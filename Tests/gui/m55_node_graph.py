@@ -393,6 +393,12 @@ try:
             report("NOTE progress_panel_status_texts raised: %s" % traceback.format_exc())
         return texts
 
+    def progress_panel_is_current_tab():
+        """TabWidget::makeCurrentTab() hides every tab but the one it makes current (it calls
+        setVisible(false) on the old one and setVisible(true) on the new one), so a ProgressPanel
+        that is visible is the current tab of whatever pane holds it."""
+        return any(w.isVisible() for w in gt.widgets_of("ProgressPanel"))
+
     # ---- steps ------------------------------------------------------------------------------
 
     def steps():
@@ -780,8 +786,12 @@ try:
             gt.shot("render-foreground-mid.png")
             check(QApplication.activeModalWidget() is pdlg_fg,
                  "render-foreground: the progress dialog is the active modal widget (blocks other windows)")
+            check(not progress_panel_is_current_tab(),
+                 "render-foreground: the Progress panel is not the current tab while the modal dialog is up")
             closed = yield ("until", lambda: find_progress_dialog() is None, 90.0)
             check(closed, "render-foreground: the progress dialog closed by itself")
+        check(not progress_panel_is_current_tab(),
+             "render-foreground: the Progress panel did not become the current tab after the render finished")
         yield ("sleep", SETTLE_MS)
         fg_files = count_output_files(os.path.join(gt.OUT, "render_fg.*.png"))
         check(len(fg_files) == FG_FRAMES,
@@ -821,6 +831,8 @@ try:
                            60.0)
             check(first, "render-foreground-cancel: the first frame was written before cancelling")
             gt.shot("render-foreground-cancel-before.png")
+            check(not progress_panel_is_current_tab(),
+                 "render-foreground-cancel: the Progress panel is not the current tab while the modal dialog is up")
             # QProgressDialog.cancel() only hides the dialog without emitting canceled(); the
             # Cancel button is what a person presses.
             cancel_buttons = [b for b in pdlg_cancel.findChildren(QPushButton) if b.text() == "Cancel"]
@@ -829,6 +841,8 @@ try:
             QApplication.processEvents()
             closed = yield ("until", lambda: find_progress_dialog() is None, 60.0)
             check(closed, "render-foreground-cancel: the progress dialog closed after Cancel")
+        check(not progress_panel_is_current_tab(),
+             "render-foreground-cancel: the Progress panel did not become the current tab after cancelling")
         yield ("sleep", SETTLE_MS)
         cancel_files = count_output_files(os.path.join(gt.OUT, "render_cancel.*.png"))
         check(len(cancel_files) < CANCEL_FRAMES,
@@ -874,8 +888,14 @@ try:
                 pdlg_sep = find_progress_dialog()
                 if check(pdlg_sep is not None, "render-foreground-separate-process: the progress dialog is up"):
                     gt.shot("render-foreground-separate-process-mid.png")
+                    check(not progress_panel_is_current_tab(),
+                         "render-foreground-separate-process: the Progress panel is not the current tab "
+                         "while the modal dialog is up")
                     closed = yield ("until", lambda: find_progress_dialog() is None, 90.0)
                     check(closed, "render-foreground-separate-process: the progress dialog closed by itself")
+                check(not progress_panel_is_current_tab(),
+                     "render-foreground-separate-process: the Progress panel did not become the current "
+                     "tab after the render finished")
                 yield ("sleep", SETTLE_MS)
                 sep_files = count_output_files(os.path.join(gt.OUT, "render_sep.*.png"))
                 check(len(sep_files) == SEP_FRAMES,

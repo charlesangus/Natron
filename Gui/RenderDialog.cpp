@@ -470,7 +470,6 @@ struct ForegroundRenderState {
     QProgressBar* bar;
     std::vector<ForegroundRenderEntry> entries;
     bool userCanceled;
-    bool failed;
     bool closed;
 
     ForegroundRenderState()
@@ -479,7 +478,6 @@ struct ForegroundRenderState {
         , bar(0)
         , entries()
         , userCanceled(false)
-        , failed(false)
         , closed(false)
     {
     }
@@ -499,8 +497,8 @@ closeForegroundRender(const ForegroundRenderStatePtr& state)
         state->dialog->hide();
         state->dialog->deleteLater();
     }
-    if (state->failed && !state->userCanceled && state->gui) {
-        state->gui->ensureProgressPanelVisible();
+    if (state->gui) {
+        state->gui->setProgressPanelTabSwitchSuppressed(false);
     }
 }
 
@@ -580,9 +578,15 @@ runForegroundRender(Gui* gui,
         previousTasks.push_back((panel && node) ? panel->getTaskForNode(node) : ProgressTaskInfoPtr());
     }
 
+    // A foreground render shows its own modal dialog; it must never also steal the current
+    // tab away to the Progress panel, which shares its task tracking with background renders.
+    gui->setProgressPanelTabSwitchSuppressed(true);
+
     gui->getApp()->startWritersRendering(false, works);
 
     if (!panel) {
+        gui->setProgressPanelTabSwitchSuppressed(false);
+
         return;
     }
 
@@ -609,6 +613,8 @@ runForegroundRender(Gui* gui,
     }
 
     if (!anyRunning) {
+        gui->setProgressPanelTabSwitchSuppressed(false);
+
         return;
     }
 
@@ -638,14 +644,11 @@ runForegroundRender(Gui* gui,
             }
             refreshForegroundRender(state);
         });
-        QObject::connect(taskPtr, &ProgressTaskInfo::taskFinished, dialog, [state, taskPtr](int retCode) {
+        QObject::connect(taskPtr, &ProgressTaskInfo::taskFinished, dialog, [state, taskPtr](int) {
             for (std::size_t j = 0; j < state->entries.size(); ++j) {
                 if (state->entries[j].task.get() == taskPtr) {
                     state->entries[j].done = true;
                 }
-            }
-            if ((retCode != 0) && !state->userCanceled) {
-                state->failed = true;
             }
             refreshForegroundRender(state);
         });

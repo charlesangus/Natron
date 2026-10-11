@@ -771,10 +771,26 @@ Gui::ensureScriptEditorVisible()
     }
 }
 
+void
+Gui::setProgressPanelTabSwitchSuppressed(bool suppressed)
+{
+    if (suppressed) {
+        ++_imp->_progressPanelTabSwitchSuppressDepth;
+    } else if (_imp->_progressPanelTabSwitchSuppressDepth > 0) {
+        --_imp->_progressPanelTabSwitchSuppressDepth;
+    }
+}
+
 PanelWidget*
 Gui::ensureProgressPanelVisible()
 {
     TabWidget* pane = _imp->_progressPanel->getParentPane();
+
+    if (_imp->_progressPanelTabSwitchSuppressDepth > 0) {
+        // The task row is already in the panel's table regardless of which tab is current;
+        // only the tab switch itself is what a suppressed caller wants to skip.
+        return pane ? pane->currentWidget() : 0;
+    }
 
     if (pane != 0) {
         PanelWidget* ret = pane->currentWidget();

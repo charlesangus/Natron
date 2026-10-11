@@ -25,6 +25,9 @@ Viewer colour picker:
 - **Pick scene-referred values.** The picker's tooltip says it reads the display-referred value from the viewer and converts it back to linear. That is wrong: it must return the scene-referred value at the picked pixel, before any viewer transform (display/view, gain, gamma, channel display). Currently `ViewerGL::getColorAt` / `getColorAtRect` (Gui/ViewerGL.cpp) take a `linear` flag from the `getColorPickerLinear` setting; confirm at elaboration whether the values are read from the post-transform texture, and fix so the picker samples the pre-transform image data. The tooltip and the `getColorPickerLinear` setting are then likely obsolete.
 - **Pick from a node's input or output.** Add a viewer picker mode that reads the colour on the viewed node's **input** or on its **output**. The default is the node's **input**, the opposite of Nuke (where it is the output). Decide at elaboration where the mode lives (viewer toolbar or the picker's own control) and how it behaves when the viewed node has several inputs (the one feeding the viewer's active input, or the first).
 
+Backward-compatibility removal (user, 2026-10-10 — no backward compat in this fork):
+- **Remove the legacy-project compatibility machinery.** Delete `ProjectSerialization_Test`'s `LegacyColourChoiceOptionFallsBackWithoutThrowing` (its remaining Grade `maskChannel` check after M76 stripped the Write part) and the `Tests/fixtures/m65-legacy-color.ntp` fixture, then the code that only serves old projects: `filterKnobChoiceOptionCompat` and the choice-option compat filters in `KnobSerialization.cpp` (~:612-650, including the writer entries M76 left), plus any other old-plugin-ID/option remapping found on the way. Scout for every such path first and list them in the elaboration.
+
 Blocked on: a codebase-scouting pass (viewer `getColorAt`/`getColorAtRect` and the picker setting, graph input arrow hit-testing, the tab menu show path, curve-editor tangent model, where `hidpi`/`interactive` are consumed), and a design answer on where the global interactive toggle and the app-level DPI setting live. The keyer and knob items should wait until M67 has landed and been UAT'd, since they edit nodes that milestone writes. Overlaps with M55 (node-graph interaction) and M56 (the unpremult-by label); decide at elaboration whether to fold those items in or leave them.
 
 Acceptance sketch:
@@ -35,3 +38,4 @@ Acceptance sketch:
 - Tab menu opens in the right spot with no jump.
 - Curve-editor handles can be dragged, lengthened, shortened and broken.
 - The colour picker returns scene-referred values and can read a node's input (default) or output.
+- No legacy-project compatibility code or legacy fixtures remain.

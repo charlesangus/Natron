@@ -208,7 +208,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
 
 ## Phase 56.6: Stylesheet density (direction per Q8)
 
-- [ ] M56.P6.T1 — Pitch a spacing and density spec as before/after mockups
+- [x] M56.P6.T1 — Pitch a spacing and density spec as before/after mockups
   - files: `PLAN/DESIGN/<date>-m56-density-spec.md` (new), a claude.ai artifact (PM publishes it)
   - approach:
     - From P1.T1's density shots, catalogue the spacing sources in both places:
@@ -298,3 +298,4 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - **Bin minimise/maximise-all:** uses `chevrons-down-up` by path. **Link cursors** keep their black halo.
   - **Order in Phase 56.5:** P5.T6, then T2, T3, T4, T7, then T5.
 - 2026-10-11 — **Density spec v2** published (claude.ai artifact `QTNUQASqsHJscpeR5JcvHa`): overlays off by default. Per the user's question, layout spacing goes through one `Gui/GuiDensity.h` header of named, DPI-scaled constants, which replaces P6.T3's "constants kept local". Optional Q_PROPERTY theming comes later. Awaiting the user's approval of the token values.
+- 2026-10-11 — **Density spec approved (user)** as v2: the token values in `PLAN/DESIGN/2026-10-11-m56-density-spec.md`, applied through a new `Gui/GuiDensity.h` of DPI-scaled constants. P6.T2–T4 apply exactly those values. P6.T4's toolbox file is `Gui/Gui05.cpp` (not `Gui20.cpp`/`ToolButton.cpp`), per the spec.

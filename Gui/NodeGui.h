@@ -470,6 +470,8 @@ protected:
 
     virtual bool mustAddResizeHandle() const { return false; }
 
+    virtual bool wantsLabelWrap() const { return true; }
+
     virtual void getInitialSize(int *w, int *h) const;
 
     void getSizeWithPreview(int *w, int *h) const;

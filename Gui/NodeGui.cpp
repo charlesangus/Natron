@@ -32,17 +32,18 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
-#include <QDebug>
-#include <QLayout>
 #include <QAction>
-#include <QThread>
+#include <QApplication>
+#include <QCursor>
+#include <QDebug>
+#include <QFile>
 #include <QFontMetrics>
+#include <QGridLayout>
+#include <QLayout>
 #include <QTextBlockFormat>
 #include <QTextCursor>
-#include <QGridLayout>
-#include <QCursor>
-#include <QFile>
-#include <QApplication>
+#include <QTextDocument>
+#include <QThread>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -997,10 +998,26 @@ NodeGui::isNearbyResizeHandle(const QPointF& pos) const
 }
 
 void
-NodeGui::adjustSizeToContent(int* /*w*/,
-                             int *h,
+NodeGui::adjustSizeToContent(int* w,
+                             int* h,
                              bool adjustToTextSize)
 {
+    if (wantsLabelWrap()) {
+        _nameItem->setTextWidth(-1);
+        const qreal naturalWidth = _nameItem->document()->idealWidth();
+        const int iconWidth = getPluginIconWidth();
+        const qreal maxContentWidth = std::max(0., TO_DPIX(NODE_MAX_WIDTH) - iconWidth);
+        // idealWidth() is the text layout width alone; boundingRect() (and so the item's
+        // on-screen width) also carries the document's left/right margins.
+        const qreal padding = 2. * _nameItem->document()->documentMargin();
+        const qreal contentWidth = std::min(naturalWidth + padding, maxContentWidth);
+
+        *w = std::max(*w, (int)std::ceil(contentWidth) + iconWidth);
+        if (naturalWidth > contentWidth) {
+            _nameItem->setTextWidth(contentWidth);
+        }
+    }
+
     QRectF labelBbox = _nameItem->boundingRect();
 
     if (adjustToTextSize) {

@@ -175,7 +175,7 @@ The design notes, the current behaviour re-checked against `a50bef552`, and the 
 
 ## Phase 55.4: Evidence and UAT
 
-- [ ] M55.P4.T1 — Write the M55 screenshot and interaction script and run it against the milestone build
+- [x] M55.P4.T1 — Write the M55 screenshot and interaction script and run it against the milestone build
   - files: `Tests/gui/m55_node_graph.py` (new)
   - approach:
     - Model it on `build/m24-shots/m24_border.py` (watchdog, NodeGraph crop, `gt.check`), creating nodes with `CreateNodeArgsPropSettingsOpened=True`.
@@ -237,3 +237,4 @@ The design notes, the current behaviour re-checked against `a50bef552`, and the 
     - `showGui` recomputes edge visibility;
     - a project load refreshes edges recursively through groups.
   - Skipped as speculative, because P1.T2's synthetic cases pass on the old binary: the size-mismatch early return and the overlap handling in `initLine`.
+- 2026-10-11 — **P4.T1 (end build):** green after a missing `<QPushButton>` include (`309631cf6`). ctest 1463/1463; `m55_node_graph.py` 137 PASS / 0 FAIL, `m55_input_pipes.py` 118/0, `m24_border.py` 47/0 (shots in `build/m55-shots/`). Product bugs found and fixed in `46d16be3c`: chain splice never worked (a connected node fell back to its free Mask input as an entry), and a separate-process render ignored the dialog's range (`ProcessHandler` now passes `first-last:step`; negative starts still fall back to the writer's range). That fix touches `Engine/AppInstance.cpp` (one line), which M76 owns on the other host, so expect a trivial conflict there. For the user's shot review: the splice marker draws under node bodies and is small; the render dialog's writer list is narrow. Not fixed: Qt6 renamed `QProcess::error` to `errorOccurred`, so `ProcessHandler`'s child-error connect fails silently (log warning).

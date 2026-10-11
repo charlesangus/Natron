@@ -359,7 +359,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - with no context, the graph is unchanged.
   - size: L
 
-- [ ] M84.P6.T2 — Emit the per-plugin cost table from profiles
+- [x] M84.P6.T2 — Emit the per-plugin cost table from profiles
   - files: `tools/bench/render-profile-report.py`, `Engine/GpuCostSeed.inc` (generated, checked in)
   - approach:
     - `--emit-cost-table` writes per-plugin CPU ms/Mpx from the M82 serial profiles, the measured parallelism, and P1.T1's in-situ Blur numbers. If the serial profiles (`build/bench/m82-profile/*-serial.steady.jsonl`) are missing on this host, re-run `run_comps.sh` with `noRenderThreads=1`.
@@ -660,3 +660,4 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - **Transfer API:** calls return `GpuStatus`, with `TimelineValue` as an out-param. `ComputeHandoff` is `Submit`, `Record` or `None`. After a download, a range belongs to the transfer family. The host-import cache is **opt-in** (`cacheHostImports`) until P4.T2 wires `forgetHostAllocation` as the HostImageMemory free hook. `forgetHostAllocation` may wait on the device when an import is still in use, so it must not be called under the cache lock (see P4.T1's note).
   - **Registry:** binding count, push bytes and group size come from Slang reflection. `slang_add_kernel(... REGISTRY NatronGpu)` plus `slang_write_kernel_table` generates `GpuKernels.inc`. Test kernels register at runtime. `GpuRecordContext` is thread-bound.
   - **Pool:** size classes go up in quarter-power-of-two steps (≤25% waste). Eviction callbacks run outside the lock and may fire after the owner dropped its handle. A concurrent `acquire` can report OOM early while another thread's callback is still running.
+- 2026-10-10 — M84.P6.T2 done (`5a7e29fd2`). `Engine/GpuCostSeed.inc` defines three macros: CPU rows (18 plugins, serial ms/Mpx and speedup), Blur σ rows (in situ, hard-coded) and GPU rows (UHD kernel-only, RX 7900 XTX). P6.T3 should note two things. The GPU rows are UHD-only, so wide blurs at 8K+ are under-estimated. Transform's serial cost of 996 ms/Mpx is as measured.

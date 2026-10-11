@@ -29,6 +29,8 @@
 
 #include <QString>
 
+#include "Global/FloatingPointExceptions.h"
+
 #include "Engine/Project.h"
 
 NATRON_NAMESPACE_ENTER
@@ -255,6 +257,7 @@ convertRow(const OCIO_NAMESPACE::CPUProcessor& processor,
     }
     try {
         OCIO_NAMESPACE::PackedImageDesc desc(pixels, width, 1, nComps);
+        const boost_adaptbx::floating_point::FpTrapGuard fpGuard;
         processor.apply(desc);
     } catch (const std::exception& e) {
         *error = e.what();

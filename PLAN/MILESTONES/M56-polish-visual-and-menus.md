@@ -118,7 +118,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - verify: at the gate build, `ctest -R ThemedIcon` passes.
   - size: M
 
-- [ ] M56.P4.T5 — Point the toolbox grouping icons at the single SVG set
+- [x] M56.P4.T5 — Point the toolbox grouping icons at the single SVG set
   - files: `Gui/GuiApplicationManager.cpp` (`*_GROUPING` cases `:278-321`, `iconSet` `:89-90`), `Gui/Gui20.cpp` (`PLUGIN_GROUP_DEFAULT_ICON_PATH` `:80`, toolbox icon build `:840-857`), `Global/Macros.h` (`NATRON_ICON_SET_NUMBER` `:266`), `Engine/AppManager.cpp` (RotoPaint registration `:1655`, the Set2 paint icon)
   - approach:
     - Map each grouping case to `Icons/lucide/<glyph>.svg` or `Icons/natron/{filter,deep}.svg`, with no set index: Image → `image`, Paint → `brush`, Time → `clock`, Channel → `menu`, Color → `palette`, Filter → custom, Keyer → `pipette`, Merge → `layers-2`, Transform → `move`, Multiview → `glasses`, Deep → custom, 3D → `box`, Other/Misc/Toolsets → per Q10.
@@ -146,6 +146,12 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
     - `git rm` the two PNGs and all of `GroupingIcons/Set1`–`Set3`, including the `.svg` and `_512.png` files in Set3. Remove their `<file>` lines (Set1 at `qrc:68-77` is already unused).
     - Before deleting anything, grep for `GroupingIcons` and both PNG names across `Engine Gui App Tests` to confirm no other references remain.
   - verify: that grep is empty. At the gate build, P1.T1's Grade panel shot shows the colour-row dropdown and global buttons recoloured, crisp at 2×, with the checked state still distinct.
+  - size: M
+
+- [ ] M56.P4.T8 — Render SVG plugin icons themed on the node graph
+  - files: `Gui/NodeGui.cpp`
+  - approach: the optional on-canvas plugin icon (`isPluginIconActivatedOnNodeGraph`, around `NodeGui.cpp:700-760`) loads `Plugin::getIconFilePath()` with plain `QPixmap::load()`. RotoPaint's icon is now an SVG with a literal `currentColor` stroke, so it would draw untinted or wrong. When the path is an SVG (`ThemedIcon::isSvgPath`), draw it with `ThemedIcon::renderPixmap` at the icon size in the theme text colour; PNG plugin icons are unchanged.
+  - verify: at the gate build, with "plugin icons in the node graph" on, a RotoPaint node shows a crisp themed brush glyph (P1.T1 shot).
   - size: M
 
 ## Phase 56.5: Icon replacement batches (scope per Q5)
@@ -274,3 +280,4 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
 - 2026-10-11 — **Twin labels (user, from mockups at claude.ai artifact `5Fw2Nn1B4F7tmtjqF3WA4n`):** Premult/Unpremult picker on its own row labelled "Premult by" / "Unpremult by" (A1). IDistort/STMap: U, V and Alpha each on their own aligned row (B1), so P3.T1 stands as written. The user briefly floated a single layer row capped at two channels (first enabled = U, second = V, as in Nuke), and a consultant designed it (`KnobLayerSelect::setMaxChannels`, one `hostUVChannels` twin). The user then dropped that path in favour of B1, so it is not planned.
 - 2026-10-11 — **Started early (user):** M56 opened in `.worktrees/m56` on `milestone/m56-visual-and-menu-polish`, branched from `main` at `a50bef552`, while M44 - Trackball Colour Editing (PR #51, in CI) and M55 - Node Graph Polish (at its gate) are still open. The user asked for it explicitly. The lane rebases onto `main` after each of those merges. Tasks that build on M44's icons (P4.T7) wait until M44 has merged. P1.T1's "before" shots run later against a `main` build. **Freshness check:** every task's files exist on `main`. P4.T6 and P5.T5 were re-sized S → M under the sizing rule: they are multi-file edits that need grep judgement.
 - 2026-10-11 — **P4.T2:** Lucide pinned at 1.55.0 (commit `70562c1ee1c4`). Lucide's LICENSE lists `clock` and `move` as Feather-derived (MIT) as well as `chevrons-down`; SOURCES.txt records all three as MIT. The custom glyphs came from `PLAN/DESIGN/icons/` and were re-saved at stroke-width 2 so the runtime thinning treats them like Lucide.
+- 2026-10-11 — **P4.T5:** toolbox groupings map to SVGs (Misc, Other and the default catch-all all `puzzle` for now). A new public `GuiApplicationManager::getIcon(PixmapEnum, int, QIcon*)` overload builds themed state icons. The implementer found that `NodeGui`'s on-canvas plugin icon loads SVG paths with plain `QPixmap::load`, so **M56.P4.T8** was added to theme it.

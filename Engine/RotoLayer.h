@@ -88,6 +88,13 @@ public:
      **/
     virtual void load(const RotoItemSerialization & obj) OVERRIDE;
 
+    void toSerialization(Serialization::RotoLayerSerialization* serialization) const;
+
+    /**
+     * @brief Creates the saved children, beziers, strokes and layers, inside this layer.
+     **/
+    void fromSerialization(const Serialization::RotoLayerSerialization& serialization);
+
     ///only callable on the main-thread
     ///No check is done to figure out if the item already exists in this layer
     ///this is up to the caller responsibility

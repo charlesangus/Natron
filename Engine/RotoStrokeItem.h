@@ -131,6 +131,14 @@ public:
      * Derived implementations must call the parent class implementation.
      **/
     virtual void load(const RotoItemSerialization & obj) OVERRIDE FINAL;
+
+    void toSerialization(Serialization::RotoStrokeItemSerialization* serialization) const;
+
+    /**
+     * @brief The item must have been created with the brush type the serialization holds.
+     **/
+    void fromSerialization(const Serialization::RotoStrokeItemSerialization& serialization);
+
     virtual RectD getBoundingBox(double time) const OVERRIDE FINAL;
 
 

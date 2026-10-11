@@ -39,6 +39,8 @@
 #include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
 
+#include "Serialization/SerializationFwd.h"
+
 NATRON_NAMESPACE_ENTER
 
 /**
@@ -162,6 +164,13 @@ public:
     void cloneInternalCurvesToGuiCurves();
 
     void cloneGuiCurvesToInternalCurves();
+
+    void toSerialization(Serialization::BezierCPSerialization* serialization) const;
+
+    /**
+     * @brief Sets the point, and its GUI copy, to the saved state.
+     **/
+    void fromSerialization(const Serialization::BezierCPSerialization& serialization);
 
     template<class Archive>
     void save(Archive & ar, const unsigned int version) const;

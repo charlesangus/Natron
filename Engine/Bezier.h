@@ -628,6 +628,9 @@ public:
      **/
     virtual void load(const RotoItemSerialization & obj) OVERRIDE;
 
+    void toSerialization(Serialization::BezierSerialization* serialization) const;
+    void fromSerialization(const Serialization::BezierSerialization& serialization);
+
     void getKeyframeTimes(std::set<double> *times) const;
 
     void getKeyframeTimesAndInterpolation(std::list<std::pair<double, KeyframeTypeEnum> > *keys) const;

@@ -463,13 +463,23 @@ RotoItem::save(RotoItemSerialization *obj) const
 void
 RotoItem::load(const RotoItemSerialization &obj)
 {
+    restoreSavedState(obj.name, obj.label, obj.activated, obj.parentLayerName, obj.locked);
+}
+
+void
+RotoItem::restoreSavedState(const std::string& name,
+                            const std::string& label,
+                            bool activated,
+                            const std::string& parentLayerName,
+                            bool locked)
+{
     {
         QMutexLocker l(&itemMutex);
-        _imp->globallyActivated = obj.activated;
-        _imp->locked = obj.locked;
-        _imp->scriptName = obj.name;
-        if ( !obj.label.empty() ) {
-            _imp->label = obj.label;
+        _imp->globallyActivated = activated;
+        _imp->locked = locked;
+        _imp->scriptName = name;
+        if ( !label.empty() ) {
+            _imp->label = label;
         } else {
             _imp->label = _imp->scriptName;
         }
@@ -494,12 +504,12 @@ RotoItem::load(const RotoItemSerialization &obj)
             _imp->scriptName = cpy;
         } else {
             l.unlock();
-            std::string name = getContext()->generateUniqueName(kRotoBezierBaseName);
+            std::string uniqueName = getContext()->generateUniqueName(kRotoBezierBaseName);
             l.relock();
-            _imp->scriptName = name;
+            _imp->scriptName = uniqueName;
         }
     }
-    RotoLayerPtr parent = getContext()->getLayerByName(obj.parentLayerName);
+    RotoLayerPtr parent = getContext()->getLayerByName(parentLayerName);
 
     {
         QMutexLocker l(&itemMutex);

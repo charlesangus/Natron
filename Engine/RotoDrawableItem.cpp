@@ -907,10 +907,7 @@ RotoDrawableItem::save(RotoItemSerialization *obj) const
     if (!s) {
         throw std::logic_error("RotoDrawableItem::save()");
     }
-    for (std::list<KnobIPtr>::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
-        s->_knobs.push_back( Serialization::KnobSerialization() );
-        serializeRotoKnob( *it, &s->_knobs.back() );
-    }
+    serializeKnobs(&s->_knobs);
     {
         QMutexLocker l(&itemMutex);
         std::memcpy(s->_overlayColor, _imp->overlayColor, sizeof(double) * 4);
@@ -919,12 +916,28 @@ RotoDrawableItem::save(RotoItemSerialization *obj) const
 }
 
 void
+RotoDrawableItem::serializeKnobs(std::list<Serialization::KnobSerialization>* knobs) const
+{
+    for (std::list<KnobIPtr>::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
+        knobs->push_back( Serialization::KnobSerialization() );
+        serializeRotoKnob( *it, &knobs->back() );
+    }
+}
+
+void
 RotoDrawableItem::load(const RotoItemSerialization &obj)
 {
     RotoItem::load(obj);
     const RotoDrawableItemSerialization & s = dynamic_cast<const RotoDrawableItemSerialization &>(obj);
 
-    for (std::list<Serialization::KnobSerialization>::const_iterator it = s._knobs.begin(); it != s._knobs.end(); ++it) {
+    restoreSavedKnobs(s._knobs, s._overlayColor);
+}
+
+void
+RotoDrawableItem::restoreSavedKnobs(const std::list<Serialization::KnobSerialization>& knobs,
+                                    const double overlayColor[4])
+{
+    for (std::list<Serialization::KnobSerialization>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
         const std::string serializedName = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name);
         for (std::list<KnobIPtr>::const_iterator it2 = _imp->knobs.begin(); it2 != _imp->knobs.end(); ++it2) {
             if ( (*it2)->getName() == serializedName ) {
@@ -942,7 +955,7 @@ RotoDrawableItem::load(const RotoItemSerialization &obj)
     }
     {
         QMutexLocker l(&itemMutex);
-        std::memcpy(_imp->overlayColor, s._overlayColor, sizeof(double) * 4);
+        std::memcpy(_imp->overlayColor, overlayColor, sizeof(double) * 4);
     }
 
     RotoStrokeType type;
@@ -1031,7 +1044,7 @@ RotoDrawableItem::load(const RotoItemSerialization &obj)
             isDbl->clone( _imp->effectStrength.get() );
         }
     }
-} // RotoDrawableItem::load
+} // RotoDrawableItem::restoreSavedKnobs
 
 bool
 RotoDrawableItem::isActivated(double time) const

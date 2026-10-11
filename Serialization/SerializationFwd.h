@@ -27,6 +27,8 @@
 // headers, so including it here does not break the plain-data boundary.
 NATRON_NAMESPACE_ENTER
 namespace Serialization {
+struct BezierCPSerialization;
+struct BezierSerialization;
 struct CurveSerialization;
 struct GroupKnobChildSerialization;
 struct GroupKnobSerialization;
@@ -34,6 +36,13 @@ struct KeyFrameSerialization;
 struct KnobDimensionSerialization;
 struct KnobMasterSerialization;
 struct KnobSerialization;
+struct RotoContextSerialization;
+struct RotoDrawableItemSerialization;
+struct RotoItemSerialization;
+struct RotoLayerChildSerialization;
+struct RotoLayerSerialization;
+struct RotoStrokeCurvesSerialization;
+struct RotoStrokeItemSerialization;
 }
 NATRON_NAMESPACE_EXIT
 

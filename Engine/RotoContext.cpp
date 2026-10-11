@@ -1031,7 +1031,15 @@ RotoContext::load(const RotoContextSerialization & obj)
 
     baseLayer->load(obj._baseLayer);
 
-    for (std::list<std::string>::const_iterator it = obj._selectedItems.begin(); it != obj._selectedItems.end(); ++it) {
+    restoreSavedSelection(obj._selectedItems);
+    _imp->isCurrentlyLoading = false;
+    refreshRotoPaintTree();
+}
+
+void
+RotoContext::restoreSavedSelection(const std::list<std::string>& selectedItemNames)
+{
+    for (std::list<std::string>::const_iterator it = selectedItemNames.begin(); it != selectedItemNames.end(); ++it) {
         RotoItemPtr item = getItemByName(*it);
         BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(item);
         RotoLayerPtr isLayer = std::dynamic_pointer_cast<RotoLayer>(item);
@@ -1041,8 +1049,6 @@ RotoContext::load(const RotoContextSerialization & obj)
             linkItemsKnobsRecursively(this, isLayer);
         }
     }
-    _imp->isCurrentlyLoading = false;
-    refreshRotoPaintTree();
 }
 
 void

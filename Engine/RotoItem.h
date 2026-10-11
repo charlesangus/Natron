@@ -44,6 +44,8 @@ CLANG_DIAG_ON(deprecated-declarations)
 #include "Engine/FitCurve.h"
 #include "Engine/EngineFwd.h"
 
+#include "Serialization/SerializationFwd.h"
+
 
 #define kRotoLayerBaseName "Layer"
 #define kRotoBezierBaseName "Bezier"
@@ -148,6 +150,13 @@ public:
     virtual void load(const RotoItemSerialization & obj);
 
     /**
+     * @brief Fills the parts of the serialization every roto item saves. The derived classes'
+     * own toSerialization/fromSerialization call these.
+     **/
+    void toSerialization(Serialization::RotoItemSerialization* serialization) const;
+    void fromSerialization(const Serialization::RotoItemSerialization& serialization);
+
+    /**
      * @brief Returns the name of the node holding this item
      **/
     std::string getRotoNodeName() const;
@@ -183,6 +192,12 @@ private:
 
     void setGloballyActivated_recursive(bool a);
     void setLocked_recursive(bool locked, RotoItem::SelectionReasonEnum reason);
+
+    void restoreSavedState(const std::string& name,
+                           const std::string& label,
+                           bool activated,
+                           const std::string& parentLayerName,
+                           bool locked);
 
     std::unique_ptr<RotoItemPrivate> _imp;
 };

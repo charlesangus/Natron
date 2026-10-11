@@ -242,6 +242,13 @@ public:
     ///Deserialization
     void load(const RotoContextSerialization & obj);
 
+    void toSerialization(Serialization::RotoContextSerialization* serialization) const;
+
+    /**
+     * @brief Must be called on a context that holds nothing but its base layer.
+     **/
+    void fromSerialization(const Serialization::RotoContextSerialization& serialization);
+
 
     /**
      * @brief This must be called by the GUI whenever an item is selected. This is recursive for layers.
@@ -463,6 +470,8 @@ private:
 
     void selectInternal(const RotoItemPtr& b, bool slaveKnobs = true);
     void deselectInternal(RotoItemPtr b);
+
+    void restoreSavedSelection(const std::list<std::string>& selectedItemNames);
 
     void removeItemRecursively(const RotoItemPtr& item, RotoItem::SelectionReasonEnum reason);
 

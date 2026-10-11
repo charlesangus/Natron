@@ -560,7 +560,7 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
     - Screenshot.
   - size: L
 
-- [ ] M44.P7.T7 — Rebuild the adjust panel without tabs, on Natron `ScaleSliderQWidget` + `SpinBox` lines, and delete `ColorEditSlider`
+- [x] M44.P7.T7 — Rebuild the adjust panel without tabs, on Natron `ScaleSliderQWidget` + `SpinBox` lines, and delete `ColorEditSlider`
   - files: `Gui/ColorAdjustPanel.h`, `Gui/ColorAdjustPanel.cpp`, `Gui/KnobGuiColor.cpp`, `Tests/ColorAdjustPanel_Test.cpp`, `Tests/CMakeLists.txt`; delete `Gui/ColorEditSlider.h`, `Gui/ColorEditSlider.cpp`, `Tests/ColorEditSlider_Test.cpp`
   - approach:
     - **Removed.** The `QTabWidget`, the "Wheel"/"Values" labels, `buildValuesTab`, the RGBA/HSV/hex fields, the palette, `onValueFieldCommitted`, `onHexCommitted`, `onPaletteColorPicked`, `onTabChanged`, `reloadPalette`, `addCurrentColorToPalette`, `clearPalette`, `savePalette`, and the getters `getTabWidget`/`getWheelTab`/`getValuesTab`/`getValueField`/`getPalette*`.
@@ -790,3 +790,10 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
   - Both use the 1.5 px stroke, rendered from SVG in the theme colour.
   - M44.P7.T11 applies them.
 - 2026-10-10 — **P7.T9 carry-over:** the global-mode button tooltip (`Gui/KnobGuiColor.cpp`) and the Ctrl+E shortcut description (`kShortcutDescActionColorTrackball`, `Gui/GuiApplicationManager10.cpp`) still list only C/T/V. T11, which touches the global button, updates both. The "HUD lights S" test goes into T10 with `Tests/ColorTrackballHud_Test.cpp`.
+- 2026-10-10 — **P7.T7 landed** (`1da2d0f4d` before the rebase):
+  - The panel is the wheel plus Hue/Sat/Value/Temp/Tint lines, each a Natron SpinBox with a ScaleSliderQWidget; there is no Alpha line.
+  - `ScaleSliderQWidget::setTrackGradient`.
+  - The Values tab, hex, palette and `ColorEditSlider` are deleted.
+  - Spinbox commits run as one-step gestures; a Return that leaves the rounded value unchanged does nothing.
+
+  The M44 branch is then rebased onto `main` with M24 (`a50bef552`); conflicts are being resolved, starting with `Tests/CMakeLists.txt`.

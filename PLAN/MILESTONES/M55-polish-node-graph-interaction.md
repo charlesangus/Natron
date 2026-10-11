@@ -156,7 +156,7 @@ The design notes, the current behaviour re-checked against `a50bef552`, and the 
     - `app.render(writer, 1, 2)` from the Script Editor still renders without a dialog.
   - size: M
 
-- [ ] M55.P3.T3 — Add a modal foreground render with progress and cancel, driven by the Progress panel's tasks
+- [x] M55.P3.T3 — Add a modal foreground render with progress and cancel, driven by the Progress panel's tasks
   - files: `Gui/RenderDialog.cpp`, `Gui/ProgressTaskInfo.h`, `Gui/ProgressTaskInfo.cpp`, `Gui/ProgressPanel.h`, `Gui/ProgressPanel.cpp`
   - approach:
     - Give `ProgressTaskInfo` two new signals: `progressChanged(double)`, emitted from `onRenderEngineFrameComputed`, and `taskFinished(int retCode)`, emitted once from `onRenderEngineStopped` and from `cancelTask`.
@@ -222,3 +222,6 @@ The design notes, the current behaviour re-checked against `a50bef552`, and the 
   - Releasing Ctrl mid-drag now drops the Ctrl hint and switches to splice; the old code kept a stale Ctrl hint.
   - Chain splices take two undo steps until P2.T4.
   - Escape and focus-out don't cancel a node drag today. P2.T3 adds a `resetSplicePlan()` call in `NodeGraph25.cpp`'s `keyPressEvent` (Escape) and `NodeGraph45.cpp`'s `focusOutEvent`.
+- 2026-10-10 — **P3.T3:** the foreground dialog is application-modal through `show()` rather than `open()`, which would force window-modal and leave floating panels usable.
+  - Cancel uses `cancelTask(false, 1)`, the same as the panel's Pause.
+  - A separate-process render that fails to start shows ProcessHandler's error dialog but never finishes its task, so the foreground dialog stays open until Cancel.

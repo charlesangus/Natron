@@ -215,7 +215,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - a request bigger than the budget returns OOM without evicting everything.
   - size: M
 
-- [ ] M84.P3.T5 — Device state machine with fault injection and re-creation
+- [x] M84.P3.T5 — Device state machine with fault injection and re-creation
   - files: `Engine/Gpu/GpuRuntime.{h,cpp}` (new), `Engine/Gpu/GpuDevice.{h,cpp}`, `Tests/Gpu/GpuRuntime_Test.cpp`
   - approach:
     - `GpuRuntime` owns the device, the transfer streams, the registry and the pool.
@@ -296,7 +296,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
 
 ## Phase 84.5: GPU-capable nodes (the minimum that exercises placement)
 
-- [ ] M84.P5.T1 — GPU-capability interface on `NativeImageEffect`
+- [x] M84.P5.T1 — GPU-capability interface on `NativeImageEffect`
   - files: `Engine/Nodes/Image/GpuRender.h` (new), `Engine/Nodes/Image/NativeImageEffect.{h,cpp}`, `Tests/Native/NativeImageEffect_Test.cpp`
   - approach:
     - New types:
@@ -342,7 +342,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
 
 ## Phase 84.6: Placement and cost model
 
-- [ ] M84.P6.T1 — Device and region fields, and the region-forming placement pass
+- [x] M84.P6.T1 — Device and region fields, and the region-forming placement pass
   - files: `Engine/RenderScheduler.h`, `Engine/GpuPlacement.{h,cpp}` (new), `Tests/GpuPlacement_Test.cpp`, `Tests/CMakeLists.txt`
   - approach:
     - `FrameGraph::Task` gains `device` (Cpu or Gpu) and `regionId` (-1 by default).
@@ -661,3 +661,6 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - **Registry:** binding count, push bytes and group size come from Slang reflection. `slang_add_kernel(... REGISTRY NatronGpu)` plus `slang_write_kernel_table` generates `GpuKernels.inc`. Test kernels register at runtime. `GpuRecordContext` is thread-bound.
   - **Pool:** size classes go up in quarter-power-of-two steps (≤25% waste). Eviction callbacks run outside the lock and may fire after the owner dropped its handle. A concurrent `acquire` can report OOM early while another thread's callback is still running.
 - 2026-10-10 — M84.P6.T2 done (`5a7e29fd2`). `Engine/GpuCostSeed.inc` defines three macros: CPU rows (18 plugins, serial ms/Mpx and speedup), Blur σ rows (in situ, hard-coded) and GPU rows (UHD kernel-only, RX 7900 XTX). P6.T3 should note two things. The GPU rows are UHD-only, so wide blurs at 8K+ are under-estimated. Transform's serial cost of 996 ms/Mpx is as measured.
+- 2026-10-10 — M84.P3.T5 (`2b44cc6ce`), P5.T1 (`7da9d9e31`) and P6.T1 (`5335e5c5e`) done. Full ctest passes in both modes once two test fixes are in (a non-user-creatable plugin filter, and a fixed pool budget in the GpuRuntime tests, since RADV's live budget drifts). GpuTests: 164/164 on lavapipe and on RADV, 82/82 on the host.
+  - **Runtime:** fault ops count from 1 and are every `GpuDevice::submit` plus every `GpuRuntime::acquire`. `recreate()` invalidates all outstanding handles and contexts. `Degraded` clears only on `recreate()`.
+  - **Placement deviations:** convexity forbids a cycle through **any** outside task, including another region, not just CPU tasks. `acceptRegion` takes `(const FrameGraph&, const Region&)`. GPU availability is a function-pointer hook, `setGpuPlacementAvailableFunc`, which is null today. **Enable it only together with P7.T2's region body**, or tasks get labelled `gpu` but still render on the CPU. Identity tasks never start a region. Multi-plane tasks are never candidates.

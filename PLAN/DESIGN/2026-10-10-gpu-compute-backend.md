@@ -301,3 +301,31 @@ The main build gains `find_package(Vulkan)` behind an option that defaults to on
 - **Runtime fusion against offline-only Slang** (M87, §6) may force a runtime-compiler decision.
 - **Slang release churn:** v2026.19 is pinned. GLSL output already needed fix-ups, and a compiler bump must re-run the tolerance suite.
 - **Host access to `/dev/dri`** after reboots (§4 #7), and no RADV inside the container (§4 #8), make real-GPU CI hard. CI will be lavapipe-only, so the semaphore interop path is never run in CI.
+
+## 9. Outcomes from M84 - GPU Placement And Residency (2026-10-11)
+
+- **Host-import registration on RADV:**
+  - pinning touched memory: UHD 2.4–3.6 ms, 8K 12–29 ms;
+  - pinning untouched memory: ~30 / ~135 ms;
+  - an import of an exact multiple of 4 GiB fails (a 32-bit truncation). The engine never submits one and treats −13 as "use staging".
+  - **Recycling is what makes host-import pay:** the `HostImageMemory` pool (default cap max(512 MB, RAM/4); 2 MB-aligned `MADV_HUGEPAGE` buffers ≥ 32 MB).
+- **Blur baseline, in-graph CPU** (UHD float, 16 threads): FIR 13.2 / 21.0 / 43.4 ms/Mpx at σ3/25/100, after leaving its buffer uninitialised. About 100 ms per UHD task of serial overhead went to M90 - Render Path Serial Overhead.
+- **Limits that changed from §4/§5:**
+  - admission is **reactive**: there is no device-byte admission; the pool enforces the budget and out-of-memory walks evict → serial strips → halve strips → CPU;
+  - strips are planned from I/O sizes against the pool budget, capped at device memory − 1 GiB;
+  - device loss re-runs the whole frame on the CPU;
+  - stripped regions download every output, so nothing resident crosses a stripped boundary.
+- **Strip pipeline:** 3 strips in flight on the dedicated transfer family, with `ComputeHandoff::Record`. It needs push descriptors.
+- **Bench results** (release, RADV RX 7900 XTX, Grade → Blur σ25 → Grade, Auto vs Off):
+
+  | Size | Off | Auto | Speedup |
+  |---|---|---|---|
+  | UHD | 0.279 s | 0.143 s | 1.95× |
+  | 8192² | 2.70 s | 1.49 s | 1.82× |
+  | 16384² | 8.2 s | 3.0 s | ~2.7× |
+  | 24000² | 17.8 s | 6.5 s | ~2.7× |
+
+  - At 16k and 24k the region is compute-bound: 276 of 314 ms of transfer is hidden at 16k, and 627 of 705 ms at 24k.
+  - keying_grade is 1.12× and cg_multipass 1.26× at UHD. No comp was slower under Auto.
+  - CPU-only renders are 10–43% faster than `main`.
+

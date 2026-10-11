@@ -515,7 +515,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - full ctest passes in both modes on lavapipe.
   - size: L
 
-- [ ] M84.P7.T10 — Fix the release-only segfault in the device-loss test on lavapipe
+- [x] M84.P7.T10 — Fix the release-only segfault in the device-loss test on lavapipe
   - files: `Engine/GpuPlacement.cpp`, `Engine/GpuContext.cpp`, `Engine/RenderScheduler.cpp`, `Engine/GpuRegionTask.cpp` (wherever the cause is), `Tests/GpuResidency_Test.cpp`
   - approach: `GpuResidencyTest.DeviceLossRendersTheFrameOnTheCpuAndTheNextRenderRecovers` segfaults in `placeRenderGraph` in the **release** build on lavapipe, 3 of 3 runs. It also fails on the tip before P7.T9. It passes in debug and on RADV in release. Find the root cause (a likely suspect is a use-after-free or a race around `recreate()` and `recoverIfLost()` invalidating handles that placement or the cost model still holds), and fix it in the engine, not the test.
   - verify:
@@ -547,7 +547,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - verify: a Decisions table. The direction must hold: Grade → Blur → Grade at 24k is faster on the GPU, and no comp is slower with Auto than with Off. Any comp that is slower is explained by the cost-model inputs, and those inputs are fixed.
   - size: M
 
-- [ ] M84.P8.T3 — Record outcomes and hand-offs
+- [x] M84.P8.T3 — Record outcomes and hand-offs
   - files: `.plan/PLAN/DESIGN/2026-10-10-gpu-compute-backend.md` (a follow-up section), `.plan/PLAN/MILESTONES/M85-native-gpu-kernels.md`, `.plan/PLAN/MILESTONES/M86-ofx-gpu-suites.md`
   - approach:
     - The design note gets the registration cost, the Blur baseline, the bench results and any limits that changed.
@@ -866,3 +866,5 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - the pool can hold up to RAM/4 plus pins when idle; consider an idle trim or a setting;
     - ≤ 64 GB machines won't fully recycle 24k frames.
   - **Found:** a pre-existing release-only segfault in the device-loss test on lavapipe → new task M84.P7.T10.
+- 2026-10-11 — M84.P7.T10 done (`a9048b4ec`). **The cause was in the test, not the engine.** `GpuResidencyTest::SetUp`'s forced context logged through a lambda that captured a `SetUp` stack local by reference. `recoverIfLost()` logs through that sink after `SetUp` returns, which corrupts the stack, and the release build crashed on it. It shows only on lavapipe, because RADV uses the app's own context. The fix holds the sink by `shared_ptr`, and the `GpuContextOptions::infoLog` doc now says it is called for the context's whole life. The test passes 20/20 in release and debug in both modes. Full ctest passes 1669/1669 in debug and release, in both modes.
+- 2026-10-11 — M84.P8.T3 done (plan-only). The hand-offs are in M85 - Native GPU Kernels and M86 - OFX 1.5 GPU Suites, and the design note has a §9 outcomes section.

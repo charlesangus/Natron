@@ -468,7 +468,7 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
     - Existing cases stay green.
   - size: M
 
-- [ ] M44.P7.T3 — Make the wheel's V/T locks independent of hover and focus, and let V take either axis
+- [x] M44.P7.T3 — Make the wheel's V/T locks independent of hover and focus, and let V take either axis
   - files: `Gui/ColorWheelWidget.h`, `Gui/ColorWheelWidget.cpp`, `Tests/ColorWheelWidget_Test.cpp`
   - approach:
     - **Key tracker.** Add a file-local `LockKeyTracker`, a `QObject` installed once on `qApp` by the first `ColorWheelWidget`.

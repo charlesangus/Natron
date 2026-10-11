@@ -259,6 +259,8 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
   - Medium: Dot label contrast was picked against the disk instead of the graph background; edges didn't re-attach when the ring toggled; `settingsSaved` wasn't emitted when saving was off; edge tints were read live in `paint()`; interactive Dots auto-opened their panel.
   - All fixed in `066c128c4`, and every thread has a reply. One build: 27/27 targeted tests (4 new KnobGuiString tests), screenshot script 0 failures. Merging once CI is green. This is the last review round allowed by the two-round cap.
 
+- 2026-10-10 — **Shipped:** PR #50 was squash-merged to `main` as `a50bef552` after two review rounds (15 + 9 findings, all fixed), user UAT approval, and green CI (`format`, `lint-ci`, `build-and-test`).
+
 **Verification gate:** `format`, `lint-ci` and `build-and-test` green; plus visual
 evidence captured the same way M17's node-graph evidence and M23's packaging gate
 were captured (Xvfb + screenshot, since this cannot be asserted in a unit test),

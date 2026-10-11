@@ -186,6 +186,8 @@ future core work has solid ground to build on.
   **M82–M87 (GPU rendering) added 2026-10-09 via the inbox (user-requested):** M82 - Render Cost Profiling measures first; M83 - GPU Compute Backend Spike picks one engine-wide backend (Vulkan compute + Slang is the lean, pending the user); M84 - GPU Placement And Residency, M85 - Native GPU Kernels, M86 - OFX 1.5 GPU Suites and M87 - Point-Op Kernel Fusion follow. They sit after M80, with M81 - Raw GPU Kernels moved behind M84 so raw kernels feed a resident region. M68 - Headless GL EGL stays deferred and is re-scoped once M83 lands. See `DECISIONS/2026-10-09-one-engine-gpu-backend.md`.
   **M73 shipped 2026-10-08** (PR #43, squash `cb04295b9`): openfx-misc pinned to its merge commit `9fb0d0904`; every fork's SupportExt pin is now on openfx-supportext master; merged stack branches and `build/wt/` worktrees removed (M64 benchmarks saved to `build/bench/from-wt-m64/`).
 
+  **M24 shipped 2026-10-10** (PR #50, squash `a50bef552`). Nodes take their body colour from a category, and the user colour is a ring outside the node. Category and edge-kind colours are set in Preferences and applied on Save. Labels pick black or white text for contrast, and Dots get a settings panel.
+
 # Board
 
 | ID | Milestone | Status | Deps | File |
@@ -254,7 +256,7 @@ future core work has solid ground to build on.
 | M22 | Missing Plugin Placeholder | todo | M75 | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |
 | M31 | Architectural Cleanup | todo | M75, M76 | [M31-architectural-cleanup.md](PLAN/MILESTONES/M31-architectural-cleanup.md) |
 | M69 | Minor Cleanup | todo | M75 | [M69-minor-cleanup.md](PLAN/MILESTONES/M69-minor-cleanup.md) |
-| M24 | Node Graph Category Colour | doing | - | [M24-node-graph-category-colour.md](PLAN/MILESTONES/M24-node-graph-category-colour.md) |
+| M24 | Node Graph Category Colour | done | - | [M24-node-graph-category-colour.md](PLAN/MILESTONES/M24-node-graph-category-colour.md) |
 | M44 | Trackball Colour Editing | doing | - | [M44-trackball-colour-editing.md](PLAN/MILESTONES/M44-trackball-colour-editing.md) |
 | M55 | Node Graph Polish | todo | M24 | [M55-polish-node-graph-interaction.md](PLAN/MILESTONES/M55-polish-node-graph-interaction.md) |
 | M46 | Labelmaker Annotations | todo |  | [M46-labelmaker-annotations.md](PLAN/MILESTONES/M46-labelmaker-annotations.md) |

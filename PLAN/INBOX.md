@@ -46,3 +46,82 @@
   `skills/natron-maintainer`; a clean build is unaffected (no build input
   depended on it).
   ```
+
+### 2026-10-11T00:00:11-04:00 — change-request
+- refs: M85, M86, M68
+- User request (2026-10-11): fold the **retirement of the engine-side GL render path** into
+  M85 - Native GPU Kernels and M86 - OFX 1.5 GPU Suites, so Vulkan compute becomes the only
+  engine GPU path and GL survives in the engine solely as a context for OFX OpenGL-suite
+  plugins. The viewer (`Gui/ViewerGL*`, overlays) and the 2D GL widgets (curve editor, dope
+  sheet, timeline, histogram) are **out of scope** and stay on GL.
+
+  Scouted on `main`-based code: native nodes never render through GL
+  (`EffectInstance::supportsOpenGLRender` defaults to None). The engine GL path exists for the
+  OFX OpenGL render suite (`OfxHost.cpp:307`) and comprises:
+  - GL texture image storage and its host-side GL wrappers: `eStorageModeGLTex` paths in
+    `Engine/Image.cpp`, `ImageConvert.cpp`, `ImageCopyChannels.cpp`, `ImageMaskMix.cpp`,
+    `ImagePremult.cpp`, with `Engine/GLShader.*` and `Engine/Texture.cpp`.
+  - Per-render-thread contexts: `Engine/OSGLContext*` (x11, wayland, xdg), `GPUContextPool.*`,
+    and the plumbing in `RenderScheduler.cpp`, `FrameRenderContext.cpp`,
+    `ParallelRenderArgs.*`, `EffectInstanceRenderRoI.cpp`, `EffectInstanceRenderDeep.cpp`,
+    `OfxClipInstance.cpp`, `CacheEntry.h`.
+  - Startup GL probing and settings: `AppManager*.cpp` renderer probe, `Settings.cpp`
+    `_enableOpenGL` / `_availableOpenGLRenderers`, `Gui/AboutWindow.cpp`.
+  - Tests: `Tests/GLScheduler_Test.cpp`, `Tests/OSGLContext_Test.cpp`.
+  (`RotoPaint*`, `TrackerNode*` GL calls are overlay drawing — viewer side, out of scope.)
+
+  **Edit `PLAN/MILESTONES/M85-native-gpu-kernels.md`** (stays a stub; still blocked on
+  M84 - GPU Placement And Residency). Append to the intent bullets:
+
+  ```markdown
+  - **Retire the engine GL render path for host work** (2026-10-11, user). The host's GL
+    wrappers around plugin renders — mask/mix, copy-channels, premult and storage conversion
+    on `eStorageModeGLTex` images (`ImageMaskMix.cpp`, `ImageCopyChannels.cpp`,
+    `ImagePremult.cpp`, `ImageConvert.cpp`, GL paths in `Image.cpp`, `GLShader.*`) — are
+    replaced by the backend-neutral kernels above running on Vulkan. GPU device selection
+    and the on/off switch in `Settings.cpp` move from the GL renderer list to the Vulkan
+    device list. After M85 nothing native or host-side renders through GL; the remaining GL
+    engine code serves only the OFX OpenGL suite and is narrowed by M86.
+  ```
+
+  and append to its acceptance sketch:
+
+  ```markdown
+  - No host-side image operation renders through GL: the `eStorageModeGLTex` mask/mix,
+    copy-channels, premult and convert paths are gone or reduced to the M86 interop boundary.
+  - The Preferences GPU setting lists Vulkan devices, not GL renderers.
+  ```
+
+  **Edit `PLAN/MILESTONES/M86-ofx-gpu-suites.md`** (stays a stub; still blocked on
+  M84 - GPU Placement And Residency). Replace the bullet "Keep the existing OpenGL suite
+  working through GL/Vulkan interop for Shadertoy and the OCIO plugins." with:
+
+  ```markdown
+  - Keep the existing OpenGL suite working for Shadertoy and the OCIO plugins, as the **only
+    remaining engine GL path** (2026-10-11, user). A GL-suite plugin's inputs and outputs
+    cross a GL/Vulkan interop boundary at the plugin call (exported Vulkan memory imported
+    as GL textures or PBOs, ordered by shared semaphores with the hostsync fallback from
+    M83). Shrink `OSGLContext*` and `GPUContextPool` to lazily created contexts used only for
+    those plugins — none are created when a project has no GL-suite plugin — and delete the
+    GL scheduling plumbing in `RenderScheduler.cpp`, `FrameRenderContext.cpp` and
+    `ParallelRenderArgs.*` that no longer has a consumer. Rework or retire
+    `Tests/GLScheduler_Test.cpp` and `Tests/OSGLContext_Test.cpp` to match. M68 - Headless
+    GL EGL then reduces to giving this narrowed context an EGL surfaceless backend.
+  ```
+
+  and append to its acceptance sketch:
+
+  ```markdown
+  - With no GL-suite plugin in the project, a render creates no GL context.
+  - GL is used in the engine only at the OFX OpenGL-suite boundary; everything else on the
+    GPU runs on Vulkan.
+  ```
+
+  **Record a project-wide decision** `PLAN/DECISIONS/2026-10-11-retire-engine-gl-render-path.md`
+  (+ INDEX line): Vulkan compute is the only engine GPU path; the engine's GL render path is
+  retired across M85 - Native GPU Kernels (host wrappers, settings) and M86 - OFX 1.5 GPU
+  Suites (contexts narrowed to the OFX OpenGL suite behind interop). The viewer and the 2D GL
+  widgets stay on GL: OFX overlay interacts require a GL context, Qt 6 allows one graphics
+  API per top-level window so the viewer can't move alone, and the M83 interop hand-off
+  already costs 0.79 ms at UHD. A later viewer modernisation should go through `QRhiWidget`
+  on its OpenGL backend first; the 2D widgets, if reworked, go to `QPainter`, not Vulkan.

@@ -34,6 +34,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QColor>
 #include <QDebug>
 #include <QFontDatabase>
+#include <QIcon>
 #include <QPixmapCache>
 #include <QSettings>
 #include <QtConcurrentRun> // QtCore on Qt4, QtConcurrent on Qt5
@@ -86,8 +87,10 @@ GuiApplicationManager::~GuiApplicationManager()
 
 namespace {
 /**
- * @brief Maps a PixmapEnum id to its resource path. iconSetStr only feeds the
- * GroupingIcons PNG paths, which still carry a set number; SVG paths never use it.
+ * @brief Maps a PixmapEnum id to its resource path. Every *_GROUPING case now
+ * points at a themed SVG glyph, so iconSetStr (the old GroupingIcons PNG set
+ * number) is no longer read by any case; it stays a parameter here, unread,
+ * until the black-and-white icons preference that still supplies it is removed.
  **/
 std::string
 pixmapEnumToPath(PixmapEnum e,
@@ -285,49 +288,49 @@ pixmapEnumToPath(PixmapEnum e,
         break;
 
     case NATRON_PIXMAP_IO_GROUPING:
-        path = NATRON_IMAGES_PATH "GroupingIcons/Set" + iconSetStr + "/image_grouping_" + iconSetStr + ".png";
+        path = NATRON_ICONS_PATH "lucide/image.svg";
         break;
     case NATRON_PIXMAP_3D_GROUPING:
-        path = NATRON_IMAGES_PATH "GroupingIcons/Set" + iconSetStr + "/3D_grouping_" + iconSetStr + ".png";
+        path = NATRON_ICONS_PATH "lucide/box.svg";
         break;
     case NATRON_PIXMAP_CHANNEL_GROUPING:
-        path = NATRON_IMAGES_PATH "GroupingIcons/Set" + iconSetStr + "/channel_grouping_" + iconSetStr + ".png";
+        path = NATRON_ICONS_PATH "lucide/menu.svg";
         break;
     case NATRON_PIXMAP_MERGE_GROUPING:
-        path = NATRON_IMAGES_PATH "GroupingIcons/Set" + iconSetStr + "/merge_grouping_" + iconSetStr + ".png";
+        path = NATRON_ICONS_PATH "lucide/layers-2.svg";
         break;
     case NATRON_PIXMAP_COLOR_GROUPING:
-        path = NATRON_IMAGES_PATH "GroupingIcons/Set" + iconSetStr + "/color_grouping_" + iconSetStr + ".png";
+        path = NATRON_ICONS_PATH "lucide/palette.svg";
         break;
     case NATRON_PIXMAP_TRANSFORM_GROUPING:
-        path = NATRON_IMAGES_PATH "GroupingIcons/Set" + iconSetStr + "/transform_grouping_" + iconSetStr + ".png";
+        path = NATRON_ICONS_PATH "lucide/move.svg";
         break;
     case NATRON_PIXMAP_DEEP_GROUPING:
-        path = NATRON_IMAGES_PATH "GroupingIcons/Set" + iconSetStr + "/deep_grouping_" + iconSetStr + ".png";
+        path = NATRON_ICONS_PATH "natron/deep.svg";
         break;
     case NATRON_PIXMAP_FILTER_GROUPING:
-        path = NATRON_IMAGES_PATH "GroupingIcons/Set" + iconSetStr + "/filter_grouping_" + iconSetStr + ".png";
+        path = NATRON_ICONS_PATH "natron/filter.svg";
         break;
     case NATRON_PIXMAP_MULTIVIEW_GROUPING:
-        path = NATRON_IMAGES_PATH "GroupingIcons/Set" + iconSetStr + "/multiview_grouping_" + iconSetStr + ".png";
+        path = NATRON_ICONS_PATH "lucide/glasses.svg";
         break;
     case NATRON_PIXMAP_MISC_GROUPING:
-        path = NATRON_IMAGES_PATH "GroupingIcons/Set" + iconSetStr + "/misc_grouping_" + iconSetStr + ".png";
+        path = NATRON_ICONS_PATH "lucide/puzzle.svg";
         break;
     case NATRON_PIXMAP_OTHER_PLUGINS:
-        path = NATRON_IMAGES_PATH "GroupingIcons/Set" + iconSetStr + "/other_grouping_" + iconSetStr + ".png";
+        path = NATRON_ICONS_PATH "lucide/puzzle.svg";
         break;
     case NATRON_PIXMAP_TOOLSETS_GROUPING:
-        path = NATRON_IMAGES_PATH "GroupingIcons/Set" + iconSetStr + "/toolsets_grouping_" + iconSetStr + ".png";
+        path = NATRON_ICONS_PATH "lucide/wrench.svg";
         break;
     case NATRON_PIXMAP_KEYER_GROUPING:
-        path = NATRON_IMAGES_PATH "GroupingIcons/Set" + iconSetStr + "/keyer_grouping_" + iconSetStr + ".png";
+        path = NATRON_ICONS_PATH "lucide/pipette.svg";
         break;
     case NATRON_PIXMAP_TIME_GROUPING:
-        path = NATRON_IMAGES_PATH "GroupingIcons/Set" + iconSetStr + "/time_grouping_" + iconSetStr + ".png";
+        path = NATRON_ICONS_PATH "lucide/clock.svg";
         break;
     case NATRON_PIXMAP_PAINT_GROUPING:
-        path = NATRON_IMAGES_PATH "GroupingIcons/Set" + iconSetStr + "/paint_grouping_" + iconSetStr + ".png";
+        path = NATRON_ICONS_PATH "lucide/brush.svg";
         break;
 
     case NATRON_PIXMAP_OPEN_EFFECTS_GROUPING:
@@ -873,6 +876,28 @@ GuiApplicationManager::getIcon(PixmapEnum e,
         }
         QPixmapCache::insert(key, *pix);
     }
+}
+
+void
+GuiApplicationManager::getIcon(PixmapEnum e,
+                               int size,
+                               QIcon* icon) const
+{
+    int iconSet = appPTR->getCurrentSettings()->getIconsBlackAndWhite() ? 2 : 3;
+    std::string iconSetStr = QString::number(iconSet).toStdString();
+    std::string path = pixmapEnumToPath(e, iconSetStr);
+    const QString qpath = QString::fromUtf8(path.c_str());
+
+    if (!path.empty() && ThemedIcon::isSvgPath(qpath)) {
+        // Gives toolbox and menu grouping icons the same themed Normal/On/Disabled
+        // states as any other themed glyph, instead of Qt's generic auto-disabled look.
+        *icon = ThemedIcon::icon(qpath, size);
+        return;
+    }
+
+    QPixmap pix;
+    getIcon(e, size, &pix);
+    icon->addPixmap(pix);
 }
 
 const std::list<PluginGroupNodePtr>&

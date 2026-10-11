@@ -65,6 +65,7 @@
 #include "Gui/SequenceFileDialog.h"
 #include "Gui/Splitter.h"
 #include "Gui/TabWidget.h"
+#include "Gui/ThemedIcon.h"
 #include "Gui/ToolButton.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
@@ -78,7 +79,7 @@
 
 #define NAMED_PLUGIN_GROUP_NO 15
 
-#define PLUGIN_GROUP_DEFAULT_ICON_PATH NATRON_IMAGES_PATH "GroupingIcons/Set" NATRON_ICON_SET_NUMBER "/other_grouping_" NATRON_ICON_SET_NUMBER ".png"
+#define PLUGIN_GROUP_DEFAULT_ICON_PATH NATRON_ICONS_PATH "lucide/puzzle.svg"
 
 NATRON_NAMESPACE_ENTER
 
@@ -103,9 +104,9 @@ static std::string namedGroupsOrdered[NAMED_PLUGIN_GROUP_NO] = {
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
 static void
-getPixmapForGrouping(QPixmap* pixmap,
-                     int size,
-                     const QString & grouping)
+getIconForGrouping(QIcon* icon,
+                   int size,
+                   const QString& grouping)
 {
     PixmapEnum e = NATRON_PIXMAP_OTHER_PLUGINS;
 
@@ -139,7 +140,7 @@ getPixmapForGrouping(QPixmap* pixmap,
     } else if ( grouping == QString::fromUtf8(PLUGIN_GROUP_OTHER) ) {
         e = NATRON_PIXMAP_MISC_GROUPING;
     }
-    appPTR->getIcon(e, size, pixmap);
+    appPTR->getIcon(e, size, icon);
 }
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
@@ -843,27 +844,32 @@ Gui::findOrCreateToolButton(const PluginGroupNodePtr & plugin)
     }
 
     QIcon toolButtonIcon, menuIcon;
-    if ( !plugin->getIconPath().isEmpty() && QFile::exists( plugin->getIconPath() ) ) {
-        QPixmap pix( plugin->getIconPath() );
+    if (!plugin->getIconPath().isEmpty() && QFile::exists(plugin->getIconPath())) {
         int menuSize = TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE);
         int toolButtonSize = !plugin->hasParent() ? TO_DPIX(NATRON_TOOL_BUTTON_ICON_SIZE) : TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE);
-        QPixmap menuPix = pix, toolbuttonPix = pix;
-        if ( (std::max( menuPix.width(), menuPix.height() ) != menuSize) && !menuPix.isNull() ) {
-            menuPix = menuPix.scaled(menuSize, menuSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        if (ThemedIcon::isSvgPath(plugin->getIconPath())) {
+            // A built-in plugin (e.g. RotoPaint) pointed at a vendored glyph gets the
+            // same themed Normal/On/Disabled states as the toolbox grouping icons.
+            // An OFX plugin's own icon is always a PNG, so it never reaches this branch.
+            menuIcon = ThemedIcon::icon(plugin->getIconPath(), menuSize);
+            toolButtonIcon = ThemedIcon::icon(plugin->getIconPath(), toolButtonSize);
+        } else {
+            QPixmap pix(plugin->getIconPath());
+            QPixmap menuPix = pix, toolbuttonPix = pix;
+            if ((std::max(menuPix.width(), menuPix.height()) != menuSize) && !menuPix.isNull()) {
+                menuPix = menuPix.scaled(menuSize, menuSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            }
+            if ((std::max(toolbuttonPix.width(), toolbuttonPix.height()) != toolButtonSize) && !toolbuttonPix.isNull()) {
+                toolbuttonPix = toolbuttonPix.scaled(toolButtonSize, toolButtonSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            }
+            menuIcon.addPixmap(menuPix);
+            toolButtonIcon.addPixmap(toolbuttonPix);
         }
-        if ( (std::max( toolbuttonPix.width(), toolbuttonPix.height() ) != toolButtonSize) && !toolbuttonPix.isNull() ) {
-            toolbuttonPix = toolbuttonPix.scaled(toolButtonSize, toolButtonSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-        }
-        menuIcon.addPixmap(menuPix);
-        toolButtonIcon.addPixmap(toolbuttonPix);
     } else {
         //add the default group icon only if it has no parent
         if ( !plugin->hasParent() ) {
-            QPixmap toolbuttonPix, menuPix;
-            getPixmapForGrouping( &toolbuttonPix, TO_DPIX(NATRON_TOOL_BUTTON_ICON_SIZE), plugin->getLabel() );
-            toolButtonIcon.addPixmap(toolbuttonPix);
-            getPixmapForGrouping( &menuPix, TO_DPIX(NATRON_TOOL_BUTTON_ICON_SIZE), plugin->getLabel() );
-            menuIcon.addPixmap(menuPix);
+            getIconForGrouping(&toolButtonIcon, TO_DPIX(NATRON_TOOL_BUTTON_ICON_SIZE), plugin->getLabel());
+            getIconForGrouping(&menuIcon, TO_DPIX(NATRON_TOOL_BUTTON_ICON_SIZE), plugin->getLabel());
         }
     }
     //if the tool-button has no children, this is a leaf, we must create an action

@@ -103,6 +103,11 @@ public:
     void getIcon(Natron::PixmapEnum e, QPixmap* pix) const;
     void getIcon(Natron::PixmapEnum e, int size, QPixmap* pix) const;
 
+    // For an SVG-backed id, builds the full themed Normal/On/Disabled/Active QIcon
+    // via ThemedIcon::icon() instead of a single flat pixmap; a PNG id falls back
+    // to the plain pixmap above, wrapped in a QIcon with only its Normal/Off state.
+    void getIcon(Natron::PixmapEnum e, int size, QIcon* icon) const;
+
     void setKnobClipBoard(Natron::KnobClipBoardType type,
                           const KnobIPtr& serialization,
                           int dimension);

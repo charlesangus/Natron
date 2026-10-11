@@ -812,3 +812,4 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
   - **Open, user to judge at UAT:** at the default properties width the HSV tracks are about 60 px and the wheel is small. Options if it's not OK: move the wheel beside the sliders, or drop the alignment indent.
   - **Found, not M44:** deleting a node can crash in `GuiPrivate::setUndoRedoActions`, which holds raw pointers to undo actions that die with a panel. A candidate for M69 - Minor Cleanup.
   - Cosmetic: spinboxes show full float precision (e.g. 1.0000000000000002).
+- 2026-10-11 — **UAT round 2 approved (user)** on `M44-05b6cad26.AppImage`. PR #51 is open (34 commits on `main` at `a50bef552`), with a Claude opus review round running alongside CI; Codex is not logged in on this host.

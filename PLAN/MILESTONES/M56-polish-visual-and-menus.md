@@ -70,7 +70,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
 
 ## Phase 56.4: Themed SVG icon pipeline
 
-- [ ] M56.P4.T1 — Link Qt6::Svg and confirm the container and the bundle carry it
+- [x] M56.P4.T1 — Link Qt6::Svg and confirm the container and the bundle carry it
   - files: `CMakeLists.txt` (`QT_COMPONENTS`, `:69-71`), `Gui/CMakeLists.txt` (`target_link_libraries(NatronGui …)`, `:58`), `tools/release/stage-bundle.sh` (only if the check below finds a gap)
   - approach:
     - Add `Svg` to `QT_COMPONENTS` and `Qt::Svg` to NatronGui.

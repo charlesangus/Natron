@@ -223,13 +223,9 @@ DockablePanel::DockablePanel(Gui* gui,
             _imp->_helpButton->setIconSize(mediumIconSize);
             _imp->_helpButton->setFocusPolicy(Qt::NoFocus);
 
-            QObject::connect( _imp->_helpButton, SIGNAL(clicked()), this, SLOT(showHelp()) );
-            QPixmap pixHide, pixShow;
-            appPTR->getIcon(NATRON_PIXMAP_UNHIDE_UNMODIFIED, iconSize, &pixShow);
-            appPTR->getIcon(NATRON_PIXMAP_HIDE_UNMODIFIED, iconSize, &pixHide);
+            QObject::connect(_imp->_helpButton, SIGNAL(clicked()), this, SLOT(showHelp()));
             QIcon icHideShow;
-            icHideShow.addPixmap(pixShow, QIcon::Normal, QIcon::Off);
-            icHideShow.addPixmap(pixHide, QIcon::Normal, QIcon::On);
+            appPTR->getIcon(NATRON_PIXMAP_HIDE_UNMODIFIED, iconSize, &icHideShow);
             _imp->_hideUnmodifiedButton = new Button(icHideShow, QString(), _imp->_headerWidget);
             _imp->_hideUnmodifiedButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Show/Hide all parameters without modifications."), NATRON_NAMESPACE::WhiteSpaceNormal) );
             _imp->_hideUnmodifiedButton->setFocusPolicy(Qt::NoFocus);
@@ -311,26 +307,16 @@ DockablePanel::DockablePanel(Gui* gui,
                 QObject::connect( _imp->_overlayButton, SIGNAL(clicked()), this, SLOT(onOverlayButtonClicked()) );
             }
         }
-        QPixmap pixUndo;
-        appPTR->getIcon(NATRON_PIXMAP_UNDO, iconSize, &pixUndo);
-        QPixmap pixUndo_gray;
-        appPTR->getIcon(NATRON_PIXMAP_UNDO_GRAYSCALE, iconSize, &pixUndo_gray);
         QIcon icUndo;
-        icUndo.addPixmap(pixUndo, QIcon::Normal);
-        icUndo.addPixmap(pixUndo_gray, QIcon::Disabled);
+        appPTR->getIcon(NATRON_PIXMAP_UNDO, iconSize, &icUndo);
         _imp->_undoButton = new Button(icUndo, QString(), _imp->_headerWidget);
         _imp->_undoButton->setFixedSize(mediumBSize);
         _imp->_undoButton->setIconSize(mediumIconSize);
         _imp->_undoButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Undo the last change made to this operator."), NATRON_NAMESPACE::WhiteSpaceNormal) );
         _imp->_undoButton->setEnabled(false);
         _imp->_undoButton->setFocusPolicy(Qt::NoFocus);
-        QPixmap pixRedo;
-        appPTR->getIcon(NATRON_PIXMAP_REDO, iconSize, &pixRedo);
-        QPixmap pixRedo_gray;
-        appPTR->getIcon(NATRON_PIXMAP_REDO_GRAYSCALE, iconSize, &pixRedo_gray);
         QIcon icRedo;
-        icRedo.addPixmap(pixRedo, QIcon::Normal);
-        icRedo.addPixmap(pixRedo_gray, QIcon::Disabled);
+        appPTR->getIcon(NATRON_PIXMAP_REDO, iconSize, &icRedo);
         _imp->_redoButton = new Button(icRedo, QString(), _imp->_headerWidget);
         _imp->_redoButton->setFixedSize(mediumBSize);
         _imp->_redoButton->setIconSize(mediumIconSize);

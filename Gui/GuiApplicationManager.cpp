@@ -166,46 +166,46 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_ICONS_PATH "natron/out-point.svg";
         break;
     case NATRON_PIXMAP_MAXIMIZE_WIDGET:
-        path = NATRON_IMAGES_PATH "maximize.png";
+        path = NATRON_ICONS_PATH "lucide/square-arrow-out-up-right.svg";
         break;
     case NATRON_PIXMAP_MINIMIZE_WIDGET:
-        path = NATRON_IMAGES_PATH "minimize.png";
+        path = NATRON_ICONS_PATH "lucide/minus.svg";
         break;
     case NATRON_PIXMAP_CLOSE_WIDGET:
-        path = NATRON_IMAGES_PATH "close.png";
+        path = NATRON_ICONS_PATH "lucide/x.svg";
         break;
     case NATRON_PIXMAP_CLOSE_PANEL:
         path = NATRON_IMAGES_PATH "closePanel.png";
         break;
     case NATRON_PIXMAP_HIDE_UNMODIFIED:
-        path = NATRON_IMAGES_PATH "hide_unmodified.png";
+        path = NATRON_ICONS_PATH "lucide/list-filter.svg";
         break;
     case NATRON_PIXMAP_UNHIDE_UNMODIFIED:
-        path = NATRON_IMAGES_PATH "unhide_unmodified.png";
+        path = NATRON_ICONS_PATH "lucide/list-filter.svg";
         break;
     case NATRON_PIXMAP_HELP_WIDGET:
-        path = NATRON_IMAGES_PATH "help.png";
+        path = NATRON_ICONS_PATH "lucide/circle-question-mark.svg";
         break;
     case NATRON_PIXMAP_GROUPBOX_FOLDED:
-        path = NATRON_IMAGES_PATH "groupbox_folded.png";
+        path = NATRON_ICONS_PATH "lucide/chevron-right.svg";
         break;
     case NATRON_PIXMAP_GROUPBOX_UNFOLDED:
-        path = NATRON_IMAGES_PATH "groupbox_unfolded.png";
+        path = NATRON_ICONS_PATH "lucide/chevron-down.svg";
         break;
     case NATRON_PIXMAP_UNDO:
-        path = NATRON_IMAGES_PATH "undo.png";
+        path = NATRON_ICONS_PATH "lucide/undo-2.svg";
         break;
     case NATRON_PIXMAP_REDO:
-        path = NATRON_IMAGES_PATH "redo.png";
+        path = NATRON_ICONS_PATH "lucide/redo-2.svg";
         break;
     case NATRON_PIXMAP_UNDO_GRAYSCALE:
-        path = NATRON_IMAGES_PATH "undo_grayscale.png";
+        path = NATRON_ICONS_PATH "lucide/undo-2.svg";
         break;
     case NATRON_PIXMAP_REDO_GRAYSCALE:
-        path = NATRON_IMAGES_PATH "redo_grayscale.png";
+        path = NATRON_ICONS_PATH "lucide/redo-2.svg";
         break;
     case NATRON_PIXMAP_RESTORE_DEFAULTS_ENABLED:
-        path = NATRON_IMAGES_PATH "restoreDefaultEnabled.png";
+        path = NATRON_ICONS_PATH "lucide/rotate-ccw.svg";
         break;
     case NATRON_PIXMAP_RESTORE_DEFAULTS_DISABLED:
         path = NATRON_IMAGES_PATH "restoreDefaultDisabled.png";
@@ -262,10 +262,10 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_ICONS_PATH "lucide/contrast.svg";
         break;
     case NATRON_PIXMAP_OPEN_FILE:
-        path = NATRON_IMAGES_PATH "open-file.png";
+        path = NATRON_ICONS_PATH "lucide/folder-open.svg";
         break;
     case NATRON_PIXMAP_COLORWHEEL:
-        path = NATRON_IMAGES_PATH "colorwheel.png";
+        path = NATRON_ICONS_PATH "lucide/swatch-book.svg";
         break;
     case NATRON_PIXMAP_COLOR_ADJUST_DROPDOWN:
         path = NATRON_ICONS_PATH "lucide/chevrons-down.svg";
@@ -274,7 +274,7 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_ICONS_PATH "lucide/expand.svg";
         break;
     case NATRON_PIXMAP_OVERLAY:
-        path = NATRON_IMAGES_PATH "colorwheel_overlay.png";
+        path = NATRON_ICONS_PATH "lucide/paint-bucket.svg";
         break;
     case NATRON_PIXMAP_ROTO_MERGE:
         path = NATRON_IMAGES_PATH "roto_merge.png";
@@ -311,7 +311,7 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_ICONS_PATH "lucide/glasses.svg";
         break;
     case NATRON_PIXMAP_MISC_GROUPING:
-        path = NATRON_ICONS_PATH "lucide/puzzle.svg";
+        path = NATRON_ICONS_PATH "lucide/shapes.svg";
         break;
     case NATRON_PIXMAP_OTHER_PLUGINS:
         path = NATRON_ICONS_PATH "lucide/puzzle.svg";
@@ -448,16 +448,16 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_IMAGES_PATH "rippleEditDisabled.png";
         break;
     case NATRON_PIXMAP_BOLD_CHECKED:
-        path = NATRON_IMAGES_PATH "bold_checked.png";
+        path = NATRON_ICONS_PATH "lucide/bold.svg";
         break;
     case NATRON_PIXMAP_BOLD_UNCHECKED:
-        path = NATRON_IMAGES_PATH "bold_unchecked.png";
+        path = NATRON_ICONS_PATH "lucide/bold.svg";
         break;
     case NATRON_PIXMAP_ITALIC_UNCHECKED:
-        path = NATRON_IMAGES_PATH "italic_unchecked.png";
+        path = NATRON_ICONS_PATH "lucide/italic.svg";
         break;
     case NATRON_PIXMAP_ITALIC_CHECKED:
-        path = NATRON_IMAGES_PATH "italic_checked.png";
+        path = NATRON_ICONS_PATH "lucide/italic.svg";
         break;
     case NATRON_PIXMAP_CLEAR_ALL_ANIMATION:
         path = NATRON_IMAGES_PATH "clearAnimation.png";
@@ -475,7 +475,7 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_IMAGES_PATH "updateViewerDisabled.png";
         break;
     case NATRON_PIXMAP_SETTINGS:
-        path = NATRON_IMAGES_PATH "settings.png";
+        path = NATRON_ICONS_PATH "lucide/settings.svg";
         break;
     case NATRON_PIXMAP_FREEZE_ENABLED:
         path = NATRON_ICONS_PATH "lucide/snowflake.svg";
@@ -726,7 +726,7 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_IMAGES_PATH "linkMultCursor.png";
         break;
     case NATRON_PIXMAP_ENTER_GROUP:
-        path = NATRON_IMAGES_PATH "enter_group.png";
+        path = NATRON_ICONS_PATH "lucide/square-arrow-right-enter.svg";
         break;
     case NATRON_PIXMAP_ROTOPAINT_BUILDUP_ENABLED:
         path = NATRON_IMAGES_PATH "rotopaint_buildup_on.png";

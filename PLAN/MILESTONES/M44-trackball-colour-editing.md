@@ -528,7 +528,7 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
     - A Blur `size` (2-D double) row is pixel-identical to before.
   - size: M
 
-- [ ] M44.P7.T6 — Give each broken-out colour channel its own line with a spinbox and a Natron slider
+- [x] M44.P7.T6 — Give each broken-out colour channel its own line with a spinbox and a Natron slider
   - files: `Gui/KnobGuiValue.h`, `Gui/KnobGuiValue.cpp`, `Gui/KnobGuiColor.h`, `Gui/KnobGuiColor.cpp`
   - approach:
     - **Hook.** Add a protected virtual `bool wantsPerDimensionSliders() const` (default false). `KnobGuiColor` returns true when it has an adjust panel and `nDims > 1`. The new layout is built only when the hook is on, a below-row column exists, and the dimension-switch button was created (slider visible).

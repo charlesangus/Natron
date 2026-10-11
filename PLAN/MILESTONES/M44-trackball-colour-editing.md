@@ -596,7 +596,7 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
     - `ColorEditSlider` is gone from the tree (`grep -r ColorEditSlider Gui Tests Engine` is empty apart from history).
   - size: L
 
-- [ ] M44.P7.T8 — Open the dropdown cleanly: no flash, and it unfolds the channels while it is open
+- [x] M44.P7.T8 — Open the dropdown cleanly: no flash, and it unfolds the channels while it is open
   - files: `Gui/KnobGuiColor.h`, `Gui/KnobGuiColor.cpp`, `Gui/KnobGuiValue.cpp`
   - approach:
     - **Diagnose the flash first.** In the GUI script, install a paint logger on the panel and its descendants that records each `QEvent::Paint` with `mapTo(window)` geometry for the first 200 ms after the ▸ click. A paint whose geometry differs from the settled one is the flash.

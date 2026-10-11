@@ -814,3 +814,4 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
   - Cosmetic: spinboxes show full float precision (e.g. 1.0000000000000002).
 - 2026-10-11 — **UAT round 2 approved (user)** on `M44-05b6cad26.AppImage`. PR #51 is open (34 commits on `main` at `a50bef552`), with a Claude opus review round running alongside CI; Codex is not logged in on this host.
 - 2026-10-11 — **Review round (Claude opus fallback; Codex not logged in):** 1 High, 8 Medium, 14 Low, plus dead-code and comment-policy items, posted to PR #51. All were fixed in `82c7726a8`: the Power gamma is capped at 0.1–10, Power Value stops count from 0.18 (slider ±2 stops), and gesture/stroke lifetime was hardened. The gate re-ran locally: ctest 1632/1632, GUI script 345 PASS / 0 FAIL. The round was closed on the PR.
+- 2026-10-11 — **Shipped:** PR #51 squash-merged to `main` as `cd0f3f5f2` after one review round and green CI (`format`, `lint-ci`, `build-and-test`).

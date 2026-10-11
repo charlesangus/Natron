@@ -246,7 +246,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - A quick CPU bench (`graph_bench.py` with `BENCH_TOPO=comp`, UHD, 3 frames) is within noise of `main`.
   - size: M
 
-- [ ] M84.P4.T2 — App-wide `GpuContext`, settings and mode resolution
+- [x] M84.P4.T2 — App-wide `GpuContext`, settings and mode resolution
   - files: `Engine/GpuContext.{h,cpp}` (new), `Engine/AppManager.{h,cpp}`, `Engine/Settings.{h,cpp}`, `Tests/GpuContext_Test.cpp`, `Tests/CMakeLists.txt`
   - approach:
     - `AppManager` owns one `GpuContext` around `GpuRuntime`. When the mode isn't Off, it initialises on a background thread at startup and registers the host-memory free hook.
@@ -387,7 +387,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
 
 ## Phase 84.7: Execution: region super-tasks, admission, failure, tiling
 
-- [ ] M84.P7.T1 — Per-task output storage, and regions contracted into super-tasks in the scheduler
+- [x] M84.P7.T1 — Per-task output storage, and regions contracted into super-tasks in the scheduler
   - files: `Engine/RenderScheduler.{h,cpp}`, `Tests/RenderScheduler_Test.cpp`
   - approach:
     - `executeTask` takes the task's storage from placement instead of the hard-coded `eStorageModeRAM` (`:933`).
@@ -666,3 +666,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - **Placement deviations:** convexity forbids a cycle through **any** outside task, including another region, not just CPU tasks. `acceptRegion` takes `(const FrameGraph&, const Region&)`. GPU availability is a function-pointer hook, `setGpuPlacementAvailableFunc`, which is null today. **Enable it only together with P7.T2's region body**, or tasks get labelled `gpu` but still render on the CPU. Identity tasks never start a region. Multi-plane tasks are never candidates.
 - 2026-10-11 — **GPU tests are gated on availability (user).** Most development happens on hosts without a GPU, and CI has none. GPU tests skip with a reason whenever what they need is missing. Vulkan compute tests run on any Vulkan device, **lavapipe included** (user chose this over skipping on software devices), and skip only when no device exists. CI keeps `NATRON_TEST_REQUIRE_GPU=1` on lavapipe. GL interop availability is separate: a missing EGL/GL device skips even under `NATRON_TEST_REQUIRE_GPU`.
 - 2026-10-11 — First branch CI run (38104592140, at `e97868b96`): 92 GPU tests passed on lavapipe in both scheduler modes. Three `GlInteropTest` readback cases segfault because CI has no EGL device; a fix is in progress. ctest takes about 10 min per mode.
+- 2026-10-11 — M84.P4.T2 done (`50b6cf2bd`) and M84.P7.T1 done (code on the branch tip). Full ctest passes in both modes, at 775 s against 737 s before; the per-process `GpuContext` startup cost is small.
+  - **`GpuContext` notes:** the free hook stays synchronous, so a stall under the cache lock is bounded by in-flight device work. Settings apply at the next launch. The `Tests` binary brings up a context in Auto mode. Placement is **still not registered**.
+  - **Region notes:** a region's stand-in tasks are appended to the frame's copy of `graph.tasks`. With no body hook, a region fails its frame. Regions write no profile record yet and get the normal thread budget (P7.T2 and P7.T3 fix both). Shared-cache de-duplication doesn't cover region members.
+- 2026-10-11 — **GL interop gating fixed.** The bundled gtest has no `GTEST_SKIP`, so `GPUTEST_SKIP()` in `SetUp` let test bodies run. Every GlInterop case now checks readiness. `GlInterop::probe()` fails when no GL context is current, so the engine won't crash on GPU-less hosts. **Watch for the same pattern elsewhere:** any `GPUTEST_SKIP` in a fixture's `SetUp` must be re-checked in each test body.

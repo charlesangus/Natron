@@ -234,7 +234,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - verify: at the gate build, the Grade and Merge panel shots match the mockup, and P1.T1's labels alignment check still passes.
   - size: M
 
-- [ ] M56.P6.T4 — Apply the spec to the viewer toolbar, tab widgets and toolbox
+- [x] M56.P6.T4 — Apply the spec to the viewer toolbar, tab widgets and toolbox
   - files: `Gui/ViewerTab.cpp`, `Gui/TabWidget.cpp`, `Gui/Gui20.cpp` (toolbox layout), `Gui/ToolButton.cpp`
   - approach: Same as P6.T3.
   - verify: at the gate build, the viewer, tab and toolbox shots match the mockup at 1× and 2×.

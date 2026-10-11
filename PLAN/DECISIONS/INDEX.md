@@ -81,3 +81,4 @@
 - 2026-10-10 — gpu-residency-from-day-one: M84 builds resident GPU regions from the start (user, after the M82 report) → DECISIONS/2026-10-10-gpu-residency-from-day-one.md
 - 2026-10-10 — gpu-compute-backend-chosen: Vulkan 1.3 compute + offline Slang→SPIR-V (no runtime Slang); native CPU kernels stay the fallback, Slang C++ twin is a test oracle; viewer gets an exported buffer as a GL PBO with semaphores, falling back to hostsync then readback (pending user sign-off) → DECISIONS/2026-10-10-gpu-compute-backend-chosen.md
 - 2026-10-10 — native-write-mirrors-native-read: native Write covers every OIIO-writable format; WriteNode and OFX writers removed, no fallback, no video → DECISIONS/2026-10-10-native-write-mirrors-native-read.md
+- 2026-10-10 — ntpz-clean-break-sibling-connections: `.ntpz` bundle, no XML import (clean break), sibling-relative connections, M93 split out first → DECISIONS/2026-10-10-ntpz-clean-break-sibling-connections.md

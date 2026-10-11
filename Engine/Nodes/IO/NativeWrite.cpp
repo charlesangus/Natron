@@ -943,7 +943,6 @@ NativeWrite::initializeKnobs()
     sublabel->setEvaluateOnChange(false);
     page->addKnob(sublabel);
 
-    // Node::createWriterFrameStepKnob is compiled out when the IO meta nodes are enabled.
     KnobIntPtr frameIncr = createKnob<KnobInt>(tr(kNatronWriteParamFrameStepLabel));
     frameIncr->setName(kNatronWriteParamFrameStep);
     frameIncr->setHintToolTip(tr(kNatronWriteParamFrameStepHint));

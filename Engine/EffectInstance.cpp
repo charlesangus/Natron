@@ -1340,9 +1340,9 @@ EffectInstance::getImage(int inputNb,
     /// The node is connected.
     assert(inputEffect);
 
-    // A plane requested with a channel subset of the one the input produces (a Write container's
-    // channel set narrows its encoder's plane list that way) is rendered whole and the requested
-    // channels are extracted from it, since renderRoI() only matches planes with equal channel counts.
+    // A plane requested with a channel subset of the one the input produces is rendered whole and
+    // the requested channels are extracted from it, since renderRoI() only matches planes with
+    // equal channel counts.
     std::vector<int> subsetChannelIndices;
     ImageLayerDesc renderedComps = isMask ? maskComps : components;
     if (layer && !isMask && !components.isColorLayer()) {
@@ -5005,9 +5005,7 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
     // Remove from this list all layers produced from this node to get the pass-through layers list
     std::list<ImageLayerDesc>& outputLayers = (*comps)[-1];
 
-    // Ensure the plug-in made the metadata layer available. An embedded encoder produces it by
-    // fetching it from its pass-through input, so the Write container's selection on that input
-    // decides whether the layer is there to produce at all.
+    // Ensure the plug-in made the metadata layer available.
     if (producesMetadataLayerImplicitly()) {
         std::list<ImageLayerDesc> metadataLayers;
         ImageLayerDesc metadataLayer, metadataPairedLayer;
@@ -5019,17 +5017,11 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
             metadataLayers.push_back(metadataLayer);
         }
         if (*passThroughInputNb >= 0) {
-            NodePtr node = getNode();
-            NodePtr ioContainer = node ? node->getIOContainer() : NodePtr();
             // Most effects can make colour without their pass-through input's (a generator, or one
             // reading another input), so only an effect whose colour comes from that input alone
             // loses the plane when the input has none; an encoder would otherwise write zeros.
-            const bool colorOnlyFromPassThrough = producesColorOnlyFromPassThroughInput() || (ioContainer && ioContainer->getEffectInstance()->producesColorOnlyFromPassThroughInput());
-            if (colorOnlyFromPassThrough && inputPresentsNoColorStorage(this, *passThroughTime, ViewIdx(*passThroughView), *passThroughInputNb)) {
+            if (producesColorOnlyFromPassThroughInput() && inputPresentsNoColorStorage(this, *passThroughTime, ViewIdx(*passThroughView), *passThroughInputNb)) {
                 removeColorLayers(&metadataLayers);
-            }
-            if (ioContainer) {
-                ioContainer->getEffectInstance()->filterLayersForEmbeddedInput(*passThroughInputNb, &metadataLayers);
             }
         }
         mergeLayersList(metadataLayers, &outputLayers);
@@ -5129,15 +5121,6 @@ EffectInstance::getPresentLayers(double time, ViewIdx view, int inputNb, std::li
     }
 
     mergeLayersList(passThroughLayers, presentLayers);
-
-    if (inputNb >= 0) {
-        NodePtr node = getNode();
-        NodePtr ioContainer = node ? node->getIOContainer() : NodePtr();
-        if (ioContainer) {
-            ioContainer->getEffectInstance()->filterLayersForEmbeddedInput(inputNb, presentLayers);
-        }
-    }
-
 } // getPresentLayers
 
 void

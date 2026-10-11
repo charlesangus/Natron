@@ -379,12 +379,6 @@ Project::reportUnresolvedOCIOColorSpaces()
     getNodes_recursive(nodes, false);
 
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
-        // The decoder/encoder a Read/Write node wraps carries the same knobs under a
-        // name the user never sees, so reporting it too would name each problem twice.
-        if ((*it)->getIOContainer()) {
-            continue;
-        }
-
         QStringList unresolved;
         for (std::size_t i = 0; i < sizeof(ocioColorSpaceKnobNames) / sizeof(ocioColorSpaceKnobNames[0]); ++i) {
             const std::string colorSpace = getStringKnobValue(*it, ocioColorSpaceKnobNames[i]);

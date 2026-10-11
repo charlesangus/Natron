@@ -572,16 +572,6 @@ public:
     }
 
     /**
-     * @brief Called on a Read/Write container's effect whenever its embedded node lists the
-     * layers present on one of its inputs (getPresentLayers() with inputNb >= 0). The container
-     * may narrow the list to what the user selected on it; the default keeps it whole.
-     **/
-    virtual void filterLayersForEmbeddedInput(int /*inputNb*/,
-                                              std::list<ImageLayerDesc>* /*layers*/)
-    {
-    }
-
-    /**
      * @brief Returns the index of the channel to use to produce the mask and the components.
      * None = -1
      * R = 0
@@ -1223,8 +1213,7 @@ public:
 
     // True when the colour plane this effect produces implicitly can only be made from its
     // pass-through input's colour, as for an encoder writing that input out: when the input has
-    // no colour plane, the effect then produces none either. Also asked of a Read/Write container
-    // on behalf of the effect embedded in it.
+    // no colour plane, the effect then produces none either.
     virtual bool producesColorOnlyFromPassThroughInput() const
     {
         return false;

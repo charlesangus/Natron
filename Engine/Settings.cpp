@@ -640,14 +640,11 @@ Settings::initializeKnobsUserInterface()
                                             "on the viewer. Turning this off will suspend the notification system.") );
     _uiPage->addKnob(_notifyOnFileChange);
 
-#ifdef NATRON_ENABLE_IO_META_NODES
     _filedialogForWriters = AppManager::createKnob<KnobBool>( this, tr("Prompt with file dialog when creating Write node") );
     _filedialogForWriters->setName("writeUseDialog");
     _filedialogForWriters->setDefaultValue(true);
     _filedialogForWriters->setHintToolTip( tr("When checked, opens-up a file dialog when creating a Write node") );
     _uiPage->addKnob(_filedialogForWriters);
-#endif
-
 
     _renderOnEditingFinished = AppManager::createKnob<KnobBool>( this, tr("Refresh viewer only when editing is finished") );
     _renderOnEditingFinished->setName("renderOnEditingFinished");
@@ -1540,9 +1537,6 @@ Settings::setDefaultValues()
 
     // General/User Interface
     _notifyOnFileChange->setDefaultValue(true);
-#ifdef NATRON_ENABLE_IO_META_NODES
-    //_filedialogForWriters
-#endif
     _renderOnEditingFinished->setDefaultValue(false);
     _linearPickers->setDefaultValue(true, 0);
     _maxPanelsOpened->setDefaultValue(10, 0);
@@ -3725,13 +3719,7 @@ Settings::isRenderQueuingEnabled() const
 bool
 Settings::isFileDialogEnabledForNewWriters() const
 {
-#ifdef NATRON_ENABLE_IO_META_NODES
-
     return _filedialogForWriters->getValue();
-#else
-
-    return true;
-#endif
 }
 
 bool

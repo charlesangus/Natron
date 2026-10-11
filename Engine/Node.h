@@ -1052,11 +1052,6 @@ public:
 
     NodePtr getMasterNode() const;
 
-#ifdef NATRON_ENABLE_IO_META_NODES
-    //When creating a Reader or Writer node, this is a pointer to the "bundle" node that the user actually see.
-    NodePtr getIOContainer() const;
-#endif
-
     /**
      * @brief Attempts to lock an image for render. If it successfully obtained the lock,
      * the thread can continue and render normally. If another thread is currently
@@ -1202,10 +1197,6 @@ private:
     void createInfoPage();
 
     void createHostMixKnob(const KnobPagePtr& mainPage);
-
-#ifndef NATRON_ENABLE_IO_META_NODES
-    void createWriterFrameStepKnob(const KnobPagePtr& mainPage);
-#endif
 
     void createUnPremultSelector(const KnobPagePtr& mainPage);
 

@@ -54,10 +54,6 @@ Node::load(const CreateNodeArgs& args)
     assert(!_imp->effect);
     _imp->isPartOfProject = !args.getProperty<bool>(kCreateNodeArgsPropOutOfProject);
 
-#ifdef NATRON_ENABLE_IO_META_NODES
-    _imp->ioContainer = args.getProperty<NodePtr>(kCreateNodeArgsPropMetaNodeContainer);
-#endif
-
     NodeCollectionPtr group = getGroup();
     std::string multiInstanceParentName = args.getProperty<std::string>(kCreateNodeArgsPropMultiInstanceParentName);
     if ( !multiInstanceParentName.empty() ) {
@@ -80,9 +76,6 @@ Node::load(const CreateNodeArgs& args)
     NodeSerializationPtr serialization = args.getProperty<NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
 
     bool isSilentCreation = args.getProperty<bool>(kCreateNodeArgsPropSilent);
-#ifndef NATRON_ENABLE_IO_META_NODES
-    bool hasUsedFileDialog = false;
-#endif
 
     bool hasDefaultFilename = false;
     {
@@ -126,37 +119,9 @@ Node::load(const CreateNodeArgs& args)
             loadKnobs(*serialization);
         }
         setValuesFromSerialization(args);
-
-
-
-#ifndef NATRON_ENABLE_IO_META_NODES
-        std::string images;
-        if (_imp->effect->isReader() && canOpenFileDialog) {
-            images = getApp()->openImageFileDialog();
-        } else if (_imp->effect->isWriter() && canOpenFileDialog) {
-            images = getApp()->saveImageFileDialog();
-        }
-        if ( !images.empty() ) {
-            hasUsedFileDialog = true;
-            KnobSerializationPtr defaultFile = createDefaultValueForParam(kOfxImageEffectFileParamName, images);
-            CreateNodeArgs::DefaultValuesList list;
-            list.push_back(defaultFile);
-
-            std::string canonicalFilename = images;
-            getApp()->getProject()->canonicalizePath(canonicalFilename);
-            int firstFrame, lastFrame;
-            Node::getOriginalFrameRangeForReader(getPluginID(), canonicalFilename, &firstFrame, &lastFrame);
-            list.push_back( createDefaultValueForParam(kReaderParamNameOriginalFrameRange, firstFrame, lastFrame) );
-            setValuesFromSerialization(args);
-        }
-#endif
     } else {
-        //ofx plugin
-#ifndef NATRON_ENABLE_IO_META_NODES
-        _imp->effect = appPTR->createOFXEffect(thisShared, args, canOpenFileDialog, &hasUsedFileDialog);
-#else
+        // ofx plugin
         _imp->effect = appPTR->createOFXEffect(thisShared, args);
-#endif
         assert(_imp->effect);
     }
 

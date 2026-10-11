@@ -1661,10 +1661,8 @@ AppManager::loadBuiltinNodePlugins()
     registerBuiltInPlugin<TrackerNode>(QString::fromUtf8(NATRON_IMAGES_PATH "trackerNodeIcon.png"), false, false);
     registerBuiltInPlugin<JoinViewsNode>(QString::fromUtf8(NATRON_IMAGES_PATH "joinViewsNode.png"), false, false);
     registerBuiltInPlugin<OneViewNode>(QString::fromUtf8(NATRON_IMAGES_PATH "oneViewNode.png"), false, false);
-#ifdef NATRON_ENABLE_IO_META_NODES
     registerBuiltInPlugin<NativeRead>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<NativeWrite>(QString::fromUtf8(NATRON_IMAGES_PATH "writeImage.png"), false, false);
-#endif
 
     if ( !isBackground() ) {
         registerBuiltInPlugin<ViewerInstance>(QString::fromUtf8(NATRON_IMAGES_PATH "viewer_icon.png"), false, false);
@@ -2390,20 +2388,9 @@ AppManager::getPluginBinary(const QString & pluginId,
 
 EffectInstancePtr
 AppManager::createOFXEffect(NodePtr node,
-                            const CreateNodeArgs& args
-#ifndef NATRON_ENABLE_IO_META_NODES
-                            ,
-                            bool allowFileDialogs,
-                            bool *hasUsedFileDialog
-#endif
-                            ) const
+                            const CreateNodeArgs& args) const
 {
-    return _imp->ofxHost->createOfxEffect(node, args
-#ifndef NATRON_ENABLE_IO_META_NODES
-                                          , allowFileDialogs,
-                                          hasUsedFileDialog
-#endif
-                                          );
+    return _imp->ofxHost->createOfxEffect(node, args);
 }
 
 void

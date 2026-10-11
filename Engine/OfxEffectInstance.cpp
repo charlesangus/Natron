@@ -405,13 +405,7 @@ OfxEffectInstance::createOfxImageEffectInstance(OFX::Host::ImageEffect::ImageEff
                                                 OFX::Host::ImageEffect::Descriptor* desc,
                                                 ContextEnum context,
                                                 const NodeSerialization* serialization,
-                                                const CreateNodeArgs& args
-#ifndef NATRON_ENABLE_IO_META_NODES
-                                                ,
-                                                bool allowFileDialogs,
-                                                bool *hasUsedFileDialog
-#endif
-                                                )
+                                                const CreateNodeArgs& args)
 {
     /*Replicate of the code in OFX::Host::ImageEffect::ImageEffectPlugin::createInstance.
        We need to pass more parameters to the constructor . That means we cannot
@@ -437,8 +431,6 @@ OfxEffectInstance::createOfxImageEffectInstance(OFX::Host::ImageEffect::ImageEff
         // Readers don't support render scale otherwise each mipmap level would require a file decoding
         setSupportsRenderScaleMaybe(eSupportsNo);
     }
-
-    std::string images;
 
     try {
         _imp->effect.reset( new OfxImageEffectInstance(plugin, *desc, mapContextToString(context), false) );
@@ -567,31 +559,6 @@ OfxEffectInstance::createOfxImageEffectInstance(OFX::Host::ImageEffect::ImageEff
             }
 
             getNode()->setValuesFromSerialization(args);
-            
-
-#ifndef NATRON_ENABLE_IO_META_NODES
-            //////////////////////////////////////////////////////
-            ///////For READERS & WRITERS only we open an image file dialog
-            if ( !getApp()->isCreatingPythonGroup() && allowFileDialogs && isReader() && !( serialization && !serialization->isNull() ) && paramValues.empty() ) {
-                images = getApp()->openImageFileDialog();
-            } else if ( !getApp()->isCreatingPythonGroup() && allowFileDialogs && isWriter() && !( serialization && !serialization->isNull() )  && paramValues.empty() ) {
-                images = getApp()->saveImageFileDialog();
-            }
-            if ( !images.empty() ) {
-                *hasUsedFileDialog = true;
-                KnobSerializationPtr defaultFile = createDefaultValueForParam(kOfxImageEffectFileParamName, images);
-                CreateNodeArgs::DefaultValuesList list;
-                list.push_back(defaultFile);
-
-                std::string canonicalFilename = images;
-                getApp()->getProject()->canonicalizePath(canonicalFilename);
-                int firstFrame, lastFrame;
-                Node::getOriginalFrameRangeForReader(getPluginID(), canonicalFilename, &firstFrame, &lastFrame);
-                list.push_back( createDefaultValueForParam(kReaderParamNameOriginalFrameRange, firstFrame, lastFrame) );
-                getNode()->setValuesFromSerialization(list);
-            }
-            //////////////////////////////////////////////////////
-#endif
 
             ///Set default metadata since the OpenFX plug-in may fetch images in its constructor
             setDefaultMetadata();
@@ -608,14 +575,7 @@ OfxEffectInstance::createOfxImageEffectInstance(OFX::Host::ImageEffect::ImageEff
         if ( (stat != kOfxStatOK) && (stat != kOfxStatReplyDefault) ) {
             QString message;
             int type;
-            NodePtr messageContainer = getNode();
-#ifdef NATRON_ENABLE_IO_META_NODES
-            NodePtr ioContainer = messageContainer->getIOContainer();
-            if (ioContainer) {
-                messageContainer = ioContainer;
-            }
-#endif
-            messageContainer->getPersistentMessage(&message, &type);
+            getNode()->getPersistentMessage(&message, &type);
             if (message.isEmpty()) {
                 throw std::runtime_error("Could not create effect instance for plugin");
             } else {

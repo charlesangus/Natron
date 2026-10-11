@@ -704,13 +704,7 @@ OfxHost::getPluginContextAndDescribe(OFX::Host::ImageEffect::ImageEffectPlugin* 
 
 AbstractOfxEffectInstancePtr
 OfxHost::createOfxEffect(NodePtr node,
-                         const CreateNodeArgs& args
-#ifndef NATRON_ENABLE_IO_META_NODES
-                         ,
-                         bool allowFileDialogs,
-                         bool *hasUsedFileDialog
-#endif
-                         )
+                         const CreateNodeArgs& args)
 {
     assert(node);
     const Plugin* natronPlugin = node->getPlugin();
@@ -730,12 +724,7 @@ OfxHost::createOfxEffect(NodePtr node,
         node->initNodeScriptName(serialization.get(), QString::fromUtf8(fixedName.c_str()));
     }
 
-    hostSideEffect->createOfxImageEffectInstance(plugin, desc, ctx, serialization.get(), args
-#ifndef NATRON_ENABLE_IO_META_NODES
-                                                 , allowFileDialogs,
-                                                 hasUsedFileDialog
-#endif
-                                                 );
+    hostSideEffect->createOfxImageEffectInstance(plugin, desc, ctx, serialization.get(), args);
 
     return hostSideEffect;
 }

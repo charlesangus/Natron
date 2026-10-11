@@ -179,12 +179,7 @@ public:
     }
 
     EffectInstancePtr createOFXEffect(NodePtr node,
-                                  const CreateNodeArgs& args
-#ifndef NATRON_ENABLE_IO_META_NODES
-                                  , bool allowFileDialogs,
-                                  bool *hasUsedFileDialog
-#endif
-                                  ) const;
+                                      const CreateNodeArgs& args) const;
 
     AppInstancePtr getAppInstance(int appID) const WARN_UNUSED_RETURN;
 

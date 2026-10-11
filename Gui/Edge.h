@@ -122,14 +122,13 @@ public:
     bool computeVisibility(bool hovered) const;
 
     /**
-     * @brief Re-reads the source node's resolved data kind and, if it changed, stores the pen that
-     * kind calls for on the item itself. The width has to live in the item's own pen because
-     * boundingRect() and shape() are both derived from it.
+     * @brief Re-reads the source node's resolved data kind and caches the colour that kind is drawn
+     * in; @p force recomputes the colour even when the kind is unchanged.
      * Public because a kind resolves from the whole connected component: an edit anywhere in it can
      * retype nodes whose own edges were not otherwise touched, and NodeGui refreshes those from
      * Node::dataKindChanged().
      **/
-    void refreshDataKindPen();
+    void refreshDataKindPen(bool force = false);
 
 private:
 

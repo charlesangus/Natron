@@ -448,6 +448,17 @@ public:
      **/
     static bool getCategoryColor(const NodePtr& internalNode, QColor* color);
 
+    /**
+     * @brief Black or white, whichever reads better as text drawn over @p background.
+     **/
+    static QColor contrastingLabelTextColor(const QColor& background);
+
+    /**
+     * @brief Recomputes the data-kind colour of this node's input and output edges; @p force
+     * recomputes it even when the kind itself is unchanged, e.g. after its colour preference changed.
+     **/
+    void refreshEdgesDataKindPen(bool force);
+
 protected:
 
     virtual int getBaseDepth() const { return 20; }
@@ -617,12 +628,15 @@ protected:
     virtual bool drawsUserColorAsBody() const { return false; }
 
     /**
-     * @brief Called with the freshly computed drawn body colour every time it changes.
-     * A subclass whose label is not _nameItem (e.g. DotGui draws its label beside the body
-     * rather than on it) overrides this to keep that label's contrast in sync, without needing
-     * access to _nameItem or the private colour state.
+     * @brief Called whenever the node's colours are refreshed, for a subclass whose label is not
+     * _nameItem (e.g. DotGui, whose label sits beside the disk) to keep that label readable.
      **/
-    virtual void refreshExtraLabelColor(const QColor& /*drawnBodyColor*/) { }
+    virtual void refreshExtraLabelColor() { }
+
+    /**
+     * @brief Shows whether the node is disabled; the default draws a cross over the body.
+     **/
+    virtual void applyDisabledState(bool disabled);
 
 private:
 
@@ -633,6 +647,8 @@ private:
     void refreshEdgesVisibilityInternal(bool hovered);
 
     void refreshPositionEnd(double x, double y);
+
+    void refreshAttachedEdgesAndLinks();
 
     void setNameItemHtml(const QString & name, const QString & label);
 

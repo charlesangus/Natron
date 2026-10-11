@@ -89,6 +89,8 @@ struct EdgePrivate
     bool isRotoMask;
     bool isMask;
     DataKindEnum dataKind;
+    bool hasKindTint;
+    QColor kindTint;
     QPointF middlePoint; //updated only when dest && source are valid
 
     EdgePrivate(Edge* publicInterface,
@@ -115,6 +117,8 @@ struct EdgePrivate
         , isRotoMask(false)
         , isMask(false)
         , dataKind(eDataKindPolymorphic)
+        , hasKindTint(false)
+        , kindTint()
         , middlePoint()
     {
     }
@@ -797,7 +801,7 @@ kindTintColor(DataKindEnum kind,
 }
 
 void
-Edge::refreshDataKindPen()
+Edge::refreshDataKindPen(bool force)
 {
     NodeGuiPtr src = _imp->source.lock();
     DataKindEnum kind = eDataKindPolymorphic;
@@ -818,10 +822,12 @@ Edge::refreshDataKindPen()
         }
     }
 
-    if (kind == _imp->dataKind) {
+    if ((kind == _imp->dataKind) && !force) {
         return;
     }
     _imp->dataKind = kind;
+    // Cached rather than read in paint() so the colour only follows saved Preferences.
+    _imp->hasKindTint = kindTintColor(kind, &_imp->kindTint);
     update();
 }
 
@@ -861,8 +867,7 @@ Edge::paint(QPainter *painter,
     } else if (_imp->useRenderingColor) {
         color = arrowColor = _imp->renderingColor;
     } else {
-        QColor tint;
-        color = arrowColor = kindTintColor(_imp->dataKind, &tint) ? tint : _imp->defaultColor;
+        color = arrowColor = _imp->hasKindTint ? _imp->kindTint : _imp->defaultColor;
     }
     myPen.setColor(color);
     painter->setPen(myPen);

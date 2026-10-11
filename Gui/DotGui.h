@@ -71,9 +71,10 @@ private:
     virtual QRectF boundingRect() const OVERRIDE FINAL;
     virtual QPainterPath shape() const OVERRIDE FINAL;
 
-    // The label sits beside the disk rather than on it, so it is a separate item from the
-    // inherited _nameItem (which stays null for a Dot) instead of reusing that machinery.
-    virtual void refreshExtraLabelColor(const QColor& drawnBodyColor) OVERRIDE FINAL;
+    virtual void refreshExtraLabelColor() OVERRIDE FINAL;
+
+    // The disk has no room for the disabled cross, so a disabled Dot is drawn faded instead.
+    virtual void applyDisabledState(bool disabled) OVERRIDE FINAL;
 
     void refreshLabelText(const QString& label);
 

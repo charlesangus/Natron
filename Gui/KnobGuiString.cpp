@@ -697,42 +697,10 @@ KnobGuiString::restoreTextInfoFromString()
         _setBoldButton->setChecked(_boldActivated);
         _setBoldButton->setDown(_boldActivated);
 
-        QString fontSizeString;
+        int parsedSize = 0;
         QString fontColorString;
-        toFind = QString::fromUtf8(kFontSizeTag);
-        i = text.indexOf(toFind);
-        bool foundFontTag = false;
-        if (i != -1) {
-            foundFontTag = true;
-            i += toFind.size();
-            while ( i < text.size() && text.at(i).isDigit() ) {
-                fontSizeString.append( text.at(i) );
-                ++i;
-            }
-        }
-        const int fontTagEnd = foundFontTag ? text.indexOf(QString::fromUtf8("\">"), i) : -1;
-        toFind = QString::fromUtf8(kFontColorTag);
-        int colorPos = foundFontTag ? text.indexOf(toFind, i) : -1;
-        if ((colorPos != -1) && (fontTagEnd != -1) && (colorPos > fontTagEnd)) {
-            colorPos = -1;
-        }
-        if (colorPos != -1) {
-            colorPos += toFind.size();
-            while (colorPos < text.size() && text.at(colorPos) != QLatin1Char('"')) {
-                fontColorString.append(text.at(colorPos));
-                ++colorPos;
-            }
-        }
-        toFind = QString::fromUtf8(kFontFaceTag);
-        i = foundFontTag ? text.indexOf(toFind, i) : -1;
-        assert( (!foundFontTag && i == -1) || (foundFontTag && i != -1) );
-        if (i != -1) {
-            i += toFind.size();
-            while ( i < text.size() && text.at(i) != QLatin1Char('"') ) {
-                _fontFamily.append( text.at(i) );
-                ++i;
-            }
-        }
+        QString parsedFamily;
+        const bool foundFontTag = parseFontTagAttributes(text, &parsedSize, &fontColorString, &parsedFamily);
 
         if (!foundFontTag) {
             _fontSize = _fontSizeSpinBox->value();
@@ -745,9 +713,10 @@ KnobGuiString::restoreTextInfoFromString()
             text.append( QString::fromUtf8(kFontEndTag) );
             knob->setValue( text.toStdString() );
         } else {
+            _fontFamily = parsedFamily;
             _fontCombo->setCurrentFont( QFont(_fontFamily) );
 
-            _fontSize = fontSizeString.toInt();
+            _fontSize = parsedSize;
 
             _fontSizeSpinBox->setValue(_fontSize);
 
@@ -768,60 +737,25 @@ KnobGuiString::parseFont(const QString & label,
                          QFont *f,
                          QColor *color)
 {
-    QString toFind = QString::fromUtf8(kFontSizeTag);
-    int startFontTag = label.indexOf(toFind);
+    int fontSize = 0;
+    QString colorName;
+    QString family;
+    const bool found = parseFontTagAttributes(label, &fontSize, &colorName, &family);
 
-    assert(startFontTag != -1);
-    startFontTag += toFind.size();
-    int j = startFontTag;
-    QString sizeStr;
-    while ( j < label.size() && label.at(j).isDigit() ) {
-        sizeStr.push_back( label.at(j) );
-        ++j;
+    assert(found);
+    Q_UNUSED(found);
+
+    f->setPointSize(fontSize);
+    f->setFamily(family);
+
+    if (label.indexOf(QString::fromUtf8(kBoldStartTag)) != -1) {
+        f->setBold(true);
     }
-
-    toFind = QString::fromUtf8(kFontFaceTag);
-    startFontTag = label.indexOf(toFind, startFontTag);
-    assert(startFontTag != -1);
-    startFontTag += toFind.size();
-    j = startFontTag;
-    QString faceStr;
-    while ( j < label.size() && label.at(j) != QLatin1Char('"') ) {
-        faceStr.push_back( label.at(j) );
-        ++j;
+    if (label.indexOf(QString::fromUtf8(kItalicStartTag)) != -1) {
+        f->setItalic(true);
     }
-
-    f->setPointSize( sizeStr.toInt() );
-    f->setFamily(faceStr);
-
-    {
-        toFind = QString::fromUtf8(kBoldStartTag);
-        int foundBold = label.indexOf(toFind);
-        if (foundBold != -1) {
-            f->setBold(true);
-        }
-    }
-
-    {
-        toFind = QString::fromUtf8(kItalicStartTag);
-        int foundItalic = label.indexOf(toFind);
-        if (foundItalic != -1) {
-            f->setItalic(true);
-        }
-    }
-    {
-        toFind = QString::fromUtf8(kFontColorTag);
-        int foundColor = label.indexOf(toFind);
-        if (foundColor != -1) {
-            foundColor += toFind.size();
-            QString currentColor;
-            int j = foundColor;
-            while ( j < label.size() && label.at(j) != QLatin1Char('"') ) {
-                currentColor.push_back( label.at(j) );
-                ++j;
-            }
-            *color = QColor(currentColor);
-        }
+    if (!colorName.isEmpty()) {
+        *color = QColor(colorName);
     }
 } // KnobGuiString::parseFont
 
@@ -998,32 +932,97 @@ KnobGuiString::colorFontButtonClicked()
     updateFontColorIcon(_fontColor);
 }
 
+// The opening tag is bounded so that a <font color> the user typed inside the label body is
+// never mistaken for, or rewritten as, the label-wide colour.
+static int
+outerFontTagEnd(const QString& text,
+                int fontTagStart)
+{
+    return text.indexOf(QLatin1Char('>'), fontTagStart);
+}
+
+static QString
+attributeValueInTag(const QString& text,
+                    const QString& attribute,
+                    int tagStart,
+                    int tagEnd,
+                    int* valueStart)
+{
+    const int attrPos = text.indexOf(attribute, tagStart);
+    if ((attrPos == -1) || (attrPos > tagEnd)) {
+        *valueStart = -1;
+
+        return QString();
+    }
+    *valueStart = attrPos + attribute.size();
+    const int valueEnd = text.indexOf(QLatin1Char('"'), *valueStart);
+    if ((valueEnd == -1) || (valueEnd > tagEnd)) {
+        *valueStart = -1;
+
+        return QString();
+    }
+
+    return text.mid(*valueStart, valueEnd - *valueStart);
+}
+
+bool
+KnobGuiString::parseFontTagAttributes(const QString& text,
+                                      int* fontSize,
+                                      QString* colorName,
+                                      QString* family)
+{
+    const QString sizeTag = QString::fromUtf8(kFontSizeTag);
+    const int tagStart = text.indexOf(sizeTag);
+    if (tagStart == -1) {
+        return false;
+    }
+    const int tagEnd = outerFontTagEnd(text, tagStart);
+    if (tagEnd == -1) {
+        return false;
+    }
+
+    QString sizeString;
+    for (int i = tagStart + sizeTag.size(); i < tagEnd && text.at(i).isDigit(); ++i) {
+        sizeString.append(text.at(i));
+    }
+    *fontSize = sizeString.toInt();
+
+    int valueStart;
+    *colorName = attributeValueInTag(text, QString::fromUtf8(kFontColorTag), tagStart, tagEnd, &valueStart);
+    *family = attributeValueInTag(text, QString::fromUtf8(kFontFaceTag), tagStart, tagEnd, &valueStart);
+
+    return true;
+}
+
 void
 KnobGuiString::findReplaceColorName(QString& text,
                                     const QColor& color)
 {
-    //find the first font tag
-    QString toFind = QString::fromUtf8(kFontSizeTag);
-    int i = text.indexOf(toFind);
-
-    if (i != -1) {
-        toFind = QString::fromUtf8(kFontColorTag);
-        int foundColorTag = text.indexOf(toFind, i);
-        if (foundColorTag != -1) {
-            foundColorTag += toFind.size();
-            QString currentColor;
-            int j = foundColorTag;
-            while ( j < text.size() && text.at(j) != QLatin1Char('"') ) {
-                currentColor.push_back( text.at(j) );
-                ++j;
-            }
-            text.remove( foundColorTag, currentColor.size() );
-            text.insert(foundColorTag, userFontColorName(color));
-        } else {
-            const int afterFontKeyword = i + (int)QString::fromUtf8("<font ").size();
-            text.insert(afterFontKeyword, QString::fromUtf8(kFontColorTag) + userFontColorName(color) + QString::fromUtf8("\" "));
-        }
+    const QString sizeTag = QString::fromUtf8(kFontSizeTag);
+    const int tagStart = text.indexOf(sizeTag);
+    if (tagStart == -1) {
+        return;
     }
+    const int tagEnd = outerFontTagEnd(text, tagStart);
+    if (tagEnd == -1) {
+        return;
+    }
+
+    int valueStart;
+    const QString currentColor = attributeValueInTag(text, QString::fromUtf8(kFontColorTag), tagStart, tagEnd, &valueStart);
+    if (valueStart != -1) {
+        text.replace(valueStart, currentColor.size(), userFontColorName(color));
+
+        return;
+    }
+
+    // kFontSizeTag includes "<font ", so the colour has to follow the size attribute for the
+    // tag to stay findable; this also keeps the attribute order makeFontTag() writes.
+    const int sizeValueEnd = text.indexOf(QLatin1Char('"'), tagStart + sizeTag.size());
+    if ((sizeValueEnd == -1) || (sizeValueEnd > tagEnd)) {
+        return;
+    }
+    text.insert(sizeValueEnd + 1, QString::fromUtf8(" " kFontColorTag) + userFontColorName(color) + QString::fromUtf8("\""));
 }
 
 void

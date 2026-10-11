@@ -198,10 +198,10 @@ wcagRelativeLuminance(const QColor& c)
 
 // 0.179 is the luminance at which white and black text give the same WCAG contrast ratio
 // against the background, so it is the threshold rather than an arbitrary pick.
-static QColor
-contrastingLabelTextColor(const QColor& body)
+QColor
+NodeGui::contrastingLabelTextColor(const QColor& background)
 {
-    return wcagRelativeLuminance(body) > 0.179 ? QColor(0, 0, 0, 255) : QColor(255, 255, 255, 255);
+    return wcagRelativeLuminance(background) > 0.179 ? QColor(0, 0, 0, 255) : QColor(255, 255, 255, 255);
 }
 
 // The label's font tag stays in the HTML handed to the text item, so an inline colour there would
@@ -1182,6 +1182,12 @@ NodeGui::refreshPositionEnd(double x,
             }
         }
     }
+    refreshAttachedEdgesAndLinks();
+}
+
+void
+NodeGui::refreshAttachedEdgesAndLinks()
+{
     refreshEdges();
     NodePtr node = getNode();
     if (node) {
@@ -1194,7 +1200,8 @@ NodeGui::refreshPositionEnd(double x,
             }
         }
     }
-    Q_EMIT positionChanged(x, y);
+    // Knob-link arrows on both ends listen to this signal to re-attach to the node's outline.
+    Q_EMIT positionChanged(pos().x(), pos().y());
 }
 
 void
@@ -1435,13 +1442,19 @@ NodeGui::refreshEdges()
 void
 NodeGui::onDataKindChanged()
 {
+    refreshEdgesDataKindPen(false);
+}
+
+void
+NodeGui::refreshEdgesDataKindPen(bool force)
+{
     for (InputEdges::const_iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
         if (*it) {
-            (*it)->refreshDataKindPen();
+            (*it)->refreshDataKindPen(force);
         }
     }
     if (_outputEdge) {
-        _outputEdge->refreshDataKindPen();
+        _outputEdge->refreshDataKindPen(force);
     }
 }
 
@@ -1763,7 +1776,7 @@ NodeGui::boundingRect() const
 QRectF
 NodeGui::outlineBoundingRect() const
 {
-    if (!_userColorBorder) {
+    if (!isUserColorBorderShown()) {
         return boundingRect();
     }
 
@@ -1928,7 +1941,7 @@ NodeGui::refreshCurrentBrush()
     applyBrush(drawnBodyColor);
     refreshUserColorBorder();
     refreshNameItemTextColor();
-    refreshExtraLabelColor(drawnBodyColor);
+    refreshExtraLabelColor();
 }
 
 void
@@ -1962,6 +1975,9 @@ NodeGui::refreshUserColorBorder()
     if (!_userColorBorder || drawsUserColorAsBody()) {
         return;
     }
+    // Compared via the ring's own rect: _hasUserColor has already changed by the time this runs,
+    // so outlineBoundingRect() cannot tell what the edges were last attached to.
+    const QRectF ringBefore = _userColorBorder->rect();
     if (!isUserColorBorderShown()) {
         _userColorBorder->clearInsetBorder();
     } else {
@@ -1974,6 +1990,9 @@ NodeGui::refreshUserColorBorder()
         _userColorBorder->setInsetBorder(userBorderColorAgainstBody(user, body), TO_DPIX(NATRON_USER_COLOR_BORDER_WIDTH));
     }
     refreshUserColorBorderGeometry();
+    if (_userColorBorder->rect() != ringBefore) {
+        refreshAttachedEdgesAndLinks();
+    }
 }
 
 void
@@ -3062,10 +3081,6 @@ NodeGui::setSize(double w,
 void
 NodeGui::onDisabledKnobToggled(bool disabled)
 {
-    if (!_nameItem) {
-        return;
-    }
-
     NodePtr node = getNode();
     assert(node);
     if (!node) {
@@ -3081,9 +3096,18 @@ NodeGui::onDisabledKnobToggled(bool disabled)
     int curFrame = node->getApp()->getTimeLine()->currentFrame();
     bool enabled = ( !lifetimeEnabled || (curFrame >= firstFrame && curFrame <= lastFrame) ) && !disabled;
 
-    _disabledTopLeftBtmRight->setVisible(!enabled);
-    _disabledBtmLeftTopRight->setVisible(!enabled);
+    applyDisabledState(!enabled);
     update();
+}
+
+void
+NodeGui::applyDisabledState(bool disabled)
+{
+    if (!_disabledTopLeftBtmRight || !_disabledBtmLeftTopRight) {
+        return;
+    }
+    _disabledTopLeftBtmRight->setVisible(disabled);
+    _disabledBtmLeftTopRight->setVisible(disabled);
 }
 
 void

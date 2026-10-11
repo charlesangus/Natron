@@ -1973,6 +1973,9 @@ Settings::saveSettings(const std::vector<KnobI*>& knobs,
                        bool pluginSettings)
 {
     if ( !_saveSettings->getValue() ) {
+        // The in-memory values are still committed, so listeners must refresh as on a real save.
+        Q_EMIT settingsSaved();
+
         return;
     }
     if (pluginSettings) {
@@ -3160,12 +3163,6 @@ Settings::getNodeCategoryColor(NodeCategoryEnum category,
         getDefaultNodeColor(r, g, b);
         break;
     }
-}
-
-bool
-Settings::isNodeCategoryColorKnob(KnobI* k) const
-{
-    return (k == _defaultNodeColor.get()) || (k == _defaultGeneratorColor.get()) || (k == _defaultReaderColor.get()) || (k == _defaultWriterColor.get()) || (k == _defaultColorGroupColor.get()) || (k == _defaultFilterGroupColor.get()) || (k == _defaultTransformGroupColor.get()) || (k == _defaultTimeGroupColor.get()) || (k == _defaultDrawGroupColor.get()) || (k == _defaultKeyerGroupColor.get()) || (k == _defaultChannelGroupColor.get()) || (k == _defaultMergeGroupColor.get()) || (k == _defaultViewsGroupColor.get()) || (k == _defaultDeepGroupColor.get()) || (k == _defaultNative3DGroupColor.get()) || (k == _defaultUsd3DGroupColor.get());
 }
 
 void

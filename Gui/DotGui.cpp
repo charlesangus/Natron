@@ -27,20 +27,20 @@
 
 #include <algorithm> // min, max
 #include <cassert>
-#include <cmath> // pow
 #include <stdexcept>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
-#include <QLayout>
 #include <QAction>
-#include <QtConcurrentRun> // QtCore on Qt4, QtConcurrent on Qt5
+#include <QApplication>
+#include <QFile>
 #include <QFontMetrics>
+#include <QGridLayout>
+#include <QLayout>
 #include <QTextBlockFormat>
 #include <QTextCursor>
-#include <QGridLayout>
-#include <QFile>
-#include <QApplication>
+#include <QTextDocument>
+#include <QtConcurrentRun> // QtCore on Qt4, QtConcurrent on Qt5
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -49,6 +49,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Backdrop.h"
 #include "Engine/Image.h"
 #include "Engine/Knob.h"
+#include "Engine/Lut.h" // Color::floatToInt
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
 #include "Engine/NodeSerialization.h"
@@ -143,12 +144,11 @@ DotGui::createGui()
                                       diam + stateOffset * 2) );
     ellipseIndicator->hide();
 
-    // Unlike a regular node, a Dot's label sits beside the disk rather than inside a body, and
-    // Nuke-like, it stays empty (and hidden) unless the user actually sets one: the disk alone
-    // already identifies the node, so there is no name fallback to fall back to.
+    // The disk alone identifies a Dot, so unlike other nodes it shows no name, only a user label.
     _labelItem = new NodeGraphTextItem(getDagGui(), this, false);
     _labelItem->setZValue(depth + 1);
     _labelItem->hide();
+    refreshExtraLabelColor();
 
     NodePtr node = getNode();
     if (node) {
@@ -166,16 +166,15 @@ DotGui::refreshLabelText(const QString& label)
         return;
     }
 
-    QString trimmed = label.trimmed();
-    if (trimmed.isEmpty()) {
+    QString html = label.trimmed();
+    html.replace(QString::fromUtf8("\n"), QString::fromUtf8("<br />"));
+    _labelItem->setHtml(html);
+    // The label editor wraps even an empty label in a font tag, so only visible text counts.
+    if (_labelItem->document()->toPlainText().trimmed().isEmpty()) {
         _labelItem->hide();
 
         return;
     }
-
-    QString html = trimmed;
-    html.replace(QString::fromUtf8("\n"), QString::fromUtf8("<br />"));
-    _labelItem->setHtml(html);
     _labelItem->adjustSize();
 
     const QRectF diskBbox = diskShape->boundingRect();
@@ -186,29 +185,30 @@ DotGui::refreshLabelText(const QString& label)
     _labelItem->show();
 }
 
-// 0.179 is the luminance at which white and black text give the same WCAG contrast ratio
-// against the colour behind them; NodeGui.cpp carries the same formula for _nameItem, but as
-// a file-local static it is not reachable from here.
-static QColor
-dotLabelContrastColor(const QColor& against)
-{
-    auto toLinear = [](double c) {
-        return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
-    };
-    double luminance = 0.2126 * toLinear(against.redF())
-        + 0.7152 * toLinear(against.greenF())
-        + 0.0722 * toLinear(against.blueF());
-
-    return luminance > 0.179 ? QColor(0, 0, 0, 255) : QColor(255, 255, 255, 255);
-}
-
+// The label is drawn beside the disk, over the node graph, so it contrasts with the graph's
+// background (the stylesheet's base colour) rather than with the disk.
 void
-DotGui::refreshExtraLabelColor(const QColor& drawnBodyColor)
+DotGui::refreshExtraLabelColor()
 {
     if (!_labelItem) {
         return;
     }
-    _labelItem->setDefaultTextColor(dotLabelContrastColor(drawnBodyColor));
+    double r, g, b;
+    appPTR->getCurrentSettings()->getBaseColor(&r, &g, &b);
+    const QColor background(Color::floatToInt<256>(r), Color::floatToInt<256>(g), Color::floatToInt<256>(b));
+    _labelItem->setDefaultTextColor(NodeGui::contrastingLabelTextColor(background));
+}
+
+void
+DotGui::applyDisabledState(bool disabled)
+{
+    const qreal opacity = disabled ? 0.35 : 1.;
+    if (diskShape) {
+        diskShape->setOpacity(opacity);
+    }
+    if (_labelItem) {
+        _labelItem->setOpacity(opacity);
+    }
 }
 
 void

@@ -223,17 +223,14 @@ NodeGraph::~NodeGraph()
 void
 NodeGraph::onSettingsSaved()
 {
-    // Settings are only committed on Save (or Restore Defaults followed by
-    // Save), never while the Preferences panel is merely being edited, so a
-    // Discard never reaches here. Refresh every node unconditionally rather
-    // than tracking which category/edge colour knobs actually changed:
-    // refreshCategoryColor() already early-outs when a node's colour is
-    // unchanged, and this fires once per save, not per edit.
+    // Recolouring on save rather than on settingChanged() keeps a discarded Preferences edit off the graph.
     for (NodesGuiList::const_iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
         (*it)->refreshCategoryColor();
+        (*it)->refreshEdgesDataKindPen(true);
     }
     for (NodesGuiList::const_iterator it = _imp->_nodesTrash.begin(); it != _imp->_nodesTrash.end(); ++it) {
         (*it)->refreshCategoryColor();
+        (*it)->refreshEdgesDataKindPen(true);
     }
     if (scene()) {
         scene()->update();
@@ -445,7 +442,8 @@ NodeGraph::createNodeGUI(const NodePtr & node,
     
     NodeSerializationPtr serialization = args.getProperty<NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
 
-    bool panelOpened = args.getProperty<bool>(kCreateNodeArgsPropSettingsOpened);
+    // A Dot is a routing aid created in passing, so its panel only opens when asked for.
+    bool panelOpened = args.getProperty<bool>(kCreateNodeArgsPropSettingsOpened) && !isDot;
     if ( !serialization && panelOpened && isTopLevelNodeBeingCreated ) {
         node_ui->ensurePanelCreated();
     }

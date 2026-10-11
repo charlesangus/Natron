@@ -115,7 +115,7 @@ The design notes, the current behaviour re-checked against `a50bef552`, and the 
   - verify: P4.T1 takes shots of the marker over a vertical pipe and a diagonal pipe, with the bar visibly across the pipe. The marker is gone after the drop and after Escape.
   - size: M
 
-- [ ] M55.P2.T4 — Make a splice one undo step, moves included
+- [x] M55.P2.T4 — Make a splice one undo step, moves included
   - files: `Gui/NodeGraphUndoRedo.h`, `Gui/NodeGraphUndoRedo.cpp`, `Gui/NodeGraph15.cpp`
   - approach:
     - Generalise `InsertNodeCommand` to `(graph, edge, exitNode, entryNode = exitNode, entryInput = preferred)`:

@@ -28,7 +28,11 @@
 #include <memory>
 
 #include <QApplication>
+#include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QLabel>
+#include <QSize>
 #include <QString>
 #include <QWidget>
 
@@ -188,6 +192,17 @@ TEST(ColorTrackballHud, FrameOverADummyWidgetTracksAResize)
     EXPECT_EQ(0, frame->x());
     EXPECT_EQ(0, frame->y());
 
+    // A hidden widget's resize event stays pending until it is shown, and a top-level window's
+    // resize comes back asynchronously from the window system, so the window is shown and the
+    // event loop runs until the frame has caught up.
+    window.show();
     window.resize(321, 233);
+
+    QElapsedTimer timer;
+    timer.start();
+    while ((frame->size() != window.size()) && (timer.elapsed() < 2000)) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    }
+    EXPECT_EQ(QSize(321, 233), window.size());
     EXPECT_EQ(window.size(), frame->size());
 }

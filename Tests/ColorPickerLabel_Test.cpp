@@ -110,6 +110,9 @@ makeWhiteKnob()
     KnobColorPtr knob = AppManager::createKnob<KnobColor>(project.get(), std::string("White"), 4, false);
 
     if (knob) {
+        // Grade's white is a Gain; left on Auto, this knob's zero defaults and unbounded display
+        // minimum would infer an Offset, whose Value edit is a flat lift that moves the plane point.
+        knob->setColorRole(eColorKnobRoleGain);
         for (int i = 0; i < 4; ++i) {
             knob->setValue(kBaseline[i], ViewSpec::all(), i, true);
         }

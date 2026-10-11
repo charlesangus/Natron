@@ -185,21 +185,10 @@ ColorKnobEditSession::push(const std::list<double>& values)
         return;
     }
 
-    KnobIPtr knob = knobGui->getKnob();
-    // pushUndoCommand() silently redoes-and-discards the command instead of putting it on the
-    // undo stack when the knob itself refuses undo, in which case there is no stack entry left
-    // to rename below.
-    const bool onUndoStack = knob && knob->getCanUndo() && knob->getEvaluateOnChange();
+    KnobUndoCommand<double>* cmd = new KnobUndoCommand<double>(knobGui, _start, values, true, _mergeKey);
 
-    knobGui->pushUndoCommand(new KnobUndoCommand<double>(knobGui, _start, values, true, _mergeKey));
-    if (onUndoStack) {
-        // redo(), called synchronously by the push above, just set the command's text to the
-        // generic "Set value of knob.label"; replace it with the gesture's own label.
-        const QUndoCommand* cmd = knobGui->getLastUndoCommand();
-        if (cmd) {
-            const_cast<QUndoCommand*>(cmd)->setText(undoText());
-        }
-    }
+    cmd->setText(undoText());
+    knobGui->pushUndoCommand(cmd);
     _committed = values;
 }
 

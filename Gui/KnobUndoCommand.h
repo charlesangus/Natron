@@ -171,7 +171,7 @@ private:
             knobUI->setValue(dimension, *it, NULL, refreshUI, !refreshUI ? eValueChangedReasonUserEdited : eValueChangedReasonNatronGuiEdited);
 
             if ( knob->getHolder()->getApp() ) {
-                if (_valueChangedReturnCode[i] == 1) { //the value change also added a keyframe
+                if (_valueChangedReturnCode[i] == KnobHelper::eValueChangedReturnCodeKeyframeAdded) {
                     try {
                         knobUI->removeKeyFrame( _newKeys[i].getTime(), dimension, ViewIdx(0) );
                     } catch (std::exception&) {
@@ -179,8 +179,7 @@ private:
                         // ignore
                     }
                     modifiedKeyFrame = true;
-                } else if (_valueChangedReturnCode[i] == 2) {
-                    //the value change moved a keyframe
+                } else if (_valueChangedReturnCode[i] == KnobHelper::eValueChangedReturnCodeKeyframeModified) {
                     knobUI->removeKeyFrame( _newKeys[i].getTime(), dimension, ViewIdx(0) );
                     knobUI->setKeyframe( _oldKeys[i].getTime(), dimension, ViewIdx(0) );
                     modifiedKeyFrame = true;
@@ -197,7 +196,7 @@ private:
         knobUI->onInternalValueChanged(ViewSpec::all(), -1, eValueChangedReasonNatronGuiEdited);
 
         knob->endChanges();
-        if (modifiedKeyFrame) {
+        if (modifiedKeyFrame && knobUI->getGui()) {
             knobUI->getGui()->getCurveEditor()->getCurveWidget()->refreshSelectedKeysAndUpdate();
         }
 
@@ -207,7 +206,10 @@ private:
             holderName = QString::fromUtf8( effect->getNode()->getLabel().c_str() );
         }
 
-        setText( tr("Set value of %1.%2").arg(holderName).arg( QString::fromUtf8( knob->getLabel().c_str() ) ) );
+        // A caller-supplied text (a colour gesture's "White: trackball") survives undo and redo.
+        if (text().isEmpty()) {
+            setText(tr("Set value of %1.%2").arg(holderName).arg(QString::fromUtf8(knob->getLabel().c_str())));
+        }
     } // undo
 
     virtual void redo() OVERRIDE FINAL
@@ -258,7 +260,7 @@ private:
             }
 
             _valueChangedReturnCode[i] = knobUI->setValue(dimension, *it, &_newKeys[i], refreshUI, !refreshUI ? eValueChangedReasonUserEdited : eValueChangedReasonNatronGuiEdited);
-            if (_valueChangedReturnCode[i] != KnobHelper::eValueChangedReturnCodeNoKeyframeAdded) {
+            if ((_valueChangedReturnCode[i] == KnobHelper::eValueChangedReturnCodeKeyframeAdded) || (_valueChangedReturnCode[i] == KnobHelper::eValueChangedReturnCodeKeyframeModified)) {
                 modifiedKeyFrames = true;
             }
 
@@ -281,7 +283,7 @@ private:
 
         knob->endChanges();
 
-        if (modifiedKeyFrames) {
+        if (modifiedKeyFrames && knobUI->getGui()) {
             knobUI->getGui()->getCurveEditor()->getCurveWidget()->refreshSelectedKeysAndUpdate();
         }
 
@@ -291,7 +293,10 @@ private:
             holderName = QString::fromUtf8( effect->getNode()->getLabel().c_str() );
         }
 
-        setText( tr("Set value of %1.%2").arg(holderName).arg( QString::fromUtf8( knob->getLabel().c_str() ) ) );
+        // A caller-supplied text (a colour gesture's "White: trackball") survives undo and redo.
+        if (text().isEmpty()) {
+            setText(tr("Set value of %1.%2").arg(holderName).arg(QString::fromUtf8(knob->getLabel().c_str())));
+        }
 
         _firstRedoCalled = true;
     } // redo
@@ -321,6 +326,9 @@ private:
         }
 
         _newValue = knobCommand->_newValue;
+        if (!knobCommand->text().isEmpty()) {
+            setText(knobCommand->text());
+        }
 
         return true;
     }

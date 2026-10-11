@@ -897,8 +897,11 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
     if (_adjustPanel) {
         // Tags the row so ColorKnobTouchTracker's app-wide filter can find this knob from a
         // press, wheel or focus-in on any of its spinboxes, not only from a gesture session.
-        containerLayout->widget()->setProperty(colorKnobTouchTagPropertyName(), QVariant::fromValue<void*>(this));
-        _rowContainer = containerLayout->widget();
+        QWidget* row = containerLayout->parentWidget();
+        if (row) {
+            row->setProperty(colorKnobTouchTagPropertyName(), QVariant::fromValue<void*>(this));
+        }
+        _rowContainer = row;
     }
     _colorLabel = new ColorPickerLabel( _useSimplifiedUI ? NULL : this, containerLayout->widget() );
     if (!_useSimplifiedUI) {

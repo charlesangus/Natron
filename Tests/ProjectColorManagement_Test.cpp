@@ -282,9 +282,13 @@ TEST(ProjectColorManagement, LinRec709WorkingGivesTheRec709Luma)
     EXPECT_NEAR(0.2126729, w[0], 1e-4);
     EXPECT_NEAR(0.7151522, w[1], 1e-4);
     EXPECT_NEAR(0.0721750, w[2], 1e-4);
-    EXPECT_NEAR(m[3], w[0], 1e-9);
-    EXPECT_NEAR(m[4], w[1], 1e-9);
-    EXPECT_NEAR(m[5], w[2], 1e-9);
+    // The matrix is probed through OCIO in single precision, so its Y row only sums to 1 to
+    // about 1e-7; w is that row renormalised.
+    const double ySum = m[3] + m[4] + m[5];
+    EXPECT_NEAR(1.0, ySum, 1e-6);
+    EXPECT_NEAR(m[3] / ySum, w[0], 1e-12);
+    EXPECT_NEAR(m[4] / ySum, w[1], 1e-12);
+    EXPECT_NEAR(m[5] / ySum, w[2], 1e-12);
 }
 
 TEST(ProjectColorManagement, LogWorkingReportsANonlinearProbeAndTheFallbackLuma)

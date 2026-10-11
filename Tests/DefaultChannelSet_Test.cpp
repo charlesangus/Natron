@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <exception>
+#include <list>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -45,8 +46,10 @@
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/Project.h"
+
+#include "Serialization/KnobSerialization.h"
+#include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_USING
 
@@ -400,12 +403,13 @@ TEST_F(DefaultChannelSetTest, ChannelSetIsSavedEvenOnItsDefault)
         ASSERT_TRUE(bool(channels));
         EXPECT_FALSE(channels->hasModifications());
 
-        NodeSerialization serialization(nodes[i]);
-        EXPECT_EQ(unsigned(NODE_SERIALIZATION_CURRENT_VERSION), serialization.getVersion());
+        Serialization::NodeSerialization serialization;
+        nodes[i]->toSerialization(&serialization);
+        EXPECT_EQ(unsigned(NATRON_SERIALIZATION_NODE_VERSION), serialization.version);
 
         bool saved = false;
-        const NodeSerialization::KnobValues& values = serialization.getKnobsValues();
-        for (NodeSerialization::KnobValues::const_iterator it = values.begin(); it != values.end(); ++it) {
+        const std::list<Serialization::KnobSerialization>& values = serialization.knobs;
+        for (std::list<Serialization::KnobSerialization>::const_iterator it = values.begin(); it != values.end(); ++it) {
             if (it->name == std::string(kNodeParamChannelSet)) {
                 saved = true;
             }

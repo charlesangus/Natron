@@ -43,7 +43,6 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/Node.h"
-#include "Engine/ProjectSerialization.h"
 
 #include "Serialization/KnobSerialization.h"
 #include "Serialization/BoostXml/KnobXml.h"

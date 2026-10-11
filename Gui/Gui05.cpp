@@ -41,7 +41,6 @@
 #endif
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/Project.h"
 #include "Engine/TimeLine.h"
 #include "Engine/CreateNodeArgs.h"
@@ -62,6 +61,8 @@
 #include "Gui/Splitter.h"
 #include "Gui/TabWidget.h"
 #include "Gui/ViewerTab.h"
+
+#include "Serialization/SerializationFwd.h"
 
 
 NATRON_NAMESPACE_ENTER
@@ -235,7 +236,7 @@ Gui::createGroupGui(const NodePtr & group,
     nodeGraph->setObjectName( QString::fromUtf8( group->getLabel().c_str() ) );
     _imp->_groups.push_back(nodeGraph);
     
-    NodeSerializationPtr serialization = args.getProperty<NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
+    Serialization::NodeSerializationPtr serialization = args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
 
     if ( where && !serialization && !getApp()->isCreatingPythonGroup() ) {
         where->appendTab(nodeGraph, nodeGraph);

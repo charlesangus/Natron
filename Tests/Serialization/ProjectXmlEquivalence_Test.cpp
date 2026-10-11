@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
 #include <exception>
 #include <list>
 #include <memory>
@@ -33,6 +34,8 @@
 
 #include <gtest/gtest.h>
 
+#include <QFile>
+#include <QRegularExpression>
 #include <QString>
 #include <QTemporaryDir>
 
@@ -42,9 +45,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/Project.h"
-#include "Engine/ProjectSerialization.h"
 
 #include "Serialization/NodeSerialization.h"
 #include "Serialization/ProjectSerialization.h"
@@ -55,29 +56,15 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
+// The project files written here carry no GUI section, so they are always marked as saved by a
+// background app: loading one into a GUI app would otherwise read a GUI section next.
 std::string
-saveProjectWithOldPath(const AppInstancePtr& app)
-{
-    std::stringstream buffer;
-    {
-        ProjectSerialization serialization(app);
-        serialization.initialize( app->getProject().get() );
-        boost::archive::xml_oarchive archive(buffer);
-        bool backgroundProject = app->isBackground();
-        archive << boost::serialization::make_nvp("Background_project", backgroundProject);
-        archive << boost::serialization::make_nvp("Project", serialization);
-    }
-
-    return buffer.str();
-}
-
-std::string
-saveProjectWithNewPath(bool backgroundProject,
-                       const Serialization::ProjectSerialization& serialization)
+saveProjectXml(const Serialization::ProjectSerialization& serialization)
 {
     std::stringstream buffer;
     {
         boost::archive::xml_oarchive archive(buffer);
+        bool backgroundProject = true;
         archive << boost::serialization::make_nvp("Background_project", backgroundProject);
         archive << boost::serialization::make_nvp("Project", serialization);
     }
@@ -86,8 +73,8 @@ saveProjectWithNewPath(bool backgroundProject,
 }
 
 bool
-loadProjectWithNewPath(const std::string& xml,
-                       Serialization::ProjectSerialization* serialization)
+loadProjectXml(const std::string& xml,
+               Serialization::ProjectSerialization* serialization)
 {
     try {
         std::stringstream buffer(xml);
@@ -104,16 +91,21 @@ loadProjectWithNewPath(const std::string& xml,
     return true;
 }
 
+// KnobsAge and CacheID are session counters, not saved state: a node's age moves on as soon as
+// the loaded graph is connected and its expressions are restored.
 std::string
-saveNodeWithOldPath(const NodeSerialization& serialization)
+withoutSessionCounters(const std::string& xml)
 {
-    std::stringstream buffer;
-    {
-        boost::archive::xml_oarchive archive(buffer);
-        archive << boost::serialization::make_nvp("Node", serialization);
+    QString normalized = QString::fromUtf8( xml.c_str() );
+    const char* const sessionCounterTags[] = { "KnobsAge", "CacheID" };
+
+    for (std::size_t i = 0; i < sizeof(sessionCounterTags) / sizeof(sessionCounterTags[0]); ++i) {
+        const QString tag = QString::fromUtf8(sessionCounterTags[i]);
+        QRegularExpression pattern( QString::fromUtf8("<%1>[^<]*</%1>").arg(tag) );
+        normalized.replace( pattern, QString::fromUtf8("<%1>SESSION_COUNTER</%1>").arg(tag) );
     }
 
-    return buffer.str();
+    return normalized.toStdString();
 }
 
 Serialization::NodeSerializationPtr
@@ -147,35 +139,81 @@ protected:
         BaseTest::TearDown();
     }
 
-    // Checks that both paths write the same project XML, that loading it through the new path
-    // writes it again unchanged, and that every loaded top-level node, handed to the old node
-    // class, archives as that node saved by the old path does.
-    void expectOldAndNewPathsMatch(Serialization::ProjectSerialization* loaded)
+    enum ReloadExpectationEnum
     {
-        AppInstancePtr app = getApp();
-        ProjectPtr project = app->getProject();
+        // Saving the loaded project writes the XML saved from the graph as it was built.
+        eReloadExpectationSameXml,
+        // Loading settles some session state into saved state, so only a second load of the
+        // first reload's save is expected to write the same XML again.
+        eReloadExpectationFixedPoint
+    };
+
+    // Writes xml to fileName in tmp, loads it as a project file and returns the XML saving that
+    // project writes.
+    std::string reloadProjectXml(const QTemporaryDir& tmp,
+                                 const QString& fileName,
+                                 const std::string& xml)
+    {
+        const QString directoryPath = tmp.path() + QLatin1Char('/');
+        {
+            QFile projectFile(directoryPath + fileName);
+            if ( !projectFile.open(QIODevice::WriteOnly | QIODevice::Truncate) ) {
+                ADD_FAILURE() << "Cannot write " << fileName.toStdString();
+
+                return std::string();
+            }
+            projectFile.write( xml.c_str(), (qint64)xml.size() );
+        }
+        ProjectPtr project = getApp()->getProject();
+        if ( !project->loadProject(directoryPath, fileName) ) {
+            ADD_FAILURE() << "Cannot load " << fileName.toStdString();
+
+            return std::string();
+        }
+
+        Serialization::ProjectSerialization reloaded;
+        project->toSerialization(&reloaded);
+        project->toSerialization(&reloaded);
+
+        return saveProjectXml(reloaded);
+    }
+
+    // Saves the graph built in the current project to XML, checks that reading that XML and
+    // writing it again changes nothing, then loads it as a project file from tmp into a fresh
+    // project and checks what saving that project writes, as reloadExpectation says.
+    void expectRoundTrip(const QTemporaryDir& tmp,
+                         Serialization::ProjectSerialization* loaded,
+                         ReloadExpectationEnum reloadExpectation = eReloadExpectationSameXml)
+    {
+        ProjectPtr project = getApp()->getProject();
+
+        // Loading the file from tmp points the [Project] variable at tmp: point it there first
+        // so the project knobs saved before and after loading agree.
+        ASSERT_TRUE( setProjectPathVariable( tmp.path() ) );
 
         // Saving syncs the private data of OpenFX effects into their knobs, which may change
         // knob ages on the first save only.
-        saveProjectWithOldPath(app);
-        const std::string oldXml = saveProjectWithOldPath(app);
-
         Serialization::ProjectSerialization saved;
         project->toSerialization(&saved);
-        const std::string newXml = saveProjectWithNewPath(app->isBackground(), saved);
-        EXPECT_EQ(oldXml, newXml);
+        project->toSerialization(&saved);
+        const std::string savedXml = saveProjectXml(saved);
 
-        ASSERT_TRUE( loadProjectWithNewPath(newXml, loaded) );
-        EXPECT_EQ( newXml, saveProjectWithNewPath(app->isBackground(), *loaded) );
+        ASSERT_TRUE( loadProjectXml(savedXml, loaded) );
+        EXPECT_EQ( savedXml, saveProjectXml(*loaded) );
         EXPECT_EQ( (unsigned int)NATRON_SERIALIZATION_PROJECT_VERSION, loaded->version );
         EXPECT_EQ( NATRON_VERSION_MAJOR, loaded->savedByVersion.versionMajor );
-
         ASSERT_EQ( saved.nodes.nodes.size(), loaded->nodes.nodes.size() );
         for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = loaded->nodes.nodes.begin(); it != loaded->nodes.nodes.end(); ++it) {
             EXPECT_EQ( (unsigned int)NATRON_SERIALIZATION_NODE_VERSION, (*it)->version );
-            NodePtr liveNode = project->getNodeByName( (*it)->scriptName );
-            ASSERT_TRUE( bool(liveNode) ) << (*it)->scriptName;
-            EXPECT_EQ( saveNodeWithOldPath( NodeSerialization(liveNode) ), saveNodeWithOldPath( NodeSerialization(**it) ) ) << (*it)->scriptName;
+        }
+
+        const std::string reloadedXml = reloadProjectXml( tmp, QString::fromUtf8("round-trip.ntp"), savedXml );
+        ASSERT_FALSE( reloadedXml.empty() );
+        if (reloadExpectation == eReloadExpectationSameXml) {
+            EXPECT_EQ( withoutSessionCounters(savedXml), withoutSessionCounters(reloadedXml) );
+        } else {
+            const std::string reloadedAgainXml = reloadProjectXml( tmp, QString::fromUtf8("round-trip-again.ntp"), reloadedXml );
+            EXPECT_EQ( withoutSessionCounters(reloadedXml), withoutSessionCounters(reloadedAgainXml) );
         }
     }
 };
@@ -187,7 +225,7 @@ TEST_F(ProjectXmlEquivalenceTest, GeneratorGradeWrite)
     ASSERT_TRUE( buildGeneratorGradeWriteGraph(tmp) );
 
     Serialization::ProjectSerialization loaded;
-    expectOldAndNewPathsMatch(&loaded);
+    expectRoundTrip(tmp, &loaded);
 
     ASSERT_EQ( 3u, loaded.nodes.nodes.size() );
     Serialization::NodeSerializationPtr grade = findSerializedNode(loaded.nodes.nodes, PLUGINID_NATRON_GRADE);
@@ -201,10 +239,12 @@ TEST_F(ProjectXmlEquivalenceTest, GeneratorGradeWrite)
 
 TEST_F(ProjectXmlEquivalenceTest, GroupWithUserKnobAndNestedGroup)
 {
+    QTemporaryDir tmp;
+    ASSERT_TRUE( tmp.isValid() );
     ASSERT_TRUE( buildGroupWithUserKnobAndNestedGroupGraph() );
 
     Serialization::ProjectSerialization loaded;
-    expectOldAndNewPathsMatch(&loaded);
+    expectRoundTrip(tmp, &loaded);
 
     ASSERT_EQ( 1u, loaded.nodes.nodes.size() );
     const Serialization::NodeSerialization& outerGroup = *loaded.nodes.nodes.front();
@@ -222,10 +262,17 @@ TEST_F(ProjectXmlEquivalenceTest, GroupWithUserKnobAndNestedGroup)
 
 TEST_F(ProjectXmlEquivalenceTest, RotoPaintAndTracker)
 {
+    QTemporaryDir tmp;
+    ASSERT_TRUE( tmp.isValid() );
     ASSERT_TRUE( buildRotoPaintAndTrackerGraph() );
 
+    // Loading a RotoPaint leaves it in a state the built graph is not in: the context makes its
+    // knobs' default state disabled and then enables the transform knobs again by restoring the
+    // selection, RotoPaint::onKnobsLoaded switches to the select tool while the paint role is
+    // still current (setting the blending mode to copy), and a loaded stroke is finished, which
+    // resets its transform center to the middle of its points.
     Serialization::ProjectSerialization loaded;
-    expectOldAndNewPathsMatch(&loaded);
+    expectRoundTrip(tmp, &loaded, eReloadExpectationFixedPoint);
 
     Serialization::NodeSerializationPtr rotoPaint = findSerializedNode(loaded.nodes.nodes, PLUGINID_NATRON_ROTOPAINT);
     ASSERT_TRUE( bool(rotoPaint) );

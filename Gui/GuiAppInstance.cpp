@@ -40,7 +40,6 @@
 #include "Engine/Image.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/Plugin.h"
 #include "Engine/ProcessHandler.h"
 #include "Engine/Settings.h"
@@ -52,6 +51,8 @@
 
 #include "Global/QtCompat.h"
 #include "Global/StrUtils.h"
+
+#include "Serialization/NodeSerialization.h"
 
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/Gui.h"
@@ -519,7 +520,7 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
         nodegui->initializeInputs();
     }
     
-    NodeSerializationPtr serialization = args.getProperty<NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
+    Serialization::NodeSerializationPtr serialization = args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
     if ( !serialization && !isViewer ) {
         ///we make sure we can have a clean preview.
         node->computePreviewImage( getTimeLine()->currentFrame() );
@@ -1085,7 +1086,7 @@ GuiAppInstance::clearOverlayRedrawRequests()
 
 void
 GuiAppInstance::onGroupCreationFinished(const NodePtr& node,
-                                        const NodeSerializationPtr& serialization, bool autoConnect)
+                                        const Serialization::NodeSerializationPtr& serialization, bool autoConnect)
 {
     NodeGuiIPtr node_gui_i = node->getNodeGui();
     if (autoConnect && !serialization && node_gui_i) {

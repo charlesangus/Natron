@@ -49,10 +49,8 @@
 #include "Engine/MemoryInfo.h" // isApplication32Bits
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/ProjectPrivate.h"
-#include "Engine/ProjectSerialization.h"
 #include "Engine/RotoContext.h"
 #include "Engine/TrackerContext.h"
 
@@ -219,45 +217,6 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
 }
 
 void
-Node::fromSerialization(const Serialization::NodeSerialization& serialization,
-                        bool updateKnobGui)
-{
-    loadKnobs(NodeSerialization(serialization), updateKnobGui);
-}
-
-NodeSerialization::NodeSerialization(const Serialization::NodeSerialization& serialization)
-    : _isNull(false)
-    , _version(serialization.version)
-    , _nbKnobs( (int)serialization.knobs.size() )
-    , _knobsValues(serialization.knobs)
-    , _knobsAge(serialization.knobsAge)
-    , _nodeLabel(serialization.label)
-    , _nodeScriptName(serialization.scriptName)
-    , _cacheID(serialization.cacheID)
-    , _pluginID(serialization.pluginID)
-    , _pluginMajorVersion(serialization.pluginMajorVersion)
-    , _pluginMinorVersion(serialization.pluginMinorVersion)
-    , _masterNodeName(serialization.masterNodeName)
-    , _inputs(serialization.inputs)
-    , _oldInputs(serialization.oldInputs)
-    , _hasRotoContext(serialization.hasRotoContext)
-    , _rotoContext(serialization.rotoContext)
-    , _hasTrackerContext(serialization.hasTrackerContext)
-    , _trackerContext(serialization.trackerContext)
-    , _node()
-    , _multiInstanceParentName(serialization.multiInstanceParentName)
-    , _userPages(serialization.userPages)
-    , _pagesIndexes(serialization.pagesOrder)
-    , _children()
-    , _pythonModule(serialization.pythonModule)
-    , _pythonModuleVersion(serialization.pythonModuleVersion)
-{
-    for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = serialization.children.begin(); it != serialization.children.end(); ++it) {
-        _children.push_back( std::make_shared<NodeSerialization>(**it) );
-    }
-}
-
-void
 NodeCollection::nodesToSerialization(Serialization::NodeCollectionSerialization* serialization) const
 {
     assert(serialization);
@@ -346,23 +305,30 @@ Project::fromSerialization(const Serialization::ProjectSerialization& serializat
                            const QString& path,
                            bool* mustSave)
 {
+    _imp->setProjectBeingLoadedInfo(serialization);
+
+    return _imp->restoreFromSerialization(serialization, name, path, mustSave);
+}
+
+void
+ProjectPrivate::setProjectBeingLoadedInfo(const Serialization::ProjectSerialization& serialization) const
+{
     const Serialization::ProjectSavedByVersionSerialization & savedBy = serialization.savedByVersion;
     // Files between these versions only name the saving build when its version string parsed.
     const bool fileNamesSavingBuild = (serialization.version >= NATRON_SERIALIZATION_PROJECT_CHANGE_VERSION_SERIALIZATION) ||
                                       ( (serialization.version >= NATRON_SERIALIZATION_PROJECT_INTRODUCES_NATRON_VERSION) && (savedBy.versionMajor != -1) );
-    if (fileNamesSavingBuild) {
-        ProjectBeingLoadedInfo projectBeingLoadedInfo;
-        projectBeingLoadedInfo.vMajor = savedBy.versionMajor;
-        projectBeingLoadedInfo.vMinor = savedBy.versionMinor;
-        projectBeingLoadedInfo.vRev = savedBy.versionRevision;
-        projectBeingLoadedInfo.gitBranch = savedBy.gitBranch;
-        projectBeingLoadedInfo.gitCommit = savedBy.gitCommit;
-        projectBeingLoadedInfo.osStr = savedBy.operatingSystem;
-        projectBeingLoadedInfo.bits = savedBy.bits;
-        getApp()->setProjectBeingLoadedInfo(projectBeingLoadedInfo);
+    if (!fileNamesSavingBuild) {
+        return;
     }
-
-    return _imp->restoreFromSerialization(serialization, name, path, mustSave);
+    ProjectBeingLoadedInfo projectBeingLoadedInfo;
+    projectBeingLoadedInfo.vMajor = savedBy.versionMajor;
+    projectBeingLoadedInfo.vMinor = savedBy.versionMinor;
+    projectBeingLoadedInfo.vRev = savedBy.versionRevision;
+    projectBeingLoadedInfo.gitBranch = savedBy.gitBranch;
+    projectBeingLoadedInfo.gitCommit = savedBy.gitCommit;
+    projectBeingLoadedInfo.osStr = savedBy.operatingSystem;
+    projectBeingLoadedInfo.bits = savedBy.bits;
+    _publicInterface->getApp()->setProjectBeingLoadedInfo(projectBeingLoadedInfo);
 }
 
 bool
@@ -384,17 +350,12 @@ ProjectPrivate::restoreFromSerialization(const Serialization::ProjectSerializati
         serializedLayers.push_back(entry);
     }
 
-    std::list<NodeSerializationPtr> serializedNodes;
-    for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = serialization.nodes.nodes.begin(); it != serialization.nodes.nodes.end(); ++it) {
-        serializedNodes.push_back( std::make_shared<NodeSerialization>(**it) );
-    }
-
     return restoreFromSerializedData(serialization.creationDate,
                                      serializedAdditionalFormats,
                                      serializedLayers,
                                      serialization.projectKnobs,
                                      serialization.timelineCurrentTime,
-                                     serializedNodes,
+                                     serialization.nodes.nodes,
                                      serialization.version < NATRON_SERIALIZATION_PROJECT_REMOVES_TIMELINE_BOUNDS,
                                      name,
                                      path,

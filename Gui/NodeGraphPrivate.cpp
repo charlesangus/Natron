@@ -30,7 +30,6 @@
 
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/Project.h"
 #include "Engine/RotoLayer.h"
 
@@ -42,6 +41,8 @@
 #include "Gui/NodeGui.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGuiSerialization.h"
+
+#include "Serialization/NodeSerialization.h"
 
 
 NATRON_NAMESPACE_ENTER
@@ -198,6 +199,7 @@ NodeGraphPrivate::copyNodesInternal(const NodesGuiList& selection,
     ///Clear clipboard
     clipboard.nodes.clear();
     clipboard.nodesUI.clear();
+    clipboard.sourceNodes.clear();
 
     NodesGuiList nodesToCopy = selection;
     for (NodesGuiList::iterator it = nodesToCopy.begin(); it != nodesToCopy.end(); ++it) {
@@ -213,11 +215,16 @@ NodeGraphPrivate::copyNodesInternal(const NodesGuiList& selection,
 
     for (NodesGuiList::iterator it = nodesToCopy.begin(); it != nodesToCopy.end(); ++it) {
         if ( (*it)->isVisible() ) {
-            NodeSerializationPtr ns( new NodeSerialization( (*it)->getNode(), true ) );
+            Serialization::NodeSerializationPtr ns = std::make_shared<Serialization::NodeSerialization>();
+            NodePtr node = (*it)->getNode();
+            if (node) {
+                node->toSerialization(ns.get(), true);
+            }
             NodeGuiSerializationPtr nGuiS = std::make_shared<NodeGuiSerialization>();
             (*it)->serialize( nGuiS.get() );
             clipboard.nodes.push_back(ns);
             clipboard.nodesUI.push_back(nGuiS);
+            clipboard.sourceNodes.push_back(node);
         }
     }
 }

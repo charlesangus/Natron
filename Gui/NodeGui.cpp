@@ -58,7 +58,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/Plugin.h"
@@ -105,6 +104,8 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/SpinBox.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
+
+#include "Serialization/NodeSerialization.h"
 
 #define NATRON_STATE_INDICATOR_OFFSET 5
 
@@ -2286,10 +2287,11 @@ NodeGui::serialize(NodeGuiSerialization* serializationObject) const
 }
 
 void
-NodeGui::serializeInternal(std::list<NodeSerializationPtr>& internalSerialization) const
+NodeGui::serializeInternal(std::list<Serialization::NodeSerializationPtr>& internalSerialization) const
 {
     NodePtr node = getNode();
-    NodeSerializationPtr thisSerialization( new NodeSerialization(node, false) );
+    Serialization::NodeSerializationPtr thisSerialization = std::make_shared<Serialization::NodeSerialization>();
+    node->toSerialization(thisSerialization.get(), false);
 
     internalSerialization.push_back(thisSerialization);
 
@@ -2302,7 +2304,11 @@ NodeGui::serializeInternal(std::list<NodeSerializationPtr>& internalSerializatio
         const std::list<std::pair<NodeWPtr, bool> >& instances = panel->getInstances();
         for (std::list<std::pair<NodeWPtr, bool> >::const_iterator it = instances.begin();
              it != instances.end(); ++it) {
-            NodeSerializationPtr childSerialization( new NodeSerialization(it->first.lock(), false) );
+            Serialization::NodeSerializationPtr childSerialization = std::make_shared<Serialization::NodeSerialization>();
+            NodePtr instance = it->first.lock();
+            if (instance) {
+                instance->toSerialization(childSerialization.get(), false);
+            }
             internalSerialization.push_back(childSerialization);
         }
     }
@@ -2310,7 +2316,7 @@ NodeGui::serializeInternal(std::list<NodeSerializationPtr>& internalSerializatio
 
 void
 NodeGui::restoreInternal(const NodeGuiPtr& thisShared,
-                         const std::list<NodeSerializationPtr>& internalSerialization)
+                         const std::list<Serialization::NodeSerializationPtr>& internalSerialization)
 {
     assert(internalSerialization.size() >= 1);
 
@@ -2788,10 +2794,12 @@ NodeGui::destroyGui()
     if (internalNode) {
         ///remove the node from the clipboard if it is
         NodeClipBoard &cb = appPTR->getNodeClipBoard();
-        for (std::list<NodeSerializationPtr>::iterator it = cb.nodes.begin();
-             it != cb.nodes.end(); ++it) {
-            if ( (*it)->getNode() == internalNode ) {
-                cb.nodes.erase(it);
+        std::list<Serialization::NodeSerializationPtr>::iterator itNode = cb.nodes.begin();
+        for (std::list<NodePtr>::iterator it = cb.sourceNodes.begin();
+             it != cb.sourceNodes.end() && itNode != cb.nodes.end(); ++it, ++itNode) {
+            if (*it == internalNode) {
+                cb.nodes.erase(itNode);
+                cb.sourceNodes.erase(it);
                 break;
             }
         }

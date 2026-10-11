@@ -60,12 +60,13 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/Nodes/IO/NativeRead.h" // kNatronReadNodeOCIOParamInputSpace
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
+
+#include "Serialization/NodeSerialization.h"
 
 //The plug-in that is instantiated whenever this node is created and doesn't point to any valid or known extension
 #define WRITE_NODE_DEFAULT_WRITER PLUGINID_OFX_WRITEOIIO
@@ -244,7 +245,7 @@ public:
 
     void createReadNodeAndConnectGraph(const std::string& filename);
 
-    void createWriteNode(bool throwErrors, const std::string& filename, const NodeSerializationPtr& serialization);
+    void createWriteNode(bool throwErrors, const std::string& filename, const Serialization::NodeSerializationPtr& serialization);
 
     void destroyWriteNode();
 
@@ -771,7 +772,7 @@ WriteNodePrivate::createReadNodeAndConnectGraph(const std::string& filename)
 void
 WriteNodePrivate::createWriteNode(bool throwErrors,
                                   const std::string& filename,
-                                  const NodeSerializationPtr& serialization)
+                                  const Serialization::NodeSerializationPtr& serialization)
 {
     if (creatingWriteNode) {
         return;
@@ -866,7 +867,7 @@ WriteNodePrivate::createWriteNode(bool throwErrors,
         args.setProperty(kCreateNodeArgsPropNoNodeGUI, true);
         args.setProperty(kCreateNodeArgsPropOutOfProject, true);
         args.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, "internalEncoderNode");
-        args.setProperty<NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization, serialization);
+        args.setProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization, serialization);
         args.setProperty<NodePtr>(kCreateNodeArgsPropMetaNodeContainer, _publicInterface->getNode());
         args.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
 
@@ -1247,12 +1248,12 @@ WriteNode::onEffectCreated(bool mayCreateFileDialog,
         }
     }
 
-    _imp->createWriteNode( throwErrors, pattern, NodeSerializationPtr() );
+    _imp->createWriteNode( throwErrors, pattern, Serialization::NodeSerializationPtr() );
     _imp->refreshPluginSelectorKnob();
 }
 
 void
-WriteNode::onKnobsAboutToBeLoaded(const NodeSerializationPtr& serialization)
+WriteNode::onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& serialization)
 {
     _imp->renderButtonKnob = std::dynamic_pointer_cast<KnobButton>( getKnobByName(kNatronWriteParamStartRender) );
     assert( _imp->renderButtonKnob.lock() );
@@ -1263,7 +1264,7 @@ WriteNode::onKnobsAboutToBeLoaded(const NodeSerializationPtr& serialization)
     //Load the pluginID to create first.
     node->loadKnob( _imp->pluginIDStringKnob.lock(), *serialization);
 
-    std::string filename = getFileNameFromSerialization( serialization->getKnobsValues() );
+    std::string filename = getFileNameFromSerialization(serialization->knobs);
     //Create the Reader with the serialization
     _imp->createWriteNode(false, filename, serialization);
     _imp->refreshPluginSelectorKnob();
@@ -1316,7 +1317,7 @@ WriteNode::knobChanged(KnobI* k,
         std::string filename = fileKnob->getValue();
 
         try {
-            _imp->createWriteNode( false, filename, NodeSerializationPtr() );
+            _imp->createWriteNode( false, filename, Serialization::NodeSerializationPtr() );
         } catch (const std::exception& e) {
             setPersistentMessage( eMessageTypeError, e.what() );
         }
@@ -1341,7 +1342,7 @@ WriteNode::knobChanged(KnobI* k,
         std::string filename = fileKnob->getValue();
 
         try {
-            _imp->createWriteNode( false, filename, NodeSerializationPtr() );
+            _imp->createWriteNode( false, filename, Serialization::NodeSerializationPtr() );
         } catch (const std::exception& e) {
             setPersistentMessage( eMessageTypeError, e.what() );
         }

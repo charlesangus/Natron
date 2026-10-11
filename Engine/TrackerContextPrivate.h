@@ -57,7 +57,6 @@ GCC_DIAG_ON(maybe-uninitialized)
 #include <QtConcurrentMap>
 
 #include "Engine/CreateNodeArgs.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/RectD.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/TrackMarker.h"

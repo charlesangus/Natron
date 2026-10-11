@@ -43,7 +43,6 @@ GCC_ONLY_DIAG_ON(class-memaccess)
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/Node.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/WriteNode.h"

@@ -21,10 +21,12 @@
 #define Serialization_SerializationFwd_h
 
 #include "Global/Macros.h"
-
 // Global/Macros.h only defines the NATRON_NAMESPACE_* macros and compiler
 // portability macros; it pulls in no Engine, Gui, Qt, Python or boost
 // headers, so including it here does not break the plain-data boundary.
+
+#include <memory>
+
 NATRON_NAMESPACE_ENTER
 namespace Serialization {
 struct BezierCPSerialization;
@@ -51,6 +53,8 @@ struct RotoStrokeCurvesSerialization;
 struct RotoStrokeItemSerialization;
 struct TrackSerialization;
 struct TrackerContextSerialization;
+
+typedef std::shared_ptr<NodeSerialization> NodeSerializationPtr;
 }
 NATRON_NAMESPACE_EXIT
 

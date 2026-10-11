@@ -38,7 +38,6 @@
 #include "Global/MathUtils.h"
 
 #include "Engine/Node.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/RotoLayer.h"
 
 #include "Gui/CurveEditor.h"

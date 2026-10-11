@@ -56,7 +56,6 @@
 #include "Engine/Interpolation.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
-#include "Engine/NodeSerialization.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"

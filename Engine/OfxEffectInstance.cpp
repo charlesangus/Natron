@@ -67,7 +67,6 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/OfxClipInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/OfxMultiplaneChoice.h"
@@ -84,6 +83,8 @@ CLANG_DIAG_ON(unknown-pragmas)
 #ifdef DEBUG
 #include "Engine/TLSHolder.h"
 #endif
+
+#include "Serialization/NodeSerialization.h"
 
 
 NATRON_NAMESPACE_ENTER
@@ -405,7 +406,7 @@ void
 OfxEffectInstance::createOfxImageEffectInstance(OFX::Host::ImageEffect::ImageEffectPlugin* plugin,
                                                 OFX::Host::ImageEffect::Descriptor* desc,
                                                 ContextEnum context,
-                                                const NodeSerialization* serialization,
+                                                const Serialization::NodeSerialization* serialization,
                                                 const CreateNodeArgs& args
 #ifndef NATRON_ENABLE_IO_META_NODES
                                                 ,
@@ -563,8 +564,8 @@ OfxEffectInstance::createOfxImageEffectInstance(OFX::Host::ImageEffect::ImageEff
                 }
             }
             ///before calling the createInstanceAction, load values
-            if ( serialization && !serialization->isNull() ) {
-                getNode()->loadKnobs(*serialization);
+            if (serialization) {
+                getNode()->fromSerialization(*serialization);
             }
 
             getNode()->setValuesFromSerialization(args);
@@ -573,9 +574,9 @@ OfxEffectInstance::createOfxImageEffectInstance(OFX::Host::ImageEffect::ImageEff
 #ifndef NATRON_ENABLE_IO_META_NODES
             //////////////////////////////////////////////////////
             ///////For READERS & WRITERS only we open an image file dialog
-            if ( !getApp()->isCreatingPythonGroup() && allowFileDialogs && isReader() && !( serialization && !serialization->isNull() ) && paramValues.empty() ) {
+            if ( !getApp()->isCreatingPythonGroup() && allowFileDialogs && isReader() && !serialization && paramValues.empty() ) {
                 images = getApp()->openImageFileDialog();
-            } else if ( !getApp()->isCreatingPythonGroup() && allowFileDialogs && isWriter() && !( serialization && !serialization->isNull() )  && paramValues.empty() ) {
+            } else if ( !getApp()->isCreatingPythonGroup() && allowFileDialogs && isWriter() && !serialization  && paramValues.empty() ) {
                 images = getApp()->saveImageFileDialog();
             }
             if ( !images.empty() ) {
@@ -656,7 +657,7 @@ OfxEffectInstance::createOfxImageEffectInstance(OFX::Host::ImageEffect::ImageEff
         }
 
 
-        if ( isReader() && serialization && !serialization->isNull() ) {
+        if (isReader() && serialization) {
             getNode()->refreshCreatedViews(true /*silent*/);
         }
     } catch (const std::exception & e) {

@@ -198,7 +198,6 @@ class NodeGui;
 class NodeGuiI;
 class NodeGuiIndicator;
 class NodeGuiSerialization;
-class NodeSerialization;
 class NodeSettingsPanel;
 class NodeViewerContext;
 class PanelWidget;

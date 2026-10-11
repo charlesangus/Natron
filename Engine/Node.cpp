@@ -82,7 +82,6 @@
 #include "Engine/MemoryInfo.h" // printAsRAM
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeGuiI.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxHost.h"
 #include "Engine/OneViewNode.h"
@@ -90,7 +89,6 @@
 #include "Engine/Plugin.h"
 #include "Engine/PrecompNode.h"
 #include "Engine/Project.h"
-#include "Engine/ProjectSerialization.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPaint.h"
@@ -108,6 +106,8 @@
 #include "Engine/WriteNode.h"
 
 #include "Engine/Nodes/NativeEffectBase.h"
+
+#include "Serialization/NodeSerialization.h"
 
 #ifndef M_LN2
 #define M_LN2       0.693147180559945309417232121458176568  /* loge(2)        */
@@ -1608,15 +1608,12 @@ Node::markPersistentMessageFromProjectLoad(const std::string& content)
 }
 
 void
-Node::loadKnobs(const NodeSerialization & serialization,
-                bool updateKnobGui)
+Node::fromSerialization(const Serialization::NodeSerialization& serialization,
+                        bool updateKnobGui)
 {
     ///Only called from the main thread
     assert( QThread::currentThread() == qApp->thread() );
     assert(_imp->knobsInitialized);
-    if ( serialization.isNull() ) {
-        return;
-    }
 
     const std::vector<KnobIPtr> & nodeKnobs = getKnobs();
 
@@ -1636,12 +1633,12 @@ Node::loadKnobs(const NodeSerialization & serialization,
 
     // Older files saved the channel set only when it differed from its default, and back then
     // every node defaulted to the Color layer: an absent value means Color, not today's "All".
-    if ((serialization.getVersion() < NODE_SERIALIZATION_ALWAYS_SAVES_CHANNEL_SET) && _imp->effect->defaultProcessesAllLayers()) {
+    if ((serialization.version < NATRON_SERIALIZATION_NODE_ALWAYS_SAVES_CHANNEL_SET) && _imp->effect->defaultProcessesAllLayers()) {
         KnobChannelSetPtr channelSet = std::dynamic_pointer_cast<KnobChannelSet>(_imp->layerKnob.lock());
         if (channelSet && !_imp->legacyChannelSetDefault.empty()) {
             bool saved = false;
-            const NodeSerialization::KnobValues& knobsValues = serialization.getKnobsValues();
-            for (NodeSerialization::KnobValues::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
+            const std::list<Serialization::KnobSerialization>& knobsValues = serialization.knobs;
+            for (std::list<Serialization::KnobSerialization>::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
                 if (NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) == channelSet->getName()) {
                     saved = true;
                     break;
@@ -1654,12 +1651,12 @@ Node::loadKnobs(const NodeSerialization & serialization,
     }
 
     ///now restore the roto context if the node has a roto context
-    if (serialization.hasRotoContext() && _imp->rotoContext) {
-        _imp->rotoContext->fromSerialization( serialization.getRotoContext() );
+    if (serialization.hasRotoContext && _imp->rotoContext) {
+        _imp->rotoContext->fromSerialization(serialization.rotoContext);
     }
 
-    if (serialization.hasTrackerContext() && _imp->trackContext) {
-        _imp->trackContext->fromSerialization( serialization.getTrackerContext() );
+    if (serialization.hasTrackerContext && _imp->trackContext) {
+        _imp->trackContext->fromSerialization(serialization.trackerContext);
     }
 
     restoreUserKnobs(serialization);
@@ -1677,7 +1674,7 @@ Node::loadKnobs(const NodeSerialization & serialization,
         }
     }
 
-    setKnobsAge( serialization.getKnobsAge() );
+    setKnobsAge(serialization.knobsAge);
 
 
     _imp->effect->onKnobsLoaded();
@@ -1723,11 +1720,11 @@ Node::restoreSublabel()
 
 void
 Node::loadKnob(const KnobIPtr & knob,
-               const NodeSerialization & serialization,
+               const Serialization::NodeSerialization & serialization,
                bool /*updateKnobGui*/)
 {
 
-    const NodeSerialization::KnobValues& knobsValues = serialization.getKnobsValues();
+    const std::list<Serialization::KnobSerialization>& knobsValues = serialization.knobs;
 
     ///try to find a serialized value for this knob
     const ProjectBeingLoadedInfo projectInfos = getApp()->getProjectBeingLoadedInfo();
@@ -1754,7 +1751,7 @@ Node::loadKnob(const KnobIPtr & knob,
             // The string parameter had the same name as the choice parameter plus "Choice" appended.
             // If we found such a parameter, retrieve the string from it.
             std::string stringParamName = isChoice->getName() + "Choice";
-            for (NodeSerialization::KnobValues::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
+            for (std::list<Serialization::KnobSerialization>::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
                 if ( NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) == stringParamName ) {
                     KnobStringPtr stringKnob = std::dynamic_pointer_cast<KnobString>( createDetachedKnobFromSerialization(*it) );
                     if (stringKnob) {
@@ -1771,7 +1768,7 @@ Node::loadKnob(const KnobIPtr & knob,
         }
     }
 
-    for (NodeSerialization::KnobValues::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
+    for (std::list<Serialization::KnobSerialization>::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
 
         std::string serializedName = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name);
         bool foundMatch = false;
@@ -1792,7 +1789,7 @@ Node::loadKnob(const KnobIPtr & knob,
         // Non persistent knobs are loaded too when the project saved a value for them.
         // A knob might change its type between versions: fromSerialization() then loads nothing.
         const KnobI::ChoiceOptionIDFilter choiceOptionIDFilter = [this, &serialization, &projectInfos, &serializedName](std::string* optionID) {
-            filterKnobChoiceOptionCompat(getPluginID(), serialization.getPluginMajorVersion(), serialization.getPluginMinorVersion(), projectInfos.vMajor, projectInfos.vMinor, projectInfos.vRev, serializedName, optionID);
+            filterKnobChoiceOptionCompat(getPluginID(), serialization.pluginMajorVersion, serialization.pluginMinorVersion, projectInfos.vMajor, projectInfos.vMinor, projectInfos.vRev, serializedName, optionID);
         };
         if ( !knob->fromSerialization(*it, choiceOptionIDFilter) ) {
             continue;

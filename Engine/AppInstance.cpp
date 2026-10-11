@@ -67,8 +67,8 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/DiskCacheNode.h"
 #include "Engine/FileDownloader.h"
 #include "Engine/GroupOutput.h"
+#include "Engine/KnobFile.h"
 #include "Engine/Node.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
@@ -76,10 +76,11 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/Plugin.h"
 #include "Engine/ProcessHandler.h"
 #include "Engine/Project.h"
-#include "Engine/ProjectSerialization.h"
 #include "Engine/Settings.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/WriteNode.h"
+
+#include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -865,7 +866,7 @@ AppInstance::createNodeFromPythonModule(Plugin* plugin,
     bool istoolsetScript = plugin->getToolsetScript();
     NodePtr node;
 
-    NodeSerializationPtr serialization = args.getProperty<NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
+    Serialization::NodeSerializationPtr serialization = args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
     NodeCollectionPtr group = args.getProperty<NodeCollectionPtr>(kCreateNodeArgsPropGroupContainer);
     {
         FlagIncrementer fs(&_imp->_creatingGroup, &_imp->creatingGroupMutex);
@@ -943,7 +944,7 @@ AppInstance::createNodeFromPythonModule(Plugin* plugin,
 
         // If there's a serialization, restore the serialization of the group node because the Python script probably overridden any state
         if (serialization) {
-            containerNode->loadKnobs(*serialization);
+            containerNode->fromSerialization(*serialization);
         }
     } //FlagSetter fs(true,&_imp->_creatingGroup,&_imp->creatingGroupMutex);
 
@@ -1116,7 +1117,7 @@ AppInstance::createNodeInternal(CreateNodeArgs& args)
     Plugin* plugin = 0;
     QString findId;
 
-    NodeSerializationPtr serialization = args.getProperty<NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
+    Serialization::NodeSerializationPtr serialization = args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
     bool trustPluginID = args.getProperty<bool>(kCreateNodeArgsPropTrustPluginID);
     QString argsPluginID = QString::fromUtf8(args.getProperty<std::string>(kCreateNodeArgsPropPluginID).c_str());
     int versionMajor = args.getProperty<int>(kCreateNodeArgsPropPluginVersion, 0);
@@ -1339,8 +1340,8 @@ AppInstance::createNodeInternal(CreateNodeArgs& args)
         bool autoConnect = args.getProperty<bool>(kCreateNodeArgsPropAutoConnect);
         bool createInitialNodes = !args.getProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes);
         if (serialization) {
-            if ( serialization && !serialization->getPythonModule().empty() ) {
-                QString pythonModulePath = QString::fromUtf8( ( serialization->getPythonModule().c_str() ) );
+            if ( serialization && !serialization->pythonModule.empty() ) {
+                QString pythonModulePath = QString::fromUtf8( ( serialization->pythonModule.c_str() ) );
                 QString moduleName;
                 QString modulePath;
                 int foundLastSlash = pythonModulePath.lastIndexOf( QChar::fromLatin1('/') );
@@ -2188,7 +2189,7 @@ AppInstance::getAppIDString() const
 
 void
 AppInstance::onGroupCreationFinished(const NodePtr& node,
-                                     const NodeSerializationPtr& serialization, bool /*autoConnect*/)
+                                     const Serialization::NodeSerializationPtr& serialization, bool /*autoConnect*/)
 {
     assert(node);
     if (!node) {

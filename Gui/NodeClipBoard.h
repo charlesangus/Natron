@@ -32,20 +32,27 @@
 
 #include "Gui/GuiFwd.h"
 
-#include "Engine/NodeSerialization.h"
 #include "Gui/NodeGuiSerialization.h"
+
+#include "Serialization/NodeSerialization.h"
+#include "Serialization/BoostXml/NodeXml.h"
 
 NATRON_NAMESPACE_ENTER
 
 class NodeClipBoard
 {
 public:
-    std::list<NodeSerializationPtr> nodes;
+    std::list<Serialization::NodeSerializationPtr> nodes;
     std::list<NodeGuiSerializationPtr> nodesUI;
+
+    // The node each item of nodes was copied from, null for an item read from an archive. It
+    // is not archived: a serialization does not reference its node.
+    std::list<NodePtr> sourceNodes;
 
     NodeClipBoard()
         : nodes()
         , nodesUI()
+        , sourceNodes()
     {
     }
 
@@ -64,7 +71,7 @@ public:
         assert( nodes.size() == nodesUI.size() );
         ar & ::boost::serialization::make_nvp("NbNodes", nNodes);
         std::list<NodeGuiSerializationPtr>::const_iterator itUI = nodesUI.begin();
-        for (std::list<NodeSerializationPtr>::const_iterator it = nodes.begin();
+        for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = nodes.begin();
              it != nodes.end(); ++it, ++itUI) {
             ar & ::boost::serialization::make_nvp("Node", **it);
             ar & ::boost::serialization::make_nvp("NodeUI", **itUI);
@@ -77,12 +84,14 @@ public:
     {
         nodes.clear();
         nodesUI.clear();
+        sourceNodes.clear();
         int nNodes;
         ar & ::boost::serialization::make_nvp("NbNodes", nNodes);
         for (int i = 0; i < nNodes; ++i) {
-            NodeSerializationPtr nS = std::make_shared<NodeSerialization>();
+            Serialization::NodeSerializationPtr nS = std::make_shared<Serialization::NodeSerialization>();
             ar & ::boost::serialization::make_nvp("Node", *nS);
             nodes.push_back(nS);
+            sourceNodes.push_back( NodePtr() );
             NodeGuiSerializationPtr nGui = std::make_shared<NodeGuiSerialization>();
             ar & ::boost::serialization::make_nvp("NodeUI", *nGui);
             nodesUI.push_back(nGui);

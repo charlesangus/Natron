@@ -138,7 +138,11 @@ public:
 
     ProjectPrivate(Project* project);
 
-    bool restoreFromSerialization(const ProjectSerialization & obj, const QString& name, const QString& path, bool* mustSave);
+    /**
+     * @brief Tells the app which Natron build saved serialization, when the file says. A
+     * partially read serialization is enough: its header is read first.
+     **/
+    void setProjectBeingLoadedInfo(const Serialization::ProjectSerialization& serialization) const;
 
     bool restoreFromSerialization(const Serialization::ProjectSerialization& serialization, const QString& name, const QString& path, bool* mustSave);
 
@@ -147,7 +151,7 @@ public:
                                    const std::list<LayerRegistryEntry>& serializedLayers,
                                    const std::list<Serialization::KnobSerialization>& projectSerializedValues,
                                    SequenceTime currentTime,
-                                   const std::list<NodeSerializationPtr>& serializedNodes,
+                                   const std::list<Serialization::NodeSerializationPtr>& serializedNodes,
                                    bool recomputeFrameRangeFromReaders,
                                    const QString& name,
                                    const QString& path,

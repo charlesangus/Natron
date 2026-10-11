@@ -33,7 +33,6 @@
 #include "Engine/GenericSchedulerThreadWatcher.h"
 #include "Engine/LibraryBinary.h"
 #include "Engine/NodeGuiI.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Project.h"
 #include "Engine/WriteNode.h"
@@ -42,6 +41,8 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobShuffleMap.h"
+
+#include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -78,7 +79,7 @@ Node::load(const CreateNodeArgs& args)
     }
 
 
-    NodeSerializationPtr serialization = args.getProperty<NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
+    Serialization::NodeSerializationPtr serialization = args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
 
     bool isSilentCreation = args.getProperty<bool>(kCreateNodeArgsPropSilent);
 #ifndef NATRON_ENABLE_IO_META_NODES
@@ -135,7 +136,7 @@ Node::load(const CreateNodeArgs& args)
         if (serialization) {
 
             _imp->effect->onKnobsAboutToBeLoaded(serialization);
-            loadKnobs(*serialization);
+            fromSerialization(*serialization);
         }
         setValuesFromSerialization(args);
 
@@ -296,9 +297,9 @@ Node::setValuesFromSerialization(const CreateNodeArgs& args)
 
 
 void
-Node::restoreUserKnobs(const NodeSerialization& serialization)
+Node::restoreUserKnobs(const Serialization::NodeSerialization& serialization)
 {
-    const std::list<Serialization::GroupKnobSerialization>& userPages = serialization.getUserPages();
+    const std::list<Serialization::GroupKnobSerialization>& userPages = serialization.userPages;
 
     for (std::list<Serialization::GroupKnobSerialization>::const_iterator it = userPages.begin(); it != userPages.end(); ++it) {
         KnobIPtr found = getKnobByName(it->name);
@@ -314,7 +315,7 @@ Node::restoreUserKnobs(const NodeSerialization& serialization)
             _imp->restoreUserKnobsRecursive( it->children, KnobGroupPtr(), page );
         }
     }
-    setPagesOrder( serialization.getPagesOrdered() );
+    setPagesOrder(serialization.pagesOrder);
 }
 
 void
@@ -393,15 +394,15 @@ Node::Implementation::storeKnobLinksRecursive(const Serialization::GroupKnobSeri
 
 
 void
-Node::storeKnobsLinks(const NodeSerialization & serialization,
+Node::storeKnobsLinks(const Serialization::NodeSerialization & serialization,
                       const std::map<std::string, std::string>& oldNewScriptNamesMapping)
 {
     ////Only called by the main-thread
     assert( QThread::currentThread() == qApp->thread() );
 
-    const NodeSerialization::KnobValues & knobsValues = serialization.getKnobsValues();
+    const std::list<Serialization::KnobSerialization> & knobsValues = serialization.knobs;
     ///try to find a serialized value for this knob
-    for (NodeSerialization::KnobValues::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
+    for (std::list<Serialization::KnobSerialization>::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
         const std::string knobName = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name);
         KnobIPtr knob = getKnobByName(knobName);
         if (!knob) {
@@ -418,7 +419,7 @@ Node::storeKnobsLinks(const NodeSerialization & serialization,
         knob->restoreExpressionsFromSerialization(*it, oldNewScriptNamesMapping);
     }
 
-    const std::list<Serialization::GroupKnobSerialization>& userKnobs = serialization.getUserPages();
+    const std::list<Serialization::GroupKnobSerialization>& userKnobs = serialization.userPages;
     for (std::list<Serialization::GroupKnobSerialization>::const_iterator it = userKnobs.begin(); it != userKnobs.end(); ++it) {
         _imp->storeKnobLinksRecursive(*it, oldNewScriptNamesMapping);
     }

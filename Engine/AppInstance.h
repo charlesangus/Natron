@@ -44,9 +44,36 @@
 #include "Engine/TimeLineKeyFrames.h"
 #include "Engine/EngineFwd.h"
 
+#include "Serialization/SerializationFwd.h"
+
 NATRON_NAMESPACE_ENTER
 
 struct AppInstancePrivate;
+
+/**
+ * @brief The Natron build that saved the project being loaded, -1 and empty strings for what
+ * the file does not say.
+ **/
+class ProjectBeingLoadedInfo
+{
+public:
+    int vMajor,vMinor,vRev;
+    std::string gitBranch,gitCommit;
+    std::string osStr;
+    int bits;
+
+    ProjectBeingLoadedInfo()
+    : vMajor(-1)
+    , vMinor(-1)
+    , vRev(-1)
+    , gitBranch()
+    , gitCommit()
+    , osStr()
+    , bits(-1)
+    {
+
+    }
+};
 
 
 class FlagSetter
@@ -448,7 +475,7 @@ Q_SIGNALS:
 
 protected:
 
-    virtual void onGroupCreationFinished(const NodePtr& node, const NodeSerializationPtr& serialization, bool autoConnect);
+    virtual void onGroupCreationFinished(const NodePtr& node, const Serialization::NodeSerializationPtr& serialization, bool autoConnect);
     virtual void createNodeGui(const NodePtr& /*node*/,
                                const NodePtr& /*parentmultiinstance*/,
                                const CreateNodeArgs& /*args*/)

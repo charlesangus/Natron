@@ -148,8 +148,6 @@ struct NodeSerialization
     }
 };
 
-typedef std::shared_ptr<NodeSerialization> NodeSerializationPtr;
-
 /**
  * @brief The saved state of the top-level nodes of a project, in graph order.
  **/

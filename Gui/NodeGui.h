@@ -55,6 +55,8 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/GuiFwd.h"
 
+#include "Serialization/SerializationFwd.h"
+
 NATRON_NAMESPACE_ENTER
 
 struct NodeGuiIndicatorPrivate;
@@ -323,9 +325,9 @@ public:
      * @brief Serialize this node. If this is a multi-instance node, every instance will
      * be serialized, hence the list.
      **/
-    void serializeInternal(std::list<NodeSerializationPtr>& internalSerialization) const;
+    void serializeInternal(std::list<Serialization::NodeSerializationPtr>& internalSerialization) const;
     void restoreInternal(const NodeGuiPtr& thisShared,
-                         const std::list<NodeSerializationPtr>& internalSerialization);
+                         const std::list<Serialization::NodeSerializationPtr>& internalSerialization);
 
     void setMergeHintActive(bool active);
 

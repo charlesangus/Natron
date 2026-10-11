@@ -46,7 +46,6 @@
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/Node.h"
 #include "Engine/OfxMultiplaneChoice.h"
-#include "Engine/ProjectSerialization.h"
 
 #include "Serialization/KnobSerialization.h"
 #include "Serialization/BoostXml/KnobXml.h"

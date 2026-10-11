@@ -69,6 +69,8 @@
 #include "Global/FloatingPointExceptions.h"
 #endif
 
+#include "Serialization/ProjectSerialization.h"
+#include "Serialization/BoostXml/ProjectXml.h"
 #include "Serialization/BoostXml/RotoXml.h"
 
 #include "Engine/AppInstance.h"
@@ -82,7 +84,6 @@
 #include "Engine/Node.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ProjectPrivate.h"
-#include "Engine/ProjectSerialization.h"
 #include "Engine/RectDSerialization.h"
 #include "Engine/RectISerialization.h"
 #include "Engine/RotoLayer.h"
@@ -480,6 +481,11 @@ Project::loadProjectInternal(const QString & path,
 
     LoadProjectSplashScreen_RAII __raii_splashscreen__(getApp(), name);
 
+    // Outside the try block: when reading fails, the header it read first still names the build
+    // that saved the file, for the error message below.
+    Serialization::ProjectSerialization projectSerialization;
+    // Nothing read yet: until the archive fills it, it must not name a saving build.
+    projectSerialization.version = 0;
     try {
         bool bgProject;
         boost::archive::xml_iarchive iArchive(ifile);
@@ -487,15 +493,15 @@ Project::loadProjectInternal(const QString & path,
             FlagSetter __raii_loadingProjectInternal__(true, &_imp->isLoadingProjectInternal, &_imp->isLoadingProjectMutex);
 
             iArchive >> boost::serialization::make_nvp("Background_project", bgProject);
-            ProjectSerialization projectSerializationObj( getApp() );
-            iArchive >> boost::serialization::make_nvp("Project", projectSerializationObj);
-            ret = load(projectSerializationObj, name, path, mustSave);
+            iArchive >> boost::serialization::make_nvp("Project", projectSerialization);
+            ret = fromSerialization(projectSerialization, name, path, mustSave);
         } // __raii_loadingProjectInternal__
 
         if (!bgProject) {
             getApp()->loadProjectGui(isAutoSave, iArchive);
         }
     } catch (const std::exception &e) {
+        _imp->setProjectBeingLoadedInfo(projectSerialization);
         const ProjectBeingLoadedInfo& pInfo = getApp()->getProjectBeingLoadedInfo();
         if (pInfo.vMajor > NATRON_VERSION_MAJOR ||
             (pInfo.vMajor == NATRON_VERSION_MAJOR && pInfo.vMinor > NATRON_VERSION_MINOR) ||
@@ -505,6 +511,7 @@ Project::loadProjectInternal(const QString & path,
         }
         throw std::runtime_error( tr("Unrecognized or damaged project file:").toStdString() + ' ' + e.what());
     } catch (...) {
+        _imp->setProjectBeingLoadedInfo(projectSerialization);
         const ProjectBeingLoadedInfo& pInfo = getApp()->getProjectBeingLoadedInfo();
         if (pInfo.vMajor > NATRON_VERSION_MAJOR ||
             (pInfo.vMajor == NATRON_VERSION_MAJOR && pInfo.vMinor > NATRON_VERSION_MINOR) ||
@@ -791,9 +798,9 @@ Project::saveProjectInternal(const QString & path,
             boost::archive::xml_oarchive oArchive(ofile);
             bool bgProject = getApp()->isBackground();
             oArchive << boost::serialization::make_nvp("Background_project", bgProject);
-            ProjectSerialization projectSerializationObj( getApp() );
-            save(&projectSerializationObj);
-            oArchive << boost::serialization::make_nvp("Project", projectSerializationObj);
+            Serialization::ProjectSerialization projectSerialization;
+            toSerialization(&projectSerialization);
+            oArchive << boost::serialization::make_nvp("Project", projectSerialization);
             if (!bgProject) {
                 AppInstancePtr app = getApp();
                 if (app) {
@@ -2280,21 +2287,6 @@ Project::isSaveUpToDate() const
     QMutexLocker l(&_imp->projectLock);
 
     return _imp->ageSinceLastSave == _imp->lastAutoSave;
-}
-
-void
-Project::save(ProjectSerialization* serializationObject) const
-{
-    serializationObject->initialize(this);
-}
-
-bool
-Project::load(const ProjectSerialization & obj,
-              const QString& name,
-              const QString& path,
-              bool* mustSave)
-{
-    return _imp->restoreFromSerialization(obj, name, path, mustSave);
 }
 
 void

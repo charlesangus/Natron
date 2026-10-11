@@ -44,14 +44,15 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/Project.h"
-#include "Engine/ProjectSerialization.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewerInstance.h"
+
+#include "Serialization/KnobSerialization.h"
+#include "Serialization/NodeSerialization.h"
 
 
 NATRON_NAMESPACE_ENTER
@@ -112,30 +113,12 @@ ProjectPrivate::ProjectPrivate(Project* project)
 }
 
 bool
-ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
-                                         const QString& name,
-                                         const QString& path,
-                                         bool* mustSave)
-{
-    return restoreFromSerializedData(obj.getCreationDate(),
-                                     obj.getAdditionalFormats(),
-                                     obj.getLayers(),
-                                     obj.getProjectKnobsValues(),
-                                     obj.getCurrentTime(),
-                                     obj.getNodesSerialization().getNodesSerialization(),
-                                     obj.getVersion() < PROJECT_SERIALIZATION_REMOVES_TIMELINE_BOUNDS,
-                                     name,
-                                     path,
-                                     mustSave);
-}
-
-bool
 ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
                                           const std::list<Format>& serializedAdditionalFormats,
                                           const std::list<LayerRegistryEntry>& serializedLayers,
                                           const std::list<Serialization::KnobSerialization>& projectSerializedValues,
                                           SequenceTime currentTime,
-                                          const std::list<NodeSerializationPtr>& serializedNodes,
+                                          const std::list<Serialization::NodeSerializationPtr>& serializedNodes,
                                           bool recomputeFrameRangeFromReaders,
                                           const QString& name,
                                           const QString& path,
@@ -232,8 +215,8 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
         /// 3) Restore the nodes
 
         std::map<std::string, bool> processedModules;
-        ok = NodeCollectionSerialization::restoreFromSerialization(serializedNodes,
-                                                                   _publicInterface->shared_from_this(), true, &processedModules);
+        ok = NodeCollection::restoreFromSerialization(serializedNodes,
+                                                      _publicInterface->shared_from_this(), true, &processedModules);
         for (std::map<std::string, bool>::iterator it = processedModules.begin(); it != processedModules.end(); ++it) {
             if (it->second) {
                 *mustSave = true;
@@ -244,7 +227,7 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
         NodesList allNodes;
         _publicInterface->getNodes_recursive(allNodes, false);
 
-        // restore the Knob links stored in the Knobs during NodeCollectionSerialization::restoreFromSerialization()
+        // restore the Knob links stored in the Knobs during NodeCollection::restoreFromSerialization()
         const std::map<std::string, std::string> oldNewScriptNamesMapping;
         for (NodesList::iterator n = allNodes.begin(); n != allNodes.end(); ++n) {
             // find all KnobIs in the node, restore links

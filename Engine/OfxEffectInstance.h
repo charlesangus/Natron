@@ -69,7 +69,7 @@ public:
     virtual void createOfxImageEffectInstance(OFX::Host::ImageEffect::ImageEffectPlugin* plugin,
                                               OFX::Host::ImageEffect::Descriptor* desc,
                                               ContextEnum context,
-                                              const NodeSerialization* serialization,
+                                              const Serialization::NodeSerialization* serialization,
                                               const CreateNodeArgs& args
 #ifndef NATRON_ENABLE_IO_META_NODES
                                               , bool allowFileDialogs,
@@ -103,7 +103,7 @@ public:
     void createOfxImageEffectInstance(OFX::Host::ImageEffect::ImageEffectPlugin* plugin,
                                       OFX::Host::ImageEffect::Descriptor* desc,
                                       ContextEnum context,
-                                      const NodeSerialization* serialization,
+                                      const Serialization::NodeSerialization* serialization,
                                       const CreateNodeArgs& args
 #ifndef NATRON_ENABLE_IO_META_NODES
                                       , bool allowFileDialogs,

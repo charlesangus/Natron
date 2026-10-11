@@ -33,7 +33,8 @@
 #include "Engine/AppInstance.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/NodeSerialization.h"
+
+#include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -51,7 +52,7 @@ void trimNumber(std::string &baseName)
 }
 
 void
-Node::initNodeScriptName(const NodeSerialization* serialization, const QString& fixedName)
+Node::initNodeScriptName(const Serialization::NodeSerialization* serialization, const QString& fixedName)
 {
     /*
      If the serialization is not null, we are either pasting a node or loading it from a project.
@@ -86,11 +87,11 @@ Node::initNodeScriptName(const NodeSerialization* serialization, const QString& 
         setScriptName_no_error_check(name);
 
     } else if (serialization) {
-        if ( group && !group->isCacheIDAlreadyTaken( serialization->getCacheID() ) ) {
+        if ( group && !group->isCacheIDAlreadyTaken( serialization->cacheID ) ) {
             QMutexLocker k(&_imp->nameMutex);
-            _imp->cacheID = serialization->getCacheID();
+            _imp->cacheID = serialization->cacheID;
         }
-        std::string name = serialization->getNodeScriptName();
+        std::string name = serialization->scriptName;
         // If the serialized script name is available, use it as is (else we get issue #755).
         // Else look for a similar name by adding a (different) number suffix.
         if ( group && group->checkIfNodeNameExists(name, this) ) {
@@ -111,7 +112,7 @@ Node::initNodeScriptName(const NodeSerialization* serialization, const QString& 
 
         //This version of setScriptName will not error if the name is invalid or already taken
         setScriptName_no_error_check(name);
-        setLabel( serialization->getNodeLabel() );
+        setLabel( serialization->label );
 
     } else {
         std::string name;

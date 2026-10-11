@@ -540,10 +540,6 @@ private:
                                     ViewSpec view,
                                     bool originatedFromMainThread)  OVERRIDE FINAL;
 
-    void save(ProjectSerialization* serializationObject) const;
-
-    bool load(const ProjectSerialization & obj, const QString& name, const QString& path, bool* mustSave);
-
 
     std::unique_ptr<ProjectPrivate> _imp;
 };

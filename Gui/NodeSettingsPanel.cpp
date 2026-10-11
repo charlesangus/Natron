@@ -39,7 +39,6 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Knob.h" // KnobHolder
 #include "Engine/Node.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/Utils.h" // convertFromPlainText
 
@@ -53,6 +52,9 @@
 #include "Gui/NodeGui.h"
 #include "Gui/TrackerPanel.h"
 #include "Gui/RotoPanel.h"
+
+#include "Serialization/NodeSerialization.h"
+#include "Serialization/BoostXml/NodeXml.h"
 
 
 using std::make_pair;
@@ -223,13 +225,13 @@ NodeSettingsPanel::onImportPresetsActionTriggered()
         return;
     }
 
-    std::list<NodeSerializationPtr> nodeSerialization;
+    std::list<Serialization::NodeSerializationPtr> nodeSerialization;
     try {
         int nNodes;
         boost::archive::xml_iarchive iArchive(ifile);
         iArchive >> boost::serialization::make_nvp("NodesCount", nNodes);
         for (int i = 0; i < nNodes; ++i) {
-            NodeSerializationPtr node( new NodeSerialization() );
+            Serialization::NodeSerializationPtr node = std::make_shared<Serialization::NodeSerialization>();
             iArchive >> boost::serialization::make_nvp("Node", *node);
             nodeSerialization.push_back(node);
         }
@@ -240,10 +242,10 @@ NodeSettingsPanel::onImportPresetsActionTriggered()
     }
 
     NodeGuiPtr node = getNode();
-    if ( nodeSerialization.front()->getPluginID() != node->getNode()->getPluginID() ) {
+    if ( nodeSerialization.front()->pluginID != node->getNode()->getPluginID() ) {
         QString err = tr("You cannot load %1 which are presets for the plug-in %2 on the plug-in %3.")
                       .arg( QString::fromUtf8( filename.c_str() ) )
-                      .arg( QString::fromUtf8( nodeSerialization.front()->getPluginID().c_str() ) )
+                      .arg( QString::fromUtf8( nodeSerialization.front()->pluginID.c_str() ) )
                       .arg( QString::fromUtf8( node->getNode()->getPluginID().c_str() ) );
         Dialogs::errorDialog( tr("Presets").toStdString(), err.toStdString() );
 
@@ -287,13 +289,13 @@ NodeSettingsPanel::onExportPresetsActionTriggered()
     }
 
     NodeGuiPtr node = getNode();
-    std::list<NodeSerializationPtr> nodeSerialization;
+    std::list<Serialization::NodeSerializationPtr> nodeSerialization;
     node->serializeInternal(nodeSerialization);
     try {
         int nNodes = nodeSerialization.size();
         boost::archive::xml_oarchive oArchive(ofile);
         oArchive << boost::serialization::make_nvp("NodesCount", nNodes);
-        for (std::list<NodeSerializationPtr>::iterator it = nodeSerialization.begin();
+        for (std::list<Serialization::NodeSerializationPtr>::iterator it = nodeSerialization.begin();
              it != nodeSerialization.end(); ++it) {
             oArchive << boost::serialization::make_nvp("Node", **it);
         }

@@ -52,7 +52,7 @@ The design notes, the current behaviour re-checked against `a50bef552`, and the 
     - Record which cases fail in M55's `## Decisions`. At least (e) is expected to fail against the pre-fix binary; (b1) and (c1) are the strongest suspects among the rest from the code reading.
   - size: M
 
-- [ ] M55.P1.T3 — Fix the causes P1.T2 exposes, and make edge refresh self-healing
+- [x] M55.P1.T3 — Fix the causes P1.T2 exposes, and make edge refresh self-healing
   - files: `Gui/NodeGui.cpp`, `Gui/ProjectGui.cpp`, `Gui/GuiAppInstance.cpp`, `Gui/Edge.cpp`
   - approach:
     - Fix whatever P1.T2 shows, with these as the expected fixes:
@@ -229,3 +229,11 @@ The design notes, the current behaviour re-checked against `a50bef552`, and the 
   - Two environment findings, unrelated to M55's own code, drove the probe design: `NodeGraph.scene()` raises `RuntimeError: Internal C++ object (QGraphicsScene) already deleted` on every call in this binary (reproduces on a bare two-node graph), so the script samples viewport pixels instead of scene items, per the design doc's documented fallback. And in the pre-fix tree, nothing ever calls `NodeGui::refreshEdgesVisility()` with `hovered=true` — hover alone never reveals a hidden input; only selecting the node does (confirmed by reading every call site). Case (e) checks the deselected state directly rather than diffing a hover toggle.
   - A group's subgraph `NodeGraph` is unparented from any tab whenever nothing has real OS focus (true throughout a synthetic script), so group-related cases make it paintable with `resize()`/`move()`/`show()`/`raise_()` directly on the widget rather than the focus-dependent Shift+double-click gesture.
   - Not exercised: `setInputVisible(false)`-style hiding through the Python API — `Engine/PyNode.h`'s `Effect` class does not expose `isInputVisible`/`setInputVisible` to Python. The native Read has 0 inputs on this build, so the Reader half of case (e) has no input edge to check; a NOTE records this rather than a skipped assertion.
+- 2026-10-10 — **P1.T3:** a conservative scope.
+  - P1.T1 fully covers case (e).
+  - Defensive fixes applied:
+    - `connectEdge` and `initializeInputs` never null a source because a GUI is missing;
+    - a new node GUI refreshes its outputs' edges;
+    - `showGui` recomputes edge visibility;
+    - a project load refreshes edges recursively through groups.
+  - Skipped as speculative, because P1.T2's synthetic cases pass on the old binary: the size-mismatch early return and the overlap handling in `initLine`.

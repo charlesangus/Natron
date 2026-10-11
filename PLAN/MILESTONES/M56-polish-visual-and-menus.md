@@ -184,7 +184,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - verify: at the gate build, shots of the roto and tracker toolbars and the curve-editor interpolation menu.
   - size: L
 
-- [ ] M56.P5.T6 — Vendor every approved glyph before the area tasks apply them
+- [x] M56.P5.T6 — Vendor every approved glyph before the area tasks apply them
   - files: `Gui/Resources/Icons/lucide/*.svg`, `Gui/Resources/Icons/natron/*.svg`, `Gui/Resources/Icons/SOURCES.txt`, `Gui/GuiResources.qrc`
   - approach: from `PLAN/DESIGN/2026-10-11-m56-icon-mapping.md` (approved), fetch the 84 Lucide glyphs byte-identical from tag 1.55.0 (commit `70562c1ee1c4`) and write the 51 custom glyphs verbatim from the doc's SVG-source section (convention A for interpolation; dope-sheet markers stay small shapes). Record each in `SOURCES.txt` (Feather-derived glyphs are MIT; check Lucide's LICENSE list) and add qrc entries. Run before P5.T2, so the area tasks only re-point ids.
   - verify: `xmllint --noout` on every new SVG; every qrc path exists; at the gate build, P1.T1's shots show no blank icon (the compact-arc-flag glyphs `eye`, `eye-off`, `droplet`, `eraser`, `diamond-plus`, `diamond-minus`, `feather`, `pen-tool`, `pin`, `zap` included; re-save any that Qt6::Svg can't draw, and note it in SOURCES.txt).

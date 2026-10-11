@@ -477,6 +477,19 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - The pixels match the CPU render.
   - size: M
 
+- [ ] M84.P7.T7 — Reactive GPU memory admission: the pool enforces the budget, out-of-memory halves the strips
+  - files: `Engine/RenderScheduler.{h,cpp}`, `Engine/GpuRegionTask.cpp`, `Engine/GpuRegionStrips.{h,cpp}`, `Engine/GpuContext.cpp`, `Tests/GpuResidency_Test.cpp`, `Tests/RenderScheduler_Test.cpp`
+  - approach:
+    - Admission no longer gates GPU regions on estimated device bytes. They are throttled only by `gpuMaxConcurrentTasks`, and the pool enforces the budget by evicting LRU buffers. Host-byte admission for downloaded outputs is unchanged. "A branch continuation always runs" stays.
+    - Strips are planned from the exactly known input and output buffer sizes only, with a fixed headroom under the device's real memory for allocations outside the pool (OFX plugins later).
+    - On out-of-memory, a region evicts and retries. If it still fails, it retries with half-height strips, down to the 4-row minimum, before the CPU fallback. Each step is counted.
+  - verify:
+    - `LargeCompStaysWithinTheDeviceBudget` asserts evictions > 0, along with its existing checks (peak ≤ budget, no budget fallback, pixels match), and passes 10/10.
+    - A test forces an out-of-memory that strip-halving resolves without a CPU fallback.
+    - Host and device reservations return to 0.
+    - Full ctest passes in both modes on lavapipe.
+  - size: L
+
 ## Phase 84.8: Benches and close-out
 
 - [ ] M84.P8.T1 — Quick directional bench: no regression in CPU-only renders
@@ -536,6 +549,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - P7.T4 after P7.T2 and P3.T5.
   - P7.T5 after P7.T2.
   - P7.T6 after P7.T3 and P7.T4.
+  - P7.T7 after P7.T6; P7.T6 is checked off together with it.
 - **Phase 8:**
   - P8.T1 after Phase 7.
   - P8.T2 after Phase 7 and P6.T3.
@@ -729,3 +743,6 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - the spatial-node scratch cost is a Blur-shaped heuristic;
     - admission reserves a stripped region's whole working set, so it is admitted only when the scheduler is idle; cap it at the budget;
     - transfer counts are per strip.
+
+- 2026-10-11 — M84.P7.T6's test is committed (`5704714b1`), but the task is left unchecked. The budget holds (pool peak exactly 64 MB), there are no fallbacks and the pixels match, but **evictions are 0**. Admission estimates a region at ~2× its real peak (60.8 MB against 32 MB), so GPU regions never overlap, and a continuation runs straight after its producer.
+- 2026-10-11 — **Reactive GPU memory admission (user).** An estimate can't be trusted for arbitrary kernels: OFX GPU plugins allocate outside our pool, and native-kernel scratch would need hand-written declarations. Correctness already rests on the pool's eviction and the P7.T4 retry/fallback, not on prediction. So device-byte admission is dropped in favour of the concurrency cap plus pool enforcement. Strips are planned from known I/O sizes with headroom, and out-of-memory halves the strip height before the CPU fallback. This **supersedes the device-byte half of the P7.T3 approach**. "Continuations always run" is kept. New task M84.P7.T7.

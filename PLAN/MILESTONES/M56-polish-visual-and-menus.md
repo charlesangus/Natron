@@ -166,7 +166,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - verify: the user approves the sheet. Record the approved mapping in M56's `## Decisions`; P5.T2 and P5.T3 apply exactly that.
   - size: M
 
-- [ ] M56.P5.T2 — Apply the approved viewer-toolbar and timeline glyphs
+- [x] M56.P5.T2 — Apply the approved viewer-toolbar and timeline glyphs
   - files: `Gui/GuiApplicationManager.cpp`, `Gui/ViewerTab.cpp` (only where a pair collapses into one `ThemedIcon::icon`), `Gui/Resources/Icons/lucide/*.svg`, `Gui/Resources/Icons/SOURCES.txt`, `Gui/GuiResources.qrc`
   - approach: Vendor the approved glyphs (and record them in the manifest), point each id at its SVG, and replace `addPixmap(on)/addPixmap(off)` pairs with the themed QIcon where the mapping says so. No new ids.
   - verify: at the gate build, P1.T1's viewer shots at 1× and 2× show the approved glyphs, and the RoI, clip-to-project, auto-contrast and pause-render toggles each show distinct On and Off states.

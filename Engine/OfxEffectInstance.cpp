@@ -677,6 +677,37 @@ const PlaneChoiceTakeOver kPlaneChoiceTakeOvers[] = {
     { "net.sf.openfx.Unpremult", "inputPlane", "hostInputLayer", "Layer", kOfxImageEffectSimpleSourceClipName, true },
 };
 
+// A take-over choice whose plugin label was left empty (openfx-misc's shared (un)premult
+// channel picker, SupportExt/ofxsMaskMix.h, never labelled it because it doubles as a mask
+// footer control there).
+struct ChannelChoiceLabelOverride {
+    const char* pluginID;
+    const char* paramName;
+    const char* twinLabel;
+};
+
+const ChannelChoiceLabelOverride kChannelChoiceLabelOverrides[] = {
+    { "net.sf.openfx.Premult", kUnPremultByChannelPluginKnobName, "Premult by" },
+    { "net.sf.openfx.Unpremult", kUnPremultByChannelPluginKnobName, "Unpremult by" },
+};
+
+std::string
+channelChoiceTwinLabel(const std::string& pluginID,
+                       const std::string& paramName,
+                       const std::string& pluginLabel)
+{
+    if (!pluginLabel.empty()) {
+        return pluginLabel;
+    }
+    for (std::size_t i = 0; i < sizeof(kChannelChoiceLabelOverrides) / sizeof(kChannelChoiceLabelOverrides[0]); ++i) {
+        if ((pluginID == kChannelChoiceLabelOverrides[i].pluginID) && (paramName == kChannelChoiceLabelOverrides[i].paramName)) {
+            return kChannelChoiceLabelOverrides[i].twinLabel;
+        }
+    }
+
+    return pluginLabel;
+}
+
 // ofxsMultiPlane.h's kMultiPlaneProcessAllPlanesParam: the checkbox that makes a plane choice
 // process every plane of its input, which a plane twin's All entry replaces.
 const char* const kPluginProcessAllPlanesParam = "processAllPlanes";
@@ -886,7 +917,7 @@ OfxEffectInstance::takeOverMultiplaneChoices(const KnobPagePtr& fallbackPage)
             layerSelect->setDefaultValue(layerSelect->encode(defaultLayer, defaultChannels));
             twinKnob = layerSelect;
         } else {
-            KnobChannelSelectPtr channelSelect = createChannelSelectKnob(twinName, choice->getLabel(), false);
+            KnobChannelSelectPtr channelSelect = createChannelSelectKnob(twinName, channelChoiceTwinLabel(pluginID, paramName, choice->getLabel()), false);
             twin.noneOption = OfxMultiplaneChoice::noneChannelOption(paramName);
             std::string defaultOption = defaultID;
             if (!clipPrefix.empty() && (defaultOption.compare(0, clipPrefix.size() + 1, clipPrefix + ".") == 0)) {
@@ -913,6 +944,19 @@ OfxEffectInstance::takeOverMultiplaneChoices(const KnobPagePtr& fallbackPage)
         } else if (fallbackPage) {
             fallbackPage->addKnob(twinKnob);
         }
+
+        // The GUI joins a knob onto its preceding sibling's row whenever that sibling has
+        // "no new line" set, even if the sibling is secret, so a hidden choice like this one
+        // would otherwise drag the knob after it (often another twin) onto its row. Move the
+        // choice's own layout onto the twin and force the now-secret choice to end its row.
+        twinKnob->setAddNewLine(choice->isNewLineActivated());
+        if (!plane) {
+            // openfx-misc chains its per-channel pickers onto one row (e.g. Distortion.cpp's
+            // channelU is "no new line" so channelV sits beside it); line each channel twin up
+            // on its own row instead.
+            twinKnob->setAddNewLine(true);
+        }
+        choice->setAddNewLine(true);
 
         choice->setSecret(true);
         choice->setSecretLocked(true);

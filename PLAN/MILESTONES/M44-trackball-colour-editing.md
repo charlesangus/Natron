@@ -615,7 +615,7 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
     - Screenshot of the open state, showing the RGBA lines above the Hue…Tint(/Alpha) lines.
   - size: M
 
-- [ ] M44.P7.T9 — Add the S key to global mode, retarget C to the trackball, and update the HUD legend
+- [x] M44.P7.T9 — Add the S key to global mode, retarget C to the trackball, and update the HUD legend
   - files: `Gui/ColorTrackballGlobalMode.h`, `Gui/ColorTrackballGlobalMode.cpp`, `Gui/ColorTrackballHud.h`, `Gui/ColorTrackballHud.cpp`, `Tests/ColorTrackballGlobalMode_Test.cpp`
   - approach:
     - **Keys.** The key classifier maps `Qt::Key_S` to `eColorGlobalModeKeySetMode` with `eColorGlobalModeS`. C, T and V are unchanged.
@@ -789,3 +789,4 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
   - The global-mode button gets an "expand" or "popup" icon, because the mode pops up and takes over the screen; the PM chose Lucide `expand` (arrows out to the corners).
   - Both use the 1.5 px stroke, rendered from SVG in the theme colour.
   - M44.P7.T11 applies them.
+- 2026-10-10 — **P7.T9 carry-over:** the global-mode button tooltip (`Gui/KnobGuiColor.cpp`) and the Ctrl+E shortcut description (`kShortcutDescActionColorTrackball`, `Gui/GuiApplicationManager10.cpp`) still list only C/T/V. T11, which touches the global button, updates both. The "HUD lights S" test goes into T10 with `Tests/ColorTrackballHud_Test.cpp`.

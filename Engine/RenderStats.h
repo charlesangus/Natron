@@ -34,6 +34,7 @@
 #include <set>
 #include <string>
 #include <tuple>
+#include <vector>
 
 #include "Global/GlobalDefines.h"
 
@@ -163,6 +164,28 @@ public:
     int getLegacyFallbacks() const;
     std::map<std::string, int> getLegacyFallbackReasons() const;
 
+    void noteUpload(unsigned long long bytes);
+    void noteDownload(unsigned long long bytes);
+    void noteEviction();
+    void noteGpuRegionRun();
+    void noteGpuTaskRun(const std::string& nodeScriptName);
+    void noteCpuFallback(const std::string& reason);
+
+    /**
+     * @brief Raises the high-water mark of bytes resident on the device.
+     **/
+    void notePeakDeviceBytes(unsigned long long bytes);
+
+    int getUploadCount() const;
+    unsigned long long getUploadBytes() const;
+    int getDownloadCount() const;
+    unsigned long long getDownloadBytes() const;
+    int getEvictions() const;
+    int getGpuRegionsRun() const;
+    std::map<std::string, int> getGpuTasksPerNode() const;
+    std::map<std::string, int> getCpuFallbackReasons() const;
+    unsigned long long getPeakDeviceBytes() const;
+
     /**
      * @brief Off by default: counting takes the node's script name and this object's lock on every renderRoI call,
      * which every task of the frame would contend on.
@@ -184,6 +207,19 @@ private:
 
     std::unique_ptr<RenderStatsPrivate> _imp;
 };
+
+/**
+ * @brief One GPU region of a render profile, as a JSON-lines record ending in a newline.
+ * Times are milliseconds, sizes bytes.
+ **/
+std::string formatRegionRecord(unsigned long long frameSequence,
+                               int regionId,
+                               const std::vector<int>& taskIds,
+                               double uploadMs,
+                               unsigned long long uploadBytes,
+                               double kernelMs,
+                               double downloadMs,
+                               unsigned long long downloadBytes);
 
 NATRON_NAMESPACE_EXIT
 

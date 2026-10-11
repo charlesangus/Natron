@@ -74,6 +74,8 @@ struct Record {
     std::vector<int> deps;
     long long wallNs = 0;
     bool pointOp = false;
+    std::string device;
+    std::string regionId;
 };
 
 // The value after `key` up to the next ',' or '}' or ']'.
@@ -111,6 +113,8 @@ parseRecord(const std::string& line)
     r.plugin = stringValue(line, "plugin");
     r.wallNs = std::atoll(rawValue(line, "wallNs").c_str());
     r.pointOp = rawValue(line, "pointOp") == "true";
+    r.device = stringValue(line, "device");
+    r.regionId = rawValue(line, "regionId");
     const std::size_t open = line.find("\"deps\":[");
     const std::size_t close = line.find(']', open);
     std::string list = line.substr(open + 8, close - open - 8);
@@ -222,6 +226,8 @@ TEST_F(RenderProfileTest, OneRecordPerTaskWithTheGraphsEdges)
         EXPECT_EQ(it->second.plugin, task.key.node->getPluginID());
         EXPECT_EQ(it->second.deps, task.dependencies);
         EXPECT_GT(it->second.wallNs, 0);
+        EXPECT_EQ(it->second.device, "cpu");
+        EXPECT_EQ(it->second.regionId, "-1");
         if (task.key.node == grade) {
             EXPECT_TRUE(it->second.pointOp);
             gradeTask = static_cast<int>(i);
@@ -256,4 +262,44 @@ TEST_F(RenderProfileTest, UnwritablePathDoesNotAffectTheRender)
     renderScene();
 
     EXPECT_FALSE(std::ifstream(RenderScheduler::getProfileFilePath().c_str()).good());
+}
+
+TEST(RenderStatsGpuCounters, AccumulateAndReport)
+{
+    RenderStats stats(false);
+
+    stats.noteUpload(100);
+    stats.noteUpload(50);
+    stats.noteDownload(30);
+    stats.noteEviction();
+    stats.noteGpuRegionRun();
+    stats.noteGpuTaskRun("Blur1");
+    stats.noteGpuTaskRun("Blur1");
+    stats.noteGpuTaskRun("Grade1");
+    stats.noteCpuFallback("unsupported");
+    stats.notePeakDeviceBytes(500);
+    stats.notePeakDeviceBytes(200);
+
+    EXPECT_EQ(stats.getUploadCount(), 2);
+    EXPECT_EQ(stats.getUploadBytes(), 150u);
+    EXPECT_EQ(stats.getDownloadCount(), 1);
+    EXPECT_EQ(stats.getDownloadBytes(), 30u);
+    EXPECT_EQ(stats.getEvictions(), 1);
+    EXPECT_EQ(stats.getGpuRegionsRun(), 1);
+    EXPECT_EQ(stats.getGpuTasksPerNode().at("Blur1"), 2);
+    EXPECT_EQ(stats.getGpuTasksPerNode().at("Grade1"), 1);
+    EXPECT_EQ(stats.getCpuFallbackReasons().at("unsupported"), 1);
+    EXPECT_EQ(stats.getPeakDeviceBytes(), 500u);
+}
+
+TEST(RenderStatsGpuCounters, RegionRecordFormat)
+{
+    std::vector<int> tasks;
+    tasks.push_back(1);
+    tasks.push_back(2);
+
+    EXPECT_EQ(formatRegionRecord(7, 3, tasks, 1.5, 64, 2.25, 0.5, 32),
+              "{\"kind\":\"region\",\"frame\":7,\"regionId\":3,\"tasks\":[1,2],"
+              "\"uploadMs\":1.500000,\"uploadBytes\":64,\"kernelMs\":2.250000,"
+              "\"downloadMs\":0.500000,\"downloadBytes\":32}\n");
 }

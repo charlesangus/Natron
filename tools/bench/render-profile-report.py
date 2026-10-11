@@ -19,6 +19,7 @@ import collections
 import json
 import os
 import sys
+import tempfile
 
 WRITER_NODES = ("internalEncoderNode",)
 
@@ -37,6 +38,8 @@ def load_records(paths):
         for index, (number, line) in enumerate(lines):
             try:
                 rec = json.loads(line)
+                if isinstance(rec, dict) and rec.get("kind") == "region":
+                    continue
                 missing = [f for f in REQUIRED_FIELDS if f not in rec]
                 if missing:
                     raise KeyError(", ".join(missing))
@@ -47,6 +50,8 @@ def load_records(paths):
                 sys.exit("%s:%d: bad record (%s)" % (path, number, err))
             if not rec.get("ok", True):
                 continue
+            rec.setdefault("device", "cpu")
+            rec.setdefault("regionId", -1)
             frames.setdefault((path, rec["frame"]), {})[rec["task"]] = rec
     return frames
 
@@ -269,6 +274,22 @@ def self_test(args):
     def close(a, b):
         return abs(a - b) < 1e-6
 
+    loaded = load_records([sample])
+    assert sum(1 for line in open(sample, encoding="utf-8") if '"kind":"region"' in line) == 1
+    assert [len(tasks) for tasks in loaded.values()] == [7], "region record must not become a task"
+    assert all("kind" not in rec and rec["task"] in range(7)
+               for tasks in loaded.values() for rec in tasks.values())
+    assert all(rec["device"] == "cpu" and rec["regionId"] == -1
+               for tasks in loaded.values() for rec in tasks.values())
+
+    with tempfile.TemporaryDirectory() as tmp:
+        gpu_path = os.path.join(tmp, "gpu.jsonl")
+        with open(gpu_path, "w", encoding="utf-8") as out:
+            out.write('{"kind":"region","frame":0,"regionId":3,"tasks":[0]}\n')
+            out.write('{"frame":0,"task":0,"plugin":"Blur","node":"B","deps":[],"roiPixels":1,'
+                      '"estimatedBytes":1,"wallNs":1,"device":"gpu","regionId":3,"ok":true}\n')
+        rec = load_records([gpu_path])[(gpu_path, 0)][0]
+        assert rec["device"] == "gpu" and rec["regionId"] == 3, rec
     assert close(res["total_task_ms"], 427.0), res["total_task_ms"]
     assert close(res["heavy_task_ms"], 400.0), res["heavy_task_ms"]
     regions = {tuple(r["nodes"]): r for r in res["region_signatures"]}

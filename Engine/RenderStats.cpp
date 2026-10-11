@@ -28,6 +28,8 @@
 #include <atomic>
 #include <bitset>
 #include <cassert>
+#include <cstdio>
+#include <string>
 #include <stdexcept>
 
 #include <QMutex>
@@ -306,8 +308,17 @@ struct RenderStatsPrivate
     std::atomic<int> unplannedPulls;
     std::atomic<int> legacyFallbacks;
     std::atomic<bool> trackRenderRoICalls;
+    std::atomic<int> uploadCount;
+    std::atomic<unsigned long long> uploadBytes;
+    std::atomic<int> downloadCount;
+    std::atomic<unsigned long long> downloadBytes;
+    std::atomic<int> evictions;
+    std::atomic<int> gpuRegionsRun;
+    std::atomic<unsigned long long> peakDeviceBytes;
 
-    // Both guarded by lock.
+    // All guarded by lock.
+    std::map<std::string, int> gpuTasksPerNode;
+    std::map<std::string, int> cpuFallbackReasons;
     std::map<std::string, int> legacyFallbackReasons;
     std::map<std::tuple<std::string, double, int>, int> renderRoICalls;
 
@@ -323,6 +334,15 @@ struct RenderStatsPrivate
         , unplannedPulls(0)
         , legacyFallbacks(0)
         , trackRenderRoICalls(false)
+        , uploadCount(0)
+        , uploadBytes(0)
+        , downloadCount(0)
+        , downloadBytes(0)
+        , evictions(0)
+        , gpuRegionsRun(0)
+        , peakDeviceBytes(0)
+        , gpuTasksPerNode()
+        , cpuFallbackReasons()
         , legacyFallbackReasons()
         , renderRoICalls()
     {
@@ -542,6 +562,113 @@ RenderStats::getLegacyFallbackReasons() const
 }
 
 void
+RenderStats::noteUpload(unsigned long long bytes)
+{
+    ++_imp->uploadCount;
+    _imp->uploadBytes += bytes;
+}
+
+void
+RenderStats::noteDownload(unsigned long long bytes)
+{
+    ++_imp->downloadCount;
+    _imp->downloadBytes += bytes;
+}
+
+void
+RenderStats::noteEviction()
+{
+    ++_imp->evictions;
+}
+
+void
+RenderStats::noteGpuRegionRun()
+{
+    ++_imp->gpuRegionsRun;
+}
+
+void
+RenderStats::noteGpuTaskRun(const std::string& nodeScriptName)
+{
+    QMutexLocker k(&_imp->lock);
+    ++_imp->gpuTasksPerNode[nodeScriptName];
+}
+
+void
+RenderStats::noteCpuFallback(const std::string& reason)
+{
+    QMutexLocker k(&_imp->lock);
+    ++_imp->cpuFallbackReasons[reason];
+}
+
+void
+RenderStats::notePeakDeviceBytes(unsigned long long bytes)
+{
+    unsigned long long seen = _imp->peakDeviceBytes.load();
+
+    while ((bytes > seen) && !_imp->peakDeviceBytes.compare_exchange_weak(seen, bytes)) {
+    }
+}
+
+int
+RenderStats::getUploadCount() const
+{
+    return _imp->uploadCount.load();
+}
+
+unsigned long long
+RenderStats::getUploadBytes() const
+{
+    return _imp->uploadBytes.load();
+}
+
+int
+RenderStats::getDownloadCount() const
+{
+    return _imp->downloadCount.load();
+}
+
+unsigned long long
+RenderStats::getDownloadBytes() const
+{
+    return _imp->downloadBytes.load();
+}
+
+int
+RenderStats::getEvictions() const
+{
+    return _imp->evictions.load();
+}
+
+int
+RenderStats::getGpuRegionsRun() const
+{
+    return _imp->gpuRegionsRun.load();
+}
+
+std::map<std::string, int>
+RenderStats::getGpuTasksPerNode() const
+{
+    QMutexLocker k(&_imp->lock);
+
+    return _imp->gpuTasksPerNode;
+}
+
+std::map<std::string, int>
+RenderStats::getCpuFallbackReasons() const
+{
+    QMutexLocker k(&_imp->lock);
+
+    return _imp->cpuFallbackReasons;
+}
+
+unsigned long long
+RenderStats::getPeakDeviceBytes() const
+{
+    return _imp->peakDeviceBytes.load();
+}
+
+void
 RenderStats::setTrackRenderRoICalls(bool track)
 {
     _imp->trackRenderRoICalls = track;
@@ -572,6 +699,35 @@ RenderStats::getRenderRoICalls() const
     QMutexLocker k(&_imp->lock);
 
     return _imp->renderRoICalls;
+}
+
+std::string
+formatRegionRecord(unsigned long long frameSequence,
+                   int regionId,
+                   const std::vector<int>& taskIds,
+                   double uploadMs,
+                   unsigned long long uploadBytes,
+                   double kernelMs,
+                   double downloadMs,
+                   unsigned long long downloadBytes)
+{
+    char num[256];
+    std::string line;
+
+    std::snprintf(num, sizeof(num), "{\"kind\":\"region\",\"frame\":%llu,\"regionId\":%d,\"tasks\":[", frameSequence, regionId);
+    line.append(num);
+    for (std::size_t i = 0; i < taskIds.size(); ++i) {
+        if (i > 0) {
+            line.push_back(',');
+        }
+        line.append(std::to_string(taskIds[i]));
+    }
+    std::snprintf(num, sizeof(num),
+                  "],\"uploadMs\":%.6f,\"uploadBytes\":%llu,\"kernelMs\":%.6f,\"downloadMs\":%.6f,\"downloadBytes\":%llu}\n",
+                  uploadMs, uploadBytes, kernelMs, downloadMs, downloadBytes);
+    line.append(num);
+
+    return line;
 }
 
 NATRON_NAMESPACE_EXIT

@@ -365,7 +365,7 @@ formatTaskRecord(const FrameGraph::Task& task,
     line.append(pointOp ? "true" : "false");
     line.append(",\"glSupport\":");
     line.append(glSupport ? "true" : "false");
-    line.append(",\"ok\":");
+    line.append(",\"device\":\"cpu\",\"regionId\":-1,\"ok\":");
     line.append(ok ? "true" : "false");
     line.append("}\n");
 

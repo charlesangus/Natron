@@ -66,14 +66,15 @@ CLANG_DIAG_ON(deprecated)
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiDefines.h"
+#include "Gui/GuiDensity.h"
 #include "Gui/GuiMacros.h"
 #include "Gui/Histogram.h"
 #include "Gui/Menu.h"
 #include "Gui/NodeGraph.h"
+#include "Gui/ProgressPanel.h"
 #include "Gui/PropertiesBinWrapper.h"
 #include "Gui/PythonPanels.h"
 #include "Gui/RegisteredTabs.h"
-#include "Gui/ProgressPanel.h"
 #include "Gui/ScriptEditor.h"
 #include "Gui/Splitter.h"
 #include "Gui/ViewerTab.h"
@@ -257,7 +258,7 @@ TabWidget::TabWidget(Gui* gui,
     _imp->transparentFloatingWidget = new TransparentDropRect(this, 0);
 
     _imp->mainLayout = new QVBoxLayout(this);
-    _imp->mainLayout->setContentsMargins(0, 5, 0, 0);
+    _imp->mainLayout->setContentsMargins(0, TO_DPIY(NATRON_DENSITY_PANE_TOP_MARGIN), 0, 0);
     _imp->mainLayout->setSpacing(0);
 
     _imp->header = new TabWidgetHeader(this);
@@ -282,7 +283,7 @@ TabWidget::TabWidget(Gui* gui,
     _imp->leftCornerButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr(LEFT_HAND_CORNER_BUTTON_TT), NATRON_NAMESPACE::WhiteSpaceNormal) );
     _imp->leftCornerButton->setFocusPolicy(Qt::NoFocus);
     _imp->headerLayout->addWidget(_imp->leftCornerButton);
-    _imp->headerLayout->addSpacing(10);
+    _imp->headerLayout->addSpacing(TO_DPIX(NATRON_DENSITY_TOOLBAR_GROUP_GAP));
 
     _imp->tabBar = new TabBar(this, _imp->header);
     _imp->tabBar->setShape(QTabBar::RoundedNorth);

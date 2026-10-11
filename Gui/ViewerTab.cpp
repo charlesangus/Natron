@@ -54,6 +54,7 @@
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiDefines.h"
+#include "Gui/GuiDensity.h"
 #include "Gui/InfoViewerWidget.h"
 #include "Gui/Label.h"
 #include "Gui/NodeGui.h"
@@ -87,7 +88,7 @@ makeFullyQualifiedLabel(Node* node,
 static void
 addSpacer(QBoxLayout* layout)
 {
-    layout->addSpacing(5);
+    layout->addSpacing(TO_DPIX(NATRON_DENSITY_TOOLBAR_GROUP_GAP));
     QFrame* line = new QFrame( layout->parentWidget() );
     line->setFrameShape(QFrame::VLine);
     line->setFrameShadow(QFrame::Raised);
@@ -96,7 +97,7 @@ addSpacer(QBoxLayout* layout)
     palette.setColor(QPalette::WindowText, Qt::black);
     line->setPalette(palette);
     layout->addWidget(line);
-    layout->addSpacing(5);
+    layout->addSpacing(TO_DPIX(NATRON_DENSITY_TOOLBAR_GROUP_GAP));
 }
 
 ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
@@ -138,8 +139,9 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->firstSettingsRow = new QWidget(this);
     _imp->firstRowLayout = new QHBoxLayout(_imp->firstSettingsRow);
     _imp->firstSettingsRow->setLayout(_imp->firstRowLayout);
-    _imp->firstRowLayout->setContentsMargins(0, 0, 0, 0);
-    _imp->firstRowLayout->setSpacing(0);
+    _imp->firstRowLayout->setContentsMargins(TO_DPIX(NATRON_DENSITY_TOOLBAR_SPACING * 2), TO_DPIY(NATRON_DENSITY_TOOLBAR_SPACING),
+                                             TO_DPIX(NATRON_DENSITY_TOOLBAR_SPACING * 2), TO_DPIY(NATRON_DENSITY_TOOLBAR_SPACING));
+    _imp->firstRowLayout->setSpacing(TO_DPIX(NATRON_DENSITY_TOOLBAR_SPACING));
     _imp->mainLayout->addWidget(_imp->firstSettingsRow);
 
     _imp->layerChoice = new ComboBox(_imp->firstSettingsRow);
@@ -413,8 +415,9 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->secondSettingsRow = new QWidget(this);
     _imp->secondRowLayout = new QHBoxLayout(_imp->secondSettingsRow);
     _imp->secondSettingsRow->setLayout(_imp->secondRowLayout);
-    _imp->secondRowLayout->setSpacing(0);
-    _imp->secondRowLayout->setContentsMargins(0, 0, 0, 0);
+    _imp->secondRowLayout->setSpacing(TO_DPIX(NATRON_DENSITY_TOOLBAR_SPACING));
+    _imp->secondRowLayout->setContentsMargins(TO_DPIX(NATRON_DENSITY_TOOLBAR_SPACING * 2), TO_DPIY(NATRON_DENSITY_TOOLBAR_SPACING),
+                                              TO_DPIX(NATRON_DENSITY_TOOLBAR_SPACING * 2), TO_DPIY(NATRON_DENSITY_TOOLBAR_SPACING));
     _imp->mainLayout->addWidget(_imp->secondSettingsRow);
 
     QIcon gainIc;

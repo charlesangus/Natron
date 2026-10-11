@@ -129,7 +129,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - verify: at the gate build, P1.T1's toolbox shot at 1× and 2× shows the new set, sharp, with no missing-image asserts in `natron.log`.
   - size: M
 
-- [ ] M56.P4.T6 — Remove the "Use black & white toolbutton icons" preference
+- [x] M56.P4.T6 — Remove the "Use black & white toolbutton icons" preference
   - files: `Engine/Settings.cpp`, `Engine/Settings.h`, `Gui/GuiApplicationManager.cpp`
   - approach: Per Q4 (default: remove), following M55.P1.T1's removal pattern:
     - delete `_useBWIcons` (`Settings.h:574`, `Settings.cpp:759-763`), its default (`:1613`), and `getIconsBlackAndWhite` (`Settings.h:237`, `Settings.cpp:3244-3247`);
@@ -148,7 +148,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - verify: that grep is empty. At the gate build, P1.T1's Grade panel shot shows the colour-row dropdown and global buttons recoloured, crisp at 2×, with the checked state still distinct.
   - size: M
 
-- [ ] M56.P4.T8 — Render SVG plugin icons themed on the node graph
+- [x] M56.P4.T8 — Render SVG plugin icons themed on the node graph
   - files: `Gui/NodeGui.cpp`
   - approach: the optional on-canvas plugin icon (`isPluginIconActivatedOnNodeGraph`, around `NodeGui.cpp:700-760`) loads `Plugin::getIconFilePath()` with plain `QPixmap::load()`. RotoPaint's icon is now an SVG with a literal `currentColor` stroke, so it would draw untinted or wrong. When the path is an SVG (`ThemedIcon::isSvgPath`), draw it with `ThemedIcon::renderPixmap` at the icon size in the theme text colour; PNG plugin icons are unchanged.
   - verify: at the gate build, with "plugin icons in the node graph" on, a RotoPaint node shows a crisp themed brush glyph (P1.T1 shot).

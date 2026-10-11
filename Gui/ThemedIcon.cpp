@@ -23,13 +23,32 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QApplication>
 #include <QFile>
 #include <QPainter>
 #include <QSvgRenderer>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+#include "Engine/AppManager.h"
+#include "Engine/Lut.h" // Color::floatToInt
+#include "Engine/Settings.h"
+
 NATRON_NAMESPACE_ENTER
+
+namespace {
+QColor
+blend40Percent(const QColor& base,
+               const QColor& over)
+{
+    const double t = 0.4;
+    const auto mix = [t](int baseChannel, int overChannel) {
+        return (int)std::lround(baseChannel * (1. - t) + overChannel * t);
+    };
+
+    return QColor(mix(base.red(), over.red()), mix(base.green(), over.green()), mix(base.blue(), over.blue()));
+}
+} // anon namespace
 
 const double ThemedIcon::STROKE_WIDTH = 1.5;
 
@@ -78,6 +97,58 @@ ThemedIcon::renderPixmap(const QString& resourcePath,
     pix.setDevicePixelRatio(dpr);
 
     return pix;
+}
+
+QColor
+ThemedIcon::themeTextColor()
+{
+    double r, g, b;
+
+    appPTR->getCurrentSettings()->getTextColor(&r, &g, &b);
+
+    return QColor(Color::floatToInt<256>(r), Color::floatToInt<256>(g), Color::floatToInt<256>(b));
+}
+
+QColor
+ThemedIcon::themeSelectionColor()
+{
+    double r, g, b;
+
+    appPTR->getCurrentSettings()->getSelectionColor(&r, &g, &b);
+
+    return QColor(Color::floatToInt<256>(r), Color::floatToInt<256>(g), Color::floatToInt<256>(b));
+}
+
+QString
+ThemedIcon::pixmapCacheKey(const QString& resourcePath,
+                           int logicalSize,
+                           const QColor& color,
+                           double dpr)
+{
+    return resourcePath + QLatin1Char('@') + QString::number(logicalSize) + QLatin1Char('@') + color.name() + QLatin1Char('@') + QString::number(dpr);
+}
+
+QIcon
+ThemedIcon::icon(const QString& resourcePath,
+                 int logicalSize)
+{
+    const double dpr = qApp ? qApp->devicePixelRatio() : 1.;
+    const QColor text = themeTextColor();
+    const QColor selection = themeSelectionColor();
+
+    double br, bg, bb;
+    appPTR->getCurrentSettings()->getBaseColor(&br, &bg, &bb);
+    const QColor base(Color::floatToInt<256>(br), Color::floatToInt<256>(bg), Color::floatToInt<256>(bb));
+    const QColor disabled = blend40Percent(base, text);
+
+    QIcon result;
+
+    result.addPixmap(renderPixmap(resourcePath, logicalSize, text, dpr), QIcon::Normal, QIcon::Off);
+    result.addPixmap(renderPixmap(resourcePath, logicalSize, selection, dpr), QIcon::Normal, QIcon::On);
+    result.addPixmap(renderPixmap(resourcePath, logicalSize, disabled, dpr), QIcon::Disabled, QIcon::Off);
+    result.addPixmap(renderPixmap(resourcePath, logicalSize, text, dpr), QIcon::Active, QIcon::Off);
+
+    return result;
 }
 
 NATRON_NAMESPACE_EXIT

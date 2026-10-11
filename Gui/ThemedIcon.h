@@ -30,6 +30,7 @@
 
 #include <QByteArray>
 #include <QColor>
+#include <QIcon>
 #include <QPixmap>
 #include <QString>
 
@@ -62,6 +63,36 @@ public:
      * straight to QIcon/QLabel without further scaling.
      **/
     static QPixmap renderPixmap(const QString& resourcePath, int logicalSize, const QColor& color, double dpr);
+
+    /**
+     * @brief Returns the current theme's text colour (Settings' "text" knob), as an
+     * opaque 8-bit QColor. Shared by GuiApplicationManager::getIcon and icon() so both
+     * agree on what "the theme colour" means.
+     **/
+    static QColor themeTextColor();
+
+    /**
+     * @brief Returns the current theme's selection colour (Settings' "selection" knob),
+     * the same way themeTextColor() reads the text colour.
+     **/
+    static QColor themeSelectionColor();
+
+    /**
+     * @brief Returns the key a renderPixmap() result for resourcePath/logicalSize/color/dpr
+     * is cached under. Every argument has to contribute: callers ask for the same path at
+     * several sizes (e.g. 24 and 18 px) and colours (Normal vs. Disabled) at once, and a key
+     * that dropped one of those would return another state's or size's pixmap.
+     **/
+    static QString pixmapCacheKey(const QString& resourcePath, int logicalSize, const QColor& color, double dpr);
+
+    /**
+     * @brief Builds the full QIcon for resourcePath at logicalSize: Normal/Off and Active
+     * in the theme text colour, Normal/On in the theme selection colour, and Disabled in
+     * the text colour blended 40% into the base colour. The blend happens before the SVG
+     * is recoloured, so Disabled is an ordinary opaque tone -- not a partially transparent
+     * pixmap that would look different depending on what it's drawn over.
+     **/
+    static QIcon icon(const QString& resourcePath, int logicalSize);
 };
 
 NATRON_NAMESPACE_EXIT

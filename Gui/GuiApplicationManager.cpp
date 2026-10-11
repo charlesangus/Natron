@@ -46,7 +46,6 @@ CLANG_DIAG_ON(uninitialized)
 #endif
 
 #include "Engine/EffectInstance.h" // PLUGINID_OFX_*
-#include "Engine/Lut.h" // Color::floatToInt
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/Settings.h"
 #include "Gui/DocumentationManager.h"
@@ -802,24 +801,6 @@ pixmapEnumToPath(PixmapEnum e,
     return path;
 } // pixmapEnumToPath
 
-QColor
-themeIconColor()
-{
-    double r, g, b;
-
-    appPTR->getCurrentSettings()->getTextColor(&r, &g, &b);
-
-    return QColor(Color::floatToInt<256>(r), Color::floatToInt<256>(g), Color::floatToInt<256>(b));
-}
-
-QString
-svgPixmapCacheKey(PixmapEnum e,
-                  int size,
-                  const QColor& color,
-                  double dpr)
-{
-    return QString::number(e) + QLatin1Char('@') + QString::number(size) + QLatin1Char('@') + color.name() + QLatin1Char('@') + QString::number(dpr);
-}
 } // anon namespace
 
 void
@@ -841,9 +822,9 @@ GuiApplicationManager::getIcon(PixmapEnum e,
         // The vendored glyphs are drawn on Lucide's 24-unit grid; this is their own
         // natural size, not a UI constant, so a direct request scales from here.
         const int naturalSize = 24;
-        const QColor color = themeIconColor();
+        const QColor color = ThemedIcon::themeTextColor();
         const double dpr = qApp->devicePixelRatio();
-        const QString key = svgPixmapCacheKey(e, naturalSize, color, dpr);
+        const QString key = ThemedIcon::pixmapCacheKey(qpath, naturalSize, color, dpr);
 
         if (!QPixmapCache::find(key, pix)) {
             *pix = ThemedIcon::renderPixmap(qpath, naturalSize, color, dpr);
@@ -871,9 +852,9 @@ GuiApplicationManager::getIcon(PixmapEnum e,
     const QString qpath = QString::fromUtf8(path.c_str());
 
     if (!path.empty() && ThemedIcon::isSvgPath(qpath)) {
-        const QColor color = themeIconColor();
+        const QColor color = ThemedIcon::themeTextColor();
         const double dpr = qApp->devicePixelRatio();
-        const QString key = svgPixmapCacheKey(e, size, color, dpr);
+        const QString key = ThemedIcon::pixmapCacheKey(qpath, size, color, dpr);
 
         if (!QPixmapCache::find(key, pix)) {
             *pix = ThemedIcon::renderPixmap(qpath, size, color, dpr);

@@ -71,6 +71,7 @@
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
@@ -283,20 +284,24 @@ protected:
      * @brief Renders with a GPU context of the test's own, so that the faults it injects and the budget it lowers do
      * not outlive it.
      **/
-    bool useOwnContext()
+    bool useOwnContext(std::uint64_t memoryBudgetMB = 0)
     {
-        if (_swapped) {
+        if (_swapped && (memoryBudgetMB == 0)) {
             return true;
         }
         GpuContextOptions options;
         options.mode = GpuResolvedMode::Force;
+        options.memoryBudgetMB = memoryBudgetMB;
         options.infoLog = [](const std::string&) { };
         std::unique_ptr<GpuContext> own(new GpuContext(options));
         if (!own->waitForInit(std::chrono::seconds(60)) || !own->isAvailable()) {
             return false;
         }
-        _swappedContext = appPTR->swapGpuContextForTests(std::move(own));
-        _swapped = true;
+        std::unique_ptr<GpuContext> previous = appPTR->swapGpuContextForTests(std::move(own));
+        if (!_swapped) {
+            _swappedContext = std::move(previous);
+            _swapped = true;
+        }
 
         return true;
     }
@@ -1121,6 +1126,137 @@ TEST_F(GpuResidencyTest, RegionNoStripFitsRendersOnTheCpu)
     EXPECT_EQ(1, renderRoICallsOf(run, chain.blur));
     expectReleased(run);
     expectMatchesCpu(chain.sink, run, stripWindow());
+}
+
+// Eight Constant -> Grade -> Blur -> Grade branches at 1024 x 1024, summed by CPU Merges, render as two frames in flight
+// on a 64 MB pool, which holds four of their images. The first branch is split after its Grade, whose output waits in
+// the frame store on the device for the region holding the rest of the branch.
+TEST_F(GpuResidencyTest, LargeCompStaysWithinTheDeviceBudget)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const std::uint64_t budgetMB = 64;
+    const std::uint64_t budget = budgetMB << 20;
+    ASSERT_TRUE(useOwnContext(budgetMB));
+    ASSERT_EQ(budget, runtime()->pool().budget());
+
+    const int size = 1024;
+    const int branches = 8;
+    const RectI window(0, 0, size, size);
+    // Each Constant leaves part of the window empty, so the Blur's falloff at its edges is in the compared pixels.
+    const int inset = 64;
+    std::vector<NodePtr> grades1, blurs, grades2;
+    NodePtr root;
+    for (int b = 0; b < branches; ++b) {
+        NodePtr constant = makeNode(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
+        NodePtr grade1 = makeGrade(1.5 - 0.1 * b, 0.01 * b);
+        // A size of 24 is a sigma of 10.
+        NodePtr blur = makeBlur(24.);
+        NodePtr grade2 = makeGrade(0.8 + 0.05 * b, -0.01);
+        ASSERT_TRUE(constant && grade1 && blur && grade2);
+        const double value = 0.02 * (b + 1);
+        ASSERT_TRUE(setKnobValues(constant, kConstantParamColor, { value, 0.5 * value, 0.25 * value, 0.1 }));
+        ASSERT_TRUE(setKnobValue(constant, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize));
+        ASSERT_TRUE(setKnobValues(constant, kNativeGeneratorParamBottomLeft, { (double)(inset * (b % 2)), (double)(inset * (b / 4)) }));
+        ASSERT_TRUE(setKnobValues(constant, kNativeGeneratorParamSize, { (double)(size - inset), (double)(size - inset) }));
+        KnobBool* crop = dynamic_cast<KnobBool*>(blur->getKnobByName(kBlurParamCropToFormat).get());
+        ASSERT_TRUE(crop != NULL);
+        crop->setValue(false);
+        connectNodes(constant, grade1, 0, true);
+        connectNodes(grade1, blur, 0, true);
+        connectNodes(blur, grade2, 0, true);
+        if (root) {
+            NodePtr merge = makeNode(PLUGINID_NATRON_MERGE, PLUGIN_MAJOR_NATRON_MERGE);
+            ASSERT_TRUE(bool(merge));
+            ASSERT_TRUE(setKnobValue(merge, kMergeParamOperation, "plus"));
+            connectNodes(root, merge, 0, true);
+            connectNodes(grade2, merge, 1, true);
+            root = merge;
+        } else {
+            root = grade2;
+        }
+        grades1.push_back(grade1);
+        blurs.push_back(blur);
+        grades2.push_back(grade2);
+    }
+
+    std::string error;
+    FrameRun runs[2];
+    for (FrameRun& run : runs) {
+        ASSERT_TRUE(prepareFrame(root, &run, &error, window)) << error;
+        std::vector<std::vector<int>> regions;
+        for (int b = 0; b < branches; ++b) {
+            const int grade1Task = taskOf(run.graph, grades1[b]);
+            const int blurTask = taskOf(run.graph, blurs[b]);
+            const int grade2Task = taskOf(run.graph, grades2[b]);
+            ASSERT_TRUE(grade1Task >= 0 && blurTask >= 0 && grade2Task >= 0);
+            if (b == 0) {
+                regions.push_back({ grade1Task });
+                regions.push_back({ blurTask, grade2Task });
+            } else {
+                regions.push_back({ grade1Task, blurTask, grade2Task });
+            }
+        }
+        assignRegions(&run.graph, regions);
+        ASSERT_EQ(1, run.graph.regions[0].outputs.front().externalConsumers);
+    }
+
+    runtime()->pool().trim();
+    const gpu::GpuBufferPoolStats before = runtime()->pool().stats();
+    // The pool's peak covers its whole life, so it bounds this render only if nothing before went over the budget.
+    ASSERT_LE(before.peakBytes, budget);
+    for (FrameRun& run : runs) {
+        run.future = _scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
+    }
+    QElapsedTimer timer;
+    timer.start();
+    while (!(runs[0].future->isFinished() && runs[1].future->isFinished()) && (timer.elapsed() < 5 * kFrameTimeoutMs)) {
+        QThread::msleep(1);
+    }
+    for (FrameRun& run : runs) {
+        if (!run.future->isFinished()) {
+            _scheduler->abort(run.context);
+        }
+    }
+    for (FrameRun& run : runs) {
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+    }
+    const gpu::GpuBufferPoolStats after = runtime()->pool().stats();
+
+    int evictions = 0;
+    for (const FrameRun& run : runs) {
+        std::string reasons;
+        for (const std::pair<const std::string, int>& reason : run.stats->getCpuFallbackReasons()) {
+            reasons += reason.first + " x" + std::to_string(reason.second) + "; ";
+        }
+        EXPECT_EQ(0, fallbacksOf(run)) << reasons;
+        EXPECT_EQ(0, run.stats->getGpuRegionRetries());
+        EXPECT_EQ(branches + 1, run.stats->getGpuRegionsRun());
+        // One upload per Constant: the second region of the split reads the first's output where it was left.
+        EXPECT_EQ(branches, run.stats->getUploadCount());
+        EXPECT_EQ(0, run.context->getStore().downloadCount());
+        EXPECT_LE(run.stats->getPeakDeviceBytes(), budget);
+        for (int b = 0; b < branches; ++b) {
+            EXPECT_EQ(0, renderRoICallsOf(run, blurs[b])) << "a Blur rendered on the CPU";
+        }
+        evictions += run.stats->getEvictions();
+    }
+    std::printf("[          ] pool budget %llu, peak %llu, evictions %llu (frame store: %d)\n",
+                (unsigned long long)budget,
+                (unsigned long long)after.peakBytes,
+                (unsigned long long)(after.evictions - before.evictions),
+                evictions);
+    EXPECT_LE(after.peakBytes, budget);
+    EXPECT_EQ(budget, runtime()->pool().budget()) << "the device ran out of memory, which shrinks the budget";
+    for (const FrameRun& run : runs) {
+        expectReleased(run);
+    }
+    // The render cached the Merges, which the CPU reference would otherwise read back.
+    appPTR->clearAllCaches();
+    for (const FrameRun& run : runs) {
+        expectMatchesCpu(root, run, window);
+    }
 }
 
 #endif // NATRON_HAVE_GPU

@@ -190,7 +190,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - verify: `xmllint --noout` on every new SVG; every qrc path exists; at the gate build, P1.T1's shots show no blank icon (the compact-arc-flag glyphs `eye`, `eye-off`, `droplet`, `eraser`, `diamond-plus`, `diamond-minus`, `feather`, `pen-tool`, `pin`, `zap` included; re-save any that Qt6::Svg can't draw, and note it in SOURCES.txt).
   - size: M
 
-- [ ] M56.P5.T7 — Apply the approved glyphs to panes, the properties bin, the Script Editor, the file dialog and the link cursors
+- [x] M56.P5.T7 — Apply the approved glyphs to panes, the properties bin, the Script Editor, the file dialog and the link cursors
   - files: `Gui/GuiApplicationManager.cpp`, `Gui/TabWidget.cpp`, `Gui/PropertiesBinWrapper.cpp` (or wherever the bin's buttons are built), `Gui/ScriptEditor.cpp`, `Gui/SequenceFileDialog.cpp`, and the cursor construction site (grep `NATRON_PIXMAP_LINK_CURSOR`)
   - approach: point each id at its SVG per the mapping's "Panes, script editor and dialogs" section. The bin's minimise/maximise-all button loads Lucide `chevrons-down-up` through `ThemedIcon::icon` by path. The link cursors keep their black halo and use the hotspot the mapping gives; build them from a rendered pixmap with `QCursor(pixmap, hotX, hotY)`. Fix the Script Editor's close icon being overwritten by the clear-history icon only if the mapping says the close button should show it.
   - verify: at the gate build, P1.T1 shots of a split pane header, the properties bin buttons, the Script Editor toolbar and the file dialog; the link cursor's hotspot lands on the clicked knob in the GUI script.

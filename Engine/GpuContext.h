@@ -90,8 +90,8 @@ struct GpuContextOptions
     // 0 selects automatically.
     std::uint64_t memoryBudgetMB = 0;
 
-    // Receives the single informational line written when the GPU is unavailable. Unset writes it to the
-    // Qt info log.
+    // Receives the informational line written when the GPU is unavailable, and one per device-loss recovery
+    // attempt, so it is called for as long as the context lives. Unset writes them to the Qt info log.
     std::function<void (const std::string&)> infoLog;
 };
 

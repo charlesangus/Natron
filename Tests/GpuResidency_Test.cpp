@@ -251,13 +251,14 @@ protected:
         }
         GpuContextOptions options;
         options.mode = GpuResolvedMode::Force;
-        std::string unavailable;
-        options.infoLog = [&unavailable](const std::string& line) {
-            unavailable = line;
+        // The context outlives SetUp() and logs again when it recovers from a device loss.
+        std::shared_ptr<std::string> unavailable = std::make_shared<std::string>();
+        options.infoLog = [unavailable](const std::string& line) {
+            *unavailable = line;
         };
         std::unique_ptr<GpuContext> forced(new GpuContext(options));
         if (!forced->waitForInit(std::chrono::seconds(60)) || !forced->isAvailable()) {
-            _skipReason = unavailable.empty() ? std::string("no Vulkan device") : unavailable;
+            _skipReason = unavailable->empty() ? std::string("no Vulkan device") : *unavailable;
 
             return;
         }

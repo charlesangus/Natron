@@ -22,6 +22,7 @@ set(GpuTests_SOURCES
     ../google-test/src/gtest_main.cc
     BlurCpu_Test.cpp
     BlurGpu_Test.cpp
+    GpuBuffer_Test.cpp
     GpuDevice_Test.cpp
     GpuKernel_Test.cpp
     GpuTransfer_Test.cpp

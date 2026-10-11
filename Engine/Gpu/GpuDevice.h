@@ -18,6 +18,8 @@ namespace gpu {
 struct GpuStatus {
     VkResult result = VK_SUCCESS;
     std::string message;
+    // Set when the caller can retry the same request through a staging copy instead of treating it as fatal.
+    bool fallbackToStaging = false;
 
     bool ok() const { return result == VK_SUCCESS; }
     explicit operator bool() const { return ok(); }
@@ -41,6 +43,10 @@ struct GpuDeviceOptions {
     // Receives VK_EXT_debug_utils messages (validation layer and loader) from whichever thread made
     // the Vulkan call. Unset means no messenger is installed.
     GpuDebugMessageFn debugMessage;
+    // Test override: caps the reported maxStorageBufferRange when smaller than the device limit. 0 = none.
+    uint64_t maxStorageBufferRange = 0;
+    // Size of one host<->device copy chunk.
+    uint64_t copyChunkSize = 512ull << 20;
 };
 
 struct GpuDeviceInfo {
@@ -62,6 +68,16 @@ struct GpuDeviceInfo {
     bool externalMemoryHost = false;
     bool memoryBudget = false;
     bool pushDescriptor = false;
+
+    // Effective values: the device limit, or the GpuDeviceOptions override when that is smaller.
+    uint64_t maxStorageBufferRange = 0;
+    uint64_t copyChunkSize = 0;
+    // 0 when VK_EXT_external_memory_host is absent.
+    uint64_t minImportedHostPointerAlignment = 0;
+    uint64_t deviceLocalHeapSize = 0;
+    uint64_t maxMemoryAllocationSize = 0;
+    // Integrated GPU, or a device-local and host-visible heap that covers all device memory.
+    bool unifiedMemory = false;
 };
 
 class GpuDevice {

@@ -326,6 +326,49 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
         optional(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, dev->info_.pushDescriptor);
     }
 
+    {
+        VkPhysicalDeviceExternalMemoryHostPropertiesEXT hostProps {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT
+        };
+        VkPhysicalDeviceVulkan11Properties p11 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES };
+        VkPhysicalDeviceProperties2 p2 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
+        p2.pNext = &p11;
+        if (dev->info_.externalMemoryHost) {
+            p11.pNext = &hostProps;
+        }
+        vkGetPhysicalDeviceProperties2(dev->physical_, &p2);
+
+        uint64_t range = p2.properties.limits.maxStorageBufferRange;
+        if (options.maxStorageBufferRange != 0) {
+            range = std::min<uint64_t>(range, options.maxStorageBufferRange);
+        }
+        dev->info_.maxStorageBufferRange = range;
+        dev->info_.copyChunkSize = std::max<uint64_t>(options.copyChunkSize, 1);
+        dev->info_.maxMemoryAllocationSize = p11.maxMemoryAllocationSize;
+        dev->info_.minImportedHostPointerAlignment
+            = dev->info_.externalMemoryHost ? hostProps.minImportedHostPointerAlignment : 0;
+
+        VkPhysicalDeviceMemoryProperties mem {};
+        vkGetPhysicalDeviceMemoryProperties(dev->physical_, &mem);
+        uint64_t localHeap = 0;
+        for (uint32_t i = 0; i < mem.memoryHeapCount; ++i) {
+            if (mem.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+                localHeap = std::max<uint64_t>(localHeap, mem.memoryHeaps[i].size);
+            }
+        }
+        dev->info_.deviceLocalHeapSize = localHeap;
+        constexpr VkMemoryPropertyFlags kBoth
+            = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+        bool covers = false;
+        for (uint32_t i = 0; i < mem.memoryTypeCount; ++i) {
+            const auto& t = mem.memoryTypes[i];
+            if ((t.propertyFlags & kBoth) == kBoth && mem.memoryHeaps[t.heapIndex].size >= localHeap) {
+                covers = true;
+            }
+        }
+        dev->info_.unifiedMemory = dev->info_.type == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU || covers;
+    }
+
     Features avail;
     vkGetPhysicalDeviceFeatures2(dev->physical_, &avail.f2);
     dev->info_.shaderFloat16 = avail.f12.shaderFloat16 == VK_TRUE;

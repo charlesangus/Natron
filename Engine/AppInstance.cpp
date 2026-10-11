@@ -1000,24 +1000,6 @@ AppInstance::createWriter(const std::string& filename,
                           int firstFrame,
                           int lastFrame)
 {
-#ifndef NATRON_ENABLE_IO_META_NODES
-    std::map<std::string, std::string> writersForFormat;
-    appPTR->getCurrentSettings()->getFileFormatsForWritingAndWriter(&writersForFormat);
-
-    QString fileCpy = QString::fromUtf8( filename.c_str() );
-    QString extq = QtCompat::removeFileExtension(fileCpy).toLower();
-    std::string ext = extq.toStdString();
-    std::map<std::string, std::string>::iterator found = writersForFormat.find(ext);
-    if ( found == writersForFormat.end() ) {
-        Dialogs::errorDialog( tr("Writer").toStdString(),
-                              tr("No plugin capable of encoding %1 was found.").arg(extq).toStdString(), false );
-
-        return NodePtr();
-    }
-
-
-    CreateNodeArgs args(QString::fromUtf8( found->second.c_str() ), reason, collection);
-#endif
     args.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, filename);
     if ( (firstFrame != std::numeric_limits<int>::min()) && (lastFrame != std::numeric_limits<int>::max()) ) {
         args.addParamDefaultValue<int>("frameRange", 2);
@@ -1145,12 +1127,6 @@ AppInstance::createNodeInternal(CreateNodeArgs& args)
         }
     }
 #endif
-
-    // Unversioned and older Write requests keep resolving to the container until the entry
-    // points pick the native writer.
-    if ((findId == QString::fromUtf8(PLUGINID_NATRON_WRITE)) && (versionMajor != PLUGIN_MAJOR_NATRON_WRITE)) {
-        versionMajor = kWriteContainerMajor;
-    }
 
     try {
         plugin = appPTR->getPluginBinary(findId, versionMajor, versionMinor, _imp->_projectCreatedWithLowerCaseIDs && serialization);

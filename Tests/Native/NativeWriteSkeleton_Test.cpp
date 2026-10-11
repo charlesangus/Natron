@@ -104,13 +104,14 @@ TEST_F(NativeWriteSkeletonTest, ExplicitMajorTwoIsTheNativeNode)
     EXPECT_EQ(1, node->getEffectInstance()->getNInputs());
 }
 
-TEST_F(NativeWriteSkeletonTest, UnversionedWriteStillBuildsTheContainer)
+TEST_F(NativeWriteSkeletonTest, UnversionedWriteIsTheNativeNode)
 {
     NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_WRITE));
 
     ASSERT_TRUE(bool(node));
-    EXPECT_TRUE(isWriteContainer(node));
-    EXPECT_FALSE(isNativeWrite(node));
+    EXPECT_TRUE(isNativeWrite(node));
+    EXPECT_FALSE(isWriteContainer(node));
+    EXPECT_EQ(PLUGIN_MAJOR_NATRON_WRITE, node->getMajorVersion());
 }
 
 TEST_F(NativeWriteSkeletonTest, OfxEncoderIDStillBuildsTheContainer)

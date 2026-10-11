@@ -73,6 +73,19 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+// The container encodes through OFX writers; AppManager::getWriterPluginIDForFileType names the native Write.
+std::string
+bestOfxWriterPluginID(const std::string& extension)
+{
+    IOPluginSetForFormat writers;
+
+    appPTR->getWritersForFormat(extension, &writers);
+
+    return writers.empty() ? std::string() : writers.rbegin()->pluginID;
+}
+} // namespace
+
 //Generic Writer
 #define kParamFilename kOfxImageEffectFileParamName
 #define kParamOutputFormat kNatronParamFormatChoice
@@ -870,7 +883,7 @@ WriteNodePrivate::createWriteNode(bool throwErrors,
         int pluginChoice_i = pluginChoiceKnob->getValue();
         if (pluginChoice_i == 0) {
             //Use default
-            writerPluginID = appPTR->getWriterPluginIDForFileType(ext);
+            writerPluginID = bestOfxWriterPluginID(ext);
         } else {
             std::vector<ChoiceOption> entries = pluginChoiceKnob->getEntries_mt_safe();
             if ( (pluginChoice_i >= 0) && ( pluginChoice_i < (int)entries.size() ) ) {
@@ -1021,7 +1034,7 @@ WriteNodePrivate::refreshPluginSelectorKnob()
     std::string ext = QtCompat::removeFileExtension(qpattern).toLower().toStdString();
     std::string pluginID;
     if ( !ext.empty() ) {
-        pluginID = appPTR->getWriterPluginIDForFileType(ext);
+        pluginID = bestOfxWriterPluginID(ext);
         IOPluginSetForFormat writersForFormat;
         appPTR->getWritersForFormat(ext, &writersForFormat);
 

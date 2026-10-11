@@ -167,8 +167,20 @@ jobs:
           set -euo pipefail
           shellcheck tools/bench/*.sh
 
+      - name: shellcheck tools/ci/check_serialization_layering.sh
+        shell: bash
+        run: |
+          set -euo pipefail
+          shellcheck tools/ci/check_serialization_layering.sh
+
       - name: actionlint workflows
         shell: bash
         run: |
           set -euo pipefail
           actionlint .github/workflows/*.yml
+
+      - name: Serialization/ layering check
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools/ci/check_serialization_layering.sh

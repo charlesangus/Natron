@@ -87,6 +87,7 @@ add_library(NatronEngine STATIC ${NatronEngine_HEADERS} ${NatronEngine_SOURCES})
 target_link_libraries(NatronEngine
     PUBLIC
         HostSupport
+        NatronSerialization
         Boost::headers
         Boost::serialization
         PkgConfig::Cairo

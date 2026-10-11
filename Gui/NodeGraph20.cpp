@@ -84,9 +84,9 @@ segmentTouchesRect(const QLineF& segment,
     return false;
 }
 
-double
-squaredDistanceToSegment(const QPointF& p,
-                         const QLineF& segment)
+QPointF
+closestPointOnSegment(const QPointF& p,
+                      const QLineF& segment)
 {
     const double dx = segment.dx();
     const double dy = segment.dy();
@@ -96,10 +96,64 @@ squaredDistanceToSegment(const QPointF& p,
         t = ((p.x() - segment.x1()) * dx + (p.y() - segment.y1()) * dy) / lengthSq;
         t = std::max(0., std::min(1., t));
     }
-    const double cx = segment.x1() + t * dx - p.x();
-    const double cy = segment.y1() + t * dy - p.y();
+
+    return QPointF(segment.x1() + t * dx, segment.y1() + t * dy);
+}
+
+double
+squaredDistanceToSegment(const QPointF& p,
+                         const QLineF& segment)
+{
+    const QPointF closest = closestPointOnSegment(p, segment);
+    const double cx = closest.x() - p.x();
+    const double cy = closest.y() - p.y();
 
     return cx * cx + cy * cy;
+}
+
+// A circle at the insertion point with a short bar across the pipe's own direction, so the
+// marker reads as a tick on the line rather than a dot that could belong to either end.
+QPainterPath
+buildSpliceMarkerPath(const QLineF& sceneSegment)
+{
+    double dx = sceneSegment.dx();
+    double dy = sceneSegment.dy();
+    const double len = std::sqrt(dx * dx + dy * dy);
+    if (len > 0.) {
+        dx /= len;
+        dy /= len;
+    } else {
+        dx = 0.;
+        dy = 1.;
+    }
+    const QPointF normal(-dy, dx);
+
+    const double radius = TO_DPIX(6.);
+    const double barHalfLength = TO_DPIX(9.);
+
+    QPainterPath path;
+    path.addEllipse(QPointF(0., 0.), radius, radius);
+    path.moveTo(-normal.x() * barHalfLength, -normal.y() * barHalfLength);
+    path.lineTo(normal.x() * barHalfLength, normal.y() * barHalfLength);
+
+    return path;
+}
+
+void
+updateSpliceMarker(QGraphicsPathItem* marker,
+                   QGraphicsItem* markerParent,
+                   Edge* pipe,
+                   const QPointF& selectionCentre)
+{
+    QLineF sceneSegment = pipe->line();
+    sceneSegment.setP1(pipe->mapToScene(sceneSegment.p1()));
+    sceneSegment.setP2(pipe->mapToScene(sceneSegment.p2()));
+
+    const QPointF scenePoint = closestPointOnSegment(selectionCentre, sceneSegment);
+
+    marker->setPath(buildSpliceMarkerPath(sceneSegment));
+    marker->setPos(markerParent->mapFromScene(scenePoint));
+    marker->show();
 }
 
 // The pipe is already connected, so canConnectInput() on its destination stops at
@@ -176,6 +230,7 @@ NodeGraph::clearSpliceHint()
     _imp->_splicePipe = 0;
     _imp->_hintInputEdge->hide();
     _imp->_hintOutputEdge->hide();
+    _imp->_spliceMarker->hide();
 }
 
 void
@@ -310,6 +365,7 @@ NodeGraph::checkForSpliceHint()
     if (bestPipe == _imp->_splicePipe) {
         _imp->_hintInputEdge->initLine();
         _imp->_hintOutputEdge->initLine();
+        updateSpliceMarker(_imp->_spliceMarker, _imp->_nodeRoot, bestPipe, selectionCentre);
 
         return;
     }
@@ -325,6 +381,8 @@ NodeGraph::checkForSpliceHint()
     _imp->_hintOutputEdge->setInputNumber(bestPipe->getInputNumber());
     _imp->_hintOutputEdge->setSourceAndDestination(_imp->_spliceExit, bestPipe->getDest());
     _imp->_hintOutputEdge->setVisible(true);
+
+    updateSpliceMarker(_imp->_spliceMarker, _imp->_nodeRoot, bestPipe, selectionCentre);
 } // NodeGraph::checkForSpliceHint
 void
 NodeGraph::checkForHints(bool shiftdown,

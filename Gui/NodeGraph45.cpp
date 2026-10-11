@@ -170,6 +170,7 @@ NodeGraph::focusOutEvent(QFocusEvent* e)
     if (_imp->_bendPointsVisible) {
         _imp->setNodesBendPointsVisible(false);
     }
+    resetSplicePlan();
     QGraphicsView::focusOutEvent(e);
 }
 

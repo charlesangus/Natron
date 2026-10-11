@@ -245,6 +245,10 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
     Qt::Key key = (Qt::Key)e->key();
     bool accept = true;
 
+    if (key == Qt::Key_Escape) {
+        resetSplicePlan();
+    }
+
 #ifndef NATRON_ENABLE_IO_META_NODES
     if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateReader, modifiers, key) ) {
         getGui()->createReader();

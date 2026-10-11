@@ -36,16 +36,17 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
-#include <QTimer>
-#include <QMutex>
+#include <QColor>
 #include <QGraphicsItem>
 #include <QGraphicsLineItem>
+#include <QGraphicsPathItem>
 #include <QGraphicsPixmapItem>
+#include <QMutex>
 #include <QPainter>
-#include <QPointF>
-#include <QColor>
 #include <QPen>
+#include <QPointF>
 #include <QStyleOptionGraphicsItem>
+#include <QTimer>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -197,6 +198,9 @@ public:
     int _spliceEntryInput = -1;
     NodeGuiPtr _spliceExit;
     Edge* _splicePipe = nullptr;
+
+    // Kept separate from Edge so Edge::paint doesn't need to know about the splice plan.
+    QGraphicsPathItem* _spliceMarker = nullptr;
     NodeGuiPtr _backdropResized; //< the backdrop being resized
     NodesGuiList _selection;
 

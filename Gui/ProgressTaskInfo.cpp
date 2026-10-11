@@ -282,6 +282,7 @@ ProgressTaskInfo::cancelTask(bool calledFromRenderEngine,
     if (!calledFromRenderEngine) {
         Q_EMIT taskCanceled();
     }
+    Q_EMIT taskFinished(retCode);
 } // ProgressTaskInfo::cancelTask
 
 void
@@ -346,6 +347,7 @@ ProgressTaskInfo::onRenderEngineFrameComputed(int frame,
         return;
     }
     updateProgress(frame, progress);
+    Q_EMIT progressChanged(_imp->progressPercent / 100.);
 }
 
 void
@@ -392,6 +394,12 @@ NodePtr
 ProgressTaskInfo::getNode() const
 {
     return _imp->node.lock();
+}
+
+int
+ProgressTaskInfo::getLastRenderedFrame() const
+{
+    return _imp->lastRenderedFrame;
 }
 
 ProcessHandlerPtr

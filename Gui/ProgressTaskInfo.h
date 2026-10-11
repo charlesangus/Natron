@@ -115,6 +115,9 @@ public:
 
     NodePtr getNode() const;
 
+    // -1 until the task has reported its first frame.
+    int getLastRenderedFrame() const;
+
     ProcessHandlerPtr getProcess() const;
 
     void setTaskBar(TaskBar *taskbar);
@@ -158,6 +161,14 @@ public Q_SLOTS:
 Q_SIGNALS:
 
     void taskCanceled();
+
+    // Fraction of the task's frame range rendered so far, in [0, 1].
+    void progressChanged(double progress);
+
+    // Emitted once per run of the task, whether it succeeded, failed, was aborted or was cancelled.
+    // retCode is the render's own code when the engine or process stopped it, and the caller's
+    // when it was cancelled from the GUI.
+    void taskFinished(int retCode);
 
 private:
 

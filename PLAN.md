@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
-status: paused
-current: [M76.P2.T13, M27.P1.T1]
-pm_heartbeat: 2026-10-11T01:18:21-04:00
+status: running
+current: [M44 PR #51 review fixes, M55.P4.T1, M76.P2.T13 (paused), M27.P1.T1, M93.P1.T1]
+pm_heartbeat: 2026-10-11T01:14:35-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -72,7 +72,12 @@ future core work has solid ground to build on.
 
 - **M16 is authored but deferred** (2026-09-05): the `.ntp` format redesign is
   future work — do not start or elaborate it without an explicit user
-  go-ahead. Design and evidence live in
+  go-ahead. **Go-ahead given 2026-10-10 (user):** picked up on a separate host. Elaborated
+  2026-10-10 into **M93 - Serialization Boundary** (plain-data `Serialization/` library, no
+  format change, golden-XML byte-for-byte harness) followed by M16 (`.ntpz` bundle, clean
+  break with no XML import, sibling-relative connections). M93 runs now and rebases onto
+  M76 - Native Write when it merges; **M92 - Linked Nodes should build on M93's plain
+  structs**. See `DECISIONS/2026-10-10-ntpz-clean-break-sibling-connections.md`. Design and evidence live in
   `PLAN/DECISIONS/2026-09-05-project-format-bundle-design.md`.
 - **M17–M21 (deep compositing + USD/Hydra 3D)** authored 2026-09-05 from
   `PLAN/DESIGN/2026-09-05-deep-and-3d-native-extensions.md`, which governs on
@@ -185,6 +190,8 @@ future core work has solid ground to build on.
   **M82–M87 (GPU rendering) added 2026-10-09 via the inbox (user-requested):** M82 - Render Cost Profiling measures first; M83 - GPU Compute Backend Spike picks one engine-wide backend (Vulkan compute + Slang is the lean, pending the user); M84 - GPU Placement And Residency, M85 - Native GPU Kernels, M86 - OFX 1.5 GPU Suites and M87 - Point-Op Kernel Fusion follow. They sit after M80, with M81 - Raw GPU Kernels moved behind M84 so raw kernels feed a resident region. M68 - Headless GL EGL stays deferred and is re-scoped once M83 lands. See `DECISIONS/2026-10-09-one-engine-gpu-backend.md`.
   **M73 shipped 2026-10-08** (PR #43, squash `cb04295b9`): openfx-misc pinned to its merge commit `9fb0d0904`; every fork's SupportExt pin is now on openfx-supportext master; merged stack branches and `build/wt/` worktrees removed (M64 benchmarks saved to `build/bench/from-wt-m64/`).
 
+  **M24 shipped 2026-10-10** (PR #50, squash `a50bef552`). Nodes take their body colour from a category, and the user colour is a ring outside the node. Category and edge-kind colours are set in Preferences and applied on Save. Labels pick black or white text for contrast, and Dots get a settings panel.
+
 # Board
 
 | ID | Milestone | Status | Deps | File |
@@ -248,13 +255,14 @@ future core work has solid ground to build on.
 | M88 | FIR Gaussian Blur | done |  | [M88-fir-gaussian-blur.md](PLAN/MILESTONES/M88-fir-gaussian-blur.md) |
 | M89 | Shared Worktree Ccache | done | - | [M89-shared-worktree-ccache.md](PLAN/MILESTONES/M89-shared-worktree-ccache.md) |
 | M90 | Render Path Serial Overhead | todo |  | [M90-render-path-serial-overhead.md](PLAN/MILESTONES/M90-render-path-serial-overhead.md) |
+| M91 | NVIDIA GPU Validation | todo | M84 | [M91-nvidia-gpu-validation.md](PLAN/MILESTONES/M91-nvidia-gpu-validation.md) |
 | M27 | Real Debug Build | doing | - | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
 | M22 | Missing Plugin Placeholder | todo | M75 | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |
 | M31 | Architectural Cleanup | todo | M75, M76 | [M31-architectural-cleanup.md](PLAN/MILESTONES/M31-architectural-cleanup.md) |
 | M69 | Minor Cleanup | todo | M75 | [M69-minor-cleanup.md](PLAN/MILESTONES/M69-minor-cleanup.md) |
-| M24 | Node Graph Category Colour | doing | - | [M24-node-graph-category-colour.md](PLAN/MILESTONES/M24-node-graph-category-colour.md) |
+| M24 | Node Graph Category Colour | done | - | [M24-node-graph-category-colour.md](PLAN/MILESTONES/M24-node-graph-category-colour.md) |
 | M44 | Trackball Colour Editing | doing | - | [M44-trackball-colour-editing.md](PLAN/MILESTONES/M44-trackball-colour-editing.md) |
-| M55 | Node Graph Polish | todo | M24 | [M55-polish-node-graph-interaction.md](PLAN/MILESTONES/M55-polish-node-graph-interaction.md) |
+| M55 | Node Graph Polish | doing | M24 | [M55-polish-node-graph-interaction.md](PLAN/MILESTONES/M55-polish-node-graph-interaction.md) |
 | M46 | Labelmaker Annotations | todo |  | [M46-labelmaker-annotations.md](PLAN/MILESTONES/M46-labelmaker-annotations.md) |
 | M56 | Visual And Menu Polish | todo | M24 | [M56-polish-visual-and-menus.md](PLAN/MILESTONES/M56-polish-visual-and-menus.md) |
 | M45 | Native Tab Menu | todo |  | [M45-tabtabtab-native-tab-menu.md](PLAN/MILESTONES/M45-tabtabtab-native-tab-menu.md) |
@@ -269,10 +277,13 @@ future core work has solid ground to build on.
 | M21 | Deep Tier-2 And Bridges | todo |  | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
 | M51 | Deep Filtering OpenDCX | todo |  | [M51-deep-filtering-opendcx.md](PLAN/MILESTONES/M51-deep-filtering-opendcx.md) |
 | M32 | Deep Sample Node | todo |  | [M32-deep-sample-node.md](PLAN/MILESTONES/M32-deep-sample-node.md) |
-| M16 | Project Format Redesign | todo |  | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
+| M93 | Serialization Boundary | doing | - | [M93-serialization-boundary.md](PLAN/MILESTONES/M93-serialization-boundary.md) |
+| M16 | Project Format Redesign | todo | M93 | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
 | M70 | RFV Declaration And Storage | todo |  | [M70-rfv-declaration-and-storage.md](PLAN/MILESTONES/M70-rfv-declaration-and-storage.md) |
 | M71 | RFV Render Context | todo |  | [M71-rfv-render-context.md](PLAN/MILESTONES/M71-rfv-render-context.md) |
 | M72 | RFV Integration And UAT | todo |  | [M72-rfv-integration-and-uat.md](PLAN/MILESTONES/M72-rfv-integration-and-uat.md) |
+| M92 | Linked Nodes | todo | M24 | [M92-linked-nodes.md](PLAN/MILESTONES/M92-linked-nodes.md) |
+| M94 | Delete Unused Maintainer Skill | todo | - | [M94-delete-unused-maintainer-skill.md](PLAN/MILESTONES/M94-delete-unused-maintainer-skill.md) |
 
 - 2026-09-18 — **M18's manual GUI checklist: all 6 items now confirmed**
   (re-run on a rebuilt AppImage at `94ceb9407` or later). Separately, the

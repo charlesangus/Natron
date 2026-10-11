@@ -277,7 +277,7 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
     - Existing `GuiTests` and `ctest` stay green.
   - size: M
 
-- [ ] M44.P4.T4 — Make a swatch drag a trackball (with V/T locks) while a click still toggles picking
+- [x] M44.P4.T4 — Make a swatch drag a trackball (with V/T locks) while a click still toggles picking
   - files: `Gui/KnobGuiColor.h`, `Gui/KnobGuiColor.cpp`
   - approach:
     - Move `ColorPickerLabel`'s toggle (`Gui/KnobGuiColor.cpp:98-107`) from press to release when the pointer moved less than `QApplication::startDragDistance()`.
@@ -291,7 +291,7 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
 
 ## Phase 44.5: Global trackball mode
 
-- [ ] M44.P5.T1 — Track the last-touched colour knob and resolve the global-mode target
+- [x] M44.P5.T1 — Track the last-touched colour knob and resolve the global-mode target
   - files: `Gui/ColorTrackballTarget.h` (new), `Gui/ColorTrackballTarget.cpp` (new), `Gui/KnobGuiColor.cpp`, `Tests/ColorTrackballTarget_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - `ColorKnobTouchTracker`, created lazily per `Gui`, implements the Design notes (Last-touched colour knob and the target): the app-wide filter for press, wheel and focus-in, and the dynamic-property tag that `KnobGuiColor` sets on its container and panel.
@@ -304,7 +304,7 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
     - A scratch GUI script opens Grade and then Blur (Blur on top → none), clicks Grade's `offset` spinbox, puts Grade first, and checks that the resolver returns `offset`.
   - size: M
 
-- [ ] M44.P5.T2 — Build the global-mode controller: engage/exit, click-drag strokes, C/T/V modes, gearing, accept keys, knob switching
+- [x] M44.P5.T2 — Build the global-mode controller: engage/exit, click-drag strokes, C/T/V modes, gearing, accept keys, knob switching
   - files: `Gui/ColorTrackballGlobalMode.h` (new), `Gui/ColorTrackballGlobalMode.cpp` (new), `Gui/KnobGuiColor.h`, `Gui/KnobGuiColor.cpp`
   - approach:
     - Implement the Design notes (Global mode, HUD and viewer border), without the HUD and border, which come in P5.T3.
@@ -328,7 +328,7 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
     - Esc exits, and the knob keeps its value.
   - size: L
 
-- [ ] M44.P5.T3 — Add the properties-bin HUD and the viewer highlight border
+- [x] M44.P5.T3 — Add the properties-bin HUD and the viewer highlight border
   - files: `Gui/ColorTrackballHud.h` (new), `Gui/ColorTrackballHud.cpp` (new), `Gui/ColorTrackballGlobalMode.cpp`, `Tests/ColorTrackballHud_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - **`ColorTrackballHud`** is a plain widget that shows the node and knob (n/N), the mode, the x/y meaning, the live values, Y, A, the gear, the key legend with the active key lit, and an end-of-list message.
@@ -344,7 +344,7 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
     - Screenshot of the global mode in T.
   - size: M
 
-- [ ] M44.P5.T4 — Add the Ctrl+E application-wide shortcut and the per-row target button
+- [x] M44.P5.T4 — Add the Ctrl+E application-wide shortcut and the per-row target button
   - files: `Gui/ActionShortcuts.h`, `Gui/GuiApplicationManager10.cpp`, `Gui/Gui.cpp`, `Gui/KnobGuiColor.cpp`
   - approach:
     - Add `kShortcutIDActionColorTrackball` and its description in `kShortcutGroupGlobal`, registered at Ctrl+E, which is unbound today.
@@ -361,7 +361,7 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
 
 ## Phase 44.6: GUI evidence and user UAT
 
-- [ ] M44.P6.T1 — Write the M44 GUI evidence script and capture the screenshot set
+- [x] M44.P6.T1 — Write the M44 GUI evidence script and capture the screenshot set
   - files: `build/m44-gui/m44_trackball.py` (new, untracked scratch, not committed)
   - approach:
     - Use the `Tests/gui/guitest.py` helpers (`run`, `check`, `shot`, `viewer_centre_colour`).
@@ -386,7 +386,7 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
   - verify: `tools/ci/local/build.sh fast`, then `Tests/gui/run-gui-test.sh build/m44-gui/m44_trackball.py build/fast/App/Natron` exits 0. `build/gui-test-out/results.txt` shows no FAIL, and the shots exist for every section. The PR description lists the shots.
   - size: M
 
-- [ ] M44.P6.T2 — Package an AppImage for the user's hands-on test
+- [x] M44.P6.T2 — Package an AppImage for the user's hands-on test
   - files: none (output: `build/fast/artifacts/*.AppImage`)
   - approach: Run `tools/ci/local/package.sh fast` on the tree that passed P6.T1. Hand the user the AppImage path and a one-screen test card:
     - the wheel gestures and V/T locks
@@ -400,10 +400,300 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
 
 - 2026-10-10 — **One build at the end (user):** builds are the bottleneck on this host, so tasks are implemented and committed without per-task builds or tests, and implementers do not compile. The milestone gets a single build, test and screenshot run once every task has landed, and any breakage is fixed then. Task checkboxes mean implemented and committed, not verified.
 
+## Phase 44.7: UAT round 1
+
+The "one build at the end" rule still applies. Implementers do not compile, and each **verify** below is what the single end build (T12) runs and checks. GUI checks go in `build/m44-gui/m44_trackball.py`, run with `Tests/gui/run-gui-test.sh build/m44-gui/m44_trackball.py build/fast/App/Natron` after `tools/ci/local/build.sh fast`.
+
+**Ordering and parallelism.**
+- **Wave 1, all in parallel:** T1, T2, T3, T4. Their file sets do not overlap.
+- **Chain B, sequential:** T4 → T5 → T6 → T7 → T8. Every task in it touches `Gui/KnobGuiColor.*` and/or `Gui/KnobGuiValue.*`.
+  - T7 also waits for T1, because they share `Tests/CMakeLists.txt` and T7 relies on T1's slider semantics.
+  - T7 also waits for T2, for the new ranges.
+- **T9** starts after T2 and runs in parallel with chain B (disjoint files).
+- **T10** waits for both T8 and T9.
+- **T11** waits for T10 and the user's icon pick.
+- **T12** comes after everything else, then **T13**.
+
+- [x] M44.P7.T1 — Add the shared gearing (Ctrl ×0.1, Shift ×4, Ctrl+Shift ×0.01) to every `ScaleSliderQWidget`, read from each mouse event
+  - files: `Gui/ScaleSliderQWidget.h`, `Gui/ScaleSliderQWidget.cpp`, `Tests/ScaleSliderQWidget_Test.cpp` (new), `Tests/CMakeLists.txt`
+  - approach:
+    - **What stays the same:**
+      - A press with no modifier still jumps to the clicked value and emits `positionChanged`.
+      - Alt+click still emits `resetToDefaultRequested`.
+      - `editingFinished(hasMoved)` and the draft-render handling on release are unchanged.
+      - The value is still clamped to `[minimum, maximum]`.
+    - **What changes:**
+      - A press with Ctrl and/or Shift held does not jump. It anchors at the current value.
+      - Every move during a press adds `dx_px × (zoomCtx visible range / width()) × gear(ctrl, shift)` to a double accumulator. `gear()` is the existing function in `Engine/ColorWheelMath.h`, which stays the single source for the factors. The modifiers come from `e->modifiers()` on each event, so focus no longer matters, and a modifier pressed or released mid-drag applies from the next move without a jump.
+      - The accumulator is clamped at each step, so reversing at an end responds at once.
+      - Int sliders round the accumulator only when they emit.
+      - A plain drag after a geared stretch stays relative, so the marker no longer sits under the cursor.
+    - **What is removed:** the Ctrl / Ctrl+Shift scale zoom. That means `zoomRange()`, `ctrlDown`/`shiftDown`/`currentZoom`, the zoom in `keyPress`/`keyRelease`/`focusIn`/`focusOut`, and its use in `increment()`. The ticks no longer rescale while Ctrl is held; see open question 3.
+    - Hover focus-stealing in `enterEvent`/`leaveEvent` stays as it is, so focus behaviour elsewhere does not change.
+    - **Who is affected:** every user of the slider, namely `KnobGuiValue` (every float and int knob slider), the viewer's gain and gamma sliders (`Gui/ViewerTab.cpp:444,491`) and the old popup's sliders (`Gui/ColorSelectorWidget.cpp`). None of those call sites change.
+    - **Shortcut conflicts:** none. The modifiers are read only while a slider has the mouse button down. Ctrl and Ctrl+Shift give the same factors the zoom gave (×0.1, ×0.01), and Shift-drag did nothing before.
+    - **Flag, inconsistency kept:** `SpinBox` digit stepping (wheel, arrow keys, Alt-drag) uses Shift as ×10 and Ctrl as ×0.1, so Shift means ×10 on a spinbox and ×4 on a slider. Spinboxes are not sliders and are left alone.
+  - verify: `GuiTests --gtest_filter=ScaleSliderQWidget*`, with a 300 px slider over [0, 1] built with a null `Gui*` and synthetic mouse events (no focus given):
+    - A plain press at 25 % gives about 0.25.
+    - A plain 30 px drag adds about 0.1 (±1 px worth).
+    - Ctrl held from the press: no jump, and +100 px adds about 0.0333.
+    - Shift: +10 px adds about 0.133.
+    - Ctrl+Shift: +100 px adds about 0.00333.
+    - Pressing Ctrl after 50 px of plain drag leaves the value continuous at the switch.
+    - Clamping at 1, then a −3 px move, drops below 1.
+    - An int slider over [0, 100] at Ctrl, +50 px, gives +1 or +2.
+    - Alt+press emits only the reset.
+  - size: M
+
+- [x] M44.P7.T2 — Give global C trackball semantics, add global S (the old C), and fix the Offset temp/tint slider range
+  - files: `Engine/ColorWheelMath.h`, `Engine/ColorWheelMath.cpp`, `Tests/ColorWheelMath_Test.cpp`
+  - approach:
+    - Add `eColorGlobalModeS` to `ColorGlobalModeEnum` and rewrite the enum's comment.
+    - `globalModeEdit` changes:
+      - **C** builds one `ColorEdit{eColorAxisTrackball, dx·r·g, −dy·r·g}`, which is `translate()`: a relative 2D move in the plane, like the wheel.
+      - **S** is today's C body unchanged: hue on x at `hueDegreesPerPixel`, saturation on y at `satPlanePerPixel`, the 10 % speed.
+      - **T** and **V** are unchanged.
+    - Add `TrackballRates::globalTrackballPlanePerPixel = wheelRim / 64.0`, about 5.5e-4/px. That is the rate of the swatch drag T4 removes, where 64 px crosses the rim. `r` is this value.
+    - Update `ColorGlobalModeStroke::hueTravelDegrees` callers: its hue advance applies to S only, because C's translate needs no remembered hue. It lives in `Gui/ColorTrackballGlobalMode.cpp`; T9 makes that one-line change, and this task only documents it in the header.
+    - **The Offset range fix.** In `sliderMapping`, Offset (non-ratio) Temp becomes ±0.1 and Offset Tint becomes ±0.1. Ratio roles keep ±100 mired and ±50 tint.
+      - Once T7 lands, a Natron slider's drag rate is its range divided by its width. A ±0.1 range over a track of about 250 px gives about 8e-4/px, which matches `tempTintPerPixelOffset` (7e-4) used by the wheel's T lock and global T. The range is retuned and the rate kept.
+      - The Offset Value range of ±0.25 stays.
+    - Change the comments that name `ColorEditSlider` to "the panel's Natron sliders" (the `ColorSliderKindEnum`, `SliderRange` and chevron docs).
+  - verify:
+    - `Tests --gtest_filter=ColorWheelMath*`:
+      - C with (dx, dy) = (64, 0) at gear 1 on a neutral gain gives a plane point about wheelRim along +x, keeps Y within 1e-12 and leaves alpha unchanged.
+      - C is linear: one 40 px move equals two 20 px moves within 1e-12.
+      - S reproduces the old C test vectors.
+      - Offset Temp and Tint `sliderMapping` gives [−0.1, 0.1].
+    - Existing cases stay green.
+  - size: M
+
+- [x] M44.P7.T3 — Make the wheel's V/T locks independent of hover and focus, and let V take either axis
+  - files: `Gui/ColorWheelWidget.h`, `Gui/ColorWheelWidget.cpp`, `Tests/ColorWheelWidget_Test.cpp`
+  - approach:
+    - **Key tracker.** Add a file-local `LockKeyTracker`, a `QObject` installed once on `qApp` by the first `ColorWheelWidget`.
+      - It records non-auto-repeat KeyPress and KeyRelease of V and T on an ordered held stack, from whichever widget has focus.
+      - It clears the stack on `ApplicationStateChange` to inactive.
+      - It **consumes** V/T, by accepting `ShortcutOverride` and filtering `KeyPress`, only while a wheel drag is active or the pointer is over a `ColorWheelWidget` (`QApplication::widgetAt(QCursor::pos())` or one of its ancestors is a wheel). This stops a focused spinbox from typing "v". Otherwise it only observes.
+      - Ctrl+V and Ctrl+T are never consumed while idle, which keeps today's `wantsShortcutOverride` rule. Mid-drag, Ctrl is the gear.
+    - **Wheel changes.**
+      - `getActiveLock()` reads the tracker's stack at the press and on every move.
+      - Remove the hover `setFocus`, the `_hovered` gating and `_heldLocks`.
+      - Keep `setFocus` on press for Esc mid-drag.
+      - Drop `grabKeyboard()`/`_keyboardGrabbed`, because the app filter sees releases wherever focus is.
+    - **V on either axis.** V computes `edit.d1 = (dx − dy) × valueRatePerPixel × g`, as global V does.
+  - verify: `GuiTests --gtest_filter=ColorWheelWidget*`, with focus explicitly on another widget, a `QLineEdit`, throughout:
+    - V pressed before the mouse press, then a drag, changes only the value.
+    - V pressed mid-drag switches to Value, and its release switches back to Trackball within the same gesture.
+    - A pure +dx drag with V raises the value, and a pure −dy drag with V raises it by the same amount.
+    - T before the press does temp/tint.
+    - The `QLineEdit` receives no "v" while the pointer is over the wheel.
+    - With the pointer elsewhere, V reaches the `QLineEdit`.
+    - Ctrl+V while idle is not overridden.
+  - size: M
+
+- [x] M44.P7.T4 — Remove the swatch's trackball drag, keeping click-to-toggle picking
+  - files: `Gui/KnobGuiColor.h`, `Gui/KnobGuiColor.cpp`, `Tests/ColorPickerLabel_Test.cpp`
+  - approach:
+    - Delete everything that drives the swatch drag:
+      - `beginTrackballDrag`, `stepTrackballDrag`, `endTrackballDrag`
+      - the drag state (`_dragging`, `_pressPos`, `_lastDragPos`, `_segmentBase`, `_dragValue`, `_dragTotal`, `_hasDragTotal`, `_heldLocks`, `_hovered`, `_keyboardGrabbed`)
+      - the key, focus and `event()` overrides, `isLockKey`, `wantsShortcutOverride`, `activeLock`, `axisLabel`
+      - `kSwatchTrackballPixelsPerRim`
+      - `StrongFocus` and the hover `setFocus`
+    - Keep the click on release, below `startDragDistance`, so a jitter still counts as a click. A longer press-drag does nothing.
+    - Restore the tooltip to the picking text only.
+    - `getEditSession`, `getColorRole`, `getEditBasis`, `getCurrentColorValue` and `isColorEditable` stay, because the panel and global mode use them. Fix their doc comments, which name `ColorPickerLabel`.
+  - verify:
+    - `GuiTests --gtest_filter=ColorPickerLabel*`: a 0 px click toggles picking, a 2 px jitter toggles, and a 30 px drag changes nothing, records no undo step and does not toggle.
+    - Delete the two drag cases from the file.
+  - size: M
+
+- [x] M44.P7.T5 — Keep colour rows compact on the left with the four buttons right-aligned in every state
+  - files: `Gui/KnobGuiValue.cpp`, `Gui/KnobGuiColor.cpp`
+  - approach:
+    - **Slider stretch.** In `KnobGuiValue::createWidget`, add the slider with stretch factor 1: `containerLayout->addWidget(_imp->slider, 1)`, or `setStretchFactor` in the grid case.
+      - Every other row has the slider as its only expanding item, so this changes nothing for non-colour knobs.
+    - **Spacer.** `KnobGuiColor::addExtraWidgets` starts with `containerLayout->addStretch(0)`.
+      - While the slider is visible, it takes all the extra width, because it has the non-zero stretch.
+      - While the slider is hidden, the spacer takes the width. It also makes the row expand horizontally, so `AlignLeft` no longer shrinks it.
+      - The result in every state: the spinboxes stay packed at the left, and "4", the swatch, ▸ and ⊕ stay at the right edge.
+    - **Fixed label slot.** The dimension-label slot before spinbox 0 gets a fixed width (the widest of the knob's dim names at the app font), shown empty while folded. Folding and unfolding then no longer slides spinbox 0 and the slider sideways.
+      - This applies only to rows where `wantsPerDimensionSliders()` is true (T6). Until T6 lands, gate it on a `KnobGuiColor`-only check.
+    - **Hide/show.** `KnobGuiColor::_hide`/`_show` also hide and show `_globalModeButton`, which is missed today.
+  - verify: the GUI script screenshots Grade at a fixed panel width in four states: folded, unfolded, folded with the panel open, and unfolded with the panel open.
+    - In all four, the x of the ⊕ button's right edge is the same (±1 px).
+    - The spinbox x positions are identical across states.
+    - In the unfolded states, the gap between adjacent spinboxes is the layout spacing (±1 px), not spread out.
+    - A Blur `size` (2-D double) row is pixel-identical to before.
+  - size: M
+
+- [x] M44.P7.T6 — Give each broken-out colour channel its own line with a spinbox and a Natron slider
+  - files: `Gui/KnobGuiValue.h`, `Gui/KnobGuiValue.cpp`, `Gui/KnobGuiColor.h`, `Gui/KnobGuiColor.cpp`
+  - approach:
+    - **Hook.** Add a protected virtual `bool wantsPerDimensionSliders() const` (default false). `KnobGuiColor` returns true when it has an adjust panel and `nDims > 1`. The new layout is built only when the hook is on, a below-row column exists, and the dimension-switch button was created (slider visible).
+    - **Layout.**
+      - Line 0 is the existing row: label slot "r" (T5), spinbox 0, `_imp->slider`, spacer, then the buttons.
+      - A new `_imp->dimensionLines` widget is inserted into the below-row column at index 1, after the row and before the adjust panel.
+      - It holds one line per dimension from 1 to n−1, in a `QGridLayout`: a fixed-width `ClickableLabel` with the dim name, that dimension's existing `KnobSpinBox` reparented here, a new `ScaleSliderQWidget` with stretch, and a fixed right inset equal to the buttons' total width. With that inset, every channel slider ends at the same x as line 0's slider.
+      - Folded: only line 0 shows, and `_imp->slider` drives all dims as today.
+      - Unfolded: `dimensionLines` shows, and `_imp->slider` drives dim 0 only. `sliderEditingEnd` writes all dims only while folded.
+      - The old "four spinboxes in one row" layout stays for knobs without the hook.
+    - **Per-dimension sliders.** Each slider i gets dim i's display range: extend `onDisplayMinMaxChanged(min, max, index)` to update slider i. They show the gearing from T1.
+      - `positionChanged` pushes a single-dimension `KnobUndoCommand<double>`, honouring `getRenderOnEditingFinishedOnly`, in the same way as `onSliderValueChanged`/`sliderEditingEnd`.
+      - `editingFinished` mirrors `onSliderEditingFinished`.
+      - `resetToDefaultRequested` pushes `RestoreDefaultsCommand(false, {knob}, i)`.
+      - `updateGUI` seeks slider i.
+      - `setEnabled`, `setReadOnly(…, i)`, `reflectExpressionState` and `setDirty` reach slider i.
+      - `KnobGuiColor::onDimensionsExpanded` gives slider i the same line colour as spinbox i (`setUseLineColor`).
+    - **Fold control.** Add a protected `setAutoFoldSuppressed(bool)`. While it is set, `updateGUI` never auto-folds.
+      - Add a protected `setDimensionsExpanded(bool)`. It expands freely, but folds only when every dimension is already equal, and it never calls the value-copying `onDimensionSwitchClicked(false)`. T8 and T10 use it.
+    - Rows sharing a line, and simplified or viewer colour knobs, are untouched.
+  - verify: the GUI script on Grade `gain`.
+    - Click "4": four lines r/g/b/a appear, each with a slider, and the sliders' right edges are aligned (±1 px).
+    - Dragging the g slider changes only `gain.g`, records one undo step, and undo restores it.
+    - Alt+click on b resets only b.
+    - An expression on g makes the g spinbox and slider read-only.
+    - Folding back with all channels equal gives one row.
+    - A 3-dim Constant colour shows three lines.
+    - A non-colour 3-D double knob is unchanged.
+    - Screenshot.
+  - size: L
+
+- [x] M44.P7.T7 — Rebuild the adjust panel without tabs, on Natron `ScaleSliderQWidget` + `SpinBox` lines, and delete `ColorEditSlider`
+  - files: `Gui/ColorAdjustPanel.h`, `Gui/ColorAdjustPanel.cpp`, `Gui/KnobGuiColor.cpp`, `Tests/ColorAdjustPanel_Test.cpp`, `Tests/CMakeLists.txt`; delete `Gui/ColorEditSlider.h`, `Gui/ColorEditSlider.cpp`, `Tests/ColorEditSlider_Test.cpp`
+  - approach:
+    - **Removed.** The `QTabWidget`, the "Wheel"/"Values" labels, `buildValuesTab`, the RGBA/HSV/hex fields, the palette, `onValueFieldCommitted`, `onHexCommitted`, `onPaletteColorPicked`, `onTabChanged`, `reloadPalette`, `addCurrentColorToPalette`, `clearPalette`, `savePalette`, and the getters `getTabWidget`/`getWheelTab`/`getValuesTab`/`getValueField`/`getPalette*`.
+      - `rgbToHsv`/`hsvToRgb` go if nothing else uses them; check with grep.
+      - The RGBA numbers now live on the knob's own channel lines (T6). On the palette and hex field, see open question 4.
+    - **New layout.** The panel is an HBox: the wheel (`AlignTop`), then a `QGridLayout` of lines Hue, Sat, Value, Temp, Tint, Alpha. Each line has a fixed-width caption, a plain `SpinBox` (double, decimals by unit) and a `ScaleSliderQWidget` (double, null `Gui*`, stretch).
+      - `setRightInset(int)`, fed by `KnobGuiColor` with the buttons' width, ends these sliders at the same x as the channel sliders above.
+      - Add `QWidget* getEditArea()`, the panel's content for enable/disable, plus `getSlider(kind)` returning `ScaleSliderQWidget*` and `getSpinBox(kind)`.
+      - The Alpha line follows open question 1.
+    - **Ranges.** Each slider's min/max come from `sliderMapping(kind, role, rates)` and are refreshed on `setRole`. That includes T2's Offset ±0.1. The unit string goes into the line's tooltip.
+    - **Semantics.** Natron slider semantics replace `ColorEditSlider`'s. The absolute-marker vs relative-elsewhere split is gone. A plain press jumps to the clicked value and a drag follows. Fine relative control comes from T1's gearing.
+      - Every `positionChanged(v)` is an **absolute** target. Hue is `setHue`, Sat `setSaturation`, Value is stops→`setValue` (ratio roles) or Y (Offset), and Alpha is absolute. Temp and Tint keep today's base+delta conversion (`replaces = true`).
+      - The first `positionChanged` with no gesture running calls `beginGesture(eSourceSlider)`, and `editingFinished` calls `endGesture()`. A gesture is still one Start, its Moves and one End, so it is still one undo step.
+      - `resetToDefaultRequested` (Alt+click) feeds the existing `onSliderResetRequested`.
+      - `SpinBox::valueChanged` is a one-shot absolute edit through `oneShot()`.
+      - `refreshSliders` calls `seekScalePosition` (which emits nothing) and `SpinBox::setValue` on every line except the one that is the active gesture's source.
+    - **Accepted consequences.** These are worth telling the user at T13:
+      - The tracks lose their colour gradients; see open question 2.
+      - A value outside a slider's range shows the marker clamped at the end, and grabbing that slider starts from the clamped value. Natron knob sliders already behave this way.
+      - Sat's drag speed is now its range over its width: 0..wheelRim across the track, about 1.4e-4/px plain and 1.4e-5/px with Ctrl, instead of the 10 %-speed 3.5e-5/px.
+    - **`KnobGuiColor.cpp`.** `refreshAdjustPanelState` enables `getEditArea()`. The ▸ tooltip drops "Values tab" and "palette".
+    - **Build lists.** Remove `ColorEditSlider_Test.cpp` from `Tests/CMakeLists.txt`. `Gui` sources are globbed, so deleting the files is enough there.
+    - `TrackballRates` is still used by the wheel locks, global mode and T2.
+  - verify: `GuiTests --gtest_filter=ColorAdjustPanel*`, rewritten:
+    - There is no `QTabWidget` child.
+    - Six lines exist; a 1-dim knob shows only Value, and a 3-dim knob has no Alpha.
+    - A press at 50 % of the Hue track gives about 180° with Y kept (±1e-9).
+    - A Ctrl drag on Value moves 0.1× the plain rate.
+    - A drag emits exactly Start, Move…, End once.
+    - Typing 2 (stops) in the Value spinbox on a gain multiplies Y by 4.
+    - Alt+click on Temp resets temp.
+    - The Offset role's Temp slider range is ±0.1.
+    - `ColorEditSlider` is gone from the tree (`grep -r ColorEditSlider Gui Tests Engine` is empty apart from history).
+  - size: L
+
+- [x] M44.P7.T8 — Open the dropdown cleanly: no flash, and it unfolds the channels while it is open
+  - files: `Gui/KnobGuiColor.h`, `Gui/KnobGuiColor.cpp`, `Gui/KnobGuiValue.cpp`
+  - approach:
+    - **Diagnose the flash first.** In the GUI script, install a paint logger on the panel and its descendants that records each `QEvent::Paint` with `mapTo(window)` geometry for the first 200 ms after the ▸ click. A paint whose geometry differs from the settled one is the flash.
+      - Leading hypothesis: `onAdjustPanelToggled` calls `setVisible(true)` while the below-row column, the page and the scroll widget still have their old sizes. The panel paints one frame at a stale geometry over the rows below before the posted `LayoutRequest`s grow the column and push those rows down.
+    - **Fix.** Wrap the toggle in `setUpdatesEnabled(false)` on the knob page's top widget (the `DockablePanel` scroll-area widget). Then show or hide the panel and the channel lines, activate the layouts bottom-up (column → row parent → page) with `QLayout::activate()`, flush with `QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest)`, and turn updates back on.
+      - If the logger points elsewhere, fix that instead. Likely candidates: the wheel's first disc render at size 0, or a widget created and only later reparented in `createBelowRowWidget`.
+    - **Unfold while open** (open question 1, recommended answer). Opening ▸ remembers whether the knob was folded, calls `setDimensionsExpanded(true)` and `setAutoFoldSuppressed(true)`.
+      - Closing clears the suppression and re-folds through `setDimensionsExpanded(false)` only if the knob was folded before and all channels are still equal.
+      - Clicking "4" while the panel is open still works. Folding asks no confirmation, as today: equal channels fold, and unequal ones copy r, Natron's existing behaviour.
+    - The unfold and re-fold run inside the same update guard as the panel toggle, so they add no flash of their own.
+  - verify: the GUI script with the paint logger.
+    - Opening and closing ▸ on Grade `gain`, `multiply` and `offset` logs no paint at a non-final geometry.
+    - Open on neutral (1,1,1,1): four channel lines are visible above the H/S/V lines, and they stay unfolded after a `value` refresh. That last part is the auto-fold check.
+    - Close: the knob folds back to one row.
+    - Open on (1,2,1,1), then close: it stays unfolded.
+    - Screenshot of the open state, showing the RGBA lines above the Hue…Tint(/Alpha) lines.
+  - size: M
+
+- [x] M44.P7.T9 — Add the S key to global mode, retarget C to the trackball, and update the HUD legend
+  - files: `Gui/ColorTrackballGlobalMode.h`, `Gui/ColorTrackballGlobalMode.cpp`, `Gui/ColorTrackballHud.h`, `Gui/ColorTrackballHud.cpp`, `Tests/ColorTrackballGlobalMode_Test.cpp`
+  - approach:
+    - **Keys.** The key classifier maps `Qt::Key_S` to `eColorGlobalModeKeySetMode` with `eColorGlobalModeS`. C, T and V are unchanged.
+      - While engaged, the controller's `ShortcutOverride` handling claims bare S. That keeps the global Project Settings shortcut (bare S, `GuiApplicationManager10.cpp:788`) from firing. This is the only shortcut S could hit, and only while the mode is engaged.
+    - **Strokes.** `ColorGlobalModeStroke::hueTravelDegrees` and `rememberedHueAfter` advance the remembered hue for S only. C is a pure translate.
+    - **HUD.**
+      - The legend becomes C S T V with the active key lit; add `_legendS`.
+      - Mode lines: "C: trackball (drag moves hue and saturation together)", "S: x = hue, y = saturation", "T: x = temp, y = tint", "V: either axis = value".
+      - C and S both show the hue/sat readout.
+    - **Tooltips.** Update the global button's tooltip and the `Ctrl+E` description to list C/S/T/V.
+  - verify:
+    - `GuiTests --gtest_filter=ColorTrackballGlobalMode*:ColorTrackballHud*`:
+      - The S key selects S.
+      - An S stroke reproduces the old C numbers.
+      - A C stroke of (+64, 0) moves the plane point about wheelRim along +x with Y kept.
+      - The HUD lights S.
+      - A synthetic S `ShortcutOverride` while engaged is accepted.
+    - In the GUI script, S pressed while engaged does not open Project Settings.
+  - size: M
+
+- [x] M44.P7.T10 — Put the HUD directly under the edited knob, and open and unfold that knob on engage
+  - files: `Gui/ColorTrackballGlobalMode.cpp`, `Gui/KnobGuiColor.h`, `Gui/KnobGuiColor.cpp`, `Gui/KnobGuiValue.h`, `Tests/ColorTrackballHud_Test.cpp`
+  - approach:
+    - **HUD placement.** Replace the properties-bin insertion (`ensureColorTrackballHud`, `layout->insertWidget(1, hud)` on the bin) with `KnobGuiColor::attachGlobalModeHud(QWidget*)` and `detachGlobalModeHud(QWidget*)`.
+      - Attaching inserts the HUD into the knob's below-row column right after the channel lines and before the adjust panel. This needs a protected `QVBoxLayout* getBelowRowColumnLayout()` on `KnobGuiValue`.
+      - The controller owns the HUD through `QPointer`. It detaches on knob switch and exit, by reparenting to null and hiding. If the knob GUI is destroyed while the HUD is attached, the HUD dies with it and is recreated lazily.
+      - `revealTarget` calls `ensureWidgetVisible` on the whole column, so the row, the HUD and the panel all stay in view.
+    - **Engage and switch.** On engage and on each knob switch, the target remembers its prior state (panel open or closed, folded or not). Then it calls `setAdjustPanelExpanded(true)` (T8 unfolds it and suppresses auto-fold) and `setGlobalModeHighlighted(true)`.
+    - **Exit and switch away.** On exit, and when switching away, the old target is restored (open question 5, recommended answer): the panel closes if it was closed, and it folds only if it was folded and the channels are still equal.
+    - Every toggle goes through T8's update guard, so engaging does not flash.
+  - verify:
+    - `GuiTests --gtest_filter=ColorTrackballHud*`: given a stand-in column layout, `attach` puts the HUD at the expected index and `detach` removes it.
+    - The GUI script:
+      - Ctrl+E on Grade engages on `gain`. Its panel opens unfolded, and the HUD's top edge is within 4 px below the last channel line and above the panel.
+      - Ctrl+Down moves the HUD under `multiply`. `gain` returns to its prior closed and folded state, and `multiply` opens.
+      - Esc removes the HUD and restores `multiply`.
+      - The properties bin's own layout has no HUD at any point.
+      - Screenshots: engaged, and after the switch.
+  - size: M
+
+- [x] M44.P7.T11 — Apply the dropdown and global-edit icons the user picks (placeholder until the icon pitch is answered)
+  - files: `Gui/KnobGuiColor.cpp`, `Gui/Resources/Images/` (new icon files), `Gui/GuiResources.qrc`, `Global/Enums.h`, `Gui/GuiApplicationManager.cpp`
+  - approach:
+    - Add the picked artwork from `PLAN/DESIGN/icons/`, or whatever the pitch delivers, at the medium-button sizes with a hi-dpi variant.
+    - Register two new `NATRON_PIXMAP_*` values and load them in `GuiApplicationManager::getIcon`, as `NATRON_PIXMAP_COLORWHEEL` is.
+    - Set them on `_colorSelectorButton` (replacing the ▸/▾ `setArrowType`, keeping both checked states distinct if the pick has two states) and on `_globalModeButton` (replacing `NATRON_PIXMAP_VIEWER_CENTER`).
+    - Scope and details are fixed only once the user picks.
+  - verify: the GUI script screenshots a collapsed row, an expanded row and the engaged state. The icons are crisp at 1× and 2× (`QT_SCALE_FACTOR=2` run), and the checked and unchecked states differ.
+  - size: M
+
+- [x] M44.P7.T12 — End build: run every suite, refresh the GUI evidence script and screenshots, and update the milestone's verification gate
+  - files: `build/m44-gui/m44_trackball.py` (untracked scratch), `PLAN/MILESTONES/M44-trackball-colour-editing.md` (verification gate list; the executor edits this)
+  - approach:
+    - Run `tools/ci/local/build.sh fast`. Re-run cmake first, because files were added and deleted.
+    - Fix any breakage.
+    - Fold every task's GUI checks above into the script.
+    - **Drop these sections:** swatch drag, the Values tab (`09-values-tab-hdr`), the absolute/relative `ColorEditSlider` drags, and the HUD in the bin.
+    - **Add these sections:** the row-alignment states (T5), channel lines (T6), dropdown open with RGBA above HSV (T8), global C vs S strokes (T9), the HUD under the knob (T10), slider gearing on a plain float knob (Blur `size`) and on the viewer gain slider (T1), and the Offset temp slider travelling its full track in about 250 px (T2).
+    - In the milestone's gate, replace `ScaleSliderQWidget*` with `ScaleSliderQWidget*`.
+  - verify: `ctest` and `GuiTests` all green. The GUI script exits 0, with no FAIL in `results.txt` and every shot present.
+  - size: M
+
+- [x] M44.P7.T13 — Package the round-2 AppImage and test card
+  - files: none (output: `build/appimages/M44-<sha>.AppImage`)
+  - approach:
+    - Run `tools/ci/local/package.sh fast` on the tree that passed T12.
+    - The test card covers:
+      - the round-1 items one by one
+      - the new slider gearing on any knob, and the viewer gain
+      - the C vs S difference
+      - the accepted consequences listed in T7: no gradients if open question 2 lands that way, clamp-at-end grabbing, and the Sat drag speed
+  - verify: the AppImage launches with `--version`. The user records the round-2 verdict in the M44 Decisions.
+  - size: S
+
 **Verification gate:**
 - CI `format`, `lint-ci` and `build-and-test` are green.
 - In `Tests`: `ColorWheelMath*`, `ProjectColorManagement*`, and the new NativeGrade/ColorCorrect role cases pass.
-- In `GuiTests`: `ColorWheelWidget*`, `ColorEditSlider*`, `ColorAdjustPanel*`, `ColorTrackballTarget*` and `ColorTrackballHud*` pass.
+- In `GuiTests`: `ColorWheelWidget*`, `ScaleSliderQWidget*`, `ColorAdjustPanel*`, `ColorTrackballTarget*` and `ColorTrackballHud*` pass.
 - `Tests/gui/run-gui-test.sh build/m44-gui/m44_trackball.py build/fast/App/Natron` passes, and its screenshots are attached to the PR.
 - `tools/ci/local/package.sh fast` produces an AppImage, and **the user's hands-on UAT on it passes**.
 - No file on M24's list is touched.
@@ -453,3 +743,73 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
 - 2026-10-10 — **P2.T1: the OCIO probe is D65-adapted.** `cie_xyz_d65_interchange` adapts ACEScg's D60 white to D65, so a real ACES 2.0 Studio project reports luma ≈ (0.2677, 0.6743, 0.0580) and shifted primaries, not the textbook AP1 values. The tests assert the measured values. Neutral (1,1,1) still maps to the wheel centre, because the white point is the image of neutral. The no-project fallback (`ColorMath::acesCgLumaWeights()`, native AP1) differs from a real project by about 0.005–0.009 in chroma. That is acceptable for a fallback, but the two are not interchangeable in tests.
 - 2026-10-10 — **P3.T4 for UAT:** the slider ranges and the per-pixel rates disagree for Offset temp/tint. The range is ±50 while the rate is 7e-4/px, so the marker barely moves. Retune the ranges or the rates in `TrackballRates`/`sliderMapping` after the user tries it. The panel's signal is `valuesEdited(value, Start|Move|End, undoLabel)`.
 - 2026-10-10 — **P4.T2:** colour knobs that share a row with other knobs never get the below-row hook (P4.T1's rule), so they keep the old popup, as simplified and viewer colour knobs do. Confirm this at UAT. `Gui/ColorKnobEditSession.cpp` is new, so the end build must re-run cmake.
+- 2026-10-10 — **P5.T2:** Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y in global mode call the target panel's own undo and redo between strokes, and are swallowed mid-stroke. They are not passed through to the app, because the Edit menu's active undo stack can follow the hovered node graph instead of the knob's panel. Near a screen edge the cursor warps back to the centre; this does nothing on Wayland.
+- 2026-10-10 — **End build and verification:** the single end build compiled first try. The first test pass had 10 failures out of 182, and the GUI script stalled because Natron crashed building any colour knob panel (`setProperty` on a null `containerLayout->widget()`). Fixed in the verify commit, along with two latent `KnobUndoCommand` bugs: a "no change" result was treated as a keyframe change, and `undo()` swapped the added/modified keyframe codes. Now 182/182 ctest pass and the GUI script reports 121 PASS, 0 FAIL, with 20 shots in `build/m44-gui/out/`.
+  - Open cosmetic issue, fixed before UAT: the adjust panel clips its slider captions and numeric fields.
+  - Known gaps: undo labels keep the node name from when the gesture was pushed, and the keyframe undo fix has no dedicated test.
+- 2026-10-10 — **P6.T2:** UAT AppImage `build/appimages/M44-ed6d59028.AppImage` (fast build). It includes the clipped-caption and value-field fix; a later commit changed only a test. It launches with `--version`. Waiting for the user's hands-on UAT.
+- 2026-10-10 — **UAT round 1 (user, `M44-ed6d59028.AppImage`):** this overrides earlier entries where they conflict.
+  - **Global mode:**
+    - **C** now works like the wheel trackball: a relative 2D hue+sat translate in the plane.
+    - A new **S** key does what C used to: x = hue, y = sat.
+    - The HUD appears directly below the knob being edited, not at the top of the properties bin.
+    - Starting global editing immediately opens that knob's dropdown and breaks it into its four components.
+  - **Layout:**
+    - Clicking the dropdown flashes something in the wrong place briefly. Fix it.
+    - Knob elements jump around:
+      - Starting global edit turns the knob into four fields that shift left.
+      - Opening the dropdown on a four-value knob spreads its elements evenly across the row instead of keeping them compact on the left.
+    - The swatch, the "4" fold button, the dropdown button and the global-edit button stay right-aligned.
+    - Remove the Values tab, and with it the "Wheel" tab label.
+    - When a knob is broken out into four elements, each gets its own slider.
+    - With the dropdown open, the RGBA sliders sit above the Hue/Sat/Value/Temp/Tint/Alpha sliders.
+  - **Trackball:**
+    - The V/T locks work whether pressed before or during a drag, with no hover-focus dependency.
+    - V accepts either axis.
+    - Drag-on-swatch is removed as too fiddly. A swatch click still toggles picking.
+  - **Sliders:**
+    - Hue/Sat/Value/Temp/Tint/Alpha use Natron's regular float slider widgets (ScaleSliderQWidget + SpinBox, as on a float knob) instead of the custom ColorEditSlider. This is read as the same widgets, not new serialized knobs on the node.
+    - The gearing (Ctrl ×0.1, Shift ×4, Ctrl+Shift ×0.01) is added to every Natron slider.
+  - **Icons:** the dropdown icon is small and hard to read, and the global-edit button is cryptic. The user wants pitched options.
+- 2026-10-10 — **Phase 44.7 added** from `PLAN/DESIGN/2026-10-10-m44-uat1-tasks.md`. The user's answers to its questions:
+  - Opening the dropdown also unfolds the knob into r/g/b/a lines above Hue/Sat/Value/Temp/Tint, and the panel's own Alpha line is dropped as a duplicate of "a".
+  - Natron's slider gets an optional, off-by-default track gradient, so Hue/Sat/Value/Temp/Tint keep their gradients.
+  - The hex field and palette are dropped; the old popup used by simplified and viewer knobs keeps its palette.
+  - Leaving global mode or switching knobs **leaves the touched knobs open and unfolded**, without restoring their earlier state. T10 is adjusted to match.
+
+  The PM defaulted the gearing to a fixed scale with no tick zoom: the marker moves at the geared rate.
+
+  Consequences to watch at UAT:
+  - A Sat slider drag becomes about 4× faster than the earlier 10% decision, because the rate becomes the slider's range over its width.
+  - Bare S (normally Project Settings) is claimed while global mode is on.
+  - Spinboxes keep Shift ×10 / Ctrl ×0.1.
+
+- 2026-10-10 — **Icons (user, from the pitch page, claude.ai artifact `CZdc6rRvpkmzzDkayeoRi9`):**
+  - The dropdown uses Lucide `chevrons-down`.
+  - The global-mode button gets an "expand" or "popup" icon, because the mode pops up and takes over the screen; the PM chose Lucide `expand` (arrows out to the corners).
+  - Both use the 1.5 px stroke, rendered from SVG in the theme colour.
+  - M44.P7.T11 applies them.
+- 2026-10-10 — **P7.T9 carry-over:** the global-mode button tooltip (`Gui/KnobGuiColor.cpp`) and the Ctrl+E shortcut description (`kShortcutDescActionColorTrackball`, `Gui/GuiApplicationManager10.cpp`) still list only C/T/V. T11, which touches the global button, updates both. The "HUD lights S" test goes into T10 with `Tests/ColorTrackballHud_Test.cpp`.
+- 2026-10-10 — **P7.T7 landed** (`1da2d0f4d` before the rebase):
+  - The panel is the wheel plus Hue/Sat/Value/Temp/Tint lines, each a Natron SpinBox with a ScaleSliderQWidget; there is no Alpha line.
+  - `ScaleSliderQWidget::setTrackGradient`.
+  - The Values tab, hex, palette and `ColorEditSlider` are deleted.
+  - Spinbox commits run as one-step gestures; a Return that leaves the rounded value unchanged does nothing.
+
+  The M44 branch is then rebased onto `main` with M24 (`a50bef552`); conflicts are being resolved, starting with `Tests/CMakeLists.txt`.
+- 2026-10-10 — **P7.T11:** the icons are 64 px PNGs rasterised from Lucide at a 1.5 px stroke in `#c8c8c8`. Natron scales one source pixmap at runtime and has no @2x convention. The checked state uses a selection-colour background from a new `mainstyle.qss` rule.
+  - **Licence:** `chevrons-down` is MIT (it comes from Feather, by Cole Bemis), not ISC. `expand` is ISC.
+  - **Open:** Natron has no third-party art licence record yet. M56's icon pass should add one, covering these two icons.
+- 2026-10-10 — **P7.T12 (end build, round 2):** green after fixes in `05b6cad26`. 217/217 ctest pass; the GUI script reports 345 PASS, 0 FAIL, with 32 shots in `build/m44-gui/out/`.
+  - Product bugs found and fixed:
+    - ScaleSliderQWidget read a null parent's font (segfault).
+    - Fine gears were rounded away by the slider's per-pixel step.
+    - The dropdown flash came from layout requests delivered top-down; they are now delivered bottom-up with repaints held, and a paint logger shows no stale paints.
+    - An expression on g locked r's slider.
+    - The HUD text clipped.
+    - Panel spinboxes clipped their values.
+  - The gate's test list uses `ScaleSliderQWidget*` in place of `ColorEditSlider*`.
+  - **Open, user to judge at UAT:** at the default properties width the HSV tracks are about 60 px and the wheel is small. Options if it's not OK: move the wheel beside the sliders, or drop the alignment indent.
+  - **Found, not M44:** deleting a node can crash in `GuiPrivate::setUndoRedoActions`, which holds raw pointers to undo actions that die with a panel. A candidate for M69 - Minor Cleanup.
+  - Cosmetic: spinboxes show full float precision (e.g. 1.0000000000000002).
+- 2026-10-11 — **UAT round 2 approved (user)** on `M44-05b6cad26.AppImage`. PR #51 is open (34 commits on `main` at `a50bef552`), with a Claude opus review round running alongside CI; Codex is not logged in on this host.

@@ -126,7 +126,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - A targeted existing ctest (`RenderScheduler*|FrameStore*`) is unchanged.
   - size: M
 
-- [ ] M84.P2.T2 — `Tests/Gpu/` as the host-runnable `GpuTests` binary
+- [x] M84.P2.T2 — `Tests/Gpu/` as the host-runnable `GpuTests` binary
   - files: `Tests/Gpu/CMakeLists.txt`, `Tests/Gpu/*_Test.cpp` (moved from the spike: GpuDevice, GpuKernel, GpuTransfer, GlInterop, GradeGpu, BlurGpu, PointOpCompose, GradeCpu, BlurCpu), `Tests/Gpu/{GpuHarness,Tolerance,GradeFixture,BlurFixture}.h`, `Tests/Gpu/ref/{GradeRef,BlurRef}.h`, `Tests/Gpu/kernels/{fill,smoke}.slang`, `Tests/CMakeLists.txt`
   - approach:
     - Build one `GpuTests` executable that links only `NatronGpu` and the bundled `Tests/google-test`, with `-static-libstdc++ -static-libgcc`, so it runs on the host.
@@ -145,20 +145,20 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - Set `VK_ICD_FILENAMES` to lavapipe and `NATRON_TEST_REQUIRE_GPU=1` on both ctest steps.
     - Keep everything in the same job.
   - verify: CI on the branch is green, the `GpuTests` cases show as passed in the log (not skipped), and the job's wall-time change is recorded in Decisions.
-  - size: S
+  - size: M
 
-- [ ] M84.P2.T4 — Rebuild the spike's tools on the promoted code
+- [x] M84.P2.T4 — Rebuild the spike's tools on the promoted code
   - files: `tools/gpu-spike/CMakeLists.txt`; delete `tools/gpu-spike/{src,cmake,tests/*_Test.cpp,tests/*.h,ref}` and the moved kernels
   - approach:
     - The spike project includes the root `cmake/` helpers and `add_subdirectory(../../Engine/Gpu)`.
     - These stay in the spike, built against `NatronGpu`: `GpuBench`, `CpuTwinBench`, `GlCompute`, `DeviceList`, `GlInteropQt`, `ImportCost` (P1.T2), `run-host.sh` and `run-bench.sh`.
     - Run this after P1.T2, since both edit the spike's CMakeLists.
   - verify: the spike configures and builds in the container, and `GpuBench --sizes uhd` runs on lavapipe.
-  - size: S
+  - size: M
 
 ## Phase 84.3: Finish the backend (design note §5 "new" items)
 
-- [ ] M84.P3.T1 — Device limits and the `GpuBuffer` RAII layer
+- [x] M84.P3.T1 — Device limits and the `GpuBuffer` RAII layer
   - files: `Engine/Gpu/GpuDevice.{h,cpp}`, `Engine/Gpu/GpuBuffer.{h,cpp}` (new), `Tests/Gpu/GpuBuffer_Test.cpp`, `Tests/Gpu/CMakeLists.txt`
   - approach:
     - `GpuDeviceInfo` gains `maxStorageBufferRange`, `minImportedHostPointerAlignment`, the device-local heap size, and `unifiedMemory` (integrated GPU, or a device-local and host-visible heap that covers device memory).
@@ -168,7 +168,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - verify: on lavapipe and RADV, the test creates, maps and destroys each kind; a misaligned import returns a status rather than crashing; and the overrides read back.
   - size: M
 
-- [ ] M84.P3.T2 — Async `GpuTransfer` streams with timeline values and built-in chunking
+- [x] M84.P3.T2 — Async `GpuTransfer` streams with timeline values and built-in chunking
   - files: `Engine/Gpu/GpuTransfer.{h,cpp}`, `Tests/Gpu/GpuTransfer_Test.cpp`
   - approach:
     - New calls: `upload(HostRange, GpuBuffer&, offset) → TimelineValue`, `download(GpuBuffer&, offset, HostRange) → TimelineValue` and `wait(TimelineValue)`, plus a way for compute submissions to wait on a transfer value.
@@ -183,7 +183,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - A host range that is freed and then reallocated gets re-imported, not served stale.
   - size: L
 
-- [ ] M84.P3.T3 — `GpuKernelRegistry` and a recording helper
+- [x] M84.P3.T3 — `GpuKernelRegistry` and a recording helper
   - files: `cmake/SlangKernels.cmake`, `Engine/Gpu/GpuKernelRegistry.{h,cpp}` (new), `Engine/Gpu/GpuRecord.{h,cpp}` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Gpu/GpuKernelRegistry_Test.cpp`
   - approach:
     - `slang_add_kernel` also appends to a generated `GpuKernels.inc`: an enum of kernel IDs and a static table of `GpuKernelDesc` (SPIR-V, entry point, binding count, push-constant bytes, group size).
@@ -195,7 +195,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - A fill dispatched through `GpuRecordContext` is correct.
   - size: M
 
-- [ ] M84.P3.T4 — Ref-counted device pool with a VRAM budget and LRU eviction
+- [x] M84.P3.T4 — Ref-counted device pool with a VRAM budget and LRU eviction
   - files: `Engine/Gpu/GpuBufferPool.{h,cpp}` (new), `Tests/Gpu/GpuBufferPool_Test.cpp`, `Tests/Gpu/CMakeLists.txt`
   - approach:
     - Free lists per size class of device-local `GpuBuffer`s. Handles are `shared_ptr`s that return their buffer to the pool on release.
@@ -215,7 +215,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - a request bigger than the budget returns OOM without evicting everything.
   - size: M
 
-- [ ] M84.P3.T5 — Device state machine with fault injection and re-creation
+- [x] M84.P3.T5 — Device state machine with fault injection and re-creation
   - files: `Engine/Gpu/GpuRuntime.{h,cpp}` (new), `Engine/Gpu/GpuDevice.{h,cpp}`, `Tests/Gpu/GpuRuntime_Test.cpp`
   - approach:
     - `GpuRuntime` owns the device, the transfer streams, the registry and the pool.
@@ -233,7 +233,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
 
 ## Phase 84.4: Host memory, device images and accounting (Engine)
 
-- [ ] M84.P4.T1 — Page-aligned, importable RAM image buffers
+- [x] M84.P4.T1 — Page-aligned, importable RAM image buffers
   - files: `Engine/CacheEntry.h`, `Engine/HostImageMemory.{h,cpp}` (new), `Tests/Image_Test.cpp`
   - approach:
     - `RamBuffer` allocates through `HostImageMemory`: aligned to the page size, with sizes padded to the import alignment (4096 until a device reports a larger one).
@@ -246,7 +246,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - A quick CPU bench (`graph_bench.py` with `BENCH_TOPO=comp`, UHD, 3 frames) is within noise of `main`.
   - size: M
 
-- [ ] M84.P4.T2 — App-wide `GpuContext`, settings and mode resolution
+- [x] M84.P4.T2 — App-wide `GpuContext`, settings and mode resolution
   - files: `Engine/GpuContext.{h,cpp}` (new), `Engine/AppManager.{h,cpp}`, `Engine/Settings.{h,cpp}`, `Tests/GpuContext_Test.cpp`, `Tests/CMakeLists.txt`
   - approach:
     - `AppManager` owns one `GpuContext` around `GpuRuntime`. When the mode isn't Off, it initialises on a background thread at startup and registers the host-memory free hook.
@@ -279,7 +279,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - an evicted entry serves finds without another download.
   - size: M
 
-- [ ] M84.P4.T4 — Transfer and placement counters in `RenderStats` and the profile
+- [x] M84.P4.T4 — Transfer and placement counters in `RenderStats` and the profile
   - files: `Engine/RenderStats.{h,cpp}`, `Engine/RenderScheduler.cpp` (`formatTaskRecord`), `tools/bench/render-profile-report.py`, `Tests/RenderProfile_Test.cpp`
   - approach:
     - New counters:
@@ -296,7 +296,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
 
 ## Phase 84.5: GPU-capable nodes (the minimum that exercises placement)
 
-- [ ] M84.P5.T1 — GPU-capability interface on `NativeImageEffect`
+- [x] M84.P5.T1 — GPU-capability interface on `NativeImageEffect`
   - files: `Engine/Nodes/Image/GpuRender.h` (new), `Engine/Nodes/Image/NativeImageEffect.{h,cpp}`, `Tests/Native/NativeImageEffect_Test.cpp`
   - approach:
     - New types:
@@ -342,7 +342,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
 
 ## Phase 84.6: Placement and cost model
 
-- [ ] M84.P6.T1 — Device and region fields, and the region-forming placement pass
+- [x] M84.P6.T1 — Device and region fields, and the region-forming placement pass
   - files: `Engine/RenderScheduler.h`, `Engine/GpuPlacement.{h,cpp}` (new), `Tests/GpuPlacement_Test.cpp`, `Tests/CMakeLists.txt`
   - approach:
     - `FrameGraph::Task` gains `device` (Cpu or Gpu) and `regionId` (-1 by default).
@@ -359,7 +359,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - with no context, the graph is unchanged.
   - size: L
 
-- [ ] M84.P6.T2 — Emit the per-plugin cost table from profiles
+- [x] M84.P6.T2 — Emit the per-plugin cost table from profiles
   - files: `tools/bench/render-profile-report.py`, `Engine/GpuCostSeed.inc` (generated, checked in)
   - approach:
     - `--emit-cost-table` writes per-plugin CPU ms/Mpx from the M82 serial profiles, the measured parallelism, and P1.T1's in-situ Blur numbers. If the serial profiles (`build/bench/m82-profile/*-serial.steady.jsonl`) are missing on this host, re-run `run_comps.sh` with `noRenderThreads=1`.
@@ -387,7 +387,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
 
 ## Phase 84.7: Execution: region super-tasks, admission, failure, tiling
 
-- [ ] M84.P7.T1 — Per-task output storage, and regions contracted into super-tasks in the scheduler
+- [x] M84.P7.T1 — Per-task output storage, and regions contracted into super-tasks in the scheduler
   - files: `Engine/RenderScheduler.{h,cpp}`, `Tests/RenderScheduler_Test.cpp`
   - approach:
     - `executeTask` takes the task's storage from placement instead of the hard-coded `eStorageModeRAM` (`:933`).
@@ -647,3 +647,26 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
 - 2026-10-10 — #48 merged. Once the in-flight tasks commit, rebase M84 with `git rebase --onto origin/main 87dcb403a`; `87dcb403a` is the M83 tip the branch is stacked on.
 - 2026-10-10 — M84.P4.T3 done. `DeviceImage` exposes `downloadToRam()`/`evictToRam()` returning an `ImagePtr` (rather than `downloadTo(Image&)`); `bytesInFlight()` returns the host figure, so the scheduler is unchanged. Device bytes are counted per entry, not de-duplicated across keys; revisit if identity tasks store device images (P7.T2). Full ctest 1280/1280.
 - 2026-10-10 — M84.P2.T1 done (`85ea0d6b7`). `NatronGpu` builds from the root, and `-DNATRON_GPU=OFF` builds. The ldd difference is only `libvulkan.so.1`. Targeted ctest passed 30/30. `slang_add_kernel` emits a header-only SPIR-V target by default, and `CPP` gives the C++-twin library. Kernel target names (grade, blur, pointop_*) match the spike's, so P2.T4 must resolve that collision. `tools/ci/local/test.sh` has no ctest filter; worth adding when convenient.
+- 2026-10-10 — M84.P2.T2 done (`1583f1ee8`). `GpuTests` gives every ctest name a `Gpu.` prefix (`GpuNoPushDescriptor.` for the second registration), so `ctest -R '^Gpu'` selects all of them. Results: 82/82 on RADV in the container. On lavapipe with `NATRON_TEST_REQUIRE_GPU=1`, everything passes except four GL-interop zero-copy cases, which skip for want of interop rather than a device; that matches the CI-coverage decision. On the host (`run-host.sh`, RADV) 45/45 pass, including every GlInterop and semaphore case.
+- 2026-10-10 — M84.P4.T4 done (`0a165a17f`). The counters and the region record format exist, but nothing feeds them yet: P7.T2 must call the `note*` methods and `formatRegionRecord`. P6.T1 must stop `formatTaskRecord` hard-coding `"device":"cpu","regionId":-1`. The report self-test asserts that region records are skipped and the new fields are read.
+- 2026-10-10 — M84.P4.T1 done (`11c1f9f49` after the rebase). **Pool accounting:** the pool is process-global, so its bytes are not added to a cache's size. Instead the cache trims the pool to its headroom (`limit − memoryCacheSize`) before evicting. That counts idle pooled bytes against the limit without double-counting them or evicting live entries. **Hooks under the lock:** `trimTo` runs the free hooks while the cache lock is held, so P4.T2's import-cache `forget` hook must not take a lock that a cache caller can hold. **Bench:** the quick CPU bench is folded into P8.T1, which compares against `main` anyway.
+- 2026-10-10 — **Floating-point trap fix** (`7fe6a04ea`). In taskgraph mode, `GLScheduler.GLNodeRendersInsideATaskAndStoresRAM` failed intermittently with SIGFPE in llvmpipe's shader compile. Pool threads inherited the debug FP traps from whichever thread spawned them. `NodeTask::run` now sets the traps itself, and `OSGLContext` masks them while it creates the context. Full ctest passes 1370/1370 in both modes.
+- 2026-10-10 — **Rebased onto `main`** (`6b0ec1f42`, M75) with `--onto origin/main 87dcb403a`. It was clean, and the GPU paths are byte-identical to before. Old tip kept as local branch `m84-pre-rebase-backup`.
+- 2026-10-10 — **Open build issue** (fix in P2.T3): `cmake/FetchSlang.cmake` defaults the deps cache to `$HOME/.cache/natron-deps`, and the CPP-kernel targets bake that absolute path. `natron-dev` and `natron-dev-gpu` share `build/debug` but have different `HOME`s, so `build.sh debug` from the other container fails to find `slang-cpp-prelude.h`.
+- 2026-10-10 — M84.P2.T3 committed (`fb3718b86`). The default deps cache is now the repo-local `.natron-deps` (fixing the cross-container build), and CI and release cache it. Both ctest steps use lavapipe with `NATRON_TEST_REQUIRE_GPU=1`. The task is checked off once a dispatched CI run on the branch is green with GpuTests passing.
+- 2026-10-10 — M84.P2.T4 done (`3289f9613`). The spike builds against `NatronGpu` using the root cmake helpers. Its CPU twins are named `grade_twin`/`blur_twin` to avoid the collision, and `slang_add_glsl` moved to `tools/gpu-spike/SlangGlsl.cmake`. `GpuBench` accepts a software device under `GPU_SPIKE_ALLOW_SOFTWARE=1`. `GpuBench --sizes uhd` and `CpuTwinBench` run on lavapipe.
+- 2026-10-10 — M84.P3.T1 done (`e97868b96`). `createHostImported` **rejects** sizes above `maxMemoryAllocationSize` (`fallbackToStaging`) instead of clamping them; callers split. GpuTests: 100/100 on lavapipe (4 GL zero-copy skips) and on RADV in the container; 54/54 on the host.
+- 2026-10-10 — M84.P3.T2 (`7fb410354`), P3.T3 (`32fcb9fee`) and P3.T4 (`080727d46`) done. GpuTests: 138/138 on lavapipe (4 GL zero-copy skips) and on RADV in the container, and 73/73 on the host. No Vulkan validation layer is installed in the container or on the host, so the ownership-transfer barriers are proven only by results on RADV's separate transfer family.
+  - **Transfer API:** calls return `GpuStatus`, with `TimelineValue` as an out-param. `ComputeHandoff` is `Submit`, `Record` or `None`. After a download, a range belongs to the transfer family. The host-import cache is **opt-in** (`cacheHostImports`) until P4.T2 wires `forgetHostAllocation` as the HostImageMemory free hook. `forgetHostAllocation` may wait on the device when an import is still in use, so it must not be called under the cache lock (see P4.T1's note).
+  - **Registry:** binding count, push bytes and group size come from Slang reflection. `slang_add_kernel(... REGISTRY NatronGpu)` plus `slang_write_kernel_table` generates `GpuKernels.inc`. Test kernels register at runtime. `GpuRecordContext` is thread-bound.
+  - **Pool:** size classes go up in quarter-power-of-two steps (≤25% waste). Eviction callbacks run outside the lock and may fire after the owner dropped its handle. A concurrent `acquire` can report OOM early while another thread's callback is still running.
+- 2026-10-10 — M84.P6.T2 done (`5a7e29fd2`). `Engine/GpuCostSeed.inc` defines three macros: CPU rows (18 plugins, serial ms/Mpx and speedup), Blur σ rows (in situ, hard-coded) and GPU rows (UHD kernel-only, RX 7900 XTX). P6.T3 should note two things. The GPU rows are UHD-only, so wide blurs at 8K+ are under-estimated. Transform's serial cost of 996 ms/Mpx is as measured.
+- 2026-10-10 — M84.P3.T5 (`2b44cc6ce`), P5.T1 (`7da9d9e31`) and P6.T1 (`5335e5c5e`) done. Full ctest passes in both modes once two test fixes are in (a non-user-creatable plugin filter, and a fixed pool budget in the GpuRuntime tests, since RADV's live budget drifts). GpuTests: 164/164 on lavapipe and on RADV, 82/82 on the host.
+  - **Runtime:** fault ops count from 1 and are every `GpuDevice::submit` plus every `GpuRuntime::acquire`. `recreate()` invalidates all outstanding handles and contexts. `Degraded` clears only on `recreate()`.
+  - **Placement deviations:** convexity forbids a cycle through **any** outside task, including another region, not just CPU tasks. `acceptRegion` takes `(const FrameGraph&, const Region&)`. GPU availability is a function-pointer hook, `setGpuPlacementAvailableFunc`, which is null today. **Enable it only together with P7.T2's region body**, or tasks get labelled `gpu` but still render on the CPU. Identity tasks never start a region. Multi-plane tasks are never candidates.
+- 2026-10-11 — **GPU tests are gated on availability (user).** Most development happens on hosts without a GPU, and CI has none. GPU tests skip with a reason whenever what they need is missing. Vulkan compute tests run on any Vulkan device, **lavapipe included** (user chose this over skipping on software devices), and skip only when no device exists. CI keeps `NATRON_TEST_REQUIRE_GPU=1` on lavapipe. GL interop availability is separate: a missing EGL/GL device skips even under `NATRON_TEST_REQUIRE_GPU`.
+- 2026-10-11 — First branch CI run (38104592140, at `e97868b96`): 92 GPU tests passed on lavapipe in both scheduler modes. Three `GlInteropTest` readback cases segfault because CI has no EGL device; a fix is in progress. ctest takes about 10 min per mode.
+- 2026-10-11 — M84.P4.T2 done (`50b6cf2bd`) and M84.P7.T1 done (code on the branch tip). Full ctest passes in both modes, at 775 s against 737 s before; the per-process `GpuContext` startup cost is small.
+  - **`GpuContext` notes:** the free hook stays synchronous, so a stall under the cache lock is bounded by in-flight device work. Settings apply at the next launch. The `Tests` binary brings up a context in Auto mode. Placement is **still not registered**.
+  - **Region notes:** a region's stand-in tasks are appended to the frame's copy of `graph.tasks`. With no body hook, a region fails its frame. Regions write no profile record yet and get the normal thread budget (P7.T2 and P7.T3 fix both). Shared-cache de-duplication doesn't cover region members.
+- 2026-10-11 — **GL interop gating fixed.** The bundled gtest has no `GTEST_SKIP`, so `GPUTEST_SKIP()` in `SetUp` let test bodies run. Every GlInterop case now checks readiness. `GlInterop::probe()` fails when no GL context is current, so the engine won't crash on GPU-less hosts. **Watch for the same pattern elsewhere:** any `GPUTEST_SKIP` in a fixture's `SetUp` must be re-checked in each test body.

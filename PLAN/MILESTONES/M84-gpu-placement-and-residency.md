@@ -138,7 +138,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - On the host: `run-host.sh build/debug/Tests/Gpu/GpuTests` is green on RADV, including semaphore interop.
   - size: M
 
-- [ ] M84.P2.T3 — GPU coverage in CI on lavapipe
+- [x] M84.P2.T3 — GPU coverage in CI on lavapipe
   - files: `.github/workflows/ci.yml`
   - approach:
     - Cache `.natron-deps` with `actions/cache`, keyed on the Slang version and SHA, and set `NATRON_DEPS_CACHE` to it.
@@ -311,7 +311,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - verify: it builds with and without `NATRON_HAVE_GPU`, and a test asserts that every registered native node except Grade and Blur reports `canRenderOnGpu == false`.
   - size: M
 
-- [ ] M84.P5.T2 — Grade on the GPU (no mask, mix 1, no unpremult)
+- [x] M84.P5.T2 — Grade on the GPU (no mask, mix 1, no unpremult)
   - files: `Engine/Nodes/Color/Grade.{h,cpp}`, `Tests/Native/NativeGradeGpu_Test.cpp`, `Tests/Gpu/Tolerance.h` (shared into the Tests binary)
   - approach:
     - Eligible for float images with 1, 3 or 4 components, no mask, mix 1 and no premult.
@@ -323,7 +323,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - On RADV inside the container (P1.T3).
   - size: M
 
-- [ ] M84.P5.T3 — FIR Gaussian Blur on the GPU, for regions of interest
+- [x] M84.P5.T3 — FIR Gaussian Blur on the GPU, for regions of interest
   - files: `Engine/Nodes/Filter/Blur.{h,cpp}`, `Engine/Gpu/Kernels/blur.slang`, `Engine/Nodes/Filter/BlurKernels.{h,cpp}` (expose the FIR weight function), `Tests/Native/NativeBlurGpu_Test.cpp`
   - approach:
     - Eligible only when filter is FIR Gaussian, `orderX == orderY == 0`, `alphaThreshold == 0`, there is no mask, mix is 1, there is no premult, and the radius is ≤ 512.
@@ -369,7 +369,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - verify: `RenderProfileReportSelfTest` is green, and the `.inc` matches the inputs listed in its header comment.
   - size: M
 
-- [ ] M84.P6.T3 — StarPU-style cost model and region acceptance
+- [x] M84.P6.T3 — StarPU-style cost model and region acceptance
   - files: `Engine/GpuCostModel.{h,cpp}` (new), `Engine/GpuPlacement.cpp`, `Tests/GpuPlacement_Test.cpp`
   - approach:
     - CPU cost is the seed ms/Mpx × Mpx, scaled to the pool size. During a session it is refined by an EMA of the measured `wallNs × budget / Mpx` from `executeTask`.
@@ -420,7 +420,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - A convex split carries one device image between regions with no extra transfer.
   - size: L
 
-- [ ] M84.P7.T3 — GPU-aware admission and thread budget
+- [x] M84.P7.T3 — GPU-aware admission and thread budget
   - files: `Engine/RenderScheduler.{h,cpp}`, `Tests/RenderScheduler_Test.cpp`
   - approach:
     - A super-task's host `estimatedBytes` covers only its downloaded outputs. A new `estimatedDeviceBytes` holds its peak working set.
@@ -670,3 +670,16 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - **`GpuContext` notes:** the free hook stays synchronous, so a stall under the cache lock is bounded by in-flight device work. Settings apply at the next launch. The `Tests` binary brings up a context in Auto mode. Placement is **still not registered**.
   - **Region notes:** a region's stand-in tasks are appended to the frame's copy of `graph.tasks`. With no body hook, a region fails its frame. Regions write no profile record yet and get the normal thread budget (P7.T2 and P7.T3 fix both). Shared-cache de-duplication doesn't cover region members.
 - 2026-10-11 — **GL interop gating fixed.** The bundled gtest has no `GTEST_SKIP`, so `GPUTEST_SKIP()` in `SetUp` let test bodies run. Every GlInterop case now checks readiness. `GlInterop::probe()` fails when no GL context is current, so the engine won't crash on GPU-less hosts. **Watch for the same pattern elsewhere:** any `GPUTEST_SKIP` in a fixture's `SetUp` must be re-checked in each test body.
+- 2026-10-11 — M84.P2.T3 verified: CI run 38110360851 is green, with 165 GPU tests passing on lavapipe in both modes.
+- 2026-10-11 — M84.P7.T3 (`c302bfb61`), P6.T3 (`c6966f0bb`), P5.T2 (`4702401a2`) and P5.T3 (`ef075e4c6`) done. Full ctest passes 1635/1635 in both modes. On lavapipe 211/211 pass; on RADV 190/190; on the host 83/83.
+  - **Cost model:** a lone UHD Grade goes to the GPU even at 25 GB/s with the measured seeds (CPU in-graph about 12 ms/Mpx against about 1.3 ms/Mpx of transfers), which agrees with M83. The "stays on the CPU" test pins CPU Grade to 1 ms/Mpx. `acceptRegion` became `regionGain` (numeric). The margin is 0.5 ms and the EMA weight 0.25.
+  - **Blur:** the GPU result is bit-identical to the CPU FIR. Channel subsets are refused. `getGpuInputRoI` has no time or view, so it reads knobs at the current time.
+  - **For P7.T2:**
+    - wire `GpuCostModel::session().observeCpu/observeGpu` into `executeTask` and the region body;
+    - wire `setDeviceBytesBudget` from the pool budget;
+    - register `setGpuPlacementAvailableFunc`.
+  - **Follow-ups:**
+    - `cmake/FetchSlang.cmake` caches `_slangc` and `_slang_inc`, so stale build dirs keep old paths. Use `NO_CACHE` or unset the variables before searching.
+    - `tools/gpu-spike/bench/GpuBench_main.cpp` passes the full Blur weight table to the new half-kernel layout, so its pixels are wrong, though the timings still hold.
+    - After a `submitAndWait` timeout, scratch buffers return to the pool while the device may still use them.
+- 2026-10-11 — **Paused: usage limit.** Next is P7.T2 (the region body, L), then P7.T4, P7.T5, P7.T6, Phase 84.8 and the gate.

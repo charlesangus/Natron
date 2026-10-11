@@ -868,3 +868,14 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - **Found:** a pre-existing release-only segfault in the device-loss test on lavapipe → new task M84.P7.T10.
 - 2026-10-11 — M84.P7.T10 done (`a9048b4ec`). **The cause was in the test, not the engine.** `GpuResidencyTest::SetUp`'s forced context logged through a lambda that captured a `SetUp` stack local by reference. `recoverIfLost()` logs through that sink after `SetUp` returns, which corrupts the stack, and the release build crashed on it. It shows only on lavapipe, because RADV uses the app's own context. The fix holds the sink by `shared_ptr`, and the `GpuContextOptions::infoLog` doc now says it is called for the context's whole life. The test passes 20/20 in release and debug in both modes. Full ctest passes 1669/1669 in debug and release, in both modes.
 - 2026-10-11 — M84.P8.T3 done (plan-only). The hand-offs are in M85 - Native GPU Kernels and M86 - OFX 1.5 GPU Suites, and the design note has a §9 outcomes section.
+- 2026-10-11 — **First gate run** (before rebase). Logs are in the untracked `.local/m84gate/`.
+  - **Passed:**
+    - host `GpuTests` on RADV: 85/85;
+    - the `-DNATRON_GPU=OFF` build;
+    - lavapipe full ctest (from P7.T10): 1669/1669, debug and release, both modes.
+  - **Failed:**
+    - **no Vulkan ICD:** 100 tests fail, mostly SEGFAULTs in `GpuTests` (`Gpu.BlurGpuTest.*`, `Gpu.GpuBufferTest.*`, …) instead of skipping;
+    - **RADV:** 9 bit-exact legacy-vs-taskgraph tests (`SchedulerEquivalence.*`, `SchedulerWriters.WideTree`, `NativeGradeTest.ChainOfThirty…`) fail because Auto puts Grade on the real GPU.
+  - Both are being fixed before the gate. The scheduler-equivalence tests should run with placement off.
+  - Published `2026-10-04-task-graph-render-scheduler.md` (corrected) and `2026-10-11-retire-engine-gl-render-path.md` to `docs/decisions/`.
+  - Rebased onto `origin/main` `cd0f3f5f2` (M24, M44), cleanly. The old tip is kept as `m84-pre-rebase-backup-2`.

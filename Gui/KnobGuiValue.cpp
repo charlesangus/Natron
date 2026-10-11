@@ -33,6 +33,7 @@ CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QApplication>
 #include <QColorDialog>
+#include <QFontMetrics>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -346,6 +347,14 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
 
     _imp->spinBoxes.resize(nDims);
 
+    int dimensionLabelSlotWidth = 0;
+    if (wantsFixedDimensionLabelSlot()) {
+        QFontMetrics fm(QApplication::font());
+        for (int i = 0; i < nDims; ++i) {
+            dimensionLabelSlotWidth = std::max(dimensionLabelSlotWidth, fm.horizontalAdvance(QString::fromUtf8(dimensionLabels[i].c_str())));
+        }
+    }
+
     int rowIndex = 0;
     int columnIndex = 0;
     for (std::size_t i = 0; i < _imp->spinBoxes.size(); ++i) {
@@ -361,6 +370,9 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
         ClickableLabel *subDesc = 0;
         if ( (nDims != 1) && (nbRows == 1) ) {
             subDesc = new ClickableLabel(QString::fromUtf8( dimensionLabels[i].c_str() ), boxContainer);
+            if ((i == 0) && wantsFixedDimensionLabelSlot()) {
+                subDesc->setFixedWidth(dimensionLabelSlotWidth);
+            }
             boxContainerLayout->addWidget(subDesc);
         }
 
@@ -466,8 +478,11 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
         QObject::connect( _imp->slider, SIGNAL(editingFinished(bool)), this, SLOT(onSliderEditingFinished(bool)) );
         if (spinBoxesGrid) {
             spinBoxesGrid->addWidget(_imp->slider, rowIndex, columnIndex);
+            // Lets the slider's column claim extra width over a trailing stretch item added
+            // by addExtraWidgets(), instead of splitting it with that item.
+            spinBoxesGrid->setColumnStretch(columnIndex, 1);
         } else {
-            containerLayout->addWidget(_imp->slider);
+            containerLayout->addWidget(_imp->slider, 1);
         }
 
         sliderVisible = shouldSliderBeVisible(dispminGui, dispmaxGui);
@@ -664,9 +679,7 @@ KnobGuiValue::expandAllDimensions()
         if (i > 0) {
             _imp->spinBoxes[i].first->show();
         }
-        if (_imp->spinBoxes[i].second) {
-            _imp->spinBoxes[i].second->show();
-        }
+        setDimensionLabelVisible(i, true);
     }
     onDimensionsExpanded();
 }
@@ -685,11 +698,35 @@ KnobGuiValue::foldAllDimensions()
         if (i > 0) {
             _imp->spinBoxes[i].first->hide();
         }
-        if (_imp->spinBoxes[i].second) {
-            _imp->spinBoxes[i].second->hide();
-        }
+        setDimensionLabelVisible(i, false);
     }
     onDimensionsFolded();
+}
+
+void
+KnobGuiValue::setDimensionLabelVisible(std::size_t index,
+                                       bool visible)
+{
+    if (index >= _imp->spinBoxes.size()) {
+        return;
+    }
+    ClickableLabel* label = _imp->spinBoxes[index].second;
+    if (!label) {
+        return;
+    }
+    if ((index == 0) && wantsFixedDimensionLabelSlot()) {
+        // The slot has a fixed width, so blanking its text rather than hiding it keeps
+        // spinbox 0 and the slider at the same x whether the knob is folded or not.
+        if (visible) {
+            KnobIPtr knob = _imp->getKnob();
+            label->setText(QString::fromUtf8(knob->getDimensionName((int)index).c_str()));
+        } else {
+            label->setText(QString());
+        }
+        label->show();
+    } else {
+        label->setVisible(visible);
+    }
 }
 
 void

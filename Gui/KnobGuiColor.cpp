@@ -635,6 +635,10 @@ KnobGuiColor::getDecimals(std::vector<int>* decimals) const
 void
 KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
 {
+    // Claims the row's extra width ahead of the swatch and buttons below, so they stay
+    // right-aligned whether the slider is visible (its own stretch then wins) or hidden
+    // for the broken-out spinboxes (this spacer is then the only stretchable item).
+    containerLayout->addStretch(0);
     containerLayout->addSpacing( TO_DPIX(10) );
     KnobColorPtr knob = _knob.lock();
     if (_adjustPanel) {
@@ -825,6 +829,9 @@ KnobGuiColor::_hide()
     }
     _colorLabel->hide();
     _colorSelectorButton->hide();
+    if (_globalModeButton) {
+        _globalModeButton->hide();
+    }
     if (_adjustPanel) {
         _adjustPanel->hide();
     }
@@ -838,6 +845,9 @@ KnobGuiColor::_show()
     }
     _colorLabel->show();
     _colorSelectorButton->show();
+    if (_globalModeButton) {
+        _globalModeButton->show();
+    }
     if (isAdjustPanelExpanded()) {
         _adjustPanel->show();
     }
@@ -973,6 +983,20 @@ KnobGuiColor::isAutoFoldDimensionsEnabled() const
     //    return false;
     //}
     //return knob->getDimension() == 3;
+}
+
+bool
+KnobGuiColor::wantsFixedDimensionLabelSlot() const
+{
+    KnobColorPtr knob = _knob.lock();
+
+    if (!knob) {
+        return false;
+    }
+
+    // Only rows with the dropdown's below-row panel break out into several spinboxes, so
+    // only they need the label slot reserved across the fold.
+    return _adjustPanel && (knob->getDimension() > 1);
 }
 
 NATRON_NAMESPACE_EXIT

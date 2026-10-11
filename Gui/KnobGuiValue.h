@@ -126,6 +126,16 @@ protected:
     virtual void addExtraWidgets(QHBoxLayout* /*containerLayout*/) {}
 
     /**
+     * @brief Reserves the row's dimension-label slot (before spinbox 0) at a fixed width
+     * instead of hiding it when folded, so folding or unfolding the knob does not slide
+     * spinbox 0 and the slider sideways.
+     **/
+    virtual bool wantsFixedDimensionLabelSlot() const
+    {
+        return false;
+    }
+
+    /**
      * @brief Lets a subclass supply a widget placed below the knob's row, spanning the
      * field area. It starts hidden; the subclass that created it is responsible for
      * showing and hiding it. Returning non-null also relaxes the row's fixed height so it
@@ -163,6 +173,7 @@ private:
 
     void expandAllDimensions();
     void foldAllDimensions();
+    void setDimensionLabelVisible(std::size_t index, bool visible);
 
     void sliderEditingEnd(double d);
 

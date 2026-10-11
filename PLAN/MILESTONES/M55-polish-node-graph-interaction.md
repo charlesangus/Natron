@@ -142,7 +142,7 @@ The design notes, the current behaviour re-checked against `a50bef552`, and the 
   - verify: `ctest -R RenderDialogRange` covers each preset; a writer range of `INT_MIN`/`INT_MAX` falling back to the project range; *Custom* 5–10 step 2; first > last giving an error; and step 0 giving an error.
   - size: M
 
-- [ ] M55.P3.T2 — Route Render Selected, Render All and the Write panel's Render button through the dialog
+- [x] M55.P3.T2 — Route Render Selected, Render All and the Write panel's Render button through the dialog
   - files: `Gui/Gui40.cpp`, `Gui/KnobGuiButton.cpp`, `Gui/RenderDialog.cpp`
   - approach:
     - `Gui::renderSelectedNode` (`Gui40.cpp:827-894`) collects the selected writers, creating one for a single non-writer as it does now (don't change the `createWriter` call). It then calls `showRenderDialog` instead of `startWritersRendering`.

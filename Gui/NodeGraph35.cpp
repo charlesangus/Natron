@@ -430,13 +430,6 @@ NodeGraph::showMenu(const QPoint & pos)
         }
     }
 
-    QAction* autoHideInputs = new ActionWithShortcut(kShortcutGroupNodegraph, kShortcutIDActionGraphAutoHideInputs,
-                                                     kShortcutDescActionGraphAutoHideInputs, viewMenu);
-    autoHideInputs->setCheckable(true);
-    autoHideInputs->setChecked( appPTR->getCurrentSettings()->areOptionalInputsAutoHidden() );
-    QObject::connect( autoHideInputs, SIGNAL(triggered()), this, SLOT(toggleAutoHideInputs()) );
-    viewMenu->addAction(autoHideInputs);
-
     QAction* hideInputs = new ActionWithShortcut(kShortcutGroupNodegraph, kShortcutIDActionGraphHideInputs,
                                                  kShortcutDescActionGraphHideInputs, viewMenu);
     hideInputs->setCheckable(true);

@@ -308,9 +308,6 @@ public:
 
     bool isFileDialogEnabledForNewWriters() const;
 
-    void setOptionalInputsAutoHidden(bool hidden);
-    bool areOptionalInputsAutoHidden() const;
-
     void getPythonGroupsSearchPaths(std::list<std::string>* templates) const;
     void appendPythonGroupsPath(const std::string& path);
 
@@ -574,7 +571,6 @@ private:
     KnobBoolPtr _useBWIcons;
     KnobIntPtr _maxUndoRedoNodeGraph;
     KnobIntPtr _disconnectedArrowLength;
-    KnobBoolPtr _hideOptionalInputsAutomatically;
     KnobBoolPtr _useInputAForMergeAutoConnect;
     KnobBoolPtr _usePluginIconsInNodeGraph;
     KnobBoolPtr _useAntiAliasing;

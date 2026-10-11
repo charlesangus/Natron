@@ -680,8 +680,6 @@ public Q_SLOTS:
 
     void onViewerTileCacheSizeChanged();
 
-    void toggleAutoHideGraphInputs();
-
     void clearPlaybackCache();
 
     void clearViewerCache();

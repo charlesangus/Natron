@@ -69,14 +69,9 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
-
 void
-NodeGraph::toggleAutoHideInputs(bool setSettings)
+NodeGraph::toggleAutoHideInputs(bool /*setSettings*/)
 {
-    if (setSettings) {
-        bool autoHide = !appPTR->getCurrentSettings()->areOptionalInputsAutoHidden();
-        appPTR->getCurrentSettings()->setOptionalInputsAutoHidden(autoHide);
-    }
     for (NodesGuiList::iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
         (*it)->refreshEdgesVisility();
     }

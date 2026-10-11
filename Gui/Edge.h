@@ -97,8 +97,6 @@ public:
 
     bool isBendPointVisible() const;
 
-    bool areOptionalInputsAutoHidden() const;
-
     void setOptional(bool optional);
 
     void setDashed(bool dashed);

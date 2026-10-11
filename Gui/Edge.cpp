@@ -284,14 +284,6 @@ Edge::isMask() const
     return _imp->isMask;
 }
 
-bool
-Edge::areOptionalInputsAutoHidden() const
-{
-    NodeGuiPtr dst = _imp->dest.lock();
-
-    return dst ? dst->getDagGui()->areOptionalInputsAutoHidden() : false;
-}
-
 void
 Edge::setSourceAndDestination(const NodeGuiPtr & src,
                               const NodeGuiPtr & dst)
@@ -310,7 +302,7 @@ Edge::setSourceAndDestination(const NodeGuiPtr & src,
 }
 
 bool
-Edge::computeVisibility(bool hovered) const
+Edge::computeVisibility(bool /*hovered*/) const
 {
     NodeGuiPtr dst = _imp->dest.lock();
     EffectInstancePtr effect;
@@ -334,27 +326,7 @@ Edge::computeVisibility(bool hovered) const
     if ( (_imp->isRotoMask || (hideInputsKnobValue && !isSelected)) && !_imp->isOutputEdge ) {
         return false;
     } else {
-        if (_imp->isOutputEdge) {
-            return true;
-        } else {
-            NodeGuiPtr src = _imp->source.lock();
-
-            //The viewer does not hide its optional edges
-            bool isViewer = effect ? dynamic_cast<ViewerInstance*>( effect.get() ) != 0 : false;
-            bool isReader = effect ? effect->isReader() : false;
-            bool autoHide = areOptionalInputsAutoHidden();
-
-            /*
-             * Hide the inputs if it is NOT hovered and NOT selected and auto-hide is enabled and if the node is either
-             * a Reader OR the input is optional and it doesn't have an input node
-             */
-            if ( !hovered && !isSelected && autoHide  && !isViewer &&
-                 ( (_imp->optional && !src) || isReader ) ) {
-                return false;
-            } else {
-                return true;
-            }
-        }
+        return true;
     }
 }
 

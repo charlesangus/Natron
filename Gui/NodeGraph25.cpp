@@ -377,8 +377,6 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
         toggleAutoPreview();
     } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphToggleAutoTurbo, modifiers, key) ) {
         toggleAutoTurbo();
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphAutoHideInputs, modifiers, key) ) {
-        toggleAutoHideInputs(true);
     } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFindNode, modifiers, key) ) {
         popFindDialog( QCursor::pos() );
     } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateNode, modifiers, key) ) {

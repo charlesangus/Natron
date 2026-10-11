@@ -1248,13 +1248,6 @@ Settings::initializeKnobsNodeGraph()
 
     _nodegraphTab->addKnob(_disconnectedArrowLength);
 
-    _hideOptionalInputsAutomatically = AppManager::createKnob<KnobBool>( this, tr("Auto hide masks inputs") );
-    _hideOptionalInputsAutomatically->setName("autoHideInputs");
-    _hideOptionalInputsAutomatically->setHintToolTip( tr("When checked, any diconnected mask input of a node in the nodegraph "
-                                                         "will be visible only when the mouse is hovering the node or when it is "
-                                                         "selected.") );
-    _nodegraphTab->addKnob(_hideOptionalInputsAutomatically);
-
     _useInputAForMergeAutoConnect = AppManager::createKnob<KnobBool>( this, tr("Merge node connect to A input") );
     _useInputAForMergeAutoConnect->setName("mergeConnectToA");
     _useInputAForMergeAutoConnect->setHintToolTip( tr("If checked, upon creation of a new Merge node, or any other node with inputs named "
@@ -1613,7 +1606,6 @@ Settings::setDefaultValues()
     _useBWIcons->setDefaultValue(false);
     _maxUndoRedoNodeGraph->setDefaultValue(20, 0);
     _disconnectedArrowLength->setDefaultValue(30);
-    _hideOptionalInputsAutomatically->setDefaultValue(true);
     _useInputAForMergeAutoConnect->setDefaultValue(true);
     _usePluginIconsInNodeGraph->setDefaultValue(true);
     _useAntiAliasing->setDefaultValue(true);
@@ -2358,8 +2350,6 @@ Settings::onKnobValueChanged(KnobI* k,
         appPTR->onViewerTileCacheSizeChanged();
     } else if (k == _texturesMode.get() && !_restoringSettings) {
         appPTR->onViewerTileCacheSizeChanged();
-    } else if ((k == _hideOptionalInputsAutomatically.get()) && !_restoringSettings && (reason == eValueChangedReasonUserEdited)) {
-        appPTR->toggleAutoHideGraphInputs();
     } else if (k == _autoProxyWhenScrubbingTimeline.get()) {
         _autoProxyLevel->setSecret( !_autoProxyWhenScrubbingTimeline->getValue() );
     } else if (!_restoringSettings && ((k == _sunkenColor.get()) || (k == _baseColor.get()) || (k == _raisedColor.get()) || (k == _selectionColor.get()) || (k == _textColor.get()) || (k == _altTextColor.get()) || (k == _timelinePlayheadColor.get()) || (k == _timelineBoundsColor.get()) || (k == _timelineBGColor.get()) || (k == _interpolatedColor.get()) || (k == _keyframeColor.get()) || (k == _trackerKeyframeColor.get()) || (k == _cachedFrameColor.get()) || (k == _diskCachedFrameColor.get()) || (k == _curveEditorBGColor.get()) || (k == _gridColor.get()) || (k == _curveEditorScaleColor.get()) || (k == _dopeSheetEditorBackgroundColor.get()) || (k == _dopeSheetEditorRootSectionBackgroundColor.get()) || (k == _dopeSheetEditorKnobSectionBackgroundColor.get()) || (k == _dopeSheetEditorScaleColor.get()) || (k == _dopeSheetEditorGridColor.get()) || (k == _keywordColor.get()) || (k == _operatorColor.get()) || (k == _curLineColor.get()) || (k == _braceColor.get()) || (k == _defClassColor.get()) || (k == _stringsColor.get()) || (k == _commentsColor.get()) || (k == _selfColor.get()) || (k == _sliderColor.get()) || (k == _numbersColor.get()))) {
@@ -3356,18 +3346,6 @@ void
 Settings::setAutoTurboModeEnabled(bool e)
 {
     _autoTurbo->setValue(e);
-}
-
-void
-Settings::setOptionalInputsAutoHidden(bool hidden)
-{
-    _hideOptionalInputsAutomatically->setValue(hidden);
-}
-
-bool
-Settings::areOptionalInputsAutoHidden() const
-{
-    return _hideOptionalInputsAutomatically->getValue();
 }
 
 void

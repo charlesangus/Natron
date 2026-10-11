@@ -920,12 +920,6 @@ GuiAppInstance::redrawAllViewers()
 }
 
 void
-GuiAppInstance::toggleAutoHideGraphInputs()
-{
-    _imp->_gui->toggleAutoHideGraphInputs();
-}
-
-void
 GuiAppInstance::appendToScriptEditor(const std::string& str)
 {
     _imp->_gui->appendToScriptEditor(str);

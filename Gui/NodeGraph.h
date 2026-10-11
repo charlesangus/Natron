@@ -134,8 +134,6 @@ public:
 
     void refreshNodesKnobsAtTime(bool onlyTimeEvaluationKnobs, SequenceTime time);
 
-    bool areOptionalInputsAutoHidden() const;
-
     void copyNodesAndCreateInGroup(const NodesGuiList& nodes,
                                    const NodeCollectionPtr& group,
                                    std::list<std::pair<std::string, NodeGuiPtr> >& createdNodes);

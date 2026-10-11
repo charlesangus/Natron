@@ -180,6 +180,18 @@ Replaces the `Write` container (`Engine/WriteNode.cpp`) and every OFX writer wit
   - verify: the gtest passes; Precomp output pixels equal the sub-project's.
   - size: M
 
+- [ ] M76.P2.T22 — A Write passes its input through and never writes outside an explicit render
+  - files: `Engine/Nodes/IO/NativeWrite.cpp/.h`; engine render plumbing only if the Write can't tell a render-to-disk request from a downstream/viewer pull
+  - approach: a Write's output is its input, restricted to the channels and layers its channel set writes (the user: "if the write node isn't rendering all channels, the viewer only shows the channels it writes; ditto for any other downstream node"). With Read back on, the output is the decoded file. The encoder runs only for Render (panel button), Render Selected, `app.render` and `-w`; a Viewer or other downstream pull never touches the disk.
+  - verify: tests — a Viewer/downstream pull of a Write writes no file and returns the input; a Write writing only R and G (or one layer) shows only those downstream; read back still shows the file; the explicit render paths still write. `Tests/gui/m76_write.py` drops its viewer-at-Constant workaround and views the Write directly; full ctest green.
+  - size: L
+
+- [ ] M76.P2.T23 — One Info page on a writer
+  - files: `Engine/Node.cpp` (`initializeDefaultKnobs`, writer block)
+  - approach: the writer block's `createInfoPage()` call dates from the container, which as a group skipped the generic one; the native Write gets both. Drop the writer block's call.
+  - verify: the Write panel has one Info tab (the GUI script checks the tab count); the Read panel still has exactly one.
+  - size: M
+
 - [ ] M76.P2.T16 — Panel and render check under Xvfb
   - files: `Engine/Nodes/IO/NativeWrite.cpp` (page layout and labels only), new `Tests/gui/m76_write.py`, `Tests/gui/m61_uat.py` (if it creates writers); `Gui/` only if a hook is missing
   - approach: Controls page with file, overwrite, format type/format/clip to RoD, frame range, first/last (no sliders), frame increment, the channel set row, then colourspace (nested menu), Context, format options, metadata and read back, and the Render button. Run the Xvfb recipe (`build/deeprepro/run-gui.sh`, `checkForUpdates` pre-seeded off) on the release build. Checks: a Tab-menu Write opens the save dialog first, and its filter lists EXR/DPX/TIFF but not MOV/CR2/PSD; Render from the panel writes a 3-frame EXR with progress; read back shows the file; the output colourspace submenu opens, and Reset to default and reselect behave; searching "WriteOIIO" or "WritePNG" in the Tab menu finds nothing; Render Selected on a non-writer creates a native Write.
@@ -214,3 +226,4 @@ Replaces the `Write` container (`Engine/WriteNode.cpp`) and every OFX writer wit
 - 2026-10-11 — M76 worktree assets rebuilt from the `m76/retire-writers` pins: `fetch-assets.sh` reports all assets present and the IO and Arena bundles load (no OpenEXR link failure). Next: build + full ctest + smoke, commit P2.T13 and P2.T14.
 - 2026-10-11 — **P2.T13, P2.T14, P2.T17** landed (`ed80d4831` IO meta-node plumbing removed, `6eea36241` OFX writers retired from the bundle, `7cdf23c96` docs). Full ctest 1534/1534 and smoke green on the release build with the worktree's own writer-less assets; the `ioContainer|IO_META_NODES|MetaNodeContainer` grep is empty. Docs follow the code where the brief didn't: entry points create the Write by `PLUGINID_NATRON_WRITE` directly (`getWriterPluginIDForFileType` has only test callers), Precomp and `-w` do no writer lookup, and the knob list adds `startRender`/`readBackStamp`.
 - 2026-10-11 — **P2.T16 panel order:** the Channels row stays at the top of the Write panel, not after Frame Increment (user: always at the top, every node). See `DECISIONS/2026-10-11-channels-row-always-at-top.md`.
+- 2026-10-11 — **P2.T16 screenshots approved (user), pending P2.T22/T23.** Xvfb check `m76_write.py` 75/75; m75_read, m61_uat, viewer_error_scrub pass. Two problems found: viewing a Write wrote the file (no viewer gate; the script worked around it), and writers had two Info tabs (the writer block's `createInfoPage` dates from the group container, which skipped the generic one). User: a Write is pass-through restricted to the channels it writes, for the viewer and every downstream node, and writes only on an explicit render (P2.T22); drop the duplicate Info page (P2.T23).

@@ -656,7 +656,7 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
       - Screenshots: engaged, and after the switch.
   - size: M
 
-- [ ] M44.P7.T11 — Apply the dropdown and global-edit icons the user picks (placeholder until the icon pitch is answered)
+- [x] M44.P7.T11 — Apply the dropdown and global-edit icons the user picks (placeholder until the icon pitch is answered)
   - files: `Gui/KnobGuiColor.cpp`, `Gui/Resources/Images/` (new icon files), `Gui/GuiResources.qrc`, `Global/Enums.h`, `Gui/GuiApplicationManager.cpp`
   - approach:
     - Add the picked artwork from `PLAN/DESIGN/icons/`, or whatever the pitch delivers, at the medium-button sizes with a hi-dpi variant.
@@ -797,3 +797,6 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
   - Spinbox commits run as one-step gestures; a Return that leaves the rounded value unchanged does nothing.
 
   The M44 branch is then rebased onto `main` with M24 (`a50bef552`); conflicts are being resolved, starting with `Tests/CMakeLists.txt`.
+- 2026-10-10 — **P7.T11:** the icons are 64 px PNGs rasterised from Lucide at a 1.5 px stroke in `#c8c8c8`. Natron scales one source pixmap at runtime and has no @2x convention. The checked state uses a selection-colour background from a new `mainstyle.qss` rule.
+  - **Licence:** `chevrons-down` is MIT (it comes from Feather, by Cole Bemis), not ISC. `expand` is ISC.
+  - **Open:** Natron has no third-party art licence record yet. M56's icon pass should add one, covering these two icons.

@@ -232,6 +232,7 @@ protected:
         , _savedBudget(0)
         , _savedDeviceBudget(0)
         , _savedGpuMaxConcurrent(2)
+        , _savedRegionBody()
     {
     }
 
@@ -244,6 +245,7 @@ protected:
         _savedBudget = _scheduler->getBytesBudget();
         _savedDeviceBudget = _scheduler->getDeviceBytesBudget();
         _savedGpuMaxConcurrent = _scheduler->getGpuMaxConcurrentTasks();
+        _savedRegionBody = _scheduler->getRegionBody();
     }
 
     virtual void TearDown() OVERRIDE
@@ -251,7 +253,7 @@ protected:
         _scheduler->setBytesBudgetForTests(_savedBudget);
         _scheduler->setDeviceBytesBudget(_savedDeviceBudget);
         _scheduler->setGpuMaxConcurrentTasks(_savedGpuMaxConcurrent);
-        _scheduler->setRegionBody(RenderScheduler::RegionBody());
+        _scheduler->setRegionBody(_savedRegionBody);
         CountingTestRegistry::reset();
         getApp()->getProject()->reset(false, true);
         BaseTest::TearDown();
@@ -638,7 +640,8 @@ protected:
                                           const FrameGraph& graph,
                                           int region,
                                           int /*budget*/,
-                                          std::map<ImageLayerDesc, ImagePtr>* rootPlanes) {
+                                          std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
+                                          RenderScheduler::RegionReport* /*report*/) {
             return renderRegionOnCpu(*state, context, graph, region, rootPlanes);
         });
     }
@@ -769,6 +772,7 @@ protected:
     std::size_t _savedBudget;
     std::size_t _savedDeviceBudget;
     int _savedGpuMaxConcurrent;
+    RenderScheduler::RegionBody _savedRegionBody;
 };
 
 TEST_F(RenderSchedulerTest, Chain)
@@ -1341,7 +1345,8 @@ TEST_F(RenderSchedulerTest, GpuRegionsGetBudgetOneAndRespectTheConcurrencyCap)
                                                  const FrameGraph& graph,
                                                  int region,
                                                  int budget,
-                                                 std::map<ImageLayerDesc, ImagePtr>* rootPlanes) {
+                                                 std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
+                                                 RenderScheduler::RegionReport* /*report*/) {
             const int now = ++probe->active;
             int seen = probe->maxActive.load();
             while ((now > seen) && !probe->maxActive.compare_exchange_weak(seen, now)) {
@@ -1402,7 +1407,8 @@ TEST_F(RenderSchedulerTest, DeviceAndHostReservationsAreReleased)
                                                         const FrameGraph& graph,
                                                         int region,
                                                         int /*budget*/,
-                                                        std::map<ImageLayerDesc, ImagePtr>* rootPlanes) {
+                                                        std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
+                                                        RenderScheduler::RegionReport* /*report*/) {
             if (mode == 1) {
                 *inBody = true;
                 QThread::msleep(100);
@@ -1536,6 +1542,7 @@ TEST_F(RenderSchedulerTest, AbortInsideARegionAbortsTheFrame)
 
 TEST_F(RenderSchedulerTest, RegionWithoutBodyFailsTheFrame)
 {
+    _scheduler->setRegionBody(RenderScheduler::RegionBody());
     std::vector<NodePtr> nodes;
     ASSERT_TRUE(buildRegionDiamond(&nodes));
     CountingTestRegistry::reset();

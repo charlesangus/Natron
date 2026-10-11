@@ -38,9 +38,16 @@
 #include <string>
 #include <thread>
 
+#include "Engine/DeviceImage.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/ImageKey.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/RectD.h"
+#include "Engine/RectI.h"
 
 namespace gpu {
+class GpuBuffer;
+class GpuBufferHandle;
 class GpuRuntime;
 }
 
@@ -171,6 +178,106 @@ private:
     std::shared_ptr<Shared> _shared;
     std::thread _thread;
 };
+
+/**
+ * @brief A float image as a device buffer holds it: the interleaved rows of bounds, with nComps() channels of layer per
+ * pixel and nothing between rows, which is also how a RAM Image lays out its pixels. The rest is what the RAM image it
+ * comes back as is made with.
+ **/
+struct GpuImageLayout
+{
+    ImageLayerDesc layer;
+    RectD rod;
+    RectI bounds;
+    unsigned int mipmapLevel = 0;
+    double par = 1.;
+    ImageFieldingOrderEnum fielding = eImageFieldingOrderNone;
+
+    // Consumers such as OfxClipInstance tell the images they fetched apart by the time and view of their key.
+    ImageKey key;
+
+    int nComps() const;
+
+    std::size_t pixelBytes() const;
+
+    /**
+     * @brief What a device buffer holding the image must have, so that a host-import download of a RAM image of the
+     * same layout, which moves gpuHostTransferBytes() of it, fits.
+     **/
+    std::size_t deviceBytes() const;
+
+    /**
+     * @brief A new float RAM image of this layout, outside the image cache; null when it cannot be allocated. A large
+     * one is page-aligned and padded, so that it can be imported by the device.
+     **/
+    ImagePtr newRamImage() const;
+};
+
+/**
+ * @brief How many bytes from the first pixel of image a transfer moves: its pixels, rounded up to the import alignment
+ * when its buffer comes from HostImageMemory's padded pool, so that the transfer can import it rather than stage it.
+ **/
+std::size_t gpuHostTransferBytes(const Image& image);
+
+/**
+ * @brief A DeviceImage in a buffer of the GPU runtime's pool.
+ *
+ * After a download, its pixels belong to the transfer queue's family, so compute must not read them again; pin()
+ * refuses from that point, and a consumer takes the RAM copy instead. Thread-safe.
+ **/
+class GpuDeviceImage
+    : public DeviceImage
+{
+public:
+
+    virtual ~GpuDeviceImage();
+
+    /**
+     * @brief Holds buffer, whose first layout.deviceBytes() bytes hold the image. stats, when set, counts the
+     * downloads.
+     **/
+    static std::shared_ptr<GpuDeviceImage> create(gpu::GpuRuntime& runtime,
+                                                  const gpu::GpuBufferHandle& buffer,
+                                                  const GpuImageLayout& layout,
+                                                  const RenderStatsPtr& stats);
+
+    virtual std::size_t bytes() const OVERRIDE FINAL;
+    virtual RectI bounds() const OVERRIDE FINAL;
+    virtual int nComps() const OVERRIDE FINAL;
+    virtual ImagePtr downloadToRam() OVERRIDE FINAL;
+
+    /**
+     * @brief Fails while the image is pinned.
+     **/
+    virtual ImagePtr evictToRam() OVERRIDE FINAL;
+
+    const GpuImageLayout& layout() const;
+
+    gpu::GpuRuntime* runtime() const;
+
+    /**
+     * @brief Keeps the pixels on the device, neither evicted nor downloaded, until the matching unpin(), and returns
+     * their buffer; null, without pinning, once they were evicted or downloaded.
+     **/
+    gpu::GpuBuffer* pin();
+
+    void unpin();
+
+    /**
+     * @brief Lets the pool reclaim the buffer under memory pressure while the image is not pinned. onEvict runs on the
+     * thread that needs the memory and must make the image's holder evict it to RAM.
+     **/
+    void setEvictable(const std::function<void ()>& onEvict);
+
+private:
+
+    GpuDeviceImage();
+
+    struct Imp;
+    std::unique_ptr<Imp> _imp;
+};
+
+typedef std::shared_ptr<GpuDeviceImage> GpuDeviceImagePtr;
 
 NATRON_NAMESPACE_EXIT
 

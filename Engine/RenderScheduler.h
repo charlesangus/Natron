@@ -224,18 +224,33 @@ public:
     };
 
     /**
+     * @brief What a region body measured, for the render profile. Times are in milliseconds, sizes in bytes.
+     **/
+    struct RegionReport {
+        // Per member, in Region::members order: the device time charged to it, 0 for an identity member.
+        std::vector<long long> memberNs;
+        double uploadMs = 0.;
+        unsigned long long uploadBytes = 0;
+        double kernelMs = 0.;
+        double downloadMs = 0.;
+        unsigned long long downloadBytes = 0;
+    };
+
+    /**
      * @brief Renders the members of graph.regions[region] with the frame context installed on the calling thread. It
      * stores each output with external consumers in the frame's store under its task's key, to be released
      * externalConsumers times, unless the frame is aborted; releases the store entries its members read from one
      * another, but not those of the region's external inputs, which the scheduler releases; and moves the planes of a
      * root output to rootPlanes. graph.tasks may hold entries past those the frame was submitted with, which the body
-     * ignores. It returns eRenderRoIRetCodeOk, or the code the frame fails or aborts with.
+     * ignores. It may leave report untouched. It returns eRenderRoIRetCodeOk, or the code the frame fails or aborts
+     * with.
      **/
     typedef std::function<EffectInstance::RenderRoIRetCode(const FrameRenderContextPtr& context,
                                                            const FrameGraph& graph,
                                                            int region,
                                                            int budget,
-                                                           std::map<ImageLayerDesc, ImagePtr>* rootPlanes)> RegionBody;
+                                                           std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
+                                                           RegionReport* report)> RegionBody;
 
     RenderScheduler();
 
@@ -300,7 +315,8 @@ public:
     std::size_t getBytesBudget() const;
 
     /**
-     * @brief The budget of the device memory the regions reserve, unbounded until set.
+     * @brief The budget of the device memory the regions reserve, unbounded until set. Admission also holds the
+     * regions to the GPU pool's budget, read when a frame with regions is submitted.
      **/
     std::size_t getDeviceBytesBudget() const;
 
@@ -347,9 +363,11 @@ public:
     std::size_t getReservedDeviceBytesForTests() const;
 
     /**
-     * @brief The body every region runs. Unset, a region fails its frame.
+     * @brief The body every region runs, runGpuRegion() until replaced. Unset, a region fails its frame.
      **/
     void setRegionBody(const RegionBody& body);
+
+    RegionBody getRegionBody() const;
 
 private:
     class NodeTask;
@@ -413,6 +431,8 @@ private:
 
     std::size_t deviceBytesInFlightLocked() const;
 
+    std::size_t deviceBytesBudgetLocked() const;
+
     void reserveLocked(const FrameGraph::Task& task);
 
     void unreserveLocked(const FrameGraph::Task& task);
@@ -458,6 +478,7 @@ private:
     std::size_t _bytesBudget;
     std::size_t _reservedDeviceBytes;
     std::size_t _deviceBytesBudget;
+    std::size_t _poolDeviceBytesBudget;
     int _runningGpuTasks;
     int _gpuMaxConcurrentTasks;
     std::size_t _peakBytesInFlight;

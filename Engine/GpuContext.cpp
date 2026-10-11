@@ -29,6 +29,8 @@
 #include <QtCore/QDebug>
 
 #include "Engine/HostImageMemory.h"
+#include "Engine/Image.h"
+#include "Engine/RenderStats.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRuntime.h"
@@ -431,5 +433,269 @@ GpuContext::initialize()
 }
 
 #endif // NATRON_HAVE_GPU
+
+int
+GpuImageLayout::nComps() const
+{
+    return layer.getNumComponents();
+}
+
+std::size_t
+GpuImageLayout::pixelBytes() const
+{
+    if ( bounds.isNull() ) {
+        return 0;
+    }
+
+    return (std::size_t)bounds.area() * (std::size_t)std::max(0, nComps()) * sizeof(float);
+}
+
+std::size_t
+GpuImageLayout::deviceBytes() const
+{
+    return HostImageMemory::paddedSize( pixelBytes() );
+}
+
+ImagePtr
+GpuImageLayout::newRamImage() const
+{
+    if (pixelBytes() == 0) {
+        return ImagePtr();
+    }
+    try {
+        return std::make_shared<Image>( key, Image::makeParams(rod, bounds, par, mipmapLevel, false, layer, eImageBitDepthFloat, fielding, eStorageModeRAM) );
+    } catch (const std::bad_alloc&) {
+        return ImagePtr();
+    }
+}
+
+std::size_t
+gpuHostTransferBytes(const Image& image)
+{
+    const RectI bounds = image.getBounds();
+    if ( bounds.isNull() ) {
+        return 0;
+    }
+    const std::size_t bytes = (std::size_t)bounds.area() * image.getComponentsCount() * getSizeOfForBitDepth( image.getBitDepth() );
+    if ( (image.getStorageMode() != eStorageModeRAM) || (bytes < HostImageMemory::minPooledBytes()) ) {
+        return bytes;
+    }
+
+    return HostImageMemory::paddedSize(bytes);
+}
+
+struct GpuDeviceImage::Imp
+{
+    mutable std::mutex mutex;
+    GpuImageLayout layout;
+    gpu::GpuRuntime* runtime = nullptr;
+    std::weak_ptr<RenderStats> stats;
+    int pins = 0;
+    bool evicted = false;
+    bool downloaded = false;
+    std::function<void ()> onEvict;
+#ifdef NATRON_HAVE_GPU
+    gpu::GpuBufferHandle buffer;
+
+    void markEvictableLocked()
+    {
+        if ( onEvict && buffer && (pins == 0) && !evicted ) {
+            buffer.markEvictable(onEvict);
+        }
+    }
+
+    ImagePtr downloadLocked()
+    {
+        if (!buffer || !runtime) {
+            return ImagePtr();
+        }
+        ImagePtr image = layout.newRamImage();
+        if (!image) {
+            return ImagePtr();
+        }
+        const std::size_t bytes = gpuHostTransferBytes(*image);
+        if ( (bytes == 0) || (bytes > buffer.size()) ) {
+            return ImagePtr();
+        }
+        {
+            Image::WriteAccess access( image.get() );
+            unsigned char* data = access.pixelAt(layout.bounds.x1, layout.bounds.y1);
+            if (!data) {
+                return ImagePtr();
+            }
+            gpu::StreamOptions options;
+            options.handoff = gpu::ComputeHandoff::Submit;
+            gpu::TimelineValue done;
+            if ( !runtime->download(buffer.buffer(), 0, {data, bytes}, done, options) || !runtime->wait(done) ) {
+                return ImagePtr();
+            }
+        }
+        downloaded = true;
+        if ( RenderStatsPtr s = stats.lock() ) {
+            s->noteDownload( layout.pixelBytes() );
+        }
+
+        return image;
+    }
+#endif
+};
+
+GpuDeviceImage::GpuDeviceImage()
+    : _imp(new Imp)
+{
+}
+
+GpuDeviceImage::~GpuDeviceImage()
+{
+}
+
+std::shared_ptr<GpuDeviceImage>
+GpuDeviceImage::create(gpu::GpuRuntime& runtime,
+                       const gpu::GpuBufferHandle& buffer,
+                       const GpuImageLayout& layout,
+                       const RenderStatsPtr& stats)
+{
+#ifdef NATRON_HAVE_GPU
+    if ( !buffer || (buffer.size() < layout.deviceBytes()) ) {
+        return std::shared_ptr<GpuDeviceImage>();
+    }
+    std::shared_ptr<GpuDeviceImage> image(new GpuDeviceImage);
+    image->_imp->runtime = &runtime;
+    image->_imp->buffer = buffer;
+    image->_imp->layout = layout;
+    image->_imp->stats = stats;
+
+    return image;
+#else
+    Q_UNUSED(runtime);
+    Q_UNUSED(buffer);
+    Q_UNUSED(layout);
+    Q_UNUSED(stats);
+
+    return std::shared_ptr<GpuDeviceImage>();
+#endif
+}
+
+std::size_t
+GpuDeviceImage::bytes() const
+{
+#ifdef NATRON_HAVE_GPU
+    std::lock_guard<std::mutex> k(_imp->mutex);
+
+    return _imp->buffer ? (std::size_t)_imp->buffer.size() : 0;
+#else
+    return 0;
+#endif
+}
+
+RectI
+GpuDeviceImage::bounds() const
+{
+    return _imp->layout.bounds;
+}
+
+int
+GpuDeviceImage::nComps() const
+{
+    return _imp->layout.nComps();
+}
+
+ImagePtr
+GpuDeviceImage::downloadToRam()
+{
+#ifdef NATRON_HAVE_GPU
+    std::lock_guard<std::mutex> k(_imp->mutex);
+    if (_imp->pins > 0) {
+        return ImagePtr();
+    }
+
+    return _imp->downloadLocked();
+#else
+    return ImagePtr();
+#endif
+}
+
+ImagePtr
+GpuDeviceImage::evictToRam()
+{
+#ifdef NATRON_HAVE_GPU
+    gpu::GpuBufferHandle freed;
+    ImagePtr image;
+    {
+        std::lock_guard<std::mutex> k(_imp->mutex);
+        if ( (_imp->pins > 0) || _imp->evicted ) {
+            return ImagePtr();
+        }
+        image = _imp->downloadLocked();
+        if (!image) {
+            return ImagePtr();
+        }
+        _imp->evicted = true;
+        _imp->onEvict = nullptr;
+        std::swap(freed, _imp->buffer);
+    }
+
+    return image;
+#else
+    return ImagePtr();
+#endif
+}
+
+const GpuImageLayout&
+GpuDeviceImage::layout() const
+{
+    return _imp->layout;
+}
+
+gpu::GpuRuntime*
+GpuDeviceImage::runtime() const
+{
+    return _imp->runtime;
+}
+
+gpu::GpuBuffer*
+GpuDeviceImage::pin()
+{
+#ifdef NATRON_HAVE_GPU
+    std::lock_guard<std::mutex> k(_imp->mutex);
+    if ( !_imp->buffer || _imp->evicted || _imp->downloaded ) {
+        return nullptr;
+    }
+    if (_imp->pins++ == 0) {
+        _imp->buffer.clearEvictable();
+    }
+    _imp->buffer.touch();
+
+    return &_imp->buffer.buffer();
+#else
+    return nullptr;
+#endif
+}
+
+void
+GpuDeviceImage::unpin()
+{
+#ifdef NATRON_HAVE_GPU
+    std::lock_guard<std::mutex> k(_imp->mutex);
+    if (_imp->pins <= 0) {
+        return;
+    }
+    if (--_imp->pins == 0) {
+        _imp->markEvictableLocked();
+    }
+#endif
+}
+
+void
+GpuDeviceImage::setEvictable(const std::function<void ()>& onEvict)
+{
+#ifdef NATRON_HAVE_GPU
+    std::lock_guard<std::mutex> k(_imp->mutex);
+    _imp->onEvict = onEvict;
+    _imp->markEvictableLocked();
+#else
+    Q_UNUSED(onEvict);
+#endif
+}
 
 NATRON_NAMESPACE_EXIT

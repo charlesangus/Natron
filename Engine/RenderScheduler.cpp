@@ -52,6 +52,9 @@
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppManager.h"
 #include "Engine/GPUContextPool.h"
+#include "Engine/GpuCostModel.h"
+#include "Engine/GpuPlacement.h"
+#include "Engine/GpuRegionTask.h"
 #include "Engine/Image.h"
 #include "Engine/MemoryInfo.h"
 #include "Engine/Node.h"
@@ -459,9 +462,11 @@ RenderScheduler::RenderScheduler()
     , _bytesBudget(std::numeric_limits<std::size_t>::max())
     , _reservedDeviceBytes(0)
     , _deviceBytesBudget(std::numeric_limits<std::size_t>::max())
+    , _poolDeviceBytesBudget(std::numeric_limits<std::size_t>::max())
     , _runningGpuTasks(0)
     , _gpuMaxConcurrentTasks(2)
     , _peakBytesInFlight(0)
+    , _regionBody(&runGpuRegion)
     , _tasksRendering(0)
 {
     SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
@@ -471,10 +476,14 @@ RenderScheduler::RenderScheduler()
     if (settings) {
         _bytesBudget = (std::size_t)(settings->getRamMaximumPercent() * (double)getSystemTotalRAM_conditionnally() / 2.);
     }
+
+    // Placement forms regions only while a body that renders them on the GPU is installed.
+    setGpuPlacementAvailableFunc(&isGpuRegionBodyAvailable);
 }
 
 RenderScheduler::~RenderScheduler()
 {
+    setGpuPlacementAvailableFunc(nullptr);
 }
 
 FrameGraph
@@ -628,14 +637,20 @@ RenderScheduler::submit(const FrameRenderContextPtr& context,
     frame->priority = priority;
     frame->regionTasksBegin = (int)frame->graph.tasks.size();
     frame->remainingTasks = (int)frame->graph.tasks.size();
-    if (!frame->graph.regions.empty()) {
+    std::size_t poolDeviceBytesBudget = 0;
+    const bool hasRegions = !frame->graph.regions.empty();
+    if (hasRegions) {
         appendRegionTasks(frame.get());
+        poolDeviceBytesBudget = gpuRegionDeviceBytesBudget();
     }
 
     int toStart = 0;
     int runnablePriority = 0;
     {
         QMutexLocker k(&_mutex);
+        if (hasRegions) {
+            _poolDeviceBytesBudget = poolDeviceBytesBudget;
+        }
         frame->sequence = _nextFrameSequence++;
         _activeFrames.push_back(frame);
         if (context->getAbortInfo()) {
@@ -933,6 +948,14 @@ RenderScheduler::setRegionBody(const RegionBody& body)
     _regionBody = body;
 }
 
+RenderScheduler::RegionBody
+RenderScheduler::getRegionBody() const
+{
+    QMutexLocker k(&_mutex);
+
+    return _regionBody;
+}
+
 bool
 RenderScheduler::ReadyRefWorse::operator()(const ReadyRef& a,
                                            const ReadyRef& b) const
@@ -1117,7 +1140,10 @@ RenderScheduler::executeTask(const FramePtr& frame,
         OpenMPThreadsScope openMPThreads(budget);
         ProfileSink& sink = profileSink();
         const bool profiling = sink.isEnabled();
-        const std::chrono::steady_clock::time_point renderStart = profiling ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+        // Only while placement can use what the cost model learns, which is never from an identity task.
+        const bool observing = !task.isIdentity && isGpuPlacementAvailable();
+        const unsigned long long renderActionsBefore = EffectInstance::getRenderActionsOnThisThread();
+        const std::chrono::steady_clock::time_point renderStart = (profiling || observing) ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
         const int rendering = ++_tasksRendering;
         if (frame->context->getStats()) {
             frame->context->getStats()->noteConcurrentTasks(rendering);
@@ -1130,9 +1156,14 @@ RenderScheduler::executeTask(const FramePtr& frame,
             retCode = EffectInstance::eRenderRoIRetCodeFailed;
         }
         --_tasksRendering;
+        const long long wallNs = (profiling || observing) ? std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - renderStart).count() : 0;
         if (profiling) {
-            const long long wallNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - renderStart).count();
             sink.append(formatTaskRecord(task, effect, frame->sequence, taskIndex, wallNs, retCode == EffectInstance::eRenderRoIRetCodeOk));
+        }
+        // A task whose output came from the cache measured no rendering, and would teach the model that the CPU is
+        // nearly free.
+        if (observing && (retCode == EffectInstance::eRenderRoIRetCodeOk) && (EffectInstance::getRenderActionsOnThisThread() != renderActionsBefore)) {
+            GpuCostModel::session().observeCpu(task, wallNs, budget);
         }
 
         bool glPlanes = false;
@@ -1206,14 +1237,30 @@ RenderScheduler::executeRegion(const FramePtr& frame,
         if (frame->context->getStats()) {
             frame->context->getStats()->noteConcurrentTasks(rendering);
         }
+        RegionReport report;
         try {
-            retCode = body(frame->context, frame->graph, region, budget, &planes);
+            retCode = body(frame->context, frame->graph, region, budget, &planes, &report);
         } catch (const std::exception&) {
             retCode = EffectInstance::eRenderRoIRetCodeFailed;
         } catch (...) {
             retCode = EffectInstance::eRenderRoIRetCodeFailed;
         }
         --_tasksRendering;
+        ProfileSink& sink = profileSink();
+        if (sink.isEnabled()) {
+            const std::vector<int>& members = frame->graph.regions[region].members;
+            const bool ok = retCode == EffectInstance::eRenderRoIRetCodeOk;
+            std::string lines;
+            for (std::size_t i = 0; i < members.size(); ++i) {
+                const FrameGraph::Task& member = frame->graph.tasks[members[i]];
+                const EffectInstancePtr effect = member.key.node ? member.key.node->getEffectInstance() : EffectInstancePtr();
+                const long long memberNs = (i < report.memberNs.size()) ? report.memberNs[i] : 0;
+                lines += formatTaskRecord(member, effect, frame->sequence, members[i], memberNs, ok);
+            }
+            lines += formatRegionRecord(frame->sequence, region, members, report.uploadMs, report.uploadBytes, report.kernelMs,
+                                        report.downloadMs, report.downloadBytes);
+            sink.append(lines);
+        }
     } else if (appPTR) {
         appPTR->writeToErrorLog_mt_safe(QString::fromUtf8("RenderScheduler"), QDateTime::currentDateTime(),
                                         QString::fromUtf8("Render task failed: a GPU region was scheduled with no region body set"));
@@ -1426,6 +1473,7 @@ RenderScheduler::admitGatedLocked(int maxRunnables)
     }
     const std::size_t inFlight = bytesInFlightLocked();
     const std::size_t deviceInFlight = deviceBytesInFlightLocked();
+    const std::size_t deviceBudget = deviceBytesBudgetLocked();
 
     while ((slots > 0) && !_gatedReady.empty()) {
         const ReadyRef& top = _gatedReady.front();
@@ -1435,8 +1483,8 @@ RenderScheduler::admitGatedLocked(int maxRunnables)
         // A stale task is admitted only to be dropped by the next pop, which releases its reservation.
         const bool fits = isStaleLocked(top)
                           || ((estimated <= _bytesBudget) && (inFlight + _reservedBytes <= _bytesBudget - estimated)
-                              && (estimatedDevice <= _deviceBytesBudget)
-                              && (deviceInFlight + _reservedDeviceBytes <= _deviceBytesBudget - estimatedDevice));
+                              && (estimatedDevice <= deviceBudget)
+                              && (deviceInFlight + _reservedDeviceBytes <= deviceBudget - estimatedDevice));
         const bool idle = (_runningTasks == 0) && _freeReady.empty() && _admittedReady.empty();
         // Stopping at the first task that does not fit, rather than skipping to smaller ones, keeps a large branch
         // from being starved by the small ones behind it.
@@ -1464,6 +1512,12 @@ RenderScheduler::bytesInFlightLocked() const
     }
 
     return bytes;
+}
+
+std::size_t
+RenderScheduler::deviceBytesBudgetLocked() const
+{
+    return std::min(_deviceBytesBudget, _poolDeviceBytesBudget);
 }
 
 std::size_t

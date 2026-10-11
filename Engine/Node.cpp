@@ -28,12 +28,14 @@
 #include <algorithm> // min, max
 #include <bitset>
 #include <cassert>
+#include <cctype>
 #include <limits>
 #include <locale>
 #include <map>
 #include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
+#include <vector>
 
 #include "Global/Macros.h"
 
@@ -4397,6 +4399,178 @@ Node::getPluginGrouping(std::list<std::string>* grouping) const
     _imp->effect->getPluginGrouping(grouping);
 }
 
+NodeCategoryEnum
+Node::getNodeCategory() const
+{
+    EffectInstancePtr effect = getEffectInstance();
+    if (!effect) {
+        return eNodeCategoryOther;
+    }
+
+    std::list<std::string> grouping;
+    getPluginGrouping(&grouping);
+
+    // Domain categories carry their own colour identity and win over Reader/Writer/Generator:
+    // this is what makes DeepWrite (which also sets isWriter()) and DeepRead (which does not)
+    // agree on being coloured as Deep, rather than one of them falling through to Writer grey.
+    NodeCategoryEnum domainCategory;
+    if (domainCategoryFromGrouping(grouping, &domainCategory)) {
+        return domainCategory;
+    }
+
+    if (effect->isReader()) {
+        return eNodeCategoryRead;
+    }
+    if (effect->isWriter()) {
+        return eNodeCategoryWrite;
+    }
+    if (effect->isGenerator()) {
+        return eNodeCategoryGenerator;
+    }
+
+    return categoryFromGroupingAndLabel(grouping.empty() ? std::string() : grouping.front(), getPluginLabel());
+}
+
+bool
+Node::domainCategoryFromGrouping(const std::list<std::string>& grouping,
+                                 NodeCategoryEnum* category)
+{
+    if (grouping.empty()) {
+        return false;
+    }
+    const std::string& major = grouping.front();
+    if (major == PLUGIN_GROUP_DEEP) {
+        *category = eNodeCategoryDeep;
+
+        return true;
+    }
+    if (major == PLUGIN_GROUP_3D) {
+        std::list<std::string>::const_iterator minor = grouping.begin();
+        ++minor;
+        *category = (minor != grouping.end() && PLUGIN_GROUP_3D + std::string("/") + *minor == PLUGIN_GROUP_3D_USD) ? eNodeCategoryUsd3D : eNodeCategoryNative3D;
+
+        return true;
+    }
+
+    return false;
+}
+
+// Splits on non-alphanumeric characters, letter/digit transitions and camel case, so that
+// "ZBlur", "Roto_Paint2" or "KeyMix" yield whole words a keyword must equal.
+static std::vector<std::string>
+labelWords(const std::string& label)
+{
+    std::vector<std::string> words;
+    std::string current;
+    const std::size_t n = label.size();
+
+    for (std::size_t i = 0; i < n; ++i) {
+        const unsigned char c = static_cast<unsigned char>(label[i]);
+        if (!std::isalnum(c)) {
+            if (!current.empty()) {
+                words.push_back(current);
+                current.clear();
+            }
+            continue;
+        }
+        if (!current.empty()) {
+            const unsigned char prev = static_cast<unsigned char>(label[i - 1]);
+            const bool lowerToUpper = std::islower(prev) && std::isupper(c);
+            const bool acronymEnd = std::isupper(prev) && std::isupper(c) && (i + 1 < n) && std::islower(static_cast<unsigned char>(label[i + 1]));
+            const bool digitBoundary = (std::isdigit(prev) != 0) != (std::isdigit(c) != 0);
+            if (lowerToUpper || acronymEnd || digitBoundary) {
+                words.push_back(current);
+                current.clear();
+            }
+        }
+        current.push_back(static_cast<char>(std::tolower(c)));
+    }
+    if (!current.empty()) {
+        words.push_back(current);
+    }
+
+    return words;
+}
+
+NodeCategoryEnum
+Node::categoryFromGroupingAndLabel(const std::string& majorGrouping,
+                                   const std::string& label)
+{
+    if (majorGrouping == PLUGIN_GROUP_COLOR) {
+        return eNodeCategoryColor;
+    }
+    if (majorGrouping == PLUGIN_GROUP_FILTER) {
+        return eNodeCategoryFilter;
+    }
+    if (majorGrouping == PLUGIN_GROUP_CHANNEL) {
+        return eNodeCategoryChannel;
+    }
+    if (majorGrouping == PLUGIN_GROUP_KEYER) {
+        return eNodeCategoryKeyer;
+    }
+    if (majorGrouping == PLUGIN_GROUP_MERGE) {
+        return eNodeCategoryMerge;
+    }
+    if (majorGrouping == PLUGIN_GROUP_PAINT) {
+        return eNodeCategoryDraw;
+    }
+    if (majorGrouping == PLUGIN_GROUP_TIME) {
+        return eNodeCategoryTime;
+    }
+    if (majorGrouping == PLUGIN_GROUP_TRANSFORM) {
+        return eNodeCategoryTransform;
+    }
+    if (majorGrouping == PLUGIN_GROUP_MULTIVIEW) {
+        return eNodeCategoryViews;
+    }
+
+    // The label is the last signal available for a third-party OFX plugin with an arbitrary
+    // grouping string. Earlier entries win, which is why "mix" precedes "key": a KeyMix
+    // combines two inputs through a mask, it does not pull a key.
+    struct KeywordEntry {
+        const char* keyword;
+        NodeCategoryEnum category;
+    };
+    static const KeywordEntry keywordTable[] = {
+        { "blur", eNodeCategoryFilter },
+        { "defocus", eNodeCategoryFilter },
+        { "merge", eNodeCategoryMerge },
+        { "over", eNodeCategoryMerge },
+        { "plus", eNodeCategoryMerge },
+        { "mix", eNodeCategoryMerge },
+        { "key", eNodeCategoryKeyer },
+        { "keyer", eNodeCategoryKeyer },
+        { "grade", eNodeCategoryColor },
+        { "color", eNodeCategoryColor },
+        { "colour", eNodeCategoryColor },
+        { "hue", eNodeCategoryColor },
+        { "sat", eNodeCategoryColor },
+        { "saturation", eNodeCategoryColor },
+        { "transform", eNodeCategoryTransform },
+        { "crop", eNodeCategoryTransform },
+        { "reformat", eNodeCategoryTransform },
+        { "warp", eNodeCategoryTransform },
+        { "time", eNodeCategoryTime },
+        { "frame", eNodeCategoryTime },
+        { "paint", eNodeCategoryDraw },
+        { "roto", eNodeCategoryDraw },
+        { "draw", eNodeCategoryDraw },
+        { "shuffle", eNodeCategoryChannel },
+        { "channel", eNodeCategoryChannel },
+        { "copy", eNodeCategoryChannel },
+    };
+
+    const std::vector<std::string> words = labelWords(label);
+
+    for (std::size_t i = 0; i < sizeof(keywordTable) / sizeof(keywordTable[0]); ++i) {
+        if (std::find(words.begin(), words.end(), keywordTable[i].keyword) != words.end()) {
+            return keywordTable[i].category;
+        }
+    }
+
+    return eNodeCategoryOther;
+}
+
 std::string
 Node::getPyPlugID() const
 {
@@ -7618,6 +7792,38 @@ Node::setColor(double r,
 
     if (gui) {
         gui->setColor(r, g, b);
+    }
+}
+
+bool
+Node::hasUserColor() const
+{
+    NodeGuiIPtr gui = _imp->guiPointer.lock();
+
+    return gui && gui->hasUserColor();
+}
+
+void
+Node::getUserColor(double* r,
+                   double* g,
+                   double* b) const
+{
+    NodeGuiIPtr gui = _imp->guiPointer.lock();
+
+    if (gui) {
+        gui->getUserColor(r, g, b);
+    } else {
+        *r = *g = *b = 0.;
+    }
+}
+
+void
+Node::resetColor()
+{
+    NodeGuiIPtr gui = _imp->guiPointer.lock();
+
+    if (gui) {
+        gui->clearUserColor();
     }
 }
 

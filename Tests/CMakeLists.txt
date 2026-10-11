@@ -67,6 +67,7 @@ set(Tests_SOURCES
     MemoryInfo_Test.cpp
     Metadata_Test.cpp
     NativeParity.cpp
+    NodeCategory_Test.cpp
     OSGLContext_Test.cpp
     PersistentMessage_Test.cpp
     PluginIdentity_Test.cpp
@@ -145,7 +146,9 @@ target_include_directories(Tests
 set(GuiTests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
+    KnobGuiString_Test.cpp
     LayerChannelRow_Test.cpp
+    NodeGuiUserColorSerialization_Test.cpp
     ShuffleMatrix_Test.cpp
     ViewerDataSerialization_Test.cpp
     guimain.cpp

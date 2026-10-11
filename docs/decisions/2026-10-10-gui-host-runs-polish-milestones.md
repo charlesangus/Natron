@@ -1,0 +1,3 @@
+# A third host runs the GUI polish milestones
+
+2026-10-10 (user): a third host's PM runs only the GUI milestones M24 - Node Graph Category Colour, M44 - Trackball Colour Editing, M55 - Node Graph Polish and M56 - Visual And Menu Polish, in up to two parallel lanes, with builds capped at `-j3`. The native I/O host and the GPU host keep their own lanes. Like the GPU host, this host does not write the board frontmatter (`current`, `pm_heartbeat` stay the native I/O host's run state); its lanes show as `doing` rows, and its task progress lives in the milestone files. It fetches `origin/plan` before every plan edit and pushes right after each plan commit.

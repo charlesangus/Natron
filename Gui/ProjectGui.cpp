@@ -299,55 +299,26 @@ loadNodeGuiSerialization(Gui* gui,
         nGui->togglePreview();
     }
 
-    EffectInstancePtr iseffect = nGui->getNode()->getEffectInstance();
+    BackdropGui* isBd = dynamic_cast<BackdropGui*>(nGui.get());
+    if (!isBd) {
+        nGui->restoreCategoryAndUserColor(serialization);
+    }
 
-    if ( serialization.colorWasFound() ) {
-        std::list<std::string> grouping;
-        nGui->getNode()->getPluginGrouping(&grouping);
-        std::string majGroup = grouping.empty() ? "" : grouping.front();
-        BackdropGui* isBd = dynamic_cast<BackdropGui*>( nGui.get() );
-        float defR, defG, defB;
+    if (serialization.colorWasFound()) {
+        if (isBd) {
+            QColor defaultColor;
+            NodeGui::getCategoryColor(nGui->getNode(), &defaultColor);
+            float defR, defG, defB;
+            defaultColor.getRgbF(&defR, &defG, &defB);
 
-        if ( iseffect->isReader() ) {
-            settings->getReaderColor(&defR, &defG, &defB);
-        } else if ( iseffect->isWriter() ) {
-            settings->getWriterColor(&defR, &defG, &defB);
-        } else if ( iseffect->isGenerator() ) {
-            settings->getGeneratorColor(&defR, &defG, &defB);
-        } else if (majGroup == PLUGIN_GROUP_COLOR) {
-            settings->getColorGroupColor(&defR, &defG, &defB);
-        } else if (majGroup == PLUGIN_GROUP_FILTER) {
-            settings->getFilterGroupColor(&defR, &defG, &defB);
-        } else if (majGroup == PLUGIN_GROUP_CHANNEL) {
-            settings->getChannelGroupColor(&defR, &defG, &defB);
-        } else if (majGroup == PLUGIN_GROUP_KEYER) {
-            settings->getKeyerGroupColor(&defR, &defG, &defB);
-        } else if (majGroup == PLUGIN_GROUP_MERGE) {
-            settings->getMergeGroupColor(&defR, &defG, &defB);
-        } else if (majGroup == PLUGIN_GROUP_PAINT) {
-            settings->getDrawGroupColor(&defR, &defG, &defB);
-        } else if (majGroup == PLUGIN_GROUP_TIME) {
-            settings->getTimeGroupColor(&defR, &defG, &defB);
-        } else if (majGroup == PLUGIN_GROUP_TRANSFORM) {
-            settings->getTransformGroupColor(&defR, &defG, &defB);
-        } else if (majGroup == PLUGIN_GROUP_MULTIVIEW) {
-            settings->getViewsGroupColor(&defR, &defG, &defB);
-        } else if (majGroup == PLUGIN_GROUP_DEEP) {
-            settings->getDeepGroupColor(&defR, &defG, &defB);
-        } else if (isBd) {
-            settings->getDefaultBackdropColor(&defR, &defG, &defB);
-        } else {
-            settings->getDefaultNodeColor(&defR, &defG, &defB);
-        }
-
-
-        float r, g, b;
-        serialization.getColor(&r, &g, &b);
-        ///restore color only if different from default.
-        if ( (std::abs(r - defR) > 0.05) || (std::abs(g - defG) > 0.05) || (std::abs(b - defB) > 0.05) ) {
-            QColor color;
-            color.setRgbF(r, g, b);
-            nGui->setCurrentColor(color);
+            float r, g, b;
+            serialization.getColor(&r, &g, &b);
+            /// restore color only if different from default.
+            if ((std::abs(r - defR) > 0.05) || (std::abs(g - defG) > 0.05) || (std::abs(b - defB) > 0.05)) {
+                QColor color;
+                color.setRgbF(r, g, b);
+                nGui->setCurrentColor(color);
+            }
         }
 
         double ovR, ovG, ovB;

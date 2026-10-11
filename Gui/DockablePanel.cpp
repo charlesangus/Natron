@@ -296,14 +296,14 @@ DockablePanel::DockablePanel(Gui* gui,
             QPixmap p(NATRON_MEDIUM_BUTTON_ICON_SIZE, NATRON_MEDIUM_BUTTON_ICON_SIZE);
             p.fill(currentColor);
 
-
-            _imp->_colorButton = new Button(QIcon(p), QString(), _imp->_headerWidget);
+            _imp->_colorButton = new NodeColorButton(this, QIcon(p), _imp->_headerWidget);
             _imp->_colorButton->setFixedSize(mediumBSize);
             _imp->_colorButton->setIconSize(mediumIconSize);
-            _imp->_colorButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Node color in the nodegraph. "
-                                                                              "The default node color is set in the "
-                                                                              "%1 preferences.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ),
-                                                                           NATRON_NAMESPACE::WhiteSpaceNormal) );
+            const QString colorToolTip = node->isBackdropNode() ? tr("Backdrop color in the nodegraph. Right-click to reset it to the default "
+                                                                     "backdrop color set in the %1 preferences.")
+                                                                      .arg(QString::fromUtf8(NATRON_APPLICATION_NAME))
+                                                                : tr("Border colour drawn around the node. Right-click to remove it.");
+            _imp->_colorButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(colorToolTip, NATRON_NAMESPACE::WhiteSpaceNormal));
             _imp->_colorButton->setFocusPolicy(Qt::NoFocus);
             QObject::connect( _imp->_colorButton, SIGNAL(clicked()), this, SLOT(onColorButtonClicked()) );
 
@@ -1536,6 +1536,21 @@ void
 DockablePanel::setCurrentColor(const QColor & c)
 {
     onColorDialogColorChanged(c);
+}
+
+void
+DockablePanel::resetUserColor()
+{
+    NodeSettingsPanel* nodePanel = dynamic_cast<NodeSettingsPanel*>(this);
+
+    if (!nodePanel) {
+        return;
+    }
+    NodeGuiPtr node = nodePanel->getNode();
+    if (!node) {
+        return;
+    }
+    node->clearUserColor();
 }
 
 void

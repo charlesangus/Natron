@@ -216,6 +216,20 @@ public:
     void getMergeGroupColor(float *r, float *g, float *b) const;
     void getViewsGroupColor(float *r, float *g, float *b) const;
     void getDeepGroupColor(float *r, float *g, float *b) const;
+    void getNative3DGroupColor(float* r, float* g, float* b) const;
+    void getUsd3DGroupColor(float* r, float* g, float* b) const;
+
+    void getNodeCategoryColor(NodeCategoryEnum category, float* r, float* g, float* b) const;
+
+    void getEdgeDeepColor(float* r, float* g, float* b) const;
+    void getEdgeSceneColor(float* r, float* g, float* b) const;
+
+    /**
+     * @brief The colour an edge should tint itself with for the given data kind, if any. Returns
+     * false for eDataKindImage and eDataKindPolymorphic, which have no knob of their own and stay
+     * untinted (the edge keeps its own default colour), leaving r/g/b untouched.
+     **/
+    bool getEdgeKindColor(DataKindEnum kind, float* r, float* g, float* b) const;
 
     bool getRenderOnEditingFinishedOnly() const;
     void setRenderOnEditingFinishedOnly(bool render);
@@ -394,6 +408,11 @@ public:
 Q_SIGNALS:
 
     void settingChanged(KnobI* knob);
+
+    /**
+     * @brief Emitted by every saveSettings() call, even when writing to disk is turned off.
+     **/
+    void settingsSaved();
 
 private:
 
@@ -650,6 +669,10 @@ private:
     KnobColorPtr _defaultMergeGroupColor;
     KnobColorPtr _defaultViewsGroupColor;
     KnobColorPtr _defaultDeepGroupColor;
+    KnobColorPtr _defaultNative3DGroupColor;
+    KnobColorPtr _defaultUsd3DGroupColor;
+    KnobColorPtr _edgeDeepColor;
+    KnobColorPtr _edgeSceneColor;
     std::vector<ChoiceOption> _knownHostNames;
     bool _restoringSettings;
     bool _settingsExisted;

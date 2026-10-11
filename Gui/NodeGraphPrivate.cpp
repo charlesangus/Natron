@@ -124,7 +124,7 @@ NodeGraphPrivate::editSelectionFromSelectionRectangle(bool addToSelection)
     const QRectF& selection = _selectionRect;
 
     for (NodesGuiList::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
-        QRectF bbox = (*it)->mapToScene( (*it)->boundingRect() ).boundingRect();
+        QRectF bbox = (*it)->mapToScene((*it)->outlineBoundingRect()).boundingRect();
         if ( selection.contains(bbox) ) {
             NodesGuiList::iterator foundInSel = std::find(_selection.begin(), _selection.end(), *it);
             if ( foundInSel != _selection.end() ) {

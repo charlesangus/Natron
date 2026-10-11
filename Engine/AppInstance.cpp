@@ -1087,10 +1087,6 @@ isEntitledForInspector(Plugin* plugin,
 
 }
 
-namespace {
-const int kWriteContainerMajor = 1;
-}
-
 NodePtr
 AppInstance::createNodeInternal(CreateNodeArgs& args)
 {
@@ -1113,20 +1109,6 @@ AppInstance::createNodeInternal(CreateNodeArgs& args)
     }
 
     bool isSilentCreation = args.getProperty<bool>(kCreateNodeArgsPropSilent);
-
-
-#ifdef NATRON_ENABLE_IO_META_NODES
-    NodePtr argsIOContainer = args.getProperty<NodePtr>(kCreateNodeArgsPropMetaNodeContainer);
-    // If it is a writer, create a WriteNode
-    if (!argsIOContainer) {
-        if (WriteNode::isBundledWriter(argsPluginID.toStdString(), wasProjectCreatedWithLowerCaseIDs())) {
-            args.addParamDefaultValue(kNatronWriteNodeParamEncodingPluginID, argsPluginID.toStdString());
-            findId = QString::fromUtf8(PLUGINID_NATRON_WRITE);
-            // The requested version is the encoder's, not the container's.
-            versionMajor = kWriteContainerMajor;
-        }
-    }
-#endif
 
     try {
         plugin = appPTR->getPluginBinary(findId, versionMajor, versionMinor, _imp->_projectCreatedWithLowerCaseIDs && serialization);

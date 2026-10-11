@@ -81,9 +81,6 @@ BaseTest::registerTestPlugins()
 
     _readPluginID = QString::fromUtf8(PLUGINID_NATRON_READ);
 
-    _writeOIIOPluginID = QString::fromUtf8(PLUGINID_OFX_WRITEOIIO);
-    _allTestPluginIDs.push_back(_writeOIIOPluginID);
-
     _writePluginID = QString::fromUtf8(PLUGINID_NATRON_WRITE);
 
     _textArenaPluginID = QString::fromUtf8("net.fxarena.openfx.Text");

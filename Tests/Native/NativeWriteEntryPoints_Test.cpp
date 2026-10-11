@@ -49,7 +49,6 @@
 #include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/IO/OiioWriteSupport.h"
 #include "Engine/Project.h"
-#include "Engine/WriteNode.h"
 
 NATRON_NAMESPACE_USING
 
@@ -59,12 +58,6 @@ bool
 isNativeWrite(const NodePtr& node)
 {
     return node && dynamic_cast<NativeWrite*>(node->getEffectInstance().get());
-}
-
-bool
-isWriteContainer(const NodePtr& node)
-{
-    return node && dynamic_cast<WriteNode*>(node->getEffectInstance().get());
 }
 
 } // namespace
@@ -94,13 +87,12 @@ TEST_F(NativeWriteEntryPointsTest, UnversionedWriteIsTheNativeNode)
     EXPECT_EQ(PLUGIN_MAJOR_NATRON_WRITE, node->getMajorVersion());
 }
 
-TEST_F(NativeWriteEntryPointsTest, ExplicitOfxWriterIDStillBuildsTheContainer)
+TEST_F(NativeWriteEntryPointsTest, ExplicitOfxWriterIDBuildsNothing)
 {
-    NodePtr node = createNode(QString::fromUtf8(PLUGINID_OFX_WRITEOIIO));
+    CreateNodeArgs args(PLUGINID_OFX_WRITEOIIO, getApp()->getProject());
+    args.setProperty<bool>(kCreateNodeArgsPropSilent, true);
 
-    ASSERT_TRUE(bool(node));
-    EXPECT_TRUE(isWriteContainer(node));
-    EXPECT_FALSE(isNativeWrite(node));
+    EXPECT_FALSE(bool(getApp()->createNode(args)));
 }
 
 TEST_F(NativeWriteEntryPointsTest, CreateWriterBuildsANativeWriteForEveryFormat)

@@ -104,7 +104,6 @@ protected:
     ///////////////stick to the default plug-ins that are pre-compiled in the shell-script.
     QString _generatorPluginID;
     QString _readPluginID;
-    QString _writeOIIOPluginID;
     QString _writePluginID;
     QString _textArenaPluginID;
     std::vector<QString> _allTestPluginIDs;

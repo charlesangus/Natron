@@ -46,12 +46,14 @@
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Color/Saturation.h"
+#include "Engine/Nodes/Deep/DeepWrite.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/IO/NativeRead.h"
+#include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
@@ -113,6 +115,7 @@ nativeTable()
         { PLUGINID_NATRON_EDGEDETECT, PLUGIN_MAJOR_NATRON_EDGEDETECT },
         { PLUGINID_NATRON_COLORLOOKUP, PLUGIN_MAJOR_NATRON_COLORLOOKUP },
         { PLUGINID_NATRON_READ, PLUGIN_MAJOR_NATRON_READ },
+        { PLUGINID_NATRON_WRITE, PLUGIN_MAJOR_NATRON_WRITE },
     };
 
     return table;
@@ -159,6 +162,25 @@ TEST_F(NativePluginListTest, NativeReadIsTheOnlyReader)
 TEST_F(NativePluginListTest, OfxReaderIDBuildsNothing)
 {
     CreateNodeArgs args(PLUGINID_OFX_READOIIO, getApp()->getProject());
+    args.setProperty<bool>(kCreateNodeArgsPropSilent, true);
+
+    EXPECT_FALSE(bool(getApp()->createNode(args)));
+}
+
+TEST_F(NativePluginListTest, NativeWriteIsTheOnlyImageWriter)
+{
+    for (const auto& versions : appPTR->getPluginsList()) {
+        for (const Plugin* plugin : versions.second) {
+            if (plugin->isWriter()) {
+                EXPECT_TRUE(versions.first == PLUGINID_NATRON_WRITE || versions.first == PLUGINID_NATRON_DEEPWRITE) << versions.first;
+            }
+        }
+    }
+}
+
+TEST_F(NativePluginListTest, OfxWriterIDBuildsNothing)
+{
+    CreateNodeArgs args(PLUGINID_OFX_WRITEOIIO, getApp()->getProject());
     args.setProperty<bool>(kCreateNodeArgsPropSilent, true);
 
     EXPECT_FALSE(bool(getApp()->createNode(args)));

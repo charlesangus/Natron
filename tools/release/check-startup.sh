@@ -259,7 +259,7 @@ if not plugin_ids:
 
 expected_plugins = {
     "reader": "fr.inria.built-in.Read",
-    "writer": "fr.inria.openfx.WriteOIIO",
+    "writer": "fr.inria.built-in.Write",
     "Merge": "net.sf.openfx.MergePlugin",
 }
 missing = [

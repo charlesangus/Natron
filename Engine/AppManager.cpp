@@ -1663,7 +1663,6 @@ AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*writersMap*/)
     registerBuiltInPlugin<OneViewNode>(QString::fromUtf8(NATRON_IMAGES_PATH "oneViewNode.png"), false, false);
 #ifdef NATRON_ENABLE_IO_META_NODES
     registerBuiltInPlugin<NativeRead>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<WriteNode>(QString::fromUtf8(NATRON_IMAGES_PATH "writeImage.png"), false, false);
     registerBuiltInPlugin<NativeWrite>(QString::fromUtf8(NATRON_IMAGES_PATH "writeImage.png"), false, false);
 #endif
 

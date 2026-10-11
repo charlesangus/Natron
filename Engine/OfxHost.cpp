@@ -958,6 +958,10 @@ OfxHost::loadOFXPlugins(IOPluginsMap* writersMap)
         if (p->getContexts().find(kOfxImageEffectContextReader) != p->getContexts().end()) {
             continue;
         }
+        // Writing is done by the native Write node only.
+        if (p->getContexts().find(kOfxImageEffectContextWriter) != p->getContexts().end()) {
+            continue;
+        }
         assert( p->getBinary() );
         if ( !p->getBinary() ) {
             continue;

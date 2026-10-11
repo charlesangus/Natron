@@ -168,7 +168,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - verify: on lavapipe and RADV, the test creates, maps and destroys each kind; a misaligned import returns a status rather than crashing; and the overrides read back.
   - size: M
 
-- [ ] M84.P3.T2 — Async `GpuTransfer` streams with timeline values and built-in chunking
+- [x] M84.P3.T2 — Async `GpuTransfer` streams with timeline values and built-in chunking
   - files: `Engine/Gpu/GpuTransfer.{h,cpp}`, `Tests/Gpu/GpuTransfer_Test.cpp`
   - approach:
     - New calls: `upload(HostRange, GpuBuffer&, offset) → TimelineValue`, `download(GpuBuffer&, offset, HostRange) → TimelineValue` and `wait(TimelineValue)`, plus a way for compute submissions to wait on a transfer value.
@@ -183,7 +183,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - A host range that is freed and then reallocated gets re-imported, not served stale.
   - size: L
 
-- [ ] M84.P3.T3 — `GpuKernelRegistry` and a recording helper
+- [x] M84.P3.T3 — `GpuKernelRegistry` and a recording helper
   - files: `cmake/SlangKernels.cmake`, `Engine/Gpu/GpuKernelRegistry.{h,cpp}` (new), `Engine/Gpu/GpuRecord.{h,cpp}` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Gpu/GpuKernelRegistry_Test.cpp`
   - approach:
     - `slang_add_kernel` also appends to a generated `GpuKernels.inc`: an enum of kernel IDs and a static table of `GpuKernelDesc` (SPIR-V, entry point, binding count, push-constant bytes, group size).
@@ -195,7 +195,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - A fill dispatched through `GpuRecordContext` is correct.
   - size: M
 
-- [ ] M84.P3.T4 — Ref-counted device pool with a VRAM budget and LRU eviction
+- [x] M84.P3.T4 — Ref-counted device pool with a VRAM budget and LRU eviction
   - files: `Engine/Gpu/GpuBufferPool.{h,cpp}` (new), `Tests/Gpu/GpuBufferPool_Test.cpp`, `Tests/Gpu/CMakeLists.txt`
   - approach:
     - Free lists per size class of device-local `GpuBuffer`s. Handles are `shared_ptr`s that return their buffer to the pool on release.
@@ -656,3 +656,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
 - 2026-10-10 — M84.P2.T3 committed (`fb3718b86`). The default deps cache is now the repo-local `.natron-deps` (fixing the cross-container build), and CI and release cache it. Both ctest steps use lavapipe with `NATRON_TEST_REQUIRE_GPU=1`. The task is checked off once a dispatched CI run on the branch is green with GpuTests passing.
 - 2026-10-10 — M84.P2.T4 done (`3289f9613`). The spike builds against `NatronGpu` using the root cmake helpers. Its CPU twins are named `grade_twin`/`blur_twin` to avoid the collision, and `slang_add_glsl` moved to `tools/gpu-spike/SlangGlsl.cmake`. `GpuBench` accepts a software device under `GPU_SPIKE_ALLOW_SOFTWARE=1`. `GpuBench --sizes uhd` and `CpuTwinBench` run on lavapipe.
 - 2026-10-10 — M84.P3.T1 done (`e97868b96`). `createHostImported` **rejects** sizes above `maxMemoryAllocationSize` (`fallbackToStaging`) instead of clamping them; callers split. GpuTests: 100/100 on lavapipe (4 GL zero-copy skips) and on RADV in the container; 54/54 on the host.
+- 2026-10-10 — M84.P3.T2 (`7fb410354`), P3.T3 (`32fcb9fee`) and P3.T4 (`080727d46`) done. GpuTests: 138/138 on lavapipe (4 GL zero-copy skips) and on RADV in the container, and 73/73 on the host. No Vulkan validation layer is installed in the container or on the host, so the ownership-transfer barriers are proven only by results on RADV's separate transfer family.
+  - **Transfer API:** calls return `GpuStatus`, with `TimelineValue` as an out-param. `ComputeHandoff` is `Submit`, `Record` or `None`. After a download, a range belongs to the transfer family. The host-import cache is **opt-in** (`cacheHostImports`) until P4.T2 wires `forgetHostAllocation` as the HostImageMemory free hook. `forgetHostAllocation` may wait on the device when an import is still in use, so it must not be called under the cache lock (see P4.T1's note).
+  - **Registry:** binding count, push bytes and group size come from Slang reflection. `slang_add_kernel(... REGISTRY NatronGpu)` plus `slang_write_kernel_table` generates `GpuKernels.inc`. Test kernels register at runtime. `GpuRecordContext` is thread-bound.
+  - **Pool:** size classes go up in quarter-power-of-two steps (≤25% waste). Eviction callbacks run outside the lock and may fire after the owner dropped its handle. A concurrent `acquire` can report OOM early while another thread's callback is still running.

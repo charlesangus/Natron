@@ -64,7 +64,7 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
   - verify: A freshly created DeepToImage shows a blue input pipe before it is connected. Changing the deep edge colour in Preferences and saving recolours deep edges.
   - size: M
 
-- [ ] M24.P5.T4 — Give Dots a properties panel with label and colour
+- [x] M24.P5.T4 — Give Dots a properties panel with label and colour
   - files: `Gui/DotGui.h`, `Gui/DotGui.cpp`, plus whatever creates or suppresses node settings panels (search for where Dots are excluded, e.g. `NodeGui::createPanel`, `isSettingsPanelVisible`, Dot plugin flags in `Engine/Dot.cpp`)
   - approach: Dots currently have no properties panel, so a user colour can't be set from the GUI. Give Dots a normal node settings panel, opened by double-click like other nodes, with the node label (Label tab) and the colour button. The Dot's label should draw next to the disk, the way other nodes show their label. The user colour fills the disk, as today.
   - verify: Double-clicking a Dot opens its panel. Setting a colour fills the disk, setting a label shows it beside the Dot, and both survive save and reload.

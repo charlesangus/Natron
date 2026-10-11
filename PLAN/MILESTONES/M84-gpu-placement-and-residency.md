@@ -145,7 +145,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - Set `VK_ICD_FILENAMES` to lavapipe and `NATRON_TEST_REQUIRE_GPU=1` on both ctest steps.
     - Keep everything in the same job.
   - verify: CI on the branch is green, the `GpuTests` cases show as passed in the log (not skipped), and the job's wall-time change is recorded in Decisions.
-  - size: S
+  - size: M
 
 - [ ] M84.P2.T4 — Rebuild the spike's tools on the promoted code
   - files: `tools/gpu-spike/CMakeLists.txt`; delete `tools/gpu-spike/{src,cmake,tests/*_Test.cpp,tests/*.h,ref}` and the moved kernels
@@ -154,7 +154,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - These stay in the spike, built against `NatronGpu`: `GpuBench`, `CpuTwinBench`, `GlCompute`, `DeviceList`, `GlInteropQt`, `ImportCost` (P1.T2), `run-host.sh` and `run-bench.sh`.
     - Run this after P1.T2, since both edit the spike's CMakeLists.
   - verify: the spike configures and builds in the container, and `GpuBench --sizes uhd` runs on lavapipe.
-  - size: S
+  - size: M
 
 ## Phase 84.3: Finish the backend (design note §5 "new" items)
 

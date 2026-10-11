@@ -435,7 +435,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - Host and device reservations return to 0 after mixed frames and after an abort.
   - size: M
 
-- [ ] M84.P7.T4 — Fall back to the CPU on out-of-memory and device loss
+- [x] M84.P7.T4 — Fall back to the CPU on out-of-memory and device loss
   - files: `Engine/GpuRegionTask.cpp`, `Engine/RenderScheduler.{h,cpp}`, `Engine/GpuContext.cpp`, `Tests/GpuResidency_Test.cpp`
   - approach:
     - **Degraded (OOM):**
@@ -699,3 +699,19 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - per-member GPU time is estimated from the cost model, not measured with timestamps;
     - under `NATRON_GPU=force`, 9 Legacy-vs-taskgraph bit-exact tests differ by one float rounding step (expected; not a CI configuration).
   - **Verify note:** running ctest directly needs `OFX_PLUGIN_PATH=build/assets/Plugins` and `xvfb-run`, as `test.sh` sets them.
+- 2026-10-11 — M84.P7.T4 done (`06d9859db`). Full ctest passes 1649/1649 in both modes (lavapipe, `NATRON_TEST_REQUIRE_GPU=1`).
+  - **Behaviour:**
+    - OOM: evict, retry once on the GPU, then render the members on the CPU in the super-task.
+    - Every other refusal or GPU error also falls back to the CPU per region, instead of failing the frame.
+    - Device loss restarts the frame CPU-only without completing the `FrameFuture`.
+    - `GpuContext::recoverIfLost()` runs from `placeRenderGraph`. It recreates only once no frame holds the runtime, and backs off 10 s after a failed recreate.
+    - Fallback reasons: "out of device memory", "GPU refused", "GPU error", "no GPU", "device lost". Retries are counted separately (`noteGpuRegionRetry`).
+  - **Deviations:**
+    - small additions in `Engine/Gpu/`: `GpuDevice::injectFault(kind, n)` counts from now, because `NATRON_GPU_FAULT` counts from creation, calibration included; `GpuDevice::drainQueues()`; and `GpuBufferPool::evict(bytes)`;
+    - `RenderScheduler::renderTaskOnCpu` is factored out;
+    - a one-shot OOM succeeds on the retry, so the "one fallback" check uses a pool budget forced to 1 byte;
+    - the shrunk budget applies through admission only; placement itself ignores the device budget, and P7.T5's stripping covers oversized regions.
+  - **Known gaps:**
+    - a CPU fallback runs with thread budget 1, so it's slow for a big Blur;
+    - fallen-back members are still profiled as `device:gpu`, and the region record has no fallback field;
+    - tasks dropped by a loss restart count as purged.

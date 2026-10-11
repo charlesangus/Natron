@@ -89,6 +89,8 @@ struct EdgePrivate
     bool isRotoMask;
     bool isMask;
     DataKindEnum dataKind;
+    bool hasKindTint;
+    QColor kindTint;
     QPointF middlePoint; //updated only when dest && source are valid
 
     EdgePrivate(Edge* publicInterface,
@@ -115,6 +117,8 @@ struct EdgePrivate
         , isRotoMask(false)
         , isMask(false)
         , dataKind(eDataKindPolymorphic)
+        , hasKindTint(false)
+        , kindTint()
         , middlePoint()
     {
     }
@@ -443,8 +447,8 @@ Edge::initLine()
     }
 
     double sc = scale();
-    QRectF sourceBBOX = source ? mapFromItem( source.get(), source->boundingRect() ).boundingRect() : QRectF(0, 0, 1, 1);
-    QRectF destBBOX = dest ? mapFromItem( dest.get(), dest->boundingRect() ).boundingRect()  : QRectF(0, 0, 1, 1);
+    QRectF sourceBBOX = source ? mapFromItem(source.get(), source->outlineBoundingRect()).boundingRect() : QRectF(0, 0, 1, 1);
+    QRectF destBBOX = dest ? mapFromItem(dest.get(), dest->outlineBoundingRect()).boundingRect() : QRectF(0, 0, 1, 1);
     QSize dstNodeSize;
     QSize srcNodeSize;
     if (dest) {
@@ -635,9 +639,9 @@ Edge::initLine()
 QRectF
 Edge::boundingRect() const
 {
-    // QGraphicsLineItem::boundingRect() covers the line stroked with the item's pen, whose width
-    // now varies with the resolved data kind, but the arrow head is painted (and stroked with that
-    // same pen) outside the line's own rect, exactly as shape() below already accounts for.
+    // QGraphicsLineItem::boundingRect() covers the line stroked with the item's pen, but the
+    // arrow head is painted (and stroked with that same pen) outside the line's own rect,
+    // exactly as shape() below already accounts for.
     QRectF rect = QGraphicsLineItem::boundingRect();
     QRectF headRect = _imp->arrowHead.boundingRect();
 
@@ -777,66 +781,53 @@ Edge::isNearbyBendPoint(const QPointF & scenePoint)
     return false;
 }
 
-// Width is the primary channel for data-kind styling: it stays legible under both
-// colorblindness and zoom-out, where a fine dash period collapses into a uniform gray.
-// The existing dash pattern below is reserved for edge activity (mask / hidden input),
-// an orthogonal, simultaneously-possible state, so kind styling must never touch it.
-static qreal
-kindWidthMultiplier(DataKindEnum kind)
-{
-    switch (kind) {
-    case eDataKindDeep:
-        return 3.;
-    case eDataKindScene:
-        return 2.;
-    case eDataKindImage:
-    case eDataKindPolymorphic:
-    default:
-        return 1.;
-    }
-}
-
+// Colour is the only data-kind channel on edges, so it does not need a second (e.g. width)
+// channel to stay legible. The dash pattern below is unrelated: it signals edge activity (mask /
+// hidden input), an orthogonal, simultaneously-possible state. The actual colours are user-facing
+// Preferences knobs (Settings::getEdgeKindColor), defaulting to an Okabe-Ito palette that stays
+// distinguishable under the common forms of colour-vision deficiency.
 static bool
 kindTintColor(DataKindEnum kind,
               QColor* color)
 {
-    switch (kind) {
-    case eDataKindDeep:
-        *color = QColor(0, 114, 178); // Okabe-Ito blue
-        return true;
-    case eDataKindScene:
-        *color = QColor(230, 159, 0); // Okabe-Ito orange
-        return true;
-    case eDataKindImage:
-    case eDataKindPolymorphic:
-    default:
+    float r, g, b;
+
+    if (!appPTR->getCurrentSettings()->getEdgeKindColor(kind, &r, &g, &b)) {
         return false;
     }
+    color->setRgbF(r, g, b);
+
+    return true;
 }
 
 void
-Edge::refreshDataKindPen()
+Edge::refreshDataKindPen(bool force)
 {
     NodeGuiPtr src = _imp->source.lock();
-    NodePtr srcNode = src ? src->getNode() : NodePtr();
-    DataKindEnum kind = srcNode ? srcNode->getEffectiveOutputDataKind() : eDataKindPolymorphic;
+    DataKindEnum kind = eDataKindPolymorphic;
 
-    if (kind == _imp->dataKind) {
+    if (src) {
+        NodePtr srcNode = src->getNode();
+        kind = srcNode ? srcNode->getEffectiveOutputDataKind() : eDataKindPolymorphic;
+    } else if (!_imp->isOutputEdge) {
+        // No source to take a kind from: fall back to what this input itself accepts, so a
+        // dangling pipe into a Deep-only input still reads as deep. An input declaring
+        // eDataKindPolymorphic (accepts anything) or eDataKindImage stays neutral, same as a
+        // connected image-kind source does.
+        NodeGuiPtr dst = _imp->dest.lock();
+        NodePtr dstNode = dst ? dst->getNode() : NodePtr();
+        EffectInstancePtr dstEffect = dstNode ? dstNode->getEffectInstance() : EffectInstancePtr();
+        if (dstEffect) {
+            kind = dstEffect->getInputDataKind(_imp->inputNb);
+        }
+    }
+
+    if ((kind == _imp->dataKind) && !force) {
         return;
     }
     _imp->dataKind = kind;
-
-    QPen p = pen();
-    qreal width = EDGE_PEN_WIDTH * kindWidthMultiplier(kind);
-    if (p.widthF() != width) {
-        // The width belongs on the item's own pen, not on a pen local to paint(): both
-        // QGraphicsLineItem::boundingRect() and shape() are derived from it, so a width only
-        // paint() knew about would draw outside the item's bounding rect -- clipped, left behind
-        // on partial repaints, and unclickable along the part of the stroke outside shape().
-        prepareGeometryChange();
-        p.setWidthF(width);
-        setPen(p);
-    }
+    // Cached rather than read in paint() so the colour only follows saved Preferences.
+    _imp->hasKindTint = kindTintColor(kind, &_imp->kindTint);
     update();
 }
 
@@ -876,11 +867,7 @@ Edge::paint(QPainter *painter,
     } else if (_imp->useRenderingColor) {
         color = arrowColor = _imp->renderingColor;
     } else {
-        QColor tint;
-        color = arrowColor = kindTintColor(_imp->dataKind, &tint) ? tint : _imp->defaultColor;
-        if (_imp->optional && !_imp->paintWithDash) {
-            color.setAlphaF(0.4);
-        }
+        color = arrowColor = _imp->hasKindTint ? _imp->kindTint : _imp->defaultColor;
     }
     myPen.setColor(color);
     painter->setPen(myPen);
@@ -957,13 +944,13 @@ LinkArrow::refreshPosition()
     QRectF bboxSlave;
 
     if (slave) {
-        bboxSlave = mapFromItem( slave.get(), slave->boundingRect() ).boundingRect();
+        bboxSlave = mapFromItem(slave.get(), slave->outlineBoundingRect()).boundingRect();
     }
 
     ///like the box master in kfc! was bound to name it so I'm hungry atm
     QRectF boxMaster;
     if (master) {
-        boxMaster = mapFromItem( master.get(), master->boundingRect() ).boundingRect();
+        boxMaster = mapFromItem(master.get(), master->outlineBoundingRect()).boundingRect();
     }
     QPointF dst = boxMaster.center();
     QPointF src = bboxSlave.center();

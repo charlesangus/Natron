@@ -34,6 +34,11 @@ Natron--NodeSettingsPanel[_selected="false"] {
     border-radius: 2px;
 }
 
+QWidget[_natronColorTrackballTarget="true"] {
+    border: 1px solid %1;
+    border-radius: 2px;
+}
+
 QToolTip {
    color: %5;
    background-color: black;
@@ -789,4 +794,12 @@ QToolButton#ColorSelectorButton:pressed {
     padding-left: 0px;
     top: 0px;
     left: 0px;
+}
+
+/* The dropdown and global-mode icons stay the same in both states, so checked (panel open,
+   global mode engaged) needs its own highlight to read as a toggle rather than a flat icon. */
+QToolButton#ColorSelectorButton:checked,
+QToolButton#ColorGlobalModeButton:checked {
+    background-color: %1;
+    border-radius: 2px;
 }

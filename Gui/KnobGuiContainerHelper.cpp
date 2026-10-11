@@ -846,6 +846,10 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
                 labelAlignment = Qt::AlignRight;
             }
 
+            if (ret->wantsTopAlignedLabel()) {
+                labelAlignment |= Qt::AlignTop;
+            }
+
             if (!hasLabel) {
                 layout->addWidget(fieldContainer, rowIndex, 0, 1, 2);
             } else {

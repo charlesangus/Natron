@@ -157,6 +157,13 @@ public:
     virtual bool shouldCreateLabel() const;
     virtual bool isLabelOnSameColumn() const;
     virtual bool isLabelBold() const;
+
+    /**
+     * @brief True when the row's label should sit at the top of its cell instead of
+     * centred, so it does not drift as a below-row widget (see KnobGuiValue::createBelowRowWidget)
+     * opens or closes under the row.
+     **/
+    virtual bool wantsTopAlignedLabel() const;
     virtual std::string getDescriptionLabel() const;
     QWidget* getFieldContainer() const;
 

@@ -75,32 +75,35 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/ViewerInstance.h"
 
 #include "Gui/ActionShortcuts.h"
+#include "Gui/ColorTrackballGlobalMode.h"
+#include "Gui/ColorTrackballTarget.h"
+#include "Gui/ComboBox.h"
 #include "Gui/CurveEditor.h"
 #include "Gui/CurveWidget.h"
-#include "Gui/ComboBox.h"
 #include "Gui/DockablePanel.h"
 #include "Gui/DopeSheetEditor.h"
 #include "Gui/ExportGroupTemplateDialog.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h" // appPTR
-#include "Gui/GuiPrivate.h"
-#include "Gui/KnobWidgetDnD.h"
 #include "Gui/GuiMacros.h"
+#include "Gui/GuiPrivate.h"
+#include "Gui/Histogram.h"
+#include "Gui/KnobGuiColor.h"
+#include "Gui/KnobWidgetDnD.h"
 #include "Gui/LogWindow.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
+#include "Gui/PreferencesPanel.h"
 #include "Gui/ProgressPanel.h"
+#include "Gui/PropertiesBinWrapper.h"
 #include "Gui/RightClickableWidget.h"
 #include "Gui/ScriptEditor.h"
+#include "Gui/SequenceFileDialog.h"
 #include "Gui/SpinBox.h"
 #include "Gui/TabWidget.h"
-#include "Gui/PreferencesPanel.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
-#include "Gui/SequenceFileDialog.h"
-#include "Gui/PropertiesBinWrapper.h"
-#include "Gui/Histogram.h"
 
 #if defined(Q_OS_WIN)
 #include <winuser.h>
@@ -915,6 +918,24 @@ Gui::onCloseTabTriggered()
         if (pw) {
             pw->takeClickFocus();
         }
+    }
+}
+
+void
+Gui::onColorTrackballActionTriggered()
+{
+    ColorTrackballGlobalMode* mode = ColorTrackballGlobalMode::instanceFor(this);
+
+    if (mode && mode->isEngaged()) {
+        mode->exit();
+
+        return;
+    }
+
+    KnobGuiColor* target = resolveColorTrackballTarget(this);
+
+    if (target) {
+        target->engageGlobalMode();
     }
 }
 

@@ -25,21 +25,22 @@
 
 #include "DotGui.h"
 
-#include <cassert>
 #include <algorithm> // min, max
+#include <cassert>
 #include <stdexcept>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
-#include <QLayout>
 #include <QAction>
-#include <QtConcurrentRun> // QtCore on Qt4, QtConcurrent on Qt5
+#include <QApplication>
+#include <QFile>
 #include <QFontMetrics>
+#include <QGridLayout>
+#include <QLayout>
 #include <QTextBlockFormat>
 #include <QTextCursor>
-#include <QGridLayout>
-#include <QFile>
-#include <QApplication>
+#include <QTextDocument>
+#include <QtConcurrentRun> // QtCore on Qt4, QtConcurrent on Qt5
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -48,6 +49,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Backdrop.h"
 #include "Engine/Image.h"
 #include "Engine/Knob.h"
+#include "Engine/Lut.h" // Color::floatToInt
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
 #include "Engine/NodeSerialization.h"
@@ -98,6 +100,8 @@ CLANG_DIAG_ON(uninitialized)
 
 #define DOT_GUI_DIAMETER 15
 
+#define DOT_GUI_LABEL_GAP 6
+
 #define NATRON_PLUGIN_ICON_SIZE 20
 #define PLUGIN_ICON_OFFSET 2
 
@@ -114,6 +118,7 @@ DotGui::DotGui(QGraphicsItem* parent)
     : NodeGui(parent)
     , diskShape(NULL)
     , ellipseIndicator(NULL)
+    , _labelItem(NULL)
 {
 }
 
@@ -138,6 +143,72 @@ DotGui::createGui()
                                       diam + stateOffset * 2,
                                       diam + stateOffset * 2) );
     ellipseIndicator->hide();
+
+    // The disk alone identifies a Dot, so unlike other nodes it shows no name, only a user label.
+    _labelItem = new NodeGraphTextItem(getDagGui(), this, false);
+    _labelItem->setZValue(depth + 1);
+    _labelItem->hide();
+    refreshExtraLabelColor();
+
+    NodePtr node = getNode();
+    if (node) {
+        QObject::connect(node.get(), &Node::nodeExtraLabelChanged, this, [this](const QString& label) {
+            refreshLabelText(label);
+        });
+        refreshLabelText(QString::fromUtf8(node->getNodeExtraLabel().c_str()));
+    }
+}
+
+void
+DotGui::refreshLabelText(const QString& label)
+{
+    if (!_labelItem) {
+        return;
+    }
+
+    QString html = label.trimmed();
+    html.replace(QString::fromUtf8("\n"), QString::fromUtf8("<br />"));
+    _labelItem->setHtml(html);
+    // The label editor wraps even an empty label in a font tag, so only visible text counts.
+    if (_labelItem->document()->toPlainText().trimmed().isEmpty()) {
+        _labelItem->hide();
+
+        return;
+    }
+    _labelItem->adjustSize();
+
+    const QRectF diskBbox = diskShape->boundingRect();
+    const QRectF labelBbox = _labelItem->boundingRect();
+    const qreal gap = TO_DPIX(DOT_GUI_LABEL_GAP);
+
+    _labelItem->setPos(diskBbox.right() + gap, diskBbox.center().y() - labelBbox.height() / 2.);
+    _labelItem->show();
+}
+
+// The label is drawn beside the disk, over the node graph, so it contrasts with the graph's
+// background (the stylesheet's base colour) rather than with the disk.
+void
+DotGui::refreshExtraLabelColor()
+{
+    if (!_labelItem) {
+        return;
+    }
+    double r, g, b;
+    appPTR->getCurrentSettings()->getBaseColor(&r, &g, &b);
+    const QColor background(Color::floatToInt<256>(r), Color::floatToInt<256>(g), Color::floatToInt<256>(b));
+    _labelItem->setDefaultTextColor(NodeGui::contrastingLabelTextColor(background));
+}
+
+void
+DotGui::applyDisabledState(bool disabled)
+{
+    const qreal opacity = disabled ? 0.35 : 1.;
+    if (diskShape) {
+        diskShape->setOpacity(opacity);
+    }
+    if (_labelItem) {
+        _labelItem->setOpacity(opacity);
+    }
 }
 
 void
@@ -164,22 +235,6 @@ void
 DotGui::applyBrush(const QBrush & brush)
 {
     diskShape->setBrush(brush);
-}
-
-NodeSettingsPanel*
-DotGui::createPanel(QVBoxLayout* /*container*/,
-                    const NodeGuiPtr & /*thisAsShared*/)
-{
-    /* NodeSettingsPanel* panel = new NodeSettingsPanel( MultiInstancePanelPtr(),
-                                                       getDagGui()->getGui(),
-                                                       thisAsShared,
-                                                       container,container->parentWidget() );
-
-       ///Always close the panel by default for Dots
-       panel->setClosed(true);
-
-       return panel;*/
-    return 0;
 }
 
 QRectF

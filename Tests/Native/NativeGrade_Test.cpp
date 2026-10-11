@@ -41,13 +41,16 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/ColorWheelMath.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Color/ColorCorrect.h"
 #include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
@@ -222,4 +225,57 @@ TEST_F(NativeGradeTest, ChainOfThirtyRendersTheSameInBothSchedulerModes)
     poolSizes.push_back(4);
     const RenderMismatch m = renderBothWays(writer, 1, 2, poolSizes);
     EXPECT_FALSE(m.any) << describe(m);
+}
+
+TEST_F(NativeGradeTest, ColorKnobRoles)
+{
+    struct RoleCheck {
+        const char* name;
+        ColorKnobRoleEnum role;
+    };
+
+    NodePtr grade = createNode(QString::fromUtf8(kGradeID));
+    ASSERT_TRUE(isNative(grade));
+    const RoleCheck kGradeRoles[] = {
+        { kGradeParamBlackPoint, eColorKnobRoleOffset },
+        { kGradeParamWhitePoint, eColorKnobRoleGain },
+        { kGradeParamBlack, eColorKnobRoleOffset },
+        { kGradeParamWhite, eColorKnobRoleGain },
+        { kGradeParamMultiply, eColorKnobRoleGain },
+        { kGradeParamOffset, eColorKnobRoleOffset },
+        { kGradeParamGamma, eColorKnobRolePower },
+    };
+    for (size_t i = 0; i < sizeof(kGradeRoles) / sizeof(kGradeRoles[0]); ++i) {
+        KnobColor* knob = dynamic_cast<KnobColor*>(grade->getKnobByName(kGradeRoles[i].name).get());
+        ASSERT_TRUE(knob != NULL) << kGradeRoles[i].name;
+        EXPECT_EQ(kGradeRoles[i].role, knob->getColorRole()) << kGradeRoles[i].name;
+    }
+
+    NodePtr colorCorrect = createNode(QString::fromUtf8(PLUGINID_NATRON_COLORCORRECT));
+    ASSERT_TRUE(isNative(colorCorrect));
+    const char* const kGroups[] = { kColorCorrectGroupMaster, kColorCorrectGroupShadows, kColorCorrectGroupMidtones, kColorCorrectGroupHighlights };
+    const RoleCheck kScaleRoles[] = {
+        { kColorCorrectParamSaturation, eColorKnobRoleGain },
+        { kColorCorrectParamContrast, eColorKnobRoleGain },
+        { kColorCorrectParamGain, eColorKnobRoleGain },
+        { kColorCorrectParamOffset, eColorKnobRoleOffset },
+        { kColorCorrectParamGamma, eColorKnobRolePower },
+    };
+    for (size_t g = 0; g < sizeof(kGroups) / sizeof(kGroups[0]); ++g) {
+        for (size_t i = 0; i < sizeof(kScaleRoles) / sizeof(kScaleRoles[0]); ++i) {
+            const std::string name = std::string(kGroups[g]) + kScaleRoles[i].name;
+            KnobColor* knob = dynamic_cast<KnobColor*>(colorCorrect->getKnobByName(name).get());
+            ASSERT_TRUE(knob != NULL) << name;
+            EXPECT_EQ(kScaleRoles[i].role, knob->getColorRole()) << name;
+        }
+    }
+
+    // Everything that never calls setColorRole, such as Constant's colour, stays Auto and is
+    // resolved by inference: all-zero defaults with a non-negative display minimum is Colour,
+    // not Offset, since Offset's defining trait is a *negative* display minimum.
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    ASSERT_TRUE(isNative(constant));
+    KnobColor* constantColor = dynamic_cast<KnobColor*>(constant->getKnobByName(kConstantParamColor).get());
+    ASSERT_TRUE(constantColor != NULL);
+    EXPECT_EQ(eColorKnobRoleColour, constantColor->getColorRole());
 }

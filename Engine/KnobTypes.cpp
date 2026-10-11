@@ -1270,12 +1270,13 @@ KnobSeparator::typeName() const
  **/
 
 KnobColor::KnobColor(KnobHolder* holder,
-                     const std::string &label,
+                     const std::string& label,
                      int dimension,
                      bool declaredByPlugin)
     : KnobDoubleBase(holder, label, dimension, declaredByPlugin)
     , _allDimensionsEnabled(true)
     , _simplifiedMode(false)
+    , _colorRole(eColorKnobRoleAuto)
 {
     //dimension greater than 4 is not supported. Dimension 2 doesn't make sense.
     assert(dimension == 1 || dimension == 3 ||  dimension == 4);
@@ -1285,12 +1286,13 @@ KnobColor::KnobColor(KnobHolder* holder,
 }
 
 KnobColor::KnobColor(KnobHolder* holder,
-                     const QString &label,
+                     const QString& label,
                      int dimension,
                      bool declaredByPlugin)
     : KnobDoubleBase(holder, label.toStdString(), dimension, declaredByPlugin)
     , _allDimensionsEnabled(true)
     , _simplifiedMode(false)
+    , _colorRole(eColorKnobRoleAuto)
 {
     //dimension greater than 4 is not supported. Dimension 2 doesn't make sense.
     assert(dimension == 1 || dimension == 3 ||  dimension == 4);
@@ -1341,6 +1343,20 @@ bool
 KnobColor::isSimplified() const
 {
     return _simplifiedMode;
+}
+
+ColorKnobRoleEnum
+KnobColor::getColorRole() const
+{
+    if (_colorRole != eColorKnobRoleAuto) {
+        return _colorRole;
+    }
+    int dims = getDimension();
+    std::vector<double> defaults(dims);
+    for (int i = 0; i < dims; ++i) {
+        defaults[i] = getDefaultValue(i);
+    }
+    return inferColorRole(defaults, getDisplayMinimum(0), getName());
 }
 
 /******************************KnobString**************************************/

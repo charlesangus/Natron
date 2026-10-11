@@ -153,6 +153,22 @@ public:
     void colorPickingToWorking(float* r, float* g, float* b) const;
 
     /**
+     * @brief Fills \p m, row-major so that XYZ = m·rgb, with the working space's matrix to CIE XYZ
+     * D65. Returns false and leaves \p m untouched when there is no project, no working space, or
+     * the working-to-XYZ transform is not a pure matrix (for example a log working space): the
+     * caller then has no matrix to build chromaticity from, and falls back to the linear temp/tint
+     * axes instead of the Planckian locus.
+     **/
+    bool getWorkingToXYZ(double m[9]) const;
+
+    /**
+     * @brief Fills \p w with the working space's luma weights, renormalised to sum to 1. These are
+     * the Y row of getWorkingToXYZ's matrix when it is available, otherwise the loaded config's
+     * getDefaultLumaCoefs(), and Rec. 709 when neither is.
+     **/
+    void getWorkingLuma(double w[3]) const;
+
+    /**
      * @brief The built-in config registry entries (ids are "ocio://" URIs) followed by "Custom config".
      **/
     static std::vector<ChoiceOption> builtinConfigOptions();
@@ -163,6 +179,7 @@ public:
 
 private:
     void rebuildPickingProcessors();
+    void rebuildWorkingColorimetry();
 
     mutable QMutex _mutex;
     OCIO_NAMESPACE::ConstConfigRcPtr _config;
@@ -173,6 +190,9 @@ private:
     OCIO_NAMESPACE::ConstCPUProcessorRcPtr _pickingToWorking;
     mutable std::map<std::string, DisplayProcessorPtr> _displayCache;
     mutable std::map<std::string, OCIO_NAMESPACE::ConstCPUProcessorRcPtr> _conversionCache;
+    bool _workingToXYZValid;
+    double _workingToXYZMatrix[9];
+    double _workingLuma[3];
 
     mutable QMutex _callbacksMutex;
     std::map<int, ConfigChangedCallback> _callbacks;

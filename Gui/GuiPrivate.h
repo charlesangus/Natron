@@ -126,6 +126,7 @@ public:
     ActionWithShortcut* actionNextTab;
     ActionWithShortcut* actionPrevTab;
     ActionWithShortcut* actionCloseTab;
+    ActionWithShortcut* actionColorTrackball;
     QAction* actionHelpWebsite;
     QAction* actionHelpForum;
     QAction* actionHelpIssues;

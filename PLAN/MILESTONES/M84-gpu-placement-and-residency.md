@@ -126,7 +126,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - A targeted existing ctest (`RenderScheduler*|FrameStore*`) is unchanged.
   - size: M
 
-- [ ] M84.P2.T2 — `Tests/Gpu/` as the host-runnable `GpuTests` binary
+- [x] M84.P2.T2 — `Tests/Gpu/` as the host-runnable `GpuTests` binary
   - files: `Tests/Gpu/CMakeLists.txt`, `Tests/Gpu/*_Test.cpp` (moved from the spike: GpuDevice, GpuKernel, GpuTransfer, GlInterop, GradeGpu, BlurGpu, PointOpCompose, GradeCpu, BlurCpu), `Tests/Gpu/{GpuHarness,Tolerance,GradeFixture,BlurFixture}.h`, `Tests/Gpu/ref/{GradeRef,BlurRef}.h`, `Tests/Gpu/kernels/{fill,smoke}.slang`, `Tests/CMakeLists.txt`
   - approach:
     - Build one `GpuTests` executable that links only `NatronGpu` and the bundled `Tests/google-test`, with `-static-libstdc++ -static-libgcc`, so it runs on the host.
@@ -279,7 +279,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - an evicted entry serves finds without another download.
   - size: M
 
-- [ ] M84.P4.T4 — Transfer and placement counters in `RenderStats` and the profile
+- [x] M84.P4.T4 — Transfer and placement counters in `RenderStats` and the profile
   - files: `Engine/RenderStats.{h,cpp}`, `Engine/RenderScheduler.cpp` (`formatTaskRecord`), `tools/bench/render-profile-report.py`, `Tests/RenderProfile_Test.cpp`
   - approach:
     - New counters:
@@ -647,3 +647,5 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
 - 2026-10-10 — #48 merged. Once the in-flight tasks commit, rebase M84 with `git rebase --onto origin/main 87dcb403a`; `87dcb403a` is the M83 tip the branch is stacked on.
 - 2026-10-10 — M84.P4.T3 done. `DeviceImage` exposes `downloadToRam()`/`evictToRam()` returning an `ImagePtr` (rather than `downloadTo(Image&)`); `bytesInFlight()` returns the host figure, so the scheduler is unchanged. Device bytes are counted per entry, not de-duplicated across keys; revisit if identity tasks store device images (P7.T2). Full ctest 1280/1280.
 - 2026-10-10 — M84.P2.T1 done (`85ea0d6b7`). `NatronGpu` builds from the root, and `-DNATRON_GPU=OFF` builds. The ldd difference is only `libvulkan.so.1`. Targeted ctest passed 30/30. `slang_add_kernel` emits a header-only SPIR-V target by default, and `CPP` gives the C++-twin library. Kernel target names (grade, blur, pointop_*) match the spike's, so P2.T4 must resolve that collision. `tools/ci/local/test.sh` has no ctest filter; worth adding when convenient.
+- 2026-10-10 — M84.P2.T2 done (`1583f1ee8`). `GpuTests` gives every ctest name a `Gpu.` prefix (`GpuNoPushDescriptor.` for the second registration), so `ctest -R '^Gpu'` selects all of them. Results: 82/82 on RADV in the container. On lavapipe with `NATRON_TEST_REQUIRE_GPU=1`, everything passes except four GL-interop zero-copy cases, which skip for want of interop rather than a device; that matches the CI-coverage decision. On the host (`run-host.sh`, RADV) 45/45 pass, including every GlInterop and semaphore case.
+- 2026-10-10 — M84.P4.T4 done (`0a165a17f`). The counters and the region record format exist, but nothing feeds them yet: P7.T2 must call the `note*` methods and `formatRegionRecord`. P6.T1 must stop `formatTaskRecord` hard-coding `"device":"cpu","regionId":-1`. The report self-test asserts that region records are skipped and the new fields are read.

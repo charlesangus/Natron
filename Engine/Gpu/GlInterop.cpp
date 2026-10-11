@@ -191,6 +191,11 @@ GlInterop::probe(GpuDevice& device, const GlProcLoader& loader, GlInteropCaps& o
     out.glVendor = str(GL_VENDOR);
     out.glRenderer = str(GL_RENDERER);
     out.glVersion = str(GL_VERSION);
+    // With no current context a GL dispatcher still resolves entry points but they are no-ops that
+    // return null, so a missing version string is the only sign the context is absent.
+    if (out.glVersion.empty()) {
+        return fail(VK_ERROR_INITIALIZATION_FAILED, "no current GL context: glGetString(GL_VERSION) returned null");
+    }
 
     const GpuDeviceInfo& info = device.info();
     out.vkExternalMemoryFd = info.externalMemoryFd;
@@ -302,7 +307,9 @@ GlInterop::create(GpuDevice& device,
     std::unique_ptr<GlInterop> self(new GlInterop);
     self->device_ = &device;
     self->gl_ = std::make_unique<Gl>();
-    self->gl_->load(loader);
+    if (!self->gl_->load(loader)) {
+        return fail(VK_ERROR_INITIALIZATION_FAILED, "GL core entry points unavailable; is a context current?");
+    }
     self->path_ = path;
     self->width_ = width;
     self->height_ = height;

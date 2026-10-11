@@ -31,6 +31,10 @@ struct GradeParams {
     uint32_t nComps;
     uint32_t channelMask;
     uint32_t flags;
+    uint32_t srcOffset;
+    uint32_t srcStride;
+    uint32_t dstOffset;
+    uint32_t dstStride;
 };
 
 constexpr uint32_t kReverse = 1;
@@ -127,6 +131,7 @@ makeCases()
                 p.height = kHeight;
                 p.nComps = nComps;
                 p.channelMask = trial % 3 == 0 ? (rng() & 0xF) : 0xF;
+                p.srcStride = p.dstStride = n * nComps;
                 p.flags = (reverse ? kReverse : 0) | ((rng() & 1) ? kClampBlack : 0) | ((rng() & 1) ? kClampWhite : 0);
                 c.reverse = reverse != 0;
 

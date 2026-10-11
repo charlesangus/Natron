@@ -14,6 +14,12 @@ struct GradeParams
     uint nComps;
     uint channelMask;
     uint flags;
+    // In floats from the start of the bound buffer to the first pixel of the window, and from
+    // one row of the window to the next.
+    uint srcOffset;
+    uint srcStride;
+    uint dstOffset;
+    uint dstStride;
 };
 [[vk::push_constant]] ConstantBuffer<GradeParams> params;
 
@@ -29,14 +35,15 @@ void grade_main(uint3 tid : SV_DispatchThreadID)
         return;
 
     uint n = params.nComps;
-    uint base = (tid.y * params.width + tid.x) * n;
+    uint srcBase = params.srcOffset + tid.y * params.srcStride + tid.x * n;
+    uint dstBase = params.dstOffset + tid.y * params.dstStride + tid.x * n;
     bool reverse = (params.flags & kReverse) != 0;
     bool clampBlack = (params.flags & kClampBlack) != 0;
     bool clampWhite = (params.flags & kClampWhite) != 0;
 
     for (uint c = 0; c < n && c < 4; ++c)
     {
-        float v = srcBuf[base + c];
+        float v = srcBuf[srcBase + c];
         // A single-channel image carries alpha, so it takes the alpha knobs.
         uint bit = (n == 1) ? 3 : c;
         if ((params.channelMask & (1u << bit)) != 0)
@@ -46,6 +53,6 @@ void grade_main(uint3 tid : SV_DispatchThreadID)
             float g = params.gamma[bit];
             v = gradeApply(v, a, b, g, params.invGamma[bit], reverse, clampBlack, clampWhite);
         }
-        dstBuf[base + c] = v;
+        dstBuf[dstBase + c] = v;
     }
 }

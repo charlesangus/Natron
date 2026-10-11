@@ -305,6 +305,7 @@ gradeParams(uint32_t w, uint32_t h)
     p.nComps = kChannels;
     p.channelMask = 0xF;
     p.flags = gradefix::kClampBlack;
+    p.srcStride = p.dstStride = w * kChannels;
     return p;
 }
 

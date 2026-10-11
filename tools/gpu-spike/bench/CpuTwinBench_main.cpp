@@ -189,6 +189,7 @@ runGradeTwin(const Frame& in, std::vector<float>& out)
     p.nComps = kChannels;
     p.channelMask = 7;
     p.flags = gradefix::kClampBlack;
+    p.srcStride = p.dstStride = in.w * kChannels;
     GradeGlobals g { { const_cast<float*>(in.rgba.data()), in.rgba.size() }, { out.data(), out.size() }, &p };
     const uint32_t gx = (in.w + kGradeTile - 1) / kGradeTile;
     const uint32_t gy = (in.h + kGradeTile - 1) / kGradeTile;

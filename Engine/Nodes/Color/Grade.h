@@ -48,6 +48,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+struct GradeValues;
+
 /**
  * @brief Grade: maps blackPoint/whitePoint to black (Lift)/white (Gain), then applies multiply,
  * offset and gamma, per channel:
@@ -75,6 +77,10 @@ public:
         return true;
     }
 
+    virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 protected:
     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -93,6 +99,8 @@ private:
                               const RenderScale& scale,
                               const RectI& roi,
                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    GradeValues readValues(double time, ViewIdx view) const;
 
     /**
      * @brief Sets blackPoint and whitePoint to the per-channel minimum and maximum of the source

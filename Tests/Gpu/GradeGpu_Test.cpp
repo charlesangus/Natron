@@ -81,6 +81,7 @@ TEST_F(GradeGpuTest, GammaPrecision)
             GradeCase c {};
             c.p.width = 4097;
             c.p.height = 1;
+            c.p.srcStride = c.p.dstStride = c.p.width;
             c.p.nComps = 1;
             c.p.channelMask = 0xF;
             c.p.flags = reverse ? gradefix::kReverse : 0;

@@ -42,26 +42,24 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/ColorWheelWidget.h"
 #include "Gui/GuiFwd.h"
 
-class QTabWidget;
-
 NATRON_NAMESPACE_ENTER
 
-class ColorEditSlider;
-class ColorSelectorPaletteButton;
 struct ColorAdjustPanelPrivate;
 
 /**
- * @brief The colour knob's adjustment panel: a Wheel tab (the trackball wheel beside the Hue,
- * Sat, Value, Temp, Tint and Alpha sliders) and a Values tab (unclamped RGBA and HSV fields, a
- * display-referred hex field and the shared colour palette). It knows nothing about knobs: the
- * owner feeds it a value, a dimension count, a role and a basis, and turns valuesEdited into
- * knob changes and undo steps.
+ * @brief The colour knob's adjustment panel: the trackball wheel beside one line each for Hue,
+ * Sat, Value, Temp and Tint, every line a caption, a SpinBox and a ScaleSliderQWidget. It
+ * knows nothing about knobs: the owner feeds it a value, a dimension count, a role and a basis,
+ * and turns valuesEdited into knob changes and undo steps.
  *
  * Every gesture is applied to the value it started from, with the steps since then accumulated
  * into one edit, so a long drag never drifts by re-rounding its own output. Each gesture is
  * reported as one Start, any number of Moves and one End; a press that never moves reports
  * nothing. While a gesture runs, setKnobValue is ignored, so the knob echoing the panel's own
  * edits back cannot re-anchor the wheel mid-drag; the wheel re-centres on the new value at End.
+ *
+ * A slider reports absolute targets in its line's unit (degrees, plane distance, stops or Y,
+ * mired, tint or the Offset axes); a spinbox commit is a one-shot absolute edit.
  **/
 class ColorAdjustPanel
     : public QWidget {
@@ -77,25 +75,14 @@ public:
     };
     Q_ENUM(GesturePhaseEnum)
 
-    enum ValueFieldEnum {
-        eValueFieldR,
-        eValueFieldG,
-        eValueFieldB,
-        eValueFieldA,
-        eValueFieldH,
-        eValueFieldS,
-        eValueFieldV,
-        eValueFieldHex
-    };
-
     typedef ColorWheelWidget::DisplayConverter DisplayConverter;
 
     explicit ColorAdjustPanel(QWidget* parent = nullptr);
     virtual ~ColorAdjustPanel() OVERRIDE;
 
     /**
-     * @brief nDims is 1, 3 or 4: a 1-dim knob shows only the Value slider and a single field,
-     * and a 3-dim knob hides everything alpha. value must already carry hasAlpha to match.
+     * @brief nDims is 1, 3 or 4: a 1-dim knob shows only the Value line. value must already
+     * carry hasAlpha to match.
      **/
     void setKnobValue(const KnobColorValue& value, int nDims, ColorKnobRoleEnum role, const LumaBasis& basis);
 
@@ -115,9 +102,10 @@ public:
     void setDisplayConverter(const DisplayConverter& converter);
 
     /**
-     * @brief Used by the hex field (both ways) and the palette swatches; null means identity.
+     * @brief Leaves this many pixels free right of the sliders, so they end at the same x as
+     * the knob's own sliders, which stop short of the row's buttons.
      **/
-    void setColorManagement(const ProjectColorManagementPtr& colorManagement);
+    void setRightInset(int pixels);
 
     const KnobColorValue& getValue() const;
     int getDimensions() const;
@@ -131,42 +119,30 @@ public:
     double getRememberedHue() const;
     bool isEditing() const;
 
-    QTabWidget* getTabWidget() const;
-    QWidget* getWheelTab() const;
-    QWidget* getValuesTab() const;
+    /**
+     * @brief Everything that edits: the wheel and every line. The owner disables it while the
+     * knob cannot take the panel's edits.
+     **/
+    QWidget* getEditArea() const;
     ColorWheelWidget* getWheel() const;
-    ColorEditSlider* getSlider(ColorSliderKindEnum kind) const;
-    LineEdit* getValueField(ValueFieldEnum field) const;
-    int getPaletteButtonCount() const;
-    ColorSelectorPaletteButton* getPaletteButton(int index) const;
 
     /**
-     * @brief Unclamped hexcone HSV, with H in degrees in [0, 360) and S = (max - min) / max, so
-     * HDR and negative values survive the round trip; max == 0 reads as S = 0.
+     * @brief Null for eColorSliderKindAlpha, which has no line: the knob's own "a" line covers it.
      **/
-    static void rgbToHsv(const double rgb[3], double hsv[3]);
-    static void hsvToRgb(const double hsv[3], double rgb[3]);
+    ScaleSliderQWidget* getSlider(ColorSliderKindEnum kind) const;
+    SpinBox* getSpinBox(ColorSliderKindEnum kind) const;
 
 Q_SIGNALS:
     void valuesEdited(KnobColorValue value, ColorAdjustPanel::GesturePhaseEnum phase, QString undoLabel);
-
-public Q_SLOTS:
-    void addCurrentColorToPalette();
-    void clearPalette();
-    void reloadPalette();
 
 private Q_SLOTS:
     void onWheelGestureStarted();
     void onWheelGestureMoved(ColorEdit edit, QString axisLabel);
     void onWheelGestureFinished(bool moved);
-    void onSliderGestureStarted();
-    void onSliderGestureMoved(double value, bool absolute, QString axisLabel);
-    void onSliderGestureFinished(bool moved);
+    void onSliderPositionChanged(double value);
+    void onSliderEditingFinished(bool hasMovedOnce);
     void onSliderResetRequested();
-    void onValueFieldCommitted();
-    void onHexCommitted();
-    void onPaletteColorPicked(float r, float g, float b, float a);
-    void onTabChanged(int index);
+    void onSpinBoxValueChanged(double value);
 
 private:
     std::unique_ptr<ColorAdjustPanelPrivate> _imp;

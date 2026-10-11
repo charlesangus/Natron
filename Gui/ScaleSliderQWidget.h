@@ -30,6 +30,7 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QBrush>
 #include <QSize>
 #include <QWidget>
 CLANG_DIAG_ON(deprecated)
@@ -94,6 +95,12 @@ public:
 
     void setUseLineColor(bool use, const QColor& color);
     void setUseSliderColor(bool use, const QColor &color);
+
+    /**
+     * @brief Paints the stops as a band along the track, from minimum() to maximum(). Empty
+     * stops, the default, leave the plain track.
+     **/
+    void setTrackGradient(const QGradientStops& stops);
 
 Q_SIGNALS:
     void editingFinished(bool hasMovedOnce);

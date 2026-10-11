@@ -81,6 +81,7 @@ struct ScaleSliderQWidgetPrivate
     bool useLineColor;
     bool useSliderColor;
     QColor lineColor;
+    QGradientStops trackGradient;
     bool allowDraftModeSetting;
 
     ScaleSliderQWidgetPrivate(QWidget* parent,
@@ -110,6 +111,7 @@ struct ScaleSliderQWidgetPrivate
         , useLineColor(false)
         , useSliderColor(false)
         , lineColor(Qt::black)
+        , trackGradient()
         , allowDraftModeSetting(allowDraftModeSetting)
     {
         font.setPointSize( (font.pointSize() * NATRON_FONT_SIZE_10) / NATRON_FONT_SIZE_13 );
@@ -426,7 +428,22 @@ ScaleSliderQWidget::paintEvent(QPaintEvent* /*e*/)
 
     /*drawing X axis*/
     double lineYpos = height() - 1 - fontM.height()  - TO_DPIY(TICK_HEIGHT) / 2;
-    p.drawLine(0, lineYpos, width() - 1, lineYpos);
+    if (!_imp->trackGradient.isEmpty()) {
+        double gradientLeft = _imp->zoomCtx.toWidgetCoordinates(_imp->minimum, 0).x();
+        double gradientRight = _imp->zoomCtx.toWidgetCoordinates(_imp->maximum, 0).x();
+        double bandHeight = TO_DPIY(TICK_HEIGHT);
+        QRectF band(gradientLeft, lineYpos - bandHeight / 2., gradientRight - gradientLeft, bandHeight);
+        QLinearGradient gradient(band.topLeft(), band.topRight());
+        gradient.setStops(_imp->trackGradient);
+        QPen previousPen = p.pen();
+        p.setPen(Qt::black);
+        p.setBrush(QBrush(gradient));
+        p.drawRect(band);
+        p.setBrush(Qt::NoBrush);
+        p.setPen(previousPen);
+    } else {
+        p.drawLine(0, lineYpos, width() - 1, lineYpos);
+    }
 
     double tickBottom = _imp->zoomCtx.toZoomCoordinates( 0, height() - 1 - fontM.height() ).y();
     double tickTop = _imp->zoomCtx.toZoomCoordinates( 0, height() - 1 - fontM.height()  - TO_DPIY(TICK_HEIGHT) ).y();
@@ -590,6 +607,13 @@ ScaleSliderQWidget::setUseLineColor(bool use,
 {
     _imp->useLineColor = use;
     _imp->lineColor = color;
+    update();
+}
+
+void
+ScaleSliderQWidget::setTrackGradient(const QGradientStops& stops)
+{
+    _imp->trackGradient = stops;
     update();
 }
 

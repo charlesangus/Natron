@@ -87,6 +87,42 @@ CLANG_DIAG_ON(uninitialized)
 NATRON_NAMESPACE_ENTER
 
 namespace {
+// The panel's sliders end where the row's own slider does: everything right of that slider
+// has a fixed width. QBoxLayout puts its spacing only between widget items; spacer items
+// contribute just their own width.
+int
+widthRightOfLastSlider(QHBoxLayout* containerLayout)
+{
+    int sliderIndex = -1;
+
+    for (int i = 0; i < containerLayout->count(); ++i) {
+        QLayoutItem* item = containerLayout->itemAt(i);
+
+        if (item && qobject_cast<ScaleSliderQWidget*>(item->widget())) {
+            sliderIndex = i;
+        }
+    }
+    if (sliderIndex < 0) {
+        return 0;
+    }
+
+    int inset = 0;
+
+    for (int i = sliderIndex + 1; i < containerLayout->count(); ++i) {
+        QLayoutItem* item = containerLayout->itemAt(i);
+
+        if (!item) {
+            continue;
+        }
+        if (item->widget()) {
+            inset += containerLayout->spacing();
+        }
+        inset += item->sizeHint().width();
+    }
+
+    return inset;
+}
+
 ColorAdjustPanel::DisplayConverter
 makeDisplayConverter(const ProjectColorManagementPtr& colorManagement)
 {
@@ -450,7 +486,6 @@ KnobGuiColor::createBelowRowWidget(QWidget* parent)
                                knob->getColorRole(),
                                ColorKnobEditSession::basisFor(colorManagement));
     _adjustPanel->setDisplayConverter(makeDisplayConverter(colorManagement));
-    _adjustPanel->setColorManagement(colorManagement);
     QObject::connect(_adjustPanel.data(), &ColorAdjustPanel::valuesEdited, this, &KnobGuiColor::onAdjustPanelValuesEdited);
 
     if (colorManagement) {
@@ -477,7 +512,6 @@ KnobGuiColor::refreshAdjustPanelColorManagement()
 
     ProjectColorManagementPtr colorManagement = getColorManagement();
 
-    _adjustPanel->setColorManagement(colorManagement);
     _adjustPanel->setDisplayConverter(makeDisplayConverter(colorManagement));
     _adjustPanel->setRole(knob->getColorRole());
     _adjustPanel->setBasis(ColorKnobEditSession::basisFor(colorManagement));
@@ -521,8 +555,7 @@ KnobGuiColor::refreshAdjustPanelState()
     bool editable = isAdjustPanelEditable();
 
     _adjustPanel->setEnabled(knob->isEnabled(0));
-    _adjustPanel->getWheelTab()->setEnabled(editable);
-    _adjustPanel->getValuesTab()->setEnabled(editable);
+    _adjustPanel->getEditArea()->setEnabled(editable);
 }
 
 void
@@ -540,7 +573,7 @@ KnobGuiColor::onAdjustPanelToggled(bool expanded)
     }
     _adjustPanel->setVisible(expanded);
     _colorSelectorButton->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
-    _colorSelectorButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(expanded ? tr("Hide the colour adjustment panel.") : tr("Show the colour adjustment panel: a trackball wheel with hue, saturation, value, temperature, tint and alpha sliders, and a Values tab with unclamped RGBA and HSV fields and the colour palette."),
+    _colorSelectorButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(expanded ? tr("Hide the colour adjustment panel.") : tr("Show the colour adjustment panel: a trackball wheel with hue, saturation, value, temperature and tint sliders."),
                                                                             NATRON_NAMESPACE::WhiteSpaceNormal));
 }
 
@@ -704,6 +737,7 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
         _globalModeButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("Engage the global trackball mode (Ctrl+E) on this knob: a click-drag anywhere then adjusts it until Esc or Enter accepts, or the shortcut is pressed again."), NATRON_NAMESPACE::WhiteSpaceNormal));
         QObject::connect(_globalModeButton, &QToolButton::clicked, this, &KnobGuiColor::engageGlobalMode);
         containerLayout->addWidget(_globalModeButton);
+        _adjustPanel->setRightInset(widthRightOfLastSlider(containerLayout));
 
         return;
     }

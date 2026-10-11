@@ -33,36 +33,26 @@
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QApplication>
+#include <QBrush>
 #include <QColor>
 #include <QFontMetrics>
-#include <QGradient>
 #include <QGridLayout>
 #include <QHBoxLayout>
-#include <QSettings>
-#include <QStringList>
-#include <QTabWidget>
 #include <QVBoxLayout>
-#include <QVariant>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
-#include "Engine/ProjectColorManagement.h"
-
-#include "Gui/Button.h"
-#include "Gui/ColorEditSlider.h"
-#include "Gui/ColorSelectorWidget.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/Label.h"
-#include "Gui/LineEdit.h"
+#include "Gui/ScaleSliderQWidget.h"
+#include "Gui/SpinBox.h"
 
 NATRON_NAMESPACE_ENTER
 
 namespace {
 const double kRec709Weights[3] = { 0.2126729, 0.7151522, 0.0721750 };
 const double kGrey = 0.18;
-const int kSliderCount = 6;
-const int kFieldCount = 8;
-const int kNumericFieldCount = 7;
+const int kLineCount = 5;
 
 // Below this distance from white a value has no usable hue of its own, so the remembered hue
 // is kept rather than overwritten by the noise angle of a near-neutral point.
@@ -72,13 +62,12 @@ const double kNeutralSaturation = 1e-9;
 // spectrum stays readable instead of collapsing to grey.
 const double kHueTrackSaturationFraction = 0.5;
 
-const ColorSliderKindEnum kSliderKinds[kSliderCount] = {
+const ColorSliderKindEnum kLineKinds[kLineCount] = {
     eColorSliderKindHue,
     eColorSliderKindSat,
     eColorSliderKindValue,
     eColorSliderKindTemp,
-    eColorSliderKindTint,
-    eColorSliderKindAlpha
+    eColorSliderKindTint
 };
 
 KnobColorValue
@@ -94,7 +83,7 @@ neutralGain()
 }
 
 QString
-sliderTitle(ColorSliderKindEnum kind)
+lineTitle(ColorSliderKindEnum kind)
 {
     switch (kind) {
     case eColorSliderKindHue:
@@ -114,60 +103,62 @@ sliderTitle(ColorSliderKindEnum kind)
     return QString();
 }
 
+// This text becomes part of an undo command's label verbatim ("value slider", "typed hue"),
+// so it reads as a word inside a phrase rather than as a caption.
 QString
-fieldTitle(int field)
+lineUndoName(ColorSliderKindEnum kind)
 {
-    switch (field) {
-    case ColorAdjustPanel::eValueFieldR:
-        return QString::fromUtf8("R");
-    case ColorAdjustPanel::eValueFieldG:
-        return QString::fromUtf8("G");
-    case ColorAdjustPanel::eValueFieldB:
-        return QString::fromUtf8("B");
-    case ColorAdjustPanel::eValueFieldA:
-        return QString::fromUtf8("A");
-    case ColorAdjustPanel::eValueFieldH:
-        return QString::fromUtf8("H");
-    case ColorAdjustPanel::eValueFieldS:
-        return QString::fromUtf8("S");
-    case ColorAdjustPanel::eValueFieldV:
-        return QString::fromUtf8("V");
-    case ColorAdjustPanel::eValueFieldHex:
-        return QObject::tr("Hex (display, clamped)");
+    switch (kind) {
+    case eColorSliderKindHue:
+        return QObject::tr("hue");
+    case eColorSliderKindSat:
+        return QObject::tr("saturation");
+    case eColorSliderKindValue:
+        return QObject::tr("value");
+    case eColorSliderKindTemp:
+        return QObject::tr("temperature");
+    case eColorSliderKindTint:
+        return QObject::tr("tint");
+    case eColorSliderKindAlpha:
+        return QObject::tr("alpha");
     }
 
     return QString();
 }
 
-QString
-fieldUndoLabel(int field)
+// Enough digits that one step of the last one is finer than a one-pixel slider move over the
+// line's range, without padding the field with noise for the wide physical ranges.
+int
+lineDecimals(ColorSliderKindEnum kind,
+             ColorKnobRoleEnum role)
 {
-    switch (field) {
-    case ColorAdjustPanel::eValueFieldR:
-        return QObject::tr("typed red");
-    case ColorAdjustPanel::eValueFieldG:
-        return QObject::tr("typed green");
-    case ColorAdjustPanel::eValueFieldB:
-        return QObject::tr("typed blue");
-    case ColorAdjustPanel::eValueFieldA:
-        return QObject::tr("typed alpha");
-    case ColorAdjustPanel::eValueFieldH:
-        return QObject::tr("typed HSV hue");
-    case ColorAdjustPanel::eValueFieldS:
-        return QObject::tr("typed HSV saturation");
-    case ColorAdjustPanel::eValueFieldV:
-        return QObject::tr("typed HSV value");
-    case ColorAdjustPanel::eValueFieldHex:
-        return QObject::tr("typed hex");
+    bool ratio = isRatioRole(role);
+
+    switch (kind) {
+    case eColorSliderKindHue:
+        return 2;
+    case eColorSliderKindSat:
+        return 5;
+    case eColorSliderKindValue:
+        return ratio ? 3 : 4;
+    case eColorSliderKindTemp:
+    case eColorSliderKindTint:
+        return ratio ? 2 : 4;
+    case eColorSliderKindAlpha:
+        return 3;
     }
 
-    return QString();
+    return 3;
 }
 
-QString
-formatField(double v)
+double
+roundToDecimals(double v,
+                int decimals)
 {
-    return QString::number(v, 'g', 6);
+    double scale = std::pow(10.0, decimals);
+    double r = std::round(v * scale) / scale;
+
+    return std::isfinite(r) ? r : v;
 }
 
 double
@@ -260,24 +251,18 @@ struct ColorAdjustPanelPrivate {
     ColorKnobRoleEnum role;
     LumaBasis basis;
     ColorAdjustPanel::DisplayConverter converter;
-    ProjectColorManagementPtr colorManagement;
     TrackballRates rates;
     double rememberedHue;
 
-    QTabWidget* tabs;
-    QWidget* wheelTab;
-    QWidget* valuesTab;
+    QWidget* editArea;
+    QGridLayout* linesLayout;
     ColorWheelWidget* wheel;
-    ColorEditSlider* sliders[kSliderCount];
-    QWidget* sliderRows[kSliderCount];
-    LineEdit* fields[kFieldCount];
-    Label* fieldLabels[kFieldCount];
-    QWidget* paletteWidget;
-    Button* paletteAddButton;
-    Button* paletteClearButton;
-    std::vector<ColorSelectorPaletteButton*> palette;
+    Label* captions[kLineCount];
+    SpinBox* spinBoxes[kLineCount];
+    ScaleSliderQWidget* sliders[kLineCount];
 
     SourceEnum source;
+    int activeSlider;
     bool started;
     KnobColorValue segmentBase;
     double segmentBaseHue;
@@ -293,18 +278,13 @@ struct ColorAdjustPanelPrivate {
         , role(eColorKnobRoleGain)
         , basis(kRec709Weights)
         , converter()
-        , colorManagement()
         , rates()
         , rememberedHue(0.0)
-        , tabs(nullptr)
-        , wheelTab(nullptr)
-        , valuesTab(nullptr)
+        , editArea(nullptr)
+        , linesLayout(nullptr)
         , wheel(nullptr)
-        , paletteWidget(nullptr)
-        , paletteAddButton(nullptr)
-        , paletteClearButton(nullptr)
-        , palette()
         , source(eSourceNone)
+        , activeSlider(-1)
         , started(false)
         , segmentBase(neutralGain())
         , segmentBaseHue(0.0)
@@ -313,188 +293,102 @@ struct ColorAdjustPanelPrivate {
         , totalReplaces(false)
         , undoLabel()
     {
-        for (int i = 0; i < kSliderCount; ++i) {
+        for (int i = 0; i < kLineCount; ++i) {
+            captions[i] = nullptr;
+            spinBoxes[i] = nullptr;
             sliders[i] = nullptr;
-            sliderRows[i] = nullptr;
-        }
-        for (int f = 0; f < kFieldCount; ++f) {
-            fields[f] = nullptr;
-            fieldLabels[f] = nullptr;
         }
     }
 
-    void buildWheelTab();
-    void buildValuesTab();
+    void buildEditArea();
 
     int sliderIndex(const QObject* s) const;
-    int fieldIndex(const QObject* e) const;
+    int spinBoxIndex(const QObject* s) const;
 
     double valueAxisLuma(const KnobColorValue& v) const;
-    double sliderValue(ColorSliderKindEnum kind) const;
-    QGradientStops sliderGradient(ColorSliderKindEnum kind) const;
+    double lineValue(ColorSliderKindEnum kind) const;
+    QGradientStops lineGradient(ColorSliderKindEnum kind) const;
+    ColorEdit lineEdit(ColorSliderKindEnum kind, double target, const KnobColorValue& from, bool* replaces) const;
     void updateRememberedHue();
-    void applySliderRates();
+    void applyRanges();
     void applyDimensions();
 
     void refreshWheel();
-    void refreshSliders();
-    void refreshFields(bool skipFocused);
-    void refreshAll(bool skipFocusedFields);
+    void refreshGradients();
+    void refreshLines(bool skipFocused);
+    void refreshAll(bool skipFocused);
 
     void beginGesture(SourceEnum src);
     void step(const ColorEdit& edit, bool replacesTotal, const QString& stepLabel);
     void endGesture();
     void oneShot(const KnobColorValue& newValue, const QString& stepLabel);
-    void savePalette();
 };
 
 void
-ColorAdjustPanelPrivate::buildWheelTab()
+ColorAdjustPanelPrivate::buildEditArea()
 {
-    wheelTab = new QWidget(tabs);
+    editArea = new QWidget(q);
 
-    QHBoxLayout* layout = new QHBoxLayout(wheelTab);
+    QHBoxLayout* layout = new QHBoxLayout(editArea);
 
-    layout->setContentsMargins(4, 4, 4, 4);
-    layout->setSpacing(8);
+    // No horizontal margin: the right inset alone decides where the sliders end, so they line
+    // up with the knob's own sliders above.
+    layout->setContentsMargins(0, (int)TO_DPIY(2.), 0, (int)TO_DPIY(2.));
+    layout->setSpacing((int)TO_DPIX(8.));
 
-    wheel = new ColorWheelWidget(wheelTab);
+    wheel = new ColorWheelWidget(editArea);
     layout->addWidget(wheel, 0, Qt::AlignTop);
 
-    QWidget* column = new QWidget(wheelTab);
-    QVBoxLayout* columnLayout = new QVBoxLayout(column);
+    linesLayout = new QGridLayout();
+    linesLayout->setContentsMargins(0, 0, 0, 0);
+    linesLayout->setHorizontalSpacing((int)TO_DPIX(4.));
+    linesLayout->setVerticalSpacing((int)TO_DPIY(1.));
+    linesLayout->setColumnStretch(2, 1);
 
-    columnLayout->setContentsMargins(0, 0, 0, 0);
-    columnLayout->setSpacing(2);
-
-    // Sized from the widest caption ("Value"/"Temp"/"Tint"/"Alpha") rather than a flat guess, so
-    // none of them clip at the app's actual font and DPI.
+    // Sized from the widest caption rather than a flat guess, so none of them clip at the
+    // app's actual font and DPI.
     QFontMetrics captionMetrics(QApplication::font());
     int captionWidth = 0;
 
-    for (int i = 0; i < kSliderCount; ++i) {
-        captionWidth = std::max(captionWidth, captionMetrics.horizontalAdvance(sliderTitle(kSliderKinds[i])));
+    for (int i = 0; i < kLineCount; ++i) {
+        captionWidth = std::max(captionWidth, captionMetrics.horizontalAdvance(lineTitle(kLineKinds[i])));
     }
     captionWidth += (int)TO_DPIX(4.);
 
-    for (int i = 0; i < kSliderCount; ++i) {
-        QWidget* row = new QWidget(column);
-        QHBoxLayout* rowLayout = new QHBoxLayout(row);
+    for (int i = 0; i < kLineCount; ++i) {
+        ColorSliderKindEnum kind = kLineKinds[i];
+        SliderRange range = sliderMapping(kind, role, rates);
+        QString objectSuffix = lineTitle(kind);
 
-        rowLayout->setContentsMargins(0, 0, 0, 0);
-        rowLayout->setSpacing(4);
+        Label* caption = new Label(lineTitle(kind), editArea);
 
-        Label* title = new Label(sliderTitle(kSliderKinds[i]), row);
+        caption->setFixedWidth(captionWidth);
+        linesLayout->addWidget(caption, i, 0);
 
-        title->setFixedWidth(captionWidth);
-        rowLayout->addWidget(title);
+        SpinBox* box = new SpinBox(editArea, SpinBox::eSpinBoxTypeDouble);
 
-        ColorEditSlider* slider = new ColorEditSlider(kSliderKinds[i], row);
+        box->setObjectName(QString::fromUtf8("ColorAdjustSpinBox") + objectSuffix);
+        linesLayout->addWidget(box, i, 1);
 
-        rowLayout->addWidget(slider, 1);
-        columnLayout->addWidget(row);
+        ScaleSliderQWidget* slider = new ScaleSliderQWidget(range.rangeMin, range.rangeMax, range.rangeMin, false,
+                                                            ScaleSliderQWidget::eDataTypeDouble, nullptr, eScaleTypeLinear, editArea);
 
+        slider->setObjectName(QString::fromUtf8("ColorAdjustSlider") + objectSuffix);
+        slider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        linesLayout->addWidget(slider, i, 2);
+
+        captions[i] = caption;
+        spinBoxes[i] = box;
         sliders[i] = slider;
-        sliderRows[i] = row;
     }
-    columnLayout->addStretch(1);
-    layout->addWidget(column, 1);
-}
-
-void
-ColorAdjustPanelPrivate::buildValuesTab()
-{
-    valuesTab = new QWidget(tabs);
-
-    QVBoxLayout* layout = new QVBoxLayout(valuesTab);
-
-    layout->setContentsMargins(4, 4, 4, 4);
-    layout->setSpacing(4);
-
-    QGridLayout* grid = new QGridLayout();
-
-    grid->setContentsMargins(0, 0, 0, 0);
-    grid->setHorizontalSpacing(4);
-    grid->setVerticalSpacing(2);
-
-    for (int f = 0; f < kFieldCount; ++f) {
-        fieldLabels[f] = new Label(fieldTitle(f), valuesTab);
-        fields[f] = new LineEdit(valuesTab);
-    }
-
-    const int rgbaFields[4] = {
-        ColorAdjustPanel::eValueFieldR, ColorAdjustPanel::eValueFieldG,
-        ColorAdjustPanel::eValueFieldB, ColorAdjustPanel::eValueFieldA
-    };
-    const int hsvFields[3] = {
-        ColorAdjustPanel::eValueFieldH, ColorAdjustPanel::eValueFieldS, ColorAdjustPanel::eValueFieldV
-    };
-
-    for (int i = 0; i < 4; ++i) {
-        grid->addWidget(fieldLabels[rgbaFields[i]], 0, 2 * i);
-        grid->addWidget(fields[rgbaFields[i]], 0, 2 * i + 1);
-    }
-    for (int i = 0; i < 3; ++i) {
-        grid->addWidget(fieldLabels[hsvFields[i]], 1, 2 * i);
-        grid->addWidget(fields[hsvFields[i]], 1, 2 * i + 1);
-    }
-    grid->addWidget(fieldLabels[ColorAdjustPanel::eValueFieldHex], 2, 0, 1, 4);
-    grid->addWidget(fields[ColorAdjustPanel::eValueFieldHex], 2, 4, 1, 4);
-    fields[ColorAdjustPanel::eValueFieldHex]->setToolTip(QObject::tr("The colour as #RRGGBB in the colour-picking (display) space. It is clamped to 0-1 and 8 bits, so it cannot hold HDR values: use the R, G and B fields for those."));
-    layout->addLayout(grid);
-
-    paletteWidget = new QWidget(valuesTab);
-
-    QHBoxLayout* paletteLayout = new QHBoxLayout(paletteWidget);
-
-    paletteLayout->setContentsMargins(0, 4, 0, 0);
-    paletteLayout->setSpacing(4);
-
-    QWidget* options = new QWidget(paletteWidget);
-    QVBoxLayout* optionsLayout = new QVBoxLayout(options);
-
-    optionsLayout->setContentsMargins(0, 0, 0, 0);
-    optionsLayout->setSpacing(2);
-
-    paletteAddButton = new Button(QObject::tr("Add"), options);
-    paletteClearButton = new Button(QObject::tr("Clear"), options);
-    paletteAddButton->setToolTip(QObject::tr("Add the current colour to the palette."));
-    paletteClearButton->setToolTip(QObject::tr("Clear every colour in the palette."));
-    optionsLayout->addWidget(paletteAddButton);
-    optionsLayout->addStretch(1);
-    optionsLayout->addWidget(paletteClearButton);
-    paletteLayout->addWidget(options);
-
-    QWidget* swatches = new QWidget(paletteWidget);
-    QVBoxLayout* swatchesLayout = new QVBoxLayout(swatches);
-
-    swatchesLayout->setContentsMargins(0, 0, 0, 0);
-    swatchesLayout->setSpacing(0);
-
-    for (int r = 0; r < COLOR_SELECTOR_PALETTE_ROWS; ++r) {
-        QWidget* rowWidget = new QWidget(swatches);
-        QHBoxLayout* rowLayout = new QHBoxLayout(rowWidget);
-
-        rowLayout->setContentsMargins(0, 0, 0, 0);
-        rowLayout->setSpacing(0);
-        for (int c = 0; c < COLOR_SELECTOR_PALETTE_COLS; ++c) {
-            ColorSelectorPaletteButton* button = new ColorSelectorPaletteButton(rowWidget);
-
-            rowLayout->addWidget(button);
-            palette.push_back(button);
-        }
-        rowLayout->addStretch(1);
-        swatchesLayout->addWidget(rowWidget);
-    }
-    paletteLayout->addWidget(swatches, 1);
-    layout->addWidget(paletteWidget);
-    layout->addStretch(1);
+    linesLayout->setRowStretch(kLineCount, 1);
+    layout->addLayout(linesLayout, 1);
 }
 
 int
 ColorAdjustPanelPrivate::sliderIndex(const QObject* s) const
 {
-    for (int i = 0; i < kSliderCount; ++i) {
+    for (int i = 0; i < kLineCount; ++i) {
         if (sliders[i] == s) {
             return i;
         }
@@ -504,11 +398,11 @@ ColorAdjustPanelPrivate::sliderIndex(const QObject* s) const
 }
 
 int
-ColorAdjustPanelPrivate::fieldIndex(const QObject* e) const
+ColorAdjustPanelPrivate::spinBoxIndex(const QObject* s) const
 {
-    for (int f = 0; f < kFieldCount; ++f) {
-        if (fields[f] == e) {
-            return f;
+    for (int i = 0; i < kLineCount; ++i) {
+        if (spinBoxes[i] == s) {
+            return i;
         }
     }
 
@@ -539,59 +433,58 @@ ColorAdjustPanelPrivate::valueAxisLuma(const KnobColorValue& v) const
 }
 
 double
-ColorAdjustPanelPrivate::sliderValue(ColorSliderKindEnum kind) const
+ColorAdjustPanelPrivate::lineValue(ColorSliderKindEnum kind) const
 {
+    double out = 0.0;
+
     switch (kind) {
     case eColorSliderKindHue: {
         PlanePoint p = toPlane(role, basis, value);
 
-        return (p.valid && planeSaturation(p) > kNeutralSaturation) ? planeHue(p) : rememberedHue;
+        out = (p.valid && planeSaturation(p) > kNeutralSaturation) ? planeHue(p) : rememberedHue;
+        break;
     }
     case eColorSliderKindSat: {
         PlanePoint p = toPlane(role, basis, value);
 
-        return p.valid ? planeSaturation(p) : 0.0;
+        out = p.valid ? planeSaturation(p) : 0.0;
+        break;
     }
     case eColorSliderKindValue: {
         double Y = valueAxisLuma(value);
 
         if (!isRatioRole(role)) {
-            return Y;
+            out = Y;
+        } else {
+            // A non-positive Y has no stop count, so it reads as the bottom of the range.
+            out = Y > 0.0 ? std::log2(Y) : sliderMapping(kind, role, rates).rangeMin;
         }
-
-        // A non-positive Y has no stop count; reading it as below the range shows the low
-        // chevron instead of a marker that pretends to sit somewhere on the track.
-        return Y > 0.0 ? std::log2(Y) : sliderMapping(kind, role, rates).rangeMin - 1.0;
+        break;
     }
     case eColorSliderKindTemp: {
         TempTintResult tt = toTempTint(role, basis, value);
 
-        return tt.valid ? tt.temp : 0.0;
+        out = tt.valid ? tt.temp : 0.0;
+        break;
     }
     case eColorSliderKindTint: {
         TempTintResult tt = toTempTint(role, basis, value);
 
-        return tt.valid ? tt.tint : 0.0;
+        out = tt.valid ? tt.tint : 0.0;
+        break;
     }
     case eColorSliderKindAlpha:
-        return value.hasAlpha ? value.a : 0.0;
+        out = value.hasAlpha ? value.a : 0.0;
+        break;
     }
 
-    return 0.0;
+    return std::isfinite(out) ? out : 0.0;
 }
 
 QGradientStops
-ColorAdjustPanelPrivate::sliderGradient(ColorSliderKindEnum kind) const
+ColorAdjustPanelPrivate::lineGradient(ColorSliderKindEnum kind) const
 {
     QGradientStops stops;
-
-    if (kind == eColorSliderKindAlpha) {
-        stops.append(QGradientStop(0.0, QColor(0, 0, 0)));
-        stops.append(QGradientStop(1.0, QColor(255, 255, 255)));
-
-        return stops;
-    }
-
     const int count = (kind == eColorSliderKindHue) ? 13 : 9;
     SliderRange range = sliderMapping(kind, role, rates);
     TempTintResult current = toTempTint(role, basis, value);
@@ -650,6 +543,40 @@ ColorAdjustPanelPrivate::sliderGradient(ColorSliderKindEnum kind) const
     return stops;
 }
 
+ColorEdit
+ColorAdjustPanelPrivate::lineEdit(ColorSliderKindEnum kind,
+                                  double target,
+                                  const KnobColorValue& from,
+                                  bool* replaces) const
+{
+    *replaces = false;
+    switch (kind) {
+    case eColorSliderKindHue:
+        return makeEdit(eColorAxisHue, target, 0.0, true);
+    case eColorSliderKindSat:
+        return makeEdit(eColorAxisSat, target, 0.0, true);
+    case eColorSliderKindValue:
+        return makeEdit(eColorAxisValue, target, 0.0, true);
+    case eColorSliderKindAlpha:
+        return makeEdit(eColorAxisAlpha, target, 0.0, true);
+    case eColorSliderKindTemp:
+    case eColorSliderKindTint: {
+        bool isTemp = kind == eColorSliderKindTemp;
+        TempTintResult base = toTempTint(role, basis, from);
+        double d = target - (base.valid ? (isTemp ? base.temp : base.tint) : 0.0);
+
+        // The target becomes a total nudge from the gesture's base: it reaches the target
+        // exactly wherever the locus is defined, keeps the other axis where it was, and still
+        // moves along the linear axes where an absolute fromTempTint would refuse.
+        *replaces = true;
+
+        return makeEdit(eColorAxisTempTint, isTemp ? d : 0.0, isTemp ? 0.0 : d, false);
+    }
+    }
+
+    return makeEdit(eColorAxisValue, target, 0.0, true);
+}
+
 void
 ColorAdjustPanelPrivate::updateRememberedHue()
 {
@@ -661,33 +588,22 @@ ColorAdjustPanelPrivate::updateRememberedHue()
 }
 
 void
-ColorAdjustPanelPrivate::applySliderRates()
+ColorAdjustPanelPrivate::applyRanges()
 {
-    for (int i = 0; i < kSliderCount; ++i) {
-        double perPixel = 0.0;
+    for (int i = 0; i < kLineCount; ++i) {
+        ColorSliderKindEnum kind = kLineKinds[i];
+        SliderRange range = sliderMapping(kind, role, rates);
+        QString tip = QObject::tr("%1, in %2. Ctrl drags 10x slower, Shift 4x faster, Ctrl+Shift 100x slower; Alt+click resets.")
+                          .arg(lineTitle(kind), QString::fromStdString(range.unit));
 
-        switch (kSliderKinds[i]) {
-        case eColorSliderKindHue:
-            perPixel = rates.hueDegreesPerPixel;
-            break;
-        case eColorSliderKindSat:
-            perPixel = rates.satPlanePerPixel;
-            break;
-        case eColorSliderKindValue:
-            perPixel = valueRatePerPixel(rates, role);
-            break;
-        case eColorSliderKindTemp:
-            perPixel = tempRatePerPixel(rates, role);
-            break;
-        case eColorSliderKindTint:
-            perPixel = tintRatePerPixel(rates, role);
-            break;
-        case eColorSliderKindAlpha:
-            break;
+        sliders[i]->setMinimumAndMaximum(range.rangeMin, range.rangeMax);
+        spinBoxes[i]->decimals(lineDecimals(kind, role));
+        if (kind == eColorSliderKindSat) {
+            spinBoxes[i]->setMinimum(0.0);
         }
-        sliders[i]->setRates(rates);
-        sliders[i]->setRole(role);
-        sliders[i]->setRelativeRatePerPixel(perPixel);
+        sliders[i]->setToolTip(tip);
+        spinBoxes[i]->setToolTip(tip);
+        captions[i]->setToolTip(tip);
     }
 }
 
@@ -695,45 +611,15 @@ void
 ColorAdjustPanelPrivate::applyDimensions()
 {
     bool single = nDims == 1;
-    bool alpha = nDims >= 4;
 
     wheel->setVisible(!single);
-    for (int i = 0; i < kSliderCount; ++i) {
-        bool visible;
+    for (int i = 0; i < kLineCount; ++i) {
+        bool visible = (kLineKinds[i] == eColorSliderKindValue) || !single;
 
-        switch (kSliderKinds[i]) {
-        case eColorSliderKindValue:
-            visible = true;
-            break;
-        case eColorSliderKindAlpha:
-            visible = alpha;
-            break;
-        default:
-            visible = !single;
-            break;
-        }
-        sliderRows[i]->setVisible(visible);
+        captions[i]->setVisible(visible);
+        spinBoxes[i]->setVisible(visible);
+        sliders[i]->setVisible(visible);
     }
-
-    for (int f = 0; f < kFieldCount; ++f) {
-        bool visible;
-
-        switch (f) {
-        case ColorAdjustPanel::eValueFieldR:
-            visible = true;
-            break;
-        case ColorAdjustPanel::eValueFieldA:
-            visible = alpha;
-            break;
-        default:
-            visible = !single;
-            break;
-        }
-        fields[f]->setVisible(visible);
-        fieldLabels[f]->setVisible(visible);
-    }
-    fieldLabels[ColorAdjustPanel::eValueFieldR]->setText(single ? QObject::tr("Value") : fieldTitle(ColorAdjustPanel::eValueFieldR));
-    paletteWidget->setVisible(!single);
 }
 
 void
@@ -745,50 +631,37 @@ ColorAdjustPanelPrivate::refreshWheel()
 }
 
 void
-ColorAdjustPanelPrivate::refreshSliders()
+ColorAdjustPanelPrivate::refreshGradients()
 {
-    for (int i = 0; i < kSliderCount; ++i) {
-        sliders[i]->setValue(sliderValue(kSliderKinds[i]));
-        sliders[i]->setGradientStops(sliderGradient(kSliderKinds[i]));
+    for (int i = 0; i < kLineCount; ++i) {
+        sliders[i]->setTrackGradient(lineGradient(kLineKinds[i]));
     }
 }
 
 void
-ColorAdjustPanelPrivate::refreshFields(bool skipFocused)
+ColorAdjustPanelPrivate::refreshLines(bool skipFocused)
 {
-    double hsv[3];
+    for (int i = 0; i < kLineCount; ++i) {
+        ColorSliderKindEnum kind = kLineKinds[i];
+        double v = lineValue(kind);
 
-    ColorAdjustPanel::rgbToHsv(value.rgb, hsv);
-
-    const double numbers[kNumericFieldCount] = {
-        value.rgb[0], value.rgb[1], value.rgb[2], value.hasAlpha ? value.a : 1.0, hsv[0], hsv[1], hsv[2]
-    };
-
-    for (int f = 0; f < kNumericFieldCount; ++f) {
-        if (skipFocused && fields[f]->hasFocus()) {
-            continue;
+        // The dragged slider keeps its own geared position: re-seeking it to the value derived
+        // back from the knob would fight the drag wherever the edit cannot reach its target.
+        if (i != activeSlider) {
+            sliders[i]->seekScalePosition(v);
         }
-        fields[f]->setText(formatField(numbers[f]));
-    }
-
-    LineEdit* hex = fields[ColorAdjustPanel::eValueFieldHex];
-
-    if (!(skipFocused && hex->hasFocus())) {
-        float display[3] = { (float)value.rgb[0], (float)value.rgb[1], (float)value.rgb[2] };
-
-        if (colorManagement) {
-            colorManagement->workingToColorPicking(&display[0], &display[1], &display[2]);
+        if (!(skipFocused && spinBoxes[i]->hasFocus())) {
+            spinBoxes[i]->setValue(roundToDecimals(v, lineDecimals(kind, role)));
         }
-        hex->setText(clampedColor(display).name());
     }
+    refreshGradients();
 }
 
 void
-ColorAdjustPanelPrivate::refreshAll(bool skipFocusedFields)
+ColorAdjustPanelPrivate::refreshAll(bool skipFocused)
 {
     refreshWheel();
-    refreshSliders();
-    refreshFields(skipFocusedFields);
+    refreshLines(skipFocused);
 }
 
 void
@@ -798,6 +671,7 @@ ColorAdjustPanelPrivate::beginGesture(SourceEnum src)
         endGesture();
     }
     source = src;
+    activeSlider = -1;
     started = false;
     segmentBase = value;
     segmentBaseHue = rememberedHue;
@@ -853,8 +727,7 @@ ColorAdjustPanelPrivate::step(const ColorEdit& edit,
 
     undoLabel = stepLabel;
     refreshWheel();
-    refreshSliders();
-    refreshFields(false);
+    refreshLines(false);
     Q_EMIT q->valuesEdited(value, ColorAdjustPanel::eGesturePhaseMove, undoLabel);
 }
 
@@ -868,6 +741,7 @@ ColorAdjustPanelPrivate::endGesture()
     bool wasStarted = started;
 
     source = eSourceNone;
+    activeSlider = -1;
     started = false;
     hasTotal = false;
     totalReplaces = false;
@@ -882,7 +756,7 @@ ColorAdjustPanelPrivate::oneShot(const KnobColorValue& newValue,
                                  const QString& stepLabel)
 {
     if (sameValue(newValue, value)) {
-        refreshFields(false);
+        refreshLines(false);
 
         return;
     }
@@ -896,25 +770,6 @@ ColorAdjustPanelPrivate::oneShot(const KnobColorValue& newValue,
     endGesture();
 }
 
-void
-ColorAdjustPanelPrivate::savePalette()
-{
-    QSettings settings(QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME));
-
-    settings.beginGroup(QString::fromUtf8(COLOR_SELECTOR_PALETTE_SETTINGS));
-    for (std::size_t i = 0; i < palette.size(); ++i) {
-        float r, g, b, a;
-
-        palette[i]->getColor(&r, &g, &b, &a);
-
-        QStringList values;
-
-        values << QString::number(r) << QString::number(g) << QString::number(b) << QString::number(a);
-        settings.setValue(QString::number((int)i), values);
-    }
-    settings.endGroup();
-}
-
 ColorAdjustPanel::ColorAdjustPanel(QWidget* parent)
     : QWidget(parent)
     , _imp(new ColorAdjustPanelPrivate(this))
@@ -922,46 +777,27 @@ ColorAdjustPanel::ColorAdjustPanel(QWidget* parent)
     QVBoxLayout* layout = new QVBoxLayout(this);
 
     layout->setContentsMargins(0, 0, 0, 0);
-
-    _imp->tabs = new QTabWidget(this);
-    _imp->buildWheelTab();
-    _imp->buildValuesTab();
-    _imp->tabs->addTab(_imp->wheelTab, tr("Wheel"));
-    _imp->tabs->addTab(_imp->valuesTab, tr("Values"));
-    layout->addWidget(_imp->tabs);
+    _imp->buildEditArea();
+    layout->addWidget(_imp->editArea);
 
     QObject::connect(_imp->wheel, &ColorWheelWidget::gestureStarted, this, &ColorAdjustPanel::onWheelGestureStarted);
     QObject::connect(_imp->wheel, &ColorWheelWidget::gestureMoved, this, &ColorAdjustPanel::onWheelGestureMoved);
     QObject::connect(_imp->wheel, &ColorWheelWidget::gestureFinished, this, &ColorAdjustPanel::onWheelGestureFinished);
-    for (int i = 0; i < kSliderCount; ++i) {
-        ColorEditSlider* s = _imp->sliders[i];
+    for (int i = 0; i < kLineCount; ++i) {
+        ScaleSliderQWidget* s = _imp->sliders[i];
 
-        QObject::connect(s, &ColorEditSlider::gestureStarted, this, &ColorAdjustPanel::onSliderGestureStarted);
-        QObject::connect(s, &ColorEditSlider::gestureMoved, this, &ColorAdjustPanel::onSliderGestureMoved);
-        QObject::connect(s, &ColorEditSlider::gestureFinished, this, &ColorAdjustPanel::onSliderGestureFinished);
-        QObject::connect(s, &ColorEditSlider::resetRequested, this, &ColorAdjustPanel::onSliderResetRequested);
+        QObject::connect(s, &ScaleSliderQWidget::positionChanged, this, &ColorAdjustPanel::onSliderPositionChanged);
+        QObject::connect(s, &ScaleSliderQWidget::editingFinished, this, &ColorAdjustPanel::onSliderEditingFinished);
+        QObject::connect(s, &ScaleSliderQWidget::resetToDefaultRequested, this, &ColorAdjustPanel::onSliderResetRequested);
+        QObject::connect(_imp->spinBoxes[i], &SpinBox::valueChanged, this, &ColorAdjustPanel::onSpinBoxValueChanged);
     }
-    for (int f = 0; f < kFieldCount; ++f) {
-        if (f == eValueFieldHex) {
-            QObject::connect(_imp->fields[f], &LineEdit::returnPressed, this, &ColorAdjustPanel::onHexCommitted);
-        } else {
-            QObject::connect(_imp->fields[f], &LineEdit::returnPressed, this, &ColorAdjustPanel::onValueFieldCommitted);
-        }
-    }
-    for (std::size_t i = 0; i < _imp->palette.size(); ++i) {
-        QObject::connect(_imp->palette[i], &ColorSelectorPaletteButton::colorPicked, this, &ColorAdjustPanel::onPaletteColorPicked);
-    }
-    QObject::connect(_imp->paletteAddButton, &Button::clicked, this, &ColorAdjustPanel::addCurrentColorToPalette);
-    QObject::connect(_imp->paletteClearButton, &Button::clicked, this, &ColorAdjustPanel::clearPalette);
-    QObject::connect(_imp->tabs, &QTabWidget::currentChanged, this, &ColorAdjustPanel::onTabChanged);
 
     _imp->wheel->setBasis(_imp->basis);
     _imp->wheel->setRole(_imp->role);
-    _imp->applySliderRates();
+    _imp->applyRanges();
     _imp->applyDimensions();
     _imp->updateRememberedHue();
     _imp->refreshAll(false);
-    reloadPalette();
 }
 
 ColorAdjustPanel::~ColorAdjustPanel()
@@ -983,7 +819,7 @@ ColorAdjustPanel::setKnobValue(const KnobColorValue& value,
     _imp->applyDimensions();
     _imp->role = role;
     _imp->wheel->setRole(role);
-    _imp->applySliderRates();
+    _imp->applyRanges();
     setKnobValue(value);
 }
 
@@ -1013,7 +849,7 @@ ColorAdjustPanel::setRole(ColorKnobRoleEnum role)
     }
     _imp->role = role;
     _imp->wheel->setRole(role);
-    _imp->applySliderRates();
+    _imp->applyRanges();
     if (!isEditing()) {
         _imp->updateRememberedHue();
         _imp->refreshAll(true);
@@ -1036,17 +872,13 @@ ColorAdjustPanel::setDisplayConverter(const DisplayConverter& converter)
 {
     _imp->converter = converter;
     _imp->wheel->setDisplayConverter(converter);
-    _imp->refreshSliders();
+    _imp->refreshGradients();
 }
 
 void
-ColorAdjustPanel::setColorManagement(const ProjectColorManagementPtr& colorManagement)
+ColorAdjustPanel::setRightInset(int pixels)
 {
-    _imp->colorManagement = colorManagement;
-    for (std::size_t i = 0; i < _imp->palette.size(); ++i) {
-        _imp->palette[i]->setColorManagement(colorManagement);
-    }
-    _imp->refreshFields(true);
+    _imp->linesLayout->setContentsMargins(0, 0, std::max(0, pixels), 0);
 }
 
 const KnobColorValue&
@@ -1085,22 +917,10 @@ ColorAdjustPanel::isEditing() const
     return _imp->source != ColorAdjustPanelPrivate::eSourceNone;
 }
 
-QTabWidget*
-ColorAdjustPanel::getTabWidget() const
-{
-    return _imp->tabs;
-}
-
 QWidget*
-ColorAdjustPanel::getWheelTab() const
+ColorAdjustPanel::getEditArea() const
 {
-    return _imp->wheelTab;
-}
-
-QWidget*
-ColorAdjustPanel::getValuesTab() const
-{
-    return _imp->valuesTab;
+    return _imp->editArea;
 }
 
 ColorWheelWidget*
@@ -1109,11 +929,11 @@ ColorAdjustPanel::getWheel() const
     return _imp->wheel;
 }
 
-ColorEditSlider*
+ScaleSliderQWidget*
 ColorAdjustPanel::getSlider(ColorSliderKindEnum kind) const
 {
-    for (int i = 0; i < kSliderCount; ++i) {
-        if (kSliderKinds[i] == kind) {
+    for (int i = 0; i < kLineCount; ++i) {
+        if (kLineKinds[i] == kind) {
             return _imp->sliders[i];
         }
     }
@@ -1121,156 +941,16 @@ ColorAdjustPanel::getSlider(ColorSliderKindEnum kind) const
     return nullptr;
 }
 
-LineEdit*
-ColorAdjustPanel::getValueField(ValueFieldEnum field) const
+SpinBox*
+ColorAdjustPanel::getSpinBox(ColorSliderKindEnum kind) const
 {
-    int f = (int)field;
-
-    return (f >= 0 && f < kFieldCount) ? _imp->fields[f] : nullptr;
-}
-
-int
-ColorAdjustPanel::getPaletteButtonCount() const
-{
-    return (int)_imp->palette.size();
-}
-
-ColorSelectorPaletteButton*
-ColorAdjustPanel::getPaletteButton(int index) const
-{
-    return (index >= 0 && index < (int)_imp->palette.size()) ? _imp->palette[index] : nullptr;
-}
-
-void
-ColorAdjustPanel::rgbToHsv(const double rgb[3],
-                           double hsv[3])
-{
-    double mx = std::max(rgb[0], std::max(rgb[1], rgb[2]));
-    double mn = std::min(rgb[0], std::min(rgb[1], rgb[2]));
-    double d = mx - mn;
-    double h = 0.0;
-
-    if (d > 0.0) {
-        if (mx == rgb[0]) {
-            h = (rgb[1] - rgb[2]) / d;
-        } else if (mx == rgb[1]) {
-            h = 2.0 + (rgb[2] - rgb[0]) / d;
-        } else {
-            h = 4.0 + (rgb[0] - rgb[1]) / d;
-        }
-        h = wrapDegrees(60.0 * h);
-    }
-    hsv[0] = h;
-    hsv[1] = (mx != 0.0) ? d / mx : 0.0;
-    hsv[2] = mx;
-}
-
-void
-ColorAdjustPanel::hsvToRgb(const double hsv[3],
-                           double rgb[3])
-{
-    double h = wrapDegrees(hsv[0]) / 60.0;
-    double c = hsv[2] * hsv[1];
-    double m = hsv[2] - c;
-    double x = c * (1.0 - std::fabs(std::fmod(h, 2.0) - 1.0));
-    int sector = std::min(5, std::max(0, (int)std::floor(h)));
-    double r = 0.0;
-    double g = 0.0;
-    double b = 0.0;
-
-    switch (sector) {
-    case 0:
-        r = c;
-        g = x;
-        break;
-    case 1:
-        r = x;
-        g = c;
-        break;
-    case 2:
-        g = c;
-        b = x;
-        break;
-    case 3:
-        g = x;
-        b = c;
-        break;
-    case 4:
-        r = x;
-        b = c;
-        break;
-    default:
-        r = c;
-        b = x;
-        break;
-    }
-    rgb[0] = r + m;
-    rgb[1] = g + m;
-    rgb[2] = b + m;
-}
-
-void
-ColorAdjustPanel::addCurrentColorToPalette()
-{
-    std::vector<ColorSelectorPaletteButton*>& palette = _imp->palette;
-
-    if (palette.empty()) {
-        return;
-    }
-
-    // With every swatch in use the oldest one is overwritten, so adding never silently fails.
-    std::size_t target = 0;
-    bool full = true;
-
-    for (std::size_t i = 0; i < palette.size(); ++i) {
-        if (!palette[i]->isModified()) {
-            target = i;
-            full = false;
-            break;
+    for (int i = 0; i < kLineCount; ++i) {
+        if (kLineKinds[i] == kind) {
+            return _imp->spinBoxes[i];
         }
     }
-    if (full) {
-        for (std::size_t i = 0; i < palette.size(); ++i) {
-            palette[i]->clearModified();
-        }
-        target = 0;
-    }
 
-    const KnobColorValue& v = _imp->value;
-
-    palette[target]->setColor((float)v.rgb[0], (float)v.rgb[1], (float)v.rgb[2], v.hasAlpha ? (float)v.a : 1.f);
-    _imp->savePalette();
-}
-
-void
-ColorAdjustPanel::clearPalette()
-{
-    for (std::size_t i = 0; i < _imp->palette.size(); ++i) {
-        _imp->palette[i]->clearColor();
-    }
-    _imp->savePalette();
-}
-
-void
-ColorAdjustPanel::reloadPalette()
-{
-    QSettings settings(QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME));
-
-    settings.beginGroup(QString::fromUtf8(COLOR_SELECTOR_PALETTE_SETTINGS));
-    for (std::size_t i = 0; i < _imp->palette.size(); ++i) {
-        QVariant stored = settings.value(QString::number((int)i));
-
-        if (!stored.isValid()) {
-            continue;
-        }
-
-        QStringList values = stored.toStringList();
-
-        if (values.size() > 3) {
-            _imp->palette[i]->setColor(values.at(0).toFloat(), values.at(1).toFloat(), values.at(2).toFloat(), values.at(3).toFloat());
-        }
-    }
-    settings.endGroup();
+    return nullptr;
 }
 
 void
@@ -1299,66 +979,31 @@ ColorAdjustPanel::onWheelGestureFinished(bool /*moved*/)
 }
 
 void
-ColorAdjustPanel::onSliderGestureStarted()
-{
-    _imp->beginGesture(ColorAdjustPanelPrivate::eSourceSlider);
-}
-
-void
-ColorAdjustPanel::onSliderGestureMoved(double value,
-                                       bool absolute,
-                                       QString axisLabel)
+ColorAdjustPanel::onSliderPositionChanged(double value)
 {
     int index = _imp->sliderIndex(sender());
 
-    if ((index < 0) || (_imp->source != ColorAdjustPanelPrivate::eSourceSlider)) {
+    if (index < 0) {
         return;
     }
+    if ((_imp->source != ColorAdjustPanelPrivate::eSourceSlider) || (_imp->activeSlider != index)) {
+        _imp->beginGesture(ColorAdjustPanelPrivate::eSourceSlider);
+        _imp->activeSlider = index;
+    }
 
-    ColorSliderKindEnum kind = kSliderKinds[index];
-    ColorEdit edit = makeEdit(eColorAxisValue, value, 0.0, absolute);
+    ColorSliderKindEnum kind = kLineKinds[index];
     bool replaces = false;
+    ColorEdit edit = _imp->lineEdit(kind, value, _imp->segmentBase, &replaces);
 
-    switch (kind) {
-    case eColorSliderKindHue:
-        edit.axis = eColorAxisHue;
-        break;
-    case eColorSliderKindSat:
-        edit.axis = eColorAxisSat;
-        break;
-    case eColorSliderKindValue:
-        edit.axis = eColorAxisValue;
-        break;
-    case eColorSliderKindAlpha:
-        edit.axis = eColorAxisAlpha;
-        break;
-    case eColorSliderKindTemp:
-    case eColorSliderKindTint: {
-        bool isTemp = kind == eColorSliderKindTemp;
-        double d = value;
-
-        // An absolute target becomes a total nudge from the gesture's base: it reaches the
-        // target exactly wherever the locus is defined, keeps the other axis where it was, and
-        // still moves along the linear axes where an absolute fromTempTint would refuse.
-        if (absolute) {
-            TempTintResult base = toTempTint(_imp->role, _imp->basis, _imp->segmentBase);
-            double from = base.valid ? (isTemp ? base.temp : base.tint) : 0.0;
-
-            d = value - from;
-            replaces = true;
-        }
-        edit = makeEdit(eColorAxisTempTint, isTemp ? d : 0.0, isTemp ? 0.0 : d, false);
-        break;
-    }
-    }
-
-    _imp->step(edit, replaces, axisLabel);
+    _imp->step(edit, replaces, tr("%1 slider").arg(lineUndoName(kind)));
 }
 
 void
-ColorAdjustPanel::onSliderGestureFinished(bool /*moved*/)
+ColorAdjustPanel::onSliderEditingFinished(bool /*hasMovedOnce*/)
 {
-    if (_imp->source != ColorAdjustPanelPrivate::eSourceSlider) {
+    int index = _imp->sliderIndex(sender());
+
+    if ((_imp->source != ColorAdjustPanelPrivate::eSourceSlider) || (index != _imp->activeSlider)) {
         return;
     }
     _imp->endGesture();
@@ -1373,13 +1018,14 @@ ColorAdjustPanel::onSliderResetRequested()
         return;
     }
 
-    ColorSliderKindEnum kind = kSliderKinds[index];
+    ColorSliderKindEnum kind = kLineKinds[index];
     const KnobColorValue& v = _imp->value;
     ColorKnobRoleEnum role = _imp->role;
     ColorEdit edit = makeEdit(eColorAxisSat, 0.0, 0.0, true);
 
     switch (kind) {
     case eColorSliderKindHue:
+    case eColorSliderKindAlpha:
         return;
     case eColorSliderKindSat:
         break;
@@ -1405,168 +1051,42 @@ ColorAdjustPanel::onSliderResetRequested()
                         false);
         break;
     }
-    case eColorSliderKindAlpha:
-        if (!v.hasAlpha) {
-            return;
-        }
-        edit = makeEdit(eColorAxisAlpha, (role == eColorKnobRoleOffset) ? 0.0 : 1.0, 0.0, true);
-        break;
     }
 
     ChromaEditResult r = applyEdit(role, _imp->basis, v, edit, _imp->rememberedHue);
 
     if (r.valid) {
-        _imp->oneShot(r.value, tr("reset %1").arg(sliderTitle(kind).toLower()));
+        _imp->oneShot(r.value, tr("reset %1").arg(lineUndoName(kind)));
     }
 }
 
 void
-ColorAdjustPanel::onValueFieldCommitted()
+ColorAdjustPanel::onSpinBoxValueChanged(double value)
 {
-    int f = _imp->fieldIndex(sender());
+    int index = _imp->spinBoxIndex(sender());
 
-    if ((f < 0) || (f == eValueFieldHex) || isEditing()) {
+    if ((index < 0) || isEditing()) {
         return;
     }
 
-    bool ok = false;
-    double typed = _imp->fields[f]->text().toDouble(&ok);
+    ColorSliderKindEnum kind = kLineKinds[index];
 
-    if (!ok || !std::isfinite(typed)) {
-        _imp->refreshFields(false);
-
-        return;
-    }
-
-    const KnobColorValue& v = _imp->value;
-    KnobColorValue out = v;
-    QString label = fieldUndoLabel(f);
-
-    switch (f) {
-    case eValueFieldR:
-    case eValueFieldG:
-    case eValueFieldB:
-        if (_imp->nDims == 1) {
-            out.rgb[0] = out.rgb[1] = out.rgb[2] = typed;
-            label = tr("typed value");
-        } else {
-            out.rgb[f - eValueFieldR] = typed;
-        }
-        break;
-    case eValueFieldA:
-        if (!v.hasAlpha) {
-            _imp->refreshFields(false);
-
-            return;
-        }
-        out.a = typed;
-        break;
-    case eValueFieldH:
-    case eValueFieldS: {
-        double hsv[3];
-
-        rgbToHsv(v.rgb, hsv);
-        hsv[(f == eValueFieldH) ? 0 : 1] = typed;
-        hsvToRgb(hsv, out.rgb);
-        break;
-    }
-    case eValueFieldV: {
-        double hsv[3];
-
-        rgbToHsv(v.rgb, hsv);
-
-        double v0 = hsv[2];
-        double y0 = luma(_imp->basis, v.rgb);
-
-        if (v0 != 0.0) {
-            for (int i = 0; i < 3; ++i) {
-                out.rgb[i] = v.rgb[i] * (typed / v0);
-            }
-        } else {
-            out.rgb[0] = out.rgb[1] = out.rgb[2] = typed;
-        }
-
-        // A V-only commit is a value edit, so alpha tracks luma the way a Value slider drag
-        // makes it: scaled with a ratio role's rgb, shifted by the luma change otherwise.
-        if (out.hasAlpha) {
-            if ((v0 != 0.0) && isRatioRole(_imp->role)) {
-                out.a = v.a * (typed / v0);
-            } else {
-                out.a = v.a + (luma(_imp->basis, out.rgb) - y0);
-            }
-        }
-        break;
-    }
-    default:
-        return;
-    }
-
-    _imp->oneShot(out, label);
-}
-
-void
-ColorAdjustPanel::onHexCommitted()
-{
-    if (isEditing()) {
-        return;
-    }
-
-    QString text = _imp->fields[eValueFieldHex]->text().trimmed();
-
-    if (!text.startsWith(QLatin1Char('#'))) {
-        text.prepend(QLatin1Char('#'));
-    }
-
-    QColor color = QColor::fromString(text);
-
-    if (!color.isValid()) {
-        _imp->refreshFields(false);
+    // Return re-commits whatever the field shows, which is the current value rounded for
+    // display; applying that would nudge the colour by the rounding, so it is a no-op.
+    if (!std::isfinite(value) || (value == roundToDecimals(_imp->lineValue(kind), lineDecimals(kind, _imp->role)))) {
+        _imp->refreshLines(false);
 
         return;
     }
 
-    float rgb[3] = { (float)color.redF(), (float)color.greenF(), (float)color.blueF() };
+    bool replaces = false;
+    ColorEdit edit = _imp->lineEdit(kind, value, _imp->value, &replaces);
 
-    if (_imp->colorManagement) {
-        _imp->colorManagement->colorPickingToWorking(&rgb[0], &rgb[1], &rgb[2]);
-    }
-
-    KnobColorValue out = _imp->value;
-
-    for (int i = 0; i < 3; ++i) {
-        out.rgb[i] = rgb[i];
-    }
-    _imp->oneShot(out, fieldUndoLabel(eValueFieldHex));
-}
-
-void
-ColorAdjustPanel::onPaletteColorPicked(float r,
-                                       float g,
-                                       float b,
-                                       float a)
-{
-    if (isEditing()) {
-        return;
-    }
-
-    KnobColorValue out = _imp->value;
-
-    out.rgb[0] = r;
-    out.rgb[1] = g;
-    out.rgb[2] = b;
-    if (out.hasAlpha) {
-        out.a = a;
-    }
-    _imp->oneShot(out, tr("palette colour"));
-}
-
-void
-ColorAdjustPanel::onTabChanged(int index)
-{
-    if (_imp->tabs->widget(index) == _imp->valuesTab) {
-        reloadPalette();
-        _imp->refreshFields(true);
-    }
+    // Through a one-step gesture rather than oneShot, so a hue typed on a neutral value is
+    // still remembered for the next saturation edit even though the colour itself is unchanged.
+    _imp->beginGesture(ColorAdjustPanelPrivate::eSourceOneShot);
+    _imp->step(edit, replaces, tr("typed %1").arg(lineUndoName(kind)));
+    _imp->endGesture();
 }
 
 NATRON_NAMESPACE_EXIT

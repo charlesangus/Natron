@@ -602,7 +602,10 @@ ProgressTaskInfo::updateProgressBar(double totalProgress,
         }
     }
 
-    if (!_imp->updatedProgressOnce && _imp->statusItem) {
+    // A frame's progress can arrive after cancelTask() already set the final status (the engine
+    // reports across threads, so this can lag behind the cancel); without this check it would
+    // overwrite Paused/Canceled with Running and nothing afterward ever corrects it.
+    if (!_imp->updatedProgressOnce && _imp->statusItem && !wasCanceled()) {
         _imp->updatedProgressOnce = true;
         _imp->statusItem->setTextColor(Qt::green);
         _imp->status = eProgressTaskStatusRunning;

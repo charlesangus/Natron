@@ -34,6 +34,7 @@ import glob
 import os
 import re
 import sys
+import time
 import traceback
 
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
@@ -833,10 +834,17 @@ try:
         check(len(cancel_files) < CANCEL_FRAMES,
              "render-foreground-cancel: fewer than %d frames were written (got %d)"
              % (CANCEL_FRAMES, len(cancel_files)))
+        # The panel's status cell is set from cancelTask(), a direct call from the Cancel click, but
+        # a frame-progress report already in flight on the render thread can be delivered right
+        # after and can race it; poll briefly rather than reading the cell exactly once.
+        wait_start = time.time()
+        row_canceled = yield ("until",
+                              lambda: any(s in ("Paused", "Canceled") for s in progress_panel_status_texts()),
+                              10.0)
         statuses = progress_panel_status_texts()
-        report("NOTE render-foreground-cancel: Progress panel status text(s) seen: %r" % statuses)
-        check(any(s in ("Paused", "Canceled") for s in statuses),
-             "render-foreground-cancel: the Progress panel shows Paused or Canceled")
+        report("NOTE render-foreground-cancel: Progress panel status text(s) seen: %r (waited %.2fs)"
+              % (statuses, time.time() - wait_start))
+        check(row_canceled, "render-foreground-cancel: the Progress panel shows Paused or Canceled")
         gt.shot("render-foreground-cancel-panel.png")
 
         # ---- render-foreground-separate-process: the same small foreground render with

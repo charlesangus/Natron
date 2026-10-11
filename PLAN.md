@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: [M44 PR #51 review fixes, M55.P4.T1, M76.P2.T13, M27.P1.T1, M93.P1.T1]
-pm_heartbeat: 2026-10-11T05:28:18-04:00
+current: [M44 PR #51 fixes build, M55 end build fix, M76.P2.T13, M27.P1.T1, M93.P1.T1]
+pm_heartbeat: 2026-10-11T05:32:29-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -259,13 +259,13 @@ future core work has solid ground to build on.
 | M27 | Real Debug Build | doing | - | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
 | M22 | Missing Plugin Placeholder | todo | M75 | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |
 | M31 | Architectural Cleanup | todo | M75, M76 | [M31-architectural-cleanup.md](PLAN/MILESTONES/M31-architectural-cleanup.md) |
-| M69 | Minor Cleanup | todo | M75 | [M69-minor-cleanup.md](PLAN/MILESTONES/M69-minor-cleanup.md) |
+| M69 | Minor Cleanup | todo | M44, M55 | [M69-minor-cleanup.md](PLAN/MILESTONES/M69-minor-cleanup.md) |
 | M24 | Node Graph Category Colour | done | - | [M24-node-graph-category-colour.md](PLAN/MILESTONES/M24-node-graph-category-colour.md) |
 | M44 | Trackball Colour Editing | doing | - | [M44-trackball-colour-editing.md](PLAN/MILESTONES/M44-trackball-colour-editing.md) |
 | M55 | Node Graph Polish | doing | M24 | [M55-polish-node-graph-interaction.md](PLAN/MILESTONES/M55-polish-node-graph-interaction.md) |
-| M46 | Labelmaker Annotations | todo |  | [M46-labelmaker-annotations.md](PLAN/MILESTONES/M46-labelmaker-annotations.md) |
-| M56 | Visual And Menu Polish | todo | M24 | [M56-polish-visual-and-menus.md](PLAN/MILESTONES/M56-polish-visual-and-menus.md) |
-| M45 | Native Tab Menu | todo |  | [M45-tabtabtab-native-tab-menu.md](PLAN/MILESTONES/M45-tabtabtab-native-tab-menu.md) |
+| M46 | Labelmaker Annotations | todo | M56 | [M46-labelmaker-annotations.md](PLAN/MILESTONES/M46-labelmaker-annotations.md) |
+| M56 | Visual And Menu Polish | todo | M44, M55 | [M56-polish-visual-and-menus.md](PLAN/MILESTONES/M56-polish-visual-and-menus.md) |
+| M45 | Native Tab Menu | todo | M55 | [M45-tabtabtab-native-tab-menu.md](PLAN/MILESTONES/M45-tabtabtab-native-tab-menu.md) |
 | M25 | GL Init FP Guard | todo |  | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
 | M29 | Independent Repository | todo |  | [M29-independent-repository.md](PLAN/MILESTONES/M29-independent-repository.md) |
 | M68 | Headless GL EGL | todo |  | [M68-headless-gl-egl-backend.md](PLAN/MILESTONES/M68-headless-gl-egl-backend.md) |
@@ -283,6 +283,8 @@ future core work has solid ground to build on.
 | M71 | RFV Render Context | todo |  | [M71-rfv-render-context.md](PLAN/MILESTONES/M71-rfv-render-context.md) |
 | M72 | RFV Integration And UAT | todo |  | [M72-rfv-integration-and-uat.md](PLAN/MILESTONES/M72-rfv-integration-and-uat.md) |
 | M92 | Linked Nodes | todo | M24 | [M92-linked-nodes.md](PLAN/MILESTONES/M92-linked-nodes.md) |
+| M95 | Knob Cleanup And Keyer Redesign | todo | M69, M76 | [M95-knob-cleanup-and-keyer-redesign.md](PLAN/MILESTONES/M95-knob-cleanup-and-keyer-redesign.md) |
+| M96 | Weighted Curve Tangents | todo | M93 | [M96-weighted-curve-tangents.md](PLAN/MILESTONES/M96-weighted-curve-tangents.md) |
 | M94 | Delete Unused Maintainer Skill | todo | - | [M94-delete-unused-maintainer-skill.md](PLAN/MILESTONES/M94-delete-unused-maintainer-skill.md) |
 
 - 2026-09-18 — **M18's manual GUI checklist: all 6 items now confirmed**

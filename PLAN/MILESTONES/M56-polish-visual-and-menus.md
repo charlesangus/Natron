@@ -228,7 +228,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - verify: at the gate build, P1.T1's density shots match the approved mockups. A user stylesheet set in Preferences still loads.
   - size: M
 
-- [ ] M56.P6.T3 — Apply the spec to the properties panel layout
+- [x] M56.P6.T3 — Apply the spec to the properties panel layout
   - files: `Gui/DockablePanel.cpp`, `Gui/DockablePanelPrivate.cpp`, `Gui/KnobGuiContainerHelper.cpp`
   - approach: Replace the hard-coded spacing and margins with the spec's values (as `GuiDefines.h`-style constants with `TO_DPIX`, kept local to these files). `KnobGuiContainerHelper.cpp` carries M44 edits; change only the margin and spacing literals.
   - verify: at the gate build, the Grade and Merge panel shots match the mockup, and P1.T1's labels alignment check still passes.

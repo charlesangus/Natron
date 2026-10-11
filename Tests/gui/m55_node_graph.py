@@ -1,7 +1,7 @@
 """Screenshot and interaction checks for node-graph splicing and the render dialog: splice-into-
-pipe (always on, unconnected nodes and chains only, insertion marker, one undo step) and the
-render dialog (writers, frame-range preset, background checkbox, modal foreground progress with
-Cancel).
+pipe (always on, unconnected nodes and chains only, highlighted target pipe, one undo step) and
+the render dialog (writers, frame-range preset, background checkbox, modal foreground progress
+with Cancel).
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
     docker exec natron-dev bash -c 'cd /home/bosley/git/Natron && \
@@ -153,13 +153,12 @@ try:
         path = os.path.join(gt.OUT, name + ".png")
         report(("SHOT " if pix.save(path) else "NOTE could not save ") + path)
 
-    # ---- green-pixel probe for the splice marker / highlighted pipe / hint edges ---------------
-    # Edge::paint draws a highlighted pipe in plain Qt::green, and NodeGraph.cpp's _spliceMarker
-    # is filled with QColor(0, 255, 0) (also plain green) with a dark outline. None of this
-    # script's own node bodies, selection halos (white) or category tints are pure green, so "is
-    # there a green pixel in roughly this area" is a safe, cheap stand-in for "is the hint/marker
-    # drawn here" without needing scene() (broken in this binary, see the module docstring) or
-    # any new Python binding.
+    # ---- green-pixel probe for the highlighted pipe / hint edges ---------------------------------
+    # Edge::paint draws a highlighted pipe, and the splice hint edges, in plain Qt::green. None of
+    # this script's own node bodies, selection halos (white) or category tints are pure green, so
+    # "is there a green pixel in roughly this area" is a safe, cheap stand-in for "is the hint/
+    # highlight drawn here" without needing scene() (broken in this binary, see the module
+    # docstring) or any new Python binding.
 
     def is_green(c):
         return (c.green() >= GREEN_G_MIN) and (c.red() <= GREEN_R_MAX) and (c.blue() <= GREEN_B_MAX)
@@ -190,9 +189,9 @@ try:
         hits = count_green_in_scene_rect(graph, img, rect_scene)
         report("NOTE %s: %d green px sampled" % (label, hits))
         if want_present:
-            return check(hits > 0, "%s: a green hint/marker pixel is drawn" % label)
+            return check(hits > 0, "%s: a green hint/highlight pixel is drawn" % label)
         else:
-            return check(hits == 0, "%s: no green hint/marker pixel is drawn (got %d)" % (label, hits))
+            return check(hits == 0, "%s: no green hint/highlight pixel is drawn (got %d)" % (label, hits))
 
     # ---- synthetic drag, press/move*3+/release on the NodeGraph viewport ----------------------
 
@@ -413,7 +412,7 @@ try:
         # meaning during the drag (it no longer suppresses splicing in favour of a hint).
         # =====================================================================================
 
-        # ---- splice-vertical: hover-with-marker, drop, and a single-node one-step undo/redo.
+        # ---- splice-vertical: hover-with-highlight, drop, and a single-node one-step undo/redo.
         gt.section("splice-vertical")
         src_v = create("net.sf.openfx.ConstantPlugin", 0, 0)
         dst_v = create("net.sf.cimg.CImgBlur", 0, 300)
@@ -431,10 +430,10 @@ try:
 
         def mid_check_v(_pos):
             graph_shot(graph_v, "splice-01-hover-vertical")
-            check_green_present(graph_v, pipe_rect_v, "splice-vertical: hover shows the marker/highlight")
+            check_green_present(graph_v, pipe_rect_v, "splice-vertical: hover shows the highlight")
 
-        # The marker sits below node bodies, so the node is dropped just beside the pipe (still
-        # inside the splice tolerance) to leave the marker in view.
+        # The highlighted pipe sits below node bodies, so the node is dropped just beside the pipe
+        # (still inside the splice tolerance) to leave the highlight in view.
         beside_v = box(mover_v)[2] / 2.0 + 9.0
         target_v = (node_center_scene(src_v)[0] + beside_v,
                     (node_center_scene(src_v)[1] + node_center_scene(dst_v)[1]) / 2.0)
@@ -471,7 +470,7 @@ try:
              "splice-vertical: redo also re-applies the destination's connection")
         graph_shot(graph_v, "splice-02b-after-redo-vertical")
 
-        # ---- splice-diagonal: the same hover-with-marker check over a diagonal pipe.
+        # ---- splice-diagonal: the same hover-with-highlight check over a diagonal pipe.
         gt.section("splice-diagonal")
         src_d = create("net.sf.openfx.ConstantPlugin", 900, 0)
         dst_d = create("net.sf.cimg.CImgBlur", 1250, 350)
@@ -486,7 +485,8 @@ try:
 
         pipe_rect_d = (900.0, 0.0, 1300.0, 400.0)
         # Off the pipe along its normal, by enough that the node's corner still grazes the pipe
-        # while the closest point on the pipe (where the marker sits) is clear of the node body.
+        # while the closest point on the pipe (where the highlight is sampled) is clear of the
+        # node body.
         sdx = node_center_scene(dst_d)[0] - node_center_scene(src_d)[0]
         sdy = node_center_scene(dst_d)[1] - node_center_scene(src_d)[1]
         slen = (sdx * sdx + sdy * sdy) ** 0.5
@@ -496,7 +496,7 @@ try:
                     (node_center_scene(src_d)[1] + node_center_scene(dst_d)[1]) / 2.0 + ny * off_d)
         drag_node_to(graph_d, mover_d, target_d, modifiers=Qt.NoModifier, release=False)
         graph_shot(graph_d, "splice-03-hover-diagonal")
-        check_green_present(graph_d, pipe_rect_d, "splice-diagonal: hover shows the marker/highlight")
+        check_green_present(graph_d, pipe_rect_d, "splice-diagonal: hover shows the highlight")
         end_drag(graph_d, target_d)
         yield ("sleep", SETTLE_MS)
         graph_shot(graph_d, "splice-04-after-drop-diagonal")
@@ -586,7 +586,7 @@ try:
         drag_node_to(graph_n, mid_n, target_n, modifiers=Qt.NoModifier, release=False)
         graph_shot(graph_n, "splice-07-connected-node-no-splice-hover")
         check_green_present(graph_n, pipe_rect_n2, "no-splice: an already-connected node dragged over a pipe "
-                            "shows no marker/highlight", want_present=False)
+                            "shows no highlight", want_present=False)
         end_drag(graph_n, target_n)
         yield ("sleep", SETTLE_MS)
         check(input_connected_from(mid_n, src_n1) is not None,
@@ -616,7 +616,7 @@ try:
         drag_node_to(graph_ctrl, mover_ctrl, target_ctrl, modifiers=Qt.ControlModifier, release=False)
         graph_shot(graph_ctrl, "splice-08-ctrl-still-splices")
         check_green_present(graph_ctrl, pipe_rect_ctrl,
-                            "ctrl-still-splices: holding Ctrl still shows the splice marker/highlight")
+                            "ctrl-still-splices: holding Ctrl still shows the splice highlight")
         end_drag(graph_ctrl, target_ctrl)
         yield ("sleep", SETTLE_MS)
 

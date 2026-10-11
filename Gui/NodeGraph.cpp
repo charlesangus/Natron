@@ -157,14 +157,6 @@ NodeGraph::NodeGraph(Gui* gui,
     _imp->_hintOutputEdge->setDefaultColor( QColor(0, 255, 0, 100) );
     _imp->_hintOutputEdge->hide();
 
-    // Above every node item (bodies sit at z 20, their topmost decorations around z 23), so
-    // dropping a node centred on the highlighted pipe doesn't hide the marker underneath it.
-    _imp->_spliceMarker = new QGraphicsPathItem(_imp->_nodeRoot);
-    _imp->_spliceMarker->setZValue(25);
-    _imp->_spliceMarker->setPen(QPen(QColor(20, 40, 20), 1.5));
-    _imp->_spliceMarker->setBrush(QColor(0, 255, 0));
-    _imp->_spliceMarker->hide();
-
     _imp->_tL = new NodeGraphTextItem(this, 0, false);
     _imp->_tL->setFlag(QGraphicsItem::ItemIgnoresTransformations);
     scene->addItem(_imp->_tL);
@@ -222,13 +214,6 @@ NodeGraph::~NodeGraph()
         }
         _imp->_hintOutputEdge->setParentItem(NULL);
         delete _imp->_hintOutputEdge;
-
-        scene = _imp->_spliceMarker->scene();
-        if (scene) {
-            scene->removeItem(_imp->_spliceMarker);
-        }
-        _imp->_spliceMarker->setParentItem(NULL);
-        delete _imp->_spliceMarker;
     }
 
     QObject::disconnect( &_imp->_refreshCacheTextTimer, SIGNAL(timeout()), this, SLOT(updateCacheSizeText()) );

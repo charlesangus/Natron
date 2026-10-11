@@ -39,7 +39,6 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QColor>
 #include <QGraphicsItem>
 #include <QGraphicsLineItem>
-#include <QGraphicsPathItem>
 #include <QGraphicsPixmapItem>
 #include <QMutex>
 #include <QPainter>
@@ -197,8 +196,6 @@ public:
     NodeGuiPtr _spliceExit;
     Edge* _splicePipe = nullptr;
 
-    // Kept separate from Edge so Edge::paint doesn't need to know about the splice plan.
-    QGraphicsPathItem* _spliceMarker = nullptr;
     NodeGuiPtr _backdropResized; //< the backdrop being resized
     NodesGuiList _selection;
 

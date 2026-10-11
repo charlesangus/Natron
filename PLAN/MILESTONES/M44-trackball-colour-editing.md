@@ -361,7 +361,7 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
 
 ## Phase 44.6: GUI evidence and user UAT
 
-- [ ] M44.P6.T1 — Write the M44 GUI evidence script and capture the screenshot set
+- [x] M44.P6.T1 — Write the M44 GUI evidence script and capture the screenshot set
   - files: `build/m44-gui/m44_trackball.py` (new, untracked scratch, not committed)
   - approach:
     - Use the `Tests/gui/guitest.py` helpers (`run`, `check`, `shot`, `viewer_centre_colour`).
@@ -454,3 +454,6 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
 - 2026-10-10 — **P3.T4 for UAT:** the slider ranges and the per-pixel rates disagree for Offset temp/tint. The range is ±50 while the rate is 7e-4/px, so the marker barely moves. Retune the ranges or the rates in `TrackballRates`/`sliderMapping` after the user tries it. The panel's signal is `valuesEdited(value, Start|Move|End, undoLabel)`.
 - 2026-10-10 — **P4.T2:** colour knobs that share a row with other knobs never get the below-row hook (P4.T1's rule), so they keep the old popup, as simplified and viewer colour knobs do. Confirm this at UAT. `Gui/ColorKnobEditSession.cpp` is new, so the end build must re-run cmake.
 - 2026-10-10 — **P5.T2:** Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y in global mode call the target panel's own undo and redo between strokes, and are swallowed mid-stroke. They are not passed through to the app, because the Edit menu's active undo stack can follow the hovered node graph instead of the knob's panel. Near a screen edge the cursor warps back to the centre; this does nothing on Wayland.
+- 2026-10-10 — **End build and verification:** the single end build compiled first try. The first test pass had 10 failures out of 182, and the GUI script stalled because Natron crashed building any colour knob panel (`setProperty` on a null `containerLayout->widget()`). Fixed in the verify commit, along with two latent `KnobUndoCommand` bugs: a "no change" result was treated as a keyframe change, and `undo()` swapped the added/modified keyframe codes. Now 182/182 ctest pass and the GUI script reports 121 PASS, 0 FAIL, with 20 shots in `build/m44-gui/out/`.
+  - Open cosmetic issue, fixed before UAT: the adjust panel clips its slider captions and numeric fields.
+  - Known gaps: undo labels keep the node name from when the gesture was pushed, and the keyframe undo fix has no dedicated test.

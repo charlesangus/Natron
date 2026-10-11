@@ -50,6 +50,7 @@ GCC_DIAG_ON(unused-parameter)
 #endif
 
 #include "Serialization/KnobSerialization.h"
+#include "Serialization/NodeSerialization.h"
 #include "Serialization/RotoSerialization.h"
 #include "Serialization/TrackerSerialization.h"
 #include "Serialization/BoostXml/KnobXml.h"
@@ -91,6 +92,12 @@ public:
     ///Used to serialize
     explicit NodeSerialization(const NodePtr & n,
                       bool serializeInputs = true);
+
+    /**
+     * @brief Holds the same data as serialization, children included, so the restore code that
+     * takes this class can restore plain node data.
+     **/
+    explicit NodeSerialization(const Serialization::NodeSerialization& serialization);
 
     ////Used to deserialize
     NodeSerialization()

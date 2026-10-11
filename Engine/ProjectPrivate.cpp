@@ -117,13 +117,37 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
                                          const QString& path,
                                          bool* mustSave)
 {
+    return restoreFromSerializedData(obj.getCreationDate(),
+                                     obj.getAdditionalFormats(),
+                                     obj.getLayers(),
+                                     obj.getProjectKnobsValues(),
+                                     obj.getCurrentTime(),
+                                     obj.getNodesSerialization().getNodesSerialization(),
+                                     obj.getVersion() < PROJECT_SERIALIZATION_REMOVES_TIMELINE_BOUNDS,
+                                     name,
+                                     path,
+                                     mustSave);
+}
+
+bool
+ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
+                                          const std::list<Format>& serializedAdditionalFormats,
+                                          const std::list<LayerRegistryEntry>& serializedLayers,
+                                          const std::list<Serialization::KnobSerialization>& projectSerializedValues,
+                                          SequenceTime currentTime,
+                                          const std::list<NodeSerializationPtr>& serializedNodes,
+                                          bool recomputeFrameRangeFromReaders,
+                                          const QString& name,
+                                          const QString& path,
+                                          bool* mustSave)
+{
     /*1st OFF RESTORE THE PROJECT KNOBS*/
     bool ok;
     std::vector<std::string> linksErrors;
     {
         CreatingNodeTreeFlag_RAII creatingNodeTreeFlag( _publicInterface->getApp() );
 
-        projectCreationTime = QDateTime::fromMSecsSinceEpoch( obj.getCreationDate() );
+        projectCreationTime = QDateTime::fromMSecsSinceEpoch(creationDate);
 
         _publicInterface->getApp()->updateProjectLoadStatus( tr("Restoring project settings...") );
 
@@ -139,8 +163,7 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
             }
         }
 
-        const std::list<Format> & objAdditionalFormats = obj.getAdditionalFormats();
-        for (std::list<Format>::const_iterator it = objAdditionalFormats.begin(); it != objAdditionalFormats.end(); ++it) {
+        for (std::list<Format>::const_iterator it = serializedAdditionalFormats.begin(); it != serializedAdditionalFormats.end(); ++it) {
             QString formatStr = ProjectPrivate::generateStringFromFormat(*it);
             if ( !it->getName().empty() ) {
                 entries.push_back( ChoiceOption(it->getName(), formatStr.toStdString(), "") );
@@ -148,19 +171,17 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
                 entries.push_back( ChoiceOption( formatStr.toStdString() ) );
             }
         }
-        additionalFormats = objAdditionalFormats;
+        additionalFormats = serializedAdditionalFormats;
 
         formatKnob->populateChoices(entries);
         autoSetProjectFormat = false;
 
         // Layers must exist before any node knob (referencing a layer by ID) is restored.
         layers.reset(new LayerRegistry());
-        const std::list<LayerRegistryEntry>& objLayers = obj.getLayers();
-        for (std::list<LayerRegistryEntry>::const_iterator it = objLayers.begin(); it != objLayers.end(); ++it) {
+        for (std::list<LayerRegistryEntry>::const_iterator it = serializedLayers.begin(); it != serializedLayers.end(); ++it) {
             layers->add(it->desc, it->origin, 0);
         }
 
-        const std::list<Serialization::KnobSerialization> & projectSerializedValues = obj.getProjectKnobsValues();
         const std::vector<KnobIPtr> & projectKnobs = _publicInterface->getKnobs();
 
         _publicInterface->resetOCIOConfigKnobsForRestore();
@@ -205,13 +226,13 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
         _publicInterface->refreshColorManagement(true);
 
         /// 2) restore the timeline
-        timeline->seekFrame(obj.getCurrentTime(), false, 0, eTimelineChangeReasonOtherSeek);
+        timeline->seekFrame(currentTime, false, 0, eTimelineChangeReasonOtherSeek);
 
 
         /// 3) Restore the nodes
 
         std::map<std::string, bool> processedModules;
-        ok = NodeCollectionSerialization::restoreFromSerialization(obj.getNodesSerialization().getNodesSerialization(),
+        ok = NodeCollectionSerialization::restoreFromSerialization(serializedNodes,
                                                                    _publicInterface->shared_from_this(), true, &processedModules);
         for (std::map<std::string, bool>::iterator it = processedModules.begin(); it != processedModules.end(); ++it) {
             if (it->second) {
@@ -256,7 +277,7 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
     lastAutoSave = time;
     _publicInterface->getApp()->setProjectWasCreatedWithLowerCaseIDs(false);
 
-    if (obj.getVersion() < PROJECT_SERIALIZATION_REMOVES_TIMELINE_BOUNDS) {
+    if (recomputeFrameRangeFromReaders) {
         _publicInterface->recomputeFrameRangeFromReaders();
     }
 
@@ -270,7 +291,7 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
         throw std::runtime_error( imploded.str() );
     }
     return ok;
-} // restoreFromSerialization
+} // restoreFromSerializedData
 
 bool
 ProjectPrivate::findFormat(int index,

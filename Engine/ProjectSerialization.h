@@ -56,6 +56,9 @@ GCC_DIAG_ON(unused-parameter)
 #include "Serialization/BoostXml/KnobXml.h"
 
 #include "Engine/AppInstance.h"
+// Must be visible wherever _additionalFormats is archived: without Format's
+// BOOST_CLASS_VERSION the archiving TU silently uses version 0.
+#include "Engine/FormatSerialization.h"
 #include "Engine/LayerRegistry.h"
 #include "Engine/MemoryInfo.h" // isApplication32Bits
 #include "Engine/Node.h"

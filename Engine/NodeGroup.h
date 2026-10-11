@@ -41,6 +41,8 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
 
+#include "Serialization/SerializationFwd.h"
+
 
 #define kNatronGroupInputIsMaskParamName "isMask"
 #define kNatronGroupInputIsOptionalParamName "optional"
@@ -217,6 +219,12 @@ public:
     void getActiveNodes(NodesList* nodes) const;
 
     void getActiveNodesExpandGroups(NodesList* nodes) const;
+
+    /**
+     * @brief Fills serialization with the active nodes of the collection that are part of the
+     * project, leaving out the instances of a multi-instance node: their parent saves them.
+     **/
+    void nodesToSerialization(Serialization::NodeCollectionSerialization* serialization) const;
 
     /**
      * @brief Get all viewers in the group and sub groups

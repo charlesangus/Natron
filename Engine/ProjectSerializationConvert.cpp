@@ -1,0 +1,404 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "Project.h"
+
+#include <cassert>
+#include <list>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "Global/GitVersion.h"
+#include "Global/GlobalDefines.h"
+
+#include "Serialization/BasicSerialization.h"
+#include "Serialization/KnobSerialization.h"
+#include "Serialization/NodeSerialization.h"
+#include "Serialization/ProjectSerialization.h"
+
+#include "Engine/AppInstance.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/Knob.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/LayerRegistry.h"
+#include "Engine/MemoryInfo.h" // isApplication32Bits
+#include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
+#include "Engine/NodeSerialization.h"
+#include "Engine/OfxEffectInstance.h"
+#include "Engine/ProjectPrivate.h"
+#include "Engine/ProjectSerialization.h"
+#include "Engine/RotoContext.h"
+#include "Engine/TrackerContext.h"
+
+NATRON_NAMESPACE_ENTER
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+void
+userKnobLayoutToSerialization(const KnobIPtr& knob,
+                              Serialization::GroupKnobSerialization* layout)
+{
+    KnobGroup* isGroup = dynamic_cast<KnobGroup*>( knob.get() );
+    KnobPage* isPage = dynamic_cast<KnobPage*>( knob.get() );
+
+    assert(isGroup || isPage);
+
+    layout->name = knob->getName();
+    layout->label = knob->getLabel();
+    layout->secret = knob->getIsSecret();
+
+    KnobsVec children;
+    if (isGroup) {
+        layout->isSetAsTab = isGroup->isTab();
+        layout->isOpened = isGroup->getValue();
+        children = isGroup->getChildren();
+    } else if (isPage) {
+        children = isPage->getChildren();
+    }
+
+    for (std::size_t i = 0; i < children.size(); ++i) {
+        // A page lists every knob below it; a knob inside a sub-group is saved by that group.
+        if ( isPage && (children[i]->getParentKnob().get() != isPage) ) {
+            continue;
+        }
+        layout->children.push_back( Serialization::GroupKnobChildSerialization() );
+        Serialization::GroupKnobChildSerialization & child = layout->children.back();
+        KnobGroupPtr isChildGroup = std::dynamic_pointer_cast<KnobGroup>(children[i]);
+        if (isChildGroup) {
+            child.isGroup = true;
+            userKnobLayoutToSerialization(isChildGroup, &child.group);
+        } else {
+            children[i]->toSerialization(&child.knob);
+        }
+    }
+}
+
+Serialization::NodeSerializationPtr
+nodeToSerialization(const NodePtr& node)
+{
+    Serialization::NodeSerializationPtr serialization = std::make_shared<Serialization::NodeSerialization>();
+
+    node->toSerialization( serialization.get() );
+
+    return serialization;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+void
+Node::toSerialization(Serialization::NodeSerialization* serialization,
+                      bool serializeInputs) const
+{
+    assert(serialization);
+    *serialization = Serialization::NodeSerialization();
+
+    EffectInstancePtr effect = getEffectInstance();
+    if ( isOpenFXNode() ) {
+        OfxEffectInstance* ofxEffect = dynamic_cast<OfxEffectInstance*>( effect.get() );
+        assert(ofxEffect);
+        if (ofxEffect) {
+            ofxEffect->syncPrivateData_other_thread();
+        }
+    }
+
+    const std::vector<KnobIPtr> knobs = effect->getKnobs_mt_safe();
+    std::list<KnobIPtr> userPages;
+    for (std::size_t i = 0; i < knobs.size(); ++i) {
+        KnobGroup* isGroup = dynamic_cast<KnobGroup*>( knobs[i].get() );
+        KnobPage* isPage = dynamic_cast<KnobPage*>( knobs[i].get() );
+
+        if (isPage) {
+            serialization->pagesOrder.push_back( knobs[i]->getName() );
+            if ( knobs[i]->isUserKnob() ) {
+                userPages.push_back(knobs[i]);
+            }
+        }
+        // User knobs are saved within the layout of their user page.
+        if ( knobs[i]->isUserKnob() || isGroup || isPage ) {
+            continue;
+        }
+
+        // A knob with an expression or a link is always saved, see
+        // https://github.com/NatronGitHub/Natron/issues/585
+        Serialization::KnobSerialization knobSerialization;
+        if ( knobs[i]->toSerialization(&knobSerialization) ) {
+            serialization->knobs.push_back(knobSerialization);
+        }
+    }
+
+    for (std::list<KnobIPtr>::const_iterator it = userPages.begin(); it != userPages.end(); ++it) {
+        serialization->userPages.push_back( Serialization::GroupKnobSerialization() );
+        userKnobLayoutToSerialization( *it, &serialization->userPages.back() );
+    }
+
+    serialization->knobsAge = getKnobsAge();
+    serialization->label = getLabel_mt_safe();
+    serialization->scriptName = getScriptName_mt_safe();
+    serialization->cacheID = getCacheID();
+    serialization->pluginID = getPluginID();
+
+    if ( !hasPyPlugBeenEdited() ) {
+        serialization->pythonModule = getPluginPythonModule();
+        serialization->pythonModuleVersion = getMajorVersion();
+    }
+
+    serialization->pluginMajorVersion = getMajorVersion();
+    serialization->pluginMinorVersion = getMinorVersion();
+
+    if (serializeInputs) {
+        getInputNames(serialization->inputs);
+    }
+
+    NodePtr masterNode = getMasterNode();
+    if (masterNode) {
+        serialization->masterNodeName = masterNode->getFullyQualifiedName();
+    }
+
+    RotoContextPtr roto = getRotoContext();
+    if ( roto && !roto->isEmpty() ) {
+        serialization->hasRotoContext = true;
+        roto->toSerialization(&serialization->rotoContext);
+    }
+
+    TrackerContextPtr tracker = getTrackerContext();
+    if (tracker) {
+        serialization->hasTrackerContext = true;
+        tracker->toSerialization(&serialization->trackerContext);
+    }
+
+    NodeGroup* isGroupNode = isEffectGroup();
+    if (isGroupNode) {
+        NodesList groupNodes;
+        isGroupNode->getActiveNodes(&groupNodes);
+        for (NodesList::const_iterator it = groupNodes.begin(); it != groupNodes.end(); ++it) {
+            if ( (*it)->isPartOfProject() ) {
+                serialization->children.push_back( nodeToSerialization(*it) );
+            }
+        }
+    }
+
+    serialization->multiInstanceParentName = getParentMultiInstanceName();
+
+    NodesList multiInstanceChildren;
+    getChildrenMultiInstance(&multiInstanceChildren);
+    if ( !multiInstanceChildren.empty() ) {
+        assert(!isGroupNode);
+        for (NodesList::const_iterator it = multiInstanceChildren.begin(); it != multiInstanceChildren.end(); ++it) {
+            assert( (*it)->getParentMultiInstance() );
+            if ( (*it)->isActivated() ) {
+                serialization->children.push_back( nodeToSerialization(*it) );
+            }
+        }
+    }
+}
+
+void
+Node::fromSerialization(const Serialization::NodeSerialization& serialization,
+                        bool updateKnobGui)
+{
+    loadKnobs(NodeSerialization(serialization), updateKnobGui);
+}
+
+NodeSerialization::NodeSerialization(const Serialization::NodeSerialization& serialization)
+    : _isNull(false)
+    , _version(serialization.version)
+    , _nbKnobs( (int)serialization.knobs.size() )
+    , _knobsValues(serialization.knobs)
+    , _knobsAge(serialization.knobsAge)
+    , _nodeLabel(serialization.label)
+    , _nodeScriptName(serialization.scriptName)
+    , _cacheID(serialization.cacheID)
+    , _pluginID(serialization.pluginID)
+    , _pluginMajorVersion(serialization.pluginMajorVersion)
+    , _pluginMinorVersion(serialization.pluginMinorVersion)
+    , _masterNodeName(serialization.masterNodeName)
+    , _inputs(serialization.inputs)
+    , _oldInputs(serialization.oldInputs)
+    , _hasRotoContext(serialization.hasRotoContext)
+    , _rotoContext(serialization.rotoContext)
+    , _hasTrackerContext(serialization.hasTrackerContext)
+    , _trackerContext(serialization.trackerContext)
+    , _node()
+    , _multiInstanceParentName(serialization.multiInstanceParentName)
+    , _userPages(serialization.userPages)
+    , _pagesIndexes(serialization.pagesOrder)
+    , _children()
+    , _pythonModule(serialization.pythonModule)
+    , _pythonModuleVersion(serialization.pythonModuleVersion)
+{
+    for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = serialization.children.begin(); it != serialization.children.end(); ++it) {
+        _children.push_back( std::make_shared<NodeSerialization>(**it) );
+    }
+}
+
+void
+NodeCollection::nodesToSerialization(Serialization::NodeCollectionSerialization* serialization) const
+{
+    assert(serialization);
+    serialization->nodes.clear();
+
+    NodesList nodes;
+    getActiveNodes(&nodes);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        if ( !(*it)->getParentMultiInstance() && (*it)->isPartOfProject() ) {
+            serialization->nodes.push_back( nodeToSerialization(*it) );
+        }
+    }
+}
+
+void
+Project::toSerialization(Serialization::ProjectSerialization* serialization) const
+{
+    assert(serialization);
+    *serialization = Serialization::ProjectSerialization();
+
+    Serialization::ProjectSavedByVersionSerialization & savedBy = serialization->savedByVersion;
+    savedBy.versionMajor = NATRON_VERSION_MAJOR;
+    savedBy.versionMinor = NATRON_VERSION_MINOR;
+    savedBy.versionRevision = NATRON_VERSION_REVISION;
+    savedBy.gitBranch = GIT_BRANCH;
+    savedBy.gitCommit = GIT_COMMIT;
+#ifdef __NATRON_WIN32__
+    savedBy.operatingSystem = "Windows";
+#elif defined(__NATRON_OSX__)
+    savedBy.operatingSystem = "MacOSX";
+#elif defined(__NATRON_LINUX__)
+    savedBy.operatingSystem = "Linux";
+#endif
+    savedBy.bits = isApplication32Bits() ? 32 : 64;
+
+    nodesToSerialization(&serialization->nodes);
+
+    std::list<Format> additionalFormats;
+    getAdditionalFormats(&additionalFormats);
+    for (std::list<Format>::const_iterator it = additionalFormats.begin(); it != additionalFormats.end(); ++it) {
+        Serialization::FormatSerialization format;
+        format.x1 = it->x1;
+        format.y1 = it->y1;
+        format.x2 = it->x2;
+        format.y2 = it->y2;
+        format.pixelAspectRatio = it->getPixelAspectRatio();
+        format.name = it->getName();
+        serialization->additionalFormats.push_back(format);
+    }
+
+    // Built-ins are code, not data: they are always re-seeded by LayerRegistry's constructor.
+    std::shared_ptr<const std::vector<LayerRegistryEntry>> layers = getLayerRegistrySnapshot();
+    for (std::vector<LayerRegistryEntry>::const_iterator it = layers->begin(); it != layers->end(); ++it) {
+        if (it->origin == LayerRegistryEntry::eOriginBuiltin) {
+            continue;
+        }
+        Serialization::LayerRegistryEntrySerialization entry;
+        entry.layer.layerID = it->desc.getLayerID();
+        entry.layer.layerLabel = it->desc.getLayerLabel();
+        entry.layer.channelsLabel = it->desc.getChannelsLabel();
+        entry.layer.channels = it->desc.getChannels();
+        entry.origin = (int)it->origin;
+        serialization->layers.push_back(entry);
+    }
+
+    const std::vector<KnobIPtr> knobs = getKnobs_mt_safe();
+    for (std::size_t i = 0; i < knobs.size(); ++i) {
+        KnobGroup* isGroup = dynamic_cast<KnobGroup*>( knobs[i].get() );
+        KnobPage* isPage = dynamic_cast<KnobPage*>( knobs[i].get() );
+        KnobButton* isButton = dynamic_cast<KnobButton*>( knobs[i].get() );
+        if ( knobs[i]->getIsPersistent() &&
+             !isGroup && !isPage && !isButton &&
+             knobs[i]->hasModificationsForSerialization() ) {
+            serialization->projectKnobs.push_back( Serialization::KnobSerialization() );
+            knobs[i]->toSerialization( &serialization->projectKnobs.back() );
+        }
+    }
+
+    serialization->timelineCurrentTime = currentFrame();
+    serialization->creationDate = getProjectCreationTime();
+}
+
+bool
+Project::fromSerialization(const Serialization::ProjectSerialization& serialization,
+                           const QString& name,
+                           const QString& path,
+                           bool* mustSave)
+{
+    const Serialization::ProjectSavedByVersionSerialization & savedBy = serialization.savedByVersion;
+    // Files between these versions only name the saving build when its version string parsed.
+    const bool fileNamesSavingBuild = (serialization.version >= NATRON_SERIALIZATION_PROJECT_CHANGE_VERSION_SERIALIZATION) ||
+                                      ( (serialization.version >= NATRON_SERIALIZATION_PROJECT_INTRODUCES_NATRON_VERSION) && (savedBy.versionMajor != -1) );
+    if (fileNamesSavingBuild) {
+        ProjectBeingLoadedInfo projectBeingLoadedInfo;
+        projectBeingLoadedInfo.vMajor = savedBy.versionMajor;
+        projectBeingLoadedInfo.vMinor = savedBy.versionMinor;
+        projectBeingLoadedInfo.vRev = savedBy.versionRevision;
+        projectBeingLoadedInfo.gitBranch = savedBy.gitBranch;
+        projectBeingLoadedInfo.gitCommit = savedBy.gitCommit;
+        projectBeingLoadedInfo.osStr = savedBy.operatingSystem;
+        projectBeingLoadedInfo.bits = savedBy.bits;
+        getApp()->setProjectBeingLoadedInfo(projectBeingLoadedInfo);
+    }
+
+    return _imp->restoreFromSerialization(serialization, name, path, mustSave);
+}
+
+bool
+ProjectPrivate::restoreFromSerialization(const Serialization::ProjectSerialization& serialization,
+                                         const QString& name,
+                                         const QString& path,
+                                         bool* mustSave)
+{
+    std::list<Format> serializedAdditionalFormats;
+    for (std::list<Serialization::FormatSerialization>::const_iterator it = serialization.additionalFormats.begin(); it != serialization.additionalFormats.end(); ++it) {
+        serializedAdditionalFormats.push_back( Format(it->x1, it->y1, it->x2, it->y2, it->name, it->pixelAspectRatio) );
+    }
+
+    std::list<LayerRegistryEntry> serializedLayers;
+    for (std::list<Serialization::LayerRegistryEntrySerialization>::const_iterator it = serialization.layers.begin(); it != serialization.layers.end(); ++it) {
+        LayerRegistryEntry entry;
+        entry.desc = ImageLayerDesc(it->layer.layerID, it->layer.layerLabel, it->layer.channelsLabel, it->layer.channels);
+        entry.origin = (LayerRegistryEntry::OriginEnum)it->origin;
+        serializedLayers.push_back(entry);
+    }
+
+    std::list<NodeSerializationPtr> serializedNodes;
+    for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = serialization.nodes.nodes.begin(); it != serialization.nodes.nodes.end(); ++it) {
+        serializedNodes.push_back( std::make_shared<NodeSerialization>(**it) );
+    }
+
+    return restoreFromSerializedData(serialization.creationDate,
+                                     serializedAdditionalFormats,
+                                     serializedLayers,
+                                     serialization.projectKnobs,
+                                     serialization.timelineCurrentTime,
+                                     serializedNodes,
+                                     serialization.version < NATRON_SERIALIZATION_PROJECT_REMOVES_TIMELINE_BOUNDS,
+                                     name,
+                                     path,
+                                     mustSave);
+}
+
+NATRON_NAMESPACE_EXIT

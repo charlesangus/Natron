@@ -50,6 +50,8 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
+#include "Serialization/SerializationFwd.h"
+
 NATRON_NAMESPACE_ENTER
 
 struct ProjectPrivate;
@@ -377,6 +379,21 @@ public:
     bool quitAnyProcessingForAllNodes(AfterQuitProcessingI* receiver, const GenericWatcherCallerArgsPtr& args);
 
     void refreshOpenGLRenderingFlagOnNodes();
+
+    /**
+     * @brief Fills serialization with everything a project file saves: the running build, the
+     * nodes, the project knobs, the user formats and layers, the timeline and the creation date.
+     **/
+    void toSerialization(Serialization::ProjectSerialization* serialization) const;
+
+    /**
+     * @brief Restores the project from serialization, as loading a project file does once it
+     * is read. name and path are the project file's.
+     **/
+    bool fromSerialization(const Serialization::ProjectSerialization& serialization,
+                           const QString& name,
+                           const QString& path,
+                           bool* mustSave);
 
 private:
 

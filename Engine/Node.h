@@ -50,6 +50,8 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/ViewIdx.h"
 #include "Global/KeySymbols.h"
 
+#include "Serialization/SerializationFwd.h"
+
 #define NATRON_PARAMETER_PAGE_NAME_EXTRA "Node"
 #define NATRON_PARAMETER_PAGE_NAME_INFO "Info"
 
@@ -178,6 +180,21 @@ public:
                            bool throwOnFailure);
 
     void restoreUserKnobs(const NodeSerialization& serialization);
+
+    /**
+     * @brief Fills serialization with everything a project file saves for this node and, for a
+     * group or a multi-instance node, the nodes it holds. The node's own input connections are
+     * left out unless serializeInputs is set.
+     **/
+    void toSerialization(Serialization::NodeSerialization* serialization,
+                         bool serializeInputs = true) const;
+
+    /**
+     * @brief Restores the knobs, roto and tracker data and user knobs saved in serialization
+     * onto this already created node, as loadKnobs() does.
+     **/
+    void fromSerialization(const Serialization::NodeSerialization& serialization,
+                           bool updateKnobGui = false);
 
     void setPagesOrder(const std::list<std::string>& pages);
 

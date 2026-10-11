@@ -53,6 +53,8 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Project.h"
 #include "Engine/TLSHolder.h"
 
+#include "Serialization/SerializationFwd.h"
+
 NATRON_NAMESPACE_ENTER
 
 struct ProjectPrivate
@@ -137,6 +139,19 @@ public:
     ProjectPrivate(Project* project);
 
     bool restoreFromSerialization(const ProjectSerialization & obj, const QString& name, const QString& path, bool* mustSave);
+
+    bool restoreFromSerialization(const Serialization::ProjectSerialization& serialization, const QString& name, const QString& path, bool* mustSave);
+
+    bool restoreFromSerializedData(qint64 creationDate,
+                                   const std::list<Format>& serializedAdditionalFormats,
+                                   const std::list<LayerRegistryEntry>& serializedLayers,
+                                   const std::list<Serialization::KnobSerialization>& projectSerializedValues,
+                                   SequenceTime currentTime,
+                                   const std::list<NodeSerializationPtr>& serializedNodes,
+                                   bool recomputeFrameRangeFromReaders,
+                                   const QString& name,
+                                   const QString& path,
+                                   bool* mustSave);
 
     bool findFormat(int index, Format* format) const;
     bool findFormat(const std::string& formatSpec, Format* format) const;

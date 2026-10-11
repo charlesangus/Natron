@@ -3147,7 +3147,6 @@ Node::initializeDefaultKnobs(bool loadingSerialization)
         renderButton->setEvaluateOnChange(false);
         _imp->renderButton = renderButton;
         mainPage->addKnob(renderButton);
-        createInfoPage();
     }
 } // Node::initializeDefaultKnobs
 

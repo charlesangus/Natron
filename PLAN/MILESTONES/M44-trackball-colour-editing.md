@@ -458,3 +458,26 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
   - Open cosmetic issue, fixed before UAT: the adjust panel clips its slider captions and numeric fields.
   - Known gaps: undo labels keep the node name from when the gesture was pushed, and the keyframe undo fix has no dedicated test.
 - 2026-10-10 — **P6.T2:** UAT AppImage `build/appimages/M44-ed6d59028.AppImage` (fast build). It includes the clipped-caption and value-field fix; a later commit changed only a test. It launches with `--version`. Waiting for the user's hands-on UAT.
+- 2026-10-10 — **UAT round 1 (user, `M44-ed6d59028.AppImage`):** this overrides earlier entries where they conflict.
+  - **Global mode:**
+    - **C** now works like the wheel trackball: a relative 2D hue+sat translate in the plane.
+    - A new **S** key does what C used to: x = hue, y = sat.
+    - The HUD appears directly below the knob being edited, not at the top of the properties bin.
+    - Starting global editing immediately opens that knob's dropdown and breaks it into its four components.
+  - **Layout:**
+    - Clicking the dropdown flashes something in the wrong place briefly. Fix it.
+    - Knob elements jump around:
+      - Starting global edit turns the knob into four fields that shift left.
+      - Opening the dropdown on a four-value knob spreads its elements evenly across the row instead of keeping them compact on the left.
+    - The swatch, the "4" fold button, the dropdown button and the global-edit button stay right-aligned.
+    - Remove the Values tab, and with it the "Wheel" tab label.
+    - When a knob is broken out into four elements, each gets its own slider.
+    - With the dropdown open, the RGBA sliders sit above the Hue/Sat/Value/Temp/Tint/Alpha sliders.
+  - **Trackball:**
+    - The V/T locks work whether pressed before or during a drag, with no hover-focus dependency.
+    - V accepts either axis.
+    - Drag-on-swatch is removed as too fiddly. A swatch click still toggles picking.
+  - **Sliders:**
+    - Hue/Sat/Value/Temp/Tint/Alpha use Natron's regular float slider widgets (ScaleSliderQWidget + SpinBox, as on a float knob) instead of the custom ColorEditSlider. This is read as the same widgets, not new serialized knobs on the node.
+    - The gearing (Ctrl ×0.1, Shift ×4, Ctrl+Shift ×0.01) is added to every Natron slider.
+  - **Icons:** the dropdown icon is small and hard to read, and the global-edit button is cryptic. The user wants pitched options.

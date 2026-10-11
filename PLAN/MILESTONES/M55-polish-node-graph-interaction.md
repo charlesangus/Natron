@@ -30,7 +30,7 @@ The design notes, the current behaviour re-checked against `a50bef552`, and the 
     - loading a settings file saved by a pre-M55 build with `autoHideInputs=true` produces no warning and no change in behaviour.
   - size: S
 
-- [ ] M55.P1.T2 — Build a GUI test that fails when a connected input has no drawn pipe, or an unconnected one hides on deselection, from synthetic cases
+- [x] M55.P1.T2 — Build a GUI test that fails when a connected input has no drawn pipe, or an unconnected one hides on deselection, from synthetic cases
   - files: `Tests/gui/m55_input_pipes.py` (new)
   - approach:
     - Model the script on `build/m24-shots/m24_border.py` (watchdog, `gt.check`/`report`, crop to the NodeGraph). Create every node with `CreateNodeArgsPropSettingsOpened=True`.

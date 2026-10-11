@@ -701,6 +701,12 @@ KnobGuiValue::getDimensionLinesWidget() const
     return _imp->dimensionLines;
 }
 
+QVBoxLayout*
+KnobGuiValue::getBelowRowColumnLayout() const
+{
+    return _imp->belowRowColumn ? qobject_cast<QVBoxLayout*>(_imp->belowRowColumn->layout()) : 0;
+}
+
 void
 KnobGuiValue::setAutoFoldSuppressed(bool suppressed)
 {

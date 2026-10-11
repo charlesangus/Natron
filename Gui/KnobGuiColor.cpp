@@ -46,6 +46,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QToolTip>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
+#include <QVBoxLayout>
 #include <QVariant>
 #include <QWidgetAction>
 CLANG_DIAG_ON(deprecated)
@@ -180,6 +181,43 @@ activateLayoutsUpToInclusive(QWidget* bottom, QWidget* top)
     }
 }
 } // namespace
+
+void
+detachColorGlobalModeHud(QWidget* hud)
+{
+    if (!hud) {
+        return;
+    }
+    hud->hide();
+
+    QWidget* parent = hud->parentWidget();
+    QVBoxLayout* layout = parent ? qobject_cast<QVBoxLayout*>(parent->layout()) : 0;
+
+    if (layout) {
+        layout->removeWidget(hud);
+    }
+    hud->setParent(0);
+}
+
+void
+attachColorGlobalModeHud(QVBoxLayout* columnLayout,
+                         QWidget* afterWidget,
+                         QWidget* hud)
+{
+    if (!columnLayout || !hud) {
+        return;
+    }
+    detachColorGlobalModeHud(hud);
+
+    // With no channel-lines widget to anchor on, index 1 still lands right after the row,
+    // the column's first and only other item at that point.
+    const int afterIndex = afterWidget ? columnLayout->indexOf(afterWidget) : -1;
+    const int index = (afterIndex >= 0) ? (afterIndex + 1) : 1;
+
+    hud->setParent(columnLayout->parentWidget());
+    columnLayout->insertWidget(index, hud);
+    hud->show();
+}
 
 ColorPickerLabel::ColorPickerLabel(KnobGuiColor* knob,
                                    QWidget* parent)
@@ -446,6 +484,55 @@ QWidget*
 KnobGuiColor::getGlobalModeRowWidget() const
 {
     return _rowContainer.data();
+}
+
+QWidget*
+KnobGuiColor::getGlobalModeColumnWidget() const
+{
+    QVBoxLayout* columnLayout = getBelowRowColumnLayout();
+
+    return columnLayout ? columnLayout->parentWidget() : 0;
+}
+
+void
+KnobGuiColor::attachGlobalModeHud(QWidget* hud)
+{
+    QVBoxLayout* columnLayout = getBelowRowColumnLayout();
+
+    if (!columnLayout || !hud) {
+        return;
+    }
+
+    QWidget* topWidget = getContainer() ? getContainer()->getContainerWidget() : 0;
+
+    if (topWidget) {
+        topWidget->setUpdatesEnabled(false);
+    }
+    attachColorGlobalModeHud(columnLayout, getDimensionLinesWidget(), hud);
+    activateLayoutsUpToInclusive(columnLayout->parentWidget(), topWidget);
+    if (topWidget) {
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+        topWidget->setUpdatesEnabled(true);
+    }
+}
+
+void
+KnobGuiColor::detachGlobalModeHud(QWidget* hud)
+{
+    QVBoxLayout* columnLayout = getBelowRowColumnLayout();
+    QWidget* topWidget = getContainer() ? getContainer()->getContainerWidget() : 0;
+
+    if (topWidget) {
+        topWidget->setUpdatesEnabled(false);
+    }
+    detachColorGlobalModeHud(hud);
+    if (columnLayout) {
+        activateLayoutsUpToInclusive(columnLayout->parentWidget(), topWidget);
+    }
+    if (topWidget) {
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+        topWidget->setUpdatesEnabled(true);
+    }
 }
 
 void

@@ -34,6 +34,7 @@
 #include <QLabel>
 #include <QSize>
 #include <QString>
+#include <QVBoxLayout>
 #include <QWidget>
 
 #include <gtest/gtest.h>
@@ -41,6 +42,7 @@
 #include "Engine/ColorWheelMath.h"
 
 #include "Gui/ColorTrackballHud.h"
+#include "Gui/KnobGuiColor.h"
 
 NATRON_NAMESPACE_USING
 
@@ -139,6 +141,25 @@ TEST(ColorTrackballHud, LightsOnlyTheActiveModeKey)
     EXPECT_TRUE(isLegendLit(hud, "ColorTrackballHudLegendV"));
 }
 
+TEST(ColorTrackballHud, LightsOnlySForModeS)
+{
+    ColorTrackballHud hud;
+    ColorTrackballHudState state = stateForC();
+
+    state.mode = eColorGlobalModeS;
+    hud.setState(state);
+
+    EXPECT_FALSE(isLegendLit(hud, "ColorTrackballHudLegendC"));
+    EXPECT_TRUE(isLegendLit(hud, "ColorTrackballHudLegendS"));
+    EXPECT_FALSE(isLegendLit(hud, "ColorTrackballHudLegendT"));
+    EXPECT_FALSE(isLegendLit(hud, "ColorTrackballHudLegendV"));
+
+    const QString values = labelByName(hud, "ColorTrackballHudValues")->text();
+
+    EXPECT_TRUE(values.contains(QString::fromUtf8("124.3")));
+    EXPECT_TRUE(values.contains(QString::fromUtf8("0.0820")));
+}
+
 TEST(ColorTrackballHud, ReportsAnInvalidChromaReadoutInsteadOfStaleNumbers)
 {
     ColorTrackballHud hud;
@@ -205,4 +226,79 @@ TEST(ColorTrackballHud, FrameOverADummyWidgetTracksAResize)
     }
     EXPECT_EQ(QSize(321, 233), window.size());
     EXPECT_EQ(window.size(), frame->size());
+}
+
+TEST(ColorTrackballHud, AttachPutsTheHudRightAfterTheChannelLinesAndDetachRemovesIt)
+{
+    // A stand-in for a knob's below-row column: the row, the channel lines, then the adjust
+    // panel, exactly the order KnobGuiValue/KnobGuiColor build it in, but with none of them
+    // backed by a real knob.
+    QWidget column;
+    QVBoxLayout* columnLayout = new QVBoxLayout(&column);
+    QWidget row;
+    QWidget channelLines;
+    QWidget panel;
+    ColorTrackballHud hud;
+
+    columnLayout->addWidget(&row);
+    columnLayout->addWidget(&channelLines);
+    columnLayout->addWidget(&panel);
+
+    attachColorGlobalModeHud(columnLayout, &channelLines, &hud);
+
+    EXPECT_EQ(2, columnLayout->indexOf(&hud));
+    EXPECT_EQ(3, columnLayout->indexOf(&panel));
+    EXPECT_EQ(&column, hud.parentWidget());
+
+    detachColorGlobalModeHud(&hud);
+
+    EXPECT_EQ(-1, columnLayout->indexOf(&hud));
+    EXPECT_TRUE(hud.parentWidget() == 0);
+}
+
+TEST(ColorTrackballHud, AttachWithNoChannelLinesGoesRightAfterTheRow)
+{
+    QWidget column;
+    QVBoxLayout* columnLayout = new QVBoxLayout(&column);
+    QWidget row;
+    QWidget panel;
+    ColorTrackballHud hud;
+
+    columnLayout->addWidget(&row);
+    columnLayout->addWidget(&panel);
+
+    attachColorGlobalModeHud(columnLayout, 0, &hud);
+
+    EXPECT_EQ(1, columnLayout->indexOf(&hud));
+    EXPECT_EQ(2, columnLayout->indexOf(&panel));
+}
+
+TEST(ColorTrackballHud, AttachTwiceMovesTheHudInsteadOfDuplicatingIt)
+{
+    QWidget columnA;
+    QVBoxLayout* columnALayout = new QVBoxLayout(&columnA);
+    QWidget rowA;
+    QWidget channelLinesA;
+
+    columnALayout->addWidget(&rowA);
+    columnALayout->addWidget(&channelLinesA);
+
+    QWidget columnB;
+    QVBoxLayout* columnBLayout = new QVBoxLayout(&columnB);
+    QWidget rowB;
+    QWidget channelLinesB;
+
+    columnBLayout->addWidget(&rowB);
+    columnBLayout->addWidget(&channelLinesB);
+
+    ColorTrackballHud hud;
+
+    attachColorGlobalModeHud(columnALayout, &channelLinesA, &hud);
+    EXPECT_EQ(2, columnALayout->indexOf(&hud));
+
+    attachColorGlobalModeHud(columnBLayout, &channelLinesB, &hud);
+
+    EXPECT_EQ(-1, columnALayout->indexOf(&hud));
+    EXPECT_EQ(2, columnBLayout->indexOf(&hud));
+    EXPECT_EQ(&columnB, hud.parentWidget());
 }

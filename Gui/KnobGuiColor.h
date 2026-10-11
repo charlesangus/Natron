@@ -65,6 +65,24 @@ NATRON_NAMESPACE_ENTER
 
 class KnobGuiColor;
 class ColorKnobEditSession;
+
+/**
+ * @brief Inserts hud into columnLayout right after afterWidget (the knob's channel-lines
+ * widget, when it has one), reparenting hud there; with no afterWidget it goes right after
+ * the column's first item, the knob's own row. Detaches hud from wherever it was first, so
+ * calling this on an already-attached hud moves it instead of leaving two copies behind.
+ *
+ * A free function, rather than only a KnobGuiColor member, so the placement rule can be
+ * exercised against a stand-in column layout in a test, without a real knob or panel behind it.
+ **/
+void attachColorGlobalModeHud(QVBoxLayout* columnLayout, QWidget* afterWidget, QWidget* hud);
+
+/**
+ * @brief Removes hud from the layout holding it, if any, hides it and clears its parent so a
+ * later attachColorGlobalModeHud() starts clean.
+ **/
+void detachColorGlobalModeHud(QWidget* hud);
+
 class ColorPickerLabel
     : public Label
 {
@@ -177,6 +195,27 @@ public:
      * readout of the mode can scroll into view. Null for knobs without an adjustment panel.
      **/
     QWidget* getGlobalModeRowWidget() const;
+
+    /**
+     * @brief The knob's whole below-row column: the row, the channel lines, the global-mode
+     * HUD once attached, and the adjust panel, top to bottom. Null for knobs without an
+     * adjustment panel. The global trackball mode scrolls this into view on engage and on
+     * every knob switch, so the row, the HUD and the panel all stay visible together.
+     **/
+    QWidget* getGlobalModeColumnWidget() const;
+
+    /**
+     * @brief Moves hud into this knob's below-row column, right after the channel lines and
+     * before the adjust panel, wrapped in the same update guard as setAdjustPanelExpanded() so
+     * the insertion settles without a paint at a stale geometry.
+     **/
+    void attachGlobalModeHud(QWidget* hud);
+
+    /**
+     * @brief Takes hud back out of this knob's below-row column and hides it, under the same
+     * update guard as attachGlobalModeHud().
+     **/
+    void detachGlobalModeHud(QWidget* hud);
 
 public Q_SLOTS:
 

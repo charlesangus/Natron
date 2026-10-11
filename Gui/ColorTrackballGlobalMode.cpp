@@ -42,6 +42,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QMouseEvent>
 #include <QRect>
 #include <QScreen>
+#include <QScrollArea>
 #include <QStyle>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -349,9 +350,8 @@ findColorTrackballHud(const ColorTrackballGlobalMode* mode)
     return ((it != huds.end()) && it->second) ? it->second.data() : 0;
 }
 
-// Index 0 of the properties bin's own layout is its buttons row, so inserting at index 1 lands
-// the HUD directly under it and pushes the scroll area down to index 2, without either one
-// needing to know the HUD exists.
+// Created with no parent: it is homeless until a target attaches it into its own below-row
+// column, and is reparented and moved there whenever the target changes.
 ColorTrackballHud*
 ensureColorTrackballHud(ColorTrackballGlobalMode* mode)
 {
@@ -361,17 +361,8 @@ ensureColorTrackballHud(ColorTrackballGlobalMode* mode)
         return existing;
     }
 
-    Gui* gui = mode->getGui();
-    PropertiesBinWrapper* bin = gui ? gui->getPropertiesBin() : 0;
-    QVBoxLayout* layout = bin ? qobject_cast<QVBoxLayout*>(bin->layout()) : 0;
+    ColorTrackballHud* hud = new ColorTrackballHud();
 
-    if (!layout) {
-        return 0;
-    }
-
-    ColorTrackballHud* hud = new ColorTrackballHud(bin);
-
-    layout->insertWidget(1, hud);
     hud->hide();
     colorTrackballHuds()[mode] = hud;
 
@@ -401,12 +392,9 @@ windowHoldsPropertiesBinOrViewer(QWidget* window)
 void
 showColorTrackballChrome(ColorTrackballGlobalMode* mode)
 {
-    ColorTrackballHud* hud = ensureColorTrackballHud(mode);
-
-    if (hud) {
-        hud->show();
-    }
-
+    // The HUD's own visibility follows attachGlobalModeHud()/detachGlobalModeHud() on the
+    // target, called from setTarget() and exit(); only the window border is this function's
+    // job.
     Gui* gui = mode->getGui();
 
     if (!gui) {
@@ -429,12 +417,6 @@ showColorTrackballChrome(ColorTrackballGlobalMode* mode)
 void
 hideColorTrackballChrome(ColorTrackballGlobalMode* mode)
 {
-    ColorTrackballHud* hud = findColorTrackballHud(mode);
-
-    if (hud) {
-        hud->hide();
-    }
-
     std::map<const ColorTrackballGlobalMode*, std::vector<QPointer<WindowHighlightFrame>>>& registry = colorTrackballHighlightFrames();
     std::map<const ColorTrackballGlobalMode*, std::vector<QPointer<WindowHighlightFrame>>>::iterator it = registry.find(mode);
 
@@ -778,6 +760,15 @@ ColorTrackballGlobalMode::onTargetGone()
 void
 ColorTrackballGlobalMode::setTarget(const KnobGuiColorPtr& target)
 {
+    // Taken off the outgoing target before clearTarget() lets go of it; the touched knob
+    // itself is left exactly as the switch leaves it, open and unfolded, with nothing restored.
+    KnobGuiColor* previousTarget = getTarget();
+    ColorTrackballHud* hud = ensureColorTrackballHud(this);
+
+    if (previousTarget && hud) {
+        previousTarget->detachGlobalModeHud(hud);
+    }
+
     clearTarget();
     // A successful switch reaches a real knob, so whatever end-of-list message the previous
     // step may have left standing no longer describes the HUD's new target.
@@ -812,6 +803,13 @@ ColorTrackballGlobalMode::setTarget(const KnobGuiColorPtr& target)
     }
 
     target->setGlobalModeHighlighted(true);
+    // Opens and unfolds the knob; switching to another one, or leaving the mode, never folds
+    // or closes it back up, so working across several knobs in one session leaves every one of
+    // them open afterwards instead of needing to be reopened.
+    target->setAdjustPanelExpanded(true);
+    if (hud) {
+        target->attachGlobalModeHud(hud);
+    }
     target->touchColorKnob();
     revealTarget();
 }
@@ -847,6 +845,20 @@ ColorTrackballGlobalMode::revealTarget()
         // Not UserEdited: that reason is the one change KnobGui does not mirror back into the
         // group's own widget, which is what actually lays the children out.
         group->setValue(true, ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, 0);
+    }
+
+    // The whole column, not just the row: with the panel open and the HUD attached, the column
+    // has grown well past the row alone, and every part of it should land in view together.
+    QWidget* column = target->getGlobalModeColumnWidget();
+
+    if (!column) {
+        return;
+    }
+    for (QWidget* w = column->parentWidget(); w; w = w->parentWidget()) {
+        if (QScrollArea* scrollArea = qobject_cast<QScrollArea*>(w)) {
+            scrollArea->ensureWidgetVisible(column);
+            break;
+        }
     }
 }
 
@@ -890,6 +902,15 @@ ColorTrackballGlobalMode::exit()
     releaseStrokeGrab();
     _heldButtons = Qt::NoButton;
     _engaged = false;
+
+    // The touched knob is left open and unfolded, exactly as the user left it; only the HUD
+    // itself comes back out.
+    KnobGuiColor* target = getTarget();
+    ColorTrackballHud* hud = findColorTrackballHud(this);
+
+    if (target && hud) {
+        target->detachGlobalModeHud(hud);
+    }
 
     QCoreApplication* app = QCoreApplication::instance();
 

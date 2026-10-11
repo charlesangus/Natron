@@ -157,6 +157,14 @@ protected:
     QWidget* getDimensionLinesWidget() const;
 
     /**
+     * @brief The below-row column's own layout (the row, the per-dimension lines when there
+     * are any, and the subclass's below-row widget, top to bottom), or null for a knob with no
+     * below-row widget and so no column of its own. Lets a subclass place extra widgets at a
+     * specific position in that column from outside createBelowRowWidget().
+     **/
+    QVBoxLayout* getBelowRowColumnLayout() const;
+
+    /**
      * @brief While set, a refresh never folds the dimensions back into one, even when they
      * all hold the same value.
      **/

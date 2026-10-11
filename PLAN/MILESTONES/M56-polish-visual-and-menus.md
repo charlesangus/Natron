@@ -259,3 +259,15 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
 - 2026-10-10 — **Icon direction (user):** a monochrome SVG line-icon set under a GPL-compatible licence, recoloured by the theme, with the three GroupingIcons sets reduced to one. The user wants pitched options before any before/after work starts.
 - 2026-10-10 — **Icon set picks (user, from the icon-options page):** Lucide is the set, drawn at a 1.5 px stroke (native 2 px is too heavy). Overrides for the toolbox grouping icons: Filter should look like Tabler's or Phosphor's filter glyph, drawn in-house in Lucide's style if Lucide has nothing suitable; Channel is a "hamburger" (three stacked horizontal lines); Merge uses the layers icon the page proposed for Deep; Deep gets a custom "D" glyph in Lucide's style. The rest of the page's questions (toolbox tint, B&W setting, NativeNodes/merge-operator scope, licence route) are still open; Lucide's ISC licence keeps GPL-2.0-or-later.
 - 2026-10-10 — **Toolbox glyph selects (user):** Filter is the custom droplet-with-fins glyph ("Filter v2", after Phosphor's `drop-half`); Deep is the custom D inside a rounded square ("Deep v3", Lucide's `square-*` convention); Keyer is Lucide `pipette` rather than `key-round`, since a key reads as keyframes while a keyer picks a colour. Channel is Lucide `menu` and Merge is Lucide `layers-2`. All custom glyphs use Lucide's 24 px grid, round caps and joins, at the 1.5 px stroke. The drafts' SVG markup is in the icon-options page (claude.ai artifact `9B52JMKTyWw5Ufep99afxr`, "Chosen" section).
+- 2026-10-11 — **User answers to the elaboration questions** (`PLAN/DESIGN/2026-10-11-m56-questions.md`):
+  - **Max node width:** start at 2.5× the default node width (200 logical px before DPI scaling) as a constant; the user expects to tune it after seeing it.
+  - **Toolbox tint:** monochrome in the theme text colour.
+  - **Icon scope:** everything, so P5.T4 (roto, tracker, curve editor, dope sheet, with custom glyphs) is in. The 33 native-node and 34 merge-operator icons stay out, for a follow-up stub.
+  - **Stylesheet:** spacing, padding and grouping only, colours unchanged, Nuke as the reference look; mockups first (P6.T1).
+  - **B&W icons preference:** removed; the old key is silently ignored.
+  - **Licence:** stay GPL-2.0-or-later with MIT/ISC sets only (Lucide pinned to its latest release at implementation time); custom glyphs GPL-2.0-or-later.
+  - **Rendering:** runtime SVG through Qt6::Svg, recoloured from the Preferences text colour.
+  - **Menus:** styling only (padding, separators, icon column) inside P6.T2.
+  - **Grouping icons:** Toolsets → Lucide `wrench`. Misc and Other: the user wants options; P5.T1's mapping sheet shows candidates for both.
+  - **Size:** keep M56 whole.
+  - **Twin labels / U-V-A layout:** the user asked for pictures of each option before choosing; pending.

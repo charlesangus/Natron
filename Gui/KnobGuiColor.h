@@ -226,6 +226,8 @@ private:
 
     virtual bool wantsFixedDimensionLabelSlot() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual bool wantsPerDimensionSliders() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual bool isRectangleType() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return false;

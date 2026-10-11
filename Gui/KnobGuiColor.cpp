@@ -649,6 +649,10 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
             row->setProperty(colorKnobTouchTagPropertyName(), QVariant::fromValue<void*>(this));
         }
         _rowContainer = row;
+        QWidget* dimensionLines = getDimensionLinesWidget();
+        if (dimensionLines) {
+            dimensionLines->setProperty(colorKnobTouchTagPropertyName(), QVariant::fromValue<void*>(this));
+        }
     }
     _colorLabel = new ColorPickerLabel( _useSimplifiedUI ? NULL : this, containerLayout->widget() );
     if (!_useSimplifiedUI) {
@@ -894,6 +898,10 @@ KnobGuiColor::onDimensionsFolded()
         getSpinBox(i, &sb);
         assert(sb);
         sb->setUseLineColor(false, Qt::red);
+        ScaleSliderQWidget* slider = getDimensionSlider(i);
+        if (slider) {
+            slider->setUseLineColor(false, Qt::red);
+        }
     }
     Q_EMIT dimensionSwitchToggled(false);
 }
@@ -922,6 +930,10 @@ KnobGuiColor::onDimensionsExpanded()
         getSpinBox(i, &sb, &label);
         assert(sb);
         sb->setUseLineColor(true, colors[i]);
+        ScaleSliderQWidget* slider = getDimensionSlider(i);
+        if (slider) {
+            slider->setUseLineColor(true, colors[i]);
+        }
     }
     Q_EMIT dimensionSwitchToggled(true);
 }
@@ -988,15 +1000,17 @@ KnobGuiColor::isAutoFoldDimensionsEnabled() const
 bool
 KnobGuiColor::wantsFixedDimensionLabelSlot() const
 {
+    // Only rows with the dropdown's below-row panel break out into channel lines, so only
+    // they need the label slot reserved across the fold.
+    return wantsPerDimensionSliders();
+}
+
+bool
+KnobGuiColor::wantsPerDimensionSliders() const
+{
     KnobColorPtr knob = _knob.lock();
 
-    if (!knob) {
-        return false;
-    }
-
-    // Only rows with the dropdown's below-row panel break out into several spinboxes, so
-    // only they need the label slot reserved across the fold.
-    return _adjustPanel && (knob->getDimension() > 1);
+    return knob && _adjustPanel && (knob->getDimension() > 1);
 }
 
 NATRON_NAMESPACE_EXIT

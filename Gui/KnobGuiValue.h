@@ -136,6 +136,39 @@ protected:
     }
 
     /**
+     * @brief When true, and the row has a below-row column and a dimension-switch button,
+     * unfolding the knob shows one line per extra dimension below the row, each with its
+     * label, spinbox and its own slider, and the row's slider then drives dimension 0 only.
+     **/
+    virtual bool wantsPerDimensionSliders() const
+    {
+        return false;
+    }
+
+    /**
+     * @brief The slider driving one dimension on its own: the row's slider for dimension 0 and
+     * the line's slider for the others. Null when the knob has no per-dimension lines.
+     **/
+    ScaleSliderQWidget* getDimensionSlider(int dimension) const;
+
+    /**
+     * @brief The widget holding the per-dimension lines, or null when there are none.
+     **/
+    QWidget* getDimensionLinesWidget() const;
+
+    /**
+     * @brief While set, a refresh never folds the dimensions back into one, even when they
+     * all hold the same value.
+     **/
+    void setAutoFoldSuppressed(bool suppressed);
+
+    /**
+     * @brief Unfolds freely. Folds only when every dimension already holds the same value,
+     * so, unlike the dimension-switch button, it never copies dimension 0 into the others.
+     **/
+    void setDimensionsExpanded(bool expanded);
+
+    /**
      * @brief Lets a subclass supply a widget placed below the knob's row, spanning the
      * field area. It starts hidden; the subclass that created it is responsible for
      * showing and hiding it. Returning non-null also relaxes the row's fixed height so it
@@ -174,8 +207,23 @@ private:
     void expandAllDimensions();
     void foldAllDimensions();
     void setDimensionLabelVisible(std::size_t index, bool visible);
+    bool areAllDimensionsEqual() const;
 
     void sliderEditingEnd(double d);
+
+    void createDimensionLines(QHBoxLayout* containerLayout,
+                              const std::vector<QWidget*>& boxContainers,
+                              int labelSlotWidth,
+                              const std::vector<double>& displayMins,
+                              const std::vector<double>& displayMaxs,
+                              const std::vector<double>& mins,
+                              const std::vector<double>& maxs);
+    void setDimensionLinesRightInset(QHBoxLayout* containerLayout);
+    void seekDimensionSlidersToSpinBoxes();
+    void dimensionSliderEditingEnd(int dimension, double d);
+    void onDimensionSliderValueChanged(int dimension, double d);
+    void onDimensionSliderEditingFinished(int dimension, bool hasMovedOnce);
+    void onDimensionSliderResetRequested(int dimension);
 
     virtual void createWidget(QHBoxLayout* layout) OVERRIDE FINAL;
 

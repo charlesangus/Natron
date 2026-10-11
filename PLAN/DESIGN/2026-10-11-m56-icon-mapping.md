@@ -16,24 +16,32 @@ Scope: icon scope "Everything" (Q5 = c), so the areas are the viewer toolbar, th
 
 ## Counts
 
-| Area | Rows | Lucide | Custom | Keep PNG | Collapsing pairs | Revised (any round) | Revised in round 3 |
+| Area | Rows | Lucide | Custom | Keep PNG | Collapsing pairs | Revised (any round) | Revised in rounds 3-6 |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Viewer toolbar | 14 | 10 | 4 | 0 | 10 | 4 | 1 |
 | Timeline and transport | 17 | 10 | 7 | 0 | 1 | 5 | 3 |
 | Properties panel | 17 | 17 | 0 | 0 | 5 | 0 | 0 |
-| Roto and RotoPaint | 39 | 25 | 14 | 0 | 10 | 9 | 4 |
+| Roto and RotoPaint | 39 | 25 | 14 | 0 | 10 | 10 | 5 |
 | Tracker | 27 | 18 | 9 | 0 | 5 | 5 | 4 |
 | Curve editor and dope sheet | 17 | 0 | 17 | 0 | 9 | 17 | 9 |
 | Panes, script editor and dialogs | 18 | 15 | 3 | 0 | 2 | 18 | 0 |
-| **All** | 149 | 95 | 54 | 0 | 42 | 58 | 21 |
+| **All** | 149 | 95 | 54 | 0 | 42 | 59 | 22 |
 
-That is 84 distinct Lucide glyphs to vendor and **51 distinct custom glyphs**, each with a draft SVG below, plus 8 alternative (B) interpolation drafts. Shared custom glyphs: `play-reverse` x3, `key-prev` x2.
+That is 84 distinct Lucide glyphs to vendor and **51 distinct custom glyphs**, each with a draft SVG below. Shared custom glyphs: `play-reverse` x3, `key-prev` x2.
 
 **Revision 2 (2026-10-11, after the user's review).** Rows the user changed say "Revised" in their notes, and the sheet gives them a Revised badge. Changes: clip to project became `square-dashed`; ROI, render scale, previous/next increment, ellipse, rectangle, clone, pressure, build-up and track range became drawn customs; the in/out points lost the bracket top; reveal became `stamp`; the dope-sheet keyframe textures are replaced by nine custom markers; Other is `circle-ellipsis`; and the pane, properties-bin, Script Editor, file-dialog and cursor ids joined the scope. Every custom glyph now has a draft SVG.
 
 **Revision 3 (2026-10-11, the user's comments on version 2).** Rows changed in this round say "Revised r3" in their notes and carry a round-3 badge on the sheet. Changes: the checkerboard cells are flush with the frame and rounded at the outer corners; in/out points are an L with a filled corner triangle; Freeze is Lucide `snowflake`; the cusp point is rotated to match `tangent`; open/close curve has a wider gap completed by a dashed arc; RotoPaint solid is Lucide `brush` (the RotoPaint icon); pressure is a single large swoop; track all keys / current key are keyframe diamonds in front of left and right play triangles; clear animation backward/forward are a trash can plus a chevron; the node-root marker is a closed tab; and the whole interpolation set is redrawn as convention A with an alternative B, plus a Free glyph for NATRON_PIXMAP_INTERP_CURVE.
 
-**Interpolation icon research.** *Maya* Graph Editor tangent buttons (Spline, Clamped, Linear, Flat, Stepped, Plateau) each draw a short curve through one key, so the curve's shape is the tangent type, and only Flat shows a handle. *Blender*'s Interpolation Mode menu (Constant, Linear, Bezier) and Easing menu draw the curve segment between keys: a stair for Constant, a straight line for Linear, an S for Bezier, and one curve per easing function. *After Effects* encodes interpolation in the keyframe's own shape on the timeline: diamond (linear), hourglass (easy ease), circle (auto Bezier), square (hold), and half-shapes when the in and out sides differ. *Houdini*'s animation editor exposes slope and tangent operations as toolbar buttons and menu entries (linear, bezier and tangent handles, manual/automatic slopes, zero slope), and its graph shows handles on the key rather than per-type icons. *Nuke*'s curve editor offers Constant, Linear, Smooth, Catmull-Rom, Cubic, Horizontal and Break from text menus and shortcuts, with no per-type icons. Natron copied Nuke's set and invented the letter-in-a-shape PNGs. Nothing here was inspected as artwork; this comes from the vendors' documentation. So there are two established conventions. Curve-shape icons (Maya, Blender) suit the menu, where the user is choosing a behaviour. Key-shape icons (After Effects) suit the dope-sheet markers, where they must stay tiny and show state at a glance. Convention A follows Maya: one key dot dead centre and one continuous curve whose shape is the interpolation, with handles drawn only for Horizontal, Break and Free, where the handle is the point. Convention B follows After Effects' key shapes. Smooth, Catmull-Rom and Cubic differ only subtly in shape, which is why Nuke names them in text and Natron's PNGs used letters. A tells them apart by clamping (no overshoot), end overshoot, and a continuous wave. Sources: Autodesk Maya Graph Editor Tangents menu (help.autodesk.com), Blender Manual F-Curves (docs.blender.org), Adobe After Effects keyframe interpolation (helpx.adobe.com), SideFX Houdini Graph view (sidefx.com), Foundry nuke.AnimationKey reference (learn.foundry.com).
+**Revision 4 (2026-10-11).** Open/close curve: the solid arc now covers half the circle and a dashed arc completes the other half. Remove feather: redrawn as one shape inside its dashed feather edge plus a separate minus, matching remove-points (rows marked "Revised r4").
+
+**Revision 5 (2026-10-11).** Remove feather redrawn again as a small pen nib, a half-size Lucide `feather` and a minus (row marked "Revised r5"). RotoPaint has no add-feather tool, so there is no plus counterpart. Interpolation break, variant A: handles at a right angle (down and right), both curves concave to the left, the outgoing curve rising; B unchanged. Catmull-Rom, variant A: overshoot exaggerated past added outer key dots.
+
+**Revision 6 (2026-10-11).** Remove feather: the half-size feather didn't read, so it's back to the small dashed square, keeping the nib + item + minus layout. Pressure: a tapered S-squiggle with more bend and a stronger thin-to-thick taper (rows marked "Revised r6").
+
+**Revision 6, continued.** The user picked convention A for the interpolation icons. A is locked in on every interpolation row and the B drafts are removed. The dope-sheet markers are unchanged; whether they should follow is still an open question.
+
+**Interpolation icon research.** *Maya* Graph Editor tangent buttons (Spline, Clamped, Linear, Flat, Stepped, Plateau) each draw a short curve through one key, so the curve's shape is the tangent type, and only Flat shows a handle. *Blender*'s Interpolation Mode menu (Constant, Linear, Bezier) and Easing menu draw the curve segment between keys: a stair for Constant, a straight line for Linear, an S for Bezier, and one curve per easing function. *After Effects* encodes interpolation in the keyframe's own shape on the timeline: diamond (linear), hourglass (easy ease), circle (auto Bezier), square (hold), and half-shapes when the in and out sides differ. *Houdini*'s animation editor exposes slope and tangent operations as toolbar buttons and menu entries (linear, bezier and tangent handles, manual/automatic slopes, zero slope), and its graph shows handles on the key rather than per-type icons. *Nuke*'s curve editor offers Constant, Linear, Smooth, Catmull-Rom, Cubic, Horizontal and Break from text menus and shortcuts, with no per-type icons. Natron copied Nuke's set and invented the letter-in-a-shape PNGs. Nothing here was inspected as artwork; this comes from the vendors' documentation. So there are two established conventions. Curve-shape icons (Maya, Blender) suit the menu, where the user is choosing a behaviour. Key-shape icons (After Effects) suit the dope-sheet markers, where they must stay tiny and show state at a glance. Convention A follows Maya: one key dot dead centre and one continuous curve whose shape is the interpolation, with handles drawn only for Horizontal, Break and Free, where the handle is the point. Convention B followed After Effects' key shapes (shown in round 3, not chosen). Smooth, Catmull-Rom and Cubic differ only subtly in shape, which is why Nuke names them in text and Natron's PNGs used letters. A tells them apart by clamping (no overshoot), end overshoot, and a continuous wave. Sources: Autodesk Maya Graph Editor Tangents menu (help.autodesk.com), Blender Manual F-Curves (docs.blender.org), Adobe After Effects keyframe interpolation (helpx.adobe.com), SideFX Houdini Graph view (sidefx.com), Foundry nuke.AnimationKey reference (learn.foundry.com).
 
 ## Viewer toolbar
 
@@ -118,8 +126,8 @@ Viewer toolbar buttons from path strings in Engine/RotoPaint.cpp (loaded by Knob
 | RotoPaint.cpp:719 `removePoints.png` | `removePoints.png` | **custom** `natron/remove-points.svg` (draft below): `pen-tool` nib with a small minus at the top right. | Remove points. |
 | RotoPaint.cpp:732 `cuspPoints.png` | `cuspPoints.png` | **custom** `natron/cusp-point.svg` (draft below): Two straight segments meeting at a sharp corner, opening to the lower right at the same 45-degree angle as Lucide `tangent` (the smooth-point glyph), with a filled square point at the corner. | Cusp points. Revised r3: rotated to open lower right at `tangent`'s 45-degree angle, sharp corner kept. |
 | RotoPaint.cpp:745 `smoothPoints.png` | `smoothPoints.png` | `tangent` | Smooth points: Lucide's tangent (a line touching a circle) is the smooth-handle idea. |
-| RotoPaint.cpp:758 `openCloseCurve.png` | `openCloseCurve.png` | **custom** `natron/open-close-curve.svg` (draft below): Arc open at the bottom with a wide gap, the gap completed by a dashed arc, end points marked. | Open/close curve. Revised r3: wider gap, completed by a dashed arc. |
-| RotoPaint.cpp:772 `removeFeather.png` | `removeFeather.png` | **custom** `natron/remove-feather.svg` (draft below): `pen-tool` nib with a small dashed square crossed out (drop the feather). | Remove feather. |
+| RotoPaint.cpp:758 `openCloseCurve.png` | `openCloseCurve.png` | **custom** `natron/open-close-curve.svg` (draft below): Solid arc over the top half of a circle, the bottom half completed by a dashed arc, end points marked. | Open/close curve. Revised r3: wider gap, completed by a dashed arc. Revised r4: gap widened to half the circle; solid top half, dashed bottom half. |
+| RotoPaint.cpp:772 `removeFeather.png` | `removeFeather.png` | **custom** `natron/remove-feather.svg` (draft below): Three small parts: a pen nib (bottom left), a small dashed square for the feather point (top right, as in select-feather), and a minus (bottom right). | Remove feather. Revised r4: redrawn with fewer strokes: one shape, its dashed feather edge, and a separate minus matching remove-points. Revised r5: pen nib + small Lucide feather + minus. There is no add-feather tool in RotoPaint.cpp, so there's no plus counterpart. Revised r6: the feather is back to the small dashed square; nib, minus and layout kept. Still no add-feather counterpart. |
 | RotoPaint.cpp:786 `bezier32.png` (Bezier) | `bezier32.png` | `pen-tool` | Draw Bézier. |
 | RotoPaint.cpp:800 `ellipse.png` | `ellipse.png` | **custom** `natron/ellipse-handles.svg` (draft below): Circle with four small filled square handles at the cardinal points. | Draw ellipse. Revised: custom circle with four square handles (was `circle`). |
 | RotoPaint.cpp:814 `rectangle.png` | `rectangle.png` | **custom** `natron/rectangle-handles.svg` (draft below): Rectangle with small filled square handles on its corners. | Draw rectangle. Revised: custom rectangle with corner handles (was `rectangle-horizontal`). |
@@ -140,7 +148,7 @@ Viewer toolbar buttons from path strings in Engine/RotoPaint.cpp (loaded by Knob
 | RotoPaint.cpp:262 `viewer_roiEnabled/Disabled.png` (bbox click anywhere) | `viewer_roiEnabled.png`, `viewer_roiDisabled.png` | `square-mouse-pointer` | **Collapses.** Click anywhere in the bounding box to select. Today it borrows the viewer RoI art; its own glyph separates the two. |
 | RotoPaint.cpp:275 `rippleEditEnabled/Disabled.png` | `rippleEditEnabled.png`, `rippleEditDisabled.png` | `waves-horizontal` | **Collapses.** Ripple edit. |
 | RotoPaint.cpp:310 `rotoShow/HideTransformOverlay.png` | `rotoShowTransformOverlay.png`, `rotoHideTransformOverlay.png` | `move` | **Collapses.** Show the transform overlay. `move` is also the Transform toolbox group; the context differs. |
-| RotoPaint.cpp:374/400/426 `rotopaint_pressure_on/off.png` | `rotopaint_pressure_on.png`, `rotopaint_pressure_off.png` | **custom** `natron/pressure.svg` (draft below): A single filled swoop filling most of the grid, narrow at the bottom left and broad at the top right. No nib. | **Collapses.** Pressure alters opacity / size / hardness (three buttons, one pair of files). Revised: custom pen nib drawing a tapered stroke (was `gauge`). Revised r3: a single large swoop, narrow to broad, no nib. |
+| RotoPaint.cpp:374/400/426 `rotopaint_pressure_on/off.png` | `rotopaint_pressure_on.png`, `rotopaint_pressure_off.png` | **custom** `natron/pressure.svg` (draft below): A single filled S-squiggle with a strong bend, tapering from a hairline at the bottom left to a broad rounded end at the top right. No nib. | **Collapses.** Pressure alters opacity / size / hardness (three buttons, one pair of files). Revised: custom pen nib drawing a tapered stroke (was `gauge`). Revised r3: a single large swoop, narrow to broad, no nib. Revised r6: S-squiggle with more bend; the taper runs from a hairline to about 5.5 units wide. |
 | RotoPaint.cpp:440 `rotopaint_buildup_on/off.png` | `rotopaint_buildup_on.png`, `rotopaint_buildup_off.png` | **custom** `natron/buildup.svg` (draft below): Pyramid of six small circles: three, two, one. | **Collapses.** Build-up. Revised: custom 3-2-1 pyramid of circles (was `layers-plus`). |
 | RotoPaint.cpp:453 `visible/unvisible.png` + NATRON_PIXMAP_VISIBLE / _UNVISIBLE | `visible.png`, `unvisible.png` | `eye` + `eye-off` | **Two glyphs.** Auto-connect viewer toggle, and the RotoPanel visibility column. The tree shows each state as a separate image, so keep two shapes. |
 | RotoPaint.cpp:286/296 `addKF/removeKF.png` + NATRON_PIXMAP_ADD_KEYFRAME / _REMOVE_KEYFRAME | `addKF.png`, `removeKF.png` | `diamond-plus` + `diamond-minus` | Add / remove keyframe (toolbar and RotoPanel). The tracker's add/remove user key use the same pair. |
@@ -190,14 +198,14 @@ The interpolation menu (DopeSheetView.cpp:2433-2513, 18 px) and the keyframe mar
 
 | Id / path string | Today's file | Proposed glyph | Notes |
 |---|---|---|---|
-| NATRON_PIXMAP_INTERP_CONSTANT | `interp_constant.png` | **custom** `natron/interp-constant.svg` (draft below): A: stepped line, held flat into the centre key, jumping up at it and holding. | Constant. Revised r3: whole set redrawn in one convention (A: centre key dot plus one curve whose shape is the interpolation), with an alternative B (key shapes) beside it to pick from. |
-| NATRON_PIXMAP_INTERP_LINEAR | `interp_linear.png` | **custom** `natron/interp-linear.svg` (draft below): A: two straight segments meeting at the centre key in a tent-shaped kink. | Linear. Revised r3: whole set redrawn in one convention (A: centre key dot plus one curve whose shape is the interpolation), with an alternative B (key shapes) beside it to pick from. |
-| NATRON_PIXMAP_INTERP_CURVE_Z | `interp_curve_z.png` | **custom** `natron/interp-smooth.svg` (draft below): A: one S curve with the key on its middle; clamped, so it flattens toward both ends without overshoot. | Smooth. Revised r3: whole set redrawn in one convention (A: centre key dot plus one curve whose shape is the interpolation), with an alternative B (key shapes) beside it to pick from. |
-| NATRON_PIXMAP_INTERP_CURVE_R | `interp_curve_r.png` | **custom** `natron/interp-catmull.svg` (draft below): A: the same S through the key, overshooting with a small wobble at each end (Catmull-Rom isn't clamped). | Catmull-Rom. Revised r3: whole set redrawn in one convention (A: centre key dot plus one curve whose shape is the interpolation), with an alternative B (key shapes) beside it to pick from. |
-| NATRON_PIXMAP_INTERP_CURVE_C | `interp_curve_c.png` | **custom** `natron/interp-cubic.svg` (draft below): A: one continuous wave through the key (continuous curvature across keys). | Cubic. Revised r3: whole set redrawn in one convention (A: centre key dot plus one curve whose shape is the interpolation), with an alternative B (key shapes) beside it to pick from. |
-| NATRON_PIXMAP_INTERP_CURVE_H | `interp_curve_h.png` | **custom** `natron/interp-horizontal.svg` (draft below): A: curve that flattens at the key, with a horizontal tangent handle drawn. | Horizontal. Revised r3: whole set redrawn in one convention (A: centre key dot plus one curve whose shape is the interpolation), with an alternative B (key shapes) beside it to pick from. |
-| NATRON_PIXMAP_INTERP_BREAK | `interp_break.png` | **custom** `natron/interp-break.svg` (draft below): A: incoming curve rises into the key and the outgoing one leaves flat then falls, each with its own handle at a different angle. | Break. Revised r3: whole set redrawn in one convention (A: centre key dot plus one curve whose shape is the interpolation), with an alternative B (key shapes) beside it to pick from. |
-| NATRON_PIXMAP_INTERP_CURVE | `interp_curve.png` | **custom** `natron/interp-free.svg` (draft below): A: S curve through the key with a single tilted, user-set tangent handle. | Free (user-edited tangents). The id has no caller today: the menu doesn't offer Free, and only the dope-sheet texture loads its file. Drawn so the set is complete. Revised r3: added to complete the interpolation set. |
+| NATRON_PIXMAP_INTERP_CONSTANT | `interp_constant.png` | **custom** `natron/interp-constant.svg` (draft below): stepped line, held flat into the centre key, jumping up at it and holding. | Constant. Revised r3: whole set redrawn in one convention (A: centre key dot plus one curve whose shape is the interpolation), with an alternative B (key shapes) beside it to pick from. Revised r6: convention A chosen by the user and locked in; the B alternative is dropped. |
+| NATRON_PIXMAP_INTERP_LINEAR | `interp_linear.png` | **custom** `natron/interp-linear.svg` (draft below): two straight segments meeting at the centre key in a tent-shaped kink. | Linear. Revised r3: whole set redrawn in one convention (A: centre key dot plus one curve whose shape is the interpolation), with an alternative B (key shapes) beside it to pick from. Revised r6: convention A chosen by the user and locked in; the B alternative is dropped. |
+| NATRON_PIXMAP_INTERP_CURVE_Z | `interp_curve_z.png` | **custom** `natron/interp-smooth.svg` (draft below): one S curve with the key on its middle; clamped, so it flattens toward both ends without overshoot. | Smooth. Revised r3: whole set redrawn in one convention (A: centre key dot plus one curve whose shape is the interpolation), with an alternative B (key shapes) beside it to pick from. Revised r6: convention A chosen by the user and locked in; the B alternative is dropped. |
+| NATRON_PIXMAP_INTERP_CURVE_R | `interp_curve_r.png` | **custom** `natron/interp-catmull.svg` (draft below): S curve through the centre key, with smaller outer key dots; the curve swings visibly past them (dips below the left key, peaks above the right key) before settling, because Catmull-Rom isn't clamped. | Catmull-Rom. Revised r3: whole set redrawn in one convention (A: centre key dot plus one curve whose shape is the interpolation), with an alternative B (key shapes) beside it to pick from. Revised r5: overshoot exaggerated; outer key dots added so the swing past them is visible. B unchanged. Revised r6: convention A chosen by the user and locked in; the B alternative is dropped. |
+| NATRON_PIXMAP_INTERP_CURVE_C | `interp_curve_c.png` | **custom** `natron/interp-cubic.svg` (draft below): one continuous wave through the key (continuous curvature across keys). | Cubic. Revised r3: whole set redrawn in one convention (A: centre key dot plus one curve whose shape is the interpolation), with an alternative B (key shapes) beside it to pick from. Revised r6: convention A chosen by the user and locked in; the B alternative is dropped. |
+| NATRON_PIXMAP_INTERP_CURVE_H | `interp_curve_h.png` | **custom** `natron/interp-horizontal.svg` (draft below): curve that flattens at the key, with a horizontal tangent handle drawn. | Horizontal. Revised r3: whole set redrawn in one convention (A: centre key dot plus one curve whose shape is the interpolation), with an alternative B (key shapes) beside it to pick from. Revised r6: convention A chosen by the user and locked in; the B alternative is dropped. |
+| NATRON_PIXMAP_INTERP_BREAK | `interp_break.png` | **custom** `natron/interp-break.svg` (draft below): broken handles at a right angle, the left one straight down and the right one straight right; the incoming curve rises into the key and the outgoing curve leaves to the right and climbs, both concave to the left. | Break. Revised r3: whole set redrawn in one convention (A: centre key dot plus one curve whose shape is the interpolation), with an alternative B (key shapes) beside it to pick from. Revised r5: A redrawn with right-angled handles (down / right) and both curves concave to the left, the outgoing curve rising. B unchanged. Revised r6: convention A chosen by the user and locked in; the B alternative is dropped. |
+| NATRON_PIXMAP_INTERP_CURVE | `interp_curve.png` | **custom** `natron/interp-free.svg` (draft below): S curve through the key with a single tilted, user-set tangent handle. | Free (user-edited tangents). The id has no caller today: the menu doesn't offer Free, and only the dope-sheet texture loads its file. Drawn so the set is complete. Revised r3: added to complete the interpolation set. Revised r6: convention A chosen by the user and locked in; the B alternative is dropped. |
 | DopeSheetView.cpp:781-798 keyframe texture `interp_constant.png` / `interp_constant_selected.png` | `interp_constant.png`, `interp_constant_selected.png` | **custom** `natron/marker-constant.svg` (draft below): Square key marker, body at `fill-opacity=".35"`. | **Collapses.** Constant: filled square. Revised: replaces the PNG texture (was keep PNG). The selected texture is the same glyph in the On colour; the GL upload calls renderPixmap at 14 px in the text and selection colours. The 35% body fill uses explicit `fill-opacity`. |
 | DopeSheetView.cpp:781-798 keyframe texture `interp_linear.png` / `interp_linear_selected.png` | `interp_linear.png`, `interp_linear_selected.png` | **custom** `natron/marker-linear.svg` (draft below): Diamond key marker, body at `fill-opacity=".35"`. | **Collapses.** Linear: filled diamond. Revised: replaces the PNG texture (was keep PNG). The selected texture is the same glyph in the On colour; the GL upload calls renderPixmap at 14 px in the text and selection colours. The 35% body fill uses explicit `fill-opacity`. |
 | DopeSheetView.cpp:781-798 keyframe texture `interp_curve.png` / `interp_curve_selected.png` | `interp_curve.png`, `interp_curve_selected.png` | **custom** `natron/marker-curve.svg` (draft below): Round key marker, body at `fill-opacity=".35"`. | **Collapses.** Free (user-edited tangents, eKeyframeTypeFree), the only use of NATRON_PIXMAP_INTERP_CURVE's file: filled circle. Revised: replaces the PNG texture (was keep PNG). The selected texture is the same glyph in the On colour; the GL upload calls renderPixmap at 14 px in the text and selection colours. The 35% body fill uses explicit `fill-opacity`. |
@@ -460,28 +468,27 @@ Two straight segments meeting at a sharp corner, opening to the lower right at t
 
 ### `open-close-curve`
 
-Arc open at the bottom with a wide gap, the gap completed by a dashed arc, end points marked. Used in: Roto and RotoPaint.
+Solid arc over the top half of a circle, the bottom half completed by a dashed arc, end points marked. Used in: Roto and RotoPaint.
 
 ```svg
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M6 18A8.5 8.5 0 1 1 18 18"/>
-  <path d="M6 18a8.5 8.5 0 0 0 12 0" stroke-dasharray="1.5 2.5"/>
-  <circle cx="6" cy="18" r="1.3" fill="currentColor" stroke="none"/>
-  <circle cx="18" cy="18" r="1.3" fill="currentColor" stroke="none"/>
+  <path d="M3.5 12a8.5 8.5 0 0 1 17 0"/>
+  <path d="M20.5 12a8.5 8.5 0 0 1-17 0" stroke-dasharray="1.5 2.5"/>
+  <circle cx="3.5" cy="12" r="1.3" fill="currentColor" stroke="none"/>
+  <circle cx="20.5" cy="12" r="1.3" fill="currentColor" stroke="none"/>
 </svg>
 ```
 
 ### `remove-feather`
 
-`pen-tool` nib with a small dashed square crossed out (drop the feather). Used in: Roto and RotoPaint.
+Three small parts: a pen nib (bottom left), a small dashed square for the feather point (top right, as in select-feather), and a minus (bottom right). Used in: Roto and RotoPaint.
 
 ```svg
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M4 20l2.5-8.5L12 9l3 3-3 5.5z"/>
-  <path d="M4 20l5-5"/>
-  <circle cx="10.5" cy="13.5" r="1.3"/>
-  <rect x="15" y="3" width="6" height="6" rx=".5" stroke-dasharray="1.6 1.6"/>
-  <path d="M14 10 22 2"/>
+  <rect x="14.5" y="3.5" width="6.5" height="6.5" rx=".5" stroke-dasharray="1.6 1.6"/>
+  <path d="M2.5 21.5l1.7-5.6 3.8-2 2 2-2 3.8z"/>
+  <path d="M2.5 21.5l3.4-3.4"/>
+  <path d="M15 18.5h6"/>
 </svg>
 ```
 
@@ -534,11 +541,11 @@ Two overlapping stamps; the rear one at `stroke-opacity=".4"`. Used in: Roto and
 
 ### `pressure`
 
-A single filled swoop filling most of the grid, narrow at the bottom left and broad at the top right. No nib. Used in: Roto and RotoPaint.
+A single filled S-squiggle with a strong bend, tapering from a hairline at the bottom left to a broad rounded end at the top right. No nib. Used in: Roto and RotoPaint.
 
 ```svg
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M2.5 21.5c6-1 11.5-6.5 15-17 1.6-.4 3.2.3 4 1.5-3.5 11-10.5 16.5-19 15.5z" fill="currentColor" stroke="none"/>
+  <path d="M2.46 20.64 3.63 20.94 4.68 21.07 5.61 21.03 6.45 20.83 7.21 20.48 7.87 19.99 8.46 19.38 8.98 18.67 9.44 17.87 9.84 17.00 10.22 16.08 10.56 15.13 10.90 14.15 11.23 13.17 11.57 12.21 11.93 11.27 12.31 10.39 12.72 9.58 13.17 8.87 13.64 8.27 14.14 7.80 14.64 7.46 15.15 7.25 15.69 7.14 16.28 7.11 16.99 7.18 17.86 7.36 18.90 7.68 A2.75 2.75 0 0 1 20.10 2.32 L18.41 2.18 L16.85 2.26 L15.42 2.56 L14.14 3.06 L13.03 3.75 L12.12 4.58 L11.39 5.50 L10.83 6.48 L10.40 7.49 L10.07 8.52 L9.81 9.56 L9.60 10.61 L9.42 11.66 L9.27 12.70 L9.12 13.73 L8.97 14.72 L8.81 15.68 L8.61 16.58 L8.38 17.43 L8.10 18.20 L7.76 18.88 L7.35 19.47 L6.85 19.96 L6.25 20.34 L5.54 20.59 L4.68 20.69 L3.69 20.62 L2.54 20.36z" fill="currentColor" stroke="none"/>
 </svg>
 ```
 
@@ -657,7 +664,7 @@ Outline diamond at the centre of `move`'s four arrows. Used in: Tracker.
 
 ### `interp-constant`
 
-A: stepped line, held flat into the centre key, jumping up at it and holding. Used in: Curve editor and dope sheet.
+stepped line, held flat into the centre key, jumping up at it and holding. Used in: Curve editor and dope sheet.
 
 ```svg
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -666,19 +673,9 @@ A: stepped line, held flat into the centre key, jumping up at it and holding. Us
 </svg>
 ```
 
-### `interpB-constant`
-
-B: square (After Effects hold key). Used in: Curve editor and dope sheet (alternative B).
-
-```svg
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <rect x="5" y="5" width="14" height="14" rx="1"/>
-</svg>
-```
-
 ### `interp-linear`
 
-A: two straight segments meeting at the centre key in a tent-shaped kink. Used in: Curve editor and dope sheet.
+two straight segments meeting at the centre key in a tent-shaped kink. Used in: Curve editor and dope sheet.
 
 ```svg
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -687,19 +684,9 @@ A: two straight segments meeting at the centre key in a tent-shaped kink. Used i
 </svg>
 ```
 
-### `interpB-linear`
-
-B: sharp diamond (After Effects linear key). Used in: Curve editor and dope sheet (alternative B).
-
-```svg
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M12 3l9 9-9 9-9-9z"/>
-</svg>
-```
-
 ### `interp-smooth`
 
-A: one S curve with the key on its middle; clamped, so it flattens toward both ends without overshoot. Used in: Curve editor and dope sheet.
+one S curve with the key on its middle; clamped, so it flattens toward both ends without overshoot. Used in: Curve editor and dope sheet.
 
 ```svg
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -708,40 +695,22 @@ A: one S curve with the key on its middle; clamped, so it flattens toward both e
 </svg>
 ```
 
-### `interpB-smooth`
-
-B: hourglass (After Effects easy ease). Used in: Curve editor and dope sheet (alternative B).
-
-```svg
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M6 4h12l-6 8 6 8H6l6-8z"/>
-</svg>
-```
-
 ### `interp-catmull`
 
-A: the same S through the key, overshooting with a small wobble at each end (Catmull-Rom isn't clamped). Used in: Curve editor and dope sheet.
+S curve through the centre key, with smaller outer key dots; the curve swings visibly past them (dips below the left key, peaks above the right key) before settling, because Catmull-Rom isn't clamped. Used in: Curve editor and dope sheet.
 
 ```svg
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M2 17c2 0 2.5 2.5 4.5 2.5 3 0 3.5-5 5.5-7.5s2.5-7.5 5.5-7.5c2 0 2.5 2.5 4.5 2.5"/>
+  <path d="M1.5 16.5C3 16.5 4 18 5 18S7 20.5 8 20.5 10.5 16 12 12 15 3.5 16 3.5 18 5 19 6 21.5 7.5 22.5 7.5"/>
+  <circle cx="5" cy="18" r="1.6" fill="currentColor" stroke="none"/>
+  <circle cx="19" cy="6" r="1.6" fill="currentColor" stroke="none"/>
   <circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/>
-</svg>
-```
-
-### `interpB-catmull`
-
-B: circle (After Effects auto Bezier). Used in: Curve editor and dope sheet (alternative B).
-
-```svg
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <circle cx="12" cy="12" r="8.5"/>
 </svg>
 ```
 
 ### `interp-cubic`
 
-A: one continuous wave through the key (continuous curvature across keys). Used in: Curve editor and dope sheet.
+one continuous wave through the key (continuous curvature across keys). Used in: Curve editor and dope sheet.
 
 ```svg
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -750,19 +719,9 @@ A: one continuous wave through the key (continuous curvature across keys). Used 
 </svg>
 ```
 
-### `interpB-cubic`
-
-B: rounded diamond (After Effects Bezier). Used in: Curve editor and dope sheet (alternative B).
-
-```svg
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M10.6 4.4a2 2 0 0 1 2.8 0l6.2 6.2a2 2 0 0 1 0 2.8l-6.2 6.2a2 2 0 0 1-2.8 0l-6.2-6.2a2 2 0 0 1 0-2.8z"/>
-</svg>
-```
-
 ### `interp-horizontal`
 
-A: curve that flattens at the key, with a horizontal tangent handle drawn. Used in: Curve editor and dope sheet.
+curve that flattens at the key, with a horizontal tangent handle drawn. Used in: Curve editor and dope sheet.
 
 ```svg
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -774,46 +733,25 @@ A: curve that flattens at the key, with a horizontal tangent handle drawn. Used 
 </svg>
 ```
 
-### `interpB-horizontal`
-
-B: wide flat capsule (flat tangent). Used in: Curve editor and dope sheet (alternative B).
-
-```svg
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <rect x="3" y="8" width="18" height="8" rx="4"/>
-</svg>
-```
-
 ### `interp-break`
 
-A: incoming curve rises into the key and the outgoing one leaves flat then falls, each with its own handle at a different angle. Used in: Curve editor and dope sheet.
+broken handles at a right angle, the left one straight down and the right one straight right; the incoming curve rises into the key and the outgoing curve leaves to the right and climbs, both concave to the left. Used in: Curve editor and dope sheet.
 
 ```svg
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M2 20c4-1 8-4 10-8"/>
-  <path d="M12 12c4 0 7 2 10 6"/>
-  <path d="M12 12 9.5 17"/>
+  <path d="M3 21c5 0 9-3 9-9"/>
+  <path d="M12 12c4.5 0 9-3 9-9"/>
+  <path d="M12 12v5"/>
   <path d="M12 12h5"/>
-  <circle cx="9.5" cy="17" r="1.3" fill="currentColor" stroke="none"/>
+  <circle cx="12" cy="17" r="1.3" fill="currentColor" stroke="none"/>
   <circle cx="17" cy="12" r="1.3" fill="currentColor" stroke="none"/>
   <circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/>
 </svg>
 ```
 
-### `interpB-break`
-
-B: half-diamond in, half-square out (After Effects mixed in/out key). Used in: Curve editor and dope sheet (alternative B).
-
-```svg
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M10.5 3.5v17L2 12z"/>
-  <path d="M13.5 3.5h7v17h-7z"/>
-</svg>
-```
-
 ### `interp-free`
 
-A: S curve through the key with a single tilted, user-set tangent handle. Used in: Curve editor and dope sheet.
+S curve through the key with a single tilted, user-set tangent handle. Used in: Curve editor and dope sheet.
 
 ```svg
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -822,19 +760,6 @@ A: S curve through the key with a single tilted, user-set tangent handle. Used i
   <circle cx="7" cy="16" r="1.3" fill="currentColor" stroke="none"/>
   <circle cx="17" cy="8" r="1.3" fill="currentColor" stroke="none"/>
   <circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/>
-</svg>
-```
-
-### `interpB-free`
-
-B: diamond with a tilted handle line through it (user-set tangent). Used in: Curve editor and dope sheet (alternative B).
-
-```svg
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M12 4l8 8-8 8-8-8z"/>
-  <path d="M2 17 22 7"/>
-  <circle cx="2.5" cy="16.75" r="1.3" fill="currentColor" stroke="none"/>
-  <circle cx="21.5" cy="7.25" r="1.3" fill="currentColor" stroke="none"/>
 </svg>
 ```
 
@@ -998,7 +923,7 @@ P5.T4 can point the † ids at the same SVG as the path string, or leave them al
 
 ## Open questions
 
-1. Interpolation: pick convention A (curve through a centre key, Maya-style) or B (key shapes, After Effects-style) for the menu set. Should the dope-sheet markers follow the same choice? B would unify them with the markers.
+1. Dope-sheet keyframe markers: the interpolation menu now uses convention A, curve glyphs (a key dot on a curve whose shape is the interpolation). The 14 px dope-sheet markers are a different thing: small key shapes (square, diamond, circle, star, ringed letters, tab). Keep the markers as small shapes, or redraw them to echo the A curve glyphs?
 2. NATRON_PIXMAP_INTERP_CURVE (Free) has no menu entry today; it's drawn only so the set is complete. Add a Free entry to the menu, or leave the id unused?
 3. Custom drafts are first drafts. Approve them as drawn, or mark the ones to rework. The 14 px dope-sheet markers (ringed C/H/R/Z) are the tightest; check them at real size in the gate build.
 4. The properties bin's minimise/maximise-all button pairs MINIMIZE_WIDGET with MAXIMIZE_WIDGET, which this sheet maps to the float glyph. The proposal builds that one button from `chevrons-down-up` through `ThemedIcon::icon` by path (no new id). Is that acceptable, or should MAXIMIZE_WIDGET stay a generic maximise glyph?

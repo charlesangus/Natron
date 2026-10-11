@@ -98,6 +98,29 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
     - two ordinary nodes with one Paste-Linked knob show the knob-link line and no glyph.
   - size: M
 
+- [ ] M92.P2.T4 — Separate link and expression lines, with colour and visibility preferences
+  - files: `Engine/Node.h`, `Engine/Node.cpp`, `Engine/Settings.h`, `Engine/Settings.cpp`, `Gui/NodeGui.cpp`
+  - approach:
+    - **Tell the lines apart.** Today `Node::KnobLink` (`Node.h:1193`) has no kind: `nodeLinks` mixes expression dependencies (added through `onKnobSlaved(..., true)` at `Knob.cpp:3016,4312`) with slave links. All of them are drawn in one hard-coded green (`NodeGui.cpp:2889-2892`). Add a kind to each entry, either **expression** or **link** (a P1.T1 link group), and build the graph's knob-link lines from both kinds. Internal `slaveTo` links (Roto, Tracker and so on) draw no lines.
+    - **Preferences.** On the Node Graph preferences page, next to M24 - Node Graph Category Colour's edge-kind colours, add:
+      - "Link line colour". Default: a blue matching the P3.T1 circle.
+      - "Expression line colour". Default: today's green (143,201,103).
+      - "Show link lines" (default on).
+      - "Show expression lines" (default on).
+    - **What follows the link settings.** The P2.T3 dashed lines between Linked Nodes are link lines, so they take the link colour and obey "Show link lines". The Linked Node glyph is always shown.
+    - **Live updates.** Changing any of these preferences repaints open graphs without a restart.
+  - verify:
+    - Xvfb screenshots of a graph containing a Linked Node pair, a Paste Link and an expression that references another node, with the two line colours visibly different.
+    - With "Show expression lines" off, only the link lines remain. With "Show link lines" off, only the expression lines remain.
+    - Changing a colour preference repaints immediately.
+    - An expression added or removed through the GUI adds or removes its line.
+  - size: M
+- [ ] M92.P2.T5 — Hotkey to show or hide all link lines
+  - files: `Gui/ActionShortcuts.h`, `Gui/GuiApplicationManager10.cpp`, `Gui/NodeGraph25.cpp`, `Gui/NodeGraph35.cpp`, `Gui/NodeGui.cpp`
+  - approach: The existing "Show Expressions Links" shortcut (`kShortcutIDActionGraphShowExpressions`, Shift+E, `ActionShortcuts.h:419-420`, `GuiApplicationManager10.cpp:928`) toggles `NodeGraph::toggleKnobLinksVisible` (`NodeGraph35.cpp:292`), which affects the current session only. Rename it to "Show Link Lines", keeping Shift+E and the right-click menu's checkable entry (`NodeGraph35.cpp:452-456`). Make it a master switch over both kinds: when off, no expression or link lines are drawn; when on, each kind follows its P2.T4 "Show … lines" preference. It stays a per-session toggle, defaulting to on, and does not change the preferences.
+  - verify: In the GUI, with both preferences on, Shift+E hides every expression line and link line, including the dashed lines between Linked Nodes, and pressing it again restores them. With "Show expression lines" off, Shift+E toggles only the link lines. The right-click menu entry's check state follows the hotkey. The shortcut appears as "Show Link Lines" in the shortcut editor.
+  - size: S
+
 ## Phase 92.3: Knob links in the GUI
 
 - [ ] M92.P3.T1 — Per-knob link button with unlink, re-link and warning
@@ -192,6 +215,8 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
   - Each of these actions can be undone and redone.
   - A save and reload keeps every link.
   - Right-click Duplicate and Paste produce independent copies.
+  - Link lines and expression lines use their own preference colours, and each kind can be hidden in preferences.
+  - Shift+E ("Show Link Lines") hides and shows both kinds of line.
   - No user-visible "Clone", "Declone" or "Link to..." remains.
 
 ## Decisions
@@ -207,4 +232,8 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
 - 2026-10-10 — **Paste Link and drag-to-link become two-way (user):** they use the same link groups and circle button as Linked Nodes. Only the internal `slaveTo` users (MultiInstance, Roto, Tracker, Write's colourspace binding) keep the one-way mechanism.
 - 2026-10-10 — **Aliases are two-way but permanent (user):** breaking an alias would leave a knob on the Group that does nothing, so alias links have no circle button and no unlink action. Deleting the Group's knob is the only way to end one.
 - 2026-10-10 — **Delete Link to... (user):** the unused expression-based `LinkToKnobDialog` is removed rather than revived. Copy Link → Paste Link and drag-to-link are the ways to link.
+- 2026-10-10 — **Line preferences and hotkey (user):**
+  - Link lines and expression lines get separate colour preferences and separate "show" preferences.
+  - The existing Shift+E session toggle becomes "Show Link Lines", a master switch over both kinds. Each kind still obeys its own preference when the switch is on.
+  - The dashed lines between Linked Nodes count as link lines. The Linked Node glyph is always shown.
 - 2026-10-10 — **Deps M24:** M24 - Node Graph Category Colour is reworking the same `NodeGui` body and border drawing, including the clone colour exception, so this milestone starts after it lands.

@@ -1,5 +1,5 @@
 """Screenshots and checks for node label wrapping, take-over picker labels and alignment, themed
-icons, and layout density.
+icons, the link cursor's hotspot, and layout density.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL/Xvfb setup):
     docker exec -e NATRON_GUI_TEST_OUT=build/m56-shots/out -e GUI_TEST_TIMEOUT=300 \
@@ -33,6 +33,9 @@ PANEL_MS = 900
 NODE_WIDTH = 80
 NODE_MAX_WIDTH = NODE_WIDTH * 2.5
 ALIGN_TOLERANCE = 2
+# Effect.getSize() is the node's boundingRect(), which carries its 1 px outline pen on top of the
+# laid-out width.
+NODE_OUTLINE = 1
 
 ROW_GAP = 4
 GROUP_INDENT = 12
@@ -50,7 +53,7 @@ try:
     import NatronEngine
     import shiboken6
     from PySide6.QtCore import QBuffer, QByteArray, QEvent, QIODevice, QMetaObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer
-    from PySide6.QtGui import QGuiApplication, QIcon, QMouseEvent
+    from PySide6.QtGui import QCursor, QGuiApplication, QIcon, QMouseEvent
     from PySide6.QtWidgets import (QAbstractButton, QApplication, QGraphicsTextItem, QLabel, QMenu, QScrollArea,
                                    QTabBar, QToolBar, QWidget)
 
@@ -346,6 +349,109 @@ try:
     def buttons_in(root, exclude_ptrs=()):
         return [b for b in descendants(root, QAbstractButton) if ptr(b) not in exclude_ptrs]
 
+    # ---- link cursor ---------------------------------------------------------------------------
+
+    def send_move(widget, pos, modifiers):
+        ev = QMouseEvent(QEvent.MouseMove, QPointF(pos), widget.mapToGlobal(QPointF(pos)),
+                         Qt.NoButton, Qt.NoButton, modifiers)
+        QApplication.sendEvent(widget, ev)
+        QApplication.processEvents()
+
+    def arrow_tip(pixels, width, height, colour):
+        """The themed-colour pixel nearest the top-left corner: the tip of the cursor's arrow."""
+        best = None
+        r0, g0, b0 = colour
+        for y in range(height):
+            for x in range(width):
+                a, r, g, b = pixels(x, y)
+                if a < 160 or max(abs(r - r0), abs(g - g0), abs(b - b0)) > 40:
+                    continue
+                if best is None or x + y < best[0] + best[1]:
+                    best = (x, y)
+        return best
+
+    def server_cursor():
+        """The cursor the X server is showing, through XFixes: (width, height, xhot, yhot, pixel
+        getter returning (a, r, g, b)), or None. This is what the user sees, after any scaling
+        the platform plugin applies to the QCursor."""
+        import ctypes
+        import ctypes.util
+
+        class XFixesCursorImage(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_short), ("y", ctypes.c_short),
+                        ("width", ctypes.c_ushort), ("height", ctypes.c_ushort),
+                        ("xhot", ctypes.c_ushort), ("yhot", ctypes.c_ushort),
+                        ("cursor_serial", ctypes.c_ulong), ("pixels", ctypes.POINTER(ctypes.c_ulong))]
+        try:
+            x11 = ctypes.CDLL(ctypes.util.find_library("X11") or "libX11.so.6")
+            xfixes = ctypes.CDLL(ctypes.util.find_library("Xfixes") or "libXfixes.so.3")
+        except OSError as e:
+            report("NOTE cursor: no libX11/libXfixes (%s)" % e)
+            return None
+        x11.XOpenDisplay.restype = ctypes.c_void_p
+        x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+        x11.XFree.argtypes = [ctypes.c_void_p]
+        xfixes.XFixesGetCursorImage.restype = ctypes.POINTER(XFixesCursorImage)
+        xfixes.XFixesGetCursorImage.argtypes = [ctypes.c_void_p]
+        dpy = x11.XOpenDisplay(None)
+        if not dpy:
+            return None
+        try:
+            img = xfixes.XFixesGetCursorImage(dpy)
+            if not img:
+                return None
+            c = img.contents
+            w, h = c.width, c.height
+            words = [c.pixels[i] & 0xffffffff for i in range(w * h)]
+            result = (w, h, c.xhot, c.yhot)
+            x11.XFree(img)
+        finally:
+            x11.XCloseDisplay(dpy)
+
+        def pixel(x, y):
+            v = words[y * w + x]
+            a = (v >> 24) & 0xff
+            if a == 0:
+                return 0, 0, 0, 0
+            # XFixes pixels are premultiplied.
+            return (a, min(255, ((v >> 16) & 0xff) * 255 // a), min(255, ((v >> 8) & 0xff) * 255 // a),
+                    min(255, (v & 0xff) * 255 // a))
+        return result + (pixel,)
+
+    def check_link_cursor(widget):
+        cur = widget.cursor()
+        if not check(cur.shape() == Qt.BitmapCursor, "Ctrl+hover on a knob shows the link cursor (shape %r)"
+                     % cur.shape()):
+            return
+        colour = theme_colours()[0]
+        pix = cur.pixmap()
+        dpr = pix.devicePixelRatio()
+        img = pix.toImage()
+        hot = cur.hotSpot()
+        pix.save(os.path.join(gt.OUT, "link-cursor.png"))
+
+        def qt_pixel(x, y):
+            c = img.pixelColor(x, y)
+            return c.alpha(), c.red(), c.green(), c.blue()
+        tip = arrow_tip(qt_pixel, img.width(), img.height(), colour)
+        report("NOTE link cursor: pixmap %dx%d at dpr %.2f, hotspot (%d, %d), arrow tip at device (%r)"
+               % (img.width(), img.height(), dpr, hot.x(), hot.y(), tip))
+        if check(tip is not None, "the link cursor has a themed arrow"):
+            dist = max(abs(tip[0] / dpr - hot.x()), abs(tip[1] / dpr - hot.y()))
+            check(dist <= 2.0, "the link cursor's hotspot sits on the arrow tip (%.1f logical px off)" % dist)
+        server = server_cursor()
+        if server is None:
+            report("NOTE link cursor: could not read the X server's cursor")
+            return
+        w, h, xhot, yhot, pixel = server
+        stip = arrow_tip(pixel, w, h, colour)
+        scale = QApplication.instance().devicePixelRatio()
+        report("NOTE X server cursor: %dx%d, hotspot (%d, %d), arrow tip (%r)" % (w, h, xhot, yhot, stip))
+        if check(stip is not None, "the X server shows the themed link cursor"):
+            dist = max(abs(stip[0] - xhot), abs(stip[1] - yhot))
+            check(dist <= 2.0 * scale, "the X server's hotspot sits on the arrow tip (%d device px off)" % dist)
+
     # ---- node label geometry -------------------------------------------------------------------
 
     def name_rects(graph, nodes):
@@ -389,7 +495,7 @@ try:
         x, y, w, h = node_rect(node)
         r = rects.get(node.getLabel())
         report("NOTE wrap %s: node %.1fx%.1f at (%.1f, %.1f)" % (case, w, h, x, y))
-        check(w <= px(NODE_MAX_WIDTH) + 0.5,
+        check(w <= px(NODE_MAX_WIDTH) + NODE_OUTLINE + 0.5,
               "%s: node width %.1f <= max %.1f" % (case, w, px(NODE_MAX_WIDTH)))
         if not check(r is not None, "%s: found the node's name item" % case):
             return
@@ -614,6 +720,13 @@ try:
             for frame, value in ((1, 0.0), (10, 8.0), (20, 3.0), (30, 12.0)):
                 size.setValueAtTime(value, frame, 0)
                 size.setValueAtTime(value * 0.5, frame, 1)
+            kinds = NatronEngine.Natron.KeyframeTypeEnum
+            # One key per marker glyph, so the dope-sheet shots show C, H, R and Z the right way up.
+            for frame, dim, kind in ((1, 0, "eKeyframeTypeConstant"), (10, 0, "eKeyframeTypeLinear"),
+                                     (20, 0, "eKeyframeTypeCatmullRom"), (30, 0, "eKeyframeTypeSmooth"),
+                                     (1, 1, "eKeyframeTypeCubic"), (10, 1, "eKeyframeTypeHorizontal"),
+                                     (20, 1, "eKeyframeTypeFree")):
+                size.setInterpolationAtTime(frame, getattr(kinds, kind), dim)
         yield ("sleep", SETTLE_MS)
 
         def interp_menu_handler(area, shot_name, seen):
@@ -652,6 +765,9 @@ try:
                 continue
             if view_class == "DopeSheetView":
                 crop_shot(pane("pane3"), "icons-dopesheet-keyframes")
+                QMetaObject.invokeMethod(view, "onSelectedAllTriggered")
+                yield ("sleep", SETTLE_MS)
+                crop_shot(pane("pane3"), "icons-dopesheet-keyframes-selected")
             else:
                 crop_shot(pane("pane3"), "icons-curve-editor")
             seen = {}
@@ -704,6 +820,30 @@ try:
         grade.destroy()
         gt.close_all_panels()
         save_icon_hashes()
+        yield ("sleep", SETTLE_MS)
+
+        # ---- link cursor
+        gt.section("cursor")
+        blur = create("net.sf.cimg.CImgBlur", 0, 0, "CursorBlur")
+        yield ("sleep", PANEL_MS)
+        panel = panel_for(blur)
+        if check(panel is not None, "Blur: settings panel is open"):
+            # KnobSpinBox has no Q_OBJECT, so its meta class name is its base's.
+            spins = [w for w in descendants(panel) if gt.class_name(w) == "SpinBox"
+                     and "<b>size</b>" in (w.toolTip() or "")[:200]]
+            if check(bool(spins), "found the Blur size spin box"):
+                spin = spins[0]
+                centre = QPoint(spin.width() // 2, spin.height() // 2)
+                # The warp makes X send a motion event without Ctrl, which unsets the link
+                # cursor; let it arrive before the Ctrl move.
+                QCursor.setPos(spin.mapToGlobal(centre))
+                yield ("sleep", SETTLE_MS)
+                send_move(spin, centre, Qt.ControlModifier)
+                yield ("sleep", 100)
+                check_link_cursor(spin)
+                send_move(spin, centre, Qt.NoModifier)
+        blur.destroy()
+        gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
 
         # ---- density

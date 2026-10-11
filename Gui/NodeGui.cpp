@@ -899,6 +899,7 @@ NodeGui::togglePreview_internal(bool refreshPreview)
 void
 NodeGui::ensurePreviewCreated()
 {
+    bool created = false;
     if (!_previewPixmap) {
         QImage prev(NATRON_PREVIEW_WIDTH, NATRON_PREVIEW_HEIGHT, QImage::Format_ARGB32);
         prev.fill(Qt::black);
@@ -909,6 +910,7 @@ NodeGui::ensurePreviewCreated()
         _previewPixmap->setTransform(QTransform::fromScale( appPTR->getLogicalDPIXRATIO(), appPTR->getLogicalDPIYRATIO() ), true);
         _previewPixmap->setPixmap(prev_pixmap);
         _previewPixmap->setZValue(getBaseDepth() + 1);
+        created = true;
     }
     QSize size = getSize();
     int w, h;
@@ -916,6 +918,17 @@ NodeGui::ensurePreviewCreated()
     if ( (size.width() < w) ||
          ( size.height() < h) ) {
         resize(w, h);
+        _previewPixmap->stackBefore(_nameItem);
+    } else if (created) {
+        // Already big enough for the preview, but a wrapped label still has to grow the node
+        // to stack under it. getSize() carries the outline pen, so resize from the laid-out size.
+        int curW, curH;
+        {
+            QMutexLocker k(&_mtSafeSizeMutex);
+            curW = _mtSafeWidth;
+            curH = _mtSafeHeight;
+        }
+        resize(curW, curH);
         _previewPixmap->stackBefore(_nameItem);
     }
 }
@@ -1006,6 +1019,7 @@ NodeGui::adjustSizeToContent(int* w,
                              int* h,
                              bool adjustToTextSize)
 {
+    bool labelWrapped = false;
     if (wantsLabelWrap()) {
         _nameItem->setTextWidth(-1);
         const qreal naturalWidth = _nameItem->document()->idealWidth();
@@ -1019,13 +1033,15 @@ NodeGui::adjustSizeToContent(int* w,
         *w = std::max(*w, (int)std::ceil(contentWidth) + iconWidth);
         if (naturalWidth > contentWidth) {
             _nameItem->setTextWidth(contentWidth);
+            labelWrapped = true;
         }
     }
 
     QRectF labelBbox = _nameItem->boundingRect();
 
+    const bool hasPreview = _previewPixmap && _previewPixmap->isVisible();
     if (adjustToTextSize) {
-        if ( _previewPixmap && _previewPixmap->isVisible() ) {
+        if (hasPreview) {
             int pw, ph;
             getSizeWithPreview(&pw, &ph);
             *h = ph;
@@ -1034,6 +1050,11 @@ NodeGui::adjustSizeToContent(int* w,
         }
     } else {
         *h = std::max( (double)*h, labelBbox.height() * 1.2 );
+    }
+    if (hasPreview && labelWrapped) {
+        // The label stacks under the preview, so a wrapped label needs a taller node to hold both.
+        const double stacked = TO_DPIY(NATRON_PREVIEW_HEIGHT) + 10 + labelBbox.height() * 1.2;
+        *h = std::max(*h, (int)std::ceil(stacked));
     }
     if (_pluginIcon && _pluginIcon->isVisible() && _presetIcon && _presetIcon->isVisible()) {
         int iconsHeight = _pluginIcon->boundingRect().height() + _presetIcon->boundingRect().height();
@@ -1544,8 +1565,10 @@ NodeGui::onPreviewImageComputed()
 {
     assert( QThread::currentThread() == qApp->thread() );
     assert(_previewPixmap);
+    bool becameVisible = false;
     if ( !_previewPixmap->isVisible() ) {
         _previewPixmap->setVisible(true);
+        becameVisible = true;
     }
 
     {
@@ -1561,8 +1584,13 @@ NodeGui::onPreviewImageComputed()
         height = _mtSafeHeight;
         width = _mtSafeWidth;
     }
-    QRectF bbox(topLeft.x(), topLeft.y(), width, height);
-    refreshPreviewAndLabelPosition(bbox);
+    if (becameVisible) {
+        // The node was last sized without the preview, so a wrapped label may need more height.
+        resize(width, height);
+    } else {
+        QRectF bbox(topLeft.x(), topLeft.y(), width, height);
+        refreshPreviewAndLabelPosition(bbox);
+    }
 }
 
 void

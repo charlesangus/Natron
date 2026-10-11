@@ -362,9 +362,6 @@ public:
     void restoreInternal(const NodeGuiPtr& thisShared,
                          const std::list<NodeSerializationPtr>& internalSerialization);
 
-    void setMergeHintActive(bool active);
-
-
     void setOverlayLocked(bool locked);
 
     virtual void refreshStateIndicator();
@@ -723,7 +720,6 @@ private:
     int _previewW, _previewH;
     QGraphicsSimpleTextItem* _persistentMessage;
     NodeGraphRectItem* _stateIndicator;
-    bool _mergeHintActive;
     NodeGuiIndicatorPtr _streamIssuesWarning;
     QGraphicsLineItem* _disabledTopLeftBtmRight;
     QGraphicsLineItem* _disabledBtmLeftTopRight;

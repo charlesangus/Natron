@@ -153,13 +153,13 @@ try:
         path = os.path.join(gt.OUT, name + ".png")
         report(("SHOT " if pix.save(path) else "NOTE could not save ") + path)
 
-    # ---- green-pixel probe for the splice marker / highlighted pipe / hint edges / merge-hint --
-    # Edge::paint draws a highlighted pipe in plain Qt::green, NodeGraph.cpp's _spliceMarker is
-    # filled with QColor(0, 255, 0) (also plain green) with a dark outline, and NodeGui's merge-
-    # hint state indicator is Qt::green too (Gui/NodeGui.cpp). None of this script's own node
-    # bodies, selection halos (white) or category tints are pure green, so "is there a green pixel
-    # in roughly this area" is a safe, cheap stand-in for "is the hint/marker drawn here" without
-    # needing scene() (broken in this binary, see the module docstring) or any new Python binding.
+    # ---- green-pixel probe for the splice marker / highlighted pipe / hint edges ---------------
+    # Edge::paint draws a highlighted pipe in plain Qt::green, and NodeGraph.cpp's _spliceMarker
+    # is filled with QColor(0, 255, 0) (also plain green) with a dark outline. None of this
+    # script's own node bodies, selection halos (white) or category tints are pure green, so "is
+    # there a green pixel in roughly this area" is a safe, cheap stand-in for "is the hint/marker
+    # drawn here" without needing scene() (broken in this binary, see the module docstring) or
+    # any new Python binding.
 
     def is_green(c):
         return (c.green() >= GREEN_G_MIN) and (c.red() <= GREEN_R_MAX) and (c.blue() <= GREEN_B_MAX)
@@ -409,8 +409,8 @@ try:
         yield ("sleep", SETTLE_MS)
 
         # =====================================================================================
-        # Splice into pipe: always on with no modifier, unconnected nodes/chains only,
-        # no suppress modifier; Ctrl keeps the dangling-stub hint, Ctrl+Shift the merge hint.
+        # Splice into pipe: always on, unconnected nodes/chains only, Ctrl has no special
+        # meaning during the drag (it no longer suppresses splicing in favour of a hint).
         # =====================================================================================
 
         # ---- splice-vertical: hover-with-marker, drop, and a single-node one-step undo/redo.
@@ -596,47 +596,36 @@ try:
         check(input_connected_from(dst_n2, mid_n) is None,
              "no-splice: the dragged node was not inserted into the other pipe")
 
-        # ---- splice-ctrl-dangling-hint: Ctrl still offers the single-node dangling-stub hint.
-        gt.section("splice-ctrl-dangling-hint")
-        target_hint = create("net.sf.cimg.CImgBlur", 3800, 0)
-        mover_hint = create("net.sf.cimg.CImgBlur", 4100, 300)
+        # ---- splice-ctrl-still-splices: Ctrl has no special meaning during a node drag anymore,
+        # so a Ctrl-held drag over a pipe splices exactly like an unmodified one.
+        gt.section("splice-ctrl-still-splices")
+        src_ctrl = create("net.sf.openfx.ConstantPlugin", 3800, 0)
+        dst_ctrl = create("net.sf.cimg.CImgBlur", 3800, 300)
+        connect(dst_ctrl, 0, src_ctrl)
+        mover_ctrl = create("net.sf.cimg.CImgBlur", 4200, 150)
         app.clearSelection()
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
-        graph_h = root_graph()
-        frame(graph_h, [target_hint, mover_hint])
-        yield ("sleep", SETTLE_MS)
-        hint_rect = (3800.0, 0.0, 4300.0, 300.0)
-        # Just right of the target, so a side of the mover's padded box crosses the target's
-        # dangling Mask stub (NodeGui::hasEdgeNearbyRect wants a crossing, not containment)
-        # without covering the target itself.
-        dest_point = (node_center_scene(target_hint)[0] + box(target_hint)[2] + 15.0,
-                      node_center_scene(target_hint)[1])
-        drag_node_to(graph_h, mover_hint, dest_point, modifiers=Qt.ControlModifier, release=False)
-        graph_shot(graph_h, "splice-08-ctrl-dangling-hint")
-        check_green_present(graph_h, hint_rect, "ctrl-dangling-hint: holding Ctrl shows the dangling-stub hint")
-        end_drag(graph_h, dest_point)
+        graph_ctrl = root_graph()
+        frame(graph_ctrl, [src_ctrl, dst_ctrl, mover_ctrl])
         yield ("sleep", SETTLE_MS)
 
-        # ---- splice-ctrl-shift-merge-hint: Ctrl+Shift still offers the merge hint.
-        gt.section("splice-ctrl-shift-merge-hint")
-        merge_a = create("net.sf.cimg.CImgBlur", 4700, 0)
-        merge_b = create("net.sf.cimg.CImgBlur", 5000, 300)
-        app.clearSelection()
-        gt.close_all_panels()
+        pipe_rect_ctrl = (3800.0, 0.0, 4200.0, 450.0)
+        target_ctrl = (node_center_scene(src_ctrl)[0],
+                       (node_center_scene(src_ctrl)[1] + node_center_scene(dst_ctrl)[1]) / 2.0)
+        drag_node_to(graph_ctrl, mover_ctrl, target_ctrl, modifiers=Qt.ControlModifier, release=False)
+        graph_shot(graph_ctrl, "splice-08-ctrl-still-splices")
+        check_green_present(graph_ctrl, pipe_rect_ctrl,
+                            "ctrl-still-splices: holding Ctrl still shows the splice marker/highlight")
+        end_drag(graph_ctrl, target_ctrl)
         yield ("sleep", SETTLE_MS)
-        graph_m = root_graph()
-        frame(graph_m, [merge_a, merge_b])
-        yield ("sleep", SETTLE_MS)
-        merge_rect = (4700.0, 0.0, 5300.0, 600.0)
-        app.selectNode(merge_a, False)
-        QApplication.processEvents()
-        drag_node_to(graph_m, merge_a, node_center_scene(merge_b),
-                    modifiers=(Qt.ControlModifier | Qt.ShiftModifier), release=False)
-        graph_shot(graph_m, "splice-09-ctrl-shift-merge-hint")
-        check_green_present(graph_m, merge_rect, "ctrl-shift-merge-hint: holding Ctrl+Shift shows the merge hint")
-        end_drag(graph_m, node_center_scene(merge_b))
-        yield ("sleep", SETTLE_MS)
+
+        check(input_connected_from(mover_ctrl, src_ctrl) is not None,
+             "ctrl-still-splices: mover's preferred input now connects from the old source")
+        check(input_connected_from(dst_ctrl, mover_ctrl) is not None,
+             "ctrl-still-splices: destination's pipe input now connects from the dropped node")
+        check(input_connected_from(dst_ctrl, src_ctrl) is None,
+             "ctrl-still-splices: destination is no longer directly connected to the old source")
 
         # =====================================================================================
         # Render dialog: writers/preset/background checkbox, modal foreground progress.

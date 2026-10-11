@@ -294,7 +294,6 @@ NodeGui::NodeGui(QGraphicsItem* parent)
     , _previewH(NATRON_PREVIEW_HEIGHT)
     , _persistentMessage(NULL)
     , _stateIndicator(NULL)
-    , _mergeHintActive(false)
     , _streamIssuesWarning()
     , _disabledTopLeftBtmRight(NULL)
     , _disabledBtmLeftTopRight(NULL)
@@ -2597,8 +2596,6 @@ NodeGui::refreshStateIndicator()
     bool isSelected = getIsSelected();
     if (value >= 1) {
         _stateIndicator->setBrush(Qt::yellow);
-    } else if (_mergeHintActive) {
-        _stateIndicator->setBrush(Qt::green);
     } else if (isSelected) {
         _stateIndicator->setBrush(Qt::white);
     } else if ( !message.isEmpty() && ( (type == 1) || (type == 2) ) ) {
@@ -2626,16 +2623,6 @@ NodeGui::refreshStateIndicator()
     } else {
         update();
     }
-}
-
-void
-NodeGui::setMergeHintActive(bool active)
-{
-    if (active == _mergeHintActive) {
-        return;
-    }
-    _mergeHintActive = active;
-    refreshStateIndicator();
 }
 
 void

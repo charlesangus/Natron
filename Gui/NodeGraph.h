@@ -251,8 +251,6 @@ private:
 
     void showNodePanel(bool casIsCtrl, bool casIsShift, NodeGui* nearbyNode);
 
-    void checkForHints(bool shiftdown, bool controlDown, const NodeGuiPtr& selectedNode, const QRectF& visibleSceneR);
-
     void checkForSpliceHint();
 
     void buildSplicePlan();
@@ -260,8 +258,6 @@ private:
     void clearSpliceHint();
 
     void resetSplicePlan();
-
-    void clearConnectionHints();
 
     void moveSelectedNodesBy(bool shiftdown, bool controlDown, const QPointF& lastMousePosScene, const QPointF& newPos, const QRectF& visibleSceneR, bool userEdit);
 

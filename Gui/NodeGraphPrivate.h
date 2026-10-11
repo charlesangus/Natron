@@ -183,10 +183,8 @@ public:
     QMenu* _menu;
     QGraphicsItem *_tL, *_tR, *_bR, *_bL;
     bool _refreshOverlays;
-    Edge* _highLightedEdge;
-    NodeGuiPtr _mergeHintNode;
 
-    ///This is a hint edge we show when _highLightedEdge is not NULL to display a possible connection.
+    // The ghost edges shown while splicing, previewing the entry/exit reconnection around the pipe.
     Edge* _hintInputEdge;
     Edge* _hintOutputEdge;
 

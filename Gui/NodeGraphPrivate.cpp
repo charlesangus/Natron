@@ -46,7 +46,6 @@
 
 NATRON_NAMESPACE_ENTER
 
-
 NodeGraphPrivate::NodeGraphPrivate(NodeGraph* p,
                                    const NodeCollectionPtr& group)
     : _publicInterface(p)
@@ -76,8 +75,6 @@ NodeGraphPrivate::NodeGraphPrivate(NodeGraph* p,
     , _bR(NULL)
     , _bL(NULL)
     , _refreshOverlays(false)
-    , _highLightedEdge(NULL)
-    , _mergeHintNode()
     , _hintInputEdge(NULL)
     , _hintOutputEdge(NULL)
     , _backdropResized()

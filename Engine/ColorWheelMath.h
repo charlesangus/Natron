@@ -381,10 +381,13 @@ double gear(bool ctrlHeld, bool shiftHeld);
  * (hue, saturation, temp, tint) are tuned per axis rather than derived from wheelRim, because
  * round-tripping them through a shared "chroma per pixel" constant would tie the saturation
  * and temperature controls' feel together for no reason other than sharing a formula.
+ * globalTrackballPlanePerPixel is the one rate that is derived from wheelRim: global C mode is
+ * a plain 2D translate with no hue or saturation axis of its own to tune separately, so it
+ * reuses the removed swatch drag's own rate, wheelRim crossed in 64 px.
  *
- * Saturation has one rate for both the Sat slider's relative drag and global C mode's y-axis:
+ * Saturation has one rate for both the Sat slider's relative drag and global S mode's y-axis:
  * both are explicit saturation controls, unlike the wheel trackball (which moves hue and
- * saturation together and keeps its own, faster feel) or global C's x-axis (hue, its own rate).
+ * saturation together and keeps its own, faster feel) or global S's x-axis (hue, its own rate).
  * Value, temp and tint each have a separate rate for ratio roles (Gain, Colour, Power, Auto)
  * and for Offset, because the two roles' axes live on different physical scales: a ratio
  * role's value axis is a count of stops (powers of two), while Offset's is a raw delta on a
@@ -392,6 +395,7 @@ double gear(bool ctrlHeld, bool shiftHeld);
  **/
 struct TrackballRates {
     double wheelRim = 0.035;
+    double globalTrackballPlanePerPixel = wheelRim / 64.0;
     double hueDegreesPerPixel = 0.5;
     double satPlanePerPixel = 3.5e-5;
     double valueStopPerPixelRatio = 0.01;
@@ -453,14 +457,17 @@ struct ColorEdit {
 ChromaEditResult applyEdit(ColorKnobRoleEnum role, const LumaBasis& basis, const KnobColorValue& v, const ColorEdit& edit, double rememberedHueDegrees);
 
 /**
- * @brief Which property a click-drag in the global trackball mode adjusts: C is hue (x) and
- * saturation (y, up = more), T is temp (x, right = warmer) and tint (y, up = magenta), and V is
- * value from dx - dy, so either screen axis brightens or darkens depending on its sign. (The
- * round-1 H and S modes are dropped: C already reaches hue and saturation, each on its own
- * screen axis, which is what H and S separately offered at the cost of an extra pair of keys.)
+ * @brief Which property a click-drag in the global trackball mode adjusts. C is a relative 2D
+ * translate in the chroma plane, exactly like the wheel's own trackball drag: dx and -dy at
+ * globalTrackballPlanePerPixel move the plane point directly, so C reads no remembered hue. S
+ * is the older, split control UAT round 1 asked C to give up: x = hue, y = saturation, each its
+ * own one-dimensional edit, which does grow saturation back out along rememberedHueDegrees when
+ * it starts from neutral. T is temp (x, right = warmer) and tint (y, up = magenta), and V is
+ * value from dx - dy, so either screen axis brightens or darkens depending on its sign.
  **/
 enum ColorGlobalModeEnum {
     eColorGlobalModeC,
+    eColorGlobalModeS,
     eColorGlobalModeT,
     eColorGlobalModeV
 };
@@ -468,14 +475,18 @@ enum ColorGlobalModeEnum {
 /**
  * @brief One global-mode pointer move, turned into the matching ColorEdit(s) through
  * TrackballRates and applied through applyEdit. dx and dy are raw screen pixels; gearFactor is
- * gear()'s result for whatever is held. C rotates hue then moves saturation, in that order, so
- * a drag starting exactly on white grows saturation along the hue the same move just set,
- * rather than along a stale remembered one.
+ * gear()'s result for whatever is held.
+ *
+ * C is a single translate() step, dx and -dy scaled by globalTrackballPlanePerPixel. S rotates
+ * hue then moves saturation, in that order, so a drag starting exactly on white grows saturation
+ * along the hue the same move just set, rather than along a stale remembered one. The remembered
+ * hue itself advances once per stroke, outside this function (Gui/ColorTrackballGlobalMode.cpp's
+ * ColorGlobalModeStroke), and only needs to for S: C's translate has no hue of its own to lose.
  **/
 ChromaEditResult globalModeEdit(ColorGlobalModeEnum mode, ColorKnobRoleEnum role, const LumaBasis& basis, const KnobColorValue& v, double dx, double dy, double gearFactor, const TrackballRates& rates, double rememberedHueDegrees);
 
 /**
- * @brief Which of the six sliders a ColorEditSlider is: Hue, Sat, Value, Temp, Tint or Alpha.
+ * @brief Which of the panel's six Natron sliders this is: Hue, Sat, Value, Temp, Tint or Alpha.
  * This is a separate list from ColorAxisEnum because Temp and Tint are one combined gesture
  * axis (TempTint) but two separate sliders with two separate ranges.
  **/

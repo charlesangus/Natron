@@ -1754,6 +1754,12 @@ globalModeEdit(ColorGlobalModeEnum mode,
 {
     switch (mode) {
     case eColorGlobalModeC: {
+        double rate = rates.globalTrackballPlanePerPixel * gearFactor;
+
+        return translate(role, basis, v, dx * rate, -dy * rate);
+    }
+
+    case eColorGlobalModeS: {
         ColorEdit hueEdit;
 
         hueEdit.axis = eColorAxisHue;
@@ -1832,16 +1838,22 @@ sliderMapping(ColorSliderKindEnum kind,
             range.rangeMax = 100.0;
             range.unit = "mired";
         } else {
-            range.rangeMin = -50.0;
-            range.rangeMax = 50.0;
+            range.rangeMin = -0.1;
+            range.rangeMax = 0.1;
             range.unit = "axis";
         }
         break;
 
     case eColorSliderKindTint:
-        range.rangeMin = -50.0;
-        range.rangeMax = 50.0;
-        range.unit = ratio ? "tint" : "axis";
+        if (ratio) {
+            range.rangeMin = -50.0;
+            range.rangeMax = 50.0;
+            range.unit = "tint";
+        } else {
+            range.rangeMin = -0.1;
+            range.rangeMax = 0.1;
+            range.unit = "axis";
+        }
         break;
 
     case eColorSliderKindAlpha:

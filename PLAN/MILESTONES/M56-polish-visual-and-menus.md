@@ -271,3 +271,4 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - **Grouping icons:** Toolsets → Lucide `wrench`. Misc and Other: the user wants options; P5.T1's mapping sheet shows candidates for both.
   - **Size:** keep M56 whole.
   - **Twin labels / U-V-A layout:** the user asked for pictures of each option before choosing; pending.
+- 2026-10-11 — **Twin labels (user, from mockups at claude.ai artifact `5Fw2Nn1B4F7tmtjqF3WA4n`):** Premult/Unpremult picker on its own row labelled "Premult by" / "Unpremult by" (A1). IDistort/STMap: U, V and Alpha each on their own aligned row (B1), so P3.T1 stands as written. The user briefly floated a single layer row capped at two channels (first enabled = U, second = V, as in Nuke), and a consultant designed it (`KnobLayerSelect::setMaxChannels`, one `hostUVChannels` twin). The user then dropped that path in favour of B1, so it is not planned.

@@ -99,6 +99,16 @@ ColorGlobalModeKeyAction classifyColorGlobalModeKey(int key, Qt::KeyboardModifie
 Qt::KeyboardModifiers colorGlobalModeModifiersAfterKey(int key, bool press, Qt::KeyboardModifiers reported);
 
 /**
+ * @brief Whether a ShortcutOverride event for key/modifiers is claimed by the global trackball
+ * mode's event filter rather than left for the application's own shortcut on the same key,
+ * given the sequences passThrough currently lets through. True for every key while engaged,
+ * including bare S, which is what keeps the Project Settings shortcut from firing while the
+ * mode is on; false only for a sequence named in passThrough, such as the shortcut that both
+ * engages and leaves the mode.
+ **/
+bool colorGlobalModeShortcutOverrideAccepted(int key, Qt::KeyboardModifiers modifiers, const QList<QKeySequence>& passThrough);
+
+/**
  * @brief The next legal knob (visible and enabled) from current in direction (+1 = down the
  * panel, -1 = up), or -1 when there is none before the end of the list. There is no wrap.
  **/
@@ -134,7 +144,7 @@ public:
 
     /**
      * @brief The hue to remember once the stroke has reached value: value's own hue when it
-     * has one, or, for a C stroke still on neutral, the start hue advanced by the stroke's hue
+     * has one, or, for an S stroke still on neutral, the start hue advanced by the stroke's hue
      * travel, so the next stroke grows saturation the way this one was heading.
      **/
     double rememberedHueAfter(ColorGlobalModeEnum mode, ColorKnobRoleEnum role, const LumaBasis& basis, const KnobColorValue& value, const TrackballRates& rates) const;
@@ -165,10 +175,11 @@ private:
 
 /**
  * @brief The global trackball mode: once engaged on a colour knob, a click-drag anywhere in
- * the application's windows adjusts that knob (C = hue and saturation, T = temperature and
- * tint, V = value), each stroke being one undo step. Esc and Enter accept and exit,
- * Ctrl+Up/Down and Ctrl+scroll move to the previous or next colour knob on the same panel,
- * and Ctrl+Z / Ctrl+Shift+Z undo and redo strokes between them on the knob's own panel.
+ * the application's windows adjusts that knob (C = a trackball translate of hue and
+ * saturation together, S = hue on x and saturation on y, T = temperature and tint, V = value),
+ * each stroke being one undo step. Esc and Enter accept and exit, Ctrl+Up/Down and Ctrl+scroll
+ * move to the previous or next colour knob on the same panel, and Ctrl+Z / Ctrl+Shift+Z undo
+ * and redo strokes between them on the knob's own panel.
  *
  * One controller exists per Gui, created on first use. Its app-wide event filter is installed
  * only while it is engaged.
@@ -241,7 +252,7 @@ public:
     KnobColorValue getLiveValue() const;
 
     /**
-     * @brief "C", "T" or "V".
+     * @brief "C", "S", "T" or "V".
      **/
     static QString modeKeyName(ColorGlobalModeEnum mode);
 

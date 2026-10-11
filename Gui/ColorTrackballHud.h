@@ -73,7 +73,7 @@ struct ColorTrackballHudState {
  * @brief The global trackball mode's own readout, docked inside the properties bin rather than
  * a popup so it stays visible wherever the bin is scrolled: the node and knob (n/N), the mode
  * and what its x and y axes do, the live values (hue/saturation, temp/tint or just the value,
- * depending on the mode), Y, A, the gear, the key legend (C, T, V, Esc/Enter, Ctrl+up/down)
+ * depending on the mode), Y, A, the gear, the key legend (C, S, T, V, Esc/Enter, Ctrl+up/down)
  * with the active mode key lit, and an end-of-list message once a knob switch hits either end
  * of the panel's colour knobs.
  *
@@ -102,6 +102,7 @@ private:
     QLabel* _modeLabel;
     QLabel* _valuesLabel;
     QLabel* _legendC;
+    QLabel* _legendS;
     QLabel* _legendT;
     QLabel* _legendV;
     QLabel* _endOfListLabel;

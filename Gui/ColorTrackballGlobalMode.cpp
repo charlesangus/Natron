@@ -131,12 +131,14 @@ classifyColorGlobalModeKey(int key,
         return result;
 
     case Qt::Key_C:
+    case Qt::Key_S:
     case Qt::Key_T:
     case Qt::Key_V:
         // Shift is allowed through: the user may already be holding it for the gear.
         if (!ctrl && !other) {
             result.action = eColorGlobalModeKeySetMode;
-            result.mode = (key == Qt::Key_C) ? eColorGlobalModeC : (key == Qt::Key_T) ? eColorGlobalModeT
+            result.mode = (key == Qt::Key_C) ? eColorGlobalModeC : (key == Qt::Key_S) ? eColorGlobalModeS
+                : (key == Qt::Key_T)                                                  ? eColorGlobalModeT
                                                                                       : eColorGlobalModeV;
         }
 
@@ -266,7 +268,7 @@ double
 ColorGlobalModeStroke::hueTravelDegrees(ColorGlobalModeEnum mode,
                                         const TrackballRates& rates) const
 {
-    return (mode == eColorGlobalModeC) ? _dx * rates.hueDegreesPerPixel : 0.0;
+    return (mode == eColorGlobalModeS) ? _dx * rates.hueDegreesPerPixel : 0.0;
 }
 
 ChromaEditResult
@@ -479,7 +481,8 @@ updateColorTrackballHud(ColorTrackballGlobalMode* mode)
 
         state.luma = luma(basis, state.value.rgb);
         switch (mode->getMode()) {
-        case eColorGlobalModeC: {
+        case eColorGlobalModeC:
+        case eColorGlobalModeS: {
             const PlanePoint p = toPlane(role, basis, state.value);
 
             state.chromaValid = p.valid;
@@ -632,6 +635,8 @@ ColorTrackballGlobalMode::modeKeyName(ColorGlobalModeEnum mode)
     switch (mode) {
     case eColorGlobalModeC:
         return QString::fromUtf8("C");
+    case eColorGlobalModeS:
+        return QString::fromUtf8("S");
     case eColorGlobalModeT:
         return QString::fromUtf8("T");
     case eColorGlobalModeV:
@@ -1170,21 +1175,25 @@ ColorTrackballGlobalMode::handleWheel(QWheelEvent* e)
 }
 
 bool
-ColorTrackballGlobalMode::isPassThrough(const QKeyEvent* e) const
+colorGlobalModeShortcutOverrideAccepted(int key,
+                                        Qt::KeyboardModifiers modifiers,
+                                        const QList<QKeySequence>& passThrough)
 {
-    if (_passThrough.isEmpty()) {
-        return false;
-    }
+    QKeyCombination combination(withoutKeypad(modifiers), Qt::Key(key));
 
-    QKeyCombination combination(withoutKeypad(e->modifiers()), Qt::Key(e->key()));
-
-    for (QList<QKeySequence>::const_iterator it = _passThrough.begin(); it != _passThrough.end(); ++it) {
+    for (QList<QKeySequence>::const_iterator it = passThrough.begin(); it != passThrough.end(); ++it) {
         if ((it->count() == 1) && ((*it)[0] == combination)) {
-            return true;
+            return false;
         }
     }
 
-    return false;
+    return true;
+}
+
+bool
+ColorTrackballGlobalMode::isPassThrough(const QKeyEvent* e) const
+{
+    return !colorGlobalModeShortcutOverrideAccepted(e->key(), e->modifiers(), _passThrough);
 }
 
 bool

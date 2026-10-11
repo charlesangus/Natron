@@ -50,6 +50,7 @@ ColorTrackballHud::ColorTrackballHud(QWidget* parent)
     , _modeLabel(new QLabel(this))
     , _valuesLabel(new QLabel(this))
     , _legendC(new QLabel(QString::fromUtf8("C"), this))
+    , _legendS(new QLabel(QString::fromUtf8("S"), this))
     , _legendT(new QLabel(QString::fromUtf8("T"), this))
     , _legendV(new QLabel(QString::fromUtf8("V"), this))
     , _endOfListLabel(new QLabel(this))
@@ -59,6 +60,7 @@ ColorTrackballHud::ColorTrackballHud(QWidget* parent)
     _modeLabel->setObjectName(QString::fromUtf8("ColorTrackballHudMode"));
     _valuesLabel->setObjectName(QString::fromUtf8("ColorTrackballHudValues"));
     _legendC->setObjectName(QString::fromUtf8("ColorTrackballHudLegendC"));
+    _legendS->setObjectName(QString::fromUtf8("ColorTrackballHudLegendS"));
     _legendT->setObjectName(QString::fromUtf8("ColorTrackballHudLegendT"));
     _legendV->setObjectName(QString::fromUtf8("ColorTrackballHudLegendV"));
     _endOfListLabel->setObjectName(QString::fromUtf8("ColorTrackballHudEndOfList"));
@@ -74,6 +76,7 @@ ColorTrackballHud::ColorTrackballHud(QWidget* parent)
     legendLayout->setContentsMargins(0, 0, 0, 0);
     legendLayout->setSpacing(10);
     legendLayout->addWidget(_legendC);
+    legendLayout->addWidget(_legendS);
     legendLayout->addWidget(_legendT);
     legendLayout->addWidget(_legendV);
     legendLayout->addWidget(acceptLegend);
@@ -92,6 +95,7 @@ ColorTrackballHud::ColorTrackballHud(QWidget* parent)
 
     _endOfListLabel->setVisible(false);
     setLegendLit(_legendC, false);
+    setLegendLit(_legendS, false);
     setLegendLit(_legendT, false);
     setLegendLit(_legendV, false);
 }
@@ -106,6 +110,8 @@ ColorTrackballHud::modeKeyName(ColorGlobalModeEnum mode)
     switch (mode) {
     case eColorGlobalModeC:
         return QString::fromUtf8("C");
+    case eColorGlobalModeS:
+        return QString::fromUtf8("S");
     case eColorGlobalModeT:
         return QString::fromUtf8("T");
     case eColorGlobalModeV:
@@ -120,11 +126,13 @@ ColorTrackballHud::modeAxesDescription(ColorGlobalModeEnum mode)
 {
     switch (mode) {
     case eColorGlobalModeC:
+        return tr("trackball (drag moves hue and saturation together)");
+    case eColorGlobalModeS:
         return tr("x = hue, y = saturation");
     case eColorGlobalModeT:
-        return tr("x = temperature, y = tint");
+        return tr("x = temp, y = tint");
     case eColorGlobalModeV:
-        return tr("x - y = value");
+        return tr("either axis = value");
     }
 
     return QString();
@@ -162,6 +170,7 @@ ColorTrackballHud::setState(const ColorTrackballHudState& state)
 
     switch (state.mode) {
     case eColorGlobalModeC:
+    case eColorGlobalModeS:
         values = state.chromaValid
             ? tr("Hue %1deg  Sat %2").arg(state.hueDegrees, 0, 'f', 1).arg(state.saturation, 0, 'f', 4)
             : tr("Hue/Sat unavailable");
@@ -182,6 +191,7 @@ ColorTrackballHud::setState(const ColorTrackballHudState& state)
     _valuesLabel->setText(values);
 
     setLegendLit(_legendC, state.mode == eColorGlobalModeC);
+    setLegendLit(_legendS, state.mode == eColorGlobalModeS);
     setLegendLit(_legendT, state.mode == eColorGlobalModeT);
     setLegendLit(_legendV, state.mode == eColorGlobalModeV);
 

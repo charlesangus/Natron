@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <cmath>
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -96,11 +97,14 @@ expectSameValue(const KnobColorValue& expected,
 TEST(ColorTrackballGlobalModeKeys, ModeKeysPickTheMode)
 {
     ColorGlobalModeKeyAction c = classifyColorGlobalModeKey(Qt::Key_C, Qt::NoModifier, false);
+    ColorGlobalModeKeyAction s = classifyColorGlobalModeKey(Qt::Key_S, Qt::NoModifier, false);
     ColorGlobalModeKeyAction t = classifyColorGlobalModeKey(Qt::Key_T, Qt::NoModifier, true);
     ColorGlobalModeKeyAction v = classifyColorGlobalModeKey(Qt::Key_V, Qt::ShiftModifier, false);
 
     EXPECT_EQ(eColorGlobalModeKeySetMode, c.action);
     EXPECT_EQ(eColorGlobalModeC, c.mode);
+    EXPECT_EQ(eColorGlobalModeKeySetMode, s.action);
+    EXPECT_EQ(eColorGlobalModeS, s.mode);
     EXPECT_EQ(eColorGlobalModeKeySetMode, t.action);
     EXPECT_EQ(eColorGlobalModeT, t.mode);
     EXPECT_EQ(eColorGlobalModeKeySetMode, v.action);
@@ -110,11 +114,24 @@ TEST(ColorTrackballGlobalModeKeys, ModeKeysPickTheMode)
 TEST(ColorTrackballGlobalModeKeys, DroppedAndForeignKeysAreSwallowed)
 {
     EXPECT_EQ(eColorGlobalModeKeySwallow, classifyColorGlobalModeKey(Qt::Key_H, Qt::NoModifier, false).action);
-    EXPECT_EQ(eColorGlobalModeKeySwallow, classifyColorGlobalModeKey(Qt::Key_S, Qt::NoModifier, false).action);
+    EXPECT_EQ(eColorGlobalModeKeySwallow, classifyColorGlobalModeKey(Qt::Key_S, Qt::ControlModifier, false).action);
     EXPECT_EQ(eColorGlobalModeKeySwallow, classifyColorGlobalModeKey(Qt::Key_C, Qt::ControlModifier, false).action);
     EXPECT_EQ(eColorGlobalModeKeySwallow, classifyColorGlobalModeKey(Qt::Key_G, Qt::ControlModifier, false).action);
     EXPECT_EQ(eColorGlobalModeKeySwallow, classifyColorGlobalModeKey(Qt::Key_Down, Qt::NoModifier, false).action);
     EXPECT_EQ(eColorGlobalModeKeySwallow, classifyColorGlobalModeKey(Qt::Key_Delete, Qt::NoModifier, false).action);
+}
+
+TEST(ColorTrackballGlobalModeKeys, ShortcutOverrideClaimsBareSWhileEngaged)
+{
+    QList<QKeySequence> passThrough;
+
+    passThrough.push_back(QKeySequence(Qt::CTRL | Qt::Key_E));
+
+    // Bare S is Project Settings' own shortcut; the mode must claim it instead of letting it
+    // through, the same as it claims every other key that is not named in passThrough.
+    EXPECT_TRUE(colorGlobalModeShortcutOverrideAccepted(Qt::Key_S, Qt::NoModifier, passThrough));
+    EXPECT_TRUE(colorGlobalModeShortcutOverrideAccepted(Qt::Key_C, Qt::NoModifier, passThrough));
+    EXPECT_FALSE(colorGlobalModeShortcutOverrideAccepted(Qt::Key_E, Qt::ControlModifier, passThrough));
 }
 
 TEST(ColorTrackballGlobalModeKeys, EscapeAndEnterAccept)
@@ -227,8 +244,10 @@ TEST(ColorTrackballGlobalModeStroke, DraggingBackReturnsToTheStart)
     stroke.addMove(50.0, 20.0, 1.0);
     stroke.addMove(-50.0, -20.0, 1.0);
 
-    for (int m = 0; m < 3; ++m) {
-        ChromaEditResult r = stroke.evaluate((ColorGlobalModeEnum)m, eColorKnobRoleGain, basis, rates);
+    const ColorGlobalModeEnum modes[] = { eColorGlobalModeC, eColorGlobalModeS, eColorGlobalModeT, eColorGlobalModeV };
+
+    for (std::size_t m = 0; m < sizeof(modes) / sizeof(modes[0]); ++m) {
+        ChromaEditResult r = stroke.evaluate(modes[m], eColorKnobRoleGain, basis, rates);
 
         ASSERT_TRUE(r.valid) << "mode " << m;
         expectSameValue(start, r.value, 1e-9);
@@ -263,14 +282,15 @@ TEST(ColorTrackballGlobalModeStroke, ChromaModesKeepLuma)
     LumaBasis basis = acescg();
     KnobColorValue start = rgba(1.1, 1.0, 0.9, 1.0);
     const double Y = luma(basis, start.rgb);
+    const ColorGlobalModeEnum modes[] = { eColorGlobalModeC, eColorGlobalModeS, eColorGlobalModeT };
 
-    for (int m = 0; m < 2; ++m) {
+    for (std::size_t m = 0; m < sizeof(modes) / sizeof(modes[0]); ++m) {
         ColorGlobalModeStroke stroke;
 
         stroke.begin(start, 0.0);
         stroke.addMove(40.0, -30.0, 1.0);
 
-        ChromaEditResult r = stroke.evaluate((ColorGlobalModeEnum)m, eColorKnobRoleGain, basis, rates);
+        ChromaEditResult r = stroke.evaluate(modes[m], eColorKnobRoleGain, basis, rates);
 
         ASSERT_TRUE(r.valid) << "mode " << m;
         EXPECT_NEAR(Y, luma(basis, r.value.rgb), 1e-12 * Y) << "mode " << m;
@@ -278,7 +298,7 @@ TEST(ColorTrackballGlobalModeStroke, ChromaModesKeepLuma)
     }
 }
 
-TEST(ColorTrackballGlobalModeStroke, NeutralStartGrowsSaturationAlongTheDraggedHue)
+TEST(ColorTrackballGlobalModeStroke, SModeNeutralStartGrowsSaturationAlongTheDraggedHue)
 {
     TrackballRates rates;
     LumaBasis basis = acescg();
@@ -289,7 +309,7 @@ TEST(ColorTrackballGlobalModeStroke, NeutralStartGrowsSaturationAlongTheDraggedH
     // saturation by 1000 times the saturation rate.
     stroke.addMove(60.0, -1000.0, 1.0);
 
-    ChromaEditResult r = stroke.evaluate(eColorGlobalModeC, eColorKnobRoleGain, basis, rates);
+    ChromaEditResult r = stroke.evaluate(eColorGlobalModeS, eColorKnobRoleGain, basis, rates);
 
     ASSERT_TRUE(r.valid);
 
@@ -298,10 +318,31 @@ TEST(ColorTrackballGlobalModeStroke, NeutralStartGrowsSaturationAlongTheDraggedH
     ASSERT_TRUE(p.valid);
     EXPECT_NEAR(10.0 + 60.0 * rates.hueDegreesPerPixel, planeHue(p), 1e-6);
     EXPECT_NEAR(1000.0 * rates.satPlanePerPixel, planeSaturation(p), 1e-9);
-    EXPECT_NEAR(planeHue(p), stroke.rememberedHueAfter(eColorGlobalModeC, eColorKnobRoleGain, basis, r.value, rates), 1e-9);
+    EXPECT_NEAR(planeHue(p), stroke.rememberedHueAfter(eColorGlobalModeS, eColorKnobRoleGain, basis, r.value, rates), 1e-9);
 }
 
-TEST(ColorTrackballGlobalModeStroke, RememberedHueAdvancesOnAStrokeThatStaysNeutral)
+TEST(ColorTrackballGlobalModeStroke, CModeDragTranslatesThePlaneLikeTheWheelsOwnTrackball)
+{
+    TrackballRates rates;
+    LumaBasis basis = acescg();
+    ColorGlobalModeStroke stroke;
+
+    stroke.begin(rgba(1, 1, 1, 1), 0.0);
+    stroke.addMove(64.0, 0.0, 1.0);
+
+    ChromaEditResult r = stroke.evaluate(eColorGlobalModeC, eColorKnobRoleGain, basis, rates);
+
+    ASSERT_TRUE(r.valid);
+
+    PlanePoint p = toPlane(eColorKnobRoleGain, basis, r.value);
+
+    ASSERT_TRUE(p.valid);
+    EXPECT_NEAR(rates.wheelRim, p.x, 1e-9);
+    EXPECT_NEAR(0.0, p.y, 1e-9);
+    EXPECT_NEAR(1.0, luma(basis, r.value.rgb), 1e-12);
+}
+
+TEST(ColorTrackballGlobalModeStroke, RememberedHueAdvancesOnAnSStrokeThatStaysNeutral)
 {
     TrackballRates rates;
     LumaBasis basis = acescg();
@@ -311,13 +352,17 @@ TEST(ColorTrackballGlobalModeStroke, RememberedHueAdvancesOnAStrokeThatStaysNeut
     stroke.begin(neutral, 350.0);
     stroke.addMove(40.0, 0.0, 1.0);
 
-    EXPECT_NEAR(10.0, stroke.rememberedHueAfter(eColorGlobalModeC, eColorKnobRoleGain, basis, neutral, rates), 1e-9);
+    // Only S reads its stroke's hue travel back into the remembered hue: C's translate has no
+    // hue axis of its own to lose, and V never touches hue either.
+    EXPECT_NEAR(10.0, stroke.rememberedHueAfter(eColorGlobalModeS, eColorKnobRoleGain, basis, neutral, rates), 1e-9);
+    EXPECT_NEAR(350.0, stroke.rememberedHueAfter(eColorGlobalModeC, eColorKnobRoleGain, basis, neutral, rates), 1e-9);
     EXPECT_NEAR(350.0, stroke.rememberedHueAfter(eColorGlobalModeV, eColorKnobRoleGain, basis, neutral, rates), 1e-9);
 }
 
 TEST(ColorTrackballGlobalModeNames, ModeKeyNames)
 {
     EXPECT_EQ(std::string("C"), ColorTrackballGlobalMode::modeKeyName(eColorGlobalModeC).toStdString());
+    EXPECT_EQ(std::string("S"), ColorTrackballGlobalMode::modeKeyName(eColorGlobalModeS).toStdString());
     EXPECT_EQ(std::string("T"), ColorTrackballGlobalMode::modeKeyName(eColorGlobalModeT).toStdString());
     EXPECT_EQ(std::string("V"), ColorTrackballGlobalMode::modeKeyName(eColorGlobalModeV).toStdString());
     EXPECT_TRUE(ColorTrackballGlobalMode::instanceFor(nullptr) == nullptr);

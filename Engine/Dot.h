@@ -48,8 +48,8 @@ public:
     {
     }
 
-    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL { return false; }
-
+    // A real settings panel gives the Dot the Node/Label knob and the colour button, exactly
+    // like GroupInput/GroupOutput already get from the same NoOpBase default.
     virtual std::string getPluginID() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return PLUGINID_NATRON_DOT;

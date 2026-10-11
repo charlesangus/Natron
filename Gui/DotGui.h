@@ -55,10 +55,7 @@ public:
     DotGui(QGraphicsItem *parent = 0);
 
 private:
-
-
     virtual void createGui() OVERRIDE FINAL;
-    virtual NodeSettingsPanel* createPanel(QVBoxLayout* container, const NodeGuiPtr & thisAsShared) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool canMakePreview() OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return false;
@@ -73,8 +70,16 @@ private:
 
     virtual QRectF boundingRect() const OVERRIDE FINAL;
     virtual QPainterPath shape() const OVERRIDE FINAL;
+
+    // The label sits beside the disk rather than on it, so it is a separate item from the
+    // inherited _nameItem (which stays null for a Dot) instead of reusing that machinery.
+    virtual void refreshExtraLabelColor(const QColor& drawnBodyColor) OVERRIDE FINAL;
+
+    void refreshLabelText(const QString& label);
+
     QGraphicsEllipseItem* diskShape;
     QGraphicsEllipseItem* ellipseIndicator;
+    NodeGraphTextItem* _labelItem;
 };
 
 NATRON_NAMESPACE_EXIT

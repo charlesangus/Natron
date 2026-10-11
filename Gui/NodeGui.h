@@ -616,6 +616,14 @@ protected:
      **/
     virtual bool drawsUserColorAsBody() const { return false; }
 
+    /**
+     * @brief Called with the freshly computed drawn body colour every time it changes.
+     * A subclass whose label is not _nameItem (e.g. DotGui draws its label beside the body
+     * rather than on it) overrides this to keep that label's contrast in sync, without needing
+     * access to _nameItem or the private colour state.
+     **/
+    virtual void refreshExtraLabelColor(const QColor& /*drawnBodyColor*/) { }
+
 private:
 
     int getPluginIconWidth() const;

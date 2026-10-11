@@ -1924,9 +1924,11 @@ NodeGui::getDrawnBodyColor() const
 void
 NodeGui::refreshCurrentBrush()
 {
-    applyBrush(getDrawnBodyColor());
+    QColor drawnBodyColor = getDrawnBodyColor();
+    applyBrush(drawnBodyColor);
     refreshUserColorBorder();
     refreshNameItemTextColor();
+    refreshExtraLabelColor(drawnBodyColor);
 }
 
 void

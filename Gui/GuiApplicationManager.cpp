@@ -268,10 +268,10 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_IMAGES_PATH "colorwheel.png";
         break;
     case NATRON_PIXMAP_COLOR_ADJUST_DROPDOWN:
-        path = NATRON_IMAGES_PATH "colorAdjustDropdown.png";
+        path = NATRON_ICONS_PATH "lucide/chevrons-down.svg";
         break;
     case NATRON_PIXMAP_COLOR_GLOBAL_TRACKBALL:
-        path = NATRON_IMAGES_PATH "colorGlobalTrackball.png";
+        path = NATRON_ICONS_PATH "lucide/expand.svg";
         break;
     case NATRON_PIXMAP_OVERLAY:
         path = NATRON_IMAGES_PATH "colorwheel_overlay.png";

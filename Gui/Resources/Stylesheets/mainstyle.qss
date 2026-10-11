@@ -49,7 +49,7 @@ QToolTip {
 
 QToolBar {
     color: %2;
-    spacing: 3px; /* spacing between items in the tool bar */
+    spacing: 2px; /* spacing between items in the tool bar */
     border: 0px solid black;
 }
 /* QToolBar::handle {
@@ -473,9 +473,9 @@ QTabBar::tab {
     background: %4; /* the background of non-selected tabs */
     border: 1px solid;
     min-width: 5em;
-    padding-left: 9px;
-    padding-right: 6px;
-    padding-top: 4px;
+    padding-left: 10px;
+    padding-right: 10px;
+    padding-top: 2px;
     padding-bottom: 2px;
     border-top-right-radius: 5px;
     border-top-left-radius: 5px;
@@ -545,11 +545,26 @@ QTabWidget::tab-bar {
 
 QMenu {
     background-color: %2; /* sets background of the menu */
-    border: 0px;
-    padding: 1px 0px 0px 1px; /* [top+bottom] [ignored] [ignored] [left+right] (QMenu box model is buggy) top must be > 1px or the first item is selected when clicking */
+    border: 1px solid %4;
+    padding: 4px 0px 4px 0px; /* [top+bottom] [ignored] [ignored] [left+right] (QMenu box model is buggy) top must be > 1px or the first item is selected when clicking */
     margin: 0px;
     color: %5;
     menu-scrollable: 1;
+}
+QMenu::item {
+    padding: 3px 24px 3px 32px; /* 8px lead-in + 24px icon column, so labels line up with or without an icon */
+}
+QMenu::icon {
+    padding-left: 8px;
+}
+QMenu::indicator {
+    width: 14px;
+    left: 8px;
+}
+QMenu::separator {
+    height: 1px;
+    background: %4;
+    margin: 4px 8px;
 }
 QMenu::item:selected { /* when user selects item using mouse or keyboard */
     background-color: %1;
@@ -740,6 +755,7 @@ QMenuBar::item
 {
     color: %5;
     background-color: %2;
+    padding: 3px 8px;
 }
 
 QMenuBar::item:selected

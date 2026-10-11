@@ -666,7 +666,7 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
   - verify: the GUI script screenshots a collapsed row, an expanded row and the engaged state. The icons are crisp at 1× and 2× (`QT_SCALE_FACTOR=2` run), and the checked and unchecked states differ.
   - size: M
 
-- [ ] M44.P7.T12 — End build: run every suite, refresh the GUI evidence script and screenshots, and update the milestone's verification gate
+- [x] M44.P7.T12 — End build: run every suite, refresh the GUI evidence script and screenshots, and update the milestone's verification gate
   - files: `build/m44-gui/m44_trackball.py` (untracked scratch), `PLAN/MILESTONES/M44-trackball-colour-editing.md` (verification gate list; the executor edits this)
   - approach:
     - Run `tools/ci/local/build.sh fast`. Re-run cmake first, because files were added and deleted.
@@ -674,7 +674,7 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
     - Fold every task's GUI checks above into the script.
     - **Drop these sections:** swatch drag, the Values tab (`09-values-tab-hdr`), the absolute/relative `ColorEditSlider` drags, and the HUD in the bin.
     - **Add these sections:** the row-alignment states (T5), channel lines (T6), dropdown open with RGBA above HSV (T8), global C vs S strokes (T9), the HUD under the knob (T10), slider gearing on a plain float knob (Blur `size`) and on the viewer gain slider (T1), and the Offset temp slider travelling its full track in about 250 px (T2).
-    - In the milestone's gate, replace `ColorEditSlider*` with `ScaleSliderQWidget*`.
+    - In the milestone's gate, replace `ScaleSliderQWidget*` with `ScaleSliderQWidget*`.
   - verify: `ctest` and `GuiTests` all green. The GUI script exits 0, with no FAIL in `results.txt` and every shot present.
   - size: M
 
@@ -693,7 +693,7 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
 **Verification gate:**
 - CI `format`, `lint-ci` and `build-and-test` are green.
 - In `Tests`: `ColorWheelMath*`, `ProjectColorManagement*`, and the new NativeGrade/ColorCorrect role cases pass.
-- In `GuiTests`: `ColorWheelWidget*`, `ColorEditSlider*`, `ColorAdjustPanel*`, `ColorTrackballTarget*` and `ColorTrackballHud*` pass.
+- In `GuiTests`: `ColorWheelWidget*`, `ScaleSliderQWidget*`, `ColorAdjustPanel*`, `ColorTrackballTarget*` and `ColorTrackballHud*` pass.
 - `Tests/gui/run-gui-test.sh build/m44-gui/m44_trackball.py build/fast/App/Natron` passes, and its screenshots are attached to the PR.
 - `tools/ci/local/package.sh fast` produces an AppImage, and **the user's hands-on UAT on it passes**.
 - No file on M24's list is touched.
@@ -800,3 +800,15 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
 - 2026-10-10 — **P7.T11:** the icons are 64 px PNGs rasterised from Lucide at a 1.5 px stroke in `#c8c8c8`. Natron scales one source pixmap at runtime and has no @2x convention. The checked state uses a selection-colour background from a new `mainstyle.qss` rule.
   - **Licence:** `chevrons-down` is MIT (it comes from Feather, by Cole Bemis), not ISC. `expand` is ISC.
   - **Open:** Natron has no third-party art licence record yet. M56's icon pass should add one, covering these two icons.
+- 2026-10-10 — **P7.T12 (end build, round 2):** green after fixes in `05b6cad26`. 217/217 ctest pass; the GUI script reports 345 PASS, 0 FAIL, with 32 shots in `build/m44-gui/out/`.
+  - Product bugs found and fixed:
+    - ScaleSliderQWidget read a null parent's font (segfault).
+    - Fine gears were rounded away by the slider's per-pixel step.
+    - The dropdown flash came from layout requests delivered top-down; they are now delivered bottom-up with repaints held, and a paint logger shows no stale paints.
+    - An expression on g locked r's slider.
+    - The HUD text clipped.
+    - Panel spinboxes clipped their values.
+  - The gate's test list uses `ScaleSliderQWidget*` in place of `ColorEditSlider*`.
+  - **Open, user to judge at UAT:** at the default properties width the HSV tracks are about 60 px and the wheel is small. Options if it's not OK: move the wheel beside the sliders, or drop the alignment indent.
+  - **Found, not M44:** deleting a node can crash in `GuiPrivate::setUndoRedoActions`, which holds raw pointers to undo actions that die with a panel. A candidate for M69 - Minor Cleanup.
+  - Cosmetic: spinboxes show full float precision (e.g. 1.0000000000000002).

@@ -28,7 +28,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
 
 ## Phase 56.1: Before evidence
 
-- [ ] M56.P1.T1 — Write the M56 screenshot script and take the "before" shots against the existing binary
+- [x] M56.P1.T1 — Write the M56 screenshot script and take the "before" shots against the existing binary
   - files: `Tests/gui/m56_visual.py` (new)
   - approach:
     - Model it on `Tests/gui/m55_input_pipes.py` / `build/m24-shots/m24_border.py` (watchdog, `gt.section`/`gt.check`/`gt.shot`, NodeGraph crop). Create nodes with `CreateNodeArgsPropSettingsOpened=True`.
@@ -302,3 +302,4 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
 - 2026-10-11 — **Misc toolbox icon → Lucide `shapes` (user).** It gets vendored and re-pointed after P5.T2, which is editing `GuiApplicationManager.cpp`. Other stays `circle-ellipsis`, and the default catch-all stays `puzzle`.
 - 2026-10-11 — **P5.T4:** check at the gate: the dope-sheet texture orientation was flipped (R, Z and node-root must read upright), and the upload changed from GL_RGBA to GL_BGRA. Free interpolation gets a shortcut ID with no default key. KnobGuiContainerHelper's pattern-size and search-size label icons now render themed.
 - 2026-10-11 — **P5.T5:** 178 orphaned PNGs deleted, 128 remain. Found an older bug: `GuiApplicationManager.cpp` asks for `merge_hard_light.png`/`merge_soft_light.png`, but the files are `merge_hardlight.png`/`merge_softlight.png`, so those two Merge-operator icons never load. It is fixed alongside P6.T2.
+- 2026-10-11 — **P1.T1 "before" run** against the M55 build, which has none of M56. 28 checks fail at both 1× and 2×, every one of them expected: wrap 5, labels 6, icons 11, density 6. The shots are in `build/m56-shots/before{,-2x}/`. For the after run, pass `M56_BASELINE_DIR` so the icon-hash comparison runs. Do not call `parentItem()` on node-graph items from Python, because PySide deletes the item and Natron crashes.

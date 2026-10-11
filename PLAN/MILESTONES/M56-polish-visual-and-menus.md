@@ -172,7 +172,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - verify: at the gate build, P1.T1's viewer shots at 1× and 2× show the approved glyphs, and the RoI, clip-to-project, auto-contrast and pause-render toggles each show distinct On and Off states.
   - size: M
 
-- [ ] M56.P5.T3 — Apply the approved properties-panel glyphs
+- [x] M56.P5.T3 — Apply the approved properties-panel glyphs
   - files: `Gui/GuiApplicationManager.cpp`, `Gui/DockablePanel.cpp`, `Gui/Resources/Icons/lucide/*.svg`, `Gui/Resources/Icons/SOURCES.txt`, `Gui/GuiResources.qrc`
   - approach: Same as P5.T2, for the panel header and the knob animation, reset and link buttons.
   - verify: at the gate build, P1.T1's Grade panel shots at 1× and 2× show the approved glyphs.

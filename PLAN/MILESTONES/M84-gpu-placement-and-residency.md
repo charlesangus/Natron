@@ -463,7 +463,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - On RADV, a 24k RGBA float Blur region renders (P8.T2).
   - size: L
 
-- [ ] M84.P7.T6 — Acceptance: the VRAM budget holds under a large comp
+- [x] M84.P7.T6 — Acceptance: the VRAM budget holds under a large comp
   - files: `Tests/GpuResidency_Test.cpp`
   - approach: on lavapipe, with the pool budget at 64 MB:
     - build 8 branches of Constant → Grade → Blur σ10 → Grade at 1024²;
@@ -477,7 +477,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - The pixels match the CPU render.
   - size: M
 
-- [ ] M84.P7.T7 — Reactive GPU memory admission: the pool enforces the budget, out-of-memory halves the strips
+- [x] M84.P7.T7 — Reactive GPU memory admission: the pool enforces the budget, out-of-memory halves the strips
   - files: `Engine/RenderScheduler.{h,cpp}`, `Engine/GpuRegionTask.cpp`, `Engine/GpuRegionStrips.{h,cpp}`, `Engine/GpuContext.cpp`, `Tests/GpuResidency_Test.cpp`, `Tests/RenderScheduler_Test.cpp`
   - approach:
     - Admission no longer gates GPU regions on estimated device bytes. They are throttled only by `gpuMaxConcurrentTasks`, and the pool enforces the budget by evicting LRU buffers. Host-byte admission for downloaded outputs is unchanged. "A branch continuation always runs" stays.
@@ -763,3 +763,15 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
 - 2026-10-11 — M84.P7.T6's test is committed (`5704714b1`), but the task is left unchecked. The budget holds (pool peak exactly 64 MB), there are no fallbacks and the pixels match, but **evictions are 0**. Admission estimates a region at ~2× its real peak (60.8 MB against 32 MB), so GPU regions never overlap, and a continuation runs straight after its producer.
 - 2026-10-11 — **Reactive GPU memory admission (user).** An estimate can't be trusted for arbitrary kernels: OFX GPU plugins allocate outside our pool, and native-kernel scratch would need hand-written declarations. Correctness already rests on the pool's eviction and the P7.T4 retry/fallback, not on prediction. So device-byte admission is dropped in favour of the concurrency cap plus pool enforcement. Strips are planned from known I/O sizes with headroom, and out-of-memory halves the strip height before the CPU fallback. This **supersedes the device-byte half of the P7.T3 approach**. "Continuations always run" is kept. New task M84.P7.T7.
 - 2026-10-11 — **Strips must stream (user):** a stripped region must overlap transfers with compute rather than run upload → compute → download → wait per strip. This was a P7.T5 follow-up, and is now in M84 as M84.P7.T8, ahead of the P8.T2 bench, so the 24k numbers reflect it.
+- 2026-10-11 — M84.P7.T7 done (`054aa9f91`), and M84.P7.T6 checked off with it. Full ctest passes 1660/1660 in both modes. `LargeCompStaysWithinTheDeviceBudget` passes 10/10: pool peak exactly 64 MB, 1–2 evictions per run, no CPU fallbacks, pixels match.
+  - **Admission:** device-byte admission is removed (`estimatedDeviceBytes`, `_reservedDeviceBytes`, the budget setter). Store device-byte reporting, `notePeakDeviceBytes` and `Region::workingSetBytes` (the evict amount before a retry) are kept.
+  - **Headroom:** strips are planned from I/O sizes against the pool budget, capped at device memory − 1 GiB (or half the device on small cards). See `kGpuStripOutsidePoolHeadroom`.
+  - **Out-of-memory ladder:** evict and retry once, then halve the strip height down to 4 rows, then the CPU fallback (`noteGpuStripHalving`).
+  - **Deviations in `Engine/Gpu/`:**
+    - pool refusals caused by contention (`GpuStatus::budgetContention`) no longer shrink the budget or mark the runtime Degraded. Driver refusals, oversize requests and injected faults still do;
+    - `GpuRecordContext::ranOutOfMemory()` makes a scratch out-of-memory halve the strips instead of reading as "GPU refused".
+  - **Test changes:** LargeComp no longer asserts `retries == 0` / `uploads == 8` / `store downloads == 0`. `WorkingSetOverTheBudgetRunsAsStrips` now uses a 4 MB budget. A new test, `OutOfMemoryHalvesTheStripsInsteadOfFallingBack`, is added.
+  - **Follow-ups:**
+    - two contending regions can halve each other into thin strips; consider waiting briefly for the other region before halving;
+    - remember a working strip height per region shape;
+    - the error log is noisy under contention.

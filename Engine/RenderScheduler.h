@@ -92,9 +92,6 @@ struct FrameGraph {
         // The host memory of its output; for a task standing for a region, of the outputs it downloads.
         std::size_t estimatedBytes = 0;
 
-        // The device memory a task standing for a region holds at its peak; 0 for any other task.
-        std::size_t estimatedDeviceBytes = 0;
-
         // Its output goes to the image cache, where another task of the same node rendering the same cached image
         // would wait inside renderRoI for this one: one at another time when the key has no time, or one at another
         // mipmap level that renderRoI maps to the same level.
@@ -243,9 +240,6 @@ public:
         // The device was lost: the scheduler renders the whole frame again on the CPU, whatever the body returned.
         bool deviceLost = false;
 
-        // The device ran out of memory, which lowered the budget of the GPU pool.
-        bool outOfDeviceMemory = false;
-
         // Why the members were rendered on the CPU rather than the GPU; empty when they were not.
         std::string cpuFallback;
     };
@@ -339,15 +333,8 @@ public:
     std::size_t getBytesBudget() const;
 
     /**
-     * @brief The budget of the device memory the regions reserve, unbounded until set. Admission also holds the
-     * regions to the GPU pool's budget, read when a frame with regions is submitted.
-     **/
-    std::size_t getDeviceBytesBudget() const;
-
-    void setDeviceBytesBudget(std::size_t bytes);
-
-    /**
-     * @brief How many regions may run at once; at least 1.
+     * @brief How many regions may run at once; at least 1. Regions are admitted on the host memory of the outputs they
+     * download, as other tasks are, but not on device memory, which the GPU pool keeps within its budget by evicting.
      **/
     int getGpuMaxConcurrentTasks() const;
 
@@ -383,8 +370,6 @@ public:
      * @brief The estimated outputs of the admitted and running tasks, which is 0 once every frame finished.
      **/
     std::size_t getReservedBytesForTests() const;
-
-    std::size_t getReservedDeviceBytesForTests() const;
 
     /**
      * @brief The body every region runs, runGpuRegion() until replaced. Unset, a region fails its frame.
@@ -456,10 +441,6 @@ private:
 
     std::size_t bytesInFlightLocked() const;
 
-    std::size_t deviceBytesInFlightLocked() const;
-
-    std::size_t deviceBytesBudgetLocked() const;
-
     void reserveLocked(const FrameGraph::Task& task);
 
     void unreserveLocked(const FrameGraph::Task& task);
@@ -503,9 +484,6 @@ private:
     // The estimated outputs of the admitted tasks and of the running ones, released when the task finished.
     std::size_t _reservedBytes;
     std::size_t _bytesBudget;
-    std::size_t _reservedDeviceBytes;
-    std::size_t _deviceBytesBudget;
-    std::size_t _poolDeviceBytesBudget;
     int _runningGpuTasks;
     int _gpuMaxConcurrentTasks;
     std::size_t _peakBytesInFlight;

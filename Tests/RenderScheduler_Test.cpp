@@ -230,7 +230,6 @@ protected:
         : BaseTest()
         , _scheduler(0)
         , _savedBudget(0)
-        , _savedDeviceBudget(0)
         , _savedGpuMaxConcurrent(2)
         , _savedRegionBody()
     {
@@ -243,7 +242,6 @@ protected:
         CountingTestRegistry::reset();
         _scheduler = appPTR->getRenderScheduler();
         _savedBudget = _scheduler->getBytesBudget();
-        _savedDeviceBudget = _scheduler->getDeviceBytesBudget();
         _savedGpuMaxConcurrent = _scheduler->getGpuMaxConcurrentTasks();
         _savedRegionBody = _scheduler->getRegionBody();
     }
@@ -251,7 +249,6 @@ protected:
     virtual void TearDown() OVERRIDE
     {
         _scheduler->setBytesBudgetForTests(_savedBudget);
-        _scheduler->setDeviceBytesBudget(_savedDeviceBudget);
         _scheduler->setGpuMaxConcurrentTasks(_savedGpuMaxConcurrent);
         _scheduler->setRegionBody(_savedRegionBody);
         CountingTestRegistry::reset();
@@ -541,7 +538,6 @@ protected:
         }
         EXPECT_EQ(0, _scheduler->getOutstandingRunnables());
         EXPECT_EQ(0u, _scheduler->getReservedBytesForTests());
-        EXPECT_EQ(0u, _scheduler->getReservedDeviceBytesForTests());
     }
 
     // Aborts the frame and waits for it on a timeout, so that the project is never reset under its live tasks.
@@ -770,7 +766,6 @@ protected:
 
     RenderScheduler* _scheduler;
     std::size_t _savedBudget;
-    std::size_t _savedDeviceBudget;
     int _savedGpuMaxConcurrent;
     RenderScheduler::RegionBody _savedRegionBody;
 };
@@ -1311,7 +1306,7 @@ TEST_F(RenderSchedulerTest, CpuBudgetsAreUnchangedWithoutRegions)
     std::string error;
     ASSERT_TRUE(prepareFrame(nodes.back(), 1., true, &run, &error)) << error;
     for (std::size_t i = 0; i < run.graph.tasks.size(); ++i) {
-        EXPECT_EQ(0u, run.graph.tasks[i].estimatedDeviceBytes);
+        EXPECT_TRUE(run.graph.tasks[i].device == FrameGraph::Device::Cpu);
     }
     submit(&run);
     ASSERT_TRUE(waitOrAbort(&run));
@@ -1384,8 +1379,9 @@ TEST_F(RenderSchedulerTest, GpuRegionsGetBudgetOneAndRespectTheConcurrencyCap)
     }
 }
 
-// Device and host reservations return to 0 after frames that wait on a tight device budget, and after an abort.
-TEST_F(RenderSchedulerTest, DeviceAndHostReservationsAreReleased)
+// Regions are admitted on the host memory of their downloaded outputs only. The reservations and the store's host and
+// device bytes return to 0 after frames that wait on a tight host budget, and after an abort.
+TEST_F(RenderSchedulerTest, HostReservationsAndDeviceBytesAreReleased)
 {
     std::vector<NodePtr> wide;
     ASSERT_TRUE(buildWide(8, &wide));
@@ -1399,7 +1395,7 @@ TEST_F(RenderSchedulerTest, DeviceAndHostReservationsAreReleased)
 
     PoolSizeGuard pool(4);
     for (int mode = 0; mode < 2; ++mode) {
-        SCOPED_TRACE(mode == 0 ? "tight device budget" : "abort");
+        SCOPED_TRACE(mode == 0 ? "tight host budget" : "abort");
         CountingTestRegistry::reset();
         std::shared_ptr<RegionBodyState> state = std::make_shared<RegionBodyState>();
         std::shared_ptr<std::atomic<bool>> inBody = std::make_shared<std::atomic<bool>>(false);
@@ -1422,11 +1418,11 @@ TEST_F(RenderSchedulerTest, DeviceAndHostReservationsAreReleased)
         placeOnGpu(&run.graph, gpu);
         ASSERT_EQ(2u, run.graph.regions.size());
         std::size_t largest = 0;
-        for (std::size_t r = 0; r < run.graph.regions.size(); ++r) {
-            largest = std::max(largest, run.graph.regions[r].workingSetBytes);
+        for (std::size_t i = 0; i < run.graph.tasks.size(); ++i) {
+            largest = std::max(largest, run.graph.tasks[i].estimatedBytes);
         }
         ASSERT_GT(largest, 0u);
-        _scheduler->setDeviceBytesBudget((mode == 0) ? largest : std::numeric_limits<std::size_t>::max());
+        _scheduler->setBytesBudgetForTests((mode == 0) ? largest : std::numeric_limits<std::size_t>::max());
         submit(&run);
         if (mode == 1) {
             QElapsedTimer timer;

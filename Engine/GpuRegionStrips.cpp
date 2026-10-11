@@ -112,37 +112,6 @@ slotUses(const GpuStripGraph& graph)
     return uses;
 }
 
-// A member reading a wider window than it writes is a spatial filter, which the GPU kernels run as separable passes
-// with an intermediate of the output's width over the input's rows.
-std::uint64_t
-scratchBytes(const GpuStripGraph& graph,
-             const GpuStripMember& member,
-             const RectI& rect)
-{
-    std::uint64_t bytes = 0;
-
-    if (rect.isNull() || !member.inputRoI || (member.outSlot < 0)) {
-        return 0;
-    }
-    const int nComps = graph.images[member.outSlot].nComps;
-    for (std::size_t k = 0; k < member.inputSlots.size(); ++k) {
-        const int slot = member.inputSlots[k];
-        if (slot < 0) {
-            continue;
-        }
-        const RectI need = member.inputRoI((int)k, rect);
-        if (need == rect) {
-            continue;
-        }
-        const RectI rows = rowsOf(graph.images[slot].bounds, need.y1, need.y2);
-        if (!rows.isNull()) {
-            bytes = std::max(bytes, bufferBytes(RectI(rect.x1, rows.y1, rect.x2, rows.y2), nComps));
-        }
-    }
-
-    return bytes;
-}
-
 /**
  * @brief The windows of the strip over rows band0 to band1, or false when a member it runs would have nothing of an
  * input it reads.
@@ -296,13 +265,6 @@ gpuStripCost(const GpuStripGraph& graph,
         }
         const GpuStripSlot& out = graph.images[member.outSlot];
         bufferOf[member.outSlot] = acquire(bufferBytes(rects[member.outSlot], out.nComps));
-
-        // A spatial member's intermediate and its two small filter tables come from the pool, held to the submission.
-        const std::uint64_t scratch = scratchBytes(graph, member, rects[member.outSlot]);
-        if (scratch > 0) {
-            cost.largestBuffer = std::max(cost.largestBuffer, allocated(limits, scratch));
-            total += allocated(limits, scratch) + 2 * allocated(limits, sizeof(float));
-        }
         for (std::size_t s = 0; s < nSlots; ++s) {
             if ((bufferOf[s] >= 0) && !graph.images[s].interior && (uses[s].lastRead == (int)i)) {
                 spare[bufferOf[s]] = true;
@@ -314,6 +276,32 @@ gpuStripCost(const GpuStripGraph& graph,
 
     return cost;
 } // gpuStripCost
+
+std::uint64_t
+gpuStripBudgetBytes(std::uint64_t poolBudget,
+                    std::uint64_t deviceBytes)
+{
+    if (deviceBytes == 0) {
+        return poolBudget;
+    }
+    const std::uint64_t usable = std::max(deviceBytes / 2, (deviceBytes > kGpuStripOutsidePoolHeadroom) ? deviceBytes - kGpuStripOutsidePoolHeadroom : 0);
+
+    return std::min(poolBudget, usable);
+}
+
+RectI
+gpuStripBands(const GpuStripGraph& graph)
+{
+    RectI bands;
+
+    for (const GpuStripSlot& slot : graph.images) {
+        if (slot.interior && !slot.resident && !slot.bounds.isNull()) {
+            mergeRows(&bands, slot.bounds);
+        }
+    }
+
+    return bands;
+}
 
 GpuStripResult
 planGpuStrips(const GpuStripGraph& graph,
@@ -328,21 +316,22 @@ planGpuStrips(const GpuStripGraph& graph,
     for (const GpuStripSlot& slot : graph.images) {
         whole.push_back(slot.bounds);
     }
-    if (fits(gpuStripCost(graph, whole, limits), limits)) {
+    const GpuStripCost wholeCost = gpuStripCost(graph, whole, limits);
+    if ((limits.forcedRows <= 0) && fits(wholeCost, limits)) {
         return GpuStripResult::Whole;
     }
 
-    RectI bands;
-    for (const GpuStripSlot& slot : graph.images) {
-        if (slot.interior && !slot.resident && !slot.bounds.isNull()) {
-            mergeRows(&bands, slot.bounds);
-        }
-    }
+    const RectI bands = gpuStripBands(graph);
     if (bands.isNull()) {
-        return (gpuStripCost(graph, whole, limits).largestBuffer > limits.maxBufferBytes) ? GpuStripResult::TooLarge : GpuStripResult::OverBudget;
+        if (fits(wholeCost, limits)) {
+            return GpuStripResult::Whole;
+        }
+
+        return (wholeCost.largestBuffer > limits.maxBufferBytes) ? GpuStripResult::TooLarge : GpuStripResult::OverBudget;
     }
 
-    const int maxUnits = std::max(1, limits.maxRows / kGpuStripRowQuantum);
+    const int maxRows = (limits.forcedRows > 0) ? std::min(limits.maxRows, limits.forcedRows) : limits.maxRows;
+    const int maxUnits = std::max(1, maxRows / kGpuStripRowQuantum);
     std::vector<GpuStrip> best;
     switch (stripsOfRows(graph, limits, bands.y1, bands.y2, kGpuStripRowQuantum, &best)) {
     case StripsFit::Fits:

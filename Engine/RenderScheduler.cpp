@@ -466,9 +466,6 @@ RenderScheduler::RenderScheduler()
     , _runningTasks(0)
     , _reservedBytes(0)
     , _bytesBudget(std::numeric_limits<std::size_t>::max())
-    , _reservedDeviceBytes(0)
-    , _deviceBytesBudget(std::numeric_limits<std::size_t>::max())
-    , _poolDeviceBytesBudget(std::numeric_limits<std::size_t>::max())
     , _runningGpuTasks(0)
     , _gpuMaxConcurrentTasks(2)
     , _peakBytesInFlight(0)
@@ -643,21 +640,15 @@ RenderScheduler::submit(const FrameRenderContextPtr& context,
     frame->priority = priority;
     frame->regionTasksBegin = (int)frame->graph.tasks.size();
     frame->remainingTasks = (int)frame->graph.tasks.size();
-    std::size_t poolDeviceBytesBudget = 0;
-    const bool hasRegions = !frame->graph.regions.empty();
-    if (hasRegions) {
+    if (!frame->graph.regions.empty()) {
         appendRegionTasks(frame.get());
         frame->gpuLease = holdGpuRegionRuntime();
-        poolDeviceBytesBudget = gpuRegionDeviceBytesBudget();
     }
 
     int toStart = 0;
     int runnablePriority = 0;
     {
         QMutexLocker k(&_mutex);
-        if (hasRegions) {
-            _poolDeviceBytesBudget = poolDeviceBytesBudget;
-        }
         frame->sequence = _nextFrameSequence++;
         _activeFrames.push_back(frame);
         if (context->getAbortInfo()) {
@@ -714,7 +705,6 @@ RenderScheduler::appendRegionTasks(Frame* frame)
                 unit.estimatedBytes += graph.tasks[output.task].estimatedBytes;
             }
         }
-        unit.estimatedDeviceBytes = region.workingSetBytes;
         unit.startsBranch = true;
         for (int d : unit.dependencies) {
             if (!graph.tasks[d].dependencies.empty()) {
@@ -843,24 +833,6 @@ RenderScheduler::getBytesBudget() const
     return _bytesBudget;
 }
 
-std::size_t
-RenderScheduler::getDeviceBytesBudget() const
-{
-    QMutexLocker k(&_mutex);
-
-    return _deviceBytesBudget;
-}
-
-void
-RenderScheduler::setDeviceBytesBudget(std::size_t bytes)
-{
-    {
-        QMutexLocker k(&_mutex);
-        _deviceBytesBudget = bytes;
-    }
-    reevaluate();
-}
-
 int
 RenderScheduler::getGpuMaxConcurrentTasks() const
 {
@@ -914,26 +886,16 @@ RenderScheduler::getReservedBytesForTests() const
     return _reservedBytes;
 }
 
-std::size_t
-RenderScheduler::getReservedDeviceBytesForTests() const
-{
-    QMutexLocker k(&_mutex);
-
-    return _reservedDeviceBytes;
-}
-
 void
 RenderScheduler::reserveLocked(const FrameGraph::Task& task)
 {
     _reservedBytes += task.estimatedBytes;
-    _reservedDeviceBytes += task.estimatedDeviceBytes;
 }
 
 void
 RenderScheduler::unreserveLocked(const FrameGraph::Task& task)
 {
     _reservedBytes -= task.estimatedBytes;
-    _reservedDeviceBytes -= task.estimatedDeviceBytes;
 }
 
 void
@@ -1284,12 +1246,6 @@ RenderScheduler::executeRegion(const FramePtr& frame,
             sink.append(lines);
         }
         deviceLost = report.deviceLost && (retCode != EffectInstance::eRenderRoIRetCodeAborted);
-        if (report.outOfDeviceMemory) {
-            // The regions admitted from now on are held to what the device could give.
-            const std::size_t poolBudget = gpuRegionDeviceBytesBudget();
-            QMutexLocker k(&_mutex);
-            _poolDeviceBytesBudget = poolBudget;
-        }
     } else if (appPTR) {
         appPTR->writeToErrorLog_mt_safe(QString::fromUtf8("RenderScheduler"), QDateTime::currentDateTime(),
                                         QString::fromUtf8("Render task failed: a GPU region was scheduled with no region body set"));
@@ -1519,19 +1475,13 @@ RenderScheduler::admitGatedLocked(int maxRunnables)
         return;
     }
     const std::size_t inFlight = bytesInFlightLocked();
-    const std::size_t deviceInFlight = deviceBytesInFlightLocked();
-    const std::size_t deviceBudget = deviceBytesBudgetLocked();
 
     while ((slots > 0) && !_gatedReady.empty()) {
         const ReadyRef& top = _gatedReady.front();
         const FrameGraph::Task& topTask = top.frame->graph.tasks[top.task];
         const std::size_t estimated = topTask.estimatedBytes;
-        const std::size_t estimatedDevice = topTask.estimatedDeviceBytes;
         // A stale task is admitted only to be dropped by the next pop, which releases its reservation.
-        const bool fits = isStaleLocked(top)
-                          || ((estimated <= _bytesBudget) && (inFlight + _reservedBytes <= _bytesBudget - estimated)
-                              && (estimatedDevice <= deviceBudget)
-                              && (deviceInFlight + _reservedDeviceBytes <= deviceBudget - estimatedDevice));
+        const bool fits = isStaleLocked(top) || ((estimated <= _bytesBudget) && (inFlight + _reservedBytes <= _bytesBudget - estimated));
         const bool idle = (_runningTasks == 0) && _freeReady.empty() && _admittedReady.empty();
         // Stopping at the first task that does not fit, rather than skipping to smaller ones, keeps a large branch
         // from being starved by the small ones behind it.
@@ -1544,7 +1494,6 @@ RenderScheduler::admitGatedLocked(int maxRunnables)
         _admittedReady.push_back(std::move(ref));
         std::push_heap(_admittedReady.begin(), _admittedReady.end(), ReadyRefWorse());
         _reservedBytes += estimated;
-        _reservedDeviceBytes += estimatedDevice;
         --slots;
     }
 }
@@ -1556,24 +1505,6 @@ RenderScheduler::bytesInFlightLocked() const
 
     for (std::list<FramePtr>::const_iterator it = _activeFrames.begin(); it != _activeFrames.end(); ++it) {
         bytes += (*it)->context->getStore().hostBytesInFlight();
-    }
-
-    return bytes;
-}
-
-std::size_t
-RenderScheduler::deviceBytesBudgetLocked() const
-{
-    return std::min(_deviceBytesBudget, _poolDeviceBytesBudget);
-}
-
-std::size_t
-RenderScheduler::deviceBytesInFlightLocked() const
-{
-    std::size_t bytes = 0;
-
-    for (std::list<FramePtr>::const_iterator it = _activeFrames.begin(); it != _activeFrames.end(); ++it) {
-        bytes += (*it)->context->getStore().deviceBytesInFlight();
     }
 
     return bytes;
@@ -1646,7 +1577,6 @@ RenderScheduler::restartOnCpuLocked(const FramePtr& frame,
         task.device = FrameGraph::Device::Cpu;
         task.regionId = -1;
         task.storage = eStorageModeRAM;
-        task.estimatedDeviceBytes = 0;
         task.remainingDeps = (int)task.dependencies.size();
     }
     frame->remainingTasks = (int)graph.tasks.size();

@@ -182,6 +182,11 @@ public:
     void noteGpuRegionRetry();
 
     /**
+     * @brief Counts one region run again on the GPU as strips half as tall, after it ran out of device memory again.
+     **/
+    void noteGpuStripHalving();
+
+    /**
      * @brief Raises the high-water mark of bytes resident on the device.
      **/
     void notePeakDeviceBytes(unsigned long long bytes);
@@ -193,6 +198,7 @@ public:
     int getEvictions() const;
     int getGpuRegionsRun() const;
     int getGpuRegionRetries() const;
+    int getGpuStripHalvings() const;
     std::map<std::string, int> getGpuTasksPerNode() const;
     std::map<std::string, int> getCpuFallbackReasons() const;
     unsigned long long getPeakDeviceBytes() const;

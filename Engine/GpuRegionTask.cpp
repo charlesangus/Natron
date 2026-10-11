@@ -260,6 +260,7 @@ public:
               const FrameGraph& graph,
               int regionIndex,
               gpu::GpuRuntime& runtime,
+              int forcedRows,
               RenderScheduler::RegionReport* report)
         : _context(context)
         , _graph(graph)
@@ -268,6 +269,7 @@ public:
         , _store(context->getStore())
         , _stats(context->getStats())
         , _report(report)
+        , _forcedRows(forcedRows)
         , _failedNode()
         , _failure()
         , _failureKind(FailureKind::None)
@@ -346,6 +348,15 @@ public:
         return _failure.empty() ? std::string("unknown error") : _failure;
     }
 
+    /**
+     * @brief The height of the strips the run was planned with; for a run planned whole, the height of the rows it
+     * renders; 0 before it was planned.
+     **/
+    int stripRows() const
+    {
+        return _stripRows;
+    }
+
 private:
     bool fail(const NodePtr& node,
               const std::string& reason,
@@ -374,6 +385,17 @@ private:
         const FailureKind kind = (status.result == VK_ERROR_OUT_OF_DEVICE_MEMORY) ? FailureKind::OutOfMemory : FailureKind::DeviceError;
 
         return fail(memberTask, what + ": " + status.message, kind);
+    }
+
+    // Node code reports any failure to record the same way; the record context tells running out of memory apart.
+    void failRecording(int memberTask,
+                       const gpu::GpuRecordContext& recorder)
+    {
+        if (recorder.ranOutOfMemory()) {
+            fail(memberTask, "the node ran out of device memory recording its GPU work", FailureKind::OutOfMemory);
+        } else {
+            fail(memberTask, "the node failed to record its GPU work");
+        }
     }
 
     EffectInstance::RenderRoIRetCode failed()
@@ -920,7 +942,7 @@ private:
                     fail(member.task, "recording threw");
                 }
                 if (status != eStatusOK) {
-                    fail(member.task, "the node failed to record its GPU work");
+                    failRecording(member.task, *recorder);
 
                     return EffectInstance::eRenderRoIRetCodeFailed;
                 }
@@ -1004,9 +1026,9 @@ private:
     }
 
     /**
-     * @brief Leaves strips empty when the region fits the device whole, and otherwise fills it with the strips it runs
-     * as. A stripped output never exists whole on the device, so every output read after the region is downloaded and
-     * stored in RAM, including those another region would have read on the device.
+     * @brief Leaves strips empty when the region fits the device whole and no strip height is forced, and otherwise
+     * fills it with the strips it runs as. A stripped output never exists whole on the device, so every output read
+     * after the region is downloaded and stored in RAM, including those another region would have read on the device.
      **/
     bool planStrips(std::vector<GpuStrip>* strips)
     {
@@ -1020,22 +1042,29 @@ private:
         if (rangeOverride != 0) {
             limits.maxBufferBytes = std::min(limits.maxBufferBytes, rangeOverride);
         }
-        limits.budgetBytes = _runtime.pool().budget();
+        limits.budgetBytes = gpuStripBudgetBytes(_runtime.pool().budget(), _runtime.device().info().deviceLocalHeapSize);
         limits.maxRows = (gpuStripRowsOverride() > 0) ? gpuStripRowsOverride() : kGpuStripDefaultRows;
+        limits.forcedRows = _forcedRows;
         limits.allocationBytes = [](std::uint64_t bytes) {
             return (std::uint64_t)gpu::GpuBufferPool::sizeClass(bytes);
         };
 
+        const GpuStripGraph graph = stripGraph();
         int rows = 0;
-        switch (planGpuStrips(stripGraph(), limits, strips, &rows)) {
+        switch (planGpuStrips(graph, limits, strips, &rows)) {
         case GpuStripResult::Whole:
+            _stripRows = std::max(0, gpuStripBands(graph).height());
+            break;
         case GpuStripResult::Strips:
+            _stripRows = rows;
             break;
         case GpuStripResult::TooLarge:
             return fail(NodePtr(), "not even a strip of " + std::to_string(kGpuStripRowQuantum) + " rows fits the device's " + std::to_string(limits.maxBufferBytes) + "-byte storage buffer range", FailureKind::TooLarge);
         case GpuStripResult::OverBudget:
-            // The same outcome as the pool refusing the first buffer: the device is out of memory for this region.
+            // The same outcome as the pool refusing the first buffer: the device is out of memory for this region, and
+            // thinner strips would not fit either.
             _runtime.noteOutOfMemory(0);
+            _stripRows = kGpuStripRowQuantum;
 
             return fail(NodePtr(), "not even a strip of " + std::to_string(kGpuStripRowQuantum) + " rows fits the device budget of " + std::to_string(limits.budgetBytes) + " bytes", FailureKind::OutOfMemory);
         case GpuStripResult::Unstrippable:
@@ -1250,7 +1279,7 @@ private:
                 fail(member.task, "recording threw");
             }
             if (status != eStatusOK) {
-                fail(member.task, "the node failed to record its GPU work");
+                failRecording(member.task, *recorder);
 
                 return EffectInstance::eRenderRoIRetCodeFailed;
             }
@@ -1450,6 +1479,8 @@ private:
     FrameStore& _store;
     const RenderStatsPtr _stats;
     RenderScheduler::RegionReport* _report;
+    const int _forcedRows;
+    int _stripRows = 0;
 
     // Index in _members of each member task, -1 for every other task.
     std::vector<int> _position;
@@ -1505,15 +1536,14 @@ runGpuRegion(const FrameRenderContextPtr& context,
         return lost();
     }
     if (runtime && gpu->isAvailable()) {
-        for (int attempt = 0;; ++attempt) {
-            {
-                const bool outOfMemory = report->outOfDeviceMemory;
-                *report = RenderScheduler::RegionReport();
-                report->outOfDeviceMemory = outOfMemory;
-            }
+        bool evicted = false;
+        int forcedRows = 0;
+        for (;;) {
+            *report = RenderScheduler::RegionReport();
             RegionRun::FailureKind kind;
+            int rows = 0;
             {
-                RegionRun run(context, graph, region, *runtime, report);
+                RegionRun run(context, graph, region, *runtime, forcedRows, report);
                 const EffectInstance::RenderRoIRetCode code = run.run(rootPlanes);
                 if (code != EffectInstance::eRenderRoIRetCodeFailed) {
                     return code;
@@ -1521,6 +1551,7 @@ runGpuRegion(const FrameRenderContextPtr& context,
                 kind = run.failureKind();
                 node = run.failedNode();
                 detail = run.failure();
+                rows = run.stripRows();
             }
             if (runtime->isLost()) {
                 return lost();
@@ -1539,17 +1570,25 @@ runGpuRegion(const FrameRenderContextPtr& context,
                 }
                 break;
             }
-            report->outOfDeviceMemory = true;
             reason = kFallbackOutOfMemory;
-            if (attempt > 0) {
+            if (!evicted) {
+                evicted = true;
+                // The run released its buffers when it ended, so what is evicted now makes room for the next one.
+                runtime->pool().evict(graph.regions[region].workingSetBytes);
+                if (stats) {
+                    stats->noteGpuRegionRetry();
+                }
+                logRegion(node, QString::fromUtf8("GPU out of memory; retrying after evicting device buffers: %1").arg(QString::fromUtf8(detail.c_str())));
+                continue;
+            }
+            if (rows <= kGpuStripRowQuantum) {
                 break;
             }
-            // The run released its buffers when it ended, so what is evicted now makes room for the next one.
-            runtime->pool().evict(graph.regions[region].workingSetBytes);
+            forcedRows = std::max(kGpuStripRowQuantum, rows / 2 / kGpuStripRowQuantum * kGpuStripRowQuantum);
             if (stats) {
-                stats->noteGpuRegionRetry();
+                stats->noteGpuStripHalving();
             }
-            logRegion(node, QString::fromUtf8("GPU out of memory; retrying after evicting device buffers: %1").arg(QString::fromUtf8(detail.c_str())));
+            logRegion(node, QString::fromUtf8("GPU out of memory; retrying as strips of %1 rows: %2").arg(forcedRows).arg(QString::fromUtf8(detail.c_str())));
         }
     }
 #endif
@@ -1575,19 +1614,6 @@ bool
 isGpuRegionBodyAvailable()
 {
     return availableRuntime() != nullptr;
-}
-
-std::size_t
-gpuRegionDeviceBytesBudget()
-{
-#ifdef NATRON_HAVE_GPU
-    gpu::GpuRuntime* runtime = availableRuntime();
-    if (runtime) {
-        return (std::size_t)runtime->pool().budget();
-    }
-#endif
-
-    return std::numeric_limits<std::size_t>::max();
 }
 
 NATRON_NAMESPACE_EXIT

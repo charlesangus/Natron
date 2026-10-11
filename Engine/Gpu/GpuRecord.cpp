@@ -96,6 +96,9 @@ GpuRecordContext::scratch(VkDeviceSize size, GpuBuffer*& out)
     }
     GpuBufferHandle handle;
     if (GpuStatus s = bufferPool_->acquire(size, handle); !s) {
+        if (s.result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            outOfMemory_ = true;
+        }
         return s;
     }
     held_.push_back(handle);

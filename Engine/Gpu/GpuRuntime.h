@@ -59,7 +59,8 @@ public:
     GpuKernelId registerKernel(const GpuKernelDesc& desc);
 
     // Entry points that fail fast with VK_ERROR_DEVICE_LOST while Lost and otherwise report their
-    // outcome to the state machine.
+    // outcome to the state machine, except for an acquire() refused over budget contention, which
+    // leaves the state and the budget alone.
     GpuStatus acquire(VkDeviceSize size, GpuBufferHandle& out);
     GpuStatus newRecordContext(std::unique_ptr<GpuRecordContext>& out);
     GpuStatus upload(HostRange src, GpuBuffer& dst, VkDeviceSize offset, TimelineValue& done,

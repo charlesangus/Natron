@@ -54,6 +54,9 @@ public:
     // it outlives the recorded work that uses it. Its contents are undefined.
     GpuStatus scratch(VkDeviceSize size, GpuBuffer*& out);
 
+    // A scratch request was refused for lack of device memory, which node code reports only as a failure to record.
+    bool ranOutOfMemory() const { return outOfMemory_; }
+
     // Records a write of `data` into dst at `offset`, visible to later dispatches. Both offset and size
     // must be multiples of 4, and the size at most 65536 bytes.
     GpuStatus updateBuffer(const GpuBuffer& dst, VkDeviceSize offset, std::span<const std::byte> data);
@@ -74,6 +77,7 @@ private:
     VkCommandPool pool_ = VK_NULL_HANDLE;
     VkCommandBuffer cmd_ = VK_NULL_HANDLE;
     bool open_ = false;
+    bool outOfMemory_ = false;
 };
 
 } // namespace gpu

@@ -126,7 +126,13 @@ GpuRuntime::acquire(VkDeviceSize size, GpuBufferHandle& out)
     if (GpuStatus injected = device_->countOperation(); !injected) {
         return note(injected, size);
     }
-    return note(pool_->acquire(size, out), size);
+    GpuStatus status = pool_->acquire(size, out);
+    // Regions running at once compete for the budget; lowering it for that would shrink it a little more with every
+    // busy render.
+    if (status.budgetContention) {
+        return status;
+    }
+    return note(status, size);
 }
 
 GpuStatus

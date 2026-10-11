@@ -53,18 +53,19 @@ NATRON_NAMESPACE_ENTER
  * intermediate is free for the next members once its last reader was recorded, and back in the pool once that work was
  * submitted. Nothing goes to the image cache.
  *
- * A region with a buffer over the device's maxStorageBufferRange, or whose working set is over the pool's budget, runs
- * as horizontal strips instead (see planGpuStrips()): each strip uploads the rows of its inputs with the halos the
- * members after them need, renders every member over its rows, and downloads only the rows of its band of each output.
- * Every output read after a stripped region is downloaded, since it never exists whole on the device. When not even a
- * strip of a few rows fits the storage buffer range, the members render on the CPU, counted as "too large for the
- * GPU"; when one does not fit the budget, the region is out of device memory.
+ * A region with a buffer over the device's maxStorageBufferRange, or whose input and output images are over the budget
+ * of gpuStripBudgetBytes(), runs as horizontal strips instead (see planGpuStrips()): each strip uploads the rows of its
+ * inputs with the halos the members after them need, renders every member over its rows, and downloads only the rows of
+ * its band of each output. Every output read after a stripped region is downloaded, since it never exists whole on the
+ * device. When not even a strip of a few rows fits the storage buffer range, the members render on the CPU, counted as
+ * "too large for the GPU"; when one does not fit the budget, the region is out of device memory.
  *
- * When the device runs out of memory, the least recently used buffers are evicted and the region is run once more.
- * When it runs out again, when a member cannot render on the GPU, or when no GPU is available, the members are rendered
- * on the CPU with renderRoI instead, in topological order, as tasks outside every region would be, and the reason is
- * counted in the frame's RenderStats. When the device is lost, it sets report->deviceLost and returns at once, for the
- * scheduler renders the whole frame again on the CPU.
+ * When the device runs out of memory, the least recently used buffers are evicted and the region is run once more. Each
+ * time it runs out again, it is run as strips half as tall as the last run's, down to strips of kGpuStripRowQuantum
+ * rows. When even those run out, when a member cannot render on the GPU, or when no GPU is available, the members are
+ * rendered on the CPU with renderRoI instead, in topological order, as tasks outside every region would be, and the
+ * reason is counted in the frame's RenderStats. When the device is lost, it sets report->deviceLost and returns at
+ * once, for the scheduler renders the whole frame again on the CPU.
  **/
 EffectInstance::RenderRoIRetCode runGpuRegion(const FrameRenderContextPtr& context,
                                               const FrameGraph& graph,
@@ -82,11 +83,6 @@ std::shared_ptr<void> holdGpuRegionRuntime();
  * @brief Whether runGpuRegion() has a GPU to render on: the application's GpuContext is available.
  **/
 bool isGpuRegionBodyAvailable();
-
-/**
- * @brief The budget of the GPU pool runGpuRegion() allocates from; unbounded while no GPU is available.
- **/
-std::size_t gpuRegionDeviceBytesBudget();
 
 NATRON_NAMESPACE_EXIT
 

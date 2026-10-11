@@ -507,7 +507,6 @@ protected:
             QThread::msleep(1);
         }
         EXPECT_EQ(0u, _scheduler->getReservedBytesForTests());
-        EXPECT_EQ(0u, _scheduler->getReservedDeviceBytesForTests());
     }
 
     static int renderRoICallsOf(const FrameRun& run,
@@ -1076,8 +1075,8 @@ TEST_F(GpuResidencyTest, StripsMatchTheWholeRegionExactly)
     expectMatchesCpu(chain.sink, tiled, stripWindow());
 }
 
-// The region fits the storage buffer range, but its working set is over the pool's budget: it runs as strips that
-// each fit the budget, rather than running out of device memory.
+// The region fits the storage buffer range, but its images alone are over the pool's budget: it runs as strips rather
+// than on the CPU. The Blur's intermediate is not planned for, so the strips may be halved before they fit.
 TEST_F(GpuResidencyTest, WorkingSetOverTheBudgetRunsAsStrips)
 {
     if (!gpuOrSkip()) {
@@ -1089,16 +1088,55 @@ TEST_F(GpuResidencyTest, WorkingSetOverTheBudgetRunsAsStrips)
     FrameRun run;
     std::string error;
     ASSERT_TRUE(prepareStripFrame(chain, &run, &error)) << error;
-    const std::uint64_t budget = 6u << 20;
+    // Two of the region's kStripWidth x kStripHeight RGBA float images take 6 MB.
+    const std::uint64_t budget = 4u << 20;
     runtime()->pool().trim();
     runtime()->pool().setUserBudget(budget);
 
     ASSERT_TRUE(render(&run));
     EXPECT_EQ(0, fallbacksOf(run));
-    EXPECT_EQ(0, run.stats->getGpuRegionRetries());
     EXPECT_EQ(1, run.stats->getGpuRegionsRun());
     EXPECT_GT(run.stats->getUploadCount(), 1) << "the region did not run as strips";
     EXPECT_LE(run.stats->getPeakDeviceBytes(), budget);
+    expectReleased(run);
+    expectMatchesCpu(chain.sink, run, stripWindow());
+}
+
+// The region's images fit the budget exactly, so it is planned whole, but the Blur's intermediate does not fit beside
+// them. Evicting frees nothing, and the region then runs as strips, halved until they fit, rather than on the CPU. The
+// pool refusing over its own budget is no failure of the device, so neither the budget nor the state changes.
+TEST_F(GpuResidencyTest, OutOfMemoryHalvesTheStripsInsteadOfFallingBack)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(useOwnContext());
+    StripChain chain;
+    ASSERT_TRUE(makeStripChain(&chain));
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareStripFrame(chain, &run, &error)) << error;
+    const std::uint64_t image = (std::uint64_t)kStripWidth * kStripHeight * 4 * sizeof(float);
+    const std::uint64_t budget = 2 * image;
+    runtime()->pool().trim();
+    runtime()->pool().setUserBudget(budget);
+    const gpu::GpuRuntimeState stateBefore = runtime()->state();
+    const std::uint64_t liveBefore = runtime()->pool().stats().liveBytes;
+
+    ASSERT_TRUE(render(&run));
+    std::printf("[          ] retries %d, strip halvings %d, uploads %d\n",
+                run.stats->getGpuRegionRetries(),
+                run.stats->getGpuStripHalvings(),
+                run.stats->getUploadCount());
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_EQ(1, run.stats->getGpuRegionRetries());
+    EXPECT_GE(run.stats->getGpuStripHalvings(), 1);
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_GT(run.stats->getUploadCount(), 1) << "the region did not run as strips";
+    EXPECT_EQ(0, renderRoICallsOf(run, chain.blur)) << "the Blur rendered on the CPU";
+    EXPECT_EQ(budget, runtime()->pool().budget());
+    EXPECT_TRUE(runtime()->state() == stateBefore);
+    EXPECT_EQ(liveBefore, runtime()->pool().stats().liveBytes);
     expectReleased(run);
     expectMatchesCpu(chain.sink, run, stripWindow());
 }
@@ -1130,7 +1168,9 @@ TEST_F(GpuResidencyTest, RegionNoStripFitsRendersOnTheCpu)
 
 // Eight Constant -> Grade -> Blur -> Grade branches at 1024 x 1024, summed by CPU Merges, render as two frames in flight
 // on a 64 MB pool, which holds four of their images. The first branch is split after its Grade, whose output waits in
-// the frame store on the device for the region holding the rest of the branch.
+// the frame store on the device for the region holding the rest of the branch. Regions are not admitted on device
+// memory, so two run at once and need more than the pool holds: it evicts, and a region it cannot serve runs again,
+// as thinner strips if need be, but never on the CPU.
 TEST_F(GpuResidencyTest, LargeCompStaysWithinTheDeviceBudget)
 {
     if (!gpuOrSkip()) {
@@ -1231,12 +1271,14 @@ TEST_F(GpuResidencyTest, LargeCompStaysWithinTheDeviceBudget)
             reasons += reason.first + " x" + std::to_string(reason.second) + "; ";
         }
         EXPECT_EQ(0, fallbacksOf(run)) << reasons;
-        EXPECT_EQ(0, run.stats->getGpuRegionRetries());
         EXPECT_EQ(branches + 1, run.stats->getGpuRegionsRun());
-        // One upload per Constant: the second region of the split reads the first's output where it was left.
-        EXPECT_EQ(branches, run.stats->getUploadCount());
-        EXPECT_EQ(0, run.context->getStore().downloadCount());
+        EXPECT_GE(run.stats->getUploadCount(), branches);
         EXPECT_LE(run.stats->getPeakDeviceBytes(), budget);
+        std::printf("[          ] frame: retries %d, strip halvings %d, uploads %d, evictions %d\n",
+                    run.stats->getGpuRegionRetries(),
+                    run.stats->getGpuStripHalvings(),
+                    run.stats->getUploadCount(),
+                    run.stats->getEvictions());
         for (int b = 0; b < branches; ++b) {
             EXPECT_EQ(0, renderRoICallsOf(run, blurs[b])) << "a Blur rendered on the CPU";
         }
@@ -1247,8 +1289,10 @@ TEST_F(GpuResidencyTest, LargeCompStaysWithinTheDeviceBudget)
                 (unsigned long long)after.peakBytes,
                 (unsigned long long)(after.evictions - before.evictions),
                 evictions);
+    EXPECT_GT(evictions, 0);
     EXPECT_LE(after.peakBytes, budget);
     EXPECT_EQ(budget, runtime()->pool().budget()) << "the device ran out of memory, which shrinks the budget";
+    EXPECT_EQ(before.liveBytes, after.liveBytes);
     for (const FrameRun& run : runs) {
         expectReleased(run);
     }
@@ -1383,4 +1427,34 @@ TEST(GpuRegionStrips, NoStripFits)
     budget.budgetBytes = kPlanRowBytes;
     EXPECT_EQ(GpuStripResult::OverBudget, planGpuStrips(graph, budget, &strips, &rows));
     EXPECT_TRUE(strips.empty());
+}
+
+TEST(GpuRegionStrips, ForcedRowsStripARegionThatFitsWhole)
+{
+    const GpuStripGraph graph = planChain();
+    GpuStripLimits limits;
+    limits.forcedRows = 250;
+    std::vector<GpuStrip> strips;
+    int rows = 0;
+
+    ASSERT_EQ(GpuStripResult::Strips, planGpuStrips(graph, limits, &strips, &rows));
+    EXPECT_EQ(248, rows);
+    ASSERT_EQ(5u, strips.size());
+    int next = 0;
+    for (const GpuStrip& strip : strips) {
+        EXPECT_EQ(next, strip.interiors[3].y1);
+        next = strip.interiors[3].y2;
+    }
+    EXPECT_EQ(kPlanHeight, next);
+    EXPECT_EQ(RectI(0, 0, kPlanWidth, kPlanHeight), gpuStripBands(graph));
+}
+
+TEST(GpuRegionStrips, BudgetLeavesHeadroomUnderTheDeviceMemory)
+{
+    const std::uint64_t gb = std::uint64_t(1) << 30;
+
+    EXPECT_EQ(gb * 32 / 5, gpuStripBudgetBytes(gb * 32 / 5, 8 * gb));
+    EXPECT_EQ(3 * gb, gpuStripBudgetBytes(gb * 16 / 5, 4 * gb));
+    EXPECT_EQ(gb * 3 / 4, gpuStripBudgetBytes(gb * 6 / 5, gb * 3 / 2));
+    EXPECT_EQ(gb, gpuStripBudgetBytes(gb, 0));
 }

@@ -42,6 +42,11 @@ NATRON_NAMESPACE_ENTER
 const int kGpuStripRowQuantum = 4;
 const int kGpuStripDefaultRows = 2048;
 
+// The device memory strips leave to what allocates outside the pool: the viewer's textures, the driver, other
+// processes and OFX plugins rendering on the GPU themselves. The pool already holds a fifth of the heap back, which is
+// too little on a small card; on a large one the pool's budget is the tighter bound.
+const std::uint64_t kGpuStripOutsidePoolHeadroom = std::uint64_t(1) << 30;
+
 /**
  * @brief One image a GPU region holds on the device, as seen by the strip planner.
  **/
@@ -82,9 +87,12 @@ struct GpuStripLimits {
     // The largest buffer a kernel may bind: the device's maxStorageBufferRange.
     std::uint64_t maxBufferBytes = std::numeric_limits<std::uint64_t>::max();
 
-    // What the buffers alive at once may take: the device pool's budget.
+    // What the input and output buffers alive at once may take: see gpuStripBudgetBytes().
     std::uint64_t budgetBytes = std::numeric_limits<std::uint64_t>::max();
     int maxRows = kGpuStripDefaultRows;
+
+    // When positive, the region runs as strips of at most this many rows even when it fits whole.
+    int forcedRows = 0;
 
     // The bytes the device allocates for a request; the request itself when unset.
     std::function<std::uint64_t(std::uint64_t)> allocationBytes;
@@ -121,14 +129,27 @@ enum class GpuStripResult {
 };
 
 /**
+ * @brief The budget strips are planned against: the pool's, and never more than the device's memory less
+ * kGpuStripOutsidePoolHeadroom, or half of it on a device that small. deviceBytes 0 is a device of unknown size.
+ **/
+std::uint64_t gpuStripBudgetBytes(std::uint64_t poolBudget,
+                                  std::uint64_t deviceBytes);
+
+/**
  * @brief The largest buffer and the peak device bytes of running graph once over the given windows, as the region
- * body allocates them: external inputs first, then each member's output, reusing a buffer whose last reader came
- * before it, and the intermediate a spatial member records; resident slots count whole, and nothing is freed before
- * the end.
+ * body allocates its images: external inputs first, then each member's output, reusing a buffer whose last reader
+ * came before it; resident slots count whole, and nothing is freed before the end. What a member's kernel allocates
+ * for itself is not counted: running out of memory over it halves the strips instead.
  **/
 GpuStripCost gpuStripCost(const GpuStripGraph& graph,
                           const std::vector<RectI>& rects,
                           const GpuStripLimits& limits);
+
+/**
+ * @brief The rows the strips of graph partition: those of its interior slots that are not resident, null when it has
+ * none.
+ **/
+RectI gpuStripBands(const GpuStripGraph& graph);
 
 /**
  * @brief Whether graph fits limits whole, and otherwise the tallest horizontal strips that do. Bands of rows, from the

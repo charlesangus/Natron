@@ -253,7 +253,9 @@ GpuBufferPool::acquire(VkDeviceSize size, GpuBufferHandle& out)
         }
 
         if (lru_.empty()) {
-            return outOfMemory(size, limit);
+            GpuStatus s = outOfMemory(size, limit);
+            s.budgetContention = !vmaRefused;
+            return s;
         }
 
         // Removing the entry before the call is what makes each callback run exactly once, and running

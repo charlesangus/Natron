@@ -20,6 +20,9 @@ struct GpuStatus {
     std::string message;
     // Set when the caller can retry the same request through a staging copy instead of treating it as fatal.
     bool fallbackToStaging = false;
+    // Set on an out-of-memory from the buffer pool when the request fits its budget but the buffers held by their
+    // owners fill it: the device itself did not refuse, and the room comes back as the owners release them.
+    bool budgetContention = false;
 
     bool ok() const { return result == VK_SUCCESS; }
     explicit operator bool() const { return ok(); }

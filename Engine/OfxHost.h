@@ -154,7 +154,7 @@ public:
 
     /*Reads OFX plugin cache and scan plugins directories
        to load them all.*/
-    void loadOFXPlugins(IOPluginsMap* writersMap);
+    void loadOFXPlugins();
 
     void clearPluginsLoadedCache();
 

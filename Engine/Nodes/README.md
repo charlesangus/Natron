@@ -158,7 +158,7 @@ only plug-in registered under `PLUGINID_NATRON_READ`, at one version,
 `PLUGIN_MAJOR_NATRON_READ`. There is no Read container and no OFX reader behind
 it: `ReadNode` is gone, and `OfxHost::loadOFXPlugins()` skips any OFX plug-in
 whose contexts include `kOfxImageEffectContextReader`, so none is registered.
-Write is still a container (`WriteNode`) around OFX writers. Decoding lives in
+Decoding lives in
 `OiioReadSupport.*` (header cache, layer grouping, metadata), time mapping in
 `ReadTimeDomain.*` and colour in `IoColorSpace.*`, with the colourspace knobs
 (`ocioInputSpace` and the rest below) in `OcioSpaceKnobs.*`, which takes a
@@ -171,7 +171,7 @@ script-name prefix so the Write can share it.
   any other extension gets an "Unsupported format" error from
   `NativeRead::rejectUnsupportedFormat()`.
 - **Entry points.** The file dialogs, drag and drop, `KnobGuiFile`, the CLI,
-  `PrecompNode` and `WriteNode` all ask
+  and `PrecompNode` all ask
   `AppManager::getReaderPluginIDForFileType()` (extension to
   `PLUGINID_NATRON_READ`, or empty) and
   `AppManager::getSupportedReaderFileFormats()` (the extension list). Don't

@@ -69,9 +69,6 @@
 #define PLUGINID_OFX_FRAMERANGE   "net.sf.openfx.FrameRange"
 #define PLUGINID_OFX_RUNSCRIPT "fr.inria.openfx.RunScript"
 #define PLUGINID_OFX_TIMEDISSOLVE "net.sf.openfx.TimeDissolvePlugin"
-#define PLUGINID_OFX_WRITEFFMPEG "fr.inria.openfx.WriteFFmpeg"
-#define PLUGINID_OFX_WRITEPFM "fr.inria.openfx.WritePFM"
-#define PLUGINID_OFX_WRITEPNG "fr.inria.openfx.WritePNG"
 
 #define PLUGINID_NATRON_VIEWER    (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Viewer")
 #define PLUGINID_NATRON_DISKCACHE (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.DiskCache")
@@ -429,7 +426,7 @@ public:
     }
 
     /**
-     * @brief Basically returns true for PLUGINID_OFX_WRITEFFMPEG
+     * @brief Returns true for writers that encode video, which cannot be paused mid-sequence
      **/
     virtual bool isVideoWriter() const WARN_UNUSED_RETURN
     {
@@ -2605,7 +2602,6 @@ private:
     class Implementation;
     std::unique_ptr<Implementation> _imp; // PIMPL: hide implementation details
 
-    friend class WriteNode;
     friend class ImageBitMapMarker_RAII;
 
     enum RenderRoIStatusEnum

@@ -1465,10 +1465,10 @@ AppManager::loadAllPlugins()
     assert( _imp->_formats.empty() );
 
     // Load plug-ins bundled into Natron
-    loadBuiltinNodePlugins(&_imp->writerPlugins);
+    loadBuiltinNodePlugins();
 
     // Load OpenFX plug-ins
-    _imp->ofxHost->loadOFXPlugins(&_imp->writerPlugins);
+    _imp->ofxHost->loadOFXPlugins();
 
     // Load PyPlugs and init.py & initGui.py scripts
     // Should be done after settings are declared
@@ -1596,7 +1596,7 @@ AppManager::registerBuiltInPlugin(const QString& iconPath,
 }
 
 void
-AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*writersMap*/)
+AppManager::loadBuiltinNodePlugins()
 {
     registerBuiltInPlugin<Backdrop>(QString::fromUtf8(NATRON_IMAGES_PATH "backdrop_icon.png"), false, false);
     registerBuiltInPlugin<GroupOutput>(QString::fromUtf8(NATRON_IMAGES_PATH "output_icon.png"), false, false);
@@ -3431,12 +3431,6 @@ AppManager::mapUNCPathToPathWithDriveLetter(const QString& uncPath) const
 
 #endif
 
-const IOPluginsMap&
-AppManager::getFileFormatsForWritingAndWriter() const
-{
-    return _imp->writerPlugins;
-}
-
 void
 AppManager::getSupportedReaderFileFormats(std::vector<std::string>* formats) const
 {
@@ -3447,19 +3441,6 @@ void
 AppManager::getSupportedWriterFileFormats(std::vector<std::string>* formats) const
 {
     *formats = OiioWriteSupport::writableExtensions();
-}
-
-void
-AppManager::getWritersForFormat(const std::string& format,
-                                IOPluginSetForFormat* encoders) const
-{
-    // This will perform a case insensitive find
-    IOPluginsMap::const_iterator found = _imp->writerPlugins.find(format);
-
-    if ( found == _imp->writerPlugins.end() ) {
-        return;
-    }
-    *encoders = found->second;
 }
 
 std::string

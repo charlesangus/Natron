@@ -140,10 +140,10 @@ GuiApplicationManager::setLoadingStatus(const QString & str)
 }
 
 void
-GuiApplicationManager::loadBuiltinNodePlugins(IOPluginsMap* writersMap)
+GuiApplicationManager::loadBuiltinNodePlugins()
 {
     // Nothing special, load base class implementation
-    AppManager::loadBuiltinNodePlugins(writersMap);
+    AppManager::loadBuiltinNodePlugins();
 }
 
 AppInstancePtr

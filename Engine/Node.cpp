@@ -3037,7 +3037,7 @@ Node::createLayerKnob(const LayerKnobSpec& spec,
 void
 Node::initializeDefaultKnobs(bool loadingSerialization)
 {
-    // Readers and Writers don't have default knobs since these knobs are on the Read/WriteNode itself
+    // Readers and Writers don't have default knobs since these knobs are on the IO container itself
 #ifdef NATRON_ENABLE_IO_META_NODES
     NodePtr ioContainer = getIOContainer();
 #endif

@@ -121,4 +121,4 @@ Acceptance sketch:
   - **OFX `hidpi`/`interactive` params:** the host hides and drives them (P2.T3).
   - **Keyer:** key source Luminance or Colour, host mask/mix only (no Bg/InM/OutM); same plugin ID, major 3, clean break with no migration.
   - **ChromaKeyer:** left as is; P4.T4 cancelled.
-  - **Footer order:** the user asked for mockups before deciding; pending.
+  - **Footer order (user, from mockups at claude.ai artifact `WTqyJm8s3WDyUBadL1h8MK`):** below the separator: Clamp black and Clamp white **side by side on one row**, then (Un)premult by, then mask channel + Invert mask, then Mix. This overrides the order in P3.T1's approach (clamp black needs no new line so clamp white joins its row); the `KnobFooterOrder` test checks this order.

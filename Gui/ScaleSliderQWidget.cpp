@@ -39,9 +39,10 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include <QApplication>
 #include <QStyleOption>
 
-#include "Engine/Settings.h"
+#include "Engine/ColorWheelMath.h"
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Settings.h"
 
 #include "Gui/GuiMacros.h"
 #include "Gui/ticks.h"
@@ -71,9 +72,10 @@ struct ScaleSliderQWidgetPrivate
     bool initialized;
     bool mustInitializeSliderPosition;
     bool readOnly;
-    bool ctrlDown;
-    bool shiftDown;
-    double currentZoom;
+    // the geared drag's running total; kept at full precision between moves so an int
+    // slider's slow gears (Ctrl) still accumulate sub-unit progress instead of stalling
+    // at zero every move
+    double accumulator;
     ScaleSliderQWidget::DataTypeEnum dataType;
     bool altered;
     bool useLineColor;
@@ -90,21 +92,19 @@ struct ScaleSliderQWidgetPrivate
                               ScaleSliderQWidget::DataTypeEnum dataType,
                               ScaleTypeEnum type)
         : gui(gui)
-        , zoomCtx( (max-min) * 1e-8, (max-min) * 1e8 )
+        , zoomCtx((max - min) * 1e-8, (max - min) * 1e8)
         , oldClick()
         , minimum(min)
         , maximum(max)
         , type(type)
         , value(initialPos)
         , dragging(false)
-        , font( parent->font() )
+        , font(parent->font())
         , sliderColor(85, 116, 114)
         , initialized(false)
         , mustInitializeSliderPosition(true)
         , readOnly(false)
-        , ctrlDown(false)
-        , shiftDown(false)
-        , currentZoom(1.)
+        , accumulator(initialPos)
         , dataType(dataType)
         , altered(false)
         , useLineColor(false)
@@ -186,20 +186,29 @@ void
 ScaleSliderQWidget::mousePressEvent(QMouseEvent* e)
 {
     if (!_imp->readOnly) {
-        // Ctrl+click cannot be used to reset to default, because Ctrl is already used for fine-tuning
-        // (fine-tuning is not possible in Nuke)!
+        // Ctrl+click cannot be used to reset to default, because Ctrl is already used for fine-tuning.
         // same goes for Shift+click.
         // we use Alt instead (Nuke uses Ctrl).
-        // @see ScaleSliderQWidget::keyPressEvent()
-        //
         if ( modifierHasAlt(e) ) {
             Q_EMIT resetToDefaultRequested();
         } else {
             QPoint newClick =  e->pos();
             _imp->oldClick = newClick;
-            QPointF newClick_opengl = _imp->zoomCtx.toZoomCoordinates( newClick.x(), newClick.y() );
-            double v = _imp->dataType == eDataTypeInt ? std::floor(newClick_opengl.x() + 0.5) : newClick_opengl.x();
-            seekInternal(v);
+            if (modifierHasControl(e) || modifierHasShift(e)) {
+                // gearing anchors on the value the slider already has, rather than jumping
+                // to the click, so a geared drag can start from anywhere on the track
+                _imp->accumulator = _imp->value;
+            } else {
+                QPointF newClick_opengl = _imp->zoomCtx.toZoomCoordinates(newClick.x(), newClick.y());
+                double v = _imp->dataType == eDataTypeInt ? std::floor(newClick_opengl.x() + 0.5) : newClick_opengl.x();
+                if (v < _imp->minimum) {
+                    v = _imp->minimum;
+                } else if (v > _imp->maximum) {
+                    v = _imp->maximum;
+                }
+                _imp->accumulator = v;
+                seekInternal(v);
+            }
         }
     }
     QWidget::mousePressEvent(e);
@@ -209,9 +218,26 @@ void
 ScaleSliderQWidget::mouseMoveEvent(QMouseEvent* e)
 {
     if (!_imp->readOnly) {
-        QPoint newClick =  e->pos();
-        QPointF newClick_opengl = _imp->zoomCtx.toZoomCoordinates( newClick.x(), newClick.y() );
-        double v = _imp->dataType == eDataTypeInt ? std::floor(newClick_opengl.x() + 0.5) : newClick_opengl.x();
+        QPoint newClick = e->pos();
+        double dxPixels = newClick.x() - _imp->oldClick.x();
+        _imp->oldClick = newClick;
+
+        // the per-pixel rate is the slider's own range over its width, not the padded
+        // zoom-context range the tick painting uses, so the gearing feels the same
+        // regardless of how much margin paintEvent leaves for tick labels
+        double unitsPerPixel = (_imp->maximum - _imp->minimum) / width();
+        double gearFactor = gear(modifierHasControl(e), modifierHasShift(e));
+        _imp->accumulator += dxPixels * unitsPerPixel * gearFactor;
+        if (_imp->accumulator < _imp->minimum) {
+            _imp->accumulator = _imp->minimum;
+        } else if (_imp->accumulator > _imp->maximum) {
+            _imp->accumulator = _imp->maximum;
+        }
+
+        // the accumulator keeps full precision between moves; only the emitted/displayed
+        // value is rounded, so a slow (Ctrl) drag on an int slider still makes progress
+        // instead of rounding every move back to zero
+        double v = _imp->dataType == eDataTypeInt ? std::floor(_imp->accumulator + 0.5) : _imp->accumulator;
         if (_imp->gui && _imp->allowDraftModeSetting) {
             _imp->gui->setDraftRenderEnabled(true);
         }
@@ -234,49 +260,6 @@ ScaleSliderQWidget::mouseReleaseEvent(QMouseEvent* e)
 }
 
 void
-ScaleSliderQWidget::focusInEvent(QFocusEvent* e)
-{
-    Qt::KeyboardModifiers mod = qApp->keyboardModifiers();
-
-    if ( mod.testFlag(Qt::ControlModifier) ) {
-        _imp->ctrlDown = true;
-    }
-    if ( mod.testFlag(Qt::ShiftModifier) ) {
-        _imp->shiftDown = true;
-    }
-    zoomRange();
-    QWidget::focusInEvent(e);
-}
-
-void
-ScaleSliderQWidget::focusOutEvent(QFocusEvent* e)
-{
-    _imp->ctrlDown = false;
-    _imp->shiftDown = false;
-    zoomRange();
-    QWidget::focusOutEvent(e);
-}
-
-void
-ScaleSliderQWidget::zoomRange()
-{
-    if (_imp->ctrlDown) {
-        double scale = _imp->shiftDown ? 100. : 10.;
-        assert(_imp->currentZoom != 0);
-        double effectiveZoom = scale / _imp->currentZoom;
-        _imp->currentZoom = scale;
-        _imp->zoomCtx.zoomx(_imp->value, 0, effectiveZoom);
-    } else {
-        _imp->zoomCtx.zoomx(_imp->value, 0, 1. / _imp->currentZoom);
-        _imp->currentZoom = 1.;
-        if (_imp->minimum < _imp->maximum) {
-            centerOn(_imp->minimum, _imp->maximum);
-        }
-    }
-    update();
-}
-
-void
 ScaleSliderQWidget::enterEvent(QEnterEvent* e)
 {
     if ( Gui::isFocusStealingPossible() ) {
@@ -292,27 +275,6 @@ ScaleSliderQWidget::leaveEvent(QEvent* e)
         clearFocus();
     }
     QWidget::leaveEvent(e);
-}
-
-void
-ScaleSliderQWidget::keyPressEvent(QKeyEvent* e)
-{
-    bool accepted = true;
-
-    if (e->key() == Qt::Key_Control) {
-        _imp->ctrlDown = true;
-        zoomRange();
-        accepted = false;
-    } else if (e->key() == Qt::Key_Shift) {
-        _imp->shiftDown = true;
-        zoomRange();
-        accepted = false;
-    } else {
-        accepted = false;
-    }
-    if (!accepted) {
-        QWidget::keyPressEvent(e);
-    }
 }
 
 double
@@ -332,27 +294,6 @@ bool
 ScaleSliderQWidget::getAltered() const
 {
     return _imp->altered;
-}
-
-void
-ScaleSliderQWidget::keyReleaseEvent(QKeyEvent* e)
-{
-    bool accepted = true;
-
-    if (e->key() == Qt::Key_Control) {
-        _imp->ctrlDown = false;
-        zoomRange();
-        accepted = false;
-    } else if (e->key() == Qt::Key_Shift) {
-        _imp->shiftDown = false;
-        zoomRange();
-        accepted = false;
-    } else {
-        accepted = false;
-    }
-    if (!accepted) {
-        QWidget::keyReleaseEvent(e);
-    }
 }
 
 void

@@ -105,9 +105,6 @@ public Q_SLOTS:
     void seekScalePosition(double v);
 
 private:
-
-    void zoomRange();
-
     void seekInternal(double v);
 
 
@@ -116,16 +113,12 @@ private:
     virtual void mousePressEvent(QMouseEvent* e) OVERRIDE FINAL;
     virtual void mouseMoveEvent(QMouseEvent* e) OVERRIDE FINAL;
     virtual void mouseReleaseEvent(QMouseEvent* e) OVERRIDE FINAL;
-    virtual void keyPressEvent(QKeyEvent* e) OVERRIDE FINAL;
-    virtual void keyReleaseEvent(QKeyEvent* e) OVERRIDE FINAL;
     virtual QSize sizeHint() const OVERRIDE FINAL;
     virtual QSize minimumSizeHint() const OVERRIDE FINAL;
     virtual void paintEvent(QPaintEvent* e) OVERRIDE FINAL;
     virtual void resizeEvent(QResizeEvent* e) OVERRIDE FINAL;
     virtual void enterEvent(QEnterEvent* e) OVERRIDE FINAL;
     virtual void leaveEvent(QEvent* e) OVERRIDE FINAL;
-    virtual void focusInEvent(QFocusEvent* e) OVERRIDE FINAL;
-    virtual void focusOutEvent(QFocusEvent* e) OVERRIDE FINAL;
     std::unique_ptr<ScaleSliderQWidgetPrivate> _imp;
 };
 

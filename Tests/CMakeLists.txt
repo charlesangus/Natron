@@ -158,6 +158,7 @@ set(GuiTests_SOURCES
     KnobGuiString_Test.cpp
     LayerChannelRow_Test.cpp
     NodeGuiUserColorSerialization_Test.cpp
+    ScaleSliderQWidget_Test.cpp
     ShuffleMatrix_Test.cpp
     ViewerDataSerialization_Test.cpp
     guimain.cpp

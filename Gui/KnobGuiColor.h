@@ -59,8 +59,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/KnobGuiValue.h"
 #include "Gui/Label.h"
 
-class QFocusEvent;
-
 NATRON_NAMESPACE_ENTER
 
 //================================
@@ -108,27 +106,7 @@ private:
     virtual void enterEvent(QEnterEvent*) OVERRIDE FINAL;
     virtual void leaveEvent(QEvent*) OVERRIDE FINAL;
     virtual void mousePressEvent(QMouseEvent*) OVERRIDE FINAL;
-    virtual void mouseMoveEvent(QMouseEvent*) OVERRIDE FINAL;
     virtual void mouseReleaseEvent(QMouseEvent*) OVERRIDE FINAL;
-    virtual void keyPressEvent(QKeyEvent*) OVERRIDE FINAL;
-    virtual void keyReleaseEvent(QKeyEvent*) OVERRIDE FINAL;
-    virtual void focusOutEvent(QFocusEvent*) OVERRIDE FINAL;
-    virtual bool event(QEvent*) OVERRIDE FINAL;
-
-    bool isLockKey(int key) const;
-    bool wantsShortcutOverride(const QKeyEvent* e) const;
-    ColorAxisEnum activeLock() const;
-    QString axisLabel(ColorAxisEnum axis) const;
-
-    /**
-     * @brief Starts the swatch's trackball gesture once a drag has cleared the click
-     * threshold. False when the knob cannot be edited right now (an expression, a slaved
-     * dimension, or disabled), in which case the press stays a plain click no matter how far
-     * it then moves.
-     **/
-    bool beginTrackballDrag();
-    void stepTrackballDrag(const QPointF& pos, Qt::KeyboardModifiers modifiers);
-    void endTrackballDrag();
 
 private:
 
@@ -136,19 +114,10 @@ private:
     QColor _currentColor;
     KnobGuiColor* _knob;
 
-    // Click-vs-drag state: a press only decides what it was once it either moves past
-    // QApplication::startDragDistance() (a trackball drag) or releases first (a click).
+    // A press only becomes a click once it releases without crossing
+    // QApplication::startDragDistance(); past that it is a no-op.
     bool _pressed;
-    bool _dragging;
     QPointF _pressPos;
-    QPointF _lastDragPos;
-    KnobColorValue _segmentBase;
-    KnobColorValue _dragValue;
-    ColorEdit _dragTotal;
-    bool _hasDragTotal;
-    std::vector<int> _heldLocks;
-    bool _hovered;
-    bool _keyboardGrabbed;
 };
 
 
@@ -194,9 +163,9 @@ public:
 
     /**
      * @brief The knob's colour role, luma-chroma basis, current value, and whether it can be
-     * edited right now (not disabled, no expression or slave on an RGB dimension). Used by
-     * ColorPickerLabel to run the swatch's own trackball gesture through the same edit session
-     * the adjustment panel uses.
+     * edited right now (not disabled, no expression or slave on an RGB dimension). Used by the
+     * adjustment panel and the global trackball mode to run their edit gestures through the
+     * same edit session.
      **/
     ColorKnobRoleEnum getColorRole() const;
     LumaBasis getEditBasis() const;

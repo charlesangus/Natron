@@ -25,13 +25,10 @@
 
 #include "Global/Macros.h"
 
-#include <cmath>
 #include <memory>
 #include <string>
 
 #include <QApplication>
-#include <QEnterEvent>
-#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPointF>
 #include <QString>
@@ -42,12 +39,10 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
-#include "Engine/ColorWheelMath.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
-#include "Gui/ColorKnobEditSession.h"
 #include "Gui/KnobGuiColor.h"
 #include "Gui/KnobGuiContainerI.h"
 
@@ -55,8 +50,8 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-// Pushes land straight on a real QUndoStack, so a drag's KnobUndoCommand runs exactly as a
-// panel's container would, without creating any other widget.
+// KnobGuiColor needs a KnobGuiContainerI to construct; a real QUndoStack behind it lets a
+// test assert on undo-step counts without building any other widget.
 class FakeKnobGuiContainer
     : public KnobGuiContainerI {
 public:
@@ -121,20 +116,6 @@ makeWhiteKnob()
     return knob;
 }
 
-KnobColorValue
-baselineValue()
-{
-    KnobColorValue v;
-
-    v.rgb[0] = kBaseline[0];
-    v.rgb[1] = kBaseline[1];
-    v.rgb[2] = kBaseline[2];
-    v.a = kBaseline[3];
-    v.hasAlpha = true;
-
-    return v;
-}
-
 void
 sendMouse(ColorPickerLabel& label,
           QEvent::Type type,
@@ -166,25 +147,6 @@ releaseAt(ColorPickerLabel& label,
           const QPointF& pos)
 {
     sendMouse(label, QEvent::MouseButtonRelease, pos, Qt::LeftButton, Qt::NoButton);
-}
-
-void
-enterLabel(ColorPickerLabel& label)
-{
-    QPointF pos(5.0, 5.0);
-    QEnterEvent e(pos, pos, label.mapToGlobal(pos));
-
-    QApplication::sendEvent(&label, &e);
-}
-
-void
-sendKey(ColorPickerLabel& label,
-        QEvent::Type type,
-        int key)
-{
-    QKeyEvent e(type, key, Qt::NoModifier);
-
-    QApplication::sendEvent(&label, &e);
 }
 
 } // namespace
@@ -225,7 +187,7 @@ TEST(ColorPickerLabel, JitterUnderDragThresholdStillCountsAsAClick)
     EXPECT_EQ(0, container.undoStack.count());
 }
 
-TEST(ColorPickerLabel, ThirtyPixelDragChangesChromaKeepsYLeavesPickingAloneAndRecordsOneUndoStep)
+TEST(ColorPickerLabel, ThirtyPixelDragChangesNothingAndDoesNotToggle)
 {
     KnobColorPtr knob = makeWhiteKnob();
     ASSERT_TRUE(bool(knob));
@@ -233,54 +195,14 @@ TEST(ColorPickerLabel, ThirtyPixelDragChangesChromaKeepsYLeavesPickingAloneAndRe
     FakeKnobGuiContainer container;
     std::shared_ptr<KnobGuiColor> knobGui = std::make_shared<KnobGuiColor>(knob, &container);
     ColorPickerLabel label(knobGui.get());
-    LumaBasis basis = knobGui->getEditBasis();
 
     pressAt(label, QPointF(0.0, 0.0));
     moveTo(label, QPointF(30.0, 0.0));
     releaseAt(label, QPointF(30.0, 0.0));
 
     EXPECT_FALSE(label.isPickingEnabled());
-    EXPECT_EQ(1, container.undoStack.count());
-
-    KnobColorValue after = ColorKnobEditSession::readKnobValue(knob);
-    double chromaMove = std::abs(after.rgb[0] - kBaseline[0])
-        + std::abs(after.rgb[1] - kBaseline[1])
-        + std::abs(after.rgb[2] - kBaseline[2]);
-
-    EXPECT_GT(chromaMove, 1e-6);
-    EXPECT_NEAR(luma(basis, kBaseline), luma(basis, after.rgb), 1e-9);
-    EXPECT_DOUBLE_EQ(kBaseline[3], after.a);
-}
-
-TEST(ColorPickerLabel, VHeldDuringTheDragChangesOnlyY)
-{
-    KnobColorPtr knob = makeWhiteKnob();
-    ASSERT_TRUE(bool(knob));
-
-    FakeKnobGuiContainer container;
-    std::shared_ptr<KnobGuiColor> knobGui = std::make_shared<KnobGuiColor>(knob, &container);
-    ColorPickerLabel label(knobGui.get());
-    LumaBasis basis = knobGui->getEditBasis();
-    ColorKnobRoleEnum role = knobGui->getColorRole();
-
-    enterLabel(label);
-    EXPECT_EQ(&label, label.focusWidget());
-    sendKey(label, QEvent::KeyPress, Qt::Key_V);
-
-    pressAt(label, QPointF(0.0, 0.0));
-    moveTo(label, QPointF(0.0, -30.0));
-    releaseAt(label, QPointF(0.0, -30.0));
-    sendKey(label, QEvent::KeyRelease, Qt::Key_V);
-
-    EXPECT_EQ(1, container.undoStack.count());
-
-    KnobColorValue after = ColorKnobEditSession::readKnobValue(knob);
-    PlanePoint before = toPlane(role, basis, baselineValue());
-    PlanePoint afterPoint = toPlane(role, basis, after);
-
-    ASSERT_TRUE(before.valid);
-    ASSERT_TRUE(afterPoint.valid);
-    EXPECT_NEAR(before.x, afterPoint.x, 1e-9);
-    EXPECT_NEAR(before.y, afterPoint.y, 1e-9);
-    EXPECT_GT(std::abs(luma(basis, after.rgb) - luma(basis, kBaseline)), 1e-6);
+    EXPECT_EQ(0, container.undoStack.count());
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_DOUBLE_EQ(kBaseline[i], knob->getValue(i));
+    }
 }

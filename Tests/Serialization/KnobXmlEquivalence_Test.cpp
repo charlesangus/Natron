@@ -184,7 +184,7 @@ void
 makeUserKnob(const KnobIPtr& knob)
 {
     knob->setAsUserKnob(true);
-    knob->setHintToolTip("A user knob");
+    knob->setHintToolTip( std::string("A user knob") );
 
     if ( KnobString* isString = dynamic_cast<KnobString*>( knob.get() ) ) {
         isString->setAsMultiLine();

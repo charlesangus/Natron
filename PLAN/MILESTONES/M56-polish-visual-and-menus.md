@@ -58,7 +58,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
 
 ## Phase 56.3: Knob label and alignment fixes
 
-- [ ] M56.P3.T1 — Stop hidden take-over choices from swallowing the row break, and label the unpremult-by twin
+- [x] M56.P3.T1 — Stop hidden take-over choices from swallowing the row break, and label the unpremult-by twin
   - files: `Engine/OfxEffectInstance.cpp`
   - approach:
     - **Alignment:** in `takeOverMultiplaneChoices` (`:826`), each twin is inserted at the plugin choice's position, and the choice is then made secret. openfx-misc `Distortion.cpp:3642-3661` gives `channelU` a no-new-line layout hint (`eLayoutHintNoNewLine`). `KnobGuiContainerHelper::initializeKnobVector` (`Gui/KnobGuiContainerHelper.cpp:418-420`) puts the next knob on the previous sibling's row whenever that sibling has `!isNewLineActivated()`, even when the sibling is secret. So the V twin joins the hidden U choice's row, which is the indent. Fix it in the engine, not the GUI: when the choice is hidden, copy its `isNewLineActivated()` onto the twin, then `choice->setAddNewLine(true)`. Whether the twin keeps "no new line" is the Q2 call. Default: the U/V/A twins each get their own row, so `setAddNewLine(true)` on the twin as well for IDistort and STMap, which matches Nuke.

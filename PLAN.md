@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: [M55 gate run, M56.P3.T1, M76.P2.T22, M27.P1.T1, M93.P1.T1, M84.P7.T7]
-pm_heartbeat: 2026-10-11T09:42:03-04:00
+current: [M55 gate run, M56.P4.T1, M76.P2.T22, M27.P1.T1, M93.P1.T1, M84.P7.T7]
+pm_heartbeat: 2026-10-11T09:49:47-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---

@@ -414,7 +414,7 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
 - **T11** waits for T10 and the user's icon pick.
 - **T12** comes after everything else, then **T13**.
 
-- [ ] M44.P7.T1 — Add the shared gearing (Ctrl ×0.1, Shift ×4, Ctrl+Shift ×0.01) to every `ScaleSliderQWidget`, read from each mouse event
+- [x] M44.P7.T1 — Add the shared gearing (Ctrl ×0.1, Shift ×4, Ctrl+Shift ×0.01) to every `ScaleSliderQWidget`, read from each mouse event
   - files: `Gui/ScaleSliderQWidget.h`, `Gui/ScaleSliderQWidget.cpp`, `Tests/ScaleSliderQWidget_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - **What stays the same:**

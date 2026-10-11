@@ -45,6 +45,7 @@
 #include "Engine/GpuContext.h"
 #include "Engine/GpuCostModel.h"
 #include "Engine/GpuPlacement.h"
+#include "Engine/GpuRegionStrips.h"
 #include "Engine/Image.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/GpuRender.h"
@@ -91,6 +92,7 @@ const char* const kFallbackOutOfMemory = "out of device memory";
 const char* const kFallbackRefused = "GPU refused";
 const char* const kFallbackDeviceError = "GPU error";
 const char* const kFallbackNoGpu = "no GPU";
+const char* const kFallbackTooLarge = "too large for the GPU";
 
 bool
 isContextAborted(const FrameRenderContextPtr& context)
@@ -211,6 +213,9 @@ struct Slot {
     gpu::GpuBufferHandle handle;
     GpuDeviceImagePtr pinned;
 
+    // For an external input in RAM: the float image uploaded from.
+    ImagePtr source;
+
     // For an external input: its task, and what the members read of it.
     int externalTask = -1;
     RectI neededRoI;
@@ -279,18 +284,29 @@ public:
 
     EffectInstance::RenderRoIRetCode run(std::map<ImageLayerDesc, ImagePtr>* rootPlanes)
     {
-        if ( !plan() || !upload() ) {
+        std::vector<GpuStrip> strips;
+        if (!plan() || !resolveInputs() || !planStrips(&strips)) {
             return failed();
         }
-        if ( isAborted() ) {
-            return EffectInstance::eRenderRoIRetCodeAborted;
-        }
-        const EffectInstance::RenderRoIRetCode recorded = record();
-        if (recorded != EffectInstance::eRenderRoIRetCodeOk) {
-            return (recorded == EffectInstance::eRenderRoIRetCodeFailed) ? failed() : recorded;
-        }
-        if ( !finishDownloads() ) {
-            return failed();
+        if (strips.empty()) {
+            if (!upload()) {
+                return failed();
+            }
+            if (isAborted()) {
+                return EffectInstance::eRenderRoIRetCodeAborted;
+            }
+            const EffectInstance::RenderRoIRetCode recorded = record();
+            if (recorded != EffectInstance::eRenderRoIRetCodeOk) {
+                return (recorded == EffectInstance::eRenderRoIRetCodeFailed) ? failed() : recorded;
+            }
+            if (!finishDownloads()) {
+                return failed();
+            }
+        } else {
+            const EffectInstance::RenderRoIRetCode recorded = recordStrips(strips);
+            if (recorded != EffectInstance::eRenderRoIRetCodeOk) {
+                return (recorded == EffectInstance::eRenderRoIRetCodeFailed) ? failed() : recorded;
+            }
         }
         if ( isAborted() ) {
             return EffectInstance::eRenderRoIRetCodeAborted;
@@ -309,6 +325,9 @@ public:
         // The region cannot run as planned on the GPU: a member has no GPU path for it, or refused to record.
         Refused,
         OutOfMemory,
+
+        // Not even the thinnest strip of the region fits the buffers a kernel may bind.
+        TooLarge,
         DeviceError
     };
 
@@ -597,13 +616,8 @@ private:
         _peakDeviceBytes = std::max(_peakDeviceBytes, bytes);
     }
 
-    bool upload()
+    bool resolveInputs()
     {
-        const Clock::time_point begin = Clock::now();
-        std::vector<gpu::TimelineValue> uploads;
-        std::vector<std::shared_ptr<Image::ReadAccess> > accesses;
-        std::vector<ImagePtr> sources;
-
         for (Slot& slot : _slots) {
             if (slot.externalTask < 0) {
                 continue;
@@ -656,15 +670,36 @@ private:
             slot.layout.par = image->getPixelAspectRatio();
             slot.layout.fielding = image->getFieldingOrder();
             slot.layout.key = image->getKey();
+            slot.source = image;
+        }
 
+        return true;
+    } // resolveInputs
+
+    bool upload()
+    {
+        const Clock::time_point begin = Clock::now();
+        std::vector<gpu::TimelineValue> uploads;
+        std::vector<std::shared_ptr<Image::ReadAccess>> accesses;
+
+        for (Slot& slot : _slots) {
+            if (!slot.source) {
+                continue;
+            }
+            const ImagePtr& image = slot.source;
+            const RectI bounds = image->getBounds();
             const std::size_t bytes = gpuHostTransferBytes(*image);
             if ( !acquireBuffer(std::max( bytes, slot.layout.deviceBytes() ), slot.externalTask, &slot.handle) ) {
+                drainUploads(uploads);
+
                 return false;
             }
             std::shared_ptr<Image::ReadAccess> access = std::make_shared<Image::ReadAccess>( image.get() );
             const unsigned char* data = access->pixelAt(bounds.x1, bounds.y1);
             if (!data) {
-                return fail(input.key.node, "its image has no pixels");
+                drainUploads(uploads);
+
+                return fail(_graph.tasks[slot.externalTask].key.node, "its image has no pixels");
             }
             gpu::StreamOptions options;
             options.handoff = gpu::ComputeHandoff::Submit;
@@ -678,7 +713,6 @@ private:
             }
             uploads.push_back(done);
             accesses.push_back(access);
-            sources.push_back(image);
             slot.view = viewOf(&slot.handle.buffer(), slot.layout);
             if (_stats) {
                 _stats->noteUpload( slot.layout.pixelBytes() );
@@ -698,6 +732,9 @@ private:
         }
         if (_report) {
             _report->uploadMs = msBetween( begin, Clock::now() );
+        }
+        for (Slot& slot : _slots) {
+            slot.source.reset();
         }
 
         return true;
@@ -752,7 +789,7 @@ private:
         if (_report) {
             _report->kernelMs += msBetween(segmentBegin, end);
             for (int position : segment) {
-                _report->memberNs[position] = (weights > 0.) ? (long long)( (double)ns * _members[position].weight / weights ) : 0;
+                _report->memberNs[position] += (weights > 0.) ? (long long)((double)ns * _members[position].weight / weights) : 0;
             }
         }
         // Submitted and finished, so no other thread acquiring them from the pool can race the work that used them.
@@ -934,6 +971,373 @@ private:
 
         return true;
     }
+
+    GpuStripGraph stripGraph() const
+    {
+        GpuStripGraph graph;
+
+        for (const Slot& slot : _slots) {
+            GpuStripSlot stripSlot;
+            stripSlot.bounds = slot.layout.bounds;
+            stripSlot.nComps = slot.layout.nComps();
+            stripSlot.external = (slot.externalTask >= 0);
+            stripSlot.resident = bool(slot.pinned);
+            stripSlot.interior = slot.keep || slot.download;
+            graph.images.push_back(stripSlot);
+        }
+        for (const Member& member : _members) {
+            if (member.identity) {
+                continue;
+            }
+            GpuStripMember stripMember;
+            stripMember.outSlot = member.outSlot;
+            stripMember.inputSlots = member.inputSlots;
+            NativeImageEffect* effect = member.effect;
+            const RenderScale scale = member.query.mappedScale;
+            stripMember.inputRoI = [effect, scale](int inputNb, const RectI& rect) {
+                return effect->getGpuInputRoI(inputNb, rect, scale);
+            };
+            graph.members.push_back(stripMember);
+        }
+
+        return graph;
+    }
+
+    /**
+     * @brief Leaves strips empty when the region fits the device whole, and otherwise fills it with the strips it runs
+     * as. A stripped output never exists whole on the device, so every output read after the region is downloaded and
+     * stored in RAM, including those another region would have read on the device.
+     **/
+    bool planStrips(std::vector<GpuStrip>* strips)
+    {
+        GpuStripLimits limits;
+        const std::uint64_t deviceRange = _runtime.device().info().maxStorageBufferRange;
+        const std::uint64_t rangeOverride = gpuStripMaxBufferOverride();
+
+        if (deviceRange != 0) {
+            limits.maxBufferBytes = deviceRange;
+        }
+        if (rangeOverride != 0) {
+            limits.maxBufferBytes = std::min(limits.maxBufferBytes, rangeOverride);
+        }
+        limits.budgetBytes = _runtime.pool().budget();
+        limits.maxRows = (gpuStripRowsOverride() > 0) ? gpuStripRowsOverride() : kGpuStripDefaultRows;
+        limits.allocationBytes = [](std::uint64_t bytes) {
+            return (std::uint64_t)gpu::GpuBufferPool::sizeClass(bytes);
+        };
+
+        int rows = 0;
+        switch (planGpuStrips(stripGraph(), limits, strips, &rows)) {
+        case GpuStripResult::Whole:
+        case GpuStripResult::Strips:
+            break;
+        case GpuStripResult::TooLarge:
+            return fail(NodePtr(), "not even a strip of " + std::to_string(kGpuStripRowQuantum) + " rows fits the device's " + std::to_string(limits.maxBufferBytes) + "-byte storage buffer range", FailureKind::TooLarge);
+        case GpuStripResult::OverBudget:
+            // The same outcome as the pool refusing the first buffer: the device is out of memory for this region.
+            _runtime.noteOutOfMemory(0);
+
+            return fail(NodePtr(), "not even a strip of " + std::to_string(kGpuStripRowQuantum) + " rows fits the device budget of " + std::to_string(limits.budgetBytes) + " bytes", FailureKind::OutOfMemory);
+        case GpuStripResult::Unstrippable:
+            return fail(NodePtr(), "a strip of the region would read nothing of an input");
+        }
+        if (!strips->empty()) {
+            for (Slot& slot : _slots) {
+                if (slot.keep) {
+                    slot.download = true;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    static std::size_t rowBytes(const Slot& slot)
+    {
+        return (std::size_t)std::max(0, slot.layout.bounds.width()) * (std::size_t)std::max(0, slot.layout.nComps()) * sizeof(float);
+    }
+
+    static GpuImageView stripView(gpu::GpuBuffer* buffer,
+                                  const Slot& slot,
+                                  const RectI& rect)
+    {
+        GpuImageView view;
+
+        view.buffer = buffer;
+        view.byteOffset = 0;
+        view.bounds = rect;
+        view.rowStrideFloats = rect.width() * slot.layout.nComps();
+        view.nComps = slot.layout.nComps();
+
+        return view;
+    }
+
+    EffectInstance::RenderRoIRetCode recordStrips(const std::vector<GpuStrip>& strips)
+    {
+        std::vector<std::shared_ptr<Image::ReadAccess>> sources(_slots.size());
+
+        for (std::size_t s = 0; s < _slots.size(); ++s) {
+            Slot& slot = _slots[s];
+            if (slot.source) {
+                sources[s] = std::make_shared<Image::ReadAccess>(slot.source.get());
+            }
+            if (slot.download && !slot.pinned) {
+                const int producerTask = (slot.producer >= 0) ? _members[slot.producer].task : slot.externalTask;
+                slot.downloadImage = slot.layout.newRamImage();
+                if (!slot.downloadImage) {
+                    fail(producerTask, "cannot allocate the downloaded image");
+
+                    return EffectInstance::eRenderRoIRetCodeFailed;
+                }
+                slot.downloadAccess = std::make_shared<Image::WriteAccess>(slot.downloadImage.get());
+            }
+        }
+        if (_report) {
+            _report->memberNs.assign(_members.size(), 0);
+        }
+        for (const GpuStrip& strip : strips) {
+            if (isAborted()) {
+                return EffectInstance::eRenderRoIRetCodeAborted;
+            }
+            if (!uploadStrip(strip, sources)) {
+                return EffectInstance::eRenderRoIRetCodeFailed;
+            }
+            const EffectInstance::RenderRoIRetCode recorded = recordStrip(strip);
+            if (recorded != EffectInstance::eRenderRoIRetCodeOk) {
+                return recorded;
+            }
+            if (!downloadStrip(strip)) {
+                return EffectInstance::eRenderRoIRetCodeFailed;
+            }
+            for (Slot& slot : _slots) {
+                if (!slot.pinned) {
+                    slot.handle = gpu::GpuBufferHandle();
+                    slot.view = GpuImageView();
+                }
+                slot.released = false;
+            }
+        }
+        for (Slot& slot : _slots) {
+            if (!slot.download) {
+                continue;
+            }
+            if (slot.pinned) {
+                if (!downloadPinned(slot)) {
+                    return EffectInstance::eRenderRoIRetCodeFailed;
+                }
+                continue;
+            }
+            slot.downloadAccess.reset();
+            slot.downloaded = slot.downloadImage;
+            slot.downloadImage.reset();
+        }
+
+        return EffectInstance::eRenderRoIRetCodeOk;
+    } // recordStrips
+
+    bool uploadStrip(const GpuStrip& strip,
+                     const std::vector<std::shared_ptr<Image::ReadAccess>>& sources)
+    {
+        const Clock::time_point begin = Clock::now();
+        std::vector<gpu::TimelineValue> uploads;
+
+        for (std::size_t s = 0; s < _slots.size(); ++s) {
+            Slot& slot = _slots[s];
+            const RectI& rect = strip.rects[s];
+            if (!slot.source || rect.isNull()) {
+                continue;
+            }
+            const std::size_t bytes = rowBytes(slot) * (std::size_t)rect.height();
+            if (!acquireBuffer(bytes, slot.externalTask, &slot.handle)) {
+                drainUploads(uploads);
+
+                return false;
+            }
+            const unsigned char* data = sources[s]->pixelAt(slot.layout.bounds.x1, rect.y1);
+            if (!data) {
+                drainUploads(uploads);
+
+                return fail(_graph.tasks[slot.externalTask].key.node, "its image has no pixels");
+            }
+            gpu::StreamOptions options;
+            options.handoff = gpu::ComputeHandoff::Submit;
+            gpu::TimelineValue done;
+            // upload() only reads the host range.
+            const gpu::GpuStatus status = _runtime.upload({ const_cast<unsigned char*>(data), bytes }, slot.handle.buffer(), 0, done, options);
+            if (!status) {
+                drainUploads(uploads);
+
+                return failGpu(slot.externalTask, "upload failed", status);
+            }
+            uploads.push_back(done);
+            slot.view = stripView(&slot.handle.buffer(), slot, rect);
+            if (_stats) {
+                _stats->noteUpload(bytes);
+            }
+            if (_report) {
+                _report->uploadBytes += bytes;
+            }
+        }
+        for (const gpu::TimelineValue& done : uploads) {
+            const gpu::GpuStatus status = _runtime.wait(done);
+            if (!status) {
+                drainUploads(uploads);
+
+                return failGpu(-1, "upload failed", status);
+            }
+        }
+        if (_report) {
+            _report->uploadMs += msBetween(begin, Clock::now());
+        }
+
+        return true;
+    } // uploadStrip
+
+    EffectInstance::RenderRoIRetCode recordStrip(const GpuStrip& strip)
+    {
+        std::unique_ptr<gpu::GpuRecordContext> recorder;
+        std::vector<int> segment;
+        Clock::time_point segmentBegin = Clock::now();
+
+        for (std::size_t i = 0; i < _members.size(); ++i) {
+            if (isAborted()) {
+                return EffectInstance::eRenderRoIRetCodeAborted;
+            }
+            Member& member = _members[i];
+            if (member.identity || strip.rects[member.outSlot].isNull()) {
+                continue;
+            }
+            const RectI& rect = strip.rects[member.outSlot];
+            if (!recorder) {
+                const gpu::GpuStatus status = _runtime.newRecordContext(recorder);
+                if (!status) {
+                    failGpu(member.task, "cannot record device work", status);
+
+                    return EffectInstance::eRenderRoIRetCodeFailed;
+                }
+                segmentBegin = Clock::now();
+            } else if (!segment.empty()) {
+                recorder->computeBarrier();
+            }
+            Slot& out = _slots[member.outSlot];
+            if (!acquireBuffer(rowBytes(out) * (std::size_t)rect.height(), member.task, &out.handle)) {
+                return EffectInstance::eRenderRoIRetCodeFailed;
+            }
+            out.view = stripView(&out.handle.buffer(), out, rect);
+
+            GpuRenderArgs args(*recorder);
+            args.query = member.query;
+            args.outputRect = rect;
+            args.inputs.resize(member.inputSlots.size());
+            for (std::size_t k = 0; k < member.inputSlots.size(); ++k) {
+                if (member.inputSlots[k] < 0) {
+                    continue;
+                }
+                args.inputs[k] = _slots[member.inputSlots[k]].view;
+                if (!args.inputs[k].buffer) {
+                    fail(member.task, "a strip of its input is not on the device");
+
+                    return EffectInstance::eRenderRoIRetCodeFailed;
+                }
+            }
+            args.output = out.view;
+            StatusEnum status = eStatusFailed;
+            try {
+                status = member.effect->renderGpu(args);
+            } catch (const std::exception& e) {
+                fail(member.task, std::string("recording threw: ") + e.what());
+            } catch (...) {
+                fail(member.task, "recording threw");
+            }
+            if (status != eStatusOK) {
+                fail(member.task, "the node failed to record its GPU work");
+
+                return EffectInstance::eRenderRoIRetCodeFailed;
+            }
+            segment.push_back((int)i);
+            releaseStripSlotsReadLastBy((int)i);
+        }
+        if (!submit(&recorder, segment, segmentBegin)) {
+            return EffectInstance::eRenderRoIRetCodeFailed;
+        }
+
+        return EffectInstance::eRenderRoIRetCodeOk;
+    } // recordStrip
+
+    // As releaseSlotsReadLastBy(), except that a device image of another region stays pinned for the next strips.
+    void releaseStripSlotsReadLastBy(int position)
+    {
+        for (Slot& slot : _slots) {
+            if (slot.released || slot.pinned || slot.keep || slot.download || (slot.lastRead != position)) {
+                continue;
+            }
+            slot.released = true;
+            if (slot.handle) {
+                _spare.push_back(slot.handle);
+                slot.handle = gpu::GpuBufferHandle();
+            }
+            slot.view = GpuImageView();
+        }
+    }
+
+    bool downloadStrip(const GpuStrip& strip)
+    {
+        const Clock::time_point begin = Clock::now();
+        std::vector<gpu::TimelineValue> downloads;
+
+        for (std::size_t s = 0; s < _slots.size(); ++s) {
+            Slot& slot = _slots[s];
+            const RectI& interior = strip.interiors[s];
+            if (!slot.download || slot.pinned || interior.isNull()) {
+                continue;
+            }
+            const int producerTask = (slot.producer >= 0) ? _members[slot.producer].task : slot.externalTask;
+            const RectI& rect = strip.rects[s];
+            const std::size_t lineBytes = rowBytes(slot);
+            const std::size_t bytes = lineBytes * (std::size_t)interior.height();
+            const VkDeviceSize offset = (VkDeviceSize)lineBytes * (VkDeviceSize)(interior.y1 - rect.y1);
+            if (!slot.handle || (offset + bytes > (std::size_t)slot.handle.size())) {
+                drainUploads(downloads);
+
+                return fail(producerTask, "the strip was not rendered on the device");
+            }
+            unsigned char* data = slot.downloadAccess->pixelAt(slot.layout.bounds.x1, interior.y1);
+            if (!data) {
+                drainUploads(downloads);
+
+                return fail(producerTask, "the downloaded image has no pixels");
+            }
+            gpu::StreamOptions options;
+            options.handoff = gpu::ComputeHandoff::Submit;
+            gpu::TimelineValue done;
+            const gpu::GpuStatus status = _runtime.download(slot.handle.buffer(), offset, { data, bytes }, done, options);
+            if (!status) {
+                drainUploads(downloads);
+
+                return failGpu(producerTask, "download failed", status);
+            }
+            downloads.push_back(done);
+            if (_stats) {
+                _stats->noteDownload(bytes);
+            }
+            if (_report) {
+                _report->downloadBytes += bytes;
+            }
+        }
+        for (const gpu::TimelineValue& done : downloads) {
+            const gpu::GpuStatus status = _runtime.wait(done);
+            if (!status) {
+                drainUploads(downloads);
+
+                return failGpu(-1, "download failed", status);
+            }
+        }
+        if (_report) {
+            _report->downloadMs += msBetween(begin, Clock::now());
+        }
+
+        return true;
+    } // downloadStrip
 
     bool storeOutputs(std::map<ImageLayerDesc, ImagePtr>* rootPlanes)
     {
@@ -1122,7 +1526,17 @@ runGpuRegion(const FrameRenderContextPtr& context,
                 return lost();
             }
             if (kind != RegionRun::FailureKind::OutOfMemory) {
-                reason = (kind == RegionRun::FailureKind::Refused) ? kFallbackRefused : kFallbackDeviceError;
+                switch (kind) {
+                case RegionRun::FailureKind::Refused:
+                    reason = kFallbackRefused;
+                    break;
+                case RegionRun::FailureKind::TooLarge:
+                    reason = kFallbackTooLarge;
+                    break;
+                default:
+                    reason = kFallbackDeviceError;
+                    break;
+                }
                 break;
             }
             report->outOfDeviceMemory = true;

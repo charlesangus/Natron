@@ -1,0 +1,395 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "GpuRegionStrips.h"
+
+#include <algorithm>
+#include <atomic>
+
+NATRON_NAMESPACE_ENTER
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+std::atomic<std::uint64_t> gMaxBufferOverride(0);
+std::atomic<int> gRowsOverride(0);
+
+std::uint64_t
+bufferBytes(const RectI& rect,
+            int nComps)
+{
+    if (rect.isNull()) {
+        return 0;
+    }
+
+    return (std::uint64_t)rect.width() * (std::uint64_t)rect.height() * (std::uint64_t)std::max(0, nComps) * sizeof(float);
+}
+
+std::uint64_t
+allocated(const GpuStripLimits& limits,
+          std::uint64_t bytes)
+{
+    if (bytes == 0) {
+        return 0;
+    }
+
+    return limits.allocationBytes ? limits.allocationBytes(bytes) : bytes;
+}
+
+// The rows y1 to y2 of bounds over its full width, null when they do not overlap.
+RectI
+rowsOf(const RectI& bounds,
+       int y1,
+       int y2)
+{
+    const int lo = std::max(y1, bounds.y1);
+    const int hi = std::min(y2, bounds.y2);
+
+    if (bounds.isNull() || (lo >= hi)) {
+        return RectI();
+    }
+
+    return RectI(bounds.x1, lo, bounds.x2, hi);
+}
+
+void
+mergeRows(RectI* rect,
+          const RectI& rows)
+{
+    if (rows.isNull()) {
+        return;
+    }
+    if (rect->isNull()) {
+        *rect = rows;
+    } else {
+        rect->merge(rows);
+    }
+}
+
+struct SlotUse {
+    int producer = -1;
+    int lastRead = -1;
+};
+
+std::vector<SlotUse>
+slotUses(const GpuStripGraph& graph)
+{
+    std::vector<SlotUse> uses(graph.images.size());
+
+    for (std::size_t i = 0; i < graph.members.size(); ++i) {
+        const GpuStripMember& member = graph.members[i];
+        if ((member.outSlot >= 0) && (member.outSlot < (int)uses.size())) {
+            uses[member.outSlot].producer = (int)i;
+        }
+        for (int slot : member.inputSlots) {
+            if ((slot >= 0) && (slot < (int)uses.size())) {
+                uses[slot].lastRead = std::max(uses[slot].lastRead, (int)i);
+            }
+        }
+    }
+
+    return uses;
+}
+
+// A member reading a wider window than it writes is a spatial filter, which the GPU kernels run as separable passes
+// with an intermediate of the output's width over the input's rows.
+std::uint64_t
+scratchBytes(const GpuStripGraph& graph,
+             const GpuStripMember& member,
+             const RectI& rect)
+{
+    std::uint64_t bytes = 0;
+
+    if (rect.isNull() || !member.inputRoI || (member.outSlot < 0)) {
+        return 0;
+    }
+    const int nComps = graph.images[member.outSlot].nComps;
+    for (std::size_t k = 0; k < member.inputSlots.size(); ++k) {
+        const int slot = member.inputSlots[k];
+        if (slot < 0) {
+            continue;
+        }
+        const RectI need = member.inputRoI((int)k, rect);
+        if (need == rect) {
+            continue;
+        }
+        const RectI rows = rowsOf(graph.images[slot].bounds, need.y1, need.y2);
+        if (!rows.isNull()) {
+            bytes = std::max(bytes, bufferBytes(RectI(rect.x1, rows.y1, rect.x2, rows.y2), nComps));
+        }
+    }
+
+    return bytes;
+}
+
+/**
+ * @brief The windows of the strip over rows band0 to band1, or false when a member it runs would have nothing of an
+ * input it reads.
+ **/
+bool
+stripOf(const GpuStripGraph& graph,
+        int band0,
+        int band1,
+        GpuStrip* strip)
+{
+    const std::size_t nSlots = graph.images.size();
+
+    strip->rects.assign(nSlots, RectI());
+    strip->interiors.assign(nSlots, RectI());
+    for (std::size_t s = 0; s < nSlots; ++s) {
+        const GpuStripSlot& slot = graph.images[s];
+        if (slot.resident) {
+            strip->rects[s] = slot.bounds;
+        } else if (slot.interior) {
+            strip->interiors[s] = rowsOf(slot.bounds, band0, band1);
+            strip->rects[s] = strip->interiors[s];
+        }
+    }
+    for (std::size_t i = graph.members.size(); i-- > 0;) {
+        const GpuStripMember& member = graph.members[i];
+        if ((member.outSlot < 0) || strip->rects[member.outSlot].isNull()) {
+            continue;
+        }
+        const RectI rect = strip->rects[member.outSlot];
+        for (std::size_t k = 0; k < member.inputSlots.size(); ++k) {
+            const int slot = member.inputSlots[k];
+            if ((slot < 0) || graph.images[slot].resident) {
+                continue;
+            }
+            const RectI need = member.inputRoI ? member.inputRoI((int)k, rect) : rect;
+            const RectI rows = rowsOf(graph.images[slot].bounds, need.y1, need.y2);
+            if (rows.isNull()) {
+                return false;
+            }
+            mergeRows(&strip->rects[slot], rows);
+        }
+    }
+    for (std::size_t s = 0; s < nSlots; ++s) {
+        const GpuStripSlot& slot = graph.images[s];
+        RectI& rect = strip->rects[s];
+        if (!slot.external || slot.resident || rect.isNull()) {
+            continue;
+        }
+        const int lo = slot.bounds.y1 + (rect.y1 - slot.bounds.y1) / kGpuStripRowQuantum * kGpuStripRowQuantum;
+        const int hi = slot.bounds.y1 + (rect.y2 - slot.bounds.y1 + kGpuStripRowQuantum - 1) / kGpuStripRowQuantum * kGpuStripRowQuantum;
+        rect = rowsOf(slot.bounds, lo, hi);
+    }
+
+    return true;
+}
+
+bool
+fits(const GpuStripCost& cost,
+     const GpuStripLimits& limits)
+{
+    return (cost.largestBuffer <= limits.maxBufferBytes) && (cost.peakBytes <= limits.budgetBytes);
+}
+
+enum class StripsFit {
+    Fits,
+    TooLarge,
+    OverBudget,
+    Unstrippable
+};
+
+StripsFit
+stripsOfRows(const GpuStripGraph& graph,
+             const GpuStripLimits& limits,
+             int rowsFrom,
+             int rowsTo,
+             int rows,
+             std::vector<GpuStrip>* strips)
+{
+    strips->clear();
+    for (int y = rowsFrom; y < rowsTo; y += rows) {
+        GpuStrip strip;
+        if (!stripOf(graph, y, std::min(rowsTo, y + rows), &strip)) {
+            return StripsFit::Unstrippable;
+        }
+        const GpuStripCost cost = gpuStripCost(graph, strip.rects, limits);
+        if (cost.largestBuffer > limits.maxBufferBytes) {
+            return StripsFit::TooLarge;
+        }
+        if (cost.peakBytes > limits.budgetBytes) {
+            return StripsFit::OverBudget;
+        }
+        strips->push_back(strip);
+    }
+
+    return StripsFit::Fits;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+GpuStripCost
+gpuStripCost(const GpuStripGraph& graph,
+             const std::vector<RectI>& rects,
+             const GpuStripLimits& limits)
+{
+    GpuStripCost cost;
+    const std::vector<SlotUse> uses = slotUses(graph);
+    const std::size_t nSlots = graph.images.size();
+
+    // Buffers stay allocated until the strip is submitted; one its last reader released is reused by a later request
+    // it is large enough for, the smallest such first.
+    std::vector<std::uint64_t> sizes;
+    std::vector<bool> spare;
+    std::vector<int> bufferOf(nSlots, -1);
+    std::uint64_t total = 0;
+    const auto acquire = [&](std::uint64_t bytes) -> int {
+        int best = -1;
+        for (std::size_t b = 0; b < sizes.size(); ++b) {
+            if (spare[b] && (sizes[b] >= bytes) && ((best < 0) || (sizes[b] < sizes[best]))) {
+                best = (int)b;
+            }
+        }
+        if (best >= 0) {
+            spare[best] = false;
+
+            return best;
+        }
+        sizes.push_back(allocated(limits, bytes));
+        spare.push_back(false);
+        total += sizes.back();
+
+        return (int)sizes.size() - 1;
+    };
+
+    for (std::size_t s = 0; s < nSlots; ++s) {
+        const GpuStripSlot& slot = graph.images[s];
+        const std::uint64_t bytes = bufferBytes(rects[s], slot.nComps);
+        cost.largestBuffer = std::max(cost.largestBuffer, allocated(limits, bytes));
+        if (bytes == 0) {
+            continue;
+        }
+        if (slot.resident) {
+            total += allocated(limits, bytes);
+        } else if (slot.external) {
+            bufferOf[s] = acquire(bytes);
+        }
+    }
+    for (std::size_t i = 0; i < graph.members.size(); ++i) {
+        const GpuStripMember& member = graph.members[i];
+        if ((member.outSlot < 0) || rects[member.outSlot].isNull()) {
+            continue;
+        }
+        const GpuStripSlot& out = graph.images[member.outSlot];
+        bufferOf[member.outSlot] = acquire(bufferBytes(rects[member.outSlot], out.nComps));
+
+        // A spatial member's intermediate and its two small filter tables come from the pool, held to the submission.
+        const std::uint64_t scratch = scratchBytes(graph, member, rects[member.outSlot]);
+        if (scratch > 0) {
+            cost.largestBuffer = std::max(cost.largestBuffer, allocated(limits, scratch));
+            total += allocated(limits, scratch) + 2 * allocated(limits, sizeof(float));
+        }
+        for (std::size_t s = 0; s < nSlots; ++s) {
+            if ((bufferOf[s] >= 0) && !graph.images[s].interior && (uses[s].lastRead == (int)i)) {
+                spare[bufferOf[s]] = true;
+                bufferOf[s] = -1;
+            }
+        }
+    }
+    cost.peakBytes = total;
+
+    return cost;
+} // gpuStripCost
+
+GpuStripResult
+planGpuStrips(const GpuStripGraph& graph,
+              const GpuStripLimits& limits,
+              std::vector<GpuStrip>* strips,
+              int* rows)
+{
+    strips->clear();
+    *rows = 0;
+
+    std::vector<RectI> whole;
+    for (const GpuStripSlot& slot : graph.images) {
+        whole.push_back(slot.bounds);
+    }
+    if (fits(gpuStripCost(graph, whole, limits), limits)) {
+        return GpuStripResult::Whole;
+    }
+
+    RectI bands;
+    for (const GpuStripSlot& slot : graph.images) {
+        if (slot.interior && !slot.resident && !slot.bounds.isNull()) {
+            mergeRows(&bands, slot.bounds);
+        }
+    }
+    if (bands.isNull()) {
+        return (gpuStripCost(graph, whole, limits).largestBuffer > limits.maxBufferBytes) ? GpuStripResult::TooLarge : GpuStripResult::OverBudget;
+    }
+
+    const int maxUnits = std::max(1, limits.maxRows / kGpuStripRowQuantum);
+    std::vector<GpuStrip> best;
+    switch (stripsOfRows(graph, limits, bands.y1, bands.y2, kGpuStripRowQuantum, &best)) {
+    case StripsFit::Fits:
+        break;
+    case StripsFit::TooLarge:
+        return GpuStripResult::TooLarge;
+    case StripsFit::OverBudget:
+        return GpuStripResult::OverBudget;
+    case StripsFit::Unstrippable:
+        return GpuStripResult::Unstrippable;
+    }
+    int lo = 1;
+    int hi = maxUnits;
+    while (lo < hi) {
+        const int mid = lo + (hi - lo + 1) / 2;
+        std::vector<GpuStrip> candidate;
+        if (stripsOfRows(graph, limits, bands.y1, bands.y2, mid * kGpuStripRowQuantum, &candidate) == StripsFit::Fits) {
+            lo = mid;
+            best.swap(candidate);
+        } else {
+            hi = mid - 1;
+        }
+    }
+    strips->swap(best);
+    *rows = lo * kGpuStripRowQuantum;
+
+    return GpuStripResult::Strips;
+} // planGpuStrips
+
+void
+setGpuStripOverridesForTests(std::uint64_t maxBufferBytes,
+                             int maxRows)
+{
+    gMaxBufferOverride.store(maxBufferBytes);
+    gRowsOverride.store(std::max(0, maxRows));
+}
+
+std::uint64_t
+gpuStripMaxBufferOverride()
+{
+    return gMaxBufferOverride.load();
+}
+
+int
+gpuStripRowsOverride()
+{
+    return gRowsOverride.load();
+}
+
+NATRON_NAMESPACE_EXIT

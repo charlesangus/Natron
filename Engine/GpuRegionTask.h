@@ -53,6 +53,13 @@ NATRON_NAMESPACE_ENTER
  * intermediate is free for the next members once its last reader was recorded, and back in the pool once that work was
  * submitted. Nothing goes to the image cache.
  *
+ * A region with a buffer over the device's maxStorageBufferRange, or whose working set is over the pool's budget, runs
+ * as horizontal strips instead (see planGpuStrips()): each strip uploads the rows of its inputs with the halos the
+ * members after them need, renders every member over its rows, and downloads only the rows of its band of each output.
+ * Every output read after a stripped region is downloaded, since it never exists whole on the device. When not even a
+ * strip of a few rows fits the storage buffer range, the members render on the CPU, counted as "too large for the
+ * GPU"; when one does not fit the budget, the region is out of device memory.
+ *
  * When the device runs out of memory, the least recently used buffers are evicted and the region is run once more.
  * When it runs out again, when a member cannot render on the GPU, or when no GPU is available, the members are rendered
  * on the CPU with renderRoI instead, in topological order, as tasks outside every region would be, and the reason is

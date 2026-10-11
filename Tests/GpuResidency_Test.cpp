@@ -61,6 +61,7 @@
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GpuContext.h"
 #include "Engine/GpuPlacement.h"
+#include "Engine/GpuRegionStrips.h"
 #include "Engine/GpuRegionTask.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -70,6 +71,7 @@
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
 #include "Engine/Nodes/Merge/Merge.h"
@@ -98,6 +100,10 @@ const double kTime = 1.;
 const float kTolerance = 1e-5f;
 
 const qint64 kFrameTimeoutMs = 60000;
+
+// Tall enough for a 1 MB storage buffer range to split a Blur of size 60 (sigma 25) into several strips.
+const int kStripWidth = 256;
+const int kStripHeight = 768;
 
 struct FrameRun {
     AbortableRenderInfoPtr abortInfo;
@@ -261,6 +267,7 @@ protected:
 
     virtual void TearDown() OVERRIDE
     {
+        setGpuStripOverridesForTests(0, 0);
         _scheduler->setRegionBody(_savedBody);
         appPTR->clearAllCaches();
         getApp()->getProject()->reset(false, true);
@@ -361,7 +368,8 @@ protected:
 
     bool prepareFrame(const NodePtr& root,
                       FrameRun* run,
-                      std::string* error)
+                      std::string* error,
+                      const RectI& renderWindow = RectI(0, 0, kWidth, kHeight))
     {
         run->abortInfo = AbortableRenderInfo::create(true, 0);
         run->stats = std::make_shared<RenderStats>(false);
@@ -380,7 +388,7 @@ protected:
                                            false /*draftMode*/,
                                            run->stats);
         std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
-        const RectD window(0., 0., kWidth, kHeight);
+        const RectD window(renderWindow.x1, renderWindow.y1, renderWindow.x2, renderWindow.y2);
         if (EffectInstance::computeRequestPass(kTime, ViewIdx(0), 0 /*mipmapLevel*/, window, root, *request) == eStatusFailed) {
             *error = "request pass failed";
 
@@ -456,9 +464,9 @@ protected:
 
     // Compares the root of run with root rendered directly on the CPU over the project format.
     void expectMatchesCpu(const NodePtr& root,
-                          const FrameRun& run)
+                          const FrameRun& run,
+                          const RectI& window = RectI(0, 0, kWidth, kHeight))
     {
-        const RectI window(0, 0, kWidth, kHeight);
         std::vector<RenderedPlane> planes;
         std::string error;
         ASSERT_TRUE(renderNodePlanesDirect(root, kTime, ViewIdx(0), 0, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error)) << error;
@@ -566,6 +574,71 @@ protected:
         assignRegions(&run->graph, { { grade1Task, blurTask }, { grade2Task } });
 
         return true;
+    }
+
+    // Source -> Grade -> Blur (sigma 25) -> Grade -> Invert over a kStripWidth x kStripHeight format.
+    struct StripChain {
+        NodePtr source, grade1, blur, grade2, sink;
+    };
+
+    static RectI stripWindow()
+    {
+        return RectI(0, 0, kStripWidth, kStripHeight);
+    }
+
+    bool makeStripChain(StripChain* chain)
+    {
+        chain->source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+        chain->grade1 = makeGrade(1.5, 0.1);
+        chain->blur = makeBlur(60.);
+        chain->grade2 = makeGrade(0.8, 0.02);
+        chain->sink = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
+        if (!chain->source || !chain->grade1 || !chain->blur || !chain->grade2 || !chain->sink) {
+            return false;
+        }
+        // The project format is set once per process, so the source and the Blur do not depend on it.
+        if (!setKnobValue(chain->source, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize) || !setKnobValues(chain->source, kNativeGeneratorParamBottomLeft, { 0., 0. }) || !setKnobValues(chain->source, kNativeGeneratorParamSize, { (double)kStripWidth, (double)kStripHeight })) {
+            return false;
+        }
+        KnobBool* crop = dynamic_cast<KnobBool*>(chain->blur->getKnobByName(kBlurParamCropToFormat).get());
+        if (!crop) {
+            return false;
+        }
+        crop->setValue(false);
+        connectNodes(chain->source, chain->grade1, 0, true);
+        connectNodes(chain->grade1, chain->blur, 0, true);
+        connectNodes(chain->blur, chain->grade2, 0, true);
+        connectNodes(chain->grade2, chain->sink, 0, true);
+
+        return true;
+    }
+
+    // The Grade, the Blur and the second Grade in one region.
+    bool prepareStripFrame(const StripChain& chain,
+                           FrameRun* run,
+                           std::string* error)
+    {
+        if (!prepareFrame(chain.sink, run, error, stripWindow())) {
+            return false;
+        }
+        const int grade1Task = taskOf(run->graph, chain.grade1);
+        const int blurTask = taskOf(run->graph, chain.blur);
+        const int grade2Task = taskOf(run->graph, chain.grade2);
+        if (grade1Task < 0 || blurTask < 0 || grade2Task < 0) {
+            *error = "a node of the chain has no task";
+
+            return false;
+        }
+        assignRegions(&run->graph, { { grade1Task, blurTask, grade2Task } });
+
+        return true;
+    }
+
+    static std::vector<float> rootPixels(const FrameRun& run)
+    {
+        const std::map<ImageLayerDesc, ImagePtr> planes = run.future->getRootPlanes();
+
+        return planes.empty() ? std::vector<float>() : readRgba(planes.begin()->second, stripWindow());
     }
 
 #ifdef NATRON_HAVE_GPU
@@ -955,4 +1028,223 @@ TEST_F(GpuResidencyTest, AbortDuringACpuFallbackEndsTheFrameCleanly)
     expectReleased(run);
 }
 
+// With a 1 MB storage buffer range, the region runs as strips, each uploading its rows of the source with the Blur's
+// halo, and its pixels are those of the region run whole.
+TEST_F(GpuResidencyTest, StripsMatchTheWholeRegionExactly)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    StripChain chain;
+    ASSERT_TRUE(makeStripChain(&chain));
+    std::string error;
+
+    FrameRun whole;
+    ASSERT_TRUE(prepareStripFrame(chain, &whole, &error)) << error;
+    ASSERT_TRUE(render(&whole));
+    EXPECT_EQ(1, whole.stats->getUploadCount());
+    EXPECT_EQ(1, whole.stats->getDownloadCount());
+    const std::vector<float> wholePixels = rootPixels(whole);
+    expectReleased(whole);
+
+    setGpuStripOverridesForTests(1u << 20, 0);
+    FrameRun tiled;
+    ASSERT_TRUE(prepareStripFrame(chain, &tiled, &error)) << error;
+    ASSERT_TRUE(render(&tiled));
+    EXPECT_EQ(0, fallbacksOf(tiled));
+    EXPECT_EQ(1, tiled.stats->getGpuRegionsRun());
+    EXPECT_EQ(0, renderRoICallsOf(tiled, chain.blur)) << "the Blur rendered on the CPU";
+    // One upload of the source and one download of the second Grade per strip.
+    EXPECT_GT(tiled.stats->getUploadCount(), 2);
+    EXPECT_EQ(tiled.stats->getUploadCount(), tiled.stats->getDownloadCount());
+    EXPECT_LE(tiled.stats->getPeakDeviceBytes(), (std::size_t)(1u << 20) * 4);
+
+    const std::vector<float> tiledPixels = rootPixels(tiled);
+    ASSERT_EQ(wholePixels.size(), tiledPixels.size());
+    ASSERT_FALSE(wholePixels.empty());
+    float worst = 0.f;
+    for (std::size_t i = 0; i < wholePixels.size(); ++i) {
+        worst = std::max(worst, std::fabs(wholePixels[i] - tiledPixels[i]));
+    }
+    EXPECT_EQ(0.f, worst);
+    expectReleased(tiled);
+    expectMatchesCpu(chain.sink, tiled, stripWindow());
+}
+
+// The region fits the storage buffer range, but its working set is over the pool's budget: it runs as strips that
+// each fit the budget, rather than running out of device memory.
+TEST_F(GpuResidencyTest, WorkingSetOverTheBudgetRunsAsStrips)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(useOwnContext());
+    StripChain chain;
+    ASSERT_TRUE(makeStripChain(&chain));
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareStripFrame(chain, &run, &error)) << error;
+    const std::uint64_t budget = 6u << 20;
+    runtime()->pool().trim();
+    runtime()->pool().setUserBudget(budget);
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_EQ(0, run.stats->getGpuRegionRetries());
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_GT(run.stats->getUploadCount(), 1) << "the region did not run as strips";
+    EXPECT_LE(run.stats->getPeakDeviceBytes(), budget);
+    expectReleased(run);
+    expectMatchesCpu(chain.sink, run, stripWindow());
+}
+
+// Not even a strip of four rows fits a storage buffer range smaller than one row: the region renders on the CPU, and
+// the fallback is counted under its own reason, without a retry.
+TEST_F(GpuResidencyTest, RegionNoStripFitsRendersOnTheCpu)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    StripChain chain;
+    ASSERT_TRUE(makeStripChain(&chain));
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareStripFrame(chain, &run, &error)) << error;
+    setGpuStripOverridesForTests(1024, 0);
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(1, fallbacksOf(run));
+    EXPECT_EQ(1, fallbacksOf(run, "too large for the GPU"));
+    EXPECT_EQ(0, run.stats->getGpuRegionRetries());
+    EXPECT_EQ(0, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(0, run.stats->getUploadCount());
+    EXPECT_EQ(1, renderRoICallsOf(run, chain.blur));
+    expectReleased(run);
+    expectMatchesCpu(chain.sink, run, stripWindow());
+}
+
 #endif // NATRON_HAVE_GPU
+
+namespace {
+
+const int kPlanWidth = 100;
+const int kPlanHeight = 1000;
+const int kPlanHalo = 10;
+const std::uint64_t kPlanRowBytes = kPlanWidth * 4 * sizeof(float);
+
+RectI
+padRows(const RectI& rect,
+        int halo)
+{
+    return RectI(rect.x1, rect.y1 - halo, rect.x2, rect.y2 + halo);
+}
+
+// A RAM source -> Grade -> Blur reading kPlanHalo rows beyond each side -> Grade read after the region.
+GpuStripGraph
+planChain()
+{
+    GpuStripGraph graph;
+    const RectI bounds(0, 0, kPlanWidth, kPlanHeight);
+
+    for (int s = 0; s < 4; ++s) {
+        GpuStripSlot slot;
+        slot.bounds = bounds;
+        slot.nComps = 4;
+        slot.external = (s == 0);
+        slot.interior = (s == 3);
+        graph.images.push_back(slot);
+    }
+    for (int m = 0; m < 3; ++m) {
+        GpuStripMember member;
+        member.outSlot = m + 1;
+        member.inputSlots.push_back(m);
+        const int halo = (m == 1) ? kPlanHalo : 0;
+        member.inputRoI = [halo](int, const RectI& rect) {
+            return padRows(rect, halo);
+        };
+        graph.members.push_back(member);
+    }
+
+    return graph;
+}
+
+} // namespace
+
+TEST(GpuRegionStrips, FitsWholeWithoutLimits)
+{
+    std::vector<GpuStrip> strips;
+    int rows = -1;
+
+    EXPECT_EQ(GpuStripResult::Whole, planGpuStrips(planChain(), GpuStripLimits(), &strips, &rows));
+    EXPECT_TRUE(strips.empty());
+    EXPECT_EQ(0, rows);
+}
+
+TEST(GpuRegionStrips, StripsCarryTheHalosBackwardsAndPartitionTheOutput)
+{
+    const GpuStripGraph graph = planChain();
+    GpuStripLimits limits;
+    limits.maxBufferBytes = 64 * kPlanRowBytes;
+    std::vector<GpuStrip> strips;
+    int rows = 0;
+
+    ASSERT_EQ(GpuStripResult::Strips, planGpuStrips(graph, limits, &strips, &rows));
+    ASSERT_GT(rows, 0);
+    EXPECT_EQ(0, rows % kGpuStripRowQuantum);
+    EXPECT_LE(rows, 64 - 2 * kPlanHalo);
+    ASSERT_GT(strips.size(), 1u);
+
+    int next = 0;
+    for (const GpuStrip& strip : strips) {
+        const RectI& interior = strip.interiors[3];
+        ASSERT_FALSE(interior.isNull());
+        EXPECT_EQ(next, interior.y1);
+        EXPECT_EQ(kPlanWidth, interior.width());
+        next = interior.y2;
+        EXPECT_TRUE(strip.interiors[0].isNull());
+        EXPECT_TRUE(strip.interiors[1].isNull());
+        EXPECT_TRUE(strip.interiors[2].isNull());
+
+        EXPECT_EQ(interior, strip.rects[3]);
+        EXPECT_EQ(interior, strip.rects[2]);
+        const RectI halo = padRows(interior, kPlanHalo).intersect(RectI(0, 0, kPlanWidth, kPlanHeight));
+        EXPECT_EQ(halo, strip.rects[1]);
+        EXPECT_TRUE(strip.rects[0].contains(halo));
+        EXPECT_EQ(0, strip.rects[0].y1 % kGpuStripRowQuantum);
+        EXPECT_TRUE((strip.rects[0].y2 % kGpuStripRowQuantum == 0) || (strip.rects[0].y2 == kPlanHeight));
+        EXPECT_LE(gpuStripCost(graph, strip.rects, limits).largestBuffer, limits.maxBufferBytes);
+    }
+    EXPECT_EQ(kPlanHeight, next);
+}
+
+TEST(GpuRegionStrips, BudgetAloneStrips)
+{
+    const GpuStripGraph graph = planChain();
+    std::vector<RectI> whole(graph.images.size(), RectI(0, 0, kPlanWidth, kPlanHeight));
+    GpuStripLimits limits;
+    limits.budgetBytes = gpuStripCost(graph, whole, limits).peakBytes / 4;
+    std::vector<GpuStrip> strips;
+    int rows = 0;
+
+    ASSERT_EQ(GpuStripResult::Strips, planGpuStrips(graph, limits, &strips, &rows));
+    for (const GpuStrip& strip : strips) {
+        EXPECT_LE(gpuStripCost(graph, strip.rects, limits).peakBytes, limits.budgetBytes);
+    }
+}
+
+TEST(GpuRegionStrips, NoStripFits)
+{
+    const GpuStripGraph graph = planChain();
+    std::vector<GpuStrip> strips;
+    int rows = 0;
+
+    GpuStripLimits range;
+    range.maxBufferBytes = (2 * kPlanHalo) * kPlanRowBytes;
+    EXPECT_EQ(GpuStripResult::TooLarge, planGpuStrips(graph, range, &strips, &rows));
+    EXPECT_TRUE(strips.empty());
+
+    GpuStripLimits budget;
+    budget.budgetBytes = kPlanRowBytes;
+    EXPECT_EQ(GpuStripResult::OverBudget, planGpuStrips(graph, budget, &strips, &rows));
+    EXPECT_TRUE(strips.empty());
+}

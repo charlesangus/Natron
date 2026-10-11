@@ -129,7 +129,7 @@ The design notes, the current behaviour re-checked against `a50bef552`, and the 
 
 ## Phase 55.3: Render dialog
 
-- [ ] M55.P3.T1 — Add `RenderDialog` (writers, frame-range preset, background checkbox) and a pure range resolver with tests
+- [x] M55.P3.T1 — Add `RenderDialog` (writers, frame-range preset, background checkbox) and a pure range resolver with tests
   - files: `Gui/RenderDialog.h` (new), `Gui/RenderDialog.cpp` (new), `Tests/RenderDialogRange_Test.cpp` (new), `Tests/CMakeLists.txt` (**OVERLAP: Tests/CMakeLists.txt**; one line in `GuiTests_SOURCES`)
   - approach:
     - Pure `RenderRange resolveRenderRange(preset, writerFirst, writerLast, writerStep, projectFirst, projectLast, custom)`. Writer bounds of `INT_MIN`/`INT_MAX` fall back to the project range, as `validateRenderOptions` does. It returns `{first, last, step, error}`, with an error when first > last or step < 1.

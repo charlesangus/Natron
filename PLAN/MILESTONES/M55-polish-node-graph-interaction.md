@@ -67,7 +67,7 @@ The design notes, the current behaviour re-checked against `a50bef552`, and the 
 
 ## Phase 55.2: Splice into pipe
 
-- [ ] M55.P2.T1 — Add a pure splice-plan helper that picks a selection's entry and exit, with unit tests
+- [x] M55.P2.T1 — Add a pure splice-plan helper that picks a selection's entry and exit, with unit tests
   - files: `Gui/NodeGraphSplice.h` (new), `Gui/NodeGraphSplice.cpp` (new), `Tests/NodeGraphSplice_Test.cpp` (new), `Tests/CMakeLists.txt` (**OVERLAP: Tests/CMakeLists.txt**; one line in `GuiTests_SOURCES`)
   - approach:
     - Write `SplicePlan planSplice(const std::vector<SpliceNodeInfo>&)`. Each `SpliceNodeInfo` holds an id, its input ids (`-1` for free), its preferred input, its output ids, `isBackdrop` and `hasNoInputs` (Reader, or zero inputs).

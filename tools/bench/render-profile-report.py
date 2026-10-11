@@ -20,6 +20,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 
 WRITER_NODES = ("internalEncoderNode",)
 
@@ -261,6 +262,119 @@ def print_report(results, args):
                  res["net_gain_unified_ms"] / n, 100 * res["net_gain_unified_share"]))
 
 
+BLUR_PLUGIN_ID = "net.sf.cimg.CImgBlur"
+GRADE_PLUGIN_ID = "net.sf.openfx.GradePlugin"
+UHD_MPX = 3840 * 2160 / 1e6
+OPEN_SIGMA = 1e9
+
+# Profile records carry no sigma, so these come from in-situ Blur measurements
+# (UHD float, 16 threads vs noRenderThreads=1, per-task ms/Mpx) taken after the
+# uninitialised-buffer fix. Rows are (algorithm, largest sigma covered, serial, threaded);
+# the last bucket of each algorithm is open-ended and was measured at sigma 100.
+BLUR_SIGMA_MEASURED = (
+    ("fir", 3.0, 46.0, 13.2),
+    ("fir", 25.0, 100.0, 21.0),
+    ("fir", OPEN_SIGMA, 267.0, 43.4),
+    ("iir", OPEN_SIGMA, 71.0, 18.9),
+)
+
+# Kernel-only GPU time per UHD image in ms (RX 7900 XTX, data already resident), from the
+# GPU compute backend design notes, section 2.3. Rows are (plugin id, largest sigma covered, ms).
+GPU_KERNEL_UHD_MS = (
+    (GRADE_PLUGIN_ID, 0.0, 0.4),
+    (BLUR_PLUGIN_ID, 3.0, 3.3),
+    (BLUR_PLUGIN_ID, 25.0, 21.5),
+    (BLUR_PLUGIN_ID, OPEN_SIGMA, 52.5),
+)
+
+
+def weighted_median(pairs):
+    """pairs is [(value, weight)]; returns the first value whose cumulative weight reaches half."""
+    pairs = sorted(pairs)
+    half = sum(w for _, w in pairs) / 2.0
+    acc = 0.0
+    for value, weight in pairs:
+        acc += weight
+        if acc >= half:
+            return value
+    return 0.0
+
+
+def plugin_costs(paths):
+    """Returns {plugin id: weighted median ms/Mpx over every successful task of the files}."""
+    samples = collections.defaultdict(list)
+    for tasks in load_records(paths).values():
+        for rec in tasks.values():
+            if rec["roiPixels"] > 0:
+                samples[rec["plugin"]].append((ms_per_mpx(rec), rec["roiPixels"]))
+    return {plugin: weighted_median(pairs) for plugin, pairs in samples.items()}
+
+
+def cost_table_rows(threaded_paths, serial_paths):
+    """Returns (cpu rows, sigma rows, gpu rows) for the seed table.
+
+    The parallel speedup is the serial cost per pixel over the threaded one, 1 for a plugin
+    the threaded profiles lack."""
+    serial = plugin_costs(serial_paths)
+    threaded = plugin_costs(threaded_paths)
+    cpu = []
+    for plugin in sorted(serial):
+        speedup = serial[plugin] / threaded[plugin] if threaded.get(plugin, 0) > 0 else 1.0
+        cpu.append((plugin, serial[plugin], speedup))
+    sigma = [(BLUR_PLUGIN_ID, algo, top, ser, ser / par) for algo, top, ser, par in BLUR_SIGMA_MEASURED]
+    gpu = [(plugin, top, ms / UHD_MPX) for plugin, top, ms in GPU_KERNEL_UHD_MS]
+    return cpu, sigma, gpu
+
+
+def file_date(path):
+    return time.strftime("%Y-%m-%d", time.localtime(os.path.getmtime(path)))
+
+
+def emit_cost_table(pairs, command):
+    """Returns the text of Engine/GpuCostSeed.inc; pairs maps each threaded profile to its serial one."""
+    threaded = list(pairs)
+    serial = [pairs[path] for path in threaded]
+    cpu, sigma, gpu = cost_table_rows(threaded, serial)
+
+    def sigma_text(top):
+        return "1e9" if top >= OPEN_SIGMA else repr(float(top))
+
+    def block(name, rows):
+        lines = ["#define %s \\" % name]
+        lines += ["    %s, \\" % row for row in rows]
+        lines[-1] = lines[-1][:-3]
+        return "\n".join(lines) + "\n"
+
+    out = ["// Seed costs for the GPU placement cost model. Generated, do not edit.",
+           "//",
+           "// Serial (noRenderThreads=1) inputs, dated by file modification time:"]
+    out += ["//   %s (%s)" % (path, file_date(path)) for path in serial]
+    out.append("// Threaded inputs:")
+    out += ["//   %s (%s)" % (path, file_date(path)) for path in threaded]
+    out += ["//",
+            "// Regenerate from the repository root with:",
+            "//   " + command,
+            "//",
+            "// Each macro expands to an initialiser list; the consuming code defines the row structs.",
+            "// CPU rows: { plugin id, serial ms per Mpx (median over tasks weighted by RoI pixels),",
+            "//   parallel speedup (serial over threaded ms per Mpx) }.",
+            "// CPU sigma rows: { plugin id, algorithm, largest sigma covered, serial ms per Mpx, parallel",
+            "//   speedup }. Use the first row of the algorithm whose sigma bound is at least the sigma.",
+            "//   Measured in situ on UHD float at 16 threads, so they are hard-coded here.",
+            "// GPU rows: { plugin id, largest sigma covered (0 when the kernel has no sigma), kernel-only",
+            "//   ms per Mpx on an RX 7900 XTX, from the UHD kernel times of the GPU compute backend",
+            "//   design notes, section 2.3 }.",
+            ""]
+    out.append(block("NATRON_GPU_COST_SEED_CPU_ROWS",
+                     ['{ "%s", %.4f, %.4f }' % row for row in cpu]))
+    out.append(block("NATRON_GPU_COST_SEED_CPU_SIGMA_ROWS",
+                     ['{ "%s", "%s", %s, %.4f, %.4f }' % (p, a, sigma_text(t), s, k)
+                      for p, a, t, s, k in sigma]))
+    out.append(block("NATRON_GPU_COST_SEED_GPU_ROWS",
+                     ['{ "%s", %s, %.4f }' % (p, sigma_text(t), ms) for p, t, ms in gpu]))
+    return "\n".join(out)
+
+
 def self_test(args):
     sample = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "render-profile-sample.jsonl")
@@ -317,6 +431,35 @@ def self_test(args):
              2: task("B", "Blur", [1], 100000000)}
     heavy, regions, _, _ = find_regions(tasks, 20.0)
     assert regions == [{0}, {2}] or regions == [{2}, {0}], regions
+
+    with tempfile.TemporaryDirectory() as tmp:
+        fast = os.path.join(tmp, "fast.jsonl")
+        with open(sample, encoding="utf-8") as src, open(fast, "w", encoding="utf-8") as dst:
+            for line in src:
+                rec = json.loads(line)
+                if "wallNs" in rec:
+                    rec["wallNs"] //= 2
+                dst.write(json.dumps(rec) + "\n")
+        cpu, sigma, gpu = cost_table_rows([fast], [sample])
+        rows = {plugin: (cost, speedup) for plugin, cost, speedup in cpu}
+        assert set(rows) == {"Read", "Blur", "Grade", "Write", "Defocus", "Merge"}, rows.keys()
+        assert close(rows["Blur"][0], 100.0) and close(rows["Blur"][1], 2.0), rows["Blur"]
+        assert close(rows["Grade"][0], 5.0) and close(rows["Defocus"][0], 200.0)
+        assert [r[1:3] for r in sigma] == [("fir", 3.0), ("fir", 25.0), ("fir", 1e9), ("iir", 1e9)]
+        assert close(sigma[0][4], 46.0 / 13.2) and close(sigma[3][4], 71.0 / 18.9), sigma
+        assert [(r[0], r[1]) for r in gpu] == [("net.sf.openfx.GradePlugin", 0.0),
+                                                ("net.sf.cimg.CImgBlur", 3.0),
+                                                ("net.sf.cimg.CImgBlur", 25.0),
+                                                ("net.sf.cimg.CImgBlur", 1e9)], gpu
+        assert close(gpu[1][2], 3.3 / (3840 * 2160 / 1e6)), gpu
+        text = emit_cost_table({fast: sample}, "cmd")
+        assert text == emit_cost_table({fast: sample}, "cmd"), "output must be deterministic"
+        assert '    { "Blur", 100.0000, 2.0000 }, \\\n' in text, text
+        assert text.count("#define NATRON_GPU_COST_SEED_") == 3
+        assert '{ "net.sf.cimg.CImgBlur", "fir", 3.0, 46.0000, 3.4848 }' in text, text
+        assert "(%s)" % file_date(sample) in text and "//   cmd\n" in text
+        body = [line for line in text.splitlines() if not line.startswith("//")]
+        assert not any(line.endswith("\\") for line in body if line.startswith("}")), body
     print("self-test passed")
 
 
@@ -345,6 +488,9 @@ def main():
                          "comp; each node's own cost per pixel then replaces the contended wallNs of that "
                          "input for classification and region cost. Costs are not shared between inputs; "
                          "nodes absent from the serial profile keep their wallNs and are reported")
+    ap.add_argument("--emit-cost-table", metavar="OUT",
+                    help="write the per-plugin cost seed (a C++ .inc) from the one-thread profiles of "
+                         "--serial-profile INPUT=SERIAL pairs, with INPUT the threaded profile, and exit")
     ap.add_argument("--json", action="store_true", help="print machine-readable JSON instead of text")
     ap.add_argument("--self-test", action="store_true",
                     help="check the analysis against render-profile-sample.jsonl and exit")
@@ -377,6 +523,14 @@ def main():
         if not sep or key not in args.files:
             ap.error("--serial-profile needs INPUT=SERIAL with INPUT one of the input files")
         pairs[key] = serial
+    if args.emit_cost_table:
+        if not pairs:
+            ap.error("--emit-cost-table needs --serial-profile INPUT=SERIAL pairs")
+        command = " ".join(["tools/bench/render-profile-report.py"] + ["--serial-profile %s=%s" % kv
+                           for kv in pairs.items()] + args.files + ["--emit-cost-table", args.emit_cost_table])
+        with open(args.emit_cost_table, "w", encoding="utf-8") as out:
+            out.write(emit_cost_table(pairs, command))
+        return
     frames = load_records(args.files)
     if pairs:
         apply_serial_costs(frames, load_records(pairs.values()), pairs)

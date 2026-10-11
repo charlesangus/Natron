@@ -490,7 +490,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - Full ctest passes in both modes on lavapipe.
   - size: L
 
-- [ ] M84.P7.T8 — Pipelined strips: stream uploads and downloads while the GPU computes
+- [x] M84.P7.T8 — Pipelined strips: stream uploads and downloads while the GPU computes
   - files: `Engine/GpuRegionTask.cpp`, `Engine/GpuRegionStrips.{h,cpp}`, `Engine/Gpu/GpuTransfer.{h,cpp}` (only if needed), `Tests/GpuResidency_Test.cpp`
   - approach:
     - A stripped region runs as a pipeline over the async transfer streams (P3.T2) with timeline semaphores. While strip k computes, strip k+1's inputs upload and strip k−1's outputs download. The host waits only when it must reuse a buffer, not after every strip.
@@ -775,3 +775,24 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - two contending regions can halve each other into thin strips; consider waiting briefly for the other region before halving;
     - remember a working strip height per region shape;
     - the error log is noisy under contention.
+- 2026-10-11 — M84.P7.T8 done (`1c06ea503`). Full ctest passes 1668/1668 in both modes on lavapipe. On RADV, GpuResidency + GpuRegionStrips + `Gpu.*` pass 113/113 in each mode.
+  - **RADV overlap** (debug build, Grade → Blur σ25 → Grade at 16384², 8 strips, second render):
+
+    | Mode | Wall | Device upload + compute + download | Transfer hidden / exposed |
+    |---|---|---|---|
+    | serial | 930.5 ms | 212 + 461 + 257 ms | 0 / 470 ms |
+    | pipelined, 3 strips in flight | **504.3 ms** | 162 + 460 + 152 ms | 274 / 39 ms |
+
+    On a first render, pinning freshly allocated destination memory costs 100–250 ms per strip on the region thread: serial 2471 ms, pipelined 1670 ms. Reproduce with `NATRON_GPU_PIPELINE_BENCH=16384` and the filter `GpuResidencyTest.PipelinedStripsOverlapBenchmark`, which is skipped by default.
+  - **Design:**
+    - order per strip: retire strip k−D, upload k, submit compute k, download k−1;
+    - each run has its own compute timeline semaphore, and `ComputeHandoff::Record` folds the ownership acquire and release into the strip's compute command buffer;
+    - the planner takes 3 in flight at the serial height if that fits, otherwise 2 at ≥ 64 rows, otherwise serial;
+    - it pipelines only with a separate transfer family **and** push descriptors. A test hook forces it on or off.
+  - **Out-of-memory ladder** is now: evict and retry → serial strips (`noteGpuStripPipelineSerialized`) → halve strips → CPU.
+  - **Stats:** GPU timestamps fill the region record (`wallMs`, `strips`, `stripsInFlight`, `transferHiddenMs`, `transferExposedMs`) and `RenderStats`.
+  - **Deviations:** also touched `GpuRecord` (non-blocking timeline submit, `Record` handoff, timestamps), `RenderScheduler`/`RenderStats`/`RenderProfile_Test` (stats; `formatRegionRecord` takes `GpuRegionTimes`) and `setGpuStripSubmittedHookForTests`.
+  - **Follow-ups:**
+    - first-frame pinning of fresh download images on the region thread; pre-fault, or import on a helper thread;
+    - a wait timeout without loss can return buffers in use (pre-existing);
+    - contending regions on the out-of-memory ladder.

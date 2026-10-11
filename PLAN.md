@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: [M55 cancel-check fix then gate, M56.P5.T1, M76 AppImage sign-off, M27.P1.T1, M93.P1.T1, M84.P7.T8]
-pm_heartbeat: 2026-10-11T10:35:43-04:00
+current: [M55 cancel-check fix then gate, M56.P5.T1, M76 AppImage sign-off, M27.P1.T1, M93.P1.T1, M84.P8.T1]
+pm_heartbeat: 2026-10-11T10:36:24-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---

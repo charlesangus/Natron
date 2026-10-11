@@ -85,7 +85,7 @@ The design notes, the current behaviour re-checked against `a50bef552`, and the 
     - two free entries (invalid).
   - size: M
 
-- [ ] M55.P2.T2 — Make splice always on for single- and multi-node selections
+- [x] M55.P2.T2 — Make splice always on for single- and multi-node selections
   - files: `Gui/NodeGraph20.cpp`, `Gui/NodeGraph15.cpp`, `Gui/NodeGraphPrivate.h`, `Gui/NodeGraph.h`
   - approach:
     - Restructure `checkForHints` into three modes:
@@ -218,3 +218,7 @@ The design notes, the current behaviour re-checked against `a50bef552`, and the 
   - **Splice:** only unconnected nodes and chains can splice, with **no suppress modifier**. Ctrl's dangling-stub hint and Ctrl+Shift's merge hint are unchanged.
 - 2026-10-10 — **Lane:** M55 runs in the project root on `milestone/m55-node-graph-polish`, alongside M44 in `.worktrees/m44`. Tasks avoid M44's files except for additive `Tests/CMakeLists.txt` lines. They also avoid `Engine/AppInstance.*`, which M76 owns on the other host.
 
+- 2026-10-10 — **P2.T2:**
+  - Releasing Ctrl mid-drag now drops the Ctrl hint and switches to splice; the old code kept a stale Ctrl hint.
+  - Chain splices take two undo steps until P2.T4.
+  - Escape and focus-out don't cancel a node drag today. P2.T3 adds a `resetSplicePlan()` call in `NodeGraph25.cpp`'s `keyPressEvent` (Escape) and `NodeGraph45.cpp`'s `focusOutEvent`.

@@ -90,7 +90,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - verify: `xmllint --noout` passes on every new SVG. Each qrc path exists (a `grep -o 'Resources/Icons/[^<]*' Gui/GuiResources.qrc | xargs ls` check). At the gate build, About → Third-Party lists `LICENSE-Lucide.txt`.
   - size: M
 
-- [ ] M56.P4.T3 — Render SVG icons recoloured from the theme in `getIcon`, and fix the scaled-cache bug
+- [x] M56.P4.T3 — Render SVG icons recoloured from the theme in `getIcon`, and fix the scaled-cache bug
   - files: `Gui/GuiApplicationManager.cpp`, `Gui/GuiApplicationManager.h`, `Gui/ThemedIcon.h` (new), `Gui/ThemedIcon.cpp` (new)
   - approach:
     - `ThemedIcon::renderPixmap(path, logicalSize, QColor, dpr)`:

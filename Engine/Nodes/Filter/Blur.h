@@ -143,6 +143,25 @@ public:
      **/
     static bool paramsAreIdentity(const RenderScale& scale, const BlurParams& params) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The FIR Gaussian without derivative, alpha threshold, mask, partial mix, unpremult or
+     * channel subset, on float images of 1 to 4 components, with a radius the GPU kernel's tile
+     * holds.
+     **/
+    virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief getSourceRoI() at the current time and view.
+     **/
+    virtual RectI getGpuInputRoI(int inputNb, const RectI& outputRect, const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The pixels render() gives for the same query: the filtered extent is the source
+     * region of interest clipped to this effect's region of definition, and the source is
+     * resolved against the input's region of definition.
+     **/
+    virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 protected:
     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 

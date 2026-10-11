@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GpuBuffer.h"
+#include "GpuBufferPool.h"
 #include "GpuKernelRegistry.h"
 
 #include <array>
@@ -9,6 +10,7 @@
 #include <memory>
 #include <span>
 #include <type_traits>
+#include <vector>
 
 namespace gpu {
 
@@ -19,7 +21,9 @@ namespace gpu {
 // thread, so a context must be used and destroyed on that thread.
 class GpuRecordContext {
 public:
-    static GpuStatus create(GpuKernelRegistry& registry, std::unique_ptr<GpuRecordContext>& out);
+    // Without a pool the context cannot hand out scratch buffers.
+    static GpuStatus create(GpuKernelRegistry& registry, std::unique_ptr<GpuRecordContext>& out,
+                            GpuBufferPool* pool = nullptr);
     ~GpuRecordContext();
     GpuRecordContext(const GpuRecordContext&) = delete;
     GpuRecordContext& operator=(const GpuRecordContext&) = delete;
@@ -46,16 +50,27 @@ public:
     // Orders earlier dispatches' storage writes before later dispatches' storage reads and writes.
     void computeBarrier();
 
+    // A device buffer of at least `size` bytes from the pool, held until the context is destroyed so
+    // it outlives the recorded work that uses it. Its contents are undefined.
+    GpuStatus scratch(VkDeviceSize size, GpuBuffer*& out);
+
+    // Records a write of `data` into dst at `offset`, visible to later dispatches. Both offset and size
+    // must be multiples of 4, and the size at most 65536 bytes.
+    GpuStatus updateBuffer(const GpuBuffer& dst, VkDeviceSize offset, std::span<const std::byte> data);
+
     // Ends the buffer, submits it and blocks until the queue finished it. The context cannot record afterwards.
     GpuStatus submitAndWait(uint64_t timeoutNs = 30'000'000'000ull);
 
 private:
-    GpuRecordContext(GpuKernelRegistry& registry)
+    GpuRecordContext(GpuKernelRegistry& registry, GpuBufferPool* pool)
         : registry_(registry)
+        , bufferPool_(pool)
     {
     }
 
     GpuKernelRegistry& registry_;
+    GpuBufferPool* bufferPool_;
+    std::vector<GpuBufferHandle> held_;
     VkCommandPool pool_ = VK_NULL_HANDLE;
     VkCommandBuffer cmd_ = VK_NULL_HANDLE;
     bool open_ = false;

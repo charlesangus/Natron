@@ -135,7 +135,7 @@ GpuRuntime::newRecordContext(std::unique_ptr<GpuRecordContext>& out)
     if (isLost()) {
         return lostStatus();
     }
-    return note(GpuRecordContext::create(*registry_, out));
+    return note(GpuRecordContext::create(*registry_, out, pool_.get()));
 }
 
 GpuStatus

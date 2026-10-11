@@ -2,6 +2,10 @@ StructuredBuffer<float> srcBuf;
 RWStructuredBuffer<float> dstBuf;
 StructuredBuffer<float> weights;
 
+// Coordinates are image pixels. The pass writes the rect of width x height pixels at (outX, outY);
+// along the blur axis a tap is first resolved against [lineLo, lineHi), then the sample against
+// the source rect [srcX1, srcX2) x [srcY1, srcY2), each by the boundary mode. An output pixel
+// whose position along the axis lies outside [lineLo, lineHi) is written as zero.
 struct BlurParams
 {
     uint width;
@@ -10,10 +14,22 @@ struct BlurParams
     uint radius;
     uint vertical;
     uint neumann;
+    int outX;
+    int outY;
+    uint dstOffset;
+    uint dstStride;
+    int srcX1;
+    int srcY1;
+    int srcX2;
+    int srcY2;
+    uint srcOffset;
+    uint srcStride;
+    int lineLo;
+    int lineHi;
 };
 [[vk::push_constant]] ConstantBuffer<BlurParams> params;
 
-// kGroup, kColumns and kDirectMaxRadius are mirrored in src/GpuBlur.cpp.
+// kGroup, kColumns and kDirectMaxRadius are mirrored in Engine/Gpu/GpuBlur.cpp.
 static const uint kGroup = 128;
 static const uint kColumns = 32;
 static const uint kDirectMaxRadius = 32;
@@ -22,29 +38,78 @@ static const uint kMaxTile = kGroup + 2 * kMaxRadius;
 
 groupshared float tile[kMaxTile * 4];
 
-// Position p along the blur axis on the given line, resolved against the
-// boundary mode; returns false when the sample is outside under Dirichlet.
-bool resolve(int p, int len, bool neumann, out int q)
+bool insideLine(int a)
 {
-    q = p;
-    if (p >= 0 && p < len)
-        return true;
-    if (!neumann)
+    return a >= params.lineLo && a < params.lineHi;
+}
+
+// Float index of channel 0 of the source sample at position a along the axis on the given line,
+// or false when the sample reads as zero.
+bool sourceIndex(int a, int line, out uint idx)
+{
+    idx = 0;
+    const bool neumann = params.neumann != 0;
+    if (params.lineLo >= params.lineHi)
         return false;
-    q = clamp(p, 0, len - 1);
+    if (!insideLine(a))
+    {
+        if (!neumann)
+            return false;
+        a = clamp(a, params.lineLo, params.lineHi - 1);
+    }
+    int x = params.vertical != 0 ? line : a;
+    int y = params.vertical != 0 ? a : line;
+    if (params.srcX1 >= params.srcX2 || params.srcY1 >= params.srcY2)
+        return false;
+    if (x < params.srcX1 || x >= params.srcX2 || y < params.srcY1 || y >= params.srcY2)
+    {
+        if (!neumann)
+            return false;
+        x = clamp(x, params.srcX1, params.srcX2 - 1);
+        y = clamp(y, params.srcY1, params.srcY2 - 1);
+    }
+    idx = params.srcOffset + uint(y - params.srcY1) * params.srcStride + uint(x - params.srcX1) * params.channels;
     return true;
 }
 
-uint pixelIndex(uint line, int p)
+float sampleAt(int a, int line, uint c)
 {
-    return params.vertical != 0 ? uint(p) * params.width + line
-                                : line * params.width + uint(p);
+    uint idx;
+    return sourceIndex(a, line, idx) ? srcBuf[idx + c] : 0.0;
 }
 
-// Dispatch shape comes from blurGroupCount in src/GpuBlur.cpp, which also
-// refuses radius > kMaxRadius and more than 4 channels, the limits of `tile`.
-// group.x is the tile along the blur axis; group.y is the line it filters, or
-// a block of kColumns columns on the vertical direct path.
+// pos is the output position along the axis and line the output line, both relative to the rect.
+uint outputIndex(uint line, uint pos)
+{
+    return params.vertical != 0 ? params.dstOffset + pos * params.dstStride + line * params.channels
+                                : params.dstOffset + line * params.dstStride + pos * params.channels;
+}
+
+int axisOrigin()
+{
+    return params.vertical != 0 ? params.outY : params.outX;
+}
+
+int lineOrigin()
+{
+    return params.vertical != 0 ? params.outX : params.outY;
+}
+
+// The symmetric taps are summed in pairs, w[0] * centre first, in the order of the CPU FIR, so
+// both round alike.
+float firAt(int a, int line, uint c)
+{
+    const int R = int(params.radius);
+    float acc = weights[0] * sampleAt(a, line, c);
+    for (int k = 1; k <= R; ++k)
+        acc += weights[k] * (sampleAt(a - k, line, c) + sampleAt(a + k, line, c));
+    return acc;
+}
+
+// Dispatch shape comes from blurGroupCount in Engine/Gpu/GpuBlur.cpp, which also refuses
+// radius > kMaxRadius and more than 4 channels, the limits of `tile`. group.x is the tile along
+// the blur axis; group.y is the line it filters, or a block of kColumns columns on the vertical
+// direct path. weights holds radius + 1 floats, for offsets 0 to radius.
 [shader("compute")]
 [numthreads(128, 1, 1)]
 void blurPass(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
@@ -53,11 +118,12 @@ void blurPass(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
     const int lines = int(params.vertical != 0 ? params.width : params.height);
     const int R = int(params.radius);
     const uint nc = params.channels;
-    const bool neumann = params.neumann != 0;
     const uint line = gid.y;
     const int base = int(gid.x * kGroup);
     const int pos = base + int(tid.x);
     const bool active = pos < len && int(line) < lines;
+    const int a0 = axisOrigin();
+    const int l0 = lineOrigin();
 
     __target_switch
     {
@@ -66,17 +132,9 @@ void blurPass(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
         // barrier cannot publish a cooperatively loaded tile there.
         if (active)
         {
+            const bool inside = insideLine(a0 + pos);
             for (uint c = 0; c < nc; ++c)
-            {
-                float acc = 0.0;
-                for (int k = -R; k <= R; ++k)
-                {
-                    int q;
-                    if (resolve(pos + k, len, neumann, q))
-                        acc += weights[k + R] * srcBuf[pixelIndex(line, q) * nc + c];
-                }
-                dstBuf[pixelIndex(line, pos) * nc + c] = acc;
-            }
+                dstBuf[outputIndex(line, uint(pos)) + c] = inside ? firAt(a0 + pos, l0 + int(line), c) : 0.0;
         }
         break;
     default:
@@ -93,17 +151,9 @@ void blurPass(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
                     const int rowPos = base + int(r);
                     if (rowPos < len)
                     {
+                        const bool inside = insideLine(a0 + rowPos);
                         for (uint c = 0; c < nc; ++c)
-                        {
-                            float acc = 0.0;
-                            for (int k = -R; k <= R; ++k)
-                            {
-                                int q;
-                                if (resolve(rowPos + k, len, neumann, q))
-                                    acc += weights[k + R] * srcBuf[(uint(q) * params.width + col) * nc + c];
-                            }
-                            dstBuf[(uint(rowPos) * params.width + col) * nc + c] = acc;
-                        }
+                            dstBuf[outputIndex(col, uint(rowPos)) + c] = inside ? firAt(a0 + rowPos, l0 + int(col), c) : 0.0;
                     }
                 }
             }
@@ -113,20 +163,22 @@ void blurPass(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
             const int tileLen = int(kGroup) + 2 * R;
             for (int t = int(tid.x); t < tileLen; t += int(kGroup))
             {
-                int q = 0;
-                const bool ok = int(line) < lines && resolve(base - R + t, len, neumann, q);
+                uint idx = 0;
+                const bool ok = int(line) < lines && sourceIndex(a0 + base - R + t, l0 + int(line), idx);
                 for (uint c = 0; c < nc; ++c)
-                    tile[uint(t) * nc + c] = ok ? srcBuf[pixelIndex(line, q) * nc + c] : 0.0;
+                    tile[uint(t) * nc + c] = ok ? srcBuf[idx + c] : 0.0;
             }
             GroupMemoryBarrierWithGroupSync();
             if (active)
             {
+                const bool inside = insideLine(a0 + pos);
+                const uint centre = tid.x + uint(R);
                 for (uint c = 0; c < nc; ++c)
                 {
-                    float acc = 0.0;
-                    for (int k = 0; k <= 2 * R; ++k)
-                        acc += weights[k] * tile[(tid.x + uint(k)) * nc + c];
-                    dstBuf[pixelIndex(line, pos) * nc + c] = acc;
+                    float acc = weights[0] * tile[centre * nc + c];
+                    for (uint k = 1; k <= uint(R); ++k)
+                        acc += weights[k] * (tile[(centre - k) * nc + c] + tile[(centre + k) * nc + c]);
+                    dstBuf[outputIndex(line, uint(pos)) + c] = inside ? acc : 0.0;
                 }
             }
         }

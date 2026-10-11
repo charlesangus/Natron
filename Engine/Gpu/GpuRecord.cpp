@@ -5,13 +5,13 @@
 namespace gpu {
 
 GpuStatus
-GpuRecordContext::create(GpuKernelRegistry& registry, std::unique_ptr<GpuRecordContext>& out)
+GpuRecordContext::create(GpuKernelRegistry& registry, std::unique_ptr<GpuRecordContext>& out, GpuBufferPool* pool)
 {
     GpuDevice& device = registry.device();
     if (device.isLost()) {
         return { VK_ERROR_DEVICE_LOST, "GpuRecordContext::create: device lost" };
     }
-    std::unique_ptr<GpuRecordContext> ctx(new GpuRecordContext(registry));
+    std::unique_ptr<GpuRecordContext> ctx(new GpuRecordContext(registry, pool));
     registry.recordingBegan();
     // From here the destructor balances recordingBegan(), including on the error paths.
     if (GpuStatus s = registry.commandPoolForThisThread(ctx->pool_); !s) {
@@ -82,6 +82,48 @@ GpuRecordContext::computeBarrier()
     dep.memoryBarrierCount = 1;
     dep.pMemoryBarriers = &mb;
     vkCmdPipelineBarrier2(cmd_, &dep);
+}
+
+GpuStatus
+GpuRecordContext::scratch(VkDeviceSize size, GpuBuffer*& out)
+{
+    out = nullptr;
+    if (!open_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::scratch: context already submitted" };
+    }
+    if (!bufferPool_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::scratch: context has no buffer pool" };
+    }
+    GpuBufferHandle handle;
+    if (GpuStatus s = bufferPool_->acquire(size, handle); !s) {
+        return s;
+    }
+    held_.push_back(handle);
+    out = &held_.back().buffer();
+    return {};
+}
+
+GpuStatus
+GpuRecordContext::updateBuffer(const GpuBuffer& dst, VkDeviceSize offset, std::span<const std::byte> data)
+{
+    if (!open_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::updateBuffer: context already submitted" };
+    }
+    if (!dst || data.empty() || data.size() > 65536 || (data.size() % 4) != 0 || (offset % 4) != 0
+        || offset + data.size() > dst.size()) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::updateBuffer: invalid range" };
+    }
+    vkCmdUpdateBuffer(cmd_, dst.buffer(), offset, data.size(), data.data());
+    VkMemoryBarrier2 mb { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+    mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    mb.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    mb.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+    VkDependencyInfo dep { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+    dep.memoryBarrierCount = 1;
+    dep.pMemoryBarriers = &mb;
+    vkCmdPipelineBarrier2(cmd_, &dep);
+    return {};
 }
 
 GpuStatus

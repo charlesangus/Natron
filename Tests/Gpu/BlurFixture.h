@@ -4,6 +4,7 @@
 #include <random>
 #include <vector>
 
+#include "GpuBlur.h"
 #include "ref/BlurRef.h"
 
 // Cases and bounds shared by the CPU-twin and GPU blur tests.
@@ -20,15 +21,15 @@ inline constexpr int kChannelCounts[] = { 1, 3, 4 };
 inline constexpr double kTolerance = 2e-6;
 inline constexpr uint32_t kGroup = 128;
 
-// Mirrors BlurParams in blur.slang, which has no padding between members.
-struct BlurParams {
-    uint32_t width;
-    uint32_t height;
-    uint32_t channels;
-    uint32_t radius;
-    uint32_t vertical;
-    uint32_t neumann;
-};
+using BlurParams = gpu::GpuBlurParams;
+
+// The kernel reads the symmetric weights of offsets 0 to radius only.
+inline std::vector<float>
+halfWeights(double sigma)
+{
+    const std::vector<double> w = blurref::makeWeights(sigma);
+    return std::vector<float>(w.begin() + w.size() / 2, w.end());
+}
 
 inline std::vector<float>
 makeImage(int width, int height, int channels, uint32_t seed)

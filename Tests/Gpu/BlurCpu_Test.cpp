@@ -44,14 +44,13 @@ maxError(int width, int height, int channels, double sigma, bool neumann, uint32
 {
     const std::vector<float> img = blurfix::makeImage(width, height, channels, seed);
 
-    const std::vector<double> wd = blurref::makeWeights(sigma);
-    const std::vector<float> wf(wd.begin(), wd.end());
-    BlurParams p { uint32_t(width), uint32_t(height), uint32_t(channels), uint32_t(wd.size() / 2), 0,
-                   neumann ? 1u : 0u };
+    const std::vector<float> wf = blurfix::halfWeights(sigma);
+    gpu::GpuBlurPass pass { uint32_t(width), uint32_t(height), uint32_t(channels), uint32_t(wf.size() - 1), false,
+                            neumann };
     std::vector<float> tmp, out;
-    runPass(img, tmp, wf, p);
-    p.vertical = 1;
-    runPass(tmp, out, wf, p);
+    runPass(img, tmp, wf, gpu::blurParams(pass));
+    pass.vertical = true;
+    runPass(tmp, out, wf, gpu::blurParams(pass));
 
     const std::vector<double> ref = blurfix::reference(img, width, height, channels, sigma, neumann);
     double worst = 0.0;

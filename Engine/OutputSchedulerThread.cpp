@@ -2368,6 +2368,14 @@ private:
             const DataKindEnum outputKind = activeInputToRender->getOutputDataKind();
 
             for (std::size_t view = 0; view < viewsToRender.size(); ++view) {
+                if (output->checkFrameToWrite(time, viewsToRender[view]) == eStatusFailed) {
+                    QString message;
+                    int type = 0;
+                    activeInputNode->getPersistentMessage(&message, &type, false);
+                    _imp->scheduler->notifyRenderFailure(message.isEmpty() ? std::string("Error caught while rendering") : message.toStdString());
+
+                    return;
+                }
                 StatusEnum stat = activeInputToRender->getRegionOfDefinition_public(activeInputToRenderHash, time, scale, viewsToRender[view], &rod, &isProjectFormat);
                 if (stat == eStatusFailed) {
                     _imp->scheduler->notifyRenderFailure("Error caught while rendering");

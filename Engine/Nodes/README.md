@@ -271,6 +271,29 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   format, `oiio/` to every format, and `ofx/timecode` and `ofx/edgecode` as
   `smpte:TimeCode` and `smpte:KeyCode`. File-identity keys, `oiio/ColorSpace`,
   other `ofx/` keys and the file-layout keys are never written.
+- **When the file is written.** Only a frame of the Write's own render to
+  disk encodes: the panel's Render button, Render Selected, `app.render` and
+  the `-w` command-line render all run through `startWritersRendering()` and
+  the Write's `RenderEngine`, whose frames are sequential and rooted at the
+  Write. `EffectInstance::isRenderingOwnSequence()` reads exactly that from
+  the frame's `ParallelRenderArgs`. A Viewer, a preview or any node downstream
+  that pulls the Write roots its frame elsewhere, so the Write returns its
+  output without touching the disk. The image cache lookup skips a writer only
+  on its own render to disk.
+- **Output.** The output, on a pull and on a render to disk alike, is what the
+  file of the frame holds, so the cache holds one image either way. One
+  planner, `planFile()` in `NativeWrite.cpp`, decides the file's planes and
+  channels from the channel set and the format's capabilities; the encoder
+  writes its plan, and the output follows it in three places: the produced
+  planes (`getComponentsNeededAndProduced()`), the colour layout
+  (`getPreferredMetadata()` makes an RGBA input RGB when the file gets no
+  alpha), and the pixels the render copies. So a partial R/G/B selection shows
+  the whole RGB triple the file gets, a layer or alpha the format cannot hold
+  is absent, and no other layer passes through
+  (`producesMetadataLayerImplicitly()` is false and
+  `isPassThroughForNonRenderedLayers()` blocks the rest). Without a writable
+  format, only the channel set restricts the output. A colour row selecting
+  alpha alone keeps an RGBA plane whose RGB is zero.
 - **Read back.** With `readBack` on, the node outputs the written file instead
   of its input, decoded by `OiioReadSupport::decode()` inside the Write
   (`renderReadBack()`), with the file read in the output space it was written in.

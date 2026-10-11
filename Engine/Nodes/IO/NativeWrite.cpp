@@ -577,6 +577,93 @@ findSelection(const std::vector<ResolvedLayer>& selected,
     return NULL;
 }
 
+// What a frame's file holds, planned from the candidate planes in their order: `planes` indexes the
+// planes the file gets, colour first, `channels` the channels of each, and `dropped` the layers
+// the format cannot hold beside the colour. The encoder writes this plan and the output shows it,
+// so the two cannot disagree.
+struct FilePlan {
+    std::vector<int> planes;
+    std::vector<PlaneChannels> channels;
+    std::vector<std::string> dropped;
+};
+
+FilePlan
+planFile(const std::vector<ImageLayerDesc>& candidates,
+         const std::vector<ResolvedLayer>& selected,
+         bool hasLayerKnob,
+         const OiioWriteSupport::FormatCaps& caps)
+{
+    FilePlan plan;
+    bool haveColor = false;
+
+    for (std::size_t i = 0; i < candidates.size(); ++i) {
+        const ImageLayerDesc& layer = candidates[i];
+        if (layer.getNumComponents() <= 0) {
+            continue;
+        }
+        const ResolvedLayer* selection = findSelection(selected, layer);
+        // The render is handed a colour plane even when no row selects colour.
+        if (hasLayerKnob && !selection) {
+            continue;
+        }
+        if (layer.isColorLayer()) {
+            if (haveColor) {
+                continue;
+            }
+            haveColor = true;
+            plan.planes.insert(plan.planes.begin(), (int)i);
+            plan.channels.insert(plan.channels.begin(), colourChannels(selection, layer.getNumComponents(), caps.alpha));
+        } else {
+            PlaneChannels channels = layerChannels(layer, selection);
+            if (channels.source.empty()) {
+                continue;
+            }
+            plan.planes.push_back((int)i);
+            plan.channels.push_back(channels);
+        }
+    }
+    // A format that cannot hold more than four channels keeps the colour row alone.
+    if (!caps.nChannels) {
+        while (plan.planes.size() > 1 || (plan.planes.size() == 1 && !haveColor)) {
+            plan.dropped.push_back(candidates[(std::size_t)plan.planes.back()].getLayerID());
+            plan.planes.pop_back();
+            plan.channels.pop_back();
+        }
+    }
+
+    return plan;
+}
+
+// The dropped layers of a plan, in the order the planes were listed.
+std::string
+droppedLayerNames(const FilePlan& plan)
+{
+    std::string names;
+
+    for (std::size_t i = plan.dropped.size(); i-- > 0;) {
+        names += (names.empty() ? "" : ", ") + plan.dropped[i];
+    }
+
+    return names;
+}
+
+// The capabilities that decide which channels the output shows. Without a writable format there
+// is no file to mirror, so only the channel set restricts the output.
+OiioWriteSupport::FormatCaps
+outputCaps(const std::string& path)
+{
+    const std::string formatName = path.empty() ? std::string() : OiioWriteSupport::formatNameForWritableExtension(extensionOf(path));
+    if (formatName.empty()) {
+        OiioWriteSupport::FormatCaps caps;
+        caps.alpha = true;
+        caps.nChannels = true;
+
+        return caps;
+    }
+
+    return OiioWriteSupport::capabilities(formatName);
+}
+
 enum PartSplitEnum {
     ePartSplitSingle = 0,
     ePartSplitViews,
@@ -1027,11 +1114,26 @@ NativeWrite::automaticOutputSpace() const
 StatusEnum
 NativeWrite::getPreferredMetadata(NodeMetadata& metadata)
 {
-    if (!readBackActive()) {
-        return eStatusOK;
-    }
     KnobOutputFilePtr filename = _filename.lock();
     if (!filename) {
+        return eStatusOK;
+    }
+    if (!readBackActive()) {
+        // An RGBA input whose file gets no alpha, because the format has none or the channel set
+        // leaves it out, makes an RGB output: the alpha is not in the file, so not in the output.
+        if ((metadata.getComponentsType(-1) == kNatronColorLayerID) && (metadata.getNComps(-1) == 4) && getNode()->getLayerKnob()) {
+            const ImageLayerDesc rgba = ImageLayerDesc::getRGBAComponents();
+            ResolvedLayer colour;
+            colour.desc = rgba;
+            getColorWriteBits(rgba, &colour.channels);
+            if (colour.channels.any()) {
+                const FilePlan plan = planFile(std::vector<ImageLayerDesc>(1, rgba), std::vector<ResolvedLayer>(1, colour), true, outputCaps(filename->getValue()));
+                if ((plan.channels.size() == 1) && (plan.channels[0].names.size() == 3)) {
+                    metadata.setNComps(-1, 3);
+                }
+            }
+        }
+
         return eStatusOK;
     }
     // A missing or unreadable file keeps the input's metadata: the render reports the error.
@@ -1136,9 +1238,82 @@ NativeWrite::getFramesNeeded(double time,
 }
 
 void
+NativeWrite::getComponentsNeededAndProduced(double time,
+                                            ViewIdx view,
+                                            EffectInstance::ComponentsNeededMap* comps,
+                                            double* passThroughTime,
+                                            int* passThroughView,
+                                            int* passThroughInputNb)
+{
+    EffectInstance::getComponentsNeededAndProduced(time, view, comps, passThroughTime, passThroughView, passThroughInputNb);
+
+    std::list<ImageLayerDesc>& produced = (*comps)[-1];
+    const std::vector<ImageLayerDesc> candidates(produced.begin(), produced.end());
+    std::vector<ResolvedLayer> selected;
+    const bool hasLayerKnob = getNode()->resolveLayerKnob(time, view, &selected);
+    const KnobOutputFilePtr filename = _filename.lock();
+    const FilePlan plan = planFile(candidates, selected, hasLayerKnob, outputCaps(filename ? filename->getValue() : std::string()));
+
+    produced.clear();
+    for (std::size_t i = 0; i < candidates.size(); ++i) {
+        if (std::find(plan.planes.begin(), plan.planes.end(), (int)i) != plan.planes.end()) {
+            produced.push_back(candidates[i]);
+        }
+    }
+}
+
+StatusEnum
+NativeWrite::checkFrameToWrite(double time,
+                               ViewIdx view)
+{
+    KnobOutputFilePtr filename = _filename.lock();
+    KnobBoolPtr overwrite = _overwrite.lock();
+    const std::string pattern = filename ? filename->getValue() : std::string();
+    const std::string formatName = pattern.empty() ? std::string() : OiioWriteSupport::formatNameForWritableExtension(extensionOf(pattern));
+
+    // A missing file name or an unsupported format is reported by the render action.
+    if (formatName.empty() || !overwrite) {
+        return eStatusOK;
+    }
+    if (!overwrite->getValue()) {
+        std::error_code ec;
+        const std::string path = filename->generateFileNameAtTime((SequenceTime)std::floor(time + 0.5), view).toStdString();
+        if (std::filesystem::exists(std::filesystem::path(path), ec)) {
+            return eStatusOK;
+        }
+    }
+    EffectInstance::ComponentsNeededMap comps;
+    double passThroughTime = time;
+    int passThroughView = view.value();
+    int passThroughInputNb = -1;
+    EffectInstance::getComponentsNeededAndProduced(time, view, &comps, &passThroughTime, &passThroughView, &passThroughInputNb);
+    const std::list<ImageLayerDesc>& candidates = comps[-1];
+    std::vector<ResolvedLayer> selected;
+    const bool hasLayerKnob = getNode()->resolveLayerKnob(time, view, &selected);
+    const FilePlan plan = planFile(std::vector<ImageLayerDesc>(candidates.begin(), candidates.end()), selected, hasLayerKnob, OiioWriteSupport::capabilities(formatName));
+
+    if (plan.planes.empty() && !plan.dropped.empty()) {
+        setPersistentMessage(eMessageTypeError, tr("%1 can hold only the colour channels, and there are none to write: %2 cannot be written").arg(QString::fromStdString(formatName), QString::fromStdString(droppedLayerNames(plan))).toStdString());
+
+        return eStatusFailed;
+    }
+
+    return eStatusOK;
+}
+
+void
 NativeWrite::onEffectCreated(bool mayCreateFileDialog,
                              const CreateNodeArgs& /*args*/)
 {
+    // The host's hint says unselected channels pass through, which they do not here.
+    const KnobIPtr channels = getNode()->getLayerKnob();
+    if (channels) {
+        channels->setHintToolTip(tr("The layers and channels this node writes to the file. The node's output, to the Viewer "
+                                    "and to every node downstream, is what the file holds: a partial R/G/B selection writes "
+                                    "and shows the whole RGB, a channel or layer the file format cannot hold is neither "
+                                    "written nor shown, and no other layer passes through."));
+    }
+
     KnobOutputFilePtr filename = _filename.lock();
 
     if (filename && !filename->getValue().empty()) {
@@ -1670,6 +1845,66 @@ NativeWrite::render(const RenderActionArgs& args)
     };
     const std::vector<PlaneCopy> copies = fetchPlanes(args.view);
 
+    std::vector<ResolvedLayer> selected;
+    const bool hasLayerKnob = getNode()->resolveLayerKnob(args.time, args.view, &selected);
+    KnobOutputFilePtr filename = _filename.lock();
+    KnobBoolPtr overwrite = _overwrite.lock();
+    if (!filename || !overwrite) {
+        return eStatusFailed;
+    }
+
+    std::vector<ImageLayerDesc> candidates;
+    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
+        candidates.push_back(it->first);
+    }
+    // A layer the format cannot hold is no output plane, yet the warning about it must name it.
+    for (std::size_t i = 0; i < selected.size(); ++i) {
+        const ImageLayerDesc& layer = selected[i].desc;
+        const bool listed = std::any_of(candidates.begin(), candidates.end(), [&](const ImageLayerDesc& c) {
+            return !c.isColorLayer() && (c.getLayerID() == layer.getLayerID());
+        });
+        if (!layer.isColorLayer() && !listed) {
+            candidates.push_back(layer);
+        }
+    }
+    const FilePlan plan = planFile(candidates, selected, hasLayerKnob, outputCaps(filename->getValue()));
+
+    // The output is what the file of this frame holds, whether or not the frame is written, so the
+    // cache holds the same image for a render to disk and for a pull.
+    const auto copyOutput = [&]() {
+        std::vector<PlaneCopy>::const_iterator copy = copies.begin();
+        int index = 0;
+        for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it, ++copy, ++index) {
+            const ImagePtr& outImage = it->second;
+            if (!outImage) {
+                continue;
+            }
+            std::vector<int> channels(copy->srcChannels.size(), -1);
+            const std::vector<int>::const_iterator planned = std::find(plan.planes.begin(), plan.planes.end(), index);
+            if (planned != plan.planes.end()) {
+                const PlaneChannels& inFile = plan.channels[(std::size_t)(planned - plan.planes.begin())];
+                for (std::size_t i = 0; i < inFile.source.size(); ++i) {
+                    const std::size_t c = (std::size_t)inFile.source[i];
+                    if (c < channels.size()) {
+                        channels[c] = copy->srcChannels[c];
+                    }
+                }
+            }
+            const StatusEnum stat = copyPlane(*this, copy->source, copy->sourceBounds, channels, outImage, args.roi);
+            if ((stat != eStatusOK) || aborted()) {
+                return stat;
+            }
+        }
+
+        return eStatusOK;
+    };
+
+    // Only a render to disk writes the file; a viewer or a node downstream pulling this frame
+    // must never touch the disk.
+    if (!isRenderingOwnSequence()) {
+        return copyOutput();
+    }
+
     // The planes of every view this render writes, for the views other than the rendered one too.
     const std::vector<ViewIdx> written = viewsToWrite(args.view);
     std::vector<std::vector<PlaneCopy>> viewCopies;
@@ -1677,11 +1912,6 @@ NativeWrite::render(const RenderActionArgs& args)
         viewCopies.push_back(written[v] == args.view ? copies : fetchPlanes(written[v]));
     }
 
-    KnobOutputFilePtr filename = _filename.lock();
-    KnobBoolPtr overwrite = _overwrite.lock();
-    if (!filename || !overwrite) {
-        return eStatusFailed;
-    }
     const std::string path = filename->generateFileNameAtTime((SequenceTime)std::floor(args.time + 0.5), args.view).toStdString();
     if (path.empty()) {
         setPersistentMessage(eMessageTypeError, tr("No output file is set").toStdString());
@@ -1698,67 +1928,21 @@ NativeWrite::render(const RenderActionArgs& args)
         exists = std::filesystem::exists(std::filesystem::path(path), ec);
     }
 
-    std::vector<ResolvedLayer> selected;
-    const bool hasLayerKnob = getNode()->resolveLayerKnob(args.time, args.view, &selected);
-
     const std::string ext = extensionOf(path);
     const std::string formatName = OiioWriteSupport::formatNameForWritableExtension(ext);
     const OiioWriteSupport::FormatCaps caps = OiioWriteSupport::capabilities(formatName);
 
-    // The planes the file gets, in file order: the colour row first, then every other layer. A
-    // format that cannot hold more than four channels keeps the colour row alone.
+    // A plane the plan keeps beyond those handed to this render has no image to write from.
     std::vector<int> filePlanes;
     std::vector<PlaneChannels> fileChannelsOfPlane;
-    std::vector<std::string> droppedLayers;
-    {
-        int index = 0;
-        bool haveColor = false;
-        for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it, ++index) {
-            if (it->first.getNumComponents() <= 0) {
-                continue;
-            }
-            const ResolvedLayer* selection = findSelection(selected, it->first);
-            // The render is handed a colour plane even when no row selects colour.
-            if (hasLayerKnob && !selection) {
-                continue;
-            }
-            if (it->first.isColorLayer()) {
-                if (haveColor) {
-                    continue;
-                }
-                haveColor = true;
-                PlaneChannels channels = colourChannels(selection, it->first.getNumComponents(), caps.alpha);
-                filePlanes.insert(filePlanes.begin(), index);
-                fileChannelsOfPlane.insert(fileChannelsOfPlane.begin(), channels);
-            } else {
-                PlaneChannels channels = layerChannels(it->first, selection);
-                if (channels.source.empty()) {
-                    continue;
-                }
-                filePlanes.push_back(index);
-                fileChannelsOfPlane.push_back(channels);
-            }
-        }
-        if (!caps.nChannels) {
-            while (filePlanes.size() > 1 || (filePlanes.size() == 1 && !haveColor)) {
-                std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator dropped = args.outputLayers.begin();
-                std::advance(dropped, filePlanes.back());
-                droppedLayers.push_back(dropped->first.getLayerID());
-                filePlanes.pop_back();
-                fileChannelsOfPlane.pop_back();
-            }
+    for (std::size_t p = 0; p < plan.planes.size(); ++p) {
+        if ((std::size_t)plan.planes[p] < args.outputLayers.size()) {
+            filePlanes.push_back(plan.planes[p]);
+            fileChannelsOfPlane.push_back(plan.channels[p]);
         }
     }
-    const bool warnDropped = !droppedLayers.empty();
-    std::string droppedNames;
-    for (std::size_t i = droppedLayers.size(); i-- > 0;) {
-        droppedNames += (droppedNames.empty() ? "" : ", ") + droppedLayers[i];
-    }
-    if (warnDropped && filePlanes.empty() && !exists) {
-        setPersistentMessage(eMessageTypeError, tr("%1 can hold only the colour channels, and there are none to write: %2 cannot be written").arg(QString::fromStdString(formatName), QString::fromStdString(droppedNames)).toStdString());
-
-        return eStatusFailed;
-    }
+    const bool warnDropped = !plan.dropped.empty();
+    const std::string droppedNames = droppedLayerNames(plan);
 
     RenderCancellation cancel(this);
     bool wrote = false;
@@ -1951,16 +2135,9 @@ NativeWrite::render(const RenderActionArgs& args)
         }
     }
 
-    std::vector<PlaneCopy>::const_iterator copy = copies.begin();
-    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it, ++copy) {
-        const ImagePtr& outImage = it->second;
-        if (!outImage) {
-            continue;
-        }
-        const StatusEnum stat = copyPlane(*this, copy->source, copy->sourceBounds, copy->srcChannels, outImage, args.roi);
-        if ((stat != eStatusOK) || aborted()) {
-            return stat;
-        }
+    const StatusEnum stat = copyOutput();
+    if ((stat != eStatusOK) || aborted()) {
+        return stat;
     }
     if (wrote && warnDropped) {
         setPersistentMessage(eMessageTypeWarning, tr("%1 cannot hold more than four channels: only the colour was written, not %2").arg(QString::fromStdString(formatName), QString::fromStdString(droppedNames)).toStdString());

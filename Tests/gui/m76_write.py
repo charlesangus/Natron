@@ -1,6 +1,7 @@
 """The native Write in the GUI: the create-time save dialog and its filter, the panel's layout,
-rendering from the Render button with progress, read back, the output colourspace menu, no
-WriteOIIO / WritePNG left in the node search, and Render Selected on a non-writer node.
+a viewed Write writing nothing until rendered, rendering from the Render button with progress,
+read back, the output colourspace menu, no WriteOIIO / WritePNG left in the node search, and
+Render Selected on a non-writer node.
 
 Fixtures are written under $NATRON_GUI_TEST_OUT/fixtures/m76 by the Write itself.
 
@@ -291,13 +292,15 @@ try:
         require(write.getPluginID() == WRITE_ID, "it is a native Write (%s)" % write.getPluginID())
         write.setPosition(200, 350)
         require(write.connectInput(0, constant), "connect the Constant to the Write")
-        require(viewer.connectInput(0, constant), "connect the Viewer to the Constant")
         write.getParam("frameRange").setValue(2)
         write.getParam("firstFrame").setValue(1)
         write.getParam("lastFrame").setValue(3)
+        require(viewer.connectInput(0, write), "connect the Viewer to the Write")
         state.update(viewer=viewer, constant=constant, write=write)
         ok = yield ("until", lambda: viewer_shows("green"), POLL_TIMEOUT_S)
-        check(ok, "the viewer shows the Constant (%r)" % (gt.viewer_centre_colour(),))
+        check(ok, "the viewer shows the Write's input, the Constant (%r)" % (gt.viewer_centre_colour(),))
+        yield ("sleep", 1000)
+        check(not sequence_files(), "viewing the Write before rendering writes no file (%r)" % sequence_files())
 
     def panel_section():
         gt.section("Write panel")
@@ -438,18 +441,17 @@ try:
 
     def readback_section():
         gt.section("read back")
-        write, constant, viewer = state["write"], state["constant"], state["viewer"]
+        write, constant = state["write"], state["constant"]
         gt.close_all_panels()
+        written = [(p, os.path.getmtime(p)) for p in sequence_files()]
         constant.getParam("color").set(BLUE[0], BLUE[1], BLUE[2], 1.0)
         ok = yield ("until", lambda: viewer_shows("blue"), POLL_TIMEOUT_S)
         check(ok, "with read back off the viewer shows the input, blue (%r)" % (gt.viewer_centre_colour(),))
-        # A Write that is viewed writes the frame it shows, so read back is switched on before the
-        # viewer is pointed at it; otherwise the green file would be overwritten with blue.
+        yield ("sleep", 500)
+        check([(p, os.path.getmtime(p)) for p in sequence_files()] == written, "viewing the blue input leaves the written files alone")
         write.getParam("readBack").setValue(True)
-        viewer.disconnectInput(0)
-        require(viewer.connectInput(0, write), "connect the Viewer to the Write")
         ok = yield ("until", lambda: viewer_shows("green"), POLL_TIMEOUT_S)
-        check(ok, "with read back on the viewer shows the written file, green (%r)" % (gt.viewer_centre_colour(),))
+        check(ok, "with read back on the viewer shows the written file, still green (%r)" % (gt.viewer_centre_colour(),))
         check(not write.getParam("startRender").getIsEnabled(), "the Render button is disabled while reading back")
         check(not (write.getPersistentMessage() or ""), "the Write reports no error (%r)" % write.getPersistentMessage())
         write.getParam("readBack").setValue(False)

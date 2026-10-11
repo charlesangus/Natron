@@ -135,11 +135,17 @@ public:
         return LayerKnobSpec(LayerKnobSpec::eKindChannelSet, LayerKnobSpec::eRoleInputBound, true);
     }
 
-    // The colour plane is the input's colour written out, so a stream without one gets none
-    // rather than a plane of zeros.
-    virtual bool producesColorOnlyFromPassThroughInput() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    // The output holds only what the file holds: neither the colour plane nor any other layer of
+    // the input passes through around the planes written, so downstream layer menus list the
+    // written layers alone.
+    virtual bool producesMetadataLayerImplicitly() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        return true;
+        return false;
+    }
+
+    virtual EffectInstance::PassThroughEnum isPassThroughForNonRenderedLayers() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return EffectInstance::ePassThroughBlockNonRenderedLayers;
     }
 
     virtual StatusEnum getRegionOfDefinition(U64 hash,
@@ -190,6 +196,18 @@ private:
     virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE FINAL;
 
     virtual FramesNeededMap getFramesNeeded(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // A frame whose file can hold none of the selected channels declares no plane, so its render
+    // action is never reached; this is where a render to disk learns it has nothing to write.
+    virtual StatusEnum checkFrameToWrite(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // The planes produced are those the file of the frame holds, so the output mirrors the file.
+    virtual void getComponentsNeededAndProduced(double time,
+                                                ViewIdx view,
+                                                EffectInstance::ComponentsNeededMap* comps,
+                                                double* passThroughTime,
+                                                int* passThroughView,
+                                                int* passThroughInputNb) OVERRIDE FINAL;
 
     // The views a render of `view` puts in its file: several when one file takes every view of
     // the project (rendered under view 0), none when another view's render writes the file.

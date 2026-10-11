@@ -441,6 +441,16 @@ EffectInstance::getParallelRenderArgsTLS() const
     return tls->frameArgs.back();
 }
 
+bool
+EffectInstance::isRenderingOwnSequence() const
+{
+    const ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
+
+    // Only an OutputSchedulerThread render roots its frames at the output it drives and flags them
+    // sequential; previews, analyses and input fetches root at a node but are never sequential.
+    return args && args->isSequentialRender && args->treeRoot && (args->treeRoot == getNode());
+}
+
 U64
 EffectInstance::getHash() const
 {

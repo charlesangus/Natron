@@ -923,6 +923,14 @@ public:
 
     ParallelRenderArgsPtr getParallelRenderArgsTLS() const;
 
+    /**
+     * @brief Whether the frame the calling thread renders belongs to a sequence render started by
+     * this node's own RenderEngine. For a writer that is a render to disk (the Render button,
+     * Render Selected, app.render, the -w command line); a frame a viewer or another node pulls
+     * through this node is not.
+     **/
+    bool isRenderingOwnSequence() const;
+
     //Implem in ParallelRenderArgs.cpp
     static StatusEnum getInputsRoIsFunctor(bool useTransforms,
                                            double time,

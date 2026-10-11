@@ -109,6 +109,17 @@ public:
 
     bool ifInfiniteclipRectToProjectDefault(RectD* rod) const;
 
+    /**
+     * @brief Called before each frame and view of this node's own render to disk is rendered. A
+     * writer that knows the frame cannot be written, including when its render action would never
+     * be reached because it declares no plane to render, sets a persistent error and returns
+     * eStatusFailed, which fails the render.
+     **/
+    virtual StatusEnum checkFrameToWrite(double /*time*/,
+                                         ViewIdx /*view*/)
+    {
+        return eStatusOK;
+    }
 
     virtual void initializeData() OVERRIDE FINAL;
     virtual void reportStats(int time, ViewIdx view, double wallTime, const std::map<NodePtr, NodeRenderStats>& stats, const RenderStatsPtr& renderStats);

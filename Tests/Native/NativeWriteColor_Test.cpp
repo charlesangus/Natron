@@ -69,6 +69,7 @@ const char* const kRuleSpace = "ACES2065-1";
 
 const char* const kOutputSpaceKnob = "ocioOutputSpace";
 const char* const kOutputSpaceMenuKnob = "ocioOutputSpaceIndex";
+const char* const kOutputContextKnob = "Context";
 const char* const kOutputSpaceSetKnob = "ocioOutputSpaceSet";
 const char* const kWorkingSpaceKnob = "ocioWorkingSpace";
 
@@ -500,21 +501,33 @@ TEST_F(NativeWriteColorTest, ReselectingTheShownEntryRecordsAUserChoice)
     EXPECT_TRUE(userSet(_writer));
 }
 
-TEST_F(NativeWriteColorTest, TheOutputColourspaceKnobsSitAfterTheBitDepth)
+TEST_F(NativeWriteColorTest, TheOutputColourspaceKnobsSitBeforeTheFormatOptions)
 {
     const std::vector<KnobIPtr> knobs = _writer->getEffectInstance()->getKnobs_mt_safe();
-    int bitDepth = -1;
+    int frameIncrement = -1;
     int menu = -1;
+    int context = -1;
+    int bitDepth = -1;
 
     for (std::size_t i = 0; i < knobs.size(); ++i) {
-        if (knobs[i]->getName() == kNatronWriteParamBitDepth) {
-            bitDepth = (int)i;
-        } else if (knobs[i]->getName() == kOutputSpaceMenuKnob) {
+        const std::string name = knobs[i]->getName();
+        if (name == kNatronWriteParamFrameStep) {
+            frameIncrement = (int)i;
+        } else if (name == kOutputSpaceMenuKnob) {
             menu = (int)i;
+        } else if (name == kOutputContextKnob) {
+            context = (int)i;
+        } else if (name == kNatronWriteParamBitDepth) {
+            bitDepth = (int)i;
         }
     }
+    ASSERT_GE(frameIncrement, 0);
+    ASSERT_GE(menu, 0);
+    ASSERT_GE(context, 0);
     ASSERT_GE(bitDepth, 0);
-    EXPECT_GT(menu, bitDepth);
+    EXPECT_GT(menu, frameIncrement);
+    EXPECT_GT(context, menu);
+    EXPECT_LT(context, bitDepth);
 }
 
 // A config whose "shot" colourspace applies the LUT file named by the $LUT context variable.

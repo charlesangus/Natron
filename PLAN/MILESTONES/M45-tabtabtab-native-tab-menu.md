@@ -122,7 +122,7 @@ One build at the end (user rule): implementers do not compile.
 
 ## Phase 45.3: Smart insertion and menu commands
 
-- [ ] M45.P3.T1 — With nothing selected, splice the new node into the pipe under the cursor
+- [ ] ~~M45.P3.T1 — With nothing selected, splice the new node into the pipe under the cursor~~ (cancelled 2026-10-11 by the user: insert-after-selected only)
   - files: `Gui/NodeGraph25.cpp`, `Gui/NodeGraphPrivate.h`, `Gui/NodeGraphUndoRedo.cpp`
   - approach:
     - When the menu opens, and only if the selection is empty, call `hasItemNearbyMouse` at the cursor. If the result is `eNearbyItemEdge` on an input edge with a source, record the edge as `(destination NodeGui weak pointer, input index)`, not as an `Edge*`, because the graph may change while the menu is open.
@@ -185,3 +185,12 @@ Acceptance sketch:
 - Pressing the tab-menu shortcut in the node graph opens a fuzzy-searchable
   create-node menu with tabtabtab-style smart insertion onto the selected
   node/pipe.
+
+## Decisions
+
+- 2026-10-11 — **Deps `M55` (user-confirmed).** M45 also takes over M69 - Minor Cleanup's "Tab menu position" jump (M69.P2.T5 is cancelled); P2.T1's no-move-after-show positioning fixes it.
+- 2026-10-11 — **User answers to the elaboration questions** (`PLAN/DESIGN/2026-10-11-m45-m46-questions.md`):
+  - **Insertion:** today's insert-after-the-selected-node only. **M45.P3.T1 (pipe splice) is cancelled.** The M55 dependency now rests only on the post-M55 node-graph files and `m55_node_graph.py` in the gate.
+  - **Command search:** the main menu bar only (P3.T2 as written).
+  - **Preferences: port tabtabtab's preferences now** (search-mode remap and scroll toggle). A new task in `Engine/Settings.*` is needed; it is added at promotion. Note it overlaps M56 - Visual And Menu Polish's P4.T6 in `Engine/Settings.*`.
+  - **Generators** are coloured by their grouping (no probe instance), and there is **no fallback** to the old dialog.

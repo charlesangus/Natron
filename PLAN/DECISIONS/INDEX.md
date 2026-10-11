@@ -83,3 +83,4 @@
 - 2026-10-10 — native-write-mirrors-native-read: native Write covers every OIIO-writable format; WriteNode and OFX writers removed, no fallback, no video → DECISIONS/2026-10-10-native-write-mirrors-native-read.md
 - 2026-10-10 — ntpz-clean-break-sibling-connections: `.ntpz` bundle, no XML import (clean break), sibling-relative connections, M93 split out first → DECISIONS/2026-10-10-ntpz-clean-break-sibling-connections.md
 - 2026-10-11 — retire-engine-gl-render-path: Vulkan compute is the only engine GPU path; engine GL narrowed to the OFX OpenGL suite (M85 host wrappers, M86 contexts); viewer and 2D widgets stay GL → DECISIONS/2026-10-11-retire-engine-gl-render-path.md
+- 2026-10-11 — channels-row-always-at-top: the Channels row is always the first row of a node's main page, every node, no per-node placement → DECISIONS/2026-10-11-channels-row-always-at-top.md

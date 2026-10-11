@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: [M44 PR #51 fixes build, M55 end build fix, M76.P2.T16, M27.P1.T1, M93.P1.T1, M84.P7.T2]
-pm_heartbeat: 2026-10-11T07:16:14-04:00
+pm_heartbeat: 2026-10-11T07:52:09-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---

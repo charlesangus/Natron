@@ -264,6 +264,12 @@ GuiApplicationManager::getIcon(PixmapEnum e,
         case NATRON_PIXMAP_COLORWHEEL:
             path = NATRON_IMAGES_PATH "colorwheel.png";
             break;
+        case NATRON_PIXMAP_COLOR_ADJUST_DROPDOWN:
+            path = NATRON_IMAGES_PATH "colorAdjustDropdown.png";
+            break;
+        case NATRON_PIXMAP_COLOR_GLOBAL_TRACKBALL:
+            path = NATRON_IMAGES_PATH "colorGlobalTrackball.png";
+            break;
         case NATRON_PIXMAP_OVERLAY:
             path = NATRON_IMAGES_PATH "colorwheel_overlay.png";
             break;

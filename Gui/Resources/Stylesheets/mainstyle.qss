@@ -795,3 +795,11 @@ QToolButton#ColorSelectorButton:pressed {
     top: 0px;
     left: 0px;
 }
+
+/* The dropdown and global-mode icons stay the same in both states, so checked (panel open,
+   global mode engaged) needs its own highlight to read as a toggle rather than a flat icon. */
+QToolButton#ColorSelectorButton:checked,
+QToolButton#ColorGlobalModeButton:checked {
+    background-color: %1;
+    border-radius: 2px;
+}

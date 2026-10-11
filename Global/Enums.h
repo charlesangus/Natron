@@ -112,8 +112,7 @@ enum KeyframeTypeEnum
     eKeyframeTypeNone = 8
 };
 
-enum PixmapEnum
-{
+enum PixmapEnum {
     NATRON_PIXMAP_PLAYER_PREVIOUS = 0,
     NATRON_PIXMAP_PLAYER_FIRST_FRAME,
     NATRON_PIXMAP_PLAYER_NEXT,
@@ -175,6 +174,8 @@ enum PixmapEnum
 
     NATRON_PIXMAP_OPEN_FILE,
     NATRON_PIXMAP_COLORWHEEL,
+    NATRON_PIXMAP_COLOR_ADJUST_DROPDOWN,
+    NATRON_PIXMAP_COLOR_GLOBAL_TRACKBALL,
     NATRON_PIXMAP_OVERLAY,
     NATRON_PIXMAP_ROTO_MERGE,
     NATRON_PIXMAP_COLOR_PICKER,
@@ -366,7 +367,6 @@ enum PixmapEnum
     NATRON_PIXMAP_INTERP_CURVE_R,
     NATRON_PIXMAP_INTERP_CURVE_Z,
 };
-
 
 ///This enum is used when dealing with parameters which have their value edited
 enum ValueChangedReasonEnum

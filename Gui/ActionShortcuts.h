@@ -214,7 +214,7 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutDescActionCloseTab "Close Tab"
 
 #define kShortcutIDActionColorTrackball "colorTrackball"
-#define kShortcutDescActionColorTrackball "Engage Colour Trackball"
+#define kShortcutDescActionColorTrackball "Engage Colour Trackball (C/S/T/V modes)"
 
 /////////VIEWER SHORTCUTS
 #define kShortcutIDActionLuminance "luminance"

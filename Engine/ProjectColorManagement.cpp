@@ -51,6 +51,11 @@ namespace {
 const char* const kURIPrefix = "ocio://";
 const char* const kCustomConfigName = "Custom config";
 const char* const kColorPickingRole = "color_picking";
+const char* const kCieXyzD65InterchangeRole = "cie_xyz_d65_interchange";
+
+// Rec. 709, used when neither the working-to-XYZ matrix nor the config's own luma coefficients
+// are available.
+const double kRec709Luma[3] = { 0.2126, 0.7152, 0.0722 };
 
 bool
 isURI(const std::string& source)
@@ -428,10 +433,16 @@ ProjectColorManagement::ProjectColorManagement()
     , _pickingToWorking()
     , _displayCache()
     , _conversionCache()
+    , _workingToXYZValid(false)
+    , _workingToXYZMatrix()
+    , _workingLuma()
     , _callbacksMutex()
     , _callbacks()
     , _nextCallbackId(1)
 {
+    for (int i = 0; i < 3; ++i) {
+        _workingLuma[i] = kRec709Luma[i];
+    }
 }
 
 ProjectColorManagement::~ProjectColorManagement()
@@ -488,6 +499,7 @@ ProjectColorManagement::load(const std::string& source,
         _conversionCache.clear();
     }
     rebuildPickingProcessors();
+    rebuildWorkingColorimetry();
 
     return eLoadErrorNone;
 }
@@ -769,6 +781,144 @@ ProjectColorManagement::setWorkingSpace(const std::string& name)
         _workingSpace = name;
     }
     rebuildPickingProcessors();
+    rebuildWorkingColorimetry();
+}
+
+bool
+ProjectColorManagement::getWorkingToXYZ(double m[9]) const
+{
+    QMutexLocker k(&_mutex);
+    if (_workingToXYZValid) {
+        for (int i = 0; i < 9; ++i) {
+            m[i] = _workingToXYZMatrix[i];
+        }
+    }
+
+    return _workingToXYZValid;
+}
+
+void
+ProjectColorManagement::getWorkingLuma(double w[3]) const
+{
+    QMutexLocker k(&_mutex);
+    for (int i = 0; i < 3; ++i) {
+        w[i] = _workingLuma[i];
+    }
+}
+
+void
+ProjectColorManagement::rebuildWorkingColorimetry()
+{
+    OCIO::ConstConfigRcPtr config;
+    std::string working;
+    {
+        QMutexLocker k(&_mutex);
+        config = _config;
+        working = _workingSpace;
+    }
+
+    bool matrixValid = false;
+    double matrix[9] = { 0. };
+    double luma[3] = { kRec709Luma[0], kRec709Luma[1], kRec709Luma[2] };
+
+    if (config && !working.empty()) {
+        const std::string xyz = resolveRoleOrName(kCieXyzD65InterchangeRole);
+        OCIO::ConstCPUProcessorRcPtr cpu = xyz.empty() ? OCIO::ConstCPUProcessorRcPtr() : getConversionProcessor(working, xyz);
+        if (cpu) {
+            try {
+                // The columns of the working-to-XYZ matrix: the probe's unit vectors are the
+                // working space's basis, so each probed XYZ is the matrix column for that basis
+                // vector, provided the transform turns out to be linear (checked below).
+                float columns[3][3] = {
+                    { 1.f, 0.f, 0.f },
+                    { 0.f, 1.f, 0.f },
+                    { 0.f, 0.f, 1.f }
+                };
+                for (int c = 0; c < 3; ++c) {
+                    cpu->applyRGB(columns[c]);
+                }
+
+                const double tolerance = 1e-5;
+                bool linear = true;
+                // A pure matrix transform (no curve, no offset) satisfies both homogeneity and
+                // additivity; a log or other nonlinear working space fails one of them well
+                // outside this tolerance, so either check alone is enough to catch it.
+                for (int c = 0; c < 3 && linear; ++c) {
+                    float doubled[3] = { (c == 0) ? 2.f : 0.f, (c == 1) ? 2.f : 0.f, (c == 2) ? 2.f : 0.f };
+                    cpu->applyRGB(doubled);
+                    for (int r = 0; r < 3; ++r) {
+                        if (std::fabs(doubled[r] - 2. * columns[c][r]) > tolerance) {
+                            linear = false;
+                            break;
+                        }
+                    }
+                }
+                static const int kPairs[3][2] = { { 0, 1 }, { 0, 2 }, { 1, 2 } };
+                for (int p = 0; p < 3 && linear; ++p) {
+                    const int a = kPairs[p][0];
+                    const int b = kPairs[p][1];
+                    float sum[3] = { 0.f, 0.f, 0.f };
+                    sum[a] += 1.f;
+                    sum[b] += 1.f;
+                    cpu->applyRGB(sum);
+                    for (int r = 0; r < 3; ++r) {
+                        if (std::fabs(sum[r] - (columns[a][r] + columns[b][r])) > tolerance) {
+                            linear = false;
+                            break;
+                        }
+                    }
+                }
+
+                if (linear) {
+                    matrixValid = true;
+                    for (int c = 0; c < 3; ++c) {
+                        matrix[0 * 3 + c] = columns[c][0];
+                        matrix[1 * 3 + c] = columns[c][1];
+                        matrix[2 * 3 + c] = columns[c][2];
+                    }
+                }
+            } catch (const std::exception&) {
+                matrixValid = false;
+            }
+        }
+
+        if (matrixValid) {
+            luma[0] = matrix[3];
+            luma[1] = matrix[4];
+            luma[2] = matrix[5];
+        } else {
+            double coefs[3] = { 0., 0., 0. };
+            try {
+                config->getDefaultLumaCoefs(coefs);
+            } catch (const std::exception&) {
+                coefs[0] = coefs[1] = coefs[2] = 0.;
+            }
+            const double sum = coefs[0] + coefs[1] + coefs[2];
+            if (sum > 1e-8) {
+                luma[0] = coefs[0];
+                luma[1] = coefs[1];
+                luma[2] = coefs[2];
+            }
+        }
+    }
+
+    const double lumaSum = luma[0] + luma[1] + luma[2];
+    if (lumaSum > 1e-8) {
+        for (int i = 0; i < 3; ++i) {
+            luma[i] /= lumaSum;
+        }
+    }
+
+    QMutexLocker k(&_mutex);
+    if ((_config == config) && (_workingSpace == working)) {
+        _workingToXYZValid = matrixValid;
+        for (int i = 0; i < 9; ++i) {
+            _workingToXYZMatrix[i] = matrix[i];
+        }
+        for (int i = 0; i < 3; ++i) {
+            _workingLuma[i] = luma[i];
+        }
+    }
 }
 
 void

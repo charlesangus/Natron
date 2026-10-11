@@ -48,16 +48,19 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Global/StrUtils.h"
 
 #include "Gui/ActionShortcuts.h"
+#include "Gui/ColorTrackballGlobalMode.h"
+#include "Gui/ColorTrackballTarget.h"
 #include "Gui/CurveEditor.h"
 #include "Gui/DopeSheetEditor.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h" // appPTR
 #include "Gui/GuiPrivate.h"
+#include "Gui/KnobGuiColor.h"
 #include "Gui/Menu.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/ProjectGui.h"
-#include "Gui/ToolButton.h"
 #include "Gui/RenderStatsDialog.h"
+#include "Gui/ToolButton.h"
 #include "Gui/ViewerTab.h"
 
 NATRON_NAMESPACE_ENTER
@@ -625,6 +628,40 @@ Gui::createMenuActions()
     QObject::connect( _imp->actionNextTab, SIGNAL(triggered()), this, SLOT(onNextTabTriggered()) );
     _imp->actionCloseTab = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionCloseTab, kShortcutDescActionCloseTab, this);
     QObject::connect( _imp->actionCloseTab, SIGNAL(triggered()), this, SLOT(onCloseTabTriggered()) );
+
+    // A window shortcut on this Gui's own windows (the main window here, each floating window
+    // as registerFloatingWindow() adds it), not an application one: every open project has its
+    // own Gui and action, and two application shortcuts on one key are ambiguous, so neither
+    // would fire. The action has no menu home; the per-row target button shows it in the UI.
+    _imp->actionColorTrackball = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionColorTrackball, kShortcutDescActionColorTrackball, this);
+    _imp->actionColorTrackball->setShortcutContext(Qt::WindowShortcut);
+    QObject::connect(_imp->actionColorTrackball, SIGNAL(triggered()), this, SLOT(onColorTrackballActionTriggered()));
+    addAction(_imp->actionColorTrackball);
+    // Every binding the user gave the action both engages the mode and, let through the mode's
+    // own app-wide filter, exits it. QAction::changed() keeps this current across a rebind.
+    {
+        ActionWithShortcut* action = _imp->actionColorTrackball;
+        ColorTrackballGlobalMode* mode = ColorTrackballGlobalMode::instanceFor(this);
+        auto syncBindings = [action, mode]() {
+            QList<QKeySequence> bindings;
+            const std::list<QKeySequence> bound = appPTR->getKeySequenceForAction(QString::fromUtf8(kShortcutGroupGlobal), QString::fromUtf8(kShortcutIDActionColorTrackball));
+
+            for (std::list<QKeySequence>::const_iterator it = bound.begin(); it != bound.end(); ++it) {
+                if (!it->isEmpty()) {
+                    bindings << *it;
+                }
+            }
+            if (bindings.isEmpty()) {
+                bindings = action->shortcuts();
+            }
+            if (action->shortcuts() != bindings) {
+                action->setShortcuts(bindings);
+            }
+            mode->setPassThroughShortcuts(bindings);
+        };
+        QObject::connect(action, &QAction::changed, action, syncBindings);
+        syncBindings();
+    }
 
     _imp->menubar->addAction( _imp->menuFile->menuAction() );
     _imp->menubar->addAction( _imp->menuEdit->menuAction() );

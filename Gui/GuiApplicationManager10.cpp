@@ -830,6 +830,7 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupGlobal, kShortcutIDActionPrevTab, kShortcutDescActionPrevTab, Qt::ShiftModifier | Qt::ControlModifier, Qt::Key_T);
     registerKeybind(kShortcutGroupGlobal, kShortcutIDActionCloseTab, kShortcutDescActionCloseTab, Qt::ShiftModifier, Qt::Key_Escape);
 
+    registerKeybind(kShortcutGroupGlobal, kShortcutIDActionColorTrackball, kShortcutDescActionColorTrackball, Qt::ControlModifier, Qt::Key_E);
 
     ///Viewer
     registerKeybindWithMask(kShortcutGroupViewer, kShortcutIDActionZoomIn, kShortcutDescActionZoomIn, Qt::NoModifier, Qt::Key_Plus,

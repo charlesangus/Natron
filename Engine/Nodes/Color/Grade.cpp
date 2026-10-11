@@ -171,7 +171,8 @@ addGradeColorKnob(KnobHolder* holder,
                   const std::string& hint,
                   double defaultValue,
                   double displayMin,
-                  double displayMax)
+                  double displayMax,
+                  ColorKnobRoleEnum role)
 {
     KnobColorPtr knob = AppManager::createKnob<KnobColor>(holder, label, 4);
 
@@ -184,6 +185,7 @@ addGradeColorKnob(KnobHolder* holder,
         knob->setDisplayMinimum(displayMin, i);
         knob->setDisplayMaximum(displayMax, i);
     }
+    knob->setColorRole(role);
     page->addKnob(knob);
 
     return knob;
@@ -261,13 +263,13 @@ Grade::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
 
-    _blackPoint = addGradeColorKnob(this, page, kGradeParamBlackPoint, tr("Black Point").toStdString(), tr("Set the color of the darkest pixels in the image.").toStdString(), 0., -1., 1.);
-    _whitePoint = addGradeColorKnob(this, page, kGradeParamWhitePoint, tr("White Point").toStdString(), tr("Set the color of the brightest pixels in the image.").toStdString(), 1., 0., 4.);
-    _black = addGradeColorKnob(this, page, kGradeParamBlack, tr("Lift").toStdString(), tr("Colors corresponding to the blackpoint are set to this value.").toStdString(), 0., -1., 1.);
-    _white = addGradeColorKnob(this, page, kGradeParamWhite, tr("Gain").toStdString(), tr("Colors corresponding to the whitepoint are set to this value.").toStdString(), 1., 0., 4.);
-    _multiply = addGradeColorKnob(this, page, kGradeParamMultiply, tr("Multiply").toStdString(), tr("Multiplies the result by this value.").toStdString(), 1., 0., 4.);
-    _offset = addGradeColorKnob(this, page, kGradeParamOffset, tr("Offset").toStdString(), tr("Adds this value to the result (this applies to black and white).").toStdString(), 0., -1., 1.);
-    _gamma = addGradeColorKnob(this, page, kGradeParamGamma, tr("Gamma").toStdString(), tr("Final gamma correction. Negative values are not affected by gamma.").toStdString(), 1., 0.2, 5.);
+    _blackPoint = addGradeColorKnob(this, page, kGradeParamBlackPoint, tr("Black Point").toStdString(), tr("Set the color of the darkest pixels in the image.").toStdString(), 0., -1., 1., eColorKnobRoleOffset);
+    _whitePoint = addGradeColorKnob(this, page, kGradeParamWhitePoint, tr("White Point").toStdString(), tr("Set the color of the brightest pixels in the image.").toStdString(), 1., 0., 4., eColorKnobRoleGain);
+    _black = addGradeColorKnob(this, page, kGradeParamBlack, tr("Lift").toStdString(), tr("Colors corresponding to the blackpoint are set to this value.").toStdString(), 0., -1., 1., eColorKnobRoleOffset);
+    _white = addGradeColorKnob(this, page, kGradeParamWhite, tr("Gain").toStdString(), tr("Colors corresponding to the whitepoint are set to this value.").toStdString(), 1., 0., 4., eColorKnobRoleGain);
+    _multiply = addGradeColorKnob(this, page, kGradeParamMultiply, tr("Multiply").toStdString(), tr("Multiplies the result by this value.").toStdString(), 1., 0., 4., eColorKnobRoleGain);
+    _offset = addGradeColorKnob(this, page, kGradeParamOffset, tr("Offset").toStdString(), tr("Adds this value to the result (this applies to black and white).").toStdString(), 0., -1., 1., eColorKnobRoleOffset);
+    _gamma = addGradeColorKnob(this, page, kGradeParamGamma, tr("Gamma").toStdString(), tr("Final gamma correction. Negative values are not affected by gamma.").toStdString(), 1., 0.2, 5., eColorKnobRolePower);
 
     KnobButtonPtr normalize = createKnob<KnobButton>(tr("Normalize"));
     normalize->setName(kGradeParamNormalize);

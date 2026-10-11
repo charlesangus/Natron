@@ -298,7 +298,8 @@ addScaleKnob(KnobHolder* holder,
              const std::string& label,
              double defaultValue,
              double displayMin,
-             double displayMax)
+             double displayMax,
+             ColorKnobRoleEnum role)
 {
     KnobColorPtr knob = AppManager::createKnob<KnobColor>(holder, label, 4);
 
@@ -310,6 +311,7 @@ addScaleKnob(KnobHolder* holder,
         knob->setDisplayMinimum(displayMin, i);
         knob->setDisplayMaximum(displayMax, i);
     }
+    knob->setColorRole(role);
     group->addKnob(knob);
 
     return knob;
@@ -397,11 +399,11 @@ ColorCorrect::addGroup(const KnobPagePtr& page,
         group->addKnob(enable);
         knobs.enable = enable;
     }
-    knobs.saturation = addScaleKnob(this, group, name + kColorCorrectParamSaturation, kColorCorrectParamSaturation, 1., 0., 4.);
-    knobs.contrast = addScaleKnob(this, group, name + kColorCorrectParamContrast, kColorCorrectParamContrast, 1., 0., 4.);
-    knobs.gamma = addScaleKnob(this, group, name + kColorCorrectParamGamma, kColorCorrectParamGamma, 1., 0.2, 5.);
-    knobs.gain = addScaleKnob(this, group, name + kColorCorrectParamGain, kColorCorrectParamGain, 1., 0., 4.);
-    knobs.offset = addScaleKnob(this, group, name + kColorCorrectParamOffset, kColorCorrectParamOffset, 0., -1., 1.);
+    knobs.saturation = addScaleKnob(this, group, name + kColorCorrectParamSaturation, kColorCorrectParamSaturation, 1., 0., 4., eColorKnobRoleGain);
+    knobs.contrast = addScaleKnob(this, group, name + kColorCorrectParamContrast, kColorCorrectParamContrast, 1., 0., 4., eColorKnobRoleGain);
+    knobs.gamma = addScaleKnob(this, group, name + kColorCorrectParamGamma, kColorCorrectParamGamma, 1., 0.2, 5., eColorKnobRolePower);
+    knobs.gain = addScaleKnob(this, group, name + kColorCorrectParamGain, kColorCorrectParamGain, 1., 0., 4., eColorKnobRoleGain);
+    knobs.offset = addScaleKnob(this, group, name + kColorCorrectParamOffset, kColorCorrectParamOffset, 0., -1., 1., eColorKnobRoleOffset);
 }
 
 void

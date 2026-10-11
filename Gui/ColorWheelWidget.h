@@ -45,9 +45,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/ColorWheelMath.h"
 
-class QEnterEvent;
 class QEvent;
-class QFocusEvent;
 class QKeyEvent;
 class QMouseEvent;
 class QPainter;
@@ -68,11 +66,12 @@ NATRON_NAMESPACE_ENTER
  *
  * Input: a left press in the disc starts a relative trackball drag (Ctrl/Shift gearing read on
  * every move), a press on the hue ring sets the hue to the angle under the cursor and keeps
- * doing so while dragged, holding V or T over the wheel turns a disc drag into a value or a
- * temp/tint drag, the scroll wheel zooms the rim, and a double-click resets the chroma. Each
- * gesture is bracketed by gestureStarted and gestureFinished, with one gestureMoved per step
- * carrying a delta (absolute for the ring and the reset); the owner applies the edits, makes the
- * gesture one undo step, and calls setValue on finish to re-centre the wheel.
+ * doing so while dragged, holding V or T, whether pressed before the drag starts or during it,
+ * turns a disc drag into a value (either axis) or a temp/tint drag, the scroll wheel zooms the
+ * rim, and a double-click resets the chroma. Each gesture is bracketed by gestureStarted and
+ * gestureFinished, with one gestureMoved per step carrying a delta (absolute for the ring and
+ * the reset); the owner applies the edits, makes the gesture one undo step, and calls setValue
+ * on finish to re-centre the wheel.
  **/
 class ColorWheelWidget
     : public QWidget {
@@ -194,10 +193,6 @@ protected:
     virtual void mouseDoubleClickEvent(QMouseEvent* e) OVERRIDE;
     virtual void wheelEvent(QWheelEvent* e) OVERRIDE;
     virtual void keyPressEvent(QKeyEvent* e) OVERRIDE;
-    virtual void keyReleaseEvent(QKeyEvent* e) OVERRIDE;
-    virtual void enterEvent(QEnterEvent* e) OVERRIDE;
-    virtual void leaveEvent(QEvent* e) OVERRIDE;
-    virtual void focusOutEvent(QFocusEvent* e) OVERRIDE;
 
 private:
     enum HitZoneEnum {
@@ -240,8 +235,6 @@ private:
 
     HitZoneEnum hitTest(const QPointF& pos) const;
     double ringAngleAt(const QPointF& pos) const;
-    bool isLockKey(int key) const;
-    bool wantsShortcutOverride(const QKeyEvent* e) const;
     void emitStep(const ColorEdit& edit, const QString& axisLabel);
     void emitRingHue(const QPointF& pos);
     void dragTo(const QPointF& pos, Qt::KeyboardModifiers modifiers);
@@ -266,9 +259,6 @@ private:
     QPointF _lastDragPos;
     PlanePoint _gestureOffset;
     bool _gestureMoved;
-    bool _keyboardGrabbed;
-    bool _hovered;
-    std::vector<int> _heldLocks;
 
     mutable DiscCacheKey _discKey;
     mutable QImage _disc;

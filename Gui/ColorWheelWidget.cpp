@@ -30,9 +30,9 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QApplication>
 #include <QBrush>
-#include <QEnterEvent>
-#include <QFocusEvent>
+#include <QCursor>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPaintEvent>
@@ -131,6 +131,147 @@ drawOutlinedLine(QPainter& p,
     p.setPen(QPen(QColor(255, 255, 255), 1.0, Qt::SolidLine, Qt::RoundCap));
     p.drawLine(a, b);
 }
+
+bool
+isLockKey(int key)
+{
+    return (key == Qt::Key_V) || (key == Qt::Key_T);
+}
+
+bool
+pointerOverWheel()
+{
+    QWidget* w = QApplication::widgetAt(QCursor::pos());
+
+    while (w) {
+        if (qobject_cast<ColorWheelWidget*>(w)) {
+            return true;
+        }
+        w = w->parentWidget();
+    }
+
+    return false;
+}
+
+/**
+ * @brief Installed once on qApp, so V/T reach the lock regardless of which widget has focus or
+ * whether the pointer ever entered the wheel: Qt delivers key events to the focused widget, not
+ * to whichever wheel a drag started on, once the pointer has left it.
+ **/
+class LockKeyTracker
+    : public QObject {
+public:
+    LockKeyTracker()
+        : QObject()
+        , _held()
+        , _draggingWheels(0)
+    {
+    }
+
+    ColorAxisEnum activeLock() const
+    {
+        if (_held.empty()) {
+            return eColorAxisTrackball;
+        }
+
+        return _held.back() == Qt::Key_V ? eColorAxisValue : eColorAxisTempTint;
+    }
+
+    void dragStarted()
+    {
+        ++_draggingWheels;
+    }
+
+    void dragFinished()
+    {
+        if (_draggingWheels > 0) {
+            --_draggingWheels;
+        }
+    }
+
+protected:
+    virtual bool eventFilter(QObject* watched,
+                             QEvent* e) OVERRIDE
+    {
+        if (e->type() == QEvent::ApplicationStateChange) {
+            if (qApp && (qApp->applicationState() == Qt::ApplicationInactive)) {
+                _held.clear();
+            }
+
+            return QObject::eventFilter(watched, e);
+        }
+
+        bool shortcutOverride = e->type() == QEvent::ShortcutOverride;
+        bool press = e->type() == QEvent::KeyPress;
+        bool release = e->type() == QEvent::KeyRelease;
+
+        if (!shortcutOverride && !press && !release) {
+            return QObject::eventFilter(watched, e);
+        }
+
+        QKeyEvent* ke = static_cast<QKeyEvent*>(e);
+
+        if (!isLockKey(ke->key())) {
+            return QObject::eventFilter(watched, e);
+        }
+
+        bool consume = consumes(ke);
+
+        if (shortcutOverride) {
+            if (consume) {
+                e->accept();
+
+                return true;
+            }
+
+            return QObject::eventFilter(watched, e);
+        }
+        if (!ke->isAutoRepeat()) {
+            _held.erase(std::remove(_held.begin(), _held.end(), ke->key()), _held.end());
+            if (press) {
+                _held.push_back(ke->key());
+            }
+        }
+
+        return consume;
+    }
+
+private:
+    // Ctrl is only claimed mid-drag, where it is the gear: over an idle wheel (dragging or not)
+    // Ctrl+V and Ctrl+T must still reach their application shortcuts.
+    bool consumes(const QKeyEvent* e) const
+    {
+        Qt::KeyboardModifiers allowed = Qt::ShiftModifier | Qt::KeypadModifier;
+
+        if (_draggingWheels > 0) {
+            allowed |= Qt::ControlModifier;
+        }
+        if (e->modifiers() & ~allowed) {
+            return false;
+        }
+
+        return (_draggingWheels > 0) || pointerOverWheel();
+    }
+
+    std::vector<int> _held;
+    int _draggingWheels;
+};
+
+LockKeyTracker*
+lockKeyTracker()
+{
+    static LockKeyTracker* tracker = [] {
+        LockKeyTracker* t = new LockKeyTracker();
+
+        if (qApp) {
+            qApp->installEventFilter(t);
+        }
+
+        return t;
+    }();
+
+    return tracker;
+}
 } // namespace
 
 bool
@@ -161,11 +302,9 @@ ColorWheelWidget::ColorWheelWidget(QWidget* parent)
     , _lastDragPos()
     , _gestureOffset()
     , _gestureMoved(false)
-    , _keyboardGrabbed(false)
-    , _hovered(false)
-    , _heldLocks()
 {
     setFocusPolicy(Qt::StrongFocus);
+    lockKeyTracker();
     updateAnchor();
 }
 
@@ -837,11 +976,7 @@ ColorWheelWidget::paintEvent(QPaintEvent* /*e*/)
 ColorAxisEnum
 ColorWheelWidget::getActiveLock() const
 {
-    if (_heldLocks.empty()) {
-        return eColorAxisTrackball;
-    }
-
-    return _heldLocks.back() == Qt::Key_V ? eColorAxisValue : eColorAxisTempTint;
+    return lockKeyTracker()->activeLock();
 }
 
 bool
@@ -877,35 +1012,6 @@ ColorWheelWidget::ringAngleAt(const QPointF& pos) const
     double degrees = std::atan2(-(pos.y() - c.y()), pos.x() - c.x()) * 180.0 / kPi;
 
     return degrees < 0.0 ? degrees + 360.0 : degrees;
-}
-
-bool
-ColorWheelWidget::isLockKey(int key) const
-{
-    return (key == Qt::Key_V) || (key == Qt::Key_T);
-}
-
-bool
-ColorWheelWidget::wantsShortcutOverride(const QKeyEvent* e) const
-{
-    bool dragging = isDragging();
-
-    if (dragging && (e->key() == Qt::Key_Escape)) {
-        return true;
-    }
-    if (!isLockKey(e->key()) || !(dragging || _hovered)) {
-        return false;
-    }
-
-    // Ctrl is only claimed mid-drag, where it is the gear: over an idle wheel Ctrl+V and Ctrl+T
-    // must still reach their application shortcuts.
-    Qt::KeyboardModifiers allowed = Qt::ShiftModifier | Qt::KeypadModifier;
-
-    if (dragging) {
-        allowed |= Qt::ControlModifier;
-    }
-
-    return !(e->modifiers() & ~allowed);
 }
 
 void
@@ -952,7 +1058,7 @@ ColorWheelWidget::dragTo(const QPointF& pos,
     edit.axis = getActiveLock();
     switch (edit.axis) {
     case eColorAxisValue:
-        edit.d1 = -dy * valueRatePerPixel(rates, _role) * g;
+        edit.d1 = (dx - dy) * valueRatePerPixel(rates, _role) * g;
         emitStep(edit, tr("Value"));
         break;
 
@@ -995,10 +1101,7 @@ ColorWheelWidget::finishGesture()
     _dragZone = eHitZoneNone;
     _gestureMoved = false;
     _gestureOffset = planePoint(0.0, 0.0);
-    if (_keyboardGrabbed) {
-        releaseKeyboard();
-        _keyboardGrabbed = false;
-    }
+    lockKeyTracker()->dragFinished();
     Q_EMIT gestureFinished(moved);
     clearDragOffset();
 }
@@ -1006,7 +1109,9 @@ ColorWheelWidget::finishGesture()
 bool
 ColorWheelWidget::event(QEvent* e)
 {
-    if ((e->type() == QEvent::ShortcutOverride) && wantsShortcutOverride(static_cast<QKeyEvent*>(e))) {
+    // V/T are the app-wide LockKeyTracker's job; only Escape, specific to this wheel's own
+    // drag, is overridden here.
+    if ((e->type() == QEvent::ShortcutOverride) && isDragging() && (static_cast<QKeyEvent*>(e)->key() == Qt::Key_Escape)) {
         e->accept();
 
         return true;
@@ -1034,15 +1139,13 @@ ColorWheelWidget::mousePressEvent(QMouseEvent* e)
     }
 
     e->accept();
+    // Kept for Esc mid-drag; V/T no longer depend on this widget holding focus.
     setFocus(Qt::MouseFocusReason);
     _dragZone = zone;
     _lastDragPos = pos;
     _gestureMoved = false;
     _gestureOffset = planePoint(0.0, 0.0);
-    // Without the grab, a lock key pressed mid-drag after the cursor has left the widget would
-    // go to whichever widget the focus chain picks, and its release would never reach us.
-    grabKeyboard();
-    _keyboardGrabbed = true;
+    lockKeyTracker()->dragStarted();
     Q_EMIT gestureStarted();
 
     if (zone == eHitZoneRing) {
@@ -1121,70 +1224,13 @@ ColorWheelWidget::wheelEvent(QWheelEvent* e)
 void
 ColorWheelWidget::keyPressEvent(QKeyEvent* e)
 {
-    int key = e->key();
-
-    if (isDragging() && (key == Qt::Key_Escape)) {
+    if (isDragging() && (e->key() == Qt::Key_Escape)) {
         e->accept();
         finishGesture();
 
         return;
     }
-    if (!isLockKey(key) || !(isDragging() || _hovered)) {
-        QWidget::keyPressEvent(e);
-
-        return;
-    }
-    e->accept();
-    if (e->isAutoRepeat()) {
-        return;
-    }
-    _heldLocks.erase(std::remove(_heldLocks.begin(), _heldLocks.end(), key), _heldLocks.end());
-    _heldLocks.push_back(key);
-}
-
-void
-ColorWheelWidget::keyReleaseEvent(QKeyEvent* e)
-{
-    int key = e->key();
-
-    if (!isLockKey(key)) {
-        QWidget::keyReleaseEvent(e);
-
-        return;
-    }
-    e->accept();
-    if (e->isAutoRepeat()) {
-        return;
-    }
-    _heldLocks.erase(std::remove(_heldLocks.begin(), _heldLocks.end(), key), _heldLocks.end());
-}
-
-void
-ColorWheelWidget::enterEvent(QEnterEvent* e)
-{
-    _hovered = true;
-    // Taking focus on hover is what lets a lock key pressed before the mouse button reach the
-    // wheel at all; with click-to-focus it would only work from the second drag on.
-    setFocus(Qt::MouseFocusReason);
-    QWidget::enterEvent(e);
-}
-
-void
-ColorWheelWidget::leaveEvent(QEvent* e)
-{
-    _hovered = false;
-    QWidget::leaveEvent(e);
-}
-
-void
-ColorWheelWidget::focusOutEvent(QFocusEvent* e)
-{
-    // The releases of keys held when focus leaves go elsewhere, so they would otherwise stay
-    // latched; mid-drag the keyboard grab still delivers them here.
-    if (!isDragging()) {
-        _heldLocks.clear();
-    }
-    QWidget::focusOutEvent(e);
+    QWidget::keyPressEvent(e);
 }
 
 NATRON_NAMESPACE_EXIT

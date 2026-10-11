@@ -451,7 +451,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - the next render recreates the device and uses the GPU again.
   - size: L
 
-- [ ] M84.P7.T5 — GPU strip tiling for oversized regions
+- [x] M84.P7.T5 — GPU strip tiling for oversized regions
   - files: `Engine/GpuRegionTask.cpp`, `Engine/GpuRegionStrips.{h,cpp}` (new), `Tests/GpuResidency_Test.cpp`
   - approach:
     - Strip a region when any member buffer exceeds `maxStorageBufferRange`, or its working set exceeds the device budget.
@@ -715,3 +715,17 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - a CPU fallback runs with thread budget 1, so it's slow for a big Blur;
     - fallen-back members are still profiled as `device:gpu`, and the region record has no fallback field;
     - tasks dropped by a loss restart count as purged.
+- 2026-10-11 — M84.P7.T5 done (`f13cbf53d`). Tiled Grade → Blur σ25 → Grade matches the untiled render exactly (diff 0) on lavapipe with a 1 MB range override. Full ctest passes 1656/1656 in both modes.
+  - **Design:**
+    - `planGpuStrips` mirrors the body's real allocation pattern, including Blur's held intermediate and weight buffers.
+    - Strips are full-width bands, 4-row multiples of up to 2048 rows, binary-searched for the tallest that fits.
+    - Inputs are uploaded with halos rounded to 4 rows. Only band rows are downloaded.
+    - A stripped region downloads **every** output to RAM, since the output never exists whole on the device.
+    - New fallback reason "too large for the GPU" (no retry) for the storage-buffer range. Over budget takes the "out of device memory" path and marks the runtime Degraded.
+    - The test hook is `setGpuStripOverridesForTests`.
+  - **Follow-ups (for P8.T2 or M85):**
+    - strips run serially (upload, compute, download, wait), with no overlap;
+    - offset halo uploads mostly go through staging, not host import;
+    - the spatial-node scratch cost is a Blur-shaped heuristic;
+    - admission reserves a stripped region's whole working set, so it is admitted only when the scheduler is idle; cap it at the budget;
+    - transfer counts are per strip.

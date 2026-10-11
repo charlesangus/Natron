@@ -234,7 +234,24 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
             }
 
             ///now if there was a hint displayed, use it to actually make connections.
-            if (_imp->_highLightedEdge) {
+            if (_imp->_splicePipe) {
+                Edge* pipe = _imp->_splicePipe;
+                NodeGuiPtr entryGui = _imp->_spliceEntry;
+                NodeGuiPtr exitGui = _imp->_spliceExit;
+                int entryInput = _imp->_spliceEntryInput;
+                NodeGuiPtr oldSrc = pipe->getSource();
+                resetSplicePlan();
+
+                if (entryGui == exitGui) {
+                    pushUndoCommand(new InsertNodeCommand(this, pipe, exitGui));
+                } else {
+                    Edge* entryEdge = entryGui->getInputArrow(entryInput);
+                    pushUndoCommand(new ConnectCommand(this, pipe, oldSrc, exitGui));
+                    if (entryEdge) {
+                        pushUndoCommand(new ConnectCommand(this, entryEdge, entryEdge->getSource(), oldSrc));
+                    }
+                }
+            } else if (_imp->_highLightedEdge) {
                 _imp->_highLightedEdge->setUseHighlight(false);
 
                 NodeGuiPtr selectedNode = _imp->_selection.front();
@@ -312,6 +329,7 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
         _imp->editSelectionFromSelectionRectangle( modCASIsShift(e) );
 
     }
+    resetSplicePlan();
     _imp->_nodesWithinBDAtPenDown.clear();
 
     _imp->cursorSet = false;

@@ -188,6 +188,15 @@ public:
     ///This is a hint edge we show when _highLightedEdge is not NULL to display a possible connection.
     Edge* _hintInputEdge;
     Edge* _hintOutputEdge;
+
+    // A selection's connections cannot change mid-drag, so its splice plan is built on the first
+    // move of a press and reused until release; _splicePlanSelection detects a selection change.
+    bool _splicePlanBuilt = false;
+    NodesGuiList _splicePlanSelection;
+    NodeGuiPtr _spliceEntry;
+    int _spliceEntryInput = -1;
+    NodeGuiPtr _spliceExit;
+    Edge* _splicePipe = nullptr;
     NodeGuiPtr _backdropResized; //< the backdrop being resized
     NodesGuiList _selection;
 

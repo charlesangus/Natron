@@ -253,6 +253,16 @@ private:
 
     void checkForHints(bool shiftdown, bool controlDown, const NodeGuiPtr& selectedNode, const QRectF& visibleSceneR);
 
+    void checkForSpliceHint();
+
+    void buildSplicePlan();
+
+    void clearSpliceHint();
+
+    void resetSplicePlan();
+
+    void clearConnectionHints();
+
     void moveSelectedNodesBy(bool shiftdown, bool controlDown, const QPointF& lastMousePosScene, const QPointF& newPos, const QRectF& visibleSceneR, bool userEdit);
 
     void scrollViewIfNeeded(const QPointF& scenePos);

@@ -650,7 +650,7 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_IMAGES_PATH "merge_grain_merge.png";
         break;
     case NATRON_PIXMAP_MERGE_HARD_LIGHT:
-        path = NATRON_IMAGES_PATH "merge_hard_light.png";
+        path = NATRON_IMAGES_PATH "merge_hardlight.png";
         break;
     case NATRON_PIXMAP_MERGE_HUE:
         path = NATRON_IMAGES_PATH "merge_hue.png";
@@ -707,7 +707,7 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_IMAGES_PATH "merge_screen.png";
         break;
     case NATRON_PIXMAP_MERGE_SOFT_LIGHT:
-        path = NATRON_IMAGES_PATH "merge_soft_light.png";
+        path = NATRON_IMAGES_PATH "merge_softlight.png";
         break;
     case NATRON_PIXMAP_MERGE_STENCIL:
         path = NATRON_IMAGES_PATH "merge_stencil.png";

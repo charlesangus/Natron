@@ -42,14 +42,11 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/KnobTypes.h"
 #include "Gui/ClickableLabel.h"
 #include "Gui/GuiApplicationManager.h"
+#include "Gui/GuiDensity.h"
 #include "Gui/KnobGui.h"
 #include "Gui/KnobGuiGroup.h"
 #include "Gui/TabGroup.h"
 #include "Gui/ThemedIcon.h"
-
-#define NATRON_FORM_LAYOUT_LINES_SPACING 0
-#define NATRON_SETTINGS_VERTICAL_SPACING_PIXELS 3
-
 
 NATRON_NAMESPACE_ENTER
 
@@ -135,7 +132,7 @@ KnobGuiContainerHelper::getKnobGui(const KnobIPtr& knob) const
 int
 KnobGuiContainerHelper::getItemsSpacingOnSameLine() const
 {
-    return TO_DPIX(15);
+    return TO_DPIX(NATRON_DENSITY_INLINE_GAP);
 }
 
 KnobGuiPtr
@@ -259,7 +256,10 @@ KnobGuiContainerHelper::getOrCreatePage(const KnobPagePtr& page)
     tabLayout->setObjectName( QString::fromUtf8("formLayout") );
     layoutContainer->setLayout(tabLayout);
     tabLayout->setColumnStretch(1, 1);
-    tabLayout->setSpacing( TO_DPIY(NATRON_FORM_LAYOUT_LINES_SPACING) );
+    // The row gap comes from each field/label row's own bottom margin (below), not from the
+    // grid's vertical spacing, which stays 0.
+    tabLayout->setHorizontalSpacing(TO_DPIX(NATRON_DENSITY_LABEL_GAP));
+    tabLayout->setVerticalSpacing(0);
 
     // Create the page gui
     KnobPageGuiPtr pageGui = std::make_shared<KnobPageGui>();
@@ -684,11 +684,19 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
         QWidget* fieldContainer = 0;
         QHBoxLayout* fieldLayout = 0;
 
+        // A group's own header row and a separator read as a section break, so they get air
+        // above and below instead of the ordinary row gap. A child of a non-tab group gets its
+        // label indented so it reads as belonging under that header.
+        const bool isSectionBoundary = (isGroup && !isGroup->isTab()) || std::dynamic_pointer_cast<KnobSeparator>(knob);
+        const int fieldTopMargin = isSectionBoundary ? TO_DPIY(NATRON_DENSITY_SECTION_GAP) : 0;
+        const int fieldBottomMargin = isSectionBoundary ? TO_DPIY(NATRON_DENSITY_SECTION_GAP) : TO_DPIY(NATRON_DENSITY_ROW_GAP);
+        const int labelLeftMargin = (parentIsGroup && !parentIsGroup->isTab()) ? TO_DPIX(NATRON_DENSITY_GROUP_INDENT) : 0;
+
         if (makeNewLine) {
             ///if new line is not turned off, create a new line
             fieldContainer = createKnobHorizontalFieldContainer(page->tab);
             fieldLayout = new QHBoxLayout(fieldContainer);
-            fieldLayout->setContentsMargins( TO_DPIX(3), 0, 0, TO_DPIY(NATRON_SETTINGS_VERTICAL_SPACING_PIXELS) );
+            fieldLayout->setContentsMargins(0, fieldTopMargin, 0, fieldBottomMargin);
             fieldLayout->setSpacing( TO_DPIY(2) );
             fieldLayout->setAlignment(Qt::AlignLeft);
         } else {
@@ -713,7 +721,7 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
             if (makeNewLine) {
                 labelContainer = new QWidget(page->tab);
                 labelLayout = new QHBoxLayout(labelContainer);
-                labelLayout->setContentsMargins( TO_DPIX(3), 0, 0, TO_DPIY(NATRON_SETTINGS_VERTICAL_SPACING_PIXELS) );
+                labelLayout->setContentsMargins(labelLeftMargin, fieldTopMargin, 0, fieldBottomMargin);
                 labelLayout->setSpacing( TO_DPIY(2) );
             }
 

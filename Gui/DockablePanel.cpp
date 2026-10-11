@@ -64,6 +64,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/Gui.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiDefines.h"
+#include "Gui/GuiDensity.h"
 #include "Gui/GuiMacros.h" // triggerButtonIsRight...
 #include "Gui/KnobGui.h"
 #include "Gui/KnobGuiColor.h"
@@ -78,8 +79,8 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/NodeGraphUndoRedo.h" // RenameNodeUndoRedoCommand
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
-#include "Gui/RightClickableWidget.h"
 #include "Gui/PropertiesBinWrapper.h"
+#include "Gui/RightClickableWidget.h"
 #include "Gui/RotoPanel.h"
 #include "Gui/TabGroup.h"
 #include "Gui/TabWidget.h"
@@ -159,14 +160,15 @@ DockablePanel::DockablePanel(Gui* gui,
         _imp->_headerWidget = new QFrame(this);
         _imp->_headerWidget->setFrameShape(QFrame::Box);
         _imp->_headerLayout = new QHBoxLayout(_imp->_headerWidget);
-        _imp->_headerLayout->setContentsMargins(0, 0, 0, 0);
+        _imp->_headerLayout->setContentsMargins(TO_DPIX(NATRON_DENSITY_HEADER_MARGIN), TO_DPIY(NATRON_DENSITY_HEADER_MARGIN),
+                                                TO_DPIX(NATRON_DENSITY_HEADER_MARGIN), TO_DPIY(NATRON_DENSITY_HEADER_MARGIN));
         _imp->_headerWidget->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-        _imp->_headerLayout->setSpacing(2);
+        _imp->_headerLayout->setSpacing(TO_DPIX(NATRON_DENSITY_HEADER_MARGIN));
         _imp->_headerWidget->setLayout(_imp->_headerLayout);
 
         if (isEffect) {
             _imp->_iconLabel = new Label( getHeaderWidget() );
-            _imp->_iconLabel->setContentsMargins(2, 2, 2, 2);
+            _imp->_iconLabel->setContentsMargins(TO_DPIX(2), TO_DPIY(2), TO_DPIX(2), TO_DPIY(2));
             _imp->_iconLabel->setToolTip(pluginLabelVersioned);
             _imp->_headerLayout->addWidget(_imp->_iconLabel);
 
@@ -376,6 +378,9 @@ DockablePanel::DockablePanel(Gui* gui,
         if (_imp->_hideUnmodifiedButton) {
             _imp->_headerLayout->addWidget(_imp->_hideUnmodifiedButton);
         }
+        // Separate the window-control cluster from the info buttons before it; otherwise
+        // both sit at the uniform inter-button gap and read as one run of buttons.
+        _imp->_headerLayout->addSpacing(TO_DPIX(NATRON_DENSITY_HEADER_CLUSTER));
         _imp->_headerLayout->addWidget(_imp->_minimize);
         _imp->_headerLayout->addWidget(_imp->_floatButton);
         _imp->_headerLayout->addWidget(_imp->_cross);
@@ -386,8 +391,9 @@ DockablePanel::DockablePanel(Gui* gui,
 
     _imp->_horizContainer = new QWidget(this);
     _imp->_horizLayout = new QHBoxLayout(_imp->_horizContainer);
-    _imp->_horizLayout->setContentsMargins(0, 3, 3, 0);
-    _imp->_horizLayout->setSpacing(2);
+    _imp->_horizLayout->setContentsMargins(TO_DPIX(NATRON_DENSITY_PANEL_MARGIN), TO_DPIY(NATRON_DENSITY_PANEL_MARGIN),
+                                           TO_DPIX(NATRON_DENSITY_PANEL_MARGIN), TO_DPIY(NATRON_DENSITY_PANEL_MARGIN));
+    _imp->_horizLayout->setSpacing(TO_DPIX(2));
 
     _imp->_rightContainer = new QWidget(_imp->_horizContainer);
     _imp->_rightContainerLayout = new QVBoxLayout(_imp->_rightContainer);

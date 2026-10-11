@@ -32,10 +32,9 @@
 #include <QTabWidget>
 #include <QGridLayout>
 
+#include "Engine/AppManager.h"
 #include "Engine/KnobTypes.h"
-
-
-#define NATRON_FORM_LAYOUT_LINES_SPACING 0
+#include "Gui/GuiDensity.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -110,7 +109,7 @@ TabGroup::addTab(const KnobGroupPtr& group,
         tabGroup->tab->setObjectName(label);
         tabGroup->layout = new QGridLayout(tabGroup->tab);
         tabGroup->layout->setColumnStretch(1, 1);
-        tabGroup->layout->setSpacing(NATRON_FORM_LAYOUT_LINES_SPACING); // unfortunately, this leaves extra space when parameters are hidden
+        tabGroup->layout->setSpacing(TO_DPIY(NATRON_DENSITY_ROW_GAP)); // unfortunately, this leaves extra space when parameters are hidden
 
         if (visible) {
             _imp->tabWidget->addTab(tabGroup->tab, label);

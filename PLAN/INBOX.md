@@ -125,3 +125,36 @@
   API per top-level window so the viewer can't move alone, and the M83 interop hand-off
   already costs 0.79 ms at UHD. A later viewer modernisation should go through `QRhiWidget`
   on its OpenGL backend first; the 2D widgets, if reworked, go to `QPainter`, not Vulkan.
+
+### 2026-10-11T00:04:16-04:00 — change-request
+- refs: M69
+- User request (2026-10-11): in **M69 - Minor Cleanup** (stays a stub), add a new "Panels:" intent
+  group, placed after "Node graph interaction" and before "Roto". Right-clicking the empty space
+  beside a panel's tabs must bring up the same pane menu as the panel management icon (the
+  top-left corner button of a pane). Append this to the stub body:
+
+  ```markdown
+  Panels:
+  - **Right-click the empty header space for the pane menu.** Right-clicking the empty space to
+    the right of a pane's tabs opens the same menu as the panel management icon at the pane's
+    top-left (split vertical/horizontal, float, close, hide toolbar/tabs header, "... here"
+    entries, set as anchor). Scouted 2026-10-11: that menu is `TabWidget::createMenu()`
+    (`Gui/TabWidget.cpp`), connected to `leftCornerButton`'s `clicked()` and shown with
+    `menu.exec(leftCornerButton->mapToGlobal(QPoint(0, 0)))`. The empty space is the stretch in
+    the pane's header row, which belongs to `TabWidgetHeader` (`Gui/TabWidget.h`), a bare
+    `QWidget` that handles only `leaveEvent`. Approach: give `TabWidgetHeader` a
+    `contextMenuEvent` (or a `mousePressEvent` for the right button) that emits a signal
+    connected to a `TabWidget` slot; refactor `createMenu()` to take the global position to
+    open at (the icon passes its own corner, the header passes the cursor) so the menu
+    opens at the right place the first time. Keep the icon's behaviour unchanged, and don't
+    swallow right-clicks on the tabs themselves (`TabBar`) or the float/close buttons. Fold in
+    the "Tab menu position" fix from the node-graph group if the same positioning bug turns out
+    to be shared.
+  ```
+
+  and append to its acceptance sketch:
+
+  ```markdown
+  - Right-clicking the empty space beside a pane's tabs opens the same menu as the panel
+    management icon, at the cursor.
+  ```

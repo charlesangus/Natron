@@ -402,7 +402,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - Full ctest is green in both scheduler modes.
   - size: L
 
-- [ ] M84.P7.T2 — The region super-task body: upload once, record all members, download per output
+- [x] M84.P7.T2 — The region super-task body: upload once, record all members, download per output
   - files: `Engine/GpuRegionTask.{h,cpp}` (new), `Engine/GpuContext.cpp` (the `DeviceImage` implementation), `Engine/RenderScheduler.cpp` (installs the hook), `Tests/GpuResidency_Test.cpp`, `Tests/CMakeLists.txt`
   - approach:
     - Runs on the pool thread with budget 1, inside `FrameContextScope`.
@@ -683,3 +683,19 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - `tools/gpu-spike/bench/GpuBench_main.cpp` passes the full Blur weight table to the new half-kernel layout, so its pixels are wrong, though the timings still hold.
     - After a `submitAndWait` timeout, scratch buffers return to the pool while the device may still use them.
 - 2026-10-11 — **Paused: usage limit.** Next is P7.T2 (the region body, L), then P7.T4, P7.T5, P7.T6, Phase 84.8 and the gate.
+- 2026-10-11 — **Resumed** after the usage-limit pause, in a GPU-only PM session running alongside other PM sessions.
+- 2026-10-11 — M84.P7.T2 done (`5bb32cbb2`). Placement is now **live**: the scheduler's constructor installs the region body and registers `setGpuPlacementAvailableFunc` together. Full ctest passes 1639/1639 in both modes (CI environment, lavapipe). GpuResidency 4/4 in both modes.
+  - **Deviations:**
+    - a download is issued once the output's producer *and* every later member that reads it are submitted, because after a download the buffer belongs to the transfer family;
+    - freed intermediates go back to the pool only after their submission finishes;
+    - an output read by both the CPU and another region is downloaded and stored in RAM only, and the other region uploads it;
+    - `RegionBody` takes a `RegionReport*` so the scheduler writes the profile records;
+    - `AppManager::swapGpuContextForTests` forces a context in tests, since Auto refuses lavapipe;
+    - `observeCpu` skips image-cache hits (`EffectInstance::getRenderActionsOnThisThread()`);
+    - the convex-split test assigns its two regions by hand, because placement can't produce region→region with single-input GPU nodes.
+  - **Bug fixed:** downloaded images carry the task's node, hash, time and view. With an empty key, OFX clips reused a wrong-time image, so FrameBlend got the wrong frame.
+  - **For P7.T4:** any region-body failure currently fails the frame, for example a Grade input that doesn't cover its window, or an empty window.
+  - **Known gaps:**
+    - per-member GPU time is estimated from the cost model, not measured with timestamps;
+    - under `NATRON_GPU=force`, 9 Legacy-vs-taskgraph bit-exact tests differ by one float rounding step (expected; not a CI configuration).
+  - **Verify note:** running ctest directly needs `OFX_PLUGIN_PATH=build/assets/Plugins` and `xvfb-run`, as `test.sh` sets them.

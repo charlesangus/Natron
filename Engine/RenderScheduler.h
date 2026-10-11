@@ -57,6 +57,11 @@ NATRON_NAMESPACE_ENTER
  * with the edges between them. The root is tasks.front().
  **/
 struct FrameGraph {
+    enum class Device {
+        Cpu,
+        Gpu
+    };
+
     struct Task {
         FrameStore::TaskKey key;
 
@@ -94,11 +99,48 @@ struct FrameGraph {
         // The level renderRoI renders at: 0 for an effect without render scale support.
         unsigned int cacheMipmapLevel = 0;
 
+        Device device = Device::Cpu;
+
+        // Index in regions of the region this task belongs to, or -1; every member of a region has device Gpu.
+        int regionId = -1;
+
         // Only read or written under the scheduler's mutex once the graph is submitted.
         int remainingDeps = 0;
     };
 
+    /**
+     * @brief Tasks rendered together on the GPU, their intermediate images staying on the device. The graph with each
+     * region contracted to one node is acyclic, so a region never waits on a task that waits on it.
+     **/
+    struct Region {
+        struct Output {
+            int task = -1;
+
+            // Per edge, as Task::consumerTasks counts them.
+            int internalConsumers = 0;
+            int externalConsumers = 0;
+
+            // The frame's root, whose planes go to the future rather than to a consumer task.
+            bool isRoot = false;
+        };
+
+        // Topological order: every member comes after the members it depends on.
+        std::vector<int> members;
+
+        // The distinct tasks outside the region that members depend on, in ascending index order.
+        std::vector<int> externalInputs;
+
+        // The members whose output is read by a consumer task, or that are the root, in members order.
+        std::vector<Output> outputs;
+
+        // An upper bound of the device memory the region needs at once: the estimatedBytes of every non-identity
+        // member, since all its intermediates may be resident until it ends, plus those of every external input
+        // uploaded. An identity member aliases its input and adds nothing.
+        std::size_t workingSetBytes = 0;
+    };
+
     std::vector<Task> tasks;
+    std::vector<Region> regions;
 };
 
 /**

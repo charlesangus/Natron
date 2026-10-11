@@ -373,7 +373,9 @@ formatTaskRecord(const FrameGraph::Task& task,
     line.append(pointOp ? "true" : "false");
     line.append(",\"glSupport\":");
     line.append(glSupport ? "true" : "false");
-    line.append(",\"device\":\"cpu\",\"regionId\":-1,\"ok\":");
+    std::snprintf(num, sizeof(num), ",\"device\":\"%s\",\"regionId\":%d,\"ok\":",
+                  (task.device == FrameGraph::Device::Gpu) ? "gpu" : "cpu", task.regionId);
+    line.append(num);
     line.append(ok ? "true" : "false");
     line.append("}\n");
 

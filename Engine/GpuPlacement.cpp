@@ -1,0 +1,480 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "GpuPlacement.h"
+
+#include <algorithm>
+#include <atomic>
+#include <bitset>
+#include <list>
+#include <queue>
+#include <tuple>
+#include <vector>
+
+#include "Engine/AppManager.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/FrameRenderContext.h"
+#include "Engine/Image.h"
+#include "Engine/ImageKey.h"
+#include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
+#include "Engine/Nodes/Image/GpuRender.h"
+#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/ParallelRenderArgs.h"
+#include "Engine/RenderScale.h"
+
+NATRON_NAMESPACE_ENTER
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+std::atomic<GpuPlacementAvailableFunc> gAvailableFunc(nullptr);
+
+/**
+ * @brief The tasks in an order where each comes after its dependencies; lower dfsPostOrder, then lower index, first
+ * among the ready ones. Empty when the dependencies have a cycle.
+ **/
+std::vector<int>
+topologicalOrder(const FrameGraph& graph)
+{
+    const int n = (int)graph.tasks.size();
+    std::vector<int> pending(n, 0);
+    std::vector<std::vector<int> > consumers(n);
+
+    for (int i = 0; i < n; ++i) {
+        std::vector<int> deps = graph.tasks[i].dependencies;
+        std::sort(deps.begin(), deps.end());
+        deps.erase(std::unique(deps.begin(), deps.end()), deps.end());
+        for (int d : deps) {
+            if ((d < 0) || (d >= n)) {
+                return std::vector<int>();
+            }
+            ++pending[i];
+            consumers[d].push_back(i);
+        }
+    }
+
+    typedef std::pair<int, int> ReadyKey;
+    std::priority_queue<ReadyKey, std::vector<ReadyKey>, std::greater<ReadyKey> > ready;
+    for (int i = 0; i < n; ++i) {
+        if (pending[i] == 0) {
+            ready.push(ReadyKey(graph.tasks[i].dfsPostOrder, i));
+        }
+    }
+    std::vector<int> order;
+    order.reserve(n);
+    while (!ready.empty()) {
+        const int i = ready.top().second;
+        ready.pop();
+        order.push_back(i);
+        for (int c : consumers[i]) {
+            if (--pending[c] == 0) {
+                ready.push(ReadyKey(graph.tasks[c].dfsPostOrder, c));
+            }
+        }
+    }
+    if ((int)order.size() != n) {
+        return std::vector<int>();
+    }
+
+    return order;
+}
+
+/**
+ * @brief Whether the graph is acyclic once the tasks sharing a non-negative label are contracted to one node.
+ **/
+bool
+isContractionAcyclic(const FrameGraph& graph,
+                     const std::vector<int>& label)
+{
+    const int n = (int)graph.tasks.size();
+
+    // Node n + l stands for label l, so that a task and a region never share a node.
+    const auto nodeOf = [&](int task) {
+        return (label[task] >= 0) ? n + label[task] : task;
+    };
+    int maxLabel = -1;
+    for (int l : label) {
+        maxLabel = std::max(maxLabel, l);
+    }
+    const int nNodes = n + maxLabel + 1;
+    std::vector<std::vector<int> > out(nNodes);
+    std::vector<int> indegree(nNodes, 0);
+    std::vector<bool> present(nNodes, false);
+
+    for (int i = 0; i < n; ++i) {
+        const int v = nodeOf(i);
+        present[v] = true;
+        for (int d : graph.tasks[i].dependencies) {
+            const int u = nodeOf(d);
+            if (u != v) {
+                out[u].push_back(v);
+                ++indegree[v];
+            }
+        }
+    }
+
+    std::vector<int> stack;
+    int nPresent = 0;
+    for (int v = 0; v < nNodes; ++v) {
+        if (present[v]) {
+            ++nPresent;
+            if (indegree[v] == 0) {
+                stack.push_back(v);
+            }
+        }
+    }
+    int visited = 0;
+    while (!stack.empty()) {
+        const int u = stack.back();
+        stack.pop_back();
+        ++visited;
+        for (int v : out[u]) {
+            if (--indegree[v] == 0) {
+                stack.push_back(v);
+            }
+        }
+    }
+
+    return visited == nPresent;
+}
+
+FrameGraph::Region
+describeRegion(const FrameGraph& graph,
+               const std::vector<int>& members,
+               const std::vector<int>& label,
+               int regionLabel,
+               const std::vector<bool>& identity)
+{
+    FrameGraph::Region region;
+
+    region.members = members;
+    for (int m : members) {
+        const FrameGraph::Task& task = graph.tasks[m];
+        for (int d : task.dependencies) {
+            if (label[d] != regionLabel) {
+                region.externalInputs.push_back(d);
+            }
+        }
+        if (!identity[m]) {
+            region.workingSetBytes += task.estimatedBytes;
+        }
+
+        FrameGraph::Region::Output output;
+        output.task = m;
+        output.isRoot = task.consumerTasks.empty();
+        for (int c : task.consumerTasks) {
+            if (label[c] == regionLabel) {
+                ++output.internalConsumers;
+            } else {
+                ++output.externalConsumers;
+            }
+        }
+        region.outputs.push_back(output);
+    }
+    std::sort(region.externalInputs.begin(), region.externalInputs.end());
+    region.externalInputs.erase(std::unique(region.externalInputs.begin(), region.externalInputs.end()), region.externalInputs.end());
+    for (int e : region.externalInputs) {
+        region.workingSetBytes += graph.tasks[e].estimatedBytes;
+    }
+
+    return region;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+void
+placeGraph(FrameGraph& graph,
+           const PlacementInputs& inputs)
+{
+    graph.regions.clear();
+    for (FrameGraph::Task& task : graph.tasks) {
+        task.device = FrameGraph::Device::Cpu;
+        task.regionId = -1;
+    }
+
+    const int n = (int)graph.tasks.size();
+    const std::vector<int> order = topologicalOrder(graph);
+    if (order.empty()) {
+        return;
+    }
+
+    std::vector<bool> identity(n, false);
+    for (int i = 0; i < n; ++i) {
+        identity[i] = inputs.isIdentity ? inputs.isIdentity(graph.tasks[i]) : graph.tasks[i].isIdentity;
+    }
+
+    // Labels are working region ids; a merge empties the regions it absorbs.
+    std::vector<int> label(n, -1);
+    std::vector<std::vector<int> > regionMembers;
+
+    const auto tryAssign = [&](int task, const std::vector<int>& absorbed, int into) -> bool {
+        std::vector<int> trial = label;
+        for (int i = 0; i < n; ++i) {
+            if ((trial[i] >= 0) && std::find(absorbed.begin(), absorbed.end(), trial[i]) != absorbed.end()) {
+                trial[i] = into;
+            }
+        }
+        trial[task] = into;
+        if (!isContractionAcyclic(graph, trial)) {
+            return false;
+        }
+        for (int r : absorbed) {
+            if (r != into) {
+                regionMembers[into].insert(regionMembers[into].end(), regionMembers[r].begin(), regionMembers[r].end());
+                regionMembers[r].clear();
+            }
+        }
+        regionMembers[into].push_back(task);
+        label.swap(trial);
+
+        return true;
+    };
+
+    for (int t : order) {
+        const FrameGraph::Task& task = graph.tasks[t];
+        std::vector<int> depRegions;
+        for (int d : task.dependencies) {
+            if ((label[d] >= 0) && (std::find(depRegions.begin(), depRegions.end(), label[d]) == depRegions.end())) {
+                depRegions.push_back(label[d]);
+            }
+        }
+
+        if (identity[t]) {
+            std::vector<int> deps = task.dependencies;
+            std::sort(deps.begin(), deps.end());
+            deps.erase(std::unique(deps.begin(), deps.end()), deps.end());
+            if ((deps.size() == 1) && (label[deps.front()] >= 0)) {
+                tryAssign(t, std::vector<int>(1, label[deps.front()]), label[deps.front()]);
+            }
+            continue;
+        }
+
+        if (inputs.isCached && inputs.isCached(task)) {
+            continue;
+        }
+        if (!inputs.canRenderOnGpu || !inputs.canRenderOnGpu(task)) {
+            continue;
+        }
+
+        if (!depRegions.empty()) {
+            if (tryAssign(t, depRegions, depRegions.front())) {
+                continue;
+            }
+            std::stable_sort(depRegions.begin(), depRegions.end(), [&](int a, int b) {
+                return regionMembers[a].size() > regionMembers[b].size();
+            });
+            bool joined = false;
+            for (int r : depRegions) {
+                if (tryAssign(t, std::vector<int>(1, r), r)) {
+                    joined = true;
+                    break;
+                }
+            }
+            if (joined) {
+                continue;
+            }
+        }
+        regionMembers.push_back(std::vector<int>());
+        const int fresh = (int)regionMembers.size() - 1;
+        label[t] = fresh;
+        regionMembers[fresh].push_back(t);
+    }
+
+    std::vector<int> position(n, 0);
+    for (int i = 0; i < n; ++i) {
+        position[order[i]] = i;
+    }
+    std::vector<int> formed;
+    for (int r = 0; r < (int)regionMembers.size(); ++r) {
+        if (!regionMembers[r].empty()) {
+            std::sort(regionMembers[r].begin(), regionMembers[r].end(), [&](int a, int b) {
+                return position[a] < position[b];
+            });
+            formed.push_back(r);
+        }
+    }
+    std::sort(formed.begin(), formed.end(), [&](int a, int b) {
+        return position[regionMembers[a].front()] < position[regionMembers[b].front()];
+    });
+
+    // Rejecting a region keeps the contraction acyclic: a cycle through its members, now separate nodes, would have
+    // been one through the region.
+    for (int r : formed) {
+        FrameGraph::Region region = describeRegion(graph, regionMembers[r], label, r, identity);
+        if (inputs.acceptRegion && !inputs.acceptRegion(graph, region)) {
+            continue;
+        }
+        const int regionId = (int)graph.regions.size();
+        for (int m : region.members) {
+            graph.tasks[m].device = FrameGraph::Device::Gpu;
+            graph.tasks[m].regionId = regionId;
+        }
+        graph.regions.push_back(std::move(region));
+    }
+} // placeGraph
+
+void
+setGpuPlacementAvailableFunc(GpuPlacementAvailableFunc func)
+{
+    gAvailableFunc.store(func);
+}
+
+bool
+isGpuPlacementAvailable()
+{
+    const GpuPlacementAvailableFunc func = gAvailableFunc.load();
+
+    return func && func();
+}
+
+bool
+makeGpuQueryForTask(const FrameGraph::Task& task,
+                    const FrameRenderContext& context,
+                    GpuQuery* query)
+{
+    const NodePtr& node = task.key.node;
+    if (!node || (task.components.size() != 1) || !context.getRequest()) {
+        return false;
+    }
+    EffectInstancePtr effect = node->getEffectInstance();
+    NativeImageEffect* native = dynamic_cast<NativeImageEffect*>(effect.get());
+    if (!native) {
+        return false;
+    }
+    FrameRequestMap::const_iterator nodeRequest = context.getRequest()->find(node);
+    if ((nodeRequest == context.getRequest()->end()) || !nodeRequest->second) {
+        return false;
+    }
+    const ImageLayerDesc& plane = task.components.front();
+
+    query->time = task.key.time;
+    query->view = task.key.view;
+    const bool rendersFullScale = (task.key.mipmapLevel != 0) && (native->supportsRenderScaleMaybe() != EffectInstance::eSupportsYes);
+    query->mappedScale = RenderScale::fromMipmapLevel(rendersFullScale ? 0 : task.key.mipmapLevel);
+    query->nComps = plane.getNumComponents();
+    query->bitDepth = task.bitdepth;
+
+    const int maskInput = native->getMaskInput();
+    query->hasMask = (maskInput >= 0) && native->getInput(maskInput) && native->isMaskEnabled(maskInput);
+
+    KnobDoublePtr mix = std::dynamic_pointer_cast<KnobDouble>(native->getKnobByName(kOfxMixParamName));
+    query->mix = mix ? mix->getValueAtTime(task.key.time, 0, task.key.view) : 1.;
+
+    const std::bitset<4> channels = native->getProcessChannelsForPlane(nodeRequest->second->nodeHash, task.key.time, task.key.view, plane);
+    for (int i = 0; i < 4; ++i) {
+        query->processChannels[i] = channels[i];
+    }
+
+    query->unPremultChannel = -1;
+    KnobChannelSelectPtr unPremultBy = native->wantsHostUnPremultSelector() ? node->getUnPremultBySelector() : KnobChannelSelectPtr();
+    if (unPremultBy && !unPremultBy->isNone() && native->getInput(0)) {
+        std::list<ImageLayerDesc> availableLayers;
+        native->getAvailableLayers(task.key.time, task.key.view, 0, &availableLayers);
+        ImageLayerDesc divisorLayer;
+        const int divisorChannel = node->getUnPremultChannel(availableLayers, &divisorLayer);
+        if (divisorLayer.getNumComponents() > 0) {
+            query->unPremultChannel = divisorChannel;
+        }
+    }
+
+    return true;
+} // makeGpuQueryForTask
+
+PlacementInputs
+makeRenderPlacementInputs(const FrameRenderContextPtr& context)
+{
+    PlacementInputs inputs;
+
+    inputs.canRenderOnGpu = [context](const FrameGraph::Task& task) -> bool {
+        GpuQuery query;
+        if (!context || !makeGpuQueryForTask(task, *context, &query)) {
+            return false;
+        }
+        const NativeImageEffect* native = dynamic_cast<const NativeImageEffect*>(task.key.node->getEffectInstance().get());
+
+        return native && native->canRenderOnGpu(query);
+    };
+
+    // Looks the cache up as renderRoI's first, non-draft, lookup does. Not knowing which full-scale flag renderRoI
+    // will key with, either counts; a false hit only keeps a task on the CPU.
+    inputs.isCached = [](const FrameGraph::Task& task) -> bool {
+        if (!task.sharesCachedOutput || !task.key.node || !appPTR || task.components.empty()) {
+            return false;
+        }
+        for (int fullScaleWithDownscaleInputs = 0; fullScaleWithDownscaleInputs < 2; ++fullScaleWithDownscaleInputs) {
+            ImageKey key(task.key.node.get(), task.nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, 1., false,
+                         fullScaleWithDownscaleInputs != 0);
+            std::list<ImagePtr> images;
+            if (!appPTR->getImage(key, &images)) {
+                continue;
+            }
+            bool allLayers = true;
+            for (const ImageLayerDesc& layer : task.components) {
+                bool covered = false;
+                for (const ImagePtr& image : images) {
+                    if (!image || (image->getMipmapLevel() != task.cacheMipmapLevel)) {
+                        continue;
+                    }
+                    const ImageLayerDesc& cached = image->getComponents();
+                    if (!((cached == layer) || (cached.isColorLayer() && layer.isColorLayer()))) {
+                        continue;
+                    }
+                    std::list<RectI> rest;
+                    image->getRestToRender(task.renderedRoI, rest);
+                    if (rest.empty()) {
+                        covered = true;
+                        break;
+                    }
+                }
+                if (!covered) {
+                    allLayers = false;
+                    break;
+                }
+            }
+            if (allLayers) {
+                return true;
+            }
+        }
+
+        return false;
+    };
+
+    return inputs;
+} // makeRenderPlacementInputs
+
+bool
+placeRenderGraph(FrameGraph& graph,
+                 const FrameRenderContextPtr& context)
+{
+    if (!isGpuPlacementAvailable() || graph.tasks.empty() || !context) {
+        return false;
+    }
+    placeGraph(graph, makeRenderPlacementInputs(context));
+
+    return true;
+}
+
+NATRON_NAMESPACE_EXIT

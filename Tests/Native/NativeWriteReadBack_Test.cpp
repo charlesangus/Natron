@@ -40,6 +40,7 @@
 #include <QTemporaryDir>
 
 #include <ofxImageEffect.h>
+#include <ofxNatron.h>
 
 #include "BaseTest.h"
 #include "NativeParity.h"
@@ -67,6 +68,9 @@ const char* const kOutputSpaceMenuKnob = "ocioOutputSpaceIndex";
 
 const int kWidth = 16;
 const int kHeight = 8;
+const int kFileWidth = 32;
+const int kFileHeight = 12;
+const double kFilePar = 2.;
 const float kGray = 0.18f;
 const float kOther = 0.5f;
 } // namespace
@@ -135,6 +139,49 @@ protected:
             }
         }
         ADD_FAILURE() << "no bit depth " << id;
+    }
+
+    void setChoice(const char* name,
+                   const std::string& id)
+    {
+        KnobChoice* choice = dynamic_cast<KnobChoice*>(_writer->getKnobByName(name).get());
+
+        ASSERT_TRUE(choice != NULL);
+        const std::vector<ChoiceOption> entries = choice->getEntries_mt_safe();
+        for (std::size_t i = 0; i < entries.size(); ++i) {
+            if (entries[i].id == id) {
+                choice->setValue((int)i, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+
+                return;
+            }
+        }
+        ADD_FAILURE() << "no entry " << id << " in " << name;
+    }
+
+    // Makes the written file's format differ from the project's and the input's.
+    void writeFixedFormatFile(const std::string& path)
+    {
+        setFile(path);
+        setBitDepth("32f");
+        pickOutputSpace(project()->getWorkingColorSpace());
+        setChoice(kNatronWriteParamFormatType, kNatronWriteFormatTypeFixed);
+        ASSERT_TRUE(setKnobValues(_writer, kNatronParamFormatSize, { (double)kFileWidth, (double)kFileHeight }));
+        ASSERT_TRUE(setKnobValues(_writer, kNatronParamFormatPar, { kFilePar }));
+        // Clipped to the input's RoD the file is written in the input's pixel aspect, not the format's.
+        KnobBool* clipToRoD = dynamic_cast<KnobBool*>(_writer->getKnobByName(kNatronWriteParamClipToRoD).get());
+        ASSERT_TRUE(clipToRoD != NULL);
+        clipToRoD->setValue(false, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+        writeSequence();
+    }
+
+    RectI outputFormat() const
+    {
+        return _writer->getEffectInstance()->getOutputFormat();
+    }
+
+    double outputPar() const
+    {
+        return _writer->getEffectInstance()->getAspectRatio(-1);
     }
 
     void pickOutputSpace(const std::string& space)
@@ -345,4 +392,38 @@ TEST_F(NativeWriteReadBackTest, TheRenderButtonIsDisabledWhileReadBackIsOn)
 
     setReadBack(false);
     EXPECT_TRUE(button->isEnabled(0));
+}
+
+TEST_F(NativeWriteReadBackTest, ReadBackReportsTheFilesFormatAndPixelAspect)
+{
+    writeFixedFormatFile(pathOf("format.exr"));
+    ASSERT_EQ(RectI(0, 0, kWidth, kHeight), outputFormat());
+    ASSERT_EQ(1., outputPar());
+
+    setReadBack(true);
+
+    EXPECT_EQ(RectI(0, 0, kFileWidth, kFileHeight), outputFormat());
+    EXPECT_EQ(kFilePar, outputPar());
+}
+
+TEST_F(NativeWriteReadBackTest, TurningReadBackOffReportsTheInputsFormatAgain)
+{
+    writeFixedFormatFile(pathOf("formatoff.exr"));
+    setReadBack(true);
+    ASSERT_EQ(RectI(0, 0, kFileWidth, kFileHeight), outputFormat());
+
+    setReadBack(false);
+
+    EXPECT_EQ(RectI(0, 0, kWidth, kHeight), outputFormat());
+    EXPECT_EQ(1., outputPar());
+}
+
+TEST_F(NativeWriteReadBackTest, AMissingFileKeepsTheInputsFormat)
+{
+    setFile(pathOf("never-written.exr"));
+
+    setReadBack(true);
+
+    EXPECT_EQ(RectI(0, 0, kWidth, kHeight), outputFormat());
+    EXPECT_EQ(1., outputPar());
 }

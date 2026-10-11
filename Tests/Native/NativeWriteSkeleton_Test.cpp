@@ -183,6 +183,43 @@ TEST_F(NativeWriteSkeletonTest, UnsupportedNamesPostTheMessageAtOnceAndASupporte
     EXPECT_FALSE(node->hasPersistentMessage()) << messageOf(node);
 }
 
+TEST_F(NativeWriteSkeletonTest, UnsupportedNameInASavedProjectPostsTheMessageAndHidesTheOptionsOnLoad)
+{
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_WRITE), PLUGIN_MAJOR_NATRON_WRITE);
+    ASSERT_TRUE(isNativeWrite(node));
+    KnobOutputFile* file = dynamic_cast<KnobOutputFile*>(node->getKnobByName(kOfxImageEffectFileParamName).get());
+    ASSERT_TRUE(file != NULL);
+    file->setValue(std::string("/tmp/native-write-skeleton.mov"));
+    const std::string name = node->getScriptName();
+
+    ProjectPtr project = getApp()->getProject();
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("native-write-mov.ntp");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    project->reset(false, true);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr loaded = project->getNodeByName(name);
+    ASSERT_TRUE(bool(loaded));
+    ASSERT_TRUE(isNativeWrite(loaded));
+    EXPECT_TRUE(loaded->hasPersistentMessage());
+    EXPECT_NE(std::string::npos, messageOf(loaded).find("Unsupported format")) << messageOf(loaded);
+    for (const char* option : { kNatronWriteParamBitDepth, kNatronWriteParamCompression, kNatronWriteParamQuality, kNatronWriteParamTileSize }) {
+        KnobIPtr knob = loaded->getKnobByName(option);
+        ASSERT_TRUE(bool(knob)) << option;
+        EXPECT_TRUE(knob->getIsSecret()) << option;
+    }
+
+    KnobOutputFile* loadedFile = dynamic_cast<KnobOutputFile*>(loaded->getKnobByName(kOfxImageEffectFileParamName).get());
+    ASSERT_TRUE(loadedFile != NULL);
+    loadedFile->setValue(std::string("/tmp/native-write-skeleton.png"));
+    EXPECT_FALSE(loaded->hasPersistentMessage()) << messageOf(loaded);
+}
+
 TEST_F(NativeWriteSkeletonTest, CreatingWithAFilenameInTheArgsKeepsItAndOpensNoDialog)
 {
     CreateNodeArgs args(PLUGINID_NATRON_WRITE, getApp()->getProject());

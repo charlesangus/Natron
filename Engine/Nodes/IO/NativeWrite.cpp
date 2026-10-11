@@ -741,6 +741,7 @@ NativeWrite::initializeKnobs()
     filename->setName(kOfxImageEffectFileParamName);
     filename->setAsOutputImageFile();
     filename->setHintToolTip(tr("The image or image sequence to write."));
+    filename->setIsMetadataSlave(true);
     page->addKnob(filename);
     _filename = filename;
 
@@ -956,6 +957,7 @@ NativeWrite::initializeKnobs()
     readBack->setHintToolTip(tr(kNatronWriteParamReadBackHint));
     readBack->setDefaultValue(false);
     readBack->setAnimationEnabled(false);
+    readBack->setIsMetadataSlave(true);
     page->addKnob(readBack);
     _readBack = readBack;
 
@@ -966,12 +968,20 @@ NativeWrite::initializeKnobs()
     stamp->setIsPersistent(false);
     stamp->setAnimationEnabled(false);
     stamp->setDefaultValue(0);
+    stamp->setIsMetadataSlave(true);
     page->addKnob(stamp);
     _readBackStamp = stamp;
 
     RenderEnginePtr engine = getRenderEngine();
     if (engine) {
-        QObject::connect(engine.get(), &RenderEngine::renderFinished, getNode().get(), [this](int) { onSequenceRenderFinished(); });
+        QObject::connect(engine.get(), &RenderEngine::renderFinished, this, [this](int) { onSequenceRenderFinished(); });
+    }
+    ProjectPtr project = getApp()->getProject();
+    if (project) {
+        QObject::connect(project.get(), &Project::projectViewsChanged, this, [this]() {
+            refreshViewsMenu();
+            _viewToKeep.clear();
+        });
     }
 
     refreshOptions();
@@ -981,6 +991,10 @@ void
 NativeWrite::onKnobsLoaded()
 {
     _outputSpace.refreshMenu();
+    // The project's views may load after this node's knobs, so a saved view missing from the menu now stays chosen until they arrive.
+    KnobChoicePtr views = _views.lock();
+    const std::string saved = views ? views->getActiveEntry().id : std::string();
+    _viewToKeep = saved == kNatronWriteViewsAll ? std::string() : saved;
     refreshOptions();
     refreshReadBackState();
 }
@@ -1011,6 +1025,42 @@ NativeWrite::automaticOutputSpace() const
     return space;
 }
 
+StatusEnum
+NativeWrite::getPreferredMetadata(NodeMetadata& metadata)
+{
+    if (!readBackActive()) {
+        return eStatusOK;
+    }
+    KnobOutputFilePtr filename = _filename.lock();
+    if (!filename) {
+        return eStatusOK;
+    }
+    // A missing or unreadable file keeps the input's metadata: the render reports the error.
+    const std::string path = filename->generateFileNameAtTime((SequenceTime)std::floor(getCurrentTime() + 0.5), ViewIdx(0)).toStdString();
+    if (path.empty() || !OiioReadSupport::isReadablePath(path)) {
+        return eStatusOK;
+    }
+    std::string error;
+    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error);
+    if (!header || header->subimages.empty()) {
+        return eStatusOK;
+    }
+    OiioReadSupport::PartChannels colour;
+    const bool hasColour = OiioReadSupport::colourPartOf(*header, viewNameOf(getApp()->getProject()->getProjectViewNames(), ViewIdx(0)), &colour);
+    const OIIO::ImageSpec& spec = header->subimages[hasColour ? (std::size_t)colour.subimage : 0];
+
+    // OpenFX formats must start at (0, 0), so a positive display-window origin only widens the
+    // format. Mirroring the display window within itself top to bottom always lands it at
+    // [0, full_height), which is why full_y drops out.
+    metadata.setOutputFormat(RectI(0, 0, spec.full_x + spec.full_width, spec.full_height));
+    metadata.setPixelAspectRatio(-1, OiioReadSupport::pixelAspectOf(spec));
+    if (hasColour) {
+        metadata.setNComps(-1, OiioReadSupport::ColourChannels::of(colour.names, colour.index).nComps());
+    }
+
+    return eStatusOK;
+}
+
 void
 NativeWrite::onMetadataRefreshed(const NodeMetadata& metadata)
 {
@@ -1026,6 +1076,13 @@ NativeWrite::refreshViewsMenu()
 
     for (std::size_t i = 0; i < names.size(); ++i) {
         options.push_back(ChoiceOption(names[i]));
+    }
+    if (!_viewToKeep.empty()) {
+        if (std::find(names.begin(), names.end(), _viewToKeep) == names.end()) {
+            options.push_back(ChoiceOption(_viewToKeep));
+        } else {
+            _viewToKeep.clear();
+        }
     }
     setMenu(_views.lock(), options);
 }
@@ -1085,7 +1142,12 @@ NativeWrite::onEffectCreated(bool mayCreateFileDialog,
 {
     KnobOutputFilePtr filename = _filename.lock();
 
-    if (!mayCreateFileDialog || !filename || !filename->getValue().empty() || getApp()->isBackground()
+    if (filename && !filename->getValue().empty()) {
+        rejectUnsupportedFormat(filename->getValue());
+
+        return;
+    }
+    if (!mayCreateFileDialog || !filename || getApp()->isBackground()
         || !appPTR->getCurrentSettings()->isFileDialogEnabledForNewWriters()) {
         return;
     }

@@ -185,6 +185,8 @@ private:
     virtual void onEffectCreated(bool mayCreateFileDialog,
                                  const CreateNodeArgs& args) OVERRIDE FINAL;
 
+    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE FINAL;
 
     virtual FramesNeededMap getFramesNeeded(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -248,6 +250,7 @@ private:
     KnobBoolWPtr _readBack;
     KnobIntWPtr _readBackStamp;
     KnobChoiceWPtr _views;
+    std::string _viewToKeep;
     KnobChoiceWPtr _frameRange;
     KnobIntWPtr _firstFrame;
     KnobIntWPtr _lastFrame;

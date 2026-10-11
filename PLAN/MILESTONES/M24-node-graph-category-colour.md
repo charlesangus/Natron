@@ -254,6 +254,11 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
 
 - 2026-10-10 — **UAT approved (user)** on `M24-d6db4bac9.AppImage`. Merge once `build-and-test` is green on `d6db4bac9`.
 
+- 2026-10-10 — **Review round 2 (Claude opus), covering the round-1/2 UAT fix commits:** 9 findings (1 high, 5 medium, 2 low, comment nits).
+  - High: the first font-colour pick on any new label corrupted its font tag.
+  - Medium: Dot label contrast was picked against the disk instead of the graph background; edges didn't re-attach when the ring toggled; `settingsSaved` wasn't emitted when saving was off; edge tints were read live in `paint()`; interactive Dots auto-opened their panel.
+  - All fixed in `066c128c4`, and every thread has a reply. One build: 27/27 targeted tests (4 new KnobGuiString tests), screenshot script 0 failures. Merging once CI is green. This is the last review round allowed by the two-round cap.
+
 **Verification gate:** `format`, `lint-ci` and `build-and-test` green; plus visual
 evidence captured the same way M17's node-graph evidence and M23's packaging gate
 were captured (Xvfb + screenshot, since this cannot be asserted in a unit test),

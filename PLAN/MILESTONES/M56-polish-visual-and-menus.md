@@ -178,7 +178,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - verify: at the gate build, P1.T1's Grade panel shots at 1× and 2× show the approved glyphs.
   - size: M
 
-- [ ] M56.P5.T4 — Send the path-based roto, tracker and dope-sheet icons through the themed loader
+- [x] M56.P5.T4 — Send the path-based roto, tracker and dope-sheet icons through the themed loader
   - files: `Gui/KnobGuiButton.cpp` (`:99` icon load), `Gui/DopeSheetView.cpp`, `Engine/RotoPaint.cpp`, `Engine/TrackerNode.cpp`, `Engine/TrackerContextPrivate.cpp` (path strings only)
   - approach: `KnobGuiButton`/`DopeSheetView` call `ThemedIcon` when the path is an SVG. Engine keeps passing `:/Resources/...` strings, and only the file names change. The custom glyphs (roto point tools, tracker controls, interpolation) need their own approval sheet first, like P5.T1.
   - verify: at the gate build, shots of the roto and tracker toolbars and the curve-editor interpolation menu.
@@ -300,3 +300,4 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
 - 2026-10-11 — **Density spec v2** published (claude.ai artifact `QTNUQASqsHJscpeR5JcvHa`): overlays off by default. Per the user's question, layout spacing goes through one `Gui/GuiDensity.h` header of named, DPI-scaled constants, which replaces P6.T3's "constants kept local". Optional Q_PROPERTY theming comes later. Awaiting the user's approval of the token values.
 - 2026-10-11 — **Density spec approved (user)** as v2: the token values in `PLAN/DESIGN/2026-10-11-m56-density-spec.md`, applied through a new `Gui/GuiDensity.h` of DPI-scaled constants. P6.T2–T4 apply exactly those values. P6.T4's toolbox file is `Gui/Gui05.cpp` (not `Gui20.cpp`/`ToolButton.cpp`), per the spec.
 - 2026-10-11 — **Misc toolbox icon → Lucide `shapes` (user).** It gets vendored and re-pointed after P5.T2, which is editing `GuiApplicationManager.cpp`. Other stays `circle-ellipsis`, and the default catch-all stays `puzzle`.
+- 2026-10-11 — **P5.T4:** check at the gate: the dope-sheet texture orientation was flipped (R, Z and node-root must read upright), and the upload changed from GL_RGBA to GL_BGRA. Free interpolation gets a shortcut ID with no default key. KnobGuiContainerHelper's pattern-size and search-size label icons now render themed.

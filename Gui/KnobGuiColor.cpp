@@ -31,6 +31,7 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QAbstractScrollArea>
 #include <QApplication>
 #include <QCoreApplication>
 #include <QDebug>
@@ -162,20 +163,28 @@ colorValueFromVector(const std::vector<double>& values)
 }
 
 // Showing or hiding the adjust panel, or folding or unfolding the dimension lines above it,
-// changes the below-row column's preferred size. Qt only applies that through a posted
-// LayoutRequest, so a paint landing before that event is processed would draw the column, and
-// the rows below it, at the geometry from before the change. Activating every layout from the
-// column up to the knob page synchronously, then flushing whatever LayoutRequest is still
-// posted for widgets above that (the scroll area, splitters, ...), settles the geometry before
-// updates are turned back on, so nothing paints at a stale size.
+// changes the below-row column's preferred size. Qt applies that through LayoutRequests that
+// each level posts to the next one up, and a flush of posted events never delivers the ones
+// posted during it, so the change climbs one level per event loop pass and a paint in between
+// draws the knob page squeezed into the panel's old height. Delivering each widget's pending
+// LayoutRequest and activating its layout bottom-up, from the column to the scroll area that
+// holds the panel (the properties bin), settles the whole chain in one go, before updates are
+// turned back on. Widgets that place their children without a QLayout, like QTabWidget, are
+// only reached through that event.
 void
 activateLayoutsUpToInclusive(QWidget* bottom, QWidget* top)
 {
+    bool reachedTop = false;
+
     for (QWidget* w = bottom; w; w = w->parentWidget()) {
+        QCoreApplication::sendPostedEvents(w, QEvent::LayoutRequest);
         if (QLayout* l = w->layout()) {
             l->activate();
         }
         if (w == top) {
+            reachedTop = true;
+        }
+        if (w->isWindow() || (reachedTop && qobject_cast<QAbstractScrollArea*>(w))) {
             break;
         }
     }

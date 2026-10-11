@@ -776,7 +776,9 @@ TEST(ColorWheelWidget, AutoRepeatLockKeyIsIgnored)
 TEST(ColorWheelWidget, CtrlLockKeysAreNeverOverriddenWhileIdle)
 {
     ColorWheelWidget wheel;
-    QLineEdit other;
+    // A plain widget rather than a QLineEdit, which accepts the override for Ctrl+V (paste) on
+    // its own and would hide whether the tracker claimed it.
+    QWidget other;
 
     setUpWheel(wheel, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.05);
     other.show();
@@ -834,7 +836,11 @@ TEST(ColorWheelWidget, PointerAwayFromWheelLetsVReachTheFocusedLineEdit)
 
     QCursor::setPos(other.mapToGlobal(QPoint(10, 10)));
 
-    EXPECT_FALSE(shortcutOverrideAccepted(other, Qt::Key_V, Qt::NoModifier));
+    // A QLineEdit accepts the override for any printable key on its own, so the tracker's
+    // part is read on a plain widget.
+    QWidget bystander;
+
+    EXPECT_FALSE(shortcutOverrideAccepted(bystander, Qt::Key_V, Qt::NoModifier));
     sendKey(other, QEvent::KeyPress, Qt::Key_V, false, Qt::NoModifier, QString::fromUtf8("v"));
     sendKey(other, QEvent::KeyRelease, Qt::Key_V);
 

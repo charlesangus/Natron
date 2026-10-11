@@ -598,6 +598,14 @@ ColorAdjustPanelPrivate::applyRanges()
 
         sliders[i]->setMinimumAndMaximum(range.rangeMin, range.rangeMax);
         spinBoxes[i]->decimals(lineDecimals(kind, role));
+
+        // Wide enough for the longest value the line's range shows at its decimals: the grid
+        // would otherwise squeeze the field in a narrow properties pane until it is clipped.
+        QFontMetrics boxMetrics(spinBoxes[i]->font());
+        int textWidth = std::max(boxMetrics.horizontalAdvance(QString::number(range.rangeMin, 'f', lineDecimals(kind, role))),
+                                 boxMetrics.horizontalAdvance(QString::number(range.rangeMax, 'f', lineDecimals(kind, role))));
+
+        spinBoxes[i]->setFixedWidth(textWidth + (int)TO_DPIX(10.));
         if (kind == eColorSliderKindSat) {
             spinBoxes[i]->setMinimum(0.0);
         }

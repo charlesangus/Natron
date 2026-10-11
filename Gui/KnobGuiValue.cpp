@@ -1513,7 +1513,9 @@ KnobGuiValue::reflectExpressionState(int dimension,
     if (hasExpr) {
         _imp->spinBoxes[dimension].first->setAnimation(3);
         //_spinBoxes[dimension].first->setReadOnly_NoFocusRect(true);
-        if (_imp->slider) {
+        // With per-dimension lines the row's slider only ever drives dimension 0 once another
+        // dimension differs, so an expression elsewhere leaves it editable.
+        if (_imp->slider && ((dimension == 0) || !_imp->dimensionLines)) {
             _imp->slider->setReadOnly(true);
         }
         if ((dimension > 0) && (dimension < (int)_imp->dimensionSliders.size()) && _imp->dimensionSliders[dimension]) {

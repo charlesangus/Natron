@@ -71,7 +71,8 @@ sendPress(QWidget* w,
           double x,
           Qt::KeyboardModifiers mods = Qt::NoModifier)
 {
-    QMouseEvent e(QEvent::MouseButtonPress, QPointF(x, kWidgetHeight / 2.), Qt::LeftButton, Qt::LeftButton, mods);
+    const QPointF pos(x, kWidgetHeight / 2.);
+    QMouseEvent e(QEvent::MouseButtonPress, pos, w->mapToGlobal(pos), Qt::LeftButton, Qt::LeftButton, mods);
 
     QApplication::sendEvent(w, &e);
 }
@@ -81,7 +82,8 @@ sendMove(QWidget* w,
          double x,
          Qt::KeyboardModifiers mods = Qt::NoModifier)
 {
-    QMouseEvent e(QEvent::MouseMove, QPointF(x, kWidgetHeight / 2.), Qt::NoButton, Qt::LeftButton, mods);
+    const QPointF pos(x, kWidgetHeight / 2.);
+    QMouseEvent e(QEvent::MouseMove, pos, w->mapToGlobal(pos), Qt::NoButton, Qt::LeftButton, mods);
 
     QApplication::sendEvent(w, &e);
 }
@@ -91,7 +93,8 @@ sendRelease(QWidget* w,
             double x,
             Qt::KeyboardModifiers mods = Qt::NoModifier)
 {
-    QMouseEvent e(QEvent::MouseButtonRelease, QPointF(x, kWidgetHeight / 2.), Qt::LeftButton, Qt::NoButton, mods);
+    const QPointF pos(x, kWidgetHeight / 2.);
+    QMouseEvent e(QEvent::MouseButtonRelease, pos, w->mapToGlobal(pos), Qt::LeftButton, Qt::NoButton, mods);
 
     QApplication::sendEvent(w, &e);
 }

@@ -179,7 +179,7 @@ void
 typeInto(SpinBox* box,
          const char* text)
 {
-    box->setText(QString::fromUtf8(text));
+    box->QLineEdit::setText(QString::fromUtf8(text));
     sendKey(box, Qt::Key_Return);
 }
 

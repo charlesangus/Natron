@@ -79,9 +79,21 @@ ColorTrackballHud::ColorTrackballHud(QWidget* parent)
     legendLayout->addWidget(_legendS);
     legendLayout->addWidget(_legendT);
     legendLayout->addWidget(_legendV);
-    legendLayout->addWidget(acceptLegend);
-    legendLayout->addWidget(stepLegend);
     legendLayout->addStretch();
+
+    // On a line of their own: the HUD is only as wide as the knob's column, which at the
+    // default properties width cannot fit the mode keys and both hints on one line.
+    QHBoxLayout* hintLayout = new QHBoxLayout();
+
+    hintLayout->setContentsMargins(0, 0, 0, 0);
+    hintLayout->setSpacing(10);
+    hintLayout->addWidget(acceptLegend);
+    hintLayout->addWidget(stepLegend);
+    hintLayout->addStretch();
+
+    _modeLabel->setWordWrap(true);
+    _valuesLabel->setWordWrap(true);
+    _endOfListLabel->setWordWrap(true);
 
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
 
@@ -91,6 +103,7 @@ ColorTrackballHud::ColorTrackballHud(QWidget* parent)
     mainLayout->addWidget(_modeLabel);
     mainLayout->addWidget(_valuesLabel);
     mainLayout->addLayout(legendLayout);
+    mainLayout->addLayout(hintLayout);
     mainLayout->addWidget(_endOfListLabel);
 
     _endOfListLabel->setVisible(false);

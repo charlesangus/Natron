@@ -25,10 +25,11 @@
 
 #include "ScaleSliderQWidget.h"
 
-#include <vector>
-#include <cmath> // for std::pow()
+#include <algorithm>
 #include <cassert>
+#include <cmath> // for std::pow()
 #include <stdexcept>
+#include <vector>
 
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 // /opt/local/include/QtGui/qmime.h:119:10: warning: private field 'type' is not used [-Wunused-private-field]
@@ -76,6 +77,9 @@ struct ScaleSliderQWidgetPrivate
     // slider's slow gears (Ctrl) still accumulate sub-unit progress instead of stalling
     // at zero every move
     double accumulator;
+    // the gear of the press or latest move, so increment() rounds an emitted value no coarser
+    // than the step the drag is actually taking
+    double dragGear;
     ScaleSliderQWidget::DataTypeEnum dataType;
     bool altered;
     bool useLineColor;
@@ -100,12 +104,13 @@ struct ScaleSliderQWidgetPrivate
         , type(type)
         , value(initialPos)
         , dragging(false)
-        , font(parent->font())
+        , font(parent ? parent->font() : QApplication::font())
         , sliderColor(85, 116, 114)
         , initialized(false)
         , mustInitializeSliderPosition(true)
         , readOnly(false)
         , accumulator(initialPos)
+        , dragGear(1.)
         , dataType(dataType)
         , altered(false)
         , useLineColor(false)
@@ -196,6 +201,7 @@ ScaleSliderQWidget::mousePressEvent(QMouseEvent* e)
         } else {
             QPoint newClick =  e->pos();
             _imp->oldClick = newClick;
+            _imp->dragGear = gear(modifierHasControl(e), modifierHasShift(e));
             if (modifierHasControl(e) || modifierHasShift(e)) {
                 // gearing anchors on the value the slider already has, rather than jumping
                 // to the click, so a geared drag can start from anywhere on the track
@@ -229,6 +235,7 @@ ScaleSliderQWidget::mouseMoveEvent(QMouseEvent* e)
         // regardless of how much margin paintEvent leaves for tick labels
         double unitsPerPixel = (_imp->maximum - _imp->minimum) / width();
         double gearFactor = gear(modifierHasControl(e), modifierHasShift(e));
+        _imp->dragGear = gearFactor;
         _imp->accumulator += dxPixels * unitsPerPixel * gearFactor;
         if (_imp->accumulator < _imp->minimum) {
             _imp->accumulator = _imp->minimum;
@@ -282,7 +289,7 @@ ScaleSliderQWidget::leaveEvent(QEvent* e)
 double
 ScaleSliderQWidget::increment()
 {
-    return ( _imp->zoomCtx.right() - _imp->zoomCtx.left() ) / width();
+    return (_imp->zoomCtx.right() - _imp->zoomCtx.left()) / width() * std::min(1., _imp->dragGear);
 }
 
 void

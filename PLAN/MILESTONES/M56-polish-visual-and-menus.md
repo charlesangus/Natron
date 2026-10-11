@@ -196,7 +196,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - verify: at the gate build, P1.T1 shots of a split pane header, the properties bin buttons, the Script Editor toolbar and the file dialog; the link cursor's hotspot lands on the clicked knob in the GUI script.
   - size: M
 
-- [ ] M56.P5.T5 — Delete orphaned PNGs and their qrc entries
+- [x] M56.P5.T5 — Delete orphaned PNGs and their qrc entries
   - files: `Gui/GuiResources.qrc`, `Gui/Resources/Images/*.png` (only the unreferenced ones)
   - approach:
     - For each `<file>` under `Resources/Images/`, grep its basename across `Engine Gui App Global Tests` and `Gui/Resources/Stylesheets/mainstyle.qss`.
@@ -301,3 +301,4 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
 - 2026-10-11 — **Density spec approved (user)** as v2: the token values in `PLAN/DESIGN/2026-10-11-m56-density-spec.md`, applied through a new `Gui/GuiDensity.h` of DPI-scaled constants. P6.T2–T4 apply exactly those values. P6.T4's toolbox file is `Gui/Gui05.cpp` (not `Gui20.cpp`/`ToolButton.cpp`), per the spec.
 - 2026-10-11 — **Misc toolbox icon → Lucide `shapes` (user).** It gets vendored and re-pointed after P5.T2, which is editing `GuiApplicationManager.cpp`. Other stays `circle-ellipsis`, and the default catch-all stays `puzzle`.
 - 2026-10-11 — **P5.T4:** check at the gate: the dope-sheet texture orientation was flipped (R, Z and node-root must read upright), and the upload changed from GL_RGBA to GL_BGRA. Free interpolation gets a shortcut ID with no default key. KnobGuiContainerHelper's pattern-size and search-size label icons now render themed.
+- 2026-10-11 — **P5.T5:** 178 orphaned PNGs deleted, 128 remain. Found an older bug: `GuiApplicationManager.cpp` asks for `merge_hard_light.png`/`merge_soft_light.png`, but the files are `merge_hardlight.png`/`merge_softlight.png`, so those two Merge-operator icons never load. It is fixed alongside P6.T2.

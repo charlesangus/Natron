@@ -35,6 +35,7 @@ jobs:
       NATRON_IN_CONTAINER: 1
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 6G
+      NATRON_DEPS_CACHE: ${{ github.workspace }}/.natron-deps
       TAG: ${{ inputs.tag || github.ref_name }}
 
     steps:
@@ -81,6 +82,14 @@ jobs:
             build/assets/Plugins
             build/assets/CImg
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
+
+      # The pinned Slang release is downloaded at configure time; the
+      # key hashes FetchSlang.cmake, so a version or SHA bump misses.
+      - name: Cache Slang
+        uses: actions/cache@v6.1.0
+        with:
+          path: .natron-deps
+          key: natron-deps-linux-${{ hashFiles('cmake/FetchSlang.cmake') }}
 
       - name: Fetch test assets
         run: tools/ci/local/fetch-assets.sh

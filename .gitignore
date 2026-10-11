@@ -252,3 +252,6 @@ moc_predefs.h
 
 # ccache directory used by CI (CCACHE_DIR in .github/workflows/ci.yml)
 .ccache/
+
+# Slang download cache (cmake/FetchSlang.cmake)
+.natron-deps/

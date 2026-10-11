@@ -29,7 +29,9 @@ else()
   if(DEFINED ENV{NATRON_DEPS_CACHE} AND NOT "$ENV{NATRON_DEPS_CACHE}" STREQUAL "")
     set(_cache "$ENV{NATRON_DEPS_CACHE}")
   else()
-    set(_cache "$ENV{HOME}/.cache/natron-deps")
+    # Generated targets bake this absolute path, and containers sharing one
+    # build dir have different HOMEs, so the default lives in the repo.
+    get_filename_component(_cache "${CMAKE_CURRENT_LIST_DIR}/../.natron-deps" ABSOLUTE)
   endif()
   set(_root "${_cache}/slang-${NATRON_SLANG_VERSION}")
 

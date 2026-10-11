@@ -72,7 +72,6 @@
 #include "Engine/UpdateViewerParams.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
-#include "Engine/WriteNode.h"
 
 #ifdef DEBUG
 //#define TRACE_SCHEDULER
@@ -1087,13 +1086,6 @@ OutputSchedulerThread::startRender()
 
     ///If the output effect is sequential (only WriteFFMPEG for now)
     EffectInstancePtr effect = _imp->outputEffect.lock();
-    WriteNode* isWriteNode = dynamic_cast<WriteNode*>( effect.get() );
-    if (isWriteNode) {
-        NodePtr embeddedWriter = isWriteNode->getEmbeddedWriter();
-        if (embeddedWriter) {
-            effect = embeddedWriter->getEffectInstance();
-        }
-    }
     SequentialPreferenceEnum pref = effect->getSequentialPreference();
     if ( (pref == eSequentialPreferenceOnlySequential) || (pref == eSequentialPreferencePreferSequential) ) {
         if (effect->beginSequenceRender_public( firstFrame, lastFrame,
@@ -1172,13 +1164,6 @@ OutputSchedulerThread::stopRender()
 
     ///If the output effect is sequential (only WriteFFMPEG for now)
     EffectInstancePtr effect = _imp->outputEffect.lock();
-    WriteNode* isWriteNode = dynamic_cast<WriteNode*>( effect.get() );
-    if (isWriteNode) {
-        NodePtr embeddedWriter = isWriteNode->getEmbeddedWriter();
-        if (embeddedWriter) {
-            effect = embeddedWriter->getEffectInstance();
-        }
-    }
     SequentialPreferenceEnum pref = effect->getSequentialPreference();
     if ( (pref == eSequentialPreferenceOnlySequential) || (pref == eSequentialPreferencePreferSequential) ) {
         int firstFrame, lastFrame;
@@ -2374,13 +2359,6 @@ private:
             EffectInstancePtr activeInputToRender;
             //if (renderDirectly) {
             activeInputToRender = output;
-            WriteNode* isWriteNode = dynamic_cast<WriteNode*>( output.get() );
-            if (isWriteNode) {
-                NodePtr embeddedWriter = isWriteNode->getEmbeddedWriter();
-                if (embeddedWriter) {
-                    activeInputToRender = embeddedWriter->getEffectInstance();
-                }
-            }
             assert(activeInputToRender);
             NodePtr activeInputNode = activeInputToRender->getNode();
             U64 activeInputToRenderHash = activeInputToRender->getHash();
@@ -2753,12 +2731,6 @@ DefaultScheduler::aboutToStartRender()
     } else {
         QString longText = QString::fromUtf8( effect->getScriptName_mt_safe().c_str() ) + tr(" ==> Rendering started");
         appPTR->writeToOutputPipe(longText, QString::fromUtf8(kRenderingStartedShort), true);
-    }
-
-    // Activate the internal writer node for a write node
-    WriteNode* isWriter = dynamic_cast<WriteNode*>( effect.get() );
-    if (isWriter) {
-        isWriter->onSequenceRenderStarted();
     }
 
     std::string cb = effect->getNode()->getBeforeRenderCallback();

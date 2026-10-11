@@ -32,10 +32,10 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/GenericSchedulerThreadWatcher.h"
 #include "Engine/LibraryBinary.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/NodeGuiI.h"
 #include "Engine/NodeSerialization.h"
 #include "Engine/Project.h"
-#include "Engine/WriteNode.h"
 
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
@@ -107,17 +107,6 @@ Node::load(const CreateNodeArgs& args)
         _imp->effect.reset( func.second(thisShared) );
         assert(_imp->effect);
 
-
-#ifdef NATRON_ENABLE_IO_META_NODES
-        NodePtr ioContainer = _imp->ioContainer.lock();
-        if (ioContainer) {
-            WriteNode* isWriter = dynamic_cast<WriteNode*>(ioContainer->getEffectInstance().get());
-            assert(isWriter);
-            if (isWriter) {
-                isWriter->setEmbeddedWriter(thisShared);
-            }
-        }
-#endif
         initNodeScriptName(serialization.get(), QString::fromUtf8(argFixedName.c_str()));
 
         _imp->effect->initializeData();

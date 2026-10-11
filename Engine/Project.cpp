@@ -88,7 +88,6 @@
 #include "Engine/StandardPaths.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
-#include "Engine/WriteNode.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -297,8 +296,7 @@ Project::loadProject(const QString & path,
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
 // The parameter names openfx-io's GenericOCIO gives every plug-in that reads,
-// writes or converts through OpenColorIO (see IOSupport/GenericOCIO.h), also
-// mirrored by Engine/WriteNode.cpp.
+// writes or converts through OpenColorIO (see IOSupport/GenericOCIO.h).
 const char* const ocioConfigFileKnobName = "ocioConfigFile";
 const char* const ocioWorkingSpaceKnobName = "ocioWorkingSpace";
 const char* const ocioColorSpaceKnobNames[] = { "ocioInputSpace", "ocioOutputSpace" };
@@ -349,17 +347,10 @@ Project::pushOCIOConfigToNode(const NodePtr& node)
     }
     const std::string source = getOCIOConfigSource();
     const std::string workingSpace = getWorkingColorSpace();
-    NodePtr embedded;
-    EffectInstancePtr effect = node->getEffectInstance();
-    if (WriteNode* isWrite = dynamic_cast<WriteNode*>(effect.get())) {
-        embedded = isWrite->getEmbeddedWriter();
-    }
 
     // The working space is a name in the config, so the plug-in must have loaded the config first.
     setHostOCIOKnob(node, ocioConfigFileKnobName, source);
-    setHostOCIOKnob(embedded, ocioConfigFileKnobName, source);
     setHostOCIOKnob(node, ocioWorkingSpaceKnobName, workingSpace);
-    setHostOCIOKnob(embedded, ocioWorkingSpaceKnobName, workingSpace);
 }
 
 void

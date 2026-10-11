@@ -176,10 +176,10 @@
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Nodes/TypedPassthrough.h"
 
+#include "Engine/NodeGroup.h"
 #include "Engine/Utils.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h" // RenderStatsMap
-#include "Engine/WriteNode.h"
 
 #include "sbkversion.h" // shiboken/pyside version
 
@@ -2143,12 +2143,6 @@ AppManager::registerPlugin(const QString& resourcesPath,
     Plugin* plugin = new Plugin(binary, resourcesPath, pluginID, pluginLabel, pluginIconPath, groupIconPath, groups, pluginMutex, major, minor,
                                 isReader, isWriter, isDeprecated);
     std::string stdID = pluginID.toStdString();
-
-#ifdef NATRON_ENABLE_IO_META_NODES
-    if (WriteNode::isBundledWriter(stdID, false)) {
-        plugin->setForInternalUseOnly(true);
-    }
-#endif
 
     PluginsMap::iterator found = _imp->_plugins.find(stdID);
     if ( found != _imp->_plugins.end() ) {

@@ -50,11 +50,11 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeGuiI.h"
+#include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Plugin.h"
 #include "Engine/Settings.h"
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewIdx.h"
-#include "Engine/WriteNode.h"
 
 #include "Gui/Button.h"
 #include "Gui/CurveGui.h"
@@ -128,25 +128,9 @@ DockablePanel::DockablePanel(Gui* gui,
         if ( dynamic_cast<GroupOutput*>(isEffect) ) {
             headerMode = eHeaderModeReadOnlyName;
         }
-        // if this is a Write plugin, get the info from the embedded plugin
         node = isEffect->getNode();
         nodeForDocumentation = node;
         if (node) {
-            const std::string pluginID = isEffect->getPluginID();
-            if (pluginID == PLUGINID_NATRON_WRITE) {
-                EffectInstancePtr effectInstance = node->getEffectInstance();
-                if (effectInstance && effectInstance->isWriter()) {
-                    WriteNode* isWriteNode = dynamic_cast<WriteNode*>( effectInstance.get() );
-
-                    if (isWriteNode) {
-                        NodePtr subnode = isWriteNode->getEmbeddedWriter();
-                        if (subnode) {
-                            nodeForDocumentation = subnode;
-                        }
-                    }
-                }
-            }
-
             const Plugin* plugin = nodeForDocumentation->getPlugin();
             if (plugin) {
                 _imp->_helpToolTip = QString::fromUtf8( nodeForDocumentation->getPluginDescription().c_str() );

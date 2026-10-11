@@ -80,7 +80,6 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/UndoCommand.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
-#include "Engine/WriteNode.h"
 #ifdef DEBUG
 #include "Engine/TLSHolder.h"
 #endif
@@ -695,15 +694,8 @@ OfxEffectInstance::hideDeprecatedPremultKnobs()
         "premult", "premultChanged", "premultChannel", "filePremult", "outputPremult", "inputPremult", 0
     };
 
-    // Write plugins are hosted behind a WriteNode container: their generic
-    // GenericWriter params (filePremult, outputPremult, inputPremult) are
-    // instantiated onto the container's knob holder, not this effect's.
-    NodePtr ioContainer = getNode() ? getNode()->getIOContainer() : NodePtr();
-    EffectInstancePtr containerEffect = ioContainer ? ioContainer->getEffectInstance() : EffectInstancePtr();
-
     for (int i = 0; premultKnobNames[i] != 0; ++i) {
         hidePremultKnobOnHolder(shared_from_this(), premultKnobNames[i]);
-        hidePremultKnobOnHolder(containerEffect, premultKnobNames[i]);
     }
 }
 
@@ -1431,12 +1423,6 @@ OfxEffectInstance::isReader() const
     assert(_imp->context != eContextNone);
 
     return _imp->context == eContextReader;
-}
-
-bool
-OfxEffectInstance::isVideoWriter() const
-{
-    return isWriter() && WriteNode::isVideoWriter( getPluginID() );
 }
 
 bool

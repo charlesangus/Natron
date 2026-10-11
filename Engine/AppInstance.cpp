@@ -75,7 +75,6 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/ProjectSerialization.h"
 #include "Engine/Settings.h"
 #include "Engine/TLSHolder.h"
-#include "Engine/WriteNode.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -1414,16 +1413,6 @@ AppInstance::exportDocs(const QString path)
                     qDebug() << pluginID;
                     // IMPORTANT: this code is *very* similar to DocumentationManager::handler(...) is section "_plugin.html"
                     NodePtr node = createNode(args);
-                    if (node && (pluginID != QString::fromUtf8(PLUGINID_NATRON_WRITE))) {
-                        WriteNode* isWriteNode = dynamic_cast<WriteNode*>(node->getEffectInstance().get());
-
-                        if (isWriteNode) {
-                            NodePtr subnode = isWriteNode->getEmbeddedWriter();
-                            if (subnode) {
-                                node = subnode;
-                            }
-                        }
-                    }
                     if (node) {
                         QDir mdDir(path);
                         if ( !mdDir.exists() ) {

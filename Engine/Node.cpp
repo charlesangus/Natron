@@ -102,8 +102,8 @@
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
-#include "Engine/WriteNode.h"
 
+#include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #ifndef M_LN2
@@ -891,17 +891,6 @@ Node::computeHashRecursive(std::list<Node*>& marked)
             continue;
         }
         (*it)->computeHashRecursive(marked);
-    }
-
-    {
-        NodePtr embedded;
-        WriteNode* isWriteNode = dynamic_cast<WriteNode*>(_imp->effect.get());
-        if (isWriteNode) {
-            embedded = isWriteNode->getEmbeddedWriter();
-        }
-        if (embedded) {
-            embedded->computeHashRecursive(marked);
-        }
     }
 
     ///If the node has a rotopaint tree, compute the hash of the nodes in the tree
@@ -1730,18 +1719,6 @@ Node::loadKnob(const KnobIPtr & knob,
     const ProjectBeingLoadedInfo projectInfos = getApp()->getProjectBeingLoadedInfo();
 
     std::string pluginID = getPluginID();
-
-    {
-        // Use the plug-in ID of the encoder for writer
-        WriteNode* isWriteNode = dynamic_cast<WriteNode*>( getEffectInstance().get() );
-        if (isWriteNode) {
-            NodePtr p = isWriteNode->getEmbeddedWriter();
-            if (p) {
-                pluginID = p->getPluginID();
-            }
-        }
-    }
-
 
     KnobChoice* isChoice = dynamic_cast<KnobChoice*>( knob.get() );
     if (isChoice) {
@@ -3408,19 +3385,6 @@ Node::setEffect(const EffectInstancePtr& effect)
     assert( QThread::currentThread() == qApp->thread() );
     _imp->effect = effect;
     _imp->effect->initializeData();
-
-
-#ifdef NATRON_ENABLE_IO_META_NODES
-    NodePtr thisShared = shared_from_this();
-    NodePtr ioContainer = _imp->ioContainer.lock();
-    if (ioContainer) {
-        WriteNode* isWriter = dynamic_cast<WriteNode*>(ioContainer->getEffectInstance().get());
-        assert(isWriter);
-        if (isWriter) {
-            isWriter->setEmbeddedWriter(thisShared);
-        }
-    }
-#endif
 }
 
 EffectInstancePtr
@@ -4365,19 +4329,6 @@ Node::getPluginDescription() const
         QMutexLocker k(&_imp->pyPluginInfoMutex);
         if ( _imp->pyPlugInfo.isPyPlug ) {
             return _imp->pyPlugInfo.pyPlugDesc;
-        }
-    }
-
-    // if this is a Write plugin, return the description from the embedded plugin
-    if (getPluginID() == PLUGINID_NATRON_WRITE) {
-        EffectInstancePtr effectInstance = getEffectInstance();
-        WriteNode* isWriteNode = dynamic_cast<WriteNode*>(effectInstance.get());
-
-        if (isWriteNode) {
-            NodePtr subnode = isWriteNode->getEmbeddedWriter();
-            if (subnode) {
-                return subnode->getPluginDescription();
-            }
         }
     }
 

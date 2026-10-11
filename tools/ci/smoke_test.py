@@ -698,7 +698,7 @@ def check_deep_write_render():
     DeepRead/DeepWrite (Engine/Nodes/Deep/) are NativeEffectBase plugins registered directly by
     AppManager::registerBuiltInPlugin(), not OFX bundles discovered via OFX_PLUGIN_PATH, so this
     exercises App.render()'s dynamic_cast<OutputEffectInstance*>/isOutput() path (Engine/
-    PyAppInstance.cpp) against a writer that never goes near OfxEffectInstance/WriteNode.
+    PyAppInstance.cpp) against a writer that never goes near OfxEffectInstance.
     """
     tmpdir = tempfile.mkdtemp(prefix="natron-ci-smoke-deep-")
     in_path = os.path.join(_repo_root(), "Tests", "fixtures", "deep-scanline.exr")

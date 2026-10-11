@@ -90,25 +90,25 @@ Replaces the `Write` container (`Engine/WriteNode.cpp`) and every OFX writer wit
   - verify: gtest: `createNode(Write)` with no major, and `createWriter` on `.exr`, `.png`, `.dpx`, `.tif`, build a `NativeWrite`; `getWriterPluginIDForFileType` returns the Write ID for every member and "" for `mov`/`cr2`; supported formats equal the set; a Precomp over a sub-project with a native Write reads its output; save/load keeps the native class. Full ctest green; smoke passes, including `app.createWriter` + `app.render` (`smoke_test.py:439-472`).
   - size: M
 
-- [ ] M76.P2.T5 — Migrate tests: shared base and render/scheduler batch
+- [x] M76.P2.T5 — Migrate tests: shared base and render/scheduler batch
   - files: `Tests/BaseTest.h/.cpp`, `Tests/RenderBothWays.h/.cpp`, `Tests/FlatExrReader.h`, `Tests/SchedulerEquivalence_Test.cpp`, `Tests/SchedulerWriters_Test.cpp`, `Tests/RenderRange_Test.cpp`, `Tests/RenderSchedulerAbort_Test.cpp`, `Tests/GLScheduler_Test.cpp`, `Tests/RenderBothWaysSelf_Test.cpp`
   - approach: add `_writePluginID = PLUGINID_NATRON_WRITE` beside `_writeOIIOPluginID` (`BaseTest.cpp:83-84`; removed in P2.T9) and use it in BaseTest's writer helpers (`:276,385,401`), `SchedulerEquivalence_Test.cpp:274,445-447`, and the `RenderBothWays.cpp:576-577` message. Fix `FlatExrReader.h:30-39`'s WriteOIIO comment. Each failing assertion is either a native bug, fixed in `NativeWrite`, or a container-specific expectation, rewritten and justified in the commit message. Runs after P1 and P2.T1–T4.
   - verify: full ctest green; no `_writeOIIOPluginID` in these files.
   - size: M
 
-- [ ] M76.P2.T6 — Migrate tests: layer and channel batch
+- [x] M76.P2.T6 — Migrate tests: layer and channel batch
   - files: `Tests/WriteAllLayers_Test.cpp`, `Tests/AddLayersRender_Test.cpp`, `Tests/RemoveLayersRender_Test.cpp`, `Tests/ShuffleRender_Test.cpp`, `Tests/ChannelSetRender_Test.cpp`, `Tests/LayerKnobsRender_Test.cpp`, `Tests/GeneratorLayer_Test.cpp`, `Tests/RotoLayer_Test.cpp`, `Tests/TypedPassthrough_Test.cpp`, `Tests/DeepPipeline_Test.cpp`
   - approach: as P2.T5. In `WriteAllLayers_Test`, delete `EncoderChannelQuadIsAdoptedAndStaysHidden` (`:506-532`; there is no encoder) and drop the `WriteNode` cast at `:218`. Independent of P2.T7/T8.
   - verify: full ctest green; no `_writeOIIOPluginID` or `WriteNode` in these files.
   - size: M
 
-- [ ] M76.P2.T7 — Migrate tests: colour, OCIO and metadata batch
+- [x] M76.P2.T7 — Migrate tests: colour, OCIO and metadata batch
   - files: `Tests/ProjectOCIO_Test.cpp`, `Tests/ProjectOCIODefaults_Test.cpp`, `Tests/ProjectOCIOPlugins_Test.cpp`, `Tests/ColorViewsRender_Test.cpp`, `Tests/Metadata_Test.cpp`, `Tests/OfxMetadataBridge_Test.cpp`
   - approach: `ProjectOCIO_Test`: the writer helper (`:103`) reads the knobs off the native Write; the WriteOIIO/WritePNG creations (`:289,309,416,553,611`) become native Writes. `ProjectOCIODefaults_Test`: the Write cases (`:605-680`) move to the native Write; the `embeddedNode` checks go (P1.T8 pins the values). `ProjectOCIOPlugins_Test`: take the OFX instance-property checks (`:70-85`) from an OFX OCIO plugin in the bundle (e.g. `fr.inria.openfx.OCIOColorSpace`). `OfxMetadataBridge_Test.cpp:413`: replace the `WriteNode` cast with a `NativeWrite` check; the OFX-boundary assertions use an OFX node downstream of the Read.
   - verify: full ctest green; no `WriteNode`, `PLUGINID_OFX_WRITE*` or `_writeOIIOPluginID` in these files.
   - size: M
 
-- [ ] M76.P2.T8 — Migrate tests: project and engine batch
+- [x] M76.P2.T8 — Migrate tests: project and engine batch
   - files: `Tests/ProjectSerialization_Test.cpp`, `Tests/PersistentMessage_Test.cpp`, `Tests/ReadFormat_Test.cpp`, `Tests/Native/EngineHooks_Test.cpp`, `Tests/Native/NativeGrade_Test.cpp`, `Tests/Native/NativeReadEntryPoints_Test.cpp`
   - approach: as P2.T5. `ProjectSerialization_Test`: delete the Write1/`outputChannels` compatibility assertions of the M65 legacy fixture test (`:420-440`, incl. the `WriteOIIO` `filterKnobChoiceOptionCompat` check) — no backward compatibility; don't build a new legacy fixture. `NativeReadEntryPoints_Test`'s read-back case (`:220-260`) is superseded by P2.T2 and goes.
   - verify: full ctest green; `grep -rn '_writeOIIOPluginID\|PLUGINID_OFX_WRITE\|WriteNode\b' Tests` finds only `BaseTest` and the "builds nothing" assertions P2.T9 adds.
@@ -180,3 +180,4 @@ Replaces the `Write` container (`Engine/WriteNode.cpp`) and every OFX writer wit
 - 2026-10-10 — **P2.T2 and P2.T3** landed (`b679a4b00`). Write suites 72/72; Write/Read/OCIO/metadata 298/299 before the last fix, which only touched the read-back RoD. A failed RoD that leaves the RoD null is read by `computeRequestPass` as an empty image, not an error, so read-back sets a non-null RoD before failing; why NativeRead doesn't need this wasn't established. Open: an unsupported filename loaded from a project shows no message until edited or rendered; read-back keeps the input's format/pixel aspect in output metadata.
 - 2026-10-10 — **P2.T4** landed (`20bd7cd6f`); full ctest 1521/1521 and smoke green on the M76 release build (smoke's `app.createWriter` + `app.render` now go through the native Write). No existing test switched to the native Write (all use explicit OFX IDs, redirected to the container). Precomp-reads-a-native-Write is untested: no Precomp test exists.
 - 2026-10-10 — **Grade legacy check deferred to M69 (user):** the remaining non-Write legacy assertion in `ProjectSerialization_Test` and the compat machinery behind it move to M69 - Minor Cleanup; M76 only removes the Write's compat.
+- 2026-10-10 — **P2.T5–T8** landed as one commit (`c572fd1e3`; parallel implementers over disjoint test files, BaseTest owned by T5). Full ctest 1519/1519, smoke green. Native bug found: the Write didn't answer `producesColorOnlyFromPassThroughInput()` (the container did), so colourless streams wrote zeroed R/G/B/A (7 tests); fixed. Rewritten expectations: RemoveLayers frame-2 file is RGB without A (the OFX encoder always wrote RGBA); EXR Write default is ACES2065-1 (file rule); OFX-boundary checks use `OCIOColorSpace`/`metadataView`; native bit-depth IDs (`8i`). New behaviour: a colour-only format (PNG) with nothing to write now fails with a message.

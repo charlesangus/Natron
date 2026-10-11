@@ -2,11 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: [M55.P4.T2 UAT, M56.P5.T1 approval + P6.T1, M76 PR #52 review + UAT, M27.P1.T1, M93.P1.T1, M84 gate]
-<<<<<<< HEAD
-pm_heartbeat: 2026-10-11T13:04:28-04:00
-=======
-pm_heartbeat: 2026-10-11T13:04:19-04:00
->>>>>>> b5c94756a (Board: M55 lane at UAT)
+pm_heartbeat: 2026-10-11T13:04:40-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---

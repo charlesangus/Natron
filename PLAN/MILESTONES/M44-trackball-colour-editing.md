@@ -445,7 +445,7 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
     - Alt+press emits only the reset.
   - size: M
 
-- [ ] M44.P7.T2 — Give global C trackball semantics, add global S (the old C), and fix the Offset temp/tint slider range
+- [x] M44.P7.T2 — Give global C trackball semantics, add global S (the old C), and fix the Offset temp/tint slider range
   - files: `Engine/ColorWheelMath.h`, `Engine/ColorWheelMath.cpp`, `Tests/ColorWheelMath_Test.cpp`
   - approach:
     - Add `eColorGlobalModeS` to `ColorGlobalModeEnum` and rewrite the enum's comment.

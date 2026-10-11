@@ -139,7 +139,7 @@ TrackerNode::initializeKnobs()
     addMarker->setCheckable(true);
     addMarker->setDefaultValue(false);
     addMarker->setSecretByDefault(true);
-    addMarker->setIconLabel(NATRON_IMAGES_PATH "addTrack.png");
+    addMarker->setIconLabel(NATRON_ICONS_PATH "lucide/crosshair.svg");
     addOverlaySlaveParam(addMarker);
     trackingPage->addKnob(addMarker);
     _imp->ui->addTrackButton = addMarker;
@@ -152,8 +152,7 @@ TrackerNode::initializeKnobs()
     trackBw->setDefaultValue(false);
     trackBw->setSecretByDefault(true);
     trackBw->setInViewerContextCanHaveShortcut(true);
-    trackBw->setIconLabel(NATRON_IMAGES_PATH "trackBackwardOn.png", true);
-    trackBw->setIconLabel(NATRON_IMAGES_PATH "trackBackwardOff.png", false);
+    trackBw->setIconLabel(NATRON_ICONS_PATH "natron/play-reverse.svg");
     trackingPage->addKnob(trackBw);
     _imp->ui->trackBwButton = trackBw;
 
@@ -163,7 +162,7 @@ TrackerNode::initializeKnobs()
     trackPrev->setEvaluateOnChange(false);
     trackPrev->setSecretByDefault(true);
     trackPrev->setInViewerContextCanHaveShortcut(true);
-    trackPrev->setIconLabel(NATRON_IMAGES_PATH "trackPrev.png");
+    trackPrev->setIconLabel(NATRON_ICONS_PATH "lucide/step-back.svg");
     trackingPage->addKnob(trackPrev);
     _imp->ui->trackPrevButton = trackPrev;
 
@@ -173,7 +172,7 @@ TrackerNode::initializeKnobs()
     stopTracking->setEvaluateOnChange(false);
     stopTracking->setSecretByDefault(true);
     stopTracking->setInViewerContextCanHaveShortcut(true);
-    stopTracking->setIconLabel(NATRON_IMAGES_PATH "pauseDisabled.png");
+    stopTracking->setIconLabel(NATRON_ICONS_PATH "lucide/pause.svg");
     trackingPage->addKnob(stopTracking);
     _imp->ui->stopTrackingButton = stopTracking;
 
@@ -183,7 +182,7 @@ TrackerNode::initializeKnobs()
     trackNext->setEvaluateOnChange(false);
     trackNext->setSecretByDefault(true);
     trackNext->setInViewerContextCanHaveShortcut(true);
-    trackNext->setIconLabel(NATRON_IMAGES_PATH "trackNext.png");
+    trackNext->setIconLabel(NATRON_ICONS_PATH "lucide/step-forward.svg");
     trackingPage->addKnob(trackNext);
     _imp->ui->trackNextButton = trackNext;
 
@@ -195,8 +194,7 @@ TrackerNode::initializeKnobs()
     trackFw->setDefaultValue(false);
     trackFw->setSecretByDefault(true);
     trackFw->setInViewerContextCanHaveShortcut(true);
-    trackFw->setIconLabel(NATRON_IMAGES_PATH "trackForwardOn.png", true);
-    trackFw->setIconLabel(NATRON_IMAGES_PATH "trackForwardOff.png", false);
+    trackFw->setIconLabel(NATRON_ICONS_PATH "lucide/play.svg");
     trackingPage->addKnob(trackFw);
     _imp->ui->trackFwButton = trackFw;
 
@@ -206,7 +204,7 @@ TrackerNode::initializeKnobs()
     trackRange->setEvaluateOnChange(false);
     trackRange->setSecretByDefault(true);
     trackRange->setInViewerContextCanHaveShortcut(true);
-    trackRange->setIconLabel(NATRON_IMAGES_PATH "trackRange.png");
+    trackRange->setIconLabel(NATRON_ICONS_PATH "natron/track-range.svg");
     trackingPage->addKnob(trackRange);
     _imp->ui->trackRangeButton = trackRange;
 
@@ -216,7 +214,7 @@ TrackerNode::initializeKnobs()
     trackAllKeys->setEvaluateOnChange(false);
     trackAllKeys->setSecretByDefault(true);
     trackAllKeys->setInViewerContextCanHaveShortcut(true);
-    trackAllKeys->setIconLabel(NATRON_IMAGES_PATH "trackAllKeyframes.png");
+    trackAllKeys->setIconLabel(NATRON_ICONS_PATH "natron/track-all-keys.svg");
     trackingPage->addKnob(trackAllKeys);
     _imp->ui->trackAllKeyframesButton = trackAllKeys;
 
@@ -227,7 +225,7 @@ TrackerNode::initializeKnobs()
     trackCurKey->setEvaluateOnChange(false);
     trackCurKey->setSecretByDefault(true);
     trackCurKey->setInViewerContextCanHaveShortcut(true);
-    trackCurKey->setIconLabel(NATRON_IMAGES_PATH "trackCurrentKeyframe.png");
+    trackCurKey->setIconLabel(NATRON_ICONS_PATH "natron/track-current-key.svg");
     trackingPage->addKnob(trackCurKey);
     _imp->ui->trackCurrentKeyframeButton = trackCurKey;
 
@@ -238,7 +236,7 @@ TrackerNode::initializeKnobs()
     addKeyframe->setEvaluateOnChange(false);
     addKeyframe->setSecretByDefault(true);
     addKeyframe->setInViewerContextCanHaveShortcut(true);
-    addKeyframe->setIconLabel(NATRON_IMAGES_PATH "addUserKey.png");
+    addKeyframe->setIconLabel(NATRON_ICONS_PATH "lucide/diamond-plus.svg");
     trackingPage->addKnob(addKeyframe);
     _imp->ui->setKeyFrameButton = addKeyframe;
 
@@ -248,7 +246,7 @@ TrackerNode::initializeKnobs()
     removeKeyframe->setEvaluateOnChange(false);
     removeKeyframe->setSecretByDefault(true);
     removeKeyframe->setInViewerContextCanHaveShortcut(true);
-    removeKeyframe->setIconLabel(NATRON_IMAGES_PATH "removeUserKey.png");
+    removeKeyframe->setIconLabel(NATRON_ICONS_PATH "lucide/diamond-minus.svg");
     trackingPage->addKnob(removeKeyframe);
     _imp->ui->removeKeyFrameButton = removeKeyframe;
 
@@ -258,7 +256,7 @@ TrackerNode::initializeKnobs()
     clearAllAnimation->setEvaluateOnChange(false);
     clearAllAnimation->setSecretByDefault(true);
     clearAllAnimation->setInViewerContextCanHaveShortcut(true);
-    clearAllAnimation->setIconLabel(NATRON_IMAGES_PATH "clearAnimation.png");
+    clearAllAnimation->setIconLabel(NATRON_ICONS_PATH "lucide/trash.svg");
     trackingPage->addKnob(clearAllAnimation);
     _imp->ui->clearAllAnimationButton = clearAllAnimation;
 
@@ -268,7 +266,7 @@ TrackerNode::initializeKnobs()
     clearBackwardAnim->setEvaluateOnChange(false);
     clearBackwardAnim->setSecretByDefault(true);
     clearBackwardAnim->setInViewerContextCanHaveShortcut(true);
-    clearBackwardAnim->setIconLabel(NATRON_IMAGES_PATH "clearAnimationBw.png");
+    clearBackwardAnim->setIconLabel(NATRON_ICONS_PATH "natron/clear-anim-bw.svg");
     trackingPage->addKnob(clearBackwardAnim);
     _imp->ui->clearBwAnimationButton = clearBackwardAnim;
 
@@ -278,7 +276,7 @@ TrackerNode::initializeKnobs()
     clearForwardAnim->setEvaluateOnChange(false);
     clearForwardAnim->setSecretByDefault(true);
     clearForwardAnim->setInViewerContextCanHaveShortcut(true);
-    clearForwardAnim->setIconLabel(NATRON_IMAGES_PATH "clearAnimationFw.png");
+    clearForwardAnim->setIconLabel(NATRON_ICONS_PATH "natron/clear-anim-fw.svg");
     trackingPage->addKnob(clearForwardAnim);
     _imp->ui->clearFwAnimationButton = clearForwardAnim;
 
@@ -290,8 +288,7 @@ TrackerNode::initializeKnobs()
     updateViewer->setDefaultValue(true);
     updateViewer->setSecretByDefault(true);
     updateViewer->setInViewerContextCanHaveShortcut(true);
-    updateViewer->setIconLabel(NATRON_IMAGES_PATH "refreshActive.png", true);
-    updateViewer->setIconLabel(NATRON_IMAGES_PATH "refresh.png", false);
+    updateViewer->setIconLabel(NATRON_ICONS_PATH "lucide/refresh-cw.svg");
     trackingPage->addKnob(updateViewer);
     _imp->ui->updateViewerButton = updateViewer;
 
@@ -303,7 +300,7 @@ TrackerNode::initializeKnobs()
     centerViewer->setDefaultValue(false);
     centerViewer->setSecretByDefault(true);
     centerViewer->setInViewerContextCanHaveShortcut(true);
-    centerViewer->setIconLabel(NATRON_IMAGES_PATH "centerOnTrack.png");
+    centerViewer->setIconLabel(NATRON_ICONS_PATH "lucide/locate-fixed.svg");
     trackingPage->addKnob(centerViewer);
     _imp->ui->centerViewerButton = centerViewer;
 
@@ -315,8 +312,7 @@ TrackerNode::initializeKnobs()
     createKeyOnMove->setDefaultValue(true);
     createKeyOnMove->setSecretByDefault(true);
     createKeyOnMove->setInViewerContextCanHaveShortcut(true);
-    createKeyOnMove->setIconLabel(NATRON_IMAGES_PATH "createKeyOnMoveOn.png", true);
-    createKeyOnMove->setIconLabel(NATRON_IMAGES_PATH "createKeyOnMoveOff.png", false);
+    createKeyOnMove->setIconLabel(NATRON_ICONS_PATH "natron/key-on-move.svg");
     trackingPage->addKnob(createKeyOnMove);
     _imp->ui->createKeyOnMoveButton = createKeyOnMove;
 
@@ -329,8 +325,7 @@ TrackerNode::initializeKnobs()
     showError->setSecretByDefault(true);
     showError->setInViewerContextCanHaveShortcut(true);
     addOverlaySlaveParam(showError);
-    showError->setIconLabel(NATRON_IMAGES_PATH "showTrackError.png", true);
-    showError->setIconLabel(NATRON_IMAGES_PATH "hideTrackError.png", false);
+    showError->setIconLabel(NATRON_ICONS_PATH "lucide/triangle-alert.svg");
     trackingPage->addKnob(showError);
     _imp->ui->showCorrelationButton = showError;
 
@@ -342,7 +337,7 @@ TrackerNode::initializeKnobs()
     resetOffset->setSecretByDefault(true);
     resetOffset->setInViewerContextCanHaveShortcut(true);
     addOverlaySlaveParam(resetOffset);
-    resetOffset->setIconLabel(NATRON_IMAGES_PATH "resetTrackOffset.png");
+    resetOffset->setIconLabel(NATRON_ICONS_PATH "lucide/undo-dot.svg");
     trackingPage->addKnob(resetOffset);
     _imp->ui->resetOffsetButton = resetOffset;
 
@@ -353,7 +348,7 @@ TrackerNode::initializeKnobs()
     resetTrack->setSecretByDefault(true);
     resetTrack->setInViewerContextCanHaveShortcut(true);
     addOverlaySlaveParam(resetTrack);
-    resetTrack->setIconLabel(NATRON_IMAGES_PATH "restoreDefaultEnabled.png");
+    resetTrack->setIconLabel(NATRON_ICONS_PATH "lucide/rotate-ccw.svg");
     trackingPage->addKnob(resetTrack);
     _imp->ui->resetTrackButton = resetTrack;
 

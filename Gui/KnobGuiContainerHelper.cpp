@@ -40,11 +40,12 @@ CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/KnobTypes.h"
-#include "Gui/KnobGui.h"
 #include "Gui/ClickableLabel.h"
-#include "Gui/KnobGuiGroup.h"
 #include "Gui/GuiApplicationManager.h"
+#include "Gui/KnobGui.h"
+#include "Gui/KnobGuiGroup.h"
 #include "Gui/TabGroup.h"
+#include "Gui/ThemedIcon.h"
 
 #define NATRON_FORM_LAYOUT_LINES_SPACING 0
 #define NATRON_SETTINGS_VERTICAL_SPACING_PIXELS 3
@@ -737,6 +738,8 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
                     pix = stdErrorPix;
                 } else if (labelIconFilePath == "dialog-information") {
                     pix = getStandardIcon(QMessageBox::Information, pixSize, label);
+                } else if (ThemedIcon::isSvgPath(QString::fromUtf8(labelIconFilePath.c_str()))) {
+                    pix = ThemedIcon::renderPixmap(QString::fromUtf8(labelIconFilePath.c_str()), pixSize, ThemedIcon::themeTextColor(), qApp->devicePixelRatio());
                 } else {
                     pix.load( QString::fromUtf8( labelIconFilePath.c_str() ) );
                     if (pix.width() != pixSize) {

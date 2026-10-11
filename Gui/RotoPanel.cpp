@@ -75,6 +75,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/SpinBox.h"
+#include "Gui/ThemedIcon.h"
 
 #define COL_LABEL 0
 #define COL_ACTIVATED 1
@@ -629,7 +630,9 @@ RotoPanel::RotoPanel(const NodeGuiPtr&  n,
     appPTR->getIcon(NATRON_PIXMAP_UNVISIBLE, medIconSize, &pixUnvisible);
     appPTR->getIcon(NATRON_PIXMAP_LOCKED, medIconSize, &pixLocked);
     appPTR->getIcon(NATRON_PIXMAP_UNLOCKED, medIconSize, &pixUnlocked);
-    appPTR->getIcon(NATRON_PIXMAP_INVERTED, medIconSize, &pixInverted);
+    // Inverted and uninverted share one glyph; a tree cell has no checked state to
+    // recolour it, so the inverted cell is drawn in the selection colour directly.
+    pixInverted = ThemedIcon::renderPixmap(QString::fromUtf8(NATRON_ICONS_PATH "natron/inverted.svg"), medIconSize, ThemedIcon::themeSelectionColor(), qApp->devicePixelRatio());
     appPTR->getIcon(NATRON_PIXMAP_UNINVERTED, medIconSize, &pixUninverted);
     appPTR->getIcon(NATRON_PIXMAP_COLORWHEEL, medIconSize, &pixWheel);
     appPTR->getIcon(NATRON_PIXMAP_ROTO_MERGE, medIconSize, &pixmerge);

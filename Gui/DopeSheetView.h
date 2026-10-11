@@ -298,6 +298,7 @@ public Q_SLOTS:
     void cubicInterpSelectedKeyframes();
     void horizontalInterpSelectedKeyframes();
     void breakInterpSelectedKeyframes();
+    void freeInterpSelectedKeyframes();
 
     /**
      * @brief Copy the selected keyframes.

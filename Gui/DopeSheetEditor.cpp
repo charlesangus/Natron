@@ -238,11 +238,13 @@ DopeSheetEditor::keyPressEvent(QKeyEvent* e)
         _imp->dopeSheetView->horizontalInterpSelectedKeyframes();
     } else if ( isKeybind(kShortcutGroupDopeSheetEditor, kShortcutIDActionCurveEditorBreak, modifiers, key) ) {
         _imp->dopeSheetView->breakInterpSelectedKeyframes();
-    } else if ( isKeybind(kShortcutGroupDopeSheetEditor, kShortcutIDActionDopeSheetEditorCopySelectedKeyframes, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupDopeSheetEditor, kShortcutIDActionCurveEditorFree, modifiers, key)) {
+        _imp->dopeSheetView->freeInterpSelectedKeyframes();
+    } else if (isKeybind(kShortcutGroupDopeSheetEditor, kShortcutIDActionDopeSheetEditorCopySelectedKeyframes, modifiers, key)) {
         _imp->dopeSheetView->copySelectedKeyframes();
-    } else if ( isKeybind(kShortcutGroupDopeSheetEditor, kShortcutIDActionDopeSheetEditorPasteKeyframes, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupDopeSheetEditor, kShortcutIDActionDopeSheetEditorPasteKeyframes, modifiers, key)) {
         _imp->dopeSheetView->pasteKeyframesRelative();
-    } else if ( isKeybind(kShortcutGroupDopeSheetEditor, kShortcutIDActionDopeSheetEditorPasteKeyframesAbsolute, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupDopeSheetEditor, kShortcutIDActionDopeSheetEditorPasteKeyframesAbsolute, modifiers, key)) {
         _imp->dopeSheetView->pasteKeyframesAbsolute();
     } else {
         accept = false;

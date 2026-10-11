@@ -26,12 +26,15 @@
 #include "DopeSheetView.h"
 
 #include <algorithm> // min, max
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 
 // Qt includes
 #include <QApplication>
+#include <QImage>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QScrollBar>
 #include <QThread>
 #include <QToolButton>
@@ -58,8 +61,8 @@
 #include "Gui/DopeSheetEditorUndoRedo.h"
 #include "Gui/DopeSheetHierarchyView.h"
 #include "Gui/Gui.h"
-#include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiAppInstance.h"
+#include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiDefines.h"
 #include "Gui/GuiMacros.h"
 #include "Gui/Histogram.h"
@@ -67,12 +70,13 @@
 #include "Gui/Menu.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
+#include "Gui/TabWidget.h"
 #include "Gui/TextRenderer.h"
-#include "Gui/ticks.h"
+#include "Gui/ThemedIcon.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
 #include "Gui/ZoomContext.h"
-#include "Gui/TabWidget.h"
+#include "Gui/ticks.h"
 
 #include <QOpenGLContext>
 
@@ -288,6 +292,7 @@ public:
 
     // for textures
     GLuint kfTexturesIDs[KF_TEXTURES_COUNT];
+    double kfTexturesScreenPixelRatio;
 
     // for navigating
     ZoomContext zoomContext;
@@ -318,7 +323,7 @@ public:
     Menu *contextMenu;
 };
 
-DopeSheetViewPrivate::DopeSheetViewPrivate(DopeSheetView *qq)
+DopeSheetViewPrivate::DopeSheetViewPrivate(DopeSheetView* qq)
     : q_ptr(qq)
     , model(0)
     , hierarchyView(0)
@@ -331,6 +336,7 @@ DopeSheetViewPrivate::DopeSheetViewPrivate(DopeSheetView *qq)
     , _textFont()
     , textRenderer()
     , kfTexturesIDs()
+    , kfTexturesScreenPixelRatio(0)
     , zoomContext(0.01, 100.)
     , zoomOrPannedSinceLastFit(false)
     , selectionRect()
@@ -340,7 +346,7 @@ DopeSheetViewPrivate::DopeSheetViewPrivate(DopeSheetView *qq)
     , keyDragLastMovement()
     , eventState(DopeSheetView::esNoEditingState)
     , currentEditedReader()
-    , contextMenu( new Menu(q_ptr) )
+    , contextMenu(new Menu(q_ptr))
 {
 }
 
@@ -776,34 +782,40 @@ DopeSheetViewPrivate::clampedMouseOffset(double fromTime,
 void
 DopeSheetViewPrivate::generateKeyframeTextures()
 {
-    QImage kfTexturesImages[KF_TEXTURES_COUNT];
+    // Indexed by KeyframeTexture: each marker is uploaded twice, unselected then selected.
+    static const char* const markerPaths[KF_TEXTURES_COUNT / 2] = {
+        NATRON_ICONS_PATH "natron/marker-constant.svg",
+        NATRON_ICONS_PATH "natron/marker-linear.svg",
+        NATRON_ICONS_PATH "natron/marker-curve.svg",
+        NATRON_ICONS_PATH "natron/marker-break.svg",
+        NATRON_ICONS_PATH "natron/marker-c.svg",
+        NATRON_ICONS_PATH "natron/marker-h.svg",
+        NATRON_ICONS_PATH "natron/marker-r.svg",
+        NATRON_ICONS_PATH "natron/marker-z.svg",
+        NATRON_ICONS_PATH "natron/marker-node-root.svg",
+    };
+    const QColor textColor = ThemedIcon::themeTextColor();
+    const QColor selectionColor = ThemedIcon::themeSelectionColor();
+    const double dpr = q_ptr->devicePixelRatio();
+    // The quad stays KF_PIXMAP_SIZE logical pixels, so the texture carries one texel per
+    // device pixel and stays sharp on a high-DPI screen.
+    const int texSize = std::max(1, (int)std::lround(KF_PIXMAP_SIZE * dpr));
 
-    kfTexturesImages[0].load( QString::fromUtf8(NATRON_IMAGES_PATH "interp_constant.png") );
-    kfTexturesImages[1].load( QString::fromUtf8(NATRON_IMAGES_PATH "interp_constant_selected.png") );
-    kfTexturesImages[2].load( QString::fromUtf8(NATRON_IMAGES_PATH "interp_linear.png") );
-    kfTexturesImages[3].load( QString::fromUtf8(NATRON_IMAGES_PATH "interp_linear_selected.png") );
-    kfTexturesImages[4].load( QString::fromUtf8(NATRON_IMAGES_PATH "interp_curve.png") );
-    kfTexturesImages[5].load( QString::fromUtf8(NATRON_IMAGES_PATH "interp_curve_selected.png") );
-    kfTexturesImages[6].load( QString::fromUtf8(NATRON_IMAGES_PATH "interp_break.png") );
-    kfTexturesImages[7].load( QString::fromUtf8(NATRON_IMAGES_PATH "interp_break_selected.png") );
-    kfTexturesImages[8].load( QString::fromUtf8(NATRON_IMAGES_PATH "interp_curve_c.png") );
-    kfTexturesImages[9].load( QString::fromUtf8(NATRON_IMAGES_PATH "interp_curve_c_selected.png") );
-    kfTexturesImages[10].load( QString::fromUtf8(NATRON_IMAGES_PATH "interp_curve_h.png") );
-    kfTexturesImages[11].load( QString::fromUtf8(NATRON_IMAGES_PATH "interp_curve_h_selected.png") );
-    kfTexturesImages[12].load( QString::fromUtf8(NATRON_IMAGES_PATH "interp_curve_r.png") );
-    kfTexturesImages[13].load( QString::fromUtf8(NATRON_IMAGES_PATH "interp_curve_r_selected.png") );
-    kfTexturesImages[14].load( QString::fromUtf8(NATRON_IMAGES_PATH "interp_curve_z.png") );
-    kfTexturesImages[15].load( QString::fromUtf8(NATRON_IMAGES_PATH "interp_curve_z_selected.png") );
-    kfTexturesImages[16].load( QString::fromUtf8(NATRON_IMAGES_PATH "keyframe_node_root.png") );
-    kfTexturesImages[17].load( QString::fromUtf8(NATRON_IMAGES_PATH "keyframe_node_root_selected.png") );
-
+    glDeleteTextures(KF_TEXTURES_COUNT, kfTexturesIDs);
     glGenTextures(KF_TEXTURES_COUNT, kfTexturesIDs);
+    kfTexturesScreenPixelRatio = dpr;
 
     glEnable(GL_TEXTURE_2D);
 
     for (int i = 0; i < KF_TEXTURES_COUNT; ++i) {
-        if (std::max( kfTexturesImages[i].width(), kfTexturesImages[i].height() ) != KF_PIXMAP_SIZE) {
-            kfTexturesImages[i] = kfTexturesImages[i].scaled(KF_PIXMAP_SIZE, KF_PIXMAP_SIZE, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        const bool selected = (i % 2) == 1;
+        const QPixmap marker = ThemedIcon::renderPixmap(QString::fromUtf8(markerPaths[i / 2]), KF_PIXMAP_SIZE, selected ? selectionColor : textColor, dpr);
+        // Unpremultiplied ARGB32, because the keyframes are blended with GL_SRC_ALPHA.
+        QImage image(texSize, texSize, QImage::Format_ARGB32);
+        image.fill(Qt::transparent);
+        {
+            QPainter painter(&image);
+            painter.drawPixmap(QRect(0, 0, texSize, texSize), marker);
         }
 
         glBindTexture(GL_TEXTURE_2D, kfTexturesIDs[i]);
@@ -814,12 +826,13 @@ DopeSheetViewPrivate::generateKeyframeTextures()
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
 
-        glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA8, KF_PIXMAP_SIZE, KF_PIXMAP_SIZE, 0, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV, kfTexturesImages[i].bits() );
+        // QImage::Format_ARGB32 is 0xAARRGGBB words, which GL reads as BGRA bytes.
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, texSize, texSize, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, image.bits());
     }
 
     glBindTexture(GL_TEXTURE_2D, 0);
     glDisable(GL_TEXTURE_2D);
-}
+} // DopeSheetViewPrivate::generateKeyframeTextures
 
 DopeSheetViewPrivate::KeyframeTexture
 DopeSheetViewPrivate::kfTextureFromKeyframeType(KeyframeTypeEnum kfType,
@@ -1426,14 +1439,16 @@ DopeSheetViewPrivate::drawTexturedKeyframe(DopeSheetViewPrivate::KeyframeTexture
     glEnable(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, kfTexturesIDs[textureType]);
 
+    // The texture's first row is the image's top scanline, and t = 0 addresses that
+    // first row, so the top edge of the quad samples t = 0 to draw the marker upright.
     glBegin(GL_POLYGON);
-    glTexCoord2f(0.0f, 1.0f);
-    glVertex2f( rect.left(), rect.top() );
     glTexCoord2f(0.0f, 0.0f);
-    glVertex2f( rect.left(), rect.bottom() );
-    glTexCoord2f(1.0f, 0.0f);
-    glVertex2f( rect.right(), rect.bottom() );
+    glVertex2f(rect.left(), rect.top());
+    glTexCoord2f(0.0f, 1.0f);
+    glVertex2f(rect.left(), rect.bottom());
     glTexCoord2f(1.0f, 1.0f);
+    glVertex2f(rect.right(), rect.bottom());
+    glTexCoord2f(1.0f, 0.0f);
     glVertex2f( rect.right(), rect.top() );
     glEnd();
 
@@ -2429,9 +2444,9 @@ DopeSheetViewPrivate::createContextMenu()
                                                            kShortcutIDActionCurveEditorConstant,
                                                            kShortcutDescActionCurveEditorConstant,
                                                            interpMenu);
-    QPixmap pix;
-    appPTR->getIcon(NATRON_PIXMAP_INTERP_CONSTANT, NATRON_MEDIUM_BUTTON_ICON_SIZE, &pix);
-    constantInterpAction->setIcon( QIcon(pix) );
+    QIcon constantIcon;
+    appPTR->getIcon(NATRON_PIXMAP_INTERP_CONSTANT, NATRON_MEDIUM_BUTTON_ICON_SIZE, &constantIcon);
+    constantInterpAction->setIcon(constantIcon);
     constantInterpAction->setIconVisibleInMenu(true);
 
     QObject::connect( constantInterpAction, SIGNAL(triggered()),
@@ -2444,8 +2459,9 @@ DopeSheetViewPrivate::createContextMenu()
                                                          kShortcutDescActionCurveEditorLinear,
                                                          interpMenu);
 
-    appPTR->getIcon(NATRON_PIXMAP_INTERP_LINEAR, NATRON_MEDIUM_BUTTON_ICON_SIZE, &pix);
-    linearInterpAction->setIcon( QIcon(pix) );
+    QIcon linearIcon;
+    appPTR->getIcon(NATRON_PIXMAP_INTERP_LINEAR, NATRON_MEDIUM_BUTTON_ICON_SIZE, &linearIcon);
+    linearInterpAction->setIcon(linearIcon);
     linearInterpAction->setIconVisibleInMenu(true);
 
     QObject::connect( linearInterpAction, SIGNAL(triggered()),
@@ -2458,8 +2474,9 @@ DopeSheetViewPrivate::createContextMenu()
                                                          kShortcutDescActionCurveEditorSmooth,
                                                          interpMenu);
 
-    appPTR->getIcon(NATRON_PIXMAP_INTERP_CURVE_Z, NATRON_MEDIUM_BUTTON_ICON_SIZE, &pix);
-    smoothInterpAction->setIcon( QIcon(pix) );
+    QIcon smoothIcon;
+    appPTR->getIcon(NATRON_PIXMAP_INTERP_CURVE_Z, NATRON_MEDIUM_BUTTON_ICON_SIZE, &smoothIcon);
+    smoothInterpAction->setIcon(smoothIcon);
     smoothInterpAction->setIconVisibleInMenu(true);
 
     QObject::connect( smoothInterpAction, SIGNAL(triggered()),
@@ -2471,8 +2488,9 @@ DopeSheetViewPrivate::createContextMenu()
                                                              kShortcutIDActionCurveEditorCatmullrom,
                                                              kShortcutDescActionCurveEditorCatmullrom,
                                                              interpMenu);
-    appPTR->getIcon(NATRON_PIXMAP_INTERP_CURVE_R, NATRON_MEDIUM_BUTTON_ICON_SIZE, &pix);
-    catmullRomInterpAction->setIcon( QIcon(pix) );
+    QIcon catmullRomIcon;
+    appPTR->getIcon(NATRON_PIXMAP_INTERP_CURVE_R, NATRON_MEDIUM_BUTTON_ICON_SIZE, &catmullRomIcon);
+    catmullRomInterpAction->setIcon(catmullRomIcon);
     catmullRomInterpAction->setIconVisibleInMenu(true);
 
     QObject::connect( catmullRomInterpAction, SIGNAL(triggered()),
@@ -2484,8 +2502,9 @@ DopeSheetViewPrivate::createContextMenu()
                                                         kShortcutIDActionCurveEditorCubic,
                                                         kShortcutDescActionCurveEditorCubic,
                                                         interpMenu);
-    appPTR->getIcon(NATRON_PIXMAP_INTERP_CURVE_C, NATRON_MEDIUM_BUTTON_ICON_SIZE, &pix);
-    cubicInterpAction->setIcon( QIcon(pix) );
+    QIcon cubicIcon;
+    appPTR->getIcon(NATRON_PIXMAP_INTERP_CURVE_C, NATRON_MEDIUM_BUTTON_ICON_SIZE, &cubicIcon);
+    cubicInterpAction->setIcon(cubicIcon);
     cubicInterpAction->setIconVisibleInMenu(true);
 
     QObject::connect( cubicInterpAction, SIGNAL(triggered()),
@@ -2497,8 +2516,9 @@ DopeSheetViewPrivate::createContextMenu()
                                                              kShortcutIDActionCurveEditorHorizontal,
                                                              kShortcutDescActionCurveEditorHorizontal,
                                                              interpMenu);
-    appPTR->getIcon(NATRON_PIXMAP_INTERP_CURVE_H, NATRON_MEDIUM_BUTTON_ICON_SIZE, &pix);
-    horizontalInterpAction->setIcon( QIcon(pix) );
+    QIcon horizontalIcon;
+    appPTR->getIcon(NATRON_PIXMAP_INTERP_CURVE_H, NATRON_MEDIUM_BUTTON_ICON_SIZE, &horizontalIcon);
+    horizontalInterpAction->setIcon(horizontalIcon);
     horizontalInterpAction->setIconVisibleInMenu(true);
 
     QObject::connect( horizontalInterpAction, SIGNAL(triggered()),
@@ -2510,14 +2530,29 @@ DopeSheetViewPrivate::createContextMenu()
                                                         kShortcutIDActionCurveEditorBreak,
                                                         kShortcutDescActionCurveEditorBreak,
                                                         interpMenu);
-    appPTR->getIcon(NATRON_PIXMAP_INTERP_BREAK, NATRON_MEDIUM_BUTTON_ICON_SIZE, &pix);
-    breakInterpAction->setIcon( QIcon(pix) );
+    QIcon breakIcon;
+    appPTR->getIcon(NATRON_PIXMAP_INTERP_BREAK, NATRON_MEDIUM_BUTTON_ICON_SIZE, &breakIcon);
+    breakInterpAction->setIcon(breakIcon);
     breakInterpAction->setIconVisibleInMenu(true);
 
     QObject::connect( breakInterpAction, SIGNAL(triggered()),
                       q_ptr, SLOT(breakInterpSelectedKeyframes()) );
 
     interpMenu->addAction(breakInterpAction);
+
+    QAction* freeInterpAction = new ActionWithShortcut(kShortcutGroupDopeSheetEditor,
+                                                       kShortcutIDActionCurveEditorFree,
+                                                       kShortcutDescActionCurveEditorFree,
+                                                       interpMenu);
+    QIcon freeIcon;
+    appPTR->getIcon(NATRON_PIXMAP_INTERP_CURVE, NATRON_MEDIUM_BUTTON_ICON_SIZE, &freeIcon);
+    freeInterpAction->setIcon(freeIcon);
+    freeInterpAction->setIconVisibleInMenu(true);
+
+    QObject::connect(freeInterpAction, SIGNAL(triggered()),
+                     q_ptr, SLOT(freeInterpSelectedKeyframes()));
+
+    interpMenu->addAction(freeInterpAction);
 
     // View actions
     QAction *frameSelectionAction = new ActionWithShortcut(kShortcutGroupDopeSheetEditor,
@@ -2913,6 +2948,14 @@ DopeSheetView::breakInterpSelectedKeyframes()
 }
 
 void
+DopeSheetView::freeInterpSelectedKeyframes()
+{
+    running_in_main_thread();
+
+    _imp->model->setSelectedKeysInterpolation(eKeyframeTypeFree);
+}
+
+void
 DopeSheetView::copySelectedKeyframes()
 {
     running_in_main_thread();
@@ -3242,6 +3285,9 @@ DopeSheetView::paintGL()
         if (screenPixelRatio != _imp->_screenPixelRatio) {
             _imp->_screenPixelRatio = screenPixelRatio;
             _imp->_textFont.reset(new QFont(appFont, appFontSize * screenPixelRatio));
+        }
+        if (devicePixelRatio() != _imp->kfTexturesScreenPixelRatio) {
+            _imp->generateKeyframeTextures();
         }
     }
     assert(_imp->_textFont);

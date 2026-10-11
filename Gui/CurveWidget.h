@@ -206,6 +206,8 @@ public Q_SLOTS:
 
     void breakDerivativesForSelectedKeyFrames();
 
+    void freeInterpForSelectedKeyFrames();
+
     void frameAll();
 
     void frameSelectedCurve();

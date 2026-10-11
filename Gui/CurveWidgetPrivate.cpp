@@ -253,6 +253,11 @@ CurveWidgetPrivate::createMenu()
     QObject::connect( breakDerivatives, SIGNAL(triggered()), _widget, SLOT(breakDerivativesForSelectedKeyFrames()) );
     interpMenu->addAction(breakDerivatives);
 
+    QAction* freeInterp = new ActionWithShortcut(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorFree,
+                                                 kShortcutDescActionCurveEditorFree, interpMenu);
+    QObject::connect(freeInterp, SIGNAL(triggered()), _widget, SLOT(freeInterpForSelectedKeyFrames()));
+    interpMenu->addAction(freeInterp);
+
     QAction* frameAll = new ActionWithShortcut(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorCenterAll,
                                                kShortcutDescActionCurveEditorCenterAll, interpMenu);
     frameAll->setShortcut( QKeySequence(Qt::Key_A) );

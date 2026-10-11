@@ -120,10 +120,10 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_ICONS_PATH "natron/key-prev.svg";
         break;
     case NATRON_PIXMAP_ADD_KEYFRAME:
-        path = NATRON_IMAGES_PATH "addKF.png";
+        path = NATRON_ICONS_PATH "lucide/diamond-plus.svg";
         break;
     case NATRON_PIXMAP_REMOVE_KEYFRAME:
-        path = NATRON_IMAGES_PATH "removeKF.png";
+        path = NATRON_ICONS_PATH "lucide/diamond-minus.svg";
         break;
     case NATRON_PIXMAP_PLAYER_REWIND_ENABLED:
         path = NATRON_IMAGES_PATH "rewind_enabled.png";
@@ -277,7 +277,7 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_ICONS_PATH "lucide/paint-bucket.svg";
         break;
     case NATRON_PIXMAP_ROTO_MERGE:
-        path = NATRON_IMAGES_PATH "roto_merge.png";
+        path = NATRON_ICONS_PATH "lucide/layers-2.svg";
         break;
     case NATRON_PIXMAP_COLOR_PICKER:
         path = NATRON_ICONS_PATH "lucide/pipette.svg";
@@ -349,16 +349,16 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_APPLICATION_ICON_PATH;
         break;
     case NATRON_PIXMAP_INVERTED:
-        path = NATRON_IMAGES_PATH "inverted.png";
+        path = NATRON_ICONS_PATH "natron/inverted.svg";
         break;
     case NATRON_PIXMAP_UNINVERTED:
-        path = NATRON_IMAGES_PATH "uninverted.png";
+        path = NATRON_ICONS_PATH "natron/inverted.svg";
         break;
     case NATRON_PIXMAP_VISIBLE:
-        path = NATRON_IMAGES_PATH "visible.png";
+        path = NATRON_ICONS_PATH "lucide/eye.svg";
         break;
     case NATRON_PIXMAP_UNVISIBLE:
-        path = NATRON_IMAGES_PATH "unvisible.png";
+        path = NATRON_ICONS_PATH "lucide/eye-off.svg";
         break;
     case NATRON_PIXMAP_LOCKED:
         path = NATRON_ICONS_PATH "lucide/lock.svg";
@@ -367,85 +367,85 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_ICONS_PATH "lucide/lock-open.svg";
         break;
     case NATRON_PIXMAP_LAYER:
-        path = NATRON_IMAGES_PATH "layer.png";
+        path = NATRON_ICONS_PATH "lucide/layers.svg";
         break;
     case NATRON_PIXMAP_BEZIER:
-        path = NATRON_IMAGES_PATH "bezier.png";
+        path = NATRON_ICONS_PATH "lucide/spline.svg";
         break;
     case NATRON_PIXMAP_CURVE:
         path = NATRON_IMAGES_PATH "curve.png";
         break;
     case NATRON_PIXMAP_BEZIER_32:
-        path = NATRON_IMAGES_PATH "bezier32.png";
+        path = NATRON_ICONS_PATH "lucide/pen-tool.svg";
         break;
     case NATRON_PIXMAP_PENCIL:
-        path = NATRON_IMAGES_PATH "rotoToolPencil.png";
+        path = NATRON_ICONS_PATH "lucide/pencil.svg";
         break;
     case NATRON_PIXMAP_ELLIPSE:
-        path = NATRON_IMAGES_PATH "ellipse.png";
+        path = NATRON_ICONS_PATH "natron/ellipse-handles.svg";
         break;
     case NATRON_PIXMAP_RECTANGLE:
-        path = NATRON_IMAGES_PATH "rectangle.png";
+        path = NATRON_ICONS_PATH "natron/rectangle-handles.svg";
         break;
     case NATRON_PIXMAP_ADD_POINTS:
-        path = NATRON_IMAGES_PATH "addPoints.png";
+        path = NATRON_ICONS_PATH "natron/add-points.svg";
         break;
     case NATRON_PIXMAP_REMOVE_POINTS:
-        path = NATRON_IMAGES_PATH "removePoints.png";
+        path = NATRON_ICONS_PATH "natron/remove-points.svg";
         break;
     case NATRON_PIXMAP_REMOVE_FEATHER:
-        path = NATRON_IMAGES_PATH "removeFeather.png";
+        path = NATRON_ICONS_PATH "natron/remove-feather.svg";
         break;
     case NATRON_PIXMAP_CUSP_POINTS:
-        path = NATRON_IMAGES_PATH "cuspPoints.png";
+        path = NATRON_ICONS_PATH "natron/cusp-point.svg";
         break;
     case NATRON_PIXMAP_SMOOTH_POINTS:
-        path = NATRON_IMAGES_PATH "smoothPoints.png";
+        path = NATRON_ICONS_PATH "lucide/tangent.svg";
         break;
     case NATRON_PIXMAP_OPEN_CLOSE_CURVE:
-        path = NATRON_IMAGES_PATH "openCloseCurve.png";
+        path = NATRON_ICONS_PATH "natron/open-close-curve.svg";
         break;
     case NATRON_PIXMAP_SELECT_ALL:
-        path = NATRON_IMAGES_PATH "cursor.png";
+        path = NATRON_ICONS_PATH "lucide/list-checks.svg";
         break;
     case NATRON_PIXMAP_SELECT_POINTS:
-        path = NATRON_IMAGES_PATH "selectPoints.png";
+        path = NATRON_ICONS_PATH "natron/select-points.svg";
         break;
     case NATRON_PIXMAP_SELECT_FEATHER:
-        path = NATRON_IMAGES_PATH "selectFeather.png";
+        path = NATRON_ICONS_PATH "natron/select-feather.svg";
         break;
     case NATRON_PIXMAP_SELECT_CURVES:
-        path = NATRON_IMAGES_PATH "selectCurves.png";
+        path = NATRON_ICONS_PATH "natron/select-curves.svg";
         break;
     case NATRON_PIXMAP_AUTO_KEYING_ENABLED:
-        path = NATRON_IMAGES_PATH "autoKeyingEnabled.png";
+        path = NATRON_ICONS_PATH "lucide/timer.svg";
         break;
     case NATRON_PIXMAP_AUTO_KEYING_DISABLED:
-        path = NATRON_IMAGES_PATH "autoKeyingDisabled.png";
+        path = NATRON_ICONS_PATH "lucide/timer.svg";
         break;
     case NATRON_PIXMAP_STICKY_SELECTION_ENABLED:
-        path = NATRON_IMAGES_PATH "stickySelectionEnabled.png";
+        path = NATRON_ICONS_PATH "lucide/pin.svg";
         break;
     case NATRON_PIXMAP_STICKY_SELECTION_DISABLED:
-        path = NATRON_IMAGES_PATH "stickySelectionDisabled.png";
+        path = NATRON_ICONS_PATH "lucide/pin.svg";
         break;
     case NATRON_PIXMAP_FEATHER_LINK_ENABLED:
-        path = NATRON_IMAGES_PATH "featherLinkEnabled.png";
+        path = NATRON_ICONS_PATH "lucide/link.svg";
         break;
     case NATRON_PIXMAP_FEATHER_LINK_DISABLED:
-        path = NATRON_IMAGES_PATH "featherLinkDisabled.png";
+        path = NATRON_ICONS_PATH "lucide/link.svg";
         break;
     case NATRON_PIXMAP_FEATHER_VISIBLE:
-        path = NATRON_IMAGES_PATH "featherEnabled.png";
+        path = NATRON_ICONS_PATH "lucide/feather.svg";
         break;
     case NATRON_PIXMAP_FEATHER_UNVISIBLE:
-        path = NATRON_IMAGES_PATH "featherDisabled.png";
+        path = NATRON_ICONS_PATH "lucide/feather.svg";
         break;
     case NATRON_PIXMAP_RIPPLE_EDIT_ENABLED:
-        path = NATRON_IMAGES_PATH "rippleEditEnabled.png";
+        path = NATRON_ICONS_PATH "lucide/waves-horizontal.svg";
         break;
     case NATRON_PIXMAP_RIPPLE_EDIT_DISABLED:
-        path = NATRON_IMAGES_PATH "rippleEditDisabled.png";
+        path = NATRON_ICONS_PATH "lucide/waves-horizontal.svg";
         break;
     case NATRON_PIXMAP_BOLD_CHECKED:
         path = NATRON_ICONS_PATH "lucide/bold.svg";
@@ -460,13 +460,13 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_ICONS_PATH "lucide/italic.svg";
         break;
     case NATRON_PIXMAP_CLEAR_ALL_ANIMATION:
-        path = NATRON_IMAGES_PATH "clearAnimation.png";
+        path = NATRON_ICONS_PATH "lucide/trash.svg";
         break;
     case NATRON_PIXMAP_CLEAR_BACKWARD_ANIMATION:
-        path = NATRON_IMAGES_PATH "clearAnimationBw.png";
+        path = NATRON_ICONS_PATH "natron/clear-anim-bw.svg";
         break;
     case NATRON_PIXMAP_CLEAR_FORWARD_ANIMATION:
-        path = NATRON_IMAGES_PATH "clearAnimationFw.png";
+        path = NATRON_ICONS_PATH "natron/clear-anim-fw.svg";
         break;
     case NATRON_PIXMAP_UPDATE_VIEWER_ENABLED:
         path = NATRON_IMAGES_PATH "updateViewerEnabled.png";
@@ -511,67 +511,67 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_ICONS_PATH "lucide/aperture.svg";
         break;
     case NATRON_PIXMAP_ADD_TRACK:
-        path = NATRON_IMAGES_PATH "addTrack.png";
+        path = NATRON_ICONS_PATH "lucide/crosshair.svg";
         break;
     case NATRON_PIXMAP_ADD_USER_KEY:
-        path = NATRON_IMAGES_PATH "addUserKey.png";
+        path = NATRON_ICONS_PATH "lucide/diamond-plus.svg";
         break;
     case NATRON_PIXMAP_REMOVE_USER_KEY:
-        path = NATRON_IMAGES_PATH "removeUserKey.png";
+        path = NATRON_ICONS_PATH "lucide/diamond-minus.svg";
         break;
     case NATRON_PIXMAP_PREV_USER_KEY:
-        path = NATRON_IMAGES_PATH "prevUserKey.png";
+        path = NATRON_ICONS_PATH "natron/key-prev.svg";
         break;
     case NATRON_PIXMAP_NEXT_USER_KEY:
-        path = NATRON_IMAGES_PATH "nextUserKey.png";
+        path = NATRON_ICONS_PATH "natron/key-next.svg";
         break;
     case NATRON_PIXMAP_TRACK_RANGE:
-        path = NATRON_IMAGES_PATH "trackRange.png";
+        path = NATRON_ICONS_PATH "natron/track-range.svg";
         break;
     case NATRON_PIXMAP_TRACK_ALL_KEYS:
-        path = NATRON_IMAGES_PATH "trackAllKeyframes.png";
+        path = NATRON_ICONS_PATH "natron/track-all-keys.svg";
         break;
     case NATRON_PIXMAP_TRACK_CURRENT_KEY:
-        path = NATRON_IMAGES_PATH "trackCurrentKeyframe.png";
+        path = NATRON_ICONS_PATH "natron/track-current-key.svg";
         break;
     case NATRON_PIXMAP_TRACK_BACKWARD_OFF:
-        path = NATRON_IMAGES_PATH "trackBackwardOff.png";
+        path = NATRON_ICONS_PATH "natron/play-reverse.svg";
         break;
     case NATRON_PIXMAP_TRACK_BACKWARD_ON:
-        path = NATRON_IMAGES_PATH "trackBackwardOn.png";
+        path = NATRON_ICONS_PATH "natron/play-reverse.svg";
         break;
     case NATRON_PIXMAP_TRACK_FORWARD_OFF:
-        path = NATRON_IMAGES_PATH "trackForwardOff.png";
+        path = NATRON_ICONS_PATH "lucide/play.svg";
         break;
     case NATRON_PIXMAP_TRACK_FORWARD_ON:
-        path = NATRON_IMAGES_PATH "trackForwardOn.png";
+        path = NATRON_ICONS_PATH "lucide/play.svg";
         break;
     case NATRON_PIXMAP_TRACK_PREVIOUS:
-        path = NATRON_IMAGES_PATH "trackPrev.png";
+        path = NATRON_ICONS_PATH "lucide/step-back.svg";
         break;
     case NATRON_PIXMAP_TRACK_NEXT:
-        path = NATRON_IMAGES_PATH "trackNext.png";
+        path = NATRON_ICONS_PATH "lucide/step-forward.svg";
         break;
     case NATRON_PIXMAP_RESET_TRACK_OFFSET:
-        path = NATRON_IMAGES_PATH "resetTrackOffset.png";
+        path = NATRON_ICONS_PATH "lucide/undo-dot.svg";
         break;
     case NATRON_PIXMAP_HIDE_TRACK_ERROR:
-        path = NATRON_IMAGES_PATH "hideTrackError.png";
+        path = NATRON_ICONS_PATH "lucide/triangle-alert.svg";
         break;
     case NATRON_PIXMAP_SHOW_TRACK_ERROR:
-        path = NATRON_IMAGES_PATH "showTrackError.png";
+        path = NATRON_ICONS_PATH "lucide/triangle-alert.svg";
         break;
     case NATRON_PIXMAP_CREATE_USER_KEY_ON_MOVE_ON:
-        path = NATRON_IMAGES_PATH "createKeyOnMoveOn.png";
+        path = NATRON_ICONS_PATH "natron/key-on-move.svg";
         break;
     case NATRON_PIXMAP_CREATE_USER_KEY_ON_MOVE_OFF:
-        path = NATRON_IMAGES_PATH "createKeyOnMoveOff.png";
+        path = NATRON_ICONS_PATH "natron/key-on-move.svg";
         break;
     case NATRON_PIXMAP_RESET_USER_KEYS:
         path = NATRON_IMAGES_PATH "removeUserKeys.png";
         break;
     case NATRON_PIXMAP_CENTER_VIEWER_ON_TRACK:
-        path = NATRON_IMAGES_PATH "centerOnTrack.png";
+        path = NATRON_ICONS_PATH "lucide/locate-fixed.svg";
         break;
     case NATRON_PIXMAP_SCRIPT_CLEAR_OUTPUT:
         path = NATRON_IMAGES_PATH "clearOutput.png";
@@ -729,70 +729,70 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_ICONS_PATH "lucide/square-arrow-right-enter.svg";
         break;
     case NATRON_PIXMAP_ROTOPAINT_BUILDUP_ENABLED:
-        path = NATRON_IMAGES_PATH "rotopaint_buildup_on.png";
+        path = NATRON_ICONS_PATH "natron/buildup.svg";
         break;
     case NATRON_PIXMAP_ROTOPAINT_BUILDUP_DISABLED:
-        path = NATRON_IMAGES_PATH "rotopaint_buildup_off.png";
+        path = NATRON_ICONS_PATH "natron/buildup.svg";
         break;
     case NATRON_PIXMAP_ROTOPAINT_BLUR:
-        path = NATRON_IMAGES_PATH "rotopaint_blur.png";
+        path = NATRON_ICONS_PATH "lucide/droplet.svg";
         break;
     case NATRON_PIXMAP_ROTOPAINT_BURN:
-        path = NATRON_IMAGES_PATH "rotopaint_burn.png";
+        path = NATRON_ICONS_PATH "lucide/flame.svg";
         break;
     case NATRON_PIXMAP_ROTOPAINT_CLONE:
-        path = NATRON_IMAGES_PATH "rotopaint_clone.png";
+        path = NATRON_ICONS_PATH "natron/clone-stamp.svg";
         break;
     case NATRON_PIXMAP_ROTOPAINT_DODGE:
-        path = NATRON_IMAGES_PATH "rotopaint_dodge.png";
+        path = NATRON_ICONS_PATH "lucide/sun.svg";
         break;
     case NATRON_PIXMAP_ROTOPAINT_ERASER:
-        path = NATRON_IMAGES_PATH "rotopaint_eraser.png";
+        path = NATRON_ICONS_PATH "lucide/eraser.svg";
         break;
     case NATRON_PIXMAP_ROTOPAINT_PRESSURE_ENABLED:
-        path = NATRON_IMAGES_PATH "rotopaint_pressure_on.png";
+        path = NATRON_ICONS_PATH "natron/pressure.svg";
         break;
     case NATRON_PIXMAP_ROTOPAINT_PRESSURE_DISABLED:
-        path = NATRON_IMAGES_PATH "rotopaint_pressure_off.png";
+        path = NATRON_ICONS_PATH "natron/pressure.svg";
         break;
     case NATRON_PIXMAP_ROTOPAINT_REVEAL:
-        path = NATRON_IMAGES_PATH "rotopaint_reveal.png";
+        path = NATRON_ICONS_PATH "lucide/stamp.svg";
         break;
     case NATRON_PIXMAP_ROTOPAINT_SHARPEN:
-        path = NATRON_IMAGES_PATH "rotopaint_sharpen.png";
+        path = NATRON_ICONS_PATH "lucide/triangle.svg";
         break;
     case NATRON_PIXMAP_ROTOPAINT_SMEAR:
-        path = NATRON_IMAGES_PATH "rotopaint_smear.png";
+        path = NATRON_ICONS_PATH "lucide/pointer.svg";
         break;
     case NATRON_PIXMAP_ROTOPAINT_SOLID:
-        path = NATRON_IMAGES_PATH "rotopaint_solid.png";
+        path = NATRON_ICONS_PATH "lucide/brush.svg";
         break;
     case NATRON_PIXMAP_ROTO_NODE_ICON:
         path = NATRON_IMAGES_PATH "rotoNodeIcon.png";
         break;
     case NATRON_PIXMAP_INTERP_LINEAR:
-        path = NATRON_IMAGES_PATH "interp_linear.png";
+        path = NATRON_ICONS_PATH "natron/interp-linear.svg";
         break;
     case NATRON_PIXMAP_INTERP_CURVE:
-        path = NATRON_IMAGES_PATH "interp_curve.png";
+        path = NATRON_ICONS_PATH "natron/interp-free.svg";
         break;
     case NATRON_PIXMAP_INTERP_CONSTANT:
-        path = NATRON_IMAGES_PATH "interp_constant.png";
+        path = NATRON_ICONS_PATH "natron/interp-constant.svg";
         break;
     case NATRON_PIXMAP_INTERP_BREAK:
-        path = NATRON_IMAGES_PATH "interp_break.png";
+        path = NATRON_ICONS_PATH "natron/interp-break.svg";
         break;
     case NATRON_PIXMAP_INTERP_CURVE_C:
-        path = NATRON_IMAGES_PATH "interp_curve_c.png";
+        path = NATRON_ICONS_PATH "natron/interp-cubic.svg";
         break;
     case NATRON_PIXMAP_INTERP_CURVE_H:
-        path = NATRON_IMAGES_PATH "interp_curve_h.png";
+        path = NATRON_ICONS_PATH "natron/interp-horizontal.svg";
         break;
     case NATRON_PIXMAP_INTERP_CURVE_R:
-        path = NATRON_IMAGES_PATH "interp_curve_r.png";
+        path = NATRON_ICONS_PATH "natron/interp-catmull.svg";
         break;
     case NATRON_PIXMAP_INTERP_CURVE_Z:
-        path = NATRON_IMAGES_PATH "interp_curve_z.png";
+        path = NATRON_ICONS_PATH "natron/interp-smooth.svg";
         break;
         // DON'T add a default: case here
     } // switch

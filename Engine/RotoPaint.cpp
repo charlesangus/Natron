@@ -206,8 +206,7 @@ RotoPaint::initializeKnobs()
     autoKeyingEnabled->setDefaultValue(true);
     autoKeyingEnabled->setSecretByDefault(true);
     autoKeyingEnabled->setInViewerContextCanHaveShortcut(true);
-    autoKeyingEnabled->setIconLabel(NATRON_IMAGES_PATH "autoKeyingEnabled.png", true);
-    autoKeyingEnabled->setIconLabel(NATRON_IMAGES_PATH "autoKeyingDisabled.png", false);
+    autoKeyingEnabled->setIconLabel(NATRON_ICONS_PATH "lucide/timer.svg");
     generalPage->addKnob(autoKeyingEnabled);
     _imp->ui->autoKeyingEnabledButton = autoKeyingEnabled;
 
@@ -219,8 +218,7 @@ RotoPaint::initializeKnobs()
     featherLinkEnabled->setSecretByDefault(true);
     featherLinkEnabled->setInViewerContextCanHaveShortcut(true);
     featherLinkEnabled->setHintToolTip( tr(kRotoUIParamFeatherLinkEnabledHint) );
-    featherLinkEnabled->setIconLabel(NATRON_IMAGES_PATH "featherLinkEnabled.png", true);
-    featherLinkEnabled->setIconLabel(NATRON_IMAGES_PATH "featherLinkDisabled.png", false);
+    featherLinkEnabled->setIconLabel(NATRON_ICONS_PATH "lucide/link.svg");
     generalPage->addKnob(featherLinkEnabled);
     _imp->ui->featherLinkEnabledButton = featherLinkEnabled;
 
@@ -233,8 +231,7 @@ RotoPaint::initializeKnobs()
     displayFeatherEnabled->setSecretByDefault(true);
     displayFeatherEnabled->setInViewerContextCanHaveShortcut(true);
     addOverlaySlaveParam(displayFeatherEnabled);
-    displayFeatherEnabled->setIconLabel(NATRON_IMAGES_PATH "featherEnabled.png", true);
-    displayFeatherEnabled->setIconLabel(NATRON_IMAGES_PATH "featherDisabled.png", false);
+    displayFeatherEnabled->setIconLabel(NATRON_ICONS_PATH "lucide/feather.svg");
     generalPage->addKnob(displayFeatherEnabled);
     _imp->ui->displayFeatherEnabledButton = displayFeatherEnabled;
 
@@ -246,8 +243,7 @@ RotoPaint::initializeKnobs()
     stickySelection->setDefaultValue(false);
     stickySelection->setSecretByDefault(true);
     stickySelection->setInViewerContextCanHaveShortcut(true);
-    stickySelection->setIconLabel(NATRON_IMAGES_PATH "stickySelectionEnabled.png", true);
-    stickySelection->setIconLabel(NATRON_IMAGES_PATH "stickySelectionDisabled.png", false);
+    stickySelection->setIconLabel(NATRON_ICONS_PATH "lucide/pin.svg");
     generalPage->addKnob(stickySelection);
     _imp->ui->stickySelectionEnabledButton = stickySelection;
 
@@ -259,8 +255,7 @@ RotoPaint::initializeKnobs()
     bboxClickAnywhere->setDefaultValue(false);
     bboxClickAnywhere->setSecretByDefault(true);
     bboxClickAnywhere->setInViewerContextCanHaveShortcut(true);
-    bboxClickAnywhere->setIconLabel(NATRON_IMAGES_PATH "viewer_roiEnabled.png", true);
-    bboxClickAnywhere->setIconLabel(NATRON_IMAGES_PATH "viewer_roiDisabled.png", false);
+    bboxClickAnywhere->setIconLabel(NATRON_ICONS_PATH "lucide/square-mouse-pointer.svg");
     generalPage->addKnob(bboxClickAnywhere);
     _imp->ui->bboxClickAnywhereButton = bboxClickAnywhere;
 
@@ -272,8 +267,7 @@ RotoPaint::initializeKnobs()
     rippleEditEnabled->setDefaultValue(false);
     rippleEditEnabled->setSecretByDefault(true);
     rippleEditEnabled->setInViewerContextCanHaveShortcut(true);
-    rippleEditEnabled->setIconLabel(NATRON_IMAGES_PATH "rippleEditEnabled.png", true);
-    rippleEditEnabled->setIconLabel(NATRON_IMAGES_PATH "rippleEditDisabled.png", false);
+    rippleEditEnabled->setIconLabel(NATRON_ICONS_PATH "lucide/waves-horizontal.svg");
     generalPage->addKnob(rippleEditEnabled);
     _imp->ui->rippleEditEnabledButton = rippleEditEnabled;
 
@@ -283,7 +277,7 @@ RotoPaint::initializeKnobs()
     addKeyframe->setHintToolTip( tr(kRotoUIParamAddKeyFrameHint) );
     addKeyframe->setSecretByDefault(true);
     addKeyframe->setInViewerContextCanHaveShortcut(true);
-    addKeyframe->setIconLabel(NATRON_IMAGES_PATH "addKF.png");
+    addKeyframe->setIconLabel(NATRON_ICONS_PATH "lucide/diamond-plus.svg");
     generalPage->addKnob(addKeyframe);
     _imp->ui->addKeyframeButton = addKeyframe;
 
@@ -293,7 +287,7 @@ RotoPaint::initializeKnobs()
     removeKeyframe->setEvaluateOnChange(false);
     removeKeyframe->setSecretByDefault(true);
     removeKeyframe->setInViewerContextCanHaveShortcut(true);
-    removeKeyframe->setIconLabel(NATRON_IMAGES_PATH "removeKF.png");
+    removeKeyframe->setIconLabel(NATRON_ICONS_PATH "lucide/diamond-minus.svg");
     generalPage->addKnob(removeKeyframe);
     _imp->ui->removeKeyframeButton = removeKeyframe;
 
@@ -307,8 +301,7 @@ RotoPaint::initializeKnobs()
     showTransform->setDefaultValue(true);
     showTransform->setInViewerContextCanHaveShortcut(true);
     showTransform->setInViewerContextNewLineActivated(true);
-    showTransform->setIconLabel(NATRON_IMAGES_PATH "rotoShowTransformOverlay.png", true);
-    showTransform->setIconLabel(NATRON_IMAGES_PATH "rotoHideTransformOverlay.png", false);
+    showTransform->setIconLabel(NATRON_ICONS_PATH "lucide/move.svg");
     generalPage->addKnob(showTransform);
     addOverlaySlaveParam(showTransform);
     _imp->ui->showTransformHandle = showTransform;
@@ -371,8 +364,7 @@ RotoPaint::initializeKnobs()
     pressureOpacity->setDefaultValue(true);
     pressureOpacity->setSecretByDefault(true);
     pressureOpacity->setInViewerContextCanHaveShortcut(true);
-    pressureOpacity->setIconLabel(NATRON_IMAGES_PATH "rotopaint_pressure_on.png", true);
-    pressureOpacity->setIconLabel(NATRON_IMAGES_PATH "rotopaint_pressure_off.png", false);
+    pressureOpacity->setIconLabel(NATRON_ICONS_PATH "natron/pressure.svg");
     generalPage->addKnob(pressureOpacity);
     _imp->ui->pressureOpacityButton = pressureOpacity;
 
@@ -397,8 +389,7 @@ RotoPaint::initializeKnobs()
     pressureSize->setDefaultValue(false);
     pressureSize->setSecretByDefault(true);
     pressureSize->setInViewerContextCanHaveShortcut(true);
-    pressureSize->setIconLabel(NATRON_IMAGES_PATH "rotopaint_pressure_on.png", true);
-    pressureSize->setIconLabel(NATRON_IMAGES_PATH "rotopaint_pressure_off.png", false);
+    pressureSize->setIconLabel(NATRON_ICONS_PATH "natron/pressure.svg");
     generalPage->addKnob(pressureSize);
     _imp->ui->pressureSizeButton = pressureSize;
 
@@ -423,8 +414,7 @@ RotoPaint::initializeKnobs()
     pressureHardness->setDefaultValue(false);
     pressureHardness->setSecretByDefault(true);
     pressureHardness->setInViewerContextCanHaveShortcut(true);
-    pressureHardness->setIconLabel(NATRON_IMAGES_PATH "rotopaint_pressure_on.png", true);
-    pressureHardness->setIconLabel(NATRON_IMAGES_PATH "rotopaint_pressure_off.png", false);
+    pressureHardness->setIconLabel(NATRON_ICONS_PATH "natron/pressure.svg");
     generalPage->addKnob(pressureHardness);
     _imp->ui->pressureHardnessButton = pressureHardness;
 
@@ -437,8 +427,7 @@ RotoPaint::initializeKnobs()
     buildUp->setDefaultValue(true);
     buildUp->setSecretByDefault(true);
     buildUp->setInViewerContextCanHaveShortcut(true);
-    buildUp->setIconLabel(NATRON_IMAGES_PATH "rotopaint_buildup_on.png", true);
-    buildUp->setIconLabel(NATRON_IMAGES_PATH "rotopaint_buildup_off.png", false);
+    buildUp->setIconLabel(NATRON_ICONS_PATH "natron/buildup.svg");
     generalPage->addKnob(buildUp);
     _imp->ui->buildUpButton = buildUp;
 
@@ -450,8 +439,8 @@ RotoPaint::initializeKnobs()
     autoConnectViewer->setDefaultValue(false);
     autoConnectViewer->setSecretByDefault(true);
     autoConnectViewer->setInViewerContextCanHaveShortcut(true);
-    autoConnectViewer->setIconLabel(NATRON_IMAGES_PATH "visible.png", true);
-    autoConnectViewer->setIconLabel(NATRON_IMAGES_PATH "unvisible.png", false);
+    autoConnectViewer->setIconLabel(NATRON_ICONS_PATH "lucide/eye.svg", true);
+    autoConnectViewer->setIconLabel(NATRON_ICONS_PATH "lucide/eye-off.svg", false);
     generalPage->addKnob(autoConnectViewer);
     _imp->ui->autoConnectViewerButton = autoConnectViewer;
 
@@ -651,7 +640,7 @@ RotoPaint::initializeKnobs()
         tool->setDefaultValue(true);
         tool->setSecretByDefault(true);
         tool->setEvaluateOnChange(false);
-        tool->setIconLabel(NATRON_IMAGES_PATH "cursor.png");
+        tool->setIconLabel(NATRON_ICONS_PATH "lucide/mouse-pointer-2.svg");
         tool->setIsPersistent(false);
         selectionToolButton->addKnob(tool);
         _imp->ui->selectAllAction = tool;
@@ -664,7 +653,7 @@ RotoPaint::initializeKnobs()
         tool->setDefaultValue(false);
         tool->setSecretByDefault(true);
         tool->setEvaluateOnChange(false);
-        tool->setIconLabel(NATRON_IMAGES_PATH "selectPoints.png");
+        tool->setIconLabel(NATRON_ICONS_PATH "natron/select-points.svg");
         tool->setIsPersistent(false);
         selectionToolButton->addKnob(tool);
         _imp->ui->selectPointsAction = tool;
@@ -677,7 +666,7 @@ RotoPaint::initializeKnobs()
         tool->setDefaultValue(false);
         tool->setSecretByDefault(true);
         tool->setEvaluateOnChange(false);
-        tool->setIconLabel(NATRON_IMAGES_PATH "selectCurves.png");
+        tool->setIconLabel(NATRON_ICONS_PATH "natron/select-curves.svg");
         tool->setIsPersistent(false);
         selectionToolButton->addKnob(tool);
         _imp->ui->selectCurvesAction = tool;
@@ -690,7 +679,7 @@ RotoPaint::initializeKnobs()
         tool->setDefaultValue(false);
         tool->setSecretByDefault(true);
         tool->setEvaluateOnChange(false);
-        tool->setIconLabel(NATRON_IMAGES_PATH "selectFeather.png");
+        tool->setIconLabel(NATRON_ICONS_PATH "natron/select-feather.svg");
         tool->setIsPersistent(false);
         selectionToolButton->addKnob(tool);
         _imp->ui->selectFeatherPointsAction = tool;
@@ -703,7 +692,7 @@ RotoPaint::initializeKnobs()
         tool->setDefaultValue(true);
         tool->setSecretByDefault(true);
         tool->setEvaluateOnChange(false);
-        tool->setIconLabel(NATRON_IMAGES_PATH "addPoints.png");
+        tool->setIconLabel(NATRON_ICONS_PATH "natron/add-points.svg");
         tool->setIsPersistent(false);
         editPointsToolButton->addKnob(tool);
         _imp->ui->addPointsAction = tool;
@@ -716,7 +705,7 @@ RotoPaint::initializeKnobs()
         tool->setDefaultValue(false);
         tool->setSecretByDefault(true);
         tool->setEvaluateOnChange(false);
-        tool->setIconLabel(NATRON_IMAGES_PATH "removePoints.png");
+        tool->setIconLabel(NATRON_ICONS_PATH "natron/remove-points.svg");
         tool->setIsPersistent(false);
         editPointsToolButton->addKnob(tool);
         _imp->ui->removePointsAction = tool;
@@ -729,7 +718,7 @@ RotoPaint::initializeKnobs()
         tool->setDefaultValue(false);
         tool->setSecretByDefault(true);
         tool->setEvaluateOnChange(false);
-        tool->setIconLabel(NATRON_IMAGES_PATH "cuspPoints.png");
+        tool->setIconLabel(NATRON_ICONS_PATH "natron/cusp-point.svg");
         tool->setIsPersistent(false);
         editPointsToolButton->addKnob(tool);
         _imp->ui->cuspPointsAction = tool;
@@ -742,7 +731,7 @@ RotoPaint::initializeKnobs()
         tool->setDefaultValue(false);
         tool->setSecretByDefault(true);
         tool->setEvaluateOnChange(false);
-        tool->setIconLabel(NATRON_IMAGES_PATH "smoothPoints.png");
+        tool->setIconLabel(NATRON_ICONS_PATH "lucide/tangent.svg");
         tool->setIsPersistent(false);
         editPointsToolButton->addKnob(tool);
         _imp->ui->smoothPointsAction = tool;
@@ -755,7 +744,7 @@ RotoPaint::initializeKnobs()
         tool->setDefaultValue(false);
         tool->setSecretByDefault(true);
         tool->setEvaluateOnChange(false);
-        tool->setIconLabel(NATRON_IMAGES_PATH "openCloseCurve.png");
+        tool->setIconLabel(NATRON_ICONS_PATH "natron/open-close-curve.svg");
         tool->setIsPersistent(false);
         editPointsToolButton->addKnob(tool);
         _imp->ui->openCloseCurveAction = tool;
@@ -769,7 +758,7 @@ RotoPaint::initializeKnobs()
         tool->setDefaultValue(false);
         tool->setSecretByDefault(true);
         tool->setEvaluateOnChange(false);
-        tool->setIconLabel(NATRON_IMAGES_PATH "removeFeather.png");
+        tool->setIconLabel(NATRON_ICONS_PATH "natron/remove-feather.svg");
         tool->setIsPersistent(false);
         editPointsToolButton->addKnob(tool);
         _imp->ui->removeFeatherAction = tool;
@@ -783,7 +772,7 @@ RotoPaint::initializeKnobs()
         tool->setDefaultValue(true);
         tool->setSecretByDefault(true);
         tool->setEvaluateOnChange(false);
-        tool->setIconLabel(NATRON_IMAGES_PATH "bezier32.png");
+        tool->setIconLabel(NATRON_ICONS_PATH "lucide/pen-tool.svg");
         tool->setIsPersistent(false);
         editBezierToolButton->addKnob(tool);
         _imp->ui->drawBezierAction = tool;
@@ -797,7 +786,7 @@ RotoPaint::initializeKnobs()
         tool->setDefaultValue(false);
         tool->setSecretByDefault(true);
         tool->setEvaluateOnChange(false);
-        tool->setIconLabel(NATRON_IMAGES_PATH "ellipse.png");
+        tool->setIconLabel(NATRON_ICONS_PATH "natron/ellipse-handles.svg");
         tool->setIsPersistent(false);
         editBezierToolButton->addKnob(tool);
         _imp->ui->drawEllipseAction = tool;
@@ -811,7 +800,7 @@ RotoPaint::initializeKnobs()
         tool->setDefaultValue(false);
         tool->setSecretByDefault(true);
         tool->setEvaluateOnChange(false);
-        tool->setIconLabel(NATRON_IMAGES_PATH "rectangle.png");
+        tool->setIconLabel(NATRON_ICONS_PATH "natron/rectangle-handles.svg");
         tool->setIsPersistent(false);
         editBezierToolButton->addKnob(tool);
         _imp->ui->drawRectangleAction = tool;
@@ -824,7 +813,7 @@ RotoPaint::initializeKnobs()
         tool->setDefaultValue(true);
         tool->setSecretByDefault(true);
         tool->setEvaluateOnChange(false);
-        tool->setIconLabel(NATRON_IMAGES_PATH "rotopaint_solid.png");
+        tool->setIconLabel(NATRON_ICONS_PATH "lucide/brush.svg");
         tool->setIsPersistent(false);
         paintToolButton->addKnob(tool);
         _imp->ui->brushAction = tool;
@@ -837,7 +826,7 @@ RotoPaint::initializeKnobs()
         tool->setDefaultValue(false);
         tool->setSecretByDefault(true);
         tool->setEvaluateOnChange(false);
-        tool->setIconLabel(NATRON_IMAGES_PATH "rotoToolPencil.png");
+        tool->setIconLabel(NATRON_ICONS_PATH "lucide/pencil.svg");
         tool->setIsPersistent(false);
         paintToolButton->addKnob(tool);
         _imp->ui->pencilAction = tool;
@@ -851,7 +840,7 @@ RotoPaint::initializeKnobs()
         tool->setDefaultValue(false);
         tool->setSecretByDefault(true);
         tool->setEvaluateOnChange(false);
-        tool->setIconLabel(NATRON_IMAGES_PATH "rotopaint_eraser.png");
+        tool->setIconLabel(NATRON_ICONS_PATH "lucide/eraser.svg");
         tool->setIsPersistent(false);
         paintToolButton->addKnob(tool);
         _imp->ui->eraserAction = tool;
@@ -865,7 +854,7 @@ RotoPaint::initializeKnobs()
             tool->setDefaultValue(true);
             tool->setSecretByDefault(true);
             tool->setEvaluateOnChange(false);
-            tool->setIconLabel(NATRON_IMAGES_PATH "rotopaint_clone.png");
+            tool->setIconLabel(NATRON_ICONS_PATH "natron/clone-stamp.svg");
             tool->setIsPersistent(false);
             cloneToolButton->addKnob(tool);
             _imp->ui->cloneAction = tool;
@@ -878,7 +867,7 @@ RotoPaint::initializeKnobs()
             tool->setDefaultValue(false);
             tool->setSecretByDefault(true);
             tool->setEvaluateOnChange(false);
-            tool->setIconLabel(NATRON_IMAGES_PATH "rotopaint_reveal.png");
+            tool->setIconLabel(NATRON_ICONS_PATH "lucide/stamp.svg");
             tool->setIsPersistent(false);
             cloneToolButton->addKnob(tool);
             _imp->ui->revealAction = tool;
@@ -893,7 +882,7 @@ RotoPaint::initializeKnobs()
             tool->setDefaultValue(true);
             tool->setSecretByDefault(true);
             tool->setEvaluateOnChange(false);
-            tool->setIconLabel(NATRON_IMAGES_PATH "rotopaint_blur.png");
+            tool->setIconLabel(NATRON_ICONS_PATH "lucide/droplet.svg");
             tool->setIsPersistent(false);
             effectToolButton->addKnob(tool);
             _imp->ui->blurAction = tool;
@@ -906,7 +895,7 @@ RotoPaint::initializeKnobs()
             tool->setDefaultValue(false);
             tool->setSecretByDefault(true);
             tool->setEvaluateOnChange(false);
-            tool->setIconLabel(NATRON_IMAGES_PATH "rotopaint_smear.png");
+            tool->setIconLabel(NATRON_ICONS_PATH "lucide/pointer.svg");
             tool->setIsPersistent(false);
             effectToolButton->addKnob(tool);
             _imp->ui->smearAction = tool;
@@ -919,7 +908,7 @@ RotoPaint::initializeKnobs()
             tool->setDefaultValue(true);
             tool->setSecretByDefault(true);
             tool->setEvaluateOnChange(false);
-            tool->setIconLabel(NATRON_IMAGES_PATH "rotopaint_dodge.png");
+            tool->setIconLabel(NATRON_ICONS_PATH "lucide/sun.svg");
             tool->setIsPersistent(false);
             mergeToolButton->addKnob(tool);
             _imp->ui->dodgeAction = tool;
@@ -932,7 +921,7 @@ RotoPaint::initializeKnobs()
             tool->setDefaultValue(false);
             tool->setSecretByDefault(true);
             tool->setEvaluateOnChange(false);
-            tool->setIconLabel(NATRON_IMAGES_PATH "rotopaint_burn.png");
+            tool->setIconLabel(NATRON_ICONS_PATH "lucide/flame.svg");
             tool->setIsPersistent(false);
             mergeToolButton->addKnob(tool);
             _imp->ui->burnAction = tool;

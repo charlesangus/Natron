@@ -1886,13 +1886,13 @@ TrackerPanelV1::setIconForButton(KnobButton* knob)
     const std::string name = knob->getName();
 
     if (name == kNatronParamTrackingPrevious) {
-        knob->setIconLabel(NATRON_IMAGES_PATH "back1.png");
+        knob->setIconLabel(NATRON_ICONS_PATH "lucide/step-back.svg");
     } else if (name == kNatronParamTrackingNext) {
-        knob->setIconLabel(NATRON_IMAGES_PATH "forward1.png");
+        knob->setIconLabel(NATRON_ICONS_PATH "lucide/step-forward.svg");
     } else if (name == kNatronParamTrackingBackward) {
-        knob->setIconLabel(NATRON_IMAGES_PATH "rewind.png");
+        knob->setIconLabel(NATRON_ICONS_PATH "natron/play-reverse.svg");
     } else if (name == kNatronParamTrackingForward) {
-        knob->setIconLabel(NATRON_IMAGES_PATH "play.png");
+        knob->setIconLabel(NATRON_ICONS_PATH "lucide/play.svg");
     }
 }
 

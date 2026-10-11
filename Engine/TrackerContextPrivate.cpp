@@ -266,7 +266,7 @@ TrackerContextPrivate::TrackerContextPrivate(TrackerContext* publicInterface,
     defPatternWinSizeKnob->setName(kTrackerParamDefaultMarkerPatternWinSize);
     defPatternWinSizeKnob->setInViewerContextLabel(tr(kTrackerParamDefaultMarkerPatternWinSizeLabel));
     defPatternWinSizeKnob->setHintToolTip( tr(kTrackerParamDefaultMarkerPatternWinSizeHint) );
-    defPatternWinSizeKnob->setIconLabel(NATRON_IMAGES_PATH "patternSize.png");
+    defPatternWinSizeKnob->setIconLabel(NATRON_ICONS_PATH "lucide/scan.svg");
     defPatternWinSizeKnob->setAnimationEnabled(false);
     defPatternWinSizeKnob->setMinimum(1);
     defPatternWinSizeKnob->disableSlider();
@@ -281,7 +281,7 @@ TrackerContextPrivate::TrackerContextPrivate(TrackerContext* publicInterface,
     defSearchWinSizeKnob->setName(kTrackerParamDefaultMarkerSearchWinSize);
     defSearchWinSizeKnob->setInViewerContextLabel(tr(kTrackerParamDefaultMarkerSearchWinSizeLabel));
     defSearchWinSizeKnob->setHintToolTip( tr(kTrackerParamDefaultMarkerSearchWinSizeHint) );
-    defSearchWinSizeKnob->setIconLabel(NATRON_IMAGES_PATH "searchSize.png");
+    defSearchWinSizeKnob->setIconLabel(NATRON_ICONS_PATH "lucide/scan-search.svg");
     defSearchWinSizeKnob->setAnimationEnabled(false);
     defSearchWinSizeKnob->setMinimum(1);
     defSearchWinSizeKnob->disableSlider();

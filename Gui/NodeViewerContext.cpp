@@ -44,8 +44,8 @@
 #include "Engine/Plugin.h"
 
 #include "Gui/ActionShortcuts.h"
-#include "Gui/ColoredFrame.h"
 #include "Gui/ClickableLabel.h"
+#include "Gui/ColoredFrame.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiDefines.h"
@@ -54,6 +54,7 @@
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/QtEnumConvert.h"
+#include "Gui/ThemedIcon.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
 #include "Gui/ViewerToolButton.h"
@@ -394,7 +395,9 @@ NodeViewerContextPrivate::addToolBarTool(const std::string& toolID,
     QIcon icon;
     if ( !iconPath.empty() ) {
         QString iconPathStr = QString::fromUtf8( iconPath.c_str() );
-        if ( QFile::exists(iconPathStr) ) {
+        if (ThemedIcon::isSvgPath(iconPathStr)) {
+            icon = ThemedIcon::icon(iconPathStr, TO_DPIX(NATRON_TOOL_BUTTON_ICON_SIZE));
+        } else if (QFile::exists(iconPathStr)) {
             QPixmap pix;
             pix.load(iconPathStr);
             if ( !pix.isNull() ) {

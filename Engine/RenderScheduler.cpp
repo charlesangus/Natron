@@ -65,6 +65,7 @@
 #include "Engine/RenderStats.h"
 #include "Engine/Settings.h"
 #include "Engine/TLSHolder.h"
+#include "Global/FloatingPointExceptions.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -149,6 +150,13 @@ public:
 
     virtual void run() OVERRIDE FINAL
     {
+#ifdef DEBUG
+        // A pool thread inherits the floating-point environment of whichever thread spawned it,
+        // so every task sets the one render threads use instead of depending on that.
+        boost_adaptbx::floating_point::exception_trapping trap(boost_adaptbx::floating_point::exception_trapping::division_by_zero |
+                                                               boost_adaptbx::floating_point::exception_trapping::invalid |
+                                                               boost_adaptbx::floating_point::exception_trapping::overflow);
+#endif
         _scheduler->runOneTask();
     }
 

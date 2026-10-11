@@ -490,6 +490,21 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - Full ctest passes in both modes on lavapipe.
   - size: L
 
+- [ ] M84.P7.T8 — Pipelined strips: stream uploads and downloads while the GPU computes
+  - files: `Engine/GpuRegionTask.cpp`, `Engine/GpuRegionStrips.{h,cpp}`, `Engine/Gpu/GpuTransfer.{h,cpp}` (only if needed), `Tests/GpuResidency_Test.cpp`
+  - approach:
+    - A stripped region runs as a pipeline over the async transfer streams (P3.T2) with timeline semaphores. While strip k computes, strip k+1's inputs upload and strip k−1's outputs download. The host waits only when it must reuse a buffer, not after every strip.
+    - Buffers rotate as at least double buffers (triple where the budget allows) per strip slot. The strip planner sizes strips so that the in-flight set (slots × strip working set) fits the budget, and keeps one-slot serial as the last step before strip-halving or the CPU fallback.
+    - It falls back to the serial path when the device has no separate transfer queue family, so lavapipe stays correct. On RADV it uses the dedicated transfer family (`RADV_PERFTEST=transfer_queue`).
+    - Abort, out-of-memory and device-loss handling keep their P7.T4/P7.T7 behaviour mid-pipeline. In-flight work is drained before any buffer is returned to the pool.
+    - Per-region stats record the overlap: transfer time hidden behind compute versus exposed.
+  - verify:
+    - Tiled output still matches untiled exactly (diff 0) on lavapipe with the 1 MB override, with pipelining both forced on and off.
+    - On RADV in the container (`devshell.sh --gpu`), a stripped Grade → Blur σ25 → Grade at 16k shows queue overlap: total region wall time is clearly below the sum of upload + compute + download, recorded in Decisions.
+    - Reservations return to 0, and abort mid-pipeline is clean.
+    - Full ctest passes in both modes on lavapipe.
+  - size: L
+
 ## Phase 84.8: Benches and close-out
 
 - [ ] M84.P8.T1 — Quick directional bench: no regression in CPU-only renders
@@ -550,6 +565,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - P7.T5 after P7.T2.
   - P7.T6 after P7.T3 and P7.T4.
   - P7.T7 after P7.T6; P7.T6 is checked off together with it.
+  - P7.T8 after P7.T7 (same files).
 - **Phase 8:**
   - P8.T1 after Phase 7.
   - P8.T2 after Phase 7 and P6.T3.
@@ -746,3 +762,4 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
 
 - 2026-10-11 — M84.P7.T6's test is committed (`5704714b1`), but the task is left unchecked. The budget holds (pool peak exactly 64 MB), there are no fallbacks and the pixels match, but **evictions are 0**. Admission estimates a region at ~2× its real peak (60.8 MB against 32 MB), so GPU regions never overlap, and a continuation runs straight after its producer.
 - 2026-10-11 — **Reactive GPU memory admission (user).** An estimate can't be trusted for arbitrary kernels: OFX GPU plugins allocate outside our pool, and native-kernel scratch would need hand-written declarations. Correctness already rests on the pool's eviction and the P7.T4 retry/fallback, not on prediction. So device-byte admission is dropped in favour of the concurrency cap plus pool enforcement. Strips are planned from known I/O sizes with headroom, and out-of-memory halves the strip height before the CPU fallback. This **supersedes the device-byte half of the P7.T3 approach**. "Continuations always run" is kept. New task M84.P7.T7.
+- 2026-10-11 — **Strips must stream (user):** a stripped region must overlap transfers with compute rather than run upload → compute → download → wait per strip. This was a P7.T5 follow-up, and is now in M84 as M84.P7.T8, ahead of the P8.T2 bench, so the 24k numbers reflect it.

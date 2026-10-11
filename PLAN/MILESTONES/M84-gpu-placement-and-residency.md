@@ -147,7 +147,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - verify: CI on the branch is green, the `GpuTests` cases show as passed in the log (not skipped), and the job's wall-time change is recorded in Decisions.
   - size: M
 
-- [ ] M84.P2.T4 — Rebuild the spike's tools on the promoted code
+- [x] M84.P2.T4 — Rebuild the spike's tools on the promoted code
   - files: `tools/gpu-spike/CMakeLists.txt`; delete `tools/gpu-spike/{src,cmake,tests/*_Test.cpp,tests/*.h,ref}` and the moved kernels
   - approach:
     - The spike project includes the root `cmake/` helpers and `add_subdirectory(../../Engine/Gpu)`.
@@ -158,7 +158,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
 
 ## Phase 84.3: Finish the backend (design note §5 "new" items)
 
-- [ ] M84.P3.T1 — Device limits and the `GpuBuffer` RAII layer
+- [x] M84.P3.T1 — Device limits and the `GpuBuffer` RAII layer
   - files: `Engine/Gpu/GpuDevice.{h,cpp}`, `Engine/Gpu/GpuBuffer.{h,cpp}` (new), `Tests/Gpu/GpuBuffer_Test.cpp`, `Tests/Gpu/CMakeLists.txt`
   - approach:
     - `GpuDeviceInfo` gains `maxStorageBufferRange`, `minImportedHostPointerAlignment`, the device-local heap size, and `unifiedMemory` (integrated GPU, or a device-local and host-visible heap that covers device memory).
@@ -653,3 +653,6 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
 - 2026-10-10 — **Floating-point trap fix** (`7fe6a04ea`). In taskgraph mode, `GLScheduler.GLNodeRendersInsideATaskAndStoresRAM` failed intermittently with SIGFPE in llvmpipe's shader compile. Pool threads inherited the debug FP traps from whichever thread spawned them. `NodeTask::run` now sets the traps itself, and `OSGLContext` masks them while it creates the context. Full ctest passes 1370/1370 in both modes.
 - 2026-10-10 — **Rebased onto `main`** (`6b0ec1f42`, M75) with `--onto origin/main 87dcb403a`. It was clean, and the GPU paths are byte-identical to before. Old tip kept as local branch `m84-pre-rebase-backup`.
 - 2026-10-10 — **Open build issue** (fix in P2.T3): `cmake/FetchSlang.cmake` defaults the deps cache to `$HOME/.cache/natron-deps`, and the CPP-kernel targets bake that absolute path. `natron-dev` and `natron-dev-gpu` share `build/debug` but have different `HOME`s, so `build.sh debug` from the other container fails to find `slang-cpp-prelude.h`.
+- 2026-10-10 — M84.P2.T3 committed (`fb3718b86`). The default deps cache is now the repo-local `.natron-deps` (fixing the cross-container build), and CI and release cache it. Both ctest steps use lavapipe with `NATRON_TEST_REQUIRE_GPU=1`. The task is checked off once a dispatched CI run on the branch is green with GpuTests passing.
+- 2026-10-10 — M84.P2.T4 done (`3289f9613`). The spike builds against `NatronGpu` using the root cmake helpers. Its CPU twins are named `grade_twin`/`blur_twin` to avoid the collision, and `slang_add_glsl` moved to `tools/gpu-spike/SlangGlsl.cmake`. `GpuBench` accepts a software device under `GPU_SPIKE_ALLOW_SOFTWARE=1`. `GpuBench --sizes uhd` and `CpuTwinBench` run on lavapipe.
+- 2026-10-10 — M84.P3.T1 done (`e97868b96`). `createHostImported` **rejects** sizes above `maxMemoryAllocationSize` (`fallbackToStaging`) instead of clamping them; callers split. GpuTests: 100/100 on lavapipe (4 GL zero-copy skips) and on RADV in the container; 54/54 on the host.

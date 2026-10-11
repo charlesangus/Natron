@@ -77,9 +77,18 @@ namespace {
 
     OIIO::ImageOutput::unique_ptr createOutput(const std::string& formatName)
     {
+        // OIIO records "called with no filename" in a global error that nothing retrieves.
+        if (formatName.empty()) {
+            return OIIO::ImageOutput::unique_ptr();
+        }
         const OiioReadSupport::FpTrapGuard guard;
+        OIIO::ImageOutput::unique_ptr output = OIIO::ImageOutput::create(formatName);
+        if (!output) {
+            // An unknown format is an expected probe result; leaving its message would attach it to a later error.
+            OIIO::geterror();
+        }
 
-        return OIIO::ImageOutput::create(formatName);
+        return output;
     }
 
     struct ExtensionTable {
@@ -675,7 +684,7 @@ writeFile(const std::string& path,
     const std::string temporaryName = utf8Of(temporary.path());
 
     OIIO::ImageOutput::unique_ptr output;
-    {
+    if (!path.empty()) {
         const OiioReadSupport::FpTrapGuard guard;
         output = OIIO::ImageOutput::create(path);
     }

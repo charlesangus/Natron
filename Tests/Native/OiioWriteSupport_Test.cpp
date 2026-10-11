@@ -186,3 +186,19 @@ TEST(OiioWriteSupport, OptionTable)
     EXPECT_FALSE(OiioWriteSupport::paramVisibility("png", "default").quality);
     EXPECT_FALSE(OiioWriteSupport::paramVisibility("no-such-format", "default").compression);
 }
+
+TEST(OiioWriteSupport, EmptyAndUnknownNamesLeaveNoPendingOiioError)
+{
+    OIIO::geterror();
+
+    EXPECT_FALSE(OiioWriteSupport::capabilities("").known);
+    EXPECT_FALSE(OiioWriteSupport::capabilities("no-such-format").known);
+    EXPECT_TRUE(OiioWriteSupport::formatNameForWritableExtension("").empty());
+    EXPECT_FALSE(OiioWriteSupport::isWritablePath(""));
+    OiioWriteSupport::autoDataType("");
+    OiioWriteSupport::validDataTypes("");
+    OiioWriteSupport::compressionChoices("");
+    OiioWriteSupport::paramVisibility("", "default");
+
+    EXPECT_TRUE(OIIO::geterror().empty());
+}

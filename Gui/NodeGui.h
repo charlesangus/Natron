@@ -183,7 +183,7 @@ public:
     virtual void setSize(double w, double h) OVERRIDE FINAL;
     virtual void getColor(double* r, double *g, double* b) const OVERRIDE FINAL;
     virtual void setColor(double r, double g, double b) OVERRIDE FINAL;
-
+    virtual void getUserColor(double* r, double* g, double* b) const OVERRIDE FINAL;
 
     /*Returns true if the NodeGUI contains the point (in items coordinates)*/
     virtual bool contains(const QPointF &point) const OVERRIDE FINAL;
@@ -201,6 +201,12 @@ public:
     virtual QRectF boundingRect() const OVERRIDE;
 
     QRectF boundingRectWithEdges() const;
+
+    /*Like boundingRect(), but grown by the user-colour border's width when that border is
+       currently drawn, since the border sits outside the node's own footprint. Edges and
+       hit-testing use this so they reach past the border rather than stopping at the node
+       it wraps.*/
+    QRectF outlineBoundingRect() const;
 
     /*this function does the painting, using QPainter, you can overload it to change the aspect of
        the node.*/
@@ -300,6 +306,35 @@ public:
     QColor getCurrentColor() const;
 
     void setCurrentColor(const QColor & c);
+
+    void setUserColor(const QColor& c);
+
+    /**
+     * @brief Removes the user colour. A Backdrop has none, its body being the colour the
+     * user sets, so it is reset to Settings::getDefaultBackdropColor() instead.
+     **/
+    virtual void clearUserColor() OVERRIDE FINAL;
+
+    virtual bool hasUserColor() const OVERRIDE FINAL;
+
+    /**
+     * @brief Reads the user colour flag and value under one lock. Returns false, leaving
+     * color untouched, when no user colour is set.
+     **/
+    bool getUserColor(QColor* color) const;
+
+    /**
+     * @brief Resets the body to the category colour and applies the user colour the
+     * serialization resolves to, so a saved project follows later Preferences changes.
+     **/
+    void restoreCategoryAndUserColor(const NodeGuiSerialization& obj);
+
+    /**
+     * @brief Re-applies this node's category body colour after a Preferences
+     * change, leaving any user colour border untouched. No-op for a backdrop,
+     * whose body colour doubles as its user colour with no way to tell the two apart.
+     **/
+    void refreshCategoryColor();
 
     void setOverlayColor(const QColor& c);
 
@@ -407,6 +442,12 @@ public:
     virtual bool setCurrentCursor(const QString& customCursorFilePath) OVERRIDE FINAL;
     virtual void showGroupKnobAsDialog(KnobGroup* group) OVERRIDE FINAL;
 
+    /**
+     * @brief The colour a node of this category gets by default: the node's own
+     * category colour, or Settings::getDefaultBackdropColor() for a backdrop.
+     **/
+    static bool getCategoryColor(const NodePtr& internalNode, QColor* color);
+
 protected:
 
     virtual int getBaseDepth() const { return 20; }
@@ -435,8 +476,6 @@ public Q_SLOTS:
     void onRightClickActionTriggered();
 
     void onRightClickMenuKnobPopulated();
-
-    bool getColorFromGrouping(QColor* color);
 
     void onHideInputsKnobValueChanged(bool hidden);
 
@@ -572,6 +611,19 @@ protected:
 
     virtual void applyBrush(const QBrush & brush);
 
+    /**
+     * @brief True when the user colour is painted as the body instead of as a border.
+     **/
+    virtual bool drawsUserColorAsBody() const { return false; }
+
+    /**
+     * @brief Called with the freshly computed drawn body colour every time it changes.
+     * A subclass whose label is not _nameItem (e.g. DotGui draws its label beside the body
+     * rather than on it) overrides this to keep that label's contrast in sync, without needing
+     * access to _nameItem or the private colour state.
+     **/
+    virtual void refreshExtraLabelColor(const QColor& /*drawnBodyColor*/) { }
+
 private:
 
     int getPluginIconWidth() const;
@@ -593,6 +645,26 @@ private:
     void populateMenu();
 
     void refreshCurrentBrush();
+
+    /**
+     * @brief A Backdrop has no category colour to keep showing underneath, so the colour the
+     * user sets is its body colour itself rather than a separate user colour.
+     **/
+    bool colorIsBody() const;
+
+    bool isDrawnAsClone() const;
+
+    QColor getDrawnBodyColor() const;
+
+    bool isUserColorBorderShown() const;
+
+    void refreshUserColorBorder();
+
+    void refreshUserColorBorderGeometry();
+
+    void refreshNameItemTextColor();
+
+    void refreshPanelColorIndicator();
 
     void initializeInputsForInspector();
 
@@ -618,6 +690,12 @@ private:
 
     /*A pointer to the rectangle of the node.*/
     NodeGraphRectItem* _boundingBox;
+
+    // Sized to the node's full footprint (icon column, _boundingBox and preview) grown by the
+    // border's width while it is shown, so the ring is drawn entirely outside that footprint
+    // instead of eating into it, and kept above those items in z-order so it is never painted
+    // over by them.
+    NodeGraphRectItem* _userColorBorder;
 
     /*A pointer to the channels pixmap displayed*/
     QGraphicsPixmapItem* _channelsPixmap;
@@ -645,9 +723,12 @@ private:
 
     //True when the settings panel has been  created
     bool _panelCreated;
-    mutable QMutex _currentColorMutex; //< protects _currentColor
+    mutable QMutex _currentColorMutex; //< protects _currentColor, _hasUserColor and _userColor
     QColor _currentColor; //< accessed by the serialization thread
+    bool _hasUserColor;
+    QColor _userColor;
     QColor _clonedColor;
+    bool _nameItemHasUserFontColor; //< the label has a font colour the user picked, which wins over body contrast
     bool _wasBeginEditCalled;
     mutable QMutex positionMutex;
 

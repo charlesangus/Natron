@@ -117,6 +117,12 @@ public:
 
     void resetHostOverlayColor();
 
+    /**
+     * @brief Removes the node's user colour border, or resets a Backdrop to the default
+     * backdrop colour. No-op outside a NodeSettingsPanel.
+     **/
+    void resetUserColor();
+
     virtual MultiInstancePanelPtr getMultiInstancePanel() const
     {
         return MultiInstancePanelPtr();

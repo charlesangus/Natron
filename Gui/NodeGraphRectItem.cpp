@@ -26,15 +26,44 @@
 
 #include "NodeGraphRectItem.h"
 
+#include <algorithm>
+
 #include <QPainter>
+#include <QPen>
 
 NATRON_NAMESPACE_ENTER
 
-NodeGraphRectItem::NodeGraphRectItem(QGraphicsItem *parent,
+NodeGraphRectItem::NodeGraphRectItem(QGraphicsItem* parent,
                                      int cornerRadiusPx)
-: QGraphicsRectItem(parent)
-, _cornerRadiusPx(cornerRadiusPx)
+    : QGraphicsRectItem(parent)
+    , _cornerRadiusPx(cornerRadiusPx)
+    , _hasInsetBorder(false)
+    , _insetBorderColor()
+    , _insetBorderWidth(0.)
 {
+}
+
+void
+NodeGraphRectItem::setInsetBorder(const QColor& color,
+                                  double width)
+{
+    if (_hasInsetBorder && (_insetBorderColor == color) && (_insetBorderWidth == width)) {
+        return;
+    }
+    _hasInsetBorder = true;
+    _insetBorderColor = color;
+    _insetBorderWidth = width;
+    update();
+}
+
+void
+NodeGraphRectItem::clearInsetBorder()
+{
+    if (!_hasInsetBorder) {
+        return;
+    }
+    _hasInsetBorder = false;
+    update();
 }
 
 void
@@ -43,6 +72,23 @@ NodeGraphRectItem::paint(QPainter *painter, const QStyleOptionGraphicsItem* /*op
     painter->setPen(pen());
     painter->setBrush(brush());
     painter->drawRoundedRect(rect(), _cornerRadiusPx, _cornerRadiusPx);
+
+    if (!_hasInsetBorder || _insetBorderWidth <= 0.) {
+        return;
+    }
+    const double halfWidth = _insetBorderWidth / 2.;
+    const QRectF strokeRect = rect().adjusted(halfWidth, halfWidth, -halfWidth, -halfWidth);
+    if ((strokeRect.width() <= 0.) || (strokeRect.height() <= 0.)) {
+        return;
+    }
+    // A QPen stroke is centred on its path: inset the path by half the width so the outer edge
+    // meets rect(), and shrink the radius by the same amount so the outer corner keeps its curve.
+    const double strokeRadius = std::max(0., _cornerRadiusPx - halfWidth);
+    QPen borderPen(_insetBorderColor, _insetBorderWidth);
+    borderPen.setJoinStyle(Qt::MiterJoin);
+    painter->setPen(borderPen);
+    painter->setBrush(Qt::NoBrush);
+    painter->drawRoundedRect(strokeRect, strokeRadius, strokeRadius);
 }
 
 NATRON_NAMESPACE_EXIT

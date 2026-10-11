@@ -117,6 +117,24 @@ struct DockablePanelPrivate
                          const QString& helpToolTip);
 };
 
+class NodeColorButton
+    : public Button {
+    GCC_DIAG_SUGGEST_OVERRIDE_OFF
+    Q_OBJECT
+    GCC_DIAG_SUGGEST_OVERRIDE_ON
+
+private:
+    DockablePanel* _panel;
+
+public:
+    NodeColorButton(DockablePanel* panel,
+                    const QIcon& icon,
+                    QWidget* parent);
+
+private:
+    virtual void mousePressEvent(QMouseEvent* e) OVERRIDE FINAL;
+};
+
 class OverlayColorButton
     : public Button
 {

@@ -570,6 +570,12 @@ Effect::setColor(double r,
     getInternalNode()->setColor(r, g, b);
 }
 
+void
+Effect::resetColor()
+{
+    getInternalNode()->resetColor();
+}
+
 bool
 Effect::isNodeSelected() const
 {

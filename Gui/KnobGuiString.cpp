@@ -664,7 +664,7 @@ KnobGuiString::restoreTextInfoFromString()
 
     if ( text.isEmpty() ) {
         _fontSize = _fontSizeSpinBox->value();
-        _fontColor = Qt::black;
+        _fontColor = QColor();
         _fontFamily = _fontCombo->currentFont().family();
         _boldActivated = false;
         _italicActivated = false;
@@ -710,18 +710,21 @@ KnobGuiString::restoreTextInfoFromString()
                 ++i;
             }
         }
+        const int fontTagEnd = foundFontTag ? text.indexOf(QString::fromUtf8("\">"), i) : -1;
         toFind = QString::fromUtf8(kFontColorTag);
-        i = text.indexOf(toFind, i);
-        assert( (!foundFontTag && i == -1) || (foundFontTag && i != -1) );
-        if (i != -1) {
-            i += toFind.size();
-            while ( i < text.size() && text.at(i) != QLatin1Char('"') ) {
-                fontColorString.append( text.at(i) );
-                ++i;
+        int colorPos = foundFontTag ? text.indexOf(toFind, i) : -1;
+        if ((colorPos != -1) && (fontTagEnd != -1) && (colorPos > fontTagEnd)) {
+            colorPos = -1;
+        }
+        if (colorPos != -1) {
+            colorPos += toFind.size();
+            while (colorPos < text.size() && text.at(colorPos) != QLatin1Char('"')) {
+                fontColorString.append(text.at(colorPos));
+                ++colorPos;
             }
         }
         toFind = QString::fromUtf8(kFontFaceTag);
-        i = text.indexOf(toFind, i);
+        i = foundFontTag ? text.indexOf(toFind, i) : -1;
         assert( (!foundFontTag && i == -1) || (foundFontTag && i != -1) );
         if (i != -1) {
             i += toFind.size();
@@ -733,7 +736,7 @@ KnobGuiString::restoreTextInfoFromString()
 
         if (!foundFontTag) {
             _fontSize = _fontSizeSpinBox->value();
-            _fontColor = Qt::black;
+            _fontColor = QColor();
             _fontFamily = _fontCombo->currentFont().family();
             _boldActivated = false;
             _italicActivated = false;
@@ -748,7 +751,11 @@ KnobGuiString::restoreTextInfoFromString()
 
             _fontSizeSpinBox->setValue(_fontSize);
 
-            _fontColor = QColor(fontColorString);
+            if (fontColorString.isEmpty() || isAutomaticLabelFontColorName(fontColorString)) {
+                _fontColor = QColor();
+            } else {
+                _fontColor = QColor(fontColorString);
+            }
         }
 
 
@@ -823,7 +830,7 @@ KnobGuiString::updateFontColorIcon(const QColor & color)
 {
     QPixmap p(18, 18);
 
-    p.fill(color);
+    p.fill(color.isValid() ? color : QColor(Qt::black));
     _fontColorButton->setIcon( QIcon(p) );
 }
 
@@ -861,14 +868,37 @@ KnobGuiString::onCurrentFontChanged(const QFont & font)
 }
 
 QString
+KnobGuiString::userFontColorName(const QColor& color)
+{
+    // The #AARRGGBB form keeps a black the user picked distinct from the automatic "#000000".
+    return color.name(QColor::HexArgb);
+}
+
+bool
+KnobGuiString::isAutomaticLabelFontColorName(const QString& colorName)
+{
+    // Older labels carry color="#000000" that Natron added on its own whether or not the user
+    // picked a colour, so that exact spelling means "no colour chosen".
+    return colorName.trimmed().compare(QString::fromUtf8("#000000"), Qt::CaseInsensitive) == 0;
+}
+
+QString
 KnobGuiString::makeFontTag(const QString& family,
                            int fontSize,
                            const QColor& color)
 {
+    // An invalid colour means the user never picked one, and leaving the attribute out lets the
+    // node graph choose a label colour that contrasts with the node body.
+    if (!color.isValid()) {
+        return QString::fromUtf8(kFontSizeTag "%1\" " kFontFaceTag "%2\">")
+            .arg(fontSize)
+            .arg(family);
+    }
+
     return QString::fromUtf8(kFontSizeTag "%1\" " kFontColorTag "%2\" " kFontFaceTag "%3\">")
-           .arg(fontSize)
-           .arg( color.name() )
-           .arg(family);
+        .arg(fontSize)
+        .arg(userFontColorName(color))
+        .arg(family);
 }
 
 QString
@@ -957,12 +987,12 @@ KnobGuiString::colorFontButtonClicked()
     QColorDialog dialog(_textEdit);
     dialog.setOption(QColorDialog::DontUseNativeDialog);
     QObject::connect( &dialog, SIGNAL(currentColorChanged(QColor)), this, SLOT(updateFontColorIcon(QColor)) );
-    dialog.setCurrentColor(_fontColor);
+    dialog.setCurrentColor(_fontColor.isValid() ? _fontColor : QColor(Qt::black));
     if ( dialog.exec() ) {
         _fontColor = dialog.currentColor();
 
         QString text = QString::fromUtf8( knob->getValue(0).c_str() );
-        findReplaceColorName( text, _fontColor.name() );
+        findReplaceColorName(text, _fontColor);
         pushUndoCommand( new KnobUndoCommand<std::string>( shared_from_this(), knob->getValue(0), text.toStdString() ) );
     }
     updateFontColorIcon(_fontColor);
@@ -988,10 +1018,10 @@ KnobGuiString::findReplaceColorName(QString& text,
                 ++j;
             }
             text.remove( foundColorTag, currentColor.size() );
-            text.insert( foundColorTag, color.name() );
+            text.insert(foundColorTag, userFontColorName(color));
         } else {
-            text.insert( i, QString::fromUtf8(kFontColorTag) );
-            text.insert( i + toFind.size(), color.name() + QString::fromUtf8("\"") );
+            const int afterFontKeyword = i + (int)QString::fromUtf8("<font ").size();
+            text.insert(afterFontKeyword, QString::fromUtf8(kFontColorTag) + userFontColorName(color) + QString::fromUtf8("\" "));
         }
     }
 }

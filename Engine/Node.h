@@ -724,11 +724,15 @@ public:
     void getSize(double* w, double* h) const;
 
     /**
-     * @brief Get the colour of the node as it appears on the nodegraph.
+     * @brief Get the colour of the node as it appears on the nodegraph: the user colour
+     * if one was set, otherwise the plug-in category colour. Ignored in background mode,
+     * since there is then no nodegraph to display it on.
      **/
     bool getColor(double* r, double *g, double* b) const;
     void setColor(double r, double g, double b);
-
+    bool hasUserColor() const;
+    void getUserColor(double* r, double* g, double* b) const;
+    void resetColor();
 
     std::string getKnobChangedCallback() const;
     std::string getInputChangedCallback() const;
@@ -781,6 +785,28 @@ public:
     std::string getPluginResourcesPath() const;
 
     void getPluginGrouping(std::list<std::string>* grouping) const;
+
+    /**
+     * @brief Resolves the NodeCategoryEnum used to colour this node in the node graph.
+     * Backdrop is not a category (it keeps its own Settings::getDefaultBackdropColor()):
+     * callers must check isBackdropNode() before calling this.
+     **/
+    NodeCategoryEnum getNodeCategory() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The domain half of getNodeCategory(): Deep, Native 3D or USD 3D, from the
+     * plugin grouping already split into its components. Returns false for any other grouping.
+     **/
+    static bool domainCategoryFromGrouping(const std::list<std::string>& grouping,
+                                           NodeCategoryEnum* category) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The table + keyword heuristic half of getNodeCategory(): maps a plugin's major
+     * grouping and label to a category, for plugins that are not a Reader/Writer/Generator
+     * and whose grouping is not a domain category. Keywords match whole words of the label.
+     **/
+    static NodeCategoryEnum categoryFromGroupingAndLabel(const std::string& majorGrouping,
+                                                         const std::string& label) WARN_UNUSED_RETURN;
 
     /**
      * @brief Forwarded to the live effect instance

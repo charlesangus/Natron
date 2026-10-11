@@ -25,8 +25,9 @@
 
 #include "DotGui.h"
 
-#include <cassert>
 #include <algorithm> // min, max
+#include <cassert>
+#include <cmath> // pow
 #include <stdexcept>
 
 CLANG_DIAG_OFF(deprecated)
@@ -98,6 +99,8 @@ CLANG_DIAG_ON(uninitialized)
 
 #define DOT_GUI_DIAMETER 15
 
+#define DOT_GUI_LABEL_GAP 6
+
 #define NATRON_PLUGIN_ICON_SIZE 20
 #define PLUGIN_ICON_OFFSET 2
 
@@ -114,6 +117,7 @@ DotGui::DotGui(QGraphicsItem* parent)
     : NodeGui(parent)
     , diskShape(NULL)
     , ellipseIndicator(NULL)
+    , _labelItem(NULL)
 {
 }
 
@@ -138,6 +142,73 @@ DotGui::createGui()
                                       diam + stateOffset * 2,
                                       diam + stateOffset * 2) );
     ellipseIndicator->hide();
+
+    // Unlike a regular node, a Dot's label sits beside the disk rather than inside a body, and
+    // Nuke-like, it stays empty (and hidden) unless the user actually sets one: the disk alone
+    // already identifies the node, so there is no name fallback to fall back to.
+    _labelItem = new NodeGraphTextItem(getDagGui(), this, false);
+    _labelItem->setZValue(depth + 1);
+    _labelItem->hide();
+
+    NodePtr node = getNode();
+    if (node) {
+        QObject::connect(node.get(), &Node::nodeExtraLabelChanged, this, [this](const QString& label) {
+            refreshLabelText(label);
+        });
+        refreshLabelText(QString::fromUtf8(node->getNodeExtraLabel().c_str()));
+    }
+}
+
+void
+DotGui::refreshLabelText(const QString& label)
+{
+    if (!_labelItem) {
+        return;
+    }
+
+    QString trimmed = label.trimmed();
+    if (trimmed.isEmpty()) {
+        _labelItem->hide();
+
+        return;
+    }
+
+    QString html = trimmed;
+    html.replace(QString::fromUtf8("\n"), QString::fromUtf8("<br />"));
+    _labelItem->setHtml(html);
+    _labelItem->adjustSize();
+
+    const QRectF diskBbox = diskShape->boundingRect();
+    const QRectF labelBbox = _labelItem->boundingRect();
+    const qreal gap = TO_DPIX(DOT_GUI_LABEL_GAP);
+
+    _labelItem->setPos(diskBbox.right() + gap, diskBbox.center().y() - labelBbox.height() / 2.);
+    _labelItem->show();
+}
+
+// 0.179 is the luminance at which white and black text give the same WCAG contrast ratio
+// against the colour behind them; NodeGui.cpp carries the same formula for _nameItem, but as
+// a file-local static it is not reachable from here.
+static QColor
+dotLabelContrastColor(const QColor& against)
+{
+    auto toLinear = [](double c) {
+        return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+    };
+    double luminance = 0.2126 * toLinear(against.redF())
+        + 0.7152 * toLinear(against.greenF())
+        + 0.0722 * toLinear(against.blueF());
+
+    return luminance > 0.179 ? QColor(0, 0, 0, 255) : QColor(255, 255, 255, 255);
+}
+
+void
+DotGui::refreshExtraLabelColor(const QColor& drawnBodyColor)
+{
+    if (!_labelItem) {
+        return;
+    }
+    _labelItem->setDefaultTextColor(dotLabelContrastColor(drawnBodyColor));
 }
 
 void
@@ -164,22 +235,6 @@ void
 DotGui::applyBrush(const QBrush & brush)
 {
     diskShape->setBrush(brush);
-}
-
-NodeSettingsPanel*
-DotGui::createPanel(QVBoxLayout* /*container*/,
-                    const NodeGuiPtr & /*thisAsShared*/)
-{
-    /* NodeSettingsPanel* panel = new NodeSettingsPanel( MultiInstancePanelPtr(),
-                                                       getDagGui()->getGui(),
-                                                       thisAsShared,
-                                                       container,container->parentWidget() );
-
-       ///Always close the panel by default for Dots
-       panel->setClosed(true);
-
-       return panel;*/
-    return 0;
 }
 
 QRectF

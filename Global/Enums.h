@@ -518,6 +518,25 @@ enum DataKindEnum {
     eDataKindPolymorphic,
 };
 
+enum NodeCategoryEnum {
+    eNodeCategoryRead,
+    eNodeCategoryWrite,
+    eNodeCategoryGenerator,
+    eNodeCategoryColor,
+    eNodeCategoryFilter,
+    eNodeCategoryChannel,
+    eNodeCategoryKeyer,
+    eNodeCategoryMerge,
+    eNodeCategoryDraw,
+    eNodeCategoryTime,
+    eNodeCategoryTransform,
+    eNodeCategoryViews,
+    eNodeCategoryDeep,
+    eNodeCategoryNative3D,
+    eNodeCategoryUsd3D,
+    eNodeCategoryOther,
+};
+
 enum RenderSafetyEnum
 {
     eRenderSafetyUnsafe = 0,

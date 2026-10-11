@@ -216,6 +216,39 @@ public:
     void getMergeGroupColor(float *r, float *g, float *b) const;
     void getViewsGroupColor(float *r, float *g, float *b) const;
     void getDeepGroupColor(float *r, float *g, float *b) const;
+    void getNative3DGroupColor(float* r, float* g, float* b) const;
+    void getUsd3DGroupColor(float* r, float* g, float* b) const;
+
+    void getNodeCategoryColor(NodeCategoryEnum category, float* r, float* g, float* b) const;
+
+    void getEdgeDeepColor(float* r, float* g, float* b) const;
+    void getEdgeSceneColor(float* r, float* g, float* b) const;
+
+    /**
+     * @brief The colour an edge should tint itself with for the given data kind, if any. Returns
+     * false for eDataKindImage and eDataKindPolymorphic, which have no knob of their own and stay
+     * untinted (the edge keeps its own default colour), leaving r/g/b untouched.
+     **/
+    bool getEdgeKindColor(DataKindEnum kind, float* r, float* g, float* b) const;
+
+    /**
+     * @brief True for the per-category node colour knobs that getNodeCategoryColor()
+     * reads from (including the "other"/default node colour), so a node graph can
+     * know when to re-colour the bodies of its nodes. The backdrop default colour
+     * knob is deliberately excluded: a backdrop's body colour also serves as its user
+     * colour, with no stored flag to tell the two apart, so live-updating it on a
+     * preference change could silently overwrite a colour the user picked by hand.
+     **/
+    bool isNodeCategoryColorKnob(KnobI* k) const;
+
+    /**
+     * @brief True while settings are being (re)loaded, so listeners to
+     * settingChanged() can ignore the burst of signals that fires then.
+     **/
+    bool isRestoringSettings() const
+    {
+        return _restoringSettings;
+    }
 
     bool getRenderOnEditingFinishedOnly() const;
     void setRenderOnEditingFinishedOnly(bool render);
@@ -394,6 +427,15 @@ public:
 Q_SIGNALS:
 
     void settingChanged(KnobI* knob);
+
+    /**
+     * @brief Emitted once settings have actually been committed to disk
+     * (the Preferences Save button, restoring defaults followed by Save, or
+     * any of the saveSettings()/saveSetting()/saveAllSettings() paths), as
+     * opposed to settingChanged(), which fires on every edit even before the
+     * user has chosen to keep it.
+     **/
+    void settingsSaved();
 
 private:
 
@@ -650,6 +692,10 @@ private:
     KnobColorPtr _defaultMergeGroupColor;
     KnobColorPtr _defaultViewsGroupColor;
     KnobColorPtr _defaultDeepGroupColor;
+    KnobColorPtr _defaultNative3DGroupColor;
+    KnobColorPtr _defaultUsd3DGroupColor;
+    KnobColorPtr _edgeDeepColor;
+    KnobColorPtr _edgeSceneColor;
     std::vector<ChoiceOption> _knownHostNames;
     bool _restoringSettings;
     bool _settingsExisted;

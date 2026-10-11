@@ -91,14 +91,35 @@ public:
     virtual void exportGroupAsPythonScript() = 0;
 
     /**
-     * @brief Get the colour of the node as it appears on the nodegraph.
+     * @brief Get the colour of the node as it appears on the nodegraph: the user colour
+     * if one was set, otherwise the plug-in category colour.
      **/
     virtual void getColor(double* r, double *g, double* b) const = 0;
 
     /**
-     * @brief Set the colour of the node as it appears on the nodegraph.
+     * @brief Set the user colour of the node, drawn as a border around the plug-in
+     * category colour (left untouched). A Backdrop has no category colour of its own, so
+     * this sets its body colour directly instead. A colour within 0.05 of the category
+     * colour clears the user colour instead, since exported scripts may write out every
+     * node's category colour, and that must not pin a border on each node.
      **/
     virtual void setColor(double r, double g, double b) = 0;
+
+    /**
+     * @brief Whether a user colour was set on this node (see setColor()).
+     **/
+    virtual bool hasUserColor() const = 0;
+
+    /**
+     * @brief Get the user colour explicitly set on this node, if any (see hasUserColor()).
+     **/
+    virtual void getUserColor(double* r, double* g, double* b) const = 0;
+
+    /**
+     * @brief Clear the user colour set by setColor(), reverting to the plug-in category colour.
+     * A Backdrop is reset to the default backdrop colour.
+     **/
+    virtual void clearUserColor() = 0;
 
     /**
      * @brief Get the suggested overlay colour

@@ -55,6 +55,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Knob.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
@@ -107,6 +108,9 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/ViewerTab.h"
 
 #define NATRON_STATE_INDICATOR_OFFSET 5
+
+// Strictly thinner than the state indicator band around the node, so the two never look alike.
+#define NATRON_USER_COLOR_BORDER_WIDTH 5
 
 #define NATRON_EDGE_DROP_TOLERANCE 15
 
@@ -178,25 +182,92 @@ getPixmapForMergeOperator(const QString& op,
     }
 }
 
-// Shared by the node silhouette and the input-arrow glyphs, so both use the exact
-// same tint per kind. Kept in sync with the Okabe-Ito colors Edge.cpp uses for the
-// same kinds: color is reinforcement only, never the sole signal.
-static bool
-kindTintColor(DataKindEnum kind,
-              QColor* color)
+static double
+srgbChannelToLinear(double c)
 {
-    switch (kind) {
-    case eDataKindDeep:
-        *color = QColor(0, 114, 178, 235); // Okabe-Ito blue
-        return true;
-    case eDataKindScene:
-        *color = QColor(230, 159, 0, 235); // Okabe-Ito orange
-        return true;
-    case eDataKindImage:
-    case eDataKindPolymorphic:
-    default:
+    return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+}
+
+static double
+wcagRelativeLuminance(const QColor& c)
+{
+    return 0.2126 * srgbChannelToLinear(c.redF())
+        + 0.7152 * srgbChannelToLinear(c.greenF())
+        + 0.0722 * srgbChannelToLinear(c.blueF());
+}
+
+// 0.179 is the luminance at which white and black text give the same WCAG contrast ratio
+// against the background, so it is the threshold rather than an arbitrary pick.
+static QColor
+contrastingLabelTextColor(const QColor& body)
+{
+    return wcagRelativeLuminance(body) > 0.179 ? QColor(0, 0, 0, 255) : QColor(255, 255, 255, 255);
+}
+
+// The label's font tag stays in the HTML handed to the text item, so an inline colour there would
+// beat setDefaultTextColor(); an automatic one is cut out so the contrast colour can show.
+static bool
+takeUserLabelFontColor(QString* html,
+                       QColor* userColor)
+{
+    const QString sizeTag = QString::fromUtf8(kFontSizeTag);
+    const QString colorTag = QString::fromUtf8(kFontColorTag);
+    const int fontTagStart = html->indexOf(sizeTag);
+    if (fontTagStart == -1) {
         return false;
     }
+    const int fontTagEnd = html->indexOf(QLatin1Char('>'), fontTagStart);
+    const int attrStart = html->indexOf(colorTag, fontTagStart);
+    if ((attrStart == -1) || ((fontTagEnd != -1) && (attrStart > fontTagEnd))) {
+        return false;
+    }
+    const int valueStart = attrStart + colorTag.size();
+    const int valueEnd = html->indexOf(QLatin1Char('"'), valueStart);
+    if (valueEnd == -1) {
+        return false;
+    }
+    const QString colorName = html->mid(valueStart, valueEnd - valueStart);
+    const QColor parsed(colorName);
+    if (parsed.isValid() && !KnobGuiString::isAutomaticLabelFontColorName(colorName)) {
+        *userColor = parsed;
+
+        return true;
+    }
+    int attrEnd = valueEnd + 1;
+    if ((attrEnd < html->size()) && (html->at(attrEnd) == QLatin1Char(' '))) {
+        ++attrEnd;
+    }
+    html->remove(attrStart, attrEnd - attrStart);
+
+    return false;
+} // takeUserLabelFontColor
+
+// Only a user colour close to the body in both luminance and hue is pushed away from it: a pure
+// hue difference at matched luminance is already visible and must keep the user's exact colour.
+static QColor
+userBorderColorAgainstBody(const QColor& user,
+                           const QColor& body)
+{
+    const double lBody = wcagRelativeLuminance(body);
+    const double lUser = wcagRelativeLuminance(user);
+    const double contrastRatio = (std::max(lBody, lUser) + 0.05) / (std::min(lBody, lUser) + 0.05);
+    const double dr = user.redF() - body.redF();
+    const double dg = user.greenF() - body.greenF();
+    const double db = user.blueF() - body.blueF();
+    const double distance = std::sqrt(dr * dr + dg * dg + db * db);
+
+    if ((contrastRatio >= 1.3) || (distance >= 0.10)) {
+        return user;
+    }
+    const double target = lBody < 0.5 ? 1. : 0.;
+    const double keep = 0.65;
+    QColor mixed;
+    mixed.setRgbF(user.redF() * keep + target * (1. - keep),
+                  user.greenF() * keep + target * (1. - keep),
+                  user.blueF() * keep + target * (1. - keep),
+                  user.alphaF());
+
+    return mixed;
 }
 
 NodeGui::NodeGui(QGraphicsItem* parent)
@@ -214,6 +285,7 @@ NodeGui::NodeGui(QGraphicsItem* parent)
     , _nameFrame(NULL)
     , _resizeHandle(NULL)
     , _boundingBox(NULL)
+    , _userColorBorder(NULL)
     , _channelsPixmap(NULL)
     , _previewPixmap(NULL)
     , _previewDataMutex()
@@ -233,7 +305,10 @@ NodeGui::NodeGui(QGraphicsItem* parent)
     , _panelCreated(false)
     , _currentColorMutex()
     , _currentColor()
+    , _hasUserColor(false)
+    , _userColor()
     , _clonedColor()
+    , _nameItemHasUserFontColor(false)
     , _wasBeginEditCalled(false)
     , positionMutex()
     , _slaveMasterLink(NULL)
@@ -382,9 +457,9 @@ NodeGui::initialize(NodeGraph* dag,
 } // initialize
 
 bool
-NodeGui::getColorFromGrouping(QColor* color)
+NodeGui::getCategoryColor(const NodePtr& internalNode,
+                          QColor* color)
 {
-    NodePtr internalNode = getNode();
     if (!internalNode) {
         return false;
     }
@@ -394,46 +469,58 @@ NodeGui::getColorFromGrouping(QColor* color)
     }
     SettingsPtr settings = appPTR->getCurrentSettings();
     float r, g, b;
-    Backdrop* isBd = dynamic_cast<Backdrop*>( iseffect.get() );
-    std::list<std::string> grouping;
 
-    internalNode->getPluginGrouping(&grouping);
-    std::string majGroup = grouping.empty() ? "" : grouping.front();
-
-    if ( iseffect->isReader() ) {
-        settings->getReaderColor(&r, &g, &b);
-    } else if (isBd) {
+    if (internalNode->isBackdropNode()) {
         settings->getDefaultBackdropColor(&r, &g, &b);
-    } else if ( iseffect->isWriter() ) {
-        settings->getWriterColor(&r, &g, &b);
-    } else if ( iseffect->isGenerator() ) {
-        settings->getGeneratorColor(&r, &g, &b);
-    } else if (majGroup == PLUGIN_GROUP_COLOR) {
-        settings->getColorGroupColor(&r, &g, &b);
-    } else if (majGroup == PLUGIN_GROUP_FILTER) {
-        settings->getFilterGroupColor(&r, &g, &b);
-    } else if (majGroup == PLUGIN_GROUP_CHANNEL) {
-        settings->getChannelGroupColor(&r, &g, &b);
-    } else if (majGroup == PLUGIN_GROUP_KEYER) {
-        settings->getKeyerGroupColor(&r, &g, &b);
-    } else if (majGroup == PLUGIN_GROUP_MERGE) {
-        settings->getMergeGroupColor(&r, &g, &b);
-    } else if (majGroup == PLUGIN_GROUP_PAINT) {
-        settings->getDrawGroupColor(&r, &g, &b);
-    } else if (majGroup == PLUGIN_GROUP_TIME) {
-        settings->getTimeGroupColor(&r, &g, &b);
-    } else if (majGroup == PLUGIN_GROUP_TRANSFORM) {
-        settings->getTransformGroupColor(&r, &g, &b);
-    } else if (majGroup == PLUGIN_GROUP_MULTIVIEW) {
-        settings->getViewsGroupColor(&r, &g, &b);
-    } else if (majGroup == PLUGIN_GROUP_DEEP) {
-        settings->getDeepGroupColor(&r, &g, &b);
     } else {
-        settings->getDefaultNodeColor(&r, &g, &b);
+        settings->getNodeCategoryColor(internalNode->getNodeCategory(), &r, &g, &b);
     }
     color->setRgbF( Image::clamp<qreal>(r, 0., 1.),
                     Image::clamp<qreal>(g, 0., 1.),
                     Image::clamp<qreal>(b, 0., 1.) );
+    return true;
+}
+
+// The colour the grouping ladder that predates node categories gave a non-backdrop node,
+// which is what archives without a stored user colour recorded for an unedited node. It
+// differs from getCategoryColor() wherever categories moved a node: Reader/Writer/Generator
+// beat the Deep grouping, 3D groupings were the default node colour, and no label keyword
+// was consulted.
+static bool
+getLegacyCategoryColor(const NodePtr& internalNode,
+                       QColor* color)
+{
+    if (!internalNode) {
+        return false;
+    }
+    EffectInstancePtr iseffect = internalNode->getEffectInstance();
+    if (!iseffect) {
+        return false;
+    }
+    std::list<std::string> grouping;
+    internalNode->getPluginGrouping(&grouping);
+    const std::string majGroup = grouping.empty() ? std::string() : grouping.front();
+    NodeCategoryEnum category;
+
+    if (iseffect->isReader()) {
+        category = eNodeCategoryRead;
+    } else if (iseffect->isWriter()) {
+        category = eNodeCategoryWrite;
+    } else if (iseffect->isGenerator()) {
+        category = eNodeCategoryGenerator;
+    } else if (majGroup == PLUGIN_GROUP_DEEP) {
+        category = eNodeCategoryDeep;
+    } else {
+        // An empty label gives the keyword heuristic nothing to match, leaving only the
+        // exact major-grouping table, which is what the old ladder consulted.
+        category = Node::categoryFromGroupingAndLabel(majGroup, std::string());
+    }
+    float r, g, b;
+    appPTR->getCurrentSettings()->getNodeCategoryColor(category, &r, &g, &b);
+    color->setRgbF(Image::clamp<qreal>(r, 0., 1.),
+                   Image::clamp<qreal>(g, 0., 1.),
+                   Image::clamp<qreal>(b, 0., 1.));
+
     return true;
 }
 
@@ -448,7 +535,7 @@ NodeGui::restoreStateAfterCreation()
     ///Refresh the disabled knob
 
     QColor color;
-    if ( getColorFromGrouping(&color) ) {
+    if (getCategoryColor(internalNode, &color)) {
         setCurrentColor(color);
     }
     KnobBoolPtr disabledknob = internalNode->getDisabledKnob();
@@ -635,6 +722,11 @@ NodeGui::createGui()
     _boundingBox = new NodeGraphRectItem(this, cornerRadiusPx);
     _boundingBox->setZValue(depth);
 
+    _userColorBorder = new NodeGraphRectItem(this, cornerRadiusPx);
+    _userColorBorder->setZValue(depth + 1.5);
+    _userColorBorder->setPen(Qt::NoPen);
+    _userColorBorder->setBrush(Qt::NoBrush);
+
     if ( mustFrameName() ) {
         _nameFrame = new QGraphicsRectItem(this);
         _nameFrame->setZValue(depth + 1);
@@ -679,7 +771,10 @@ NodeGui::createGui()
 
     _nameItem = new NodeGraphTextItem(getDagGui(), this, false);
     _nameItem->setPlainText( QString::fromUtf8( node->getLabel().c_str() ) );
-    _nameItem->setDefaultTextColor( QColor(0, 0, 0, 255) );
+    // setNameItemHtml() re-picks this against the real body colour as soon as the category
+    // colour is known; until then, fall back to black against the still-undetermined body.
+    QColor initialCategoryColor;
+    _nameItem->setDefaultTextColor(getCategoryColor(node, &initialCategoryColor) ? contrastingLabelTextColor(initialCategoryColor) : QColor(0, 0, 0, 255));
     //_nameItem->setFont( QFont(appFont,appFontSize) );
     _nameItem->setZValue(depth + 1);
 
@@ -756,13 +851,13 @@ NodeGui::createGui()
 void
 NodeGui::onSettingsPanelColorChanged(const QColor & color)
 {
-    {
-        QMutexLocker k(&_currentColorMutex);
-        _currentColor = color;
+    if (colorIsBody()) {
+        setCurrentColor(color);
+    } else if (hasUserColor() || (color.rgb() != getCurrentColor().rgb())) {
+        // Compared at 8 bits per channel, the precision the colour dialog hands back, so
+        // confirming the dialog unchanged does not turn the body colour into a user colour.
+        setUserColor(color);
     }
-    Q_EMIT colorChanged(color);
-
-    refreshCurrentBrush();
 }
 
 void
@@ -1061,10 +1156,8 @@ NodeGui::resize(int width,
         _passThroughIndicator->refreshPosition(bottomRight);
     }
 
-    int indicatorOffset = TO_DPIX(NATRON_STATE_INDICATOR_OFFSET);
     _persistentMessage->setPos(midNodeX - (pMWidth / 2), topLeft.y() + height / 2 - metrics.height() / 2);
-    _stateIndicator->setRect(topLeft.x() - indicatorOffset, topLeft.y() - indicatorOffset,
-                             width + indicatorOffset * 2, height + indicatorOffset * 2);
+    refreshUserColorBorderGeometry();
 
     _disabledBtmLeftTopRight->setLine(insetDiagonal(bbox.bottomLeft(), bbox.topRight(), kDisabledCrossPenWidth));
     _disabledTopLeftBtmRight->setLine(insetDiagonal(bbox.topLeft(), bbox.bottomRight(), kDisabledCrossPenWidth));
@@ -1350,10 +1443,6 @@ NodeGui::onDataKindChanged()
     if (_outputEdge) {
         _outputEdge->refreshDataKindPen();
     }
-
-    // The silhouette reads the resolved kind at paint time, so it only follows a change that
-    // repaints the node item.
-    update();
 }
 
 void
@@ -1635,7 +1724,7 @@ NodeGui::initializeInputs()
 bool
 NodeGui::contains(const QPointF &point) const
 {
-    QRectF bbox = boundingRect();
+    QRectF bbox = outlineBoundingRect();
 
     bbox.adjust(-5, -5, 5, 5);
 
@@ -1667,6 +1756,25 @@ NodeGui::boundingRect() const
     t.translate( center.x(), center.y() );
     t.scale( scale(), scale() );
     t.translate( -center.x(), -center.y() );
+
+    return t.mapRect(bbox);
+}
+
+QRectF
+NodeGui::outlineBoundingRect() const
+{
+    if (!_userColorBorder) {
+        return boundingRect();
+    }
+
+    QTransform t;
+    QRectF bbox = _userColorBorder->rect();
+
+    QPointF center = bbox.center();
+
+    t.translate(center.x(), center.y());
+    t.scale(scale(), scale());
+    t.translate(-center.x(), -center.y());
 
     return t.mapRect(bbox);
 }
@@ -1753,7 +1861,7 @@ bool
 NodeGui::isNearby(QPointF &point)
 {
     QPointF p = mapFromScene(point);
-    QRectF bbox = boundingRect();
+    QRectF bbox = outlineBoundingRect();
     QRectF r( bbox.x() - TO_DPIX(NATRON_EDGE_DROP_TOLERANCE), bbox.y() - TO_DPIY(NATRON_EDGE_DROP_TOLERANCE),
               bbox.width() + TO_DPIX(NATRON_EDGE_DROP_TOLERANCE), bbox.height() + TO_DPIY(NATRON_EDGE_DROP_TOLERANCE) );
 
@@ -1790,14 +1898,103 @@ NodeGui::applyBrush(const QBrush & brush)
     }
 }
 
+bool
+NodeGui::colorIsBody() const
+{
+    return dynamic_cast<const BackdropGui*>(this) != NULL;
+}
+
+bool
+NodeGui::isDrawnAsClone() const
+{
+    return !_masterNodeGui.expired();
+}
+
+QColor
+NodeGui::getDrawnBodyColor() const
+{
+    if (isDrawnAsClone()) {
+        return _clonedColor;
+    }
+    QMutexLocker k(&_currentColorMutex);
+
+    return (_hasUserColor && drawsUserColorAsBody()) ? _userColor : _currentColor;
+}
+
 void
 NodeGui::refreshCurrentBrush()
 {
-    if (_slaveMasterLink) {
-        applyBrush(_clonedColor);
-    } else {
-        applyBrush(_currentColor);
+    QColor drawnBodyColor = getDrawnBodyColor();
+    applyBrush(drawnBodyColor);
+    refreshUserColorBorder();
+    refreshNameItemTextColor();
+    refreshExtraLabelColor(drawnBodyColor);
+}
+
+void
+NodeGui::refreshNameItemTextColor()
+{
+    // A font colour the user picked in the label editor always wins over body contrast.
+    if (!_nameItem || _nameItemHasUserFontColor) {
+        return;
     }
+    _nameItem->setDefaultTextColor(contrastingLabelTextColor(getDrawnBodyColor()));
+}
+
+bool
+NodeGui::isUserColorBorderShown() const
+{
+    if (!_userColorBorder || drawsUserColorAsBody()) {
+        return false;
+    }
+    // A clone is drawn entirely in the clone colour, so the user colour is hidden while it is one.
+    if (isDrawnAsClone()) {
+        return false;
+    }
+    QMutexLocker k(&_currentColorMutex);
+
+    return _hasUserColor;
+}
+
+void
+NodeGui::refreshUserColorBorder()
+{
+    if (!_userColorBorder || drawsUserColorAsBody()) {
+        return;
+    }
+    if (!isUserColorBorderShown()) {
+        _userColorBorder->clearInsetBorder();
+    } else {
+        QColor body, user;
+        {
+            QMutexLocker k(&_currentColorMutex);
+            body = _currentColor;
+            user = _userColor;
+        }
+        _userColorBorder->setInsetBorder(userBorderColorAgainstBody(user, body), TO_DPIX(NATRON_USER_COLOR_BORDER_WIDTH));
+    }
+    refreshUserColorBorderGeometry();
+}
+
+void
+NodeGui::refreshUserColorBorderGeometry()
+{
+    if (!_userColorBorder || !_stateIndicator || !_boundingBox) {
+        return;
+    }
+    const QRectF bbox = _boundingBox->rect();
+    const double borderWidth = isUserColorBorderShown() ? (double)TO_DPIX(NATRON_USER_COLOR_BORDER_WIDTH) : 0.;
+
+    // The border's outer edge sits on _userColorBorder's own rect (NodeGraphRectItem::setInsetBorder
+    // strokes inward from it), so growing that rect by the border's width, rather than the body's
+    // rect, moves the whole ring outside the footprint instead of eating into it.
+    _userColorBorder->setRect(bbox.adjusted(-borderWidth, -borderWidth, borderWidth, borderWidth));
+
+    // The selection halo grows by the same amount so it keeps sitting outside the border instead
+    // of the two overlapping.
+    const double indicatorOffset = (double)TO_DPIX(NATRON_STATE_INDICATOR_OFFSET) + borderWidth;
+    _stateIndicator->setRect(bbox.x() - indicatorOffset, bbox.y() - indicatorOffset,
+                             bbox.width() + indicatorOffset * 2, bbox.height() + indicatorOffset * 2);
 }
 
 bool
@@ -2322,8 +2519,12 @@ NodeGui::copyFrom(const NodeGuiSerialization & obj)
 {
     float r, g, b;
     double overlayR, overlayB, overlayG;
-    obj.getColor(&r, &g, &b);
-    setCurrentColor( QColor::fromRgbF(r, g, b) );
+    if (colorIsBody()) {
+        obj.getColor(&r, &g, &b);
+        setCurrentColor(QColor::fromRgbF(r, g, b));
+    } else {
+        restoreCategoryAndUserColor(obj);
+    }
     if (obj.getOverlayColor(&overlayR, &overlayG, &overlayB)) {
         setOverlayColor( QColor::fromRgbF(overlayR, overlayB, overlayG) );
     }
@@ -2528,7 +2729,7 @@ NodeGui::onAllKnobsSlaved(bool b)
         }
         if ( !node->isNodeDisabled() ) {
             if ( !isSelected() ) {
-                applyBrush(_clonedColor);
+                applyBrush(getDrawnBodyColor());
             }
         }
     } else {
@@ -2539,10 +2740,12 @@ NodeGui::onAllKnobsSlaved(bool b)
         _masterNodeGui.reset();
         if ( !node->isNodeDisabled() ) {
             if ( !isSelected() ) {
-                applyBrush(_currentColor);
+                applyBrush(getDrawnBodyColor());
             }
         }
     }
+    refreshUserColorBorder();
+    refreshNameItemTextColor();
     update();
 }
 
@@ -3186,11 +3389,9 @@ NodeGui::setNameItemHtml(const QString & name,
     finalText.prepend( QString::fromUtf8("<div align=\"center\">") );
     finalText.append( QString::fromUtf8("</div>") );
 
-    int startFontTag = finalText.indexOf( QString::fromUtf8("<font size=") );
-    int endFontTag = -1;
-    if (startFontTag != -1) {
-        startFontTag = finalText.indexOf(QString::fromUtf8("\">"), startFontTag);
-    }
+    QColor userFontColor;
+    _nameItemHasUserFontColor = takeUserLabelFontColor(&finalText, &userFontColor);
+    const bool hasFontTag = finalText.indexOf(QString::fromUtf8(kFontSizeTag)) != -1;
 
     QString oldText = _nameItem->toHtml();
     if (finalText == oldText) {
@@ -3199,11 +3400,10 @@ NodeGui::setNameItemHtml(const QString & name,
     }
 
     QFont f;
-    QColor color = Qt::black;
-    if (startFontTag != -1) {
-        KnobGuiString::parseFont(finalText, &f, &color);
-        //Remove font from the HTML
-        finalText.remove(startFontTag, endFontTag - startFontTag);
+    QColor color = _nameItemHasUserFontColor ? userFontColor : contrastingLabelTextColor(getDrawnBodyColor());
+    if (hasFontTag) {
+        QColor colorFromTag;
+        KnobGuiString::parseFont(finalText, &f, &colorFromTag);
     } else {
         f = QApplication::font();
     }
@@ -3317,9 +3517,119 @@ NodeGui::getCurrentColor() const
 void
 NodeGui::setCurrentColor(const QColor & c)
 {
-    onSettingsPanelColorChanged(c);
+    {
+        QMutexLocker k(&_currentColorMutex);
+        _currentColor = c;
+    }
+    Q_EMIT colorChanged(c);
+    refreshCurrentBrush();
+    refreshPanelColorIndicator();
+}
+
+void
+NodeGui::setUserColor(const QColor& c)
+{
+    {
+        QMutexLocker k(&_currentColorMutex);
+        _hasUserColor = true;
+        _userColor = c;
+    }
+    refreshCurrentBrush();
+    refreshPanelColorIndicator();
+}
+
+void
+NodeGui::clearUserColor()
+{
+    if (colorIsBody()) {
+        QColor defaultColor;
+        if (getCategoryColor(getNode(), &defaultColor)) {
+            setCurrentColor(defaultColor);
+        }
+
+        return;
+    }
+    {
+        QMutexLocker k(&_currentColorMutex);
+        _hasUserColor = false;
+        _userColor = QColor();
+    }
+    refreshCurrentBrush();
+    refreshPanelColorIndicator();
+}
+
+void
+NodeGui::refreshPanelColorIndicator()
+{
     if (_settingsPanel) {
-        _settingsPanel->setCurrentColor(c);
+        QColor color;
+        if (!getUserColor(&color)) {
+            color = getCurrentColor();
+        }
+        _settingsPanel->setCurrentColor(color);
+    }
+}
+
+bool
+NodeGui::hasUserColor() const
+{
+    QMutexLocker k(&_currentColorMutex);
+
+    return _hasUserColor;
+}
+
+bool
+NodeGui::getUserColor(QColor* color) const
+{
+    QMutexLocker k(&_currentColorMutex);
+
+    if (!_hasUserColor) {
+        return false;
+    }
+    *color = _userColor;
+
+    return true;
+}
+
+void
+NodeGui::restoreCategoryAndUserColor(const NodeGuiSerialization& obj)
+{
+    NodePtr node = getNode();
+    QColor categoryColor;
+    const bool hasCategoryColor = getCategoryColor(node, &categoryColor);
+    float category[3] = { 0.f, 0.f, 0.f };
+    float legacyCategory[3] = { 0.f, 0.f, 0.f };
+    bool hasLegacyCategoryColor = false;
+
+    if (hasCategoryColor) {
+        setCurrentColor(categoryColor);
+        categoryColor.getRgbF(&category[0], &category[1], &category[2]);
+        QColor legacyColor;
+        hasLegacyCategoryColor = getLegacyCategoryColor(node, &legacyColor);
+        if (hasLegacyCategoryColor) {
+            legacyColor.getRgbF(&legacyCategory[0], &legacyCategory[1], &legacyCategory[2]);
+        }
+    }
+
+    float r, g, b;
+    if (obj.resolveUserColor(hasCategoryColor ? category : NULL,
+                             hasLegacyCategoryColor ? legacyCategory : NULL,
+                             &r, &g, &b)) {
+        setUserColor(QColor::fromRgbF(r, g, b));
+    } else {
+        clearUserColor();
+    }
+}
+
+void
+NodeGui::refreshCategoryColor()
+{
+    if (colorIsBody()) {
+        return;
+    }
+    QColor color;
+    if (getCategoryColor(getNode(), &color) && (color != getCurrentColor())) {
+        setCurrentColor(color);
     }
 }
 
@@ -3588,7 +3898,27 @@ NodeGui::getColor(double* r,
                   double *g,
                   double* b) const
 {
-    QColor c = getCurrentColor();
+    QColor c;
+    if (!getUserColor(&c)) {
+        c = getCurrentColor();
+    }
+
+    *r = c.redF();
+    *g = c.greenF();
+    *b = c.blueF();
+}
+
+void
+NodeGui::getUserColor(double* r,
+                      double* g,
+                      double* b) const
+{
+    QColor c;
+    if (!getUserColor(&c)) {
+        *r = *g = *b = 0.;
+
+        return;
+    }
 
     *r = c.redF();
     *g = c.greenF();
@@ -3603,7 +3933,17 @@ NodeGui::setColor(double r,
     QColor c;
 
     c.setRgbF(r, g, b);
-    setCurrentColor(c);
+    if (colorIsBody()) {
+        setCurrentColor(c);
+
+        return;
+    }
+    QColor categoryColor;
+    if (getCategoryColor(getNode(), &categoryColor) && (std::abs(c.redF() - categoryColor.redF()) <= 0.05) && (std::abs(c.greenF() - categoryColor.greenF()) <= 0.05) && (std::abs(c.blueF() - categoryColor.blueF()) <= 0.05)) {
+        clearUserColor();
+    } else {
+        setUserColor(c);
+    }
 }
 
 void
@@ -3821,7 +4161,7 @@ NodeGui::setPluginIDAndVersion(const std::list<std::string>& /*grouping*/,
                                unsigned int version)
 {
     QColor color;
-    if ( getColorFromGrouping(&color) ) {
+    if (getCategoryColor(getNode(), &color)) {
         setCurrentColor(color);
     }
     if ( getSettingPanel() ) {

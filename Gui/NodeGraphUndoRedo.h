@@ -169,7 +169,11 @@ protected:
 };
 
 /*
- * @brief Inserts an existing node in a stream
+ * @brief Inserts an existing node (or an entry/exit pair, for a chain) in a stream.
+ * The pipe's destination is reconnected to exitNode, and entryNode's entryInput is
+ * reconnected to the pipe's old source. For a single node, leave entryNode/entryInput
+ * at their defaults: entryNode is exitNode, and entryInput is looked up as the node's
+ * preferred input when the command is (re)done.
  */
 class InsertNodeCommand
     : public ConnectCommand
@@ -177,17 +181,19 @@ class InsertNodeCommand
     Q_DECLARE_TR_FUNCTIONS(InsertNodeCommand)
 
 public:
-
     InsertNodeCommand(NodeGraph* graph,
                       Edge* edge,
-                      const NodeGuiPtr & newSrc,
-                      QUndoCommand *parent = 0);
+                      const NodeGuiPtr& exitNode,
+                      const NodeGuiPtr& entryNode = NodeGuiPtr(),
+                      int entryInput = -1,
+                      QUndoCommand* parent = 0);
 
     virtual void undo();
     virtual void redo();
 
 private:
-
+    NodeGuiWPtr _entryNode;
+    int _entryInput;
     Edge* _inputEdge;
 };
 

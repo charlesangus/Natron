@@ -229,9 +229,7 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
                     }
                 }
             }
-            if ( (_imp->_deltaSinceMousePress.x() != 0) || (_imp->_deltaSinceMousePress.y() != 0) ) {
-                pushUndoCommand( new MoveMultipleNodesCommand( nodesToMove, _imp->_deltaSinceMousePress.x(), _imp->_deltaSinceMousePress.y() ) );
-            }
+            const bool hasMoved = (_imp->_deltaSinceMousePress.x() != 0) || (_imp->_deltaSinceMousePress.y() != 0);
 
             ///now if there was a hint displayed, use it to actually make connections.
             if (_imp->_splicePipe) {
@@ -239,90 +237,94 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
                 NodeGuiPtr entryGui = _imp->_spliceEntry;
                 NodeGuiPtr exitGui = _imp->_spliceExit;
                 int entryInput = _imp->_spliceEntryInput;
-                NodeGuiPtr oldSrc = pipe->getSource();
                 resetSplicePlan();
 
-                if (entryGui == exitGui) {
-                    pushUndoCommand(new InsertNodeCommand(this, pipe, exitGui));
-                } else {
-                    Edge* entryEdge = entryGui->getInputArrow(entryInput);
-                    pushUndoCommand(new ConnectCommand(this, pipe, oldSrc, exitGui));
-                    if (entryEdge) {
-                        pushUndoCommand(new ConnectCommand(this, entryEdge, entryEdge->getSource(), oldSrc));
-                    }
+                /// One undo step for the whole splice: the move (if any) and the connection(s)
+                /// are children of the same parent command, so a single undo restores both.
+                QUndoCommand* spliceCommand = new QUndoCommand(tr("Insert nodes"));
+                if (hasMoved) {
+                    new MoveMultipleNodesCommand(nodesToMove, _imp->_deltaSinceMousePress.x(), _imp->_deltaSinceMousePress.y(), spliceCommand);
                 }
-            } else if (_imp->_highLightedEdge) {
-                _imp->_highLightedEdge->setUseHighlight(false);
-
-                NodeGuiPtr selectedNode = _imp->_selection.front();
-
-                _imp->_highLightedEdge->setUseHighlight(false);
-                if ( _imp->_highLightedEdge->isOutputEdge() ) {
-                    int prefInput = selectedNode->getNode()->getPreferredInputForConnection();
-                    if (prefInput != -1) {
-                        Edge* inputEdge = selectedNode->getInputArrow(prefInput);
-                        assert(inputEdge);
-                        pushUndoCommand( new ConnectCommand( this, inputEdge, inputEdge->getSource(),
-                                                             _imp->_highLightedEdge->getSource() ) );
-                    }
-                } else {
-                    pushUndoCommand( new InsertNodeCommand(this, _imp->_highLightedEdge, selectedNode) );
-                } // if ( _imp->_highLightedEdge->isOutputEdge() )
-
-                _imp->_highLightedEdge = 0;
-                _imp->_hintInputEdge->hide();
-                _imp->_hintOutputEdge->hide();
-            } else if (_imp->_mergeHintNode) {
-                _imp->_mergeHintNode->setMergeHintActive(false);
-                NodeGuiPtr selectedNode = _imp->_selection.front();
-                selectedNode->setMergeHintActive(false);
-
-                if ( getGui() ) {
-                    QRectF selectedNodeBbox = selectedNode->mapToScene( selectedNode->boundingRect() ).boundingRect();
-                    QRectF mergeHintNodeBbox = _imp->_mergeHintNode->mapToScene( _imp->_mergeHintNode->boundingRect() ).boundingRect();
-                    QPointF mergeHintCenter = mergeHintNodeBbox.center();
-
-                    ///Place the selected node on the right of the hint node
-                    QPointF selectedNodePos(mergeHintCenter.x() + mergeHintNodeBbox.width() / 2. + TO_DPIX(NATRON_NODE_DUPLICATE_X_OFFSET),
-                                            mergeHintCenter.y() - selectedNodeBbox.height() / 2.);
-
-                    selectedNodePos = selectedNode->mapToParent( selectedNode->mapFromScene(selectedNodePos) );
-                    selectedNode->setPosition( selectedNodePos.x(), selectedNodePos.y() );
-
-                    selectedNodeBbox = selectedNode->mapToScene( selectedNode->boundingRect() ).boundingRect();
-
-                    QPointF selectedNodeCenter = selectedNodeBbox.center();
-                    CreateNodeArgs args( PLUGINID_OFX_MERGE, getGroup() );
-                    args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
-                    args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
-                    
-                    NodePtr mergeNode = getGui()->getApp()->createNode(args);
-
-                    if (mergeNode) {
-                        NodeGuiIPtr nodeUI = mergeNode->getNodeGui();
-                        assert(nodeUI);
-                        NodeGuiPtr nodeGui = std::dynamic_pointer_cast<NodeGui>(nodeUI);
-                        assert(nodeGui);
-
-                        double nodeW, nodeH;
-                        nodeGui->getSize(&nodeW, &nodeH);
-                        ///Place the new merge node exactly in the middle of the 2, with an Y offset
-                        QPointF newNodePos( ( mergeHintCenter.x() + selectedNodeCenter.x() ) / 2. - nodeW / 2.,
-                                            std::max( (mergeHintCenter.y() + mergeHintNodeBbox.height() / 2.),
-                                                      selectedNodeCenter.y() + selectedNodeBbox.height() / 2. ) + TO_DPIY(NodeGui::DEFAULT_OFFSET_BETWEEN_NODES) );
-
-
-                        newNodePos = nodeGui->mapToParent( nodeGui->mapFromScene(newNodePos) );
-                        nodeGui->setPosition( newNodePos.x(), newNodePos.y() );
-                        int aIndex = mergeNode->getInputNumberFromLabel("A");
-                        int bIndex = mergeNode->getInputNumberFromLabel("B");
-                        assert(aIndex != -1 && bIndex != -1);
-                        mergeNode->connectInput(selectedNode->getNode(), aIndex);
-                        mergeNode->connectInput(_imp->_mergeHintNode->getNode(), bIndex);
-                    }
+                new InsertNodeCommand(this, pipe, exitGui, entryGui, entryInput, spliceCommand);
+                pushUndoCommand(spliceCommand);
+            } else {
+                if (hasMoved) {
+                    pushUndoCommand(new MoveMultipleNodesCommand(nodesToMove, _imp->_deltaSinceMousePress.x(), _imp->_deltaSinceMousePress.y()));
                 }
 
-                _imp->_mergeHintNode.reset();
+                if (_imp->_highLightedEdge) {
+                    _imp->_highLightedEdge->setUseHighlight(false);
+
+                    NodeGuiPtr selectedNode = _imp->_selection.front();
+
+                    _imp->_highLightedEdge->setUseHighlight(false);
+                    if (_imp->_highLightedEdge->isOutputEdge()) {
+                        int prefInput = selectedNode->getNode()->getPreferredInputForConnection();
+                        if (prefInput != -1) {
+                            Edge* inputEdge = selectedNode->getInputArrow(prefInput);
+                            assert(inputEdge);
+                            pushUndoCommand(new ConnectCommand(this, inputEdge, inputEdge->getSource(),
+                                                               _imp->_highLightedEdge->getSource()));
+                        }
+                    } else {
+                        pushUndoCommand(new InsertNodeCommand(this, _imp->_highLightedEdge, selectedNode));
+                    } // if ( _imp->_highLightedEdge->isOutputEdge() )
+
+                    _imp->_highLightedEdge = 0;
+                    _imp->_hintInputEdge->hide();
+                    _imp->_hintOutputEdge->hide();
+                } else if (_imp->_mergeHintNode) {
+                    _imp->_mergeHintNode->setMergeHintActive(false);
+                    NodeGuiPtr selectedNode = _imp->_selection.front();
+                    selectedNode->setMergeHintActive(false);
+
+                    if (getGui()) {
+                        QRectF selectedNodeBbox = selectedNode->mapToScene(selectedNode->boundingRect()).boundingRect();
+                        QRectF mergeHintNodeBbox = _imp->_mergeHintNode->mapToScene(_imp->_mergeHintNode->boundingRect()).boundingRect();
+                        QPointF mergeHintCenter = mergeHintNodeBbox.center();
+
+                        /// Place the selected node on the right of the hint node
+                        QPointF selectedNodePos(mergeHintCenter.x() + mergeHintNodeBbox.width() / 2. + TO_DPIX(NATRON_NODE_DUPLICATE_X_OFFSET),
+                                                mergeHintCenter.y() - selectedNodeBbox.height() / 2.);
+
+                        selectedNodePos = selectedNode->mapToParent(selectedNode->mapFromScene(selectedNodePos));
+                        selectedNode->setPosition(selectedNodePos.x(), selectedNodePos.y());
+
+                        selectedNodeBbox = selectedNode->mapToScene(selectedNode->boundingRect()).boundingRect();
+
+                        QPointF selectedNodeCenter = selectedNodeBbox.center();
+                        CreateNodeArgs args(PLUGINID_OFX_MERGE, getGroup());
+                        args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
+                        args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+
+                        NodePtr mergeNode = getGui()->getApp()->createNode(args);
+
+                        if (mergeNode) {
+                            NodeGuiIPtr nodeUI = mergeNode->getNodeGui();
+                            assert(nodeUI);
+                            NodeGuiPtr nodeGui = std::dynamic_pointer_cast<NodeGui>(nodeUI);
+                            assert(nodeGui);
+
+                            double nodeW, nodeH;
+                            nodeGui->getSize(&nodeW, &nodeH);
+                            /// Place the new merge node exactly in the middle of the 2, with an Y offset
+                            QPointF newNodePos((mergeHintCenter.x() + selectedNodeCenter.x()) / 2. - nodeW / 2.,
+                                               std::max((mergeHintCenter.y() + mergeHintNodeBbox.height() / 2.),
+                                                        selectedNodeCenter.y() + selectedNodeBbox.height() / 2.)
+                                                   + TO_DPIY(NodeGui::DEFAULT_OFFSET_BETWEEN_NODES));
+
+                            newNodePos = nodeGui->mapToParent(nodeGui->mapFromScene(newNodePos));
+                            nodeGui->setPosition(newNodePos.x(), newNodePos.y());
+                            int aIndex = mergeNode->getInputNumberFromLabel("A");
+                            int bIndex = mergeNode->getInputNumberFromLabel("B");
+                            assert(aIndex != -1 && bIndex != -1);
+                            mergeNode->connectInput(selectedNode->getNode(), aIndex);
+                            mergeNode->connectInput(_imp->_mergeHintNode->getNode(), bIndex);
+                        }
+                    }
+
+                    _imp->_mergeHintNode.reset();
+                }
             }
         }
     } else if (state == eEventStateSelectionRect) {

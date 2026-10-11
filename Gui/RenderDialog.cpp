@@ -431,7 +431,9 @@ showRenderDialog(Gui* gui,
         return;
     }
 
-    gui->getApp()->startWritersRendering(false, works);
+    if (dialog.isBackgroundChecked()) {
+        gui->getApp()->startWritersRendering(false, works);
+    }
 }
 
 NATRON_NAMESPACE_EXIT

@@ -219,7 +219,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - verify: the user approves a spec. Record the token values in M56's `## Decisions`; P6.T2–T4 apply exactly those.
   - size: M
 
-- [ ] M56.P6.T2 — Apply the spec in the stylesheet, including the menus
+- [x] M56.P6.T2 — Apply the spec in the stylesheet, including the menus
   - files: `Gui/Resources/Stylesheets/mainstyle.qss`, `Gui/Gui20.cpp` (`loadStyleSheet` prelude `:268-290`, only if a token needs a new `%n` substitution)
   - approach:
     - Change padding and margins only. Keep the `%1`–`%11` colour placeholders and their order.

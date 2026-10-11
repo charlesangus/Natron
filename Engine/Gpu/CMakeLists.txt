@@ -25,6 +25,7 @@ slang_add_kernel(pointop_masked Kernels/pointops.slang ENTRY pointop_masked)
 add_library(NatronGpu STATIC
     GpuDevice.cpp
     GpuBuffer.cpp
+    GpuBufferPool.cpp
     GpuKernel.cpp
     GpuTransfer.cpp
     GpuBlur.cpp

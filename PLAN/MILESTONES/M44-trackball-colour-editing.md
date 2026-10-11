@@ -386,7 +386,7 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
   - verify: `tools/ci/local/build.sh fast`, then `Tests/gui/run-gui-test.sh build/m44-gui/m44_trackball.py build/fast/App/Natron` exits 0. `build/gui-test-out/results.txt` shows no FAIL, and the shots exist for every section. The PR description lists the shots.
   - size: M
 
-- [ ] M44.P6.T2 — Package an AppImage for the user's hands-on test
+- [x] M44.P6.T2 — Package an AppImage for the user's hands-on test
   - files: none (output: `build/fast/artifacts/*.AppImage`)
   - approach: Run `tools/ci/local/package.sh fast` on the tree that passed P6.T1. Hand the user the AppImage path and a one-screen test card:
     - the wheel gestures and V/T locks
@@ -457,3 +457,4 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
 - 2026-10-10 — **End build and verification:** the single end build compiled first try. The first test pass had 10 failures out of 182, and the GUI script stalled because Natron crashed building any colour knob panel (`setProperty` on a null `containerLayout->widget()`). Fixed in the verify commit, along with two latent `KnobUndoCommand` bugs: a "no change" result was treated as a keyframe change, and `undo()` swapped the added/modified keyframe codes. Now 182/182 ctest pass and the GUI script reports 121 PASS, 0 FAIL, with 20 shots in `build/m44-gui/out/`.
   - Open cosmetic issue, fixed before UAT: the adjust panel clips its slider captions and numeric fields.
   - Known gaps: undo labels keep the node name from when the gesture was pushed, and the keyframe undo fix has no dedicated test.
+- 2026-10-10 — **P6.T2:** UAT AppImage `build/appimages/M44-ed6d59028.AppImage` (fast build). It includes the clipped-caption and value-field fix; a later commit changed only a test. It launches with `--version`. Waiting for the user's hands-on UAT.

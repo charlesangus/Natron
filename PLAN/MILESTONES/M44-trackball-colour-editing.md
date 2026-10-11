@@ -784,3 +784,8 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
   - Bare S (normally Project Settings) is claimed while global mode is on.
   - Spinboxes keep Shift ×10 / Ctrl ×0.1.
 
+- 2026-10-10 — **Icons (user, from the pitch page, claude.ai artifact `CZdc6rRvpkmzzDkayeoRi9`):**
+  - The dropdown uses Lucide `chevrons-down`.
+  - The global-mode button gets an "expand" or "popup" icon, because the mode pops up and takes over the screen; the PM chose Lucide `expand` (arrows out to the corners).
+  - Both use the 1.5 px stroke, rendered from SVG in the theme colour.
+  - M44.P7.T11 applies them.

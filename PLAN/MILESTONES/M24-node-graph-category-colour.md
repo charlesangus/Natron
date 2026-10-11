@@ -250,6 +250,8 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
   - Side effect: a black picked by hand before this change, including in the shipped PyPlugs, now gets the contrast colour.
   - The screenshot script now creates nodes the toolbar way and checks the label text by sampling its pixels.
 
+- 2026-10-10 — **Rounds 1–2 verified:** M24 was rebased onto `main` (M75 included). One `fast` build was clean; 23 targeted tests pass; the screenshot script reports 0 failures. It now covers: the outset ring with the halo outside it; white labels on toolbar-created deep nodes (pixels sampled); save-only recolour; the Dot panel and label. Pushed to PR #50 (force-with-lease after the rebase). Labels render in a serif fallback in the container because the label's `Droid Sans` face is missing there; check this in the AppImage.
+
 **Verification gate:** `format`, `lint-ci` and `build-and-test` green; plus visual
 evidence captured the same way M17's node-graph evidence and M23's packaging gate
 were captured (Xvfb + screenshot, since this cannot be asserted in a unit test),

@@ -32,11 +32,13 @@
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QApplication>
+#include <QCoreApplication>
 #include <QDebug>
 #include <QFontComboBox>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QLayout>
 #include <QMetaObject>
 #include <QMouseEvent>
 #include <QScrollArea>
@@ -156,6 +158,26 @@ colorValueFromVector(const std::vector<double>& values)
     v.a = v.hasAlpha ? values[3] : 1.0;
 
     return v;
+}
+
+// Showing or hiding the adjust panel, or folding or unfolding the dimension lines above it,
+// changes the below-row column's preferred size. Qt only applies that through a posted
+// LayoutRequest, so a paint landing before that event is processed would draw the column, and
+// the rows below it, at the geometry from before the change. Activating every layout from the
+// column up to the knob page synchronously, then flushing whatever LayoutRequest is still
+// posted for widgets above that (the scroll area, splitters, ...), settles the geometry before
+// updates are turned back on, so nothing paints at a stale size.
+void
+activateLayoutsUpToInclusive(QWidget* bottom, QWidget* top)
+{
+    for (QWidget* w = bottom; w; w = w->parentWidget()) {
+        if (QLayout* l = w->layout()) {
+            l->activate();
+        }
+        if (w == top) {
+            break;
+        }
+    }
 }
 } // namespace
 
@@ -310,6 +332,7 @@ KnobGuiColor::KnobGuiColor(KnobIPtr knob,
     , _globalModeButton(0)
     , _lastColor()
     , _useSimplifiedUI(true)
+    , _dimensionsWereFoldedWhenPanelOpened(false)
     , _adjustPanel()
     , _rowContainer()
     , _editSession()
@@ -564,14 +587,44 @@ KnobGuiColor::onAdjustPanelToggled(bool expanded)
     if (!_adjustPanel) {
         return;
     }
+
+    QWidget* topWidget = getContainer() ? getContainer()->getContainerWidget() : 0;
+    QWidget* columnWidget = _adjustPanel->parentWidget();
+
+    // Everything below is one update: the panel's visibility, the channel lines' fold state,
+    // and the layout settling they both need. See activateLayoutsUpToInclusive() for why.
+    if (topWidget) {
+        topWidget->setUpdatesEnabled(false);
+    }
+
     if (expanded) {
         KnobColorPtr knob = _knob.lock();
 
         if (knob && !_adjustPanel->isEditing()) {
             _adjustPanel->setKnobValue(ColorKnobEditSession::readKnobValue(knob));
         }
+        // Remembered so closing can restore a fold the user had, without copying dimension 0
+        // into the others the way the dimension-switch button would.
+        _dimensionsWereFoldedWhenPanelOpened = !getAllDimensionsVisible();
+        setAutoFoldSuppressed(true);
+        setDimensionsExpanded(true);
+        _adjustPanel->setVisible(true);
+    } else {
+        _adjustPanel->setVisible(false);
+        setAutoFoldSuppressed(false);
+        if (_dimensionsWereFoldedWhenPanelOpened) {
+            setDimensionsExpanded(false);
+        }
     }
-    _adjustPanel->setVisible(expanded);
+
+    if (columnWidget) {
+        activateLayoutsUpToInclusive(columnWidget, topWidget);
+    }
+    if (topWidget) {
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+        topWidget->setUpdatesEnabled(true);
+    }
+
     _colorSelectorButton->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
     _colorSelectorButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(expanded ? tr("Hide the colour adjustment panel.") : tr("Show the colour adjustment panel: a trackball wheel with hue, saturation, value, temperature and tint sliders."),
                                                                             NATRON_NAMESPACE::WhiteSpaceNormal));

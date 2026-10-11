@@ -265,6 +265,7 @@ private:
     QToolButton* _globalModeButton;
     std::vector<double> _lastColor;
     bool _useSimplifiedUI;
+    bool _dimensionsWereFoldedWhenPanelOpened;
     QPointer<ColorAdjustPanel> _adjustPanel;
     QPointer<QWidget> _rowContainer;
     std::unique_ptr<ColorKnobEditSession> _editSession;

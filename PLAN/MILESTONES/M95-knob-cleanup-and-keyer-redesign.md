@@ -89,7 +89,7 @@ Scouting (2026-10-11, `10e0accd5`):
   - verify: `ctest -R NativeKeyer` passes at the gate.
   - size: M
 
-- [ ] M95.P4.T4 — (only if Q14 = share) Move ChromaKeyer's output onto the shared matte stage
+- [ ] ~~M95.P4.T4 — (only if Q14 = share) Move ChromaKeyer's output onto the shared matte stage~~ (cancelled 2026-10-11: user keeps ChromaKeyer as is)
   - files: `Engine/Nodes/Keyer/ChromaKeyer.h`, `Engine/Nodes/Keyer/ChromaKeyer.cpp`, `Tests/Native/NativeChromaKeyer_Test.cpp`
   - approach: keep ChromaKeyer's angle-based key value (acceptance/suppression angle, key lift/gain), feed it through `trapezoidMatte`, and drop its show/composite/despill outputs and `Bg` input, mirroring P4.T2.
   - verify: `ctest -R NativeChromaKeyer` with rewritten analytic cases.
@@ -112,3 +112,13 @@ Acceptance sketch:
 - Keyer has four matte values and outputs an alpha only.
 - No node has `hidpi` or `interactive` knobs; DPI is app-level and interactive is one global toggle with a shortcut.
 - "(Un)premult by" and clamp black/white sit below the line with mask and mix.
+
+## Decisions
+- 2026-10-11 — **Split from M69 - Minor Cleanup (user-approved).** Deps `M69, M76`.
+- 2026-10-11 — **User answers** (`PLAN/DESIGN/2026-10-11-m69-questions.md`):
+  - **Interactive toggle: shortcut + the existing preference only, no viewer button.** P1.T1 drops the viewer-toolbar button (`ViewerTab.cpp`, `ViewerTabPrivate.h` leave its files list); the Alt+U shortcut and the Preferences checkbox stay in sync.
+  - **DPI:** automatic only; nothing to build.
+  - **OFX `hidpi`/`interactive` params:** the host hides and drives them (P2.T3).
+  - **Keyer:** key source Luminance or Colour, host mask/mix only (no Bg/InM/OutM); same plugin ID, major 3, clean break with no migration.
+  - **ChromaKeyer:** left as is; P4.T4 cancelled.
+  - **Footer order:** the user asked for mockups before deciding; pending.

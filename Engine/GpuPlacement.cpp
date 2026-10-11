@@ -212,6 +212,7 @@ placeGraph(FrameGraph& graph,
     graph.regions.clear();
     for (FrameGraph::Task& task : graph.tasks) {
         task.device = FrameGraph::Device::Cpu;
+        task.storage = eStorageModeRAM;
         task.regionId = -1;
     }
 

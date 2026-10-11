@@ -130,6 +130,11 @@ struct RenderScheduler::Frame {
     Priority priority = Priority::Background;
     unsigned long long sequence = 0;
 
+    // graph.tasks holds the submitted tasks below this index and, from it, one task per region standing for the
+    // region in the ready heaps: its dependencies and consumerTasks are the edges between members and the tasks
+    // outside the region.
+    int regionTasksBegin = 0;
+
     // The fields below are guarded by the scheduler's mutex.
     int remainingTasks = 0;
     int runningTasks = 0;
@@ -616,7 +621,11 @@ RenderScheduler::submit(const FrameRenderContextPtr& context,
     frame->graph = std::move(graph);
     frame->future = future;
     frame->priority = priority;
+    frame->regionTasksBegin = (int)frame->graph.tasks.size();
     frame->remainingTasks = (int)frame->graph.tasks.size();
+    if (!frame->graph.regions.empty()) {
+        appendRegionTasks(frame.get());
+    }
 
     int toStart = 0;
     int runnablePriority = 0;
@@ -630,7 +639,8 @@ RenderScheduler::submit(const FrameRenderContextPtr& context,
         for (std::size_t i = 0; i < frame->graph.tasks.size(); ++i) {
             FrameGraph::Task& task = frame->graph.tasks[i];
             task.remainingDeps = (int)task.dependencies.size();
-            if (task.remainingDeps == 0) {
+            const bool member = (task.regionId >= 0) && ((int)i < frame->regionTasksBegin);
+            if ((task.remainingDeps == 0) && !member) {
                 pushReadyLocked(frame, (int)i);
             }
         }
@@ -639,6 +649,50 @@ RenderScheduler::submit(const FrameRenderContextPtr& context,
     startRunnables(toStart, runnablePriority);
 
     return future;
+}
+
+void
+RenderScheduler::appendRegionTasks(Frame* frame)
+{
+    FrameGraph& graph = frame->graph;
+    const int regionCount = (int)graph.regions.size();
+    int memberCount = 0;
+
+    graph.tasks.reserve(graph.tasks.size() + regionCount);
+    for (int r = 0; r < regionCount; ++r) {
+        const FrameGraph::Region& region = graph.regions[r];
+        FrameGraph::Task unit;
+        unit.device = FrameGraph::Device::Gpu;
+        unit.regionId = r;
+        if (!region.members.empty()) {
+            unit.dfsPostOrder = graph.tasks[region.members.front()].dfsPostOrder;
+        }
+        for (int m : region.members) {
+            const FrameGraph::Task& member = graph.tasks[m];
+            for (int d : member.dependencies) {
+                if (graph.tasks[d].regionId != r) {
+                    unit.dependencies.push_back(d);
+                }
+            }
+            for (int c : member.consumerTasks) {
+                if (graph.tasks[c].regionId != r) {
+                    unit.consumerTasks.push_back(c);
+                }
+            }
+            unit.dfsPostOrder = std::min(unit.dfsPostOrder, member.dfsPostOrder);
+        }
+        unit.consumers = (int)unit.consumerTasks.size();
+        unit.startsBranch = true;
+        for (int d : unit.dependencies) {
+            if (!graph.tasks[d].dependencies.empty()) {
+                unit.startsBranch = false;
+                break;
+            }
+        }
+        memberCount += (int)region.members.size();
+        graph.tasks.push_back(std::move(unit));
+    }
+    frame->remainingTasks += regionCount - memberCount;
 }
 
 void
@@ -790,6 +844,14 @@ RenderScheduler::getReservedBytesForTests() const
     return _reservedBytes;
 }
 
+void
+RenderScheduler::setRegionBody(const RegionBody& body)
+{
+    QMutexLocker k(&_mutex);
+
+    _regionBody = body;
+}
+
 bool
 RenderScheduler::ReadyRefWorse::operator()(const ReadyRef& a,
                                            const ReadyRef& b) const
@@ -921,6 +983,12 @@ RenderScheduler::executeTask(const FramePtr& frame,
                              int budget,
                              std::vector<FramePtr>* finished)
 {
+    if (taskIndex >= frame->regionTasksBegin) {
+        executeRegion(frame, taskIndex, budget, finished);
+
+        return;
+    }
+
     const FrameGraph::Task& task = frame->graph.tasks[taskIndex];
     EffectInstance::RenderRoIRetCode retCode = EffectInstance::eRenderRoIRetCodeFailed;
     std::map<ImageLayerDesc, ImagePtr> planes;
@@ -940,7 +1008,7 @@ RenderScheduler::executeTask(const FramePtr& frame,
                                            task.bitdepth,
                                            false /*calledFromGetImage*/,
                                            callerEffect.get(),
-                                           eStorageModeRAM,
+                                           task.storage,
                                            caller.key.time);
         AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
         OpenMPThreadsScope openMPThreads(budget);
@@ -1009,6 +1077,69 @@ RenderScheduler::executeTask(const FramePtr& frame,
         }
     }
 
+    completeTask(frame, taskIndex, retCode, std::move(planes), finished);
+} // RenderScheduler::executeTask
+
+void
+RenderScheduler::executeRegion(const FramePtr& frame,
+                               int taskIndex,
+                               int budget,
+                               std::vector<FramePtr>* finished)
+{
+    const FrameGraph::Task& unit = frame->graph.tasks[taskIndex];
+    const int region = taskIndex - frame->regionTasksBegin;
+    EffectInstance::RenderRoIRetCode retCode = EffectInstance::eRenderRoIRetCodeFailed;
+    std::map<ImageLayerDesc, ImagePtr> planes;
+    RegionBody body;
+    {
+        QMutexLocker k(&_mutex);
+        body = _regionBody;
+    }
+
+    if (body) {
+        AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
+        OpenMPThreadsScope openMPThreads(budget);
+        const int rendering = ++_tasksRendering;
+        if (frame->context->getStats()) {
+            frame->context->getStats()->noteConcurrentTasks(rendering);
+        }
+        try {
+            retCode = body(frame->context, frame->graph, region, budget, &planes);
+        } catch (const std::exception&) {
+            retCode = EffectInstance::eRenderRoIRetCodeFailed;
+        } catch (...) {
+            retCode = EffectInstance::eRenderRoIRetCodeFailed;
+        }
+        --_tasksRendering;
+    } else if (appPTR) {
+        appPTR->writeToErrorLog_mt_safe(QString::fromUtf8("RenderScheduler"), QDateTime::currentDateTime(),
+                                        QString::fromUtf8("Render task failed: a GPU region was scheduled with no region body set"));
+    }
+
+    if (retCode == EffectInstance::eRenderRoIRetCodeOk) {
+        FrameStore& store = frame->context->getStore();
+        for (std::vector<int>::const_iterator it = unit.dependencies.begin(); it != unit.dependencies.end(); ++it) {
+            store.release(frame->graph.tasks[*it].key);
+        }
+        const RenderStatsPtr& stats = frame->context->getStats();
+        if (stats) {
+            for (std::size_t i = 0; i < frame->graph.regions[region].members.size(); ++i) {
+                stats->incTasksRun();
+            }
+        }
+    }
+
+    completeTask(frame, taskIndex, retCode, std::move(planes), finished);
+}
+
+void
+RenderScheduler::completeTask(const FramePtr& frame,
+                              int taskIndex,
+                              EffectInstance::RenderRoIRetCode retCode,
+                              std::map<ImageLayerDesc, ImagePtr>&& planes,
+                              std::vector<FramePtr>* finished)
+{
+    const FrameGraph::Task& task = frame->graph.tasks[taskIndex];
     int toStart = 0;
     int runnablePriority = 0;
     std::vector<ReadyRef> purgedOnFailure;
@@ -1041,10 +1172,22 @@ RenderScheduler::executeTask(const FramePtr& frame,
                 frame->rootPlanes = std::move(planes);
             }
             --frame->remainingTasks;
-            for (std::vector<int>::const_iterator it = task.consumerTasks.begin(); it != task.consumerTasks.end(); ++it) {
-                FrameGraph::Task& consumer = frame->graph.tasks[*it];
-                if (--consumer.remainingDeps == 0) {
-                    pushReadyLocked(frame, *it);
+            if (frame->graph.regions.empty()) {
+                for (std::vector<int>::const_iterator it = task.consumerTasks.begin(); it != task.consumerTasks.end(); ++it) {
+                    FrameGraph::Task& consumer = frame->graph.tasks[*it];
+                    if (--consumer.remainingDeps == 0) {
+                        pushReadyLocked(frame, *it);
+                    }
+                }
+            } else {
+                // A consumer inside a region waits through the task standing for its region.
+                for (std::vector<int>::const_iterator it = task.consumerTasks.begin(); it != task.consumerTasks.end(); ++it) {
+                    const int consumerRegion = frame->graph.tasks[*it].regionId;
+                    const int next = (consumerRegion >= 0) ? (frame->regionTasksBegin + consumerRegion) : *it;
+                    FrameGraph::Task& consumer = frame->graph.tasks[next];
+                    if (--consumer.remainingDeps == 0) {
+                        pushReadyLocked(frame, next);
+                    }
                 }
             }
             if (frame->remainingTasks == 0) {
@@ -1064,7 +1207,7 @@ RenderScheduler::executeTask(const FramePtr& frame,
             abort(abortInfo);
         }
     }
-} // RenderScheduler::executeTask
+} // RenderScheduler::completeTask
 
 void
 RenderScheduler::setProfilePath(const std::string& path)

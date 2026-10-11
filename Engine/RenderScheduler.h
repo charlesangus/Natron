@@ -30,6 +30,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <functional>
 #include <list>
 #include <map>
 #include <memory>
@@ -100,6 +101,9 @@ struct FrameGraph {
         unsigned int cacheMipmapLevel = 0;
 
         Device device = Device::Cpu;
+
+        // Where renderRoI allocates the task's images when it runs on its own.
+        StorageModeEnum storage = eStorageModeRAM;
 
         // Index in regions of the region this task belongs to, or -1; every member of a region has device Gpu.
         int regionId = -1;
@@ -201,6 +205,11 @@ private:
  *
  * A failed task aborts its frame, and every frame of the same AbortableRenderInfo, as abort() does, but the frame
  * finishes with eRenderRoIRetCodeFailed.
+ *
+ * Each region of a graph runs as one task through the region body: it is ready once every task outside it that a
+ * member depends on has run, and its members are never run on their own. When it succeeded, each of those inputs is
+ * released once per edge into a member, as the members would have released them, and the tasks outside it that consume
+ * a member become ready as if the members had run. A region that fails or is aborted ends its frame as a task would.
  **/
 class RenderScheduler {
 public:
@@ -208,6 +217,20 @@ public:
         Interactive,
         Background
     };
+
+    /**
+     * @brief Renders the members of graph.regions[region] with the frame context installed on the calling thread. It
+     * stores each output with external consumers in the frame's store under its task's key, to be released
+     * externalConsumers times, unless the frame is aborted; releases the store entries its members read from one
+     * another, but not those of the region's external inputs, which the scheduler releases; and moves the planes of a
+     * root output to rootPlanes. graph.tasks may hold entries past those the frame was submitted with, which the body
+     * ignores. It returns eRenderRoIRetCodeOk, or the code the frame fails or aborts with.
+     **/
+    typedef std::function<EffectInstance::RenderRoIRetCode(const FrameRenderContextPtr& context,
+                                                           const FrameGraph& graph,
+                                                           int region,
+                                                           int budget,
+                                                           std::map<ImageLayerDesc, ImagePtr>* rootPlanes)> RegionBody;
 
     RenderScheduler();
 
@@ -302,6 +325,11 @@ public:
      **/
     std::size_t getReservedBytesForTests() const;
 
+    /**
+     * @brief The body every region runs. Unset, a region fails its frame.
+     **/
+    void setRegionBody(const RegionBody& body);
+
 private:
     class NodeTask;
     struct Frame;
@@ -329,6 +357,16 @@ private:
     bool popLocked(FramePtr* frame, int* task, int* budget, std::vector<FramePtr>* finished);
 
     void executeTask(const FramePtr& frame, int task, int budget, std::vector<FramePtr>* finished);
+
+    void executeRegion(const FramePtr& frame, int task, int budget, std::vector<FramePtr>* finished);
+
+    void completeTask(const FramePtr& frame,
+                      int task,
+                      EffectInstance::RenderRoIRetCode retCode,
+                      std::map<ImageLayerDesc, ImagePtr>&& planes,
+                      std::vector<FramePtr>* finished);
+
+    static void appendRegionTasks(Frame* frame);
 
     void pushReadyLocked(const FramePtr& frame, int task);
 
@@ -384,6 +422,7 @@ private:
     std::size_t _reservedBytes;
     std::size_t _bytesBudget;
     std::size_t _peakBytesInFlight;
+    RegionBody _regionBody;
 
     // The tasks inside renderRoI, counted without the mutex.
     std::atomic<int> _tasksRendering;

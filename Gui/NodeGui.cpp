@@ -102,6 +102,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/QtEnumConvert.h"
 #include "Gui/SequenceFileDialog.h"
 #include "Gui/SpinBox.h"
+#include "Gui/ThemedIcon.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
 
@@ -752,16 +753,19 @@ NodeGui::createGui()
 
         int size = TO_DPIX(NATRON_PLUGIN_ICON_SIZE);
         QPixmap pix;
-        pix.load(iconFilePath);
-        if (!pix.isNull()) {
-            if (std::max( pix.width(), pix.height() ) != size) {
+        if (ThemedIcon::isSvgPath(iconFilePath)) {
+            pix = ThemedIcon::renderPixmap(iconFilePath, size, ThemedIcon::themeTextColor(), qApp->devicePixelRatio());
+        } else {
+            pix.load(iconFilePath);
+            if (!pix.isNull() && (std::max(pix.width(), pix.height()) != size)) {
                 pix = pix.scaled(size, size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
             }
+        }
+        if (!pix.isNull()) {
             _pluginIcon->setPixmap(pix);
         } else {
             _pluginIcon->hide();
         }
-
     }
 
     _presetIcon = new NodeGraphPixmapItem(getDagGui(), this);

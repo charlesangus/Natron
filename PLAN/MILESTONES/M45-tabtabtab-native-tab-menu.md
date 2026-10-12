@@ -10,11 +10,11 @@ Replace Natron's node-creation dialog (`Gui/NodeCreationDialog.*`, a frameless `
 - Tab-Tab to repeat the last node;
 - a correct position the first time it opens (this takes over M69's "Tab menu position" item);
 - insertion after the selected node (today's behaviour, kept);
-- tabtabtab's preferences (the search-mode remap and the scroll toggle) in its own dialog, under Edit > Tab Menu Preferences...
+- tabtabtab's preferences (the search-mode remap and the scroll toggle) as a "Tab menu" section on the Nodegraph page of Natron's Preferences (M45.P6.T5). The adapter reads them on every open, so tabtabtab's own prefs JSON and dialog are not used or vendored.
 
 Layout:
 - The vendored files live in `Gui/Resources/TabTabTab/`. They ship to `<bin>/../Resources/tabtabtab/`, through a post-build copy for dev builds and `stage-bundle.sh` for the AppImage.
-- Vendored files stay byte-identical to upstream apart from the two patches in M45.P5.T2, which are listed in `UPSTREAM`.
+- Vendored files stay byte-identical to upstream apart from the one patch in M45.P5.T2, which is listed in `UPSTREAM`.
 
 One build at the end (user rule): implementers do not compile. The pure-Python tests (M45.P5.T2, M45.P5.T4) need no build, and implementers may run them with the host `python3`.
 
@@ -22,7 +22,7 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
 
 - [ ] ~~M45.P1.T1 — Add a pure tab-menu matcher and ranker, with unit tests~~ (cancelled 2026-10-12: replaced by lifting tabtabtab-nuke, user)
 - [ ] ~~M45.P1.T2 — Build the tab-menu item list from the plugin registry, with category colour, icon, shortcut and weight~~ (cancelled 2026-10-12: replaced by lifting tabtabtab-nuke, user; its item-list and category-colour logic moves to M45.P6.T1/T2)
-- [ ] ~~M45.P1.T3 — Add the Tab menu preferences (search-mode remap, scroll toggle) to the Nodegraph page, with accessors~~ (cancelled 2026-10-12: replaced by lifting tabtabtab-nuke, user; tabtabtab's own prefs JSON and dialog are used instead)
+- [ ] ~~M45.P1.T3 — Add the Tab menu preferences (search-mode remap, scroll toggle) to the Nodegraph page, with accessors~~ (cancelled 2026-10-12: replaced by lifting tabtabtab-nuke, user; its Settings knobs are reinstated, without the C++ accessors, as M45.P6.T5)
 
 ## Phase 45.2: The palette (cancelled)
 
@@ -42,13 +42,14 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
 
 ## Phase 45.5: Vendor tabtabtab and write the Natron adapter
 
-- [ ] M45.P5.T1 — Vendor tabtabtab-nuke's core, prefs, prefs dialog, core tests and licence at a pinned commit
-  - files: `Gui/Resources/TabTabTab/` (new): `tabtabtab_nuke_core.py`, `tabtabtab_prefs.py`, `tabtabtab_prefs_dialog.py`, `LICENSE`, `UPSTREAM`, `tests/__init__.py`, `tests/test_node_model_diff.py`, `tests/test_monitor_selection.py`, `tests/test_main_window_discovery.py`, `tests/test_cursor_restore_on_close.py`
+- [ ] M45.P5.T1 — Vendor tabtabtab-nuke's core, core tests and licence at a pinned commit
+  - files: `Gui/Resources/TabTabTab/` (new): `tabtabtab_nuke_core.py`, `LICENSE`, `UPSTREAM`, `tests/__init__.py`, `tests/test_node_model_diff.py`, `tests/test_monitor_selection.py`, `tests/test_main_window_discovery.py`, `tests/test_cursor_restore_on_close.py`
   - approach:
     - `git clone https://github.com/charlesangus/tabtabtab-nuke` and `git checkout 48de32d`. If the user names a newer tag, use that instead and record it.
     - Copy the files above byte for byte. Keep the upstream file names: the modules import each other by name, and renaming them would turn the vendored copy into a fork.
     - Do not vendor:
       - `tabtabtab_nuke.py` and `menu.py` (the Nuke adapter, replaced by M45.P5.T3);
+      - `tabtabtab_prefs.py` and `tabtabtab_prefs_dialog.py`. The preferences live in Natron's Settings (M45.P6.T5), and the core never imports these two files, so leaving them out means no patch to the dialog's Nuke import;
       - `tests/test_menu_fingerprint.py` (it tests the Nuke adapter);
       - `readme.md`, `docs/`, `Makefile`, `.github/`.
     - `UPSTREAM` is plain text: the source URL, the commit hash, the date, the list of files taken, the list of files left out, and a "Local patches" heading that M45.P5.T2 fills in.
@@ -56,39 +57,36 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
   - verify: run `cd Gui/Resources/TabTabTab && python3 -m pytest -q tests` (host python, no build). All the vendored tests pass; upstream reports 38 passing, minus the fingerprint tests that were left out. Run `diff -r` against the clone, restricted to the vendored files; it shows no differences.
   - size: S
 
-- [ ] M45.P5.T2 — Patch the vendored core and prefs dialog so the host is pluggable (two small patches that can go upstream)
-  - files: `Gui/Resources/TabTabTab/tabtabtab_nuke_core.py`, `Gui/Resources/TabTabTab/tabtabtab_prefs_dialog.py`, `Gui/Resources/TabTabTab/UPSTREAM`
+- [ ] M45.P5.T2 — Patch the vendored core so the host's main window is pluggable (one small patch that can go upstream)
+  - files: `Gui/Resources/TabTabTab/tabtabtab_nuke_core.py`, `Gui/Resources/TabTabTab/UPSTREAM`, `Gui/Resources/TabTabTab/tests/test_host_hooks.py` (new)
   - approach:
-    - Patch 1 (core), the main-window finder:
+    - The patch, a main-window finder:
       - Add a module global `_main_window_finder = None`, a public `set_main_window_finder(fn)`, and `_find_main_window()`, which returns `(_main_window_finder or _find_nuke_main_window)()`. The late lookup is deliberate: the upstream tests rely on module-global name resolution.
       - Replace the three `_find_nuke_main_window()` calls, in `_try_reparent_preloaded`, `_create_tabtabtab_widget` and `launch`, with `_find_main_window()`.
       - Leave `_find_nuke_main_window` itself unchanged.
-    - Patch 2 (prefs dialog), an optional Enable toggle:
-      - Move `import tabtabtab_nuke` from module level into `_on_accept`, and only import it when no callback is given.
-      - `TabtabtabPrefsDialog.__init__(self, parent=None, show_enabled_toggle=True, on_enabled_changed=None)`. When `show_enabled_toggle` is false, skip adding the "Enable Tabtabtab" row; its checkbox still exists, so the populate code is unchanged.
-      - In `_on_accept`, only save `tabtabtab_enabled` and call the enable hook when the toggle is shown. The hook is `on_enabled_changed(enabled)` if one was given, otherwise the current `tabtabtab_nuke.registerNukeAction`/`unregisterNukeAction`.
-      - `show_prefs_dialog(parent=None, show_enabled_toggle=True, on_enabled_changed=None)` passes the arguments through.
-      - Nuke's call sites (`menu.py`, no arguments) behave exactly as before.
-    - Record both patches under "Local patches" in `UPSTREAM`, each with a one-line description, so they can be offered upstream (see the open question).
+    - The earlier second patch (an optional Enable toggle in the prefs dialog) was dropped on 2026-10-12, because the dialog is no longer vendored.
+    - Record the patch under "Local patches" in `UPSTREAM` with a one-line description (user, 2026-10-12: patch the vendored copy and record it there).
     - Keep upstream's style in the patched lines: 4-space indent and docstrings where upstream has them.
   - verify:
     - `python3 -m pytest -q tests` in `Gui/Resources/TabTabTab` still passes, including `test_main_window_discovery.py`, unmodified.
     - A new test file in the same folder, `tests/test_host_hooks.py`, uses upstream's stub pattern from `test_main_window_discovery.py`. It checks that:
       - with no finder set, `_find_main_window()` returns the Nuke finder's result;
-      - after `set_main_window_finder(lambda: sentinel)`, `_create_tabtabtab_widget` passes `sentinel` as the parent;
-      - importing `tabtabtab_prefs_dialog` with no `tabtabtab_nuke` module available succeeds.
+      - after `set_main_window_finder(lambda: sentinel)`, `_create_tabtabtab_widget` passes `sentinel` as the parent.
     - `test_host_hooks.py` is the one Natron-added file in `tests/`; `UPSTREAM` lists it.
   - size: M
 
 - [ ] M45.P5.T3 — Write the Natron adapter `tabtabtab_natron.py`
   - files: `Gui/Resources/TabTabTab/tabtabtab_natron.py` (new)
   - approach:
-    - This replaces `tabtabtab_nuke.py`, and is modelled on its `NukePlugin`. Imports: `tabtabtab_nuke_core` (`TabTabTabPlugin`, `launch`, `find_qt_menu_items`, `set_main_window_finder`), `tabtabtab_prefs`, `tabtabtab_prefs_dialog`, and `PySide6` (`QtCore`, `QtGui`, `QtWidgets`).
-    - Storage:
-      - `_storage_dir` defaults to `os.path.expanduser("~/.Natron")`.
-      - `set_storage_dir(path)` rebinds `tabtabtab_prefs.prefs_singleton = tabtabtab_prefs.TabtabtabPrefs(os.path.join(path, "tabtabtab_prefs.json"))` and points the weights path at `os.path.join(path, "tabtabtab_weights.json")`.
-      - It is called once at import with the default. The GUI test calls it with a scratch folder.
-      - `tabtabtab_prefs.py` itself is not patched. The dialog reads `tabtabtab_prefs.prefs_singleton` when it is called, so rebinding the singleton is enough.
+    - This replaces `tabtabtab_nuke.py`, and is modelled on its `NukePlugin`. Imports: `tabtabtab_nuke_core` (`TabTabTabPlugin`, `launch`, `find_qt_menu_items`, `set_main_window_finder`, `DEFAULT_SPACE_MODE_ORDER`), `NatronGui`, and `PySide6` (`QtCore`, `QtGui`, `QtWidgets`). It does not import `tabtabtab_prefs` or the prefs dialog, which are not vendored.
+    - Weights storage:
+      - The weights path defaults to `os.path.expanduser("~/.Natron/tabtabtab_weights.json")`.
+      - `set_storage_dir(path)` points it at `os.path.join(path, "tabtabtab_weights.json")` instead. The GUI test calls it with a scratch folder.
+    - Preferences, read from Natron's Settings (M45.P6.T5) on every `launch`:
+      - Get `NatronGui.natron.getSettings()` (`PyCoreApplication::getSettings`, `PyGlobalFunctions.h:219`). Its `getParam(name)` returns a typed wrapper (`AppSettings::getParam`, `PyAppInstance.cpp:247`).
+      - `tabMenuSearchModes` is a `ChoiceParam`. `p.getOption(p.getValue())` returns the option ID (`ChoiceParam::getOption`, `PyParameter.cpp:1811`), and the option IDs are tabtabtab's own mode names joined by commas. So `space_mode_order = p.getOption(p.getValue()).split(",")`, with no mapping table on the Python side.
+      - `tabMenuScroll` is a `BooleanParam`; `scroll_enabled = p.getValue()`.
+      - If a param is missing (`None`) or anything raises, fall back to `DEFAULT_SPACE_MODE_ORDER` and `True`. The core also validates the order itself.
     - Main window:
       - `_find_natron_main_window()` takes `QApplication.activeWindow()` and walks up `parentWidget()` to the first widget whose `metaObject().className() == "Natron::Gui"`. This also covers a node graph in a floating pane.
       - If there is none, it returns the first top-level `QMainWindow` with that class name, or `None`.
@@ -102,10 +100,7 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
         - Command items come from the core's `find_qt_menu_items(window.menuBar())` on the window from `_find_natron_main_window()`, or an empty list if there is no window. Add `shortcut = action.shortcut().toString(QtGui.QKeySequence.NativeText)` when it is non-empty.
         - If two items end up with the same `menupath`, append " (2)", " (3)" and so on to the later ones, because the core's row diff is keyed on `menupath`.
         - Do not cache anything. The node list is rebuilt from C++ on every call, so a category-colour edit (M24) or a shortcut change shows up on the next open.
-      - `get_weights_file()` returns the weights path. The first time it is called in a session, if that file does not exist, seed it:
-        - build `{menupath: weight}` for the current node items from `json.loads(app.getTabMenuLegacyWeights())`, which maps `"<id>|<major>"` to the old QSettings count;
-        - write it only if at least one weight is non-zero.
-        - This keeps users' history from the old dialog.
+      - `get_weights_file()` returns the weights path. Weights start fresh; there is no seeding from the old `QSettings` counts (user, 2026-10-12).
       - `invoke(thing)` must not act synchronously: the core calls `invoke` before it closes the popup, and both creating a Read (a modal file dialog) and menu actions (Preferences) open windows. Keep a reference to the callable and `QtCore.QTimer.singleShot(0, ...)` it:
         - for a `_NodeEntry`, call `app.createNodeFromTabMenu(id, major)`;
         - for a `QAction`, `action.trigger()` if the action still exists. Guard with `shiboken6.isValid` and catch `RuntimeError`.
@@ -114,8 +109,8 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
         - for a `QAction`, the base-class default (`menuobj.icon()`).
       - `get_color(menuobj)`: for a `_NodeEntry` with a colour, `(QColor(c), QColor(c))`, which is the Nuke adapter's convention; otherwise `(None, None)`.
     - Module entry points:
-      - `launch(app)`: calls `_plugin.set_app(app)`, then the core's `launch(_plugin, space_mode_order=prefs.get("space_mode_order"), scroll_enabled=prefs.get("scroll_enabled"))`, with the prefs read on every call so changes apply on the next open.
-      - `show_prefs_dialog()`: calls `tabtabtab_prefs_dialog.show_prefs_dialog(parent=_find_natron_main_window(), show_enabled_toggle=False, on_enabled_changed=lambda enabled: None)`. There is no fallback dialog, so there is no Enable toggle (Decisions).
+      - `launch(app)`: calls `_plugin.set_app(app)`, reads the two preferences as above, then calls the core's `launch(_plugin, space_mode_order=..., scroll_enabled=...)`. The core's warm-instance path re-applies both on every call, so a change in Preferences applies on the next open.
+      - There is no `show_prefs_dialog` and no Edit-menu entry. The preferences are on Natron's Nodegraph page.
     - Do not port `schedule_preload`: the widget is built on the first Tab, and the item build is cheap.
     - The comment policy applies to this file, which is new Natron code.
   - verify: M45.P5.T4's unit tests at any time (no build); M45.P8.T1 at the gate.
@@ -125,7 +120,7 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
   - files: `Tests/python/test_tabtabtab_natron.py` (new), `Tests/python/run_tabtabtab_tests.py` (new), `Tests/CMakeLists.txt`
   - approach:
     - `test_tabtabtab_natron.py` is a stdlib `unittest` module. It loads the adapter by path, using the stub-module pattern of upstream `tests/test_main_window_discovery.py`: `PySide6`/`QtCore`/`QtGui`/`QtWidgets`/`shiboken6` stubs in `sys.modules`, restored afterwards.
-    - `QTimer.singleShot` is stubbed so that it records calls. The `app` is a fake with canned `getTabMenuNodeItems`/`getTabMenuLegacyWeights` JSON and a recording `createNodeFromTabMenu`.
+    - `QTimer.singleShot` is stubbed so that it records calls. The `app` is a fake with canned `getTabMenuNodeItems` JSON and a recording `createNodeFromTabMenu`. A `NatronGui` stub provides `natron.getSettings().getParam(name)`, returning fakes with `getValue`/`getOption`, or `None`.
     - Cases:
       - node `menupath` and display formatting ("Blur [Filter]");
       - a "/" in a label is replaced;
@@ -134,8 +129,10 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
       - `get_color` parses "#rrggbb" and returns `(None, None)` for commands and for an empty colour;
       - `invoke` on a node schedules exactly one call and does not call `createNodeFromTabMenu` until the recorded callback runs;
       - `invoke` on an action schedules `trigger`;
-      - weight seeding writes `{menupath: n}` only when the file is absent and some weight is non-zero, and never overwrites an existing file;
-      - `set_storage_dir` repoints both the prefs and the weights paths;
+      - `launch` passes `space_mode_order == ["consecutive", "anchored_fuzzy", "non_anchored_fuzzy"]` and `scroll_enabled=False` to the stubbed core `launch` when the fake settings hold that option ID and False;
+      - `launch` falls back to `DEFAULT_SPACE_MODE_ORDER` and `True` when `getParam` returns `None`;
+      - `get_weights_file` returns the default path when the file is absent, and creates nothing;
+      - `set_storage_dir` repoints the weights path;
       - `_find_natron_main_window` prefers the `Natron::Gui` ancestor of the active window, and falls back to the top-level scan.
     - `run_tabtabtab_tests.py` takes no arguments:
       - it puts `Gui/Resources/TabTabTab` and `Tests/python` on `sys.path`;
@@ -159,7 +156,7 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
   - verify: `ctest -R NodeCategory`. New cases show that `categoryForPlugin(*node->getPlugin())` equals `node->getNodeCategory()` for a Read, a Write, a Deep node, a Grade, a Blur and a Merge created in the test app.
   - size: M
 
-- [ ] M45.P6.T2 — Write `TabMenuBridge`: the node item list, legacy weights, node creation, launch and startup bootstrap, exposed on `GuiApp`
+- [ ] M45.P6.T2 — Write `TabMenuBridge`: the node item list, node creation, launch and startup bootstrap, exposed on `GuiApp`
   - files: `Gui/TabMenuBridge.h` (new), `Gui/TabMenuBridge.cpp` (new), `Gui/PyGuiApp.h`, `Gui/PyGuiApp.cpp`
   - approach:
     - `TabMenuBridge` is a plain namespace of free functions with file-static state `QPointer<NodeGraph> g_target` and `QPointF g_scenePos`. It is GUI-thread only, and only one popup exists at a time.
@@ -174,7 +171,7 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
         - `icon`: `getIconFilePath()` if `QFile::exists`, otherwise "";
         - `color`: `Settings::getNodeCategoryColor(Node::categoryForPlugin(*p), &r, &g, &b)` (`Settings.h:222`) as `QColor::fromRgbF(...).name()`;
         - `shortcut`: the first entry of `getKeybind(group, pluginID)` (the macro at `GuiApplicationManager.h:63`) as `toString(QKeySequence::NativeText)`, or "". `group` is `kShortcutGroupNodes` followed by `"/" + g` for each grouping element; this is how `GuiApplicationManager::onPluginLoaded` (`GuiApplicationManager.cpp:990-1047`) registers it. Note that `Plugin::getPluginShortcutGroup()` is the viewer-interface group, not this one.
-    - `QString legacyWeightsJson()` returns a JSON object mapping `"<id>|<major>"` to the old `QSettings(NATRON_ORGANIZATION_NAME, NATRON_APPLICATION_NAME)` value of `<id><major>_tab_weight`. It uses one `QSettings` instance and includes only the non-zero values. Logic moved from `getPluginWeight` (`NodeCreationDialog.cpp:348-367`). Nothing writes those keys any more.
+    - There is no legacy-weights function: weights start fresh (user, 2026-10-12). The old `<id><major>_tab_weight` `QSettings` keys are neither read nor written any more.
     - `bool createNode(const QString& pluginID, int major)`:
       - returns false if `g_target` is null;
       - otherwise does the body of today's `NodeGraph::onCreateNodeDialogFinished` (`NodeGraph25.cpp:202-225`): `CreateNodeArgs(id, g_target->getGroup())`, `kCreateNodeArgsPropNodeInitialPosition` = `g_scenePos`, `kCreateNodeArgsPropPluginVersion` = major, then `g_target->getGui()->getApp()->createNode(args)`.
@@ -186,12 +183,10 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
     - `void bootstrap()`:
       - computes `dir = QCoreApplication::applicationDirPath() + "/../Resources/tabtabtab"`, made canonical;
       - if `dir` is missing, prints one error line naming it, and returns;
-      - otherwise runs `import sys` and `sys.path.insert(0, r'<dir>')` (only if it is not there yet), then `import tabtabtab_natron`, through `interpretPythonScript` in `__main__`;
-      - calls `appPTR->addCommand(tr("Edit/Tab Menu Preferences..."), "tabtabtab_natron.show_prefs_dialog", (Qt::Key)0, Qt::NoModifier)`. `Gui::addMenuEntry` wraps it as `app = appN; f()` (`Gui50.cpp:1017`).
-      - This avoids `Gui.cpp` and `Engine/Settings.*`, which M56 is also editing.
+      - otherwise runs `import sys` and `sys.path.insert(0, r'<dir>')` (only if it is not there yet), then `import tabtabtab_natron`, through `interpretPythonScript` in `__main__`.
+      - It adds no menu entry (user, 2026-10-12: the preferences live in Natron's Preferences), and it does not touch `Gui.cpp`, which M56 is also editing.
     - Bindings: on `GuiApp` (`PyGuiApp.h`, after `renderBlocking`), add:
       - `QString getTabMenuNodeItems() const`
-      - `QString getTabMenuLegacyWeights() const`
       - `bool createNodeFromTabMenu(const QString& pluginID, int majorVersion)`
       - Each forwards to `TabMenuBridge`.
       - These are plain `QString`/`int`/`bool` signatures on an existing `object-type`, so shiboken generates them with no `typesystem_natronGui.xml` change and no `sourceList.py` change. Do not include `TabMenuBridge.h` from `PyGuiApp.h`; include it from `PyGuiApp.cpp` only.
@@ -215,11 +210,35 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
 - [ ] M45.P6.T4 — Remove NodeCreationDialog, keeping CompleterLineEdit for its other users
   - files: `Gui/NodeCreationDialog.h`, `Gui/NodeCreationDialog.cpp`, `Gui/Resources/Stylesheets/mainstyle.qss`
   - approach:
-    - Delete the `NodeCreationDialog` class, its private struct, and the `getPluginWeight`/`incrementPluginWeight` statics (moved to the bridge in M45.P6.T2).
+    - Delete the `NodeCreationDialog` class, its private struct, and the `getPluginWeight`/`incrementPluginWeight` statics (weights start fresh in tabtabtab's JSON, so nothing replaces them).
     - Keep `CompleterLineEdit` in the same files, because `PickKnobDialog.cpp`, `LinkToKnobDialog.cpp`, `KnobGuiPrivate.h`, `EditScriptDialog.cpp` and `EditExpressionDialog.cpp` include it.
     - In `CompleterLineEdit`, drop the `dynamic_cast<NodeCreationDialog*>` branches in `setTextFromIndex` and `keyPressEvent`, so quick-exit always calls `_imp->dialog->accept()`. Leave the list-positioning code alone.
     - Remove the `NodeCreationDialog, Natron--NodeCreationDialog` rule (`mainstyle.qss:321-326`).
   - verify: at the gate build, `grep -rn NodeCreationDialog Gui/` finds nothing, and the Pick Knob and Link-to-Knob dialogs still complete node names (by hand in the UAT).
+  - size: M
+
+- [ ] M45.P6.T5 — Add the "Tab menu" preferences (search-mode remap, scroll toggle) to the Nodegraph page
+  - files: `Engine/Settings.h`, `Engine/Settings.cpp`, `Tests/TabMenuSettings_Test.cpp` (new), `Tests/CMakeLists.txt` (one line in the `Tests` binary's source list, beside `NodeCategory_Test.cpp`)
+  - approach:
+    - This reuses the cancelled M45.P1.T3 brief, with two changes: the option IDs are tabtabtab's mode names, and there are no C++ accessors, because only the Python adapter reads these knobs (M45.P5.T3).
+    - Keep every edit additive, because M56 - Visual And Menu Polish also edits these files in another worktree: it removes `_useBWIcons` from the Nodegraph members and defaults, and adds an accessor near `Settings.h:306`. Append; do not reorder or reformat existing lines.
+    - In `Settings::initializeKnobsNodeGraph()`, after `_nodegraphTab->addKnob(_useInputAForMergeAutoConnect);` (`Settings.cpp:1257`), add:
+      - `_tabMenuSeparator` (`KnobSeparator`, label "Tab menu", name `tabMenuSeparator`) as the heading;
+      - `_tabMenuSearchModes` (`KnobChoice`, label "Search modes (no / one / two leading spaces)", name `tabMenuSearchModes`). It has six `ChoiceOption`s, one per ordering of the three modes:
+        - each option's ID is the ordering of tabtabtab's mode names joined by commas, starting with `anchored_fuzzy,non_anchored_fuzzy,consecutive` (these are `tabtabtab_nuke_core.MODE_*`; the adapter splits the ID on ",");
+        - each label is like "Anchored fuzzy / Non-anchored fuzzy / Consecutive".
+        - A single choice can only hold a valid permutation, so no validation is needed.
+        - The tooltip explains that the number of leading spaces in the query picks the mode, and that `[` also searches the category. Reuse tabtabtab's own wording for the three modes (its prefs dialog's `MODE_DESCRIPTIONS`, with "Blur"/"MotionBlur" changed to "Blur"/"DirBlur").
+      - `_tabMenuScroll` (`KnobBool`, label "Scroll through all results", name `tabMenuScroll`). Its tooltip says that when it is off, only the first screenful of matches is kept.
+      - Add each with `_nodegraphTab->addKnob`.
+    - Declare the three `Knob*Ptr` members after `_useAntiAliasing` in the `// Nodegraph` block (`Settings.h:576`).
+    - In `setDefaultValues()`, add a separate `// Tab menu` block after `_useAntiAliasing->setDefaultValue(true);` (`Settings.cpp:1611`): choice 0 (`anchored_fuzzy,non_anchored_fuzzy,consecutive`) and scroll `true`. These match tabtabtab's own defaults.
+    - Nothing goes in `onKnobValueChanged`: the adapter reads the values on every open.
+  - verify: `ctest -R TabMenuSettings` checks, on `appPTR->getCurrentSettings()` (look the knobs up by name with `getKnobByNameAndType`, as `GLScheduler_Test.cpp:114` does, and restore the old values afterwards):
+    - the defaults are index 0, whose option ID is `anchored_fuzzy,non_anchored_fuzzy,consecutive`, and scrolling on;
+    - the six option IDs are distinct, and each splits into a permutation of the three mode names;
+    - `tabMenuScroll` can be turned off.
+    - At the gate, M45.P8.T1 checks that a change through `natron.getSettings()` alters the live menu. The page layout (a "Tab menu" heading with both controls) is checked by eye in the UAT.
   - size: M
 
 ## Phase 45.7: Shipping the Python files
@@ -267,10 +286,14 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
       - Commands:
         - "pref" lists the Preferences action under Edit, and choosing it opens the Preferences panel (then close it);
         - a menu-bar leaf that is disabled at that moment, picked at run time, is absent from its own query;
-        - "Tab Menu Preferences..." is listed under Edit.
+        - nothing named "Tab Menu Preferences" or "Tabtabtab" is listed (there is no Edit-menu entry).
       - Colour: Blur's row has a `Qt.UserRole` colour equal to the Filter category colour, and a command row has none.
       - Weights: after the creations, `tabtabtab_weights.json` in the scratch folder has a positive entry for Blur's menupath.
-      - Preferences (in memory, not saved): set `space_mode_order` to consecutive / anchored / non-anchored. After that, "blr" lists neither Blur nor DirBlur and " blr" lists Blur only. Set `scroll_enabled` to False: "a" gives at most 18 rows. Restore both afterwards.
+      - Preferences, through Natron's settings (`natron.getSettings().getParam(...)`, not saved):
+        - Set `tabMenuSearchModes` to the option whose ID is `consecutive,anchored_fuzzy,non_anchored_fuzzy`, found by scanning `getOption(i)`. On the next open, "blr" lists neither Blur nor DirBlur, and " blr" lists Blur only.
+        - Set `tabMenuScroll` to False. On the next open, "a" gives at most 18 rows.
+        - Restore both afterwards.
+        - No `tabtabtab_prefs.json` is created in the scratch folder or in `~/.Natron`.
     - Shots: the open menu with coloured rows; the `[` filter; a command query; the graph after a Blur is inserted below the selected Read.
   - verify: `NATRON_GUI_TEST_OUT=build/m45-shots Tests/gui/run-gui-test.sh Tests/gui/m45_tab_menu.py build/fast/App/Natron` reports 0 failures at the gate build.
   - size: M
@@ -288,25 +311,25 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
   - files: none (build, run, package)
   - approach:
     - Configure (new files are globbed, so re-run cmake), then build.
-    - Run `ctest` (including `TabTabTabPython` and `NodeCategory`), then `m45_tab_menu.py`, `m75_read.py`, `m55_node_graph.py`, `m55_input_pipes.py` and `build/m24-shots/m24_border.py` (untracked; run it from that path).
+    - Run `ctest` (including `TabTabTabPython`, `TabMenuSettings` and `NodeCategory`), then `m45_tab_menu.py`, `m75_read.py`, `m55_node_graph.py`, `m55_input_pipes.py` and `build/m24-shots/m24_border.py` (untracked; run it from that path).
     - Package `build/appimages/M45-<sha>.AppImage`.
   - verify: everything is green, and the AppImage path is posted for the user's UAT.
   - size: M
 
-**Verification gate:** CI `format`, `lint-ci` and `build-and-test` are green, including `TabTabTabPython` (vendored upstream core tests plus the adapter tests) and the extended `NodeCategory` cases. `Tests/gui/m45_tab_menu.py`, `m75_read.py`, `m55_node_graph.py`, `m55_input_pipes.py` and `build/m24-shots/m24_border.py` report 0 failures on the gate build. `grep -rn NodeCreationDialog Gui/` is empty. The user signs off the shots and the AppImage UAT, which covers:
+**Verification gate:** CI `format`, `lint-ci` and `build-and-test` are green, including `TabTabTabPython` (vendored upstream core tests plus the adapter tests), the new `TabMenuSettings` cases and the extended `NodeCategory` cases. `Tests/gui/m45_tab_menu.py`, `m75_read.py`, `m55_node_graph.py`, `m55_input_pipes.py` and `build/m24-shots/m24_border.py` report 0 failures on the gate build. `grep -rn NodeCreationDialog Gui/` is empty. The user signs off the shots and the AppImage UAT, which covers:
 - the menu opening under the cursor with no jump;
 - "blr" → Blur;
 - Tab-Tab repeat;
 - an insert below a selected node;
 - a menu-command search;
 - category colours and icons;
-- Edit > Tab Menu Preferences... (a remapped search mode, and scrolling off, both applying on the next open);
+- the "Tab menu" section of Preferences > Nodegraph (a remapped search mode, and scrolling off, both applying on the next open);
 - a rebound Create Node shortcut;
 - Pick Knob / Link-to-Knob completion still working.
 
 Acceptance sketch:
 - Pressing the create-node shortcut (Tab by default, rebindable) in any node graph opens tabtabtab, vendored from tabtabtab-nuke with a Natron adapter. It fuzzy-searches nodes and main-menu commands, colours rows by M24 category, and inserts the chosen node after the selected one.
-- Its search-mode and scroll preferences live in tabtabtab's own dialog under Edit, and usage weights carry over from the old dialog.
+- Its search-mode and scroll preferences are a "Tab menu" section on Natron's Preferences > Nodegraph page. Usage weights start fresh in tabtabtab's own weights file.
 
 ## Decisions
 
@@ -327,3 +350,10 @@ Acceptance sketch:
   - **Weights:** tabtabtab's own JSON (`~/.Natron/tabtabtab_weights.json`, keyed by menupath), so the core's `NodeWeights` is used unmodified and menu commands get weights too. The first time it runs, the adapter seeds the file from the old `QSettings` `<id><major>_tab_weight` counts, so history carries over. The old keys are then left untouched.
   - **Deferred invoke:** the adapter runs both node creation and menu actions one event-loop tick after the popup closes, so a modal dialog opened by the choice (the Read file dialog, Preferences) never overlaps the popup.
   - **Shortcut group fix:** a plugin's create shortcut is looked up in `kShortcutGroupNodes` plus `/<grouping>`, with the plugin ID as the action ID. The cancelled P1.T2's `Plugin::getPluginShortcutGroup()` is the viewer-interface group.
+- 2026-10-12 — **User answers to the consultant's three questions.** These replace the matching consultant calls in the decision above.
+  - **Patches:** patch the vendored copy and record it in `UPSTREAM`. Only the core's main-window-finder patch remains (M45.P5.T2). The prefs-dialog patch went away with the next answer.
+  - **Preferences live in Natron's Preferences**, not in tabtabtab's dialog.
+    - New task **M45.P6.T5** adds a "Tab menu" section to the Nodegraph page in `Engine/Settings.*`, with edits kept additive because M56 is also editing those files. It reuses the cancelled P1.T3 six-way choice, but the option IDs are tabtabtab's mode names joined by commas. There are no C++ accessors.
+    - The adapter reads the two knobs on every open through `NatronGui.natron.getSettings().getParam(...)`. This API exists: `AppSettings::getParam` returns typed wrappers, and `ChoiceParam::getOption(i)` returns the option ID. It passes them straight into the core's `launch(space_mode_order=..., scroll_enabled=...)`.
+    - `tabtabtab_prefs.py` and `tabtabtab_prefs_dialog.py` are therefore not vendored. The core never imports them, and leaving them out modifies upstream least. The Edit > Tab Menu Preferences... entry and the bootstrap's `addCommand` are dropped.
+  - **Weights start fresh:** there is no seeding from the old `QSettings` `<id><major>_tab_weight` counts. `getTabMenuLegacyWeights`/`legacyWeightsJson` are dropped from M45.P6.T2, and the seeding logic and its tests from M45.P5.T3/T4.

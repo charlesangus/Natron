@@ -75,8 +75,7 @@ typedef std::variant<bool, int, double, std::string> KnobValueSerialization;
  * @brief Where one knob dimension is linked to: a knob of another node (or of a track of
  * another node). masterDimension is -1 when the link exists but is not meant to be saved.
  **/
-struct KnobMasterSerialization
-{
+struct KnobMasterSerialization {
     int masterDimension;
     std::string masterNodeName;
     std::string masterNodeNameFull;
@@ -96,8 +95,7 @@ struct KnobMasterSerialization
 /**
  * @brief The saved state of one knob dimension.
  **/
-struct KnobDimensionSerialization
-{
+struct KnobDimensionSerialization {
     bool enabled;
 
     // Present when the dimension is animated.
@@ -129,8 +127,7 @@ struct KnobDimensionSerialization
 /**
  * @brief The menu entries of a choice knob and their help strings.
  **/
-struct KnobChoiceExtraSerialization
-{
+struct KnobChoiceExtraSerialization {
     std::vector<std::string> entries;
     std::vector<std::string> helpStrings;
 };
@@ -138,8 +135,7 @@ struct KnobChoiceExtraSerialization
 /**
  * @brief The range of an Int, Double or Color user knob.
  **/
-struct KnobValueRangeSerialization
-{
+struct KnobValueRangeSerialization {
     double minimum;
     double maximum;
     double displayMinimum;
@@ -157,8 +153,7 @@ struct KnobValueRangeSerialization
 /**
  * @brief Whether an input or output file user knob holds an image sequence.
  **/
-struct KnobFileExtraSerialization
-{
+struct KnobFileExtraSerialization {
     bool useSequences;
 
     KnobFileExtraSerialization()
@@ -170,8 +165,7 @@ struct KnobFileExtraSerialization
 /**
  * @brief Whether a path user knob holds a list of paths.
  **/
-struct KnobPathExtraSerialization
-{
+struct KnobPathExtraSerialization {
     bool multiPath;
 
     KnobPathExtraSerialization()
@@ -183,8 +177,7 @@ struct KnobPathExtraSerialization
 /**
  * @brief Whether a layer-select user knob shows per-channel buttons.
  **/
-struct KnobLayerSelectExtraSerialization
-{
+struct KnobLayerSelectExtraSerialization {
     bool withChannelButtons;
 
     KnobLayerSelectExtraSerialization()
@@ -196,8 +189,7 @@ struct KnobLayerSelectExtraSerialization
 /**
  * @brief How a String user knob displays its text.
  **/
-struct KnobTextExtraSerialization
-{
+struct KnobTextExtraSerialization {
     bool isLabel;
     bool isMultiLine;
     bool usesRichText;
@@ -220,13 +212,13 @@ typedef std::variant<std::monostate,
                      KnobFileExtraSerialization,
                      KnobPathExtraSerialization,
                      KnobLayerSelectExtraSerialization,
-                     KnobTextExtraSerialization> KnobExtraSerialization;
+                     KnobTextExtraSerialization>
+    KnobExtraSerialization;
 
 /**
  * @brief Plain-data equivalent of everything a project file saves for one knob.
  **/
-struct KnobSerialization
-{
+struct KnobSerialization {
     // The class version the knob was loaded from, NATRON_SERIALIZATION_KNOB_VERSION otherwise.
     unsigned int version;
 
@@ -243,10 +235,10 @@ struct KnobSerialization
     std::vector<KnobDimensionSerialization> dimensions;
 
     // Present for parametric knobs only.
-    std::optional<std::list<CurveSerialization> > parametricCurves;
+    std::optional<std::list<CurveSerialization>> parametricCurves;
 
     // Present for knobs whose string value can animate (String and InputFile knobs).
-    std::optional<std::map<int, std::string> > stringAnimation;
+    std::optional<std::map<int, std::string>> stringAnimation;
 
     // Present for choice knobs: the ID of the selected entry, used to find it again when the
     // entries changed since the project was saved.
@@ -294,8 +286,7 @@ struct GroupKnobChildSerialization;
  * @brief The layout of a user page or user group knob: its definition and, in order, the user
  * knobs and nested groups it holds.
  **/
-struct GroupKnobSerialization
-{
+struct GroupKnobSerialization {
     std::string name;
     std::string label;
     bool secret;
@@ -313,8 +304,7 @@ struct GroupKnobSerialization
  * @brief One child of a user page or group: the nested group when isGroup is set, the regular
  * user knob otherwise.
  **/
-struct GroupKnobChildSerialization
-{
+struct GroupKnobChildSerialization {
     bool isGroup;
     KnobSerialization knob;
     GroupKnobSerialization group;
@@ -328,8 +318,7 @@ struct GroupKnobChildSerialization
 };
 
 // Defined once GroupKnobChildSerialization is complete, which the children list needs.
-inline
-GroupKnobSerialization::GroupKnobSerialization()
+inline GroupKnobSerialization::GroupKnobSerialization()
     : name()
     , label()
     , secret(false)
@@ -342,8 +331,7 @@ GroupKnobSerialization::GroupKnobSerialization()
 /**
  * @brief The Knob<T> value type a knob type name stands for.
  **/
-enum KnobStorageTypeEnum
-{
+enum KnobStorageTypeEnum {
     eKnobStorageTypeNone = 0,
     eKnobStorageTypeBool,
     eKnobStorageTypeInt,
@@ -356,8 +344,7 @@ enum KnobStorageTypeEnum
  * archive is read without any Engine knob at hand. The names are those Engine's knob classes
  * return from typeNameStatic().
  **/
-struct KnobTypeTraits
-{
+struct KnobTypeTraits {
     // One of the knob types a project file can create.
     bool isKnown;
 

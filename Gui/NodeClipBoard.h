@@ -49,10 +49,10 @@ GCC_DIAG_ON(unused-parameter)
 
 #include "Gui/GuiFwd.h"
 
-#include "Serialization/NodeSerialization.h"
-#include "Serialization/ProjectGuiSerialization.h"
 #include "Serialization/BoostXml/NodeXml.h"
 #include "Serialization/BoostXml/ProjectGuiXml.h"
+#include "Serialization/NodeSerialization.h"
+#include "Serialization/ProjectGuiSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -108,7 +108,7 @@ public:
             Serialization::NodeSerializationPtr nS = std::make_shared<Serialization::NodeSerialization>();
             ar & ::boost::serialization::make_nvp("Node", *nS);
             nodes.push_back(nS);
-            sourceNodes.push_back( NodePtr() );
+            sourceNodes.push_back(NodePtr());
             Serialization::NodeGuiSerializationPtr nGui = std::make_shared<Serialization::NodeGuiSerialization>();
             ar & ::boost::serialization::make_nvp("NodeUI", *nGui);
             nodesUI.push_back(nGui);

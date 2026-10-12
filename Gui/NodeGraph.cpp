@@ -440,7 +440,7 @@ NodeGraph::createNodeGUI(const NodePtr & node,
     if ( !nodesBeingCreated.empty() && (nodesBeingCreated.front() == node) ) {
         isTopLevelNodeBeingCreated = true;
     }
-    
+
     Serialization::NodeSerializationPtr serialization = args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
 
     // A Dot is a routing aid created in passing, so its panel only opens when asked for.

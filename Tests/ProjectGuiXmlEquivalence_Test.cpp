@@ -38,17 +38,17 @@
 #include <gtest/gtest.h>
 
 #include "Serialization/BasicSerialization.h"
-#include "Serialization/KnobSerialization.h"
-#include "Serialization/ProjectGuiSerialization.h"
 #include "Serialization/BoostXml/BasicTypesXml.h"
 #include "Serialization/BoostXml/KnobXml.h"
 #include "Serialization/BoostXml/ProjectGuiXml.h"
+#include "Serialization/KnobSerialization.h"
+#include "Serialization/ProjectGuiSerialization.h"
 
 NATRON_NAMESPACE_USING
 
 namespace {
 
-template<class T>
+template <class T>
 std::string
 saveXml(const char* name,
         const T& object)
@@ -62,7 +62,7 @@ saveXml(const char* name,
     return buffer.str();
 }
 
-template<class T>
+template <class T>
 void
 loadXml(const std::string& xml,
         const char* name,
@@ -84,8 +84,8 @@ makeStringKnob(const std::string& name,
     knob.typeName = "String";
     knob.dimension = 1;
     knob.dimensions.resize(1);
-    knob.dimensions[0].value = Serialization::KnobValueSerialization( value );
-    knob.dimensions[0].defaultValue = Serialization::KnobValueSerialization( std::string() );
+    knob.dimensions[0].value = Serialization::KnobValueSerialization(value);
+    knob.dimensions[0].defaultValue = Serialization::KnobValueSerialization(std::string());
     knob.stringAnimation = std::map<int, std::string>();
 
     return knob;
@@ -286,7 +286,7 @@ makePopulatedProjectGui()
         Serialization::NodeGuiSerializationPtr nestedGroup = makeNodeGui("Group1.Group2", 60., 80., 0.4f, 0.4f, 0.4f);
         nestedGroup->width = 640.;
         nestedGroup->height = 480.;
-        nestedGroup->children.push_back( makeNodeGui("Group1.Group2.Dot1", -5., -6., 0.1f, 0.2f, 0.3f) );
+        nestedGroup->children.push_back(makeNodeGui("Group1.Group2.Dot1", -5., -6., 0.1f, 0.2f, 0.3f));
         group->children.push_back(nestedGroup);
         projectGui.nodes.push_back(*group);
 
@@ -305,9 +305,8 @@ makePopulatedProjectGui()
         workshopTabs.push_back("dopeSheetEditor");
         std::list<std::string> propertiesTabs;
         propertiesTabs.push_back("properties");
-        std::shared_ptr<Serialization::SplitterSerialization> workshopSplitter =
-            makeSplitter( "600 400", 1, paneChild( makePane("pane2", workshopTabs, 1, false) ), paneChild( makePane("pane3", propertiesTabs, 0, false) ) );
-        mainWindow.childSplitter = makeSplitter( "1200 720", 0, paneChild( makePane("pane1", viewerTabs, 0, true) ), splitterChild(workshopSplitter) );
+        std::shared_ptr<Serialization::SplitterSerialization> workshopSplitter = makeSplitter("600 400", 1, paneChild(makePane("pane2", workshopTabs, 1, false)), paneChild(makePane("pane3", propertiesTabs, 0, false)));
+        mainWindow.childSplitter = makeSplitter("1200 720", 0, paneChild(makePane("pane1", viewerTabs, 0, true)), splitterChild(workshopSplitter));
         projectGui.layout.windows.push_back(mainWindow);
 
         Serialization::ApplicationWindowSerialization floatingPaneWindow = makeWindow(false, 200, 300, 640, 480);
@@ -321,8 +320,7 @@ makePopulatedProjectGui()
         secondViewerTabs.push_back("Viewer2");
         std::list<std::string> histogramTabs;
         histogramTabs.push_back("histogram2");
-        floatingSplitterWindow.childSplitter =
-            makeSplitter( "400 400", 0, paneChild( makePane("pane5", secondViewerTabs, 0, false) ), paneChild( makePane("pane6", histogramTabs, 0, false) ) );
+        floatingSplitterWindow.childSplitter = makeSplitter("400 400", 0, paneChild(makePane("pane5", secondViewerTabs, 0, false)), paneChild(makePane("pane6", histogramTabs, 0, false)));
         projectGui.layout.windows.push_back(floatingSplitterWindow);
 
         Serialization::ApplicationWindowSerialization floatingNodePanelWindow = makeWindow(false, 900, 100, 400, 700);
@@ -353,8 +351,8 @@ makePopulatedProjectGui()
         Serialization::PythonPanelSerialization panel;
         panel.name = "My Panel";
         panel.pythonFunction = "createMyPanel";
-        panel.knobs.push_back( makeStringKnob("note", "some <text>") );
-        panel.knobs.push_back( makeIntKnob("count", 3) );
+        panel.knobs.push_back(makeStringKnob("note", "some <text>"));
+        panel.knobs.push_back(makeIntKnob("count", 3));
         panel.userData = "user data & more";
         projectGui.pythonPanels.push_back(panel);
 
@@ -374,7 +372,7 @@ expectSameKnob(const Serialization::KnobSerialization& expected,
     EXPECT_EQ(expected.name, actual.name);
     EXPECT_EQ(expected.typeName, actual.typeName);
     EXPECT_EQ(expected.dimension, actual.dimension);
-    ASSERT_EQ( expected.dimensions.size(), actual.dimensions.size() );
+    ASSERT_EQ(expected.dimensions.size(), actual.dimensions.size());
     for (std::size_t i = 0; i < actual.dimensions.size(); ++i) {
         EXPECT_TRUE(expected.dimensions[i].value == actual.dimensions[i].value);
     }
@@ -409,7 +407,7 @@ expectSameNodeGui(const Serialization::NodeGuiSerialization& expected,
         EXPECT_EQ(expected.userColorB, actual.userColorB);
     }
 
-    ASSERT_EQ( expected.children.size(), actual.children.size() );
+    ASSERT_EQ(expected.children.size(), actual.children.size());
     std::list<Serialization::NodeGuiSerializationPtr>::const_iterator expectedChild = expected.children.begin();
     for (std::list<Serialization::NodeGuiSerializationPtr>::const_iterator child = actual.children.begin(); child != actual.children.end(); ++child, ++expectedChild) {
         expectSameNodeGui(**expectedChild, **child);
@@ -432,16 +430,16 @@ expectSameSplitter(const Serialization::SplitterSerialization& expected,
 {
     EXPECT_EQ(expected.sizes, actual.sizes);
     EXPECT_EQ(expected.orientation, actual.orientation);
-    ASSERT_EQ( expected.children.size(), actual.children.size() );
+    ASSERT_EQ(expected.children.size(), actual.children.size());
     for (std::size_t i = 0; i < actual.children.size(); ++i) {
         const Serialization::SplitterChildSerialization& expectedChild = expected.children[i];
         const Serialization::SplitterChildSerialization& child = actual.children[i];
-        ASSERT_EQ( (bool)expectedChild.splitter, (bool)child.splitter );
+        ASSERT_EQ((bool)expectedChild.splitter, (bool)child.splitter);
         if (child.splitter) {
             expectSameSplitter(*expectedChild.splitter, *child.splitter);
         } else {
-            ASSERT_TRUE( (bool)expectedChild.pane );
-            ASSERT_TRUE( (bool)child.pane );
+            ASSERT_TRUE((bool)expectedChild.pane);
+            ASSERT_TRUE((bool)child.pane);
             expectSamePane(*expectedChild.pane, *child.pane);
         }
     }
@@ -451,8 +449,8 @@ void
 expectSameWindow(const Serialization::ApplicationWindowSerialization& expected,
                  const Serialization::ApplicationWindowSerialization& actual)
 {
-    ASSERT_EQ( (bool)expected.childSplitter, (bool)actual.childSplitter );
-    ASSERT_EQ( (bool)expected.childPane, (bool)actual.childPane );
+    ASSERT_EQ((bool)expected.childSplitter, (bool)actual.childSplitter);
+    ASSERT_EQ((bool)expected.childPane, (bool)actual.childPane);
     if (actual.childSplitter) {
         expectSameSplitter(*expected.childSplitter, *actual.childSplitter);
     }
@@ -471,15 +469,15 @@ void
 expectSameLayout(const Serialization::GuiLayoutSerialization& expected,
                  const Serialization::GuiLayoutSerialization& actual)
 {
-    ASSERT_EQ( expected.windows.size(), actual.windows.size() );
+    ASSERT_EQ(expected.windows.size(), actual.windows.size());
     std::list<Serialization::ApplicationWindowSerialization>::const_iterator expectedWindow = expected.windows.begin();
     for (std::list<Serialization::ApplicationWindowSerialization>::const_iterator window = actual.windows.begin(); window != actual.windows.end(); ++window, ++expectedWindow) {
         expectSameWindow(*expectedWindow, *window);
     }
-    ASSERT_EQ( expected.legacyPanes.size(), actual.legacyPanes.size() );
+    ASSERT_EQ(expected.legacyPanes.size(), actual.legacyPanes.size());
     for (std::map<std::string, Serialization::PaneLayoutSerialization>::const_iterator pane = actual.legacyPanes.begin(); pane != actual.legacyPanes.end(); ++pane) {
         std::map<std::string, Serialization::PaneLayoutSerialization>::const_iterator expectedPane = expected.legacyPanes.find(pane->first);
-        ASSERT_TRUE( expectedPane != expected.legacyPanes.end() );
+        ASSERT_TRUE(expectedPane != expected.legacyPanes.end());
         expectSamePane(expectedPane->second, pane->second);
     }
     EXPECT_EQ(expected.legacySplitterStates, actual.legacySplitterStates);
@@ -534,10 +532,10 @@ void
 expectSameViewers(const std::map<std::string, Serialization::ViewerDataSerialization>& expected,
                   const std::map<std::string, Serialization::ViewerDataSerialization>& actual)
 {
-    ASSERT_EQ( expected.size(), actual.size() );
+    ASSERT_EQ(expected.size(), actual.size());
     for (std::map<std::string, Serialization::ViewerDataSerialization>::const_iterator viewer = actual.begin(); viewer != actual.end(); ++viewer) {
         std::map<std::string, Serialization::ViewerDataSerialization>::const_iterator expectedViewer = expected.find(viewer->first);
-        ASSERT_TRUE( expectedViewer != expected.end() );
+        ASSERT_TRUE(expectedViewer != expected.end());
         expectSameViewerData(expectedViewer->second, viewer->second);
     }
 }
@@ -566,7 +564,7 @@ expectSamePythonPanel(const Serialization::PythonPanelSerialization& expected,
     EXPECT_EQ(expected.name, actual.name);
     EXPECT_EQ(expected.pythonFunction, actual.pythonFunction);
     EXPECT_EQ(expected.userData, actual.userData);
-    ASSERT_EQ( expected.knobs.size(), actual.knobs.size() );
+    ASSERT_EQ(expected.knobs.size(), actual.knobs.size());
     std::list<Serialization::KnobSerialization>::const_iterator expectedKnob = expected.knobs.begin();
     for (std::list<Serialization::KnobSerialization>::const_iterator knob = actual.knobs.begin(); knob != actual.knobs.end(); ++knob, ++expectedKnob) {
         expectSameKnob(*expectedKnob, *knob);
@@ -579,7 +577,7 @@ expectSameProjectGui(const Serialization::ProjectGuiSerialization& expected,
 {
     EXPECT_EQ(expected.version, actual.version);
 
-    ASSERT_EQ( expected.nodes.size(), actual.nodes.size() );
+    ASSERT_EQ(expected.nodes.size(), actual.nodes.size());
     std::list<Serialization::NodeGuiSerialization>::const_iterator expectedNode = expected.nodes.begin();
     for (std::list<Serialization::NodeGuiSerialization>::const_iterator node = actual.nodes.begin(); node != actual.nodes.end(); ++node, ++expectedNode) {
         expectSameNodeGui(*expectedNode, *node);
@@ -590,7 +588,7 @@ expectSameProjectGui(const Serialization::ProjectGuiSerialization& expected,
 
     EXPECT_EQ(expected.histograms, actual.histograms);
 
-    ASSERT_EQ( expected.legacyBackdrops.size(), actual.legacyBackdrops.size() );
+    ASSERT_EQ(expected.legacyBackdrops.size(), actual.legacyBackdrops.size());
     std::list<Serialization::NodeBackdropSerialization>::const_iterator expectedBackdrop = expected.legacyBackdrops.begin();
     for (std::list<Serialization::NodeBackdropSerialization>::const_iterator backdrop = actual.legacyBackdrops.begin(); backdrop != actual.legacyBackdrops.end(); ++backdrop, ++expectedBackdrop) {
         expectSameBackdrop(*expectedBackdrop, *backdrop);
@@ -601,7 +599,7 @@ expectSameProjectGui(const Serialization::ProjectGuiSerialization& expected,
     EXPECT_EQ(expected.openedPanelsHideUnmodified, actual.openedPanelsHideUnmodified);
     EXPECT_EQ(expected.scriptEditorInput, actual.scriptEditorInput);
 
-    ASSERT_EQ( expected.pythonPanels.size(), actual.pythonPanels.size() );
+    ASSERT_EQ(expected.pythonPanels.size(), actual.pythonPanels.size());
     std::list<Serialization::PythonPanelSerialization>::const_iterator expectedPythonPanel = expected.pythonPanels.begin();
     for (std::list<Serialization::PythonPanelSerialization>::const_iterator pythonPanel = actual.pythonPanels.begin(); pythonPanel != actual.pythonPanels.end(); ++pythonPanel, ++expectedPythonPanel) {
         expectSamePythonPanel(*expectedPythonPanel, *pythonPanel);
@@ -611,8 +609,7 @@ expectSameProjectGui(const Serialization::ProjectGuiSerialization& expected,
 // Old-format writers: each archives the NVPs a class wrote at the version given to it below, so
 // the load branches for files saved by older versions can be exercised.
 
-struct NodeGuiVersion3Writer
-{
+struct NodeGuiVersion3Writer {
     std::string name;
     double positionX;
     double positionY;
@@ -622,23 +619,22 @@ struct NodeGuiVersion3Writer
     float colorB;
     bool selected;
 
-    template<class Archive>
-    void serialize(Archive & ar,
+    template <class Archive>
+    void serialize(Archive& ar,
                    const unsigned int /*version*/)
     {
-        ar & ::boost::serialization::make_nvp("Name", name);
-        ar & ::boost::serialization::make_nvp("X_position", positionX);
-        ar & ::boost::serialization::make_nvp("Y_position", positionY);
-        ar & ::boost::serialization::make_nvp("Preview_enabled", previewEnabled);
-        ar & ::boost::serialization::make_nvp("r", colorR);
-        ar & ::boost::serialization::make_nvp("g", colorG);
-        ar & ::boost::serialization::make_nvp("b", colorB);
-        ar & ::boost::serialization::make_nvp("Selected", selected);
+        ar& ::boost::serialization::make_nvp("Name", name);
+        ar& ::boost::serialization::make_nvp("X_position", positionX);
+        ar& ::boost::serialization::make_nvp("Y_position", positionY);
+        ar& ::boost::serialization::make_nvp("Preview_enabled", previewEnabled);
+        ar& ::boost::serialization::make_nvp("r", colorR);
+        ar& ::boost::serialization::make_nvp("g", colorG);
+        ar& ::boost::serialization::make_nvp("b", colorB);
+        ar& ::boost::serialization::make_nvp("Selected", selected);
     }
 };
 
-struct BackdropVersion1Writer
-{
+struct BackdropVersion1Writer {
     double positionX;
     double positionY;
     int width;
@@ -650,25 +646,24 @@ struct BackdropVersion1Writer
     float colorG;
     float colorB;
 
-    template<class Archive>
-    void serialize(Archive & ar,
+    template <class Archive>
+    void serialize(Archive& ar,
                    const unsigned int /*version*/)
     {
-        ar & ::boost::serialization::make_nvp("X_position", positionX);
-        ar & ::boost::serialization::make_nvp("Y_position", positionY);
-        ar & ::boost::serialization::make_nvp("Width", width);
-        ar & ::boost::serialization::make_nvp("Height", height);
-        ar & ::boost::serialization::make_nvp("Name", name);
-        ar & ::boost::serialization::make_nvp("MasterName", masterName);
-        ar & ::boost::serialization::make_nvp("Label", label);
-        ar & ::boost::serialization::make_nvp("r", colorR);
-        ar & ::boost::serialization::make_nvp("g", colorG);
-        ar & ::boost::serialization::make_nvp("b", colorB);
+        ar& ::boost::serialization::make_nvp("X_position", positionX);
+        ar& ::boost::serialization::make_nvp("Y_position", positionY);
+        ar& ::boost::serialization::make_nvp("Width", width);
+        ar& ::boost::serialization::make_nvp("Height", height);
+        ar& ::boost::serialization::make_nvp("Name", name);
+        ar& ::boost::serialization::make_nvp("MasterName", masterName);
+        ar& ::boost::serialization::make_nvp("Label", label);
+        ar& ::boost::serialization::make_nvp("r", colorR);
+        ar& ::boost::serialization::make_nvp("g", colorG);
+        ar& ::boost::serialization::make_nvp("b", colorB);
     }
 };
 
-struct PaneLayoutVersion3Writer
-{
+struct PaneLayoutVersion3Writer {
     bool floating;
     std::list<bool> splits;
     std::string parentName;
@@ -680,27 +675,26 @@ struct PaneLayoutVersion3Writer
     int width;
     int height;
 
-    template<class Archive>
-    void serialize(Archive & ar,
+    template <class Archive>
+    void serialize(Archive& ar,
                    const unsigned int /*version*/)
     {
-        ar & ::boost::serialization::make_nvp("Floating", floating);
-        ar & ::boost::serialization::make_nvp("Splits", splits);
-        ar & ::boost::serialization::make_nvp("ParentName", parentName);
-        ar & ::boost::serialization::make_nvp("SplitsNames", splitsNames);
-        ar & ::boost::serialization::make_nvp("Tabs", tabs);
-        ar & ::boost::serialization::make_nvp("Index", currentIndex);
+        ar& ::boost::serialization::make_nvp("Floating", floating);
+        ar& ::boost::serialization::make_nvp("Splits", splits);
+        ar& ::boost::serialization::make_nvp("ParentName", parentName);
+        ar& ::boost::serialization::make_nvp("SplitsNames", splitsNames);
+        ar& ::boost::serialization::make_nvp("Tabs", tabs);
+        ar& ::boost::serialization::make_nvp("Index", currentIndex);
         if (floating) {
-            ar & ::boost::serialization::make_nvp("x", positionX);
-            ar & ::boost::serialization::make_nvp("y", positionY);
-            ar & ::boost::serialization::make_nvp("w", width);
-            ar & ::boost::serialization::make_nvp("h", height);
+            ar& ::boost::serialization::make_nvp("x", positionX);
+            ar& ::boost::serialization::make_nvp("y", positionY);
+            ar& ::boost::serialization::make_nvp("w", width);
+            ar& ::boost::serialization::make_nvp("h", height);
         }
     }
 };
 
-struct ViewerDataVersion3Writer
-{
+struct ViewerDataVersion3Writer {
     double zoomLeft;
     double zoomBottom;
     double zoomFactor;
@@ -718,31 +712,30 @@ struct ViewerDataVersion3Writer
     int wipeCompositingOperator;
     bool frameRangeLocked;
 
-    template<class Archive>
-    void serialize(Archive & ar,
+    template <class Archive>
+    void serialize(Archive& ar,
                    const unsigned int /*version*/)
     {
-        ar & ::boost::serialization::make_nvp("zoomLeft", zoomLeft);
-        ar & ::boost::serialization::make_nvp("zoomBottom", zoomBottom);
-        ar & ::boost::serialization::make_nvp("zoomFactor", zoomFactor);
-        ar & ::boost::serialization::make_nvp("zoomPAR", zoomPixelAspectRatio);
-        ar & ::boost::serialization::make_nvp("UserRoIEnabled", userRoIEnabled);
-        ar & ::boost::serialization::make_nvp("UserRoI", userRoI);
-        ar & ::boost::serialization::make_nvp("ClippedToProject", isClippedToProject);
-        ar & ::boost::serialization::make_nvp("AutoContrast", autoContrastEnabled);
-        ar & ::boost::serialization::make_nvp("Gain", gain);
-        ar & ::boost::serialization::make_nvp("ColorSpace", colorSpace);
-        ar & ::boost::serialization::make_nvp("Channels", channels);
-        ar & ::boost::serialization::make_nvp("RenderScaleActivated", renderScaleActivated);
-        ar & ::boost::serialization::make_nvp("MipMapLevel", mipmapLevel);
-        ar & ::boost::serialization::make_nvp("ZoomOrPanSinceFit", zoomOrPanSinceLastFit);
-        ar & ::boost::serialization::make_nvp("CompositingOP", wipeCompositingOperator);
-        ar & ::boost::serialization::make_nvp("FrameRangeLocked", frameRangeLocked);
+        ar& ::boost::serialization::make_nvp("zoomLeft", zoomLeft);
+        ar& ::boost::serialization::make_nvp("zoomBottom", zoomBottom);
+        ar& ::boost::serialization::make_nvp("zoomFactor", zoomFactor);
+        ar& ::boost::serialization::make_nvp("zoomPAR", zoomPixelAspectRatio);
+        ar& ::boost::serialization::make_nvp("UserRoIEnabled", userRoIEnabled);
+        ar& ::boost::serialization::make_nvp("UserRoI", userRoI);
+        ar& ::boost::serialization::make_nvp("ClippedToProject", isClippedToProject);
+        ar& ::boost::serialization::make_nvp("AutoContrast", autoContrastEnabled);
+        ar& ::boost::serialization::make_nvp("Gain", gain);
+        ar& ::boost::serialization::make_nvp("ColorSpace", colorSpace);
+        ar& ::boost::serialization::make_nvp("Channels", channels);
+        ar& ::boost::serialization::make_nvp("RenderScaleActivated", renderScaleActivated);
+        ar& ::boost::serialization::make_nvp("MipMapLevel", mipmapLevel);
+        ar& ::boost::serialization::make_nvp("ZoomOrPanSinceFit", zoomOrPanSinceLastFit);
+        ar& ::boost::serialization::make_nvp("CompositingOP", wipeCompositingOperator);
+        ar& ::boost::serialization::make_nvp("FrameRangeLocked", frameRangeLocked);
     }
 };
 
-struct ProjectGuiVersion2Writer
-{
+struct ProjectGuiVersion2Writer {
     std::list<NodeGuiVersion3Writer> nodes;
     std::map<std::string, PaneLayoutVersion3Writer> panes;
     std::map<std::string, std::string> splitterStates;
@@ -751,36 +744,34 @@ struct ProjectGuiVersion2Writer
     std::list<std::string> histograms;
     std::list<BackdropVersion1Writer> backdrops;
 
-    template<class Archive>
-    void serialize(Archive & ar,
+    template <class Archive>
+    void serialize(Archive& ar,
                    const unsigned int /*version*/)
     {
-        ar & ::boost::serialization::make_nvp("NodesGui", nodes);
-        ar & ::boost::serialization::make_nvp("Gui_Layout", panes);
-        ar & ::boost::serialization::make_nvp("Splitters_states", splitterStates);
-        ar & ::boost::serialization::make_nvp("ViewersData", viewers);
-        ar & ::boost::serialization::make_nvp("PreviewsTurnedOffGlobaly", previewsTurnedOffGlobally);
-        ar & ::boost::serialization::make_nvp("Histograms", histograms);
-        ar & ::boost::serialization::make_nvp("Backdrops", backdrops);
+        ar& ::boost::serialization::make_nvp("NodesGui", nodes);
+        ar& ::boost::serialization::make_nvp("Gui_Layout", panes);
+        ar& ::boost::serialization::make_nvp("Splitters_states", splitterStates);
+        ar& ::boost::serialization::make_nvp("ViewersData", viewers);
+        ar& ::boost::serialization::make_nvp("PreviewsTurnedOffGlobaly", previewsTurnedOffGlobally);
+        ar& ::boost::serialization::make_nvp("Histograms", histograms);
+        ar& ::boost::serialization::make_nvp("Backdrops", backdrops);
     }
 };
 
-struct GuiLayoutVersion1Writer
-{
+struct GuiLayoutVersion1Writer {
     std::map<std::string, PaneLayoutVersion3Writer> panes;
     std::map<std::string, std::string> splitterStates;
 
-    template<class Archive>
-    void serialize(Archive & ar,
+    template <class Archive>
+    void serialize(Archive& ar,
                    const unsigned int /*version*/)
     {
-        ar & ::boost::serialization::make_nvp("Gui_Layout", panes);
-        ar & ::boost::serialization::make_nvp("Splitters_states", splitterStates);
+        ar& ::boost::serialization::make_nvp("Gui_Layout", panes);
+        ar& ::boost::serialization::make_nvp("Splitters_states", splitterStates);
     }
 };
 
-struct ProjectGuiVersion9Writer
-{
+struct ProjectGuiVersion9Writer {
     std::list<Serialization::NodeGuiSerialization> nodes;
     GuiLayoutVersion1Writer layout;
     std::map<std::string, Serialization::ViewerDataSerialization> viewers;
@@ -789,17 +780,17 @@ struct ProjectGuiVersion9Writer
     std::list<std::string> openedPanels;
     std::string scriptEditorInput;
 
-    template<class Archive>
-    void serialize(Archive & ar,
+    template <class Archive>
+    void serialize(Archive& ar,
                    const unsigned int /*version*/)
     {
-        ar & ::boost::serialization::make_nvp("NodesGui", nodes);
-        ar & ::boost::serialization::make_nvp("Gui_Layout", layout);
-        ar & ::boost::serialization::make_nvp("ViewersData", viewers);
-        ar & ::boost::serialization::make_nvp("Histograms", histograms);
-        ar & ::boost::serialization::make_nvp("Backdrops", backdrops);
-        ar & ::boost::serialization::make_nvp("OpenedPanels", openedPanels);
-        ar & ::boost::serialization::make_nvp("ScriptEditorInput", scriptEditorInput);
+        ar& ::boost::serialization::make_nvp("NodesGui", nodes);
+        ar& ::boost::serialization::make_nvp("Gui_Layout", layout);
+        ar& ::boost::serialization::make_nvp("ViewersData", viewers);
+        ar& ::boost::serialization::make_nvp("Histograms", histograms);
+        ar& ::boost::serialization::make_nvp("Backdrops", backdrops);
+        ar& ::boost::serialization::make_nvp("OpenedPanels", openedPanels);
+        ar& ::boost::serialization::make_nvp("ScriptEditorInput", scriptEditorInput);
     }
 };
 
@@ -914,12 +905,12 @@ loadAndCheckResave(const std::string& xml)
 {
     Serialization::ProjectGuiSerialization loaded;
 
-    EXPECT_NO_THROW( loadXml(xml, "ProjectGui", &loaded) );
+    EXPECT_NO_THROW(loadXml(xml, "ProjectGui", &loaded));
 
     const std::string savedXml = saveXml("ProjectGui", loaded);
     Serialization::ProjectGuiSerialization reloaded;
-    EXPECT_NO_THROW( loadXml(savedXml, "ProjectGui", &reloaded) );
-    EXPECT_EQ( savedXml, saveXml("ProjectGui", reloaded) );
+    EXPECT_NO_THROW(loadXml(savedXml, "ProjectGui", &reloaded));
+    EXPECT_EQ(savedXml, saveXml("ProjectGui", reloaded));
 
     return loaded;
 }
@@ -940,46 +931,46 @@ TEST(ProjectGuiXmlEquivalence, APopulatedGuiSectionRoundTripsThroughTheAdapter)
     const std::string xml = saveXml("ProjectGui", source);
 
     Serialization::ProjectGuiSerialization reloaded;
-    ASSERT_NO_THROW( loadXml(xml, "ProjectGui", &reloaded) );
+    ASSERT_NO_THROW(loadXml(xml, "ProjectGui", &reloaded));
     expectSameProjectGui(source, reloaded);
-    EXPECT_EQ( xml, saveXml("ProjectGui", reloaded) );
+    EXPECT_EQ(xml, saveXml("ProjectGui", reloaded));
 
-    EXPECT_EQ( (unsigned int)NATRON_SERIALIZATION_PROJECT_GUI_VERSION, reloaded.version );
-    ASSERT_EQ( (std::size_t)3, reloaded.nodes.size() );
-    const Serialization::NodeGuiSerialization& group = *std::next( reloaded.nodes.begin() );
-    EXPECT_EQ( std::string("Group1"), group.nodeName );
+    EXPECT_EQ((unsigned int)NATRON_SERIALIZATION_PROJECT_GUI_VERSION, reloaded.version);
+    ASSERT_EQ((std::size_t)3, reloaded.nodes.size());
+    const Serialization::NodeGuiSerialization& group = *std::next(reloaded.nodes.begin());
+    EXPECT_EQ(std::string("Group1"), group.nodeName);
     EXPECT_TRUE(group.selected);
     EXPECT_TRUE(group.hasOverlayColor);
     EXPECT_EQ(0.75, group.overlayColorB);
-    ASSERT_EQ( (std::size_t)2, group.children.size() );
+    ASSERT_EQ((std::size_t)2, group.children.size());
     const Serialization::NodeGuiSerialization& nestedGroup = *group.children.back();
     EXPECT_EQ(640., nestedGroup.width);
-    ASSERT_EQ( (std::size_t)1, nestedGroup.children.size() );
-    EXPECT_EQ( std::string("Group1.Group2.Dot1"), nestedGroup.children.front()->nodeName );
+    ASSERT_EQ((std::size_t)1, nestedGroup.children.size());
+    EXPECT_EQ(std::string("Group1.Group2.Dot1"), nestedGroup.children.front()->nodeName);
 
-    ASSERT_EQ( (std::size_t)5, reloaded.layout.windows.size() );
+    ASSERT_EQ((std::size_t)5, reloaded.layout.windows.size());
     const Serialization::ApplicationWindowSerialization& mainWindow = reloaded.layout.windows.front();
     EXPECT_TRUE(mainWindow.isMainWindow);
-    ASSERT_TRUE( (bool)mainWindow.childSplitter );
-    ASSERT_EQ( (std::size_t)2, mainWindow.childSplitter->children.size() );
-    ASSERT_TRUE( (bool)mainWindow.childSplitter->children[0].pane );
+    ASSERT_TRUE((bool)mainWindow.childSplitter);
+    ASSERT_EQ((std::size_t)2, mainWindow.childSplitter->children.size());
+    ASSERT_TRUE((bool)mainWindow.childSplitter->children[0].pane);
     EXPECT_TRUE(mainWindow.childSplitter->children[0].pane->isAnchor);
-    ASSERT_TRUE( (bool)mainWindow.childSplitter->children[1].splitter );
-    EXPECT_EQ( std::string("600 400"), mainWindow.childSplitter->children[1].splitter->sizes );
-    EXPECT_EQ( std::string(NATRON_SERIALIZATION_PROJECT_SETTINGS_PANEL_NAME), reloaded.layout.windows.back().childDockablePanel );
-    EXPECT_FALSE( (bool)reloaded.layout.windows.back().childSplitter );
-    EXPECT_FALSE( (bool)reloaded.layout.windows.back().childPane );
+    ASSERT_TRUE((bool)mainWindow.childSplitter->children[1].splitter);
+    EXPECT_EQ(std::string("600 400"), mainWindow.childSplitter->children[1].splitter->sizes);
+    EXPECT_EQ(std::string(NATRON_SERIALIZATION_PROJECT_SETTINGS_PANEL_NAME), reloaded.layout.windows.back().childDockablePanel);
+    EXPECT_FALSE((bool)reloaded.layout.windows.back().childSplitter);
+    EXPECT_FALSE((bool)reloaded.layout.windows.back().childPane);
 
-    ASSERT_EQ( (std::size_t)2, reloaded.viewers.size() );
-    EXPECT_EQ( std::string("Alpha"), reloaded.viewers.find("Viewer2")->second.channels );
-    EXPECT_EQ( std::string("ACES 1.3 Reference Gamut Compression"), reloaded.viewers.find("Viewer1")->second.look );
-    EXPECT_EQ( std::string("print('hello')\nprint(\"<a & b>\")\n"), reloaded.scriptEditorInput );
-    ASSERT_EQ( (std::size_t)2, reloaded.pythonPanels.size() );
-    EXPECT_EQ( (std::size_t)2, reloaded.pythonPanels.front().knobs.size() );
-    EXPECT_TRUE( reloaded.pythonPanels.back().knobs.empty() );
+    ASSERT_EQ((std::size_t)2, reloaded.viewers.size());
+    EXPECT_EQ(std::string("Alpha"), reloaded.viewers.find("Viewer2")->second.channels);
+    EXPECT_EQ(std::string("ACES 1.3 Reference Gamut Compression"), reloaded.viewers.find("Viewer1")->second.look);
+    EXPECT_EQ(std::string("print('hello')\nprint(\"<a & b>\")\n"), reloaded.scriptEditorInput);
+    ASSERT_EQ((std::size_t)2, reloaded.pythonPanels.size());
+    EXPECT_EQ((std::size_t)2, reloaded.pythonPanels.front().knobs.size());
+    EXPECT_TRUE(reloaded.pythonPanels.back().knobs.empty());
 
     // Splitters and panes are tracked, so the file numbers every one of them.
-    EXPECT_NE( std::string::npos, xml.find("object_id=") );
+    EXPECT_NE(std::string::npos, xml.find("object_id="));
 }
 
 TEST(ProjectGuiXmlEquivalence, TheLayoutViewersAndPythonPanelsRoundTripOnTheirOwn)
@@ -989,22 +980,22 @@ TEST(ProjectGuiXmlEquivalence, TheLayoutViewersAndPythonPanelsRoundTripOnTheirOw
     // A layout file holds the layout alone, under this name.
     const std::string layoutXml = saveXml("Layout", source.layout);
     Serialization::GuiLayoutSerialization layout;
-    ASSERT_NO_THROW( loadXml(layoutXml, "Layout", &layout) );
+    ASSERT_NO_THROW(loadXml(layoutXml, "Layout", &layout));
     expectSameLayout(source.layout, layout);
-    EXPECT_EQ( layoutXml, saveXml("Layout", layout) );
+    EXPECT_EQ(layoutXml, saveXml("Layout", layout));
 
     const std::string viewersXml = saveXml("ViewersData", source.viewers);
     std::map<std::string, Serialization::ViewerDataSerialization> viewers;
-    ASSERT_NO_THROW( loadXml(viewersXml, "ViewersData", &viewers) );
+    ASSERT_NO_THROW(loadXml(viewersXml, "ViewersData", &viewers));
     expectSameViewers(source.viewers, viewers);
-    EXPECT_EQ( viewersXml, saveXml("ViewersData", viewers) );
+    EXPECT_EQ(viewersXml, saveXml("ViewersData", viewers));
 
     const Serialization::PythonPanelSerialization& sourcePythonPanel = source.pythonPanels.front();
     const std::string pythonPanelXml = saveXml("PythonPanel", sourcePythonPanel);
     Serialization::PythonPanelSerialization pythonPanel;
-    ASSERT_NO_THROW( loadXml(pythonPanelXml, "PythonPanel", &pythonPanel) );
+    ASSERT_NO_THROW(loadXml(pythonPanelXml, "PythonPanel", &pythonPanel));
     expectSamePythonPanel(sourcePythonPanel, pythonPanel);
-    EXPECT_EQ( pythonPanelXml, saveXml("PythonPanel", pythonPanel) );
+    EXPECT_EQ(pythonPanelXml, saveXml("PythonPanel", pythonPanel));
 }
 
 TEST(ProjectGuiXmlEquivalence, AVersion1LayoutFileLoadsItsPanesAsLegacyPanes)
@@ -1016,43 +1007,43 @@ TEST(ProjectGuiXmlEquivalence, AVersion1LayoutFileLoadsItsPanesAsLegacyPanes)
     written.splitterStates["Splitter1"] = "100 200";
 
     Serialization::GuiLayoutSerialization layout;
-    ASSERT_NO_THROW( loadXml(saveXml("Layout", written), "Layout", &layout) );
+    ASSERT_NO_THROW(loadXml(saveXml("Layout", written), "Layout", &layout));
 
     EXPECT_TRUE(layout.windows.empty());
-    ASSERT_EQ( (std::size_t)2, layout.legacyPanes.size() );
+    ASSERT_EQ((std::size_t)2, layout.legacyPanes.size());
     for (std::map<std::string, Serialization::PaneLayoutSerialization>::const_iterator it = layout.legacyPanes.begin(); it != layout.legacyPanes.end(); ++it) {
-        EXPECT_EQ( legacyPaneTabsAsScriptNames(), it->second.tabs );
+        EXPECT_EQ(legacyPaneTabsAsScriptNames(), it->second.tabs);
         EXPECT_EQ(2, it->second.currentIndex);
-        EXPECT_EQ( std::string(), it->second.name );
+        EXPECT_EQ(std::string(), it->second.name);
         EXPECT_FALSE(it->second.isAnchor);
     }
-    ASSERT_EQ( (std::size_t)1, layout.legacySplitterStates.size() );
-    EXPECT_EQ( std::string("100 200"), layout.legacySplitterStates.find("Splitter1")->second );
+    ASSERT_EQ((std::size_t)1, layout.legacySplitterStates.size());
+    EXPECT_EQ(std::string("100 200"), layout.legacySplitterStates.find("Splitter1")->second);
 }
 
 TEST(ProjectGuiXmlEquivalence, AVersion2GuiSectionLoadsItsValues)
 {
     ProjectGuiVersion2Writer written;
 
-    written.nodes.push_back( makeNodeGuiVersion3("My Blur 1", 12.5, true) );
-    written.nodes.push_back( makeNodeGuiVersion3("2D Transform", -40., false) );
+    written.nodes.push_back(makeNodeGuiVersion3("My Blur 1", 12.5, true));
+    written.nodes.push_back(makeNodeGuiVersion3("2D Transform", -40., false));
     written.panes["Pane1"] = makePaneLayoutVersion3(false);
     written.panes["Pane2"] = makePaneLayoutVersion3(true);
     written.splitterStates["Splitter1"] = "100 200";
     written.viewers["Viewer1"] = makeViewerDataVersion3();
     written.previewsTurnedOffGlobally = true;
     written.histograms.push_back("histogram1");
-    written.backdrops.push_back( makeBackdropVersion1("Backdrop1", "") );
-    written.backdrops.push_back( makeBackdropVersion1("Backdrop2", "Backdrop1") );
+    written.backdrops.push_back(makeBackdropVersion1("Backdrop1", ""));
+    written.backdrops.push_back(makeBackdropVersion1("Backdrop2", "Backdrop1"));
 
-    const Serialization::ProjectGuiSerialization loaded = loadAndCheckResave( saveXml("ProjectGui", written) );
+    const Serialization::ProjectGuiSerialization loaded = loadAndCheckResave(saveXml("ProjectGui", written));
 
-    EXPECT_EQ( (unsigned int)NATRON_SERIALIZATION_PROJECT_GUI_INTRODUCES_BACKDROPS, loaded.version );
+    EXPECT_EQ((unsigned int)NATRON_SERIALIZATION_PROJECT_GUI_INTRODUCES_BACKDROPS, loaded.version);
 
-    ASSERT_EQ( (std::size_t)2, loaded.nodes.size() );
+    ASSERT_EQ((std::size_t)2, loaded.nodes.size());
     const Serialization::NodeGuiSerialization& blur = loaded.nodes.front();
-    EXPECT_EQ( (unsigned int)NATRON_SERIALIZATION_NODE_GUI_INTRODUCES_SELECTED, blur.version );
-    EXPECT_EQ( std::string("My_Blur_1"), blur.nodeName );
+    EXPECT_EQ((unsigned int)NATRON_SERIALIZATION_NODE_GUI_INTRODUCES_SELECTED, blur.version);
+    EXPECT_EQ(std::string("My_Blur_1"), blur.nodeName);
     EXPECT_EQ(12.5, blur.positionX);
     EXPECT_EQ(-12.5, blur.positionY);
     EXPECT_TRUE(blur.previewEnabled);
@@ -1066,24 +1057,24 @@ TEST(ProjectGuiXmlEquivalence, AVersion2GuiSectionLoadsItsValues)
     EXPECT_FALSE(blur.hasOverlayColor);
     EXPECT_TRUE(blur.children.empty());
     const Serialization::NodeGuiSerialization& transform = loaded.nodes.back();
-    EXPECT_EQ( std::string("p2D_Transform"), transform.nodeName );
+    EXPECT_EQ(std::string("p2D_Transform"), transform.nodeName);
     EXPECT_EQ(-40., transform.positionX);
     EXPECT_FALSE(transform.selected);
 
     EXPECT_TRUE(loaded.layout.windows.empty());
-    ASSERT_EQ( (std::size_t)2, loaded.layout.legacyPanes.size() );
+    ASSERT_EQ((std::size_t)2, loaded.layout.legacyPanes.size());
     for (std::map<std::string, Serialization::PaneLayoutSerialization>::const_iterator it = loaded.layout.legacyPanes.begin(); it != loaded.layout.legacyPanes.end(); ++it) {
-        EXPECT_EQ( legacyPaneTabsAsScriptNames(), it->second.tabs );
+        EXPECT_EQ(legacyPaneTabsAsScriptNames(), it->second.tabs);
         EXPECT_EQ(2, it->second.currentIndex);
-        EXPECT_EQ( std::string(), it->second.name );
+        EXPECT_EQ(std::string(), it->second.name);
         EXPECT_FALSE(it->second.isAnchor);
     }
     // Splitter states saved before NATRON_SERIALIZATION_PROJECT_GUI_CHANGES_SPLITTERS are dropped.
     EXPECT_TRUE(loaded.layout.legacySplitterStates.empty());
 
-    ASSERT_EQ( (std::size_t)1, loaded.viewers.size() );
+    ASSERT_EQ((std::size_t)1, loaded.viewers.size());
     const Serialization::ViewerDataSerialization& viewer = loaded.viewers.find("Viewer1")->second;
-    EXPECT_EQ( (unsigned int)NATRON_SERIALIZATION_VIEWER_DATA_INTRODUCES_FRAME_RANGE, viewer.version );
+    EXPECT_EQ((unsigned int)NATRON_SERIALIZATION_VIEWER_DATA_INTRODUCES_FRAME_RANGE, viewer.version);
     EXPECT_EQ(-7.5, viewer.zoomLeft);
     EXPECT_EQ(2.25, viewer.zoomBottom);
     EXPECT_EQ(0.5, viewer.zoomFactor);
@@ -1117,24 +1108,24 @@ TEST(ProjectGuiXmlEquivalence, AVersion2GuiSectionLoadsItsValues)
     EXPECT_EQ(-1, viewer.activeInputB);
     EXPECT_FALSE(viewer.isFullFrameProcessEnabled);
 
-    ASSERT_EQ( (std::size_t)1, loaded.histograms.size() );
-    EXPECT_EQ( std::string("histogram1"), loaded.histograms.front() );
+    ASSERT_EQ((std::size_t)1, loaded.histograms.size());
+    EXPECT_EQ(std::string("histogram1"), loaded.histograms.front());
 
-    ASSERT_EQ( (std::size_t)2, loaded.legacyBackdrops.size() );
+    ASSERT_EQ((std::size_t)2, loaded.legacyBackdrops.size());
     const Serialization::NodeBackdropSerialization& firstBackdrop = loaded.legacyBackdrops.front();
     EXPECT_EQ(15.5, firstBackdrop.positionX);
     EXPECT_EQ(-25.25, firstBackdrop.positionY);
     EXPECT_EQ(320, firstBackdrop.width);
     EXPECT_EQ(240, firstBackdrop.height);
-    EXPECT_EQ( std::string("Backdrop1"), firstBackdrop.name );
-    EXPECT_EQ( std::string(), firstBackdrop.masterBackdropName );
+    EXPECT_EQ(std::string("Backdrop1"), firstBackdrop.name);
+    EXPECT_EQ(std::string(), firstBackdrop.masterBackdropName);
     expectSameKnob(makeStringKnob("Label", "Backdrop note"), firstBackdrop.label);
     EXPECT_EQ(0.3f, firstBackdrop.colorR);
     EXPECT_EQ(0.6f, firstBackdrop.colorG);
     EXPECT_EQ(0.9f, firstBackdrop.colorB);
     EXPECT_FALSE(firstBackdrop.selected);
-    EXPECT_EQ( std::string("Backdrop2"), loaded.legacyBackdrops.back().name );
-    EXPECT_EQ( std::string("Backdrop1"), loaded.legacyBackdrops.back().masterBackdropName );
+    EXPECT_EQ(std::string("Backdrop2"), loaded.legacyBackdrops.back().name);
+    EXPECT_EQ(std::string("Backdrop1"), loaded.legacyBackdrops.back().masterBackdropName);
 
     EXPECT_TRUE(loaded.openedPanels.empty());
     EXPECT_TRUE(loaded.openedPanelsMinimized.empty());
@@ -1168,28 +1159,28 @@ TEST(ProjectGuiXmlEquivalence, AVersion9GuiSectionLoadsItsValues)
     written.openedPanels = populated.openedPanels;
     written.scriptEditorInput = populated.scriptEditorInput;
 
-    const Serialization::ProjectGuiSerialization loaded = loadAndCheckResave( saveXml("ProjectGui", written) );
+    const Serialization::ProjectGuiSerialization loaded = loadAndCheckResave(saveXml("ProjectGui", written));
 
-    EXPECT_EQ( (unsigned int)NATRON_SERIALIZATION_PROJECT_GUI_SCRIPT_EDITOR, loaded.version );
+    EXPECT_EQ((unsigned int)NATRON_SERIALIZATION_PROJECT_GUI_SCRIPT_EDITOR, loaded.version);
 
-    ASSERT_EQ( populated.nodes.size(), loaded.nodes.size() );
+    ASSERT_EQ(populated.nodes.size(), loaded.nodes.size());
     std::list<Serialization::NodeGuiSerialization>::const_iterator populatedNode = populated.nodes.begin();
     for (std::list<Serialization::NodeGuiSerialization>::const_iterator node = loaded.nodes.begin(); node != loaded.nodes.end(); ++node, ++populatedNode) {
         expectSameNodeGui(*populatedNode, *node);
     }
 
     EXPECT_TRUE(loaded.layout.windows.empty());
-    ASSERT_EQ( (std::size_t)1, loaded.layout.legacyPanes.size() );
+    ASSERT_EQ((std::size_t)1, loaded.layout.legacyPanes.size());
     const Serialization::PaneLayoutSerialization& pane = loaded.layout.legacyPanes.find("Pane1")->second;
-    EXPECT_EQ( legacyPaneTabsAsScriptNames(), pane.tabs );
+    EXPECT_EQ(legacyPaneTabsAsScriptNames(), pane.tabs);
     EXPECT_EQ(2, pane.currentIndex);
-    ASSERT_EQ( (std::size_t)1, loaded.layout.legacySplitterStates.size() );
-    EXPECT_EQ( std::string("100 200"), loaded.layout.legacySplitterStates.find("Splitter1")->second );
+    ASSERT_EQ((std::size_t)1, loaded.layout.legacySplitterStates.size());
+    EXPECT_EQ(std::string("100 200"), loaded.layout.legacySplitterStates.find("Splitter1")->second);
 
     expectSameViewers(populated.viewers, loaded.viewers);
     EXPECT_EQ(populated.histograms, loaded.histograms);
 
-    ASSERT_EQ( (std::size_t)1, loaded.legacyBackdrops.size() );
+    ASSERT_EQ((std::size_t)1, loaded.legacyBackdrops.size());
     expectSameBackdrop(backdrop, loaded.legacyBackdrops.front());
 
     EXPECT_EQ(populated.openedPanels, loaded.openedPanels);

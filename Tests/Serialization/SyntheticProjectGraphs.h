@@ -63,8 +63,7 @@ NATRON_NAMESPACE_ENTER
  * @brief Builds, in the current project, the small graphs the serialization tests save.
  **/
 class SyntheticProjectGraphTest
-    : public BaseTest
-{
+    : public BaseTest {
 protected:
     // Points the project's [Project] path variable at `directoryPath`, the same row
     // Project::saveProject() fills in from the save directory.

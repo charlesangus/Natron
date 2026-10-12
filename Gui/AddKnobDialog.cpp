@@ -1797,9 +1797,8 @@ AddKnobDialog::onOkClicked()
 
         assert(_imp->knob);
 
-
         if (_imp->originalKnob) {
-            _imp->knob->clone( _imp->originalKnob.get() );
+            _imp->knob->clone(_imp->originalKnob.get());
         }
 
         KnobString* isLabelKnob = dynamic_cast<KnobString*>( _imp->knob.get() );

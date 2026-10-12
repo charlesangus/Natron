@@ -53,8 +53,8 @@ GCC_DIAG_ON(unused-parameter)
 
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/RotoLayer.h"
 #include "Engine/Project.h"
+#include "Engine/RotoLayer.h"
 #include "Engine/ViewerInstance.h"
 
 #include "Gui/BackdropGui.h"
@@ -67,10 +67,10 @@ GCC_DIAG_ON(unused-parameter)
 
 #include "Global/QtCompat.h"
 
-#include "Serialization/NodeSerialization.h"
-#include "Serialization/ProjectGuiSerialization.h"
 #include "Serialization/BoostXml/NodeXml.h"
 #include "Serialization/BoostXml/ProjectGuiXml.h"
+#include "Serialization/NodeSerialization.h"
+#include "Serialization/ProjectGuiSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 void
@@ -311,13 +311,13 @@ NodeGraph::cloneSelectedNodes(const QPointF& scenePos)
     for (NodesGuiList::iterator it = nodesToCopy.begin(); it != nodesToCopy.end(); ++it) {
         NodePtr sourceNode = (*it)->getNode();
         Serialization::NodeSerializationPtr internalSerialization = std::make_shared<Serialization::NodeSerialization>();
-        sourceNode->toSerialization( internalSerialization.get() );
+        sourceNode->toSerialization(internalSerialization.get());
         Serialization::NodeGuiSerializationPtr guiSerialization = std::make_shared<Serialization::NodeGuiSerialization>();
-        (*it)->toSerialization( guiSerialization.get() );
+        (*it)->toSerialization(guiSerialization.get());
         NodeGuiPtr clone = _imp->pasteNode(internalSerialization, sourceNode, guiSerialization, offset,
                                            _imp->group.lock(), std::string(), true, &oldNewScriptNamesMapping);
 
-        newNodes.push_back( std::make_pair(internalSerialization->scriptName, clone) );
+        newNodes.push_back(std::make_pair(internalSerialization->scriptName, clone));
         newNodesList.push_back(clone);
         serializations.push_back(internalSerialization);
 

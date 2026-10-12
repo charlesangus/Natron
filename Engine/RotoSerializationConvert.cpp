@@ -31,9 +31,9 @@
 #include <string>
 #include <vector>
 
+#include <QCoreApplication>
 #include <QMutex>
 #include <QThread>
-#include <QCoreApplication>
 
 #include "Serialization/RotoSerialization.h"
 
@@ -176,17 +176,17 @@ Bezier::toSerialization(Serialization::BezierSerialization* serialization) const
         serialization->isOpenBezier = _imp->isOpenBezier;
         serialization->controlPoints.clear();
         serialization->featherPoints.clear();
-        assert( _imp->featherPoints.size() == _imp->points.size() || !useFeatherPoints() );
+        assert(_imp->featherPoints.size() == _imp->points.size() || !useFeatherPoints());
 
         bool useFeather = useFeatherPoints();
         BezierCPs::const_iterator featherIt = _imp->featherPoints.begin();
         for (BezierCPs::const_iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
-            serialization->controlPoints.push_back( Serialization::BezierCPSerialization() );
-            (*it)->toSerialization( &serialization->controlPoints.back() );
+            serialization->controlPoints.push_back(Serialization::BezierCPSerialization());
+            (*it)->toSerialization(&serialization->controlPoints.back());
             serialization->controlPoints.back().broken = false;
-            if ( useFeather && ( featherIt != _imp->featherPoints.end() ) ) {
-                serialization->featherPoints.push_back( Serialization::BezierCPSerialization() );
-                (*featherIt)->toSerialization( &serialization->featherPoints.back() );
+            if (useFeather && (featherIt != _imp->featherPoints.end())) {
+                serialization->featherPoints.push_back(Serialization::BezierCPSerialization());
+                (*featherIt)->toSerialization(&serialization->featherPoints.back());
                 serialization->featherPoints.back().broken = false;
                 ++featherIt;
             }
@@ -199,7 +199,7 @@ Bezier::toSerialization(Serialization::BezierSerialization* serialization) const
 void
 Bezier::fromSerialization(const Serialization::BezierSerialization& serialization)
 {
-    BezierPtr thisShared = std::dynamic_pointer_cast<Bezier>( shared_from_this() );
+    BezierPtr thisShared = std::dynamic_pointer_cast<Bezier>(shared_from_this());
 
     assert(thisShared);
     {
@@ -215,7 +215,7 @@ Bezier::fromSerialization(const Serialization::BezierSerialization& serializatio
             controlPoint->setBroken(false);
             _imp->points.push_back(controlPoint);
 
-            if ( useFeather && ( featherIt != serialization.featherPoints.end() ) ) {
+            if (useFeather && (featherIt != serialization.featherPoints.end())) {
                 BezierCPPtr featherPoint = std::make_shared<FeatherPoint>(thisShared);
                 featherPoint->fromSerialization(*featherIt);
                 featherPoint->setBroken(false);
@@ -238,8 +238,8 @@ RotoStrokeItem::toSerialization(Serialization::RotoStrokeItemSerialization* seri
     serialization->brushType = (int)_imp->type;
     serialization->strokes.clear();
     for (std::vector<RotoStrokeItemPrivate::StrokeCurves>::const_iterator it = _imp->strokes.begin(); it != _imp->strokes.end(); ++it) {
-        serialization->strokes.push_back( Serialization::RotoStrokeCurvesSerialization() );
-        Serialization::RotoStrokeCurvesSerialization & curves = serialization->strokes.back();
+        serialization->strokes.push_back(Serialization::RotoStrokeCurvesSerialization());
+        Serialization::RotoStrokeCurvesSerialization& curves = serialization->strokes.back();
         it->xCurve->toSerialization(&curves.xCurve);
         it->yCurve->toSerialization(&curves.yCurve);
         it->pressureCurve->toSerialization(&curves.pressureCurve);
@@ -289,17 +289,17 @@ RotoLayer::toSerialization(Serialization::RotoLayerSerialization* serialization)
         RotoStrokeItemPtr isStroke = std::dynamic_pointer_cast<RotoStrokeItem>(*it);
         RotoLayerPtr isLayer = std::dynamic_pointer_cast<RotoLayer>(*it);
         if (isBezier && !isStroke) {
-            serialization->children.push_back( Serialization::RotoLayerChildSerialization() );
+            serialization->children.push_back(Serialization::RotoLayerChildSerialization());
             serialization->children.back().type = Serialization::eRotoLayerChildTypeBezier;
-            isBezier->toSerialization( &serialization->children.back().bezier );
+            isBezier->toSerialization(&serialization->children.back().bezier);
         } else if (isStroke) {
-            serialization->children.push_back( Serialization::RotoLayerChildSerialization() );
+            serialization->children.push_back(Serialization::RotoLayerChildSerialization());
             serialization->children.back().type = Serialization::eRotoLayerChildTypeStroke;
-            isStroke->toSerialization( &serialization->children.back().stroke );
+            isStroke->toSerialization(&serialization->children.back().stroke);
         } else if (isLayer) {
-            serialization->children.push_back( Serialization::RotoLayerChildSerialization() );
+            serialization->children.push_back(Serialization::RotoLayerChildSerialization());
             serialization->children.back().type = Serialization::eRotoLayerChildTypeLayer;
-            isLayer->toSerialization( &serialization->children.back().layer );
+            isLayer->toSerialization(&serialization->children.back().layer);
         }
     }
 
@@ -309,17 +309,17 @@ RotoLayer::toSerialization(Serialization::RotoLayerSerialization* serialization)
 void
 RotoLayer::fromSerialization(const Serialization::RotoLayerSerialization& serialization)
 {
-    RotoLayerPtr thisLayer = std::dynamic_pointer_cast<RotoLayer>( shared_from_this() );
+    RotoLayerPtr thisLayer = std::dynamic_pointer_cast<RotoLayer>(shared_from_this());
 
     assert(thisLayer);
     RotoItem::fromSerialization(serialization);
     for (std::list<Serialization::RotoLayerChildSerialization>::const_iterator it = serialization.children.begin(); it != serialization.children.end(); ++it) {
         switch (it->type) {
         case Serialization::eRotoLayerChildTypeBezier: {
-            BezierPtr bezier( new Bezier(getContext(), kRotoBezierBaseName, RotoLayerPtr(), false) );
+            BezierPtr bezier(new Bezier(getContext(), kRotoBezierBaseName, RotoLayerPtr(), false));
             bezier->createNodes(false);
             bezier->fromSerialization(it->bezier);
-            if ( !bezier->getParentLayer() ) {
+            if (!bezier->getParentLayer()) {
                 bezier->setParentLayer(thisLayer);
             }
             QMutexLocker l(&itemMutex);
@@ -327,10 +327,10 @@ RotoLayer::fromSerialization(const Serialization::RotoLayerSerialization& serial
             break;
         }
         case Serialization::eRotoLayerChildTypeStroke: {
-            RotoStrokeItemPtr stroke( new RotoStrokeItem( (RotoStrokeType)it->stroke.brushType, getContext(), kRotoPaintBrushBaseName, RotoLayerPtr() ) );
+            RotoStrokeItemPtr stroke(new RotoStrokeItem((RotoStrokeType)it->stroke.brushType, getContext(), kRotoPaintBrushBaseName, RotoLayerPtr()));
             stroke->createNodes(false);
             stroke->fromSerialization(it->stroke);
-            if ( !stroke->getParentLayer() ) {
+            if (!stroke->getParentLayer()) {
                 stroke->setParentLayer(thisLayer);
             }
             QMutexLocker l(&itemMutex);
@@ -338,11 +338,11 @@ RotoLayer::fromSerialization(const Serialization::RotoLayerSerialization& serial
             break;
         }
         case Serialization::eRotoLayerChildTypeLayer: {
-            RotoLayerPtr layer( new RotoLayer(getContext(), kRotoLayerBaseName, thisLayer) );
+            RotoLayerPtr layer(new RotoLayer(getContext(), kRotoLayerBaseName, thisLayer));
             _imp->items.push_back(layer);
             getContext()->addLayer(layer);
             layer->fromSerialization(it->layer);
-            if ( !layer->getParentLayer() ) {
+            if (!layer->getParentLayer()) {
                 layer->setParentLayer(thisLayer);
             }
             break;
@@ -363,21 +363,21 @@ RotoContext::toSerialization(Serialization::RotoContextSerialization* serializat
     serialization->featherLink = _imp->featherLink;
     serialization->rippleEdit = _imp->rippleEdit;
 
-    assert( !_imp->layers.empty() );
-    if ( !_imp->layers.empty() ) {
+    assert(!_imp->layers.empty());
+    if (!_imp->layers.empty()) {
         _imp->layers.front()->toSerialization(&serialization->baseLayer);
     }
 
     serialization->selectedItems.clear();
     for (std::list<RotoItemPtr>::const_iterator it = _imp->selectedItems.begin(); it != _imp->selectedItems.end(); ++it) {
-        serialization->selectedItems.push_back( (*it)->getScriptName() );
+        serialization->selectedItems.push_back((*it)->getScriptName());
     }
 }
 
 void
 RotoContext::fromSerialization(const Serialization::RotoContextSerialization& serialization)
 {
-    assert( QThread::currentThread() == qApp->thread() );
+    assert(QThread::currentThread() == qApp->thread());
 
     _imp->isCurrentlyLoading = true;
     _imp->autoKeying = serialization.autoKeying;

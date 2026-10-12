@@ -540,7 +540,6 @@ private:
                                     ViewSpec view,
                                     bool originatedFromMainThread)  OVERRIDE FINAL;
 
-
     std::unique_ptr<ProjectPrivate> _imp;
 };
 

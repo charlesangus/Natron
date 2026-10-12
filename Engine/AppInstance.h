@@ -54,27 +54,24 @@ struct AppInstancePrivate;
  * @brief The Natron build that saved the project being loaded, -1 and empty strings for what
  * the file does not say.
  **/
-class ProjectBeingLoadedInfo
-{
+class ProjectBeingLoadedInfo {
 public:
-    int vMajor,vMinor,vRev;
-    std::string gitBranch,gitCommit;
+    int vMajor, vMinor, vRev;
+    std::string gitBranch, gitCommit;
     std::string osStr;
     int bits;
 
     ProjectBeingLoadedInfo()
-    : vMajor(-1)
-    , vMinor(-1)
-    , vRev(-1)
-    , gitBranch()
-    , gitCommit()
-    , osStr()
-    , bits(-1)
+        : vMajor(-1)
+        , vMinor(-1)
+        , vRev(-1)
+        , gitBranch()
+        , gitCommit()
+        , osStr()
+        , bits(-1)
     {
-
     }
 };
-
 
 class FlagSetter
 {
@@ -246,7 +243,7 @@ public:
      * project only reads that section for an app that is not in the background.
      **/
     virtual void loadProjectGui(bool /*isAutosave*/,
-                                const Serialization::ProjectGuiSerialization & /*serialization*/) const
+                                const Serialization::ProjectGuiSerialization& /*serialization*/) const
     {
     }
 
@@ -484,7 +481,6 @@ Q_SIGNALS:
     void pluginsPopulated();
 
 protected:
-
     virtual void onGroupCreationFinished(const NodePtr& node, const Serialization::NodeSerializationPtr& serialization, bool autoConnect);
     virtual void createNodeGui(const NodePtr& /*node*/,
                                const NodePtr& /*parentmultiinstance*/,

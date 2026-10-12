@@ -26,12 +26,12 @@ namespace Serialization {
 
 namespace {
 
-bool
-storedColorIsNear(const NodeGuiSerialization& node,
-                  const float* color)
-{
-    return color && (std::abs(node.colorR - color[0]) <= 0.05) && (std::abs(node.colorG - color[1]) <= 0.05) && (std::abs(node.colorB - color[2]) <= 0.05);
-}
+    bool
+    storedColorIsNear(const NodeGuiSerialization& node,
+                      const float* color)
+    {
+        return color && (std::abs(node.colorR - color[0]) <= 0.05) && (std::abs(node.colorG - color[1]) <= 0.05) && (std::abs(node.colorB - color[2]) <= 0.05);
+    }
 
 } // namespace
 
@@ -56,7 +56,7 @@ resolveNodeGuiUserColor(const NodeGuiSerialization& node,
     if (!node.colorWasFound || !categoryColor) {
         return false;
     }
-    if ( storedColorIsNear(node, categoryColor) || storedColorIsNear(node, legacyCategoryColor) ) {
+    if (storedColorIsNear(node, categoryColor) || storedColorIsNear(node, legacyCategoryColor)) {
         return false;
     }
     *r = node.colorR;

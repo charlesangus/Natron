@@ -48,9 +48,8 @@
 #include "Gui/ProjectGui.h"
 #include "Gui/SequenceFileDialog.h"
 
-#include "Serialization/ProjectGuiSerialization.h"
 #include "Serialization/BoostXml/ProjectGuiXml.h"
-
+#include "Serialization/ProjectGuiSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 

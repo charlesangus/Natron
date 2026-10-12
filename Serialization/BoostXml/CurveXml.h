@@ -45,27 +45,27 @@ GCC_DIAG_ON(unused-parameter)
 namespace boost {
 namespace serialization {
 
-template<class Archive>
-void
-serialize(Archive & ar,
-          NATRON_NAMESPACE::Serialization::KeyFrameSerialization & keyframe,
-          const unsigned int /*version*/)
-{
-    ar & ::boost::serialization::make_nvp("Time", keyframe.time);
-    ar & ::boost::serialization::make_nvp("Value", keyframe.value);
-    ar & ::boost::serialization::make_nvp("InterpolationMethod", keyframe.interpolation);
-    ar & ::boost::serialization::make_nvp("LeftDerivative", keyframe.leftDerivative);
-    ar & ::boost::serialization::make_nvp("RightDerivative", keyframe.rightDerivative);
-}
+    template <class Archive>
+    void
+    serialize(Archive& ar,
+              NATRON_NAMESPACE::Serialization::KeyFrameSerialization& keyframe,
+              const unsigned int /*version*/)
+    {
+        ar& ::boost::serialization::make_nvp("Time", keyframe.time);
+        ar& ::boost::serialization::make_nvp("Value", keyframe.value);
+        ar& ::boost::serialization::make_nvp("InterpolationMethod", keyframe.interpolation);
+        ar& ::boost::serialization::make_nvp("LeftDerivative", keyframe.leftDerivative);
+        ar& ::boost::serialization::make_nvp("RightDerivative", keyframe.rightDerivative);
+    }
 
-template<class Archive>
-void
-serialize(Archive & ar,
-          NATRON_NAMESPACE::Serialization::CurveSerialization & curve,
-          const unsigned int /*version*/)
-{
-    ar & ::boost::serialization::make_nvp("KeyFrameSet", curve.keyframes);
-}
+    template <class Archive>
+    void
+    serialize(Archive& ar,
+              NATRON_NAMESPACE::Serialization::CurveSerialization& curve,
+              const unsigned int /*version*/)
+    {
+        ar& ::boost::serialization::make_nvp("KeyFrameSet", curve.keyframes);
+    }
 
 } // namespace serialization
 } // namespace boost

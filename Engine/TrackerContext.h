@@ -137,7 +137,6 @@ public:
 
     void toSerialization(Serialization::TrackerContextSerialization* serialization) const;
 
-
     NodePtr getNode() const;
     KnobChoicePtr getCorrelationScoreTypeKnob() const;
     KnobBoolPtr getEnabledKnob() const;

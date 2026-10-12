@@ -54,7 +54,6 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Serialization/SerializationFwd.h"
 
-
 #define NATRON_CACHE_SIZE_TEXT_REFRESH_INTERVAL_MS 1000
 #define NATRON_NODES_RENDER_STATE_REFRESH_INTERVAL_MS 300
 
@@ -239,23 +238,22 @@ public:
      * @param sourceNode[in] The node internalSerialization was made from, if known. A clone is slaved to it.
      * @param offset[in] The offset applied to the new node position relative to the serialized node's position.
      **/
-    NodeGuiPtr pasteNode(const Serialization::NodeSerializationPtr & internalSerialization,
-                         const NodePtr & sourceNode,
-                         const Serialization::NodeGuiSerializationPtr & guiSerialization,
-                         const QPointF & offset,
+    NodeGuiPtr pasteNode(const Serialization::NodeSerializationPtr& internalSerialization,
+                         const NodePtr& sourceNode,
+                         const Serialization::NodeGuiSerializationPtr& guiSerialization,
+                         const QPointF& offset,
                          const NodeCollectionPtr& group,
                          const std::string& parentName,
                          bool clone,
                          std::map<std::string, std::string>* oldNewScriptNamesMapping);
-
 
     /**
      * @brief This is called once all nodes of a clipboard have been pasted to try to restore connections between them
      * WARNING: The 2 lists must be ordered the same: each item in serializations corresponds to the same item in the newNodes
      * list. We're not using 2 lists to avoid a copy from the paste function.
      **/
-    void restoreConnections(const std::list<Serialization::NodeSerializationPtr> & serializations,
-                            const std::list<std::pair<std::string, NodeGuiPtr> > & newNodes,
+    void restoreConnections(const std::list<Serialization::NodeSerializationPtr>& serializations,
+                            const std::list<std::pair<std::string, NodeGuiPtr>>& newNodes,
                             const std::map<std::string, std::string>& oldNewScriptNamesMap);
 
     void editSelectionFromSelectionRectangle(bool addToSelection);

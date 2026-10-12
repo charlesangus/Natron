@@ -52,8 +52,8 @@
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
-#include "Serialization/KnobSerialization.h"
 #include "Serialization/BoostXml/KnobXml.h"
+#include "Serialization/KnobSerialization.h"
 
 NATRON_NAMESPACE_USING
 
@@ -65,8 +65,7 @@ const char* const kKnobTypeNames[] = {
     "LayerSelect", "ChannelSelect", "ShuffleMap", "InputFile", "OutputFile", "Button", "Separator", "Group", "Page"
 };
 
-enum KnobVariantEnum
-{
+enum KnobVariantEnum {
     eKnobVariantStatic = 0,
     eKnobVariantAnimated,
     eKnobVariantExpression,
@@ -101,9 +100,9 @@ variantName(KnobVariantEnum variant)
 int
 dimensionForKnobType(const std::string& typeName)
 {
-    if ( typeName == KnobDouble::typeNameStatic() ) {
+    if (typeName == KnobDouble::typeNameStatic()) {
         return 2;
-    } else if ( typeName == KnobColor::typeNameStatic() ) {
+    } else if (typeName == KnobColor::typeNameStatic()) {
         return 3;
     }
 
@@ -118,43 +117,43 @@ createKnobOfType(KnobHolder* holder,
     const int dimension = dimensionForKnobType(typeName);
     KnobIPtr knob;
 
-    if ( typeName == KnobInt::typeNameStatic() ) {
+    if (typeName == KnobInt::typeNameStatic()) {
         knob = AppManager::createKnob<KnobInt>(holder, name, dimension, false);
-    } else if ( typeName == KnobBool::typeNameStatic() ) {
+    } else if (typeName == KnobBool::typeNameStatic()) {
         knob = AppManager::createKnob<KnobBool>(holder, name, dimension, false);
-    } else if ( typeName == KnobDouble::typeNameStatic() ) {
+    } else if (typeName == KnobDouble::typeNameStatic()) {
         knob = AppManager::createKnob<KnobDouble>(holder, name, dimension, false);
-    } else if ( typeName == KnobChoice::typeNameStatic() ) {
+    } else if (typeName == KnobChoice::typeNameStatic()) {
         knob = AppManager::createKnob<KnobChoice>(holder, name, dimension, false);
-    } else if ( typeName == KnobString::typeNameStatic() ) {
+    } else if (typeName == KnobString::typeNameStatic()) {
         knob = AppManager::createKnob<KnobString>(holder, name, dimension, false);
-    } else if ( typeName == KnobParametric::typeNameStatic() ) {
+    } else if (typeName == KnobParametric::typeNameStatic()) {
         knob = AppManager::createKnob<KnobParametric>(holder, name, dimension, false);
-    } else if ( typeName == KnobColor::typeNameStatic() ) {
+    } else if (typeName == KnobColor::typeNameStatic()) {
         knob = AppManager::createKnob<KnobColor>(holder, name, dimension, false);
-    } else if ( typeName == KnobPath::typeNameStatic() ) {
+    } else if (typeName == KnobPath::typeNameStatic()) {
         knob = AppManager::createKnob<KnobPath>(holder, name, dimension, false);
-    } else if ( typeName == KnobLayers::typeNameStatic() ) {
+    } else if (typeName == KnobLayers::typeNameStatic()) {
         knob = AppManager::createKnob<KnobLayers>(holder, name, dimension, false);
-    } else if ( typeName == KnobChannelSet::typeNameStatic() ) {
+    } else if (typeName == KnobChannelSet::typeNameStatic()) {
         knob = AppManager::createKnob<KnobChannelSet>(holder, name, dimension, false);
-    } else if ( typeName == KnobLayerSelect::typeNameStatic() ) {
+    } else if (typeName == KnobLayerSelect::typeNameStatic()) {
         knob = AppManager::createKnob<KnobLayerSelect>(holder, name, dimension, false);
-    } else if ( typeName == KnobChannelSelect::typeNameStatic() ) {
+    } else if (typeName == KnobChannelSelect::typeNameStatic()) {
         knob = AppManager::createKnob<KnobChannelSelect>(holder, name, dimension, false);
-    } else if ( typeName == KnobShuffleMap::typeNameStatic() ) {
+    } else if (typeName == KnobShuffleMap::typeNameStatic()) {
         knob = AppManager::createKnob<KnobShuffleMap>(holder, name, dimension, false);
-    } else if ( typeName == KnobFile::typeNameStatic() ) {
+    } else if (typeName == KnobFile::typeNameStatic()) {
         knob = AppManager::createKnob<KnobFile>(holder, name, dimension, false);
-    } else if ( typeName == KnobOutputFile::typeNameStatic() ) {
+    } else if (typeName == KnobOutputFile::typeNameStatic()) {
         knob = AppManager::createKnob<KnobOutputFile>(holder, name, dimension, false);
-    } else if ( typeName == KnobButton::typeNameStatic() ) {
+    } else if (typeName == KnobButton::typeNameStatic()) {
         knob = AppManager::createKnob<KnobButton>(holder, name, dimension, false);
-    } else if ( typeName == KnobSeparator::typeNameStatic() ) {
+    } else if (typeName == KnobSeparator::typeNameStatic()) {
         knob = AppManager::createKnob<KnobSeparator>(holder, name, dimension, false);
-    } else if ( typeName == KnobGroup::typeNameStatic() ) {
+    } else if (typeName == KnobGroup::typeNameStatic()) {
         knob = AppManager::createKnob<KnobGroup>(holder, name, dimension, false);
-    } else if ( typeName == KnobPage::typeNameStatic() ) {
+    } else if (typeName == KnobPage::typeNameStatic()) {
         knob = AppManager::createKnob<KnobPage>(holder, name, dimension, false);
     }
     if (knob) {
@@ -168,12 +167,12 @@ createKnobOfType(KnobHolder* holder,
 void
 defineKnob(const KnobIPtr& knob)
 {
-    KnobChoice* isChoice = dynamic_cast<KnobChoice*>( knob.get() );
+    KnobChoice* isChoice = dynamic_cast<KnobChoice*>(knob.get());
     if (isChoice) {
         std::vector<ChoiceOption> options;
-        options.push_back( ChoiceOption("alpha", "Alpha", "The first entry") );
-        options.push_back( ChoiceOption("beta", "Beta", "The second entry") );
-        options.push_back( ChoiceOption("gamma", "Gamma", "The third entry") );
+        options.push_back(ChoiceOption("alpha", "Alpha", "The first entry"));
+        options.push_back(ChoiceOption("beta", "Beta", "The second entry"));
+        options.push_back(ChoiceOption("gamma", "Gamma", "The third entry"));
         isChoice->populateChoices(options);
     }
 }
@@ -183,18 +182,18 @@ void
 makeUserKnob(const KnobIPtr& knob)
 {
     knob->setAsUserKnob(true);
-    knob->setHintToolTip( std::string("A user knob") );
+    knob->setHintToolTip(std::string("A user knob"));
 
-    if ( KnobString* isString = dynamic_cast<KnobString*>( knob.get() ) ) {
+    if (KnobString* isString = dynamic_cast<KnobString*>(knob.get())) {
         isString->setAsMultiLine();
         isString->setUsesRichText(true);
-    } else if ( KnobFile* isFile = dynamic_cast<KnobFile*>( knob.get() ) ) {
+    } else if (KnobFile* isFile = dynamic_cast<KnobFile*>(knob.get())) {
         isFile->setAsInputImage();
-    } else if ( KnobOutputFile* isOutputFile = dynamic_cast<KnobOutputFile*>( knob.get() ) ) {
+    } else if (KnobOutputFile* isOutputFile = dynamic_cast<KnobOutputFile*>(knob.get())) {
         isOutputFile->setAsOutputImageFile();
-    } else if ( KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>( knob.get() ) ) {
+    } else if (KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(knob.get())) {
         isLayerSelect->setWithChannelButtons(true);
-    } else if ( KnobDouble* isDouble = dynamic_cast<KnobDouble*>( knob.get() ) ) {
+    } else if (KnobDouble* isDouble = dynamic_cast<KnobDouble*>(knob.get())) {
         std::vector<double> minimums(isDouble->getDimension(), -5.), maximums(isDouble->getDimension(), 5.);
         std::vector<double> displayMinimums(isDouble->getDimension(), -2.), displayMaximums(isDouble->getDimension(), 2.);
         isDouble->setMinimumsAndMaximums(minimums, maximums);
@@ -208,61 +207,58 @@ setDistinctiveValues(const KnobIPtr& knob)
 {
     const std::string& typeName = knob->typeName();
 
-    if ( KnobChoice* isChoice = dynamic_cast<KnobChoice*>( knob.get() ) ) {
+    if (KnobChoice* isChoice = dynamic_cast<KnobChoice*>(knob.get())) {
         isChoice->setValue(2);
-    } else if ( KnobIntBase* isInt = dynamic_cast<KnobIntBase*>( knob.get() ) ) {
+    } else if (KnobIntBase* isInt = dynamic_cast<KnobIntBase*>(knob.get())) {
         for (int i = 0; i < isInt->getDimension(); ++i) {
             isInt->setValue(7 + i, ViewSpec::all(), i);
         }
-    } else if ( typeName == KnobBool::typeNameStatic() ) {
-        KnobBoolBase* isBool = dynamic_cast<KnobBoolBase*>( knob.get() );
+    } else if (typeName == KnobBool::typeNameStatic()) {
+        KnobBoolBase* isBool = dynamic_cast<KnobBoolBase*>(knob.get());
         isBool->setValue(true);
-    } else if ( KnobParametric* isParametric = dynamic_cast<KnobParametric*>( knob.get() ) ) {
+    } else if (KnobParametric* isParametric = dynamic_cast<KnobParametric*>(knob.get())) {
         StatusEnum status = isParametric->addControlPoint(eValueChangedReasonNatronInternalEdited, 0, 0.25, 0.75);
         EXPECT_EQ(eStatusOK, status);
-    } else if ( KnobDoubleBase* isDouble = dynamic_cast<KnobDoubleBase*>( knob.get() ) ) {
+    } else if (KnobDoubleBase* isDouble = dynamic_cast<KnobDoubleBase*>(knob.get())) {
         for (int i = 0; i < isDouble->getDimension(); ++i) {
             isDouble->setValue(0.25 + i, ViewSpec::all(), i);
         }
-    } else if ( KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>( knob.get() ) ) {
+    } else if (KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(knob.get())) {
         isChannelSet->addRegex("spec.*");
-    } else if ( KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>( knob.get() ) ) {
+    } else if (KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(knob.get())) {
         isLayerSelect->setLayer("diffuse");
-    } else if ( (typeName == KnobString::typeNameStatic()) || (typeName == KnobFile::typeNameStatic()) ||
-                (typeName == KnobOutputFile::typeNameStatic()) || (typeName == KnobPath::typeNameStatic()) ) {
-        KnobStringBase* isString = dynamic_cast<KnobStringBase*>( knob.get() );
-        isString->setValue( std::string("saved value") );
+    } else if ((typeName == KnobString::typeNameStatic()) || (typeName == KnobFile::typeNameStatic()) || (typeName == KnobOutputFile::typeNameStatic()) || (typeName == KnobPath::typeNameStatic())) {
+        KnobStringBase* isString = dynamic_cast<KnobStringBase*>(knob.get());
+        isString->setValue(std::string("saved value"));
     }
 }
 
 bool
 isAnimatableValueType(const std::string& typeName)
 {
-    return (typeName == KnobInt::typeNameStatic()) || (typeName == KnobChoice::typeNameStatic()) ||
-           (typeName == KnobBool::typeNameStatic()) || (typeName == KnobDouble::typeNameStatic()) ||
-           (typeName == KnobColor::typeNameStatic()) || (typeName == KnobString::typeNameStatic());
+    return (typeName == KnobInt::typeNameStatic()) || (typeName == KnobChoice::typeNameStatic()) || (typeName == KnobBool::typeNameStatic()) || (typeName == KnobDouble::typeNameStatic()) || (typeName == KnobColor::typeNameStatic()) || (typeName == KnobString::typeNameStatic());
 }
 
 void
 animateKnob(const KnobIPtr& knob)
 {
-    if ( KnobChoice* isChoice = dynamic_cast<KnobChoice*>( knob.get() ) ) {
+    if (KnobChoice* isChoice = dynamic_cast<KnobChoice*>(knob.get())) {
         isChoice->setValueAtTime(10, 0, ViewSpec::all(), 0);
         isChoice->setValueAtTime(20, 2, ViewSpec::all(), 0);
-    } else if ( KnobIntBase* isInt = dynamic_cast<KnobIntBase*>( knob.get() ) ) {
+    } else if (KnobIntBase* isInt = dynamic_cast<KnobIntBase*>(knob.get())) {
         for (int i = 0; i < isInt->getDimension(); ++i) {
             isInt->setValueAtTime(10, 1 + i, ViewSpec::all(), i);
             isInt->setValueAtTime(20, 9 + i, ViewSpec::all(), i);
         }
-    } else if ( KnobBoolBase* isBool = dynamic_cast<KnobBoolBase*>( knob.get() ) ) {
+    } else if (KnobBoolBase* isBool = dynamic_cast<KnobBoolBase*>(knob.get())) {
         isBool->setValueAtTime(10, true, ViewSpec::all(), 0);
         isBool->setValueAtTime(20, false, ViewSpec::all(), 0);
-    } else if ( KnobDoubleBase* isDouble = dynamic_cast<KnobDoubleBase*>( knob.get() ) ) {
+    } else if (KnobDoubleBase* isDouble = dynamic_cast<KnobDoubleBase*>(knob.get())) {
         for (int i = 0; i < isDouble->getDimension(); ++i) {
             isDouble->setValueAtTime(10, 0.5 + i, ViewSpec::all(), i);
             isDouble->setValueAtTime(20, 1.5 + i, ViewSpec::all(), i);
         }
-    } else if ( KnobStringBase* isString = dynamic_cast<KnobStringBase*>( knob.get() ) ) {
+    } else if (KnobStringBase* isString = dynamic_cast<KnobStringBase*>(knob.get())) {
         isString->setValueAtTime(10, std::string("first key"), ViewSpec::all(), 0);
         isString->setValueAtTime(20, std::string("second key"), ViewSpec::all(), 0);
     }
@@ -279,15 +275,13 @@ variantApplies(const std::string& typeName,
     case eKnobVariantAnimated:
         return isAnimatableValueType(typeName) && knob->canAnimate();
     case eKnobVariantExpression:
-        return (typeName == KnobInt::typeNameStatic()) || (typeName == KnobDouble::typeNameStatic()) ||
-               (typeName == KnobColor::typeNameStatic());
+        return (typeName == KnobInt::typeNameStatic()) || (typeName == KnobDouble::typeNameStatic()) || (typeName == KnobColor::typeNameStatic());
     case eKnobVariantLinked:
         return isAnimatableValueType(typeName);
     case eKnobVariantUserKnob:
         // Pages and groups are saved as user-page layout, not as regular user knobs, and a
         // Layers knob was never offered as a user knob.
-        return (typeName != KnobPage::typeNameStatic()) && (typeName != KnobGroup::typeNameStatic()) &&
-               (typeName != KnobLayers::typeNameStatic());
+        return (typeName != KnobPage::typeNameStatic()) && (typeName != KnobGroup::typeNameStatic()) && (typeName != KnobLayers::typeNameStatic());
     }
 
     return false;
@@ -347,13 +341,13 @@ archivePrologue(const std::string& savedXml)
 const int*
 intValue(const std::optional<Serialization::KnobValueSerialization>& value)
 {
-    return value ? std::get_if<int>( &(*value) ) : NULL;
+    return value ? std::get_if<int>(&(*value)) : NULL;
 }
 
 const double*
 doubleValue(const std::optional<Serialization::KnobValueSerialization>& value)
 {
-    return value ? std::get_if<double>( &(*value) ) : NULL;
+    return value ? std::get_if<double>(&(*value)) : NULL;
 }
 
 } // anonymous namespace
@@ -366,7 +360,7 @@ TEST_F(BaseTest, KnobXmlEquivalenceRoundTripIsByteIdentical)
     NodePtr targetNode = createNode(_generatorPluginID);
     NodePtr masterNode = createNode(_generatorPluginID);
 
-    ASSERT_TRUE( bool(sourceNode) && bool(targetNode) && bool(masterNode) );
+    ASSERT_TRUE(bool(sourceNode) && bool(targetNode) && bool(masterNode));
 
     KnobHolder* sourceHolder = sourceNode->getEffectInstance().get();
     KnobHolder* targetHolder = targetNode->getEffectInstance().get();
@@ -385,7 +379,7 @@ TEST_F(BaseTest, KnobXmlEquivalenceRoundTripIsByteIdentical)
                 ADD_FAILURE() << "Could not create a knob of type " << typeName;
                 continue;
             }
-            if ( !variantApplies(typeName, variant, source) ) {
+            if (!variantApplies(typeName, variant, source)) {
                 continue;
             }
 
@@ -399,22 +393,22 @@ TEST_F(BaseTest, KnobXmlEquivalenceRoundTripIsByteIdentical)
                 animateKnob(source);
             } else if (variant == eKnobVariantExpression) {
                 const std::string expression = (typeName == KnobInt::typeNameStatic()) ? "3 + 4" : "0.5 * 3";
-                EXPECT_NO_THROW( source->setExpression(0, expression, false, false) );
+                EXPECT_NO_THROW(source->setExpression(0, expression, false, false));
             } else if (variant == eKnobVariantLinked) {
                 KnobIPtr master = createKnobOfType(masterHolder, typeName, std::string("master") + knobName);
-                ASSERT_TRUE( bool(master) );
+                ASSERT_TRUE(bool(master));
                 defineKnob(master);
                 setDistinctiveValues(master);
-                EXPECT_TRUE( source->slaveTo(0, master, 0) );
+                EXPECT_TRUE(source->slaveTo(0, master, 0));
             }
 
             const std::string savedXml = saveKnobToXml(source);
 
             Serialization::KnobSerialization loaded;
-            if ( !loadFromXml(savedXml, &loaded) ) {
+            if (!loadFromXml(savedXml, &loaded)) {
                 continue;
             }
-            EXPECT_EQ( savedXml, saveToXml(loaded) );
+            EXPECT_EQ(savedXml, saveToXml(loaded));
 
             KnobIPtr restored;
             if (variant == eKnobVariantUserKnob) {
@@ -423,7 +417,7 @@ TEST_F(BaseTest, KnobXmlEquivalenceRoundTripIsByteIdentical)
                 restored = createKnobOfType(targetHolder, typeName, knobName);
                 if (restored) {
                     defineKnob(restored);
-                    EXPECT_TRUE( restored->fromSerialization(loaded) );
+                    EXPECT_TRUE(restored->fromSerialization(loaded));
                 }
             }
             if (!restored) {
@@ -432,9 +426,9 @@ TEST_F(BaseTest, KnobXmlEquivalenceRoundTripIsByteIdentical)
             }
             restored->restoreExpressionsFromSerialization(loaded, noRenamedScriptNames);
             restored->storeLinksFromSerialization(loaded);
-            EXPECT_NO_THROW( restored->restoreLinks(getApp()->getProject()->getNodes(), noRenamedScriptNames, true) );
+            EXPECT_NO_THROW(restored->restoreLinks(getApp()->getProject()->getNodes(), noRenamedScriptNames, true));
 
-            EXPECT_EQ( savedXml, saveKnobToXml(restored) );
+            EXPECT_EQ(savedXml, saveKnobToXml(restored));
         }
     }
 }
@@ -443,25 +437,25 @@ TEST_F(BaseTest, KnobXmlEquivalenceFromSerializationRefusesAnotherType)
 {
     NodePtr node = createNode(_generatorPluginID);
 
-    ASSERT_TRUE( bool(node) );
+    ASSERT_TRUE(bool(node));
 
     KnobIPtr source = createKnobOfType(node->getEffectInstance().get(), KnobInt::typeNameStatic(), "intSource");
     KnobIPtr target = createKnobOfType(node->getEffectInstance().get(), KnobDouble::typeNameStatic(), "doubleTarget");
-    ASSERT_TRUE( bool(source) && bool(target) );
+    ASSERT_TRUE(bool(source) && bool(target));
 
     Serialization::KnobSerialization saved;
     source->toSerialization(&saved);
-    EXPECT_FALSE( target->fromSerialization(saved) );
+    EXPECT_FALSE(target->fromSerialization(saved));
 }
 
 TEST_F(BaseTest, KnobXmlEquivalenceFromSerializationFiltersAnUnknownChoiceOptionID)
 {
     NodePtr node = createNode(_generatorPluginID);
 
-    ASSERT_TRUE( bool(node) );
+    ASSERT_TRUE(bool(node));
 
     KnobIPtr source = createKnobOfType(node->getEffectInstance().get(), KnobChoice::typeNameStatic(), "choiceSource");
-    ASSERT_TRUE( bool(source) );
+    ASSERT_TRUE(bool(source));
     defineKnob(source);
 
     Serialization::KnobSerialization saved;
@@ -475,169 +469,167 @@ TEST_F(BaseTest, KnobXmlEquivalenceFromSerializationFiltersAnUnknownChoiceOption
     };
 
     KnobIPtr filtered = createKnobOfType(node->getEffectInstance().get(), KnobChoice::typeNameStatic(), "choiceFiltered");
-    ASSERT_TRUE( bool(filtered) );
+    ASSERT_TRUE(bool(filtered));
     defineKnob(filtered);
-    EXPECT_TRUE( filtered->fromSerialization(saved, renameRetiredOption) );
-    KnobChoice* filteredChoice = dynamic_cast<KnobChoice*>( filtered.get() );
+    EXPECT_TRUE(filtered->fromSerialization(saved, renameRetiredOption));
+    KnobChoice* filteredChoice = dynamic_cast<KnobChoice*>(filtered.get());
     ASSERT_TRUE(filteredChoice != NULL);
-    EXPECT_EQ( 2, filteredChoice->getValue() );
-    EXPECT_EQ( std::string("gamma"), filteredChoice->getActiveEntry().id );
+    EXPECT_EQ(2, filteredChoice->getValue());
+    EXPECT_EQ(std::string("gamma"), filteredChoice->getActiveEntry().id);
 
     KnobIPtr unfiltered = createKnobOfType(node->getEffectInstance().get(), KnobChoice::typeNameStatic(), "choiceUnfiltered");
-    ASSERT_TRUE( bool(unfiltered) );
+    ASSERT_TRUE(bool(unfiltered));
     defineKnob(unfiltered);
-    EXPECT_TRUE( unfiltered->fromSerialization(saved) );
-    KnobChoice* unfilteredChoice = dynamic_cast<KnobChoice*>( unfiltered.get() );
+    EXPECT_TRUE(unfiltered->fromSerialization(saved));
+    KnobChoice* unfilteredChoice = dynamic_cast<KnobChoice*>(unfiltered.get());
     ASSERT_TRUE(unfilteredChoice != NULL);
-    EXPECT_EQ( 0, unfilteredChoice->getValue() );
+    EXPECT_EQ(0, unfilteredChoice->getValue());
 }
 
 TEST_F(BaseTest, KnobXmlEquivalenceToSerializationReportsWhetherANodeMustSaveTheKnob)
 {
     NodePtr node = createNode(_generatorPluginID);
 
-    ASSERT_TRUE( bool(node) );
+    ASSERT_TRUE(bool(node));
 
     KnobHolder* holder = node->getEffectInstance().get();
     Serialization::KnobSerialization saved;
 
     KnobIPtr untouched = createKnobOfType(holder, KnobInt::typeNameStatic(), "untouchedInt");
-    ASSERT_TRUE( bool(untouched) );
-    EXPECT_FALSE( untouched->toSerialization(&saved) );
+    ASSERT_TRUE(bool(untouched));
+    EXPECT_FALSE(untouched->toSerialization(&saved));
 
     KnobIPtr edited = createKnobOfType(holder, KnobInt::typeNameStatic(), "editedInt");
-    ASSERT_TRUE( bool(edited) );
+    ASSERT_TRUE(bool(edited));
     setDistinctiveValues(edited);
-    EXPECT_TRUE( edited->toSerialization(&saved) );
+    EXPECT_TRUE(edited->toSerialization(&saved));
 
     KnobIPtr channelSet = createKnobOfType(holder, KnobChannelSet::typeNameStatic(), "untouchedChannels");
-    ASSERT_TRUE( bool(channelSet) );
-    EXPECT_TRUE( channelSet->toSerialization(&saved) );
+    ASSERT_TRUE(bool(channelSet));
+    EXPECT_TRUE(channelSet->toSerialization(&saved));
 }
 
 TEST_F(BaseTest, KnobXmlEquivalenceReadsLegacyChoiceLabel)
 {
     NodePtr node = createNode(_generatorPluginID);
 
-    ASSERT_TRUE( bool(node) );
+    ASSERT_TRUE(bool(node));
 
     KnobIPtr reference = createKnobOfType(node->getEffectInstance().get(), KnobInt::typeNameStatic(), "referenceKnob");
-    ASSERT_TRUE( bool(reference) );
-    const std::string prologue = archivePrologue( saveKnobToXml(reference) );
-    ASSERT_FALSE( prologue.empty() );
+    ASSERT_TRUE(bool(reference));
+    const std::string prologue = archivePrologue(saveKnobToXml(reference));
+    ASSERT_FALSE(prologue.empty());
 
     // Knob version 4 and value version 2: no alias flag, no expression, and the selected entry
     // saved as a Label inside the value rather than as the knob's ChoiceLabel.
-    const std::string xml = prologue +
-                            "<Knob class_id=\"0\" tracking_level=\"0\" version=\"4\">\n"
-                            "<Name>legacyChoice</Name>\n"
-                            "<Type>Choice</Type>\n"
-                            "<Dimension>1</Dimension>\n"
-                            "<Secret>0</Secret>\n"
-                            "<item class_id=\"1\" tracking_level=\"0\" version=\"2\">\n"
-                            "<Enabled>1</Enabled>\n"
-                            "<HasAnimation>0</HasAnimation>\n"
-                            "<Value>1</Value>\n"
-                            "<Label>beta</Label>\n"
-                            "<HasMaster>0</HasMaster>\n"
-                            "</item>\n"
-                            "</Knob>\n"
-                            "</boost_serialization>\n";
+    const std::string xml = prologue + "<Knob class_id=\"0\" tracking_level=\"0\" version=\"4\">\n"
+                                       "<Name>legacyChoice</Name>\n"
+                                       "<Type>Choice</Type>\n"
+                                       "<Dimension>1</Dimension>\n"
+                                       "<Secret>0</Secret>\n"
+                                       "<item class_id=\"1\" tracking_level=\"0\" version=\"2\">\n"
+                                       "<Enabled>1</Enabled>\n"
+                                       "<HasAnimation>0</HasAnimation>\n"
+                                       "<Value>1</Value>\n"
+                                       "<Label>beta</Label>\n"
+                                       "<HasMaster>0</HasMaster>\n"
+                                       "</item>\n"
+                                       "</Knob>\n"
+                                       "</boost_serialization>\n";
 
     Serialization::KnobSerialization loaded;
-    ASSERT_TRUE( loadFromXml(xml, &loaded) );
+    ASSERT_TRUE(loadFromXml(xml, &loaded));
     EXPECT_EQ(4u, loaded.version);
     EXPECT_EQ(std::string("legacyChoice"), loaded.name);
     ASSERT_EQ(1u, loaded.dimensions.size());
-    ASSERT_TRUE( intValue(loaded.dimensions[0].value) != NULL );
-    EXPECT_EQ( 1, *intValue(loaded.dimensions[0].value) );
-    EXPECT_FALSE( loaded.dimensions[0].defaultValue.has_value() );
-    ASSERT_TRUE( loaded.choiceOptionID.has_value() );
-    EXPECT_EQ( std::string("beta"), *loaded.choiceOptionID );
+    ASSERT_TRUE(intValue(loaded.dimensions[0].value) != NULL);
+    EXPECT_EQ(1, *intValue(loaded.dimensions[0].value));
+    EXPECT_FALSE(loaded.dimensions[0].defaultValue.has_value());
+    ASSERT_TRUE(loaded.choiceOptionID.has_value());
+    EXPECT_EQ(std::string("beta"), *loaded.choiceOptionID);
     EXPECT_FALSE(loaded.isUserKnob);
     EXPECT_FALSE(loaded.masterIsAlias);
-    EXPECT_FALSE( loaded.dimensions[0].master.has_value() );
-    EXPECT_TRUE( loaded.dimensions[0].expression.empty() );
+    EXPECT_FALSE(loaded.dimensions[0].master.has_value());
+    EXPECT_TRUE(loaded.dimensions[0].expression.empty());
 
     KnobIPtr restored = createKnobOfType(node->getEffectInstance().get(), KnobChoice::typeNameStatic(), "legacyChoice");
-    ASSERT_TRUE( bool(restored) );
+    ASSERT_TRUE(bool(restored));
     defineKnob(restored);
-    EXPECT_TRUE( restored->fromSerialization(loaded) );
-    KnobChoice* restoredChoice = dynamic_cast<KnobChoice*>( restored.get() );
+    EXPECT_TRUE(restored->fromSerialization(loaded));
+    KnobChoice* restoredChoice = dynamic_cast<KnobChoice*>(restored.get());
     ASSERT_TRUE(restoredChoice != NULL);
-    EXPECT_EQ( 1, restoredChoice->getValue() );
-    EXPECT_EQ( std::string("beta"), restoredChoice->getActiveEntry().id );
+    EXPECT_EQ(1, restoredChoice->getValue());
+    EXPECT_EQ(std::string("beta"), restoredChoice->getActiveEntry().id);
 }
 
 TEST_F(BaseTest, KnobXmlEquivalenceReadsLegacyUserDoubleWithDefaultsAndExpressionResults)
 {
     NodePtr node = createNode(_generatorPluginID);
 
-    ASSERT_TRUE( bool(node) );
+    ASSERT_TRUE(bool(node));
 
     KnobIPtr reference = createKnobOfType(node->getEffectInstance().get(), KnobInt::typeNameStatic(), "referenceKnob");
-    ASSERT_TRUE( bool(reference) );
-    const std::string prologue = archivePrologue( saveKnobToXml(reference) );
-    ASSERT_FALSE( prologue.empty() );
+    ASSERT_TRUE(bool(reference));
+    const std::string prologue = archivePrologue(saveKnobToXml(reference));
+    ASSERT_FALSE(prologue.empty());
 
     // Knob version 12 (user knob with per-dimension DefaultValue elements and an overlay flag)
     // and value version 5 (with the since-removed ExprResults map).
-    const std::string xml = prologue +
-                            "<Knob class_id=\"0\" tracking_level=\"0\" version=\"12\">\n"
-                            "<Name>legacyDouble</Name>\n"
-                            "<Type>Double</Type>\n"
-                            "<Dimension>2</Dimension>\n"
-                            "<Secret>0</Secret>\n"
-                            "<MasterIsAlias>0</MasterIsAlias>\n"
-                            "<item class_id=\"1\" tracking_level=\"0\" version=\"5\">\n"
-                            "<Enabled>1</Enabled>\n"
-                            "<HasAnimation>0</HasAnimation>\n"
-                            "<Value>0.5</Value>\n"
-                            "<HasMaster>0</HasMaster>\n"
-                            "<Expression></Expression>\n"
-                            "<ExprHasRet>0</ExprHasRet>\n"
-                            "<ExprResults class_id=\"2\" tracking_level=\"0\" version=\"0\">\n"
-                            "<count>0</count>\n"
-                            "<item_version>0</item_version>\n"
-                            "</ExprResults>\n"
-                            "</item>\n"
-                            "<item>\n"
-                            "<Enabled>0</Enabled>\n"
-                            "<HasAnimation>0</HasAnimation>\n"
-                            "<Value>1.5</Value>\n"
-                            "<HasMaster>0</HasMaster>\n"
-                            "<Expression></Expression>\n"
-                            "<ExprHasRet>0</ExprHasRet>\n"
-                            "<ExprResults>\n"
-                            "<count>0</count>\n"
-                            "<item_version>0</item_version>\n"
-                            "</ExprResults>\n"
-                            "</item>\n"
-                            "<UserKnob>1</UserKnob>\n"
-                            "<Label>Legacy Double</Label>\n"
-                            "<Help>Saved by an old version</Help>\n"
-                            "<NewLine>1</NewLine>\n"
-                            "<Evaluate>1</Evaluate>\n"
-                            "<Animates>1</Animates>\n"
-                            "<Persistent>1</Persistent>\n"
-                            "<Min>-10</Min>\n"
-                            "<Max>10</Max>\n"
-                            "<DMin>-1</DMin>\n"
-                            "<DMax>1</DMax>\n"
-                            "<HasOverlayHandle>1</HasOverlayHandle>\n"
-                            "<DefaultValue>0.25</DefaultValue>\n"
-                            "<DefaultValue>0.75</DefaultValue>\n"
-                            "</Knob>\n"
-                            "</boost_serialization>\n";
+    const std::string xml = prologue + "<Knob class_id=\"0\" tracking_level=\"0\" version=\"12\">\n"
+                                       "<Name>legacyDouble</Name>\n"
+                                       "<Type>Double</Type>\n"
+                                       "<Dimension>2</Dimension>\n"
+                                       "<Secret>0</Secret>\n"
+                                       "<MasterIsAlias>0</MasterIsAlias>\n"
+                                       "<item class_id=\"1\" tracking_level=\"0\" version=\"5\">\n"
+                                       "<Enabled>1</Enabled>\n"
+                                       "<HasAnimation>0</HasAnimation>\n"
+                                       "<Value>0.5</Value>\n"
+                                       "<HasMaster>0</HasMaster>\n"
+                                       "<Expression></Expression>\n"
+                                       "<ExprHasRet>0</ExprHasRet>\n"
+                                       "<ExprResults class_id=\"2\" tracking_level=\"0\" version=\"0\">\n"
+                                       "<count>0</count>\n"
+                                       "<item_version>0</item_version>\n"
+                                       "</ExprResults>\n"
+                                       "</item>\n"
+                                       "<item>\n"
+                                       "<Enabled>0</Enabled>\n"
+                                       "<HasAnimation>0</HasAnimation>\n"
+                                       "<Value>1.5</Value>\n"
+                                       "<HasMaster>0</HasMaster>\n"
+                                       "<Expression></Expression>\n"
+                                       "<ExprHasRet>0</ExprHasRet>\n"
+                                       "<ExprResults>\n"
+                                       "<count>0</count>\n"
+                                       "<item_version>0</item_version>\n"
+                                       "</ExprResults>\n"
+                                       "</item>\n"
+                                       "<UserKnob>1</UserKnob>\n"
+                                       "<Label>Legacy Double</Label>\n"
+                                       "<Help>Saved by an old version</Help>\n"
+                                       "<NewLine>1</NewLine>\n"
+                                       "<Evaluate>1</Evaluate>\n"
+                                       "<Animates>1</Animates>\n"
+                                       "<Persistent>1</Persistent>\n"
+                                       "<Min>-10</Min>\n"
+                                       "<Max>10</Max>\n"
+                                       "<DMin>-1</DMin>\n"
+                                       "<DMax>1</DMax>\n"
+                                       "<HasOverlayHandle>1</HasOverlayHandle>\n"
+                                       "<DefaultValue>0.25</DefaultValue>\n"
+                                       "<DefaultValue>0.75</DefaultValue>\n"
+                                       "</Knob>\n"
+                                       "</boost_serialization>\n";
 
     Serialization::KnobSerialization loaded;
-    ASSERT_TRUE( loadFromXml(xml, &loaded) );
+    ASSERT_TRUE(loadFromXml(xml, &loaded));
     EXPECT_EQ(12u, loaded.version);
     ASSERT_EQ(2u, loaded.dimensions.size());
-    ASSERT_TRUE( doubleValue(loaded.dimensions[0].value) != NULL );
-    EXPECT_EQ( 0.5, *doubleValue(loaded.dimensions[0].value) );
-    ASSERT_TRUE( doubleValue(loaded.dimensions[1].value) != NULL );
-    EXPECT_EQ( 1.5, *doubleValue(loaded.dimensions[1].value) );
+    ASSERT_TRUE(doubleValue(loaded.dimensions[0].value) != NULL);
+    EXPECT_EQ(0.5, *doubleValue(loaded.dimensions[0].value));
+    ASSERT_TRUE(doubleValue(loaded.dimensions[1].value) != NULL);
+    EXPECT_EQ(1.5, *doubleValue(loaded.dimensions[1].value));
     EXPECT_TRUE(loaded.dimensions[0].enabled);
     EXPECT_FALSE(loaded.dimensions[1].enabled);
     EXPECT_TRUE(loaded.isUserKnob);
@@ -649,91 +641,90 @@ TEST_F(BaseTest, KnobXmlEquivalenceReadsLegacyUserDoubleWithDefaultsAndExpressio
     EXPECT_EQ(10., range->maximum);
     EXPECT_EQ(-1., range->displayMinimum);
     EXPECT_EQ(1., range->displayMaximum);
-    ASSERT_TRUE( loaded.useHostOverlayHandle.has_value() );
+    ASSERT_TRUE(loaded.useHostOverlayHandle.has_value());
     EXPECT_TRUE(*loaded.useHostOverlayHandle);
-    EXPECT_FALSE( loaded.dimensions[0].defaultValue.has_value() );
-    EXPECT_FALSE( loaded.dimensions[1].defaultValue.has_value() );
+    EXPECT_FALSE(loaded.dimensions[0].defaultValue.has_value());
+    EXPECT_FALSE(loaded.dimensions[1].defaultValue.has_value());
     EXPECT_TRUE(loaded.triggerNewLine);
     EXPECT_TRUE(loaded.evaluatesOnChange);
     EXPECT_TRUE(loaded.animationEnabled);
     EXPECT_TRUE(loaded.isPersistent);
-    EXPECT_FALSE( loaded.choiceOptionID.has_value() );
+    EXPECT_FALSE(loaded.choiceOptionID.has_value());
 
     KnobIPtr restored = createUserKnobFromSerialization(node->getEffectInstance().get(), loaded);
-    ASSERT_TRUE( bool(restored) );
-    KnobDouble* restoredDouble = dynamic_cast<KnobDouble*>( restored.get() );
+    ASSERT_TRUE(bool(restored));
+    KnobDouble* restoredDouble = dynamic_cast<KnobDouble*>(restored.get());
     ASSERT_TRUE(restoredDouble != NULL);
-    EXPECT_EQ( 0.5, restoredDouble->getValue(0) );
-    EXPECT_EQ( 1.5, restoredDouble->getValue(1) );
-    EXPECT_EQ( -10., restoredDouble->getMinimum(0) );
-    EXPECT_EQ( 1., restoredDouble->getDisplayMaximum(0) );
-    EXPECT_TRUE( restoredDouble->isUserKnob() );
-    EXPECT_EQ( std::string("Saved by an old version"), restoredDouble->getHintToolTip() );
+    EXPECT_EQ(0.5, restoredDouble->getValue(0));
+    EXPECT_EQ(1.5, restoredDouble->getValue(1));
+    EXPECT_EQ(-10., restoredDouble->getMinimum(0));
+    EXPECT_EQ(1., restoredDouble->getDisplayMaximum(0));
+    EXPECT_TRUE(restoredDouble->isUserKnob());
+    EXPECT_EQ(std::string("Saved by an old version"), restoredDouble->getHintToolTip());
 }
 
 TEST_F(BaseTest, KnobXmlEquivalenceReadsLegacySlavedTracksAndShortMaster)
 {
     NodePtr node = createNode(_generatorPluginID);
 
-    ASSERT_TRUE( bool(node) );
+    ASSERT_TRUE(bool(node));
 
     KnobIPtr reference = createKnobOfType(node->getEffectInstance().get(), KnobInt::typeNameStatic(), "referenceKnob");
-    ASSERT_TRUE( bool(reference) );
-    const std::string prologue = archivePrologue( saveKnobToXml(reference) );
-    ASSERT_FALSE( prologue.empty() );
+    ASSERT_TRUE(bool(reference));
+    const std::string prologue = archivePrologue(saveKnobToXml(reference));
+    ASSERT_FALSE(prologue.empty());
 
     // Knob version 3 (a 2D Double named "center" followed by the since-removed slaved track
     // points), value version 1 and master version 1 (no full node name, no track name).
-    const std::string xml = prologue +
-                            "<Knob class_id=\"0\" tracking_level=\"0\" version=\"3\">\n"
-                            "<Name>center</Name>\n"
-                            "<Type>Double</Type>\n"
-                            "<Dimension>2</Dimension>\n"
-                            "<Secret>1</Secret>\n"
-                            "<item class_id=\"1\" tracking_level=\"0\" version=\"1\">\n"
-                            "<Enabled>1</Enabled>\n"
-                            "<HasAnimation>0</HasAnimation>\n"
-                            "<Value>0.25</Value>\n"
-                            "<HasMaster>1</HasMaster>\n"
-                            "<Master class_id=\"2\" tracking_level=\"0\" version=\"1\">\n"
-                            "<MasterDimension>1</MasterDimension>\n"
-                            "<MasterNodeName>Transform1</MasterNodeName>\n"
-                            "<MasterKnobName>translate</MasterKnobName>\n"
-                            "</Master>\n"
-                            "</item>\n"
-                            "<item>\n"
-                            "<Enabled>1</Enabled>\n"
-                            "<HasAnimation>0</HasAnimation>\n"
-                            "<Value>0.75</Value>\n"
-                            "<HasMaster>0</HasMaster>\n"
-                            "</item>\n"
-                            "<SlavePtsNo>1</SlavePtsNo>\n"
-                            "<SlavePtNodeName>Roto1</SlavePtNodeName>\n"
-                            "<SlavePtBezier>Bezier1</SlavePtBezier>\n"
-                            "<SlavePtIndex>2</SlavePtIndex>\n"
-                            "<SlavePtIsFeather>0</SlavePtIsFeather>\n"
-                            "<OffsetTime>5</OffsetTime>\n"
-                            "</Knob>\n"
-                            "</boost_serialization>\n";
+    const std::string xml = prologue + "<Knob class_id=\"0\" tracking_level=\"0\" version=\"3\">\n"
+                                       "<Name>center</Name>\n"
+                                       "<Type>Double</Type>\n"
+                                       "<Dimension>2</Dimension>\n"
+                                       "<Secret>1</Secret>\n"
+                                       "<item class_id=\"1\" tracking_level=\"0\" version=\"1\">\n"
+                                       "<Enabled>1</Enabled>\n"
+                                       "<HasAnimation>0</HasAnimation>\n"
+                                       "<Value>0.25</Value>\n"
+                                       "<HasMaster>1</HasMaster>\n"
+                                       "<Master class_id=\"2\" tracking_level=\"0\" version=\"1\">\n"
+                                       "<MasterDimension>1</MasterDimension>\n"
+                                       "<MasterNodeName>Transform1</MasterNodeName>\n"
+                                       "<MasterKnobName>translate</MasterKnobName>\n"
+                                       "</Master>\n"
+                                       "</item>\n"
+                                       "<item>\n"
+                                       "<Enabled>1</Enabled>\n"
+                                       "<HasAnimation>0</HasAnimation>\n"
+                                       "<Value>0.75</Value>\n"
+                                       "<HasMaster>0</HasMaster>\n"
+                                       "</item>\n"
+                                       "<SlavePtsNo>1</SlavePtsNo>\n"
+                                       "<SlavePtNodeName>Roto1</SlavePtNodeName>\n"
+                                       "<SlavePtBezier>Bezier1</SlavePtBezier>\n"
+                                       "<SlavePtIndex>2</SlavePtIndex>\n"
+                                       "<SlavePtIsFeather>0</SlavePtIsFeather>\n"
+                                       "<OffsetTime>5</OffsetTime>\n"
+                                       "</Knob>\n"
+                                       "</boost_serialization>\n";
 
     Serialization::KnobSerialization loaded;
-    ASSERT_TRUE( loadFromXml(xml, &loaded) );
+    ASSERT_TRUE(loadFromXml(xml, &loaded));
     EXPECT_EQ(3u, loaded.version);
     EXPECT_TRUE(loaded.secret);
     EXPECT_FALSE(loaded.masterIsAlias);
     ASSERT_EQ(2u, loaded.dimensions.size());
-    ASSERT_TRUE( loaded.dimensions[0].master.has_value() );
+    ASSERT_TRUE(loaded.dimensions[0].master.has_value());
     EXPECT_EQ(1, loaded.dimensions[0].master->masterDimension);
     EXPECT_EQ(std::string("Transform1"), loaded.dimensions[0].master->masterNodeName);
     EXPECT_EQ(std::string("translate"), loaded.dimensions[0].master->masterKnobName);
-    EXPECT_TRUE( loaded.dimensions[0].master->masterNodeNameFull.empty() );
-    EXPECT_FALSE( loaded.dimensions[1].master.has_value() );
-    ASSERT_TRUE( doubleValue(loaded.dimensions[0].value) != NULL );
-    EXPECT_EQ( 0.25, *doubleValue(loaded.dimensions[0].value) );
-    ASSERT_TRUE( doubleValue(loaded.dimensions[1].value) != NULL );
-    EXPECT_EQ( 0.75, *doubleValue(loaded.dimensions[1].value) );
-    EXPECT_FALSE( loaded.dimensions[0].defaultValue.has_value() );
-    EXPECT_TRUE( loaded.dimensions[0].expression.empty() );
-    EXPECT_TRUE( loaded.dimensions[0].master->masterTrackName.empty() );
+    EXPECT_TRUE(loaded.dimensions[0].master->masterNodeNameFull.empty());
+    EXPECT_FALSE(loaded.dimensions[1].master.has_value());
+    ASSERT_TRUE(doubleValue(loaded.dimensions[0].value) != NULL);
+    EXPECT_EQ(0.25, *doubleValue(loaded.dimensions[0].value));
+    ASSERT_TRUE(doubleValue(loaded.dimensions[1].value) != NULL);
+    EXPECT_EQ(0.75, *doubleValue(loaded.dimensions[1].value));
+    EXPECT_FALSE(loaded.dimensions[0].defaultValue.has_value());
+    EXPECT_TRUE(loaded.dimensions[0].expression.empty());
+    EXPECT_TRUE(loaded.dimensions[0].master->masterTrackName.empty());
     EXPECT_FALSE(loaded.isUserKnob);
 }

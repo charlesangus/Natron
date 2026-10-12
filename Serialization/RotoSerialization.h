@@ -36,8 +36,7 @@ namespace Serialization {
  * @brief The saved state of one control or feather point of a bezier: its static position and
  * tangents, used when they are not animated, and their animation curves.
  **/
-struct BezierCPSerialization
-{
+struct BezierCPSerialization {
     double x;
     double y;
     CurveSerialization xCurve;
@@ -77,8 +76,7 @@ struct BezierCPSerialization
 /**
  * @brief What every roto item saves: layers, beziers and strokes alike.
  **/
-struct RotoItemSerialization
-{
+struct RotoItemSerialization {
     std::string name;
     std::string label;
     bool activated;
@@ -102,8 +100,7 @@ struct RotoItemSerialization
  * order the item holds them, and the color their overlay is drawn with.
  **/
 struct RotoDrawableItemSerialization
-    : public RotoItemSerialization
-{
+    : public RotoItemSerialization {
     std::list<KnobSerialization> knobs;
 
     // Red, green, blue and alpha.
@@ -121,8 +118,7 @@ struct RotoDrawableItemSerialization
  * @brief The saved state of a bezier shape. featherPoints holds one point per control point.
  **/
 struct BezierSerialization
-    : public RotoDrawableItemSerialization
-{
+    : public RotoDrawableItemSerialization {
     std::list<BezierCPSerialization> controlPoints;
     std::list<BezierCPSerialization> featherPoints;
     bool closed;
@@ -141,8 +137,7 @@ struct BezierSerialization
 /**
  * @brief The curves of one pen-down to pen-up movement of a paint stroke.
  **/
-struct RotoStrokeCurvesSerialization
-{
+struct RotoStrokeCurvesSerialization {
     CurveSerialization xCurve;
     CurveSerialization yCurve;
     CurveSerialization pressureCurve;
@@ -152,8 +147,7 @@ struct RotoStrokeCurvesSerialization
  * @brief The saved state of a paint stroke.
  **/
 struct RotoStrokeItemSerialization
-    : public RotoDrawableItemSerialization
-{
+    : public RotoDrawableItemSerialization {
     // The Engine RotoStrokeType of the stroke.
     int brushType;
     std::list<RotoStrokeCurvesSerialization> strokes;
@@ -169,8 +163,7 @@ struct RotoStrokeItemSerialization
 /**
  * @brief The kind of a layer child. The values are those the project format saves.
  **/
-enum RotoLayerChildTypeEnum
-{
+enum RotoLayerChildTypeEnum {
     eRotoLayerChildTypeBezier = 0,
     eRotoLayerChildTypeStroke = 1,
     eRotoLayerChildTypeLayer = 2
@@ -182,8 +175,7 @@ struct RotoLayerChildSerialization;
  * @brief The saved state of a layer and, in order, of the items it holds.
  **/
 struct RotoLayerSerialization
-    : public RotoItemSerialization
-{
+    : public RotoItemSerialization {
     std::list<RotoLayerChildSerialization> children;
 
     RotoLayerSerialization();
@@ -193,8 +185,7 @@ struct RotoLayerSerialization
  * @brief One item of a layer: of bezier, stroke and layer, only the member type selects is
  * meaningful.
  **/
-struct RotoLayerChildSerialization
-{
+struct RotoLayerChildSerialization {
     RotoLayerChildTypeEnum type;
     BezierSerialization bezier;
     RotoStrokeItemSerialization stroke;
@@ -210,8 +201,7 @@ struct RotoLayerChildSerialization
 };
 
 // Defined once RotoLayerChildSerialization is complete, which the children list needs.
-inline
-RotoLayerSerialization::RotoLayerSerialization()
+inline RotoLayerSerialization::RotoLayerSerialization()
     : RotoItemSerialization()
     , children()
 {
@@ -221,8 +211,7 @@ RotoLayerSerialization::RotoLayerSerialization()
  * @brief The saved state of the roto context of a Roto or RotoPaint node: the base layer, which
  * holds every other item, the script names of the selected items, and the editing toggles.
  **/
-struct RotoContextSerialization
-{
+struct RotoContextSerialization {
     RotoLayerSerialization baseLayer;
     std::list<std::string> selectedItems;
     bool autoKeying;

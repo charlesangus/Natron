@@ -346,7 +346,7 @@ TrackMarker::fromSerialization(const Serialization::TrackSerialization& serializ
     for (std::list<Serialization::KnobSerialization>::const_iterator it = serialization.knobs.begin(); it != serialization.knobs.end(); ++it) {
         const std::string serializedName = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name);
         for (KnobsVec::const_iterator it2 = knobs.begin(); it2 != knobs.end(); ++it2) {
-            if ( (*it2)->getName() == serializedName ) {
+            if ((*it2)->getName() == serializedName) {
                 KnobIPtr serializedKnob = createDetachedKnobFromSerialization(*it);
                 if (!serializedKnob) {
                     break;
@@ -369,8 +369,8 @@ TrackMarker::toSerialization(Serialization::TrackSerialization* serialization) c
     // Reading a value may evaluate an expression, which must not run under the track mutex.
     KnobsVec knobs = getKnobs_mt_safe();
     for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-        serialization->knobs.push_back( Serialization::KnobSerialization() );
-        (*it)->toSerialization( &serialization->knobs.back() );
+        serialization->knobs.push_back(Serialization::KnobSerialization());
+        (*it)->toSerialization(&serialization->knobs.back());
     }
 
     QMutexLocker k(&_imp->trackMutex);

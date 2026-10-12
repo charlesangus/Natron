@@ -44,16 +44,15 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/AppManager.h"
 #include "Engine/CLArgs.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/KnobFile.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
-#include "Engine/KnobTypes.h"
-#include "Engine/KnobFile.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
-
 
 NATRON_NAMESPACE_ENTER
 

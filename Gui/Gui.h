@@ -51,7 +51,6 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Serialization/SerializationFwd.h"
 
-
 #define kMainSplitterObjectName "ToolbarSplitter"
 
 NATRON_NAMESPACE_ENTER
@@ -225,7 +224,7 @@ public:
     ///@param enableOldProjectCompatibility When true, the default Gui layout will be created
     ///prior to restoring. This is because older projects didn't have as much info to recreate the entire layout.
     void restoreLayout(bool wipePrevious, bool enableOldProjectCompatibility,
-                       const Serialization::GuiLayoutSerialization & layoutSerialization);
+                       const Serialization::GuiLayoutSerialization& layoutSerialization);
 
     /**
      * @brief Fills serialization with the layout of the application: the main window, then the
@@ -312,7 +311,7 @@ public:
 
     static QPixmap screenShot(QWidget* w);
 
-    void loadProjectGui(bool isAutosave, const Serialization::ProjectGuiSerialization & serialization) const;
+    void loadProjectGui(bool isAutosave, const Serialization::ProjectGuiSerialization& serialization) const;
 
     void saveProjectGui(Serialization::ProjectGuiSerialization* serialization);
 

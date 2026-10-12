@@ -68,7 +68,6 @@ class BezierCP
     friend class Bezier;
 
 public:
-
     BezierCP();
 
     BezierCP(const BezierCP & other);

@@ -69,11 +69,11 @@
 #include "Global/FloatingPointExceptions.h"
 #endif
 
-#include "Serialization/ProjectGuiSerialization.h"
-#include "Serialization/ProjectSerialization.h"
 #include "Serialization/BoostXml/ProjectGuiXml.h"
 #include "Serialization/BoostXml/ProjectXml.h"
 #include "Serialization/BoostXml/RotoXml.h"
+#include "Serialization/ProjectGuiSerialization.h"
+#include "Serialization/ProjectSerialization.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -500,7 +500,7 @@ Project::loadProjectInternal(const QString & path,
         } // __raii_loadingProjectInternal__
 
         // A background app leaves the GUI section of the file unread.
-        if ( !bgProject && !getApp()->isBackground() ) {
+        if (!bgProject && !getApp()->isBackground()) {
             Serialization::ProjectGuiSerialization projectGuiSerialization;
             iArchive >> boost::serialization::make_nvp("ProjectGui", projectGuiSerialization);
             getApp()->loadProjectGui(isAutoSave, projectGuiSerialization);
@@ -809,7 +809,7 @@ Project::saveProjectInternal(const QString & path,
             if (!bgProject) {
                 AppInstancePtr app = getApp();
                 Serialization::ProjectGuiSerialization projectGuiSerialization;
-                if ( app && app->saveProjectGui(&projectGuiSerialization) ) {
+                if (app && app->saveProjectGui(&projectGuiSerialization)) {
                     oArchive << boost::serialization::make_nvp("ProjectGui", projectGuiSerialization);
                 }
             }

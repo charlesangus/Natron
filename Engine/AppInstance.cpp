@@ -1340,8 +1340,8 @@ AppInstance::createNodeInternal(CreateNodeArgs& args)
         bool autoConnect = args.getProperty<bool>(kCreateNodeArgsPropAutoConnect);
         bool createInitialNodes = !args.getProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes);
         if (serialization) {
-            if ( serialization && !serialization->pythonModule.empty() ) {
-                QString pythonModulePath = QString::fromUtf8( ( serialization->pythonModule.c_str() ) );
+            if (serialization && !serialization->pythonModule.empty()) {
+                QString pythonModulePath = QString::fromUtf8((serialization->pythonModule.c_str()));
                 QString moduleName;
                 QString modulePath;
                 int foundLastSlash = pythonModulePath.lastIndexOf( QChar::fromLatin1('/') );

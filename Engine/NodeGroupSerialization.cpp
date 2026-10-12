@@ -37,12 +37,12 @@
 #include <QFile>
 #include <QFileInfo>
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
-#include "Engine/Settings.h"
-#include "Engine/AppInstance.h"
 #include "Engine/Node.h"
 #include "Engine/RotoLayer.h"
+#include "Engine/Settings.h"
 #include "Engine/ViewerInstance.h"
 
 #include "Serialization/NodeSerialization.h"
@@ -72,7 +72,7 @@ static QString lookForFileRecursively(const QString& dirPath, const QString& fil
 }
 
 bool
-NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSerializationPtr> & serializedNodes,
+NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSerializationPtr>& serializedNodes,
                                          const NodeCollectionPtr& group,
                                          bool createNodes,
                                          std::map<std::string, bool>* moduleUpdatesProcessed)
@@ -95,7 +95,7 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
     ///If a parent of a multi-instance node doesn't exist anymore but the children do, we must recreate the parent.
     ///Problem: we have lost the nodes connections. To do so we restore them using the serialization of a child.
     ///This map contains all the parents that must be reconnected and an iterator to the child serialization
-    std::map<NodePtr, std::list<Serialization::NodeSerializationPtr>::const_iterator > parentsToReconnect;
+    std::map<NodePtr, std::list<Serialization::NodeSerializationPtr>::const_iterator> parentsToReconnect;
     std::list<Serialization::NodeSerializationPtr> multiInstancesToRecurse;
     std::map<NodePtr, Serialization::NodeSerializationPtr> createdNodes;
     for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = serializedNodes.begin(); it != serializedNodes.end(); ++it) {
@@ -109,11 +109,11 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
         ///If the node is a multiinstance child find in all the serialized nodes if the parent exists.
         ///If not, create it
 
-        if ( !(*it)->multiInstanceParentName.empty() ) {
+        if (!(*it)->multiInstanceParentName.empty()) {
             bool foundParent = false;
             for (std::list<Serialization::NodeSerializationPtr>::const_iterator it2 = serializedNodes.begin();
                  it2 != serializedNodes.end(); ++it2) {
-                if ( (*it2)->scriptName == (*it)->multiInstanceParentName ) {
+                if ((*it2)->scriptName == (*it)->multiInstanceParentName) {
                     foundParent = true;
                     break;
                 }
@@ -121,7 +121,7 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
             if (!foundParent) {
                 ///Maybe it was created so far by another child who created it so look into the nodes
 
-                NodePtr parent = group->getNodeByName( (*it)->multiInstanceParentName );
+                NodePtr parent = group->getNodeByName((*it)->multiInstanceParentName);
                 if (parent) {
                     foundParent = true;
                 }
@@ -135,7 +135,7 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
                     
                     NodePtr parent = appInst->createNode(args);
                     try {
-                        parent->setScriptName( (*it)->multiInstanceParentName.c_str() );
+                        parent->setScriptName((*it)->multiInstanceParentName.c_str());
                     } catch (...) {
                     }
 
@@ -224,7 +224,7 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
         if (!createNodes) {
             ///We are in the case where we loaded a PyPlug: it probably created all the nodes in the group already but didn't
             ///load their serialization
-            n = group->getNodeByName( (*it)->scriptName );
+            n = group->getNodeByName((*it)->scriptName);
         }
 
         int majorVersion, minorVersion;
@@ -264,15 +264,15 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
                  (n->getPlugin()->getMajorVersion() != (int)majorVersion) && ( n->getPluginID() == pluginID) ) {
                 // If the node has a IOContainer don't do this check: when loading older projects that had a
                 // ReadOIIO node for example in version 2, we would now create a new Read meta-node with version 1 instead
-                QString text( tr("WARNING: The node %1 (%2) version %3.%4 "
-                                 "was found in the script but was loaded "
-                                 "with version %5.%6 instead.")
-                              .arg( QString::fromUtf8( (*it)->scriptName.c_str() ) )
-                              .arg( QString::fromUtf8( pluginID.c_str() ) )
-                              .arg(majorVersion)
-                              .arg(minorVersion)
-                              .arg( n->getPlugin()->getMajorVersion() )
-                              .arg( n->getPlugin()->getMinorVersion() ) );
+                QString text(tr("WARNING: The node %1 (%2) version %3.%4 "
+                                "was found in the script but was loaded "
+                                "with version %5.%6 instead.")
+                                 .arg(QString::fromUtf8((*it)->scriptName.c_str()))
+                                 .arg(QString::fromUtf8(pluginID.c_str()))
+                                 .arg(majorVersion)
+                                 .arg(minorVersion)
+                                 .arg(n->getPlugin()->getMajorVersion())
+                                 .arg(n->getPlugin()->getMinorVersion()));
                 appPTR->writeToErrorLog_mt_safe(tr("Project"), QDateTime::currentDateTime(), text);
                 mustShowErrorsLog = true;
             }
@@ -301,9 +301,8 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
     } // for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = serializedNodes.begin(); it != serializedNodes.end(); ++it) {
 
     for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = multiInstancesToRecurse.begin(); it != multiInstancesToRecurse.end(); ++it) {
-        NodeCollection::restoreFromSerialization( (*it)->children, group, true, moduleUpdatesProcessed );
+        NodeCollection::restoreFromSerialization((*it)->children, group, true, moduleUpdatesProcessed);
     }
-
 
     appInst->updateProjectLoadStatus( tr("Restoring graph links in group: %1").arg(groupName) );
 
@@ -316,7 +315,7 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
         }
 
         ///for all nodes that are part of a multi-instance, fetch the main instance node pointer
-        const std::string & parentName = it->second->multiInstanceParentName;
+        const std::string& parentName = it->second->multiInstanceParentName;
         if ( !parentName.empty() ) {
             it->first->fetchParentMultiInstancePointer();
             //Do not restore connections as we just use the ones of the parent anyway
@@ -324,16 +323,16 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
         }
 
         ///restore slave/master link if any
-        const std::string & masterNodeName = it->second->masterNodeName;
+        const std::string& masterNodeName = it->second->masterNodeName;
         if ( !masterNodeName.empty() ) {
             ///find such a node
             NodePtr masterNode = it->first->getApp()->getNodeByFullySpecifiedName(masterNodeName);
 
             if (!masterNode) {
-                appPTR->writeToErrorLog_mt_safe( tr("Project"), QDateTime::currentDateTime(),
-                                                 tr("Cannot restore the link between %1 and %2.")
-                                                 .arg( QString::fromUtf8( it->second->scriptName.c_str() ) )
-                                                 .arg( QString::fromUtf8( masterNodeName.c_str() ) ) );
+                appPTR->writeToErrorLog_mt_safe(tr("Project"), QDateTime::currentDateTime(),
+                                                tr("Cannot restore the link between %1 and %2.")
+                                                    .arg(QString::fromUtf8(it->second->scriptName.c_str()))
+                                                    .arg(QString::fromUtf8(masterNodeName.c_str())));
                 mustShowErrorsLog = true;
             } else {
                 it->first->getEffectInstance()->slaveAllKnobs( masterNode->getEffectInstance().get(), true );
@@ -345,7 +344,7 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
             continue;
         }
 
-        const std::vector<std::string> & oldInputs = it->second->oldInputs;
+        const std::vector<std::string>& oldInputs = it->second->oldInputs;
         if ( !oldInputs.empty() ) {
             /*
              * Prior to Natron v2 OpenFX effects had their inputs reversed internally
@@ -356,8 +355,8 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
                 if ( !oldInputs[j].empty() && !group->connectNodes(isOfxEffect ? oldInputs.size() - 1 - j : j, oldInputs[j], it->first) ) {
                     if (createNodes) {
                         qDebug() << tr("Failed to connect node %1 to %2 (this is normal if loading a PyPlug)")
-                                    .arg( QString::fromUtf8( it->second->scriptName.c_str() ) )
-                                    .arg( QString::fromUtf8( oldInputs[j].c_str() ) );
+                                        .arg(QString::fromUtf8(it->second->scriptName.c_str()))
+                                        .arg(QString::fromUtf8(oldInputs[j].c_str()));
                     }
                 }
             }
@@ -377,8 +376,8 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
                 if ( !it2->second.empty() && !group->connectNodes(index, it2->second, it->first) ) {
                     if (createNodes) {
                         qDebug() << tr("Failed to connect node %1 to %2 (this is normal if loading a PyPlug)")
-                                    .arg( QString::fromUtf8( it->second->scriptName.c_str() ) )
-                                    .arg( QString::fromUtf8( it2->second.c_str() ) );
+                                        .arg(QString::fromUtf8(it->second->scriptName.c_str()))
+                                        .arg(QString::fromUtf8(it2->second.c_str()));
                     }
                 }
             }
@@ -399,9 +398,11 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
     }
 
     ///Also reconnect parents of multiinstance nodes that were created on the fly
-    for (std::map<NodePtr, std::list<Serialization::NodeSerializationPtr>::const_iterator >::const_iterator
-         it = parentsToReconnect.begin(); it != parentsToReconnect.end(); ++it) {
-        const std::vector<std::string> & oldInputs = (*it->second)->oldInputs;
+    for (std::map<NodePtr, std::list<Serialization::NodeSerializationPtr>::const_iterator>::const_iterator
+             it
+         = parentsToReconnect.begin();
+         it != parentsToReconnect.end(); ++it) {
+        const std::vector<std::string>& oldInputs = (*it->second)->oldInputs;
         if ( !oldInputs.empty() ) {
             /*
              * Prior to Natron v2 OpenFX effects had their inputs reversed internally

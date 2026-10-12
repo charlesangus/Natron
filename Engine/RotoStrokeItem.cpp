@@ -35,7 +35,6 @@
 #include <QLineF>
 #include <QDebug>
 
-
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
@@ -47,8 +46,8 @@
 #include "Engine/ImageParams.h"
 #include "Engine/Interpolation.h"
 #include "Engine/RenderStats.h"
-#include "Engine/RotoLayer.h"
 #include "Engine/RotoContextPrivate.h"
+#include "Engine/RotoLayer.h"
 #include "Engine/RotoPoint.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"

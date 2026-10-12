@@ -135,12 +135,10 @@ public:
      **/
     void load(const CreateNodeArgs& args);
 
-
     void initNodeScriptName(const Serialization::NodeSerialization* serialization, const QString& fixedName);
 
-
-    void loadKnob(const KnobIPtr & knob,
-                  const Serialization::NodeSerialization & serialization,
+    void loadKnob(const KnobIPtr& knob,
+                  const Serialization::NodeSerialization& serialization,
                   bool updateKnobGui = false);
 
     ///Set values for Knobs given their serialization
@@ -165,9 +163,9 @@ public:
         return appPTR->getKnobFactory().createKnob<K>(getEffectInstance(), description, dimension, declaredByPlugin);
     }
 
-    ///This cannot be done in fromSerialization as to call this all the nodes in the project must have
-    ///been loaded first.
-    void storeKnobsLinks(const Serialization::NodeSerialization & serialization,
+    /// This cannot be done in fromSerialization as to call this all the nodes in the project must have
+    /// been loaded first.
+    void storeKnobsLinks(const Serialization::NodeSerialization& serialization,
                          const std::map<std::string, std::string>& oldNewScriptNamesMapping);
 
     // Once all nodes are created, we can restore the links that were previously saved by storeKnobsLinks()

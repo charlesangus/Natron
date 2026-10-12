@@ -35,8 +35,7 @@ namespace Serialization {
  * itself, since Global/Enums.h (where it is defined) pulls in Qt and this
  * directory may not depend on Qt.
  **/
-struct KeyFrameSerialization
-{
+struct KeyFrameSerialization {
     double time;
     double value;
     int interpolation;
@@ -56,8 +55,7 @@ struct KeyFrameSerialization
 /**
  * @brief Plain-data equivalent of a Curve: the ordered set of keyframes it holds.
  **/
-struct CurveSerialization
-{
+struct CurveSerialization {
     std::vector<KeyFrameSerialization> keyframes;
 };
 

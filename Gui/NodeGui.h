@@ -168,7 +168,6 @@ public:
      **/
     void fromSerialization(const Serialization::NodeGuiSerialization& serialization);
 
-
     NodePtr getNode() const
     {
         return _internalNode.lock();

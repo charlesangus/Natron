@@ -29,12 +29,12 @@
 #include <string>
 
 #include "Serialization/BasicSerialization.h"
-#include "Serialization/KnobSerialization.h"
-#include "Serialization/NodeSerialization.h"
-#include "Serialization/ProjectSerialization.h"
 #include "Serialization/BoostXml/BasicTypesXml.h"
 #include "Serialization/BoostXml/KnobXml.h"
 #include "Serialization/BoostXml/NodeXml.h"
+#include "Serialization/KnobSerialization.h"
+#include "Serialization/NodeSerialization.h"
+#include "Serialization/ProjectSerialization.h"
 
 #if !defined(Q_MOC_RUN) && !defined(SBK_RUN)
 GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_OFF
@@ -80,138 +80,137 @@ NATRON_NAMESPACE_EXIT
 namespace boost {
 namespace serialization {
 
-template<class Archive>
-void
-save(Archive & ar,
-     const NATRON_NAMESPACE::Serialization::LayerRegistryEntrySerialization & entry,
-     const unsigned int /*version*/)
-{
-    ar & ::boost::serialization::make_nvp("Desc", entry.layer);
-    int origin = entry.origin;
-    ar & ::boost::serialization::make_nvp("Origin", origin);
-}
-
-template<class Archive>
-void
-load(Archive & ar,
-     NATRON_NAMESPACE::Serialization::LayerRegistryEntrySerialization & entry,
-     const unsigned int /*version*/)
-{
-    entry = NATRON_NAMESPACE::Serialization::LayerRegistryEntrySerialization();
-
-    ar & ::boost::serialization::make_nvp("Desc", entry.layer);
-    ar & ::boost::serialization::make_nvp("Origin", entry.origin);
-}
-
-template<class Archive>
-void
-serialize(Archive & ar,
-          NATRON_NAMESPACE::Serialization::LayerRegistryEntrySerialization & entry,
-          const unsigned int version)
-{
-    ::boost::serialization::split_free(ar, entry, version);
-}
-
-template<class Archive>
-void
-save(Archive & ar,
-     const NATRON_NAMESPACE::Serialization::ProjectSerialization & project,
-     const unsigned int /*version*/)
-{
-    const NATRON_NAMESPACE::Serialization::ProjectSavedByVersionSerialization & savedBy = project.savedByVersion;
-
-    ar & ::boost::serialization::make_nvp("VersionMajor", savedBy.versionMajor);
-    ar & ::boost::serialization::make_nvp("VersionMinor", savedBy.versionMinor);
-    ar & ::boost::serialization::make_nvp("VersionRev", savedBy.versionRevision);
-    ar & ::boost::serialization::make_nvp("GitBranch", savedBy.gitBranch);
-    ar & ::boost::serialization::make_nvp("GitCommit", savedBy.gitCommit);
-    ar & ::boost::serialization::make_nvp("OS", savedBy.operatingSystem);
-    ar & ::boost::serialization::make_nvp("Bits", savedBy.bits);
-
-    ar & ::boost::serialization::make_nvp("NodesCollection", project.nodes);
-    int knobCount = (int)project.projectKnobs.size();
-    ar & ::boost::serialization::make_nvp("ProjectKnobsCount", knobCount);
-    for (std::list<NATRON_NAMESPACE::Serialization::KnobSerialization>::const_iterator it = project.projectKnobs.begin(); it != project.projectKnobs.end(); ++it) {
-        ar & ::boost::serialization::make_nvp("item", *it);
+    template <class Archive>
+    void
+    save(Archive& ar,
+         const NATRON_NAMESPACE::Serialization::LayerRegistryEntrySerialization& entry,
+         const unsigned int /*version*/)
+    {
+        ar& ::boost::serialization::make_nvp("Desc", entry.layer);
+        int origin = entry.origin;
+        ar& ::boost::serialization::make_nvp("Origin", origin);
     }
-    ar & ::boost::serialization::make_nvp("AdditionalFormats", project.additionalFormats);
-    ar & ::boost::serialization::make_nvp("Layers", project.layers);
-    ar & ::boost::serialization::make_nvp("Timeline_current_time", project.timelineCurrentTime);
-    ar & ::boost::serialization::make_nvp("CreationDate", project.creationDate);
-}
 
-template<class Archive>
-void
-load(Archive & ar,
-     NATRON_NAMESPACE::Serialization::ProjectSerialization & project,
-     const unsigned int version)
-{
-    project = NATRON_NAMESPACE::Serialization::ProjectSerialization();
-    project.version = version;
+    template <class Archive>
+    void
+    load(Archive& ar,
+         NATRON_NAMESPACE::Serialization::LayerRegistryEntrySerialization& entry,
+         const unsigned int /*version*/)
+    {
+        entry = NATRON_NAMESPACE::Serialization::LayerRegistryEntrySerialization();
 
-    NATRON_NAMESPACE::Serialization::ProjectSavedByVersionSerialization & savedBy = project.savedByVersion;
+        ar& ::boost::serialization::make_nvp("Desc", entry.layer);
+        ar& ::boost::serialization::make_nvp("Origin", entry.origin);
+    }
 
-    if ( (version >= NATRON_SERIALIZATION_PROJECT_INTRODUCES_NATRON_VERSION) && (version < NATRON_SERIALIZATION_PROJECT_CHANGE_VERSION_SERIALIZATION) ) {
-        std::string natronVersion;
-        ar & ::boost::serialization::make_nvp("NatronVersion", natronVersion);
-        if ( NATRON_NAMESPACE::Serialization::parseLegacyNatronVersionString(natronVersion, &savedBy.versionMajor, &savedBy.versionMinor, &savedBy.versionRevision) &&
-             ( NATRON_VERSION_ENCODE(savedBy.versionMajor, savedBy.versionMinor, savedBy.versionRevision) > NATRON_VERSION_ENCODED ) ) {
-            throw std::invalid_argument("The given project was produced with a more recent and incompatible version of Natron.");
+    template <class Archive>
+    void
+    serialize(Archive& ar,
+              NATRON_NAMESPACE::Serialization::LayerRegistryEntrySerialization& entry,
+              const unsigned int version)
+    {
+        ::boost::serialization::split_free(ar, entry, version);
+    }
+
+    template <class Archive>
+    void
+    save(Archive& ar,
+         const NATRON_NAMESPACE::Serialization::ProjectSerialization& project,
+         const unsigned int /*version*/)
+    {
+        const NATRON_NAMESPACE::Serialization::ProjectSavedByVersionSerialization& savedBy = project.savedByVersion;
+
+        ar& ::boost::serialization::make_nvp("VersionMajor", savedBy.versionMajor);
+        ar& ::boost::serialization::make_nvp("VersionMinor", savedBy.versionMinor);
+        ar& ::boost::serialization::make_nvp("VersionRev", savedBy.versionRevision);
+        ar& ::boost::serialization::make_nvp("GitBranch", savedBy.gitBranch);
+        ar& ::boost::serialization::make_nvp("GitCommit", savedBy.gitCommit);
+        ar& ::boost::serialization::make_nvp("OS", savedBy.operatingSystem);
+        ar& ::boost::serialization::make_nvp("Bits", savedBy.bits);
+
+        ar& ::boost::serialization::make_nvp("NodesCollection", project.nodes);
+        int knobCount = (int)project.projectKnobs.size();
+        ar& ::boost::serialization::make_nvp("ProjectKnobsCount", knobCount);
+        for (std::list<NATRON_NAMESPACE::Serialization::KnobSerialization>::const_iterator it = project.projectKnobs.begin(); it != project.projectKnobs.end(); ++it) {
+            ar& ::boost::serialization::make_nvp("item", *it);
         }
+        ar& ::boost::serialization::make_nvp("AdditionalFormats", project.additionalFormats);
+        ar& ::boost::serialization::make_nvp("Layers", project.layers);
+        ar& ::boost::serialization::make_nvp("Timeline_current_time", project.timelineCurrentTime);
+        ar& ::boost::serialization::make_nvp("CreationDate", project.creationDate);
     }
 
-    if (version >= NATRON_SERIALIZATION_PROJECT_CHANGE_VERSION_SERIALIZATION) {
-        ar & ::boost::serialization::make_nvp("VersionMajor", savedBy.versionMajor);
-        ar & ::boost::serialization::make_nvp("VersionMinor", savedBy.versionMinor);
-        ar & ::boost::serialization::make_nvp("VersionRev", savedBy.versionRevision);
-        ar & ::boost::serialization::make_nvp("GitBranch", savedBy.gitBranch);
-        ar & ::boost::serialization::make_nvp("GitCommit", savedBy.gitCommit);
-        ar & ::boost::serialization::make_nvp("OS", savedBy.operatingSystem);
-        ar & ::boost::serialization::make_nvp("Bits", savedBy.bits);
-    }
+    template <class Archive>
+    void
+    load(Archive& ar,
+         NATRON_NAMESPACE::Serialization::ProjectSerialization& project,
+         const unsigned int version)
+    {
+        project = NATRON_NAMESPACE::Serialization::ProjectSerialization();
+        project.version = version;
 
-    if (version < NATRON_SERIALIZATION_PROJECT_INTRODUCES_GROUPS) {
-        int nodeCount = 0;
-        ar & ::boost::serialization::make_nvp("NodesCount", nodeCount);
-        for (int i = 0; i < nodeCount; ++i) {
-            NATRON_NAMESPACE::Serialization::NodeSerializationPtr node = std::make_shared<NATRON_NAMESPACE::Serialization::NodeSerialization>();
-            ar & ::boost::serialization::make_nvp("item", *node);
-            project.nodes.nodes.push_back(node);
+        NATRON_NAMESPACE::Serialization::ProjectSavedByVersionSerialization& savedBy = project.savedByVersion;
+
+        if ((version >= NATRON_SERIALIZATION_PROJECT_INTRODUCES_NATRON_VERSION) && (version < NATRON_SERIALIZATION_PROJECT_CHANGE_VERSION_SERIALIZATION)) {
+            std::string natronVersion;
+            ar& ::boost::serialization::make_nvp("NatronVersion", natronVersion);
+            if (NATRON_NAMESPACE::Serialization::parseLegacyNatronVersionString(natronVersion, &savedBy.versionMajor, &savedBy.versionMinor, &savedBy.versionRevision) && (NATRON_VERSION_ENCODE(savedBy.versionMajor, savedBy.versionMinor, savedBy.versionRevision) > NATRON_VERSION_ENCODED)) {
+                throw std::invalid_argument("The given project was produced with a more recent and incompatible version of Natron.");
+            }
         }
-    } else {
-        ar & ::boost::serialization::make_nvp("NodesCollection", project.nodes);
+
+        if (version >= NATRON_SERIALIZATION_PROJECT_CHANGE_VERSION_SERIALIZATION) {
+            ar& ::boost::serialization::make_nvp("VersionMajor", savedBy.versionMajor);
+            ar& ::boost::serialization::make_nvp("VersionMinor", savedBy.versionMinor);
+            ar& ::boost::serialization::make_nvp("VersionRev", savedBy.versionRevision);
+            ar& ::boost::serialization::make_nvp("GitBranch", savedBy.gitBranch);
+            ar& ::boost::serialization::make_nvp("GitCommit", savedBy.gitCommit);
+            ar& ::boost::serialization::make_nvp("OS", savedBy.operatingSystem);
+            ar& ::boost::serialization::make_nvp("Bits", savedBy.bits);
+        }
+
+        if (version < NATRON_SERIALIZATION_PROJECT_INTRODUCES_GROUPS) {
+            int nodeCount = 0;
+            ar& ::boost::serialization::make_nvp("NodesCount", nodeCount);
+            for (int i = 0; i < nodeCount; ++i) {
+                NATRON_NAMESPACE::Serialization::NodeSerializationPtr node = std::make_shared<NATRON_NAMESPACE::Serialization::NodeSerialization>();
+                ar& ::boost::serialization::make_nvp("item", *node);
+                project.nodes.nodes.push_back(node);
+            }
+        } else {
+            ar& ::boost::serialization::make_nvp("NodesCollection", project.nodes);
+        }
+
+        int knobCount = 0;
+        ar& ::boost::serialization::make_nvp("ProjectKnobsCount", knobCount);
+        for (int i = 0; i < knobCount; ++i) {
+            project.projectKnobs.push_back(NATRON_NAMESPACE::Serialization::KnobSerialization());
+            ar& ::boost::serialization::make_nvp("item", project.projectKnobs.back());
+        }
+
+        ar& ::boost::serialization::make_nvp("AdditionalFormats", project.additionalFormats);
+        if (version >= NATRON_SERIALIZATION_PROJECT_ADDS_LAYERS) {
+            ar& ::boost::serialization::make_nvp("Layers", project.layers);
+        }
+        ar& ::boost::serialization::make_nvp("Timeline_current_time", project.timelineCurrentTime);
+        if (version < NATRON_SERIALIZATION_PROJECT_REMOVES_TIMELINE_BOUNDS) {
+            ar& ::boost::serialization::make_nvp("Timeline_left_bound", project.legacyTimelineLeftBound);
+            ar& ::boost::serialization::make_nvp("Timeline_right_bound", project.legacyTimelineRightBound);
+        }
+        if (version < NATRON_SERIALIZATION_PROJECT_REMOVES_NODE_COUNTERS) {
+            ar& ::boost::serialization::make_nvp("NodeCounters", project.legacyNodeCounters);
+        }
+        ar& ::boost::serialization::make_nvp("CreationDate", project.creationDate);
     }
 
-    int knobCount = 0;
-    ar & ::boost::serialization::make_nvp("ProjectKnobsCount", knobCount);
-    for (int i = 0; i < knobCount; ++i) {
-        project.projectKnobs.push_back( NATRON_NAMESPACE::Serialization::KnobSerialization() );
-        ar & ::boost::serialization::make_nvp("item", project.projectKnobs.back());
+    template <class Archive>
+    void
+    serialize(Archive& ar,
+              NATRON_NAMESPACE::Serialization::ProjectSerialization& project,
+              const unsigned int version)
+    {
+        ::boost::serialization::split_free(ar, project, version);
     }
-
-    ar & ::boost::serialization::make_nvp("AdditionalFormats", project.additionalFormats);
-    if (version >= NATRON_SERIALIZATION_PROJECT_ADDS_LAYERS) {
-        ar & ::boost::serialization::make_nvp("Layers", project.layers);
-    }
-    ar & ::boost::serialization::make_nvp("Timeline_current_time", project.timelineCurrentTime);
-    if (version < NATRON_SERIALIZATION_PROJECT_REMOVES_TIMELINE_BOUNDS) {
-        ar & ::boost::serialization::make_nvp("Timeline_left_bound", project.legacyTimelineLeftBound);
-        ar & ::boost::serialization::make_nvp("Timeline_right_bound", project.legacyTimelineRightBound);
-    }
-    if (version < NATRON_SERIALIZATION_PROJECT_REMOVES_NODE_COUNTERS) {
-        ar & ::boost::serialization::make_nvp("NodeCounters", project.legacyNodeCounters);
-    }
-    ar & ::boost::serialization::make_nvp("CreationDate", project.creationDate);
-}
-
-template<class Archive>
-void
-serialize(Archive & ar,
-          NATRON_NAMESPACE::Serialization::ProjectSerialization & project,
-          const unsigned int version)
-{
-    ::boost::serialization::split_free(ar, project, version);
-}
 
 } // namespace serialization
 } // namespace boost

@@ -61,8 +61,7 @@ namespace Serialization {
  * @brief Plain-data equivalent of an image layer description: its ID, its label, the label of
  * its channel set and its channel names.
  **/
-struct LayerSerialization
-{
+struct LayerSerialization {
     std::string layerID;
     std::string layerLabel;
     std::string channelsLabel;
@@ -75,8 +74,7 @@ struct LayerSerialization
  * nodes it holds. Node names are script names; a name read from a file older than script names
  * is already converted to one.
  **/
-struct NodeSerialization
-{
+struct NodeSerialization {
     // The class version the node was loaded from, NATRON_SERIALIZATION_NODE_VERSION otherwise.
     unsigned int version;
 
@@ -117,7 +115,7 @@ struct NodeSerialization
     std::list<std::string> pagesOrder;
 
     // The nodes of a group, or the instances of a multi-instance node.
-    std::list<std::shared_ptr<NodeSerialization> > children;
+    std::list<std::shared_ptr<NodeSerialization>> children;
 
     std::string cacheID;
 
@@ -151,8 +149,7 @@ struct NodeSerialization
 /**
  * @brief The saved state of the top-level nodes of a project, in graph order.
  **/
-struct NodeCollectionSerialization
-{
+struct NodeCollectionSerialization {
     std::list<NodeSerializationPtr> nodes;
 };
 

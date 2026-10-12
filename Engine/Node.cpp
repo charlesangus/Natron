@@ -47,8 +47,8 @@
 #include <QTextStream>
 #include <QWaitCondition>
 
-#include <ofxNatron.h>
 #include <SequenceParsing.h>
+#include <ofxNatron.h>
 
 #include "Global/FStreamsSupport.h"
 #ifdef DEBUG
@@ -1679,7 +1679,6 @@ Node::fromSerialization(const Serialization::NodeSerialization& serialization,
 
     setKnobsAge(serialization.knobsAge);
 
-
     _imp->effect->onKnobsLoaded();
 }
 
@@ -1722,8 +1721,8 @@ Node::restoreSublabel()
 }
 
 void
-Node::loadKnob(const KnobIPtr & knob,
-               const Serialization::NodeSerialization & serialization,
+Node::loadKnob(const KnobIPtr& knob,
+               const Serialization::NodeSerialization& serialization,
                bool /*updateKnobGui*/)
 {
 
@@ -1755,8 +1754,8 @@ Node::loadKnob(const KnobIPtr & knob,
             // If we found such a parameter, retrieve the string from it.
             std::string stringParamName = isChoice->getName() + "Choice";
             for (std::list<Serialization::KnobSerialization>::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
-                if ( NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) == stringParamName ) {
-                    KnobStringPtr stringKnob = std::dynamic_pointer_cast<KnobString>( createDetachedKnobFromSerialization(*it) );
+                if (NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) == stringParamName) {
+                    KnobStringPtr stringKnob = std::dynamic_pointer_cast<KnobString>(createDetachedKnobFromSerialization(*it));
                     if (stringKnob) {
                         std::string serializedString = stringKnob->getValue();
                         if (it->version < NATRON_SERIALIZATION_KNOB_CHANGE_LAYERS_SERIALIZATION) {
@@ -1767,7 +1766,6 @@ Node::loadKnob(const KnobIPtr & knob,
                     break;
                 }
             }
-
         }
     }
 
@@ -1794,7 +1792,7 @@ Node::loadKnob(const KnobIPtr & knob,
         const KnobI::ChoiceOptionIDFilter choiceOptionIDFilter = [this, &serialization, &projectInfos, &serializedName](std::string* optionID) {
             filterKnobChoiceOptionCompat(getPluginID(), serialization.pluginMajorVersion, serialization.pluginMinorVersion, projectInfos.vMajor, projectInfos.vMinor, projectInfos.vRev, serializedName, optionID);
         };
-        if ( !knob->fromSerialization(*it, choiceOptionIDFilter) ) {
+        if (!knob->fromSerialization(*it, choiceOptionIDFilter)) {
             continue;
         }
 
@@ -1803,7 +1801,6 @@ Node::loadKnob(const KnobIPtr & knob,
         }
 
         break;
-
     }
 
 } // Node::loadKnob

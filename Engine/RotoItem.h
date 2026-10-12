@@ -46,7 +46,6 @@ CLANG_DIAG_ON(deprecated-declarations)
 
 #include "Serialization/SerializationFwd.h"
 
-
 #define kRotoLayerBaseName "Layer"
 #define kRotoBezierBaseName "Bezier"
 #define kRotoOpenBezierBaseName "Pencil"

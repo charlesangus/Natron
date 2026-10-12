@@ -57,11 +57,10 @@ GCC_DIAG_ON(maybe-uninitialized)
 #include <QtConcurrentMap>
 
 #include "Engine/CreateNodeArgs.h"
-#include "Engine/RectD.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/RectD.h"
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerFrameAccessor.h"
-
 
 #define kTrackBaseName "track"
 

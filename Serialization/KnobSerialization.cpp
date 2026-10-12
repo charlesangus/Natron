@@ -42,7 +42,7 @@ getKnobTypeTraits(const std::string& typeName)
         traits.storageType = eKnobStorageTypeBool;
         traits.hasValue = true;
         traits.isBool = true;
-    } else if ( (typeName == "Button") || (typeName == "Separator") || (typeName == "Group") || (typeName == "Page") ) {
+    } else if ((typeName == "Button") || (typeName == "Separator") || (typeName == "Group") || (typeName == "Page")) {
         traits.storageType = eKnobStorageTypeBool;
     } else if (typeName == "Double") {
         traits.storageType = eKnobStorageTypeDouble;
@@ -77,7 +77,7 @@ getKnobTypeTraits(const std::string& typeName)
         traits.storageType = eKnobStorageTypeString;
         traits.hasValue = true;
         traits.isLayerSelect = true;
-    } else if ( (typeName == "Layers") || (typeName == "ChannelSet") || (typeName == "ChannelSelect") || (typeName == "ShuffleMap") ) {
+    } else if ((typeName == "Layers") || (typeName == "ChannelSet") || (typeName == "ChannelSelect") || (typeName == "ShuffleMap")) {
         traits.storageType = eKnobStorageTypeString;
         traits.hasValue = true;
     } else {
@@ -98,14 +98,14 @@ scriptFriendlyKnobName(const std::string& name)
     std::locale locale;
     std::string friendlyName;
     for (std::size_t i = 0; i < name.size(); ++i) {
-        if ( friendlyName.empty() && std::isdigit(name[i], locale) ) {
+        if (friendlyName.empty() && std::isdigit(name[i], locale)) {
             friendlyName.push_back('p');
             friendlyName.push_back(name[i]);
             continue;
         }
-        if ( std::isspace(name[i], locale) ) {
+        if (std::isspace(name[i], locale)) {
             friendlyName.push_back('_');
-        } else if ( (name[i] == '_') || std::isalnum(name[i], locale) ) {
+        } else if ((name[i] == '_') || std::isalnum(name[i], locale)) {
             friendlyName.push_back(name[i]);
         }
     }

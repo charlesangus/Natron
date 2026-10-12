@@ -46,8 +46,7 @@ namespace Serialization {
  * @brief One project layer-registry entry: the layer and where it came from, as the value of
  * Engine's LayerRegistryEntry::OriginEnum. Built-in layers are never saved.
  **/
-struct LayerRegistryEntrySerialization
-{
+struct LayerRegistryEntrySerialization {
     LayerSerialization layer;
     int origin;
 
@@ -64,8 +63,7 @@ struct LayerRegistryEntrySerialization
  * record the version numbers, and files older than
  * NATRON_SERIALIZATION_PROJECT_INTRODUCES_NATRON_VERSION record nothing.
  **/
-struct ProjectSavedByVersionSerialization
-{
+struct ProjectSavedByVersionSerialization {
     int versionMajor;
     int versionMinor;
     int versionRevision;
@@ -90,8 +88,7 @@ struct ProjectSavedByVersionSerialization
  * @brief The saved state of a project: the build that saved it, its nodes, its knobs, the
  * formats and layers the user added, the timeline position and when it was created.
  **/
-struct ProjectSerialization
-{
+struct ProjectSerialization {
     // The class version the project was loaded from, NATRON_SERIALIZATION_PROJECT_VERSION
     // otherwise.
     unsigned int version;

@@ -384,10 +384,10 @@ WriteNodePrivate::cloneGenericKnobs()
         for (KnobsVec::const_iterator it2 = knobs.begin(); it2 != knobs.end(); ++it2) {
             if ( (*it2)->getName() == serializedKnob->getName() ) {
                 KnobChoice* isChoice = dynamic_cast<KnobChoice*>( (*it2).get() );
-                KnobChoice* choiceSerialized = dynamic_cast<KnobChoice*>( serializedKnob.get() );
+                KnobChoice* choiceSerialized = dynamic_cast<KnobChoice*>(serializedKnob.get());
                 if (isChoice && choiceSerialized) {
                     if (it->choiceOptionID) {
-                        const std::string & optionID = *it->choiceOptionID;
+                        const std::string& optionID = *it->choiceOptionID;
                         // first, try to get the id the easy way ( see choiceMatch() )
                         int id = isChoice->choiceRestorationId(choiceSerialized, optionID);
                         isChoice->choiceRestoration(choiceSerialized, optionID, id);
@@ -422,11 +422,11 @@ WriteNodePrivate::destroyWriteNode()
             // Since we want to keep some knobs around, ensure they do not get deleted in the destructor of the embedded node
             embeddedNode->getEffectInstance()->removeKnobFromList(it->get());
 
-            if ( !(*it)->isDeclaredByPlugin() ) {
+            if (!(*it)->isDeclaredByPlugin()) {
                 continue;
             }
 
-            //If it is a knob of this WriteNode, do not destroy it
+            // If it is a knob of this WriteNode, do not destroy it
             bool isWriteNodeKnob = false;
             for (std::list<KnobIWPtr>::iterator it2 = writeNodeKnobs.begin(); it2 != writeNodeKnobs.end(); ++it2) {
                 if (it2->lock() == *it) {
@@ -438,20 +438,20 @@ WriteNodePrivate::destroyWriteNode()
                 continue;
             }
 
-            //Keep pages around they will be re-used
-            KnobPage* isPage = dynamic_cast<KnobPage*>( it->get() );
+            // Keep pages around they will be re-used
+            KnobPage* isPage = dynamic_cast<KnobPage*>(it->get());
             if (isPage) {
                 continue;
             }
 
-            //This is a knob of the Writer plug-in
+            // This is a knob of the Writer plug-in
 
-            //Serialize generic knobs and keep them around until we create a new Writer plug-in
+            // Serialize generic knobs and keep them around until we create a new Writer plug-in
             bool mustSerializeKnob;
-            bool isGeneric = isGenericKnob( (*it)->getName(), &mustSerializeKnob );
+            bool isGeneric = isGenericKnob((*it)->getName(), &mustSerializeKnob);
             if (!isGeneric || mustSerializeKnob) {
-                genericKnobsSerialization.push_back( Serialization::KnobSerialization() );
-                (*it)->toSerialization( &genericKnobsSerialization.back() );
+                genericKnobsSerialization.push_back(Serialization::KnobSerialization());
+                (*it)->toSerialization(&genericKnobsSerialization.back());
             }
             if (!isGeneric) {
                 try {
@@ -463,7 +463,6 @@ WriteNodePrivate::destroyWriteNode()
     } catch (...) {
         assert(false);
     }
-
 
     //This will remove the GUI of non generic parameters
     _publicInterface->recreateKnobs(true);
@@ -643,9 +642,9 @@ getFileNameFromSerialization(const std::list<Serialization::KnobSerialization>& 
     std::string filePattern;
 
     for (std::list<Serialization::KnobSerialization>::const_iterator it = serializations.begin(); it != serializations.end(); ++it) {
-        if ( NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) == kOfxImageEffectFileParamName ) {
+        if (NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) == kOfxImageEffectFileParamName) {
             KnobIPtr serializedKnob = createDetachedKnobFromSerialization(*it);
-            KnobStringBase* isString = dynamic_cast<KnobStringBase*>( serializedKnob.get() );
+            KnobStringBase* isString = dynamic_cast<KnobStringBase*>(serializedKnob.get());
             assert(isString);
             if (isString) {
                 filePattern = isString->getValue();
@@ -1245,7 +1244,7 @@ WriteNode::onEffectCreated(bool mayCreateFileDialog,
         }
     }
 
-    _imp->createWriteNode( throwErrors, pattern, Serialization::NodeSerializationPtr() );
+    _imp->createWriteNode(throwErrors, pattern, Serialization::NodeSerializationPtr());
     _imp->refreshPluginSelectorKnob();
 }
 
@@ -1314,7 +1313,7 @@ WriteNode::knobChanged(KnobI* k,
         std::string filename = fileKnob->getValue();
 
         try {
-            _imp->createWriteNode( false, filename, Serialization::NodeSerializationPtr() );
+            _imp->createWriteNode(false, filename, Serialization::NodeSerializationPtr());
         } catch (const std::exception& e) {
             setPersistentMessage( eMessageTypeError, e.what() );
         }
@@ -1339,7 +1338,7 @@ WriteNode::knobChanged(KnobI* k,
         std::string filename = fileKnob->getValue();
 
         try {
-            _imp->createWriteNode( false, filename, Serialization::NodeSerializationPtr() );
+            _imp->createWriteNode(false, filename, Serialization::NodeSerializationPtr());
         } catch (const std::exception& e) {
             setPersistentMessage( eMessageTypeError, e.what() );
         }

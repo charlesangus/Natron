@@ -52,12 +52,12 @@ CLANG_DIAG_ON(uninitialized)
 #include "Global/FloatingPointExceptions.h"
 #endif
 
-#include "Engine/LibraryBinary.h"
 #include "Engine/CreateNodeArgs.h"
-#include "Engine/Settings.h"
-#include "Engine/Project.h"
-#include "Engine/ViewerInstance.h"
+#include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
+#include "Engine/Project.h"
+#include "Engine/Settings.h"
+#include "Engine/ViewerInstance.h"
 
 #include "Global/QtCompat.h"
 

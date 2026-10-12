@@ -71,48 +71,48 @@ NATRON_NAMESPACE_ANONYMOUS_ENTER
  * to no holder, then cloned from.
  */
 KnobIPtr
-createDetachedKnob(const std::string & typeName,
+createDetachedKnob(const std::string& typeName,
                    int dimension)
 {
     KnobIPtr ret;
 
-    if ( typeName == KnobInt::typeNameStatic() ) {
+    if (typeName == KnobInt::typeNameStatic()) {
         ret = std::make_shared<KnobInt>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobBool::typeNameStatic() ) {
+    } else if (typeName == KnobBool::typeNameStatic()) {
         ret = std::make_shared<KnobBool>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobDouble::typeNameStatic() ) {
+    } else if (typeName == KnobDouble::typeNameStatic()) {
         ret = std::make_shared<KnobDouble>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobChoice::typeNameStatic() ) {
+    } else if (typeName == KnobChoice::typeNameStatic()) {
         ret = std::make_shared<KnobChoice>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobString::typeNameStatic() ) {
+    } else if (typeName == KnobString::typeNameStatic()) {
         ret = std::make_shared<KnobString>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobParametric::typeNameStatic() ) {
+    } else if (typeName == KnobParametric::typeNameStatic()) {
         ret = std::make_shared<KnobParametric>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobColor::typeNameStatic() ) {
+    } else if (typeName == KnobColor::typeNameStatic()) {
         ret = std::make_shared<KnobColor>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobPath::typeNameStatic() ) {
+    } else if (typeName == KnobPath::typeNameStatic()) {
         ret = std::make_shared<KnobPath>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobLayers::typeNameStatic() ) {
+    } else if (typeName == KnobLayers::typeNameStatic()) {
         ret = std::make_shared<KnobLayers>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobChannelSet::typeNameStatic() ) {
+    } else if (typeName == KnobChannelSet::typeNameStatic()) {
         ret = std::make_shared<KnobChannelSet>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobLayerSelect::typeNameStatic() ) {
+    } else if (typeName == KnobLayerSelect::typeNameStatic()) {
         ret = std::make_shared<KnobLayerSelect>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobChannelSelect::typeNameStatic() ) {
+    } else if (typeName == KnobChannelSelect::typeNameStatic()) {
         ret = std::make_shared<KnobChannelSelect>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobShuffleMap::typeNameStatic() ) {
+    } else if (typeName == KnobShuffleMap::typeNameStatic()) {
         ret = std::make_shared<KnobShuffleMap>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobFile::typeNameStatic() ) {
+    } else if (typeName == KnobFile::typeNameStatic()) {
         ret = std::make_shared<KnobFile>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobOutputFile::typeNameStatic() ) {
+    } else if (typeName == KnobOutputFile::typeNameStatic()) {
         ret = std::make_shared<KnobOutputFile>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobButton::typeNameStatic() ) {
+    } else if (typeName == KnobButton::typeNameStatic()) {
         ret = std::make_shared<KnobButton>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobSeparator::typeNameStatic() ) {
+    } else if (typeName == KnobSeparator::typeNameStatic()) {
         ret = std::make_shared<KnobSeparator>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobGroup::typeNameStatic() ) {
+    } else if (typeName == KnobGroup::typeNameStatic()) {
         ret = std::make_shared<KnobGroup>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobPage::typeNameStatic() ) {
+    } else if (typeName == KnobPage::typeNameStatic()) {
         ret = std::make_shared<KnobPage>((KnobHolder*)NULL, std::string(), dimension, false);
     }
 
@@ -125,19 +125,19 @@ createDetachedKnob(const std::string & typeName,
 
 template <typename T>
 const T*
-getSerializedValue(const std::optional<Serialization::KnobValueSerialization> & value)
+getSerializedValue(const std::optional<Serialization::KnobValueSerialization>& value)
 {
     if (!value) {
         return NULL;
     }
 
-    return std::get_if<T>( &(*value) );
+    return std::get_if<T>(&(*value));
 }
 
 template <typename T>
 void
 loadDetachedKnobValue(Knob<T>* knob,
-                      const Serialization::KnobDimensionSerialization & dimensionData,
+                      const Serialization::KnobDimensionSerialization& dimensionData,
                       int dimension,
                       ViewSpec view)
 {
@@ -152,34 +152,34 @@ loadDetachedKnobValue(Knob<T>* knob,
 }
 
 void
-loadDetachedKnob(const Serialization::KnobSerialization & serialization,
-                 const KnobIPtr & knob)
+loadDetachedKnob(const Serialization::KnobSerialization& serialization,
+                 const KnobIPtr& knob)
 {
     knob->setName(serialization.name);
     knob->setSecret(serialization.secret);
 
-    KnobIntBase* isInt = dynamic_cast<KnobIntBase*>( knob.get() );
-    KnobBoolBase* isBool = dynamic_cast<KnobBoolBase*>( knob.get() );
-    KnobDoubleBase* isDouble = dynamic_cast<KnobDoubleBase*>( knob.get() );
-    KnobChoice* isChoice = dynamic_cast<KnobChoice*>( knob.get() );
-    KnobStringBase* isString = dynamic_cast<KnobStringBase*>( knob.get() );
-    KnobFile* isFile = dynamic_cast<KnobFile*>( knob.get() );
-    KnobParametric* isParametric = dynamic_cast<KnobParametric*>( knob.get() );
-    KnobPage* isPage = dynamic_cast<KnobPage*>( knob.get() );
-    KnobGroup* isGroup = dynamic_cast<KnobGroup*>( knob.get() );
-    KnobSeparator* isSeparator = dynamic_cast<KnobSeparator*>( knob.get() );
-    KnobButton* isButton = dynamic_cast<KnobButton*>( knob.get() );
-    AnimatingKnobStringHelper* isStringAnimated = dynamic_cast<AnimatingKnobStringHelper*>( knob.get() );
-    KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>( knob.get() );
+    KnobIntBase* isInt = dynamic_cast<KnobIntBase*>(knob.get());
+    KnobBoolBase* isBool = dynamic_cast<KnobBoolBase*>(knob.get());
+    KnobDoubleBase* isDouble = dynamic_cast<KnobDoubleBase*>(knob.get());
+    KnobChoice* isChoice = dynamic_cast<KnobChoice*>(knob.get());
+    KnobStringBase* isString = dynamic_cast<KnobStringBase*>(knob.get());
+    KnobFile* isFile = dynamic_cast<KnobFile*>(knob.get());
+    KnobParametric* isParametric = dynamic_cast<KnobParametric*>(knob.get());
+    KnobPage* isPage = dynamic_cast<KnobPage*>(knob.get());
+    KnobGroup* isGroup = dynamic_cast<KnobGroup*>(knob.get());
+    KnobSeparator* isSeparator = dynamic_cast<KnobSeparator*>(knob.get());
+    KnobButton* isButton = dynamic_cast<KnobButton*>(knob.get());
+    AnimatingKnobStringHelper* isStringAnimated = dynamic_cast<AnimatingKnobStringHelper*>(knob.get());
+    KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(knob.get());
 
     // Input image files no longer hold keyframes: the Reader's file parameter (whose script name
     // is kOfxImageEffectFileParamName, see kOfxImageEffectContextReader) turns the frame of its
     // last saved keyframe back into a sequence pattern instead.
     const bool isReaderFileParam = isFile && (isFile->getName() == kOfxImageEffectFileParamName);
 
-    const int dimensionCount = std::min( knob->getDimension(), (int)serialization.dimensions.size() );
+    const int dimensionCount = std::min(knob->getDimension(), (int)serialization.dimensions.size());
     for (int i = 0; i < dimensionCount; ++i) {
-        const Serialization::KnobDimensionSerialization & dimensionData = serialization.dimensions[i];
+        const Serialization::KnobDimensionSerialization& dimensionData = serialization.dimensions[i];
 
         knob->setEnabled(i, dimensionData.enabled);
 
@@ -236,7 +236,7 @@ loadDetachedKnob(const Serialization::KnobSerialization & serialization,
             isParametric->loadParametricCurves(curves);
         }
     } else if (isStringAnimated) {
-        if ( serialization.stringAnimation && !isReaderFileParam ) {
+        if (serialization.stringAnimation && !isReaderFileParam) {
             isStringAnimated->loadAnimation(*serialization.stringAnimation);
         }
     }
@@ -249,17 +249,17 @@ loadDetachedKnob(const Serialization::KnobSerialization & serialization,
 
 void
 restoreChoiceFromDetachedKnob(KnobChoice* knob,
-                              const KnobIPtr & serializedKnob,
-                              const Serialization::KnobSerialization & serialization,
-                              const KnobI::ChoiceOptionIDFilter & choiceOptionIDFilter)
+                              const KnobIPtr& serializedKnob,
+                              const Serialization::KnobSerialization& serialization,
+                              const KnobI::ChoiceOptionIDFilter& choiceOptionIDFilter)
 {
-    KnobChoice* choiceSerialized = dynamic_cast<KnobChoice*>( serializedKnob.get() );
+    KnobChoice* choiceSerialized = dynamic_cast<KnobChoice*>(serializedKnob.get());
     if (!choiceSerialized || !serialization.choiceOptionID) {
         return;
     }
     std::string optionID = *serialization.choiceOptionID;
     int id = knob->choiceRestorationId(choiceSerialized, optionID);
-    if ( (id < 0) && choiceOptionIDFilter ) {
+    if ((id < 0) && choiceOptionIDFilter) {
         choiceOptionIDFilter(&optionID);
         id = knob->choiceRestorationId(choiceSerialized, optionID);
     }
@@ -267,11 +267,11 @@ restoreChoiceFromDetachedKnob(KnobChoice* knob,
 }
 
 void
-fillMasterSerialization(const std::pair<int, KnobIPtr> & master,
+fillMasterSerialization(const std::pair<int, KnobIPtr>& master,
                         Serialization::KnobMasterSerialization* masterData)
 {
     masterData->masterDimension = master.first;
-    NamedKnobHolder* holder = dynamic_cast<NamedKnobHolder*>( master.second->getHolder() );
+    NamedKnobHolder* holder = dynamic_cast<NamedKnobHolder*>(master.second->getHolder());
     assert(holder);
 
     TrackMarker* isMarker = dynamic_cast<TrackMarker*>(holder);
@@ -289,8 +289,8 @@ fillMasterSerialization(const std::pair<int, KnobIPtr> & master,
 template <class K>
 std::shared_ptr<K>
 createOrReuseUserKnob(KnobHolder* holder,
-                      const Serialization::KnobSerialization & serialization,
-                      const KnobIPtr & existingKnob)
+                      const Serialization::KnobSerialization& serialization,
+                      const KnobIPtr& existingKnob)
 {
     if (existingKnob) {
         return std::dynamic_pointer_cast<K>(existingKnob);
@@ -302,7 +302,7 @@ createOrReuseUserKnob(KnobHolder* holder,
 template <typename T, class K>
 void
 applyUserKnobRange(K* knob,
-                   const Serialization::KnobSerialization & serialization)
+                   const Serialization::KnobSerialization& serialization)
 {
     const Serialization::KnobValueRangeSerialization* range = std::get_if<Serialization::KnobValueRangeSerialization>(&serialization.extraData);
     if (!range) {
@@ -310,10 +310,10 @@ applyUserKnobRange(K* knob,
     }
     std::vector<T> minimums, maximums, displayMinimums, displayMaximums;
     for (int i = 0; i < knob->getDimension(); ++i) {
-        minimums.push_back( static_cast<T>(range->minimum) );
-        maximums.push_back( static_cast<T>(range->maximum) );
-        displayMinimums.push_back( static_cast<T>(range->displayMinimum) );
-        displayMaximums.push_back( static_cast<T>(range->displayMaximum) );
+        minimums.push_back(static_cast<T>(range->minimum));
+        maximums.push_back(static_cast<T>(range->maximum));
+        displayMinimums.push_back(static_cast<T>(range->displayMinimum));
+        displayMaximums.push_back(static_cast<T>(range->displayMaximum));
     }
     knob->setMinimumsAndMaximums(minimums, maximums);
     knob->setDisplayMinimumsAndMaximums(displayMinimums, displayMaximums);
@@ -346,44 +346,44 @@ KnobHelper::toSerialization(Serialization::KnobSerialization* serialization)
     serialization->typeName = typeName();
     serialization->dimension = dimension;
     serialization->secret = getIsSecret();
-    serialization->masterIsAlias = bool( getAliasMaster() );
+    serialization->masterIsAlias = bool(getAliasMaster());
     serialization->dimensions.resize(dimension);
 
     bool hasExpressionOrLink = false;
     for (int i = 0; i < dimension; ++i) {
-        Serialization::KnobDimensionSerialization & dimensionData = serialization->dimensions[i];
+        Serialization::KnobDimensionSerialization& dimensionData = serialization->dimensions[i];
 
         dimensionData.enabled = isEnabled(i);
 
-        if ( isAnimated(i) ) {
+        if (isAnimated(i)) {
             CurvePtr curve = getCurve(ViewIdx(0), i, true);
             if (curve) {
                 dimensionData.curve.emplace();
-                curve->toSerialization( &(*dimensionData.curve) );
+                curve->toSerialization(&(*dimensionData.curve));
             }
         }
 
         if (isInt && !isChoice) {
-            dimensionData.value = Serialization::KnobValueSerialization( std::in_place_type<int>, isInt->getValue(i) );
-            dimensionData.defaultValue = Serialization::KnobValueSerialization( std::in_place_type<int>, isInt->getDefaultValue(i) );
+            dimensionData.value = Serialization::KnobValueSerialization(std::in_place_type<int>, isInt->getValue(i));
+            dimensionData.defaultValue = Serialization::KnobValueSerialization(std::in_place_type<int>, isInt->getDefaultValue(i));
         } else if (isBool && !isPage && !isGroup && !isSeparator && !isButton) {
-            dimensionData.value = Serialization::KnobValueSerialization( std::in_place_type<bool>, isBool->getValue(i) );
-            dimensionData.defaultValue = Serialization::KnobValueSerialization( std::in_place_type<bool>, isBool->getDefaultValue(i) );
+            dimensionData.value = Serialization::KnobValueSerialization(std::in_place_type<bool>, isBool->getValue(i));
+            dimensionData.defaultValue = Serialization::KnobValueSerialization(std::in_place_type<bool>, isBool->getDefaultValue(i));
         } else if (isDoubleBase && !isParametric) {
-            dimensionData.value = Serialization::KnobValueSerialization( std::in_place_type<double>, isDoubleBase->getValue(i) );
-            dimensionData.defaultValue = Serialization::KnobValueSerialization( std::in_place_type<double>, isDoubleBase->getDefaultValue(i) );
+            dimensionData.value = Serialization::KnobValueSerialization(std::in_place_type<double>, isDoubleBase->getValue(i));
+            dimensionData.defaultValue = Serialization::KnobValueSerialization(std::in_place_type<double>, isDoubleBase->getDefaultValue(i));
         } else if (isChoice) {
-            dimensionData.value = Serialization::KnobValueSerialization( std::in_place_type<int>, isChoice->getValue(i) );
-            dimensionData.defaultValue = Serialization::KnobValueSerialization( std::in_place_type<int>, isChoice->getDefaultValue(i) );
+            dimensionData.value = Serialization::KnobValueSerialization(std::in_place_type<int>, isChoice->getValue(i));
+            dimensionData.defaultValue = Serialization::KnobValueSerialization(std::in_place_type<int>, isChoice->getDefaultValue(i));
         } else if (isStringBase) {
-            dimensionData.value = Serialization::KnobValueSerialization( std::in_place_type<std::string>, isStringBase->getValue(i) );
-            dimensionData.defaultValue = Serialization::KnobValueSerialization( std::in_place_type<std::string>, isStringBase->getDefaultValue(i) );
+            dimensionData.value = Serialization::KnobValueSerialization(std::in_place_type<std::string>, isStringBase->getValue(i));
+            dimensionData.defaultValue = Serialization::KnobValueSerialization(std::in_place_type<std::string>, isStringBase->getDefaultValue(i));
         }
 
         std::pair<int, KnobIPtr> master = getMaster(i);
-        if ( isSlave(i) ) {
+        if (isSlave(i)) {
             Serialization::KnobMasterSerialization masterData;
-            if ( master.second && !isMastersPersistenceIgnored() ) {
+            if (master.second && !isMastersPersistenceIgnored()) {
                 fillMasterSerialization(master, &masterData);
             }
             dimensionData.master = masterData;
@@ -392,7 +392,7 @@ KnobHelper::toSerialization(Serialization::KnobSerialization* serialization)
         dimensionData.expression = getExpression(i);
         dimensionData.expressionHasReturnVariable = isExpressionUsingRetVariable(i);
 
-        if ( !dimensionData.expression.empty() || master.second ) {
+        if (!dimensionData.expression.empty() || master.second) {
             hasExpressionOrLink = true;
         }
     }
@@ -408,7 +408,7 @@ KnobHelper::toSerialization(Serialization::KnobSerialization* serialization)
         }
     } else if (isStringAnimated) {
         serialization->stringAnimation.emplace();
-        isStringAnimated->getAnimation().save( &(*serialization->stringAnimation) );
+        isStringAnimated->getAnimation().save(&(*serialization->stringAnimation));
     }
 
     serialization->isUserKnob = isUserKnob();
@@ -422,15 +422,15 @@ KnobHelper::toSerialization(Serialization::KnobSerialization* serialization)
     if (isChoice) {
         Serialization::KnobChoiceExtraSerialization choiceData;
         std::vector<ChoiceOption> options = isChoice->getEntries_mt_safe();
-        choiceData.entries.resize( options.size() );
-        choiceData.helpStrings.resize( options.size() );
+        choiceData.entries.resize(options.size());
+        choiceData.helpStrings.resize(options.size());
         for (std::size_t i = 0; i < options.size(); ++i) {
             choiceData.entries[i] = options[i].id;
             choiceData.helpStrings[i] = options[i].tooltip;
         }
         int index = isChoice->getValue();
         std::string optionID;
-        if ( (index >= 0) && ( index < (int)choiceData.entries.size() ) ) {
+        if ((index >= 0) && (index < (int)choiceData.entries.size())) {
             optionID = choiceData.entries[index];
         }
         serialization->choiceOptionID = optionID;
@@ -486,21 +486,21 @@ KnobHelper::toSerialization(Serialization::KnobSerialization* serialization)
             serialization->extraData = layerSelectData;
         }
 
-        if ( isDouble && (dimension == 2) ) {
+        if (isDouble && (dimension == 2)) {
             serialization->useHostOverlayHandle = isDouble->getHasHostOverlayHandle();
         }
     }
 
     // KnobChannelSet::hasModificationsForSerialization() always returns true: its default
     // differs per node, so a value left out would be read back as whatever the default is then.
-    return hasExpressionOrLink || ( getIsPersistent() && hasModificationsForSerialization() );
+    return hasExpressionOrLink || (getIsPersistent() && hasModificationsForSerialization());
 } // KnobHelper::toSerialization
 
 bool
 KnobHelper::fromSerialization(const Serialization::KnobSerialization& serialization,
                               const ChoiceOptionIDFilter& choiceOptionIDFilter)
 {
-    if ( typeName() != serialization.typeName ) {
+    if (typeName() != serialization.typeName) {
         return false;
     }
     KnobIPtr serializedKnob = createDetachedKnobFromSerialization(serialization);
@@ -508,7 +508,7 @@ KnobHelper::fromSerialization(const Serialization::KnobSerialization& serializat
         return false;
     }
 
-    cloneDefaultValues( serializedKnob.get() );
+    cloneDefaultValues(serializedKnob.get());
 
     KnobChoice* isChoice = dynamic_cast<KnobChoice*>(this);
     if (isChoice) {
@@ -521,7 +521,7 @@ KnobHelper::fromSerialization(const Serialization::KnobSerialization& serializat
     // its last dimension replicated rather than only its first ones loaded, so the result
     // looks the same as before.
     const int serializedDimension = serializedKnob->getDimension();
-    if ( (serializedDimension > 0) && ( serializedDimension < getDimension() ) ) {
+    if ((serializedDimension > 0) && (serializedDimension < getDimension())) {
         for (int i = 0; i < serializedDimension; ++i) {
             cloneAndUpdateGui(serializedKnob.get(), i);
         }
@@ -529,12 +529,12 @@ KnobHelper::fromSerialization(const Serialization::KnobSerialization& serializat
             cloneAndUpdateGui(serializedKnob.get(), i, serializedDimension - 1);
         }
     } else {
-        cloneAndUpdateGui( serializedKnob.get() );
+        cloneAndUpdateGui(serializedKnob.get());
     }
-    setSecret( serializedKnob->getIsSecret() );
-    if ( getDimension() == serializedDimension ) {
+    setSecret(serializedKnob->getIsSecret());
+    if (getDimension() == serializedDimension) {
         for (int i = 0; i < getDimension(); ++i) {
-            setEnabled( i, serializedKnob->isEnabled(i) );
+            setEnabled(i, serializedKnob->isEnabled(i));
         }
     }
 
@@ -545,10 +545,10 @@ void
 KnobI::storeLinksFromSerialization(const Serialization::KnobSerialization& serialization)
 {
     if (serialization.masterIsAlias) {
-        if ( serialization.dimensions.empty() ) {
+        if (serialization.dimensions.empty()) {
             return;
         }
-        const std::optional<Serialization::KnobMasterSerialization> & savedMaster = serialization.dimensions.front().master;
+        const std::optional<Serialization::KnobMasterSerialization>& savedMaster = serialization.dimensions.front().master;
         const Serialization::KnobMasterSerialization aliasMaster = savedMaster ? *savedMaster : Serialization::KnobMasterSerialization();
         storeLink(-1, aliasMaster.masterNodeNameFull, aliasMaster.masterNodeName, aliasMaster.masterTrackName, aliasMaster.masterKnobName, -1);
 
@@ -556,9 +556,9 @@ KnobI::storeLinksFromSerialization(const Serialization::KnobSerialization& seria
     }
 
     for (std::size_t i = 0; i < serialization.dimensions.size(); ++i) {
-        const std::optional<Serialization::KnobMasterSerialization> & master = serialization.dimensions[i].master;
-        if ( master && (master->masterDimension != -1) ) {
-            storeLink( (int)i, master->masterNodeNameFull, master->masterNodeName, master->masterTrackName, master->masterKnobName, master->masterDimension );
+        const std::optional<Serialization::KnobMasterSerialization>& master = serialization.dimensions[i].master;
+        if (master && (master->masterDimension != -1)) {
+            storeLink((int)i, master->masterNodeNameFull, master->masterNodeName, master->masterTrackName, master->masterKnobName, master->masterDimension);
         }
     }
 }
@@ -567,24 +567,24 @@ void
 KnobI::restoreExpressionsFromSerialization(const Serialization::KnobSerialization& serialization,
                                            const std::map<std::string, std::string>& oldNewScriptNamesMapping)
 {
-    const int dimensionCount = std::min( getDimension(), (int)serialization.dimensions.size() );
+    const int dimensionCount = std::min(getDimension(), (int)serialization.dimensions.size());
 
     try {
         for (int i = 0; i < dimensionCount; ++i) {
-            const Serialization::KnobDimensionSerialization & dimensionData = serialization.dimensions[i];
-            if ( dimensionData.expression.empty() ) {
+            const Serialization::KnobDimensionSerialization& dimensionData = serialization.dimensions[i];
+            if (dimensionData.expression.empty()) {
                 continue;
             }
-            QString expression = QString::fromUtf8( dimensionData.expression.c_str() );
+            QString expression = QString::fromUtf8(dimensionData.expression.c_str());
             for (std::map<std::string, std::string>::const_iterator it = oldNewScriptNamesMapping.begin();
                  it != oldNewScriptNamesMapping.end(); ++it) {
-                expression.replace( QString::fromUtf8( it->first.c_str() ), QString::fromUtf8( it->second.c_str() ) );
+                expression.replace(QString::fromUtf8(it->first.c_str()), QString::fromUtf8(it->second.c_str()));
             }
             restoreExpression(i, expression.toStdString(), dimensionData.expressionHasReturnVariable);
         }
     } catch (const std::exception& e) {
-        QString error = QString::fromUtf8("Failed to restore expression: %1").arg( QString::fromUtf8( e.what() ) );
-        appPTR->writeToErrorLog_mt_safe(QString::fromUtf8( getName().c_str() ), QDateTime::currentDateTime(), error);
+        QString error = QString::fromUtf8("Failed to restore expression: %1").arg(QString::fromUtf8(e.what()));
+        appPTR->writeToErrorLog_mt_safe(QString::fromUtf8(getName().c_str()), QDateTime::currentDateTime(), error);
     }
 }
 
@@ -609,52 +609,52 @@ createUserKnobFromSerialization(KnobHolder* holder,
         return KnobIPtr();
     }
 
-    const std::string & typeName = serialization.typeName;
+    const std::string& typeName = serialization.typeName;
     KnobIPtr knob;
-    if ( typeName == KnobInt::typeNameStatic() ) {
+    if (typeName == KnobInt::typeNameStatic()) {
         KnobIntPtr k = createOrReuseUserKnob<KnobInt>(holder, serialization, existingKnob);
         if (!k) {
             return KnobIPtr();
         }
         applyUserKnobRange<int>(k.get(), serialization);
         knob = k;
-    } else if ( typeName == KnobDouble::typeNameStatic() ) {
+    } else if (typeName == KnobDouble::typeNameStatic()) {
         KnobDoublePtr k = createOrReuseUserKnob<KnobDouble>(holder, serialization, existingKnob);
         if (!k) {
             return KnobIPtr();
         }
         applyUserKnobRange<double>(k.get(), serialization);
-        if ( serialization.useHostOverlayHandle && *serialization.useHostOverlayHandle ) {
+        if (serialization.useHostOverlayHandle && *serialization.useHostOverlayHandle) {
             k->setHasHostOverlayHandle(true);
         }
         knob = k;
-    } else if ( typeName == KnobBool::typeNameStatic() ) {
+    } else if (typeName == KnobBool::typeNameStatic()) {
         knob = createOrReuseUserKnob<KnobBool>(holder, serialization, existingKnob);
-    } else if ( typeName == KnobChoice::typeNameStatic() ) {
+    } else if (typeName == KnobChoice::typeNameStatic()) {
         KnobChoicePtr k = createOrReuseUserKnob<KnobChoice>(holder, serialization, existingKnob);
         if (!k) {
             return KnobIPtr();
         }
         const Serialization::KnobChoiceExtraSerialization* choiceData = std::get_if<Serialization::KnobChoiceExtraSerialization>(&serialization.extraData);
         if (choiceData) {
-            std::vector<ChoiceOption> options( choiceData->entries.size() );
+            std::vector<ChoiceOption> options(choiceData->entries.size());
             for (std::size_t i = 0; i < options.size(); ++i) {
                 options[i].id = choiceData->entries[i];
-                if ( i < choiceData->helpStrings.size() ) {
+                if (i < choiceData->helpStrings.size()) {
                     options[i].tooltip = choiceData->helpStrings[i];
                 }
             }
             k->populateChoices(options);
         }
         knob = k;
-    } else if ( typeName == KnobColor::typeNameStatic() ) {
+    } else if (typeName == KnobColor::typeNameStatic()) {
         KnobColorPtr k = createOrReuseUserKnob<KnobColor>(holder, serialization, existingKnob);
         if (!k) {
             return KnobIPtr();
         }
         applyUserKnobRange<double>(k.get(), serialization);
         knob = k;
-    } else if ( typeName == KnobString::typeNameStatic() ) {
+    } else if (typeName == KnobString::typeNameStatic()) {
         KnobStringPtr k = createOrReuseUserKnob<KnobString>(holder, serialization, existingKnob);
         if (!k) {
             return KnobIPtr();
@@ -671,7 +671,7 @@ createUserKnobFromSerialization(KnobHolder* holder,
             }
         }
         knob = k;
-    } else if ( typeName == KnobFile::typeNameStatic() ) {
+    } else if (typeName == KnobFile::typeNameStatic()) {
         KnobFilePtr k = createOrReuseUserKnob<KnobFile>(holder, serialization, existingKnob);
         if (!k) {
             return KnobIPtr();
@@ -681,7 +681,7 @@ createUserKnobFromSerialization(KnobHolder* holder,
             k->setAsInputImage();
         }
         knob = k;
-    } else if ( typeName == KnobOutputFile::typeNameStatic() ) {
+    } else if (typeName == KnobOutputFile::typeNameStatic()) {
         KnobOutputFilePtr k = createOrReuseUserKnob<KnobOutputFile>(holder, serialization, existingKnob);
         if (!k) {
             return KnobIPtr();
@@ -691,7 +691,7 @@ createUserKnobFromSerialization(KnobHolder* holder,
             k->setAsOutputImageFile();
         }
         knob = k;
-    } else if ( typeName == KnobPath::typeNameStatic() ) {
+    } else if (typeName == KnobPath::typeNameStatic()) {
         KnobPathPtr k = createOrReuseUserKnob<KnobPath>(holder, serialization, existingKnob);
         if (!k) {
             return KnobIPtr();
@@ -701,29 +701,29 @@ createUserKnobFromSerialization(KnobHolder* holder,
             k->setMultiPath(true);
         }
         knob = k;
-    } else if ( typeName == KnobButton::typeNameStatic() ) {
+    } else if (typeName == KnobButton::typeNameStatic()) {
         knob = createOrReuseUserKnob<KnobButton>(holder, serialization, existingKnob);
-    } else if ( typeName == KnobSeparator::typeNameStatic() ) {
+    } else if (typeName == KnobSeparator::typeNameStatic()) {
         knob = createOrReuseUserKnob<KnobSeparator>(holder, serialization, existingKnob);
-    } else if ( typeName == KnobParametric::typeNameStatic() ) {
+    } else if (typeName == KnobParametric::typeNameStatic()) {
         knob = createOrReuseUserKnob<KnobParametric>(holder, serialization, existingKnob);
-    } else if ( typeName == KnobChannelSet::typeNameStatic() ) {
+    } else if (typeName == KnobChannelSet::typeNameStatic()) {
         knob = createOrReuseUserKnob<KnobChannelSet>(holder, serialization, existingKnob);
-    } else if ( typeName == KnobLayerSelect::typeNameStatic() ) {
+    } else if (typeName == KnobLayerSelect::typeNameStatic()) {
         KnobLayerSelectPtr k = createOrReuseUserKnob<KnobLayerSelect>(holder, serialization, existingKnob);
         if (!k) {
             return KnobIPtr();
         }
         if (!existingKnob) {
-            KnobLayerSelect* layerSelectSerialized = dynamic_cast<KnobLayerSelect*>( serializedKnob.get() );
+            KnobLayerSelect* layerSelectSerialized = dynamic_cast<KnobLayerSelect*>(serializedKnob.get());
             if (layerSelectSerialized) {
-                k->setWithChannelButtons( layerSelectSerialized->getWithChannelButtons() );
+                k->setWithChannelButtons(layerSelectSerialized->getWithChannelButtons());
             }
         }
         knob = k;
-    } else if ( typeName == KnobChannelSelect::typeNameStatic() ) {
+    } else if (typeName == KnobChannelSelect::typeNameStatic()) {
         knob = createOrReuseUserKnob<KnobChannelSelect>(holder, serialization, existingKnob);
-    } else if ( typeName == KnobShuffleMap::typeNameStatic() ) {
+    } else if (typeName == KnobShuffleMap::typeNameStatic()) {
         knob = createOrReuseUserKnob<KnobShuffleMap>(holder, serialization, existingKnob);
     }
 
@@ -731,12 +731,12 @@ createUserKnobFromSerialization(KnobHolder* holder,
         return KnobIPtr();
     }
 
-    knob->cloneDefaultValues( serializedKnob.get() );
-    KnobChoice* isChoice = dynamic_cast<KnobChoice*>( knob.get() );
+    knob->cloneDefaultValues(serializedKnob.get());
+    KnobChoice* isChoice = dynamic_cast<KnobChoice*>(knob.get());
     if (isChoice) {
-        restoreChoiceFromDetachedKnob( isChoice, serializedKnob, serialization, KnobI::ChoiceOptionIDFilter() );
+        restoreChoiceFromDetachedKnob(isChoice, serializedKnob, serialization, KnobI::ChoiceOptionIDFilter());
     } else {
-        knob->clone( serializedKnob.get() );
+        knob->clone(serializedKnob.get());
     }
     knob->setAsUserKnob(true);
     knob->setIsPersistent(serialization.isPersistent);

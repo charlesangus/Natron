@@ -36,8 +36,7 @@ namespace Serialization {
  * TOC (FrameKey.h, ImageKey.h, ImageParams.h) archives them directly; this type
  * is the plain-data shape other, non-cache call sites can use instead.
  **/
-struct RectISerialization
-{
+struct RectISerialization {
     int x1, y1, x2, y2;
 
     RectISerialization()
@@ -52,8 +51,7 @@ struct RectISerialization
 /**
  * @brief Plain-data equivalent of RectD, see RectISerialization.
  **/
-struct RectDSerialization
-{
+struct RectDSerialization {
     double x1, y1, x2, y2;
 
     RectDSerialization()
@@ -70,8 +68,7 @@ struct RectDSerialization
  * an optional display name, see RectISerialization.
  **/
 struct FormatSerialization
-    : public RectISerialization
-{
+    : public RectISerialization {
     double pixelAspectRatio;
     std::string name;
 
@@ -91,8 +88,7 @@ struct FormatSerialization
  * this type has no consumer yet either; it exists so a future one does not have
  * to depend on Engine/Variant.h, which pulls in QVariant.
  **/
-struct VariantSerialization
-{
+struct VariantSerialization {
     std::string typeTag;
     bool boolValue;
     int intValue;

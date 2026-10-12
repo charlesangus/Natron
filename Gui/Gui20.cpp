@@ -1405,7 +1405,7 @@ Gui::saveWarning()
 
 void
 Gui::loadProjectGui(bool isAutosave,
-                    const Serialization::ProjectGuiSerialization & serialization) const
+                    const Serialization::ProjectGuiSerialization& serialization) const
 {
     assert(_imp->_projectGui);
     _imp->_projectGui->fromSerialization(serialization, isAutosave);

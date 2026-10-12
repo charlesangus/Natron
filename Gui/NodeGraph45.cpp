@@ -651,11 +651,11 @@ NodeGraph::copyNodesAndCreateInGroup(const NodesGuiList& nodes,
         std::list<NodePtr>::const_iterator itSource = clipboard.sourceNodes.begin();
         for (std::list<Serialization::NodeGuiSerializationPtr>::const_iterator it = clipboard.nodesUI.begin();
              it != clipboard.nodesUI.end(); ++it, ++itOther, ++itSource) {
-            NodeGuiPtr node = _imp->pasteNode( *itOther, *itSource, *it, QPointF(0, 0), group, std::string(), false, &oldNewScriptNamesMapping);
+            NodeGuiPtr node = _imp->pasteNode(*itOther, *itSource, *it, QPointF(0, 0), group, std::string(), false, &oldNewScriptNamesMapping);
             assert(node);
             if (node) {
                 oldNewScriptNamesMapping[(*itOther)->scriptName] = node->getNode()->getScriptName();
-                createdNodes.push_back( std::make_pair( (*itOther)->scriptName, node ) );
+                createdNodes.push_back(std::make_pair((*itOther)->scriptName, node));
             }
         }
         assert( clipboard.nodes.size() == createdNodes.size() );

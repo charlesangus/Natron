@@ -87,7 +87,7 @@ Node::initNodeScriptName(const Serialization::NodeSerialization* serialization, 
         setScriptName_no_error_check(name);
 
     } else if (serialization) {
-        if ( group && !group->isCacheIDAlreadyTaken( serialization->cacheID ) ) {
+        if (group && !group->isCacheIDAlreadyTaken(serialization->cacheID)) {
             QMutexLocker k(&_imp->nameMutex);
             _imp->cacheID = serialization->cacheID;
         }
@@ -112,7 +112,7 @@ Node::initNodeScriptName(const Serialization::NodeSerialization* serialization, 
 
         //This version of setScriptName will not error if the name is invalid or already taken
         setScriptName_no_error_check(name);
-        setLabel( serialization->label );
+        setLabel(serialization->label);
 
     } else {
         std::string name;

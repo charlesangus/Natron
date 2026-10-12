@@ -53,9 +53,8 @@
 #include "Gui/TrackerPanel.h"
 #include "Gui/RotoPanel.h"
 
-#include "Serialization/NodeSerialization.h"
 #include "Serialization/BoostXml/NodeXml.h"
-
+#include "Serialization/NodeSerialization.h"
 
 using std::make_pair;
 NATRON_NAMESPACE_ENTER
@@ -249,11 +248,11 @@ NodeSettingsPanel::onImportPresetsActionTriggered()
     }
 
     NodeGuiPtr node = getNode();
-    if ( nodeSerialization.front()->pluginID != node->getNode()->getPluginID() ) {
+    if (nodeSerialization.front()->pluginID != node->getNode()->getPluginID()) {
         QString err = tr("You cannot load %1 which are presets for the plug-in %2 on the plug-in %3.")
-                      .arg( QString::fromUtf8( filename.c_str() ) )
-                      .arg( QString::fromUtf8( nodeSerialization.front()->pluginID.c_str() ) )
-                      .arg( QString::fromUtf8( node->getNode()->getPluginID().c_str() ) );
+                          .arg(QString::fromUtf8(filename.c_str()))
+                          .arg(QString::fromUtf8(nodeSerialization.front()->pluginID.c_str()))
+                          .arg(QString::fromUtf8(node->getNode()->getPluginID().c_str()));
         Dialogs::errorDialog( tr("Presets").toStdString(), err.toStdString() );
 
         return;

@@ -78,7 +78,6 @@ Node::load(const CreateNodeArgs& args)
         func = binary->findFunction<EffectBuilder>("BuildEffect");
     }
 
-
     Serialization::NodeSerializationPtr serialization = args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
 
     bool isSilentCreation = args.getProperty<bool>(kCreateNodeArgsPropSilent);
@@ -295,7 +294,6 @@ Node::setValuesFromSerialization(const CreateNodeArgs& args)
 
 }
 
-
 void
 Node::restoreUserKnobs(const Serialization::NodeSerialization& serialization)
 {
@@ -312,7 +310,7 @@ Node::restoreUserKnobs(const Serialization::NodeSerialization& serialization)
             page = std::dynamic_pointer_cast<KnobPage>(found);
         }
         if (page) {
-            _imp->restoreUserKnobsRecursive( it->children, KnobGroupPtr(), page );
+            _imp->restoreUserKnobsRecursive(it->children, KnobGroupPtr(), page);
         }
     }
     setPagesOrder(serialization.pagesOrder);
@@ -351,7 +349,7 @@ Node::Implementation::restoreUserKnobsRecursive(const std::list<Serialization::G
             const Serialization::KnobSerialization& knobSerialization = it->knob;
             assert(knobSerialization.isUserKnob);
 
-            KnobIPtr found = _publicInterface->getKnobByName( NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(knobSerialization.name) );
+            KnobIPtr found = _publicInterface->getKnobByName(NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(knobSerialization.name));
             KnobIPtr knob = createUserKnobFromSerialization(effect.get(), knobSerialization, found);
             if (!knob) {
                 continue;
@@ -365,7 +363,6 @@ Node::Implementation::restoreUserKnobsRecursive(const std::list<Serialization::G
     }
 } // Node::Implementation::restoreUserKnobsRecursive
 
-
 void
 Node::Implementation::storeKnobLinksRecursive(const Serialization::GroupKnobSerialization& group,
                                               const std::map<std::string, std::string>& oldNewScriptNamesMapping)
@@ -375,14 +372,14 @@ Node::Implementation::storeKnobLinksRecursive(const Serialization::GroupKnobSeri
             storeKnobLinksRecursive(it->group, oldNewScriptNamesMapping);
         } else {
             const std::string knobName = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->knob.name);
-            KnobIPtr knob =  _publicInterface->getKnobByName(knobName);
+            KnobIPtr knob = _publicInterface->getKnobByName(knobName);
             if (!knob) {
                 LogEntry::LogEntryColor c;
                 if (_publicInterface->getColor(&c.r, &c.g, &c.b)) {
                     c.colorSet = true;
                 }
 
-                QString err = tr("Could not find a parameter named %1").arg( QString::fromUtf8( knobName.c_str() ) );
+                QString err = tr("Could not find a parameter named %1").arg(QString::fromUtf8(knobName.c_str()));
                 appPTR->writeToErrorLog_mt_safe(QString::fromUtf8( _publicInterface->getScriptName_mt_safe().c_str() ), QDateTime::currentDateTime(), err, false, c);
                 continue;
             }
@@ -392,15 +389,14 @@ Node::Implementation::storeKnobLinksRecursive(const Serialization::GroupKnobSeri
     }
 }
 
-
 void
-Node::storeKnobsLinks(const Serialization::NodeSerialization & serialization,
+Node::storeKnobsLinks(const Serialization::NodeSerialization& serialization,
                       const std::map<std::string, std::string>& oldNewScriptNamesMapping)
 {
     ////Only called by the main-thread
     assert( QThread::currentThread() == qApp->thread() );
 
-    const std::list<Serialization::KnobSerialization> & knobsValues = serialization.knobs;
+    const std::list<Serialization::KnobSerialization>& knobsValues = serialization.knobs;
     ///try to find a serialized value for this knob
     for (std::list<Serialization::KnobSerialization>::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
         const std::string knobName = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name);
@@ -411,7 +407,7 @@ Node::storeKnobsLinks(const Serialization::NodeSerialization & serialization,
                 c.colorSet = true;
             }
 
-            QString err = tr("Could not find a parameter named %1").arg( QString::fromUtf8( knobName.c_str() ) );
+            QString err = tr("Could not find a parameter named %1").arg(QString::fromUtf8(knobName.c_str()));
             appPTR->writeToErrorLog_mt_safe(QString::fromUtf8( getScriptName_mt_safe().c_str() ), QDateTime::currentDateTime(), err, false, c);
             continue;
         }

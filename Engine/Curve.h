@@ -34,8 +34,8 @@
 #include <list>
 #include <utility>
 
-#include "Global/GlobalDefines.h"
 #include "Engine/EngineFwd.h"
+#include "Global/GlobalDefines.h"
 #include "Serialization/CurveSerialization.h"
 
 #define NATRON_CURVE_X_SPACING_EPSILON 1e-6
@@ -359,7 +359,6 @@ public:
     void fromSerialization(const Serialization::CurveSerialization& serialization);
 
 private:
-
     ///////The following functions are not thread-safe
     KeyFrameSet::const_iterator find(double time) const WARN_UNUSED_RETURN;
     KeyFrameSet::const_iterator atIndex(int index) const WARN_UNUSED_RETURN;

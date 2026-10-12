@@ -35,8 +35,7 @@ namespace Serialization {
  * @brief The saved state of one track of a tracker: its names, its knobs, in the order the
  * track holds them, and the frames the user keyed by hand.
  **/
-struct TrackSerialization
-{
+struct TrackSerialization {
     // The format has always carried this flag, but a track's enabled state lives in its
     // "enabled" knob: the flag is saved as true and ignored on load.
     bool enabled;
@@ -62,8 +61,7 @@ struct TrackSerialization
 /**
  * @brief The saved state of the tracker context of a tracker node: its tracks, in order.
  **/
-struct TrackerContextSerialization
-{
+struct TrackerContextSerialization {
     std::list<TrackSerialization> tracks;
 };
 

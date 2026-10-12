@@ -28,11 +28,11 @@
 
 #include "Global/Macros.h"
 
-#include <vector>
-#include <string>
-#include <set>
-#include <map>
 #include <functional>
+#include <map>
+#include <set>
+#include <string>
+#include <vector>
 
 #include <QReadWriteLock>
 #include <QMutex>
@@ -47,7 +47,6 @@
 #include "Engine/EngineFwd.h"
 
 #include "Serialization/SerializationFwd.h"
-
 
 #define NATRON_USER_MANAGED_KNOBS_PAGE_LABEL "User"
 #define NATRON_USER_MANAGED_KNOBS_PAGE "userNatron"
@@ -385,7 +384,7 @@ public:
      * @brief Replaces, in place, a saved choice option ID that matches none of a choice knob's
      * entries with the ID an older version of Natron or of the plug-in used for the same option.
      **/
-    typedef std::function<void (std::string* optionID)> ChoiceOptionIDFilter;
+    typedef std::function<void(std::string* optionID)> ChoiceOptionIDFilter;
 
     // TODO: enable_shared_from_this
     // constructors should be privatized in any class that derives from std::enable_shared_from_this<>
@@ -496,7 +495,8 @@ public:
      * @returns false, doing nothing, when serialization holds another knob type.
      **/
     virtual bool fromSerialization(const Serialization::KnobSerialization& serialization,
-                                   const ChoiceOptionIDFilter& choiceOptionIDFilter = ChoiceOptionIDFilter()) = 0;
+                                   const ChoiceOptionIDFilter& choiceOptionIDFilter = ChoiceOptionIDFilter())
+        = 0;
     virtual void computeHasModifications() = 0;
     virtual void checkAnimationLevel(ViewSpec view, int dimension) = 0;
 

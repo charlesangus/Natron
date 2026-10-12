@@ -98,7 +98,7 @@ paneToSerialization(TabWidget* tab,
     QStringList tabScriptNames = tab->getTabScriptNames();
 
     for (int i = 0; i < tabScriptNames.size(); ++i) {
-        serialization->tabs.push_back( tabScriptNames[i].toStdString() );
+        serialization->tabs.push_back(tabScriptNames[i].toStdString());
     }
     serialization->currentIndex = tab->activeIndex();
     serialization->name = tab->objectName_mt_safe().toStdString();
@@ -111,7 +111,7 @@ splitterToSerialization(Splitter* splitter,
 {
     serialization->sizes = splitter->serializeNatron().toStdString();
     OrientationEnum orientation = eOrientationHorizontal;
-    switch ( splitter->orientation() ) {
+    switch (splitter->orientation()) {
     case Qt::Horizontal:
         orientation = eOrientationHorizontal;
         break;
@@ -134,10 +134,10 @@ splitterToSerialization(Splitter* splitter,
         TabWidget* isTabWidget = dynamic_cast<TabWidget*>(*it);
         if (isSplitter) {
             child.splitter = std::make_shared<Serialization::SplitterSerialization>();
-            splitterToSerialization( isSplitter, child.splitter.get() );
+            splitterToSerialization(isSplitter, child.splitter.get());
         } else if (isTabWidget) {
             child.pane = std::make_shared<Serialization::PaneLayoutSerialization>();
-            paneToSerialization( isTabWidget, child.pane.get() );
+            paneToSerialization(isTabWidget, child.pane.get());
         }
         serialization->children.push_back(child);
     }
@@ -164,10 +164,10 @@ applicationWindowToSerialization(bool isMainWindow,
 
             if (isSplitter) {
                 serialization->childSplitter = std::make_shared<Serialization::SplitterSerialization>();
-                splitterToSerialization( isSplitter, serialization->childSplitter.get() );
+                splitterToSerialization(isSplitter, serialization->childSplitter.get());
             } else if (isTabWidget) {
                 serialization->childPane = std::make_shared<Serialization::PaneLayoutSerialization>();
-                paneToSerialization( isTabWidget, serialization->childPane.get() );
+                paneToSerialization(isTabWidget, serialization->childPane.get());
             }
         }
     } else {
@@ -182,13 +182,13 @@ applicationWindowToSerialization(bool isMainWindow,
 
             if (isSplitter) {
                 serialization->childSplitter = std::make_shared<Serialization::SplitterSerialization>();
-                splitterToSerialization( isSplitter, serialization->childSplitter.get() );
+                splitterToSerialization(isSplitter, serialization->childSplitter.get());
             } else if (isTabWidget) {
                 serialization->childPane = std::make_shared<Serialization::PaneLayoutSerialization>();
-                paneToSerialization( isTabWidget, serialization->childPane.get() );
+                paneToSerialization(isTabWidget, serialization->childPane.get());
             } else if (isPanel) {
                 // Only the project settings panel belongs to a holder without a script name.
-                NamedKnobHolder* isNamedHolder = dynamic_cast<NamedKnobHolder*>( isPanel->getHolder() );
+                NamedKnobHolder* isNamedHolder = dynamic_cast<NamedKnobHolder*>(isPanel->getHolder());
                 if (isNamedHolder) {
                     serialization->childDockablePanel = isNamedHolder->getScriptName_mt_safe();
                 } else {
@@ -209,13 +209,13 @@ pythonPanelToSerialization(NATRON_PYTHON_NAMESPACE::PyPanel* panel,
     std::list<NATRON_PYTHON_NAMESPACE::Param*> parameters = panel->getParams();
     for (std::list<NATRON_PYTHON_NAMESPACE::Param*>::iterator it = parameters.begin(); it != parameters.end(); ++it) {
         KnobIPtr knob = (*it)->getInternalKnob();
-        KnobGroup* isGroup = dynamic_cast<KnobGroup*>( knob.get() );
-        KnobPage* isPage = dynamic_cast<KnobPage*>( knob.get() );
-        KnobButton* isButton = dynamic_cast<KnobButton*>( knob.get() );
+        KnobGroup* isGroup = dynamic_cast<KnobGroup*>(knob.get());
+        KnobPage* isPage = dynamic_cast<KnobPage*>(knob.get());
+        KnobButton* isButton = dynamic_cast<KnobButton*>(knob.get());
 
         if (!isGroup && !isPage && !isButton) {
-            serialization->knobs.push_back( Serialization::KnobSerialization() );
-            knob->toSerialization( &serialization->knobs.back() );
+            serialization->knobs.push_back(Serialization::KnobSerialization());
+            knob->toSerialization(&serialization->knobs.back());
         }
         delete *it;
     }
@@ -227,16 +227,16 @@ void
 restorePaneFromSerialization(TabWidget* pane,
                              const Serialization::PaneLayoutSerialization& serialization)
 {
-    QString availableName = pane->getGui()->getAvailablePaneName( QString::fromUtf8( serialization.name.c_str() ) );
+    QString availableName = pane->getGui()->getAvailablePaneName(QString::fromUtf8(serialization.name.c_str()));
 
     pane->setObjectName_mt_safe(availableName);
     pane->setAsAnchor(serialization.isAnchor);
-    const RegisteredTabs & tabs = pane->getGui()->getRegisteredTabs();
+    const RegisteredTabs& tabs = pane->getGui()->getRegisteredTabs();
     for (std::list<std::string>::const_iterator it = serialization.tabs.begin(); it != serialization.tabs.end(); ++it) {
         RegisteredTabs::const_iterator found = tabs.find(*it);
 
         // A tab the current session does not have is skipped.
-        if ( found != tabs.end() ) {
+        if (found != tabs.end()) {
             TabWidget::moveTab(found->second.first, found->second.second, pane);
         }
     }
@@ -285,7 +285,7 @@ restoreSplitterFromSerialization(Gui* gui,
         }
     }
 
-    splitter->restoreNatron( QString::fromUtf8( serialization.sizes.c_str() ) );
+    splitter->restoreNatron(QString::fromUtf8(serialization.sizes.c_str()));
 }
 
 void
@@ -296,7 +296,7 @@ restoreNodeGuiFromSerialization(Gui* gui,
                                 double rightBound,
                                 const Serialization::NodeGuiSerialization& serialization)
 {
-    const std::string & name = serialization.nodeName;
+    const std::string& name = serialization.nodeName;
     NodePtr internalNode = gui->getApp()->getProject()->getNodeByFullySpecifiedName(name);
 
     if (!internalNode) {
@@ -307,14 +307,13 @@ restoreNodeGuiFromSerialization(Gui* gui,
     assert(nodeGuiInterface);
     NodeGuiPtr nodeGui = std::dynamic_pointer_cast<NodeGui>(nodeGuiInterface);
 
-    nodeGui->refreshPosition( serialization.positionX, serialization.positionY, true );
+    nodeGui->refreshPosition(serialization.positionX, serialization.positionY, true);
 
-    if ( ( serialization.previewEnabled && !nodeGui->getNode()->isPreviewEnabled() ) ||
-         ( !serialization.previewEnabled && nodeGui->getNode()->isPreviewEnabled() ) ) {
+    if ((serialization.previewEnabled && !nodeGui->getNode()->isPreviewEnabled()) || (!serialization.previewEnabled && nodeGui->getNode()->isPreviewEnabled())) {
         nodeGui->togglePreview();
     }
 
-    BackdropGui* isBackdrop = dynamic_cast<BackdropGui*>( nodeGui.get() );
+    BackdropGui* isBackdrop = dynamic_cast<BackdropGui*>(nodeGui.get());
     if (!isBackdrop) {
         nodeGui->restoreCategoryAndUserColor(serialization);
     }
@@ -327,7 +326,7 @@ restoreNodeGuiFromSerialization(Gui* gui,
             defaultColor.getRgbF(&defaultR, &defaultG, &defaultB);
 
             // A colour within 0.05 of the default is left to follow the default.
-            if ( (std::abs(serialization.colorR - defaultR) > 0.05) || (std::abs(serialization.colorG - defaultG) > 0.05) || (std::abs(serialization.colorB - defaultB) > 0.05) ) {
+            if ((std::abs(serialization.colorR - defaultR) > 0.05) || (std::abs(serialization.colorG - defaultG) > 0.05) || (std::abs(serialization.colorB - defaultB) > 0.05)) {
                 QColor color;
                 color.setRgbF(serialization.colorR, serialization.colorG, serialization.colorB);
                 nodeGui->setCurrentColor(color);
@@ -348,8 +347,8 @@ restoreNodeGuiFromSerialization(Gui* gui,
     ViewerInstance* viewer = nodeGui->getNode()->isEffectViewer();
     if (viewer) {
         std::map<std::string, Serialization::ViewerDataSerialization>::const_iterator found = viewers.find(name);
-        if ( found != viewers.end() ) {
-            const Serialization::ViewerDataSerialization & viewerData = found->second;
+        if (found != viewers.end()) {
+            const Serialization::ViewerDataSerialization& viewerData = found->second;
             ViewerTab* tab = gui->getApp()->getGui()->getViewerTabForInstance(viewer);
             tab->setProjection(viewerData.zoomLeft, viewerData.zoomBottom, viewerData.zoomFactor, 1.);
             tab->setChannels(viewerData.channels);
@@ -358,11 +357,11 @@ restoreNodeGuiFromSerialization(Gui* gui,
             tab->setGamma(viewerData.gamma);
             tab->setUserRoIEnabled(viewerData.userRoIEnabled);
             tab->setAutoContrastEnabled(viewerData.autoContrastEnabled);
-            tab->setUserRoI( RectD(viewerData.userRoI.x1, viewerData.userRoI.y1, viewerData.userRoI.x2, viewerData.userRoI.y2) );
+            tab->setUserRoI(RectD(viewerData.userRoI.x1, viewerData.userRoI.y1, viewerData.userRoI.x2, viewerData.userRoI.y2));
             tab->setClipToProject(viewerData.isClippedToProject);
             tab->setRenderScaleActivated(viewerData.renderScaleActivated);
             tab->setMipmapLevel(viewerData.mipmapLevel);
-            tab->setCompositingOperator( (ViewerCompositingOperatorEnum)viewerData.wipeCompositingOperator );
+            tab->setCompositingOperator((ViewerCompositingOperatorEnum)viewerData.wipeCompositingOperator);
             tab->setZoomOrPannedSinceLastFit(viewerData.zoomOrPanSinceLastFit);
             tab->setTopToolbarVisible(viewerData.topToolbarVisible);
             tab->setLeftToolbarVisible(viewerData.leftToolbarVisible);
@@ -372,8 +371,8 @@ restoreNodeGuiFromSerialization(Gui* gui,
             tab->setTimelineVisible(viewerData.timelineVisible);
             tab->setCheckerboardEnabled(viewerData.checkerboardEnabled);
             tab->setFullFrameProcessing(viewerData.isFullFrameProcessEnabled);
-            if ( !viewerData.layerName.empty() ) {
-                tab->setCurrentLayers( QString::fromUtf8( viewerData.layerName.c_str() ), QString::fromUtf8( viewerData.alphaLayerName.c_str() ) );
+            if (!viewerData.layerName.empty()) {
+                tab->setCurrentLayers(QString::fromUtf8(viewerData.layerName.c_str()), QString::fromUtf8(viewerData.alphaLayerName.c_str()));
             }
 
             if (viewerData.isInputAPaused && viewerData.isInputBPaused) {
@@ -431,7 +430,7 @@ NodeGui::toSerialization(Serialization::NodeGuiSerialization* serialization) con
     serialization->colorG = color.greenF();
     serialization->colorB = color.blueF();
     QColor userColor;
-    if ( getUserColor(&userColor) ) {
+    if (getUserColor(&userColor)) {
         serialization->hasUserColor = true;
         serialization->userColorR = userColor.redF();
         serialization->userColorG = userColor.greenF();
@@ -447,19 +446,19 @@ NodeGui::toSerialization(Serialization::NodeGuiSerialization* serialization) con
         isGroup->getActiveNodes(&nodes);
 
         for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
-            if ( !(*it)->isPartOfProject() ) {
+            if (!(*it)->isPartOfProject()) {
                 continue;
             }
             NodeGuiIPtr childGuiInterface = (*it)->getNodeGui();
             if (!childGuiInterface) {
                 continue;
             }
-            NodeGui* childGui = dynamic_cast<NodeGui*>( childGuiInterface.get() );
+            NodeGui* childGui = dynamic_cast<NodeGui*>(childGuiInterface.get());
             if (!childGui) {
                 continue;
             }
             Serialization::NodeGuiSerializationPtr child = std::make_shared<Serialization::NodeGuiSerialization>();
-            childGui->toSerialization( child.get() );
+            childGui->toSerialization(child.get());
             serialization->children.push_back(child);
         }
     }
@@ -468,18 +467,18 @@ NodeGui::toSerialization(Serialization::NodeGuiSerialization* serialization) con
 void
 NodeGui::fromSerialization(const Serialization::NodeGuiSerialization& serialization)
 {
-    if ( colorIsBody() ) {
-        setCurrentColor( QColor::fromRgbF(serialization.colorR, serialization.colorG, serialization.colorB) );
+    if (colorIsBody()) {
+        setCurrentColor(QColor::fromRgbF(serialization.colorR, serialization.colorG, serialization.colorB));
     } else {
         restoreCategoryAndUserColor(serialization);
     }
     if (serialization.hasOverlayColor) {
-        setOverlayColor( QColor::fromRgbF(serialization.overlayColorR, serialization.overlayColorB, serialization.overlayColorG) );
+        setOverlayColor(QColor::fromRgbF(serialization.overlayColorR, serialization.overlayColorB, serialization.overlayColorG));
     }
-    setPos_mt_safe( QPointF(serialization.positionX, serialization.positionY) );
+    setPos_mt_safe(QPointF(serialization.positionX, serialization.positionY));
     NodePtr node = getNode();
     assert(node);
-    if ( node && ( node->isPreviewEnabled() != serialization.previewEnabled ) ) {
+    if (node && (node->isPreviewEnabled() != serialization.previewEnabled)) {
         togglePreview();
     }
     resize(serialization.width, serialization.height);
@@ -491,20 +490,20 @@ Gui::toSerialization(Serialization::GuiLayoutSerialization* serialization)
     assert(serialization);
     *serialization = Serialization::GuiLayoutSerialization();
 
-    serialization->windows.push_back( Serialization::ApplicationWindowSerialization() );
-    applicationWindowToSerialization( true, this, &serialization->windows.back() );
+    serialization->windows.push_back(Serialization::ApplicationWindowSerialization());
+    applicationWindowToSerialization(true, this, &serialization->windows.back());
 
     std::list<FloatingWidget*> floatingWindows = getFloatingWindows();
     for (std::list<FloatingWidget*>::iterator it = floatingWindows.begin(); it != floatingWindows.end(); ++it) {
-        serialization->windows.push_back( Serialization::ApplicationWindowSerialization() );
-        applicationWindowToSerialization( false, *it, &serialization->windows.back() );
+        serialization->windows.push_back(Serialization::ApplicationWindowSerialization());
+        applicationWindowToSerialization(false, *it, &serialization->windows.back());
     }
 }
 
 void
 Gui::restoreLayout(bool wipePrevious,
                    bool enableOldProjectCompatibility,
-                   const Serialization::GuiLayoutSerialization & layoutSerialization)
+                   const Serialization::GuiLayoutSerialization& layoutSerialization)
 {
     if (wipePrevious) {
         wipeLayout();
@@ -534,10 +533,10 @@ Gui::restoreLayout(bool wipePrevious,
             Splitter* centralWidget = new Splitter(this);
             restoreSplitterFromSerialization(this, centralWidget, *it->childSplitter);
             mainWidget = centralWidget;
-        } else if ( !it->childDockablePanel.empty() ) {
+        } else if (!it->childDockablePanel.empty()) {
             // The settings panel is floated once every window exists.
             assert(!it->isMainWindow);
-            floatingDockablePanels.push_back( &(*it) );
+            floatingDockablePanels.push_back(&(*it));
             continue;
         }
 
@@ -556,26 +555,26 @@ Gui::restoreLayout(bool wipePrevious,
             window = floatingWindow;
         }
 
-        int width = std::min( it->width, screen.width() );
-        int height = std::min( it->height, screen.height() );
+        int width = std::min(it->width, screen.width());
+        int height = std::min(it->height, screen.height());
         window->resize(width, height);
         // If the screen size changed, make sure at least 50x50 pixels of the window are visible
-        int positionX = MathUtils::clamp( it->positionX, screen.left(), screen.right() - 50 );
-        int positionY = MathUtils::clamp( it->positionY, screen.top(), screen.bottom() - 50 );
-        window->move( QPoint(positionX, positionY) );
+        int positionX = MathUtils::clamp(it->positionX, screen.left(), screen.right() - 50);
+        int positionY = MathUtils::clamp(it->positionY, screen.top(), screen.bottom() - 50);
+        window->move(QPoint(positionX, positionY));
     }
 
     for (std::list<const Serialization::ApplicationWindowSerialization*>::iterator it = floatingDockablePanels.begin();
          it != floatingDockablePanels.end(); ++it) {
-        assert( !(*it)->childDockablePanel.empty() );
+        assert(!(*it)->childDockablePanel.empty());
         FloatingWidget* floatingWindow = 0;
-        if ( (*it)->childDockablePanel == NATRON_SERIALIZATION_PROJECT_SETTINGS_PANEL_NAME ) {
+        if ((*it)->childDockablePanel == NATRON_SERIALIZATION_PROJECT_SETTINGS_PANEL_NAME) {
             floatingWindow = _imp->_projectGui->getPanel()->floatPanel();
         } else {
-            const NodesGuiList & nodes = getNodeGraph()->getAllActiveNodes();
+            const NodesGuiList& nodes = getNodeGraph()->getAllActiveNodes();
             DockablePanel* panel = 0;
             for (NodesGuiList::const_iterator it2 = nodes.begin(); it2 != nodes.end(); ++it2) {
-                if ( (*it2)->getNode()->getScriptName() == (*it)->childDockablePanel ) {
+                if ((*it2)->getNode()->getScriptName() == (*it)->childDockablePanel) {
                     (*it2)->ensurePanelCreated();
                     NodeSettingsPanel* nodeSettings = (*it2)->getSettingPanel();
                     if (nodeSettings) {
@@ -594,8 +593,8 @@ Gui::restoreLayout(bool wipePrevious,
             }
         }
         assert(floatingWindow);
-        floatingWindow->move( QPoint( (*it)->positionX, (*it)->positionY ) );
-        floatingWindow->resize( std::min( (*it)->width, screen.width() ), std::min( (*it)->height, screen.height() ) );
+        floatingWindow->move(QPoint((*it)->positionX, (*it)->positionY));
+        floatingWindow->resize(std::min((*it)->width, screen.width()), std::min((*it)->height, screen.height()));
     }
 } // restoreLayout
 
@@ -615,15 +614,15 @@ ProjectGui::toSerialization(Serialization::ProjectGuiSerialization* serializatio
         }
         NodeGuiPtr nodeGui = std::dynamic_pointer_cast<NodeGui>(nodeGuiInterface);
 
-        if ( !nodeGui->isVisible() ) {
+        if (!nodeGui->isVisible()) {
             continue;
         }
         NodeCollectionPtr isInCollection = (*it)->getGroup();
-        NodeGroup* isCollectionAGroup = dynamic_cast<NodeGroup*>( isInCollection.get() );
+        NodeGroup* isCollectionAGroup = dynamic_cast<NodeGroup*>(isInCollection.get());
         if (!isCollectionAGroup) {
             // A node inside a group is saved with its group.
-            serialization->nodes.push_back( Serialization::NodeGuiSerialization() );
-            nodeGui->toSerialization( &serialization->nodes.back() );
+            serialization->nodes.push_back(Serialization::NodeGuiSerialization());
+            nodeGui->toSerialization(&serialization->nodes.back());
         }
         ViewerInstance* viewer = (*it)->isEffectViewer();
         if (!viewer) {
@@ -673,19 +672,19 @@ ProjectGui::toSerialization(Serialization::ProjectGuiSerialization* serializatio
         viewerData.alphaLayerName = tab->getCurrentAlphaLayerName().toStdString();
         tab->getTimelineBounds(&viewerData.leftBound, &viewerData.rightBound);
         tab->getActiveInputs(&viewerData.activeInputA, &viewerData.activeInputB);
-        serialization->viewers.insert( std::make_pair(viewer->getNode()->getScriptName_mt_safe(), viewerData) );
+        serialization->viewers.insert(std::make_pair(viewer->getNode()->getScriptName_mt_safe(), viewerData));
     }
 
     getGui()->toSerialization(&serialization->layout);
 
     std::list<Histogram*> histograms = getGui()->getHistograms_mt_safe();
     for (std::list<Histogram*>::const_iterator it = histograms.begin(); it != histograms.end(); ++it) {
-        serialization->histograms.push_back( (*it)->objectName().toStdString() );
+        serialization->histograms.push_back((*it)->objectName().toStdString());
     }
 
     std::list<DockablePanel*> panels = getGui()->getVisiblePanels_mt_safe();
     for (std::list<DockablePanel*>::iterator it = panels.begin(); it != panels.end(); ++it) {
-        if ( !(*it)->isVisible() ) {
+        if (!(*it)->isVisible()) {
             continue;
         }
         KnobHolder* holder = (*it)->getHolder();
@@ -717,8 +716,8 @@ ProjectGui::toSerialization(Serialization::ProjectGuiSerialization* serializatio
 
     std::map<NATRON_PYTHON_NAMESPACE::PyPanel*, std::string> pythonPanels = getGui()->getPythonPanels();
     for (std::map<NATRON_PYTHON_NAMESPACE::PyPanel*, std::string>::iterator it = pythonPanels.begin(); it != pythonPanels.end(); ++it) {
-        serialization->pythonPanels.push_back( Serialization::PythonPanelSerialization() );
-        pythonPanelToSerialization( it->first, it->second, &serialization->pythonPanels.back() );
+        serialization->pythonPanels.push_back(Serialization::PythonPanelSerialization());
+        pythonPanelToSerialization(it->first, it->second, &serialization->pythonPanels.back());
     }
 } // ProjectGui::toSerialization
 
@@ -739,7 +738,7 @@ ProjectGui::fromSerialization(const Serialization::ProjectGuiSerialization& seri
     NodesList allNodes;
     _project.lock()->getNodes_recursive(allNodes, true);
     for (NodesList::const_iterator it = allNodes.begin(); it != allNodes.end(); ++it) {
-        NodeGuiPtr nodeGui = std::dynamic_pointer_cast<NodeGui>( (*it)->getNodeGui() );
+        NodeGuiPtr nodeGui = std::dynamic_pointer_cast<NodeGui>((*it)->getNodeGui());
         if (nodeGui) {
             nodeGui->refreshEdges();
             nodeGui->refreshKnobLinks();
@@ -748,7 +747,7 @@ ProjectGui::fromSerialization(const Serialization::ProjectGuiSerialization& seri
 
     for (std::list<Serialization::NodeBackdropSerialization>::const_iterator it = serialization.legacyBackdrops.begin(); it != serialization.legacyBackdrops.end(); ++it) {
         KnobIPtr labelKnob = createDetachedKnobFromSerialization(it->label);
-        CreateNodeArgs args( PLUGINID_NATRON_BACKDROP, _project.lock() );
+        CreateNodeArgs args(PLUGINID_NATRON_BACKDROP, _project.lock());
         args.setProperty<bool>(kCreateNodeArgsPropSettingsOpened, false);
         args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
         args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
@@ -756,15 +755,15 @@ ProjectGui::fromSerialization(const Serialization::ProjectGuiSerialization& seri
         NodePtr node = getGui()->getApp()->createNode(args);
         NodeGuiIPtr nodeGuiInterface = node->getNodeGui();
         assert(nodeGuiInterface);
-        BackdropGui* backdrop = dynamic_cast<BackdropGui*>( nodeGuiInterface.get() );
+        BackdropGui* backdrop = dynamic_cast<BackdropGui*>(nodeGuiInterface.get());
         assert(backdrop);
         if (backdrop) {
             backdrop->setPos(it->positionX, it->positionY);
             backdrop->resize(it->width, it->height);
-            KnobString* labelString = dynamic_cast<KnobString*>( labelKnob.get() );
+            KnobString* labelString = dynamic_cast<KnobString*>(labelKnob.get());
             assert(labelString);
             if (labelString) {
-                backdrop->onLabelChanged( QString::fromUtf8( labelString->getValue().c_str() ) );
+                backdrop->onLabelChanged(QString::fromUtf8(labelString->getValue().c_str()));
             }
             QColor color;
             color.setRgbF(it->colorR, it->colorG, it->colorB);
@@ -774,12 +773,12 @@ ProjectGui::fromSerialization(const Serialization::ProjectGuiSerialization& seri
     }
 
     // we have to give the tr() context explicitly due to a bug in lupdate
-    _gui->getApp()->updateProjectLoadStatus( QObject::tr("Restoring settings panels", "ProjectGui") );
+    _gui->getApp()->updateProjectLoadStatus(QObject::tr("Restoring settings panels", "ProjectGui"));
 
     // Panels are opened bottom up so the first saved one ends on top.
     for (std::list<std::string>::const_reverse_iterator it = serialization.openedPanels.rbegin(); it != serialization.openedPanels.rend(); ++it) {
-        bool isMinimized = ( std::find(serialization.openedPanelsMinimized.begin(), serialization.openedPanelsMinimized.end(), *it) != serialization.openedPanelsMinimized.end() );
-        bool hideUnmodified = ( std::find(serialization.openedPanelsHideUnmodified.begin(), serialization.openedPanelsHideUnmodified.end(), *it) != serialization.openedPanelsHideUnmodified.end() );
+        bool isMinimized = (std::find(serialization.openedPanelsMinimized.begin(), serialization.openedPanelsMinimized.end(), *it) != serialization.openedPanelsMinimized.end());
+        bool hideUnmodified = (std::find(serialization.openedPanelsHideUnmodified.begin(), serialization.openedPanelsHideUnmodified.end(), *it) != serialization.openedPanelsHideUnmodified.end());
         if (*it == NATRON_SERIALIZATION_PROJECT_SETTINGS_PANEL_NAME) {
             _gui->setVisibleProjectSettingsPanel(isMinimized);
         } else {
@@ -787,7 +786,7 @@ ProjectGui::fromSerialization(const Serialization::ProjectGuiSerialization& seri
             if (node) {
                 NodeGuiIPtr nodeGuiInterface = node->getNodeGui();
                 assert(nodeGuiInterface);
-                NodeGui* nodeGui = dynamic_cast<NodeGui*>( nodeGuiInterface.get() );
+                NodeGui* nodeGui = dynamic_cast<NodeGui*>(nodeGuiInterface.get());
                 assert(nodeGui);
                 if (nodeGui) {
                     nodeGui->setVisibleSettingsPanel(true, isMinimized, hideUnmodified);
@@ -796,9 +795,9 @@ ProjectGui::fromSerialization(const Serialization::ProjectGuiSerialization& seri
         }
     }
 
-    if ( !serialization.pythonPanels.empty() ) {
+    if (!serialization.pythonPanels.empty()) {
         // we have to give the tr() context explicitly due to a bug in lupdate
-        _gui->getApp()->updateProjectLoadStatus( QObject::tr("Restoring user panels", "ProjectGui") );
+        _gui->getApp()->updateProjectLoadStatus(QObject::tr("Restoring user panels", "ProjectGui"));
 
         std::string appID = _gui->getApp()->getAppIDString();
         std::string err;
@@ -807,28 +806,28 @@ ProjectGui::fromSerialization(const Serialization::ProjectGuiSerialization& seri
         assert(ok);
         if (!ok) {
             // we have to give the tr() context explicitly due to a bug in lupdate
-            throw std::runtime_error( QObject::tr("ProjectGui::load(): interpretPythonScript(%1) failed!", "ProjectGui").arg( QString::fromUtf8( script.c_str() ) ).toStdString() );
+            throw std::runtime_error(QObject::tr("ProjectGui::load(): interpretPythonScript(%1) failed!", "ProjectGui").arg(QString::fromUtf8(script.c_str())).toStdString());
         }
     }
     for (std::list<Serialization::PythonPanelSerialization>::const_iterator it = serialization.pythonPanels.begin(); it != serialization.pythonPanels.end(); ++it) {
         std::string script = it->pythonFunction + "()\n";
         std::string err, output;
-        if ( !NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &err, &output) ) {
+        if (!NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &err, &output)) {
             _gui->getApp()->appendToScriptEditor(err);
         } else {
-            if ( !output.empty() ) {
+            if (!output.empty()) {
                 _gui->getApp()->appendToScriptEditor(output);
             }
         }
         const RegisteredTabs& registeredTabs = _gui->getRegisteredTabs();
         RegisteredTabs::const_iterator found = registeredTabs.find(it->name);
-        if ( found != registeredTabs.end() ) {
+        if (found != registeredTabs.end()) {
             NATRON_PYTHON_NAMESPACE::PyPanel* panel = dynamic_cast<NATRON_PYTHON_NAMESPACE::PyPanel*>(found->second.first);
             if (panel) {
-                panel->restore( QString::fromUtf8( it->userData.c_str() ) );
+                panel->restore(QString::fromUtf8(it->userData.c_str()));
                 for (std::list<Serialization::KnobSerialization>::const_iterator it2 = it->knobs.begin(); it2 != it->knobs.end(); ++it2) {
                     const std::string serializedName = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it2->name);
-                    NATRON_PYTHON_NAMESPACE::Param* param = panel->getParam( QString::fromUtf8( serializedName.c_str() ) );
+                    NATRON_PYTHON_NAMESPACE::Param* param = panel->getParam(QString::fromUtf8(serializedName.c_str()));
                     if (param) {
                         KnobIPtr serializedKnob = createDetachedKnobFromSerialization(*it2);
                         if (serializedKnob) {
@@ -842,17 +841,17 @@ ProjectGui::fromSerialization(const Serialization::ProjectGuiSerialization& seri
     }
 
     // we have to give the tr() context explicitly due to a bug in lupdate
-    _gui->getApp()->updateProjectLoadStatus( QObject::tr("Restoring layout", "ProjectGui") );
+    _gui->getApp()->updateProjectLoadStatus(QObject::tr("Restoring layout", "ProjectGui"));
 
     // An auto-save always restores its workspace.
     bool loadWorkspace = isAutosave || appPTR->getCurrentSettings()->getLoadProjectWorkspce();
     if (loadWorkspace) {
-        _gui->restoreLayout( true, serialization.version < NATRON_SERIALIZATION_PROJECT_GUI_MAJOR_OVERHAUL, serialization.layout );
+        _gui->restoreLayout(true, serialization.version < NATRON_SERIALIZATION_PROJECT_GUI_MAJOR_OVERHAUL, serialization.layout);
     }
 
     for (std::list<std::string>::const_iterator it = serialization.histograms.begin(); it != serialization.histograms.end(); ++it) {
         Histogram* histogram = _gui->addNewHistogram();
-        histogram->setObjectName( QString::fromUtf8( (*it).c_str() ) );
+        histogram->setObjectName(QString::fromUtf8((*it).c_str()));
         _gui->appendTabToDefaultViewerPane(histogram, histogram);
     }
 
@@ -860,7 +859,7 @@ ProjectGui::fromSerialization(const Serialization::ProjectGuiSerialization& seri
         _gui->getNodeGraph()->clearSelection();
     }
 
-    _gui->getScriptEditor()->setInputScript( QString::fromUtf8( serialization.scriptEditorInput.c_str() ) );
+    _gui->getScriptEditor()->setInputScript(QString::fromUtf8(serialization.scriptEditorInput.c_str()));
     _gui->centerAllNodeGraphsWithTimer();
 } // ProjectGui::fromSerialization
 

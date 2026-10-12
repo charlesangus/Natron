@@ -1123,9 +1123,9 @@ EnableNodesCommand::redo()
     }
 }
 
-LoadNodePresetsCommand::LoadNodePresetsCommand(const NodeGuiPtr & node,
+LoadNodePresetsCommand::LoadNodePresetsCommand(const NodeGuiPtr& node,
                                                const std::list<Serialization::NodeSerializationPtr>& serialization,
-                                               QUndoCommand *parent)
+                                               QUndoCommand* parent)
     : QUndoCommand(parent)
     , _firstRedoCalled(false)
     , _isUndone(false)

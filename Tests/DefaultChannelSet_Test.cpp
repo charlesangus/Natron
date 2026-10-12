@@ -26,8 +26,8 @@
 #include "Global/Macros.h"
 
 #include <exception>
-#include <list>
 #include <iostream>
+#include <list>
 #include <string>
 #include <vector>
 

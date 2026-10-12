@@ -45,7 +45,6 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Serialization/SerializationFwd.h"
 
-
 #define kNatronGroupInputIsMaskParamName "isMask"
 #define kNatronGroupInputIsOptionalParamName "optional"
 
@@ -235,7 +234,7 @@ public:
      * user chose to update a saved instance to the PyPlug version found on disk. Returns false
      * if an error was written to the error log.
      **/
-    static bool restoreFromSerialization(const std::list<Serialization::NodeSerializationPtr> & serializedNodes,
+    static bool restoreFromSerialization(const std::list<Serialization::NodeSerializationPtr>& serializedNodes,
                                          const NodeCollectionPtr& group,
                                          bool createNodes,
                                          std::map<std::string, bool>* moduleUpdatesProcessed);

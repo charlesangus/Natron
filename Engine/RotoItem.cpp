@@ -453,7 +453,7 @@ RotoItem::restoreSavedState(const std::string& name,
         _imp->globallyActivated = activated;
         _imp->locked = locked;
         _imp->scriptName = name;
-        if ( !label.empty() ) {
+        if (!label.empty()) {
             _imp->label = label;
         } else {
             _imp->label = _imp->scriptName;

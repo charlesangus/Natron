@@ -29,47 +29,47 @@ namespace Serialization {
 
 namespace {
 
-// Same result as QString::toInt() on the part, which the old reader used: surrounding
-// whitespace is ignored and anything else that is not a base-10 int reads as 0.
-int
-legacyVersionPartToInt(const std::string& part)
-{
-    std::size_t begin = 0;
-    std::size_t end = part.size();
+    // Same result as QString::toInt() on the part, which the old reader used: surrounding
+    // whitespace is ignored and anything else that is not a base-10 int reads as 0.
+    int
+    legacyVersionPartToInt(const std::string& part)
+    {
+        std::size_t begin = 0;
+        std::size_t end = part.size();
 
-    while ( (begin < end) && std::isspace( (unsigned char)part[begin] ) ) {
-        ++begin;
-    }
-    while ( (end > begin) && std::isspace( (unsigned char)part[end - 1] ) ) {
-        --end;
-    }
-    bool isNegative = false;
-    if ( (begin < end) && ( (part[begin] == '+') || (part[begin] == '-') ) ) {
-        isNegative = (part[begin] == '-');
-        ++begin;
-    }
-    if (begin == end) {
-        return 0;
-    }
-    long long value = 0;
-    for (std::size_t i = begin; i < end; ++i) {
-        if ( !std::isdigit( (unsigned char)part[i] ) ) {
+        while ((begin < end) && std::isspace((unsigned char)part[begin])) {
+            ++begin;
+        }
+        while ((end > begin) && std::isspace((unsigned char)part[end - 1])) {
+            --end;
+        }
+        bool isNegative = false;
+        if ((begin < end) && ((part[begin] == '+') || (part[begin] == '-'))) {
+            isNegative = (part[begin] == '-');
+            ++begin;
+        }
+        if (begin == end) {
             return 0;
         }
-        value = value * 10 + (part[i] - '0');
-        if (value > (long long)INT_MAX + 1) {
+        long long value = 0;
+        for (std::size_t i = begin; i < end; ++i) {
+            if (!std::isdigit((unsigned char)part[i])) {
+                return 0;
+            }
+            value = value * 10 + (part[i] - '0');
+            if (value > (long long)INT_MAX + 1) {
+                return 0;
+            }
+        }
+        if (isNegative) {
+            value = -value;
+        }
+        if ((value > INT_MAX) || (value < INT_MIN)) {
             return 0;
         }
-    }
-    if (isNegative) {
-        value = -value;
-    }
-    if ( (value > INT_MAX) || (value < INT_MIN) ) {
-        return 0;
-    }
 
-    return (int)value;
-}
+        return (int)value;
+    }
 
 } // anonymous namespace
 
@@ -99,7 +99,7 @@ parseLegacyNatronVersionString(const std::string& natronVersion,
     std::vector<std::string> parts(1);
     for (std::size_t i = 0; i < versionText.size(); ++i) {
         if (versionText[i] == '.') {
-            parts.push_back( std::string() );
+            parts.push_back(std::string());
         } else {
             parts.back().push_back(versionText[i]);
         }
@@ -122,19 +122,19 @@ NATRON_NAMESPACE_EXIT
 namespace boost {
 namespace serialization {
 
-template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive & ar,
-                                                        NATRON_NAMESPACE::Serialization::LayerRegistryEntrySerialization & entry,
-                                                        const unsigned int version);
-template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive & ar,
-                                                        NATRON_NAMESPACE::Serialization::LayerRegistryEntrySerialization & entry,
-                                                        const unsigned int version);
+    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
+                                                          NATRON_NAMESPACE::Serialization::LayerRegistryEntrySerialization& entry,
+                                                          const unsigned int version);
+    template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
+                                                          NATRON_NAMESPACE::Serialization::LayerRegistryEntrySerialization& entry,
+                                                          const unsigned int version);
 
-template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive & ar,
-                                                        NATRON_NAMESPACE::Serialization::ProjectSerialization & project,
-                                                        const unsigned int version);
-template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive & ar,
-                                                        NATRON_NAMESPACE::Serialization::ProjectSerialization & project,
-                                                        const unsigned int version);
+    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
+                                                          NATRON_NAMESPACE::Serialization::ProjectSerialization& project,
+                                                          const unsigned int version);
+    template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
+                                                          NATRON_NAMESPACE::Serialization::ProjectSerialization& project,
+                                                          const unsigned int version);
 
 } // namespace serialization
 } // namespace boost

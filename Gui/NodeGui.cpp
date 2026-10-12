@@ -76,7 +76,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/BackdropGui.h"
 #include "Gui/Button.h"
 #include "Gui/CurveEditor.h"
-#include "Gui/HostOverlay.h"
 #include "Gui/DockablePanel.h"
 #include "Gui/DopeSheetEditor.h"
 #include "Gui/Edge.h"
@@ -84,22 +83,22 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiDefines.h"
+#include "Gui/HostOverlay.h"
 #include "Gui/KnobGui.h"
 #include "Gui/KnobGuiString.h"
-#include "Gui/QtEnumConvert.h"
 #include "Gui/Label.h"
 #include "Gui/LineEdit.h"
-#include "Gui/MultiInstancePanel.h"
 #include "Gui/Menu.h"
+#include "Gui/MultiInstancePanel.h"
 #include "Gui/NodeClipBoard.h"
 #include "Gui/NodeGraph.h"
-#include "Gui/NodeGraphUndoRedo.h"
-#include "Gui/NodeGraphTextItem.h"
 #include "Gui/NodeGraphRectItem.h"
+#include "Gui/NodeGraphTextItem.h"
+#include "Gui/NodeGraphUndoRedo.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/PreviewThread.h"
 #include "Gui/PythonPanels.h"
-#include "Gui/SequenceFileDialog.h"
+#include "Gui/QtEnumConvert.h"
 #include "Gui/SequenceFileDialog.h"
 #include "Gui/SpinBox.h"
 #include "Gui/ViewerGL.h"
@@ -2925,7 +2924,7 @@ NodeGui::destroyGui()
 
         for (std::list<Serialization::NodeGuiSerializationPtr>::iterator it = cb.nodesUI.begin();
              it != cb.nodesUI.end(); ++it) {
-            if ( (*it)->nodeName == internalNode->getFullyQualifiedName() ) {
+            if ((*it)->nodeName == internalNode->getFullyQualifiedName()) {
                 cb.nodesUI.erase(it);
                 break;
             }
@@ -3541,10 +3540,10 @@ NodeGui::restoreCategoryAndUserColor(const Serialization::NodeGuiSerialization& 
     }
 
     float r, g, b;
-    if ( Serialization::resolveNodeGuiUserColor(serialization,
-                                                hasCategoryColor ? category : NULL,
-                                                hasLegacyCategoryColor ? legacyCategory : NULL,
-                                                &r, &g, &b) ) {
+    if (Serialization::resolveNodeGuiUserColor(serialization,
+                                               hasCategoryColor ? category : NULL,
+                                               hasLegacyCategoryColor ? legacyCategory : NULL,
+                                               &r, &g, &b)) {
         setUserColor(QColor::fromRgbF(r, g, b));
     } else {
         clearUserColor();

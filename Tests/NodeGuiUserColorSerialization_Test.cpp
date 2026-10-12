@@ -30,8 +30,8 @@
 
 #include <gtest/gtest.h>
 
-#include "Serialization/ProjectGuiSerialization.h"
 #include "Serialization/BoostXml/ProjectGuiXml.h"
+#include "Serialization/ProjectGuiSerialization.h"
 
 NATRON_NAMESPACE_USING
 
@@ -130,7 +130,7 @@ TEST(NodeGuiUserColorSerialization, RoundTripsAUserColor)
 
 TEST(NodeGuiUserColorSerialization, ACurrentArchiveWithoutAUserColorNeverGuessesOne)
 {
-    Serialization::NodeGuiSerialization restored = roundTrip( Serialization::NodeGuiSerialization() );
+    Serialization::NodeGuiSerialization restored = roundTrip(Serialization::NodeGuiSerialization());
 
     const float category[3] = { 0.9f, 0.9f, 0.9f };
     float r, g, b;

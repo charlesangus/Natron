@@ -56,10 +56,10 @@ bool filterKnobNameCompat(const std::string& pluginID,
  * @returns true if a filter was applied, false otherwise
  */
 bool filterKnobChoiceOptionCompat(const std::string& pluginID,
-                            int pluginVersionMajor, int pluginVersionMinor,
-                            int natronVersionMajor, int natronVersionMinor, int natronVersionRevision,
-                            const std::string& paramName,
-                            std::string* optionID);
+                                  int pluginVersionMajor, int pluginVersionMinor,
+                                  int natronVersionMajor, int natronVersionMinor, int natronVersionRevision,
+                                  const std::string& paramName,
+                                  std::string* optionID);
 
 NATRON_NAMESPACE_EXIT
 

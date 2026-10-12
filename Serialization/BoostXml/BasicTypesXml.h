@@ -51,116 +51,115 @@ GCC_DIAG_ON(unused-parameter)
 namespace boost {
 namespace serialization {
 
-template<class Archive>
-void
-serialize(Archive & ar,
-          NATRON_NAMESPACE::Serialization::RectISerialization & rect,
-          const unsigned int /*version*/)
-{
-    ar & ::boost::serialization::make_nvp("Left", rect.x1);
-    ar & ::boost::serialization::make_nvp("Bottom", rect.y1);
-    ar & ::boost::serialization::make_nvp("Right", rect.x2);
-    ar & ::boost::serialization::make_nvp("Top", rect.y2);
-}
-
-template<class Archive>
-void
-serialize(Archive & ar,
-          NATRON_NAMESPACE::Serialization::RectDSerialization & rect,
-          const unsigned int /*version*/)
-{
-    ar & ::boost::serialization::make_nvp("Left", rect.x1);
-    ar & ::boost::serialization::make_nvp("Bottom", rect.y1);
-    ar & ::boost::serialization::make_nvp("Right", rect.x2);
-    ar & ::boost::serialization::make_nvp("Top", rect.y2);
-}
-
-template<class Archive>
-void
-serialize(Archive & ar,
-          NATRON_NAMESPACE::Serialization::FormatSerialization & format,
-          const unsigned int version)
-{
-    if (version < NATRON_SERIALIZATION_FORMAT_CHANGES_TO_RECTD) {
-        NATRON_NAMESPACE::Serialization::RectISerialization r;
-        ar & ::boost::serialization::make_nvp("RectI", r);
-        format.x1 = r.x1;
-        format.x2 = r.x2;
-        format.y1 = r.y1;
-        format.y2 = r.y2;
-    } else if (version < NATRON_SERIALIZATION_FORMAT_CHANGES_TO_RECTI) {
-        NATRON_NAMESPACE::Serialization::RectDSerialization r;
-        ar & ::boost::serialization::make_nvp("RectD", r);
-        format.x1 = r.x1;
-        format.x2 = r.x2;
-        format.y1 = r.y1;
-        format.y2 = r.y2;
-    } else {
-        ::boost::serialization::void_cast_register<NATRON_NAMESPACE::Serialization::FormatSerialization, NATRON_NAMESPACE::Serialization::RectISerialization>(
-            static_cast<NATRON_NAMESPACE::Serialization::FormatSerialization *>(nullptr),
-            static_cast<NATRON_NAMESPACE::Serialization::RectISerialization *>(nullptr)
-            );
-        ar & ::boost::serialization::make_nvp( "RectI", ::boost::serialization::base_object<NATRON_NAMESPACE::Serialization::RectISerialization>(format) );
+    template <class Archive>
+    void
+    serialize(Archive& ar,
+              NATRON_NAMESPACE::Serialization::RectISerialization& rect,
+              const unsigned int /*version*/)
+    {
+        ar& ::boost::serialization::make_nvp("Left", rect.x1);
+        ar& ::boost::serialization::make_nvp("Bottom", rect.y1);
+        ar& ::boost::serialization::make_nvp("Right", rect.x2);
+        ar& ::boost::serialization::make_nvp("Top", rect.y2);
     }
-    ar & ::boost::serialization::make_nvp("Pixel_aspect_ratio", format.pixelAspectRatio);
-    ar & ::boost::serialization::make_nvp("Name", format.name);
-}
 
-template<class Archive>
-void
-save(Archive & ar,
-     const NATRON_NAMESPACE::Serialization::VariantSerialization & variant,
-     const unsigned int /*version*/)
-{
-    std::string typeTag = variant.typeTag;
-
-    ar & ::boost::serialization::make_nvp("Type", typeTag);
-    if (typeTag == "bool") {
-        bool v = variant.boolValue;
-        ar & ::boost::serialization::make_nvp("Value", v);
-    } else if ( (typeTag == "int") || (typeTag == "uint") ) {
-        int v = variant.intValue;
-        ar & ::boost::serialization::make_nvp("Value", v);
-    } else if (typeTag == "double") {
-        double v = variant.doubleValue;
-        ar & ::boost::serialization::make_nvp("Value", v);
-    } else if (typeTag == "string") {
-        std::string v = variant.stringValue;
-        ar & ::boost::serialization::make_nvp("Value", v);
-    } else if (typeTag == "stringlist") {
-        std::list<std::string> v = variant.stringListValue;
-        ar & ::boost::serialization::make_nvp("Value", v);
+    template <class Archive>
+    void
+    serialize(Archive& ar,
+              NATRON_NAMESPACE::Serialization::RectDSerialization& rect,
+              const unsigned int /*version*/)
+    {
+        ar& ::boost::serialization::make_nvp("Left", rect.x1);
+        ar& ::boost::serialization::make_nvp("Bottom", rect.y1);
+        ar& ::boost::serialization::make_nvp("Right", rect.x2);
+        ar& ::boost::serialization::make_nvp("Top", rect.y2);
     }
-}
 
-template<class Archive>
-void
-load(Archive & ar,
-     NATRON_NAMESPACE::Serialization::VariantSerialization & variant,
-     const unsigned int /*version*/)
-{
-    ar & ::boost::serialization::make_nvp("Type", variant.typeTag);
-    if (variant.typeTag == "bool") {
-        ar & ::boost::serialization::make_nvp("Value", variant.boolValue);
-    } else if ( (variant.typeTag == "int") || (variant.typeTag == "uint") ) {
-        ar & ::boost::serialization::make_nvp("Value", variant.intValue);
-    } else if (variant.typeTag == "double") {
-        ar & ::boost::serialization::make_nvp("Value", variant.doubleValue);
-    } else if (variant.typeTag == "string") {
-        ar & ::boost::serialization::make_nvp("Value", variant.stringValue);
-    } else if (variant.typeTag == "stringlist") {
-        ar & ::boost::serialization::make_nvp("Value", variant.stringListValue);
+    template <class Archive>
+    void
+    serialize(Archive& ar,
+              NATRON_NAMESPACE::Serialization::FormatSerialization& format,
+              const unsigned int version)
+    {
+        if (version < NATRON_SERIALIZATION_FORMAT_CHANGES_TO_RECTD) {
+            NATRON_NAMESPACE::Serialization::RectISerialization r;
+            ar& ::boost::serialization::make_nvp("RectI", r);
+            format.x1 = r.x1;
+            format.x2 = r.x2;
+            format.y1 = r.y1;
+            format.y2 = r.y2;
+        } else if (version < NATRON_SERIALIZATION_FORMAT_CHANGES_TO_RECTI) {
+            NATRON_NAMESPACE::Serialization::RectDSerialization r;
+            ar& ::boost::serialization::make_nvp("RectD", r);
+            format.x1 = r.x1;
+            format.x2 = r.x2;
+            format.y1 = r.y1;
+            format.y2 = r.y2;
+        } else {
+            ::boost::serialization::void_cast_register<NATRON_NAMESPACE::Serialization::FormatSerialization, NATRON_NAMESPACE::Serialization::RectISerialization>(
+                static_cast<NATRON_NAMESPACE::Serialization::FormatSerialization*>(nullptr),
+                static_cast<NATRON_NAMESPACE::Serialization::RectISerialization*>(nullptr));
+            ar& ::boost::serialization::make_nvp("RectI", ::boost::serialization::base_object<NATRON_NAMESPACE::Serialization::RectISerialization>(format));
+        }
+        ar& ::boost::serialization::make_nvp("Pixel_aspect_ratio", format.pixelAspectRatio);
+        ar& ::boost::serialization::make_nvp("Name", format.name);
     }
-}
 
-template<class Archive>
-void
-serialize(Archive & ar,
-          NATRON_NAMESPACE::Serialization::VariantSerialization & variant,
-          const unsigned int version)
-{
-    ::boost::serialization::split_free(ar, variant, version);
-}
+    template <class Archive>
+    void
+    save(Archive& ar,
+         const NATRON_NAMESPACE::Serialization::VariantSerialization& variant,
+         const unsigned int /*version*/)
+    {
+        std::string typeTag = variant.typeTag;
+
+        ar& ::boost::serialization::make_nvp("Type", typeTag);
+        if (typeTag == "bool") {
+            bool v = variant.boolValue;
+            ar& ::boost::serialization::make_nvp("Value", v);
+        } else if ((typeTag == "int") || (typeTag == "uint")) {
+            int v = variant.intValue;
+            ar& ::boost::serialization::make_nvp("Value", v);
+        } else if (typeTag == "double") {
+            double v = variant.doubleValue;
+            ar& ::boost::serialization::make_nvp("Value", v);
+        } else if (typeTag == "string") {
+            std::string v = variant.stringValue;
+            ar& ::boost::serialization::make_nvp("Value", v);
+        } else if (typeTag == "stringlist") {
+            std::list<std::string> v = variant.stringListValue;
+            ar& ::boost::serialization::make_nvp("Value", v);
+        }
+    }
+
+    template <class Archive>
+    void
+    load(Archive& ar,
+         NATRON_NAMESPACE::Serialization::VariantSerialization& variant,
+         const unsigned int /*version*/)
+    {
+        ar& ::boost::serialization::make_nvp("Type", variant.typeTag);
+        if (variant.typeTag == "bool") {
+            ar& ::boost::serialization::make_nvp("Value", variant.boolValue);
+        } else if ((variant.typeTag == "int") || (variant.typeTag == "uint")) {
+            ar& ::boost::serialization::make_nvp("Value", variant.intValue);
+        } else if (variant.typeTag == "double") {
+            ar& ::boost::serialization::make_nvp("Value", variant.doubleValue);
+        } else if (variant.typeTag == "string") {
+            ar& ::boost::serialization::make_nvp("Value", variant.stringValue);
+        } else if (variant.typeTag == "stringlist") {
+            ar& ::boost::serialization::make_nvp("Value", variant.stringListValue);
+        }
+    }
+
+    template <class Archive>
+    void
+    serialize(Archive& ar,
+              NATRON_NAMESPACE::Serialization::VariantSerialization& variant,
+              const unsigned int version)
+    {
+        ::boost::serialization::split_free(ar, variant, version);
+    }
 
 } // namespace serialization
 } // namespace boost

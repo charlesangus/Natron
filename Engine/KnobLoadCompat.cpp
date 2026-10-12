@@ -42,15 +42,14 @@ static bool
 startsWith(const std::string& str,
            const std::string& prefix)
 {
-    return str.substr( 0, prefix.size() ) == prefix;
+    return str.substr(0, prefix.size()) == prefix;
 }
 
 static bool
-endsWith(const std::string &str,
-         const std::string &suffix)
+endsWith(const std::string& str,
+         const std::string& suffix)
 {
-    return ( ( str.size() >= suffix.size() ) &&
-            (str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0) );
+    return ((str.size() >= suffix.size()) && (str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0));
 }
 
 static bool
@@ -65,12 +64,11 @@ equalsStringCaseInsensitive(const std::string& str1, const std::string& str2)
     return StrUtils::iequals(str1, str2);
 }
 
-typedef bool (*stringFuncPtr)(const std::string&,const std::string&);
+typedef bool (*stringFuncPtr)(const std::string&, const std::string&);
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
-struct FilterMatcher
-{
+struct FilterMatcher {
     // The second string parameter that is passed to the nameMatcher function
     std::string nameToMatch;
 
@@ -78,8 +76,7 @@ struct FilterMatcher
     stringFuncPtr func;
 };
 
-struct PluginMatch
-{
+struct PluginMatch {
     // The ID of the plug-in that is concerned by this filter.
     std::string pluginID;
 
@@ -96,31 +93,26 @@ struct PluginMatch
     stringFuncPtr func;
 };
 
-struct KnobMatch
-{
+struct KnobMatch {
     // List of plug-ins to which it applies to. If empty, applies to any plug-in
     std::list<PluginMatch> plugin;
     FilterMatcher filter;
 };
 
-struct NatronVersionMatch
-{
+struct NatronVersionMatch {
     // The version of Natron up to which the filter must be applied.
     // If these values are -1, the filter is always applied.
     int vMajor, vMinor, vRev;
 
     NatronVersionMatch()
-    : vMajor(-1)
-    , vMinor(-1)
-    , vRev(-1)
+        : vMajor(-1)
+        , vMinor(-1)
+        , vRev(-1)
     {
-
     }
 };
 
-
-struct KnobNameFilter
-{
+struct KnobNameFilter {
 
     // All elements in the string will be checked, if one is matched, the filter applies.
     std::list<KnobMatch> filters;
@@ -132,17 +124,15 @@ struct KnobNameFilter
     NatronVersionMatch natronVersionMin, natronVersionMax;
 
     KnobNameFilter()
-    : filters()
-    , replacement()
-    , natronVersionMin()
-    , natronVersionMax()
+        : filters()
+        , replacement()
+        , natronVersionMin()
+        , natronVersionMax()
     {
-
     }
 };
 
-struct KnobChoiceOptionFilter
-{
+struct KnobChoiceOptionFilter {
 
     // All elements in the string will be checked, if one is matched, the filter applies.
     std::list<KnobMatch> filters;
@@ -155,19 +145,16 @@ struct KnobChoiceOptionFilter
     NatronVersionMatch natronVersionMin, natronVersionMax;
 
     KnobChoiceOptionFilter()
-    : filters()
-    , optionFilters()
-    , replacement()
-    , natronVersionMin()
-    , natronVersionMax()
+        : filters()
+        , optionFilters()
+        , replacement()
+        , natronVersionMin()
+        , natronVersionMax()
     {
-
     }
 };
 
-
-static
-PluginMatch&
+static PluginMatch&
 addPluginMatch(KnobMatch& f,
                const std::string& pluginID,
                int pluginMajorMin = -1,
@@ -175,14 +162,14 @@ addPluginMatch(KnobMatch& f,
                int pluginMajorMax = -1,
                int pluginMinorMax = -1)
 {
-    PluginMatch m = {pluginID, pluginMajorMin, pluginMinorMin, pluginMajorMax, pluginMinorMax, equalsStringCaseInsensitive};
+    PluginMatch m = { pluginID, pluginMajorMin, pluginMinorMin, pluginMajorMax, pluginMinorMax, equalsStringCaseInsensitive };
     f.plugin.push_back(m);
     return f.plugin.back();
 }
 
-
 template <typename FILTER>
-KnobMatch& addKnobFilter(FILTER& f, const std::string& nameToMatch, stringFuncPtr func)
+KnobMatch&
+addKnobFilter(FILTER& f, const std::string& nameToMatch, stringFuncPtr func)
 {
     KnobMatch m;
     m.filter.nameToMatch = nameToMatch;
@@ -191,30 +178,33 @@ KnobMatch& addKnobFilter(FILTER& f, const std::string& nameToMatch, stringFuncPt
     return f.filters.back();
 }
 
-void addOptionFilter(KnobChoiceOptionFilter& f, const std::string& nameToMatch, stringFuncPtr func)
+void
+addOptionFilter(KnobChoiceOptionFilter& f, const std::string& nameToMatch, stringFuncPtr func)
 {
-    FilterMatcher m = {nameToMatch, func};
+    FilterMatcher m = { nameToMatch, func };
     f.optionFilters.push_back(m);
 }
 
 template <typename FILTER>
-void setNatronVersionMin(FILTER &f, int major = -1, int minor = -1, int rev = -1) {
+void
+setNatronVersionMin(FILTER& f, int major = -1, int minor = -1, int rev = -1)
+{
     f.natronVersionMin.vMajor = major;
     f.natronVersionMin.vMinor = minor;
     f.natronVersionMin.vRev = rev;
 }
 
 template <typename FILTER>
-void setNatronVersionMax(FILTER &f, int major = -1, int minor = -1, int rev = -1) {
+void
+setNatronVersionMax(FILTER& f, int major = -1, int minor = -1, int rev = -1)
+{
     f.natronVersionMax.vMajor = major;
     f.natronVersionMax.vMinor = minor;
     f.natronVersionMax.vRev = rev;
 }
 
-class KnobNameFilters
-{
+class KnobNameFilters {
 public:
-
     std::vector<KnobNameFilter> filters;
 
     KnobNameFilters()
@@ -334,10 +324,8 @@ public:
     }
 };
 
-class KnobChoiceOptionFilters
-{
+class KnobChoiceOptionFilters {
 public:
-
     std::vector<KnobChoiceOptionFilter> filters;
 
     KnobChoiceOptionFilters()
@@ -426,34 +414,29 @@ static const KnobNameFilters knobNameFilters = KnobNameFilters();
 static const KnobChoiceOptionFilters knobChoiceOptionFilters = KnobChoiceOptionFilters();
 
 template <typename FILTER>
-bool matchKnobFilterInternal(const FILTER& filter, const std::string& name, const std::string& pluginID, int pluginVersionMajor, int pluginVersionMinor,
-                             int natronVersionMajor, int natronVersionMinor, int natronVersionRevision)
+bool
+matchKnobFilterInternal(const FILTER& filter, const std::string& name, const std::string& pluginID, int pluginVersionMajor, int pluginVersionMinor,
+                        int natronVersionMajor, int natronVersionMinor, int natronVersionRevision)
 {
     assert(!filter.replacement.empty());
 
     // match natron version
-    if ( natronVersionMajor != -1 &&
-        filter.natronVersionMin.vMajor != -1 &&
-        ( (natronVersionMajor < filter.natronVersionMin.vMajor) || // major < min.major
-         ( filter.natronVersionMin.vMinor != -1 &&
-          ( (natronVersionMajor == filter.natronVersionMin.vMajor &&  // major == min.major &&
-             natronVersionMinor < filter.natronVersionMin.vMinor) ||  //  minor < min.minor
-           ( filter.natronVersionMin.vRev != -1 &&
-            natronVersionMajor == filter.natronVersionMin.vMajor && // major == min.major &&
-            natronVersionMinor == filter.natronVersionMin.vMinor && // minor == min.minor &&
-            natronVersionRevision < filter.natronVersionMin.vRev) ) ) ) ) { // rev < min.rev
+    if (natronVersionMajor != -1 && filter.natronVersionMin.vMajor != -1 && ((natronVersionMajor < filter.natronVersionMin.vMajor) || // major < min.major
+                                                                             (filter.natronVersionMin.vMinor != -1 && ((natronVersionMajor == filter.natronVersionMin.vMajor && // major == min.major &&
+                                                                                                                        natronVersionMinor < filter.natronVersionMin.vMinor)
+                                                                                                                       || //  minor < min.minor
+                                                                                                                       (filter.natronVersionMin.vRev != -1 && natronVersionMajor == filter.natronVersionMin.vMajor && // major == min.major &&
+                                                                                                                        natronVersionMinor == filter.natronVersionMin.vMinor && // minor == min.minor &&
+                                                                                                                        natronVersionRevision < filter.natronVersionMin.vRev))))) { // rev < min.rev
         return false;
     }
-    if (natronVersionMajor != -1 &&
-        filter.natronVersionMax.vMajor != -1 &&
-        ( (natronVersionMajor > filter.natronVersionMax.vMajor) || // major > max.major
-         ( filter.natronVersionMax.vMinor != -1 &&
-          ( (natronVersionMajor == filter.natronVersionMax.vMajor &&  // major == max.major &&
-             natronVersionMinor > filter.natronVersionMax.vMinor) ||  //  minor > max.minor
-           ( filter.natronVersionMax.vRev != -1 &&
-            natronVersionMajor == filter.natronVersionMax.vMajor && // major == max.major &&
-            natronVersionMinor == filter.natronVersionMax.vMinor && // minor == max.minor &&
-            natronVersionRevision > filter.natronVersionMax.vRev) ) ) ) ) { // rev > max.rev
+    if (natronVersionMajor != -1 && filter.natronVersionMax.vMajor != -1 && ((natronVersionMajor > filter.natronVersionMax.vMajor) || // major > max.major
+                                                                             (filter.natronVersionMax.vMinor != -1 && ((natronVersionMajor == filter.natronVersionMax.vMajor && // major == max.major &&
+                                                                                                                        natronVersionMinor > filter.natronVersionMax.vMinor)
+                                                                                                                       || //  minor > max.minor
+                                                                                                                       (filter.natronVersionMax.vRev != -1 && natronVersionMajor == filter.natronVersionMax.vMajor && // major == max.major &&
+                                                                                                                        natronVersionMinor == filter.natronVersionMax.vMinor && // minor == max.minor &&
+                                                                                                                        natronVersionRevision > filter.natronVersionMax.vRev))))) { // rev > max.rev
         return false;
     }
 
@@ -467,20 +450,10 @@ bool matchKnobFilterInternal(const FILTER& filter, const std::string& name, cons
                     if (!it2->func(pluginID, it2->pluginID)) {
                         continue;
                     }
-                    if (pluginVersionMajor != -1 &&
-                        it2->pluginVersionMajorMin != -1 &&
-                        ( (pluginVersionMajor < it2->pluginVersionMajorMin) ||
-                         (it2->pluginVersionMinorMin != -1 &&
-                          pluginVersionMajor == it2->pluginVersionMajorMin &&
-                          pluginVersionMinor < it2->pluginVersionMinorMin) ) ) {
+                    if (pluginVersionMajor != -1 && it2->pluginVersionMajorMin != -1 && ((pluginVersionMajor < it2->pluginVersionMajorMin) || (it2->pluginVersionMinorMin != -1 && pluginVersionMajor == it2->pluginVersionMajorMin && pluginVersionMinor < it2->pluginVersionMinorMin))) {
                         return false;
                     }
-                    if (pluginVersionMajor != -1 &&
-                        it2->pluginVersionMajorMax != -1 &&
-                        ( (pluginVersionMajor > it2->pluginVersionMajorMax) ||
-                         (it2->pluginVersionMinorMax != -1 &&
-                          pluginVersionMajor == it2->pluginVersionMajorMax &&
-                          pluginVersionMinor > it2->pluginVersionMinorMax) ) ) {
+                    if (pluginVersionMajor != -1 && it2->pluginVersionMajorMax != -1 && ((pluginVersionMajor > it2->pluginVersionMajorMax) || (it2->pluginVersionMinorMax != -1 && pluginVersionMajor == it2->pluginVersionMajorMax && pluginVersionMinor > it2->pluginVersionMinorMax))) {
                         return false;
                     }
 
@@ -498,7 +471,6 @@ bool matchKnobFilterInternal(const FILTER& filter, const std::string& name, cons
         }
         return false;
     }
-
 
     return true;
 }
@@ -540,10 +512,8 @@ filterKnobChoiceOptionCompat(const std::string& pluginID, int pluginVersionMajor
                 }
             }
         }
-
     }
     return false;
 }
-
 
 NATRON_NAMESPACE_EXIT

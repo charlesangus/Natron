@@ -62,8 +62,8 @@ void
 userKnobLayoutToSerialization(const KnobIPtr& knob,
                               Serialization::GroupKnobSerialization* layout)
 {
-    KnobGroup* isGroup = dynamic_cast<KnobGroup*>( knob.get() );
-    KnobPage* isPage = dynamic_cast<KnobPage*>( knob.get() );
+    KnobGroup* isGroup = dynamic_cast<KnobGroup*>(knob.get());
+    KnobPage* isPage = dynamic_cast<KnobPage*>(knob.get());
 
     assert(isGroup || isPage);
 
@@ -82,11 +82,11 @@ userKnobLayoutToSerialization(const KnobIPtr& knob,
 
     for (std::size_t i = 0; i < children.size(); ++i) {
         // A page lists every knob below it; a knob inside a sub-group is saved by that group.
-        if ( isPage && (children[i]->getParentKnob().get() != isPage) ) {
+        if (isPage && (children[i]->getParentKnob().get() != isPage)) {
             continue;
         }
-        layout->children.push_back( Serialization::GroupKnobChildSerialization() );
-        Serialization::GroupKnobChildSerialization & child = layout->children.back();
+        layout->children.push_back(Serialization::GroupKnobChildSerialization());
+        Serialization::GroupKnobChildSerialization& child = layout->children.back();
         KnobGroupPtr isChildGroup = std::dynamic_pointer_cast<KnobGroup>(children[i]);
         if (isChildGroup) {
             child.isGroup = true;
@@ -102,7 +102,7 @@ nodeToSerialization(const NodePtr& node)
 {
     Serialization::NodeSerializationPtr serialization = std::make_shared<Serialization::NodeSerialization>();
 
-    node->toSerialization( serialization.get() );
+    node->toSerialization(serialization.get());
 
     return serialization;
 }
@@ -117,8 +117,8 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
     *serialization = Serialization::NodeSerialization();
 
     EffectInstancePtr effect = getEffectInstance();
-    if ( isOpenFXNode() ) {
-        OfxEffectInstance* ofxEffect = dynamic_cast<OfxEffectInstance*>( effect.get() );
+    if (isOpenFXNode()) {
+        OfxEffectInstance* ofxEffect = dynamic_cast<OfxEffectInstance*>(effect.get());
         assert(ofxEffect);
         if (ofxEffect) {
             ofxEffect->syncPrivateData_other_thread();
@@ -128,31 +128,31 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
     const std::vector<KnobIPtr> knobs = effect->getKnobs_mt_safe();
     std::list<KnobIPtr> userPages;
     for (std::size_t i = 0; i < knobs.size(); ++i) {
-        KnobGroup* isGroup = dynamic_cast<KnobGroup*>( knobs[i].get() );
-        KnobPage* isPage = dynamic_cast<KnobPage*>( knobs[i].get() );
+        KnobGroup* isGroup = dynamic_cast<KnobGroup*>(knobs[i].get());
+        KnobPage* isPage = dynamic_cast<KnobPage*>(knobs[i].get());
 
         if (isPage) {
-            serialization->pagesOrder.push_back( knobs[i]->getName() );
-            if ( knobs[i]->isUserKnob() ) {
+            serialization->pagesOrder.push_back(knobs[i]->getName());
+            if (knobs[i]->isUserKnob()) {
                 userPages.push_back(knobs[i]);
             }
         }
         // User knobs are saved within the layout of their user page.
-        if ( knobs[i]->isUserKnob() || isGroup || isPage ) {
+        if (knobs[i]->isUserKnob() || isGroup || isPage) {
             continue;
         }
 
         // A knob with an expression or a link is always saved, see
         // https://github.com/NatronGitHub/Natron/issues/585
         Serialization::KnobSerialization knobSerialization;
-        if ( knobs[i]->toSerialization(&knobSerialization) ) {
+        if (knobs[i]->toSerialization(&knobSerialization)) {
             serialization->knobs.push_back(knobSerialization);
         }
     }
 
     for (std::list<KnobIPtr>::const_iterator it = userPages.begin(); it != userPages.end(); ++it) {
-        serialization->userPages.push_back( Serialization::GroupKnobSerialization() );
-        userKnobLayoutToSerialization( *it, &serialization->userPages.back() );
+        serialization->userPages.push_back(Serialization::GroupKnobSerialization());
+        userKnobLayoutToSerialization(*it, &serialization->userPages.back());
     }
 
     serialization->knobsAge = getKnobsAge();
@@ -161,7 +161,7 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
     serialization->cacheID = getCacheID();
     serialization->pluginID = getPluginID();
 
-    if ( !hasPyPlugBeenEdited() ) {
+    if (!hasPyPlugBeenEdited()) {
         serialization->pythonModule = getPluginPythonModule();
         serialization->pythonModuleVersion = getMajorVersion();
     }
@@ -179,7 +179,7 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
     }
 
     RotoContextPtr roto = getRotoContext();
-    if ( roto && !roto->isEmpty() ) {
+    if (roto && !roto->isEmpty()) {
         serialization->hasRotoContext = true;
         roto->toSerialization(&serialization->rotoContext);
     }
@@ -195,8 +195,8 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
         NodesList groupNodes;
         isGroupNode->getActiveNodes(&groupNodes);
         for (NodesList::const_iterator it = groupNodes.begin(); it != groupNodes.end(); ++it) {
-            if ( (*it)->isPartOfProject() ) {
-                serialization->children.push_back( nodeToSerialization(*it) );
+            if ((*it)->isPartOfProject()) {
+                serialization->children.push_back(nodeToSerialization(*it));
             }
         }
     }
@@ -205,12 +205,12 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
 
     NodesList multiInstanceChildren;
     getChildrenMultiInstance(&multiInstanceChildren);
-    if ( !multiInstanceChildren.empty() ) {
+    if (!multiInstanceChildren.empty()) {
         assert(!isGroupNode);
         for (NodesList::const_iterator it = multiInstanceChildren.begin(); it != multiInstanceChildren.end(); ++it) {
-            assert( (*it)->getParentMultiInstance() );
-            if ( (*it)->isActivated() ) {
-                serialization->children.push_back( nodeToSerialization(*it) );
+            assert((*it)->getParentMultiInstance());
+            if ((*it)->isActivated()) {
+                serialization->children.push_back(nodeToSerialization(*it));
             }
         }
     }
@@ -225,8 +225,8 @@ NodeCollection::nodesToSerialization(Serialization::NodeCollectionSerialization*
     NodesList nodes;
     getActiveNodes(&nodes);
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
-        if ( !(*it)->getParentMultiInstance() && (*it)->isPartOfProject() ) {
-            serialization->nodes.push_back( nodeToSerialization(*it) );
+        if (!(*it)->getParentMultiInstance() && (*it)->isPartOfProject()) {
+            serialization->nodes.push_back(nodeToSerialization(*it));
         }
     }
 }
@@ -237,7 +237,7 @@ Project::toSerialization(Serialization::ProjectSerialization* serialization) con
     assert(serialization);
     *serialization = Serialization::ProjectSerialization();
 
-    Serialization::ProjectSavedByVersionSerialization & savedBy = serialization->savedByVersion;
+    Serialization::ProjectSavedByVersionSerialization& savedBy = serialization->savedByVersion;
     savedBy.versionMajor = NATRON_VERSION_MAJOR;
     savedBy.versionMinor = NATRON_VERSION_MINOR;
     savedBy.versionRevision = NATRON_VERSION_REVISION;
@@ -284,14 +284,12 @@ Project::toSerialization(Serialization::ProjectSerialization* serialization) con
 
     const std::vector<KnobIPtr> knobs = getKnobs_mt_safe();
     for (std::size_t i = 0; i < knobs.size(); ++i) {
-        KnobGroup* isGroup = dynamic_cast<KnobGroup*>( knobs[i].get() );
-        KnobPage* isPage = dynamic_cast<KnobPage*>( knobs[i].get() );
-        KnobButton* isButton = dynamic_cast<KnobButton*>( knobs[i].get() );
-        if ( knobs[i]->getIsPersistent() &&
-             !isGroup && !isPage && !isButton &&
-             knobs[i]->hasModificationsForSerialization() ) {
-            serialization->projectKnobs.push_back( Serialization::KnobSerialization() );
-            knobs[i]->toSerialization( &serialization->projectKnobs.back() );
+        KnobGroup* isGroup = dynamic_cast<KnobGroup*>(knobs[i].get());
+        KnobPage* isPage = dynamic_cast<KnobPage*>(knobs[i].get());
+        KnobButton* isButton = dynamic_cast<KnobButton*>(knobs[i].get());
+        if (knobs[i]->getIsPersistent() && !isGroup && !isPage && !isButton && knobs[i]->hasModificationsForSerialization()) {
+            serialization->projectKnobs.push_back(Serialization::KnobSerialization());
+            knobs[i]->toSerialization(&serialization->projectKnobs.back());
         }
     }
 
@@ -313,10 +311,9 @@ Project::fromSerialization(const Serialization::ProjectSerialization& serializat
 void
 ProjectPrivate::setProjectBeingLoadedInfo(const Serialization::ProjectSerialization& serialization) const
 {
-    const Serialization::ProjectSavedByVersionSerialization & savedBy = serialization.savedByVersion;
+    const Serialization::ProjectSavedByVersionSerialization& savedBy = serialization.savedByVersion;
     // Files between these versions only name the saving build when its version string parsed.
-    const bool fileNamesSavingBuild = (serialization.version >= NATRON_SERIALIZATION_PROJECT_CHANGE_VERSION_SERIALIZATION) ||
-                                      ( (serialization.version >= NATRON_SERIALIZATION_PROJECT_INTRODUCES_NATRON_VERSION) && (savedBy.versionMajor != -1) );
+    const bool fileNamesSavingBuild = (serialization.version >= NATRON_SERIALIZATION_PROJECT_CHANGE_VERSION_SERIALIZATION) || ((serialization.version >= NATRON_SERIALIZATION_PROJECT_INTRODUCES_NATRON_VERSION) && (savedBy.versionMajor != -1));
     if (!fileNamesSavingBuild) {
         return;
     }
@@ -339,7 +336,7 @@ ProjectPrivate::restoreFromSerialization(const Serialization::ProjectSerializati
 {
     std::list<Format> serializedAdditionalFormats;
     for (std::list<Serialization::FormatSerialization>::const_iterator it = serialization.additionalFormats.begin(); it != serialization.additionalFormats.end(); ++it) {
-        serializedAdditionalFormats.push_back( Format(it->x1, it->y1, it->x2, it->y2, it->name, it->pixelAspectRatio) );
+        serializedAdditionalFormats.push_back(Format(it->x1, it->y1, it->x2, it->y2, it->name, it->pixelAspectRatio));
     }
 
     std::list<LayerRegistryEntry> serializedLayers;

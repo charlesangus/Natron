@@ -86,7 +86,6 @@ CLANG_DIAG_ON(unknown-pragmas)
 
 #include "Serialization/NodeSerialization.h"
 
-
 NATRON_NAMESPACE_ENTER
 
 using std::cout; using std::endl; using std::string;
@@ -411,9 +410,9 @@ OfxEffectInstance::createOfxImageEffectInstance(OFX::Host::ImageEffect::ImageEff
 #ifndef NATRON_ENABLE_IO_META_NODES
                                                 ,
                                                 bool allowFileDialogs,
-                                                bool *hasUsedFileDialog
+                                                bool* hasUsedFileDialog
 #endif
-                                                )
+)
 {
     /*Replicate of the code in OFX::Host::ImageEffect::ImageEffectPlugin::createInstance.
        We need to pass more parameters to the constructor . That means we cannot
@@ -574,9 +573,9 @@ OfxEffectInstance::createOfxImageEffectInstance(OFX::Host::ImageEffect::ImageEff
 #ifndef NATRON_ENABLE_IO_META_NODES
             //////////////////////////////////////////////////////
             ///////For READERS & WRITERS only we open an image file dialog
-            if ( !getApp()->isCreatingPythonGroup() && allowFileDialogs && isReader() && !serialization && paramValues.empty() ) {
+            if (!getApp()->isCreatingPythonGroup() && allowFileDialogs && isReader() && !serialization && paramValues.empty()) {
                 images = getApp()->openImageFileDialog();
-            } else if ( !getApp()->isCreatingPythonGroup() && allowFileDialogs && isWriter() && !serialization  && paramValues.empty() ) {
+            } else if (!getApp()->isCreatingPythonGroup() && allowFileDialogs && isWriter() && !serialization && paramValues.empty()) {
                 images = getApp()->saveImageFileDialog();
             }
             if ( !images.empty() ) {
@@ -655,7 +654,6 @@ OfxEffectInstance::createOfxImageEffectInstance(OFX::Host::ImageEffect::ImageEff
                 }
             }
         }
-
 
         if (isReader() && serialization) {
             getNode()->refreshCreatedViews(true /*silent*/);

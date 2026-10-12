@@ -326,10 +326,9 @@ class LoadNodePresetsCommand
     Q_DECLARE_TR_FUNCTIONS(LoadNodePresetsCommand)
 
 public:
-
-    LoadNodePresetsCommand(const NodeGuiPtr & node,
+    LoadNodePresetsCommand(const NodeGuiPtr& node,
                            const std::list<Serialization::NodeSerializationPtr>& serialization,
-                           QUndoCommand *parent = 0);
+                           QUndoCommand* parent = 0);
 
     virtual ~LoadNodePresetsCommand();
     virtual void undo();

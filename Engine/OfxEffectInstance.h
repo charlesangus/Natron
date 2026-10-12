@@ -72,10 +72,12 @@ public:
                                               const Serialization::NodeSerialization* serialization,
                                               const CreateNodeArgs& args
 #ifndef NATRON_ENABLE_IO_META_NODES
-                                              , bool allowFileDialogs,
-                                              bool *hasUsedFileDialog
+                                              ,
+                                              bool allowFileDialogs,
+                                              bool* hasUsedFileDialog
 #endif
-                                              ) = 0;
+                                              )
+        = 0;
     static QStringList makePluginGrouping(const std::string & pluginIdentifier,
                                           int versionMajor, int versionMinor,
                                           const std::string & pluginLabel,
@@ -106,8 +108,9 @@ public:
                                       const Serialization::NodeSerialization* serialization,
                                       const CreateNodeArgs& args
 #ifndef NATRON_ENABLE_IO_META_NODES
-                                      , bool allowFileDialogs,
-                                      bool *hasUsedFileDialog
+                                      ,
+                                      bool allowFileDialogs,
+                                      bool* hasUsedFileDialog
 #endif
                                       ) OVERRIDE FINAL;
 

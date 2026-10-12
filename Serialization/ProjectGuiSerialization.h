@@ -100,8 +100,7 @@ namespace Serialization {
  * nodeName is the node's fully qualified script name; a name read from a file older than
  * NATRON_SERIALIZATION_NODE_GUI_MERGE_BACKDROP is already converted to a script name.
  **/
-struct NodeGuiSerialization
-{
+struct NodeGuiSerialization {
     // The class version the node GUI was loaded from, NATRON_SERIALIZATION_NODE_GUI_VERSION
     // otherwise.
     unsigned int version;
@@ -184,8 +183,7 @@ bool resolveNodeGuiUserColor(const NodeGuiSerialization& node,
  * @brief A backdrop as files older than NATRON_SERIALIZATION_PROJECT_GUI_MERGE_BACKDROP saved
  * it, apart from the nodes. Newer files save backdrops as nodes and never write this.
  **/
-struct NodeBackdropSerialization
-{
+struct NodeBackdropSerialization {
     double positionX;
     double positionY;
     int width;
@@ -224,8 +222,7 @@ struct NodeBackdropSerialization
  * toolbars, playback settings and active inputs. Fields a loaded file does not save hold the
  * values the viewer had before they existed.
  **/
-struct ViewerDataSerialization
-{
+struct ViewerDataSerialization {
     // The class version the viewer data was loaded from, NATRON_SERIALIZATION_VIEWER_DATA_VERSION
     // otherwise.
     unsigned int version;
@@ -325,8 +322,7 @@ struct ViewerDataSerialization
  * @brief A Python panel the user opened: its label, the Python function that creates it, the
  * parameters it holds and the data its save function returned.
  **/
-struct PythonPanelSerialization
-{
+struct PythonPanelSerialization {
     std::string name;
     std::string pythonFunction;
     std::list<KnobSerialization> knobs;
@@ -338,8 +334,7 @@ struct PythonPanelSerialization
  * whether it is the anchor pane new viewers go to. Tab names read from a file older than
  * NATRON_SERIALIZATION_PANE_INTRODUCES_SCRIPT_NAME are already converted to script names.
  **/
-struct PaneLayoutSerialization
-{
+struct PaneLayoutSerialization {
     std::list<std::string> tabs;
     int currentIndex;
 
@@ -359,8 +354,7 @@ struct PaneLayoutSerialization
 /**
  * @brief One side of a splitter: a nested splitter when splitter is set, a pane otherwise.
  **/
-struct SplitterChildSerialization
-{
+struct SplitterChildSerialization {
     std::shared_ptr<SplitterSerialization> splitter;
     std::shared_ptr<PaneLayoutSerialization> pane;
 };
@@ -369,8 +363,7 @@ struct SplitterChildSerialization
  * @brief A splitter: the sizes of its two sides as Splitter::serializeNatron() writes them, its
  * orientation as the value of OrientationEnum, and its two sides.
  **/
-struct SplitterSerialization
-{
+struct SplitterSerialization {
     std::string sizes;
     int orientation;
     std::vector<SplitterChildSerialization> children;
@@ -388,8 +381,7 @@ struct SplitterSerialization
  * splitter, a pane, or for a floating window the settings panel named childDockablePanel), and
  * its position and size. At most one of childSplitter, childPane and childDockablePanel is set.
  **/
-struct ApplicationWindowSerialization
-{
+struct ApplicationWindowSerialization {
     std::shared_ptr<SplitterSerialization> childSplitter;
     std::shared_ptr<PaneLayoutSerialization> childPane;
 
@@ -419,8 +411,7 @@ struct ApplicationWindowSerialization
 /**
  * @brief The layout of the application: its windows, the main window first.
  **/
-struct GuiLayoutSerialization
-{
+struct GuiLayoutSerialization {
     std::list<ApplicationWindowSerialization> windows;
 
     // Only read from layouts older than NATRON_SERIALIZATION_GUI_LAYOUT_MAJOR_OVERHAUL or
@@ -434,8 +425,7 @@ struct GuiLayoutSerialization
  * @brief The GUI section of a project file: the node graph state of the nodes, the layout, the
  * viewers, histograms, opened settings panels and Python panels, and the script editor input.
  **/
-struct ProjectGuiSerialization
-{
+struct ProjectGuiSerialization {
     // The class version the GUI section was loaded from, NATRON_SERIALIZATION_PROJECT_GUI_VERSION
     // otherwise.
     unsigned int version;

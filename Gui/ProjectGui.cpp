@@ -39,14 +39,13 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
-
 #include "Engine/Backdrop.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
-#include "Engine/PyParameter.h" // Param
 #include "Engine/Project.h"
+#include "Engine/PyParameter.h" // Param
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/Settings.h"
@@ -77,7 +76,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/TabWidget.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
-
 
 NATRON_NAMESPACE_ENTER
 

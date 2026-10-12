@@ -242,7 +242,6 @@ public:
      **/
     void fromSerialization(const Serialization::RotoContextSerialization& serialization);
 
-
     /**
      * @brief This must be called by the GUI whenever an item is selected. This is recursive for layers.
      **/

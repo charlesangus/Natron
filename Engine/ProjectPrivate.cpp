@@ -40,7 +40,6 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
-#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -53,7 +52,6 @@
 
 #include "Serialization/KnobSerialization.h"
 #include "Serialization/NodeSerialization.h"
-
 
 NATRON_NAMESPACE_ENTER
 
@@ -173,14 +171,14 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
         for (U32 i = 0; i < projectKnobs.size(); ++i) {
             ///try to find a serialized value for this knob
             for (std::list<Serialization::KnobSerialization>::const_iterator it = projectSerializedValues.begin(); it != projectSerializedValues.end(); ++it) {
-                if ( NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) == projectKnobs[i]->getName() ) {
+                if (NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) == projectKnobs[i]->getName()) {
                     // Non persistent knobs are loaded too when the project saved a value for them.
                     KnobIPtr serializedKnob = createDetachedKnobFromSerialization(*it);
                     KnobChoice* isChoice = dynamic_cast<KnobChoice*>( projectKnobs[i].get() );
                     if (isChoice) {
-                        KnobChoice* choiceSerialized = dynamic_cast<KnobChoice*>( serializedKnob.get() );
+                        KnobChoice* choiceSerialized = dynamic_cast<KnobChoice*>(serializedKnob.get());
                         if (choiceSerialized && it->choiceOptionID) {
-                            const std::string & optionID = *it->choiceOptionID;
+                            const std::string& optionID = *it->choiceOptionID;
                             int id = isChoice->choiceRestorationId(choiceSerialized, optionID);
                             isChoice->choiceRestoration(choiceSerialized, optionID, id);
                         }
@@ -210,7 +208,6 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
 
         /// 2) restore the timeline
         timeline->seekFrame(currentTime, false, 0, eTimelineChangeReasonOtherSeek);
-
 
         /// 3) Restore the nodes
 

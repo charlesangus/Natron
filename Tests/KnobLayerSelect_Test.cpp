@@ -47,8 +47,8 @@
 #include "Engine/Node.h"
 #include "Engine/OfxMultiplaneChoice.h"
 
-#include "Serialization/KnobSerialization.h"
 #include "Serialization/BoostXml/KnobXml.h"
+#include "Serialization/KnobSerialization.h"
 
 NATRON_NAMESPACE_USING
 

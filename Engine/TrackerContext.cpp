@@ -37,20 +37,19 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
-
 #include "Engine/AppInstance.h"
+#include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/KnobTypes.h"
 #include "Engine/Project.h"
-#include "Engine/Curve.h"
-#include "Engine/Timer.h" // gettimeofday()
 #include "Engine/TLSHolder.h"
-#include "Engine/Transform.h"
+#include "Engine/Timer.h" // gettimeofday()
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContextPrivate.h"
+#include "Engine/Transform.h"
 #include "Engine/ViewerInstance.h"
 
 #include "Serialization/TrackerSerialization.h"
@@ -126,8 +125,8 @@ TrackerContext::toSerialization(Serialization::TrackerContextSerialization* seri
     QMutexLocker k(&_imp->trackerContextMutex);
 
     for (std::size_t i = 0; i < _imp->markers.size(); ++i) {
-        serialization->tracks.push_back( Serialization::TrackSerialization() );
-        _imp->markers[i]->toSerialization( &serialization->tracks.back() );
+        serialization->tracks.push_back(Serialization::TrackSerialization());
+        _imp->markers[i]->toSerialization(&serialization->tracks.back());
     }
 }
 

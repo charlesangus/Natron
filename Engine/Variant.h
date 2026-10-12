@@ -42,8 +42,7 @@ CLANG_DIAG_ON(deprecated)
 NATRON_NAMESPACE_ENTER
 
 class Variant
-    : public QVariant
-{
+    : public QVariant {
 public:
 
     Variant()

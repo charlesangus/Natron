@@ -88,7 +88,6 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/DockablePanel.h"
 #include "Gui/DopeSheetEditor.h"
 #include "Gui/FloatingWidget.h"
-#include "Gui/QtEnumConvert.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
@@ -100,10 +99,11 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/PreferencesPanel.h"
+#include "Gui/ProgressPanel.h"
 #include "Gui/ProjectGui.h"
 #include "Gui/PropertiesBinWrapper.h"
-#include "Gui/ProgressPanel.h"
 #include "Gui/PythonPanels.h"
+#include "Gui/QtEnumConvert.h"
 #include "Gui/RightClickableWidget.h"
 #include "Gui/ScriptEditor.h"
 #include "Gui/SequenceFileDialog.h"
@@ -113,7 +113,6 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/ToolButton.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
-
 
 NATRON_NAMESPACE_ENTER
 GuiPrivate::GuiPrivate(const GuiAppInstancePtr& app,

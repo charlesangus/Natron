@@ -56,8 +56,8 @@
 
 #include "Global/QtCompat.h" // removeFileExtension
 
-#include "Serialization/ProjectGuiSerialization.h"
 #include "Serialization/BoostXml/ProjectGuiXml.h"
+#include "Serialization/ProjectGuiSerialization.h"
 
 #ifdef __NATRON_WIN32__
 #if _WIN32_WINNT < 0x0500

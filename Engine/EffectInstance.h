@@ -2171,7 +2171,7 @@ public:
         return false;
     }
 
-    virtual void onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& /*serialization*/) {}
+    virtual void onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& /*serialization*/) { }
 
     virtual void onKnobsLoaded() {}
 

@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: [M45.P8.T3 build (queued), M56 UAT, M76 UAT round 2, M27.P1.T1, M93.P1.T1, M85 elaboration]
-pm_heartbeat: 2026-10-12T01:02:02-04:00
+current: [M45.P8.T3 build (queued), M56 UAT, M76 UAT round 2, M27.P1.T1, M93.P1.T1, M85.P1.T1]
+pm_heartbeat: 2026-10-12T01:02:15-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -191,6 +191,7 @@ future core work has solid ground to build on.
   **M102–M106 (live sessions + graph merge) added 2026-10-11 via the inbox (user-requested), renumbered from M95–M99 on 2026-10-12 because those IDs were already taken:** M102 - Graph Edit Operations is the shared foundation (persistent node ID, plain-data edit operations). M103 - Graph Diff And Merge and M104 - Merge Resolution UI deliver three-way template merge. M105 - Live Session Core and M106 - Live Session Presence And Undo deliver live multi-user editing. All of it runs after M16 - Project Format Redesign. See `DECISIONS/2026-10-11-live-sessions-and-graph-merge.md`.
   **M100 - Content Node Hashing added 2026-10-11 (user):** content (Merkle) node hashes replace `knobsAge`; see `DECISIONS/2026-10-11-content-node-hashing.md`. **M101 - Clean-Sheet Merge Node added 2026-10-12 (user):** a new native `fr.natron.Merge` after M84 - GPU Placement And Residency replaces the openfx-misc Merge port with no compatibility, and M85 - Native GPU Kernels no longer ports Merge; see `DECISIONS/2026-10-12-clean-sheet-merge.md`.
   **M84 shipped 2026-10-12** (PR #54, squash `6fcf9c4fa`): Vulkan compute + Slang is in the main build, the default GPU mode is Auto, Grade and Blur (FIR Gaussian) run on the GPU, and resident regions pipeline their strips on the transfer queue. Hand-offs are in M85 - Native GPU Kernels and M86 - OFX 1.5 GPU Suites.
+  **M85 split (user, 2026-10-12):** M85 - Native GPU Kernels covers the kernel description, the per-pixel mask/mix/premult wrapping (`pixelwrap.slang`) and the node ports (Grade and Blur complete, point ops, keyers, morphology, Transform). Split off from it: M107 - GPU Viewer Hand-off, M108 - Retire Engine GL Host Path (separate from M86, runs before it), M109 - GPU Region Engine Hardening and M110 - Remaining Native GPU Ports.
   **M73 shipped 2026-10-08** (PR #43, squash `cb04295b9`): openfx-misc pinned to its merge commit `9fb0d0904`; every fork's SupportExt pin is now on openfx-supportext master; merged stack branches and `build/wt/` worktrees removed (M64 benchmarks saved to `build/bench/from-wt-m64/`).
 
   **M24 shipped 2026-10-10** (PR #50, squash `a50bef552`). Nodes take their body colour from a category, and the user colour is a ring outside the node. Category and edge-kind colours are set in Preferences and applied on Save. Labels pick black or white text for contrast, and Dots get a settings panel.
@@ -254,8 +255,12 @@ future core work has solid ground to build on.
 | M101 | Clean-Sheet Merge Node | todo | M84 | [M101-clean-sheet-merge-node.md](PLAN/MILESTONES/M101-clean-sheet-merge-node.md) |
 | M81 | Raw GPU Kernels | todo |  | [M81-raw-gpu-kernels.md](PLAN/MILESTONES/M81-raw-gpu-kernels.md) |
 | M85 | Native GPU Kernels | doing |  | [M85-native-gpu-kernels.md](PLAN/MILESTONES/M85-native-gpu-kernels.md) |
+| M107 | GPU Viewer Hand-off | todo | M85 | [M107-gpu-viewer-hand-off.md](PLAN/MILESTONES/M107-gpu-viewer-hand-off.md) |
+| M108 | Retire Engine GL Host Path | todo | M85 | [M108-retire-engine-gl-host-path.md](PLAN/MILESTONES/M108-retire-engine-gl-host-path.md) |
 | M86 | OFX 1.5 GPU Suites | todo |  | [M86-ofx-gpu-suites.md](PLAN/MILESTONES/M86-ofx-gpu-suites.md) |
 | M87 | Point-Op Kernel Fusion | todo |  | [M87-point-op-kernel-fusion.md](PLAN/MILESTONES/M87-point-op-kernel-fusion.md) |
+| M109 | GPU Region Engine Hardening | todo | M85 | [M109-gpu-region-engine-hardening.md](PLAN/MILESTONES/M109-gpu-region-engine-hardening.md) |
+| M110 | Remaining Native GPU Ports | todo | M85, M109 | [M110-remaining-native-gpu-ports.md](PLAN/MILESTONES/M110-remaining-native-gpu-ports.md) |
 | M88 | FIR Gaussian Blur | done |  | [M88-fir-gaussian-blur.md](PLAN/MILESTONES/M88-fir-gaussian-blur.md) |
 | M89 | Shared Worktree Ccache | done | - | [M89-shared-worktree-ccache.md](PLAN/MILESTONES/M89-shared-worktree-ccache.md) |
 | M90 | Render Path Serial Overhead | todo |  | [M90-render-path-serial-overhead.md](PLAN/MILESTONES/M90-render-path-serial-overhead.md) |

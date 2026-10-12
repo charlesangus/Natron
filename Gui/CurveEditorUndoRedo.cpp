@@ -634,16 +634,17 @@ MoveTangentCommand::MoveTangentCommand(CurveWidget* widget,
                                        SelectedTangentEnum deriv,
                                        const KeyPtr& key,
                                        double dx,
-                                       double dy,           //< dx dy relative to the center of the keyframe
+                                       double dy, //< dx dy relative to the center of the keyframe
                                        bool updateOnFirstRedo,
-                                       QUndoCommand *parent)
+                                       bool forceBreak,
+                                       QUndoCommand* parent)
     : QUndoCommand(parent)
     , _widget(widget)
     , _key(key)
     , _deriv(deriv)
-    , _oldInterp( key->key.getInterpolation() )
-    , _oldLeft( key->key.getLeftDerivative() )
-    , _oldRight( key->key.getRightDerivative() )
+    , _oldInterp(key->key.getInterpolation())
+    , _oldLeft(key->key.getLeftDerivative())
+    , _oldRight(key->key.getRightDerivative())
     , _setBoth(false)
     , _updateOnFirstRedo(updateOnFirstRedo)
     , _firstRedoCalled(false)
@@ -676,6 +677,12 @@ MoveTangentCommand::MoveTangentCommand(CurveWidget* widget,
                                             interp == eKeyframeTypeCubic ||
                                             interp == eKeyframeTypeFree);
     _setBoth = keyframeIsFirstOrLast ? interpIsCatmullRomOrCubicOrFree  || internalCurve->isCurvePeriodic() : interpIsNotBroken;
+
+    // Ctrl-drag always breaks the key, even one whose first/last or periodic status would
+    // otherwise keep both sides linked.
+    if (forceBreak) {
+        _setBoth = false;
+    }
 
     bool isLeft;
     if (deriv == eSelectedTangentLeft) {
@@ -825,6 +832,88 @@ MoveTangentCommand::mergeWith(const QUndoCommand * command)
     } else {
         return false;
     }
+}
+
+/////////////////////////// JoinTangentsCommand
+
+double
+joinedDerivative(double left,
+                 double right)
+{
+    return std::tan((std::atan(left) + std::atan(right)) / 2.);
+}
+
+JoinTangentsCommand::JoinTangentsCommand(CurveWidget* widget,
+                                         const SelectedKeys& keys,
+                                         QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , _keys()
+    , _widget(widget)
+{
+    for (SelectedKeys::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        for (std::list<KeyPtr>::const_iterator it2 = it->second.begin(); it2 != it->second.end(); ++it2) {
+            const KeyPtr& key = *it2;
+            if (key->key.getInterpolation() != eKeyframeTypeBroken) {
+                continue;
+            }
+
+            JoinedTangentChange change;
+            change.key = key;
+            change.oldInterp = eKeyframeTypeBroken;
+            change.oldLeft = key->key.getLeftDerivative();
+            change.oldRight = key->key.getRightDerivative();
+            change.joined = joinedDerivative(change.oldLeft, change.oldRight);
+            _keys.push_back(change);
+        }
+    }
+    setText(tr("Join tangents"));
+}
+
+void
+JoinTangentsCommand::setNewDerivatives(bool undo)
+{
+    for (std::list<JoinedTangentChange>::iterator it = _keys.begin(); it != _keys.end(); ++it) {
+        KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>(it->key->curve.get());
+        if (!isKnobCurve) {
+            continue;
+        }
+
+        KnobIPtr attachedKnob = isKnobCurve->getInternalKnob();
+        assert(attachedKnob);
+        KnobParametric* isParametric = dynamic_cast<KnobParametric*>(attachedKnob.get());
+        double left = undo ? it->oldLeft : it->joined;
+        double right = undo ? it->oldRight : it->joined;
+        KeyframeTypeEnum interp = undo ? it->oldInterp : eKeyframeTypeFree;
+
+        if (!isParametric) {
+            attachedKnob->beginChanges();
+            attachedKnob->moveDerivativesAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), it->key->key.getTime(), left, right);
+            attachedKnob->setInterpolationAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), it->key->key.getTime(), interp, &it->key->key);
+            attachedKnob->endChanges();
+        } else {
+            int keyframeIndexInCurve = it->key->curve->getInternalCurve()->keyFrameIndex(it->key->key.getTime());
+            it->key->key = it->key->curve->getInternalCurve()->setKeyFrameInterpolation(interp, keyframeIndexInCurve);
+            it->key->key = it->key->curve->getInternalCurve()->setKeyFrameDerivatives(left, right, keyframeIndexInCurve);
+            attachedKnob->evaluateValueChange(isKnobCurve->getDimension(), it->key->key.getTime(), ViewIdx(0), eValueChangedReasonUserEdited);
+        }
+
+        // Null when a unit test exercises the command without a real curve widget behind it.
+        if (_widget) {
+            _widget->refreshCurveDisplayTangents(it->key->curve.get());
+        }
+    }
+}
+
+void
+JoinTangentsCommand::undo()
+{
+    setNewDerivatives(true);
+}
+
+void
+JoinTangentsCommand::redo()
+{
+    setNewDerivatives(false);
 }
 
 TransformKeysCommand::TransformKeysCommand(CurveWidget* widget,

@@ -304,14 +304,14 @@ public:
         eSelectedTangentRight
     };
 
-
     MoveTangentCommand(CurveWidget* widget,
                        SelectedTangentEnum deriv,
                        const KeyPtr& key,
                        double dx,
                        double dy,
                        bool updateOnFirstRedo,
-                       QUndoCommand *parent = 0);
+                       bool forceBreak = false,
+                       QUndoCommand* parent = 0);
 
     MoveTangentCommand(CurveWidget* widget,
                        SelectedTangentEnum deriv,
@@ -342,6 +342,42 @@ private:
     bool _setBoth;
     bool _updateOnFirstRedo;
     bool _firstRedoCalled;
+};
+
+// The slope of the mean of the two tangent angles, so joining a 45-degree rise with a
+// flat run gives a 22.5-degree slope rather than splitting the difference in run/rise space.
+double joinedDerivative(double left, double right);
+
+class JoinTangentsCommand
+    : public QUndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(JoinTangentsCommand)
+
+public:
+    JoinTangentsCommand(CurveWidget* widget,
+                        const SelectedKeys& keys,
+                        QUndoCommand* parent = 0);
+
+    virtual ~JoinTangentsCommand() OVERRIDE
+    {
+    }
+
+private:
+    virtual void undo() OVERRIDE FINAL;
+    virtual void redo() OVERRIDE FINAL;
+
+    void setNewDerivatives(bool undo);
+
+private:
+    struct JoinedTangentChange {
+        KeyPtr key;
+        KeyframeTypeEnum oldInterp;
+        double oldLeft;
+        double oldRight;
+        double joined;
+    };
+
+    std::list<JoinedTangentChange> _keys;
+    CurveWidget* _widget;
 };
 
 class TransformKeysCommand

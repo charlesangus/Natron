@@ -1080,6 +1080,7 @@ CurveWidget::mousePressEvent(QMouseEvent* e)
         _imp->_mustSetDragOrientation = true;
         _imp->_state = eEventStateDraggingTangent;
         _imp->_selectedDerivative = selectedTan;
+        _imp->_tangentDragForceBreak = modCASIsControl(e);
         _imp->_lastMousePos = e->pos();
         //no need to set _imp->_dragStartPoint
         update();
@@ -1240,6 +1241,13 @@ CurveWidget::mouseReleaseEvent(QMouseEvent*)
     }
 
     if (prevState == eEventStateSelecting) { // should other cases be considered?
+        update();
+    }
+
+    if ((prevState == eEventStateDraggingTangent) && _imp->_selectedDerivative.second) {
+        // The dragged handle was drawn at the cursor; now that the drag is over, put it back at
+        // its real, clamped length.
+        _imp->refreshKeyTangents(_imp->_selectedDerivative.second);
         update();
     }
 } // CurveWidget::mouseReleaseEvent
@@ -1617,6 +1625,8 @@ CurveWidget::keyPressEvent(QKeyEvent* e)
         breakDerivativesForSelectedKeyFrames();
     } else if (isKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorFree, modifiers, key)) {
         freeInterpForSelectedKeyFrames();
+    } else if (isKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorJoin, modifiers, key)) {
+        joinTangentsForSelectedKeyFrames();
     } else if (isKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorCenterAll, modifiers, key)) {
         frameAll();
     } else if (isKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorCenter, modifiers, key)) {
@@ -1786,6 +1796,15 @@ CurveWidget::freeInterpForSelectedKeyFrames()
     assert(qApp && qApp->thread() == QThread::currentThread());
 
     _imp->setSelectedKeysInterpolation(eKeyframeTypeFree);
+}
+
+void
+CurveWidget::joinTangentsForSelectedKeyFrames()
+{
+    // always running in the main thread
+    assert(qApp && qApp->thread() == QThread::currentThread());
+
+    pushUndoCommand(new JoinTangentsCommand(this, _imp->_selectedKeyFrames));
 }
 
 void

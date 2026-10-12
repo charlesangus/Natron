@@ -532,6 +532,8 @@ CLANG_DIAG_ON(uninitialized)
 
 #define kShortcutIDActionCurveEditorFree "free"
 #define kShortcutDescActionCurveEditorFree "Free Interpolation"
+#define kShortcutIDActionCurveEditorJoin "join"
+#define kShortcutDescActionCurveEditorJoin "Join"
 
 #define kShortcutIDActionCurveEditorSelectAll "selectAll"
 #define kShortcutDescActionCurveEditorSelectAll "Select All Keyframes"

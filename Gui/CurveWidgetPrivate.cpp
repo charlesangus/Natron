@@ -94,6 +94,8 @@ CurveWidgetPrivate::CurveWidgetPrivate(Gui* gui,
     , _timeline(timeline)
     , _timelineEnabled(bool(timeline))
     , _selectedDerivative()
+    , _tangentDragForceBreak(false)
+    , _tangentDragCursorPos()
     , _evaluateOnPenUp(false)
     , _keyDragLastMovement()
     , _undoStack(new QUndoStack)
@@ -256,6 +258,11 @@ CurveWidgetPrivate::createMenu()
                                                  kShortcutDescActionCurveEditorFree, interpMenu);
     QObject::connect(freeInterp, SIGNAL(triggered()), _widget, SLOT(freeInterpForSelectedKeyFrames()));
     interpMenu->addAction(freeInterp);
+    QAction* joinTangents = new ActionWithShortcut(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorJoin,
+                                                   kShortcutDescActionCurveEditorJoin, interpMenu);
+    joinTangents->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_X));
+    QObject::connect(joinTangents, SIGNAL(triggered()), _widget, SLOT(joinTangentsForSelectedKeyFrames()));
+    interpMenu->addAction(joinTangents);
 
     QAction* frameAll = new ActionWithShortcut(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorCenterAll,
                                                kShortcutDescActionCurveEditorCenterAll, interpMenu);
@@ -1461,7 +1468,12 @@ CurveWidgetPrivate::moveSelectedTangent(const QPointF & pos)
     ///to modifying the keyframe, and set it back to its original value afterwards.
     bool updateOnPenUpOnly = appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
 
-    _widget->pushUndoCommand( new MoveTangentCommand(_widget, _selectedDerivative.first, key, dx, dy, !updateOnPenUpOnly) );
+    // Follow the cursor rather than the (clamped, derivative-derived) handle length refreshKeyTangents()
+    // would otherwise give it: the true length is a hint for where to drop the mouse, not a place to snap to.
+    // The command's redo(), below, is what calls refreshKeyTangents() for this key.
+    _tangentDragCursorPos = pos;
+
+    _widget->pushUndoCommand(new MoveTangentCommand(_widget, _selectedDerivative.first, key, dx, dy, !updateOnPenUpOnly, _tangentDragForceBreak));
 } // moveSelectedTangent
 
 void
@@ -1537,6 +1549,18 @@ CurveWidgetPrivate::refreshKeyTangents(KeyPtr & key)
     key->leftTan.second = leftTanY;
     key->rightTan.first = rightTanX;
     key->rightTan.second = rightTanY;
+
+    // The handle being dragged draws at the cursor, not at the clamped length above; it snaps
+    // back to that length as soon as the drag ends (_state leaves eEventStateDraggingTangent).
+    if ((_state == eEventStateDraggingTangent) && (_selectedDerivative.second == key)) {
+        if (_selectedDerivative.first == MoveTangentCommand::eSelectedTangentLeft) {
+            key->leftTan.first = _tangentDragCursorPos.x();
+            key->leftTan.second = _tangentDragCursorPos.y();
+        } else {
+            key->rightTan.first = _tangentDragCursorPos.x();
+            key->rightTan.second = _tangentDragCursorPos.y();
+        }
+    }
 } // refreshKeyTangents
 
 void

@@ -207,6 +207,7 @@ public Q_SLOTS:
     void breakDerivativesForSelectedKeyFrames();
 
     void freeInterpForSelectedKeyFrames();
+    void joinTangentsForSelectedKeyFrames();
 
     void frameAll();
 

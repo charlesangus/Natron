@@ -173,6 +173,8 @@ public:
     TimeLinePtr _timeline;
     bool _timelineEnabled;
     std::pair<MoveTangentCommand::SelectedTangentEnum, KeyPtr> _selectedDerivative;
+    bool _tangentDragForceBreak; //< Ctrl was held when the tangent drag started
+    QPointF _tangentDragCursorPos; //< zoom coordinates of the cursor, while a tangent is being dragged
     bool _evaluateOnPenUp; //< true if we must re-evaluate the nodes associated to the selected keyframes on penup
     QPointF _keyDragLastMovement;
     std::unique_ptr<QUndoStack> _undoStack;

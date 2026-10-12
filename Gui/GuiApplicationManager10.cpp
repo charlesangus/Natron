@@ -969,6 +969,7 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorHorizontal, kShortcutDescActionCurveEditorHorizontal, Qt::NoModifier, Qt::Key_H);
     registerKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorBreak, kShortcutDescActionCurveEditorBreak, Qt::NoModifier, Qt::Key_X);
     registerKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorFree, kShortcutDescActionCurveEditorFree, Qt::NoModifier, (Qt::Key)0);
+    registerKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorJoin, kShortcutDescActionCurveEditorJoin, Qt::ShiftModifier, Qt::Key_X);
     registerKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorSelectAll, kShortcutDescActionCurveEditorSelectAll, Qt::ControlModifier, Qt::Key_A);
     registerKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorCenterAll, kShortcutDescActionCurveEditorCenterAll
                     , Qt::NoModifier, Qt::Key_A);

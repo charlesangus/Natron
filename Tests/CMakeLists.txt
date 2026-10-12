@@ -164,6 +164,7 @@ set(GuiTests_SOURCES
     RenderDialogRange_Test.cpp
     ScaleSliderQWidget_Test.cpp
     ShuffleMatrix_Test.cpp
+    TabMenuBridge_Test.cpp
     ViewerDataSerialization_Test.cpp
     guimain.cpp
 )

@@ -887,3 +887,9 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - **Low:** comments in `GpuRegionTask.cpp` around `unionOf` and `overlapOf` restate the code.
 
   A fixer is verifying each finding and fixing the real ones.
+- 2026-10-11 — **Review round 1 fixes** (`d91d3a487`). Gpu tests pass 230/230 on RADV with a separate transfer family, in both modes.
+  - **Ownership finding: declined.** Every reuse of a pooled buffer writes the range before reading it, which the spec allows without an ownership transfer. Where contents must survive, a transfer is already recorded. A comment records this.
+  - **Timeout finding: real, and worse than reported.** `VK_TIMEOUT` is positive, so `check()` read a timed-out wait as success. `submitAndWait` now marks the device lost, waits for the fence and returns `VK_ERROR_DEVICE_LOST`. New test: `GpuRuntimeTest.TimedOutSubmissionIsALossThatOutlivesItsWork`.
+  - **Comment finding:** trimmed.
+  - The Vulkan validation layer isn't available in the container or on the host.
+- 2026-10-11 — CI `format` (clang-format 21.1.8 drift on changed lines) and `lint-ci` (SC2012 in `devshell.sh`) fail on PR #54. Fixes delegated.

@@ -145,7 +145,7 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
 
 ## Phase 45.6: The C++ bridge
 
-- [ ] M45.P6.T1 — Resolve a plugin's node category without an instance
+- [x] M45.P6.T1 — Resolve a plugin's node category without an instance
   - files: `Engine/Node.h`, `Engine/Node.cpp`, `Tests/NodeCategory_Test.cpp`
   - approach:
     - Add `static NodeCategoryEnum Node::categoryForPlugin(const Plugin& plugin)`, declared beside `domainCategoryFromGrouping`/`categoryFromGroupingAndLabel` (`Node.h:797-808`). It mirrors `Node::getNodeCategory()` (`Node.cpp:4402-4432`) without an effect instance:

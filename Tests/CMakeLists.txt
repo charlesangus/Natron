@@ -72,6 +72,7 @@ set(Tests_SOURCES
     Metadata_Test.cpp
     NativeParity.cpp
     NodeCategory_Test.cpp
+    TabMenuSettings_Test.cpp
     OSGLContext_Test.cpp
     PersistentMessage_Test.cpp
     PluginIdentity_Test.cpp

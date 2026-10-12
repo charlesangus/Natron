@@ -781,3 +781,188 @@ and CI are green, and the user signs off the UAT.
 - 2026-10-11 — **User decision:** v1 includes presence, per-user undo, and follow-a-user's-viewer.
 - 2026-10-11 — Per-user undo replays the user's own inverse as new operations (last-writer-wins). Commands invalidated by remote deletes are dropped, not transformed.
 ````
+
+### 2026-10-11T22:51:00-04:00 — change-request
+- refs: M100 (new milestone)
+- New milestone **M100 - Content Node Hashing**, user-requested on 2026-10-11. Suggested board row, after M93 - Serialization Boundary: `| M100 | Content Node Hashing | todo | M93 | [M100-content-node-hashing.md](PLAN/MILESTONES/M100-content-node-hashing.md) |`.
+- **Why:** today `Node::computeHashInternal` (`Engine/Node.cpp:762`) does not hash content. It hashes a `knobsAge` counter, the input hashes, the script name and the project creation time. The user rejected this ("not a reasonable way to do it"). A node's hash must be a content (Merkle) hash: the plugin type, render-affecting knob values, input hashes by index, and the identity of every file read upstream. Any change to a file, the topology or a knob must then change the hash, and identical state must give an identical hash.
+- **Suggested project-wide decision** `DECISIONS/2026-10-11-content-node-hashing.md` (+ INDEX line): "Node hashes become content hashes (plugin identity, render-hashed knob values incl. full curves/expressions, inputs by index, file stamps, project digest), replacing knobsAge. Cache entries are evicted LRU, not purged on hash change. User decision 2026-10-11."
+- **Collision to fix separately:** the pending live-session entries above claim M95–M99. M95 and M96 already exist on the board (M95 - Knob Cleanup And Keyer Redesign, M96 - Weighted Curve Tangents). The user has not yet chosen new IDs for them. Do not apply them under the colliding IDs; raise it as an open question.
+- **Design input:** an Opus investigation on 2026-10-11 read the code but did not build or reproduce anything. Its findings are in the file's Notes. Full file content:
+
+````markdown
+# M100 - Content Node Hashing
+
+Replace the `knobsAge` counter hash with a content hash. Identical state gives an identical
+hash, so undo and A/B toggling reuse the cache. Any change to a knob, the topology or an
+upstream file changes the hash. The change lands in steps: shadow hash plus audit, then file
+identity, then switching the cache keys, then deleting the age machinery. Depends on
+M93 - Serialization Boundary, because Phases 100.4 and 100.5 touch `Node.cpp` load code and
+`NodeSerialization`. M16 - Project Format Redesign deletes the serialized `KnobsAge` field,
+as it already plans to.
+
+## Notes (investigation 2026-10-11, code reading only; re-check line numbers)
+
+**Current scheme:**
+- `computeHashInternal` hashes the following (`Node.cpp:762-865`), via vector + boost CRC-64 (`Hash64.cpp:42`):
+  - the node's age;
+  - the IO container's age;
+  - inputs as `hash + i`;
+  - the script name;
+  - the project creation time.
+- When the hash changes, the old entries are purged (`:860`), except while a project is loading or closing (`:929`).
+- `knobsAge` and `CreationDate` are saved in the project and restored on load (`Node.cpp:1679`, `ProjectPrivate.cpp:125`).
+- The viewer and disk cache tables of contents persist across sessions (`Project.cpp:638`, `AppManager.cpp:501`).
+- `ImageKey::operator==` ignores the holder (`ImageKey.cpp:82-98`). Cache lookup is by hash plus equality (`Cache.h:1702`), so entries are effectively shared already.
+
+**Bugs in the current scheme.** Found by reading the code; none is reproduced yet, and the Phase 100.6 regressions must cover them:
+1. **Stale images after reopen or autosave recovery.** An unsaved edit takes the age from 10 to 11, and its renders persist in the viewer and disk caches. On reopen the age is back at 10. A *different* edit reaches 11 again, which gives the same hash, so the stale pixels are served.
+2. **Two copies of one project collide.** Save As keeps the creation date. Once the two copies diverge, equal ages give equal hashes for different content, in two windows or in later sessions.
+3. **A file changed on disk stays stale.** No mtime reaches the hash; only Reload fixes it.
+4. **Off-thread edits don't move the hash.** Knob edits made off the main thread, or during inputChanged, never bump the age (the `isMT` guard, `EffectInstance.cpp:3430`).
+5. **Undo and A/B toggling discard valid cache.** Every return to an earlier state gets a new age.
+
+Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); paste and clone deliberately force different hashes (`Gui/NodeGraphPrivate10.cpp:249`).
+
+## Design (applies to every task)
+
+- **Node hash** = XXH3 over four parts. Keep `U64`, and never let the result be 0, because 0 means "not computed".
+  1. **Identity:** plugin ID, plugin major and minor version, and a binary stamp (the `.ofx` path, mtime and size; for native nodes, the Natron version and git hash).
+  2. **Render-hashed knobs**, sorted by script name, each as name plus content.
+     - Content per view and dimension: the static value; the *whole* curve (keys, interpolation, tangents, extrapolation; weights after M96 - Weighted Curve Tangents); the expression string; parametric, table and string data.
+     - Doubles are canonicalized: −0 becomes +0, and all NaNs become one value.
+     - Each knob memoizes its hash behind a dirty bit.
+     - Linked or slaved knobs hash the value they read through the link, which replaces the `knobsAgeChanged` slaving (`Node.cpp:5378`).
+  3. **Inputs:** each index mixed with the input's hash, or a fixed "unconnected" marker. The viewer hashes its active inputs with their index. `getInput()` already applies group redirection.
+  4. **Project digest:** formats, fps, frame range, OCIO config identity and working space, layer-registry content, and the render-affecting preferences.
+- **Which knobs are render-hashed:** value knobs that are not hash-exempt and are persistent or evaluate on change. Erring towards including a knob is the safe direction, since the cost is only a cache miss.
+  - Explicitly exempt: label, sublabel, preview, hide-inputs, info text and user colour.
+  - Do NOT exempt a knob just because it doesn't evaluate on change: secret persistent OFX state params are often flagged that way.
+- **What leaves the hash:** the script name and the creation time. One exception: a node with an expression also folds in its fully qualified name, because `thisNode` and `thisGroup` are resolved by name.
+- **Expressions** fold in the content hashes of their dependency knobs (`getExpressionDependencies`, with a visited set). Tokens such as `random`, `time.`, `open(` and `os.` mark the knob volatile.
+- **Volatile:** a per-session salt, reused within a session but never served from the disk cache in a later one. It applies to volatile expressions and to plugins on a "volatile" list (Text, which depends on fontconfig, etc.).
+- **Roto and RotoPaint:** `RotoItem::appendContentHash`, memoized per item and dirtied wherever `incrementNodesAge()` is called today. It covers the item's knobs, control and feather points with their curves, stroke points, and the order of items. Each stroke's internal nodes fold in their own item's hash.
+- **Read/Write containers:** the container's knobs are hashed into the embedded node. This replaces M58's age fold.
+- **Files:**
+  - A `FileStampRegistry` holds (path, statx mtime_ns, size, inode) with a short TTL.
+  - Single files: `KnobFile`, the OCIO config, LUTs, fonts and DeepRead layers. A Write's output file is not stamped.
+  - Sequences: a sequence stamp, the hash of every frame's stamp, taken from the existing directory scan. Rescan on inotify (`QFileSystemWatcher`), on app focus-in (NFS gets no inotify), and on Reload.
+  - Per-render guard: stat each Read's current frame when render args are set up, and restart the render if the stamp moved. Keep this guard off the serial render path (M90 - Render Path Serial Overhead, M82 profiler).
+- **Animation:** hash the whole curve. Time stays in `ImageKey` for frame-varying nodes, as today. Hashing the value at each frame is a later optimization that can ride the per-request hash of M71 - RFV Render Context.
+- **Eviction:** no purge on hash change; LRU reclaims old entries. Explicit purges stay on node delete, Reload, Clear Cache and a cache-version change. Raise `ActionsCache`'s instance limit so toggling between two states keeps both.
+- **Threading:** off-thread setters set an atomic dirty flag and post `mustComputeHashOnMainThread`. `getHashValue()` and the render-args snapshot recompute a dirty hash under the node lock. The main-thread assert goes away.
+- **Persistence:** stop reading `KnobsAge` on load and write 0 until M16 - Project Format Redesign removes it. M93's golden harness already strips it. Bump `NATRON_CACHE_VERSION` when the keys switch over.
+- **GPU vs CPU:** not part of the key. Their outputs differ by about a rounding step and already mix in the cache today.
+- **Related milestones:**
+  - M92 - Linked Nodes gets simpler if this lands first, since link groups hash their shared storage.
+  - M19 - USD/Hydra Foundation's `stackHash` should reuse the knob hash.
+
+## Phase 100.1: Hasher and knob content hash
+- [ ] M100.P1.T1 — Vendor XXH3 and add a streaming ContentHasher
+  - files: libs/xxhash/xxhash.h, libs/CMakeLists.txt, Engine/ContentHasher.h, Engine/ContentHasher.cpp, Tests/ContentHasher_Test.cpp
+  - approach: header-only XXH3-64 behind ContentHasher (appendU64, appendDouble with canonicalization, length-prefixed appendString and appendBytes; finalize never returns 0). First check whether the container's OIIO `hash.h` exposes XXH3; if it does, use it and skip vendoring.
+  - verify: `ctest -R ContentHasher` covers known vectors, -0/+0 and NaN canonicalization, and ("ab","c") ≠ ("a","bc")
+  - size: M
+- [ ] M100.P1.T2 — Add memoized KnobI::appendContentHash for every knob type
+  - files: Engine/Knob.h, Engine/Knob.cpp, Engine/KnobImpl.h, Engine/KnobTypes.cpp, Engine/Curve.cpp
+  - approach: for each view and dimension, hash the static value, the full curve and the expression string. Memoize behind a dirty bit that is cleared in onInternalValueChanged and on curve or expression changes. Linked dimensions hash through their master.
+  - verify: Tests/KnobContentHash_Test.cpp: every kind of mutation changes the hash, reverting restores it, and a slaved knob hashes equal to its master
+  - size: L
+- [ ] M100.P1.T3 — Classify render-hashed knobs and exempt UI-only ones
+  - files: Engine/Knob.h, Engine/Knob.cpp, Engine/Node.cpp, Engine/OfxParamInstance.cpp
+  - approach: isRenderHashed() = value type && !hashExempt && (persistent || evaluateOnChange). Call setHashExempt on label, sublabel, preview, hide-inputs, info text and user colour.
+  - verify: a test shows that editing the label or info text leaves the hash unchanged, and editing a secret persistent param changes it
+  - size: M
+
+## Phase 100.2: Node content hash in shadow
+- [ ] M100.P2.T1 — Compute the Node content hash beside the age
+  - files: Engine/Node.cpp, Engine/Node.h, Engine/NodePrivate.h, Engine/Project.cpp, Engine/Project.h
+  - approach: identity + sorted hashed knobs + inputs by index (mixed, with an unconnected marker) + the project digest, stored as contentHash. getHashValue is unchanged.
+  - verify: Tests/NodeContentHash_Test.cpp: two freshly built identical graphs hash equal; topology changes and input swaps produce different hashes
+  - size: M
+- [ ] M100.P2.T2 — Hash roto/paint items and IO containers
+  - files: Engine/RotoItem.cpp, Engine/RotoDrawableItem.cpp, Engine/Bezier.cpp, Engine/RotoStrokeItem.cpp, Engine/Node.cpp
+  - approach: a per-item memoized appendContentHash, dirtied wherever incrementNodesAge is called. Stroke internal nodes fold in their item's hash, and the container's knobs fold into the embedded IO node.
+  - verify: moving one control point changes the hash and undo restores it; a micro-benchmark measures hash cost on a 5k-stroke comp
+  - size: L
+- [ ] M100.P2.T3 — Fold expression dependencies into knob hashes
+  - files: Engine/Knob.cpp, Engine/Knob.h, Engine/Node.cpp
+  - approach: fold in each dependency knob's content hash (visited set to stop cycles), the owner's fully qualified name when the node has expressions, and a session salt when a volatile token appears.
+  - verify: a test shows that changing a referenced knob on a node that is not upstream changes the hash, and that an expression cycle terminates
+  - size: M
+- [ ] M100.P2.T4 — Add a NATRON_HASH_AUDIT shadow cross-check
+  - files: Engine/Node.cpp, Engine/Node.h, Tests/CMakeLists.txt
+  - approach: log once per knob whenever the age and content hashes disagree, in either direction. Run the full ctest with the audit on and record what it finds in `## Decisions`.
+  - verify: an audit ctest run in which every discrepancy is explained or fixed
+  - size: M
+
+## Phase 100.3: File identity
+- [ ] M100.P3.T1 — Add FileStampRegistry and single-file stamps
+  - files: Engine/FileStampRegistry.h, Engine/FileStampRegistry.cpp, Engine/KnobFile.cpp, Engine/Project.cpp, Tests/FileStamp_Test.cpp
+  - approach: statx stamps with a TTL memo. The hashes of KnobFile and the OCIO config include the stamp, which is re-validated at render start.
+  - verify: touching the file changes the hash; an unchanged file keeps a stable hash
+  - size: M
+- [ ] M100.P3.T2 — Add sequence stamps with inotify and focus-in rescan
+  - files: Engine/FileStampRegistry.cpp, the native Read node source (M75 - Native Read), the DeepRead source, Engine/PrecompNode.cpp, Gui/GuiApplicationManager.cpp
+  - approach: hash all frame stamps from the existing directory scan. Watch the directory with QFileSystemWatcher, rescan on app focus-in, and force a rescan on Reload.
+  - verify: rewriting one frame of a sequence changes the Read's hash; confirm the viewer re-renders in a GUI test or UAT
+  - size: L
+- [ ] M100.P3.T3 — Add a per-render current-frame stat guard
+  - files: Engine/ParallelRenderArgs.cpp, Engine/FileStampRegistry.cpp, Engine/ViewerInstance.cpp
+  - approach: stat each Read's frame file when render args are set up. On a mismatch, update the registry, recompute the hash, abort and restart the render.
+  - verify: a test overwrites a frame between two renders and gets the new pixels; the M82 profiler shows no serial regression
+  - size: M
+
+## Phase 100.4: Switch keys and drop the purge
+- [ ] M100.P4.T1 — Make getHashValue return the content hash and bump the cache version
+  - files: Engine/Node.cpp, Global/GlobalDefines.h, Engine/Hash64.cpp, Tests/BaseTest.cpp
+  - approach: remove the script name (except on nodes with expressions), the creation time and the age from the key. Set NATRON_CACHE_VERSION to 10.
+  - verify: the existing hash tests pass; two identical nodes share one cache entry (a counting effect renders once)
+  - size: M
+- [ ] M100.P4.T2 — Replace purge-on-hash-change with LRU eviction
+  - files: Engine/Node.cpp, Engine/EffectInstancePrivate.cpp, Tests/DeepRenderPipeline_Test.cpp, Tests/DeepImageCache_Test.cpp
+  - approach: remove the purge in computeHashInternal and keep the delete, Reload and Clear Cache purges. Raise the ActionsCache instance limit. Rewrite the tests that assert a purge as tests that assert reuse.
+  - verify: going value 1 → 2 → 1 causes zero re-renders on the third step
+  - size: M
+- [ ] M100.P4.T3 — Make the hash recompute lazy and thread-safe
+  - files: Engine/Node.cpp, Engine/Node.h, Engine/EffectInstance.cpp, Engine/Knob.cpp
+  - approach: an atomic dirty flag that any thread can set. getHashValue and the render snapshot recompute under the node lock. Remove the main-thread assert; edits during inputChanged mark the node dirty.
+  - verify: a test sets a knob from a worker thread and the next render sees the new hash; run TSan if it is available
+  - size: L
+
+## Phase 100.5: Remove knobsAge
+- [ ] M100.P5.T1 — Turn core age bumps into dirty marks and delete the age hacks
+  - files: Engine/Node.cpp, Engine/NodeInputs.cpp, Engine/EffectInstance.cpp, Engine/Project.cpp, Engine/Node.h
+  - approach: incrementKnobsAge becomes markHashDirty. Delete the knobsAgeChanged slaving, the group-input force, the group-disable loop, the format loop and the layer-user bump.
+  - verify: full ctest, plus disabled-Group and GroupInput rewire tests
+  - size: L
+- [ ] M100.P5.T2 — Migrate the remaining age-bump callers
+  - files: Engine/RotoDrawableItem.cpp, Engine/RotoStrokeItem.cpp, AddLayers and DeepAddLayers sources, Gui/NodeGraphPrivate10.cpp, Gui/MultiInstancePanel.cpp
+  - approach: apply the same replacement, and delete the bump that forces paste and clone to hash differently.
+  - verify: `grep incrementKnobsAge` finds nothing; ctest passes
+  - size: M
+- [ ] M100.P5.T3 — Stop reading KnobsAge on load
+  - files: Engine/Node.cpp, Engine/NodeSerialization.cpp (or M93's plain struct)
+  - approach: ignore the field on load and write 0; M16 - Project Format Redesign deletes it.
+  - verify: the M93 golden harness is unchanged; load → save → load gives an identical hash
+  - size: S
+
+## Phase 100.6: Invariant tests and cost
+- [ ] M100.P6.T1 — Add a hash-invariant and regression suite
+  - files: Tests/HashInvariants_Test.cpp, Tests/CMakeLists.txt
+  - approach: the same state gives the same hash (fresh build, save/load, a second app instance); every edit changes it; undo restores it; topology changes and file touches change it; label and position changes don't. Add regressions for Notes bugs 1, 2 and 4.
+  - verify: `ctest -R HashInvariants`
+  - size: M
+- [ ] M100.P6.T2 — Add a plugin sweep: every render-hashed knob of every bundled plugin changes the hash
+  - files: Tests/HashPluginSweep_Test.cpp, Tests/CMakeLists.txt, Tests/hash_exempt_allowlist.txt
+  - approach: create each plugin from appPTR's list. For each isRenderHashed knob, perturb it by type, assert the hash changed, revert, and assert it is restored. The allowlist explains every exemption.
+  - verify: ctest passes with the OFX bundle
+  - size: L
+- [ ] M100.P6.T3 — Benchmark hash cost
+  - files: tools/bench/hash_bench.py
+  - approach: time the hash recompute on the bench comps and on a heavy roto comp. Target: keystroke to rehash under 1 ms on HD comps.
+  - verify: record the results in `## Decisions`
+  - size: M
+
+**Verification gate:** full ctest green in both scheduler modes; the HashInvariants and HashPluginSweep suites pass; the audit run leaves no discrepancy unexplained; the regressions for bugs 1, 2 and 4 pass; value toggling and undo hit the cache; touching a frame file refreshes the viewer in the AppImage; `incrementKnobsAge`/`knobsAge` appear nowhere outside serialization.
+````

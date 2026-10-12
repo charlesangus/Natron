@@ -119,3 +119,45 @@ TEST(ThemedIcon, PixmapCacheKeyIncludesSize)
     EXPECT_NE(key24, key18);
     EXPECT_EQ(key24, key24Again);
 }
+
+TEST(ThemedIcon, StrokeKeepsItsScreenWeightBelow18Px)
+{
+    EXPECT_DOUBLE_EQ(ThemedIcon::STROKE_WIDTH, ThemedIcon::strokeWidthFor(24));
+    EXPECT_DOUBLE_EQ(ThemedIcon::STROKE_WIDTH, ThemedIcon::strokeWidthFor(18));
+    EXPECT_DOUBLE_EQ(ThemedIcon::STROKE_WIDTH * 18. / 12., ThemedIcon::strokeWidthFor(12));
+    EXPECT_DOUBLE_EQ(2.5, ThemedIcon::strokeWidthFor(4));
+
+    const QByteArray recolored = ThemedIcon::recolor(QByteArray(kGlyphSvg), QColor(255, 0, 0), 12);
+    EXPECT_TRUE(recolored.contains("stroke-width=\"2.25\""));
+}
+
+TEST_F(ThemedIconTest, IconRendersAtTheRequestedSize)
+{
+    const QIcon icon = ThemedIcon::icon(glyphPath, 24);
+    const QPixmap small = icon.pixmap(QSize(13, 13), 1., QIcon::Normal, QIcon::Off);
+    const QPixmap large = icon.pixmap(QSize(36, 36), 1., QIcon::Normal, QIcon::Off);
+
+    EXPECT_EQ(13, small.width());
+    EXPECT_EQ(36, large.width());
+}
+
+TEST_F(ThemedIconTest, TwoGlyphIconDrawsOnStateFromItsOwnFile)
+{
+    const QString onPath = glyphPath + QString::fromUtf8(".on.svg");
+    {
+        QFile file(onPath);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        file.write("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" "
+                   "fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M1 1h22v22H1z\"/></svg>");
+    }
+    const QIcon icon = ThemedIcon::icon(glyphPath, onPath, 24);
+    const QImage off = icon.pixmap(QSize(24, 24), 1., QIcon::Normal, QIcon::Off).toImage();
+    const QImage on = icon.pixmap(QSize(24, 24), 1., QIcon::Normal, QIcon::On).toImage();
+
+    ASSERT_FALSE(off.isNull());
+    ASSERT_FALSE(on.isNull());
+    EXPECT_NE(off, on);
+    // The corner of the square is drawn only by the On glyph.
+    EXPECT_EQ(0, off.pixelColor(1, 1).alpha());
+    EXPECT_GT(on.pixelColor(1, 1).alpha(), 0);
+}

@@ -30,7 +30,9 @@
 
 #define NATRON_BUTTON_BORDER 4
 #define NATRON_SMALL_BUTTON_SIZE 15
-#define NATRON_SMALL_BUTTON_ICON_SIZE (NATRON_SMALL_BUTTON_SIZE - NATRON_BUTTON_BORDER)
+// Lucide glyphs leave a 2-unit inset inside their 24-unit box, which at this size would
+// shrink them well below the medium buttons' proportion, so small buttons keep half the border.
+#define NATRON_SMALL_BUTTON_ICON_SIZE (NATRON_SMALL_BUTTON_SIZE - NATRON_BUTTON_BORDER / 2)
 #define NATRON_MEDIUM_BUTTON_SIZE 22
 #define NATRON_MEDIUM_BUTTON_ICON_SIZE (NATRON_MEDIUM_BUTTON_SIZE - NATRON_BUTTON_BORDER)
 #define NATRON_LARGE_BUTTON_SIZE 30

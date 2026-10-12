@@ -566,9 +566,9 @@ MultiInstancePanel::createMultiInstanceGui(QVBoxLayout* layout)
     _imp->buttonsLayout->addWidget(_imp->removeButton);
 
     QObject::connect( _imp->removeButton, SIGNAL(clicked(bool)), this, SLOT(onRemoveButtonClicked()) );
-    QPixmap selectAll;
+    QIcon selectAll;
     appPTR->getIcon(NATRON_PIXMAP_SELECT_ALL, NATRON_SMALL_BUTTON_ICON_SIZE, &selectAll);
-    _imp->selectAll = new Button(QIcon(selectAll), QString(), _imp->buttonsContainer);
+    _imp->selectAll = new Button(selectAll, QString(), _imp->buttonsContainer);
     _imp->selectAll->setFixedSize(NATRON_SMALL_BUTTON_SIZE, NATRON_SMALL_BUTTON_SIZE);
     _imp->selectAll->setIconSize( QSize(NATRON_SMALL_BUTTON_ICON_SIZE, NATRON_SMALL_BUTTON_ICON_SIZE) );
     _imp->selectAll->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Select all."), NATRON_NAMESPACE::WhiteSpaceNormal) );

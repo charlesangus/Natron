@@ -44,17 +44,18 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/Knob.h"
 #include "Engine/Utils.h" // convertFromPlainText
 
-#include "Gui/DialogButtonBox.h"
-#include "Gui/LineEdit.h" // LineEdit
-#include "Gui/SpinBox.h" // SpinBox
+#include "Engine/Project.h"
 #include "Gui/Button.h" // Button
 #include "Gui/CurveWidget.h" // CurveWidget
-#include "Gui/SequenceFileDialog.h" // SequenceFileDialog
-#include "Gui/GuiApplicationManager.h"
-#include "Gui/Label.h" // Label
+#include "Gui/DialogButtonBox.h"
 #include "Gui/Gui.h" // Gui
 #include "Gui/GuiAppInstance.h"
-#include "Engine/Project.h"
+#include "Gui/GuiApplicationManager.h"
+#include "Gui/GuiDefines.h"
+#include "Gui/Label.h" // Label
+#include "Gui/LineEdit.h" // LineEdit
+#include "Gui/SequenceFileDialog.h" // SequenceFileDialog
+#include "Gui/SpinBox.h" // SpinBox
 
 NATRON_NAMESPACE_ENTER
 
@@ -137,9 +138,9 @@ ImportExportCurveDialog::ImportExportCurveDialog(bool isExportDialog,
     _fileLineEdit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     _fileLayout->addWidget(_fileLineEdit);
     _fileBrowseButton = new Button(_fileContainer);
-    QPixmap pix;
-    appPTR->getIcon(NATRON_PIXMAP_OPEN_FILE, &pix);
-    _fileBrowseButton->setIcon( QIcon(pix) );
+    QIcon pix;
+    appPTR->getIcon(NATRON_PIXMAP_OPEN_FILE, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &pix);
+    _fileBrowseButton->setIcon(pix);
     QObject::connect( _fileBrowseButton, SIGNAL(clicked()), this, SLOT(open_file()) );
     _fileLayout->addWidget(_fileBrowseButton);
     _mainLayout->addWidget(_fileContainer);

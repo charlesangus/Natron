@@ -71,6 +71,7 @@
         <file>Resources/Icons/lucide/arrow-left.svg</file>
         <file>Resources/Icons/lucide/arrow-right-to-line.svg</file>
         <file>Resources/Icons/lucide/arrow-right.svg</file>
+        <file>Resources/Icons/lucide/arrow-up.svg</file>
         <file>Resources/Icons/lucide/bold.svg</file>
         <file>Resources/Icons/lucide/box.svg</file>
         <file>Resources/Icons/lucide/brush-cleaning.svg</file>
@@ -82,6 +83,7 @@
         <file>Resources/Icons/lucide/circle-ellipsis.svg</file>
         <file>Resources/Icons/lucide/circle-play.svg</file>
         <file>Resources/Icons/lucide/circle-question-mark.svg</file>
+        <file>Resources/Icons/lucide/circle-x.svg</file>
         <file>Resources/Icons/lucide/clock.svg</file>
         <file>Resources/Icons/lucide/columns-2.svg</file>
         <file>Resources/Icons/lucide/contrast.svg</file>
@@ -95,13 +97,22 @@
         <file>Resources/Icons/lucide/eye.svg</file>
         <file>Resources/Icons/lucide/feather.svg</file>
         <file>Resources/Icons/lucide/file-code.svg</file>
+        <file>Resources/Icons/lucide/file-cog.svg</file>
         <file>Resources/Icons/lucide/file-play.svg</file>
+        <file>Resources/Icons/lucide/file-plus.svg</file>
+        <file>Resources/Icons/lucide/file-x.svg</file>
+        <file>Resources/Icons/lucide/file.svg</file>
         <file>Resources/Icons/lucide/flame.svg</file>
         <file>Resources/Icons/lucide/focus.svg</file>
         <file>Resources/Icons/lucide/folder-open.svg</file>
+        <file>Resources/Icons/lucide/folder-plus.svg</file>
+        <file>Resources/Icons/lucide/folder-sync.svg</file>
+        <file>Resources/Icons/lucide/folder.svg</file>
         <file>Resources/Icons/lucide/fullscreen.svg</file>
         <file>Resources/Icons/lucide/glasses.svg</file>
+        <file>Resources/Icons/lucide/hard-drive.svg</file>
         <file>Resources/Icons/lucide/image.svg</file>
+        <file>Resources/Icons/lucide/info.svg</file>
         <file>Resources/Icons/lucide/italic.svg</file>
         <file>Resources/Icons/lucide/layers-2.svg</file>
         <file>Resources/Icons/lucide/layers.svg</file>
@@ -113,10 +124,13 @@
         <file>Resources/Icons/lucide/locate-fixed.svg</file>
         <file>Resources/Icons/lucide/lock-open.svg</file>
         <file>Resources/Icons/lucide/lock.svg</file>
+        <file>Resources/Icons/lucide/log-out.svg</file>
         <file>Resources/Icons/lucide/menu.svg</file>
         <file>Resources/Icons/lucide/minus.svg</file>
+        <file>Resources/Icons/lucide/monitor.svg</file>
         <file>Resources/Icons/lucide/mouse-pointer-2.svg</file>
         <file>Resources/Icons/lucide/move.svg</file>
+        <file>Resources/Icons/lucide/package.svg</file>
         <file>Resources/Icons/lucide/paint-bucket.svg</file>
         <file>Resources/Icons/lucide/palette.svg</file>
         <file>Resources/Icons/lucide/panel-top.svg</file>
@@ -133,6 +147,7 @@
         <file>Resources/Icons/lucide/repeat.svg</file>
         <file>Resources/Icons/lucide/rotate-ccw.svg</file>
         <file>Resources/Icons/lucide/rows-2.svg</file>
+        <file>Resources/Icons/lucide/save-all.svg</file>
         <file>Resources/Icons/lucide/save.svg</file>
         <file>Resources/Icons/lucide/scan-search.svg</file>
         <file>Resources/Icons/lucide/scan.svg</file>
@@ -238,7 +253,6 @@
         <file>Resources/Images/checkbox_unchecked_readonly.png</file>
         <file>Resources/Images/closeTab.png</file>
         <file>Resources/Images/closeTab_hovered.png</file>
-        <file>Resources/Images/color_picker.png</file>
         <file>Resources/Images/curve.png</file>
         <file>Resources/Images/diskcache_icon.png</file>
         <file>Resources/Images/dot_icon.png</file>

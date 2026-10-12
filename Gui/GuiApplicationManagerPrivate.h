@@ -83,6 +83,7 @@ struct GuiApplicationManagerPrivate
     CLArgs startupArgs;
     std::shared_ptr<QFutureWatcher<void> > fontconfigUpdateWatcher;
     QTimer updateSplashscreenTimer;
+    QTimer themeReloadTimer;
     int fontconfigMessageDots;
     PreviewThread previewRenderThread;
     int dpiX, dpiY;

@@ -116,9 +116,9 @@ KnobGuiFile::createWidget(QHBoxLayout* layout)
 
     _openFileButton = new Button( layout->parentWidget() );
     _openFileButton->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
-    QPixmap pix;
-    appPTR->getIcon(NATRON_PIXMAP_OPEN_FILE, NATRON_MEDIUM_BUTTON_ICON_SIZE, &pix);
-    _openFileButton->setIcon( QIcon(pix) );
+    QIcon pix;
+    appPTR->getIcon(NATRON_PIXMAP_OPEN_FILE, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &pix);
+    _openFileButton->setIcon(pix);
     _openFileButton->setToolTip( toolTip() );
     _openFileButton->setFocusPolicy(Qt::NoFocus); // exclude from tab focus
     QObject::connect( _openFileButton, SIGNAL(clicked()), this, SLOT(onButtonClicked()) );
@@ -130,9 +130,9 @@ KnobGuiFile::createWidget(QHBoxLayout* layout)
         _reloadButton = new Button( layout->parentWidget() );
         _reloadButton->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
         _reloadButton->setFocusPolicy(Qt::NoFocus);
-        QPixmap pixRefresh;
-        appPTR->getIcon(NATRON_PIXMAP_VIEWER_REFRESH, NATRON_MEDIUM_BUTTON_ICON_SIZE, &pixRefresh);
-        _reloadButton->setIcon( QIcon(pixRefresh) );
+        QIcon pixRefresh;
+        appPTR->getIcon(NATRON_PIXMAP_VIEWER_REFRESH, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &pixRefresh);
+        _reloadButton->setIcon(pixRefresh);
         _reloadButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Reload the file."), NATRON_NAMESPACE::WhiteSpaceNormal) );
         QObject::connect( _reloadButton, SIGNAL(clicked()), this, SLOT(onReloadClicked()) );
         layout->addWidget(_reloadButton);
@@ -517,9 +517,9 @@ KnobGuiOutputFile::createWidget(QHBoxLayout* layout)
 
     _openFileButton = new Button( layout->parentWidget() );
     _openFileButton->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
-    QPixmap pix;
-    appPTR->getIcon(NATRON_PIXMAP_OPEN_FILE, NATRON_MEDIUM_BUTTON_ICON_SIZE, &pix);
-    _openFileButton->setIcon( QIcon(pix) );
+    QIcon pix;
+    appPTR->getIcon(NATRON_PIXMAP_OPEN_FILE, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &pix);
+    _openFileButton->setIcon(pix);
     _openFileButton->setToolTip( toolTip() );
     _openFileButton->setFocusPolicy(Qt::NoFocus); // exclude from tab focus
     QObject::connect( _openFileButton, SIGNAL(clicked()), this, SLOT(onButtonClicked()) );
@@ -531,9 +531,9 @@ KnobGuiOutputFile::createWidget(QHBoxLayout* layout)
         _rewriteButton = new Button( layout->parentWidget() );
         _rewriteButton->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
         _rewriteButton->setFocusPolicy(Qt::NoFocus);
-        QPixmap pixRefresh;
-        appPTR->getIcon(NATRON_PIXMAP_VIEWER_REFRESH, NATRON_MEDIUM_BUTTON_ICON_SIZE, &pixRefresh);
-        _rewriteButton->setIcon( QIcon(pixRefresh) );
+        QIcon pixRefresh;
+        appPTR->getIcon(NATRON_PIXMAP_VIEWER_REFRESH, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &pixRefresh);
+        _rewriteButton->setIcon(pixRefresh);
         _rewriteButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Rewrite the file."), NATRON_NAMESPACE::WhiteSpaceNormal) );
         QObject::connect( _rewriteButton, SIGNAL(clicked()), this, SLOT(onRewriteClicked()) );
         layout->addWidget(_rewriteButton);
@@ -810,9 +810,9 @@ KnobGuiPath::createWidget(QHBoxLayout* layout)
         _openFileButton = new Button( layout->parentWidget() );
         _openFileButton->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
         _openFileButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Click to select a path to append to/replace this variable."), NATRON_NAMESPACE::WhiteSpaceNormal) );
-        QPixmap pix;
-        appPTR->getIcon(NATRON_PIXMAP_OPEN_FILE, NATRON_MEDIUM_BUTTON_ICON_SIZE, &pix);
-        _openFileButton->setIcon( QIcon(pix) );
+        QIcon pix;
+        appPTR->getIcon(NATRON_PIXMAP_OPEN_FILE, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &pix);
+        _openFileButton->setIcon(pix);
         QObject::connect( _openFileButton, SIGNAL(clicked()), this, SLOT(onOpenFileButtonClicked()) );
 
         mainLayout->addWidget(_lineEdit);

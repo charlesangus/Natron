@@ -60,17 +60,18 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 // /opt/local/include/QtGui/qmime.h:119:10: warning: private field 'type' is not used [-Wunused-private-field]
 #include <QKeyEvent>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
-#include <QColor>
+#include <QAbstractFileIconProvider>
 #include <QAction>
 #include <QApplication>
-#include <QStylePainter>
-#include <QStyleOptionViewItem>
-#include <QStandardPaths>
+#include <QColor>
 #include <QDebug>
 #include <QEvent>
 #include <QMimeData>
-#include <QtConcurrentRun> // QtCore on Qt4, QtConcurrent on Qt5
 #include <QSettings>
+#include <QStandardPaths>
+#include <QStyleOptionViewItem>
+#include <QStylePainter>
+#include <QtConcurrentRun> // QtCore on Qt4, QtConcurrent on Qt5
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -91,23 +92,70 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewerInstance.h"
 
+#include "Global/QtCompat.h" // removeFileExtension
 #include "Gui/Button.h"
-#include "Gui/LineEdit.h"
 #include "Gui/ComboBox.h"
 #include "Gui/DialogButtonBox.h"
-#include "Gui/GuiApplicationManager.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
+#include "Gui/GuiApplicationManager.h"
+#include "Gui/Label.h"
+#include "Gui/LineEdit.h"
+#include "Gui/Menu.h"
 #include "Gui/NodeGui.h"
 #include "Gui/PythonPanels.h"
-#include "Gui/ViewerTab.h"
-#include "Gui/ViewerGL.h"
 #include "Gui/TabWidget.h"
-#include "Gui/Label.h"
-#include "Gui/Menu.h"
-#include "Global/QtCompat.h" // removeFileExtension
+#include "Gui/ThemedIcon.h"
+#include "Gui/ViewerGL.h"
+#include "Gui/ViewerTab.h"
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+QIcon
+fileDialogGlyph(const char* lucideName)
+{
+    return ThemedIcon::icon(QString::fromUtf8(NATRON_ICONS_PATH "lucide/") + QString::fromUtf8(lucideName) + QString::fromUtf8(".svg"),
+                            NATRON_MEDIUM_BUTTON_ICON_SIZE);
+}
+
+// The default provider returns the desktop icon theme's glyphs, whose colours follow the
+// desktop rather than Natron's theme.
+class ThemedFileIconProvider
+    : public QAbstractFileIconProvider {
+public:
+    QIcon icon(IconType type) const override
+    {
+        switch (type) {
+        case QAbstractFileIconProvider::Computer:
+            return fileDialogGlyph("monitor");
+        case QAbstractFileIconProvider::Drive:
+            return fileDialogGlyph("hard-drive");
+        case QAbstractFileIconProvider::Folder:
+            return fileDialogGlyph("folder");
+        default:
+            return fileDialogGlyph("file");
+        }
+    }
+
+    QIcon icon(const QFileInfo& info) const override
+    {
+        if (info.isRoot()) {
+            return icon(QAbstractFileIconProvider::Drive);
+        }
+
+        return icon(info.isDir() ? QAbstractFileIconProvider::Folder : QAbstractFileIconProvider::File);
+    }
+};
+
+QAbstractFileIconProvider*
+themedFileIconProvider()
+{
+    static ThemedFileIconProvider provider;
+
+    return &provider;
+}
+} // anon namespace
 
 static inline bool
 isCaseSensitiveFileSystem(const QString &path)
@@ -248,28 +296,28 @@ SequenceFileDialog::SequenceFileDialog( QWidget* parent, // necessary to transmi
     QSize buttonSize( TO_DPIX(NATRON_MEDIUM_BUTTON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_SIZE) );
     QSize buttonIconSize( TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_ICON_SIZE) );
 
-    _previousButton = new Button(style()->standardIcon(QStyle::SP_ArrowBack), QString(), _buttonsWidget);
+    _previousButton = new Button(fileDialogGlyph("arrow-left"), QString(), _buttonsWidget);
     _previousButton->setFixedSize(buttonSize);
     _previousButton->setIconSize(buttonIconSize);
     _previousButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Go back in the directory history."), NATRON_NAMESPACE::WhiteSpaceNormal) );
     _buttonsLayout->addWidget(_previousButton);
     QObject::connect( _previousButton, SIGNAL(clicked()), this, SLOT(previousFolder()) );
 
-    _nextButton = new Button(style()->standardIcon(QStyle::SP_ArrowForward), QString(), _buttonsWidget);
+    _nextButton = new Button(fileDialogGlyph("arrow-right"), QString(), _buttonsWidget);
     _nextButton->setFixedSize(buttonSize);
     _nextButton->setIconSize(buttonIconSize);
     _nextButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Go forward in the directory history."), NATRON_NAMESPACE::WhiteSpaceNormal) );
     _buttonsLayout->addWidget(_nextButton);
     QObject::connect( _nextButton, SIGNAL(clicked()), this, SLOT(nextFolder()) );
 
-    _upButton = new Button(style()->standardIcon(QStyle::SP_ArrowUp), QString(), _buttonsWidget);
+    _upButton = new Button(fileDialogGlyph("arrow-up"), QString(), _buttonsWidget);
     _upButton->setIconSize(buttonIconSize);
     _upButton->setFixedSize(buttonSize);
     _upButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Go to the parent directory."), NATRON_NAMESPACE::WhiteSpaceNormal) );
     _buttonsLayout->addWidget(_upButton);
     QObject::connect( _upButton, SIGNAL(clicked()), this, SLOT(parentFolder()) );
 
-    _createDirButton = new Button(style()->standardIcon(QStyle::SP_FileDialogNewFolder), QString(), _buttonsWidget);
+    _createDirButton = new Button(fileDialogGlyph("folder-plus"), QString(), _buttonsWidget);
     _createDirButton->setIconSize(buttonIconSize);
     _createDirButton->setFixedSize(buttonSize);
     _createDirButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Create a new directory here."), NATRON_NAMESPACE::WhiteSpaceNormal) );
@@ -385,13 +433,9 @@ SequenceFileDialog::SequenceFileDialog( QWidget* parent, // necessary to transmi
 
     _centerAreaLayout->addWidget(_centerSplitter);
 
-    if ( (mode == eFileDialogModeOpen) && isSequenceDialog ) {
-        QPixmap pixPreviewButtonEnabled, pixPreviewButtonDisabled;
-        appPTR->getIcon(NATRON_PIXMAP_PLAYER_PLAY_ENABLED, &pixPreviewButtonEnabled);
-        appPTR->getIcon(NATRON_PIXMAP_PLAYER_PLAY_DISABLED, &pixPreviewButtonDisabled);
+    if ((mode == eFileDialogModeOpen) && isSequenceDialog) {
         QIcon icPreview;
-        icPreview.addPixmap(pixPreviewButtonEnabled, QIcon::Normal, QIcon::On);
-        icPreview.addPixmap(pixPreviewButtonDisabled, QIcon::Normal, QIcon::Off);
+        appPTR->getIcon(NATRON_PIXMAP_PLAYER_PLAY_DISABLED, NATRON_PIXMAP_PLAYER_PLAY_ENABLED, buttonIconSize.width(), &icPreview);
         _togglePreviewButton = new Button(icPreview, QString(), _centerArea);
         _togglePreviewButton->setIconSize(buttonIconSize);
         QObject::connect( _togglePreviewButton, SIGNAL(clicked(bool)), this, SLOT(onTogglePreviewButtonClicked(bool)) );
@@ -446,9 +490,9 @@ SequenceFileDialog::SequenceFileDialog( QWidget* parent, // necessary to transmi
         _filterLineEdit = new FileDialogLineEdit(_filterWidget);
         _filterLayout->addWidget(_filterLineEdit);
         QSize buttonSize( 15, _filterLineEdit->sizeHint().height() );
-        QPixmap pixDropDown;
-        appPTR->getIcon(NATRON_PIXMAP_COMBOBOX, &pixDropDown);
-        _filterDropDown = new Button(QIcon(pixDropDown), QString(), _filterWidget);
+        QIcon dropDownIcon;
+        appPTR->getIcon(NATRON_PIXMAP_COMBOBOX, TO_DPIX(NATRON_SMALL_BUTTON_ICON_SIZE), &dropDownIcon);
+        _filterDropDown = new Button(dropDownIcon, QString(), _filterWidget);
         _filterDropDown->setFixedSize(buttonSize);
         _filterLayout->addWidget(_filterDropDown);
         QObject::connect( _filterDropDown, SIGNAL(clicked()), this, SLOT(showFilterMenu()) );
@@ -490,6 +534,8 @@ SequenceFileDialog::SequenceFileDialog( QWidget* parent, // necessary to transmi
     initialBookmarks.push_back( QUrl::fromLocalFile( QLatin1String("") ) );
 #endif
 
+    _favoriteViewModel->setIconProvider(themedFileIconProvider());
+    _lookinViewModel->setIconProvider(themedFileIconProvider());
     _favoriteView->setModelAndUrls(_favoriteViewModel.get(), initialBookmarks);
 
 
@@ -1427,6 +1473,7 @@ SequenceFileDialog::openSelectedFiles()
                     QMessageBox ques(QMessageBox::Question, tr("Existing file"), text, QMessageBox::Yes | QMessageBox::No,
                                      this, Qt::Dialog | Qt::MSWindowsFixedSizeDialogHint | Qt::WindowStaysOnTopHint);
                     Gui::setQMessageBoxAppropriateFont(&ques);
+                    Gui::setQMessageBoxThemedIcon(&ques);
                     ques.setDefaultButton(QMessageBox::Yes);
                     ques.setWindowFlags(ques.windowFlags() | Qt::WindowStaysOnTopHint);
                     QMessageBox::StandardButton ret = QMessageBox::No;
@@ -1701,12 +1748,6 @@ SequenceFileDialog::selectedFiles()
         }
     }
 
-#ifdef __NATRON_WIN32__
-    if (appPTR->getCurrentSettings()->isDriveLetterToUNCPathConversionEnabled()) {
-        QString ret = FileSystemModel::mapPathWithDriveLetterToPathWithNetworkShareName( QString::fromUtf8( selection.c_str() ) );
-        selection = ret.toStdString();
-    }
-#endif
     return selection;
 }
 
@@ -1727,12 +1768,6 @@ SequenceFileDialog::filesToSave()
     } else {
         ret = text;
     }
-
-#ifdef __NATRON_WIN32__
-    if (appPTR->getCurrentSettings()->isDriveLetterToUNCPathConversionEnabled()) {
-        ret = FileSystemModel::mapPathWithDriveLetterToPathWithNetworkShareName(ret);
-    }
-#endif
 
     return ret.toStdString();
 }
@@ -1755,14 +1790,6 @@ SequenceFileDialog::selectedDirectory() const
             Project::makeRelativeToVariable(pathName, pathValue, path);
         }
     }
-
-
-#ifdef __NATRON_WIN32__
-    if (appPTR->getCurrentSettings()->isDriveLetterToUNCPathConversionEnabled()) {
-        QString ret = FileSystemModel::mapPathWithDriveLetterToPathWithNetworkShareName( QString::fromUtf8( path.c_str() ) );
-        path = ret.toStdString();
-    }
-#endif
 
     return path;
 }

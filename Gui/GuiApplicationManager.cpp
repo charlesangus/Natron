@@ -73,6 +73,12 @@ GuiApplicationManager::GuiApplicationManager()
     : AppManager()
     , _imp( new GuiApplicationManagerPrivate(this) )
 {
+    // A colour knob reports each channel separately and a colour picker reports every drag
+    // step, and reapplying the stylesheet repolishes every widget, so the changes are
+    // coalesced into one reapply.
+    _imp->themeReloadTimer.setSingleShot(true);
+    _imp->themeReloadTimer.setInterval(150);
+    QObject::connect(&_imp->themeReloadTimer, SIGNAL(timeout()), this, SLOT(onThemeReloadTimerTriggered()));
 }
 
 GuiApplicationManager::~GuiApplicationManager()
@@ -819,14 +825,8 @@ GuiApplicationManager::getIcon(PixmapEnum e,
         // The vendored glyphs are drawn on Lucide's 24-unit grid; this is their own
         // natural size, not a UI constant, so a direct request scales from here.
         const int naturalSize = 24;
-        const QColor color = ThemedIcon::themeTextColor();
-        const double dpr = qApp->devicePixelRatio();
-        const QString key = ThemedIcon::pixmapCacheKey(qpath, naturalSize, color, dpr);
 
-        if (!QPixmapCache::find(key, pix)) {
-            *pix = ThemedIcon::renderPixmap(qpath, naturalSize, color, dpr);
-            QPixmapCache::insert(key, *pix);
-        }
+        *pix = ThemedIcon::cachedPixmap(qpath, naturalSize, ThemedIcon::themeTextColor(), qApp->devicePixelRatio());
 
         return;
     }
@@ -847,14 +847,7 @@ GuiApplicationManager::getIcon(PixmapEnum e,
     const QString qpath = QString::fromUtf8(path.c_str());
 
     if (!path.empty() && ThemedIcon::isSvgPath(qpath)) {
-        const QColor color = ThemedIcon::themeTextColor();
-        const double dpr = qApp->devicePixelRatio();
-        const QString key = ThemedIcon::pixmapCacheKey(qpath, size, color, dpr);
-
-        if (!QPixmapCache::find(key, pix)) {
-            *pix = ThemedIcon::renderPixmap(qpath, size, color, dpr);
-            QPixmapCache::insert(key, *pix);
-        }
+        *pix = ThemedIcon::cachedPixmap(qpath, size, ThemedIcon::themeTextColor(), qApp->devicePixelRatio());
 
         return;
     }
@@ -888,6 +881,29 @@ GuiApplicationManager::getIcon(PixmapEnum e,
     QPixmap pix;
     getIcon(e, size, &pix);
     icon->addPixmap(pix);
+}
+
+void
+GuiApplicationManager::getIcon(PixmapEnum off,
+                               PixmapEnum on,
+                               int size,
+                               QIcon* icon) const
+{
+    const QString offPath = QString::fromUtf8(pixmapEnumToPath(off).c_str());
+    const QString onPath = QString::fromUtf8(pixmapEnumToPath(on).c_str());
+
+    if (ThemedIcon::isSvgPath(offPath) && ThemedIcon::isSvgPath(onPath)) {
+        *icon = ThemedIcon::icon(offPath, onPath, size);
+
+        return;
+    }
+
+    QPixmap offPix, onPix;
+    getIcon(off, size, &offPix);
+    getIcon(on, size, &onPix);
+    *icon = QIcon();
+    icon->addPixmap(offPix, QIcon::Normal, QIcon::Off);
+    icon->addPixmap(onPix, QIcon::Normal, QIcon::On);
 }
 
 const std::list<PluginGroupNodePtr>&

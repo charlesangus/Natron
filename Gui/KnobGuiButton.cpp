@@ -130,15 +130,12 @@ KnobGuiButton::createWidget(QHBoxLayout* layout)
     QPixmap pixChecked, pixUnchecked;
     const bool onIsSvg = !onIconFilePath.isEmpty() && ThemedIcon::isSvgPath(onIconFilePath);
     const bool offIsSvg = !offIconFilePath.isEmpty() && ThemedIcon::isSvgPath(offIconFilePath);
-    if (onIsSvg && offIsSvg && (onIconFilePath == offIconFilePath)) {
-        // One glyph for both states: the checked state shows in the selection colour.
-        icon = ThemedIcon::icon(onIconFilePath, NATRON_MEDIUM_BUTTON_ICON_SIZE);
-    } else if (onIsSvg && offIsSvg) {
-        // The two states are different shapes, so the shape alone carries the state.
-        const QColor textColor = ThemedIcon::themeTextColor();
-        const double dpr = qApp->devicePixelRatio();
-        icon.addPixmap(ThemedIcon::renderPixmap(offIconFilePath, NATRON_MEDIUM_BUTTON_ICON_SIZE, textColor, dpr), QIcon::Normal, QIcon::Off);
-        icon.addPixmap(ThemedIcon::renderPixmap(onIconFilePath, NATRON_MEDIUM_BUTTON_ICON_SIZE, textColor, dpr), QIcon::Normal, QIcon::On);
+    if ((onIsSvg || onIconFilePath.isEmpty()) && (offIsSvg || offIconFilePath.isEmpty()) && (onIsSvg || offIsSvg)) {
+        // One glyph for both states shows the checked state in the selection colour; two
+        // different shapes carry the state themselves.
+        const QString offPath = offIconFilePath.isEmpty() ? onIconFilePath : offIconFilePath;
+        const QString onPath = onIconFilePath.isEmpty() ? offIconFilePath : onIconFilePath;
+        icon = ThemedIcon::icon(offPath, onPath, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE));
     } else {
         if (!offIconFilePath.isEmpty()) {
             if (pixUnchecked.load(offIconFilePath)) {

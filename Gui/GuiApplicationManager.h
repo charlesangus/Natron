@@ -108,6 +108,10 @@ public:
     // to the plain pixmap above, wrapped in a QIcon with only its Normal/Off state.
     void getIcon(Natron::PixmapEnum e, int size, QIcon* icon) const;
 
+    // A toggle whose On state is a different glyph (play/stop, lock/unlock). Ids that
+    // map to the same SVG give the single-glyph icon, with On in the selection colour.
+    void getIcon(Natron::PixmapEnum off, Natron::PixmapEnum on, int size, QIcon* icon) const;
+
     void setKnobClipBoard(Natron::KnobClipBoardType type,
                           const KnobIPtr& serialization,
                           int dimension);
@@ -207,7 +211,16 @@ public Q_SLOTS:
 
     void onFontconfigCacheUpdateFinished();
     void onFontconfigTimerTriggered();
+    void onThemeReloadTimerTriggered();
 
+Q_SIGNALS:
+
+    // Emitted once the stylesheet has been reapplied after a theme colour change. Widgets
+    // that hold a rendered QPixmap (labels, cursors, GL textures) re-render on it; QIcons
+    // built by ThemedIcon recolour on their own when repainted.
+    void themeChanged();
+
+public:
 #ifdef Q_OS_DARWIN
 Q_SIGNALS:
     void dockClicked();

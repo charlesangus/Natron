@@ -60,21 +60,20 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/NodeGraph.h"
 #include "Gui/ProjectGui.h"
 #include "Gui/RenderStatsDialog.h"
+#include "Gui/ThemedIcon.h"
 #include "Gui/ToolButton.h"
 #include "Gui/ViewerTab.h"
 
 NATRON_NAMESPACE_ENTER
 
-
-// Helper function: Get the icon with the given name from the icon theme.
-// If unavailable, fall back to the built-in icon. Icon names conform to this specification:
-// http://standards.freedesktop.org/icon-naming-spec/icon-naming-spec-latest.html
 static QIcon
-get_icon(const std::string &name)
+menuIcon(const char* lucideName)
 {
-    QString str = QString::fromUtf8( name.c_str() );
+    // Menus draw icons at the style's small icon size; the themed icon renders at whatever
+    // size is asked for, so this is only its nominal size.
+    const int nominalSize = 16;
 
-    return QIcon::fromTheme( str, QIcon(QString::fromUtf8(":icons/") + str) );
+    return ThemedIcon::icon(QString::fromUtf8(NATRON_ICONS_PATH "lucide/") + QString::fromUtf8(lucideName) + QString::fromUtf8(".svg"), nominalSize);
 }
 
 Gui::Gui(const GuiAppInstancePtr& app,
@@ -455,31 +454,31 @@ Gui::createMenuActions()
 
 
     _imp->actionNew_project = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionNewProject, kShortcutDescActionNewProject, this);
-    _imp->actionNew_project->setIcon( get_icon("document-new") );
+    _imp->actionNew_project->setIcon(menuIcon("file-plus"));
     QObject::connect( _imp->actionNew_project, SIGNAL(triggered()), this, SLOT(newProject()) );
 
     _imp->actionOpen_project = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionOpenProject, kShortcutDescActionOpenProject, this);
-    _imp->actionOpen_project->setIcon( get_icon("document-open") );
+    _imp->actionOpen_project->setIcon(menuIcon("folder-open"));
     QObject::connect( _imp->actionOpen_project, SIGNAL(triggered()), this, SLOT(openProject()) );
 
     _imp->actionClose_project = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionCloseProject, kShortcutDescActionCloseProject, this);
-    _imp->actionClose_project->setIcon( get_icon("document-close") );
+    _imp->actionClose_project->setIcon(menuIcon("file-x"));
     QObject::connect( _imp->actionClose_project, SIGNAL(triggered()), this, SLOT(closeProject()) );
 
     _imp->actionReload_project = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionReloadProject, kShortcutDescActionReloadProject, this);
-    _imp->actionReload_project->setIcon( get_icon("document-open") );
+    _imp->actionReload_project->setIcon(menuIcon("folder-sync"));
     QObject::connect( _imp->actionReload_project, SIGNAL(triggered()), this, SLOT(reloadProject()) );
 
     _imp->actionSave_project = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionSaveProject, kShortcutDescActionSaveProject, this);
-    _imp->actionSave_project->setIcon( get_icon("document-save") );
+    _imp->actionSave_project->setIcon(menuIcon("save"));
     QObject::connect( _imp->actionSave_project, SIGNAL(triggered()), this, SLOT(saveProject()) );
 
     _imp->actionSaveAs_project = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionSaveAsProject, kShortcutDescActionSaveAsProject, this);
-    _imp->actionSaveAs_project->setIcon( get_icon("document-save-as") );
+    _imp->actionSaveAs_project->setIcon(menuIcon("save-all"));
     QObject::connect( _imp->actionSaveAs_project, SIGNAL(triggered()), this, SLOT(saveProjectAs()) );
 
     _imp->actionExportAsGroup = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionExportProject, kShortcutDescActionExportProject, this);
-    _imp->actionExportAsGroup->setIcon( get_icon("document-save-as") );
+    _imp->actionExportAsGroup->setIcon(menuIcon("package"));
     QObject::connect( _imp->actionExportAsGroup, SIGNAL(triggered()), this, SLOT(exportProjectAsGroup()) );
 
     _imp->actionSaveAndIncrementVersion = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionSaveAndIncrVersion, kShortcutDescActionSaveAndIncrVersion, this);
@@ -491,11 +490,11 @@ Gui::createMenuActions()
 
     _imp->actionExit = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionQuit, kShortcutDescActionQuit, this);
     _imp->actionExit->setMenuRole(QAction::QuitRole);
-    _imp->actionExit->setIcon( get_icon("application-exit") );
+    _imp->actionExit->setIcon(menuIcon("log-out"));
     QObject::connect( _imp->actionExit, SIGNAL(triggered()), appPTR, SLOT(exitAppWithSaveWarning()) );
 
     _imp->actionProject_settings = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionProjectSettings, kShortcutDescActionProjectSettings, this);
-    _imp->actionProject_settings->setIcon( get_icon("document-properties") );
+    _imp->actionProject_settings->setIcon(menuIcon("file-cog"));
     QObject::connect( _imp->actionProject_settings, SIGNAL(triggered()), this, SLOT(setVisibleProjectSettingsPanel()) );
 
     _imp->actionShowErrorLog = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionShowErrorLog, kShortcutDescActionShowErrorLog, this);
@@ -512,7 +511,7 @@ Gui::createMenuActions()
 #endif
 
     _imp->actionFullScreen = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionFullscreen, kShortcutDescActionFullscreen, this);
-    _imp->actionFullScreen->setIcon( get_icon("view-fullscreen") );
+    _imp->actionFullScreen->setIcon(menuIcon("fullscreen"));
     _imp->actionFullScreen->setShortcutContext(Qt::ApplicationShortcut);
     QObject::connect( _imp->actionFullScreen, SIGNAL(triggered()), this, SLOT(toggleFullScreen()) );
 

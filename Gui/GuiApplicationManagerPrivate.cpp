@@ -34,6 +34,7 @@ CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QApplication>
 #include <QDebug>
+#include <QPainter>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -45,12 +46,11 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
-
 GuiApplicationManagerPrivate::GuiApplicationManagerPrivate(GuiApplicationManager* publicInterface)
-    :   _publicInterface(publicInterface)
+    : _publicInterface(publicInterface)
     , _topLevelToolButtons()
     , _knobsClipBoard(new KnobsClipBoard)
-    , _knobGuiFactory( new KnobGuiFactory() )
+    , _knobGuiFactory(new KnobGuiFactory())
     , _colorPickerCursor()
     , _linkToCursor()
     , _splashScreen(NULL)
@@ -64,6 +64,7 @@ GuiApplicationManagerPrivate::GuiApplicationManagerPrivate(GuiApplicationManager
     , startupArgs()
     , fontconfigUpdateWatcher()
     , updateSplashscreenTimer()
+    , themeReloadTimer()
     , fontconfigMessageDots(3)
     , previewRenderThread()
     , dpiX(96)
@@ -190,21 +191,20 @@ GuiApplicationManagerPrivate::findPluginToolButtonInternal(const std::list<Plugi
 void
 GuiApplicationManagerPrivate::createColorPickerCursor()
 {
-    QImage originalImage;
+    // The pipette's tip is its bottom-left corner. Drawing it in the top-right quarter of a
+    // canvas twice its size puts the tip on QCursor's default hotspot, the canvas centre.
+    const int glyphSize = 16;
+    const double dpr = qApp->devicePixelRatio();
+    const QPixmap glyph = ThemedIcon::renderPixmap(QString::fromUtf8(NATRON_ICONS_PATH "lucide/pipette.svg"),
+                                                   glyphSize, ThemedIcon::themeTextColor(), dpr);
+    QPixmap pix((int)std::lround(2 * glyphSize * dpr), (int)std::lround(2 * glyphSize * dpr));
 
-    originalImage.load( QString::fromUtf8(NATRON_IMAGES_PATH "color_picker.png") );
-    originalImage = originalImage.scaled(16, 16);
-    QImage dstImage(32, 32, QImage::Format_ARGB32);
-    dstImage.fill( QColor(0, 0, 0, 0) );
-
-    int oW = originalImage.width();
-    int oH = originalImage.height();
-    for (int y = 0; y < oH; ++y) {
-        for (int x = 0; x < oW; ++x) {
-            dstImage.setPixel( x + oW, y, originalImage.pixel(x, y) );
-        }
+    pix.setDevicePixelRatio(dpr);
+    pix.fill(Qt::transparent);
+    {
+        QPainter painter(&pix);
+        painter.drawPixmap(QPointF(glyphSize, 0), glyph);
     }
-    QPixmap pix = QPixmap::fromImage(dstImage);
     _colorPickerCursor = QCursor(pix);
 }
 

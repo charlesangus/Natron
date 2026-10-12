@@ -55,11 +55,20 @@ CHANNEL_BUTTON_CHROMA_RATIO = 0.65
 CHANNEL_BUTTON_MIN_CHROMA = 25
 ROW_LABEL_BRIGHTNESS_RATIO = 0.85
 
+SMALL_BUTTON = 15
+SMALL_BUTTON_ICON = 13
+FULL_STRENGTH_ALPHA = 230
+GLYPH_FILL_FRACTION = 0.4
+DROP_DOWN_ICON = 6
+ICON_TEXT_TOLERANCE = 2
+THEME_RELOAD_MS = 1500
+RECOLOUR_TEST_COLOUR = (0.35, 0.85, 0.45)
+
 try:
     import NatronEngine
     import shiboken6
     from PySide6.QtCore import QBuffer, QByteArray, QEvent, QIODevice, QMetaObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer
-    from PySide6.QtGui import QCursor, QGuiApplication, QIcon, QMouseEvent
+    from PySide6.QtGui import QCursor, QFontMetrics, QGuiApplication, QIcon, QMouseEvent, QPalette
     from PySide6.QtWidgets import (QAbstractButton, QApplication, QGraphicsTextItem, QLabel, QMenu, QScrollArea,
                                    QTabBar, QToolBar, QWidget)
 
@@ -231,6 +240,90 @@ try:
         QApplication.sendEvent(widget, ev)
         done[0] = True
         QApplication.processEvents()
+
+    # ---- icon size, colour and live theme probes ---------------------------------------------
+
+    def text_colour():
+        param = NatronEngine.natron.getSettings().getParam("text")
+        return tuple(int(round(param.getValue(i) * 255)) for i in range(3))
+
+    def opaque_colour(img):
+        """Mean colour of the fully opaque pixels: the stroke cores, free of edge blending."""
+        n = r = g = b = 0
+        for y in range(img.height()):
+            for x in range(img.width()):
+                c = img.pixelColor(x, y)
+                if c.alpha() >= 250:
+                    n += 1
+                    r += c.red()
+                    g += c.green()
+                    b += c.blue()
+        return (r / float(n), g / float(n), b / float(n)) if n else None
+
+    def colour_near(a, b, tol):
+        return a is not None and b is not None and all(abs(x - y) <= tol for x, y in zip(a, b))
+
+    def fmt_colour(c):
+        return "none" if c is None else "(%.0f, %.0f, %.0f)" % tuple(c)
+
+    def glyph_extent(pix):
+        """(max alpha, glyph bounding-box size in logical px) of a rendered icon."""
+        img = pix.toImage()
+        dpr = pix.devicePixelRatio() or 1.0
+        top_alpha = 0
+        xs = []
+        ys = []
+        for y in range(img.height()):
+            for x in range(img.width()):
+                a = img.pixelColor(x, y).alpha()
+                top_alpha = max(top_alpha, a)
+                if a >= 128:
+                    xs.append(x)
+                    ys.append(y)
+        if not xs:
+            return top_alpha, 0.0
+        return top_alpha, max(max(xs) - min(xs) + 1, max(ys) - min(ys) + 1) / dpr
+
+    def check_small_buttons(area, buttons):
+        probed = 0
+        for b in buttons:
+            ic = b.icon()
+            if ic is None or ic.isNull() or b.width() > px(SMALL_BUTTON) + 1:
+                continue
+            probed += 1
+            name = describe_icon_owner(b)
+            size = b.iconSize()
+            check(size.width() >= px(SMALL_BUTTON_ICON) - 0.5,
+                  "%s: %s draws its icon at %d px in a %d px button" % (area, name, size.width(), b.width()))
+            top_alpha, extent = glyph_extent(ic.pixmap(size))
+            check(top_alpha >= FULL_STRENGTH_ALPHA,
+                  "%s: %s's strokes reach full strength at the button's icon size (max alpha %d)" % (area, name, top_alpha))
+            check(extent >= GLYPH_FILL_FRACTION * b.width(),
+                  "%s: %s's glyph spans %.1f px of its %d px button" % (area, name, extent, b.width()))
+        check(probed > 0, "%s: found small icon buttons to probe (%d)" % (area, probed))
+
+    def themed_label():
+        for w in QApplication.allWidgets():
+            if isinstance(w, QLabel) and w.isVisible() and w.property("_natronThemedIcon") is not None:
+                return w
+        return None
+
+    def label_text_colour():
+        for w in QApplication.allWidgets():
+            # An unaltered Label is drawn in the plain text colour (an altered one uses the
+            # "unmodified" colour instead).
+            if (gt.class_name(w) == "Label" and w.isVisible() and w.isEnabled() and w.text()
+                    and w.property("altered") is False):
+                c = w.palette().color(QPalette.WindowText)
+                return (c.red(), c.green(), c.blue())
+        return None
+
+    def icon_colour(button):
+        return opaque_colour(button.icon().pixmap(QSize(ICON_PROBE_SIZE, ICON_PROBE_SIZE), QIcon.Normal, QIcon.Off).toImage())
+
+    def label_pixmap_colour(label):
+        pix = label.pixmap() if label is not None else None
+        return opaque_colour(pix.toImage()) if pix is not None and not pix.isNull() else None
 
     # ---- themed-icon probe ---------------------------------------------------------------------
 
@@ -1029,6 +1122,136 @@ try:
         grade.destroy()
         gt.close_all_panels()
         save_icon_hashes()
+        yield ("sleep", SETTLE_MS)
+
+        # ---- UAT round: icon sizes, bin row, combos, icon colour, live recolour, legacy icons
+        gt.section("uat")
+        headers = [h for h in gt.widgets_of("TabWidgetHeader") if h.isVisible()]
+        if check(bool(headers), "found a pane header"):
+            check_small_buttons("pane header", [b for h in headers for b in h.findChildren(QAbstractButton)])
+
+        grade = create("net.sf.openfx.GradePlugin", 300, 0)
+        yield ("sleep", PANEL_MS)
+        scroll = next((w for w in QApplication.allWidgets()
+                       if isinstance(w, QScrollArea) and w.objectName() == "Properties" and w.isVisible()), None)
+        bin_widget = scroll.parentWidget() if scroll is not None else None
+        bin_buttons = []
+        if check(bin_widget is not None, "the properties bin is shown"):
+            panel_ptrs = set()
+            for p in visible_panels():
+                panel_ptrs.update(ptr(w) for w in [p] + p.findChildren(QWidget))
+            bin_buttons = [b for b in buttons_in(bin_widget) if ptr(b) not in panel_ptrs and not b.icon().isNull()]
+            check_small_buttons("properties bin", bin_buttons)
+
+            spins = [w for w in descendants(bin_widget) if gt.class_name(w) == "SpinBox" and ptr(w) not in panel_ptrs]
+            if check(bool(spins) and bool(bin_buttons), "found the bin's max-panels box and buttons"):
+                spin = spins[0]
+                fm = QFontMetrics(spin.font())
+                check(spin.height() >= fm.height() + 2,
+                      "max-panels box is tall enough for its text (%d px for a %d px line)" % (spin.height(), fm.height()))
+                check(spin.width() >= fm.horizontalAdvance("99") + 4,
+                      "max-panels box is wide enough for two digits (%d px)" % spin.width())
+                spin_mid = spin.mapTo(bin_widget, QPoint(0, spin.height() // 2)).y()
+                button_mid = bin_buttons[0].mapTo(bin_widget, QPoint(0, bin_buttons[0].height() // 2)).y()
+                check(abs(spin_mid - button_mid) <= 1,
+                      "max-panels box is centred on the bin buttons (%d vs %d)" % (spin_mid, button_mid))
+                crop_shot(spin.parentWidget(), "uat-properties-bin-row", pad=4)
+
+        if bin_buttons:
+            want = text_colour()
+            got = icon_colour(bin_buttons[0])
+            rendered = label_text_colour()
+            check(colour_near(got, want, ICON_TEXT_TOLERANCE),
+                  "an icon's strokes are the Preferences text colour (%s vs %s)" % (fmt_colour(got), fmt_colour(want)))
+            check(colour_near(got, rendered, ICON_TEXT_TOLERANCE),
+                  "an icon's strokes match the rendered label text colour (%s vs %s)" % (fmt_colour(got), fmt_colour(rendered)))
+
+        viewer_tab = next((w for w in gt.widgets_of("ViewerTab") if w.isVisible()), None)
+        if viewer_tab is None:
+            make_tab_current("pane1", "viewer")
+            yield ("sleep", SETTLE_MS)
+            viewer_tab = next((w for w in gt.widgets_of("ViewerTab") if w.isVisible()), None)
+        if check(viewer_tab is not None, "a viewer tab is shown"):
+            formats = [w for w in descendants(viewer_tab)
+                       if gt.class_name(w) == "ComboBox" and "time display format" in (w.toolTip() or "").lower()]
+            if check(bool(formats), "found the time display format menu"):
+                combo = formats[0]
+                fm = QFontMetrics(combo.font())
+                need = (max(fm.horizontalAdvance("TC"), fm.horizontalAdvance("TF")) + fm.horizontalAdvance("x") // 2
+                        + 2 * DROP_DOWN_ICON + 2)
+                check(combo.width() >= need,
+                      "time display format menu fits its text and arrow (%d px, needs %d)" % (combo.width(), need))
+                crop_shot(combo.parentWidget(), "uat-time-format")
+
+        if bin_buttons:
+            settings = NatronEngine.natron.getSettings()
+            text_param = settings.getParam("text")
+            old = [text_param.getValue(i) for i in range(3)]
+            start = time.time()
+            for i, v in enumerate(RECOLOUR_TEST_COLOUR):
+                text_param.setValue(v, i)
+            elapsed = time.time() - start
+            check(elapsed < 0.5, "changing the text colour returns at once (%.2f s for three channels)" % elapsed)
+            yield ("sleep", THEME_RELOAD_MS)
+            want = text_colour()
+            check(colour_near(icon_colour(bin_buttons[0]), want, ICON_TEXT_TOLERANCE),
+                  "a text colour change recolours a button icon (%s vs %s)"
+                  % (fmt_colour(icon_colour(bin_buttons[0])), fmt_colour(want)))
+            label = themed_label()
+            if check(label is not None, "found a label showing a themed icon"):
+                got = label_pixmap_colour(label)
+                check(colour_near(got, want, ICON_TEXT_TOLERANCE),
+                      "a text colour change recolours a label's icon (%s vs %s)" % (fmt_colour(got), fmt_colour(want)))
+            check(colour_near(label_text_colour(), want, ICON_TEXT_TOLERANCE),
+                  "a text colour change restyles the label text (%s)" % fmt_colour(label_text_colour()))
+            gt.shot("uat-recoloured.png")
+            for i, v in enumerate(old):
+                text_param.setValue(v, i)
+            yield ("sleep", THEME_RELOAD_MS)
+            check(colour_near(icon_colour(bin_buttons[0]), text_colour(), ICON_TEXT_TOLERANCE),
+                  "restoring the text colour restores the icon colour")
+        grade.destroy()
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+
+        gui = gui_widget()
+        if check(gui is not None, "found the main window"):
+            menu_actions = []
+            for top in gui.menuBar().actions():
+                if top.menu() is not None:
+                    menu_actions.extend(a for a in top.menu().actions() if not a.icon().isNull())
+            check_icon_entries("main menu", icon_entries(menu_actions))
+
+            seen = {}
+
+            def inspect_dialog():
+                dialogs = [d for d in gt.widgets_of("SequenceFileDialog") if d.isVisible()]
+                if not dialogs:
+                    if seen.get("tries", 0) < 40:
+                        seen["tries"] = seen.get("tries", 0) + 1
+                        QTimer.singleShot(200, inspect_dialog)
+                    return
+                dialog = dialogs[0]
+                seen["dialog"] = True
+                entries = icon_entries(buttons_in(dialog))
+                for view in dialog.findChildren(QWidget):
+                    model = view.model() if hasattr(view, "model") and callable(view.model) else None
+                    if model is None or gt.class_name(view) != "FavoriteView":
+                        continue
+                    for row in range(model.rowCount()):
+                        deco = model.index(row, 0).data(Qt.DecorationRole)
+                        if isinstance(deco, QIcon) and not deco.isNull():
+                            entries.append(("favourite %d" % row, deco))
+                seen["entries"] = entries
+                crop_shot(dialog, "uat-file-dialog")
+                dialog.reject()
+
+            QTimer.singleShot(500, inspect_dialog)
+            # openProject() runs the modal file dialog; inspect_dialog() rejects it, which returns here.
+            QMetaObject.invokeMethod(gui, "openProject")
+            QApplication.processEvents()
+            if check(seen.get("dialog", False), "the open-project file dialog opened"):
+                check_icon_entries("file dialog", seen.get("entries", []))
         yield ("sleep", SETTLE_MS)
 
         # ---- link cursor

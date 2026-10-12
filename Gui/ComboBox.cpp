@@ -57,7 +57,7 @@ CLANG_DIAG_ON(deprecated-register)
 #include "Gui/GuiMacros.h"
 #include "Gui/KnobWidgetDnD.h"
 #include "Gui/Menu.h"
-
+#include "Gui/ThemedIcon.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -331,14 +331,12 @@ ComboBox::paintEvent(QPaintEvent* /*e*/)
         p.drawPath(path);
     }
     QColor textColor;
-    if (_readOnly) {
-        textColor.setRgb(100, 100, 100);
+    if (_readOnly || !_enabled) {
+        textColor = ThemedIcon::themeDisabledColor();
     } else if (_altered) {
         double aR, aG, aB;
         appPTR->getCurrentSettings()->getAltTextColor(&aR, &aG, &aB);
         textColor.setRgbF(aR, aG, aB);
-    } else if (!_enabled) {
-        textColor = Qt::black;
     } else {
         double r, g, b;
         appPTR->getCurrentSettings()->getTextColor(&r, &g, &b);
@@ -716,7 +714,6 @@ ComboBox::setCurrentText_internal(const QString & text)
     growMaximumWidthFromText(str);
 
     _currentText = strippedText(text);
-    QFontMetrics m = fontMetrics();
 
     // if no action matches this text, set the index to a dirty value
     int index = -1;
@@ -728,8 +725,7 @@ ComboBox::setCurrentText_internal(const QString & text)
     }
 
     if (_sizePolicy.horizontalPolicy() != QSizePolicy::Fixed) {
-        int w = m.horizontalAdvance(str) + 2 * DROP_DOWN_ICON_SIZE;
-        setMinimumWidth(w);
+        setMinimumWidth(widthToFit(QStringList() << str));
     }
 
     int ret = -1;
@@ -748,8 +744,25 @@ ComboBox::setMaximumWidthFromText(const QString & str)
     if (_elidedWidth > 0 || _sizePolicy.horizontalPolicy() == QSizePolicy::Fixed) {
         return;
     }
-    int w = fontMetrics().horizontalAdvance(str);
-    setMaximumWidth(w + DROP_DOWN_ICON_SIZE * 2);
+    setMaximumWidth(widthToFit(QStringList() << str));
+}
+
+int
+ComboBox::widthToFit(const QStringList& texts) const
+{
+    // The application stylesheet sets the font size, and it only applies once polished.
+    ensurePolished();
+    const QFontMetrics fm = fontMetrics();
+    int textWidth = 0;
+
+    for (QStringList::const_iterator it = texts.begin(); it != texts.end(); ++it) {
+        textWidth = std::max(textWidth, fm.horizontalAdvance(*it));
+    }
+    const QMargins margins = contentsMargins();
+    // Two px for the rounding in layoutRect()'s half-character indent.
+    const int slack = 2;
+
+    return textWidth + fm.horizontalAdvance(QLatin1Char('x')) / 2 + DROP_DOWN_ICON_SIZE * 2 + 2 * frameWidth() + margins.left() + margins.right() + slack;
 }
 
 void
@@ -758,7 +771,7 @@ ComboBox::growMaximumWidthFromText(const QString & str)
     if (_sizePolicy.horizontalPolicy() == QSizePolicy::Fixed) {
         return;
     }
-    int w = fontMetrics().horizontalAdvance(str) + 2 * DROP_DOWN_ICON_SIZE;
+    const int w = widthToFit(QStringList() << str);
     if ( w > maximumWidth() ) {
         setMaximumWidth(w);
     }

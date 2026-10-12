@@ -32,8 +32,9 @@
 #include <utility>
 #include <stdexcept>
 
-#include <QThread>
 #include <QDebug>
+#include <QStyle>
+#include <QThread>
 
 #include <QAction>
 #include <QApplication> // qApp
@@ -58,7 +59,7 @@
 #include "Gui/QtEnumConvert.h"
 #include "Gui/ResizableMessageBox.h"
 #include "Gui/TabWidget.h"
-
+#include "Gui/ThemedIcon.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -291,6 +292,31 @@ Gui::informationDialog(const std::string & title,
 }
 
 void
+Gui::setQMessageBoxThemedIcon(QMessageBox* widget)
+{
+    ThemedIcon::MessageGlyphEnum kind;
+
+    switch (widget->icon()) {
+    case QMessageBox::Information:
+        kind = ThemedIcon::eMessageGlyphInformation;
+        break;
+    case QMessageBox::Warning:
+        kind = ThemedIcon::eMessageGlyphWarning;
+        break;
+    case QMessageBox::Critical:
+        kind = ThemedIcon::eMessageGlyphError;
+        break;
+    case QMessageBox::Question:
+        kind = ThemedIcon::eMessageGlyphQuestion;
+        break;
+    default:
+        return;
+    }
+    const int size = widget->style()->pixelMetric(QStyle::PM_MessageBoxIconSize, 0, widget);
+    widget->setIconPixmap(ThemedIcon::messageIcon(kind, size).pixmap(QSize(size, size), widget->devicePixelRatio()));
+}
+
+void
 Gui::setQMessageBoxAppropriateFont(QMessageBox* widget)
 {
     QGridLayout* grid = dynamic_cast<QGridLayout*>( widget->layout() );
@@ -341,12 +367,14 @@ Gui::onDoDialog(int type,
     if (type == 0) { // error dialog
         QMessageBox critical(QMessageBox::Critical, title, msg, QMessageBox::NoButton, this, Qt::Dialog | Qt::MSWindowsFixedSizeDialogHint | Qt::WindowStaysOnTopHint);
         setQMessageBoxAppropriateFont(&critical);
+        setQMessageBoxThemedIcon(&critical);
         critical.setWindowFlags(critical.windowFlags() | Qt::WindowStaysOnTopHint);
         critical.setTextFormat(Qt::RichText);   //this is what makes the links clickable
         ignore_result( critical.exec() );
     } else if (type == 1) { // warning dialog
         QMessageBox warning(QMessageBox::Warning, title, msg, QMessageBox::NoButton, this, Qt::Dialog | Qt::MSWindowsFixedSizeDialogHint | Qt::WindowStaysOnTopHint);
         setQMessageBoxAppropriateFont(&warning);
+        setQMessageBoxThemedIcon(&warning);
         warning.setTextFormat(Qt::RichText);
         warning.setWindowFlags(warning.windowFlags() | Qt::WindowStaysOnTopHint);
         ignore_result( warning.exec() );
@@ -354,6 +382,7 @@ Gui::onDoDialog(int type,
         if (msg.count() < 1000) {
             QMessageBox info(QMessageBox::Information, title, msg, QMessageBox::NoButton, this, Qt::Dialog | Qt::MSWindowsFixedSizeDialogHint | Qt::WindowStaysOnTopHint);
             setQMessageBoxAppropriateFont(&info);
+            setQMessageBoxThemedIcon(&info);
             info.setTextFormat(Qt::RichText);
             info.setWindowFlags(info.windowFlags() | Qt::WindowStaysOnTopHint);
             ignore_result( info.exec() );
@@ -369,7 +398,8 @@ Gui::onDoDialog(int type,
         QMessageBox ques(QMessageBox::Question, title, msg, QtEnumConvert::toQtStandarButtons(buttons),
                          this, Qt::Dialog | Qt::MSWindowsFixedSizeDialogHint | Qt::WindowStaysOnTopHint);
         setQMessageBoxAppropriateFont(&ques);
-        ques.setDefaultButton( QtEnumConvert::toQtStandardButton( (StandardButtonEnum)defaultB ) );
+        setQMessageBoxThemedIcon(&ques);
+        ques.setDefaultButton(QtEnumConvert::toQtStandardButton((StandardButtonEnum)defaultB));
         ques.setWindowFlags(ques.windowFlags() | Qt::WindowStaysOnTopHint);
         if ( ques.exec() ) {
             _imp->_lastQuestionDialogAnswer = QtEnumConvert::fromQtStandardButton( ques.standardButton( ques.clickedButton() ) );

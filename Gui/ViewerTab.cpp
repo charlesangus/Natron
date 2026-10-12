@@ -134,7 +134,6 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     /*VIEWER SETTINGS*/
 
     /*1st row of buttons*/
-    QFontMetrics fm(font(), 0);
 
     _imp->firstSettingsRow = new QWidget(this);
     _imp->firstRowLayout = new QHBoxLayout(_imp->firstSettingsRow);
@@ -150,7 +149,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
                                         "The channels of the layer will be mapped to the RGBA channels of the viewer according to "
                                         "its number of channels. (e.g: UV would be mapped to RG)") + QString::fromUtf8("</p>") );
     QObject::connect( _imp->layerChoice, SIGNAL(currentIndexChanged(int)), this, SLOT(onLayerComboChanged(int)) );
-    _imp->layerChoice->setFixedWidth( fm.horizontalAdvance( QString::fromUtf8("Color.Toto.RGBA") ) + 3 * TO_DPIX(DROP_DOWN_ICON_SIZE) );
+    _imp->layerChoice->setFixedWidth(_imp->layerChoice->widthToFit(QStringList() << QString::fromUtf8("Color.Toto.RGBA")));
     _imp->layerChoice->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     _imp->firstRowLayout->addWidget(_imp->layerChoice);
 
@@ -158,7 +157,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->alphaChannelChoice->setToolTip( QString::fromUtf8("<p><b>") + tr("Alpha channel:") + QString::fromUtf8("</b></p><p>")
                                           + tr("Select here a channel of any layer that will be used when displaying the "
                                                "alpha channel with the <b>Channels</b> choice on the right.") + QString::fromUtf8("</p>") );
-    _imp->alphaChannelChoice->setFixedWidth( fm.horizontalAdvance( QString::fromUtf8("Color.alpha") ) + 3 * TO_DPIX(DROP_DOWN_ICON_SIZE) );
+    _imp->alphaChannelChoice->setFixedWidth(_imp->alphaChannelChoice->widthToFit(QStringList() << QString::fromUtf8("Color.alpha")));
     _imp->alphaChannelChoice->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     QObject::connect( _imp->alphaChannelChoice, SIGNAL(currentIndexChanged(int)), this, SLOT(onAlphaChannelComboChanged(int)) );
     _imp->firstRowLayout->addWidget(_imp->alphaChannelChoice);
@@ -167,7 +166,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->viewerChannels->setToolTip( QString::fromUtf8("<p><b>") + tr("Display Channels:") + QString::fromUtf8("</b></p><p>")
                                       + tr("The channels to display on the viewer.") + QString::fromUtf8("</p>") );
     _imp->firstRowLayout->addWidget(_imp->viewerChannels);
-    _imp->viewerChannels->setFixedWidth( fm.horizontalAdvance( QString::fromUtf8("Luminance") ) + 3 * TO_DPIX(DROP_DOWN_ICON_SIZE) );
+    _imp->viewerChannels->setFixedWidth(_imp->viewerChannels->widthToFit(QStringList() << QString::fromUtf8("Luminance")));
     _imp->viewerChannels->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 
     addSpacer(_imp->firstRowLayout);
@@ -223,17 +222,11 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
 
     _imp->firstRowLayout->addWidget(_imp->zoomCombobox);
 
-    const int pixmapIconSize = TO_DPIX(NATRON_MEDIUM_BUTTON_SIZE);
+    const int pixmapIconSize = TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE);
     const QSize buttonSize( TO_DPIX(NATRON_MEDIUM_BUTTON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_SIZE) );
-    const QSize buttonIconSize( TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_ICON_SIZE) );
-    QPixmap lockEnabled, lockDisabled;
-    appPTR->getIcon(NATRON_PIXMAP_LOCKED, pixmapIconSize, &lockEnabled);
-    appPTR->getIcon(NATRON_PIXMAP_UNLOCKED, pixmapIconSize, &lockDisabled);
-
+    const QSize buttonIconSize(TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_ICON_SIZE));
     QIcon lockIcon;
-    lockIcon.addPixmap(lockEnabled, QIcon::Normal, QIcon::On);
-    lockIcon.addPixmap(lockDisabled, QIcon::Normal, QIcon::Off);
-
+    appPTR->getIcon(NATRON_PIXMAP_UNLOCKED, NATRON_PIXMAP_LOCKED, pixmapIconSize, &lockIcon);
 
     _imp->syncViewerButton = new Button(lockIcon, QString(), _imp->firstSettingsRow);
     _imp->syncViewerButton->setCheckable(true);
@@ -364,23 +357,23 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
 
     _imp->firstInputImage = new ComboBox(_imp->firstSettingsRow);
     _imp->firstInputImage->setToolTip( _imp->firstInputLabel->toolTip() );
-    _imp->firstInputImage->setFixedWidth(fm.horizontalAdvance( QString::fromUtf8("ColorCorrect1") ) + 3 * DROP_DOWN_ICON_SIZE);
+    _imp->firstInputImage->setFixedWidth(_imp->firstInputImage->widthToFit(QStringList() << QString::fromUtf8("ColorCorrect1")));
     _imp->firstInputImage->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     _imp->firstInputImage->addItem( QString::fromUtf8(" - ") );
     QObject::connect( _imp->firstInputImage, SIGNAL(currentIndexChanged(QString)), this, SLOT(onFirstInputNameChanged(QString)) );
     _imp->firstRowLayout->addWidget(_imp->firstInputImage);
 
-    QPixmap pixMerge;
-    appPTR->getIcon(NATRON_PIXMAP_MERGE_GROUPING, pixmapIconSize, &pixMerge);
+    QIcon mergeIcon;
+    appPTR->getIcon(NATRON_PIXMAP_MERGE_GROUPING, pixmapIconSize, &mergeIcon);
     _imp->compositingOperatorLabel = new Label(QString(), _imp->firstSettingsRow);
-    _imp->compositingOperatorLabel->setPixmap(pixMerge);
+    ThemedIcon::setLabelIcon(_imp->compositingOperatorLabel, mergeIcon, pixmapIconSize);
     _imp->compositingOperatorLabel->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Operation applied between viewer inputs A and B. a and b are the alpha components of each input. d is the wipe dissolve factor, controlled by the arc handle."), NATRON_NAMESPACE::WhiteSpaceNormal) );
     _imp->firstRowLayout->addWidget(_imp->compositingOperatorLabel);
 
 
     _imp->compositingOperator = new ComboBox(_imp->firstSettingsRow);
     QObject::connect( _imp->compositingOperator, SIGNAL(currentIndexChanged(int)), this, SLOT(onCompositingOperatorIndexChanged(int)) );
-    _imp->compositingOperator->setFixedWidth(fm.horizontalAdvance( QString::fromUtf8("W-OnionSkin") ) + 3 * DROP_DOWN_ICON_SIZE);
+    _imp->compositingOperator->setFixedWidth(_imp->compositingOperator->widthToFit(QStringList() << QString::fromUtf8("W-OnionSkin")));
     _imp->compositingOperator->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     _imp->compositingOperator->setToolTip( _imp->compositingOperatorLabel->toolTip() );
     _imp->compositingOperator->addItem( tr(" - "), QIcon(), QKeySequence(), tr("No wipe or composite: A") );
@@ -403,7 +396,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
 
     _imp->secondInputImage = new ComboBox(_imp->firstSettingsRow);
     _imp->secondInputImage->setToolTip( _imp->secondInputLabel->toolTip() );
-    _imp->secondInputImage->setFixedWidth(fm.horizontalAdvance( QString::fromUtf8("ColorCorrect1") )  + 3 * DROP_DOWN_ICON_SIZE);
+    _imp->secondInputImage->setFixedWidth(_imp->secondInputImage->widthToFit(QStringList() << QString::fromUtf8("ColorCorrect1")));
     _imp->secondInputImage->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     _imp->secondInputImage->addItem( QString::fromUtf8(" - ") );
     QObject::connect( _imp->secondInputImage, SIGNAL(currentIndexChanged(QString)), this, SLOT(onSecondInputNameChanged(QString)) );
@@ -528,10 +521,10 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
 
     _imp->secondRowLayout->addStretch();
 
-    QPixmap colorPickerpix;
-    appPTR->getIcon(NATRON_PIXMAP_COLOR_PICKER, pixmapIconSize, &colorPickerpix);
+    QIcon colorPickerIcon;
+    appPTR->getIcon(NATRON_PIXMAP_COLOR_PICKER, pixmapIconSize, &colorPickerIcon);
 
-    _imp->pickerButton = new Button(QIcon(colorPickerpix), QString(), _imp->secondSettingsRow);
+    _imp->pickerButton = new Button(colorPickerIcon, QString(), _imp->secondSettingsRow);
     _imp->pickerButton->setFocusPolicy(Qt::NoFocus);
     _imp->pickerButton->setCheckable(true);
     _imp->pickerButton->setChecked(true);
@@ -739,15 +732,9 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->playbackMode_Button->setIconSize(buttonIconSize);
     _imp->playbackMode_Button->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Behaviour to adopt when the playback hit the end of the range: loop,bounce or stop."), NATRON_NAMESPACE::WhiteSpaceNormal) );
 
-
     TimeLinePtr timeline = getGui()->getApp()->getTimeLine();
-    QPixmap tripleSyncUnlockPix, tripleSyncLockedPix;
-    appPTR->getIcon(NATRON_PIXMAP_UNLOCKED, pixmapIconSize, &tripleSyncUnlockPix);
-    appPTR->getIcon(NATRON_PIXMAP_LOCKED, pixmapIconSize, &tripleSyncLockedPix);
-
     QIcon tripleSyncIc;
-    tripleSyncIc.addPixmap(tripleSyncUnlockPix, QIcon::Normal, QIcon::Off);
-    tripleSyncIc.addPixmap(tripleSyncLockedPix, QIcon::Normal, QIcon::On);
+    appPTR->getIcon(NATRON_PIXMAP_UNLOCKED, NATRON_PIXMAP_LOCKED, pixmapIconSize, &tripleSyncIc);
     _imp->tripleSyncButton = new Button(tripleSyncIc, QString(), _imp->playerButtonsContainer);
     _imp->tripleSyncButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("When activated, the timeline frame-range is synchronized with the Dope Sheet and the Curve Editor."), NATRON_NAMESPACE::WhiteSpaceNormal) );
     _imp->tripleSyncButton->setCheckable(true);
@@ -792,8 +779,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->timeFormat->setCurrentIndex_no_emit(1);
     _imp->timeFormat->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Set the time display format.")
                                                                          , NATRON_NAMESPACE::WhiteSpaceNormal));
-    const QSize timeFormatSize( TO_DPIX(NATRON_LARGE_BUTTON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_SIZE) );
-    _imp->timeFormat->setFixedSize(timeFormatSize);
+    _imp->timeFormat->setFixedSize(_imp->timeFormat->widthToFit(QStringList() << tr("TC") << tr("TF")), TO_DPIY(NATRON_MEDIUM_BUTTON_SIZE));
 
     QIcon icFreeze;
     appPTR->getIcon(NATRON_PIXMAP_FREEZE_ENABLED, pixmapIconSize, &icFreeze);
@@ -808,68 +794,39 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
                                       "for maximum efficiency.") + QString::fromUtf8("</p>") );
     _imp->turboButton->setFocusPolicy(Qt::NoFocus);
     QObject::connect( _imp->turboButton, SIGNAL (clicked(bool)), getGui(), SLOT(onFreezeUIButtonClicked(bool)) );
-    QPixmap pixFirst;
-    QPixmap pixPrevKF;
-    QPixmap pixRewindDisabled;
-    QPixmap pixBack1;
-    QPixmap pixStop;
-    QPixmap pixForward1;
-    QPixmap pixPlayDisabled;
-    QPixmap pixNextKF;
-    QPixmap pixLast;
-    QPixmap pixPrevIncr;
-    QPixmap pixNextIncr;
-    QPixmap pixRefresh;
-    QPixmap pixCenterViewer;
-    QPixmap pixLoopMode;
-    QPixmap pixInpoint;
-    QPixmap pixOutPoint;
+    const auto themedIcon = [pixmapIconSize](PixmapEnum e) {
+        QIcon icon;
+        appPTR->getIcon(e, pixmapIconSize, &icon);
 
-    appPTR->getIcon(NATRON_PIXMAP_PLAYER_FIRST_FRAME, &pixFirst);
-    appPTR->getIcon(NATRON_PIXMAP_PLAYER_PREVIOUS_KEY, &pixPrevKF);
-    appPTR->getIcon(NATRON_PIXMAP_PLAYER_REWIND_DISABLED, &pixRewindDisabled);
-    appPTR->getIcon(NATRON_PIXMAP_PLAYER_PREVIOUS, &pixBack1);
-    appPTR->getIcon(NATRON_PIXMAP_PLAYER_STOP_ENABLED, &pixStop);
-    appPTR->getIcon(NATRON_PIXMAP_PLAYER_NEXT, &pixForward1);
-    appPTR->getIcon(NATRON_PIXMAP_PLAYER_PLAY_DISABLED, &pixPlayDisabled);
-    appPTR->getIcon(NATRON_PIXMAP_PLAYER_NEXT_KEY, &pixNextKF);
-    appPTR->getIcon(NATRON_PIXMAP_PLAYER_LAST_FRAME, &pixLast);
-    appPTR->getIcon(NATRON_PIXMAP_PLAYER_PREVIOUS_INCR, &pixPrevIncr);
-    appPTR->getIcon(NATRON_PIXMAP_PLAYER_NEXT_INCR, &pixNextIncr);
-    appPTR->getIcon(NATRON_PIXMAP_VIEWER_REFRESH, &pixRefresh);
-    appPTR->getIcon(NATRON_PIXMAP_VIEWER_CENTER, &pixCenterViewer);
-    appPTR->getIcon(NATRON_PIXMAP_PLAYER_LOOP_MODE, &pixLoopMode);
-    appPTR->getIcon(NATRON_PIXMAP_PLAYER_TIMELINE_IN, &pixInpoint);
-    appPTR->getIcon(NATRON_PIXMAP_PLAYER_TIMELINE_OUT, &pixOutPoint);
+        return icon;
+    };
+    const auto toggleIcon = [pixmapIconSize](PixmapEnum off, PixmapEnum on) {
+        QIcon icon;
+        appPTR->getIcon(off, on, pixmapIconSize, &icon);
 
-    _imp->firstFrame_Button->setIcon( QIcon(pixFirst) );
-    _imp->previousKeyFrame_Button->setIcon( QIcon(pixPrevKF) );
+        return icon;
+    };
 
-    QIcon icRewind;
-    icRewind.addPixmap(pixStop, QIcon::Normal, QIcon::On);
-    icRewind.addPixmap(pixRewindDisabled, QIcon::Normal, QIcon::Off);
-    _imp->play_Backward_Button->setIcon( icRewind );
-    _imp->previousFrame_Button->setIcon( QIcon(pixBack1) );
-    _imp->nextFrame_Button->setIcon( QIcon(pixForward1) );
-
-    QIcon icPlay;
-    icPlay.addPixmap(pixStop, QIcon::Normal, QIcon::On);
-    icPlay.addPixmap(pixPlayDisabled, QIcon::Normal, QIcon::Off);
-    _imp->play_Forward_Button->setIcon( icPlay );
-    _imp->nextKeyFrame_Button->setIcon( QIcon(pixNextKF) );
-    _imp->lastFrame_Button->setIcon( QIcon(pixLast) );
-    _imp->previousIncrement_Button->setIcon( QIcon(pixPrevIncr) );
-    _imp->nextIncrement_Button->setIcon( QIcon(pixNextIncr) );
-    _imp->iconRefreshOff = QIcon(pixRefresh);
+    _imp->firstFrame_Button->setIcon(themedIcon(NATRON_PIXMAP_PLAYER_FIRST_FRAME));
+    _imp->previousKeyFrame_Button->setIcon(themedIcon(NATRON_PIXMAP_PLAYER_PREVIOUS_KEY));
+    _imp->play_Backward_Button->setIcon(toggleIcon(NATRON_PIXMAP_PLAYER_REWIND_DISABLED, NATRON_PIXMAP_PLAYER_STOP_ENABLED));
+    _imp->previousFrame_Button->setIcon(themedIcon(NATRON_PIXMAP_PLAYER_PREVIOUS));
+    _imp->nextFrame_Button->setIcon(themedIcon(NATRON_PIXMAP_PLAYER_NEXT));
+    _imp->play_Forward_Button->setIcon(toggleIcon(NATRON_PIXMAP_PLAYER_PLAY_DISABLED, NATRON_PIXMAP_PLAYER_STOP_ENABLED));
+    _imp->nextKeyFrame_Button->setIcon(themedIcon(NATRON_PIXMAP_PLAYER_NEXT_KEY));
+    _imp->lastFrame_Button->setIcon(themedIcon(NATRON_PIXMAP_PLAYER_LAST_FRAME));
+    _imp->previousIncrement_Button->setIcon(themedIcon(NATRON_PIXMAP_PLAYER_PREVIOUS_INCR));
+    _imp->nextIncrement_Button->setIcon(themedIcon(NATRON_PIXMAP_PLAYER_NEXT_INCR));
+    _imp->iconRefreshOff = themedIcon(NATRON_PIXMAP_VIEWER_REFRESH);
     // Refresh isn't a checkable toggle: refreshViewerRenderingState() swaps this icon in
-    // while a render is in flight, so the "active" state is built straight from the same
-    // glyph in the selection colour rather than through a second pixmap id.
-    _imp->iconRefreshOn = QIcon(ThemedIcon::renderPixmap(QString::fromUtf8(NATRON_ICONS_PATH "lucide/refresh-cw.svg"), pixmapIconSize, ThemedIcon::themeSelectionColor(), qApp->devicePixelRatio()));
+    // while a render is in flight, so the "active" state is the same glyph drawn in the
+    // selection colour whatever the button's state.
+    _imp->iconRefreshOn = ThemedIcon::selectionIcon(QString::fromUtf8(NATRON_ICONS_PATH "lucide/refresh-cw.svg"), pixmapIconSize);
     _imp->refreshButton->setIcon(_imp->iconRefreshOff);
-    _imp->centerViewerButton->setIcon( QIcon(pixCenterViewer) );
-    _imp->playbackMode_Button->setIcon( QIcon(pixLoopMode) );
-    _imp->playBackInputButton->setIcon( QIcon(pixInpoint) );
-    _imp->playBackOutputButton->setIcon( QIcon(pixOutPoint) );
+    _imp->centerViewerButton->setIcon(themedIcon(NATRON_PIXMAP_VIEWER_CENTER));
+    _imp->playbackMode_Button->setIcon(themedIcon(NATRON_PIXMAP_PLAYER_LOOP_MODE));
+    _imp->playBackInputButton->setIcon(themedIcon(NATRON_PIXMAP_PLAYER_TIMELINE_IN));
+    _imp->playBackOutputButton->setIcon(themedIcon(NATRON_PIXMAP_PLAYER_TIMELINE_OUT));
 
     QIcon icClip;
     appPTR->getIcon(NATRON_PIXMAP_VIEWER_CLIP_TO_PROJECT_ENABLED, pixmapIconSize, &icClip);

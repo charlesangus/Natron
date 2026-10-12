@@ -40,8 +40,9 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 CLANG_DIAG_ON(deprecated-register)
 // clang-format on
 
-#include "Gui/GuiApplicationManager.h"
 #include "Engine/Settings.h"
+#include "Gui/GuiApplicationManager.h"
+#include "Gui/ThemedIcon.h"
 
 NATRON_NAMESPACE_ENTER
 AnimatedCheckBox::AnimatedCheckBox(QWidget *parent)
@@ -170,7 +171,7 @@ AnimatedCheckBox::paintEvent(QPaintEvent* e)
         if (animation == 3) {
             activeColor = Qt::black;
         } else if (readOnly) {
-            activeColor.setRgbF(0.5, 0.5, 0.5);
+            activeColor = ThemedIcon::themeDisabledColor();
         } else if (altered) {
             double r, g, b;
             appPTR->getCurrentSettings()->getAltTextColor(&r, &g, &b);

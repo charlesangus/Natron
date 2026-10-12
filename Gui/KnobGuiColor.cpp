@@ -921,9 +921,9 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
         return;
     }
 
-    QPixmap colorSelectorPix;
-    appPTR->getIcon(NATRON_PIXMAP_COLORWHEEL, NATRON_MEDIUM_BUTTON_ICON_SIZE, &colorSelectorPix);
-    _colorSelectorButton->setIcon(QIcon(colorSelectorPix));
+    QIcon colorSelectorPix;
+    appPTR->getIcon(NATRON_PIXMAP_COLORWHEEL, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &colorSelectorPix);
+    _colorSelectorButton->setIcon(colorSelectorPix);
     _colorSelectorButton->setIconSize(medIconSize);
     _colorSelectorButton->setPopupMode(QToolButton::InstantPopup);
     _colorSelectorButton->setArrowType(Qt::NoArrow);

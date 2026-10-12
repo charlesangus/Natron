@@ -47,21 +47,21 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/ViewerInstance.h"
 
 #include "Gui/ActionShortcuts.h"
-#include "Gui/GuiMacros.h"
 #include "Gui/Button.h"
 #include "Gui/ChannelsComboBox.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h" // appPTR
+#include "Gui/GuiDefines.h"
+#include "Gui/GuiMacros.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeViewerContext.h"
 #include "Gui/RenderStatsDialog.h"
 #include "Gui/SpinBox.h"
-#include "Gui/TimeLineGui.h"
 #include "Gui/TabWidget.h"
+#include "Gui/TimeLineGui.h"
 #include "Gui/ViewerGL.h"
-
 
 NATRON_NAMESPACE_ENTER
 
@@ -149,17 +149,17 @@ ViewerTab::getCurrentView() const
 void
 ViewerTab::setPlaybackMode(PlaybackModeEnum mode)
 {
-    QPixmap pix;
+    QIcon pix;
 
     switch (mode) {
     case ePlaybackModeLoop:
-        appPTR->getIcon(NATRON_PIXMAP_PLAYER_LOOP_MODE, &pix);
+        appPTR->getIcon(NATRON_PIXMAP_PLAYER_LOOP_MODE, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &pix);
         break;
     case ePlaybackModeBounce:
-        appPTR->getIcon(NATRON_PIXMAP_PLAYER_BOUNCE, &pix);
+        appPTR->getIcon(NATRON_PIXMAP_PLAYER_BOUNCE, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &pix);
         break;
     case ePlaybackModeOnce:
-        appPTR->getIcon(NATRON_PIXMAP_PLAYER_PLAY_ONCE, &pix);
+        appPTR->getIcon(NATRON_PIXMAP_PLAYER_PLAY_ONCE, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &pix);
         break;
     default:
         break;
@@ -168,7 +168,7 @@ ViewerTab::setPlaybackMode(PlaybackModeEnum mode)
         QMutexLocker k(&_imp->playbackModeMutex);
         _imp->playbackMode = mode;
     }
-    _imp->playbackMode_Button->setIcon( QIcon(pix) );
+    _imp->playbackMode_Button->setIcon(pix);
     _imp->viewerNode->getRenderEngine()->setPlaybackMode(mode);
 }
 
@@ -186,16 +186,16 @@ ViewerTab::togglePlaybackMode()
     PlaybackModeEnum mode = _imp->viewerNode->getRenderEngine()->getPlaybackMode();
 
     mode = (PlaybackModeEnum)( ( (int)mode + 1 ) % 3 );
-    QPixmap pix;
+    QIcon pix;
     switch (mode) {
     case ePlaybackModeLoop:
-        appPTR->getIcon(NATRON_PIXMAP_PLAYER_LOOP_MODE, &pix);
+        appPTR->getIcon(NATRON_PIXMAP_PLAYER_LOOP_MODE, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &pix);
         break;
     case ePlaybackModeBounce:
-        appPTR->getIcon(NATRON_PIXMAP_PLAYER_BOUNCE, &pix);
+        appPTR->getIcon(NATRON_PIXMAP_PLAYER_BOUNCE, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &pix);
         break;
     case ePlaybackModeOnce:
-        appPTR->getIcon(NATRON_PIXMAP_PLAYER_PLAY_ONCE, &pix);
+        appPTR->getIcon(NATRON_PIXMAP_PLAYER_PLAY_ONCE, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &pix);
         break;
     default:
         break;
@@ -204,7 +204,7 @@ ViewerTab::togglePlaybackMode()
         QMutexLocker k(&_imp->playbackModeMutex);
         _imp->playbackMode = mode;
     }
-    _imp->playbackMode_Button->setIcon( QIcon(pix) );
+    _imp->playbackMode_Button->setIcon(pix);
     _imp->viewerNode->getRenderEngine()->setPlaybackMode(mode);
 }
 

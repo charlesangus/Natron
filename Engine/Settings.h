@@ -403,8 +403,6 @@ public:
 
     int getMaxOpenGLContexts() const;
 
-    bool isDriveLetterToUNCPathConversionEnabled() const;
-
 Q_SIGNALS:
 
     void settingChanged(KnobI* knob);
@@ -494,7 +492,6 @@ private:
     KnobBoolPtr _firstReadSetProjectFormat;
     KnobBoolPtr _autoPreviewEnabledForNewProjects;
     KnobBoolPtr _fixPathsOnProjectPathChanged;
-    KnobBoolPtr _enableMappingFromDriveLettersToUNCShareNames;
 
     // General/Documentation
     KnobPagePtr _documentationPage;

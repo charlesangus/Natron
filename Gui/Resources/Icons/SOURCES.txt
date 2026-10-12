@@ -4,6 +4,7 @@ lucide/arrow-left-right.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893
 lucide/arrow-left.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
 lucide/arrow-right-to-line.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/arrow-right.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
+lucide/arrow-up.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
 lucide/bold.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/box.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/brush-cleaning.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
@@ -15,6 +16,7 @@ lucide/chevrons-down.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fd
 lucide/circle-ellipsis.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/circle-play.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/circle-question-mark.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/circle-x.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
 lucide/clock.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
 lucide/columns-2.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/contrast.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
@@ -28,13 +30,22 @@ lucide/eye-off.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927
 lucide/eye.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/feather.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
 lucide/file-code.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/file-cog.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/file-play.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/file-plus.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/file-x.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/file.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/flame.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/focus.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/folder-open.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/folder-plus.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/folder-sync.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/folder.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/fullscreen.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/glasses.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/hard-drive.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/image.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/info.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
 lucide/italic.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
 lucide/layers-2.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/layers.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
@@ -46,10 +57,13 @@ lucide/list-x.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb85119279
 lucide/locate-fixed.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/lock-open.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/lock.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
+lucide/log-out.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
 lucide/menu.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/minus.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
+lucide/monitor.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
 lucide/mouse-pointer-2.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/move.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
+lucide/package.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/paint-bucket.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/palette.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/panel-top.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
@@ -66,6 +80,7 @@ lucide/refresh-cw.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511
 lucide/repeat.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/rotate-ccw.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/rows-2.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/save-all.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/save.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/scan-search.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/scan.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC

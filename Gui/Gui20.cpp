@@ -175,14 +175,10 @@ void
 Gui::loadStyleSheet()
 {
     SettingsPtr settings = appPTR->getCurrentSettings();
-    QColor selCol, sunkCol, baseCol, raisedCol, txtCol, intCol, kfCol, disCol, eCol, altCol, lightSelCol;
+    QColor selCol, sunkCol, baseCol, raisedCol, txtCol, intCol, kfCol, disCol, eCol, altCol, lightSelCol, disabledTxtCol;
 
     //settings->
-    {
-        double r, g, b;
-        settings->getSelectionColor(&r, &g, &b);
-        selCol = to_qcolor(r, g, b);
-    }
+    selCol = ThemedIcon::themeSelectionColor();
     {
         double r, g, b;
         r = 1;
@@ -205,11 +201,8 @@ Gui::loadStyleSheet()
         settings->getSunkenColor(&r, &g, &b);
         sunkCol = to_qcolor(r, g, b);
     }
-    {
-        double r, g, b;
-        settings->getTextColor(&r, &g, &b);
-        txtCol = to_qcolor(r, g, b);
-    }
+    txtCol = ThemedIcon::themeTextColor();
+    disabledTxtCol = ThemedIcon::themeDisabledColor();
     {
         double r, g, b;
         settings->getInterpolatedColor(&r, &g, &b);
@@ -255,7 +248,7 @@ Gui::loadStyleSheet()
     p.setBrush( QPalette::BrightText, txtCol );
     p.setBrush( QPalette::Link, selCol ); // can only be set via palette
     p.setBrush( QPalette::LinkVisited, selCol ); // can only be set via palette
-    {
+    if (qApp->palette() != p) {
 #ifdef DEBUG
         boost_adaptbx::floating_point::exception_trapping trap(0);
 #endif
@@ -279,21 +272,26 @@ Gui::loadStyleSheet()
                                             "QInputDialog { font-family: \"%1\"; font-size: %2pt; }\n" // ... or the label doesn't get the right font
                                             ).arg(appFont).arg(appFontSize);
         content += in.readAll();
+        content = content.arg(qcolor_to_qstring(selCol)) // %1: selection-color
+                      .arg(qcolor_to_qstring(baseCol)) // %2: medium background
+                      .arg(qcolor_to_qstring(raisedCol)) // %3: soft background
+                      .arg(qcolor_to_qstring(sunkCol)) // %4: strong background
+                      .arg(qcolor_to_qstring(txtCol)) // %5: text colour
+                      .arg(qcolor_to_qstring(intCol)) // %6: interpolated value color
+                      .arg(qcolor_to_qstring(kfCol)) // %7: keyframe value color
+                      .arg(qcolor_to_qstring(disCol)) // %8: disabled editable text
+                      .arg(qcolor_to_qstring(eCol)) // %9: expression background color
+                      .arg(qcolor_to_qstring(altCol)) // %10 = altered text color
+                      .arg(qcolor_to_qstring(lightSelCol)) // %11 = mouse over selection color
+                      .arg(qcolor_to_qstring(disabledTxtCol)); // %12 = disabled text colour
+        // Every GUI instance reloads on a theme change, and applying a stylesheet repolishes
+        // every widget even when nothing in it changed.
+        if (qApp->styleSheet() != content) {
 #ifdef DEBUG
-        boost_adaptbx::floating_point::exception_trapping trap(0);
+            boost_adaptbx::floating_point::exception_trapping trap(0);
 #endif
-        qApp->setStyleSheet( content
-                             .arg( qcolor_to_qstring(selCol) ) // %1: selection-color
-                             .arg( qcolor_to_qstring(baseCol) ) // %2: medium background
-                             .arg( qcolor_to_qstring(raisedCol) ) // %3: soft background
-                             .arg( qcolor_to_qstring(sunkCol) ) // %4: strong background
-                             .arg( qcolor_to_qstring(txtCol) ) // %5: text colour
-                             .arg( qcolor_to_qstring(intCol) ) // %6: interpolated value color
-                             .arg( qcolor_to_qstring(kfCol) ) // %7: keyframe value color
-                             .arg( qcolor_to_qstring(disCol) ) // %8: disabled editable text
-                             .arg( qcolor_to_qstring(eCol) ) // %9: expression background color
-                             .arg( qcolor_to_qstring(altCol) ) // %10 = altered text color
-                             .arg( qcolor_to_qstring(lightSelCol) ) ); // %11 = mouse over selection color
+            qApp->setStyleSheet(content);
+        }
     } else {
         Dialogs::errorDialog( tr("Stylesheet").toStdString(), tr("Failure to load stylesheet file ").toStdString() + qss.fileName().toStdString() );
     }

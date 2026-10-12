@@ -622,14 +622,6 @@ Settings::initializeKnobsProjectSetup()
     _fixPathsOnProjectPathChanged->setName("autoFixRelativePaths");
 
     _projectsPage->addKnob(_fixPathsOnProjectPathChanged);
-
-    _enableMappingFromDriveLettersToUNCShareNames = AppManager::createKnob<KnobBool>( this, tr("Use drive letters instead of server names (Windows only)") );
-    _enableMappingFromDriveLettersToUNCShareNames->setHintToolTip( tr("This is only relevant for Windows: If checked, %1 will not convert a path starting with a drive letter from the file dialog to a network share name. You may use this if for example you want to share a same project with several users across facilities with different servers but where users have all the same drive attached to a server.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ) );
-    _enableMappingFromDriveLettersToUNCShareNames->setName("useDriveLetters");
-#ifndef __NATRON_WIN32__
-    _enableMappingFromDriveLettersToUNCShareNames->setAllDimensionsEnabled(false);
-#endif
-    _projectsPage->addKnob(_enableMappingFromDriveLettersToUNCShareNames);
 }
 
 void
@@ -1619,7 +1611,6 @@ Settings::setDefaultValues()
     _firstReadSetProjectFormat->setDefaultValue(true);
     _autoPreviewEnabledForNewProjects->setDefaultValue(true, 0);
     _fixPathsOnProjectPathChanged->setDefaultValue(true);
-    //_enableMappingFromDriveLettersToUNCShareNames
 
     // General/Documentation
     _wwwServerPort->setDefaultValue(0);
@@ -3947,12 +3938,6 @@ bool
 Settings::isFileDialogEnabledForNewWriters() const
 {
     return _filedialogForWriters->getValue();
-}
-
-bool
-Settings::isDriveLetterToUNCPathConversionEnabled() const
-{
-    return !_enableMappingFromDriveLettersToUNCShareNames->getValue();
 }
 
 NATRON_NAMESPACE_EXIT

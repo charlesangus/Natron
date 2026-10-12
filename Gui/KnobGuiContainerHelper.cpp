@@ -283,34 +283,24 @@ KnobGuiContainerHelper::getOrCreatePage(const KnobPagePtr& page)
     return pageGui;
 } // KnobGuiContainerHelper::getOrCreatePage
 
-static QPixmap
+static QIcon
 getStandardIcon(QMessageBox::Icon icon,
-                int size,
-                QWidget* widget)
+                int size)
 {
-    QStyle *style = widget ? widget->style() : QApplication::style();
-    QIcon tmpIcon;
-
     switch (icon) {
     case QMessageBox::Information:
-        tmpIcon = style->standardIcon(QStyle::SP_MessageBoxInformation, 0, widget);
-        break;
+        return ThemedIcon::messageIcon(ThemedIcon::eMessageGlyphInformation, size);
     case QMessageBox::Warning:
-        tmpIcon = style->standardIcon(QStyle::SP_MessageBoxWarning, 0, widget);
-        break;
+        return ThemedIcon::messageIcon(ThemedIcon::eMessageGlyphWarning, size);
     case QMessageBox::Critical:
-        tmpIcon = style->standardIcon(QStyle::SP_MessageBoxCritical, 0, widget);
-        break;
+        return ThemedIcon::messageIcon(ThemedIcon::eMessageGlyphError, size);
     case QMessageBox::Question:
-        tmpIcon = style->standardIcon(QStyle::SP_MessageBoxQuestion, 0, widget);
+        return ThemedIcon::messageIcon(ThemedIcon::eMessageGlyphQuestion, size);
     default:
         break;
     }
-    if ( !tmpIcon.isNull() ) {
-        return tmpIcon.pixmap(size, size);
-    }
 
-    return QPixmap();
+    return QIcon();
 }
 
 /**
@@ -730,33 +720,38 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
             warningLabel->setVisible(false);
             QFontMetrics fm(label->font(), 0);
             int pixSize = fm.height();
-            QPixmap stdErrorPix;
-            stdErrorPix = getStandardIcon(QMessageBox::Critical, pixSize, label);
-            warningLabel->setPixmap(stdErrorPix);
+            const QIcon stdErrorIcon = getStandardIcon(QMessageBox::Critical, pixSize);
+            ThemedIcon::setLabelIcon(warningLabel, stdErrorIcon, pixSize);
 
             bool pixmapSet = false;
             if ( !labelIconFilePath.empty() ) {
-                QPixmap pix;
+                const QString iconPath = QString::fromUtf8(labelIconFilePath.c_str());
+                QIcon themedLabelIcon;
 
                 if (labelIconFilePath == "dialog-warning") {
-                    pix = getStandardIcon(QMessageBox::Warning, pixSize, label);
+                    themedLabelIcon = getStandardIcon(QMessageBox::Warning, pixSize);
                 } else if (labelIconFilePath == "dialog-question") {
-                    pix = getStandardIcon(QMessageBox::Question, pixSize, label);
+                    themedLabelIcon = getStandardIcon(QMessageBox::Question, pixSize);
                 } else if (labelIconFilePath == "dialog-error") {
-                    pix = stdErrorPix;
+                    themedLabelIcon = stdErrorIcon;
                 } else if (labelIconFilePath == "dialog-information") {
-                    pix = getStandardIcon(QMessageBox::Information, pixSize, label);
-                } else if (ThemedIcon::isSvgPath(QString::fromUtf8(labelIconFilePath.c_str()))) {
-                    pix = ThemedIcon::renderPixmap(QString::fromUtf8(labelIconFilePath.c_str()), pixSize, ThemedIcon::themeTextColor(), qApp->devicePixelRatio());
-                } else {
-                    pix.load( QString::fromUtf8( labelIconFilePath.c_str() ) );
-                    if (pix.width() != pixSize) {
-                        pix = pix.scaled(pixSize, pixSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-                    }
+                    themedLabelIcon = getStandardIcon(QMessageBox::Information, pixSize);
+                } else if (ThemedIcon::isSvgPath(iconPath)) {
+                    themedLabelIcon = ThemedIcon::icon(iconPath, pixSize);
                 }
-                if ( !pix.isNull() ) {
+                if (!themedLabelIcon.isNull()) {
                     pixmapSet = true;
-                    label->setPixmap(pix);
+                    ThemedIcon::setLabelIcon(label, themedLabelIcon, pixSize);
+                } else {
+                    QPixmap pix;
+                    pix.load(iconPath);
+                    if (!pix.isNull()) {
+                        if (pix.width() != pixSize) {
+                            pix = pix.scaled(pixSize, pixSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+                        }
+                        pixmapSet = true;
+                        label->setPixmap(pix);
+                    }
                 }
             }
             if (!pixmapSet) {

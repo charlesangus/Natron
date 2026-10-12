@@ -45,12 +45,13 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/KnobTypes.h"
 #include "Engine/Settings.h"
 
-#include "Gui/GuiMacros.h"
-#include "Gui/ticks.h"
+#include "Gui/Gui.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiDefines.h"
+#include "Gui/GuiMacros.h"
+#include "Gui/ThemedIcon.h"
 #include "Gui/ZoomContext.h"
-#include "Gui/Gui.h"
+#include "Gui/ticks.h"
 
 #define TICK_HEIGHT 7
 #define SLIDER_WIDTH 4
@@ -511,7 +512,7 @@ ScaleSliderQWidget::paintEvent(QPaintEvent* /*e*/)
                     // draw it with a lower alpha
                     alphaText *= (tickSizePixel - sSizePixel) / (double)minTickSizeTextPixel;
                 }
-                QColor c = _imp->readOnly || !isEnabled() ? Qt::black : textColor;
+                QColor c = _imp->readOnly || !isEnabled() ? ThemedIcon::themeDisabledColor() : textColor;
                 c.setAlphaF(alphaText);
                 p.setFont(_imp->font);
                 p.setPen(c);

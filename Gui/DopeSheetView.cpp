@@ -2592,6 +2592,13 @@ DopeSheetView::DopeSheetView(DopeSheet *model,
 
     setMouseTracking(true);
 
+    // The marker textures are rendered in the theme colours; clearing the ratio they were
+    // built for makes the next paint, which has the GL context current, rebuild them.
+    ThemedIcon::connectThemeChanged(this, [this]() {
+        _imp->kfTexturesScreenPixelRatio = 0;
+        update();
+    });
+
     if (timeline) {
         ProjectPtr project = gui->getApp()->getProject();
         assert(project);

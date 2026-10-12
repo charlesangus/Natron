@@ -919,8 +919,12 @@ KnobGui::onHasModificationsChanged()
         return;
     }
     if (_imp->descriptionLabel) {
-        bool hasModif = getKnob()->hasModifications();
-        _imp->descriptionLabel->setAltered(!hasModif);
+        KnobIPtr knob = getKnob();
+        // A label knob's text is information, not a value that can be left at its default,
+        // so it is not dimmed as "unmodified".
+        KnobString* isString = dynamic_cast<KnobString*>(knob.get());
+        const bool isInformation = isString && isString->isLabel();
+        _imp->descriptionLabel->setAltered(!isInformation && !knob->hasModifications());
     }
     reflectModificationsState();
 }

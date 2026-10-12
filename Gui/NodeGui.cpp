@@ -797,6 +797,13 @@ NodeGui::createGui()
         } else {
             _pluginIcon->hide();
         }
+        if (ThemedIcon::isSvgPath(iconFilePath)) {
+            NodeGraphPixmapItem* pluginIcon = _pluginIcon;
+            const QString path = iconFilePath;
+            ThemedIcon::connectThemeChanged(this, [pluginIcon, path, size]() {
+                pluginIcon->setPixmap(ThemedIcon::renderPixmap(path, size, ThemedIcon::themeTextColor(), qApp->devicePixelRatio()));
+            });
+        }
     }
 
     _presetIcon = new NodeGraphPixmapItem(getDagGui(), this);

@@ -220,12 +220,25 @@ GpuRecordContext::submitAndWait(uint64_t timeoutNs)
     submit.commandBufferInfoCount = 1;
     submit.pCommandBufferInfos = &ci;
     GpuStatus s = device.submit(QueueKind::Compute, std::span<const VkSubmitInfo2>(&submit, 1), fence);
+    bool mayBePending = (s.result == VK_ERROR_DEVICE_LOST);
     if (s) {
-        s = device.check(vkWaitForFences(vk, 1, &fence, VK_TRUE, timeoutNs), "vkWaitForFences");
+        VkResult waited = vkWaitForFences(vk, 1, &fence, VK_TRUE, timeoutNs);
+        if (waited == VK_TIMEOUT) {
+            // The work still runs, and the fence, the command buffer, the scratch buffers and the caller's buffers it
+            // uses must all outlive it, so it is waited for without a bound. Latching a loss first stops new work
+            // from queueing behind it and sends the caller down its device-loss path.
+            device.check(VK_ERROR_DEVICE_LOST, "vkWaitForFences");
+            waited = vkWaitForFences(vk, 1, &fence, VK_TRUE, UINT64_MAX);
+            s = { VK_ERROR_DEVICE_LOST, "GpuRecordContext::submitAndWait: the device work timed out" };
+        }
+        if (waited != VK_SUCCESS) {
+            s = device.check(waited, "vkWaitForFences");
+            mayBePending = true;
+        }
     }
     vkDestroyFence(vk, fence, nullptr);
-    if (!s) {
-        // The work may still be pending after a timeout, and freeing its command buffer then is invalid.
+    if (mayBePending) {
+        // After a loss the command buffer may still be pending, and freeing it then is invalid.
         cmd_ = VK_NULL_HANDLE;
     }
     return s;

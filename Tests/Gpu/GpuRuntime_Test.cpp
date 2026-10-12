@@ -167,6 +167,32 @@ TEST_F(GpuRuntimeTest, RecreateReturnsToReadyAndDispatches)
     EXPECT_GE(rt->registry().creationCount(fillId), 1u);
 }
 
+TEST_F(GpuRuntimeTest, TimedOutSubmissionIsALossThatOutlivesItsWork)
+{
+    GpuStatus s = make();
+    GPUTEST_DEVICE_OR_SKIP(s.ok(), s.message);
+
+    constexpr uint32_t side = 1024;
+    std::unique_ptr<GpuRecordContext> ctx;
+    ASSERT_TRUE(rt->newRecordContext(ctx).ok());
+    GpuBuffer* target = nullptr;
+    ASSERT_TRUE(ctx->scratch(VkDeviceSize(side) * side * sizeof(uint32_t), target).ok());
+    const FillParams p { side, side, 0 };
+    // Enough work that a zero timeout finds it still running.
+    for (int i = 0; i < 512; ++i) {
+        ASSERT_TRUE(ctx->dispatch(fillId, { target }, p, { side, side, 1 }).ok());
+        ctx->computeBarrier();
+    }
+    s = ctx->submitAndWait(0);
+    ASSERT_EQ(s.result, VK_ERROR_DEVICE_LOST) << s.message;
+    EXPECT_EQ(rt->state(), GpuRuntimeState::Lost);
+    ctx.reset();
+
+    ASSERT_TRUE(rt->recreate().ok());
+    EXPECT_EQ(rt->leakedAllocationsAtLastTeardown(), 0u);
+    EXPECT_EQ(runFill(), 0u);
+}
+
 TEST_F(GpuRuntimeTest, RecreateFromReadyHasNoLeaks)
 {
     GpuStatus s = make();

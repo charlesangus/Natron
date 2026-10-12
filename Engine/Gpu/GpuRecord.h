@@ -74,6 +74,8 @@ public:
     void writeTimestamp(VkQueryPool pool, uint32_t query);
 
     // Ends the buffer, submits it and blocks until the queue finished it. The context cannot record afterwards.
+    // Work still running after timeoutNs latches a device loss and fails with VK_ERROR_DEVICE_LOST, but the call
+    // returns only once that work is done or the device really is lost, so that the buffers it uses outlive it.
     GpuStatus submitAndWait(uint64_t timeoutNs = 30'000'000'000ull);
 
     // Ends the buffer and submits it once every wait is reached, signalling `signal` when it is done, without

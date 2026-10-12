@@ -645,6 +645,9 @@ private:
         return true;
     } // plan
 
+    // A reused buffer may still be owned by the transfer family after a download, or by the compute family after a
+    // dispatch. Every use writes the range it later reads before reading it, so the next queue takes the buffer over
+    // without an ownership transfer, which Vulkan allows at the cost of leaving its contents undefined.
     bool acquireBuffer(VkDeviceSize size,
                        int memberTask,
                        gpu::GpuBufferHandle* out)
@@ -1250,11 +1253,8 @@ private:
         return finishStripImages() ? EffectInstance::eRenderRoIRetCodeOk : EffectInstance::eRenderRoIRetCodeFailed;
     } // recordStrips
 
-    /**
-     * @brief Uploads the rows of strip each input reads into a buffer of its slot. Run serially, it waits for them;
-     * pipelined, it leaves them in flight, adds them to flight's transfers and to pending, which the strip's compute
-     * waits on, and leaves the compute queue's half of their ownership transfer to the strip's command buffer.
-     **/
+    // Pipelined, the uploads are left in flight for the strip's compute to wait on, and the compute queue's half of
+    // their ownership transfer is left to the strip's command buffer.
     bool uploadStrip(const GpuStrip& strip,
                      const std::vector<std::shared_ptr<Image::ReadAccess>>& sources,
                      StripInFlight* flight = nullptr,
@@ -1327,10 +1327,6 @@ private:
         return true;
     } // uploadStrip
 
-    /**
-     * @brief Records the members that render a part of strip into recorder, in order, with a barrier between them,
-     * appending their positions to segment.
-     **/
     EffectInstance::RenderRoIRetCode recordStripMembers(const GpuStrip& strip,
                                                         gpu::GpuRecordContext& recorder,
                                                         std::vector<int>* segment)
@@ -1447,10 +1443,7 @@ private:
         return std::make_pair((VkDeviceSize)lineBytes * (VkDeviceSize)(interior.y1 - strip.rects[s].y1), lineBytes * (std::size_t)interior.height());
     }
 
-    /**
-     * @brief Downloads the interior rows of strip from the buffers of its slots: the current ones, waiting for them, or
-     * pipelined, those flight holds, after its compute and without waiting.
-     **/
+    // Pipelined, each range must match the one submitStrip released to the transfer family exactly.
     bool downloadStrip(const GpuStrip& strip,
                        StripInFlight* flight = nullptr)
     {
@@ -1554,11 +1547,8 @@ private:
         return (std::uint32_t)(strip * _queriesPerStrip) + (std::uint32_t)pair * 2;
     }
 
-    /**
-     * @brief The timeline the strips' compute signals and, when the device can time both its queues, a query pool
-     * with a pair of timestamps per strip for its compute and for each of its uploads and downloads. Timing is
-     * optional: without it, the region still runs.
-     **/
+    // A device that cannot time both its queues, or a query pool that cannot be made, leaves the region untimed
+    // rather than failing it.
     bool startPipeline(std::size_t nStrips)
     {
         gpu::GpuDevice& device = _runtime.device();
@@ -1610,11 +1600,8 @@ private:
         return true;
     } // startPipeline
 
-    /**
-     * @brief Records strip into a command buffer of its own, which takes its uploaded inputs over from the transfer
-     * family, renders the members and hands the interiors it downloads back, then submits it to run once uploads are
-     * done, without waiting. flight takes the buffers the strip used.
-     **/
+    // flight takes over the buffers the strip used, which stay out of reach of later strips until retireStrip sees
+    // its device work done.
     EffectInstance::RenderRoIRetCode submitStrip(const GpuStrip& strip,
                                                  StripInFlight* flight,
                                                  const std::vector<gpu::TimelineValue>& uploads)
@@ -1674,10 +1661,6 @@ private:
         return EffectInstance::eRenderRoIRetCodeOk;
     } // submitStrip
 
-    /**
-     * @brief Waits for the oldest strip in flight to land, then keeps its buffers for the next strips; they are free
-     * of any device work by then.
-     **/
     bool retireStrip(const std::vector<GpuStrip>& strips)
     {
         StripInFlight& flight = _inFlightStrips.front();
@@ -1765,7 +1748,6 @@ private:
 
     typedef std::vector<std::pair<std::uint64_t, std::uint64_t>> Intervals;
 
-    // Sorted, disjoint, and merged where they touched.
     static Intervals unionOf(Intervals intervals)
     {
         std::sort(intervals.begin(), intervals.end());
@@ -1791,7 +1773,7 @@ private:
         return total;
     }
 
-    // Both unions of intervals.
+    // a and b must each be sorted and disjoint, as unionOf returns them.
     static std::uint64_t overlapOf(const Intervals& a,
                                    const Intervals& b)
     {
@@ -1814,11 +1796,7 @@ private:
         return total;
     }
 
-    /**
-     * @brief Reads the strips' timestamps into the report: device time of the uploads, the compute and the downloads,
-     * and how much of the transfers ran while compute did. Without timestamps, the region's wall time stands for its
-     * compute, which over-charges its members.
-     **/
+    // Without timestamps, the region's wall time stands for its compute, which over-charges its members.
     void notePipelineTimes(std::size_t nStrips)
     {
         if (!_report) {

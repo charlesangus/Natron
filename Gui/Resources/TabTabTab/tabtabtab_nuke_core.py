@@ -1125,6 +1125,31 @@ def _clear_tabtabtab_instance(*_args):
     _tabtabtab_instance = None
 
 
+_main_window_finder = None
+
+
+def set_main_window_finder(fn):
+    """Register a callable returning the host's main window (or None),
+    replacing _find_nuke_main_window as the default used by _find_main_window().
+
+    Lets non-Nuke hosts plug in their own main-window lookup without
+    patching every call site.
+    """
+    global _main_window_finder
+    _main_window_finder = fn
+
+
+def _find_main_window():
+    """Return the host's main window via the registered finder, falling
+    back to _find_nuke_main_window() when none has been set.
+
+    Looked up by name on every call (rather than resolved once into a
+    local), so a finder registered after this module is imported is
+    still picked up — module-global name resolution, as the tests rely on.
+    """
+    return (_main_window_finder or _find_nuke_main_window)()
+
+
 # Retry budget for preload-only re-parenting. Plugin-load typically runs
 # before Nuke's main window is registered in topLevelWidgets(), but the
 # main window appears within a second or two; ~10s of retries is enough
@@ -1156,7 +1181,7 @@ def _try_reparent_preloaded(widget, attempts_remaining):
     except RuntimeError:
         return
 
-    parent = _find_nuke_main_window()
+    parent = _find_main_window()
     if parent is not None:
         widget.setParent(parent, Qt.Dialog | Qt.FramelessWindowHint)
         return
@@ -1169,7 +1194,7 @@ def _try_reparent_preloaded(widget, attempts_remaining):
 
 
 def _create_tabtabtab_widget(plugin, space_mode_order, scroll_enabled=False):
-    parent = _find_nuke_main_window()
+    parent = _find_main_window()
     # Qt.Dialog keeps the widget a top-level window even with a parent set.
     # Without it, setWindowFlags(FramelessWindowHint) drops the dialog type
     # and Qt treats the widget as a child of the parent — which puts it in
@@ -1207,7 +1232,7 @@ def launch(plugin, space_mode_order=None, scroll_enabled=False):
             # bare setParent on a top-level widget would demote it to a
             # child of the main window's z-stack.
             if current_parent is None:
-                rediscovered_parent = _find_nuke_main_window()
+                rediscovered_parent = _find_main_window()
                 if rediscovered_parent is not None:
                     _tabtabtab_instance.setParent(
                         rediscovered_parent,

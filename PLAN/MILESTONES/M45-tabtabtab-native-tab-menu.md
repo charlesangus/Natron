@@ -75,7 +75,7 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
     - `test_host_hooks.py` is the one Natron-added file in `tests/`; `UPSTREAM` lists it.
   - size: M
 
-- [ ] M45.P5.T3 — Write the Natron adapter `tabtabtab_natron.py`
+- [x] M45.P5.T3 — Write the Natron adapter `tabtabtab_natron.py`
   - files: `Gui/Resources/TabTabTab/tabtabtab_natron.py` (new)
   - approach:
     - This replaces `tabtabtab_nuke.py`, and is modelled on its `NukePlugin`. Imports: `tabtabtab_nuke_core` (`TabTabTabPlugin`, `launch`, `find_qt_menu_items`, `set_main_window_finder`, `DEFAULT_SPACE_MODE_ORDER`), `NatronGui`, and `PySide6` (`QtCore`, `QtGui`, `QtWidgets`). It does not import `tabtabtab_prefs` or the prefs dialog, which are not vendored.
@@ -357,3 +357,4 @@ Acceptance sketch:
     - The adapter reads the two knobs on every open through `NatronGui.natron.getSettings().getParam(...)`. This API exists: `AppSettings::getParam` returns typed wrappers, and `ChoiceParam::getOption(i)` returns the option ID. It passes them straight into the core's `launch(space_mode_order=..., scroll_enabled=...)`.
     - `tabtabtab_prefs.py` and `tabtabtab_prefs_dialog.py` are therefore not vendored. The core never imports them, and leaving them out modifies upstream least. The Edit > Tab Menu Preferences... entry and the bootstrap's `addCommand` are dropped.
   - **Weights start fresh:** there is no seeding from the old `QSettings` `<id><major>_tab_weight` counts. `getTabMenuLegacyWeights`/`legacyWeightsJson` are dropped from M45.P6.T2, and the seeding logic and its tests from M45.P5.T3/T4.
+- 2026-10-12 — **P5.T3:** the adapter (`tabtabtab_natron.py`) calls the core's `tabtabtab_nuke_core.launch(...)` by module, so tests stub `launch` on the core module. It validates the search-mode order itself, because a reused popup in the core keeps an invalid order. It expects `GuiApp.getTabMenuNodeItems()` to return a JSON list of `{id, major, label, grouping[], icon, color, shortcut}`, plus `GuiApp.createNodeFromTabMenu(id, major)`, and the settings knobs `tabMenuSearchModes` (a choice whose option IDs are comma-joined mode names) and `tabMenuScroll`.

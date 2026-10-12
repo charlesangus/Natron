@@ -704,13 +704,7 @@ OfxHost::getPluginContextAndDescribe(OFX::Host::ImageEffect::ImageEffectPlugin* 
 
 AbstractOfxEffectInstancePtr
 OfxHost::createOfxEffect(NodePtr node,
-                         const CreateNodeArgs& args
-#ifndef NATRON_ENABLE_IO_META_NODES
-                         ,
-                         bool allowFileDialogs,
-                         bool *hasUsedFileDialog
-#endif
-                         )
+                         const CreateNodeArgs& args)
 {
     assert(node);
     const Plugin* natronPlugin = node->getPlugin();
@@ -730,12 +724,7 @@ OfxHost::createOfxEffect(NodePtr node,
         node->initNodeScriptName(serialization.get(), QString::fromUtf8(fixedName.c_str()));
     }
 
-    hostSideEffect->createOfxImageEffectInstance(plugin, desc, ctx, serialization.get(), args
-#ifndef NATRON_ENABLE_IO_META_NODES
-                                                 , allowFileDialogs,
-                                                 hasUsedFileDialog
-#endif
-                                                 );
+    hostSideEffect->createOfxImageEffectInstance(plugin, desc, ctx, serialization.get(), args);
 
     return hostSideEffect;
 }
@@ -853,7 +842,7 @@ QDebug operator<<(QDebug dbg, const std::list<std::string> &l)
 }
 
 void
-OfxHost::loadOFXPlugins(IOPluginsMap* writersMap)
+OfxHost::loadOFXPlugins()
 {
     qDebug() << "Load OFX Plugins...";
     SettingsPtr settings = appPTR->getCurrentSettings();
@@ -958,6 +947,10 @@ OfxHost::loadOFXPlugins(IOPluginsMap* writersMap)
         if (p->getContexts().find(kOfxImageEffectContextReader) != p->getContexts().end()) {
             continue;
         }
+        // Writing is done by the native Write node only.
+        if (p->getContexts().find(kOfxImageEffectContextWriter) != p->getContexts().end()) {
+            continue;
+        }
         assert( p->getBinary() );
         if ( !p->getBinary() ) {
             continue;
@@ -1057,25 +1050,6 @@ OfxHost::loadOFXPlugins(IOPluginsMap* writersMap)
         std::list<PluginActionShortcut> shortcuts;
         getPluginShortcuts(p->getDescriptor(), &shortcuts);
         natronPlugin->setShorcuts(shortcuts);
-
-        /// if this plugin's descriptor has the kTuttleOfxImageEffectPropSupportedExtensions property,
-        /// use it to fill the writersMap
-        int formatsCount = p->getDescriptor().getProps().getDimension(kTuttleOfxImageEffectPropSupportedExtensions);
-        std::vector<std::string> formats(formatsCount);
-        for (int k = 0; k < formatsCount; ++k) {
-            formats[k] = p->getDescriptor().getProps().getStringProperty(kTuttleOfxImageEffectPropSupportedExtensions, k);
-            std::transform(formats[k].begin(), formats[k].end(), formats[k].begin(), ::tolower);
-        }
-
-        double evaluation = p->getDescriptor().getProps().getDoubleProperty(kTuttleOfxImageEffectPropEvaluation);
-
-        if (!isDeprecated && (foundWriter != contexts.end()) && (formatsCount > 0) && writersMap) {
-            ///we're safe to assume that this plugin is a writer.
-            for (std::size_t k = 0; k < formats.size(); ++k) {
-                IOPluginSetForFormat& evalForFormat = (*writersMap)[formats[k]];
-                evalForFormat.insert( IOPluginEvaluation(openfxId, evaluation) );
-            }
-        }
     }
     qDebug() << "Load OFX Plugins... done!";
 } // loadOFXPlugins

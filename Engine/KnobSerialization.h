@@ -1035,38 +1035,6 @@ public:
 private:
 };
 
-
-template <typename T>
-KnobSerializationPtr
-createDefaultValueForParam(const std::string& paramName,
-                           const T& value0,
-                           const T& value1)
-{
-    std::shared_ptr< Knob<T> > knob = std::make_shared<Knob<T> >(NULL, paramName, 2, false);
-
-    knob->populate();
-    knob->setName(paramName);
-    knob->setValues(value0, value1, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
-    KnobSerializationPtr ret = std::make_shared<KnobSerialization>(knob);
-
-    return ret;
-}
-
-template <typename T>
-KnobSerializationPtr
-createDefaultValueForParam(const std::string& paramName,
-                           const T& value)
-{
-    std::shared_ptr< Knob<T> > knob = std::make_shared<Knob<T> >(NULL, paramName, 1, false);
-
-    knob->populate();
-    knob->setName(paramName);
-    knob->setValue(value);
-    KnobSerializationPtr ret = std::make_shared<KnobSerialization>(knob);
-
-    return ret;
-}
-
 ///Used by Groups and Pages for serialization of User knobs, to maintain their layout.
 class GroupKnobSerialization
     : public KnobSerializationBase

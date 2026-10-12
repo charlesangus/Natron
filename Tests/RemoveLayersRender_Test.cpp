@@ -221,7 +221,7 @@ protected:
 
     void createWriter()
     {
-        _writer = createNode(_writeOIIOPluginID);
+        _writer = createNativeWriter();
         ASSERT_TRUE(bool(_writer));
 
         connectNodes(_last, _writer, 0, true);
@@ -239,7 +239,7 @@ protected:
         compression->setValueFromID("none", 0);
 
         KnobChannelSet* writerChannels = dynamic_cast<KnobChannelSet*>(_writer->getKnobByName(kNodeParamChannelSet).get());
-        ASSERT_TRUE(writerChannels != NULL) << "the Write container has no channel set knob";
+        ASSERT_TRUE(writerChannels != NULL) << "the Write has no channel set knob";
         writerChannels->setAll();
     }
 
@@ -847,7 +847,7 @@ TEST_F(RemoveLayersRenderTest, BlurOnAllOverASwitchRoutedToAColourlessStreamWrit
 }
 
 // The multiplanar effect produces the colour plane itself, so a colourless pass-through input
-// does not take it away; only an encoder's colour comes from that input alone.
+// does not take it away; only a writer's colour comes from that input alone.
 TEST_F(RemoveLayersRenderTest, AMultiplanarEffectOverAColourlessStreamStillProducesColour)
 {
     createRemoveOnFixture();
@@ -922,15 +922,14 @@ TEST_F(RemoveLayersRenderTest, MetadataDoNotDependOnTheFrameTheTimelineIsOn)
     EXPECT_EQ(nCompsParkedOnFrame1, nCompsParkedOnFrame2);
     EXPECT_EQ(3, nCompsParkedOnFrame2);
 
-    // The encoder's clip keeps the RGB layout the metadata advertise, so the frame whose colour
-    // plane is alpha alone is written with its R, G and B read as zero.
+    // The Write sizes the colour row from the RGB layout the metadata advertise, so the frame
+    // whose colour plane is alpha alone is written as R, G and B read as zero, with no alpha.
     FlatExrImage image;
     render("frame2_parked_on_1.exr", &image, 2);
     if (HasFatalFailure()) {
         return;
     }
-    EXPECT_EQ(names({ "R", "G", "B", "A", "diffuse.R", "diffuse.G", "diffuse.B", "specular.R", "specular.G", "specular.B" }), channelSet(image));
+    EXPECT_EQ(names({ "R", "G", "B", "diffuse.R", "diffuse.G", "diffuse.B", "specular.R", "specular.G", "specular.B" }), channelSet(image));
     expectPlane(image, "", 0.f, 0.f, 0.f);
-    expectChannel(image, "A", 1.f);
     expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
 }

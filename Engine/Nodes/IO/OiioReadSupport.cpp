@@ -49,11 +49,7 @@ namespace OiioReadSupport {
 namespace {
     OIIO::ImageInput::unique_ptr openInput(const std::string& path)
     {
-#ifdef DEBUG
-        // OIIO's first open() of some formats builds its default colour config, whose OCIO
-        // colourspace probing raises FE_INVALID, and debug builds trap that on the calling thread.
-        boost_adaptbx::floating_point::exception_trapping trap(0);
-#endif
+        const FpTrapGuard guard;
 
         // PFM stores rows bottom-up and OIIO only flips them to top-down when the open carries a
         // config; other formats ignore the attribute.
@@ -912,6 +908,35 @@ isReadablePath(const std::string& path)
     }
 
     return !formatNameForExtension(path.substr(dot + 1)).empty();
+}
+double
+pixelAspectOf(const OIIO::ImageSpec& spec)
+{
+    const float par = spec.get_float_attribute("PixelAspectRatio", 1.f);
+
+    return par > 0.f ? (double)par : 1.;
+}
+
+bool
+colourPartOf(const Header& header,
+             const std::string& view,
+             PartChannels* colour)
+{
+    std::vector<PartChannels> parts;
+
+    viewParts(header, view, &parts);
+    for (std::vector<PartChannels>::const_iterator it = parts.begin(); it != parts.end(); ++it) {
+        if (!it->part.empty() && !isColourPartName(it->part)) {
+            continue;
+        }
+        if (ColourChannels::of(it->names, it->index).hasAny()) {
+            *colour = *it;
+
+            return true;
+        }
+    }
+
+    return false;
 }
 } // namespace OiioReadSupport
 

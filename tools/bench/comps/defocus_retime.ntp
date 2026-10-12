@@ -1341,7 +1341,7 @@
 			<PythonModule></PythonModule>
 			<PythonModuleVersion>0</PythonModuleVersion>
 			<Plugin_major_version>5</Plugin_major_version>
-			<Plugin_minor_version>0</Plugin_minor_version>
+			<Plugin_minor_version>1</Plugin_minor_version>
 			<KnobsCount>3</KnobsCount>
 			<item>
 				<Name>size</Name>
@@ -1689,7 +1689,7 @@
 			<PythonModule></PythonModule>
 			<PythonModuleVersion>0</PythonModuleVersion>
 			<Plugin_major_version>5</Plugin_major_version>
-			<Plugin_minor_version>0</Plugin_minor_version>
+			<Plugin_minor_version>1</Plugin_minor_version>
 			<KnobsCount>3</KnobsCount>
 			<item>
 				<Name>size</Name>
@@ -1870,7 +1870,7 @@
 			<PythonModule></PythonModule>
 			<PythonModuleVersion>0</PythonModuleVersion>
 			<Plugin_major_version>5</Plugin_major_version>
-			<Plugin_minor_version>0</Plugin_minor_version>
+			<Plugin_minor_version>1</Plugin_minor_version>
 			<KnobsCount>3</KnobsCount>
 			<item>
 				<Name>size</Name>
@@ -2696,86 +2696,9 @@
 			<Plugin_id>fr.inria.built-in.Write</Plugin_id>
 			<PythonModule></PythonModule>
 			<PythonModuleVersion>0</PythonModuleVersion>
-			<Plugin_major_version>1</Plugin_major_version>
+			<Plugin_major_version>2</Plugin_major_version>
 			<Plugin_minor_version>0</Plugin_minor_version>
-			<KnobsCount>19</KnobsCount>
-			<item>
-				<Name>encodingPluginChoice</Name>
-				<Type>Choice</Type>
-				<Dimension>1</Dimension>
-				<Secret>1</Secret>
-				<MasterIsAlias>0</MasterIsAlias>
-				<item>
-					<Enabled>1</Enabled>
-					<HasAnimation>0</HasAnimation>
-					<Value>0</Value>
-					<Default>0</Default>
-					<HasMaster>0</HasMaster>
-					<Expression></Expression>
-					<ExprHasRet>0</ExprHasRet>
-				</item>
-				<ChoiceLabel>Default</ChoiceLabel>
-				<UserKnob>0</UserKnob>
-			</item>
-			<item>
-				<Name>encodingPluginID</Name>
-				<Type>String</Type>
-				<Dimension>1</Dimension>
-				<Secret>1</Secret>
-				<MasterIsAlias>0</MasterIsAlias>
-				<item>
-					<Enabled>1</Enabled>
-					<HasAnimation>0</HasAnimation>
-					<Value>fr.inria.openfx.WriteOIIO</Value>
-					<Default></Default>
-					<HasMaster>0</HasMaster>
-					<Expression></Expression>
-					<ExprHasRet>0</ExprHasRet>
-				</item>
-				<StringsAnimation>
-					<count>0</count>
-					<item_version>0</item_version>
-				</StringsAnimation>
-				<UserKnob>0</UserKnob>
-			</item>
-			<item>
-				<Name>userTextArea</Name>
-				<Type>String</Type>
-				<Dimension>1</Dimension>
-				<Secret>0</Secret>
-				<MasterIsAlias>0</MasterIsAlias>
-				<item>
-					<Enabled>1</Enabled>
-					<HasAnimation>0</HasAnimation>
-					<Value>&lt;Natron&gt;(defocus_retime.####.exr)&lt;/Natron&gt;</Value>
-					<Default></Default>
-					<HasMaster>0</HasMaster>
-					<Expression></Expression>
-					<ExprHasRet>0</ExprHasRet>
-				</item>
-				<StringsAnimation>
-					<count>0</count>
-					<item_version>0</item_version>
-				</StringsAnimation>
-				<UserKnob>0</UserKnob>
-			</item>
-			<item>
-				<Name>channels</Name>
-				<Type>ChannelSet</Type>
-				<Dimension>1</Dimension>
-				<Secret>0</Secret>
-				<MasterIsAlias>0</MasterIsAlias>
-				<item>
-					<Enabled>1</Enabled>
-					<HasAnimation>0</HasAnimation>
-					<Value></Value>
-					<Default></Default>
-					<HasMaster>0</HasMaster>
-					<Expression></Expression>
-					<ExprHasRet>0</ExprHasRet>
-				</item>
-				<UserKnob>0</UserKnob>
-			</item>
+			<KnobsCount>14</KnobsCount>
 			<item>
 				<Name>filename</Name>
 				<Type>OutputFile</Type>
@@ -2802,55 +2725,31 @@
 				<item>
 					<Enabled>0</Enabled>
 					<HasAnimation>0</HasAnimation>
-					<Value>6</Value>
+					<Value>0</Value>
 					<Default>7</Default>
 					<HasMaster>0</HasMaster>
 					<Expression></Expression>
 					<ExprHasRet>0</ExprHasRet>
 				</item>
-				<ChoiceLabel>HD</ChoiceLabel>
+				<ChoiceLabel>PC_Video</ChoiceLabel>
 				<UserKnob>0</UserKnob>
 			</item>
 			<item>
-				<Name>ocioConfigFile</Name>
-				<Type>InputFile</Type>
+				<Name>bitDepth</Name>
+				<Type>Choice</Type>
 				<Dimension>1</Dimension>
-				<Secret>1</Secret>
+				<Secret>0</Secret>
 				<MasterIsAlias>0</MasterIsAlias>
 				<item>
 					<Enabled>1</Enabled>
 					<HasAnimation>0</HasAnimation>
-					<Value>ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5</Value>
-					<Default>ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5</Default>
+					<Value>2</Value>
+					<Default>0</Default>
 					<HasMaster>0</HasMaster>
 					<Expression></Expression>
 					<ExprHasRet>0</ExprHasRet>
 				</item>
-				<StringsAnimation>
-					<count>0</count>
-					<item_version>0</item_version>
-				</StringsAnimation>
-				<UserKnob>0</UserKnob>
-			</item>
-			<item>
-				<Name>ocioInputSpace</Name>
-				<Type>String</Type>
-				<Dimension>1</Dimension>
-				<Secret>1</Secret>
-				<MasterIsAlias>0</MasterIsAlias>
-				<item>
-					<Enabled>0</Enabled>
-					<HasAnimation>0</HasAnimation>
-					<Value>ACEScg</Value>
-					<Default>scene_linear</Default>
-					<HasMaster>0</HasMaster>
-					<Expression></Expression>
-					<ExprHasRet>0</ExprHasRet>
-				</item>
-				<StringsAnimation>
-					<count>0</count>
-					<item_version>0</item_version>
-				</StringsAnimation>
+				<ChoiceLabel>32f</ChoiceLabel>
 				<UserKnob>0</UserKnob>
 			</item>
 			<item>
@@ -2860,28 +2759,7 @@
 				<Secret>1</Secret>
 				<MasterIsAlias>0</MasterIsAlias>
 				<item>
-					<Enabled>0</Enabled>
-					<HasAnimation>0</HasAnimation>
-					<Value>ACEScg</Value>
-					<Default>scene_linear</Default>
-					<HasMaster>0</HasMaster>
-					<Expression></Expression>
-					<ExprHasRet>0</ExprHasRet>
-				</item>
-				<StringsAnimation>
-					<count>0</count>
-					<item_version>0</item_version>
-				</StringsAnimation>
-				<UserKnob>0</UserKnob>
-			</item>
-			<item>
-				<Name>ocioWorkingSpace</Name>
-				<Type>String</Type>
-				<Dimension>1</Dimension>
-				<Secret>1</Secret>
-				<MasterIsAlias>0</MasterIsAlias>
-				<item>
-					<Enabled>0</Enabled>
+					<Enabled>1</Enabled>
 					<HasAnimation>0</HasAnimation>
 					<Value>ACEScg</Value>
 					<Default></Default>
@@ -2896,47 +2774,13 @@
 				<UserKnob>0</UserKnob>
 			</item>
 			<item>
-				<Name>firstFrame</Name>
-				<Type>Int</Type>
-				<Dimension>1</Dimension>
-				<Secret>1</Secret>
-				<MasterIsAlias>0</MasterIsAlias>
-				<item>
-					<Enabled>0</Enabled>
-					<HasAnimation>0</HasAnimation>
-					<Value>0</Value>
-					<Default>0</Default>
-					<HasMaster>0</HasMaster>
-					<Expression></Expression>
-					<ExprHasRet>0</ExprHasRet>
-				</item>
-				<UserKnob>0</UserKnob>
-			</item>
-			<item>
-				<Name>lastFrame</Name>
-				<Type>Int</Type>
-				<Dimension>1</Dimension>
-				<Secret>1</Secret>
-				<MasterIsAlias>0</MasterIsAlias>
-				<item>
-					<Enabled>0</Enabled>
-					<HasAnimation>0</HasAnimation>
-					<Value>0</Value>
-					<Default>0</Default>
-					<HasMaster>0</HasMaster>
-					<Expression></Expression>
-					<ExprHasRet>0</ExprHasRet>
-				</item>
-				<UserKnob>0</UserKnob>
-			</item>
-			<item>
-				<Name>ParamExistingInstance</Name>
+				<Name>ocioOutputSpaceSet</Name>
 				<Type>Bool</Type>
 				<Dimension>1</Dimension>
 				<Secret>1</Secret>
 				<MasterIsAlias>0</MasterIsAlias>
 				<item>
-					<Enabled>0</Enabled>
+					<Enabled>1</Enabled>
 					<HasAnimation>0</HasAnimation>
 					<Value>1</Value>
 					<Default>0</Default>
@@ -2947,7 +2791,7 @@
 				<UserKnob>0</UserKnob>
 			</item>
 			<item>
-				<Name>bitDepth</Name>
+				<Name>compression</Name>
 				<Type>Choice</Type>
 				<Dimension>1</Dimension>
 				<Secret>0</Secret>
@@ -2955,13 +2799,13 @@
 				<item>
 					<Enabled>1</Enabled>
 					<HasAnimation>0</HasAnimation>
-					<Value>7</Value>
+					<Value>1</Value>
 					<Default>0</Default>
 					<HasMaster>0</HasMaster>
 					<Expression></Expression>
 					<ExprHasRet>0</ExprHasRet>
 				</item>
-				<ChoiceLabel>32f</ChoiceLabel>
+				<ChoiceLabel>none</ChoiceLabel>
 				<UserKnob>0</UserKnob>
 			</item>
 			<item>
@@ -3016,26 +2860,8 @@
 				<UserKnob>0</UserKnob>
 			</item>
 			<item>
-				<Name>compression</Name>
-				<Type>Choice</Type>
-				<Dimension>1</Dimension>
-				<Secret>0</Secret>
-				<MasterIsAlias>0</MasterIsAlias>
-				<item>
-					<Enabled>1</Enabled>
-					<HasAnimation>0</HasAnimation>
-					<Value>1</Value>
-					<Default>0</Default>
-					<HasMaster>0</HasMaster>
-					<Expression></Expression>
-					<ExprHasRet>0</ExprHasRet>
-				</item>
-				<ChoiceLabel>none</ChoiceLabel>
-				<UserKnob>0</UserKnob>
-			</item>
-			<item>
-				<Name>outputChannels</Name>
-				<Type>Choice</Type>
+				<Name>firstFrame</Name>
+				<Type>Int</Type>
 				<Dimension>1</Dimension>
 				<Secret>1</Secret>
 				<MasterIsAlias>0</MasterIsAlias>
@@ -3048,7 +2874,82 @@
 					<Expression></Expression>
 					<ExprHasRet>0</ExprHasRet>
 				</item>
-				<ChoiceLabel>uk.co.thefoundry.OfxImagePlaneColour</ChoiceLabel>
+				<UserKnob>0</UserKnob>
+			</item>
+			<item>
+				<Name>lastFrame</Name>
+				<Type>Int</Type>
+				<Dimension>1</Dimension>
+				<Secret>1</Secret>
+				<MasterIsAlias>0</MasterIsAlias>
+				<item>
+					<Enabled>0</Enabled>
+					<HasAnimation>0</HasAnimation>
+					<Value>0</Value>
+					<Default>0</Default>
+					<HasMaster>0</HasMaster>
+					<Expression></Expression>
+					<ExprHasRet>0</ExprHasRet>
+				</item>
+				<UserKnob>0</UserKnob>
+			</item>
+			<item>
+				<Name>NatronOfxParamStringSublabelName</Name>
+				<Type>String</Type>
+				<Dimension>1</Dimension>
+				<Secret>1</Secret>
+				<MasterIsAlias>0</MasterIsAlias>
+				<item>
+					<Enabled>1</Enabled>
+					<HasAnimation>0</HasAnimation>
+					<Value>[Project]/../../../build/bench/m82-profile/out/defocus_retime.####.exr</Value>
+					<Default></Default>
+					<HasMaster>0</HasMaster>
+					<Expression></Expression>
+					<ExprHasRet>0</ExprHasRet>
+				</item>
+				<StringsAnimation>
+					<count>0</count>
+					<item_version>0</item_version>
+				</StringsAnimation>
+				<UserKnob>0</UserKnob>
+			</item>
+			<item>
+				<Name>userTextArea</Name>
+				<Type>String</Type>
+				<Dimension>1</Dimension>
+				<Secret>0</Secret>
+				<MasterIsAlias>0</MasterIsAlias>
+				<item>
+					<Enabled>1</Enabled>
+					<HasAnimation>0</HasAnimation>
+					<Value>&lt;Natron&gt;(defocus_retime.####.exr)&lt;/Natron&gt;</Value>
+					<Default></Default>
+					<HasMaster>0</HasMaster>
+					<Expression></Expression>
+					<ExprHasRet>0</ExprHasRet>
+				</item>
+				<StringsAnimation>
+					<count>0</count>
+					<item_version>0</item_version>
+				</StringsAnimation>
+				<UserKnob>0</UserKnob>
+			</item>
+			<item>
+				<Name>channels</Name>
+				<Type>ChannelSet</Type>
+				<Dimension>1</Dimension>
+				<Secret>0</Secret>
+				<MasterIsAlias>0</MasterIsAlias>
+				<item>
+					<Enabled>1</Enabled>
+					<HasAnimation>0</HasAnimation>
+					<Value></Value>
+					<Default></Default>
+					<HasMaster>0</HasMaster>
+					<Expression></Expression>
+					<ExprHasRet>0</ExprHasRet>
+				</item>
 				<UserKnob>0</UserKnob>
 			</item>
 			<Inputs_map>
@@ -3059,16 +2960,17 @@
 					<second>final_grade</second>
 				</item>
 			</Inputs_map>
-			<KnobsAge>8</KnobsAge>
+			<KnobsAge>6</KnobsAge>
 			<MasterNode></MasterNode>
 			<HasRotoContext>0</HasRotoContext>
 			<HasTrackerContext>0</HasTrackerContext>
 			<MultiInstanceParent></MultiInstanceParent>
 			<UserPagesCount>0</UserPagesCount>
-			<PagesCount>3</PagesCount>
+			<PagesCount>4</PagesCount>
 			<name>Controls</name>
 			<name>Node</name>
 			<name>Info</name>
+			<name>Info2</name>
 			<Children>0</Children>
 			<CacheID>Write</CacheID>
 		</item>
@@ -3083,7 +2985,7 @@
 		<item>
 			<Enabled>1</Enabled>
 			<HasAnimation>0</HasAnimation>
-			<Value>&lt;Name&gt;Project&lt;/Name&gt;&lt;Value&gt;&lt;/Value&gt;</Value>
+			<Value>&lt;Name&gt;Project&lt;/Name&gt;&lt;Value&gt;tools/bench/comps&lt;/Value&gt;</Value>
 			<Default></Default>
 			<HasMaster>0</HasMaster>
 			<Expression></Expression>
@@ -3162,7 +3064,7 @@
 		<item>
 			<Enabled>0</Enabled>
 			<HasAnimation>0</HasAnimation>
-			<Value>Sat Oct 10 13:32:58 2026</Value>
+			<Value>Sun Oct 11 04:02:05 2026</Value>
 			<Default></Default>
 			<HasMaster>0</HasMaster>
 			<Expression></Expression>
@@ -3196,7 +3098,7 @@
 		</item>
 	</Layers>
 	<Timeline_current_time>1</Timeline_current_time>
-	<CreationDate>1791639178499</CreationDate>
+	<CreationDate>1791691325649</CreationDate>
 </Project>
 </boost_serialization>
 

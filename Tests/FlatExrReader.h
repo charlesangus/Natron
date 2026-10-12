@@ -27,15 +27,15 @@
 #include <string>
 #include <vector>
 
-// A hand-rolled reader for the one, fully-specified EXR layout the tests write through WriteOIIO
+// A hand-rolled reader for the one, fully-specified EXR layout the tests write through the native Write
 // configured with bitDepth=32f and compression=none: single-part, scanline, uncompressed, every
 // channel 32-bit float. That layout is small enough to parse here, which keeps OpenImageIO and
 // OpenEXR out of the Tests binary -- neither is otherwise part of this build. Anything else
 // (tiled, deep, multipart, compressed, half channels) is rejected with an error, not misread.
 //
-// With that writer configuration the OCIO input/output colorspaces both resolve to scene_linear
-// (see WriteOIIOPlugin::onOutputFileChanged), so the values read back are the rendered values
-// with no gamma applied.
+// The values read back are the rendered values only when the writer's output colourspace is pinned
+// to the project working space (BaseTest::createNativeWriter does this); the default comes from
+// OCIO file rules and would convert them.
 struct FlatExrImage {
     // The data window, in the file's own coordinates: EXR rows run top-down, so row 0 is the
     // topmost scanline, which is Natron's y == height - 1.

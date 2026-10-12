@@ -1029,15 +1029,11 @@ GuiApplicationManager::onPluginLoaded(Plugin* plugin)
         symbol = Qt::Key_B;
     } else if ( pluginID == QString::fromUtf8(PLUGINID_NATRON_DOT) ) {
         symbol = Qt::Key_Period;
-    }
-#ifdef NATRON_ENABLE_IO_META_NODES
-    else if ( pluginID == QString::fromUtf8(PLUGINID_NATRON_READ) ) {
+    } else if (pluginID == QString::fromUtf8(PLUGINID_NATRON_READ)) {
         symbol = Qt::Key_R;
-    } else if ( pluginID == QString::fromUtf8(PLUGINID_NATRON_WRITE) ) {
+    } else if (pluginID == QString::fromUtf8(PLUGINID_NATRON_WRITE)) {
         symbol = Qt::Key_W;
-    }
-#endif
-    else {
+    } else {
         hasShortcut = false;
     }
     plugin->setHasShortcut(hasShortcut);

@@ -41,6 +41,8 @@
 
 #include <OpenColorIO/OpenColorAppHelpers.h>
 
+#include "Global/FloatingPointExceptions.h"
+
 #include "Engine/Hash64.h"
 
 NATRON_NAMESPACE_ENTER
@@ -678,6 +680,7 @@ ProjectColorManagement::getDisplayProcessor(const std::string& src,
             pipeline->setLooksOverride(look.c_str());
         }
 
+        const boost_adaptbx::floating_point::FpTrapGuard fpGuard;
         result->processor = pipeline->getProcessor(config);
         result->cpu = result->processor->getOptimizedCPUProcessor(OCIO::BIT_DEPTH_F32, OCIO::BIT_DEPTH_F32, OCIO::OPTIMIZATION_DEFAULT);
         result->cacheID = result->processor->getCacheID();
@@ -750,6 +753,7 @@ ProjectColorManagement::getConversionProcessor(const std::string& src,
 
     OCIO::ConstCPUProcessorRcPtr cpu;
     try {
+        const boost_adaptbx::floating_point::FpTrapGuard fpGuard;
         OCIO::ConstProcessorRcPtr processor;
         if (context.empty()) {
             processor = config->getProcessor(src.c_str(), dst.c_str());
@@ -935,6 +939,7 @@ ProjectColorManagement::rebuildPickingProcessors()
     OCIO::ConstCPUProcessorRcPtr forward, backward;
     if (config && !working.empty()) {
         try {
+            const boost_adaptbx::floating_point::FpTrapGuard fpGuard;
             forward = config->getProcessor(working.c_str(), kColorPickingRole)->getDefaultCPUProcessor();
             backward = config->getProcessor(kColorPickingRole, working.c_str())->getDefaultCPUProcessor();
         } catch (const std::exception&) {

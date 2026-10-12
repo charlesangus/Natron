@@ -39,11 +39,11 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
-#include "Engine/KnobSerialization.h" // createDefaultValueForParam
+#include "Engine/FileSystemModel.h"
+#include "Engine/KnobSerialization.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
-#include "Engine/FileSystemModel.h"
 
 #include "Gui/ActionShortcuts.h"
 #include "Gui/Gui.h"

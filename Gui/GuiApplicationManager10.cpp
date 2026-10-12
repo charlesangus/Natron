@@ -140,10 +140,10 @@ GuiApplicationManager::setLoadingStatus(const QString & str)
 }
 
 void
-GuiApplicationManager::loadBuiltinNodePlugins(IOPluginsMap* writersMap)
+GuiApplicationManager::loadBuiltinNodePlugins()
 {
     // Nothing special, load base class implementation
-    AppManager::loadBuiltinNodePlugins(writersMap);
+    AppManager::loadBuiltinNodePlugins();
 }
 
 AppInstancePtr
@@ -916,13 +916,7 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPlaybackIn, kShortcutDescActionPlayerPlaybackIn, Qt::AltModifier, Qt::Key_I);
     registerKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPlaybackOut, kShortcutDescActionPlayerPlaybackOut, Qt::AltModifier, Qt::Key_O);
 
-
-    ///Nodegraph
-#ifndef NATRON_ENABLE_IO_META_NODES
-    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateReader, kShortcutDescActionGraphCreateReader, Qt::NoModifier, Qt::Key_R);
-    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateWriter, kShortcutDescActionGraphCreateWriter, Qt::NoModifier, Qt::Key_W);
-#endif
-
+    /// Nodegraph
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphRearrangeNodes, kShortcutDescActionGraphRearrangeNodes, Qt::NoModifier, Qt::Key_L);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphDisableNodes, kShortcutDescActionGraphDisableNodes, Qt::NoModifier, Qt::Key_D);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphRemoveNodes, kShortcutDescActionGraphRemoveNodes, Qt::NoModifier, Qt::Key_Backspace);

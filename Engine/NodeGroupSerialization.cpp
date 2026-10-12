@@ -269,10 +269,7 @@ NodeCollectionSerialization::restoreFromSerialization(const std::list<NodeSerial
             mustShowErrorsLog = true;
             continue;
         } else {
-            if ( !usingPythonModule && n->getPlugin() &&
-                 (n->getPlugin()->getMajorVersion() != (int)majorVersion) && ( n->getPluginID() == pluginID) ) {
-                // If the node has a IOContainer don't do this check: when loading older projects that had a
-                // ReadOIIO node for example in version 2, we would now create a new Read meta-node with version 1 instead
+            if (!usingPythonModule && n->getPlugin() && (n->getPlugin()->getMajorVersion() != (int)majorVersion) && (n->getPluginID() == pluginID)) {
                 QString text( tr("WARNING: The node %1 (%2) version %3.%4 "
                                  "was found in the script but was loaded "
                                  "with version %5.%6 instead.")

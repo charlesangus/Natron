@@ -352,12 +352,12 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
     RectI boundsToRender = roi;
     std::list<DeepImageCacheEntryPtr> supersededDeepEntries;
 
-    // A writer's own output must actually run renderDeep() on every sequential render, since the
-    // file write is a side effect inside it -- mirroring EffectInstanceRenderRoI.cpp's
-    // `doCacheLookup = !isWriter() || !frameArgs->isSequentialRender` for the image path. Inputs
-    // upstream of the writer are unaffected: each is pulled through its own recursive
-    // renderDeepRoI() call below, gated by that input's own isWriter().
-    const bool doCacheLookup = !args.byPassCache && (!isWriter() || !frameArgs->isSequentialRender);
+    // A writer's own output must actually run renderDeep() on every frame of its render to disk,
+    // since the file write is a side effect inside it -- mirroring EffectInstanceRenderRoI.cpp's
+    // cache lookup for the image path. Inputs upstream of the writer are unaffected: each is
+    // pulled through its own recursive renderDeepRoI() call below, gated by that input's own
+    // isWriter().
+    const bool doCacheLookup = !args.byPassCache && (!isWriter() || !isRenderingOwnSequence());
 
     if (doCacheLookup) {
         std::list<DeepImageCacheEntryPtr> cached;

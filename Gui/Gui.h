@@ -632,9 +632,6 @@ public Q_SLOTS:
 
     void onViewerImageChanged(int texIndex, bool hasImageBackend);
 
-    NodePtr createReader();
-    NodePtr createWriter();
-
     void renderAllWriters();
 
     void renderSelectedNode();

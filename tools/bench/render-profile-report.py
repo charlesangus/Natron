@@ -22,8 +22,6 @@ import sys
 import tempfile
 import time
 
-WRITER_NODES = ("internalEncoderNode",)
-
 
 REQUIRED_FIELDS = ("frame", "task", "plugin", "node", "deps", "roiPixels", "estimatedBytes", "wallNs")
 
@@ -58,8 +56,6 @@ def load_records(paths):
 
 
 def is_writer(rec):
-    if rec["node"] in WRITER_NODES:
-        return True
     return rec["plugin"].rsplit(".", 1)[-1].lower().startswith("write")
 
 
@@ -427,7 +423,7 @@ def self_test(args):
         return {"plugin": plugin, "node": node, "deps": deps, "roiPixels": 1000000,
                 "estimatedBytes": 1000, "wallNs": ns}
     tasks = {0: task("A", "Blur", [], 100000000),
-             1: task("internalEncoderNode", "fr.inria.openfx.WriteOIIO", [0], 100000000),
+             1: task("Write1", "fr.inria.built-in.Write", [0], 100000000),
              2: task("B", "Blur", [1], 100000000)}
     heavy, regions, _, _ = find_regions(tasks, 20.0)
     assert regions == [{0}, {2}] or regions == [{2}, {0}], regions

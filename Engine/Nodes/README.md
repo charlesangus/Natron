@@ -117,8 +117,7 @@ edits or drops keys overrides `deriveOutputMetadata()`, usually starting from
 
 - What an input gives depends on its kind. A native input answers with its own
   `getOutputMetadata()`, so the lookup recurses up a native chain. An OpenFX
-  input, or a Write container, answers with its output clip's metadata
-  (the embedded encoder's for a container), converted by
+  input answers with its output clip's metadata, converted by
   `OfxMetadataBridge`. Any other kind of effect gives an empty map.
   `getInputEffectMetadata()` is the one place that lookup is extended.
 - A `NoOpBase` input (a Dot, a group Output, the typed test pass-throughs) is
@@ -153,14 +152,16 @@ keep the default.
 
 ## I/O nodes
 
-`Engine/Nodes/IO/` holds the native Read. `NativeRead` (`NativeRead.h`) is the
+`Engine/Nodes/IO/` holds the native Read and Write. `NativeRead` (`NativeRead.h`) is the
 only plug-in registered under `PLUGINID_NATRON_READ`, at one version,
 `PLUGIN_MAJOR_NATRON_READ`. There is no Read container and no OFX reader behind
 it: `ReadNode` is gone, and `OfxHost::loadOFXPlugins()` skips any OFX plug-in
 whose contexts include `kOfxImageEffectContextReader`, so none is registered.
-Write is still a container (`WriteNode`) around OFX writers. Decoding lives in
+Decoding lives in
 `OiioReadSupport.*` (header cache, layer grouping, metadata), time mapping in
-`ReadTimeDomain.*` and colour in `ReadColorSpace.*`.
+`ReadTimeDomain.*` and colour in `IoColorSpace.*`, with the colourspace knobs
+(`ocioInputSpace` and the rest below) in `OcioSpaceKnobs.*`, which takes a
+script-name prefix so the Write can share it.
 
 - **Formats.** `OiioReadSupport::readableExtensions()` is OIIO's
   `extension_list` attribute minus the formats named in `kExcludedOiioFormats`
@@ -169,7 +170,7 @@ Write is still a container (`WriteNode`) around OFX writers. Decoding lives in
   any other extension gets an "Unsupported format" error from
   `NativeRead::rejectUnsupportedFormat()`.
 - **Entry points.** The file dialogs, drag and drop, `KnobGuiFile`, the CLI,
-  `PrecompNode` and `WriteNode` all ask
+  and `PrecompNode` all ask
   `AppManager::getReaderPluginIDForFileType()` (extension to
   `PLUGINID_NATRON_READ`, or empty) and
   `AppManager::getSupportedReaderFileFormats()` (the extension list). Don't
@@ -182,10 +183,18 @@ Write is still a container (`WriteNode`) around OFX writers. Decoding lives in
   `timeDomainUserEdited`, `ocioInputSpace`,
   `ocioInputSpaceIndex`, `ocioInputSpaceSet`, the `Context` group of
   `key1`..`key4` and `value1`..`value4`, and the hidden `ocioConfigFile`,
-  `ocioWorkingSpace` and `availableViews`.
+  `ocioWorkingSpace` and `availableViews`. `reload` (`kNatronReadParamReload`)
+  is a Reload button on the `filename` row.
+- **Reload.** The Reload button runs `purgeCaches()`: the frame listings, the
+  cached headers of the files and proxy files, the output metadata and the
+  action results are dropped, and the frame range is read from disk again. The
+  button triggers a render, so the node hash moves and the images and action
+  results cached under the old hash are retired. Until then a file changed on
+  disk is not seen: the produced layers, the region of definition and the
+  cached images stay those of the file read before.
 - **Colour.** Pixels are converted to the project's working space through the
-  project's OCIO config (`ReadColorSpace::toWorkingProcessor()`). The default
-  input space (`ReadColorSpace::defaultInputSpace()`) is, in order: the config's
+  project's OCIO config (`IoColorSpace::toWorkingProcessor()`). The default
+  input space (`IoColorSpace::defaultInputSpace()`) is, in order: the config's
   file rules (`fileRuleColorSpace()`; a match on the default rule alone does not
   count), the file's `oiio:ColorSpace` tag if the config has a colourspace, role
   or alias of that name (`embeddedColorSpace()`), then the project's file
@@ -218,6 +227,103 @@ Write is still a container (`WriteNode`) around OFX writers. Decoding lives in
 - **Not read.** RAW (`raw` is excluded; a later milestone adds it) and layered
   documents such as PSD (`psd` is excluded; deferred to "M79 - Layered Document
   Readers").
+
+### Write
+
+`NativeWrite` (`NativeWrite.h`) mirrors the Read. It is the only plug-in
+registered under `PLUGINID_NATRON_WRITE` (`fr.inria.built-in.Write`), at one
+version, `PLUGIN_MAJOR_NATRON_WRITE`. There is no Write container and no OFX
+writer behind it: `WriteNode` is gone, and `OfxHost::loadOFXPlugins()` skips any
+OFX plug-in whose contexts include `kOfxImageEffectContextWriter`. Encoding
+lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
+`OcioSpaceKnobs.*`.
+
+- **Formats.** `OiioWriteSupport::writableExtensions()` is the extensions of
+  OIIO's runtime `output_format_list` (every format `ImageOutput::create` can
+  make, if OIIO lacks that attribute) minus `kExcludedOiioFormats`, lower case
+  and sorted. There is no hand-written list and no video. A path with any other
+  extension gets an "Unsupported format" error from
+  `NativeWrite::rejectUnsupportedFormat()`.
+- **Entry points.** The file dialogs and `KnobGuiFile` take their filters from
+  `AppManager::getSupportedWriterFileFormats()`, and
+  `AppManager::getWriterPluginIDForFileType()` maps an extension to
+  `PLUGINID_NATRON_WRITE` (or empty). Everything that creates a Write (Render
+  Selected, `app.createWriter`, the command-line render of an output file)
+  names `PLUGINID_NATRON_WRITE` directly. Don't hard-code an extension set elsewhere.
+- **Knobs.** The script names are WriteOIIO's, because tests, `tools/bench` and
+  host code look them up by name: `filename`, `overwrite`, `formatType`,
+  `clipToRoD`, `frameRange`, `firstFrame`, `lastFrame`, `frameIncr`,
+  `bitDepth`, `compression`, `quality`, `dwaCompressionLevel`,
+  `zipCompressionLevel`, `tileSize`, `partSplitting`, `viewsSelector`,
+  `ocioOutputSpace`, `ocioOutputSpaceIndex`, `ocioOutputSpaceSet`, the `Context`
+  group of `key1`..`key4` and `value1`..`value4`, the hidden `ocioConfigFile`
+  and `ocioWorkingSpace`, `startRender`, `writeMetadata`, `readBack`,
+  `reload` (a Reload button on the `readBack` row) and the hidden
+  `readBackStamp`. The compression, bit-depth and per-format knobs follow the
+  file name through `OiioWriteSupport::paramVisibility()`.
+- **Encoder.** `OiioWriteSupport::writeFile()` pulls rows from a `RowSource` one
+  band (about `kDefaultBandBytes`) at a time and is the only pixel memory held:
+  there is no full-frame copy, and sizes, strides and offsets are 64-bit, so the
+  frame size is bounded by the file format. The file is written under a
+  temporary name beside the target and renamed onto it on success; on failure
+  or cancellation the temporary is removed and the old file is untouched.
+- **Colour.** Rows go from the working space to the output space through the
+  project's OCIO config, in the band callback. The default output space is
+  from the config's file rules, then the project's file default for the pixel
+  depth. The file is tagged with `oiio:ColorSpace`, set to the space's Color
+  Interop ID when the config has one, else to the space name
+  (`IoColorSpace::fileTag()`).
+- **Metadata.** With `writeMetadata` on, the upstream metadata is written by
+  `OiioWriteSupport::applyMetadata()`, the inverse of
+  `OiioReadSupport::attributeMetadata()`, routed by key prefix: `exr/` to
+  OpenEXR only, `exif/` to every format, `tiff/`, `dpx/` and `cin/` to their own
+  format, `oiio/` to every format, and `ofx/timecode` and `ofx/edgecode` as
+  `smpte:TimeCode` and `smpte:KeyCode`. File-identity keys, `oiio/ColorSpace`,
+  other `ofx/` keys and the file-layout keys are never written.
+- **When the file is written.** Only a frame of the Write's own render to
+  disk encodes: the panel's Render button, Render Selected, `app.render` and
+  the `-w` command-line render all run through `startWritersRendering()` and
+  the Write's `RenderEngine`, whose frames are sequential and rooted at the
+  Write. `EffectInstance::isRenderingOwnSequence()` reads exactly that from
+  the frame's `ParallelRenderArgs`. A Viewer, a preview or any node downstream
+  that pulls the Write roots its frame elsewhere, so the Write returns its
+  output without touching the disk. The image cache lookup skips a writer only
+  on its own render to disk.
+- **Output.** The output, on a pull and on a render to disk alike, is what the
+  file of the frame holds, so the cache holds one image either way. One
+  planner, `planFile()` in `NativeWrite.cpp`, decides the file's planes and
+  channels from the channel set and the format's capabilities; the encoder
+  writes its plan, and the output follows it in three places: the produced
+  planes (`getComponentsNeededAndProduced()`), the colour layout
+  (`getPreferredMetadata()` makes an RGBA input RGB when the file gets no
+  alpha), and the pixels the render copies. So a partial R/G/B selection shows
+  the whole RGB triple the file gets, a layer the file gets only some channels
+  of is declared as a layer of those channels alone under its own name (what
+  the native Read makes of the file; the render fetches the input's whole layer
+  and copies the written channels), a layer or alpha the format cannot hold
+  is absent, and no other layer passes through
+  (`producesMetadataLayerImplicitly()` is false and
+  `isPassThroughForNonRenderedLayers()` blocks the rest). Without a writable
+  format, only the channel set restricts the output. A colour row selecting
+  alpha alone keeps an RGBA plane whose RGB is zero.
+- **Read back.** With `readBack` on, the node outputs the written file instead
+  of its input, decoded by `OiioReadSupport::decode()` inside the Write
+  (`renderReadBack()`), with the file read in the output space it was written in.
+  The produced planes then come from the file's header too
+  (`readBackLayers()`: its colour part and the layers
+  `OiioReadSupport::fileLayers()` groups for the view), so the channel set and
+  the input, even a disconnected one, no longer decide what downstream sees.
+  The input is optional while reading back (`isInputOptional()`), so a Viewer
+  renders the Write without it, and `outputFollowsLayerKnob()` is false, so a
+  channel set that selects nothing does not make the Write an identity of its
+  input.
+- **Reload.** The Reload button on the `readBack` row is enabled only while
+  `readBack` is on. It runs `purgeCaches()`: the cached headers of the files of
+  the frame range, the output metadata and the action results are dropped, and
+  the button triggers a render, so the node hash moves and the images and
+  action results cached under the old hash are retired. Until then a file
+  changed on disk is not seen: the produced layers and the cached images stay
+  those of the file read before.
 
 ## Writing a node, start to finish
 

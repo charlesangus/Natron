@@ -710,17 +710,6 @@ OfxImageEffectInstance::newParam(const std::string &paramName,
         throw std::runtime_error( std::string("Parameter ") + paramName + " has unknown OFX type " + paramType );
     }
 
-#ifdef NATRON_ENABLE_IO_META_NODES
-    /**
-     * For writers embedded in a WriteNode, the holder will be the WriteNode
-     * but to ensure that all functions such as getKnobByName actually work, we add them to the knob vector so that
-     * interacting with the Reader or the container is actually the same.
-     **/
-    if ( knob->getHolder() != getOfxEffectInstance().get() ) {
-        getOfxEffectInstance()->addKnob(knob);
-    }
-#endif
-
     OfxParamToKnob* ptk = dynamic_cast<OfxParamToKnob*>(instance);
     assert(ptk);
     if (!ptk) {
@@ -865,16 +854,6 @@ OfxImageEffectInstance::addParamsToTheirParents()
                             sep = AppManager::createKnob<KnobSeparator>( knobHolder, std::string() );
                             assert(sep);
                             sep->setName(separatorName);
-#ifdef NATRON_ENABLE_IO_META_NODES
-                            /**
-                             * For writers embedded in a WriteNode, the holder will be the WriteNode
-                             * but to ensure that all functions such as getKnobByName actually work, we add them to the knob vector so that
-                             * interacting with the Reader or the container is actually the same.
-                             **/
-                            if ( knobHolder != getOfxEffectInstance().get() ) {
-                                getOfxEffectInstance()->addKnob(sep);
-                            }
-#endif
                         }
                         parentIsGroup->addKnob(sep);
                     }
@@ -984,16 +963,6 @@ OfxImageEffectInstance::addParamsToTheirParents()
                         sep = AppManager::createKnob<KnobSeparator>( knobHolder, std::string() );
                         assert(sep);
                         sep->setName(separatorName);
-#ifdef NATRON_ENABLE_IO_META_NODES
-                        /**
-                         * For writers embedded in a WriteNode, the holder will be the WriteNode
-                         * but to ensure that all functions such as getKnobByName actually work, we add them to the knob vector so that
-                         * interacting with the Reader or the container is actually the same.
-                         **/
-                        if ( knobHolder != getOfxEffectInstance().get() ) {
-                            getOfxEffectInstance()->addKnob(sep);
-                        }
-#endif
                     }
                     pageKnob->addKnob(sep);
                 }

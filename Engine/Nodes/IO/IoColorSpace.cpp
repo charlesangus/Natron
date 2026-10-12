@@ -23,17 +23,19 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
-#include "ReadColorSpace.h"
+#include "IoColorSpace.h"
 
 #include <exception>
 
 #include <QString>
 
+#include "Global/FloatingPointExceptions.h"
+
 #include "Engine/Project.h"
 
 NATRON_NAMESPACE_ENTER
 
-namespace ReadColorSpace {
+namespace IoColorSpace {
 std::string
 nameInConfig(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
              const std::string& name)
@@ -101,7 +103,50 @@ embeddedColorSpace(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
     }
     const char* const tag = *(const char* const*)value->data();
 
-    return tag ? nameInConfig(config, tag) : std::string();
+    if (!tag || !config) {
+        return std::string();
+    }
+    const std::string named = nameInConfig(config, tag);
+    if (!named.empty()) {
+        return named;
+    }
+    // OIIO records a file's colourspace as its Color Interop ID, which a config need not also
+    // list among the space's aliases.
+    try {
+        const int count = config->getNumColorSpaces(OCIO_NAMESPACE::SEARCH_REFERENCE_SPACE_ALL, OCIO_NAMESPACE::COLORSPACE_ALL);
+        for (int i = 0; i < count; ++i) {
+            const char* const name = config->getColorSpaceNameByIndex(OCIO_NAMESPACE::SEARCH_REFERENCE_SPACE_ALL, OCIO_NAMESPACE::COLORSPACE_ALL, i);
+            OCIO_NAMESPACE::ConstColorSpaceRcPtr colorSpace = name ? config->getColorSpace(name) : OCIO_NAMESPACE::ConstColorSpaceRcPtr();
+            const char* const interop = colorSpace ? colorSpace->getInteropID() : NULL;
+            if (interop && (std::string(interop) == tag)) {
+                return std::string(name);
+            }
+        }
+    } catch (const std::exception&) {
+    }
+
+    return std::string();
+}
+
+std::string
+fileTag(const Project& project,
+        const std::string& space)
+{
+    const ProjectColorManagementPtr colorManagement = project.getColorManagement();
+    const OCIO_NAMESPACE::ConstConfigRcPtr config = colorManagement ? colorManagement->getConfig() : OCIO_NAMESPACE::ConstConfigRcPtr();
+
+    // OIIO turns the tag into an interop ID through its own config, which knows nothing of a
+    // custom config's names and drops a tag it cannot map.
+    try {
+        OCIO_NAMESPACE::ConstColorSpaceRcPtr colorSpace = (config && !space.empty()) ? config->getColorSpace(space.c_str()) : OCIO_NAMESPACE::ConstColorSpaceRcPtr();
+        const char* const interop = colorSpace ? colorSpace->getInteropID() : NULL;
+        if (interop && *interop) {
+            return std::string(interop);
+        }
+    } catch (const std::exception&) {
+    }
+
+    return space;
 }
 
 std::string
@@ -123,16 +168,33 @@ defaultInputSpace(const Project& project,
     return space;
 }
 
-bool
-toWorkingProcessor(const Project& project,
-                   const std::string& input,
-                   const std::string& working,
-                   const std::vector<std::pair<std::string, std::string>>& context,
-                   OCIO_NAMESPACE::ConstCPUProcessorRcPtr* processor,
-                   std::string* error)
+std::string
+defaultOutputSpace(const Project& project,
+                   const std::string& path,
+                   FileColorCategoryEnum category)
+{
+    const ProjectColorManagementPtr colorManagement = project.getColorManagement();
+    const OCIO_NAMESPACE::ConstConfigRcPtr config = colorManagement ? colorManagement->getConfig() : OCIO_NAMESPACE::ConstConfigRcPtr();
+    std::string space = fileRuleColorSpace(config, path);
+
+    if (space.empty()) {
+        space = project.getFileColorSpace(category);
+    }
+
+    return space;
+}
+
+static bool
+buildProcessor(const Project& project,
+               const std::string& from,
+               const std::string& to,
+               const std::vector<std::pair<std::string, std::string>>& context,
+               const QString& failure,
+               OCIO_NAMESPACE::ConstCPUProcessorRcPtr* processor,
+               std::string* error)
 {
     processor->reset();
-    if (input.empty() || working.empty() || input == working) {
+    if (from.empty() || to.empty() || from == to) {
         return true;
     }
     std::string configError;
@@ -148,12 +210,9 @@ toWorkingProcessor(const Project& project,
             variables.push_back(context[i]);
         }
     }
-    OCIO_NAMESPACE::ConstCPUProcessorRcPtr cpu = colorManagement ? colorManagement->getConversionProcessor(input, working, variables) : OCIO_NAMESPACE::ConstCPUProcessorRcPtr();
+    OCIO_NAMESPACE::ConstCPUProcessorRcPtr cpu = colorManagement ? colorManagement->getConversionProcessor(from, to, variables) : OCIO_NAMESPACE::ConstCPUProcessorRcPtr();
     if (!cpu) {
-        *error = Project::tr("Cannot convert from the OpenColorIO colorspace \"%1\" to the working space \"%2\".")
-                     .arg(QString::fromStdString(input))
-                     .arg(QString::fromStdString(working))
-                     .toStdString();
+        *error = failure.arg(QString::fromStdString(from)).arg(QString::fromStdString(to)).toStdString();
 
         return false;
     }
@@ -162,6 +221,28 @@ toWorkingProcessor(const Project& project,
     }
 
     return true;
+}
+
+bool
+processor(const Project& project,
+          const std::string& from,
+          const std::string& to,
+          const std::vector<std::pair<std::string, std::string>>& context,
+          OCIO_NAMESPACE::ConstCPUProcessorRcPtr* processor,
+          std::string* error)
+{
+    return buildProcessor(project, from, to, context, Project::tr("Cannot convert from the OpenColorIO colorspace \"%1\" to the colorspace \"%2\"."), processor, error);
+}
+
+bool
+toWorkingProcessor(const Project& project,
+                   const std::string& input,
+                   const std::string& working,
+                   const std::vector<std::pair<std::string, std::string>>& context,
+                   OCIO_NAMESPACE::ConstCPUProcessorRcPtr* processor,
+                   std::string* error)
+{
+    return buildProcessor(project, input, working, context, Project::tr("Cannot convert from the OpenColorIO colorspace \"%1\" to the working space \"%2\"."), processor, error);
 }
 
 bool
@@ -176,6 +257,7 @@ convertRow(const OCIO_NAMESPACE::CPUProcessor& processor,
     }
     try {
         OCIO_NAMESPACE::PackedImageDesc desc(pixels, width, 1, nComps);
+        const boost_adaptbx::floating_point::FpTrapGuard fpGuard;
         processor.apply(desc);
     } catch (const std::exception& e) {
         *error = e.what();
@@ -185,6 +267,6 @@ convertRow(const OCIO_NAMESPACE::CPUProcessor& processor,
 
     return true;
 }
-} // namespace ReadColorSpace
+} // namespace IoColorSpace
 
 NATRON_NAMESPACE_EXIT

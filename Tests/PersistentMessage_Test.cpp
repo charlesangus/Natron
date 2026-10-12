@@ -151,7 +151,7 @@ protected:
             return;
         }
 
-        _writer = createNode(_writeOIIOPluginID);
+        _writer = createNativeWriter();
         ASSERT_TRUE(bool(_writer));
         connectNodes(_shuffle, _writer, 0, true);
         KnobChoice* bitDepth = dynamic_cast<KnobChoice*>(_writer->getKnobByName("bitDepth").get());

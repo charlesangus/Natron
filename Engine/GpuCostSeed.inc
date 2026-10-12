@@ -23,7 +23,7 @@
 //   design notes, section 2.3 }.
 
 #define NATRON_GPU_COST_SEED_CPU_ROWS \
-    { "fr.inria.openfx.WriteOIIO", 16.0285, 1.1214 }, \
+    { "fr.inria.built-in.Write", 16.0285, 1.1214 }, \
     { "net.sf.cimg.CImgBlur", 46.9759, 2.3127 }, \
     { "net.sf.cimg.CImgDilate", 50.1112, 2.3281 }, \
     { "net.sf.cimg.CImgErode", 54.6268, 2.7995 }, \

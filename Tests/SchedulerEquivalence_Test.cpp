@@ -271,7 +271,7 @@ renderJointlyBothWays(const std::vector<NodePtr>& writers)
         KnobChoicePtr bitDepth = writers[i] ? std::dynamic_pointer_cast<KnobChoice>(writers[i]->getKnobByName("bitDepth")) : KnobChoicePtr();
         KnobChoicePtr compression = writers[i] ? std::dynamic_pointer_cast<KnobChoice>(writers[i]->getKnobByName("compression")) : KnobChoicePtr();
         if (!output.effect || !bitDepth || !compression) {
-            return failure("writer " + std::to_string(i) + " is not a WriteOIIO node", kFirstFrame);
+            return failure("writer " + std::to_string(i) + " is not a native Write node", kFirstFrame);
         }
         bitDepth->setValueFromID("32f", 0);
         compression->setValueFromID("none", 0);
@@ -445,7 +445,7 @@ protected:
 
     NodePtr createWriter(const NodePtr& source)
     {
-        NodePtr writer = createNode(_writeOIIOPluginID);
+        NodePtr writer = createNativeWriter();
         EXPECT_TRUE(bool(writer));
         if (writer) {
             connectNodes(source, writer, 0, true);

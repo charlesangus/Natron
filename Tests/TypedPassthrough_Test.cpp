@@ -89,7 +89,7 @@ readExrPod(std::ifstream& in,
 }
 
 // Same rationale as RenderRange_Test.cpp's readExrFirstPixelRed, generalized to the whole
-// image instead of a single pixel: WriteOIIO is configured below with bitDepth=32f and
+// image instead of a single pixel: the Write is configured below with bitDepth=32f and
 // compression=none, giving a single-part, scanline, uncompressed, 32-bit float layout that
 // a small hand-rolled reader can parse exactly, rather than linking OpenImageIO/OpenEXR into
 // the Tests binary. This is what lets the "renders identically" test below compare every
@@ -364,7 +364,7 @@ TEST_F(BaseTest, TypedPassthroughChainContradictionRejected)
     EXPECT_EQ(proof.get(), conflictingNode.get());
 }
 
-// Renders SeNoise -> WriteOIIO twice, once directly and once with TypedPassthrough spliced in
+// Renders SeNoise -> Write twice, once directly and once with TypedPassthrough spliced in
 // between generator and writer, and asserts the two renders are pixel-for-pixel identical.
 // This is the substantive check that inserting the proof node mid-chain does not alter the
 // rendered result: NativeEffectBase gives TypedPassthrough no render() override of its own, so
@@ -383,7 +383,7 @@ TEST_F(BaseTest, TypedPassthroughMidChainRendersIdentically)
     // Render 1: generator -> writer directly.
     {
         NodePtr generator = createNode(_generatorPluginID);
-        NodePtr writer = createNode(_writeOIIOPluginID);
+        NodePtr writer = createNativeWriter(directPath);
         ASSERT_TRUE(generator && writer);
 
         KnobChoice* bitDepth = dynamic_cast<KnobChoice*>(writer->getKnobByName("bitDepth").get());
@@ -409,7 +409,7 @@ TEST_F(BaseTest, TypedPassthroughMidChainRendersIdentically)
     {
         NodePtr generator = createNode(_generatorPluginID);
         NodePtr proof = createNode(QString::fromUtf8(PLUGINID_NATRON_TYPEDPASSTHROUGH));
-        NodePtr writer = createNode(_writeOIIOPluginID);
+        NodePtr writer = createNativeWriter(throughProofPath);
         ASSERT_TRUE(generator && proof && writer);
 
         KnobChoice* bitDepth = dynamic_cast<KnobChoice*>(writer->getKnobByName("bitDepth").get());

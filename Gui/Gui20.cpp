@@ -43,7 +43,7 @@
 
 #include "Engine/CLArgs.h"
 #include "Engine/CreateNodeArgs.h"
-#include "Engine/KnobSerialization.h" // createDefaultValueForParam
+#include "Engine/KnobSerialization.h"
 #include "Engine/Lut.h" // Color, floatToInt
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h" // NodeGroup, NodeCollection, NodesList
@@ -1250,72 +1250,6 @@ Gui::createNewViewer()
     }
     CreateNodeArgs args(PLUGINID_NATRON_VIEWER, graph->getGroup() );
     ignore_result( getApp()->createNode(args) );
-}
-
-NodePtr
-Gui::createReader()
-{
-    NodePtr ret;
-    std::vector<std::string> filters;
-
-    appPTR->getSupportedReaderFileFormats(&filters);
-
-    std::string pattern = popOpenFileDialog( true, filters, _imp->_lastLoadSequenceOpenedDir.toStdString(), true );
-    if ( !pattern.empty() ) {
-        NodeGraph* graph = 0;
-        if (_imp->_lastFocusedGraph) {
-            graph = _imp->_lastFocusedGraph;
-        } else {
-            graph = _imp->_nodeGraphArea;
-        }
-        NodeCollectionPtr group = graph->getGroup();
-        assert(group);
-
-        CreateNodeArgs args(PLUGINID_NATRON_READ, group);
-        ret = getApp()->createReader(pattern, args);
-    }
-
-    return ret;
-} // Gui::createReader
-
-NodePtr
-Gui::createWriter()
-{
-    NodePtr ret;
-    std::vector<std::string> filters;
-
-    appPTR->getSupportedWriterFileFormats(&filters);
-
-    std::string file;
-    bool useDialogForWriters = appPTR->getCurrentSettings()->isFileDialogEnabledForNewWriters();
-    if (useDialogForWriters) {
-        file = popSaveFileDialog( true, filters, _imp->_lastSaveSequenceOpenedDir.toStdString(), true );
-        if ( file.empty() ) {
-            return NodePtr();
-        }
-    }
-
-
-    if ( !file.empty() ) {
-        std::string patternCpy = file;
-        std::string path = SequenceParsing::removePath(patternCpy);
-        _imp->_lastSaveSequenceOpenedDir = QString::fromUtf8( path.c_str() );
-    }
-
-    NodeGraph* graph = 0;
-    if (_imp->_lastFocusedGraph) {
-        graph = _imp->_lastFocusedGraph;
-    } else {
-        graph = _imp->_nodeGraphArea;
-    }
-    NodeCollectionPtr group = graph->getGroup();
-    assert(group);
-
-    CreateNodeArgs args(PLUGINID_NATRON_WRITE, group);
-    ret =  getApp()->createWriter(file, args);
-
-
-    return ret;
 }
 
 std::string

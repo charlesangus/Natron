@@ -245,7 +245,7 @@ struct FrameView_compare_less
             if (lhs.view < rhs.view) {
                 return true;
             } else if (lhs.view > rhs.view) {
-                return true;
+                return false;
             } else {
                 return false;
             }

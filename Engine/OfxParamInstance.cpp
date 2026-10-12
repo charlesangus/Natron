@@ -55,7 +55,6 @@
 #include "Engine/TLSHolder.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
-#include "Engine/WriteNode.h"
 #include "Global/GlobalDefines.h"
 
 NATRON_NAMESPACE_ENTER
@@ -310,22 +309,6 @@ OfxParamToKnob::getKnobHolder() const
     if (!effect) {
         return EffectInstancePtr();
     }
-
-#ifdef NATRON_ENABLE_IO_META_NODES
-    NodePtr node = effect->getNode();
-    assert(node);
-    std::string pluginID = node->getPluginID();
-    /*
-       For writers
-     */
-    bool wasProjectCreatedWithLowerCaseIDs = node->getApp()->wasProjectCreatedWithLowerCaseIDs();
-    if (WriteNode::isBundledWriter(pluginID, wasProjectCreatedWithLowerCaseIDs)) {
-        NodePtr iocontainer = node->getIOContainer();
-        assert(iocontainer);
-
-        return iocontainer->getEffectInstance();
-    }
-#endif
 
     return effect;
 }

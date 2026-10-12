@@ -108,7 +108,7 @@ protected:
     // the render path, on a render thread, exactly as when a viewer first shows the reader.
     void renderOnce(const NodePtr& read)
     {
-        NodePtr writer = createNode(_writeOIIOPluginID);
+        NodePtr writer = createNativeWriter();
         ASSERT_TRUE(bool(writer));
         connectNodes(read, writer, 0, true);
 

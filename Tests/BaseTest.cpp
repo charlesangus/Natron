@@ -46,16 +46,17 @@ CLANG_DIAG_ON(tautological-undefined-compare)
 CLANG_DIAG_ON(unknown-pragmas)
 // clang-format on
 
-#include "Engine/CreateNodeArgs.h"
-#include "Engine/Node.h"
-#include "Engine/Project.h"
-#include "Engine/AppManager.h"
 #include "Engine/AppInstance.h"
-#include "Engine/KnobTypes.h"
-#include "Engine/EffectInstance.h"
-#include "Engine/Plugin.h"
-#include "Engine/Curve.h"
+#include "Engine/AppManager.h"
 #include "Engine/CLArgs.h"
+#include "Engine/CreateNodeArgs.h"
+#include "Engine/Curve.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
+#include "Engine/Nodes/IO/NativeWrite.h"
+#include "Engine/Plugin.h"
+#include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -80,8 +81,7 @@ BaseTest::registerTestPlugins()
 
     _readPluginID = QString::fromUtf8(PLUGINID_NATRON_READ);
 
-    _writeOIIOPluginID = QString::fromUtf8(PLUGINID_OFX_WRITEOIIO);
-    _allTestPluginIDs.push_back(_writeOIIOPluginID);
+    _writePluginID = QString::fromUtf8(PLUGINID_NATRON_WRITE);
 
     _textArenaPluginID = QString::fromUtf8("net.fxarena.openfx.Text");
     _allTestPluginIDs.push_back(_textArenaPluginID);
@@ -139,6 +139,29 @@ BaseTest::createNode(const QString & pluginID,
     EXPECT_NE(ret.get(), (Node*)NULL);
 
     return ret;
+}
+
+NodePtr
+BaseTest::createNativeWriter(const std::string& filename)
+{
+    NodePtr writer = createNode(_writePluginID, PLUGIN_MAJOR_NATRON_WRITE);
+    if (!writer) {
+        return writer;
+    }
+    // The default output space comes from OCIO file rules and would convert the pixels the tests compare.
+    KnobStringBase* outputSpace = dynamic_cast<KnobStringBase*>(writer->getKnobByName("ocioOutputSpace").get());
+    KnobBool* outputSpaceSet = dynamic_cast<KnobBool*>(writer->getKnobByName("ocioOutputSpaceSet").get());
+    EXPECT_TRUE(outputSpace != NULL);
+    EXPECT_TRUE(outputSpaceSet != NULL);
+    if (outputSpace && outputSpaceSet) {
+        outputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
+        outputSpaceSet->setValue(true);
+    }
+    if (!filename.empty()) {
+        writer->setOutputFilesForWriter(filename);
+    }
+
+    return writer;
 }
 
 NodePtr
@@ -273,7 +296,7 @@ TEST_F(BaseTest, GenerateDot)
     NodePtr generator = createNode(_generatorPluginID);
 
     ///create the writer and set its output filename
-    NodePtr writer = createNode(_writeOIIOPluginID);
+    NodePtr writer = createNativeWriter();
 
     ASSERT_TRUE( bool(generator) && bool(writer) );
 
@@ -382,7 +405,7 @@ TEST_F(BaseTest, HashChangesOnKnobValueChange)
 TEST_F(BaseTest, HashChangesOnInputConnected)
 {
     NodePtr generator = createNode(_generatorPluginID);
-    NodePtr writer = createNode(_writeOIIOPluginID);
+    NodePtr writer = createNativeWriter();
     ASSERT_TRUE(generator && writer);
 
     U64 hashBefore = writer->getHashValue();
@@ -398,7 +421,7 @@ TEST_F(BaseTest, SimpleNodeConnections) {
     NodePtr generator = createNode(_generatorPluginID);
 
     ///create the writer and set its output filename
-    NodePtr writer = createNode(_writeOIIOPluginID);
+    NodePtr writer = createNativeWriter();
 
     ASSERT_TRUE(writer && generator);
     connectNodes(generator, writer, 0, true);

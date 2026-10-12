@@ -9,7 +9,7 @@ because a script run this way has no __file__ or argv to take it from:
     xvfb-run --auto-servernum NatronRenderer tools/ci/regen_read_time_offset.py
 
 The fixture is a native Read (timeOffset 50, in time-offset frame mode, the
-only mode that honours it) feeding a Write whose output directory is the
+only mode that honours it) feeding a native Write whose output directory is the
 placeholder smoke_test.py substitutes before rendering.
 """
 import os
@@ -38,12 +38,11 @@ def main():
     _require(reader.getParam("frameMode"), "Read.frameMode").set(FRAME_MODE_TIME_OFFSET)
     _require(reader.getParam("timeOffset"), "Read.timeOffset").set(TIME_OFFSET)
 
-    writer = _require(app.createNode("fr.inria.openfx.WriteOIIO"), "WriteOIIO")
+    writer = _require(app.createWriter(OUTPUT_DIR_TOKEN + "/out.####.exr"),
+                      "the native Write")
     if writer.getScriptName() != "Write1":
         raise AssertionError("expected the Write to be named Write1, got %r"
                              % (writer.getScriptName(),))
-    _require(writer.getParam("filename"), "Write.filename").set(
-        OUTPUT_DIR_TOKEN + "/out.####.exr")
     if not writer.connectInput(0, reader):
         raise AssertionError("could not connect Read1 to Write1")
 

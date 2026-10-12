@@ -46,13 +46,13 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/IO/IoColorSpace.h"
+#include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
-#include "Engine/Nodes/IO/ReadColorSpace.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/ViewIdx.h"
-#include "Engine/WriteNode.h"
 
 NATRON_NAMESPACE_USING
 
@@ -145,7 +145,7 @@ writeUntaggedImage(const QTemporaryDir& dir,
     OIIO::ImageInput::unique_ptr in = OIIO::ImageInput::open(path);
     EXPECT_TRUE(bool(in)) << file;
     if (in) {
-        EXPECT_TRUE(ReadColorSpace::embeddedColorSpace(project()->getColorManagement()->getConfig(), in->spec()).empty())
+        EXPECT_TRUE(IoColorSpace::embeddedColorSpace(project()->getColorManagement()->getConfig(), in->spec()).empty())
             << file << " carries a colourspace of the config";
     }
 
@@ -171,42 +171,24 @@ writeFloat(const QTemporaryDir& dir)
 }
 
 NodePtr
-createWriter(const std::string& encoderID,
-             const std::string& file)
+createWriter(const std::string& file)
 {
-    CreateNodeArgs args(encoderID, project());
+    CreateNodeArgs args(PLUGINID_NATRON_WRITE, project());
 
-    args.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, file);
+    args.setProperty<int>(kCreateNodeArgsPropPluginVersion, PLUGIN_MAJOR_NATRON_WRITE, 0);
+    NodePtr writer = appPTR->getTopLevelInstance()->createNode(args);
 
-    return appPTR->getTopLevelInstance()->createNode(args);
-}
-
-NodePtr
-embeddedNode(const NodePtr& node)
-{
-    EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
-
-    if (WriteNode* isWrite = dynamic_cast<WriteNode*>(effect.get())) {
-        return isWrite->getEmbeddedWriter();
+    if (writer) {
+        writer->setOutputFilesForWriter(file);
     }
 
-    return NodePtr();
-}
-
-// A Write holds its knobs in the encoder it wraps; the native Read holds its own.
-NodePtr
-knobOwner(const NodePtr& node)
-{
-    NodePtr embedded = embeddedNode(node);
-
-    return embedded ? embedded : node;
+    return writer;
 }
 
 std::string
-stringValue(const NodePtr& wrapper,
+stringValue(const NodePtr& node,
             const char* name)
 {
-    NodePtr node = knobOwner(wrapper);
     KnobStringBasePtr knob = node ? std::dynamic_pointer_cast<KnobStringBase>(node->getKnobByName(name)) : KnobStringBasePtr();
 
     EXPECT_TRUE(bool(knob)) << name;
@@ -215,11 +197,9 @@ stringValue(const NodePtr& wrapper,
 }
 
 KnobBoolPtr
-boolKnob(const NodePtr& wrapper,
+boolKnob(const NodePtr& node,
          const char* name)
 {
-    NodePtr node = knobOwner(wrapper);
-
     return node ? std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(name)) : KnobBoolPtr();
 }
 
@@ -608,27 +588,24 @@ TEST_F(ProjectOCIODefaultsTest, WritePngOutputsTheEightBitDefaultFromTheWorkingS
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
 
-    NodePtr png = createWriter(PLUGINID_OFX_WRITEPNG, (tmp.path() + QLatin1String("/out.png")).toStdString());
+    NodePtr png = createWriter((tmp.path() + QLatin1String("/out.png")).toStdString());
 
     ASSERT_TRUE(bool(png));
-    ASSERT_TRUE(bool(embeddedNode(png)));
-    ASSERT_EQ(std::string(PLUGINID_OFX_WRITEPNG), embeddedNode(png)->getPluginID());
     EXPECT_EQ(project()->getFileColorSpace(eFileColorCategory8Bit), stringValue(png, kOutputSpaceKnob));
     EXPECT_EQ(std::string(kSRGBSpace), stringValue(png, kOutputSpaceKnob));
-    EXPECT_EQ(project()->getWorkingColorSpace(), stringValue(png, kInputSpaceKnob));
+    EXPECT_EQ(project()->getWorkingColorSpace(), stringValue(png, kWorkingSpaceKnob));
 }
 
-TEST_F(ProjectOCIODefaultsTest, WriteOIIOExrOutputsTheFloatDefaultFromTheWorkingSpace)
+TEST_F(ProjectOCIODefaultsTest, WriteExrOutputsTheFileRuleSpace)
 {
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
 
-    NodePtr exr = createWriter(PLUGINID_OFX_WRITEOIIO, (tmp.path() + QLatin1String("/out.exr")).toStdString());
+    NodePtr exr = createWriter((tmp.path() + QLatin1String("/out.exr")).toStdString());
 
     ASSERT_TRUE(bool(exr));
-    EXPECT_EQ(project()->getFileColorSpace(eFileColorCategoryFloat), stringValue(exr, kOutputSpaceKnob));
-    EXPECT_EQ(std::string(kWorkingSpace), stringValue(exr, kOutputSpaceKnob));
-    EXPECT_EQ(project()->getWorkingColorSpace(), stringValue(exr, kInputSpaceKnob));
+    EXPECT_EQ(std::string(kFileRuleSpace), stringValue(exr, kOutputSpaceKnob));
+    EXPECT_EQ(project()->getWorkingColorSpace(), stringValue(exr, kWorkingSpaceKnob));
 }
 
 TEST_F(ProjectOCIODefaultsTest, AnExistingWriteKeepsItsOutputSpaceAcrossADefaultChangeAndReload)
@@ -636,7 +613,7 @@ TEST_F(ProjectOCIODefaultsTest, AnExistingWriteKeepsItsOutputSpaceAcrossADefault
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
 
-    NodePtr writer = createWriter(PLUGINID_OFX_WRITEPNG, (tmp.path() + QLatin1String("/out.png")).toStdString());
+    NodePtr writer = createWriter((tmp.path() + QLatin1String("/out.png")).toStdString());
 
     ASSERT_TRUE(bool(writer));
     ASSERT_EQ(std::string(kSRGBSpace), stringValue(writer, kOutputSpaceKnob));
@@ -651,7 +628,7 @@ TEST_F(ProjectOCIODefaultsTest, AnExistingWriteKeepsItsOutputSpaceAcrossADefault
     writer = project()->getNodeByName(name);
     ASSERT_TRUE(bool(writer));
     EXPECT_EQ(std::string(kSRGBSpace), stringValue(writer, kOutputSpaceKnob));
-    EXPECT_EQ(std::string(kWorkingSpace), stringValue(writer, kInputSpaceKnob));
+    EXPECT_EQ(std::string(kWorkingSpace), stringValue(writer, kWorkingSpaceKnob));
 }
 
 // ACEScg 0.18 is mid-gray: linear 0.18 encodes to 0.4614 under the sRGB curve, i.e. code 118.
@@ -668,7 +645,7 @@ TEST_F(ProjectOCIODefaultsTest, ProbeOfMidGrayWrittenToAnEightBitPngEncodesToCod
     ASSERT_TRUE(color != NULL);
     color->setValues(0.18, 0.18, 0.18, 1., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
 
-    NodePtr writer = createWriter(PLUGINID_OFX_WRITEPNG, path);
+    NodePtr writer = createWriter(path);
     ASSERT_TRUE(bool(writer));
     ASSERT_EQ(std::string(kSRGBSpace), stringValue(writer, kOutputSpaceKnob));
     ASSERT_TRUE(project()->connectNodes(0, constant, writer));

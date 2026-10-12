@@ -6,7 +6,9 @@
 # (plates 1 and 2 ZIP, plate 3 PIZ), and one HD deep sequence deep_hd.####.exr (DeepFromImage of
 # plate 1's image with a Z ramp from 1 to 100 across the frame). The images are checkerboards with
 # full-frame noise reseeded every frame, so they compress about as badly as grainy footage and no
-# two frames are alike. A sequence whose frames all exist is skipped.
+# two frames are alike. A sequence whose frames all exist is skipped. The writer's output colourspace
+# is pinned to the project working space, so the plates hold the generated pixel values unconverted
+# instead of taking the ACES2065-1 the OCIO file rules pick for .exr.
 #
 # Environment:
 #   BENCH_PLATES_RES     hd | uhd | all (default all); the deep sequence is made with hd
@@ -80,6 +82,14 @@ def image(index):
     return m
 
 
+def pin_output_space(writer):
+    working = param(writer, "ocioWorkingSpace").get()
+    if not working:
+        raise RuntimeError("%s has no working colourspace to pin the output to" % writer.getScriptName())
+    param(writer, "ocioOutputSpace").set(working)
+    param(writer, "ocioOutputSpaceSet").set(True)
+
+
 def render(writer, stem, files):
     t0 = time.time()
     app.render(writer, 1, FRAMES)
@@ -105,6 +115,7 @@ def plates(res):
             first = src
         writer = app.createWriter(os.path.join(PLATES, stem + ".####.exr"))
         writer.connectInput(0, src)
+        pin_output_space(writer)
         set_choice(writer, "compression", COMPRESSION[index])
         set_choice(writer, "bitDepth", "16f")
         render(writer, stem, files)

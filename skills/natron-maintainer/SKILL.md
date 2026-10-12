@@ -31,7 +31,7 @@ the source itself.
   ``Node`` → ``EffectInstance``. A ``Node`` is the stable graph vertex; its
   ``EffectInstance`` is the (replaceable) behavior — either an
   ``OfxEffectInstance`` (an OpenFX plug-in) or a built-in C++ effect
-  (``ViewerInstance``, ``RotoPaint``, ``TrackerNode``, ``ReadNode``/``WriteNode``,
+  (``ViewerInstance``, ``RotoPaint``, ``TrackerNode``,
   ``NodeGroup``, ``Backdrop``, ``Dot``, …).
 - **Rendering is pull-based:** an output effect calls
   ``EffectInstance::renderRoI(RenderRoIArgs&, …)`` which recurses upstream by

@@ -39,7 +39,7 @@ Scouted 2026-10-11 on `milestone/m55-node-graph-polish` at `10e0accd5`. **Re-che
   - verify: P7.T1 runs: click a Blur's input, move, pan with the middle button, zoom with the wheel (the arrow tip stays at the cursor), click a Constant, and Blur's input 0 is the Constant, undone in one Ctrl+Z. A second run is cancelled by Escape and a third by right-click; in both, connections are unchanged, no undo entry is added, and no context menu opens.
   - size: L
 
-- [ ] M69.P2.T3 — Add keyboard shortcuts that connect the selected nodes
+- [x] M69.P2.T3 — Add keyboard shortcuts that connect the selected nodes
   - files: `Gui/ActionShortcuts.h`, `Gui/GuiApplicationManager10.cpp`, `Gui/NodeGraph25.cpp`, `Gui/NodeGraph40.cpp`, `Gui/NodeGraph.h` (**OVERLAP: ActionShortcuts.h / GuiApplicationManager10.cpp** with P4.T3 and P6.T2; **REBASE (M56)**: both shortcut files gain the curve editor's "Free" entry; **REBASE (M45)**: `GuiApplicationManager10.cpp` gains an include and `TabMenuBridge::bootstrap()`, and `NodeGraph25.cpp`/`NodeGraph.h` as in P2.T2)
   - approach:
     - **Y** connects: each other selected node, in selection order, feeds the next free input of the **last-selected** node, preferred input first (`Node::getPreferredInputForConnection`). **Shift+Y** connects in reverse: the last-selected node feeds the preferred input of every other selected node.

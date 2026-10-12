@@ -196,6 +196,13 @@ public:
     // does not rebuild the plan that was just dismissed.
     bool _spliceCancelled = false;
 
+    // An input arrow picked up by a click and following the cursor. It is kept apart from
+    // _evtState so that panning and zooming still run while it is held, and it is held by node
+    // and input number rather than as an Edge*, so deleting the node meanwhile leaves nothing
+    // dangling.
+    NodeGuiWPtr _pickedUpArrowDest;
+    int _pickedUpArrowInput = -1;
+
     NodeGuiPtr _backdropResized; //< the backdrop being resized
     NodesGuiList _selection;
 

@@ -164,6 +164,7 @@ set(GuiTests_SOURCES
     EdgeNearbyGrab_Test.cpp
     KnobGuiString_Test.cpp
     LayerChannelRow_Test.cpp
+    NodeGraphPickUp_Test.cpp
     NodeGraphSplice_Test.cpp
     NodeGuiUserColorSerialization_Test.cpp
     ProjectGuiXmlEquivalence_Test.cpp

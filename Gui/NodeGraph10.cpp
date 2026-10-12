@@ -246,6 +246,11 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
         return;
     }
 
+    if ((_imp->_pickedUpArrowInput >= 0) && handlePickUpPress(e)) {
+        _imp->_evtState = eEventStateNone;
+
+        return;
+    }
 
     NodeCollectionPtr collection = getGroup();
     NodeGroup* isGroup = dynamic_cast<NodeGroup*>( collection.get() );

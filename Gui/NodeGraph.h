@@ -257,6 +257,18 @@ private:
 
     void cancelSplice();
 
+    bool connectInputArrowToNode(Edge* arrow, const NodeGuiPtr& target);
+
+    Edge* getPickedUpArrow() const;
+
+    void pickUpArrow(Edge* arrow);
+
+    void dragPickedUpArrowToCursor();
+
+    void dropPickedUpArrow();
+
+    bool handlePickUpPress(QMouseEvent* e);
+
     void moveSelectedNodesBy(bool shiftdown, bool controlDown, const QPointF& lastMousePosScene, const QPointF& newPos, const QRectF& visibleSceneR, bool userEdit);
 
     void scrollViewIfNeeded(const QPointF& scenePos);

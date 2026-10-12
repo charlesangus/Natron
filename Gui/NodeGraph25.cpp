@@ -157,6 +157,14 @@ NodeGraph::showNodePanel(bool casIsCtrl, bool casIsShift, NodeGui* nearbyNode)
 void
 NodeGraph::mouseDoubleClickEvent(QMouseEvent* e)
 {
+    // The second press of a double click arrives here instead of in mousePressEvent, so a held
+    // arrow must get it too.
+    if ((_imp->_pickedUpArrowInput >= 0) && handlePickUpPress(e)) {
+        _imp->_evtState = eEventStateNone;
+
+        return;
+    }
+
     NodeGui* nearbyNode;
     Edge* nearbyEdge;
     NearbyItemEnum nearbyItemCode = hasItemNearbyMouse(e->pos(), &nearbyNode, &nearbyEdge);
@@ -214,6 +222,7 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
 
     if (key == Qt::Key_Escape) {
         cancelSplice();
+        dropPickedUpArrow();
     }
 
     if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphRemoveNodes, modifiers, key) ) {

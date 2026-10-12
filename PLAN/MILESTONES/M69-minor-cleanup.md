@@ -8,7 +8,7 @@ Scouted 2026-10-11 on `milestone/m55-node-graph-polish` at `10e0accd5`. **Re-che
 
 ## Phase 69.1: Crash fix
 
-- [ ] M69.P1.T1 — Stop the Edit menu holding dangling undo/redo actions after a node's undo stack dies
+- [x] M69.P1.T1 — Stop the Edit menu holding dangling undo/redo actions after a node's undo stack dies
   - files: `Gui/Gui30.cpp`, `Gui/GuiPrivate.h`, `Gui/GuiPrivate.cpp` (**REBASE (M56)**: `GuiPrivate.cpp` includes and `createPropertiesBinGui`; `setUndoRedoActions` is untouched)
   - approach:
     - Cause: `Gui::removeUndoStack` (`Gui30.cpp:660-681`) removes the stack's actions from `menuEdit` when they are current, but leaves `_imp->_currentUndoAction`/`_currentRedoAction` pointing at them. The actions are parented to the `QUndoStack` (`registerNewUndoStack`, `:649-657`), so they die with it (`NodeGui::removeUndoStack`, `Gui/NodeGui.cpp:935-940`, from `destroyGui` `:2889`, call at `:2898`; M56 shifts these). The next `GuiPrivate::setUndoRedoActions` (`GuiPrivate.cpp:565-580`) calls `menuEdit->removeAction` on a freed pointer.

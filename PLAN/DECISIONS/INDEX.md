@@ -86,6 +86,7 @@
 - 2026-10-11 — channels-row-always-at-top: the Channels row is always the first row of a node's main page, every node, no per-node placement → DECISIONS/2026-10-11-channels-row-always-at-top.md
 - 2026-10-11 — live-sessions-and-graph-merge: host-authoritative live sessions (v1: sync, presence, per-user undo, follow viewer, no password); template merge on app and CLI with node-specific handlers; identity policy from an M103 spike → DECISIONS/2026-10-11-live-sessions-and-graph-merge.md
 - 2026-10-11 — content-node-hashing: content (Merkle) node hashes replace knobsAge; LRU eviction, no purge on hash change → DECISIONS/2026-10-11-content-node-hashing.md
-- 2026-10-12 — clean-sheet-merge: new native fr.natron.Merge (HDR-safe Nuke maths, layer modes, per-side alpha sources); old Merge deleted with no compat; M85 drops Merge → DECISIONS/2026-10-12-clean-sheet-merge.md
+- 2026-10-12 — clean-sheet-merge: new native Merge (plain ID) (HDR-safe Nuke maths, layer modes, per-side alpha sources); old Merge deleted with no compat; M85 drops Merge → DECISIONS/2026-10-12-clean-sheet-merge.md
 - 2026-10-12 — renumber-live-session-milestones: inbox M95–M99 applied as M102–M106 (IDs taken) → DECISIONS/2026-10-12-renumber-live-session-milestones.md
 - 2026-10-12 — fold-m97-into-m100: M97 - Value-Based Node Hashing cancelled; its prior art and Write EXR read back move into M100 - Content Node Hashing (Phase 100.7) → DECISIONS/2026-10-12-fold-m97-into-m100.md
+- 2026-10-12 — native-nodes-drop-ofx-legacy: OFX-parity rule retired; plain native IDs at major 1; one node per feature with no duplicate menu entries (except Merge presets; Add/Multiply/Gamma stay separate); clamps default off; ChromaKeyer into M95; Blur trimmed → DECISIONS/2026-10-12-native-nodes-drop-ofx-legacy.md

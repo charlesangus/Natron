@@ -95,6 +95,17 @@ Scouting (2026-10-11, `10e0accd5`):
   - verify: `ctest -R NativeChromaKeyer` with rewritten analytic cases.
   - size: L
 
+- [ ] M95.P4.T5 — Make ChromaKeyer scene-linear: no Rec.709 encoding, no clamps, base mask/mix
+  - files: `Engine/Nodes/Keyer/ChromaKeyer.h`, `Engine/Nodes/Keyer/ChromaKeyer.cpp`, `Tests/Native/NativeChromaKeyer_Test.cpp`
+  - approach:
+    - Key in the scene-linear working space. Delete the Rec.709 transfer encoding and its `linearProcessing` toggle (`ChromaKeyer.cpp:169-171, 228-231, 702`).
+    - Remove the ±0.5 Cb/Cr and [0,1] RGB clamps after suppression, and the background-key clamp (`:272-288, 302`).
+    - Replace the CCIR 601/709/2020 `colorspace` choice (`:694-697`) with luma/chroma weights derived from the project's OCIO working space (as Saturation does for AP1). Give Keyer's `luminanceMath` (P4.T2) the same working-space default.
+    - Replace the own inside/outside-mask clamp and blend (`:211-212`) with the host mask/mix footer, as P4.T2 does for Keyer.
+    - Keep ChromaKeyer's angle-based key (acceptance/suppression angle, key lift/gain) and its outputs. This is not the alpha-only redesign that P4.T4 proposed and the user declined.
+  - verify: `ctest -R NativeChromaKeyer` with analytic cases: a green key on ACEScg values above 1 and below 0 keeps the foreground colour unclipped, mask/mix through the footer, and AP1 weights under an ACES config.
+  - size: L
+
 ## Phase 95.5: Evidence and UAT
 
 - [ ] M95.P5.T1 — GUI script, shots and AppImage checkpoint
@@ -105,11 +116,12 @@ Scouting (2026-10-11, `10e0accd5`):
 
 **Verification gate:**
 - One `fast` build with CI `format`, `lint-ci` and `build-and-test` green.
-- ctest green, including `KeyerMatte`, `NativeKeyer`, `KnobFooterOrder`, `NativeConstant`, `NativeCrop`, `NativeTransform`, `NativePosition` and `RectangleOverlay`, plus M93's `GoldenXml` if it has merged (regenerate its fixtures for the dropped knobs, and record that here).
+- ctest green, including `KeyerMatte`, `NativeKeyer`, `NativeChromaKeyer`, `KnobFooterOrder`, `NativeConstant`, `NativeCrop`, `NativeTransform`, `NativePosition` and `RectangleOverlay`, plus M93's `GoldenXml` if it has merged (regenerate its fixtures for the dropped knobs, and record that here).
 - `m95_knobs_keyer.py` reports 0 failures; the user approves the shots and signs off on `build/appimages/M95-<sha>.AppImage`.
 
 Acceptance sketch:
 - Keyer has four matte values and outputs an alpha only.
+- ChromaKeyer keys in scene-linear space with no clamps and uses the host mask/mix footer.
 - No node has `hidpi` or `interactive` knobs; DPI is app-level and interactive is one global toggle with a shortcut.
 - "(Un)premult by" and clamp black/white sit below the line with mask and mix.
 
@@ -122,3 +134,4 @@ Acceptance sketch:
   - **Keyer:** key source Luminance or Colour, host mask/mix only (no Bg/InM/OutM); same plugin ID, major 3, clean break with no migration.
   - **ChromaKeyer:** left as is; P4.T4 cancelled.
   - **Footer order (user, from mockups at claude.ai artifact `WTqyJm8s3WDyUBadL1h8MK`):** below the separator: Clamp black and Clamp white **side by side on one row**, then (Un)premult by, then mask channel + Invert mask, then Mix. This overrides the order in P3.T1's approach (clamp black needs no new line so clamp white joins its row); the `KnobFooterOrder` test checks this order.
+- 2026-10-12 — **ChromaKeyer added back (user), as a scene-linear fix rather than the alpha-only redesign:** P4.T5 removes the Rec.709 encoding and the HDR clamps and moves it to the host mask/mix (`DECISIONS/2026-10-12-native-nodes-drop-ofx-legacy.md`). The Keyer's "same plugin ID, major 3" answer is superseded by the plain-ID rule: M107 - Native Node Identity Cleanup renames it to `Keyer` at major 1.

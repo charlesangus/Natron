@@ -1,6 +1,6 @@
 # M101 - Clean-Sheet Merge Node
 
-A new native Merge, `fr.natron.Merge`. It matches Nuke's Merge feature for feature, minus a few
+A new native Merge, `Merge`. It matches Nuke's Merge feature for feature, minus a few
 pieces of legacy cruft, and it can merge several layers at once. Each side's alpha can be one
 universal channel, each layer's own alpha, or a per-channel alpha layer. It ships with a CPU
 row kernel and a native multi-input GPU kernel, using the placement and residency interface from
@@ -41,9 +41,9 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
 ## Design
 
 - **Identity:**
-  - ID `fr.natron.Merge`, version 1, label "Merge", category Merge.
+  - ID `Merge` (a plain ID, as for every native node; `DECISIONS/2026-10-12-native-nodes-drop-ofx-legacy.md`), version 1, label "Merge", category Merge.
   - Inputs are **B = 0, A = 1, Mask = 2, then A2..A64**, Nuke's order and the old node's. A inputs fold in order like Nuke: A over B, then A2 over the result, and so on.
-  - The presets (Plus, Matte, Multiply, In, Out, Screen, Max, Min, Difference) are **menu entries** that create `fr.natron.Merge` with `operation` set. They are not separate plug-ins.
+  - The presets (Plus, Matte, Multiply, In, Out, Screen, Max, Min, Difference) are **menu entries** that create `Merge` with `operation` set. They are not separate plug-ins.
 - **Operators:**
   - All of Nuke's operators: atop, average, colour-burn, colour-dodge, conjoint-over, copy, difference, disjoint-over, divide, exclusion, from, geometric, hard-light, hypot, in, mask, matte, max, min, minus, multiply, out, over, overlay, plus, screen, soft-light, stencil, under and xor.
   - Plus the openfx-misc extras: hue, saturation, colour, luminosity, freeze, grain-extract, grain-merge, pin-light and reflect.
@@ -110,7 +110,7 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
 - [ ] M101.P2.T2 — Add the new Merge node with a single layer and universal alpha
   - files: `Engine/Nodes/Merge/NativeMerge.{h,cpp}` (new), `Engine/AppManager.cpp` (registration), `Tests/Native/NativeMergeNode_Test.cpp` (new)
   - approach:
-    - `fr.natron.Merge` v1 with the Design's inputs, operation, bbox, metadata from, frame range from, and the base class's mask and mix.
+    - `Merge` v1 with the Design's inputs, operation, bbox, metadata from, frame range from, and the base class's mask and mix.
     - Use `layers = Single` only for now, with A/B/output layer knobs declared through `declareLayerKnob` (A and B input-bound, output a Target) and universal alpha channel selects per side.
     - The kernel calls `MergeMath.h` through P2.T1's multi-input `RowIO`, folding A2..An in order.
     - Override `getRegionOfDefinition`, `isIdentity` and `deriveOutputMetadata` per the Design.
@@ -122,7 +122,7 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
 - [ ] M101.P2.T3 — Turn the old Merge presets into menu entries for the new node
   - files: `Engine/AppInstance.cpp` (`:1068` preset handling), `Engine/AppManager.cpp`, the node-menu or tab-menu preset source (find where presets are listed for M45 - Native Tab Menu), `Tests/Native/NativeMergeNode_Test.cpp`
   - approach:
-    - Plus, Matte, Multiply, In, Out, Screen, Max, Min and Difference create `fr.natron.Merge` with `operation` set, and show the operator as the node's sub-label.
+    - Plus, Matte, Multiply, In, Out, Screen, Max, Min and Difference create `Merge` with `operation` set, and show the operator as the node's sub-label.
     - They are not separate plug-in IDs. Register the menu entries alongside the old presets until P5 deletes them.
   - verify: a test creates each preset entry and checks the plug-in ID and operation. Manual check: the tab menu lists them.
   - size: M
@@ -178,14 +178,14 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
 - [ ] M101.P5.T1 — Move RotoPaint's internal merges to the new node
   - files: `Engine/RotoContext.cpp`, `Engine/RotoDrawableItem.cpp`, `Engine/RotoItem.cpp`, `Engine/RotoLayer.cpp`, `Engine/RotoStrokeItem.cpp`
   - approach:
-    - Create `fr.natron.Merge` instead of `PLUGINID_OFX_MERGE`.
+    - Create `Merge` instead of `PLUGINID_OFX_MERGE`.
     - Map each knob set by name (`operation` and any channel or bbox knobs) to the new knobs. Input indices are unchanged (B = 0, A = 1, Mask = 2).
   - verify: the existing Roto/RotoPaint tests, plus a manual paint-stroke check in the GUI, at the gate.
   - size: M
 
 - [ ] M101.P5.T2 — Move the bundled PyPlugs to the new node (Glow, LightWrap, DropShadow, EdgeBlur)
   - files: `Gui/Resources/PyPlugs/Glow.py`, `LightWrap.py`, `DropShadow.py`, `EdgeBlur.py`
-  - approach: replace the old Merge IDs with `fr.natron.Merge` and set `operation` explicitly where a preset ID was used. Input indices are unchanged. Map any `AChannels`/`BChannels`/`OutputChannels`/`screenAlpha` settings to the new layer and alpha knobs. `screenAlpha` has no equivalent, so note any PyPlug whose output changes.
+  - approach: replace the old Merge IDs with `Merge` and set `operation` explicitly where a preset ID was used. Input indices are unchanged. Map any `AChannels`/`BChannels`/`OutputChannels`/`screenAlpha` settings to the new layer and alpha knobs. `screenAlpha` has no equivalent, so note any PyPlug whose output changes.
   - verify: `PyPlugNativeParams_Test` (updated in P5.T4) and rendering each PyPlug on a fixture at the gate.
   - size: M
 
@@ -203,7 +203,7 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
 
 - [ ] M101.P5.T5 — Point the metadata, catalogue and PyPlug tests at the new node
   - files: `Tests/NativeMetadataPolicy_Test.cpp`, `Tests/NativeMetadata_Test.cpp`, `Tests/NodeCategory_Test.cpp`, `Tests/OfxMetadataBridge_Test.cpp`, `Tests/Native/NativePluginList_Test.cpp` (and `Tests/Native/PyPlugNativeParams_Test.cpp`, `Tests/Native/BlurFIRGaussian_Test.cpp` if they reference Merge)
-  - approach: as P5.T4. `NativePluginList_Test` must expect `fr.natron.Merge` and no `net.sf.openfx.Merge*` IDs.
+  - approach: as P5.T4. `NativePluginList_Test` must expect `Merge` and no `net.sf.openfx.Merge*` IDs.
   - verify: these tests pass at the gate.
   - size: M
 
@@ -256,3 +256,4 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
 - 2026-10-12 — **Dropped** (user): Nuke's mask fringe and inject, video colorspace, and alpha masking (`screenAlpha`). Masking is just the base class's mask channel, invert and mix.
 - 2026-10-12 — **Per-channel alpha comes from an alpha layer** whose channel *i* is the alpha of merged channel *i* (user). This fits the 4-channel layer cap.
 - 2026-10-12 — **Placed after M84 - GPU Placement And Residency and before M85 - Native GPU Kernels** (user). M85 no longer ports Merge.
+- 2026-10-12 — **Plain ID `Merge`, not a reverse-domain ID** (user): native nodes drop reverse-domain IDs. The operation presets stay as menu entries; Merge is the one exception to "no duplicate menu entries".

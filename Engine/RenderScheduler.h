@@ -30,6 +30,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <functional>
 #include <list>
 #include <map>
 #include <memory>
@@ -57,6 +58,11 @@ NATRON_NAMESPACE_ENTER
  * with the edges between them. The root is tasks.front().
  **/
 struct FrameGraph {
+    enum class Device {
+        Cpu,
+        Gpu
+    };
+
     struct Task {
         FrameStore::TaskKey key;
 
@@ -82,6 +88,8 @@ struct FrameGraph {
 
         // Every dependency is a leaf (vacuously so for a leaf): running it starts holding a new branch in memory.
         bool startsBranch = false;
+
+        // The host memory of its output; for a task standing for a region, of the outputs it downloads.
         std::size_t estimatedBytes = 0;
 
         // Its output goes to the image cache, where another task of the same node rendering the same cached image
@@ -94,11 +102,51 @@ struct FrameGraph {
         // The level renderRoI renders at: 0 for an effect without render scale support.
         unsigned int cacheMipmapLevel = 0;
 
+        Device device = Device::Cpu;
+
+        // Where renderRoI allocates the task's images when it runs on its own.
+        StorageModeEnum storage = eStorageModeRAM;
+
+        // Index in regions of the region this task belongs to, or -1; every member of a region has device Gpu.
+        int regionId = -1;
+
         // Only read or written under the scheduler's mutex once the graph is submitted.
         int remainingDeps = 0;
     };
 
+    /**
+     * @brief Tasks rendered together on the GPU, their intermediate images staying on the device. The graph with each
+     * region contracted to one node is acyclic, so a region never waits on a task that waits on it.
+     **/
+    struct Region {
+        struct Output {
+            int task = -1;
+
+            // Per edge, as Task::consumerTasks counts them.
+            int internalConsumers = 0;
+            int externalConsumers = 0;
+
+            // The frame's root, whose planes go to the future rather than to a consumer task.
+            bool isRoot = false;
+        };
+
+        // Topological order: every member comes after the members it depends on.
+        std::vector<int> members;
+
+        // The distinct tasks outside the region that members depend on, in ascending index order.
+        std::vector<int> externalInputs;
+
+        // The members whose output is read by a consumer task, or that are the root, in members order.
+        std::vector<Output> outputs;
+
+        // An upper bound of the device memory the region needs at once: the estimatedBytes of every non-identity
+        // member, since all its intermediates may be resident until it ends, plus those of every external input
+        // uploaded. An identity member aliases its input and adds nothing.
+        std::size_t workingSetBytes = 0;
+    };
+
     std::vector<Task> tasks;
+    std::vector<Region> regions;
 };
 
 /**
@@ -159,6 +207,16 @@ private:
  *
  * A failed task aborts its frame, and every frame of the same AbortableRenderInfo, as abort() does, but the frame
  * finishes with eRenderRoIRetCodeFailed.
+ *
+ * Each region of a graph runs as one task through the region body: it is ready once every task outside it that a
+ * member depends on has run, and its members are never run on their own. When it succeeded, each of those inputs is
+ * released once per edge into a member, as the members would have released them, and the tasks outside it that consume
+ * a member become ready as if the members had run. A region that fails or is aborted ends its frame as a task would.
+ *
+ * A region reporting a device loss does not end its frame: the frame's queued tasks are dropped, and once its running
+ * ones returned, whatever they produced is dropped with the store, every task is placed on the CPU and the leaves are
+ * queued again, the future still waiting. A frame with regions holds the GPU runtime from submit() until it finished
+ * or was restarted, so that the runtime is not recreated under the device images in its store.
  **/
 class RenderScheduler {
 public:
@@ -166,6 +224,54 @@ public:
         Interactive,
         Background
     };
+
+    /**
+     * @brief What a region body measured, for the render profile. Times are in milliseconds, sizes in bytes.
+     **/
+    struct RegionReport {
+        // Per member, in Region::members order: the device time charged to it, 0 for an identity member.
+        std::vector<long long> memberNs;
+        double uploadMs = 0.;
+        unsigned long long uploadBytes = 0;
+        double kernelMs = 0.;
+        double downloadMs = 0.;
+        unsigned long long downloadBytes = 0;
+
+        // The region's time on its thread, from its first upload to its last download landing.
+        double wallMs = 0.;
+
+        // The strips the region ran as, 0 when it ran whole, and the most of them in flight at once.
+        int strips = 0;
+        int stripsInFlight = 0;
+
+        // Transfer time on the device spent while compute ran, so hidden by it, and the rest, which the region waited
+        // for. Only a pipelined region hides any.
+        double transferHiddenMs = 0.;
+        double transferExposedMs = 0.;
+
+        // The device was lost: the scheduler renders the whole frame again on the CPU, whatever the body returned.
+        bool deviceLost = false;
+
+        // Why the members were rendered on the CPU rather than the GPU; empty when they were not.
+        std::string cpuFallback;
+    };
+
+    /**
+     * @brief Renders the members of graph.regions[region] with the frame context installed on the calling thread. It
+     * stores each output with external consumers in the frame's store under its task's key, to be released
+     * externalConsumers times, unless the frame is aborted; releases the store entries its members read from one
+     * another, but not those of the region's external inputs, which the scheduler releases; and moves the planes of a
+     * root output to rootPlanes. graph.tasks may hold entries past those the frame was submitted with, which the body
+     * ignores. It may leave report untouched. It returns eRenderRoIRetCodeOk, or the code the frame fails or aborts
+     * with, unless it sets report->deviceLost.
+     **/
+    typedef std::function<EffectInstance::RenderRoIRetCode(const FrameRenderContextPtr& context,
+                                                           const FrameGraph& graph,
+                                                           int region,
+                                                           int budget,
+                                                           std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
+                                                           RegionReport* report)>
+        RegionBody;
 
     RenderScheduler();
 
@@ -184,6 +290,16 @@ public:
                                  double time,
                                  ViewIdx view,
                                  unsigned int mipmapLevel);
+
+    /**
+     * @brief Renders graph.tasks[task] with renderRoI as the scheduler runs a task outside every region, its images
+     * allocated with storage, on the calling thread, which must have the frame context installed. Leaves the frame's
+     * store alone.
+     **/
+    static EffectInstance::RenderRoIRetCode renderTaskOnCpu(const FrameGraph& graph,
+                                                            int task,
+                                                            StorageModeEnum storage,
+                                                            std::map<ImageLayerDesc, ImagePtr>* planes);
 
     /**
      * @brief Queues the tasks of graph. The context must stay unchanged until the future finished. An empty graph
@@ -229,6 +345,14 @@ public:
 
     std::size_t getBytesBudget() const;
 
+    /**
+     * @brief How many regions may run at once; at least 1. Regions are admitted on the host memory of the outputs they
+     * download, as other tasks are, but not on device memory, which the GPU pool keeps within its budget by evicting.
+     **/
+    int getGpuMaxConcurrentTasks() const;
+
+    void setGpuMaxConcurrentTasks(int count);
+
     void setBytesBudgetForTests(std::size_t bytes);
 
     /**
@@ -260,6 +384,13 @@ public:
      **/
     std::size_t getReservedBytesForTests() const;
 
+    /**
+     * @brief The body every region runs, runGpuRegion() until replaced. Unset, a region fails its frame.
+     **/
+    void setRegionBody(const RegionBody& body);
+
+    RegionBody getRegionBody() const;
+
 private:
     class NodeTask;
     struct Frame;
@@ -288,7 +419,24 @@ private:
 
     void executeTask(const FramePtr& frame, int task, int budget, std::vector<FramePtr>* finished);
 
+    void executeRegion(const FramePtr& frame, int task, int budget, std::vector<FramePtr>* finished);
+
+    void completeTask(const FramePtr& frame,
+                      int task,
+                      EffectInstance::RenderRoIRetCode retCode,
+                      std::map<ImageLayerDesc, ImagePtr>&& planes,
+                      std::vector<FramePtr>* finished,
+                      bool deviceLost = false);
+
+    void restartOnCpuLocked(const FramePtr& frame, std::vector<FramePtr>* finished);
+
+    static void appendRegionTasks(Frame* frame);
+
     void pushReadyLocked(const FramePtr& frame, int task);
+
+    void releaseGpuWaitingLocked();
+
+    static bool isRegionTask(const ReadyRef& ref);
 
     void purgeQueuedLocked(const FramePtr& frame, std::vector<int>* purged);
 
@@ -305,6 +453,10 @@ private:
     void admitGatedLocked(int maxRunnables);
 
     std::size_t bytesInFlightLocked() const;
+
+    void reserveLocked(const FrameGraph::Task& task);
+
+    void unreserveLocked(const FrameGraph::Task& task);
 
     void markDeadLocked(const FramePtr& frame, EffectInstance::RenderRoIRetCode retCode);
 
@@ -332,6 +484,10 @@ private:
     std::multimap<SharedOutputKey, ReadyRef> _deferredReady;
     std::list<FramePtr> _activeFrames;
 
+    // The ready regions held back while gpuMaxConcurrentTasks regions run, put back in the queues when one finished.
+    // They do not delay the CPU tasks.
+    std::vector<ReadyRef> _gpuWaiting;
+
     // The unfinished frames by the AbortableRenderInfo of their context, which each frame keeps alive.
     std::multimap<const AbortableRenderInfo*, FramePtr> _framesByAbortInfo;
     unsigned long long _nextFrameSequence;
@@ -341,7 +497,10 @@ private:
     // The estimated outputs of the admitted tasks and of the running ones, released when the task finished.
     std::size_t _reservedBytes;
     std::size_t _bytesBudget;
+    int _runningGpuTasks;
+    int _gpuMaxConcurrentTasks;
     std::size_t _peakBytesInFlight;
+    RegionBody _regionBody;
 
     // The tasks inside renderRoI, counted without the mutex.
     std::atomic<int> _tasksRendering;

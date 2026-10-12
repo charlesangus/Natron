@@ -55,12 +55,13 @@
 #include <SequenceParsing.h> // for removePath
 #endif
 
-#include "Engine/Hash64.h"
 #include "Engine/CacheEntryHolder.h"
+#include "Engine/EngineFwd.h"
+#include "Engine/Hash64.h"
+#include "Engine/HostImageMemory.h"
 #include "Engine/MemoryFile.h"
 #include "Engine/NonKeyParams.h"
 #include "Engine/Texture.h"
-#include "Engine/EngineFwd.h"
 #include "Global/GlobalDefines.h"
 #include "Global/StrUtils.h"
 
@@ -74,12 +75,13 @@ class RamBuffer
 {
     T* data;
     U64 count;
+    std::size_t byteSize;
 
 public:
-
     RamBuffer()
         : data(0)
         , count(0)
+        , byteSize(0)
     {
     }
 
@@ -97,6 +99,7 @@ public:
     {
         std::swap(data, other.data);
         std::swap(count, other.count);
+        std::swap(byteSize, other.byteSize);
     }
 
     U64 size() const
@@ -109,15 +112,13 @@ public:
         if (size == 0) {
             return;
         }
-        count = size;
         if (data) {
-            free(data);
+            HostImageMemory::release(data, byteSize);
             data = 0;
         }
-        if (count == 0) {
-            return;
-        }
-        data = (T*)malloc( size * sizeof(T) );
+        count = size;
+        byteSize = size * sizeof(T);
+        data = (T*)HostImageMemory::allocate(byteSize);
         if (!data) {
             throw std::bad_alloc();
         }
@@ -127,7 +128,7 @@ public:
     {
         count = 0;
         if (data) {
-            free(data);
+            HostImageMemory::release(data, byteSize);
             data = 0;
         }
     }
@@ -135,7 +136,7 @@ public:
     ~RamBuffer()
     {
         if (data) {
-            free(data);
+            HostImageMemory::release(data, byteSize);
             data = 0;
         }
     }

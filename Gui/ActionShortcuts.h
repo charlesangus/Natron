@@ -213,6 +213,9 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionCloseTab "closeTab"
 #define kShortcutDescActionCloseTab "Close Tab"
 
+#define kShortcutIDActionColorTrackball "colorTrackball"
+#define kShortcutDescActionColorTrackball "Engage Colour Trackball (C/S/T/V modes)"
+
 /////////VIEWER SHORTCUTS
 #define kShortcutIDActionLuminance "luminance"
 #define kShortcutDescActionLuminance "Display Luminance"
@@ -436,9 +439,6 @@ CLANG_DIAG_ON(uninitialized)
 
 #define kShortcutIDActionGraphSelectAllVisible "selectAllVisible"
 #define kShortcutDescActionGraphSelectAllVisible "Select All Visible Nodes"
-
-#define kShortcutIDActionGraphAutoHideInputs "autoHideInputs"
-#define kShortcutDescActionGraphAutoHideInputs "Auto-Hide Optional Inputs"
 
 #define kShortcutIDActionGraphHideInputs "hideInputs"
 #define kShortcutDescActionGraphHideInputs "Hide inputs"

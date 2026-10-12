@@ -148,6 +148,8 @@ NodeGraph::NodeGraph(Gui* gui,
     _imp->_undoStack->setUndoLimit( appPTR->getCurrentSettings()->getMaximumUndoRedoNodeGraph() );
     getGui()->registerNewUndoStack(_imp->_undoStack);
 
+    QObject::connect(appPTR->getCurrentSettings().get(), SIGNAL(settingsSaved()), this, SLOT(onSettingsSaved()));
+
     _imp->_hintInputEdge = new Edge(0, 0, NodeGuiPtr(), _imp->_nodeRoot);
     _imp->_hintInputEdge->setDefaultColor( QColor(0, 255, 0, 100) );
     _imp->_hintInputEdge->hide();
@@ -217,6 +219,23 @@ NodeGraph::~NodeGraph()
 
     QObject::disconnect( &_imp->_refreshCacheTextTimer, SIGNAL(timeout()), this, SLOT(updateCacheSizeText()) );
     _imp->_nodeCreationShortcutEnabled = false;
+}
+
+void
+NodeGraph::onSettingsSaved()
+{
+    // Recolouring on save rather than on settingChanged() keeps a discarded Preferences edit off the graph.
+    for (NodesGuiList::const_iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
+        (*it)->refreshCategoryColor();
+        (*it)->refreshEdgesDataKindPen(true);
+    }
+    for (NodesGuiList::const_iterator it = _imp->_nodesTrash.begin(); it != _imp->_nodesTrash.end(); ++it) {
+        (*it)->refreshCategoryColor();
+        (*it)->refreshEdgesDataKindPen(true);
+    }
+    if (scene()) {
+        scene()->update();
+    }
 }
 
 bool
@@ -424,7 +443,8 @@ NodeGraph::createNodeGUI(const NodePtr & node,
     
     Serialization::NodeSerializationPtr serialization = args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
 
-    bool panelOpened = args.getProperty<bool>(kCreateNodeArgsPropSettingsOpened);
+    // A Dot is a routing aid created in passing, so its panel only opens when asked for.
+    bool panelOpened = args.getProperty<bool>(kCreateNodeArgsPropSettingsOpened) && !isDot;
     if ( !serialization && panelOpened && isTopLevelNodeBeingCreated ) {
         node_ui->ensurePanelCreated();
     }

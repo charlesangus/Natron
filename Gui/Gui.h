@@ -454,8 +454,6 @@ public:
 
     void abortAllViewers();
 
-    void toggleAutoHideGraphInputs();
-
     void centerAllNodeGraphsWithTimer();
 
     void setLastEnteredTabWidget(TabWidget* tab);
@@ -676,6 +674,12 @@ public Q_SLOTS:
     void onPrevTabTriggered();
 
     void onCloseTabTriggered();
+
+    /**
+     * @brief Ctrl+E, application-wide: exits the global colour trackball mode if it is
+     * engaged, else resolves and engages its target, or does nothing when there is none.
+     **/
+    void onColorTrackballActionTriggered();
 
     void onUserCommandTriggered();
 

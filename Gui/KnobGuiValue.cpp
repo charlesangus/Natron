@@ -31,16 +31,18 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QApplication>
+#include <QColorDialog>
+#include <QFontMetrics>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QHeaderView>
+#include <QScrollArea>
 #include <QStyle>
-#include <QColorDialog>
 #include <QToolTip>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
-#include <QHeaderView>
-#include <QApplication>
-#include <QScrollArea>
+#include <QVBoxLayout>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 // /opt/local/include/QtGui/qmime.h:119:10: warning: private field 'type' is not used [-Wunused-private-field]
 #include <QKeyEvent>
@@ -90,21 +92,31 @@ struct KnobGuiValuePrivate
     KnobDoubleBaseWPtr doubleKnob;
     std::vector<std::pair<SpinBox *, ClickableLabel *> > spinBoxes;
     QWidget *container;
+    QWidget* belowRowColumn; // non-null only when createBelowRowWidget() supplied a widget; owns "container" as a child
     ScaleSliderQWidget *slider;
     Button* rectangleFormatButton;
     Button *dimensionSwitchButton;
     bool rectangleFormatIsWidthHeight;
+    QWidget* dimensionLines;
+    QGridLayout* dimensionLinesLayout;
+    std::vector<ScaleSliderQWidget*> dimensionSliders; // indexed by dimension; entry 0 stays null, the row's slider drives it
+    bool autoFoldSuppressed;
 
     KnobGuiValuePrivate(KnobIPtr knob)
         : knob(knob)
-        , intKnob( std::dynamic_pointer_cast<KnobIntBase>(knob) )
-        , doubleKnob( std::dynamic_pointer_cast<KnobDoubleBase>(knob) )
+        , intKnob(std::dynamic_pointer_cast<KnobIntBase>(knob))
+        , doubleKnob(std::dynamic_pointer_cast<KnobDoubleBase>(knob))
         , spinBoxes()
         , container(0)
+        , belowRowColumn(0)
         , slider(0)
         , rectangleFormatButton(0)
         , dimensionSwitchButton(0)
         , rectangleFormatIsWidthHeight(true)
+        , dimensionLines(0)
+        , dimensionLinesLayout(0)
+        , dimensionSliders()
+        , autoFoldSuppressed(false)
     {
     }
 
@@ -211,8 +223,16 @@ KnobGuiValue::~KnobGuiValue()
 void
 KnobGuiValue::removeSpecificGui()
 {
-    _imp->container->deleteLater();
+    // The column, when there is one, owns "container" as a child, so deleting it is enough.
+    if (_imp->belowRowColumn) {
+        _imp->belowRowColumn->deleteLater();
+    } else {
+        _imp->container->deleteLater();
+    }
     _imp->spinBoxes.clear();
+    _imp->dimensionLines = 0;
+    _imp->dimensionLinesLayout = 0;
+    _imp->dimensionSliders.clear();
 }
 
 void
@@ -221,8 +241,7 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
     connectKnobSignalSlots();
 
     _imp->container = new QWidget( layout->parentWidget() );
-    QHBoxLayout *containerLayout = new QHBoxLayout(_imp->container);
-    layout->addWidget(_imp->container);
+    QHBoxLayout* containerLayout = new QHBoxLayout(_imp->container);
 
     containerLayout->setContentsMargins(0, 0, 0, 0);
     containerLayout->setSpacing(3);
@@ -231,8 +250,32 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
         disableSlider();
     }
 
+    // Rows that share a line with other knobs have no single field column to grow,
+    // so they never get a below-row widget.
+    QWidget* belowRowWidget = (getKnobsCountOnSameLine() > 1) ? 0 : createBelowRowWidget(layout->parentWidget());
+
+    if (belowRowWidget) {
+        _imp->belowRowColumn = new QWidget(layout->parentWidget());
+        QVBoxLayout* columnLayout = new QVBoxLayout(_imp->belowRowColumn);
+        columnLayout->setContentsMargins(0, 0, 0, 0);
+        columnLayout->setSpacing(0);
+        columnLayout->addWidget(_imp->container);
+        belowRowWidget->setParent(_imp->belowRowColumn);
+        belowRowWidget->hide();
+        columnLayout->addWidget(belowRowWidget);
+        layout->addWidget(_imp->belowRowColumn);
+    } else {
+        layout->addWidget(_imp->container);
+    }
+
     if ( !isSliderDisabled() ) {
-        layout->parentWidget()->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+        // A row with a below-row widget must be able to grow when that widget is shown,
+        // so its fixed height only applies to rows that cannot have one.
+        if (belowRowWidget) {
+            layout->parentWidget()->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+        } else {
+            layout->parentWidget()->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+        }
     }
 
     KnobIPtr knob = _imp->getKnob();
@@ -315,10 +358,20 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
 
     _imp->spinBoxes.resize(nDims);
 
+    int dimensionLabelSlotWidth = 0;
+    if (wantsFixedDimensionLabelSlot() || wantsPerDimensionSliders()) {
+        QFontMetrics fm(QApplication::font());
+        for (int i = 0; i < nDims; ++i) {
+            dimensionLabelSlotWidth = std::max(dimensionLabelSlotWidth, fm.horizontalAdvance(QString::fromUtf8(dimensionLabels[i].c_str())));
+        }
+    }
+
+    std::vector<QWidget*> boxContainers(nDims, (QWidget*)0);
     int rowIndex = 0;
     int columnIndex = 0;
     for (std::size_t i = 0; i < _imp->spinBoxes.size(); ++i) {
         QWidget *boxContainer = new QWidget(allSpinBoxesContainer);
+        boxContainers[i] = boxContainer;
         boxContainer->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 
         QHBoxLayout *boxContainerLayout = 0;
@@ -330,6 +383,9 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
         ClickableLabel *subDesc = 0;
         if ( (nDims != 1) && (nbRows == 1) ) {
             subDesc = new ClickableLabel(QString::fromUtf8( dimensionLabels[i].c_str() ), boxContainer);
+            if ((i == 0) && wantsFixedDimensionLabelSlot()) {
+                subDesc->setFixedWidth(dimensionLabelSlotWidth);
+            }
             boxContainerLayout->addWidget(subDesc);
         }
 
@@ -435,8 +491,11 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
         QObject::connect( _imp->slider, SIGNAL(editingFinished(bool)), this, SLOT(onSliderEditingFinished(bool)) );
         if (spinBoxesGrid) {
             spinBoxesGrid->addWidget(_imp->slider, rowIndex, columnIndex);
+            // Lets the slider's column claim extra width over a trailing stretch item added
+            // by addExtraWidgets(), instead of splitting it with that item.
+            spinBoxesGrid->setColumnStretch(columnIndex, 1);
         } else {
-            containerLayout->addWidget(_imp->slider);
+            containerLayout->addWidget(_imp->slider, 1);
         }
 
         sliderVisible = shouldSliderBeVisible(dispminGui, dispmaxGui);
@@ -470,6 +529,10 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
         _imp->dimensionSwitchButton->setCheckable(true);
         containerLayout->addWidget(_imp->dimensionSwitchButton);
 
+        if (wantsPerDimensionSliders() && _imp->belowRowColumn && !spinBoxesGrid) {
+            createDimensionLines(containerLayout, boxContainers, dimensionLabelSlotWidth, displayMins, displayMaxs, mins, maxs);
+        }
+
         bool showSlider = true;
         double firstDimensionValue = 0.;
         SequenceTime time = 0;
@@ -489,8 +552,12 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
             }
         }
         if (!showSlider || !isAutoFoldDimensionsEnabled()) {
-            _imp->slider->hide();
-            _imp->dimensionSwitchButton->setChecked(true);
+            if (_imp->dimensionLines) {
+                expandAllDimensions();
+            } else {
+                _imp->slider->hide();
+                _imp->dimensionSwitchButton->setChecked(true);
+            }
         } else {
             foldAllDimensions();
         }
@@ -503,7 +570,262 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
     }
 
     addExtraWidgets(containerLayout);
+
+    if (_imp->dimensionLines) {
+        setDimensionLinesRightInset(containerLayout);
+    }
 } // createWidget
+
+void
+KnobGuiValue::createDimensionLines(QHBoxLayout* containerLayout,
+                                   const std::vector<QWidget*>& boxContainers,
+                                   int labelSlotWidth,
+                                   const std::vector<double>& displayMins,
+                                   const std::vector<double>& displayMaxs,
+                                   const std::vector<double>& mins,
+                                   const std::vector<double>& maxs)
+{
+    QVBoxLayout* columnLayout = qobject_cast<QVBoxLayout*>(_imp->belowRowColumn->layout());
+    if (!columnLayout) {
+        return;
+    }
+
+    KnobIPtr knob = _imp->getKnob();
+    const int nDims = (int)_imp->spinBoxes.size();
+    const ScaleSliderQWidget::DataTypeEnum sliderType = _imp->getKnobAsDouble() ? ScaleSliderQWidget::eDataTypeDouble : ScaleSliderQWidget::eDataTypeInt;
+
+    _imp->dimensionLines = new QWidget(_imp->belowRowColumn);
+    _imp->dimensionLinesLayout = new QGridLayout(_imp->dimensionLines);
+    _imp->dimensionLinesLayout->setContentsMargins(0, 0, 0, 0);
+    // Matches the row's own spacing so each line's spinbox and slider start at the same x as
+    // spinbox 0 and the row's slider.
+    _imp->dimensionLinesLayout->setHorizontalSpacing(containerLayout->spacing());
+    _imp->dimensionLinesLayout->setVerticalSpacing(TO_DPIY(1));
+    _imp->dimensionLinesLayout->setColumnStretch(2, 1);
+    _imp->dimensionSliders.assign(nDims, (ScaleSliderQWidget*)0);
+
+    for (int i = 1; i < nDims; ++i) {
+        const int line = i - 1;
+        SpinBox* box = _imp->spinBoxes[i].first;
+        ClickableLabel* label = _imp->spinBoxes[i].second;
+
+        if (label) {
+            label->setFixedWidth(labelSlotWidth);
+            _imp->dimensionLinesLayout->addWidget(label, line, 0);
+        }
+        _imp->dimensionLinesLayout->addWidget(box, line, 1);
+
+        double dispmin = displayMins[i];
+        double dispmax = displayMaxs[i];
+        if (dispmin == std::numeric_limits<double>::lowest()) {
+            dispmin = mins[i];
+        }
+        if (dispmax == std::numeric_limits<double>::max()) {
+            dispmax = maxs[i];
+        }
+
+        ScaleSliderQWidget* slider = new ScaleSliderQWidget(0., 1., _imp->getKnobValue(i), knob->getEvaluateOnChange(),
+                                                            sliderType, getGui(), eScaleTypeLinear, _imp->dimensionLines);
+        slider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        if (hasToolTip()) {
+            slider->setToolTip(toolTip());
+        }
+        QObject::connect(slider, &ScaleSliderQWidget::positionChanged, this, [this, i](double v) {
+            onDimensionSliderValueChanged(i, v);
+        });
+        QObject::connect(slider, &ScaleSliderQWidget::editingFinished, this, [this, i](bool hasMovedOnce) {
+            onDimensionSliderEditingFinished(i, hasMovedOnce);
+        });
+        QObject::connect(slider, &ScaleSliderQWidget::resetToDefaultRequested, this, [this, i]() {
+            onDimensionSliderResetRequested(i);
+        });
+        _imp->dimensionLinesLayout->addWidget(slider, line, 2);
+        _imp->dimensionSliders[i] = slider;
+
+        onDisplayMinMaxChanged(dispmin, dispmax, i);
+        slider->seekScalePosition(valueAccordingToType(false, i, _imp->getKnobValue(i)));
+
+        // The box's label and spinbox now live on the line, so its slot in the row is dropped.
+        if (boxContainers[i]) {
+            containerLayout->removeWidget(boxContainers[i]);
+            delete boxContainers[i];
+        }
+    }
+
+    _imp->dimensionLines->hide();
+    // After the row and before the subclass's below-row widget.
+    columnLayout->insertWidget(1, _imp->dimensionLines);
+} // KnobGuiValue::createDimensionLines
+
+void
+KnobGuiValue::setDimensionLinesRightInset(QHBoxLayout* containerLayout)
+{
+    const int sliderIndex = containerLayout->indexOf(_imp->slider);
+    if ((sliderIndex < 0) || !_imp->dimensionLinesLayout) {
+        return;
+    }
+
+    // Everything right of the row's slider has a fixed width, so insetting the lines by the
+    // same amount ends every channel slider at the row slider's right edge. QBoxLayout puts
+    // its spacing only between widget items; spacer items contribute just their own width.
+    int inset = 0;
+    for (int i = sliderIndex + 1; i < containerLayout->count(); ++i) {
+        QLayoutItem* item = containerLayout->itemAt(i);
+        if (!item) {
+            continue;
+        }
+        if (item->widget()) {
+            inset += containerLayout->spacing();
+        }
+        inset += item->sizeHint().width();
+    }
+    _imp->dimensionLinesLayout->setContentsMargins(0, 0, inset, 0);
+}
+
+ScaleSliderQWidget*
+KnobGuiValue::getDimensionSlider(int dimension) const
+{
+    if (!_imp->dimensionLines || (dimension < 0) || (dimension >= (int)_imp->dimensionSliders.size())) {
+        return 0;
+    }
+    if (dimension == 0) {
+        return _imp->slider;
+    }
+
+    return _imp->dimensionSliders[dimension];
+}
+
+QWidget*
+KnobGuiValue::getDimensionLinesWidget() const
+{
+    return _imp->dimensionLines;
+}
+
+QVBoxLayout*
+KnobGuiValue::getBelowRowColumnLayout() const
+{
+    return _imp->belowRowColumn ? qobject_cast<QVBoxLayout*>(_imp->belowRowColumn->layout()) : 0;
+}
+
+void
+KnobGuiValue::setAutoFoldSuppressed(bool suppressed)
+{
+    _imp->autoFoldSuppressed = suppressed;
+}
+
+void
+KnobGuiValue::setDimensionsExpanded(bool expanded)
+{
+    if (!_imp->dimensionSwitchButton) {
+        return;
+    }
+    if (expanded) {
+        if (!_imp->dimensionSwitchButton->isChecked()) {
+            expandAllDimensions();
+        }
+    } else if (_imp->dimensionSwitchButton->isChecked() && areAllDimensionsEqual()) {
+        foldAllDimensions();
+    }
+}
+
+bool
+KnobGuiValue::areAllDimensionsEqual() const
+{
+    KnobIPtr knob = _imp->getKnob();
+    const int nDims = (int)_imp->spinBoxes.size();
+    if (!knob || (nDims < 2)) {
+        return true;
+    }
+
+    const double ref = _imp->getKnobValue(0);
+    const std::string refExpression = knob->getExpression(0);
+    for (int i = 1; i < nDims; ++i) {
+        if ((_imp->getKnobValue(i) != ref) || (knob->getExpression(i) != refExpression)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void
+KnobGuiValue::seekDimensionSlidersToSpinBoxes()
+{
+    for (std::size_t i = 1; i < _imp->dimensionSliders.size(); ++i) {
+        if (_imp->dimensionSliders[i]) {
+            _imp->dimensionSliders[i]->seekScalePosition(_imp->spinBoxes[i].first->value());
+        }
+    }
+}
+
+void
+KnobGuiValue::onDimensionSliderValueChanged(int dimension,
+                                            double d)
+{
+    if (appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly()) {
+        return;
+    }
+    dimensionSliderEditingEnd(dimension, d);
+}
+
+void
+KnobGuiValue::onDimensionSliderEditingFinished(int dimension,
+                                               bool hasMovedOnce)
+{
+    ScaleSliderQWidget* slider = getDimensionSlider(dimension);
+    if (!slider) {
+        return;
+    }
+    SettingsPtr settings = appPTR->getCurrentSettings();
+    if (settings->getRenderOnEditingFinishedOnly()) {
+        dimensionSliderEditingEnd(dimension, slider->getPosition());
+    } else if (settings->isAutoProxyEnabled() && hasMovedOnce) {
+        getGui()->renderAllViewers(true);
+    }
+}
+
+void
+KnobGuiValue::onDimensionSliderResetRequested(int dimension)
+{
+    std::list<KnobIPtr> knobsList;
+
+    knobsList.push_back(_imp->knob.lock());
+    pushUndoCommand(new RestoreDefaultsCommand(false, knobsList, dimension));
+}
+
+void
+KnobGuiValue::dimensionSliderEditingEnd(int dimension,
+                                        double d)
+{
+    ScaleSliderQWidget* slider = getDimensionSlider(dimension);
+    if (!slider || (dimension >= (int)_imp->spinBoxes.size())) {
+        return;
+    }
+
+    KnobDoubleBasePtr doubleKnob = _imp->getKnobAsDouble();
+    KnobIntBasePtr intKnob = _imp->getKnobAsInt();
+
+    if (doubleKnob) {
+        int digits = std::max(0, (int)-std::floor(std::log10(slider->increment())));
+        QString str;
+        str.setNum(d, 'f', digits);
+        d = str.toDouble();
+    }
+    _imp->spinBoxes[dimension].first->setValue(d);
+    d = valueAccordingToType(true, dimension, d);
+    if (doubleKnob) {
+        pushUndoCommand(new KnobUndoCommand<double>(shared_from_this(), doubleKnob->getValue(dimension), d, dimension, false));
+    } else {
+        assert(intKnob);
+        pushUndoCommand(new KnobUndoCommand<int>(shared_from_this(), intKnob->getValue(dimension), (int)d, dimension, false));
+    }
+
+    std::vector<double> values(_imp->spinBoxes.size());
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        values[i] = ((int)i == dimension) ? d : _imp->getKnobValue(i);
+    }
+    updateExtraGui(values);
+}
 
 void
 KnobGuiValue::onResetToDefaultRequested()
@@ -512,7 +834,8 @@ KnobGuiValue::onResetToDefaultRequested()
     std::list<KnobIPtr> knobsList;
 
     knobsList.push_back(knob);
-    pushUndoCommand( new RestoreDefaultsCommand(false, knobsList, -1) );
+    const bool rowSliderDrivesDimensionZero = _imp->dimensionLines && _imp->dimensionSwitchButton && _imp->dimensionSwitchButton->isChecked();
+    pushUndoCommand(new RestoreDefaultsCommand(false, knobsList, rowSliderDrivesDimensionZero ? 0 : -1));
 }
 
 void
@@ -628,14 +951,20 @@ KnobGuiValue::expandAllDimensions()
 
     _imp->dimensionSwitchButton->setChecked(true);
     _imp->dimensionSwitchButton->setDown(true);
-    _imp->slider->hide();
+    if (_imp->dimensionLines) {
+        _imp->slider->setVisible(shouldSliderBeVisible(_imp->slider->minimum(), _imp->slider->maximum()));
+    } else {
+        _imp->slider->hide();
+    }
     for (std::size_t i = 0; i < _imp->spinBoxes.size(); ++i) {
         if (i > 0) {
             _imp->spinBoxes[i].first->show();
         }
-        if (_imp->spinBoxes[i].second) {
-            _imp->spinBoxes[i].second->show();
-        }
+        setDimensionLabelVisible(i, true);
+    }
+    if (_imp->dimensionLines) {
+        seekDimensionSlidersToSpinBoxes();
+        _imp->dimensionLines->show();
     }
     onDimensionsExpanded();
 }
@@ -654,11 +983,38 @@ KnobGuiValue::foldAllDimensions()
         if (i > 0) {
             _imp->spinBoxes[i].first->hide();
         }
-        if (_imp->spinBoxes[i].second) {
-            _imp->spinBoxes[i].second->hide();
-        }
+        setDimensionLabelVisible(i, false);
+    }
+    if (_imp->dimensionLines) {
+        _imp->dimensionLines->hide();
     }
     onDimensionsFolded();
+}
+
+void
+KnobGuiValue::setDimensionLabelVisible(std::size_t index,
+                                       bool visible)
+{
+    if (index >= _imp->spinBoxes.size()) {
+        return;
+    }
+    ClickableLabel* label = _imp->spinBoxes[index].second;
+    if (!label) {
+        return;
+    }
+    if ((index == 0) && wantsFixedDimensionLabelSlot()) {
+        // The slot has a fixed width, so blanking its text rather than hiding it keeps
+        // spinbox 0 and the slider at the same x whether the knob is folded or not.
+        if (visible) {
+            KnobIPtr knob = _imp->getKnob();
+            label->setText(QString::fromUtf8(knob->getDimensionName((int)index).c_str()));
+        } else {
+            label->setText(QString());
+        }
+        label->show();
+    } else {
+        label->setVisible(visible);
+    }
 }
 
 void
@@ -682,7 +1038,11 @@ KnobGuiValue::onDisplayMinMaxChanged(const double mini,
                                      const double maxi,
                                      int index)
 {
-    if (_imp->slider) {
+    ScaleSliderQWidget* targetSlider = _imp->slider;
+    if ((index > 0) && (index < (int)_imp->dimensionSliders.size()) && _imp->dimensionSliders[index]) {
+        targetSlider = _imp->dimensionSliders[index];
+    }
+    if (targetSlider) {
         double sliderMin = valueAccordingToType(false, index, mini);
         double sliderMax = valueAccordingToType(false, index, maxi);
         if ( (sliderMax - sliderMin) >= SLIDER_MAX_RANGE ) {
@@ -723,13 +1083,15 @@ KnobGuiValue::onDisplayMinMaxChanged(const double mini,
             }
         }
 
-        if ( shouldSliderBeVisible(sliderMin, sliderMax) ) {
-            _imp->slider->setVisible(true);
-        } else {
-            _imp->slider->setVisible(false);
+        if (targetSlider == _imp->slider) {
+            if (shouldSliderBeVisible(sliderMin, sliderMax)) {
+                _imp->slider->setVisible(true);
+            } else {
+                _imp->slider->setVisible(false);
+            }
         }
         if (sliderMax > sliderMin) {
-            _imp->slider->setMinimumAndMaximum(sliderMin, sliderMax);
+            targetSlider->setMinimumAndMaximum(sliderMin, sliderMax);
         }
     }
 } // KnobGuiValue::onDisplayMinMaxChanged
@@ -804,10 +1166,9 @@ KnobGuiValue::updateGUI(const int dimension)
     if ( !isAutoFoldDimensionsEnabled() ||
          (_imp->dimensionSwitchButton && !_imp->dimensionSwitchButton->isChecked() && allValuesNotEqual) ){
         expandAllDimensions();
-    } else if (isAutoFoldDimensionsEnabled() && _imp->dimensionSwitchButton && _imp->dimensionSwitchButton->isChecked() && !allValuesNotEqual) {
+    } else if (isAutoFoldDimensionsEnabled() && !_imp->autoFoldSuppressed && _imp->dimensionSwitchButton && _imp->dimensionSwitchButton->isChecked() && !allValuesNotEqual) {
         foldAllDimensions();
     }
-
 
     if (dimension != -1) {
         switch (dimension) {
@@ -825,6 +1186,9 @@ KnobGuiValue::updateGUI(const int dimension)
             break;
         default:
             _imp->spinBoxes[dimension].first->setValue(values[dimension]);
+            if ((dimension < (int)_imp->dimensionSliders.size()) && _imp->dimensionSliders[dimension]) {
+                _imp->dimensionSliders[dimension]->seekScalePosition(values[dimension]);
+            }
             break;
         }
     } else {
@@ -838,6 +1202,11 @@ KnobGuiValue::updateGUI(const int dimension)
         } else {
             for (int i = 0; i < knobDim; ++i) {
                 _imp->spinBoxes[i].first->setValue(values[i]);
+            }
+        }
+        for (int i = 1; i < (int)_imp->dimensionSliders.size(); ++i) {
+            if (_imp->dimensionSliders[i]) {
+                _imp->dimensionSliders[i]->seekScalePosition(values[i]);
             }
         }
     }
@@ -900,6 +1269,12 @@ KnobGuiValue::onSliderEditingFinished(bool hasMovedOnce)
 void
 KnobGuiValue::sliderEditingEnd(double d)
 {
+    if (_imp->dimensionLines && _imp->dimensionSwitchButton && _imp->dimensionSwitchButton->isChecked()) {
+        dimensionSliderEditingEnd(0, d);
+
+        return;
+    }
+
     KnobDoubleBasePtr doubleKnob = _imp->getKnobAsDouble();
     KnobIntBasePtr intKnob = _imp->getKnobAsInt();
 
@@ -911,28 +1286,47 @@ KnobGuiValue::sliderEditingEnd(double d)
     }
     std::vector<double> newValuesVec;
     if (_imp->dimensionSwitchButton) {
+        // The folded slider stands for every dimension, but one driven by an expression or a
+        // link keeps its driver's value. Driven trailing dimensions are left out of the undo
+        // command altogether, so it never writes them; one between two free ones is rewritten
+        // with the value it already shows.
+        KnobIPtr knob = _imp->getKnob();
+        std::vector<bool> driven(_imp->spinBoxes.size(), false);
+        int written = 1;
+
         for (std::size_t i = 0; i < _imp->spinBoxes.size(); ++i) {
-            _imp->spinBoxes[i].first->setValue(d);
+            driven[i] = knob && (!knob->getExpression((int)i).empty() || knob->isSlave((int)i));
+            if (!driven[i]) {
+                _imp->spinBoxes[i].first->setValue(d);
+                written = (int)i + 1;
+            }
         }
         d = valueAccordingToType(true, 0, d);
 
         if (doubleKnob) {
             std::list<double> oldValues, newValues;
-            for (int i = 0; i < (int)_imp->spinBoxes.size(); ++i) {
-                oldValues.push_back( doubleKnob->getValue(i) );
-                newValues.push_back(d);
-                newValuesVec.push_back(d);
+            for (int i = 0; i < written; ++i) {
+                const double old = doubleKnob->getValue(i);
+
+                oldValues.push_back(old);
+                newValues.push_back(driven[i] ? old : d);
+                newValuesVec.push_back(driven[i] ? old : d);
             }
             pushUndoCommand( new KnobUndoCommand<double>(shared_from_this(), oldValues, newValues, false) );
         } else {
             assert(intKnob);
             std::list<int> oldValues, newValues;
-            for (int i = 0; i < (int)_imp->spinBoxes.size(); ++i) {
-                oldValues.push_back( intKnob->getValue(i) );
-                newValues.push_back( (int)d );
-                newValuesVec.push_back(d);
+            for (int i = 0; i < written; ++i) {
+                const int old = intKnob->getValue(i);
+
+                oldValues.push_back(old);
+                newValues.push_back(driven[i] ? old : (int)d);
+                newValuesVec.push_back(driven[i] ? old : d);
             }
             pushUndoCommand( new KnobUndoCommand<int>(shared_from_this(), oldValues, newValues, false) );
+        }
+        for (int i = written; i < (int)_imp->spinBoxes.size(); ++i) {
+            newValuesVec.push_back(doubleKnob ? doubleKnob->getValue(i) : (double)intKnob->getValue(i));
         }
     } else {
         _imp->spinBoxes[0].first->setValue(d);
@@ -1016,6 +1410,7 @@ KnobGuiValue::onSpinBoxValueChanged()
     if (_imp->slider) {
         _imp->slider->seekScalePosition(newValue[0]);
     }
+    seekDimensionSlidersToSpinBoxes();
 } // KnobGuiValue::onSpinBoxValueChanged
 
 void
@@ -1036,6 +1431,9 @@ KnobGuiValue::_hide()
     if (_imp->rectangleFormatButton) {
         _imp->rectangleFormatButton->hide();
     }
+    if (_imp->dimensionLines) {
+        _imp->dimensionLines->hide();
+    }
 }
 
 void
@@ -1049,9 +1447,11 @@ KnobGuiValue::_show()
             if (_imp->spinBoxes[i].second) {
                 _imp->spinBoxes[i].second->show();
             }
+        } else if ((i == 0) && wantsFixedDimensionLabelSlot()) {
+            setDimensionLabelVisible(0, false);
         }
     }
-    if ( _imp->slider && ( ( !_imp->dimensionSwitchButton && (_imp->spinBoxes.size() == 1) ) || ( _imp->dimensionSwitchButton && !_imp->dimensionSwitchButton->isChecked() ) ) ) {
+    if (_imp->slider && ((!_imp->dimensionSwitchButton && (_imp->spinBoxes.size() == 1)) || (_imp->dimensionSwitchButton && !_imp->dimensionSwitchButton->isChecked()) || _imp->dimensionLines)) {
         double sliderMax = _imp->slider->maximum();
         double sliderMin = _imp->slider->minimum();
         if ( (sliderMax > sliderMin) && ( (sliderMax - sliderMin) < SLIDER_MAX_RANGE ) && (sliderMax < std::numeric_limits<int>::max()) && (sliderMin > std::numeric_limits<int>::min()) ) {
@@ -1063,6 +1463,9 @@ KnobGuiValue::_show()
     }
     if (_imp->rectangleFormatButton) {
         _imp->rectangleFormatButton->show();
+    }
+    if (_imp->dimensionLines && _imp->dimensionSwitchButton && _imp->dimensionSwitchButton->isChecked()) {
+        _imp->dimensionLines->show();
     }
 }
 
@@ -1082,6 +1485,12 @@ KnobGuiValue::setEnabled()
     if (_imp->slider) {
         _imp->slider->setReadOnly( !enabled0 );
     }
+    for (std::size_t i = 1; i < _imp->dimensionSliders.size(); ++i) {
+        if (_imp->dimensionSliders[i]) {
+            bool enabled = knob->isEnabled(i) && !knob->isSlave(i) && knob->getExpression(i).empty();
+            _imp->dimensionSliders[i]->setReadOnly(!enabled);
+        }
+    }
 
     setEnabledExtraGui(enabled0);
 }
@@ -1094,6 +1503,9 @@ KnobGuiValue::setReadOnly(bool readOnly,
     _imp->spinBoxes[dimension].first->setReadOnly_NoFocusRect(readOnly);
     if ( _imp->slider && (dimension == 0) ) {
         _imp->slider->setReadOnly(readOnly);
+    }
+    if ((dimension > 0) && (dimension < (int)_imp->dimensionSliders.size()) && _imp->dimensionSliders[dimension]) {
+        _imp->dimensionSliders[dimension]->setReadOnly(readOnly);
     }
 }
 
@@ -1120,8 +1532,13 @@ KnobGuiValue::reflectExpressionState(int dimension,
     if (hasExpr) {
         _imp->spinBoxes[dimension].first->setAnimation(3);
         //_spinBoxes[dimension].first->setReadOnly_NoFocusRect(true);
-        if (_imp->slider) {
+        // With per-dimension lines the row's slider only ever drives dimension 0 once another
+        // dimension differs, so an expression elsewhere leaves it editable.
+        if (_imp->slider && ((dimension == 0) || !_imp->dimensionLines)) {
             _imp->slider->setReadOnly(true);
+        }
+        if ((dimension > 0) && (dimension < (int)_imp->dimensionSliders.size()) && _imp->dimensionSliders[dimension]) {
+            _imp->dimensionSliders[dimension]->setReadOnly(true);
         }
     } else {
         AnimationLevelEnum lvl = knob->getAnimationLevel(dimension);
@@ -1131,6 +1548,9 @@ KnobGuiValue::reflectExpressionState(int dimension,
         if (_imp->slider) {
             bool isEnabled0 = knob->isEnabled(0);
             _imp->slider->setReadOnly(!isEnabled0);
+        }
+        if ((dimension > 0) && (dimension < (int)_imp->dimensionSliders.size()) && _imp->dimensionSliders[dimension]) {
+            _imp->dimensionSliders[dimension]->setReadOnly(!isEnabled || knob->isSlave(dimension));
         }
     }
 }
@@ -1145,6 +1565,11 @@ KnobGuiValue::updateToolTip()
         }
         if (_imp->slider) {
             _imp->slider->setToolTip(tt);
+        }
+        for (std::size_t i = 1; i < _imp->dimensionSliders.size(); ++i) {
+            if (_imp->dimensionSliders[i]) {
+                _imp->dimensionSliders[i]->setToolTip(tt);
+            }
         }
     }
 }
@@ -1162,6 +1587,11 @@ KnobGuiValue::reflectModificationsState()
     }
     if (_imp->slider) {
         _imp->slider->setAltered(!hasModif);
+    }
+    for (std::size_t i = 1; i < _imp->dimensionSliders.size(); ++i) {
+        if (_imp->dimensionSliders[i]) {
+            _imp->dimensionSliders[i]->setAltered(!hasModif);
+        }
     }
 }
 

@@ -782,6 +782,15 @@ AppManager::loadInternal(const CLArgs& cl)
     // Call restore after initializing knobs
     _imp->_settings->restoreSettings( cl.isLoadedUsingDefaultSettings() );
     onRenderSchedulerModeSettingChanged(_imp->_settings->getRenderSchedulerMode());
+    {
+        GpuContextOptions gpuOptions;
+        gpuOptions.mode = GpuContext::resolveMode(_imp->_settings->getGpuComputeMode(), std::getenv("NATRON_GPU"));
+        gpuOptions.device = _imp->_settings->getGpuDevice();
+        gpuOptions.memoryBudgetMB = _imp->_settings->getGpuMemoryBudgetMB();
+        _imp->gpuContext.reset(new GpuContext(gpuOptions));
+    }
+    // The scheduler enables GPU placement when it is created, which must happen before the first frame is placed.
+    getRenderScheduler();
     if (cl.isLoadedUsingDefaultSettings()) {
         _imp->_settings->setSaveSettings(false);
     }
@@ -2999,6 +3008,20 @@ AppManager::setRenderSchedulerMode(RenderSchedulerModeEnum mode)
     _imp->renderSchedulerMode = (int)mode;
 }
 
+GpuContext*
+AppManager::getGpuContext() const
+{
+    return _imp->gpuContext.get();
+}
+
+std::unique_ptr<GpuContext>
+AppManager::swapGpuContextForTests(std::unique_ptr<GpuContext> context)
+{
+    _imp->gpuContext.swap(context);
+
+    return context;
+}
+
 void
 AppManager::onRenderSchedulerModeSettingChanged(RenderSchedulerModeEnum mode)
 {
@@ -3300,20 +3323,6 @@ bool
 AppManager::wasProjectCreatedDuringRC2Or3() const
 {
     return _imp->lastProjectLoadedCreatedDuringRC2Or3;
-}
-
-void
-AppManager::toggleAutoHideGraphInputs()
-{
-    AppInstanceVec copy;
-    {
-        QMutexLocker k(&_imp->_appInstancesMutex);
-        copy = _imp->_appInstances;
-    }
-
-    for (AppInstanceVec::iterator it = copy.begin(); it != copy.end(); ++it) {
-        (*it)->toggleAutoHideGraphInputs();
-    }
 }
 
 void

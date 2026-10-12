@@ -277,6 +277,10 @@ makePopulatedProjectGui()
         blur->overlayColorR = 1.;
         blur->overlayColorG = 0.;
         blur->overlayColorB = 0.5;
+        blur->hasUserColor = true;
+        blur->userColorR = 0.25f;
+        blur->userColorG = 0.5f;
+        blur->userColorB = 0.75f;
         group->children.push_back(blur);
 
         Serialization::NodeGuiSerializationPtr nestedGroup = makeNodeGui("Group1.Group2", 60., 80., 0.4f, 0.4f, 0.4f);
@@ -397,6 +401,12 @@ expectSameNodeGui(const Serialization::NodeGuiSerialization& expected,
         EXPECT_EQ(expected.overlayColorR, actual.overlayColorR);
         EXPECT_EQ(expected.overlayColorG, actual.overlayColorG);
         EXPECT_EQ(expected.overlayColorB, actual.overlayColorB);
+    }
+    EXPECT_EQ(expected.hasUserColor, actual.hasUserColor);
+    if (expected.hasUserColor && actual.hasUserColor) {
+        EXPECT_EQ(expected.userColorR, actual.userColorR);
+        EXPECT_EQ(expected.userColorG, actual.userColorG);
+        EXPECT_EQ(expected.userColorB, actual.userColorB);
     }
 
     ASSERT_EQ( expected.children.size(), actual.children.size() );

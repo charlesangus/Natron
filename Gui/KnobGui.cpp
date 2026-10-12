@@ -307,6 +307,12 @@ KnobGui::isLabelBold() const
     return false;
 }
 
+bool
+KnobGui::wantsTopAlignedLabel() const
+{
+    return false;
+}
+
 std::string
 KnobGui::getDescriptionLabel() const
 {

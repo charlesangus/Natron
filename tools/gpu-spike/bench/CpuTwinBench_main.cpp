@@ -26,10 +26,10 @@
 
 #include "slang-cpp-prelude.h"
 
-#include "../ref/BlurRef.h"
-#include "../tests/BlurFixture.h"
-#include "../tests/GradeFixture.h"
+#include "BlurFixture.h"
 #include "BlurKernels.h"
+#include "GradeFixture.h"
+#include "ref/BlurRef.h"
 
 extern "C" void grade_main(ComputeVaryingInput*, void* entryPointParams, void* globalParams);
 extern "C" void blurPass(ComputeVaryingInput*, void* entryPointParams, void* globalParams);
@@ -189,6 +189,7 @@ runGradeTwin(const Frame& in, std::vector<float>& out)
     p.nComps = kChannels;
     p.channelMask = 7;
     p.flags = gradefix::kClampBlack;
+    p.srcStride = p.dstStride = in.w * kChannels;
     GradeGlobals g { { const_cast<float*>(in.rgba.data()), in.rgba.size() }, { out.data(), out.size() }, &p };
     const uint32_t gx = (in.w + kGradeTile - 1) / kGradeTile;
     const uint32_t gy = (in.h + kGradeTile - 1) / kGradeTile;

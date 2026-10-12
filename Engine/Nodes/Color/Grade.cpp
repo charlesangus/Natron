@@ -37,14 +37,11 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/RenderScale.h"
 
-NATRON_NAMESPACE_ENTER
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 
-namespace {
-struct GradeChannel {
-    double a;
-    double b;
-    double gamma;
-};
+NATRON_NAMESPACE_ENTER
 
 struct GradeValues {
     double blackPoint[4];
@@ -55,6 +52,28 @@ struct GradeValues {
     double offset[4];
     double gamma[4];
 };
+
+namespace {
+struct GradeChannel {
+    double a;
+    double b;
+    double gamma;
+};
+
+// The per-channel affine terms of the grade formula; the CPU kernel and the GPU parameters both
+// take them from here so the two paths cannot drift.
+void
+gradeChannels(const GradeValues& values,
+              GradeChannel out[4])
+{
+    for (int i = 0; i < 4; ++i) {
+        const double d = values.whitePoint[i] - values.blackPoint[i];
+        const double A = (d != 0) ? values.multiply[i] * (values.white[i] - values.black[i]) / d : 0;
+        out[i].a = A;
+        out[i].b = values.offset[i] + values.black[i] - A * values.blackPoint[i];
+        out[i].gamma = values.gamma[i];
+    }
+}
 
 class GradeKernel
     : public PixelKernel {
@@ -67,13 +86,7 @@ public:
         , _clampBlack(clampBlack)
         , _clampWhite(clampWhite)
     {
-        for (int i = 0; i < 4; ++i) {
-            const double d = values.whitePoint[i] - values.blackPoint[i];
-            const double A = (d != 0) ? values.multiply[i] * (values.white[i] - values.black[i]) / d : 0;
-            _channels[i].a = A;
-            _channels[i].b = values.offset[i] + values.black[i] - A * values.blackPoint[i];
-            _channels[i].gamma = values.gamma[i];
-        }
+        gradeChannels(values, _channels);
     }
 
     virtual void processRow(const RowIO& io) const OVERRIDE FINAL
@@ -171,7 +184,8 @@ addGradeColorKnob(KnobHolder* holder,
                   const std::string& hint,
                   double defaultValue,
                   double displayMin,
-                  double displayMax)
+                  double displayMax,
+                  ColorKnobRoleEnum role)
 {
     KnobColorPtr knob = AppManager::createKnob<KnobColor>(holder, label, 4);
 
@@ -184,6 +198,7 @@ addGradeColorKnob(KnobHolder* holder,
         knob->setDisplayMinimum(displayMin, i);
         knob->setDisplayMaximum(displayMax, i);
     }
+    knob->setColorRole(role);
     page->addKnob(knob);
 
     return knob;
@@ -213,6 +228,49 @@ readBool(const KnobBoolWPtr& weak,
 
     return knob ? knob->getValueAtTime(time, 0, view) : defaultValue;
 }
+
+#ifdef NATRON_HAVE_GPU
+// Mirrors GradeParams in grade.slang, which has no padding between members.
+struct GradeGpuParams {
+    float a[4];
+    float b[4];
+    float gamma[4];
+    float invGamma[4];
+    uint32_t width;
+    uint32_t height;
+    uint32_t nComps;
+    uint32_t channelMask;
+    uint32_t flags;
+    uint32_t srcOffset;
+    uint32_t srcStride;
+    uint32_t dstOffset;
+    uint32_t dstStride;
+};
+
+static_assert(sizeof(GradeGpuParams) == 100, "must match GradeParams in grade.slang");
+
+constexpr uint32_t kGradeGpuReverse = 1;
+constexpr uint32_t kGradeGpuClampBlack = 2;
+constexpr uint32_t kGradeGpuClampWhite = 4;
+
+// Float offset of the first pixel of `rect` inside view, or false when the view cannot hold it.
+bool
+windowOffset(const GpuImageView& view,
+             const RectI& rect,
+             uint32_t& offset)
+{
+    if (!view.buffer || (view.byteOffset % sizeof(float) != 0) || (view.rowStrideFloats <= 0) || !view.bounds.contains(rect)) {
+        return false;
+    }
+    const uint64_t floats = view.byteOffset / sizeof(float) + (uint64_t)(rect.y1 - view.bounds.y1) * (uint64_t)view.rowStrideFloats + (uint64_t)(rect.x1 - view.bounds.x1) * (uint64_t)view.nComps;
+    if (floats > UINT32_MAX) {
+        return false;
+    }
+    offset = (uint32_t)floats;
+
+    return true;
+}
+#endif
 } // anonymous namespace
 
 Grade::Grade(NodePtr node)
@@ -261,13 +319,13 @@ Grade::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
 
-    _blackPoint = addGradeColorKnob(this, page, kGradeParamBlackPoint, tr("Black Point").toStdString(), tr("Set the color of the darkest pixels in the image.").toStdString(), 0., -1., 1.);
-    _whitePoint = addGradeColorKnob(this, page, kGradeParamWhitePoint, tr("White Point").toStdString(), tr("Set the color of the brightest pixels in the image.").toStdString(), 1., 0., 4.);
-    _black = addGradeColorKnob(this, page, kGradeParamBlack, tr("Lift").toStdString(), tr("Colors corresponding to the blackpoint are set to this value.").toStdString(), 0., -1., 1.);
-    _white = addGradeColorKnob(this, page, kGradeParamWhite, tr("Gain").toStdString(), tr("Colors corresponding to the whitepoint are set to this value.").toStdString(), 1., 0., 4.);
-    _multiply = addGradeColorKnob(this, page, kGradeParamMultiply, tr("Multiply").toStdString(), tr("Multiplies the result by this value.").toStdString(), 1., 0., 4.);
-    _offset = addGradeColorKnob(this, page, kGradeParamOffset, tr("Offset").toStdString(), tr("Adds this value to the result (this applies to black and white).").toStdString(), 0., -1., 1.);
-    _gamma = addGradeColorKnob(this, page, kGradeParamGamma, tr("Gamma").toStdString(), tr("Final gamma correction. Negative values are not affected by gamma.").toStdString(), 1., 0.2, 5.);
+    _blackPoint = addGradeColorKnob(this, page, kGradeParamBlackPoint, tr("Black Point").toStdString(), tr("Set the color of the darkest pixels in the image.").toStdString(), 0., -1., 1., eColorKnobRoleOffset);
+    _whitePoint = addGradeColorKnob(this, page, kGradeParamWhitePoint, tr("White Point").toStdString(), tr("Set the color of the brightest pixels in the image.").toStdString(), 1., 0., 4., eColorKnobRoleGain);
+    _black = addGradeColorKnob(this, page, kGradeParamBlack, tr("Lift").toStdString(), tr("Colors corresponding to the blackpoint are set to this value.").toStdString(), 0., -1., 1., eColorKnobRoleOffset);
+    _white = addGradeColorKnob(this, page, kGradeParamWhite, tr("Gain").toStdString(), tr("Colors corresponding to the whitepoint are set to this value.").toStdString(), 1., 0., 4., eColorKnobRoleGain);
+    _multiply = addGradeColorKnob(this, page, kGradeParamMultiply, tr("Multiply").toStdString(), tr("Multiplies the result by this value.").toStdString(), 1., 0., 4., eColorKnobRoleGain);
+    _offset = addGradeColorKnob(this, page, kGradeParamOffset, tr("Offset").toStdString(), tr("Adds this value to the result (this applies to black and white).").toStdString(), 0., -1., 1., eColorKnobRoleOffset);
+    _gamma = addGradeColorKnob(this, page, kGradeParamGamma, tr("Gamma").toStdString(), tr("Final gamma correction. Negative values are not affected by gamma.").toStdString(), 1., 0.2, 5., eColorKnobRolePower);
 
     KnobButtonPtr normalize = createKnob<KnobButton>(tr("Normalize"));
     normalize->setName(kGradeParamNormalize);
@@ -302,23 +360,99 @@ Grade::initializeKnobs()
     addMaskMixKnobs(page);
 } // Grade::initializeKnobs
 
-PixelKernelPtr
-Grade::makeKernel(const KernelContext& context)
+GradeValues
+Grade::readValues(double time,
+                  ViewIdx view) const
 {
     GradeValues values;
 
-    readColor(_blackPoint, context.time, context.view, 0., values.blackPoint);
-    readColor(_whitePoint, context.time, context.view, 1., values.whitePoint);
-    readColor(_black, context.time, context.view, 0., values.black);
-    readColor(_white, context.time, context.view, 1., values.white);
-    readColor(_multiply, context.time, context.view, 1., values.multiply);
-    readColor(_offset, context.time, context.view, 0., values.offset);
-    readColor(_gamma, context.time, context.view, 1., values.gamma);
+    readColor(_blackPoint, time, view, 0., values.blackPoint);
+    readColor(_whitePoint, time, view, 1., values.whitePoint);
+    readColor(_black, time, view, 0., values.black);
+    readColor(_white, time, view, 1., values.white);
+    readColor(_multiply, time, view, 1., values.multiply);
+    readColor(_offset, time, view, 0., values.offset);
+    readColor(_gamma, time, view, 1., values.gamma);
 
-    return std::make_shared<GradeKernel>(values,
+    return values;
+}
+
+PixelKernelPtr
+Grade::makeKernel(const KernelContext& context)
+{
+    return std::make_shared<GradeKernel>(readValues(context.time, context.view),
                                          readBool(_reverse, context.time, context.view, false),
                                          readBool(_clampBlack, context.time, context.view, true),
                                          readBool(_clampWhite, context.time, context.view, false));
+}
+
+bool
+Grade::canRenderOnGpu(const GpuQuery& query) const
+{
+#ifdef NATRON_HAVE_GPU
+    return query.bitDepth == eImageBitDepthFloat && (query.nComps == 1 || query.nComps == 3 || query.nComps == 4) && !query.hasMask && query.mix >= 1. && query.unPremultChannel == -1;
+#else
+    Q_UNUSED(query);
+
+    return false;
+#endif
+}
+
+StatusEnum
+Grade::renderGpu(const GpuRenderArgs& args)
+{
+#ifdef NATRON_HAVE_GPU
+    if (!canRenderOnGpu(args.query) || args.inputs.empty()) {
+        return eStatusFailed;
+    }
+    const GpuImageView& src = args.inputs[0];
+    const GpuImageView& dst = args.output;
+    const int nComps = args.query.nComps;
+    const RectI& rect = args.outputRect;
+    if ((src.nComps != nComps) || (dst.nComps != nComps) || rect.isNull()) {
+        return eStatusFailed;
+    }
+    GradeGpuParams p = {};
+    if (!windowOffset(src, rect, p.srcOffset) || !windowOffset(dst, rect, p.dstOffset)) {
+        return eStatusFailed;
+    }
+
+    const double time = args.query.time;
+    const ViewIdx view = args.query.view;
+    GradeChannel channels[4];
+    gradeChannels(readValues(time, view), channels);
+    for (int i = 0; i < 4; ++i) {
+        p.a[i] = (float)channels[i].a;
+        p.b[i] = (float)channels[i].b;
+        p.gamma[i] = (float)channels[i].gamma;
+        p.invGamma[i] = (float)(1. / channels[i].gamma);
+        if (args.query.processChannels[i]) {
+            p.channelMask |= 1u << i;
+        }
+    }
+    p.width = (uint32_t)rect.width();
+    p.height = (uint32_t)rect.height();
+    p.nComps = (uint32_t)nComps;
+    p.srcStride = (uint32_t)src.rowStrideFloats;
+    p.dstStride = (uint32_t)dst.rowStrideFloats;
+    if (readBool(_reverse, time, view, false)) {
+        p.flags |= kGradeGpuReverse;
+    }
+    if (readBool(_clampBlack, time, view, true)) {
+        p.flags |= kGradeGpuClampBlack;
+    }
+    if (readBool(_clampWhite, time, view, false)) {
+        p.flags |= kGradeGpuClampWhite;
+    }
+
+    const gpu::GpuStatus status = args.context.dispatch(gpu::GpuKernelId::grade, { src.buffer, dst.buffer }, p, { p.width, p.height, 1 });
+
+    return status ? eStatusOK : eStatusFailed;
+#else
+    Q_UNUSED(args);
+
+    return eStatusFailed;
+#endif
 }
 
 bool
@@ -331,14 +465,7 @@ Grade::isIdentityOp(double time,
         return false;
     }
 
-    GradeValues values;
-    readColor(_blackPoint, time, view, 0., values.blackPoint);
-    readColor(_whitePoint, time, view, 1., values.whitePoint);
-    readColor(_black, time, view, 0., values.black);
-    readColor(_white, time, view, 1., values.white);
-    readColor(_multiply, time, view, 1., values.multiply);
-    readColor(_offset, time, view, 0., values.offset);
-    readColor(_gamma, time, view, 1., values.gamma);
+    const GradeValues values = readValues(time, view);
     for (int i = 0; i < 4; ++i) {
         if ((values.blackPoint[i] != 0.) || (values.whitePoint[i] != 1.) || (values.black[i] != 0.) || (values.white[i] != 1.) || (values.multiply[i] != 1.) || (values.offset[i] != 0.) || (values.gamma[i] != 1.)) {
             return false;

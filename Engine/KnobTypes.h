@@ -43,11 +43,12 @@ GCC_ONLY_DIAG_ON(class-memaccess)
 #include <QMutex>
 #include <QString>
 
-#include "Global/GlobalDefines.h"
+#include "Engine/ChoiceOption.h"
+#include "Engine/ColorWheelMath.h"
+#include "Engine/EngineFwd.h"
 #include "Engine/Knob.h"
 #include "Engine/ViewIdx.h"
-#include "Engine/EngineFwd.h"
-#include "Engine/ChoiceOption.h"
+#include "Global/GlobalDefines.h"
 
 #define kFontSizeTag "<font size=\""
 #define kFontColorTag "color=\""
@@ -423,6 +424,16 @@ public:
     // Returns true if the knobChanged handler was caught and an action was done
     bool trigger();
 
+    // Like trigger(), but the host skips its own action for the button (a render button's
+    // render), for a caller that performs that action itself; the plug-in's and the user's
+    // Python knobChanged callbacks still run.
+    bool triggerCallbacksOnly();
+
+    bool isTriggeringCallbacksOnly() const
+    {
+        return _triggeringCallbacksOnly;
+    }
+
     virtual bool supportsInViewerContext() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return true;
@@ -457,6 +468,7 @@ private:
 private:
     static const std::string _typeNameStr;
     bool _renderButton;
+    bool _triggeringCallbacksOnly;
     bool _checkable;
     bool _isToolButtonAction;
 };
@@ -715,6 +727,23 @@ public:
         return true;
     }
 
+    /**
+     * @brief The native Grade/ColorCorrect declarations call this with an explicit role.
+     * GUI-only metadata: never serialised, never hashed, and not reachable from Python.
+     **/
+    void setColorRole(ColorKnobRoleEnum role)
+    {
+        _colorRole = role;
+    }
+
+    /**
+     * @brief Resolves eColorKnobRoleAuto (the default for every knob that setColorRole was
+     * never called on, i.e. every OFX, Python and keyer colour knob) through inferColorRole,
+     * read fresh each time rather than cached, since nothing currently changes a knob's
+     * defaults, display minimum or script name after construction.
+     **/
+    ColorKnobRoleEnum getColorRole() const;
+
 public Q_SLOTS:
 
     void onDimensionSwitchToggled(bool b);
@@ -738,6 +767,7 @@ private:
 private:
     bool _allDimensionsEnabled;
     bool _simplifiedMode;
+    ColorKnobRoleEnum _colorRole;
     static const std::string _typeNameStr;
 };
 

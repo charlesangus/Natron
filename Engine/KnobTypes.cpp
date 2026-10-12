@@ -443,11 +443,12 @@ KnobDouble::computeValuesHaveModifications(int dimension,
 /******************************KnobButton**************************************/
 
 KnobButton::KnobButton(KnobHolder* holder,
-                       const std::string &label,
+                       const std::string& label,
                        int dimension,
                        bool declaredByPlugin)
     : KnobBoolBase(holder, label, dimension, declaredByPlugin)
     , _renderButton(false)
+    , _triggeringCallbacksOnly(false)
     , _checkable(false)
     , _isToolButtonAction(false)
 {
@@ -455,11 +456,12 @@ KnobButton::KnobButton(KnobHolder* holder,
 }
 
 KnobButton::KnobButton(KnobHolder* holder,
-                       const QString &label,
+                       const QString& label,
                        int dimension,
                        bool declaredByPlugin)
     : KnobBoolBase(holder, label.toStdString(), dimension, declaredByPlugin)
     , _renderButton(false)
+    , _triggeringCallbacksOnly(false)
     , _checkable(false)
     , _isToolButtonAction(false)
 {
@@ -489,6 +491,22 @@ bool
 KnobButton::trigger()
 {
     return evaluateValueChange(0, getCurrentTime(), ViewIdx(0),  eValueChangedReasonUserEdited);
+}
+
+bool
+KnobButton::triggerCallbacksOnly()
+{
+    _triggeringCallbacksOnly = true;
+    bool ret = false;
+    try {
+        ret = trigger();
+    } catch (...) {
+        _triggeringCallbacksOnly = false;
+        throw;
+    }
+    _triggeringCallbacksOnly = false;
+
+    return ret;
 }
 
 /******************************KnobChoice**************************************/
@@ -1269,12 +1287,13 @@ KnobSeparator::typeName() const
  **/
 
 KnobColor::KnobColor(KnobHolder* holder,
-                     const std::string &label,
+                     const std::string& label,
                      int dimension,
                      bool declaredByPlugin)
     : KnobDoubleBase(holder, label, dimension, declaredByPlugin)
     , _allDimensionsEnabled(true)
     , _simplifiedMode(false)
+    , _colorRole(eColorKnobRoleAuto)
 {
     //dimension greater than 4 is not supported. Dimension 2 doesn't make sense.
     assert(dimension == 1 || dimension == 3 ||  dimension == 4);
@@ -1284,12 +1303,13 @@ KnobColor::KnobColor(KnobHolder* holder,
 }
 
 KnobColor::KnobColor(KnobHolder* holder,
-                     const QString &label,
+                     const QString& label,
                      int dimension,
                      bool declaredByPlugin)
     : KnobDoubleBase(holder, label.toStdString(), dimension, declaredByPlugin)
     , _allDimensionsEnabled(true)
     , _simplifiedMode(false)
+    , _colorRole(eColorKnobRoleAuto)
 {
     //dimension greater than 4 is not supported. Dimension 2 doesn't make sense.
     assert(dimension == 1 || dimension == 3 ||  dimension == 4);
@@ -1340,6 +1360,20 @@ bool
 KnobColor::isSimplified() const
 {
     return _simplifiedMode;
+}
+
+ColorKnobRoleEnum
+KnobColor::getColorRole() const
+{
+    if (_colorRole != eColorKnobRoleAuto) {
+        return _colorRole;
+    }
+    int dims = getDimension();
+    std::vector<double> defaults(dims);
+    for (int i = 0; i < dims; ++i) {
+        defaults[i] = getDefaultValue(i);
+    }
+    return inferColorRole(defaults, getDisplayMinimum(0), getName());
 }
 
 /******************************KnobString**************************************/

@@ -314,52 +314,24 @@ restoreNodeGuiFromSerialization(Gui* gui,
         nodeGui->togglePreview();
     }
 
-    EffectInstancePtr effect = nodeGui->getNode()->getEffectInstance();
+    BackdropGui* isBackdrop = dynamic_cast<BackdropGui*>( nodeGui.get() );
+    if (!isBackdrop) {
+        nodeGui->restoreCategoryAndUserColor(serialization);
+    }
 
     if (serialization.colorWasFound) {
-        std::list<std::string> grouping;
-        nodeGui->getNode()->getPluginGrouping(&grouping);
-        std::string majorGroup = grouping.empty() ? "" : grouping.front();
-        BackdropGui* isBackdrop = dynamic_cast<BackdropGui*>( nodeGui.get() );
-        float defaultR, defaultG, defaultB;
+        if (isBackdrop) {
+            QColor defaultColor;
+            NodeGui::getCategoryColor(nodeGui->getNode(), &defaultColor);
+            float defaultR, defaultG, defaultB;
+            defaultColor.getRgbF(&defaultR, &defaultG, &defaultB);
 
-        if ( effect->isReader() ) {
-            settings->getReaderColor(&defaultR, &defaultG, &defaultB);
-        } else if ( effect->isWriter() ) {
-            settings->getWriterColor(&defaultR, &defaultG, &defaultB);
-        } else if ( effect->isGenerator() ) {
-            settings->getGeneratorColor(&defaultR, &defaultG, &defaultB);
-        } else if (majorGroup == PLUGIN_GROUP_COLOR) {
-            settings->getColorGroupColor(&defaultR, &defaultG, &defaultB);
-        } else if (majorGroup == PLUGIN_GROUP_FILTER) {
-            settings->getFilterGroupColor(&defaultR, &defaultG, &defaultB);
-        } else if (majorGroup == PLUGIN_GROUP_CHANNEL) {
-            settings->getChannelGroupColor(&defaultR, &defaultG, &defaultB);
-        } else if (majorGroup == PLUGIN_GROUP_KEYER) {
-            settings->getKeyerGroupColor(&defaultR, &defaultG, &defaultB);
-        } else if (majorGroup == PLUGIN_GROUP_MERGE) {
-            settings->getMergeGroupColor(&defaultR, &defaultG, &defaultB);
-        } else if (majorGroup == PLUGIN_GROUP_PAINT) {
-            settings->getDrawGroupColor(&defaultR, &defaultG, &defaultB);
-        } else if (majorGroup == PLUGIN_GROUP_TIME) {
-            settings->getTimeGroupColor(&defaultR, &defaultG, &defaultB);
-        } else if (majorGroup == PLUGIN_GROUP_TRANSFORM) {
-            settings->getTransformGroupColor(&defaultR, &defaultG, &defaultB);
-        } else if (majorGroup == PLUGIN_GROUP_MULTIVIEW) {
-            settings->getViewsGroupColor(&defaultR, &defaultG, &defaultB);
-        } else if (majorGroup == PLUGIN_GROUP_DEEP) {
-            settings->getDeepGroupColor(&defaultR, &defaultG, &defaultB);
-        } else if (isBackdrop) {
-            settings->getDefaultBackdropColor(&defaultR, &defaultG, &defaultB);
-        } else {
-            settings->getDefaultNodeColor(&defaultR, &defaultG, &defaultB);
-        }
-
-        // A colour within 0.05 of the default is left to follow the default.
-        if ( (std::abs(serialization.colorR - defaultR) > 0.05) || (std::abs(serialization.colorG - defaultG) > 0.05) || (std::abs(serialization.colorB - defaultB) > 0.05) ) {
-            QColor color;
-            color.setRgbF(serialization.colorR, serialization.colorG, serialization.colorB);
-            nodeGui->setCurrentColor(color);
+            // A colour within 0.05 of the default is left to follow the default.
+            if ( (std::abs(serialization.colorR - defaultR) > 0.05) || (std::abs(serialization.colorG - defaultG) > 0.05) || (std::abs(serialization.colorB - defaultB) > 0.05) ) {
+                QColor color;
+                color.setRgbF(serialization.colorR, serialization.colorG, serialization.colorB);
+                nodeGui->setCurrentColor(color);
+            }
         }
 
         if (serialization.hasOverlayColor) {
@@ -458,6 +430,13 @@ NodeGui::toSerialization(Serialization::NodeGuiSerialization* serialization) con
     serialization->colorR = color.redF();
     serialization->colorG = color.greenF();
     serialization->colorB = color.blueF();
+    QColor userColor;
+    if ( getUserColor(&userColor) ) {
+        serialization->hasUserColor = true;
+        serialization->userColorR = userColor.redF();
+        serialization->userColorG = userColor.greenF();
+        serialization->userColorB = userColor.blueF();
+    }
     serialization->selected = isSelected();
 
     serialization->hasOverlayColor = getOverlayColor(&serialization->overlayColorR, &serialization->overlayColorG, &serialization->overlayColorB);
@@ -489,7 +468,11 @@ NodeGui::toSerialization(Serialization::NodeGuiSerialization* serialization) con
 void
 NodeGui::fromSerialization(const Serialization::NodeGuiSerialization& serialization)
 {
-    setCurrentColor( QColor::fromRgbF(serialization.colorR, serialization.colorG, serialization.colorB) );
+    if ( colorIsBody() ) {
+        setCurrentColor( QColor::fromRgbF(serialization.colorR, serialization.colorG, serialization.colorB) );
+    } else {
+        restoreCategoryAndUserColor(serialization);
+    }
     if (serialization.hasOverlayColor) {
         setOverlayColor( QColor::fromRgbF(serialization.overlayColorR, serialization.overlayColorB, serialization.overlayColorG) );
     }
@@ -751,10 +734,16 @@ ProjectGui::fromSerialization(const Serialization::ProjectGuiSerialization& seri
         restoreNodeGuiFromSerialization(_gui, serialization.viewers, settings, leftBound, rightBound, *it);
     }
 
-    const NodesGuiList nodesGui = getVisibleNodes();
-    for (NodesGuiList::const_iterator it = nodesGui.begin(); it != nodesGui.end(); ++it) {
-        (*it)->refreshEdges();
-        (*it)->refreshKnobLinks();
+    // getVisibleNodes() only covers the root graph's active nodes; walk every node of every
+    // sub-graph too, so a Group's own pipes are repainted right after load as well.
+    NodesList allNodes;
+    _project.lock()->getNodes_recursive(allNodes, true);
+    for (NodesList::const_iterator it = allNodes.begin(); it != allNodes.end(); ++it) {
+        NodeGuiPtr nodeGui = std::dynamic_pointer_cast<NodeGui>( (*it)->getNodeGui() );
+        if (nodeGui) {
+            nodeGui->refreshEdges();
+            nodeGui->refreshKnobLinks();
+        }
     }
 
     for (std::list<Serialization::NodeBackdropSerialization>::const_iterator it = serialization.legacyBackdrops.begin(); it != serialization.legacyBackdrops.end(); ++it) {

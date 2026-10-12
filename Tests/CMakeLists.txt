@@ -28,6 +28,7 @@ set(Tests_SOURCES
     CLArgs_Test.cpp
     ColorViews_Test.cpp
     ColorViewsRender_Test.cpp
+    ColorWheelMath_Test.cpp
     Curve_Test.cpp
     DataKind_Test.cpp
     DataKindProjectLoad_Test.cpp
@@ -49,6 +50,9 @@ set(Tests_SOURCES
     FrameStoreHandoff_Test.cpp
     GeneratorLayer_Test.cpp
     GLScheduler_Test.cpp
+    GpuContext_Test.cpp
+    GpuPlacement_Test.cpp
+    GpuResidency_Test.cpp
     GraphScaling_Test.cpp
     GraphScalingExpressionDeps_Test.cpp
     GraphScalingNaming_Test.cpp
@@ -67,6 +71,7 @@ set(Tests_SOURCES
     MemoryInfo_Test.cpp
     Metadata_Test.cpp
     NativeParity.cpp
+    NodeCategory_Test.cpp
     OSGLContext_Test.cpp
     PersistentMessage_Test.cpp
     PluginIdentity_Test.cpp
@@ -148,8 +153,20 @@ target_include_directories(Tests
 set(GuiTests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
+    ColorAdjustPanel_Test.cpp
+    ColorKnobUndoMerge_Test.cpp
+    ColorPickerLabel_Test.cpp
+    ColorTrackballGlobalMode_Test.cpp
+    ColorTrackballHud_Test.cpp
+    ColorTrackballTarget_Test.cpp
+    ColorWheelWidget_Test.cpp
+    KnobGuiString_Test.cpp
     LayerChannelRow_Test.cpp
+    NodeGraphSplice_Test.cpp
+    NodeGuiUserColorSerialization_Test.cpp
     ProjectGuiXmlEquivalence_Test.cpp
+    RenderDialogRange_Test.cpp
+    ScaleSliderQWidget_Test.cpp
     ShuffleMatrix_Test.cpp
     ViewerDataSerialization_Test.cpp
     guimain.cpp
@@ -166,6 +183,7 @@ target_link_libraries(GuiTests
 target_compile_definitions(GuiTests
     PRIVATE
         NATRON_TESTS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+        NATRON_TESTS_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/output"
 )
 target_include_directories(GuiTests
     PRIVATE
@@ -193,6 +211,10 @@ include(GoogleTest)
 # Blowing the 5s budget is a FATAL_ERROR that fails ctest before a single test runs.
 gtest_discover_tests(Tests DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 120 PROPERTIES TIMEOUT 300)
 gtest_discover_tests(GuiTests DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 120 PROPERTIES TIMEOUT 300)
+
+if(NATRON_GPU)
+    add_subdirectory(Gpu)
+endif()
 
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)

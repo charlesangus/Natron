@@ -50,7 +50,9 @@
 #include "Engine/Settings.h"
 #include "Engine/ViewerInstance.h"
 
+#include "Gui/ActionShortcuts.h"
 #include "Gui/CurveEditor.h"
+#include "Gui/FloatingWidget.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h" // appPTR
 #include "Gui/GuiPrivate.h"
@@ -59,11 +61,11 @@
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
 #include "Gui/ProjectGui.h"
+#include "Gui/ScriptEditor.h"
 #include "Gui/SequenceFileDialog.h"
 #include "Gui/Splitter.h"
 #include "Gui/TabWidget.h"
 #include "Gui/ToolButton.h"
-#include "Gui/ScriptEditor.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
 
@@ -466,6 +468,10 @@ Gui::registerFloatingWindow(FloatingWidget* window)
     if ( found == _imp->_floatingWindows.end() ) {
         _imp->_floatingWindows.push_back(window);
     }
+    k.unlock();
+    if (window && _imp->actionColorTrackball) {
+        window->addAction(_imp->actionColorTrackball);
+    }
 }
 
 void
@@ -476,6 +482,10 @@ Gui::unregisterFloatingWindow(FloatingWidget* window)
 
     if ( found != _imp->_floatingWindows.end() ) {
         _imp->_floatingWindows.erase(found);
+    }
+    k.unlock();
+    if (window && _imp->actionColorTrackball) {
+        window->removeAction(_imp->actionColorTrackball);
     }
 }
 

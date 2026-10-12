@@ -86,12 +86,6 @@ NodeGraph::isNearbyNavigator(const QPoint& widgetPos,
     return false;
 }
 
-bool
-NodeGraph::areOptionalInputsAutoHidden() const
-{
-    return appPTR->getCurrentSettings()->areOptionalInputsAutoHidden();
-}
-
 void
 NodeGraph::deselect()
 {

@@ -52,6 +52,9 @@
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppManager.h"
 #include "Engine/GPUContextPool.h"
+#include "Engine/GpuCostModel.h"
+#include "Engine/GpuPlacement.h"
+#include "Engine/GpuRegionTask.h"
 #include "Engine/Image.h"
 #include "Engine/MemoryInfo.h"
 #include "Engine/Node.h"
@@ -65,6 +68,7 @@
 #include "Engine/RenderStats.h"
 #include "Engine/Settings.h"
 #include "Engine/TLSHolder.h"
+#include "Global/FloatingPointExceptions.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -129,13 +133,24 @@ struct RenderScheduler::Frame {
     Priority priority = Priority::Background;
     unsigned long long sequence = 0;
 
+    // graph.tasks holds the submitted tasks below this index and, from it, one task per region standing for the
+    // region in the ready heaps: its dependencies and consumerTasks are the edges between members and the tasks
+    // outside the region.
+    int regionTasksBegin = 0;
+
     // The fields below are guarded by the scheduler's mutex.
     int remainingTasks = 0;
     int runningTasks = 0;
     bool dead = false;
     bool finished = false;
+
+    // A region lost the device: the frame is rendered again on the CPU once its running tasks returned.
+    bool restartOnCpu = false;
     EffectInstance::RenderRoIRetCode retCode = EffectInstance::eRenderRoIRetCodeOk;
     std::map<ImageLayerDesc, ImagePtr> rootPlanes;
+
+    // Released only once the store holds no device image any more.
+    std::shared_ptr<void> gpuLease;
 };
 
 class RenderScheduler::NodeTask
@@ -149,6 +164,11 @@ public:
 
     virtual void run() OVERRIDE FINAL
     {
+#ifdef DEBUG
+        // A pool thread inherits the floating-point environment of whichever thread spawned it,
+        // so every task sets the one render threads use instead of depending on that.
+        boost_adaptbx::floating_point::exception_trapping trap(boost_adaptbx::floating_point::exception_trapping::division_by_zero | boost_adaptbx::floating_point::exception_trapping::invalid | boost_adaptbx::floating_point::exception_trapping::overflow);
+#endif
         _scheduler->runOneTask();
     }
 
@@ -365,7 +385,9 @@ formatTaskRecord(const FrameGraph::Task& task,
     line.append(pointOp ? "true" : "false");
     line.append(",\"glSupport\":");
     line.append(glSupport ? "true" : "false");
-    line.append(",\"ok\":");
+    std::snprintf(num, sizeof(num), ",\"device\":\"%s\",\"regionId\":%d,\"ok\":",
+                  (task.device == FrameGraph::Device::Gpu) ? "gpu" : "cpu", task.regionId);
+    line.append(num);
     line.append(ok ? "true" : "false");
     line.append("}\n");
 
@@ -435,13 +457,17 @@ RenderScheduler::RenderScheduler()
     , _sharedOutputsRunning()
     , _deferredReady()
     , _activeFrames()
+    , _gpuWaiting()
     , _framesByAbortInfo()
     , _nextFrameSequence(0)
     , _outstandingRunnables(0)
     , _runningTasks(0)
     , _reservedBytes(0)
     , _bytesBudget(std::numeric_limits<std::size_t>::max())
+    , _runningGpuTasks(0)
+    , _gpuMaxConcurrentTasks(2)
     , _peakBytesInFlight(0)
+    , _regionBody(&runGpuRegion)
     , _tasksRendering(0)
 {
     SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
@@ -451,10 +477,14 @@ RenderScheduler::RenderScheduler()
     if (settings) {
         _bytesBudget = (std::size_t)(settings->getRamMaximumPercent() * (double)getSystemTotalRAM_conditionnally() / 2.);
     }
+
+    // Placement forms regions only while a body that renders them on the GPU is installed.
+    setGpuPlacementAvailableFunc(&isGpuRegionBodyAvailable);
 }
 
 RenderScheduler::~RenderScheduler()
 {
+    setGpuPlacementAvailableFunc(nullptr);
 }
 
 FrameGraph
@@ -606,7 +636,12 @@ RenderScheduler::submit(const FrameRenderContextPtr& context,
     frame->graph = std::move(graph);
     frame->future = future;
     frame->priority = priority;
+    frame->regionTasksBegin = (int)frame->graph.tasks.size();
     frame->remainingTasks = (int)frame->graph.tasks.size();
+    if (!frame->graph.regions.empty()) {
+        appendRegionTasks(frame.get());
+        frame->gpuLease = holdGpuRegionRuntime();
+    }
 
     int toStart = 0;
     int runnablePriority = 0;
@@ -620,7 +655,8 @@ RenderScheduler::submit(const FrameRenderContextPtr& context,
         for (std::size_t i = 0; i < frame->graph.tasks.size(); ++i) {
             FrameGraph::Task& task = frame->graph.tasks[i];
             task.remainingDeps = (int)task.dependencies.size();
-            if (task.remainingDeps == 0) {
+            const bool member = (task.regionId >= 0) && ((int)i < frame->regionTasksBegin);
+            if ((task.remainingDeps == 0) && !member) {
                 pushReadyLocked(frame, (int)i);
             }
         }
@@ -629,6 +665,55 @@ RenderScheduler::submit(const FrameRenderContextPtr& context,
     startRunnables(toStart, runnablePriority);
 
     return future;
+}
+
+void
+RenderScheduler::appendRegionTasks(Frame* frame)
+{
+    FrameGraph& graph = frame->graph;
+    const int regionCount = (int)graph.regions.size();
+    int memberCount = 0;
+
+    graph.tasks.reserve(graph.tasks.size() + regionCount);
+    for (int r = 0; r < regionCount; ++r) {
+        const FrameGraph::Region& region = graph.regions[r];
+        FrameGraph::Task unit;
+        unit.device = FrameGraph::Device::Gpu;
+        unit.regionId = r;
+        if (!region.members.empty()) {
+            unit.dfsPostOrder = graph.tasks[region.members.front()].dfsPostOrder;
+        }
+        for (int m : region.members) {
+            const FrameGraph::Task& member = graph.tasks[m];
+            for (int d : member.dependencies) {
+                if (graph.tasks[d].regionId != r) {
+                    unit.dependencies.push_back(d);
+                }
+            }
+            for (int c : member.consumerTasks) {
+                if (graph.tasks[c].regionId != r) {
+                    unit.consumerTasks.push_back(c);
+                }
+            }
+            unit.dfsPostOrder = std::min(unit.dfsPostOrder, member.dfsPostOrder);
+        }
+        unit.consumers = (int)unit.consumerTasks.size();
+        for (const FrameGraph::Region::Output& output : region.outputs) {
+            if (output.isRoot || (output.externalConsumers > 0)) {
+                unit.estimatedBytes += graph.tasks[output.task].estimatedBytes;
+            }
+        }
+        unit.startsBranch = true;
+        for (int d : unit.dependencies) {
+            if (!graph.tasks[d].dependencies.empty()) {
+                unit.startsBranch = false;
+                break;
+            }
+        }
+        memberCount += (int)region.members.size();
+        graph.tasks.push_back(std::move(unit));
+    }
+    frame->remainingTasks += regionCount - memberCount;
 }
 
 void
@@ -720,7 +805,7 @@ RenderScheduler::getLoad(int* running,
     QMutexLocker k(&_mutex);
 
     *running = _runningTasks;
-    *ready = (int)(_freeReady.size() + _admittedReady.size() + _gatedReady.size() + _deferredReady.size());
+    *ready = (int)(_freeReady.size() + _admittedReady.size() + _gatedReady.size() + _deferredReady.size() + _gpuWaiting.size());
 }
 
 int
@@ -744,6 +829,25 @@ RenderScheduler::getBytesBudget() const
     QMutexLocker k(&_mutex);
 
     return _bytesBudget;
+}
+
+int
+RenderScheduler::getGpuMaxConcurrentTasks() const
+{
+    QMutexLocker k(&_mutex);
+
+    return _gpuMaxConcurrentTasks;
+}
+
+void
+RenderScheduler::setGpuMaxConcurrentTasks(int count)
+{
+    {
+        QMutexLocker k(&_mutex);
+        _gpuMaxConcurrentTasks = std::max(1, count);
+        releaseGpuWaitingLocked();
+    }
+    reevaluate();
 }
 
 void
@@ -778,6 +882,45 @@ RenderScheduler::getReservedBytesForTests() const
     QMutexLocker k(&_mutex);
 
     return _reservedBytes;
+}
+
+void
+RenderScheduler::reserveLocked(const FrameGraph::Task& task)
+{
+    _reservedBytes += task.estimatedBytes;
+}
+
+void
+RenderScheduler::unreserveLocked(const FrameGraph::Task& task)
+{
+    _reservedBytes -= task.estimatedBytes;
+}
+
+void
+RenderScheduler::releaseGpuWaitingLocked()
+{
+    std::vector<ReadyRef> waiting;
+
+    waiting.swap(_gpuWaiting);
+    for (ReadyRef& ref : waiting) {
+        pushReadyLocked(ref.frame, ref.task);
+    }
+}
+
+void
+RenderScheduler::setRegionBody(const RegionBody& body)
+{
+    QMutexLocker k(&_mutex);
+
+    _regionBody = body;
+}
+
+RenderScheduler::RegionBody
+RenderScheduler::getRegionBody() const
+{
+    QMutexLocker k(&_mutex);
+
+    return _regionBody;
 }
 
 bool
@@ -852,6 +995,15 @@ RenderScheduler::popLocked(FramePtr* frame,
         heap->pop_back();
 
         const FrameGraph::Task& popped = ref.frame->graph.tasks[ref.task];
+        if (isRegionTask(ref) && (_runningGpuTasks >= _gpuMaxConcurrentTasks)) {
+            // Its reservation is dropped, as for a deferred task: once released it goes through admission again if it
+            // starts a branch.
+            if (heap == &_admittedReady) {
+                unreserveLocked(popped);
+            }
+            _gpuWaiting.push_back(std::move(ref));
+            continue;
+        }
         if (!popped.sharesCachedOutput) {
             break;
         }
@@ -861,7 +1013,7 @@ RenderScheduler::popLocked(FramePtr* frame,
         }
         // Its reservation is dropped: once released it goes through admission again if it starts a branch.
         if (heap == &_admittedReady) {
-            _reservedBytes -= popped.estimatedBytes;
+            unreserveLocked(popped);
         }
         _deferredReady.emplace(key, std::move(ref));
     }
@@ -870,8 +1022,12 @@ RenderScheduler::popLocked(FramePtr* frame,
     *task = ref.task;
     ++ref.frame->runningTasks;
     ++_runningTasks;
+    const bool region = isRegionTask(ref);
+    if (region) {
+        ++_runningGpuTasks;
+    }
     if (heap == &_freeReady) {
-        _reservedBytes += ref.frame->graph.tasks[ref.task].estimatedBytes;
+        reserveLocked(ref.frame->graph.tasks[ref.task]);
     }
 
     const int poolMax = std::max(1, QThreadPool::globalInstance()->maxThreadCount());
@@ -884,8 +1040,17 @@ RenderScheduler::popLocked(FramePtr* frame,
     }
     // The gated and deferred tasks are left out: they cannot start before a running task finished, so they do not
     // compete for threads now.
-    const int ready = (int)(_freeReady.size() + _admittedReady.size());
-    *budget = computeTaskBudget(poolMax, _runningTasks, ready, cores, nThreadsPerEffect);
+    if (region) {
+        // The region drives the device from this thread; the threads of a CPU task would only idle.
+        *budget = 1;
+
+        return true;
+    }
+    const auto regionsIn = [](const ReadyHeap& heap) {
+        return (int)std::count_if(heap.begin(), heap.end(), [](const ReadyRef& r) { return isRegionTask(r); });
+    };
+    const int ready = (int)(_freeReady.size() + _admittedReady.size()) - regionsIn(_freeReady) - regionsIn(_admittedReady);
+    *budget = computeTaskBudget(poolMax, _runningTasks - _runningGpuTasks, ready, cores, nThreadsPerEffect);
 
     return true;
 }
@@ -905,53 +1070,81 @@ failTaskWithReason(const EffectInstancePtr& effect,
 
 } // namespace
 
+EffectInstance::RenderRoIRetCode
+RenderScheduler::renderTaskOnCpu(const FrameGraph& graph,
+                                 int taskIndex,
+                                 StorageModeEnum storage,
+                                 std::map<ImageLayerDesc, ImagePtr>* planes)
+{
+    const FrameGraph::Task& task = graph.tasks[taskIndex];
+    EffectInstancePtr effect = task.key.node ? task.key.node->getEffectInstance() : EffectInstancePtr();
+    if (!effect) {
+        return EffectInstance::eRenderRoIRetCodeFailed;
+    }
+    const FrameGraph::Task& caller = task.consumerTasks.empty() ? task : graph.tasks[task.consumerTasks.front()];
+    EffectInstancePtr callerEffect = caller.key.node ? caller.key.node->getEffectInstance() : EffectInstancePtr();
+    EffectInstance::RenderRoIArgs args(task.key.time,
+                                       RenderScale::fromMipmapLevel(task.key.mipmapLevel),
+                                       task.key.mipmapLevel,
+                                       task.key.view,
+                                       false /*byPassCache*/,
+                                       task.roi,
+                                       RectD(),
+                                       task.components,
+                                       task.bitdepth,
+                                       false /*calledFromGetImage*/,
+                                       callerEffect.get(),
+                                       storage,
+                                       caller.key.time);
+    try {
+        return effect->renderRoI(args, planes);
+    } catch (const std::exception&) {
+        return EffectInstance::eRenderRoIRetCodeFailed;
+    } catch (...) {
+        return EffectInstance::eRenderRoIRetCodeFailed;
+    }
+}
+
 void
 RenderScheduler::executeTask(const FramePtr& frame,
                              int taskIndex,
                              int budget,
                              std::vector<FramePtr>* finished)
 {
+    if (taskIndex >= frame->regionTasksBegin) {
+        executeRegion(frame, taskIndex, budget, finished);
+
+        return;
+    }
+
     const FrameGraph::Task& task = frame->graph.tasks[taskIndex];
     EffectInstance::RenderRoIRetCode retCode = EffectInstance::eRenderRoIRetCodeFailed;
     std::map<ImageLayerDesc, ImagePtr> planes;
     EffectInstancePtr effect = task.key.node ? task.key.node->getEffectInstance() : EffectInstancePtr();
 
     if (effect) {
-        const FrameGraph::Task& caller = task.consumerTasks.empty() ? task : frame->graph.tasks[task.consumerTasks.front()];
-        EffectInstancePtr callerEffect = caller.key.node ? caller.key.node->getEffectInstance() : EffectInstancePtr();
-        EffectInstance::RenderRoIArgs args(task.key.time,
-                                           RenderScale::fromMipmapLevel(task.key.mipmapLevel),
-                                           task.key.mipmapLevel,
-                                           task.key.view,
-                                           false /*byPassCache*/,
-                                           task.roi,
-                                           RectD(),
-                                           task.components,
-                                           task.bitdepth,
-                                           false /*calledFromGetImage*/,
-                                           callerEffect.get(),
-                                           eStorageModeRAM,
-                                           caller.key.time);
         AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
         OpenMPThreadsScope openMPThreads(budget);
         ProfileSink& sink = profileSink();
         const bool profiling = sink.isEnabled();
-        const std::chrono::steady_clock::time_point renderStart = profiling ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+        // Only while placement can use what the cost model learns, which is never from an identity task.
+        const bool observing = !task.isIdentity && isGpuPlacementAvailable();
+        const unsigned long long renderActionsBefore = EffectInstance::getRenderActionsOnThisThread();
+        const std::chrono::steady_clock::time_point renderStart = (profiling || observing) ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
         const int rendering = ++_tasksRendering;
         if (frame->context->getStats()) {
             frame->context->getStats()->noteConcurrentTasks(rendering);
         }
-        try {
-            retCode = effect->renderRoI(args, &planes);
-        } catch (const std::exception&) {
-            retCode = EffectInstance::eRenderRoIRetCodeFailed;
-        } catch (...) {
-            retCode = EffectInstance::eRenderRoIRetCodeFailed;
-        }
+        retCode = renderTaskOnCpu(frame->graph, taskIndex, task.storage, &planes);
         --_tasksRendering;
+        const long long wallNs = (profiling || observing) ? std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - renderStart).count() : 0;
         if (profiling) {
-            const long long wallNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - renderStart).count();
             sink.append(formatTaskRecord(task, effect, frame->sequence, taskIndex, wallNs, retCode == EffectInstance::eRenderRoIRetCodeOk));
+        }
+        // A task whose output came from the cache measured no rendering, and would teach the model that the CPU is
+        // nearly free.
+        if (observing && (retCode == EffectInstance::eRenderRoIRetCodeOk) && (EffectInstance::getRenderActionsOnThisThread() != renderActionsBefore)) {
+            GpuCostModel::session().observeCpu(task, wallNs, budget);
         }
 
         bool glPlanes = false;
@@ -999,21 +1192,133 @@ RenderScheduler::executeTask(const FramePtr& frame,
         }
     }
 
+    completeTask(frame, taskIndex, retCode, std::move(planes), finished);
+} // RenderScheduler::executeTask
+
+void
+RenderScheduler::executeRegion(const FramePtr& frame,
+                               int taskIndex,
+                               int budget,
+                               std::vector<FramePtr>* finished)
+{
+    const FrameGraph::Task& unit = frame->graph.tasks[taskIndex];
+    const int region = taskIndex - frame->regionTasksBegin;
+    EffectInstance::RenderRoIRetCode retCode = EffectInstance::eRenderRoIRetCodeFailed;
+    std::map<ImageLayerDesc, ImagePtr> planes;
+    RegionBody body;
+    {
+        QMutexLocker k(&_mutex);
+        body = _regionBody;
+    }
+    bool deviceLost = false;
+
+    if (body) {
+        AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
+        OpenMPThreadsScope openMPThreads(budget);
+        const int rendering = ++_tasksRendering;
+        if (frame->context->getStats()) {
+            frame->context->getStats()->noteConcurrentTasks(rendering);
+        }
+        RegionReport report;
+        try {
+            retCode = body(frame->context, frame->graph, region, budget, &planes, &report);
+        } catch (const std::exception&) {
+            retCode = EffectInstance::eRenderRoIRetCodeFailed;
+        } catch (...) {
+            retCode = EffectInstance::eRenderRoIRetCodeFailed;
+        }
+        --_tasksRendering;
+        ProfileSink& sink = profileSink();
+        if (sink.isEnabled()) {
+            const std::vector<int>& members = frame->graph.regions[region].members;
+            const bool ok = retCode == EffectInstance::eRenderRoIRetCodeOk;
+            std::string lines;
+            for (std::size_t i = 0; i < members.size(); ++i) {
+                const FrameGraph::Task& member = frame->graph.tasks[members[i]];
+                const EffectInstancePtr effect = member.key.node ? member.key.node->getEffectInstance() : EffectInstancePtr();
+                const long long memberNs = (i < report.memberNs.size()) ? report.memberNs[i] : 0;
+                lines += formatTaskRecord(member, effect, frame->sequence, members[i], memberNs, ok);
+            }
+            GpuRegionTimes times;
+            times.uploadMs = report.uploadMs;
+            times.uploadBytes = report.uploadBytes;
+            times.kernelMs = report.kernelMs;
+            times.downloadMs = report.downloadMs;
+            times.downloadBytes = report.downloadBytes;
+            times.wallMs = report.wallMs;
+            times.strips = report.strips;
+            times.stripsInFlight = report.stripsInFlight;
+            times.transferHiddenMs = report.transferHiddenMs;
+            times.transferExposedMs = report.transferExposedMs;
+            lines += formatRegionRecord(frame->sequence, region, members, times);
+            sink.append(lines);
+        }
+        deviceLost = report.deviceLost && (retCode != EffectInstance::eRenderRoIRetCodeAborted);
+    } else if (appPTR) {
+        appPTR->writeToErrorLog_mt_safe(QString::fromUtf8("RenderScheduler"), QDateTime::currentDateTime(),
+                                        QString::fromUtf8("Render task failed: a GPU region was scheduled with no region body set"));
+    }
+
+    if ((retCode == EffectInstance::eRenderRoIRetCodeOk) && !deviceLost) {
+        FrameStore& store = frame->context->getStore();
+        for (std::vector<int>::const_iterator it = unit.dependencies.begin(); it != unit.dependencies.end(); ++it) {
+            store.release(frame->graph.tasks[*it].key);
+        }
+        const RenderStatsPtr& stats = frame->context->getStats();
+        if (stats) {
+            for (std::size_t i = 0; i < frame->graph.regions[region].members.size(); ++i) {
+                stats->incTasksRun();
+            }
+        }
+    }
+
+    completeTask(frame, taskIndex, retCode, std::move(planes), finished, deviceLost);
+}
+
+void
+RenderScheduler::completeTask(const FramePtr& frame,
+                              int taskIndex,
+                              EffectInstance::RenderRoIRetCode retCode,
+                              std::map<ImageLayerDesc, ImagePtr>&& planes,
+                              std::vector<FramePtr>* finished,
+                              bool deviceLost)
+{
+    const FrameGraph::Task& task = frame->graph.tasks[taskIndex];
     int toStart = 0;
     int runnablePriority = 0;
     std::vector<ReadyRef> purgedOnFailure;
+    bool failsFrame = retCode == EffectInstance::eRenderRoIRetCodeFailed;
     {
         QMutexLocker k(&_mutex);
         --_outstandingRunnables;
         --_runningTasks;
-        _reservedBytes -= task.estimatedBytes;
+        unreserveLocked(task);
         --frame->runningTasks;
+        if (taskIndex >= frame->regionTasksBegin) {
+            --_runningGpuTasks;
+            releaseGpuWaitingLocked();
+        }
         _peakBytesInFlight = std::max(_peakBytesInFlight, bytesInFlightLocked());
         if (task.sharesCachedOutput) {
             releaseSharedOutputLocked(task);
         }
 
-        if (retCode != EffectInstance::eRenderRoIRetCodeOk) {
+        if (deviceLost && !frame->dead && !frame->finished && !frame->restartOnCpu) {
+            frame->restartOnCpu = true;
+            // The store goes with the restart, so the inputs of the dropped tasks need no release.
+            std::vector<int> dropped;
+            purgeQueuedLocked(frame, &dropped);
+        }
+
+        const bool restarting = frame->restartOnCpu && !frame->dead;
+        if (restarting) {
+            // What a task returns while the frame waits for its restart is dropped with the store; a failure caused by
+            // the loss would only recur, or not, on the CPU.
+            failsFrame = false;
+            if (frame->runningTasks == 0) {
+                restartOnCpuLocked(frame, finished);
+            }
+        } else if (retCode != EffectInstance::eRenderRoIRetCodeOk) {
             markDeadLocked(frame, retCode);
             if (retCode == EffectInstance::eRenderRoIRetCodeFailed) {
                 abortLocked(frame, &purgedOnFailure, finished);
@@ -1022,19 +1327,32 @@ RenderScheduler::executeTask(const FramePtr& frame,
             markDeadLocked(frame, EffectInstance::eRenderRoIRetCodeAborted);
         }
 
-        if (frame->dead) {
+        // A restart may have dropped the task standing for a region, which task refers to.
+        if (!restarting && frame->dead) {
             if (frame->runningTasks == 0) {
                 finishLocked(frame, finished);
             }
-        } else {
+        } else if (!restarting) {
             if (task.consumers == 0) {
                 frame->rootPlanes = std::move(planes);
             }
             --frame->remainingTasks;
-            for (std::vector<int>::const_iterator it = task.consumerTasks.begin(); it != task.consumerTasks.end(); ++it) {
-                FrameGraph::Task& consumer = frame->graph.tasks[*it];
-                if (--consumer.remainingDeps == 0) {
-                    pushReadyLocked(frame, *it);
+            if (frame->graph.regions.empty()) {
+                for (std::vector<int>::const_iterator it = task.consumerTasks.begin(); it != task.consumerTasks.end(); ++it) {
+                    FrameGraph::Task& consumer = frame->graph.tasks[*it];
+                    if (--consumer.remainingDeps == 0) {
+                        pushReadyLocked(frame, *it);
+                    }
+                }
+            } else {
+                // A consumer inside a region waits through the task standing for its region.
+                for (std::vector<int>::const_iterator it = task.consumerTasks.begin(); it != task.consumerTasks.end(); ++it) {
+                    const int consumerRegion = frame->graph.tasks[*it].regionId;
+                    const int next = (consumerRegion >= 0) ? (frame->regionTasksBegin + consumerRegion) : *it;
+                    FrameGraph::Task& consumer = frame->graph.tasks[next];
+                    if (--consumer.remainingDeps == 0) {
+                        pushReadyLocked(frame, next);
+                    }
                 }
             }
             if (frame->remainingTasks == 0) {
@@ -1045,7 +1363,7 @@ RenderScheduler::executeTask(const FramePtr& frame,
     }
     startRunnables(toStart, runnablePriority);
 
-    if (retCode == EffectInstance::eRenderRoIRetCodeFailed) {
+    if (failsFrame) {
         releasePurgedInputs(purgedOnFailure);
         // The running siblings would otherwise render in full for a frame whose result is dropped.
         const AbortableRenderInfoPtr& abortInfo = frame->context->getAbortInfo();
@@ -1054,7 +1372,7 @@ RenderScheduler::executeTask(const FramePtr& frame,
             abort(abortInfo);
         }
     }
-} // RenderScheduler::executeTask
+} // RenderScheduler::completeTask
 
 void
 RenderScheduler::setProfilePath(const std::string& path)
@@ -1113,6 +1431,12 @@ RenderScheduler::pushReadyLocked(const FramePtr& frame,
 }
 
 bool
+RenderScheduler::isRegionTask(const ReadyRef& ref)
+{
+    return ref.task >= ref.frame->regionTasksBegin;
+}
+
+bool
 RenderScheduler::isStaleLocked(const ReadyRef& ref) const
 {
     if (ref.frame->finished || ref.frame->dead) {
@@ -1130,7 +1454,7 @@ RenderScheduler::discardStaleTopsLocked(ReadyHeap* heap,
     while (!heap->empty() && isStaleLocked(heap->front())) {
         FramePtr frame = heap->front().frame;
         if (heap == &_admittedReady) {
-            _reservedBytes -= frame->graph.tasks[heap->front().task].estimatedBytes;
+            unreserveLocked(frame->graph.tasks[heap->front().task]);
         }
         std::pop_heap(heap->begin(), heap->end(), ReadyRefWorse());
         heap->pop_back();
@@ -1162,7 +1486,8 @@ RenderScheduler::admitGatedLocked(int maxRunnables)
 
     while ((slots > 0) && !_gatedReady.empty()) {
         const ReadyRef& top = _gatedReady.front();
-        const std::size_t estimated = top.frame->graph.tasks[top.task].estimatedBytes;
+        const FrameGraph::Task& topTask = top.frame->graph.tasks[top.task];
+        const std::size_t estimated = topTask.estimatedBytes;
         // A stale task is admitted only to be dropped by the next pop, which releases its reservation.
         const bool fits = isStaleLocked(top) || ((estimated <= _bytesBudget) && (inFlight + _reservedBytes <= _bytesBudget - estimated));
         const bool idle = (_runningTasks == 0) && _freeReady.empty() && _admittedReady.empty();
@@ -1187,7 +1512,7 @@ RenderScheduler::bytesInFlightLocked() const
     std::size_t bytes = 0;
 
     for (std::list<FramePtr>::const_iterator it = _activeFrames.begin(); it != _activeFrames.end(); ++it) {
-        bytes += (*it)->context->getStore().bytesInFlight();
+        bytes += (*it)->context->getStore().hostBytesInFlight();
     }
 
     return bytes;
@@ -1234,6 +1559,43 @@ RenderScheduler::finishLocked(const FramePtr& frame,
 }
 
 void
+RenderScheduler::restartOnCpuLocked(const FramePtr& frame,
+                                    std::vector<FramePtr>* finished)
+{
+    frame->restartOnCpu = false;
+    const AbortableRenderInfoPtr& abortInfo = frame->context->getAbortInfo();
+    if (abortInfo && abortInfo->isAborted()) {
+        markDeadLocked(frame, EffectInstance::eRenderRoIRetCodeAborted);
+        finishLocked(frame, finished);
+
+        return;
+    }
+    if (frame->context->getStats()) {
+        frame->context->getStats()->noteCpuFallback("device lost");
+    }
+    // No task of the frame runs or is queued, so nothing reads the store or the graph.
+    frame->context->getStore().clear();
+    frame->gpuLease.reset();
+    frame->rootPlanes.clear();
+
+    FrameGraph& graph = frame->graph;
+    graph.tasks.resize(frame->regionTasksBegin);
+    graph.regions.clear();
+    for (FrameGraph::Task& task : graph.tasks) {
+        task.device = FrameGraph::Device::Cpu;
+        task.regionId = -1;
+        task.storage = eStorageModeRAM;
+        task.remainingDeps = (int)task.dependencies.size();
+    }
+    frame->remainingTasks = (int)graph.tasks.size();
+    for (std::size_t i = 0; i < graph.tasks.size(); ++i) {
+        if (graph.tasks[i].remainingDeps == 0) {
+            pushReadyLocked(frame, (int)i);
+        }
+    }
+}
+
+void
 RenderScheduler::purgeQueuedLocked(const FramePtr& frame,
                                    std::vector<int>* purged)
 {
@@ -1245,7 +1607,7 @@ RenderScheduler::purgeQueuedLocked(const FramePtr& frame,
         for (ReadyHeap::iterator it = heap->begin(); it != heap->end(); ++it) {
             if (it->frame == frame) {
                 if (heap == &_admittedReady) {
-                    _reservedBytes -= frame->graph.tasks[it->task].estimatedBytes;
+                    unreserveLocked(frame->graph.tasks[it->task]);
                 }
                 purged->push_back(it->task);
             } else {
@@ -1258,6 +1620,14 @@ RenderScheduler::purgeQueuedLocked(const FramePtr& frame,
         if (kept != heap->end()) {
             heap->erase(kept, heap->end());
             std::make_heap(heap->begin(), heap->end(), ReadyRefWorse());
+        }
+    }
+    for (std::vector<ReadyRef>::iterator it = _gpuWaiting.begin(); it != _gpuWaiting.end();) {
+        if (it->frame == frame) {
+            purged->push_back(it->task);
+            it = _gpuWaiting.erase(it);
+        } else {
+            ++it;
         }
     }
     for (std::multimap<SharedOutputKey, ReadyRef>::iterator it = _deferredReady.begin(); it != _deferredReady.end();) {
@@ -1375,6 +1745,7 @@ RenderScheduler::finalizeFrames(const std::vector<FramePtr>& finished)
         const FramePtr& frame = *it;
         // No task of a finished frame runs or is queued any more, so its fields are read without the lock.
         frame->context->getStore().clear();
+        frame->gpuLease.reset();
         if (frame->dead) {
             frame->future->finish(frame->retCode, std::map<ImageLayerDesc, ImagePtr>());
         } else {

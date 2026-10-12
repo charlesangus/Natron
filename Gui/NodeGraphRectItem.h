@@ -32,6 +32,7 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QColor>
 #include <QGraphicsItem>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -44,6 +45,10 @@ class NodeGraphRectItem
 : public QGraphicsRectItem
 {
     int _cornerRadiusPx;
+    bool _hasInsetBorder;
+    QColor _insetBorderColor;
+    double _insetBorderWidth;
+
 public:
 
     NodeGraphRectItem(QGraphicsItem *parent,
@@ -58,6 +63,11 @@ public:
     {
         _cornerRadiusPx = cornerRadiusPx;
     }
+
+    // A stroke whose outer edge lies on rect(), so none of it falls outside the item's footprint.
+    void setInsetBorder(const QColor& color, double width);
+
+    void clearInsetBorder();
 
     virtual void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *widget) OVERRIDE FINAL;
 };

@@ -162,7 +162,10 @@
 				<HasTrackerContext>0</HasTrackerContext>
 				<MultiInstanceParent></MultiInstanceParent>
 				<UserPagesCount>0</UserPagesCount>
-				<PagesCount>0</PagesCount>
+				<PagesCount>3</PagesCount>
+				<name>Node</name>
+				<name>Settings</name>
+				<name>Info</name>
 				<Children>0</Children>
 				<CacheID>NORMALIZED</CacheID>
 			</item>

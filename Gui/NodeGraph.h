@@ -134,8 +134,6 @@ public:
 
     void refreshNodesKnobsAtTime(bool onlyTimeEvaluationKnobs, SequenceTime time);
 
-    bool areOptionalInputsAutoHidden() const;
-
     void copyNodesAndCreateInGroup(const NodesGuiList& nodes,
                                    const NodeCollectionPtr& group,
                                    std::list<std::pair<std::string, NodeGuiPtr> >& createdNodes);
@@ -217,8 +215,6 @@ public Q_SLOTS:
 
     void centerOnAllNodes();
 
-    void toggleAutoHideInputs(bool setSettings = true);
-
     void toggleHideInputs();
 
     void popCreateNodeDialog();
@@ -243,6 +239,8 @@ public Q_SLOTS:
 
     void onAutoScrollTimerTriggered();
 
+    void onSettingsSaved();
+
 private:
 
     NodeGraph(const NodeGraph&) = delete;
@@ -251,7 +249,15 @@ private:
 
     void showNodePanel(bool casIsCtrl, bool casIsShift, NodeGui* nearbyNode);
 
-    void checkForHints(bool shiftdown, bool controlDown, const NodeGuiPtr& selectedNode, const QRectF& visibleSceneR);
+    void checkForSpliceHint();
+
+    void buildSplicePlan();
+
+    void clearSpliceHint();
+
+    void resetSplicePlan();
+
+    void cancelSplice();
 
     void moveSelectedNodesBy(bool shiftdown, bool controlDown, const QPointF& lastMousePosScene, const QPointF& newPos, const QRectF& visibleSceneR, bool userEdit);
 

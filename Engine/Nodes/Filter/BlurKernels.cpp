@@ -191,6 +191,27 @@ LineFilter::firGaussianRadius(double sigma)
     return static_cast<int>(std::ceil(3. * sigma));
 }
 
+std::vector<float>
+LineFilter::firGaussianWeights(double sigma)
+{
+    const int radius = firGaussianRadius(sigma);
+    std::vector<float> weights(radius + 1, 1.f);
+    if (radius) {
+        std::vector<double> w(radius + 1);
+        const double twoSigmaSq = 2. * sigma * sigma;
+        double sum = 0.;
+        for (int k = 0; k <= radius; ++k) {
+            w[k] = std::exp(-static_cast<double>(k) * k / twoSigmaSq);
+            sum += k ? 2. * w[k] : w[k];
+        }
+        for (int k = 0; k <= radius; ++k) {
+            weights[k] = static_cast<float>(w[k] / sum);
+        }
+    }
+
+    return weights;
+}
+
 LineFilter
 LineFilter::firGaussian(double sigma,
                         unsigned int order,
@@ -208,19 +229,7 @@ LineFilter::firGaussian(double sigma,
     f._order = order;
     f._neumann = neumann;
     f._radius = radius;
-    f._weights.assign(radius + 1, 1.f);
-    if (radius) {
-        std::vector<double> w(radius + 1);
-        const double twoSigmaSq = 2. * sigma * sigma;
-        double sum = 0.;
-        for (int k = 0; k <= radius; ++k) {
-            w[k] = std::exp(-static_cast<double>(k) * k / twoSigmaSq);
-            sum += k ? 2. * w[k] : w[k];
-        }
-        for (int k = 0; k <= radius; ++k) {
-            f._weights[k] = static_cast<float>(w[k] / sum);
-        }
-    }
+    f._weights = firGaussianWeights(sigma);
 
     return f;
 }

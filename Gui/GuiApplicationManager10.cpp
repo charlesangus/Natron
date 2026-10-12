@@ -829,6 +829,7 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupGlobal, kShortcutIDActionPrevTab, kShortcutDescActionPrevTab, Qt::ShiftModifier | Qt::ControlModifier, Qt::Key_T);
     registerKeybind(kShortcutGroupGlobal, kShortcutIDActionCloseTab, kShortcutDescActionCloseTab, Qt::ShiftModifier, Qt::Key_Escape);
 
+    registerKeybind(kShortcutGroupGlobal, kShortcutIDActionColorTrackball, kShortcutDescActionColorTrackball, Qt::ControlModifier, Qt::Key_E);
 
     ///Viewer
     registerKeybindWithMask(kShortcutGroupViewer, kShortcutIDActionZoomIn, kShortcutDescActionZoomIn, Qt::NoModifier, Qt::Key_Plus,
@@ -931,7 +932,6 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphSelectDown, kShortcutDescActionGraphSelectDown, Qt::ShiftModifier, Qt::Key_Down);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphSelectAll, kShortcutDescActionGraphSelectAll, Qt::ControlModifier, Qt::Key_A);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphSelectAllVisible, kShortcutDescActionGraphSelectAllVisible, Qt::ShiftModifier | Qt::ControlModifier, Qt::Key_A);
-    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphAutoHideInputs, kShortcutDescActionGraphAutoHideInputs, Qt::NoModifier, (Qt::Key)0);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphHideInputs, kShortcutDescActionGraphHideInputs, Qt::NoModifier, (Qt::Key)0);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphSwitchInputs, kShortcutDescActionGraphSwitchInputs, Qt::ShiftModifier, Qt::Key_X);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCopy, kShortcutDescActionGraphCopy, Qt::ControlModifier, Qt::Key_C);

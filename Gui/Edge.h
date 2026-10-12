@@ -97,8 +97,6 @@ public:
 
     bool isBendPointVisible() const;
 
-    bool areOptionalInputsAutoHidden() const;
-
     void setOptional(bool optional);
 
     void setDashed(bool dashed);
@@ -115,21 +113,19 @@ public:
 
     /**
      * @brief Refresh the Edge properties such as dashed state, optional state, visibility etc...
-     * @param hovered True if the mouse is hovering the dst node (the node holding this edge)
      **/
-    void refreshState(bool hovered);
+    void refreshState();
 
-    bool computeVisibility(bool hovered) const;
+    bool computeVisibility() const;
 
     /**
-     * @brief Re-reads the source node's resolved data kind and, if it changed, stores the pen that
-     * kind calls for on the item itself. The width has to live in the item's own pen because
-     * boundingRect() and shape() are both derived from it.
+     * @brief Re-reads the source node's resolved data kind and caches the colour that kind is drawn
+     * in; @p force recomputes the colour even when the kind is unchanged.
      * Public because a kind resolves from the whole connected component: an edit anywhere in it can
      * retype nodes whose own edges were not otherwise touched, and NodeGui refreshes those from
      * Node::dataKindChanged().
      **/
-    void refreshDataKindPen();
+    void refreshDataKindPen(bool force = false);
 
 private:
 

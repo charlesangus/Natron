@@ -404,6 +404,38 @@ Settings::initializeKnobsThreading()
                                             "The NATRON_RENDER_SCHEDULER environment variable (legacy or taskgraph) takes precedence over this setting."));
     _threadingPage->addKnob(_renderSchedulerMode);
 
+    _gpuComputeMode = AppManager::createKnob<KnobChoice>(this, tr("GPU compute"));
+    _gpuComputeMode->setName("gpuComputeMode");
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("off",
+                                       tr("Off").toStdString(),
+                                       tr("Never use the GPU for compute.").toStdString()));
+        assert(entries.size() == (int)eGpuComputeModeAuto);
+        entries.push_back(ChoiceOption("auto",
+                                       tr("Auto").toStdString(),
+                                       tr("Use the GPU for compute when a suitable one is found.").toStdString()));
+        _gpuComputeMode->populateChoices(entries);
+    }
+    _gpuComputeMode->setHintToolTip(tr("Whether the GPU is used for compute. Auto uses a hardware Vulkan device when one is found and "
+                                       "never a software one. The NATRON_GPU environment variable (off, auto or force) takes precedence "
+                                       "over this setting; force also accepts software devices. Changing this takes effect upon the next application launch."));
+    _threadingPage->addKnob(_gpuComputeMode);
+
+    _gpuDevice = AppManager::createKnob<KnobString>(this, tr("GPU device"));
+    _gpuDevice->setName("gpuDevice");
+    _gpuDevice->setHintToolTip(tr("The name, or part of the name, of the Vulkan device to use for compute, or its index. "
+                                  "Leave empty to choose automatically. Changing this takes effect upon the next application launch."));
+    _threadingPage->addKnob(_gpuDevice);
+
+    _gpuMemoryBudgetMB = AppManager::createKnob<KnobInt>(this, tr("GPU memory budget (MB)"));
+    _gpuMemoryBudgetMB->setName("gpuMemoryBudgetMB");
+    _gpuMemoryBudgetMB->setHintToolTip(tr("The most device memory, in megabytes, that compute may hold on the GPU. "
+                                          "0 chooses automatically from what the device offers. Changing this takes effect upon the next application launch."));
+    _gpuMemoryBudgetMB->setMinimum(0);
+    _gpuMemoryBudgetMB->disableSlider();
+    _threadingPage->addKnob(_gpuMemoryBudgetMB);
+
     _renderInSeparateProcess = AppManager::createKnob<KnobBool>( this, tr("Render in a separate process") );
     _renderInSeparateProcess->setName("renderNewProcess");
     _renderInSeparateProcess->setHintToolTip( tr("If true, %1 will render frames to disk in "
@@ -1010,6 +1042,30 @@ Settings::initializeKnobsNodeGraphColors()
     _defaultDeepGroupColor->setSimplified(true);
     _defaultDeepGroupColor->setHintToolTip( tr("The color used for newly created Deep nodes.") );
     _nodegraphColorsTab->addKnob(_defaultDeepGroupColor);
+
+    _defaultNative3DGroupColor = AppManager::createKnob<KnobColor>(this, tr("Native 3D group"), 3);
+    _defaultNative3DGroupColor->setName("native3DNodesColor");
+    _defaultNative3DGroupColor->setSimplified(true);
+    _defaultNative3DGroupColor->setHintToolTip(tr("The color used for newly created Native 3D nodes."));
+    _nodegraphColorsTab->addKnob(_defaultNative3DGroupColor);
+
+    _defaultUsd3DGroupColor = AppManager::createKnob<KnobColor>(this, tr("USD 3D group"), 3);
+    _defaultUsd3DGroupColor->setName("usd3DNodesColor");
+    _defaultUsd3DGroupColor->setSimplified(true);
+    _defaultUsd3DGroupColor->setHintToolTip(tr("The color used for newly created USD 3D nodes."));
+    _nodegraphColorsTab->addKnob(_defaultUsd3DGroupColor);
+
+    _edgeDeepColor = AppManager::createKnob<KnobColor>(this, tr("Deep edges"), 3);
+    _edgeDeepColor->setName("edgeDeepColor");
+    _edgeDeepColor->setSimplified(true);
+    _edgeDeepColor->setHintToolTip(tr("The color used to tint node graph edges carrying Deep data, connected or not."));
+    _nodegraphColorsTab->addKnob(_edgeDeepColor);
+
+    _edgeSceneColor = AppManager::createKnob<KnobColor>(this, tr("Scene edges"), 3);
+    _edgeSceneColor->setName("edgeSceneColor");
+    _edgeSceneColor->setSimplified(true);
+    _edgeSceneColor->setHintToolTip(tr("The color used to tint node graph edges carrying Scene data, connected or not."));
+    _nodegraphColorsTab->addKnob(_edgeSceneColor);
 } // Settings::initializeKnobsNodeGraphColors
 
 void
@@ -1223,13 +1279,6 @@ Settings::initializeKnobsNodeGraph()
     _disconnectedArrowLength->disableSlider();
 
     _nodegraphTab->addKnob(_disconnectedArrowLength);
-
-    _hideOptionalInputsAutomatically = AppManager::createKnob<KnobBool>( this, tr("Auto hide masks inputs") );
-    _hideOptionalInputsAutomatically->setName("autoHideInputs");
-    _hideOptionalInputsAutomatically->setHintToolTip( tr("When checked, any diconnected mask input of a node in the nodegraph "
-                                                         "will be visible only when the mouse is hovering the node or when it is "
-                                                         "selected.") );
-    _nodegraphTab->addKnob(_hideOptionalInputsAutomatically);
 
     _useInputAForMergeAutoConnect = AppManager::createKnob<KnobBool>( this, tr("Merge node connect to A input") );
     _useInputAForMergeAutoConnect->setName("mergeConnectToA");
@@ -1508,6 +1557,9 @@ Settings::setDefaultValues()
     _useThreadPool->setDefaultValue(true);
     _nThreadsPerEffect->setDefaultValue(0);
     _renderSchedulerMode->setDefaultValue((int)eRenderSchedulerModeTaskGraph);
+    _gpuComputeMode->setDefaultValue((int)eGpuComputeModeAuto);
+    _gpuDevice->setDefaultValue(std::string());
+    _gpuMemoryBudgetMB->setDefaultValue(0);
     _renderInSeparateProcess->setDefaultValue(false, 0);
     _queueRenders->setDefaultValue(false);
 
@@ -1589,7 +1641,6 @@ Settings::setDefaultValues()
     _useBWIcons->setDefaultValue(false);
     _maxUndoRedoNodeGraph->setDefaultValue(20, 0);
     _disconnectedArrowLength->setDefaultValue(30);
-    _hideOptionalInputsAutomatically->setDefaultValue(true);
     _useInputAForMergeAutoConnect->setDefaultValue(true);
     _usePluginIconsInNodeGraph->setDefaultValue(true);
     _useAntiAliasing->setDefaultValue(true);
@@ -1775,7 +1826,18 @@ Settings::setDefaultValues()
     _defaultDeepGroupColor->setDefaultValue(0., 0);
     _defaultDeepGroupColor->setDefaultValue(0., 1);
     _defaultDeepGroupColor->setDefaultValue(0.38, 2);
-
+    _defaultNative3DGroupColor->setDefaultValue(0.50, 0);
+    _defaultNative3DGroupColor->setDefaultValue(0.20, 1);
+    _defaultNative3DGroupColor->setDefaultValue(0.60, 2);
+    _defaultUsd3DGroupColor->setDefaultValue(0.20, 0);
+    _defaultUsd3DGroupColor->setDefaultValue(0.55, 1);
+    _defaultUsd3DGroupColor->setDefaultValue(0.55, 2);
+    _edgeDeepColor->setDefaultValue(0. / 255., 0); // Okabe-Ito blue
+    _edgeDeepColor->setDefaultValue(114. / 255., 1);
+    _edgeDeepColor->setDefaultValue(178. / 255., 2);
+    _edgeSceneColor->setDefaultValue(230. / 255., 0); // Okabe-Ito orange
+    _edgeSceneColor->setDefaultValue(159. / 255., 1);
+    _edgeSceneColor->setDefaultValue(0. / 255., 2);
 
     endChanges();
 } // setDefaultValues
@@ -1938,6 +2000,9 @@ Settings::saveSettings(const std::vector<KnobI*>& knobs,
                        bool pluginSettings)
 {
     if ( !_saveSettings->getValue() ) {
+        // The in-memory values are still committed, so listeners must refresh as on a real save.
+        Q_EMIT settingsSaved();
+
         return;
     }
     if (pluginSettings) {
@@ -2017,6 +2082,8 @@ Settings::saveSettings(const std::vector<KnobI*>& knobs,
     if (doWarnings) {
         warnChangedKnobs(changedKnobs);
     }
+
+    Q_EMIT settingsSaved();
 } // saveSettings
 
 void
@@ -2318,8 +2385,6 @@ Settings::onKnobValueChanged(KnobI* k,
         appPTR->onViewerTileCacheSizeChanged();
     } else if (k == _texturesMode.get() && !_restoringSettings) {
         appPTR->onViewerTileCacheSizeChanged();
-    } else if ((k == _hideOptionalInputsAutomatically.get()) && !_restoringSettings && (reason == eValueChangedReasonUserEdited)) {
-        appPTR->toggleAutoHideGraphInputs();
     } else if (k == _autoProxyWhenScrubbingTimeline.get()) {
         _autoProxyLevel->setSecret( !_autoProxyWhenScrubbingTimeline->getValue() );
     } else if (!_restoringSettings && ((k == _sunkenColor.get()) || (k == _baseColor.get()) || (k == _raisedColor.get()) || (k == _selectionColor.get()) || (k == _textColor.get()) || (k == _altTextColor.get()) || (k == _timelinePlayheadColor.get()) || (k == _timelineBoundsColor.get()) || (k == _timelineBGColor.get()) || (k == _interpolatedColor.get()) || (k == _keyframeColor.get()) || (k == _trackerKeyframeColor.get()) || (k == _cachedFrameColor.get()) || (k == _diskCachedFrameColor.get()) || (k == _curveEditorBGColor.get()) || (k == _gridColor.get()) || (k == _curveEditorScaleColor.get()) || (k == _dopeSheetEditorBackgroundColor.get()) || (k == _dopeSheetEditorRootSectionBackgroundColor.get()) || (k == _dopeSheetEditorKnobSectionBackgroundColor.get()) || (k == _dopeSheetEditorScaleColor.get()) || (k == _dopeSheetEditorGridColor.get()) || (k == _keywordColor.get()) || (k == _operatorColor.get()) || (k == _curLineColor.get()) || (k == _braceColor.get()) || (k == _defClassColor.get()) || (k == _stringsColor.get()) || (k == _commentsColor.get()) || (k == _selfColor.get()) || (k == _sliderColor.get()) || (k == _numbersColor.get()))) {
@@ -2441,6 +2506,24 @@ bool
 Settings::viewerOverlaysPath() const
 {
     return _viewerOverlaysPath->getValue();
+}
+
+GpuComputeModeEnum
+Settings::getGpuComputeMode() const
+{
+    return (GpuComputeModeEnum)_gpuComputeMode->getValue();
+}
+
+std::string
+Settings::getGpuDevice() const
+{
+    return _gpuDevice->getValue();
+}
+
+std::uint64_t
+Settings::getGpuMemoryBudgetMB() const
+{
+    return (std::uint64_t)std::max(0, _gpuMemoryBudgetMB->getValue());
 }
 
 ///////////////////////////////////////////////////////
@@ -3046,6 +3129,125 @@ Settings::getDeepGroupColor(float *r,
     *b = _defaultDeepGroupColor->getValue(2);
 }
 
+void
+Settings::getNative3DGroupColor(float* r,
+                                float* g,
+                                float* b) const
+{
+    *r = _defaultNative3DGroupColor->getValue(0);
+    *g = _defaultNative3DGroupColor->getValue(1);
+    *b = _defaultNative3DGroupColor->getValue(2);
+}
+
+void
+Settings::getUsd3DGroupColor(float* r,
+                             float* g,
+                             float* b) const
+{
+    *r = _defaultUsd3DGroupColor->getValue(0);
+    *g = _defaultUsd3DGroupColor->getValue(1);
+    *b = _defaultUsd3DGroupColor->getValue(2);
+}
+
+void
+Settings::getNodeCategoryColor(NodeCategoryEnum category,
+                               float* r,
+                               float* g,
+                               float* b) const
+{
+    switch (category) {
+    case eNodeCategoryRead:
+        getReaderColor(r, g, b);
+        break;
+    case eNodeCategoryWrite:
+        getWriterColor(r, g, b);
+        break;
+    case eNodeCategoryGenerator:
+        getGeneratorColor(r, g, b);
+        break;
+    case eNodeCategoryColor:
+        getColorGroupColor(r, g, b);
+        break;
+    case eNodeCategoryFilter:
+        getFilterGroupColor(r, g, b);
+        break;
+    case eNodeCategoryChannel:
+        getChannelGroupColor(r, g, b);
+        break;
+    case eNodeCategoryKeyer:
+        getKeyerGroupColor(r, g, b);
+        break;
+    case eNodeCategoryMerge:
+        getMergeGroupColor(r, g, b);
+        break;
+    case eNodeCategoryDraw:
+        getDrawGroupColor(r, g, b);
+        break;
+    case eNodeCategoryTime:
+        getTimeGroupColor(r, g, b);
+        break;
+    case eNodeCategoryTransform:
+        getTransformGroupColor(r, g, b);
+        break;
+    case eNodeCategoryViews:
+        getViewsGroupColor(r, g, b);
+        break;
+    case eNodeCategoryDeep:
+        getDeepGroupColor(r, g, b);
+        break;
+    case eNodeCategoryNative3D:
+        getNative3DGroupColor(r, g, b);
+        break;
+    case eNodeCategoryUsd3D:
+        getUsd3DGroupColor(r, g, b);
+        break;
+    case eNodeCategoryOther:
+    default:
+        getDefaultNodeColor(r, g, b);
+        break;
+    }
+}
+
+void
+Settings::getEdgeDeepColor(float* r,
+                           float* g,
+                           float* b) const
+{
+    *r = _edgeDeepColor->getValue(0);
+    *g = _edgeDeepColor->getValue(1);
+    *b = _edgeDeepColor->getValue(2);
+}
+
+void
+Settings::getEdgeSceneColor(float* r,
+                            float* g,
+                            float* b) const
+{
+    *r = _edgeSceneColor->getValue(0);
+    *g = _edgeSceneColor->getValue(1);
+    *b = _edgeSceneColor->getValue(2);
+}
+
+bool
+Settings::getEdgeKindColor(DataKindEnum kind,
+                           float* r,
+                           float* g,
+                           float* b) const
+{
+    switch (kind) {
+    case eDataKindDeep:
+        getEdgeDeepColor(r, g, b);
+        return true;
+    case eDataKindScene:
+        getEdgeSceneColor(r, g, b);
+        return true;
+    case eDataKindImage:
+    case eDataKindPolymorphic:
+    default:
+        return false;
+    }
+}
+
 int
 Settings::getDisconnectedArrowLength() const
 {
@@ -3197,18 +3399,6 @@ void
 Settings::setAutoTurboModeEnabled(bool e)
 {
     _autoTurbo->setValue(e);
-}
-
-void
-Settings::setOptionalInputsAutoHidden(bool hidden)
-{
-    _hideOptionalInputsAutomatically->setValue(hidden);
-}
-
-bool
-Settings::areOptionalInputsAutoHidden() const
-{
-    return _hideOptionalInputsAutomatically->getValue();
 }
 
 void

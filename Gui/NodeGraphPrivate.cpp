@@ -47,7 +47,6 @@
 
 NATRON_NAMESPACE_ENTER
 
-
 NodeGraphPrivate::NodeGraphPrivate(NodeGraph* p,
                                    const NodeCollectionPtr& group)
     : _publicInterface(p)
@@ -77,8 +76,6 @@ NodeGraphPrivate::NodeGraphPrivate(NodeGraph* p,
     , _bR(NULL)
     , _bL(NULL)
     , _refreshOverlays(false)
-    , _highLightedEdge(NULL)
-    , _mergeHintNode()
     , _hintInputEdge(NULL)
     , _hintOutputEdge(NULL)
     , _backdropResized()
@@ -125,7 +122,7 @@ NodeGraphPrivate::editSelectionFromSelectionRectangle(bool addToSelection)
     const QRectF& selection = _selectionRect;
 
     for (NodesGuiList::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
-        QRectF bbox = (*it)->mapToScene( (*it)->boundingRect() ).boundingRect();
+        QRectF bbox = (*it)->mapToScene((*it)->outlineBoundingRect()).boundingRect();
         if ( selection.contains(bbox) ) {
             NodesGuiList::iterator foundInSel = std::find(_selection.begin(), _selection.end(), *it);
             if ( foundInSel != _selection.end() ) {

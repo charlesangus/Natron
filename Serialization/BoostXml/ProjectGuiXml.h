@@ -93,6 +93,13 @@ save(Archive & ar,
         ar & ::boost::serialization::make_nvp("oB", node.overlayColorB);
     }
 
+    ar & ::boost::serialization::make_nvp("HasUserColor", node.hasUserColor);
+    if (node.hasUserColor) {
+        ar & ::boost::serialization::make_nvp("uR", node.userColorR);
+        ar & ::boost::serialization::make_nvp("uG", node.userColorG);
+        ar & ::boost::serialization::make_nvp("uB", node.userColorB);
+    }
+
     int childCount = (int)node.children.size();
     ar & ::boost::serialization::make_nvp("Children", childCount);
     for (std::list<NATRON_NAMESPACE::Serialization::NodeGuiSerializationPtr>::const_iterator it = node.children.begin(); it != node.children.end(); ++it) {
@@ -142,6 +149,15 @@ load(Archive & ar,
         }
     } else {
         node.hasOverlayColor = false;
+    }
+
+    if (version >= NATRON_SERIALIZATION_NODE_GUI_INTRODUCES_USER_COLOR) {
+        ar & ::boost::serialization::make_nvp("HasUserColor", node.hasUserColor);
+        if (node.hasUserColor) {
+            ar & ::boost::serialization::make_nvp("uR", node.userColorR);
+            ar & ::boost::serialization::make_nvp("uG", node.userColorG);
+            ar & ::boost::serialization::make_nvp("uB", node.userColorB);
+        }
     }
 
     if (version >= NATRON_SERIALIZATION_NODE_GUI_INTRODUCES_CHILDREN) {

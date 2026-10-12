@@ -113,7 +113,16 @@ public:
 
     void restartTask();
 
+    // A foreground task is shown in its own modal dialog, so nothing it does may switch the
+    // current tab to the Progress panel.
+    void setForeground(bool foreground);
+
+    bool isForeground() const;
+
     NodePtr getNode() const;
+
+    // -1 until the task has reported its first frame.
+    int getLastRenderedFrame() const;
 
     ProcessHandlerPtr getProcess() const;
 
@@ -158,6 +167,14 @@ public Q_SLOTS:
 Q_SIGNALS:
 
     void taskCanceled();
+
+    // Fraction of the task's frame range rendered so far, in [0, 1].
+    void progressChanged(double progress);
+
+    // Emitted once per run of the task, whether it succeeded, failed, was aborted or was cancelled.
+    // retCode is the render's own code when the engine or process stopped it, and the caller's
+    // when it was cancelled from the GUI.
+    void taskFinished(int retCode);
 
 private:
 

@@ -28,12 +28,15 @@
 
 #include "Global/Macros.h"
 
-#include <vector> // KnobGuiInt
 #include <list>
+#include <memory>
+#include <vector> // KnobGuiInt
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QObject>
+#include <QPointF>
+#include <QPointer>
 #include <QStyledItemDelegate>
 #include <QTextEdit>
 #include <QToolButton>
@@ -47,18 +50,39 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Knob.h"
 #include "Engine/Singleton.h"
 
-#include "Gui/CurveSelection.h"
-#include "Gui/KnobGuiValue.h"
-#include "Gui/ColorSelectorWidget.h"
 #include "Gui/AnimatedCheckBox.h"
-#include "Gui/Label.h"
+#include "Gui/ColorAdjustPanel.h"
+#include "Gui/ColorSelectorWidget.h"
+#include "Gui/ColorTrackballTarget.h"
+#include "Gui/CurveSelection.h"
 #include "Gui/GuiFwd.h"
+#include "Gui/KnobGuiValue.h"
+#include "Gui/Label.h"
 
 NATRON_NAMESPACE_ENTER
 
 //================================
 
 class KnobGuiColor;
+class ColorKnobEditSession;
+
+/**
+ * @brief Inserts hud into columnLayout right after afterWidget (the knob's channel-lines
+ * widget, when it has one), reparenting hud there; with no afterWidget it goes right after
+ * the column's first item, the knob's own row. Detaches hud from wherever it was first, so
+ * calling this on an already-attached hud moves it instead of leaving two copies behind.
+ *
+ * A free function, rather than only a KnobGuiColor member, so the placement rule can be
+ * exercised against a stand-in column layout in a test, without a real knob or panel behind it.
+ **/
+void attachColorGlobalModeHud(QVBoxLayout* columnLayout, QWidget* afterWidget, QWidget* hud);
+
+/**
+ * @brief Removes hud from the layout holding it, if any, hides it and clears its parent so a
+ * later attachColorGlobalModeHud() starts clean.
+ **/
+void detachColorGlobalModeHud(QWidget* hud);
+
 class ColorPickerLabel
     : public Label
 {
@@ -100,12 +124,18 @@ private:
     virtual void enterEvent(QEnterEvent*) OVERRIDE FINAL;
     virtual void leaveEvent(QEvent*) OVERRIDE FINAL;
     virtual void mousePressEvent(QMouseEvent*) OVERRIDE FINAL;
+    virtual void mouseReleaseEvent(QMouseEvent*) OVERRIDE FINAL;
 
 private:
 
     bool _pickingEnabled;
     QColor _currentColor;
     KnobGuiColor* _knob;
+
+    // A press only becomes a click once it releases without crossing
+    // QApplication::startDragDistance(); past that it is a no-op.
+    bool _pressed;
+    QPointF _pressPos;
 };
 
 
@@ -127,9 +157,75 @@ public:
     KnobGuiColor(KnobIPtr knob,
                  KnobGuiContainerI *container);
 
-    virtual ~KnobGuiColor() {}
+    virtual ~KnobGuiColor() OVERRIDE;
+
+    virtual bool wantsTopAlignedLabel() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The row's adjustment panel, or null for simplified and viewer knobs and for knobs
+     * that share their line with other knobs, which keep the colour selector popup.
+     **/
+    ColorAdjustPanel* getAdjustPanel() const;
+    bool isAdjustPanelExpanded() const;
+    void setAdjustPanelExpanded(bool expanded);
+
+    ColorKnobEditSession* getEditSession();
+
+    /**
+     * @brief Records this knob as the last one touched on its panel, for the global trackball
+     * mode's target resolution. Called on every edit session's Start, and by the app-wide
+     * ColorKnobTouchTracker filter when a press, wheel or focus-in lands on the row or panel
+     * without going through a session (for example a plain spinbox click).
+     **/
+    void touchColorKnob();
+
+    /**
+     * @brief The knob's colour role, luma-chroma basis, current value, and whether it can be
+     * edited right now (not disabled, no expression or slave on an RGB dimension). Used by the
+     * adjustment panel and the global trackball mode to run their edit gestures through the
+     * same edit session.
+     **/
+    ColorKnobRoleEnum getColorRole() const;
+    LumaBasis getEditBasis() const;
+    KnobColorValue getCurrentColorValue() const;
+    bool isColorEditable() const;
+
+    /**
+     * @brief The row's own container widget, which the global trackball mode highlights and a
+     * readout of the mode can scroll into view. Null for knobs without an adjustment panel.
+     **/
+    QWidget* getGlobalModeRowWidget() const;
+
+    /**
+     * @brief The knob's whole below-row column: the row, the channel lines, the global-mode
+     * HUD once attached, and the adjust panel, top to bottom. Null for knobs without an
+     * adjustment panel. The global trackball mode scrolls this into view on engage and on
+     * every knob switch, so the row, the HUD and the panel all stay visible together.
+     **/
+    QWidget* getGlobalModeColumnWidget() const;
+
+    /**
+     * @brief Moves hud into this knob's below-row column, right after the channel lines and
+     * before the adjust panel, wrapped in the same update guard as setAdjustPanelExpanded() so
+     * the insertion settles without a paint at a stale geometry.
+     **/
+    void attachGlobalModeHud(QWidget* hud);
+
+    /**
+     * @brief Takes hud back out of this knob's below-row column and hides it, under the same
+     * update guard as attachGlobalModeHud().
+     **/
+    void detachGlobalModeHud(QWidget* hud);
 
 public Q_SLOTS:
+
+    /**
+     * @brief Engages the global trackball mode on this knob. Does nothing on simplified and
+     * viewer knobs, which have no adjustment panel.
+     **/
+    void engageGlobalMode();
+
+    void setGlobalModeHighlighted(bool highlighted);
 
     void updateColorSelector();
 
@@ -140,6 +236,14 @@ public Q_SLOTS:
     void onMustShowAllDimension();
 
     void onColorSelectorChanged(float r, float g, float b, float a);
+
+    void onAdjustPanelToggled(bool expanded);
+
+    void onAdjustPanelValuesEdited(KnobColorValue value, ColorAdjustPanel::GesturePhaseEnum phase, QString undoLabel);
+
+    void onProjectColorConfigChanged();
+
+    void refreshAdjustPanelState();
 
 Q_SIGNALS:
 
@@ -159,6 +263,10 @@ private:
 
     virtual bool isAutoFoldDimensionsEnabled() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual bool wantsFixedDimensionLabelSlot() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool wantsPerDimensionSliders() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual bool isRectangleType() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return false;
@@ -173,6 +281,12 @@ private:
     virtual void getDecimals(std::vector<int>* decimals) const OVERRIDE FINAL;
     virtual void addExtraWidgets(QHBoxLayout* containerLayout) OVERRIDE FINAL;
     virtual void updateExtraGui(const std::vector<double>& values) OVERRIDE FINAL;
+    virtual QWidget* createBelowRowWidget(QWidget* parent) OVERRIDE FINAL;
+
+    ProjectColorManagementPtr getColorManagement() const;
+    void refreshAdjustPanelColorManagement();
+    bool isAdjustPanelEditable() const;
+    void refreshAdjustPanelToolTip(bool expanded);
 
     void updateLabel(double r, double g, double b, double a);
 
@@ -188,8 +302,15 @@ private:
     ColorPickerLabel *_colorLabel;
     ColorSelectorWidget *_colorSelector;
     QToolButton *_colorSelectorButton;
+    QToolButton* _globalModeButton;
     std::vector<double> _lastColor;
     bool _useSimplifiedUI;
+    bool _dimensionsWereFoldedWhenPanelOpened;
+    QPointer<ColorAdjustPanel> _adjustPanel;
+    QPointer<QWidget> _rowContainer;
+    std::unique_ptr<ColorKnobEditSession> _editSession;
+    std::weak_ptr<ProjectColorManagement> _configCallbackOwner;
+    int _configCallbackId;
 };
 
 NATRON_NAMESPACE_EXIT

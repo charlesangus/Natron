@@ -11,6 +11,7 @@
 #   BENCH_BLUR_SIZE  size parameter of the Blur nodes (default 3; sigma = size / 2.4)
 #   BENCH_RES     tiny (32x32, isolates per-node overhead) | hd (1920x1080) | uhd (3840x2160); for the
 #                 plate-fed families it also picks the plate resolution (deepcomp always uses HD)
+#   BENCH_BLUR_FILTER  Blur "filter" choice (default: the plugin's own default)
 #   BENCH_PLATES_DIR  where make_plates.py wrote the plates (default build/bench/fixtures)
 #   BENCH_FRAMES  frames timed one at a time after the warm-up frame (default 3)
 #   BENCH_RANGE   frames rendered as one range, to measure frame-parallel throughput (default 0)
@@ -117,6 +118,7 @@ FRAMES = int(os.environ.get("BENCH_FRAMES", "3"))
 RANGE = int(os.environ.get("BENCH_RANGE", "0"))
 OUT = os.environ.get("BENCH_OUT", "")
 SEED = int(os.environ.get("BENCH_SEED", "1"))
+BLUR_FILTER = os.environ.get("BENCH_BLUR_FILTER", "")
 HOLD = float(os.environ.get("BENCH_HOLD", "0"))
 SETTINGS = os.environ.get("BENCH_SETTINGS", "")
 WORK = os.environ.get("BENCH_WORK", os.path.join(os.getcwd(), "build", "bench", "work"))
@@ -269,6 +271,8 @@ def blur(inp, i):
     n = make("net.sf.cimg.CImgBlur")
     n.connectInput(0, inp)
     param(n, "size").set(BLUR_SIZE, BLUR_SIZE)
+    if BLUR_FILTER:
+        set_choice(n, "filter", BLUR_FILTER)
     return n
 
 
@@ -681,6 +685,9 @@ def main():
         "n": N,
         "nodes": n_nodes,
         "res": RES,
+        "size": CUSTOM_SIZE,
+        "blur_size": BLUR_SIZE,
+        "blur_filter": BLUR_FILTER,
         "named": NAMED,
         "build_s": round(build_s, 4),
         "warm_wall_s": round(warm_wall, 4),

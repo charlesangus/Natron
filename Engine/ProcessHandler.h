@@ -99,13 +99,16 @@ class ProcessHandler
     QStringList _processArgs;
 
 public:
-
     /**
      * @brief Starts a new process which will load the project specified by "projectPath".
-     * The process will render using the effect specified by writer.
+     * The process will render using the effect specified by writer, over firstFrame..lastFrame
+     * by frameStep.
      **/
-    ProcessHandler(const QString & projectPath,
-                   OutputEffectInstance* writer);
+    ProcessHandler(const QString& projectPath,
+                   OutputEffectInstance* writer,
+                   int firstFrame,
+                   int lastFrame,
+                   int frameStep);
 
     virtual ~ProcessHandler();
 

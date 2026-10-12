@@ -1,0 +1,462 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "GpuCostModel.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <limits>
+
+#include <QThreadPool>
+
+#include "Engine/EffectInstance.h"
+#include "Engine/GpuContext.h"
+#include "Engine/Node.h"
+#include "Engine/Nodes/Filter/Blur.h"
+
+NATRON_NAMESPACE_ENTER
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+struct SeedCpuRow {
+    const char* pluginId;
+    double serialMsPerMpx;
+    double parallelSpeedup;
+};
+
+struct SeedCpuSigmaRow {
+    const char* pluginId;
+    const char* algorithm;
+    double sigmaMax;
+    double serialMsPerMpx;
+    double parallelSpeedup;
+};
+
+struct SeedGpuRow {
+    const char* pluginId;
+    double sigmaMax;
+    double kernelMsPerMpx;
+};
+
+#include "Engine/GpuCostSeed.inc"
+
+const SeedCpuRow kSeedCpuRows[] = { NATRON_GPU_COST_SEED_CPU_ROWS };
+const SeedCpuSigmaRow kSeedCpuSigmaRows[] = { NATRON_GPU_COST_SEED_CPU_SIGMA_ROWS };
+const SeedGpuRow kSeedGpuRows[] = { NATRON_GPU_COST_SEED_GPU_ROWS };
+
+// The thread count the seed's threaded profiles ran with.
+const int kSeedThreads = 16;
+
+const double kInfinity = std::numeric_limits<double>::infinity();
+
+double
+speedupAt(int threads,
+          double measuredSpeedup)
+{
+    if (threads <= 1) {
+        return 1.;
+    }
+    // A speedup below 1 is contention, which Amdahl's law cannot describe; it is kept as measured.
+    if (measuredSpeedup <= 1.) {
+        return measuredSpeedup;
+    }
+    const double p = (double)kSeedThreads;
+    const double serialFraction = std::min(1., std::max(0., (p / measuredSpeedup - 1.) / (p - 1.)));
+    const double speedup = 1. / (serialFraction + (1. - serialFraction) / threads);
+
+    return std::min(speedup, (double)threads);
+}
+
+double
+ema(double current,
+    double sample)
+{
+    return current + GpuCostModel::kEmaWeight * (sample - current);
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+GpuTransferRates
+GpuTransferRates::fromCalibration(const GpuCalibration& calibration)
+{
+    GpuTransferRates rates;
+
+    rates.uploadBytesPerSecond = calibration.uploadBytesPerSecond;
+    rates.downloadBytesPerSecond = calibration.downloadBytesPerSecond;
+    rates.unifiedMemory = calibration.unifiedMemory;
+
+    return rates;
+}
+
+GpuCostModel::GpuCostModel()
+{
+    for (const SeedCpuRow& seed : kSeedCpuRows) {
+        CpuRow row;
+        row.serialMsPerMpx = seed.serialMsPerMpx;
+        row.parallelSpeedup = seed.parallelSpeedup;
+        _cpu[seed.pluginId].push_back(row);
+    }
+    for (const SeedCpuSigmaRow& seed : kSeedCpuSigmaRows) {
+        CpuRow row;
+        row.sigmaMax = seed.sigmaMax;
+        row.iir = (std::strcmp(seed.algorithm, "iir") == 0);
+        row.serialMsPerMpx = seed.serialMsPerMpx;
+        row.parallelSpeedup = seed.parallelSpeedup;
+        _cpu[seed.pluginId].push_back(row);
+    }
+    for (const SeedGpuRow& seed : kSeedGpuRows) {
+        GpuRow row;
+        row.sigmaMax = seed.sigmaMax;
+        row.kernelMsPerMpx = seed.kernelMsPerMpx;
+        _gpu[seed.pluginId].push_back(row);
+    }
+    for (std::pair<const std::string, std::vector<GpuRow>>& rows : _gpu) {
+        std::stable_sort(rows.second.begin(), rows.second.end(), [](const GpuRow& a, const GpuRow& b) {
+            return a.sigmaMax < b.sigmaMax;
+        });
+    }
+}
+
+GpuCostModel&
+GpuCostModel::session()
+{
+    static GpuCostModel model;
+
+    return model;
+}
+
+void
+GpuCostModel::setThreadCount(int threads)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    _threads = std::max(0, threads);
+}
+
+int
+GpuCostModel::threadCount() const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    return threadCountLocked();
+}
+
+int
+GpuCostModel::threadCountLocked() const
+{
+    if (_threads > 0) {
+        return _threads;
+    }
+
+    return std::max(1, QThreadPool::globalInstance()->maxThreadCount());
+}
+
+void
+GpuCostModel::setTransferRates(const GpuTransferRates& rates)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    _rates = rates;
+}
+
+GpuTransferRates
+GpuCostModel::transferRates() const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    return _rates;
+}
+
+void
+GpuCostModel::setTraitsHint(const std::function<GpuTaskTraits(const FrameGraph::Task&)>& hint)
+{
+    _traitsHint = hint;
+}
+
+void
+GpuCostModel::setCpuSeed(const std::string& pluginId,
+                         double serialMsPerMpx,
+                         double parallelSpeedup)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    std::vector<CpuRow>& rows = _cpu[pluginId];
+
+    if (rows.empty()) {
+        rows.push_back(CpuRow());
+    }
+    for (CpuRow& row : rows) {
+        row.serialMsPerMpx = serialMsPerMpx;
+        row.parallelSpeedup = parallelSpeedup;
+        row.measured = false;
+    }
+}
+
+GpuTaskTraits
+GpuCostModel::traitsOf(const FrameGraph::Task& task) const
+{
+    if (_traitsHint) {
+        return _traitsHint(task);
+    }
+    const NodePtr& node = task.key.node;
+    if (!node) {
+        return GpuTaskTraits();
+    }
+    GpuTaskTraits traits(node->getPluginID());
+    EffectInstancePtr effect = node->getEffectInstance();
+    if (const Blur* blur = dynamic_cast<const Blur*>(effect.get())) {
+        BlurParams params;
+        blur->getParams(task.key.time, task.key.view, &params);
+        const double scale = std::ldexp(1., -(int)task.cacheMipmapLevel);
+        traits.sigma = std::max(params.sizeX, params.sizeY) * scale / 2.4;
+        traits.iir = (params.filter == BlurKernels::eFilterQuasiGaussian) || (params.filter == BlurKernels::eFilterGaussian);
+    }
+
+    return traits;
+}
+
+double
+GpuCostModel::megapixelsOf(const FrameGraph::Task& task)
+{
+    const RectI& rect = task.renderedRoI.isNull() ? task.roi : task.renderedRoI;
+
+    return rect.isNull() ? 0. : (double)rect.area() / 1e6;
+}
+
+const GpuCostModel::CpuRow*
+GpuCostModel::findCpuRowLocked(const GpuTaskTraits& traits) const
+{
+    std::map<std::string, std::vector<CpuRow>>::const_iterator found = _cpu.find(traits.pluginId);
+    if (found == _cpu.end()) {
+        return nullptr;
+    }
+    const CpuRow* plain = nullptr;
+    for (const CpuRow& row : found->second) {
+        if (row.sigmaMax < 0.) {
+            plain = &row;
+        } else if ((row.iir == traits.iir) && (row.sigmaMax >= traits.sigma)) {
+            return &row;
+        }
+    }
+
+    return plain;
+}
+
+GpuCostModel::CpuRow*
+GpuCostModel::findCpuRowLocked(const GpuTaskTraits& traits)
+{
+    return const_cast<CpuRow*>(static_cast<const GpuCostModel*>(this)->findCpuRowLocked(traits));
+}
+
+const GpuCostModel::GpuRow*
+GpuCostModel::findGpuRowLocked(const GpuTaskTraits& traits) const
+{
+    std::map<std::string, std::vector<GpuRow>>::const_iterator found = _gpu.find(traits.pluginId);
+    if ((found == _gpu.end()) || found->second.empty()) {
+        return nullptr;
+    }
+    for (const GpuRow& row : found->second) {
+        if (row.sigmaMax >= traits.sigma) {
+            return &row;
+        }
+    }
+
+    return &found->second.back();
+}
+
+GpuCostModel::GpuRow*
+GpuCostModel::findGpuRowLocked(const GpuTaskTraits& traits)
+{
+    return const_cast<GpuRow*>(static_cast<const GpuCostModel*>(this)->findGpuRowLocked(traits));
+}
+
+double
+GpuCostModel::seedThreadMsPerMpxLocked(const CpuRow& row) const
+{
+    const int threads = threadCountLocked();
+
+    return row.serialMsPerMpx * threads / speedupAt(threads, row.parallelSpeedup);
+}
+
+double
+GpuCostModel::cpuMs(const GpuTaskTraits& traits,
+                    double megapixels) const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    const CpuRow* row = findCpuRowLocked(traits);
+
+    if (!row) {
+        return 0.;
+    }
+    const double threadMsPerMpx = row->measured ? row->threadMsPerMpx : seedThreadMsPerMpxLocked(*row);
+
+    return threadMsPerMpx * megapixels / threadCountLocked();
+}
+
+double
+GpuCostModel::gpuMs(const GpuTaskTraits& traits,
+                    double megapixels) const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    const GpuRow* row = findGpuRowLocked(traits);
+
+    return row ? row->kernelMsPerMpx * megapixels : kInfinity;
+}
+
+bool
+GpuCostModel::hasGpuCost(const GpuTaskTraits& traits) const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    return findGpuRowLocked(traits) != nullptr;
+}
+
+double
+GpuCostModel::transferMs(double uploadBytes,
+                         double downloadBytes) const
+{
+    const GpuTransferRates rates = transferRates();
+
+    if (rates.unifiedMemory) {
+        return 0.;
+    }
+    double ms = 0.;
+    if (uploadBytes > 0.) {
+        ms += (rates.uploadBytesPerSecond > 0.) ? uploadBytes / rates.uploadBytesPerSecond * 1e3 : kInfinity;
+    }
+    if (downloadBytes > 0.) {
+        ms += (rates.downloadBytesPerSecond > 0.) ? downloadBytes / rates.downloadBytesPerSecond * 1e3 : kInfinity;
+    }
+
+    return ms;
+}
+
+double
+GpuCostModel::regionGainMs(const FrameGraph& graph,
+                           const FrameGraph::Region& region) const
+{
+    std::vector<bool> inRegion(graph.tasks.size(), false);
+    for (int m : region.members) {
+        inRegion[m] = true;
+    }
+
+    double savedMs = 0.;
+    double gpuTotalMs = 0.;
+    for (int m : region.members) {
+        const FrameGraph::Task& task = graph.tasks[m];
+        if (task.isIdentity) {
+            continue;
+        }
+        const GpuTaskTraits traits = traitsOf(task);
+        const double megapixels = megapixelsOf(task);
+        gpuTotalMs += gpuMs(traits, megapixels);
+        savedMs += cpuMs(traits, megapixels);
+    }
+
+    double uploadBytes = 0.;
+    for (int e : region.externalInputs) {
+        if (graph.tasks[e].device == FrameGraph::Device::Cpu) {
+            uploadBytes += (double)graph.tasks[e].estimatedBytes;
+        }
+    }
+    double downloadBytes = 0.;
+    for (const FrameGraph::Region::Output& output : region.outputs) {
+        bool cpuConsumed = output.isRoot;
+        for (int c : graph.tasks[output.task].consumerTasks) {
+            if (!inRegion[c] && (graph.tasks[c].device == FrameGraph::Device::Cpu)) {
+                cpuConsumed = true;
+            }
+        }
+        if (cpuConsumed) {
+            downloadBytes += (double)graph.tasks[output.task].estimatedBytes;
+        }
+    }
+
+    return savedMs - gpuTotalMs - transferMs(uploadBytes, downloadBytes) - kAcceptMarginMs;
+}
+
+void
+GpuCostModel::observeCpu(const GpuTaskTraits& traits,
+                         std::int64_t wallNs,
+                         int budget,
+                         double megapixels)
+{
+    if ((wallNs < 0) || (budget <= 0) || (megapixels <= 0.)) {
+        return;
+    }
+    const double sample = (double)wallNs * budget / 1e6 / megapixels;
+    std::lock_guard<std::mutex> lock(_mutex);
+    CpuRow* row = findCpuRowLocked(traits);
+
+    if (!row) {
+        CpuRow fresh;
+        fresh.measured = true;
+        fresh.threadMsPerMpx = sample;
+        _cpu[traits.pluginId].push_back(fresh);
+
+        return;
+    }
+    const double current = row->measured ? row->threadMsPerMpx : seedThreadMsPerMpxLocked(*row);
+    row->threadMsPerMpx = ema(current, sample);
+    row->measured = true;
+}
+
+void
+GpuCostModel::observeCpu(const FrameGraph::Task& task,
+                         std::int64_t wallNs,
+                         int budget)
+{
+    observeCpu(traitsOf(task), wallNs, budget, megapixelsOf(task));
+}
+
+void
+GpuCostModel::observeGpu(const GpuTaskTraits& traits,
+                         std::int64_t kernelNs,
+                         double megapixels)
+{
+    if ((kernelNs < 0) || (megapixels <= 0.)) {
+        return;
+    }
+    const double sample = (double)kernelNs / 1e6 / megapixels;
+    std::lock_guard<std::mutex> lock(_mutex);
+    GpuRow* row = findGpuRowLocked(traits);
+
+    if (!row) {
+        GpuRow fresh;
+        fresh.sigmaMax = kInfinity;
+        fresh.kernelMsPerMpx = sample;
+        _gpu[traits.pluginId].push_back(fresh);
+
+        return;
+    }
+    row->kernelMsPerMpx = ema(row->kernelMsPerMpx, sample);
+}
+
+void
+GpuCostModel::observeGpu(const FrameGraph::Task& task,
+                         std::int64_t kernelNs)
+{
+    observeGpu(traitsOf(task), kernelNs, megapixelsOf(task));
+}
+
+NATRON_NAMESPACE_EXIT

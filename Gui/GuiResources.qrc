@@ -151,6 +151,8 @@
         <file>Resources/Images/closeTab.png</file>
         <file>Resources/Images/closeTab_hovered.png</file>
         <file>Resources/Images/color_picker.png</file>
+        <file>Resources/Images/colorAdjustDropdown.png</file>
+        <file>Resources/Images/colorGlobalTrackball.png</file>
         <file>Resources/Images/colorwheel.png</file>
         <file>Resources/Images/colorwheel_overlay.png</file>
         <file>Resources/Images/combobox.png</file>

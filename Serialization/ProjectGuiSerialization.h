@@ -39,7 +39,8 @@
 #define NATRON_SERIALIZATION_NODE_GUI_MERGE_BACKDROP 4
 #define NATRON_SERIALIZATION_NODE_GUI_INTRODUCES_OVERLAY_COLOR 5
 #define NATRON_SERIALIZATION_NODE_GUI_INTRODUCES_CHILDREN 6
-#define NATRON_SERIALIZATION_NODE_GUI_VERSION NATRON_SERIALIZATION_NODE_GUI_INTRODUCES_CHILDREN
+#define NATRON_SERIALIZATION_NODE_GUI_INTRODUCES_USER_COLOR 7
+#define NATRON_SERIALIZATION_NODE_GUI_VERSION NATRON_SERIALIZATION_NODE_GUI_INTRODUCES_USER_COLOR
 
 #define NATRON_SERIALIZATION_NODE_BACKDROP_INTRODUCES_SELECTED 2
 #define NATRON_SERIALIZATION_NODE_BACKDROP_VERSION NATRON_SERIALIZATION_NODE_BACKDROP_INTRODUCES_SELECTED
@@ -128,6 +129,13 @@ struct NodeGuiSerialization
     double overlayColorB;
     bool hasOverlayColor;
 
+    // Only meaningful from NATRON_SERIALIZATION_NODE_GUI_INTRODUCES_USER_COLOR on: older files
+    // store no user colour, see resolveNodeGuiUserColor().
+    bool hasUserColor;
+    float userColorR;
+    float userColorG;
+    float userColorB;
+
     std::list<NodeGuiSerializationPtr> children;
 
     NodeGuiSerialization()
@@ -147,10 +155,30 @@ struct NodeGuiSerialization
         , overlayColorG(1.)
         , overlayColorB(1.)
         , hasOverlayColor(false)
+        , hasUserColor(false)
+        , userColorR(0.f)
+        , userColorG(0.f)
+        , userColorB(0.f)
         , children()
     {
     }
 };
+
+/**
+ * @brief Whether the node should carry a user colour, and which one. Files older than
+ * NATRON_SERIALIZATION_NODE_GUI_INTRODUCES_USER_COLOR only stored a single node colour, which
+ * was the default of either the current category colours or the older grouping ladder the file
+ * may have been saved with, unless the user picked it. It is taken to be the user's only if it
+ * differs from both by more than 0.05 in some channel. Each colour is an RGB triple;
+ * legacyCategoryColor may be NULL, and with categoryColor NULL no stored colour is taken to be
+ * the user's, since there is nothing to tell a default apart from a pick.
+ **/
+bool resolveNodeGuiUserColor(const NodeGuiSerialization& node,
+                             const float* categoryColor,
+                             const float* legacyCategoryColor,
+                             float* r,
+                             float* g,
+                             float* b);
 
 /**
  * @brief A backdrop as files older than NATRON_SERIALIZATION_PROJECT_GUI_MERGE_BACKDROP saved

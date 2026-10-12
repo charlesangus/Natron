@@ -48,8 +48,6 @@ public:
     {
     }
 
-    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL { return false; }
-
     virtual std::string getPluginID() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return PLUGINID_NATRON_DOT;

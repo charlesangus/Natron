@@ -64,6 +64,7 @@ jobs:
       # end-of-job `ccache -s` keeps reporting cleanups, raise this
       # first.
       CCACHE_MAXSIZE: 6G
+      NATRON_DEPS_CACHE: ${{ github.workspace }}/.natron-deps
 
     steps:
       - name: Checkout branch
@@ -136,6 +137,14 @@ jobs:
             build/assets/CImg
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 
+      # The pinned Slang release is downloaded at configure time; the
+      # key hashes FetchSlang.cmake, so a version or SHA bump misses.
+      - name: Cache Slang
+        uses: actions/cache@v6.1.0
+        with:
+          path: .natron-deps
+          key: natron-deps-linux-${{ hashFiles('cmake/FetchSlang.cmake') }}
+
       - name: Fetch test assets
         run: tools/ci/local/fetch-assets.sh
 
@@ -156,12 +165,20 @@ jobs:
       # legacy leg left in smoke-reference.
       - name: Run ctest suite (debug, legacy scheduler)
         env:
+          # lavapipe is the CPU Vulkan device; without it the Gpu tests
+          # would skip silently, so REQUIRE_GPU turns that into a failure.
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          NATRON_TEST_REQUIRE_GPU: 1
           NATRON_RENDER_SCHEDULER: legacy
         run: tools/ci/local/test.sh ctest debug
 
       - name: Run ctest suite (debug, taskgraph scheduler)
         if: success() || failure()
         env:
+          # lavapipe is the CPU Vulkan device; without it the Gpu tests
+          # would skip silently, so REQUIRE_GPU turns that into a failure.
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          NATRON_TEST_REQUIRE_GPU: 1
           NATRON_RENDER_SCHEDULER: taskgraph
         run: tools/ci/local/test.sh ctest debug
 

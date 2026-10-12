@@ -1,5 +1,5 @@
 """The native Write in the GUI: the create-time save dialog and its filter, the panel's layout,
-a viewed Write writing nothing until rendered, rendering from the Render button with progress,
+a viewed Write writing nothing until rendered, rendering from the Render button through the render dialog and its progress dialog,
 read back and the Reload button, the output colourspace menu, no WriteOIIO / WritePNG left in the
 node search, and Render Selected on a non-writer node.
 
@@ -10,8 +10,7 @@ is missing).
 Screenshots (cropped unless noted): m76-write-panel.png (the Write's properties panel),
 m76-output-colorspace-menu.png (the Output Colorspace menu open on a submenu),
 m76-colorspace-changed.png and m76-colorspace-reset.png, m76-save-dialog-filter.png (the create-time
-save dialog with its filter menu) and m76-render-finished.png (the whole screen after the render,
-progress panel included).
+save dialog with its filter menu) and m76-render-finished.png (the whole screen after the render).
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m76_write.py
 """
@@ -32,7 +31,7 @@ try:
     from PySide6.QtCore import QEvent, QMetaObject, QPointF, QRect, Qt, QTimer, Q_ARG
     from PySide6.QtGui import QEnterEvent, QFocusEvent, QGuiApplication, QMouseEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QListView, QProgressBar, QPushButton, QWidget
+    from PySide6.QtWidgets import QApplication, QDialogButtonBox, QLabel, QLineEdit, QListView, QProgressBar, QProgressDialog, QPushButton, QWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -244,7 +243,7 @@ try:
         found = [b for b in panel.findChildren(QPushButton) if b.isVisible() and b.text() == text]
         return found[0] if len(found) == 1 else None
 
-    progress = {"bars": 0, "peak": 0, "panel_visible": False}
+    progress = {"bars": 0, "peak": 0, "panel_visible": False, "dialogs": 0, "modal": False}
 
     def sample_progress():
         for panel in gt.widgets_of("ProgressPanel"):
@@ -256,6 +255,44 @@ try:
                 progress["panel_visible"] = progress["panel_visible"] or panel.isVisible()
             except RuntimeError:
                 continue
+        for dialog in QApplication.topLevelWidgets():
+            try:
+                if isinstance(dialog, QProgressDialog) and dialog.isVisible():
+                    progress["dialogs"] += 1
+                    progress["modal"] = progress["modal"] or QApplication.activeModalWidget() is dialog
+            except RuntimeError:
+                continue
+
+    def drive_render_dialog(seen, preset=None):
+        """Accepts the RenderDialog the way a user would. The dialog runs its own event loop inside
+        whatever opened it, so a repeating timer does the work from within that loop."""
+        timer = QTimer()
+        timer.setInterval(100)
+
+        def poll():
+            dialogs = [d for d in gt.widgets_of("RenderDialog") if d.isVisible()]
+            if not dialogs:
+                return
+            timer.stop()
+            dialog = dialogs[0]
+            seen["dialog"] = True
+            seen["writers"] = [l.text() for l in dialog.findChildren(QLabel) if l.isVisible()]
+            combos = [w for w in dialog.findChildren(QWidget) if gt.class_name(w) == "ComboBox"]
+            seen["preset"] = str(combos[0].property("natronCurrentText")) if combos else None
+            if preset is not None and combos:
+                QMetaObject.invokeMethod(combos[0], "setCurrentIndex", Q_ARG(int, preset))
+                QApplication.processEvents()
+            boxes = [w for w in dialog.findChildren(QDialogButtonBox) if w.isVisible()]
+            seen["ok"] = bool(boxes) and boxes[0].button(QDialogButtonBox.Ok) is not None
+            if seen["ok"]:
+                gt.shot("m76-render-dialog.png")
+                boxes[0].button(QDialogButtonBox.Ok).click()
+            else:
+                dialog.reject()
+
+        timer.timeout.connect(poll)
+        timer.start()
+        return timer
 
     sampler = QTimer()
     sampler.setInterval(5)
@@ -479,9 +516,16 @@ try:
         buttons = [b for b in panel.findChildren(QPushButton) if b.isVisible() and b.text() == "Render"]
         require(len(buttons) == 1, "the panel has a Render button (%d)" % len(buttons))
         check(not sequence_files(), "no output exists before rendering")
-        progress.update(bars=0, peak=0, panel_visible=False)
+        progress.update(bars=0, peak=0, panel_visible=False, dialogs=0, modal=False)
         sampler.start()
+        seen = {}
+        driver = drive_render_dialog(seen)
         buttons[0].click()
+        driver.stop()
+        check(seen.get("dialog", False), "the Render button opens the render dialog")
+        check(any(write.getLabel() in text for text in seen.get("writers", [])),
+              "the render dialog lists the Write (%r)" % seen.get("writers"))
+        check(seen.get("preset") == "Write node range", "the dialog defaults to the Write's own range (%r)" % seen.get("preset"))
         ok = yield ("until", lambda: len(sequence_files()) == 3 and all(s > 0 for s in sizes(sequence_files())), POLL_TIMEOUT_S)
         files = sequence_files()
         check(ok, "the render wrote three non-empty files (%r)" % list(zip([os.path.basename(f) for f in files], sizes(files))))
@@ -491,7 +535,10 @@ try:
         check(sizes(sequence_files()) == settled and len(settled) == 3, "the sequence has exactly three files and stopped growing")
         sampler.stop()
         report("NOTE progress seen: %r" % progress)
-        check(progress["bars"] > 0, "a progress bar appeared in the progress panel while rendering")
+        check(progress["dialogs"] > 0, "the modal progress dialog appeared while rendering")
+        check(progress["modal"], "the progress dialog was the active modal widget")
+        ok = yield ("until", lambda: not any(isinstance(d, QProgressDialog) and d.isVisible() for d in QApplication.topLevelWidgets()), POLL_TIMEOUT_S)
+        check(ok, "the progress dialog closed once the render finished")
         check(not (write.getPersistentMessage() or ""), "the Write reports no error (%r)" % write.getPersistentMessage())
         gt.shot("m76-render-finished.png")
 
@@ -577,14 +624,20 @@ try:
             QMetaObject.invokeMethod(dialog, "openSelectedFiles")
 
         QTimer.singleShot(500, fill)
-        # The Write that Render Selected creates asks for its file first; the call returns once fill()
-        # has accepted that dialog.
+        render_seen = {}
+        driver = drive_render_dialog(render_seen)
+        # The Write that Render Selected creates asks for its file first, then for the render dialog;
+        # the call returns once fill() and the driver have accepted both.
         QMetaObject.invokeMethod(guis[0], "renderSelectedNode")
         QApplication.processEvents()
+        driver.stop()
+        check(render_seen.get("dialog", False), "Render Selected opens the render dialog")
         check(seen.get("dialog", False), "Render Selected on a Constant asks where to save")
         created = [n for n in writers() if n.getScriptName() not in before]
         check(len(created) == 1, "Render Selected created one Write (%d)" % len(created))
         require(bool(created), "a new Write exists")
+        check(any(created[0].getLabel() in text for text in render_seen.get("writers", [])),
+              "the render dialog lists the new Write (%r)" % render_seen.get("writers"))
         check(created[0].getPluginID() == WRITE_ID, "the created node is a native Write (%s)" % created[0].getPluginID())
         check(str(created[0].getParam("filename").getValue()) == SELECTED, "its file is the one chosen (%r)" % created[0].getParam("filename").getValue())
         ok = yield ("until", lambda: os.path.isfile(SELECTED) and os.path.getsize(SELECTED) > 0, POLL_TIMEOUT_S)

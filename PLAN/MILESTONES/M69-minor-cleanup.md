@@ -72,7 +72,7 @@ Scouted 2026-10-11 on `milestone/m55-node-graph-polish` at `10e0accd5`. **Re-che
 
 ## Phase 69.3: Panels
 
-- [ ] M69.P3.T1 — Right-click the empty header space for the pane menu, at the cursor
+- [x] M69.P3.T1 — Right-click the empty header space for the pane menu, at the cursor
   - files: `Gui/TabWidget.h`, `Gui/TabWidget.cpp` (**REBASE (M56)**: `TabWidget.cpp` includes and the constructor's header margins/spacing, `:257-286`)
   - approach:
     - The pane menu is `TabWidget::createMenu()` (`TabWidget.cpp:383-470`): split vertical/horizontal, float, close, hide toolbar/tabs header, the "... here" entries, set as anchor. It is connected to `leftCornerButton`'s `clicked()` (`:314`) and opens with `menu.exec(leftCornerButton->mapToGlobal(QPoint(0, 0)))` (`:469`). The empty space right of the tabs is the stretch in the header row, owned by `TabWidgetHeader` (`TabWidget.h:121-145`), a bare `QWidget` that only handles `leaveEvent`.

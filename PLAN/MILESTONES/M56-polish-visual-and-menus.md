@@ -334,3 +334,14 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - Legacy icons remain, e.g. in the save dialog; do another sweep.
 
   All of these are being fixed together; the build waits for M69's cold build.
+- 2026-10-12 — **UAT round 1 fixes** (`9227c65b2` before rebase), all nine items:
+  - **Rendering and recolouring:** a new `ThemedIcon` icon engine renders the SVG at the requested size and reads the theme colours when it paints. That fixes the tiny header icons and makes recolouring live, through a new `GuiApplicationManager::themeChanged`.
+  - **Speed:** colour changes are debounced into one stylesheet reload.
+  - **White icons:** these were icons that bypassed theming (desktop-theme File-menu icons, Qt standard icons in the file dialog and message boxes). They are now themed glyphs. There was no linear/sRGB mismatch.
+  - **Dark disabled text:** a new `%12` stylesheet colour (the text colour blended into the base) replaces black.
+  - **Combo sizing:** combos size to their text, including the time-format dropdown.
+  - **Panel-count box:** the bin's "2" box is sized and centred.
+  - **Drive letters:** the drive-letters preference is removed.
+  - **New Lucide glyphs:** 15 more were vendored (File menu, file dialog, messages), and the colour-picker cursor now uses `pipette`.
+  - **Rebase:** onto `main` with M84, with no conflicts.
+  - **Needs the gate build:** these have only been compiled object by object so far. The build waits for M69's end-build agent.

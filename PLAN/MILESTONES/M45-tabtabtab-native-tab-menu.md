@@ -363,3 +363,9 @@ Acceptance sketch:
 - 2026-10-12 — **UAT round 1 (user) on `M45-222178856.AppImage`, not yet passed.**
   - **Popup flip:** the user rejects the search box flipping to the bottom. It's confusing and not how tabtabtab works, so the flip comes out of patch 0002. The host row metrics (Natron's row height, 15 rows) stay, and placement goes back to upstream's.
   - **Missing icons:** icons don't show reliably, e.g. Grade and Add. The bridge's icon resolution is being fixed to match how Natron shows those icons elsewhere.
+- 2026-10-12 — **UAT round 1 fixes** (`52405c3d0` after the rebase onto `main` with M84, no conflicts):
+  - **Popup flip:** the flip is removed from patch 0002. Placement is upstream's again, and Natron's row metrics stay.
+  - **Missing icons:** the adapter checked icon paths with `os.path.isfile`, which cannot see `:/` resource paths, so native nodes had no icon. It now uses `QFile.exists`.
+  - **SVG icons:** the bundle now also ships the `iconengines` Qt plugins, so SVG icons render sharp.
+  - **Tests:** a new `TabMenuBridge.NativeGradeCarriesItsResourceIcon` test was added. The Python suites pass (39 tests).
+  - **Waiting on the build:** the rebuild, the GUI re-run and the AppImage wait for M69's end-build agent.

@@ -29,21 +29,28 @@
 
 NATRON_NAMESPACE_ENTER
 namespace Serialization {
+struct ApplicationWindowSerialization;
 struct BezierCPSerialization;
 struct BezierSerialization;
 struct CurveSerialization;
 struct GroupKnobChildSerialization;
 struct GroupKnobSerialization;
+struct GuiLayoutSerialization;
 struct KeyFrameSerialization;
 struct KnobDimensionSerialization;
 struct KnobMasterSerialization;
 struct KnobSerialization;
 struct LayerRegistryEntrySerialization;
 struct LayerSerialization;
+struct NodeBackdropSerialization;
 struct NodeCollectionSerialization;
+struct NodeGuiSerialization;
 struct NodeSerialization;
+struct PaneLayoutSerialization;
+struct ProjectGuiSerialization;
 struct ProjectSavedByVersionSerialization;
 struct ProjectSerialization;
+struct PythonPanelSerialization;
 struct RotoContextSerialization;
 struct RotoDrawableItemSerialization;
 struct RotoItemSerialization;
@@ -51,9 +58,13 @@ struct RotoLayerChildSerialization;
 struct RotoLayerSerialization;
 struct RotoStrokeCurvesSerialization;
 struct RotoStrokeItemSerialization;
+struct SplitterChildSerialization;
+struct SplitterSerialization;
 struct TrackSerialization;
 struct TrackerContextSerialization;
+struct ViewerDataSerialization;
 
+typedef std::shared_ptr<NodeGuiSerialization> NodeGuiSerializationPtr;
 typedef std::shared_ptr<NodeSerialization> NodeSerializationPtr;
 }
 NATRON_NAMESPACE_EXIT

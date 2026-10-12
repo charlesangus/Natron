@@ -49,6 +49,8 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/RegisteredTabs.h"
 #include "Gui/GuiFwd.h"
 
+#include "Serialization/SerializationFwd.h"
+
 
 #define kMainSplitterObjectName "ToolbarSplitter"
 
@@ -224,6 +226,14 @@ public:
     ///prior to restoring. This is because older projects didn't have as much info to recreate the entire layout.
     void restoreLayout(bool wipePrevious, bool enableOldProjectCompatibility,
                        const GuiLayoutSerialization & layoutSerialization);
+    void restoreLayout(bool wipePrevious, bool enableOldProjectCompatibility,
+                       const Serialization::GuiLayoutSerialization & layoutSerialization);
+
+    /**
+     * @brief Fills serialization with the layout of the application: the main window, then the
+     * floating windows, each with the splitters and panes or the settings panel it holds.
+     **/
+    void toSerialization(Serialization::GuiLayoutSerialization* serialization);
 
     const std::list<TabWidget*> & getPanes() const;
     std::list<TabWidget*> getPanes_mt_safe() const;

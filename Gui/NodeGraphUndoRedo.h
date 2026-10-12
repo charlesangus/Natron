@@ -201,6 +201,36 @@ private:
     int _connectedEntryInput;
 };
 
+/*
+ * @brief Swaps node inputs between two recorded states. The "after" state is already
+ * in place when the command is pushed, so the first redo does nothing.
+ */
+class ReconnectInputsCommand
+    : public QUndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(ReconnectInputsCommand)
+
+public:
+    struct InputChange {
+        NodeWPtr node;
+        int inputNb;
+        NodeWPtr before;
+        NodeWPtr after;
+    };
+
+    ReconnectInputsCommand(NodeGraph* graph,
+                           const std::vector<InputChange>& changes,
+                           QUndoCommand* parent = 0);
+
+    virtual void undo();
+    virtual void redo();
+
+private:
+    void apply(bool toAfter);
+
+    std::vector<InputChange> _changes;
+    NodeGraph* _graph;
+    bool _firstRedoCalled;
+};
 
 class ResizeBackdropCommand
     : public QUndoCommand

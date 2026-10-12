@@ -41,6 +41,8 @@ struct SpliceNodeInfo {
     std::vector<SpliceNodeId> outputIds;
     bool isBackdrop;
     bool hasNoInputs;
+    bool isOutputNode;
+    bool isInputNode;
 
     SpliceNodeInfo()
         : id(-1)
@@ -49,6 +51,8 @@ struct SpliceNodeInfo {
         , outputIds()
         , isBackdrop(false)
         , hasNoInputs(false)
+        , isOutputNode(false)
+        , isInputNode(false)
     {
     }
 };
@@ -71,6 +75,28 @@ struct SplicePlan {
 SplicePlan planSplice(const std::vector<SpliceNodeInfo>& selection);
 
 SplicePlan planSpliceForSelection(const NodesGuiList& selection);
+
+struct PasteSplicePlan {
+    bool valid;
+    SpliceNodeId targetId;
+    SplicePlan splice;
+
+    PasteSplicePlan()
+        : valid(false)
+        , targetId(-1)
+        , splice()
+    {
+    }
+};
+
+// The target is the one non-backdrop node of the selection; the pasted set is
+// spliced below it, so the target must be able to feed it and the entry must
+// accept an input rather than feed the target.
+PasteSplicePlan planPasteSplice(const std::vector<SpliceNodeInfo>& selection,
+                                const std::vector<SpliceNodeInfo>& pasted);
+
+PasteSplicePlan planPasteSpliceForSelection(const NodesGuiList& selection,
+                                            const NodesGuiList& pasted);
 
 NATRON_NAMESPACE_EXIT
 

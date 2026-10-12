@@ -26,8 +26,10 @@
 #include "NodeGraph.h"
 #include "NodeGraphPrivate.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <limits>
+#include <map>
 #include <sstream> // stringstream
 #include <stdexcept>
 #include <vector>
@@ -69,6 +71,7 @@ GCC_DIAG_ON(unused-parameter)
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/NodeClipBoard.h"
 #include "Gui/NodeGraphConnect.h"
+#include "Gui/NodeGraphSplice.h"
 #include "Gui/NodeGui.h"
 
 #include "Global/QtCompat.h"
@@ -173,6 +176,120 @@ NodeGraph::cutSelectedNodes()
     deleteSelection();
 }
 
+static NodeGuiPtr
+findNodeGui(const NodesGuiList& nodes,
+            SpliceNodeId id)
+{
+    for (NodesGuiList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        if (reinterpret_cast<SpliceNodeId>((*it)->getNode().get()) == id) {
+            return *it;
+        }
+    }
+
+    return NodeGuiPtr();
+}
+
+/*
+ * Places and wires the pasted nodes below the one selected node, as node creation does,
+ * and pushes their creation and the new connections as one undo step. Returns false,
+ * having changed nothing, when the paste does not splice.
+ */
+static bool
+pasteOntoNode(NodeGraph* graph,
+              const NodesGuiList& selection,
+              const NodesGuiList& pasted)
+{
+    PasteSplicePlan plan = planPasteSpliceForSelection(selection, pasted);
+
+    if (!plan.valid) {
+        return false;
+    }
+
+    NodeGuiPtr targetGui = findNodeGui(selection, plan.targetId);
+    NodeGuiPtr entryGui = findNodeGui(pasted, plan.splice.entryId);
+    NodeGuiPtr exitGui = findNodeGui(pasted, plan.splice.exitId);
+    if (!targetGui || !entryGui || !exitGui) {
+        return false;
+    }
+
+    NodePtr targetNode = targetGui->getNode();
+    NodePtr entryNode = entryGui->getNode();
+    NodePtr exitNode = exitGui->getNode();
+
+    std::map<NodePtr, int> targetOutputs;
+    targetNode->getOutputsConnectedToThisNode(&targetOutputs);
+
+    std::vector<NodePtr> watchedNodes;
+    watchedNodes.push_back(entryNode);
+    for (std::map<NodePtr, int>::const_iterator it = targetOutputs.begin(); it != targetOutputs.end(); ++it) {
+        watchedNodes.push_back(it->first);
+    }
+    std::vector<std::vector<NodeWPtr>> inputsBefore;
+    for (std::size_t i = 0; i < watchedNodes.size(); ++i) {
+        inputsBefore.push_back(watchedNodes[i]->getGuiInputs());
+    }
+
+    const QPointF entryPosBefore = entryGui->getPos_mt_safe();
+    graph->moveNodesForIdealPosition(entryGui, targetGui, true);
+    const QPointF delta = entryGui->getPos_mt_safe() - entryPosBefore;
+    for (NodesGuiList::const_iterator it = pasted.begin(); it != pasted.end(); ++it) {
+        if (*it == entryGui) {
+            continue;
+        }
+        const QPointF pos = (*it)->getPos_mt_safe();
+        (*it)->setPosition(pos.x() + delta.x(), pos.y() + delta.y());
+    }
+
+    if (entryGui != exitGui) {
+        // Node creation re-routes the target's outputs to the node it placed, which for a
+        // pasted chain is the entry; the chain's result comes out of the exit.
+        for (std::map<NodePtr, int>::const_iterator it = targetOutputs.begin(); it != targetOutputs.end(); ++it) {
+            const std::vector<NodeWPtr>& inputs = it->first->getGuiInputs();
+            if ((it->second >= 0) && (it->second < (int)inputs.size()) && (inputs[it->second].lock() == entryNode)) {
+                ignore_result(it->first->replaceInput(exitNode, it->second));
+            }
+        }
+
+        QRectF pastedRect;
+        for (NodesGuiList::const_iterator it = pasted.begin(); it != pasted.end(); ++it) {
+            pastedRect |= (*it)->mapToScene((*it)->boundingRect()).boundingRect();
+        }
+        for (std::map<NodePtr, int>::const_iterator it = targetOutputs.begin(); it != targetOutputs.end(); ++it) {
+            NodeGuiIPtr outputGuiI = it->first->getNodeGui();
+            NodeGui* outputGui = dynamic_cast<NodeGui*>(outputGuiI.get());
+            if (outputGui) {
+                outputGui->moveBelowPositionRecursively(pastedRect);
+            }
+        }
+    }
+
+    std::vector<ReconnectInputsCommand::InputChange> changes;
+    for (std::size_t i = 0; i < watchedNodes.size(); ++i) {
+        const std::vector<NodeWPtr>& before = inputsBefore[i];
+        const std::vector<NodeWPtr>& after = watchedNodes[i]->getGuiInputs();
+        const std::size_t nInputs = std::max(before.size(), after.size());
+        for (std::size_t j = 0; j < nInputs; ++j) {
+            NodePtr beforeInput = (j < before.size()) ? before[j].lock() : NodePtr();
+            NodePtr afterInput = (j < after.size()) ? after[j].lock() : NodePtr();
+            if (beforeInput != afterInput) {
+                ReconnectInputsCommand::InputChange change;
+                change.node = watchedNodes[i];
+                change.inputNb = (int)j;
+                change.before = beforeInput;
+                change.after = afterInput;
+                changes.push_back(change);
+            }
+        }
+    }
+
+    QUndoCommand* pasteCommand = new QUndoCommand(NodeGraph::tr("Paste node(s)"));
+    new AddMultipleNodesCommand(graph, pasted, pasteCommand);
+    new ReconnectInputsCommand(graph, changes, pasteCommand);
+    graph->pushUndoCommand(pasteCommand);
+
+    return true;
+} // pasteOntoNode
+
 void
 NodeGraph::pasteCliboard(const NodeClipBoard& clipboard,
                          std::list<std::pair<std::string, NodeGuiPtr> >* newNodes)
@@ -203,10 +320,28 @@ NodeGraph::pasteNodeClipBoards(const QPointF& pos)
         return false;
     }
 
-    _imp->pasteNodesInternal(cb, _imp->_root->mapFromScene(pos), true, &newNodes);
+    const NodesGuiList selectionBeforePaste = _imp->_selection;
+    if (selectionBeforePaste.empty()) {
+        _imp->pasteNodesInternal(cb, _imp->_root->mapFromScene(pos), true, &newNodes);
+
+        return true;
+    }
+
+    _imp->pasteNodesInternal(cb, _imp->_root->mapFromScene(pos), false, &newNodes);
+    if (newNodes.empty() || (newNodes.size() != cb.nodes.size())) {
+        return true;
+    }
+
+    NodesGuiList pastedNodes;
+    for (std::list<std::pair<std::string, NodeGuiPtr>>::const_iterator it = newNodes.begin(); it != newNodes.end(); ++it) {
+        pastedNodes.push_back(it->second);
+    }
+    if (!pasteOntoNode(this, selectionBeforePaste, pastedNodes)) {
+        pushUndoCommand(new AddMultipleNodesCommand(this, pastedNodes));
+    }
 
     return true;
-}
+} // pasteNodeClipBoards
 
 bool
 NodeGraph::pasteNodeClipBoards()

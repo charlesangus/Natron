@@ -183,3 +183,126 @@ TEST(NodeGraphSplice, TwoFreeEntriesIsInvalid)
 
     EXPECT_FALSE(plan.valid);
 }
+
+namespace {
+SpliceNodeInfo
+makeTarget(SpliceNodeId id,
+           bool isOutputNode = false,
+           bool isBackdrop = false)
+{
+    SpliceNodeInfo info = makeInfo(id, std::vector<SpliceNodeId>(1, -1), 0, std::vector<SpliceNodeId>(), isBackdrop);
+
+    info.isOutputNode = isOutputNode;
+
+    return info;
+}
+
+std::vector<SpliceNodeInfo>
+makePastedChain()
+{
+    std::vector<SpliceNodeInfo> pasted;
+
+    pasted.push_back(makeInfo(10, std::vector<SpliceNodeId>(1, -1), 0, std::vector<SpliceNodeId>(1, 11)));
+    pasted.push_back(makeInfo(11, std::vector<SpliceNodeId>(1, 10), 0, std::vector<SpliceNodeId>()));
+
+    return pasted;
+}
+} // anonymous namespace
+
+TEST(NodeGraphPasteSplice, OneSelectedNodeTakesThePastedChain)
+{
+    std::vector<SpliceNodeInfo> selection(1, makeTarget(1));
+
+    PasteSplicePlan plan = planPasteSplice(selection, makePastedChain());
+
+    EXPECT_TRUE(plan.valid);
+    EXPECT_EQ(1, plan.targetId);
+    EXPECT_EQ(10, plan.splice.entryId);
+    EXPECT_EQ(0, plan.splice.entryInput);
+    EXPECT_EQ(11, plan.splice.exitId);
+}
+
+TEST(NodeGraphPasteSplice, NoSelectionIsInvalid)
+{
+    PasteSplicePlan plan = planPasteSplice(std::vector<SpliceNodeInfo>(), makePastedChain());
+
+    EXPECT_FALSE(plan.valid);
+}
+
+TEST(NodeGraphPasteSplice, TwoSelectedNodesIsInvalid)
+{
+    std::vector<SpliceNodeInfo> selection;
+
+    selection.push_back(makeTarget(1));
+    selection.push_back(makeTarget(2));
+
+    PasteSplicePlan plan = planPasteSplice(selection, makePastedChain());
+
+    EXPECT_FALSE(plan.valid);
+}
+
+TEST(NodeGraphPasteSplice, SelectedBackdropIsIgnored)
+{
+    std::vector<SpliceNodeInfo> selection;
+
+    selection.push_back(makeTarget(1, false, true));
+    selection.push_back(makeTarget(2));
+
+    PasteSplicePlan plan = planPasteSplice(selection, makePastedChain());
+
+    EXPECT_TRUE(plan.valid);
+    EXPECT_EQ(2, plan.targetId);
+}
+
+TEST(NodeGraphPasteSplice, OnlyABackdropSelectedIsInvalid)
+{
+    std::vector<SpliceNodeInfo> selection(1, makeTarget(1, false, true));
+
+    PasteSplicePlan plan = planPasteSplice(selection, makePastedChain());
+
+    EXPECT_FALSE(plan.valid);
+}
+
+TEST(NodeGraphPasteSplice, OutputTargetIsInvalid)
+{
+    std::vector<SpliceNodeInfo> selection(1, makeTarget(1, true));
+
+    PasteSplicePlan plan = planPasteSplice(selection, makePastedChain());
+
+    EXPECT_FALSE(plan.valid);
+}
+
+TEST(NodeGraphPasteSplice, PastedSetWithoutSingleEntryIsInvalid)
+{
+    std::vector<SpliceNodeInfo> selection(1, makeTarget(1));
+    std::vector<SpliceNodeInfo> pasted;
+
+    pasted.push_back(makeInfo(10, std::vector<SpliceNodeId>(1, -1), 0, std::vector<SpliceNodeId>()));
+    pasted.push_back(makeInfo(11, std::vector<SpliceNodeId>(1, -1), 0, std::vector<SpliceNodeId>()));
+
+    PasteSplicePlan plan = planPasteSplice(selection, pasted);
+
+    EXPECT_FALSE(plan.valid);
+}
+
+TEST(NodeGraphPasteSplice, PastedReaderIsInvalid)
+{
+    std::vector<SpliceNodeInfo> selection(1, makeTarget(1));
+    std::vector<SpliceNodeInfo> pasted(1, makeInfo(10, std::vector<SpliceNodeId>(), -1, std::vector<SpliceNodeId>(), false, true));
+
+    PasteSplicePlan plan = planPasteSplice(selection, pasted);
+
+    EXPECT_FALSE(plan.valid);
+}
+
+TEST(NodeGraphPasteSplice, GeneratorEntryIsInvalid)
+{
+    std::vector<SpliceNodeInfo> selection(1, makeTarget(1));
+    std::vector<SpliceNodeInfo> pasted = makePastedChain();
+
+    pasted[0].isInputNode = true;
+
+    PasteSplicePlan plan = planPasteSplice(selection, pasted);
+
+    EXPECT_FALSE(plan.valid);
+}

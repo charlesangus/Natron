@@ -133,14 +133,14 @@ planSplice(const std::vector<SpliceNodeInfo>& selection)
     return plan;
 } // planSplice
 
-SplicePlan
-planSpliceForSelection(const NodesGuiList& selection)
+static std::vector<SpliceNodeInfo>
+makeSpliceInfos(const NodesGuiList& nodes)
 {
     std::vector<SpliceNodeInfo> infos;
 
-    infos.reserve(selection.size());
+    infos.reserve(nodes.size());
 
-    for (NodesGuiList::const_iterator it = selection.begin(); it != selection.end(); ++it) {
+    for (NodesGuiList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
         const NodeGuiPtr& nodeGui = *it;
         NodePtr node = nodeGui->getNode();
         if (!node) {
@@ -150,6 +150,8 @@ planSpliceForSelection(const NodesGuiList& selection)
         SpliceNodeInfo info;
         info.id = reinterpret_cast<SpliceNodeId>(node.get());
         info.isBackdrop = dynamic_cast<BackdropGui*>(nodeGui.get()) != 0;
+        info.isOutputNode = node->isOutputNode();
+        info.isInputNode = node->isInputNode();
 
         EffectInstancePtr effect = node->getEffectInstance();
         info.hasNoInputs = (effect && effect->isReader()) || (node->getNInputs() == 0);
@@ -176,7 +178,59 @@ planSpliceForSelection(const NodesGuiList& selection)
         infos.push_back(info);
     }
 
-    return planSplice(infos);
-} // planSpliceForSelection
+    return infos;
+} // makeSpliceInfos
+
+SplicePlan
+planSpliceForSelection(const NodesGuiList& selection)
+{
+    return planSplice(makeSpliceInfos(selection));
+}
+
+PasteSplicePlan
+planPasteSplice(const std::vector<SpliceNodeInfo>& selection,
+                const std::vector<SpliceNodeInfo>& pasted)
+{
+    PasteSplicePlan plan;
+
+    const SpliceNodeInfo* target = 0;
+    for (std::size_t i = 0; i < selection.size(); ++i) {
+        if (selection[i].isBackdrop) {
+            continue;
+        }
+        if (target) {
+            return plan;
+        }
+        target = &selection[i];
+    }
+
+    if (!target || target->isOutputNode) {
+        return plan;
+    }
+
+    SplicePlan splice = planSplice(pasted);
+    if (!splice.valid) {
+        return plan;
+    }
+
+    for (std::size_t i = 0; i < pasted.size(); ++i) {
+        if ((pasted[i].id == splice.entryId) && pasted[i].isInputNode) {
+            return plan;
+        }
+    }
+
+    plan.valid = true;
+    plan.targetId = target->id;
+    plan.splice = splice;
+
+    return plan;
+} // planPasteSplice
+
+PasteSplicePlan
+planPasteSpliceForSelection(const NodesGuiList& selection,
+                            const NodesGuiList& pasted)
+{
+    return planPasteSplice(makeSpliceInfos(selection), makeSpliceInfos(pasted));
+}
 
 NATRON_NAMESPACE_EXIT

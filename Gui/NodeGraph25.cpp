@@ -248,19 +248,22 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
     } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphSwitchInputs, modifiers, key) ) {
         ///No need to make an undo command for this, the user just have to do it a second time to reverse the effect
         switchInputs1and2ForSelectedNodes();
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphSelectAll, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphConnectSelectedToLast, modifiers, key)) {
+        connectSelectedNodesToLastSelected();
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphConnectLastToSelected, modifiers, key)) {
+        connectLastSelectedToSelectedNodes();
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphSelectAll, modifiers, key)) {
         selectAllNodes(false);
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphSelectAllVisible, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphSelectAllVisible, modifiers, key)) {
         selectAllNodes(true);
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphMakeGroup, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphMakeGroup, modifiers, key)) {
         createGroupFromSelection();
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphExpandGroup, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphExpandGroup, modifiers, key)) {
         expandSelectedGroups();
-    } else if ( (key == Qt::Key_Control) && (e->modifiers() == Qt::ControlModifier) ) {
+    } else if ((key == Qt::Key_Control) && (e->modifiers() == Qt::ControlModifier)) {
         _imp->setNodesBendPointsVisible(true);
         accept = false;
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphSelectUp, modifiers, key) ||
-                isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphNavigateUpstream, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphSelectUp, modifiers, key) || isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphNavigateUpstream, modifiers, key)) {
         ///We try to find if the last selected node has an input, if so move selection (or add to selection)
         ///the first valid input node
         if ( !_imp->_selection.empty() ) {
@@ -283,8 +286,7 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
                 }
             }
         }
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphSelectDown, modifiers, key) ||
-                isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphNavigateDownstream, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphSelectDown, modifiers, key) || isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphNavigateDownstream, modifiers, key)) {
         ///We try to find if the last selected node has an output, if so move selection (or add to selection)
         ///the first valid output node
         if ( !_imp->_selection.empty() ) {
@@ -310,49 +312,49 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
                 } // firstOutput
             }
         }
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerFirst, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerFirst, modifiers, key)) {
         if ( getLastSelectedViewer() ) {
             getLastSelectedViewer()->firstFrame();
         }
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerLast, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerLast, modifiers, key)) {
         if ( getLastSelectedViewer() ) {
             getLastSelectedViewer()->lastFrame();
         }
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevIncr, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevIncr, modifiers, key)) {
         if ( getLastSelectedViewer() ) {
             getLastSelectedViewer()->previousIncrement();
         }
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerNextIncr, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerNextIncr, modifiers, key)) {
         if ( getLastSelectedViewer() ) {
             getLastSelectedViewer()->nextIncrement();
         }
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerNext, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerNext, modifiers, key)) {
         if ( getLastSelectedViewer() ) {
             getLastSelectedViewer()->nextFrame();
         }
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevious, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevious, modifiers, key)) {
         if ( getLastSelectedViewer() ) {
             getLastSelectedViewer()->previousFrame();
         }
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevKF, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevKF, modifiers, key)) {
         getGui()->getApp()->goToPreviousKeyframe();
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerNextKF, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerNextKF, modifiers, key)) {
         getGui()->getApp()->goToNextKeyframe();
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphRearrangeNodes, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphRearrangeNodes, modifiers, key)) {
         if ( !_imp->rearrangeSelectedNodes() ) {
             accept = false;
         }
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphDisableNodes, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphDisableNodes, modifiers, key)) {
         toggleSelectedNodesEnabled();
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphShowExpressions, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphShowExpressions, modifiers, key)) {
         toggleKnobLinksVisible();
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphToggleAutoPreview, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphToggleAutoPreview, modifiers, key)) {
         toggleAutoPreview();
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphToggleAutoTurbo, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphToggleAutoTurbo, modifiers, key)) {
         toggleAutoTurbo();
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFindNode, modifiers, key) ) {
-        popFindDialog(QCursor::pos());
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphRenameNode, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFindNode, modifiers, key)) {
+        popFindDialog( QCursor::pos() );
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphRenameNode, modifiers, key)) {
         renameNode();
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphExtractNode, modifiers, key)) {
         pushUndoCommand( new ExtractNodeUndoRedoCommand(this, _imp->_selection) );

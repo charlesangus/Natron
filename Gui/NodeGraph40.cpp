@@ -26,9 +26,11 @@
 #include "NodeGraph.h"
 #include "NodeGraphPrivate.h"
 
+#include <cstddef>
 #include <limits>
 #include <sstream> // stringstream
 #include <stdexcept>
+#include <vector>
 
 #if !defined(Q_MOC_RUN) && !defined(SBK_RUN)
 GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_OFF
@@ -49,6 +51,8 @@ GCC_DIAG_ON(unused-parameter)
 #include <QClipboard>
 #include <QDebug>
 #include <QMimeData>
+#include <QStatusBar>
+#include <QStringList>
 #include <QThread>
 
 #include "Engine/Node.h"
@@ -59,10 +63,12 @@ GCC_DIAG_ON(unused-parameter)
 
 #include "Gui/BackdropGui.h"
 #include "Gui/CurveEditor.h"
+#include "Gui/Edge.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/NodeClipBoard.h"
+#include "Gui/NodeGraphConnect.h"
 #include "Gui/NodeGui.h"
 
 #include "Global/QtCompat.h"
@@ -487,5 +493,92 @@ NodeGraph::centerOnAllNodes()
     _imp->_refreshOverlays = true;
     update();
 } // NodeGraph::centerOnAllNodes
+
+static QString
+briefConnectFailureReason(Node::CanConnectInputReturnValue ret)
+{
+    switch (ret) {
+    case Node::eCanConnectInput_graphCycles:
+        return QCoreApplication::translate("NodeGraph", "would create a cycle");
+    case Node::eCanConnectInput_groupHasNoOutput:
+        return QCoreApplication::translate("NodeGraph", "the group has no output");
+    case Node::eCanConnectInput_differentPars:
+        return QCoreApplication::translate("NodeGraph", "different pixel aspect ratios");
+    case Node::eCanConnectInput_differentFPS:
+        return QCoreApplication::translate("NodeGraph", "different frame rates");
+    case Node::eCanConnectInput_multiResNotSupported:
+        return QCoreApplication::translate("NodeGraph", "multi-resolution isn't supported");
+    case Node::eCanConnectInput_incompatibleDataKind:
+        return QCoreApplication::translate("NodeGraph", "incompatible data kind");
+    case Node::eCanConnectInput_givenNodeNotConnectable:
+        return QCoreApplication::translate("NodeGraph", "it can't be connected to");
+    case Node::eCanConnectInput_indexOutOfRange:
+    case Node::eCanConnectInput_inputAlreadyConnected:
+    case Node::eCanConnectInput_ok:
+        break;
+    }
+
+    return QCoreApplication::translate("NodeGraph", "the connection was rejected");
+}
+
+void
+NodeGraph::applyConnectPlan(const std::vector<ConnectPlanConnection>& plan,
+                            const QString& undoText)
+{
+    QStringList skipped;
+    QUndoCommand* parentCommand = new QUndoCommand(undoText);
+
+    for (std::size_t i = 0; i < plan.size(); ++i) {
+        const ConnectPlanConnection& entry = plan[i];
+        NodePtr srcNode = entry.source ? entry.source->getNode() : NodePtr();
+        NodePtr dstNode = entry.dest ? entry.dest->getNode() : NodePtr();
+        if (!srcNode || !dstNode) {
+            continue;
+        }
+
+        Node::CanConnectInputReturnValue ret = dstNode->canConnectInput(srcNode, entry.destInput);
+        if (ret != Node::eCanConnectInput_ok) {
+            skipped << tr("%1 to %2's input %3 (%4)")
+                           .arg(QString::fromUtf8(srcNode->getLabel().c_str()))
+                           .arg(QString::fromUtf8(dstNode->getLabel().c_str()))
+                           .arg(entry.destInput + 1)
+                           .arg(briefConnectFailureReason(ret));
+            continue;
+        }
+
+        Edge* edge = entry.dest->getInputArrow(entry.destInput);
+        assert(edge);
+        if (!edge) {
+            continue;
+        }
+        new ConnectCommand(this, edge, edge->getSource(), entry.source, parentCommand);
+    }
+
+    if (parentCommand->childCount() > 0) {
+        pushUndoCommand(parentCommand);
+    } else {
+        delete parentCommand;
+    }
+
+    if (!skipped.isEmpty()) {
+        getGui()->statusBar()->showMessage(tr("Skipped: %1").arg(skipped.join(QLatin1String("; "))), 5000);
+    }
+} // NodeGraph::applyConnectPlan
+
+void
+NodeGraph::connectSelectedNodesToLastSelected()
+{
+    std::vector<ConnectPlanConnection> plan = planFeedLastSelectedForSelection(_imp->_selection);
+
+    applyConnectPlan(plan, tr("Connect Selected Nodes to Last Selected"));
+}
+
+void
+NodeGraph::connectLastSelectedToSelectedNodes()
+{
+    std::vector<ConnectPlanConnection> plan = planFeedSelectionFromLastForSelection(_imp->_selection);
+
+    applyConnectPlan(plan, tr("Connect Last Selected to Selected Nodes"));
+}
 
 NATRON_NAMESPACE_EXIT

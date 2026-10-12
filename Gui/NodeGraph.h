@@ -46,8 +46,9 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/NodeGraphI.h"
 #include "Engine/EngineFwd.h"
 
-#include "Gui/PanelWidget.h"
 #include "Gui/GuiFwd.h"
+#include "Gui/NodeGraphConnect.h"
+#include "Gui/PanelWidget.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -195,6 +196,10 @@ public Q_SLOTS:
 
     void switchInputs1and2ForSelectedNodes();
 
+    void connectSelectedNodesToLastSelected();
+
+    void connectLastSelectedToSelectedNodes();
+
     void extractSelectedNode();
 
     void createGroupFromSelection();
@@ -258,6 +263,8 @@ private:
     void cancelSplice();
 
     bool connectInputArrowToNode(Edge* arrow, const NodeGuiPtr& target);
+
+    void applyConnectPlan(const std::vector<ConnectPlanConnection>& plan, const QString& undoText);
 
     Edge* getPickedUpArrow() const;
 

@@ -953,6 +953,9 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphExpandGroup, kShortcutDescActionGraphExpandGroup, Qt::ControlModifier | Qt::AltModifier,
                     Qt::Key_G);
 
+    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphConnectSelectedToLast, kShortcutDescActionGraphConnectSelectedToLast, Qt::NoModifier, Qt::Key_Y);
+    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphConnectLastToSelected, kShortcutDescActionGraphConnectLastToSelected, Qt::ShiftModifier, Qt::Key_Y);
+
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphOpenNodePanel, kShortcutDescActionGraphOpenNodePanel, Qt::NoModifier, Qt::Key_Return);
 
 

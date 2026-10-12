@@ -247,13 +247,13 @@ try:
         param = NatronEngine.natron.getSettings().getParam("text")
         return tuple(int(round(param.getValue(i) * 255)) for i in range(3))
 
-    def opaque_colour(img):
+    def opaque_colour(img, min_alpha=250):
         """Mean colour of the fully opaque pixels: the stroke cores, free of edge blending."""
         n = r = g = b = 0
         for y in range(img.height()):
             for x in range(img.width()):
                 c = img.pixelColor(x, y)
-                if c.alpha() >= 250:
+                if c.alpha() >= min_alpha:
                     n += 1
                     r += c.red()
                     g += c.green()
@@ -322,8 +322,10 @@ try:
         return opaque_colour(button.icon().pixmap(QSize(ICON_PROBE_SIZE, ICON_PROBE_SIZE), QIcon.Normal, QIcon.Off).toImage())
 
     def label_pixmap_colour(label):
+        # A label's pixmap is rendered at its small display size, where a stroke's core can stop
+        # just short of fully opaque.
         pix = label.pixmap() if label is not None else None
-        return opaque_colour(pix.toImage()) if pix is not None and not pix.isNull() else None
+        return opaque_colour(pix.toImage(), FULL_STRENGTH_ALPHA) if pix is not None and not pix.isNull() else None
 
     # ---- themed-icon probe ---------------------------------------------------------------------
 

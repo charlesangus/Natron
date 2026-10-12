@@ -198,7 +198,7 @@ Scouted 2026-10-11 on `milestone/m55-node-graph-polish` at `10e0accd5`. **Re-che
   - verify: `NATRON_GUI_TEST_OUT=build/m69-shots GUI_TEST_TIMEOUT=300 Tests/gui/run-gui-test.sh Tests/gui/m69_cleanup.py build/fast/App/Natron` reports 0 failures. `m55_node_graph.py`, `m55_input_pipes.py` and (after the M56 rebase) `m56_visual.py` still report 0. The user approves the shots.
   - size: L
 
-- [ ] M69.P7.T2 — Package the AppImage and run the user checkpoint
+- [x] M69.P7.T2 — Package the AppImage and run the user checkpoint
   - files: `build/appimages/M69-<sha>.AppImage`, `build/appimages/M69-uat.md`
   - approach: `tools/ci/local/package.sh fast`. The UAT script covers:
     - deleting a node with its panel focused, then undo in another panel;
@@ -271,3 +271,4 @@ Acceptance sketch:
 - 2026-10-12 — **P8:** removed 1,932 lines. Beyond the brief, `markPersistentMessageFromProjectLoad` also went, because only the deleted warning used it. Still in place: the pre-2.2.3 `"<name>Choice"` string-param branch in `Node::loadKnob` (with only its filter call removed), and the flags `NODE_SERIALIZATION_ALWAYS_SAVES_CHANNEL_SET` and `KNOB_SERIALIZATION_CHANGE_LAYERS_SERIALIZATION`, which other definitions still use. Under the no-backward-compatibility rule, the pre-2.2.3 branch is removed in the P7.T1 end build.
 - 2026-10-12 — **P7.T1 (end build):** a cold build hit one compile error (missing `<QContextMenuEvent>` include). ctest 1944/1944. `m69_cleanup.py` 151 PASS / 0 FAIL across 10 sections; `m55_node_graph.py` and `m55_input_pipes.py` 0 FAIL. Product bugs fixed: the stub grab broad-phase reached only ±9 px, and the curve editor did not repaint after Join. The pre-2.2.3 Choice branch was removed. Shots are in `.worktrees/m69/build/m69-shots/out/`.
 - 2026-10-12 — **Screenshots approved (user)** (claude.ai artifact `L7vbjS2AiRqXC1aDrqnqnR`). The UAT AppImage is packaged once the build slot frees.
+- 2026-10-12 — **UAT AppImage:** `build/appimages/M69-a2e90be96.AppImage` (includes the bundled Vulkan loader), script `build/appimages/M69-uat.md`.

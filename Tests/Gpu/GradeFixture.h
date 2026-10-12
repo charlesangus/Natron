@@ -11,8 +11,8 @@
 #include <string>
 #include <vector>
 
-#include "ref/GradeRef.h"
 #include "Tolerance.h"
+#include "ref/GradeRef.h"
 
 // Inputs, bounds and per-element checks shared by the CPU-twin and GPU Grade
 // tests, so both are held to the same reference and the same tolerances.

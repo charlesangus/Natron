@@ -36,7 +36,7 @@ NATRON_NAMESPACE_ENTER
  **/
 class DeviceImage {
 public:
-    virtual ~DeviceImage() {}
+    virtual ~DeviceImage() { }
 
     /**
      * @brief The device memory the image occupies.

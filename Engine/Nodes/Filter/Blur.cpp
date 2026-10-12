@@ -885,8 +885,7 @@ bool
 usableView(const GpuImageView& view,
            int nComps)
 {
-    return view.buffer && (view.nComps == nComps) && (view.rowStrideFloats >= view.bounds.width() * nComps) &&
-           ((view.byteOffset % sizeof(float)) == 0);
+    return view.buffer && (view.nComps == nComps) && (view.rowStrideFloats >= view.bounds.width() * nComps) && ((view.byteOffset % sizeof(float)) == 0);
 }
 } // anonymous namespace
 #endif
@@ -895,8 +894,7 @@ bool
 Blur::canRenderOnGpu(const GpuQuery& query) const
 {
 #ifdef NATRON_HAVE_GPU
-    if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps < 1) || (query.nComps > (int)gpu::kGpuBlurMaxChannels) ||
-        query.hasMask || (query.mix != 1.) || (query.unPremultChannel != -1)) {
+    if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps < 1) || (query.nComps > (int)gpu::kGpuBlurMaxChannels) || query.hasMask || (query.mix != 1.) || (query.unPremultChannel != -1)) {
         return false;
     }
     // render() passes unprocessed channels through from the source, which the kernel does not.
@@ -907,14 +905,12 @@ Blur::canRenderOnGpu(const GpuQuery& query) const
     }
     BlurParams params;
     getParams(query.time, query.view, &params);
-    if ((params.filter != BlurKernels::eFilterFIRGaussian) || (params.orderX != 0) || (params.orderY != 0) ||
-        (params.alphaThreshold > 0.)) {
+    if ((params.filter != BlurKernels::eFilterFIRGaussian) || (params.orderX != 0) || (params.orderY != 0) || (params.alphaThreshold > 0.)) {
         return false;
     }
     const OfxPointD rs = query.mappedScale.toOfxPointD();
 
-    return (firRadius(rs.x * params.sizeX) <= (int)gpu::kGpuBlurMaxRadius) &&
-           (firRadius(rs.y * params.sizeY) <= (int)gpu::kGpuBlurMaxRadius);
+    return (firRadius(rs.x * params.sizeX) <= (int)gpu::kGpuBlurMaxRadius) && (firRadius(rs.y * params.sizeY) <= (int)gpu::kGpuBlurMaxRadius);
 #else
     Q_UNUSED(query);
 

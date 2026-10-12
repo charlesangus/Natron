@@ -259,13 +259,10 @@ windowOffset(const GpuImageView& view,
              const RectI& rect,
              uint32_t& offset)
 {
-    if (!view.buffer || (view.byteOffset % sizeof(float) != 0) || (view.rowStrideFloats <= 0) ||
-        !view.bounds.contains(rect)) {
+    if (!view.buffer || (view.byteOffset % sizeof(float) != 0) || (view.rowStrideFloats <= 0) || !view.bounds.contains(rect)) {
         return false;
     }
-    const uint64_t floats = view.byteOffset / sizeof(float) +
-                            (uint64_t)(rect.y1 - view.bounds.y1) * (uint64_t)view.rowStrideFloats +
-                            (uint64_t)(rect.x1 - view.bounds.x1) * (uint64_t)view.nComps;
+    const uint64_t floats = view.byteOffset / sizeof(float) + (uint64_t)(rect.y1 - view.bounds.y1) * (uint64_t)view.rowStrideFloats + (uint64_t)(rect.x1 - view.bounds.x1) * (uint64_t)view.nComps;
     if (floats > UINT32_MAX) {
         return false;
     }
@@ -393,9 +390,7 @@ bool
 Grade::canRenderOnGpu(const GpuQuery& query) const
 {
 #ifdef NATRON_HAVE_GPU
-    return query.bitDepth == eImageBitDepthFloat &&
-           (query.nComps == 1 || query.nComps == 3 || query.nComps == 4) &&
-           !query.hasMask && query.mix >= 1. && query.unPremultChannel == -1;
+    return query.bitDepth == eImageBitDepthFloat && (query.nComps == 1 || query.nComps == 3 || query.nComps == 4) && !query.hasMask && query.mix >= 1. && query.unPremultChannel == -1;
 #else
     Q_UNUSED(query);
 
@@ -450,7 +445,7 @@ Grade::renderGpu(const GpuRenderArgs& args)
         p.flags |= kGradeGpuClampWhite;
     }
 
-    const gpu::GpuStatus status = args.context.dispatch(gpu::GpuKernelId::grade, {src.buffer, dst.buffer}, p, {p.width, p.height, 1});
+    const gpu::GpuStatus status = args.context.dispatch(gpu::GpuKernelId::grade, { src.buffer, dst.buffer }, p, { p.width, p.height, 1 });
 
     return status ? eStatusOK : eStatusFailed;
 #else

@@ -367,8 +367,7 @@ TEST_F(NativeGradeGpuTest, MatchesTheCpuKernelOnTheGradeFixtures)
             if (!gradefix::matches(got[i], want[i], conditioned, bounds)) {
                 ++violations;
                 if (failures.size() < 10) {
-                    failures.push_back("case " + std::to_string(k) + " element " + std::to_string(i) + " in=" + std::to_string(in) +
-                                       " gpu=" + std::to_string(got[i]) + " cpu=" + std::to_string(want[i]));
+                    failures.push_back("case " + std::to_string(k) + " element " + std::to_string(i) + " in=" + std::to_string(in) + " gpu=" + std::to_string(got[i]) + " cpu=" + std::to_string(want[i]));
                 }
             }
         }
@@ -421,9 +420,7 @@ TEST_F(NativeGradeGpuTest, HonoursOffsetsAndStridesOfTheViews)
     for (int y = 0; y < rect.height(); ++y) {
         for (int x = 0; x < rect.width(); ++x) {
             for (int c = 0; c < nComps; ++c) {
-                packed[((size_t)y * rect.width() + x) * nComps + c] =
-                    src[srcByteOffset / sizeof(float) + (size_t)(rect.y1 - srcBounds.y1 + y) * srcStride +
-                        (size_t)(rect.x1 - srcBounds.x1 + x) * nComps + c];
+                packed[((size_t)y * rect.width() + x) * nComps + c] = src[srcByteOffset / sizeof(float) + (size_t)(rect.y1 - srcBounds.y1 + y) * srcStride + (size_t)(rect.x1 - srcBounds.x1 + x) * nComps + c];
             }
         }
     }
@@ -470,8 +467,7 @@ TEST_F(NativeGradeGpuTest, HonoursOffsetsAndStridesOfTheViews)
             const size_t col = rel % dstStride;
             const size_t firstRow = 4;
             const size_t firstCol = 7 * nComps;
-            if (row >= firstRow && row < firstRow + (size_t)rect.height() && col >= firstCol &&
-                col < firstCol + (size_t)rect.width() * nComps) {
+            if (row >= firstRow && row < firstRow + (size_t)rect.height() && col >= firstCol && col < firstCol + (size_t)rect.width() * nComps) {
                 inside = true;
                 wantIndex = (row - firstRow) * rect.width() * nComps + (col - firstCol);
             }

@@ -17,7 +17,6 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
 // "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
@@ -45,8 +44,7 @@
 NATRON_NAMESPACE_USING
 
 namespace {
-class ScopedEnv
-{
+class ScopedEnv {
 public:
     ScopedEnv(const char* name,
               const char* value)
@@ -65,7 +63,7 @@ public:
         if (_hadOld) {
             ::setenv(_name.c_str(), _old.c_str(), 1);
         } else {
-            ::unsetenv( _name.c_str() );
+            ::unsetenv(_name.c_str());
         }
     }
 
@@ -75,17 +73,16 @@ private:
     bool _hadOld;
 };
 
-struct LogCapture
-{
+struct LogCapture {
     std::mutex mutex;
     std::vector<std::string> lines;
 
-    std::function<void (const std::string&)> sink()
+    std::function<void(const std::string&)> sink()
     {
-        return [this] (const std::string& line) {
-                   std::lock_guard<std::mutex> k(mutex);
-                   lines.push_back(line);
-               };
+        return [this](const std::string& line) {
+            std::lock_guard<std::mutex> k(mutex);
+            lines.push_back(line);
+        };
     }
 };
 
@@ -103,7 +100,7 @@ makeOptions(GpuResolvedMode mode,
 
 TEST(GpuContextModeTest, EnvOverridesSetting)
 {
-    for (GpuComputeModeEnum setting : {eGpuComputeModeOff, eGpuComputeModeAuto}) {
+    for (GpuComputeModeEnum setting : { eGpuComputeModeOff, eGpuComputeModeAuto }) {
         EXPECT_EQ(GpuContext::resolveMode(setting, "off"), GpuResolvedMode::Off);
         EXPECT_EQ(GpuContext::resolveMode(setting, "auto"), GpuResolvedMode::Auto);
         EXPECT_EQ(GpuContext::resolveMode(setting, "force"), GpuResolvedMode::Force);

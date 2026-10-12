@@ -57,8 +57,7 @@ namespace {
     GpuStatus uploadWeights(GpuRecordContext& ctx, std::span<const float> w, GpuBuffer*& out)
     {
         if (w.empty() || w.size() > kGpuBlurMaxRadius + 1) {
-            return { VK_ERROR_FEATURE_NOT_PRESENT, "recordSeparableBlur: blur radius exceeds the GPU blur limit of "
-                                                       + std::to_string(kGpuBlurMaxRadius) };
+            return { VK_ERROR_FEATURE_NOT_PRESENT, "recordSeparableBlur: blur radius exceeds the GPU blur limit of " + std::to_string(kGpuBlurMaxRadius) };
         }
         if (GpuStatus s = ctx.scratch(w.size_bytes(), out); !s) {
             return s;

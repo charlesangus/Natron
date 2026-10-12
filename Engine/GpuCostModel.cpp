@@ -133,7 +133,7 @@ GpuCostModel::GpuCostModel()
         row.kernelMsPerMpx = seed.kernelMsPerMpx;
         _gpu[seed.pluginId].push_back(row);
     }
-    for (std::pair<const std::string, std::vector<GpuRow> >& rows : _gpu) {
+    for (std::pair<const std::string, std::vector<GpuRow>>& rows : _gpu) {
         std::stable_sort(rows.second.begin(), rows.second.end(), [](const GpuRow& a, const GpuRow& b) {
             return a.sigmaMax < b.sigmaMax;
         });
@@ -246,7 +246,7 @@ GpuCostModel::megapixelsOf(const FrameGraph::Task& task)
 const GpuCostModel::CpuRow*
 GpuCostModel::findCpuRowLocked(const GpuTaskTraits& traits) const
 {
-    std::map<std::string, std::vector<CpuRow> >::const_iterator found = _cpu.find(traits.pluginId);
+    std::map<std::string, std::vector<CpuRow>>::const_iterator found = _cpu.find(traits.pluginId);
     if (found == _cpu.end()) {
         return nullptr;
     }
@@ -271,7 +271,7 @@ GpuCostModel::findCpuRowLocked(const GpuTaskTraits& traits)
 const GpuCostModel::GpuRow*
 GpuCostModel::findGpuRowLocked(const GpuTaskTraits& traits) const
 {
-    std::map<std::string, std::vector<GpuRow> >::const_iterator found = _gpu.find(traits.pluginId);
+    std::map<std::string, std::vector<GpuRow>>::const_iterator found = _gpu.find(traits.pluginId);
     if ((found == _gpu.end()) || found->second.empty()) {
         return nullptr;
     }

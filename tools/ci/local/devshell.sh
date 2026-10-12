@@ -139,7 +139,7 @@ if [[ "${GPU}" == "1" ]]; then
     done
     if [[ "${RENDER_NODE_OK}" != "1" ]]; then
         echo "devshell.sh: --gpu needs a readable and writable /dev/dri/renderD* node;" >&2
-        echo "    found: $(ls -l /dev/dri/renderD* 2>&1 | tr '\n' ' ')" >&2
+        echo "    found: $(find /dev/dri -maxdepth 1 -name "renderD*" -ls 2>&1 | tr "\n" " ")" >&2
         echo "    see 'GPU container' in tools/ci/local/README.md for the host udev rule." >&2
         exit 1
     fi

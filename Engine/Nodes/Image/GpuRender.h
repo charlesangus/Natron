@@ -31,10 +31,10 @@
 #include <cstdint>
 #include <vector>
 
-#include "Global/Enums.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
+#include "Global/Enums.h"
 
 // Declared rather than included so engine code can name the GPU types in a build without NatronGpu.
 namespace gpu {
@@ -47,8 +47,7 @@ NATRON_NAMESPACE_ENTER
 /**
  * @brief What a node is asked to render, enough for it to say whether the GPU path can take it.
  **/
-struct GpuQuery
-{
+struct GpuQuery {
     double time;
     ViewIdx view;
     RenderScale mappedScale;
@@ -81,8 +80,7 @@ struct GpuQuery
  * @brief A window of interleaved float pixels in a device buffer. The view does not own the
  * buffer.
  **/
-struct GpuImageView
-{
+struct GpuImageView {
     gpu::GpuBuffer* buffer;
     uint64_t byteOffset;
     RectI bounds;
@@ -99,8 +97,7 @@ struct GpuImageView
     }
 };
 
-struct GpuRenderArgs
-{
+struct GpuRenderArgs {
     GpuQuery query;
     RectI outputRect;
 

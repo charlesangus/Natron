@@ -52,8 +52,8 @@
 #include "Engine/DeepImageCacheEntry.h"
 #include "Engine/FrameEntry.h"
 #include "Engine/GPUContextPool.h"
-#include "Engine/GpuContext.h"
 #include "Engine/GenericSchedulerThreadWatcher.h"
+#include "Engine/GpuContext.h"
 #include "Engine/Image.h"
 #include "Engine/TLSHolder.h"
 

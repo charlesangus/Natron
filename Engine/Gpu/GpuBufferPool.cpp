@@ -7,15 +7,15 @@ namespace gpu {
 
 namespace {
 
-constexpr VkDeviceSize kMinClass = 64 * 1024;
+    constexpr VkDeviceSize kMinClass = 64 * 1024;
 
-GpuStatus
-outOfMemory(VkDeviceSize size, uint64_t budget)
-{
-    return { VK_ERROR_OUT_OF_DEVICE_MEMORY,
-             "GPU buffer pool cannot provide " + std::to_string(size) + " bytes within a budget of "
-                 + std::to_string(budget) + " bytes" };
-}
+    GpuStatus
+    outOfMemory(VkDeviceSize size, uint64_t budget)
+    {
+        return { VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                 "GPU buffer pool cannot provide " + std::to_string(size) + " bytes within a budget of "
+                     + std::to_string(budget) + " bytes" };
+    }
 
 } // namespace
 

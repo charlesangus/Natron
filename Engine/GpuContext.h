@@ -57,8 +57,7 @@ NATRON_NAMESPACE_ENTER
  * @brief What the setting and the NATRON_GPU environment variable resolve to. Force accepts any device,
  * including CPU-type ones such as lavapipe.
  **/
-enum class GpuResolvedMode
-{
+enum class GpuResolvedMode {
     Off,
     Auto,
     Force
@@ -67,8 +66,7 @@ enum class GpuResolvedMode
 /**
  * @brief Measured at startup with one 64 MB round trip per transfer path.
  **/
-struct GpuCalibration
-{
+struct GpuCalibration {
     double uploadBytesPerSecond = 0.;
     double downloadBytesPerSecond = 0.;
     // Zero when the device cannot import host pointers.
@@ -80,8 +78,7 @@ struct GpuCalibration
     bool hostImport = false;
 };
 
-struct GpuContextOptions
-{
+struct GpuContextOptions {
     GpuResolvedMode mode = GpuResolvedMode::Off;
 
     // Empty selects automatically.
@@ -92,7 +89,7 @@ struct GpuContextOptions
 
     // Receives the informational line written when the GPU is unavailable, and one per device-loss recovery
     // attempt, so it is called for as long as the context lives. Unset writes them to the Qt info log.
-    std::function<void (const std::string&)> infoLog;
+    std::function<void(const std::string&)> infoLog;
 };
 
 /**
@@ -108,10 +105,8 @@ struct GpuContextOptions
  * initializes or while it is queried. The cost is a bounded stall of the thread that trims, only when a
  * freed buffer is still in use by a transfer.
  **/
-class GpuContext
-{
+class GpuContext {
 public:
-
     /**
      * @brief Starts initialization on a background thread unless @p options.mode is Off.
      **/
@@ -180,7 +175,6 @@ public:
     bool recoverIfLost();
 
 private:
-
     struct Shared;
 
     void initialize();
@@ -197,8 +191,7 @@ private:
  * pixel and nothing between rows, which is also how a RAM Image lays out its pixels. The rest is what the RAM image it
  * comes back as is made with.
  **/
-struct GpuImageLayout
-{
+struct GpuImageLayout {
     ImageLayerDesc layer;
     RectD rod;
     RectI bounds;
@@ -239,10 +232,8 @@ std::size_t gpuHostTransferBytes(const Image& image);
  * refuses from that point, and a consumer takes the RAM copy instead. Thread-safe.
  **/
 class GpuDeviceImage
-    : public DeviceImage
-{
+    : public DeviceImage {
 public:
-
     virtual ~GpuDeviceImage();
 
     /**
@@ -280,10 +271,9 @@ public:
      * @brief Lets the pool reclaim the buffer under memory pressure while the image is not pinned. onEvict runs on the
      * thread that needs the memory and must make the image's holder evict it to RAM.
      **/
-    void setEvictable(const std::function<void ()>& onEvict);
+    void setEvictable(const std::function<void()>& onEvict);
 
 private:
-
     GpuDeviceImage();
 
     struct Imp;

@@ -26,10 +26,10 @@
 
 #include "slang-cpp-prelude.h"
 
-#include "ref/BlurRef.h"
 #include "BlurFixture.h"
-#include "GradeFixture.h"
 #include "BlurKernels.h"
+#include "GradeFixture.h"
+#include "ref/BlurRef.h"
 
 extern "C" void grade_main(ComputeVaryingInput*, void* entryPointParams, void* globalParams);
 extern "C" void blurPass(ComputeVaryingInput*, void* entryPointParams, void* globalParams);

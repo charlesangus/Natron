@@ -33,13 +33,13 @@ struct GpuBufferPoolStats {
 };
 
 namespace detail {
-struct BufferLease {
-    GpuBuffer buffer;
-    GpuBufferPool* pool = nullptr;
-    uint64_t stamp = 0;
-    std::function<void()> onEvict;
-    bool evictable = false;
-};
+    struct BufferLease {
+        GpuBuffer buffer;
+        GpuBufferPool* pool = nullptr;
+        uint64_t stamp = 0;
+        std::function<void()> onEvict;
+        bool evictable = false;
+    };
 } // namespace detail
 
 // Shared ownership of one pooled buffer. The last copy to go away returns the buffer to the pool.

@@ -39,8 +39,7 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
-enum InitState
-{
+enum InitState {
     eInitPending = 0,
     eInitReady = 1,
     eInitUnavailable = 2
@@ -50,15 +49,14 @@ std::string
 lowerCase(const char* s)
 {
     std::string out(s);
-    std::transform( out.begin(), out.end(), out.begin(), [] (unsigned char c) { return (char)std::tolower(c); } );
+    std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) { return (char)std::tolower(c); });
 
     return out;
 }
 }
 
-struct GpuContext::Shared
-{
-    std::atomic<int> state {eInitPending};
+struct GpuContext::Shared {
+    std::atomic<int> state { eInitPending };
     mutable std::mutex mutex;
     mutable std::condition_variable cond;
     GpuCalibration calibration;
@@ -75,8 +73,7 @@ struct GpuContext::Shared
 
     // The free hook may run on any thread, possibly after the runtime started to go away, so it reaches the
     // runtime only through this pointer, which teardown clears under the exclusive lock.
-    struct HookTarget
-    {
+    struct HookTarget {
         std::shared_mutex mutex;
         gpu::GpuRuntime* runtime = nullptr;
     };
@@ -130,7 +127,7 @@ GpuContext::GpuContext(const GpuContextOptions& options)
 {
 #ifdef NATRON_HAVE_GPU
     if (_mode != GpuResolvedMode::Off) {
-        _thread = std::thread( [this] { initialize(); } );
+        _thread = std::thread([this] { initialize(); });
         return;
     }
 #endif
@@ -139,7 +136,7 @@ GpuContext::GpuContext(const GpuContextOptions& options)
 
 GpuContext::~GpuContext()
 {
-    if ( _thread.joinable() ) {
+    if (_thread.joinable()) {
         _thread.join();
     }
 #ifdef NATRON_HAVE_GPU
@@ -181,7 +178,7 @@ GpuContext::waitForInit(std::chrono::milliseconds timeout) const
 {
     std::unique_lock<std::mutex> k(_shared->mutex);
 
-    return _shared->cond.wait_for( k, timeout, [this] { return _shared->state.load() != eInitPending; } );
+    return _shared->cond.wait_for(k, timeout, [this] { return _shared->state.load() != eInitPending; });
 }
 
 GpuCalibration
@@ -295,8 +292,7 @@ constexpr std::size_t kCalibrationBytes = std::size_t(64) << 20;
 // Shifts the pointer off the import alignment so the transfer must take the staging path.
 constexpr std::size_t kStagingMisalignment = 64;
 
-struct RoundTrip
-{
+struct RoundTrip {
     double uploadBytesPerSecond = 0.;
     double downloadBytesPerSecond = 0.;
     gpu::TransferPath uploadPath = gpu::TransferPath::Staging;
@@ -325,7 +321,7 @@ roundTrip(gpu::GpuRuntime& runtime,
     up.path = &out.uploadPath;
     gpu::TimelineValue uploaded;
     const Clock::time_point t0 = Clock::now();
-    if (gpu::GpuStatus s = runtime.upload({host, kCalibrationBytes}, buffer, 0, uploaded, up); !s) {
+    if (gpu::GpuStatus s = runtime.upload({ host, kCalibrationBytes }, buffer, 0, uploaded, up); !s) {
         return s;
     }
     if (gpu::GpuStatus s = runtime.wait(uploaded); !s) {
@@ -337,7 +333,7 @@ roundTrip(gpu::GpuRuntime& runtime,
     down.handoff = gpu::ComputeHandoff::None;
     down.path = &out.downloadPath;
     gpu::TimelineValue downloaded;
-    if (gpu::GpuStatus s = runtime.download(buffer, 0, {host, kCalibrationBytes}, downloaded, down); !s) {
+    if (gpu::GpuStatus s = runtime.download(buffer, 0, { host, kCalibrationBytes }, downloaded, down); !s) {
         return s;
     }
     if (gpu::GpuStatus s = runtime.wait(downloaded); !s) {
@@ -377,7 +373,7 @@ calibrate(gpu::GpuRuntime& runtime,
     const std::size_t hostBytes = kCalibrationBytes + kStagingMisalignment;
     void* host = HostImageMemory::allocate(hostBytes);
     if (!host) {
-        return {VK_ERROR_OUT_OF_HOST_MEMORY, "calibration buffer allocation failed"};
+        return { VK_ERROR_OUT_OF_HOST_MEMORY, "calibration buffer allocation failed" };
     }
     std::memset(host, 0x5a, hostBytes);
 
@@ -397,8 +393,7 @@ calibrate(gpu::GpuRuntime& runtime,
 
     out.stagingUploadBytesPerSecond = staging.uploadBytesPerSecond;
     out.stagingDownloadBytesPerSecond = staging.downloadBytesPerSecond;
-    out.hostImport = tryImport && imported.uploadPath == gpu::TransferPath::HostImport &&
-                     imported.downloadPath == gpu::TransferPath::HostImport;
+    out.hostImport = tryImport && imported.uploadPath == gpu::TransferPath::HostImport && imported.downloadPath == gpu::TransferPath::HostImport;
     if (out.hostImport) {
         out.hostImportUploadBytesPerSecond = imported.uploadBytesPerSecond;
         out.hostImportDownloadBytesPerSecond = imported.downloadBytesPerSecond;
@@ -422,12 +417,12 @@ GpuContext::initialize()
     try {
         // The cache is switched on at creation, so the hook that drops its imports must exist first. It does
         // nothing until the runtime is published through the hook target.
-        shared.hookId = HostImageMemory::addFreeHook( [target] (void* ptr, std::size_t paddedBytes) {
-                                                          std::shared_lock<std::shared_mutex> k(target->mutex);
-                                                          if (target->runtime && !target->runtime->isLost()) {
-                                                              target->runtime->transfer().forgetHostAllocation(ptr, paddedBytes);
-                                                          }
-                                                      } );
+        shared.hookId = HostImageMemory::addFreeHook([target](void* ptr, std::size_t paddedBytes) {
+            std::shared_lock<std::shared_mutex> k(target->mutex);
+            if (target->runtime && !target->runtime->isLost()) {
+                target->runtime->transfer().forgetHostAllocation(ptr, paddedBytes);
+            }
+        });
 
         gpu::GpuRuntimeOptions rtOptions;
         rtOptions.device.deviceSelector = _options.device;
@@ -435,13 +430,13 @@ GpuContext::initialize()
         gpu::GpuStatus status = gpu::GpuRuntime::create(rtOptions, runtime);
         if (!status) {
             failure = status.message.empty() ? "no usable Vulkan device" : status.message;
-        } else if ( !isDeviceAllowed(_mode, runtime->device().info().type == VK_PHYSICAL_DEVICE_TYPE_CPU) ) {
+        } else if (!isDeviceAllowed(_mode, runtime->device().info().type == VK_PHYSICAL_DEVICE_TYPE_CPU)) {
             failure = "only a CPU-type Vulkan device is present (" + runtime->device().info().name + ")";
         } else {
             const gpu::GpuTransfer& transfer = runtime->transfer();
             if (transfer.hostImportSupported()) {
                 shared.previousAlignment = HostImageMemory::importAlignment();
-                HostImageMemory::setImportAlignment( (std::size_t)transfer.hostImportAlignment() );
+                HostImageMemory::setImportAlignment((std::size_t)transfer.hostImportAlignment());
                 shared.alignmentChanged = true;
             }
             {
@@ -514,7 +509,7 @@ GpuImageLayout::nComps() const
 std::size_t
 GpuImageLayout::pixelBytes() const
 {
-    if ( bounds.isNull() ) {
+    if (bounds.isNull()) {
         return 0;
     }
 
@@ -524,7 +519,7 @@ GpuImageLayout::pixelBytes() const
 std::size_t
 GpuImageLayout::deviceBytes() const
 {
-    return HostImageMemory::paddedSize( pixelBytes() );
+    return HostImageMemory::paddedSize(pixelBytes());
 }
 
 ImagePtr
@@ -534,7 +529,7 @@ GpuImageLayout::newRamImage() const
         return ImagePtr();
     }
     try {
-        return std::make_shared<Image>( key, Image::makeParams(rod, bounds, par, mipmapLevel, false, layer, eImageBitDepthFloat, fielding, eStorageModeRAM) );
+        return std::make_shared<Image>(key, Image::makeParams(rod, bounds, par, mipmapLevel, false, layer, eImageBitDepthFloat, fielding, eStorageModeRAM));
     } catch (const std::bad_alloc&) {
         return ImagePtr();
     }
@@ -544,19 +539,18 @@ std::size_t
 gpuHostTransferBytes(const Image& image)
 {
     const RectI bounds = image.getBounds();
-    if ( bounds.isNull() ) {
+    if (bounds.isNull()) {
         return 0;
     }
-    const std::size_t bytes = (std::size_t)bounds.area() * image.getComponentsCount() * getSizeOfForBitDepth( image.getBitDepth() );
-    if ( (image.getStorageMode() != eStorageModeRAM) || (bytes < HostImageMemory::minPooledBytes()) ) {
+    const std::size_t bytes = (std::size_t)bounds.area() * image.getComponentsCount() * getSizeOfForBitDepth(image.getBitDepth());
+    if ((image.getStorageMode() != eStorageModeRAM) || (bytes < HostImageMemory::minPooledBytes())) {
         return bytes;
     }
 
     return HostImageMemory::paddedSize(bytes);
 }
 
-struct GpuDeviceImage::Imp
-{
+struct GpuDeviceImage::Imp {
     mutable std::mutex mutex;
     GpuImageLayout layout;
     gpu::GpuRuntime* runtime = nullptr;
@@ -564,13 +558,13 @@ struct GpuDeviceImage::Imp
     int pins = 0;
     bool evicted = false;
     bool downloaded = false;
-    std::function<void ()> onEvict;
+    std::function<void()> onEvict;
 #ifdef NATRON_HAVE_GPU
     gpu::GpuBufferHandle buffer;
 
     void markEvictableLocked()
     {
-        if ( onEvict && buffer && (pins == 0) && !evicted ) {
+        if (onEvict && buffer && (pins == 0) && !evicted) {
             buffer.markEvictable(onEvict);
         }
     }
@@ -585,11 +579,11 @@ struct GpuDeviceImage::Imp
             return ImagePtr();
         }
         const std::size_t bytes = gpuHostTransferBytes(*image);
-        if ( (bytes == 0) || (bytes > buffer.size()) ) {
+        if ((bytes == 0) || (bytes > buffer.size())) {
             return ImagePtr();
         }
         {
-            Image::WriteAccess access( image.get() );
+            Image::WriteAccess access(image.get());
             unsigned char* data = access.pixelAt(layout.bounds.x1, layout.bounds.y1);
             if (!data) {
                 return ImagePtr();
@@ -597,13 +591,13 @@ struct GpuDeviceImage::Imp
             gpu::StreamOptions options;
             options.handoff = gpu::ComputeHandoff::Submit;
             gpu::TimelineValue done;
-            if ( !runtime->download(buffer.buffer(), 0, {data, bytes}, done, options) || !runtime->wait(done) ) {
+            if (!runtime->download(buffer.buffer(), 0, { data, bytes }, done, options) || !runtime->wait(done)) {
                 return ImagePtr();
             }
         }
         downloaded = true;
-        if ( RenderStatsPtr s = stats.lock() ) {
-            s->noteDownload( layout.pixelBytes() );
+        if (RenderStatsPtr s = stats.lock()) {
+            s->noteDownload(layout.pixelBytes());
         }
 
         return image;
@@ -627,7 +621,7 @@ GpuDeviceImage::create(gpu::GpuRuntime& runtime,
                        const RenderStatsPtr& stats)
 {
 #ifdef NATRON_HAVE_GPU
-    if ( !buffer || (buffer.size() < layout.deviceBytes()) ) {
+    if (!buffer || (buffer.size() < layout.deviceBytes())) {
         return std::shared_ptr<GpuDeviceImage>();
     }
     std::shared_ptr<GpuDeviceImage> image(new GpuDeviceImage);
@@ -694,7 +688,7 @@ GpuDeviceImage::evictToRam()
     ImagePtr image;
     {
         std::lock_guard<std::mutex> k(_imp->mutex);
-        if ( (_imp->pins > 0) || _imp->evicted ) {
+        if ((_imp->pins > 0) || _imp->evicted) {
             return ImagePtr();
         }
         image = _imp->downloadLocked();
@@ -729,7 +723,7 @@ GpuDeviceImage::pin()
 {
 #ifdef NATRON_HAVE_GPU
     std::lock_guard<std::mutex> k(_imp->mutex);
-    if ( !_imp->buffer || _imp->evicted || _imp->downloaded ) {
+    if (!_imp->buffer || _imp->evicted || _imp->downloaded) {
         return nullptr;
     }
     if (_imp->pins++ == 0) {
@@ -758,7 +752,7 @@ GpuDeviceImage::unpin()
 }
 
 void
-GpuDeviceImage::setEvictable(const std::function<void ()>& onEvict)
+GpuDeviceImage::setEvictable(const std::function<void()>& onEvict)
 {
 #ifdef NATRON_HAVE_GPU
     std::lock_guard<std::mutex> k(_imp->mutex);

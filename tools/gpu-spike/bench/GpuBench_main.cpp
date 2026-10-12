@@ -1052,7 +1052,8 @@ main(int argc, char** argv)
     const char* allowSoftware = std::getenv("GPU_SPIKE_ALLOW_SOFTWARE");
     if (dev->info().type == VK_PHYSICAL_DEVICE_TYPE_CPU && !(allowSoftware && allowSoftware[0] == '1')) {
         std::fprintf(stderr, "GpuBench needs a real GPU, found a software device (%s); "
-                             "GPU_SPIKE_ALLOW_SOFTWARE=1 accepts it\n", dev->info().name.c_str());
+                             "GPU_SPIKE_ALLOW_SOFTWARE=1 accepts it\n",
+                     dev->info().name.c_str());
         return 1;
     }
     std::printf("device: %s | transferUsesComputeQueue=%d hostImport=%d | iters=%d | hw threads %u\n",

@@ -157,8 +157,7 @@ sizeSweep(const Importer& imp, size_t align)
         const char* label;
         size_t bytes;
     };
-    const Sz sizes[] = { { "1MB", size_t(1) << 20 }, { "UHD", kUhdBytes }, { "8K", size_t(7680) * 4320 * 16 },
-                         { "4GB", size_t(4) << 30 } };
+    const Sz sizes[] = { { "1MB", size_t(1) << 20 }, { "UHD", kUhdBytes }, { "8K", size_t(7680) * 4320 * 16 }, { "4GB", size_t(4) << 30 } };
     for (const Sz& s : sizes) {
         const size_t bytes = roundUp(s.bytes, align);
         if (double(bytes) * 2.0 > memAvailableBytes()) {
@@ -309,7 +308,9 @@ main()
     Importer imp { dev->device(),
                    reinterpret_cast<PFN_vkGetMemoryHostPointerPropertiesEXT>(
                        vkGetDeviceProcAddr(dev->device(), "vkGetMemoryHostPointerPropertiesEXT")),
-                   {}, "", VK_SUCCESS };
+                   {},
+                   "",
+                   VK_SUCCESS };
     vkGetPhysicalDeviceMemoryProperties(dev->physicalDevice(), &imp.mem);
     if (!imp.getProps) {
         std::fprintf(stderr, "vkGetMemoryHostPointerPropertiesEXT missing\n");

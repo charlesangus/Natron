@@ -270,7 +270,8 @@ public:
                                                            int region,
                                                            int budget,
                                                            std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
-                                                           RegionReport* report)> RegionBody;
+                                                           RegionReport* report)>
+        RegionBody;
 
     RenderScheduler();
 

@@ -51,7 +51,7 @@ const std::size_t kBytes = 1000;
  **/
 FrameGraph
 makeGraph(int nTasks,
-          const std::vector<std::pair<int, int> >& edges)
+          const std::vector<std::pair<int, int>>& edges)
 {
     FrameGraph graph;
 
@@ -151,7 +151,7 @@ isContractionAcyclic(const FrameGraph& graph)
         return (graph.tasks[t].regionId >= 0) ? n + graph.tasks[t].regionId : t;
     };
     const int nNodes = n + (int)graph.regions.size();
-    std::vector<std::set<int> > out(nNodes);
+    std::vector<std::set<int>> out(nNodes);
 
     for (int t = 0; t < n; ++t) {
         for (int d : graph.tasks[t].dependencies) {
@@ -163,7 +163,7 @@ isContractionAcyclic(const FrameGraph& graph)
 
     // 0 unvisited, 1 on the DFS path, 2 done.
     std::vector<int> state(nNodes, 0);
-    std::vector<std::pair<int, std::set<int>::const_iterator> > stack;
+    std::vector<std::pair<int, std::set<int>::const_iterator>> stack;
     for (int root = 0; root < nNodes; ++root) {
         if (state[root] != 0) {
             continue;
@@ -210,14 +210,14 @@ findOutput(const FrameGraph::Region& region,
 // root 0 <- 1 <- 2 <- 3 <- reader 4 (CPU)
 TEST(GpuPlacement, ChainBecomesOneRegion)
 {
-    FrameGraph graph = makeGraph(5, { {0, 1}, {1, 2}, {2, 3}, {3, 4} });
+    FrameGraph graph = makeGraph(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
 
-    placeGraph(graph, gpuTasks(graph, {0, 1, 2, 3}));
+    placeGraph(graph, gpuTasks(graph, { 0, 1, 2, 3 }));
 
     ASSERT_EQ(graph.regions.size(), 1u);
     const FrameGraph::Region& region = graph.regions[0];
-    EXPECT_EQ(region.members, std::vector<int>({3, 2, 1, 0}));
-    EXPECT_EQ(region.externalInputs, std::vector<int>({4}));
+    EXPECT_EQ(region.members, std::vector<int>({ 3, 2, 1, 0 }));
+    EXPECT_EQ(region.externalInputs, std::vector<int>({ 4 }));
     for (int t = 0; t < 4; ++t) {
         EXPECT_EQ(graph.tasks[t].device, FrameGraph::Device::Gpu) << t;
         EXPECT_EQ(graph.tasks[t].regionId, 0) << t;
@@ -248,16 +248,16 @@ TEST(GpuPlacement, ChainBecomesOneRegion)
 // that region would wait on 2, which waits on it.
 TEST(GpuPlacement, DiamondWithCpuSideSplitsIntoConvexRegions)
 {
-    FrameGraph graph = makeGraph(5, { {0, 1}, {0, 2}, {1, 3}, {2, 3}, {3, 4} });
+    FrameGraph graph = makeGraph(5, { { 0, 1 }, { 0, 2 }, { 1, 3 }, { 2, 3 }, { 3, 4 } });
 
-    placeGraph(graph, gpuTasks(graph, {0, 1, 3}));
+    placeGraph(graph, gpuTasks(graph, { 0, 1, 3 }));
 
     ASSERT_EQ(graph.regions.size(), 2u);
     EXPECT_EQ(graph.tasks[2].device, FrameGraph::Device::Cpu);
     EXPECT_EQ(graph.tasks[4].device, FrameGraph::Device::Cpu);
     EXPECT_EQ(graph.tasks[1].regionId, graph.tasks[3].regionId);
     EXPECT_NE(graph.tasks[0].regionId, graph.tasks[1].regionId);
-    for (int t : {0, 1, 3}) {
+    for (int t : { 0, 1, 3 }) {
         EXPECT_EQ(graph.tasks[t].device, FrameGraph::Device::Gpu) << t;
         EXPECT_GE(graph.tasks[t].regionId, 0) << t;
     }
@@ -267,25 +267,25 @@ TEST(GpuPlacement, DiamondWithCpuSideSplitsIntoConvexRegions)
     EXPECT_TRUE(isContractionAcyclic(graph));
 
     const FrameGraph::Region& upstream = graph.regions[graph.tasks[3].regionId];
-    EXPECT_EQ(upstream.members, std::vector<int>({3, 1}));
-    EXPECT_EQ(upstream.externalInputs, std::vector<int>({4}));
+    EXPECT_EQ(upstream.members, std::vector<int>({ 3, 1 }));
+    EXPECT_EQ(upstream.externalInputs, std::vector<int>({ 4 }));
     const FrameGraph::Region::Output* three = findOutput(upstream, 3);
     ASSERT_TRUE(three);
     EXPECT_EQ(three->internalConsumers, 1);
     EXPECT_EQ(three->externalConsumers, 1);
 
     const FrameGraph::Region& merge = graph.regions[graph.tasks[0].regionId];
-    EXPECT_EQ(merge.members, std::vector<int>({0}));
-    EXPECT_EQ(merge.externalInputs, std::vector<int>({1, 2}));
+    EXPECT_EQ(merge.members, std::vector<int>({ 0 }));
+    EXPECT_EQ(merge.externalInputs, std::vector<int>({ 1, 2 }));
 }
 
 // GPU 3 feeds GPU 1 directly and through CPU 2, so they are in different regions. Root 0 (GPU) reads 3 first, then 1.
 // Joining 3's region would have that region wait on 1's, which waits on it, with no CPU task on the cycle.
 TEST(GpuPlacement, RegionsNeverWaitOnEachOther)
 {
-    FrameGraph graph = makeGraph(5, { {0, 3}, {0, 1}, {1, 3}, {1, 2}, {2, 3}, {3, 4} });
+    FrameGraph graph = makeGraph(5, { { 0, 3 }, { 0, 1 }, { 1, 3 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
 
-    placeGraph(graph, gpuTasks(graph, {0, 1, 3}));
+    placeGraph(graph, gpuTasks(graph, { 0, 1, 3 }));
 
     ASSERT_EQ(graph.regions.size(), 2u);
     EXPECT_NE(graph.tasks[1].regionId, graph.tasks[3].regionId);
@@ -299,13 +299,13 @@ TEST(GpuPlacement, RegionsNeverWaitOnEachOther)
 // GPU 3 feeds GPU 1 through two inputs and CPU 2 through one; the root 0 (CPU) reads 1 and 2.
 TEST(GpuPlacement, MultiConsumerNodeIsOneMemberWithConsumerCounts)
 {
-    FrameGraph graph = makeGraph(4, { {0, 1}, {0, 2}, {1, 3}, {1, 3}, {2, 3} });
+    FrameGraph graph = makeGraph(4, { { 0, 1 }, { 0, 2 }, { 1, 3 }, { 1, 3 }, { 2, 3 } });
 
-    placeGraph(graph, gpuTasks(graph, {1, 3}));
+    placeGraph(graph, gpuTasks(graph, { 1, 3 }));
 
     ASSERT_EQ(graph.regions.size(), 1u);
     const FrameGraph::Region& region = graph.regions[0];
-    EXPECT_EQ(region.members, std::vector<int>({3, 1}));
+    EXPECT_EQ(region.members, std::vector<int>({ 3, 1 }));
     EXPECT_TRUE(region.externalInputs.empty());
 
     const FrameGraph::Region::Output* three = findOutput(region, 3);
@@ -323,8 +323,8 @@ TEST(GpuPlacement, MultiConsumerNodeIsOneMemberWithConsumerCounts)
 // root 0 <- 1 (cached) <- 2
 TEST(GpuPlacement, CacheHitStaysOnCpu)
 {
-    FrameGraph graph = makeGraph(3, { {0, 1}, {1, 2} });
-    PlacementInputs inputs = gpuTasks(graph, {0, 1, 2});
+    FrameGraph graph = makeGraph(3, { { 0, 1 }, { 1, 2 } });
+    PlacementInputs inputs = gpuTasks(graph, { 0, 1, 2 });
     const FrameGraph::Task* cached = &graph.tasks[1];
     int capabilityCalls = 0;
     const auto canRender = inputs.canRenderOnGpu;
@@ -345,22 +345,22 @@ TEST(GpuPlacement, CacheHitStaysOnCpu)
     EXPECT_EQ(capabilityCalls, 2);
     ASSERT_EQ(graph.regions.size(), 2u);
     EXPECT_NE(graph.tasks[0].regionId, graph.tasks[2].regionId);
-    EXPECT_EQ(graph.regions[graph.tasks[0].regionId].externalInputs, std::vector<int>({1}));
+    EXPECT_EQ(graph.regions[graph.tasks[0].regionId].externalInputs, std::vector<int>({ 1 }));
 }
 
 // root 0 (GPU) <- identity 1 <- 2 (GPU) <- identity 3 <- reader 4 (CPU)
 TEST(GpuPlacement, IdentityJoinsItsInputsRegionOnly)
 {
-    FrameGraph graph = makeGraph(5, { {0, 1}, {1, 2}, {2, 3}, {3, 4} });
+    FrameGraph graph = makeGraph(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
     graph.tasks[1].isIdentity = true;
     graph.tasks[3].isIdentity = true;
 
-    placeGraph(graph, gpuTasks(graph, {0, 1, 2, 3}));
+    placeGraph(graph, gpuTasks(graph, { 0, 1, 2, 3 }));
 
     EXPECT_EQ(graph.tasks[3].device, FrameGraph::Device::Cpu);
     ASSERT_EQ(graph.regions.size(), 1u);
-    EXPECT_EQ(graph.regions[0].members, std::vector<int>({2, 1, 0}));
-    EXPECT_EQ(graph.regions[0].externalInputs, std::vector<int>({3}));
+    EXPECT_EQ(graph.regions[0].members, std::vector<int>({ 2, 1, 0 }));
+    EXPECT_EQ(graph.regions[0].externalInputs, std::vector<int>({ 3 }));
 
     // Identity 1 aliases 2's image; the uploaded identity 3 counts.
     EXPECT_EQ(graph.regions[0].workingSetBytes, kBytes * (1 + 3 + 4));
@@ -368,8 +368,8 @@ TEST(GpuPlacement, IdentityJoinsItsInputsRegionOnly)
 
 TEST(GpuPlacement, RejectedRegionStaysOnCpu)
 {
-    FrameGraph graph = makeGraph(3, { {0, 1}, {1, 2} });
-    PlacementInputs inputs = gpuTasks(graph, {0, 1, 2});
+    FrameGraph graph = makeGraph(3, { { 0, 1 }, { 1, 2 } });
+    PlacementInputs inputs = gpuTasks(graph, { 0, 1, 2 });
 
     inputs.regionGain = [](const FrameGraph&, const FrameGraph::Region&) {
         return -1.;
@@ -393,9 +393,9 @@ gpuUnavailable()
 
 TEST(GpuPlacement, NoAvailabilityLeavesGraphUnchanged)
 {
-    const FrameGraph original = makeGraph(3, { {0, 1}, {1, 2} });
+    const FrameGraph original = makeGraph(3, { { 0, 1 }, { 1, 2 } });
 
-    for (GpuPlacementAvailableFunc func : {GpuPlacementAvailableFunc(nullptr), &gpuUnavailable}) {
+    for (GpuPlacementAvailableFunc func : { GpuPlacementAvailableFunc(nullptr), &gpuUnavailable }) {
         setGpuPlacementAvailableFunc(func);
         EXPECT_FALSE(isGpuPlacementAvailable());
 
@@ -452,7 +452,7 @@ struct CostFixture {
     FrameGraph graph;
 
     CostFixture(int nTasks,
-                const std::vector<std::pair<int, int> >& edges)
+                const std::vector<std::pair<int, int>>& edges)
         : graph(makeGraph(nTasks, edges))
     {
         for (FrameGraph::Task& task : graph.tasks) {
@@ -539,7 +539,7 @@ TEST(GpuCostModel, MeasurementsRefineByMovingAverage)
 // sink 0 (CPU) <- Grade 1 <- reader 2 (CPU)
 TEST(GpuCostModel, IsolatedGradeNeedsUnifiedMemory)
 {
-    CostFixture fixture(3, { {0, 1}, {1, 2} });
+    CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
 
     fixture.traits[1] = GpuTaskTraits(kGradeId);
     fixture.place();
@@ -551,14 +551,14 @@ TEST(GpuCostModel, IsolatedGradeNeedsUnifiedMemory)
     fixture.model.setTransferRates(unified);
     fixture.place();
     ASSERT_EQ(fixture.graph.regions.size(), 1u);
-    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({1}));
+    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({ 1 }));
     EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Gpu);
 }
 
 // sink 0 (CPU) <- Grade 1 <- ... <- Grade 10 <- reader 11 (CPU)
 TEST(GpuCostModel, GradeChainFormsOneRegion)
 {
-    std::vector<std::pair<int, int> > edges;
+    std::vector<std::pair<int, int>> edges;
     for (int t = 0; t <= 10; ++t) {
         edges.push_back(std::make_pair(t, t + 1));
     }
@@ -577,7 +577,7 @@ TEST(GpuCostModel, GradeChainFormsOneRegion)
 // sink 0 (CPU) <- Blur 1 (sigma 25) <- reader 2 (CPU), on the seeds alone.
 TEST(GpuCostModel, LoneBlurIsAcceptedAtUhd)
 {
-    CostFixture fixture(3, { {0, 1}, {1, 2} });
+    CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
 
     fixture.traits[1] = GpuTaskTraits(kBlurId, 25.);
     fixture.place();
@@ -589,13 +589,13 @@ TEST(GpuCostModel, LoneBlurIsAcceptedAtUhd)
 // sink 0 (CPU) <- Grade 1 <- Grade 2 <- reader 3 (CPU): it gains about 4.7 ms at 25 GB/s and loses at 12.5.
 TEST(GpuCostModel, HalvingBandwidthRejectsMarginalRegion)
 {
-    CostFixture fixture(4, { {0, 1}, {1, 2}, {2, 3} });
+    CostFixture fixture(4, { { 0, 1 }, { 1, 2 }, { 2, 3 } });
 
     fixture.traits[1] = GpuTaskTraits(kGradeId);
     fixture.traits[2] = GpuTaskTraits(kGradeId);
     fixture.place();
     ASSERT_EQ(fixture.graph.regions.size(), 1u);
-    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({2, 1}));
+    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({ 2, 1 }));
 
     fixture.model.setTransferRates(rates(12.5e9));
     fixture.place();
@@ -609,7 +609,7 @@ TEST(GpuCostModel, HalvingBandwidthRejectsMarginalRegion)
 // the Grade's extra download sinks the region, but the Blur alone still gains.
 TEST(GpuCostModel, RejectedRegionShrinksToItsProfitableMember)
 {
-    CostFixture fixture(5, { {0, 1}, {0, 2}, {1, 3}, {2, 3}, {3, 4} });
+    CostFixture fixture(5, { { 0, 1 }, { 0, 2 }, { 1, 3 }, { 2, 3 }, { 3, 4 } });
 
     fixture.traits[1] = GpuTaskTraits(kBlurId, 3.);
     fixture.traits[3] = GpuTaskTraits(kGradeId);
@@ -617,8 +617,8 @@ TEST(GpuCostModel, RejectedRegionShrinksToItsProfitableMember)
     fixture.place();
 
     ASSERT_EQ(fixture.graph.regions.size(), 1u);
-    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({1}));
-    EXPECT_EQ(fixture.graph.regions[0].externalInputs, std::vector<int>({3}));
+    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({ 1 }));
+    EXPECT_EQ(fixture.graph.regions[0].externalInputs, std::vector<int>({ 3 }));
     EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Gpu);
     EXPECT_EQ(fixture.graph.tasks[3].device, FrameGraph::Device::Cpu);
     EXPECT_EQ(fixture.graph.tasks[3].regionId, -1);
@@ -631,7 +631,7 @@ TEST(GpuCostModel, RejectedRegionShrinksToItsProfitableMember)
 // root first, then 1.
 TEST(GpuCostModel, ShrinkingNeverBreaksConvexity)
 {
-    CostFixture fixture(5, { {0, 1}, {1, 3}, {2, 1}, {3, 4} });
+    CostFixture fixture(5, { { 0, 1 }, { 1, 3 }, { 2, 1 }, { 3, 4 } });
     const char* const slowId = "test.SlowOnGpu";
 
     fixture.model.setCpuSeed(slowId, 1., 1.);
@@ -642,7 +642,7 @@ TEST(GpuCostModel, ShrinkingNeverBreaksConvexity)
     fixture.place();
 
     ASSERT_EQ(fixture.graph.regions.size(), 1u);
-    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({3}));
+    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({ 3 }));
     EXPECT_EQ(fixture.graph.tasks[0].device, FrameGraph::Device::Cpu);
     EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
     EXPECT_TRUE(isConvex(fixture.graph, 0));

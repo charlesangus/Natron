@@ -29,8 +29,8 @@
 #include "Global/Macros.h"
 
 #include <cstdint>
-#include <string>
 #include <map>
+#include <string>
 #include <vector>
 
 #include "Global/GlobalDefines.h"

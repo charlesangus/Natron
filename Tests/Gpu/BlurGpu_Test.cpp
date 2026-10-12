@@ -232,7 +232,7 @@ regionReference(const std::vector<float>& src, const GpuBlurImage& srcImage, con
                 const auto tap = [&](int p) -> T {
                     int q;
                     return resolve(p, domain.y1, domain.y2, q) ? mid[(size_t(q - domain.y1) * midW + (x - out.x1)) * nc + c]
-                                                              : T(0);
+                                                               : T(0);
                 };
                 T acc = hw[0] * tap(y);
                 for (int k = 1; k <= r; ++k) {

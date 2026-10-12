@@ -55,13 +55,13 @@
 #include <SequenceParsing.h> // for removePath
 #endif
 
+#include "Engine/CacheEntryHolder.h"
+#include "Engine/EngineFwd.h"
 #include "Engine/Hash64.h"
 #include "Engine/HostImageMemory.h"
-#include "Engine/CacheEntryHolder.h"
 #include "Engine/MemoryFile.h"
 #include "Engine/NonKeyParams.h"
 #include "Engine/Texture.h"
-#include "Engine/EngineFwd.h"
 #include "Global/GlobalDefines.h"
 #include "Global/StrUtils.h"
 
@@ -78,7 +78,6 @@ class RamBuffer
     std::size_t byteSize;
 
 public:
-
     RamBuffer()
         : data(0)
         , count(0)

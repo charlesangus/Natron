@@ -188,8 +188,8 @@ private:
     const GpuRow* findGpuRowLocked(const GpuTaskTraits& traits) const;
 
     mutable std::mutex _mutex;
-    std::map<std::string, std::vector<CpuRow> > _cpu;
-    std::map<std::string, std::vector<GpuRow> > _gpu;
+    std::map<std::string, std::vector<CpuRow>> _cpu;
+    std::map<std::string, std::vector<GpuRow>> _gpu;
     int _threads = 0;
     GpuTransferRates _rates;
     std::function<GpuTaskTraits(const FrameGraph::Task&)> _traitsHint;

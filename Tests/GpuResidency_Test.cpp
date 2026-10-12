@@ -133,7 +133,7 @@ taskOf(const FrameGraph& graph,
  **/
 void
 assignRegions(FrameGraph* graph,
-              const std::vector<std::vector<int> >& memberSets)
+              const std::vector<std::vector<int>>& memberSets)
 {
     graph->regions.clear();
     for (FrameGraph::Task& task : graph->tasks) {

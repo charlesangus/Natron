@@ -593,8 +593,7 @@ TEST(ImageCopyUnProcessedChannelsTest, LargeRoiMatchesReference)
 }
 
 namespace {
-struct HostImageMemoryGuard
-{
+struct HostImageMemoryGuard {
     std::size_t savedMax;
     std::size_t savedAlignment;
 
@@ -685,7 +684,7 @@ TEST(HostImageMemoryTest, TrimToKeepsPooledBytesWithinHeadroom)
     const std::size_t padded = HostImageMemory::paddedSize(bytes);
     std::vector<void*> bufs;
     for (int i = 0; i < 4; ++i) {
-        bufs.push_back( HostImageMemory::allocate(bytes) );
+        bufs.push_back(HostImageMemory::allocate(bytes));
     }
     for (std::size_t i = 0; i < bufs.size(); ++i) {
         HostImageMemory::release(bufs[i], bytes);
@@ -708,19 +707,19 @@ TEST(HostImageMemoryTest, TrimToKeepsPooledBytesWithinHeadroom)
 TEST(HostImageMemoryTest, FreeHookFiresOnlyOnRealFrees)
 {
     HostImageMemoryGuard guard;
-    std::vector<std::pair<void*, std::size_t> > freed;
+    std::vector<std::pair<void*, std::size_t>> freed;
     const int id = HostImageMemory::addFreeHook([&freed](void* ptr, std::size_t padded) {
-                                                    freed.push_back(std::make_pair(ptr, padded));
-                                                });
+        freed.push_back(std::make_pair(ptr, padded));
+    });
     const std::size_t bytes = 2 * 1024 * 1024;
     void* a = HostImageMemory::allocate(bytes);
     HostImageMemory::release(a, bytes);
-    EXPECT_TRUE( freed.empty() );
+    EXPECT_TRUE(freed.empty());
 
     void* b = HostImageMemory::allocate(bytes);
     EXPECT_EQ(a, b);
     HostImageMemory::release(b, bytes);
-    EXPECT_TRUE( freed.empty() );
+    EXPECT_TRUE(freed.empty());
 
     HostImageMemory::trim();
     ASSERT_EQ(freed.size(), 1u);
@@ -743,11 +742,11 @@ TEST(HostImageMemoryTest, PoolStaysBounded)
 
     std::size_t freedCount = 0;
     const int id = HostImageMemory::addFreeHook([&freedCount](void*, std::size_t) {
-                                                    ++freedCount;
-                                                });
+        ++freedCount;
+    });
     std::vector<void*> bufs;
     for (int i = 0; i < 8; ++i) {
-        bufs.push_back( HostImageMemory::allocate(bytes) );
+        bufs.push_back(HostImageMemory::allocate(bytes));
     }
     for (std::size_t i = 0; i < bufs.size(); ++i) {
         HostImageMemory::release(bufs[i], bytes);

@@ -71,7 +71,7 @@ logRegion(const NodePtr& node,
     if (!appPTR) {
         return;
     }
-    const QString name = node ? QString::fromUtf8( node->getScriptName_mt_safe().c_str() ) : QString::fromUtf8("RenderScheduler");
+    const QString name = node ? QString::fromUtf8(node->getScriptName_mt_safe().c_str()) : QString::fromUtf8("RenderScheduler");
     appPTR->writeToErrorLog_mt_safe(name, QDateTime::currentDateTime(), message);
 }
 
@@ -350,10 +350,10 @@ public:
                 _report->transferExposedMs = _report->uploadMs + _report->downloadMs;
             }
         }
-        if ( isAborted() ) {
+        if (isAborted()) {
             return EffectInstance::eRenderRoIRetCodeAborted;
         }
-        if ( !storeOutputs(rootPlanes) ) {
+        if (!storeOutputs(rootPlanes)) {
             return failed();
         }
         noteSuccess();
@@ -408,7 +408,7 @@ private:
               const std::string& reason,
               FailureKind kind = FailureKind::Refused)
     {
-        if ( _failure.empty() ) {
+        if (_failure.empty()) {
             _failedNode = node;
             _failure = reason;
             _failureKind = kind;
@@ -473,7 +473,7 @@ private:
 
         const ParallelRenderArgsPtr frameArgs = _context->getArgs(task.key.node);
         FrameRequestMap::const_iterator nodeRequest = _context->getRequest() ? _context->getRequest()->find(task.key.node) : FrameRequestMap::const_iterator();
-        const U64 nodeHash = ( _context->getRequest() && ( nodeRequest != _context->getRequest()->end() ) && nodeRequest->second ) ? nodeRequest->second->nodeHash : 0;
+        const U64 nodeHash = (_context->getRequest() && (nodeRequest != _context->getRequest()->end()) && nodeRequest->second) ? nodeRequest->second->nodeHash : 0;
         layout.key = ImageKey(task.key.node.get(),
                               nodeHash,
                               frameArgs ? frameArgs->isFrameVaryingOrAnimated : true,
@@ -492,7 +492,7 @@ private:
     {
         for (std::size_t s = 0; s < _slots.size(); ++s) {
             Slot& slot = _slots[s];
-            if ( (slot.externalTask == task) && (slot.layout.layer == layer) && (slot.layout.layer.getChannels() == layer.getChannels()) ) {
+            if ((slot.externalTask == task) && (slot.layout.layer == layer) && (slot.layout.layer.getChannels() == layer.getChannels())) {
                 slot.neededRoI.merge(needed);
 
                 return (int)s;
@@ -525,7 +525,7 @@ private:
         for (std::size_t i = 0; i < _region.members.size(); ++i) {
             _position[_region.members[i]] = (int)i;
         }
-        if ( _region.members.empty() || !request ) {
+        if (_region.members.empty() || !request) {
             return fail(NodePtr(), "the region has no member or no request");
         }
 
@@ -535,22 +535,22 @@ private:
             const FrameGraph::Task& task = _graph.tasks[taskIndex];
             Member member;
             member.task = taskIndex;
-            if ( !task.key.node || (task.components.size() != 1) ) {
+            if (!task.key.node || (task.components.size() != 1)) {
                 return fail(taskIndex, "the task does not render exactly one plane");
             }
             const ImageLayerDesc& plane = task.components.front();
 
             // Task::dependencies follows the request's edges, skipping those whose node is gone.
-            std::vector<std::pair<int, int> > edges;
+            std::vector<std::pair<int, int>> edges;
             const FrameViewRequest* fvRequest = request->findFrameViewRequest(task.key.node, task.key.time, task.key.view);
             if (fvRequest) {
                 std::size_t d = 0;
                 for (std::vector<FrameViewRequest::TaskEdge>::const_iterator it = fvRequest->dependencies.begin(); it != fvRequest->dependencies.end(); ++it) {
-                    if ( !it->node.lock() ) {
+                    if (!it->node.lock()) {
                         continue;
                     }
-                    if ( d < task.dependencies.size() ) {
-                        edges.push_back( std::make_pair(it->inputNb, task.dependencies[d]) );
+                    if (d < task.dependencies.size()) {
+                        edges.push_back(std::make_pair(it->inputNb, task.dependencies[d]));
                     }
                     ++d;
                 }
@@ -558,8 +558,8 @@ private:
 
             if (task.isIdentity) {
                 std::vector<int> deps = task.dependencies;
-                std::sort( deps.begin(), deps.end() );
-                deps.erase( std::unique( deps.begin(), deps.end() ), deps.end() );
+                std::sort(deps.begin(), deps.end());
+                deps.erase(std::unique(deps.begin(), deps.end()), deps.end());
                 if (deps.size() != 1) {
                     return fail(taskIndex, "an identity task without a single input");
                 }
@@ -569,24 +569,24 @@ private:
                 continue;
             }
 
-            member.effect = dynamic_cast<NativeImageEffect*>( task.key.node->getEffectInstance().get() );
+            member.effect = dynamic_cast<NativeImageEffect*>(task.key.node->getEffectInstance().get());
             if (!member.effect) {
                 return fail(taskIndex, "the node has no GPU path");
             }
-            if ( !makeGpuQueryForTask(task, *_context, &member.query) || !member.effect->canRenderOnGpu(member.query) ) {
+            if (!makeGpuQueryForTask(task, *_context, &member.query) || !member.effect->canRenderOnGpu(member.query)) {
                 return fail(taskIndex, "the node cannot render these settings on the GPU");
             }
-            if ( (task.key.mipmapLevel != 0) && (member.effect->supportsRenderScaleMaybe() != EffectInstance::eSupportsYes) ) {
+            if ((task.key.mipmapLevel != 0) && (member.effect->supportsRenderScaleMaybe() != EffectInstance::eSupportsYes)) {
                 return fail(taskIndex, "the node renders at full scale");
             }
-            if ( task.renderedRoI.isNull() ) {
+            if (task.renderedRoI.isNull()) {
                 return fail(taskIndex, "the task renders an empty window");
             }
 
             member.inputSlots.assign(std::max(0, member.effect->getNInputs()), -1);
             for (std::size_t e = 0; e < edges.size(); ++e) {
                 const int inputNb = edges[e].first;
-                if ( (inputNb < 0) || ( inputNb >= (int)member.inputSlots.size() ) ) {
+                if ((inputNb < 0) || (inputNb >= (int)member.inputSlots.size())) {
                     continue;
                 }
                 const RectI needed = member.effect->getGpuInputRoI(inputNb, task.renderedRoI, member.query.mappedScale);
@@ -600,7 +600,7 @@ private:
             _slots.push_back(out);
             member.outSlot = (int)_slots.size() - 1;
 
-            const double kernelMs = model.gpuMs( model.traitsOf(task), GpuCostModel::megapixelsOf(task) );
+            const double kernelMs = model.gpuMs(model.traitsOf(task), GpuCostModel::megapixelsOf(task));
             member.weight = (std::isfinite(kernelMs) && (kernelMs > 0.)) ? kernelMs : 1.;
             _members.push_back(member);
         }
@@ -628,7 +628,7 @@ private:
             } else if (output.externalConsumers > 0) {
                 ++slot.deviceOutputs;
             }
-            if ( output.isRoot || (output.externalConsumers > 0) ) {
+            if (output.isRoot || (output.externalConsumers > 0)) {
                 slot.keep = true;
             }
         }
@@ -638,7 +638,7 @@ private:
                 slot.download = true;
             }
             if (slot.download) {
-                slot.downloadAt = std::max( 0, std::max(slot.producer, slot.lastRead) );
+                slot.downloadAt = std::max(0, std::max(slot.producer, slot.lastRead));
             }
         }
 
@@ -654,13 +654,13 @@ private:
     {
         std::size_t best = _spare.size();
         for (std::size_t i = 0; i < _spare.size(); ++i) {
-            if ( (_spare[i].size() >= size) && ( (best == _spare.size()) || (_spare[i].size() < _spare[best].size()) ) ) {
+            if ((_spare[i].size() >= size) && ((best == _spare.size()) || (_spare[i].size() < _spare[best].size()))) {
                 best = i;
             }
         }
-        if ( best < _spare.size() ) {
+        if (best < _spare.size()) {
             *out = _spare[best];
-            _spare.erase( _spare.begin() + (std::ptrdiff_t)best );
+            _spare.erase(_spare.begin() + (std::ptrdiff_t)best);
 
             return true;
         }
@@ -718,14 +718,14 @@ private:
             }
             const FrameGraph::Task& input = _graph.tasks[slot.externalTask];
             RectI pixelRoI = slot.neededRoI.intersect(input.renderedRoI);
-            if ( pixelRoI.isNull() ) {
+            if (pixelRoI.isNull()) {
                 pixelRoI = input.renderedRoI;
             }
             std::list<ImageLayerDesc> needed(1, slot.layout.layer);
 
             std::list<DeviceImagePtr> deviceImages;
-            if ( _store.findDevice(input.key, needed, pixelRoI, &deviceImages) ) {
-                GpuDeviceImagePtr image = std::dynamic_pointer_cast<GpuDeviceImage>( deviceImages.front() );
+            if (_store.findDevice(input.key, needed, pixelRoI, &deviceImages)) {
+                GpuDeviceImagePtr image = std::dynamic_pointer_cast<GpuDeviceImage>(deviceImages.front());
                 gpu::GpuBuffer* buffer = (image && (image->runtime() == &_runtime) && (image->nComps() == slot.layout.nComps())) ? image->pin() : nullptr;
                 if (buffer) {
                     slot.pinned = image;
@@ -737,17 +737,16 @@ private:
 
             std::list<ImagePtr> images;
             bool found = _store.find(input.key, needed, pixelRoI, &images);
-            if ( !found && !input.components.empty() ) {
+            if (!found && !input.components.empty()) {
                 std::list<ImageLayerDesc> stored(1, input.components.front());
                 found = _store.find(input.key, stored, pixelRoI, &images);
             }
-            if ( !found || images.empty() || !images.front() ) {
+            if (!found || images.empty() || !images.front()) {
                 return fail(input.key.node, "its output is not in the frame store");
             }
             ImagePtr image = images.front();
             const RectI bounds = image->getBounds();
-            if ( (image->getBitDepth() != eImageBitDepthFloat) || ( (int)image->getComponentsCount() != slot.layout.nComps() ) ||
-                 (image->getStorageMode() == eStorageModeGLTex) ) {
+            if ((image->getBitDepth() != eImageBitDepthFloat) || ((int)image->getComponentsCount() != slot.layout.nComps()) || (image->getStorageMode() == eStorageModeGLTex)) {
                 ImagePtr converted;
                 try {
                     converted = std::make_shared<Image>(slot.layout.layer, image->getRoD(), bounds, image->getMipmapLevel(), image->getPixelAspectRatio(),
@@ -783,12 +782,12 @@ private:
             const ImagePtr& image = slot.source;
             const RectI bounds = image->getBounds();
             const std::size_t bytes = gpuHostTransferBytes(*image);
-            if ( !acquireBuffer(std::max( bytes, slot.layout.deviceBytes() ), slot.externalTask, &slot.handle) ) {
+            if (!acquireBuffer(std::max(bytes, slot.layout.deviceBytes()), slot.externalTask, &slot.handle)) {
                 drainUploads(uploads);
 
                 return false;
             }
-            std::shared_ptr<Image::ReadAccess> access = std::make_shared<Image::ReadAccess>( image.get() );
+            std::shared_ptr<Image::ReadAccess> access = std::make_shared<Image::ReadAccess>(image.get());
             const unsigned char* data = access->pixelAt(bounds.x1, bounds.y1);
             if (!data) {
                 drainUploads(uploads);
@@ -799,7 +798,7 @@ private:
             options.handoff = gpu::ComputeHandoff::Submit;
             gpu::TimelineValue done;
             // upload() only reads the host range.
-            const gpu::GpuStatus status = _runtime.upload({const_cast<unsigned char*>(data), bytes}, slot.handle.buffer(), 0, done, options);
+            const gpu::GpuStatus status = _runtime.upload({ const_cast<unsigned char*>(data), bytes }, slot.handle.buffer(), 0, done, options);
             if (!status) {
                 drainUploads(uploads);
 
@@ -809,7 +808,7 @@ private:
             accesses.push_back(access);
             slot.view = viewOf(&slot.handle.buffer(), slot.layout);
             if (_stats) {
-                _stats->noteUpload( slot.layout.pixelBytes() );
+                _stats->noteUpload(slot.layout.pixelBytes());
             }
             if (_report) {
                 _report->uploadBytes += slot.layout.pixelBytes();
@@ -825,7 +824,7 @@ private:
             }
         }
         if (_report) {
-            _report->uploadMs = msBetween( begin, Clock::now() );
+            _report->uploadMs = msBetween(begin, Clock::now());
         }
         for (Slot& slot : _slots) {
             slot.source.reset();
@@ -846,7 +845,7 @@ private:
     void releaseSlotsReadLastBy(int position)
     {
         for (Slot& slot : _slots) {
-            if ( slot.released || slot.keep || slot.download || (slot.lastRead != position) ) {
+            if (slot.released || slot.keep || slot.download || (slot.lastRead != position)) {
                 continue;
             }
             slot.released = true;
@@ -868,7 +867,7 @@ private:
     {
         if (*recorder) {
             // The runtime's own entry points report to its state machine; a record context's submission does not.
-            const gpu::GpuStatus status = _runtime.note( (*recorder)->submitAndWait() );
+            const gpu::GpuStatus status = _runtime.note((*recorder)->submitAndWait());
             recorder->reset();
             if (!status) {
                 return failGpu(segment.empty() ? -1 : _members[segment.front()].task, "the device work failed", status);
@@ -900,12 +899,12 @@ private:
     {
         for (std::size_t s = 0; s < _slots.size(); ++s) {
             Slot& slot = _slots[s];
-            if ( !slot.download || slot.downloadIssued || (slot.downloadAt > position) ) {
+            if (!slot.download || slot.downloadIssued || (slot.downloadAt > position)) {
                 continue;
             }
             slot.downloadIssued = true;
             if (slot.pinned) {
-                if ( !downloadPinned(slot) ) {
+                if (!downloadPinned(slot)) {
                     return false;
                 }
                 continue;
@@ -917,28 +916,28 @@ private:
                 return fail(producerTask, "cannot allocate the downloaded image");
             }
             const std::size_t bytes = gpuHostTransferBytes(*image);
-            if ( !slot.handle || ( bytes > (std::size_t)slot.handle.size() ) ) {
+            if (!slot.handle || (bytes > (std::size_t)slot.handle.size())) {
                 return fail(producerTask, "the device buffer is smaller than its image");
             }
-            std::shared_ptr<Image::WriteAccess> access = std::make_shared<Image::WriteAccess>( image.get() );
+            std::shared_ptr<Image::WriteAccess> access = std::make_shared<Image::WriteAccess>(image.get());
             unsigned char* data = access->pixelAt(slot.layout.bounds.x1, slot.layout.bounds.y1);
             if (!data) {
                 return fail(producerTask, "the downloaded image has no pixels");
             }
             gpu::StreamOptions options;
             options.handoff = gpu::ComputeHandoff::Submit;
-            const gpu::GpuStatus status = _runtime.download(slot.handle.buffer(), 0, {data, bytes}, slot.downloadDone, options);
+            const gpu::GpuStatus status = _runtime.download(slot.handle.buffer(), 0, { data, bytes }, slot.downloadDone, options);
             if (!status) {
                 return failGpu(producerTask, "download failed", status);
             }
             slot.downloadAccess = access;
             slot.downloadImage = image;
             if (_stats) {
-                _stats->noteDownload( slot.layout.pixelBytes() );
+                _stats->noteDownload(slot.layout.pixelBytes());
             }
             if (_report) {
                 _report->downloadBytes += slot.layout.pixelBytes();
-                _report->downloadMs += msBetween( begin, Clock::now() );
+                _report->downloadMs += msBetween(begin, Clock::now());
             }
         }
 
@@ -954,7 +953,7 @@ private:
         slot.pinned.reset();
         image->unpin();
         std::list<ImagePtr> images;
-        if ( !_store.find(input.key, std::list<ImageLayerDesc>(1, slot.layout.layer), image->bounds(), &images) || images.empty() ) {
+        if (!_store.find(input.key, std::list<ImageLayerDesc>(1, slot.layout.layer), image->bounds(), &images) || images.empty()) {
             return fail(input.key.node, "its device image could not be downloaded");
         }
         slot.downloaded = images.front();
@@ -972,7 +971,7 @@ private:
             _report->memberNs.assign(_members.size(), 0);
         }
         for (std::size_t i = 0; i < _members.size(); ++i) {
-            if ( isAborted() ) {
+            if (isAborted()) {
                 return EffectInstance::eRenderRoIRetCodeAborted;
             }
             Member& member = _members[i];
@@ -985,11 +984,11 @@ private:
                         return EffectInstance::eRenderRoIRetCodeFailed;
                     }
                     segmentBegin = Clock::now();
-                } else if ( !segment.empty() ) {
+                } else if (!segment.empty()) {
                     recorder->computeBarrier();
                 }
                 Slot& out = _slots[member.outSlot];
-                if ( !acquireBuffer(out.layout.deviceBytes(), member.task, &out.handle) ) {
+                if (!acquireBuffer(out.layout.deviceBytes(), member.task, &out.handle)) {
                     return EffectInstance::eRenderRoIRetCodeFailed;
                 }
                 out.view = viewOf(&out.handle.buffer(), out.layout);
@@ -998,7 +997,7 @@ private:
                 GpuRenderArgs args(*recorder);
                 args.query = member.query;
                 args.outputRect = task.renderedRoI;
-                args.inputs.resize( member.inputSlots.size() );
+                args.inputs.resize(member.inputSlots.size());
                 for (std::size_t k = 0; k < member.inputSlots.size(); ++k) {
                     if (member.inputSlots[k] >= 0) {
                         args.inputs[k] = _slots[member.inputSlots[k]].view;
@@ -1018,24 +1017,24 @@ private:
 
                     return EffectInstance::eRenderRoIRetCodeFailed;
                 }
-                segment.push_back( (int)i );
+                segment.push_back((int)i);
             }
-            releaseSlotsReadLastBy( (int)i );
+            releaseSlotsReadLastBy((int)i);
 
             bool downloadHere = false;
             for (const Slot& slot : _slots) {
-                if ( slot.download && !slot.downloadIssued && (slot.downloadAt == (int)i) ) {
+                if (slot.download && !slot.downloadIssued && (slot.downloadAt == (int)i)) {
                     downloadHere = true;
                 }
             }
             if (downloadHere) {
-                if ( !submit(&recorder, segment, segmentBegin) || !issueDownloads( (int)i ) ) {
+                if (!submit(&recorder, segment, segmentBegin) || !issueDownloads((int)i)) {
                     return EffectInstance::eRenderRoIRetCodeFailed;
                 }
                 segment.clear();
             }
         }
-        if ( !submit(&recorder, segment, segmentBegin) || !issueDownloads( std::numeric_limits<int>::max() ) ) {
+        if (!submit(&recorder, segment, segmentBegin) || !issueDownloads(std::numeric_limits<int>::max())) {
             return EffectInstance::eRenderRoIRetCodeFailed;
         }
 
@@ -1053,14 +1052,14 @@ private:
             slot.downloadDone = gpu::TimelineValue();
             slot.downloadAccess.reset();
             if (!status) {
-                return failGpu( (slot.producer >= 0) ? _members[slot.producer].task : slot.externalTask, "download failed", status );
+                return failGpu((slot.producer >= 0) ? _members[slot.producer].task : slot.externalTask, "download failed", status);
             }
             slot.downloaded = slot.downloadImage;
             slot.downloadImage.reset();
             slot.handle = gpu::GpuBufferHandle();
         }
         if (_report) {
-            _report->downloadMs += msBetween( begin, Clock::now() );
+            _report->downloadMs += msBetween(begin, Clock::now());
         }
 
         return true;
@@ -1871,7 +1870,7 @@ private:
 
     bool storeOutputs(std::map<ImageLayerDesc, ImagePtr>* rootPlanes)
     {
-        std::vector<GpuDeviceImagePtr> deviceImages( _slots.size() );
+        std::vector<GpuDeviceImagePtr> deviceImages(_slots.size());
 
         for (const FrameGraph::Region::Output& output : _region.outputs) {
             const FrameGraph::Task& task = _graph.tasks[output.task];
@@ -1913,8 +1912,8 @@ private:
                 const FrameStore::TaskKey key = task.key;
                 image->setEvictable([weakContext, weakStats, key]() {
                     const FrameRenderContextPtr context = weakContext.lock();
-                    if ( context && (context->getStore().evictToRam(key) > 0) ) {
-                        if ( const RenderStatsPtr stats = weakStats.lock() ) {
+                    if (context && (context->getStore().evictToRam(key) > 0)) {
+                        if (const RenderStatsPtr stats = weakStats.lock()) {
                             stats->noteEviction();
                         }
                     }
@@ -1935,11 +1934,11 @@ private:
                 continue;
             }
             const FrameGraph::Task& task = _graph.tasks[member.task];
-            if ( _report && ( i < _report->memberNs.size() ) && (_report->memberNs[i] > 0) ) {
+            if (_report && (i < _report->memberNs.size()) && (_report->memberNs[i] > 0)) {
                 model.observeGpu(task, _report->memberNs[i]);
             }
             if (_stats) {
-                _stats->noteGpuTaskRun( task.key.node->getScriptName_mt_safe() );
+                _stats->noteGpuTaskRun(task.key.node->getScriptName_mt_safe());
             }
         }
         if (_stats) {
@@ -2038,7 +2037,7 @@ runGpuRegion(const FrameRenderContextPtr& context,
              std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
              RenderScheduler::RegionReport* report)
 {
-    if ( !context || (region < 0) || ( region >= (int)graph.regions.size() ) ) {
+    if (!context || (region < 0) || (region >= (int)graph.regions.size())) {
         logRegionFailure(NodePtr(), "the region does not exist");
 
         return EffectInstance::eRenderRoIRetCodeFailed;

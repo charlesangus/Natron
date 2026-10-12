@@ -50,11 +50,9 @@ NATRON_NAMESPACE_ENTER
  *
  * All functions are thread-safe.
  **/
-class HostImageMemory
-{
+class HostImageMemory {
 public:
-
-    typedef std::function<void (void* ptr, std::size_t paddedBytes)> FreeHook;
+    typedef std::function<void(void* ptr, std::size_t paddedBytes)> FreeHook;
 
     static std::size_t minPooledBytes();
 

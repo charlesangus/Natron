@@ -88,7 +88,8 @@ protected:
                 uint32_t bits;
                 std::memcpy(&bits, &f, sizeof bits);
                 return bits;
-            }() : i;
+            }()
+                                          : i;
             bad += out[i] != want;
         }
         return bad;

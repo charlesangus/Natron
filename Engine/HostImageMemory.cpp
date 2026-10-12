@@ -17,7 +17,6 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
 // "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
@@ -72,14 +71,12 @@ defaultMaxPoolBytes()
     return std::max<std::size_t>(kMinDefaultMaxPoolBytes, (std::size_t)(ram / kDefaultMaxPoolRamFraction));
 }
 
-struct PooledBuffer
-{
+struct PooledBuffer {
     void* ptr;
     std::size_t padded;
 };
 
-struct State
-{
+struct State {
     std::mutex mutex;
     std::size_t pageSize;
     std::size_t alignment;
@@ -162,7 +159,7 @@ rawFree(void* ptr)
 void
 reallyFree(const std::vector<PooledBuffer>& buffers)
 {
-    if ( buffers.empty() ) {
+    if (buffers.empty()) {
         return;
     }
     std::vector<HostImageMemory::FreeHook> hooks;
@@ -186,7 +183,7 @@ void
 takeAllPooled(State& s,
               std::vector<PooledBuffer>& out)
 {
-    out.insert( out.end(), s.pool.begin(), s.pool.end() );
+    out.insert(out.end(), s.pool.begin(), s.pool.end());
     s.pool.clear();
     s.pooledBytes = 0;
 }
@@ -220,7 +217,7 @@ HostImageMemory::paddedSize(std::size_t bytes)
         return bytes;
     }
 
-    return roundUp( bytes, importAlignment() );
+    return roundUp(bytes, importAlignment());
 }
 
 void
@@ -230,7 +227,7 @@ HostImageMemory::setImportAlignment(std::size_t alignment)
     std::vector<PooledBuffer> toFree;
     {
         std::lock_guard<std::mutex> k(s.mutex);
-        s.alignment = roundUp( std::max(alignment, s.pageSize), s.pageSize );
+        s.alignment = roundUp(std::max(alignment, s.pageSize), s.pageSize);
         takeAllPooled(s, toFree);
     }
     reallyFree(toFree);
@@ -244,8 +241,8 @@ HostImageMemory::setMaxPoolBytes(std::size_t bytes)
     {
         std::lock_guard<std::mutex> k(s.mutex);
         s.maxPoolBytes = bytes;
-        while (s.pooledBytes > s.maxPoolBytes && !s.pool.empty() ) {
-            toFree.push_back( s.pool.front() );
+        while (s.pooledBytes > s.maxPoolBytes && !s.pool.empty()) {
+            toFree.push_back(s.pool.front());
             s.pooledBytes -= s.pool.front().padded;
             s.pool.pop_front();
         }
@@ -299,8 +296,8 @@ HostImageMemory::trimTo(std::size_t maxBytes)
     std::vector<PooledBuffer> toFree;
     {
         std::lock_guard<std::mutex> k(s.mutex);
-        while (s.pooledBytes > maxBytes && !s.pool.empty() ) {
-            toFree.push_back( s.pool.front() );
+        while (s.pooledBytes > maxBytes && !s.pool.empty()) {
+            toFree.push_back(s.pool.front());
             s.pooledBytes -= s.pool.front().padded;
             s.pool.pop_front();
         }
@@ -346,7 +343,7 @@ HostImageMemory::allocate(std::size_t bytes)
         for (std::deque<PooledBuffer>::reverse_iterator it = s.pool.rbegin(); it != s.pool.rend(); ++it) {
             if (it->padded == padded) {
                 void* ptr = it->ptr;
-                s.pool.erase( (++it).base() );
+                s.pool.erase((++it).base());
                 s.pooledBytes -= padded;
                 s.live[ptr] = padded;
 
@@ -390,17 +387,17 @@ HostImageMemory::release(void* ptr,
     {
         std::lock_guard<std::mutex> k(s.mutex);
         std::unordered_map<void*, std::size_t>::iterator lit = s.live.find(ptr);
-        assert( lit != s.live.end() );
+        assert(lit != s.live.end());
         const std::size_t padded = lit != s.live.end() ? lit->second : roundUp(bytes, s.alignment);
         if (lit != s.live.end()) {
             s.live.erase(lit);
         }
-        PooledBuffer b = {ptr, padded};
+        PooledBuffer b = { ptr, padded };
         if (padded <= s.maxPoolBytes) {
             s.pool.push_back(b);
             s.pooledBytes += padded;
             while (s.pooledBytes > s.maxPoolBytes) {
-                toFree.push_back( s.pool.front() );
+                toFree.push_back(s.pool.front());
                 s.pooledBytes -= s.pool.front().padded;
                 s.pool.pop_front();
             }

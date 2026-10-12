@@ -29,8 +29,8 @@
 #include <bitset>
 #include <cassert>
 #include <cstdio>
-#include <string>
 #include <stdexcept>
+#include <string>
 
 #include <QMutex>
 

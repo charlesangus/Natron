@@ -42,8 +42,8 @@
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/DefaultShaders.h"
-#include "Engine/GPUContextPool.h"
 #include "Engine/GLShader.h"
+#include "Engine/GPUContextPool.h"
 #include "Global/FloatingPointExceptions.h"
 
 NATRON_NAMESPACE_ENTER

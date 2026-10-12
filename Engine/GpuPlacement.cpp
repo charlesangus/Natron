@@ -63,7 +63,7 @@ topologicalOrder(const FrameGraph& graph)
 {
     const int n = (int)graph.tasks.size();
     std::vector<int> pending(n, 0);
-    std::vector<std::vector<int> > consumers(n);
+    std::vector<std::vector<int>> consumers(n);
 
     for (int i = 0; i < n; ++i) {
         std::vector<int> deps = graph.tasks[i].dependencies;
@@ -79,7 +79,7 @@ topologicalOrder(const FrameGraph& graph)
     }
 
     typedef std::pair<int, int> ReadyKey;
-    std::priority_queue<ReadyKey, std::vector<ReadyKey>, std::greater<ReadyKey> > ready;
+    std::priority_queue<ReadyKey, std::vector<ReadyKey>, std::greater<ReadyKey>> ready;
     for (int i = 0; i < n; ++i) {
         if (pending[i] == 0) {
             ready.push(ReadyKey(graph.tasks[i].dfsPostOrder, i));
@@ -122,7 +122,7 @@ isContractionAcyclic(const FrameGraph& graph,
         maxLabel = std::max(maxLabel, l);
     }
     const int nNodes = n + maxLabel + 1;
-    std::vector<std::vector<int> > out(nNodes);
+    std::vector<std::vector<int>> out(nNodes);
     std::vector<int> indegree(nNodes, 0);
     std::vector<bool> present(nNodes, false);
 
@@ -231,7 +231,7 @@ placeGraph(FrameGraph& graph,
 
     // Labels are working region ids; a merge empties the regions it absorbs.
     std::vector<int> label(n, -1);
-    std::vector<std::vector<int> > regionMembers;
+    std::vector<std::vector<int>> regionMembers;
 
     const auto tryAssign = [&](int task, const std::vector<int>& absorbed, int into) -> bool {
         std::vector<int> trial = label;
@@ -365,7 +365,7 @@ placeGraph(FrameGraph& graph,
             while (!stack.empty()) {
                 const int t = stack.back();
                 stack.pop_back();
-                for (const std::vector<int>* edges : {&graph.tasks[t].dependencies, &graph.tasks[t].consumerTasks}) {
+                for (const std::vector<int>* edges : { &graph.tasks[t].dependencies, &graph.tasks[t].consumerTasks }) {
                     for (int u : *edges) {
                         if ((label[u] == l) && (part[u] < 0)) {
                             part[u] = nParts;
@@ -376,7 +376,7 @@ placeGraph(FrameGraph& graph,
             }
             ++nParts;
         }
-        std::vector<std::vector<int> > parts(nParts);
+        std::vector<std::vector<int>> parts(nParts);
         for (int m : members) {
             parts[part[m]].push_back(m);
         }
@@ -443,7 +443,7 @@ placeGraph(FrameGraph& graph,
                     rest.push_back(m);
                 }
             }
-            std::vector<std::vector<int> > parts = connectedParts(rest, q);
+            std::vector<std::vector<int>> parts = connectedParts(rest, q);
             regionMembers[q] = parts.front();
             queue.push_back(q);
             for (std::size_t i = 1; i < parts.size(); ++i) {

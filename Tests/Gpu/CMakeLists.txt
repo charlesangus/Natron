@@ -10,10 +10,7 @@ set(NATRON_GPU_KERNEL_DIR ${CMAKE_SOURCE_DIR}/Engine/Gpu/Kernels)
 # SPIR-V targets named after its registry kernels.
 slang_add_kernel(test_grade ${NATRON_GPU_KERNEL_DIR}/grade.slang ENTRY grade_main CPP)
 slang_add_kernel(test_blur ${NATRON_GPU_KERNEL_DIR}/blur.slang ENTRY blurPass CPP)
-foreach(_p grade invert chain masked)
-    slang_add_kernel(test_pointop_${_p} ${NATRON_GPU_KERNEL_DIR}/pointops.slang ENTRY pointop_${_p} CPP)
-endforeach()
-foreach(_e pixelwrap_identity pixelwrap_scale)
+foreach(_e pixelwrap_identity pixelwrap_scale pixelwrap_grade pixelwrap_invert pixelwrap_chain)
     slang_add_kernel(${_e} ${NATRON_GPU_KERNEL_DIR}/pixelwrap.slang ENTRY ${_e} CPP)
 endforeach()
 foreach(_e wrap_divide wrap_finish)
@@ -37,8 +34,7 @@ set(GpuTests_SOURCES
     GpuTransfer_Test.cpp
     GradeCpu_Test.cpp
     GradeGpu_Test.cpp
-    PointOpCompose_Test.cpp
-    PointOpGpu_Test.cpp
+    PixelWrapCompose_Test.cpp
     PixelWrap_Test.cpp
     Smoke_Test.cpp
 )
@@ -60,12 +56,11 @@ target_link_libraries(GpuTests
         smoke
         test_grade
         test_blur
-        test_pointop_grade
-        test_pointop_invert
-        test_pointop_chain
-        test_pointop_masked
         pixelwrap_identity
         pixelwrap_scale
+        pixelwrap_grade
+        pixelwrap_invert
+        pixelwrap_chain
         test_wrap_divide
         test_wrap_finish
         test_smoke

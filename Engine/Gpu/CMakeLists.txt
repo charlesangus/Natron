@@ -17,10 +17,6 @@ include("${NATRON_GPU_CMAKE_DIR}/SlangKernels.cmake")
 
 slang_add_kernel(grade Kernels/grade.slang ENTRY grade_main REGISTRY NatronGpu)
 slang_add_kernel(blur Kernels/blur.slang ENTRY blurPass REGISTRY NatronGpu)
-slang_add_kernel(pointop_grade Kernels/pointops.slang ENTRY pointop_grade REGISTRY NatronGpu)
-slang_add_kernel(pointop_invert Kernels/pointops.slang ENTRY pointop_invert REGISTRY NatronGpu)
-slang_add_kernel(pointop_chain Kernels/pointops.slang ENTRY pointop_chain REGISTRY NatronGpu)
-slang_add_kernel(pointop_masked Kernels/pointops.slang ENTRY pointop_masked REGISTRY NatronGpu)
 slang_add_kernel(wrap_divide Kernels/pixelwrap.slang ENTRY wrap_divide REGISTRY NatronGpu)
 slang_add_kernel(wrap_finish Kernels/pixelwrap.slang ENTRY wrap_finish REGISTRY NatronGpu)
 

@@ -9,6 +9,7 @@
 #include "GpuBuffer.h"
 #include "GpuRecord.h"
 #include "GpuTestDevice.h"
+#include "GpuWrap.h"
 #include "fill_spirv.h"
 
 using namespace gpu;
@@ -111,10 +112,10 @@ GPU_TEST_F(GpuKernelRegistryTest, LooksUpGeneratedAndRegisteredKernels)
     EXPECT_GT(grade->storageBufferCount, 0u);
     EXPECT_GT(grade->pushConstantBytes, 0u);
 
-    const GpuKernelDesc* masked = registry->desc(GpuKernelId::pointop_masked);
-    ASSERT_NE(masked, nullptr);
-    EXPECT_EQ(masked->storageBufferCount, 3u);
-    EXPECT_EQ(masked->pushConstantBytes, 88u);
+    const GpuKernelDesc* divide = registry->desc(GpuKernelId::wrap_divide);
+    ASSERT_NE(divide, nullptr);
+    EXPECT_EQ(divide->storageBufferCount, kGpuWrapBindings);
+    EXPECT_EQ(divide->pushConstantBytes, sizeof(GpuWrapParams));
 
     const GpuKernelDesc* fill = registry->desc(fillId);
     ASSERT_NE(fill, nullptr);

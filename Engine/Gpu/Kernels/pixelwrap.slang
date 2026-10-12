@@ -1,3 +1,5 @@
+import gradeops;
+
 // The per-pixel wrapping of NativeImageEffect::render(): divide by the "(Un)premult by" channel,
 // the op, multiply back, blend with the undivided source by mask x mix, and pass unprocessed
 // channels through from the undivided source. GpuWrapParams in Engine/Gpu/GpuWrap.h mirrors
@@ -253,6 +255,93 @@ struct WrapScale : IPixelOp
     {
         return v * 2.0;
     }
+}
+
+struct WrapGrade : IPixelOp
+{
+    float4 a;
+    float4 b;
+    float4 gamma;
+    float4 invGamma;
+    uint channelMask;
+    uint flags;
+
+    // Parameter block, in words: a, b, gamma, invGamma (4 each), channelMask, flags.
+    [mutating] void load(StructuredBuffer<uint> params)
+    {
+        a = wrapParamFloat4(params, 0);
+        b = wrapParamFloat4(params, 4);
+        gamma = wrapParamFloat4(params, 8);
+        invGamma = wrapParamFloat4(params, 12);
+        channelMask = params[16];
+        flags = params[17];
+    }
+
+    float4 apply(float4 v, int2 xy)
+    {
+        const bool reverse = (flags & 1) != 0;
+        const bool clampBlack = (flags & 2) != 0;
+        const bool clampWhite = (flags & 4) != 0;
+        [ForceUnroll]
+        for (uint c = 0; c < 4; ++c)
+        {
+            if ((channelMask & (1u << c)) != 0)
+                v[c] = gradeApply(v[c], a[c], b[c], gamma[c], invGamma[c], reverse, clampBlack, clampWhite);
+        }
+        return v;
+    }
+}
+
+struct WrapInvert : IPixelOp
+{
+    [mutating] void load(StructuredBuffer<uint> params) {}
+
+    float4 apply(float4 v, int2 xy)
+    {
+        return float4(1.0 - v.rgb, v.a);
+    }
+}
+
+// Both ops load from the same parameter block, so only one of them may read it.
+struct Chain<A : IPixelOp, B : IPixelOp> : IPixelOp
+{
+    A first;
+    B second;
+
+    [mutating] void load(StructuredBuffer<uint> params)
+    {
+        first.load(params);
+        second.load(params);
+    }
+
+    float4 apply(float4 v, int2 xy)
+    {
+        return second.apply(first.apply(v, xy), xy);
+    }
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void pixelwrap_grade(uint3 tid : SV_DispatchThreadID)
+{
+    WrapGrade op;
+    runWrapped<WrapGrade>(op, tid);
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void pixelwrap_invert(uint3 tid : SV_DispatchThreadID)
+{
+    WrapInvert op;
+    runWrapped<WrapInvert>(op, tid);
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void pixelwrap_chain(uint3 tid : SV_DispatchThreadID)
+{
+    Chain<WrapGrade, WrapInvert> op;
+    runWrapped<Chain<WrapGrade, WrapInvert>>(op, tid);
 }
 
 [shader("compute")]

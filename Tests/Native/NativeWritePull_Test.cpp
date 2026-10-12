@@ -82,12 +82,14 @@ const SourceChannel kSourceChannels[] = {
     { "R", 0.125f }, { "G", 0.25f }, { "B", 0.375f }, { "A", 1.f }, { "diffuse.R", 0.5f }, { "diffuse.G", 0.625f }, { "diffuse.B", 0.75f }, { "specular.R", 0.0625f }, { "specular.G", 0.1875f }, { "specular.B", 0.3125f }, { "mask.A", 0.875f }
 };
 
+// A non-empty `hash` is stored as the Write stores the hash of a frame it rendered.
 bool
 writeExr(const std::string& path,
          const std::vector<std::string>& names,
          const std::vector<float>& values,
          int alphaChannel,
-         std::string* error)
+         std::string* error,
+         const std::string& hash = std::string())
 {
     const int n = (int)names.size();
     OIIO::ImageSpec spec(kSize, kSize, n, OIIO::TypeDesc::FLOAT);
@@ -95,6 +97,9 @@ writeExr(const std::string& path,
     spec.channelnames = names;
     spec.alpha_channel = alphaChannel;
     spec.attribute("compression", "none");
+    if (!hash.empty()) {
+        spec.attribute(kNatronWriteOutputHashAttribute, hash);
+    }
     std::vector<float> pixels((std::size_t)kSize * kSize * n);
     for (int p = 0; p < kSize * kSize; ++p) {
         for (int c = 0; c < n; ++c) {
@@ -265,6 +270,18 @@ protected:
         }
 
         return true;
+    }
+
+    std::string storedHash() const
+    {
+        OIIO::ImageInput::unique_ptr input = OIIO::ImageInput::open(_output);
+        if (!input) {
+            return std::string();
+        }
+        const std::string hash = input->spec().get_string_attribute(kNatronWriteOutputHashAttribute);
+        input->close();
+
+        return hash;
     }
 
     int fileChannelCount() const
@@ -480,8 +497,10 @@ TEST_F(NativeWritePullTest, ReadBackThroughADownstreamNodeIsTheFile)
 {
     renderToDisk();
     ASSERT_TRUE(outputExists());
+    const std::string hash = storedHash();
+    ASSERT_FALSE(hash.empty());
     std::string error;
-    ASSERT_TRUE(writeExr(_output, { "R", "G", "B", "A" }, { 0.5f, 0.5f, 0.5f, 1.f }, 3, &error)) << error;
+    ASSERT_TRUE(writeExr(_output, { "R", "G", "B", "A" }, { 0.5f, 0.5f, 0.5f, 1.f }, 3, &error, hash)) << error;
 
     setReadBack(true);
 
@@ -490,14 +509,16 @@ TEST_F(NativeWritePullTest, ReadBackThroughADownstreamNodeIsTheFile)
     expectEveryPixel(pixels, { 0.5f, 0.5f, 0.5f, 1.f });
 }
 
-TEST_F(NativeWritePullTest, ReadBackShowsTheFilesLayersWhateverTheInputOffers)
+TEST_F(NativeWritePullTest, ReadBackShowsTheFilesLayersWhileTheChannelSetIsAsRendered)
 {
     renderToDisk();
     ASSERT_TRUE(outputExists());
+    const std::string hash = storedHash();
+    ASSERT_FALSE(hash.empty());
     // Values the source does not have, and a specular of one channel and no mask, so that what
     // downstream sees can only come from the file.
     std::string error;
-    ASSERT_TRUE(writeExr(_output, { "R", "G", "B", "A", "diffuse.R", "diffuse.G", "diffuse.B", "specular.G" }, { 0.5f, 0.25f, 0.125f, 1.f, 0.75f, 0.5f, 0.25f, 0.625f }, 3, &error)) << error;
+    ASSERT_TRUE(writeExr(_output, { "R", "G", "B", "A", "diffuse.R", "diffuse.G", "diffuse.B", "specular.G" }, { 0.5f, 0.25f, 0.125f, 1.f, 0.75f, 0.5f, 0.25f, 0.625f }, 3, &error, hash)) << error;
     setReadBack(true);
 
     const auto expectTheFile = [&](const char* when) {
@@ -524,12 +545,24 @@ TEST_F(NativeWritePullTest, ReadBackShowsTheFilesLayersWhateverTheInputOffers)
 
     expectTheFile("as written");
 
+    // The channel set decides what the file holds, so the file no longer stands for the node's
+    // output and the input passes through, narrowed to what the file would now hold.
+    const std::vector<ChannelSetRow> rendered = _channels->getRows();
     _channels->setLayer(0, "diffuse", NULL);
     _channels->addLayer("mask", NULL);
-    expectTheFile("after the channel set changed");
+    EXPECT_EQ(std::set<std::string>({ "diffuse", "mask" }), layerIDs(layersSeenDownstream()));
+    const std::list<ImageLayerDesc> narrowed = layersSeenDownstream();
+    for (std::list<ImageLayerDesc>::const_iterator it = narrowed.begin(); it != narrowed.end(); ++it) {
+        if (it->getLayerID() == "diffuse") {
+            std::vector<float> pixels;
+            ASSERT_TRUE(pull(_dot, *it, &pixels));
+            expectEveryPixel(pixels, { 0.5f, 0.625f, 0.75f });
+        }
+    }
 
-    disconnectNodes(_reader, _writer, true);
-    expectTheFile("after the input was disconnected");
+    // setAll() resets the first row only, so the rows are put back whole.
+    _channels->setRows(rendered);
+    expectTheFile("after the channel set was set back");
     EXPECT_TRUE(outputExists());
 }
 

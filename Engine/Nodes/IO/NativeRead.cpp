@@ -30,7 +30,9 @@
 #include <cctype>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <functional>
 #include <limits>
 #include <list>
@@ -39,6 +41,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -57,6 +60,7 @@
 #include "Engine/ChoiceOption.h"
 #include "Engine/FileSystemModel.h"
 #include "Engine/Format.h"
+#include "Engine/Hash64.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
@@ -125,6 +129,7 @@ timeDomainAtDefaults(const KnobIntPtr& firstFrame,
 NativeRead::NativeRead(NodePtr node)
     : NativeEffectBase(node)
     , _filename()
+    , _reload()
     , _proxy()
     , _proxyThreshold()
     , _originalProxyScale()
@@ -176,8 +181,19 @@ NativeRead::initializeKnobs()
     // NativeEffectBase has no counterpart of an OpenFX clip-preferences slave param, so without
     // this the preferred metadata is only consulted once, at creation, before a file is chosen.
     filename->setIsMetadataSlave(true);
+    filename->setAddNewLine(false);
     page->addKnob(filename);
     _filename = filename;
+
+    // Left to trigger a render: the evaluation retires the images and action results cached under
+    // the old node hash, and the metadata is derived again from the file now on disk.
+    KnobButtonPtr reload = createKnob<KnobButton>(tr("Reload"));
+    reload->setName(kNatronReadParamReload);
+    reload->setHintToolTip(tr("Reads the file again: forgets the frames, headers, layers and metadata read before and the "
+                              "images decoded from them, so a file changed on disk is what the node outputs."));
+    reload->setIsMetadataSlave(true);
+    page->addKnob(reload);
+    _reload = reload;
 
     KnobFilePtr proxy = createKnob<KnobFile>(tr("Proxy File"));
     proxy->setName(kOfxImageEffectProxyParamName);
@@ -587,6 +603,29 @@ NativeRead::purgeCaches()
     endChanges(true);
 }
 
+void
+NativeRead::appendContentHash(double time,
+                              ViewIdx /*view*/,
+                              Hash64* hash) const
+{
+    const Target target = targetAtTime(time);
+
+    hash->append<int>((int)target.kind);
+    if (target.kind != ReadTimeDomain::Result::eFile) {
+        return;
+    }
+    // The pattern is already in the hash through the filename knob; the frame picks the file of
+    // the pattern and the stamp tells a replaced file apart.
+    hash->append<int>(target.frame);
+    std::error_code timeError;
+    std::error_code sizeError;
+    const std::filesystem::path path(target.path);
+    const std::filesystem::file_time_type mtime = std::filesystem::last_write_time(path, timeError);
+    const std::uintmax_t size = std::filesystem::file_size(path, sizeError);
+    hash->append<std::int64_t>(timeError ? 0 : (std::int64_t)mtime.time_since_epoch().count());
+    hash->append<U64>(sizeError ? 0 : (U64)size);
+}
+
 ReadTimeDomain::Settings
 NativeRead::settingsAt(double time) const
 {
@@ -866,6 +905,13 @@ NativeRead::knobChanged(KnobI* k,
                         double /*time*/,
                         bool /*originatedFromMainThread*/)
 {
+    KnobButtonPtr reload = _reload.lock();
+    if (reload && (k == reload.get())) {
+        purgeCaches();
+        clearPersistentMessage(false);
+
+        return true;
+    }
     if (proxyKnobChanged(k, reason)) {
         return true;
     }

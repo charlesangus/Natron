@@ -1,9 +1,11 @@
 """The native Write in the GUI: the create-time save dialog and its filter, the panel's layout,
 a viewed Write writing nothing until rendered, rendering from the Render button with progress,
-read back, the output colourspace menu, no WriteOIIO / WritePNG left in the node search, and
-Render Selected on a non-writer node.
+read back gated on the hash the render stored and the Reload button, the output colourspace
+menu, no WriteOIIO / WritePNG left in the node search, and Render Selected on a non-writer node.
 
-Fixtures are written under $NATRON_GUI_TEST_OUT/fixtures/m76 by the Write itself.
+Fixtures are written under $NATRON_GUI_TEST_OUT/fixtures/m76 by the Write itself. The read-back
+section recolours a written frame in place, keeping its header, with oiiotool (or OpenImageIO's
+Python module if that is missing).
 
 Screenshots (cropped unless noted): m76-write-panel.png (the Write's properties panel),
 m76-output-colorspace-menu.png (the Output Colorspace menu open on a submenu),
@@ -15,6 +17,7 @@ Usage: Tests/gui/run-gui-test.sh Tests/gui/m76_write.py
 """
 import glob
 import os
+import subprocess
 import sys
 import traceback
 
@@ -37,6 +40,7 @@ try:
     FIXTURE_DIR = os.path.join(gt.OUT, "fixtures", "m76")
     GREEN = (0.1, 0.8, 0.1)
     BLUE = (0.1, 0.1, 0.8)
+    RED = (0.8, 0.1, 0.1)
     SEQUENCE = os.path.join(FIXTURE_DIR, "m76-render.###.exr")
     SELECTED = os.path.join(FIXTURE_DIR, "m76-selected.exr")
 
@@ -195,6 +199,52 @@ try:
     def sizes(paths):
         return [os.path.getsize(p) if os.path.isfile(p) else -1 for p in paths]
 
+    def frame_file(frame):
+        return os.path.join(FIXTURE_DIR, "m76-render.%03d.exr" % frame)
+
+    def recolour_keeping_header(path, rgb):
+        """Sets every pixel of the RGBA file to rgb with alpha 1, keeping the header attributes,
+        the hash the Write stored among them, so the file still stands for the Write's render."""
+        temporary = os.path.join(os.path.dirname(path), "recolour-temporary.exr")
+        try:
+            subprocess.run(["oiiotool", path, "--mulc", "0,0,0,1", "--addc", "%s,%s,%s,0" % rgb, "-o", temporary],
+                           check=True, capture_output=True)
+            os.replace(temporary, path)
+            return True
+        except (OSError, subprocess.CalledProcessError):
+            pass
+        try:
+            import OpenImageIO as oiio
+            buf = oiio.ImageBuf(path)
+            buf.read(0, 0, True)
+            if not oiio.ImageBufAlgo.fill(buf, (rgb[0], rgb[1], rgb[2], 1.0)) or not buf.write(temporary):
+                return False
+            os.replace(temporary, path)
+            return True
+        except Exception:
+            return False
+
+    def show_node_graph():
+        """Brings the node graph's tab back to the front: the Progress panel takes it over when a
+        render starts."""
+        view = next(iter(gt.widgets_of("NodeGraph")), None)
+        require(view is not None, "the node graph exists")
+        tabs = view.parentWidget()
+        while tabs is not None and gt.class_name(tabs) != "TabWidget":
+            tabs = tabs.parentWidget()
+        require(tabs is not None, "the node graph sits in a tab widget")
+        for index in range(8):
+            if view.isVisible():
+                break
+            QMetaObject.invokeMethod(tabs, "makeCurrentTab", Q_ARG(int, index))
+            QApplication.processEvents()
+        require(view.isVisible(), "the node graph tab is shown")
+        return view
+
+    def panel_button(panel, text):
+        found = [b for b in panel.findChildren(QPushButton) if b.isVisible() and b.text() == text]
+        return found[0] if len(found) == 1 else None
+
     progress = {"bars": 0, "peak": 0, "panel_visible": False}
 
     def sample_progress():
@@ -326,6 +376,13 @@ try:
         if render:
             rows_y = [y for _, y in rows]
             check(render[0].mapTo(panel, render[0].rect().topLeft()).y() >= max(rows_y), "the Render button is the last row")
+        reload = panel_button(panel, "Reload")
+        check(reload is not None, "the panel has one Reload button")
+        if reload is not None:
+            ry = first_y(rows, "Read back file")
+            check(ry is not None and abs(reload.mapTo(panel, reload.rect().topLeft()).y() - ry) < 16,
+                  "the Reload button sits on the Read back file row")
+            check(not reload.isEnabled(), "the Reload button is disabled while read back is off")
         screen_crop("m76-write-panel.png", global_rect(panel))
 
     def colorspace_section():
@@ -443,20 +500,58 @@ try:
         gt.section("read back")
         write, constant = state["write"], state["constant"]
         gt.close_all_panels()
+        frame = app.timelineGetTime()
+        require(1 <= frame <= 3, "the viewer shows a rendered frame (%d)" % frame)
+        shown = frame_file(frame)
         written = [(p, os.path.getmtime(p)) for p in sequence_files()]
+        check(not write.getParam("reload").getIsEnabled(), "Reload is disabled while read back is off")
+
+        write.getParam("readBack").setValue(True)
+        yield ("sleep", 500)
+        check(write.getParam("reload").getIsEnabled(), "Reload is enabled while reading back")
+        check(not write.getParam("startRender").getIsEnabled(), "the Render button is disabled while reading back")
+        ok = yield ("until", lambda: viewer_shows("green"), POLL_TIMEOUT_S)
+        check(ok, "with read back on the viewer shows the rendered frame, green (%r)" % (gt.viewer_centre_colour(),))
+        check(not (write.getPersistentMessage() or ""), "the Write reports no error (%r)" % write.getPersistentMessage())
+
+        require(recolour_keeping_header(shown, RED), "recolour %s in place" % os.path.basename(shown),
+                "no oiiotool or OpenImageIO")
+        yield ("sleep", 1500)
+        check(viewer_shows("green"), "without Reload the viewer keeps the image it had (%r)" % (gt.viewer_centre_colour(),))
+        show_node_graph()
+        yield from open_panel(write)
+        yield ("sleep", 500)
+        panel = panel_of(write)
+        require(panel is not None, "the Write's panel is open")
+        reload = panel_button(panel, "Reload")
+        require(reload is not None and reload.isEnabled(), "the panel has an enabled Reload button")
+        reload.click()
+        ok = yield ("until", lambda: viewer_shows("red"), POLL_TIMEOUT_S)
+        check(ok, "Reload shows the file changed on disk, red (%r)" % (gt.viewer_centre_colour(),))
+        gt.close_all_panels()
+
         constant.getParam("color").set(BLUE[0], BLUE[1], BLUE[2], 1.0)
         ok = yield ("until", lambda: viewer_shows("blue"), POLL_TIMEOUT_S)
-        check(ok, "with read back off the viewer shows the input, blue (%r)" % (gt.viewer_centre_colour(),))
+        check(ok, "a change upstream shows the input, blue, though read back is on (%r)" % (gt.viewer_centre_colour(),))
         yield ("sleep", 500)
-        check([(p, os.path.getmtime(p)) for p in sequence_files()] == written, "viewing the blue input leaves the written files alone")
-        write.getParam("readBack").setValue(True)
-        ok = yield ("until", lambda: viewer_shows("green"), POLL_TIMEOUT_S)
-        check(ok, "with read back on the viewer shows the written file, still green (%r)" % (gt.viewer_centre_colour(),))
-        check(not write.getParam("startRender").getIsEnabled(), "the Render button is disabled while reading back")
-        check(not (write.getPersistentMessage() or ""), "the Write reports no error (%r)" % write.getPersistentMessage())
+        check([p for p, _ in written] == sequence_files() and all(os.path.getmtime(p) == t for p, t in written if p != shown),
+              "viewing the changed input leaves the written files alone")
+        constant.getParam("color").set(GREEN[0], GREEN[1], GREEN[2], 1.0)
+        ok = yield ("until", lambda: viewer_shows("red"), POLL_TIMEOUT_S)
+        check(ok, "undoing the change matches the file's hash again and shows the file, red (%r)" % (gt.viewer_centre_colour(),))
+
         write.getParam("readBack").setValue(False)
-        ok = yield ("until", lambda: viewer_shows("blue"), POLL_TIMEOUT_S)
-        check(ok, "turning read back off shows the input again (%r)" % (gt.viewer_centre_colour(),))
+        ok = yield ("until", lambda: viewer_shows("green"), POLL_TIMEOUT_S)
+        check(ok, "turning read back off shows the input again, green (%r)" % (gt.viewer_centre_colour(),))
+        check(not write.getParam("reload").getIsEnabled(), "Reload is disabled again")
+
+        write.getParam("filename").setValue(os.path.join(FIXTURE_DIR, "m76-other.###.png"))
+        yield ("sleep", 500)
+        check(not write.getParam("readBack").getIsVisible(), "a PNG file name hides Read back file")
+        check(not write.getParam("reload").getIsVisible(), "a PNG file name hides Reload")
+        write.getParam("filename").setValue(SEQUENCE)
+        yield ("sleep", 500)
+        check(write.getParam("readBack").getIsVisible(), "an EXR file name shows Read back file again")
 
     def render_selected_section():
         gt.section("Render Selected")
@@ -468,21 +563,9 @@ try:
         # asks for confirmation first.
         app.getProjectParam("frameRange").set(1, 1)
         app.selectNode(constant, True)
+        view = show_node_graph()
         # Render Selected acts on the graph that last had focus, and there is no window manager to
         # give it any under Xvfb.
-        view = next(iter(gt.widgets_of("NodeGraph")), None)
-        require(view is not None, "the node graph exists")
-        # The Progress panel took over the graph's tab when the render started.
-        tabs = view.parentWidget()
-        while tabs is not None and gt.class_name(tabs) != "TabWidget":
-            tabs = tabs.parentWidget()
-        require(tabs is not None, "the node graph sits in a tab widget")
-        for index in range(8):
-            if view.isVisible():
-                break
-            QMetaObject.invokeMethod(tabs, "makeCurrentTab", Q_ARG(int, index))
-            QApplication.processEvents()
-        require(view.isVisible(), "the node graph tab is shown")
         QApplication.sendEvent(view, QFocusEvent(QEvent.FocusIn))
         seen = {}
 

@@ -2168,6 +2168,35 @@ public:
         return true;
     }
 
+    /**
+     * @brief A hash of what decides this node's output at `time` and `view`, from values alone:
+     * the plug-in and version of this node and of every node upstream, the knobs of each that
+     * isKnobInContentHash() keeps, what appendContentHash() adds, and which input each is
+     * connected to. Unlike the node hash, which counts edits, the same graph holding the same
+     * values gives the same hash in any session, so the hash can be stored with a rendered file
+     * and compared later. Animation counts whole: a keyframe anywhere changes the hash at every
+     * time, so a node that reads its input at other times needs no special case. Names, labels
+     * and positions do not count.
+     **/
+    U64 computeContentHash(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether `knob` takes part in computeContentHash(). By default every saved knob that
+     * triggers a render does, except buttons and layout knobs. A node excludes a knob that
+     * triggers a render without changing its pixels.
+     **/
+    virtual bool isKnobInContentHash(const KnobI& knob) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Adds to computeContentHash() what decides this node's output besides its knobs and
+     * inputs, such as the file a reader loads at `time`.
+     **/
+    virtual void appendContentHash(double /*time*/,
+                                   ViewIdx /*view*/,
+                                   Hash64* /*hash*/) const
+    {
+    }
+
     virtual void onKnobsAboutToBeLoaded(const NodeSerializationPtr& /*serialization*/) {}
 
     virtual void onKnobsLoaded() {}

@@ -29,9 +29,12 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Engine/EffectInstance.h" // for PLUGINID_NATRON_WRITE
@@ -48,9 +51,17 @@
 
 #define kNatronWriteParamReadBack "readBack"
 #define kNatronWriteParamReadBackLabel "Read back file"
-#define kNatronWriteParamReadBackHint "When checked, the output of this node comes from reading the written file instead of the input node"
+#define kNatronWriteParamReadBackHint "When checked, a frame whose EXR file was rendered by this node from its input as it is now is read " \
+                                      "from that file. Any other frame, one never rendered or rendered before a change upstream or "        \
+                                      "on this node, passes the input through. Only EXR files can be read back."
 
 #define kNatronWriteParamReadBackStamp "readBackStamp"
+
+#define kNatronWriteParamReload "reload"
+
+// The EXR header attribute holding the content hash of the frame and views the file was rendered
+// from. The native Read drops attributes under an unknown prefix, so it never reaches metadata.
+#define kNatronWriteOutputHashAttribute "natron:outputHash"
 
 #define kNatronWriteParamStartRender "startRender"
 
@@ -100,7 +111,7 @@ NATRON_NAMESPACE_ENTER
  * lastFrame, frameIncr, bitDepth, compression, quality, dwaCompressionLevel, zipCompressionLevel,
  * tileSize, partSplitting, viewsSelector, ocioOutputSpace, ocioOutputSpaceIndex,
  * ocioOutputSpaceSet, the Context group key1..4 and value1..4, the hidden ocioConfigFile and
- * ocioWorkingSpace, writeMetadata, readBack.
+ * ocioWorkingSpace, writeMetadata, readBack, reload.
  **/
 class NativeWrite
     : public NativeEffectBase {
@@ -150,11 +161,13 @@ public:
         return EffectInstance::ePassThroughBlockNonRenderedLayers;
     }
 
-    // While reading back, the output is the file: the input is not needed, so a Viewer shows the
-    // file with the input disconnected, and the channel set does not gate the render.
-    virtual bool isInputOptional(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
+    // A frame read back is the file, so the channel set does not gate its render.
     virtual bool outputFollowsLayerKnob(double time, ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // Forgets what was read of the read-back files and the content hashes worked out for them.
+    virtual void purgeCaches() OVERRIDE FINAL;
+
+    virtual bool isKnobInContentHash(const KnobI& knob) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual StatusEnum getRegionOfDefinition(U64 hash,
                                              double time,
@@ -221,9 +234,9 @@ private:
     // The input's planes the channel set selects, whole, before the file's format narrows them.
     std::vector<ImageLayerDesc> inputPlanes(double time, ViewIdx view) WARN_UNUSED_RETURN;
 
-    // The colour plane, when the file has one, and every other layer of the file of `time` and
-    // `view` as the native Read groups them; read back declares these whatever the input offers.
-    std::list<ImageLayerDesc> readBackLayers(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+    // The colour plane, when the file has one, and every other layer of `header` for `view` as
+    // the native Read groups them; read back declares these whatever the input offers.
+    std::list<ImageLayerDesc> readBackLayers(const OiioReadSupport::Header& header, ViewIdx view) const WARN_UNUSED_RETURN;
 
     // The views a render of `view` puts in its file: several when one file takes every view of
     // the project (rendered under view 0), none when another view's render writes the file.
@@ -238,15 +251,31 @@ private:
 
     bool resolveWindow(double time, ViewIdx view, Window* window) const WARN_UNUSED_RETURN;
 
-    // Whether the output comes from the written file: the knob is on and the file is not being written.
+    // Whether the file name is an EXR, the one format whose header holds the content hash.
+    bool readBackAvailable() const WARN_UNUSED_RETURN;
+
+    // Whether frames may come from the written file: the knob is on, the file is an EXR and it is
+    // not being written.
     bool readBackActive() const WARN_UNUSED_RETURN;
 
-    // The headers of the file of `time` and `view`, or null with a persistent error set.
-    std::shared_ptr<const OiioReadSupport::Header> readBackHeader(double time, ViewIdx view, std::string* path) WARN_UNUSED_RETURN;
+    // The content hash of this node at `time` and `view` (computeContentHash()), remembered until
+    // the node hash changes.
+    U64 outputHash(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
-    StatusEnum renderReadBack(const RenderActionArgs& args) WARN_UNUSED_RETURN;
+    // What the file of `time` and `view` holds the hash of, as stored in its header: every view
+    // the file takes, and the project settings the graph's pixels depend on beside its knobs.
+    std::string fileHash(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
-    // The Render button is off while the node shows the file.
+    // The headers of the file of `time` and `view` when read back is active and the file holds
+    // fileHash() of them; null otherwise, and that frame passes the input through.
+    std::shared_ptr<const OiioReadSupport::Header> readBackFrame(double time, ViewIdx view, std::string* path) const WARN_UNUSED_RETURN;
+
+    StatusEnum renderReadBack(const RenderActionArgs& args,
+                              const OiioReadSupport::Header& header,
+                              const std::string& path) WARN_UNUSED_RETURN;
+
+    // Read back is offered for an EXR only; the Render button is off while it is on, and Reload
+    // only while it is on.
     void refreshReadBackState();
 
     // A finished sequence changed the file, which the hash must tell the viewer.
@@ -283,11 +312,16 @@ private:
     KnobBoolWPtr _writeMetadata;
     KnobBoolWPtr _readBack;
     KnobIntWPtr _readBackStamp;
+    KnobButtonWPtr _reload;
     KnobChoiceWPtr _views;
     std::string _viewToKeep;
     KnobChoiceWPtr _frameRange;
     KnobIntWPtr _firstFrame;
     KnobIntWPtr _lastFrame;
+
+    mutable std::mutex _outputHashMutex;
+    mutable U64 _outputHashNodeHash = 0;
+    mutable std::map<std::pair<double, int>, U64> _outputHashes;
 };
 
 NATRON_NAMESPACE_EXIT

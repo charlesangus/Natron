@@ -45,6 +45,7 @@
 
 #define PLUGIN_MAJOR_NATRON_READ 2
 #define kNatronReadNodeOCIOParamInputSpace "ocioInputSpace"
+#define kNatronReadParamReload "reload"
 
 NATRON_NAMESPACE_ENTER
 
@@ -122,6 +123,9 @@ public:
      * one refresh of the whole project.
      **/
     virtual void purgeCaches() OVERRIDE FINAL;
+
+    // The file a frame loads is part of the output: one replaced on disk is new content.
+    virtual void appendContentHash(double time, ViewIdx view, Hash64* hash) const OVERRIDE FINAL;
 
     /**
      * @brief Calls `hook` each time a Read has listed the files of a pattern on disk, before it
@@ -207,6 +211,7 @@ private:
     std::optional<std::string> automaticInputSpace() const;
 
     KnobFileWPtr _filename;
+    KnobButtonWPtr _reload;
     KnobFileWPtr _proxy;
     KnobDoubleWPtr _proxyThreshold;
     KnobDoubleWPtr _originalProxyScale;

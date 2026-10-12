@@ -1,5 +1,6 @@
 """The native Read in the GUI: layers in the viewer's layer menu, formats the old readers covered,
-no ReadOIIO / ReadPNG left in the node search, and the create-time file dialog's filter.
+the Reload button picking up a file changed on disk, no ReadOIIO / ReadPNG left in the node search,
+and the create-time file dialog's filter.
 
 A DPX and a TGA are written at run time with oiiotool (or OpenImageIO's Python module if that is
 missing) under $NATRON_GUI_TEST_OUT/fixtures, so the container only needs one of the two.
@@ -26,7 +27,7 @@ try:
     from PySide6.QtCore import QEvent, QMetaObject, QPointF, QRect, Qt, QTimer, Q_ARG
     from PySide6.QtGui import QEnterEvent, QGuiApplication, QMouseEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QListView, QWidget
+    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QListView, QPushButton, QWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -389,6 +390,33 @@ try:
                 if viewers:
                     screen_crop("m75-dpx-viewer.png", global_rect(viewers[0]))
 
+    def reload_section():
+        gt.section("Reload")
+        path = os.path.join(FIXTURE_DIR, "m75-reload.tga")
+        require(make_solid(path, SOLIDS["dpx"][0]), "write a run-time TGA", "no oiiotool or OpenImageIO")
+        read = connect_reader(path, 600, "the reloaded Read")
+        ok = yield ("until", lambda: viewer_shows("green"), POLL_TIMEOUT_S)
+        check(ok, "the Read displays its file, green (%r)" % (gt.viewer_centre_colour(),))
+
+        require(make_solid(path, SOLIDS["tga"][0]), "rewrite the TGA in blue", "no oiiotool or OpenImageIO")
+        yield ("sleep", 1500)
+        check(viewer_shows("green"), "without Reload the viewer keeps the image it had (%r)" % (gt.viewer_centre_colour(),))
+
+        yield from open_panel(read)
+        yield ("sleep", 800)
+        panel = panel_of(read)
+        require(panel is not None, "the Read's panel is open")
+        buttons = [b for b in panel.findChildren(QPushButton) if b.isVisible() and b.text() == "Reload"]
+        require(len(buttons) == 1, "the panel has one Reload button (%d)" % len(buttons))
+        fy = first_y(panel_rows(panel), "File")
+        check(fy is not None and abs(buttons[0].mapTo(panel, buttons[0].rect().topLeft()).y() - fy) < 16,
+              "the Reload button sits on the File row")
+        buttons[0].click()
+        ok = yield ("until", lambda: viewer_shows("blue"), POLL_TIMEOUT_S)
+        check(ok, "Reload displays the rewritten file, blue (%r)" % (gt.viewer_centre_colour(),))
+        check(read_is_clean(read), "the Read reports no error (%r)" % read.getPersistentMessage())
+        gt.close_all_panels()
+
     def open_node_dialog():
         view = node_graph_view()
         require(view is not None, "the node graph is on screen")
@@ -472,6 +500,7 @@ try:
         yield from layers_section()
         yield from panel_section()
         yield from format_section()
+        yield from reload_section()
         yield from search_section()
         yield from dialog_section()
 

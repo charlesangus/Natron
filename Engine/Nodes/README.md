@@ -183,7 +183,15 @@ script-name prefix so the Write can share it.
   `timeDomainUserEdited`, `ocioInputSpace`,
   `ocioInputSpaceIndex`, `ocioInputSpaceSet`, the `Context` group of
   `key1`..`key4` and `value1`..`value4`, and the hidden `ocioConfigFile`,
-  `ocioWorkingSpace` and `availableViews`.
+  `ocioWorkingSpace` and `availableViews`. `reload` (`kNatronReadParamReload`)
+  is a Reload button on the `filename` row.
+- **Reload.** The Reload button runs `purgeCaches()`: the frame listings, the
+  cached headers of the files and proxy files, the output metadata and the
+  action results are dropped, and the frame range is read from disk again. The
+  button triggers a render, so the node hash moves and the images and action
+  results cached under the old hash are retired. Until then a file changed on
+  disk is not seen: the produced layers, the region of definition and the
+  cached images stay those of the file read before.
 - **Colour.** Pixels are converted to the project's working space through the
   project's OCIO config (`IoColorSpace::toWorkingProcessor()`). The default
   input space (`IoColorSpace::defaultInputSpace()`) is, in order: the config's
@@ -249,7 +257,8 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   `zipCompressionLevel`, `tileSize`, `partSplitting`, `viewsSelector`,
   `ocioOutputSpace`, `ocioOutputSpaceIndex`, `ocioOutputSpaceSet`, the `Context`
   group of `key1`..`key4` and `value1`..`value4`, the hidden `ocioConfigFile`
-  and `ocioWorkingSpace`, `startRender`, `writeMetadata`, `readBack` and
+  and `ocioWorkingSpace`, `startRender`, `writeMetadata`, `readBack`,
+  `reload` (a Reload button on the `readBack` row) and the hidden
   `readBackStamp`. The compression, bit-depth and per-format knobs follow the
   file name through `OiioWriteSupport::paramVisibility()`.
 - **Encoder.** `OiioWriteSupport::writeFile()` pulls rows from a `RowSource` one
@@ -270,7 +279,12 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   OpenEXR only, `exif/` to every format, `tiff/`, `dpx/` and `cin/` to their own
   format, `oiio/` to every format, and `ofx/timecode` and `ofx/edgecode` as
   `smpte:TimeCode` and `smpte:KeyCode`. File-identity keys, `oiio/ColorSpace`,
-  other `ofx/` keys and the file-layout keys are never written.
+  other `ofx/` keys and the file-layout keys are never written. Whatever
+  `writeMetadata` says, an EXR also gets `natron:outputHash`
+  (`kNatronWriteOutputHashAttribute`, see Read back). No key of the prefix map
+  produces it and the native Read drops attributes under an unknown prefix, so
+  it never becomes metadata: a file read and written again carries the hash of
+  the Write that wrote it last, and metadata round trips are unchanged.
 - **When the file is written.** Only a frame of the Write's own render to
   disk encodes: the panel's Render button, Render Selected, `app.render` and
   the `-w` command-line render all run through `startWritersRendering()` and
@@ -297,17 +311,51 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   `isPassThroughForNonRenderedLayers()` blocks the rest). Without a writable
   format, only the channel set restricts the output. A colour row selecting
   alpha alone keeps an RGBA plane whose RGB is zero.
-- **Read back.** With `readBack` on, the node outputs the written file instead
-  of its input, decoded by `OiioReadSupport::decode()` inside the Write
-  (`renderReadBack()`), with the file read in the output space it was written in.
-  The produced planes then come from the file's header too
-  (`readBackLayers()`: its colour part and the layers
-  `OiioReadSupport::fileLayers()` groups for the view), so the channel set and
-  the input, even a disconnected one, no longer decide what downstream sees.
-  The input is optional while reading back (`isInputOptional()`), so a Viewer
-  renders the Write without it, and `outputFollowsLayerKnob()` is false, so a
-  channel set that selects nothing does not make the Write an identity of its
-  input.
+- **Read back.** Read back works for EXR files only: for any other extension
+  `readBack` and `reload` are hidden and `readBackActive()` is false. With
+  `readBack` on, a frame is read from its file only when the file exists and
+  its `natron:outputHash` equals `fileHash()` of the frame now
+  (`readBackFrame()`); any other frame passes the input through exactly as
+  with `readBack` off, planned by `planFile()`. A frame read back is decoded
+  by `OiioReadSupport::decode()` inside the Write (`renderReadBack()`), in the
+  output space it was written in; its produced planes come from the file's
+  header (`readBackLayers()`), it needs no input frame or region, and
+  `outputFollowsLayerKnob()` is false for it, so a channel set that selects
+  nothing does not make it an identity of its input. The input is never
+  optional: a disconnected input changes the hash, so no frame matches. The
+  node's format, pixel aspect and colour components are the file's when the
+  frame at the current time is read back, the input's otherwise.
+- **The hash.** A render to disk stores `fileHash()` in every part of an EXR:
+  the frame, then for each view the file holds
+  `EffectInstance::computeContentHash()`, then the project's default format
+  and view names. The content hash is computed from values, unlike the node
+  hash, which counts edits (`knobsAge`) and so never returns to an earlier
+  value and differs between sessions. It walks the Write and every node
+  upstream through `getInput()` (so groups and precomps count by their
+  insides) and hashes each node's plug-in ID and version, which input each
+  input is on, every knob `isKnobInContentHash()` keeps (by default the saved
+  knobs that trigger a render, buttons and layout knobs excluded) as its
+  expression, its whole animation curve and its value at the frame (a choice
+  by entry ID), and what `appendContentHash()` adds: the native Read adds the
+  file a frame loads, by resolved frame, modification time and size. A Roto
+  or RotoPaint node adds its saved age, since shapes are not knobs. The Write
+  leaves out the knobs that never change a frame's pixels: `readBack`,
+  `readBackStamp`, `overwrite`, `frameRange`, `firstFrame`, `lastFrame` and
+  `frameIncr`; buttons such as `reload` and `startRender` are out by default,
+  and the render-versus-pull state is not a knob. So toggling read back or
+  pressing Reload keeps a match, while any upstream edit or a Write knob that
+  changes the pixels breaks it, and undoing the edit restores it. A keyframe
+  anywhere changes the hash at every frame. `outputHash()` remembers the
+  content hash per time and view until the node hash moves.
+- **Caching.** Images and action results are cached under the node hash, which
+  moves with every edit upstream or on the Write, so a frame going from match
+  to mismatch or back is computed again. A finished sequence writes files
+  without moving it, so `onSequenceRenderFinished()` bumps the hidden
+  `readBackStamp` while read back is on, and the frames just written are read
+  rather than the input cached before. A file changed on disk by anything else
+  is seen after Reload, which drops the cached headers of the frame range's
+  files, the remembered content hashes, the output metadata and the action
+  results, and moves the node hash.
 
 ## Writing a node, start to finish
 

@@ -307,7 +307,7 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
   - verify: `Tests/gui/run-gui-test.sh Tests/gui/m75_read.py build/fast/App/Natron` reports 0 failures at the gate build.
   - size: M
 
-- [ ] M45.P8.T3 — Run the one build, the tests, and package the AppImage for UAT
+- [x] M45.P8.T3 — Run the one build, the tests, and package the AppImage for UAT
   - files: none (build, run, package)
   - approach:
     - Configure (new files are globbed, so re-run cmake), then build.
@@ -359,3 +359,4 @@ Acceptance sketch:
   - **Weights start fresh:** there is no seeding from the old `QSettings` `<id><major>_tab_weight` counts. `getTabMenuLegacyWeights`/`legacyWeightsJson` are dropped from M45.P6.T2, and the seeding logic and its tests from M45.P5.T3/T4.
 - 2026-10-12 — **P5.T3:** the adapter (`tabtabtab_natron.py`) calls the core's `tabtabtab_nuke_core.launch(...)` by module, so tests stub `launch` on the core module. It validates the search-mode order itself, because a reused popup in the core keeps an invalid order. It expects `GuiApp.getTabMenuNodeItems()` to return a JSON list of `{id, major, label, grouping[], icon, color, shortcut}`, plus `GuiApp.createNodeFromTabMenu(id, major)`, and the settings knobs `tabMenuSearchModes` (a choice whose option IDs are comma-joined mode names) and `tabMenuScroll`.
 - 2026-10-12 — **P6.T3–T5:** `Gui/NodeCreationDialog.*` was renamed to `Gui/CompleterLineEdit.*`, because the remaining class is the completer and the brief's "no NodeCreationDialog left" check needed it. `m75_read.py` now drives the tab menu (`TabTabTabWidget`). P7.T1 is re-sized from S to M, since it is CMake post-build logic plus the bundle script.
+- 2026-10-12 — **Gate (P8.T3):** ctest 1669/1669. GUI scripts on the final binary: `m45_tab_menu` 97/0, `m75_read` 75/0, `m55_node_graph` 162/0, `m55_input_pipes` 118/0, `m24_border` 47/0. Fixed a long-standing product bug: validating a rebound shortcut cleared the old modifiers but kept the old key (`PreferencesPanel.cpp`, `88396da7d`). The popup was about 757 px tall and got pushed above the cursor, so the user approved vendored patch 0002 (`222178856`): host row metrics (Natron row height, 15 rows) and the list flips above the search box near the screen bottom. The popup is now 448 px, with the search box at the cursor. UAT AppImage: `build/appimages/M45-222178856.AppImage`, script `build/appimages/M45-uat.md`.

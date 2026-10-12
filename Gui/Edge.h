@@ -28,9 +28,13 @@
 
 #include "Global/Macros.h"
 
+#include <vector>
+
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QGraphicsLineItem>
+#include <QLineF>
+#include <QPointF>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -61,6 +65,12 @@ public:
     QPainterPath shape() const OVERRIDE WARN_UNUSED_RETURN;
 
     bool contains(const QPointF &point) const OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Squared distance from point to the closest point on the segment (clamped to its
+     * endpoints, not the infinite line through it). Both must be in the same coordinate space.
+     **/
+    static double dist2ToSegment(const QLineF& line, const QPointF& point);
 
     void setSource(const NodeGuiPtr & src);
 
@@ -133,6 +143,23 @@ private:
 
     std::unique_ptr<EdgePrivate> _imp;
 };
+
+// One edge under consideration by pickNearestEdgeCandidate(), with its line already mapped to
+// the coordinate space scenePos is in (scene space, for NodeGraph::hasItemNearbyMouse).
+struct EdgeNearbyCandidate {
+    QLineF line;
+    bool isUnconnectedInput; // an input edge with no source: grabbed with unconnectedInputGrabRadius, not grabRadius
+};
+
+/**
+ * @brief Returns the index into candidates of the one whose line is closest to scenePos, among
+ * those within their own grab radius (unconnectedInputGrabRadius for an unconnected input stub,
+ * grabRadius for everything else), or -1 if none qualify.
+ **/
+int pickNearestEdgeCandidate(const QPointF& scenePos,
+                             const std::vector<EdgeNearbyCandidate>& candidates,
+                             double grabRadius,
+                             double unconnectedInputGrabRadius);
 
 /**
  * @brief An arrow in the graph representing an expression between 2 nodes or that one node is a clone of another.

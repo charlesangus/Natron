@@ -161,6 +161,7 @@ set(GuiTests_SOURCES
     ColorTrackballHud_Test.cpp
     ColorTrackballTarget_Test.cpp
     ColorWheelWidget_Test.cpp
+    EdgeNearbyGrab_Test.cpp
     KnobGuiString_Test.cpp
     LayerChannelRow_Test.cpp
     NodeGraphSplice_Test.cpp

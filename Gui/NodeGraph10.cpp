@@ -27,6 +27,7 @@
 #include "NodeGraphPrivate.h"
 
 #include <stdexcept>
+#include <vector>
 
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 CLANG_DIAG_OFF(deprecated)
@@ -127,8 +128,10 @@ NodeGraph::hasItemNearbyMouse(const QPoint& mousePosViewport,
             nodes.insert(n);
         }
     }
-    // use a tolerance for edges
-    double tolerance = TO_DPIX(10.);
+    // Use a tolerance for edges, wide enough to find an unconnected input stub (see below). The
+    // broad-phase query below still runs against each edge's drawn shape; the radii that decide
+    // which one actually wins are applied afterwards, against the nearest point on its line.
+    double tolerance = TO_DPIX(18.);
     QRect toleranceRect(mousePosViewport.x() - tolerance / 2.,
                         mousePosViewport.y() - tolerance / 2.,
                         tolerance,
@@ -176,16 +179,36 @@ NodeGraph::hasItemNearbyMouse(const QPoint& mousePosViewport,
             }
         }
     }
-    if ( !edges.empty() ) {
-        *edge = *edges.begin();
-
+    if (!edges.empty()) {
         QPointF scenePos = mapToScene(mousePosViewport);
-        if ( (*edge)->hasSource() && (*edge)->isBendPointVisible() && (*edge)->isNearbyBendPoint(scenePos) ) {
-            return eNearbyItemEdgeBendPoint;
-        } else {
-            return eNearbyItemNodeEdge;
+
+        // Grab radii are kept in viewport pixels (not scene units) so they don't shrink when the
+        // graph is zoomed out. An unconnected input has no pipe to click along, only its stub and
+        // free tail, so it gets a bigger one than a connected pipe or an output edge.
+        double zoomFactor = transform().mapRect(QRectF(0, 0, 1, 1)).width();
+        assert(zoomFactor != 0);
+        double grabRadius = TO_DPIX(10.) / zoomFactor;
+        double unconnectedInputGrabRadius = TO_DPIX(18.) / zoomFactor;
+
+        std::vector<Edge*> edgeList(edges.begin(), edges.end());
+        std::vector<EdgeNearbyCandidate> candidates;
+        candidates.reserve(edgeList.size());
+        for (std::vector<Edge*>::const_iterator it = edgeList.begin(); it != edgeList.end(); ++it) {
+            EdgeNearbyCandidate candidate;
+            candidate.line = QLineF((*it)->mapToScene((*it)->line().p1()), (*it)->mapToScene((*it)->line().p2()));
+            candidate.isUnconnectedInput = !(*it)->isOutputEdge() && !(*it)->hasSource();
+            candidates.push_back(candidate);
         }
 
+        int nearestIndex = pickNearestEdgeCandidate(scenePos, candidates, grabRadius, unconnectedInputGrabRadius);
+        if (nearestIndex == -1) {
+            return eNearbyItemNone;
+        }
+        *edge = edgeList[nearestIndex];
+
+        if ( (*edge)->hasSource() && (*edge)->isBendPointVisible() && (*edge)->isNearbyBendPoint(scenePos) ) {
+            return eNearbyItemEdgeBendPoint;
+        }
         return eNearbyItemNodeEdge;
     }
 

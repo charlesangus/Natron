@@ -649,9 +649,9 @@ dist2(const QPointF & p1,
     return sqr( p2.x() - p1.x() ) +  sqr( p2.y() - p1.y() );
 }
 
-static double
-dist2ToSegment(const QLineF & line,
-               const QPointF & p)
+double
+Edge::dist2ToSegment(const QLineF& line,
+                     const QPointF& p)
 {
     double length2 = line.length() * line.length();
     const QPointF & p1 = line.p1();
@@ -681,6 +681,30 @@ Edge::contains(const QPointF &point) const
     double d2 = dist2ToSegment(line(), point);
 
     return d2 <= kGraphicalContainerOffset * kGraphicalContainerOffset;
+}
+
+int
+pickNearestEdgeCandidate(const QPointF& scenePos,
+                         const std::vector<EdgeNearbyCandidate>& candidates,
+                         double grabRadius,
+                         double unconnectedInputGrabRadius)
+{
+    int nearestIndex = -1;
+    double nearestDist2 = 0.;
+
+    for (std::size_t i = 0; i < candidates.size(); ++i) {
+        double radius = candidates[i].isUnconnectedInput ? unconnectedInputGrabRadius : grabRadius;
+        double d2 = Edge::dist2ToSegment(candidates[i].line, scenePos);
+        if (d2 > radius * radius) {
+            continue;
+        }
+        if ((nearestIndex == -1) || (d2 < nearestDist2)) {
+            nearestIndex = (int)i;
+            nearestDist2 = d2;
+        }
+    }
+
+    return nearestIndex;
 }
 
 void

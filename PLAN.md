@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: [M69.P7.T1 end build, M45 UAT, M56 UAT, M76 merge M84 + gate, M27.P1.T1, M93.P5.T1 (UAT AppImage building; PR #55 review), M85.P1.T3 (fixing test)]
-pm_heartbeat: 2026-10-12T09:29:36-04:00
+current: [M69.P7.T1 end build, M45 UAT, M56 UAT, M27.P1.T1, M93.P5.T1 (UAT AppImage building; PR #55 review), M85.P1.T3 (fixing test)]
+pm_heartbeat: 2026-10-12T09:51:50-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -195,6 +195,8 @@ future core work has solid ground to build on.
   **M85 split (user, 2026-10-12):** M85 - Native GPU Kernels covers the kernel description, the per-pixel mask/mix/premult wrapping (`pixelwrap.slang`) and the node ports (Grade and Blur complete, point ops, keyers, morphology, Transform). Split off from it: M107 - GPU Viewer Hand-off, M108 - Retire Engine GL Host Path (separate from M86, runs before it), M109 - GPU Region Engine Hardening and M110 - Remaining Native GPU Ports.
   **M73 shipped 2026-10-08** (PR #43, squash `cb04295b9`): openfx-misc pinned to its merge commit `9fb0d0904`; every fork's SupportExt pin is now on openfx-supportext master; merged stack branches and `build/wt/` worktrees removed (M64 benchmarks saved to `build/bench/from-wt-m64/`).
 
+  **M76 shipped 2026-10-12** (PR #52, squash `ca130dcf0`): one native OIIO Write for every writable format; `WriteNode`, the OFX writers and the IO meta-node plumbing are gone. A Write passes its input through as the file would hold it and writes only on an explicit render; Reload buttons on the Read and Write. Hash-gated read back moved to M97 - Value-Based Node Hashing (stub).
+
   **M24 shipped 2026-10-10** (PR #50, squash `a50bef552`). Nodes take their body colour from a category, and the user colour is a ring outside the node. Category and edge-kind colours are set in Preferences and applied on Save. Labels pick black or white text for contrast, and Dots get a settings panel.
 
 # Board
@@ -245,7 +247,7 @@ future core work has solid ground to build on.
 | M64 | Tiled Rendering | blocked |  | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
 | M74 | Native Metadata Core | done |  | [M74-native-metadata-core.md](PLAN/MILESTONES/M74-native-metadata-core.md) |
 | M75 | Native Read | done |  | [M75-native-read.md](PLAN/MILESTONES/M75-native-read.md) |
-| M76 | Native Write | doing | M75 | [M76-native-write.md](PLAN/MILESTONES/M76-native-write.md) |
+| M76 | Native Write | done | M75 | [M76-native-write.md](PLAN/MILESTONES/M76-native-write.md) |
 | M77 | Native Metadata Nodes | todo | M75 | [M77-native-metadata-nodes.md](PLAN/MILESTONES/M77-native-metadata-nodes.md) |
 | M78 | Metadata In Expressions | todo | M75, M77 | [M78-metadata-in-expressions.md](PLAN/MILESTONES/M78-metadata-in-expressions.md) |
 | M79 | Layered Document Readers | todo | M75 | [M79-layered-document-readers.md](PLAN/MILESTONES/M79-layered-document-readers.md) |

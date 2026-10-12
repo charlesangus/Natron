@@ -203,3 +203,4 @@ Acceptance sketch:
   - **Roto multi-feather:** same signed distance along each point's own normal.
   - **Tangent join:** mean of the two angles.
 - 2026-10-12 — **Added (user, from the M56 shot review):** IDistort's UV picker offers only RGBA. It needs the layer dropdown that other multiplane nodes have, so the U/V/Alpha channels can come from any layer. To be planned as a task when M69 is promoted.
+- 2026-10-12 — **Started early (user)** in `.worktrees/m69` on `milestone/m69-minor-cleanup`, branched from `main` at `6fcf9c4fa` (includes M55 and M84). This is a third lane, beyond the usual two, at the user's request while M56 waits on UAT and M45 runs its gate. M69 overlaps M56 (`ViewerTab.cpp`, `Settings.*`, `OfxEffectInstance.cpp`) and M45 (`NodeGraph25.cpp`, `NodeGraph.h`), so it rebases after each of those merges.

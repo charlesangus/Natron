@@ -26,8 +26,8 @@
 #include "GpuKernel.h"
 #include "GpuTransfer.h"
 
-#include "../tests/BlurFixture.h"
-#include "../tests/GradeFixture.h"
+#include "BlurFixture.h"
+#include "GradeFixture.h"
 #include "blur_spirv.h"
 #include "grade_spirv.h"
 
@@ -305,6 +305,7 @@ gradeParams(uint32_t w, uint32_t h)
     p.nComps = kChannels;
     p.channelMask = 0xF;
     p.flags = gradefix::kClampBlack;
+    p.srcStride = p.dstStride = w * kChannels;
     return p;
 }
 
@@ -1048,8 +1049,11 @@ main(int argc, char** argv)
         std::fprintf(stderr, "device: %s\n", st.message.c_str());
         return 1;
     }
-    if (dev->info().type == VK_PHYSICAL_DEVICE_TYPE_CPU) {
-        std::fprintf(stderr, "GpuBench needs a real GPU, found a software device (%s)\n", dev->info().name.c_str());
+    const char* allowSoftware = std::getenv("GPU_SPIKE_ALLOW_SOFTWARE");
+    if (dev->info().type == VK_PHYSICAL_DEVICE_TYPE_CPU && !(allowSoftware && allowSoftware[0] == '1')) {
+        std::fprintf(stderr, "GpuBench needs a real GPU, found a software device (%s); "
+                             "GPU_SPIKE_ALLOW_SOFTWARE=1 accepts it\n",
+                     dev->info().name.c_str());
         return 1;
     }
     std::printf("device: %s | transferUsesComputeQueue=%d hostImport=%d | iters=%d | hw threads %u\n",

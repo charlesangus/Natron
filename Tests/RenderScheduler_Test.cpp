@@ -28,9 +28,12 @@
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
+#include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -50,6 +53,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/FrameRenderContext.h"
+#include "Engine/GpuPlacement.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Knob.h"
@@ -58,6 +62,7 @@
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
+#include "Engine/RenderScale.h"
 #include "Engine/RenderScheduler.h"
 #include "Engine/RenderStats.h"
 #include "Engine/TimeLine.h"
@@ -126,6 +131,96 @@ struct LeafLatch {
     std::atomic<bool> timedOut { false };
 };
 
+thread_local bool tInRegionBody = false;
+
+// Shared with the region body, like SiblingState.
+struct RegionBodyState {
+    std::atomic<int> runs { 0 };
+
+    // Returned once the first member rendered, instead of rendering the others; Ok renders every member.
+    EffectInstance::RenderRoIRetCode stopWith = EffectInstance::eRenderRoIRetCodeOk;
+    bool throwAfterFirst = false;
+};
+
+// Shared with the render hook, like SiblingState.
+struct RenderLog {
+    std::mutex mutex;
+    std::vector<const Node*> order;
+    std::set<const Node*> inBody;
+    std::set<const Node*> outsideBody;
+    std::map<const Node*, std::size_t> storeBytesAtRender;
+    FrameRenderContextPtr context;
+};
+
+/**
+ * @brief A region body rendering the members on the CPU one after the other, as their tasks would, keeping their
+ * outputs in RAM in the store.
+ **/
+EffectInstance::RenderRoIRetCode
+renderRegionOnCpu(RegionBodyState& state,
+                  const FrameRenderContextPtr& context,
+                  const FrameGraph& graph,
+                  int regionIndex,
+                  std::map<ImageLayerDesc, ImagePtr>* rootPlanes)
+{
+    ++state.runs;
+    tInRegionBody = true;
+    const FrameGraph::Region& region = graph.regions[regionIndex];
+    FrameStore& store = context->getStore();
+    const AbortableRenderInfoPtr& abortInfo = context->getAbortInfo();
+    EffectInstance::RenderRoIRetCode retCode = EffectInstance::eRenderRoIRetCodeOk;
+
+    for (std::size_t i = 0; i < region.members.size(); ++i) {
+        if (abortInfo && abortInfo->isAborted()) {
+            retCode = EffectInstance::eRenderRoIRetCodeAborted;
+            break;
+        }
+        const FrameGraph::Task& task = graph.tasks[region.members[i]];
+        EffectInstancePtr effect = task.key.node->getEffectInstance();
+        const FrameGraph::Task& caller = task.consumerTasks.empty() ? task : graph.tasks[task.consumerTasks.front()];
+        EffectInstancePtr callerEffect = caller.key.node->getEffectInstance();
+        EffectInstance::RenderRoIArgs args(task.key.time,
+                                           RenderScale::fromMipmapLevel(task.key.mipmapLevel),
+                                           task.key.mipmapLevel,
+                                           task.key.view,
+                                           false /*byPassCache*/,
+                                           task.roi,
+                                           RectD(),
+                                           task.components,
+                                           task.bitdepth,
+                                           false /*calledFromGetImage*/,
+                                           callerEffect.get(),
+                                           eStorageModeRAM,
+                                           caller.key.time);
+        std::map<ImageLayerDesc, ImagePtr> planes;
+        retCode = effect->renderRoI(args, &planes);
+        if (retCode != EffectInstance::eRenderRoIRetCodeOk) {
+            break;
+        }
+        for (std::size_t d = 0; d < task.dependencies.size(); ++d) {
+            if (graph.tasks[task.dependencies[d]].regionId == regionIndex) {
+                store.release(graph.tasks[task.dependencies[d]].key);
+            }
+        }
+        if (task.consumerTasks.empty()) {
+            *rootPlanes = planes;
+        } else if (!(abortInfo && abortInfo->isAborted())) {
+            store.put(task.key, planes, task.renderedRoI, task.consumers);
+        }
+        if (state.throwAfterFirst) {
+            tInRegionBody = false;
+            throw std::runtime_error("region body failure");
+        }
+        if (state.stopWith != EffectInstance::eRenderRoIRetCodeOk) {
+            retCode = state.stopWith;
+            break;
+        }
+    }
+    tInRegionBody = false;
+
+    return retCode;
+} // renderRegionOnCpu
+
 } // namespace
 
 class RenderSchedulerTest
@@ -135,6 +230,8 @@ protected:
         : BaseTest()
         , _scheduler(0)
         , _savedBudget(0)
+        , _savedGpuMaxConcurrent(2)
+        , _savedRegionBody()
     {
     }
 
@@ -145,11 +242,15 @@ protected:
         CountingTestRegistry::reset();
         _scheduler = appPTR->getRenderScheduler();
         _savedBudget = _scheduler->getBytesBudget();
+        _savedGpuMaxConcurrent = _scheduler->getGpuMaxConcurrentTasks();
+        _savedRegionBody = _scheduler->getRegionBody();
     }
 
     virtual void TearDown() OVERRIDE
     {
         _scheduler->setBytesBudgetForTests(_savedBudget);
+        _scheduler->setGpuMaxConcurrentTasks(_savedGpuMaxConcurrent);
+        _scheduler->setRegionBody(_savedRegionBody);
         CountingTestRegistry::reset();
         getApp()->getProject()->reset(false, true);
         BaseTest::TearDown();
@@ -514,8 +615,159 @@ protected:
         return first;
     }
 
+    // Places the tasks of gpuNodes on the GPU, grouped into regions as placement forms them.
+    static void placeOnGpu(FrameGraph* graph,
+                           const std::vector<NodePtr>& gpuNodes)
+    {
+        std::set<const Node*> gpu;
+        for (std::size_t i = 0; i < gpuNodes.size(); ++i) {
+            gpu.insert(gpuNodes[i].get());
+        }
+        PlacementInputs inputs;
+        inputs.canRenderOnGpu = [gpu](const FrameGraph::Task& task) {
+            return gpu.count(task.key.node.get()) > 0;
+        };
+        placeGraph(*graph, inputs);
+    }
+
+    void installRegionBody(const std::shared_ptr<RegionBodyState>& state)
+    {
+        _scheduler->setRegionBody([state](const FrameRenderContextPtr& context,
+                                          const FrameGraph& graph,
+                                          int region,
+                                          int /*budget*/,
+                                          std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
+                                          RenderScheduler::RegionReport* /*report*/) {
+            return renderRegionOnCpu(*state, context, graph, region, rootPlanes);
+        });
+    }
+
+    // Records each render, whether it ran inside the region body, and the bytes in the frame's store when it started.
+    static void installRenderLog(const std::shared_ptr<RenderLog>& log)
+    {
+        CountingTestRegistry::setRenderHook([log](const Node* node) {
+            std::lock_guard<std::mutex> k(log->mutex);
+            log->order.push_back(node);
+            if (tInRegionBody) {
+                log->inBody.insert(node);
+            } else {
+                log->outsideBody.insert(node);
+            }
+            if (log->context) {
+                log->storeBytesAtRender[node] = log->context->getStore().bytesInFlight();
+            }
+        });
+    }
+
+    static std::size_t positionOf(const RenderLog& log,
+                                  const NodePtr& node)
+    {
+        const std::vector<const Node*>::const_iterator found = std::find(log.order.begin(), log.order.end(), node.get());
+
+        return (std::size_t)(found - log.order.begin());
+    }
+
+    static float rootValue(const FrameFuture& future)
+    {
+        const std::map<ImageLayerDesc, ImagePtr> planes = future.getRootPlanes();
+        if (planes.empty() || !planes.begin()->second) {
+            ADD_FAILURE() << "the root rendered nothing";
+
+            return -1.f;
+        }
+        Image::ReadAccess access = planes.begin()->second->getReadRights();
+        const float* pixel = (const float*)access.pixelAt(0, 0);
+        if (!pixel) {
+            ADD_FAILURE() << "the root has no pixel at 0,0";
+
+            return -1.f;
+        }
+
+        return pixel[0];
+    }
+
+    /**
+     * @brief A feeds B and C, which M merges; M feeds X and Y, which the root merges. The root holds 10.
+     **/
+    bool buildRegionDiamond(std::vector<NodePtr>* nodes)
+    {
+        nodes->clear();
+        NodePtr a = createCounting(kTestPluginIDCounting, 1.);
+        NodePtr b = createCounting(kTestPluginIDCounting, 1.);
+        NodePtr c = createCounting(kTestPluginIDCounting, 1.);
+        NodePtr m = createCounting(kTestPluginIDCountingMerge, 0.);
+        NodePtr x = createCounting(kTestPluginIDCounting, 1.);
+        NodePtr y = createCounting(kTestPluginIDCounting, 1.);
+        NodePtr root = createCounting(kTestPluginIDCountingMerge, 0.);
+        if (!a || !b || !c || !m || !x || !y || !root) {
+            return false;
+        }
+        connectNodes(a, b, 0, true);
+        connectNodes(a, c, 0, true);
+        connectNodes(b, m, 0, true);
+        connectNodes(c, m, 1, true);
+        connectNodes(m, x, 0, true);
+        connectNodes(m, y, 0, true);
+        connectNodes(x, root, 0, true);
+        connectNodes(y, root, 1, true);
+        nodes->push_back(a);
+        nodes->push_back(b);
+        nodes->push_back(c);
+        nodes->push_back(m);
+        nodes->push_back(x);
+        nodes->push_back(y);
+        nodes->push_back(root);
+
+        return true;
+    }
+
+    /**
+     * @brief Renders the region diamond with B, C and M in one region and checks that the region body ran once, then
+     * that the frame finished with expected, released everything, and left the scheduler idle. Returns the log.
+     **/
+    std::shared_ptr<RenderLog> renderRegionDiamond(const std::vector<NodePtr>& nodes,
+                                                   const std::shared_ptr<RegionBodyState>& state,
+                                                   EffectInstance::RenderRoIRetCode expected,
+                                                   FrameRun* run)
+    {
+        std::shared_ptr<RenderLog> log = std::make_shared<RenderLog>();
+        std::string error;
+
+        EXPECT_TRUE(prepareFrame(nodes.back(), 1., true, run, &error)) << error;
+        if (!run->context) {
+            return log;
+        }
+        std::vector<NodePtr> gpu;
+        gpu.push_back(nodes[1]);
+        gpu.push_back(nodes[2]);
+        gpu.push_back(nodes[3]);
+        placeOnGpu(&run->graph, gpu);
+        EXPECT_EQ(1u, run->graph.regions.size());
+        if (run->graph.regions.size() != 1) {
+            return log;
+        }
+        EXPECT_EQ(3u, run->graph.regions[0].members.size());
+        EXPECT_EQ(1u, run->graph.regions[0].externalInputs.size());
+
+        log->context = run->context;
+        installRenderLog(log);
+        installRegionBody(state);
+        submit(run);
+        EXPECT_TRUE(waitOrAbort(run)) << "the frame did not finish within " << kFrameTimeoutMs << " ms";
+        EXPECT_EQ(expected, run->future->wait());
+        CountingTestRegistry::setRenderHook(CountingTestRegistry::RenderHook());
+        EXPECT_EQ(1, state->runs.load());
+        EXPECT_EQ(0u, run->context->getStore().bytesInFlight());
+        EXPECT_EQ(0, _scheduler->getFramesInFlight(run->abortInfo));
+        expectSchedulerIdle();
+
+        return log;
+    }
+
     RenderScheduler* _scheduler;
     std::size_t _savedBudget;
+    int _savedGpuMaxConcurrent;
+    RenderScheduler::RegionBody _savedRegionBody;
 };
 
 TEST_F(RenderSchedulerTest, Chain)
@@ -888,4 +1140,419 @@ TEST_F(RenderSchedulerTest, FailureUnderAOneOutputBudgetReleasesEverything)
         }
         ASSERT_NO_FATAL_FAILURE(setBool(failing, failKnobs[k], false));
     }
+}
+
+// The region runs once all of A has, before X and Y, and releases A once per edge into it: when the root renders, the
+// store holds X and Y alone.
+TEST_F(RenderSchedulerTest, RegionRunsBetweenItsInputsAndItsConsumers)
+{
+    const std::size_t oneOutput = measureOneOutputBytes();
+    ASSERT_GT(oneOutput, 0u);
+
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildRegionDiamond(&nodes));
+    const NodePtr& a = nodes[0];
+    const NodePtr& x = nodes[4];
+    const NodePtr& y = nodes[5];
+    const NodePtr& root = nodes[6];
+
+    for (std::size_t p = 0; p < sizeof(kPoolSizes) / sizeof(kPoolSizes[0]); ++p) {
+        SCOPED_TRACE("pool size " + std::to_string(kPoolSizes[p]));
+        PoolSizeGuard pool(kPoolSizes[p]);
+        CountingTestRegistry::reset();
+
+        std::shared_ptr<RegionBodyState> state = std::make_shared<RegionBodyState>();
+        FrameRun run;
+        std::shared_ptr<RenderLog> log = renderRegionDiamond(nodes, state, EffectInstance::eRenderRoIRetCodeOk, &run);
+        ASSERT_TRUE(run.future && run.future->isFinished());
+        EXPECT_FLOAT_EQ(10.f, rootValue(*run.future));
+        EXPECT_EQ((int)nodes.size(), run.stats->getTasksRun());
+
+        std::lock_guard<std::mutex> k(log->mutex);
+        ASSERT_EQ(nodes.size(), log->order.size());
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            EXPECT_EQ(1, CountingTestRegistry::renders(nodes[i])) << "node " << i;
+            const bool member = (i >= 1) && (i <= 3);
+            EXPECT_EQ(member, log->inBody.count(nodes[i].get()) > 0) << "node " << i;
+            EXPECT_EQ(!member, log->outsideBody.count(nodes[i].get()) > 0) << "node " << i;
+        }
+        for (std::size_t i = 1; i <= 3; ++i) {
+            EXPECT_LT(positionOf(*log, a), positionOf(*log, nodes[i])) << "node " << i;
+            EXPECT_LT(positionOf(*log, nodes[i]), positionOf(*log, x)) << "node " << i;
+            EXPECT_LT(positionOf(*log, nodes[i]), positionOf(*log, y)) << "node " << i;
+        }
+        EXPECT_EQ(2 * oneOutput, log->storeBytesAtRender[root.get()]);
+    }
+}
+
+// A region whose output another region reads beside a CPU task: A alone, then D on the CPU, then B merging A and D.
+TEST_F(RenderSchedulerTest, RegionFeedsAnotherRegion)
+{
+    NodePtr a = createCounting(kTestPluginIDCounting, 1.);
+    NodePtr d = createCounting(kTestPluginIDCounting, 1.);
+    NodePtr b = createCounting(kTestPluginIDCountingMerge, 0.);
+    NodePtr root = createCounting(kTestPluginIDCounting, 1.);
+    ASSERT_TRUE(a && d && b && root);
+    connectNodes(a, d, 0, true);
+    connectNodes(a, b, 0, true);
+    connectNodes(d, b, 1, true);
+    connectNodes(b, root, 0, true);
+    std::vector<NodePtr> nodes;
+    nodes.push_back(a);
+    nodes.push_back(d);
+    nodes.push_back(b);
+    nodes.push_back(root);
+    std::vector<NodePtr> gpu;
+    gpu.push_back(a);
+    gpu.push_back(b);
+
+    for (std::size_t p = 0; p < sizeof(kPoolSizes) / sizeof(kPoolSizes[0]); ++p) {
+        SCOPED_TRACE("pool size " + std::to_string(kPoolSizes[p]));
+        PoolSizeGuard pool(kPoolSizes[p]);
+        CountingTestRegistry::reset();
+
+        std::shared_ptr<RegionBodyState> state = std::make_shared<RegionBodyState>();
+        installRegionBody(state);
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(root, 1., true, &run, &error)) << error;
+        placeOnGpu(&run.graph, gpu);
+        ASSERT_EQ(2u, run.graph.regions.size());
+        submit(&run);
+        ASSERT_TRUE(waitOrAbort(&run)) << "the frame did not finish within " << kFrameTimeoutMs << " ms";
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+        EXPECT_FLOAT_EQ(4.f, rootValue(*run.future));
+        EXPECT_EQ(2, state->runs.load());
+        EXPECT_EQ((int)nodes.size(), run.stats->getTasksRun());
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            EXPECT_EQ(1, CountingTestRegistry::renders(nodes[i])) << "node " << i;
+        }
+        EXPECT_EQ(0u, run.context->getStore().bytesInFlight());
+        expectSchedulerIdle();
+    }
+}
+
+// Regions without external inputs: two regions of leaves and their merge feeding CPU merges, and a whole chain in one
+// region holding the root.
+TEST_F(RenderSchedulerTest, RegionsOfLeavesAndOfTheRoot)
+{
+    std::vector<NodePtr> wide;
+    ASSERT_TRUE(buildWide(8, &wide));
+    std::vector<NodePtr> wideGpu;
+    wideGpu.push_back(wide[0]);
+    wideGpu.push_back(wide[1]);
+    wideGpu.push_back(wide[8]);
+    wideGpu.push_back(wide[2]);
+    wideGpu.push_back(wide[3]);
+    wideGpu.push_back(wide[9]);
+
+    std::vector<NodePtr> chain;
+    ASSERT_TRUE(buildChain(6, &chain));
+
+    for (std::size_t p = 0; p < sizeof(kPoolSizes) / sizeof(kPoolSizes[0]); ++p) {
+        SCOPED_TRACE("pool size " + std::to_string(kPoolSizes[p]));
+        PoolSizeGuard pool(kPoolSizes[p]);
+
+        for (int graph = 0; graph < 2; ++graph) {
+            SCOPED_TRACE(graph == 0 ? "wide" : "chain");
+            const std::vector<NodePtr>& nodes = (graph == 0) ? wide : chain;
+            CountingTestRegistry::reset();
+            std::shared_ptr<RegionBodyState> state = std::make_shared<RegionBodyState>();
+            installRegionBody(state);
+            FrameRun run;
+            std::string error;
+            ASSERT_TRUE(prepareFrame(nodes.back(), 1., true, &run, &error)) << error;
+            placeOnGpu(&run.graph, (graph == 0) ? wideGpu : chain);
+            const int regionCount = (int)run.graph.regions.size();
+            ASSERT_EQ((graph == 0) ? 2 : 1, regionCount);
+            for (std::size_t r = 0; r < run.graph.regions.size(); ++r) {
+                EXPECT_TRUE(run.graph.regions[r].externalInputs.empty());
+            }
+            submit(&run);
+            ASSERT_TRUE(waitOrAbort(&run)) << "the frame did not finish within " << kFrameTimeoutMs << " ms";
+            ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+            EXPECT_FLOAT_EQ((graph == 0) ? 8.f : 6.f, rootValue(*run.future));
+            EXPECT_EQ(regionCount, state->runs.load());
+            EXPECT_EQ((int)nodes.size(), run.stats->getTasksRun());
+            for (std::size_t i = 0; i < nodes.size(); ++i) {
+                EXPECT_EQ(1, CountingTestRegistry::renders(nodes[i])) << "node " << i;
+            }
+            EXPECT_EQ(0u, run.context->getStore().bytesInFlight());
+            expectSchedulerIdle();
+        }
+    }
+}
+
+// What the region bodies of one frame observed.
+struct GpuBodyProbe {
+    std::atomic<int> active { 0 };
+    std::atomic<int> maxActive { 0 };
+    std::atomic<int> minBudget { 1 << 20 };
+    std::atomic<int> maxBudget { 0 };
+};
+
+TEST_F(RenderSchedulerTest, CpuBudgetsAreUnchangedWithoutRegions)
+{
+    EXPECT_EQ(8, RenderScheduler::computeTaskBudget(8, 1, 0, 8, 0));
+    EXPECT_EQ(4, RenderScheduler::computeTaskBudget(8, 1, 1, 8, 0));
+    EXPECT_EQ(2, RenderScheduler::computeTaskBudget(8, 1, 3, 8, 0));
+    EXPECT_EQ(3, RenderScheduler::computeTaskBudget(8, 1, 0, 8, 3));
+    EXPECT_EQ(1, RenderScheduler::computeTaskBudget(2, 4, 4, 8, 0));
+
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildWide(8, &nodes));
+    CountingTestRegistry::reset();
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., true, &run, &error)) << error;
+    for (std::size_t i = 0; i < run.graph.tasks.size(); ++i) {
+        EXPECT_TRUE(run.graph.tasks[i].device == FrameGraph::Device::Cpu);
+    }
+    submit(&run);
+    ASSERT_TRUE(waitOrAbort(&run));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+    EXPECT_FLOAT_EQ(8.f, rootValue(*run.future));
+    expectSchedulerIdle();
+}
+
+// Two independent regions of the wide graph, each holding two leaves and their merge, beside CPU merges.
+TEST_F(RenderSchedulerTest, GpuRegionsGetBudgetOneAndRespectTheConcurrencyCap)
+{
+    std::vector<NodePtr> wide;
+    ASSERT_TRUE(buildWide(8, &wide));
+    std::vector<NodePtr> gpu;
+    gpu.push_back(wide[0]);
+    gpu.push_back(wide[1]);
+    gpu.push_back(wide[8]);
+    gpu.push_back(wide[2]);
+    gpu.push_back(wide[3]);
+    gpu.push_back(wide[9]);
+
+    for (int cap = 1; cap <= 2; ++cap) {
+        SCOPED_TRACE("cap " + std::to_string(cap));
+        PoolSizeGuard pool(8);
+        CountingTestRegistry::reset();
+        _scheduler->setGpuMaxConcurrentTasks(cap);
+
+        std::shared_ptr<RegionBodyState> state = std::make_shared<RegionBodyState>();
+        std::shared_ptr<GpuBodyProbe> probe = std::make_shared<GpuBodyProbe>();
+        _scheduler->setRegionBody([state, probe](const FrameRenderContextPtr& context,
+                                                 const FrameGraph& graph,
+                                                 int region,
+                                                 int budget,
+                                                 std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
+                                                 RenderScheduler::RegionReport* /*report*/) {
+            const int now = ++probe->active;
+            int seen = probe->maxActive.load();
+            while ((now > seen) && !probe->maxActive.compare_exchange_weak(seen, now)) {
+            }
+            int low = probe->minBudget.load();
+            while ((budget < low) && !probe->minBudget.compare_exchange_weak(low, budget)) {
+            }
+            int high = probe->maxBudget.load();
+            while ((budget > high) && !probe->maxBudget.compare_exchange_weak(high, budget)) {
+            }
+            QThread::msleep(40);
+            const EffectInstance::RenderRoIRetCode ret = renderRegionOnCpu(*state, context, graph, region, rootPlanes);
+            --probe->active;
+
+            return ret;
+        });
+
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(wide.back(), 1., true, &run, &error)) << error;
+        placeOnGpu(&run.graph, gpu);
+        ASSERT_EQ(2u, run.graph.regions.size());
+        submit(&run);
+        ASSERT_TRUE(waitOrAbort(&run));
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+        EXPECT_FLOAT_EQ(8.f, rootValue(*run.future));
+        EXPECT_EQ(2, state->runs.load());
+        EXPECT_EQ(1, probe->minBudget.load());
+        EXPECT_EQ(1, probe->maxBudget.load());
+        EXPECT_LE(probe->maxActive.load(), cap);
+        if (cap == 1) {
+            EXPECT_EQ(1, probe->maxActive.load());
+        }
+        expectSchedulerIdle();
+    }
+}
+
+// Regions are admitted on the host memory of their downloaded outputs only. The reservations and the store's host and
+// device bytes return to 0 after frames that wait on a tight host budget, and after an abort.
+TEST_F(RenderSchedulerTest, HostReservationsAndDeviceBytesAreReleased)
+{
+    std::vector<NodePtr> wide;
+    ASSERT_TRUE(buildWide(8, &wide));
+    std::vector<NodePtr> gpu;
+    gpu.push_back(wide[0]);
+    gpu.push_back(wide[1]);
+    gpu.push_back(wide[8]);
+    gpu.push_back(wide[2]);
+    gpu.push_back(wide[3]);
+    gpu.push_back(wide[9]);
+
+    PoolSizeGuard pool(4);
+    for (int mode = 0; mode < 2; ++mode) {
+        SCOPED_TRACE(mode == 0 ? "tight host budget" : "abort");
+        CountingTestRegistry::reset();
+        std::shared_ptr<RegionBodyState> state = std::make_shared<RegionBodyState>();
+        std::shared_ptr<std::atomic<bool>> inBody = std::make_shared<std::atomic<bool>>(false);
+        _scheduler->setRegionBody([state, inBody, mode](const FrameRenderContextPtr& context,
+                                                        const FrameGraph& graph,
+                                                        int region,
+                                                        int /*budget*/,
+                                                        std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
+                                                        RenderScheduler::RegionReport* /*report*/) {
+            if (mode == 1) {
+                *inBody = true;
+                QThread::msleep(100);
+            }
+            return renderRegionOnCpu(*state, context, graph, region, rootPlanes);
+        });
+
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(wide.back(), 1., true, &run, &error)) << error;
+        placeOnGpu(&run.graph, gpu);
+        ASSERT_EQ(2u, run.graph.regions.size());
+        std::size_t largest = 0;
+        for (std::size_t i = 0; i < run.graph.tasks.size(); ++i) {
+            largest = std::max(largest, run.graph.tasks[i].estimatedBytes);
+        }
+        ASSERT_GT(largest, 0u);
+        _scheduler->setBytesBudgetForTests((mode == 0) ? largest : std::numeric_limits<std::size_t>::max());
+        submit(&run);
+        if (mode == 1) {
+            QElapsedTimer timer;
+            timer.start();
+            while (!*inBody && (timer.elapsed() < 5000)) {
+                QThread::msleep(1);
+            }
+            _scheduler->abort(run.context);
+            run.future->wait();
+        } else {
+            ASSERT_TRUE(waitOrAbort(&run));
+            ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+            EXPECT_FLOAT_EQ(8.f, rootValue(*run.future));
+            EXPECT_EQ(2, state->runs.load());
+        }
+        EXPECT_EQ(0u, run.context->getStore().hostBytesInFlight());
+        EXPECT_EQ(0u, run.context->getStore().deviceBytesInFlight());
+        expectSchedulerIdle();
+    }
+}
+
+// A member failing, the body returning a failure, and the body throwing all fail the frame as a failed task would:
+// nothing downstream of the region runs.
+TEST_F(RenderSchedulerTest, FailureInsideARegionFailsTheFrame)
+{
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildRegionDiamond(&nodes));
+
+    for (int mode = 0; mode < 3; ++mode) {
+        SCOPED_TRACE(mode == 0 ? "failing member" : (mode == 1 ? "body fails" : "body throws"));
+        if (mode == 0) {
+            ASSERT_NO_FATAL_FAILURE(setFail(nodes[3]));
+        }
+        for (std::size_t p = 0; p < sizeof(kPoolSizes) / sizeof(kPoolSizes[0]); ++p) {
+            SCOPED_TRACE("pool size " + std::to_string(kPoolSizes[p]));
+            PoolSizeGuard pool(kPoolSizes[p]);
+            CountingTestRegistry::reset();
+
+            std::shared_ptr<RegionBodyState> state = std::make_shared<RegionBodyState>();
+            if (mode == 1) {
+                state->stopWith = EffectInstance::eRenderRoIRetCodeFailed;
+            } else if (mode == 2) {
+                state->throwAfterFirst = true;
+            }
+            FrameRun run;
+            renderRegionDiamond(nodes, state, EffectInstance::eRenderRoIRetCodeFailed, &run);
+            ASSERT_TRUE(run.future && run.future->isFinished());
+            EXPECT_TRUE(run.future->getRootPlanes().empty());
+            EXPECT_TRUE(run.abortInfo->isAborted());
+            EXPECT_EQ(1, CountingTestRegistry::renders(nodes[0]));
+            for (std::size_t i = 4; i < nodes.size(); ++i) {
+                EXPECT_EQ(0, CountingTestRegistry::renders(nodes[i])) << "node " << i;
+            }
+        }
+        if (mode == 0) {
+            ASSERT_NO_FATAL_FAILURE(setBool(nodes[3], "fail", false));
+        }
+    }
+}
+
+// The frame aborted while a member renders, and the body returning an abort, both end the frame as aborted.
+TEST_F(RenderSchedulerTest, AbortInsideARegionAbortsTheFrame)
+{
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildRegionDiamond(&nodes));
+
+    for (int mode = 0; mode < 2; ++mode) {
+        SCOPED_TRACE(mode == 0 ? "aborted while a member renders" : "body aborts");
+        for (std::size_t p = 0; p < sizeof(kPoolSizes) / sizeof(kPoolSizes[0]); ++p) {
+            SCOPED_TRACE("pool size " + std::to_string(kPoolSizes[p]));
+            PoolSizeGuard pool(kPoolSizes[p]);
+            CountingTestRegistry::reset();
+
+            std::shared_ptr<RegionBodyState> state = std::make_shared<RegionBodyState>();
+            if (mode == 1) {
+                state->stopWith = EffectInstance::eRenderRoIRetCodeAborted;
+            }
+            installRegionBody(state);
+            FrameRun run;
+            std::string error;
+            ASSERT_TRUE(prepareFrame(nodes.back(), 1., true, &run, &error)) << error;
+            std::vector<NodePtr> gpu(nodes.begin() + 1, nodes.begin() + 4);
+            placeOnGpu(&run.graph, gpu);
+            ASSERT_EQ(1u, run.graph.regions.size());
+            const NodePtr firstMember = run.graph.tasks[run.graph.regions[0].members.front()].key.node;
+            if (mode == 0) {
+                AbortableRenderInfoPtr abortInfo = run.abortInfo;
+                const Node* firstMemberNode = firstMember.get();
+                CountingTestRegistry::setRenderHook([firstMemberNode, abortInfo](const Node* node) {
+                    if (node == firstMemberNode) {
+                        abortInfo->setAborted();
+                    }
+                });
+            }
+            submit(&run);
+            ASSERT_TRUE(waitOrAbort(&run)) << "the frame did not finish within " << kFrameTimeoutMs << " ms";
+            EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, run.future->wait());
+            CountingTestRegistry::setRenderHook(CountingTestRegistry::RenderHook());
+            EXPECT_EQ(1, state->runs.load());
+            EXPECT_TRUE(run.future->getRootPlanes().empty());
+            EXPECT_EQ(0u, run.context->getStore().bytesInFlight());
+            EXPECT_EQ(0, _scheduler->getFramesInFlight(run.abortInfo));
+            EXPECT_EQ(1, CountingTestRegistry::renders(nodes[0]));
+            EXPECT_EQ(1, CountingTestRegistry::renders(firstMember));
+            EXPECT_EQ(2, CountingTestRegistry::totalRenders());
+            for (std::size_t i = 4; i < nodes.size(); ++i) {
+                EXPECT_EQ(0, CountingTestRegistry::renders(nodes[i])) << "node " << i;
+            }
+            expectSchedulerIdle();
+        }
+    }
+}
+
+TEST_F(RenderSchedulerTest, RegionWithoutBodyFailsTheFrame)
+{
+    _scheduler->setRegionBody(RenderScheduler::RegionBody());
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildRegionDiamond(&nodes));
+    CountingTestRegistry::reset();
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., true, &run, &error)) << error;
+    std::vector<NodePtr> gpu(nodes.begin() + 1, nodes.begin() + 4);
+    placeOnGpu(&run.graph, gpu);
+    ASSERT_EQ(1u, run.graph.regions.size());
+    submit(&run);
+    ASSERT_TRUE(waitOrAbort(&run)) << "the frame did not finish within " << kFrameTimeoutMs << " ms";
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeFailed, run.future->wait());
+    EXPECT_EQ(1, CountingTestRegistry::totalRenders());
+    EXPECT_EQ(0u, run.context->getStore().bytesInFlight());
+    expectSchedulerIdle();
 }

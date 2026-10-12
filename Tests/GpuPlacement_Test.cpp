@@ -1,0 +1,650 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "Global/Macros.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <set>
+#include <utility>
+#include <vector>
+
+#include <gtest/gtest.h>
+
+#include "Engine/FrameRenderContext.h"
+#include "Engine/GpuCostModel.h"
+#include "Engine/GpuPlacement.h"
+#include "Engine/RenderScheduler.h"
+
+NATRON_NAMESPACE_USING
+
+namespace {
+
+const std::size_t kBytes = 1000;
+
+/**
+ * @brief A graph of nTasks tasks, task 0 being the root, with an edge per (consumer, dependency) pair in the order
+ * given. The nodes are null: placement only looks at the edges and asks the callbacks.
+ **/
+FrameGraph
+makeGraph(int nTasks,
+          const std::vector<std::pair<int, int>>& edges)
+{
+    FrameGraph graph;
+
+    graph.tasks.resize(nTasks);
+    for (int i = 0; i < nTasks; ++i) {
+        graph.tasks[i].estimatedBytes = kBytes * (std::size_t)(i + 1);
+    }
+    for (const std::pair<int, int>& edge : edges) {
+        graph.tasks[edge.first].dependencies.push_back(edge.second);
+        graph.tasks[edge.second].consumerTasks.push_back(edge.first);
+    }
+    for (FrameGraph::Task& task : graph.tasks) {
+        task.consumers = (int)task.consumerTasks.size();
+    }
+
+    return graph;
+}
+
+PlacementInputs
+gpuTasks(const FrameGraph& graph,
+         const std::set<int>& gpu)
+{
+    PlacementInputs inputs;
+    const FrameGraph::Task* first = graph.tasks.data();
+
+    inputs.canRenderOnGpu = [first, gpu](const FrameGraph::Task& task) {
+        return gpu.count((int)(&task - first)) != 0;
+    };
+
+    return inputs;
+}
+
+int
+indexOf(const FrameGraph& graph,
+        const FrameGraph::Task& task)
+{
+    return (int)(&task - graph.tasks.data());
+}
+
+bool
+reaches(const FrameGraph& graph,
+        int from,
+        int to)
+{
+    std::vector<int> stack(1, from);
+    std::vector<bool> seen(graph.tasks.size(), false);
+
+    while (!stack.empty()) {
+        const int t = stack.back();
+        stack.pop_back();
+        if (t == to) {
+            return true;
+        }
+        if (seen[t]) {
+            continue;
+        }
+        seen[t] = true;
+        stack.insert(stack.end(), graph.tasks[t].consumerTasks.begin(), graph.tasks[t].consumerTasks.end());
+    }
+
+    return false;
+}
+
+/**
+ * @brief No path leaves a member of the region through a non-member and comes back to a member.
+ **/
+bool
+isConvex(const FrameGraph& graph,
+         int regionId)
+{
+    const FrameGraph::Region& region = graph.regions[regionId];
+
+    for (int m : region.members) {
+        for (int c : graph.tasks[m].consumerTasks) {
+            if (graph.tasks[c].regionId == regionId) {
+                continue;
+            }
+            for (int other : region.members) {
+                if (reaches(graph, c, other)) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+/**
+ * @brief The graph with each region contracted to one node has no cycle.
+ **/
+bool
+isContractionAcyclic(const FrameGraph& graph)
+{
+    const int n = (int)graph.tasks.size();
+    const auto nodeOf = [&](int t) {
+        return (graph.tasks[t].regionId >= 0) ? n + graph.tasks[t].regionId : t;
+    };
+    const int nNodes = n + (int)graph.regions.size();
+    std::vector<std::set<int>> out(nNodes);
+
+    for (int t = 0; t < n; ++t) {
+        for (int d : graph.tasks[t].dependencies) {
+            if (nodeOf(d) != nodeOf(t)) {
+                out[nodeOf(d)].insert(nodeOf(t));
+            }
+        }
+    }
+
+    // 0 unvisited, 1 on the DFS path, 2 done.
+    std::vector<int> state(nNodes, 0);
+    std::vector<std::pair<int, std::set<int>::const_iterator>> stack;
+    for (int root = 0; root < nNodes; ++root) {
+        if (state[root] != 0) {
+            continue;
+        }
+        state[root] = 1;
+        stack.push_back(std::make_pair(root, out[root].begin()));
+        while (!stack.empty()) {
+            const int u = stack.back().first;
+            if (stack.back().second == out[u].end()) {
+                state[u] = 2;
+                stack.pop_back();
+                continue;
+            }
+            const int v = *stack.back().second;
+            ++stack.back().second;
+            if (state[v] == 1) {
+                return false;
+            }
+            if (state[v] == 0) {
+                state[v] = 1;
+                stack.push_back(std::make_pair(v, out[v].begin()));
+            }
+        }
+    }
+
+    return true;
+}
+
+const FrameGraph::Region::Output*
+findOutput(const FrameGraph::Region& region,
+           int task)
+{
+    for (const FrameGraph::Region::Output& output : region.outputs) {
+        if (output.task == task) {
+            return &output;
+        }
+    }
+
+    return nullptr;
+}
+
+} // namespace
+
+// root 0 <- 1 <- 2 <- 3 <- reader 4 (CPU)
+TEST(GpuPlacement, ChainBecomesOneRegion)
+{
+    FrameGraph graph = makeGraph(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
+
+    placeGraph(graph, gpuTasks(graph, { 0, 1, 2, 3 }));
+
+    ASSERT_EQ(graph.regions.size(), 1u);
+    const FrameGraph::Region& region = graph.regions[0];
+    EXPECT_EQ(region.members, std::vector<int>({ 3, 2, 1, 0 }));
+    EXPECT_EQ(region.externalInputs, std::vector<int>({ 4 }));
+    for (int t = 0; t < 4; ++t) {
+        EXPECT_EQ(graph.tasks[t].device, FrameGraph::Device::Gpu) << t;
+        EXPECT_EQ(graph.tasks[t].regionId, 0) << t;
+    }
+    EXPECT_EQ(graph.tasks[4].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(graph.tasks[4].regionId, -1);
+
+    ASSERT_EQ(region.outputs.size(), 4u);
+    const FrameGraph::Region::Output* root = findOutput(region, 0);
+    ASSERT_TRUE(root);
+    EXPECT_TRUE(root->isRoot);
+    EXPECT_EQ(root->internalConsumers, 0);
+    EXPECT_EQ(root->externalConsumers, 0);
+    for (int t = 1; t < 4; ++t) {
+        const FrameGraph::Region::Output* output = findOutput(region, t);
+        ASSERT_TRUE(output) << t;
+        EXPECT_FALSE(output->isRoot);
+        EXPECT_EQ(output->internalConsumers, 1) << t;
+        EXPECT_EQ(output->externalConsumers, 0) << t;
+    }
+
+    // Members 0..3 hold 1..4 kBytes, the uploaded reader 5.
+    EXPECT_EQ(region.workingSetBytes, kBytes * (1 + 2 + 3 + 4 + 5));
+    EXPECT_TRUE(isConvex(graph, 0));
+}
+
+// Merge 0 reads GPU 1 and CPU 2, which both read GPU 3, which reads reader 4 (CPU). Merge cannot join 3's region:
+// that region would wait on 2, which waits on it.
+TEST(GpuPlacement, DiamondWithCpuSideSplitsIntoConvexRegions)
+{
+    FrameGraph graph = makeGraph(5, { { 0, 1 }, { 0, 2 }, { 1, 3 }, { 2, 3 }, { 3, 4 } });
+
+    placeGraph(graph, gpuTasks(graph, { 0, 1, 3 }));
+
+    ASSERT_EQ(graph.regions.size(), 2u);
+    EXPECT_EQ(graph.tasks[2].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(graph.tasks[4].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(graph.tasks[1].regionId, graph.tasks[3].regionId);
+    EXPECT_NE(graph.tasks[0].regionId, graph.tasks[1].regionId);
+    for (int t : { 0, 1, 3 }) {
+        EXPECT_EQ(graph.tasks[t].device, FrameGraph::Device::Gpu) << t;
+        EXPECT_GE(graph.tasks[t].regionId, 0) << t;
+    }
+    for (int r = 0; r < (int)graph.regions.size(); ++r) {
+        EXPECT_TRUE(isConvex(graph, r)) << r;
+    }
+    EXPECT_TRUE(isContractionAcyclic(graph));
+
+    const FrameGraph::Region& upstream = graph.regions[graph.tasks[3].regionId];
+    EXPECT_EQ(upstream.members, std::vector<int>({ 3, 1 }));
+    EXPECT_EQ(upstream.externalInputs, std::vector<int>({ 4 }));
+    const FrameGraph::Region::Output* three = findOutput(upstream, 3);
+    ASSERT_TRUE(three);
+    EXPECT_EQ(three->internalConsumers, 1);
+    EXPECT_EQ(three->externalConsumers, 1);
+
+    const FrameGraph::Region& merge = graph.regions[graph.tasks[0].regionId];
+    EXPECT_EQ(merge.members, std::vector<int>({ 0 }));
+    EXPECT_EQ(merge.externalInputs, std::vector<int>({ 1, 2 }));
+}
+
+// GPU 3 feeds GPU 1 directly and through CPU 2, so they are in different regions. Root 0 (GPU) reads 3 first, then 1.
+// Joining 3's region would have that region wait on 1's, which waits on it, with no CPU task on the cycle.
+TEST(GpuPlacement, RegionsNeverWaitOnEachOther)
+{
+    FrameGraph graph = makeGraph(5, { { 0, 3 }, { 0, 1 }, { 1, 3 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
+
+    placeGraph(graph, gpuTasks(graph, { 0, 1, 3 }));
+
+    ASSERT_EQ(graph.regions.size(), 2u);
+    EXPECT_NE(graph.tasks[1].regionId, graph.tasks[3].regionId);
+    EXPECT_EQ(graph.tasks[0].regionId, graph.tasks[1].regionId);
+    for (int r = 0; r < (int)graph.regions.size(); ++r) {
+        EXPECT_TRUE(isConvex(graph, r)) << r;
+    }
+    EXPECT_TRUE(isContractionAcyclic(graph));
+}
+
+// GPU 3 feeds GPU 1 through two inputs and CPU 2 through one; the root 0 (CPU) reads 1 and 2.
+TEST(GpuPlacement, MultiConsumerNodeIsOneMemberWithConsumerCounts)
+{
+    FrameGraph graph = makeGraph(4, { { 0, 1 }, { 0, 2 }, { 1, 3 }, { 1, 3 }, { 2, 3 } });
+
+    placeGraph(graph, gpuTasks(graph, { 1, 3 }));
+
+    ASSERT_EQ(graph.regions.size(), 1u);
+    const FrameGraph::Region& region = graph.regions[0];
+    EXPECT_EQ(region.members, std::vector<int>({ 3, 1 }));
+    EXPECT_TRUE(region.externalInputs.empty());
+
+    const FrameGraph::Region::Output* three = findOutput(region, 3);
+    ASSERT_TRUE(three);
+    EXPECT_EQ(three->internalConsumers, 2);
+    EXPECT_EQ(three->externalConsumers, 1);
+    const FrameGraph::Region::Output* one = findOutput(region, 1);
+    ASSERT_TRUE(one);
+    EXPECT_EQ(one->internalConsumers, 0);
+    EXPECT_EQ(one->externalConsumers, 1);
+    EXPECT_EQ(region.workingSetBytes, kBytes * (4 + 2));
+    EXPECT_TRUE(isConvex(graph, 0));
+}
+
+// root 0 <- 1 (cached) <- 2
+TEST(GpuPlacement, CacheHitStaysOnCpu)
+{
+    FrameGraph graph = makeGraph(3, { { 0, 1 }, { 1, 2 } });
+    PlacementInputs inputs = gpuTasks(graph, { 0, 1, 2 });
+    const FrameGraph::Task* cached = &graph.tasks[1];
+    int capabilityCalls = 0;
+    const auto canRender = inputs.canRenderOnGpu;
+
+    inputs.isCached = [cached](const FrameGraph::Task& task) {
+        return &task == cached;
+    };
+    inputs.canRenderOnGpu = [&](const FrameGraph::Task& task) {
+        ++capabilityCalls;
+        EXPECT_NE(&task, cached);
+
+        return canRender(task);
+    };
+    placeGraph(graph, inputs);
+
+    EXPECT_EQ(graph.tasks[1].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(graph.tasks[1].regionId, -1);
+    EXPECT_EQ(capabilityCalls, 2);
+    ASSERT_EQ(graph.regions.size(), 2u);
+    EXPECT_NE(graph.tasks[0].regionId, graph.tasks[2].regionId);
+    EXPECT_EQ(graph.regions[graph.tasks[0].regionId].externalInputs, std::vector<int>({ 1 }));
+}
+
+// root 0 (GPU) <- identity 1 <- 2 (GPU) <- identity 3 <- reader 4 (CPU)
+TEST(GpuPlacement, IdentityJoinsItsInputsRegionOnly)
+{
+    FrameGraph graph = makeGraph(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
+    graph.tasks[1].isIdentity = true;
+    graph.tasks[3].isIdentity = true;
+
+    placeGraph(graph, gpuTasks(graph, { 0, 1, 2, 3 }));
+
+    EXPECT_EQ(graph.tasks[3].device, FrameGraph::Device::Cpu);
+    ASSERT_EQ(graph.regions.size(), 1u);
+    EXPECT_EQ(graph.regions[0].members, std::vector<int>({ 2, 1, 0 }));
+    EXPECT_EQ(graph.regions[0].externalInputs, std::vector<int>({ 3 }));
+
+    // Identity 1 aliases 2's image; the uploaded identity 3 counts.
+    EXPECT_EQ(graph.regions[0].workingSetBytes, kBytes * (1 + 3 + 4));
+}
+
+TEST(GpuPlacement, RejectedRegionStaysOnCpu)
+{
+    FrameGraph graph = makeGraph(3, { { 0, 1 }, { 1, 2 } });
+    PlacementInputs inputs = gpuTasks(graph, { 0, 1, 2 });
+
+    inputs.regionGain = [](const FrameGraph&, const FrameGraph::Region&) {
+        return -1.;
+    };
+    placeGraph(graph, inputs);
+
+    EXPECT_TRUE(graph.regions.empty());
+    for (const FrameGraph::Task& task : graph.tasks) {
+        EXPECT_EQ(task.device, FrameGraph::Device::Cpu) << indexOf(graph, task);
+        EXPECT_EQ(task.regionId, -1) << indexOf(graph, task);
+    }
+}
+
+namespace {
+bool
+gpuUnavailable()
+{
+    return false;
+}
+}
+
+TEST(GpuPlacement, NoAvailabilityLeavesGraphUnchanged)
+{
+    const FrameGraph original = makeGraph(3, { { 0, 1 }, { 1, 2 } });
+
+    for (GpuPlacementAvailableFunc func : { GpuPlacementAvailableFunc(nullptr), &gpuUnavailable }) {
+        setGpuPlacementAvailableFunc(func);
+        EXPECT_FALSE(isGpuPlacementAvailable());
+
+        FrameGraph graph = original;
+        EXPECT_FALSE(placeRenderGraph(graph, FrameRenderContextPtr()));
+        EXPECT_TRUE(graph.regions.empty());
+        ASSERT_EQ(graph.tasks.size(), original.tasks.size());
+        for (std::size_t i = 0; i < graph.tasks.size(); ++i) {
+            EXPECT_EQ(graph.tasks[i].device, FrameGraph::Device::Cpu) << i;
+            EXPECT_EQ(graph.tasks[i].regionId, -1) << i;
+            EXPECT_EQ(graph.tasks[i].dependencies, original.tasks[i].dependencies) << i;
+            EXPECT_EQ(graph.tasks[i].consumerTasks, original.tasks[i].consumerTasks) << i;
+            EXPECT_EQ(graph.tasks[i].estimatedBytes, original.tasks[i].estimatedBytes) << i;
+        }
+    }
+    setGpuPlacementAvailableFunc(nullptr);
+
+    // Without a capability callback nothing is a candidate either.
+    FrameGraph graph = original;
+    placeGraph(graph, PlacementInputs());
+    EXPECT_TRUE(graph.regions.empty());
+    for (const FrameGraph::Task& task : graph.tasks) {
+        EXPECT_EQ(task.device, FrameGraph::Device::Cpu);
+    }
+}
+
+namespace {
+
+const char* const kGradeId = "net.sf.openfx.GradePlugin";
+const char* const kBlurId = "net.sf.cimg.CImgBlur";
+const RectI kUhd(0, 0, 3840, 2160);
+const std::size_t kUhdBytes = (std::size_t)3840 * 2160 * 4 * sizeof(float);
+const double kUhdMpx = 3840. * 2160. / 1e6;
+
+GpuTransferRates
+rates(double bytesPerSecond)
+{
+    GpuTransferRates r;
+
+    r.uploadBytesPerSecond = bytesPerSecond;
+    r.downloadBytesPerSecond = bytesPerSecond;
+
+    return r;
+}
+
+/**
+ * @brief A model on 16 threads, as the seeds were measured, whose traits come from a per-task table. Grade's CPU cost
+ * is that of a host where it runs at 1 ms/Mpx on the whole pool: the seeded cost includes the render path's serial
+ * overhead, against which even a lone Grade at 25 GB/s gains on the GPU.
+ **/
+struct CostFixture {
+    GpuCostModel model;
+    std::map<int, GpuTaskTraits> traits;
+    FrameGraph graph;
+
+    CostFixture(int nTasks,
+                const std::vector<std::pair<int, int>>& edges)
+        : graph(makeGraph(nTasks, edges))
+    {
+        for (FrameGraph::Task& task : graph.tasks) {
+            task.roi = kUhd;
+            task.renderedRoI = kUhd;
+            task.estimatedBytes = kUhdBytes;
+        }
+        model.setThreadCount(16);
+        model.setTransferRates(rates(25e9));
+        model.setCpuSeed(kGradeId, 16., 16.);
+        const FrameGraph* g = &graph;
+        const std::map<int, GpuTaskTraits>* table = &traits;
+        model.setTraitsHint([g, table](const FrameGraph::Task& task) {
+            std::map<int, GpuTaskTraits>::const_iterator found = table->find(indexOf(*g, task));
+
+            return (found == table->end()) ? GpuTaskTraits() : found->second;
+        });
+    }
+
+    void place()
+    {
+        PlacementInputs inputs;
+
+        inputs.canRenderOnGpu = [this](const FrameGraph::Task& task) {
+            return traits.count(indexOf(graph, task)) != 0;
+        };
+        inputs.regionGain = [this](const FrameGraph& g, const FrameGraph::Region& region) {
+            return model.regionGainMs(g, region);
+        };
+        placeGraph(graph, inputs);
+    }
+};
+
+} // namespace
+
+TEST(GpuCostModel, GradeCostsFollowSeedOverride)
+{
+    GpuCostModel model;
+
+    model.setThreadCount(16);
+    model.setCpuSeed(kGradeId, 16., 16.);
+    EXPECT_NEAR(model.cpuMs(GpuTaskTraits(kGradeId), kUhdMpx), kUhdMpx, 1e-9);
+    EXPECT_NEAR(model.gpuMs(GpuTaskTraits(kGradeId), kUhdMpx), 0.0482 * kUhdMpx, 1e-9);
+    EXPECT_FALSE(model.hasGpuCost(GpuTaskTraits("net.sf.openfx.MergePlugin")));
+}
+
+TEST(GpuCostModel, SerialSeedScalesToPoolSize)
+{
+    GpuCostModel model;
+
+    // Blur FIR up to sigma 25: 100 ms/Mpx serial, 4.7619 at 16 threads.
+    const GpuTaskTraits blur(kBlurId, 25.);
+    model.setThreadCount(16);
+    EXPECT_NEAR(model.cpuMs(blur, 1.), 100. / 4.7619, 1e-6);
+    model.setThreadCount(1);
+    EXPECT_NEAR(model.cpuMs(blur, 1.), 100., 1e-6);
+    model.setThreadCount(4);
+    const double four = model.cpuMs(blur, 1.);
+    EXPECT_GT(four, 100. / 4.7619);
+    EXPECT_LT(four, 100.);
+    EXPECT_GE(four, 100. / 4.);
+}
+
+TEST(GpuCostModel, MeasurementsRefineByMovingAverage)
+{
+    GpuCostModel model;
+
+    model.setThreadCount(16);
+    model.setCpuSeed(kGradeId, 16., 16.);
+
+    // 32 thread-ms per Mpx against a seed of 16.
+    model.observeCpu(GpuTaskTraits(kGradeId), (std::int64_t)(2e6 * kUhdMpx), 16, kUhdMpx);
+    EXPECT_NEAR(model.cpuMs(GpuTaskTraits(kGradeId), 1.), (16. + GpuCostModel::kEmaWeight * 16.) / 16., 1e-9);
+
+    const double seedGpu = model.gpuMs(GpuTaskTraits(kGradeId), 1.);
+    model.observeGpu(GpuTaskTraits(kGradeId), (std::int64_t)(1e6 * kUhdMpx), kUhdMpx);
+    EXPECT_NEAR(model.gpuMs(GpuTaskTraits(kGradeId), 1.), seedGpu + GpuCostModel::kEmaWeight * (1. - seedGpu), 1e-9);
+
+    // A measured GPU run makes a plugin without a GPU seed eligible.
+    model.observeGpu(GpuTaskTraits("net.sf.openfx.MergePlugin"), 1000000, 1.);
+    EXPECT_TRUE(model.hasGpuCost(GpuTaskTraits("net.sf.openfx.MergePlugin")));
+}
+
+// sink 0 (CPU) <- Grade 1 <- reader 2 (CPU)
+TEST(GpuCostModel, IsolatedGradeNeedsUnifiedMemory)
+{
+    CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
+
+    fixture.traits[1] = GpuTaskTraits(kGradeId);
+    fixture.place();
+    EXPECT_TRUE(fixture.graph.regions.empty());
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
+
+    GpuTransferRates unified;
+    unified.unifiedMemory = true;
+    fixture.model.setTransferRates(unified);
+    fixture.place();
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({ 1 }));
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Gpu);
+}
+
+// sink 0 (CPU) <- Grade 1 <- ... <- Grade 10 <- reader 11 (CPU)
+TEST(GpuCostModel, GradeChainFormsOneRegion)
+{
+    std::vector<std::pair<int, int>> edges;
+    for (int t = 0; t <= 10; ++t) {
+        edges.push_back(std::make_pair(t, t + 1));
+    }
+    CostFixture fixture(12, edges);
+    for (int t = 1; t <= 10; ++t) {
+        fixture.traits[t] = GpuTaskTraits(kGradeId);
+    }
+    fixture.place();
+
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    EXPECT_EQ(fixture.graph.regions[0].members.size(), 10u);
+    EXPECT_EQ(fixture.graph.tasks[0].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(fixture.graph.tasks[11].device, FrameGraph::Device::Cpu);
+}
+
+// sink 0 (CPU) <- Blur 1 (sigma 25) <- reader 2 (CPU), on the seeds alone.
+TEST(GpuCostModel, LoneBlurIsAcceptedAtUhd)
+{
+    CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
+
+    fixture.traits[1] = GpuTaskTraits(kBlurId, 25.);
+    fixture.place();
+
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Gpu);
+}
+
+// sink 0 (CPU) <- Grade 1 <- Grade 2 <- reader 3 (CPU): it gains about 4.7 ms at 25 GB/s and loses at 12.5.
+TEST(GpuCostModel, HalvingBandwidthRejectsMarginalRegion)
+{
+    CostFixture fixture(4, { { 0, 1 }, { 1, 2 }, { 2, 3 } });
+
+    fixture.traits[1] = GpuTaskTraits(kGradeId);
+    fixture.traits[2] = GpuTaskTraits(kGradeId);
+    fixture.place();
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({ 2, 1 }));
+
+    fixture.model.setTransferRates(rates(12.5e9));
+    fixture.place();
+    EXPECT_TRUE(fixture.graph.regions.empty());
+    for (const FrameGraph::Task& task : fixture.graph.tasks) {
+        EXPECT_EQ(task.device, FrameGraph::Device::Cpu) << indexOf(fixture.graph, task);
+    }
+}
+
+// sink 0 (CPU) reads Blur 1 (sigma 3) and CPU 2, which both read Grade 3, which reads reader 4 (CPU). On a 3 GB/s link
+// the Grade's extra download sinks the region, but the Blur alone still gains.
+TEST(GpuCostModel, RejectedRegionShrinksToItsProfitableMember)
+{
+    CostFixture fixture(5, { { 0, 1 }, { 0, 2 }, { 1, 3 }, { 2, 3 }, { 3, 4 } });
+
+    fixture.traits[1] = GpuTaskTraits(kBlurId, 3.);
+    fixture.traits[3] = GpuTaskTraits(kGradeId);
+    fixture.model.setTransferRates(rates(3e9));
+    fixture.place();
+
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({ 1 }));
+    EXPECT_EQ(fixture.graph.regions[0].externalInputs, std::vector<int>({ 3 }));
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Gpu);
+    EXPECT_EQ(fixture.graph.tasks[3].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(fixture.graph.tasks[3].regionId, -1);
+    EXPECT_TRUE(isConvex(fixture.graph, 0));
+    EXPECT_TRUE(isContractionAcyclic(fixture.graph));
+}
+
+// root Blur 0 <- 1 <- Blur 3 <- reader 4 (CPU), and 1 also feeds the CPU sink 2. 1 is much slower on the GPU, so the
+// region would gain most by dropping it, but that would leave {3, 0} waiting on itself through 1: the shrink drops the
+// root first, then 1.
+TEST(GpuCostModel, ShrinkingNeverBreaksConvexity)
+{
+    CostFixture fixture(5, { { 0, 1 }, { 1, 3 }, { 2, 1 }, { 3, 4 } });
+    const char* const slowId = "test.SlowOnGpu";
+
+    fixture.model.setCpuSeed(slowId, 1., 1.);
+    fixture.model.observeGpu(GpuTaskTraits(slowId), 1000000000, 1.);
+    fixture.traits[0] = GpuTaskTraits(kBlurId, 3.);
+    fixture.traits[1] = GpuTaskTraits(slowId);
+    fixture.traits[3] = GpuTaskTraits(kBlurId, 3.);
+    fixture.place();
+
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({ 3 }));
+    EXPECT_EQ(fixture.graph.tasks[0].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
+    EXPECT_TRUE(isConvex(fixture.graph, 0));
+    EXPECT_TRUE(isContractionAcyclic(fixture.graph));
+}

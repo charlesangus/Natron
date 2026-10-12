@@ -1,0 +1,1816 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "Global/Macros.h"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <functional>
+#include <list>
+#include <map>
+#include <memory>
+#include <set>
+#include <string>
+#include <tuple>
+#include <vector>
+
+#include <gtest/gtest.h>
+
+#include <QElapsedTimer>
+#include <QFile>
+#include <QString>
+#include <QTemporaryDir>
+#include <QThread>
+
+#include "BaseTest.h"
+#include "NativeParity.h"
+#include "RenderBothWays.h"
+
+#include "Engine/AbortableRenderInfo.h"
+#include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
+#include "Engine/FrameRenderContext.h"
+#include "Engine/GpuContext.h"
+#include "Engine/GpuPlacement.h"
+#include "Engine/GpuRegionStrips.h"
+#include "Engine/GpuRegionTask.h"
+#include "Engine/Image.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
+#include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Color/Invert.h"
+#include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Generator/CheckerBoard.h"
+#include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
+#include "Engine/Nodes/Image/GpuRender.h"
+#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/ParallelRenderArgs.h"
+#include "Engine/Project.h"
+#include "Engine/RectD.h"
+#include "Engine/RectI.h"
+#include "Engine/RenderScheduler.h"
+#include "Engine/RenderStats.h"
+#include "Engine/TimeLine.h"
+#include "Engine/ViewIdx.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRuntime.h"
+#endif
+
+NATRON_NAMESPACE_USING
+
+namespace {
+
+const int kWidth = 96;
+const int kHeight = 64;
+const double kTime = 1.;
+
+// The Blur is bit-identical to the CPU one; what is left is the Grade's float arithmetic against the CPU's.
+const float kTolerance = 1e-5f;
+
+const qint64 kFrameTimeoutMs = 60000;
+
+// Tall enough for a 1 MB storage buffer range to split a Blur of size 60 (sigma 25) into several strips.
+const int kStripWidth = 256;
+const int kStripHeight = 768;
+
+struct FrameRun {
+    AbortableRenderInfoPtr abortInfo;
+    RenderStatsPtr stats;
+    FrameRenderContextPtr context;
+    FrameGraph graph;
+    FrameFuturePtr future;
+};
+
+int
+taskOf(const FrameGraph& graph,
+       const NodePtr& node)
+{
+    for (std::size_t i = 0; i < graph.tasks.size(); ++i) {
+        if (graph.tasks[i].key.node == node) {
+            return (int)i;
+        }
+    }
+
+    return -1;
+}
+
+/**
+ * @brief Puts the given member sets on the GPU as regions, exactly as given, and every other task on the CPU, filling
+ * each region as placeGraph() would describe it.
+ **/
+void
+assignRegions(FrameGraph* graph,
+              const std::vector<std::vector<int>>& memberSets)
+{
+    graph->regions.clear();
+    for (FrameGraph::Task& task : graph->tasks) {
+        task.device = FrameGraph::Device::Cpu;
+        task.regionId = -1;
+    }
+    for (std::size_t r = 0; r < memberSets.size(); ++r) {
+        for (int m : memberSets[r]) {
+            graph->tasks[m].device = FrameGraph::Device::Gpu;
+            graph->tasks[m].regionId = (int)r;
+        }
+    }
+    for (std::size_t r = 0; r < memberSets.size(); ++r) {
+        FrameGraph::Region region;
+        region.members = memberSets[r];
+        // A dependency always ends before its consumer in the request pass's post-order.
+        std::sort(region.members.begin(), region.members.end(), [graph](int a, int b) {
+            return graph->tasks[a].dfsPostOrder < graph->tasks[b].dfsPostOrder;
+        });
+        for (int m : region.members) {
+            const FrameGraph::Task& task = graph->tasks[m];
+            for (int d : task.dependencies) {
+                if (graph->tasks[d].regionId != (int)r) {
+                    region.externalInputs.push_back(d);
+                }
+            }
+            region.workingSetBytes += task.estimatedBytes;
+            FrameGraph::Region::Output output;
+            output.task = m;
+            output.isRoot = task.consumerTasks.empty();
+            for (int c : task.consumerTasks) {
+                if (graph->tasks[c].regionId == (int)r) {
+                    ++output.internalConsumers;
+                } else {
+                    ++output.externalConsumers;
+                }
+            }
+            region.outputs.push_back(output);
+        }
+        std::sort(region.externalInputs.begin(), region.externalInputs.end());
+        region.externalInputs.erase(std::unique(region.externalInputs.begin(), region.externalInputs.end()), region.externalInputs.end());
+        for (int e : region.externalInputs) {
+            region.workingSetBytes += graph->tasks[e].estimatedBytes;
+        }
+        graph->regions.push_back(region);
+    }
+}
+
+// The pixels of image over window, zero where it has none, as float RGBA rows from the bottom one.
+std::vector<float>
+readRgba(const ImagePtr& image,
+         const RectI& window)
+{
+    std::vector<float> out((std::size_t)window.area() * 4, 0.f);
+
+    if (!image || (image->getBitDepth() != eImageBitDepthFloat)) {
+        return out;
+    }
+    const int nComps = (int)image->getComponentsCount();
+    Image::ReadAccess access = image->getReadRights();
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            const float* pixel = (const float*)access.pixelAt(x, y);
+            if (!pixel) {
+                continue;
+            }
+            float* dst = &out[((std::size_t)(y - window.y1) * window.width() + (x - window.x1)) * 4];
+            for (int c = 0; c < std::min(nComps, 4); ++c) {
+                dst[c] = pixel[c];
+            }
+        }
+    }
+
+    return out;
+}
+
+} // namespace
+
+class GpuResidencyTest
+    : public BaseTest {
+protected:
+    GpuResidencyTest()
+        : BaseTest()
+        , _scheduler(0)
+        , _savedBody()
+        , _swappedContext()
+        , _swapped(false)
+        , _gpuReady(false)
+        , _skipReason()
+    {
+    }
+
+    virtual void SetUp() OVERRIDE
+    {
+        BaseTest::SetUp();
+        ProjectPtr project = getApp()->getProject();
+        project->reset(false, true);
+        project->setAutoSetProjectFormatEnabled(true);
+        project->setOrAddProjectFormat(Format(0, 0, kWidth, kHeight, "gpuResidency96x64", 1.));
+        appPTR->clearAllCaches();
+
+        _scheduler = appPTR->getRenderScheduler();
+        _savedBody = _scheduler->getRegionBody();
+        _scheduler->setRegionBody(&runGpuRegion);
+
+        // The application's context may refuse the device (Auto ignores CPU-type ones), so a forced one stands in.
+        GpuContext* app = appPTR->getGpuContext();
+        if (app) {
+            app->waitForInit(std::chrono::seconds(60));
+        }
+        if (app && app->isAvailable()) {
+            _gpuReady = true;
+
+            return;
+        }
+        GpuContextOptions options;
+        options.mode = GpuResolvedMode::Force;
+        // The context outlives SetUp() and logs again when it recovers from a device loss.
+        std::shared_ptr<std::string> unavailable = std::make_shared<std::string>();
+        options.infoLog = [unavailable](const std::string& line) {
+            *unavailable = line;
+        };
+        std::unique_ptr<GpuContext> forced(new GpuContext(options));
+        if (!forced->waitForInit(std::chrono::seconds(60)) || !forced->isAvailable()) {
+            _skipReason = unavailable->empty() ? std::string("no Vulkan device") : *unavailable;
+
+            return;
+        }
+        _swappedContext = appPTR->swapGpuContextForTests(std::move(forced));
+        _swapped = true;
+        _gpuReady = true;
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        setGpuStripOverridesForTests(0, 0);
+        setGpuStripPipeliningForTests(GpuStripPipelining::Auto);
+        setGpuStripSubmittedHookForTests(std::function<void(std::size_t)>());
+        _scheduler->setRegionBody(_savedBody);
+        appPTR->clearAllCaches();
+        getApp()->getProject()->reset(false, true);
+        if (_swapped) {
+            std::unique_ptr<GpuContext> forced = appPTR->swapGpuContextForTests(std::move(_swappedContext));
+            forced.reset();
+            _swapped = false;
+        }
+        BaseTest::TearDown();
+    }
+
+    /**
+     * @brief Renders with a GPU context of the test's own, so that the faults it injects and the budget it lowers do
+     * not outlive it.
+     **/
+    bool useOwnContext(std::uint64_t memoryBudgetMB = 0)
+    {
+        if (_swapped && (memoryBudgetMB == 0)) {
+            return true;
+        }
+        GpuContextOptions options;
+        options.mode = GpuResolvedMode::Force;
+        options.memoryBudgetMB = memoryBudgetMB;
+        options.infoLog = [](const std::string&) { };
+        std::unique_ptr<GpuContext> own(new GpuContext(options));
+        if (!own->waitForInit(std::chrono::seconds(60)) || !own->isAvailable()) {
+            return false;
+        }
+        std::unique_ptr<GpuContext> previous = appPTR->swapGpuContextForTests(std::move(own));
+        if (!_swapped) {
+            _swappedContext = std::move(previous);
+            _swapped = true;
+        }
+
+        return true;
+    }
+
+    /**
+     * @brief Runs onRegion(n, context) before the n-th region of the frames, counted from 1, then the region on the GPU.
+     **/
+    void interceptRegions(const std::function<void(int, const FrameRenderContextPtr&)>& onRegion)
+    {
+        std::shared_ptr<std::atomic<int>> count = std::make_shared<std::atomic<int>>(0);
+        _scheduler->setRegionBody([count, onRegion](const FrameRenderContextPtr& context,
+                                                    const FrameGraph& graph,
+                                                    int region,
+                                                    int budget,
+                                                    std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
+                                                    RenderScheduler::RegionReport* report) {
+            onRegion(++*count, context);
+
+            return runGpuRegion(context, graph, region, budget, rootPlanes, report);
+        });
+    }
+
+    // The bundled gtest has no GTEST_SKIP, so each test returns early on false.
+    bool gpuOrSkip()
+    {
+        if (_gpuReady) {
+            return true;
+        }
+        const char* require = std::getenv("NATRON_TEST_REQUIRE_GPU");
+        if (require && (std::strcmp(require, "1") == 0)) {
+            ADD_FAILURE() << "NATRON_TEST_REQUIRE_GPU=1 but " << _skipReason;
+        } else {
+            std::printf("[  SKIPPED ] %s\n", _skipReason.c_str());
+        }
+
+        return false;
+    }
+
+    NodePtr makeNode(const char* pluginID,
+                     int major)
+    {
+        NodePtr node = createNode(QString::fromUtf8(pluginID), major);
+        EXPECT_TRUE(bool(node)) << pluginID;
+
+        return node;
+    }
+
+    NodePtr makeGrade(double multiply,
+                      double offset)
+    {
+        NodePtr grade = makeNode(PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE);
+        if (grade) {
+            EXPECT_TRUE(setKnobValues(grade, "multiply", { multiply, multiply, multiply, multiply }));
+            EXPECT_TRUE(setKnobValues(grade, "offset", { offset, offset, offset, offset }));
+        }
+
+        return grade;
+    }
+
+    NodePtr makeBlur(double size)
+    {
+        NodePtr blur = makeNode(PLUGINID_NATRON_BLUR, PLUGIN_MAJOR_NATRON_BLUR);
+        if (blur) {
+            EXPECT_TRUE(setKnobValues(blur, kBlurParamSize, { size, size }));
+        }
+
+        return blur;
+    }
+
+    bool prepareFrame(const NodePtr& root,
+                      FrameRun* run,
+                      std::string* error,
+                      const RectI& renderWindow = RectI(0, 0, kWidth, kHeight))
+    {
+        run->abortInfo = AbortableRenderInfo::create(true, 0);
+        run->stats = std::make_shared<RenderStats>(false);
+        run->stats->setTrackRenderRoICalls(true);
+
+        ParallelRenderArgsSetter frameArgs(kTime,
+                                           ViewIdx(0),
+                                           false /*isRenderUserInteraction*/,
+                                           false /*isSequential*/,
+                                           run->abortInfo,
+                                           root,
+                                           0 /*textureIndex*/,
+                                           getApp()->getTimeLine().get(),
+                                           NodePtr(),
+                                           false /*isAnalysis*/,
+                                           false /*draftMode*/,
+                                           run->stats);
+        std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
+        const RectD window(renderWindow.x1, renderWindow.y1, renderWindow.x2, renderWindow.y2);
+        if (EffectInstance::computeRequestPass(kTime, ViewIdx(0), 0 /*mipmapLevel*/, window, root, *request) == eStatusFailed) {
+            *error = "request pass failed";
+
+            return false;
+        }
+        frameArgs.updateNodesRequest(*request);
+
+        run->context = FrameRenderContext::create(kTime,
+                                                  ViewIdx(0),
+                                                  false /*isRenderUserInteraction*/,
+                                                  false /*isSequential*/,
+                                                  run->abortInfo,
+                                                  root,
+                                                  0 /*textureIndex*/,
+                                                  getApp()->getTimeLine().get(),
+                                                  NodePtr(),
+                                                  false /*isAnalysis*/,
+                                                  false /*draftMode*/,
+                                                  run->stats);
+        run->context->setRequest(request);
+        run->graph = RenderScheduler::buildGraph(run->context, root, kTime, ViewIdx(0), 0 /*mipmapLevel*/);
+        if (run->graph.tasks.empty()) {
+            *error = "empty graph";
+
+            return false;
+        }
+
+        return true;
+    }
+
+    // Places, as placeGraph() would without a cost model, every task of gpuNodes their effect can render on the GPU.
+    static void placeOnGpu(FrameRun* run,
+                           const std::vector<NodePtr>& gpuNodes)
+    {
+        std::set<const Node*> gpu;
+        for (const NodePtr& node : gpuNodes) {
+            gpu.insert(node.get());
+        }
+        const FrameRenderContextPtr context = run->context;
+        PlacementInputs inputs;
+        inputs.canRenderOnGpu = [gpu, context](const FrameGraph::Task& task) {
+            if (!gpu.count(task.key.node.get())) {
+                return false;
+            }
+            GpuQuery query;
+            if (!makeGpuQueryForTask(task, *context, &query)) {
+                return false;
+            }
+            const NativeImageEffect* native = dynamic_cast<const NativeImageEffect*>(task.key.node->getEffectInstance().get());
+
+            return native && native->canRenderOnGpu(query);
+        };
+        placeGraph(run->graph, inputs);
+    }
+
+    bool render(FrameRun* run)
+    {
+        run->future = _scheduler->submit(run->context, std::move(run->graph), RenderScheduler::Priority::Interactive);
+        QElapsedTimer timer;
+        timer.start();
+        while (!run->future->isFinished()) {
+            if (timer.elapsed() > kFrameTimeoutMs) {
+                _scheduler->abort(run->context);
+                run->future->wait();
+
+                return false;
+            }
+            QThread::msleep(1);
+        }
+
+        return run->future->wait() == EffectInstance::eRenderRoIRetCodeOk;
+    }
+
+    // Compares the root of run with root rendered directly on the CPU over the project format.
+    void expectMatchesCpu(const NodePtr& root,
+                          const FrameRun& run,
+                          const RectI& window = RectI(0, 0, kWidth, kHeight))
+    {
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        ASSERT_TRUE(renderNodePlanesDirect(root, kTime, ViewIdx(0), 0, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error)) << error;
+        ASSERT_EQ(1u, planes.size());
+        const std::map<ImageLayerDesc, ImagePtr> rootPlanes = run.future->getRootPlanes();
+        ASSERT_FALSE(rootPlanes.empty());
+        const std::vector<float> got = readRgba(rootPlanes.begin()->second, window);
+        const std::vector<float>& want = planes.front().pixels;
+        ASSERT_EQ(want.size(), got.size());
+
+        float worst = 0.f;
+        std::size_t worstAt = 0;
+        bool nonZero = false;
+        for (std::size_t i = 0; i < want.size(); ++i) {
+            const float diff = std::fabs(want[i] - got[i]);
+            if (!(diff <= worst)) {
+                worst = diff;
+                worstAt = i;
+            }
+            nonZero = nonZero || (want[i] != 0.f);
+        }
+        EXPECT_TRUE(nonZero) << "the CPU render is black, which proves nothing";
+        EXPECT_LE(worst, kTolerance) << "worst at pixel " << (worstAt / 4) << " channel " << (worstAt % 4) << ": CPU " << want[worstAt] << ", GPU " << got[worstAt];
+    }
+
+    void expectReleased(const FrameRun& run)
+    {
+        EXPECT_EQ(0u, run.context->getStore().hostBytesInFlight());
+        EXPECT_EQ(0u, run.context->getStore().deviceBytesInFlight());
+        QElapsedTimer timer;
+        timer.start();
+        while (((_scheduler->getOutstandingRunnables() > 0) || (_scheduler->getReservedBytesForTests() > 0)) && (timer.elapsed() < 5000)) {
+            QThread::msleep(1);
+        }
+        EXPECT_EQ(0u, _scheduler->getReservedBytesForTests());
+    }
+
+    static int renderRoICallsOf(const FrameRun& run,
+                                const NodePtr& node)
+    {
+        int calls = 0;
+        const std::map<std::tuple<std::string, double, int>, int> all = run.stats->getRenderRoICalls();
+        for (std::map<std::tuple<std::string, double, int>, int>::const_iterator it = all.begin(); it != all.end(); ++it) {
+            if (std::get<0>(it->first) == node->getScriptName_mt_safe()) {
+                calls += it->second;
+            }
+        }
+
+        return calls;
+    }
+
+    static int gpuRunsOf(const FrameRun& run,
+                         const NodePtr& node)
+    {
+        const std::map<std::string, int> runs = run.stats->getGpuTasksPerNode();
+        const std::map<std::string, int>::const_iterator found = runs.find(node->getScriptName_mt_safe());
+
+        return (found == runs.end()) ? 0 : found->second;
+    }
+
+    // Source -> Grade -> Blur -> Grade -> Invert, with the first Grade and the Blur in a region and the second Grade in
+    // another, which reads the Blur on the device.
+    struct SplitChain {
+        NodePtr source, grade1, blur, grade2, sink;
+    };
+
+    bool makeSplitChain(SplitChain* chain)
+    {
+        chain->source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+        chain->grade1 = makeGrade(1.5, 0.1);
+        chain->blur = makeBlur(7.);
+        chain->grade2 = makeGrade(0.8, 0.02);
+        chain->sink = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
+        if (!chain->source || !chain->grade1 || !chain->blur || !chain->grade2 || !chain->sink) {
+            return false;
+        }
+        connectNodes(chain->source, chain->grade1, 0, true);
+        connectNodes(chain->grade1, chain->blur, 0, true);
+        connectNodes(chain->blur, chain->grade2, 0, true);
+        connectNodes(chain->grade2, chain->sink, 0, true);
+
+        return true;
+    }
+
+    bool prepareSplitFrame(const SplitChain& chain,
+                           FrameRun* run,
+                           std::string* error)
+    {
+        return prepareFrame(chain.sink, run, error) && splitRegions(chain, run, error);
+    }
+
+    static bool splitRegions(const SplitChain& chain,
+                             FrameRun* run,
+                             std::string* error)
+    {
+        const int grade1Task = taskOf(run->graph, chain.grade1);
+        const int blurTask = taskOf(run->graph, chain.blur);
+        const int grade2Task = taskOf(run->graph, chain.grade2);
+        if (grade1Task < 0 || blurTask < 0 || grade2Task < 0) {
+            *error = "a node of the chain has no task";
+
+            return false;
+        }
+        assignRegions(&run->graph, { { grade1Task, blurTask }, { grade2Task } });
+
+        return true;
+    }
+
+    // Source -> Grade -> Blur (sigma 25) -> Grade -> Invert over a kStripWidth x kStripHeight format.
+    struct StripChain {
+        NodePtr source, grade1, blur, grade2, sink;
+    };
+
+    static RectI stripWindow()
+    {
+        return RectI(0, 0, kStripWidth, kStripHeight);
+    }
+
+    bool makeStripChain(StripChain* chain)
+    {
+        chain->source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+        chain->grade1 = makeGrade(1.5, 0.1);
+        chain->blur = makeBlur(60.);
+        chain->grade2 = makeGrade(0.8, 0.02);
+        chain->sink = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
+        if (!chain->source || !chain->grade1 || !chain->blur || !chain->grade2 || !chain->sink) {
+            return false;
+        }
+        // The project format is set once per process, so the source and the Blur do not depend on it.
+        if (!setKnobValue(chain->source, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize) || !setKnobValues(chain->source, kNativeGeneratorParamBottomLeft, { 0., 0. }) || !setKnobValues(chain->source, kNativeGeneratorParamSize, { (double)kStripWidth, (double)kStripHeight })) {
+            return false;
+        }
+        KnobBool* crop = dynamic_cast<KnobBool*>(chain->blur->getKnobByName(kBlurParamCropToFormat).get());
+        if (!crop) {
+            return false;
+        }
+        crop->setValue(false);
+        connectNodes(chain->source, chain->grade1, 0, true);
+        connectNodes(chain->grade1, chain->blur, 0, true);
+        connectNodes(chain->blur, chain->grade2, 0, true);
+        connectNodes(chain->grade2, chain->sink, 0, true);
+
+        return true;
+    }
+
+    // The Grade, the Blur and the second Grade in one region.
+    bool prepareStripFrame(const StripChain& chain,
+                           FrameRun* run,
+                           std::string* error)
+    {
+        if (!prepareFrame(chain.sink, run, error, stripWindow())) {
+            return false;
+        }
+        const int grade1Task = taskOf(run->graph, chain.grade1);
+        const int blurTask = taskOf(run->graph, chain.blur);
+        const int grade2Task = taskOf(run->graph, chain.grade2);
+        if (grade1Task < 0 || blurTask < 0 || grade2Task < 0) {
+            *error = "a node of the chain has no task";
+
+            return false;
+        }
+        assignRegions(&run->graph, { { grade1Task, blurTask, grade2Task } });
+
+        return true;
+    }
+
+    static std::vector<float> rootPixels(const FrameRun& run)
+    {
+        const std::map<ImageLayerDesc, ImagePtr> planes = run.future->getRootPlanes();
+
+        return planes.empty() ? std::vector<float>() : readRgba(planes.begin()->second, stripWindow());
+    }
+
+#ifdef NATRON_HAVE_GPU
+    static gpu::GpuRuntime* runtime()
+    {
+        return appPTR->getGpuContext()->runtime();
+    }
+#endif
+
+    static int fallbacksOf(const FrameRun& run,
+                           const std::string& reason)
+    {
+        const std::map<std::string, int> reasons = run.stats->getCpuFallbackReasons();
+        const std::map<std::string, int>::const_iterator found = reasons.find(reason);
+
+        return (found == reasons.end()) ? 0 : found->second;
+    }
+
+    static int fallbacksOf(const FrameRun& run)
+    {
+        int total = 0;
+        for (const std::pair<const std::string, int>& reason : run.stats->getCpuFallbackReasons()) {
+            total += reason.second;
+        }
+
+        return total;
+    }
+
+    RenderScheduler* _scheduler;
+    RenderScheduler::RegionBody _savedBody;
+    std::unique_ptr<GpuContext> _swappedContext;
+    bool _swapped;
+    bool _gpuReady;
+    std::string _skipReason;
+};
+
+TEST_F(GpuResidencyTest, ChainUploadsOnceAndDownloadsOnce)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr grade1 = makeGrade(1.5, 0.1);
+    NodePtr blur = makeBlur(9.);
+    NodePtr grade2 = makeGrade(0.75, -0.05);
+    NodePtr sink = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
+    ASSERT_TRUE(source && grade1 && blur && grade2 && sink);
+    connectNodes(source, grade1, 0, true);
+    connectNodes(grade1, blur, 0, true);
+    connectNodes(blur, grade2, 0, true);
+    connectNodes(grade2, sink, 0, true);
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(sink, &run, &error)) << error;
+    placeOnGpu(&run, { grade1, blur, grade2 });
+    ASSERT_EQ(1u, run.graph.regions.size());
+    ASSERT_EQ(3u, run.graph.regions[0].members.size());
+    ASSERT_EQ(1u, run.graph.regions[0].externalInputs.size());
+
+    QTemporaryDir profileDir;
+    ASSERT_TRUE(profileDir.isValid());
+    RenderScheduler::setProfilePath((profileDir.path() + QString::fromUtf8("/profile")).toStdString());
+    const bool rendered = render(&run);
+    RenderScheduler::flushProfile();
+    const std::string profilePath = RenderScheduler::getProfileFilePath();
+    RenderScheduler::setProfilePath(std::string());
+    ASSERT_TRUE(rendered);
+
+    QFile profile(QString::fromStdString(profilePath));
+    ASSERT_TRUE(profile.open(QIODevice::ReadOnly)) << profilePath;
+    int regionRecords = 0;
+    int gpuTaskRecords = 0;
+    for (const QByteArray& line : profile.readAll().split('\n')) {
+        if (line.contains("\"kind\":\"region\"") && line.contains("\"uploadBytes\":") && !line.contains("\"uploadBytes\":0,")) {
+            ++regionRecords;
+        }
+        if (line.contains("\"device\":\"gpu\",\"regionId\":0,\"ok\":true")) {
+            ++gpuTaskRecords;
+        }
+    }
+    EXPECT_EQ(1, regionRecords);
+    EXPECT_EQ(3, gpuTaskRecords);
+
+    EXPECT_EQ(1, run.stats->getUploadCount());
+    EXPECT_EQ(1, run.stats->getDownloadCount());
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(1, gpuRunsOf(run, grade1));
+    EXPECT_EQ(1, gpuRunsOf(run, blur));
+    EXPECT_EQ(1, gpuRunsOf(run, grade2));
+    EXPECT_EQ(0, renderRoICallsOf(run, blur)) << "the Blur rendered on the CPU";
+    EXPECT_GT(run.stats->getPeakDeviceBytes(), 0u);
+    EXPECT_EQ(0, run.context->getStore().downloadCount());
+    expectReleased(run);
+    expectMatchesCpu(sink, run);
+}
+
+// The Grade feeds a Blur followed by a Grade, a second Blur, and a CPU Invert; the Merges joining them are on the CPU.
+TEST_F(GpuResidencyTest, SharedProducerRendersOnceAndDownloadsOnlyCpuOutputs)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr grade = makeGrade(1.25, 0.05);
+    NodePtr blur1 = makeBlur(5.);
+    NodePtr grade2 = makeGrade(0.5, 0.2);
+    NodePtr blur2 = makeBlur(12.);
+    NodePtr invert = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
+    NodePtr merge1 = makeNode(PLUGINID_NATRON_MERGE, PLUGIN_MAJOR_NATRON_MERGE);
+    NodePtr merge2 = makeNode(PLUGINID_NATRON_MERGE, PLUGIN_MAJOR_NATRON_MERGE);
+    ASSERT_TRUE(source && grade && blur1 && grade2 && blur2 && invert && merge1 && merge2);
+    connectNodes(source, grade, 0, true);
+    connectNodes(grade, blur1, 0, true);
+    connectNodes(blur1, grade2, 0, true);
+    connectNodes(grade, blur2, 0, true);
+    connectNodes(grade, invert, 0, true);
+    connectNodes(blur2, merge1, 0, true);
+    connectNodes(grade2, merge1, 1, true);
+    connectNodes(invert, merge2, 0, true);
+    connectNodes(merge1, merge2, 1, true);
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(merge2, &run, &error)) << error;
+    placeOnGpu(&run, { grade, blur1, grade2, blur2 });
+    ASSERT_EQ(1u, run.graph.regions.size());
+    ASSERT_EQ(4u, run.graph.regions[0].members.size());
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(1, run.stats->getUploadCount());
+    // The shared Grade for the Invert, then the second Grade and the second Blur for the first Merge; the first Blur is
+    // only read inside the region.
+    EXPECT_EQ(3, run.stats->getDownloadCount());
+    EXPECT_EQ(1, gpuRunsOf(run, grade));
+    EXPECT_EQ(0, renderRoICallsOf(run, grade)) << "the shared Grade rendered on the CPU";
+    EXPECT_EQ(1, gpuRunsOf(run, blur1));
+    EXPECT_EQ(1, gpuRunsOf(run, blur2));
+    EXPECT_EQ(1, gpuRunsOf(run, grade2));
+    expectReleased(run);
+    expectMatchesCpu(merge2, run);
+}
+
+// Two regions joined by the Blur's output, which the second reads on the device where the first left it.
+TEST_F(GpuResidencyTest, SplitCarriesOneDeviceImageBetweenRegions)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr grade1 = makeGrade(1.5, 0.1);
+    NodePtr blur = makeBlur(7.);
+    NodePtr grade2 = makeGrade(0.8, 0.02);
+    NodePtr sink = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
+    ASSERT_TRUE(source && grade1 && blur && grade2 && sink);
+    connectNodes(source, grade1, 0, true);
+    connectNodes(grade1, blur, 0, true);
+    connectNodes(blur, grade2, 0, true);
+    connectNodes(grade2, sink, 0, true);
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(sink, &run, &error)) << error;
+    const int grade1Task = taskOf(run.graph, grade1);
+    const int blurTask = taskOf(run.graph, blur);
+    const int grade2Task = taskOf(run.graph, grade2);
+    ASSERT_TRUE(grade1Task >= 0 && blurTask >= 0 && grade2Task >= 0);
+    assignRegions(&run.graph, { { grade1Task, blurTask }, { grade2Task } });
+    ASSERT_EQ(1, run.graph.regions[0].outputs.back().externalConsumers);
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(1, run.stats->getUploadCount());
+    EXPECT_EQ(1, run.stats->getDownloadCount());
+    EXPECT_EQ(2, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(0, run.context->getStore().downloadCount()) << "the device image was downloaded rather than read in place";
+    expectReleased(run);
+    expectMatchesCpu(sink, run);
+}
+
+// FrameBlend, an OpenFX plugin, tells the frames it fetched apart by the time in their image key.
+TEST_F(GpuResidencyTest, DownloadedOutputsKeepTheirTimeAndView)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr grade = makeGrade(1., 0.);
+    NodePtr blend = createNode(QString::fromUtf8("net.sf.openfx.FrameBlend"));
+    ASSERT_TRUE(source && grade && blend);
+    KnobColor* multiply = dynamic_cast<KnobColor*>(grade->getKnobByName("multiply").get());
+    ASSERT_TRUE(multiply != NULL);
+    for (int d = 0; d < 3; ++d) {
+        multiply->setValueAtTime(-3., 0.2, ViewSpec::all(), d);
+        multiply->setValueAtTime(3., 1.4, ViewSpec::all(), d);
+    }
+    KnobInt* frameRange = dynamic_cast<KnobInt*>(blend->getKnobByName("frameRange").get());
+    KnobBool* absolute = dynamic_cast<KnobBool*>(blend->getKnobByName("absolute").get());
+    ASSERT_TRUE(frameRange && absolute);
+    frameRange->setValue(-3, ViewSpec::all(), 0);
+    frameRange->setValue(0, ViewSpec::all(), 1);
+    absolute->setValue(false);
+    connectNodes(source, grade, 0, true);
+    connectNodes(grade, blend, 0, true);
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(blend, &run, &error)) << error;
+    placeOnGpu(&run, { grade });
+    ASSERT_EQ(4u, run.graph.regions.size());
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(4, run.stats->getDownloadCount());
+    expectReleased(run);
+    expectMatchesCpu(blend, run);
+}
+
+#ifdef NATRON_HAVE_GPU
+
+// The second region runs out of device memory once: it is run again on the GPU after evicting, the first region's
+// device image going to RAM and being uploaded again.
+TEST_F(GpuResidencyTest, OutOfMemoryRetriesTheRegionAfterEvicting)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(useOwnContext());
+    SplitChain chain;
+    ASSERT_TRUE(makeSplitChain(&chain));
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareSplitFrame(chain, &run, &error)) << error;
+    const std::uint64_t budgetBefore = runtime()->pool().budget();
+    interceptRegions([](int region, const FrameRenderContextPtr&) {
+        if (region == 2) {
+            runtime()->device().injectFault(gpu::GpuFaultPlan::Kind::OutOfMemory, 1);
+        }
+    });
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(1, run.stats->getGpuRegionRetries());
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_EQ(2, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(gpu::GpuRuntimeState::Degraded, runtime()->state());
+    EXPECT_LT(runtime()->pool().budget(), budgetBefore);
+    expectReleased(run);
+    expectMatchesCpu(chain.sink, run);
+}
+
+// The device has no room for the second region at all: after the retry, its Grade renders on the CPU from the Blur the
+// first region left on the device, downloaded first.
+TEST_F(GpuResidencyTest, OutOfMemoryAtTheSecondRegionRendersItOnTheCpu)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(useOwnContext());
+    SplitChain chain;
+    ASSERT_TRUE(makeSplitChain(&chain));
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareSplitFrame(chain, &run, &error)) << error;
+    interceptRegions([](int region, const FrameRenderContextPtr&) {
+        if (region == 2) {
+            runtime()->pool().setUserBudget(1);
+        }
+    });
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(1, fallbacksOf(run));
+    EXPECT_EQ(1, fallbacksOf(run, "out of device memory"));
+    EXPECT_EQ(1, run.stats->getGpuRegionRetries());
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(1, run.context->getStore().downloadCount()) << "the Blur's device image was not downloaded once";
+    EXPECT_EQ(1, renderRoICallsOf(run, chain.grade2));
+    EXPECT_EQ(0, renderRoICallsOf(run, chain.blur)) << "the Blur rendered again on the CPU";
+    EXPECT_EQ(gpu::GpuRuntimeState::Degraded, runtime()->state());
+    expectReleased(run);
+    expectMatchesCpu(chain.sink, run);
+}
+
+// The Invert has no GPU path: the region holding it renders on the CPU, root included, rather than failing the frame.
+TEST_F(GpuResidencyTest, MemberWithoutAGpuPathRendersTheRegionOnTheCpu)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr grade = makeGrade(1.25, 0.05);
+    NodePtr invert = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
+    ASSERT_TRUE(source && grade && invert);
+    connectNodes(source, grade, 0, true);
+    connectNodes(grade, invert, 0, true);
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(invert, &run, &error)) << error;
+    const int gradeTask = taskOf(run.graph, grade);
+    const int invertTask = taskOf(run.graph, invert);
+    ASSERT_TRUE(gradeTask >= 0 && invertTask >= 0);
+    assignRegions(&run.graph, { { gradeTask, invertTask } });
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(1, fallbacksOf(run));
+    EXPECT_EQ(1, fallbacksOf(run, "GPU refused"));
+    EXPECT_EQ(0, run.stats->getGpuRegionRetries());
+    EXPECT_EQ(0, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(1, renderRoICallsOf(run, grade));
+    EXPECT_EQ(1, renderRoICallsOf(run, invert));
+    expectReleased(run);
+    expectMatchesCpu(invert, run);
+}
+
+// The device is lost in the middle of the second region: the frame renders again, all on the CPU, and the next render
+// recreates the device and runs both regions on it.
+TEST_F(GpuResidencyTest, DeviceLossRendersTheFrameOnTheCpuAndTheNextRenderRecovers)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(useOwnContext());
+    SplitChain chain;
+    ASSERT_TRUE(makeSplitChain(&chain));
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareSplitFrame(chain, &run, &error)) << error;
+    // The second region's first operation acquires its output; the second submits its work.
+    interceptRegions([](int region, const FrameRenderContextPtr&) {
+        if (region == 2) {
+            runtime()->device().injectFault(gpu::GpuFaultPlan::Kind::DeviceLost, 2);
+        }
+    });
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(gpu::GpuRuntimeState::Lost, runtime()->state());
+    EXPECT_FALSE(appPTR->getGpuContext()->isAvailable());
+    EXPECT_EQ(1, fallbacksOf(run));
+    EXPECT_EQ(1, fallbacksOf(run, "device lost"));
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(1, renderRoICallsOf(run, chain.grade1));
+    EXPECT_EQ(1, renderRoICallsOf(run, chain.blur));
+    EXPECT_EQ(1, renderRoICallsOf(run, chain.grade2));
+    expectReleased(run);
+    expectMatchesCpu(chain.sink, run);
+
+    _scheduler->setRegionBody(&runGpuRegion);
+    FrameRun next;
+    ASSERT_TRUE(prepareFrame(chain.sink, &next, &error)) << error;
+    placeRenderGraph(next.graph, next.context);
+    EXPECT_EQ(gpu::GpuRuntimeState::Ready, runtime()->state());
+    ASSERT_TRUE(appPTR->getGpuContext()->isAvailable());
+    ASSERT_TRUE(splitRegions(chain, &next, &error)) << error;
+
+    ASSERT_TRUE(render(&next));
+    EXPECT_EQ(0, fallbacksOf(next));
+    EXPECT_EQ(2, next.stats->getGpuRegionsRun());
+    EXPECT_EQ(0, renderRoICallsOf(next, chain.blur)) << "the Blur rendered on the CPU after the recovery";
+    expectReleased(next);
+    expectMatchesCpu(chain.sink, next);
+}
+
+// The frame is aborted as its only region falls back to the CPU: it ends aborted and gives every reservation back.
+TEST_F(GpuResidencyTest, AbortDuringACpuFallbackEndsTheFrameCleanly)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(useOwnContext());
+    SplitChain chain;
+    ASSERT_TRUE(makeSplitChain(&chain));
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(chain.sink, &run, &error)) << error;
+    const int grade2Task = taskOf(run.graph, chain.grade2);
+    ASSERT_GE(grade2Task, 0);
+    assignRegions(&run.graph, { { grade2Task } });
+    // The uploads fail before the region looks at the abort, so it is the fallback that sees it.
+    interceptRegions([](int, const FrameRenderContextPtr& context) {
+        runtime()->pool().setUserBudget(1);
+        context->getAbortInfo()->setAborted();
+    });
+
+    EXPECT_FALSE(render(&run));
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, run.future->wait());
+    EXPECT_EQ(1, fallbacksOf(run, "out of device memory"));
+    EXPECT_EQ(0, renderRoICallsOf(run, chain.grade2));
+    EXPECT_EQ(0, renderRoICallsOf(run, chain.sink));
+    expectReleased(run);
+}
+
+// With a 1 MB storage buffer range, the region runs as strips, each uploading its rows of the source with the Blur's
+// halo, and its pixels are those of the region run whole.
+TEST_F(GpuResidencyTest, StripsMatchTheWholeRegionExactly)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    StripChain chain;
+    ASSERT_TRUE(makeStripChain(&chain));
+    std::string error;
+
+    FrameRun whole;
+    ASSERT_TRUE(prepareStripFrame(chain, &whole, &error)) << error;
+    ASSERT_TRUE(render(&whole));
+    EXPECT_EQ(1, whole.stats->getUploadCount());
+    EXPECT_EQ(1, whole.stats->getDownloadCount());
+    const std::vector<float> wholePixels = rootPixels(whole);
+    expectReleased(whole);
+
+    setGpuStripOverridesForTests(1u << 20, 0);
+    FrameRun tiled;
+    ASSERT_TRUE(prepareStripFrame(chain, &tiled, &error)) << error;
+    ASSERT_TRUE(render(&tiled));
+    EXPECT_EQ(0, fallbacksOf(tiled));
+    EXPECT_EQ(1, tiled.stats->getGpuRegionsRun());
+    EXPECT_EQ(0, renderRoICallsOf(tiled, chain.blur)) << "the Blur rendered on the CPU";
+    // One upload of the source and one download of the second Grade per strip.
+    EXPECT_GT(tiled.stats->getUploadCount(), 2);
+    EXPECT_EQ(tiled.stats->getUploadCount(), tiled.stats->getDownloadCount());
+    EXPECT_LE(tiled.stats->getPeakDeviceBytes(), (std::size_t)(1u << 20) * 4 * ((tiled.stats->getGpuPipelinedRegions() > 0) ? kGpuStripMaxInFlight : 1));
+
+    const std::vector<float> tiledPixels = rootPixels(tiled);
+    ASSERT_EQ(wholePixels.size(), tiledPixels.size());
+    ASSERT_FALSE(wholePixels.empty());
+    float worst = 0.f;
+    for (std::size_t i = 0; i < wholePixels.size(); ++i) {
+        worst = std::max(worst, std::fabs(wholePixels[i] - tiledPixels[i]));
+    }
+    EXPECT_EQ(0.f, worst);
+    expectReleased(tiled);
+    expectMatchesCpu(chain.sink, tiled, stripWindow());
+}
+
+// The region fits the storage buffer range, but its images alone are over the pool's budget: it runs as strips rather
+// than on the CPU. The Blur's intermediate is not planned for, so the strips may be halved before they fit.
+TEST_F(GpuResidencyTest, WorkingSetOverTheBudgetRunsAsStrips)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(useOwnContext());
+    StripChain chain;
+    ASSERT_TRUE(makeStripChain(&chain));
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareStripFrame(chain, &run, &error)) << error;
+    // Two of the region's kStripWidth x kStripHeight RGBA float images take 6 MB.
+    const std::uint64_t budget = 4u << 20;
+    runtime()->pool().trim();
+    runtime()->pool().setUserBudget(budget);
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_GT(run.stats->getUploadCount(), 1) << "the region did not run as strips";
+    EXPECT_LE(run.stats->getPeakDeviceBytes(), budget);
+    expectReleased(run);
+    expectMatchesCpu(chain.sink, run, stripWindow());
+}
+
+// The region's images fit the budget exactly, so it is planned whole, but the Blur's intermediate does not fit beside
+// them. Evicting frees nothing, and the region then runs as strips, halved until they fit, rather than on the CPU. The
+// pool refusing over its own budget is no failure of the device, so neither the budget nor the state changes.
+TEST_F(GpuResidencyTest, OutOfMemoryHalvesTheStripsInsteadOfFallingBack)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(useOwnContext());
+    StripChain chain;
+    ASSERT_TRUE(makeStripChain(&chain));
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareStripFrame(chain, &run, &error)) << error;
+    const std::uint64_t image = (std::uint64_t)kStripWidth * kStripHeight * 4 * sizeof(float);
+    const std::uint64_t budget = 2 * image;
+    runtime()->pool().trim();
+    runtime()->pool().setUserBudget(budget);
+    const gpu::GpuRuntimeState stateBefore = runtime()->state();
+    const std::uint64_t liveBefore = runtime()->pool().stats().liveBytes;
+
+    ASSERT_TRUE(render(&run));
+    std::printf("[          ] retries %d, strip halvings %d, uploads %d\n",
+                run.stats->getGpuRegionRetries(),
+                run.stats->getGpuStripHalvings(),
+                run.stats->getUploadCount());
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_EQ(1, run.stats->getGpuRegionRetries());
+    EXPECT_GE(run.stats->getGpuStripHalvings(), 1);
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_GT(run.stats->getUploadCount(), 1) << "the region did not run as strips";
+    EXPECT_EQ(0, renderRoICallsOf(run, chain.blur)) << "the Blur rendered on the CPU";
+    EXPECT_EQ(budget, runtime()->pool().budget());
+    EXPECT_TRUE(runtime()->state() == stateBefore);
+    EXPECT_EQ(liveBefore, runtime()->pool().stats().liveBytes);
+    expectReleased(run);
+    expectMatchesCpu(chain.sink, run, stripWindow());
+}
+
+// Not even a strip of four rows fits a storage buffer range smaller than one row: the region renders on the CPU, and
+// the fallback is counted under its own reason, without a retry.
+TEST_F(GpuResidencyTest, RegionNoStripFitsRendersOnTheCpu)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    StripChain chain;
+    ASSERT_TRUE(makeStripChain(&chain));
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareStripFrame(chain, &run, &error)) << error;
+    setGpuStripOverridesForTests(1024, 0);
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(1, fallbacksOf(run));
+    EXPECT_EQ(1, fallbacksOf(run, "too large for the GPU"));
+    EXPECT_EQ(0, run.stats->getGpuRegionRetries());
+    EXPECT_EQ(0, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(0, run.stats->getUploadCount());
+    EXPECT_EQ(1, renderRoICallsOf(run, chain.blur));
+    expectReleased(run);
+    expectMatchesCpu(chain.sink, run, stripWindow());
+}
+
+// Eight Constant -> Grade -> Blur -> Grade branches at 1024 x 1024, summed by CPU Merges, render as two frames in flight
+// on a 64 MB pool, which holds four of their images. The first branch is split after its Grade, whose output waits in
+// the frame store on the device for the region holding the rest of the branch. Regions are not admitted on device
+// memory, so two run at once and need more than the pool holds: it evicts, and a region it cannot serve runs again,
+// as thinner strips if need be, but never on the CPU.
+TEST_F(GpuResidencyTest, LargeCompStaysWithinTheDeviceBudget)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const std::uint64_t budgetMB = 64;
+    const std::uint64_t budget = budgetMB << 20;
+    ASSERT_TRUE(useOwnContext(budgetMB));
+    ASSERT_EQ(budget, runtime()->pool().budget());
+
+    const int size = 1024;
+    const int branches = 8;
+    const RectI window(0, 0, size, size);
+    // Each Constant leaves part of the window empty, so the Blur's falloff at its edges is in the compared pixels.
+    const int inset = 64;
+    std::vector<NodePtr> grades1, blurs, grades2;
+    NodePtr root;
+    for (int b = 0; b < branches; ++b) {
+        NodePtr constant = makeNode(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
+        NodePtr grade1 = makeGrade(1.5 - 0.1 * b, 0.01 * b);
+        // A size of 24 is a sigma of 10.
+        NodePtr blur = makeBlur(24.);
+        NodePtr grade2 = makeGrade(0.8 + 0.05 * b, -0.01);
+        ASSERT_TRUE(constant && grade1 && blur && grade2);
+        const double value = 0.02 * (b + 1);
+        ASSERT_TRUE(setKnobValues(constant, kConstantParamColor, { value, 0.5 * value, 0.25 * value, 0.1 }));
+        ASSERT_TRUE(setKnobValue(constant, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize));
+        ASSERT_TRUE(setKnobValues(constant, kNativeGeneratorParamBottomLeft, { (double)(inset * (b % 2)), (double)(inset * (b / 4)) }));
+        ASSERT_TRUE(setKnobValues(constant, kNativeGeneratorParamSize, { (double)(size - inset), (double)(size - inset) }));
+        KnobBool* crop = dynamic_cast<KnobBool*>(blur->getKnobByName(kBlurParamCropToFormat).get());
+        ASSERT_TRUE(crop != NULL);
+        crop->setValue(false);
+        connectNodes(constant, grade1, 0, true);
+        connectNodes(grade1, blur, 0, true);
+        connectNodes(blur, grade2, 0, true);
+        if (root) {
+            NodePtr merge = makeNode(PLUGINID_NATRON_MERGE, PLUGIN_MAJOR_NATRON_MERGE);
+            ASSERT_TRUE(bool(merge));
+            ASSERT_TRUE(setKnobValue(merge, kMergeParamOperation, "plus"));
+            connectNodes(root, merge, 0, true);
+            connectNodes(grade2, merge, 1, true);
+            root = merge;
+        } else {
+            root = grade2;
+        }
+        grades1.push_back(grade1);
+        blurs.push_back(blur);
+        grades2.push_back(grade2);
+    }
+
+    std::string error;
+    FrameRun runs[2];
+    for (FrameRun& run : runs) {
+        ASSERT_TRUE(prepareFrame(root, &run, &error, window)) << error;
+        std::vector<std::vector<int>> regions;
+        for (int b = 0; b < branches; ++b) {
+            const int grade1Task = taskOf(run.graph, grades1[b]);
+            const int blurTask = taskOf(run.graph, blurs[b]);
+            const int grade2Task = taskOf(run.graph, grades2[b]);
+            ASSERT_TRUE(grade1Task >= 0 && blurTask >= 0 && grade2Task >= 0);
+            if (b == 0) {
+                regions.push_back({ grade1Task });
+                regions.push_back({ blurTask, grade2Task });
+            } else {
+                regions.push_back({ grade1Task, blurTask, grade2Task });
+            }
+        }
+        assignRegions(&run.graph, regions);
+        ASSERT_EQ(1, run.graph.regions[0].outputs.front().externalConsumers);
+    }
+
+    runtime()->pool().trim();
+    const gpu::GpuBufferPoolStats before = runtime()->pool().stats();
+    // The pool's peak covers its whole life, so it bounds this render only if nothing before went over the budget.
+    ASSERT_LE(before.peakBytes, budget);
+    for (FrameRun& run : runs) {
+        run.future = _scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
+    }
+    QElapsedTimer timer;
+    timer.start();
+    while (!(runs[0].future->isFinished() && runs[1].future->isFinished()) && (timer.elapsed() < 5 * kFrameTimeoutMs)) {
+        QThread::msleep(1);
+    }
+    for (FrameRun& run : runs) {
+        if (!run.future->isFinished()) {
+            _scheduler->abort(run.context);
+        }
+    }
+    for (FrameRun& run : runs) {
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+    }
+    const gpu::GpuBufferPoolStats after = runtime()->pool().stats();
+
+    int evictions = 0;
+    for (const FrameRun& run : runs) {
+        std::string reasons;
+        for (const std::pair<const std::string, int>& reason : run.stats->getCpuFallbackReasons()) {
+            reasons += reason.first + " x" + std::to_string(reason.second) + "; ";
+        }
+        EXPECT_EQ(0, fallbacksOf(run)) << reasons;
+        EXPECT_EQ(branches + 1, run.stats->getGpuRegionsRun());
+        EXPECT_GE(run.stats->getUploadCount(), branches);
+        EXPECT_LE(run.stats->getPeakDeviceBytes(), budget);
+        std::printf("[          ] frame: retries %d, strip halvings %d, uploads %d, evictions %d\n",
+                    run.stats->getGpuRegionRetries(),
+                    run.stats->getGpuStripHalvings(),
+                    run.stats->getUploadCount(),
+                    run.stats->getEvictions());
+        for (int b = 0; b < branches; ++b) {
+            EXPECT_EQ(0, renderRoICallsOf(run, blurs[b])) << "a Blur rendered on the CPU";
+        }
+        evictions += run.stats->getEvictions();
+    }
+    std::printf("[          ] pool budget %llu, peak %llu, evictions %llu (frame store: %d)\n",
+                (unsigned long long)budget,
+                (unsigned long long)after.peakBytes,
+                (unsigned long long)(after.evictions - before.evictions),
+                evictions);
+    EXPECT_GT(evictions, 0);
+    EXPECT_LE(after.peakBytes, budget);
+    EXPECT_EQ(budget, runtime()->pool().budget()) << "the device ran out of memory, which shrinks the budget";
+    EXPECT_EQ(before.liveBytes, after.liveBytes);
+    for (const FrameRun& run : runs) {
+        expectReleased(run);
+    }
+    // The render cached the Merges, which the CPU reference would otherwise read back.
+    appPTR->clearAllCaches();
+    for (const FrameRun& run : runs) {
+        expectMatchesCpu(root, run, window);
+    }
+}
+
+namespace {
+
+// Without push descriptors the region body never pipelines its strips, even when asked to.
+bool
+canPipeline()
+{
+    return appPTR->getGpuContext()->runtime()->device().info().pushDescriptor;
+}
+
+float
+worstDiff(const std::vector<float>& a,
+          const std::vector<float>& b)
+{
+    float worst = 0.f;
+    for (std::size_t i = 0; (i < a.size()) && (i < b.size()); ++i) {
+        worst = std::max(worst, std::fabs(a[i] - b[i]));
+    }
+
+    return worst;
+}
+
+} // namespace
+
+// With a 1 MB storage buffer range, the strips match the region run whole exactly, whether they run one at a time or
+// pipelined, with uploads and downloads in flight beside the compute of another strip; and both give every buffer back.
+TEST_F(GpuResidencyTest, PipelinedStripsMatchTheWholeRegionExactly)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    StripChain chain;
+    ASSERT_TRUE(makeStripChain(&chain));
+    std::string error;
+
+    FrameRun whole;
+    ASSERT_TRUE(prepareStripFrame(chain, &whole, &error)) << error;
+    ASSERT_TRUE(render(&whole));
+    const std::vector<float> wholePixels = rootPixels(whole);
+    ASSERT_FALSE(wholePixels.empty());
+    expectReleased(whole);
+
+    setGpuStripOverridesForTests(1u << 20, 0);
+    const GpuStripPipelining modes[] = { GpuStripPipelining::On, GpuStripPipelining::Off };
+    for (GpuStripPipelining mode : modes) {
+        const bool on = (mode == GpuStripPipelining::On);
+        SCOPED_TRACE(on ? "pipelined" : "serial");
+        setGpuStripPipeliningForTests(mode);
+        const std::uint64_t liveBefore = runtime()->pool().stats().liveBytes;
+        FrameRun tiled;
+        ASSERT_TRUE(prepareStripFrame(chain, &tiled, &error)) << error;
+        ASSERT_TRUE(render(&tiled));
+        std::printf("[          ] %s: uploads %d, pipelined regions %d, transfer hidden %.3f ms, exposed %.3f ms, peak %llu bytes\n",
+                    on ? "pipelined" : "serial",
+                    tiled.stats->getUploadCount(),
+                    tiled.stats->getGpuPipelinedRegions(),
+                    tiled.stats->getGpuTransferHiddenMs(),
+                    tiled.stats->getGpuTransferExposedMs(),
+                    (unsigned long long)tiled.stats->getPeakDeviceBytes());
+        EXPECT_EQ(0, fallbacksOf(tiled));
+        EXPECT_EQ(1, tiled.stats->getGpuRegionsRun());
+        EXPECT_EQ((on && canPipeline()) ? 1 : 0, tiled.stats->getGpuPipelinedRegions());
+        EXPECT_EQ(0, renderRoICallsOf(tiled, chain.blur)) << "the Blur rendered on the CPU";
+        EXPECT_GT(tiled.stats->getUploadCount(), 2);
+        EXPECT_EQ(tiled.stats->getUploadCount(), tiled.stats->getDownloadCount());
+        EXPECT_LE(tiled.stats->getPeakDeviceBytes(), (std::size_t)(1u << 20) * 4 * (on ? kGpuStripMaxInFlight : 1));
+
+        const std::vector<float> tiledPixels = rootPixels(tiled);
+        ASSERT_EQ(wholePixels.size(), tiledPixels.size());
+        EXPECT_EQ(0.f, worstDiff(wholePixels, tiledPixels));
+        expectReleased(tiled);
+        EXPECT_EQ(liveBefore, runtime()->pool().stats().liveBytes);
+    }
+}
+
+// The frame is aborted once the second strip of a pipelined region is submitted: the region waits for the strips in
+// flight, gives their buffers back and ends the frame aborted, without rendering anything on the CPU.
+TEST_F(GpuResidencyTest, AbortMidPipelineEndsTheFrameCleanly)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    if (!canPipeline()) {
+        std::printf("[  SKIPPED ] the device has no push descriptors, so strips never run pipelined\n");
+
+        return;
+    }
+    StripChain chain;
+    ASSERT_TRUE(makeStripChain(&chain));
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareStripFrame(chain, &run, &error)) << error;
+    setGpuStripOverridesForTests(1u << 20, 0);
+    setGpuStripPipeliningForTests(GpuStripPipelining::On);
+    const std::uint64_t liveBefore = runtime()->pool().stats().liveBytes;
+    const AbortableRenderInfoPtr abortInfo = run.abortInfo;
+    std::shared_ptr<std::atomic<int>> submitted = std::make_shared<std::atomic<int>>(0);
+    setGpuStripSubmittedHookForTests([abortInfo, submitted](std::size_t strip) {
+        ++*submitted;
+        if (strip == 1) {
+            abortInfo->setAborted();
+        }
+    });
+
+    EXPECT_FALSE(render(&run));
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, run.future->wait());
+    EXPECT_EQ(2, submitted->load()) << "the region went on submitting strips after the abort";
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_EQ(0, renderRoICallsOf(run, chain.blur));
+    EXPECT_EQ(0, renderRoICallsOf(run, chain.sink));
+    expectReleased(run);
+    EXPECT_EQ(liveBefore, runtime()->pool().stats().liveBytes);
+}
+
+// Three strips in flight fit the budget as planned, but each also holds the Blur's intermediate, which the plan leaves
+// out. Evicting frees nothing; the same strips run one at a time do fit, so the region neither halves them nor falls
+// back to the CPU.
+TEST_F(GpuResidencyTest, OutOfMemoryMidPipelineRunsTheStripsOneAtATime)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    if (!canPipeline()) {
+        std::printf("[  SKIPPED ] the device has no push descriptors, so strips never run pipelined\n");
+
+        return;
+    }
+    ASSERT_TRUE(useOwnContext());
+    StripChain chain;
+    ASSERT_TRUE(makeStripChain(&chain));
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareStripFrame(chain, &run, &error)) << error;
+    setGpuStripOverridesForTests(1u << 20, 0);
+    setGpuStripPipeliningForTests(GpuStripPipelining::On);
+    // A strip's input and its Grade's output each take up to 1 MB, and the Blur's intermediate as much again.
+    const std::uint64_t budget = (13u << 20) / 2;
+    runtime()->pool().trim();
+    runtime()->pool().setUserBudget(budget);
+    const std::uint64_t liveBefore = runtime()->pool().stats().liveBytes;
+
+    ASSERT_TRUE(render(&run));
+    std::printf("[          ] retries %d, serialized %d, strip halvings %d, pipelined regions %d, uploads %d\n",
+                run.stats->getGpuRegionRetries(),
+                run.stats->getGpuStripPipelinesSerialized(),
+                run.stats->getGpuStripHalvings(),
+                run.stats->getGpuPipelinedRegions(),
+                run.stats->getUploadCount());
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_EQ(1, run.stats->getGpuRegionRetries());
+    EXPECT_EQ(1, run.stats->getGpuStripPipelinesSerialized());
+    EXPECT_EQ(0, run.stats->getGpuStripHalvings());
+    EXPECT_EQ(0, run.stats->getGpuPipelinedRegions());
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(0, renderRoICallsOf(run, chain.blur)) << "the Blur rendered on the CPU";
+    EXPECT_LE(run.stats->getPeakDeviceBytes(), budget);
+    expectReleased(run);
+    EXPECT_EQ(liveBefore, runtime()->pool().stats().liveBytes);
+    expectMatchesCpu(chain.sink, run, stripWindow());
+}
+
+// The device is lost while strips are in flight: they are drained, and the frame is rendered again on the CPU.
+TEST_F(GpuResidencyTest, DeviceLossMidPipelineRendersTheFrameOnTheCpu)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    if (!canPipeline()) {
+        std::printf("[  SKIPPED ] the device has no push descriptors, so strips never run pipelined\n");
+
+        return;
+    }
+    ASSERT_TRUE(useOwnContext());
+    StripChain chain;
+    ASSERT_TRUE(makeStripChain(&chain));
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareStripFrame(chain, &run, &error)) << error;
+    setGpuStripOverridesForTests(1u << 20, 0);
+    setGpuStripPipeliningForTests(GpuStripPipelining::On);
+    // The next operation issues the downloads of the first strip, behind the second strip's compute.
+    setGpuStripSubmittedHookForTests([](std::size_t strip) {
+        if (strip == 1) {
+            runtime()->device().injectFault(gpu::GpuFaultPlan::Kind::DeviceLost, 1);
+        }
+    });
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(gpu::GpuRuntimeState::Lost, runtime()->state());
+    EXPECT_EQ(1, fallbacksOf(run, "device lost"));
+    EXPECT_EQ(0, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(1, renderRoICallsOf(run, chain.blur));
+    expectReleased(run);
+    expectMatchesCpu(chain.sink, run, stripWindow());
+}
+
+// Renders Constant -> Grade -> Blur (sigma 25) -> Grade over NATRON_GPU_PIPELINE_BENCH x NATRON_GPU_PIPELINE_BENCH
+// pixels as strips, one at a time and then pipelined, and prints where the region's time went. It checks no timing:
+// only that both give the same pixels. Skipped unless the variable is set.
+TEST_F(GpuResidencyTest, PipelinedStripsOverlapBenchmark)
+{
+    const char* sizeText = std::getenv("NATRON_GPU_PIPELINE_BENCH");
+    if (!sizeText || (std::atoi(sizeText) <= 0)) {
+        std::printf("[  SKIPPED ] set NATRON_GPU_PIPELINE_BENCH to the image size to run it\n");
+
+        return;
+    }
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const int size = std::atoi(sizeText);
+    NodePtr source = makeNode(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
+    NodePtr grade1 = makeGrade(1.5, 0.1);
+    NodePtr blur = makeBlur(60.);
+    NodePtr grade2 = makeGrade(0.8, 0.02);
+    NodePtr sink = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
+    ASSERT_TRUE(source && grade1 && blur && grade2 && sink);
+    ASSERT_TRUE(setKnobValue(source, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize));
+    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamBottomLeft, { 0., 0. }));
+    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamSize, { (double)size, (double)size }));
+    KnobBool* crop = dynamic_cast<KnobBool*>(blur->getKnobByName(kBlurParamCropToFormat).get());
+    ASSERT_TRUE(crop);
+    crop->setValue(false);
+    connectNodes(source, grade1, 0, true);
+    connectNodes(grade1, blur, 0, true);
+    connectNodes(blur, grade2, 0, true);
+    connectNodes(grade2, sink, 0, true);
+    const RectI window(0, 0, size, size);
+
+    std::shared_ptr<RenderScheduler::RegionReport> last = std::make_shared<RenderScheduler::RegionReport>();
+    _scheduler->setRegionBody([last](const FrameRenderContextPtr& context,
+                                     const FrameGraph& graph,
+                                     int region,
+                                     int budget,
+                                     std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
+                                     RenderScheduler::RegionReport* report) {
+        const EffectInstance::RenderRoIRetCode code = runGpuRegion(context, graph, region, budget, rootPlanes, report);
+        *last = *report;
+
+        return code;
+    });
+
+    // The second render of each mode recycles the first one's host buffers, whose imports the device keeps, as frames
+    // of a sequence do; the first pays for touching fresh memory as it pins it. The pool keeps its default size, so
+    // the numbers are those of a real render.
+    std::vector<float> reference;
+    const GpuStripPipelining modes[] = { GpuStripPipelining::Off, GpuStripPipelining::On };
+    for (GpuStripPipelining mode : modes) {
+        const bool on = (mode == GpuStripPipelining::On);
+        setGpuStripPipeliningForTests(mode);
+        for (int pass = 0; pass < 2; ++pass) {
+            FrameRun run;
+            std::string error;
+            ASSERT_TRUE(prepareFrame(sink, &run, &error, window)) << error;
+            const int grade1Task = taskOf(run.graph, grade1);
+            const int blurTask = taskOf(run.graph, blur);
+            const int grade2Task = taskOf(run.graph, grade2);
+            ASSERT_TRUE(grade1Task >= 0 && blurTask >= 0 && grade2Task >= 0);
+            assignRegions(&run.graph, { { grade1Task, blurTask, grade2Task } });
+            run.future = _scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
+            ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+            const RenderScheduler::RegionReport report = *last;
+            const double sum = report.uploadMs + report.kernelMs + report.downloadMs;
+            std::printf("[          ] %dx%d %s, %s: %d strips, %d in flight; wall %.1f ms; upload %.1f + compute %.1f + download %.1f = %.1f ms; "
+                        "transfer hidden %.1f ms, exposed %.1f ms; %.1f MB up, %.1f MB down\n",
+                        size, size, on ? "pipelined" : "serial", (pass == 0) ? "first" : "recycled", report.strips, report.stripsInFlight, report.wallMs,
+                        report.uploadMs, report.kernelMs, report.downloadMs, sum, report.transferHiddenMs, report.transferExposedMs,
+                        (double)report.uploadBytes / 1e6, (double)report.downloadBytes / 1e6);
+            EXPECT_EQ(0, fallbacksOf(run));
+            EXPECT_GT(report.strips, 1);
+            EXPECT_EQ(on && canPipeline(), report.stripsInFlight > 1);
+            const std::map<ImageLayerDesc, ImagePtr> planes = run.future->getRootPlanes();
+            ASSERT_FALSE(planes.empty());
+            const std::vector<float> pixels = readRgba(planes.begin()->second, RectI(0, 0, size, std::min(size, 64)));
+            if (reference.empty()) {
+                reference = pixels;
+            } else {
+                EXPECT_EQ(0.f, worstDiff(reference, pixels));
+            }
+            expectReleased(run);
+        }
+    }
+}
+
+#endif // NATRON_HAVE_GPU
+
+namespace {
+
+const int kPlanWidth = 100;
+const int kPlanHeight = 1000;
+const int kPlanHalo = 10;
+const std::uint64_t kPlanRowBytes = kPlanWidth * 4 * sizeof(float);
+
+RectI
+padRows(const RectI& rect,
+        int halo)
+{
+    return RectI(rect.x1, rect.y1 - halo, rect.x2, rect.y2 + halo);
+}
+
+// A RAM source -> Grade -> Blur reading kPlanHalo rows beyond each side -> Grade read after the region.
+GpuStripGraph
+planChain()
+{
+    GpuStripGraph graph;
+    const RectI bounds(0, 0, kPlanWidth, kPlanHeight);
+
+    for (int s = 0; s < 4; ++s) {
+        GpuStripSlot slot;
+        slot.bounds = bounds;
+        slot.nComps = 4;
+        slot.external = (s == 0);
+        slot.interior = (s == 3);
+        graph.images.push_back(slot);
+    }
+    for (int m = 0; m < 3; ++m) {
+        GpuStripMember member;
+        member.outSlot = m + 1;
+        member.inputSlots.push_back(m);
+        const int halo = (m == 1) ? kPlanHalo : 0;
+        member.inputRoI = [halo](int, const RectI& rect) {
+            return padRows(rect, halo);
+        };
+        graph.members.push_back(member);
+    }
+
+    return graph;
+}
+
+} // namespace
+
+TEST(GpuRegionStrips, FitsWholeWithoutLimits)
+{
+    std::vector<GpuStrip> strips;
+    int rows = -1;
+
+    EXPECT_EQ(GpuStripResult::Whole, planGpuStrips(planChain(), GpuStripLimits(), &strips, &rows));
+    EXPECT_TRUE(strips.empty());
+    EXPECT_EQ(0, rows);
+}
+
+TEST(GpuRegionStrips, StripsCarryTheHalosBackwardsAndPartitionTheOutput)
+{
+    const GpuStripGraph graph = planChain();
+    GpuStripLimits limits;
+    limits.maxBufferBytes = 64 * kPlanRowBytes;
+    std::vector<GpuStrip> strips;
+    int rows = 0;
+
+    ASSERT_EQ(GpuStripResult::Strips, planGpuStrips(graph, limits, &strips, &rows));
+    ASSERT_GT(rows, 0);
+    EXPECT_EQ(0, rows % kGpuStripRowQuantum);
+    EXPECT_LE(rows, 64 - 2 * kPlanHalo);
+    ASSERT_GT(strips.size(), 1u);
+
+    int next = 0;
+    for (const GpuStrip& strip : strips) {
+        const RectI& interior = strip.interiors[3];
+        ASSERT_FALSE(interior.isNull());
+        EXPECT_EQ(next, interior.y1);
+        EXPECT_EQ(kPlanWidth, interior.width());
+        next = interior.y2;
+        EXPECT_TRUE(strip.interiors[0].isNull());
+        EXPECT_TRUE(strip.interiors[1].isNull());
+        EXPECT_TRUE(strip.interiors[2].isNull());
+
+        EXPECT_EQ(interior, strip.rects[3]);
+        EXPECT_EQ(interior, strip.rects[2]);
+        const RectI halo = padRows(interior, kPlanHalo).intersect(RectI(0, 0, kPlanWidth, kPlanHeight));
+        EXPECT_EQ(halo, strip.rects[1]);
+        EXPECT_TRUE(strip.rects[0].contains(halo));
+        EXPECT_EQ(0, strip.rects[0].y1 % kGpuStripRowQuantum);
+        EXPECT_TRUE((strip.rects[0].y2 % kGpuStripRowQuantum == 0) || (strip.rects[0].y2 == kPlanHeight));
+        EXPECT_LE(gpuStripCost(graph, strip.rects, limits).largestBuffer, limits.maxBufferBytes);
+    }
+    EXPECT_EQ(kPlanHeight, next);
+}
+
+TEST(GpuRegionStrips, BudgetAloneStrips)
+{
+    const GpuStripGraph graph = planChain();
+    std::vector<RectI> whole(graph.images.size(), RectI(0, 0, kPlanWidth, kPlanHeight));
+    GpuStripLimits limits;
+    limits.budgetBytes = gpuStripCost(graph, whole, limits).peakBytes / 4;
+    std::vector<GpuStrip> strips;
+    int rows = 0;
+
+    ASSERT_EQ(GpuStripResult::Strips, planGpuStrips(graph, limits, &strips, &rows));
+    for (const GpuStrip& strip : strips) {
+        EXPECT_LE(gpuStripCost(graph, strip.rects, limits).peakBytes, limits.budgetBytes);
+    }
+}
+
+TEST(GpuRegionStrips, NoStripFits)
+{
+    const GpuStripGraph graph = planChain();
+    std::vector<GpuStrip> strips;
+    int rows = 0;
+
+    GpuStripLimits range;
+    range.maxBufferBytes = (2 * kPlanHalo) * kPlanRowBytes;
+    EXPECT_EQ(GpuStripResult::TooLarge, planGpuStrips(graph, range, &strips, &rows));
+    EXPECT_TRUE(strips.empty());
+
+    GpuStripLimits budget;
+    budget.budgetBytes = kPlanRowBytes;
+    EXPECT_EQ(GpuStripResult::OverBudget, planGpuStrips(graph, budget, &strips, &rows));
+    EXPECT_TRUE(strips.empty());
+}
+
+TEST(GpuRegionStrips, ForcedRowsStripARegionThatFitsWhole)
+{
+    const GpuStripGraph graph = planChain();
+    GpuStripLimits limits;
+    limits.forcedRows = 250;
+    std::vector<GpuStrip> strips;
+    int rows = 0;
+
+    ASSERT_EQ(GpuStripResult::Strips, planGpuStrips(graph, limits, &strips, &rows));
+    EXPECT_EQ(248, rows);
+    ASSERT_EQ(5u, strips.size());
+    int next = 0;
+    for (const GpuStrip& strip : strips) {
+        EXPECT_EQ(next, strip.interiors[3].y1);
+        next = strip.interiors[3].y2;
+    }
+    EXPECT_EQ(kPlanHeight, next);
+    EXPECT_EQ(RectI(0, 0, kPlanWidth, kPlanHeight), gpuStripBands(graph));
+}
+
+TEST(GpuRegionStrips, BudgetLeavesHeadroomUnderTheDeviceMemory)
+{
+    const std::uint64_t gb = std::uint64_t(1) << 30;
+
+    EXPECT_EQ(gb * 32 / 5, gpuStripBudgetBytes(gb * 32 / 5, 8 * gb));
+    EXPECT_EQ(3 * gb, gpuStripBudgetBytes(gb * 16 / 5, 4 * gb));
+    EXPECT_EQ(gb * 3 / 4, gpuStripBudgetBytes(gb * 6 / 5, gb * 3 / 2));
+    EXPECT_EQ(gb, gpuStripBudgetBytes(gb, 0));
+}
+
+// Strips the buffer range alone limits fit three in flight at the height a single one has.
+TEST(GpuRegionStrips, PipelinedStripsKeepTheirHeightWhenTheBudgetAllows)
+{
+    const GpuStripGraph graph = planChain();
+    GpuStripLimits limits;
+    limits.maxBufferBytes = 64 * kPlanRowBytes;
+    std::vector<GpuStrip> serial;
+    int serialRows = 0;
+    int inFlight = 0;
+    ASSERT_EQ(GpuStripResult::Strips, planGpuStrips(graph, limits, &serial, &serialRows, &inFlight));
+    EXPECT_EQ(1, inFlight);
+
+    limits.maxInFlight = kGpuStripMaxInFlight;
+    std::vector<GpuStrip> strips;
+    int rows = 0;
+    ASSERT_EQ(GpuStripResult::Strips, planGpuStrips(graph, limits, &strips, &rows, &inFlight));
+    EXPECT_EQ(kGpuStripMaxInFlight, inFlight);
+    EXPECT_EQ(serialRows, rows);
+    EXPECT_EQ(serial.size(), strips.size());
+}
+
+// Under a budget one strip fills, two in flight share it as thinner strips, each within half of it.
+TEST(GpuRegionStrips, PipelinedStripsShareTheBudget)
+{
+    const GpuStripGraph graph = planChain();
+    GpuStripLimits limits;
+    limits.maxBufferBytes = 256 * kPlanRowBytes;
+    std::vector<GpuStrip> strips;
+    int rows = 0;
+    int inFlight = 0;
+    ASSERT_EQ(GpuStripResult::Strips, planGpuStrips(graph, limits, &strips, &rows, &inFlight));
+    std::uint64_t peak = 0;
+    for (const GpuStrip& strip : strips) {
+        peak = std::max(peak, gpuStripCost(graph, strip.rects, limits).peakBytes);
+    }
+    limits.budgetBytes = peak;
+    limits.maxInFlight = kGpuStripMaxInFlight;
+
+    ASSERT_EQ(GpuStripResult::Strips, planGpuStrips(graph, limits, &strips, &rows, &inFlight));
+    EXPECT_EQ(2, inFlight);
+    EXPECT_GE(rows, kGpuStripMinPipelinedRows);
+    for (const GpuStrip& strip : strips) {
+        EXPECT_LE(2 * gpuStripCost(graph, strip.rects, limits).peakBytes, limits.budgetBytes);
+    }
+}
+
+// Strips that would have to be thinner than kGpuStripMinPipelinedRows to fit two in flight run one at a time instead.
+TEST(GpuRegionStrips, ThinPipelinedStripsRunOneAtATime)
+{
+    const GpuStripGraph graph = planChain();
+    GpuStripLimits limits;
+    limits.maxBufferBytes = 64 * kPlanRowBytes;
+    std::vector<GpuStrip> serial;
+    int serialRows = 0;
+    int inFlight = 0;
+    ASSERT_EQ(GpuStripResult::Strips, planGpuStrips(graph, limits, &serial, &serialRows, &inFlight));
+    std::uint64_t peak = 0;
+    for (const GpuStrip& strip : serial) {
+        peak = std::max(peak, gpuStripCost(graph, strip.rects, limits).peakBytes);
+    }
+    limits.budgetBytes = peak;
+    limits.maxInFlight = kGpuStripMaxInFlight;
+
+    std::vector<GpuStrip> strips;
+    int rows = 0;
+    ASSERT_EQ(GpuStripResult::Strips, planGpuStrips(graph, limits, &strips, &rows, &inFlight));
+    EXPECT_EQ(1, inFlight);
+    EXPECT_EQ(serialRows, rows);
+}

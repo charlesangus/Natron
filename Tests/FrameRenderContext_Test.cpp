@@ -42,6 +42,7 @@
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/DeviceImage.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/Image.h"
@@ -95,6 +96,46 @@ makeKey(const NodePtr& node,
 
     return key;
 }
+
+class FakeDeviceImage
+    : public DeviceImage {
+public:
+    FakeDeviceImage(const RectI& bounds,
+                    std::size_t bytes)
+        : _bounds(bounds)
+        , _bytes(bytes)
+        , downloads(0)
+    {
+    }
+
+    virtual std::size_t bytes() const OVERRIDE FINAL { return _bytes; }
+
+    virtual RectI bounds() const OVERRIDE FINAL { return _bounds; }
+
+    virtual int nComps() const OVERRIDE FINAL { return 4; }
+
+    virtual ImagePtr downloadToRam() OVERRIDE FINAL
+    {
+        ++downloads;
+
+        return makeLocalImage(ImageLayerDesc::getRGBAComponents(), _bounds);
+    }
+
+    virtual ImagePtr evictToRam() OVERRIDE FINAL
+    {
+        ImagePtr image = downloadToRam();
+
+        _bytes = 0;
+
+        return image;
+    }
+
+    int downloads;
+
+private:
+    RectI _bounds;
+    std::size_t _bytes;
+};
 
 } // namespace
 
@@ -286,4 +327,113 @@ TEST_F(FrameRenderContextTest, FrameStoreCountsAnImageStoredUnderTwoKeysOnce)
     EXPECT_EQ(imageBytes, store.bytesInFlight()) << "clear() must forget the images it counted";
     store.release(input);
     EXPECT_EQ(0u, store.bytesInFlight());
+}
+
+TEST_F(FrameRenderContextTest, FrameStoreDownloadsADeviceOnlyEntryOnce)
+{
+    FrameStore store;
+    const RectI bounds(0, 0, 8, 8);
+    std::shared_ptr<FakeDeviceImage> device = std::make_shared<FakeDeviceImage>(bounds, 1000);
+    std::map<ImageLayerDesc, DeviceImagePtr> layers;
+    layers[ImageLayerDesc::getRGBAComponents()] = device;
+    const FrameStore::TaskKey key = makeKey(NodePtr(), 1.);
+    store.putDevice(key, layers, bounds, 3);
+
+    EXPECT_EQ(0u, store.hostBytesInFlight());
+    EXPECT_EQ(1000u, store.deviceBytesInFlight());
+
+    std::list<ImageLayerDesc> needed;
+    needed.push_back(ImageLayerDesc::getRGBAComponents());
+    std::list<DeviceImagePtr> onDevice;
+    ASSERT_TRUE(store.findDevice(key, needed, bounds, &onDevice));
+    EXPECT_EQ(device.get(), onDevice.front().get());
+    EXPECT_EQ(0, store.downloadCount());
+
+    std::list<ImagePtr> first;
+    std::list<ImagePtr> second;
+    ASSERT_TRUE(store.find(key, needed, RectI(1, 1, 5, 5), &first));
+    ASSERT_TRUE(store.find(key, needed, RectI(2, 2, 6, 6), &second));
+    EXPECT_EQ(first.front().get(), second.front().get());
+    EXPECT_EQ(1, store.downloadCount());
+    EXPECT_EQ(1, device->downloads);
+
+    std::list<ImagePtr> outside;
+    EXPECT_FALSE(store.find(key, needed, RectI(4, 4, 12, 12), &outside));
+
+    const std::size_t hostBytes = first.front()->size();
+    EXPECT_EQ(hostBytes, store.hostBytesInFlight());
+    EXPECT_EQ(hostBytes, store.bytesInFlight());
+    EXPECT_EQ(1000u, store.deviceBytesInFlight());
+
+    store.release(key);
+    store.release(key);
+    EXPECT_EQ(hostBytes, store.hostBytesInFlight());
+    store.release(key);
+    EXPECT_EQ(0u, store.hostBytesInFlight());
+    EXPECT_EQ(0u, store.deviceBytesInFlight());
+    std::list<DeviceImagePtr> afterRelease;
+    EXPECT_FALSE(store.findDevice(key, needed, bounds, &afterRelease));
+}
+
+TEST_F(FrameRenderContextTest, FrameStoreAccountsHostAndDeviceBytesApart)
+{
+    FrameStore store;
+    const RectI bounds(0, 0, 8, 8);
+    ImagePtr rgba = makeLocalImage(ImageLayerDesc::getRGBAComponents(), bounds);
+    ASSERT_TRUE(bool(rgba));
+    std::map<ImageLayerDesc, ImagePtr> ramLayers;
+    ramLayers[ImageLayerDesc::getRGBAComponents()] = rgba;
+    std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers;
+    deviceLayers[ImageLayerDesc::getRGBAComponents()] = std::make_shared<FakeDeviceImage>(bounds, 500);
+
+    const FrameStore::TaskKey ramKey = makeKey(NodePtr(), 1.);
+    const FrameStore::TaskKey deviceKey = makeKey(NodePtr(), 2.);
+    store.put(ramKey, ramLayers, bounds, 1);
+    EXPECT_EQ(rgba->size(), store.hostBytesInFlight());
+    EXPECT_EQ(0u, store.deviceBytesInFlight());
+    store.putDevice(deviceKey, deviceLayers, bounds, 1);
+    EXPECT_EQ(rgba->size(), store.hostBytesInFlight());
+    EXPECT_EQ(500u, store.deviceBytesInFlight());
+
+    store.release(ramKey);
+    EXPECT_EQ(0u, store.hostBytesInFlight());
+    EXPECT_EQ(500u, store.deviceBytesInFlight());
+    store.release(deviceKey);
+    EXPECT_EQ(0u, store.hostBytesInFlight());
+    EXPECT_EQ(0u, store.deviceBytesInFlight());
+
+    store.putDevice(deviceKey, deviceLayers, bounds, 1);
+    store.clear();
+    EXPECT_EQ(0u, store.deviceBytesInFlight());
+}
+
+TEST_F(FrameRenderContextTest, FrameStoreEvictedEntryServesRamFindsWithoutDownloading)
+{
+    FrameStore store;
+    const RectI bounds(0, 0, 8, 8);
+    std::shared_ptr<FakeDeviceImage> device = std::make_shared<FakeDeviceImage>(bounds, 1000);
+    std::map<ImageLayerDesc, DeviceImagePtr> layers;
+    layers[ImageLayerDesc::getRGBAComponents()] = device;
+    const FrameStore::TaskKey key = makeKey(NodePtr(), 1.);
+    store.putDevice(key, layers, bounds, 2);
+
+    EXPECT_EQ(1000u, store.evictToRam(key));
+    EXPECT_EQ(0u, store.deviceBytesInFlight());
+    EXPECT_GT(store.hostBytesInFlight(), 0u);
+    const int downloadsAfterEviction = store.downloadCount();
+
+    std::list<ImageLayerDesc> needed;
+    needed.push_back(ImageLayerDesc::getRGBAComponents());
+    std::list<ImagePtr> found;
+    ASSERT_TRUE(store.find(key, needed, bounds, &found));
+    EXPECT_EQ(downloadsAfterEviction, store.downloadCount());
+    EXPECT_EQ(1, device->downloads);
+    std::list<DeviceImagePtr> onDevice;
+    EXPECT_FALSE(store.findDevice(key, needed, bounds, &onDevice));
+
+    store.release(key);
+    EXPECT_TRUE(store.find(key, needed, bounds, &found)) << "eviction must not change the consumer count";
+    store.release(key);
+    EXPECT_EQ(0u, store.hostBytesInFlight());
+    EXPECT_EQ(0u, store.deviceBytesInFlight());
 }

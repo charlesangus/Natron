@@ -60,6 +60,9 @@ FrameStore::FrameStore()
     , _entries()
     , _imageRefs()
     , _bytesInFlight(0)
+    , _downloadedBytes(0)
+    , _deviceBytes(0)
+    , _downloads(0)
 {
 }
 
@@ -78,22 +81,54 @@ FrameStore::put(const TaskKey& key,
     }
 
     std::shared_ptr<Entry> entry = std::make_shared<Entry>();
+    entry->layers = std::move(layers);
+    entry->renderedRoI = renderedRoI;
+    entry->consumersLeft = consumers;
+    putEntry(key, entry);
+}
+
+void
+FrameStore::putDevice(const TaskKey& key,
+                      std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers,
+                      const RectI& renderedRoI,
+                      int consumers)
+{
+    if (consumers <= 0) {
+        return;
+    }
+
+    std::shared_ptr<Entry> entry = std::make_shared<Entry>();
+    entry->deviceLayers = std::move(deviceLayers);
+    entry->renderedRoI = renderedRoI;
+    entry->consumersLeft = consumers;
+    putEntry(key, entry);
+}
+
+void
+FrameStore::putEntry(const TaskKey& key,
+                     const std::shared_ptr<Entry>& entry)
+{
     bool boundsSet = false;
-    for (std::map<ImageLayerDesc, ImagePtr>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
-        if (!it->second) {
-            continue;
-        }
-        const RectI layerBounds = it->second->getBounds();
+    const auto addBounds = [&](const RectI& layerBounds) {
         if (boundsSet) {
             entry->bounds = entry->bounds.intersect(layerBounds);
         } else {
             entry->bounds = layerBounds;
             boundsSet = true;
         }
+    };
+    for (std::map<ImageLayerDesc, ImagePtr>::const_iterator it = entry->layers.begin(); it != entry->layers.end(); ++it) {
+        if (it->second) {
+            addBounds(it->second->getBounds());
+            entry->countedImages.push_back(it->second.get());
+        }
     }
-    entry->layers = std::move(layers);
-    entry->renderedRoI = renderedRoI;
-    entry->consumersLeft = consumers;
+    for (std::map<ImageLayerDesc, DeviceImagePtr>::const_iterator it = entry->deviceLayers.begin(); it != entry->deviceLayers.end(); ++it) {
+        if (it->second) {
+            addBounds(it->second->bounds());
+            entry->deviceBytes += it->second->bytes();
+        }
+    }
 
     // Destroyed once the lock is released, so that freeing its images does not happen under it.
     std::shared_ptr<Entry> replaced;
@@ -103,6 +138,7 @@ FrameStore::put(const TaskKey& key,
         replaced.swap(slot);
         slot = entry;
         addImageRefsLocked(*entry);
+        _deviceBytes += entry->deviceBytes;
         if (replaced) {
             removeImageRefsLocked(*replaced);
         }
@@ -112,28 +148,22 @@ FrameStore::put(const TaskKey& key,
 void
 FrameStore::addImageRefsLocked(const Entry& entry)
 {
-    for (std::map<ImageLayerDesc, ImagePtr>::const_iterator it = entry.layers.begin(); it != entry.layers.end(); ++it) {
-        if (!it->second) {
-            continue;
-        }
-        ImageRefs& refs = _imageRefs[it->second.get()];
+    for (std::vector<const Image*>::const_iterator it = entry.countedImages.begin(); it != entry.countedImages.end(); ++it) {
+        ImageRefs& refs = _imageRefs[*it];
         if (refs.refs++ > 0) {
             continue;
         }
         // The image cache counts the memory of the images it allocated until they are destroyed, evicted or not.
-        refs.bytes = it->second->getCacheAPI() ? 0 : it->second->size();
+        refs.bytes = (*it)->getCacheAPI() ? 0 : (*it)->size();
         _bytesInFlight += refs.bytes;
     }
 }
 
 void
-FrameStore::removeImageRefsLocked(const Entry& entry)
+FrameStore::removeImageRefsLocked(Entry& entry)
 {
-    for (std::map<ImageLayerDesc, ImagePtr>::const_iterator it = entry.layers.begin(); it != entry.layers.end(); ++it) {
-        if (!it->second) {
-            continue;
-        }
-        ImageRefsMap::iterator found = _imageRefs.find(it->second.get());
+    for (std::vector<const Image*>::const_iterator it = entry.countedImages.begin(); it != entry.countedImages.end(); ++it) {
+        ImageRefsMap::iterator found = _imageRefs.find(*it);
         if (found == _imageRefs.end()) {
             continue;
         }
@@ -143,7 +173,46 @@ FrameStore::removeImageRefsLocked(const Entry& entry)
         _bytesInFlight -= found->second.bytes;
         _imageRefs.erase(found);
     }
+
+    // A find or eviction running on the entry finishes first, and none starts counting after this.
+    std::lock_guard<std::mutex> k(entry.lock);
+    entry.retired = true;
+    _downloadedBytes -= entry.downloadedBytes;
+    _deviceBytes -= entry.deviceBytes;
+    entry.downloadedBytes = 0;
+    entry.deviceBytes = 0;
 }
+
+void
+FrameStore::addDownloadedBytesLocked(Entry& entry,
+                                     std::size_t bytes) const
+{
+    if (entry.retired) {
+        return;
+    }
+    entry.downloadedBytes += bytes;
+    _downloadedBytes += bytes;
+}
+
+namespace {
+
+// ImageLayerDesc orders by layer ID only, so the map also finds a stored layer with a different layout (rgba for
+// alpha); the consumer must get exactly the channels it asked for, as the pull would render them.
+template <typename Map>
+typename Map::const_iterator
+findExactLayer(const Map& layers,
+               const ImageLayerDesc& needed)
+{
+    typename Map::const_iterator found = layers.find(needed);
+
+    if ((found == layers.end()) || !found->second || (found->first.getChannels() != needed.getChannels())) {
+        return layers.end();
+    }
+
+    return found;
+}
+
+} // namespace
 
 bool
 FrameStore::find(const TaskKey& key,
@@ -162,23 +231,115 @@ FrameStore::find(const TaskKey& key,
         entry = found->second;
     }
 
-    // Only consumersLeft changes once an entry is stored, so its other fields can be read without the lock.
+    // Only the layers and the accounting change once an entry is stored, so its other fields can be read without
+    // the lock.
     if (!entry->bounds.contains(pixelRoI) || !entry->renderedRoI.contains(pixelRoI)) {
         return false;
     }
     std::list<ImagePtr> images;
-    for (std::list<ImageLayerDesc>::const_iterator it = needed.begin(); it != needed.end(); ++it) {
-        // ImageLayerDesc orders by layer ID only, so the map also finds a stored layer with a different layout
-        // (rgba for alpha); the consumer must get exactly the channels it asked for, as the pull would render them.
-        std::map<ImageLayerDesc, ImagePtr>::const_iterator foundLayer = entry->layers.find(*it);
-        if ((foundLayer == entry->layers.end()) || !foundLayer->second || (foundLayer->first.getChannels() != it->getChannels())) {
-            return false;
+    {
+        std::lock_guard<std::mutex> k(entry->lock);
+        for (std::list<ImageLayerDesc>::const_iterator it = needed.begin(); it != needed.end(); ++it) {
+            std::map<ImageLayerDesc, ImagePtr>::const_iterator foundLayer = findExactLayer(entry->layers, *it);
+            if (foundLayer != entry->layers.end()) {
+                images.push_back(foundLayer->second);
+                continue;
+            }
+            std::map<ImageLayerDesc, DeviceImagePtr>::const_iterator foundDevice = findExactLayer(entry->deviceLayers, *it);
+            if (foundDevice == entry->deviceLayers.end()) {
+                return false;
+            }
+            ImagePtr downloaded = foundDevice->second->downloadToRam();
+            if (!downloaded) {
+                return false;
+            }
+            ++_downloads;
+            addDownloadedBytesLocked(*entry, downloaded->size());
+            entry->layers[foundDevice->first] = downloaded;
+            images.push_back(downloaded);
         }
-        images.push_back(foundLayer->second);
     }
     out->splice(out->end(), images);
 
     return true;
+}
+
+bool
+FrameStore::findDevice(const TaskKey& key,
+                       const std::list<ImageLayerDesc>& needed,
+                       const RectI& pixelRoI,
+                       std::list<DeviceImagePtr>* out) const
+{
+    assert(out);
+    std::shared_ptr<Entry> entry;
+    {
+        std::lock_guard<std::mutex> k(_entriesMutex);
+        EntryMap::const_iterator found = _entries.find(key);
+        if (found == _entries.end()) {
+            return false;
+        }
+        entry = found->second;
+    }
+
+    if (!entry->bounds.contains(pixelRoI) || !entry->renderedRoI.contains(pixelRoI)) {
+        return false;
+    }
+    std::list<DeviceImagePtr> images;
+    {
+        std::lock_guard<std::mutex> k(entry->lock);
+        for (std::list<ImageLayerDesc>::const_iterator it = needed.begin(); it != needed.end(); ++it) {
+            std::map<ImageLayerDesc, DeviceImagePtr>::const_iterator foundLayer = findExactLayer(entry->deviceLayers, *it);
+            if (foundLayer == entry->deviceLayers.end()) {
+                return false;
+            }
+            images.push_back(foundLayer->second);
+        }
+    }
+    out->splice(out->end(), images);
+
+    return true;
+}
+
+std::size_t
+FrameStore::evictToRam(const TaskKey& key)
+{
+    std::shared_ptr<Entry> entry;
+    {
+        std::lock_guard<std::mutex> k(_entriesMutex);
+        EntryMap::const_iterator found = _entries.find(key);
+        if (found == _entries.end()) {
+            return 0;
+        }
+        entry = found->second;
+    }
+
+    std::lock_guard<std::mutex> k(entry->lock);
+    std::size_t freed = 0;
+    std::map<ImageLayerDesc, DeviceImagePtr>::iterator it = entry->deviceLayers.begin();
+    while (it != entry->deviceLayers.end()) {
+        const std::size_t bytes = it->second ? it->second->bytes() : 0;
+        // A layer already downloaded keeps the RAM image it has.
+        const bool inRam = entry->layers.find(it->first) != entry->layers.end();
+        ImagePtr image = inRam ? ImagePtr() : (it->second ? it->second->evictToRam() : ImagePtr());
+        if (!inRam && !image) {
+            // A failed eviction leaves the device image valid.
+            ++it;
+            continue;
+        }
+        if (!inRam) {
+            ++_downloads;
+            addDownloadedBytesLocked(*entry, image->size());
+            entry->layers[it->first] = image;
+        }
+        freed += bytes;
+        it = entry->deviceLayers.erase(it);
+    }
+    if (!entry->retired) {
+        entry->deviceBytes -= freed;
+        _deviceBytes -= freed;
+    }
+
+    return freed;
 }
 
 void
@@ -203,7 +364,25 @@ FrameStore::release(const TaskKey& key)
 std::size_t
 FrameStore::bytesInFlight() const
 {
-    return _bytesInFlight;
+    return hostBytesInFlight();
+}
+
+std::size_t
+FrameStore::hostBytesInFlight() const
+{
+    return _bytesInFlight + _downloadedBytes;
+}
+
+std::size_t
+FrameStore::deviceBytesInFlight() const
+{
+    return _deviceBytes;
+}
+
+int
+FrameStore::downloadCount() const
+{
+    return _downloads;
 }
 
 void
@@ -215,6 +394,12 @@ FrameStore::clear()
         erased.swap(_entries);
         _imageRefs.clear();
         _bytesInFlight = 0;
+        _downloadedBytes = 0;
+        _deviceBytes = 0;
+        for (EntryMap::iterator it = erased.begin(); it != erased.end(); ++it) {
+            std::lock_guard<std::mutex> entryLock(it->second->lock);
+            it->second->retired = true;
+        }
     }
 }
 

@@ -74,7 +74,7 @@ protected:
     {
         initializeOpenGLFunctions();
         GpuDeviceOptions o;
-        o.enableValidation = std::getenv("GPU_SPIKE_NO_VALIDATION") == nullptr;
+        o.enableValidation = std::getenv("NATRON_GPU_NO_VALIDATION") == nullptr;
         GpuStatus s = GpuDevice::create(o, dev_);
         if (!s) {
             error = "GpuDevice: " + s.message;

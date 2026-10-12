@@ -36,9 +36,11 @@
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "Global/GlobalDefines.h"
 
+#include "Engine/DeviceImage.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/ParallelRenderArgs.h"
@@ -66,7 +68,12 @@ public:
     };
 
     struct Entry {
+        // Guards layers and deviceLayers, which a RAM find extends and an eviction empties after the entry is stored.
+        std::mutex lock;
+
+        // The images downloaded from deviceLayers join the ones stored in RAM.
         std::map<ImageLayerDesc, ImagePtr> layers;
+        std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers;
 
         // Intersection of the bounds of all layers.
         RectI bounds;
@@ -76,11 +83,25 @@ public:
         RectI renderedRoI;
         std::atomic<int> consumersLeft;
 
+        // The images of layers when the entry was stored, which are the ones counted in _imageRefs.
+        std::vector<const Image*> countedImages;
+
+        // Guarded by lock.
+        std::size_t deviceBytes;
+        std::size_t downloadedBytes;
+        bool retired;
+
         Entry()
-            : layers()
+            : lock()
+            , layers()
+            , deviceLayers()
             , bounds()
             , renderedRoI()
             , consumersLeft(0)
+            , countedImages()
+            , deviceBytes(0)
+            , downloadedBytes(0)
+            , retired(false)
         {
         }
     };
@@ -99,10 +120,28 @@ public:
     void put(const TaskKey& key, std::map<ImageLayerDesc, ImagePtr> layers, const RectI& renderedRoI, int consumers);
 
     /**
+     * @brief Like put(), for layers that live in device memory. A consumer reading RAM images gets them downloaded
+     * on the first find.
+     **/
+    void putDevice(const TaskKey& key, std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers, const RectI& renderedRoI, int consumers);
+
+    /**
      * @brief Appends to out the image of each needed layer, in order, if all of them are stored for key and both
      * their bounds and the RoI rendered for key contain pixelRoI. Returns false and leaves out untouched otherwise.
+     * A layer stored only in device memory is downloaded once and kept in RAM for the later finds.
      **/
     bool find(const TaskKey& key, const std::list<ImageLayerDesc>& needed, const RectI& pixelRoI, std::list<ImagePtr>* out) const;
+
+    /**
+     * @brief Like find() for device images; never uploads, so layers stored only in RAM are not found.
+     **/
+    bool findDevice(const TaskKey& key, const std::list<ImageLayerDesc>& needed, const RectI& pixelRoI, std::list<DeviceImagePtr>* out) const;
+
+    /**
+     * @brief Moves the device layers of key to RAM and frees their device memory, leaving the consumer count alone.
+     * Returns the device bytes freed.
+     **/
+    std::size_t evictToRam(const TaskKey& key);
 
     /**
      * @brief Called once by each consumer of key when done reading it; the entry is erased by the last one.
@@ -115,6 +154,21 @@ public:
      * however many keys it is stored under.
      **/
     std::size_t bytesInFlight() const;
+
+    /**
+     * @brief The RAM bytes held, including the copies downloaded from device images; what bytesInFlight() returns.
+     **/
+    std::size_t hostBytesInFlight() const;
+
+    /**
+     * @brief The device memory held by the stored device images.
+     **/
+    std::size_t deviceBytesInFlight() const;
+
+    /**
+     * @brief How many device images were downloaded to RAM by find() or evictToRam().
+     **/
+    int downloadCount() const;
 
     void clear();
 
@@ -130,9 +184,13 @@ private:
 
     typedef std::unordered_map<const Image*, ImageRefs> ImageRefsMap;
 
+    void putEntry(const TaskKey& key, const std::shared_ptr<Entry>& entry);
+
     void addImageRefsLocked(const Entry& entry);
 
-    void removeImageRefsLocked(const Entry& entry);
+    void removeImageRefsLocked(Entry& entry);
+
+    void addDownloadedBytesLocked(Entry& entry, std::size_t bytes) const;
 
     mutable std::mutex _entriesMutex;
     EntryMap _entries;
@@ -140,6 +198,9 @@ private:
     // An identity task stores the image of its input under its own key too.
     ImageRefsMap _imageRefs;
     std::atomic<std::size_t> _bytesInFlight;
+    mutable std::atomic<std::size_t> _downloadedBytes;
+    mutable std::atomic<std::size_t> _deviceBytes;
+    mutable std::atomic<int> _downloads;
 };
 
 /**

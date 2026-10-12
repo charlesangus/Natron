@@ -1,0 +1,3 @@
+# Retire the engine GL render path
+
+2026-10-11 (user). Vulkan compute is the only engine GPU path. The engine's GL render path is retired across M85 - Native GPU Kernels (host-side GL wrappers and the GPU settings move to Vulkan) and M86 - OFX 1.5 GPU Suites (GL contexts narrowed to the OFX OpenGL suite behind GL/Vulkan interop, created lazily only when a project has a GL-suite plugin). The viewer and the 2D GL widgets stay on GL: OFX overlay interacts require a GL context, Qt 6 allows one graphics API per top-level window so the viewer can't move alone, and the M83 interop hand-off already costs 0.79 ms at UHD. A later viewer modernisation should go through `QRhiWidget` on its OpenGL backend first; the 2D widgets, if reworked, go to `QPainter`, not Vulkan.

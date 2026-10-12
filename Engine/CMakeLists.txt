@@ -83,6 +83,10 @@ list(APPEND NatronEngine_SOURCES
     ../Global/StrUtils.cpp
     ../libs/SequenceParsing/SequenceParsing.cpp
 )
+if(NATRON_GPU)
+    add_subdirectory(Gpu)
+endif()
+
 add_library(NatronEngine STATIC ${NatronEngine_HEADERS} ${NatronEngine_SOURCES})
 target_link_libraries(NatronEngine
     PUBLIC
@@ -93,6 +97,7 @@ target_link_libraries(NatronEngine
         harfbuzz::harfbuzz
         Freetype::Freetype
         OpenColorIO::OpenColorIO
+        $<$<BOOL:${NATRON_GPU}>:NatronGpu>
     PRIVATE
         ${SHIBOKEN_LIB}
         ${PYSIDE_LIB}
@@ -140,6 +145,9 @@ target_include_directories(NatronEngine
         ../libs/SequenceParsing
         ${X11_INCLUDE_DIR}
 )
+if(NATRON_GPU)
+    target_compile_definitions(NatronEngine PUBLIC NATRON_HAVE_GPU=1)
+endif()
 target_compile_definitions(NatronEngine
     PRIVATE
         NATRON_CUSTOM_BUILD_USER_TOKEN="${BUILD_USER_NAME}"

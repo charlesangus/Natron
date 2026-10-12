@@ -1,0 +1,134 @@
+#pragma once
+
+#include "GpuKernel.h"
+
+#include <array>
+#include <cstdint>
+#include <optional>
+#include <span>
+
+namespace gpu {
+
+class GpuBuffer;
+class GpuRecordContext;
+
+// Where a pass reads and writes, in image pixel coordinates. Offsets and strides count floats.
+struct GpuBlurRegion {
+    // Image position of the first output pixel, stored at dstOffset in the destination.
+    int32_t outX = 0;
+    int32_t outY = 0;
+    uint32_t dstOffset = 0;
+    uint32_t dstStride = 0;
+    // The source pixels that exist, the first stored at srcOffset; samples outside are black, or
+    // the nearest of them under neumann.
+    int32_t srcX1 = 0;
+    int32_t srcY1 = 0;
+    int32_t srcX2 = 0;
+    int32_t srcY2 = 0;
+    uint32_t srcOffset = 0;
+    uint32_t srcStride = 0;
+    // The extent of the filtered line along the blur axis: taps beyond it take the boundary
+    // condition before the source is read, and outputs beyond it are zero.
+    int32_t lineLo = 0;
+    int32_t lineHi = 0;
+};
+
+// Host side of Kernels/blur.slang (entry blurPass): validates a pass against the kernel's
+// fixed-size shared tile and picks the dispatch shape for the path the kernel will take.
+struct GpuBlurPass {
+    // The output rect's size.
+    uint32_t width = 0;
+    uint32_t height = 0;
+    // Interleaved float channels per pixel.
+    uint32_t channels = 0;
+    // Taps run from -radius to +radius; the weights buffer holds the radius + 1 weights of offsets
+    // 0 to radius, the kernel being symmetric.
+    uint32_t radius = 0;
+    bool vertical = false;
+    // Clamp to the edge pixel (true) or read zero outside the image (false).
+    bool neumann = true;
+    // Unset, source and destination are both the whole tightly packed width x height image.
+    std::optional<GpuBlurRegion> region;
+};
+
+// Mirrors BlurParams in Kernels/blur.slang, which has no padding between members.
+struct GpuBlurParams {
+    uint32_t width;
+    uint32_t height;
+    uint32_t channels;
+    uint32_t radius;
+    uint32_t vertical;
+    uint32_t neumann;
+    int32_t outX;
+    int32_t outY;
+    uint32_t dstOffset;
+    uint32_t dstStride;
+    int32_t srcX1;
+    int32_t srcY1;
+    int32_t srcX2;
+    int32_t srcY2;
+    uint32_t srcOffset;
+    uint32_t srcStride;
+    int32_t lineLo;
+    int32_t lineHi;
+};
+
+inline constexpr uint32_t kGpuBlurMaxRadius = 512;
+inline constexpr uint32_t kGpuBlurMaxChannels = 4;
+inline constexpr uint32_t kGpuBlurGroupSize = 128;
+
+GpuStatus validateBlurPass(const GpuBlurPass& pass);
+
+GpuBlurParams blurParams(const GpuBlurPass& pass);
+
+// Groups to dispatch for `pass`; only meaningful for a pass validateBlurPass accepts.
+std::array<uint32_t, 3> blurGroupCount(const GpuBlurPass& pass);
+
+// Records one pass of `blur`, a GpuKernel built from blurPass with bindings {src, dst, weights}.
+// A radius above kGpuBlurMaxRadius or more than kGpuBlurMaxChannels channels is refused, since
+// the kernel's shared tile is sized for those limits.
+GpuStatus recordBlurPass(GpuKernel& blur, VkCommandBuffer cmd, VkBuffer src, VkBuffer dst, VkBuffer weights,
+                         const GpuBlurPass& pass);
+
+// Half-open pixel rect in image coordinates.
+struct GpuBlurRect {
+    int32_t x1 = 0;
+    int32_t y1 = 0;
+    int32_t x2 = 0;
+    int32_t y2 = 0;
+
+    bool empty() const { return x1 >= x2 || y1 >= y2; }
+};
+
+// Interleaved float pixels of `bounds` in a buffer, the first at offsetFloats, rows strideFloats apart.
+struct GpuBlurImage {
+    const GpuBuffer* buffer = nullptr;
+    uint64_t offsetFloats = 0;
+    GpuBlurRect bounds;
+    uint32_t strideFloats = 0;
+};
+
+// A separable FIR blur of `output`, computed as a horizontal then a vertical pass over the lines of
+// `domain`. Samples outside srcValid are black, or the nearest srcValid pixel under neumann, and a
+// tap beyond `domain` takes the same boundary condition at the domain's edge first. Output pixels
+// outside `domain` are zero.
+struct GpuSeparableBlur {
+    GpuBlurImage src;
+    // Within src.bounds, or empty when the source has no pixels.
+    GpuBlurRect srcValid;
+    GpuBlurImage dst;
+    // Within dst.bounds.
+    GpuBlurRect output;
+    GpuBlurRect domain;
+    uint32_t channels = 0;
+    bool neumann = false;
+    // Symmetric half kernels: the weights of offsets 0 to radius.
+    std::span<const float> weightsX;
+    std::span<const float> weightsY;
+};
+
+// Records both passes into ctx, with the intermediate rows and the weights in scratch buffers
+// held by ctx and a compute barrier between the passes.
+GpuStatus recordSeparableBlur(GpuRecordContext& ctx, const GpuSeparableBlur& blur);
+
+} // namespace gpu

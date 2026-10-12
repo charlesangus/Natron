@@ -28,7 +28,9 @@
 #include <atomic>
 #include <bitset>
 #include <cassert>
+#include <cstdio>
 #include <stdexcept>
+#include <string>
 
 #include <QMutex>
 
@@ -306,10 +308,25 @@ struct RenderStatsPrivate
     std::atomic<int> unplannedPulls;
     std::atomic<int> legacyFallbacks;
     std::atomic<bool> trackRenderRoICalls;
+    std::atomic<int> uploadCount;
+    std::atomic<unsigned long long> uploadBytes;
+    std::atomic<int> downloadCount;
+    std::atomic<unsigned long long> downloadBytes;
+    std::atomic<int> evictions;
+    std::atomic<int> gpuRegionsRun;
+    std::atomic<int> gpuRegionRetries;
+    std::atomic<int> gpuStripHalvings;
+    std::atomic<int> gpuStripPipelinesSerialized;
+    std::atomic<int> gpuPipelinedRegions;
+    std::atomic<unsigned long long> peakDeviceBytes;
 
-    // Both guarded by lock.
+    // All guarded by lock.
+    std::map<std::string, int> gpuTasksPerNode;
+    std::map<std::string, int> cpuFallbackReasons;
     std::map<std::string, int> legacyFallbackReasons;
     std::map<std::tuple<std::string, double, int>, int> renderRoICalls;
+    double gpuTransferHiddenMs;
+    double gpuTransferExposedMs;
 
     RenderStatsPrivate()
         : lock()
@@ -323,8 +340,23 @@ struct RenderStatsPrivate
         , unplannedPulls(0)
         , legacyFallbacks(0)
         , trackRenderRoICalls(false)
+        , uploadCount(0)
+        , uploadBytes(0)
+        , downloadCount(0)
+        , downloadBytes(0)
+        , evictions(0)
+        , gpuRegionsRun(0)
+        , gpuRegionRetries(0)
+        , gpuStripHalvings(0)
+        , gpuStripPipelinesSerialized(0)
+        , gpuPipelinedRegions(0)
+        , peakDeviceBytes(0)
+        , gpuTasksPerNode()
+        , cpuFallbackReasons()
         , legacyFallbackReasons()
         , renderRoICalls()
+        , gpuTransferHiddenMs(0.)
+        , gpuTransferExposedMs(0.)
     {
     }
 
@@ -542,6 +574,181 @@ RenderStats::getLegacyFallbackReasons() const
 }
 
 void
+RenderStats::noteUpload(unsigned long long bytes)
+{
+    ++_imp->uploadCount;
+    _imp->uploadBytes += bytes;
+}
+
+void
+RenderStats::noteDownload(unsigned long long bytes)
+{
+    ++_imp->downloadCount;
+    _imp->downloadBytes += bytes;
+}
+
+void
+RenderStats::noteEviction()
+{
+    ++_imp->evictions;
+}
+
+void
+RenderStats::noteGpuRegionRun()
+{
+    ++_imp->gpuRegionsRun;
+}
+
+void
+RenderStats::noteGpuTaskRun(const std::string& nodeScriptName)
+{
+    QMutexLocker k(&_imp->lock);
+    ++_imp->gpuTasksPerNode[nodeScriptName];
+}
+
+void
+RenderStats::noteGpuRegionRetry()
+{
+    ++_imp->gpuRegionRetries;
+}
+
+void
+RenderStats::noteGpuStripHalving()
+{
+    ++_imp->gpuStripHalvings;
+}
+
+void
+RenderStats::noteGpuStripPipelineSerialized()
+{
+    ++_imp->gpuStripPipelinesSerialized;
+}
+
+void
+RenderStats::noteGpuPipelinedRegion(double transferHiddenMs,
+                                    double transferExposedMs)
+{
+    ++_imp->gpuPipelinedRegions;
+    QMutexLocker k(&_imp->lock);
+    _imp->gpuTransferHiddenMs += transferHiddenMs;
+    _imp->gpuTransferExposedMs += transferExposedMs;
+}
+
+void
+RenderStats::noteCpuFallback(const std::string& reason)
+{
+    QMutexLocker k(&_imp->lock);
+    ++_imp->cpuFallbackReasons[reason];
+}
+
+void
+RenderStats::notePeakDeviceBytes(unsigned long long bytes)
+{
+    unsigned long long seen = _imp->peakDeviceBytes.load();
+
+    while ((bytes > seen) && !_imp->peakDeviceBytes.compare_exchange_weak(seen, bytes)) {
+    }
+}
+
+int
+RenderStats::getUploadCount() const
+{
+    return _imp->uploadCount.load();
+}
+
+unsigned long long
+RenderStats::getUploadBytes() const
+{
+    return _imp->uploadBytes.load();
+}
+
+int
+RenderStats::getDownloadCount() const
+{
+    return _imp->downloadCount.load();
+}
+
+unsigned long long
+RenderStats::getDownloadBytes() const
+{
+    return _imp->downloadBytes.load();
+}
+
+int
+RenderStats::getEvictions() const
+{
+    return _imp->evictions.load();
+}
+
+int
+RenderStats::getGpuRegionsRun() const
+{
+    return _imp->gpuRegionsRun.load();
+}
+
+int
+RenderStats::getGpuRegionRetries() const
+{
+    return _imp->gpuRegionRetries.load();
+}
+
+int
+RenderStats::getGpuStripHalvings() const
+{
+    return _imp->gpuStripHalvings.load();
+}
+
+int
+RenderStats::getGpuStripPipelinesSerialized() const
+{
+    return _imp->gpuStripPipelinesSerialized.load();
+}
+
+int
+RenderStats::getGpuPipelinedRegions() const
+{
+    return _imp->gpuPipelinedRegions.load();
+}
+
+double
+RenderStats::getGpuTransferHiddenMs() const
+{
+    QMutexLocker k(&_imp->lock);
+
+    return _imp->gpuTransferHiddenMs;
+}
+
+double
+RenderStats::getGpuTransferExposedMs() const
+{
+    QMutexLocker k(&_imp->lock);
+
+    return _imp->gpuTransferExposedMs;
+}
+
+std::map<std::string, int>
+RenderStats::getGpuTasksPerNode() const
+{
+    QMutexLocker k(&_imp->lock);
+
+    return _imp->gpuTasksPerNode;
+}
+
+std::map<std::string, int>
+RenderStats::getCpuFallbackReasons() const
+{
+    QMutexLocker k(&_imp->lock);
+
+    return _imp->cpuFallbackReasons;
+}
+
+unsigned long long
+RenderStats::getPeakDeviceBytes() const
+{
+    return _imp->peakDeviceBytes.load();
+}
+
+void
 RenderStats::setTrackRenderRoICalls(bool track)
 {
     _imp->trackRenderRoICalls = track;
@@ -572,6 +779,33 @@ RenderStats::getRenderRoICalls() const
     QMutexLocker k(&_imp->lock);
 
     return _imp->renderRoICalls;
+}
+
+std::string
+formatRegionRecord(unsigned long long frameSequence,
+                   int regionId,
+                   const std::vector<int>& taskIds,
+                   const GpuRegionTimes& times)
+{
+    char num[512];
+    std::string line;
+
+    std::snprintf(num, sizeof(num), "{\"kind\":\"region\",\"frame\":%llu,\"regionId\":%d,\"tasks\":[", frameSequence, regionId);
+    line.append(num);
+    for (std::size_t i = 0; i < taskIds.size(); ++i) {
+        if (i > 0) {
+            line.push_back(',');
+        }
+        line.append(std::to_string(taskIds[i]));
+    }
+    std::snprintf(num, sizeof(num),
+                  "],\"uploadMs\":%.6f,\"uploadBytes\":%llu,\"kernelMs\":%.6f,\"downloadMs\":%.6f,\"downloadBytes\":%llu,"
+                  "\"wallMs\":%.6f,\"strips\":%d,\"stripsInFlight\":%d,\"transferHiddenMs\":%.6f,\"transferExposedMs\":%.6f}\n",
+                  times.uploadMs, times.uploadBytes, times.kernelMs, times.downloadMs, times.downloadBytes,
+                  times.wallMs, times.strips, times.stripsInFlight, times.transferHiddenMs, times.transferExposedMs);
+    line.append(num);
+
+    return line;
 }
 
 NATRON_NAMESPACE_EXIT

@@ -117,6 +117,12 @@ public:
     static int firGaussianRadius(double sigma);
 
     /**
+     * @brief The weights firGaussian(sigma, ...) applies to offsets 0 to firGaussianRadius(sigma),
+     * the kernel being symmetric: {1} when sigma gives no smoothing.
+     **/
+    static std::vector<float> firGaussianWeights(double sigma);
+
+    /**
      * @brief The line filter for `filter`: deriche for QuasiGaussian, vanVliet for Gaussian,
      * box with 1/2/3 iterations for Box/Triangle/Quadratic, firGaussian for FIRGaussian. `size`
      * is sigma for the Gaussians and the box width for the others, both in pixels.

@@ -49,6 +49,11 @@
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuBlur.h"
+#include "Engine/Gpu/GpuRecord.h"
+#endif
+
 NATRON_NAMESPACE_ENTER
 
 using namespace SpatialFilter;
@@ -742,12 +747,16 @@ Blur::render(const RenderActionArgs& args)
         const PlaneJob& job = jobs[j];
         const ProcessedPlanes planes(job);
         const int nPlanes = planes.count();
-        std::vector<float> buffer(processing ? planeSize * nPlanes : 0);
+        // Left uninitialised: fillBuffer() writes every element, and zeroing here would fault the pages in
+        // on this thread alone.
+        const std::size_t bufferSize = processing ? planeSize * nPlanes : 0;
+        const std::unique_ptr<float[]> bufferStorage(bufferSize ? new float[bufferSize] : NULL);
+        float* const buffer = bufferStorage.get();
 
-        if (!buffer.empty()) {
+        if (buffer) {
             // 1. The source over the buffer, outside its image by the boundary condition, divided by the "(Un)premult by"
             // channel where that is usable.
-            fillBuffer(job, planes, bufferRect, params.neumann ? Boundary::Nearest : Boundary::Zero, nThreads, cancel, &buffer[0]);
+            fillBuffer(job, planes, bufferRect, params.neumann ? Boundary::Nearest : Boundary::Zero, nThreads, cancel, buffer);
             if (cancel.check()) {
                 return eStatusOK;
             }
@@ -769,7 +778,7 @@ Blur::render(const RenderActionArgs& args)
                             }
                             const int p = line / bufferHeight;
                             const int row = line % bufferHeight;
-                            filterX.apply(&buffer[(std::size_t)p * planeSize + (std::size_t)row * bufferWidth], bufferWidth, 1, scratch);
+                            filterX.apply(buffer + (std::size_t)p * planeSize + (std::size_t)row * bufferWidth, bufferWidth, 1, scratch);
                         }
                     };
                     forEachLineChunk(nPlanes * bufferHeight, (std::size_t)bufferWidth * tapsX, nThreads, cancel, rows);
@@ -791,7 +800,7 @@ Blur::render(const RenderActionArgs& args)
                             }
                             const int p = line / blocksPerPlane;
                             const int column = (line % blocksPerPlane) * block;
-                            filterY.applyColumns(&buffer[(std::size_t)p * planeSize + column], bufferHeight, bufferWidth, std::min(block, bufferWidth - column), scratch);
+                            filterY.applyColumns(buffer + (std::size_t)p * planeSize + column, bufferHeight, bufferWidth, std::min(block, bufferWidth - column), scratch);
                         }
                     };
                     forEachLineChunk(nPlanes * blocksPerPlane, (std::size_t)bufferHeight * block * tapsY, nThreads, cancel, columnBlocks);
@@ -807,7 +816,7 @@ Blur::render(const RenderActionArgs& args)
                             }
                             const int p = line / bufferWidth;
                             const int column = line % bufferWidth;
-                            filterY.apply(&buffer[(std::size_t)p * planeSize + column], bufferHeight, bufferWidth, scratch);
+                            filterY.apply(buffer + (std::size_t)p * planeSize + column, bufferHeight, bufferWidth, scratch);
                         }
                     };
                     forEachLineChunk(nPlanes * bufferWidth, (std::size_t)bufferHeight, nThreads, cancel, columns);
@@ -826,7 +835,7 @@ Blur::render(const RenderActionArgs& args)
         layout.processWindow = processWindow;
         layout.processing = processing;
         layout.bufferRect = bufferRect;
-        layout.buffer = buffer.empty() ? NULL : &buffer[0];
+        layout.buffer = buffer;
         layout.mix = mix;
         writeWindow(job, planes, maskSource, layout, nThreads, cancel, [&](float v, int p) -> float {
             if (scaleDerivative) {
@@ -845,5 +854,145 @@ Blur::render(const RenderActionArgs& args)
 
     return eStatusOK;
 } // Blur::render
+
+#ifdef NATRON_HAVE_GPU
+namespace {
+gpu::GpuBlurRect
+gpuRect(const RectI& r)
+{
+    gpu::GpuBlurRect g;
+    g.x1 = r.x1;
+    g.y1 = r.y1;
+    g.x2 = r.x2;
+    g.y2 = r.y2;
+
+    return g;
+}
+
+gpu::GpuBlurImage
+gpuImage(const GpuImageView& view)
+{
+    gpu::GpuBlurImage g;
+    g.buffer = view.buffer;
+    g.offsetFloats = view.byteOffset / sizeof(float);
+    g.bounds = gpuRect(view.bounds);
+    g.strideFloats = (uint32_t)view.rowStrideFloats;
+
+    return g;
+}
+
+bool
+usableView(const GpuImageView& view,
+           int nComps)
+{
+    return view.buffer && (view.nComps == nComps) && (view.rowStrideFloats >= view.bounds.width() * nComps) && ((view.byteOffset % sizeof(float)) == 0);
+}
+} // anonymous namespace
+#endif
+
+bool
+Blur::canRenderOnGpu(const GpuQuery& query) const
+{
+#ifdef NATRON_HAVE_GPU
+    if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps < 1) || (query.nComps > (int)gpu::kGpuBlurMaxChannels) || query.hasMask || (query.mix != 1.) || (query.unPremultChannel != -1)) {
+        return false;
+    }
+    // render() passes unprocessed channels through from the source, which the kernel does not.
+    for (int c = 0; c < 4; ++c) {
+        if (!query.processChannels[c]) {
+            return false;
+        }
+    }
+    BlurParams params;
+    getParams(query.time, query.view, &params);
+    if ((params.filter != BlurKernels::eFilterFIRGaussian) || (params.orderX != 0) || (params.orderY != 0) || (params.alphaThreshold > 0.)) {
+        return false;
+    }
+    const OfxPointD rs = query.mappedScale.toOfxPointD();
+
+    return (firRadius(rs.x * params.sizeX) <= (int)gpu::kGpuBlurMaxRadius) && (firRadius(rs.y * params.sizeY) <= (int)gpu::kGpuBlurMaxRadius);
+#else
+    Q_UNUSED(query);
+
+    return false;
+#endif
+}
+
+RectI
+Blur::getGpuInputRoI(int inputNb,
+                     const RectI& outputRect,
+                     const RenderScale& scale) const
+{
+    if (inputNb != 0) {
+        return NativeImageEffect::getGpuInputRoI(inputNb, outputRect, scale);
+    }
+    BlurParams params;
+    getParams(getCurrentTime(), getCurrentView(), &params);
+
+    return getSourceRoI(outputRect, scale, params);
+}
+
+StatusEnum
+Blur::renderGpu(const GpuRenderArgs& args)
+{
+#ifdef NATRON_HAVE_GPU
+    if (!canRenderOnGpu(args.query) || args.inputs.empty()) {
+        return eStatusFailed;
+    }
+    const GpuImageView& src = args.inputs[0];
+    const GpuImageView& dst = args.output;
+    const int nComps = args.query.nComps;
+    const RectI& rect = args.outputRect;
+    EffectInstancePtr input = getInput(0);
+    if (!input || !usableView(src, nComps) || !usableView(dst, nComps) || isEmptyRect(rect) || !dst.bounds.contains(rect)) {
+        return eStatusFailed;
+    }
+
+    const double time = args.query.time;
+    const ViewIdx view = args.query.view;
+    const RenderScale& scale = args.query.mappedScale;
+    BlurParams params;
+    getParams(time, view, &params);
+    const OfxPointD rs = scale.toOfxPointD();
+
+    // render() filters the window plus its halo clipped to this effect's region of definition, and
+    // fillBuffer() resolves the source against the input image.
+    RectD ownRoD;
+    bool isProjectFormat = false;
+    if (getRegionOfDefinition_public(getRenderHash(), time, scale, view, &ownRoD, &isProjectFormat) == eStatusFailed) {
+        return eStatusFailed;
+    }
+    RectI domain;
+    intersectRects(getSourceRoI(rect, scale, params), toPixelEnclosing(ownRoD, scale, getAspectRatio(-1)), &domain);
+
+    const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
+    RectD srcRoD;
+    if (input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &srcRoD, &isProjectFormat) == eStatusFailed) {
+        return eStatusFailed;
+    }
+    RectI valid;
+    intersectRects(src.bounds, toPixelEnclosing(srcRoD, scale, getAspectRatio(0)), &valid);
+
+    const std::vector<float> weightsX = BlurKernels::LineFilter::firGaussianWeights(rs.x * params.sizeX / 2.4);
+    const std::vector<float> weightsY = BlurKernels::LineFilter::firGaussianWeights(rs.y * params.sizeY / 2.4);
+
+    gpu::GpuSeparableBlur blur;
+    blur.src = gpuImage(src);
+    blur.srcValid = gpuRect(valid);
+    blur.dst = gpuImage(dst);
+    blur.output = gpuRect(rect);
+    blur.domain = gpuRect(domain);
+    blur.channels = (uint32_t)nComps;
+    blur.neumann = params.neumann;
+    blur.weightsX = weightsX;
+    blur.weightsY = weightsY;
+
+    return gpu::recordSeparableBlur(args.context, blur) ? eStatusOK : eStatusFailed;
+#else
+    Q_UNUSED(args);
+
+    return eStatusFailed;
+#endif
+} // Blur::renderGpu
 
 NATRON_NAMESPACE_EXIT

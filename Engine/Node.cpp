@@ -48,6 +48,7 @@
 #include <QWaitCondition>
 
 #include <ofxNatron.h>
+#include <SequenceParsing.h>
 
 #include "Global/FStreamsSupport.h"
 #ifdef DEBUG

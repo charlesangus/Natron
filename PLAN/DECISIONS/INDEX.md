@@ -1,0 +1,1 @@
+- 2026-10-12 — bundle-vulkan-loader: libvulkan.so.1 removed from the AppImage excludelist so bundles start without a system Vulkan loader (M84 links it directly); dlopen with CPU fallback remains the cleaner follow-up → DECISIONS/2026-10-12-bundle-vulkan-loader.md

@@ -346,3 +346,4 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - **Rebase:** onto `main` with M84, with no conflicts.
   - **Needs the gate build:** these have only been compiled object by object so far. The build waits for M69's end-build agent.
 - 2026-10-12 — **The 21 new UAT-fix icons are approved (user)** (claude.ai artifact `VL8xyza9LEeqzorFzdNJvf`). The one exception is Reload Project, which uses the standard `refresh-cw` instead of `folder-sync` (`c12e54587`). `folder-sync` was removed.
+- 2026-10-12 — **UAT fixes verified:** live recolouring now reaches labels. The viewer info bar had hard-coded its text colour (`e8c57b03b`). `m56_visual.py` 272/0 at 1× and 2×; ctest 2042/2042. The Vulkan loader is bundled (decision `2026-10-12-bundle-vulkan-loader`), and the round-2 AppImage is being repackaged.

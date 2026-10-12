@@ -45,6 +45,19 @@ target_include_directories(Natron
         ../Global
 )
 
+# TabMenuBridge::bootstrap() looks for the vendored tabtabtab files at
+# <bin>/../Resources/tabtabtab. Copy them on every build so edited scripts are
+# picked up, ensuring a dev build at build/fast/App/Natron always finds them at
+# build/fast/Resources/tabtabtab. No install() rule is added, as for PyPlugs:
+# an FHS prefix would put this under /usr/Resources.
+add_custom_target(NatronTabTabTabResources ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/Gui/Resources/TabTabTab
+        $<TARGET_FILE_DIR:Natron>/../Resources/tabtabtab
+    VERBATIM
+)
+add_dependencies(NatronTabTabTabResources Natron)
+
 install(TARGETS Natron DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(FILES ../Gui/Resources/Applications/fr.natron.Natron.desktop
     DESTINATION "${CMAKE_INSTALL_DATADIR}/applications")

@@ -28,12 +28,12 @@ struct Buffer {
     void* mapped = nullptr;
 };
 
-class GpuKernelTest : public ::testing::Test {
+class GpuKernelTest : public gputest::SkippableTest {
 protected:
     void SetUp() override
     {
         GpuStatus s = gputest::createDevice(dev);
-        GPUTEST_DEVICE_OR_SKIP(s.ok(), s.message);
+        GPUTEST_DEVICE_OR_SKIP_TEST(s.ok(), s.message);
 
         GpuKernelDesc d;
         d.spirv = fill_spirv;
@@ -165,7 +165,7 @@ protected:
 
 } // namespace
 
-TEST_F(GpuKernelTest, GroupCountRoundsUp)
+GPU_TEST_F(GpuKernelTest, GroupCountRoundsUp)
 {
     ASSERT_EQ(kernel->desc().groupSize, (std::array<uint32_t, 3> { 16, 16, 1 }));
     EXPECT_EQ(kernel->groupCount({ kW, kH, 1 }), (std::array<uint32_t, 3> { 121, 68, 1 }));
@@ -173,7 +173,7 @@ TEST_F(GpuKernelTest, GroupCountRoundsUp)
     EXPECT_EQ(kernel->groupCount({ 0xFFFFFFFFu, 1, 1 }), (std::array<uint32_t, 3> { 0x10000000u, 1, 1 }));
 }
 
-TEST_F(GpuKernelTest, RefusesGroupCountsBeyondTheDeviceLimit)
+GPU_TEST_F(GpuKernelTest, RefusesGroupCountsBeyondTheDeviceLimit)
 {
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(dev->physicalDevice(), &props);
@@ -187,7 +187,7 @@ TEST_F(GpuKernelTest, RefusesGroupCountsBeyondTheDeviceLimit)
     EXPECT_EQ(s.result, VK_ERROR_FEATURE_NOT_PRESENT) << s.message;
 }
 
-TEST_F(GpuKernelTest, FillUint)
+GPU_TEST_F(GpuKernelTest, FillUint)
 {
     runFill(0);
     const auto* out = static_cast<const uint32_t*>(readback.mapped);
@@ -208,7 +208,7 @@ TEST_F(GpuKernelTest, FillUint)
     }
 }
 
-TEST_F(GpuKernelTest, FillFloat)
+GPU_TEST_F(GpuKernelTest, FillFloat)
 {
     runFill(1);
     const auto* out = static_cast<const float*>(readback.mapped);
@@ -221,7 +221,7 @@ TEST_F(GpuKernelTest, FillFloat)
     EXPECT_EQ(bad, 0u);
 }
 
-TEST_F(GpuKernelTest, RejectsMismatchedBindings)
+GPU_TEST_F(GpuKernelTest, RejectsMismatchedBindings)
 {
     GpuStatus s = kernel->record(VK_NULL_HANDLE, {}, {}, { 1, 1, 1 });
     EXPECT_FALSE(s.ok());

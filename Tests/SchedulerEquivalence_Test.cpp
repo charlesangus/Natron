@@ -283,6 +283,7 @@ renderJointlyBothWays(const std::vector<NodePtr>& writers)
 
     DisableUnreachableRAMPurging noPurge;
     JointRenderGuard guard;
+    GpuPlacementOffGuard cpuOnly;
 
     appPTR->setRenderSchedulerMode(eRenderSchedulerModeLegacy);
     appPTR->clearAllCaches();

@@ -73,7 +73,7 @@ pathName(TransferPath p)
     return p == TransferPath::HostImport ? "host-import" : "staging";
 }
 
-class GpuTransferTest : public ::testing::Test {
+class GpuTransferTest : public gputest::SkippableTest {
 protected:
     static void SetUpTestCase()
     {
@@ -104,7 +104,7 @@ protected:
     void SetUp() override
     {
         check_.expectClean("device setup");
-        GPUTEST_DEVICE_OR_SKIP(dev_ != nullptr, setupError_);
+        GPUTEST_DEVICE_OR_SKIP_TEST(dev_ != nullptr, setupError_);
     }
 
     void TearDown() override
@@ -152,7 +152,7 @@ expectSame(const void* a, const void* b, size_t bytes, uint32_t frame)
 
 } // namespace
 
-TEST_F(GpuTransferTest, StagingRoundTripUhd)
+GPU_TEST_F(GpuTransferTest, StagingRoundTripUhd)
 {
     GpuTransferOptions o;
     o.allowHostImport = false;
@@ -170,7 +170,7 @@ TEST_F(GpuTransferTest, StagingRoundTripUhd)
     expectSame(srcs_[0].get(), dsts_[0].get(), kUhdBytes, 0);
 }
 
-TEST_F(GpuTransferTest, HostImportRoundTripUhd)
+GPU_TEST_F(GpuTransferTest, HostImportRoundTripUhd)
 {
     GpuTransferOptions o;
     auto t = make(o);
@@ -189,7 +189,7 @@ TEST_F(GpuTransferTest, HostImportRoundTripUhd)
     expectSame(srcs_[1].get(), dsts_[1].get(), kUhdBytes, 1);
 }
 
-TEST_F(GpuTransferTest, MisalignedPointerFallsBackToStaging)
+GPU_TEST_F(GpuTransferTest, MisalignedPointerFallsBackToStaging)
 {
     auto t = make({});
     ASSERT_TRUE(t != nullptr);
@@ -206,7 +206,7 @@ TEST_F(GpuTransferTest, MisalignedPointerFallsBackToStaging)
     expectSame(srcs_[2].get() + 16, dsts_[2].get(), bytes, 2);
 }
 
-TEST_F(GpuTransferTest, OddSizesAndUserComputeCallback)
+GPU_TEST_F(GpuTransferTest, OddSizesAndUserComputeCallback)
 {
     GpuTransferOptions o;
     o.stripBytes = 1 << 20;
@@ -235,7 +235,7 @@ TEST_F(GpuTransferTest, OddSizesAndUserComputeCallback)
     }
 }
 
-TEST_F(GpuTransferTest, FailedComputeRecordAbortsAndTransferStaysUsable)
+GPU_TEST_F(GpuTransferTest, FailedComputeRecordAbortsAndTransferStaysUsable)
 {
     GpuTransferOptions o;
     o.stripBytes = 1 << 20;
@@ -268,7 +268,7 @@ TEST_F(GpuTransferTest, FailedComputeRecordAbortsAndTransferStaysUsable)
     }
 }
 
-TEST_F(GpuTransferTest, ThrowingComputeRecordPropagatesAndTransferStaysUsable)
+GPU_TEST_F(GpuTransferTest, ThrowingComputeRecordPropagatesAndTransferStaysUsable)
 {
     GpuTransferOptions o;
     o.stripBytes = 1 << 20;
@@ -331,7 +331,7 @@ printTimeline(const RunResult& r)
 
 // Prints the stage timeline of each configuration. Overlap depends on machine load, so the
 // figures are reported rather than asserted; the test checks the data and transfer paths.
-TEST_F(GpuTransferTest, PipelinedFramesTimeline)
+GPU_TEST_F(GpuTransferTest, PipelinedFramesTimeline)
 {
     const uint32_t many = std::max(2u, std::min(8u, std::thread::hardware_concurrency()));
     struct Config {
@@ -427,7 +427,7 @@ struct FillParams {
 
 } // namespace
 
-TEST_F(GpuTransferTest, ChunkedRoundTripBothPaths)
+GPU_TEST_F(GpuTransferTest, ChunkedRoundTripBothPaths)
 {
     GpuDeviceOptions opts = gputest::deviceOptions();
     opts.copyChunkSize = kChunk;
@@ -503,7 +503,7 @@ TEST_F(GpuTransferTest, ChunkedRoundTripBothPaths)
 
 // The fill kernel overwrites a prefix of the uploaded buffer, so the downloaded prefix shows the
 // upload landed before compute and the download ran after it; the tail shows the upload itself.
-TEST_F(GpuTransferTest, UploadComputeDownloadWithoutHostWait)
+GPU_TEST_F(GpuTransferTest, UploadComputeDownloadWithoutHostWait)
 {
     constexpr uint32_t w = 512;
     constexpr uint32_t h = 256;
@@ -610,7 +610,7 @@ TEST_F(GpuTransferTest, UploadComputeDownloadWithoutHostWait)
     vkDestroyCommandPool(vk, pool, nullptr);
 }
 
-TEST_F(GpuTransferTest, ForgottenHostAllocationIsReimported)
+GPU_TEST_F(GpuTransferTest, ForgottenHostAllocationIsReimported)
 {
     GpuTransferOptions o;
     o.cacheHostImports = true;

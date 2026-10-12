@@ -10,12 +10,12 @@ using namespace gpu;
 
 namespace {
 
-class GpuDeviceTest : public ::testing::Test {
+class GpuDeviceTest : public gputest::SkippableTest {
 protected:
     void SetUp() override
     {
         GpuStatus s = gputest::createDevice(dev);
-        GPUTEST_DEVICE_OR_SKIP(s.ok(), s.message);
+        GPUTEST_DEVICE_OR_SKIP_TEST(s.ok(), s.message);
         std::cout << "device: " << dev->info().name
                   << " transferFallback=" << dev->info().transferUsesComputeQueue
                   << " validation=" << dev->info().validationEnabled
@@ -39,7 +39,7 @@ protected:
 
 } // namespace
 
-TEST_F(GpuDeviceTest, TransferQueueOrFallbackFlag)
+GPU_TEST_F(GpuDeviceTest, TransferQueueOrFallbackFlag)
 {
     const GpuDeviceInfo& i = dev->info();
     if (i.transferUsesComputeQueue) {
@@ -49,7 +49,7 @@ TEST_F(GpuDeviceTest, TransferQueueOrFallbackFlag)
     }
 }
 
-TEST_F(GpuDeviceTest, BudgetIsNonZero)
+GPU_TEST_F(GpuDeviceTest, BudgetIsNonZero)
 {
     std::vector<VmaBudget> budgets;
     ASSERT_TRUE(dev->queryBudget(budgets).ok());
@@ -66,7 +66,7 @@ TEST(GpuDeviceOptions, ValidationIsOffByDefault)
     EXPECT_FALSE(GpuDeviceOptions {}.enableValidation);
 }
 
-TEST_F(GpuDeviceTest, PushDescriptorCanBeDisabled)
+GPU_TEST_F(GpuDeviceTest, PushDescriptorCanBeDisabled)
 {
     gpu::GpuDeviceOptions o = gputest::deviceOptions();
     o.disablePushDescriptor = true;
@@ -76,7 +76,7 @@ TEST_F(GpuDeviceTest, PushDescriptorCanBeDisabled)
     EXPECT_FALSE(other->info().pushDescriptor);
 }
 
-TEST_F(GpuDeviceTest, DebugMessengerReachesCallback)
+GPU_TEST_F(GpuDeviceTest, DebugMessengerReachesCallback)
 {
     if (!dev->info().debugMessenger) {
         GPUTEST_SKIP() << "VK_EXT_debug_utils unavailable";
@@ -93,7 +93,7 @@ TEST_F(GpuDeviceTest, DebugMessengerReachesCallback)
     check = gputest::ValidationCheck();
 }
 
-TEST_F(GpuDeviceTest, EmptySubmitSignalsTimelineSemaphore)
+GPU_TEST_F(GpuDeviceTest, EmptySubmitSignalsTimelineSemaphore)
 {
     VkSemaphore sem = VK_NULL_HANDLE;
     ASSERT_TRUE(dev->createTimelineSemaphore(0, sem).ok());
@@ -124,7 +124,7 @@ TEST_F(GpuDeviceTest, EmptySubmitSignalsTimelineSemaphore)
     EXPECT_FALSE(dev->isLost());
 }
 
-TEST_F(GpuDeviceTest, LostStateIsSticky)
+GPU_TEST_F(GpuDeviceTest, LostStateIsSticky)
 {
     EXPECT_FALSE(dev->isLost());
     GpuStatus s = dev->check(VK_ERROR_DEVICE_LOST, "synthetic");

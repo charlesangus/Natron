@@ -23,7 +23,7 @@
 // binary runs on lavapipe and on RADV.
 namespace gputest {
 
-class GpuSuite : public ::testing::Test {
+class GpuSuite : public SkippableTest {
 protected:
     static void SetUpTestCase()
     {
@@ -48,7 +48,7 @@ protected:
     void SetUp() override
     {
         suiteCheck_.expectClean("device setup");
-        GPUTEST_DEVICE_OR_SKIP(dev_ != nullptr, setupError_);
+        GPUTEST_DEVICE_OR_SKIP_TEST(dev_ != nullptr, setupError_);
     }
 
     void TearDown() override

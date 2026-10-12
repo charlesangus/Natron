@@ -126,17 +126,65 @@ private:
 };
 
 struct SkipReporter {
-    void operator=(const SkipStream& reason) const { std::printf("[  SKIPPED ] %s\n", reason.str().c_str()); }
+    bool* skipped = nullptr;
+
+    void operator=(const SkipStream& reason) const
+    {
+        if (skipped) {
+            *skipped = true;
+        }
+        std::printf("[  SKIPPED ] %s\n", reason.str().c_str());
+    }
+};
+
+// Returning from SetUp does not stop the test body in this gtest, so a fixture whose SetUp may skip
+// derives from SkippableTest and declares its tests with GPU_TEST_F: the body then runs only if SetUp
+// neither failed nor called GPUTEST_SKIP_TEST(). TestBody is final, so TEST_F does not compile on such a
+// fixture and a test cannot silently lose the guard.
+class SkippableTest : public ::testing::Test {
+protected:
+    SkipReporter skipTest() { return SkipReporter { &skipped_ }; }
+
+private:
+    void TestBody() final
+    {
+        if (!skipped_) {
+            runBody();
+        }
+    }
+
+    virtual void runBody() = 0;
+
+    bool skipped_ = false;
 };
 
 } // namespace gputest
 
 #define GPUTEST_SKIP() return ::gputest::SkipReporter() = ::gputest::SkipStream()
 
-#define GPUTEST_DEVICE_OR_SKIP(ok, message)                       \
-    if (ok) {                                                     \
-    } else if (gputest::deviceRequired(message)) {                \
-        FAIL() << "no usable Vulkan device: " << (message);       \
-    } else {                                                      \
-        GPUTEST_SKIP() << "no usable Vulkan device: " << (message); \
+// In a SkippableTest's SetUp: reports the skip and keeps the test body from running.
+#define GPUTEST_SKIP_TEST() return this->skipTest() = ::gputest::SkipStream()
+
+#define GPUTEST_DEVICE_OR_SKIP_WITH(ok, message, skip)      \
+    if (ok) {                                               \
+    } else if (gputest::deviceRequired(message)) {          \
+        FAIL() << "no usable Vulkan device: " << (message); \
+    } else {                                                \
+        skip() << "no usable Vulkan device: " << (message); \
     }
+
+#define GPUTEST_DEVICE_OR_SKIP(ok, message) GPUTEST_DEVICE_OR_SKIP_WITH(ok, message, GPUTEST_SKIP)
+#define GPUTEST_DEVICE_OR_SKIP_TEST(ok, message) GPUTEST_DEVICE_OR_SKIP_WITH(ok, message, GPUTEST_SKIP_TEST)
+
+// TEST_F for a fixture derived from gputest::SkippableTest. It registers the test as TEST_F does.
+#define GPUTEST_CLASS_NAME_(fixture, name) fixture##_##name##_GpuTest
+#define GPU_TEST_F(fixture, name)                                                                                            \
+    class GPUTEST_CLASS_NAME_(fixture, name)                                                                                 \
+        : public fixture {                                                                                                   \
+        void runBody() override;                                                                                             \
+        [[maybe_unused]] static ::testing::TestInfo* const testInfo_;                                                        \
+    };                                                                                                                       \
+    ::testing::TestInfo* const GPUTEST_CLASS_NAME_(fixture, name)::testInfo_ = ::testing::internal::MakeAndRegisterTestInfo( \
+        #fixture, #name, nullptr, nullptr, ::testing::internal::GetTypeId<fixture>(), fixture::SetUpTestCase,                \
+        fixture::TearDownTestCase, new ::testing::internal::TestFactoryImpl<GPUTEST_CLASS_NAME_(fixture, name)>);            \
+    void GPUTEST_CLASS_NAME_(fixture, name)::runBody()

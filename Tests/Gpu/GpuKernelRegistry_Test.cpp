@@ -25,12 +25,12 @@ struct FillParams {
     uint32_t asFloat;
 };
 
-class GpuKernelRegistryTest : public ::testing::Test {
+class GpuKernelRegistryTest : public gputest::SkippableTest {
 protected:
     void SetUp() override
     {
         GpuStatus s = gputest::createDevice(dev);
-        GPUTEST_DEVICE_OR_SKIP(s.ok(), s.message);
+        GPUTEST_DEVICE_OR_SKIP_TEST(s.ok(), s.message);
 
         GpuKernelDesc d;
         d.spirv = fill_spirv;
@@ -102,7 +102,7 @@ protected:
 
 } // namespace
 
-TEST_F(GpuKernelRegistryTest, LooksUpGeneratedAndRegisteredKernels)
+GPU_TEST_F(GpuKernelRegistryTest, LooksUpGeneratedAndRegisteredKernels)
 {
     const GpuKernelDesc* grade = registry->desc(GpuKernelId::grade);
     ASSERT_NE(grade, nullptr);
@@ -135,7 +135,7 @@ TEST_F(GpuKernelRegistryTest, LooksUpGeneratedAndRegisteredKernels)
     EXPECT_FALSE(registry->get(static_cast<GpuKernelId>(static_cast<uint32_t>(fillId) + 1), k).ok());
 }
 
-TEST_F(GpuKernelRegistryTest, CreatesEachPipelineOnceAcrossThreadsAndAgainAfterInvalidate)
+GPU_TEST_F(GpuKernelRegistryTest, CreatesEachPipelineOnceAcrossThreadsAndAgainAfterInvalidate)
 {
     std::vector<GpuKernelId> ids;
     for (uint32_t i = 0; i < static_cast<uint32_t>(GpuKernelId::Count); ++i) {
@@ -178,17 +178,17 @@ TEST_F(GpuKernelRegistryTest, CreatesEachPipelineOnceAcrossThreadsAndAgainAfterI
     }
 }
 
-TEST_F(GpuKernelRegistryTest, FillThroughRecordContextUint)
+GPU_TEST_F(GpuKernelRegistryTest, FillThroughRecordContextUint)
 {
     EXPECT_EQ(runFill(0), 0u);
 }
 
-TEST_F(GpuKernelRegistryTest, FillThroughRecordContextFloat)
+GPU_TEST_F(GpuKernelRegistryTest, FillThroughRecordContextFloat)
 {
     EXPECT_EQ(runFill(1), 0u);
 }
 
-TEST_F(GpuKernelRegistryTest, ConcurrentContextsEachRecordOnTheirOwnThread)
+GPU_TEST_F(GpuKernelRegistryTest, ConcurrentContextsEachRecordOnTheirOwnThread)
 {
     std::atomic<size_t> bad { 0 };
     std::vector<std::thread> threads;
@@ -205,7 +205,7 @@ TEST_F(GpuKernelRegistryTest, ConcurrentContextsEachRecordOnTheirOwnThread)
     EXPECT_EQ(bad.load(), 0u);
 }
 
-TEST_F(GpuKernelRegistryTest, RejectsWrongBindingCountAndSubmittedContext)
+GPU_TEST_F(GpuKernelRegistryTest, RejectsWrongBindingCountAndSubmittedContext)
 {
     std::unique_ptr<GpuRecordContext> ctx;
     ASSERT_TRUE(GpuRecordContext::create(*registry, ctx).ok());

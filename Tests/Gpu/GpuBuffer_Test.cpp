@@ -14,12 +14,12 @@ using namespace gpu;
 
 namespace {
 
-class GpuBufferTest : public ::testing::Test {
+class GpuBufferTest : public gputest::SkippableTest {
 protected:
     void SetUp() override
     {
         GpuStatus s = gputest::createDevice(dev);
-        GPUTEST_DEVICE_OR_SKIP(s.ok(), s.message);
+        GPUTEST_DEVICE_OR_SKIP_TEST(s.ok(), s.message);
     }
 
     void TearDown() override
@@ -43,7 +43,7 @@ struct AlignedBlock {
 
 } // namespace
 
-TEST_F(GpuBufferTest, DeviceInfoLimitsAreReported)
+GPU_TEST_F(GpuBufferTest, DeviceInfoLimitsAreReported)
 {
     const GpuDeviceInfo& i = dev->info();
     EXPECT_GT(i.maxStorageBufferRange, 0u);
@@ -83,7 +83,7 @@ TEST(GpuBufferOptionsTest, OverridesReadBackThroughDeviceInfo)
     EXPECT_EQ(dev->info().maxStorageBufferRange, limit);
 }
 
-TEST_F(GpuBufferTest, DeviceLocalCreateMoveDestroy)
+GPU_TEST_F(GpuBufferTest, DeviceLocalCreateMoveDestroy)
 {
     GpuBuffer b;
     GpuStatus s = GpuBuffer::createDeviceLocal(*dev, 1 << 20, kGpuBufferDefaultUsage, b);
@@ -100,14 +100,14 @@ TEST_F(GpuBufferTest, DeviceLocalCreateMoveDestroy)
     EXPECT_EQ(moved.buffer(), static_cast<VkBuffer>(VK_NULL_HANDLE));
 }
 
-TEST_F(GpuBufferTest, ZeroSizeIsRejected)
+GPU_TEST_F(GpuBufferTest, ZeroSizeIsRejected)
 {
     GpuBuffer b;
     EXPECT_FALSE(GpuBuffer::createDeviceLocal(*dev, 0, kGpuBufferDefaultUsage, b).ok());
     EXPECT_EQ(b.buffer(), static_cast<VkBuffer>(VK_NULL_HANDLE));
 }
 
-TEST_F(GpuBufferTest, StagingIsMapped)
+GPU_TEST_F(GpuBufferTest, StagingIsMapped)
 {
     GpuBuffer b;
     GpuStatus s = GpuBuffer::createStaging(*dev, 4096, kGpuBufferDefaultUsage, b);
@@ -118,7 +118,7 @@ TEST_F(GpuBufferTest, StagingIsMapped)
     EXPECT_EQ(static_cast<uint8_t*>(b.mapped())[4095], 0xab);
 }
 
-TEST_F(GpuBufferTest, HostImportedWrapsCallerMemory)
+GPU_TEST_F(GpuBufferTest, HostImportedWrapsCallerMemory)
 {
     if (!dev->info().externalMemoryHost) {
         GPUTEST_SKIP() << "VK_EXT_external_memory_host is not available";
@@ -139,7 +139,7 @@ TEST_F(GpuBufferTest, HostImportedWrapsCallerMemory)
     EXPECT_EQ(b.mapped(), block.ptr);
 }
 
-TEST_F(GpuBufferTest, MisalignedHostImportReturnsStatus)
+GPU_TEST_F(GpuBufferTest, MisalignedHostImportReturnsStatus)
 {
     if (!dev->info().externalMemoryHost) {
         GPUTEST_SKIP() << "VK_EXT_external_memory_host is not available";
@@ -166,7 +166,7 @@ TEST_F(GpuBufferTest, MisalignedHostImportReturnsStatus)
     EXPECT_EQ(b.buffer(), static_cast<VkBuffer>(VK_NULL_HANDLE));
 }
 
-TEST_F(GpuBufferTest, HostImportAboveMaxAllocationSizeIsRejected)
+GPU_TEST_F(GpuBufferTest, HostImportAboveMaxAllocationSizeIsRejected)
 {
     if (!dev->info().externalMemoryHost) {
         GPUTEST_SKIP() << "VK_EXT_external_memory_host is not available";
@@ -188,7 +188,7 @@ TEST_F(GpuBufferTest, HostImportAboveMaxAllocationSizeIsRejected)
     EXPECT_EQ(b.buffer(), static_cast<VkBuffer>(VK_NULL_HANDLE));
 }
 
-TEST_F(GpuBufferTest, ExportableCreateAndDestroy)
+GPU_TEST_F(GpuBufferTest, ExportableCreateAndDestroy)
 {
     if (!dev->info().externalMemoryFd) {
         GPUTEST_SKIP() << "VK_KHR_external_memory_fd is not available";

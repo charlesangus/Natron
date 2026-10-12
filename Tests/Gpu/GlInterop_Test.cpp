@@ -194,34 +194,24 @@ private:
     GpuDevice* dev_ = nullptr;
 };
 
-class GlInteropTest : public ::testing::Test {
+class GlInteropTest : public gputest::SkippableTest {
 protected:
-    // This gtest has no GTEST_SKIP, so returning from SetUp does not stop the test body. Every test
-    // therefore starts with GLINTEROP_READY_OR_SKIP, which reports why SetUp left the GL side unusable.
     void SetUp() override
     {
         GpuStatus s = gputest::createDevice(dev);
-        if (!s.ok()) {
-            if (gputest::deviceRequired(s.message)) {
-                FAIL() << "no usable Vulkan device: " << s.message;
-            }
-            notReady = "no usable Vulkan device: " + s.message;
-            return;
-        }
+        GPUTEST_DEVICE_OR_SKIP_TEST(s.ok(), s.message);
         if (!egl.init()) {
-            notReady = "EGL surfaceless unavailable: " + egl.error;
             if (gputest::envSet("NATRON_TEST_REQUIRE_GL")) {
-                FAIL() << notReady;
+                FAIL() << "EGL surfaceless unavailable: " << egl.error;
             }
-            return;
+            GPUTEST_SKIP_TEST() << "EGL surfaceless unavailable: " << egl.error;
         }
         s = GlInterop::probe(*dev, eglLoader, caps);
         if (!s.ok()) {
-            notReady = "GL interop probe failed: " + s.message;
             if (gputest::envSet("NATRON_TEST_REQUIRE_GL")) {
-                FAIL() << notReady;
+                FAIL() << "GL interop probe failed: " << s.message;
             }
-            return;
+            GPUTEST_SKIP_TEST() << "GL interop probe failed: " << s.message;
         }
 
         GpuKernelDesc d;
@@ -358,7 +348,6 @@ protected:
     }
 
     gputest::ValidationCheck check;
-    std::string notReady;
     std::unique_ptr<GpuDevice> dev;
     std::unique_ptr<GpuKernel> fill;
     EglSurfaceless egl;
@@ -375,15 +364,8 @@ median(std::vector<double> v)
 
 } // namespace
 
-#define GLINTEROP_READY_OR_SKIP()                  \
-    if (notReady.empty()) {                        \
-    } else {                                       \
-        GPUTEST_SKIP() << notReady;                \
-    }
-
-TEST_F(GlInteropTest, Probe)
+GPU_TEST_F(GlInteropTest, Probe)
 {
-    GLINTEROP_READY_OR_SKIP();
     std::cout << "driver: " << driverLabel() << "\n"
               << "gl: " << caps.glVendor << " | " << caps.glRenderer << " | " << caps.glVersion << "\n"
               << "vkMemFd=" << caps.vkExternalMemoryFd << " vkBufExport=" << caps.vkBufferExportable
@@ -395,45 +377,38 @@ TEST_F(GlInteropTest, Probe)
               << "missing: " << (caps.missing.empty() ? "(none)" : caps.missing) << "\n";
 }
 
-TEST_F(GlInteropTest, ZeroCopyByteExact)
+GPU_TEST_F(GlInteropTest, ZeroCopyByteExact)
 {
-    GLINTEROP_READY_OR_SKIP();
     roundTrip(GlHandoffPath::ZeroCopy);
 }
 
-TEST_F(GlInteropTest, ZeroCopyHostSyncByteExact)
+GPU_TEST_F(GlInteropTest, ZeroCopyHostSyncByteExact)
 {
-    GLINTEROP_READY_OR_SKIP();
     roundTrip(GlHandoffPath::ZeroCopyHostSync);
 }
 
-TEST_F(GlInteropTest, ReadbackByteExact)
+GPU_TEST_F(GlInteropTest, ReadbackByteExact)
 {
-    GLINTEROP_READY_OR_SKIP();
     roundTrip(GlHandoffPath::Readback);
 }
 
-TEST_F(GlInteropTest, ZeroCopyBackToBack)
+GPU_TEST_F(GlInteropTest, ZeroCopyBackToBack)
 {
-    GLINTEROP_READY_OR_SKIP();
     backToBack(GlHandoffPath::ZeroCopy);
 }
 
-TEST_F(GlInteropTest, ZeroCopyHostSyncBackToBack)
+GPU_TEST_F(GlInteropTest, ZeroCopyHostSyncBackToBack)
 {
-    GLINTEROP_READY_OR_SKIP();
     backToBack(GlHandoffPath::ZeroCopyHostSync);
 }
 
-TEST_F(GlInteropTest, ReadbackBackToBack)
+GPU_TEST_F(GlInteropTest, ReadbackBackToBack)
 {
-    GLINTEROP_READY_OR_SKIP();
     backToBack(GlHandoffPath::Readback);
 }
 
-TEST_F(GlInteropTest, UhdLatency)
+GPU_TEST_F(GlInteropTest, UhdLatency)
 {
-    GLINTEROP_READY_OR_SKIP();
     constexpr uint32_t w = 3840;
     constexpr uint32_t h = 2160;
     const int iterations = std::getenv("GL_INTEROP_ITERS") ? std::atoi(std::getenv("GL_INTEROP_ITERS")) : 10;

@@ -46,7 +46,7 @@ protected:
 
 } // namespace
 
-TEST_F(GradeGpuTest, MatchesReferenceOverSweep)
+GPU_TEST_F(GradeGpuTest, MatchesReferenceOverSweep)
 {
     const std::vector<GradeCase> cases = gradefix::makeCases();
     const std::vector<std::vector<float>> dst = run(cases);
@@ -73,7 +73,7 @@ TEST_F(GradeGpuTest, MatchesReferenceOverSweep)
 
 // pow/exp quality is the driver difference that matters for gamma, so isolate
 // it: forward grade with gamma != 1 and no clamps, input in the display range.
-TEST_F(GradeGpuTest, GammaPrecision)
+GPU_TEST_F(GradeGpuTest, GammaPrecision)
 {
     std::vector<GradeCase> cases;
     for (float gamma : { 0.45f, 1.0f / 2.2f, 1.8f, 2.2f, 2.4f, 4.0f }) {

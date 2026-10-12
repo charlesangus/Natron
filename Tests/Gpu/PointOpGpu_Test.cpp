@@ -108,7 +108,7 @@ protected:
 
 } // namespace
 
-TEST_F(PointOpGpuTest, GradeMatchesReference)
+GPU_TEST_F(PointOpGpuTest, GradeMatchesReference)
 {
     const std::vector<gradefix::GradeCase> grade = rgbaGradeCases();
     std::vector<PointCase> cases;
@@ -129,7 +129,7 @@ TEST_F(PointOpGpuTest, GradeMatchesReference)
 }
 
 // Grade then invert: RGB is 1 - grade(v), alpha is grade(alpha).
-TEST_F(PointOpGpuTest, ChainMatchesReference)
+GPU_TEST_F(PointOpGpuTest, ChainMatchesReference)
 {
     const std::vector<gradefix::GradeCase> grade = rgbaGradeCases();
     std::vector<PointCase> cases;
@@ -166,7 +166,7 @@ TEST_F(PointOpGpuTest, ChainMatchesReference)
     EXPECT_EQ(violations, 0u);
 }
 
-TEST_F(PointOpGpuTest, MaskedMatchesReference)
+GPU_TEST_F(PointOpGpuTest, MaskedMatchesReference)
 {
     constexpr uint32_t kW = 67;
     constexpr uint32_t kH = 19;

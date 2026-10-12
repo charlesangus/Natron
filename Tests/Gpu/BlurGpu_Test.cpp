@@ -85,7 +85,7 @@ protected:
 
 } // namespace
 
-TEST_F(BlurGpuTest, MatchesReference)
+GPU_TEST_F(BlurGpuTest, MatchesReference)
 {
     const std::vector<BlurCase> cases = makeCases();
     const std::vector<std::vector<float>> dst = run(cases);
@@ -120,7 +120,7 @@ TEST_F(BlurGpuTest, MatchesReference)
 
 // sigma 170 gives radius 510, the widest the shared tile holds. Every group loads 128 + 2R samples
 // whatever the image size, so a small image fills the whole tile.
-TEST_F(BlurGpuTest, LargestSupportedRadiusMatchesReference)
+GPU_TEST_F(BlurGpuTest, LargestSupportedRadiusMatchesReference)
 {
     constexpr double kSigma = 170.0;
     ASSERT_LE(uint32_t(blurref::radiusForSigma(kSigma)), kGpuBlurMaxRadius);
@@ -139,7 +139,7 @@ TEST_F(BlurGpuTest, LargestSupportedRadiusMatchesReference)
     }
 }
 
-TEST_F(BlurGpuTest, RefusesRadiusAndChannelsBeyondTheTile)
+GPU_TEST_F(BlurGpuTest, RefusesRadiusAndChannelsBeyondTheTile)
 {
     auto kernel = makeKernel(blur_spirv, blur_spirv_words, "main", 3, sizeof(blurfix::BlurParams), blur_group_size);
     ASSERT_TRUE(kernel != nullptr);

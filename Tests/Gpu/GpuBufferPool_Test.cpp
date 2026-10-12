@@ -17,12 +17,12 @@ namespace {
 constexpr uint64_t kMiB = 1024 * 1024;
 constexpr uint64_t kBudget = 32 * kMiB;
 
-class GpuBufferPoolTest : public ::testing::Test {
+class GpuBufferPoolTest : public gputest::SkippableTest {
 protected:
     void SetUp() override
     {
         GpuStatus s = gputest::createDevice(dev);
-        GPUTEST_DEVICE_OR_SKIP(s.ok(), s.message);
+        GPUTEST_DEVICE_OR_SKIP_TEST(s.ok(), s.message);
         GpuBufferPoolOptions options;
         options.overrideBudgetBytes = kBudget;
         pool = std::make_unique<GpuBufferPool>(*dev, options);
@@ -46,12 +46,12 @@ protected:
     std::unique_ptr<GpuBufferPool> pool;
 };
 
-TEST_F(GpuBufferPoolTest, BudgetIsOverrideCappedByHeap)
+GPU_TEST_F(GpuBufferPoolTest, BudgetIsOverrideCappedByHeap)
 {
     EXPECT_EQ(pool->budget(), kBudget);
 }
 
-TEST_F(GpuBufferPoolTest, SizeClassesRoundUpWithinTwentyFivePercent)
+GPU_TEST_F(GpuBufferPoolTest, SizeClassesRoundUpWithinTwentyFivePercent)
 {
     for (uint64_t n : std::initializer_list<uint64_t> { 1, 65537, 1000000, 8 * kMiB, 8 * kMiB + 1, 100 * kMiB + 7 }) {
         const uint64_t c = GpuBufferPool::sizeClass(n);
@@ -60,7 +60,7 @@ TEST_F(GpuBufferPoolTest, SizeClassesRoundUpWithinTwentyFivePercent)
     }
 }
 
-TEST_F(GpuBufferPoolTest, UsageNeverExceedsBudget)
+GPU_TEST_F(GpuBufferPoolTest, UsageNeverExceedsBudget)
 {
     std::vector<GpuBufferHandle> held;
     for (int i = 0; i < 40; ++i) {
@@ -77,7 +77,7 @@ TEST_F(GpuBufferPoolTest, UsageNeverExceedsBudget)
     EXPECT_GT(s.evictions, 0u);
 }
 
-TEST_F(GpuBufferPoolTest, EvictsLeastRecentlyUsedExactlyOnce)
+GPU_TEST_F(GpuBufferPoolTest, EvictsLeastRecentlyUsedExactlyOnce)
 {
     constexpr int n = 4;
     std::vector<GpuBufferHandle> held(n);
@@ -103,7 +103,7 @@ TEST_F(GpuBufferPoolTest, EvictsLeastRecentlyUsedExactlyOnce)
     EXPECT_EQ(pool->stats().evictions, static_cast<uint64_t>(n));
 }
 
-TEST_F(GpuBufferPoolTest, EvictFreesPooledThenLeastRecentlyUsed)
+GPU_TEST_F(GpuBufferPoolTest, EvictFreesPooledThenLeastRecentlyUsed)
 {
     constexpr int n = 3;
     std::vector<GpuBufferHandle> held(n);
@@ -132,7 +132,7 @@ TEST_F(GpuBufferPoolTest, EvictFreesPooledThenLeastRecentlyUsed)
     EXPECT_EQ(usage(), 0u);
 }
 
-TEST_F(GpuBufferPoolTest, LastReleaseReturnsBufferToPool)
+GPU_TEST_F(GpuBufferPoolTest, LastReleaseReturnsBufferToPool)
 {
     GpuBufferHandle a;
     ASSERT_TRUE(pool->acquire(4 * kMiB, a).ok());
@@ -151,7 +151,7 @@ TEST_F(GpuBufferPoolTest, LastReleaseReturnsBufferToPool)
     EXPECT_EQ(pool->stats().pooledBytes, 0u);
 }
 
-TEST_F(GpuBufferPoolTest, PooledBuffersAreTrimmedBeforeEvicting)
+GPU_TEST_F(GpuBufferPoolTest, PooledBuffersAreTrimmedBeforeEvicting)
 {
     GpuBufferHandle victim;
     ASSERT_TRUE(pool->acquire(8 * kMiB, victim).ok());
@@ -170,7 +170,7 @@ TEST_F(GpuBufferPoolTest, PooledBuffersAreTrimmedBeforeEvicting)
     EXPECT_LE(usage(), kBudget);
 }
 
-TEST_F(GpuBufferPoolTest, OversizeRequestFailsWithoutEvicting)
+GPU_TEST_F(GpuBufferPoolTest, OversizeRequestFailsWithoutEvicting)
 {
     GpuBufferHandle h;
     ASSERT_TRUE(pool->acquire(8 * kMiB, h).ok());
@@ -186,7 +186,7 @@ TEST_F(GpuBufferPoolTest, OversizeRequestFailsWithoutEvicting)
     EXPECT_TRUE(static_cast<bool>(h));
 }
 
-TEST_F(GpuBufferPoolTest, OutOfMemoryWhenNothingIsEvictable)
+GPU_TEST_F(GpuBufferPoolTest, OutOfMemoryWhenNothingIsEvictable)
 {
     GpuBufferHandle a, b;
     ASSERT_TRUE(pool->acquire(16 * kMiB, a).ok());
@@ -195,7 +195,7 @@ TEST_F(GpuBufferPoolTest, OutOfMemoryWhenNothingIsEvictable)
     EXPECT_EQ(pool->acquire(4 * kMiB, c).result, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 }
 
-TEST_F(GpuBufferPoolTest, CallbackMayReenterPool)
+GPU_TEST_F(GpuBufferPoolTest, CallbackMayReenterPool)
 {
     GpuBufferHandle h;
     ASSERT_TRUE(pool->acquire(24 * kMiB, h).ok());
@@ -210,7 +210,7 @@ TEST_F(GpuBufferPoolTest, CallbackMayReenterPool)
     EXPECT_LE(usage(), kBudget);
 }
 
-TEST_F(GpuBufferPoolTest, ConcurrentAcquireStaysWithinBudget)
+GPU_TEST_F(GpuBufferPoolTest, ConcurrentAcquireStaysWithinBudget)
 {
     std::vector<std::thread> threads;
     std::atomic<int> failures { 0 };

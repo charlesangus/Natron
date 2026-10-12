@@ -705,13 +705,14 @@ Gui::removeUndoStack(QUndoStack* stack)
     }
     if (_imp->_currentUndoAction == it->second.first) {
         _imp->menuEdit->removeAction(_imp->_currentUndoAction);
+        _imp->_currentUndoAction = 0;
     }
     if (_imp->_currentRedoAction == it->second.second) {
         _imp->menuEdit->removeAction(_imp->_currentRedoAction);
+        _imp->_currentRedoAction = 0;
     }
-    if ( it != _imp->_undoStacksActions.end() ) {
-        _imp->_undoStacksActions.erase(it);
-    }
+    _imp->_undoStacksGroup->removeStack(stack);
+    _imp->_undoStacksActions.erase(it);
 }
 
 void

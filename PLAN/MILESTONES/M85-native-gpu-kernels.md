@@ -61,7 +61,7 @@ Scouted facts this plan relies on (2026-10-12, `milestone/m85-native-gpu-kernels
 
 ## Phase 85.1: Kernel description and per-pixel wrapping
 
-- [ ] M85.P1.T1 — Write the shared per-pixel wrapping module and its engine-free host side
+- [x] M85.P1.T1 — Write the shared per-pixel wrapping module and its engine-free host side
   - files: `Engine/Gpu/Kernels/pixelwrap.slang` (new), `Engine/Gpu/GpuWrap.{h,cpp}` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Gpu/PixelWrap_Test.cpp` (new), `Tests/Gpu/CMakeLists.txt`
   - approach:
     - **Semantics:** reproduce `NativeImageEffect.cpp:560-610` exactly (see Scouted facts):
@@ -94,7 +94,7 @@ Scouted facts this plan relies on (2026-10-12, `milestone/m85-native-gpu-kernels
     - The build adds no hand-listed kernel link.
   - size: L
 
-- [ ] M85.P1.T2 — Extract a shared GPU parity harness for native-node tests
+- [x] M85.P1.T2 — Extract a shared GPU parity harness for native-node tests
   - files: `Tests/Native/NativeGpuParity.{h,cpp}` (new), `Tests/CMakeLists.txt` (add the `.cpp` and header to the explicit lists), `Tests/Native/NativeGradeGpu_Test.cpp`, `Tests/Native/NativeBlurGpu_Test.cpp`, `Engine/Nodes/README.md`
   - approach:
     - Move the duplicated `createRuntime`/upload/download/`makeBuffer` helpers (`NativeGradeGpu_Test.cpp:206-270`) into the harness. The runtime skips with a reason, or fails under `NATRON_TEST_REQUIRE_GPU=1`.
@@ -124,7 +124,7 @@ Scouted facts this plan relies on (2026-10-12, `milestone/m85-native-gpu-kernels
   - verify: `NativeImageEffectGpu_Test` defines a test-only point-op node whose CPU kernel scales processed channels by 2 and whose GPU kernel is `pixelwrap_scale`, registered at runtime through `GpuKernelRegistry::registerKernel`. Through the P1.T2 harness, its `renderGpu` matches its CPU `render()` bit-exactly without a divisor, and within the P1.T1 bound with one, over the P1.T1 matrix. `NativeGpuCapabilityTest` still passes, with no new production node answering true.
   - size: L
 
-- [ ] M85.P1.T4 — Give GPU-capable nodes without seed rows a class-default cost
+- [x] M85.P1.T4 — Give GPU-capable nodes without seed rows a class-default cost
   - files: `Engine/GpuCostModel.{h,cpp}`, `Engine/GpuPlacement.cpp`, `Tests/GpuPlacement_Test.cpp`
   - approach:
     - `GpuTaskTraits` gains a cost class (point op / spatial / other), taken from `NativeImageEffect::isPointOp()` in `traitsOf`.
@@ -527,3 +527,20 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - port Blur's IIR and box filters to the GPU (P2.T4);
   - decide how OCIO runs on Vulkan when M107 starts.
 - 2026-10-12 — The bench host is a Ryzen 7 7800X3D with 8 cores, 16 threads and 188 GB of RAM, not the 4-core host M64 - Tiled Rendering was benched on.
+- 2026-10-12 — **P1.T1** (`6be53a69d`), **P1.T2** (`cea3e3ef2`) and **P1.T4** (`4fd4b3920`) done. Their verify set passes 64/64 on lavapipe and on RADV in both scheduler modes, and on RADV without push descriptors. With no ICD the GPU cases skip.
+  - **P1.T1 notes for later tasks:**
+    - `WrapParams` is 112 B.
+    - The test kernels live in `pixelwrap.slang` itself, because `slang_add_kernel` has no include path.
+    - Multiply-back uses `(0 < d) ? d : 0`, so a NaN divisor matches the CPU's `std::max`.
+    - The divisor and skip channels are component indices.
+    - Ops read their params through `load(StructuredBuffer<uint>)` with `wrapParamFloat` and `wrapParamFloat4`.
+    - `GpuWrap` has an explicit `applyMask` flag.
+    - "≤ 3 ULP" is checked as 3 × FLT_EPSILON × the largest term. "Bit-exact" accepts ±0 and any NaN.
+    - On RADV, divided cases reach at most 1.96 ε.
+  - **P1.T2:**
+    - `runRenderGpu` takes the runtime as its first argument.
+    - `renderEndToEnd` has no caller yet; P1.T3 is its first.
+    - Grade keeps its `gradefix` ULP bound.
+  - **P1.T4:**
+    - `GpuTaskTraits` gains `costClass` and `inputCount`, and `hasGpuCost` includes the class defaults, so `GpuPlacement.cpp` is unchanged.
+    - `inputCount` includes the mask input, which errs toward the CPU.

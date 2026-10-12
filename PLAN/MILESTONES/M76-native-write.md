@@ -206,7 +206,7 @@ Replaces the `Write` container (`Engine/WriteNode.cpp`) and every OFX writer wit
 
 ## Phase 76.3: UAT round 1
 
-- [ ] M76.P3.T1 — Reload button on the native Read and the native Write
+- [x] M76.P3.T1 — Reload button on the native Read and the native Write
   - files: `Engine/Nodes/IO/NativeRead.cpp/.h`, `Engine/Nodes/IO/NativeWrite.cpp/.h`, tests under `Tests/Native/`, `Tests/gui/m75_read.py`/`m76_write.py`
   - approach: a Reload button on each. On the Read it drops everything cached from the file (decoded headers, layer lists, the node's cached images) and re-reads, so a file changed on disk shows up. On the Write it does the same for the read-back file and is enabled only while Read back file is on.
   - verify: tests overwrite the file on disk after a first pull; without Reload the old pixels/layers are served, after Reload the new ones; the Write's button is disabled with read back off. GUI scripts click it.
@@ -249,3 +249,4 @@ Replaces the `Write` container (`Engine/WriteNode.cpp`) and every OFX writer wit
 - 2026-10-11 — PR #52 CI green (`format`, `lint-ci`, `build-and-test` on `f69ebae73`). Waiting only on the user's UAT sign-off of `M76-f69ebae73.AppImage`; then merge the fork PRs (openfx-io#12, openfx-arena#6) with merge commits, re-pin `fetch-assets.sh`, and squash-merge #52.
 - 2026-10-11 — **UAT round 1 (user):** no Reload button on the native Read or Write (Write: only meaningful with read back on); Write read back must compare the hash stored in the file with the node hash and read only on a match, EXR sequences only. Added as Phase 76.3 (P3.T1, P3.T2). PM assumption, stated to the user: on a mismatch or a missing frame the Write passes its input through.
 - 2026-10-11 — **P3.T2 dropped (user):** the hash-gated read back exposed that Natron's node hash counts edits, not values; hashing becomes M97 - Value-Based Node Hashing, and the EXR-only read-back restriction (which existed only to carry the hash) goes with it. The implemented work is parked on `m76/hash-gated-readback-wip` (`f1fbe003a`); only P3.T1's Reload buttons are re-applied on the M76 branch.
+- 2026-10-11 — **P3.T1** landed (`be485e396`, Reload re-applied from the parked WIP without any hash code). Release ctest 1765/1765, smoke, GUI m76_write 96, m75_read 90, m61_uat 176, viewer_error_scrub 55. Removing the WIP's source file needed a `cmake .` reconfigure of the worktree release tree (first build failed on the missing file and the tests ran on the stale binary).

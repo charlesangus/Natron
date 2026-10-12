@@ -194,7 +194,9 @@ class NatronPlugin(TabTabTabPlugin):
             return None
         icon = self._icon_cache.get(path)
         if icon is None:
-            if not os.path.isfile(path):
+            # Native nodes' icons live in Natron's Qt resources (":/..."),
+            # which only QFile can see.
+            if not QtCore.QFile.exists(path):
                 return None
             icon = QtGui.QIcon(path)
             self._icon_cache[path] = icon

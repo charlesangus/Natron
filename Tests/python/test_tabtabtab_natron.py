@@ -42,6 +42,10 @@ class _FakeQKeySequence(object):
     NativeText = "NativeText"
 
 
+_GRADE_RESOURCE_ICON = ":/Resources/Images/NativeNodes/net.sf.openfx.GradePlugin.png"
+_FAKE_QT_RESOURCES = {_GRADE_RESOURCE_ICON}
+
+
 _FAKE_APP_FONT = object()
 _FAKE_FONT_HEIGHT = 11
 
@@ -179,6 +183,13 @@ class NatronAdapterTests(unittest.TestCase):
                 scheduled.append((delay_ms, callback))
 
         qtcore.QTimer = _StubQTimer
+
+        class _StubQFile(object):
+            @staticmethod
+            def exists(path):
+                return path in _FAKE_QT_RESOURCES or os.path.isfile(path)
+
+        qtcore.QFile = _StubQFile
 
         qtgui = types.ModuleType("PySide6.QtGui")
         qtgui.QIcon = _FakeQIcon
@@ -465,6 +476,15 @@ class NatronAdapterTests(unittest.TestCase):
         self.assertIsNone(
             plugin.get_icon(h.module._NodeEntry("id", 1, "/no/such/file.png", ""))
         )
+
+    def test_get_icon_loads_qt_resource_paths(self):
+        h = self._load_adapter()
+        plugin = h.module.NatronPlugin()
+
+        icon = plugin.get_icon(h.module._NodeEntry("net.sf.openfx.GradePlugin", 1, _GRADE_RESOURCE_ICON, ""))
+
+        self.assertIsInstance(icon, h.qtgui.QIcon)
+        self.assertEqual(icon.path, _GRADE_RESOURCE_ICON)
 
     def test_get_icon_falls_back_to_base_for_commands(self):
         h = self._load_adapter()

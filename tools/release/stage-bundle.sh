@@ -169,7 +169,7 @@ fi
 
 echo "==> Copying Qt6 plugins from $QT_PLUGIN_DIR"
 
-for subdir in platforms imageformats xcbglintegrations; do
+for subdir in platforms imageformats iconengines xcbglintegrations; do
     src="$QT_PLUGIN_DIR/$subdir"
     if [[ -d "$src" ]]; then
         mkdir -p "$STAGE_DIR/plugins/$subdir"

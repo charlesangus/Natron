@@ -770,36 +770,6 @@ class _ItemDelegate(QtWidgets.QStyledItemDelegate):
         painter.restore()
 
 
-def _popup_position(cursor_x, cursor_y, popup_w, popup_h, screen_rect, offset=13):
-    """Compute (xpos, ypos, flipped) for placing the popup relative to
-    the cursor, clamped to screen_rect.
-
-    Normally the search box (the top of the popup) sits `offset` pixels
-    above the cursor, with the list dropping down below it. When the
-    popup is taller than the room below the cursor, flip it so the list
-    is above the search box instead — the box still lands at the
-    cursor, rather than the whole popup sliding up the screen to fit.
-    Falls back to clamping on-screen (the old behaviour) if the popup
-    fits in neither orientation.
-    """
-    def clamp(val, mi, ma):
-        return max(min(val, ma), mi)
-
-    xpos = cursor_x - (popup_w / 2)
-    xpos = clamp(xpos, screen_rect.left(), screen_rect.right() - popup_w)
-
-    top_ypos = cursor_y - offset
-    below_max = screen_rect.bottom() - (popup_h - offset)
-    if top_ypos <= below_max:
-        return xpos, top_ypos, False
-
-    bottom_ypos = cursor_y + offset - popup_h
-    if bottom_ypos >= screen_rect.top():
-        return xpos, bottom_ypos, True
-
-    return xpos, clamp(top_ypos, screen_rect.top(), below_max), False
-
-
 class TabTabTabWidget(QtWidgets.QDialog):
     def __init__(self, plugin, parent=None, winflags=None, space_mode_order=None, scroll_enabled=False):
         super(TabTabTabWidget, self).__init__(parent=parent)
@@ -841,10 +811,7 @@ class TabTabTabWidget(QtWidgets.QDialog):
         self.things.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
         self.input.setTextMargins(2, _font_h // 2, 2, _font_h // 2)
 
-        # Add input and items to layout. list_above_input tracks which
-        # order is currently in the layout, so under_cursor() can flip it
-        # (see _set_list_above_input) without reshuffling on every call.
-        self._list_above_input = False
+        # Add input and items to layout
         layout = QtWidgets.QVBoxLayout()
         layout.addWidget(self.input)
         layout.addWidget(self.things)
@@ -889,6 +856,9 @@ class TabTabTabWidget(QtWidgets.QDialog):
         self.things.setFixedHeight(total_h)
 
     def under_cursor(self):
+        def clamp(val, mi, ma):
+            return max(min(val, ma), mi)
+
         # Get cursor position, and screen dimensions on active screen
         cursor = QtGui.QCursor().pos()
         screen_obj = None
@@ -898,33 +868,16 @@ class TabTabTabWidget(QtWidgets.QDialog):
             screen_obj = self.screen()
         screen = screen_obj.geometry()
 
-        xpos, ypos, flipped = _popup_position(
-            cursor.x(), cursor.y(), self.width(), self.height(), screen)
-        self._set_list_above_input(flipped)
+        # Get window position so cursor is just over text input
+        xpos = cursor.x() - (self.width() / 2)
+        ypos = cursor.y() - 13
+
+        # Clamp window location to prevent it going offscreen
+        xpos = clamp(xpos, screen.left(), screen.right() - self.width())
+        ypos = clamp(ypos, screen.top(), screen.bottom() - (self.height() - 13))
 
         # Move window
         self.move(xpos, ypos)
-
-    def _set_list_above_input(self, flip):
-        """Swap whether the list sits above or below the search box.
-
-        under_cursor() flips this when the popup doesn't fit below the
-        cursor but does fit above it, so the search box still lands at
-        the cursor instead of the whole popup sliding up the screen.
-        """
-        if flip == self._list_above_input:
-            return
-        self._list_above_input = flip
-
-        layout = self.layout()
-        layout.removeWidget(self.input)
-        layout.removeWidget(self.things)
-        if flip:
-            layout.addWidget(self.things)
-            layout.addWidget(self.input)
-        else:
-            layout.addWidget(self.input)
-            layout.addWidget(self.things)
 
     def move_selection(self, where):
         if where not in ["first", "up", "down"]:

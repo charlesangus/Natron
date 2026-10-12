@@ -33,6 +33,8 @@
 #include <gtest/gtest.h>
 
 #include <QColor>
+#include <QFile>
+#include <QIcon>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -43,7 +45,18 @@
 #include "Engine/Node.h"
 #include "Engine/Settings.h"
 
+#include "Engine/Nodes/Color/Grade.h"
+
 #include "Gui/TabMenuBridge.h"
+
+// GuiResources lives in the static NatronGui library, and only
+// GuiApplicationManager registers it, which this suite's AppManager is not.
+// Q_INIT_RESOURCE has to be expanded outside any namespace.
+static void
+initGuiResources()
+{
+    Q_INIT_RESOURCE(GuiResources);
+}
 
 NATRON_NAMESPACE_USING
 
@@ -230,6 +243,27 @@ TEST(TabMenuBridge, IconIsEmptyUnlessTheFileExists)
     EXPECT_EQ(existing, withIcon.front().value(QString::fromUtf8("icon")).toString());
     EXPECT_EQ(QString(), missingIcon.front().value(QString::fromUtf8("icon")).toString());
     EXPECT_EQ(QString(), missingIcon.front().value(QString::fromUtf8("shortcut")).toString());
+}
+
+TEST(TabMenuBridge, NativeGradeCarriesItsResourceIcon)
+{
+    initGuiResources();
+
+    const PluginsMap& plugins = appPTR->getPluginsList();
+    PluginsMap::const_iterator found = plugins.find(PLUGINID_NATRON_GRADE);
+    ASSERT_TRUE(found != plugins.end());
+    ASSERT_FALSE(found->second.empty());
+    const Plugin* grade = *found->second.rbegin();
+    ASSERT_TRUE(grade->getIconFilePath().startsWith(QString::fromUtf8(NATRON_IMAGES_PATH)));
+
+    std::vector<QJsonObject> grades = itemsWithId(parseItems(TabMenuBridge::nodeItemsJson(plugins, noShortcut)),
+                                                  QString::fromUtf8(PLUGINID_NATRON_GRADE));
+    ASSERT_EQ(1u, grades.size());
+    const QString icon = grades.front().value(QString::fromUtf8("icon")).toString();
+
+    EXPECT_EQ(grade->getIconFilePath(), icon);
+    EXPECT_TRUE(QFile::exists(icon)) << icon.toStdString();
+    EXPECT_FALSE(QIcon(icon).pixmap(16, 16).isNull()) << icon.toStdString();
 }
 
 TEST(TabMenuBridge, CreateNodeWithoutAnOpenMenuDoesNothing)

@@ -156,7 +156,7 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
   - verify: `ctest -R NodeCategory`. New cases show that `categoryForPlugin(*node->getPlugin())` equals `node->getNodeCategory()` for a Read, a Write, a Deep node, a Grade, a Blur and a Merge created in the test app.
   - size: M
 
-- [ ] M45.P6.T2 — Write `TabMenuBridge`: the node item list, node creation, launch and startup bootstrap, exposed on `GuiApp`
+- [x] M45.P6.T2 — Write `TabMenuBridge`: the node item list, node creation, launch and startup bootstrap, exposed on `GuiApp`
   - files: `Gui/TabMenuBridge.h` (new), `Gui/TabMenuBridge.cpp` (new), `Gui/PyGuiApp.h`, `Gui/PyGuiApp.cpp`
   - approach:
     - `TabMenuBridge` is a plain namespace of free functions with file-static state `QPointer<NodeGraph> g_target` and `QPointF g_scenePos`. It is GUI-thread only, and only one popup exists at a time.

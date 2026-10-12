@@ -26,7 +26,7 @@ Scoping draft (2026-10-10): `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` hold
 
 Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `PLAN/DESIGN/2026-10-10-icon-direction-options.md` (icon audit, loaders, cache bug), and the icon-options page (claude.ai artifact `9B52JMKTyWw5Ufep99afxr`, "Chosen" section, which holds the toolbox glyph SVGs). The `## Phase 56.8: Shot review round 1 fixes
 
-- [ ] M56.P8.T1 — Apply the user's shot-review fixes (artifact `6y7CdSBwvuiThopTMEmBYJ` comments + chat, 2026-10-12)
+- [x] M56.P8.T1 — Apply the user's shot-review fixes (artifact `6y7CdSBwvuiThopTMEmBYJ` comments + chat, 2026-10-12)
   - files: `Gui/NodeGui.cpp` (label alignment), `Gui/LayerChannelRow.*` / `Gui/KnobGuiLayerSelect.*` / `Gui/KnobGuiChannelSelect.*` (channel picker), `Gui/KnobGuiContainerHelper.cpp` (button column), `Engine/OfxEffectInstance.cpp` (IDistort UV offset row), `Gui/GuiApplicationManager.cpp` or the toolbox builder (stray coloured icon), Merge panel knob/label code, `Tests/gui/m56_visual.py`
   - approach:
     - Left-align node labels by default; wrapped continuation lines get a small hanging indent.
@@ -258,7 +258,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
 
 ## Phase 56.7: Evidence and UAT
 
-- [ ] M56.P7.T1 — End build: run every suite and the M56 script, and take the "after" shots
+- [x] M56.P7.T1 — End build: run every suite and the M56 script, and take the "after" shots
   - files: `Tests/gui/m56_visual.py` (fixes only), `PLAN/MILESTONES/M56-polish-visual-and-menus.md` (gate results; the executor edits this)
   - approach:
     - Run one `tools/ci/local/build.sh fast`, then ctest.
@@ -322,3 +322,4 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
 - 2026-10-11 — **P7.T1 (end build):** the first build in the worktree was green, with no compile errors. ctest passes 1632/1632, once `build/assets` was symlinked into the worktree so the CImg reference tests compile (a worktree has no assets of its own). `m56_visual.py` passes 150/0 at 1× and at 2×; `m24_border.py` passes 47/0. `m55_input_pipes.py` fails 3 checks (Mask stubs auto-hiding) because M55 isn't merged yet; this clears on rebase. One product bug was found and fixed in `875df5bd3`: a node with a preview and a wrapped label drew the label below the node. Visual checks pass: the dope-sheet markers are upright with no red/blue swap, `feather` and `pen-tool` arcs render in Qt 6.8.3 (no re-save needed), the opacity glyphs show their fade, and the brush reads at 18 px. At 2× the link-cursor hotspot is about 1 logical px off, because Qt's X11 backend doesn't scale the hotspot; this is within tolerance. The after shots are in `.worktrees/m56/build/m56-shots/after{,-2x}/`. The before/after review with the user comes next.
 - 2026-10-11 — **P7.T2 AppImage:** `build/appimages/M56-875df5bd3.AppImage` with `build/appimages/M56-uat.md`. It launches; `check-relocatable.sh` on the extracted bundle finds 266 binaries that all resolve, `libQt6Svg.so.6` included. Waiting on the user's shot approval (claude.ai artifact `6y7CdSBwvuiThopTMEmBYJ`) and UAT.
 - 2026-10-12 — **Shot review round 1 (user):** eight fixes, listed in P8.T1. **Deferred:** IDistort offers only RGBA where it should have a layer dropdown. The user asked to defer this to a later milestone, so it is added to M69 - Minor Cleanup.
+- 2026-10-12 — **Review round 2 (user):** the node label block is centred again, with its lines left-aligned and an 8 px hanging indent. The channel row's "[-]" button moves to the end of the row, so the layer menu and "+" align with the field column (`2deb32ca3`). The branch was rebased onto `main` with M55 (clean). Gate on `2deb32ca3`: `m56_visual.py` 202/0 at 1× and at 2×; `m55_node_graph.py` 162/0, `m55_input_pipes.py` 118/0 and `m24_border.py` 47/0 (on `4b534b725`); full ctest 1654/1655. The one failure, `BlurKernels.CImgReferenceAvailable`, was a stale ccache object compiled before `build/assets` was linked into the worktree; recompiled, the CImg tests pass 10/10. UAT AppImage: `build/appimages/M56-2deb32ca3.AppImage`.

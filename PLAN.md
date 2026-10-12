@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: [M45.P8.T3 build (queued), M56.P8.T1, M76 UAT round 2, M27.P1.T1, M93.P1.T1, M85 elaboration]
-pm_heartbeat: 2026-10-12T00:43:53-04:00
+current: [M45.P8.T3 build (queued), M56 UAT, M76 UAT round 2, M27.P1.T1, M93.P1.T1, M85 elaboration]
+pm_heartbeat: 2026-10-12T00:48:03-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---

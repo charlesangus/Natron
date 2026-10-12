@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: [M69 freshness check, M45.P8.T3 build (queued), M56 UAT, M76 UAT round 2, M27.P1.T1, M93.P5.T1 (UAT AppImage building; PR #55 review), M85.P1.T3 (fixing test)]
-pm_heartbeat: 2026-10-12T06:21:23-04:00
+pm_heartbeat: 2026-10-12T06:35:42-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---

@@ -27,7 +27,7 @@ Scouted 2026-10-11 on `milestone/m55-node-graph-polish` at `10e0accd5`. **Re-che
   - verify: P7.T1 sends presses at 12px and 16px from an unconnected Merge input stub, at 100% and 50% zoom. Each starts an arrow drag (the stub follows the cursor). A press 30px away doesn't. With two pipes crossing near the cursor, the nearer one is taken.
   - size: M
 
-- [ ] M69.P2.T2 — Add pick-up connection mode: click an input, it follows the cursor, click a node to connect
+- [x] M69.P2.T2 — Add pick-up connection mode: click an input, it follows the cursor, click a node to connect
   - files: `Gui/NodeGraphPrivate.h`, `Gui/NodeGraph10.cpp`, `Gui/NodeGraph15.cpp`, `Gui/NodeGraph20.cpp`, `Gui/NodeGraph25.cpp` (**REBASE (M45)**: M45 drops `_lastNodeCreatedName` from `NodeGraphPrivate.h`, and in `NodeGraph25.cpp` rewrites `NodeGraph::event`/`popCreateNodeDialog` and removes the create-node branch of `keyPressEvent`; the Escape branch is untouched)
   - approach:
     - A press and release on an input arrow with no movement (`hasMovedOnce` false at the `eEventStateDraggingArrow` release, `NodeGraph15.cpp:141-142`) enters pick-up instead of doing nothing. Store `_pickedUpArrow` (an `Edge*`) plus the original source in `NodeGraphPrivate`, as a flag **separate from `_evtState`**, so the existing pan (middle drag) and zoom (wheel) states keep working while an input is held.

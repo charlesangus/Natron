@@ -155,7 +155,7 @@ Scouted 2026-10-11 on `milestone/m55-node-graph-polish` at `10e0accd5`. **Re-che
 
 ## Phase 69.8: Legacy-project compatibility removal
 
-- [ ] M69.P8.T1 — Remove the knob-name and choice-option compatibility filters
+- [x] M69.P8.T1 — Remove the knob-name and choice-option compatibility filters
   - files: `Engine/KnobSerialization.cpp`, `Engine/KnobSerialization.h`, `Engine/Node.cpp`, `Engine/PyParameter.cpp`, `Tests/ProjectSerialization_Test.cpp` (**REBASE (M45)**: `Node.cpp` gains about 24 lines elsewhere; **OVERLAP with M76 - Native Write**, on another host, and **M93 - Serialization Boundary**; see approach)
   - approach: the user added this on 2026-10-10 (no backward compatibility in this fork). The re-check of 2026-10-12 found both still on `main`:
     - The filter tables are the whole anonymous namespace `KnobSerialization.cpp:301-659`: `KnobNameFilter`/`KnobChoiceOptionFilter`, `KnobNameFilters` `:445-566`, `KnobChoiceOptionFilters` `:568-657` with the WriteOIIO `outputChannels` motion/disparity entries and the frame-range/bit-depth entries, and the two statics `:658-659`. The functions are `filterKnobNameCompat`/`filterKnobChoiceOptionCompat` at `:740-780`, declared at `KnobSerialization.h:240-262`. Delete all of it.
@@ -166,7 +166,7 @@ Scouted 2026-10-11 on `milestone/m55-node-graph-polish` at `10e0accd5`. **Re-che
   - verify: at the gate build, ctest is green; `grep -rn "filterKnob\(Name\|ChoiceOption\)Compat\|KnobChoiceOptionFilter\|KnobNameFilter" Engine Gui Tests` finds nothing.
   - size: M
 
-- [ ] M69.P8.T2 — Remove the legacy colour-layer reset and the pre-v17 channel-set gate, with both legacy fixtures
+- [x] M69.P8.T2 — Remove the legacy colour-layer reset and the pre-v17 channel-set gate, with both legacy fixtures
   - files: `Engine/Node.cpp`, `Engine/Node.h`, `Engine/NodePrivate.h`, `Engine/NodeMain.cpp`, `Engine/KnobChannelSet.h`/`.cpp`, `Tests/ProjectSerialization_Test.cpp`, `Tests/DefaultChannelSet_Test.cpp`, `Tests/fixtures/m65-legacy-color.ntp`, `Tests/fixtures/channel-set-legacy-defaults.ntp` (**REBASE (M45)**: `Node.cpp`/`Node.h`; pending Q3)
   - approach: split from P8.T1 by the 2026-10-12 scout. Deleting the `m65-legacy-color.ntp` fixture, as P8.T1 first asked, removes every `LegacyColorProjectTest` case (`ProjectSerialization_Test.cpp:312-~530`: `ColorLayerValuesResetToRgbaKeepingChannelsWithAWarning`, `LegacyColorWarningSurvivesARender` and `ResavingWritesRgbaNeverTheStorageID`, beside P8.T1's case). Those tests are the only coverage of M65's load-time machinery. Delete the machinery with them:
     - the legacy colour-layer reset and warning: `rewriteLegacyColorRows`/`rewriteLegacyColorValue`/`Node::resetLegacyColorLayerKnobs`/`postPendingLegacyColorLayerWarning` (`Node.cpp:1450-1600`), the call at `:1672-1676` and `NodeMain.cpp:227`, and `legacyColorLayerWarningPending` (`NodePrivate.h:274,534`);
@@ -268,3 +268,4 @@ Acceptance sketch:
   - **Legacy removal:** remove both the M65 colour-layer reset and the pre-v17 channel-set gate, with their tests and fixtures (P8.T1 and P8.T2 as written).
   - **Rect pick output:** yes. Ctrl+Shift+Alt drag reads the output; plain Ctrl+Shift drag reads the input. P4.T3 includes this. Hover stays input-only.
 - 2026-10-12 — **P2.T4:** the paste splices only when exactly one non-backdrop node is selected, and leaves it unconnected when the target is a Viewer or Write or the pasted entry is a generator. For a chain, outputs are re-routed to the pasted *exit*, because `moveNodesForIdealPosition` routes to the entry. Undo diffs the recorded inputs through a new `ReconnectInputsCommand`. The Python `app.pasteNodes()` path splices too.
+- 2026-10-12 — **P8:** removed 1,932 lines. Beyond the brief, `markPersistentMessageFromProjectLoad` also went, because only the deleted warning used it. Still in place: the pre-2.2.3 `"<name>Choice"` string-param branch in `Node::loadKnob` (with only its filter call removed), and the flags `NODE_SERIALIZATION_ALWAYS_SAVES_CHANNEL_SET` and `KNOB_SERIALIZATION_CHANGE_LAYERS_SERIALIZATION`, which other definitions still use. Under the no-backward-compatibility rule, the pre-2.2.3 branch is removed in the P7.T1 end build.

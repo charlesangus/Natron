@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: [M69.P8.T1, M45 UAT, M56 UAT, M76 merge M84 + gate, M27.P1.T1, M93.P5.T1 (UAT AppImage building; PR #55 review), M85.P1.T3 (fixing test)]
-pm_heartbeat: 2026-10-12T09:26:24-04:00
+current: [M69.P7.T1 end build, M45 UAT, M56 UAT, M76 merge M84 + gate, M27.P1.T1, M93.P5.T1 (UAT AppImage building; PR #55 review), M85.P1.T3 (fixing test)]
+pm_heartbeat: 2026-10-12T09:29:36-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---

@@ -466,7 +466,7 @@ Gui::createMenuActions()
     QObject::connect( _imp->actionClose_project, SIGNAL(triggered()), this, SLOT(closeProject()) );
 
     _imp->actionReload_project = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionReloadProject, kShortcutDescActionReloadProject, this);
-    _imp->actionReload_project->setIcon(menuIcon("folder-sync"));
+    _imp->actionReload_project->setIcon(menuIcon("refresh-cw"));
     QObject::connect( _imp->actionReload_project, SIGNAL(triggered()), this, SLOT(reloadProject()) );
 
     _imp->actionSave_project = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionSaveProject, kShortcutDescActionSaveProject, this);

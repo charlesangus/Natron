@@ -323,3 +323,14 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
 - 2026-10-11 — **P7.T2 AppImage:** `build/appimages/M56-875df5bd3.AppImage` with `build/appimages/M56-uat.md`. It launches; `check-relocatable.sh` on the extracted bundle finds 266 binaries that all resolve, `libQt6Svg.so.6` included. Waiting on the user's shot approval (claude.ai artifact `6y7CdSBwvuiThopTMEmBYJ`) and UAT.
 - 2026-10-12 — **Shot review round 1 (user):** eight fixes, listed in P8.T1. **Deferred:** IDistort offers only RGBA where it should have a layer dropdown. The user asked to defer this to a later milestone, so it is added to M69 - Minor Cleanup.
 - 2026-10-12 — **Review round 2 (user):** the node label block is centred again, with its lines left-aligned and an 8 px hanging indent. The channel row's "[-]" button moves to the end of the row, so the layer menu and "+" align with the field column (`2deb32ca3`). The branch was rebased onto `main` with M55 (clean). Gate on `2deb32ca3`: `m56_visual.py` 202/0 at 1× and at 2×; `m55_node_graph.py` 162/0, `m55_input_pipes.py` 118/0 and `m24_border.py` 47/0 (on `4b534b725`); full ctest 1654/1655. The one failure, `BlurKernels.CImgReferenceAvailable`, was a stale ccache object compiled before `build/assets` was linked into the worktree; recompiled, the CImg tests pass 10/10. UAT AppImage: `build/appimages/M56-2deb32ca3.AppImage`.
+- 2026-10-12 — **UAT round 1 (user) on `M56-2deb32ca3.AppImage`, not yet passed.** Findings (screenshot `.local/Screenshot_20261012_094720.png`):
+  - The icons in the pane header and properties-bin buttons are tiny.
+  - The bin's "2" max-panels box is offset and crowded.
+  - The time-display format dropdown is too small for its text.
+  - Several Preferences items show the wrong text colour.
+  - Remove the Windows-only "use drive letters" preference.
+  - Some icons look white instead of the text colour (about 0.78 linear).
+  - Changing the text colour is very slow, and it doesn't recolour the icons; the user wants that to happen live.
+  - Legacy icons remain, e.g. in the save dialog; do another sweep.
+
+  All of these are being fixed together; the build waits for M69's cold build.

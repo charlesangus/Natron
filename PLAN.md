@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: [M69.P7.T1 end build, M45 UAT fixes, M56 UAT fixes, M27.P1.T1, M93.P5.T1 (awaiting user UAT; formatting commit pending a verify build), M85.P1.T3 (fixing test)]
-pm_heartbeat: 2026-10-12T11:14:33-04:00
+current: [M69.P7.T1 end build, M45 UAT fixes, M56 UAT fixes, M27.P1.T1, M93 ship (format fix, CI, merge PR #55), M85.P1.T3 (fixing test)]
+pm_heartbeat: 2026-10-12T11:18:26-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -294,7 +294,7 @@ future core work has solid ground to build on.
 | M93 | Serialization Boundary | doing | - | [M93-serialization-boundary.md](PLAN/MILESTONES/M93-serialization-boundary.md) |
 | M100 | Content Node Hashing | todo | M93 | [M100-content-node-hashing.md](PLAN/MILESTONES/M100-content-node-hashing.md) |
 | M16 | Project Format Redesign | todo | M93 | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
-| M114 | Authoritative Undoable Presets | todo | M93 | [M114-authoritative-undoable-presets.md](PLAN/MILESTONES/M114-authoritative-undoable-presets.md) |
+| M114 | Global Undo Correctness | todo | M93 | [M114-global-undo-correctness.md](PLAN/MILESTONES/M114-global-undo-correctness.md) |
 | M102 | Graph Edit Operations | todo | M16 | [M102-graph-edit-operations.md](PLAN/MILESTONES/M102-graph-edit-operations.md) |
 | M103 | Graph Diff And Merge | todo | M102 | [M103-graph-diff-and-merge.md](PLAN/MILESTONES/M103-graph-diff-and-merge.md) |
 | M104 | Merge Resolution UI | todo | M103 | [M104-merge-resolution-ui.md](PLAN/MILESTONES/M104-merge-resolution-ui.md) |

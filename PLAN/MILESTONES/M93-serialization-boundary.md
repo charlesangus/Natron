@@ -180,7 +180,7 @@ Scouting facts (2026-10-10, `main` at `6b0ec1f42`):
 
 ## Phase 93.5: Close-out
 
-- [ ] M93.P5.T1 — AppImage smoke UAT of the GUI-only serialization paths
+- [x] M93.P5.T1 — AppImage smoke UAT of the GUI-only serialization paths
   - files: `build/appimages/M93-<sha>.AppImage`, `build/appimages/M93-uat.md`
   - approach: build with the release `tools/ci/local/package.sh` and launch-check it with `build/appimages/run-launch-check.sh`. The checklist:
     - open, save and reopen each `tools/bench/comps/*.ntp`;
@@ -251,5 +251,6 @@ includes boost archives. The user signs off the UAT.
 - 2026-10-12 — UAT findings from the user:
   - (1) Applying a preset adds nothing usable to the undo stack.
   - (2) A preset only changes the knobs that were non-default on the exporting node.
-  Comparing with `origin/main` shows both are pre-existing: the command goes onto the node's panel stack, not the node graph's, and is dropped when the knobs rebuild; export saves only modified knobs, and apply skips knobs absent from the file. Logged as stub M114 - Authoritative Undoable Presets.
+  Comparing with `origin/main` shows both are pre-existing: the command goes onto the node's panel stack, not the node graph's, and is dropped when the knobs rebuild; export saves only modified knobs, and apply skips knobs absent from the file. Logged as stub M114, later renamed M114 - Global Undo Correctness.
   - This corrects an earlier claim in this file that the 40486db57 Load Presets undo fix makes undo work. It only changes `LoadNodePresetsCommand::undo()`, which users rarely reach. The UAT checklist's preset-undo item tests M114's scope, not M93's.
+- 2026-10-12 — **User signed off the UAT** of `build/appimages/M93-a8294c063.AppImage`, keeping the copy-time snapshot change. Per the user, M114 became **M114 - Global Undo Correctness**: one global undo stack tracking every edit, with nodes keeping local stacks for their panels' undo/redo buttons. The two preset issues are part of it.

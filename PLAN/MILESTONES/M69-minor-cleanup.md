@@ -101,7 +101,7 @@ Scouted 2026-10-11 on `milestone/m55-node-graph-polish` at `10e0accd5`. **Re-che
   - verify: `ctest -R NodeColorSampler`: for Constant(0.25)→Grade(gain 2), sampling the Grade gives 0.5 and its input (the Constant) gives 0.25. A 4×4 rect over a CheckerBoard square boundary gives the mean. A disconnected node returns false.
   - size: M
 
-- [ ] M69.P4.T3 — Make the picker read the viewed node's input by default, and its output with Ctrl+Alt
+- [x] M69.P4.T3 — Make the picker read the viewed node's input by default, and its output with Ctrl+Alt
   - files: `Gui/ViewerGL.cpp`, `Gui/ViewerGL.h`, `Gui/ViewerGLPrivate.h`, `Gui/InfoViewerWidget.h`, `Gui/InfoViewerWidget.cpp`, `Gui/ActionShortcuts.h`, `Gui/GuiApplicationManager10.cpp` (seven files, but the last four are one-line or few-line edits; **OVERLAP: ActionShortcuts.h / GuiApplicationManager10.cpp** with P2.T3 and P6.T2; **REBASE (M56, M45)**: as in P2.T3, in other parts of those two files. This task no longer touches `ViewerTab.cpp`, which M56 rewrites heavily.)
   - approach:
     - This is a modifier, not a toolbar button (user decision 2026-10-11). Plain **Ctrl-click** (`kShortcutIDMousePickColor`), the **Ctrl+Shift rect pick** (`kShortcutIDMouseRectanglePick`) and the **hover readout** (`updateColorPicker`, `ViewerGL.cpp:2562-2670`) read the viewed node's **input**. **Ctrl+Alt-click** reads its **output**, which is today's path.

@@ -204,6 +204,20 @@ Replaces the `Write` container (`Engine/WriteNode.cpp`) and every OFX writer wit
   - verify: the section matches the code (`writableExtensions`, `kExcludedOiioFormats`, `PLUGIN_MAJOR_NATRON_WRITE`, the OfxHost skip); `lint-ci` green.
   - size: M
 
+## Phase 76.3: UAT round 1
+
+- [ ] M76.P3.T1 — Reload button on the native Read and the native Write
+  - files: `Engine/Nodes/IO/NativeRead.cpp/.h`, `Engine/Nodes/IO/NativeWrite.cpp/.h`, tests under `Tests/Native/`, `Tests/gui/m75_read.py`/`m76_write.py`
+  - approach: a Reload button on each. On the Read it drops everything cached from the file (decoded headers, layer lists, the node's cached images) and re-reads, so a file changed on disk shows up. On the Write it does the same for the read-back file and is enabled only while Read back file is on.
+  - verify: tests overwrite the file on disk after a first pull; without Reload the old pixels/layers are served, after Reload the new ones; the Write's button is disabled with read back off. GUI scripts click it.
+  - size: M
+
+- [ ] M76.P3.T2 — Read back only an EXR whose stored hash matches the node
+  - files: `Engine/Nodes/IO/NativeWrite.cpp/.h`, `Engine/Nodes/IO/OiioWriteSupport.*`, tests, `Engine/Nodes/README.md`
+  - approach: on a render to disk the Write stores its node hash for that frame/view in the EXR header. With Read back on, a frame is read from the file only if the stored hash equals the node's current hash; any upstream change or Write knob change breaks the match and the Write passes its input through (missing frame likewise). Read back is offered only for EXR sequences (hidden/disabled for other formats).
+  - verify: tests — render, read back shows the file; change an upstream knob → input shown, not the file; revert → file again; change a Write knob → input; a non-EXR extension disables read back; a missing frame shows the input. The existing missing-frame-is-an-error test changes to match.
+  - size: L
+
 **Verification gate:** every extension in OIIO's runtime output format list outside the excluded formats (raw, null, term, ffmpeg, psd) creates a native Write through every entry point (Tab menu, Image > Write, Render Selected, `app.createWriter`, `-w`, Precomp), and unsupported extensions (mov, cr2, psd) are refused with a message. EXR (scanline, tiled, multi-part, multi-view), PNG 8/16, JPEG, TIFF 8/16/float, DPX, TGA, HDR and PFM round-trip through the native Read in ctest. Layers, channel subsets, views and parts, output colourspace defaults/conversion/reset/context, metadata write-out and read-back are tested. The large-image gate test (a frame over 2^31 bytes) passes at support and node level, and a 3-frame range renders identically in the legacy and task-graph schedulers with 0 unplanned pulls. No OFX writer is registered or reachable, `WriteNode` and the IO meta-node plumbing are gone from the tree, and the fork bundles no longer build OFX writers. Full ctest green; smoke green, including `app.render` and `-i Read1`; the release startup probe expects the native Write. The Xvfb GUI check passes with screenshots approved by the user, and the user signs off on a GUI render in an AppImage. CI (`format`, `lint-ci`, `build-and-test`) green.
 
 ## Decisions
@@ -233,3 +247,4 @@ Replaces the `Write` container (`Engine/WriteNode.cpp`) and every OFX writer wit
 - 2026-10-11 — **Review round 1 (Codex, PR #52) closed:** 6 findings, all fixed (`bdbe991c6`): narrowed layers for partly selected non-colour layers, read-back layers from the file with the input optional (new engine opt-out `EffectInstance::outputFollowsLayerKnob` of the no-channel identity shortcut), 64-bit row sizes, visible large-test skips (`NATRON_REQUIRE_LARGE_TESTS=1` enforces), creation over every writable extension, comment cleanup. CI's debug run then failed on a SIGFPE inside OpenColorIO's inverse-LUT bake (`MakeFastLut1DFromInverse`, gdb-confirmed); `f69ebae73` masks debug FP traps around OCIO processor builds and `convertRow`'s apply, with the guard moved to `Global/FloatingPointExceptions.h`. Debug ctest 1759/1759 both schedulers; release ctest, smoke, GUI green. AppImage `M76-ec033989a` predates these fixes.
 - 2026-10-11 — AppImage `build/appimages/M76-f69ebae73.AppImage` (review fixes included; supersedes `M76-ec033989a`) and updated `M76-uat.md` handed to the user; smoke green on it.
 - 2026-10-11 — PR #52 CI green (`format`, `lint-ci`, `build-and-test` on `f69ebae73`). Waiting only on the user's UAT sign-off of `M76-f69ebae73.AppImage`; then merge the fork PRs (openfx-io#12, openfx-arena#6) with merge commits, re-pin `fetch-assets.sh`, and squash-merge #52.
+- 2026-10-11 — **UAT round 1 (user):** no Reload button on the native Read or Write (Write: only meaningful with read back on); Write read back must compare the hash stored in the file with the node hash and read only on a match, EXR sequences only. Added as Phase 76.3 (P3.T1, P3.T2). PM assumption, stated to the user: on a mismatch or a missing frame the Write passes its input through.

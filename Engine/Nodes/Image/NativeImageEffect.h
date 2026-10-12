@@ -33,6 +33,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
@@ -128,6 +129,35 @@ public:
     virtual bool isPointOp() const WARN_UNUSED_RETURN
     {
         return false;
+    }
+
+    /**
+     * @brief Whether renderGpu() can produce this query. Nodes that cannot are rendered on the
+     * CPU.
+     **/
+    virtual bool canRenderOnGpu(const GpuQuery& /*query*/) const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief The region of input inputNb that renderGpu() reads to produce outputRect; wider
+     * than outputRect for a node with a halo.
+     **/
+    virtual RectI getGpuInputRoI(int /*inputNb*/,
+                                 const RectI& outputRect,
+                                 const RenderScale& /*scale*/) const WARN_UNUSED_RETURN
+    {
+        return outputRect;
+    }
+
+    /**
+     * @brief Records the dispatches that fill args.output over args.outputRect. Only called
+     * when canRenderOnGpu() accepted args.query.
+     **/
+    virtual StatusEnum renderGpu(const GpuRenderArgs& /*args*/) WARN_UNUSED_RETURN
+    {
+        return eStatusFailed;
     }
 
     /**

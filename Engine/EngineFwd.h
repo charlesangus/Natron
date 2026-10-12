@@ -159,6 +159,7 @@ class FramebufferConfig;
 class GLRendererID;
 class GLShader;
 class GPUContextPool;
+class GpuContext;
 class GenericAccess;
 class GenericSchedulerThread;
 class GenericSchedulerThreadWatcher;

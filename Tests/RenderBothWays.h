@@ -30,6 +30,7 @@
 
 #include <functional>
 #include <list>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -57,6 +58,22 @@ struct RenderMismatch {
     float maxAbsDiff = 0.f;
     std::string file;
     std::string error;
+};
+
+// Renders with GPU placement off, as the GPU mode setting set to Off would, while it lives. The
+// both-ways comparisons below hold one so that they compare the two schedulers on the CPU: with a
+// device, the Task graph pass could otherwise place nodes on the GPU, whose results may differ from
+// the CPU's by a rounding step. No render may be running when it is created or destroyed.
+class GpuPlacementOffGuard {
+public:
+    GpuPlacementOffGuard();
+    ~GpuPlacementOffGuard();
+
+    GpuPlacementOffGuard(const GpuPlacementOffGuard&) = delete;
+    GpuPlacementOffGuard& operator=(const GpuPlacementOffGuard&) = delete;
+
+private:
+    std::unique_ptr<GpuContext> _saved;
 };
 
 // Renders frames [firstFrame, lastFrame] through `writer` (a native Write node) once in Legacy

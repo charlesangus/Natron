@@ -6,13 +6,13 @@
 # documentation below in sync with the "Install Linux system packages" step
 # there.
 #
-# This file currently adds no layers on top of the base image -- everything
-# ci.yml's package-install step needs (bar one documented exception below) is
-# already present in aswf/ci-vfxall:2027-clang21.1. It is kept as a file
+# Everything ci.yml's package-install step needs (bar one documented
+# exception below) is already present in aswf/ci-vfxall:2027-clang21.1, so
+# the only layer this file adds is the local-only Mesa relink at the bottom,
+# which CI never sees (CI runs the base image directly). It is kept as a file
 # (rather than building the image straight from `docker pull`) so that:
 #   (a) the drift-check comment block below has somewhere to live, and
-#   (b) future local-only layers (additional tools, env setup, etc.) have an
-#       obvious, already-wired seam to land in instead of a fresh file.
+#   (b) local-only layers have an obvious, already-wired seam to land in.
 #
 # Why ci-vfxall and not ci-baseqt (which this used through M7): ci-baseqt
 # ships Qt/PySide and the base libraries but no OpenColorIO, OpenImageIO, or
@@ -67,6 +67,36 @@ FROM aswf/ci-vfxall:2027-clang21.1
 
 # --- Local-only additions (not part of CI's package list) ------------------
 # ccache, ninja, and gdb are already present in this base image (ccache and
-# ninja via Conan at /usr/local/bin, gdb as an RPM) -- nothing to install
-# here. This section is intentionally empty; kept as a marker in case a
-# future local-only tool needs adding, so it's obvious where it belongs.
+# ninja via Conan at /usr/local/bin, gdb as an RPM) -- nothing to install.
+
+# --- Mesa: bind its drivers to the system LLVM -----------------------------
+# Mesa's RPMs were built against the system /usr/lib64/libLLVM.so.21.1, but
+# both ld.so.conf and LD_LIBRARY_PATH put /usr/local/lib first, where the
+# Conan clang toolchain ships its own libLLVM.so.21.1 under the same soname
+# without the AMDGPU target. RADV and radeonsi then fail to load
+# (`undefined symbol: LLVMInitializeAMDGPUTargetInfo`), leaving only the
+# software rasterisers. Neither the search order nor LD_PRELOAD can fix
+# that globally: clang itself links the /usr/local copy, and Qt needs
+# /usr/local ahead of /usr/lib64 for FreeType.
+#
+# A NEEDED entry containing a slash is opened by that exact path, bypassing
+# every search path, so rewriting it in each Mesa library that links LLVM
+# pins only Mesa to the system copy and leaves the toolchain untouched. All
+# such libraries are rewritten, llvmpipe and lavapipe included, so a process
+# that loads several Mesa drivers maps one LLVM rather than two copies that
+# export identically versioned symbols. The build fails if nothing matched,
+# so a base image bump that renames these libraries cannot silently undo it.
+RUN set -eu; \
+    sys_llvm=/usr/lib64/libLLVM.so.21.1; \
+    patched=0; \
+    for lib in $(rpm -ql $(rpm -qa 'mesa-*') | grep '\.so' | sort -u); do \
+        if [ -f "$lib" ] && [ ! -L "$lib" ] \
+            && readelf -d "$lib" 2>/dev/null | grep -q 'NEEDED.*\[libLLVM\.so\.21\.1\]'; then \
+            patchelf --replace-needed libLLVM.so.21.1 "$sys_llvm" "$lib"; \
+            echo "relinked $lib -> $sys_llvm"; \
+            patched=$((patched + 1)); \
+        fi; \
+    done; \
+    test "$patched" -gt 0; \
+    ldd /usr/lib64/libvulkan_radeon.so | grep -q "$sys_llvm"; \
+    ! ldd /usr/lib64/libvulkan_radeon.so | grep -q /usr/local/lib/libLLVM

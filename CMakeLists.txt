@@ -34,6 +34,15 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 option(NATRON_SYSTEM_LIBS "use system versions of dependencies instead of bundled ones" OFF)
 option(NATRON_BUILD_TESTS "build the Natron test suite" ON)
+option(NATRON_GPU "Vulkan compute backend" ON)
+
+if(NATRON_GPU)
+    find_package(Vulkan)
+    if(NOT Vulkan_FOUND)
+        message(STATUS "Vulkan not found: building without the GPU backend (NATRON_GPU=OFF)")
+        set(NATRON_GPU OFF)
+    endif()
+endif()
 
 set(IS_DEBUG_BUILD OFF)
 if(CMAKE_BUILD_TYPE MATCHES "^(debug|Debug|DEBUG)$")

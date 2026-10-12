@@ -49,6 +49,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Cache.h"
+#include "Engine/GpuPlacement.h"
 #include "Engine/Image.h"
 #include "Engine/Log.h"
 #include "Engine/Lut.h"
@@ -513,6 +514,7 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
             root.roi = roi;
             root.components = components;
             root.bitdepth = bitdepth;
+            placeRenderGraph(graph, context);
 
             return appPTR->getRenderScheduler()->submit(context, std::move(graph), RenderScheduler::Priority::Interactive);
         }

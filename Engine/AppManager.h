@@ -424,6 +424,18 @@ public:
     RenderSchedulerModeEnum getRenderSchedulerMode() const;
 
     /**
+     * @brief The GPU context, null before the settings are loaded. It reports unavailable while it initializes
+     * on its own thread and whenever no suitable device exists.
+     **/
+    GpuContext* getGpuContext() const;
+
+    /**
+     * @brief Replaces the GPU context and returns the previous one, so that a test can render with a device the
+     * settings would not select. No render may be running.
+     **/
+    std::unique_ptr<GpuContext> swapGpuContextForTests(std::unique_ptr<GpuContext> context);
+
+    /**
      * @brief Overrides the mode, whatever its source, until the next Settings change.
      **/
     void setRenderSchedulerMode(RenderSchedulerModeEnum mode);

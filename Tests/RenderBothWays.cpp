@@ -53,6 +53,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/FrameRenderContext.h"
+#include "Engine/GpuContext.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
@@ -558,6 +559,18 @@ renderNodePlanesDirect(const NodePtr& node,
     return true;
 } // renderNodePlanesDirect
 
+GpuPlacementOffGuard::GpuPlacementOffGuard()
+{
+    GpuContextOptions options;
+    options.mode = GpuResolvedMode::Off;
+    _saved = appPTR->swapGpuContextForTests(std::unique_ptr<GpuContext>(new GpuContext(options)));
+}
+
+GpuPlacementOffGuard::~GpuPlacementOffGuard()
+{
+    appPTR->swapGpuContextForTests(std::move(_saved));
+}
+
 RenderMismatch
 renderBothWays(const NodePtr& writer,
                int firstFrame,
@@ -593,6 +606,7 @@ renderBothWays(const NodePtr& writer,
     DisableUnreachableRAMPurging noPurge;
     ThreadPoolSizeGuard poolGuard;
     SchedulerModeGuard modeGuard;
+    GpuPlacementOffGuard cpuOnly;
 
     enterMode(eRenderSchedulerModeLegacy, 0);
     const WriterPass legacy = renderAndReadSequence(writerEffect, pattern, viewNames, firstFrame, lastFrame);
@@ -642,6 +656,7 @@ renderBothWaysDirect(const NodePtr& node,
     DisableUnreachableRAMPurging noPurge;
     ThreadPoolSizeGuard poolGuard;
     SchedulerModeGuard modeGuard;
+    GpuPlacementOffGuard cpuOnly;
 
     enterMode(eRenderSchedulerModeLegacy, 0);
     const DirectPass legacy = renderDirect(node, time, view, mipmapLevel, roi, false /*throughScheduler*/);

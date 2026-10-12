@@ -55,6 +55,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GenericSchedulerThreadWatcher.h"
+#include "Engine/GpuPlacement.h"
 #include "Engine/Image.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
@@ -2452,6 +2453,7 @@ private:
                             if (graph.tasks.empty()) {
                                 fallbackReason = "request does not reach the writer";
                             } else {
+                                placeRenderGraph(graph, context);
                                 future = appPTR->getRenderScheduler()->submit(context, std::move(graph), RenderScheduler::Priority::Background);
                             }
                         }

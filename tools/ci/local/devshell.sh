@@ -12,6 +12,17 @@
 #   tools/ci/local/devshell.sh <cmd> [args...]  # run a command, propagate its exit code
 #   tools/ci/local/devshell.sh --recreate       # force-recreate the container (e.g. after
 #                                                # the image changes), then continue as above
+#   tools/ci/local/devshell.sh --gpu [...]      # use the GPU container instead (see below)
+#
+# --gpu (or NATRON_DEV_GPU=1 in the environment, which is how build.sh/test.sh
+# reach it, since they re-exec through this script without flags) selects a
+# separate container, "natron-dev-gpu" by default, for work that needs the
+# host GPU through Vulkan: it refuses to start unless a /dev/dri render node
+# is readable and writable, and sets RADV_PERFTEST=transfer_queue, without
+# which this Mesa's RADV exposes no transfer-only queue family. It is a
+# separate container so the normal one keeps its environment unchanged.
+#
+#   NATRON_DEV_GPU=1 tools/ci/local/test.sh ctest release
 #
 # The container name defaults to "natron-dev" and can be overridden with
 # NATRON_DEV_CONTAINER, e.g. to give a second git worktree of this repo its
@@ -35,7 +46,23 @@
 set -euo pipefail
 
 IMAGE="natron-dev:2027-clang21.1"
-CONTAINER_NAME="${NATRON_DEV_CONTAINER:-natron-dev}"
+
+RECREATE=0
+GPU="${NATRON_DEV_GPU:-0}"
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        --recreate) RECREATE=1; shift ;;
+        --gpu) GPU=1; shift ;;
+        *) break ;;
+    esac
+done
+[[ "${GPU}" == "1" ]] || GPU=0
+
+if [[ "${GPU}" == "1" ]]; then
+    CONTAINER_NAME="${NATRON_DEV_CONTAINER:-natron-dev-gpu}"
+else
+    CONTAINER_NAME="${NATRON_DEV_CONTAINER:-natron-dev}"
+fi
 HOME_VOLUME="${CONTAINER_NAME}-home"
 CCACHE_MOUNT="/ccache"
 HOME_MOUNT="/home/devshell"
@@ -101,9 +128,26 @@ if [[ -e /dev/dri ]]; then
     done
 fi
 
+GPU_DOCKER_ARGS=()
+if [[ "${GPU}" == "1" ]]; then
+    RENDER_NODE_OK=0
+    for node in /dev/dri/renderD*; do
+        if [[ -r "${node}" && -w "${node}" ]]; then
+            RENDER_NODE_OK=1
+            break
+        fi
+    done
+    if [[ "${RENDER_NODE_OK}" != "1" ]]; then
+        echo "devshell.sh: --gpu needs a readable and writable /dev/dri/renderD* node;" >&2
+        echo "    found: $(find /dev/dri -maxdepth 1 -name "renderD*" -ls 2>&1 | tr "\n" " ")" >&2
+        echo "    see 'GPU container' in tools/ci/local/README.md for the host udev rule." >&2
+        exit 1
+    fi
+    GPU_DOCKER_ARGS+=(-e NATRON_DEV_GPU=1 -e RADV_PERFTEST=transfer_queue)
+fi
+
 # --- optional forced recreate -----------------------------------------------
-if [[ "${1:-}" == "--recreate" ]]; then
-    shift
+if [[ "${RECREATE}" == "1" ]]; then
     echo "devshell.sh: recreating container '${CONTAINER_NAME}' (caches are kept)..." >&2
     docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 fi
@@ -157,6 +201,7 @@ if [[ "${STATE}" == "missing" ]]; then
         --cap-add=SYS_PTRACE \
         --security-opt seccomp=unconfined \
         "${DRI_DOCKER_ARGS[@]+"${DRI_DOCKER_ARGS[@]}"}" \
+        "${GPU_DOCKER_ARGS[@]+"${GPU_DOCKER_ARGS[@]}"}" \
         -v "${REPO_ROOT}:${REPO_ROOT}" \
         -v "${CCACHE_DIR_HOST}:${CCACHE_MOUNT}" \
         -v "${HOME_VOLUME}:${HOME_MOUNT}" \

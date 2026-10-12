@@ -21,8 +21,11 @@ slang_add_kernel(pointop_grade Kernels/pointops.slang ENTRY pointop_grade REGIST
 slang_add_kernel(pointop_invert Kernels/pointops.slang ENTRY pointop_invert REGISTRY NatronGpu)
 slang_add_kernel(pointop_chain Kernels/pointops.slang ENTRY pointop_chain REGISTRY NatronGpu)
 slang_add_kernel(pointop_masked Kernels/pointops.slang ENTRY pointop_masked REGISTRY NatronGpu)
+slang_add_kernel(wrap_divide Kernels/pixelwrap.slang ENTRY wrap_divide REGISTRY NatronGpu)
+slang_add_kernel(wrap_finish Kernels/pixelwrap.slang ENTRY wrap_finish REGISTRY NatronGpu)
 
 slang_write_kernel_table(NatronGpu OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/gen/GpuKernels.inc")
+get_property(NatronGpu_KERNELS GLOBAL PROPERTY SLANG_REGISTRY_NatronGpu)
 
 add_library(NatronGpu STATIC
     GpuDevice.cpp
@@ -34,6 +37,7 @@ add_library(NatronGpu STATIC
     GpuRuntime.cpp
     GpuTransfer.cpp
     GpuBlur.cpp
+    GpuWrap.cpp
     GlInterop.cpp
     Vma.cpp
 )
@@ -44,12 +48,7 @@ target_link_libraries(NatronGpu
     PUBLIC
         Vulkan::Vulkan
         Threads::Threads
-        grade
-        blur
-        pointop_grade
-        pointop_invert
-        pointop_chain
-        pointop_masked
+        ${NatronGpu_KERNELS}
 )
 target_compile_options(NatronGpu PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
 set_target_properties(NatronGpu PROPERTIES POSITION_INDEPENDENT_CODE ON)

@@ -7,11 +7,17 @@ include(${CMAKE_SOURCE_DIR}/cmake/SlangKernels.cmake)
 set(NATRON_GPU_KERNEL_DIR ${CMAKE_SOURCE_DIR}/Engine/Gpu/Kernels)
 
 # The CPU twins and the extra test kernels get their own names; NatronGpu already owns the
-# SPIR-V targets grade, blur and pointop_*.
+# SPIR-V targets named after its registry kernels.
 slang_add_kernel(test_grade ${NATRON_GPU_KERNEL_DIR}/grade.slang ENTRY grade_main CPP)
 slang_add_kernel(test_blur ${NATRON_GPU_KERNEL_DIR}/blur.slang ENTRY blurPass CPP)
 foreach(_p grade invert chain masked)
     slang_add_kernel(test_pointop_${_p} ${NATRON_GPU_KERNEL_DIR}/pointops.slang ENTRY pointop_${_p} CPP)
+endforeach()
+foreach(_e pixelwrap_identity pixelwrap_scale)
+    slang_add_kernel(${_e} ${NATRON_GPU_KERNEL_DIR}/pixelwrap.slang ENTRY ${_e} CPP)
+endforeach()
+foreach(_e wrap_divide wrap_finish)
+    slang_add_kernel(test_${_e} ${NATRON_GPU_KERNEL_DIR}/pixelwrap.slang ENTRY ${_e} CPP)
 endforeach()
 slang_add_kernel(fill kernels/fill.slang ENTRY fill_main)
 slang_add_kernel(smoke kernels/smoke.slang ENTRY smoke)
@@ -33,6 +39,7 @@ set(GpuTests_SOURCES
     GradeGpu_Test.cpp
     PointOpCompose_Test.cpp
     PointOpGpu_Test.cpp
+    PixelWrap_Test.cpp
     Smoke_Test.cpp
 )
 if(TARGET OpenGL::EGL)
@@ -57,6 +64,10 @@ target_link_libraries(GpuTests
         test_pointop_invert
         test_pointop_chain
         test_pointop_masked
+        pixelwrap_identity
+        pixelwrap_scale
+        test_wrap_divide
+        test_wrap_finish
         test_smoke
         -static-libstdc++
         -static-libgcc

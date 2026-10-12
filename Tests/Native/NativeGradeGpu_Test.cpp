@@ -41,6 +41,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "Native/NativeGpuParity.h"
 
 #include "Gpu/GradeFixture.h"
 
@@ -201,76 +202,9 @@ TEST_F(NativeGradeGpuTest, EligibilityFollowsTheSupportedSettings)
 
 #ifdef NATRON_HAVE_GPU
 
-namespace {
-
-// Creates a runtime on whatever Vulkan device exists, software ones included. Returns false after
-// printing the reason when there is none, unless NATRON_TEST_REQUIRE_GPU=1 makes that a failure.
-bool
-createRuntime(std::unique_ptr<gpu::GpuRuntime>& runtime)
-{
-    gpu::GpuRuntimeOptions options;
-    const gpu::GpuStatus status = gpu::GpuRuntime::create(options, runtime);
-    if (status) {
-        std::printf("vulkan device: %s\n", runtime->device().info().name.c_str());
-
-        return true;
-    }
-    const char* require = std::getenv("NATRON_TEST_REQUIRE_GPU");
-    if (require && (std::strcmp(require, "1") == 0)) {
-        ADD_FAILURE() << "no usable Vulkan device: " << status.message;
-    } else {
-        std::printf("[  SKIPPED ] no usable Vulkan device: %s\n", status.message.c_str());
-    }
-
-    return false;
-}
-
-bool
-upload(gpu::GpuRuntime& runtime,
-       gpu::GpuBuffer& buffer,
-       const std::vector<float>& data)
-{
-    gpu::TimelineValue done;
-    gpu::GpuStatus s = runtime.upload({ const_cast<float*>(data.data()), data.size() * sizeof(float) }, buffer, 0, done);
-    if (s) {
-        s = runtime.wait(done);
-    }
-    EXPECT_TRUE(bool(s)) << s.message;
-
-    return bool(s);
-}
-
-bool
-download(gpu::GpuRuntime& runtime,
-         gpu::GpuBuffer& buffer,
-         std::vector<float>& data)
-{
-    gpu::TimelineValue done;
-    gpu::GpuStatus s = runtime.download(buffer, 0, { data.data(), data.size() * sizeof(float) }, done);
-    if (s) {
-        s = runtime.wait(done);
-    }
-    EXPECT_TRUE(bool(s)) << s.message;
-
-    return bool(s);
-}
-
-gpu::GpuBuffer
-makeBuffer(gpu::GpuRuntime& runtime,
-           size_t floats)
-{
-    gpu::GpuBuffer buffer;
-    const gpu::GpuStatus s = gpu::GpuBuffer::createDeviceLocal(runtime.device(), floats * sizeof(float), gpu::kGpuBufferDefaultUsage, buffer);
-    EXPECT_TRUE(bool(s)) << s.message;
-
-    return buffer;
-}
-
-} // namespace
-
 TEST_F(NativeGradeGpuTest, MatchesTheCpuKernelOnTheGradeFixtures)
 {
-    std::unique_ptr<gpu::GpuRuntime> runtime;
+    std::unique_ptr<GpuParityRuntime> runtime;
     if (!createRuntime(runtime)) {
         return;
     }
@@ -280,14 +214,6 @@ TEST_F(NativeGradeGpuTest, MatchesTheCpuKernelOnTheGradeFixtures)
 
     const std::vector<gradefix::GradeCase> cases = gradefix::makeCases();
     ASSERT_FALSE(cases.empty());
-    size_t maxFloats = 0;
-    for (const gradefix::GradeCase& c : cases) {
-        maxFloats = std::max(maxFloats, c.src.size());
-    }
-    gpu::GpuBuffer srcBuffer = makeBuffer(*runtime, maxFloats);
-    gpu::GpuBuffer dstBuffer = makeBuffer(*runtime, maxFloats);
-    ASSERT_TRUE(bool(srcBuffer) && bool(dstBuffer));
-
     const gradefix::Bounds bounds { gradefix::kUlpBound, true };
     uint64_t compared = 0;
     uint64_t passthrough = 0;
@@ -317,30 +243,19 @@ TEST_F(NativeGradeGpuTest, MatchesTheCpuKernelOnTheGradeFixtures)
         const int nComps = (int)p.nComps;
         const std::vector<float> want = cpuRender(grade, c.src, width, height, nComps, p.channelMask);
 
-        ASSERT_TRUE(upload(*runtime, srcBuffer, c.src));
-        std::unique_ptr<gpu::GpuRecordContext> context;
-        ASSERT_TRUE(bool(runtime->newRecordContext(context)));
-        GpuRenderArgs args(*context);
-        args.query.nComps = nComps;
-        args.query.bitDepth = eImageBitDepthFloat;
+        GpuQuery query = eligibleQuery();
+        query.nComps = nComps;
         for (int i = 0; i < 4; ++i) {
-            args.query.processChannels[i] = (p.channelMask >> i) & 1u;
+            query.processChannels[i] = (p.channelMask >> i) & 1u;
         }
-        ASSERT_TRUE(grade->canRenderOnGpu(args.query));
-        args.outputRect = RectI(0, 0, width, height);
-        GpuImageView view;
-        view.bounds = args.outputRect;
-        view.rowStrideFloats = width * nComps;
-        view.nComps = nComps;
-        view.buffer = &srcBuffer;
-        args.inputs.push_back(view);
-        view.buffer = &dstBuffer;
-        args.output = view;
-        ASSERT_EQ(eStatusOK, grade->renderGpu(args));
-        const gpu::GpuStatus submitted = context->submitAndWait();
-        ASSERT_TRUE(bool(submitted)) << submitted.message;
-        std::vector<float> got(c.src.size(), -123.f);
-        ASSERT_TRUE(download(*runtime, dstBuffer, got));
+        GpuParityImage image;
+        image.bounds = RectI(0, 0, width, height);
+        image.nComps = nComps;
+        image.pixels = c.src;
+        const GpuRunResult run = runRenderGpu(*runtime, *grade, query, std::vector<GpuParityImage>(1, image), nullptr, image.bounds);
+        ASSERT_TRUE(run.ok);
+        EXPECT_EQ(0u, run.writtenOutside);
+        const std::vector<float>& got = run.pixels;
 
         for (size_t i = 0; i < c.src.size(); ++i) {
             const int channel = (int)(i % nComps);
@@ -384,7 +299,7 @@ TEST_F(NativeGradeGpuTest, MatchesTheCpuKernelOnTheGradeFixtures)
 
 TEST_F(NativeGradeGpuTest, HonoursOffsetsAndStridesOfTheViews)
 {
-    std::unique_ptr<gpu::GpuRuntime> runtime;
+    std::unique_ptr<GpuParityRuntime> runtime;
     if (!createRuntime(runtime)) {
         return;
     }
@@ -403,87 +318,52 @@ TEST_F(NativeGradeGpuTest, HonoursOffsetsAndStridesOfTheViews)
     const int dstWidth = 25;
     const int dstHeight = 17;
     const RectI rect(13, 22, 13 + 11, 22 + 7);
-    const int srcStride = srcBounds.width() * nComps + 3;
-    const int dstStride = dstWidth * nComps + 5;
-    const uint64_t srcByteOffset = 16 * sizeof(float);
-    const uint64_t dstByteOffset = 8 * sizeof(float);
-    const size_t srcFloats = srcByteOffset / sizeof(float) + (size_t)srcStride * srcBounds.height();
-    const size_t dstFloats = dstByteOffset / sizeof(float) + (size_t)dstStride * dstHeight;
 
-    std::vector<float> src(srcFloats);
-    for (size_t i = 0; i < src.size(); ++i) {
-        src[i] = -0.5f + (float)((i * 37) % 211) / 100.f;
+    std::vector<float> packedSrc((size_t)srcBounds.width() * srcBounds.height() * nComps);
+    for (size_t i = 0; i < packedSrc.size(); ++i) {
+        packedSrc[i] = -0.5f + (float)((i * 37) % 211) / 100.f;
     }
-    const std::vector<float> sentinel(dstFloats, 7.f);
-
     std::vector<float> packed((size_t)rect.width() * rect.height() * nComps);
     for (int y = 0; y < rect.height(); ++y) {
         for (int x = 0; x < rect.width(); ++x) {
             for (int c = 0; c < nComps; ++c) {
-                packed[((size_t)y * rect.width() + x) * nComps + c] = src[srcByteOffset / sizeof(float) + (size_t)(rect.y1 - srcBounds.y1 + y) * srcStride + (size_t)(rect.x1 - srcBounds.x1 + x) * nComps + c];
+                packed[((size_t)y * rect.width() + x) * nComps + c] = packedSrc[(size_t)(rect.y1 - srcBounds.y1 + y) * srcBounds.width() * nComps + (size_t)(rect.x1 - srcBounds.x1 + x) * nComps + c];
             }
         }
     }
     const std::vector<float> want = cpuRender(grade, packed, rect.width(), rect.height(), nComps, 0xF);
 
-    gpu::GpuBuffer srcBuffer = makeBuffer(*runtime, srcFloats);
-    gpu::GpuBuffer dstBuffer = makeBuffer(*runtime, dstFloats);
-    ASSERT_TRUE(bool(srcBuffer) && bool(dstBuffer));
-    ASSERT_TRUE(upload(*runtime, srcBuffer, src));
-    ASSERT_TRUE(upload(*runtime, dstBuffer, sentinel));
-
-    std::unique_ptr<gpu::GpuRecordContext> context;
-    ASSERT_TRUE(bool(runtime->newRecordContext(context)));
-    GpuRenderArgs args(*context);
-    args.query.nComps = nComps;
-    args.outputRect = rect;
-    GpuImageView in;
-    in.buffer = &srcBuffer;
-    in.byteOffset = srcByteOffset;
+    GpuParityImage in;
     in.bounds = srcBounds;
-    in.rowStrideFloats = srcStride;
     in.nComps = nComps;
-    args.inputs.push_back(in);
-    args.output.buffer = &dstBuffer;
-    args.output.byteOffset = dstByteOffset;
-    // The window sits 7 pixels and 4 rows into the destination.
-    args.output.bounds = RectI(rect.x1 - 7, rect.y1 - 4, rect.x1 - 7 + dstWidth, rect.y1 - 4 + dstHeight);
-    args.output.rowStrideFloats = dstStride;
-    args.output.nComps = nComps;
-    ASSERT_EQ(eStatusOK, grade->renderGpu(args));
-    const gpu::GpuStatus submitted = context->submitAndWait();
-    ASSERT_TRUE(bool(submitted)) << submitted.message;
-    std::vector<float> got(dstFloats);
-    ASSERT_TRUE(download(*runtime, dstBuffer, got));
+    in.layout.padFloats = 16;
+    in.layout.rowPadFloats = 3;
+    in.pixels = packedSrc;
 
+    GpuViewLayout layout;
+    layout.padFloats = 8;
+    layout.rowPadFloats = 5;
+    // The window sits 7 pixels and 4 rows into the destination.
+    layout.marginLeft = 7;
+    layout.marginBottom = 4;
+    layout.marginRight = dstWidth - 7 - rect.width();
+    layout.marginTop = dstHeight - 4 - rect.height();
+    GpuQuery query;
+    query.nComps = nComps;
+    const GpuRunResult run = runRenderGpu(*runtime, *grade, query, std::vector<GpuParityImage>(1, in), nullptr, rect, layout);
+    ASSERT_TRUE(run.ok);
+    EXPECT_EQ(0u, run.writtenOutside) << "floats outside the window were written";
+
+    const std::vector<float>& got = run.pixels;
+    ASSERT_EQ(packed.size(), got.size());
     const gradefix::Bounds bounds { gradefix::kUlpBound, true };
-    int checkedInside = 0;
     for (size_t i = 0; i < got.size(); ++i) {
-        const size_t rel = i - dstByteOffset / sizeof(float);
-        bool inside = false;
-        size_t wantIndex = 0;
-        if (i >= dstByteOffset / sizeof(float)) {
-            const size_t row = rel / dstStride;
-            const size_t col = rel % dstStride;
-            const size_t firstRow = 4;
-            const size_t firstCol = 7 * nComps;
-            if (row >= firstRow && row < firstRow + (size_t)rect.height() && col >= firstCol && col < firstCol + (size_t)rect.width() * nComps) {
-                inside = true;
-                wantIndex = (row - firstRow) * rect.width() * nComps + (col - firstCol);
-            }
-        }
-        if (!inside) {
-            ASSERT_EQ(0, std::memcmp(&got[i], &sentinel[i], sizeof(float))) << "float " << i << " outside the window was written";
-            continue;
-        }
-        ++checkedInside;
-        const int bit = (int)(wantIndex % nComps);
+        const int bit = (int)(i % nComps);
         const graderef::Channel chan { setting.multiply[bit], setting.offset[bit], setting.gamma[bit] };
-        const double conditioned = gradefix::conditionedTolerance(packed[wantIndex], chan, false, want[wantIndex], true);
-        EXPECT_TRUE(gradefix::matches(got[i], want[wantIndex], conditioned, bounds))
-            << "window float " << wantIndex << " gpu=" << got[i] << " cpu=" << want[wantIndex];
+        const double conditioned = gradefix::conditionedTolerance(packed[i], chan, false, want[i], true);
+        EXPECT_TRUE(gradefix::matches(got[i], want[i], conditioned, bounds))
+            << "window float " << i << " gpu=" << got[i] << " cpu=" << want[i];
     }
-    EXPECT_EQ((int)packed.size(), checkedInside);
 }
 
 #endif // NATRON_HAVE_GPU

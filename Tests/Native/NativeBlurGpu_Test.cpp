@@ -42,6 +42,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "Native/NativeGpuParity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -204,57 +205,6 @@ TEST_F(NativeBlurGpuTest, InputRegionIsTheSourceRegionOfInterest)
 
 namespace {
 
-// A runtime on whatever Vulkan device exists, software ones included: the application's context
-// refuses CPU devices outside Force mode. Returns false after printing the reason when there is
-// none, unless NATRON_TEST_REQUIRE_GPU=1 makes that a failure.
-bool
-createRuntime(std::unique_ptr<gpu::GpuRuntime>& runtime)
-{
-    gpu::GpuRuntimeOptions options;
-    const gpu::GpuStatus status = gpu::GpuRuntime::create(options, runtime);
-    if (status) {
-        std::printf("vulkan device: %s\n", runtime->device().info().name.c_str());
-
-        return true;
-    }
-    const char* require = std::getenv("NATRON_TEST_REQUIRE_GPU");
-    if (require && (std::strcmp(require, "1") == 0)) {
-        ADD_FAILURE() << "no usable Vulkan device: " << status.message;
-    } else {
-        std::printf("[  SKIPPED ] no usable Vulkan device: %s\n", status.message.c_str());
-    }
-
-    return false;
-}
-
-bool
-transfer(gpu::GpuRuntime& runtime,
-         gpu::GpuBuffer& buffer,
-         std::vector<float>& data,
-         bool toDevice)
-{
-    gpu::TimelineValue done;
-    const gpu::HostRange range { data.data(), data.size() * sizeof(float) };
-    gpu::GpuStatus s = toDevice ? runtime.upload(range, buffer, 0, done) : runtime.download(buffer, 0, range, done);
-    if (s) {
-        s = runtime.wait(done);
-    }
-    EXPECT_TRUE(bool(s)) << s.message;
-
-    return bool(s);
-}
-
-gpu::GpuBuffer
-makeBuffer(gpu::GpuRuntime& runtime,
-           size_t floats)
-{
-    gpu::GpuBuffer buffer;
-    const gpu::GpuStatus s = gpu::GpuBuffer::createDeviceLocal(runtime.device(), std::max<size_t>(floats, 1) * sizeof(float), gpu::kGpuBufferDefaultUsage, buffer);
-    EXPECT_TRUE(bool(s)) << s.message;
-
-    return buffer;
-}
-
 ImageLayerDesc
 colorLayer(const NodePtr& node)
 {
@@ -327,7 +277,7 @@ describeCase(const GpuBlurCase& c,
 // edges all fall inside the filtered extent.
 TEST_F(NativeBlurGpuTest, MatchesTheCpuRender)
 {
-    std::unique_ptr<gpu::GpuRuntime> runtime;
+    std::unique_ptr<GpuParityRuntime> runtime;
     if (!createRuntime(runtime)) {
         return;
     }
@@ -336,8 +286,7 @@ TEST_F(NativeBlurGpuTest, MatchesTheCpuRender)
     ASSERT_TRUE(bool(source));
     setParitySourceOrigin(source, 3, 5);
 
-    const float kTolerance = 2e-6f;
-    const float kSentinel = -1234.f;
+    const ParityTolerance kTolerance = ParityTolerance::make(2e-6, 0.);
     int nCompared = 0;
     for (double sigma : { 0.5, 3., 25., 100. }) {
         for (bool nearest : { false, true }) {
@@ -379,77 +328,31 @@ TEST_F(NativeBlurGpuTest, MatchesTheCpuRender)
 
                         const int nComps = 4;
                         // Both views sit inside larger buffers, at an offset and with padded rows.
-                        const int srcPadFloats = 6;
-                        const int srcStride = inputRoI.width() * nComps + 8;
-                        std::vector<float> src(srcPadFloats + (size_t)srcStride * inputRoI.height(), 0.f);
-                        for (int y = 0; y < inputRoI.height(); ++y) {
-                            std::copy(in.pixels.begin() + (size_t)y * inputRoI.width() * nComps,
-                                      in.pixels.begin() + (size_t)(y + 1) * inputRoI.width() * nComps,
-                                      src.begin() + srcPadFloats + (size_t)y * srcStride);
-                        }
-                        const RectI dstBounds(roi.x1 - 2, roi.y1 - 1, roi.x2 + 3, roi.y2 + 2);
-                        const int dstPadFloats = 4;
-                        const int dstStride = dstBounds.width() * nComps + 4;
-                        std::vector<float> dst(dstPadFloats + (size_t)dstStride * dstBounds.height(), kSentinel);
+                        GpuParityImage image;
+                        image.bounds = inputRoI;
+                        image.nComps = nComps;
+                        image.pixels = in.pixels;
+                        image.layout.padFloats = 6;
+                        image.layout.rowPadFloats = 8;
+                        GpuViewLayout layout;
+                        layout.padFloats = 4;
+                        layout.rowPadFloats = 4;
+                        layout.marginLeft = 2;
+                        layout.marginBottom = 1;
+                        layout.marginRight = 3;
+                        layout.marginTop = 2;
 
-                        gpu::GpuBuffer srcBuffer = makeBuffer(*runtime, src.size());
-                        gpu::GpuBuffer dstBuffer = makeBuffer(*runtime, dst.size());
-                        ASSERT_TRUE(bool(srcBuffer) && bool(dstBuffer)) << what;
-                        ASSERT_TRUE(transfer(*runtime, srcBuffer, src, true)) << what;
-                        ASSERT_TRUE(transfer(*runtime, dstBuffer, dst, true)) << what;
+                        GpuQuery query = eligibleQuery();
+                        query.mappedScale = scale;
+                        const GpuRunResult run = runRenderGpu(*runtime, *blur, query, std::vector<GpuParityImage>(1, image), nullptr, roi, layout);
+                        ASSERT_TRUE(run.ok) << what;
+                        EXPECT_EQ(0u, run.writtenOutside) << what << ": floats outside the window were written";
 
-                        std::unique_ptr<gpu::GpuRecordContext> context;
-                        ASSERT_TRUE(bool(runtime->newRecordContext(context))) << what;
-                        GpuRenderArgs args(*context);
-                        args.query = eligibleQuery();
-                        args.query.mappedScale = scale;
-                        ASSERT_TRUE(blur->canRenderOnGpu(args.query)) << what;
-                        args.outputRect = roi;
-                        GpuImageView view;
-                        view.buffer = &srcBuffer;
-                        view.byteOffset = srcPadFloats * sizeof(float);
-                        view.bounds = inputRoI;
-                        view.rowStrideFloats = srcStride;
-                        view.nComps = nComps;
-                        args.inputs.push_back(view);
-                        args.output.buffer = &dstBuffer;
-                        args.output.byteOffset = dstPadFloats * sizeof(float);
-                        args.output.bounds = dstBounds;
-                        args.output.rowStrideFloats = dstStride;
-                        args.output.nComps = nComps;
-                        ASSERT_EQ(eStatusOK, blur->renderGpu(args)) << what;
-                        const gpu::GpuStatus submitted = context->submitAndWait();
-                        ASSERT_TRUE(bool(submitted)) << what << ": " << submitted.message;
-                        context.reset();
-                        ASSERT_TRUE(transfer(*runtime, dstBuffer, dst, false)) << what;
-
-                        float worst = 0.f;
-                        int worstX = 0;
-                        int worstY = 0;
-                        int written = 0;
-                        for (int y = dstBounds.y1; y < dstBounds.y2; ++y) {
-                            for (int x = dstBounds.x1; x < dstBounds.x2; ++x) {
-                                const float* got = &dst[dstPadFloats + (size_t)(y - dstBounds.y1) * dstStride + (size_t)(x - dstBounds.x1) * nComps];
-                                if (!roi.contains(x, y)) {
-                                    for (int k = 0; k < nComps; ++k) {
-                                        written += (got[k] != kSentinel);
-                                    }
-                                    continue;
-                                }
-                                const float* want = &cpu.pixels[((size_t)(y - roi.y1) * roi.width() + (x - roi.x1)) * nComps];
-                                for (int k = 0; k < nComps; ++k) {
-                                    const float d = std::fabs(got[k] - want[k]);
-                                    if (!(d <= worst)) {
-                                        worst = d;
-                                        worstX = x;
-                                        worstY = y;
-                                    }
-                                    ++nCompared;
-                                }
-                            }
-                        }
-                        EXPECT_EQ(0, written) << what << ": floats outside the window were written";
-                        EXPECT_LE(worst, kTolerance) << what << ", worst at (" << worstX << "," << worstY << ")";
+                        ASSERT_EQ(cpu.pixels.size(), run.pixels.size()) << what;
+                        const ImageDiff diff = compareImages(cpu.pixels, run.pixels, kTolerance);
+                        nCompared += (int)diff.compared;
+                        const std::size_t at = diff.worstIndex / nComps;
+                        EXPECT_EQ(0u, diff.mismatches) << what << ", worst at (" << (roi.x1 + (int)(at % roi.width())) << "," << (roi.y1 + (int)(at / roi.width())) << ")";
                     }
                 }
             }

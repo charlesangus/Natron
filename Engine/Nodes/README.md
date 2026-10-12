@@ -819,3 +819,28 @@ Measured exceptions and what they are not:
   ACES AP1 coefficients above. Keyer and ChromaKeyer with an RGB source treat
   alpha as 1 for Normal and add nothing for "Add to Inside Mask", where OFX
   reads out of bounds, and neither mirrors OFX's output-premult preference.
+
+### GPU parity
+
+A native node's GPU path is held to the node's own CPU render, not to the OFX
+plugin, and states its tolerance in this section: a node row above gets a GPU
+bound beside its CPU class, or a measured exception below it, in the same change
+that lets the node answer `canRenderOnGpu()`. Vulkan division is 2.5 ulp and
+`pow` and the trigonometric functions are looser still, so a GPU bound is
+usually wider than the CPU class of the same node. Grade holds `gradefix::kUlpBound` (`Tests/Gpu/GradeFixture.h`) and Blur holds
+2e-6 absolute.
+
+`Tests/Native/NativeGpuParity.{h,cpp}` is the shared harness. A test names its
+bound with `ParityTolerance` and compares through `compareImages()`.
+
+- `createRuntime()` makes a runtime on whatever Vulkan device exists, software
+  ones included. With none, the test prints a skip notice and returns, or fails
+  under `NATRON_TEST_REQUIRE_GPU=1`.
+- `runRenderGpu()` uploads the inputs and an optional mask into views with a
+  chosen offset, row padding and bounds (the source may be smaller than the
+  window), records `renderGpu()`, and returns the window. It also counts the
+  floats written outside it.
+- `renderEndToEnd()` renders a small graph once as a scheduler frame with a
+  forced GPU context and once under `GpuPlacementOffGuard`. It returns both
+  images and the frame's regions, so a test can assert with `ranInRegion()` that
+  the node ran on the device.

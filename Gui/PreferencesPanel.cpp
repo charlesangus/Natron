@@ -1553,6 +1553,7 @@ PreferencesPanel::onValidateShortcutButtonClicked()
 
     selection->setText(1, text);
     action->modifiers.clear();
+    ka->currentShortcut.clear();
     if ( !text.isEmpty() ) {
         action->modifiers.push_back(modifiers);
         ka->currentShortcut.push_back(symbol);

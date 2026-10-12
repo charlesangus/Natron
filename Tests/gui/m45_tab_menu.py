@@ -15,12 +15,15 @@ Conventions shared with Tests/gui/m55_node_graph.py and Tests/gui/m75_read.py:
   - never call parentItem() on a node-graph item from Python: PySide deletes it and Natron
     crashes.
 
-Shots: m45-search-blr.png (the open menu with coloured rows), m45-category-filter.png (a "["
-category query), m45-command-pref.png (a menu-command query) and m45-insert-after-read.png (the
-graph after a Blur is inserted below the selected Read).
+Shots: m45-open-at-cursor.png (the first open, unfiltered), m45-search-blr.png (the open menu
+with coloured rows), m45-category-filter.png (a "[" category query), m45-command-pref.png (a
+menu-command query), m45-insert-after-read.png (the graph after a Blur is inserted below the
+selected Read) and m45-preferences-nodegraph.png (the "Tab menu" section of Preferences >
+Nodegraph).
 """
 import json
 import os
+import re
 import sys
 import traceback
 
@@ -41,8 +44,8 @@ try:
     from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, Qt
     from PySide6.QtGui import QColor, QCursor, QEnterEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import (QApplication, QLineEdit, QListView, QMainWindow, QPushButton,
-                                   QTreeWidget)
+    from PySide6.QtWidgets import (QApplication, QLabel, QLineEdit, QListView, QMainWindow, QPushButton,
+                                   QScrollArea, QTreeWidget)
 
     import guitest as gt
     from guitest import check, require
@@ -178,6 +181,11 @@ try:
         point1 = main_graph.mapToGlobal(main_graph.rect().center())
         popup1 = yield from check_position(main_graph, popup_filter, point1, "position (first open)")
         if popup1 is not None:
+            yield ("sleep", 300)
+            # Screen grabs under Xvfb do not draw the pointer, so record where it was.
+            gt.report("NOTE m45-open-at-cursor.png: cursor at (%d, %d), popup at %r"
+                      % (point1.x(), point1.y(), popup1.geometry()))
+            gt.shot("m45-open-at-cursor.png")
             close_menu(popup1)
 
         point2 = main_graph.mapToGlobal(main_graph.rect().center() + QPoint(120, 60))
@@ -248,13 +256,18 @@ try:
         popup, line_edit, view = yield from open_menu(main_graph)
         if not check(popup is not None, "keys: the tab menu opens"):
             return
+        # The popup refreshes its rows on the two event-loop ticks after it shows; let that
+        # finish so the row count read below is the one Up wrapped to.
+        yield ("sleep", 300)
         line_edit.setText("")
         QApplication.processEvents()
         model = view.model()
         check(view.currentIndex().row() == 0, "keys: a fresh filter selects row 0")
         QTest.keyClick(line_edit, Qt.Key_Up)
         QApplication.processEvents()
-        check(view.currentIndex().row() == model.rowCount() - 1, "keys: Up from row 0 wraps to the last row")
+        check(view.currentIndex().row() == model.rowCount() - 1,
+              "keys: Up from row 0 wraps to the last row (row %d of %d)"
+              % (view.currentIndex().row(), model.rowCount()))
 
         QTest.keyClick(popup, Qt.Key_Escape)
         ok = yield ("until", lambda: not popup.isVisible(), 5.0)
@@ -301,15 +314,23 @@ try:
         check(new_node.getPluginID() == BLUR_ID, "insert: the new node is a Blur")
         check(input_connected_from(new_node, read_node) == 0, "insert: the Blur's input 0 is the selected Read")
 
+        # With a node selected, GuiAppInstance::createNodeGui ignores the position hint and places
+        # the new node below the selected one.
         nx, ny = new_node.getPosition()
-        dist = ((nx - scene_pos.x()) ** 2 + (ny - scene_pos.y()) ** 2) ** 0.5
-        check(dist <= 150.0, "insert: the new node is within 150px of the cursor's scene position (got %.1f)" % dist)
+        rx, ry = read_node.getPosition()
+        check(ny > ry and abs(nx - rx) <= 150.0,
+              "insert: the Blur is placed below the selected Read (Blur %r, Read %r)" % ((nx, ny), (rx, ry)))
 
         gt.shot("m45-insert-after-read.png")
         return new_node
 
-    def tab_tab_section(main_graph):
+    def tab_tab_section(main_graph, global_point):
         gt.section("tab-tab")
+        # With nothing selected the node goes where the cursor was when the menu opened.
+        app.clearSelection()
+        QApplication.processEvents()
+        QCursor.setPos(global_point)
+        scene_pos = main_graph.mapToScene(main_graph.mapFromGlobal(global_point))
         before = set(n.getScriptName() for n in app.getChildren())
 
         popup, line_edit, _view = yield from open_menu(main_graph)
@@ -326,6 +347,10 @@ try:
             return None
         new_node = next(n for n in app.getChildren() if n.getScriptName() not in before)
         check(new_node.getPluginID() == BLUR_ID, "tab-tab: the second node is also a Blur")
+        nx, ny = new_node.getPosition()
+        dist = ((nx - scene_pos.x()) ** 2 + (ny - scene_pos.y()) ** 2) ** 0.5
+        check(dist <= 150.0,
+              "tab-tab: the unconnected Blur is within 150px of the cursor's scene position (got %.1f)" % dist)
         return new_node
 
     # ---- Tab inside a Group's own graph creates the node inside that group --------------------
@@ -471,13 +496,10 @@ try:
     # so this drives the real Shortcut Editor page of Preferences the way a person would.
 
     def _find_tree_item(tree, text):
-        stack = [tree.topLevelItem(i) for i in range(tree.topLevelItemCount())]
-        while stack:
-            item = stack.pop()
-            if item.text(0) == text:
-                return item
-            stack.extend(item.child(i) for i in range(item.childCount()))
-        return None
+        # Walking topLevelItem()/child() from Python fails on the Preferences trees: the second
+        # item's wrapper already reports its C++ object deleted. findItems() does not.
+        items = tree.findItems(text, Qt.MatchExactly | Qt.MatchRecursive, 0)
+        return items[0] if items else None
 
     def _open_preferences():
         action = find_action("edit", "preferences")
@@ -511,6 +533,31 @@ try:
         shortcut_trees[0].setCurrentItem(action_item)
         QApplication.processEvents()
         return True
+
+    def nodegraph_page_section():
+        gt.section("preferences page")
+        panel = _open_preferences()
+        if panel is None:
+            return
+        page_trees = [w for w in panel.findChildren(QTreeWidget) if w.columnCount() == 1]
+        page_item = _find_tree_item(page_trees[0], "Nodegraph") if len(page_trees) == 1 else None
+        if check(page_item is not None, "preferences page: found the Nodegraph page"):
+            page_trees[0].setCurrentItem(page_item)
+            QApplication.processEvents()
+            # A separator's label is bold, so its text is wrapped in <b>...</b>.
+            headings = [w for w in panel.findChildren(QLabel) if re.sub(r"<[^>]*>", "", w.text()) == "Tab menu"]
+            if check(len(headings) == 1, "preferences page: the Nodegraph page has a 'Tab menu' heading"):
+                heading = headings[0]
+                area = heading.parentWidget()
+                while area is not None and not isinstance(area, QScrollArea):
+                    area = area.parentWidget()
+                if area is not None:
+                    area.ensureWidgetVisible(heading, 50, 200)
+                yield ("sleep", 300)
+                check(heading.isVisible(), "preferences page: the 'Tab menu' heading is shown")
+                gt.shot("m45-preferences-nodegraph.png")
+        panel.close()
+        QApplication.processEvents()
 
     def rebind_section(main_graph):
         gt.section("shortcut rebind")
@@ -613,11 +660,12 @@ try:
 
         cursor_point = main_graph.mapToGlobal(main_graph.rect().center())
         yield from insert_after_selected_section(main_graph, read_node, cursor_point)
-        yield from tab_tab_section(main_graph)
+        yield from tab_tab_section(main_graph, cursor_point)
         yield from group_section(main_graph)
         yield from commands_section(main_graph)
         yield from weights_section(blur_item)
         yield from preferences_section(main_graph)
+        yield from nodegraph_page_section()
         yield from rebind_section(main_graph)
 
         gt.section("preferences files")

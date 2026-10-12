@@ -1,44 +1,529 @@
 # M85 - Native GPU Kernels
 
-> Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
+Native nodes get GPU implementations on the M84 Vulkan compute backend (design note `PLAN/DESIGN/2026-10-10-gpu-compute-backend.md`), so the resident regions M84 built stop breaking at every node that isn't Grade or Blur.
 
-Give native nodes GPU implementations on the M83 backend.
-- Heavy nodes first, ranked by M82's profile (likely Blur, Defocus/Convolve, Transform with filtering, and the OCIO and colour pipeline).
-- Then the cheap point ops (Grade, ColorCorrect, Shuffle, Copy, Premult/Unpremult, Clamp and the like) — mainly so they don't break a resident region.
-- Add a backend-neutral kernel description next to `makeKernel()` (`Engine/Nodes/Image/PixelKernel.h`). Mask, mix, process-channels and premult wrapping become per-pixel parts of each kernel.
-- Native nodes report GPU support (today `EffectInstance::supportsOpenGLRender` defaults to None for them, `EffectInstance.h:1772`).
-- **Retire the engine GL render path for host work** (2026-10-11, user). The host's GL
-  wrappers around plugin renders — mask/mix, copy-channels, premult and storage conversion
-  on `eStorageModeGLTex` images (`ImageMaskMix.cpp`, `ImageCopyChannels.cpp`,
-  `ImagePremult.cpp`, `ImageConvert.cpp`, GL paths in `Image.cpp`, `GLShader.*`) — are
-  replaced by the backend-neutral kernels above running on Vulkan. GPU device selection
-  and the on/off switch in `Settings.cpp` move from the GL renderer list to the Vulkan
-  device list. After M85 nothing native or host-side renders through GL; the remaining GL
-  engine code serves only the OFX OpenGL suite and is narrowed by M86.
-- **Hand-offs from M84 - GPU Placement And Residency** (2026-10-11):
-  - **Viewer:** wire `GlInterop` into `ViewerGL`, and add a GPU viewer-process kernel so a region's root output can stay on the device. Today the viewer downloads the root because display conversion runs on the CPU (`ViewerInstance.cpp` `scaleToTexture*`). Add double-buffering in `GlInterop`, deferred from the M83 review.
-  - **Grade and Blur:** add mask, mix and premult wrapping to their GPU paths. M84 ships them without mask or mix, with no unpremult and FIR-only.
-  - **Blur:** GPU IIR and box Blur, or a recorded decision to keep them CPU-only. Speed up the vertical pass.
-  - **Per-kernel scratch:** M84 plans strips from I/O sizes only and handles kernel scratch reactively (evict → serial strips → halve → CPU). New kernels need no scratch declaration, but heavy-scratch kernels will hit that ladder on their first frame. Remember a strip height that worked per region shape.
-  - **Contention:** two regions sharing the pool can halve each other into thin strips. Consider waiting briefly for the other region before halving.
-  - **First-frame imports:** pinning fresh download destinations costs ~50 ms per 512 MB strip on the region thread. Import ahead of time on a helper thread, which needs `GpuTransfer::resolveImports` outside `importMutex`.
-  - **CPU fallback:** a region that falls back runs on the CPU with thread budget 1, so it is slow for a big Blur. Give the fallback a real budget.
-  - **Profiles:** members that fell back are still labelled `device:gpu`, and the region record has no fallback field.
-  - **Single-node regions:** in keying_grade and cg_multipass they are mostly exposed transfer (~11 of ~12 ms). Porting the neighbouring keyers and morphology is what makes those comps resident; Merge's GPU path comes from M101 - Clean-Sheet Merge Node.
-  - **`HostImageMemory`:** the pool can hold up to RAM/4 plus pinned imports while idle. Add an idle trim or a setting.
-  - **Timeouts:** a `submitAndWait` timeout without a device loss can return buffers to the pool while the device may still use them.
-  - **Per-member GPU time** is estimated from the cost model, not measured with per-member timestamps.
+- **Kernel description:** a backend-neutral GPU description of a point operator sits next to `makeKernel()` (`Engine/Nodes/Image/PixelKernel.h`). It holds a registry kernel ID and a parameter block, built from the same knob reads as the CPU kernel. The base class then renders every point op on the GPU without per-node host code.
+- **Per-pixel wrapping:** mask, mix, process channels and "(Un)premult by" become one shared Slang module. It reproduces `NativeImageEffect::render()` exactly, and spatial nodes get divide and finish passes from it. Grade and Blur move onto it, which closes the M84 hand-off.
+- **Nodes, heavy first (M82 ranking):**
+  - Transform, including motion blur (55% of `defocus_retime`);
+  - Blur, completed: wrapping, IIR and box filters, a faster vertical pass;
+  - ChromaKeyer, ColorCorrect, Erode/Dilate and Keyer (the `keying_grade` chain);
+  - then the cheap point ops, so they don't break a region: Invert, Clamp, Add/Multiply/Gamma, Saturation, ColorLookup, Constant/Solid and CheckerBoard.
+- **Proof:** each ported node passes a CPU/GPU parity test with a stated tolerance. A quick directional bench, then a thorough one, measures the M82 comps and the heavy spatial nodes up to 24k on RADV.
+- **Out of scope:**
+  - **Merge** belongs to M101 - Clean-Sheet Merge Node.
+  - **Split off (confirmed by the user 2026-10-12) into M107 - GPU Viewer Hand-off, M108 - Retire Engine GL Host Path, M109 - GPU Region Engine Hardening and M110 - Remaining Native GPU Ports:** viewer interop, the GL host-path retirement and the Preferences device list, the region-engine hardening follow-ups, and the remaining node ports.
 
-Blocked on: M84 - GPU Placement And Residency, and the ranked node list from M82 - Render Cost Profiling.
+Scouted facts this plan relies on (2026-10-12, `milestone/m85-native-gpu-kernels` = `main` `6fcf9c4fa`):
+- **Point-op pipeline (`Engine/Nodes/Image/`):**
+  - `PixelKernel.h`: `KernelContext`, the row-based `RowIO` with `src[kPixelKernelMaxInputs = 4]`, and `PixelKernel::processRow`. It has no GPU types.
+  - `NativeImageEffect.h:127-153` holds the M84 GPU virtuals: `canRenderOnGpu(const GpuQuery&)`, `getGpuInputRoI`, `renderGpu(const GpuRenderArgs&)` (default `eStatusFailed`). `makeKernel` is at `:182`.
+  - `GpuQuery`, `GpuImageView` and `GpuRenderArgs` are in **`Engine/Nodes/Image/GpuRender.h`**. M101's brief says `Engine/Gpu/GpuRender.h`; that path is wrong. `GpuRenderArgs::inputs` is indexed by input number, so multi-input GPU nodes already work at the interface.
+  - `NativeImageEffect::render` is `NativeImageEffect.cpp:405-615`. The per-pixel wrapping, which is the spec the GPU must reproduce, is at `:560-610`, in this order:
+    1. divide by the divisor where `Image::unPremultDivisorIsUsable(d)` (`!(d <= FLT_EPSILON)`, `Image.h:810`), skipping `skipChannel`;
+    2. `processRow`;
+    3. multiply back with `premultiplyValue(v, d) = v * max(0, d)` (`Image.h:823`);
+    4. blend `v * alpha + (1 - alpha) * src`, where `alpha = mix * (maskInvert ? 1 - m : m)`, `alpha == 0` gives src and `alpha == 1` gives v;
+    5. pass unprocessed channels through from the undivided source.
 
-Acceptance sketch:
-- Each ported node matches its CPU output within a stated tolerance on fixtures.
-- A measured end-to-end speed-up on the M82 comps on a real GPU.
-- Silent CPU fallback with no device.
-- No host-side image operation renders through GL: the `eStorageModeGLTex` mask/mix,
-  copy-channels, premult and convert paths are gone or reduced to the M86 interop boundary.
-- The Preferences GPU setting lists Vulkan devices, not GL renderers.
+    Reads outside the source give 0, the mask outside its image gives 0, and the divisor outside gives 1 (`readSourceRow`/`readChannelRow`, `:136-200`). Channel bits follow `pixelKernelChannelBit`: a 1-channel image is alpha, bit 3.
+  - Spatial nodes (Blur, ErodeDilate, EdgeDetect) share `Engine/Nodes/Filter/SpatialFilterSupport.h`. `fillBuffer` (`:212`) divides the source by the divisor where usable. `writeWindow` (`:236`) multiplies back, blends with the undivided source by mask × mix, and passes through unprocessed channels and pixels outside the processed window.
+- **Point-op nodes** (`makeKernel` overrides): Grade, Clamp, Saturation, ColorCorrect (tone curves through `CurveSnapshot`), Invert, ColorLookup (a 1024-interval LUT per curve, `ColorLookup.cpp:60-225`), ColorMathNode (Add/Multiply/Gamma), Constant/Solid and CheckerBoard (generators, no input).
+- **Not point ops:**
+  - Keyer and ChromaKeyer have their own `render()` and 4 inputs: Source, InM, OutM, Bg (`Keyer.h:55-58`, `ChromaKeyer.h:52-55`).
+  - Dissolve, ErodeDilate, EdgeDetect, Transform/TransformMasked, Reformat, Crop and Position are not point ops either.
+  - Shuffle/ShuffleCopy/AddLayers/RemoveLayers derive from `NativeEffectBase` and are multi-planar (`Shuffle.h:68,96`). M84 never makes multi-plane tasks placement candidates.
+- **M84's GPU nodes:**
+  - `Grade::canRenderOnGpu` (`Grade.cpp:390`) refuses masks, mix < 1 and premult. `renderGpu` (`:402-455`) dispatches `grade_main` with offsets and strides, and fails when the input view doesn't contain the window (`windowOffset`, `:258`).
+  - `Blur::canRenderOnGpu` (`Blur.cpp:894-920`) also refuses channel subsets, non-FIR filters, derivative orders and `alphaThreshold > 0`. Its `renderGpu` (`:936-996`) calls `gpu::recordSeparableBlur` (`Engine/Gpu/GpuBlur.h`). Blur's alpha threshold runs at `Blur.cpp:844`.
+- **Placement and regions:**
+  - `makeGpuQueryForTask` (`Engine/GpuPlacement.cpp:479-529`) fills `hasMask`, `mix`, `processChannels` and `unPremultChannel` (the divisor channel, with no check that the divisor's layer is the task's plane).
+  - `canRenderOnGpu` is gated on `GpuCostModel::hasGpuCost` (`:550-553`). **A node with no GPU seed row is never placed.**
+  - In `GpuRegionTask.cpp`, `slotOfTask` (`:510`) keys **every** input, masks included, by the member's own plane (`:593`). External inputs are converted to that layer on upload (`:749-757`). `renderGpu` is called at `:1009` (whole region) and `:1369` (strips).
+- **Cost seeds:**
+  - `Engine/GpuCostSeed.inc` is generated by `tools/bench/render-profile-report.py --emit-cost-table`. Its GPU rows exist only for Grade and Blur (`GPU_KERNEL_UHD_MS`, `render-profile-report.py:282`).
+  - Its CPU rows cover only the 18 plugins in the M82 comps. `GpuTaskTraits` is `{pluginId, sigma, iir}` (`GpuCostModel.h:49`).
+  - The M82 profiles it regenerates from are present locally in `build/bench/m82-profile/`.
+- **Kernels:**
+  - `Engine/Gpu/CMakeLists.txt` lists each `slang_add_kernel(... REGISTRY NatronGpu)` and links every kernel target by hand. `cmake/SlangKernels.cmake:108` already records registry kernels in the global property `SLANG_REGISTRY_NatronGpu`.
+  - `Kernels/pointops.slang` is the spike's `IPixelOp`/`Masked<>`/`Chain<>`. Its `Masked` lerps on its own alpha and has no bounds, strides or channel mask, so it does **not** match the CPU. Only `Tests/Gpu/PointOpGpu_Test.cpp` and `PointOpCompose_Test.cpp` use it.
+  - Push constants are capped at 128 B (design note §4 #9). `GpuRecordContext::updateBuffer` writes up to 64 KiB and `scratch()` hands out pool buffers (`Engine/Gpu/GpuRecord.h`).
+- **Tests:**
+  - `Tests/Native/NativeGradeGpu_Test.cpp:206-270` and `NativeBlurGpu_Test.cpp` each carry their own `createRuntime`/upload/download helpers.
+  - `Tests/Native/NativeGpuCapability_Test.cpp` holds the allowlist of nodes that may answer `canRenderOnGpu` (Grade, Blur).
+  - End-to-end GPU renders use `appPTR->swapGpuContextForTests` and `GpuPlacementOffGuard` (`Tests/RenderBothWays.h:67`), as `Tests/GpuResidency_Test.cpp:265-303` does.
+  - `Tests/CMakeLists.txt` lists root sources explicitly and globs `Native/*_Test.cpp` (`:119`).
+  - Per-node CPU parity tolerance classes are in `Engine/Nodes/README.md:650-690`.
+- **Transform:**
+  - The source is fetched with a concatenated input transform (`Transform.cpp:1065`, `getImage(..., &job->inputTransform)`) and folded in by `Resampler::concatenateInputTransform` (`:1113`). The redirections come from `ParallelRenderArgs::transforms` (`ParallelRenderArgs.h:171`, `EffectInstance::tryConcatenateTransforms`, `EffectInstance.h:2327`).
+  - Filters and supersampling are `Resampler::interpolate`/`interpolateSuper` (`Resampler.h:319-337`). Adaptive motion-blur sampling is `motionBlurPixel` (`:507`).
+- **Dropped from the stub's hand-offs:** the `submitAndWait` timeout. M84 fixed it in review (`d91d3a487`): a timeout now marks the device lost and waits for the fence.
+
+## Phase 85.1: Kernel description and per-pixel wrapping
+
+- [ ] M85.P1.T1 — Write the shared per-pixel wrapping module and its engine-free host side
+  - files: `Engine/Gpu/Kernels/pixelwrap.slang` (new), `Engine/Gpu/GpuWrap.{h,cpp}` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Gpu/PixelWrap_Test.cpp` (new), `Tests/Gpu/CMakeLists.txt`
+  - approach:
+    - **Semantics:** reproduce `NativeImageEffect.cpp:560-610` exactly (see Scouted facts):
+      - read source pixels by view offset, stride and bounds, with 0 outside;
+      - divide by the divisor where `!(d <= FLT_EPSILON)`, skipping `skipChannel`, with the divisor read from the source pixel (1 outside);
+      - `op.apply`;
+      - multiply back by `max(0, d)`;
+      - `alpha = mix * (invert ? 1 - m : m)`, with the mask read from its own view and channel (0 outside), giving `alpha == 0 → src`, `alpha == 1 → v`, else `v * alpha + (1 - alpha) * src`. Mark the arithmetic `precise` so the driver can't contract it into an FMA;
+      - channels not in `channelMask` copy the undivided source.
+
+      nComps is 1–4, mapped through `pixelKernelChannelBit` (1 channel = alpha).
+    - **Layout:**
+      - push constants `WrapParams`: output origin and size; the src, dst and mask offset, stride and bounds; the mask channel and nComps; the divisor and skip channels; mix; flags. Keep it ≤ 128 B, mirrored in `GpuWrap.h` with a `static_assert`;
+      - bindings: 0 src, 1 dst, 2 mask, 3 op params (a storage buffer). An unused binding gets a 16-byte pool buffer.
+    - **Entry shapes:**
+      - `runWrapped<Op : IPixelOp>(Op, tid)` for point ops, where an op's `load(paramsBuffer)` reads its own params;
+      - two standalone kernels for spatial nodes: `wrap_divide` (source → a divided copy) and `wrap_finish` (filtered result + undivided source + mask → dst).
+    - **Host side:** `GpuWrap.{h,cpp}` packs `WrapParams` from plain inputs (no Engine headers) and records the divide and finish passes on a `GpuRecordContext`.
+    - **CMake:** link the registry kernels from the `SLANG_REGISTRY_NatronGpu` property instead of the hand-kept list, so each later port adds one `slang_add_kernel` line.
+    - **Test kernels** (in `Tests/Gpu/CMakeLists.txt`, with CPP twins): `pixelwrap_identity` and `pixelwrap_scale` (× 2 on processed channels).
+  - verify:
+    - `GpuTests` `PixelWrap.*` passes on lavapipe and on RADV in the container. It compares GPU against a hand-written C++ transcription of `NativeImageEffect.cpp:576-610` over:
+      - nComps 1/3/4 and channel subsets;
+      - mask none, partial bounds and inverted;
+      - mix 0, 0.5 and 1;
+      - divisors 0, negative, NaN, < FLT_EPSILON and normal, plus a skip channel;
+      - a source smaller than the window;
+      - nonzero offsets and strides.
+    - **Bounds:** bit-exact without a divisor, and ≤ 3 ULP relative where the divisor divides (Vulkan `OpFDiv` is 2.5 ULP).
+    - The build adds no hand-listed kernel link.
+  - size: L
+
+- [ ] M85.P1.T2 — Extract a shared GPU parity harness for native-node tests
+  - files: `Tests/Native/NativeGpuParity.{h,cpp}` (new), `Tests/CMakeLists.txt` (add the `.cpp` and header to the explicit lists), `Tests/Native/NativeGradeGpu_Test.cpp`, `Tests/Native/NativeBlurGpu_Test.cpp`, `Engine/Nodes/README.md`
+  - approach:
+    - Move the duplicated `createRuntime`/upload/download/`makeBuffer` helpers (`NativeGradeGpu_Test.cpp:206-270`) into the harness. The runtime skips with a reason, or fails under `NATRON_TEST_REQUIRE_GPU=1`.
+    - Add `runRenderGpu(effect, query, inputs, mask, outputRect, layout)`: it uploads the input images into views with configurable offset, stride and bounds (including a source smaller than the window), records, submits and downloads.
+    - Add `renderEndToEnd(graph, root)`: it renders a small graph once with a forced GPU context (`swapGpuContextForTests`) and once under `GpuPlacementOffGuard`. It returns both outputs plus the frame's region records, so a test can assert that the node really ran in a region.
+    - Comparisons reuse `ParityTolerance` from `Tests/NativeParity.h`.
+    - Port the Grade and Blur GPU tests onto the harness with no change in what they check.
+    - Add a "GPU parity" subsection to `Engine/Nodes/README.md`'s tolerance section, saying that every GPU path states its tolerance there.
+  - verify: `NativeGradeGpuTest.*` and `NativeBlurGpuTest.*` pass unchanged on lavapipe and RADV, and still skip cleanly with no ICD.
+  - size: M
+
+- [ ] M85.P1.T3 — Add the backend-neutral point-op description next to makeKernel() and render point ops on the GPU in the base
+  - files: `Engine/Nodes/Image/PixelKernel.h`, `Engine/Nodes/Image/GpuRender.h`, `Engine/Nodes/Image/NativeImageEffect.{h,cpp}`, `Engine/GpuPlacement.cpp`, `Tests/Native/NativeImageEffectGpu_Test.cpp` (new)
+  - approach:
+    - **The description, in `PixelKernel.h`** (no Vulkan types): `struct PixelKernelGpu { int kernel = -1; std::vector<std::byte> params; }`, plus a `setParams<P>()` helper for trivially-copyable structs. `kernel` holds a `gpu::GpuKernelId` cast to int, so the header builds with `NATRON_GPU=OFF`.
+    - **Two virtuals next to `makeKernel`:**
+      - `virtual int gpuKernelId(const GpuQuery&) const`: a cheap check of settings, default −1;
+      - `virtual bool makeGpuKernel(const KernelContext&, PixelKernelGpu*)`: default false.
+    - **One knob read for both backends:** a node reads its knobs once into one params struct that feeds both `makeKernel` and `makeGpuKernel`, so the CPU and GPU descriptions cannot drift. The CPU kernels stay hand-written, as the backend decision requires.
+    - **Base path:** when `isPointOp()`:
+      - `canRenderOnGpu` accepts float with nComps 1–4 when `gpuKernelId(query) >= 0` and the divisor (if any) lies in the task's plane;
+      - `renderGpu` builds the `KernelContext` and calls `makeGpuKernel`. It refuses params over 64 KiB, writes them into a `scratch()` buffer with `updateBuffer`, and dispatches with `WrapParams` from P1.T1;
+      - the mask view is `args.inputs[getMaskInput()]`. The mask channel comes from `resolveInputPlaneForRender`, and `maskInvert`, `mix`, the divisor and the skip channel (`Node::getUnPremultSkipChannel`) are read at `query.time`/`view` as `render()` reads them.
+    - Nodes that override `canRenderOnGpu`/`renderGpu` themselves (Grade and Blur, for now) are unaffected.
+    - **Query:** `GpuQuery` gains `bool unPremultInPlane`, set by `makeGpuQueryForTask` (`GpuPlacement.cpp:516-526`) when the divisor layer equals the task's plane.
+    - **Multi-input:** out of scope here. The description is single-source; Keyer, ChromaKeyer and the M101 Merge write their own `renderGpu` and import `pixelwrap.slang` (see Decisions).
+  - verify: `NativeImageEffectGpu_Test` defines a test-only point-op node whose CPU kernel scales processed channels by 2 and whose GPU kernel is `pixelwrap_scale`, registered at runtime through `GpuKernelRegistry::registerKernel`. Through the P1.T2 harness, its `renderGpu` matches its CPU `render()` bit-exactly without a divisor, and within the P1.T1 bound with one, over the P1.T1 matrix. `NativeGpuCapabilityTest` still passes, with no new production node answering true.
+  - size: L
+
+- [ ] M85.P1.T4 — Give GPU-capable nodes without seed rows a class-default cost
+  - files: `Engine/GpuCostModel.{h,cpp}`, `Engine/GpuPlacement.cpp`, `Tests/GpuPlacement_Test.cpp`
+  - approach:
+    - `GpuTaskTraits` gains a cost class (point op / spatial / other), taken from `NativeImageEffect::isPointOp()` in `traitsOf`.
+    - **Point op with no GPU row:** Grade's GPU row scaled by its buffer count, (inputs + 1) / 2.
+    - **Point op with no CPU row:** Grade's CPU row.
+    - **Spatial with no row:** the Blur σ25 rows, both CPU and GPU, as a deliberately rough seed that the session EMA corrects after the first frame.
+    - Measured rows always win. P6.T2 replaces the defaults for the ported nodes with measured rows.
+  - verify: `GpuPlacement_Test` cases:
+    - a point op with no rows becomes placeable, and joins a Grade → X → Grade region instead of splitting it;
+    - a node whose `canRenderOnGpu` is false is still never placed;
+    - the existing Grade and Blur placement tests are unchanged.
+  - size: M
+
+- [ ] M85.P1.T5 — Retire the spike's pointops.slang
+  - files: `Engine/Gpu/Kernels/pointops.slang` (delete, keeping `Chain<A, B>` in `pixelwrap.slang` for M87), `Engine/Gpu/CMakeLists.txt`, `Tests/Gpu/CMakeLists.txt`, `Tests/Gpu/PointOpGpu_Test.cpp`, `Tests/Gpu/PointOpCompose_Test.cpp`
+  - approach:
+    - Drop the `pointop_grade/invert/chain/masked` registry entries and their test twins.
+    - Keep the composition check `Chain<Grade, Invert>` bit-exact against two passes, re-targeted at a `pixelwrap_chain` test entry built from `pixelwrap.slang`. M87 still needs that evidence.
+    - Delete `PointOpGpu_Test`'s masked case, which P1.T1 supersedes.
+  - verify: `GpuTests` builds with no `pointop_*` kernel left, and `PointOpCompose.ChainEqualsInvertAfterGrade` (renamed as needed) passes on the CPP twin and on lavapipe.
+  - size: M
+
+## Phase 85.2: Grade and Blur complete; masks reach regions
+
+- [ ] M85.P2.T1 — Move Grade onto the description, gaining mask, mix and premult
+  - files: `Engine/Nodes/Color/Grade.{h,cpp}`, `Engine/Gpu/Kernels/grade.slang`, `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeGradeGpu_Test.cpp`
+  - approach:
+    - Add a `GradeOp : IPixelOp` and an entry `grade_wrapped` built on `runWrapped`, reusing `gradeops.slang`.
+    - Keep `grade_main`, because the engine-free `GpuTests` Grade fixtures use it.
+    - Replace Grade's `canRenderOnGpu`/`renderGpu` overrides with `gpuKernelId`/`makeGpuKernel`. The params struct is the one `GradeKernel` is built from (computed in double, cast once).
+  - verify: on lavapipe and RADV, the existing fixture cases still meet the M83 ULP-conditioned bound. New harness cases also meet it:
+    - mask (RGBA and Alpha-only mask images, inverted, partial bounds);
+    - mix 0.5;
+    - unpremult by A;
+    - a channel subset;
+    - a source smaller than the window, which `windowOffset` used to refuse.
+  - size: M
+
+- [ ] M85.P2.T2 — Resolve each input's own layer in regions (masks and side inputs)
+  - files: `Engine/Nodes/Image/NativeImageEffect.{h,cpp}`, `Engine/GpuRegionTask.cpp`, `Engine/GpuPlacement.cpp`, `Tests/GpuResidency_Test.cpp`
+  - approach:
+    - Add `virtual bool getGpuInputLayer(int inputNb, const ImageLayerDesc& plane, double time, ViewIdx view, ImageLayerDesc* layer) const`:
+      - the default returns `plane`;
+      - the base returns `resolveInputPlaneForRender`'s layer for mask inputs (anything `NativeInputDescription` marks as a mask), so Keyer's InM/OutM work too.
+    - In `GpuRegionTask::plan` (`:586-595`), external slots for such inputs are keyed and converted by that layer. A member producer whose plane differs from the requested layer makes the member refuse, falling back to the CPU through the existing reason path.
+    - `makeGpuQueryForTask` keeps `hasMask`; nothing else in the query changes.
+  - verify: new `GpuResidencyTest` cases in both scheduler modes:
+    - Grade masked by a CPU-rendered Alpha-only mask: one region, the mask uploaded once, pixels within Grade's bound of the CPU render;
+    - Grade masked by an RGBA mask produced inside the same region: the mask is never downloaded;
+    - a mask whose layer isn't the member's plane falls back to the CPU and matches.
+
+    The existing residency tests are unchanged.
+  - size: L
+
+- [ ] M85.P2.T3 — Blur on the GPU with mask, mix, premult, channel subsets and alpha threshold
+  - files: `Engine/Nodes/Filter/Blur.{h,cpp}`, `Engine/Nodes/Image/NativeImageEffect.{h,cpp}` (spatial helpers), `Tests/Native/NativeBlurGpu_Test.cpp`
+  - approach:
+    - **Shared helpers** for every spatial node, on the base:
+      - `recordGpuDivide(args, scratch)` runs `wrap_divide` when a divisor applies;
+      - `recordGpuFinish(args, filtered)` runs `wrap_finish`. It covers mask × mix, multiply-back and passthrough of unprocessed channels, exactly as `SpatialFilterSupport::writeWindow`.
+    - **Blur:**
+      - divide into a scratch buffer when the divisor applies;
+      - blur all channels of the scratch, or of the source;
+      - then the finish pass.
+    - **Alpha threshold:** applied to the filtered alpha before the finish pass, in the order of `Blur.cpp:844`. Use a small Blur-specific pass or a `WrapParams` field, whichever is less code.
+    - **Lifted refusals:** channel subsets, mask, mix and unpremult. The FIR-only refusal stays until P2.T4, and derivative orders stay CPU-only (see Decisions).
+  - verify: GPU vs CPU Blur within 2e-6 absolute (the M84 FIR bound) for:
+    - σ 0.5, 3, 25 and 100;
+    - masks (inverted and partial);
+    - mix 0.3;
+    - unpremult by A;
+    - an R+A channel subset;
+    - alpha threshold 0.003;
+    - black and nearest edges, `expandRoD` on and off, and odd sizes.
+
+    Runs on lavapipe and RADV.
+  - size: L
+
+- [ ] M85.P2.T4 — GPU IIR (Deriche, van Vliet) and box/triangle/quadratic Blur
+  - files: `Engine/Gpu/Kernels/blur_lines.slang` (new), `Engine/Gpu/GpuBlur.{h,cpp}`, `Engine/Gpu/CMakeLists.txt`, `Engine/Nodes/Filter/Blur.cpp`, `Tests/Native/NativeBlurGpu_Test.cpp`
+  - approach:
+    - One thread per line, running the same recursions as `BlurKernels::deriche`/`vanVliet`/`boxFilter` (`BlurKernels.h:186-188`) in float: coefficients computed on the host by the same functions, causal and anticausal passes, and Neumann/zero boundaries.
+    - Rows first, then columns. Columns use the coalesced one-thread-per-column layout `blur.slang` uses for r ≤ 32.
+    - `Blur::canRenderOnGpu` accepts these filters at order 0.
+  - verify: GPU vs CPU within the `iir()` class (1e-4 absolute, `Engine/Nodes/README.md`) for each filter at sizes 3, 25 and 100, both edges, and a 1-channel alpha. Also runs on RADV, recording the UHD kernel times in Decisions.
+  - size: L
+
+- [ ] M85.P2.T5 — Speed up the FIR vertical pass for wide radii
+  - files: `Engine/Gpu/Kernels/blur.slang`, `Engine/Gpu/GpuBlur.{h,cpp}`, `Tests/Gpu/BlurGpu_Test.cpp`, `tools/gpu-spike/bench/GpuBench_main.cpp`
+  - approach:
+    - For r > 32, replace the column pass with either a 2D-tiled pass or a transpose → horizontal pass → transpose (design note §2.4 and §4 #5). Pick by measurement on RADV.
+    - Pad or skew the shared tile to remove the 8K σ25 stride aliasing, where V is 6× H.
+    - Fix `GpuBench_main.cpp` passing the full weight table to the half-kernel layout (an M84 follow-up), so the bench output is correct again.
+    - This task does not touch `Blur.cpp`, so it can run from the start.
+  - verify:
+    - `Gpu.BlurGpuTest.*` stays within 2e-6 on lavapipe and RADV.
+    - `GpuBench --sizes uhd,8k` on RADV records H and V times in Decisions. Target: V ≤ 1.5× H at σ25 and σ100 at UHD and 8K. If it misses, record why.
+    - `run-host.sh` GpuTests stay green.
+  - size: L
+
+## Phase 85.3: Point ops
+
+Each task follows the same pattern, using P1.T3's description:
+- a Slang op plus an entry in a new kernel file;
+- `gpuKernelId`/`makeGpuKernel` reading one params struct shared with `makeKernel`;
+- a harness parity test with a stated tolerance, including a masked, mix 0.5, unpremult-by-A case;
+- one `renderEndToEnd` case asserting a Grade → node → Grade chain forms one region;
+- the node's ID added to `NativeGpuCapability_Test`'s allowlist.
+
+Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A node that cannot meet its class records a measured bound and the reason beside it in that README.
+
+- [ ] M85.P3.T1 — Invert on the GPU
+  - files: `Engine/Nodes/Color/Invert.{h,cpp}`, `Engine/Gpu/Kernels/invert.slang` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeInvertGpu_Test.cpp` (new), `Tests/Native/NativeGpuCapability_Test.cpp`
+  - approach: follow the Phase 85.3 pattern.
+  - verify: exact with no divisor, mask, or mix below 1; otherwise `arithmetic()` (1e-6 relative). Runs on lavapipe and RADV.
+  - size: M
+
+- [ ] M85.P3.T2 — Clamp on the GPU
+  - files: `Engine/Nodes/Color/Clamp.{h,cpp}`, `Engine/Gpu/Kernels/clamp.slang` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeClampGpu_Test.cpp` (new), `Tests/Native/NativeGpuCapability_Test.cpp`
+  - approach:
+    - Follow the Phase 85.3 pattern.
+    - Spell the selects out as Grade's clamps do (`gradeops.slang`), so that NaN lands where `std::min`/`std::max` put it.
+  - verify: the same bounds as Invert, plus NaN and ±inf inputs.
+  - size: M
+
+- [ ] M85.P3.T3 — Add, Multiply and Gamma (ColorMathNode) on the GPU
+  - files: `Engine/Nodes/Color/ColorMathNode.{h,cpp}`, `Engine/Gpu/Kernels/colormath.slang` (new, three entries), `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeColorMathGpu_Test.cpp` (new)
+  - approach:
+    - Follow the Phase 85.3 pattern, with one entry per operation, selected by the node's plugin ID.
+    - Gamma follows Grade's pow handling, including pow(v, 0) = 1, negatives and subnormals (the design note §3 value-or-0 rule).
+    - Add the three IDs to `NativeGpuCapability_Test.cpp`. That makes this a 6th file, accepted for a one-line edit.
+  - verify: Add and Multiply within `arithmetic()`, and Gamma within `transcendental()` with the subnormal rule. Runs on lavapipe and RADV.
+  - size: M
+
+- [ ] M85.P3.T4 — Saturation on the GPU
+  - files: `Engine/Nodes/Color/Saturation.{h,cpp}`, `Engine/Gpu/Kernels/saturation.slang` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeSaturationGpu_Test.cpp` (new), `Tests/Native/NativeGpuCapability_Test.cpp`
+  - approach:
+    - Follow the Phase 85.3 pattern.
+    - Luminance coefficients for every colourspace option, including the real ACES AP1 ones, come from the host params, not constants in the kernel.
+  - verify: `transcendental()` for each luminance option. Runs on lavapipe and RADV.
+  - size: M
+
+- [ ] M85.P3.T5 — ColorCorrect on the GPU, tone curves included
+  - files: `Engine/Nodes/Color/ColorCorrect.{h,cpp}`, `Engine/Nodes/Image/CurveSnapshot.h` (a flat export of keys for the GPU), `Engine/Gpu/Kernels/colorcorrect.slang` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeColorCorrectGpu_Test.cpp` (new)
+  - approach:
+    - Port the per-range (shadows/midtones/highlights/master) saturation, contrast, gamma, gain and offset maths.
+    - **Tone curves:** evaluate the two `CurveSnapshot` curves in the kernel from their keys, which are uploaded in the params buffer (time, value, left and right derivatives, interpolation type). Port the subset of `Interpolation::interpolate` the tone-range curves can use, with the y-range clamp. Do not bake a LUT: it would not hold the tolerance.
+    - Add the ID to the allowlist.
+  - verify: `transcendental()` against the CPU across all four ranges, with:
+    - default curves and an edited curve with constant, linear, smooth and broken keys;
+    - inputs below 0 and above 1.
+
+    Record a measured bound if double-vs-float exceeds it. Runs on lavapipe and RADV.
+  - size: L
+
+- [ ] M85.P3.T6 — ColorLookup on the GPU
+  - files: `Engine/Nodes/Color/ColorLookup.{h,cpp}`, `Engine/Gpu/Kernels/colorlookup.slang` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeColorLookupGpu_Test.cpp` (new), `Tests/Native/NativeGpuCapability_Test.cpp`
+  - approach:
+    - Upload the five 1024-interval LUTs `ColorLookupKernel` already builds (`ColorLookup.cpp:110-113`), about 20 KB, as the params block.
+    - The kernel repeats the lookup and interpolation of `:214-225` for each master-curve mode.
+    - Values outside the range follow the CPU branch exactly.
+  - verify: `transcendental()` for every master-curve mode, out-of-range inputs and an edited curve. Runs on lavapipe and RADV.
+  - size: M
+
+- [ ] M85.P3.T7 — Constant and Solid on the GPU
+  - files: `Engine/Nodes/Generator/Constant.{h,cpp}`, `Engine/Gpu/Kernels/generators.slang` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeConstantGpu_Test.cpp` (new)
+  - approach:
+    - A zero-input point op whose op ignores its input.
+    - Confirm that the base path and `GpuRegionTask` accept a member with no input slot, and that placement lets a generator start a region (only identity tasks are barred).
+    - Add both IDs to the allowlist.
+  - verify:
+    - Exact match with the CPU.
+    - An end-to-end Constant → Grade → Blur frame forms one region with **zero uploads** (region record).
+  - size: M
+
+- [ ] M85.P3.T8 — CheckerBoard on the GPU
+  - files: `Engine/Nodes/Generator/CheckerBoard.{h,cpp}`, `Engine/Gpu/Kernels/generators.slang`, `Tests/Native/NativeCheckerBoardGpu_Test.cpp` (new), `Tests/Native/NativeGpuCapability_Test.cpp`
+  - approach:
+    - Follow P3.T7's pattern, with the square size, line width and colours in the params.
+    - Compute cell membership from integer pixel coordinates at the mapped render scale, as the CPU kernel does. If the CPU uses double coordinates, mirror its rounding.
+  - verify: exact at mipmap 0 and 1 for odd box sizes and a centre-line case. Otherwise record a measured bound with the reason.
+  - size: M
+
+## Phase 85.4: Keyers and morphology
+
+- [ ] M85.P4.T1 — Keyer on the GPU
+  - files: `Engine/Nodes/Keyer/Keyer.{h,cpp}`, `Engine/Gpu/Kernels/keyer.slang` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeKeyerGpu_Test.cpp` (new)
+  - approach:
+    - Override `canRenderOnGpu`/`renderGpu` directly, as a multi-input node: Source, InM, OutM and Bg come through `args.inputs` by input number.
+    - Import `pixelwrap.slang`'s per-pixel helpers for the mask, mix and premult parts that apply.
+    - InM and OutM take their layer from P2.T2's `getGpuInputLayer`.
+    - Port each key mode and the soft/tolerance ranges from `Keyer::render`. Refuse the settings the port doesn't cover.
+    - Add the ID to the allowlist.
+  - verify:
+    - `transcendental()` for every key mode, with and without InM, OutM and Bg, including an input missing over part of the window.
+    - An end-to-end Grade → Keyer → Grade frame forms one region.
+  - size: M
+
+- [ ] M85.P4.T2 — ChromaKeyer on the GPU
+  - files: `Engine/Nodes/Keyer/ChromaKeyer.{h,cpp}`, `Engine/Gpu/Kernels/chromakeyer.slang` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeChromaKeyerGpu_Test.cpp` (new)
+  - approach:
+    - Follow P4.T1's pattern. ChromaKeyer is the heaviest per-pixel node in `keying_grade`: 64 ms/Mpx serial.
+    - Port the key-colour, acceptance/suppression angles, tolerances, despill and the source/Bg/InM/OutM combination of `ChromaKeyer::render` (`ChromaKeyer.cpp:783-948`; output modes `ChromaKeyer.cpp:66-75`).
+    - Add the ID to the allowlist.
+  - verify:
+    - `transcendental()` across the output modes (intermediate, premultiplied, unpremultiplied, composite) and the source-alpha options.
+    - An end-to-end case forms one region.
+  - size: L
+
+- [ ] M85.P4.T3 — Erode and Dilate on the GPU
+  - files: `Engine/Nodes/Filter/ErodeDilate.{h,cpp}`, `Engine/Gpu/Kernels/morphology.slang` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeErodeDilateGpu_Test.cpp` (new)
+  - approach:
+    - Separable min (Erode) or max (Dilate): H then V, with the `blur.slang` tile layout.
+    - Use direct windowed min/max for small radii, and a van Herk/Gil-Werman prefix/suffix tile for wide ones, matching `ErodeDilateKernels::filterLine` (`ErodeDilate.h:52-72`), including its nearest boundary and its short-line rule.
+    - Wrap with P2.T3's divide and finish helpers.
+    - `getGpuInputRoI` returns the CPU `getRegionsOfInterest` window.
+    - Add both IDs to the allowlist.
+  - verify:
+    - Exact match with the CPU at sizes 1, 2, 6 and 40 (the `keying_grade` sizes plus a wide one), on short lines, with mask, mix and unpremult.
+    - A stripped region (`setGpuStripOverridesForTests`) matches the whole region exactly.
+    - Runs on lavapipe and RADV.
+  - size: L
+
+## Phase 85.5: Transform
+
+- [ ] M85.P5.T1 — Transform and TransformMasked on the GPU without motion blur
+  - files: `Engine/Gpu/Kernels/resample.slang` (new), `Engine/Gpu/CMakeLists.txt`, `Engine/Nodes/Transform/Transform.{h,cpp}`, `Tests/Native/NativeTransformGpu_Test.cpp` (new)
+  - approach:
+    - Resample from **storage buffers** with the CPU filter maths, not `VkImage` sampling (see Decisions):
+      - port `Resampler::filter1D`/`filterWeights` for impulse, box, bilinear, cubic, Keys, Simon, Rifman, Mitchell, Parzen and Notch, with the clamp option;
+      - port `interpolate`, and `interpolateSuper` for minification (`Resampler.h:255-337`);
+      - honour black-outside.
+    - The inverse matrix and the supersampling Jacobian come from `buildSamplingTransforms` on the host, passed as push constants or params.
+    - `getGpuInputRoI` returns the CPU `getRegionsOfInterest` window for the output rect, so strips get correct halos under rotation.
+    - **Refused, falling back to the CPU:**
+      - motion blur > 0 (P5.T2);
+      - a concatenated input transform. Detect it with the same `ParallelRenderArgs::transforms` lookup that `getImage(..., &inputTransform)` uses (`Transform.cpp:1065`), exposed to the GPU query.
+    - Mask and mix go through the finish pass.
+    - Add both IDs to the allowlist.
+  - verify:
+    - `resampling()` (1e-5 absolute) against the CPU for each filter, under:
+      - translate, scale up and down (supersampling), rotate 30°, skew;
+      - clamp on and off, black-outside on and off;
+      - mipmap 0 and 1.
+    - TransformMasked's `mask-mix05` case.
+    - A rotated Transform in a stripped region equals the whole region exactly.
+  - size: L
+
+- [ ] M85.P5.T2 — Transform motion blur on the GPU
+  - files: `Engine/Gpu/Kernels/resample.slang`, `Engine/Nodes/Transform/Transform.cpp`, `Engine/GpuCostModel.{h,cpp}` (motion-blur traits), `Tests/Native/NativeTransformGpu_Test.cpp`
+  - approach:
+    - Port `motionBlurPixel` (`Resampler.h:507`) as a per-pixel loop: van der Corput sample times, per-time matrices precomputed on the host into the params buffer (bounded by `motionBlurMaxIterations`), and the same adaptive error stop.
+    - Directional blur and the shutter options follow the CPU.
+    - `GpuTaskTraits` gains a motion-blur flag, so the 996 ms/Mpx seed CPU row (measured with motion blur) no longer also prices a plain Transform. The plain Transform takes the spatial class default until P6.T2.
+  - verify:
+    - `iir()` (1e-4 absolute) against the CPU for motion blur 0.5, 1 and 4, all shutter offsets and directional blur.
+    - An 8K case on RADV records the kernel time in Decisions.
+  - size: L
+
+## Phase 85.6: Benches and close-out
+
+- [ ] M85.P6.T1 — Label fallen-back members in profiles
+  - files: `Engine/GpuRegionTask.{h,cpp}`, `Engine/RenderScheduler.cpp` (`formatTaskRecord`/`formatRegionRecord`), `tools/bench/render-profile-report.py`, `Tests/RenderProfile_Test.cpp`
+  - approach:
+    - Members of a region that fell back to the CPU are recorded as `"device":"cpu"`, keeping their `regionId`.
+    - The region record gains `fallback` (the reason string, or empty) and `retries`.
+    - The report script counts fallbacks per plugin.
+    - This is the profile half of the M84 hand-off. The fallback thread budget goes to the proposed M109.
+  - verify: `RenderProfileTest` asserts both fields on an injected-OOM fallback and on a clean region, and the report self-test passes.
+  - size: M
+
+- [ ] M85.P6.T2 — Measure the new kernels and seed their cost rows
+  - files: `tools/bench/render-profile-report.py` (`GPU_KERNEL_UHD_MS`, plus CPU rows for native nodes the M82 comps lack), `Engine/GpuCostSeed.inc` (regenerated), `Engine/GpuCostModel.cpp` (if traits need it)
+  - approach:
+    - On RADV in the container, take the UHD kernel-only time of each node ported in Phases 85.2–85.5 from the region record's GPU timestamps on a single-node region (`NATRON_RENDER_PROFILE`).
+    - Take in-situ CPU ms/Mpx for the ported nodes with no CPU row, at 1 thread and at the full thread count, as M84.P1.T1 did.
+    - Add the rows and regenerate the seed with the command in its header. The inputs are in `build/bench/m82-profile/`.
+    - Record the table in Decisions.
+  - verify: the regenerated `GpuCostSeed.inc` has rows for every ported node, `GpuPlacement_Test` and `GpuCostModel` tests pass, and the self-test in `render-profile-report.py` is updated and passes.
+  - size: M
+
+- [ ] M85.P6.T3 — Quick directional bench (~1 hour)
+  - files: none (results go in Decisions); a `gbg`/spatial topology may be added to `tools/bench/graph_bench.py` if the M84 local copy's G-B-G case is still uncommitted
+  - approach:
+    - Release build in the RADV container (`devshell.sh --gpu`), `NATRON_RENDER_SCHEDULER=taskgraph`, with GPU Auto against Off on the same host.
+    - Record `nproc` and the render thread count actually used. The user describes the host as 4 cores, so numbers are not comparable with M84's 7800X3D table.
+    - **Workloads:**
+      - `keying_grade`, `cg_multipass` and `defocus_retime` at UHD, 6 frames each, first frame dropped;
+      - Grade → Transform (motion blur 1) → Grade and Grade → Erode 6 → Blur σ25 → Grade, at UHD and 16k.
+    - **Also:** a CPU-only check of `chain`, `comp` and `blurchain` against `main` `6fcf9c4fa`, both with `NATRON_GPU=off`.
+    - **Record:** per-frame wall time, regions formed and their sizes, fallbacks (P6.T1), and transfer hidden/exposed.
+  - verify:
+    - The direction holds: every comp is at least as fast under Auto as under Off, and the regions in `keying_grade` grow beyond M84's mostly single-node ones (Merge and the OFX Despill are the expected breaks).
+    - CPU-only is within ±5% of `main`.
+    - Any slower case is explained by the cost model and fixed before P6.T4.
+  - size: M
+
+- [ ] M85.P6.T4 — Thorough bench matrix (only after P6.T3's direction holds)
+  - files: none (results go in Decisions)
+  - approach:
+    - Release build, RADV, interleaved Auto/Off, 3 rounds.
+    - The three M82 comps at UHD and 8K.
+    - The heavy spatial nodes alone and in G-X-G chains at UHD, 8K, 16k and 24k, tiled (stripped) against untiled where the frame fits: Transform with and without motion blur, Blur FIR σ25/σ100 and IIR, Erode 6/40, ChromaKeyer.
+    - The host has 188 GB of RAM, so 24k frames (9.2 GB each) fit.
+    - Report each case's speed-up and the per-node share of region time.
+  - verify: a Decisions table with a measured end-to-end speed-up on each M82 comp, and no Auto case slower than Off. Any limit found becomes a follow-up in the proposed M109.
+  - size: M
+
+- [ ] M85.P6.T5 — Record outcomes and hand-offs
+  - files: `.plan/PLAN/DESIGN/2026-10-10-gpu-compute-backend.md` (a §10 "Outcomes from M85"), `.plan/PLAN/MILESTONES/M101-clean-sheet-merge-node.md`, `.plan/PLAN/MILESTONES/M87-point-op-kernel-fusion.md`, the proposed split milestones
+  - approach:
+    - **Design note:** the wrap layout and tolerances, the bench tables, the vertical-pass result, and the decision to resample from storage buffers rather than sampled images (it supersedes §1's "sampled images arrive with M85's filtered Transform").
+    - **M101:** `merge.slang` imports `pixelwrap.slang` for mask, mix and premult, and the `GpuRender.h` path correction.
+    - **M87:** the measured lengths of point-op runs inside regions, as fusion evidence.
+    - **The split milestones:** any follow-ups the benches found.
+  - verify: the named files carry the outcomes.
+  - size: S
+
+**Dependency map**
+- **Start in parallel:** P1.T1, P1.T2, P1.T4 and P2.T5. P2.T5 touches only `blur.slang`, `GpuBlur` and the bench.
+- **P1.T3:** after P1.T1 and P1.T2.
+- **P1.T5:** after P1.T1.
+- **Phase 2:**
+  - P2.T1 after P1.T3;
+  - P2.T2 after P2.T1, because its region tests use a masked Grade;
+  - P2.T3 after P1.T3, in parallel with P2.T1. It touches `NativeImageEffect` like P2.T2, so the two run one after the other;
+  - P2.T4 after P2.T3 (same `Blur.cpp`) and P2.T5 (same `GpuBlur`).
+- **Phase 3:** every task after P1.T3 and P1.T4, and all of them in parallel. They share one-line edits to `Engine/Gpu/CMakeLists.txt` and `NativeGpuCapability_Test.cpp`, which the PM merges serially. P3.T8 after P3.T7 (same `generators.slang`).
+- **Phase 4:**
+  - P4.T1 and P4.T2 after P2.T2 (InM/OutM layers) and P1.T3; they can run in parallel;
+  - P4.T3 after P2.T3 (spatial helpers).
+- **Phase 5:** P5.T1 after P2.T3, then P5.T2.
+- **Phase 6:**
+  - P6.T1 after P2.T2 (same `GpuRegionTask.cpp`);
+  - P6.T2 after all of Phases 2–5;
+  - P6.T3 after P6.T1 and P6.T2;
+  - P6.T4 after P6.T3;
+  - P6.T5 last.
+- **Critical path:** P1.T1 → P1.T3 → P2.T3 → P5.T1 → P5.T2 → P6.T2 → P6.T3 → P6.T4 → P6.T5. A parallel near-critical path runs P1.T3 → P2.T1 → P2.T2 → P4.T2.
+- **Builds:** one at a time through the natron-dev container (the PM runs them). Implementers never run cmake configure, and new `Engine/Gpu/Kernels/*.slang` files need a reconfigure, which the PM batches.
+
+**Verification gate:**
+- **Container, lavapipe:** full ctest is green in both scheduler modes (`NATRON_RENDER_SCHEDULER=legacy|taskgraph`) in natron-dev, with `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json` and `NATRON_TEST_REQUIRE_GPU=1`. That includes:
+  - `GpuTests` (`PixelWrap.*` among them);
+  - every `Native*Gpu_Test` parity suite, none skipped;
+  - `NativeImageEffectGpu_Test`;
+  - the new `GpuResidency_Test` mask cases;
+  - `NativeGpuCapability_Test`, whose allowlist is exactly the ported set.
+- **Container, no Vulkan ICD:** full ctest is green in both modes. Every GPU test skips with a reason, and renders silently fall back to the CPU.
+- **Container, RADV** (`devshell.sh --gpu`): the same suite is green in both modes.
+- **Host:** `GpuTests` is green on RADV through `tools/gpu-spike/run-host.sh`, including semaphore interop.
+- **Build:** `-DNATRON_GPU=OFF` builds.
+- **CI:** green, with the GPU tests run on lavapipe, not skipped.
+- **Benches:**
+  - P6.T3 shows the direction and no CPU-only regression beyond ±5% of `main`;
+  - P6.T4 shows a measured end-to-end speed-up on each M82 comp on RADV, with no Auto case slower than Off.
+- **Records:** P6.T5's hand-offs are written, and every ported node's GPU tolerance is in `Engine/Nodes/README.md`.
 
 ## Decisions
 
 - 2026-10-12 — **Merge is out of scope** (user): M101 - Clean-Sheet Merge Node replaces the old `MergeNode` with a new node that ships its own GPU kernel, so porting the old one would be throwaway work. Not a dependency: M85 runs without it.
+- 2026-10-12 — **Elaborated from the stub by a planning consultant; the scope is cut**. M85 keeps the coherent first slice:
+  - the kernel description and per-pixel wrapping;
+  - Grade and Blur completed;
+  - every native point op except the multi-plane channel nodes;
+  - Keyer, ChromaKeyer and Erode/Dilate;
+  - Transform, including motion blur;
+  - the profile fallback labels;
+  - the benches on the M82 comps.
+
+  **Moved out, as proposed stubs:**
+  - viewer interop and a GPU viewer process → **M107 - GPU Viewer Hand-off**;
+  - the host GL wrapper retirement and the Vulkan device list in Preferences → **M108 - Retire Engine GL Host Path**;
+  - the region-engine follow-ups from M84 → **M109 - GPU Region Engine Hardening**: per-shape strip memory, contention, helper-thread imports, the fallback thread budget, the `HostImageMemory` idle trim, per-member timestamps, and multi-plane tasks;
+  - EdgeDetect, Reformat, Crop, Position, Dissolve and the channel nodes → **M110 - Remaining Native GPU Ports**.
+
+  So the stub's acceptance items "no host-side image operation renders through GL" and "Preferences lists Vulkan devices" move to M108.
+
+  **Why:** each of those is its own coherent change, touching the viewer, the GL engine and the scheduler. Together with the node ports they would make a PR far bigger than M84's. The node ports are what the M82 ranking and residency need first.
+- 2026-10-12 — **Dropped hand-off:** the `submitAndWait` timeout returning buffers in use. M84's review fixed it in `d91d3a487`.
+- 2026-10-12 — **The backend-neutral description is a kernel ID plus a parameter block** (`PixelKernelGpu` in `PixelKernel.h`), built from the same knob read as `makeKernel()`.
+  - The CPU kernels stay hand-written, per `2026-10-10-gpu-compute-backend-chosen.md`.
+  - Shared C++/Slang maths headers are allowed per node where they pay off (M101's `MergeMath.h` precedent), but M85 doesn't require them.
+  - Mask, mix, process channels and premult live once, in `pixelwrap.slang`. It reproduces `NativeImageEffect::render()` exactly, with `precise` blend arithmetic.
+  - Op parameters go in a storage buffer and wrap geometry in push constants, because the 128 B push-constant limit can't hold both (Grade alone needs 64 B).
+- 2026-10-12 — **Multi-input kernels and M101:**
+  - M85's point-op description stays single-source.
+  - Multi-input nodes (Keyer, ChromaKeyer, and later Merge) override `renderGpu` and import `pixelwrap.slang`'s helpers. `GpuRenderArgs::inputs` already carries every input by number.
+  - M101.P2.T1, which feeds several inputs into the CPU `RowIO`, is independent of M85 and not duplicated. If a generic multi-source GPU point-op description is wanted later, it extends `PixelKernelGpu` together with M101.P2.T1 or in M87.
+- 2026-10-12 — **"(Un)premult by" runs on the GPU only when the divisor lies in the task's own plane;** otherwise the node renders on the CPU. Masks may come from any layer: P2.T2 resolves the layer of each mask input.
+- 2026-10-12 — **Blur on the GPU:**
+  - every filter (FIR, IIR Deriche/van Vliet, box/triangle/quadratic) is ported at order 0;
+  - derivative orders (`orderX/Y > 0`) stay CPU-only, because they are rare and the FIR kernel assumes a symmetric half kernel.
+- 2026-10-12 — **Transform resamples from storage buffers with the CPU's filter maths, not `VkImage` sampling.** Hardware filtering has coarse fixed-point weights and only bilinear, so it can't meet the 1e-5 resampling tolerance or Natron's ten filters. This supersedes the design note's "sampled images arrive with M85's filtered Transform".
+- 2026-10-12 — **OCIO stays on the CPU in M85.** The OCIO nodes are OpenFX. Read's colour conversion runs on the CPU next to decode. OCIO on Vulkan, without runtime shader compilation, is the open question of the proposed M107.
+- 2026-10-12 — **Plugin versions are unchanged.** M85 changes no knob, default or CPU result; GPU paths match the CPU within stated tolerances. This follows the hard-cut rule: no compatibility machinery and nothing version-gated.
+- 2026-10-12 — **The user answered the elaboration's questions:**
+  - accept the split into M107 - GPU Viewer Hand-off, M108 - Retire Engine GL Host Path, M109 - GPU Region Engine Hardening and M110 - Remaining Native GPU Ports;
+  - M108 stays separate from M86 - OFX 1.5 GPU Suites;
+  - port Blur's IIR and box filters to the GPU (P2.T4);
+  - decide how OCIO runs on Vulkan when M107 starts.
+- 2026-10-12 — The bench host is a Ryzen 7 7800X3D with 8 cores, 16 threads and 188 GB of RAM, not the 4-core host M64 - Tiled Rendering was benched on.

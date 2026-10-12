@@ -18,7 +18,7 @@ Scouted 2026-10-11 on `milestone/m55-node-graph-polish` at `10e0accd5`. **Re-che
 
 ## Phase 69.2: Node graph interaction
 
-- [ ] M69.P2.T1 — Make input arrows easier to grab
+- [x] M69.P2.T1 — Make input arrows easier to grab
   - files: `Gui/NodeGraph10.cpp`, `Gui/Edge.cpp`, `Gui/Edge.h`
   - approach:
     - Today: `NodeGraph::hasItemNearbyMouse` (`NodeGraph10.cpp:109-191`) queries `items()` over a fixed `TO_DPIX(10.)` viewport square (`:131`) against each item's shape. `Edge::shape()` (`Edge.cpp:629`) is the 2px line plus a 10px arrowhead (`ARROW_SIZE_DISCONNECTED`, `:61`). The function then takes `*edges.begin()` (`:180`), which is pointer order, not the nearest edge. Nodes win at the exact point.

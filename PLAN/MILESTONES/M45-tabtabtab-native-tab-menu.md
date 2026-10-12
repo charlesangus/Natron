@@ -42,7 +42,7 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
 
 ## Phase 45.5: Vendor tabtabtab and write the Natron adapter
 
-- [ ] M45.P5.T1 — Vendor tabtabtab-nuke's core, core tests and licence at a pinned commit
+- [x] M45.P5.T1 — Vendor tabtabtab-nuke's core, core tests and licence at a pinned commit
   - files: `Gui/Resources/TabTabTab/` (new): `tabtabtab_nuke_core.py`, `LICENSE`, `UPSTREAM`, `tests/__init__.py`, `tests/test_node_model_diff.py`, `tests/test_monitor_selection.py`, `tests/test_main_window_discovery.py`, `tests/test_cursor_restore_on_close.py`
   - approach:
     - `git clone https://github.com/charlesangus/tabtabtab-nuke` and `git checkout 48de32d`. If the user names a newer tag, use that instead and record it.
@@ -57,7 +57,7 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
   - verify: run `cd Gui/Resources/TabTabTab && python3 -m pytest -q tests` (host python, no build). All the vendored tests pass; upstream reports 38 passing, minus the fingerprint tests that were left out. Run `diff -r` against the clone, restricted to the vendored files; it shows no differences.
   - size: S
 
-- [ ] M45.P5.T2 — Patch the vendored core so the host's main window is pluggable (one small patch that can go upstream)
+- [x] M45.P5.T2 — Patch the vendored core so the host's main window is pluggable (one small patch that can go upstream)
   - files: `Gui/Resources/TabTabTab/tabtabtab_nuke_core.py`, `Gui/Resources/TabTabTab/UPSTREAM`, `Gui/Resources/TabTabTab/tests/test_host_hooks.py` (new)
   - approach:
     - The patch, a main-window finder:

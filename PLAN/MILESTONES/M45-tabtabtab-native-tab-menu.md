@@ -116,7 +116,7 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
   - verify: M45.P5.T4's unit tests at any time (no build); M45.P8.T1 at the gate.
   - size: L
 
-- [ ] M45.P5.T4 — Unit-test the adapter with stubbed PySide6 and NatronGui, and register the Python tests with ctest
+- [x] M45.P5.T4 — Unit-test the adapter with stubbed PySide6 and NatronGui, and register the Python tests with ctest
   - files: `Tests/python/test_tabtabtab_natron.py` (new), `Tests/python/run_tabtabtab_tests.py` (new), `Tests/CMakeLists.txt`
   - approach:
     - `test_tabtabtab_natron.py` is a stdlib `unittest` module. It loads the adapter by path, using the stub-module pattern of upstream `tests/test_main_window_discovery.py`: `PySide6`/`QtCore`/`QtGui`/`QtWidgets`/`shiboken6` stubs in `sys.modules`, restored afterwards.

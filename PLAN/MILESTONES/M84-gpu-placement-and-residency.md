@@ -894,3 +894,4 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - The Vulkan validation layer isn't available in the container or on the host.
 - 2026-10-11 — CI `format` (clang-format 21.1.8 drift on changed lines) and `lint-ci` (SC2012 in `devshell.sh`) fail on PR #54. Fixes delegated.
 - 2026-10-11 — CI fixes (`8bf4a189a`): clang-format 21.1.8 on the changed lines of 34 files, and SC2012 in `devshell.sh`. Replied on all three review threads. The round is closed, and the gate is re-running on the new tip.
+- 2026-10-12 — **Shipped.** PR #54 squash-merged as `6fcf9c4fa`. CI was green, with both modes running on lavapipe with `NATRON_TEST_REQUIRE_GPU=1` at 1901/1901 and nothing skipped.

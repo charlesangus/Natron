@@ -43,13 +43,26 @@ NATRON_NAMESPACE_ENTER
 struct GpuCalibration;
 
 /**
+ * @brief What a plugin without cost rows is assumed to cost like: a point op like Grade, a native effect that is not
+ * one like a Blur, anything else has no default.
+ **/
+enum class GpuCostClass {
+    eOther,
+    ePointOp,
+    eSpatial,
+};
+
+/**
  * @brief What the cost of a task depends on besides its size: the plugin, and for a blur its sigma in pixels at the
- * level it renders at and whether its filter is recursive.
+ * level it renders at and whether its filter is recursive. The cost class and the input count only matter for a
+ * plugin without rows of its own.
  **/
 struct GpuTaskTraits {
     std::string pluginId;
     double sigma = 0.;
     bool iir = false;
+    GpuCostClass costClass = GpuCostClass::eOther;
+    int inputCount = 1;
 
     GpuTaskTraits() = default;
 
@@ -135,12 +148,15 @@ public:
     static double megapixelsOf(const FrameGraph::Task& task);
 
     /**
-     * @brief CPU wall time on the whole pool; 0 for a plugin with neither a seed nor a measurement.
+     * @brief CPU wall time on the whole pool. A plugin without a row of its own takes its class default: Grade's row
+     * for a point op, the Blur's sigma 25 row for a spatial effect. 0 for any other.
      **/
     double cpuMs(const GpuTaskTraits& traits, double megapixels) const;
 
     /**
-     * @brief GPU kernel time; infinite for a plugin without a GPU seed row, which is never worth placing.
+     * @brief GPU kernel time. A plugin without a row of its own takes its class default: Grade's row scaled by
+     * (inputs + 1) / 2 for a point op, the Blur's sigma 25 row for a spatial effect. Infinite for any other, which is
+     * never worth placing.
      **/
     double gpuMs(const GpuTaskTraits& traits, double megapixels) const;
 
@@ -182,6 +198,8 @@ private:
 
     int threadCountLocked() const;
     double seedThreadMsPerMpxLocked(const CpuRow& row) const;
+    const CpuRow* findCpuRowOrDefaultLocked(const GpuTaskTraits& traits) const;
+    bool gpuMsPerMpxLocked(const GpuTaskTraits& traits, double* msPerMpx) const;
     CpuRow* findCpuRowLocked(const GpuTaskTraits& traits);
     const CpuRow* findCpuRowLocked(const GpuTaskTraits& traits) const;
     GpuRow* findGpuRowLocked(const GpuTaskTraits& traits);

@@ -648,3 +648,101 @@ TEST(GpuCostModel, ShrinkingNeverBreaksConvexity)
     EXPECT_TRUE(isConvex(fixture.graph, 0));
     EXPECT_TRUE(isContractionAcyclic(fixture.graph));
 }
+
+namespace {
+
+GpuTaskTraits
+unseededTraits(GpuCostClass costClass,
+               int inputCount = 1)
+{
+    GpuTaskTraits traits("test.NoSeedRows");
+
+    traits.costClass = costClass;
+    traits.inputCount = inputCount;
+
+    return traits;
+}
+
+} // namespace
+
+TEST(GpuCostModel, ClassDefaultsFollowGradeAndBlurRows)
+{
+    GpuCostModel model;
+
+    model.setThreadCount(16);
+    const GpuTaskTraits point = unseededTraits(GpuCostClass::ePointOp);
+    EXPECT_TRUE(model.hasGpuCost(point));
+    EXPECT_NEAR(model.gpuMs(point, 1.), model.gpuMs(GpuTaskTraits(kGradeId), 1.), 1e-12);
+    EXPECT_NEAR(model.cpuMs(point, 1.), model.cpuMs(GpuTaskTraits(kGradeId), 1.), 1e-12);
+    EXPECT_NEAR(model.gpuMs(unseededTraits(GpuCostClass::ePointOp, 3), 1.), 2. * model.gpuMs(GpuTaskTraits(kGradeId), 1.), 1e-12);
+
+    const GpuTaskTraits spatial = unseededTraits(GpuCostClass::eSpatial);
+    EXPECT_NEAR(model.gpuMs(spatial, 1.), model.gpuMs(GpuTaskTraits(kBlurId, 25.), 1.), 1e-12);
+    EXPECT_NEAR(model.cpuMs(spatial, 1.), model.cpuMs(GpuTaskTraits(kBlurId, 25.), 1.), 1e-12);
+
+    const GpuTaskTraits other = unseededTraits(GpuCostClass::eOther);
+    EXPECT_FALSE(model.hasGpuCost(other));
+    EXPECT_EQ(model.cpuMs(other, 1.), 0.);
+}
+
+TEST(GpuCostModel, MeasuredRowsBeatClassDefaults)
+{
+    GpuCostModel model;
+
+    model.setThreadCount(16);
+    const GpuTaskTraits point = unseededTraits(GpuCostClass::ePointOp);
+    model.observeGpu(point, 7000000, 1.);
+    model.observeCpu(point, 9000000, 16, 1.);
+    EXPECT_NEAR(model.gpuMs(point, 1.), 7., 1e-9);
+    EXPECT_NEAR(model.cpuMs(point, 1.), 9., 1e-9);
+}
+
+// sink 0 (CPU) <- Grade 1 <- X 2 <- Grade 3 <- reader 4 (CPU), X a point op with no rows.
+TEST(GpuCostModel, UnseededPointOpJoinsGradeRegion)
+{
+    CostFixture fixture(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
+
+    fixture.traits[1] = GpuTaskTraits(kGradeId);
+    fixture.traits[2] = unseededTraits(GpuCostClass::ePointOp);
+    fixture.traits[3] = GpuTaskTraits(kGradeId);
+    fixture.place();
+
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    EXPECT_EQ(fixture.graph.regions[0].members.size(), 3u);
+    EXPECT_EQ(fixture.graph.tasks[2].device, FrameGraph::Device::Gpu);
+}
+
+TEST(GpuCostModel, UnseededOtherNodeIsNeverPlaced)
+{
+    CostFixture fixture(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
+
+    fixture.traits[1] = GpuTaskTraits(kGradeId);
+    fixture.traits[2] = unseededTraits(GpuCostClass::eOther);
+    fixture.traits[3] = GpuTaskTraits(kGradeId);
+    fixture.place();
+
+    EXPECT_EQ(fixture.graph.tasks[2].device, FrameGraph::Device::Cpu);
+}
+
+// X is a point op that cannot render on the GPU, whatever its default cost.
+TEST(GpuCostModel, NodeThatCannotRenderOnGpuIsNeverPlaced)
+{
+    CostFixture fixture(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
+
+    fixture.traits[1] = GpuTaskTraits(kGradeId);
+    fixture.traits[2] = unseededTraits(GpuCostClass::ePointOp);
+    fixture.traits[3] = GpuTaskTraits(kGradeId);
+
+    PlacementInputs inputs;
+    inputs.canRenderOnGpu = [&fixture](const FrameGraph::Task& task) {
+        const int index = indexOf(fixture.graph, task);
+
+        return (index != 2) && (fixture.traits.count(index) != 0);
+    };
+    inputs.regionGain = [&fixture](const FrameGraph& g, const FrameGraph::Region& region) {
+        return fixture.model.regionGainMs(g, region);
+    };
+    placeGraph(fixture.graph, inputs);
+
+    EXPECT_EQ(fixture.graph.tasks[2].device, FrameGraph::Device::Cpu);
+}

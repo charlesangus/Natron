@@ -36,6 +36,7 @@
 #include "Engine/GpuContext.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Image/NativeImageEffect.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -69,6 +70,10 @@ const SeedGpuRow kSeedGpuRows[] = { NATRON_GPU_COST_SEED_GPU_ROWS };
 
 // The thread count the seed's threaded profiles ran with.
 const int kSeedThreads = 16;
+
+const char* const kGradePluginId = "net.sf.openfx.GradePlugin";
+const char* const kBlurPluginId = "net.sf.cimg.CImgBlur";
+const double kBlurDefaultSigma = 25.;
 
 const double kInfinity = std::numeric_limits<double>::infinity();
 
@@ -223,7 +228,11 @@ GpuCostModel::traitsOf(const FrameGraph::Task& task) const
         return GpuTaskTraits();
     }
     GpuTaskTraits traits(node->getPluginID());
+    traits.inputCount = node->getNInputs();
     EffectInstancePtr effect = node->getEffectInstance();
+    if (const NativeImageEffect* native = dynamic_cast<const NativeImageEffect*>(effect.get())) {
+        traits.costClass = native->isPointOp() ? GpuCostClass::ePointOp : GpuCostClass::eSpatial;
+    }
     if (const Blur* blur = dynamic_cast<const Blur*>(effect.get())) {
         BlurParams params;
         blur->getParams(task.key.time, task.key.view, &params);
@@ -298,12 +307,54 @@ GpuCostModel::seedThreadMsPerMpxLocked(const CpuRow& row) const
     return row.serialMsPerMpx * threads / speedupAt(threads, row.parallelSpeedup);
 }
 
+const GpuCostModel::CpuRow*
+GpuCostModel::findCpuRowOrDefaultLocked(const GpuTaskTraits& traits) const
+{
+    if (const CpuRow* row = findCpuRowLocked(traits)) {
+        return row;
+    }
+    if (traits.costClass == GpuCostClass::ePointOp) {
+        return findCpuRowLocked(GpuTaskTraits(kGradePluginId));
+    }
+    if (traits.costClass == GpuCostClass::eSpatial) {
+        return findCpuRowLocked(GpuTaskTraits(kBlurPluginId, kBlurDefaultSigma, false));
+    }
+
+    return nullptr;
+}
+
+bool
+GpuCostModel::gpuMsPerMpxLocked(const GpuTaskTraits& traits,
+                                double* msPerMpx) const
+{
+    if (const GpuRow* row = findGpuRowLocked(traits)) {
+        *msPerMpx = row->kernelMsPerMpx;
+
+        return true;
+    }
+    if (traits.costClass == GpuCostClass::ePointOp) {
+        if (const GpuRow* row = findGpuRowLocked(GpuTaskTraits(kGradePluginId))) {
+            *msPerMpx = row->kernelMsPerMpx * (std::max(1, traits.inputCount) + 1) / 2.;
+
+            return true;
+        }
+    } else if (traits.costClass == GpuCostClass::eSpatial) {
+        if (const GpuRow* row = findGpuRowLocked(GpuTaskTraits(kBlurPluginId, kBlurDefaultSigma, false))) {
+            *msPerMpx = row->kernelMsPerMpx;
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
 double
 GpuCostModel::cpuMs(const GpuTaskTraits& traits,
                     double megapixels) const
 {
     std::lock_guard<std::mutex> lock(_mutex);
-    const CpuRow* row = findCpuRowLocked(traits);
+    const CpuRow* row = findCpuRowOrDefaultLocked(traits);
 
     if (!row) {
         return 0.;
@@ -318,9 +369,9 @@ GpuCostModel::gpuMs(const GpuTaskTraits& traits,
                     double megapixels) const
 {
     std::lock_guard<std::mutex> lock(_mutex);
-    const GpuRow* row = findGpuRowLocked(traits);
+    double msPerMpx = 0.;
 
-    return row ? row->kernelMsPerMpx * megapixels : kInfinity;
+    return gpuMsPerMpxLocked(traits, &msPerMpx) ? msPerMpx * megapixels : kInfinity;
 }
 
 bool
@@ -328,7 +379,9 @@ GpuCostModel::hasGpuCost(const GpuTaskTraits& traits) const
 {
     std::lock_guard<std::mutex> lock(_mutex);
 
-    return findGpuRowLocked(traits) != nullptr;
+    double msPerMpx = 0.;
+
+    return gpuMsPerMpxLocked(traits, &msPerMpx);
 }
 
 double

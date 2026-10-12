@@ -861,12 +861,10 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
     _colorLabel = new ColorPickerLabel( _useSimplifiedUI ? NULL : this, containerLayout->widget() );
     if (!_useSimplifiedUI) {
         _colorLabel->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("To pick a color on a viewer, click this and then press control + left click on any viewer.\n"
-                                                                          "You can also pick the average color of a given rectangle by holding control + shift + left click\n. "
-                                                                          "To deselect the picker left click anywhere."
-                                                                          "Note that by default %1 converts to linear the color picked\n"
-                                                                          "because all the processing pipeline is linear, but you can turn this off in the\n"
-                                                                          "preferences panel.")
-                                                                           .arg(QString::fromUtf8(NATRON_APPLICATION_NAME)),
+                                                                          "You can also pick the average color of a given rectangle by holding control + shift + left click.\n"
+                                                                          "To deselect the picker left click anywhere.\n"
+                                                                          "Picked values are the image's scene-referred values, before the viewer's "
+                                                                          "gain, gamma and display transform."),
                                                                        NATRON_NAMESPACE::WhiteSpaceNormal));
     }
 

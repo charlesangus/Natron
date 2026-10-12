@@ -432,17 +432,17 @@ public:
 
     /**
      * @brief Get the color of the currently displayed image at position x,y.
-     * @param forceLinear If true, r, g and b are the image values, otherwise they go through
-     * the viewer's display transform (without gain, offset or gamma).
+     * r, g, b and a are the rendered image's scene-referred values, before gain, gamma
+     * and the display transform.
      * X and Y are in CANONICAL COORDINATES
      * @return true if the point is inside the image and colors were set
      **/
-    bool getColorAt(double x, double y, bool forceLinear, int textureIndex, float* r,
+    bool getColorAt(double x, double y, int textureIndex, float* r,
                     float* g, float* b, float* a, unsigned int* mipmapLevel) WARN_UNUSED_RETURN;
 
     // same as getColor, but computes the mean over a given rectangle
-    bool getColorAtRect(const RectD &rect, // rectangle in canonical coordinates
-                        bool forceLinear, int textureIndex, float* r, float* g, float* b, float* a, unsigned int* mipmapLevel);
+    bool getColorAtRect(const RectD& rect, // rectangle in canonical coordinates
+                        int textureIndex, float* r, float* g, float* b, float* a, unsigned int* mipmapLevel);
 
     /**
      * @brief Get the raw deep samples of the currently displayed image at position x,y, in

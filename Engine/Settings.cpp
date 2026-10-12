@@ -676,14 +676,6 @@ Settings::initializeKnobsUserInterface()
                                                  " or the timeline. This setting doesn't apply to roto splines editing.") );
     _uiPage->addKnob(_renderOnEditingFinished);
 
-
-    _linearPickers = AppManager::createKnob<KnobBool>( this, tr("Linear color pickers") );
-    _linearPickers->setName("linearPickers");
-    _linearPickers->setHintToolTip( tr("When activated, all colors picked from the color parameters are linearized "
-                                       "before being fetched. Otherwise they are in the same colorspace "
-                                       "as the viewer they were picked from.") );
-    _uiPage->addKnob(_linearPickers);
-
     _maxPanelsOpened = AppManager::createKnob<KnobInt>( this, tr("Maximum number of open settings panels (0=\"unlimited\")") );
     _maxPanelsOpened->setName("maxPanels");
     _maxPanelsOpened->setHintToolTip( tr("This property holds the maximum number of settings panels that can be "
@@ -1621,7 +1613,6 @@ Settings::setDefaultValues()
     // General/User Interface
     _notifyOnFileChange->setDefaultValue(true);
     _renderOnEditingFinished->setDefaultValue(false);
-    _linearPickers->setDefaultValue(true, 0);
     _maxPanelsOpened->setDefaultValue(10, 0);
     _useCursorPositionIncrements->setDefaultValue(true);
     //_defaultLayoutFile
@@ -2599,12 +2590,6 @@ double
 Settings::getUnreachableRamPercent() const
 {
     return (double)_unreachableRAMPercent->getValue() / 100.;
-}
-
-bool
-Settings::getColorPickerLinear() const
-{
-    return _linearPickers->getValue();
 }
 
 int

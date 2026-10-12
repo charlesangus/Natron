@@ -2623,7 +2623,6 @@ ViewerGL::updateColorPicker(int textureIndex,
     }
 
     float r, g, b, a;
-    bool linear = appPTR->getCurrentSettings()->getColorPickerLinear();
     bool picked = false;
     RectD rod = getRoD(textureIndex);
     RectD formatCanonical = getCanonicalFormat(textureIndex);
@@ -2642,7 +2641,7 @@ ViewerGL::updateColorPicker(int textureIndex,
                    ( imgPosCanonical.y() >= formatCanonical.bottom() ) &&
                    ( imgPosCanonical.y() < formatCanonical.top() ) ) ) {
                 //imgPos must be in canonical coordinates
-                picked = getColorAt(imgPosCanonical.x(), imgPosCanonical.y(), linear, textureIndex, &r, &g, &b, &a, &mmLevel);
+                picked = getColorAt(imgPosCanonical.x(), imgPosCanonical.y(), textureIndex, &r, &g, &b, &a, &mmLevel);
             }
         }
     }
@@ -3731,12 +3730,11 @@ ViewerGL::pickColorInternal(double x,
     }
 
     _imp->lastPickerPos = imgPos;
-    bool linear = appPTR->getCurrentSettings()->getColorPickerLinear();
     bool ret = false;
     for (int i = 0; i < 2; ++i) {
         // imgPos must be in canonical coordinates
         unsigned int mmLevel;
-        bool picked = getColorAt(imgPos.x(), imgPos.y(), linear, i, &r, &g, &b, &a, &mmLevel);
+        bool picked = getColorAt(imgPos.x(), imgPos.y(), i, &r, &g, &b, &a, &mmLevel);
         if (picked) {
             if (i == 0) {
                 _imp->viewerTab->getGui()->setColorPickersColor(r, g, b, a);
@@ -3907,7 +3905,6 @@ void
 ViewerGL::updateRectangleColorPickerInternal()
 {
     float r, g, b, a;
-    bool linear = appPTR->getCurrentSettings()->getColorPickerLinear();
     QPointF topLeft = _imp->pickerRect.topLeft();
     QPointF btmRight = _imp->pickerRect.bottomRight();
     RectD rect;
@@ -3918,7 +3915,7 @@ ViewerGL::updateRectangleColorPickerInternal()
     rect.set_top( std::max( topLeft.y(), btmRight.y() ) );
     for (int i = 0; i < 2; ++i) {
         unsigned int mm;
-        bool picked = getColorAtRect(rect, linear, i, &r, &g, &b, &a, &mm);
+        bool picked = getColorAtRect(rect, i, &r, &g, &b, &a, &mm);
         if (picked) {
             if (i == 0) {
                 _imp->viewerTab->getGui()->setColorPickersColor(r, g, b, a);
@@ -4277,14 +4274,13 @@ getColorAtInternal(const ImagePtr& image,
 
 bool
 ViewerGL::getColorAt(double x,
-                     double y,           // x and y in canonical coordinates
-                     bool forceLinear,
+                     double y, // x and y in canonical coordinates
                      int textureIndex,
                      float* r,
                      float* g,
                      float* b,
                      float* a,
-                     unsigned int* imgMmlevel)                               // output values
+                     unsigned int* imgMmlevel) // output values
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
@@ -4324,17 +4320,6 @@ ViewerGL::getColorAt(double x,
         break;
     }
     *imgMmlevel = image->getMipmapLevel();
-
-    if (gotval && !forceLinear && image->getComponents().isColorLayer()) {
-        ProjectColorManagement::DisplayProcessorPtr processor = _imp->getDisplayProcessor();
-        if (processor) {
-            float rgba[4] = { *r, *g, *b, *a };
-            applyViewerDisplayTransform(*processor, rgba, 1, 1., 0., 1.);
-            *r = rgba[0];
-            *g = rgba[1];
-            *b = rgba[2];
-        }
-    }
 
     return gotval;
 } // getColorAt
@@ -4415,8 +4400,7 @@ ViewerGL::updateDeepProbe(int textureIndex,
 }
 
 bool
-ViewerGL::getColorAtRect(const RectD &rect, // rectangle in canonical coordinates
-                         bool forceLinear,
+ViewerGL::getColorAtRect(const RectD& rect, // rectangle in canonical coordinates
                          int textureIndex,
                          float* r,
                          float* g,
@@ -4454,15 +4438,9 @@ ViewerGL::getColorAtRect(const RectD &rect, // rectangle in canonical coordinate
     }
 
     ImageBitDepthEnum depth = image->getBitDepth();
-    ProjectColorManagement::DisplayProcessorPtr processor;
-    if (!forceLinear && image->getComponents().isColorLayer()) {
-        processor = _imp->getDisplayProcessor();
-    }
-    std::vector<float> row;
 
     unsigned long area = 0;
     for (int yPixel = rectPixel.bottom(); yPixel < rectPixel.top(); ++yPixel) {
-        row.clear();
         for (int xPixel = rectPixel.x1; xPixel < rectPixel.x2; ++xPixel) {
             float rPix, gPix, bPix, aPix;
             bool gotval = false;
@@ -4482,26 +4460,13 @@ ViewerGL::getColorAtRect(const RectD &rect, // rectangle in canonical coordinate
                 break;
             }
             if (gotval) {
-                row.push_back(rPix);
-                row.push_back(gPix);
-                row.push_back(bPix);
-                row.push_back(aPix);
+                rSum += rPix;
+                gSum += gPix;
+                bSum += bPix;
+                aSum += aPix;
+                ++area;
             }
         }
-        if (row.empty()) {
-            continue;
-        }
-        const int count = (int)row.size() / 4;
-        if (processor) {
-            applyViewerDisplayTransform(*processor, &row[0], count, 1., 0., 1.);
-        }
-        for (int i = 0; i < count; ++i) {
-            rSum += row[4 * i];
-            gSum += row[4 * i + 1];
-            bSum += row[4 * i + 2];
-            aSum += row[4 * i + 3];
-        }
-        area += count;
     }
 
     if (area > 0) {

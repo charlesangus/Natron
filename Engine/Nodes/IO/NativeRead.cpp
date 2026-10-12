@@ -125,6 +125,7 @@ timeDomainAtDefaults(const KnobIntPtr& firstFrame,
 NativeRead::NativeRead(NodePtr node)
     : NativeEffectBase(node)
     , _filename()
+    , _reload()
     , _proxy()
     , _proxyThreshold()
     , _originalProxyScale()
@@ -176,8 +177,19 @@ NativeRead::initializeKnobs()
     // NativeEffectBase has no counterpart of an OpenFX clip-preferences slave param, so without
     // this the preferred metadata is only consulted once, at creation, before a file is chosen.
     filename->setIsMetadataSlave(true);
+    filename->setAddNewLine(false);
     page->addKnob(filename);
     _filename = filename;
+
+    // Left to trigger a render: the evaluation retires the images and action results cached under
+    // the old node hash, and the metadata is derived again from the file now on disk.
+    KnobButtonPtr reload = createKnob<KnobButton>(tr("Reload"));
+    reload->setName(kNatronReadParamReload);
+    reload->setHintToolTip(tr("Reads the file again: forgets the frames, headers, layers and metadata read before and the "
+                              "images decoded from them, so a file changed on disk is what the node outputs."));
+    reload->setIsMetadataSlave(true);
+    page->addKnob(reload);
+    _reload = reload;
 
     KnobFilePtr proxy = createKnob<KnobFile>(tr("Proxy File"));
     proxy->setName(kOfxImageEffectProxyParamName);
@@ -866,6 +878,13 @@ NativeRead::knobChanged(KnobI* k,
                         double /*time*/,
                         bool /*originatedFromMainThread*/)
 {
+    KnobButtonPtr reload = _reload.lock();
+    if (reload && (k == reload.get())) {
+        purgeCaches();
+        clearPersistentMessage(false);
+
+        return true;
+    }
     if (proxyKnobChanged(k, reason)) {
         return true;
     }

@@ -183,7 +183,15 @@ script-name prefix so the Write can share it.
   `timeDomainUserEdited`, `ocioInputSpace`,
   `ocioInputSpaceIndex`, `ocioInputSpaceSet`, the `Context` group of
   `key1`..`key4` and `value1`..`value4`, and the hidden `ocioConfigFile`,
-  `ocioWorkingSpace` and `availableViews`.
+  `ocioWorkingSpace` and `availableViews`. `reload` (`kNatronReadParamReload`)
+  is a Reload button on the `filename` row.
+- **Reload.** The Reload button runs `purgeCaches()`: the frame listings, the
+  cached headers of the files and proxy files, the output metadata and the
+  action results are dropped, and the frame range is read from disk again. The
+  button triggers a render, so the node hash moves and the images and action
+  results cached under the old hash are retired. Until then a file changed on
+  disk is not seen: the produced layers, the region of definition and the
+  cached images stay those of the file read before.
 - **Colour.** Pixels are converted to the project's working space through the
   project's OCIO config (`IoColorSpace::toWorkingProcessor()`). The default
   input space (`IoColorSpace::defaultInputSpace()`) is, in order: the config's
@@ -249,7 +257,8 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   `zipCompressionLevel`, `tileSize`, `partSplitting`, `viewsSelector`,
   `ocioOutputSpace`, `ocioOutputSpaceIndex`, `ocioOutputSpaceSet`, the `Context`
   group of `key1`..`key4` and `value1`..`value4`, the hidden `ocioConfigFile`
-  and `ocioWorkingSpace`, `startRender`, `writeMetadata`, `readBack` and
+  and `ocioWorkingSpace`, `startRender`, `writeMetadata`, `readBack`,
+  `reload` (a Reload button on the `readBack` row) and the hidden
   `readBackStamp`. The compression, bit-depth and per-format knobs follow the
   file name through `OiioWriteSupport::paramVisibility()`.
 - **Encoder.** `OiioWriteSupport::writeFile()` pulls rows from a `RowSource` one
@@ -308,6 +317,13 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   renders the Write without it, and `outputFollowsLayerKnob()` is false, so a
   channel set that selects nothing does not make the Write an identity of its
   input.
+- **Reload.** The Reload button on the `readBack` row is enabled only while
+  `readBack` is on. It runs `purgeCaches()`: the cached headers of the files of
+  the frame range, the output metadata and the action results are dropped, and
+  the button triggers a render, so the node hash moves and the images and
+  action results cached under the old hash are retired. Until then a file
+  changed on disk is not seen: the produced layers and the cached images stay
+  those of the file read before.
 
 ## Writing a node, start to finish
 

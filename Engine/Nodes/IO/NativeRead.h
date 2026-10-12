@@ -45,6 +45,7 @@
 
 #define PLUGIN_MAJOR_NATRON_READ 2
 #define kNatronReadNodeOCIOParamInputSpace "ocioInputSpace"
+#define kNatronReadParamReload "reload"
 
 NATRON_NAMESPACE_ENTER
 
@@ -207,6 +208,7 @@ private:
     std::optional<std::string> automaticInputSpace() const;
 
     KnobFileWPtr _filename;
+    KnobButtonWPtr _reload;
     KnobFileWPtr _proxy;
     KnobDoubleWPtr _proxyThreshold;
     KnobDoubleWPtr _originalProxyScale;

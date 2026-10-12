@@ -90,6 +90,8 @@ enum FrameRangeEnum {
 
 const int kMinBandPixels = 16384;
 
+const double kMaxEvictedFrames = 1 << 16;
+
 void
 setSecretAndDisabled(const KnobIPtr& knob,
                      bool secret)
@@ -1071,8 +1073,20 @@ NativeWrite::initializeKnobs()
     readBack->setDefaultValue(false);
     readBack->setAnimationEnabled(false);
     readBack->setIsMetadataSlave(true);
+    readBack->setAddNewLine(false);
     page->addKnob(readBack);
     _readBack = readBack;
+
+    // Left to trigger a render: the evaluation retires the images and action results cached under
+    // the old node hash, and the metadata is derived again from the files now on disk.
+    KnobButtonPtr reload = createKnob<KnobButton>(tr("Reload"));
+    reload->setName(kNatronWriteParamReload);
+    reload->setHintToolTip(tr("Reads the written files again: forgets their headers and layers and the images read from "
+                              "them, so a file changed on disk is what the node outputs. Only while Read back file is on."));
+    reload->setIsMetadataSlave(true);
+    reload->setAllDimensionsEnabled(false);
+    page->addKnob(reload);
+    _reload = reload;
 
     // A change to this knob is how a finished sequence reaches the hash, which no effect may bump directly.
     KnobIntPtr stamp = createKnob<KnobInt>(tr("Read Back Stamp"));
@@ -1433,11 +1447,38 @@ void
 NativeWrite::refreshReadBackState()
 {
     const KnobBoolPtr readBack = _readBack.lock();
+    const KnobButtonPtr reload = _reload.lock();
     const KnobIPtr button = getKnobByName(kNatronWriteParamStartRender);
 
+    if (reload) {
+        reload->setAllDimensionsEnabled(readBack && readBack->getValue());
+    }
     if (readBack && button) {
         button->setAllDimensionsEnabled(!readBack->getValue());
     }
+}
+
+void
+NativeWrite::purgeCaches()
+{
+    // The header cache already parses a file again when its time or size changed; this also
+    // catches a file rewritten within one tick of the clock at the same size.
+    const KnobOutputFilePtr filename = _filename.lock();
+    double first = 0.;
+    double last = 0.;
+    getFrameRange(&first, &last);
+    if (filename && !filename->getValue().empty() && (last - first < kMaxEvictedFrames)) {
+        const int nViews = std::max(1, getApp()->getProject()->getProjectViewsCount());
+        std::vector<std::string> paths;
+        for (double frame = std::floor(first); frame <= last; frame += 1.) {
+            for (int v = 0; v < nViews; ++v) {
+                paths.push_back(filename->generateFileNameAtTime((SequenceTime)frame, ViewIdx(v)).toStdString());
+            }
+        }
+        OiioReadSupport::evictHeaders(paths);
+    }
+    invalidateOutputMetadata();
+    clearActionsCache();
 }
 
 void
@@ -1582,6 +1623,13 @@ NativeWrite::knobChanged(KnobI* k,
     const KnobBoolPtr readBack = _readBack.lock();
     if (readBack && (k == readBack.get())) {
         refreshReadBackState();
+        clearPersistentMessage(false);
+
+        return true;
+    }
+    const KnobButtonPtr reload = _reload.lock();
+    if (reload && (k == reload.get())) {
+        purgeCaches();
         clearPersistentMessage(false);
 
         return true;

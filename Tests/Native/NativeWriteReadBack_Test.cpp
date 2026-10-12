@@ -25,9 +25,12 @@
 
 #include "Global/Macros.h"
 
+#include <bitset>
 #include <cmath>
+#include <cstddef>
 #include <list>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -262,13 +265,20 @@ protected:
         return true;
     }
 
-    // Replaces the file with a flat float image of `value` in every colour channel.
+    // Replaces the file with a flat float image of `value` in every colour channel and in each of
+    // `extra`, 1 in alpha.
     void overwriteWithGray(const std::string& path,
-                           float value)
+                           float value,
+                           const std::vector<std::string>& extra = std::vector<std::string>())
     {
-        OIIO::ImageSpec spec(kWidth, kHeight, 4, OIIO::TypeDesc::FLOAT);
-        std::vector<float> pixels((std::size_t)kWidth * kHeight * 4, value);
-        for (std::size_t i = 3; i < pixels.size(); i += 4) {
+        std::vector<std::string> names = { "R", "G", "B", "A" };
+        names.insert(names.end(), extra.begin(), extra.end());
+        const int n = (int)names.size();
+        OIIO::ImageSpec spec(kWidth, kHeight, n, OIIO::TypeDesc::FLOAT);
+        spec.channelnames = names;
+        spec.alpha_channel = 3;
+        std::vector<float> pixels((std::size_t)kWidth * kHeight * n, value);
+        for (std::size_t i = 3; i < pixels.size(); i += (std::size_t)n) {
             pixels[i] = 1.f;
         }
         OIIO::ImageOutput::unique_ptr out = OIIO::ImageOutput::create(path);
@@ -277,6 +287,34 @@ protected:
         ASSERT_TRUE(out->open(path, spec));
         ASSERT_TRUE(out->write_image(OIIO::TypeDesc::FLOAT, pixels.data()));
         ASSERT_TRUE(out->close());
+    }
+
+    void pressReload()
+    {
+        KnobButton* reload = dynamic_cast<KnobButton*>(_writer->getKnobByName(kNatronWriteParamReload).get());
+
+        ASSERT_TRUE(reload != NULL);
+        reload->trigger();
+    }
+
+    std::set<std::string> producedLayerIDs()
+    {
+        EffectInstance::ComponentsNeededMap comps;
+        std::list<ImageLayerDesc> passThroughLayers;
+        double passThroughTime = 0.;
+        int passThroughView = 0;
+        std::bitset<4> processChannels;
+        EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
+        int passThroughInputNb = -1;
+
+        _writer->getEffectInstance()->getComponentsNeededAndProduced_public(_writer->getHashValue(), 1., ViewIdx(0), &comps, &passThroughLayers, &passThroughTime, &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInputNb);
+        std::set<std::string> ids;
+        const std::list<ImageLayerDesc>& produced = comps[-1];
+        for (std::list<ImageLayerDesc>::const_iterator it = produced.begin(); it != produced.end(); ++it) {
+            ids.insert(it->isColorLayer() ? std::string(kNatronColorLayerID) : it->getLayerID());
+        }
+
+        return ids;
     }
 
     std::string message() const
@@ -392,6 +430,40 @@ TEST_F(NativeWriteReadBackTest, TheRenderButtonIsDisabledWhileReadBackIsOn)
 
     setReadBack(false);
     EXPECT_TRUE(button->isEnabled(0));
+}
+
+TEST_F(NativeWriteReadBackTest, TheReloadButtonIsEnabledOnlyWhileReadingBack)
+{
+    KnobIPtr reload = _writer->getKnobByName(kNatronWriteParamReload);
+
+    ASSERT_TRUE(bool(reload));
+    EXPECT_FALSE(reload->getIsSecret());
+    EXPECT_FALSE(reload->isEnabled(0));
+
+    setReadBack(true);
+    EXPECT_TRUE(reload->isEnabled(0));
+
+    setReadBack(false);
+    EXPECT_FALSE(reload->isEnabled(0));
+}
+
+TEST_F(NativeWriteReadBackTest, ReloadReadsTheLayersOfAFileChangedOnDisk)
+{
+    const std::string path = pathOf("layers.exr");
+    setFile(path);
+    setBitDepth("32f");
+    pickOutputSpace(project()->getWorkingColorSpace());
+    writeSequence();
+    overwriteWithGray(path, kOther);
+    setReadBack(true);
+    ASSERT_EQ(std::set<std::string>({ kNatronColorLayerID }), producedLayerIDs());
+
+    overwriteWithGray(path, kOther, { "depth.Z" });
+    // The produced layers are cached under the node hash, which a file changed on disk leaves alone.
+    EXPECT_EQ(std::set<std::string>({ kNatronColorLayerID }), producedLayerIDs());
+
+    pressReload();
+    EXPECT_EQ(std::set<std::string>({ kNatronColorLayerID, "depth" }), producedLayerIDs());
 }
 
 TEST_F(NativeWriteReadBackTest, ReadBackReportsTheFilesFormatAndPixelAspect)

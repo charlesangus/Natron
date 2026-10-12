@@ -52,6 +52,8 @@
 
 #define kNatronWriteParamReadBackStamp "readBackStamp"
 
+#define kNatronWriteParamReload "reload"
+
 #define kNatronWriteParamStartRender "startRender"
 
 #define kNatronWriteParamOverwrite "overwrite"
@@ -100,7 +102,7 @@ NATRON_NAMESPACE_ENTER
  * lastFrame, frameIncr, bitDepth, compression, quality, dwaCompressionLevel, zipCompressionLevel,
  * tileSize, partSplitting, viewsSelector, ocioOutputSpace, ocioOutputSpaceIndex,
  * ocioOutputSpaceSet, the Context group key1..4 and value1..4, the hidden ocioConfigFile and
- * ocioWorkingSpace, writeMetadata, readBack.
+ * ocioWorkingSpace, writeMetadata, readBack, reload.
  **/
 class NativeWrite
     : public NativeEffectBase {
@@ -155,6 +157,9 @@ public:
     virtual bool isInputOptional(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual bool outputFollowsLayerKnob(double time, ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // Forgets what was read of the read-back files.
+    virtual void purgeCaches() OVERRIDE FINAL;
 
     virtual StatusEnum getRegionOfDefinition(U64 hash,
                                              double time,
@@ -246,7 +251,7 @@ private:
 
     StatusEnum renderReadBack(const RenderActionArgs& args) WARN_UNUSED_RETURN;
 
-    // The Render button is off while the node shows the file.
+    // The Render button is off while the node shows the file, and Reload is on only then.
     void refreshReadBackState();
 
     // A finished sequence changed the file, which the hash must tell the viewer.
@@ -283,6 +288,7 @@ private:
     KnobBoolWPtr _writeMetadata;
     KnobBoolWPtr _readBack;
     KnobIntWPtr _readBackStamp;
+    KnobButtonWPtr _reload;
     KnobChoiceWPtr _views;
     std::string _viewToKeep;
     KnobChoiceWPtr _frameRange;

@@ -809,6 +809,13 @@ public:
                                                          const std::string& label) WARN_UNUSED_RETURN;
 
     /**
+     * @brief Like getNodeCategory(), but from a Plugin alone, for a menu entry before any node
+     * of it exists. Generators can't be detected without an instance, so they fall back to the
+     * grouping heuristic instead of the Generator category.
+     **/
+    static NodeCategoryEnum categoryForPlugin(const Plugin& plugin) WARN_UNUSED_RETURN;
+
+    /**
      * @brief Forwarded to the live effect instance
      **/
     std::string getPluginDescription() const;

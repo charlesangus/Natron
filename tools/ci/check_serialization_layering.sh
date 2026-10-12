@@ -57,7 +57,7 @@ while IFS= read -r -d '' file; do
         "Serialization/ must not include Gui/"
 
     check_pattern "$file" "$relative_path" \
-        '^[[:space:]]*#include[[:space:]]*[<"](Q[A-Za-z]+[">]|Qt[A-Za-z]*/)' \
+        '^[[:space:]]*#include[[:space:]]*[<"]Q(t|[A-Z])' \
         "Serialization/ must not include a Qt header"
 
     check_pattern "$file" "$relative_path" \

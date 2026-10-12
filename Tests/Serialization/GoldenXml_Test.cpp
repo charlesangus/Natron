@@ -25,7 +25,6 @@
 
 #include <algorithm>
 #include <cstdlib>
-#include <iostream>
 #include <list>
 #include <sstream>
 #include <string>
@@ -257,9 +256,9 @@ protected:
     }
 
     // Copies `sourcePath` into `tmp` and loads it as the current project. Returns false, with
-    // *reason set to something worth printing from a skipped test, on any failure to load --
-    // including a thrown exception, which a project referencing a plugin the test environment
-    // doesn't have can trigger.
+    // *reason set to something worth printing on failure, on any failure to load -- including a
+    // thrown exception, which a project referencing a plugin the test environment doesn't have
+    // can trigger.
     bool loadFixtureProject(const std::string& sourcePath,
                             const QTemporaryDir& tmp,
                             std::string* reason)
@@ -294,6 +293,17 @@ protected:
         }
 
         return loaded;
+    }
+
+    // Loads `sourcePath` as the current project, failing the test (rather than silently
+    // skipping it) if the load does not succeed. CI and test.sh both set OFX_PLUGIN_PATH, so a
+    // load failure here means a missing fixture or an actual regression, not an environment
+    // without the OFX plugin bundle.
+    void assertFixtureProjectLoaded(const std::string& sourcePath,
+                                    const QTemporaryDir& tmp)
+    {
+        std::string reason;
+        ASSERT_TRUE(loadFixtureProject(sourcePath, tmp, &reason)) << reason;
     }
 
     // Saves the project currently in memory, normalizes the result, and either (re)writes it as
@@ -356,12 +366,7 @@ TEST_F(GoldenXmlTest, FixtureChannelSetLegacyDefaults)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
 
-    std::string reason;
-    if (!loadFixtureProject(std::string(NATRON_TESTS_FIXTURES_DIR "/channel-set-legacy-defaults.ntp"), tmp, &reason)) {
-        // TODO: Convert to GTEST_SKIP() when the bundled gtest supports it.
-        std::cerr << "Skipping FixtureChannelSetLegacyDefaults: " << reason << std::endl;
-        return;
-    }
+    ASSERT_NO_FATAL_FAILURE(assertFixtureProjectLoaded(std::string(NATRON_TESTS_FIXTURES_DIR "/channel-set-legacy-defaults.ntp"), tmp));
     compareAgainstGolden("channel-set-legacy-defaults", tmp);
 }
 
@@ -370,12 +375,7 @@ TEST_F(GoldenXmlTest, FixtureM65LegacyColor)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
 
-    std::string reason;
-    if (!loadFixtureProject(std::string(NATRON_TESTS_FIXTURES_DIR "/m65-legacy-color.ntp"), tmp, &reason)) {
-        // TODO: Convert to GTEST_SKIP() when the bundled gtest supports it.
-        std::cerr << "Skipping FixtureM65LegacyColor: " << reason << std::endl;
-        return;
-    }
+    ASSERT_NO_FATAL_FAILURE(assertFixtureProjectLoaded(std::string(NATRON_TESTS_FIXTURES_DIR "/m65-legacy-color.ntp"), tmp));
     compareAgainstGolden("m65-legacy-color", tmp);
 }
 
@@ -384,12 +384,7 @@ TEST_F(GoldenXmlTest, FixtureReadTimeOffset)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
 
-    std::string reason;
-    if (!loadFixtureProject(std::string(NATRON_TESTS_FIXTURES_DIR "/read-time-offset.ntp"), tmp, &reason)) {
-        // TODO: Convert to GTEST_SKIP() when the bundled gtest supports it.
-        std::cerr << "Skipping FixtureReadTimeOffset: " << reason << std::endl;
-        return;
-    }
+    ASSERT_NO_FATAL_FAILURE(assertFixtureProjectLoaded(std::string(NATRON_TESTS_FIXTURES_DIR "/read-time-offset.ntp"), tmp));
     compareAgainstGolden("read-time-offset", tmp);
 }
 
@@ -398,13 +393,8 @@ TEST_F(GoldenXmlTest, FixtureCgMultipass)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
 
-    std::string reason;
     const std::string path = std::string(NATRON_TESTS_FIXTURES_DIR) + "/../../tools/bench/comps/cg_multipass.ntp";
-    if (!loadFixtureProject(path, tmp, &reason)) {
-        // TODO: Convert to GTEST_SKIP() when the bundled gtest supports it.
-        std::cerr << "Skipping FixtureCgMultipass: " << reason << std::endl;
-        return;
-    }
+    ASSERT_NO_FATAL_FAILURE(assertFixtureProjectLoaded(path, tmp));
     compareAgainstGolden("cg_multipass", tmp);
 }
 
@@ -413,13 +403,8 @@ TEST_F(GoldenXmlTest, FixtureDefocusRetime)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
 
-    std::string reason;
     const std::string path = std::string(NATRON_TESTS_FIXTURES_DIR) + "/../../tools/bench/comps/defocus_retime.ntp";
-    if (!loadFixtureProject(path, tmp, &reason)) {
-        // TODO: Convert to GTEST_SKIP() when the bundled gtest supports it.
-        std::cerr << "Skipping FixtureDefocusRetime: " << reason << std::endl;
-        return;
-    }
+    ASSERT_NO_FATAL_FAILURE(assertFixtureProjectLoaded(path, tmp));
     compareAgainstGolden("defocus_retime", tmp);
 }
 
@@ -428,13 +413,8 @@ TEST_F(GoldenXmlTest, FixtureKeyingGrade)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
 
-    std::string reason;
     const std::string path = std::string(NATRON_TESTS_FIXTURES_DIR) + "/../../tools/bench/comps/keying_grade.ntp";
-    if (!loadFixtureProject(path, tmp, &reason)) {
-        // TODO: Convert to GTEST_SKIP() when the bundled gtest supports it.
-        std::cerr << "Skipping FixtureKeyingGrade: " << reason << std::endl;
-        return;
-    }
+    ASSERT_NO_FATAL_FAILURE(assertFixtureProjectLoaded(path, tmp));
     compareAgainstGolden("keying_grade", tmp);
 }
 

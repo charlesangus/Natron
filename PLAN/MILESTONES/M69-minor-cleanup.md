@@ -49,7 +49,7 @@ Scouted 2026-10-11 on `milestone/m55-node-graph-polish` at `10e0accd5`. **Re-che
   - verify: P7.T1 selects Constant, then Checkerboard, then Merge, and presses Y: Merge A and B are fed by the two sources, undone in one step. It selects Grade, Blur and Constant (last) and presses Shift+Y: both Grade and Blur take the Constant.
   - size: M
 
-- [ ] M69.P2.T4 — Make pasting onto a selected node connect it
+- [x] M69.P2.T4 — Make pasting onto a selected node connect it
   - files: `Gui/NodeGraph40.cpp`, `Gui/NodeGraphPrivate10.cpp`, `Gui/NodeGraphPrivate.h`, `Gui/NodeGraphSplice.h`, `Gui/NodeGraphSplice.cpp` (**REBASE (M45)**: `NodeGraphPrivate.h`, as in P2.T2)
   - approach:
     - In `NodeGraph::pasteNodeClipBoards(const QPointF&)` (`NodeGraph40.cpp:174-198`; Ctrl+V reaches it through the no-argument overload at `:201` from `NodeGraph25.cpp:266`), capture the selection before `pasteNodesInternal` (`NodeGraphPrivate10.cpp:56-164`) replaces it.
@@ -267,3 +267,4 @@ Acceptance sketch:
   - **IDistort/STMap UV layer:** cancelled (P9.T1). The user dropped the alpha-channel feature and wants both rewritten as native nodes in the new **M113 - Native Node Rewrites Continued**.
   - **Legacy removal:** remove both the M65 colour-layer reset and the pre-v17 channel-set gate, with their tests and fixtures (P8.T1 and P8.T2 as written).
   - **Rect pick output:** yes. Ctrl+Shift+Alt drag reads the output; plain Ctrl+Shift drag reads the input. P4.T3 includes this. Hover stays input-only.
+- 2026-10-12 — **P2.T4:** the paste splices only when exactly one non-backdrop node is selected, and leaves it unconnected when the target is a Viewer or Write or the pasted entry is a generator. For a chain, outputs are re-routed to the pasted *exit*, because `moveNodesForIdealPosition` routes to the entry. Undo diffs the recorded inputs through a new `ReconnectInputsCommand`. The Python `app.pasteNodes()` path splices too.

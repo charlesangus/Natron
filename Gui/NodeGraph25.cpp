@@ -245,6 +245,10 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
     Qt::Key key = (Qt::Key)e->key();
     bool accept = true;
 
+    if (key == Qt::Key_Escape) {
+        cancelSplice();
+    }
+
 #ifndef NATRON_ENABLE_IO_META_NODES
     if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateReader, modifiers, key) ) {
         getGui()->createReader();
@@ -377,8 +381,6 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
         toggleAutoPreview();
     } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphToggleAutoTurbo, modifiers, key) ) {
         toggleAutoTurbo();
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphAutoHideInputs, modifiers, key) ) {
-        toggleAutoHideInputs(true);
     } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFindNode, modifiers, key) ) {
         popFindDialog( QCursor::pos() );
     } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateNode, modifiers, key) ) {

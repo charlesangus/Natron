@@ -446,8 +446,6 @@ public:
 
     void abortAllViewers();
 
-    void toggleAutoHideGraphInputs();
-
     void centerAllNodeGraphsWithTimer();
 
     void setLastEnteredTabWidget(TabWidget* tab);

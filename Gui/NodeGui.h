@@ -265,8 +265,7 @@ public:
 
     /*Returns an edge if the node has an edge close to the
        point pt. pt is in scene coord.*/
-    Edge* hasEdgeNearbyPoint(const QPointF & pt);
-    Edge* hasEdgeNearbyRect(const QRectF & rect);
+    Edge* hasEdgeNearbyPoint(const QPointF& pt);
     Edge* hasBendPointNearbyPoint(const QPointF & pt);
 
     void refreshPosition( double x, double y, bool skipMagnet = false, const QPointF & mouseScenePos = QPointF() );
@@ -361,9 +360,6 @@ public:
     void serializeInternal(std::list<NodeSerializationPtr>& internalSerialization) const;
     void restoreInternal(const NodeGuiPtr& thisShared,
                          const std::list<NodeSerializationPtr>& internalSerialization);
-
-    void setMergeHintActive(bool active);
-
 
     void setOverlayLocked(bool locked);
 
@@ -592,7 +588,6 @@ public Q_SLOTS:
 
     void onParentMultiInstancePositionChanged(int x, int y);
 
-    void refreshEdgesVisility(bool hovered);
     void refreshEdgesVisility();
 
     void onPreviewImageComputed();
@@ -643,8 +638,6 @@ private:
     int getPluginIconWidth() const;
 
     double refreshPreviewAndLabelPosition(const QRectF& bbox);
-
-    void refreshEdgesVisibilityInternal(bool hovered);
 
     void refreshPositionEnd(double x, double y);
 
@@ -723,7 +716,6 @@ private:
     int _previewW, _previewH;
     QGraphicsSimpleTextItem* _persistentMessage;
     NodeGraphRectItem* _stateIndicator;
-    bool _mergeHintActive;
     NodeGuiIndicatorPtr _streamIssuesWarning;
     QGraphicsLineItem* _disabledTopLeftBtmRight;
     QGraphicsLineItem* _disabledBtmLeftTopRight;

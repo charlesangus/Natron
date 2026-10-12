@@ -69,22 +69,6 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
-
-void
-NodeGraph::toggleAutoHideInputs(bool setSettings)
-{
-    if (setSettings) {
-        bool autoHide = !appPTR->getCurrentSettings()->areOptionalInputsAutoHidden();
-        appPTR->getCurrentSettings()->setOptionalInputsAutoHidden(autoHide);
-    }
-    for (NodesGuiList::iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
-        (*it)->refreshEdgesVisility();
-    }
-    for (NodesGuiList::iterator it = _imp->_nodesTrash.begin(); it != _imp->_nodesTrash.end(); ++it) {
-        (*it)->refreshEdgesVisility();
-    }
-}
-
 void
 NodeGraph::toggleHideInputs()
 {
@@ -175,6 +159,7 @@ NodeGraph::focusOutEvent(QFocusEvent* e)
     if (_imp->_bendPointsVisible) {
         _imp->setNodesBendPointsVisible(false);
     }
+    cancelSplice();
     QGraphicsView::focusOutEvent(e);
 }
 

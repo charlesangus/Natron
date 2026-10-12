@@ -110,6 +110,7 @@ public:
     bool canceled;
     bool canCancel;
     bool updatedProgressOnce;
+    bool foreground;
     int firstFrame, lastFrame, frameStep, lastRenderedFrame, nFramesRendered;
     std::unique_ptr<TimeLapse> timer;
     std::unique_ptr<QTimer> refreshLabelTimer;
@@ -151,6 +152,7 @@ public:
         , canceled(false)
         , canCancel(canCancel)
         , updatedProgressOnce(false)
+        , foreground(false)
         , firstFrame(firstFrame)
         , lastFrame(lastFrame)
         , frameStep(frameStep)
@@ -207,6 +209,9 @@ ProgressTaskInfo::getStatus() const
 void
 ProgressTaskInfo::onShowProgressPanelTimerTimeout()
 {
+    if (_imp->foreground) {
+        return;
+    }
     _imp->lastWidgetCurrentWhenShowingProgressDialog = _imp->panel->getGui()->ensureProgressPanelVisible();
 }
 
@@ -223,7 +228,9 @@ ProgressTaskInfo::cancelTask(bool calledFromRenderEngine,
     }
 
     if (calledFromRenderEngine) {
-        _imp->panel->getGui()->ensureProgressPanelVisible();
+        if (!_imp->foreground) {
+            _imp->panel->getGui()->ensureProgressPanelVisible();
+        }
         _imp->panel->onLastTaskAddedFinished(this);
     } else {
         if (_imp->lastWidgetCurrentWhenShowingProgressDialog) {
@@ -282,6 +289,7 @@ ProgressTaskInfo::cancelTask(bool calledFromRenderEngine,
     if (!calledFromRenderEngine) {
         Q_EMIT taskCanceled();
     }
+    Q_EMIT taskFinished(retCode);
 } // ProgressTaskInfo::cancelTask
 
 void
@@ -291,6 +299,7 @@ ProgressTaskInfo::restartTask()
         QMutexLocker k(&_imp->canceledMutex);
         _imp->canceled = false;
     }
+    _imp->foreground = false;
     _imp->updatedProgressOnce = false;
     _imp->timer.reset(new TimeLapse);
     _imp->refreshLabelTimer->start(NATRON_PROGRESS_DIALOG_ETA_REFRESH_MS);
@@ -346,6 +355,7 @@ ProgressTaskInfo::onRenderEngineFrameComputed(int frame,
         return;
     }
     updateProgress(frame, progress);
+    Q_EMIT progressChanged(_imp->progressPercent / 100.);
 }
 
 void
@@ -388,10 +398,28 @@ ProgressTaskInfo::clearItems()
     _imp->frameRangeItem = 0;
 }
 
+void
+ProgressTaskInfo::setForeground(bool foreground)
+{
+    _imp->foreground = foreground;
+}
+
+bool
+ProgressTaskInfo::isForeground() const
+{
+    return _imp->foreground;
+}
+
 NodePtr
 ProgressTaskInfo::getNode() const
 {
     return _imp->node.lock();
+}
+
+int
+ProgressTaskInfo::getLastRenderedFrame() const
+{
+    return _imp->lastRenderedFrame;
 }
 
 ProcessHandlerPtr
@@ -594,7 +622,10 @@ ProgressTaskInfo::updateProgressBar(double totalProgress,
         }
     }
 
-    if (!_imp->updatedProgressOnce && _imp->statusItem) {
+    // A frame's progress can arrive after cancelTask() already set the final status (the engine
+    // reports across threads, so this can lag behind the cancel); without this check it would
+    // overwrite Paused/Canceled with Running and nothing afterward ever corrects it.
+    if (!_imp->updatedProgressOnce && _imp->statusItem && !wasCanceled()) {
         _imp->updatedProgressOnce = true;
         _imp->statusItem->setTextColor(Qt::green);
         _imp->status = eProgressTaskStatusRunning;

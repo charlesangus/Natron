@@ -294,7 +294,6 @@ NodeGui::NodeGui(QGraphicsItem* parent)
     , _previewH(NATRON_PREVIEW_HEIGHT)
     , _persistentMessage(NULL)
     , _stateIndicator(NULL)
-    , _mergeHintActive(false)
     , _streamIssuesWarning()
     , _disabledTopLeftBtmRight(NULL)
     , _disabledBtmLeftTopRight(NULL)
@@ -1677,10 +1676,15 @@ NodeGui::initializeInputs()
         NodePtr input = inputs[i].lock();
         if (input) {
             NodeGuiIPtr gui_i = input->getNodeGui();
-            assert(gui_i);
-            NodeGuiPtr gui = std::dynamic_pointer_cast<NodeGui>(gui_i);
-            assert(gui);
-            edge->setSource(gui);
+            // The input node can exist before its own GUI does (nodes created or restored out
+            // of order). Leave this freshly made edge sourceless rather than asserting; the late
+            // GUI's own creation path (GuiAppInstance::createNodeGui) repairs it once it appears.
+            if (gui_i) {
+                NodeGuiPtr gui = std::dynamic_pointer_cast<NodeGui>(gui_i);
+                if (gui) {
+                    edge->setSource(gui);
+                }
+            }
         }
         if ( node &&
              !node->getEffectInstance()->isInputMask(i) &&
@@ -1795,25 +1799,10 @@ NodeGui::outlineBoundingRect() const
 void
 NodeGui::refreshEdgesVisility()
 {
-    QPointF mousePos = mapFromScene( _graph->mapToScene( _graph->mapFromGlobal( QCursor::pos() ) ) );
-    bool hovered = contains(mousePos);
-
-    refreshEdgesVisibilityInternal(hovered);
-}
-
-void
-NodeGui::refreshEdgesVisility(bool hovered)
-{
-    refreshEdgesVisibilityInternal(hovered);
-}
-
-void
-NodeGui::refreshEdgesVisibilityInternal(bool hovered)
-{
     std::vector<bool> edgesVisibility( _inputEdges.size() );
 
     for (std::size_t i = 0; i < _inputEdges.size(); ++i) {
-        edgesVisibility[i] = _inputEdges[i]->computeVisibility(hovered);
+        edgesVisibility[i] = _inputEdges[i]->computeVisibility();
     }
 
     NodePtr node = getNode();
@@ -2091,14 +2080,22 @@ NodeGui::connectEdge(int edgeNumber)
         return false;
     }
 
-    NodeGuiPtr src;
     NodePtr input = inputs[edgeNumber].lock();
-    if (input) {
+    if (!input) {
+        _inputEdges[edgeNumber]->setSource(NodeGuiPtr());
+    } else {
         NodeGuiIPtr ngi = input->getNodeGui();
-        src = std::dynamic_pointer_cast<NodeGui>(ngi);
+        if (ngi) {
+            _inputEdges[edgeNumber]->setSource(std::dynamic_pointer_cast<NodeGui>(ngi));
+        } else {
+            // Without a GUI for the input yet, a source that is still this input is kept (see
+            // initializeInputs()), but a source for a different node is stale and must go.
+            NodeGuiPtr currentSource = _inputEdges[edgeNumber]->getSource();
+            if (currentSource && (currentSource->getNode() != input)) {
+                _inputEdges[edgeNumber]->setSource(NodeGuiPtr());
+            }
+        }
     }
-
-    _inputEdges[edgeNumber]->setSource(src);
 
     assert(node);
     if ( dynamic_cast<InspectorNode*>( node.get() ) ) {
@@ -2148,67 +2145,6 @@ NodeGui::hasBendPointNearbyPoint(const QPointF & pt)
     return NULL;
 }
 
-Edge*
-NodeGui::hasEdgeNearbyRect(const QRectF & rect)
-{
-    ///try with all 4 corners
-
-    QLineF rectEdges[4] =
-    {
-        QLineF( rect.topLeft(), rect.topRight() ),
-        QLineF( rect.topRight(), rect.bottomRight() ),
-        QLineF( rect.bottomRight(), rect.bottomLeft() ),
-        QLineF( rect.bottomLeft(), rect.topLeft() )
-    };
-    QPointF intersection;
-    QPointF middleRect = rect.center();
-    Edge* closest = 0;
-    double closestSquareDist = 0;
-
-    for (InputEdges::const_iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
-        QLineF edgeLine = (*it)->line();
-        edgeLine.setP1( (*it)->mapToScene( edgeLine.p1() ) );
-        edgeLine.setP2( (*it)->mapToScene( edgeLine.p2() ) );
-        for (int j = 0; j < 4; ++j) {
-            QLineF::IntersectionType intersectType = edgeLine.intersects(rectEdges[j], &intersection);
-            if (intersectType == QLineF::BoundedIntersection) {
-                if (!closest) {
-                    closest = *it;
-                    closestSquareDist = ( intersection.x() - middleRect.x() ) * ( intersection.x() - middleRect.x() )
-                                        + ( intersection.y() - middleRect.y() ) * ( intersection.y() - middleRect.y() );
-                } else {
-                    double dist = ( intersection.x() - middleRect.x() ) * ( intersection.x() - middleRect.x() )
-                                  + ( intersection.y() - middleRect.y() ) * ( intersection.y() - middleRect.y() );
-                    if (dist < closestSquareDist) {
-                        closestSquareDist = dist;
-                        closest = *it;
-                    }
-                }
-                break;
-            }
-        }
-    }
-    if (closest) {
-        return closest;
-    }
-
-    if (_outputEdge) {
-        if ( _outputEdge->isVisible() ) {
-            QLineF edgeLine = _outputEdge->line();
-            edgeLine.setP1( (_outputEdge)->mapToScene( edgeLine.p1() ) );
-            edgeLine.setP2( (_outputEdge)->mapToScene( edgeLine.p2() ) );
-            for (int j = 0; j < 4; ++j) {
-                QLineF::IntersectionType intersectType = edgeLine.intersects(rectEdges[j], &intersection);
-                if (intersectType == QLineF::BoundedIntersection) {
-                    return _outputEdge;
-                }
-            }
-        }
-    }
-
-    return NULL;
-} // hasEdgeNearbyRect
-
 void
 NodeGui::showGui()
 {
@@ -2232,6 +2168,10 @@ NodeGui::showGui()
         _outputEdge->setActive(true);
     }
     refreshEdges();
+    // An edge created while this node was hidden was force-hidden regardless of its real
+    // connection state (see initializeInputs()); now that the node is shown again, recompute
+    // each edge's visibility from its actual state instead of leaving it stuck hidden.
+    refreshEdgesVisility();
     const NodesWList & outputs = node->getGuiOutputs();
     for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
         NodePtr output = it->lock();
@@ -2583,8 +2523,6 @@ NodeGui::refreshStateIndicator()
     bool isSelected = getIsSelected();
     if (value >= 1) {
         _stateIndicator->setBrush(Qt::yellow);
-    } else if (_mergeHintActive) {
-        _stateIndicator->setBrush(Qt::green);
     } else if (isSelected) {
         _stateIndicator->setBrush(Qt::white);
     } else if ( !message.isEmpty() && ( (type == 1) || (type == 2) ) ) {
@@ -2612,16 +2550,6 @@ NodeGui::refreshStateIndicator()
     } else {
         update();
     }
-}
-
-void
-NodeGui::setMergeHintActive(bool active)
-{
-    if (active == _mergeHintActive) {
-        return;
-    }
-    _mergeHintActive = active;
-    refreshStateIndicator();
 }
 
 void

@@ -156,7 +156,9 @@ set(GuiTests_SOURCES
     ColorWheelWidget_Test.cpp
     KnobGuiString_Test.cpp
     LayerChannelRow_Test.cpp
+    NodeGraphSplice_Test.cpp
     NodeGuiUserColorSerialization_Test.cpp
+    RenderDialogRange_Test.cpp
     ScaleSliderQWidget_Test.cpp
     ShuffleMatrix_Test.cpp
     ViewerDataSerialization_Test.cpp

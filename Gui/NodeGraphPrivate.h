@@ -36,16 +36,16 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
-#include <QTimer>
-#include <QMutex>
+#include <QColor>
 #include <QGraphicsItem>
 #include <QGraphicsLineItem>
 #include <QGraphicsPixmapItem>
+#include <QMutex>
 #include <QPainter>
-#include <QPointF>
-#include <QColor>
 #include <QPen>
+#include <QPointF>
 #include <QStyleOptionGraphicsItem>
+#include <QTimer>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -55,8 +55,6 @@ CLANG_DIAG_ON(uninitialized)
 
 #define NATRON_CACHE_SIZE_TEXT_REFRESH_INTERVAL_MS 1000
 #define NATRON_NODES_RENDER_STATE_REFRESH_INTERVAL_MS 300
-
-#define NATRON_NODE_DUPLICATE_X_OFFSET 50
 
 ///These are percentages of the size of the NodeGraph in widget coordinates.
 #define NATRON_NAVIGATOR_BASE_HEIGHT 0.2
@@ -182,12 +180,22 @@ public:
     QMenu* _menu;
     QGraphicsItem *_tL, *_tR, *_bR, *_bL;
     bool _refreshOverlays;
-    Edge* _highLightedEdge;
-    NodeGuiPtr _mergeHintNode;
 
-    ///This is a hint edge we show when _highLightedEdge is not NULL to display a possible connection.
     Edge* _hintInputEdge;
     Edge* _hintOutputEdge;
+
+    // A selection's connections cannot change mid-drag, so its splice plan is built on the first
+    // move of a press and reused until release; _splicePlanSelection detects a selection change.
+    bool _splicePlanBuilt = false;
+    NodesGuiList _splicePlanSelection;
+    NodeGuiPtr _spliceEntry;
+    int _spliceEntryInput = -1;
+    NodeGuiPtr _spliceExit;
+    Edge* _splicePipe = nullptr;
+    // Set by Escape or focus loss, and cleared by the next press, so that the rest of the drag
+    // does not rebuild the plan that was just dismissed.
+    bool _spliceCancelled = false;
+
     NodeGuiPtr _backdropResized; //< the backdrop being resized
     NodesGuiList _selection;
 

@@ -6145,7 +6145,7 @@ Node::onEffectKnobValueChanged(KnobI* what,
             Q_EMIT previewKnobToggled();
         }
     } else if ( what == _imp->renderButton.lock().get() ) {
-        if ( getEffectInstance()->isWriter() ) {
+        if (getEffectInstance()->isWriter() && !_imp->renderButton.lock()->isTriggeringCallbacksOnly()) {
             /*if this is a button and it is a render button,we're safe to assume the plug-ins wants to start rendering.*/
             AppInstance::RenderWork w;
             w.writer = dynamic_cast<OutputEffectInstance*>( _imp->effect.get() );

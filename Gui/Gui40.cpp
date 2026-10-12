@@ -48,6 +48,7 @@
 #include "Engine/Image.h"
 #include "Engine/Lut.h" // floatToInt
 #include "Engine/Node.h"
+#include "Engine/OutputEffectInstance.h"
 #include "Engine/ProcessHandler.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
@@ -60,16 +61,16 @@
 #include "Gui/GuiPrivate.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
-#include "Gui/ProjectGui.h"
-#include "Gui/RenderStatsDialog.h"
+#include "Gui/NodeSettingsPanel.h"
 #include "Gui/ProgressPanel.h"
+#include "Gui/ProjectGui.h"
+#include "Gui/RenderDialog.h"
+#include "Gui/RenderStatsDialog.h"
+#include "Gui/ScriptEditor.h"
 #include "Gui/Splitter.h"
 #include "Gui/TabWidget.h"
-#include "Gui/ScriptEditor.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
-#include "Gui/NodeSettingsPanel.h"
-
 
 NATRON_NAMESPACE_ENTER
 
@@ -816,11 +817,28 @@ Gui::onNodeNameChanged(const QString & /*name*/)
 void
 Gui::renderAllWriters()
 {
-    try {
-        getApp()->startWritersRenderingFromNames( areRenderStatsEnabled(), false, std::list<std::string>(), std::list<std::pair<int, std::pair<int, int> > >() );
-    } catch (const std::exception& e) {
-        Dialogs::warningDialog( tr("Render").toStdString(), e.what() );
+    std::list<OutputEffectInstance*> projectWriters;
+    getApp()->getProject()->getWriters(&projectWriters);
+
+    std::list<NodePtr> writers;
+    for (std::list<OutputEffectInstance*>::const_iterator it = projectWriters.begin(); it != projectWriters.end(); ++it) {
+        if (!*it) {
+            continue;
+        }
+        NodePtr node = (*it)->getNode();
+        if (!node || node->isNodeDisabledAtAllTimes()) {
+            continue;
+        }
+        writers.push_back(node);
     }
+
+    if (writers.empty()) {
+        Dialogs::warningDialog(tr("Render").toStdString(), tr("Project file is missing a writer node. This project cannot render anything.").toStdString());
+
+        return;
+    }
+
+    showRenderDialog(this, writers);
 }
 
 void
@@ -839,8 +857,8 @@ Gui::renderSelectedNode()
 
         return;
     }
-    std::list<AppInstance::RenderWork> workList;
-    bool useStats = getApp()->isRenderStatsActionChecked();
+    std::list<NodePtr> writers;
+    NodePtr createdWriter;
     for (NodesGuiList::const_iterator it = selectedNodes.begin();
          it != selectedNodes.end(); ++it) {
         NodePtr internalNode = (*it)->getNode();
@@ -852,17 +870,9 @@ Gui::renderSelectedNode()
             continue;
         }
         if ( effect->isWriter() ) {
-            if ( !effect->areKnobsFrozen() ) {
-                //if ((*it)->getNode()->is)
+            if (!effect->areKnobsFrozen()) {
                 ///if the node is a writer, just use it to render!
-                AppInstance::RenderWork w;
-                w.writer = dynamic_cast<OutputEffectInstance*>( effect.get() );
-                assert(w.writer);
-                w.firstFrame = std::numeric_limits<int>::min();
-                w.lastFrame = std::numeric_limits<int>::max();
-                w.frameStep = std::numeric_limits<int>::min();
-                w.useRenderStats = useStats;
-                workList.push_back(w);
+                writers.push_back(internalNode);
             }
         } else {
             if (selectedNodes.size() == 1) {
@@ -878,19 +888,17 @@ Gui::renderSelectedNode()
                 NodePtr writer = getApp()->createWriter( std::string(), args );
 #endif
                 if (writer) {
-                    AppInstance::RenderWork w;
-                    w.writer = dynamic_cast<OutputEffectInstance*>( writer->getEffectInstance().get() );
-                    assert(w.writer);
-                    w.firstFrame = std::numeric_limits<int>::min();
-                    w.lastFrame = std::numeric_limits<int>::max();
-                    w.frameStep = std::numeric_limits<int>::min();
-                    w.useRenderStats = useStats;
-                    workList.push_back(w);
+                    writers.push_back(writer);
+                    createdWriter = writer;
                 }
             }
         }
     }
-    getApp()->startWritersRendering(false, workList);
+    // The dialog lists each writer's own name, file and frame range, so the Write node has to
+    // exist before it opens; one made only for this render goes away again if it is cancelled.
+    if (!showRenderDialog(this, writers) && createdWriter) {
+        createdWriter->destroyNode(false, false);
+    }
 } // Gui::renderSelectedNode
 
 void

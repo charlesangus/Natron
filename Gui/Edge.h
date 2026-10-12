@@ -97,8 +97,6 @@ public:
 
     bool isBendPointVisible() const;
 
-    bool areOptionalInputsAutoHidden() const;
-
     void setOptional(bool optional);
 
     void setDashed(bool dashed);
@@ -115,11 +113,10 @@ public:
 
     /**
      * @brief Refresh the Edge properties such as dashed state, optional state, visibility etc...
-     * @param hovered True if the mouse is hovering the dst node (the node holding this edge)
      **/
-    void refreshState(bool hovered);
+    void refreshState();
 
-    bool computeVisibility(bool hovered) const;
+    bool computeVisibility() const;
 
     /**
      * @brief Re-reads the source node's resolved data kind and caches the colour that kind is drawn

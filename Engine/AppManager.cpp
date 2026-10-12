@@ -3303,20 +3303,6 @@ AppManager::wasProjectCreatedDuringRC2Or3() const
 }
 
 void
-AppManager::toggleAutoHideGraphInputs()
-{
-    AppInstanceVec copy;
-    {
-        QMutexLocker k(&_imp->_appInstancesMutex);
-        copy = _imp->_appInstances;
-    }
-
-    for (AppInstanceVec::iterator it = copy.begin(); it != copy.end(); ++it) {
-        (*it)->toggleAutoHideGraphInputs();
-    }
-}
-
-void
 AppManager::launchPythonInterpreter()
 {
     std::string err;

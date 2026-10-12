@@ -73,6 +73,7 @@ set(Tests_SOURCES
     NativeParity.cpp
     NodeCategory_Test.cpp
     TabMenuSettings_Test.cpp
+    NodeColorSampler_Test.cpp
     OSGLContext_Test.cpp
     PersistentMessage_Test.cpp
     PluginIdentity_Test.cpp

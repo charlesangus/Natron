@@ -749,7 +749,7 @@ KnobGuiShuffleMap::rebuildMatrix()
             b->setEnabled(column.enabled);
             QColor color;
             if (getChannelColorFromName(column.channel, &color)) {
-                b->setStyleSheet(QString::fromUtf8("QPushButton:checked { background-color: %1; }").arg(color.name()));
+                b->setStyleSheet(QString::fromUtf8("QPushButton:checked { background-color: %1; }").arg(getChannelButtonColor(color).name()));
             }
             buttonGroup->addButton(b, (int)c);
             _imp->gridWidgets.push_back(b);

@@ -126,6 +126,9 @@ CLANG_DIAG_ON(uninitialized)
 #define NATRON_PLUGIN_ICON_SIZE 20
 #define PLUGIN_ICON_OFFSET 2
 
+// Logical px that a wrapped label's continuation lines sit right of its first line.
+#define NATRON_NODE_LABEL_WRAP_INDENT 8
+
 NATRON_NAMESPACE_ENTER
 
 using std::make_pair;
@@ -165,6 +168,34 @@ static void
 replaceLineBreaksWithHtmlParagraph(QString &txt)
 {
     txt.replace( QString::fromUtf8("\n"), QString::fromUtf8("<br />") );
+}
+
+/**
+ * @brief Splits each <br /> line of the label into its own block and gives every block a hanging
+ * indent, so a line that wraps reads as the continuation of the line above while the label's own
+ * line breaks still start flush left.
+ **/
+static void
+applyLabelHangingIndent(QTextDocument* doc,
+                        qreal indent)
+{
+    const QString lineSeparator(QChar::LineSeparator);
+    QTextCursor found = doc->find(lineSeparator);
+
+    while (!found.isNull()) {
+        const QTextCharFormat charFormat = found.charFormat();
+        const QTextBlockFormat blockFormat = found.blockFormat();
+        found.removeSelectedText();
+        found.insertBlock(blockFormat, charFormat);
+        found = doc->find(lineSeparator, found);
+    }
+
+    QTextBlockFormat hanging;
+    hanging.setLeftMargin(indent);
+    hanging.setTextIndent(-indent);
+    QTextCursor all(doc);
+    all.select(QTextCursor::Document);
+    all.mergeBlockFormat(hanging);
 }
 
 static void
@@ -1099,7 +1130,7 @@ NodeGui::refreshPreviewAndLabelPosition(const QRectF& bbox)
 
     {
         int nameWidth = labelBbox.width();
-        double textX = bbox.x() + iconWidth +  ( (bbox.width() - iconWidth) / 2 ) - (nameWidth / 2);
+        double textX = mustFrameName() ? bbox.x() + iconWidth + ((bbox.width() - iconWidth) / 2) - (nameWidth / 2) : bbox.x() + iconWidth;
         //double textY = topLeft.y() + labelHeight * 0.1;
         double textY;
         if ( mustFrameName() ) {
@@ -3363,7 +3394,8 @@ NodeGui::setNameItemHtml(const QString & name,
 
     replaceLineBreaksWithHtmlParagraph(finalText);
 
-    finalText.prepend( QString::fromUtf8("<div align=\"center\">") );
+    // A backdrop's framed title stays centred; every other node's label reads left-aligned.
+    finalText.prepend(QString::fromUtf8(mustFrameName() ? "<div align=\"center\">" : "<div align=\"left\">"));
     finalText.append( QString::fromUtf8("</div>") );
 
     QColor userFontColor;
@@ -3391,6 +3423,9 @@ NodeGui::setNameItemHtml(const QString & name,
     _nameItem->setDefaultTextColor(color);
     _nameItem->setFont(f);
     _nameItem->setHtml(finalText);
+    if (!mustFrameName()) {
+        applyLabelHangingIndent(_nameItem->document(), TO_DPIX(NATRON_NODE_LABEL_WRAP_INDENT));
+    }
     _nameItem->adjustSize();
 
 

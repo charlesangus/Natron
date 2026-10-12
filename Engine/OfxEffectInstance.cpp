@@ -909,6 +909,9 @@ OfxEffectInstance::takeOverMultiplaneChoices(const KnobPagePtr& fallbackPage)
                     quad[c]->setSecret(true);
                     quad[c]->setSecretLocked(true);
                     quad[c]->setIsPersistent(false);
+                    // The plugin chains R, G, B, A and its plane choice onto one row; with the
+                    // quad hidden, that row would put the twin's label in the field column.
+                    quad[c]->setAddNewLine(true);
                 }
                 if (defaultChannels.size() == 4) {
                     defaultChannels.clear();

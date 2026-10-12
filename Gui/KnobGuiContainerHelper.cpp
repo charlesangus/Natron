@@ -862,7 +862,11 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
             }
 
             if (!hasLabel) {
-                layout->addWidget(fieldContainer, rowIndex, 0, 1, 2);
+                if (ret->startsInFieldColumn()) {
+                    layout->addWidget(fieldContainer, rowIndex, 1, 1, 1);
+                } else {
+                    layout->addWidget(fieldContainer, rowIndex, 0, 1, 2);
+                }
             } else {
                 if (label) {
                     if (labelOnSameColumn) {

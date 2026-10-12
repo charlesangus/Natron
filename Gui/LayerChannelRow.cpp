@@ -55,6 +55,7 @@ const char* const kChannelNameProperty = "channelName";
 const char* const kChannelColorProperty = "channelColor";
 const char* const kInvalidProperty = "invalid";
 const char* const kColorLayerID = kNatronColorViewRGBA;
+const int kLine1Spacing = 3;
 
 QString
 qs(const std::string& s)
@@ -182,7 +183,7 @@ LayerChannelRow::LayerChannelRow(ModeEnum mode,
 
     _line1Layout = new QHBoxLayout();
     _line1Layout->setContentsMargins(0, 0, 0, 0);
-    _line1Layout->setSpacing(3);
+    _line1Layout->setSpacing(kLine1Spacing);
     _layout->addLayout(_line1Layout);
 
     _removeButton = new Button(QString::fromUtf8("−"), this);
@@ -420,6 +421,12 @@ LayerChannelRow::setRemoveColumnReserved(bool reserved)
 
     policy.setRetainSizeWhenHidden(reserved);
     _removeButton->setSizePolicy(policy);
+}
+
+int
+LayerChannelRow::getRemoveColumnWidth()
+{
+    return NATRON_SMALL_BUTTON_SIZE + kLine1Spacing;
 }
 
 LayerChannelRow::SetRowModeEnum
@@ -799,7 +806,7 @@ LayerChannelRow::rebuildChannelButtons()
         QColor color;
         if (getChannelColorFromName(channels[i], &color)) {
             b->setProperty(kChannelColorProperty, QVariant(color));
-            b->setStyleSheet(QString::fromUtf8("QPushButton:checked { background-color: %1; }").arg(color.name()));
+            b->setStyleSheet(QString::fromUtf8("QPushButton:checked { background-color: %1; }").arg(getChannelButtonColor(color).name()));
         }
         b->blockSignals(true);
         b->setChecked(isRegexRow ? !_regexExcludedChannels.count(channels[i]) : isChannelEnabled(channels[i]));

@@ -168,6 +168,9 @@ public:
      **/
     void setRemoveColumnReserved(bool reserved);
 
+    /// How far a reserved "[-]" column pushes the combo right of the row's left edge.
+    static int getRemoveColumnWidth();
+
     SetRowModeEnum getSetRowMode() const;
     std::string getCurrentLayerID() const;
     std::string getCurrentChannel() const;

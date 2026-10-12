@@ -31,6 +31,7 @@
 #include <QByteArray>
 #include <QColor>
 #include <QIcon>
+#include <QImage>
 #include <QPixmap>
 #include <QString>
 
@@ -93,6 +94,18 @@ public:
      * pixmap that would look different depending on what it's drawn over.
      **/
     static QIcon icon(const QString& resourcePath, int logicalSize);
+
+    /**
+     * @brief Scales source to fit logicalSize x logicalSize at dpr and paints every pixel in
+     * color, keeping only the source's alpha: a raster icon's silhouette in a single tone.
+     **/
+    static QPixmap tintPixmap(const QImage& source, int logicalSize, const QColor& color, double dpr);
+
+    /**
+     * @brief icon()'s states for a raster (PNG) icon drawn through tintPixmap(), for a plugin
+     * bundle's own grouping icon that would otherwise be the one coloured icon in the toolbox.
+     **/
+    static QIcon tintedIcon(const QString& rasterPath, int logicalSize);
 };
 
 NATRON_NAMESPACE_EXIT

@@ -49,6 +49,12 @@ THEMED_PIXEL_FRACTION = 0.9
 THEMED_ICON_FRACTION = 0.8
 ICON_PROBE_SIZE = 24
 
+PLUGIN_ICON_COLUMN = 20 + 2 * 2
+LABEL_WRAP_INDENT = 8
+CHANNEL_BUTTON_CHROMA_RATIO = 0.65
+CHANNEL_BUTTON_MIN_CHROMA = 25
+ROW_LABEL_BRIGHTNESS_RATIO = 0.85
+
 try:
     import NatronEngine
     import shiboken6
@@ -290,12 +296,12 @@ try:
     def check_icons(area, owners):
         """owners are buttons or actions. Every icon must be non-null, and most must be drawn in
         the theme's text or selection colour: the PNG icons were not."""
-        check_icon_entries(area, icon_entries(owners))
+        return check_icon_entries(area, icon_entries(owners))
 
     def check_icon_entries(area, icons):
         colours = theme_colours()
         if not check(len(icons) > 0, "%s: found icons to probe (%d)" % (area, len(icons))):
-            return
+            return 0, 0, []
         nulls = 0
         themed = 0
         probed = 0
@@ -324,6 +330,7 @@ try:
             report("NOTE %s: icons not in the theme colour: %s" % (area, ", ".join(off[:12])))
         _icon_hashes[area] = hashes
         compare_with_baseline(area, hashes)
+        return themed, probed, off
 
     def compare_with_baseline(area, hashes):
         base_dir = os.environ.get("M56_BASELINE_DIR")
@@ -454,11 +461,11 @@ try:
 
     # ---- node label geometry -------------------------------------------------------------------
 
-    def name_rects(graph, nodes):
-        """Each node's name-item scene rect, keyed by label, matched on its text. Never call
-        parentItem() here: the wrapper PySide builds for the NodeGui parent deletes the node's
-        graphics item when it is collected, and the next Effect.getSize() then crashes."""
-        rects = {}
+    def name_items(graph, nodes):
+        """Each node's name item, keyed by label, matched on its text. Never call parentItem()
+        here: the wrapper PySide builds for the NodeGui parent deletes the node's graphics item
+        when it is collected, and the next Effect.getSize() then crashes."""
+        items = {}
         for node in nodes:
             label = node.getLabel()
             x, y, w, h = node_rect(node)
@@ -467,9 +474,57 @@ try:
                 if not isinstance(it, QGraphicsTextItem):
                     continue
                 if it.toPlainText().split("\n")[0].strip().startswith(label[:20]):
-                    rects[label] = QRectF(it.sceneBoundingRect())
+                    items[label] = it
                     break
-        return rects
+        return items
+
+    def name_rects(graph, nodes):
+        """Each node's name-item scene rect, keyed by label."""
+        return dict((label, QRectF(it.sceneBoundingRect())) for label, it in name_items(graph, nodes).items())
+
+    def label_line_xs(item):
+        """For each block of a name item's document, the x of each of its laid-out lines."""
+        doc = item.document()
+        doc.documentLayout().documentSize()
+        blocks = []
+        block = doc.begin()
+        while block.isValid():
+            lay = block.layout()
+            blocks.append([lay.lineAt(i).x() for i in range(lay.lineCount())])
+            block = block.next()
+        return blocks
+
+    def check_label_alignment(graph, rects, nodes, wrapped_node):
+        """Every block's first line starts at the same x (left-aligned rather than centred), a
+        wrapped block's later lines sit one hanging indent right of its first, and each label
+        starts right after the node's plugin-icon column instead of being centred in the node."""
+        items = name_items(graph, nodes)
+        offsets = []
+        for node in nodes:
+            label = node.getLabel()
+            it = items.get(label)
+            r = rects.get(label)
+            if it is None or r is None:
+                check(False, "label align: found the name item of %r" % label)
+                continue
+            blocks = label_line_xs(it)
+            firsts = [b[0] for b in blocks if b]
+            check(firsts and max(firsts) - min(firsts) <= 0.5,
+                  "label align %r: every line break starts at the same x (%r)" % (label[:24], firsts))
+            offsets.append(r.left() - node_rect(node)[0])
+        report("NOTE label left offsets from the node's left edge: %r" % ["%.1f" % o for o in offsets])
+        icon_column = px(PLUGIN_ICON_COLUMN)
+        check(offsets and all(abs(o - icon_column) <= 1.5 for o in offsets),
+              "label align: each label starts at the plugin-icon column's right edge (%.1f)" % icon_column)
+        it = items.get(wrapped_node.getLabel())
+        if check(it is not None, "label align: found the wrapped label's item"):
+            blocks = label_line_xs(it)
+            wrapped = next((b for b in blocks if len(b) > 1), None)
+            report("NOTE wrapped label line x per block: %r" % blocks)
+            if check(wrapped is not None, "label align: the long label wraps onto several lines"):
+                indents = [x - wrapped[0] for x in wrapped[1:]]
+                check(all(abs(d - px(LABEL_WRAP_INDENT)) <= 0.5 for d in indents),
+                      "label align: wrapped lines hang %d px right of the first (%r)" % (LABEL_WRAP_INDENT, indents))
 
     def frame_nodes(graph, nodes, max_zoom=1.5):
         xs, ys, xe, ye = [], [], [], []
@@ -557,6 +612,134 @@ try:
                 cells.append(parent)
         return cells
 
+    def first_of_class(widgets, cls_name):
+        for f in widgets:
+            if gt.class_name(f) == cls_name:
+                return f
+            for w in descendants(f):
+                if gt.class_name(w) == cls_name:
+                    return w
+        return None
+
+    def right_in(panel, widget):
+        return left_in(panel, widget) + widget.width()
+
+    def image_of(widget):
+        return widget.grab().toImage()
+
+    def max_brightness(img):
+        best = 0
+        for y in range(img.height()):
+            for x in range(img.width()):
+                c = img.pixelColor(x, y)
+                best = max(best, (c.red() + c.green() + c.blue()) / 3.0)
+        return best
+
+    def dominant_colour(img):
+        counts = {}
+        for y in range(img.height()):
+            for x in range(img.width()):
+                c = img.pixelColor(x, y)
+                key = (c.red(), c.green(), c.blue())
+                counts[key] = counts.get(key, 0) + 1
+        return max(counts.items(), key=lambda kv: kv[1])[0] if counts else None
+
+    def chroma(rgb):
+        return max(rgb) - min(rgb)
+
+    def check_channel_buttons(panel, area):
+        """Checked R/G/B toggles are filled with their channel colour blended toward the panel,
+        not the raw channel colour, and still read as red, green and blue."""
+        buttons = [b for b in buttons_in(panel) if b.property("channelColor") is not None and b.isChecked()]
+        coloured = []
+        for b in buttons:
+            col = b.property("channelColor")
+            raw = (col.red(), col.green(), col.blue())
+            if chroma(raw) > 0:
+                coloured.append((b, raw))
+        if not check(len(coloured) >= 3, "%s: found the checked R, G and B channel buttons (%d)" % (area, len(coloured))):
+            return
+        for b, raw in coloured:
+            shown = dominant_colour(image_of(b))
+            report("NOTE %s channel button %s: channel colour %r, drawn %r" % (area, b.text(), raw, shown))
+            check(shown is not None and chroma(shown) <= chroma(raw) * CHANNEL_BUTTON_CHROMA_RATIO,
+                  "%s: the %s button is less saturated than its channel colour (chroma %r vs %d)"
+                  % (area, b.text(), shown and chroma(shown), chroma(raw)))
+            check(shown is not None and chroma(shown) >= CHANNEL_BUTTON_MIN_CHROMA and
+                  shown.index(max(shown)) == raw.index(max(raw)),
+                  "%s: the %s button still reads as its channel's hue (%r)" % (area, b.text(), shown))
+
+    def check_add_layer_button(panel, area):
+        rows = [w for w in descendants(panel) if gt.class_name(w) == "LayerChannelRow"]
+        plus = [b for b in buttons_in(panel) if b.text() == "+" and "layer row" in (b.toolTip() or "")]
+        if not check(rows and plus, "%s: found the channel picker's layer row and + button" % area):
+            return
+        combo = first_of_class([rows[0]], "ComboBox")
+        if check(combo is not None, "%s: found the layer row's combo" % area):
+            a, b = left_in(panel, plus[0]), left_in(panel, combo)
+            check(abs(a - b) <= ALIGN_TOLERANCE, "%s: the + button sits under the layer combo (x %d vs %d)" % (area, a, b))
+            check(top_in(panel, plus[0]) > top_in(panel, combo), "%s: the + button is below the combo" % area)
+
+    def check_button_in_field_column(panel, area, text, field_knob):
+        btns = [b for b in buttons_in(panel) if b.text().replace("&", "") == text]
+        _l, fields = knob_widgets(panel, field_knob)
+        if not check(btns and fields, "%s: found the %s button and the %s field" % (area, text, field_knob)):
+            return
+        a = left_in(panel, btns[0])
+        b = min(left_in(panel, f) for f in fields)
+        check(abs(a - b) <= ALIGN_TOLERANCE,
+              "%s: the %s button lines up with the field column (x %d vs %s field %d)" % (area, text, a, field_knob, b))
+
+    def check_uv_rows(panel):
+        """UV Offset's expanded U and V boxes sit together, and its dimension switch lines up with
+        UV Scale's at the row's end."""
+        switches = {}
+        for knob in ("uvOffset", "uvScale"):
+            _l, fields = knob_widgets(panel, knob)
+            spins = [f for f in fields if gt.class_name(f) == "SpinBox"]
+            if not check(bool(spins), "IDistort: found the %s spin boxes" % knob):
+                return
+            mid_y = top_in(panel, spins[0]) + spins[0].height() // 2
+            twos = [b for b in buttons_in(panel) if b.text() == "2" and
+                    top_in(panel, b) <= mid_y <= top_in(panel, b) + b.height()]
+            if not check(bool(twos), "IDistort: found the %s dimension switch" % knob):
+                return
+            switches[knob] = twos[0]
+            if knob == "uvOffset" and len(spins) >= 2:
+                spins.sort(key=lambda w: left_in(panel, w))
+                gap = left_in(panel, spins[1]) - right_in(panel, spins[0])
+                check(gap <= px(24), "IDistort: the U and V boxes sit together (gap %d px)" % gap)
+        a, b = right_in(panel, switches["uvOffset"]), right_in(panel, switches["uvScale"])
+        check(abs(a - b) <= ALIGN_TOLERANCE,
+              "IDistort: the UV Offset and UV Scale dimension switches share a right edge (%d vs %d)" % (a, b))
+
+    def check_merge_rows(panel):
+        """The A/B/Output row labels are drawn in the normal label colour, in the label column,
+        and each row's first channel toggle starts at the same x."""
+        _l, op_fields = knob_widgets(panel, "operation")
+        op_labels = [l for l in _l if l.text().strip()]
+        reference = max_brightness(image_of(op_labels[0])) if op_labels else None
+        lefts = []
+        for knob in ("AChannels", "BChannels", "OutputChannels"):
+            labels, _f = knob_widgets(panel, knob)
+            labels = [l for l in labels if l.text().strip()]
+            if not check(bool(labels), "Merge: found the %s row label" % knob):
+                continue
+            bright = max_brightness(image_of(labels[0]))
+            check(reference is not None and bright >= reference * ROW_LABEL_BRIGHTNESS_RATIO,
+                  "Merge: the %s row label is drawn in the normal text colour (brightness %.0f vs %r)"
+                  % (knob, bright, reference))
+            if op_labels:
+                a, b = right_in(panel, labels[0]), right_in(panel, op_labels[0])
+                check(abs(a - b) <= ALIGN_TOLERANCE,
+                      "Merge: the %s row label is right-aligned in the label column (%d vs %d)" % (knob, a, b))
+            _l2, toggles = knob_widgets(panel, knob + "R")
+            if check(bool(toggles), "Merge: found the %sR toggle" % knob):
+                lefts.append(min(left_in(panel, t) for t in toggles))
+        report("NOTE Merge first toggle left x per row: %r" % lefts)
+        check(len(lefts) == 3 and max(lefts) - min(lefts) <= ALIGN_TOLERANCE,
+              "Merge: the A, B and Output toggles start at the same x (%r)" % lefts)
+
     # ---- steps ---------------------------------------------------------------------------------
 
     def steps():
@@ -613,6 +796,7 @@ try:
         check_wrap(rects, grade, "Grade with a multi-line user label")
         check_wrap(rects, icon_node, "30 chars with a plugin icon")
         check_wrap(rects, preview, "30 chars with a preview")
+        check_label_alignment(graph, rects, [short, mid, longn, grade, icon_node, preview], longn)
         check(all(abs(a - b) <= 1.5 for a, b in zip(backdrop.getSize(), backdrop_size)),
               "Backdrop keeps its size with a long label (%r -> %r)" % (backdrop_size, backdrop.getSize()))
         check(all(abs(a - b) <= 1.5 for a, b in zip(dot.getSize(), dot_size)),
@@ -636,6 +820,13 @@ try:
                 if pick_fields and layer_fields:
                     check(abs(top_in(panel, pick_fields[0]) - top_in(panel, layer_fields[0])) > 2,
                           "%s: the picker sits on its own row, not the layer row" % short_name)
+                    pick_combo = first_of_class(pick_fields, "ComboBox")
+                    layer_combo = first_of_class(layer_fields, "ComboBox")
+                    if check(pick_combo is not None and layer_combo is not None,
+                             "%s: found the layer and picker combos" % short_name):
+                        a, b = left_in(panel, layer_combo), left_in(panel, pick_combo)
+                        check(abs(a - b) <= ALIGN_TOLERANCE,
+                              "%s: the layer and %s combos share a left x (%d vs %d)" % (short_name, expected, a, b))
                 crop_shot(panel, "labels-%s" % short_name.lower())
             node.destroy()
 
@@ -662,6 +853,8 @@ try:
                           % (short_name, ALIGN_TOLERANCE, lefts))
                     check(len(set(tops)) == len(tops),
                           "%s: U, V and Alpha each sit on their own row (%r)" % (short_name, tops))
+                if short_name == "IDistort":
+                    check_uv_rows(panel)
                 crop_shot(panel, "labels-%s" % short_name.lower())
             node.destroy()
         gt.close_all_panels()
@@ -672,7 +865,10 @@ try:
         toolbars = [t for t in QApplication.allWidgets() if isinstance(t, QToolBar) and t.isVisible()]
         toolbox = toolbars[0] if toolbars else None
         if check(toolbox is not None, "found the left toolbox"):
-            check_icons("toolbox", buttons_in(toolbox))
+            themed, probed, off = check_icons("toolbox", buttons_in(toolbox))
+            check(probed > 0 and themed == probed,
+                  "toolbox: every grouping icon is drawn in the theme colour (%d of %d; off: %s)"
+                  % (themed, probed, ", ".join(off) or "none"))
             crop_shot(toolbox, "icons-toolbox")
 
         viewer = create("fr.inria.built-in.Viewer", 0, 400)
@@ -868,9 +1064,13 @@ try:
                     margins.append((m.left(), m.top(), m.right(), m.bottom()))
             check(any(all(near(v, PANEL_MARGIN) for v in m) for m in margins),
                   "Grade: the panel body has a %d px margin on every side" % PANEL_MARGIN)
+            check_channel_buttons(panel, "Grade")
+            check_add_layer_button(panel, "Grade")
+            check_button_in_field_column(panel, "Grade", "Normalize", "mix")
         merge_panel = panel_for(merge)
-        if merge_panel is not None:
+        if check(merge_panel is not None, "Merge: settings panel is open"):
             crop_shot(merge_panel, "density-merge-panel")
+            check_merge_rows(merge_panel)
         tab_pane = pane("pane3")
         if check(tab_pane is not None and tab_pane.layout() is not None, "found the node-graph pane"):
             top = tab_pane.layout().contentsMargins().top()

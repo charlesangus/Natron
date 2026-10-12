@@ -25,6 +25,7 @@ CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QApplication>
 #include <QFile>
+#include <QImage>
 #include <QPainter>
 #include <QSvgRenderer>
 CLANG_DIAG_ON(deprecated)
@@ -128,13 +129,13 @@ ThemedIcon::pixmapCacheKey(const QString& resourcePath,
     return resourcePath + QLatin1Char('@') + QString::number(logicalSize) + QLatin1Char('@') + color.name() + QLatin1Char('@') + QString::number(dpr);
 }
 
+namespace {
+template <typename RenderFn>
 QIcon
-ThemedIcon::icon(const QString& resourcePath,
-                 int logicalSize)
+buildStateIcon(RenderFn render)
 {
-    const double dpr = qApp ? qApp->devicePixelRatio() : 1.;
-    const QColor text = themeTextColor();
-    const QColor selection = themeSelectionColor();
+    const QColor text = ThemedIcon::themeTextColor();
+    const QColor selection = ThemedIcon::themeSelectionColor();
 
     double br, bg, bb;
     appPTR->getCurrentSettings()->getBaseColor(&br, &bg, &bb);
@@ -143,12 +144,59 @@ ThemedIcon::icon(const QString& resourcePath,
 
     QIcon result;
 
-    result.addPixmap(renderPixmap(resourcePath, logicalSize, text, dpr), QIcon::Normal, QIcon::Off);
-    result.addPixmap(renderPixmap(resourcePath, logicalSize, selection, dpr), QIcon::Normal, QIcon::On);
-    result.addPixmap(renderPixmap(resourcePath, logicalSize, disabled, dpr), QIcon::Disabled, QIcon::Off);
-    result.addPixmap(renderPixmap(resourcePath, logicalSize, text, dpr), QIcon::Active, QIcon::Off);
+    result.addPixmap(render(text), QIcon::Normal, QIcon::Off);
+    result.addPixmap(render(selection), QIcon::Normal, QIcon::On);
+    result.addPixmap(render(disabled), QIcon::Disabled, QIcon::Off);
+    result.addPixmap(render(text), QIcon::Active, QIcon::Off);
 
     return result;
+}
+} // anon namespace
+
+QIcon
+ThemedIcon::icon(const QString& resourcePath,
+                 int logicalSize)
+{
+    const double dpr = qApp ? qApp->devicePixelRatio() : 1.;
+
+    return buildStateIcon([&](const QColor& color) {
+        return renderPixmap(resourcePath, logicalSize, color, dpr);
+    });
+}
+
+QPixmap
+ThemedIcon::tintPixmap(const QImage& source,
+                       int logicalSize,
+                       const QColor& color,
+                       double dpr)
+{
+    if (source.isNull()) {
+        return QPixmap();
+    }
+    const int deviceSize = (int)std::lround(logicalSize * dpr);
+    QImage tinted = source.scaled(deviceSize, deviceSize, Qt::KeepAspectRatio, Qt::SmoothTransformation)
+                        .convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    {
+        QPainter painter(&tinted);
+        painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+        painter.fillRect(tinted.rect(), color);
+    }
+    QPixmap pix = QPixmap::fromImage(tinted);
+    pix.setDevicePixelRatio(dpr);
+
+    return pix;
+}
+
+QIcon
+ThemedIcon::tintedIcon(const QString& rasterPath,
+                       int logicalSize)
+{
+    const double dpr = qApp ? qApp->devicePixelRatio() : 1.;
+    const QImage source(rasterPath);
+
+    return buildStateIcon([&](const QColor& color) {
+        return tintPixmap(source, logicalSize, color, dpr);
+    });
 }
 
 NATRON_NAMESPACE_EXIT

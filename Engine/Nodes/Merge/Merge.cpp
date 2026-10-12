@@ -367,7 +367,6 @@ addRowLabel(KnobHolder* holder,
     knob->setHintToolTip(hint);
     knob->setDefaultValue(text);
     knob->setAsLabel();
-    knob->setAllDimensionsEnabled(false);
     knob->setAddNewLine(false);
     knob->setSpacingBetweenItems(1);
     page->addKnob(knob);

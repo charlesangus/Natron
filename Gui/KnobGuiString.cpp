@@ -508,7 +508,9 @@ bool
 KnobGuiString::isLabelOnSameColumn() const
 {
     KnobStringPtr knob = _knob.lock();
-    return knob && knob->isLabel();
+    // A label that other knobs follow on its row titles that row, so it sits in the label
+    // column like any knob's label; a label alone on its row spans both columns.
+    return knob && knob->isLabel() && knob->isNewLineActivated();
 }
 
 void

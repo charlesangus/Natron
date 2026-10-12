@@ -155,6 +155,13 @@ public:
     void enableRightClickMenu(QWidget* widget, int dimension);
 
     virtual bool shouldCreateLabel() const;
+
+    /**
+     * @brief For a knob with no label (shouldCreateLabel() false): whether its row starts in the
+     * field column, lined up with the other knobs' fields, rather than spanning the empty label
+     * column too.
+     **/
+    virtual bool startsInFieldColumn() const { return false; }
     virtual bool isLabelOnSameColumn() const;
     virtual bool isLabelBold() const;
 

@@ -853,6 +853,12 @@ Gui::findOrCreateToolButton(const PluginGroupNodePtr & plugin)
             // An OFX plugin's own icon is always a PNG, so it never reaches this branch.
             menuIcon = ThemedIcon::icon(plugin->getIconPath(), menuSize);
             toolButtonIcon = ThemedIcon::icon(plugin->getIconPath(), toolButtonSize);
+        } else if (!plugin->hasParent() && !plugin->getChildren().empty()) {
+            // A plugin bundle's own top-level grouping (e.g. openfx-arena's "Extra") brings a
+            // colour PNG into the otherwise monochrome toolbox. Its silhouette is kept and drawn
+            // in the theme colour; plugins' own icons, which may be colour-coded, keep theirs.
+            menuIcon = ThemedIcon::tintedIcon(plugin->getIconPath(), menuSize);
+            toolButtonIcon = ThemedIcon::tintedIcon(plugin->getIconPath(), toolButtonSize);
         } else {
             QPixmap pix(plugin->getIconPath());
             QPixmap menuPix = pix, toolbuttonPix = pix;

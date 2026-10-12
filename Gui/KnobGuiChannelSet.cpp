@@ -191,8 +191,8 @@ KnobGuiChannelSet::createWidget(QHBoxLayout* layout)
     QWidget* addContainer = new QWidget(getContainer());
     QHBoxLayout* addLayout = new QHBoxLayout(addContainer);
     addLayout->setContentsMargins(0, 0, 0, 0);
-    // Sized and left-aligned like each row's [-] button, so it reads as the next cell of
-    // that column rather than a button of its own.
+    // Sized like each row's [-] button, but set under the layer combos it adds to.
+    addLayout->addSpacing(LayerChannelRow::getRemoveColumnWidth());
     _imp->addLayerButton = new Button(QString::fromUtf8("+"), addContainer);
     _imp->addLayerButton->setToolTip(tr("Add a layer row"));
     _imp->addLayerButton->setFocusPolicy(Qt::StrongFocus);

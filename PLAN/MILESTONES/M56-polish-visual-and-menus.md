@@ -345,3 +345,4 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - **New Lucide glyphs:** 15 more were vendored (File menu, file dialog, messages), and the colour-picker cursor now uses `pipette`.
   - **Rebase:** onto `main` with M84, with no conflicts.
   - **Needs the gate build:** these have only been compiled object by object so far. The build waits for M69's end-build agent.
+- 2026-10-12 — **The 21 new UAT-fix icons are approved (user)** (claude.ai artifact `VL8xyza9LEeqzorFzdNJvf`). The one exception is Reload Project, which uses the standard `refresh-cw` instead of `folder-sync` (`c12e54587`). `folder-sync` was removed.

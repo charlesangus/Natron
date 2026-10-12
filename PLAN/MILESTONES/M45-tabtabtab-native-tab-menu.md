@@ -193,7 +193,7 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
   - verify: at the gate, M45.P8.T1 exercises every function through the live menu. Also, `python -c` in the built Natron's script editor (by hand in the UAT): `json.loads(app1.getTabMenuNodeItems())` lists Blur with a non-empty colour.
   - size: L
 
-- [ ] M45.P6.T3 — Route the node graph's create-node shortcut and right-click "Create Node" to the bridge, and run the bootstrap at startup
+- [x] M45.P6.T3 — Route the node graph's create-node shortcut and right-click "Create Node" to the bridge, and run the bootstrap at startup
   - files: `Gui/NodeGraph25.cpp`, `Gui/NodeGraph.h`, `Gui/NodeGraphPrivate.h`, `Gui/NodeGraphPrivate.cpp`, `Gui/GuiApplicationManager10.cpp`
   - approach:
     - In `NodeGraph::event` (`NodeGraph25.cpp:169-187`), replace `ke->key() == Qt::Key_Tab` with `isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateNode, ke->modifiers(), (Qt::Key)ke->key())`, so a rebinding in the shortcut editor takes effect. It must stay in `event()`, because `QGraphicsView` takes Tab for focus traversal before `keyPressEvent`. Keep the `_nodeCreationShortcutEnabled` gate (`NodeGraph30.cpp:141-156`) and `takeClickFocus()`.
@@ -207,7 +207,7 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
     - After rebinding Create Node in the shortcut editor, the new key opens it and Tab does not (by hand in the UAT).
   - size: M
 
-- [ ] M45.P6.T4 — Remove NodeCreationDialog, keeping CompleterLineEdit for its other users
+- [x] M45.P6.T4 — Remove NodeCreationDialog, keeping CompleterLineEdit for its other users
   - files: `Gui/NodeCreationDialog.h`, `Gui/NodeCreationDialog.cpp`, `Gui/Resources/Stylesheets/mainstyle.qss`
   - approach:
     - Delete the `NodeCreationDialog` class, its private struct, and the `getPluginWeight`/`incrementPluginWeight` statics (weights start fresh in tabtabtab's JSON, so nothing replaces them).
@@ -217,7 +217,7 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
   - verify: at the gate build, `grep -rn NodeCreationDialog Gui/` finds nothing, and the Pick Knob and Link-to-Knob dialogs still complete node names (by hand in the UAT).
   - size: M
 
-- [ ] M45.P6.T5 — Add the "Tab menu" preferences (search-mode remap, scroll toggle) to the Nodegraph page
+- [x] M45.P6.T5 — Add the "Tab menu" preferences (search-mode remap, scroll toggle) to the Nodegraph page
   - files: `Engine/Settings.h`, `Engine/Settings.cpp`, `Tests/TabMenuSettings_Test.cpp` (new), `Tests/CMakeLists.txt` (one line in the `Tests` binary's source list, beside `NodeCategory_Test.cpp`)
   - approach:
     - This reuses the cancelled M45.P1.T3 brief, with two changes: the option IDs are tabtabtab's mode names, and there are no C++ accessors, because only the Python adapter reads these knobs (M45.P5.T3).
@@ -358,3 +358,4 @@ Acceptance sketch:
     - `tabtabtab_prefs.py` and `tabtabtab_prefs_dialog.py` are therefore not vendored. The core never imports them, and leaving them out modifies upstream least. The Edit > Tab Menu Preferences... entry and the bootstrap's `addCommand` are dropped.
   - **Weights start fresh:** there is no seeding from the old `QSettings` `<id><major>_tab_weight` counts. `getTabMenuLegacyWeights`/`legacyWeightsJson` are dropped from M45.P6.T2, and the seeding logic and its tests from M45.P5.T3/T4.
 - 2026-10-12 — **P5.T3:** the adapter (`tabtabtab_natron.py`) calls the core's `tabtabtab_nuke_core.launch(...)` by module, so tests stub `launch` on the core module. It validates the search-mode order itself, because a reused popup in the core keeps an invalid order. It expects `GuiApp.getTabMenuNodeItems()` to return a JSON list of `{id, major, label, grouping[], icon, color, shortcut}`, plus `GuiApp.createNodeFromTabMenu(id, major)`, and the settings knobs `tabMenuSearchModes` (a choice whose option IDs are comma-joined mode names) and `tabMenuScroll`.
+- 2026-10-12 — **P6.T3–T5:** `Gui/NodeCreationDialog.*` was renamed to `Gui/CompleterLineEdit.*`, because the remaining class is the completer and the brief's "no NodeCreationDialog left" check needed it. `m75_read.py` now drives the tab menu (`TabTabTabWidget`). P7.T1 is re-sized from S to M, since it is CMake post-build logic plus the bundle script.

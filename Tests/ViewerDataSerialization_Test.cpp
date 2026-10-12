@@ -34,13 +34,15 @@
 #include <boost/archive/binary_oarchive.hpp>
 
 #include "Engine/RectDSerialization.h"
-#include "Gui/ProjectGuiSerialization.h"
+
+#include "Serialization/ProjectGuiSerialization.h"
+#include "Serialization/BoostXml/ProjectGuiXml.h"
 
 NATRON_NAMESPACE_USING
 
 namespace {
 
-// The ViewerData layout of the version before the OCIO display fields, which stored a viewer
+// The viewer data layout of the version before the OCIO display fields, which stored a viewer
 // colourspace where Display, View and Look now are.
 struct LegacyViewerData {
     double zoomLeft = 12.;
@@ -119,9 +121,9 @@ struct LegacyViewerData {
 
 void
 expectLegacyFieldsLoaded(const LegacyViewerData& legacy,
-                         const ViewerData& restored)
+                         const Serialization::ViewerDataSerialization& restored)
 {
-    EXPECT_EQ((unsigned int)VIEWER_DATA_INTRODUCES_FULL_FRAME_PROC, restored.version);
+    EXPECT_EQ((unsigned int)NATRON_SERIALIZATION_VIEWER_DATA_INTRODUCES_FULL_FRAME_PROC, restored.version);
     EXPECT_EQ(std::string(), restored.display);
     EXPECT_EQ(std::string(), restored.view);
     EXPECT_EQ(std::string(), restored.look);
@@ -134,29 +136,24 @@ expectLegacyFieldsLoaded(const LegacyViewerData& legacy,
     EXPECT_EQ(legacy.alphaLayerName, restored.alphaLayerName);
     EXPECT_EQ(legacy.channels, restored.channels);
     EXPECT_EQ(legacy.mipmapLevel, restored.mipmapLevel);
-    EXPECT_EQ(legacy.wipeCompositingOp, restored.wipeCompositingOp);
+    EXPECT_EQ(legacy.wipeCompositingOp, restored.wipeCompositingOperator);
     EXPECT_EQ(legacy.rightBound, restored.rightBound);
     EXPECT_EQ(legacy.timelineVisible, restored.timelineVisible);
-    EXPECT_EQ(legacy.isInputAPaused, restored.isPauseEnabled[0]);
+    EXPECT_EQ(legacy.isInputAPaused, restored.isInputAPaused);
     EXPECT_EQ(legacy.fps, restored.fps);
     EXPECT_EQ(legacy.fpsLocked, restored.fpsLocked);
-    EXPECT_EQ(legacy.aChoice, restored.aChoice);
-    EXPECT_EQ(legacy.bChoice, restored.bChoice);
+    EXPECT_EQ(legacy.aChoice, restored.activeInputA);
+    EXPECT_EQ(legacy.bChoice, restored.activeInputB);
     EXPECT_EQ(legacy.fullFrame, restored.isFullFrameProcessEnabled);
 }
 
 } // namespace
 
-BOOST_CLASS_VERSION(LegacyViewerData, VIEWER_DATA_INTRODUCES_FULL_FRAME_PROC)
+BOOST_CLASS_VERSION(LegacyViewerData, NATRON_SERIALIZATION_VIEWER_DATA_INTRODUCES_FULL_FRAME_PROC)
 
 TEST(ViewerDataSerialization, RoundTripsTheDisplayTransform)
 {
-    ViewerData original = ViewerData();
-    original.zoomFactor = 1.;
-    original.gain = 1.;
-    original.gamma = 1.;
-    original.fps = 24.;
-    original.aChoice = original.bChoice = -1;
+    Serialization::ViewerDataSerialization original;
     original.display = "sRGB - Display";
     original.view = "Un-tone-mapped";
     original.look = "ACES 1.3 Reference Gamut Compression";
@@ -167,13 +164,13 @@ TEST(ViewerDataSerialization, RoundTripsTheDisplayTransform)
         oArchive << boost::serialization::make_nvp("ViewerData", original);
     }
 
-    ViewerData restored = ViewerData();
+    Serialization::ViewerDataSerialization restored;
     {
         boost::archive::xml_iarchive iArchive(stream);
         iArchive >> boost::serialization::make_nvp("ViewerData", restored);
     }
 
-    EXPECT_EQ((unsigned int)VIEWER_DATA_INTRODUCES_OCIO_DISPLAY, restored.version);
+    EXPECT_EQ((unsigned int)NATRON_SERIALIZATION_VIEWER_DATA_INTRODUCES_OCIO_DISPLAY, restored.version);
     EXPECT_EQ(original.display, restored.display);
     EXPECT_EQ(original.view, restored.view);
     EXPECT_EQ(original.look, restored.look);
@@ -190,7 +187,7 @@ TEST(ViewerDataSerialization, AnXmlArchiveFromBeforeTheDisplayTransformLoadsWith
     }
     ASSERT_NE(std::string::npos, stream.str().find("ColorSpace"));
 
-    ViewerData restored = ViewerData();
+    Serialization::ViewerDataSerialization restored;
     restored.display = restored.view = restored.look = "stale";
     {
         boost::archive::xml_iarchive iArchive(stream);
@@ -209,7 +206,7 @@ TEST(ViewerDataSerialization, ABinaryArchiveFromBeforeTheDisplayTransformLoadsWi
         oArchive << legacy;
     }
 
-    ViewerData restored = ViewerData();
+    Serialization::ViewerDataSerialization restored;
     restored.display = restored.view = restored.look = "stale";
     {
         boost::archive::binary_iarchive iArchive(stream);

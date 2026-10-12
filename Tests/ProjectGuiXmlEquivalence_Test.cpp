@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <iterator>
 #include <list>
 #include <map>
 #include <memory>
@@ -35,13 +36,6 @@
 #include <vector>
 
 #include <gtest/gtest.h>
-
-// The old classes are archived here too, so their BOOST_CLASS_VERSION declarations (in these
-// headers) and RectD's serialize definition must be visible.
-#include "Engine/RectDSerialization.h"
-#include "Gui/NodeBackdropSerialization.h"
-#include "Gui/NodeGuiSerialization.h"
-#include "Gui/ProjectGuiSerialization.h"
 
 #include "Serialization/BasicSerialization.h"
 #include "Serialization/KnobSerialization.h"
@@ -369,341 +363,238 @@ makePopulatedProjectGui()
     return projectGui;
 }
 
-NATRON_NAMESPACE::PaneLayout*
-toOldPane(const Serialization::PaneLayoutSerialization& pane)
-{
-    NATRON_NAMESPACE::PaneLayout* oldPane = new NATRON_NAMESPACE::PaneLayout;
-
-    oldPane->tabs = pane.tabs;
-    oldPane->currentIndex = pane.currentIndex;
-    oldPane->isAnchor = pane.isAnchor;
-    oldPane->name = pane.name;
-
-    return oldPane;
-}
-
-NATRON_NAMESPACE::SplitterSerialization*
-toOldSplitter(const Serialization::SplitterSerialization& splitter)
-{
-    NATRON_NAMESPACE::SplitterSerialization* oldSplitter = new NATRON_NAMESPACE::SplitterSerialization;
-
-    oldSplitter->sizes = splitter.sizes;
-    oldSplitter->orientation = splitter.orientation;
-    for (std::size_t i = 0; i < splitter.children.size(); ++i) {
-        NATRON_NAMESPACE::SplitterSerialization::Child* oldChild = new NATRON_NAMESPACE::SplitterSerialization::Child;
-        if (splitter.children[i].splitter) {
-            oldChild->child_asSplitter = toOldSplitter(*splitter.children[i].splitter);
-        } else {
-            oldChild->child_asPane = toOldPane(*splitter.children[i].pane);
-        }
-        oldSplitter->children.push_back(oldChild);
-    }
-
-    return oldSplitter;
-}
-
-NATRON_NAMESPACE::ApplicationWindowSerialization*
-toOldWindow(const Serialization::ApplicationWindowSerialization& window)
-{
-    NATRON_NAMESPACE::ApplicationWindowSerialization* oldWindow = new NATRON_NAMESPACE::ApplicationWindowSerialization;
-
-    if (window.childSplitter) {
-        oldWindow->child_asSplitter = toOldSplitter(*window.childSplitter);
-    } else if (window.childPane) {
-        oldWindow->child_asPane = toOldPane(*window.childPane);
-    }
-    oldWindow->child_asDockablePanel = window.childDockablePanel;
-    oldWindow->isMainWindow = window.isMainWindow;
-    oldWindow->x = window.positionX;
-    oldWindow->y = window.positionY;
-    oldWindow->w = window.width;
-    oldWindow->h = window.height;
-
-    return oldWindow;
-}
-
-NATRON_NAMESPACE::ViewerData
-toOldViewerData(const Serialization::ViewerDataSerialization& viewer)
-{
-    NATRON_NAMESPACE::ViewerData oldViewer = NATRON_NAMESPACE::ViewerData();
-
-    oldViewer.zoomLeft = viewer.zoomLeft;
-    oldViewer.zoomBottom = viewer.zoomBottom;
-    oldViewer.zoomFactor = viewer.zoomFactor;
-    oldViewer.userRoIenabled = viewer.userRoIEnabled;
-    oldViewer.userRoI = RectD(viewer.userRoI.x1, viewer.userRoI.y1, viewer.userRoI.x2, viewer.userRoI.y2);
-    oldViewer.isClippedToProject = viewer.isClippedToProject;
-    oldViewer.isFullFrameProcessEnabled = viewer.isFullFrameProcessEnabled;
-    oldViewer.autoContrastEnabled = viewer.autoContrastEnabled;
-    oldViewer.gain = viewer.gain;
-    oldViewer.gamma = viewer.gamma;
-    oldViewer.renderScaleActivated = viewer.renderScaleActivated;
-    oldViewer.mipmapLevel = viewer.mipmapLevel;
-    oldViewer.display = viewer.display;
-    oldViewer.view = viewer.view;
-    oldViewer.look = viewer.look;
-    oldViewer.channels = viewer.channels;
-    oldViewer.layerName = viewer.layerName;
-    oldViewer.alphaLayerName = viewer.alphaLayerName;
-    oldViewer.zoomOrPanSinceLastFit = viewer.zoomOrPanSinceLastFit;
-    oldViewer.wipeCompositingOp = viewer.wipeCompositingOperator;
-    oldViewer.leftToolbarVisible = viewer.leftToolbarVisible;
-    oldViewer.rightToolbarVisible = viewer.rightToolbarVisible;
-    oldViewer.topToolbarVisible = viewer.topToolbarVisible;
-    oldViewer.playerVisible = viewer.playerVisible;
-    oldViewer.infobarVisible = viewer.infobarVisible;
-    oldViewer.timelineVisible = viewer.timelineVisible;
-    oldViewer.checkerboardEnabled = viewer.checkerboardEnabled;
-    oldViewer.isPauseEnabled[0] = viewer.isInputAPaused;
-    oldViewer.isPauseEnabled[1] = viewer.isInputBPaused;
-    oldViewer.fps = viewer.fps;
-    oldViewer.fpsLocked = viewer.fpsLocked;
-    oldViewer.leftBound = viewer.leftBound;
-    oldViewer.rightBound = viewer.rightBound;
-    oldViewer.aChoice = viewer.activeInputA;
-    oldViewer.bChoice = viewer.activeInputB;
-    oldViewer.version = viewer.version;
-
-    return oldViewer;
-}
-
 void
-expectSameKnob(const Serialization::KnobSerialization& oldKnob,
-               const Serialization::KnobSerialization& knob)
+expectSameKnob(const Serialization::KnobSerialization& expected,
+               const Serialization::KnobSerialization& actual)
 {
-    EXPECT_EQ(oldKnob.name, knob.name);
-    EXPECT_EQ(oldKnob.typeName, knob.typeName);
-    EXPECT_EQ(oldKnob.dimension, knob.dimension);
-    ASSERT_EQ( oldKnob.dimensions.size(), knob.dimensions.size() );
-    for (std::size_t i = 0; i < knob.dimensions.size(); ++i) {
-        EXPECT_TRUE(oldKnob.dimensions[i].value == knob.dimensions[i].value);
+    EXPECT_EQ(expected.name, actual.name);
+    EXPECT_EQ(expected.typeName, actual.typeName);
+    EXPECT_EQ(expected.dimension, actual.dimension);
+    ASSERT_EQ( expected.dimensions.size(), actual.dimensions.size() );
+    for (std::size_t i = 0; i < actual.dimensions.size(); ++i) {
+        EXPECT_TRUE(expected.dimensions[i].value == actual.dimensions[i].value);
     }
 }
 
 void
-expectSameNodeGui(const NATRON_NAMESPACE::NodeGuiSerialization& oldNode,
-                  const Serialization::NodeGuiSerialization& node)
+expectSameNodeGui(const Serialization::NodeGuiSerialization& expected,
+                  const Serialization::NodeGuiSerialization& actual)
 {
-    EXPECT_EQ(oldNode.getFullySpecifiedName(), node.nodeName);
-    EXPECT_EQ(oldNode.getX(), node.positionX);
-    EXPECT_EQ(oldNode.getY(), node.positionY);
-    double oldWidth = -1.;
-    double oldHeight = -1.;
-    oldNode.getSize(&oldWidth, &oldHeight);
-    EXPECT_EQ(oldWidth, node.width);
-    EXPECT_EQ(oldHeight, node.height);
-    EXPECT_EQ(oldNode.isPreviewEnabled(), node.previewEnabled);
-    float oldColorR = -1.f;
-    float oldColorG = -1.f;
-    float oldColorB = -1.f;
-    oldNode.getColor(&oldColorR, &oldColorG, &oldColorB);
-    EXPECT_EQ(oldColorR, node.colorR);
-    EXPECT_EQ(oldColorG, node.colorG);
-    EXPECT_EQ(oldColorB, node.colorB);
-    EXPECT_EQ(oldNode.colorWasFound(), node.colorWasFound);
-    EXPECT_EQ(oldNode.isSelected(), node.selected);
-    double oldOverlayR = -1.;
-    double oldOverlayG = -1.;
-    double oldOverlayB = -1.;
-    const bool oldHasOverlayColor = oldNode.getOverlayColor(&oldOverlayR, &oldOverlayG, &oldOverlayB);
-    EXPECT_EQ(oldHasOverlayColor, node.hasOverlayColor);
-    if (oldHasOverlayColor && node.hasOverlayColor) {
-        EXPECT_EQ(oldOverlayR, node.overlayColorR);
-        EXPECT_EQ(oldOverlayG, node.overlayColorG);
-        EXPECT_EQ(oldOverlayB, node.overlayColorB);
+    EXPECT_EQ(expected.version, actual.version);
+    EXPECT_EQ(expected.nodeName, actual.nodeName);
+    EXPECT_EQ(expected.positionX, actual.positionX);
+    EXPECT_EQ(expected.positionY, actual.positionY);
+    EXPECT_EQ(expected.width, actual.width);
+    EXPECT_EQ(expected.height, actual.height);
+    EXPECT_EQ(expected.previewEnabled, actual.previewEnabled);
+    EXPECT_EQ(expected.colorR, actual.colorR);
+    EXPECT_EQ(expected.colorG, actual.colorG);
+    EXPECT_EQ(expected.colorB, actual.colorB);
+    EXPECT_EQ(expected.colorWasFound, actual.colorWasFound);
+    EXPECT_EQ(expected.selected, actual.selected);
+    EXPECT_EQ(expected.hasOverlayColor, actual.hasOverlayColor);
+    if (expected.hasOverlayColor && actual.hasOverlayColor) {
+        EXPECT_EQ(expected.overlayColorR, actual.overlayColorR);
+        EXPECT_EQ(expected.overlayColorG, actual.overlayColorG);
+        EXPECT_EQ(expected.overlayColorB, actual.overlayColorB);
     }
 
-    const std::list<NodeGuiSerializationPtr>& oldChildren = oldNode.getChildren();
-    ASSERT_EQ( oldChildren.size(), node.children.size() );
-    std::list<NodeGuiSerializationPtr>::const_iterator oldChild = oldChildren.begin();
-    for (std::list<Serialization::NodeGuiSerializationPtr>::const_iterator child = node.children.begin(); child != node.children.end(); ++child, ++oldChild) {
-        expectSameNodeGui(**oldChild, **child);
+    ASSERT_EQ( expected.children.size(), actual.children.size() );
+    std::list<Serialization::NodeGuiSerializationPtr>::const_iterator expectedChild = expected.children.begin();
+    for (std::list<Serialization::NodeGuiSerializationPtr>::const_iterator child = actual.children.begin(); child != actual.children.end(); ++child, ++expectedChild) {
+        expectSameNodeGui(**expectedChild, **child);
     }
 }
 
 void
-expectSamePane(const NATRON_NAMESPACE::PaneLayout& oldPane,
-               const Serialization::PaneLayoutSerialization& pane)
+expectSamePane(const Serialization::PaneLayoutSerialization& expected,
+               const Serialization::PaneLayoutSerialization& actual)
 {
-    EXPECT_EQ(oldPane.tabs, pane.tabs);
-    EXPECT_EQ(oldPane.currentIndex, pane.currentIndex);
-    EXPECT_EQ(oldPane.isAnchor, pane.isAnchor);
-    EXPECT_EQ(oldPane.name, pane.name);
+    EXPECT_EQ(expected.tabs, actual.tabs);
+    EXPECT_EQ(expected.currentIndex, actual.currentIndex);
+    EXPECT_EQ(expected.isAnchor, actual.isAnchor);
+    EXPECT_EQ(expected.name, actual.name);
 }
 
 void
-expectSameSplitter(const NATRON_NAMESPACE::SplitterSerialization& oldSplitter,
-                   const Serialization::SplitterSerialization& splitter)
+expectSameSplitter(const Serialization::SplitterSerialization& expected,
+                   const Serialization::SplitterSerialization& actual)
 {
-    EXPECT_EQ(oldSplitter.sizes, splitter.sizes);
-    EXPECT_EQ(oldSplitter.orientation, splitter.orientation);
-    ASSERT_EQ( oldSplitter.children.size(), splitter.children.size() );
-    for (std::size_t i = 0; i < splitter.children.size(); ++i) {
-        const NATRON_NAMESPACE::SplitterSerialization::Child& oldChild = *oldSplitter.children[i];
-        const Serialization::SplitterChildSerialization& child = splitter.children[i];
-        ASSERT_EQ( oldChild.child_asSplitter != NULL, (bool)child.splitter );
+    EXPECT_EQ(expected.sizes, actual.sizes);
+    EXPECT_EQ(expected.orientation, actual.orientation);
+    ASSERT_EQ( expected.children.size(), actual.children.size() );
+    for (std::size_t i = 0; i < actual.children.size(); ++i) {
+        const Serialization::SplitterChildSerialization& expectedChild = expected.children[i];
+        const Serialization::SplitterChildSerialization& child = actual.children[i];
+        ASSERT_EQ( (bool)expectedChild.splitter, (bool)child.splitter );
         if (child.splitter) {
-            expectSameSplitter(*oldChild.child_asSplitter, *child.splitter);
+            expectSameSplitter(*expectedChild.splitter, *child.splitter);
         } else {
-            ASSERT_TRUE(oldChild.child_asPane != NULL);
+            ASSERT_TRUE( (bool)expectedChild.pane );
             ASSERT_TRUE( (bool)child.pane );
-            expectSamePane(*oldChild.child_asPane, *child.pane);
+            expectSamePane(*expectedChild.pane, *child.pane);
         }
     }
 }
 
 void
-expectSameWindow(const NATRON_NAMESPACE::ApplicationWindowSerialization& oldWindow,
-                 const Serialization::ApplicationWindowSerialization& window)
+expectSameWindow(const Serialization::ApplicationWindowSerialization& expected,
+                 const Serialization::ApplicationWindowSerialization& actual)
 {
-    ASSERT_EQ( oldWindow.child_asSplitter != NULL, (bool)window.childSplitter );
-    ASSERT_EQ( oldWindow.child_asPane != NULL, (bool)window.childPane );
-    if (window.childSplitter) {
-        expectSameSplitter(*oldWindow.child_asSplitter, *window.childSplitter);
+    ASSERT_EQ( (bool)expected.childSplitter, (bool)actual.childSplitter );
+    ASSERT_EQ( (bool)expected.childPane, (bool)actual.childPane );
+    if (actual.childSplitter) {
+        expectSameSplitter(*expected.childSplitter, *actual.childSplitter);
     }
-    if (window.childPane) {
-        expectSamePane(*oldWindow.child_asPane, *window.childPane);
+    if (actual.childPane) {
+        expectSamePane(*expected.childPane, *actual.childPane);
     }
-    EXPECT_EQ(oldWindow.child_asDockablePanel, window.childDockablePanel);
-    EXPECT_EQ(oldWindow.isMainWindow, window.isMainWindow);
-    EXPECT_EQ(oldWindow.x, window.positionX);
-    EXPECT_EQ(oldWindow.y, window.positionY);
-    EXPECT_EQ(oldWindow.w, window.width);
-    EXPECT_EQ(oldWindow.h, window.height);
+    EXPECT_EQ(expected.childDockablePanel, actual.childDockablePanel);
+    EXPECT_EQ(expected.isMainWindow, actual.isMainWindow);
+    EXPECT_EQ(expected.positionX, actual.positionX);
+    EXPECT_EQ(expected.positionY, actual.positionY);
+    EXPECT_EQ(expected.width, actual.width);
+    EXPECT_EQ(expected.height, actual.height);
 }
 
 void
-expectSameViewerData(const NATRON_NAMESPACE::ViewerData& oldViewer,
-                     const Serialization::ViewerDataSerialization& viewer)
+expectSameLayout(const Serialization::GuiLayoutSerialization& expected,
+                 const Serialization::GuiLayoutSerialization& actual)
 {
-    EXPECT_EQ(oldViewer.version, viewer.version);
-    EXPECT_EQ(oldViewer.zoomLeft, viewer.zoomLeft);
-    EXPECT_EQ(oldViewer.zoomBottom, viewer.zoomBottom);
-    EXPECT_EQ(oldViewer.zoomFactor, viewer.zoomFactor);
-    EXPECT_EQ(oldViewer.userRoIenabled, viewer.userRoIEnabled);
-    EXPECT_EQ(oldViewer.userRoI.x1, viewer.userRoI.x1);
-    EXPECT_EQ(oldViewer.userRoI.y1, viewer.userRoI.y1);
-    EXPECT_EQ(oldViewer.userRoI.x2, viewer.userRoI.x2);
-    EXPECT_EQ(oldViewer.userRoI.y2, viewer.userRoI.y2);
-    EXPECT_EQ(oldViewer.isClippedToProject, viewer.isClippedToProject);
-    EXPECT_EQ(oldViewer.isFullFrameProcessEnabled, viewer.isFullFrameProcessEnabled);
-    EXPECT_EQ(oldViewer.autoContrastEnabled, viewer.autoContrastEnabled);
-    EXPECT_EQ(oldViewer.gain, viewer.gain);
-    EXPECT_EQ(oldViewer.gamma, viewer.gamma);
-    EXPECT_EQ(oldViewer.renderScaleActivated, viewer.renderScaleActivated);
-    EXPECT_EQ(oldViewer.mipmapLevel, viewer.mipmapLevel);
-    EXPECT_EQ(oldViewer.display, viewer.display);
-    EXPECT_EQ(oldViewer.view, viewer.view);
-    EXPECT_EQ(oldViewer.look, viewer.look);
-    EXPECT_EQ(oldViewer.channels, viewer.channels);
-    EXPECT_EQ(oldViewer.layerName, viewer.layerName);
-    EXPECT_EQ(oldViewer.alphaLayerName, viewer.alphaLayerName);
-    EXPECT_EQ(oldViewer.zoomOrPanSinceLastFit, viewer.zoomOrPanSinceLastFit);
-    EXPECT_EQ(oldViewer.wipeCompositingOp, viewer.wipeCompositingOperator);
-    EXPECT_EQ(oldViewer.leftToolbarVisible, viewer.leftToolbarVisible);
-    EXPECT_EQ(oldViewer.rightToolbarVisible, viewer.rightToolbarVisible);
-    EXPECT_EQ(oldViewer.topToolbarVisible, viewer.topToolbarVisible);
-    EXPECT_EQ(oldViewer.playerVisible, viewer.playerVisible);
-    EXPECT_EQ(oldViewer.infobarVisible, viewer.infobarVisible);
-    EXPECT_EQ(oldViewer.timelineVisible, viewer.timelineVisible);
-    EXPECT_EQ(oldViewer.checkerboardEnabled, viewer.checkerboardEnabled);
-    EXPECT_EQ(oldViewer.isPauseEnabled[0], viewer.isInputAPaused);
-    EXPECT_EQ(oldViewer.isPauseEnabled[1], viewer.isInputBPaused);
-    EXPECT_EQ(oldViewer.fps, viewer.fps);
-    EXPECT_EQ(oldViewer.fpsLocked, viewer.fpsLocked);
-    EXPECT_EQ(oldViewer.leftBound, viewer.leftBound);
-    EXPECT_EQ(oldViewer.rightBound, viewer.rightBound);
-    EXPECT_EQ(oldViewer.aChoice, viewer.activeInputA);
-    EXPECT_EQ(oldViewer.bChoice, viewer.activeInputB);
+    ASSERT_EQ( expected.windows.size(), actual.windows.size() );
+    std::list<Serialization::ApplicationWindowSerialization>::const_iterator expectedWindow = expected.windows.begin();
+    for (std::list<Serialization::ApplicationWindowSerialization>::const_iterator window = actual.windows.begin(); window != actual.windows.end(); ++window, ++expectedWindow) {
+        expectSameWindow(*expectedWindow, *window);
+    }
+    ASSERT_EQ( expected.legacyPanes.size(), actual.legacyPanes.size() );
+    for (std::map<std::string, Serialization::PaneLayoutSerialization>::const_iterator pane = actual.legacyPanes.begin(); pane != actual.legacyPanes.end(); ++pane) {
+        std::map<std::string, Serialization::PaneLayoutSerialization>::const_iterator expectedPane = expected.legacyPanes.find(pane->first);
+        ASSERT_TRUE( expectedPane != expected.legacyPanes.end() );
+        expectSamePane(expectedPane->second, pane->second);
+    }
+    EXPECT_EQ(expected.legacySplitterStates, actual.legacySplitterStates);
 }
 
 void
-expectSameBackdrop(const NATRON_NAMESPACE::NodeBackdropSerialization& oldBackdrop,
-                   const Serialization::NodeBackdropSerialization& backdrop)
+expectSameViewerData(const Serialization::ViewerDataSerialization& expected,
+                     const Serialization::ViewerDataSerialization& actual)
 {
-    double oldPositionX = -1.;
-    double oldPositionY = -1.;
-    oldBackdrop.getPos(oldPositionX, oldPositionY);
-    EXPECT_EQ(oldPositionX, backdrop.positionX);
-    EXPECT_EQ(oldPositionY, backdrop.positionY);
-    int oldWidth = -1;
-    int oldHeight = -1;
-    oldBackdrop.getSize(oldWidth, oldHeight);
-    EXPECT_EQ(oldWidth, backdrop.width);
-    EXPECT_EQ(oldHeight, backdrop.height);
-    EXPECT_EQ(oldBackdrop.getFullySpecifiedName(), backdrop.name);
-    EXPECT_EQ(oldBackdrop.getMasterBackdropName(), backdrop.masterBackdropName);
-    float oldColorR = -1.f;
-    float oldColorG = -1.f;
-    float oldColorB = -1.f;
-    oldBackdrop.getColor(oldColorR, oldColorG, oldColorB);
-    EXPECT_EQ(oldColorR, backdrop.colorR);
-    EXPECT_EQ(oldColorG, backdrop.colorG);
-    EXPECT_EQ(oldColorB, backdrop.colorB);
-    EXPECT_EQ(oldBackdrop.isSelected(), backdrop.selected);
+    EXPECT_EQ(expected.version, actual.version);
+    EXPECT_EQ(expected.zoomLeft, actual.zoomLeft);
+    EXPECT_EQ(expected.zoomBottom, actual.zoomBottom);
+    EXPECT_EQ(expected.zoomFactor, actual.zoomFactor);
+    EXPECT_EQ(expected.userRoIEnabled, actual.userRoIEnabled);
+    EXPECT_EQ(expected.userRoI.x1, actual.userRoI.x1);
+    EXPECT_EQ(expected.userRoI.y1, actual.userRoI.y1);
+    EXPECT_EQ(expected.userRoI.x2, actual.userRoI.x2);
+    EXPECT_EQ(expected.userRoI.y2, actual.userRoI.y2);
+    EXPECT_EQ(expected.isClippedToProject, actual.isClippedToProject);
+    EXPECT_EQ(expected.isFullFrameProcessEnabled, actual.isFullFrameProcessEnabled);
+    EXPECT_EQ(expected.autoContrastEnabled, actual.autoContrastEnabled);
+    EXPECT_EQ(expected.gain, actual.gain);
+    EXPECT_EQ(expected.gamma, actual.gamma);
+    EXPECT_EQ(expected.renderScaleActivated, actual.renderScaleActivated);
+    EXPECT_EQ(expected.mipmapLevel, actual.mipmapLevel);
+    EXPECT_EQ(expected.display, actual.display);
+    EXPECT_EQ(expected.view, actual.view);
+    EXPECT_EQ(expected.look, actual.look);
+    EXPECT_EQ(expected.channels, actual.channels);
+    EXPECT_EQ(expected.layerName, actual.layerName);
+    EXPECT_EQ(expected.alphaLayerName, actual.alphaLayerName);
+    EXPECT_EQ(expected.zoomOrPanSinceLastFit, actual.zoomOrPanSinceLastFit);
+    EXPECT_EQ(expected.wipeCompositingOperator, actual.wipeCompositingOperator);
+    EXPECT_EQ(expected.leftToolbarVisible, actual.leftToolbarVisible);
+    EXPECT_EQ(expected.rightToolbarVisible, actual.rightToolbarVisible);
+    EXPECT_EQ(expected.topToolbarVisible, actual.topToolbarVisible);
+    EXPECT_EQ(expected.playerVisible, actual.playerVisible);
+    EXPECT_EQ(expected.infobarVisible, actual.infobarVisible);
+    EXPECT_EQ(expected.timelineVisible, actual.timelineVisible);
+    EXPECT_EQ(expected.checkerboardEnabled, actual.checkerboardEnabled);
+    EXPECT_EQ(expected.isInputAPaused, actual.isInputAPaused);
+    EXPECT_EQ(expected.isInputBPaused, actual.isInputBPaused);
+    EXPECT_EQ(expected.fps, actual.fps);
+    EXPECT_EQ(expected.fpsLocked, actual.fpsLocked);
+    EXPECT_EQ(expected.leftBound, actual.leftBound);
+    EXPECT_EQ(expected.rightBound, actual.rightBound);
+    EXPECT_EQ(expected.activeInputA, actual.activeInputA);
+    EXPECT_EQ(expected.activeInputB, actual.activeInputB);
 }
 
 void
-expectSameProjectGui(const NATRON_NAMESPACE::ProjectGuiSerialization& oldProjectGui,
-                     const Serialization::ProjectGuiSerialization& projectGui)
+expectSameViewers(const std::map<std::string, Serialization::ViewerDataSerialization>& expected,
+                  const std::map<std::string, Serialization::ViewerDataSerialization>& actual)
 {
-    EXPECT_EQ(oldProjectGui.getVersion(), projectGui.version);
+    ASSERT_EQ( expected.size(), actual.size() );
+    for (std::map<std::string, Serialization::ViewerDataSerialization>::const_iterator viewer = actual.begin(); viewer != actual.end(); ++viewer) {
+        std::map<std::string, Serialization::ViewerDataSerialization>::const_iterator expectedViewer = expected.find(viewer->first);
+        ASSERT_TRUE( expectedViewer != expected.end() );
+        expectSameViewerData(expectedViewer->second, viewer->second);
+    }
+}
 
-    const std::list<NATRON_NAMESPACE::NodeGuiSerialization>& oldNodes = oldProjectGui.getSerializedNodesGui();
-    ASSERT_EQ( oldNodes.size(), projectGui.nodes.size() );
-    std::list<NATRON_NAMESPACE::NodeGuiSerialization>::const_iterator oldNode = oldNodes.begin();
-    for (std::list<Serialization::NodeGuiSerialization>::const_iterator node = projectGui.nodes.begin(); node != projectGui.nodes.end(); ++node, ++oldNode) {
-        expectSameNodeGui(*oldNode, *node);
+void
+expectSameBackdrop(const Serialization::NodeBackdropSerialization& expected,
+                   const Serialization::NodeBackdropSerialization& actual)
+{
+    EXPECT_EQ(expected.positionX, actual.positionX);
+    EXPECT_EQ(expected.positionY, actual.positionY);
+    EXPECT_EQ(expected.width, actual.width);
+    EXPECT_EQ(expected.height, actual.height);
+    EXPECT_EQ(expected.name, actual.name);
+    EXPECT_EQ(expected.masterBackdropName, actual.masterBackdropName);
+    expectSameKnob(expected.label, actual.label);
+    EXPECT_EQ(expected.colorR, actual.colorR);
+    EXPECT_EQ(expected.colorG, actual.colorG);
+    EXPECT_EQ(expected.colorB, actual.colorB);
+    EXPECT_EQ(expected.selected, actual.selected);
+}
+
+void
+expectSamePythonPanel(const Serialization::PythonPanelSerialization& expected,
+                      const Serialization::PythonPanelSerialization& actual)
+{
+    EXPECT_EQ(expected.name, actual.name);
+    EXPECT_EQ(expected.pythonFunction, actual.pythonFunction);
+    EXPECT_EQ(expected.userData, actual.userData);
+    ASSERT_EQ( expected.knobs.size(), actual.knobs.size() );
+    std::list<Serialization::KnobSerialization>::const_iterator expectedKnob = expected.knobs.begin();
+    for (std::list<Serialization::KnobSerialization>::const_iterator knob = actual.knobs.begin(); knob != actual.knobs.end(); ++knob, ++expectedKnob) {
+        expectSameKnob(*expectedKnob, *knob);
+    }
+}
+
+void
+expectSameProjectGui(const Serialization::ProjectGuiSerialization& expected,
+                     const Serialization::ProjectGuiSerialization& actual)
+{
+    EXPECT_EQ(expected.version, actual.version);
+
+    ASSERT_EQ( expected.nodes.size(), actual.nodes.size() );
+    std::list<Serialization::NodeGuiSerialization>::const_iterator expectedNode = expected.nodes.begin();
+    for (std::list<Serialization::NodeGuiSerialization>::const_iterator node = actual.nodes.begin(); node != actual.nodes.end(); ++node, ++expectedNode) {
+        expectSameNodeGui(*expectedNode, *node);
     }
 
-    const NATRON_NAMESPACE::GuiLayoutSerialization& oldLayout = oldProjectGui.getGuiLayout();
-    ASSERT_EQ( oldLayout._windows.size(), projectGui.layout.windows.size() );
-    std::list<NATRON_NAMESPACE::ApplicationWindowSerialization*>::const_iterator oldWindow = oldLayout._windows.begin();
-    for (std::list<Serialization::ApplicationWindowSerialization>::const_iterator window = projectGui.layout.windows.begin(); window != projectGui.layout.windows.end(); ++window, ++oldWindow) {
-        expectSameWindow(**oldWindow, *window);
-    }
-    ASSERT_EQ( oldLayout._layout.size(), projectGui.layout.legacyPanes.size() );
-    for (std::map<std::string, Serialization::PaneLayoutSerialization>::const_iterator pane = projectGui.layout.legacyPanes.begin(); pane != projectGui.layout.legacyPanes.end(); ++pane) {
-        std::map<std::string, NATRON_NAMESPACE::PaneLayout>::const_iterator oldPane = oldLayout._layout.find(pane->first);
-        ASSERT_TRUE( oldPane != oldLayout._layout.end() );
-        expectSamePane(oldPane->second, pane->second);
-    }
-    EXPECT_EQ(oldLayout._splittersStates, projectGui.layout.legacySplitterStates);
+    expectSameLayout(expected.layout, actual.layout);
+    expectSameViewers(expected.viewers, actual.viewers);
 
-    const std::map<std::string, NATRON_NAMESPACE::ViewerData>& oldViewers = oldProjectGui.getViewersProjections();
-    ASSERT_EQ( oldViewers.size(), projectGui.viewers.size() );
-    for (std::map<std::string, Serialization::ViewerDataSerialization>::const_iterator viewer = projectGui.viewers.begin(); viewer != projectGui.viewers.end(); ++viewer) {
-        std::map<std::string, NATRON_NAMESPACE::ViewerData>::const_iterator oldViewer = oldViewers.find(viewer->first);
-        ASSERT_TRUE( oldViewer != oldViewers.end() );
-        expectSameViewerData(oldViewer->second, viewer->second);
+    EXPECT_EQ(expected.histograms, actual.histograms);
+
+    ASSERT_EQ( expected.legacyBackdrops.size(), actual.legacyBackdrops.size() );
+    std::list<Serialization::NodeBackdropSerialization>::const_iterator expectedBackdrop = expected.legacyBackdrops.begin();
+    for (std::list<Serialization::NodeBackdropSerialization>::const_iterator backdrop = actual.legacyBackdrops.begin(); backdrop != actual.legacyBackdrops.end(); ++backdrop, ++expectedBackdrop) {
+        expectSameBackdrop(*expectedBackdrop, *backdrop);
     }
 
-    EXPECT_EQ(oldProjectGui.getHistograms(), projectGui.histograms);
+    EXPECT_EQ(expected.openedPanels, actual.openedPanels);
+    EXPECT_EQ(expected.openedPanelsMinimized, actual.openedPanelsMinimized);
+    EXPECT_EQ(expected.openedPanelsHideUnmodified, actual.openedPanelsHideUnmodified);
+    EXPECT_EQ(expected.scriptEditorInput, actual.scriptEditorInput);
 
-    const std::list<NATRON_NAMESPACE::NodeBackdropSerialization>& oldBackdrops = oldProjectGui.getBackdrops();
-    ASSERT_EQ( oldBackdrops.size(), projectGui.legacyBackdrops.size() );
-    std::list<NATRON_NAMESPACE::NodeBackdropSerialization>::const_iterator oldBackdrop = oldBackdrops.begin();
-    for (std::list<Serialization::NodeBackdropSerialization>::const_iterator backdrop = projectGui.legacyBackdrops.begin(); backdrop != projectGui.legacyBackdrops.end(); ++backdrop, ++oldBackdrop) {
-        expectSameBackdrop(*oldBackdrop, *backdrop);
-    }
-
-    EXPECT_EQ(oldProjectGui.getOpenedPanels(), projectGui.openedPanels);
-    EXPECT_EQ(oldProjectGui.getOpenedPanelsMinimized(), projectGui.openedPanelsMinimized);
-    EXPECT_EQ(oldProjectGui.getOpenedPanelsHideUnmodified(), projectGui.openedPanelsHideUnmodified);
-    EXPECT_EQ(oldProjectGui.getInputScript(), projectGui.scriptEditorInput);
-
-    const std::list<PythonPanelSerializationPtr>& oldPythonPanels = oldProjectGui.getPythonPanels();
-    ASSERT_EQ( oldPythonPanels.size(), projectGui.pythonPanels.size() );
-    std::list<PythonPanelSerializationPtr>::const_iterator oldPythonPanel = oldPythonPanels.begin();
-    for (std::list<Serialization::PythonPanelSerialization>::const_iterator pythonPanel = projectGui.pythonPanels.begin(); pythonPanel != projectGui.pythonPanels.end(); ++pythonPanel, ++oldPythonPanel) {
-        EXPECT_EQ( (*oldPythonPanel)->name, pythonPanel->name );
-        EXPECT_EQ( (*oldPythonPanel)->pythonFunction, pythonPanel->pythonFunction );
-        EXPECT_EQ( (*oldPythonPanel)->userData, pythonPanel->userData );
-        ASSERT_EQ( (*oldPythonPanel)->knobs.size(), pythonPanel->knobs.size() );
-        std::list<Serialization::KnobSerialization>::const_iterator oldKnob = (*oldPythonPanel)->knobs.begin();
-        for (std::list<Serialization::KnobSerialization>::const_iterator knob = pythonPanel->knobs.begin(); knob != pythonPanel->knobs.end(); ++knob, ++oldKnob) {
-            expectSameKnob(*oldKnob, *knob);
-        }
+    ASSERT_EQ( expected.pythonPanels.size(), actual.pythonPanels.size() );
+    std::list<Serialization::PythonPanelSerialization>::const_iterator expectedPythonPanel = expected.pythonPanels.begin();
+    for (std::list<Serialization::PythonPanelSerialization>::const_iterator pythonPanel = actual.pythonPanels.begin(); pythonPanel != actual.pythonPanels.end(); ++pythonPanel, ++expectedPythonPanel) {
+        expectSamePythonPanel(*expectedPythonPanel, *pythonPanel);
     }
 }
 
@@ -992,20 +883,35 @@ makeViewerDataVersion3()
     return viewer;
 }
 
-// Loads xml with both the old classes and the new adapter, checks they read the same state and
-// save it back to the same XML, and returns what the new adapter read.
-Serialization::ProjectGuiSerialization
-loadWithBothAndCompare(const std::string& xml)
+// The tabs of makePaneLayoutVersion3() once loading has given them their script names.
+std::list<std::string>
+legacyPaneTabsAsScriptNames()
 {
-    NATRON_NAMESPACE::ProjectGuiSerialization oldProjectGui;
-    Serialization::ProjectGuiSerialization projectGui;
+    std::list<std::string> tabs;
 
-    EXPECT_NO_THROW( loadXml(xml, "ProjectGui", &oldProjectGui) );
-    EXPECT_NO_THROW( loadXml(xml, "ProjectGui", &projectGui) );
-    expectSameProjectGui(oldProjectGui, projectGui);
-    EXPECT_EQ( saveXml("ProjectGui", oldProjectGui), saveXml("ProjectGui", projectGui) );
+    tabs.push_back(NATRON_SERIALIZATION_CURVE_EDITOR_TAB_NAME);
+    tabs.push_back(NATRON_SERIALIZATION_NODE_GRAPH_TAB_NAME);
+    tabs.push_back("properties");
+    tabs.push_back("Viewer1");
 
-    return projectGui;
+    return tabs;
+}
+
+// Loads xml through the adapter, checks that saving what was read, loading that back and saving
+// it again writes the same XML, and returns what was read.
+Serialization::ProjectGuiSerialization
+loadAndCheckResave(const std::string& xml)
+{
+    Serialization::ProjectGuiSerialization loaded;
+
+    EXPECT_NO_THROW( loadXml(xml, "ProjectGui", &loaded) );
+
+    const std::string savedXml = saveXml("ProjectGui", loaded);
+    Serialization::ProjectGuiSerialization reloaded;
+    EXPECT_NO_THROW( loadXml(savedXml, "ProjectGui", &reloaded) );
+    EXPECT_EQ( savedXml, saveXml("ProjectGui", reloaded) );
+
+    return loaded;
 }
 
 } // anonymous namespace
@@ -1018,50 +924,103 @@ BOOST_CLASS_VERSION(ProjectGuiVersion2Writer, NATRON_SERIALIZATION_PROJECT_GUI_I
 BOOST_CLASS_VERSION(GuiLayoutVersion1Writer, 1)
 BOOST_CLASS_VERSION(ProjectGuiVersion9Writer, NATRON_SERIALIZATION_PROJECT_GUI_SCRIPT_EDITOR)
 
-TEST(ProjectGuiXmlEquivalence, APopulatedGuiSectionSavesTheSameXmlThroughTheOldAndNewClasses)
+TEST(ProjectGuiXmlEquivalence, APopulatedGuiSectionRoundTripsThroughTheAdapter)
 {
     const Serialization::ProjectGuiSerialization source = makePopulatedProjectGui();
-    const std::string newXml = saveXml("ProjectGui", source);
-
-    NATRON_NAMESPACE::ProjectGuiSerialization oldProjectGui;
-    ASSERT_NO_THROW( loadXml(newXml, "ProjectGui", &oldProjectGui) );
-    expectSameProjectGui(oldProjectGui, source);
-
-    const std::string oldXml = saveXml("ProjectGui", oldProjectGui);
-    EXPECT_EQ(oldXml, newXml);
+    const std::string xml = saveXml("ProjectGui", source);
 
     Serialization::ProjectGuiSerialization reloaded;
-    ASSERT_NO_THROW( loadXml(oldXml, "ProjectGui", &reloaded) );
-    expectSameProjectGui(oldProjectGui, reloaded);
-    EXPECT_EQ( saveXml("ProjectGui", reloaded), oldXml );
+    ASSERT_NO_THROW( loadXml(xml, "ProjectGui", &reloaded) );
+    expectSameProjectGui(source, reloaded);
+    EXPECT_EQ( xml, saveXml("ProjectGui", reloaded) );
+
+    EXPECT_EQ( (unsigned int)NATRON_SERIALIZATION_PROJECT_GUI_VERSION, reloaded.version );
+    ASSERT_EQ( (std::size_t)3, reloaded.nodes.size() );
+    const Serialization::NodeGuiSerialization& group = *std::next( reloaded.nodes.begin() );
+    EXPECT_EQ( std::string("Group1"), group.nodeName );
+    EXPECT_TRUE(group.selected);
+    EXPECT_TRUE(group.hasOverlayColor);
+    EXPECT_EQ(0.75, group.overlayColorB);
+    ASSERT_EQ( (std::size_t)2, group.children.size() );
+    const Serialization::NodeGuiSerialization& nestedGroup = *group.children.back();
+    EXPECT_EQ(640., nestedGroup.width);
+    ASSERT_EQ( (std::size_t)1, nestedGroup.children.size() );
+    EXPECT_EQ( std::string("Group1.Group2.Dot1"), nestedGroup.children.front()->nodeName );
+
+    ASSERT_EQ( (std::size_t)5, reloaded.layout.windows.size() );
+    const Serialization::ApplicationWindowSerialization& mainWindow = reloaded.layout.windows.front();
+    EXPECT_TRUE(mainWindow.isMainWindow);
+    ASSERT_TRUE( (bool)mainWindow.childSplitter );
+    ASSERT_EQ( (std::size_t)2, mainWindow.childSplitter->children.size() );
+    ASSERT_TRUE( (bool)mainWindow.childSplitter->children[0].pane );
+    EXPECT_TRUE(mainWindow.childSplitter->children[0].pane->isAnchor);
+    ASSERT_TRUE( (bool)mainWindow.childSplitter->children[1].splitter );
+    EXPECT_EQ( std::string("600 400"), mainWindow.childSplitter->children[1].splitter->sizes );
+    EXPECT_EQ( std::string(NATRON_SERIALIZATION_PROJECT_SETTINGS_PANEL_NAME), reloaded.layout.windows.back().childDockablePanel );
+    EXPECT_FALSE( (bool)reloaded.layout.windows.back().childSplitter );
+    EXPECT_FALSE( (bool)reloaded.layout.windows.back().childPane );
+
+    ASSERT_EQ( (std::size_t)2, reloaded.viewers.size() );
+    EXPECT_EQ( std::string("Alpha"), reloaded.viewers.find("Viewer2")->second.channels );
+    EXPECT_EQ( std::string("ACES 1.3 Reference Gamut Compression"), reloaded.viewers.find("Viewer1")->second.look );
+    EXPECT_EQ( std::string("print('hello')\nprint(\"<a & b>\")\n"), reloaded.scriptEditorInput );
+    ASSERT_EQ( (std::size_t)2, reloaded.pythonPanels.size() );
+    EXPECT_EQ( (std::size_t)2, reloaded.pythonPanels.front().knobs.size() );
+    EXPECT_TRUE( reloaded.pythonPanels.back().knobs.empty() );
+
+    // Splitters and panes are tracked, so the file numbers every one of them.
+    EXPECT_NE( std::string::npos, xml.find("object_id=") );
 }
 
-TEST(ProjectGuiXmlEquivalence, TheLayoutViewersAndPythonPanelsMatchTheOldClassesBuiltFromTheSameValues)
+TEST(ProjectGuiXmlEquivalence, TheLayoutViewersAndPythonPanelsRoundTripOnTheirOwn)
 {
     const Serialization::ProjectGuiSerialization source = makePopulatedProjectGui();
 
-    NATRON_NAMESPACE::GuiLayoutSerialization oldLayout;
-    for (std::list<Serialization::ApplicationWindowSerialization>::const_iterator it = source.layout.windows.begin(); it != source.layout.windows.end(); ++it) {
-        oldLayout._windows.push_back( toOldWindow(*it) );
-    }
-    EXPECT_EQ( saveXml("Layout", oldLayout), saveXml("Layout", source.layout) );
+    // A layout file holds the layout alone, under this name.
+    const std::string layoutXml = saveXml("Layout", source.layout);
+    Serialization::GuiLayoutSerialization layout;
+    ASSERT_NO_THROW( loadXml(layoutXml, "Layout", &layout) );
+    expectSameLayout(source.layout, layout);
+    EXPECT_EQ( layoutXml, saveXml("Layout", layout) );
 
-    std::map<std::string, NATRON_NAMESPACE::ViewerData> oldViewers;
-    for (std::map<std::string, Serialization::ViewerDataSerialization>::const_iterator it = source.viewers.begin(); it != source.viewers.end(); ++it) {
-        oldViewers.insert( std::make_pair( it->first, toOldViewerData(it->second) ) );
-    }
-    EXPECT_EQ( saveXml("ViewersData", oldViewers), saveXml("ViewersData", source.viewers) );
+    const std::string viewersXml = saveXml("ViewersData", source.viewers);
+    std::map<std::string, Serialization::ViewerDataSerialization> viewers;
+    ASSERT_NO_THROW( loadXml(viewersXml, "ViewersData", &viewers) );
+    expectSameViewers(source.viewers, viewers);
+    EXPECT_EQ( viewersXml, saveXml("ViewersData", viewers) );
 
-    const Serialization::PythonPanelSerialization& pythonPanel = source.pythonPanels.front();
-    NATRON_NAMESPACE::PythonPanelSerialization oldPythonPanel;
-    oldPythonPanel.knobs = pythonPanel.knobs;
-    oldPythonPanel.name = pythonPanel.name;
-    oldPythonPanel.pythonFunction = pythonPanel.pythonFunction;
-    oldPythonPanel.userData = pythonPanel.userData;
-    EXPECT_EQ( saveXml("PythonPanel", oldPythonPanel), saveXml("PythonPanel", pythonPanel) );
+    const Serialization::PythonPanelSerialization& sourcePythonPanel = source.pythonPanels.front();
+    const std::string pythonPanelXml = saveXml("PythonPanel", sourcePythonPanel);
+    Serialization::PythonPanelSerialization pythonPanel;
+    ASSERT_NO_THROW( loadXml(pythonPanelXml, "PythonPanel", &pythonPanel) );
+    expectSamePythonPanel(sourcePythonPanel, pythonPanel);
+    EXPECT_EQ( pythonPanelXml, saveXml("PythonPanel", pythonPanel) );
 }
 
-TEST(ProjectGuiXmlEquivalence, AVersion2GuiSectionLoadsTheSameThroughTheOldAndNewClasses)
+TEST(ProjectGuiXmlEquivalence, AVersion1LayoutFileLoadsItsPanesAsLegacyPanes)
+{
+    GuiLayoutVersion1Writer written;
+
+    written.panes["Pane1"] = makePaneLayoutVersion3(false);
+    written.panes["Pane2"] = makePaneLayoutVersion3(true);
+    written.splitterStates["Splitter1"] = "100 200";
+
+    Serialization::GuiLayoutSerialization layout;
+    ASSERT_NO_THROW( loadXml(saveXml("Layout", written), "Layout", &layout) );
+
+    EXPECT_TRUE(layout.windows.empty());
+    ASSERT_EQ( (std::size_t)2, layout.legacyPanes.size() );
+    for (std::map<std::string, Serialization::PaneLayoutSerialization>::const_iterator it = layout.legacyPanes.begin(); it != layout.legacyPanes.end(); ++it) {
+        EXPECT_EQ( legacyPaneTabsAsScriptNames(), it->second.tabs );
+        EXPECT_EQ(2, it->second.currentIndex);
+        EXPECT_EQ( std::string(), it->second.name );
+        EXPECT_FALSE(it->second.isAnchor);
+    }
+    ASSERT_EQ( (std::size_t)1, layout.legacySplitterStates.size() );
+    EXPECT_EQ( std::string("100 200"), layout.legacySplitterStates.find("Splitter1")->second );
+}
+
+TEST(ProjectGuiXmlEquivalence, AVersion2GuiSectionLoadsItsValues)
 {
     ProjectGuiVersion2Writer written;
 
@@ -1076,42 +1035,105 @@ TEST(ProjectGuiXmlEquivalence, AVersion2GuiSectionLoadsTheSameThroughTheOldAndNe
     written.backdrops.push_back( makeBackdropVersion1("Backdrop1", "") );
     written.backdrops.push_back( makeBackdropVersion1("Backdrop2", "Backdrop1") );
 
-    const Serialization::ProjectGuiSerialization loaded = loadWithBothAndCompare( saveXml("ProjectGui", written) );
+    const Serialization::ProjectGuiSerialization loaded = loadAndCheckResave( saveXml("ProjectGui", written) );
 
     EXPECT_EQ( (unsigned int)NATRON_SERIALIZATION_PROJECT_GUI_INTRODUCES_BACKDROPS, loaded.version );
+
     ASSERT_EQ( (std::size_t)2, loaded.nodes.size() );
-    EXPECT_EQ( std::string("My_Blur_1"), loaded.nodes.front().nodeName );
-    EXPECT_EQ( std::string("p2D_Transform"), loaded.nodes.back().nodeName );
-    EXPECT_TRUE(loaded.nodes.front().colorWasFound);
-    EXPECT_FALSE(loaded.nodes.front().hasOverlayColor);
+    const Serialization::NodeGuiSerialization& blur = loaded.nodes.front();
+    EXPECT_EQ( (unsigned int)NATRON_SERIALIZATION_NODE_GUI_INTRODUCES_SELECTED, blur.version );
+    EXPECT_EQ( std::string("My_Blur_1"), blur.nodeName );
+    EXPECT_EQ(12.5, blur.positionX);
+    EXPECT_EQ(-12.5, blur.positionY);
+    EXPECT_TRUE(blur.previewEnabled);
+    EXPECT_EQ(0.5f, blur.colorR);
+    EXPECT_EQ(0.25f, blur.colorG);
+    EXPECT_EQ(0.125f, blur.colorB);
+    EXPECT_TRUE(blur.colorWasFound);
+    EXPECT_TRUE(blur.selected);
+    EXPECT_EQ(0., blur.width);
+    EXPECT_EQ(0., blur.height);
+    EXPECT_FALSE(blur.hasOverlayColor);
+    EXPECT_TRUE(blur.children.empty());
+    const Serialization::NodeGuiSerialization& transform = loaded.nodes.back();
+    EXPECT_EQ( std::string("p2D_Transform"), transform.nodeName );
+    EXPECT_EQ(-40., transform.positionX);
+    EXPECT_FALSE(transform.selected);
+
     EXPECT_TRUE(loaded.layout.windows.empty());
     ASSERT_EQ( (std::size_t)2, loaded.layout.legacyPanes.size() );
-    std::list<std::string> expectedTabs;
-    expectedTabs.push_back(NATRON_SERIALIZATION_CURVE_EDITOR_TAB_NAME);
-    expectedTabs.push_back(NATRON_SERIALIZATION_NODE_GRAPH_TAB_NAME);
-    expectedTabs.push_back("properties");
-    expectedTabs.push_back("Viewer1");
-    EXPECT_EQ( expectedTabs, loaded.layout.legacyPanes.find("Pane2")->second.tabs );
-    EXPECT_EQ( 2, loaded.layout.legacyPanes.find("Pane2")->second.currentIndex );
+    for (std::map<std::string, Serialization::PaneLayoutSerialization>::const_iterator it = loaded.layout.legacyPanes.begin(); it != loaded.layout.legacyPanes.end(); ++it) {
+        EXPECT_EQ( legacyPaneTabsAsScriptNames(), it->second.tabs );
+        EXPECT_EQ(2, it->second.currentIndex);
+        EXPECT_EQ( std::string(), it->second.name );
+        EXPECT_FALSE(it->second.isAnchor);
+    }
+    // Splitter states saved before NATRON_SERIALIZATION_PROJECT_GUI_CHANGES_SPLITTERS are dropped.
     EXPECT_TRUE(loaded.layout.legacySplitterStates.empty());
+
     ASSERT_EQ( (std::size_t)1, loaded.viewers.size() );
     const Serialization::ViewerDataSerialization& viewer = loaded.viewers.find("Viewer1")->second;
     EXPECT_EQ( (unsigned int)NATRON_SERIALIZATION_VIEWER_DATA_INTRODUCES_FRAME_RANGE, viewer.version );
-    EXPECT_EQ(1., viewer.gamma);
+    EXPECT_EQ(-7.5, viewer.zoomLeft);
+    EXPECT_EQ(2.25, viewer.zoomBottom);
+    EXPECT_EQ(0.5, viewer.zoomFactor);
+    EXPECT_TRUE(viewer.userRoIEnabled);
+    EXPECT_EQ(1., viewer.userRoI.x1);
+    EXPECT_EQ(2., viewer.userRoI.y1);
+    EXPECT_EQ(30., viewer.userRoI.x2);
+    EXPECT_EQ(40., viewer.userRoI.y2);
+    EXPECT_FALSE(viewer.isClippedToProject);
+    EXPECT_TRUE(viewer.autoContrastEnabled);
     EXPECT_EQ(3., viewer.gain);
+    EXPECT_EQ(1., viewer.gamma);
     EXPECT_EQ(std::string(), viewer.display);
+    EXPECT_EQ(std::string(), viewer.view);
+    EXPECT_EQ(std::string(), viewer.look);
+    EXPECT_EQ(std::string(), viewer.layerName);
+    EXPECT_EQ(std::string("RGB"), viewer.channels);
+    EXPECT_TRUE(viewer.renderScaleActivated);
+    EXPECT_EQ(1u, viewer.mipmapLevel);
+    EXPECT_TRUE(viewer.zoomOrPanSinceLastFit);
     EXPECT_EQ(2, viewer.wipeCompositingOperator);
     EXPECT_EQ(1, viewer.leftBound);
+    EXPECT_EQ(1, viewer.rightBound);
+    EXPECT_TRUE(viewer.leftToolbarVisible);
+    EXPECT_TRUE(viewer.timelineVisible);
+    EXPECT_FALSE(viewer.isInputAPaused);
+    EXPECT_FALSE(viewer.checkerboardEnabled);
+    EXPECT_EQ(24., viewer.fps);
+    EXPECT_TRUE(viewer.fpsLocked);
     EXPECT_EQ(-1, viewer.activeInputA);
+    EXPECT_EQ(-1, viewer.activeInputB);
+    EXPECT_FALSE(viewer.isFullFrameProcessEnabled);
+
+    ASSERT_EQ( (std::size_t)1, loaded.histograms.size() );
+    EXPECT_EQ( std::string("histogram1"), loaded.histograms.front() );
+
     ASSERT_EQ( (std::size_t)2, loaded.legacyBackdrops.size() );
+    const Serialization::NodeBackdropSerialization& firstBackdrop = loaded.legacyBackdrops.front();
+    EXPECT_EQ(15.5, firstBackdrop.positionX);
+    EXPECT_EQ(-25.25, firstBackdrop.positionY);
+    EXPECT_EQ(320, firstBackdrop.width);
+    EXPECT_EQ(240, firstBackdrop.height);
+    EXPECT_EQ( std::string("Backdrop1"), firstBackdrop.name );
+    EXPECT_EQ( std::string(), firstBackdrop.masterBackdropName );
+    expectSameKnob(makeStringKnob("Label", "Backdrop note"), firstBackdrop.label);
+    EXPECT_EQ(0.3f, firstBackdrop.colorR);
+    EXPECT_EQ(0.6f, firstBackdrop.colorG);
+    EXPECT_EQ(0.9f, firstBackdrop.colorB);
+    EXPECT_FALSE(firstBackdrop.selected);
+    EXPECT_EQ( std::string("Backdrop2"), loaded.legacyBackdrops.back().name );
     EXPECT_EQ( std::string("Backdrop1"), loaded.legacyBackdrops.back().masterBackdropName );
-    EXPECT_FALSE(loaded.legacyBackdrops.back().selected);
-    EXPECT_EQ( std::string("Label"), loaded.legacyBackdrops.back().label.name );
+
     EXPECT_TRUE(loaded.openedPanels.empty());
+    EXPECT_TRUE(loaded.openedPanelsMinimized.empty());
+    EXPECT_TRUE(loaded.openedPanelsHideUnmodified.empty());
     EXPECT_TRUE(loaded.scriptEditorInput.empty());
+    EXPECT_TRUE(loaded.pythonPanels.empty());
 }
 
-TEST(ProjectGuiXmlEquivalence, AVersion9GuiSectionLoadsTheSameThroughTheOldAndNewClasses)
+TEST(ProjectGuiXmlEquivalence, AVersion9GuiSectionLoadsItsValues)
 {
     ProjectGuiVersion9Writer written;
 
@@ -1136,18 +1158,33 @@ TEST(ProjectGuiXmlEquivalence, AVersion9GuiSectionLoadsTheSameThroughTheOldAndNe
     written.openedPanels = populated.openedPanels;
     written.scriptEditorInput = populated.scriptEditorInput;
 
-    const Serialization::ProjectGuiSerialization loaded = loadWithBothAndCompare( saveXml("ProjectGui", written) );
+    const Serialization::ProjectGuiSerialization loaded = loadAndCheckResave( saveXml("ProjectGui", written) );
 
     EXPECT_EQ( (unsigned int)NATRON_SERIALIZATION_PROJECT_GUI_SCRIPT_EDITOR, loaded.version );
-    EXPECT_EQ( populated.nodes.size(), loaded.nodes.size() );
+
+    ASSERT_EQ( populated.nodes.size(), loaded.nodes.size() );
+    std::list<Serialization::NodeGuiSerialization>::const_iterator populatedNode = populated.nodes.begin();
+    for (std::list<Serialization::NodeGuiSerialization>::const_iterator node = loaded.nodes.begin(); node != loaded.nodes.end(); ++node, ++populatedNode) {
+        expectSameNodeGui(*populatedNode, *node);
+    }
+
     EXPECT_TRUE(loaded.layout.windows.empty());
-    EXPECT_EQ( (std::size_t)1, loaded.layout.legacyPanes.size() );
+    ASSERT_EQ( (std::size_t)1, loaded.layout.legacyPanes.size() );
+    const Serialization::PaneLayoutSerialization& pane = loaded.layout.legacyPanes.find("Pane1")->second;
+    EXPECT_EQ( legacyPaneTabsAsScriptNames(), pane.tabs );
+    EXPECT_EQ(2, pane.currentIndex);
+    ASSERT_EQ( (std::size_t)1, loaded.layout.legacySplitterStates.size() );
     EXPECT_EQ( std::string("100 200"), loaded.layout.legacySplitterStates.find("Splitter1")->second );
-    EXPECT_EQ( populated.viewers.size(), loaded.viewers.size() );
+
+    expectSameViewers(populated.viewers, loaded.viewers);
+    EXPECT_EQ(populated.histograms, loaded.histograms);
+
     ASSERT_EQ( (std::size_t)1, loaded.legacyBackdrops.size() );
-    EXPECT_TRUE(loaded.legacyBackdrops.front().selected);
+    expectSameBackdrop(backdrop, loaded.legacyBackdrops.front());
+
     EXPECT_EQ(populated.openedPanels, loaded.openedPanels);
     EXPECT_TRUE(loaded.openedPanelsMinimized.empty());
+    EXPECT_TRUE(loaded.openedPanelsHideUnmodified.empty());
     EXPECT_EQ(populated.scriptEditorInput, loaded.scriptEditorInput);
     EXPECT_TRUE(loaded.pythonPanels.empty());
 }

@@ -39,14 +39,17 @@
 
 #include "Global/FStreamsSupport.h"
 
+#include "Engine/AppManager.h" // Dialogs
 #include "Engine/Settings.h"
 #include "Engine/ViewIdx.h"
 
 #include "Gui/DockablePanel.h"
 #include "Gui/Menu.h"
 #include "Gui/ProjectGui.h"
-#include "Gui/ProjectGuiSerialization.h" // PaneLayout, GuiLayoutSerialization
 #include "Gui/SequenceFileDialog.h"
+
+#include "Serialization/ProjectGuiSerialization.h"
+#include "Serialization/BoostXml/ProjectGuiXml.h"
 
 
 NATRON_NAMESPACE_ENTER
@@ -71,9 +74,9 @@ Gui::importLayout()
 
         try {
             boost::archive::xml_iarchive iArchive(ifile);
-            GuiLayoutSerialization s;
-            iArchive >> boost::serialization::make_nvp("Layout", s);
-            restoreLayout(true, false, s);
+            Serialization::GuiLayoutSerialization layoutSerialization;
+            iArchive >> boost::serialization::make_nvp("Layout", layoutSerialization);
+            restoreLayout(true, false, layoutSerialization);
         } catch (const boost::archive::archive_exception & e) {
             QString err = QString::fromUtf8("Exception occurred when opening file %1: %2").arg( QString::fromUtf8( filename.c_str() ) ).arg( QString::fromUtf8( e.what() ) );
             Dialogs::errorDialog( tr("Error").toStdString(), tr( err.toStdString().c_str() ).toStdString(), false );
@@ -104,9 +107,9 @@ Gui::createDefaultLayoutInternal(bool wipePrevious)
         } else {
             try {
                 boost::archive::xml_iarchive iArchive(ifile);
-                GuiLayoutSerialization s;
-                iArchive >> boost::serialization::make_nvp("Layout", s);
-                restoreLayout(false, false, s);
+                Serialization::GuiLayoutSerialization layoutSerialization;
+                iArchive >> boost::serialization::make_nvp("Layout", layoutSerialization);
+                restoreLayout(false, false, layoutSerialization);
             } catch (const boost::archive::archive_exception & e) {
                 ifile.close();
                 QString err = QString::fromUtf8("Exception occurred when opening file %1: %2").arg( QString::fromUtf8( fileLayout.c_str() ) ).arg( QString::fromUtf8( e.what() ) );

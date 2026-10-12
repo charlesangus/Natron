@@ -67,6 +67,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Global/QtCompat.h"
 
 #include "Serialization/NodeSerialization.h"
+#include "Serialization/ProjectGuiSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -663,7 +664,7 @@ NodeGraph::copyNodesAndCreateInGroup(const NodesGuiList& nodes,
         std::map<std::string, std::string> oldNewScriptNamesMapping;
         std::list<Serialization::NodeSerializationPtr>::const_iterator itOther = clipboard.nodes.begin();
         std::list<NodePtr>::const_iterator itSource = clipboard.sourceNodes.begin();
-        for (std::list<NodeGuiSerializationPtr>::const_iterator it = clipboard.nodesUI.begin();
+        for (std::list<Serialization::NodeGuiSerializationPtr>::const_iterator it = clipboard.nodesUI.begin();
              it != clipboard.nodesUI.end(); ++it, ++itOther, ++itSource) {
             NodeGuiPtr node = _imp->pasteNode( *itOther, *itSource, *it, QPointF(0, 0), group, std::string(), false, &oldNewScriptNamesMapping);
             assert(node);

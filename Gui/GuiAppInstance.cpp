@@ -782,17 +782,21 @@ GuiAppInstance::isShowingDialog() const
 }
 
 void
-GuiAppInstance::loadProjectGui(bool isAutosave, boost::archive::xml_iarchive & archive) const
+GuiAppInstance::loadProjectGui(bool isAutosave,
+                               const Serialization::ProjectGuiSerialization & serialization) const
 {
-    _imp->_gui->loadProjectGui(isAutosave, archive);
+    _imp->_gui->loadProjectGui(isAutosave, serialization);
 }
 
-void
-GuiAppInstance::saveProjectGui(boost::archive::xml_oarchive & archive)
+bool
+GuiAppInstance::saveProjectGui(Serialization::ProjectGuiSerialization* serialization)
 {
-    if (_imp->_gui) {
-        _imp->_gui->saveProjectGui(archive);
+    if (!_imp->_gui) {
+        return false;
     }
+    _imp->_gui->saveProjectGui(serialization);
+
+    return true;
 }
 
 void

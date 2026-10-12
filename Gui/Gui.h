@@ -225,8 +225,6 @@ public:
     ///@param enableOldProjectCompatibility When true, the default Gui layout will be created
     ///prior to restoring. This is because older projects didn't have as much info to recreate the entire layout.
     void restoreLayout(bool wipePrevious, bool enableOldProjectCompatibility,
-                       const GuiLayoutSerialization & layoutSerialization);
-    void restoreLayout(bool wipePrevious, bool enableOldProjectCompatibility,
                        const Serialization::GuiLayoutSerialization & layoutSerialization);
 
     /**
@@ -314,9 +312,9 @@ public:
 
     static QPixmap screenShot(QWidget* w);
 
-    void loadProjectGui(bool isAutosave, boost::archive::xml_iarchive & obj) const;
+    void loadProjectGui(bool isAutosave, const Serialization::ProjectGuiSerialization & serialization) const;
 
-    void saveProjectGui(boost::archive::xml_oarchive & archive);
+    void saveProjectGui(Serialization::ProjectGuiSerialization* serialization);
 
     void setColorPickersColor(double r, double g, double b, double a);
 

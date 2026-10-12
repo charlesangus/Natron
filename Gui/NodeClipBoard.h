@@ -28,14 +28,31 @@
 
 #include "Global/Macros.h"
 
+#include <cassert>
 #include <list>
+#include <memory>
+
+#if !defined(Q_MOC_RUN) && !defined(SBK_RUN)
+GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_OFF
+// clang-format off
+GCC_DIAG_OFF(unused-parameter)
+#include <boost/archive/xml_iarchive.hpp>
+#include <boost/archive/xml_oarchive.hpp>
+#include <boost/serialization/split_member.hpp>
+#include <boost/serialization/version.hpp>
+GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_ON
+GCC_DIAG_ON(unused-parameter)
+// clang-format on
+#endif
+
+#include "Engine/EngineFwd.h"
 
 #include "Gui/GuiFwd.h"
 
-#include "Gui/NodeGuiSerialization.h"
-
 #include "Serialization/NodeSerialization.h"
+#include "Serialization/ProjectGuiSerialization.h"
 #include "Serialization/BoostXml/NodeXml.h"
+#include "Serialization/BoostXml/ProjectGuiXml.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -43,7 +60,7 @@ class NodeClipBoard
 {
 public:
     std::list<Serialization::NodeSerializationPtr> nodes;
-    std::list<NodeGuiSerializationPtr> nodesUI;
+    std::list<Serialization::NodeGuiSerializationPtr> nodesUI;
 
     // The node each item of nodes was copied from, null for an item read from an archive. It
     // is not archived: a serialization does not reference its node.
@@ -70,7 +87,7 @@ public:
 
         assert( nodes.size() == nodesUI.size() );
         ar & ::boost::serialization::make_nvp("NbNodes", nNodes);
-        std::list<NodeGuiSerializationPtr>::const_iterator itUI = nodesUI.begin();
+        std::list<Serialization::NodeGuiSerializationPtr>::const_iterator itUI = nodesUI.begin();
         for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = nodes.begin();
              it != nodes.end(); ++it, ++itUI) {
             ar & ::boost::serialization::make_nvp("Node", **it);
@@ -92,7 +109,7 @@ public:
             ar & ::boost::serialization::make_nvp("Node", *nS);
             nodes.push_back(nS);
             sourceNodes.push_back( NodePtr() );
-            NodeGuiSerializationPtr nGui = std::make_shared<NodeGuiSerialization>();
+            Serialization::NodeGuiSerializationPtr nGui = std::make_shared<Serialization::NodeGuiSerialization>();
             ar & ::boost::serialization::make_nvp("NodeUI", *nGui);
             nodesUI.push_back(nGui);
         }

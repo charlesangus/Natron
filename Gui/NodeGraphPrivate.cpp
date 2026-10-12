@@ -40,9 +40,9 @@
 #include "Gui/NodeClipBoard.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeGraph.h"
-#include "Gui/NodeGuiSerialization.h"
 
 #include "Serialization/NodeSerialization.h"
+#include "Serialization/ProjectGuiSerialization.h"
 
 
 NATRON_NAMESPACE_ENTER
@@ -220,8 +220,8 @@ NodeGraphPrivate::copyNodesInternal(const NodesGuiList& selection,
             if (node) {
                 node->toSerialization(ns.get(), true);
             }
-            NodeGuiSerializationPtr nGuiS = std::make_shared<NodeGuiSerialization>();
-            (*it)->serialize( nGuiS.get() );
+            Serialization::NodeGuiSerializationPtr nGuiS = std::make_shared<Serialization::NodeGuiSerialization>();
+            (*it)->toSerialization( nGuiS.get() );
             clipboard.nodes.push_back(ns);
             clipboard.nodesUI.push_back(nGuiS);
             clipboard.sourceNodes.push_back(node);

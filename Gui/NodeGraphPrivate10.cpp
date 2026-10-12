@@ -47,9 +47,9 @@
 #include "Gui/GuiApplicationManager.h" // appPTR
 #include "Gui/NodeClipBoard.h"
 #include "Gui/NodeGui.h"
-#include "Gui/NodeGuiSerialization.h"
 
 #include "Serialization/NodeSerialization.h"
+#include "Serialization/ProjectGuiSerialization.h"
 
 
 NATRON_NAMESPACE_ENTER
@@ -67,12 +67,12 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
         double ymin = std::numeric_limits<int>::max();
         double ymax = std::numeric_limits<int>::min();
 
-        for (std::list<NodeGuiSerializationPtr>::const_iterator it = clipboard.nodesUI.begin();
+        for (std::list<Serialization::NodeGuiSerializationPtr>::const_iterator it = clipboard.nodesUI.begin();
              it != clipboard.nodesUI.end(); ++it) {
-            double x = (*it)->getX();
-            double y = (*it)->getY();
-            double w, h;
-            (*it)->getSize(&w, &h);
+            double x = (*it)->positionX;
+            double y = (*it)->positionY;
+            double w = (*it)->width;
+            double h = (*it)->height;
             if ( (x + w) > xmax ) {
                 xmax = x;
             }
@@ -105,7 +105,7 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
             const std::list<Serialization::NodeSerializationPtr>& internalNodesClipBoard = clipboard.nodes;
             std::list<Serialization::NodeSerializationPtr>::const_iterator itOther = internalNodesClipBoard.begin();
             std::list<NodePtr>::const_iterator itSource = clipboard.sourceNodes.begin();
-            for (std::list<NodeGuiSerializationPtr>::const_iterator it = clipboard.nodesUI.begin();
+            for (std::list<Serialization::NodeGuiSerializationPtr>::const_iterator it = clipboard.nodesUI.begin();
                  it != clipboard.nodesUI.end(); ++it, ++itOther) {
                 NodePtr sourceNode;
                 if ( itSource != clipboard.sourceNodes.end() ) {
@@ -188,7 +188,7 @@ void trimNumber(std::string &baseName)
 NodeGuiPtr
 NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr & internalSerialization,
                             const NodePtr & sourceNode,
-                            const NodeGuiSerializationPtr & guiSerialization,
+                            const Serialization::NodeGuiSerializationPtr & guiSerialization,
                             const QPointF & offset,
                             const NodeCollectionPtr& grp,
                             const std::string& parentName,
@@ -259,7 +259,7 @@ NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr & internal
     //We don't want the clone to have the same hash as the original
     n->incrementKnobsAge();
     if (guiSerialization) {
-        gui->copyFrom(*guiSerialization);
+        gui->fromSerialization(*guiSerialization);
     }
     QPointF newPos = gui->getPos_mt_safe() + offset;
     gui->setPosition( newPos.x(), newPos.y() );
@@ -277,9 +277,9 @@ NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr & internal
     NodeGroupPtr isGrp =
         std::dynamic_pointer_cast<NodeGroup>( n->getEffectInstance()->shared_from_this() );
     const std::list<Serialization::NodeSerializationPtr>& nodes = internalSerialization->children;
-    std::list<NodeGuiSerializationPtr>  nodesUi;
+    std::list<Serialization::NodeGuiSerializationPtr>  nodesUi;
     if (guiSerialization) {
-        nodesUi = guiSerialization->getChildren();
+        nodesUi = guiSerialization->children;
     }
     assert( nodes.size() == nodesUi.size() || nodesUi.empty() );
 
@@ -311,9 +311,9 @@ NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr & internal
         }
         std::list<std::pair<Serialization::NodeSerializationPtr, NodePtr> > newNodesMap;
         std::list<std::pair<std::string, NodeGuiPtr> > newNodes;
-        std::list<NodeGuiSerializationPtr>::const_iterator itUi = nodesUi.begin();
+        std::list<Serialization::NodeGuiSerializationPtr>::const_iterator itUi = nodesUi.begin();
         for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
-            NodeGuiSerializationPtr guiS = nodesUi.empty() ?  NodeGuiSerializationPtr() : *itUi;
+            Serialization::NodeGuiSerializationPtr guiS = nodesUi.empty() ?  Serialization::NodeGuiSerializationPtr() : *itUi;
             NodePtr childSourceNode;
             if (sourceCollection) {
                 childSourceNode = sourceCollection->getNodeByName( (*it)->scriptName );

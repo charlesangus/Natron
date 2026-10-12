@@ -64,12 +64,13 @@ GCC_DIAG_ON(unused-parameter)
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/NodeClipBoard.h"
 #include "Gui/NodeGui.h"
-#include "Gui/NodeGuiSerialization.h"
 
 #include "Global/QtCompat.h"
 
 #include "Serialization/NodeSerialization.h"
+#include "Serialization/ProjectGuiSerialization.h"
 #include "Serialization/BoostXml/NodeXml.h"
+#include "Serialization/BoostXml/ProjectGuiXml.h"
 
 NATRON_NAMESPACE_ENTER
 void
@@ -311,8 +312,8 @@ NodeGraph::cloneSelectedNodes(const QPointF& scenePos)
         NodePtr sourceNode = (*it)->getNode();
         Serialization::NodeSerializationPtr internalSerialization = std::make_shared<Serialization::NodeSerialization>();
         sourceNode->toSerialization( internalSerialization.get() );
-        NodeGuiSerializationPtr guiSerialization = std::make_shared<NodeGuiSerialization>();
-        (*it)->serialize( guiSerialization.get() );
+        Serialization::NodeGuiSerializationPtr guiSerialization = std::make_shared<Serialization::NodeGuiSerialization>();
+        (*it)->toSerialization( guiSerialization.get() );
         NodeGuiPtr clone = _imp->pasteNode(internalSerialization, sourceNode, guiSerialization, offset,
                                            _imp->group.lock(), std::string(), true, &oldNewScriptNamesMapping);
 

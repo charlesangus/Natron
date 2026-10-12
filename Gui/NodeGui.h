@@ -157,14 +157,6 @@ public:
     virtual void restoreStateAfterCreation() OVERRIDE FINAL;
 
     /**
-     * @brief Fills the serializationObject with the current state of the NodeGui.
-     **/
-    void serialize(NodeGuiSerialization* serializationObject) const;
-
-
-    void copyFrom(const NodeGuiSerialization & obj);
-
-    /**
      * @brief Fills serialization with what a project file saves for this node in the node graph
      * and, for a group, for the nodes it holds that are part of the project.
      **/

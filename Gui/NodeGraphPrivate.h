@@ -233,7 +233,7 @@ public:
      **/
     NodeGuiPtr pasteNode(const Serialization::NodeSerializationPtr & internalSerialization,
                          const NodePtr & sourceNode,
-                         const NodeGuiSerializationPtr & guiSerialization,
+                         const Serialization::NodeGuiSerializationPtr & guiSerialization,
                          const QPointF & offset,
                          const NodeCollectionPtr& group,
                          const std::string& parentName,

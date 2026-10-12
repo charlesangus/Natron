@@ -93,7 +93,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/NodeClipBoard.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGraphUndoRedo.h"
-#include "Gui/NodeGuiSerialization.h"
 #include "Gui/NodeGraphTextItem.h"
 #include "Gui/NodeGraphRectItem.h"
 #include "Gui/NodeSettingsPanel.h"
@@ -106,6 +105,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/ViewerTab.h"
 
 #include "Serialization/NodeSerialization.h"
+#include "Serialization/ProjectGuiSerialization.h"
 
 #define NATRON_STATE_INDICATOR_OFFSET 5
 
@@ -2281,12 +2281,6 @@ NodeGui::getKnobs() const
 }
 
 void
-NodeGui::serialize(NodeGuiSerialization* serializationObject) const
-{
-    serializationObject->initialize(this);
-}
-
-void
 NodeGui::serializeInternal(std::list<Serialization::NodeSerializationPtr>& internalSerialization) const
 {
     NodePtr node = getNode();
@@ -2321,27 +2315,6 @@ NodeGui::restoreInternal(const NodeGuiPtr& thisShared,
     assert(internalSerialization.size() >= 1);
 
     getSettingPanel()->pushUndoCommand( new LoadNodePresetsCommand(thisShared, internalSerialization) );
-}
-
-void
-NodeGui::copyFrom(const NodeGuiSerialization & obj)
-{
-    float r, g, b;
-    double overlayR, overlayB, overlayG;
-    obj.getColor(&r, &g, &b);
-    setCurrentColor( QColor::fromRgbF(r, g, b) );
-    if (obj.getOverlayColor(&overlayR, &overlayG, &overlayB)) {
-        setOverlayColor( QColor::fromRgbF(overlayR, overlayB, overlayG) );
-    }
-    setPos_mt_safe( QPointF( obj.getX(), obj.getY() ) );
-    NodePtr node = getNode();
-    assert(node);
-    if ( node && ( node->isPreviewEnabled() != obj.isPreviewEnabled() ) ){
-        togglePreview();
-    }
-    double w, h;
-    obj.getSize(&w, &h);
-    resize(w, h);
 }
 
 QUndoStackPtr
@@ -2804,9 +2777,9 @@ NodeGui::destroyGui()
             }
         }
 
-        for (std::list<NodeGuiSerializationPtr>::iterator it = cb.nodesUI.begin();
+        for (std::list<Serialization::NodeGuiSerializationPtr>::iterator it = cb.nodesUI.begin();
              it != cb.nodesUI.end(); ++it) {
-            if ( (*it)->getFullySpecifiedName() == internalNode->getFullyQualifiedName() ) {
+            if ( (*it)->nodeName == internalNode->getFullyQualifiedName() ) {
                 cb.nodesUI.erase(it);
                 break;
             }

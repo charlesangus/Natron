@@ -241,12 +241,22 @@ public:
         return eStandardButtonYes;
     }
 
-    virtual void loadProjectGui(bool /*isAutosave*/, boost::archive::xml_iarchive & /*archive*/) const
+    /**
+     * @brief Restores the GUI section of a project file once the project's nodes exist. The
+     * project only reads that section for an app that is not in the background.
+     **/
+    virtual void loadProjectGui(bool /*isAutosave*/,
+                                const Serialization::ProjectGuiSerialization & /*serialization*/) const
     {
     }
 
-    virtual void saveProjectGui(boost::archive::xml_oarchive & /*archive*/)
+    /**
+     * @brief Fills serialization with the GUI section of a project file. Returns false when the
+     * app has no GUI to save, in which case the project file has no GUI section.
+     **/
+    virtual bool saveProjectGui(Serialization::ProjectGuiSerialization* /*serialization*/)
     {
+        return false;
     }
 
     virtual void setupViewersForViews(const std::vector<std::string>& /*viewNames*/)

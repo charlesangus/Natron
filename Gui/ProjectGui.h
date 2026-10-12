@@ -70,12 +70,6 @@ public:
         return _project.lock();
     }
 
-    template<class Archive>
-    void save(Archive & ar) const;
-
-    template<class Archive>
-    void load(bool isAutosave, Archive & ar);
-
     /**
      * @brief Fills serialization with the GUI section of a project file: the node graph state of
      * the visible nodes, the viewers, the layout, the histograms, the opened settings and Python

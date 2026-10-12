@@ -83,7 +83,7 @@ Scouted 2026-10-11 on `milestone/m55-node-graph-polish` at `10e0accd5`. **Re-che
 
 ## Phase 69.4: Viewer colour picker
 
-- [ ] M69.P4.T1 — Always pick scene-referred values; remove "Linear color pickers"
+- [x] M69.P4.T1 — Always pick scene-referred values; remove "Linear color pickers"
   - files: `Gui/ViewerGL.cpp`, `Gui/ViewerGL.h`, `Engine/Settings.h`, `Engine/Settings.cpp`, `Gui/KnobGuiColor.cpp` (**REBASE (M56)**: `Settings.*` loses `_useBWIcons`, and `KnobGuiColor.cpp`'s icon code at `:886-910` changes; **REBASE (M45)**: `Settings.*` gains the Tab-menu knobs)
   - approach:
     - Finding: the picker does **not** read the display texture. `getColorAt`/`getColorAtRect` (`ViewerGL.cpp:4279-4517`) sample `lastRenderedTiles`, which holds `params->colorImage`. That is the viewed node's rendered image (`Engine/ViewerInstance.cpp:2961` → `endTransferBufferFromRAMToGPU` → `ViewerGL.cpp:1505`), before gain, gamma and the display transform. The display processor is applied only when `forceLinear` is false (`:4328-4332`, `:4458-4496`), which is the `linearPickers` setting (default **true**).
@@ -93,7 +93,7 @@ Scouted 2026-10-11 on `milestone/m55-node-graph-polish` at `10e0accd5`. **Re-che
   - verify: P7.T1 shows a Constant (0.18, 2.0, 0.5, 1) through viewer gain +2, gamma 2.2 and the sRGB display. Ctrl+Alt-click (output, P4.T3) reads back exactly (0.18, 2.0, 0.5, 1) in the info bar and in a picking Grade's colour knob. The rect pick returns the same values. The Preferences UI page no longer lists "Linear color pickers".
   - size: M
 
-- [ ] M69.P4.T2 — Add an Engine helper that samples a node's image over a pixel rect
+- [x] M69.P4.T2 — Add an Engine helper that samples a node's image over a pixel rect
   - files: `Engine/NodeColorSampler.h` (new), `Engine/NodeColorSampler.cpp` (new), `Tests/NodeColorSampler_Test.cpp` (new), `Tests/CMakeLists.txt` (**OVERLAP: Tests/CMakeLists.txt** with P5.T1, P6.T1; **REBASE (M56, M45)**: both add test sources)
   - approach:
     - `bool sampleNodeColor(const NodePtr& node, double time, ViewIdx view, unsigned int mipmapLevel, const RectI& pixelRect, const ImageLayerDesc& layer, float rgba[4])`. It averages the rect. It renders the RoI synchronously the way `TrackMarker::getMarkerImage` does (`Engine/TrackMarker.cpp:1162-1220`: `ParallelRenderArgsSetter` at `:1186` + `renderRoI` at `:1212`), on the same scale and layer the viewer used, so the normal case is a cache hit on the image the viewer render just pulled through.

@@ -186,12 +186,6 @@ LayerChannelRow::LayerChannelRow(ModeEnum mode,
     _line1Layout->setSpacing(kLine1Spacing);
     _layout->addLayout(_line1Layout);
 
-    _removeButton = new Button(QString::fromUtf8("−"), this);
-    _removeButton->setToolTip(tr("Remove this layer from the set"));
-    _removeButton->setFocusPolicy(Qt::StrongFocus);
-    _removeButton->setFixedSize(NATRON_SMALL_BUTTON_SIZE, NATRON_SMALL_BUTTON_SIZE);
-    _line1Layout->addWidget(_removeButton);
-
     _combo = new ComboBox(this);
     _line1Layout->addWidget(_combo);
 
@@ -208,6 +202,12 @@ LayerChannelRow::LayerChannelRow(ModeEnum mode,
 
     _matchesLabel = new Label(this);
     _line1Layout->addWidget(_matchesLabel);
+
+    _removeButton = new Button(QString::fromUtf8("−"), this);
+    _removeButton->setToolTip(tr("Remove this layer from the set"));
+    _removeButton->setFocusPolicy(Qt::StrongFocus);
+    _removeButton->setFixedSize(NATRON_SMALL_BUTTON_SIZE, NATRON_SMALL_BUTTON_SIZE);
+    _line1Layout->addWidget(_removeButton);
 
     _line1Layout->addStretch();
 
@@ -412,21 +412,6 @@ bool
 LayerChannelRow::isRowRemovable() const
 {
     return _removable;
-}
-
-void
-LayerChannelRow::setRemoveColumnReserved(bool reserved)
-{
-    QSizePolicy policy = _removeButton->sizePolicy();
-
-    policy.setRetainSizeWhenHidden(reserved);
-    _removeButton->setSizePolicy(policy);
-}
-
-int
-LayerChannelRow::getRemoveColumnWidth()
-{
-    return NATRON_SMALL_BUTTON_SIZE + kLine1Spacing;
 }
 
 LayerChannelRow::SetRowModeEnum
@@ -772,7 +757,7 @@ LayerChannelRow::placeButtonsContainer(bool onLine2)
         _line2Layout->insertWidget(2, _buttonsContainer);
     } else {
         _line2Layout->removeWidget(_buttonsContainer);
-        _line1Layout->insertWidget(2, _buttonsContainer);
+        _line1Layout->insertWidget(1, _buttonsContainer);
     }
     _buttonsOnLine2 = onLine2;
 }

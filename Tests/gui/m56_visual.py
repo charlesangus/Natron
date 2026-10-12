@@ -496,10 +496,10 @@ try:
 
     def check_label_alignment(graph, rects, nodes, wrapped_node):
         """Every block's first line starts at the same x (left-aligned rather than centred), a
-        wrapped block's later lines sit one hanging indent right of its first, and each label
-        starts right after the node's plugin-icon column instead of being centred in the node."""
+        wrapped block's later lines sit one hanging indent right of its first, and the text block
+        as a whole is centred in the space beside the node's plugin-icon column."""
         items = name_items(graph, nodes)
-        offsets = []
+        centre_offsets = []
         for node in nodes:
             label = node.getLabel()
             it = items.get(label)
@@ -511,11 +511,13 @@ try:
             firsts = [b[0] for b in blocks if b]
             check(firsts and max(firsts) - min(firsts) <= 0.5,
                   "label align %r: every line break starts at the same x (%r)" % (label[:24], firsts))
-            offsets.append(r.left() - node_rect(node)[0])
-        report("NOTE label left offsets from the node's left edge: %r" % ["%.1f" % o for o in offsets])
+            centre_offsets.append(r.center().x() - node_rect(node)[0])
         icon_column = px(PLUGIN_ICON_COLUMN)
-        check(offsets and all(abs(o - icon_column) <= 1.5 for o in offsets),
-              "label align: each label starts at the plugin-icon column's right edge (%.1f)" % icon_column)
+        expected = [icon_column + (node_rect(n)[2] - icon_column) / 2.0 for n in nodes]
+        report("NOTE label centre offsets from the node's left edge: %r (expected %r)"
+               % (["%.1f" % o for o in centre_offsets], ["%.1f" % e for e in expected]))
+        check(centre_offsets and all(abs(o - e) <= 2.0 for o, e in zip(centre_offsets, expected)),
+              "label align: each label block is centred beside the plugin-icon column")
         it = items.get(wrapped_node.getLabel())
         if check(it is not None, "label align: found the wrapped label's item"):
             blocks = label_line_xs(it)
@@ -669,16 +671,27 @@ try:
                   shown.index(max(shown)) == raw.index(max(raw)),
                   "%s: the %s button still reads as its channel's hue (%r)" % (area, b.text(), shown))
 
-    def check_add_layer_button(panel, area):
+    def check_add_layer_button(panel, area, field_knob="mix"):
+        """The + button sits under the layer combo, and both share the same left x as every
+        other field-column widget (the [-] remove button moved to the row's end, so it no longer
+        pushes the combo out of the field column)."""
         rows = [w for w in descendants(panel) if gt.class_name(w) == "LayerChannelRow"]
         plus = [b for b in buttons_in(panel) if b.text() == "+" and "layer row" in (b.toolTip() or "")]
         if not check(rows and plus, "%s: found the channel picker's layer row and + button" % area):
             return
         combo = first_of_class([rows[0]], "ComboBox")
-        if check(combo is not None, "%s: found the layer row's combo" % area):
-            a, b = left_in(panel, plus[0]), left_in(panel, combo)
-            check(abs(a - b) <= ALIGN_TOLERANCE, "%s: the + button sits under the layer combo (x %d vs %d)" % (area, a, b))
-            check(top_in(panel, plus[0]) > top_in(panel, combo), "%s: the + button is below the combo" % area)
+        if not check(combo is not None, "%s: found the layer row's combo" % area):
+            return
+        a, b = left_in(panel, plus[0]), left_in(panel, combo)
+        check(abs(a - b) <= ALIGN_TOLERANCE, "%s: the + button sits under the layer combo (x %d vs %d)" % (area, a, b))
+        check(top_in(panel, plus[0]) > top_in(panel, combo), "%s: the + button is below the combo" % area)
+        _l, field_cells = knob_widgets(panel, field_knob)
+        if check(bool(field_cells), "%s: found the %s field to compare against the field column" % (area, field_knob)):
+            field_left = min(left_in(panel, f) for f in field_cells)
+            check(abs(b - field_left) <= ALIGN_TOLERANCE,
+                  "%s: the layer combo's left x matches the field column (%d vs %s %d)" % (area, b, field_knob, field_left))
+            check(abs(a - field_left) <= ALIGN_TOLERANCE,
+                  "%s: the + button shares the field column's left x (%d vs %s %d)" % (area, a, field_knob, field_left))
 
     def check_button_in_field_column(panel, area, text, field_knob):
         btns = [b for b in buttons_in(panel) if b.text().replace("&", "") == text]

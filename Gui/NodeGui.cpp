@@ -1130,7 +1130,7 @@ NodeGui::refreshPreviewAndLabelPosition(const QRectF& bbox)
 
     {
         int nameWidth = labelBbox.width();
-        double textX = mustFrameName() ? bbox.x() + iconWidth + ((bbox.width() - iconWidth) / 2) - (nameWidth / 2) : bbox.x() + iconWidth;
+        double textX = bbox.x() + iconWidth + ((bbox.width() - iconWidth) / 2) - (nameWidth / 2);
         //double textY = topLeft.y() + labelHeight * 0.1;
         double textY;
         if ( mustFrameName() ) {

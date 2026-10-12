@@ -155,7 +155,6 @@ public:
     virtual void clearViewersLastRenderedTexture() OVERRIDE FINAL;
     virtual void appendToScriptEditor(const std::string& str) OVERRIDE FINAL;
     virtual void printAutoDeclaredVariable(const std::string& str) OVERRIDE FINAL;
-    virtual void toggleAutoHideGraphInputs() OVERRIDE FINAL;
     virtual void setLastViewerUsingTimeline(const NodePtr& node) OVERRIDE FINAL;
     virtual ViewerInstance* getLastViewerUsingTimeline() const OVERRIDE FINAL;
 

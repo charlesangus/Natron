@@ -531,12 +531,16 @@ ConnectCommand::doConnect(const NodeGuiPtr &oldSrc,
 
 InsertNodeCommand::InsertNodeCommand(NodeGraph* graph,
                                      Edge* edge,
-                                     const NodeGuiPtr & newSrc,
-                                     QUndoCommand *parent)
-    : ConnectCommand(graph, edge, edge->getSource(), newSrc, parent)
-    , _inputEdge(0)
+                                     const NodeGuiPtr& exitNode,
+                                     const NodeGuiPtr& entryNode,
+                                     int entryInput,
+                                     QUndoCommand* parent)
+    : ConnectCommand(graph, edge, edge->getSource(), exitNode, parent)
+    , _entryNode(entryNode ? entryNode : exitNode)
+    , _entryInput(entryInput)
+    , _connectedEntryInput(-1)
 {
-    assert(newSrc);
+    assert(exitNode);
     setText( tr("Insert node") );
 }
 
@@ -544,20 +548,21 @@ void
 InsertNodeCommand::undo()
 {
     NodeGuiPtr oldSrc = _oldSrc.lock();
-    NodeGuiPtr newSrc = _newSrc.lock();
+    NodeGuiPtr exitNode = _newSrc.lock();
     NodeGuiPtr dst = _dst.lock();
 
-    assert(newSrc);
+    assert(exitNode);
 
     NodePtr oldSrcInternal = oldSrc ? oldSrc->getNode() : NodePtr();
-    NodePtr newSrcInternal = newSrc->getNode();
+    NodePtr exitNodeInternal = exitNode->getNode();
     NodePtr dstInternal = dst->getNode();
-    assert(newSrcInternal && dstInternal);
+    assert(exitNodeInternal && dstInternal);
 
-    doConnect(newSrc, oldSrc, dst, _inputNb);
+    doConnect(exitNode, oldSrc, dst, _inputNb);
 
-    if (_inputEdge) {
-        doConnect( _inputEdge->getSource(), NodeGuiPtr(), _inputEdge->getDest(), _inputEdge->getInputNumber() );
+    NodeGuiPtr entryNode = _entryNode.lock();
+    if (entryNode && oldSrc && (_connectedEntryInput != -1)) {
+        doConnect(oldSrc, NodeGuiPtr(), entryNode, _connectedEntryInput);
     }
 
     ViewerInstance* isDstAViewer = dst->getNode()->isEffectViewer();
@@ -571,25 +576,30 @@ void
 InsertNodeCommand::redo()
 {
     NodeGuiPtr oldSrc = _oldSrc.lock();
-    NodeGuiPtr newSrc = _newSrc.lock();
+    NodeGuiPtr exitNode = _newSrc.lock();
     NodeGuiPtr dst = _dst.lock();
+    NodeGuiPtr entryNode = _entryNode.lock();
 
-    assert(newSrc);
+    assert(exitNode && entryNode);
 
     NodePtr oldSrcInternal = oldSrc ? oldSrc->getNode() : NodePtr();
-    NodePtr newSrcInternal = newSrc->getNode();
+    NodePtr exitNodeInternal = exitNode->getNode();
+    NodePtr entryNodeInternal = entryNode->getNode();
     NodePtr dstInternal = dst->getNode();
-    assert(newSrcInternal && dstInternal);
+    assert(exitNodeInternal && dstInternal && entryNodeInternal);
 
-    newSrcInternal->beginInputEdition();
+    bool sameNode = (entryNodeInternal == exitNodeInternal);
+
+    exitNodeInternal->beginInputEdition();
+    if (!sameNode) {
+        entryNodeInternal->beginInputEdition();
+    }
     dstInternal->beginInputEdition();
 
-    doConnect(oldSrc, newSrc, dst, _inputNb);
+    doConnect(oldSrc, exitNode, dst, _inputNb);
 
-
-    ///find out if the node is already connected to what the edge is connected
     bool alreadyConnected = false;
-    const std::vector<NodeWPtr> & inpNodes = newSrcInternal->getGuiInputs();
+    const std::vector<NodeWPtr>& inpNodes = entryNodeInternal->getGuiInputs();
     if (oldSrcInternal) {
         for (std::size_t i = 0; i < inpNodes.size(); ++i) {
             if (inpNodes[i].lock() == oldSrcInternal) {
@@ -599,14 +609,13 @@ InsertNodeCommand::redo()
         }
     }
 
-    _inputEdge = 0;
+    _connectedEntryInput = -1;
     if (oldSrcInternal && !alreadyConnected) {
-        ///push a second command... this is a bit dirty but I don't have time to add a whole new command just for this
-        int prefInput = newSrcInternal->getPreferredInputForConnection();
-        if (prefInput != -1) {
-            _inputEdge = newSrc->getInputArrow(prefInput);
-            assert(_inputEdge);
-            doConnect( _inputEdge->getSource(), oldSrc, _inputEdge->getDest(), _inputEdge->getInputNumber() );
+        int prefInput = (_entryInput != -1) ? _entryInput : entryNodeInternal->getPreferredInputForConnection();
+        Edge* entryEdge = (prefInput != -1) ? entryNode->getInputArrow(prefInput) : 0;
+        if (entryEdge) {
+            doConnect(entryEdge->getSource(), oldSrc, entryNode, prefInput);
+            _connectedEntryInput = prefInput;
         }
     }
 
@@ -615,7 +624,10 @@ InsertNodeCommand::redo()
         _graph->getGui()->getApp()->triggerAutoSave();
     }
 
-    newSrcInternal->endInputEdition(false);
+    exitNodeInternal->endInputEdition(false);
+    if (!sameNode) {
+        entryNodeInternal->endInputEdition(false);
+    }
     dstInternal->endInputEdition(false);
 
     std::list<ViewerInstance* > viewers;

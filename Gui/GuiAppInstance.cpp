@@ -508,8 +508,19 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
     ///Don't initialize inputs if it is a multi-instance child since it is not part of  the graph
     if (!parentMultiInstance) {
         nodegui->initializeInputs();
+
+        // This node's own GUI may have appeared after an existing output's edge already tried
+        // (and failed) to source from it, e.g. while restoring nodes out of order. Ask each
+        // existing output to refresh its edges now, the same way NodeGui::showGui() does.
+        const NodesWList& outputs = node->getGuiOutputs();
+        for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
+            NodePtr output = it->lock();
+            if (output) {
+                output->doRefreshEdgesGUI();
+            }
+        }
     }
-    
+
     NodeSerializationPtr serialization = args.getProperty<NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
     if ( !serialization && !isViewer ) {
         ///we make sure we can have a clean preview.
@@ -908,12 +919,6 @@ void
 GuiAppInstance::redrawAllViewers()
 {
     _imp->_gui->redrawAllViewers();
-}
-
-void
-GuiAppInstance::toggleAutoHideGraphInputs()
-{
-    _imp->_gui->toggleAutoHideGraphInputs();
 }
 
 void

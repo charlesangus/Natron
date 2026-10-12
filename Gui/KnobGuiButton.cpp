@@ -72,6 +72,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/Label.h"
 #include "Gui/NewLayerDialog.h"
 #include "Gui/ProjectGui.h"
+#include "Gui/RenderDialog.h"
 #include "Gui/ScaleSliderQWidget.h"
 #include "Gui/SpinBox.h"
 #include "Gui/TabGroup.h"
@@ -185,6 +186,17 @@ KnobGuiButton::emitValueChanged(bool clicked)
         _button->setChecked(clicked);
 
         pushUndoCommand( new KnobUndoCommand<bool>(shared_from_this(), k->getValue(), clicked, 0, false) );
+    } else if (k->isRenderButton()) {
+        EffectInstance* isEffect = dynamic_cast<EffectInstance*>(k->getHolder());
+        NodePtr node = isEffect ? isEffect->getNode() : NodePtr();
+        if (node && isEffect->isWriter() && getGui()) {
+            k->triggerCallbacksOnly();
+            std::list<NodePtr> writers;
+            writers.push_back(node);
+            showRenderDialog(getGui(), writers);
+        } else {
+            k->trigger();
+        }
     } else {
         k->trigger();
     }

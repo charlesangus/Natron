@@ -444,11 +444,12 @@ KnobDouble::computeValuesHaveModifications(int dimension,
 /******************************KnobButton**************************************/
 
 KnobButton::KnobButton(KnobHolder* holder,
-                       const std::string &label,
+                       const std::string& label,
                        int dimension,
                        bool declaredByPlugin)
     : KnobBoolBase(holder, label, dimension, declaredByPlugin)
     , _renderButton(false)
+    , _triggeringCallbacksOnly(false)
     , _checkable(false)
     , _isToolButtonAction(false)
 {
@@ -456,11 +457,12 @@ KnobButton::KnobButton(KnobHolder* holder,
 }
 
 KnobButton::KnobButton(KnobHolder* holder,
-                       const QString &label,
+                       const QString& label,
                        int dimension,
                        bool declaredByPlugin)
     : KnobBoolBase(holder, label.toStdString(), dimension, declaredByPlugin)
     , _renderButton(false)
+    , _triggeringCallbacksOnly(false)
     , _checkable(false)
     , _isToolButtonAction(false)
 {
@@ -490,6 +492,22 @@ bool
 KnobButton::trigger()
 {
     return evaluateValueChange(0, getCurrentTime(), ViewIdx(0),  eValueChangedReasonUserEdited);
+}
+
+bool
+KnobButton::triggerCallbacksOnly()
+{
+    _triggeringCallbacksOnly = true;
+    bool ret = false;
+    try {
+        ret = trigger();
+    } catch (...) {
+        _triggeringCallbacksOnly = false;
+        throw;
+    }
+    _triggeringCallbacksOnly = false;
+
+    return ret;
 }
 
 /******************************KnobChoice**************************************/

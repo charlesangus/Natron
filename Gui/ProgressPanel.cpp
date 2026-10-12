@@ -270,6 +270,14 @@ ProgressPanel::getSelectedTask(std::list<ProgressTaskInfoPtr>& selection) const
     getSelectedTaskInternal(selected, selection);
 }
 
+ProgressTaskInfoPtr
+ProgressPanel::getTaskForNode(const NodePtr& node) const
+{
+    QMutexLocker k(&_imp->tasksMutex);
+
+    return _imp->findTask(node);
+}
+
 void
 ProgressPanel::keyPressEvent(QKeyEvent* e)
 {

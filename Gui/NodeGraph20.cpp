@@ -26,8 +26,10 @@
 #include "NodeGraph.h"
 #include "NodeGraphPrivate.h"
 
+#include <algorithm>
 #include <cmath> // abs
 #include <stdexcept>
+#include <vector>
 
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 CLANG_DIAG_OFF(deprecated)
@@ -48,252 +50,291 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/Edge.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiMacros.h"
+#include "Gui/NodeGraphSplice.h"
 #include "Gui/NodeGui.h"
 
 #include "Global/QtCompat.h"
 
 NATRON_NAMESPACE_ENTER
-void
-NodeGraph::checkForHints(bool shiftdown,
-                         bool controlDown,
-                         const NodeGuiPtr& selectedNode,
-                         const QRectF& visibleSceneR)
+
+namespace {
+
+const double kSpliceRectTolerance = 10;
+
+bool
+segmentTouchesRect(const QLineF& segment,
+                   const QRectF& rect)
 {
-    NodePtr internalNode = selectedNode->getNode();
-    bool doMergeHints = shiftdown && controlDown;
-    bool doConnectionHints = controlDown;
-
-    //Ignore hints for backdrops
-    BackdropGui* isBd = dynamic_cast<BackdropGui*>( selectedNode.get() );
-
-    if (isBd) {
-        return;
+    if (rect.contains(segment.p1()) || rect.contains(segment.p2())) {
+        return true;
     }
-
-    if (!doMergeHints) {
-        ///for nodes already connected don't show hint
-        if ( ( internalNode->getNInputs() == 0) && internalNode->hasOutputConnected() ) {
-            doConnectionHints = false;
-        } else if ( ( internalNode->getNInputs() > 0) && internalNode->hasAllInputsConnected() && internalNode->hasOutputConnected() ) {
-            doConnectionHints = false;
+    const QLineF sides[4] = {
+        QLineF(rect.topLeft(), rect.topRight()),
+        QLineF(rect.topRight(), rect.bottomRight()),
+        QLineF(rect.bottomRight(), rect.bottomLeft()),
+        QLineF(rect.bottomLeft(), rect.topLeft())
+    };
+    QPointF intersection;
+    for (int i = 0; i < 4; ++i) {
+        if (segment.intersects(sides[i], &intersection) == QLineF::BoundedIntersection) {
+            return true;
         }
     }
 
-    if (!doConnectionHints) {
+    return false;
+}
+
+QPointF
+closestPointOnSegment(const QPointF& p,
+                      const QLineF& segment)
+{
+    const double dx = segment.dx();
+    const double dy = segment.dy();
+    const double lengthSq = dx * dx + dy * dy;
+    double t = 0.;
+    if (lengthSq > 0.) {
+        t = ((p.x() - segment.x1()) * dx + (p.y() - segment.y1()) * dy) / lengthSq;
+        t = std::max(0., std::min(1., t));
+    }
+
+    return QPointF(segment.x1() + t * dx, segment.y1() + t * dy);
+}
+
+double
+squaredDistanceToSegment(const QPointF& p,
+                         const QLineF& segment)
+{
+    const QPointF closest = closestPointOnSegment(p, segment);
+    const double cx = closest.x() - p.x();
+    const double cy = closest.y() - p.y();
+
+    return cx * cx + cy * cy;
+}
+
+// The pipe is already connected, so canConnectInput() on its destination stops at
+// eCanConnectInput_inputAlreadyConnected before checking cycles or data kinds; those are
+// checked separately here for the exit that would replace the pipe's source.
+bool
+canSpliceIntoPipe(const NodePtr& destNode,
+                  int pipeInput,
+                  const NodePtr& srcNode,
+                  const NodePtr& entryNode,
+                  int entryInput,
+                  const NodePtr& exitNode)
+{
+    Node::CanConnectInputReturnValue destRet = destNode->canConnectInput(exitNode, pipeInput);
+    if ((destRet != Node::eCanConnectInput_ok) && (destRet != Node::eCanConnectInput_inputAlreadyConnected)) {
+        return false;
+    }
+    if (!destNode->checkIfConnectingInputIsOk(exitNode.get())) {
+        return false;
+    }
+    if (destNode->checkDataKindCompatibility(exitNode, pipeInput) != Node::eCanConnectInput_ok) {
+        return false;
+    }
+
+    return entryNode->canConnectInput(srcNode, entryInput) == Node::eCanConnectInput_ok;
+}
+
+} // anonymous namespace
+
+void
+NodeGraph::buildSplicePlan()
+{
+    _imp->_splicePlanBuilt = true;
+    _imp->_splicePlanSelection = _imp->_selection;
+    _imp->_spliceEntry.reset();
+    _imp->_spliceEntryInput = -1;
+    _imp->_spliceExit.reset();
+
+    SplicePlan plan = planSpliceForSelection(_imp->_selection);
+    if (!plan.valid) {
         return;
     }
 
-    QRectF selectedNodeBbox = selectedNode->boundingRectWithEdges(); //selectedNode->mapToParent( selectedNode->boundingRect() ).boundingRect();
-    double tolerance = 10;
-    selectedNodeBbox.adjust(-tolerance, -tolerance, tolerance, tolerance);
+    NodeGuiPtr entryGui, exitGui;
+    for (NodesGuiList::const_iterator it = _imp->_selection.begin(); it != _imp->_selection.end(); ++it) {
+        NodePtr node = (*it)->getNode();
+        if (!node) {
+            continue;
+        }
+        SpliceNodeId id = reinterpret_cast<SpliceNodeId>(node.get());
+        if (id == plan.entryId) {
+            entryGui = *it;
+        }
+        if (id == plan.exitId) {
+            exitGui = *it;
+        }
+    }
+    if (!entryGui || !exitGui || !entryGui->getInputArrow(plan.entryInput)) {
+        return;
+    }
 
-    NodeGuiPtr nodeToShowMergeRect;
-    NodePtr selectedNodeInternalNode = selectedNode->getNode();
-    bool selectedNodeIsReader = selectedNodeInternalNode->getEffectInstance()->isReader() || selectedNodeInternalNode->getNInputs() == 0;
-    Edge* edge = 0;
+    _imp->_spliceEntry = entryGui;
+    _imp->_spliceEntryInput = plan.entryInput;
+    _imp->_spliceExit = exitGui;
+}
+
+void
+NodeGraph::clearSpliceHint()
+{
+    if (!_imp->_splicePipe) {
+        return;
+    }
+    _imp->_splicePipe->setUseHighlight(false);
+    _imp->_splicePipe = 0;
+    _imp->_hintInputEdge->hide();
+    _imp->_hintOutputEdge->hide();
+}
+
+void
+NodeGraph::resetSplicePlan()
+{
+    clearSpliceHint();
+    _imp->_splicePlanBuilt = false;
+    _imp->_splicePlanSelection.clear();
+    _imp->_spliceEntry.reset();
+    _imp->_spliceEntryInput = -1;
+    _imp->_spliceExit.reset();
+}
+
+void
+NodeGraph::cancelSplice()
+{
+    resetSplicePlan();
+    _imp->_spliceCancelled = true;
+}
+
+void
+NodeGraph::checkForSpliceHint()
+{
+    if (_imp->_spliceCancelled) {
+        return;
+    }
+
+    if (!_imp->_splicePlanBuilt || (_imp->_splicePlanSelection != _imp->_selection)) {
+        clearSpliceHint();
+        buildSplicePlan();
+    }
+
+    if (!_imp->_spliceEntry || !_imp->_spliceExit) {
+        clearSpliceHint();
+
+        return;
+    }
+
+    NodePtr entryNode = _imp->_spliceEntry->getNode();
+    NodePtr exitNode = _imp->_spliceExit->getNode();
+    if (!entryNode || !exitNode) {
+        clearSpliceHint();
+
+        return;
+    }
+
+    std::set<NodeGui*> selectedNodes;
+    std::vector<QRectF> selectedRects;
+    QRectF selectionBody;
+    for (NodesGuiList::const_iterator it = _imp->_selection.begin(); it != _imp->_selection.end(); ++it) {
+        selectedNodes.insert(it->get());
+        QRectF r = (*it)->boundingRectWithEdges();
+        r.adjust(-kSpliceRectTolerance, -kSpliceRectTolerance, kSpliceRectTolerance, kSpliceRectTolerance);
+        selectedRects.push_back(r);
+        selectionBody = selectionBody.united((*it)->mapToScene((*it)->boundingRect()).boundingRect());
+    }
+    const QPointF selectionCentre = selectionBody.center();
+
     std::set<NodeGui*> nodesWithinRect;
     getNodesWithinViewportRect(visibleWidgetRect(), &nodesWithinRect);
 
-    {
-        for (std::set<NodeGui*>::iterator it = nodesWithinRect.begin(); it != nodesWithinRect.end(); ++it) {
-            bool isAlreadyAnOutput = false;
-            const NodesWList& outputs = internalNode->getGuiOutputs();
-            for (NodesWList::const_iterator it2 = outputs.begin(); it2 != outputs.end(); ++it2) {
-                NodePtr node = it2->lock();
-                if (!node) {
-                    continue;
-                }
-                if ( node == (*it)->getNode() ) {
-                    isAlreadyAnOutput = true;
+    Edge* bestPipe = 0;
+    double bestDistSq = 0.;
+    for (std::set<NodeGui*>::const_iterator it = nodesWithinRect.begin(); it != nodesWithinRect.end(); ++it) {
+        NodeGui* destGui = *it;
+        if ((selectedNodes.find(destGui) != selectedNodes.end()) || !destGui->isVisible()) {
+            continue;
+        }
+        NodePtr destNode = destGui->getNode();
+        if (!destNode) {
+            continue;
+        }
+        EffectInstancePtr destEffect = destNode->getEffectInstance();
+
+        const std::vector<Edge*>& pipes = destGui->getInputsArrows();
+        for (std::size_t i = 0; i < pipes.size(); ++i) {
+            Edge* pipe = pipes[i];
+            if (!pipe || !pipe->isVisible() || !pipe->hasSource()) {
+                continue;
+            }
+            NodeGuiPtr srcGui = pipe->getSource();
+            if (!srcGui || (selectedNodes.find(srcGui.get()) != selectedNodes.end())) {
+                continue;
+            }
+            if (destEffect && destEffect->isInputRotoBrush(pipe->getInputNumber())) {
+                continue;
+            }
+
+            QLineF segment = pipe->line();
+            segment.setP1(pipe->mapToScene(segment.p1()));
+            segment.setP2(pipe->mapToScene(segment.p2()));
+
+            bool touches = false;
+            for (std::size_t r = 0; r < selectedRects.size(); ++r) {
+                if (segmentTouchesRect(segment, selectedRects[r])) {
+                    touches = true;
                     break;
                 }
             }
-            if (isAlreadyAnOutput) {
+            if (!touches) {
                 continue;
             }
-            QRectF nodeBbox = (*it)->boundingRectWithEdges();
-            if ( ( (*it) != selectedNode.get() ) && (*it)->isVisible() && nodeBbox.intersects(visibleSceneR) ) {
-                if (doMergeHints) {
-                    //QRectF nodeRect = (*it)->mapToParent((*it)->boundingRect()).boundingRect();
 
-                    NodePtr internalNode = (*it)->getNode();
-
-
-                    if ( !internalNode->isOutputNode() && nodeBbox.intersects(selectedNodeBbox) ) {
-                        bool nHasInput = internalNode->hasInputConnected();
-                        int nMaxInput = internalNode->getNInputs();
-                        bool selectedHasInput = selectedNodeInternalNode->hasInputConnected();
-                        int selectedMaxInput = selectedNodeInternalNode->getNInputs();
-                        double nPAR = internalNode->getEffectInstance()->getAspectRatio(-1);
-                        double selectedPAR = selectedNodeInternalNode->getEffectInstance()->getAspectRatio(-1);
-                        double nFPS = internalNode->getEffectInstance()->getFrameRate();
-                        double selectedFPS = selectedNodeInternalNode->getEffectInstance()->getFrameRate();
-                        bool isValid = true;
-
-                        if ( (selectedPAR != nPAR) || (std::abs(nFPS - selectedFPS) > 0.01) ) {
-                            if (nHasInput || selectedHasInput) {
-                                isValid = false;
-                            } else if ( !nHasInput && (nMaxInput == 0) && !selectedHasInput && (selectedMaxInput == 0) ) {
-                                isValid = false;
-                            }
-                        }
-                        if (isValid) {
-                            nodeToShowMergeRect = (*it)->shared_from_this();
-                        }
-                    } else {
-                        (*it)->setMergeHintActive(false);
-                    }
-                } else { //!doMergeHints
-                    edge = (*it)->hasEdgeNearbyRect(selectedNodeBbox);
-
-                    ///if the edge input is the selected node don't continue
-                    if ( edge && ( edge->getSource() == selectedNode) ) {
-                        edge = 0;
-                    }
-
-                    if ( edge && edge->isOutputEdge() ) {
-                        if (selectedNodeIsReader) {
-                            continue;
-                        }
-                        int prefInput = selectedNodeInternalNode->getPreferredInputForConnection();
-                        if (prefInput == -1) {
-                            edge = 0;
-                        } else {
-                            Node::CanConnectInputReturnValue ret = selectedNodeInternalNode->canConnectInput(edge->getSource()->getNode(),
-                                                                                                             prefInput);
-                            if (ret != Node::eCanConnectInput_ok) {
-                                edge = 0;
-                            }
-                        }
-                    }
-
-                    if ( edge && !edge->isOutputEdge() ) {
-                        if ( (*it)->getNode()->getEffectInstance()->isReader() ||
-                             ( (*it)->getNode()->getNInputs() == 0 ) ) {
-                            edge = 0;
-                            continue;
-                        }
-
-                        if ( (*it)->getNode()->getEffectInstance()->isInputRotoBrush( edge->getInputNumber() ) ) {
-                            edge = 0;
-                            continue;
-                        }
-
-                        //Check that the edge can connect to the selected node
-                        {
-                            Node::CanConnectInputReturnValue ret = edge->getDest()->getNode()->canConnectInput( selectedNodeInternalNode, edge->getInputNumber() );
-                            if ( (ret == Node::eCanConnectInput_inputAlreadyConnected) &&
-                                 !selectedNodeIsReader ) {
-                                ret = Node::eCanConnectInput_ok;
-                            }
-
-                            if (ret != Node::eCanConnectInput_ok) {
-                                edge = 0;
-                            }
-                        }
-
-                        //Check that the selected node can connect to the input of the edge
-
-                        if (edge) {
-                            NodeGuiPtr edgeHasSource = edge->getSource();
-                            if (edgeHasSource) {
-                                int prefInput = selectedNodeInternalNode->getPreferredInputForConnection();
-                                if (prefInput != -1) {
-                                    Node::CanConnectInputReturnValue ret = selectedNodeInternalNode->canConnectInput(edgeHasSource->getNode(), prefInput);
-                                    if ( (ret == Node::eCanConnectInput_inputAlreadyConnected) &&
-                                         !selectedNodeIsReader ) {
-                                        ret = Node::eCanConnectInput_ok;
-                                    }
-
-                                    if (ret != Node::eCanConnectInput_ok) {
-                                        edge = 0;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if (edge) {
-                        edge->setUseHighlight(true);
-                        break;
-                    }
-                } // doMergeHints
+            const double distSq = squaredDistanceToSegment(selectionCentre, segment);
+            if (bestPipe && (distSq >= bestDistSq)) {
+                continue;
             }
-        }
-    } // QMutexLocker l(&_imp->_nodesMutex);
 
-    if ( _imp->_highLightedEdge && ( _imp->_highLightedEdge != edge) ) {
-        _imp->_highLightedEdge->setUseHighlight(false);
-        _imp->_hintInputEdge->hide();
-        _imp->_hintOutputEdge->hide();
+            NodePtr srcNode = srcGui->getNode();
+            if (!srcNode || !canSpliceIntoPipe(destNode, pipe->getInputNumber(), srcNode, entryNode, _imp->_spliceEntryInput, exitNode)) {
+                continue;
+            }
+
+            bestPipe = pipe;
+            bestDistSq = distSq;
+        }
     }
 
-    _imp->_highLightedEdge = edge;
+    if (!bestPipe) {
+        clearSpliceHint();
 
-    if ( edge && edge->getSource() && edge->getDest() ) {
-        ///setup the hints edge
-
-        ///find out if the node is already connected to what the edge is connected
-        bool alreadyConnected = false;
-        const std::vector<NodeWPtr> & inpNodes = selectedNode->getNode()->getGuiInputs();
-        for (std::size_t i = 0; i < inpNodes.size(); ++i) {
-            if ( inpNodes[i].lock() == edge->getSource()->getNode() ) {
-                alreadyConnected = true;
-                break;
-            }
-        }
-
-        if ( !_imp->_hintInputEdge->isVisible() ) {
-            if (!alreadyConnected) {
-                int prefInput = selectedNode->getNode()->getPreferredInputForConnection();
-                _imp->_hintInputEdge->setInputNumber(prefInput != -1 ? prefInput : 0);
-                _imp->_hintInputEdge->setSourceAndDestination(edge->getSource(), selectedNode);
-                _imp->_hintInputEdge->setVisible(true);
-            }
-            _imp->_hintOutputEdge->setInputNumber( edge->getInputNumber() );
-            _imp->_hintOutputEdge->setSourceAndDestination( selectedNode, edge->getDest() );
-            _imp->_hintOutputEdge->setVisible(true);
-        } else {
-            if (!alreadyConnected) {
-                _imp->_hintInputEdge->initLine();
-            }
-            _imp->_hintOutputEdge->initLine();
-        }
-    } else if (edge) {
-        ///setup only 1 of the hints edge
-
-        if ( _imp->_highLightedEdge && !_imp->_hintInputEdge->isVisible() ) {
-            if ( edge->isOutputEdge() ) {
-                int prefInput = selectedNode->getNode()->getPreferredInputForConnection();
-                if (prefInput != -1) {
-                    _imp->_hintInputEdge->setInputNumber(prefInput);
-                    _imp->_hintInputEdge->setSourceAndDestination(edge->getSource(), selectedNode);
-                    _imp->_hintInputEdge->setVisible(true);
-                }
-            } else {
-                _imp->_hintInputEdge->setInputNumber( edge->getInputNumber() );
-                _imp->_hintInputEdge->setSourceAndDestination( selectedNode, edge->getDest() );
-                _imp->_hintInputEdge->setVisible(true);
-            }
-        } else if ( _imp->_highLightedEdge && _imp->_hintInputEdge->isVisible() ) {
-            _imp->_hintInputEdge->initLine();
-        }
-    } else if (nodeToShowMergeRect) {
-        nodeToShowMergeRect->setMergeHintActive(true);
-        selectedNode->setMergeHintActive(true);
-        _imp->_mergeHintNode = nodeToShowMergeRect;
-    } else {
-        selectedNode->setMergeHintActive(false);
-        _imp->_mergeHintNode.reset();
+        return;
     }
-} // NodeGraph::checkForHints
+
+    if (bestPipe == _imp->_splicePipe) {
+        _imp->_hintInputEdge->initLine();
+        _imp->_hintOutputEdge->initLine();
+
+        return;
+    }
+
+    clearSpliceHint();
+    _imp->_splicePipe = bestPipe;
+    bestPipe->setUseHighlight(true);
+
+    _imp->_hintInputEdge->setInputNumber(_imp->_spliceEntryInput);
+    _imp->_hintInputEdge->setSourceAndDestination(bestPipe->getSource(), _imp->_spliceEntry);
+    _imp->_hintInputEdge->setVisible(true);
+
+    _imp->_hintOutputEdge->setInputNumber(bestPipe->getInputNumber());
+    _imp->_hintOutputEdge->setSourceAndDestination(_imp->_spliceExit, bestPipe->getDest());
+    _imp->_hintOutputEdge->setVisible(true);
+} // NodeGraph::checkForSpliceHint
 
 void
-NodeGraph::moveSelectedNodesBy(bool shiftdown,
+NodeGraph::moveSelectedNodesBy(bool /*shiftdown*/,
                                bool controlDown,
                                const QPointF& lastMousePosScene,
                                const QPointF& newPos,
-                               const QRectF& visibleSceneR,
+                               const QRectF& /*visibleSceneR*/,
                                bool userEdit)
 {
     if ( _imp->_selection.empty() ) {
@@ -358,19 +399,13 @@ NodeGraph::moveSelectedNodesBy(bool shiftdown,
     }
 
     if (!userEdit) {
-        //For !userEdit do not do auto-scroll and connections hints
         return;
     }
 
     //Start auto-scolling if nearby the edges
     checkAndStartAutoScrollTimer(newPos);
 
-    //The lines below are trying to
-    if (_imp->_selection.size() != 1) {
-        return;
-    }
-
-    checkForHints(shiftdown, controlDown, _imp->_selection.front(), visibleSceneR);
+    checkForSpliceHint();
 } // NodeGraph::moveSelectedNodesBy
 
 void

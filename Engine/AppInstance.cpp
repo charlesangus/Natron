@@ -1725,7 +1725,7 @@ AppInstance::startWritersRendering(bool doBlockingRender,
         item.savePath = savePath;
 
         if (renderInSeparateProcess) {
-            item.process = std::make_shared<ProcessHandler>(savePath, item.work.writer);
+            item.process = std::make_shared<ProcessHandler>(savePath, item.work.writer, item.work.firstFrame, item.work.lastFrame, item.work.frameStep);
             QObject::connect( item.process.get(), SIGNAL(processFinished(int)), this, SLOT(onBackgroundRenderProcessFinished()) );
         } else {
             QObject::connect(item.work.writer->getRenderEngine().get(), SIGNAL(renderFinished(int)), this, SLOT(onQueuedRenderFinished(int)), Qt::UniqueConnection);

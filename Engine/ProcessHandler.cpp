@@ -25,6 +25,7 @@
 
 #include "ProcessHandler.h"
 
+#include <algorithm>
 #include <cassert>
 #include <stdexcept>
 
@@ -49,8 +50,11 @@
 
 NATRON_NAMESPACE_ENTER
 
-ProcessHandler::ProcessHandler(const QString & projectPath,
-                               OutputEffectInstance* writer)
+ProcessHandler::ProcessHandler(const QString& projectPath,
+                               OutputEffectInstance* writer,
+                               int firstFrame,
+                               int lastFrame,
+                               int frameStep)
     : _process(new QProcess)
     , _writer(writer)
     , _ipcServer(0)
@@ -98,11 +102,16 @@ ProcessHandler::ProcessHandler(const QString & projectPath,
     _processArgs << QString::fromUtf8("-b") << QString::fromUtf8("-w") << QString::fromUtf8( writer->getScriptName_mt_safe().c_str() );
     _processArgs << QString::fromUtf8("--IPCpipe") <<  tmpFileName;
     _processArgs << projectPath;
+    // The command-line range syntax splits on '-', so a negative frame cannot be expressed; such a
+    // range is left to the writer's own frame range in the child process.
+    if ((firstFrame >= 0) && (lastFrame >= firstFrame)) {
+        _processArgs << QString::fromUtf8("%1-%2:%3").arg(firstFrame).arg(lastFrame).arg(std::max(1, frameStep));
+    }
 
     ///connect the useful slots of the process
     QObject::connect( _process, SIGNAL(readyReadStandardOutput()), this, SLOT(onStandardOutputBytesWritten()) );
-    QObject::connect( _process, SIGNAL(readyReadStandardError()), this, SLOT(onStandardErrorBytesWritten()) );
-    QObject::connect( _process, SIGNAL(error(QProcess::ProcessError)), this, SLOT(onProcessError(QProcess::ProcessError)) );
+    QObject::connect(_process, SIGNAL(readyReadStandardError()), this, SLOT(onStandardErrorBytesWritten()));
+    QObject::connect(_process, &QProcess::errorOccurred, this, &ProcessHandler::onProcessError);
     QObject::connect( _process, SIGNAL(finished(int,QProcess::ExitStatus)), this, SLOT(onProcessEnd(int,QProcess::ExitStatus)) );
 
 

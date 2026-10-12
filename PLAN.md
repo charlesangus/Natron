@@ -294,7 +294,7 @@ future core work has solid ground to build on.
 | M92 | Linked Nodes | todo | M24 | [M92-linked-nodes.md](PLAN/MILESTONES/M92-linked-nodes.md) |
 | M95 | Knob Cleanup And Keyer Redesign | todo | M69, M76 | [M95-knob-cleanup-and-keyer-redesign.md](PLAN/MILESTONES/M95-knob-cleanup-and-keyer-redesign.md) |
 | M96 | Weighted Curve Tangents | todo | M93 | [M96-weighted-curve-tangents.md](PLAN/MILESTONES/M96-weighted-curve-tangents.md) |
-| M97 | Value-Based Node Hashing | todo |  | [M97-value-based-node-hashing.md](PLAN/MILESTONES/M97-value-based-node-hashing.md) |
+| M97 | ~~Value-Based Node Hashing~~ | cancelled |  | [M97-value-based-node-hashing.md](PLAN/MILESTONES/M97-value-based-node-hashing.md) |
 | M94 | Delete Unused Maintainer Skill | todo | - | [M94-delete-unused-maintainer-skill.md](PLAN/MILESTONES/M94-delete-unused-maintainer-skill.md) |
 
 - 2026-09-18 — **M18's manual GUI checklist: all 6 items now confirmed**
@@ -318,7 +318,5 @@ future core work has solid ground to build on.
   (`format`, `lint-ci`, `build-and-test`) green throughout.
 
 # Open questions
-
-- **M97 - Value-Based Node Hashing vs M100 - Content Node Hashing:** both replace the `knobsAge` node hash with a value/content hash. M100 carries the user's scope decision (content hashes replace `knobsAge` and become the cache keys), which was M97's blocker. Proposed: fold M97 into M100 (cancel M97 and carry its prior art, branch `m76/hash-gated-readback-wip`, and its Write EXR read-back acceptance into M100). Awaiting the user.
 
 - **M64 - Tiled Rendering:** dropped for now (user, 2026-10-08): this 4-core dev host is too slow for the Phase 64.7 re-evaluation benchmarks to be meaningful. Resume only on a faster host and with the user's go-ahead.

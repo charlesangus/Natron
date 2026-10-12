@@ -8,6 +8,15 @@ M93 - Serialization Boundary, because Phases 100.4 and 100.5 touch `Node.cpp` lo
 `NodeSerialization`. M16 - Project Format Redesign deletes the serialized `KnobsAge` field,
 as it already plans to.
 
+**Absorbs M97 - Value-Based Node Hashing** (cancelled 2026-10-12, user): its prior art and its
+Write read-back acceptance now live here (Phase 100.7). Prior art: branch
+`m76/hash-gated-readback-wip` (`f1fbe003a`) has a working value-based content hash
+(`EffectInstance::computeContentHash`, `Engine/EffectInstanceContentHash.cpp`) and the Write's
+hash-gated, EXR-only read back on top of it, with the hash stored as `natron:outputHash` in the
+EXR header and tests (`Tests/Native/NativeWriteReadBack_Test.cpp`). Its Xvfb check passed the
+full undo-restores-the-match flow. Mine it for Phases 100.1–100.2, but don't merge it as is: it
+sits on pre-review M76 - Native Write code.
+
 ## Notes (investigation 2026-10-11, code reading only; re-check line numbers)
 
 **Current scheme:**
@@ -171,4 +180,12 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - verify: record the results in `## Decisions`
   - size: M
 
-**Verification gate:** full ctest green in both scheduler modes; the HashInvariants and HashPluginSweep suites pass; the audit run leaves no discrepancy unexplained; the regressions for bugs 1, 2 and 4 pass; value toggling and undo hit the cache; touching a frame file refreshes the viewer in the AppImage; `incrementKnobsAge`/`knobsAge` appear nowhere outside serialization.
+## Phase 100.7: Write read back gated by the hash
+- [ ] M100.P7.T1 — Read back an EXR frame only when its stored hash matches the node
+  - files: Engine/Nodes/IO/NativeWrite.{h,cpp}, Tests/Native/NativeWriteReadBack_Test.cpp, Tests/gui/m76_write.py, Engine/Nodes/README.md
+  - approach: port the read-back half of `f1fbe003a` onto the shipped NativeWrite, using the Phase 100.4 content hash. The Write stores its node's hash as `natron:outputHash` in each EXR it writes. Read back shows the file only when the stored hash equals the current hash, and shows the input otherwise. Read back is offered only for EXR. This replaces M76.P3.T2, which was cancelled.
+  - verify: `NativeWriteReadBack_Test` covers match, mismatch after an edit, and a restored match after undo; the GUI script repeats the undo flow under Xvfb.
+  - size: M
+
+**Verification gate:** full ctest green in both scheduler modes; the HashInvariants and HashPluginSweep suites pass; the audit run leaves no discrepancy unexplained; the regressions for bugs 1, 2 and 4 pass; value toggling and undo hit the cache; touching a frame file refreshes the viewer in the AppImage; `incrementKnobsAge`/`knobsAge` appear nowhere outside serialization. Renaming a node or reopening the project in another session leaves its hash unchanged; the Write reads back an EXR only on a hash match (M100.P7.T1).
+- 2026-10-12 — **Absorbed M97 - Value-Based Node Hashing** (user): M97 duplicated this milestone, and its blocker (the scope call) was settled here. Its prior art and the Write EXR read back moved into the intro and Phase 100.7.

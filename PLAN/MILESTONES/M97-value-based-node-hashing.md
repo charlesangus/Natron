@@ -1,4 +1,6 @@
-# M97 - Value-Based Node Hashing
+# M97 - ~~Value-Based Node Hashing~~
+
+> **Cancelled 2026-10-12 (user):** folded into M100 - Content Node Hashing, which carries this stub's prior art and acceptance (Phase 100.7). See `DECISIONS/2026-10-12-fold-m97-into-m100.md`.
 
 > Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
 

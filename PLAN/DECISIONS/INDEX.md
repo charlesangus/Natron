@@ -88,3 +88,4 @@
 - 2026-10-11 — content-node-hashing: content (Merkle) node hashes replace knobsAge; LRU eviction, no purge on hash change → DECISIONS/2026-10-11-content-node-hashing.md
 - 2026-10-12 — clean-sheet-merge: new native fr.natron.Merge (HDR-safe Nuke maths, layer modes, per-side alpha sources); old Merge deleted with no compat; M85 drops Merge → DECISIONS/2026-10-12-clean-sheet-merge.md
 - 2026-10-12 — renumber-live-session-milestones: inbox M95–M99 applied as M102–M106 (IDs taken) → DECISIONS/2026-10-12-renumber-live-session-milestones.md
+- 2026-10-12 — fold-m97-into-m100: M97 - Value-Based Node Hashing cancelled; its prior art and Write EXR read back move into M100 - Content Node Hashing (Phase 100.7) → DECISIONS/2026-10-12-fold-m97-into-m100.md

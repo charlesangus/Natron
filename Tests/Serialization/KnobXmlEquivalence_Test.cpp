@@ -448,7 +448,7 @@ TEST_F(BaseTest, KnobXmlEquivalenceFromSerializationRefusesAnotherType)
     EXPECT_FALSE(target->fromSerialization(saved));
 }
 
-TEST_F(BaseTest, KnobXmlEquivalenceFromSerializationFiltersAnUnknownChoiceOptionID)
+TEST_F(BaseTest, KnobXmlEquivalenceFromSerializationFallsBackOnAnUnknownChoiceOptionID)
 {
     NodePtr node = createNode(_generatorPluginID);
 
@@ -462,28 +462,13 @@ TEST_F(BaseTest, KnobXmlEquivalenceFromSerializationFiltersAnUnknownChoiceOption
     source->toSerialization(&saved);
     saved.choiceOptionID = std::string("retiredGamma");
 
-    const KnobI::ChoiceOptionIDFilter renameRetiredOption = [](std::string* optionID) {
-        if (*optionID == "retiredGamma") {
-            *optionID = "gamma";
-        }
-    };
-
-    KnobIPtr filtered = createKnobOfType(node->getEffectInstance().get(), KnobChoice::typeNameStatic(), "choiceFiltered");
-    ASSERT_TRUE(bool(filtered));
-    defineKnob(filtered);
-    EXPECT_TRUE(filtered->fromSerialization(saved, renameRetiredOption));
-    KnobChoice* filteredChoice = dynamic_cast<KnobChoice*>(filtered.get());
-    ASSERT_TRUE(filteredChoice != NULL);
-    EXPECT_EQ(2, filteredChoice->getValue());
-    EXPECT_EQ(std::string("gamma"), filteredChoice->getActiveEntry().id);
-
-    KnobIPtr unfiltered = createKnobOfType(node->getEffectInstance().get(), KnobChoice::typeNameStatic(), "choiceUnfiltered");
-    ASSERT_TRUE(bool(unfiltered));
-    defineKnob(unfiltered);
-    EXPECT_TRUE(unfiltered->fromSerialization(saved));
-    KnobChoice* unfilteredChoice = dynamic_cast<KnobChoice*>(unfiltered.get());
-    ASSERT_TRUE(unfilteredChoice != NULL);
-    EXPECT_EQ(0, unfilteredChoice->getValue());
+    KnobIPtr restored = createKnobOfType(node->getEffectInstance().get(), KnobChoice::typeNameStatic(), "choiceRestored");
+    ASSERT_TRUE(bool(restored));
+    defineKnob(restored);
+    EXPECT_TRUE(restored->fromSerialization(saved));
+    KnobChoice* restoredChoice = dynamic_cast<KnobChoice*>(restored.get());
+    ASSERT_TRUE(restoredChoice != NULL);
+    EXPECT_EQ(0, restoredChoice->getValue());
 }
 
 TEST_F(BaseTest, KnobXmlEquivalenceToSerializationReportsWhetherANodeMustSaveTheKnob)

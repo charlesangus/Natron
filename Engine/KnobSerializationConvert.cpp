@@ -250,19 +250,14 @@ loadDetachedKnob(const Serialization::KnobSerialization& serialization,
 void
 restoreChoiceFromDetachedKnob(KnobChoice* knob,
                               const KnobIPtr& serializedKnob,
-                              const Serialization::KnobSerialization& serialization,
-                              const KnobI::ChoiceOptionIDFilter& choiceOptionIDFilter)
+                              const Serialization::KnobSerialization& serialization)
 {
     KnobChoice* choiceSerialized = dynamic_cast<KnobChoice*>(serializedKnob.get());
     if (!choiceSerialized || !serialization.choiceOptionID) {
         return;
     }
-    std::string optionID = *serialization.choiceOptionID;
+    const std::string& optionID = *serialization.choiceOptionID;
     int id = knob->choiceRestorationId(choiceSerialized, optionID);
-    if ((id < 0) && choiceOptionIDFilter) {
-        choiceOptionIDFilter(&optionID);
-        id = knob->choiceRestorationId(choiceSerialized, optionID);
-    }
     knob->choiceRestoration(choiceSerialized, optionID, id);
 }
 
@@ -497,8 +492,7 @@ KnobHelper::toSerialization(Serialization::KnobSerialization* serialization)
 } // KnobHelper::toSerialization
 
 bool
-KnobHelper::fromSerialization(const Serialization::KnobSerialization& serialization,
-                              const ChoiceOptionIDFilter& choiceOptionIDFilter)
+KnobHelper::fromSerialization(const Serialization::KnobSerialization& serialization)
 {
     if (typeName() != serialization.typeName) {
         return false;
@@ -512,7 +506,7 @@ KnobHelper::fromSerialization(const Serialization::KnobSerialization& serializat
 
     KnobChoice* isChoice = dynamic_cast<KnobChoice*>(this);
     if (isChoice) {
-        restoreChoiceFromDetachedKnob(isChoice, serializedKnob, serialization, choiceOptionIDFilter);
+        restoreChoiceFromDetachedKnob(isChoice, serializedKnob, serialization);
 
         return true;
     }
@@ -734,7 +728,7 @@ createUserKnobFromSerialization(KnobHolder* holder,
     knob->cloneDefaultValues(serializedKnob.get());
     KnobChoice* isChoice = dynamic_cast<KnobChoice*>(knob.get());
     if (isChoice) {
-        restoreChoiceFromDetachedKnob(isChoice, serializedKnob, serialization, KnobI::ChoiceOptionIDFilter());
+        restoreChoiceFromDetachedKnob(isChoice, serializedKnob, serialization);
     } else {
         knob->clone(serializedKnob.get());
     }

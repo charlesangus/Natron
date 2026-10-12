@@ -380,12 +380,6 @@ class KnobI
     friend class KnobHolder;
 
 public:
-    /**
-     * @brief Replaces, in place, a saved choice option ID that matches none of a choice knob's
-     * entries with the ID an older version of Natron or of the plug-in used for the same option.
-     **/
-    typedef std::function<void(std::string* optionID)> ChoiceOptionIDFilter;
-
     // TODO: enable_shared_from_this
     // constructors should be privatized in any class that derives from std::enable_shared_from_this<>
 
@@ -488,15 +482,12 @@ public:
     /**
      * @brief Applies serialized values, defaults, animation, secretness and enabled state to this
      * existing knob, the way loading a project applies a saved knob to the knob of the same name.
-     * Choice knobs restore their selected entry by ID, passing an ID that matches no entry
-     * through choiceOptionIDFilter, when given, before looking it up again. Expressions and links
+     * Choice knobs restore their selected entry by ID. Expressions and links
      * are not restored here: they may refer to knobs that do not exist yet, see
      * restoreExpressionsFromSerialization() and storeLinksFromSerialization().
      * @returns false, doing nothing, when serialization holds another knob type.
      **/
-    virtual bool fromSerialization(const Serialization::KnobSerialization& serialization,
-                                   const ChoiceOptionIDFilter& choiceOptionIDFilter = ChoiceOptionIDFilter())
-        = 0;
+    virtual bool fromSerialization(const Serialization::KnobSerialization& serialization) = 0;
     virtual void computeHasModifications() = 0;
     virtual void checkAnimationLevel(ViewSpec view, int dimension) = 0;
 
@@ -1663,8 +1654,7 @@ public:
     virtual bool hasModifications(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool hasModificationsForSerialization() const OVERRIDE WARN_UNUSED_RETURN;
     virtual bool toSerialization(Serialization::KnobSerialization* serialization) OVERRIDE FINAL;
-    virtual bool fromSerialization(const Serialization::KnobSerialization& serialization,
-                                   const ChoiceOptionIDFilter& choiceOptionIDFilter = ChoiceOptionIDFilter()) OVERRIDE FINAL;
+    virtual bool fromSerialization(const Serialization::KnobSerialization& serialization) OVERRIDE FINAL;
     virtual void checkAnimationLevel(ViewSpec view, int dimension) OVERRIDE FINAL;
     virtual KnobIPtr createDuplicateOnHolder(KnobHolder* otherHolder,
                                             const std::shared_ptr<KnobPage>& page,

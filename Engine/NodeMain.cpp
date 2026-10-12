@@ -181,8 +181,6 @@ Node::load(const CreateNodeArgs& args)
 
     _imp->effect->onEffectCreated(canOpenFileDialog, args);
 
-    postPendingLegacyColorLayerWarning();
-
     if ( !getApp()->isCreatingNodeTree() ) {
         refreshAllInputRelatedData(!serialization);
     }

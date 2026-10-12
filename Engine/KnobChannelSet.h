@@ -191,13 +191,6 @@ public:
      **/
     static std::vector<ChannelSetRow> defaultRows();
 
-    /**
-     * @brief The default rows projects saved before per-node defaults existed stood for: the
-     * colour storage layer ID, every channel. Such a row resolves to nothing; it exists only so
-     * that loading an old project lands on a value the load-time colour-layer rewrite recognises.
-     **/
-    static std::vector<ChannelSetRow> legacyColorDefaultRows();
-
     std::vector<ChannelSetRow> getRows() const;
 
     /**

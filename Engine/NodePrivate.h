@@ -237,7 +237,6 @@ public:
         , persistentMessageType(0)
         , persistentMessageMutex()
         , persistentMessageFromChannelSelector(false)
-        , persistentMessageFromProjectLoad(false)
         , persistentMessageRenderSequence(0)
         , nanWarningHash(0)
         , channelSelectorResolvedSequence(0)
@@ -268,8 +267,6 @@ public:
         , streamWarnings()
         , requiresGLFinishBeforeRender(false)
         , pluginOwnsChannelMask(false)
-        , legacyChannelSetDefault()
-        , legacyColorLayerWarningPending(false)
         , effectiveDataKindMutex()
         , effectiveDataKindCacheSet(false)
         , effectiveDataKindCache(eDataKindPolymorphic)
@@ -452,10 +449,6 @@ public:
     // persistentMessageMutex.
     bool persistentMessageFromChannelSelector;
 
-    // Whether persistentMessage is a warning about how the project loaded. No render can make
-    // it untrue, so render-driven clears keep it. Guarded by persistentMessageMutex.
-    bool persistentMessageFromProjectLoad;
-
     // The AbortableRenderInfo sequence number of the render that posted the channel-selector
     // message, 0 when it was posted outside a render. Guarded by persistentMessageMutex.
     U64 persistentMessageRenderSequence;
@@ -517,13 +510,6 @@ public:
     // channel, DenoiseSharpen collapses R/G/B into one flag, ClipTest ORs the selection into a
     // zebra decision): adoptChannelQuad() leaves their quad alone instead of forcing it.
     bool pluginOwnsChannelMask;
-
-    // The channel-set value this node started on before channel-agnostic nodes defaulted to
-    // "All". A project saved back then stored no value for an untouched knob, so loading it
-    // must restore this instead of today's default.
-    std::string legacyChannelSetDefault;
-
-    bool legacyColorLayerWarningPending;
 
     // Cache for Node::getEffectiveOutputDataKind(): only ever populated for nodes whose
     // declared output kind is eDataKindPolymorphic, since a non-polymorphic node's kind is a

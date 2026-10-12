@@ -323,11 +323,16 @@ class MoveFeatherBarUndoCommand
     Q_DECLARE_TR_FUNCTIONS(MoveFeatherBarUndoCommand)
 
 public:
-
+    /**
+     * @brief Drags the feather bar of point by (dx, dy), and with it the feather of every point in
+     * selectedPoints: each feather moves along its own direction by the signed distance the drag
+     * projects to on point's direction.
+     **/
     MoveFeatherBarUndoCommand(const RotoPaintInteractPtr& roto,
                               double dx,
                               double dy,
-                              const std::pair<BezierCPPtr, BezierCPPtr> & point,
+                              const std::pair<BezierCPPtr, BezierCPPtr>& point,
+                              const std::list<std::pair<BezierCPPtr, BezierCPPtr>>& selectedPoints,
                               double time);
 
     virtual ~MoveFeatherBarUndoCommand();
@@ -337,14 +342,23 @@ public:
     virtual bool mergeWith(const UndoCommandPtr& other) OVERRIDE FINAL;
 
 private:
+    struct FeatherBar {
+        BezierCPPtr cp, fp;
+        BezierCPPtr oldCp, oldFp;
+    };
+
+    void addFeatherBar(const std::pair<BezierCPPtr, BezierCPPtr>& point);
 
     RotoPaintInteractWPtr _roto;
     bool _firstRedoCalled;
     double _dx, _dy;
     bool _rippleEditEnabled;
     double _time; //< the time at which the change was made
-    BezierPtr _curve;
-    std::pair<BezierCPPtr, BezierCPPtr> _oldPoint, _newPoint;
+    std::list<RotoDrawableItemPtr> _selectedCurves;
+    std::list<std::pair<BezierCPPtr, BezierCPPtr>> _selectedPoints;
+    std::pair<BezierCPPtr, BezierCPPtr> _grabbedPoint;
+    // The grabbed bar is first: its direction sets the distance every bar moves by.
+    std::list<FeatherBar> _bars;
 };
 
 

@@ -2289,7 +2289,17 @@ RotoPaint::onOverlayPenDown(double time,
                 featherBarSel.second.reset();
             }
         }
-
+        // Grabbing the bar of an already selected point keeps the selection, so the drag moves
+        // every selected feather; handleControlPointSelection would drop it on Shift.
+        bool featherBarIsSelected = false;
+        if (featherBarSel.first) {
+            for (SelectedCPs::const_iterator it = _imp->ui->selectedCps.begin(); it != _imp->ui->selectedCps.end(); ++it) {
+                if ((it->first == featherBarSel.first) || (it->second == featherBarSel.first)) {
+                    featherBarIsSelected = true;
+                    break;
+                }
+            }
+        }
 
         if (nearbyBezier) {
             ///check if the user clicked nearby the cross hair of the selection rectangle in which case
@@ -2303,15 +2313,20 @@ RotoPaint::onOverlayPenDown(double time,
                 }
                 didSomething = true;
             } else if (featherBarSel.first) {
-                _imp->ui->clearCPSSelection();
+                if (!featherBarIsSelected) {
+                    _imp->ui->clearCPSSelection();
+                }
                 _imp->ui->featherBarBeingDragged = featherBarSel;
 
                 ///Also select the point only if the curve is the same!
                 if (featherBarSel.first->getBezier() == nearbyBezier) {
-                    _imp->ui->handleControlPointSelection(_imp->ui->featherBarBeingDragged);
+                    if (!featherBarIsSelected) {
+                        _imp->ui->handleControlPointSelection(_imp->ui->featherBarBeingDragged);
+                    }
                     _imp->ui->handleBezierSelection(nearbyBezier);
                 }
                 _imp->ui->state = eEventStateDraggingFeatherBar;
+                _imp->ui->evaluateOnPenUp = true;
                 didSomething = true;
             } else {
                 bool found = false;
@@ -2339,10 +2354,13 @@ RotoPaint::onOverlayPenDown(double time,
             }
         } else {
             if (featherBarSel.first) {
-                _imp->ui->clearCPSSelection();
                 _imp->ui->featherBarBeingDragged = featherBarSel;
-                _imp->ui->handleControlPointSelection(_imp->ui->featherBarBeingDragged);
+                if (!featherBarIsSelected) {
+                    _imp->ui->clearCPSSelection();
+                    _imp->ui->handleControlPointSelection(_imp->ui->featherBarBeingDragged);
+                }
                 _imp->ui->state = eEventStateDraggingFeatherBar;
+                _imp->ui->evaluateOnPenUp = true;
                 didSomething = true;
             }
             if (_imp->ui->state == eEventStateNone) {
@@ -2839,7 +2857,7 @@ RotoPaint::onOverlayPenMotion(double time,
         break;
     }
     case eEventStateDraggingFeatherBar: {
-        pushUndoCommand( new MoveFeatherBarUndoCommand(_imp->ui, dx, dy, _imp->ui->featherBarBeingDragged, time) );
+        pushUndoCommand(new MoveFeatherBarUndoCommand(_imp->ui, dx, dy, _imp->ui->featherBarBeingDragged, _imp->ui->selectedCps, time));
         _imp->ui->evaluateOnPenUp = true;
         didSomething = true;
         break;

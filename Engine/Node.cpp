@@ -1506,31 +1506,6 @@ Node::loadKnob(const KnobIPtr& knob,
 
     const std::list<Serialization::KnobSerialization>& knobsValues = serialization.knobs;
 
-    ///try to find a serialized value for this knob
-    const ProjectBeingLoadedInfo projectInfos = getApp()->getProjectBeingLoadedInfo();
-
-    std::string pluginID = getPluginID();
-
-    KnobChoice* isChoice = dynamic_cast<KnobChoice*>( knob.get() );
-    if (isChoice) {
-
-        if (projectInfos.vMajor == 2 && projectInfos.vMinor < 3) {
-            // Before Natron 2.2.3, all dynamic choice parameters for multiplane had a string parameter.
-            // The string parameter had the same name as the choice parameter plus "Choice" appended.
-            // If we found such a parameter, retrieve the string from it.
-            std::string stringParamName = isChoice->getName() + "Choice";
-            for (std::list<Serialization::KnobSerialization>::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
-                if (NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) == stringParamName) {
-                    KnobStringPtr stringKnob = std::dynamic_pointer_cast<KnobString>(createDetachedKnobFromSerialization(*it));
-                    if (stringKnob) {
-                        isChoice->setActiveEntry(ChoiceOption(stringKnob->getValue()));
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
     for (std::list<Serialization::KnobSerialization>::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
 
         if (NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) != knob->getName()) {

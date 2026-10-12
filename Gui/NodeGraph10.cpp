@@ -128,14 +128,15 @@ NodeGraph::hasItemNearbyMouse(const QPoint& mousePosViewport,
             nodes.insert(n);
         }
     }
-    // Use a tolerance for edges, wide enough to find an unconnected input stub (see below). The
-    // broad-phase query below still runs against each edge's drawn shape; the radii that decide
-    // which one actually wins are applied afterwards, against the nearest point on its line.
+    // The broad-phase square reaches as far as the largest grab radius below (an unconnected
+    // input stub's) on every side of the cursor. It still runs against each edge's drawn shape;
+    // the radii that decide which one actually wins are applied afterwards, against the nearest
+    // point on its line.
     double tolerance = TO_DPIX(18.);
-    QRect toleranceRect(mousePosViewport.x() - tolerance / 2.,
-                        mousePosViewport.y() - tolerance / 2.,
-                        tolerance,
-                        tolerance);
+    QRect toleranceRect(mousePosViewport.x() - tolerance,
+                        mousePosViewport.y() - tolerance,
+                        2. * tolerance,
+                        2. * tolerance);
     selectedItems = items(toleranceRect, Qt::IntersectsItemShape);
     std::set<Edge*> edges;
     for (QList<QGraphicsItem*>::Iterator it = selectedItems.begin(); it != selectedItems.end(); ++it) {

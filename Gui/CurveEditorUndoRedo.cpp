@@ -896,11 +896,11 @@ JoinTangentsCommand::setNewDerivatives(bool undo)
             it->key->key = it->key->curve->getInternalCurve()->setKeyFrameDerivatives(left, right, keyframeIndexInCurve);
             attachedKnob->evaluateValueChange(isKnobCurve->getDimension(), it->key->key.getTime(), ViewIdx(0), eValueChangedReasonUserEdited);
         }
+    }
 
-        // Null when a unit test exercises the command without a real curve widget behind it.
-        if (_widget) {
-            _widget->refreshCurveDisplayTangents(it->key->curve.get());
-        }
+    // Null when a unit test exercises the command without a real curve widget behind it.
+    if (_widget) {
+        _widget->refreshSelectedKeysAndUpdate();
     }
 }
 

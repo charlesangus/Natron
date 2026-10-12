@@ -212,7 +212,7 @@ Replaces the `Write` container (`Engine/WriteNode.cpp`) and every OFX writer wit
   - verify: tests overwrite the file on disk after a first pull; without Reload the old pixels/layers are served, after Reload the new ones; the Write's button is disabled with read back off. GUI scripts click it.
   - size: M
 
-- [ ] M76.P3.T2 — Read back only an EXR whose stored hash matches the node
+- [x] M76.P3.T2 — ~~Read back only an EXR whose stored hash matches the node~~ (cancelled, moved to M97 - Value-Based Node Hashing)
   - files: `Engine/Nodes/IO/NativeWrite.cpp/.h`, `Engine/Nodes/IO/OiioWriteSupport.*`, tests, `Engine/Nodes/README.md`
   - approach: on a render to disk the Write stores its node hash for that frame/view in the EXR header. With Read back on, a frame is read from the file only if the stored hash equals the node's current hash; any upstream change or Write knob change breaks the match and the Write passes its input through (missing frame likewise). Read back is offered only for EXR sequences (hidden/disabled for other formats).
   - verify: tests — render, read back shows the file; change an upstream knob → input shown, not the file; revert → file again; change a Write knob → input; a non-EXR extension disables read back; a missing frame shows the input. The existing missing-frame-is-an-error test changes to match.
@@ -248,3 +248,4 @@ Replaces the `Write` container (`Engine/WriteNode.cpp`) and every OFX writer wit
 - 2026-10-11 — AppImage `build/appimages/M76-f69ebae73.AppImage` (review fixes included; supersedes `M76-ec033989a`) and updated `M76-uat.md` handed to the user; smoke green on it.
 - 2026-10-11 — PR #52 CI green (`format`, `lint-ci`, `build-and-test` on `f69ebae73`). Waiting only on the user's UAT sign-off of `M76-f69ebae73.AppImage`; then merge the fork PRs (openfx-io#12, openfx-arena#6) with merge commits, re-pin `fetch-assets.sh`, and squash-merge #52.
 - 2026-10-11 — **UAT round 1 (user):** no Reload button on the native Read or Write (Write: only meaningful with read back on); Write read back must compare the hash stored in the file with the node hash and read only on a match, EXR sequences only. Added as Phase 76.3 (P3.T1, P3.T2). PM assumption, stated to the user: on a mismatch or a missing frame the Write passes its input through.
+- 2026-10-11 — **P3.T2 dropped (user):** the hash-gated read back exposed that Natron's node hash counts edits, not values; hashing becomes M97 - Value-Based Node Hashing, and the EXR-only read-back restriction (which existed only to carry the hash) goes with it. The implemented work is parked on `m76/hash-gated-readback-wip` (`f1fbe003a`); only P3.T1's Reload buttons are re-applied on the M76 branch.

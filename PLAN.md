@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: [M45.P5.T1, M56.P8.T1, M76.P3.T1, M27.P1.T1, M93.P1.T1, M84 gate]
-pm_heartbeat: 2026-10-11T22:41:29-04:00
+pm_heartbeat: 2026-10-11T22:44:50-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -285,6 +285,7 @@ future core work has solid ground to build on.
 | M92 | Linked Nodes | todo | M24 | [M92-linked-nodes.md](PLAN/MILESTONES/M92-linked-nodes.md) |
 | M95 | Knob Cleanup And Keyer Redesign | todo | M69, M76 | [M95-knob-cleanup-and-keyer-redesign.md](PLAN/MILESTONES/M95-knob-cleanup-and-keyer-redesign.md) |
 | M96 | Weighted Curve Tangents | todo | M93 | [M96-weighted-curve-tangents.md](PLAN/MILESTONES/M96-weighted-curve-tangents.md) |
+| M97 | Value-Based Node Hashing | todo |  | [M97-value-based-node-hashing.md](PLAN/MILESTONES/M97-value-based-node-hashing.md) |
 | M94 | Delete Unused Maintainer Skill | todo | - | [M94-delete-unused-maintainer-skill.md](PLAN/MILESTONES/M94-delete-unused-maintainer-skill.md) |
 
 - 2026-09-18 — **M18's manual GUI checklist: all 6 items now confirmed**

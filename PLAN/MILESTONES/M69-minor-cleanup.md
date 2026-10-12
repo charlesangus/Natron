@@ -116,7 +116,7 @@ Scouted 2026-10-11 on `milestone/m55-node-graph-polish` at `10e0accd5`. **Re-che
 
 ## Phase 69.5: Roto multi-point feather
 
-- [ ] M69.P5.T1 — Add a pure helper for the multi-point feather drag, with unit tests
+- [x] M69.P5.T1 — Add a pure helper for the multi-point feather drag, with unit tests
   - files: `Engine/RotoFeatherDrag.h` (new), `Engine/RotoFeatherDrag.cpp` (new), `Tests/RotoFeatherDrag_Test.cpp` (new), `Tests/CMakeLists.txt` (**OVERLAP: Tests/CMakeLists.txt**; **REBASE (M56, M45)**)
   - approach:
     - Extract the per-point direction maths from `MoveFeatherBarUndoCommand::redo` (`Engine/RotoUndoCommand.cpp:1012-1110`): the unit feather direction, or the normal from left/right derivatives when the feather sits on the control point.
@@ -125,7 +125,7 @@ Scouted 2026-10-11 on `milestone/m55-node-graph-polish` at `10e0accd5`. **Re-che
   - verify: `ctest -R RotoFeatherDrag`: a drag along a direction gives that distance. Three points with different normals each move by `s` along their own normal. The feather-on-point case uses the derivative normal.
   - size: M
 
-- [ ] M69.P5.T2 — Drag the feather of every selected point together, as one undo step
+- [x] M69.P5.T2 — Drag the feather of every selected point together, as one undo step
   - files: `Engine/RotoPaint.cpp`, `Engine/RotoUndoCommand.h`, `Engine/RotoUndoCommand.cpp` (**REBASE (M56)**: `RotoPaint.cpp`'s `initializeKnobs` icon paths change, so the line numbers below drop by about 15; the press and move handlers are untouched)
   - approach:
     - In the press handler, when the grabbed feather bar's control point is already selected, skip `clearCPSSelection()` (`RotoPaint.cpp:2317` and `:2353`); otherwise select it alone, as today.

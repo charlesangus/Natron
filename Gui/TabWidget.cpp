@@ -263,6 +263,7 @@ TabWidget::TabWidget(Gui* gui,
 
     _imp->header = new TabWidgetHeader(this);
     QObject::connect( _imp->header, SIGNAL(mouseLeftTabBar()), this, SLOT(onTabBarMouseLeft()) );
+    QObject::connect(_imp->header, SIGNAL(paneMenuRequested(QPoint)), this, SLOT(createMenu(QPoint)));
     _imp->headerLayout = new QHBoxLayout(_imp->header);
     _imp->headerLayout->setContentsMargins(0, 0, 0, 0);
     _imp->headerLayout->setSpacing(0);
@@ -311,8 +312,7 @@ TabWidget::TabWidget(Gui* gui,
 
     /*adding menu to the left corner button*/
     _imp->leftCornerButton->setContextMenuPolicy(Qt::CustomContextMenu);
-    QObject::connect( _imp->leftCornerButton, SIGNAL(clicked()), this, SLOT(createMenu()) );
-
+    QObject::connect(_imp->leftCornerButton, SIGNAL(clicked()), this, SLOT(onPaneMenuButtonClicked()));
 
     _imp->mainLayout->addWidget(_imp->header);
     _imp->mainLayout->addStretch();
@@ -380,7 +380,13 @@ TabWidget::setClosable(bool closable)
 }
 
 void
-TabWidget::createMenu()
+TabWidget::onPaneMenuButtonClicked()
+{
+    createMenu(_imp->leftCornerButton->mapToGlobal(QPoint(0, 0)));
+}
+
+void
+TabWidget::createMenu(const QPoint& globalPos)
 {
     MenuWithToolTips menu(_imp->gui);
     //QFont f(appFont,appFontSize);
@@ -466,7 +472,7 @@ TabWidget::createMenu()
     QObject::connect( isAnchorAction, SIGNAL(triggered()), this, SLOT(onSetAsAnchorActionTriggered()) );
     menu.addAction(isAnchorAction);
 
-    menu.exec( _imp->leftCornerButton->mapToGlobal( QPoint(0, 0) ) );
+    menu.exec(globalPos);
 } // TabWidget::createMenu
 
 void

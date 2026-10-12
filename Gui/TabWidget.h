@@ -135,12 +135,25 @@ Q_SIGNALS:
 
     void mouseLeftTabBar();
 
+    void paneMenuRequested(QPoint globalPos);
+
 private:
 
     virtual void leaveEvent(QEvent* e) OVERRIDE FINAL
     {
         Q_EMIT mouseLeftTabBar();
         QWidget::leaveEvent(e);
+    }
+
+    virtual void contextMenuEvent(QContextMenuEvent* e) OVERRIDE FINAL
+    {
+        // Only the empty stretch area should open the pane menu: a click on the
+        // TabBar or on the float/close buttons has its own context behaviour.
+        if (!childAt(e->pos())) {
+            Q_EMIT paneMenuRequested(e->globalPos());
+        } else {
+            QWidget::contextMenuEvent(e);
+        }
     }
 };
 
@@ -282,7 +295,9 @@ public Q_SLOTS:
        index out of range will have no effect.*/
     void makeCurrentTab(int index);
 
-    void createMenu();
+    void createMenu(const QPoint& globalPos);
+
+    void onPaneMenuButtonClicked();
 
     void addNewViewer();
 

@@ -98,6 +98,7 @@ set(Tests_SOURCES
     RenderScheduler_Test.cpp
     RenderSchedulerAbort_Test.cpp
     RenderSchedulerMode_Test.cpp
+    RotoFeatherDrag_Test.cpp
     RotoLayer_Test.cpp
     SchedulerEquivalence_Test.cpp
     SchedulerWriters_Test.cpp

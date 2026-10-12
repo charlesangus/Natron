@@ -136,7 +136,7 @@ Scouted 2026-10-11 on `milestone/m55-node-graph-polish` at `10e0accd5`. **Re-che
 
 ## Phase 69.6: Curve editor tangents (break and join)
 
-- [ ] M69.P6.T1 — Add a "join tangents" command and its slope helper, with unit tests
+- [x] M69.P6.T1 — Add a "join tangents" command and its slope helper, with unit tests
   - files: `Gui/CurveEditorUndoRedo.h`, `Gui/CurveEditorUndoRedo.cpp`, `Tests/CurveTangentJoin_Test.cpp` (new), `Tests/CMakeLists.txt` (**OVERLAP: Tests/CMakeLists.txt**; **REBASE (M56, M45)**)
   - approach:
     - Pure `double joinedDerivative(double left, double right)`: the slope of the mean of the two tangent angles, `tan((atan(l)+atan(r))/2)` (user decision).
@@ -144,7 +144,7 @@ Scouted 2026-10-11 on `milestone/m55-node-graph-polish` at `10e0accd5`. **Re-che
   - verify: `ctest -R CurveTangentJoin`: (1, 1) gives 1; (0, ∞-like 1e6) gives about 1; (−1, 1) gives 0. A command round-trip on a `KnobDouble` curve restores the broken state on undo.
   - size: M
 
-- [ ] M69.P6.T2 — Ctrl-drag a handle to break it, add a Join action, and let a dragged handle follow the cursor
+- [x] M69.P6.T2 — Ctrl-drag a handle to break it, add a Join action, and let a dragged handle follow the cursor
   - files: `Gui/CurveWidget.cpp`, `Gui/CurveWidgetPrivate.cpp`, `Gui/CurveWidgetPrivate.h`, `Gui/ActionShortcuts.h`, `Gui/GuiApplicationManager10.cpp` (**OVERLAP: ActionShortcuts.h / GuiApplicationManager10.cpp** with P2.T3 and P4.T3; **REBASE (M56)**: M56 adds a "Free Interpolation" action (`kShortcutIDActionCurveEditorFree`, no default key) right after Break, in the same five places this task edits: the `#define`s, both `registerKeybind` groups, `CurveWidgetPrivate::createMenu`, `CurveWidget::keyPressEvent`, plus a `freeInterpForSelectedKeyFrames` slot. Put Join after Free.)
   - approach:
     - Ctrl+drag on a tangent of an unbroken key forces the one-sided path: give `MoveTangentCommand` a `forceBreak` flag that sets `_setBoth=false` and `eKeyframeTypeBroken` (constructor `CurveEditorUndoRedo.cpp:633-708`; `_setBoth` is decided at `:678`). Plain drag keeps today's both-sides behaviour.

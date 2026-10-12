@@ -260,7 +260,7 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
 
 ## Phase 45.8: Tests, the one build, and UAT
 
-- [ ] M45.P8.T1 — Write the GUI test script for the tab menu
+- [x] M45.P8.T1 — Write the GUI test script for the tab menu
   - files: `Tests/gui/m45_tab_menu.py` (new)
   - approach:
     - Model it on `Tests/gui/m55_node_graph.py` (watchdog, `gt.check`/`gt.shot`, `create()`).
@@ -298,7 +298,7 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
   - verify: `NATRON_GUI_TEST_OUT=build/m45-shots Tests/gui/run-gui-test.sh Tests/gui/m45_tab_menu.py build/fast/App/Natron` reports 0 failures at the gate build.
   - size: M
 
-- [ ] M45.P8.T2 — Point `m75_read.py`'s Tab-menu helper at the new popup
+- [x] M45.P8.T2 — Point `m75_read.py`'s Tab-menu helper at the new popup
   - files: `Tests/gui/m75_read.py`
   - approach:
     - `open_node_dialog()` (`:392-404`) waits for `gt.widgets_of("TabTabTabWidget")` instead of `NodeCreationDialog`. It returns the popup, its `QLineEdit` and its `QListView`, as before.

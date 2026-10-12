@@ -188,6 +188,8 @@ future core work has solid ground to build on.
 - **Backlog order (2026-10-08, user):** M73 (wrap-up of M67 - Native Core Nodes) → M64 (re-evaluation only, stops for a go-ahead) → M27 → M22 → M31 → M69 → M24 → M44 → M55 and M46 together (evaluate Labelmaker-style node-graph info as part of node-graph polish) → M56 → M45. M25, M29 and M68 were not placed and stay unscheduled. **Deferred, do not start:** RFV (M70–M72), deep (M21, M51, M32), M16, and the 3D roadmap (M19, M20, M52–M54). Naming M31 here is the go-ahead its stub asked for. See `DECISIONS/2026-10-08-backlog-order-after-parcel-2.md`.
   **M74–M78 (native I/O and metadata) inserted 2026-10-08 (user):** they run right after the M64 re-evaluation, which was already in flight when they were planned, and ahead of M27 and the rest of the order above. See `DECISIONS/2026-10-08-m64-reeval-before-native-io.md`. **Read scope (2026-10-09, user):** the native Read covers every OIIO format, RAW is dropped, and the OFX Read container path is removed. M79 - Layered Document Readers (PSD, KRA, ORA, XCF) was added later and is unscheduled. **RAW returns (2026-10-09, user)** as M80 - Native RAW Support (rawspeed + darktable ports, CPU) and M81 - Raw GPU Kernels, after M79; see `DECISIONS/2026-10-09-raw-support-via-rawspeed-and-darktable-ports.md`. See `DECISIONS/2026-10-09-native-read-format-scope.md`. **M74 shipped 2026-10-09** (PR #44, squash `2cf878e7f`): native nodes carry per-frame metadata, bridged to OFX both ways. **M64 dropped for now (2026-10-08, user):** the host is too slow for its benchmarks.
   **M82–M87 (GPU rendering) added 2026-10-09 via the inbox (user-requested):** M82 - Render Cost Profiling measures first; M83 - GPU Compute Backend Spike picks one engine-wide backend (Vulkan compute + Slang is the lean, pending the user); M84 - GPU Placement And Residency, M85 - Native GPU Kernels, M86 - OFX 1.5 GPU Suites and M87 - Point-Op Kernel Fusion follow. They sit after M80, with M81 - Raw GPU Kernels moved behind M84 so raw kernels feed a resident region. M68 - Headless GL EGL stays deferred and is re-scoped once M83 lands. See `DECISIONS/2026-10-09-one-engine-gpu-backend.md`.
+  **M102–M106 (live sessions + graph merge) added 2026-10-11 via the inbox (user-requested), renumbered from M95–M99 on 2026-10-12 because those IDs were already taken:** M102 - Graph Edit Operations is the shared foundation (persistent node ID, plain-data edit operations). M103 - Graph Diff And Merge and M104 - Merge Resolution UI deliver three-way template merge. M105 - Live Session Core and M106 - Live Session Presence And Undo deliver live multi-user editing. All of it runs after M16 - Project Format Redesign. See `DECISIONS/2026-10-11-live-sessions-and-graph-merge.md`.
+  **M100 - Content Node Hashing added 2026-10-11 (user):** content (Merkle) node hashes replace `knobsAge`; see `DECISIONS/2026-10-11-content-node-hashing.md`. **M101 - Clean-Sheet Merge Node added 2026-10-12 (user):** a new native `fr.natron.Merge` after M84 - GPU Placement And Residency replaces the openfx-misc Merge port with no compatibility, and M85 - Native GPU Kernels no longer ports Merge; see `DECISIONS/2026-10-12-clean-sheet-merge.md`.
   **M73 shipped 2026-10-08** (PR #43, squash `cb04295b9`): openfx-misc pinned to its merge commit `9fb0d0904`; every fork's SupportExt pin is now on openfx-supportext master; merged stack branches and `build/wt/` worktrees removed (M64 benchmarks saved to `build/bench/from-wt-m64/`).
 
   **M24 shipped 2026-10-10** (PR #50, squash `a50bef552`). Nodes take their body colour from a category, and the user colour is a ring outside the node. Category and edge-kind colours are set in Preferences and applied on Save. Labels pick black or white text for contrast, and Dots get a settings panel.
@@ -248,6 +250,7 @@ future core work has solid ground to build on.
 | M82 | Render Cost Profiling | done |  | [M82-render-cost-profiling.md](PLAN/MILESTONES/M82-render-cost-profiling.md) |
 | M83 | GPU Compute Backend Spike | done |  | [M83-gpu-compute-backend-spike.md](PLAN/MILESTONES/M83-gpu-compute-backend-spike.md) |
 | M84 | GPU Placement And Residency | doing |  | [M84-gpu-placement-and-residency.md](PLAN/MILESTONES/M84-gpu-placement-and-residency.md) |
+| M101 | Clean-Sheet Merge Node | todo | M84 | [M101-clean-sheet-merge-node.md](PLAN/MILESTONES/M101-clean-sheet-merge-node.md) |
 | M81 | Raw GPU Kernels | todo |  | [M81-raw-gpu-kernels.md](PLAN/MILESTONES/M81-raw-gpu-kernels.md) |
 | M85 | Native GPU Kernels | todo |  | [M85-native-gpu-kernels.md](PLAN/MILESTONES/M85-native-gpu-kernels.md) |
 | M86 | OFX 1.5 GPU Suites | todo |  | [M86-ofx-gpu-suites.md](PLAN/MILESTONES/M86-ofx-gpu-suites.md) |
@@ -278,7 +281,13 @@ future core work has solid ground to build on.
 | M51 | Deep Filtering OpenDCX | todo |  | [M51-deep-filtering-opendcx.md](PLAN/MILESTONES/M51-deep-filtering-opendcx.md) |
 | M32 | Deep Sample Node | todo |  | [M32-deep-sample-node.md](PLAN/MILESTONES/M32-deep-sample-node.md) |
 | M93 | Serialization Boundary | doing | - | [M93-serialization-boundary.md](PLAN/MILESTONES/M93-serialization-boundary.md) |
+| M100 | Content Node Hashing | todo | M93 | [M100-content-node-hashing.md](PLAN/MILESTONES/M100-content-node-hashing.md) |
 | M16 | Project Format Redesign | todo | M93 | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
+| M102 | Graph Edit Operations | todo | M16 | [M102-graph-edit-operations.md](PLAN/MILESTONES/M102-graph-edit-operations.md) |
+| M103 | Graph Diff And Merge | todo | M102 | [M103-graph-diff-and-merge.md](PLAN/MILESTONES/M103-graph-diff-and-merge.md) |
+| M104 | Merge Resolution UI | todo | M103 | [M104-merge-resolution-ui.md](PLAN/MILESTONES/M104-merge-resolution-ui.md) |
+| M105 | Live Session Core | todo | M102 | [M105-live-session-core.md](PLAN/MILESTONES/M105-live-session-core.md) |
+| M106 | Live Session Presence And Undo | todo | M105 | [M106-live-session-presence-and-undo.md](PLAN/MILESTONES/M106-live-session-presence-and-undo.md) |
 | M70 | RFV Declaration And Storage | todo |  | [M70-rfv-declaration-and-storage.md](PLAN/MILESTONES/M70-rfv-declaration-and-storage.md) |
 | M71 | RFV Render Context | todo |  | [M71-rfv-render-context.md](PLAN/MILESTONES/M71-rfv-render-context.md) |
 | M72 | RFV Integration And UAT | todo |  | [M72-rfv-integration-and-uat.md](PLAN/MILESTONES/M72-rfv-integration-and-uat.md) |
@@ -309,5 +318,7 @@ future core work has solid ground to build on.
   (`format`, `lint-ci`, `build-and-test`) green throughout.
 
 # Open questions
+
+- **M97 - Value-Based Node Hashing vs M100 - Content Node Hashing:** both replace the `knobsAge` node hash with a value/content hash. M100 carries the user's scope decision (content hashes replace `knobsAge` and become the cache keys), which was M97's blocker. Proposed: fold M97 into M100 (cancel M97 and carry its prior art, branch `m76/hash-gated-readback-wip`, and its Write EXR read-back acceptance into M100). Awaiting the user.
 
 - **M64 - Tiled Rendering:** dropped for now (user, 2026-10-08): this 4-core dev host is too slow for the Phase 64.7 re-evaluation benchmarks to be meaningful. Resume only on a faster host and with the user's go-ahead.

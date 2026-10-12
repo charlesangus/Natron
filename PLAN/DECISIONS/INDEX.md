@@ -84,3 +84,7 @@
 - 2026-10-10 — ntpz-clean-break-sibling-connections: `.ntpz` bundle, no XML import (clean break), sibling-relative connections, M93 split out first → DECISIONS/2026-10-10-ntpz-clean-break-sibling-connections.md
 - 2026-10-11 — retire-engine-gl-render-path: Vulkan compute is the only engine GPU path; engine GL narrowed to the OFX OpenGL suite (M85 host wrappers, M86 contexts); viewer and 2D widgets stay GL → DECISIONS/2026-10-11-retire-engine-gl-render-path.md
 - 2026-10-11 — channels-row-always-at-top: the Channels row is always the first row of a node's main page, every node, no per-node placement → DECISIONS/2026-10-11-channels-row-always-at-top.md
+- 2026-10-11 — live-sessions-and-graph-merge: host-authoritative live sessions (v1: sync, presence, per-user undo, follow viewer, no password); template merge on app and CLI with node-specific handlers; identity policy from an M103 spike → DECISIONS/2026-10-11-live-sessions-and-graph-merge.md
+- 2026-10-11 — content-node-hashing: content (Merkle) node hashes replace knobsAge; LRU eviction, no purge on hash change → DECISIONS/2026-10-11-content-node-hashing.md
+- 2026-10-12 — clean-sheet-merge: new native fr.natron.Merge (HDR-safe Nuke maths, layer modes, per-side alpha sources); old Merge deleted with no compat; M85 drops Merge → DECISIONS/2026-10-12-clean-sheet-merge.md
+- 2026-10-12 — renumber-live-session-milestones: inbox M95–M99 applied as M102–M106 (IDs taken) → DECISIONS/2026-10-12-renumber-live-session-milestones.md

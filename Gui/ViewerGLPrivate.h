@@ -63,8 +63,7 @@ NATRON_NAMESPACE_ENTER
  *@enum MouseStateEnum
  *@brief basic state switching for mouse events
  **/
-enum MouseStateEnum
-{
+enum MouseStateEnum {
     eMouseStateSelecting = 0,
     eMouseStateDraggingImage,
     eMouseStateDraggingRoiLeftEdge,
@@ -78,7 +77,7 @@ enum MouseStateEnum
     eMouseStateDraggingRoiCross,
     eMouseStateBuildingUserRoI,
     eMouseStatePickingColor,
-    eMouseStatePickingInputColor,
+    eMouseStatePickingOutputColor,
     eMouseStateBuildingPickerRectangle,
     eMouseStateDraggingWipeCenter,
     eMouseStateDraggingWipeMixHandle,
@@ -222,6 +221,9 @@ struct ViewerGL::Implementation
     PickerStateEnum pickerState;
     QPointF lastPickerPos;
     QRectF pickerRect;
+    // Whether the rectangle pick reads the viewed node's output rather than its input. It samples
+    // on release, when the modifiers may no longer match the ones the drag started with.
+    bool pickerReadsOutput;
 
     // projection info, only used by the main thread
     QPointF glShadow; //!< pixel size in projection coordinates - used to create shadow

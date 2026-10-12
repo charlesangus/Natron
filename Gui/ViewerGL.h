@@ -637,7 +637,7 @@ private:
                                              const RectD & dispW, // in canonical coordinates
                                              int texIndex);
     void updateRectangleColorPicker();
-    void updateRectangleColorPickerInternal();
+    void updateRectangleColorPickerInternal(bool pickOutput);
 
     /**
      * @brief Refreshes the info bar's deep sample label for the pixel at x,y in canonical
@@ -649,9 +649,34 @@ private:
     /**
      * @brief X and Y are in widget coords!
      **/
-    bool pickColor(double x, double y, bool pickInput);
-    bool pickColorInternal(double x, double y, bool pickInput);
+    bool pickColor(double x, double y, bool pickOutput);
+    bool pickColorInternal(double x, double y, bool pickOutput);
 
+    /**
+     * @brief The node feeding the one displayed in textureIndex at time: the preferred input
+     * (Source, else B before A, else the first connected input, mandatory before optional
+     * before masks) of the nearest enabled node upstream of the viewer's active input, itself
+     * resolved past disabled nodes. Null when the displayed node has no connected input.
+     **/
+    NodePtr getViewedNodeInput(int textureIndex, double time) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Mean colour of the viewed node's input over pixelRect, in the pixel coordinates of
+     * displayed, the image last rendered in textureIndex, at the time, view, scale and layer
+     * displayed was rendered with. Channels displayed lacks are filled as getColorAt() fills them.
+     **/
+    bool getInputColorAtPixelRect(int textureIndex, const ImagePtr& displayed, const RectI& pixelRect,
+                                  float* r, float* g, float* b, float* a) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief getColorAt() and getColorAtRect() read from the viewed node's input unless pickOutput
+     * is set, and from its output when the input cannot be read. fromInput is set to which one
+     * was read.
+     **/
+    bool pickColorAt(double x, double y, int textureIndex, bool pickOutput, float* r, float* g, float* b, float* a,
+                     unsigned int* mipmapLevel, bool* fromInput) WARN_UNUSED_RETURN;
+    bool pickColorAtRect(const RectD& rect, int textureIndex, bool pickOutput, float* r, float* g, float* b, float* a,
+                         unsigned int* mipmapLevel, bool* fromInput) WARN_UNUSED_RETURN;
 
     static double currentTimeForEvent(QInputEvent* e);
 

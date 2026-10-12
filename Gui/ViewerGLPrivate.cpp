@@ -117,6 +117,7 @@ ViewerGL::Implementation::Implementation(ViewerGL* this_,
     , currentViewerInfo_resolutionOverlay()
     , pickerState(ePickerStateInactive)
     , lastPickerPos()
+    , pickerReadsOutput(false)
     , userRoIEnabled(false) // protected by mutex
     , userRoI() // protected by mutex
     , buildUserRoIOnNextPress(false)

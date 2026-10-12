@@ -54,9 +54,12 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 
 #include "Engine/DeepFlatten.h"
 #include "Engine/DeepImage.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Lut.h"
 #include "Engine/Node.h"
+#include "Engine/NodeColorSampler.h"
 #include "Engine/NodeGuiI.h"
 #include "Engine/OfxOverlayInteract.h"
 #include "Engine/Project.h"
@@ -1886,23 +1889,22 @@ ViewerGL::mousePressEvent(QMouseEvent* e)
         }
     }
 
-    if ( !overlaysCaught &&
-        isMouseShortcut(kShortcutGroupViewer, kShortcutIDMousePickInputColor, modifiers, button) &&
-        displayingImage() ) {
+    if (!overlaysCaught && isMouseShortcut(kShortcutGroupViewer, kShortcutIDMousePickOutputColor, modifiers, button) && displayingImage()) {
         // picker with single-point selection
         _imp->pickerState = ePickerStatePoint;
         if ( pickColor( e->position().x(), e->position().y(), true ) ) {
-            _imp->ms = eMouseStatePickingInputColor;
+            _imp->ms = eMouseStatePickingOutputColor;
             mustRedraw = true;
             overlaysCaught = true;
         }
     }
 
-    if ( !overlaysCaught &&
-         isMouseShortcut(kShortcutGroupViewer, kShortcutIDMouseRectanglePick, modifiers, button) &&
-         displayingImage() ) {
+    const bool rectanglePickInput = isMouseShortcut(kShortcutGroupViewer, kShortcutIDMouseRectanglePick, modifiers, button);
+    const bool rectanglePickOutput = isMouseShortcut(kShortcutGroupViewer, kShortcutIDMouseRectanglePickOutput, modifiers, button);
+    if (!overlaysCaught && (rectanglePickInput || rectanglePickOutput) && displayingImage()) {
         // start picker with rectangle selection (picked color is the average over the rectangle)
         _imp->pickerState = ePickerStateRectangle;
+        _imp->pickerReadsOutput = rectanglePickOutput;
         _imp->pickerRect.setTopLeft(zoomPos);
         _imp->pickerRect.setBottomRight(zoomPos);
         _imp->ms = eMouseStateBuildingPickerRectangle;
@@ -2471,7 +2473,7 @@ ViewerGL::penMotionInternal(int x,
         mustRedraw = true;
         break;
     }
-    case eMouseStatePickingInputColor: {
+    case eMouseStatePickingOutputColor: {
         pickColor( newClick.x(), newClick.y(), true );
         mustRedraw = true;
         break;
@@ -2624,6 +2626,7 @@ ViewerGL::updateColorPicker(int textureIndex,
 
     float r, g, b, a;
     bool picked = false;
+    bool fromInput = false;
     RectD rod = getRoD(textureIndex);
     RectD formatCanonical = getCanonicalFormat(textureIndex);
     unsigned int mmLevel;
@@ -2641,7 +2644,7 @@ ViewerGL::updateColorPicker(int textureIndex,
                    ( imgPosCanonical.y() >= formatCanonical.bottom() ) &&
                    ( imgPosCanonical.y() < formatCanonical.top() ) ) ) {
                 //imgPos must be in canonical coordinates
-                picked = getColorAt(imgPosCanonical.x(), imgPosCanonical.y(), textureIndex, &r, &g, &b, &a, &mmLevel);
+                picked = pickColorAt(imgPosCanonical.x(), imgPosCanonical.y(), textureIndex, false, &r, &g, &b, &a, &mmLevel, &fromInput);
             }
         }
     }
@@ -2656,6 +2659,7 @@ ViewerGL::updateColorPicker(int textureIndex,
         if ( !_imp->infoViewer[textureIndex]->colorVisible() ) {
             _imp->infoViewer[textureIndex]->showColorInfo();
         }
+        _imp->infoViewer[textureIndex]->setColorSource(fromInput);
         _imp->infoViewer[textureIndex]->setColor(r, g, b, a);
 
         if (textureIndex == 0) {
@@ -3718,10 +3722,8 @@ ViewerGL::getViewerTab() const
 bool
 ViewerGL::pickColorInternal(double x,
                             double y,
-                            bool /*pickInput*/)
+                            bool pickOutput)
 {
-
-//#pragma message WARN("Todo: use pickInput")
     float r, g, b, a;
     QPointF imgPos;
     {
@@ -3734,7 +3736,8 @@ ViewerGL::pickColorInternal(double x,
     for (int i = 0; i < 2; ++i) {
         // imgPos must be in canonical coordinates
         unsigned int mmLevel;
-        bool picked = getColorAt(imgPos.x(), imgPos.y(), i, &r, &g, &b, &a, &mmLevel);
+        bool fromInput = false;
+        bool picked = pickColorAt(imgPos.x(), imgPos.y(), i, pickOutput, &r, &g, &b, &a, &mmLevel, &fromInput);
         if (picked) {
             if (i == 0) {
                 _imp->viewerTab->getGui()->setColorPickersColor(r, g, b, a);
@@ -3744,6 +3747,7 @@ ViewerGL::pickColorInternal(double x,
             if ( !_imp->infoViewer[i]->colorVisible() ) {
                 _imp->infoViewer[i]->showColorInfo();
             }
+            _imp->infoViewer[i]->setColorSource(fromInput);
             _imp->infoViewer[i]->setColor(r, g, b, a);
             ret = true;
             {
@@ -3764,7 +3768,7 @@ ViewerGL::pickColorInternal(double x,
 bool
 ViewerGL::pickColor(double x,
                     double y,
-                    bool pickInput)
+                    bool pickOutput)
 {
     bool isSync = _imp->viewerTab->isViewersSynchroEnabled();
 
@@ -3772,7 +3776,7 @@ ViewerGL::pickColor(double x,
         bool res = false;
         const std::list<ViewerTab*>& allViewers = _imp->viewerTab->getGui()->getViewersList();
         for (std::list<ViewerTab*>::const_iterator it = allViewers.begin(); it != allViewers.end(); ++it) {
-            bool ret = (*it)->getViewer()->pickColorInternal(x, y, pickInput);
+            bool ret = (*it)->getViewer()->pickColorInternal(x, y, pickOutput);
             if ( (*it)->getViewer() == this ) {
                 res = ret;
             }
@@ -3780,7 +3784,7 @@ ViewerGL::pickColor(double x,
 
         return res;
     } else {
-        return pickColorInternal(x, y, pickInput);
+        return pickColorInternal(x, y, pickOutput);
     }
 }
 
@@ -3894,15 +3898,15 @@ ViewerGL::updateRectangleColorPicker()
     if (isSync) {
         const std::list<ViewerTab*>& allViewers = _imp->viewerTab->getGui()->getViewersList();
         for (std::list<ViewerTab*>::const_iterator it = allViewers.begin(); it != allViewers.end(); ++it) {
-            (*it)->getViewer()->updateRectangleColorPickerInternal();
+            (*it)->getViewer()->updateRectangleColorPickerInternal(_imp->pickerReadsOutput);
         }
     } else {
-        updateRectangleColorPickerInternal();
+        updateRectangleColorPickerInternal(_imp->pickerReadsOutput);
     }
 }
 
 void
-ViewerGL::updateRectangleColorPickerInternal()
+ViewerGL::updateRectangleColorPickerInternal(bool pickOutput)
 {
     float r, g, b, a;
     QPointF topLeft = _imp->pickerRect.topLeft();
@@ -3915,7 +3919,8 @@ ViewerGL::updateRectangleColorPickerInternal()
     rect.set_top( std::max( topLeft.y(), btmRight.y() ) );
     for (int i = 0; i < 2; ++i) {
         unsigned int mm;
-        bool picked = getColorAtRect(rect, i, &r, &g, &b, &a, &mm);
+        bool fromInput = false;
+        bool picked = pickColorAtRect(rect, i, pickOutput, &r, &g, &b, &a, &mm, &fromInput);
         if (picked) {
             if (i == 0) {
                 _imp->viewerTab->getGui()->setColorPickersColor(r, g, b, a);
@@ -3925,6 +3930,7 @@ ViewerGL::updateRectangleColorPickerInternal()
                 _imp->infoViewer[i]->showColorInfo();
             }
             _imp->infoViewer[i]->setColorApproximated(mm > 0);
+            _imp->infoViewer[i]->setColorSource(fromInput);
             _imp->infoViewer[i]->setColor(r, g, b, a);
 
             OfxRGBAColourD c = {r,g,b,a};
@@ -4480,6 +4486,138 @@ ViewerGL::getColorAtRect(const RectD& rect, // rectangle in canonical coordinate
 
     return false;
 } // getColorAtRect
+
+NodePtr
+ViewerGL::getViewedNodeInput(int textureIndex,
+                             double time) const
+{
+    ViewerInstance* viewer = getInternalNode();
+    int activeInputs[2];
+
+    viewer->getActiveInputs(activeInputs[0], activeInputs[1]);
+    EffectInstancePtr viewed = viewer->getInput(activeInputs[textureIndex]);
+    if (viewed) {
+        viewed = viewed->getNearestNonDisabled(time);
+    }
+    if (!viewed) {
+        return NodePtr();
+    }
+    NodePtr input = viewed->getNode()->getPreferredInputNode();
+    if (!input || !input->getEffectInstance()) {
+        return NodePtr();
+    }
+    EffectInstancePtr effectiveInput = input->getEffectInstance()->getNearestNonDisabled(time);
+
+    return effectiveInput ? effectiveInput->getNode() : NodePtr();
+}
+
+bool
+ViewerGL::getInputColorAtPixelRect(int textureIndex,
+                                   const ImagePtr& displayed,
+                                   const RectI& pixelRect,
+                                   float* r,
+                                   float* g,
+                                   float* b,
+                                   float* a)
+{
+    double time;
+    {
+        QMutexLocker l(&_imp->lastRenderedImageMutex);
+        time = _imp->displayTextures[textureIndex].time;
+    }
+    NodePtr input = getViewedNodeInput(textureIndex, time);
+    if (!input) {
+        return false;
+    }
+
+    const ImageLayerDesc& layer = displayed->getComponents();
+    float rgba[4];
+    if (!sampleNodeColor(input, time, getCurrentView(), displayed->getMipmapLevel(), pixelRect, layer, rgba)) {
+        return false;
+    }
+
+    // getColorAtInternal() spreads a single channel over RGBA and fills a two-channel image's B
+    // and A with 1, so the input and the output of the same layer must be filled alike to compare.
+    const std::vector<std::string>& channels = layer.getChannels();
+    if (channels.size() == 1) {
+        const float value = (channels[0] == "A") ? rgba[3] : rgba[0];
+        rgba[0] = rgba[1] = rgba[2] = rgba[3] = value;
+    } else if (channels.size() == 2) {
+        rgba[2] = 1.f;
+        rgba[3] = 1.f;
+    }
+    *r = rgba[0];
+    *g = rgba[1];
+    *b = rgba[2];
+    *a = rgba[3];
+
+    return true;
+}
+
+bool
+ViewerGL::pickColorAt(double x,
+                      double y, // x and y in canonical coordinates
+                      int textureIndex,
+                      bool pickOutput,
+                      float* r,
+                      float* g,
+                      float* b,
+                      float* a,
+                      unsigned int* mipmapLevel,
+                      bool* fromInput)
+{
+    if (!pickOutput) {
+        ImagePtr displayed = getLastRenderedImageByMipmapLevel(textureIndex, getMipmapLevelCombinedToZoomFactor());
+        if (displayed) {
+            const double par = displayed->getPixelAspectRatio();
+            const double scale = 1. / (1 << displayed->getMipmapLevel());
+            const int xPixel = std::floor(x * scale / par);
+            const int yPixel = std::floor(y * scale);
+            if (getInputColorAtPixelRect(textureIndex, displayed, RectI(xPixel, yPixel, xPixel + 1, yPixel + 1), r, g, b, a)) {
+                *mipmapLevel = displayed->getMipmapLevel();
+                *fromInput = true;
+
+                return true;
+            }
+        }
+    }
+    *fromInput = false;
+
+    return getColorAt(x, y, textureIndex, r, g, b, a, mipmapLevel);
+}
+
+bool
+ViewerGL::pickColorAtRect(const RectD& rect, // rectangle in canonical coordinates
+                          int textureIndex,
+                          bool pickOutput,
+                          float* r,
+                          float* g,
+                          float* b,
+                          float* a,
+                          unsigned int* mipmapLevel,
+                          bool* fromInput)
+{
+    if (!pickOutput) {
+        ImagePtr displayed = getLastRenderedImageByMipmapLevel(textureIndex, getMipmapLevelCombinedToZoomFactor());
+        if (displayed) {
+            // Converted exactly as getColorAtRect() converts it, so input and output average the same pixels.
+            const unsigned int mm = displayed->getMipmapLevel();
+            const RectI pixelRect(int(std::floor(rect.left())) >> mm,
+                                  int(std::floor(rect.bottom())) >> mm,
+                                  int(std::floor(rect.right())) >> mm,
+                                  int(std::floor(rect.top())) >> mm);
+            if (getInputColorAtPixelRect(textureIndex, displayed, pixelRect, r, g, b, a)) {
+                *mipmapLevel = mm;
+                *fromInput = true;
+
+                return true;
+            }
+        }
+    }
+    *fromInput = false;
+
+    return getColorAtRect(rect, textureIndex, r, g, b, a, mipmapLevel);
+}
 
 int
 ViewerGL::getCurrentlyDisplayedTime() const

@@ -332,13 +332,16 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutDescActionShowAll "Show All"
 
 #define kShortcutIDMousePickColor "pick"
-#define kShortcutDescMousePickColor "Pick a Color"
+#define kShortcutDescMousePickColor "Pick a Color from the viewed node's input"
 
-#define kShortcutIDMousePickInputColor "pickInput"
-#define kShortcutDescMousePickInputColor "Pick a Color from input of viewed node"
+#define kShortcutIDMousePickOutputColor "pickOutput"
+#define kShortcutDescMousePickOutputColor "Pick a Color from the viewed node's output"
 
 #define kShortcutIDMouseRectanglePick "rectanglePick"
-#define kShortcutDescMouseRectanglePick "Rectangle Color Picker"
+#define kShortcutDescMouseRectanglePick "Rectangle Color Picker on the viewed node's input"
+
+#define kShortcutIDMouseRectanglePickOutput "rectanglePickOutput"
+#define kShortcutDescMouseRectanglePickOutput "Rectangle Color Picker on the viewed node's output"
 
 #define kShortcutIDToggleWipe "toggleWipe"
 #define kShortcutDescToggleWipe "Toggle Wipe"

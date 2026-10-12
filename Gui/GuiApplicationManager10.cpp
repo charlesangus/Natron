@@ -899,8 +899,8 @@ GuiApplicationManager::populateShortcuts()
 
     registerMouseShortcut(kShortcutGroupViewer, kShortcutIDMousePickColor, kShortcutDescMousePickColor, Qt::ControlModifier, Qt::LeftButton);
     registerMouseShortcut(kShortcutGroupViewer, kShortcutIDMouseRectanglePick, kShortcutDescMouseRectanglePick, Qt::ShiftModifier | Qt::ControlModifier, Qt::LeftButton);
-    //registerMouseShortcut(kShortcutGroupViewer, kShortcutIDMousePickInputColor, kShortcutDescMousePickInputColor, Qt::ControlModifier | Qt::AltModifier, Qt::LeftButton);
-
+    registerMouseShortcut(kShortcutGroupViewer, kShortcutIDMousePickOutputColor, kShortcutDescMousePickOutputColor, Qt::ControlModifier | Qt::AltModifier, Qt::LeftButton);
+    registerMouseShortcut(kShortcutGroupViewer, kShortcutIDMouseRectanglePickOutput, kShortcutDescMouseRectanglePickOutput, Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier, Qt::LeftButton);
 
     ///Player
     registerKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevious, kShortcutDescActionPlayerPrevious, Qt::NoModifier, Qt::Key_Left);

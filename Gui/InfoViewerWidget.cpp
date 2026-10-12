@@ -81,6 +81,9 @@ InfoViewerWidget::InfoViewerWidget(const QString& description,
                             "<font color=orange>RoD:</font>  The region of definition of the displayed image (where the data is defined)<br />"
                             "<font color=orange>Fps:</font>  (Only active during playback) The frame-rate of the play-back sustained by the viewer<br />"
                             "<font color=orange>Coordinates:</font>  The coordinates of the current mouse location<br />"
+                            "<font color=orange>in/out:</font>  Whether the RGBA values are read from the viewed node's input (<b>in</b>) or its output (<b>out</b>). "
+                            "Ctrl-click, the Ctrl+Shift rectangle and hovering read the input, Ctrl+Alt-click and the Ctrl+Shift+Alt rectangle read the output. "
+                            "A node without a connected input is always read at its output.<br />"
                             "<font color=orange>RGBA:</font>  The RGBA color of the displayed image. Note that if some <b>?</b> are set instead of colors "
                             "that means the underlying image cannot be accessed internally, you should refresh the viewer to make it available. "
                             "Also sometimes you may notice the tilde '~' before the colors: it indicates whether the color indicated is the true "
@@ -149,6 +152,13 @@ InfoViewerWidget::InfoViewerWidget(const QString& description,
         coordMouse->setMinimumWidth(width);
     }
 
+    colorSource = new Label(this);
+    {
+        QFontMetrics fm = colorSource->fontMetrics();
+        int width = fm.horizontalAdvance(QString::fromUtf8("out "));
+        colorSource->setMinimumWidth(width);
+    }
+
     rgbaValues = new Label(this);
     {
         QFontMetrics fm = rgbaValues->fontMetrics();
@@ -180,6 +190,7 @@ InfoViewerWidget::InfoViewerWidget(const QString& description,
     layout->addWidget(coordDispWindow);
     layout->addWidget(_fpsLabel);
     layout->addWidget(coordMouse);
+    layout->addWidget(colorSource);
     layout->addWidget(rgbaValues);
     layout->addWidget(color);
     layout->addWidget(hvl_lastOption);
@@ -239,6 +250,7 @@ void
 InfoViewerWidget::showColorInfo()
 {
     hvl_lastOption->show();
+    colorSource->show();
     rgbaValues->show();
     color->show();
 }
@@ -247,6 +259,7 @@ void
 InfoViewerWidget::hideColorInfo()
 {
     hvl_lastOption->hide();
+    colorSource->hide();
     rgbaValues->hide();
     color->hide();
     deepValues->hide();
@@ -492,6 +505,17 @@ InfoViewerWidget::setColor(float r,
     hvl_lastOption->setText(hsvlValues);
     hvl_lastOption->update();
 } // setColor
+
+void
+InfoViewerWidget::setColorSource(bool fromInput)
+{
+    const QFont& font = colorSource->font();
+
+    colorSource->setText(QString::fromUtf8("<font color=\"#DBE0E0\" face=\"%2\" size=%3>%1</font>")
+                             .arg(fromInput ? QString::fromUtf8("in") : QString::fromUtf8("out"))
+                             .arg(font.family())
+                             .arg(font.pixelSize()));
+}
 
 void
 InfoViewerWidget::setColorValid(bool valid)

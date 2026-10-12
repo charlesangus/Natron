@@ -138,7 +138,7 @@ Scouted facts this plan relies on (2026-10-12, `milestone/m85-native-gpu-kernels
     - the existing Grade and Blur placement tests are unchanged.
   - size: M
 
-- [ ] M85.P1.T5 — Retire the spike's pointops.slang
+- [x] M85.P1.T5 — Retire the spike's pointops.slang
   - files: `Engine/Gpu/Kernels/pointops.slang` (delete, keeping `Chain<A, B>` in `pixelwrap.slang` for M87), `Engine/Gpu/CMakeLists.txt`, `Tests/Gpu/CMakeLists.txt`, `Tests/Gpu/PointOpGpu_Test.cpp`, `Tests/Gpu/PointOpCompose_Test.cpp`
   - approach:
     - Drop the `pointop_grade/invert/chain/masked` registry entries and their test twins.
@@ -544,3 +544,9 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - **P1.T4:**
     - `GpuTaskTraits` gains `costClass` and `inputCount`, and `hasGpuCost` includes the class defaults, so `GpuPlacement.cpp` is unchanged.
     - `inputCount` includes the mask input, which errs toward the CPU.
+- 2026-10-12 — **P1.T5 done** (`871a330ea`).
+  - `Chain<A, B>`, `WrapGrade` and `WrapInvert` moved into `pixelwrap.slang`. The test entries are `pixelwrap_grade`, `pixelwrap_invert` and `pixelwrap_chain`.
+  - `PixelWrapCompose.ChainEqualsInvertAfterGrade` passes on the C++ twin. It also runs in the `Gpu.` and `GpuNoPushDescriptor.` ctest registrations, on lavapipe and RADV.
+  - `GpuKernelRegistry_Test` now checks `wrap_divide` instead of `pointop_masked`.
+  - `Chain::load` loads both ops from the same block, which is fine for Grade then Invert. Two ops that both read params would need offsets; that is for M87.
+  - P1.T3's test `NativeImageEffectGpuTest.RenderGpuMatchesTheCpuRender` fails on its alpha-source case: the output layer has 4 channels but the source has 1. A consultant is diagnosing it.

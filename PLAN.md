@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: [M69 freshness check, M45.P8.T3 build (queued), M56 UAT, M76 UAT round 2, M27.P1.T1, M93.P5.T1 (UAT AppImage building; PR #55 review), M85.P1.T3 (fixing test)]
-pm_heartbeat: 2026-10-12T06:35:42-04:00
+pm_heartbeat: 2026-10-12T08:16:01-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -305,6 +305,7 @@ future core work has solid ground to build on.
 | M96 | Weighted Curve Tangents | todo | M93 | [M96-weighted-curve-tangents.md](PLAN/MILESTONES/M96-weighted-curve-tangents.md) |
 | M97 | ~~Value-Based Node Hashing~~ | cancelled |  | [M97-value-based-node-hashing.md](PLAN/MILESTONES/M97-value-based-node-hashing.md) |
 | M94 | Delete Unused Maintainer Skill | todo | - | [M94-delete-unused-maintainer-skill.md](PLAN/MILESTONES/M94-delete-unused-maintainer-skill.md) |
+| M113 | Native Node Rewrites Continued | todo |  | [M113-native-node-rewrites-continued.md](PLAN/MILESTONES/M113-native-node-rewrites-continued.md) |
 
 - 2026-09-18 — **M18's manual GUI checklist: all 6 items now confirmed**
   (re-run on a rebuilt AppImage at `94ceb9407` or later). Separately, the

@@ -178,7 +178,7 @@ Scouted 2026-10-11 on `milestone/m55-node-graph-polish` at `10e0accd5`. **Re-che
 
 ## Phase 69.9: IDistort UV layer
 
-- [ ] M69.P9.T1 — Give IDistort and STMap a UV layer dropdown that feeds their U, V and Alpha pickers
+- [ ] ~~M69.P9.T1 — Give IDistort and STMap a UV layer dropdown that feeds their U, V and Alpha pickers~~ (cancelled 2026-10-12 by the user: IDistort and STMap are rewritten as native nodes in M113 - Native Node Rewrites Continued)
   - files: `Engine/OfxEffectInstance.cpp`, `Engine/Node.h`, `Engine/Node.cpp`, `Engine/NodePrivate.h`, `Tests/LayerKnobsRender_Test.cpp` (**REBASE (M56)**: M56 edits `takeOverMultiplaneChoices`, see approach; **REBASE (M45)**: `Node.cpp`/`Node.h`; pending Q1, Q2)
   - approach:
     - Why it looks RGBA-only. IDistort's `channelU`/`channelV`/`channelA` (openfx-misc `Distortion.cpp:3636-3656`, `describeInContextAddPlaneChannelChoice` over the single `UV` clip) are recognised as channel choices by `OfxMultiplaneChoice::isMultiplaneChannelChoice`. `takeOverMultiplaneChoices` (`OfxEffectInstance.cpp:827-982`) twins each of them as a flat `KnobChannelSelect` (`hostChannelU`/`V`/`A`), not as a layer dropdown; only `kPlaneChoiceTakeOvers` (`:724-727`, Premult/Unpremult `inputPlane`) get a `KnobLayerSelect`. Each twin is input-bound to the UV clip (resolved from the option hints, `:872-884`), and its combo lists `layer.channel` for every layer that input carries. `LayerKnobsRender_Test.cpp:800` shows `diffuse.R` is listed when the UV input carries diffuse. An **unconnected** UV input lists only the colour views (`Node.cpp` `appendInputStreamLayers`, "an unconnected input still lists" Color), which is what M56's shot showed. So nothing is broken, but there is no layer dropdown, and a long flat channel list is hard to use.
@@ -263,3 +263,7 @@ Acceptance sketch:
     - **Q2:** should STMap get the same dropdown? Recommended: yes. It has the same params from the same openfx-misc source.
     - **Q3:** should P8.T2 remove the legacy colour-layer reset/warning and the pre-v17 channel-set gate? Recommended: yes, under the no-backward-compatibility rule.
     - **Q4:** should Ctrl+Shift+Alt rect-pick read the output? Recommended: no. Rect and hover always read the input, as decided.
+- 2026-10-12 — **User answers to the freshness-check questions:**
+  - **IDistort/STMap UV layer:** cancelled (P9.T1). The user dropped the alpha-channel feature and wants both rewritten as native nodes in the new **M113 - Native Node Rewrites Continued**.
+  - **Legacy removal:** remove both the M65 colour-layer reset and the pre-v17 channel-set gate, with their tests and fixtures (P8.T1 and P8.T2 as written).
+  - **Rect pick output:** yes. Ctrl+Shift+Alt drag reads the output; plain Ctrl+Shift drag reads the input. P4.T3 includes this. Hover stays input-only.

@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: [M45.P8.T3 build (queued), M56.P8.T1, M76 UAT round 2, M27.P1.T1, M93.P1.T1]
-pm_heartbeat: 2026-10-12T00:40:02-04:00
+current: [M45.P8.T3 build (queued), M56.P8.T1, M76 UAT round 2, M27.P1.T1, M93.P1.T1, M85 elaboration]
+pm_heartbeat: 2026-10-12T00:43:53-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -253,7 +253,7 @@ future core work has solid ground to build on.
 | M84 | GPU Placement And Residency | done |  | [M84-gpu-placement-and-residency.md](PLAN/MILESTONES/M84-gpu-placement-and-residency.md) |
 | M101 | Clean-Sheet Merge Node | todo | M84 | [M101-clean-sheet-merge-node.md](PLAN/MILESTONES/M101-clean-sheet-merge-node.md) |
 | M81 | Raw GPU Kernels | todo |  | [M81-raw-gpu-kernels.md](PLAN/MILESTONES/M81-raw-gpu-kernels.md) |
-| M85 | Native GPU Kernels | todo |  | [M85-native-gpu-kernels.md](PLAN/MILESTONES/M85-native-gpu-kernels.md) |
+| M85 | Native GPU Kernels | doing |  | [M85-native-gpu-kernels.md](PLAN/MILESTONES/M85-native-gpu-kernels.md) |
 | M86 | OFX 1.5 GPU Suites | todo |  | [M86-ofx-gpu-suites.md](PLAN/MILESTONES/M86-ofx-gpu-suites.md) |
 | M87 | Point-Op Kernel Fusion | todo |  | [M87-point-op-kernel-fusion.md](PLAN/MILESTONES/M87-point-op-kernel-fusion.md) |
 | M88 | FIR Gaussian Blur | done |  | [M88-fir-gaussian-blur.md](PLAN/MILESTONES/M88-fir-gaussian-blur.md) |

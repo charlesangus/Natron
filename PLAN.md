@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: [M69.P7.T2 package, M45 UAT fixes, M56 UAT fixes, M27.P1.T1, M93 ship (format fix, CI, merge PR #55), M85.P1.T3 (fixing test)]
-pm_heartbeat: 2026-10-12T11:46:56-04:00
+current: [M69.P7.T2 package, M45 UAT round 2, M56 UAT fixes, M27.P1.T1, M93 ship (format fix, CI, merge PR #55), M85.P1.T3 (fixing test)]
+pm_heartbeat: 2026-10-12T14:48:41-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---

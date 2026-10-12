@@ -369,3 +369,4 @@ Acceptance sketch:
   - **SVG icons:** the bundle now also ships the `iconengines` Qt plugins, so SVG icons render sharp.
   - **Tests:** a new `TabMenuBridge.NativeGradeCarriesItsResourceIcon` test was added. The Python suites pass (39 tests).
   - **Waiting on the build:** the rebuild, the GUI re-run and the AppImage wait for M69's end-build agent.
+- 2026-10-12 — **Gate re-run on `52405c3d0`** (rebased onto `main` with M84): `m45_tab_menu` 97/0, `m75_read` 90/0, `m55_node_graph` 162/0; ctest 2050/2051. The one failure, `DeepNodesTest.DeepExpressionIsRegisteredAndInstantiable`, is **not M45's**. gtest reported PASS, then the process segfaulted on a background thread during AppManager/Qt shutdown. It passed 8/8 when run alone, and it was the only segfault in 2053 tests. The `Tests` binary does not link NatronGui. This is a rare, pre-existing shutdown race. UAT AppImage round 2: `build/appimages/M45-52405c3d0.AppImage`.

@@ -187,7 +187,7 @@ The design notes, the current behaviour re-checked against `a50bef552`, and the 
   - verify: `NATRON_GUI_TEST_OUT=build/m55-shots/out GUI_TEST_TIMEOUT=300 Tests/gui/run-gui-test.sh Tests/gui/m55_node_graph.py build/fast/App/Natron` reports 0 failures, as do the other two scripts. Show the shots to the user, who approves them.
   - size: L
 
-- [ ] M55.P4.T2 — Package the AppImage for the user checkpoint
+- [x] M55.P4.T2 — Package the AppImage for the user checkpoint
   - files: `build/appimages/M55-<sha>.AppImage`, `build/appimages/M55-uat.md`
   - approach: package with `tools/ci/local/package.sh`, as M24 did (the `--no-appstream` wrapper note in M24's Decisions applies). The UAT script walks through:
     - splicing a Blur and a two-node chain into a pipe and watching the marker;
@@ -243,3 +243,4 @@ The design notes, the current behaviour re-checked against `a50bef552`, and the 
 - 2026-10-11 — **Gate re-run on `main` + M44 (rebased, `942922fb4`):** build OK; ctest 1648/1648; `m55_node_graph.py` 139/0, `m55_input_pipes.py` 118/0, `m24_border.py` 47/0. Packaging the UAT AppImage next.
 - 2026-10-11 — **AppImage for UAT:** `build/appimages/M55-942922fb4.AppImage` (fast build of the gate-green rebased branch), with `build/appimages/M55-uat.md`. It launches; `--version` shows the stale `d9dcaf1` from the cached configure, as M24 noted. Awaiting the user's sign-off.
 - 2026-10-11 — **UAT passed (user)** on `M55-942922fb4.AppImage`, with one change: a foreground render must not switch to the Progress tab. That fix is in progress. The user's other question, about the pick-up connection mode, is answered: it is M69.P2.T2 in M69 - Minor Cleanup, not M55.
+- 2026-10-12 — **Shipped:** PR #53 squash-merged as `a0a6336e8` after one review round (1 high, 4 medium and 6 low findings, all fixed in `3676fe15b`; the user's `paramChanged` callback is kept through `KnobButton::triggerCallbacksOnly`). CI was green. Gate on the final head: ctest 1653/1653, GUI scripts 162/118/47 with 0 failures.

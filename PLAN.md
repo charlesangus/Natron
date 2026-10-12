@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: [M55 PR #53 review fixes, M56.P8.T1, M76.P3.T1, M27.P1.T1, M93.P1.T1, M84 gate]
-pm_heartbeat: 2026-10-11T21:32:00-04:00
+current: [M45 setup, M56.P8.T1, M76.P3.T1, M27.P1.T1, M93.P1.T1, M84 gate]
+pm_heartbeat: 2026-10-11T22:02:55-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -262,10 +262,10 @@ future core work has solid ground to build on.
 | M69 | Minor Cleanup | todo | M44, M55 | [M69-minor-cleanup.md](PLAN/MILESTONES/M69-minor-cleanup.md) |
 | M24 | Node Graph Category Colour | done | - | [M24-node-graph-category-colour.md](PLAN/MILESTONES/M24-node-graph-category-colour.md) |
 | M44 | Trackball Colour Editing | done | - | [M44-trackball-colour-editing.md](PLAN/MILESTONES/M44-trackball-colour-editing.md) |
-| M55 | Node Graph Polish | doing | M24 | [M55-polish-node-graph-interaction.md](PLAN/MILESTONES/M55-polish-node-graph-interaction.md) |
+| M55 | Node Graph Polish | done | M24 | [M55-polish-node-graph-interaction.md](PLAN/MILESTONES/M55-polish-node-graph-interaction.md) |
 | M46 | Labelmaker Annotations | todo | M56 | [M46-labelmaker-annotations.md](PLAN/MILESTONES/M46-labelmaker-annotations.md) |
 | M56 | Visual And Menu Polish | doing | M44, M55 | [M56-polish-visual-and-menus.md](PLAN/MILESTONES/M56-polish-visual-and-menus.md) |
-| M45 | Native Tab Menu | todo | M55 | [M45-tabtabtab-native-tab-menu.md](PLAN/MILESTONES/M45-tabtabtab-native-tab-menu.md) |
+| M45 | Native Tab Menu | doing | M55 | [M45-tabtabtab-native-tab-menu.md](PLAN/MILESTONES/M45-tabtabtab-native-tab-menu.md) |
 | M25 | GL Init FP Guard | todo |  | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
 | M29 | Independent Repository | todo |  | [M29-independent-repository.md](PLAN/MILESTONES/M29-independent-repository.md) |
 | M68 | Headless GL EGL | todo |  | [M68-headless-gl-egl-backend.md](PLAN/MILESTONES/M68-headless-gl-egl-backend.md) |

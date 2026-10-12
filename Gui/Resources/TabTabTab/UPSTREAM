@@ -28,5 +28,14 @@ Local patches:
   _find_nuke_main_window() call sites, so a non-Nuke host (Natron) can plug
   in its own main-window lookup; _find_nuke_main_window itself and Nuke's
   behaviour are unchanged.
+- patches/0002-host-row-metrics.patch — tabtabtab_nuke_core.py gets
+  set_row_metrics(row_height, visible_rows), used by TabTabTabWidget in
+  place of the hardcoded "twice the font height" row and 18 visible rows,
+  so a host can size the popup to its own row height; defaults are
+  unchanged, so Nuke's sizing is untouched. Also extracts the popup's
+  cursor-relative placement into _popup_position(), which now flips the
+  list above the search box instead of pushing the whole popup up the
+  screen when it doesn't fit below the cursor.
 - tests/test_host_hooks.py is a new test file, added by Natron (not from
-  upstream), covering set_main_window_finder() and _find_main_window().
+  upstream), covering set_main_window_finder(), _find_main_window(),
+  set_row_metrics(), _row_height(), _visible_rows() and _popup_position().

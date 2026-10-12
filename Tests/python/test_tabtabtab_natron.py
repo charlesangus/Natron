@@ -42,6 +42,18 @@ class _FakeQKeySequence(object):
     NativeText = "NativeText"
 
 
+_FAKE_APP_FONT = object()
+_FAKE_FONT_HEIGHT = 11
+
+
+class _FakeFontMetrics(object):
+    def __init__(self, font):
+        self.font = font
+
+    def height(self):
+        return _FAKE_FONT_HEIGHT
+
+
 class _FakeKeySequenceValue(object):
     def __init__(self, text):
         self._text = text
@@ -172,6 +184,7 @@ class NatronAdapterTests(unittest.TestCase):
         qtgui.QIcon = _FakeQIcon
         qtgui.QColor = _FakeQColor
         qtgui.QKeySequence = _FakeQKeySequence
+        qtgui.QFontMetrics = _FakeFontMetrics
 
         app_holder = {"instance": _make_qapp()}
 
@@ -182,6 +195,10 @@ class NatronAdapterTests(unittest.TestCase):
             @staticmethod
             def instance():
                 return app_holder["instance"]
+
+            @staticmethod
+            def font():
+                return _FAKE_APP_FONT
 
         qtwidgets.QApplication = _StubQApplication
 
@@ -218,6 +235,7 @@ class NatronAdapterTests(unittest.TestCase):
         core.TabTabTabPlugin = _FakeTabTabTabPlugin
         core.find_qt_menu_items = lambda menubar: []
         core.set_main_window_finder = MagicMock()
+        core.set_row_metrics = MagicMock()
         core.launch = MagicMock()
 
         stub_modules = {
@@ -558,6 +576,16 @@ class NatronAdapterTests(unittest.TestCase):
         _args, kwargs = h.core.launch.call_args
         self.assertEqual(kwargs["space_mode_order"], _DEFAULT_SPACE_MODE_ORDER)
         self.assertTrue(kwargs["scroll_enabled"])
+
+    # --- row metrics ---------------------------------------------------------
+
+    def test_sets_row_metrics_from_app_font_height(self):
+        h = self._load_adapter()
+
+        h.core.set_row_metrics.assert_called_once_with(
+            row_height=_FAKE_FONT_HEIGHT + h.module._ROW_HEIGHT_PADDING,
+            visible_rows=h.module._VISIBLE_ROWS,
+        )
 
     # --- main window finder -----------------------------------------------------
 

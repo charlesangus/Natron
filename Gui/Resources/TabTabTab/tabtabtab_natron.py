@@ -17,6 +17,7 @@ from tabtabtab_nuke_core import (
     TabTabTabPlugin,
     find_qt_menu_items,
     set_main_window_finder,
+    set_row_metrics,
 )
 
 
@@ -54,7 +55,22 @@ def _find_natron_main_window():
     return None
 
 
+_ROW_HEIGHT_PADDING = 6
+_VISIBLE_ROWS = 15
+
+
+def _natron_row_height():
+    """Font height plus a little padding — the row height Natron's own
+    lists and menus use — instead of the core's default (twice the font
+    height), which makes the popup far taller than fits most screens.
+    QFontMetrics is already DPI-scaled, so no extra scaling is needed here.
+    """
+    metrics = QtGui.QFontMetrics(QtWidgets.QApplication.font())
+    return metrics.height() + _ROW_HEIGHT_PADDING
+
+
 set_main_window_finder(_find_natron_main_window)
+set_row_metrics(row_height=_natron_row_height(), visible_rows=_VISIBLE_ROWS)
 
 
 def _path_element(text):

@@ -1,11 +1,17 @@
-"""Tests for the pluggable main-window finder (set_main_window_finder /
-_find_main_window).
+"""Tests for the pluggable host hooks: the main-window finder
+(set_main_window_finder / _find_main_window), the row metrics override
+(set_row_metrics / _row_height / _visible_rows), and the popup placement
+helper (_popup_position).
 
 Covers:
   - _find_main_window() defaulting to _find_nuke_main_window() when no
     finder has been registered
   - _create_tabtabtab_widget() passing the registered finder's result as
     the widget's parent
+  - _row_height()/_visible_rows() defaulting to the built-in Nuke sizing
+    until set_row_metrics() overrides them
+  - _popup_position() keeping the search box at the cursor when the
+    popup fits below it, and flipping above it when it doesn't
 """
 
 import importlib.util
@@ -153,3 +159,88 @@ def test_create_widget_uses_registered_finder_as_parent():
     module._create_tabtabtab_widget(plugin=MagicMock(), space_mode_order=None)
 
     assert captured["parent"] is sentinel
+
+
+# --- row metrics (set_row_metrics / _row_height / _visible_rows) -----------
+
+
+def test_row_metrics_default_to_nuke_sizing_when_unset():
+    module, _QMainWindow = _load_module([])
+
+    assert module._row_height(10) == 20  # twice the font height
+    assert module._visible_rows() == 18
+
+
+def test_set_row_metrics_overrides_both_values():
+    module, _QMainWindow = _load_module([])
+
+    module.set_row_metrics(row_height=24, visible_rows=15)
+
+    assert module._row_height(10) == 24
+    assert module._visible_rows() == 15
+
+
+def test_set_row_metrics_omitted_argument_falls_back_to_default():
+    module, _QMainWindow = _load_module([])
+
+    module.set_row_metrics(row_height=24)
+
+    assert module._row_height(10) == 24
+    assert module._visible_rows() == 18  # visible_rows wasn't passed
+
+
+# --- popup placement (_popup_position) --------------------------------------
+
+
+class _Rect(object):
+    """Minimal stand-in for a QRect, exposing only what _popup_position uses."""
+
+    def __init__(self, left, top, right, bottom):
+        self._left, self._top, self._right, self._bottom = left, top, right, bottom
+
+    def left(self):
+        return self._left
+
+    def top(self):
+        return self._top
+
+    def right(self):
+        return self._right
+
+    def bottom(self):
+        return self._bottom
+
+
+def test_popup_position_keeps_edit_at_cursor_when_it_fits_below():
+    module, _QMainWindow = _load_module([])
+    screen = _Rect(0, 0, 1920, 1199)
+
+    xpos, ypos, flipped = module._popup_position(500, 200, 400, 300, screen)
+
+    assert flipped is False
+    assert ypos == 200 - 13  # search box lands right at the cursor
+
+
+def test_popup_position_flips_above_when_it_does_not_fit_below():
+    module, _QMainWindow = _load_module([])
+    # A popup taller than the room below the cursor on a short screen,
+    # but which fits above it (cursor is near the bottom of the screen).
+    screen = _Rect(0, 0, 1920, 999)
+
+    xpos, ypos, flipped = module._popup_position(960, 900, 400, 757, screen)
+
+    assert flipped is True
+    assert ypos >= screen.top()
+    assert ypos + 757 <= screen.bottom() + 1
+
+
+def test_popup_position_clamps_on_screen_when_it_fits_neither_way():
+    module, _QMainWindow = _load_module([])
+    # A popup taller than the entire screen: can't fit above or below
+    # the cursor in either orientation.
+    screen = _Rect(0, 0, 1920, 999)
+
+    xpos, ypos, flipped = module._popup_position(960, 500, 400, 2000, screen)
+
+    assert flipped is False
+    assert ypos >= screen.top()

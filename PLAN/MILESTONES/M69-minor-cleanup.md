@@ -202,3 +202,4 @@ Acceptance sketch:
   - **Several inputs:** the main/preferred input (B on Merge), falling back to Output when there is none.
   - **Roto multi-feather:** same signed distance along each point's own normal.
   - **Tangent join:** mean of the two angles.
+- 2026-10-12 — **Added (user, from the M56 shot review):** IDistort's UV picker offers only RGBA. It needs the layer dropdown that other multiplane nodes have, so the U/V/Alpha channels can come from any layer. To be planned as a task when M69 is promoted.

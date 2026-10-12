@@ -24,7 +24,23 @@ Acceptance sketch:
 
 Scoping draft (2026-10-10): `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` holds a draft phase/task breakdown and the user questions to settle before elaborating. Deps: M24 (confirmed by the user).
 
-Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `PLAN/DESIGN/2026-10-10-icon-direction-options.md` (icon audit, loaders, cache bug), and the icon-options page (claude.ai artifact `9B52JMKTyWw5Ufep99afxr`, "Chosen" section, which holds the toolbox glyph SVGs). The `## Decisions` below override all three. Line numbers are for `main` at `a50bef552` and will move once M44 and M55 merge. One build at the end (user rule): implementers do not compile. Only P1.T1 runs against a standing binary.
+Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `PLAN/DESIGN/2026-10-10-icon-direction-options.md` (icon audit, loaders, cache bug), and the icon-options page (claude.ai artifact `9B52JMKTyWw5Ufep99afxr`, "Chosen" section, which holds the toolbox glyph SVGs). The `## Phase 56.8: Shot review round 1 fixes
+
+- [ ] M56.P8.T1 — Apply the user's shot-review fixes (artifact `6y7CdSBwvuiThopTMEmBYJ` comments + chat, 2026-10-12)
+  - files: `Gui/NodeGui.cpp` (label alignment), `Gui/LayerChannelRow.*` / `Gui/KnobGuiLayerSelect.*` / `Gui/KnobGuiChannelSelect.*` (channel picker), `Gui/KnobGuiContainerHelper.cpp` (button column), `Engine/OfxEffectInstance.cpp` (IDistort UV offset row), `Gui/GuiApplicationManager.cpp` or the toolbox builder (stray coloured icon), Merge panel knob/label code, `Tests/gui/m56_visual.py`
+  - approach:
+    - Left-align node labels by default; wrapped continuation lines get a small hanging indent.
+    - Align the Premult channel picker's dropdowns.
+    - Dim the very saturated R/G/B/A channel buttons in the channel picker.
+    - Left-align the picker's "+" button under the layer dropdown, not offset to the left.
+    - Left-align buttons with the first knob column, not with the labels.
+    - Merge panel: fix the dark label text and the misaligned Output row.
+    - IDistort: fix the odd alignment of the UV Offset knobs.
+    - Toolbox: make the one remaining coloured icon monochrome.
+  - verify: an incremental build; `m56_visual.py` passes at 1× and 2× with new checks for each item; the revised shots are approved by the user.
+  - size: L
+
+## Decisions` below override all three. Line numbers are for `main` at `a50bef552` and will move once M44 and M55 merge. One build at the end (user rule): implementers do not compile. Only P1.T1 runs against a standing binary.
 
 ## Phase 56.1: Before evidence
 
@@ -305,3 +321,4 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
 - 2026-10-11 — **P1.T1 "before" run** against the M55 build, which has none of M56. 28 checks fail at both 1× and 2×, every one of them expected: wrap 5, labels 6, icons 11, density 6. The shots are in `build/m56-shots/before{,-2x}/`. For the after run, pass `M56_BASELINE_DIR` so the icon-hash comparison runs. Do not call `parentItem()` on node-graph items from Python, because PySide deletes the item and Natron crashes.
 - 2026-10-11 — **P7.T1 (end build):** the first build in the worktree was green, with no compile errors. ctest passes 1632/1632, once `build/assets` was symlinked into the worktree so the CImg reference tests compile (a worktree has no assets of its own). `m56_visual.py` passes 150/0 at 1× and at 2×; `m24_border.py` passes 47/0. `m55_input_pipes.py` fails 3 checks (Mask stubs auto-hiding) because M55 isn't merged yet; this clears on rebase. One product bug was found and fixed in `875df5bd3`: a node with a preview and a wrapped label drew the label below the node. Visual checks pass: the dope-sheet markers are upright with no red/blue swap, `feather` and `pen-tool` arcs render in Qt 6.8.3 (no re-save needed), the opacity glyphs show their fade, and the brush reads at 18 px. At 2× the link-cursor hotspot is about 1 logical px off, because Qt's X11 backend doesn't scale the hotspot; this is within tolerance. The after shots are in `.worktrees/m56/build/m56-shots/after{,-2x}/`. The before/after review with the user comes next.
 - 2026-10-11 — **P7.T2 AppImage:** `build/appimages/M56-875df5bd3.AppImage` with `build/appimages/M56-uat.md`. It launches; `check-relocatable.sh` on the extracted bundle finds 266 binaries that all resolve, `libQt6Svg.so.6` included. Waiting on the user's shot approval (claude.ai artifact `6y7CdSBwvuiThopTMEmBYJ`) and UAT.
+- 2026-10-12 — **Shot review round 1 (user):** eight fixes, listed in P8.T1. **Deferred:** IDistort offers only RGBA where it should have a layer dropdown. The user asked to defer this to a later milestone, so it is added to M69 - Minor Cleanup.

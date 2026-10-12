@@ -1,0 +1,25 @@
+Source: https://github.com/charlesangus/tabtabtab-nuke
+Commit: 48de32d77aea52712140663f0caa15dd709dd2ea
+Date: 2026-10-12
+
+Files taken:
+- tabtabtab_nuke_core.py
+- LICENSE
+- tests/__init__.py
+- tests/test_node_model_diff.py
+- tests/test_monitor_selection.py
+- tests/test_main_window_discovery.py
+- tests/test_cursor_restore_on_close.py
+
+Files left out:
+- tabtabtab_nuke.py — Nuke adapter, replaced by M45.P5.T3's Natron adapter
+- menu.py — Nuke adapter, replaced by M45.P5.T3's Natron adapter
+- tabtabtab_prefs.py — Preferences live in Natron's Settings (M45.P6.T5), not vendored
+- tabtabtab_prefs_dialog.py — Preferences live in Natron's Settings (M45.P6.T5), not vendored
+- tests/test_menu_fingerprint.py — Tests the Nuke adapter, not applicable to Natron
+- readme.md — Upstream documentation, not needed in vendored copy
+- docs/ — Upstream documentation, not needed in vendored copy
+- Makefile — Upstream build artifact, not needed in vendored copy
+- .github/ — Upstream CI configuration, not needed in vendored copy
+
+Local patches:

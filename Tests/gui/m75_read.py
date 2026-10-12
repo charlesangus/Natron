@@ -481,11 +481,11 @@ try:
         require(row >= 0, "the Tab menu offers Read")
         view.setCurrentIndex(view.model().index(row, 0))
         QTimer.singleShot(500, inspect)
-        # The tab menu defers the Read's creation to the next event-loop pass, so processEvents()
-        # runs it; that opens the modal file dialog, and the call returns once inspect() has rejected it.
+        # The adapter creates the node (and opens the file dialog) one event-loop tick after the
+        # popup closes, so this polls for inspect() to see it rather than a single processEvents().
         QTest.keyClick(line_edit, Qt.Key_Return)
-        QApplication.processEvents()
-        check(seen.get("dialog", False), "the create-time file dialog opened")
+        ok = yield ("until", lambda: seen.get("dialog", False), POLL_TIMEOUT_S)
+        check(ok, "the create-time file dialog opened")
         items = [i.lower() for i in seen.get("items", [])]
         check(len(items) > 3, "the dialog's filter menu opened (%d entries)" % len(items))
         check("*.dpx" in items, "the dialog's filter lists dpx")

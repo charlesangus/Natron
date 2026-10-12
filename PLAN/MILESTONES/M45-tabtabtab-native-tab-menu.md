@@ -243,7 +243,7 @@ One build at the end (user rule): implementers do not compile. The pure-Python t
 
 ## Phase 45.7: Shipping the Python files
 
-- [ ] M45.P7.T1 — Copy the vendored folder next to the binary in dev builds and into the AppImage
+- [x] M45.P7.T1 — Copy the vendored folder next to the binary in dev builds and into the AppImage
   - files: `App/CMakeLists.txt`, `tools/release/stage-bundle.sh`
   - approach:
     - `App/CMakeLists.txt`, after `target_include_directories(Natron ...)`:

@@ -37,6 +37,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Color/Clamp.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Filter/Blur.h"
@@ -55,6 +56,7 @@ gpuCapableIds()
     static const std::set<std::string> ids = {
         PLUGINID_NATRON_GRADE,
         PLUGINID_NATRON_BLUR,
+        PLUGINID_NATRON_CLAMP,
         PLUGINID_NATRON_INVERT,
     };
 

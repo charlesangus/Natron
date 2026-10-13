@@ -218,7 +218,7 @@ Scouted 2026-10-11 on `milestone/m55-node-graph-polish` at `10e0accd5`. **Re-che
 
 Line numbers are from `milestone/m69-minor-cleanup` at `a2e90be96`. They will shift once M45 - Native Tab Menu and M56 - Visual And Menu Polish merge and this branch rebases.
 
-- [ ] M69.P10.T1 — With an input held, a left-click on anything that isn't a node disconnects that input, as one undo step
+- [x] M69.P10.T1 — With an input held, a left-click on anything that isn't a node disconnects that input, as one undo step
   - files: `Gui/NodeGraphPickUp.h`, `Gui/NodeGraphPickUp.cpp`, `Gui/NodeGraph15.cpp`, `Tests/NodeGraphPickUp_Test.cpp`, `Tests/gui/m69_cleanup.py`
   - approach:
     - Add `ePickUpPressDisconnect` to `PickUpPressActionEnum` (`NodeGraphPickUp.h:43-48`).
@@ -264,7 +264,7 @@ Line numbers are from `milestone/m69-minor-cleanup` at `a2e90be96`. They will sh
   - approach: TBD once P10.T4 or the user's pasted text gives the error. Plan this task's brief then.
   - verify: P10.T4's section passes.
   - size: M
-- [ ] M69.P10.T6 — Open the pane menu from a right-click anywhere in the tab header
+- [x] M69.P10.T6 — Open the pane menu from a right-click anywhere in the tab header
   - files: `Gui/TabWidget.h`, `Gui/TabWidget.cpp`, `Tests/gui/m69_cleanup.py`
   - approach:
     - This is a requirement change from the user. A right-click on a tab, on the empty header space, on the left corner button or on the float/close buttons all open the pane menu at the cursor.
@@ -284,7 +284,7 @@ Line numbers are from `milestone/m69-minor-cleanup` at `a2e90be96`. They will sh
     - Smooth, then a plain drag moves both tangents.
     - Undo of the Ctrl-drag, then a plain drag moves both tangents.
   - size: M
-- [ ] M69.P10.T8 — Draw a dragged curve tangent at its normal length; drop the follow-the-cursor stand-in
+- [x] M69.P10.T8 — Draw a dragged curve tangent at its normal length; drop the follow-the-cursor stand-in
   - files: `Gui/CurveWidgetPrivate.cpp`, `Gui/CurveWidgetPrivate.h`, `Gui/CurveWidget.cpp`, `Tests/gui/m69_cleanup.py`
   - approach:
     - Delete `_tangentDragCursorPos`: the member (`CurveWidgetPrivate.h:178`), its initializer (`.cpp:98`), its assignment in `moveSelectedTangent` (`.cpp:1465-1468`), the override block in `refreshKeyTangents` (`.cpp:1547-1557`) and the snap-back in `CurveWidget::mouseReleaseEvent` (`CurveWidget.cpp:1246-1251`).

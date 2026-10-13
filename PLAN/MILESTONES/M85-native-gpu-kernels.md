@@ -149,7 +149,7 @@ Scouted facts this plan relies on (2026-10-12, `milestone/m85-native-gpu-kernels
 
 ## Phase 85.2: Grade and Blur complete; masks reach regions
 
-- [ ] M85.P2.T1 — Move Grade onto the description, gaining mask, mix and premult
+- [x] M85.P2.T1 — Move Grade onto the description, gaining mask, mix and premult
   - files: `Engine/Nodes/Color/Grade.{h,cpp}`, `Engine/Gpu/Kernels/grade.slang`, `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeGradeGpu_Test.cpp`
   - approach:
     - Add a `GradeOp : IPixelOp` and an entry `grade_wrapped` built on `runWrapped`, reusing `gradeops.slang`.
@@ -179,7 +179,7 @@ Scouted facts this plan relies on (2026-10-12, `milestone/m85-native-gpu-kernels
     The existing residency tests are unchanged.
   - size: L
 
-- [ ] M85.P2.T3 — Blur on the GPU with mask, mix, premult, channel subsets and alpha threshold
+- [x] M85.P2.T3 — Blur on the GPU with mask, mix, premult, channel subsets and alpha threshold
   - files: `Engine/Nodes/Filter/Blur.{h,cpp}`, `Engine/Nodes/Image/NativeImageEffect.{h,cpp}` (spatial helpers), `Tests/Native/NativeBlurGpu_Test.cpp`
   - approach:
     - **Shared helpers** for every spatial node, on the base:
@@ -236,13 +236,13 @@ Each task follows the same pattern, using P1.T3's description:
 
 Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A node that cannot meet its class records a measured bound and the reason beside it in that README.
 
-- [ ] M85.P3.T1 — Invert on the GPU
+- [x] M85.P3.T1 — Invert on the GPU
   - files: `Engine/Nodes/Color/Invert.{h,cpp}`, `Engine/Gpu/Kernels/invert.slang` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeInvertGpu_Test.cpp` (new), `Tests/Native/NativeGpuCapability_Test.cpp`
   - approach: follow the Phase 85.3 pattern.
   - verify: exact with no divisor, mask, or mix below 1; otherwise `arithmetic()` (1e-6 relative). Runs on lavapipe and RADV.
   - size: M
 
-- [ ] M85.P3.T2 — Clamp on the GPU
+- [x] M85.P3.T2 — Clamp on the GPU
   - files: `Engine/Nodes/Color/Clamp.{h,cpp}`, `Engine/Gpu/Kernels/clamp.slang` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeClampGpu_Test.cpp` (new), `Tests/Native/NativeGpuCapability_Test.cpp`
   - approach:
     - Follow the Phase 85.3 pattern.
@@ -550,3 +550,8 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - `GpuKernelRegistry_Test` now checks `wrap_divide` instead of `pointop_masked`.
   - `Chain::load` loads both ops from the same block, which is fine for Grade then Invert. Two ops that both read params would need offsets; that is for M87.
 - 2026-10-12 — **P1.T3 done** (`f7e5aa13e`). The alpha-source failure was in the test, not the base path: the region engine converts inputs to the task's plane before `renderGpu()`, and the test now does the same with `Image::convertToFormat`. 156 of 216 matrix cases render (96 divided); the 60 refusals are the divisor or mask falling outside the plane. The GPU/PixelWrap/NativeImageEffect set passes 265/265 on lavapipe, RADV and no-ICD, in both scheduler modes.
+- 2026-10-12 — **P2.T3** (`1875fa346`), **P2.T1** (`40d83b426`), **P3.T1** (`7367c6c39`) and **P3.T2** (`b3ba54792`) done, implemented in parallel and swept together: 392/392 on lavapipe, RADV and no-ICD in both scheduler modes.
+  - **Blur:** the alpha threshold is a `WrapParams` field (now 116 B, flag 4) applied in `wrap_finish`. `Blur::renderGpu` crops the source view to the input's valid rect before the divide and finish passes, because a view past the RoD reads a divisor of 0 instead of 1. Unpremult cases hold 2e-6 absolute plus 1e-6 relative: divided values reach ~650, and RADV is 1–5 ulp off there, while lavapipe is exact.
+  - **Grade:** `GradeOp` and `grade_wrapped` live in `pixelwrap.slang`, because `grade.slang`'s own buffer bindings would clash. `Grade::readSettings` feeds both kernels.
+  - **Clamp:** compares use sign-magnitude integer keys, because the device flushes denormals in float compares and the CPU doesn't.
+  - **Tests:** parity windows stay inside the node's RoD, because `GpuRegionTask` never asks `renderGpu` for pixels outside it. Saturation replaces Invert as the "no GPU kernel" node in `NativeImageEffectGpuTest` and `GpuResidencyTest`.

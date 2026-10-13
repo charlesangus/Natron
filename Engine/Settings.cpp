@@ -1283,6 +1283,53 @@ Settings::initializeKnobsNodeGraph()
                                                       "A and B, input A is be preferred "
                                                       "for auto-connection. When the node is disabled, B is always output, whether this is checked or not.") );
     _nodegraphTab->addKnob(_useInputAForMergeAutoConnect);
+
+    _tabMenuSeparator = AppManager::createKnob<KnobSeparator>(this, tr("Tab menu"));
+    _tabMenuSeparator->setName("tabMenuSeparator");
+    _nodegraphTab->addKnob(_tabMenuSeparator);
+
+    _tabMenuSearchModes = AppManager::createKnob<KnobChoice>(this, tr("Search modes (no / one / two leading spaces)"));
+    _tabMenuSearchModes->setName("tabMenuSearchModes");
+    {
+        // Each option ID is a list of tabtabtab mode names that the tab menu's Python adapter splits on ","
+        // and passes to tabtabtab as its space-mode order, so the IDs must match tabtabtab's names exactly.
+        const QString anchored = tr("Anchored fuzzy");
+        const QString nonAnchored = tr("Non-anchored fuzzy");
+        const QString consecutive = tr("Consecutive");
+        const QString separator = QString::fromUtf8(" / ");
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("anchored_fuzzy,non_anchored_fuzzy,consecutive",
+                                       (anchored + separator + nonAnchored + separator + consecutive).toStdString(), ""));
+        entries.push_back(ChoiceOption("anchored_fuzzy,consecutive,non_anchored_fuzzy",
+                                       (anchored + separator + consecutive + separator + nonAnchored).toStdString(), ""));
+        entries.push_back(ChoiceOption("non_anchored_fuzzy,anchored_fuzzy,consecutive",
+                                       (nonAnchored + separator + anchored + separator + consecutive).toStdString(), ""));
+        entries.push_back(ChoiceOption("non_anchored_fuzzy,consecutive,anchored_fuzzy",
+                                       (nonAnchored + separator + consecutive + separator + anchored).toStdString(), ""));
+        entries.push_back(ChoiceOption("consecutive,anchored_fuzzy,non_anchored_fuzzy",
+                                       (consecutive + separator + anchored + separator + nonAnchored).toStdString(), ""));
+        entries.push_back(ChoiceOption("consecutive,non_anchored_fuzzy,anchored_fuzzy",
+                                       (consecutive + separator + nonAnchored + separator + anchored).toStdString(), ""));
+        _tabMenuSearchModes->populateChoices(entries);
+    }
+    _tabMenuSearchModes->setHintToolTip(tr("The search mode the tab menu uses for a query with no leading space, one leading space "
+                                           "and two leading spaces, in that order. A query that starts with [ also searches the "
+                                           "category.\n\n"
+                                           "Anchored fuzzy: the letters you type must appear in order, starting from the first "
+                                           "letter of the node name. \"blr\" finds \"Blur\" but not \"DirBlur\".\n\n"
+                                           "Non-anchored fuzzy: the letters you type must appear in order, but can start anywhere "
+                                           "in the node name. \"blr\" finds both \"Blur\" and \"DirBlur\".\n\n"
+                                           "Consecutive: the letters you type must appear as one unbroken run anywhere in the "
+                                           "node name. \"blur\" finds both \"Blur\" and \"DirBlur\", while \"blr\" finds neither, "
+                                           "because its letters are not adjacent."));
+    _nodegraphTab->addKnob(_tabMenuSearchModes);
+
+    _tabMenuScroll = AppManager::createKnob<KnobBool>(this, tr("Scroll through all results"));
+    _tabMenuScroll->setName("tabMenuScroll");
+    _tabMenuScroll->setHintToolTip(tr("When checked, the tab menu keeps more matches than fit in its window, and you can scroll "
+                                      "or use the arrow keys to reach the rest. When unchecked, only the first screenful of "
+                                      "matches is kept. Takes effect the next time the tab menu opens."));
+    _nodegraphTab->addKnob(_tabMenuScroll);
 } // Settings::initializeKnobsNodeGraph
 
 void
@@ -1638,6 +1685,10 @@ Settings::setDefaultValues()
     _useInputAForMergeAutoConnect->setDefaultValue(true);
     _usePluginIconsInNodeGraph->setDefaultValue(true);
     _useAntiAliasing->setDefaultValue(true);
+
+    // Tab menu
+    _tabMenuSearchModes->setDefaultValue(0);
+    _tabMenuScroll->setDefaultValue(true);
 
     // Plugins
     _extraPluginPaths->setDefaultValue("", 0);

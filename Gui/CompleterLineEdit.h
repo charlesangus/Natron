@@ -17,8 +17,8 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef NODECREATIONDIALOG_H
-#define NODECREATIONDIALOG_H
+#ifndef Gui_CompleterLineEdit_h
+#define Gui_CompleterLineEdit_h
 
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
@@ -79,37 +79,6 @@ private:
     std::unique_ptr<CompleterLineEditPrivate> _imp;
 };
 
-struct NodeCreationDialogPrivate;
-class NodeCreationDialog
-    : public QDialog {
-    GCC_DIAG_SUGGEST_OVERRIDE_OFF
-    Q_OBJECT
-    GCC_DIAG_SUGGEST_OVERRIDE_ON
-
-public:
-    explicit NodeCreationDialog(const QString& initialFilter,
-                                QWidget* parent);
-
-    virtual ~NodeCreationDialog() OVERRIDE;
-
-    QString getNodeName(int* major) const;
-
-    void finish(bool accepted);
-
-Q_SIGNALS:
-
-    // Do not use the base class accept and reject
-    // because here we do not use a modal dialog.
-    // If we do then some complicated recursion due to the
-    // completelerlineedit can make Qt crash.
-    void dialogFinished(bool accepted);
-
-private:
-    virtual void changeEvent(QEvent* e) OVERRIDE FINAL;
-    virtual void keyPressEvent(QKeyEvent* e) OVERRIDE FINAL;
-    std::unique_ptr<NodeCreationDialogPrivate> _imp;
-};
-
 NATRON_NAMESPACE_EXIT
 
-#endif // NODECREATIONDIALOG_H
+#endif // Gui_CompleterLineEdit_h

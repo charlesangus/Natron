@@ -1,0 +1,57 @@
+--- a/tabtabtab_nuke_core.py
++++ b/tabtabtab_nuke_core.py
+@@ -789,14 +789,15 @@
+ 
+         # List of stuff, and associated model
+         self.things_model = NodeModel(items, weights=self.weights, icon_fn=plugin.get_icon, color_fn=plugin.get_color,
+-                                       space_mode_order=space_mode_order, scroll_enabled=scroll_enabled)
++                                       space_mode_order=space_mode_order, scroll_enabled=scroll_enabled,
++                                       num_items=_visible_rows())
+         self.things = QtWidgets.QListView()
+         self.things.setModel(self.things_model)
+         self.things.setUniformItemSizes(True)
+         self.input.setFont(self.things.font())
+ 
+         _font_h = self.things.fontMetrics().height()
+-        _row_h = _font_h * 2
++        _row_h = _row_height(_font_h)
+         self.things.setItemDelegate(_ItemDelegate(_row_h, _row_h, self.things))
+         self.things.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+         # Vertical scrolling stays native QListView behaviour (mouse wheel,
+@@ -1150,6 +1151,36 @@
+     return (_main_window_finder or _find_nuke_main_window)()
+ 
+ 
++_row_height_override = None
++_visible_rows_override = None
++
++
++def set_row_metrics(row_height=None, visible_rows=None):
++    """Override the popup's row height (in pixels) and/or how many rows
++    are visible at once, replacing the built-in Nuke-sized defaults
++    (twice the font height, 18 rows). Pass None for either argument to
++    leave that one at its default.
++
++    Lets a host whose own UI uses a different row height size the popup
++    to match, without patching every call site.
++    """
++    global _row_height_override, _visible_rows_override
++    _row_height_override = row_height
++    _visible_rows_override = visible_rows
++
++
++def _row_height(font_h):
++    """Return the configured row height, or twice the given font height
++    (the Nuke default) when none has been registered via set_row_metrics()."""
++    return _row_height_override if _row_height_override is not None else font_h * 2
++
++
++def _visible_rows():
++    """Return the configured number of visible popup rows, or 18 (the
++    Nuke default) when none has been registered via set_row_metrics()."""
++    return _visible_rows_override if _visible_rows_override is not None else 18
++
++
+ # Retry budget for preload-only re-parenting. Plugin-load typically runs
+ # before Nuke's main window is registered in topLevelWidgets(), but the
+ # main window appears within a second or two; ~10s of retries is enough

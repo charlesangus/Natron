@@ -51,9 +51,9 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h" // isKeyBind
 #include "Gui/GuiMacros.h"
-#include "Gui/NodeCreationDialog.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
+#include "Gui/TabMenuBridge.h"
 #include "Gui/TabWidget.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
@@ -175,7 +175,7 @@ NodeGraph::event(QEvent* e)
     if (e->type() == QEvent::KeyPress) {
         QKeyEvent* ke = dynamic_cast<QKeyEvent*>(e);
         assert(ke);
-        if (ke && (ke->key() == Qt::Key_Tab) && _imp->_nodeCreationShortcutEnabled) {
+        if (ke && _imp->_nodeCreationShortcutEnabled && isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateNode, ke->modifiers(), (Qt::Key)ke->key())) {
             popCreateNodeDialog();
             takeClickFocus();
             ke->accept();
@@ -190,39 +190,7 @@ NodeGraph::event(QEvent* e)
 void
 NodeGraph::popCreateNodeDialog()
 {
-    NodeCreationDialog* nodeCreation = new NodeCreationDialog(_imp->_lastNodeCreatedName, this);
-
-    /// This allows us to have a non-modal dialog: when the user clicks outside of the dialog,
-    /// it closes it.
-    QObject::connect(nodeCreation, SIGNAL(dialogFinished(bool)), this, SLOT(onCreateNodeDialogFinished(bool)));
-    nodeCreation->show();
-}
-
-void
-NodeGraph::onCreateNodeDialogFinished(bool accepted)
-{
-    NodeCreationDialog* dialog = qobject_cast<NodeCreationDialog*>(sender());
-
-    if (dialog) {
-        int major;
-        QString res = dialog->getNodeName(&major);
-
-        if (accepted) {
-            _imp->_lastNodeCreatedName = res;
-            const PluginsMap& allPlugins = appPTR->getPluginsList();
-            PluginsMap::const_iterator found = allPlugins.find(res.toStdString());
-            if (found != allPlugins.end()) {
-                QPointF posHint = mapToScene(mapFromGlobal(QCursor::pos()));
-                CreateNodeArgs args(res.toStdString(), getGroup());
-                args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, posHint.x(), 0);
-                args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, posHint.y(), 1);
-                args.setProperty<int>(kCreateNodeArgsPropPluginVersion, major, 0);
-                getGui()->getApp()->createNode(args);
-            }
-        }
-
-        dialog->close();
-    }
+    TabMenuBridge::launch(this);
 }
 
 void
@@ -375,10 +343,7 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
         toggleAutoTurbo();
     } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFindNode, modifiers, key) ) {
         popFindDialog(QCursor::pos());
-    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateNode, modifiers, key)) {
-        assert(false && "Should never be reached (caught in NodeGraph::event())");
-        popCreateNodeDialog();
-    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphRenameNode, modifiers, key)) {
+    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphRenameNode, modifiers, key) ) {
         renameNode();
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphExtractNode, modifiers, key)) {
         pushUndoCommand( new ExtractNodeUndoRedoCommand(this, _imp->_selection) );

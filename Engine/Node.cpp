@@ -4262,6 +4262,30 @@ Node::getNodeCategory() const
     return categoryFromGroupingAndLabel(grouping.empty() ? std::string() : grouping.front(), getPluginLabel());
 }
 
+NodeCategoryEnum
+Node::categoryForPlugin(const Plugin& plugin)
+{
+    const QStringList& qgrouping = plugin.getGrouping();
+    std::list<std::string> grouping;
+    for (QStringList::const_iterator it = qgrouping.begin(); it != qgrouping.end(); ++it) {
+        grouping.push_back(it->toStdString());
+    }
+
+    NodeCategoryEnum domainCategory;
+    if (domainCategoryFromGrouping(grouping, &domainCategory)) {
+        return domainCategory;
+    }
+
+    if (plugin.isReader()) {
+        return eNodeCategoryRead;
+    }
+    if (plugin.isWriter()) {
+        return eNodeCategoryWrite;
+    }
+
+    return categoryFromGroupingAndLabel(grouping.empty() ? std::string() : grouping.front(), plugin.getPluginLabel().toStdString());
+}
+
 bool
 Node::domainCategoryFromGrouping(const std::list<std::string>& grouping,
                                  NodeCategoryEnum* category)

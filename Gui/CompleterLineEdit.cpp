@@ -23,7 +23,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
-#include "NodeCreationDialog.h"
+#include "CompleterLineEdit.h"
 
 #include <stdexcept>
 
@@ -34,11 +34,8 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QKeyEvent>
 #include <QListView>
 #include <QRegularExpression>
-#include <QSettings>
 #include <QStringList>
 #include <QStringListModel>
-#include <QTimer>
-#include <QVBoxLayout>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -203,15 +200,8 @@ CompleterLineEdit::setTextFromIndex(const QModelIndex& index)
     setText(text);
     Q_EMIT itemCompletionChosen();
     _imp->listView->hide();
-    if (_imp->quickExitEnabled) {
-        NodeCreationDialog* isNodeDialog = dynamic_cast<NodeCreationDialog*>(_imp->dialog);
-        if (isNodeDialog) {
-            isNodeDialog->finish(true);
-        } else {
-            if (_imp->dialog) {
-                _imp->dialog->accept();
-            }
-        }
+    if (_imp->quickExitEnabled && _imp->dialog) {
+        _imp->dialog->accept();
     }
 }
 
@@ -227,13 +217,8 @@ CompleterLineEdit::keyPressEvent(QKeyEvent* e)
 
     if (key == Qt::Key_Escape) {
         if (_imp->quickExitEnabled) {
-            NodeCreationDialog* isNodeDialog = dynamic_cast<NodeCreationDialog*>(_imp->dialog);
-            if (isNodeDialog) {
-                isNodeDialog->finish(false);
-            } else {
-                if (_imp->dialog) {
-                    _imp->dialog->accept();
-                }
+            if (_imp->dialog) {
+                _imp->dialog->accept();
             }
         } else {
             if (_imp->listView->isVisible()) {
@@ -272,15 +257,8 @@ CompleterLineEdit::keyPressEvent(QKeyEvent* e)
         if (_imp->model->rowCount() == 1) {
             setText(_imp->model->index(0).data().toString());
             Q_EMIT itemCompletionChosen();
-            if (_imp->quickExitEnabled) {
-                NodeCreationDialog* isNodeDialog = dynamic_cast<NodeCreationDialog*>(_imp->dialog);
-                if (isNodeDialog) {
-                    isNodeDialog->finish(true);
-                } else {
-                    if (_imp->dialog) {
-                        _imp->dialog->accept();
-                    }
-                }
+            if (_imp->quickExitEnabled && _imp->dialog) {
+                _imp->dialog->accept();
             }
             e->accept();
         } else {
@@ -298,15 +276,8 @@ CompleterLineEdit::keyPressEvent(QKeyEvent* e)
             }
             if (doDialogEnd) {
                 Q_EMIT itemCompletionChosen();
-                if (_imp->quickExitEnabled) {
-                    NodeCreationDialog* isNodeDialog = dynamic_cast<NodeCreationDialog*>(_imp->dialog);
-                    if (isNodeDialog) {
-                        isNodeDialog->finish(true);
-                    } else {
-                        if (_imp->dialog) {
-                            _imp->dialog->accept();
-                        }
-                    }
+                if (_imp->quickExitEnabled && _imp->dialog) {
+                    _imp->dialog->accept();
                 }
                 e->accept();
             } else {
@@ -325,214 +296,7 @@ CompleterLineEdit::showCompleter()
     filterText(text());
 }
 
-struct NodeCreationDialogPrivate {
-    QVBoxLayout* layout;
-    CompleterLineEdit* textEdit;
-    PluginsMap items;
-    bool isFinished;
-
-    NodeCreationDialogPrivate()
-        : layout(NULL)
-        , textEdit(NULL)
-        , items(appPTR->getPluginsList())
-        , isFinished(false)
-    {
-    }
-};
-
-static int
-getPluginWeight(const QString& pluginID,
-                int majVersion)
-{
-    QSettings settings(QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME));
-    QString propName(pluginID + QString::number(majVersion) + QString::fromUtf8("_tab_weight"));
-    int curValue = settings.value(propName, QVariant(0)).toInt();
-
-    return curValue;
-}
-
-static void
-incrementPluginWeight(const QString& pluginID,
-                      int majVersion)
-{
-    QSettings settings(QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME));
-    QString propName(pluginID + QString::number(majVersion) + QString::fromUtf8("_tab_weight"));
-    int curValue = settings.value(propName, QVariant(0)).toInt();
-
-    ++curValue;
-    settings.setValue(propName, QVariant(curValue));
-}
-
-NodeCreationDialog::NodeCreationDialog(const QString& initialFilter,
-                                       QWidget* parent)
-    : QDialog(parent)
-    , _imp(new NodeCreationDialogPrivate())
-{
-    setWindowTitle(tr("Node Creation Tool"));
-    setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint);
-    setObjectName(QString::fromUtf8("nodeCreationDialog"));
-    setAttribute(Qt::WA_DeleteOnClose, true);
-    _imp->layout = new QVBoxLayout(this);
-    _imp->layout->setContentsMargins(0, 0, 0, 0);
-
-    CompleterLineEdit::PluginsNamesMap pluginsMap;
-    QString initialFilterName;
-    std::string stdInitialFilter = initialFilter.toStdString();
-    int i = 0;
-    for (PluginsMap::iterator it = _imp->items.begin(); it != _imp->items.end(); ++it) {
-        if (it->second.empty()) {
-            continue;
-        }
-
-        if (it->second.size() == 1) {
-            std::pair<QString, QString> idNamePair;
-            Plugin* p = (*it->second.begin());
-            if (!p->getIsUserCreatable()) {
-                continue;
-            }
-
-            idNamePair.second = p->generateUserFriendlyPluginID();
-
-            int indexOfBracket = idNamePair.second.lastIndexOf(QString::fromUtf8("  ["));
-            if (indexOfBracket != -1) {
-                idNamePair.first = idNamePair.second.left(indexOfBracket);
-            }
-
-            int weight = getPluginWeight(p->getPluginID(), p->getMajorVersion());
-            pluginsMap.insert(std::make_pair(weight, idNamePair));
-
-            if (it->first == stdInitialFilter) {
-                initialFilterName = idNamePair.first;
-            }
-            ++i;
-        } else {
-            QString bestMajorName;
-            for (PluginVersionsOrdered::reverse_iterator it2 = it->second.rbegin(); it2 != it->second.rend(); ++it2) {
-                if (!(*it2)->getIsUserCreatable()) {
-                    continue;
-                }
-                std::pair<QString, QString> idNamePair;
-                if (it2 == it->second.rbegin()) {
-                    idNamePair.second = (*it2)->generateUserFriendlyPluginID();
-                    bestMajorName = idNamePair.second;
-                } else {
-                    idNamePair.second = (*it2)->generateUserFriendlyPluginIDMajorEncoded();
-                }
-
-                int indexOfBracket = idNamePair.second.lastIndexOf(QString::fromUtf8("  ["));
-                if (indexOfBracket != -1) {
-                    idNamePair.first = idNamePair.second.left(indexOfBracket);
-                }
-
-                ++i;
-
-                int weight = getPluginWeight((*it2)->getPluginID(), (*it2)->getMajorVersion());
-                pluginsMap.insert(std::make_pair(weight, idNamePair));
-            }
-            if (it->first == stdInitialFilter) {
-                initialFilterName = bestMajorName;
-            }
-        }
-    }
-
-    _imp->textEdit = new CompleterLineEdit(pluginsMap, true, this);
-    if (!initialFilterName.isEmpty()) {
-        _imp->textEdit->setText(initialFilterName);
-    }
-
-    QPoint global = QCursor::pos();
-    QSize sizeH = sizeHint();
-    global.rx() -= sizeH.width() / 2;
-    global.ry() -= sizeH.height() / 2;
-    move(global.x(), global.y());
-
-    _imp->layout->addWidget(_imp->textEdit);
-    _imp->textEdit->setFocus();
-    _imp->textEdit->selectAll();
-    QTimer::singleShot(20, _imp->textEdit, SLOT(showCompleter()));
-}
-
-NodeCreationDialog::~NodeCreationDialog()
-{
-}
-
-QString
-NodeCreationDialog::getNodeName(int* major) const
-{
-    QString name = _imp->textEdit->text();
-
-    for (PluginsMap::iterator it = _imp->items.begin(); it != _imp->items.end(); ++it) {
-        if (it->second.size() == 1) {
-            if ((*it->second.begin())->generateUserFriendlyPluginID() == name) {
-                Plugin* p = (*it->second.begin());
-                *major = p->getMajorVersion();
-                const QString& ret = p->getPluginID();
-                incrementPluginWeight(ret, *major);
-
-                return ret;
-            }
-        } else {
-            for (PluginVersionsOrdered::reverse_iterator it2 = it->second.rbegin(); it2 != it->second.rend(); ++it2) {
-                if (it2 == it->second.rbegin()) {
-                    if ((*it2)->generateUserFriendlyPluginID() == name) {
-                        *major = (*it2)->getMajorVersion();
-                        const QString& ret = (*it2)->getPluginID();
-                        incrementPluginWeight(ret, *major);
-
-                        return ret;
-                    }
-                } else {
-                    if ((*it2)->generateUserFriendlyPluginIDMajorEncoded() == name) {
-                        *major = (*it2)->getMajorVersion();
-                        const QString& ret = (*it2)->getPluginID();
-                        incrementPluginWeight(ret, *major);
-
-                        return ret;
-                    }
-                }
-            }
-        }
-    }
-
-    return QString();
-}
-
-void
-NodeCreationDialog::keyPressEvent(QKeyEvent* e)
-{
-    if ((e->key() == Qt::Key_Return) || (e->key() == Qt::Key_Enter)) {
-        finish(true);
-    } else if (e->key() == Qt::Key_Escape) {
-        finish(false);
-    } else {
-        QDialog::keyPressEvent(e);
-    }
-}
-
-void
-NodeCreationDialog::changeEvent(QEvent* e)
-{
-    if (e->type() == QEvent::ActivationChange) {
-        if (!isActiveWindow() && (qApp->activeWindow() != _imp->textEdit->getView())) {
-            finish(false);
-
-            return;
-        }
-    }
-    QDialog::changeEvent(e);
-}
-
-void
-NodeCreationDialog::finish(bool accepted)
-{
-    if (_imp->isFinished) {
-        return;
-    }
-    _imp->isFinished = true;
-    Q_EMIT dialogFinished(accepted);
-}
-
 NATRON_NAMESPACE_EXIT
 
 NATRON_NAMESPACE_USING
-#include "moc_NodeCreationDialog.cpp"
+#include "moc_CompleterLineEdit.cpp"

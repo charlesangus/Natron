@@ -425,9 +425,9 @@ try:
         centre = QPointF(view.rect().center())
         QApplication.sendEvent(view, QEnterEvent(centre, centre, QPointF(view.mapToGlobal(view.rect().center()))))
         QTest.keyClick(view, Qt.Key_Tab)
-        ok = yield ("until", lambda: any(d.isVisible() for d in gt.widgets_of("NodeCreationDialog")), POLL_TIMEOUT_S)
+        ok = yield ("until", lambda: any(d.isVisible() for d in gt.widgets_of("TabTabTabWidget")), POLL_TIMEOUT_S)
         require(ok, "the Tab menu opens")
-        dialog = next(d for d in gt.widgets_of("NodeCreationDialog") if d.isVisible())
+        dialog = next(d for d in gt.widgets_of("TabTabTabWidget") if d.isVisible())
         return dialog, dialog.findChildren(QLineEdit)[0], dialog.findChildren(QListView)[0]
 
     def listed(line_edit, view, text):
@@ -481,11 +481,11 @@ try:
         require(row >= 0, "the Tab menu offers Read")
         view.setCurrentIndex(view.model().index(row, 0))
         QTimer.singleShot(500, inspect)
-        # Return creates the Read, whose creation opens the modal file dialog; the call returns once
-        # inspect() has rejected it.
+        # The adapter creates the node (and opens the file dialog) one event-loop tick after the
+        # popup closes, so this polls for inspect() to see it rather than a single processEvents().
         QTest.keyClick(line_edit, Qt.Key_Return)
-        QApplication.processEvents()
-        check(seen.get("dialog", False), "the create-time file dialog opened")
+        ok = yield ("until", lambda: seen.get("dialog", False), POLL_TIMEOUT_S)
+        check(ok, "the create-time file dialog opened")
         items = [i.lower() for i in seen.get("items", [])]
         check(len(items) > 3, "the dialog's filter menu opened (%d entries)" % len(items))
         check("*.dpx" in items, "the dialog's filter lists dpx")

@@ -72,6 +72,7 @@ set(Tests_SOURCES
     Metadata_Test.cpp
     NativeParity.cpp
     NodeCategory_Test.cpp
+    TabMenuSettings_Test.cpp
     OSGLContext_Test.cpp
     PersistentMessage_Test.cpp
     PluginIdentity_Test.cpp
@@ -168,6 +169,7 @@ set(GuiTests_SOURCES
     RenderDialogRange_Test.cpp
     ScaleSliderQWidget_Test.cpp
     ShuffleMatrix_Test.cpp
+    TabMenuBridge_Test.cpp
     ViewerDataSerialization_Test.cpp
     guimain.cpp
 )
@@ -220,4 +222,6 @@ find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME RenderProfileReportSelfTest
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/bench/render-profile-report.py --self-test)
+    add_test(NAME TabTabTabPython
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/Tests/python/run_tabtabtab_tests.py)
 endif()

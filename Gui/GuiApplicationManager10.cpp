@@ -66,6 +66,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiAppInstance.h"
 #include "Gui/KnobGuiFactory.h"
 #include "Gui/SplashScreen.h"
+#include "Gui/TabMenuBridge.h"
 
 /**
  * @macro Registers a keybind to the application.
@@ -341,6 +342,7 @@ GuiApplicationManager::onAllPluginsLoaded()
     ///Restore user shortcuts only when all plug-ins are populated.
     loadShortcuts();
     AppManager::onAllPluginsLoaded();
+    TabMenuBridge::bootstrap();
 }
 
 void

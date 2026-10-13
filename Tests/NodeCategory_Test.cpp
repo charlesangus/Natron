@@ -32,13 +32,17 @@
 
 #include "BaseTest.h"
 
+#include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Deep/DeepMerge.h"
 #include "Engine/Nodes/Deep/DeepRead.h"
 #include "Engine/Nodes/Deep/DeepWrite.h"
+#include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/TypedPassthrough.h"
+#include "Engine/Plugin.h"
 
 NATRON_NAMESPACE_USING
 
@@ -96,6 +100,57 @@ TEST_F(BaseTest, TypedPassthroughIsOtherCategory)
 
     ASSERT_TRUE(bool(passthrough));
     EXPECT_EQ(eNodeCategoryOther, passthrough->getNodeCategory());
+}
+
+// categoryForPlugin resolves the same category as getNodeCategory() without an effect
+// instance, which is what it is for: a menu entry can need a node's colour before any node
+// of that plugin exists.
+TEST_F(BaseTest, CategoryForPluginAgreesWithGetNodeCategoryForRead)
+{
+    NodePtr read = createNode(QString::fromUtf8(PLUGINID_NATRON_READ));
+
+    ASSERT_TRUE(bool(read));
+    EXPECT_EQ(read->getNodeCategory(), Node::categoryForPlugin(*read->getPlugin()));
+}
+
+TEST_F(BaseTest, CategoryForPluginAgreesWithGetNodeCategoryForWrite)
+{
+    NodePtr write = createNode(QString::fromUtf8(PLUGINID_NATRON_WRITE));
+
+    ASSERT_TRUE(bool(write));
+    EXPECT_EQ(write->getNodeCategory(), Node::categoryForPlugin(*write->getPlugin()));
+}
+
+TEST_F(BaseTest, CategoryForPluginAgreesWithGetNodeCategoryForDeep)
+{
+    NodePtr deepMerge = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPMERGE));
+
+    ASSERT_TRUE(bool(deepMerge));
+    EXPECT_EQ(deepMerge->getNodeCategory(), Node::categoryForPlugin(*deepMerge->getPlugin()));
+}
+
+TEST_F(BaseTest, CategoryForPluginAgreesWithGetNodeCategoryForGrade)
+{
+    NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
+
+    ASSERT_TRUE(bool(grade));
+    EXPECT_EQ(grade->getNodeCategory(), Node::categoryForPlugin(*grade->getPlugin()));
+}
+
+TEST_F(BaseTest, CategoryForPluginAgreesWithGetNodeCategoryForBlur)
+{
+    NodePtr blur = createNode(QString::fromUtf8(PLUGINID_NATRON_BLUR));
+
+    ASSERT_TRUE(bool(blur));
+    EXPECT_EQ(blur->getNodeCategory(), Node::categoryForPlugin(*blur->getPlugin()));
+}
+
+TEST_F(BaseTest, CategoryForPluginAgreesWithGetNodeCategoryForMerge)
+{
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE));
+
+    ASSERT_TRUE(bool(merge));
+    EXPECT_EQ(merge->getNodeCategory(), Node::categoryForPlugin(*merge->getPlugin()));
 }
 
 // The keyword heuristic is the last rung before Other, for a third-party OFX plugin whose

@@ -48,6 +48,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/NodeGui.h"
 #include "Gui/PythonPanels.h"
 #include "Gui/SequenceFileDialog.h"
+#include "Gui/TabMenuBridge.h"
 #include "Gui/TabWidget.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
@@ -611,6 +612,19 @@ GuiApp::renderBlocking(const std::list<Effect*>& effects,
                        const std::list<int>& frameSteps)
 {
     renderInternal(true, effects, firstFrames, lastFrames, frameSteps);
+}
+
+QString
+GuiApp::getTabMenuNodeItems() const
+{
+    return TabMenuBridge::nodeItemsJson();
+}
+
+bool
+GuiApp::createNodeFromTabMenu(const QString& pluginID,
+                              int majorVersion)
+{
+    return TabMenuBridge::createNode(pluginID, majorVersion);
 }
 
 PyViewer::PyViewer(const NodePtr& node)

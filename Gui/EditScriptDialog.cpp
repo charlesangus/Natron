@@ -65,6 +65,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 
 #include "Gui/Button.h"
 #include "Gui/ComboBox.h"
+#include "Gui/CompleterLineEdit.h"
 #include "Gui/CurveEditor.h"
 #include "Gui/CurveGui.h"
 #include "Gui/CustomParamInteract.h"
@@ -77,7 +78,6 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/Label.h"
 #include "Gui/LineEdit.h"
 #include "Gui/Menu.h"
-#include "Gui/NodeCreationDialog.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/ScriptTextEdit.h"

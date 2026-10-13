@@ -219,8 +219,6 @@ public Q_SLOTS:
 
     void popCreateNodeDialog();
 
-    void onCreateNodeDialogFinished(bool accepted);
-
     void popFindDialog( const QPoint& pos = QPoint(0, 0) );
 
     void renameNode();

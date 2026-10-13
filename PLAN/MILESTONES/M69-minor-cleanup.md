@@ -389,3 +389,4 @@ Acceptance sketch:
   - **Curve handle length:** deferred to M96 - Weighted Curve Tangents, through an inbox entry. M69 drops its follow-the-cursor stand-in.
   - **Folded knob:** a folded multi-component knob shows one curve, and editing it overwrites every channel. Referencing instead of copying is a follow-up, through an inbox entry.
   - These became Phase 69.10.
+- 2026-10-12 — **Phase 69.10 execution (coordinator):** T1, T2, T6, T7 and T8 run in parallel and change product code and gtests only. Their `m69_cleanup.py` sections are written in one pass by P10.T4, which also adds the paste repro, because every task edits that one file and parallel edits would mix the commits.

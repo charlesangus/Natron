@@ -282,7 +282,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
 
 ## Phase 56.9: UAT round 3 fixes (2026-10-12)
 
-- [ ] M56.P9.T1 — Strip the platform icons from the standard buttons of Natron's message boxes
+- [x] M56.P9.T1 — Strip the platform icons from the standard buttons of Natron's message boxes
   - files: `Gui/Gui30.cpp`, `Gui/MessageBox.cpp`
   - approach:
     - The "Save changes to %1?" dialog (`Gui::saveWarning`, `Gui/Gui20.cpp:1334`) reaches `Gui::onDoDialog` (`Gui/Gui30.cpp`, question branch ~line 397). That builds a `QMessageBox` whose main glyph is already themed by `Gui::setQMessageBoxThemedIcon` (`Gui30.cpp:295`).

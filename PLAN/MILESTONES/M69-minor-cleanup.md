@@ -313,13 +313,45 @@ Line numbers are from `milestone/m69-minor-cleanup` at `a2e90be96`. They will sh
     - User decision: overwrite every channel with the edited curve. Referencing instead of copying is a follow-up the user raised; it is out of this milestone.
   - verify: in the GUI, with `gain` folded and keyed, drag a key, set Broken and Join. Every dimension then equals dimension 0 at each key, and one undo reverts all four.
   - size: M
-- [ ] M69.P10.T11 — Rebase, end build, scripts and the round-3 UAT AppImage
+- [x] M69.P10.T11 — Rebase, end build, scripts and the round-3 UAT AppImage
   - files: `build/appimages/M69-<sha>.AppImage`, `build/appimages/M69-uat.md`
   - approach:
     - Rebase onto `main` after M45 and M56 merge.
     - Run one `tools/ci/local/build.sh fast`, then ctest and the gate's GUI scripts.
     - Run `tools/ci/local/package.sh fast`. The UAT script covers every Phase 69.10 item.
   - verify: the gate is green, and the user signs off on the AppImage.
+  - size: L
+
+## Phase 69.11: UAT round 3 fixes (2026-10-13)
+
+User UAT on `M69-2e5e0477d`, 2026-10-13, given in chat.
+
+- [ ] M69.P11.T1 — Y and U skip a multi-input node's mask; single-input nodes may still take theirs
+  - files: `Gui/NodeGraphConnect.cpp`, `Gui/NodeGraphConnect.h`, `Tests/NodeGraphConnect_Test.cpp`, `Tests/gui/m69_cleanup.py`
+  - approach:
+    - The user's case: five Grades and a Merge. Select the Merge, then the five Grades, and press Y. That connects B, A, A2, A3 and A4, never the mask.
+    - Rule, for Y, Shift+Y, U and Shift+U alike: a target with more than one non-mask input (Merge-like) takes only non-mask inputs. A target with at most one non-mask input (Grade: Source plus Mask) may also fill its mask once the main input is taken.
+    - U's "first free input" changes to match: a Grade whose Source is taken gets the U source on its Mask.
+  - verify: `NodeGraphConnect` gtest cases cover a Merge-like target (the mask is never chosen, even with more sources than non-mask inputs) and a Grade-like target (the mask is filled second). The GUI `y-shift-y`/`u-shift-u` sections cover Merge plus five Grades.
+  - size: M
+- [ ] M69.P11.T2 — Make the explicit fold/expand state the source of truth, and make fold/expand undoable
+  - files: `Gui/KnobGuiValue.cpp`, `Gui/KnobGui.h`, `Gui/CurveEditor.cpp`, `Gui/CurveWidget.cpp`, `Gui/CurveEditorUndoRedo.*`, `Tests/gui/m69_cleanup.py`
+  - approach:
+    - The user's bug: keyframe a Blur's `size` at two frames, then press "2". X and Y curves appear correctly, but dragging either reverts the knob to single-value. Editing one component in the properties bin first avoids the bug.
+    - Likely cause: P10.T9's fallback ("auto-fold enabled and every dimension's curve equal") and/or the knob's auto-fold treat equal curves as folded. The drag then goes through `FoldedCurveEditCommand`, or the auto-fold re-folds the knob after the edit.
+    - Fix: once the user has expanded or folded explicitly, that state wins. Equal values must not re-fold an expanded knob, and the curve editor reads the knob's real fold state.
+    - Fold/expand pushes an undo command on the panel's undo stack, so undo and redo restore the fold state, and the curve editor follows.
+  - verify: GUI section: key Blur `size` at two frames, expand, drag the X curve's key. The knob stays expanded, only X changes, and Y is unchanged. Undo restores X. Undo again re-folds; redo expands.
+  - size: L
+- [ ] M69.P11.T3 — Right-clicking a tab opens the pane menu without making that tab current
+  - files: `Gui/TabWidget.cpp`, `Gui/TabWidget.h`, `Tests/gui/m69_cleanup.py`
+  - approach: remove P10.T6's "make the tab current first" step. The menu's actions keep acting on the pane's current tab.
+  - verify: the GUI `pane-header-menu` section: a right-click on a non-current tab opens the menu at the cursor, and the current tab is unchanged.
+  - size: M
+- [ ] M69.P11.T4 — Rebase onto main after M56 merges, end build, scripts and the round-4 UAT AppImage
+  - files: `build/appimages/M69-<sha>.AppImage`, `build/appimages/M69-uat.md`
+  - approach: rebase onto `main` with M56; expect conflicts in `CurveWidget*` with M56.P9.T2. Run one `fast` build, ctest, `m69_cleanup.py`, `m55_*`, `m45_tab_menu.py` and `m56_visual.py`, then package.
+  - verify: the gate is green, and the user signs off.
   - size: L
 
 **Verification gate:**
@@ -402,3 +434,4 @@ Acceptance sketch:
 - 2026-10-12 — **P10.T4:** the sections were written without a run. Three checks are proxies because Python can't read the undo index, the interpolation type or a viewer re-render. A Grade `gain`/`multiply` fallback, the Tab-popup row prefix and Merge's preferred input B are the guesses most likely to need fixing at the first run.
 - 2026-10-13 — **P10.T11 started early:** the rebase is onto `main` with M45 only, not waiting for M56. That lets the user run UAT on M56 and M69 side by side instead of one after the other. After M56 merges, M69 rebases again (expect conflicts in `CurveWidget*` with M56.P9.T2), and CI verifies that build.
 - 2026-10-13 — **P10.T11 end build green, awaiting UAT sign-off:** rebased onto `main` (M45); `a2e90be96` dropped as already upstream; conflicts with M45 (create-node keybind) and M76 (WriteNode deleted, legacy-compat removal) resolved. ctest 2100/2100 (2 GPU tests disabled). `m69_cleanup.py` passes all 296 checks after fixes to the script only (`8b8f0be41`); no product bugs were found. `m55_node_graph.py`, `m55_input_pipes.py` and `m45_tab_menu.py` all report 0 failures. `m56_visual.py` didn't run because it isn't on main yet; it runs once M56 merges. The AppImage is `build/appimages/M69-2e5e0477d.AppImage`, with `M69-uat.md` rewritten and shots in `.worktrees/m69/build/m69-shots/uat3/`.
+- 2026-10-13 — **UAT round 3 (user, chat):** with Y and U, a Merge never gets its mask connected, while a Grade may get its mask connected; dragging a curve on an expanded knob re-folds it; fold/expand must be undoable; right-clicking a tab must not make it current. These became Phase 69.11. P10.T11 is done; its AppImage carried the round-2 fixes to UAT.

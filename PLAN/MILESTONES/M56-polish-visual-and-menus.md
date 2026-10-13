@@ -306,7 +306,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
     - Leave the dope sheet unchanged.
   - verify: `grep -n "glColor4f(0\.\|QColor(2" Gui/CurveWidget*.cpp Gui/CurveGui.cpp` finds no fixed greys left. At the end build, screenshot the curve editor with a Grade's curves next to the node graph at 1× and 2× for the user.
   - size: M
-- [ ] M56.P9.T3 — End build, regression scripts, and the UAT AppImage
+- [x] M56.P9.T3 — End build, regression scripts, and the UAT AppImage
   - files: `build/appimages/M56-<sha>.AppImage`, `build/appimages/M56-uat.md`
   - approach: rebase onto `main` (M45 merges first). Run one `tools/ci/local/build.sh fast`, ctest, `m56_visual.py` at 1× and 2× and the gate's regression scripts, then `tools/ci/local/package.sh fast`. The UAT script covers the button-free dialogs and the curve-editor screenshot.
   - verify: ctest and the scripts are green, and the user signs off on the AppImage.

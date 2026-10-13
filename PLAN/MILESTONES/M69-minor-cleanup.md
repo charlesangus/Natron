@@ -259,7 +259,7 @@ Line numbers are from `milestone/m69-minor-cleanup` at `a2e90be96`. They will sh
     - The user is pasting the real error text into `.local/uat-feedback-2026-10-12.md`. Use it to sharpen the check if it has arrived.
   - verify: the section fails on the current build, and its NOTE lines give the error.
   - size: M
-- [ ] M69.P10.T5 — Fix the copy/paste error
+- [x] M69.P10.T5 — Fix the copy/paste error
   - files: TBD from the error text (suspects: P2.T4's splice in `NodeGraph40.cpp:191-283` / `NodeGraph05.cpp:54`, which connects outside the undo commands; P8's `Node::loadKnob` filter removal; `NodeGraphPrivate10.cpp:118-131`)
   - approach: TBD once P10.T4 or the user's pasted text gives the error. Plan this task's brief then.
   - verify: P10.T4's section passes.
@@ -393,3 +393,4 @@ Acceptance sketch:
 - 2026-10-12 — **P10.T7:** no roto gtest was added, because `RotoLayer_Test.cpp` needs render fixtures that can't be checked without a build; the GUI section covers the task. `BezierCP::cuspPoint` now also marks the point broken, and `smoothPoint` clears the flag.
 - 2026-10-12 — **P10.T2:** the old "anchor feeds every node" planner is kept as `planFeedSourceIntoTargets`, for P10.T3's U and Shift+U to reuse. `NodeGraph::connectSelectedNodesToLastSelected` and `connectLastSelectedToSelectedNodes` keep their old names; P10.T3 renames them.
 - 2026-10-12 — **P10.T9:** `CurveEditor::isFoldedKnobDimensionZero(const CurveGui*)` is the accessor P10.T10 uses. Roto item knobs have no fold button, so they auto-fold while every dimension's curves match.
+- 2026-10-12 — **P10.T5 (paste error, consultant diagnosis, ~65% confidence):** this is not a deserialization failure. Ctrl+V reached `Gui::keyPressEvent` when the graph had click focus but not keyboard focus, for example after the Tab popup closed, and the main window ran the clipboard XML as Python, so the Script Editor showed a SyntaxError. `main` has the same bug. The fix (`Gui50.cpp`) offers the paste to the click-focused graph first and matches the rebindable paste keybind. The stale `keyPressEventHasVisitedFocusWidget` flag is never reset and could misroute other keys too. That is left alone because a correct reset needs an event-filter-level change. P10.T4's repro sends Ctrl+V to the main window with the graph unfocused, to confirm the diagnosis.

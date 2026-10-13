@@ -54,11 +54,20 @@ struct GpuQuery {
     int nComps;
     ImageBitDepthEnum bitDepth;
     bool hasMask;
+
+    // Whether the channel the mask reads is a channel of the rendered plane, the layout every
+    // input is handed over in, or the mask resolves to no channel and reads zero.
+    bool maskInPlane;
+
     double mix;
     bool processChannels[4];
 
     // Channel of the input that "(Un)premult by" divides by, or -1 when none is selected.
     int unPremultChannel;
+
+    // Whether that channel is a channel of the rendered plane, so that it can be read from the
+    // source pixel being divided.
+    bool unPremultInPlane;
 
     GpuQuery()
         : time(0.)
@@ -67,8 +76,10 @@ struct GpuQuery {
         , nComps(4)
         , bitDepth(eImageBitDepthFloat)
         , hasMask(false)
+        , maskInPlane(false)
         , mix(1.)
         , unPremultChannel(-1)
+        , unPremultInPlane(false)
     {
         for (int i = 0; i < 4; ++i) {
             processChannels[i] = true;

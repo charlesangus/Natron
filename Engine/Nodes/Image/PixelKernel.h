@@ -29,7 +29,11 @@
 #include "Global/Macros.h"
 
 #include <bitset>
+#include <cstddef>
+#include <cstring>
 #include <memory>
+#include <type_traits>
+#include <vector>
 
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
@@ -132,6 +136,26 @@ public:
 };
 
 typedef std::shared_ptr<const PixelKernel> PixelKernelPtr;
+
+/**
+ * @brief The GPU description of a point operator, built by NativeImageEffect::makeGpuKernel() from
+ * the same knob values as the PixelKernel of makeKernel(): a kernel of the GPU registry, a
+ * gpu::GpuKernelId held as an int so that this header builds without the GPU backend (-1 for
+ * none), and the parameter block that kernel's op loads. The base wraps it with mask, mix,
+ * processed channels and "(Un)premult by" exactly as render() wraps processRow().
+ **/
+struct PixelKernelGpu {
+    int kernel = -1;
+    std::vector<std::byte> params;
+
+    template <typename P>
+    void setParams(const P& p)
+    {
+        static_assert(std::is_trivially_copyable<P>::value, "GPU parameters are copied byte for byte");
+        params.resize(sizeof(P));
+        std::memcpy(params.data(), &p, sizeof(P));
+    }
+};
 
 NATRON_NAMESPACE_EXIT
 

@@ -551,7 +551,8 @@ EndToEndResult
 renderEndToEnd(const std::vector<NodePtr>& graph,
                const NodePtr& root,
                const RectI& window,
-               double time)
+               double time,
+               const GpuContextReady& onGpuContext)
 {
     EndToEndResult result;
     result.window = window;
@@ -562,6 +563,9 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
         result.skipped = true;
         result.error = forced.reason();
 
+        return result;
+    }
+    if (onGpuContext && !onGpuContext(&result.error)) {
         return result;
     }
 

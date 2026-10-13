@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -167,13 +168,19 @@ struct EndToEndResult {
     bool ranInRegion(const NodePtr& node) const;
 };
 
+// Called once the forced GPU context is installed and before the GPU frame is planned, so a test can
+// register kernels on its runtime (appPTR->getGpuContext()->runtime()). Returning false fails the run
+// with `error`.
+typedef std::function<bool(std::string* error)> GpuContextReady;
+
 // Renders `root` over `window` at `time` twice. First as a frame of the render scheduler with a
 // forced GPU context, with every node of `graph` whose effect accepts the task on the GPU, as
 // regions. Then on the CPU under a GpuPlacementOffGuard.
 EndToEndResult renderEndToEnd(const std::vector<NodePtr>& graph,
                               const NodePtr& root,
                               const RectI& window,
-                              double time = 1.);
+                              double time = 1.,
+                              const GpuContextReady& onGpuContext = GpuContextReady());
 
 NATRON_NAMESPACE_EXIT
 

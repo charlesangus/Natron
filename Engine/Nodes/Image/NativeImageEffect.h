@@ -133,12 +133,10 @@ public:
 
     /**
      * @brief Whether renderGpu() can produce this query. Nodes that cannot are rendered on the
-     * CPU.
+     * CPU. The base accepts a point operator's float query of 1 to 4 channels when gpuKernelId()
+     * names a kernel and any "(Un)premult by" or mask channel lies in the rendered plane.
      **/
-    virtual bool canRenderOnGpu(const GpuQuery& /*query*/) const WARN_UNUSED_RETURN
-    {
-        return false;
-    }
+    virtual bool canRenderOnGpu(const GpuQuery& query) const WARN_UNUSED_RETURN;
 
     /**
      * @brief The region of input inputNb that renderGpu() reads to produce outputRect; wider
@@ -153,12 +151,11 @@ public:
 
     /**
      * @brief Records the dispatches that fill args.output over args.outputRect. Only called
-     * when canRenderOnGpu() accepted args.query.
+     * when canRenderOnGpu() accepted args.query. The base records a point operator's
+     * makeGpuKernel() description wrapped as render() wraps makeKernel()'s, with the mask,
+     * mix, mask inversion and "(Un)premult by" read at the query's time and view.
      **/
-    virtual StatusEnum renderGpu(const GpuRenderArgs& /*args*/) WARN_UNUSED_RETURN
-    {
-        return eStatusFailed;
-    }
+    virtual StatusEnum renderGpu(const GpuRenderArgs& args) WARN_UNUSED_RETURN;
 
     /**
      * @brief The input render() reads as its mask: the first input described as a mask, or -1.
@@ -180,6 +177,26 @@ protected:
      * per render call; a null kernel fails the render.
      **/
     virtual PixelKernelPtr makeKernel(const KernelContext& context) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The GPU kernel the point operator would render query with, as a gpu::GpuKernelId,
+     * or -1 to keep these settings on the CPU. A cheap check of settings, called during
+     * placement; the base's canRenderOnGpu() adds the format and "(Un)premult by" rules.
+     **/
+    virtual int gpuKernelId(const GpuQuery& /*query*/) const WARN_UNUSED_RETURN
+    {
+        return -1;
+    }
+
+    /**
+     * @brief Fills gpu with the point operator's GPU description at context, read from the
+     * same knob values as makeKernel(). Called once per renderGpu(); false fails it.
+     **/
+    virtual bool makeGpuKernel(const KernelContext& /*context*/,
+                               PixelKernelGpu* /*gpu*/) WARN_UNUSED_RETURN
+    {
+        return false;
+    }
 
     /**
      * @brief Whether the operator itself leaves its input unchanged at (time, view) over roi,

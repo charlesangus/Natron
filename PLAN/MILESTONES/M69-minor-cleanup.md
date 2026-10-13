@@ -214,6 +214,114 @@ Scouted 2026-10-11 on `milestone/m55-node-graph-polish` at `10e0accd5`. **Re-che
   - verify: the user signs off on the AppImage.
   - size: M
 
+## Phase 69.10: UAT round 2 fixes (2026-10-12)
+
+Line numbers are from `milestone/m69-minor-cleanup` at `a2e90be96`. They will shift once M45 - Native Tab Menu and M56 - Visual And Menu Polish merge and this branch rebases.
+
+- [ ] M69.P10.T1 — With an input held, a left-click on anything that isn't a node disconnects that input, as one undo step
+  - files: `Gui/NodeGraphPickUp.h`, `Gui/NodeGraphPickUp.cpp`, `Gui/NodeGraph15.cpp`, `Tests/NodeGraphPickUp_Test.cpp`, `Tests/gui/m69_cleanup.py`
+  - approach:
+    - Add `ePickUpPressDisconnect` to `PickUpPressActionEnum` (`NodeGraphPickUp.h:43-48`).
+    - `decidePickUpPress` (`NodeGraphPickUp.cpp:38-62`) returns it for a left click on `ePickUpClickTargetOther`: empty space, a pipe or a backdrop (user decision). A left click on the holding node, a right-click and Escape still cancel.
+    - `NodeGraph::handlePickUpPress` (`NodeGraph15.cpp:202-253`) gets a new case. It clears `_pickedUpArrowDest`/`_pickedUpArrowInput` the way the Connect case does. If `arrow->getSource()` is set, it pushes `new ConnectCommand(this, arrow, arrow->getSource(), NodeGuiPtr())`, as the drag-release disconnect does (`:307-310`). It then calls `refreshEdges()` and `initLine()`.
+    - An unconnected stub just drops, with no undo entry.
+  - verify:
+    - gtest `NodeGraphPickUp`: `LeftClickOnEmptySpaceCancels` (`:61`) becomes a Disconnect expectation. The holding-node and right-click cases stay Cancel.
+    - The GUI `pick-up` section: picking up a connected input and clicking empty space leaves it unconnected, and one undo restores it.
+  - size: M
+- [ ] M69.P10.T2 — Re-anchor Y and Shift+Y on selection order
+  - files: `Gui/NodeGraphConnect.cpp`, `Gui/NodeGraphConnect.h`, `Gui/ActionShortcuts.h`, `Gui/NodeGraph40.cpp`, `Tests/gui/m69_cleanup.py`
+  - approach:
+    - `_selection` is kept in click order. Both wrappers in `NodeGraphConnect.cpp` take `selection.back()` as the anchor today (`:95`, `:148`).
+    - **Y** (user): the first-selected node is the one whose inputs change; the later nodes, in order, feed its free inputs (preferred input first, then input order).
+    - **Shift+Y** (user): the same connection with the order reversed. The sources come first, in order, and the last-selected node is the one whose inputs change.
+    - The planners (`planFeedLastSelected` `:38`, `planFeedSelectionFromLast` `:69`) are id-based. Rename them and their parameters to describe their new use.
+    - Update the descriptions (`ActionShortcuts.h:512-516`) and the undo texts (`NodeGraph40.cpp:701,709`). Keep the shortcut IDs.
+  - verify:
+    - `NodeGraphConnect_Test` passes, with its planner cases updated to the new semantics.
+    - The GUI `y-shift-y` section (`m69_cleanup.py:726-760`) uses `setSelection([target, s1, s2])` + Y and `setSelection([s1, s2, target])` + Shift+Y, and checks that s1 lands on the preferred input (B), so order is tested.
+  - size: M
+- [ ] M69.P10.T3 — Add Nuke-style U and Shift+U
+  - files: `Gui/NodeGraphConnect.cpp`, `Gui/NodeGraphConnect.h`, `Gui/ActionShortcuts.h`, `Gui/NodeGraph40.cpp`, `Tests/gui/m69_cleanup.py` (plus the gtest file `NodeGraphConnect_Test`)
+  - approach: two new rebindable shortcuts, registered and dispatched the way P2.T3 registered Y and Shift+Y. Each is one undo step.
+    - **U** (user): the first-selected node's output goes into the first free input of every later-selected node.
+    - **Shift+U** (user): the last-selected node's output goes into the first free input of every other selected node.
+    - "First free input" means the lowest-index unconnected non-mask input. A node with no free input is skipped.
+    - Add a pure id-based planner beside the Y planners, with gtest cases.
+  - verify: the `NodeGraphConnect` gtest cases for both planners pass, and a GUI `u-shift-u` section checks the connections and a one-step undo.
+  - size: M
+- [ ] M69.P10.T4 — Reproduce the copy/paste error in a GUI test and capture its text
+  - files: `Tests/gui/m69_cleanup.py`
+  - approach:
+    - Add a new `paste-after-create` section that follows the UI flow. Create Blur1 with `CreateNodeArgsPropSettingsOpened` and `CreateNodeArgsPropAutoConnect`, then press Ctrl+C through `graph_key`. Create Blur2 with Blur1 selected, then press Ctrl+V. Repeat with Grade and Constant.
+    - A `ModalGuard`, like `PopupGuard` (`:281`), polls `QApplication.activeModalWidget()` and records each `QMessageBox`'s title, text and informativeText, then accepts it.
+    - Also record node persistent messages and viewer messages as `NOTE` lines, then check that none appeared.
+    - The user is pasting the real error text into `.local/uat-feedback-2026-10-12.md`. Use it to sharpen the check if it has arrived.
+  - verify: the section fails on the current build, and its NOTE lines give the error.
+  - size: M
+- [ ] M69.P10.T5 — Fix the copy/paste error
+  - files: TBD from the error text (suspects: P2.T4's splice in `NodeGraph40.cpp:191-283` / `NodeGraph05.cpp:54`, which connects outside the undo commands; P8's `Node::loadKnob` filter removal; `NodeGraphPrivate10.cpp:118-131`)
+  - approach: TBD once P10.T4 or the user's pasted text gives the error. Plan this task's brief then.
+  - verify: P10.T4's section passes.
+  - size: M
+- [ ] M69.P10.T6 — Open the pane menu from a right-click anywhere in the tab header
+  - files: `Gui/TabWidget.h`, `Gui/TabWidget.cpp`, `Tests/gui/m69_cleanup.py`
+  - approach:
+    - This is a requirement change from the user. A right-click on a tab, on the empty header space, on the left corner button or on the float/close buttons all open the pane menu at the cursor.
+    - In `TabWidgetHeader::contextMenuEvent` (`TabWidget.h:149-157`), drop the `childAt` filter and always emit `paneMenuRequested(globalPos)`.
+    - Remove the corner button's `setContextMenuPolicy(Qt::CustomContextMenu)` (`TabWidget.cpp:314`), which swallows the event.
+    - A right-click on a tab makes that tab current first, because "Float pane" acts on the current widget.
+  - verify: the GUI `pane-header-menu` section (`:865-920`) checks that a right-click on a tab (it also becomes current), on the corner button and on the float button each opens the pane menu at the cursor.
+  - size: M
+- [ ] M69.P10.T7 — Keep a broken roto tangent broken until Smooth is applied
+  - files: `Engine/RotoUndoCommand.cpp`, `Engine/BezierCP.cpp`, `Engine/Bezier.cpp`, `Tests/gui/m69_cleanup.py`
+  - approach:
+    - In `dragTangent` (`RotoUndoCommand.cpp:838-866`), use `const bool broken = breakTangents || cp.getBroken();` for both `getDeltaForPoint` calls and `movePointLeftAndRightIndex`. Then `Bezier::moveBezierPointInternal`'s `setBroken(...)` (`Bezier.cpp:1900-1996`) no longer un-breaks on a plain drag.
+    - Copy `_imp->broken` in `BezierCP::clone` (`BezierCP.cpp:899-931`) so undo restores the flag.
+    - The explicit un-break is the existing Smooth action (user decision): `Bezier::smoothOrCuspPointAtIndex` (`Bezier.cpp:2279-2335`) already calls `setBroken(false)` when smoothing.
+  - verify: a GUI roto section that uses `getControlPointPosition` (`PyRoto.h:134`):
+    - Ctrl-drag a right tangent, then plain-drag it. The left tangent doesn't move.
+    - Smooth, then a plain drag moves both tangents.
+    - Undo of the Ctrl-drag, then a plain drag moves both tangents.
+  - size: M
+- [ ] M69.P10.T8 — Draw a dragged curve tangent at its normal length; drop the follow-the-cursor stand-in
+  - files: `Gui/CurveWidgetPrivate.cpp`, `Gui/CurveWidgetPrivate.h`, `Gui/CurveWidget.cpp`, `Tests/gui/m69_cleanup.py`
+  - approach:
+    - Delete `_tangentDragCursorPos`: the member (`CurveWidgetPrivate.h:178`), its initializer (`.cpp:98`), its assignment in `moveSelectedTangent` (`.cpp:1465-1468`), the override block in `refreshKeyTangents` (`.cpp:1547-1557`) and the snap-back in `CurveWidget::mouseReleaseEvent` (`CurveWidget.cpp:1246-1251`).
+    - Keep `_tangentDragForceBreak`, the `forceBreak` argument and Join.
+    - True handle length is M96 - Weighted Curve Tangents (user decision).
+    - **REBASE (M56):** M56.P9.T2 edits the colour code in the same files.
+  - verify: the GUI `curve-join` (`:924`) slope checks pass. During a long Ctrl-drag, nothing is drawn near the cursor beyond the handle's length.
+  - size: M
+- [ ] M69.P10.T9 — Show one curve for a folded multi-component knob, and refresh on fold/expand
+  - files: `Gui/KnobGui.h`, `Gui/KnobGuiValue.cpp`, `Gui/CurveEditor.cpp`, `Gui/CurveEditor.h`, `Tests/gui/m69_cleanup.py`
+  - approach:
+    - `createElementsForKnob` (`CurveEditor.cpp:400-497`) makes one curve per dimension.
+    - Add the signal `KnobGui::dimensionsFoldedChanged(bool)` and emit it from `KnobGuiValue::foldAllDimensions`/`expandAllDimensions` (`:946-990`, including the auto-fold at `:1166-1170`).
+    - While the knob is folded (`getAllDimensionsVisible()`, `KnobGuiValue.cpp:856`), the knob's curve-editor context hides dimensions 1..n and labels dimension 0 with the knob's label.
+    - A "hidden by fold" flag on `NodeCurveEditorElement` must be respected by `setVisible`/`checkVisibleState` (`:599-681`), so a later `keyFrameSet` doesn't re-show those dimensions.
+    - If the fold button doesn't exist before the panel opens, fall back to "auto-fold enabled and every dimension's curve equal".
+  - verify: in the GUI, key a folded Grade `gain`, and the curve-editor tree shows one curve. Expand it and four appear; fold it and one shows again.
+  - size: M
+- [ ] M69.P10.T10 — Make edits on a folded curve apply to every dimension, as one undo step
+  - files: `Gui/CurveWidget.cpp`, `Gui/CurveEditorUndoRedo.h`, `Gui/CurveEditorUndoRedo.cpp`, `Tests/gui/m69_cleanup.py`
+  - approach:
+    - Wrap the command in `CurveWidget::pushUndoCommand` when its curve is a folded dimension 0. The wrapper is a `FoldedCurveEditCommand(inner, knob)`:
+      - redo runs the inner command, then `knob->cloneCurve(view, d, *curve0)` for d = 1..n;
+      - undo restores the snapshots of dimensions 1..n, then runs the inner undo;
+      - `id()`/`mergeWith` pass through to the inner command, so a drag stays one step.
+    - User decision: overwrite every channel with the edited curve. Referencing instead of copying is a follow-up the user raised; it is out of this milestone.
+  - verify: in the GUI, with `gain` folded and keyed, drag a key, set Broken and Join. Every dimension then equals dimension 0 at each key, and one undo reverts all four.
+  - size: M
+- [ ] M69.P10.T11 — Rebase, end build, scripts and the round-3 UAT AppImage
+  - files: `build/appimages/M69-<sha>.AppImage`, `build/appimages/M69-uat.md`
+  - approach:
+    - Rebase onto `main` after M45 and M56 merge.
+    - Run one `tools/ci/local/build.sh fast`, then ctest and the gate's GUI scripts.
+    - Run `tools/ci/local/package.sh fast`. The UAT script covers every Phase 69.10 item.
+  - verify: the gate is green, and the user signs off on the AppImage.
+  - size: L
+
 **Verification gate:**
 - One `fast` build (`tools/ci/local/build.sh fast`), with CI `format`, `lint-ci` and `build-and-test` green.
 - ctest green, including the new `NodeColorSampler`, `RotoFeatherDrag` and `CurveTangentJoin` cases and the new `LayerKnobsRender` UV-layer case. The existing `RotoLayer`, `NodeGraphSplice`, `RenderDialogRange`, `LayerKnobsRender` and `ColorViewsRender` must also pass.
@@ -272,3 +380,12 @@ Acceptance sketch:
 - 2026-10-12 — **P7.T1 (end build):** a cold build hit one compile error (missing `<QContextMenuEvent>` include). ctest 1944/1944. `m69_cleanup.py` 151 PASS / 0 FAIL across 10 sections; `m55_node_graph.py` and `m55_input_pipes.py` 0 FAIL. Product bugs fixed: the stub grab broad-phase reached only ±9 px, and the curve editor did not repaint after Join. The pre-2.2.3 Choice branch was removed. Shots are in `.worktrees/m69/build/m69-shots/out/`.
 - 2026-10-12 — **Screenshots approved (user)** (claude.ai artifact `L7vbjS2AiRqXC1aDrqnqnR`). The UAT AppImage is packaged once the build slot frees.
 - 2026-10-12 — **UAT AppImage:** `build/appimages/M69-a2e90be96.AppImage` (includes the bundled Vulkan loader), script `build/appimages/M69-uat.md`.
+- 2026-10-12 — **UAT round 2 (user, `.local/uat-feedback-2026-10-12.md`), answers and decisions:**
+  - **Pick-up:** a click on anything that isn't a node disconnects the held input.
+  - **Y and Shift+Y:** Y anchors on the first-selected node, whose inputs change. Shift+Y makes the same connection with the selection order reversed.
+  - **U and Shift+U:** Nuke-style shortcuts added. U pipes the first-selected node's output into the first free input of each later node. Shift+U pipes the last-selected node's output into the others.
+  - **Pane menu:** right-clicking anywhere in the tab header opens it. This is a requirement change.
+  - **Roto:** a broken tangent stays broken until Smooth.
+  - **Curve handle length:** deferred to M96 - Weighted Curve Tangents, through an inbox entry. M69 drops its follow-the-cursor stand-in.
+  - **Folded knob:** a folded multi-component knob shows one curve, and editing it overwrites every channel. Referencing instead of copying is a follow-up, through an inbox entry.
+  - These became Phase 69.10.

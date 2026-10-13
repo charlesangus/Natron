@@ -505,6 +505,12 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionGraphConnectLastToSelected "connectLastToSelected"
 #define kShortcutDescActionGraphConnectLastToSelected "Connect Earlier-Selected Nodes into Last Selected"
 
+#define kShortcutIDActionGraphFeedFirstIntoLater "feedFirstIntoLater"
+#define kShortcutDescActionGraphFeedFirstIntoLater "Connect First Selected into Later-Selected Nodes"
+
+#define kShortcutIDActionGraphFeedLastIntoOthers "feedLastIntoOthers"
+#define kShortcutDescActionGraphFeedLastIntoOthers "Connect Last Selected into Other Selected Nodes"
+
 ///////////CURVEEDITOR SHORTCUTS
 #define kShortcutIDActionCurveEditorRemoveKeys "remove"
 #define kShortcutDescActionCurveEditorRemoveKeys "Delete Keyframes"

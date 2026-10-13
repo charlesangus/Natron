@@ -176,3 +176,94 @@ TEST(NodeGraphConnect, FeedSourceIntoTargetsWithNoTargetsIsEmpty)
 
     EXPECT_TRUE(plan.empty());
 }
+
+TEST(NodeGraphConnect, FeedFirstFreeInputPicksLowestFreeInput)
+{
+    std::vector<int> freeA;
+    freeA.push_back(1);
+    freeA.push_back(2);
+    std::vector<int> freeB;
+    freeB.push_back(0);
+    freeB.push_back(3);
+
+    std::vector<ConnectFreeInputsNode> targets;
+    targets.push_back(ConnectFreeInputsNode(10, freeA));
+    targets.push_back(ConnectFreeInputsNode(11, freeB));
+
+    std::vector<ConnectPlanEntry> plan = planFeedSourceIntoFirstFreeInputs(1, targets);
+
+    ASSERT_EQ(2u, plan.size());
+    EXPECT_EQ(1, plan[0].sourceId);
+    EXPECT_EQ(10, plan[0].destId);
+    EXPECT_EQ(1, plan[0].destInput);
+    EXPECT_EQ(1, plan[1].sourceId);
+    EXPECT_EQ(11, plan[1].destId);
+    EXPECT_EQ(0, plan[1].destInput);
+}
+
+TEST(NodeGraphConnect, FeedFirstFreeInputIgnoresListOrderOfFreeInputs)
+{
+    std::vector<int> free;
+    free.push_back(3);
+    free.push_back(1);
+    free.push_back(2);
+
+    std::vector<ConnectFreeInputsNode> targets;
+    targets.push_back(ConnectFreeInputsNode(10, free));
+
+    std::vector<ConnectPlanEntry> plan = planFeedSourceIntoFirstFreeInputs(1, targets);
+
+    ASSERT_EQ(1u, plan.size());
+    EXPECT_EQ(1, plan[0].destInput);
+}
+
+TEST(NodeGraphConnect, FeedFirstFreeInputSkipsNodeWithNoFreeInput)
+{
+    std::vector<int> none;
+    std::vector<int> free;
+    free.push_back(0);
+
+    std::vector<ConnectFreeInputsNode> targets;
+    targets.push_back(ConnectFreeInputsNode(10, none));
+    targets.push_back(ConnectFreeInputsNode(11, free));
+
+    std::vector<ConnectPlanEntry> plan = planFeedSourceIntoFirstFreeInputs(1, targets);
+
+    ASSERT_EQ(1u, plan.size());
+    EXPECT_EQ(11, plan[0].destId);
+}
+
+TEST(NodeGraphConnect, FeedFirstFreeInputKeepsTargetOrder)
+{
+    std::vector<int> free;
+    free.push_back(0);
+
+    std::vector<ConnectFreeInputsNode> forward;
+    forward.push_back(ConnectFreeInputsNode(10, free));
+    forward.push_back(ConnectFreeInputsNode(11, free));
+    std::vector<ConnectFreeInputsNode> reversed(forward.rbegin(), forward.rend());
+
+    std::vector<ConnectPlanEntry> planForward = planFeedSourceIntoFirstFreeInputs(1, forward);
+    std::vector<ConnectPlanEntry> planReversed = planFeedSourceIntoFirstFreeInputs(1, reversed);
+
+    ASSERT_EQ(2u, planForward.size());
+    ASSERT_EQ(2u, planReversed.size());
+    EXPECT_EQ(planForward[0].destId, planReversed[1].destId);
+    EXPECT_EQ(planForward[1].destId, planReversed[0].destId);
+    EXPECT_EQ(planForward[0].destInput, planReversed[1].destInput);
+}
+
+TEST(NodeGraphConnect, FeedFirstFreeInputNeverConnectsSourceToItself)
+{
+    std::vector<int> free;
+    free.push_back(0);
+
+    std::vector<ConnectFreeInputsNode> targets;
+    targets.push_back(ConnectFreeInputsNode(1, free));
+    targets.push_back(ConnectFreeInputsNode(11, free));
+
+    std::vector<ConnectPlanEntry> plan = planFeedSourceIntoFirstFreeInputs(1, targets);
+
+    ASSERT_EQ(1u, plan.size());
+    EXPECT_EQ(11, plan[0].destId);
+}

@@ -249,9 +249,13 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
         ///No need to make an undo command for this, the user just have to do it a second time to reverse the effect
         switchInputs1and2ForSelectedNodes();
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphConnectSelectedToLast, modifiers, key)) {
-        connectSelectedNodesToLastSelected();
+        connectLaterSelectedNodesIntoFirstSelected();
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphConnectLastToSelected, modifiers, key)) {
-        connectLastSelectedToSelectedNodes();
+        connectEarlierSelectedNodesIntoLastSelected();
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFeedFirstIntoLater, modifiers, key)) {
+        connectFirstSelectedIntoLaterSelectedNodes();
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFeedLastIntoOthers, modifiers, key)) {
+        connectLastSelectedIntoOtherSelectedNodes();
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphSelectAll, modifiers, key)) {
         selectAllNodes(false);
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphSelectAllVisible, modifiers, key)) {

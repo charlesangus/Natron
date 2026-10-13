@@ -849,6 +849,8 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionMatteOverlay, kShortcutDescActionMatteOverlay, Qt::NoModifier, Qt::Key_M);
 
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionLuminanceA, kShortcutDescActionLuminanceA, Qt::ShiftModifier, Qt::Key_Y);
+    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFeedFirstIntoLater, kShortcutDescActionGraphFeedFirstIntoLater, Qt::NoModifier, Qt::Key_U);
+    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFeedLastIntoOthers, kShortcutDescActionGraphFeedLastIntoOthers, Qt::ShiftModifier, Qt::Key_U);
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionRedA, kShortcutDescActionRedA, Qt::ShiftModifier, Qt::Key_R);
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionGreenA, kShortcutDescActionGreenA, Qt::ShiftModifier, Qt::Key_G);
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionBlueA, kShortcutDescActionBlueA, Qt::ShiftModifier, Qt::Key_B);
@@ -955,6 +957,8 @@ GuiApplicationManager::populateShortcuts()
 
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphConnectSelectedToLast, kShortcutDescActionGraphConnectSelectedToLast, Qt::NoModifier, Qt::Key_Y);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphConnectLastToSelected, kShortcutDescActionGraphConnectLastToSelected, Qt::ShiftModifier, Qt::Key_Y);
+    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFeedFirstIntoLater, kShortcutDescActionGraphFeedFirstIntoLater, Qt::NoModifier, Qt::Key_U);
+    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFeedLastIntoOthers, kShortcutDescActionGraphFeedLastIntoOthers, Qt::ShiftModifier, Qt::Key_U);
 
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphOpenNodePanel, kShortcutDescActionGraphOpenNodePanel, Qt::NoModifier, Qt::Key_Return);
 

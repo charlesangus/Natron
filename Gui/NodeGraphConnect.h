@@ -31,7 +31,7 @@ NATRON_NAMESPACE_ENTER
 
 typedef std::intptr_t ConnectNodeId;
 
-// One connection the Y / Shift+Y shortcuts plan to make: sourceId feeds input destInput of destId.
+// One connection the Y / Shift+Y / U / Shift+U shortcuts plan to make: sourceId feeds input destInput of destId.
 struct ConnectPlanEntry {
     ConnectNodeId sourceId;
     ConnectNodeId destId;
@@ -74,6 +74,23 @@ struct ConnectTargetNode {
 std::vector<ConnectPlanEntry> planFeedSourceIntoTargets(ConnectNodeId sourceId,
                                                         const std::vector<ConnectTargetNode>& targets);
 
+// U / Shift+U: sourceId feeds the lowest-numbered free input of every target. freeInputs lists the
+// target's unconnected non-mask input numbers; a target with none, and the source itself, are left unplanned.
+struct ConnectFreeInputsNode {
+    ConnectNodeId id;
+    std::vector<int> freeInputs;
+
+    ConnectFreeInputsNode(ConnectNodeId id_,
+                          const std::vector<int>& freeInputs_)
+        : id(id_)
+        , freeInputs(freeInputs_)
+    {
+    }
+};
+
+std::vector<ConnectPlanEntry> planFeedSourceIntoFirstFreeInputs(ConnectNodeId sourceId,
+                                                                const std::vector<ConnectFreeInputsNode>& targets);
+
 // GUI-facing wrappers: selection is in click order, as NodeGraphPrivate::_selection keeps it.
 // Each returns the entries resolved back to the actual NodeGui pointers, ready to connect.
 struct ConnectPlanConnection {
@@ -96,6 +113,12 @@ std::vector<ConnectPlanConnection> planFeedFirstSelectedForSelection(const Nodes
 
 // Shift+Y: the last-selected node is the anchor; the earlier-selected nodes feed it in selection order.
 std::vector<ConnectPlanConnection> planFeedLastSelectedForSelection(const NodesGuiList& selection);
+
+// U: the first-selected node feeds the first free input of each later-selected node.
+std::vector<ConnectPlanConnection> planFeedFirstSelectedIntoLaterForSelection(const NodesGuiList& selection);
+
+// Shift+U: the last-selected node feeds the first free input of each other selected node.
+std::vector<ConnectPlanConnection> planFeedLastSelectedIntoOthersForSelection(const NodesGuiList& selection);
 
 NATRON_NAMESPACE_EXIT
 

@@ -196,9 +196,13 @@ public Q_SLOTS:
 
     void switchInputs1and2ForSelectedNodes();
 
-    void connectSelectedNodesToLastSelected();
+    void connectLaterSelectedNodesIntoFirstSelected();
 
-    void connectLastSelectedToSelectedNodes();
+    void connectEarlierSelectedNodesIntoLastSelected();
+
+    void connectFirstSelectedIntoLaterSelectedNodes();
+
+    void connectLastSelectedIntoOtherSelectedNodes();
 
     void extractSelectedNode();
 

@@ -38,6 +38,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
@@ -54,6 +55,7 @@ gpuCapableIds()
     static const std::set<std::string> ids = {
         PLUGINID_NATRON_GRADE,
         PLUGINID_NATRON_BLUR,
+        PLUGINID_NATRON_INVERT,
     };
 
     return ids;

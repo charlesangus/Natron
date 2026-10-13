@@ -69,6 +69,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Color/Invert.h"
+#include "Engine/Nodes/Color/Saturation.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
@@ -926,7 +927,7 @@ TEST_F(GpuResidencyTest, OutOfMemoryAtTheSecondRegionRendersItOnTheCpu)
     expectMatchesCpu(chain.sink, run);
 }
 
-// The Invert has no GPU path: the region holding it renders on the CPU, root included, rather than failing the frame.
+// The Saturation has no GPU path: the region holding it renders on the CPU, root included, rather than failing the frame.
 TEST_F(GpuResidencyTest, MemberWithoutAGpuPathRendersTheRegionOnTheCpu)
 {
     if (!gpuOrSkip()) {
@@ -934,18 +935,19 @@ TEST_F(GpuResidencyTest, MemberWithoutAGpuPathRendersTheRegionOnTheCpu)
     }
     NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
     NodePtr grade = makeGrade(1.25, 0.05);
-    NodePtr invert = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
-    ASSERT_TRUE(source && grade && invert);
+    NodePtr saturation = makeNode(PLUGINID_NATRON_SATURATION, PLUGIN_MAJOR_NATRON_SATURATION);
+    ASSERT_TRUE(source && grade && saturation);
+    ASSERT_TRUE(setKnobValues(saturation, kSaturationParamSaturation, { 0.5 }));
     connectNodes(source, grade, 0, true);
-    connectNodes(grade, invert, 0, true);
+    connectNodes(grade, saturation, 0, true);
 
     FrameRun run;
     std::string error;
-    ASSERT_TRUE(prepareFrame(invert, &run, &error)) << error;
+    ASSERT_TRUE(prepareFrame(saturation, &run, &error)) << error;
     const int gradeTask = taskOf(run.graph, grade);
-    const int invertTask = taskOf(run.graph, invert);
-    ASSERT_TRUE(gradeTask >= 0 && invertTask >= 0);
-    assignRegions(&run.graph, { { gradeTask, invertTask } });
+    const int saturationTask = taskOf(run.graph, saturation);
+    ASSERT_TRUE(gradeTask >= 0 && saturationTask >= 0);
+    assignRegions(&run.graph, { { gradeTask, saturationTask } });
 
     ASSERT_TRUE(render(&run));
     EXPECT_EQ(1, fallbacksOf(run));
@@ -953,9 +955,9 @@ TEST_F(GpuResidencyTest, MemberWithoutAGpuPathRendersTheRegionOnTheCpu)
     EXPECT_EQ(0, run.stats->getGpuRegionRetries());
     EXPECT_EQ(0, run.stats->getGpuRegionsRun());
     EXPECT_EQ(1, renderRoICallsOf(run, grade));
-    EXPECT_EQ(1, renderRoICallsOf(run, invert));
+    EXPECT_EQ(1, renderRoICallsOf(run, saturation));
     expectReleased(run);
-    expectMatchesCpu(invert, run);
+    expectMatchesCpu(saturation, run);
 }
 
 // The device is lost in the middle of the second region: the frame renders again, all on the CPU, and the next render

@@ -58,7 +58,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
-#include "Engine/Nodes/Color/Invert.h"
+#include "Engine/Nodes/Color/Saturation.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
@@ -562,12 +562,12 @@ TEST_F(NativeImageEffectGpuTest, BaseAcceptsAPointOpOnlyWithAKernel)
     }
 
     // A production point op keeps the base's default: no kernel, so no GPU.
-    NodePtr invert = createNode(QString::fromUtf8(PLUGINID_NATRON_INVERT));
-    ASSERT_TRUE(bool(invert));
-    NativeImageEffect* invertEffect = effectOf(invert);
-    ASSERT_TRUE(invertEffect != NULL);
-    ASSERT_TRUE(invertEffect->isPointOp());
-    EXPECT_FALSE(invertEffect->canRenderOnGpu(q));
+    NodePtr saturation = createNode(QString::fromUtf8(PLUGINID_NATRON_SATURATION));
+    ASSERT_TRUE(bool(saturation));
+    NativeImageEffect* saturationEffect = effectOf(saturation);
+    ASSERT_TRUE(saturationEffect != NULL);
+    ASSERT_TRUE(saturationEffect->isPointOp());
+    EXPECT_FALSE(saturationEffect->canRenderOnGpu(q));
 }
 
 #ifdef NATRON_HAVE_GPU

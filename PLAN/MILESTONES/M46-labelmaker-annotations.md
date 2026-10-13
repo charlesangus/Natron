@@ -9,7 +9,7 @@ A native C++ reimplementation of github.com/charlesangus/Labelmaker (design and 
 - "Class | name" when a node has been renamed;
 - Read/Write file names.
 
-The readouts are driven by a shipped base config plus a personal JSON config keyed by plugin ID. When a node's label grows, the nodes below it are pushed down automatically, off the undo stack (as Labelmaker does; a preference turns this off). An undoable "De-overlap All" tidies whole graphs. Config lines can also name a Python readout function (`"python": "module.func"`), which runs in one batched, time-budgeted pass per refresh tick. Annotations are computed at draw time, never saved, so project files are unchanged.
+The readouts are driven by a shipped base config plus a personal JSON config keyed by plugin ID. When a node's label grows, the nodes below it are pushed down automatically, off the undo stack (as Labelmaker does; a preference turns this off). An undoable "De-overlap All" tidies whole graphs. Config lines can also name a Python readout function (`"python": "module.func"`), which runs lazily: in batched, time-budgeted slices on an idle-priority pass, only for dirty nodes in view. Stale labels are acceptable, and GUI stalls are not. Annotations are computed at draw time, never saved, so project files are unchanged.
 
 The layout rides on M56 Phase 56.1 (node text grows to a maximum width, then wraps). One build at the end (user rule): implementers do not compile.
 
@@ -160,20 +160,22 @@ The layout rides on M56 Phase 56.1 (node text grows to a maximum width, then wra
   - verify: P5.T1 edits the personal file while the app is running. The Blur gains its new line within a second with no restart, and a malformed edit leaves the old lines in place and logs an error. A `node_annotations.json` in a `NATRON_PLUGIN_PATH` directory is layered under the personal file. A `python` line whose function file is edited picks up the new code after "Reload Node Annotations".
   - size: M
 
-- [ ] M46.P2.T3 — Refresh annotations on knob, label, input and frame changes, coalesced per graph into one Python pass per tick
+- [ ] M46.P2.T3 — Refresh annotations lazily on an idle-priority pass, for dirty visible nodes only
   - files: `Engine/Node.h`, `Engine/Node.cpp`, `Gui/NodeGui.h`, `Gui/NodeGui.cpp`, `Gui/NodeGraph.h`, `Gui/NodeGraphPrivate.h`, `Gui/NodeGraph.cpp`
   - approach:
     - In `Node::onEffectKnobValueChanged` (`Node.cpp:6123`), emit a new `annotationInputsChanged()` for every knob change. Keep the existing per-knob branches.
     - Emit it also from input connect/disconnect, so the mask readout follows the mask pipe. Renames already go through `onInternalNameChanged`, which also marks the node dirty and drops its cached Python node object (P1.T5).
     - Coalesce per `NodeGraph`, not per `NodeGui`, so one GIL hold covers the whole batch:
-      - `NodeGui` connects the signal queued to `scheduleAnnotationRefresh()`, which adds the node to `NodeGraph::_annotationDirty` (a set of weak refs) and starts the graph's single-shot 0 ms timer.
-      - On the tick, the graph runs P1.T2 for every dirty node, using that node's cached Python results (`NodeGui::_annotationPyCache`).
+      - `NodeGui` connects the signal queued to `scheduleAnnotationRefresh()`, which adds the node to `NodeGraph::_annotationDirty` (a set of weak refs) and arms the graph's idle pass (below). Marking dirty does no evaluation.
+      - **Idle pass, not a tick.** Nothing runs on a fixed period or per event. The pass is a single-shot timer, restarted by every input event in the graph (mouse, wheel, key) and armed at 150 ms after the last one. It runs only when there is no drag, pan, zoom, rubber band or playback in progress, and posts itself at `Qt::LowEventPriority`, so it yields to all user input. When the pass would run while input is pending, it re-arms instead.
+      - **Visible first, off-screen never eagerly.** The pass takes only dirty nodes whose rect intersects the viewport, plus a small margin. Off-screen dirty nodes stay dirty, and are picked up when they scroll into view: the pan and zoom end handlers re-arm the pass. Labels may show stale values until then.
+      - Per slice, the graph runs P1.T2 for the dirty visible nodes, using that node's cached Python results (`NodeGui::_annotationPyCache`).
       - Nodes reporting `needsPython` become `PyJob`s, and the graph calls `store->runner().run(jobs, frame, 4ms, &out)` once.
       - It writes the results into each node's cache, re-runs P1.T2 for those nodes (pure C++, cheap), and calls `setNameItemHtml` once per node.
-      - Jobs left over the budget stay dirty, and the timer re-arms.
+      - The whole slice, C++ evaluation plus Python, is capped at 4 ms. Nodes left over the budget stay dirty, and the pass re-arms through the same idle path.
     - Frame changes: connect the app timeline's `frameChanged` once per `NodeGraph`. Mark dirty only the NodeGuis whose last evaluation reported `frameDependent`.
     - While a pass runs, `scheduleAnnotationRefresh` from the node currently being evaluated is ignored (a guard set around each job), so a readout function that sets knobs can't loop.
-    - During playback, template lines refresh every frame, but Python jobs run at most every 125 ms, with one final pass when playback stops. While a project is loading, or `getApp()->isCreatingPythonGroup()` is true, the Python pass is skipped and re-armed.
+    - During playback and interaction no annotation evaluates at all, template or Python. Frame-dependent nodes are marked dirty, and one idle pass runs after playback or the interaction stops. While a project is loading, or `getApp()->isCreatingPythonGroup()` is true, the Python pass is skipped and re-armed.
     - GIL contention: CPython 3.13 has no try-acquire, and `USE_NATRON_GIL` is not defined, so `PythonGILLocker` is a plain `PyGILState_Ensure`. A render thread evaluating an expression can delay the pass by up to the switch interval (5 ms). The 4 ms budget and the playback throttle bound the cost on our side. No other mitigation is planned; document this.
     - Skip Dot, Backdrop, Viewer and multi-instance children.
   - verify: P5.T1 checks that:
@@ -182,7 +184,7 @@ The layout rides on M56 Phase 56.1 (node text grows to a maximum width, then wra
     - connecting a mask pipe adds `M`;
     - a Python line updates once per knob edit;
     - a Python readout function that sets a knob settles after one pass (pass count logged);
-    - a 200-node graph, every node with a `refresh: frame` Python line, keeps each tick under 4 ms while scrubbing (per-tick time logged), and the timed scrub stays interactive at the gate build.
+    - a 200-node graph, every node with a `refresh: frame` Python line, keeps each slice under 4 ms (per-slice time logged), runs no slice while dragging or playing, and evaluates off-screen nodes only once they scroll into view (counter logged).
   - size: L
 
 ## Phase 46.3: Drawing on the node
@@ -248,7 +250,7 @@ The layout rides on M56 Phase 56.1 (node text grows to a maximum width, then wra
   - files: `Gui/NodeGraph.h`, `Gui/NodeGraphPrivate.h`, `Gui/NodeGraph.cpp`, `Gui/NodeGui.h`, `Gui/NodeGui.cpp`
   - approach:
     - The user chose Labelmaker's behaviour knowingly: hidden moves that push no command. Gate it on the P2.T1 preference "Push nodes down when an annotation grows" (default on).
-    - `NodeGui` keeps its last `full` height. When `setNameItemHtml` makes the node taller (shrinking never pulls nodes back up), it adds the node to `NodeGraph::_pushSeeds`. The graph handles the seeds once per P2.T3 tick, after all labels in that tick are updated:
+    - `NodeGui` keeps its last `full` height. When `setNameItemHtml` makes the node taller (shrinking never pulls nodes back up), it adds the node to `NodeGraph::_pushSeeds`. The graph handles the seeds once per P2.T3 pass, after all labels in that pass are updated:
       - it runs `planDeoverlap(rects, AnnotationOnly, &seeds)` over the visible nodes of that graph level;
       - it applies the moves with plain `NodeGui::setPosition` and pushes **no** undo command;
       - it calls `triggerAutoSave()` as other moves do.
@@ -256,7 +258,7 @@ The layout rides on M56 Phase 56.1 (node text grows to a maximum width, then wra
     - Undo interaction, decided:
       - `MoveMultipleNodesCommand` stores **deltas** (`NodeGraphUndoRedo.cpp:75`), so undoing an earlier move shifts nodes relative to where the hidden pushes left them. The pushes survive and nothing jumps back on top.
       - Commands that restore **absolute** positions (`RearrangeNodesCommand`, `NodeGraphUndoRedo.cpp:1057`, plus the splice, extract and group commands) can put a node back inside a grown label.
-      - So after every undo/redo on the graph's undo stack (`QUndoStack::indexChanged`, coalesced into the next tick), the graph runs a settle pass: `planDeoverlap(rects, AnnotationOnly)`, unseeded, off-stack.
+      - So after every undo/redo on the graph's undo stack (`QUndoStack::indexChanged`, coalesced into the next pass), the graph runs a settle pass: `planDeoverlap(rects, AnnotationOnly)`, unseeded, off-stack.
       - Because `AnnotationOnly` only fixes annotation-caused overlaps and is idempotent, re-settling after undo/redo is stable and never fights an undo. Overlaps the user made on purpose between bare boxes are never touched. Redo of an absolute command followed by a settle reaches the same layout every time.
       - Document the limit: a hidden push is not itself undoable. Ctrl+Z undoes the user's action, and the push reappears only if the label grows again.
     - Skip Backdrops and Viewers. Never move a node the user is currently dragging; defer until the mouse is released.
@@ -281,13 +283,18 @@ The layout rides on M56 Phase 56.1 (node text grows to a maximum width, then wra
   - verify: `NATRON_GUI_TEST_OUT=build/m46-shots Tests/gui/run-gui-test.sh Tests/gui/m46_annotations.py build/fast/App/Natron` reports 0 failures at the gate build.
   - size: L
 
+- [ ] M46.P5.T3 — Hold M118's budgets with annotations on
+  - files: `tools/bench/gui/gen_graph.py`, `tools/bench/gui/gui_bench.py`, `tools/bench/gui/BASELINE.md`
+  - approach: add an `annotations=True` option to the M117 generator, which writes a personal config covering every generated plugin, with one Python readout per tenth node. Run the Xvfb GUI bench at N=3000 `mixed` with annotations on and off. Compare both runs against M118 - Large Graph GUI Responsiveness's Xvfb baseline, and ask the user for a real-host run with annotations on.
+  - verify: with annotations on, `compare.py` against the M118 Xvfb baseline exits 0. No stall over 250 ms is attributed to an annotation pass. The user's host run meets M118's budgets.
+  - size: M
 - [ ] M46.P5.T2 — Run the one build, the tests, and package the AppImage for UAT
   - files: none
   - approach: re-run cmake (new globbed files and the qrc), build, run `ctest`, then `m46_annotations.py`, `m24_border.py`, `m55_node_graph.py` and M56's wrap script. Package `build/appimages/M46-<sha>.AppImage`.
   - verify: everything is green, and the AppImage is posted for UAT.
   - size: M
 
-**Verification gate:** CI `format`, `lint-ci` and `build-and-test` are green, including the `NodeAnnotationConfig`, `NodeAnnotation`, `NodeAnnotationBaseConfig`, `NodeAnnotationHtml`, `NodeAnnotationPython` and `NodeGraphDeoverlap` tests. The gate report records the measured `NodeAnnotationPython` 200-job time and the P2.T3 per-tick time while scrubbing. `Tests/gui/m46_annotations.py`, `m24_border.py` and `m55_node_graph.py` report 0 failures on the gate build. The user signs off the shots and the AppImage UAT, which covers: readouts appearing and disappearing with defaults, swatches, the channel/mask/mix line, "Class | name", Read/Write file names, a live personal-config reload, a Python readout line with its error marker, the preference off giving the old labels, the auto-push (and its preference off), undo/redo after a push leaving no annotation overlap, and an undoable De-overlap All.
+**Verification gate:** CI `format`, `lint-ci` and `build-and-test` are green, including the `NodeAnnotationConfig`, `NodeAnnotation`, `NodeAnnotationBaseConfig`, `NodeAnnotationHtml`, `NodeAnnotationPython` and `NodeGraphDeoverlap` tests. The gate report records the measured `NodeAnnotationPython` 200-job time and the P2.T3 per-slice time, and P5.T3's GUI bench comparison against M118's Xvfb baseline plus the user's host run within M118's budgets. `Tests/gui/m46_annotations.py`, `m24_border.py` and `m55_node_graph.py` report 0 failures on the gate build. The user signs off the shots and the AppImage UAT, which covers: readouts appearing and disappearing with defaults, swatches, the channel/mask/mix line, "Class | name", Read/Write file names, a live personal-config reload, a Python readout line with its error marker, the preference off giving the old labels, the auto-push (and its preference off), undo/redo after a push leaving no annotation overlap, and an undoable De-overlap All.
 
 Acceptance sketch:
 - Nodes can display rich, Labelmaker-style annotation text/data on the node
@@ -299,10 +306,12 @@ Scheduling note (2026-10-08, user): runs together with M55. Before elaborating, 
 
 - 2026-10-11 (user):
   - **Licence:** the user wrote Labelmaker and relicenses its config schema and base config under GPL-2.0-or-later, so translating `base_config.json` (P1.T4) is fine.
-  - **Python readouts:** batched, not per line. A config line may give `"python": "module.func"`, resolved once per config load and called with `(thisNode, frame)` in one GIL hold per refresh tick, with a 4 ms budget and per-node cached results (P1.T5, P2.T3). No init.py registration API.
+  - **Python readouts:** batched, not per line. A config line may give `"python": "module.func"`, resolved once per config load and called with `(thisNode, frame)` in one GIL hold per idle slice, with a 4 ms budget and per-node cached results (P1.T5, P2.T3). No init.py registration API.
   - **Both Python limits accepted, and documented:** no timeout (a hanging function hangs the UI; only calls over 50 ms are auto-disabled), and no cross-node dependency tracking (refresh on own-node changes, `refresh: frame`, or "Reload Node Annotations").
   - **No config editor** in M46; users edit the JSON.
   - **Auto-push on, off the undo stack**, as Labelmaker does, with a preference to turn it off (P4.T3). Undo interaction: `MoveMultipleNodesCommand` stores deltas, so pushes survive its undo. Commands that restore absolute positions are followed by an idempotent, off-stack `AnnotationOnly` settle after every undo/redo. Hidden pushes are themselves not undoable. Manual "De-overlap All" stays undoable (P4.T2).
   - **The summary line replaces** the layer summary when annotations are on (P3.T2).
   - **Personal config lives next to the PyPlugs:** `~/.Natron/node_annotations.json` by default, plus a `node_annotations.json` in any PyPlug search directory, layered (P2.T1, P2.T2). Not `AppConfigLocation`.
   - **Deps:** `M56` (Phase 56.1 width cap and wrap).
+- 2026-10-13 — Annotations evaluate lazily, never per tick (user, during the M118 - Large Graph GUI Responsiveness grilling): "should be evaluated lazily, low prio idle process, stale labels are acceptable but gui performance issues are not." P2.T3 now runs an input-debounced, low-priority idle pass over dirty visible nodes only, with no evaluation during playback or interaction. P5.T3 holds M118's bench budgets with annotations on.
+- 2026-10-13 — Deps are now M56 and M118 - Large Graph GUI Responsiveness (user): the push-down layout builds on M118's local stacking and indexed scene, and M46 must pass the GUI bench.

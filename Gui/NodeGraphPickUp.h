@@ -43,6 +43,7 @@ enum PickUpClickTargetEnum {
 enum PickUpPressActionEnum {
     ePickUpPressConnect,
     ePickUpPressCancel,
+    ePickUpPressDisconnect,
     ePickUpPressPassThrough,
     ePickUpPressIgnore,
 };
@@ -55,7 +56,8 @@ bool shouldStartPickUp(PickUpButtonEnum releasedButton, bool movedSincePress, bo
 
 /**
  * @brief What a press does while an input arrow is held: a left click on another node connects,
- * a left click anywhere else (its own node included) or a right click cancels, the middle button
+ * a left click on anything that is not a node disconnects the input, a left click on its own
+ * node or a right click cancels, the middle button
  * and the navigator keep panning, and other button combinations are swallowed.
  **/
 PickUpPressActionEnum decidePickUpPress(PickUpButtonEnum button, PickUpClickTargetEnum target);

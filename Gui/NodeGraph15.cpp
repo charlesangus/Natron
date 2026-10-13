@@ -237,6 +237,21 @@ NodeGraph::handlePickUpPress(QMouseEvent* e)
         dropPickedUpArrow();
 
         return true;
+    case ePickUpPressDisconnect: {
+        _imp->_pickedUpArrowDest.reset();
+        _imp->_pickedUpArrowInput = -1;
+        if (arrow->getSource()) {
+            pushUndoCommand(new ConnectCommand(this, arrow, arrow->getSource(), NodeGuiPtr()));
+        }
+        if (nodeHoldingEdge) {
+            nodeHoldingEdge->refreshEdges();
+        }
+        arrow->initLine();
+        scene()->update();
+        update();
+
+        return true;
+    }
     case ePickUpPressConnect: {
         NodeGuiPtr targetNode = nearbyNode->shared_from_this();
         // Let go of the arrow before connecting: a rejected connection opens a dialog, and the

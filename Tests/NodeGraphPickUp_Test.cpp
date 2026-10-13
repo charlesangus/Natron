@@ -58,9 +58,9 @@ TEST(NodeGraphPickUp, LeftClickOnAnotherNodeConnects)
     EXPECT_EQ(ePickUpPressConnect, decidePickUpPress(ePickUpButtonLeft, ePickUpClickTargetNode));
 }
 
-TEST(NodeGraphPickUp, LeftClickOnEmptySpaceCancels)
+TEST(NodeGraphPickUp, LeftClickOnNonNodeDisconnects)
 {
-    EXPECT_EQ(ePickUpPressCancel, decidePickUpPress(ePickUpButtonLeft, ePickUpClickTargetOther));
+    EXPECT_EQ(ePickUpPressDisconnect, decidePickUpPress(ePickUpButtonLeft, ePickUpClickTargetOther));
 }
 
 TEST(NodeGraphPickUp, LeftClickOnTheHoldingNodeCancels)

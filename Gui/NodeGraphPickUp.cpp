@@ -46,8 +46,9 @@ decidePickUpPress(PickUpButtonEnum button,
             return ePickUpPressConnect;
         case ePickUpClickTargetNavigator:
             return ePickUpPressPassThrough;
-        case ePickUpClickTargetHoldingNode:
         case ePickUpClickTargetOther:
+            return ePickUpPressDisconnect;
+        case ePickUpClickTargetHoldingNode:
         default:
             return ePickUpPressCancel;
         }

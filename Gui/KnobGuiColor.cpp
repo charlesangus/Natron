@@ -954,7 +954,7 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
 void
 KnobGuiColor::onMustShowAllDimension()
 {
-    onDimensionSwitchClicked(true);
+    setDimensionsExpanded(true);
 }
 
 void

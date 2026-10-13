@@ -410,8 +410,12 @@ isKnobFoldedInCurveEditor(const KnobGuiPtr& kgui,
     if (kgui) {
         return !kgui->getAllDimensionsVisible();
     }
+    if (knob->getKnobGuiPointer()) {
+        return !knob->getAllDimensionVisible();
+    }
 
-    // Without a knob GUI there is no fold button to read, so apply the panel's auto-fold rule instead.
+    // Only a knob no panel shows, such as a roto item's, gets here: with no fold button to read,
+    // apply the panel's auto-fold rule instead.
     bool autoFold = false;
     if (dynamic_cast<KnobColor*>(knob.get())) {
         autoFold = true;

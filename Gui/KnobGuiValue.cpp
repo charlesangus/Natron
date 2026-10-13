@@ -103,6 +103,7 @@ struct KnobGuiValuePrivate
     bool autoFoldSuppressed;
     bool foldStateHeld;
     bool dimensionsFolded;
+    bool expandedByUser;
 
     KnobGuiValuePrivate(KnobIPtr knob)
         : knob(knob)
@@ -121,6 +122,7 @@ struct KnobGuiValuePrivate
         , autoFoldSuppressed(false)
         , foldStateHeld(false)
         , dimensionsFolded(false)
+        , expandedByUser(false)
     {
     }
 
@@ -561,7 +563,7 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
                 break;
             }
         }
-        if (!showSlider || !isAutoFoldDimensionsEnabled()) {
+        if (!showSlider || !isAutoFoldDimensionsEnabled() || !areAllDimensionCurvesEqual()) {
             if (_imp->dimensionLines) {
                 expandAllDimensions();
             } else {
@@ -739,7 +741,7 @@ KnobGuiValue::setDimensionsExpanded(bool expanded)
         if (!_imp->dimensionSwitchButton->isChecked()) {
             expandAllDimensions();
         }
-    } else if (_imp->dimensionSwitchButton->isChecked() && areAllDimensionsEqual()) {
+    } else if (_imp->dimensionSwitchButton->isChecked() && !_imp->expandedByUser && areAllDimensionsEqual()) {
         foldAllDimensions();
     }
 }
@@ -761,7 +763,76 @@ KnobGuiValue::areAllDimensionsEqual() const
         }
     }
 
+    return areAllDimensionCurvesEqual();
+}
+
+bool
+KnobGuiValue::areAllDimensionCurvesEqual() const
+{
+    KnobIPtr knob = _imp->getKnob();
+    if (!knob || (knob->getDimension() < 2)) {
+        return true;
+    }
+
+    CurvePtr refCurve = knob->getCurve(ViewIdx(0), 0, true);
+    const KeyFrameSet refKeys = refCurve ? refCurve->getKeyFrames_mt_safe() : KeyFrameSet();
+    for (int i = 1; i < knob->getDimension(); ++i) {
+        CurvePtr curve = knob->getCurve(ViewIdx(0), i, true);
+        const KeyFrameSet keys = curve ? curve->getKeyFrames_mt_safe() : KeyFrameSet();
+        if (keys != refKeys) {
+            return false;
+        }
+    }
+
     return true;
+}
+
+void
+KnobGuiValue::setDimensionsFoldedByUser(bool folded)
+{
+    if (!_imp->dimensionSwitchButton) {
+        return;
+    }
+    _imp->expandedByUser = !folded;
+    if (folded) {
+        foldAllDimensions();
+    } else {
+        expandAllDimensions();
+    }
+}
+
+void
+KnobGuiValue::copyDimensionZeroValueToOthers()
+{
+    KnobIPtr knob = _imp->getKnob();
+    KnobDoubleBasePtr doubleKnob = _imp->getKnobAsDouble();
+    KnobIntBasePtr intKnob = _imp->getKnobAsInt();
+    if (!knob || _imp->spinBoxes.empty()) {
+        return;
+    }
+    const int nDims = knob->getDimension();
+    if (nDims <= 1) {
+        return;
+    }
+    SequenceTime time = knob->getCurrentTime();
+    double firstDimensionValue = _imp->spinBoxes[0].first->value();
+    if (getNormalizationPolicy(0) != eValueIsNormalizedNone) {
+        firstDimensionValue = denormalize(0, time, firstDimensionValue);
+    }
+    knob->beginChanges();
+    for (int i = 1; i < nDims; ++i) {
+        double v = firstDimensionValue;
+        if (getNormalizationPolicy(i) != eValueIsNormalizedNone) {
+            v = normalize(i, time, v);
+        }
+        if (doubleKnob) {
+            doubleKnob->setValue(v, ViewSpec::all(), i);
+        } else {
+            assert(intKnob);
+            intKnob->setValue(v, ViewSpec::all(), i);
+        }
+    }
+    knob->endChanges();
 }
 
 void
@@ -913,6 +984,68 @@ KnobGuiValue::onRectangleFormatButtonClicked()
     updateGUI(3);
 }
 
+namespace {
+
+class DimensionsFoldCommand
+    : public QUndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(DimensionsFoldCommand)
+
+public:
+    DimensionsFoldCommand(const KnobGuiPtr& knobGui,
+                          bool fold)
+        : QUndoCommand()
+        , _knobGui(knobGui)
+        , _fold(fold)
+        , _knobBeforeFold()
+    {
+        KnobIPtr knob = knobGui->getKnob();
+        // Folding writes dimension 0's value into the others, which undo has to put back.
+        if (_fold && knob) {
+            _knobBeforeFold = MultipleKnobEditsUndoCommand::createCopyForKnob(knob);
+        }
+        const QString label = knob ? QString::fromUtf8(knob->getLabel().c_str()) : QString();
+        setText(_fold ? tr("Fold %1").arg(label) : tr("Expand %1").arg(label));
+    }
+
+    virtual ~DimensionsFoldCommand() OVERRIDE
+    {
+    }
+
+    virtual void undo() OVERRIDE FINAL
+    {
+        KnobGuiPtr knobGui = _knobGui.lock();
+        KnobGuiValue* isValue = dynamic_cast<KnobGuiValue*>(knobGui.get());
+        if (!isValue) {
+            return;
+        }
+        KnobIPtr knob = knobGui->getKnob();
+        if (knob && _knobBeforeFold) {
+            knob->cloneAndUpdateGui(_knobBeforeFold.get());
+        }
+        isValue->setDimensionsFoldedByUser(!_fold);
+    }
+
+    virtual void redo() OVERRIDE FINAL
+    {
+        KnobGuiPtr knobGui = _knobGui.lock();
+        KnobGuiValue* isValue = dynamic_cast<KnobGuiValue*>(knobGui.get());
+        if (!isValue) {
+            return;
+        }
+        isValue->setDimensionsFoldedByUser(_fold);
+        if (_fold) {
+            isValue->copyDimensionZeroValueToOthers();
+        }
+    }
+
+private:
+    KnobGuiWPtr _knobGui;
+    bool _fold;
+    KnobIPtr _knobBeforeFold;
+};
+
+} // namespace
+
 void
 KnobGuiValue::onDimensionSwitchClicked(bool clicked)
 {
@@ -923,39 +1056,7 @@ KnobGuiValue::onDimensionSwitchClicked(bool clicked)
 
         return;
     }
-    _imp->dimensionSwitchButton->setDown(clicked);
-    _imp->dimensionSwitchButton->setChecked(clicked);
-    if (clicked) {
-        expandAllDimensions();
-    } else {
-        foldAllDimensions();
-
-        KnobIPtr knob = _imp->getKnob();
-        KnobDoubleBasePtr doubleKnob = _imp->getKnobAsDouble();
-        KnobIntBasePtr intKnob = _imp->getKnobAsInt();
-        const int nDims = knob->getDimension();
-        if (nDims > 1) {
-            SequenceTime time = knob->getCurrentTime();
-            double firstDimensionValue = _imp->spinBoxes[0].first->value();
-            if (getNormalizationPolicy(0) != eValueIsNormalizedNone) {
-                firstDimensionValue = denormalize(0, time, firstDimensionValue);
-            }
-            knob->beginChanges();
-            for (int i = 1; i < nDims; ++i) {
-                double v = firstDimensionValue;
-                if (getNormalizationPolicy(i) != eValueIsNormalizedNone) {
-                    v = normalize(i, time, v);
-                }
-                if (doubleKnob) {
-                    doubleKnob->setValue(v, ViewSpec::all(), i);
-                } else {
-                    assert(intKnob);
-                    intKnob->setValue(v, ViewSpec::all(), i);
-                }
-            }
-            knob->endChanges();
-        }
-    }
+    pushUndoCommand(new DimensionsFoldCommand(shared_from_this(), !clicked));
 }
 
 void
@@ -1190,7 +1291,9 @@ KnobGuiValue::updateGUI(const int dimension)
     if (!_imp->foldStateHeld) {
         if (!isAutoFoldDimensionsEnabled() || (_imp->dimensionSwitchButton && !_imp->dimensionSwitchButton->isChecked() && allValuesNotEqual)) {
             expandAllDimensions();
-        } else if (isAutoFoldDimensionsEnabled() && !_imp->autoFoldSuppressed && _imp->dimensionSwitchButton && _imp->dimensionSwitchButton->isChecked() && !allValuesNotEqual) {
+        } else if (isAutoFoldDimensionsEnabled() && !_imp->autoFoldSuppressed && !_imp->expandedByUser && _imp->dimensionSwitchButton && _imp->dimensionSwitchButton->isChecked() && !allValuesNotEqual && areAllDimensionCurvesEqual()) {
+            // Equal values at the current frame alone would fold dimensions animated apart, and the
+            // curve editor then edits a folded knob's other dimensions through its first one.
             foldAllDimensions();
         }
     }

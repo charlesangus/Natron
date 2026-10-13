@@ -77,6 +77,19 @@ public:
      **/
     void setFoldStateHeld(bool held);
 
+    /**
+     * @brief Folds or expands the dimensions the way the dimension-switch button asks, without
+     * pushing an undo command. A knob expanded this way stays expanded when every dimension
+     * comes to hold the same value, until it is folded the same way.
+     **/
+    void setDimensionsFoldedByUser(bool folded);
+
+    /**
+     * @brief Gives every other dimension dimension 0's value at the current time, as folding
+     * with the dimension-switch button does.
+     **/
+    void copyDimensionZeroValueToOthers();
+
     int getDimensionForSpinBox(const SpinBox* spinbox) const;
 
 public Q_SLOTS:
@@ -176,8 +189,9 @@ protected:
     void setAutoFoldSuppressed(bool suppressed);
 
     /**
-     * @brief Unfolds freely. Folds only when every dimension already holds the same value,
-     * so, unlike the dimension-switch button, it never copies dimension 0 into the others.
+     * @brief Unfolds freely. Folds only when every dimension already holds the same value and
+     * curve, so, unlike the dimension-switch button, it never copies dimension 0 into the others,
+     * and never when the user expanded the knob with that button.
      **/
     void setDimensionsExpanded(bool expanded);
 
@@ -221,6 +235,7 @@ private:
     void foldAllDimensions();
     void setDimensionLabelVisible(std::size_t index, bool visible);
     bool areAllDimensionsEqual() const;
+    bool areAllDimensionCurvesEqual() const;
 
     void sliderEditingEnd(double d);
 

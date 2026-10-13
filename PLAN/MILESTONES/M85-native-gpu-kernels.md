@@ -106,7 +106,7 @@ Scouted facts this plan relies on (2026-10-12, `milestone/m85-native-gpu-kernels
   - verify: `NativeGradeGpuTest.*` and `NativeBlurGpuTest.*` pass unchanged on lavapipe and RADV, and still skip cleanly with no ICD.
   - size: M
 
-- [ ] M85.P1.T3 — Add the backend-neutral point-op description next to makeKernel() and render point ops on the GPU in the base
+- [x] M85.P1.T3 — Add the backend-neutral point-op description next to makeKernel() and render point ops on the GPU in the base
   - files: `Engine/Nodes/Image/PixelKernel.h`, `Engine/Nodes/Image/GpuRender.h`, `Engine/Nodes/Image/NativeImageEffect.{h,cpp}`, `Engine/GpuPlacement.cpp`, `Tests/Native/NativeImageEffectGpu_Test.cpp` (new)
   - approach:
     - **The description, in `PixelKernel.h`** (no Vulkan types): `struct PixelKernelGpu { int kernel = -1; std::vector<std::byte> params; }`, plus a `setParams<P>()` helper for trivially-copyable structs. `kernel` holds a `gpu::GpuKernelId` cast to int, so the header builds with `NATRON_GPU=OFF`.
@@ -549,4 +549,4 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - `PixelWrapCompose.ChainEqualsInvertAfterGrade` passes on the C++ twin. It also runs in the `Gpu.` and `GpuNoPushDescriptor.` ctest registrations, on lavapipe and RADV.
   - `GpuKernelRegistry_Test` now checks `wrap_divide` instead of `pointop_masked`.
   - `Chain::load` loads both ops from the same block, which is fine for Grade then Invert. Two ops that both read params would need offsets; that is for M87.
-  - P1.T3's test `NativeImageEffectGpuTest.RenderGpuMatchesTheCpuRender` fails on its alpha-source case: the output layer has 4 channels but the source has 1. A consultant is diagnosing it.
+- 2026-10-12 — **P1.T3 done** (`f7e5aa13e`). The alpha-source failure was in the test, not the base path: the region engine converts inputs to the task's plane before `renderGpu()`, and the test now does the same with `Image::convertToFormat`. 156 of 216 matrix cases render (96 divided); the 60 refusals are the divisor or mask falling outside the plane. The GPU/PixelWrap/NativeImageEffect set passes 265/265 on lavapipe, RADV and no-ICD, in both scheduler modes.

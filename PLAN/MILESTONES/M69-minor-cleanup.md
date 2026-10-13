@@ -364,9 +364,27 @@ User UAT on `M69-2e5e0477d`, 2026-10-13, given in chat.
     - Also remove the colour-adjust panel's re-fold on close (`KnobGuiColor.cpp:727`); a close is not a user fold request.
   - verify: `ProjectSerialization` gtest round-trips a folded and an expanded knob, and the GUI section saves, reloads and checks the fold state.
   - size: L
-- [ ] M69.P11.T4 — Rebase onto main after M56 merges (M93 also landed), end build, scripts and the round-4 UAT AppImage
+- [x] M69.P11.T4 — Rebase onto main after M56 merges (M93 also landed), end build, scripts and the round-4 UAT AppImage
   - files: `build/appimages/M69-<sha>.AppImage`, `build/appimages/M69-uat.md`
   - approach: rebase onto `main` with M56; expect conflicts in `CurveWidget*` with M56.P9.T2. Run one `fast` build, ctest, `m69_cleanup.py`, `m55_*`, `m45_tab_menu.py` and `m56_visual.py`, then package.
+  - verify: the gate is green, and the user signs off.
+  - size: L
+
+## Phase 69.12: UAT round 4 fixes (2026-10-13)
+
+User UAT on `M69-7e3c0cea8`, 2026-10-13, given in chat with a screenshot.
+
+- [ ] M69.P12.T1 — Size the pane header's float/close buttons and the properties bin's toolbar buttons like the panel header buttons
+  - files: `Gui/TabWidget.cpp`, `Gui/PropertiesBinWrapper*`/`Gui/Gui*.cpp` (wherever the properties bin's max-panels spinbox row is built), the panel header in `Gui/DockablePanel*.cpp` as the reference; `Tests/gui/m69_cleanup.py`
+  - approach:
+    - Too small: each pane header's float and close buttons, at the right end of the tab bar (every pane), and the two buttons beside the properties bin's max-panels spinbox ("2"), i.e. minimize-all and close-all.
+    - Correct, the reference: a node panel's header buttons (minimize / float / close beside "Project Settings"). Match their button size and icon size, through the same shared helper or metric if one exists, not a new hard-coded pixel value.
+    - Keep the scaling with the UI scale factor that M56 added.
+  - verify: the GUI script measures the pane header's float/close buttons and the properties bin's toolbar buttons and checks they equal the panel header buttons' size; shots at 1× and 2× for the user.
+  - size: M
+- [ ] M69.P12.T2 — End build, scripts and the round-5 UAT AppImage
+  - files: `build/appimages/M69-<sha>.AppImage`, `build/appimages/M69-uat.md`
+  - approach: one `fast` build, ctest, `m69_cleanup.py`, `m56_visual.py` at 1× and 2×, then package.
   - verify: the gate is green, and the user signs off.
   - size: L
 

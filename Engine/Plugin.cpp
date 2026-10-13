@@ -358,16 +358,4 @@ PluginGroupNode::tryRemoveChild(PluginGroupNode* plugin)
     }
 }
 
-static bool
-iless(char l, char r) {
-    return std::tolower(l, std::locale()) < std::tolower(r, std::locale());
-}
-
-bool
-FormatExtensionCompareCaseInsensitive::operator() (const std::string& lhs,
-                                                   const std::string& rhs) const
-{
-    return std::lexicographical_compare( lhs.begin(), lhs.end(), rhs.begin(), rhs.end(), iless );
-}
-
 NATRON_NAMESPACE_EXIT

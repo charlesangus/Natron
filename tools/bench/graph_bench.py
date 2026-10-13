@@ -642,6 +642,9 @@ def main():
         os.remove(stale)
     writer = app.createWriter(path)
     writer.connectInput(0, root)
+    working = writer.getParam("ocioWorkingSpace").get()
+    writer.getParam("ocioOutputSpace").set(working)
+    writer.getParam("ocioOutputSpaceSet").set(True)
     for name, value in (("compression", "none"),):
         p = writer.getParam(name)
         if p is not None:

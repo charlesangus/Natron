@@ -74,7 +74,7 @@ for i in *.md; do
 #    $PANDOC "$i" --columns=1000 -o "$(echo "$i"|$SED 's/\.md$/.rst/')"
 done
 echo "Applying pandoc asterisk fix"
-for i in plugins/fr.inria.openfx.ReadOIIO.md plugins/fr.inria.openfx.WriteOIIO.md; do
+for i in plugins/fr.inria.openfx.ReadOIIO.md; do
     # Hack: pandoc 2.3.1 does not escape the asterisk in "\(\*",
     # let's replace this string with "\(\\*".
     $SED -i.bak "s/\\\(\\\\\*/\\\(\\\\\\\*/" "$i"

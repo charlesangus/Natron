@@ -55,9 +55,9 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/IO/IoColorSpace.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
-#include "Engine/Nodes/IO/ReadColorSpace.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/RectI.h"
@@ -348,10 +348,10 @@ TEST_F(NativeReadColorTest, AnExrTakesTheColourspaceOfTheConfigsFileRule)
     ASSERT_EQ(std::string(kOtherWorkingSpace), std::string(config()->getColorSpaceFromFilepath("/shots/plate.exr")));
     ASSERT_NE(project()->getFileColorSpace(eFileColorCategoryFloat), std::string(kOtherWorkingSpace));
 
-    EXPECT_EQ(std::string(kOtherWorkingSpace), ReadColorSpace::fileRuleColorSpace(config(), "/shots/plate.exr"));
-    EXPECT_EQ(std::string(kOtherWorkingSpace), ReadColorSpace::fileRuleColorSpace(config(), "/shots/ACES2065-1/plate.exr"));
-    EXPECT_EQ(std::string(), ReadColorSpace::fileRuleColorSpace(config(), "/shots/plate.tif"));
-    EXPECT_EQ(std::string(kOtherWorkingSpace), ReadColorSpace::defaultInputSpace(*project(), "/shots/plate.exr", OIIO::ImageSpec(4, 4, 3, OIIO::TypeDesc::HALF)));
+    EXPECT_EQ(std::string(kOtherWorkingSpace), IoColorSpace::fileRuleColorSpace(config(), "/shots/plate.exr"));
+    EXPECT_EQ(std::string(kOtherWorkingSpace), IoColorSpace::fileRuleColorSpace(config(), "/shots/ACES2065-1/plate.exr"));
+    EXPECT_EQ(std::string(), IoColorSpace::fileRuleColorSpace(config(), "/shots/plate.tif"));
+    EXPECT_EQ(std::string(kOtherWorkingSpace), IoColorSpace::defaultInputSpace(*project(), "/shots/plate.exr", OIIO::ImageSpec(4, 4, 3, OIIO::TypeDesc::HALF)));
 
     NodePtr node = createRead();
     setFile(node, path);
@@ -423,9 +423,9 @@ TEST_F(NativeReadColorTest, AFloatFileWithNoRuleOrTagTakesTheProjectFloatDefault
     ASSERT_FALSE(path.empty());
     Decoded ref;
     ASSERT_TRUE(readWithOiio(path, &ref));
-    ASSERT_EQ(eFileColorCategoryFloat, ReadColorSpace::categoryOf(ref.spec));
-    ASSERT_TRUE(ReadColorSpace::fileRuleColorSpace(config(), path).empty());
-    ASSERT_TRUE(ReadColorSpace::embeddedColorSpace(config(), ref.spec).empty());
+    ASSERT_EQ(eFileColorCategoryFloat, IoColorSpace::categoryOf(ref.spec));
+    ASSERT_TRUE(IoColorSpace::fileRuleColorSpace(config(), path).empty());
+    ASSERT_TRUE(IoColorSpace::embeddedColorSpace(config(), ref.spec).empty());
 
     NodePtr node = createRead();
     setFile(node, path);
@@ -461,8 +461,8 @@ TEST_F(NativeReadColorTest, AValidEmbeddedColourspaceWinsOverTheProjectDefault)
     std::string error;
     const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error);
     ASSERT_TRUE(header && !header->subimages.empty()) << error;
-    ASSERT_EQ(eFileColorCategory16Bit, ReadColorSpace::categoryOf(header->subimages[0]));
-    ASSERT_EQ(std::string(kSRGBSpace), ReadColorSpace::embeddedColorSpace(config(), header->subimages[0]));
+    ASSERT_EQ(eFileColorCategory16Bit, IoColorSpace::categoryOf(header->subimages[0]));
+    ASSERT_EQ(std::string(kSRGBSpace), IoColorSpace::embeddedColorSpace(config(), header->subimages[0]));
 
     NodePtr node = createRead();
     setFile(node, path);
@@ -485,7 +485,7 @@ TEST_F(NativeReadColorTest, ATenBitDpxTakesTheSixteenBitDefault)
     ASSERT_TRUE(header && !header->subimages.empty()) << error;
     const OIIO::ImageSpec& spec = header->subimages[0];
     ASSERT_EQ(10, spec.get_int_attribute("oiio:BitsPerSample", 0));
-    ASSERT_TRUE(ReadColorSpace::embeddedColorSpace(config(), spec).empty()) << "OIIO tags the DPX with a colourspace of the config";
+    ASSERT_TRUE(IoColorSpace::embeddedColorSpace(config(), spec).empty()) << "OIIO tags the DPX with a colourspace of the config";
 
     NodePtr node = createRead();
     setFile(node, path);
@@ -496,10 +496,10 @@ TEST_F(NativeReadColorTest, ATenBitDpxTakesTheSixteenBitDefault)
 
 TEST_F(NativeReadColorTest, EveryFormatTakesTheCategoryOfItsPixelType)
 {
-    EXPECT_EQ(eFileColorCategory8Bit, ReadColorSpace::categoryOf(OIIO::ImageSpec(4, 4, 3, OIIO::TypeDesc::UINT8)));
-    EXPECT_EQ(eFileColorCategory16Bit, ReadColorSpace::categoryOf(OIIO::ImageSpec(4, 4, 3, OIIO::TypeDesc::UINT16)));
-    EXPECT_EQ(eFileColorCategoryFloat, ReadColorSpace::categoryOf(OIIO::ImageSpec(4, 4, 3, OIIO::TypeDesc::HALF)));
-    EXPECT_EQ(eFileColorCategoryFloat, ReadColorSpace::categoryOf(OIIO::ImageSpec(4, 4, 3, OIIO::TypeDesc::FLOAT)));
+    EXPECT_EQ(eFileColorCategory8Bit, IoColorSpace::categoryOf(OIIO::ImageSpec(4, 4, 3, OIIO::TypeDesc::UINT8)));
+    EXPECT_EQ(eFileColorCategory16Bit, IoColorSpace::categoryOf(OIIO::ImageSpec(4, 4, 3, OIIO::TypeDesc::UINT16)));
+    EXPECT_EQ(eFileColorCategoryFloat, IoColorSpace::categoryOf(OIIO::ImageSpec(4, 4, 3, OIIO::TypeDesc::HALF)));
+    EXPECT_EQ(eFileColorCategoryFloat, IoColorSpace::categoryOf(OIIO::ImageSpec(4, 4, 3, OIIO::TypeDesc::FLOAT)));
 
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
@@ -527,7 +527,7 @@ TEST_F(NativeReadColorTest, EveryFormatTakesTheCategoryOfItsPixelType)
         std::string error;
         const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error);
         ASSERT_TRUE(header && !header->subimages.empty()) << cases[i].file << ": " << error;
-        EXPECT_EQ(cases[i].category, ReadColorSpace::categoryOf(header->subimages[0])) << cases[i].file;
+        EXPECT_EQ(cases[i].category, IoColorSpace::categoryOf(header->subimages[0])) << cases[i].file;
     }
 }
 
@@ -537,17 +537,17 @@ TEST_F(NativeReadColorTest, AnUntaggedFileTakesTheProjectDefaultOfItsCategory)
     setProjectSpace("colorSpace16Bit", kLinearRec709Space);
     const std::string path("/nonexistent/untagged.tif");
 
-    EXPECT_EQ(std::string(kGamma22Space), ReadColorSpace::defaultInputSpace(*project(), path, OIIO::ImageSpec(4, 4, 3, OIIO::TypeDesc::UINT8)));
-    EXPECT_EQ(std::string(kLinearRec709Space), ReadColorSpace::defaultInputSpace(*project(), path, OIIO::ImageSpec(4, 4, 3, OIIO::TypeDesc::UINT16)));
-    EXPECT_EQ(project()->getFileColorSpace(eFileColorCategoryFloat), ReadColorSpace::defaultInputSpace(*project(), path, OIIO::ImageSpec(4, 4, 3, OIIO::TypeDesc::FLOAT)));
+    EXPECT_EQ(std::string(kGamma22Space), IoColorSpace::defaultInputSpace(*project(), path, OIIO::ImageSpec(4, 4, 3, OIIO::TypeDesc::UINT8)));
+    EXPECT_EQ(std::string(kLinearRec709Space), IoColorSpace::defaultInputSpace(*project(), path, OIIO::ImageSpec(4, 4, 3, OIIO::TypeDesc::UINT16)));
+    EXPECT_EQ(project()->getFileColorSpace(eFileColorCategoryFloat), IoColorSpace::defaultInputSpace(*project(), path, OIIO::ImageSpec(4, 4, 3, OIIO::TypeDesc::FLOAT)));
 
     OIIO::ImageSpec tagged(4, 4, 3, OIIO::TypeDesc::UINT8);
     tagged.attribute("oiio:ColorSpace", kLinearRec709Space);
-    EXPECT_EQ(std::string(kLinearRec709Space), ReadColorSpace::defaultInputSpace(*project(), path, tagged));
+    EXPECT_EQ(std::string(kLinearRec709Space), IoColorSpace::defaultInputSpace(*project(), path, tagged));
 
     OIIO::ImageSpec unknown(4, 4, 3, OIIO::TypeDesc::UINT8);
     unknown.attribute("oiio:ColorSpace", kUnknownSpace);
-    EXPECT_EQ(std::string(kGamma22Space), ReadColorSpace::defaultInputSpace(*project(), path, unknown));
+    EXPECT_EQ(std::string(kGamma22Space), IoColorSpace::defaultInputSpace(*project(), path, unknown));
 }
 
 TEST_F(NativeReadColorTest, AnEightBitPngTakesTheEightBitDefaultAndMatchesOcio)
@@ -556,7 +556,7 @@ TEST_F(NativeReadColorTest, AnEightBitPngTakesTheEightBitDefaultAndMatchesOcio)
     Decoded ref;
     ASSERT_TRUE(readWithOiio(path, &ref));
     ASSERT_EQ(3, ref.spec.nchannels);
-    ASSERT_EQ(eFileColorCategory8Bit, ReadColorSpace::categoryOf(ref.spec));
+    ASSERT_EQ(eFileColorCategory8Bit, IoColorSpace::categoryOf(ref.spec));
 
     NodePtr node = createRead();
     setFile(node, path);
@@ -1041,8 +1041,8 @@ TEST_F(NativeReadContextTest, PairsWithAnEmptyKeyAreIgnored)
     pairs.push_back(std::make_pair(std::string(), std::string("quarter")));
     OCIO_NAMESPACE::ConstCPUProcessorRcPtr withIgnored, without;
     std::string error;
-    ASSERT_TRUE(ReadColorSpace::toWorkingProcessor(*project(), "shot", "lin", pairs, &withIgnored, &error)) << error;
-    ASSERT_TRUE(ReadColorSpace::toWorkingProcessor(*project(), "shot", "lin", std::vector<std::pair<std::string, std::string>>(), &without, &error)) << error;
+    ASSERT_TRUE(IoColorSpace::toWorkingProcessor(*project(), "shot", "lin", pairs, &withIgnored, &error)) << error;
+    ASSERT_TRUE(IoColorSpace::toWorkingProcessor(*project(), "shot", "lin", std::vector<std::pair<std::string, std::string>>(), &without, &error)) << error;
     ASSERT_TRUE(bool(withIgnored));
     EXPECT_EQ(without, withIgnored);
 }

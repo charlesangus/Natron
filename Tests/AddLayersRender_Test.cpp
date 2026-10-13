@@ -168,7 +168,7 @@ protected:
 
     void createWriter()
     {
-        _writer = createNode(_writeOIIOPluginID);
+        _writer = createNativeWriter();
         ASSERT_TRUE(bool(_writer));
 
         connectNodes(_last, _writer, 0, true);
@@ -186,7 +186,7 @@ protected:
         compression->setValueFromID("none", 0);
 
         KnobChannelSet* writerChannels = dynamic_cast<KnobChannelSet*>(_writer->getKnobByName(kNodeParamChannelSet).get());
-        ASSERT_TRUE(writerChannels != NULL) << "the Write container has no channel set knob";
+        ASSERT_TRUE(writerChannels != NULL) << "the Write has no channel set knob";
         writerChannels->setAll();
     }
 

@@ -203,7 +203,7 @@ protected:
 
     NodePtr createWriter(const NodePtr& source)
     {
-        NodePtr writer = createNode(_writeOIIOPluginID);
+        NodePtr writer = createNativeWriter();
         EXPECT_TRUE(bool(writer));
         if (writer) {
             connectNodes(source, writer, 0, true);

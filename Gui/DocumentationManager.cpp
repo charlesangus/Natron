@@ -45,7 +45,6 @@ GCC_ONLY_DIAG_ON(class-memaccess)
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
-#include "Engine/WriteNode.h"
 #include "Gui/GuiApplicationManager.h" // appPTR
 
 NATRON_NAMESPACE_ENTER
@@ -172,16 +171,12 @@ DocumentationManager::handler(QHttpRequest *req,
      fr.inria.openfx.ReadPDF.rst
      fr.inria.openfx.ReadPFM.rst
      fr.inria.openfx.ReadPNG.rst
-     fr.inria.openfx.WriteFFmpeg.rst
-     fr.inria.openfx.WriteOIIO.rst
-     fr.inria.openfx.WritePFM.rst
-     fr.inria.openfx.WritePNG.rst
      net.fxarena.openfx.ReadPSD.rst
      net.fxarena.openfx.ReadSVG.rst
      */
     {
         const std::string id = pluginID.toStdString();
-        if (WriteNode::isBundledWriter(id, false) || pluginID.startsWith(QString::fromUtf8("fr.inria.openfx.OCIO")) || id == PLUGINID_NATRON_READ || id == PLUGINID_NATRON_WRITE) {
+        if (pluginID.startsWith(QString::fromUtf8("fr.inria.openfx.OCIO")) || id == PLUGINID_NATRON_READ || id == PLUGINID_NATRON_WRITE) {
             // use the dynamic version, to get the right colorspace options
             staticPage.clear();
         }
@@ -263,21 +258,6 @@ DocumentationManager::handler(QHttpRequest *req,
 
                             NodePtr node = appPTR->getTopLevelInstance()->createNode(args);
                             // IMPORTANT: this code is *very* similar to AppInstance::exportDocs
-                            if ( node &&
-                                 pluginID != QString::fromUtf8(PLUGINID_NATRON_READ) &&
-                                 pluginID != QString::fromUtf8(PLUGINID_NATRON_WRITE) ) {
-                                EffectInstancePtr effectInstance = node->getEffectInstance();
-                                if (effectInstance && effectInstance->isWriter()) {
-                                    WriteNode* isWriteNode = dynamic_cast<WriteNode*>( effectInstance.get() );
-
-                                    if (isWriteNode) {
-                                        NodePtr subnode = isWriteNode->getEmbeddedWriter();
-                                        if (subnode) {
-                                            node = subnode;
-                                        }
-                                    }
-                                }
-                            }
                             if (node) {
                                 QString html = node->makeDocumentation(true);
                                 html = parser(html, docDir);

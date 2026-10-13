@@ -192,16 +192,16 @@ NodeGraph::popCreateNodeDialog()
 {
     NodeCreationDialog* nodeCreation = new NodeCreationDialog(_imp->_lastNodeCreatedName, this);
 
-    ///This allows us to have a non-modal dialog: when the user clicks outside of the dialog,
-    ///it closes it.
-    QObject::connect( nodeCreation, SIGNAL(dialogFinished(bool)), this, SLOT(onCreateNodeDialogFinished(bool)) );
+    /// This allows us to have a non-modal dialog: when the user clicks outside of the dialog,
+    /// it closes it.
+    QObject::connect(nodeCreation, SIGNAL(dialogFinished(bool)), this, SLOT(onCreateNodeDialogFinished(bool)));
     nodeCreation->show();
 }
 
 void
 NodeGraph::onCreateNodeDialogFinished(bool accepted)
 {
-    NodeCreationDialog* dialog = qobject_cast<NodeCreationDialog*>( sender() );
+    NodeCreationDialog* dialog = qobject_cast<NodeCreationDialog*>(sender());
 
     if (dialog) {
         int major;
@@ -209,11 +209,11 @@ NodeGraph::onCreateNodeDialogFinished(bool accepted)
 
         if (accepted) {
             _imp->_lastNodeCreatedName = res;
-            const PluginsMap & allPlugins = appPTR->getPluginsList();
-            PluginsMap::const_iterator found = allPlugins.find( res.toStdString() );
-            if ( found != allPlugins.end() ) {
-                QPointF posHint = mapToScene( mapFromGlobal( QCursor::pos() ) );
-                CreateNodeArgs args( res.toStdString(), getGroup() );
+            const PluginsMap& allPlugins = appPTR->getPluginsList();
+            PluginsMap::const_iterator found = allPlugins.find(res.toStdString());
+            if (found != allPlugins.end()) {
+                QPointF posHint = mapToScene(mapFromGlobal(QCursor::pos()));
+                CreateNodeArgs args(res.toStdString(), getGroup());
                 args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, posHint.x(), 0);
                 args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, posHint.y(), 1);
                 args.setProperty<int>(kCreateNodeArgsPropPluginVersion, major, 0);
@@ -222,7 +222,6 @@ NodeGraph::onCreateNodeDialogFinished(bool accepted)
         }
 
         dialog->close();
-
     }
 }
 
@@ -249,13 +248,6 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
         cancelSplice();
     }
 
-#ifndef NATRON_ENABLE_IO_META_NODES
-    if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateReader, modifiers, key) ) {
-        getGui()->createReader();
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateWriter, modifiers, key) ) {
-        getGui()->createWriter();
-    } else
-#endif
     if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphRemoveNodes, modifiers, key) ) {
         deleteSelection();
     } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphForcePreview, modifiers, key) ) {
@@ -382,23 +374,23 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
     } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphToggleAutoTurbo, modifiers, key) ) {
         toggleAutoTurbo();
     } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFindNode, modifiers, key) ) {
-        popFindDialog( QCursor::pos() );
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateNode, modifiers, key) ) {
+        popFindDialog(QCursor::pos());
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateNode, modifiers, key)) {
         assert(false && "Should never be reached (caught in NodeGraph::event())");
         popCreateNodeDialog();
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphRenameNode, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphRenameNode, modifiers, key)) {
         renameNode();
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphExtractNode, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphExtractNode, modifiers, key)) {
         pushUndoCommand( new ExtractNodeUndoRedoCommand(this, _imp->_selection) );
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphTogglePreview, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphTogglePreview, modifiers, key)) {
         togglePreviewsForSelectedNodes();
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionZoomIn, Qt::NoModifier, key) ) { // zoom in/out doesn't care about modifiers
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionZoomIn, Qt::NoModifier, key)) { // zoom in/out doesn't care about modifiers
         QWheelEvent e(mapFromGlobal( QCursor::pos() ), QCursor::pos(), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
         wheelEvent(&e);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionZoomOut, Qt::NoModifier, key) ) { // zoom in/out doesn't care about modifiers
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionZoomOut, Qt::NoModifier, key)) { // zoom in/out doesn't care about modifiers
         QWheelEvent e(mapFromGlobal( QCursor::pos() ), QCursor::pos(), QPoint(), QPoint(0, -120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
         wheelEvent(&e);
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphOpenNodePanel, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphOpenNodePanel, modifiers, key)) {
         if (_imp->_selection.size() == 1) {
             showNodePanel(modCASIsControl(e), modCASIsControl(e), _imp->_selection.front().get());
         } else {

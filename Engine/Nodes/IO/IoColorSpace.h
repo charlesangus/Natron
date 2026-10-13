@@ -17,8 +17,8 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef Engine_Nodes_IO_ReadColorSpace_h
-#define Engine_Nodes_IO_ReadColorSpace_h
+#ifndef Engine_Nodes_IO_IoColorSpace_h
+#define Engine_Nodes_IO_IoColorSpace_h
 
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
@@ -41,10 +41,10 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The input colourspace of the native Read: the default it takes for a file, and the
- * conversion from it to the project's working space.
+ * @brief The file colourspace of the native Read and Write: the default a file takes, and the
+ * conversions between it and the project's working space.
  **/
-namespace ReadColorSpace {
+namespace IoColorSpace {
 /**
  * @brief The project file default a file of this spec takes: float for float, half and double
  * pixels, 16-bit for 16-bit integer pixels (which is how OIIO reads a 10- or 12-bit DPX), 8-bit
@@ -67,15 +67,41 @@ std::string fileRuleColorSpace(const OCIO_NAMESPACE::ConstConfigRcPtr& config, c
 
 /**
  * @brief The colourspace the file's own oiio:ColorSpace tag names, by its name in \p config.
- * Empty when there is no tag or \p config has no colourspace, role or alias of that name.
+ * The tag may be a name, role, alias or Color Interop ID. Empty when there is no tag or
+ * \p config has no colourspace it names.
  **/
 std::string embeddedColorSpace(const OCIO_NAMESPACE::ConstConfigRcPtr& config, const OIIO::ImageSpec& spec);
+
+/**
+ * @brief The oiio:ColorSpace tag a file written in \p space carries: the space's Color Interop ID
+ * in the project's config when it has one, else \p space itself.
+ **/
+std::string fileTag(const Project& project, const std::string& space);
 
 /**
  * @brief The input colourspace a Read takes for \p path: the config's file rules, then the file's
  * own tag, then the project's file default for categoryOf(spec).
  **/
 std::string defaultInputSpace(const Project& project, const std::string& path, const OIIO::ImageSpec& spec);
+
+/**
+ * @brief The output colourspace a Write takes for \p path whose data falls in \p category: the
+ * config's file rules, then the project's file default for \p category.
+ **/
+std::string defaultOutputSpace(const Project& project, const std::string& path, FileColorCategoryEnum category);
+
+/**
+ * @brief The processor converting \p from to \p to through the project's config, left null when
+ * no conversion is needed: an empty space, equal spaces or a processor that is a no-op.
+ * \p context holds the OCIO context variables to set; a pair with an empty key is ignored.
+ * Returns false, filling \p error, when a conversion is needed and cannot be built.
+ **/
+bool processor(const Project& project,
+               const std::string& from,
+               const std::string& to,
+               const std::vector<std::pair<std::string, std::string>>& context,
+               OCIO_NAMESPACE::ConstCPUProcessorRcPtr* processor,
+               std::string* error);
 
 /**
  * @brief The processor converting \p input to \p working through the project's config, left
@@ -95,8 +121,8 @@ bool toWorkingProcessor(const Project& project,
  * floats each; a fourth component is left untouched. Returns false, filling \p error, on failure.
  **/
 bool convertRow(const OCIO_NAMESPACE::CPUProcessor& processor, float* pixels, int width, int nComps, std::string* error);
-} // namespace ReadColorSpace
+} // namespace IoColorSpace
 
 NATRON_NAMESPACE_EXIT
 
-#endif // Engine_Nodes_IO_ReadColorSpace_h
+#endif // Engine_Nodes_IO_IoColorSpace_h

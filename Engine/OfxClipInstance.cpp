@@ -1525,21 +1525,7 @@ OfxClipInstance::getInputNb() const
 EffectInstancePtr
 OfxClipInstance::getEffectHolder() const
 {
-    OfxEffectInstancePtr effect = _imp->nodeInstance.lock();
-
-    if (!effect) {
-        return effect;
-    }
-#ifdef NATRON_ENABLE_IO_META_NODES
-    if ( effect->isReader() ) {
-        NodePtr ioContainer = effect->getNode()->getIOContainer();
-        if (ioContainer) {
-            return ioContainer->getEffectInstance();
-        }
-    }
-#endif
-
-    return effect;
+    return _imp->nodeInstance.lock();
 }
 
 EffectInstancePtr
@@ -1909,9 +1895,6 @@ OfxClipInstance::fetchMetadata(OfxTime time,
         }
 
         if (isOutput()) {
-            // The filename param belongs to the decoder rather than to the Read container
-            // getEffectHolder() hands back, so the keys are taken from the effect this clip
-            // is actually part of.
             OfxEffectInstancePtr reader = _imp->nodeInstance.lock();
             if (reader && reader->isReader()) {
                 addReaderFileMetadata(metadata, reader, time);

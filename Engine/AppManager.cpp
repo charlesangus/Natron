@@ -163,7 +163,9 @@
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/IO/NativeRead.h"
+#include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
+#include "Engine/Nodes/IO/OiioWriteSupport.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
@@ -174,10 +176,10 @@
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Nodes/TypedPassthrough.h"
 
+#include "Engine/NodeGroup.h"
 #include "Engine/Utils.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h" // RenderStatsMap
-#include "Engine/WriteNode.h"
 
 #include "sbkversion.h" // shiboken/pyside version
 
@@ -1472,10 +1474,10 @@ AppManager::loadAllPlugins()
     assert( _imp->_formats.empty() );
 
     // Load plug-ins bundled into Natron
-    loadBuiltinNodePlugins(&_imp->writerPlugins);
+    loadBuiltinNodePlugins();
 
     // Load OpenFX plug-ins
-    _imp->ofxHost->loadOFXPlugins(&_imp->writerPlugins);
+    _imp->ofxHost->loadOFXPlugins();
 
     // Load PyPlugs and init.py & initGui.py scripts
     // Should be done after settings are declared
@@ -1603,7 +1605,7 @@ AppManager::registerBuiltInPlugin(const QString& iconPath,
 }
 
 void
-AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*writersMap*/)
+AppManager::loadBuiltinNodePlugins()
 {
     registerBuiltInPlugin<Backdrop>(QString::fromUtf8(NATRON_IMAGES_PATH "backdrop_icon.png"), false, false);
     registerBuiltInPlugin<GroupOutput>(QString::fromUtf8(NATRON_IMAGES_PATH "output_icon.png"), false, false);
@@ -1668,10 +1670,8 @@ AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*writersMap*/)
     registerBuiltInPlugin<TrackerNode>(QString::fromUtf8(NATRON_IMAGES_PATH "trackerNodeIcon.png"), false, false);
     registerBuiltInPlugin<JoinViewsNode>(QString::fromUtf8(NATRON_IMAGES_PATH "joinViewsNode.png"), false, false);
     registerBuiltInPlugin<OneViewNode>(QString::fromUtf8(NATRON_IMAGES_PATH "oneViewNode.png"), false, false);
-#ifdef NATRON_ENABLE_IO_META_NODES
     registerBuiltInPlugin<NativeRead>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<WriteNode>(QString::fromUtf8(NATRON_IMAGES_PATH "writeImage.png"), false, false);
-#endif
+    registerBuiltInPlugin<NativeWrite>(QString::fromUtf8(NATRON_IMAGES_PATH "writeImage.png"), false, false);
 
     if ( !isBackground() ) {
         registerBuiltInPlugin<ViewerInstance>(QString::fromUtf8(NATRON_IMAGES_PATH "viewer_icon.png"), false, false);
@@ -2151,12 +2151,6 @@ AppManager::registerPlugin(const QString& resourcesPath,
                                 isReader, isWriter, isDeprecated);
     std::string stdID = pluginID.toStdString();
 
-#ifdef NATRON_ENABLE_IO_META_NODES
-    if (WriteNode::isBundledWriter(stdID, false)) {
-        plugin->setForInternalUseOnly(true);
-    }
-#endif
-
     PluginsMap::iterator found = _imp->_plugins.find(stdID);
     if ( found != _imp->_plugins.end() ) {
         found->second.insert(plugin);
@@ -2403,20 +2397,9 @@ AppManager::getPluginBinary(const QString & pluginId,
 
 EffectInstancePtr
 AppManager::createOFXEffect(NodePtr node,
-                            const CreateNodeArgs& args
-#ifndef NATRON_ENABLE_IO_META_NODES
-                            ,
-                            bool allowFileDialogs,
-                            bool *hasUsedFileDialog
-#endif
-                            ) const
+                            const CreateNodeArgs& args) const
 {
-    return _imp->ofxHost->createOfxEffect(node, args
-#ifndef NATRON_ENABLE_IO_META_NODES
-                                          , allowFileDialogs,
-                                          hasUsedFileDialog
-#endif
-                                          );
+    return _imp->ofxHost->createOfxEffect(node, args);
 }
 
 void
@@ -3444,12 +3427,6 @@ AppManager::mapUNCPathToPathWithDriveLetter(const QString& uncPath) const
 
 #endif
 
-const IOPluginsMap&
-AppManager::getFileFormatsForWritingAndWriter() const
-{
-    return _imp->writerPlugins;
-}
-
 void
 AppManager::getSupportedReaderFileFormats(std::vector<std::string>* formats) const
 {
@@ -3459,26 +3436,7 @@ AppManager::getSupportedReaderFileFormats(std::vector<std::string>* formats) con
 void
 AppManager::getSupportedWriterFileFormats(std::vector<std::string>* formats) const
 {
-    const IOPluginsMap& writersForFormat = getFileFormatsForWritingAndWriter();
-
-    formats->resize( writersForFormat.size() );
-    int i = 0;
-    for (IOPluginsMap::const_iterator it = writersForFormat.begin(); it != writersForFormat.end(); ++it, ++i) {
-        (*formats)[i] = it->first;
-    }
-}
-
-void
-AppManager::getWritersForFormat(const std::string& format,
-                                IOPluginSetForFormat* encoders) const
-{
-    // This will perform a case insensitive find
-    IOPluginsMap::const_iterator found = _imp->writerPlugins.find(format);
-
-    if ( found == _imp->writerPlugins.end() ) {
-        return;
-    }
-    *encoders = found->second;
+    *formats = OiioWriteSupport::writableExtensions();
 }
 
 std::string
@@ -3490,15 +3448,7 @@ AppManager::getReaderPluginIDForFileType(const std::string & extension) const
 std::string
 AppManager::getWriterPluginIDForFileType(const std::string & extension) const
 {
-    // This will perform a case insensitive find
-    IOPluginsMap::const_iterator found = _imp->writerPlugins.find(extension);
-
-    if ( found == _imp->writerPlugins.end() ) {
-        return std::string();
-    }
-    // Return the "best" plug-in (i.e: higher score)
-
-    return found->second.empty() ? std::string() : found->second.rbegin()->pluginID;
+    return OiioWriteSupport::formatNameForWritableExtension(extension).empty() ? std::string() : std::string(PLUGINID_NATRON_WRITE);
 }
 
 

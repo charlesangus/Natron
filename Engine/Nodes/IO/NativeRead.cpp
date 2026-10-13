@@ -63,12 +63,11 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/IO/IoColorSpace.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
-#include "Engine/Nodes/IO/ReadColorSpace.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/PoolParallelFor.h"
 #include "Engine/Project.h"
-#include "Engine/ProjectColorManagement.h"
 #include "Engine/RectI.h"
 
 NATRON_NAMESPACE_ENTER
@@ -83,125 +82,9 @@ const std::size_t kStagingBytes = std::size_t(16) << 20;
 // Past this many frames a still image's valid range is no longer enumerated.
 const int kMaxStillFrames = 1 << 16;
 
-double
-pixelAspectOf(const OIIO::ImageSpec& spec)
-{
-    const float par = spec.get_float_attribute("PixelAspectRatio", 1.f);
-
-    return par > 0.f ? (double)par : 1.;
-}
-
-// Where the R, G, B and A of a file sit among its channels, -1 when it has none, and its
-// luminance (Y or I), which stands in for R, G and B when the file has none of them.
-struct ColourChannels {
-    int index[4];
-    int luminance;
-
-    ColourChannels()
-        : index { -1, -1, -1, -1 }
-        , luminance(-1)
-    {
-    }
-
-    // `names[k]` is the name of file channel `index[k]`.
-    static ColourChannels of(const std::vector<std::string>& names,
-                             const std::vector<int>& index)
-    {
-        ColourChannels result;
-
-        for (std::size_t k = 0; k < index.size() && k < names.size(); ++k) {
-            const int i = index[k];
-            std::string name = names[k];
-            std::transform(name.begin(), name.end(), name.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
-            if (name.compare(0, 5, "rgba.") == 0) {
-                name.erase(0, 5);
-            }
-            if (name.size() != 1) {
-                continue;
-            }
-            if (name[0] == 'y' || name[0] == 'i') {
-                if (result.luminance < 0) {
-                    result.luminance = i;
-                }
-                continue;
-            }
-            const std::size_t slot = std::string("rgba").find(name[0]);
-            if (slot != std::string::npos && result.index[slot] < 0) {
-                result.index[slot] = i;
-            }
-        }
-
-        return result;
-    }
-
-    bool hasRgb() const
-    {
-        return index[0] >= 0 || index[1] >= 0 || index[2] >= 0;
-    }
-
-    bool hasAny() const
-    {
-        return hasRgb() || luminance >= 0 || index[3] >= 0;
-    }
-
-    bool spreadsLuminance() const
-    {
-        return !hasRgb() && luminance >= 0;
-    }
-
-    // A file with none of R, G, B, A or luminance stays a black RGBA plane rather than being
-    // shuffled in.
-    int nComps() const
-    {
-        if (hasRgb() || spreadsLuminance()) {
-            return index[3] >= 0 ? 4 : 3;
-        }
-
-        return index[3] >= 0 ? 1 : 4;
-    }
-
-    int fileChannelForComponent(int nComps,
-                                int component) const
-    {
-        if (nComps == 1) {
-            return index[3];
-        }
-        if ((nComps == 3 || nComps == 4) && component < nComps) {
-            if (spreadsLuminance() && component < 3) {
-                return luminance;
-            }
-
-            return index[component];
-        }
-
-        return -1;
-    }
-};
-
-// The part that holds the colour plane of `view`: the first whose name, without the view, is
-// none or the colour plane's, and that has an R, G, B, A or luminance channel. A part named
-// otherwise is a layer of that name, which fileLayers lists, so it never stands in for the colour.
-bool
-colourPartOf(const OiioReadSupport::Header& header,
-             const std::string& view,
-             OiioReadSupport::PartChannels* colour)
-{
-    std::vector<OiioReadSupport::PartChannels> parts;
-
-    OiioReadSupport::viewParts(header, view, &parts);
-    for (std::vector<OiioReadSupport::PartChannels>::const_iterator it = parts.begin(); it != parts.end(); ++it) {
-        if (!it->part.empty() && !OiioReadSupport::isColourPartName(it->part)) {
-            continue;
-        }
-        if (ColourChannels::of(it->names, it->index).hasAny()) {
-            *colour = *it;
-
-            return true;
-        }
-    }
-
-    return false;
-}
+using OiioReadSupport::ColourChannels;
+using OiioReadSupport::colourPartOf;
+using OiioReadSupport::pixelAspectOf;
 
 int
 colourSubimageOf(const OiioReadSupport::Header& header,
@@ -225,11 +108,6 @@ const char* const kKnobFrameMode = "frameMode";
 const char* const kKnobStartingTime = "startingTime";
 const char* const kKnobTimeOffset = "timeOffset";
 const char* const kKnobTimeDomainUserEdited = "timeDomainUserEdited";
-const char* const kKnobOCIOConfigFile = "ocioConfigFile";
-const char* const kKnobOCIOWorkingSpace = "ocioWorkingSpace";
-const char* const kKnobOCIOInputSpaceIndex = "ocioInputSpaceIndex";
-const char* const kKnobOCIOInputSpaceSet = "ocioInputSpaceSet";
-const char* const kKnobOCIOContext = "Context";
 
 bool
 timeDomainAtDefaults(const KnobIntPtr& firstFrame,
@@ -247,6 +125,7 @@ timeDomainAtDefaults(const KnobIntPtr& firstFrame,
 NativeRead::NativeRead(NodePtr node)
     : NativeEffectBase(node)
     , _filename()
+    , _reload()
     , _proxy()
     , _proxyThreshold()
     , _originalProxyScale()
@@ -261,11 +140,7 @@ NativeRead::NativeRead(NodePtr node)
     , _startingTime()
     , _timeOffset()
     , _timeDomainUserEdited()
-    , _ocioConfigFile()
-    , _ocioWorkingSpace()
     , _inputSpace()
-    , _inputSpaceMenu()
-    , _inputSpaceSet()
     , _availableViews()
     , _listingMutex()
     , _listing()
@@ -302,8 +177,19 @@ NativeRead::initializeKnobs()
     // NativeEffectBase has no counterpart of an OpenFX clip-preferences slave param, so without
     // this the preferred metadata is only consulted once, at creation, before a file is chosen.
     filename->setIsMetadataSlave(true);
+    filename->setAddNewLine(false);
     page->addKnob(filename);
     _filename = filename;
+
+    // Left to trigger a render: the evaluation retires the images and action results cached under
+    // the old node hash, and the metadata is derived again from the file now on disk.
+    KnobButtonPtr reload = createKnob<KnobButton>(tr("Reload"));
+    reload->setName(kNatronReadParamReload);
+    reload->setHintToolTip(tr("Reads the file again: forgets the frames, headers, layers and metadata read before and the "
+                              "images decoded from them, so a file changed on disk is what the node outputs."));
+    reload->setIsMetadataSlave(true);
+    page->addKnob(reload);
+    _reload = reload;
 
     KnobFilePtr proxy = createKnob<KnobFile>(tr("Proxy File"));
     proxy->setName(kOfxImageEffectProxyParamName);
@@ -481,82 +367,18 @@ NativeRead::initializeKnobs()
     page->addKnob(availableViews);
     _availableViews = availableViews;
 
-    KnobStringPtr ocioConfigFile = createKnob<KnobString>(tr("OCIO Config File"));
-    ocioConfigFile->setName(kKnobOCIOConfigFile);
-    ocioConfigFile->setAnimationEnabled(false);
-    // The project pushes its config to every node after creation and after a load.
-    ocioConfigFile->setIsPersistent(false);
-    ocioConfigFile->setSecret(true);
-    page->addKnob(ocioConfigFile);
-    _ocioConfigFile = ocioConfigFile;
+    OcioSpaceKnobs::Description inputSpace;
+    inputSpace.prefix = kNatronReadNodeOCIOParamInputSpace;
+    inputSpace.label = tr("Input Colorspace");
+    inputSpace.spaceHint = tr("The OpenColorIO colorspace of the file. The image is converted from it to the project's "
+                              "working space. It is shown only when the project's config has no colorspace of that name.");
+    inputSpace.menuHint = tr("The OpenColorIO colorspace of the file. The image is converted from it to the project's "
+                             "working space. A new Read takes the colorspace the config's file rules give the file, else the "
+                             "colorspace tagged in the file, else the project's default for files of its kind. The "
+                             "config's default rule does not count. Reset to default returns to that colorspace.");
+    inputSpace.setLabel = tr("Input Colorspace Set");
+    _inputSpace.create(this, page, inputSpace, [this]() { return automaticInputSpace(); });
 
-    KnobStringPtr ocioWorkingSpace = createKnob<KnobString>(tr("Working Colorspace"));
-    ocioWorkingSpace->setName(kKnobOCIOWorkingSpace);
-    ocioWorkingSpace->setAnimationEnabled(false);
-    ocioWorkingSpace->setIsPersistent(false);
-    ocioWorkingSpace->setSecret(true);
-    page->addKnob(ocioWorkingSpace);
-    _ocioWorkingSpace = ocioWorkingSpace;
-
-    KnobStringPtr inputSpace = createKnob<KnobString>(tr("Input Colorspace"));
-    inputSpace->setName(kNatronReadNodeOCIOParamInputSpace);
-    inputSpace->setHintToolTip(tr("The OpenColorIO colorspace of the file. The image is converted from it to the project's "
-                                  "working space. It is shown only when the project's config has no colorspace of that name."));
-    inputSpace->setAnimationEnabled(false);
-    inputSpace->setSecret(true);
-    page->addKnob(inputSpace);
-    _inputSpace = inputSpace;
-
-    KnobChoicePtr inputSpaceMenu = createKnob<KnobChoice>(tr("Input Colorspace"));
-    inputSpaceMenu->setName(kKnobOCIOInputSpaceIndex);
-    inputSpaceMenu->setHintToolTip(tr("The OpenColorIO colorspace of the file. The image is converted from it to the project's "
-                                      "working space. A new Read takes the colorspace the config's file rules give the file, else the "
-                                      "colorspace tagged in the file, else the project's default for files of its kind. The "
-                                      "config's default rule does not count. Reset to default returns to that colorspace."));
-    inputSpaceMenu->setAnimationEnabled(false);
-    inputSpaceMenu->setCascading(true);
-    inputSpaceMenu->setNotifiesOnReselect(true);
-    inputSpaceMenu->setIsPersistent(false);
-    // Only the input space string it sets decides the render.
-    inputSpaceMenu->setEvaluateOnChange(false);
-    page->addKnob(inputSpaceMenu);
-    _inputSpaceMenu = inputSpaceMenu;
-
-    KnobBoolPtr inputSpaceSet = createKnob<KnobBool>(tr("Input Colorspace Set"));
-    inputSpaceSet->setName(kKnobOCIOInputSpaceSet);
-    inputSpaceSet->setDefaultValue(false);
-    inputSpaceSet->setAnimationEnabled(false);
-    inputSpaceSet->setEvaluateOnChange(false);
-    inputSpaceSet->setSecret(true);
-    page->addKnob(inputSpaceSet);
-    _inputSpaceSet = inputSpaceSet;
-
-    const QString contextHint = tr("OCIO Contexts allow you to apply specific LUTs or grades to different shots.\n"
-                                   "Here you can specify the context name (key) and its corresponding value.\n"
-                                   "Full details of how to set up contexts and add them to your config can be found in the OpenColorIO documentation:\n"
-                                   "http://opencolorio.org/userguide/contexts.html");
-    KnobGroupPtr context = createKnob<KnobGroup>(tr("OCIO Context"));
-    context->setName(kKnobOCIOContext);
-    context->setHintToolTip(contextHint);
-    context->setDefaultValue(false);
-    page->addKnob(context);
-    for (int i = 0; i < 4; ++i) {
-        const std::string n = std::to_string(i + 1);
-        KnobStringPtr key = createKnob<KnobString>("key" + n);
-        key->setName("key" + n);
-        key->setHintToolTip(contextHint);
-        key->setAddNewLine(false);
-        context->addKnob(key);
-        _contextKeys[i] = key;
-
-        KnobStringPtr value = createKnob<KnobString>("value" + n);
-        value->setName("value" + n);
-        value->setHintToolTip(contextHint);
-        context->addKnob(value);
-        _contextValues[i] = value;
-    }
-
-    refreshInputSpaceMenu();
     refreshTimeKnobState();
     refreshProxyKnobState();
 }
@@ -564,7 +386,7 @@ NativeRead::initializeKnobs()
 void
 NativeRead::onKnobsLoaded()
 {
-    refreshInputSpaceMenu();
+    _inputSpace.refreshMenu();
     refreshTimeKnobState();
     refreshProxyKnobState();
     refreshAvailableViews(true);
@@ -1004,116 +826,32 @@ NativeRead::getFrameRange(double* first,
     *last = range.max;
 }
 
-std::string
-NativeRead::workingSpaceName() const
+std::optional<std::string>
+NativeRead::automaticInputSpace() const
 {
-    KnobStringPtr knob = _ocioWorkingSpace.lock();
-    const std::string pushed = knob ? knob->getValue() : std::string();
-
-    if (!pushed.empty()) {
-        return pushed;
-    }
-    AppInstancePtr app = getApp();
-    ProjectPtr project = app ? app->getProject() : ProjectPtr();
-
-    return project ? project->getWorkingColorSpace() : std::string();
-}
-
-std::vector<std::pair<std::string, std::string>>
-NativeRead::contextVariables(double time) const
-{
-    std::vector<std::pair<std::string, std::string>> variables;
-
-    for (int i = 0; i < 4; ++i) {
-        KnobStringPtr key = _contextKeys[i].lock();
-        KnobStringPtr value = _contextValues[i].lock();
-        if (!key || !value) {
-            continue;
-        }
-        const std::string name = key->getValueAtTime(time);
-        if (!name.empty()) {
-            variables.push_back(std::make_pair(name, value->getValueAtTime(time)));
-        }
-    }
-
-    return variables;
-}
-
-void
-NativeRead::refreshInputSpaceMenu()
-{
-    KnobChoicePtr menu = _inputSpaceMenu.lock();
-    KnobStringPtr space = _inputSpace.lock();
-    AppInstancePtr app = getApp();
-    ProjectPtr project = app ? app->getProject() : ProjectPtr();
-    ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
-
-    if (!menu || !space || !colorManagement) {
-        return;
-    }
-    const std::vector<ChoiceOption> options = Project::colorSpaceOptions(*colorManagement);
-    menu->populateChoices(options);
-
-    // A Read without a file converts nothing, which the menu shows as the working space.
-    const std::string value = space->getValue();
-    const std::string shown = ReadColorSpace::nameInConfig(colorManagement->getConfig(), value.empty() ? workingSpaceName() : value);
-    int index = -1;
-    for (std::size_t i = 0; i < options.size(); ++i) {
-        if (!shown.empty() && options[i].id == shown) {
-            index = (int)i;
-            break;
-        }
-    }
-    if (index >= 0 && menu->getValue() != index) {
-        menu->setValue(index);
-    }
-    // A name the config lacks cannot be shown by the menu, so the string itself is shown.
-    space->setSecret(value.empty() || index >= 0);
-}
-
-void
-NativeRead::guessInputSpace()
-{
-    KnobStringPtr space = _inputSpace.lock();
-    AppInstancePtr app = getApp();
-    ProjectPtr project = app ? app->getProject() : ProjectPtr();
-
-    if (!space || !project) {
-        return;
-    }
     const std::string path = representativePath();
+
+    // A Read without a file converts nothing.
     if (path.empty()) {
-        return;
+        return std::string();
+    }
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    if (!project) {
+        return std::nullopt;
     }
     std::string error;
     const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error);
     if (!header || header->subimages.empty()) {
-        return;
+        return std::nullopt;
     }
     const OIIO::ImageSpec& spec = header->subimages[(std::size_t)colourSubimageOf(*header, projectViewName(ViewIdx(0)))];
-    const std::string guess = ReadColorSpace::defaultInputSpace(*project, path, spec);
-    if (!guess.empty() && guess != space->getValue()) {
-        space->setValue(guess);
+    const std::string guess = IoColorSpace::defaultInputSpace(*project, path, spec);
+    if (guess.empty()) {
+        return std::nullopt;
     }
-}
 
-void
-NativeRead::resetInputSpace()
-{
-    KnobStringPtr space = _inputSpace.lock();
-    KnobBoolPtr spaceSet = _inputSpaceSet.lock();
-
-    if (!space || !spaceSet) {
-        return;
-    }
-    spaceSet->setValue(false);
-    if (representativePath().empty()) {
-        space->setValue(std::string());
-    } else {
-        guessInputSpace();
-    }
-    // The space may already hold the default, so nothing else re-selects it in the menu.
-    refreshInputSpaceMenu();
+    return guess;
 }
 
 bool
@@ -1121,56 +859,16 @@ NativeRead::colourKnobChanged(KnobI* k,
                               ValueChangedReasonEnum reason)
 {
     KnobFilePtr filename = _filename.lock();
-    KnobStringPtr configFile = _ocioConfigFile.lock();
-    KnobStringPtr workingSpace = _ocioWorkingSpace.lock();
-    KnobStringPtr space = _inputSpace.lock();
-    KnobChoicePtr menu = _inputSpaceMenu.lock();
-    KnobBoolPtr spaceSet = _inputSpaceSet.lock();
 
-    if (!filename || !configFile || !workingSpace || !space || !menu || !spaceSet || reason == eValueChangedReasonTimeChanged) {
-        return false;
-    }
-    const bool byUser = reason == eValueChangedReasonUserEdited;
-
-    if (k == filename.get()) {
-        // A loaded or pasted node keeps the input space it was saved with.
-        AppInstancePtr app = getApp();
-        const bool restoring = app && (app->isCreatingNodeTree() || (app->getProject() && app->getProject()->isLoadingProject()));
-        if (!spaceSet->getValue() && !restoring) {
-            guessInputSpace();
+    if (filename && k == filename.get()) {
+        if (reason != eValueChangedReasonTimeChanged) {
+            _inputSpace.sourceChanged();
         }
 
         return false;
     }
-    if (k == configFile.get() || k == workingSpace.get()) {
-        refreshInputSpaceMenu();
 
-        return true;
-    }
-    if ((k == menu.get() || k == space.get()) && reason == eValueChangedReasonRestoreDefault) {
-        resetInputSpace();
-
-        return true;
-    }
-    if (k == menu.get()) {
-        const int index = menu->getValue();
-        if (byUser && index >= 0 && index < menu->getNumEntries()) {
-            spaceSet->setValue(true);
-            space->setValue(menu->getEntry(index).id);
-        }
-
-        return true;
-    }
-    if (k == space.get()) {
-        if (byUser) {
-            spaceSet->setValue(true);
-        }
-        refreshInputSpaceMenu();
-
-        return true;
-    }
-
-    return false;
+    return _inputSpace.knobChanged(k, reason);
 }
 
 bool
@@ -1180,6 +878,13 @@ NativeRead::knobChanged(KnobI* k,
                         double /*time*/,
                         bool /*originatedFromMainThread*/)
 {
+    KnobButtonPtr reload = _reload.lock();
+    if (reload && (k == reload.get())) {
+        purgeCaches();
+        clearPersistentMessage(false);
+
+        return true;
+    }
     if (proxyKnobChanged(k, reason)) {
         return true;
     }
@@ -1391,6 +1096,17 @@ NativeRead::getRegionOfDefinition(U64 /*hash*/,
 }
 
 void
+NativeRead::addAcceptedComponents(int inputNb,
+                                  std::list<ImageLayerDesc>* comps)
+{
+    NativeEffectBase::addAcceptedComponents(inputNb, comps);
+    // A file layer can have two channels. Without a two-channel entry the render renders such a
+    // plane into an RGB buffer and converts it back by position, so its second channel would
+    // come out as the buffer's G instead of the layer's own second channel.
+    comps->push_back(ImageLayerDesc::getXYComponents());
+}
+
+void
 NativeRead::getComponentsNeededAndProduced(double time,
                                            ViewIdx view,
                                            EffectInstance::ComponentsNeededMap* comps,
@@ -1479,7 +1195,7 @@ decodeBand(const ReadPlane& plane,
     }
     if (plane.toWorking) {
         for (int y = y1; y < y2; ++y) {
-            if (!ReadColorSpace::convertRow(*plane.toWorking, (float*)access.pixelAt(plane.rect.x1, y), width, nComps, error)) {
+            if (!IoColorSpace::convertRow(*plane.toWorking, (float*)access.pixelAt(plane.rect.x1, y), width, nComps, error)) {
                 return false;
             }
         }
@@ -1540,9 +1256,8 @@ NativeRead::render(const RenderActionArgs& args)
 
     OCIO_NAMESPACE::ConstCPUProcessorRcPtr toWorking;
     if (header) {
-        KnobStringPtr inputSpace = _inputSpace.lock();
         std::string conversionError;
-        if (!ReadColorSpace::toWorkingProcessor(*getApp()->getProject(), inputSpace ? inputSpace->getValue() : std::string(), workingSpaceName(), contextVariables(args.time), &toWorking, &conversionError)) {
+        if (!IoColorSpace::toWorkingProcessor(*getApp()->getProject(), _inputSpace.space(), _inputSpace.workingSpace(), _inputSpace.contextVariables(args.time), &toWorking, &conversionError)) {
             setPersistentMessage(eMessageTypeError, conversionError);
 
             return eStatusFailed;

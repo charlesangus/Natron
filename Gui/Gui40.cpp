@@ -876,17 +876,13 @@ Gui::renderSelectedNode()
             }
         } else {
             if (selectedNodes.size() == 1) {
-                ///create a node and connect it to the node and use it to render
-#ifndef NATRON_ENABLE_IO_META_NODES
-                NodePtr writer = createWriter();
-#else
+                /// create a node and connect it to the node and use it to render
                 NodeGraph* graph = selectedNodes.front()->getDagGui();
                 CreateNodeArgs args(PLUGINID_NATRON_WRITE, graph->getGroup());
                 args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
                 args.setProperty<bool>(kCreateNodeArgsPropSettingsOpened, false);
                 args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
-                NodePtr writer = getApp()->createWriter( std::string(), args );
-#endif
+                NodePtr writer = getApp()->createWriter(std::string(), args);
                 if (writer) {
                     writers.push_back(writer);
                     createdWriter = writer;

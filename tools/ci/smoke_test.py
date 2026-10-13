@@ -168,7 +168,7 @@ def _write_solid_png(path, width, height, rgb):
 
     Used as the smoke test's input image so this script does not depend on
     any downloaded test assets or a generator OpenFX plug-in (only
-    openfx-io's WriteOIIO is available in CI, see
+    openfx-io's image plug-ins are available in CI, see
     ".github/workflows/ci.yml"'s "Download Plugins" step; the generator
     plug-ins from openfx-misc, e.g. CheckerBoard/ColorBars/Constant, are
     not).
@@ -299,7 +299,7 @@ def check_plugin_id_enumeration():
     actual_ids = set(NatronEngine.natron.getPluginIDs())
 
     bundles = {
-        "IO": ("fr.inria.openfx.WriteOIIO",),
+        "IO": ("fr.inria.openfx.OIIOText",),
         "Misc": ("net.sf.openfx.Premult", "net.sf.openfx.HSVToolPlugin",
                  "net.sf.openfx.switchPlugin"),
         "CImg": ("net.sf.cimg.CImgSharpen", "net.sf.cimg.CImgPlasma"),
@@ -693,12 +693,12 @@ def check_misc_effect_render():
 
 
 def check_deep_write_render():
-    """Assert App.render() drives a native (non-OFX) writer, not just WriteOIIO.
+    """Assert App.render() drives a native (non-OFX) writer, not an OFX writer.
 
     DeepRead/DeepWrite (Engine/Nodes/Deep/) are NativeEffectBase plugins registered directly by
     AppManager::registerBuiltInPlugin(), not OFX bundles discovered via OFX_PLUGIN_PATH, so this
     exercises App.render()'s dynamic_cast<OutputEffectInstance*>/isOutput() path (Engine/
-    PyAppInstance.cpp) against a writer that never goes near OfxEffectInstance/WriteNode.
+    PyAppInstance.cpp) against a writer that never goes near OfxEffectInstance.
     """
     tmpdir = tempfile.mkdtemp(prefix="natron-ci-smoke-deep-")
     in_path = os.path.join(_repo_root(), "Tests", "fixtures", "deep-scanline.exr")

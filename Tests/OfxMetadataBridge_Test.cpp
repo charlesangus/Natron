@@ -52,6 +52,7 @@
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/IO/NativeRead.h"
+#include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Metadata/OfxMetadataBridge.h"
@@ -61,7 +62,6 @@
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
-#include "Engine/WriteNode.h"
 
 #include <ofxImageEffect.h>
 #include <ofxMetadata.h>
@@ -362,14 +362,18 @@ TEST_F(BaseTest, OfxMetadataBridgeOfxKeysReachTheNativeNode)
     EXPECT_EQ(std::optional<std::string>("changed"), shuffleEffect->getOutputMetadata(time, ViewIdx(0)).getString(kContributeNoteKey));
 }
 
-TEST_F(BaseTest, OfxMetadataBridgeReadKeysReachTheWriteEncoderThroughNativeNodes)
+TEST_F(BaseTest, OfxMetadataBridgeReadKeysReachAnOfxNodeThroughNativeNodes)
 {
     NodePtr generator = createNode(QString::fromUtf8(PLUGINID_OFX_CONSTANT));
-    NodePtr fixtureWriter = createNode(_writeOIIOPluginID);
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string pattern = (tmp.path() + QLatin1String("/gateSource.####.exr")).toStdString();
+    NodePtr fixtureWriter = createNativeWriter(pattern);
     ASSERT_TRUE(bool(generator) && bool(fixtureWriter));
 
     connectNodes(generator, fixtureWriter, 0, true);
 
+    // The menus are rebuilt for the file's format, so these are set once the file is.
     KnobChoice* bitDepth = dynamic_cast<KnobChoice*>(fixtureWriter->getKnobByName("bitDepth").get());
     ASSERT_TRUE(bitDepth != NULL);
     bitDepth->setValueFromID("32f", 0);
@@ -377,11 +381,6 @@ TEST_F(BaseTest, OfxMetadataBridgeReadKeysReachTheWriteEncoderThroughNativeNodes
     KnobChoice* compression = dynamic_cast<KnobChoice*>(fixtureWriter->getKnobByName("compression").get());
     ASSERT_TRUE(compression != NULL);
     compression->setValueFromID("none", 0);
-
-    QTemporaryDir tmp;
-    ASSERT_TRUE(tmp.isValid());
-    const std::string pattern = (tmp.path() + QLatin1String("/gateSource.####.exr")).toStdString();
-    fixtureWriter->setOutputFilesForWriter(pattern);
 
     const int firstFrame = 1;
     const int lastFrame = 2;
@@ -405,29 +404,28 @@ TEST_F(BaseTest, OfxMetadataBridgeReadKeysReachTheWriteEncoderThroughNativeNodes
 
     NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
     NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE));
-    NodePtr write = createNode(_writeOIIOPluginID);
+    NodePtr write = createNativeWriter();
+    NodePtr view = createNode(QString::fromUtf8(kMetadataViewID));
     ASSERT_TRUE(bool(grade) && bool(merge) && bool(write));
+    ASSERT_TRUE(bool(view)) << "node creation failed for " << kMetadataViewID;
     ASSERT_TRUE(nativeEffectOf(grade) != NULL);
     ASSERT_TRUE(nativeEffectOf(merge) != NULL);
 
-    WriteNode* writeNode = dynamic_cast<WriteNode*>(write->getEffectInstance().get());
-    ASSERT_TRUE(writeNode != NULL) << "the writer is not backed by a Write container";
+    ASSERT_TRUE(dynamic_cast<NativeWrite*>(write->getEffectInstance().get()) != NULL);
 
     connectNodes(reader, grade, 0, true);
     connectNodes(grade, merge, 1, true);
     connectNodes(merge, write, 0, true);
+    connectNodes(merge, view, 0, true);
 
-    NodePtr encoder = writeNode->getEmbeddedWriter();
-    ASSERT_TRUE(bool(encoder)) << "the Write container has no embedded encoder";
-
-    OFX::Host::ImageEffect::ClipInstance* source = clipOf(encoder, kOfxImageEffectSimpleSourceClipName);
-    ASSERT_TRUE(source != NULL) << "the embedded encoder has no " << kOfxImageEffectSimpleSourceClipName << " clip";
+    OFX::Host::ImageEffect::ClipInstance* source = clipOf(view, kOfxImageEffectSimpleSourceClipName);
+    ASSERT_TRUE(source != NULL) << "the downstream node has no " << kOfxImageEffectSimpleSourceClipName << " clip";
 
     MetadataRef received(source, lastFrame);
     ASSERT_TRUE(received.get() != NULL);
 
     ASSERT_TRUE(received->fetchProperty(kOfxMetadataKeyFilePath) != NULL)
-        << "the reader's " << kOfxMetadataKeyFilePath << " never reached the encoder";
+        << "the reader's " << kOfxMetadataKeyFilePath << " never reached the downstream OFX node";
     EXPECT_EQ(frameTwoPath, received->getStringProperty(kOfxMetadataKeyFilePath));
 
     ASSERT_TRUE(received->fetchProperty(kOfxMetadataKeySourceFrame) != NULL);

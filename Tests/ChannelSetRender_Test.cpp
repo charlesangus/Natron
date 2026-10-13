@@ -129,14 +129,14 @@ protected:
         return effect;
     }
 
-    // Appends a WriteOIIO writing every layer of `node` as one 32-bit float part per frame into
+    // Appends a native Write writing every layer of `node` as one 32-bit float part per frame into
     // `tmp`, following the frame-numbered file name pattern it returns in `pattern`.
     NodePtr createAllLayersWriter(const NodePtr& node,
                                   const QTemporaryDir& tmp,
                                   std::string* pattern,
                                   std::string* error)
     {
-        NodePtr writer = createNode(_writeOIIOPluginID);
+        NodePtr writer = createNativeWriter();
         if (!writer) {
             *error = "writer creation failed";
 

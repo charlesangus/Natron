@@ -76,7 +76,6 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/Label.h"
 #include "Gui/LineEdit.h"
 #include "Gui/Menu.h"
-#include "Gui/Menu.h"
 #include "Gui/NodeCreationDialog.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"

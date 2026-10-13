@@ -136,6 +136,26 @@ namespace boost_adaptbx { namespace floating_point {
       }
   };
 
+  /** Keeps trapping off for the calling thread while it lives in a debug build; does nothing in a
+      release build. Third-party maths (OpenColorIO LUT inversion, OIIO colour probing) legitimately
+      raises these exceptions, and render threads trap them in debug builds. */
+  class FpTrapGuard {
+  public:
+      FpTrapGuard()
+#ifdef DEBUG
+          : trap_(exception_trapping::dont_trap)
+#endif
+      {
+      }
+
+      FpTrapGuard(const FpTrapGuard&) = delete;
+      FpTrapGuard& operator=(const FpTrapGuard&) = delete;
+
+  private:
+#ifdef DEBUG
+      exception_trapping trap_;
+#endif
+  };
 }} // boost_adaptbx::floating_point
 
 #endif // GUARD

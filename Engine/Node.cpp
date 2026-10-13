@@ -106,8 +106,8 @@
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
-#include "Engine/WriteNode.h"
 
+#include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #include "Serialization/NodeSerialization.h"
@@ -786,13 +786,6 @@ Node::computeHashInternal()
         ///append the effect's own age
         _imp->hash.append(_imp->knobsAge);
 
-        // A bundled encoder/decoder's OFX params are knobs of the Read/Write container,
-        // so its own age never moves when the user edits them.
-        NodePtr ioContainer = _imp->ioContainer.lock();
-        if (ioContainer) {
-            _imp->hash.append(ioContainer->getKnobsAge());
-        }
-
         ///append all inputs hash
         RotoDrawableItemPtr attachedStroke = _imp->paintStroke.lock();
         NodePtr attachedStrokeContextNode;
@@ -897,17 +890,6 @@ Node::computeHashRecursive(std::list<Node*>& marked)
             continue;
         }
         (*it)->computeHashRecursive(marked);
-    }
-
-    {
-        NodePtr embedded;
-        WriteNode* isWriteNode = dynamic_cast<WriteNode*>(_imp->effect.get());
-        if (isWriteNode) {
-            embedded = isWriteNode->getEmbeddedWriter();
-        }
-        if (embedded) {
-            embedded->computeHashRecursive(marked);
-        }
     }
 
     ///If the node has a rotopaint tree, compute the hash of the nodes in the tree
@@ -1598,12 +1580,6 @@ Node::postPendingLegacyColorLayerWarning()
 void
 Node::markPersistentMessageFromProjectLoad(const std::string& content)
 {
-#ifdef NATRON_ENABLE_IO_META_NODES
-    NodePtr ioContainer = getIOContainer();
-    if (ioContainer) {
-        ioContainer->markPersistentMessageFromProjectLoad(content);
-    }
-#endif
     QMutexLocker k(&_imp->persistentMessageMutex);
     if (_imp->persistentMessage == QString::fromUtf8(content.c_str())) {
         _imp->persistentMessageFromProjectLoad = true;
@@ -1732,18 +1708,6 @@ Node::loadKnob(const KnobIPtr& knob,
     const ProjectBeingLoadedInfo projectInfos = getApp()->getProjectBeingLoadedInfo();
 
     std::string pluginID = getPluginID();
-
-    {
-        // Use the plug-in ID of the encoder for writer
-        WriteNode* isWriteNode = dynamic_cast<WriteNode*>( getEffectInstance().get() );
-        if (isWriteNode) {
-            NodePtr p = isWriteNode->getEmbeddedWriter();
-            if (p) {
-                pluginID = p->getPluginID();
-            }
-        }
-    }
-
 
     KnobChoice* isChoice = dynamic_cast<KnobChoice*>( knob.get() );
     if (isChoice) {
@@ -2503,11 +2467,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
         _imp->nodeRemovalCallback = onNodeDeleted;
         settingsPage->addKnob(onNodeDeleted);
     }
-    if (_imp->effect->isWriter()
-#ifdef NATRON_ENABLE_IO_META_NODES
-        && !getIOContainer()
-#endif
-        ) {
+    if (_imp->effect->isWriter()) {
         KnobStringPtr beforeFrameRender =  AppManager::createKnob<KnobString>(_imp->effect.get(), tr("Before frame render"), 1, false);
 
         beforeFrameRender->setName("beforeFrameRender");
@@ -2758,37 +2718,6 @@ Node::createMaskSelectors(const std::vector<std::pair<bool, bool> >& hasMaskChan
     } // for (int i = 0; i < inputsCount; ++i) {
 } // Node::createMaskSelectors
 
-#ifndef NATRON_ENABLE_IO_META_NODES
-void
-Node::createWriterFrameStepKnob(const KnobPagePtr& mainPage)
-{
-    ///Find a  "lastFrame" parameter and add it after it
-    KnobIntPtr frameIncrKnob = AppManager::createKnob<KnobInt>(_imp->effect.get(), tr(kNatronWriteParamFrameStepLabel), 1, false);
-
-    frameIncrKnob->setName(kNatronWriteParamFrameStep);
-    frameIncrKnob->setHintToolTip( tr(kNatronWriteParamFrameStepHint) );
-    frameIncrKnob->setAnimationEnabled(false);
-    frameIncrKnob->setMinimum(1);
-    frameIncrKnob->setDefaultValue(1);
-    if (mainPage) {
-        std::vector<KnobIPtr> children = mainPage->getChildren();
-        bool foundLastFrame = false;
-        for (std::size_t i = 0; i < children.size(); ++i) {
-            if (children[i]->getName() == "lastFrame") {
-                mainPage->insertKnob(i + 1, frameIncrKnob);
-                foundLastFrame = true;
-                break;
-            }
-        }
-        if (!foundLastFrame) {
-            mainPage->addKnob(frameIncrKnob);
-        }
-    }
-    _imp->frameIncrKnob = frameIncrKnob;
-}
-
-#endif
-
 KnobPagePtr
 Node::getOrCreateMainPage()
 {
@@ -3008,11 +2937,6 @@ Node::createLayerKnob(const LayerKnobSpec& spec,
 void
 Node::initializeDefaultKnobs(bool loadingSerialization)
 {
-    // Readers and Writers don't have default knobs since these knobs are on the Read/WriteNode itself
-#ifdef NATRON_ENABLE_IO_META_NODES
-    NodePtr ioContainer = getIOContainer();
-#endif
-
     //Add the "Node" page
     KnobPagePtr settingsPage = AppManager::createKnob<KnobPage>(_imp->effect.get(), tr(NATRON_PARAMETER_PAGE_NAME_EXTRA), 1, false);
     _imp->nodeSettingsPage = settingsPage;
@@ -3092,11 +3016,7 @@ Node::initializeDefaultKnobs(bool loadingSerialization)
     createUnPremultSelector(mainPage);
 
     OfxEffectInstance* isOfxEffect = dynamic_cast<OfxEffectInstance*>(_imp->effect.get());
-    if (isOfxEffect && isOfxEffect->isMultiPlanar()
-#ifdef NATRON_ENABLE_IO_META_NODES
-        && !ioContainer
-#endif
-    ) {
+    if (isOfxEffect && isOfxEffect->isMultiPlanar()) {
         isOfxEffect->takeOverMultiplaneChoices(mainPage);
     }
 
@@ -3163,15 +3083,7 @@ Node::initializeDefaultKnobs(bool loadingSerialization)
         createInfoPage();
     }
 
-    if (_imp->effect->isWriter()
-#ifdef NATRON_ENABLE_IO_META_NODES
-        && !ioContainer
-#endif
-        ) {
-        //Create a frame step parameter for writers, and control it in OutputSchedulerThread.cpp
-#ifndef NATRON_ENABLE_IO_META_NODES
-        createWriterFrameStepKnob(mainPage);
-#endif
+    if (_imp->effect->isWriter()) {
         if (!mainPage) {
             mainPage = getOrCreateMainPage();
         }
@@ -3183,7 +3095,6 @@ Node::initializeDefaultKnobs(bool loadingSerialization)
         renderButton->setEvaluateOnChange(false);
         _imp->renderButton = renderButton;
         mainPage->addKnob(renderButton);
-        createInfoPage();
     }
 } // Node::initializeDefaultKnobs
 
@@ -3356,19 +3267,6 @@ Node::setEffect(const EffectInstancePtr& effect)
     assert( QThread::currentThread() == qApp->thread() );
     _imp->effect = effect;
     _imp->effect->initializeData();
-
-
-#ifdef NATRON_ENABLE_IO_META_NODES
-    NodePtr thisShared = shared_from_this();
-    NodePtr ioContainer = _imp->ioContainer.lock();
-    if (ioContainer) {
-        WriteNode* isWriter = dynamic_cast<WriteNode*>(ioContainer->getEffectInstance().get());
-        assert(isWriter);
-        if (isWriter) {
-            isWriter->setEmbeddedWriter(thisShared);
-        }
-    }
-#endif
 }
 
 EffectInstancePtr
@@ -4316,19 +4214,6 @@ Node::getPluginDescription() const
         }
     }
 
-    // if this is a Write plugin, return the description from the embedded plugin
-    if (getPluginID() == PLUGINID_NATRON_WRITE) {
-        EffectInstancePtr effectInstance = getEffectInstance();
-        WriteNode* isWriteNode = dynamic_cast<WriteNode*>(effectInstance.get());
-
-        if (isWriteNode) {
-            NodePtr subnode = isWriteNode->getEmbeddedWriter();
-            if (subnode) {
-                return subnode->getPluginDescription();
-            }
-        }
-    }
-
     return _imp->effect->getPluginDescription();
 }
 
@@ -4624,13 +4509,6 @@ Node::message(MessageTypeEnum type,
         return true;
     }
 
-#ifdef NATRON_ENABLE_IO_META_NODES
-    NodePtr ioContainer = getIOContainer();
-    if (ioContainer) {
-        ioContainer->message(type, content);
-        return true;
-    }
-#endif
     // Some nodes may be hidden from the user but may still report errors (such that the group is in fact hidden to the user)
     if ( !isPartOfProject() && getGroup() ) {
         NodeGroup* isGroup = dynamic_cast<NodeGroup*>( getGroup().get() );
@@ -4762,16 +4640,7 @@ Node::postPersistentMessage(MessageTypeEnum type,
         return;
     }
 
-    if ( !appPTR->isBackground() ) {
-        //if the message is just an information, display a popup instead.
-#ifdef NATRON_ENABLE_IO_META_NODES
-        NodePtr ioContainer = getIOContainer();
-        if (ioContainer) {
-            ioContainer->postPersistentMessage(type, content, fromChannelSelector, renderSequence, render);
-
-            return;
-        }
-#endif
+    if (!appPTR->isBackground()) {
         // Some nodes may be hidden from the user but may still report errors (such that the group is in fact hidden to the user)
         if ( !isPartOfProject() && getGroup() ) {
             NodeGroup* isGroup = dynamic_cast<NodeGroup*>( getGroup().get() );
@@ -4799,12 +4668,6 @@ Node::postPersistentMessage(MessageTypeEnum type,
 bool
 Node::hasPersistentMessage() const
 {
-#ifdef NATRON_ENABLE_IO_META_NODES
-    NodePtr ioContainer = getIOContainer();
-    if (ioContainer) {
-        return ioContainer->hasPersistentMessage();
-    }
-#endif
     QMutexLocker k(&_imp->persistentMessageMutex);
 
     return !_imp->persistentMessage.isEmpty();
@@ -4822,12 +4685,6 @@ Node::getPersistentMessage(QString* message,
                            int* type,
                            bool prefixLabelAndType) const
 {
-#ifdef NATRON_ENABLE_IO_META_NODES
-    NodePtr ioContainer = getIOContainer();
-    if (ioContainer) {
-        return ioContainer->getPersistentMessage(message, type, prefixLabelAndType);
-    }
-#endif
     QMutexLocker k(&_imp->persistentMessageMutex);
 
     *type = _imp->persistentMessageType;
@@ -4865,14 +4722,6 @@ Node::clearPersistentMessageRecursive(std::list<Node*>& markedNodes)
 void
 Node::clearPersistentMessageInternal()
 {
-#ifdef NATRON_ENABLE_IO_META_NODES
-    NodePtr ioContainer = getIOContainer();
-    if (ioContainer) {
-        ioContainer->clearPersistentMessageInternal();
-
-        return;
-    }
-#endif
     bool changed;
     {
         QMutexLocker k(&_imp->persistentMessageMutex);
@@ -4897,14 +4746,6 @@ Node::clearChannelSelectorMessage()
     if (!getApp()) {
         return;
     }
-#ifdef NATRON_ENABLE_IO_META_NODES
-    NodePtr ioContainer = getIOContainer();
-    if (ioContainer) {
-        ioContainer->clearChannelSelectorMessage();
-
-        return;
-    }
-#endif
     bool changed = false;
     {
         QMutexLocker k(&_imp->persistentMessageMutex);
@@ -4929,14 +4770,6 @@ Node::clearChannelSelectorMessageFromRender(U64 renderSequence,
     if (renderAborted || !getApp()) {
         return;
     }
-#ifdef NATRON_ENABLE_IO_META_NODES
-    NodePtr ioContainer = getIOContainer();
-    if (ioContainer) {
-        ioContainer->clearChannelSelectorMessageFromRender(renderSequence, renderAborted);
-
-        return;
-    }
-#endif
     bool changed = false;
     {
         QMutexLocker k(&_imp->persistentMessageMutex);
@@ -4958,11 +4791,6 @@ void
 Node::refreshChannelSelectorMessageAtTime(double time,
                                           const std::list<ViewIdx>& views)
 {
-#ifdef NATRON_ENABLE_IO_META_NODES
-    if (getIOContainer()) {
-        return;
-    }
-#endif
     {
         QMutexLocker k(&_imp->persistentMessageMutex);
         if (!_imp->persistentMessageFromChannelSelector || _imp->persistentMessage.isEmpty()) {
@@ -5020,14 +4848,6 @@ Node::clearPersistentMessageForPreview()
     if (!getApp()) {
         return;
     }
-#ifdef NATRON_ENABLE_IO_META_NODES
-    NodePtr ioContainer = getIOContainer();
-    if (ioContainer) {
-        ioContainer->clearPersistentMessageForPreview();
-
-        return;
-    }
-#endif
     bool changed = false;
     {
         QMutexLocker k(&_imp->persistentMessageMutex);
@@ -5047,7 +4867,6 @@ Node::getNodesWithPersistentMessageUpstream(const NodesList& roots,
                                             NodesList* nodes)
 {
     std::set<Node*> visited;
-    std::set<Node*> collected;
     std::list<NodePtr> queue(roots.begin(), roots.end());
 
     while (!queue.empty()) {
@@ -5056,15 +4875,8 @@ Node::getNodesWithPersistentMessageUpstream(const NodesList& roots,
         if (!node || !visited.insert(node.get()).second) {
             continue;
         }
-        NodePtr owner = node;
-#ifdef NATRON_ENABLE_IO_META_NODES
-        NodePtr ioContainer = node->getIOContainer();
-        if (ioContainer) {
-            owner = ioContainer;
-        }
-#endif
-        if (owner->hasAnyPersistentMessage() && collected.insert(owner.get()).second) {
-            nodes->push_back(owner);
+        if (node->hasAnyPersistentMessage()) {
+            nodes->push_back(node);
         }
         int nInputs = node->getNInputs();
         for (int i = 0; i < nInputs; ++i) {
@@ -5427,15 +5239,6 @@ Node::onMasterNodeDeactivated()
     _imp->effect->unslaveAllKnobs();
 }
 
-#ifdef NATRON_ENABLE_IO_META_NODES
-NodePtr
-Node::getIOContainer() const
-{
-    return _imp->ioContainer.lock();
-}
-
-#endif
-
 NodePtr
 Node::getMasterNode() const
 {
@@ -5700,7 +5503,7 @@ Node::onFileNameParameterChanged(KnobI* fileKnob)
             _imp->effect->getFrameRange_public(getHashValue(), &leftBound, &rightBound, true);
 
             if ( (leftBound != std::numeric_limits<int>::min()) && (rightBound != std::numeric_limits<int>::max()) ) {
-                if ( getGroup() || getIOContainer() ) {
+                if (getGroup()) {
                     getApp()->getProject()->unionFrameRangeWith(leftBound, rightBound);
                 }
             }
@@ -5728,11 +5531,7 @@ Node::onFileNameParameterChanged(KnobI* fileKnob)
         KnobOutputFile* fileParam = dynamic_cast<KnobOutputFile*>(fileKnob);
         if (fileParam) {
             std::string pattern = fileParam->getValue();
-            std::size_t foundViewPattern = pattern.find_first_of("%v");
-            if (foundViewPattern == std::string::npos) {
-                foundViewPattern = pattern.find_first_of("%V");
-            }
-            if (foundViewPattern != std::string::npos) {
+            if ((pattern.find("%v") != std::string::npos) || (pattern.find("%V") != std::string::npos)) {
                 //We found view pattern
                 KnobIPtr viewsKnob = getKnobByName(kWriteOIIOParamViewsSelector);
                 if (viewsKnob) {
@@ -6779,13 +6578,6 @@ Node::isNodeDisabled() const
     if (isContainerGrp) {
         return thisDisabled || isContainerGrp->getNode()->isNodeDisabled();
     }
-#ifdef NATRON_ENABLE_IO_META_NODES
-    NodePtr ioContainer = getIOContainer();
-    if (ioContainer) {
-        return ioContainer->isNodeDisabled();
-    }
-#endif
-
     int lifeTimeFirst, lifeTimeEnd;
     bool lifeTimeEnabled = isLifetimeActivated(&lifeTimeFirst, &lifeTimeEnd);
     double curFrame = _imp->effect->getCurrentTime();
@@ -6804,13 +6596,6 @@ Node::isNodeDisabled(double time) const
     if (isContainerGrp) {
         return thisDisabled || isContainerGrp->getNode()->isNodeDisabled(time);
     }
-#ifdef NATRON_ENABLE_IO_META_NODES
-    NodePtr ioContainer = getIOContainer();
-    if (ioContainer) {
-        return ioContainer->isNodeDisabled(time);
-    }
-#endif
-
     int lifeTimeFirst, lifeTimeEnd;
     bool lifeTimeEnabled = isLifetimeActivated(&lifeTimeFirst, &lifeTimeEnd);
     bool enabled = (!lifeTimeEnabled || (time >= lifeTimeFirst && time <= lifeTimeEnd)) && !thisDisabled;
@@ -6828,13 +6613,6 @@ Node::isNodeDisabledAtAllTimes() const
     if (isContainerGrp) {
         return thisDisabled || isContainerGrp->getNode()->isNodeDisabledAtAllTimes();
     }
-#ifdef NATRON_ENABLE_IO_META_NODES
-    NodePtr ioContainer = getIOContainer();
-    if (ioContainer) {
-        return ioContainer->isNodeDisabledAtAllTimes();
-    }
-#endif
-
     return thisDisabled;
 }
 
@@ -7986,12 +7764,7 @@ Node::declarePythonFields()
     }
 
     std::locale locale;
-    std::string nodeName;
-    if (getIOContainer()) {
-        nodeName = getIOContainer()->getFullyQualifiedName();
-    } else {
-        nodeName = getFullyQualifiedName();
-    }
+    std::string nodeName = getFullyQualifiedName();
     std::string appID = getApp()->getAppIDString();
     bool alreadyDefined = false;
     std::string nodeFullName = appID + "." + nodeName;
@@ -8046,12 +7819,7 @@ Node::removeParameterFromPython(const std::string& parameterName)
     }
     PythonGILLocker pgl;
     std::string appID = getApp()->getAppIDString();
-    std::string nodeName;
-    if (getIOContainer()) {
-        nodeName = getIOContainer()->getFullyQualifiedName();
-    } else {
-        nodeName = getFullyQualifiedName();
-    }
+    std::string nodeName = getFullyQualifiedName();
     std::string nodeFullName = appID + "." + nodeName;
     bool alreadyDefined = false;
     PyObject* nodeObj = NATRON_PYTHON_NAMESPACE::getAttrRecursive(nodeFullName, NATRON_PYTHON_NAMESPACE::getMainModule(), &alreadyDefined);

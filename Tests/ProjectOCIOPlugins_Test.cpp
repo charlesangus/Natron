@@ -39,11 +39,11 @@
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/Project.h"
-#include "Engine/WriteNode.h"
 
 NATRON_NAMESPACE_USING
 
 namespace {
+const char* const kOCIOColorSpaceID = "fr.inria.openfx.OCIOColorSpace";
 const char* const kStudioURI = "ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5";
 const char* const kCGURI = "ocio://cg-config-v4.0.0_aces-v2.0_ocio-v2.5";
 
@@ -67,19 +67,14 @@ protected:
         project()->reset(false, true);
     }
 
-    OFX::Host::ImageEffect::Instance* createWriter()
+    OFX::Host::ImageEffect::Instance* createOfxInstance()
     {
-        CreateNodeArgs args(PLUGINID_OFX_WRITEOIIO, project());
+        CreateNodeArgs args(kOCIOColorSpaceID, project());
         _node = appPTR->getTopLevelInstance()->createNode(args);
         if (!_node) {
             return NULL;
         }
-        WriteNode* writeNode = dynamic_cast<WriteNode*>(_node->getEffectInstance().get());
-        NodePtr encoder = writeNode ? writeNode->getEmbeddedWriter() : NodePtr();
-        if (!encoder) {
-            return NULL;
-        }
-        OfxEffectInstance* effect = dynamic_cast<OfxEffectInstance*>(encoder->getEffectInstance().get());
+        OfxEffectInstance* effect = dynamic_cast<OfxEffectInstance*>(_node->getEffectInstance().get());
 
         return effect ? effect->effectInstance() : NULL;
     }
@@ -89,7 +84,7 @@ protected:
 
 TEST_F(ProjectOCIOPluginsTest, InstancePropsReturnTheProjectConfigWorkingSpaceAndFileDefaults)
 {
-    OFX::Host::ImageEffect::Instance* instance = createWriter();
+    OFX::Host::ImageEffect::Instance* instance = createOfxInstance();
 
     ASSERT_TRUE(instance != NULL);
     const OFX::Host::Property::Set& props = instance->getProps();
@@ -109,7 +104,7 @@ TEST_F(ProjectOCIOPluginsTest, InstancePropsReturnTheProjectConfigWorkingSpaceAn
 
 TEST_F(ProjectOCIOPluginsTest, SwitchingTheProjectConfigIsSeenByTheSameInstance)
 {
-    OFX::Host::ImageEffect::Instance* instance = createWriter();
+    OFX::Host::ImageEffect::Instance* instance = createOfxInstance();
 
     ASSERT_TRUE(instance != NULL);
     const OFX::Host::Property::Set& props = instance->getProps();

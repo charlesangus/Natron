@@ -70,6 +70,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/NativeRead.h"
+#include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/OutputSchedulerThread.h"
@@ -78,7 +79,6 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/TLSHolder.h"
-#include "Engine/WriteNode.h"
 
 #include "Serialization/NodeSerialization.h"
 
@@ -1005,24 +1005,6 @@ AppInstance::createWriter(const std::string& filename,
                           int firstFrame,
                           int lastFrame)
 {
-#ifndef NATRON_ENABLE_IO_META_NODES
-    std::map<std::string, std::string> writersForFormat;
-    appPTR->getCurrentSettings()->getFileFormatsForWritingAndWriter(&writersForFormat);
-
-    QString fileCpy = QString::fromUtf8( filename.c_str() );
-    QString extq = QtCompat::removeFileExtension(fileCpy).toLower();
-    std::string ext = extq.toStdString();
-    std::map<std::string, std::string>::iterator found = writersForFormat.find(ext);
-    if ( found == writersForFormat.end() ) {
-        Dialogs::errorDialog( tr("Writer").toStdString(),
-                              tr("No plugin capable of encoding %1 was found.").arg(extq).toStdString(), false );
-
-        return NodePtr();
-    }
-
-
-    CreateNodeArgs args(QString::fromUtf8( found->second.c_str() ), reason, collection);
-#endif
     args.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, filename);
     if ( (firstFrame != std::numeric_limits<int>::min()) && (lastFrame != std::numeric_limits<int>::max()) ) {
         args.addParamDefaultValue<int>("frameRange", 2);
@@ -1132,18 +1114,6 @@ AppInstance::createNodeInternal(CreateNodeArgs& args)
     }
 
     bool isSilentCreation = args.getProperty<bool>(kCreateNodeArgsPropSilent);
-
-
-#ifdef NATRON_ENABLE_IO_META_NODES
-    NodePtr argsIOContainer = args.getProperty<NodePtr>(kCreateNodeArgsPropMetaNodeContainer);
-    // If it is a writer, create a WriteNode
-    if (!argsIOContainer) {
-        if (WriteNode::isBundledWriter(argsPluginID.toStdString(), wasProjectCreatedWithLowerCaseIDs())) {
-            args.addParamDefaultValue(kNatronWriteNodeParamEncodingPluginID, argsPluginID.toStdString());
-            findId = QString::fromUtf8(PLUGINID_NATRON_WRITE);
-        }
-    }
-#endif
 
     try {
         plugin = appPTR->getPluginBinary(findId, versionMajor, versionMinor, _imp->_projectCreatedWithLowerCaseIDs && serialization);
@@ -1449,16 +1419,6 @@ AppInstance::exportDocs(const QString path)
                     qDebug() << pluginID;
                     // IMPORTANT: this code is *very* similar to DocumentationManager::handler(...) is section "_plugin.html"
                     NodePtr node = createNode(args);
-                    if (node && (pluginID != QString::fromUtf8(PLUGINID_NATRON_WRITE))) {
-                        WriteNode* isWriteNode = dynamic_cast<WriteNode*>(node->getEffectInstance().get());
-
-                        if (isWriteNode) {
-                            NodePtr subnode = isWriteNode->getEmbeddedWriter();
-                            if (subnode) {
-                                node = subnode;
-                            }
-                        }
-                    }
                     if (node) {
                         QDir mdDir(path);
                         if ( !mdDir.exists() ) {

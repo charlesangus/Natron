@@ -859,8 +859,9 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
             if (!components) {
                 continue;
             }
-            //For writers, we always want to call the render action when doing a sequential render, but we still want to use the cache for nodes upstream
-            bool doCacheLookup = !isWriter() || !frameArgs->isSequentialRender;
+            // A writer's render to disk must call the render action, which writes the file; a pull
+            // through a writer, and every node upstream, may still use the cache.
+            bool doCacheLookup = !isWriter() || !isRenderingOwnSequence();
             if (doCacheLookup) {
                 int nLookups = draftModeSupported && frameArgs->draftMode ? 2 : 1;
 

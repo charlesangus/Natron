@@ -441,6 +441,16 @@ EffectInstance::getParallelRenderArgsTLS() const
     return tls->frameArgs.back();
 }
 
+bool
+EffectInstance::isRenderingOwnSequence() const
+{
+    const ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
+
+    // Only an OutputSchedulerThread render roots its frames at the output it drives and flags them
+    // sequential; previews, analyses and input fetches root at a node but are never sequential.
+    return args && args->isSequentialRender && args->treeRoot && (args->treeRoot == getNode());
+}
+
 U64
 EffectInstance::getHash() const
 {
@@ -1340,9 +1350,9 @@ EffectInstance::getImage(int inputNb,
     /// The node is connected.
     assert(inputEffect);
 
-    // A plane requested with a channel subset of the one the input produces (a Write container's
-    // channel set narrows its encoder's plane list that way) is rendered whole and the requested
-    // channels are extracted from it, since renderRoI() only matches planes with equal channel counts.
+    // A plane requested with a channel subset of the one the input produces is rendered whole and
+    // the requested channels are extracted from it, since renderRoI() only matches planes with
+    // equal channel counts.
     std::vector<int> subsetChannelIndices;
     ImageLayerDesc renderedComps = isMask ? maskComps : components;
     if (layer && !isMask && !components.isColorLayer()) {
@@ -4175,7 +4185,7 @@ EffectInstance::isIdentity_public(bool useIdentityCache, // only set to true whe
         *inputNb = getNode()->getPreferredInput();
         *inputTime = time;
         *inputView = view;
-    } else if (!isResolvingLayersPassThrough() && !getNode()->hasAtLeastOneChannelToProcess(time, view)) {
+    } else if (!isResolvingLayersPassThrough() && outputFollowsLayerKnob(time, view) && !getNode()->hasAtLeastOneChannelToProcess(time, view)) {
         // The selection is resolved against the pass-through input, so choosing that input
         // cannot depend on the selection: while it is being chosen only the plug-in answers.
         // An unprocessed output then shows that input, not the preferred one: a Switch whose
@@ -5016,9 +5026,7 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
     // Remove from this list all layers produced from this node to get the pass-through layers list
     std::list<ImageLayerDesc>& outputLayers = (*comps)[-1];
 
-    // Ensure the plug-in made the metadata layer available. An embedded encoder produces it by
-    // fetching it from its pass-through input, so the Write container's selection on that input
-    // decides whether the layer is there to produce at all.
+    // Ensure the plug-in made the metadata layer available.
     if (producesMetadataLayerImplicitly()) {
         std::list<ImageLayerDesc> metadataLayers;
         ImageLayerDesc metadataLayer, metadataPairedLayer;
@@ -5030,17 +5038,11 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
             metadataLayers.push_back(metadataLayer);
         }
         if (*passThroughInputNb >= 0) {
-            NodePtr node = getNode();
-            NodePtr ioContainer = node ? node->getIOContainer() : NodePtr();
             // Most effects can make colour without their pass-through input's (a generator, or one
             // reading another input), so only an effect whose colour comes from that input alone
             // loses the plane when the input has none; an encoder would otherwise write zeros.
-            const bool colorOnlyFromPassThrough = producesColorOnlyFromPassThroughInput() || (ioContainer && ioContainer->getEffectInstance()->producesColorOnlyFromPassThroughInput());
-            if (colorOnlyFromPassThrough && inputPresentsNoColorStorage(this, *passThroughTime, ViewIdx(*passThroughView), *passThroughInputNb)) {
+            if (producesColorOnlyFromPassThroughInput() && inputPresentsNoColorStorage(this, *passThroughTime, ViewIdx(*passThroughView), *passThroughInputNb)) {
                 removeColorLayers(&metadataLayers);
-            }
-            if (ioContainer) {
-                ioContainer->getEffectInstance()->filterLayersForEmbeddedInput(*passThroughInputNb, &metadataLayers);
             }
         }
         mergeLayersList(metadataLayers, &outputLayers);
@@ -5140,15 +5142,6 @@ EffectInstance::getPresentLayers(double time, ViewIdx view, int inputNb, std::li
     }
 
     mergeLayersList(passThroughLayers, presentLayers);
-
-    if (inputNb >= 0) {
-        NodePtr node = getNode();
-        NodePtr ioContainer = node ? node->getIOContainer() : NodePtr();
-        if (ioContainer) {
-            ioContainer->getEffectInstance()->filterLayersForEmbeddedInput(inputNb, presentLayers);
-        }
-    }
-
 } // getPresentLayers
 
 void

@@ -138,20 +138,22 @@ def checker(name, boxes=40):
     return n
 
 
+def pin_output_space(writer):
+    working = p(writer, "ocioWorkingSpace").get()
+    if not working:
+        raise RuntimeError("%s has no working colourspace to pin the output to" % writer.getScriptName())
+    p(writer, "ocioOutputSpace").set(working)
+    p(writer, "ocioOutputSpaceSet").set(True)
+
+
 def finish(comp, root):
     os.makedirs(RENDER_DIR, exist_ok=True)
     props = {"CreateNodeArgsPropNodeInitialName": NatronEngine.StringNodeCreationProperty("Write")}
     writer = app.createWriter(WRITE_PATTERN % comp, None, props)
     writer.connectInput(0, root)
-    comp_param = writer.getParam("compression")
-    if comp_param is not None:
-        comp_param.set("none")
-    bit_depth = writer.getParam("bitDepth")
-    if bit_depth is not None:
-        try:
-            choice(writer, "bitDepth", "32f")
-        except RuntimeError:
-            pass
+    pin_output_space(writer)
+    choice(writer, "bitDepth", "32f")
+    choice(writer, "compression", "none")
     path = os.path.join(OUT, comp + ".ntp")
     app.saveProject(path)
     # The saved Project variable is the directory at save time; Natron resets it on load.

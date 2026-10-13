@@ -167,8 +167,8 @@ public:
     NodesGuiList _nodes;
     NodesGuiList _nodesTrash;
 
-    ///Enables the "Tab" shortcut to popup the node creation dialog.
-    ///This is set to true on enterEvent and set back to false on leaveEvent
+    /// Enables the "Tab" shortcut to popup the node creation dialog.
+    /// This is set to true on enterEvent and set back to false on leaveEvent
     bool _nodeCreationShortcutEnabled;
     QString _lastNodeCreatedName;
     QGraphicsItem* _root; ///< this is the parent of all items in the graph

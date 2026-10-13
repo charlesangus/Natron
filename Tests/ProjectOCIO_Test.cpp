@@ -46,13 +46,13 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/Settings.h"
-#include "Engine/WriteNode.h"
 
 NATRON_NAMESPACE_USING
 
@@ -86,6 +86,16 @@ createNode(const std::string& pluginID)
 }
 
 NodePtr
+createNativeWrite()
+{
+    CreateNodeArgs args(PLUGINID_NATRON_WRITE, project());
+
+    args.setProperty<int>(kCreateNodeArgsPropPluginVersion, PLUGIN_MAJOR_NATRON_WRITE, 0);
+
+    return appPTR->getTopLevelInstance()->createNode(args);
+}
+
+NodePtr
 createReader(const std::string& fixture)
 {
     CreateNodeArgs args(PLUGINID_NATRON_READ, project());
@@ -93,18 +103,6 @@ createReader(const std::string& fixture)
     args.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/") + fixture);
 
     return appPTR->getTopLevelInstance()->createNode(args);
-}
-
-NodePtr
-embeddedNode(const NodePtr& node)
-{
-    EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
-
-    if (WriteNode* isWrite = dynamic_cast<WriteNode*>(effect.get())) {
-        return isWrite->getEmbeddedWriter();
-    }
-
-    return NodePtr();
 }
 
 KnobStringBasePtr
@@ -286,17 +284,15 @@ private:
 TEST_F(ProjectOCIOTest, NewReadWriteAndColorSpaceNodesCarryTheProjectConfigHidden)
 {
     NodePtr read = createReader("flat-rgb-only.exr");
-    NodePtr write = createNode(PLUGINID_OFX_WRITEOIIO);
+    NodePtr write = createNativeWrite();
     NodePtr colorSpace = createNode(kOCIOColorSpaceID);
 
     ASSERT_TRUE(bool(read));
     ASSERT_TRUE(bool(write));
     ASSERT_TRUE(bool(colorSpace));
-    ASSERT_TRUE(bool(embeddedNode(write)));
 
     expectCarriesConfig(read, kStudioURI);
     expectCarriesConfig(write, kStudioURI);
-    expectCarriesConfig(embeddedNode(write), kStudioURI);
     expectCarriesConfig(colorSpace, kStudioURI);
 }
 
@@ -306,7 +302,7 @@ TEST_F(ProjectOCIOTest, SwitchingToCGUpdatesEveryNodeAndRebuildsTheColorSpaceMen
     ASSERT_FALSE(configDefines(kCGURI, kStudioOnlySpace));
 
     NodePtr read = createReader("flat-rgb-only.exr");
-    NodePtr write = createNode(PLUGINID_OFX_WRITEOIIO);
+    NodePtr write = createNativeWrite();
     NodePtr colorSpace = createNode(kOCIOColorSpaceID);
     ASSERT_TRUE(bool(read));
     ASSERT_TRUE(bool(write));
@@ -320,7 +316,6 @@ TEST_F(ProjectOCIOTest, SwitchingToCGUpdatesEveryNodeAndRebuildsTheColorSpaceMen
 
     expectCarriesConfig(read, kCGURI);
     expectCarriesConfig(write, kCGURI);
-    expectCarriesConfig(embeddedNode(write), kCGURI);
     expectCarriesConfig(colorSpace, kCGURI);
 
     const std::vector<ChoiceOption> entries = inputMenu->getEntries_mt_safe();
@@ -413,7 +408,7 @@ TEST_F(ProjectOCIOTest, ASavedAndReloadedProjectKeepsTheConfigTheCleanStateAndTh
 
     switchProjectConfig(kCGURI);
     NodePtr read = createReader("flat-rgb-only.exr");
-    NodePtr write = createNode(PLUGINID_OFX_WRITEOIIO);
+    NodePtr write = createNativeWrite();
     NodePtr colorSpace = createNode(kOCIOColorSpaceID);
     ASSERT_TRUE(bool(read));
     ASSERT_TRUE(bool(write));
@@ -434,7 +429,6 @@ TEST_F(ProjectOCIOTest, ASavedAndReloadedProjectKeepsTheConfigTheCleanStateAndTh
 
     expectCarriesConfig(read, kCGURI);
     expectCarriesConfig(write, kCGURI);
-    expectCarriesConfig(embeddedNode(write), kCGURI);
     expectCarriesConfig(colorSpace, kCGURI);
     EXPECT_FALSE(colorSpace->hasPersistentMessage());
 }
@@ -550,34 +544,35 @@ TEST_F(ProjectOCIOTest, AHostOwnedConfigSwitchLeavesARoleNamedColorSpaceAsWritte
 TEST_F(ProjectOCIOTest, ChangingTheWorkingSpaceMovesOnlyTheTechnicalSideOfExistingReadsAndWrites)
 {
     NodePtr read = createReader("flat-rgb-only.exr");
-    NodePtr write = createNode(PLUGINID_OFX_WRITEOIIO);
+    NodePtr write = createNativeWrite();
     NodePtr colorSpace = createNode(kOCIOColorSpaceID);
-    ASSERT_TRUE(bool(embeddedNode(write)));
+    ASSERT_TRUE(bool(write));
     ASSERT_TRUE(bool(colorSpace));
+    write->setOutputFilesForWriter("/tmp/projectOcioWorkingSpace.exr");
     plantInputSpace(colorSpace, kSharedSpace);
     plantSpace(colorSpace, "ocioOutputSpace", kSharedSpace);
 
-    const NodePtr encoder = embeddedNode(write);
     ASSERT_EQ(std::string(kSharedSpace), stringKnob(read, "ocioWorkingSpace")->getValue());
-    ASSERT_EQ(std::string(kSharedSpace), stringKnob(encoder, "ocioInputSpace")->getValue());
+    ASSERT_EQ(std::string(kSharedSpace), stringKnob(write, "ocioWorkingSpace")->getValue());
     const std::string readFileSpace = stringKnob(read, "ocioInputSpace")->getValue();
-    const std::string writeFileSpace = stringKnob(encoder, "ocioOutputSpace")->getValue();
+    const std::string writeFileSpace = stringKnob(write, "ocioOutputSpace")->getValue();
+    ASSERT_FALSE(writeFileSpace.empty());
 
     setWorkingSpace("ACEScct");
 
     EXPECT_EQ(std::string("ACEScct"), stringKnob(read, "ocioWorkingSpace")->getValue());
-    EXPECT_EQ(std::string("ACEScct"), stringKnob(encoder, "ocioInputSpace")->getValue());
+    EXPECT_EQ(std::string("ACEScct"), stringKnob(write, "ocioWorkingSpace")->getValue());
     EXPECT_EQ(readFileSpace, stringKnob(read, "ocioInputSpace")->getValue());
-    EXPECT_EQ(writeFileSpace, stringKnob(encoder, "ocioOutputSpace")->getValue());
+    EXPECT_EQ(writeFileSpace, stringKnob(write, "ocioOutputSpace")->getValue());
     EXPECT_EQ(std::string(kSharedSpace), stringKnob(colorSpace, "ocioInputSpace")->getValue());
     EXPECT_EQ(std::string(kSharedSpace), stringKnob(colorSpace, "ocioOutputSpace")->getValue());
 
     setWorkingSpace(kSharedSpace);
 
     EXPECT_EQ(std::string(kSharedSpace), stringKnob(read, "ocioWorkingSpace")->getValue());
-    EXPECT_EQ(std::string(kSharedSpace), stringKnob(encoder, "ocioInputSpace")->getValue());
+    EXPECT_EQ(std::string(kSharedSpace), stringKnob(write, "ocioWorkingSpace")->getValue());
     EXPECT_EQ(readFileSpace, stringKnob(read, "ocioInputSpace")->getValue());
-    EXPECT_EQ(writeFileSpace, stringKnob(encoder, "ocioOutputSpace")->getValue());
+    EXPECT_EQ(writeFileSpace, stringKnob(write, "ocioOutputSpace")->getValue());
 }
 
 TEST_F(ProjectOCIOTest, AConfigFileThatFailsToLoadKeepsTheKnobButPublishesTheConfigInUse)
@@ -605,12 +600,13 @@ TEST_F(ProjectOCIOTest, AConfigFileThatFailsToLoadKeepsTheKnobButPublishesTheCon
 
 namespace {
 NodePtr
-createConstantIntoPngWriter(const std::string& path)
+createConstantIntoNativeWriter(const std::string& path)
 {
     NodePtr constant = createNode("net.sf.openfx.ConstantPlugin");
-    CreateNodeArgs writerArgs(PLUGINID_OFX_WRITEPNG, project());
-    writerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, path);
-    NodePtr writer = appPTR->getTopLevelInstance()->createNode(writerArgs);
+    NodePtr writer = createNativeWrite();
+    if (writer) {
+        writer->setOutputFilesForWriter(path);
+    }
     EXPECT_TRUE(bool(constant));
     EXPECT_TRUE(bool(writer));
     if (!constant || !writer || !project()->connectNodes(0, constant, writer)) {
@@ -655,9 +651,9 @@ TEST_F(ProjectOCIOTest, AnOCIOOverrideThatFailsToLoadFailsRendersInsteadOfUsingA
     ASSERT_TRUE(project()->getOCIOConfigError(&error));
     EXPECT_NE(std::string::npos, error.find(missing)) << error;
 
-    NodePtr writer = createConstantIntoPngWriter(failedPath);
+    NodePtr writer = createConstantIntoNativeWriter(failedPath);
     ASSERT_TRUE(bool(writer));
-    expectCarriesConfig(embeddedNode(writer), inUse);
+    expectCarriesConfig(writer, inUse);
     ASSERT_TRUE(renderFrameOne(writer));
     EXPECT_FALSE(QFile::exists(QString::fromStdString(failedPath)));
 
@@ -665,7 +661,7 @@ TEST_F(ProjectOCIOTest, AnOCIOOverrideThatFailsToLoadFailsRendersInsteadOfUsingA
     project()->reset(false, true);
     EXPECT_FALSE(project()->getOCIOConfigError(0));
 
-    writer = createConstantIntoPngWriter(renderedPath);
+    writer = createConstantIntoNativeWriter(renderedPath);
     ASSERT_TRUE(bool(writer));
     ASSERT_TRUE(renderFrameOne(writer));
     EXPECT_TRUE(QFile::exists(QString::fromStdString(renderedPath)));

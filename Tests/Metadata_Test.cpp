@@ -569,11 +569,15 @@ TEST_F(MetadataPluginFixture, DisconnectedInputClipFallsBackToHostDerivedMetadat
 TEST_F(MetadataPluginFixture, ReaderFileMetadataReachesADownstreamInputClip)
 {
     NodePtr generator = createNode(QString::fromUtf8(PLUGINID_OFX_CONSTANT));
-    NodePtr writer = createNode(_writeOIIOPluginID);
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string pattern = (tmp.path() + QLatin1String("/downstreamReaderMetadata.####.exr")).toStdString();
+    NodePtr writer = createNativeWriter(pattern);
     ASSERT_TRUE(bool(generator) && bool(writer));
 
     connectNodes(generator, writer, 0, true);
 
+    // The menus are rebuilt for the file's format, so these are set once the file is.
     KnobChoice* bitDepth = dynamic_cast<KnobChoice*>(writer->getKnobByName("bitDepth").get());
     ASSERT_TRUE(bitDepth != NULL);
     bitDepth->setValueFromID("32f", 0);
@@ -581,11 +585,6 @@ TEST_F(MetadataPluginFixture, ReaderFileMetadataReachesADownstreamInputClip)
     KnobChoice* compression = dynamic_cast<KnobChoice*>(writer->getKnobByName("compression").get());
     ASSERT_TRUE(compression != NULL);
     compression->setValueFromID("none", 0);
-
-    QTemporaryDir tmp;
-    ASSERT_TRUE(tmp.isValid());
-    const std::string pattern = (tmp.path() + QLatin1String("/downstreamReaderMetadata.####.exr")).toStdString();
-    writer->setOutputFilesForWriter(pattern);
 
     const int frame = 1;
 
@@ -878,11 +877,11 @@ TEST_F(MetadataPluginFixture, MetadataConcurrentReadsDuringRenderStayWhole)
     NodePtr generator = createNode(QString::fromUtf8(PLUGINID_OFX_CONSTANT));
     NodePtr contribute = createNode(QString::fromUtf8(kMetadataContributeID));
     NodePtr print = createNode(QString::fromUtf8(kMetadataPrintID));
-    NodePtr writer = createNode(_writeOIIOPluginID);
+    NodePtr writer = createNativeWriter();
     ASSERT_TRUE(bool(generator)) << "node creation failed for " << PLUGINID_OFX_CONSTANT;
     ASSERT_TRUE(bool(contribute)) << "node creation failed for " << kMetadataContributeID;
     ASSERT_TRUE(bool(print)) << "node creation failed for " << kMetadataPrintID;
-    ASSERT_TRUE(bool(writer)) << "node creation failed for " << _writeOIIOPluginID.toStdString();
+    ASSERT_TRUE(bool(writer)) << "node creation failed for " << _writePluginID.toStdString();
 
     connectNodes(generator, contribute, 0, true);
     connectNodes(contribute, print, 0, true);
@@ -902,8 +901,8 @@ TEST_F(MetadataPluginFixture, MetadataConcurrentReadsDuringRenderStayWhole)
     // plug-in's own level back and both of those run it. The example plug-ins never call
     // setRenderThreadSafety(), so they take the OFX default of instance safe, and their render
     // bodies -- a per window pixel copy of images the host hands them, plus a read of metadata
-    // the host owns -- meet fully safe. The generator and the writer declare fully safe for
-    // themselves and are left alone, so with these two raised nothing in the chain serialises.
+    // the host owns -- meet fully safe. The generator declares fully safe for itself and
+    // is left alone.
     contribute->setRenderThreadSafety(eRenderSafetyFullySafe);
     print->setRenderThreadSafety(eRenderSafetyFullySafe);
     ASSERT_EQ(eRenderSafetyFullySafe, contribute->getCurrentRenderThreadSafety());

@@ -194,19 +194,10 @@ GuiAppInstance::deletePreviewProvider()
             _imp->_previewProvider->viewerNodeInternal.reset();
         }
 
-#ifndef NATRON_ENABLE_IO_META_NODES
-        for (std::map<std::string, NodePtr>::iterator it =
-                 _imp->_previewProvider->readerNodes.begin();
-             it != _imp->_previewProvider->readerNodes.end(); ++it) {
-            it->second->destroyNode(true, false);
-        }
-        _imp->_previewProvider->readerNodes.clear();
-#else
         if (_imp->_previewProvider->readerNode) {
             _imp->_previewProvider->readerNode->destroyNode(true, false);
             _imp->_previewProvider->readerNode.reset();
         }
-#endif
 
         _imp->_previewProvider.reset();
     }

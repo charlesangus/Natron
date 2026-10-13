@@ -148,14 +148,14 @@ protected:
         return square;
     }
 
-    // Appends a WriteOIIO writing every layer of `node` as one 32-bit float part and renders
+    // Appends a native Write writing every layer of `node` as one 32-bit float part and renders
     // frame 1 into `tmp`, parsing the result into `image`.
     bool renderAllLayers(const NodePtr& node,
                          const QTemporaryDir& tmp,
                          FlatExrImage* image,
                          std::string* error)
     {
-        NodePtr writer = createNode(_writeOIIOPluginID);
+        NodePtr writer = createNativeWriter();
         if (!writer) {
             *error = "writer creation failed";
 

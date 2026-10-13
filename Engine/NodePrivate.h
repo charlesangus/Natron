@@ -193,10 +193,6 @@ public:
         , masterNodeMutex()
         , masterNode()
         , nodeLinks()
-#ifdef NATRON_ENABLE_IO_META_NODES
-        , ioContainer()
-#endif
-        , frameIncrKnob()
         , nodeSettingsPage()
         , nodeLabelKnob()
         , previewEnabledKnob()
@@ -387,12 +383,6 @@ public:
     NodeWPtr masterNode; //< this points to the master when the node is a clone
     KnobLinkList nodeLinks; //< these point to the parents of the params links
 
-#ifdef NATRON_ENABLE_IO_META_NODES
-    //When creating a Reader or Writer node, this is a pointer to the "bundle" node that the user actually see.
-    NodeWPtr ioContainer;
-#endif
-
-    KnobIntWPtr frameIncrKnob;
     KnobPageWPtr nodeSettingsPage;
     KnobStringWPtr nodeLabelKnob;
     KnobBoolWPtr previewEnabledKnob;

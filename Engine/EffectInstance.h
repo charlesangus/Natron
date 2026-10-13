@@ -71,9 +71,6 @@
 #define PLUGINID_OFX_FRAMERANGE   "net.sf.openfx.FrameRange"
 #define PLUGINID_OFX_RUNSCRIPT "fr.inria.openfx.RunScript"
 #define PLUGINID_OFX_TIMEDISSOLVE "net.sf.openfx.TimeDissolvePlugin"
-#define PLUGINID_OFX_WRITEFFMPEG "fr.inria.openfx.WriteFFmpeg"
-#define PLUGINID_OFX_WRITEPFM "fr.inria.openfx.WritePFM"
-#define PLUGINID_OFX_WRITEPNG "fr.inria.openfx.WritePNG"
 
 #define PLUGINID_NATRON_VIEWER    (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Viewer")
 #define PLUGINID_NATRON_DISKCACHE (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.DiskCache")
@@ -431,7 +428,7 @@ public:
     }
 
     /**
-     * @brief Basically returns true for PLUGINID_OFX_WRITEFFMPEG
+     * @brief Returns true for writers that encode video, which cannot be paused mid-sequence
      **/
     virtual bool isVideoWriter() const WARN_UNUSED_RETURN
     {
@@ -574,16 +571,6 @@ public:
     virtual bool defaultProcessesAllLayers() const WARN_UNUSED_RETURN
     {
         return false;
-    }
-
-    /**
-     * @brief Called on a Read/Write container's effect whenever its embedded node lists the
-     * layers present on one of its inputs (getPresentLayers() with inputNb >= 0). The container
-     * may narrow the list to what the user selected on it; the default keeps it whole.
-     **/
-    virtual void filterLayersForEmbeddedInput(int /*inputNb*/,
-                                              std::list<ImageLayerDesc>* /*layers*/)
-    {
     }
 
     /**
@@ -938,6 +925,14 @@ public:
 
     ParallelRenderArgsPtr getParallelRenderArgsTLS() const;
 
+    /**
+     * @brief Whether the frame the calling thread renders belongs to a sequence render started by
+     * this node's own RenderEngine. For a writer that is a render to disk (the Render button,
+     * Render Selected, app.render, the -w command line); a frame a viewer or another node pulls
+     * through this node is not.
+     **/
+    bool isRenderingOwnSequence() const;
+
     //Implem in ParallelRenderArgs.cpp
     static StatusEnum getInputsRoIsFunctor(bool useTransforms,
                                            double time,
@@ -1234,8 +1229,7 @@ public:
 
     // True when the colour plane this effect produces implicitly can only be made from its
     // pass-through input's colour, as for an encoder writing that input out: when the input has
-    // no colour plane, the effect then produces none either. Also asked of a Read/Write container
-    // on behalf of the effect embedded in it.
+    // no colour plane, the effect then produces none either.
     virtual bool producesColorOnlyFromPassThroughInput() const
     {
         return false;
@@ -2171,6 +2165,17 @@ public:
         return false;
     }
 
+    /**
+     * @brief Reimplement to return false at a time and view where the output does not come from
+     * the planes the layer knob selects, such as a Write showing the file it wrote. A layer knob
+     * that selects no channel there then does not make the effect an identity of its input.
+     **/
+    virtual bool outputFollowsLayerKnob(double /*time*/,
+                                        ViewIdx /*view*/) const
+    {
+        return true;
+    }
+
     virtual void onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& /*serialization*/) { }
 
     virtual void onKnobsLoaded() {}
@@ -2613,7 +2618,6 @@ private:
     class Implementation;
     std::unique_ptr<Implementation> _imp; // PIMPL: hide implementation details
 
-    friend class WriteNode;
     friend class ImageBitMapMarker_RAII;
 
     enum RenderRoIStatusEnum

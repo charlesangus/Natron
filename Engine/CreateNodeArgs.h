@@ -171,13 +171,6 @@
 #define kCreateNodeArgsPropGroupContainer "CreateNodeArgsPropGroupContainer"
 
 /**
- * @brief optional x1 std::shared_ptr<Node> A Pointer to a node that contains this node. This is used internally by the Read and Write nodes
- * which are meta-bundles to the internal decoders/encoders.
- * Default value - null
- **/
-#define kCreateNodeArgsPropMetaNodeContainer "CreateNodeArgsPropMetaNodeContainer"
-
-/**
  * @brief [DEPRECATED] optional x1 std::string For the old Tracker_PM node, we used this to indicate when creating a track (which was represented by a node internally)
  * what was the script-name of the parent node.
  * This is meaningless in Natron >= 2.1
@@ -320,7 +313,6 @@ class CreateNodeArgs
         createProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, true);
         createProperty<bool>(kCreateNodeArgsPropTrustPluginID, false);
         createProperty<NodeCollectionPtr>(kCreateNodeArgsPropGroupContainer, NodeCollectionPtr());
-        createProperty<NodePtr>(kCreateNodeArgsPropMetaNodeContainer, NodePtr());
         createProperty<std::string>(kCreateNodeArgsPropMultiInstanceParentName, std::string());
 
 

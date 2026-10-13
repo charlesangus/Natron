@@ -116,6 +116,8 @@ public:
 
     void refreshReadNodeInput();
 
+    void copyWriterSpaceToReadNode(const NodePtr& read) const;
+
     void populateWriteNodesChoice(bool setPartOfPrecomp, bool setWriteNodeChoice);
 
     NodePtr getWriteNodeFromPreComp() const;
@@ -584,6 +586,8 @@ PrecompNodePrivate::createReadNode()
         return;
     }
 
+    copyWriterSpaceToReadNode(read);
+
     PrecompNodePtr precomp = std::dynamic_pointer_cast<PrecompNode>( _publicInterface->shared_from_this() );
     assert(precomp);
     read->setPrecompNode(precomp);
@@ -595,6 +599,23 @@ PrecompNodePrivate::createReadNode()
         readNode = read;
     }
 } // PrecompNodePrivate::createReadNode
+
+// The Read's automatic input space comes from the colour config's file rules, which need not match the
+// space the Write encoded in, so the Read is told the Write's space the way a user pick would.
+void
+PrecompNodePrivate::copyWriterSpaceToReadNode(const NodePtr& read) const
+{
+    NodePtr writeNode = getWriteNodeFromPreComp();
+    if (!writeNode || !read) {
+        return;
+    }
+    KnobStringBase* outputSpace = dynamic_cast<KnobStringBase*>(writeNode->getKnobByName("ocioOutputSpace").get());
+    KnobStringBase* inputSpace = dynamic_cast<KnobStringBase*>(read->getKnobByName("ocioInputSpace").get());
+    if (!outputSpace || !inputSpace) {
+        return;
+    }
+    inputSpace->setValue(outputSpace->getValue(), ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+}
 
 void
 PrecompNodePrivate::refreshOutputNode()
@@ -657,6 +678,7 @@ PrecompNodePrivate::refreshReadNodeInput()
     }
     //Remove all images from the cache associated to the reader since we know they are no longer valid.
     //This is a blocking call so that we are sure there's no old image laying around in the cache after this call
+    copyWriterSpaceToReadNode(readNode);
     readNode->removeAllImagesFromCache(true);
     readNode->purgeAllInstancesCaches();
 
@@ -695,13 +717,12 @@ PrecompNodePrivate::launchPreRender()
 void
 PrecompNode::onPreRenderFinished()
 {
-    NodePtr output = getOutputNode();
+    NodePtr output = _imp->getWriteNodeFromPreComp();
 
     if (!output) {
         return;
     }
-    OutputEffectInstance* writer = dynamic_cast<OutputEffectInstance*>( output->getEffectInstance().get() );
-    assert(writer);
+    OutputEffectInstance* writer = dynamic_cast<OutputEffectInstance*>(output->getEffectInstance().get());
     if (writer) {
         RenderEnginePtr engine = writer->getRenderEngine();
         if (engine) {

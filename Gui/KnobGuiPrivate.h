@@ -71,8 +71,8 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/Variant.h"
 #include "Engine/ViewerInstance.h"
 
-#include "Gui/ComboBox.h"
 #include "Gui/ClickableLabel.h"
+#include "Gui/ComboBox.h"
 #include "Gui/CurveEditor.h"
 #include "Gui/CurveGui.h"
 #include "Gui/CustomParamInteract.h"
@@ -84,7 +84,6 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/KnobGuiGroup.h"
 #include "Gui/LineEdit.h"
 #include "Gui/LinkToKnobDialog.h"
-#include "Gui/Menu.h"
 #include "Gui/Menu.h"
 #include "Gui/NodeCreationDialog.h"
 #include "Gui/NodeGui.h"

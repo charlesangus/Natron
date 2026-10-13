@@ -44,7 +44,6 @@ ENGINE_PHASES = (("request pass", "computeRequestPass"),
                  ("identity", "isIdentity_public"),
                  ("rod", "getRegionOfDefinition_public"),
                  ("components", "getComponentsNeeded"),
-                 ("writer", "WriteNode"),
                  ("python", "Py"))
 
 

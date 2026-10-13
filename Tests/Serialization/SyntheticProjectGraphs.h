@@ -102,7 +102,7 @@ protected:
     {
         NodePtr generator = createNode(_generatorPluginID);
         NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
-        NodePtr writer = createNode(_writeOIIOPluginID);
+        NodePtr writer = createNativeWriter();
 
         if (!generator || !grade || !writer) {
             return false;
@@ -110,12 +110,8 @@ protected:
         connectNodes(generator, grade, 0, true);
         connectNodes(grade, writer, 0, true);
 
-        // An OIIO Write with no filename logs an OpenImageIO error as soon as it is asked to
-        // create an output; give it one in the test's temp dir, spelled through the [Project]
-        // variable rather than as tmp.path() itself. Node::onFileNameParameterChanged() looks for
-        // a %v/%V view token with find_first_of(), so any 'v', 'V' or '%' anywhere in the raw
-        // path hides viewsSelector, which then gets saved. A literal path would make the golden
-        // depend on the random QTemporaryDir name (about one run in six) and on $TMPDIR.
+        // The filename is spelled through the [Project] variable rather than as tmp.path() itself,
+        // so the golden depends neither on the random QTemporaryDir name nor on $TMPDIR.
         // [Project] must already resolve when the filename is set: while it is empty, the stored
         // value ends up with repeated "[Project]/" prefixes.
         if (!setProjectPathVariable(tmp.path())) {

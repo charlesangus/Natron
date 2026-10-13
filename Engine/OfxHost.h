@@ -144,17 +144,11 @@ public:
 
     virtual OFX::Host::Memory::Instance* newMemoryInstance(size_t nBytes) OVERRIDE FINAL WARN_UNUSED_RETURN;
     AbstractOfxEffectInstancePtr createOfxEffect(NodePtr node,
-                                                                 const CreateNodeArgs& args
-#ifndef NATRON_ENABLE_IO_META_NODES
-                                                                 , bool allowFileDialogs,
-                                                                 bool *hasUsedFileDialog
-#endif
-                                                                 );
-
+                                                 const CreateNodeArgs& args);
 
     /*Reads OFX plugin cache and scan plugins directories
        to load them all.*/
-    void loadOFXPlugins(IOPluginsMap* writersMap);
+    void loadOFXPlugins();
 
     void clearPluginsLoadedCache();
 

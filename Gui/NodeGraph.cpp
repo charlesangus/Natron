@@ -38,7 +38,6 @@
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/Dot.h"
 #include "Engine/Node.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
@@ -55,6 +54,8 @@
 #include "Gui/NodeGraphTextItem.h"
 
 #include "Global/QtCompat.h"
+
+#include "Serialization/SerializationFwd.h"
 
 NATRON_NAMESPACE_ENTER
 //using std::cout; using std::endl;
@@ -439,8 +440,8 @@ NodeGraph::createNodeGUI(const NodePtr & node,
     if ( !nodesBeingCreated.empty() && (nodesBeingCreated.front() == node) ) {
         isTopLevelNodeBeingCreated = true;
     }
-    
-    NodeSerializationPtr serialization = args.getProperty<NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
+
+    Serialization::NodeSerializationPtr serialization = args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
 
     // A Dot is a routing aid created in passing, so its panel only opens when asked for.
     bool panelOpened = args.getProperty<bool>(kCreateNodeArgsPropSettingsOpened) && !isDot;

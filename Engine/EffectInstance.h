@@ -46,6 +46,8 @@
 #include "Engine/RenderStats.h"
 #include "Engine/ViewIdx.h"
 
+#include "Serialization/SerializationFwd.h"
+
 // Various useful plugin IDs, @see EffectInstance::getPluginID()
 #define PLUGINID_OFX_MERGE        "net.sf.openfx.MergePlugin"
 #define PLUGINID_OFX_TRACKERPM    "net.sf.openfx.TrackerPM"
@@ -2174,7 +2176,7 @@ public:
         return true;
     }
 
-    virtual void onKnobsAboutToBeLoaded(const NodeSerializationPtr& /*serialization*/) {}
+    virtual void onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& /*serialization*/) { }
 
     virtual void onKnobsLoaded() {}
 

@@ -34,24 +34,25 @@
 #include <QCoreApplication>
 
 #include "Engine/CLArgs.h"
-#include "Engine/Project.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/DiskCacheNode.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
+#include "Engine/KnobFile.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/Plugin.h"
 #include "Engine/ProcessHandler.h"
-#include "Engine/Settings.h"
-#include "Engine/DiskCacheNode.h"
-#include "Engine/KnobFile.h"
+#include "Engine/Project.h"
 #include "Engine/RotoStrokeItem.h"
+#include "Engine/Settings.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
 #include "Global/QtCompat.h"
 #include "Global/StrUtils.h"
+
+#include "Serialization/NodeSerialization.h"
 
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/Gui.h"
@@ -521,7 +522,7 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
         }
     }
 
-    NodeSerializationPtr serialization = args.getProperty<NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
+    Serialization::NodeSerializationPtr serialization = args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
     if ( !serialization && !isViewer ) {
         ///we make sure we can have a clean preview.
         node->computePreviewImage( getTimeLine()->currentFrame() );
@@ -783,17 +784,21 @@ GuiAppInstance::isShowingDialog() const
 }
 
 void
-GuiAppInstance::loadProjectGui(bool isAutosave, boost::archive::xml_iarchive & archive) const
+GuiAppInstance::loadProjectGui(bool isAutosave,
+                               const Serialization::ProjectGuiSerialization& serialization) const
 {
-    _imp->_gui->loadProjectGui(isAutosave, archive);
+    _imp->_gui->loadProjectGui(isAutosave, serialization);
 }
 
-void
-GuiAppInstance::saveProjectGui(boost::archive::xml_oarchive & archive)
+bool
+GuiAppInstance::saveProjectGui(Serialization::ProjectGuiSerialization* serialization)
 {
-    if (_imp->_gui) {
-        _imp->_gui->saveProjectGui(archive);
+    if (!_imp->_gui) {
+        return false;
     }
+    _imp->_gui->saveProjectGui(serialization);
+
+    return true;
 }
 
 void
@@ -1081,7 +1086,7 @@ GuiAppInstance::clearOverlayRedrawRequests()
 
 void
 GuiAppInstance::onGroupCreationFinished(const NodePtr& node,
-                                        const NodeSerializationPtr& serialization, bool autoConnect)
+                                        const Serialization::NodeSerializationPtr& serialization, bool autoConnect)
 {
     NodeGuiIPtr node_gui_i = node->getNodeGui();
     if (autoConnect && !serialization && node_gui_i) {

@@ -40,18 +40,18 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
-#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/Project.h"
-#include "Engine/ProjectSerialization.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewerInstance.h"
 
+#include "Serialization/KnobSerialization.h"
+#include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -111,10 +111,16 @@ ProjectPrivate::ProjectPrivate(Project* project)
 }
 
 bool
-ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
-                                         const QString& name,
-                                         const QString& path,
-                                         bool* mustSave)
+ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
+                                          const std::list<Format>& serializedAdditionalFormats,
+                                          const std::list<LayerRegistryEntry>& serializedLayers,
+                                          const std::list<Serialization::KnobSerialization>& projectSerializedValues,
+                                          SequenceTime currentTime,
+                                          const std::list<Serialization::NodeSerializationPtr>& serializedNodes,
+                                          bool recomputeFrameRangeFromReaders,
+                                          const QString& name,
+                                          const QString& path,
+                                          bool* mustSave)
 {
     /*1st OFF RESTORE THE PROJECT KNOBS*/
     bool ok;
@@ -122,7 +128,7 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
     {
         CreatingNodeTreeFlag_RAII creatingNodeTreeFlag( _publicInterface->getApp() );
 
-        projectCreationTime = QDateTime::fromMSecsSinceEpoch( obj.getCreationDate() );
+        projectCreationTime = QDateTime::fromMSecsSinceEpoch(creationDate);
 
         _publicInterface->getApp()->updateProjectLoadStatus( tr("Restoring project settings...") );
 
@@ -138,8 +144,7 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
             }
         }
 
-        const std::list<Format> & objAdditionalFormats = obj.getAdditionalFormats();
-        for (std::list<Format>::const_iterator it = objAdditionalFormats.begin(); it != objAdditionalFormats.end(); ++it) {
+        for (std::list<Format>::const_iterator it = serializedAdditionalFormats.begin(); it != serializedAdditionalFormats.end(); ++it) {
             QString formatStr = ProjectPrivate::generateStringFromFormat(*it);
             if ( !it->getName().empty() ) {
                 entries.push_back( ChoiceOption(it->getName(), formatStr.toStdString(), "") );
@@ -147,19 +152,17 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
                 entries.push_back( ChoiceOption( formatStr.toStdString() ) );
             }
         }
-        additionalFormats = objAdditionalFormats;
+        additionalFormats = serializedAdditionalFormats;
 
         formatKnob->populateChoices(entries);
         autoSetProjectFormat = false;
 
         // Layers must exist before any node knob (referencing a layer by ID) is restored.
         layers.reset(new LayerRegistry());
-        const std::list<LayerRegistryEntry>& objLayers = obj.getLayers();
-        for (std::list<LayerRegistryEntry>::const_iterator it = objLayers.begin(); it != objLayers.end(); ++it) {
+        for (std::list<LayerRegistryEntry>::const_iterator it = serializedLayers.begin(); it != serializedLayers.end(); ++it) {
             layers->add(it->desc, it->origin, 0);
         }
 
-        const std::list<KnobSerializationPtr> & projectSerializedValues = obj.getProjectKnobsValues();
         const std::vector<KnobIPtr> & projectKnobs = _publicInterface->getKnobs();
 
         _publicInterface->resetOCIOConfigKnobsForRestore();
@@ -167,36 +170,21 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
         /// 1) restore project's knobs.
         for (U32 i = 0; i < projectKnobs.size(); ++i) {
             ///try to find a serialized value for this knob
-            for (std::list<KnobSerializationPtr>::const_iterator it = projectSerializedValues.begin(); it != projectSerializedValues.end(); ++it) {
-                if ( (*it)->getName() == projectKnobs[i]->getName() ) {
-                    ///EDIT: Allow non persistent params to be loaded if we found a valid serialization for them
-                    //if ( projectKnobs[i]->getIsPersistent() ) {
-
+            for (std::list<Serialization::KnobSerialization>::const_iterator it = projectSerializedValues.begin(); it != projectSerializedValues.end(); ++it) {
+                if (NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) == projectKnobs[i]->getName()) {
+                    // Non persistent knobs are loaded too when the project saved a value for them.
+                    KnobIPtr serializedKnob = createDetachedKnobFromSerialization(*it);
                     KnobChoice* isChoice = dynamic_cast<KnobChoice*>( projectKnobs[i].get() );
                     if (isChoice) {
-                        const TypeExtraData* extraData = (*it)->getExtraData();
-                        const ChoiceExtraData* choiceData = dynamic_cast<const ChoiceExtraData*>(extraData);
-                        assert(choiceData);
-                        if (choiceData) {
-                            KnobChoice* choiceSerialized = dynamic_cast<KnobChoice*>( (*it)->getKnob().get() );
-                            assert(choiceSerialized);
-                            if (choiceSerialized) {
-                                std::string optionID = choiceData->_choiceString;
-                                // first, try to get the id the easy way ( see choiceMatch() )
-                                int id = isChoice->choiceRestorationId(choiceSerialized, optionID);
-//#pragma message WARN("TODO: choice id filters")
-                                //if (id < 0) {
-                                //    // no luck, try the filters
-                                //    filterKnobChoiceOptionCompat(getPluginID(), serialization.getPluginMajorVersion(), serialization.getPluginMinorVersion(), projectInfos.vMajor, projectInfos.vMinor, projectInfos.vRev, serializedName, &optionID);
-                                //    id = isChoice->choiceRestorationId(choiceSerialized, optionID);
-                                //}
-                                isChoice->choiceRestoration(choiceSerialized, optionID, id);
-                            }
+                        KnobChoice* choiceSerialized = dynamic_cast<KnobChoice*>(serializedKnob.get());
+                        if (choiceSerialized && it->choiceOptionID) {
+                            const std::string& optionID = *it->choiceOptionID;
+                            int id = isChoice->choiceRestorationId(choiceSerialized, optionID);
+                            isChoice->choiceRestoration(choiceSerialized, optionID, id);
                         }
-                    } else {
-                        projectKnobs[i]->clone( (*it)->getKnob() );
+                    } else if (serializedKnob) {
+                        projectKnobs[i]->clone(serializedKnob);
                     }
-                    //}
                     break;
                 }
             }
@@ -219,14 +207,13 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
         _publicInterface->refreshColorManagement(true);
 
         /// 2) restore the timeline
-        timeline->seekFrame(obj.getCurrentTime(), false, 0, eTimelineChangeReasonOtherSeek);
-
+        timeline->seekFrame(currentTime, false, 0, eTimelineChangeReasonOtherSeek);
 
         /// 3) Restore the nodes
 
         std::map<std::string, bool> processedModules;
-        ok = NodeCollectionSerialization::restoreFromSerialization(obj.getNodesSerialization().getNodesSerialization(),
-                                                                   _publicInterface->shared_from_this(), true, &processedModules);
+        ok = NodeCollection::restoreFromSerialization(serializedNodes,
+                                                      _publicInterface->shared_from_this(), true, &processedModules);
         for (std::map<std::string, bool>::iterator it = processedModules.begin(); it != processedModules.end(); ++it) {
             if (it->second) {
                 *mustSave = true;
@@ -237,7 +224,7 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
         NodesList allNodes;
         _publicInterface->getNodes_recursive(allNodes, false);
 
-        // restore the Knob links stored in the Knobs during NodeCollectionSerialization::restoreFromSerialization()
+        // restore the Knob links stored in the Knobs during NodeCollection::restoreFromSerialization()
         const std::map<std::string, std::string> oldNewScriptNamesMapping;
         for (NodesList::iterator n = allNodes.begin(); n != allNodes.end(); ++n) {
             // find all KnobIs in the node, restore links
@@ -270,7 +257,7 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
     lastAutoSave = time;
     _publicInterface->getApp()->setProjectWasCreatedWithLowerCaseIDs(false);
 
-    if (obj.getVersion() < PROJECT_SERIALIZATION_REMOVES_TIMELINE_BOUNDS) {
+    if (recomputeFrameRangeFromReaders) {
         _publicInterface->recomputeFrameRangeFromReaders();
     }
 
@@ -284,7 +271,7 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
         throw std::runtime_error( imploded.str() );
     }
     return ok;
-} // restoreFromSerialization
+} // restoreFromSerializedData
 
 bool
 ProjectPrivate::findFormat(int index,

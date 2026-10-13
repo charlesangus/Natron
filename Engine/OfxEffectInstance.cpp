@@ -67,7 +67,6 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/OfxClipInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/OfxMultiplaneChoice.h"
@@ -84,6 +83,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/TLSHolder.h"
 #endif
 
+#include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -404,7 +404,7 @@ void
 OfxEffectInstance::createOfxImageEffectInstance(OFX::Host::ImageEffect::ImageEffectPlugin* plugin,
                                                 OFX::Host::ImageEffect::Descriptor* desc,
                                                 ContextEnum context,
-                                                const NodeSerialization* serialization,
+                                                const Serialization::NodeSerialization* serialization,
                                                 const CreateNodeArgs& args)
 {
     /*Replicate of the code in OFX::Host::ImageEffect::ImageEffectPlugin::createInstance.
@@ -554,8 +554,8 @@ OfxEffectInstance::createOfxImageEffectInstance(OFX::Host::ImageEffect::ImageEff
                 }
             }
             ///before calling the createInstanceAction, load values
-            if ( serialization && !serialization->isNull() ) {
-                getNode()->loadKnobs(*serialization);
+            if (serialization) {
+                getNode()->fromSerialization(*serialization);
             }
 
             getNode()->setValuesFromSerialization(args);
@@ -614,8 +614,7 @@ OfxEffectInstance::createOfxImageEffectInstance(OFX::Host::ImageEffect::ImageEff
             }
         }
 
-
-        if ( isReader() && serialization && !serialization->isNull() ) {
+        if (isReader() && serialization) {
             getNode()->refreshCreatedViews(true /*silent*/);
         }
     } catch (const std::exception & e) {

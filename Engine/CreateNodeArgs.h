@@ -34,6 +34,8 @@
 
 #include "Engine/EngineFwd.h"
 
+#include "Serialization/SerializationFwd.h"
+
 /**
  * @brief x1 std::string property indicating the ID of the plug-in instance to create
  * Default value - Empty
@@ -79,7 +81,7 @@
 #define kCreateNodeArgsPropParamValue "CreateNodeArgsPropParamValue"
 
 /**
- * @brief optional x1 std::shared_ptr<NodeSerialization> A pointer to a node serialization object.
+ * @brief optional x1 Serialization::NodeSerializationPtr A pointer to a node serialization object.
  * Default value - NULL
  * If non null, Natron will load the node state from this object.
  **/
@@ -299,7 +301,7 @@ class CreateNodeArgs
         createProperty<double>(kCreateNodeArgsPropNodeInitialPosition, std::numeric_limits<int>::min(), std::numeric_limits<int>::min());
         createProperty<std::string>(kCreateNodeArgsPropNodeInitialName, std::string());
         createProperty<std::string>(kCreateNodeArgsPropNodeInitialParamValues, std::vector<std::string>());
-        createProperty<std::shared_ptr<NodeSerialization> >(kCreateNodeArgsPropNodeSerialization, std::shared_ptr<NodeSerialization>());
+        createProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization, Serialization::NodeSerializationPtr());
         createProperty<bool>(kCreateNodeArgsPropDoNotLoadPyPlugFromScript, false);
         createProperty<bool>(kCreateNodeArgsPropOutOfProject, false);
         createProperty<bool>(kCreateNodeArgsPropNoNodeGUI, false);

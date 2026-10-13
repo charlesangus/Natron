@@ -86,19 +86,8 @@ public:
 
     virtual void clone(const RotoItem*  other) OVERRIDE;
 
-    /**
-     * @brief Must be implemented by the derived class to save the state into
-     * the serialization object.
-     * Derived implementations must call the parent class implementation.
-     **/
-    virtual void save(RotoItemSerialization* obj) const OVERRIDE;
-
-    /**
-     * @brief Must be implemented by the derived class to load the state from
-     * the serialization object.
-     * Derived implementations must call the parent class implementation.
-     **/
-    virtual void load(const RotoItemSerialization & obj) OVERRIDE;
+    void toSerialization(Serialization::RotoDrawableItemSerialization* serialization) const;
+    void fromSerialization(const Serialization::RotoDrawableItemSerialization& serialization);
 
     /**
      * @brief When deactivated the spline will not be taken into account when rendering, neither will it be visible on the viewer.
@@ -246,6 +235,16 @@ private:
 
 
     RotoDrawableItem* findPreviousInHierarchy();
+
+    void serializeKnobs(std::list<Serialization::KnobSerialization>* knobs) const;
+
+    /**
+     * @brief Applies saved knobs and overlay color, then pushes the knob values onto the
+     * item's internal nodes.
+     **/
+    void restoreSavedKnobs(const std::list<Serialization::KnobSerialization>& knobs,
+                           const double overlayColor[4]);
+
     std::unique_ptr<RotoDrawableItemPrivate> _imp;
 };
 

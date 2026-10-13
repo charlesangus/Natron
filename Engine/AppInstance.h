@@ -44,10 +44,34 @@
 #include "Engine/TimeLineKeyFrames.h"
 #include "Engine/EngineFwd.h"
 
+#include "Serialization/SerializationFwd.h"
+
 NATRON_NAMESPACE_ENTER
 
 struct AppInstancePrivate;
 
+/**
+ * @brief The Natron build that saved the project being loaded, -1 and empty strings for what
+ * the file does not say.
+ **/
+class ProjectBeingLoadedInfo {
+public:
+    int vMajor, vMinor, vRev;
+    std::string gitBranch, gitCommit;
+    std::string osStr;
+    int bits;
+
+    ProjectBeingLoadedInfo()
+        : vMajor(-1)
+        , vMinor(-1)
+        , vRev(-1)
+        , gitBranch()
+        , gitCommit()
+        , osStr()
+        , bits(-1)
+    {
+    }
+};
 
 class FlagSetter
 {
@@ -214,12 +238,22 @@ public:
         return eStandardButtonYes;
     }
 
-    virtual void loadProjectGui(bool /*isAutosave*/, boost::archive::xml_iarchive & /*archive*/) const
+    /**
+     * @brief Restores the GUI section of a project file once the project's nodes exist. The
+     * project only reads that section for an app that is not in the background.
+     **/
+    virtual void loadProjectGui(bool /*isAutosave*/,
+                                const Serialization::ProjectGuiSerialization& /*serialization*/) const
     {
     }
 
-    virtual void saveProjectGui(boost::archive::xml_oarchive & /*archive*/)
+    /**
+     * @brief Fills serialization with the GUI section of a project file. Returns false when the
+     * app has no GUI to save, in which case the project file has no GUI section.
+     **/
+    virtual bool saveProjectGui(Serialization::ProjectGuiSerialization* /*serialization*/)
     {
+        return false;
     }
 
     virtual void setupViewersForViews(const std::vector<std::string>& /*viewNames*/)
@@ -447,8 +481,7 @@ Q_SIGNALS:
     void pluginsPopulated();
 
 protected:
-
-    virtual void onGroupCreationFinished(const NodePtr& node, const NodeSerializationPtr& serialization, bool autoConnect);
+    virtual void onGroupCreationFinished(const NodePtr& node, const Serialization::NodeSerializationPtr& serialization, bool autoConnect);
     virtual void createNodeGui(const NodePtr& /*node*/,
                                const NodePtr& /*parentmultiinstance*/,
                                const CreateNodeArgs& /*args*/)

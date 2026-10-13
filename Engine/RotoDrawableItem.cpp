@@ -36,13 +36,14 @@
 #include <QLineF>
 #include <QDebug>
 
+#include "Serialization/KnobSerialization.h"
+
 #include "Engine/RotoContextPrivate.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/BezierCP.h"
-#include "Engine/CreateNodeArgs.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/CoonsRegularization.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/FeatherPoint.h"
 #include "Engine/Format.h"
 #include "Engine/Hash64.h"
@@ -50,12 +51,10 @@
 #include "Engine/ImageParams.h"
 #include "Engine/Interpolation.h"
 #include "Engine/Project.h"
-#include "Engine/KnobSerialization.h"
 #include "Engine/RenderStats.h"
-#include "Engine/RotoDrawableItemSerialization.h"
+#include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
-#include "Engine/RotoContext.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
@@ -880,51 +879,49 @@ RotoDrawableItem::clone(const RotoItem* other)
 }
 
 static void
-serializeRotoKnob(const KnobIPtr & knob,
-                  KnobSerialization* serialization)
+serializeRotoKnob(const KnobIPtr& knob,
+                  Serialization::KnobSerialization* serialization)
 {
     std::pair<int, KnobIPtr> master = knob->getMaster(0);
 
     if (master.second) {
-        serialization->initialize(master.second);
+        // The values are those of the knob this one is slaved to, but the expressions remain
+        // this knob's own.
+        master.second->toSerialization(serialization);
+        const int dimensionCount = std::min(knob->getDimension(), (int)serialization->dimensions.size());
+        for (int i = 0; i < dimensionCount; ++i) {
+            serialization->dimensions[i].expression = knob->getExpression(i);
+            serialization->dimensions[i].expressionHasReturnVariable = knob->isExpressionUsingRetVariable(i);
+        }
     } else {
-        serialization->initialize(knob);
+        knob->toSerialization(serialization);
     }
 }
 
 void
-RotoDrawableItem::save(RotoItemSerialization *obj) const
+RotoDrawableItem::serializeKnobs(std::list<Serialization::KnobSerialization>* knobs) const
 {
-    RotoDrawableItemSerialization* s = dynamic_cast<RotoDrawableItemSerialization*>(obj);
-
-    assert(s);
-    if (!s) {
-        throw std::logic_error("RotoDrawableItem::save()");
-    }
     for (std::list<KnobIPtr>::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
-        KnobSerializationPtr k = std::make_shared<KnobSerialization>(*it);
-        serializeRotoKnob( *it, k.get() );
-        s->_knobs.push_back(k);
+        knobs->push_back(Serialization::KnobSerialization());
+        serializeRotoKnob(*it, &knobs->back());
     }
-    {
-        QMutexLocker l(&itemMutex);
-        std::memcpy(s->_overlayColor, _imp->overlayColor, sizeof(double) * 4);
-    }
-    RotoItem::save(obj);
 }
 
 void
-RotoDrawableItem::load(const RotoItemSerialization &obj)
+RotoDrawableItem::restoreSavedKnobs(const std::list<Serialization::KnobSerialization>& knobs,
+                                    const double overlayColor[4])
 {
-    RotoItem::load(obj);
-    const RotoDrawableItemSerialization & s = dynamic_cast<const RotoDrawableItemSerialization &>(obj);
-
-    for (std::list<KnobSerializationPtr>::const_iterator it = s._knobs.begin(); it != s._knobs.end(); ++it) {
+    for (std::list<Serialization::KnobSerialization>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        const std::string serializedName = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name);
         for (std::list<KnobIPtr>::const_iterator it2 = _imp->knobs.begin(); it2 != _imp->knobs.end(); ++it2) {
-            if ( (*it2)->getName() == (*it)->getName() ) {
+            if ((*it2)->getName() == serializedName) {
+                KnobIPtr serializedKnob = createDetachedKnobFromSerialization(*it);
+                if (!serializedKnob) {
+                    break;
+                }
                 KnobSignalSlotHandlerPtr s = (*it2)->getSignalSlotHandler();
                 s->blockSignals(true);
-                (*it2)->clone( (*it)->getKnob().get() );
+                (*it2)->clone(serializedKnob.get());
                 s->blockSignals(false);
                 break;
             }
@@ -932,7 +929,7 @@ RotoDrawableItem::load(const RotoItemSerialization &obj)
     }
     {
         QMutexLocker l(&itemMutex);
-        std::memcpy(_imp->overlayColor, s._overlayColor, sizeof(double) * 4);
+        std::memcpy(_imp->overlayColor, overlayColor, sizeof(double) * 4);
     }
 
     RotoStrokeType type;
@@ -1021,7 +1018,7 @@ RotoDrawableItem::load(const RotoItemSerialization &obj)
             isDbl->clone( _imp->effectStrength.get() );
         }
     }
-} // RotoDrawableItem::load
+} // RotoDrawableItem::restoreSavedKnobs
 
 bool
 RotoDrawableItem::isActivated(double time) const

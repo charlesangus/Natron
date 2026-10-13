@@ -30,13 +30,14 @@
 
 #include <gtest/gtest.h>
 
-#include "Gui/NodeGuiSerialization.h"
+#include "Serialization/BoostXml/ProjectGuiXml.h"
+#include "Serialization/ProjectGuiSerialization.h"
 
 NATRON_NAMESPACE_USING
 
 namespace {
 
-// The NodeGuiSerialization layout of the version before the user colour, which stored a
+// The node GUI layout of the version before the user colour, which stored a
 // single node colour and nothing to tell a user's pick from the category default.
 struct LegacyNodeGuiSerialization {
     std::string nodeName = "Blur1";
@@ -71,15 +72,15 @@ struct LegacyNodeGuiSerialization {
     }
 };
 
-NodeGuiSerialization
-roundTrip(const NodeGuiSerialization& original)
+Serialization::NodeGuiSerialization
+roundTrip(const Serialization::NodeGuiSerialization& original)
 {
     std::stringstream stream;
     {
         boost::archive::xml_oarchive oArchive(stream);
         oArchive << boost::serialization::make_nvp("NodeGui", original);
     }
-    NodeGuiSerialization restored;
+    Serialization::NodeGuiSerialization restored;
     {
         boost::archive::xml_iarchive iArchive(stream);
         iArchive >> boost::serialization::make_nvp("NodeGui", restored);
@@ -88,7 +89,7 @@ roundTrip(const NodeGuiSerialization& original)
     return restored;
 }
 
-NodeGuiSerialization
+Serialization::NodeGuiSerialization
 loadLegacy(const LegacyNodeGuiSerialization& legacy)
 {
     std::stringstream stream;
@@ -96,7 +97,7 @@ loadLegacy(const LegacyNodeGuiSerialization& legacy)
         boost::archive::xml_oarchive oArchive(stream);
         oArchive << boost::serialization::make_nvp("NodeGui", legacy);
     }
-    NodeGuiSerialization restored;
+    Serialization::NodeGuiSerialization restored;
     {
         boost::archive::xml_iarchive iArchive(stream);
         iArchive >> boost::serialization::make_nvp("NodeGui", restored);
@@ -107,18 +108,21 @@ loadLegacy(const LegacyNodeGuiSerialization& legacy)
 
 } // namespace
 
-BOOST_CLASS_VERSION(LegacyNodeGuiSerialization, NODE_GUI_INTRODUCES_CHILDREN)
+BOOST_CLASS_VERSION(LegacyNodeGuiSerialization, NATRON_SERIALIZATION_NODE_GUI_INTRODUCES_CHILDREN)
 
 TEST(NodeGuiUserColorSerialization, RoundTripsAUserColor)
 {
-    NodeGuiSerialization original;
-    original.setUserColor(0.25f, 0.5f, 0.75f);
+    Serialization::NodeGuiSerialization original;
+    original.hasUserColor = true;
+    original.userColorR = 0.25f;
+    original.userColorG = 0.5f;
+    original.userColorB = 0.75f;
 
-    NodeGuiSerialization restored = roundTrip(original);
+    Serialization::NodeGuiSerialization restored = roundTrip(original);
 
     const float category[3] = { 0.f, 0.f, 0.f };
     float r = -1.f, g = -1.f, b = -1.f;
-    ASSERT_TRUE(restored.resolveUserColor(category, NULL, &r, &g, &b));
+    ASSERT_TRUE(Serialization::resolveNodeGuiUserColor(restored, category, NULL, &r, &g, &b));
     EXPECT_FLOAT_EQ(0.25f, r);
     EXPECT_FLOAT_EQ(0.5f, g);
     EXPECT_FLOAT_EQ(0.75f, b);
@@ -126,29 +130,27 @@ TEST(NodeGuiUserColorSerialization, RoundTripsAUserColor)
 
 TEST(NodeGuiUserColorSerialization, ACurrentArchiveWithoutAUserColorNeverGuessesOne)
 {
-    NodeGuiSerialization restored = roundTrip(NodeGuiSerialization());
+    Serialization::NodeGuiSerialization restored = roundTrip(Serialization::NodeGuiSerialization());
 
     const float category[3] = { 0.9f, 0.9f, 0.9f };
     float r, g, b;
-    EXPECT_FALSE(restored.resolveUserColor(category, NULL, &r, &g, &b));
+    EXPECT_FALSE(Serialization::resolveNodeGuiUserColor(restored, category, NULL, &r, &g, &b));
 }
 
 TEST(NodeGuiUserColorSerialization, ALegacyColorFarFromTheCategoryColorSeedsAUserColor)
 {
     const LegacyNodeGuiSerialization legacy;
-    NodeGuiSerialization restored = loadLegacy(legacy);
+    Serialization::NodeGuiSerialization restored = loadLegacy(legacy);
 
-    ASSERT_TRUE(restored.colorWasFound());
-    float storedR, storedG, storedB;
-    restored.getColor(&storedR, &storedG, &storedB);
-    EXPECT_FLOAT_EQ(legacy.r, storedR);
-    EXPECT_FLOAT_EQ(legacy.g, storedG);
-    EXPECT_FLOAT_EQ(legacy.b, storedB);
+    ASSERT_TRUE(restored.colorWasFound);
+    EXPECT_FLOAT_EQ(legacy.r, restored.colorR);
+    EXPECT_FLOAT_EQ(legacy.g, restored.colorG);
+    EXPECT_FLOAT_EQ(legacy.b, restored.colorB);
 
     const float category[3] = { 0.8f, 0.5f, 0.2f };
     const float legacyCategory[3] = { 0.1f, 0.1f, 0.1f };
     float r = -1.f, g = -1.f, b = -1.f;
-    ASSERT_TRUE(restored.resolveUserColor(category, legacyCategory, &r, &g, &b));
+    ASSERT_TRUE(Serialization::resolveNodeGuiUserColor(restored, category, legacyCategory, &r, &g, &b));
     EXPECT_FLOAT_EQ(legacy.r, r);
     EXPECT_FLOAT_EQ(legacy.g, g);
     EXPECT_FLOAT_EQ(legacy.b, b);
@@ -157,11 +159,11 @@ TEST(NodeGuiUserColorSerialization, ALegacyColorFarFromTheCategoryColorSeedsAUse
 TEST(NodeGuiUserColorSerialization, ALegacyColorNearTheCategoryColorSeedsNoUserColor)
 {
     const LegacyNodeGuiSerialization legacy;
-    NodeGuiSerialization restored = loadLegacy(legacy);
+    Serialization::NodeGuiSerialization restored = loadLegacy(legacy);
 
     const float category[3] = { 0.82f, 0.48f, 0.33f };
     float r, g, b;
-    EXPECT_FALSE(restored.resolveUserColor(category, NULL, &r, &g, &b));
+    EXPECT_FALSE(Serialization::resolveNodeGuiUserColor(restored, category, NULL, &r, &g, &b));
 }
 
 // A pre-user-colour archive stored whatever the older grouping ladder resolved to, which can
@@ -170,20 +172,20 @@ TEST(NodeGuiUserColorSerialization, ALegacyColorNearTheCategoryColorSeedsNoUserC
 TEST(NodeGuiUserColorSerialization, ALegacyColorNearTheOldLadderColorSeedsNoUserColor)
 {
     const LegacyNodeGuiSerialization legacy;
-    NodeGuiSerialization restored = loadLegacy(legacy);
+    Serialization::NodeGuiSerialization restored = loadLegacy(legacy);
 
     const float category[3] = { 0.1f, 0.1f, 0.4f };
     const float legacyCategory[3] = { 0.78f, 0.52f, 0.28f };
     float r, g, b;
-    EXPECT_FALSE(restored.resolveUserColor(category, legacyCategory, &r, &g, &b));
+    EXPECT_FALSE(Serialization::resolveNodeGuiUserColor(restored, category, legacyCategory, &r, &g, &b));
 }
 
 // Without a category colour there is no default to compare against, so nothing is guessed.
 TEST(NodeGuiUserColorSerialization, ALegacyColorWithNoKnownCategoryColorSeedsNoUserColor)
 {
     const LegacyNodeGuiSerialization legacy;
-    NodeGuiSerialization restored = loadLegacy(legacy);
+    Serialization::NodeGuiSerialization restored = loadLegacy(legacy);
 
     float r, g, b;
-    EXPECT_FALSE(restored.resolveUserColor(NULL, NULL, &r, &g, &b));
+    EXPECT_FALSE(Serialization::resolveNodeGuiUserColor(restored, NULL, NULL, &r, &g, &b));
 }

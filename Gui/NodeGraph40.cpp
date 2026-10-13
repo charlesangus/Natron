@@ -47,13 +47,14 @@ GCC_DIAG_ON(unused-parameter)
 
 #include <QApplication>
 #include <QClipboard>
+#include <QDebug>
 #include <QMimeData>
+#include <QThread>
 
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/NodeSerialization.h"
-#include "Engine/RotoLayer.h"
 #include "Engine/Project.h"
+#include "Engine/RotoLayer.h"
 #include "Engine/ViewerInstance.h"
 
 #include "Gui/BackdropGui.h"
@@ -63,9 +64,13 @@ GCC_DIAG_ON(unused-parameter)
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/NodeClipBoard.h"
 #include "Gui/NodeGui.h"
-#include "Gui/NodeGuiSerialization.h"
 
 #include "Global/QtCompat.h"
+
+#include "Serialization/BoostXml/NodeXml.h"
+#include "Serialization/BoostXml/ProjectGuiXml.h"
+#include "Serialization/NodeSerialization.h"
+#include "Serialization/ProjectGuiSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 void
@@ -300,21 +305,23 @@ NodeGraph::cloneSelectedNodes(const QPointF& scenePos)
 
     QPointF offset( scenePos.x() - ( (xmax + xmin) / 2. ), scenePos.y() -  ( (ymax + ymin) / 2. ) );
     std::list<std::pair<std::string, NodeGuiPtr> > newNodes;
-    std::list<NodeSerializationPtr> serializations;
+    std::list<Serialization::NodeSerializationPtr> serializations;
     std::list<NodeGuiPtr> newNodesList;
     std::map<std::string, std::string> oldNewScriptNamesMapping;
     for (NodesGuiList::iterator it = nodesToCopy.begin(); it != nodesToCopy.end(); ++it) {
-        NodeSerializationPtr  internalSerialization( new NodeSerialization( (*it)->getNode() ) );
-        NodeGuiSerializationPtr guiSerialization = std::make_shared<NodeGuiSerialization>();
-        (*it)->serialize( guiSerialization.get() );
-        NodeGuiPtr clone = _imp->pasteNode(internalSerialization, guiSerialization, offset,
+        NodePtr sourceNode = (*it)->getNode();
+        Serialization::NodeSerializationPtr internalSerialization = std::make_shared<Serialization::NodeSerialization>();
+        sourceNode->toSerialization(internalSerialization.get());
+        Serialization::NodeGuiSerializationPtr guiSerialization = std::make_shared<Serialization::NodeGuiSerialization>();
+        (*it)->toSerialization(guiSerialization.get());
+        NodeGuiPtr clone = _imp->pasteNode(internalSerialization, sourceNode, guiSerialization, offset,
                                            _imp->group.lock(), std::string(), true, &oldNewScriptNamesMapping);
 
-        newNodes.push_back( std::make_pair(internalSerialization->getNodeScriptName(), clone) );
+        newNodes.push_back(std::make_pair(internalSerialization->scriptName, clone));
         newNodesList.push_back(clone);
         serializations.push_back(internalSerialization);
 
-        oldNewScriptNamesMapping[internalSerialization->getNodeScriptName()] = clone->getNode()->getScriptName();
+        oldNewScriptNamesMapping[internalSerialization->scriptName] = clone->getNode()->getScriptName();
     }
 
 
@@ -327,7 +334,7 @@ NodeGraph::cloneSelectedNodes(const QPointF& scenePos)
     getGui()->getApp()->getProject()->getActiveNodesExpandGroups(&allNodes);
 
     //Restore links once all children are created for alias knobs/expressions
-    std::list<NodeSerializationPtr>::iterator itS = serializations.begin();
+    std::list<Serialization::NodeSerializationPtr>::iterator itS = serializations.begin();
     for (std::list<NodeGuiPtr> ::iterator it = newNodesList.begin(); it != newNodesList.end(); ++it, ++itS) {
         (*it)->getNode()->storeKnobsLinks(**itS, oldNewScriptNamesMapping);
         (*it)->getNode()->restoreKnobsLinks(allNodes, oldNewScriptNamesMapping, true); // clone should never fail

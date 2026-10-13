@@ -42,6 +42,8 @@
 
 #include "Gui/GuiFwd.h"
 
+#include "Serialization/SerializationFwd.h"
+
 NATRON_NAMESPACE_ENTER
 
 /**
@@ -324,10 +326,9 @@ class LoadNodePresetsCommand
     Q_DECLARE_TR_FUNCTIONS(LoadNodePresetsCommand)
 
 public:
-
-    LoadNodePresetsCommand(const NodeGuiPtr & node,
-                           const std::list<NodeSerializationPtr>& serialization,
-                           QUndoCommand *parent = 0);
+    LoadNodePresetsCommand(const NodeGuiPtr& node,
+                           const std::list<Serialization::NodeSerializationPtr>& serialization,
+                           QUndoCommand* parent = 0);
 
     virtual ~LoadNodePresetsCommand();
     virtual void undo();
@@ -342,7 +343,7 @@ private:
     bool _isUndone;
     NodeGuiWPtr _node;
     std::list<NodeWPtr> _oldChildren, _newChildren; //< children if multi-instance
-    std::list<NodeSerializationPtr> _newSerializations, _oldSerialization;
+    std::list<Serialization::NodeSerializationPtr> _newSerializations, _oldSerialization;
 };
 
 class RenameNodeUndoRedoCommand

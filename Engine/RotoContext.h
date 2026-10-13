@@ -83,7 +83,6 @@ public:
  * all the splines data structures and their state.
  * This class is MT-safe.
  **/
-class RotoContextSerialization;
 struct RotoContextPrivate;
 
 class RotoContext
@@ -236,12 +235,12 @@ public:
      **/
     U64 getAge();
 
-    ///Serialization
-    void save(RotoContextSerialization* obj) const;
+    void toSerialization(Serialization::RotoContextSerialization* serialization) const;
 
-    ///Deserialization
-    void load(const RotoContextSerialization & obj);
-
+    /**
+     * @brief Must be called on a context that holds nothing but its base layer.
+     **/
+    void fromSerialization(const Serialization::RotoContextSerialization& serialization);
 
     /**
      * @brief This must be called by the GUI whenever an item is selected. This is recursive for layers.
@@ -463,6 +462,8 @@ private:
 
     void selectInternal(const RotoItemPtr& b, bool slaveKnobs = true);
     void deselectInternal(RotoItemPtr b);
+
+    void restoreSavedSelection(const std::list<std::string>& selectedItemNames);
 
     void removeItemRecursively(const RotoItemPtr& item, RotoItem::SelectionReasonEnum reason);
 

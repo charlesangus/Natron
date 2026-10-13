@@ -39,7 +39,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/Node.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/Project.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/TimeLine.h"
@@ -53,6 +52,8 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/Edge.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/MultiInstancePanel.h"
+
+#include "Serialization/NodeSerialization.h"
 
 #define MINIMUM_VERTICAL_SPACE_BETWEEN_NODES 10
 
@@ -1122,9 +1123,9 @@ EnableNodesCommand::redo()
     }
 }
 
-LoadNodePresetsCommand::LoadNodePresetsCommand(const NodeGuiPtr & node,
-                                               const std::list<NodeSerializationPtr>& serialization,
-                                               QUndoCommand *parent)
+LoadNodePresetsCommand::LoadNodePresetsCommand(const NodeGuiPtr& node,
+                                               const std::list<Serialization::NodeSerializationPtr>& serialization,
+                                               QUndoCommand* parent)
     : QUndoCommand(parent)
     , _firstRedoCalled(false)
     , _isUndone(false)
@@ -1155,7 +1156,7 @@ LoadNodePresetsCommand::undo()
     NodeGuiPtr node = _node.lock();
     NodePtr internalNode = node->getNode();
     MultiInstancePanelPtr panel = node->getMultiInstancePanel();
-    internalNode->loadKnobs(*_oldSerialization.front(), true);
+    internalNode->fromSerialization(*_oldSerialization.front(), true);
     if (panel) {
         std::list<NodePtr> newChildren, oldChildren;
         getListAsShared(_newChildren, newChildren);
@@ -1163,6 +1164,14 @@ LoadNodePresetsCommand::undo()
         panel->removeInstances(newChildren);
         panel->addInstances(oldChildren);
     }
+
+    NodesList allNodes;
+    internalNode->getApp()->getProject()->getActiveNodesExpandGroups(&allNodes);
+
+    std::map<std::string, std::string> oldNewScriptNames;
+    internalNode->storeKnobsLinks(*_oldSerialization.front(), oldNewScriptNames);
+    internalNode->restoreKnobsLinks(allNodes, oldNewScriptNames, true); // may not fail
+
     internalNode->getEffectInstance()->incrHashAndEvaluate(true, true);
     internalNode->getApp()->triggerAutoSave();
 }
@@ -1188,11 +1197,11 @@ LoadNodePresetsCommand::redo()
 
         int k = 0;
 
-        for (std::list<NodeSerializationPtr>::const_iterator it = _newSerializations.begin();
+        for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = _newSerializations.begin();
              it != _newSerializations.end(); ++it, ++k) {
             if (k > 0) {  /// this is a multi-instance child, create it
                 NodePtr newNode = panel->createNewInstance(false);
-                newNode->loadKnobs(**it);
+                newNode->fromSerialization(**it);
                 std::list<SequenceTime> keys;
                 newNode->getAllKnobsKeyframes(&keys);
                 newNode->getApp()->addMultipleKeyframeIndicatorsAdded(keys, true);
@@ -1201,7 +1210,7 @@ LoadNodePresetsCommand::redo()
         }
     }
 
-    internalNode->loadKnobs(*_newSerializations.front(), true);
+    internalNode->fromSerialization(*_newSerializations.front(), true);
     if (panel) {
         std::list<NodePtr> oldChildren, newChildren;
         getListAsShared(_oldChildren, oldChildren);

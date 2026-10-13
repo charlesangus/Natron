@@ -59,7 +59,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/Plugin.h"
@@ -77,7 +76,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/BackdropGui.h"
 #include "Gui/Button.h"
 #include "Gui/CurveEditor.h"
-#include "Gui/HostOverlay.h"
 #include "Gui/DockablePanel.h"
 #include "Gui/DopeSheetEditor.h"
 #include "Gui/Edge.h"
@@ -85,27 +83,29 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiDefines.h"
+#include "Gui/HostOverlay.h"
 #include "Gui/KnobGui.h"
 #include "Gui/KnobGuiString.h"
-#include "Gui/QtEnumConvert.h"
 #include "Gui/Label.h"
 #include "Gui/LineEdit.h"
-#include "Gui/MultiInstancePanel.h"
 #include "Gui/Menu.h"
+#include "Gui/MultiInstancePanel.h"
 #include "Gui/NodeClipBoard.h"
 #include "Gui/NodeGraph.h"
-#include "Gui/NodeGraphUndoRedo.h"
-#include "Gui/NodeGuiSerialization.h"
-#include "Gui/NodeGraphTextItem.h"
 #include "Gui/NodeGraphRectItem.h"
+#include "Gui/NodeGraphTextItem.h"
+#include "Gui/NodeGraphUndoRedo.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/PreviewThread.h"
 #include "Gui/PythonPanels.h"
-#include "Gui/SequenceFileDialog.h"
+#include "Gui/QtEnumConvert.h"
 #include "Gui/SequenceFileDialog.h"
 #include "Gui/SpinBox.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
+
+#include "Serialization/NodeSerialization.h"
+#include "Serialization/ProjectGuiSerialization.h"
 
 #define NATRON_STATE_INDICATOR_OFFSET 5
 
@@ -2436,16 +2436,11 @@ NodeGui::getKnobs() const
 }
 
 void
-NodeGui::serialize(NodeGuiSerialization* serializationObject) const
-{
-    serializationObject->initialize(this);
-}
-
-void
-NodeGui::serializeInternal(std::list<NodeSerializationPtr>& internalSerialization) const
+NodeGui::serializeInternal(std::list<Serialization::NodeSerializationPtr>& internalSerialization) const
 {
     NodePtr node = getNode();
-    NodeSerializationPtr thisSerialization( new NodeSerialization(node, false) );
+    Serialization::NodeSerializationPtr thisSerialization = std::make_shared<Serialization::NodeSerialization>();
+    node->toSerialization(thisSerialization.get(), false);
 
     internalSerialization.push_back(thisSerialization);
 
@@ -2458,7 +2453,11 @@ NodeGui::serializeInternal(std::list<NodeSerializationPtr>& internalSerializatio
         const std::list<std::pair<NodeWPtr, bool> >& instances = panel->getInstances();
         for (std::list<std::pair<NodeWPtr, bool> >::const_iterator it = instances.begin();
              it != instances.end(); ++it) {
-            NodeSerializationPtr childSerialization( new NodeSerialization(it->first.lock(), false) );
+            Serialization::NodeSerializationPtr childSerialization = std::make_shared<Serialization::NodeSerialization>();
+            NodePtr instance = it->first.lock();
+            if (instance) {
+                instance->toSerialization(childSerialization.get(), false);
+            }
             internalSerialization.push_back(childSerialization);
         }
     }
@@ -2466,36 +2465,11 @@ NodeGui::serializeInternal(std::list<NodeSerializationPtr>& internalSerializatio
 
 void
 NodeGui::restoreInternal(const NodeGuiPtr& thisShared,
-                         const std::list<NodeSerializationPtr>& internalSerialization)
+                         const std::list<Serialization::NodeSerializationPtr>& internalSerialization)
 {
     assert(internalSerialization.size() >= 1);
 
     getSettingPanel()->pushUndoCommand( new LoadNodePresetsCommand(thisShared, internalSerialization) );
-}
-
-void
-NodeGui::copyFrom(const NodeGuiSerialization & obj)
-{
-    float r, g, b;
-    double overlayR, overlayB, overlayG;
-    if (colorIsBody()) {
-        obj.getColor(&r, &g, &b);
-        setCurrentColor(QColor::fromRgbF(r, g, b));
-    } else {
-        restoreCategoryAndUserColor(obj);
-    }
-    if (obj.getOverlayColor(&overlayR, &overlayG, &overlayB)) {
-        setOverlayColor( QColor::fromRgbF(overlayR, overlayB, overlayG) );
-    }
-    setPos_mt_safe( QPointF( obj.getX(), obj.getY() ) );
-    NodePtr node = getNode();
-    assert(node);
-    if ( node && ( node->isPreviewEnabled() != obj.isPreviewEnabled() ) ){
-        togglePreview();
-    }
-    double w, h;
-    obj.getSize(&w, &h);
-    resize(w, h);
 }
 
 QUndoStackPtr
@@ -2938,17 +2912,19 @@ NodeGui::destroyGui()
     if (internalNode) {
         ///remove the node from the clipboard if it is
         NodeClipBoard &cb = appPTR->getNodeClipBoard();
-        for (std::list<NodeSerializationPtr>::iterator it = cb.nodes.begin();
-             it != cb.nodes.end(); ++it) {
-            if ( (*it)->getNode() == internalNode ) {
-                cb.nodes.erase(it);
+        std::list<Serialization::NodeSerializationPtr>::iterator itNode = cb.nodes.begin();
+        for (std::list<NodePtr>::iterator it = cb.sourceNodes.begin();
+             it != cb.sourceNodes.end() && itNode != cb.nodes.end(); ++it, ++itNode) {
+            if (*it == internalNode) {
+                cb.nodes.erase(itNode);
+                cb.sourceNodes.erase(it);
                 break;
             }
         }
 
-        for (std::list<NodeGuiSerializationPtr>::iterator it = cb.nodesUI.begin();
+        for (std::list<Serialization::NodeGuiSerializationPtr>::iterator it = cb.nodesUI.begin();
              it != cb.nodesUI.end(); ++it) {
-            if ( (*it)->getFullySpecifiedName() == internalNode->getFullyQualifiedName() ) {
+            if ((*it)->nodeName == internalNode->getFullyQualifiedName()) {
                 cb.nodesUI.erase(it);
                 break;
             }
@@ -3544,7 +3520,7 @@ NodeGui::getUserColor(QColor* color) const
 }
 
 void
-NodeGui::restoreCategoryAndUserColor(const NodeGuiSerialization& obj)
+NodeGui::restoreCategoryAndUserColor(const Serialization::NodeGuiSerialization& serialization)
 {
     NodePtr node = getNode();
     QColor categoryColor;
@@ -3564,9 +3540,10 @@ NodeGui::restoreCategoryAndUserColor(const NodeGuiSerialization& obj)
     }
 
     float r, g, b;
-    if (obj.resolveUserColor(hasCategoryColor ? category : NULL,
-                             hasLegacyCategoryColor ? legacyCategory : NULL,
-                             &r, &g, &b)) {
+    if (Serialization::resolveNodeGuiUserColor(serialization,
+                                               hasCategoryColor ? category : NULL,
+                                               hasLegacyCategoryColor ? legacyCategory : NULL,
+                                               &r, &g, &b)) {
         setUserColor(QColor::fromRgbF(r, g, b));
     } else {
         clearUserColor();

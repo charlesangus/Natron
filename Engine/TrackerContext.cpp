@@ -37,22 +37,22 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
-
 #include "Engine/AppInstance.h"
+#include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/KnobTypes.h"
 #include "Engine/Project.h"
-#include "Engine/Curve.h"
-#include "Engine/Timer.h" // gettimeofday()
 #include "Engine/TLSHolder.h"
-#include "Engine/Transform.h"
+#include "Engine/Timer.h" // gettimeofday()
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContextPrivate.h"
-#include "Engine/TrackerSerialization.h"
+#include "Engine/Transform.h"
 #include "Engine/ViewerInstance.h"
+
+#include "Serialization/TrackerSerialization.h"
 
 #define NATRON_TRACKER_REPORT_PROGRESS_DELTA_MS 200
 
@@ -101,33 +101,32 @@ TrackerContext::~TrackerContext()
 }
 
 void
-TrackerContext::load(const TrackerContextSerialization& serialization)
+TrackerContext::fromSerialization(const Serialization::TrackerContextSerialization& serialization)
 {
     TrackerContextPtr thisShared = shared_from_this();
     QMutexLocker k(&_imp->trackerContextMutex);
 
-    for (std::list<TrackSerialization>::const_iterator it = serialization._tracks.begin(); it != serialization._tracks.end(); ++it) {
+    for (std::list<Serialization::TrackSerialization>::const_iterator it = serialization.tracks.begin(); it != serialization.tracks.end(); ++it) {
         TrackMarkerPtr marker;
-        if ( it->usePatternMatching() ) {
+        if (it->isPatternMatching) {
             marker = TrackMarkerPM::create(thisShared);
         } else {
             marker = TrackMarker::create(thisShared);
         }
         marker->initializeKnobsPublic();
-        marker->load(*it);
+        marker->fromSerialization(*it);
         _imp->markers.push_back(marker);
     }
 }
 
 void
-TrackerContext::save(TrackerContextSerialization* serialization) const
+TrackerContext::toSerialization(Serialization::TrackerContextSerialization* serialization) const
 {
     QMutexLocker k(&_imp->trackerContextMutex);
 
     for (std::size_t i = 0; i < _imp->markers.size(); ++i) {
-        TrackSerialization s;
-        _imp->markers[i]->save(&s);
-        serialization->_tracks.push_back(s);
+        serialization->tracks.push_back(Serialization::TrackSerialization());
+        _imp->markers[i]->toSerialization(&serialization->tracks.back());
     }
 }
 

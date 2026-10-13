@@ -123,8 +123,8 @@ public:
                                               Natron::StandardButtons buttons,
                                               Natron::StandardButtonEnum defaultButton,
                                               bool* stopAsking) OVERRIDE FINAL WARN_UNUSED_RETURN;
-    virtual void loadProjectGui(bool isAutosave,  boost::archive::xml_iarchive & archive) const OVERRIDE FINAL;
-    virtual void saveProjectGui(boost::archive::xml_oarchive & archive) OVERRIDE FINAL;
+    virtual void loadProjectGui(bool isAutosave, const Serialization::ProjectGuiSerialization& serialization) const OVERRIDE FINAL;
+    virtual bool saveProjectGui(Serialization::ProjectGuiSerialization* serialization) OVERRIDE FINAL;
     virtual void notifyRenderStarted(const QString & sequenceName,
                                      int firstFrame, int lastFrame,
                                      int frameStep, bool canPause,
@@ -258,8 +258,7 @@ public:
     ///////////////// END OVERRIDDEN FROM TIMELINEKEYFRAMES
 
 private:
-
-    virtual void onGroupCreationFinished(const NodePtr& node, const NodeSerializationPtr& serialization, bool autoConnect) OVERRIDE FINAL;
+    virtual void onGroupCreationFinished(const NodePtr& node, const Serialization::NodeSerializationPtr& serialization, bool autoConnect) OVERRIDE FINAL;
     virtual void createNodeGui(const NodePtr &node,
                                const NodePtr&  parentMultiInstance,
                                const CreateNodeArgs& args) OVERRIDE FINAL;

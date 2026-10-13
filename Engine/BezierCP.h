@@ -39,6 +39,8 @@
 #include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
 
+#include "Serialization/SerializationFwd.h"
+
 NATRON_NAMESPACE_ENTER
 
 /**
@@ -66,8 +68,6 @@ class BezierCP
     friend class Bezier;
 
 public:
-
-    ///Constructore used by the serialization
     BezierCP();
 
     BezierCP(const BezierCP & other);
@@ -163,14 +163,12 @@ public:
 
     void cloneGuiCurvesToInternalCurves();
 
-    template<class Archive>
-    void save(Archive & ar, const unsigned int version) const;
+    void toSerialization(Serialization::BezierCPSerialization* serialization) const;
 
-    template<class Archive>
-    void load(Archive & ar, const unsigned int version);
-
-    template<class Archive>
-    void serialize(Archive & ar, const unsigned int version);
+    /**
+     * @brief Sets the point, and its GUI copy, to the saved state.
+     **/
+    void fromSerialization(const Serialization::BezierCPSerialization& serialization);
 
 private:
 

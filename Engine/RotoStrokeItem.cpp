@@ -35,7 +35,6 @@
 #include <QLineF>
 #include <QDebug>
 
-
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
@@ -48,10 +47,8 @@
 #include "Engine/Interpolation.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContextPrivate.h"
-#include "Engine/RotoDrawableItemSerialization.h"
-#include "Engine/RotoItemSerialization.h"
+#include "Engine/RotoLayer.h"
 #include "Engine/RotoPoint.h"
-#include "Engine/RotoStrokeItemSerialization.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
@@ -625,68 +622,6 @@ RotoStrokeItem::clone(const RotoItem* other)
     RotoDrawableItem::clone(other);
     incrementNodesAge();
     resetNodesThreadSafety();
-}
-
-void
-RotoStrokeItem::save(RotoItemSerialization* obj) const
-{
-    RotoDrawableItem::save(obj);
-    RotoStrokeItemSerialization* s = dynamic_cast<RotoStrokeItemSerialization*>(obj);
-
-    assert(s);
-    if (!s) {
-        throw std::logic_error("RotoStrokeItem::save");
-    }
-    {
-        QMutexLocker k(&itemMutex);
-        s->_brushType = (int)_imp->type;
-        for (std::vector<RotoStrokeItemPrivate::StrokeCurves>::const_iterator it = _imp->strokes.begin();
-             it != _imp->strokes.end(); ++it) {
-            CurvePtr xCurve = std::make_shared<Curve>();
-            CurvePtr yCurve = std::make_shared<Curve>();
-            CurvePtr pressureCurve = std::make_shared<Curve>();
-            xCurve->clone( *(it->xCurve) );
-            yCurve->clone( *(it->yCurve) );
-            pressureCurve->clone( *(it->pressureCurve) );
-            s->_xCurves.push_back(xCurve);
-            s->_yCurves.push_back(yCurve);
-            s->_pressureCurves.push_back(pressureCurve);
-        }
-    }
-}
-
-void
-RotoStrokeItem::load(const RotoItemSerialization & obj)
-{
-    RotoDrawableItem::load(obj);
-    const RotoStrokeItemSerialization* s = dynamic_cast<const RotoStrokeItemSerialization*>(&obj);
-
-    assert(s);
-    if (!s) {
-        throw std::logic_error("RotoStrokeItem::load");
-    }
-    {
-        QMutexLocker k(&itemMutex);
-        _imp->type = (RotoStrokeType)s->_brushType;
-
-        assert( s->_xCurves.size() == s->_yCurves.size() && s->_xCurves.size() == s->_pressureCurves.size() );
-        std::list<CurvePtr>::const_iterator itY = s->_yCurves.begin();
-        std::list<CurvePtr>::const_iterator itP = s->_pressureCurves.begin();
-        for (std::list<CurvePtr>::const_iterator it = s->_xCurves.begin();
-             it != s->_xCurves.end(); ++it, ++itY, ++itP) {
-            RotoStrokeItemPrivate::StrokeCurves s;
-            s.xCurve = std::make_shared<Curve>();
-            s.yCurve = std::make_shared<Curve>();
-            s.pressureCurve = std::make_shared<Curve>();
-            s.xCurve->clone( **(it) );
-            s.yCurve->clone( **(itY) );
-            s.pressureCurve->clone( **(itP) );
-            _imp->strokes.push_back(s);
-        }
-    }
-
-
-    setStrokeFinished();
 }
 
 RectD

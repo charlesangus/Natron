@@ -42,6 +42,7 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_OFF(deprecated-register) //'register' storage class specifier is deprecated
 #include <QDateTime>
 #include <QDir>
+#include <QFile>
 #include <QMutex>
 #include <QThreadPool>
 #include <QCoreApplication>
@@ -98,7 +99,6 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/LibraryBinary.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
 #include "Engine/Node.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/OfxMemory.h"
@@ -110,6 +110,8 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/StandardPaths.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/ThreadPool.h"
+
+#include "Serialization/SerializationFwd.h"
 
 //An effect may not use more than this amount of threads
 #define NATRON_MULTI_THREAD_SUITE_MAX_NUM_CPU 4
@@ -716,7 +718,7 @@ OfxHost::createOfxEffect(NodePtr node,
 
 
     AbstractOfxEffectInstancePtr hostSideEffect( new OfxEffectInstance(node) );
-    NodeSerializationPtr serialization = args.getProperty<NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
+    Serialization::NodeSerializationPtr serialization = args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
     std::string fixedName = args.getProperty<std::string>(kCreateNodeArgsPropNodeInitialName);
 
     if ( node && !node->getEffectInstance() ) {

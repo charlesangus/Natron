@@ -62,6 +62,10 @@ public:
     int x2; // right
     int y2; // top
 
+    // Kept intrusive (rather than moved to a Serialization/ plain-data adapter)
+    // because the disk-cache TOC (Engine/FrameKey.h, ImageKey.h, ImageParams.h)
+    // archives RectI directly; see Serialization/BasicSerialization.h for the
+    // plain-data equivalent other call sites should use instead.
     template<class Archive>
     void serialize(Archive & ar,
                    const unsigned int version);

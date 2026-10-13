@@ -55,6 +55,8 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/GuiFwd.h"
 
+#include "Serialization/SerializationFwd.h"
+
 NATRON_NAMESPACE_ENTER
 
 struct NodeGuiIndicatorPrivate;
@@ -155,13 +157,16 @@ public:
     virtual void restoreStateAfterCreation() OVERRIDE FINAL;
 
     /**
-     * @brief Fills the serializationObject with the current state of the NodeGui.
+     * @brief Fills serialization with what a project file saves for this node in the node graph
+     * and, for a group, for the nodes it holds that are part of the project.
      **/
-    void serialize(NodeGuiSerialization* serializationObject) const;
+    void toSerialization(Serialization::NodeGuiSerialization* serialization) const;
 
-
-    void copyFrom(const NodeGuiSerialization & obj);
-
+    /**
+     * @brief Applies the colours, position, preview state and size saved in serialization to
+     * this node, as pasting a copied node does.
+     **/
+    void fromSerialization(const Serialization::NodeGuiSerialization& serialization);
 
     NodePtr getNode() const
     {
@@ -326,7 +331,7 @@ public:
      * @brief Resets the body to the category colour and applies the user colour the
      * serialization resolves to, so a saved project follows later Preferences changes.
      **/
-    void restoreCategoryAndUserColor(const NodeGuiSerialization& obj);
+    void restoreCategoryAndUserColor(const Serialization::NodeGuiSerialization& serialization);
 
     /**
      * @brief Re-applies this node's category body colour after a Preferences
@@ -357,9 +362,9 @@ public:
      * @brief Serialize this node. If this is a multi-instance node, every instance will
      * be serialized, hence the list.
      **/
-    void serializeInternal(std::list<NodeSerializationPtr>& internalSerialization) const;
+    void serializeInternal(std::list<Serialization::NodeSerializationPtr>& internalSerialization) const;
     void restoreInternal(const NodeGuiPtr& thisShared,
-                         const std::list<NodeSerializationPtr>& internalSerialization);
+                         const std::list<Serialization::NodeSerializationPtr>& internalSerialization);
 
     void setOverlayLocked(bool locked);
 

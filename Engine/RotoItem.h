@@ -44,6 +44,7 @@ CLANG_DIAG_ON(deprecated-declarations)
 #include "Engine/FitCurve.h"
 #include "Engine/EngineFwd.h"
 
+#include "Serialization/SerializationFwd.h"
 
 #define kRotoLayerBaseName "Layer"
 #define kRotoBezierBaseName "Bezier"
@@ -134,18 +135,11 @@ public:
     int getHierarchyLevel() const;
 
     /**
-     * @brief Must be implemented by the derived class to save the state into
-     * the serialization object.
-     * Derived implementations must call the parent class implementation.
+     * @brief Fills the parts of the serialization every roto item saves. The derived classes'
+     * own toSerialization/fromSerialization call these.
      **/
-    virtual void save(RotoItemSerialization* obj) const;
-
-    /**
-     * @brief Must be implemented by the derived class to load the state from
-     * the serialization object.
-     * Derived implementations must call the parent class implementation.
-     **/
-    virtual void load(const RotoItemSerialization & obj);
+    void toSerialization(Serialization::RotoItemSerialization* serialization) const;
+    void fromSerialization(const Serialization::RotoItemSerialization& serialization);
 
     /**
      * @brief Returns the name of the node holding this item
@@ -183,6 +177,12 @@ private:
 
     void setGloballyActivated_recursive(bool a);
     void setLocked_recursive(bool locked, RotoItem::SelectionReasonEnum reason);
+
+    void restoreSavedState(const std::string& name,
+                           const std::string& label,
+                           bool activated,
+                           const std::string& parentLayerName,
+                           bool locked);
 
     std::unique_ptr<RotoItemPrivate> _imp;
 };

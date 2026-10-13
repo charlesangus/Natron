@@ -160,6 +160,8 @@ add_subdirectory(libs)
 
 add_subdirectory(HostSupport)
 
+add_subdirectory(Serialization)
+
 add_subdirectory(Engine)
 
 add_subdirectory(PythonBin)

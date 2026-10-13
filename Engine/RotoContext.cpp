@@ -56,9 +56,7 @@
 #include "Engine/Interpolation.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
-#include "Engine/NodeSerialization.h"
 #include "Engine/RenderStats.h"
-#include "Engine/RotoContextSerialization.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
@@ -969,29 +967,6 @@ RotoContext::isEmpty() const
     return _imp->layers.empty();
 }
 
-void
-RotoContext::save(RotoContextSerialization* obj) const
-{
-    QMutexLocker l(&_imp->rotoContextMutex);
-
-    obj->_autoKeying = _imp->autoKeying;
-    obj->_featherLink = _imp->featherLink;
-    obj->_rippleEdit = _imp->rippleEdit;
-
-    ///There must always be the base layer
-    assert( !_imp->layers.empty() );
-
-    ///Serializing this layer will recursively serialize everything
-    _imp->layers.front()->save( dynamic_cast<RotoItemSerialization*>(&obj->_baseLayer) );
-
-    ///the age of the context is not serialized as the images are wiped from the cache anyway
-
-    ///Serialize the selection
-    for (std::list<RotoItemPtr>::const_iterator it = _imp->selectedItems.begin(); it != _imp->selectedItems.end(); ++it) {
-        obj->_selectedItems.push_back( (*it)->getScriptName() );
-    }
-}
-
 static void
 linkItemsKnobsRecursively(RotoContext* ctx,
                           const RotoLayerPtr & layer)
@@ -1011,27 +986,9 @@ linkItemsKnobsRecursively(RotoContext* ctx,
 }
 
 void
-RotoContext::load(const RotoContextSerialization & obj)
+RotoContext::restoreSavedSelection(const std::list<std::string>& selectedItemNames)
 {
-    assert( QThread::currentThread() == qApp->thread() );
-    ///no need to lock here, when this is called the main-thread is the only active thread
-
-    _imp->isCurrentlyLoading = true;
-    _imp->autoKeying = obj._autoKeying;
-    _imp->featherLink = obj._featherLink;
-    _imp->rippleEdit = obj._rippleEdit;
-
-    for (std::list<KnobIWPtr>::iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
-        it->lock()->setDefaultAllDimensionsEnabled(false);
-    }
-
-    assert(_imp->layers.size() == 1);
-
-    RotoLayerPtr baseLayer = _imp->layers.front();
-
-    baseLayer->load(obj._baseLayer);
-
-    for (std::list<std::string>::const_iterator it = obj._selectedItems.begin(); it != obj._selectedItems.end(); ++it) {
+    for (std::list<std::string>::const_iterator it = selectedItemNames.begin(); it != selectedItemNames.end(); ++it) {
         RotoItemPtr item = getItemByName(*it);
         BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(item);
         RotoLayerPtr isLayer = std::dynamic_pointer_cast<RotoLayer>(item);
@@ -1041,8 +998,6 @@ RotoContext::load(const RotoContextSerialization & obj)
             linkItemsKnobsRecursively(this, isLayer);
         }
     }
-    _imp->isCurrentlyLoading = false;
-    refreshRotoPaintTree();
 }
 
 void

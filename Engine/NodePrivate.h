@@ -39,6 +39,8 @@
 
 #include "Engine/Hash64.h"
 
+#include "Serialization/SerializationFwd.h"
+
 NATRON_NAMESPACE_ENTER
 
 /*The output node was connected from inputNumber to this...*/
@@ -291,11 +293,11 @@ public:
         computingPreview = v;
     }
 
-    void restoreUserKnobsRecursive(const std::list<KnobSerializationBasePtr>& knobs,
+    void restoreUserKnobsRecursive(const std::list<Serialization::GroupKnobChildSerialization>& knobs,
                                    const KnobGroupPtr& group,
                                    const KnobPagePtr& page);
 
-    void storeKnobLinksRecursive(const GroupKnobSerialization* group,
+    void storeKnobLinksRecursive(const Serialization::GroupKnobSerialization& group,
                                  const std::map<std::string, std::string>& oldNewScriptNamesMapping);
 
     void restoreKnobLinksRecursive(const NodesList & allNodes,

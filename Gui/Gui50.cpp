@@ -64,12 +64,11 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Global/QtCompat.h"
 
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/FileSystemModel.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h" // NodesList, NodeCollection
 #include "Engine/Project.h"
-#include "Engine/KnobSerialization.h"
-#include "Engine/FileSystemModel.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewerInstance.h"
@@ -104,6 +103,8 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/TabWidget.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
+
+#include <SequenceParsing.h>
 
 #if defined(Q_OS_WIN)
 #include <winuser.h>

@@ -342,6 +342,38 @@ Curve::clone(const Curve & other)
     onCurveChanged();
 }
 
+void
+Curve::toSerialization(Serialization::CurveSerialization* serialization) const
+{
+    QMutexLocker l(&_imp->_lock);
+
+    serialization->keyframes.clear();
+    serialization->keyframes.reserve(_imp->keyFrames.size());
+    for (KeyFrameSet::const_iterator it = _imp->keyFrames.begin(); it != _imp->keyFrames.end(); ++it) {
+        Serialization::KeyFrameSerialization keyframe;
+        keyframe.time = it->getTime();
+        keyframe.value = it->getValue();
+        keyframe.interpolation = (int)it->getInterpolation();
+        keyframe.leftDerivative = it->getLeftDerivative();
+        keyframe.rightDerivative = it->getRightDerivative();
+        serialization->keyframes.push_back(keyframe);
+    }
+}
+
+void
+Curve::fromSerialization(const Serialization::CurveSerialization& serialization)
+{
+    KeyFrameSet keys;
+
+    for (std::vector<Serialization::KeyFrameSerialization>::const_iterator it = serialization.keyframes.begin(); it != serialization.keyframes.end(); ++it) {
+        KeyFrame k(it->time, it->value, it->leftDerivative, it->rightDerivative, (KeyframeTypeEnum)it->interpolation);
+        keys.insert(k);
+    }
+
+    QMutexLocker l(&_imp->_lock);
+    _imp->keyFrames = keys;
+}
+
 bool
 Curve::cloneAndCheckIfChanged(const Curve& other)
 {

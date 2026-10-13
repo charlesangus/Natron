@@ -118,19 +118,13 @@ public:
 
     virtual void clone(const RotoItem* other) OVERRIDE FINAL;
 
-    /**
-     * @brief Must be implemented by the derived class to save the state into
-     * the serialization object.
-     * Derived implementations must call the parent class implementation.
-     **/
-    virtual void save(RotoItemSerialization* obj) const OVERRIDE FINAL;
+    void toSerialization(Serialization::RotoStrokeItemSerialization* serialization) const;
 
     /**
-     * @brief Must be implemented by the derived class to load the state from
-     * the serialization object.
-     * Derived implementations must call the parent class implementation.
+     * @brief The item must have been created with the brush type the serialization holds.
      **/
-    virtual void load(const RotoItemSerialization & obj) OVERRIDE FINAL;
+    void fromSerialization(const Serialization::RotoStrokeItemSerialization& serialization);
+
     virtual RectD getBoundingBox(double time) const OVERRIDE FINAL;
 
 

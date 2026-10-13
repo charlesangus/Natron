@@ -119,6 +119,9 @@ set(Tests_SOURCES
 # every build, so a newly added file is compiled without re-running cmake by hand.
 file(GLOB Tests_NATIVE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Native/*_Test.cpp)
 list(APPEND Tests_SOURCES ${Tests_NATIVE_SOURCES})
+# Same CONFIGURE_DEPENDS auto-pickup for the serialization-boundary tests.
+file(GLOB Tests_SERIALIZATION_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Serialization/*_Test.cpp)
+list(APPEND Tests_SOURCES ${Tests_SERIALIZATION_SOURCES})
 add_executable(Tests ${Tests_HEADERS} ${Tests_SOURCES})
 target_link_libraries(Tests
     PRIVATE
@@ -162,6 +165,7 @@ set(GuiTests_SOURCES
     LayerChannelRow_Test.cpp
     NodeGraphSplice_Test.cpp
     NodeGuiUserColorSerialization_Test.cpp
+    ProjectGuiXmlEquivalence_Test.cpp
     RenderDialogRange_Test.cpp
     ScaleSliderQWidget_Test.cpp
     ShuffleMatrix_Test.cpp

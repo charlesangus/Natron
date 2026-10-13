@@ -49,6 +49,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/RegisteredTabs.h"
 #include "Gui/GuiFwd.h"
 
+#include "Serialization/SerializationFwd.h"
 
 #define kMainSplitterObjectName "ToolbarSplitter"
 
@@ -223,7 +224,13 @@ public:
     ///@param enableOldProjectCompatibility When true, the default Gui layout will be created
     ///prior to restoring. This is because older projects didn't have as much info to recreate the entire layout.
     void restoreLayout(bool wipePrevious, bool enableOldProjectCompatibility,
-                       const GuiLayoutSerialization & layoutSerialization);
+                       const Serialization::GuiLayoutSerialization& layoutSerialization);
+
+    /**
+     * @brief Fills serialization with the layout of the application: the main window, then the
+     * floating windows, each with the splitters and panes or the settings panel it holds.
+     **/
+    void toSerialization(Serialization::GuiLayoutSerialization* serialization);
 
     const std::list<TabWidget*> & getPanes() const;
     std::list<TabWidget*> getPanes_mt_safe() const;
@@ -304,9 +311,9 @@ public:
 
     static QPixmap screenShot(QWidget* w);
 
-    void loadProjectGui(bool isAutosave, boost::archive::xml_iarchive & obj) const;
+    void loadProjectGui(bool isAutosave, const Serialization::ProjectGuiSerialization& serialization) const;
 
-    void saveProjectGui(boost::archive::xml_oarchive & archive);
+    void saveProjectGui(Serialization::ProjectGuiSerialization* serialization);
 
     void setColorPickersColor(double r, double g, double b, double a);
 

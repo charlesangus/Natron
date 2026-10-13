@@ -29,7 +29,9 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <map>
 #include <set>
+#include <string>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -41,6 +43,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
 
+#include "Serialization/SerializationFwd.h"
 
 #define kNatronGroupInputIsMaskParamName "isMask"
 #define kNatronGroupInputIsOptionalParamName "optional"
@@ -217,6 +220,24 @@ public:
     void getActiveNodes(NodesList* nodes) const;
 
     void getActiveNodesExpandGroups(NodesList* nodes) const;
+
+    /**
+     * @brief Fills serialization with the active nodes of the collection that are part of the
+     * project, leaving out the instances of a multi-instance node: their parent saves them.
+     **/
+    void nodesToSerialization(Serialization::NodeCollectionSerialization* serialization) const;
+
+    /**
+     * @brief Creates the nodes saved in serializedNodes in group, or with createNodes false
+     * restores them onto the nodes a PyPlug already created there, then connects them and
+     * stores their knob links. moduleUpdatesProcessed remembers, per PyPlug module, whether the
+     * user chose to update a saved instance to the PyPlug version found on disk. Returns false
+     * if an error was written to the error log.
+     **/
+    static bool restoreFromSerialization(const std::list<Serialization::NodeSerializationPtr>& serializedNodes,
+                                         const NodeCollectionPtr& group,
+                                         bool createNodes,
+                                         std::map<std::string, bool>* moduleUpdatesProcessed);
 
     /**
      * @brief Get all viewers in the group and sub groups

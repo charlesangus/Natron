@@ -28,10 +28,11 @@
 
 #include "Global/Macros.h"
 
-#include <vector>
-#include <string>
-#include <set>
+#include <functional>
 #include <map>
+#include <set>
+#include <string>
+#include <vector>
 
 #include <QReadWriteLock>
 #include <QMutex>
@@ -45,6 +46,7 @@
 #include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
 
+#include "Serialization/SerializationFwd.h"
 
 #define NATRON_USER_MANAGED_KNOBS_PAGE_LABEL "User"
 #define NATRON_USER_MANAGED_KNOBS_PAGE "userNatron"
@@ -378,6 +380,12 @@ class KnobI
     friend class KnobHolder;
 
 public:
+    /**
+     * @brief Replaces, in place, a saved choice option ID that matches none of a choice knob's
+     * entries with the ID an older version of Natron or of the plug-in used for the same option.
+     **/
+    typedef std::function<void(std::string* optionID)> ChoiceOptionIDFilter;
+
     // TODO: enable_shared_from_this
     // constructors should be privatized in any class that derives from std::enable_shared_from_this<>
 
@@ -467,6 +475,28 @@ public:
     virtual bool hasModifications() const = 0;
     virtual bool hasModifications(int dimension) const = 0;
     virtual bool hasModificationsForSerialization() const = 0;
+
+    /**
+     * @brief Replaces serialization with everything a project file saves for this knob, as it is now.
+     * Not const: reading a value may evaluate an expression and update its cache.
+     * @returns Whether a node must save this knob: it carries an expression or a link, or it is
+     * persistent and hasModificationsForSerialization() says it differs from its defaults (which
+     * a KnobChannelSet always does).
+     **/
+    virtual bool toSerialization(Serialization::KnobSerialization* serialization) = 0;
+
+    /**
+     * @brief Applies serialized values, defaults, animation, secretness and enabled state to this
+     * existing knob, the way loading a project applies a saved knob to the knob of the same name.
+     * Choice knobs restore their selected entry by ID, passing an ID that matches no entry
+     * through choiceOptionIDFilter, when given, before looking it up again. Expressions and links
+     * are not restored here: they may refer to knobs that do not exist yet, see
+     * restoreExpressionsFromSerialization() and storeLinksFromSerialization().
+     * @returns false, doing nothing, when serialization holds another knob type.
+     **/
+    virtual bool fromSerialization(const Serialization::KnobSerialization& serialization,
+                                   const ChoiceOptionIDFilter& choiceOptionIDFilter = ChoiceOptionIDFilter())
+        = 0;
     virtual void computeHasModifications() = 0;
     virtual void checkAnimationLevel(ViewSpec view, int dimension) = 0;
 
@@ -1220,6 +1250,19 @@ public:
                       const std::map<std::string, std::string>& oldNewScriptNamesMapping,
                       bool throwOnFailure);
 
+    /**
+     * @brief Stores the links serialization saved, for restoreLinks() to resolve once every node exists.
+     **/
+    void storeLinksFromSerialization(const Serialization::KnobSerialization& serialization);
+
+    /**
+     * @brief Restores the expressions serialization saved, with each old node script name of
+     * oldNewScriptNamesMapping replaced by its new one. Only valid once every knob the
+     * expressions may refer to exists.
+     **/
+    void restoreExpressionsFromSerialization(const Serialization::KnobSerialization& serialization,
+                                             const std::map<std::string, std::string>& oldNewScriptNamesMapping);
+
 private:
     struct Link {
         int slaveDimension;
@@ -1619,6 +1662,9 @@ public:
     virtual bool hasModifications() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool hasModifications(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool hasModificationsForSerialization() const OVERRIDE WARN_UNUSED_RETURN;
+    virtual bool toSerialization(Serialization::KnobSerialization* serialization) OVERRIDE FINAL;
+    virtual bool fromSerialization(const Serialization::KnobSerialization& serialization,
+                                   const ChoiceOptionIDFilter& choiceOptionIDFilter = ChoiceOptionIDFilter()) OVERRIDE FINAL;
     virtual void checkAnimationLevel(ViewSpec view, int dimension) OVERRIDE FINAL;
     virtual KnobIPtr createDuplicateOnHolder(KnobHolder* otherHolder,
                                             const std::shared_ptr<KnobPage>& page,
@@ -2913,6 +2959,26 @@ std::shared_ptr<K> KnobHolder::createKnob(const std::string &label,
 {
     return AppManager::createKnob<K>(this, label, dimension);
 }
+
+/**
+ * @brief Creates on holder the user knob serialization describes (or, when existingKnob is
+ * given, reuses it), applies its definition, values and animation, and marks it as a user knob.
+ * Adding it to a page or group is left to the caller, as are its expressions and links.
+ * @returns null when the type name is not one a user knob can have, or when existingKnob is of
+ * another type.
+ **/
+KnobIPtr createUserKnobFromSerialization(KnobHolder* holder,
+                                         const Serialization::KnobSerialization& serialization,
+                                         const KnobIPtr& existingKnob = KnobIPtr());
+
+/**
+ * @brief Creates a knob of the serialized type that belongs to no holder, named as saved and
+ * holding the saved values, defaults, animation, secretness and enabled state (not expressions
+ * nor links). Cloning from it applies the saved state to a live knob without the evaluation and
+ * change notifications that setting values on that knob directly would trigger.
+ * @returns null when the type name is not one a project file can create.
+ **/
+KnobIPtr createDetachedKnobFromSerialization(const Serialization::KnobSerialization& serialization);
 
 NATRON_NAMESPACE_EXIT
 

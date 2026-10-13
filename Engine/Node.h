@@ -50,6 +50,8 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/ViewIdx.h"
 #include "Global/KeySymbols.h"
 
+#include "Serialization/SerializationFwd.h"
+
 #define NATRON_PARAMETER_PAGE_NAME_EXTRA "Node"
 #define NATRON_PARAMETER_PAGE_NAME_INFO "Info"
 
@@ -133,16 +135,10 @@ public:
      **/
     void load(const CreateNodeArgs& args);
 
+    void initNodeScriptName(const Serialization::NodeSerialization* serialization, const QString& fixedName);
 
-    void initNodeScriptName(const NodeSerialization* serialization, const QString& fixedName);
-
-
-    ///called by load() and OfxEffectInstance, do not call this!
-    void loadKnobs(const NodeSerialization & serialization, bool updateKnobGui = false);
-
-
-    void loadKnob(const KnobIPtr & knob,
-                  const NodeSerialization & serialization,
+    void loadKnob(const KnobIPtr& knob,
+                  const Serialization::NodeSerialization& serialization,
                   bool updateKnobGui = false);
 
     ///Set values for Knobs given their serialization
@@ -167,9 +163,9 @@ public:
         return appPTR->getKnobFactory().createKnob<K>(getEffectInstance(), description, dimension, declaredByPlugin);
     }
 
-    ///This cannot be done in loadKnobs as to call this all the nodes in the project must have
-    ///been loaded first.
-    void storeKnobsLinks(const NodeSerialization & serialization,
+    /// This cannot be done in fromSerialization as to call this all the nodes in the project must have
+    /// been loaded first.
+    void storeKnobsLinks(const Serialization::NodeSerialization& serialization,
                          const std::map<std::string, std::string>& oldNewScriptNamesMapping);
 
     // Once all nodes are created, we can restore the links that were previously saved by storeKnobsLinks()
@@ -177,7 +173,22 @@ public:
                            const std::map<std::string, std::string>& oldNewScriptNamesMapping,
                            bool throwOnFailure);
 
-    void restoreUserKnobs(const NodeSerialization& serialization);
+    void restoreUserKnobs(const Serialization::NodeSerialization& serialization);
+
+    /**
+     * @brief Fills serialization with everything a project file saves for this node and, for a
+     * group or a multi-instance node, the nodes it holds. The node's own input connections are
+     * left out unless serializeInputs is set.
+     **/
+    void toSerialization(Serialization::NodeSerialization* serialization,
+                         bool serializeInputs = true) const;
+
+    /**
+     * @brief Restores the knobs, roto and tracker data and user knobs saved in serialization
+     * onto this already created node.
+     **/
+    void fromSerialization(const Serialization::NodeSerialization& serialization,
+                           bool updateKnobGui = false);
 
     void setPagesOrder(const std::list<std::string>& pages);
 

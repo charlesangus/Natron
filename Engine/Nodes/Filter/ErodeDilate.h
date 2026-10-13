@@ -142,6 +142,24 @@ public:
      **/
     static void getExpansion(const RenderScale& scale, const ErodeDilateParams& params, bool dilate, int* deltaX, int* deltaY);
 
+    /**
+     * @brief Float images of 1 to 4 components, with any "(Un)premult by" channel in the rendered
+     * plane and half widths the GPU kernel's tile holds.
+     **/
+    virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief getSourceRoI() at the current time and view.
+     **/
+    virtual RectI getGpuInputRoI(int inputNb, const RectI& outputRect, const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The pixels render() gives for the same query, including the filter buffer it shrinks
+     * to the mask and clips to this effect's region of definition, which decides where a line is
+     * short and where its windows clamp.
+     **/
+    virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 protected:
     ErodeDilate(NodePtr node, bool dilate);
 

@@ -847,6 +847,7 @@ Saturation holds its CPU class, transcendental, for every luminance option; the 
 weights from the CPU's `ColorMath::luminance` (`Tests/Native/NativeSaturationGpu_Test.cpp`).
 Constant and Solid hold their CPU class, exact, for every target layer and channel selection, with a source connected or not (`Tests/Native/NativeConstantGpu_Test.cpp`).
 Add and Multiply hold `arithmetic()` and Gamma holds `transcendental()`, where a subnormal input may come back as 0 on a device that flushes denormals (`Tests/Native/NativeColorMathGpu_Test.cpp`).
+Erode and Dilate hold exact, bit for bit on NaNs, signed zeros and denormals, except where "(Un)premult by" divides, which holds Blur's 2e-6 absolute plus 1e-6 relative (`Tests/Native/NativeErodeDilateGpu_Test.cpp`).
 
 `Tests/Native/NativeGpuParity.{h,cpp}` is the shared harness. A test names its
 bound with `ParityTolerance` and compares through `compareImages()`.

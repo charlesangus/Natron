@@ -45,6 +45,7 @@
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Color/Saturation.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
 #include "Engine/Plugin.h"
@@ -63,11 +64,14 @@ gpuCapableIds()
         PLUGINID_NATRON_CLAMP,
         PLUGINID_NATRON_INVERT,
         PLUGINID_NATRON_COLORLOOKUP,
+        PLUGINID_NATRON_CONSTANT,
         PLUGINID_NATRON_SOLID,
         PLUGINID_NATRON_SATURATION,
         PLUGINID_NATRON_ADD,
         PLUGINID_NATRON_MULTIPLY,
         PLUGINID_NATRON_GAMMA,
+        PLUGINID_NATRON_ERODE,
+        PLUGINID_NATRON_DILATE,
     };
 
     return ids;

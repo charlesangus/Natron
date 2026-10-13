@@ -17,6 +17,10 @@ include("${NATRON_GPU_CMAKE_DIR}/SlangKernels.cmake")
 
 slang_add_kernel(grade Kernels/grade.slang ENTRY grade_main REGISTRY NatronGpu)
 slang_add_kernel(blur Kernels/blur.slang ENTRY blurPass REGISTRY NatronGpu)
+slang_add_kernel(morph_direct Kernels/morphology.slang ENTRY morph_direct REGISTRY NatronGpu)
+slang_add_kernel(morph_wide Kernels/morphology.slang ENTRY morph_wide REGISTRY NatronGpu)
+slang_add_kernel(morph_mask_bbox Kernels/morphology.slang ENTRY morph_mask_bbox REGISTRY NatronGpu)
+slang_add_kernel(morph_window Kernels/morphology.slang ENTRY morph_window REGISTRY NatronGpu)
 slang_add_kernel(wrap_divide Kernels/pixelwrap.slang ENTRY wrap_divide REGISTRY NatronGpu)
 slang_add_kernel(wrap_finish Kernels/pixelwrap.slang ENTRY wrap_finish REGISTRY NatronGpu)
 slang_add_kernel(invert Kernels/invert.slang ENTRY invert_main REGISTRY NatronGpu)
@@ -42,6 +46,7 @@ add_library(NatronGpu STATIC
     GpuRuntime.cpp
     GpuTransfer.cpp
     GpuBlur.cpp
+    GpuMorphology.cpp
     GpuWrap.cpp
     GlInterop.cpp
     Vma.cpp

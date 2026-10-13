@@ -318,13 +318,6 @@ QDialog {
     background-color: %2;
 }
 
-NodeCreationDialog,
-Natron--NodeCreationDialog {
-    background-color: %2;
-    border: 5px black;
-    border-radius:2px;
-}
-
 QToolButton {
     background-color: %3;
 }

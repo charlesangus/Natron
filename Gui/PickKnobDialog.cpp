@@ -41,10 +41,10 @@
 #include "Engine/Utils.h" // convertFromPlainText
 
 #include "Gui/ComboBox.h"
+#include "Gui/CompleterLineEdit.h"
 #include "Gui/DialogButtonBox.h"
-#include "Gui/Label.h"
 #include "Gui/KnobGui.h"
-#include "Gui/NodeCreationDialog.h" // CompleterLineEdit
+#include "Gui/Label.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 

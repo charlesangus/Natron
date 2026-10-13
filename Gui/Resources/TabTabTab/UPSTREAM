@@ -1,0 +1,48 @@
+Source: https://github.com/charlesangus/tabtabtab-nuke
+Commit: 48de32d77aea52712140663f0caa15dd709dd2ea
+Date: 2026-10-12
+
+Files taken:
+- tabtabtab_nuke_core.py
+- LICENSE
+- tests/__init__.py
+- tests/test_node_model_diff.py
+- tests/test_monitor_selection.py
+- tests/test_main_window_discovery.py
+- tests/test_cursor_restore_on_close.py
+
+Files left out:
+- tabtabtab_nuke.py — Nuke adapter, replaced by M45.P5.T3's Natron adapter
+- menu.py — Nuke adapter, replaced by M45.P5.T3's Natron adapter
+- tabtabtab_prefs.py — Preferences live in Natron's Settings (M45.P6.T5), not vendored
+- tabtabtab_prefs_dialog.py — Preferences live in Natron's Settings (M45.P6.T5), not vendored
+- tests/test_menu_fingerprint.py — Tests the Nuke adapter, not applicable to Natron
+- readme.md — Upstream documentation, not needed in vendored copy
+- docs/ — Upstream documentation, not needed in vendored copy
+- Makefile — Upstream build artifact, not needed in vendored copy
+- .github/ — Upstream CI configuration, not needed in vendored copy
+
+Local patches:
+- patches/0001-pluggable-main-window-finder.patch — tabtabtab_nuke_core.py gets
+  set_main_window_finder(fn) and _find_main_window(), used at the three
+  _find_nuke_main_window() call sites, so a non-Nuke host (Natron) can plug
+  in its own main-window lookup; _find_nuke_main_window itself and Nuke's
+  behaviour are unchanged.
+- patches/0002-host-row-metrics.patch — tabtabtab_nuke_core.py gets
+  set_row_metrics(row_height, visible_rows), used by TabTabTabWidget in
+  place of the hardcoded "twice the font height" row and 18 visible rows,
+  so a host can size the popup to its own row height; defaults are
+  unchanged, so Nuke's sizing is untouched. The popup's placement is
+  upstream's, unchanged.
+- patches/0003-refresh-retained-row-menuobj.patch — tabtabtab_nuke_core.py's
+  NodeModel._apply_items keeps a visually unchanged row's dict as before
+  (still no dataChanged), but now swaps in the refresh's menuobj and, when
+  it is a different object, drops the row's cached colour. Without it a
+  host that builds fresh handles per refresh (Natron: per-project QActions,
+  node entries carrying the current category colour) kept invoking and
+  colouring from the first open's handles. Re-filtering on a keystroke
+  reuses the same menuobjs, so Nuke's per-keystroke cost is unchanged.
+  tests/test_node_model_diff.py gains two tests for it.
+- tests/test_host_hooks.py is a new test file, added by Natron (not from
+  upstream), covering set_main_window_finder(), _find_main_window(),
+  set_row_metrics(), _row_height() and _visible_rows().

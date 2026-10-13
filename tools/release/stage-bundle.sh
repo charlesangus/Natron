@@ -169,7 +169,7 @@ fi
 
 echo "==> Copying Qt6 plugins from $QT_PLUGIN_DIR"
 
-for subdir in platforms imageformats xcbglintegrations; do
+for subdir in platforms imageformats iconengines xcbglintegrations; do
     src="$QT_PLUGIN_DIR/$subdir"
     if [[ -d "$src" ]]; then
         mkdir -p "$STAGE_DIR/plugins/$subdir"
@@ -291,6 +291,10 @@ copy_tree "$FONTS_SRC/conf.d" "$FONTS_DEST/conf.d"
 # AppManager::getAllNonOFXPluginsPaths() looks for PyPlugs under
 # <bin>/../Plugins/PyPlugs, and OfxHost under <bin>/../Plugins/OFX/Natron.
 copy_tree "$SOURCE_DIR/Gui/Resources/PyPlugs" "$STAGE_DIR/Plugins/PyPlugs"
+
+# TabMenuBridge::bootstrap() looks for the vendored tabtabtab files at
+# <bin>/../Resources/tabtabtab.
+copy_tree "$SOURCE_DIR/Gui/Resources/TabTabTab" "$STAGE_DIR/Resources/tabtabtab" --exclude='./tests' --exclude='__pycache__'
 
 # fetch-assets.sh writes what it downloads and builds to <repo>/build/assets
 # regardless of where the build directory itself is, so a build tree

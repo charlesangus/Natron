@@ -580,6 +580,9 @@ private:
     KnobBoolPtr _useInputAForMergeAutoConnect;
     KnobBoolPtr _usePluginIconsInNodeGraph;
     KnobBoolPtr _useAntiAliasing;
+    KnobSeparatorPtr _tabMenuSeparator;
+    KnobChoicePtr _tabMenuSearchModes;
+    KnobBoolPtr _tabMenuScroll;
 
     // Plugins
     KnobPagePtr _pluginsTab;

@@ -41,6 +41,7 @@
 #include "Engine/Nodes/Color/ColorMathNode.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Color/Invert.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Color/Saturation.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Image/GpuRender.h"
@@ -60,6 +61,7 @@ gpuCapableIds()
         PLUGINID_NATRON_BLUR,
         PLUGINID_NATRON_CLAMP,
         PLUGINID_NATRON_INVERT,
+        PLUGINID_NATRON_SOLID,
         PLUGINID_NATRON_SATURATION,
         PLUGINID_NATRON_ADD,
         PLUGINID_NATRON_MULTIPLY,

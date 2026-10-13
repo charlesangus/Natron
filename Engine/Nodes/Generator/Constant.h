@@ -65,7 +65,21 @@ protected:
 private:
     virtual void initializeKnobs() OVERRIDE FINAL;
 
+    virtual bool isPointOp() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
     virtual PixelKernelPtr makeKernel(const KernelContext& context) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual int gpuKernelId(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool makeGpuKernel(const KernelContext& context,
+                               PixelKernelGpu* gpu) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // The colour at context's time and view; the alpha of a Solid is 1.
+    void readColor(const KernelContext& context,
+                   float rgba[4]) const;
 
     bool _solid;
     KnobColorWPtr _color;

@@ -163,7 +163,7 @@ Scouted facts this plan relies on (2026-10-12, `milestone/m85-native-gpu-kernels
     - a source smaller than the window, which `windowOffset` used to refuse.
   - size: M
 
-- [ ] M85.P2.T2 — Resolve each input's own layer in regions (masks and side inputs)
+- [x] M85.P2.T2 — Resolve each input's own layer in regions (masks and side inputs)
   - files: `Engine/Nodes/Image/NativeImageEffect.{h,cpp}`, `Engine/GpuRegionTask.cpp`, `Engine/GpuPlacement.cpp`, `Tests/GpuResidency_Test.cpp`
   - approach:
     - Add `virtual bool getGpuInputLayer(int inputNb, const ImageLayerDesc& plane, double time, ViewIdx view, ImageLayerDesc* layer) const`:
@@ -250,7 +250,7 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - verify: the same bounds as Invert, plus NaN and ±inf inputs.
   - size: M
 
-- [ ] M85.P3.T3 — Add, Multiply and Gamma (ColorMathNode) on the GPU
+- [x] M85.P3.T3 — Add, Multiply and Gamma (ColorMathNode) on the GPU
   - files: `Engine/Nodes/Color/ColorMathNode.{h,cpp}`, `Engine/Gpu/Kernels/colormath.slang` (new, three entries), `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeColorMathGpu_Test.cpp` (new)
   - approach:
     - Follow the Phase 85.3 pattern, with one entry per operation, selected by the node's plugin ID.
@@ -259,7 +259,7 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - verify: Add and Multiply within `arithmetic()`, and Gamma within `transcendental()` with the subnormal rule. Runs on lavapipe and RADV.
   - size: M
 
-- [ ] M85.P3.T4 — Saturation on the GPU
+- [x] M85.P3.T4 — Saturation on the GPU
   - files: `Engine/Nodes/Color/Saturation.{h,cpp}`, `Engine/Gpu/Kernels/saturation.slang` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeSaturationGpu_Test.cpp` (new), `Tests/Native/NativeGpuCapability_Test.cpp`
   - approach:
     - Follow the Phase 85.3 pattern.
@@ -280,7 +280,7 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
     Record a measured bound if double-vs-float exceeds it. Runs on lavapipe and RADV.
   - size: L
 
-- [ ] M85.P3.T6 — ColorLookup on the GPU
+- [x] M85.P3.T6 — ColorLookup on the GPU
   - files: `Engine/Nodes/Color/ColorLookup.{h,cpp}`, `Engine/Gpu/Kernels/colorlookup.slang` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeColorLookupGpu_Test.cpp` (new), `Tests/Native/NativeGpuCapability_Test.cpp`
   - approach:
     - Upload the five 1024-interval LUTs `ColorLookupKernel` already builds (`ColorLookup.cpp:110-113`), about 20 KB, as the params block.
@@ -289,7 +289,7 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - verify: `transcendental()` for every master-curve mode, out-of-range inputs and an edited curve. Runs on lavapipe and RADV.
   - size: M
 
-- [ ] M85.P3.T7 — Constant and Solid on the GPU
+- [x] M85.P3.T7 — Constant and Solid on the GPU
   - files: `Engine/Nodes/Generator/Constant.{h,cpp}`, `Engine/Gpu/Kernels/generators.slang` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeConstantGpu_Test.cpp` (new)
   - approach:
     - A zero-input point op whose op ignores its input.
@@ -334,7 +334,7 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
     - An end-to-end case forms one region.
   - size: L
 
-- [ ] M85.P4.T3 — Erode and Dilate on the GPU
+- [x] M85.P4.T3 — Erode and Dilate on the GPU
   - files: `Engine/Nodes/Filter/ErodeDilate.{h,cpp}`, `Engine/Gpu/Kernels/morphology.slang` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeErodeDilateGpu_Test.cpp` (new)
   - approach:
     - Separable min (Erode) or max (Dilate): H then V, with the `blur.slang` tile layout.
@@ -555,3 +555,18 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - **Grade:** `GradeOp` and `grade_wrapped` live in `pixelwrap.slang`, because `grade.slang`'s own buffer bindings would clash. `Grade::readSettings` feeds both kernels.
   - **Clamp:** compares use sign-magnitude integer keys, because the device flushes denormals in float compares and the CPU doesn't.
   - **Tests:** parity windows stay inside the node's RoD, because `GpuRegionTask` never asks `renderGpu` for pixels outside it. Saturation replaces Invert as the "no GPU kernel" node in `NativeImageEffectGpuTest` and `GpuResidencyTest`.
+- 2026-10-13 — **P2.T2** (`d39696926`), **P3.T3** (`85c3945dd`), **P3.T4** (`efa00fc6a`), **P3.T7** (`2b4af5100`), **P3.T6** (`2febcd573`) and **P4.T3** (`bfe6a3c5e`) done as one parallel batch. The sweep passes 485/485 on lavapipe, RADV and no-ICD in both scheduler modes, and the CPU suites (`Native|Residency|Placement`) pass 378/378.
+  - **P2.T2:**
+    - A mask outside the task's plane no longer refuses the GPU. The region uploads it in its own layer.
+    - An in-region producer whose plane differs from the layer its consumer reads makes the consumer refuse.
+    - **Bug fixed:** `GpuRegionTask::plan` also adds an edge for an input whose node is already a dependency through another input. Before, one node wired to both a member's source and its mask left the source with no slot. With the same layer that rendered wrong; with different layers it hung.
+    - The GPU view helpers (`isUsableGpuView`, `cropGpuView`, `getGpuMaskViewComponent`, `toGpuBlurRect`/`toGpuBlurImage`) are protected statics on `NativeImageEffect`, shared by Blur and ErodeDilate.
+    - "No GPU path" tests use the test op with `gScaleKernel = -1` and EdgeDetect, not production point ops.
+  - **P3.T6 ColorLookup:**
+    - Out-of-range values are evaluated from the curve keys (≤ 128 keys, more falls back). Two-component pixels stay on the CPU.
+    - **Measured bounds:** weighted standard holds 5e-4 relative and luminance 3e-5, because both divide by a near-zero quantity. The standard and film-like modes hold `transcendental()`.
+  - **P4.T3 Erode/Dilate:** direct min/max up to half width 16, van Herk/Gil-Werman above. The mask-shrunk window is computed on the device. Compares are integer-keyed, bit-exact against `filterLine`.
+  - **P3.T7 Constant/Solid:** no region or placement change was needed.
+  - **Follow-ups for M109 - GPU Region Engine Hardening:**
+    - A region whose member had an empty input slot hung instead of falling back to the CPU. It wasn't diagnosed: ptrace isn't allowed in the container.
+    - `collectPreRenderFrames` records one edge when a node feeds two inputs of one consumer, which contradicts `FrameGraph::Task`'s comment. The CPU pre-renders one input and fetches the other on demand.

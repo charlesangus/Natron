@@ -348,7 +348,23 @@ User UAT on `M69-2e5e0477d`, 2026-10-13, given in chat.
   - approach: remove P10.T6's "make the tab current first" step. The menu's actions keep acting on the pane's current tab.
   - verify: the GUI `pane-header-menu` section: a right-click on a non-current tab opens the menu at the cursor, and the current tab is unchanged.
   - size: M
-- [ ] M69.P11.T4 — Rebase onto main after M56 merges, end build, scripts and the round-4 UAT AppImage
+- [x] M69.P11.T5 — Never fold a knob automatically
+  - files: `Engine/Knob.h`, `Engine/Knob.cpp`, `Gui/KnobGuiValue.*`, `Gui/KnobGuiColor.*`, `Gui/CurveEditor.cpp`, `Tests/gui/m69_cleanup.py`
+  - approach: the user said, "It should never automatically fold. Once unfolded, it only folds at user request." The auto-fold in `updateGUI` is removed. The fold state lives on the engine knob (`setDimensionsUnfoldedInGui`), so it survives a GUI rebuild. A new knob GUI starts folded only when its components are equal. Auto-expand on differing components stays.
+  - verify: the GUI `expanded-curve` section: equal values plus time-line moves, and close/reopen of the panel, both leave the knob expanded.
+  - size: L
+- [ ] M69.P11.T6 — Save the fold state with the project: one saved value means folded, one per component means expanded
+  - files: TBD after the rebase onto M93's serialization layer (`Serialization/`, `Engine/Knob*.cpp`)
+  - approach:
+    - User decision: "Save with the project. If a knob has one value saved, it's folded, if it has a value per component saved, it's unfolded, and vice versa."
+    - A folded multi-component knob writes one value or curve. An expanded one writes every component.
+    - Loading one value applies it to every component and folds the knob. Loading per-component values expands it.
+    - Done after P11.T4's rebase onto `main`, because M93 rewrote serialization.
+    - Settle what projects saved before this change mean, since they always wrote every component.
+    - Also remove the colour-adjust panel's re-fold on close (`KnobGuiColor.cpp:727`); a close is not a user fold request.
+  - verify: `ProjectSerialization` gtest round-trips a folded and an expanded knob, and the GUI section saves, reloads and checks the fold state.
+  - size: L
+- [ ] M69.P11.T4 — Rebase onto main after M56 merges (M93 also landed), end build, scripts and the round-4 UAT AppImage
   - files: `build/appimages/M69-<sha>.AppImage`, `build/appimages/M69-uat.md`
   - approach: rebase onto `main` with M56; expect conflicts in `CurveWidget*` with M56.P9.T2. Run one `fast` build, ctest, `m69_cleanup.py`, `m55_*`, `m45_tab_menu.py` and `m56_visual.py`, then package.
   - verify: the gate is green, and the user signs off.
@@ -440,3 +456,4 @@ Acceptance sketch:
   - **Fix:** an `expandedByUser` flag stops the auto-fold. Auto-fold also now needs equal keyframes, not just equal values at the current frame.
   - **Undo:** fold/expand is `DimensionsFoldCommand` on the panel's undo stack.
   - **Known limit:** the fold state isn't serialized, as before, so a reload re-derives it from values and keys.
+- 2026-10-13 — **Fold state (user):** the knob never auto-folds (P11.T5, `17a952426`), and the fold state is saved with the project (P11.T6). The rebase onto M93 must come first, so T4 splits: rebase, then T6, then the build.

@@ -459,6 +459,12 @@ Q_SIGNALS:
      **/
     void keyInterpolationChanged();
 
+    /**
+     *@brief Emitted when a multi-dimensional knob's dimensions are folded to a single value (true)
+     * or expanded back to one value per dimension (false).
+     **/
+    void dimensionsFoldedChanged(bool folded);
+
     ///emitted when the description label is clicked
     void labelClicked(bool);
 

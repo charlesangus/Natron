@@ -43,14 +43,15 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 
 #include "Engine/Bezier.h"
-#include "Engine/Knob.h"
 #include "Engine/Curve.h"
-#include "Engine/Node.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/Knob.h"
 #include "Engine/KnobFile.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoStrokeItem.h"
-#include "Engine/EffectInstance.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -397,6 +398,44 @@ CurveEditor::removeNode(NodeGui* node)
     _imp->curveWidget->centerOn(-10, 500, -10, 10);
 }
 
+static bool
+isKnobFoldedInCurveEditor(const KnobGuiPtr& kgui,
+                          const KnobIPtr& knob)
+{
+    if (!knob || (knob->getDimension() <= 1)) {
+        return false;
+    }
+    if (kgui) {
+        return !kgui->getAllDimensionsVisible();
+    }
+
+    // Without a knob GUI there is no fold button to read, so apply the panel's auto-fold rule instead.
+    bool autoFold = false;
+    if (dynamic_cast<KnobColor*>(knob.get())) {
+        autoFold = true;
+    } else if (KnobDouble* isDouble = dynamic_cast<KnobDouble*>(knob.get())) {
+        autoFold = isDouble->isAutoFoldDimensionsEnabled();
+    }
+    if (!autoFold) {
+        return false;
+    }
+    CurvePtr refCurve = knob->getCurve(ViewIdx(0), 0, true);
+    const KeyFrameSet refKeys = refCurve ? refCurve->getKeyFrames_mt_safe() : KeyFrameSet();
+    const std::string refExpr = knob->getExpression(0);
+    for (int i = 1; i < knob->getDimension(); ++i) {
+        if (knob->getExpression(i) != refExpr) {
+            return false;
+        }
+        CurvePtr curve = knob->getCurve(ViewIdx(0), i, true);
+        const KeyFrameSet keys = curve ? curve->getKeyFrames_mt_safe() : KeyFrameSet();
+        if (keys != refKeys) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static void
 createElementsForKnob(QTreeWidgetItem* parent,
                       const KnobGuiPtr& kgui,
@@ -434,6 +473,8 @@ createElementsForKnob(QTreeWidgetItem* parent,
 
     CurveGuiPtr knobCurve;
     bool hideKnob = true;
+    std::vector<NodeCurveEditorElement*> dimElements;
+    const bool folded = isKnobFoldedInCurveEditor(kgui, k);
 
     if (k->getDimension() == 1) {
         if (kgui) {
@@ -469,8 +510,9 @@ createElementsForKnob(QTreeWidgetItem* parent,
             curveWidget->addCurveAndSetColor(dimCurve);
 
             elements.push_back(elem);
+            dimElements.push_back(elem);
             std::string expr = k->getExpression(j);
-            if ( !dimCurve->getInternalCurve()->isAnimated() && expr.empty() ) {
+            if ((folded && (j > 0)) || (!dimCurve->getInternalCurve()->isAnimated() && expr.empty())) {
                 dimItem->setHidden(true);
             } else {
                 *hasCurveVisible = true;
@@ -491,6 +533,9 @@ createElementsForKnob(QTreeWidgetItem* parent,
         elem = new NodeCurveEditorElement(tree, curveEditor, k, 0, knobItem, knobCurve);
     }
     elements.push_back(elem);
+    if (!dimElements.empty()) {
+        elem->setKnobDimensionElements(dimElements);
+    }
 } // createElementsForKnob
 
 NodeCurveEditorContext::NodeCurveEditorContext(QTreeWidget* tree,
@@ -599,6 +644,9 @@ NodeCurveEditorElement::getInternalKnob() const
 void
 NodeCurveEditorElement::setVisible(bool visible)
 {
+    if (_hiddenByFold) {
+        visible = false;
+    }
     if (visible) {
         //show the item
         if (!_curveDisplayed) {
@@ -618,7 +666,7 @@ NodeCurveEditorElement::setVisible(bool visible)
         //hide the item
         //hiding is a bit more complex because we do not always hide the parent too,it also
         // depends on the item's siblings visibility
-        if (_curveDisplayed) {
+        if (_curveDisplayed || (_curve && !_treeItem->isHidden())) {
             _curveDisplayed = false;
             _treeItem->setHidden(true);
             checkIfHiddenRecursivly( _treeWidget, _treeItem->parent() );
@@ -631,6 +679,18 @@ void
 NodeCurveEditorElement::checkVisibleState(bool autoSelectOnShow)
 {
     if (!_curve) {
+        if (!_dimensionElements.empty()) {
+            const bool folded = isKnobFoldedInCurveEditor(_knob.lock(), getInternalKnob());
+            if (folded != _knobFolded) {
+                applyFoldState(folded);
+            }
+        }
+
+        return;
+    }
+    if (_hiddenByFold) {
+        setVisible(false);
+
         return;
     }
 
@@ -687,6 +747,77 @@ NodeCurveEditorElement::checkVisibleState()
 } // checkVisibleState
 
 void
+NodeCurveEditorElement::setKnobDimensionElements(const std::vector<NodeCurveEditorElement*>& dimensionElements)
+{
+    _dimensionElements = dimensionElements;
+    KnobGuiPtr kgui = _knob.lock();
+    _knobFolded = isKnobFoldedInCurveEditor(kgui, getInternalKnob());
+    for (std::size_t i = 0; i < _dimensionElements.size(); ++i) {
+        NodeCurveEditorElement* dimElem = _dimensionElements[i];
+        if (dimElem->_dimension == 0) {
+            dimElem->_foldedKnobDimensionZero = _knobFolded;
+        } else {
+            dimElem->_hiddenByFold = _knobFolded;
+            if (_knobFolded) {
+                dimElem->_curveDisplayed = false;
+            }
+        }
+    }
+    if (_knobFolded && !_dimensionElements.empty()) {
+        NodeCurveEditorElement* dimZero = _dimensionElements.front();
+        KnobIPtr knob = getInternalKnob();
+        if (knob && dimZero->_curve) {
+            const QString label = QString::fromUtf8(knob->getLabel().c_str());
+            dimZero->_treeItem->setText(0, label);
+            dimZero->_curve->setName(label);
+        }
+    }
+    if (kgui) {
+        QObject::connect(kgui.get(), SIGNAL(dimensionsFoldedChanged(bool)), this, SLOT(onDimensionsFoldedChanged(bool)));
+    }
+}
+
+void
+NodeCurveEditorElement::onDimensionsFoldedChanged(bool folded)
+{
+    if (folded != _knobFolded) {
+        applyFoldState(folded);
+    }
+}
+
+void
+NodeCurveEditorElement::applyFoldState(bool folded)
+{
+    _knobFolded = folded;
+    KnobIPtr knob = getInternalKnob();
+    if (!knob) {
+        return;
+    }
+    const QString knobLabel = QString::fromUtf8(knob->getLabel().c_str());
+    for (std::size_t i = 0; i < _dimensionElements.size(); ++i) {
+        NodeCurveEditorElement* dimElem = _dimensionElements[i];
+        if (dimElem->_dimension == 0) {
+            dimElem->_foldedKnobDimensionZero = folded;
+            if (dimElem->_curve) {
+                const QString dimName = QString::fromUtf8(knob->getDimensionName(0).c_str());
+                dimElem->_treeItem->setText(0, folded ? knobLabel : dimName);
+                dimElem->_curve->setName(folded ? knobLabel : knobLabel + QLatin1Char('.') + dimName);
+            }
+        } else {
+            dimElem->_hiddenByFold = folded;
+        }
+    }
+    for (std::size_t i = 0; i < _dimensionElements.size(); ++i) {
+        _dimensionElements[i]->checkVisibleState(false);
+    }
+    _curveWidget->onItemSelectionChanged();
+    CurveGuiPtr selected = _curveWidget->getSelectedCurve();
+    if (selected) {
+        _curveWidget->setSelectedCurve(selected);
+    }
+}
+
+void
 NodeCurveEditorElement::onExpressionChanged()
 {
     if (_curveWidget->getSelectedCurve() == _curve) {
@@ -697,7 +828,7 @@ NodeCurveEditorElement::onExpressionChanged()
     checkVisibleState();
 }
 
-NodeCurveEditorElement::NodeCurveEditorElement(QTreeWidget *tree,
+NodeCurveEditorElement::NodeCurveEditorElement(QTreeWidget* tree,
                                                CurveEditor* curveWidget,
                                                const KnobGuiPtr& knob,
                                                int dimension,
@@ -711,6 +842,10 @@ NodeCurveEditorElement::NodeCurveEditorElement(QTreeWidget *tree,
     , _knob(knob)
     , _internalKnob()
     , _dimension(dimension)
+    , _dimensionElements()
+    , _knobFolded(false)
+    , _hiddenByFold(false)
+    , _foldedKnobDimensionZero(false)
 {
     if (knob) {
         QObject::connect( knob.get(), SIGNAL(keyFrameSet()), this, SLOT(checkVisibleState()) );
@@ -727,7 +862,7 @@ NodeCurveEditorElement::NodeCurveEditorElement(QTreeWidget *tree,
     }
 }
 
-NodeCurveEditorElement::NodeCurveEditorElement(QTreeWidget *tree,
+NodeCurveEditorElement::NodeCurveEditorElement(QTreeWidget* tree,
                                                CurveEditor* curveWidget,
                                                const KnobIPtr& internalKnob,
                                                int dimension,
@@ -741,6 +876,10 @@ NodeCurveEditorElement::NodeCurveEditorElement(QTreeWidget *tree,
     , _knob()
     , _internalKnob(internalKnob)
     , _dimension(dimension)
+    , _dimensionElements()
+    , _knobFolded(false)
+    , _hiddenByFold(false)
+    , _foldedKnobDimensionZero(false)
 {
     if (internalKnob) {
         KnobSignalSlotHandlerPtr handler = internalKnob->getSignalSlotHandler();
@@ -1015,7 +1154,7 @@ CurveEditor::showCurve(const KnobGuiPtr& knob,
          it != _imp->nodes.end(); ++it) {
         NodeCurveEditorElement* elem = (*it)->findElement(knob, dimension);
         if (elem) {
-            if ( elem->getCurve()->getInternalCurve()->isAnimated() ) {
+            if (!elem->isHiddenByFold() && elem->getCurve()->getInternalCurve()->isAnimated()) {
                 elem->getCurve()->setVisible(true);
                 elem->getTreeItem()->setHidden(false);
                 if ( elem->getTreeItem()->parent() ) {
@@ -1041,7 +1180,7 @@ CurveEditor::showCurves(const KnobGuiPtr& knob)
              it != _imp->nodes.end(); ++it) {
             NodeCurveEditorElement* elem = (*it)->findElement(knob, i);
             if (elem) {
-                if ( elem->getCurve()->getInternalCurve()->isAnimated() ) {
+                if (!elem->isHiddenByFold() && elem->getCurve()->getInternalCurve()->isAnimated()) {
                     elem->getCurve()->setVisible(true);
                     elem->getTreeItem()->setHidden(false);
                     if ( elem->getTreeItem()->parent() ) {
@@ -1174,7 +1313,7 @@ recursiveSelectElement(const std::list<NodeCurveEditorElement*>& elements,
         for (std::list<NodeCurveEditorElement*>::const_iterator it = elements.begin(); it != elements.end(); ++it) {
             CurveGuiPtr curve = (*it)->getCurve();
             cur->setSelected(true);
-            if ( curve  && curve->getInternalCurve()->isAnimated() ) {
+            if (curve && !(*it)->isHiddenByFold() && curve->getInternalCurve()->isAnimated()) {
                 curves->push_back(curve);
             }
         }
@@ -1607,7 +1746,7 @@ CurveEditor::setSelectedCurve(const CurveGuiPtr& curve)
                 ss << effect->getNode()->getFullyQualifiedName();
                 ss << '.';
                 ss << knob->getName();
-                if (knob->getDimension() > 1) {
+                if ((knob->getDimension() > 1) && !isFoldedKnobDimensionZero(knobCurve.get())) {
                     ss << '.';
                     ss << knob->getDimensionName( knobCurve->getDimension() );
                 }
@@ -1636,6 +1775,35 @@ CurveEditor::setSelectedCurve(const CurveGuiPtr& curve)
     _imp->resultLabel->setText( QString::fromUtf8("= ") );
     _imp->resultLabel->setAltered(true);
 } // CurveEditor::setSelectedCurve
+
+bool
+CurveEditor::isFoldedKnobDimensionZero(const CurveGui* curve) const
+{
+    if (!curve) {
+        return false;
+    }
+    for (std::list<NodeCurveEditorContext*>::const_iterator it = _imp->nodes.begin(); it != _imp->nodes.end(); ++it) {
+        const NodeCurveEditorContext::Elements& elems = (*it)->getElements();
+        for (NodeCurveEditorContext::Elements::const_iterator it2 = elems.begin(); it2 != elems.end(); ++it2) {
+            if ((*it2)->getCurve().get() == curve) {
+                return (*it2)->isFoldedKnobDimensionZero();
+            }
+        }
+    }
+    for (std::list<RotoCurveEditorContext*>::const_iterator it = _imp->rotos.begin(); it != _imp->rotos.end(); ++it) {
+        const std::list<RotoItemEditorContext*>& items = (*it)->getElements();
+        for (std::list<RotoItemEditorContext*>::const_iterator it2 = items.begin(); it2 != items.end(); ++it2) {
+            const std::list<NodeCurveEditorElement*>& elems = (*it2)->getElements();
+            for (std::list<NodeCurveEditorElement*>::const_iterator it3 = elems.begin(); it3 != elems.end(); ++it3) {
+                if ((*it3)->getCurve().get() == curve) {
+                    return (*it3)->isFoldedKnobDimensionZero();
+                }
+            }
+        }
+    }
+
+    return false;
+}
 
 void
 CurveEditor::refreshCurrentExpression()

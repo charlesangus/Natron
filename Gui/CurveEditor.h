@@ -78,7 +78,14 @@ public:
                            const CurveGuiPtr& curve);
 
     NodeCurveEditorElement()
-        : _treeItem(), _curve(), _curveDisplayed(false), _curveWidget(NULL)
+        : _treeItem()
+        , _curve()
+        , _curveDisplayed(false)
+        , _curveWidget(NULL)
+        , _dimensionElements()
+        , _knobFolded(false)
+        , _hiddenByFold(false)
+        , _foldedKnobDimensionZero(false)
     {
     }
 
@@ -115,6 +122,28 @@ public:
 
     void checkVisibleState(bool autoSelectOnShow);
 
+    /**
+     * @brief Called on the knob-level element of a multi-dimensional knob with the elements of each of its
+     * dimensions, so that it can show a single curve while the knob is folded.
+     **/
+    void setKnobDimensionElements(const std::vector<NodeCurveEditorElement*>& dimensionElements);
+
+    /**
+     * @brief True for dimensions 1..n of a folded knob: they stay hidden whatever their animation.
+     **/
+    bool isHiddenByFold() const WARN_UNUSED_RETURN
+    {
+        return _hiddenByFold;
+    }
+
+    /**
+     * @brief True for the dimension 0 curve of a folded knob, which stands for all of its dimensions.
+     **/
+    bool isFoldedKnobDimensionZero() const WARN_UNUSED_RETURN
+    {
+        return _foldedKnobDimensionZero;
+    }
+
 public Q_SLOTS:
 
 
@@ -126,8 +155,10 @@ public Q_SLOTS:
 
     void onExpressionChanged();
 
-private:
+    void onDimensionsFoldedChanged(bool folded);
 
+private:
+    void applyFoldState(bool folded);
 
     QTreeWidgetItem* _treeItem;
     CurveGuiPtr _curve;
@@ -137,6 +168,10 @@ private:
     KnobGuiWPtr _knob;
     KnobIWPtr _internalKnob;
     int _dimension;
+    std::vector<NodeCurveEditorElement*> _dimensionElements;
+    bool _knobFolded;
+    bool _hiddenByFold;
+    bool _foldedKnobDimensionZero;
 };
 
 class NodeCurveEditorContext
@@ -360,6 +395,11 @@ public:
     void setSelectedCurve(const CurveGuiPtr& curve);
 
     CurveGuiPtr getSelectedCurve() const;
+
+    /**
+     * @brief True when the curve is dimension 0 of a knob folded to a single value in its properties panel.
+     **/
+    bool isFoldedKnobDimensionZero(const CurveGui* curve) const WARN_UNUSED_RETURN;
 
     void refreshCurrentExpression();
 

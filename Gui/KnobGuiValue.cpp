@@ -101,6 +101,7 @@ struct KnobGuiValuePrivate
     QGridLayout* dimensionLinesLayout;
     std::vector<ScaleSliderQWidget*> dimensionSliders; // indexed by dimension; entry 0 stays null, the row's slider drives it
     bool autoFoldSuppressed;
+    bool dimensionsFolded;
 
     KnobGuiValuePrivate(KnobIPtr knob)
         : knob(knob)
@@ -117,6 +118,7 @@ struct KnobGuiValuePrivate
         , dimensionLinesLayout(0)
         , dimensionSliders()
         , autoFoldSuppressed(false)
+        , dimensionsFolded(false)
     {
     }
 
@@ -973,6 +975,10 @@ KnobGuiValue::expandAllDimensions()
         _imp->dimensionLines->show();
     }
     onDimensionsExpanded();
+    if (_imp->dimensionsFolded) {
+        _imp->dimensionsFolded = false;
+        Q_EMIT dimensionsFoldedChanged(false);
+    }
 }
 
 void
@@ -995,6 +1001,10 @@ KnobGuiValue::foldAllDimensions()
         _imp->dimensionLines->hide();
     }
     onDimensionsFolded();
+    if (!_imp->dimensionsFolded) {
+        _imp->dimensionsFolded = true;
+        Q_EMIT dimensionsFoldedChanged(true);
+    }
 }
 
 void

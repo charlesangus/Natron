@@ -887,6 +887,22 @@ usableView(const GpuImageView& view,
 {
     return view.buffer && (view.nComps == nComps) && (view.rowStrideFloats >= view.bounds.width() * nComps) && ((view.byteOffset % sizeof(float)) == 0);
 }
+
+// view over r, a rect inside view.bounds; no buffer when r is empty, which reads as zero.
+GpuImageView
+cropView(const GpuImageView& view,
+         const RectI& r)
+{
+    GpuImageView out;
+    if (isEmptyRect(r)) {
+        return out;
+    }
+    out = view;
+    out.bounds = r;
+    out.byteOffset += ((uint64_t)(r.y1 - view.bounds.y1) * view.rowStrideFloats + (uint64_t)(r.x1 - view.bounds.x1) * view.nComps) * sizeof(float);
+
+    return out;
+}
 } // anonymous namespace
 #endif
 
@@ -894,18 +910,15 @@ bool
 Blur::canRenderOnGpu(const GpuQuery& query) const
 {
 #ifdef NATRON_HAVE_GPU
-    if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps < 1) || (query.nComps > (int)gpu::kGpuBlurMaxChannels) || query.hasMask || (query.mix != 1.) || (query.unPremultChannel != -1)) {
+    if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps < 1) || (query.nComps > (int)gpu::kGpuBlurMaxChannels)) {
         return false;
     }
-    // render() passes unprocessed channels through from the source, which the kernel does not.
-    for (int c = 0; c < 4; ++c) {
-        if (!query.processChannels[c]) {
-            return false;
-        }
+    if ((query.hasMask && !query.maskInPlane) || ((query.unPremultChannel >= 0) && !query.unPremultInPlane)) {
+        return false;
     }
     BlurParams params;
     getParams(query.time, query.view, &params);
-    if ((params.filter != BlurKernels::eFilterFIRGaussian) || (params.orderX != 0) || (params.orderY != 0) || (params.alphaThreshold > 0.)) {
+    if ((params.filter != BlurKernels::eFilterFIRGaussian) || (params.orderX != 0) || (params.orderY != 0)) {
         return false;
     }
     const OfxPointD rs = query.mappedScale.toOfxPointD();
@@ -976,18 +989,73 @@ Blur::renderGpu(const GpuRenderArgs& args)
     const std::vector<float> weightsX = BlurKernels::LineFilter::firGaussianWeights(rs.x * params.sizeX / 2.4);
     const std::vector<float> weightsY = BlurKernels::LineFilter::firGaussianWeights(rs.y * params.sizeY / 2.4);
 
+    int divisor = -1;
+    if (!getGpuUnPremultComponent(args.query, &divisor)) {
+        return eStatusFailed;
+    }
+    const bool blurred = (firRadius(rs.x * params.sizeX) > 0) || (firRadius(rs.y * params.sizeY) > 0);
+    float alphaThreshold = 0.f;
+    if (blurred && (params.alphaThreshold > 0.)) {
+        // The smallest float not below the threshold, so that a float alpha compares with it as
+        // render() compares it with the double.
+        alphaThreshold = (float)params.alphaThreshold;
+        if ((double)alphaThreshold < params.alphaThreshold) {
+            alphaThreshold = std::nextafter(alphaThreshold, FLT_MAX);
+        }
+    }
+    bool allChannels = true;
+    for (int c = 0; c < 4; ++c) {
+        allChannels = allChannels && args.query.processChannels[c];
+    }
+    const bool finish = args.query.hasMask || (getMixValue(time, view) != 1.) || !allChannels || (divisor >= 0) || (alphaThreshold > 0.f);
+
+    // The source view may extend past the input's region of definition; render() reads the
+    // divisor there as 1, as the wrap does outside its source view.
+    GpuRenderArgs wrapArgs(args);
+    wrapArgs.inputs[0] = cropView(src, valid);
+
+    gpu::GpuRecordContext& ctx = args.context;
     gpu::GpuSeparableBlur blur;
     blur.src = gpuImage(src);
     blur.srcValid = gpuRect(valid);
-    blur.dst = gpuImage(dst);
+    if ((divisor >= 0) && !isEmptyRect(valid)) {
+        GpuImageView divided;
+        divided.bounds = valid;
+        divided.nComps = nComps;
+        divided.rowStrideFloats = valid.width() * nComps;
+        if (!ctx.scratch((VkDeviceSize)valid.area() * nComps * sizeof(float), divided.buffer) || (recordGpuDivide(wrapArgs, divided) != eStatusOK)) {
+            return eStatusFailed;
+        }
+        ctx.computeBarrier();
+        blur.src = gpuImage(divided);
+    }
+
+    GpuImageView filtered = dst;
+    if (finish) {
+        filtered = GpuImageView();
+        filtered.bounds = rect;
+        filtered.nComps = nComps;
+        filtered.rowStrideFloats = rect.width() * nComps;
+        if (!ctx.scratch((VkDeviceSize)rect.area() * nComps * sizeof(float), filtered.buffer)) {
+            return eStatusFailed;
+        }
+    }
+    blur.dst = gpuImage(filtered);
     blur.output = gpuRect(rect);
     blur.domain = gpuRect(domain);
     blur.channels = (uint32_t)nComps;
     blur.neumann = params.neumann;
     blur.weightsX = weightsX;
     blur.weightsY = weightsY;
+    if (!gpu::recordSeparableBlur(ctx, blur)) {
+        return eStatusFailed;
+    }
+    if (!finish) {
+        return eStatusOK;
+    }
+    ctx.computeBarrier();
 
-    return gpu::recordSeparableBlur(args.context, blur) ? eStatusOK : eStatusFailed;
+    return recordGpuFinish(wrapArgs, filtered, alphaThreshold);
 #else
     Q_UNUSED(args);
 

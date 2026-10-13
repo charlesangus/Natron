@@ -37,6 +37,10 @@
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
+namespace gpu {
+struct GpuWrap;
+}
+
 NATRON_NAMESPACE_ENTER
 
 /**
@@ -219,6 +223,34 @@ protected:
 
     double getMixValue(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The component of the rendered plane that "(Un)premult by" divides by at query's
+     * time and view, -1 when there is none. False when the divisor lies outside the plane, which
+     * canRenderOnGpu() must refuse.
+     **/
+    bool getGpuUnPremultComponent(const GpuQuery& query, int* component) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For a spatial node's renderGpu(): records the source over scratch.bounds into
+     * scratch, divided by the "(Un)premult by" channel where that is usable, as render()'s
+     * spatial nodes fill their buffer. Every channel is written; the source reads zero outside its
+     * view. scratch has the plane's channel count.
+     **/
+    StatusEnum recordGpuDivide(const GpuRenderArgs& args,
+                               const GpuImageView& scratch) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For a spatial node's renderGpu(): writes args.output over args.outputRect from
+     * filtered, the filter's result over a rect containing outputRect, as render()'s spatial
+     * nodes write their window: processed channels multiplied back by the divisor and blended
+     * with the undivided source by mask x mix, unprocessed channels passed through. With
+     * alphaThreshold > 0, a filtered alpha below it reads zero first. Recorded work that wrote
+     * filtered must be ordered before it with a compute barrier.
+     **/
+    StatusEnum recordGpuFinish(const GpuRenderArgs& args,
+                               const GpuImageView& filtered,
+                               float alphaThreshold = 0.f) WARN_UNUSED_RETURN;
+
     bool getMaskInvertValue(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     /**
@@ -237,6 +269,10 @@ protected:
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE WARN_UNUSED_RETURN;
 
 private:
+    // The wrap of args' source, mask, mix, processed channels and divisor, for the caller to
+    // give an output and a destination.
+    bool makeGpuWrap(const GpuRenderArgs& args, gpu::GpuWrap* wrap) WARN_UNUSED_RETURN;
+
     NativeImageTraits _traits;
     KnobDoubleWPtr _mix;
     KnobBoolWPtr _maskInvert;

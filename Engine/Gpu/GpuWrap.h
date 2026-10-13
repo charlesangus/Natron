@@ -40,12 +40,14 @@ struct GpuWrapParams {
     int32_t skipChannel;
     float mix;
     uint32_t flags;
+    float alphaThreshold;
 };
-static_assert(sizeof(GpuWrapParams) == 112);
+static_assert(sizeof(GpuWrapParams) == 116);
 static_assert(sizeof(GpuWrapParams) <= GpuKernel::kMaxPushConstantBytes);
 
 inline constexpr uint32_t kGpuWrapFlagMask = 1;
 inline constexpr uint32_t kGpuWrapFlagMaskInvert = 2;
+inline constexpr uint32_t kGpuWrapFlagAlphaThreshold = 4;
 
 // Bindings of every kernel built on pixelwrap.slang: source, destination, mask, then the op's
 // parameter block (the filtered result for wrap_finish).
@@ -92,6 +94,8 @@ struct GpuWrap {
     int32_t divisorChannel = -1;
     // The component that is the divisor itself, left undivided, or -1.
     int32_t skipChannel = -1;
+    // Above 0, wrap_finish zeroes a filtered alpha (colour bit 3) below it before multiplying back.
+    float alphaThreshold = 0.0f;
 };
 
 // Validates the geometry of `wrap` and packs it for a dispatch over its output; buffers are only

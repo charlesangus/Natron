@@ -144,9 +144,9 @@ public:
     static bool paramsAreIdentity(const RenderScale& scale, const BlurParams& params) WARN_UNUSED_RETURN;
 
     /**
-     * @brief The FIR Gaussian without derivative, alpha threshold, mask, partial mix, unpremult or
-     * channel subset, on float images of 1 to 4 components, with a radius the GPU kernel's tile
-     * holds.
+     * @brief The FIR Gaussian without derivative, on float images of 1 to 4 components, with a
+     * radius the GPU kernel's tile holds and any mask or "(Un)premult by" channel in the rendered
+     * plane.
      **/
     virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 

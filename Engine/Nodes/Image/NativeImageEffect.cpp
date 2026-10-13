@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bitset>
 #include <cstddef>
 #include <functional>
 #include <list>
@@ -358,6 +359,99 @@ NativeImageEffect::canRenderOnGpu(const GpuQuery& query) const
 #endif
 }
 
+bool
+NativeImageEffect::getGpuUnPremultComponent(const GpuQuery& query,
+                                            int* component)
+{
+    *component = -1;
+    NodePtr node = getNode();
+    KnobChannelSelectPtr unPremultBy = (_traits.hostUnPremult && node) ? node->getUnPremultBySelector() : KnobChannelSelectPtr();
+    if (!unPremultBy || unPremultBy->isNone() || !getInput(0)) {
+        return true;
+    }
+    std::list<ImageLayerDesc> availableLayers;
+    getAvailableLayers(query.time, query.view, 0, &availableLayers);
+    ImageLayerDesc divisorLayer;
+    const int divisorChannel = node->getUnPremultChannel(availableLayers, &divisorLayer);
+    if ((divisorChannel < 0) || (divisorLayer.getNumComponents() == 0)) {
+        return true;
+    }
+    if (!query.unPremultInPlane) {
+        return false;
+    }
+    // A colour divisor lies in a colour plane of nComps channels; any other lies in its own layer.
+    const ImageLayerDesc plane = divisorLayer.isColorLayer() ? ImageLayerDesc::mapNCompsToColorLayer(query.nComps) : divisorLayer;
+    const int c = Node::getUnPremultSkipChannel(plane, divisorLayer, divisorChannel);
+    if ((c < 0) || (c >= query.nComps)) {
+        return false;
+    }
+    *component = c;
+
+    return true;
+}
+
+bool
+NativeImageEffect::makeGpuWrap(const GpuRenderArgs& args,
+                               gpu::GpuWrap* wrap)
+{
+#ifdef NATRON_HAVE_GPU
+    const GpuQuery& query = args.query;
+    const double time = query.time;
+    const ViewIdx view = query.view;
+    const int nComps = query.nComps;
+
+    wrap->nComps = (uint32_t)nComps;
+    std::bitset<4> channels;
+    for (int i = 0; i < 4; ++i) {
+        channels[i] = query.processChannels[i];
+    }
+    wrap->channelMask = (uint32_t)channels.to_ulong();
+    wrap->mix = (float)getMixValue(time, view);
+
+    // An input that is not connected reads zero, as render() reads it.
+    const bool hasSource = !args.inputs.empty() && args.inputs[0].buffer;
+    wrap->src.nComps = (uint32_t)nComps;
+    if (hasSource && !toWrapView(args.inputs[0], &wrap->src)) {
+        return false;
+    }
+
+    if (hasSource) {
+        int component = -1;
+        if (!getGpuUnPremultComponent(query, &component)) {
+            return false;
+        }
+        wrap->divisorChannel = component;
+        wrap->skipChannel = component;
+    }
+
+    const int maskInput = getMaskInput();
+    if (query.hasMask && (maskInput >= 0)) {
+        wrap->applyMask = true;
+        wrap->maskInvert = getMaskInvertValue(time, view);
+        // A mask render() cannot fetch reads zero everywhere.
+        wrap->mask.nComps = 1;
+        const bool hasMask = (maskInput < (int)args.inputs.size()) && args.inputs[maskInput].buffer;
+        ImageLayerDesc maskLayer;
+        int maskChannel = -1;
+        if (hasMask && resolveInputPlaneForRender(maskInput, time, view, &maskLayer, &maskChannel) && (maskChannel >= 0) && (maskChannel < maskLayer.getNumComponents())) {
+            const GpuImageView& maskView = args.inputs[maskInput];
+            const int component = maskViewComponent(maskLayer, maskChannel, maskView.nComps);
+            if ((component < 0) || (component >= maskView.nComps) || !toWrapView(maskView, &wrap->mask)) {
+                return false;
+            }
+            wrap->maskChannel = (uint32_t)component;
+        }
+    }
+
+    return true;
+#else
+    Q_UNUSED(args);
+    Q_UNUSED(wrap);
+
+    return false;
+#endif
+}
+
 StatusEnum
 NativeImageEffect::renderGpu(const GpuRenderArgs& args)
 {
@@ -366,13 +460,10 @@ NativeImageEffect::renderGpu(const GpuRenderArgs& args)
     if (!canRenderOnGpu(query) || args.outputRect.isNull()) {
         return eStatusFailed;
     }
-    const double time = query.time;
-    const ViewIdx view = query.view;
-    const int nComps = query.nComps;
 
     KernelContext context;
-    context.time = time;
-    context.view = view;
+    context.time = query.time;
+    context.view = query.view;
     context.mappedScale = query.mappedScale;
     for (int i = 0; i < 4; ++i) {
         context.processChannels[i] = query.processChannels[i];
@@ -383,60 +474,12 @@ NativeImageEffect::renderGpu(const GpuRenderArgs& args)
     }
 
     gpu::GpuWrap wrap;
-    wrap.nComps = (uint32_t)nComps;
+    if (!makeGpuWrap(args, &wrap)) {
+        return eStatusFailed;
+    }
     wrap.output = gpu::GpuWrapRect { args.outputRect.x1, args.outputRect.y1, args.outputRect.x2, args.outputRect.y2 };
     if (!toWrapView(args.output, &wrap.dst)) {
         return eStatusFailed;
-    }
-    wrap.channelMask = (uint32_t)context.processChannels.to_ulong();
-    wrap.mix = (float)getMixValue(time, view);
-
-    // An input that is not connected reads zero, as render() reads it.
-    const bool hasSource = !args.inputs.empty() && args.inputs[0].buffer;
-    wrap.src.nComps = (uint32_t)nComps;
-    if (hasSource && !toWrapView(args.inputs[0], &wrap.src)) {
-        return eStatusFailed;
-    }
-
-    NodePtr node = getNode();
-    KnobChannelSelectPtr unPremultBy = (_traits.hostUnPremult && node) ? node->getUnPremultBySelector() : KnobChannelSelectPtr();
-    if (hasSource && unPremultBy && !unPremultBy->isNone() && getInput(0)) {
-        std::list<ImageLayerDesc> availableLayers;
-        getAvailableLayers(time, view, 0, &availableLayers);
-        ImageLayerDesc divisorLayer;
-        const int divisorChannel = node->getUnPremultChannel(availableLayers, &divisorLayer);
-        if ((divisorChannel >= 0) && (divisorLayer.getNumComponents() > 0)) {
-            if (!query.unPremultInPlane) {
-                return eStatusFailed;
-            }
-            // A colour divisor lies in a colour plane of nComps channels; any other lies in its own layer.
-            const ImageLayerDesc plane = divisorLayer.isColorLayer() ? ImageLayerDesc::mapNCompsToColorLayer(nComps) : divisorLayer;
-            const int component = Node::getUnPremultSkipChannel(plane, divisorLayer, divisorChannel);
-            if ((component < 0) || (component >= nComps)) {
-                return eStatusFailed;
-            }
-            wrap.divisorChannel = component;
-            wrap.skipChannel = component;
-        }
-    }
-
-    const int maskInput = getMaskInput();
-    if (query.hasMask && (maskInput >= 0)) {
-        wrap.applyMask = true;
-        wrap.maskInvert = getMaskInvertValue(time, view);
-        // A mask render() cannot fetch reads zero everywhere.
-        wrap.mask.nComps = 1;
-        const bool hasMask = (maskInput < (int)args.inputs.size()) && args.inputs[maskInput].buffer;
-        ImageLayerDesc maskLayer;
-        int maskChannel = -1;
-        if (hasMask && resolveInputPlaneForRender(maskInput, time, view, &maskLayer, &maskChannel) && (maskChannel >= 0) && (maskChannel < maskLayer.getNumComponents())) {
-            const GpuImageView& maskView = args.inputs[maskInput];
-            const int component = maskViewComponent(maskLayer, maskChannel, maskView.nComps);
-            if ((component < 0) || (component >= maskView.nComps) || !toWrapView(maskView, &wrap.mask)) {
-                return eStatusFailed;
-            }
-            wrap.maskChannel = (uint32_t)component;
-        }
     }
 
     gpu::GpuRecordContext& ctx = args.context;
@@ -456,6 +499,52 @@ NativeImageEffect::renderGpu(const GpuRenderArgs& args)
     return eStatusFailed;
 #endif
 } // NativeImageEffect::renderGpu
+
+StatusEnum
+NativeImageEffect::recordGpuDivide(const GpuRenderArgs& args,
+                                   const GpuImageView& scratch)
+{
+#ifdef NATRON_HAVE_GPU
+    gpu::GpuWrap wrap;
+    if (!makeGpuWrap(args, &wrap) || !toWrapView(scratch, &wrap.dst)) {
+        return eStatusFailed;
+    }
+    wrap.output = wrap.dst.bounds;
+    wrap.applyMask = false;
+    wrap.mix = 1.f;
+
+    return gpu::recordWrapDivide(args.context, wrap) ? eStatusOK : eStatusFailed;
+#else
+    Q_UNUSED(args);
+    Q_UNUSED(scratch);
+
+    return eStatusFailed;
+#endif
+}
+
+StatusEnum
+NativeImageEffect::recordGpuFinish(const GpuRenderArgs& args,
+                                   const GpuImageView& filtered,
+                                   float alphaThreshold)
+{
+#ifdef NATRON_HAVE_GPU
+    gpu::GpuWrap wrap;
+    gpu::GpuWrapView filteredView;
+    if (args.outputRect.isNull() || !makeGpuWrap(args, &wrap) || !toWrapView(args.output, &wrap.dst) || !toWrapView(filtered, &filteredView)) {
+        return eStatusFailed;
+    }
+    wrap.output = gpu::GpuWrapRect { args.outputRect.x1, args.outputRect.y1, args.outputRect.x2, args.outputRect.y2 };
+    wrap.alphaThreshold = alphaThreshold;
+
+    return gpu::recordWrapFinish(args.context, wrap, filteredView) ? eStatusOK : eStatusFailed;
+#else
+    Q_UNUSED(args);
+    Q_UNUSED(filtered);
+    Q_UNUSED(alphaThreshold);
+
+    return eStatusFailed;
+#endif
+}
 
 void
 NativeImageEffect::addMaskMixKnobs(const KnobPagePtr& page)

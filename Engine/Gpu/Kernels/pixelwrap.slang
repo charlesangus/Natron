@@ -40,6 +40,7 @@ struct WrapParams
     int skipChannel;
     float mix;
     uint flags;
+    float alphaThreshold;
 };
 
 [[vk::binding(0, 0)]] StructuredBuffer<float> wrapSrc;
@@ -51,6 +52,7 @@ struct WrapParams
 
 static const uint kWrapMask = 1;
 static const uint kWrapMaskInvert = 2;
+static const uint kWrapAlphaThreshold = 4;
 
 // The op sees and returns pixels in channel-bit order, absent channels reading as zero, and only
 // the channels in channelMask of its result are kept.
@@ -234,6 +236,8 @@ void wrap_finish(uint3 tid : SV_DispatchThreadID)
     float4 filtered = float4(0.0, 0.0, 0.0, 0.0);
     for (uint c = 0; c < n && c < 4; ++c)
         filtered[wrapChannelBit(n, c)] = asfloat(wrapAux[base + c]);
+    if ((wrap.flags & kWrapAlphaThreshold) != 0 && filtered.a < wrap.alphaThreshold)
+        filtered.a = 0.0;
     wrapWrite(tid.xy, p, src, filtered, d);
 }
 

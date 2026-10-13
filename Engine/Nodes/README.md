@@ -828,7 +828,8 @@ bound beside its CPU class, or a measured exception below it, in the same change
 that lets the node answer `canRenderOnGpu()`. Vulkan division is 2.5 ulp and
 `pow` and the trigonometric functions are looser still, so a GPU bound is
 usually wider than the CPU class of the same node. Grade holds `gradefix::kUlpBound` (`Tests/Gpu/GradeFixture.h`) and Blur holds
-2e-6 absolute.
+2e-6 absolute, plus 1e-6 relative with "(Un)premult by", whose divided values
+reach far above 1.
 
 `Tests/Native/NativeGpuParity.{h,cpp}` is the shared harness. A test names its
 bound with `ParityTolerance` and compares through `compareImages()`.

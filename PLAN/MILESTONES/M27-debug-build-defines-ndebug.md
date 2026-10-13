@@ -24,7 +24,7 @@ source would look identical from the compile line.
   - verify: `grep NDEBUG build/debug/compile_commands.json` comes back empty for `Engine/`, `Gui/` and `Tests/` translation units after a `--reconfigure`; a temporary `assert(false)` in an engine function reached by a ctest case aborts the run (remove it after); the release build still defines `NDEBUG`; whole ctest suite green.
   - size: M
 
-- [ ] M27.P1.T2 — Audit what the inert assertions were hiding
+- [x] M27.P1.T2 — Audit what the inert assertions were hiding
   - files: wherever the audit leads; expected `Engine/EffectInstanceRenderDeep.cpp`, `Engine/DeepFlatten.cpp`, `Engine/Node.cpp`
   - approach: with assertions live, run the whole ctest suite and fix what fires. Assertions that have been no-ops for the life of this fork may encode assumptions the code has since broken, and M18 added several on purpose (the TLS frame-args requirement in `renderDeepRoIFlattened`, the single-`splitRoi` assumption). An assertion that fires is either a real defect or a stale assertion — decide which per case and say which in the commit, never silence one to get green.
   - verify: whole ctest suite green with assertions live, and each assertion changed or removed is justified in the commit message.

@@ -31,10 +31,20 @@
 #include <string>
 
 #include "Engine/KnobTypes.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 #include "Engine/Nodes/Image/ColorMath.h"
 #include "Engine/RenderScale.h"
 
 NATRON_NAMESPACE_ENTER
+
+struct SaturationValues {
+    double saturation;
+    ColorMath::LuminanceMathEnum luminanceMath;
+    bool clampBlack;
+    bool clampWhite;
+};
 
 namespace {
 class SaturationKernel
@@ -120,6 +130,21 @@ readSaturation(const KnobDoubleWPtr& weak,
 
     return knob ? knob->getValueAtTime(time, 0, view) : 1.;
 }
+
+#ifdef NATRON_HAVE_GPU
+// The parameter block of SaturationOp in saturation.slang, which has no padding between members.
+struct SaturationGpuParams {
+    float saturation;
+    uint32_t flags;
+    float weights[3];
+};
+
+static_assert(sizeof(SaturationGpuParams) == 20, "must match SaturationOp in saturation.slang");
+
+constexpr uint32_t kSaturationGpuClampBlack = 1;
+constexpr uint32_t kSaturationGpuClampWhite = 2;
+constexpr uint32_t kSaturationGpuLumaMax = 4;
+#endif
 } // anonymous namespace
 
 Saturation::Saturation(NodePtr node)
@@ -201,20 +226,70 @@ Saturation::initializeKnobs()
     addMaskMixKnobs(page);
 }
 
-PixelKernelPtr
-Saturation::makeKernel(const KernelContext& context)
+SaturationValues
+Saturation::readValues(double time,
+                       ViewIdx view) const
 {
     KnobChoicePtr math = _luminanceMath.lock();
-    int mathIndex = math ? math->getValueAtTime(context.time, 0, context.view) : (int)ColorMath::eLuminanceMathRec709;
+    int mathIndex = math ? math->getValueAtTime(time, 0, view) : (int)ColorMath::eLuminanceMathRec709;
 
     if ((mathIndex < (int)ColorMath::eLuminanceMathRec709) || (mathIndex > (int)ColorMath::eLuminanceMathMax)) {
         mathIndex = (int)ColorMath::eLuminanceMathRec709;
     }
 
-    return std::make_shared<SaturationKernel>(readSaturation(_saturation, context.time, context.view),
-                                              (ColorMath::LuminanceMathEnum)mathIndex,
-                                              readBool(_clampBlack, context.time, context.view, true),
-                                              readBool(_clampWhite, context.time, context.view, false));
+    SaturationValues values;
+    values.saturation = readSaturation(_saturation, time, view);
+    values.luminanceMath = (ColorMath::LuminanceMathEnum)mathIndex;
+    values.clampBlack = readBool(_clampBlack, time, view, true);
+    values.clampWhite = readBool(_clampWhite, time, view, false);
+
+    return values;
+}
+
+PixelKernelPtr
+Saturation::makeKernel(const KernelContext& context)
+{
+    const SaturationValues v = readValues(context.time, context.view);
+
+    return std::make_shared<SaturationKernel>(v.saturation, v.luminanceMath, v.clampBlack, v.clampWhite);
+}
+
+int
+Saturation::gpuKernelId(const GpuQuery& /*query*/) const
+{
+#ifdef NATRON_HAVE_GPU
+    return (int)gpu::GpuKernelId::saturation_wrapped;
+#else
+    return -1;
+#endif
+}
+
+bool
+Saturation::makeGpuKernel(const KernelContext& context,
+                          PixelKernelGpu* gpuKernel)
+{
+#ifdef NATRON_HAVE_GPU
+    const SaturationValues v = readValues(context.time, context.view);
+
+    // The weights are the luminance of the unit colours, taken from the function the CPU kernel
+    // calls; Max is no weighted sum and is flagged instead.
+    SaturationGpuParams p = {};
+    p.saturation = (float)v.saturation;
+    p.flags = (v.clampBlack ? kSaturationGpuClampBlack : 0) | (v.clampWhite ? kSaturationGpuClampWhite : 0) |
+              ((v.luminanceMath == ColorMath::eLuminanceMathMax) ? kSaturationGpuLumaMax : 0);
+    p.weights[0] = (float)ColorMath::luminance(v.luminanceMath, 1., 0., 0.);
+    p.weights[1] = (float)ColorMath::luminance(v.luminanceMath, 0., 1., 0.);
+    p.weights[2] = (float)ColorMath::luminance(v.luminanceMath, 0., 0., 1.);
+    gpuKernel->kernel = (int)gpu::GpuKernelId::saturation_wrapped;
+    gpuKernel->setParams(p);
+
+    return true;
+#else
+    Q_UNUSED(context);
+    Q_UNUSED(gpuKernel);
+
+    return false;
+#endif
 }
 
 bool

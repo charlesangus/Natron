@@ -13,7 +13,9 @@ Acceptance sketch:
 - An unweighted key evaluates exactly as today.
 - In bezier mode a curve-editor handle has two states. **Unbroken:** the in and out handles stay aligned, and changing one handle's length changes the other's too. **Broken:** each handle's length and angle change independently of the other. (From the M69 - Minor Cleanup UAT, 2026-10-12.)
 - A weighted handle keeps its new length on release; it never snaps back.
+- At `QT_SCALE_FACTOR=2`, clicking directly on a curve in the curve editor selects it, as it does at 1×. Today a click aimed at y=150 only picked `gamma.r` at y=14, so the curve hit-test likely ignores the device pixel ratio. Found during the M56 - Visual And Menu Polish end build.
 
 ## Decisions
 
 - 2026-10-13 — Handle length belongs here, not in M69 - Minor Cleanup: the user decided at the M69 UAT (2026-10-12) that M69 drops its visual-only follow-the-cursor handle drawing instead of implementing length.
+- 2026-10-13 — The curve-editor HiDPI hit-test bug lives here (user, from an inbox report): this milestone already reworks curve-editor picking and handles.

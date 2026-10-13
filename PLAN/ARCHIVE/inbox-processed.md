@@ -3332,3 +3332,7 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
 ### 2026-10-12T00:00:02Z — info
 - refs: none
 - Left over after M45 - Native Tab Menu merged: `Tests/gui/m76_write.py:181,183` still look up `gt.widgets_of("NodeCreationDialog")`. That class is gone (the Tab menu is now tabtabtab, and the completer was renamed `CompleterLineEdit`), so those lines of the M76 - Native Write GUI script will no longer find the node menu. They need the `m75_read.py` treatment: drive `TabTabTabWidget`. No milestone owns this yet.
+
+### 2026-10-13T00:00:00Z — change-request
+- refs: none
+- Pre-existing bug found during the M56 end build: at `QT_SCALE_FACTOR=2`, clicking directly on a curve in the curve editor doesn't select it (a click aimed at y=150 only picked `gamma.r` at y=14), so the curve hit-test likely ignores the device pixel ratio. At 1× it works. Needs a home: a task in a curve-editor milestone (M96?) or a new small fix milestone.

@@ -48,12 +48,17 @@ struct ConnectPlanEntry {
 };
 
 // Y / Shift+Y: each source, in the order given, feeds the next free input of anchorId.
-// anchorFreeInputs lists anchorId's unconnected input numbers, in input order; anchorPreferredInput,
-// when it names one of them, is tried first. Sources beyond the free input count are left
-// unplanned, as are entries this returns once the caller finds they can't actually be made
-// (a cycle, a rejecting canConnectInput): neither is this function's concern.
+// anchorFreeInputs lists anchorId's unconnected non-mask input numbers, in input order;
+// anchorPreferredInput, when it names one of them, is tried first. anchorFreeMaskInputs lists its
+// unconnected mask inputs: they are used, after the non-mask ones, only when the anchor has at most
+// one non-mask input in total (anchorNonMaskInputCount, connected or not), so a Merge-like anchor
+// never has a mask fed. Sources beyond the usable input count are left unplanned, as are entries
+// this returns once the caller finds they can't actually be made (a cycle, a rejecting
+// canConnectInput): neither is this function's concern.
 std::vector<ConnectPlanEntry> planFeedAnchor(ConnectNodeId anchorId,
                                              const std::vector<int>& anchorFreeInputs,
+                                             const std::vector<int>& anchorFreeMaskInputs,
+                                             int anchorNonMaskInputCount,
                                              int anchorPreferredInput,
                                              const std::vector<ConnectNodeId>& sourcesInOrder);
 
@@ -75,15 +80,23 @@ std::vector<ConnectPlanEntry> planFeedSourceIntoTargets(ConnectNodeId sourceId,
                                                         const std::vector<ConnectTargetNode>& targets);
 
 // U / Shift+U: sourceId feeds the lowest-numbered free input of every target. freeInputs lists the
-// target's unconnected non-mask input numbers; a target with none, and the source itself, are left unplanned.
+// target's unconnected non-mask input numbers. When it is empty and the target has at most one
+// non-mask input in total (nonMaskInputCount), the lowest of freeMaskInputs is used instead. A target
+// with no usable input, and the source itself, are left unplanned.
 struct ConnectFreeInputsNode {
     ConnectNodeId id;
     std::vector<int> freeInputs;
+    std::vector<int> freeMaskInputs;
+    int nonMaskInputCount;
 
     ConnectFreeInputsNode(ConnectNodeId id_,
-                          const std::vector<int>& freeInputs_)
+                          const std::vector<int>& freeInputs_,
+                          const std::vector<int>& freeMaskInputs_,
+                          int nonMaskInputCount_)
         : id(id_)
         , freeInputs(freeInputs_)
+        , freeMaskInputs(freeMaskInputs_)
+        , nonMaskInputCount(nonMaskInputCount_)
     {
     }
 };

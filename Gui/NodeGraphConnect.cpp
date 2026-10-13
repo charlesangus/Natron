@@ -38,6 +38,8 @@ NATRON_NAMESPACE_ENTER
 std::vector<ConnectPlanEntry>
 planFeedAnchor(ConnectNodeId anchorId,
                const std::vector<int>& anchorFreeInputs,
+               const std::vector<int>& anchorFreeMaskInputs,
+               int anchorNonMaskInputCount,
                int anchorPreferredInput,
                const std::vector<ConnectNodeId>& sourcesInOrder)
 {
@@ -55,6 +57,10 @@ planFeedAnchor(ConnectNodeId anchorId,
         if (anchorFreeInputs[i] != anchorPreferredInput) {
             orderedFreeInputs.push_back(anchorFreeInputs[i]);
         }
+    }
+
+    if (anchorNonMaskInputCount <= 1) {
+        orderedFreeInputs.insert(orderedFreeInputs.end(), anchorFreeMaskInputs.begin(), anchorFreeMaskInputs.end());
     }
 
     const std::size_t count = std::min(orderedFreeInputs.size(), sourcesInOrder.size());
@@ -90,10 +96,17 @@ planFeedSourceIntoFirstFreeInputs(ConnectNodeId sourceId,
 
     plan.reserve(targets.size());
     for (std::size_t i = 0; i < targets.size(); ++i) {
-        if (targets[i].id == sourceId || targets[i].freeInputs.empty()) {
+        if (targets[i].id == sourceId) {
             continue;
         }
-        const int lowest = *std::min_element(targets[i].freeInputs.begin(), targets[i].freeInputs.end());
+        const std::vector<int>* candidates = &targets[i].freeInputs;
+        if (candidates->empty() && targets[i].nonMaskInputCount <= 1) {
+            candidates = &targets[i].freeMaskInputs;
+        }
+        if (candidates->empty()) {
+            continue;
+        }
+        const int lowest = *std::min_element(candidates->begin(), candidates->end());
         plan.push_back(ConnectPlanEntry(sourceId, targets[i].id, lowest));
     }
 
@@ -136,14 +149,20 @@ planFeedAnchorForSelection(const NodesGuiList& selection,
     }
 
     std::vector<int> anchorFreeInputs;
+    std::vector<int> anchorFreeMaskInputs;
+    int anchorNonMaskInputCount = 0;
     const std::vector<NodeWPtr>& anchorInputs = anchorNode->getGuiInputs();
     for (std::size_t i = 0; i < anchorInputs.size(); ++i) {
+        const bool isMask = anchorNode->getEffectInstance()->isInputMask((int)i);
+        if (!isMask) {
+            ++anchorNonMaskInputCount;
+        }
         if (!anchorInputs[i].lock()) {
-            anchorFreeInputs.push_back((int)i);
+            (isMask ? anchorFreeMaskInputs : anchorFreeInputs).push_back((int)i);
         }
     }
 
-    std::vector<ConnectPlanEntry> plan = planFeedAnchor(anchorId, anchorFreeInputs, anchorNode->getPreferredInputForConnection(), sourcesInOrder);
+    std::vector<ConnectPlanEntry> plan = planFeedAnchor(anchorId, anchorFreeInputs, anchorFreeMaskInputs, anchorNonMaskInputCount, anchorNode->getPreferredInputForConnection(), sourcesInOrder);
 
     result.reserve(plan.size());
     for (std::size_t i = 0; i < plan.size(); ++i) {
@@ -187,15 +206,21 @@ planFeedSourceForSelection(const NodesGuiList& selection,
             continue;
         }
         std::vector<int> freeInputs;
+        std::vector<int> freeMaskInputs;
+        int nonMaskInputCount = 0;
         const std::vector<NodeWPtr>& inputs = node->getGuiInputs();
         for (std::size_t i = 0; i < inputs.size(); ++i) {
-            if (!inputs[i].lock() && !node->getEffectInstance()->isInputMask((int)i)) {
-                freeInputs.push_back((int)i);
+            const bool isMask = node->getEffectInstance()->isInputMask((int)i);
+            if (!isMask) {
+                ++nonMaskInputCount;
+            }
+            if (!inputs[i].lock()) {
+                (isMask ? freeMaskInputs : freeInputs).push_back((int)i);
             }
         }
         const ConnectNodeId id = reinterpret_cast<ConnectNodeId>(node.get());
         byId[id] = *it;
-        targets.push_back(ConnectFreeInputsNode(id, freeInputs));
+        targets.push_back(ConnectFreeInputsNode(id, freeInputs, freeMaskInputs, nonMaskInputCount));
     }
 
     std::vector<ConnectPlanEntry> plan = planFeedSourceIntoFirstFreeInputs(sourceId, targets);

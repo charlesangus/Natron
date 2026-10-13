@@ -398,3 +398,4 @@ Acceptance sketch:
   - **Wrapper:** a `CurveEditorCommand` base class exposes `getEditedCurves()`, and `FoldedCurveEditCommand` wraps every command whose curve is a folded dimension 0. Undo runs the inner undo first, then restores the snapshots. Commands are not re-copied after a merge, because Qt's redo runs before `mergeWith`.
   - **Extra files:** a fold-state hold (`KnobGuiValue::setFoldStateHeld`, `CurveEditor::setFoldStateHeld`) stops the knob unfolding mid-edit. That put `KnobGuiValue.*` and `CurveEditor.*` beyond the brief's file list.
   - **Known gaps:** undo doesn't restore the other dimensions' static values after an edit that removes every key, and a drag runs n−1 `cloneCurve` calls on every mouse move.
+- 2026-10-12 — **P10.T5 diagnosis confirmed (user):** the second node was created from the Tab menu, Ctrl+V was pressed, and the error appeared in the Script Editor. The key-routing cause is confirmed.

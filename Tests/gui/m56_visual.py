@@ -55,8 +55,8 @@ CHANNEL_BUTTON_CHROMA_RATIO = 0.65
 CHANNEL_BUTTON_MIN_CHROMA = 25
 ROW_LABEL_BRIGHTNESS_RATIO = 0.85
 
-SMALL_BUTTON = 15
-SMALL_BUTTON_ICON = 13
+HEADER_BUTTON = 22
+HEADER_BUTTON_ICON = 18
 FULL_STRENGTH_ALPHA = 230
 GLYPH_FILL_FRACTION = 0.4
 DROP_DOWN_ICON = 6
@@ -284,23 +284,23 @@ try:
             return top_alpha, 0.0
         return top_alpha, max(max(xs) - min(xs) + 1, max(ys) - min(ys) + 1) / dpr
 
-    def check_small_buttons(area, buttons):
+    def check_header_buttons(area, buttons):
         probed = 0
         for b in buttons:
             ic = b.icon()
-            if ic is None or ic.isNull() or b.width() > px(SMALL_BUTTON) + 1:
+            if ic is None or ic.isNull() or b.width() > px(HEADER_BUTTON) + 1:
                 continue
             probed += 1
             name = describe_icon_owner(b)
             size = b.iconSize()
-            check(size.width() >= px(SMALL_BUTTON_ICON) - 0.5,
+            check(size.width() >= px(HEADER_BUTTON_ICON) - 0.5,
                   "%s: %s draws its icon at %d px in a %d px button" % (area, name, size.width(), b.width()))
             top_alpha, extent = glyph_extent(ic.pixmap(size))
             check(top_alpha >= FULL_STRENGTH_ALPHA,
                   "%s: %s's strokes reach full strength at the button's icon size (max alpha %d)" % (area, name, top_alpha))
             check(extent >= GLYPH_FILL_FRACTION * b.width(),
                   "%s: %s's glyph spans %.1f px of its %d px button" % (area, name, extent, b.width()))
-        check(probed > 0, "%s: found small icon buttons to probe (%d)" % (area, probed))
+        check(probed > 0, "%s: found header icon buttons to probe (%d)" % (area, probed))
 
     def themed_label():
         for w in QApplication.allWidgets():
@@ -1130,7 +1130,7 @@ try:
         gt.section("uat")
         headers = [h for h in gt.widgets_of("TabWidgetHeader") if h.isVisible()]
         if check(bool(headers), "found a pane header"):
-            check_small_buttons("pane header", [b for h in headers for b in h.findChildren(QAbstractButton)])
+            check_header_buttons("pane header", [b for h in headers for b in h.findChildren(QAbstractButton)])
 
         grade = create("net.sf.openfx.GradePlugin", 300, 0)
         yield ("sleep", PANEL_MS)
@@ -1143,7 +1143,7 @@ try:
             for p in visible_panels():
                 panel_ptrs.update(ptr(w) for w in [p] + p.findChildren(QWidget))
             bin_buttons = [b for b in buttons_in(bin_widget) if ptr(b) not in panel_ptrs and not b.icon().isNull()]
-            check_small_buttons("properties bin", bin_buttons)
+            check_header_buttons("properties bin", bin_buttons)
 
             spins = [w for w in descendants(bin_widget) if gt.class_name(w) == "SpinBox" and ptr(w) not in panel_ptrs]
             if check(bool(spins) and bool(bin_buttons), "found the bin's max-panels box and buttons"):

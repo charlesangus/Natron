@@ -890,6 +890,45 @@ try:
             yield ("sleep", 200)
             check(all(input_of(sm, i) is None for i in range(sm.getMaxInputCount())),
                   "Shift+Y (%s): one undo removes both connections" % order)
+
+        def merge_fill_order(merge):
+            main = [i for i in range(merge.getMaxInputCount()) if merge.getInputLabel(i).lower() != "mask"]
+            preferred = input_index(merge, "A" if to_a else "B")
+            if preferred in main:
+                main.remove(preferred)
+                main.insert(0, preferred)
+            return main
+
+        mask_slots = [i for i in range(ma.getMaxInputCount()) if ma.getInputLabel(i).lower() == "mask"]
+        fill_order = merge_fill_order(ma)
+        y_grades = [create("net.sf.openfx.GradePlugin", 3000 + 300 * k, -900) for k in range(5)]
+        gt.close_all_panels()
+        select_in_order([ma] + y_grades)
+        graph_key(Qt.Key_Y)
+        yield ("sleep", SETTLE_MS)
+        for k, slot in enumerate(fill_order[:len(y_grades)]):
+            check(same(input_of(ma, slot), y_grades[k]),
+                  "Y: Grade %d of 5 feeds the Merge's input %s" % (k + 1, ma.getInputLabel(slot)))
+        check(all(input_of(ma, i) is None for i in mask_slots), "Y: five Grades into a Merge never fill its mask")
+        graph_shot("y-03-merge-five-grades")
+        trigger("undo")
+        yield ("sleep", 200)
+        check(all(input_of(ma, i) is None for i in range(ma.getMaxInputCount())), "Y: one undo removes every Merge connection")
+
+        mg = create("net.sf.openfx.GradePlugin", 3300, -600)
+        g_mask = [i for i in range(mg.getMaxInputCount()) if mg.getInputLabel(i).lower() == "mask"]
+        g_main = [i for i in range(mg.getMaxInputCount()) if i not in g_mask]
+        gt.close_all_panels()
+        select_in_order([mg, y_grades[0], y_grades[1]])
+        graph_key(Qt.Key_Y)
+        yield ("sleep", SETTLE_MS)
+        check(len(g_main) == 1 and len(g_mask) == 1, "Y: a Grade has one main input and one mask (%r)" % ([mg.getInputLabel(i) for i in range(mg.getMaxInputCount())],))
+        check(same(input_of(mg, g_main[0]), y_grades[0]), "Y: the first source feeds the Grade's Source")
+        check(same(input_of(mg, g_mask[0]), y_grades[1]), "Y: the second source feeds the Grade's Mask")
+        graph_shot("y-04-grade-source-then-mask")
+        trigger("undo")
+        yield ("sleep", 200)
+        destroy_nodes([mg] + y_grades)
         app.clearSelection()
         destroy_nodes([sm, sb, sa, gc, gb, ma, ys])
         yield ("sleep", SETTLE_MS)
@@ -945,13 +984,41 @@ try:
         graph_key(Qt.Key_U)
         yield ("sleep", SETTLE_MS)
         check(um_want is not None and same(input_of(um, um_want), ua), "U: a Merge with one input taken is fed on its next free input (%r)" % um_want)
-        check(same(input_of(ud, 0), ux) and all(input_of(ud, i) is None for i in ud_mask),
-              "U: a node with no free non-mask input is skipped, its mask left alone")
+        check(same(input_of(ud, 0), ux) and len(ud_mask) == 1 and same(input_of(ud, ud_mask[0]), ua),
+              "U: a single-input node with its main input taken takes the source on its mask")
         graph_shot("u-03-next-free-input")
         trigger("undo")
         yield ("sleep", 200)
-        check(um_want is not None and input_of(um, um_want) is None, "U: one undo reverts the Merge's new connection")
+        check(um_want is not None and input_of(um, um_want) is None, "U: one undo reverts the Merge's new connections")
+        check(all(input_of(ud, i) is None for i in ud_mask), "U: that undo also clears the Grade's mask")
         um.disconnectInput(0 if um_b is None else um_b)
+        ud.disconnectInput(0)
+
+        um_masks = [i for i in range(um.getMaxInputCount()) if um.getInputLabel(i).lower() == "mask"]
+        um_main = [i for i in range(um.getMaxInputCount()) if i not in um_masks]
+        for i in um_main:
+            um.connectInput(i, ux)
+        QApplication.processEvents()
+        select_in_order([ua, um])
+        graph_key(Qt.Key_U)
+        yield ("sleep", SETTLE_MS)
+        check(all(same(input_of(um, i), ux) for i in um_main), "U: a Merge with every main input taken keeps them")
+        check(all(input_of(um, i) is None for i in um_masks), "U: a Merge with every main input taken is skipped, its mask left empty")
+        graph_shot("u-05-merge-full-skips-mask")
+        for i in um_main:
+            um.disconnectInput(i)
+
+        ud.connectInput(0, ux)
+        QApplication.processEvents()
+        select_in_order([ua, ud])
+        graph_key(Qt.Key_U)
+        yield ("sleep", SETTLE_MS)
+        check(same(input_of(ud, 0), ux), "U: a Grade whose Source is taken keeps it")
+        check(len(ud_mask) == 1 and same(input_of(ud, ud_mask[0]), ua), "U: a Grade whose Source is taken takes the U source on its Mask")
+        graph_shot("u-06-grade-mask")
+        trigger("undo")
+        yield ("sleep", 200)
+        check(all(input_of(ud, i) is None for i in ud_mask), "U: one undo clears the Grade's Mask")
         ud.disconnectInput(0)
 
         ua.connectInput(0, ub)
@@ -1233,10 +1300,15 @@ try:
                 original = bar.currentIndex()
                 if check(tab_count >= 2, "the graph pane has two or more tabs (got %d)" % tab_count):
                     target = [i for i in range(tab_count) if i != original][0]
-                    pane_menu_after(bar, bar.tabRect(target).center(), "a non-current tab")
-                    check(bar.currentIndex() == target, "the right-clicked tab became current")
-                    bar.setCurrentIndex(original)
-                    QApplication.processEvents()
+                    original_widget = pane.currentWidget() if hasattr(pane, "currentWidget") else None
+                    tab_center = bar.tabRect(target).center()
+                    send_mouse(bar, QEvent.MouseButtonPress, tab_center, Qt.RightButton, Qt.RightButton)
+                    send_mouse(bar, QEvent.MouseButtonRelease, tab_center, Qt.RightButton, Qt.NoButton)
+                    check(bar.currentIndex() == original, "a right-press on a non-current tab leaves the current tab alone")
+                    pane_menu_after(bar, tab_center, "a non-current tab")
+                    check(bar.currentIndex() == original, "the right-clicked tab did not become current")
+                    if original_widget is not None:
+                        check(pane.currentWidget() is original_widget, "the pane's current widget is unchanged by the right-click")
                 buttons = header.findChildren(QPushButton)
                 buttons.sort(key=lambda b: b.mapTo(header, QPoint(0, 0)).x())
                 float_buttons = [b for b in buttons if "Float pane" in b.toolTip()]
@@ -1560,6 +1632,155 @@ try:
         yield ("sleep", SETTLE_MS)
         gt.close_all_panels()
         destroy_nodes([fg])
+        yield ("sleep", SETTLE_MS)
+
+        # =====================================================================================
+        gt.section("expanded-curve")
+        gt.close_all_panels()
+        eb = create("net.sf.cimg.CImgBlur", 11600, 0)
+        size = eb.getParam("size")
+        gt.require(size is not None and size.getNumDimensions() == 2, "the Blur has a two-component size knob")
+        size_label = size.getLabel().strip().lower()
+        for t, v in ((1, 2.0), (21, 6.0)):
+            for d in range(2):
+                size.setValueAtTime(v, t, d)
+        yield ("sleep", SETTLE_MS)
+
+        def size_knob_item():
+            for tree in gt.widgets_of("CurveEditor")[0].findChildren(QTreeWidget):
+                for i in range(tree.topLevelItemCount()):
+                    node_item = tree.topLevelItem(i)
+                    if node_item.text(0) != eb.getLabel():
+                        continue
+                    for j in range(node_item.childCount()):
+                        if node_item.child(j).text(0).strip().lower() == size_label:
+                            return tree, node_item.child(j)
+            return None, None
+
+        def size_rows():
+            """Labels of the visible curve-editor rows under the size knob's row, or None."""
+            _tree, knob_item = size_knob_item()
+            if knob_item is None:
+                return None
+            return [knob_item.child(k).text(0).strip().lower()
+                    for k in range(knob_item.childCount()) if not knob_item.child(k).isHidden()]
+
+        def size_switch():
+            for w in QApplication.allWidgets():
+                try:
+                    if not (isinstance(w, QLabel) and w.isVisible() and ancestor_of_class(w, "NodeSettingsPanel") is not None
+                            and strip_tags(w.text()).rstrip(":").strip().lower() == size_label):
+                        continue
+                    y = w.mapToGlobal(w.rect().center()).y()
+                    for b in QApplication.allWidgets():
+                        if isinstance(b, QPushButton) and b.isVisible() and "Switch between a single value" in b.toolTip():
+                            top = b.mapToGlobal(QPoint(0, 0)).y()
+                            if top <= y <= top + b.height():
+                                return b
+                except RuntimeError:
+                    continue
+            return None
+
+        def size_at(t):
+            return (size.getValueAtTime(t, 0), size.getValueAtTime(t, 1))
+
+        editors = gt.widgets_of("CurveEditor")
+        eswitch = size_switch()
+        ecw = None
+        if check(editors and eswitch is not None, "found the curve editor and the size knob's dimension switch"):
+            check(not eswitch.isChecked(), "size starts folded")
+            eswitch.click()
+            yield ("sleep", SETTLE_MS)
+            check(eswitch.isChecked(), "the switch expands size")
+            rows = size_rows()
+            check(rows is not None and len(rows) == 2, "expanded: one curve per component (got %r)" % (rows,))
+            report("NOTE expanded-curve: undo action after the expand reads %r" % (undo_text(),))
+
+            check(make_tab_current(editors[0]), "brought the curve editor's tab to the front")
+            yield ("sleep", SETTLE_MS)
+            tree, knob_item = size_knob_item()
+            if check(knob_item is not None and knob_item.childCount() == 2, "found the size knob's two component rows"):
+                # Only X is selected, so the curve widget shows X's curve alone and the drag cannot
+                # land on Y's key, which sits on the same spot.
+                tree.clearSelection()
+                knob_item.child(0).setSelected(True)
+                QApplication.processEvents()
+                visible_cws = [w for w in gt.widgets_of("CurveWidget") if w.isVisible()]
+                ecw = visible_cws[0] if visible_cws else None
+        if check(ecw is not None, "the curve widget is visible"):
+            send_key(ecw, Qt.Key_A)
+            yield ("sleep", SETTLE_MS)
+            EW, EH = float(ecw.width()), float(ecw.height())
+            ey0, ey1 = 2.0 - 0.4, 6.0 + 0.4
+            esy = EH / (ey1 - ey0)
+            eviewer = app.getViewer(viewer.getScriptName())
+            eviewer.seek(1)
+            yield ("sleep", SETTLE_MS)
+            exa = time_cursor_x(ecw)
+            # The drag happens with the time line where both components keep the same value, the
+            # case that used to fold the knob back.
+            eviewer.seek(21)
+            yield ("sleep", SETTLE_MS)
+            exb = time_cursor_x(ecw)
+            gt.require(exa is not None and exb is not None and exb > exa, "found the curve widget's time line at frames 1 and 21")
+            esx = (exb - exa) / 20.0
+            key_pt = QPointF(exa, EH - (2.0 - ey0) * esy)
+            img = widget_image(ecw)
+            kx = int(round(key_pt.x()))
+            column = [img.pixelColor(kx, y) for y in range(img.height())]
+            counts = {}
+            for c in column:
+                counts[c.rgb()] = counts.get(c.rgb(), 0) + 1
+            bg = next(c for c in column if c.rgb() == max(counts, key=counts.get))
+            marked = [y for y, c in enumerate(column)
+                      if abs(c.red() - bg.red()) + abs(c.green() - bg.green()) + abs(c.blue() - bg.blue()) > 120
+                      and abs(y - key_pt.y()) <= 25]
+            report("NOTE expanded-curve: %dx%d, frames 1/21 at x=%r/%r, key guess y=%.1f, marked rows near it %r"
+                   % (EW, EH, exa, exb, key_pt.y(), marked[:12]))
+            if marked:
+                key_pt = QPointF(key_pt.x(), min(marked, key=lambda y: abs(y - key_pt.y())))
+            before = size_at(1)
+            drag(ecw, key_pt, key_pt + QPointF(0, -40))
+            yield ("sleep", SETTLE_MS)
+            after = size_at(1)
+            report("NOTE expanded-curve: size at frame 1 before %r, after the drag %r; at frame 21 %r" % (before, after, size_at(21)))
+            check(abs(after[0] - before[0]) > 1e-3, "dragging X's key changed X at frame 1")
+            check(abs(after[1] - before[1]) <= 1e-6, "dragging X's key left Y at frame 1 alone")
+            check(eswitch.isChecked(), "size is still expanded after the drag")
+            rows = size_rows()
+            check(rows is not None and len(rows) == 2, "Y's curve is still listed in the curve editor (got %r)" % (rows,))
+            widget_shot(ecw, "expanded-01-after-drag")
+
+            trigger("undo")
+            yield ("sleep", SETTLE_MS)
+            check(abs(size_at(1)[0] - before[0]) <= 1e-6, "undo restores X at frame 1 (now %r)" % (size_at(1),))
+            check(eswitch.isChecked(), "size is still expanded after the undo, with both components equal again")
+            rows = size_rows()
+            check(rows is not None and len(rows) == 2, "both curves are still listed after the undo (got %r)" % (rows,))
+
+            eswitch.click()
+            yield ("sleep", SETTLE_MS)
+            check(not eswitch.isChecked(), "the switch folds size")
+            check(size_rows() == [size_label], "folded: one curve named like the knob (got %r)" % (size_rows(),))
+            undo_label = undo_text()[0] or ""
+            check("fold" in undo_label.lower(), "the fold is on the undo stack (undo action reads %r)" % (undo_label,))
+            trigger("undo")
+            yield ("sleep", SETTLE_MS)
+            check(eswitch.isChecked(), "undoing the fold expands size again")
+            rows = size_rows()
+            check(rows is not None and len(rows) == 2, "after undoing the fold: one curve per component (got %r)" % (rows,))
+            trigger("redo")
+            yield ("sleep", SETTLE_MS)
+            check(not eswitch.isChecked(), "redoing the fold folds size again")
+            check(size_rows() == [size_label], "after redoing the fold: one curve (got %r)" % (size_rows(),))
+            check(all(abs(v - 2.0) <= 1e-6 for v in size_at(1)) and all(abs(v - 6.0) <= 1e-6 for v in size_at(21)),
+                  "folding, undoing and redoing left the keys as they were (got %r, %r)" % (size_at(1), size_at(21)))
+        graphs = gt.widgets_of("NodeGraph")
+        if graphs:
+            make_tab_current(graphs[0])
+        yield ("sleep", SETTLE_MS)
+        gt.close_all_panels()
+        destroy_nodes([eb])
         yield ("sleep", SETTLE_MS)
 
         # =====================================================================================

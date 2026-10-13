@@ -178,8 +178,8 @@ future core work has solid ground to build on.
 | E10 | UI Polish | Polish node graph interaction, menus and visuals. |
 | E11 | Live Collaboration | Let several artists edit one graph in a live session. |
 | E12 | Graph Diff And Merge | Diff and merge node graphs, with a UI to resolve conflicts. |
-| E13 | RFV | Deliver the RFV feature: declaration and storage, render context, integration. |
-| E14 | Architecture | Pay down structural debt that feature work exposes. |
+| E13 | RFV | Add Reverse-flow Variable feature - arbitrary data that travels up the graph, like frame context. |
+| E14 | Architecture | Solidify architecture, considering correctness, performance, robustness, etc. |
 
 # Open questions
 

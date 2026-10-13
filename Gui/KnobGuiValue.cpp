@@ -559,8 +559,16 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
                 break;
             }
         }
-        if (!showSlider || !isAutoFoldDimensionsEnabled() || !areAllDimensionCurvesEqual() || knob->getDimensionsUnfoldedInGui()) {
-            knob->setDimensionsUnfoldedInGui(true);
+        bool unfolded;
+        if (knob->hasDimensionsFoldState()) {
+            // A fold state set by hand or by a loaded project is kept, unless the dimensions
+            // have come to differ since, which a folded knob would hide.
+            unfolded = knob->getDimensionsUnfoldedInGui() || !areAllDimensionsEqual();
+        } else {
+            unfolded = !showSlider || !isAutoFoldDimensionsEnabled() || !areAllDimensionCurvesEqual();
+        }
+        knob->setDimensionsUnfoldedInGui(unfolded);
+        if (unfolded) {
             if (_imp->dimensionLines) {
                 expandAllDimensions();
             } else {
@@ -572,6 +580,10 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
         }
 
         QObject::connect( _imp->dimensionSwitchButton, SIGNAL(clicked(bool)), this, SLOT(onDimensionSwitchClicked(bool)) );
+        KnobSignalSlotHandlerPtr handler = knob->getSignalSlotHandler();
+        if (handler) {
+            QObject::connect(handler.get(), SIGNAL(dimensionsFoldStateRestored()), this, SLOT(onDimensionsFoldStateRestored()));
+        }
     } else {
         if (_imp->slider) {
             _imp->slider->hide();
@@ -723,21 +735,13 @@ KnobGuiValue::setFoldStateHeld(bool held)
 }
 
 void
-KnobGuiValue::setDimensionsExpanded(bool expanded)
+KnobGuiValue::onDimensionsFoldStateRestored()
 {
-    if (!_imp->dimensionSwitchButton) {
+    KnobIPtr knob = _imp->getKnob();
+    if (!knob) {
         return;
     }
-    if (expanded) {
-        if (!_imp->dimensionSwitchButton->isChecked()) {
-            expandAllDimensions();
-        }
-    } else {
-        KnobIPtr knob = _imp->getKnob();
-        if (_imp->dimensionSwitchButton->isChecked() && knob && !knob->getDimensionsUnfoldedInGui() && areAllDimensionsEqual()) {
-            foldAllDimensions();
-        }
-    }
+    setDimensionsFolded(!knob->getDimensionsUnfoldedInGui() && areAllDimensionsEqual());
 }
 
 bool
@@ -1289,7 +1293,7 @@ KnobGuiValue::updateGUI(const int dimension)
         if (allValuesNotEqual) {
             knob->setDimensionsUnfoldedInGui(true);
         }
-        if (!isAutoFoldDimensionsEnabled() || (allValuesNotEqual && !_imp->dimensionSwitchButton->isChecked())) {
+        if (knob->getDimensionsUnfoldedInGui() && !_imp->dimensionSwitchButton->isChecked()) {
             expandAllDimensions();
         }
     }

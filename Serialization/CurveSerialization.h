@@ -50,6 +50,8 @@ struct KeyFrameSerialization {
         , rightDerivative(0.)
     {
     }
+
+    bool operator==(const KeyFrameSerialization&) const = default;
 };
 
 /**
@@ -57,6 +59,8 @@ struct KeyFrameSerialization {
  **/
 struct CurveSerialization {
     std::vector<KeyFrameSerialization> keyframes;
+
+    bool operator==(const CurveSerialization&) const = default;
 };
 
 } // namespace Serialization

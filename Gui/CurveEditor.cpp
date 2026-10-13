@@ -415,9 +415,11 @@ isKnobFoldedInCurveEditor(const KnobGuiPtr& kgui,
     }
 
     // Only a knob no panel shows, such as a roto item's, gets here: with no fold button to read,
-    // apply the rule a new panel folds a knob by instead.
+    // use the knob's own fold state, or the rule a new panel folds a knob by when it has none.
     bool autoFold = false;
-    if (dynamic_cast<KnobColor*>(knob.get())) {
+    if (knob->hasDimensionsFoldState()) {
+        autoFold = !knob->getDimensionsUnfoldedInGui();
+    } else if (dynamic_cast<KnobColor*>(knob.get())) {
         autoFold = true;
     } else if (KnobDouble* isDouble = dynamic_cast<KnobDouble*>(knob.get())) {
         autoFold = isDouble->isAutoFoldDimensionsEnabled();

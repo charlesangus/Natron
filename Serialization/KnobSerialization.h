@@ -49,7 +49,8 @@
 #define NATRON_SERIALIZATION_KNOB_REMOVE_DEFAULT_VALUES 13
 #define NATRON_SERIALIZATION_KNOB_CHANGE_LAYERS_SERIALIZATION 14
 #define NATRON_SERIALIZATION_KNOB_INTRODUCES_LAYER_SELECT_CHANNEL_BUTTONS 15
-#define NATRON_SERIALIZATION_KNOB_VERSION NATRON_SERIALIZATION_KNOB_INTRODUCES_LAYER_SELECT_CHANNEL_BUTTONS
+#define NATRON_SERIALIZATION_KNOB_SAVES_FOLDED_DIMENSIONS 16
+#define NATRON_SERIALIZATION_KNOB_VERSION NATRON_SERIALIZATION_KNOB_SAVES_FOLDED_DIMENSIONS
 
 #define NATRON_SERIALIZATION_KNOB_VALUE_INTRODUCES_CHOICE_LABEL 2
 #define NATRON_SERIALIZATION_KNOB_VALUE_INTRODUCES_EXPRESSIONS 3
@@ -90,6 +91,8 @@ struct KnobMasterSerialization {
         , masterKnobName()
     {
     }
+
+    bool operator==(const KnobMasterSerialization&) const = default;
 };
 
 /**
@@ -122,6 +125,8 @@ struct KnobDimensionSerialization {
         , expressionHasReturnVariable(false)
     {
     }
+
+    bool operator==(const KnobDimensionSerialization&) const = default;
 };
 
 /**
@@ -232,6 +237,9 @@ struct KnobSerialization {
     // When set, the master of the first dimension is a knob this knob is an alias of.
     bool masterIsAlias;
 
+    // One entry per dimension, or, from NATRON_SERIALIZATION_KNOB_SAVES_FOLDED_DIMENSIONS on, a
+    // single entry standing for every dimension of a multi-dimensional knob whose dimensions are
+    // folded. The entry count is what the loaded knob's fold state is restored from.
     std::vector<KnobDimensionSerialization> dimensions;
 
     // Present for parametric knobs only.

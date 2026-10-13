@@ -102,6 +102,11 @@ public:
         Q_EMIT enabledChanged();
     }
 
+    void s_dimensionsFoldStateRestored()
+    {
+        Q_EMIT dimensionsFoldStateRestored();
+    }
+
     void s_keyFrameSet(double time,
                        ViewSpec view,
                        int dimension,
@@ -297,6 +302,9 @@ Q_SIGNALS:
     ///Emitted when a dimension enabled state changed
     void enabledChanged();
 
+    /// Emitted when a loaded project set the fold state of the knob's dimensions
+    void dimensionsFoldStateRestored();
+
     ///This is called to notify the gui that the knob shouldn't be editable.
     ///Basically this is used when rendering with a Writer or for Trackers while tracking is active.
     void frozenChanged(bool frozen);
@@ -424,11 +432,23 @@ public:
     virtual bool getAllDimensionVisible() const = 0;
 
     /**
-     * @brief Whether the knob GUI has shown this knob's dimensions unfolded, so that a GUI built
-     * for it later starts unfolded too. Not saved with the project.
+     * @brief Whether the knob's dimensions are shown unfolded, so that a GUI built for it later
+     * starts the same way. Saved with the project: a folded knob saves one dimension for all.
      **/
     virtual void setDimensionsUnfoldedInGui(bool unfolded) = 0;
     virtual bool getDimensionsUnfoldedInGui() const = 0;
+
+    /**
+     * @brief False until the fold state is set by a GUI, the user or a loaded project. Until
+     * then a new GUI picks the start state itself, from the knob's values.
+     **/
+    virtual bool hasDimensionsFoldState() const = 0;
+
+    /**
+     * @brief Sets the fold state a loaded project saved, and makes a GUI that already shows the
+     * knob fold or unfold to match.
+     **/
+    virtual void restoreDimensionsUnfoldedInGui(bool unfolded) = 0;
     static bool areTypesCompatibleForSlave(KnobI* lhs, KnobI* rhs);
 
     /**
@@ -1418,6 +1438,8 @@ public:
     virtual bool getAllDimensionVisible() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setDimensionsUnfoldedInGui(bool unfolded) OVERRIDE FINAL;
     virtual bool getDimensionsUnfoldedInGui() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool hasDimensionsFoldState() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void restoreDimensionsUnfoldedInGui(bool unfolded) OVERRIDE FINAL;
     /**
      * @brief Returns the knob was created by a plugin or added automatically by Natron (e.g like mask knobs)
      **/

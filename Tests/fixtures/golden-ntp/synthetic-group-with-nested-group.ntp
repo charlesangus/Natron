@@ -21,12 +21,13 @@
 			<Plugin_major_version>1</Plugin_major_version>
 			<Plugin_minor_version>0</Plugin_minor_version>
 			<KnobsCount>1</KnobsCount>
-			<item class_id="3" tracking_level="0" version="15">
+			<item class_id="3" tracking_level="0" version="16">
 				<Name>convertToGroup</Name>
 				<Type>Button</Type>
 				<Dimension>1</Dimension>
 				<Secret>1</Secret>
 				<MasterIsAlias>0</MasterIsAlias>
+				<SavedDimensions>1</SavedDimensions>
 				<item class_id="4" tracking_level="0" version="7">
 					<Enabled>1</Enabled>
 					<HasAnimation>0</HasAnimation>
@@ -60,6 +61,7 @@
 					<Dimension>1</Dimension>
 					<Secret>0</Secret>
 					<MasterIsAlias>0</MasterIsAlias>
+					<SavedDimensions>1</SavedDimensions>
 					<item>
 						<Enabled>1</Enabled>
 						<HasAnimation>0</HasAnimation>
@@ -184,6 +186,7 @@
 					<Dimension>1</Dimension>
 					<Secret>1</Secret>
 					<MasterIsAlias>0</MasterIsAlias>
+					<SavedDimensions>1</SavedDimensions>
 					<item>
 						<Enabled>1</Enabled>
 						<HasAnimation>0</HasAnimation>
@@ -275,6 +278,7 @@
 		<Dimension>1</Dimension>
 		<Secret>0</Secret>
 		<MasterIsAlias>0</MasterIsAlias>
+		<SavedDimensions>1</SavedDimensions>
 		<item>
 			<Enabled>1</Enabled>
 			<HasAnimation>0</HasAnimation>
@@ -292,6 +296,7 @@
 		<Dimension>1</Dimension>
 		<Secret>0</Secret>
 		<MasterIsAlias>0</MasterIsAlias>
+		<SavedDimensions>1</SavedDimensions>
 		<item>
 			<Enabled>0</Enabled>
 			<HasAnimation>0</HasAnimation>

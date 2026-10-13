@@ -720,11 +720,10 @@ KnobGuiColor::onAdjustPanelToggled(bool expanded)
         if (knob && !_adjustPanel->isEditing()) {
             _adjustPanel->setKnobValue(ColorKnobEditSession::readKnobValue(knob));
         }
-        setDimensionsExpanded(true);
+        setDimensionsFolded(false);
         _adjustPanel->setVisible(true);
     } else {
         _adjustPanel->setVisible(false);
-        setDimensionsExpanded(false);
     }
 
     if (columnWidget) {

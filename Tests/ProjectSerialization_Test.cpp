@@ -39,6 +39,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/Curve.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
@@ -48,8 +49,12 @@
 #include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
+#include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
+#include "Engine/ViewIdx.h"
+
+#include "Serialization/KnobSerialization.h"
 
 #include <ofxImageEffect.h>
 #include <ofxNatron.h>
@@ -403,4 +408,193 @@ TEST_F(MultiplaneTwinProjectTest, TwinsRoundTripAndArePushedIntoThePluginChoices
     EXPECT_TRUE(boolValue(premult, kNatronOfxParamProcessG));
     EXPECT_TRUE(boolValue(premult, kNatronOfxParamProcessB));
     EXPECT_TRUE(boolValue(premult, kNatronOfxParamProcessA));
+}
+
+class DimensionsFoldStateProjectTest
+    : public BaseTest {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        BaseTest::SetUp();
+        getApp()->getProject()->reset(false, true);
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        getApp()->getProject()->reset(false, true);
+        BaseTest::TearDown();
+    }
+
+    KnobDoublePtr createBlurSize(std::string* blurName)
+    {
+        NodePtr blur = createNode(QString::fromUtf8(PLUGINID_NATRON_BLUR));
+        if (!blur) {
+            return KnobDoublePtr();
+        }
+        *blurName = blur->getScriptName();
+
+        return std::dynamic_pointer_cast<KnobDouble>(blur->getKnobByName(kBlurParamSize));
+    }
+
+    static std::size_t savedDimensionCount(const KnobDoublePtr& knob)
+    {
+        Serialization::KnobSerialization serialization;
+        knob->toSerialization(&serialization);
+
+        return serialization.dimensions.size();
+    }
+
+    // Saves the project, resets it and loads it back, then returns the reloaded Blur's size.
+    KnobDoublePtr saveResetAndReload(const std::string& blurName)
+    {
+        ProjectPtr project = getApp()->getProject();
+        QTemporaryDir tmp;
+        if (!tmp.isValid()) {
+            ADD_FAILURE() << "no temporary directory";
+
+            return KnobDoublePtr();
+        }
+        const QString dirPath = tmp.path() + QLatin1Char('/');
+        const QString fileName = QString::fromUtf8("fold-state.ntp");
+        QString savedFilePath;
+        if (!project->saveProject(dirPath, fileName, &savedFilePath)) {
+            ADD_FAILURE() << "saveProject() failed";
+
+            return KnobDoublePtr();
+        }
+        project->reset(false, true);
+        if (!project->loadProject(dirPath, fileName)) {
+            ADD_FAILURE() << "loadProject() failed";
+
+            return KnobDoublePtr();
+        }
+        NodePtr blur = project->getNodeByName(blurName);
+        if (!blur) {
+            ADD_FAILURE() << "the reloaded project has no " << blurName;
+
+            return KnobDoublePtr();
+        }
+
+        return std::dynamic_pointer_cast<KnobDouble>(blur->getKnobByName(kBlurParamSize));
+    }
+};
+
+TEST_F(DimensionsFoldStateProjectTest, FoldedKnobSavesOneValueAndLoadsFolded)
+{
+    std::string blurName;
+    KnobDoublePtr size = createBlurSize(&blurName);
+    ASSERT_TRUE(bool(size));
+    ASSERT_EQ(2, size->getDimension());
+    size->setValue(5., ViewSpec::all(), 0);
+    size->setValue(5., ViewSpec::all(), 1);
+    size->setDimensionsUnfoldedInGui(false);
+    EXPECT_EQ(1u, savedDimensionCount(size));
+
+    KnobDoublePtr reloaded = saveResetAndReload(blurName);
+    ASSERT_TRUE(bool(reloaded));
+    EXPECT_TRUE(reloaded->hasDimensionsFoldState());
+    EXPECT_FALSE(reloaded->getDimensionsUnfoldedInGui());
+    EXPECT_DOUBLE_EQ(5., reloaded->getValue(0));
+    EXPECT_DOUBLE_EQ(5., reloaded->getValue(1));
+    EXPECT_EQ(1u, savedDimensionCount(reloaded));
+}
+
+TEST_F(DimensionsFoldStateProjectTest, ExpandedKnobWithEqualValuesSavesEveryValueAndLoadsExpanded)
+{
+    std::string blurName;
+    KnobDoublePtr size = createBlurSize(&blurName);
+    ASSERT_TRUE(bool(size));
+    size->setValue(5., ViewSpec::all(), 0);
+    size->setValue(5., ViewSpec::all(), 1);
+    size->setDimensionsUnfoldedInGui(true);
+    EXPECT_EQ(2u, savedDimensionCount(size));
+
+    KnobDoublePtr reloaded = saveResetAndReload(blurName);
+    ASSERT_TRUE(bool(reloaded));
+    EXPECT_TRUE(reloaded->hasDimensionsFoldState());
+    EXPECT_TRUE(reloaded->getDimensionsUnfoldedInGui());
+    EXPECT_DOUBLE_EQ(5., reloaded->getValue(0));
+    EXPECT_DOUBLE_EQ(5., reloaded->getValue(1));
+    EXPECT_EQ(2u, savedDimensionCount(reloaded));
+}
+
+TEST_F(DimensionsFoldStateProjectTest, ExpandedKnobWithDifferentValuesLoadsExpanded)
+{
+    std::string blurName;
+    KnobDoublePtr size = createBlurSize(&blurName);
+    ASSERT_TRUE(bool(size));
+    size->setValue(3., ViewSpec::all(), 0);
+    size->setValue(7., ViewSpec::all(), 1);
+    size->setDimensionsUnfoldedInGui(true);
+    EXPECT_EQ(2u, savedDimensionCount(size));
+
+    KnobDoublePtr reloaded = saveResetAndReload(blurName);
+    ASSERT_TRUE(bool(reloaded));
+    EXPECT_TRUE(reloaded->hasDimensionsFoldState());
+    EXPECT_TRUE(reloaded->getDimensionsUnfoldedInGui());
+    EXPECT_DOUBLE_EQ(3., reloaded->getValue(0));
+    EXPECT_DOUBLE_EQ(7., reloaded->getValue(1));
+}
+
+// Values that differ say nothing about what the user folded: they are saved per dimension
+// whatever the fold state, so loading never hides one.
+TEST_F(DimensionsFoldStateProjectTest, FoldedKnobWithDifferentValuesSavesEveryValue)
+{
+    std::string blurName;
+    KnobDoublePtr size = createBlurSize(&blurName);
+    ASSERT_TRUE(bool(size));
+    size->setValue(3., ViewSpec::all(), 0);
+    size->setValue(7., ViewSpec::all(), 1);
+    size->setDimensionsUnfoldedInGui(false);
+    EXPECT_EQ(2u, savedDimensionCount(size));
+
+    KnobDoublePtr reloaded = saveResetAndReload(blurName);
+    ASSERT_TRUE(bool(reloaded));
+    EXPECT_TRUE(reloaded->getDimensionsUnfoldedInGui());
+    EXPECT_DOUBLE_EQ(3., reloaded->getValue(0));
+    EXPECT_DOUBLE_EQ(7., reloaded->getValue(1));
+}
+
+TEST_F(DimensionsFoldStateProjectTest, AnimatedFoldedKnobSavesOneCurveForEveryDimension)
+{
+    std::string blurName;
+    KnobDoublePtr size = createBlurSize(&blurName);
+    ASSERT_TRUE(bool(size));
+    for (int d = 0; d < 2; ++d) {
+        size->setValueAtTime(1, 2., ViewSpec::all(), d);
+        size->setValueAtTime(11, 8., ViewSpec::all(), d);
+    }
+    size->setDimensionsUnfoldedInGui(false);
+    EXPECT_EQ(1u, savedDimensionCount(size));
+
+    KnobDoublePtr reloaded = saveResetAndReload(blurName);
+    ASSERT_TRUE(bool(reloaded));
+    EXPECT_TRUE(reloaded->hasDimensionsFoldState());
+    EXPECT_FALSE(reloaded->getDimensionsUnfoldedInGui());
+    for (int d = 0; d < 2; ++d) {
+        SCOPED_TRACE(d);
+        CurvePtr curve = reloaded->getCurve(ViewIdx(0), d);
+        ASSERT_TRUE(bool(curve));
+        EXPECT_EQ(2, curve->getKeyFramesCount());
+        EXPECT_DOUBLE_EQ(2., reloaded->getValueAtTime(1, d));
+        EXPECT_DOUBLE_EQ(8., reloaded->getValueAtTime(11, d));
+    }
+    EXPECT_DOUBLE_EQ(reloaded->getValueAtTime(6, 0), reloaded->getValueAtTime(6, 1));
+    EXPECT_EQ(1u, savedDimensionCount(reloaded));
+}
+
+TEST_F(DimensionsFoldStateProjectTest, ExpandedKnobAtItsDefaultIsSavedAndLoadsExpanded)
+{
+    std::string blurName;
+    KnobDoublePtr size = createBlurSize(&blurName);
+    ASSERT_TRUE(bool(size));
+    size->setDimensionsUnfoldedInGui(true);
+    Serialization::KnobSerialization serialization;
+    EXPECT_TRUE(size->toSerialization(&serialization));
+    EXPECT_EQ(2u, serialization.dimensions.size());
+
+    KnobDoublePtr reloaded = saveResetAndReload(blurName);
+    ASSERT_TRUE(bool(reloaded));
+    EXPECT_TRUE(reloaded->hasDimensionsFoldState());
+    EXPECT_TRUE(reloaded->getDimensionsUnfoldedInGui());
 }

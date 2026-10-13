@@ -713,3 +713,121 @@ TEST_F(BaseTest, KnobXmlEquivalenceReadsLegacySlavedTracksAndShortMaster)
     EXPECT_TRUE(loaded.dimensions[0].master->masterTrackName.empty());
     EXPECT_FALSE(loaded.isUserKnob);
 }
+
+namespace {
+
+std::string
+twoDimensionalDoubleKnobXml(const std::string& prologue,
+                            unsigned int knobVersion,
+                            const std::vector<double>& savedValues)
+{
+    std::ostringstream xml;
+
+    xml << prologue << "<Knob class_id=\"0\" tracking_level=\"0\" version=\"" << knobVersion << "\">\n"
+        << "<Name>foldable</Name>\n"
+        << "<Type>Double</Type>\n"
+        << "<Dimension>2</Dimension>\n"
+        << "<Secret>0</Secret>\n"
+        << "<MasterIsAlias>0</MasterIsAlias>\n";
+    if (knobVersion >= NATRON_SERIALIZATION_KNOB_SAVES_FOLDED_DIMENSIONS) {
+        xml << "<SavedDimensions>" << savedValues.size() << "</SavedDimensions>\n";
+    }
+    for (std::size_t i = 0; i < savedValues.size(); ++i) {
+        xml << ((i == 0) ? "<item class_id=\"1\" tracking_level=\"0\" version=\"7\">\n" : "<item>\n")
+            << "<Enabled>1</Enabled>\n"
+            << "<HasAnimation>0</HasAnimation>\n"
+            << "<Value>" << savedValues[i] << "</Value>\n"
+            << "<Default>0</Default>\n"
+            << "<HasMaster>0</HasMaster>\n"
+            << "<Expression></Expression>\n"
+            << "<ExprHasRet>0</ExprHasRet>\n"
+            << "</item>\n";
+    }
+    xml << "<UserKnob>0</UserKnob>\n"
+        << "</Knob>\n"
+        << "</boost_serialization>\n";
+
+    return xml.str();
+}
+
+} // anonymous namespace
+
+TEST_F(BaseTest, KnobXmlEquivalenceOneSavedDimensionLoadsIntoEveryDimensionFolded)
+{
+    NodePtr node = createNode(_generatorPluginID);
+
+    ASSERT_TRUE(bool(node));
+
+    KnobIPtr reference = createKnobOfType(node->getEffectInstance().get(), KnobInt::typeNameStatic(), "referenceKnob");
+    ASSERT_TRUE(bool(reference));
+    const std::string prologue = archivePrologue(saveKnobToXml(reference));
+    ASSERT_FALSE(prologue.empty());
+
+    std::vector<double> savedValues(1, 0.5);
+    Serialization::KnobSerialization loaded;
+    ASSERT_TRUE(loadFromXml(twoDimensionalDoubleKnobXml(prologue, NATRON_SERIALIZATION_KNOB_SAVES_FOLDED_DIMENSIONS, savedValues), &loaded));
+    EXPECT_EQ(2, loaded.dimension);
+    ASSERT_EQ(1u, loaded.dimensions.size());
+
+    KnobIPtr restored = createKnobOfType(node->getEffectInstance().get(), KnobDouble::typeNameStatic(), "foldable");
+    ASSERT_TRUE(bool(restored));
+    EXPECT_TRUE(restored->fromSerialization(loaded));
+    KnobDouble* restoredDouble = dynamic_cast<KnobDouble*>(restored.get());
+    ASSERT_TRUE(restoredDouble != NULL);
+    EXPECT_EQ(0.5, restoredDouble->getValue(0));
+    EXPECT_EQ(0.5, restoredDouble->getValue(1));
+    EXPECT_TRUE(restored->hasDimensionsFoldState());
+    EXPECT_FALSE(restored->getDimensionsUnfoldedInGui());
+
+    savedValues.assign(2, 0.5);
+    ASSERT_TRUE(loadFromXml(twoDimensionalDoubleKnobXml(prologue, NATRON_SERIALIZATION_KNOB_SAVES_FOLDED_DIMENSIONS, savedValues), &loaded));
+    ASSERT_EQ(2u, loaded.dimensions.size());
+    EXPECT_TRUE(restored->fromSerialization(loaded));
+    EXPECT_TRUE(restored->getDimensionsUnfoldedInGui());
+}
+
+// Before the fold state was saved, every dimension was, so an older knob's entry count says
+// nothing and the knob is left to the rule a new GUI starts by: folded when all are equal.
+TEST_F(BaseTest, KnobXmlEquivalenceOlderKnobWithEqualDimensionsLoadsFolded)
+{
+    NodePtr node = createNode(_generatorPluginID);
+
+    ASSERT_TRUE(bool(node));
+
+    KnobIPtr reference = createKnobOfType(node->getEffectInstance().get(), KnobInt::typeNameStatic(), "referenceKnob");
+    ASSERT_TRUE(bool(reference));
+    const std::string prologue = archivePrologue(saveKnobToXml(reference));
+    ASSERT_FALSE(prologue.empty());
+
+    const unsigned int olderVersion = NATRON_SERIALIZATION_KNOB_SAVES_FOLDED_DIMENSIONS - 1;
+    Serialization::KnobSerialization loaded;
+    ASSERT_TRUE(loadFromXml(twoDimensionalDoubleKnobXml(prologue, olderVersion, std::vector<double>(2, 0.5)), &loaded));
+    EXPECT_EQ(olderVersion, loaded.version);
+    ASSERT_EQ(2u, loaded.dimensions.size());
+
+    KnobIPtr restored = createKnobOfType(node->getEffectInstance().get(), KnobDouble::typeNameStatic(), "foldable");
+    ASSERT_TRUE(bool(restored));
+    KnobDouble* restoredDouble = dynamic_cast<KnobDouble*>(restored.get());
+    ASSERT_TRUE(restoredDouble != NULL);
+    restoredDouble->setCanAutoFoldDimensions(true);
+    EXPECT_TRUE(restored->fromSerialization(loaded));
+    EXPECT_EQ(0.5, restoredDouble->getValue(0));
+    EXPECT_EQ(0.5, restoredDouble->getValue(1));
+    EXPECT_FALSE(restored->hasDimensionsFoldState());
+
+    Serialization::KnobSerialization resaved;
+    restored->toSerialization(&resaved);
+    EXPECT_EQ(1u, resaved.dimensions.size());
+
+    std::vector<double> differentValues;
+    differentValues.push_back(0.5);
+    differentValues.push_back(1.5);
+    KnobIPtr different = createKnobOfType(node->getEffectInstance().get(), KnobDouble::typeNameStatic(), "foldableDifferent");
+    ASSERT_TRUE(bool(different));
+    dynamic_cast<KnobDouble*>(different.get())->setCanAutoFoldDimensions(true);
+    ASSERT_TRUE(loadFromXml(twoDimensionalDoubleKnobXml(prologue, olderVersion, differentValues), &loaded));
+    EXPECT_TRUE(different->fromSerialization(loaded));
+    EXPECT_FALSE(different->hasDimensionsFoldState());
+    different->toSerialization(&resaved);
+    EXPECT_EQ(2u, resaved.dimensions.size());
+}

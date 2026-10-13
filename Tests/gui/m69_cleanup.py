@@ -5,7 +5,7 @@ paste-onto-a-node and paste when the graph holds only the click focus, the pane 
 anywhere in the tab header, scene-referred viewer picking with input/output modifiers, the
 multi-point roto feather drag and broken tangent, curve-editor tangent break, join and handle
 length, a folded knob's single curve and its edits, and an expanded knob staying expanded until
-it is folded by hand.
+it is folded by hand, with the fold state kept through a save and reload.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
     docker exec -e NATRON_GUI_TEST_OUT=build/m69-shots/out -e GUI_TEST_TIMEOUT=300 \
@@ -2158,6 +2158,102 @@ try:
         gt.close_all_panels()
         destroy_nodes([roto2])
         yield ("sleep", SETTLE_MS)
+
+        # =====================================================================================
+        # Run last: resetProject() wipes every node made above.
+        gt.section("fold-state-saved")
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+
+        def fold_switch(label):
+            """The dimension switch on the row of the open properties panel's knob labelled `label`."""
+            for w in QApplication.allWidgets():
+                try:
+                    if not (isinstance(w, QLabel) and w.isVisible() and ancestor_of_class(w, "NodeSettingsPanel") is not None
+                            and strip_tags(w.text()).rstrip(":").strip().lower() == label):
+                        continue
+                    y = w.mapToGlobal(w.rect().center()).y()
+                    for b in QApplication.allWidgets():
+                        if isinstance(b, QPushButton) and b.isVisible() and "Switch between a single value" in b.toolTip():
+                            top = b.mapToGlobal(QPoint(0, 0)).y()
+                            if top <= y <= top + b.height():
+                                return b
+                except RuntimeError:
+                    continue
+            return None
+
+        def open_panel(an_app, node, label):
+            graph = root_graph()
+            gt.require(graph is not None, "the node graph is on screen")
+            an_app.clearSelection()
+            an_app.selectNode(node, True)
+            QMetaObject.invokeMethod(graph, "showSelectedNodeSettingsPanel")
+            opened = yield ("until", lambda: fold_switch(label) is not None, 10.0)
+            yield ("sleep", SETTLE_MS)
+            return opened
+
+        fb = create("net.sf.cimg.CImgBlur", 12400, 0)
+        fsize = fb.getParam("size")
+        gt.require(fsize is not None and fsize.getNumDimensions() == 2, "the Blur has a two-component size knob")
+        fsize_label = fsize.getLabel().strip().lower()
+        for d in range(2):
+            fsize.setValue(4.0, d)
+        yield ("sleep", SETTLE_MS)
+        fswitch = fold_switch(fsize_label)
+        if check(fswitch is not None, "found the size knob's dimension switch"):
+            if not fswitch.isChecked():
+                fswitch.click()
+                yield ("sleep", SETTLE_MS)
+            check(fswitch.isChecked(), "size is expanded, with both components equal")
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+
+        fg = create("net.sf.openfx.GradePlugin", 12400, 300)
+        fgain = fg.getParam("gain")
+        gt.require(fgain is not None and fgain.getNumDimensions() > 1, "the Grade has a multi-component gain knob")
+        fgain_label = fgain.getLabel().strip().lower()
+        set_all(fgain, 1.5)
+        yield ("sleep", SETTLE_MS)
+        gswitch = fold_switch(fgain_label)
+        if check(gswitch is not None, "found the gain knob's dimension switch"):
+            if gswitch.isChecked():
+                gswitch.click()
+                yield ("sleep", SETTLE_MS)
+            check(not gswitch.isChecked(), "gain is folded")
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+
+        fb_name = fb.getScriptName()
+        fg_name = fg.getScriptName()
+        fold_path = os.path.join(gt.OUT, "fold-state.ntp")
+        if check(app.saveProjectAs(fold_path), "save the project to " + fold_path):
+            if check(app.resetProject(), "reset the project (close, keep the window)"):
+                check(app.getNode(fb_name) is None and app.getNode(fg_name) is None, "the reset removed the Blur and the Grade")
+                reloaded = app.loadProject(fold_path)
+                yield ("sleep", SETTLE_MS)
+                if check(reloaded is not None, "reload " + fold_path):
+                    rb = reloaded.getNode(fb_name)
+                    rg = reloaded.getNode(fg_name)
+                    if check(rb is not None and rg is not None, "found the reloaded Blur and Grade"):
+                        gt.close_all_panels()
+                        yield ("sleep", SETTLE_MS)
+                        opened = yield from open_panel(reloaded, rb, fsize_label)
+                        if check(opened, "opened the reloaded Blur's properties panel"):
+                            rswitch = fold_switch(fsize_label)
+                            check(rswitch is not None and rswitch.isChecked(), "size is still expanded after the reload")
+                            check(all(abs(rb.getParam("size").getValue(d) - 4.0) <= TOL for d in range(2)),
+                                  "both size components came back as 4")
+                        gt.close_all_panels()
+                        yield ("sleep", SETTLE_MS)
+                        opened = yield from open_panel(reloaded, rg, fgain_label)
+                        if check(opened, "opened the reloaded Grade's properties panel"):
+                            rswitch = fold_switch(fgain_label)
+                            check(rswitch is not None and not rswitch.isChecked(), "gain is still folded after the reload")
+                            rgain = rg.getParam("gain")
+                            check(all(abs(rgain.getValue(d) - 1.5) <= TOL for d in range(rgain.getNumDimensions())),
+                                  "every gain component came back as 1.5")
+                        gt.close_all_panels()
+                        yield ("sleep", SETTLE_MS)
 
         faulthandler.cancel_dump_traceback_later()
 

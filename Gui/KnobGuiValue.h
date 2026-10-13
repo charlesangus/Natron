@@ -104,6 +104,8 @@ public Q_SLOTS:
 
     void onDimensionSwitchClicked(bool);
 
+    void onDimensionsFoldStateRestored();
+
     void onRectangleFormatButtonClicked();
 
     void onResetToDefaultRequested();
@@ -181,13 +183,6 @@ protected:
      * specific position in that column from outside createBelowRowWidget().
      **/
     QVBoxLayout* getBelowRowColumnLayout() const;
-
-    /**
-     * @brief Unfolds for the time being, without recording it on the knob, and folds back only
-     * a knob that has not been unfolded any other way since and whose dimensions all still hold
-     * the same value and curve. Never copies dimension 0 into the others.
-     **/
-    void setDimensionsExpanded(bool expanded);
 
     /**
      * @brief Lets a subclass supply a widget placed below the knob's row, spanning the

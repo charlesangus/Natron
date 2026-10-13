@@ -177,9 +177,11 @@ loadDetachedKnob(const Serialization::KnobSerialization& serialization,
     // last saved keyframe back into a sequence pattern instead.
     const bool isReaderFileParam = isFile && (isFile->getName() == kOfxImageEffectFileParamName);
 
-    const int dimensionCount = std::min(knob->getDimension(), (int)serialization.dimensions.size());
+    const int savedDimensionCount = (int)serialization.dimensions.size();
+    const bool oneDimensionForAll = (savedDimensionCount == 1) && (knob->getDimension() > 1);
+    const int dimensionCount = oneDimensionForAll ? knob->getDimension() : std::min(knob->getDimension(), savedDimensionCount);
     for (int i = 0; i < dimensionCount; ++i) {
-        const Serialization::KnobDimensionSerialization& dimensionData = serialization.dimensions[i];
+        const Serialization::KnobDimensionSerialization& dimensionData = serialization.dimensions[oneDimensionForAll ? 0 : i];
 
         knob->setEnabled(i, dimensionData.enabled);
 
@@ -279,6 +281,78 @@ fillMasterSerialization(const std::pair<int, KnobIPtr>& master,
         masterData->masterNodeName = holder ? holder->getScriptName_mt_safe() : "";
     }
     masterData->masterKnobName = master.second->getName();
+}
+
+bool
+canFoldDimensions(const KnobI* knob)
+{
+    if (knob->getDimension() < 2) {
+        return false;
+    }
+    if (dynamic_cast<const KnobChoice*>(knob) || dynamic_cast<const KnobParametric*>(knob)) {
+        return false;
+    }
+
+    return dynamic_cast<const KnobIntBase*>(knob) || dynamic_cast<const KnobDoubleBase*>(knob);
+}
+
+// The start state KnobGuiValue::createWidget gives a knob no GUI, user or project has set the
+// fold state of yet, when every dimension holds the same value and curve.
+bool
+areDimensionsFoldedByDefault(const KnobI* knob)
+{
+    if (dynamic_cast<const KnobColor*>(knob)) {
+        return true;
+    }
+    const KnobDouble* isDouble = dynamic_cast<const KnobDouble*>(knob);
+
+    return isDouble && isDouble->isAutoFoldDimensionsEnabled();
+}
+
+bool
+areDimensionsFolded(const KnobI* knob)
+{
+    if (knob->hasDimensionsFoldState()) {
+        return !knob->getDimensionsUnfoldedInGui();
+    }
+
+    return areDimensionsFoldedByDefault(knob);
+}
+
+// Loading gives the one saved dimension to every dimension, so it may only stand for them when
+// that loses nothing: defaults included, since loading clones those too, and with no link or
+// expression, which are restored per dimension.
+bool
+canSaveOneDimensionForAll(const KnobI* knob,
+                          const Serialization::KnobSerialization& serialization,
+                          bool folded)
+{
+    if (!folded || !canFoldDimensions(knob) || serialization.masterIsAlias || ((int)serialization.dimensions.size() != knob->getDimension())) {
+        return false;
+    }
+    const Serialization::KnobDimensionSerialization& first = serialization.dimensions.front();
+    if (first.master || !first.expression.empty()) {
+        return false;
+    }
+    for (std::size_t i = 1; i < serialization.dimensions.size(); ++i) {
+        if (!(serialization.dimensions[i] == first)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void
+restoreDimensionsFoldState(KnobI* knob,
+                           const Serialization::KnobSerialization& serialization)
+{
+    // Older projects saved every dimension of a folded knob too, so their entry count says
+    // nothing: the knob is left for a new GUI to fold or not from its values.
+    if ((serialization.version < NATRON_SERIALIZATION_KNOB_SAVES_FOLDED_DIMENSIONS) || (serialization.dimension < 2) || serialization.dimensions.empty() || !canFoldDimensions(knob)) {
+        return;
+    }
+    knob->restoreDimensionsUnfoldedInGui(serialization.dimensions.size() > 1);
 }
 
 template <class K>
@@ -392,6 +466,12 @@ KnobHelper::toSerialization(Serialization::KnobSerialization* serialization)
         }
     }
 
+    const bool savesOneDimensionForAll = canSaveOneDimensionForAll(this, *serialization, areDimensionsFolded(this));
+    const bool foldStateDiffersFromDefault = savesOneDimensionForAll != canSaveOneDimensionForAll(this, *serialization, areDimensionsFoldedByDefault(this));
+    if (savesOneDimensionForAll) {
+        serialization->dimensions.resize(1);
+    }
+
     if (isParametric) {
         std::list<Curve> curves;
         isParametric->saveParametricCurves(&curves);
@@ -488,7 +568,9 @@ KnobHelper::toSerialization(Serialization::KnobSerialization* serialization)
 
     // KnobChannelSet::hasModificationsForSerialization() always returns true: its default
     // differs per node, so a value left out would be read back as whatever the default is then.
-    return hasExpressionOrLink || (getIsPersistent() && hasModificationsForSerialization());
+    // A knob left at its defaults is not saved, which would also lose a fold state other than
+    // the one a new GUI starts with.
+    return hasExpressionOrLink || (getIsPersistent() && (foldStateDiffersFromDefault || hasModificationsForSerialization()));
 } // KnobHelper::toSerialization
 
 bool
@@ -531,6 +613,7 @@ KnobHelper::fromSerialization(const Serialization::KnobSerialization& serializat
             setEnabled(i, serializedKnob->isEnabled(i));
         }
     }
+    restoreDimensionsFoldState(this, serialization);
 
     return true;
 } // KnobHelper::fromSerialization
@@ -732,6 +815,7 @@ createUserKnobFromSerialization(KnobHolder* holder,
     } else {
         knob->clone(serializedKnob.get());
     }
+    restoreDimensionsFoldState(knob.get(), serialization);
     knob->setAsUserKnob(true);
     knob->setIsPersistent(serialization.isPersistent);
     knob->setAnimationEnabled(serialization.animationEnabled);

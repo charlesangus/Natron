@@ -142,7 +142,7 @@ future core work has solid ground to build on.
 | M21 | Deep Tier-2 And Bridges | todo |  |  | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
 | M51 | Deep Filtering OpenDCX | todo |  |  | [M51-deep-filtering-opendcx.md](PLAN/MILESTONES/M51-deep-filtering-opendcx.md) |
 | M32 | Deep Sample Node | todo |  |  | [M32-deep-sample-node.md](PLAN/MILESTONES/M32-deep-sample-node.md) |
-| M93 | Serialization Boundary | todo | - |  | [M93-serialization-boundary.md](PLAN/MILESTONES/M93-serialization-boundary.md) |
+| M93 | Serialization Boundary | doing | - | slate-ferret | [M93-serialization-boundary.md](PLAN/MILESTONES/M93-serialization-boundary.md) |
 | M100 | Content Node Hashing | todo | M93 |  | [M100-content-node-hashing.md](PLAN/MILESTONES/M100-content-node-hashing.md) |
 | M16 | Project Format Redesign | todo | M93 |  | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
 | M114 | Global Undo Correctness | todo | M93 |  | [M114-global-undo-correctness.md](PLAN/MILESTONES/M114-global-undo-correctness.md) |

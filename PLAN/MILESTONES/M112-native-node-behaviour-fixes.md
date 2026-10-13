@@ -129,6 +129,11 @@ Scouted facts (2026-10-12, read-only audit on `milestone/m45-native-tab-menu`; r
 
 ## Phase 108.5: Close-out
 
+- [ ] M112.P5.T2 — Point the M76 Write GUI script at the tabtabtab node menu
+  - files: `Tests/gui/m76_write.py`
+  - approach: lines ~181/183 still look up `gt.widgets_of("NodeCreationDialog")`, which M45 - Native Tab Menu removed (the Tab menu is `TabTabTabWidget`, the completer `CompleterLineEdit`). Drive `TabTabTabWidget` the way `Tests/gui/m75_read.py` (~428–430) does.
+  - verify: `Tests/gui/run-gui-test.sh Tests/gui/m76_write.py` passes under Xvfb.
+  - size: M
 - [ ] M112.P5.T1 — UAT
   - files: none (user acceptance)
   - approach: hand the user a build and a checklist:

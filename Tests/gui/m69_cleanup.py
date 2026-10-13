@@ -55,7 +55,7 @@ TOL = 1e-3
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Q_ARG, Qt, QTimer
+    from PySide6.QtCore import QEvent, QItemSelectionModel, QMetaObject, QPoint, QPointF, Q_ARG, Qt, QTimer
     from PySide6.QtGui import QContextMenuEvent, QEnterEvent, QGuiApplication, QKeyEvent, QMouseEvent, QWheelEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import (QApplication, QLabel, QLineEdit, QListView, QMainWindow, QMenu,
@@ -911,10 +911,22 @@ try:
             check(same(input_of(ma, slot), y_grades[k]),
                   "Y: Grade %d of 5 feeds the Merge's input %s" % (k + 1, ma.getInputLabel(slot)))
         check(all(input_of(ma, i) is None for i in mask_slots), "Y: five Grades into a Merge never fill its mask")
+        frame(graph, [ma] + y_grades, max_zoom=1.0)
         graph_shot("y-03-merge-five-grades")
         trigger("undo")
         yield ("sleep", 200)
         check(all(input_of(ma, i) is None for i in range(ma.getMaxInputCount())), "Y: one undo removes every Merge connection")
+
+        select_in_order([ma] + y_grades)
+        graph_key(Qt.Key_U)
+        yield ("sleep", SETTLE_MS)
+        check(all(same(input_of(g, 0), ma) for g in y_grades), "U: the first-selected Merge feeds each of the five Grades")
+        check(all(input_of(ma, i) is None for i in range(ma.getMaxInputCount())), "U: the Merge's own inputs stay empty")
+        frame(graph, [ma] + y_grades, max_zoom=1.0)
+        graph_shot("u-07-merge-into-five-grades")
+        trigger("undo")
+        yield ("sleep", 200)
+        check(all(input_of(g, 0) is None for g in y_grades), "U: one undo removes every Grade connection")
 
         mg = create("net.sf.openfx.GradePlugin", 3300, -600)
         g_mask = [i for i in range(mg.getMaxInputCount()) if mg.getInputLabel(i).lower() == "mask"]
@@ -1308,6 +1320,16 @@ try:
                     check(bar.currentIndex() == original, "a right-press on a non-current tab leaves the current tab alone")
                     pane_menu_after(bar, tab_center, "a non-current tab")
                     check(bar.currentIndex() == original, "the right-clicked tab did not become current")
+
+                    def shoot_tab_menu():
+                        pop = QApplication.activePopupWidget()
+                        if pop is not None:
+                            gt.shot("pane-menu-02-non-current-tab.png")
+                            pop.close()
+                    QTimer.singleShot(300, shoot_tab_menu)
+                    QApplication.sendEvent(bar, QContextMenuEvent(QContextMenuEvent.Mouse, tab_center, bar.mapToGlobal(tab_center)))
+                    QApplication.processEvents()
+                    check(bar.currentIndex() == original, "the tab is still not current after the captured menu closes")
                     if original_widget is not None:
                         check(pane.currentWidget() is original_widget, "the pane's current widget is unchanged by the right-click")
                 buttons = header.findChildren(QPushButton)
@@ -1638,7 +1660,12 @@ try:
         # =====================================================================================
         gt.section("expanded-curve")
         gt.close_all_panels()
-        eb = create("net.sf.cimg.CImgBlur", 11600, 0)
+        # The keys go in before any panel exists: keying X alone first makes X and Y differ for a
+        # moment, which an open panel answers by expanding the knob.
+        eb = app.createNode("net.sf.cimg.CImgBlur", -1, None,
+                            {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(False)})
+        gt.require(eb is not None, "create net.sf.cimg.CImgBlur", gt.plugin_problem("net.sf.cimg.CImgBlur"))
+        eb.setPosition(11600, 0)
         size = eb.getParam("size")
         gt.require(size is not None and size.getNumDimensions() == 2, "the Blur has a two-component size knob")
         size_label = size.getLabel().strip().lower()
@@ -1646,25 +1673,39 @@ try:
             for d in range(2):
                 size.setValueAtTime(v, t, d)
         yield ("sleep", SETTLE_MS)
+        gt.close_all_panels()
+        app.clearSelection()
+        app.selectNode(eb, True)
+        QMetaObject.invokeMethod(root_graph(), "showSelectedNodeSettingsPanel")
+        yield ("until", lambda: gt.widgets_of("CurveEditor") and any(
+            isinstance(b, QPushButton) and b.isVisible() and "Switch between a single value" in b.toolTip()
+            for b in QApplication.allWidgets()), 10.0)
+        yield ("sleep", SETTLE_MS)
 
-        def size_knob_item():
+        # Rows are read through the tree's model: QTreeWidgetItem is no QObject, so PySide can
+        # hand back the wrapper of an item deleted with an earlier node when a new item reuses
+        # its address.
+        def size_knob_index():
             for tree in gt.widgets_of("CurveEditor")[0].findChildren(QTreeWidget):
-                for i in range(tree.topLevelItemCount()):
-                    node_item = tree.topLevelItem(i)
-                    if node_item.text(0) != eb.getLabel():
+                model = tree.model()
+                for i in range(model.rowCount()):
+                    node_index = model.index(i, 0)
+                    if node_index.data() != eb.getLabel():
                         continue
-                    for j in range(node_item.childCount()):
-                        if node_item.child(j).text(0).strip().lower() == size_label:
-                            return tree, node_item.child(j)
+                    for j in range(model.rowCount(node_index)):
+                        knob_index = model.index(j, 0, node_index)
+                        if str(knob_index.data()).strip().lower() == size_label:
+                            return tree, knob_index
             return None, None
 
         def size_rows():
             """Labels of the visible curve-editor rows under the size knob's row, or None."""
-            _tree, knob_item = size_knob_item()
-            if knob_item is None:
+            tree, knob_index = size_knob_index()
+            if knob_index is None:
                 return None
-            return [knob_item.child(k).text(0).strip().lower()
-                    for k in range(knob_item.childCount()) if not knob_item.child(k).isHidden()]
+            model = tree.model()
+            return [str(model.index(k, 0, knob_index).data()).strip().lower()
+                    for k in range(model.rowCount(knob_index)) if not tree.isRowHidden(k, knob_index)]
 
         def size_switch():
             for w in QApplication.allWidgets():
@@ -1699,12 +1740,13 @@ try:
 
             check(make_tab_current(editors[0]), "brought the curve editor's tab to the front")
             yield ("sleep", SETTLE_MS)
-            tree, knob_item = size_knob_item()
-            if check(knob_item is not None and knob_item.childCount() == 2, "found the size knob's two component rows"):
+            tree, knob_index = size_knob_index()
+            if check(knob_index is not None and tree.model().rowCount(knob_index) == 2, "found the size knob's two component rows"):
                 # Only X is selected, so the curve widget shows X's curve alone and the drag cannot
                 # land on Y's key, which sits on the same spot.
                 tree.clearSelection()
-                knob_item.child(0).setSelected(True)
+                tree.selectionModel().select(tree.model().index(0, 0, knob_index),
+                                             QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
                 QApplication.processEvents()
                 visible_cws = [w for w in gt.widgets_of("CurveWidget") if w.isVisible()]
                 ecw = visible_cws[0] if visible_cws else None
@@ -1728,18 +1770,17 @@ try:
             key_pt = QPointF(exa, EH - (2.0 - ey0) * esy)
             img = widget_image(ecw)
             kx = int(round(key_pt.x()))
-            column = [img.pixelColor(kx, y) for y in range(img.height())]
-            counts = {}
-            for c in column:
-                counts[c.rgb()] = counts.get(c.rgb(), 0) + 1
-            bg = next(c for c in column if c.rgb() == max(counts, key=counts.get))
-            marked = [y for y, c in enumerate(column)
-                      if abs(c.red() - bg.red()) + abs(c.green() - bg.green()) + abs(c.blue() - bg.blue()) > 120
-                      and abs(y - key_pt.y()) <= 25]
-            report("NOTE expanded-curve: %dx%d, frames 1/21 at x=%r/%r, key guess y=%.1f, marked rows near it %r"
+            # The key sits where X's curve crosses frame 1's column; the value axis need not
+            # follow frameAll()'s padding, so the row is found on screen.
+            marked = sorted(y for y in range(img.height()) for x in (kx - 1, kx, kx + 1)
+                            if 0 <= x < img.width()
+                            and img.pixelColor(x, y).blue() > 180
+                            and img.pixelColor(x, y).blue() > img.pixelColor(x, y).red() + 60
+                            and img.pixelColor(x, y).blue() > img.pixelColor(x, y).green() + 80)
+            report("NOTE expanded-curve: %dx%d, frames 1/21 at x=%r/%r, key guess y=%.1f, curve rows in its column %r"
                    % (EW, EH, exa, exb, key_pt.y(), marked[:12]))
             if marked:
-                key_pt = QPointF(key_pt.x(), min(marked, key=lambda y: abs(y - key_pt.y())))
+                key_pt = QPointF(key_pt.x(), marked[len(marked) // 2])
             before = size_at(1)
             drag(ecw, key_pt, key_pt + QPointF(0, -40))
             yield ("sleep", SETTLE_MS)
@@ -1813,6 +1854,8 @@ try:
         yield ("sleep", SETTLE_MS)
         gt.close_all_panels()
         destroy_nodes([eb])
+        # The roto sections key their shapes at frame 1 and drag at the current frame.
+        app.getViewer(viewer.getScriptName()).seek(1)
         yield ("sleep", SETTLE_MS)
 
         # =====================================================================================
@@ -2182,6 +2225,8 @@ try:
                     continue
             return None
 
+        # loadProject() hands back the engine App, which has no selection calls; the window's
+        # GuiApp is still `app`.
         def open_panel(an_app, node, label):
             graph = root_graph()
             gt.require(graph is not None, "the node graph is on screen")
@@ -2209,7 +2254,7 @@ try:
         yield ("sleep", SETTLE_MS)
 
         fg = create("net.sf.openfx.GradePlugin", 12400, 300)
-        fgain = fg.getParam("gain")
+        fgain = fg.getParam("gain") if fg.getParam("gain") is not None else fg.getParam("multiply")
         gt.require(fgain is not None and fgain.getNumDimensions() > 1, "the Grade has a multi-component gain knob")
         fgain_label = fgain.getLabel().strip().lower()
         set_all(fgain, 1.5)
@@ -2237,19 +2282,21 @@ try:
                     if check(rb is not None and rg is not None, "found the reloaded Blur and Grade"):
                         gt.close_all_panels()
                         yield ("sleep", SETTLE_MS)
-                        opened = yield from open_panel(reloaded, rb, fsize_label)
+                        opened = yield from open_panel(app, rb, fsize_label)
                         if check(opened, "opened the reloaded Blur's properties panel"):
                             rswitch = fold_switch(fsize_label)
                             check(rswitch is not None and rswitch.isChecked(), "size is still expanded after the reload")
+                            gt.shot("fold-01-reloaded-blur-size-expanded.png")
                             check(all(abs(rb.getParam("size").getValue(d) - 4.0) <= TOL for d in range(2)),
                                   "both size components came back as 4")
                         gt.close_all_panels()
                         yield ("sleep", SETTLE_MS)
-                        opened = yield from open_panel(reloaded, rg, fgain_label)
+                        opened = yield from open_panel(app, rg, fgain_label)
                         if check(opened, "opened the reloaded Grade's properties panel"):
                             rswitch = fold_switch(fgain_label)
                             check(rswitch is not None and not rswitch.isChecked(), "gain is still folded after the reload")
-                            rgain = rg.getParam("gain")
+                            gt.shot("fold-02-reloaded-grade-gain-folded.png")
+                            rgain = rg.getParam("gain") if rg.getParam("gain") is not None else rg.getParam("multiply")
                             check(all(abs(rgain.getValue(d) - 1.5) <= TOL for d in range(rgain.getNumDimensions())),
                                   "every gain component came back as 1.5")
                         gt.close_all_panels()

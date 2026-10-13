@@ -34,3 +34,4 @@ source would look identical from the compile line.
 
 ## Decisions
 - 2026-10-10 — **Opened as a parallel lane** in `.worktrees/m27` (branch `milestone/m27-real-debug-build`) alongside M75 - Native Read (user). Freshness check passed. P1.T2's assertion audit waits until M75 merges, so the audit covers the native Read.
+- 2026-10-13 — **Review round (Codex, PR #58):** three major findings on the multi-layer trimap marking (duplicate rects, partial marking, overwritten renderedElsewhere), all pre-existing; fixed in a380021c6 with `RectI::disjointUnion()` plus tests. Two further pre-existing races deferred to M31 - Architectural Cleanup Phase 31.6; display-time label resolution deferred to M31.P5.T1 (user).

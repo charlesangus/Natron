@@ -241,7 +241,7 @@ Line numbers are from `milestone/m69-minor-cleanup` at `a2e90be96`. They will sh
     - `NodeGraphConnect_Test` passes, with its planner cases updated to the new semantics.
     - The GUI `y-shift-y` section (`m69_cleanup.py:726-760`) uses `setSelection([target, s1, s2])` + Y and `setSelection([s1, s2, target])` + Shift+Y, and checks that s1 lands on the preferred input (B), so order is tested.
   - size: M
-- [ ] M69.P10.T3 — Add Nuke-style U and Shift+U
+- [x] M69.P10.T3 — Add Nuke-style U and Shift+U
   - files: `Gui/NodeGraphConnect.cpp`, `Gui/NodeGraphConnect.h`, `Gui/ActionShortcuts.h`, `Gui/NodeGraph40.cpp`, `Tests/gui/m69_cleanup.py` (plus the gtest file `NodeGraphConnect_Test`)
   - approach: two new rebindable shortcuts, registered and dispatched the way P2.T3 registered Y and Shift+Y. Each is one undo step.
     - **U** (user): the first-selected node's output goes into the first free input of every later-selected node.

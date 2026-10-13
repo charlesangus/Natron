@@ -326,7 +326,7 @@ Line numbers are from `milestone/m69-minor-cleanup` at `a2e90be96`. They will sh
 
 User UAT on `M69-2e5e0477d`, 2026-10-13, given in chat.
 
-- [ ] M69.P11.T1 — Y and U skip a multi-input node's mask; single-input nodes may still take theirs
+- [x] M69.P11.T1 — Y and U skip a multi-input node's mask; single-input nodes may still take theirs
   - files: `Gui/NodeGraphConnect.cpp`, `Gui/NodeGraphConnect.h`, `Tests/NodeGraphConnect_Test.cpp`, `Tests/gui/m69_cleanup.py`
   - approach:
     - The user's case: five Grades and a Merge. Select the Merge, then the five Grades, and press Y. That connects B, A, A2, A3 and A4, never the mask.
@@ -334,7 +334,7 @@ User UAT on `M69-2e5e0477d`, 2026-10-13, given in chat.
     - U's "first free input" changes to match: a Grade whose Source is taken gets the U source on its Mask.
   - verify: `NodeGraphConnect` gtest cases cover a Merge-like target (the mask is never chosen, even with more sources than non-mask inputs) and a Grade-like target (the mask is filled second). The GUI `y-shift-y`/`u-shift-u` sections cover Merge plus five Grades.
   - size: M
-- [ ] M69.P11.T2 — Make the explicit fold/expand state the source of truth, and make fold/expand undoable
+- [x] M69.P11.T2 — Make the explicit fold/expand state the source of truth, and make fold/expand undoable
   - files: `Gui/KnobGuiValue.cpp`, `Gui/KnobGui.h`, `Gui/CurveEditor.cpp`, `Gui/CurveWidget.cpp`, `Gui/CurveEditorUndoRedo.*`, `Tests/gui/m69_cleanup.py`
   - approach:
     - The user's bug: keyframe a Blur's `size` at two frames, then press "2". X and Y curves appear correctly, but dragging either reverts the knob to single-value. Editing one component in the properties bin first avoids the bug.
@@ -343,7 +343,7 @@ User UAT on `M69-2e5e0477d`, 2026-10-13, given in chat.
     - Fold/expand pushes an undo command on the panel's undo stack, so undo and redo restore the fold state, and the curve editor follows.
   - verify: GUI section: key Blur `size` at two frames, expand, drag the X curve's key. The knob stays expanded, only X changes, and Y is unchanged. Undo restores X. Undo again re-folds; redo expands.
   - size: L
-- [ ] M69.P11.T3 — Right-clicking a tab opens the pane menu without making that tab current
+- [x] M69.P11.T3 — Right-clicking a tab opens the pane menu without making that tab current
   - files: `Gui/TabWidget.cpp`, `Gui/TabWidget.h`, `Tests/gui/m69_cleanup.py`
   - approach: remove P10.T6's "make the tab current first" step. The menu's actions keep acting on the pane's current tab.
   - verify: the GUI `pane-header-menu` section: a right-click on a non-current tab opens the menu at the cursor, and the current tab is unchanged.
@@ -435,3 +435,8 @@ Acceptance sketch:
 - 2026-10-13 — **P10.T11 started early:** the rebase is onto `main` with M45 only, not waiting for M56. That lets the user run UAT on M56 and M69 side by side instead of one after the other. After M56 merges, M69 rebases again (expect conflicts in `CurveWidget*` with M56.P9.T2), and CI verifies that build.
 - 2026-10-13 — **P10.T11 end build green, awaiting UAT sign-off:** rebased onto `main` (M45); `a2e90be96` dropped as already upstream; conflicts with M45 (create-node keybind) and M76 (WriteNode deleted, legacy-compat removal) resolved. ctest 2100/2100 (2 GPU tests disabled). `m69_cleanup.py` passes all 296 checks after fixes to the script only (`8b8f0be41`); no product bugs were found. `m55_node_graph.py`, `m55_input_pipes.py` and `m45_tab_menu.py` all report 0 failures. `m56_visual.py` didn't run because it isn't on main yet; it runs once M56 merges. The AppImage is `build/appimages/M69-2e5e0477d.AppImage`, with `M69-uat.md` rewritten and shots in `.worktrees/m69/build/m69-shots/uat3/`.
 - 2026-10-13 — **UAT round 3 (user, chat):** with Y and U, a Merge never gets its mask connected, while a Grade may get its mask connected; dragging a curve on an expanded knob re-folds it; fold/expand must be undoable; right-clicking a tab must not make it current. These became Phase 69.11. P10.T11 is done; its AppImage carried the round-2 fixes to UAT.
+- 2026-10-13 — **P11.T1–T3 done** (`f2cbd6e84`, `73bd563cc`, `e156e2cfd`; script `d6cc82f53`):
+  - **Fold bug cause:** `KnobGuiValue::updateGUI`'s auto-fold re-folded an expanded knob whenever its components matched at the current frame. The curve editor's equal-curves fallback wasn't involved.
+  - **Fix:** an `expandedByUser` flag stops the auto-fold. Auto-fold also now needs equal keyframes, not just equal values at the current frame.
+  - **Undo:** fold/expand is `DimensionsFoldCommand` on the panel's undo stack.
+  - **Known limit:** the fold state isn't serialized, as before, so a reload re-derives it from values and keys.

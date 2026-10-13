@@ -229,7 +229,7 @@ Line numbers are from `milestone/m69-minor-cleanup` at `a2e90be96`. They will sh
     - gtest `NodeGraphPickUp`: `LeftClickOnEmptySpaceCancels` (`:61`) becomes a Disconnect expectation. The holding-node and right-click cases stay Cancel.
     - The GUI `pick-up` section: picking up a connected input and clicking empty space leaves it unconnected, and one undo restores it.
   - size: M
-- [ ] M69.P10.T2 — Re-anchor Y and Shift+Y on selection order
+- [x] M69.P10.T2 — Re-anchor Y and Shift+Y on selection order
   - files: `Gui/NodeGraphConnect.cpp`, `Gui/NodeGraphConnect.h`, `Gui/ActionShortcuts.h`, `Gui/NodeGraph40.cpp`, `Tests/gui/m69_cleanup.py`
   - approach:
     - `_selection` is kept in click order. Both wrappers in `NodeGraphConnect.cpp` take `selection.back()` as the anchor today (`:95`, `:148`).
@@ -273,7 +273,7 @@ Line numbers are from `milestone/m69-minor-cleanup` at `a2e90be96`. They will sh
     - A right-click on a tab makes that tab current first, because "Float pane" acts on the current widget.
   - verify: the GUI `pane-header-menu` section (`:865-920`) checks that a right-click on a tab (it also becomes current), on the corner button and on the float button each opens the pane menu at the cursor.
   - size: M
-- [ ] M69.P10.T7 — Keep a broken roto tangent broken until Smooth is applied
+- [x] M69.P10.T7 — Keep a broken roto tangent broken until Smooth is applied
   - files: `Engine/RotoUndoCommand.cpp`, `Engine/BezierCP.cpp`, `Engine/Bezier.cpp`, `Tests/gui/m69_cleanup.py`
   - approach:
     - In `dragTangent` (`RotoUndoCommand.cpp:838-866`), use `const bool broken = breakTangents || cp.getBroken();` for both `getDeltaForPoint` calls and `movePointLeftAndRightIndex`. Then `Bezier::moveBezierPointInternal`'s `setBroken(...)` (`Bezier.cpp:1900-1996`) no longer un-breaks on a plain drag.
@@ -390,3 +390,5 @@ Acceptance sketch:
   - **Folded knob:** a folded multi-component knob shows one curve, and editing it overwrites every channel. Referencing instead of copying is a follow-up, through an inbox entry.
   - These became Phase 69.10.
 - 2026-10-12 — **Phase 69.10 execution (coordinator):** T1, T2, T6, T7 and T8 run in parallel and change product code and gtests only. Their `m69_cleanup.py` sections are written in one pass by P10.T4, which also adds the paste repro, because every task edits that one file and parallel edits would mix the commits.
+- 2026-10-12 — **P10.T7:** no roto gtest was added, because `RotoLayer_Test.cpp` needs render fixtures that can't be checked without a build; the GUI section covers the task. `BezierCP::cuspPoint` now also marks the point broken, and `smoothPoint` clears the flag.
+- 2026-10-12 — **P10.T2:** the old "anchor feeds every node" planner is kept as `planFeedSourceIntoTargets`, for P10.T3's U and Shift+U to reuse. `NodeGraph::connectSelectedNodesToLastSelected` and `connectLastSelectedToSelectedNodes` keep their old names; P10.T3 renames them.

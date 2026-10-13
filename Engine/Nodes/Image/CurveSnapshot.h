@@ -66,6 +66,21 @@ public:
         _yMax = yRange.max;
     }
 
+    const std::vector<KeyFrame>& keys() const
+    {
+        return _keys;
+    }
+
+    double yMin() const
+    {
+        return _yMin;
+    }
+
+    double yMax() const
+    {
+        return _yMax;
+    }
+
     double valueAt(double t) const
     {
         if (_keys.empty()) {

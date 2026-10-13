@@ -38,6 +38,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Clamp.h"
+#include "Engine/Nodes/Color/ColorLookup.h"
 #include "Engine/Nodes/Color/ColorMathNode.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Color/Invert.h"
@@ -61,6 +62,7 @@ gpuCapableIds()
         PLUGINID_NATRON_BLUR,
         PLUGINID_NATRON_CLAMP,
         PLUGINID_NATRON_INVERT,
+        PLUGINID_NATRON_COLORLOOKUP,
         PLUGINID_NATRON_SOLID,
         PLUGINID_NATRON_SATURATION,
         PLUGINID_NATRON_ADD,

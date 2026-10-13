@@ -834,6 +834,15 @@ Clamp holds its CPU class, exact, except where a divisor, mask or mix below 1
 enters, which hold `arithmetic()` (`Tests/Native/NativeClampGpu_Test.cpp`).
 Invert holds its CPU class, exact, except where a divisor, mask or mix below 1
 enters, which hold `arithmetic()` (`Tests/Native/NativeInvertGpu_Test.cpp`).
+ColorLookup holds `transcendental()` in the standard and film-like modes, including values outside
+`range`, which the shader evaluates from the curve's keys in float, and blends the table in two floats
+to round as the CPU's double does. Weighted standard holds 5e-4 relative and luminance 3e-5: they
+divide a curve value by a channel's distance to 0 or 1, or by the luminance, which grows a float
+rounding as the divisor nears 0 (measured 2.1e-4 on RADV with "(Un)premult by", 1.3e-5 without, and
+1.05e-5 for luminance at the 1e-8 floor). Weighted standard also skips the colour of a pixel with a
+denormal colour channel, whose quotient depends on the device's denormal arithmetic. Pixels of two
+components stay on the CPU, as does a curve of more than 128 keys
+(`Tests/Native/NativeColorLookupGpu_Test.cpp`).
 Saturation holds its CPU class, transcendental, for every luminance option; the kernel takes the
 weights from the CPU's `ColorMath::luminance` (`Tests/Native/NativeSaturationGpu_Test.cpp`).
 Constant and Solid hold their CPU class, exact, for every target layer and channel selection, with a source connected or not (`Tests/Native/NativeConstantGpu_Test.cpp`).

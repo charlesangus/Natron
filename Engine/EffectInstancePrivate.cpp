@@ -589,6 +589,21 @@ EffectInstance::Implementation::setDuringInteractAction(bool b)
 }
 
 #if NATRON_ENABLE_TRIMAP
+namespace {
+// restToRender accumulates across the layers of one render, whereas getRestToRender_trimap() requires an empty output list.
+// Every rectangle gathered so far is marked on this image too, as all layers are rendered over the same rectangles.
+void
+appendRestToRender(const ImagePtr& img, const RectI& roi, std::list<RectI>* restToRender, bool* renderedElsewhere)
+{
+    std::list<RectI> imageRest;
+    img->getRestToRender_trimap(roi, imageRest, renderedElsewhere);
+    restToRender->splice(restToRender->end(), imageRest);
+    for (std::list<RectI>::const_iterator it = restToRender->begin(); it != restToRender->end(); ++it) {
+        img->markForRendering(*it);
+    }
+}
+}
+
 void
 EffectInstance::Implementation::markImageAsBeingRendered(const ImagePtr & img, const RectI& roi, std::list<RectI>* restToRender, bool *renderedElsewhere)
 {
@@ -603,10 +618,7 @@ EffectInstance::Implementation::markImageAsBeingRendered(const ImagePtr & img, c
         k.unlock(); // imagesBeingRenderedMutex
         QMutexLocker k2(&ibr->lock);
         ++(ibr->refCount);
-        img->getRestToRender_trimap(roi, *restToRender, renderedElsewhere);
-        for (std::list<RectI>::const_iterator it = restToRender->begin(); it!=restToRender->end();++it) {
-            img->markForRendering(*it);
-        }
+        appendRestToRender(img, roi, restToRender, renderedElsewhere);
     } else {
         ImageBeingRenderedPtr ibr = std::make_shared<Implementation::ImageBeingRendered>();
         ++ibr->refCount;
@@ -615,10 +627,7 @@ EffectInstance::Implementation::markImageAsBeingRendered(const ImagePtr & img, c
         Q_UNUSED(ok);
         k.unlock(); // imagesBeingRenderedMutex
         QMutexLocker k2(&ibr->lock);
-        img->getRestToRender_trimap(roi, *restToRender, renderedElsewhere);
-        for (std::list<RectI>::const_iterator it = restToRender->begin(); it!=restToRender->end();++it) {
-            img->markForRendering(*it);
-        }
+        appendRestToRender(img, roi, restToRender, renderedElsewhere);
     }
 }
 

@@ -1384,9 +1384,8 @@ TrackerNodeInteract::onKeyFrameImageRenderingFinished()
     }
 
     OverlaySupport* overlay = _p->publicInterface->getCurrentViewportForOverlays();
-    assert(overlay);
+    // Headless sessions have no viewport, hence no GL context to upload the keyframe texture into.
     OpenGLViewerI* isOpenGLViewer = dynamic_cast<OpenGLViewerI*>(overlay);
-    assert(isOpenGLViewer);
     if (!isOpenGLViewer) {
         return;
     }

@@ -172,6 +172,7 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionCurveEditorCubic);
     (void)QT_TR_NOOP(kShortcutDescActionCurveEditorHorizontal);
     (void)QT_TR_NOOP(kShortcutDescActionCurveEditorBreak);
+    (void)QT_TR_NOOP(kShortcutDescActionCurveEditorFree);
     (void)QT_TR_NOOP(kShortcutDescActionCurveEditorSelectAll);
     (void)QT_TR_NOOP(kShortcutDescActionCurveEditorCenter);
     (void)QT_TR_NOOP(kShortcutDescActionCurveEditorCopy);

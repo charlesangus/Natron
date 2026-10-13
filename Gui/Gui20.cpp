@@ -65,6 +65,7 @@
 #include "Gui/SequenceFileDialog.h"
 #include "Gui/Splitter.h"
 #include "Gui/TabWidget.h"
+#include "Gui/ThemedIcon.h"
 #include "Gui/ToolButton.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
@@ -78,7 +79,7 @@
 
 #define NAMED_PLUGIN_GROUP_NO 15
 
-#define PLUGIN_GROUP_DEFAULT_ICON_PATH NATRON_IMAGES_PATH "GroupingIcons/Set" NATRON_ICON_SET_NUMBER "/other_grouping_" NATRON_ICON_SET_NUMBER ".png"
+#define PLUGIN_GROUP_DEFAULT_ICON_PATH NATRON_ICONS_PATH "lucide/puzzle.svg"
 
 NATRON_NAMESPACE_ENTER
 
@@ -103,9 +104,9 @@ static std::string namedGroupsOrdered[NAMED_PLUGIN_GROUP_NO] = {
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
 static void
-getPixmapForGrouping(QPixmap* pixmap,
-                     int size,
-                     const QString & grouping)
+getIconForGrouping(QIcon* icon,
+                   int size,
+                   const QString& grouping)
 {
     PixmapEnum e = NATRON_PIXMAP_OTHER_PLUGINS;
 
@@ -139,7 +140,7 @@ getPixmapForGrouping(QPixmap* pixmap,
     } else if ( grouping == QString::fromUtf8(PLUGIN_GROUP_OTHER) ) {
         e = NATRON_PIXMAP_MISC_GROUPING;
     }
-    appPTR->getIcon(e, size, pixmap);
+    appPTR->getIcon(e, size, icon);
 }
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
@@ -174,14 +175,10 @@ void
 Gui::loadStyleSheet()
 {
     SettingsPtr settings = appPTR->getCurrentSettings();
-    QColor selCol, sunkCol, baseCol, raisedCol, txtCol, intCol, kfCol, disCol, eCol, altCol, lightSelCol;
+    QColor selCol, sunkCol, baseCol, raisedCol, txtCol, intCol, kfCol, disCol, eCol, altCol, lightSelCol, disabledTxtCol;
 
     //settings->
-    {
-        double r, g, b;
-        settings->getSelectionColor(&r, &g, &b);
-        selCol = to_qcolor(r, g, b);
-    }
+    selCol = ThemedIcon::themeSelectionColor();
     {
         double r, g, b;
         r = 1;
@@ -204,11 +201,8 @@ Gui::loadStyleSheet()
         settings->getSunkenColor(&r, &g, &b);
         sunkCol = to_qcolor(r, g, b);
     }
-    {
-        double r, g, b;
-        settings->getTextColor(&r, &g, &b);
-        txtCol = to_qcolor(r, g, b);
-    }
+    txtCol = ThemedIcon::themeTextColor();
+    disabledTxtCol = ThemedIcon::themeDisabledColor();
     {
         double r, g, b;
         settings->getInterpolatedColor(&r, &g, &b);
@@ -254,7 +248,7 @@ Gui::loadStyleSheet()
     p.setBrush( QPalette::BrightText, txtCol );
     p.setBrush( QPalette::Link, selCol ); // can only be set via palette
     p.setBrush( QPalette::LinkVisited, selCol ); // can only be set via palette
-    {
+    if (qApp->palette() != p) {
 #ifdef DEBUG
         boost_adaptbx::floating_point::exception_trapping trap(0);
 #endif
@@ -278,21 +272,26 @@ Gui::loadStyleSheet()
                                             "QInputDialog { font-family: \"%1\"; font-size: %2pt; }\n" // ... or the label doesn't get the right font
                                             ).arg(appFont).arg(appFontSize);
         content += in.readAll();
+        content = content.arg(qcolor_to_qstring(selCol)) // %1: selection-color
+                      .arg(qcolor_to_qstring(baseCol)) // %2: medium background
+                      .arg(qcolor_to_qstring(raisedCol)) // %3: soft background
+                      .arg(qcolor_to_qstring(sunkCol)) // %4: strong background
+                      .arg(qcolor_to_qstring(txtCol)) // %5: text colour
+                      .arg(qcolor_to_qstring(intCol)) // %6: interpolated value color
+                      .arg(qcolor_to_qstring(kfCol)) // %7: keyframe value color
+                      .arg(qcolor_to_qstring(disCol)) // %8: disabled editable text
+                      .arg(qcolor_to_qstring(eCol)) // %9: expression background color
+                      .arg(qcolor_to_qstring(altCol)) // %10 = altered text color
+                      .arg(qcolor_to_qstring(lightSelCol)) // %11 = mouse over selection color
+                      .arg(qcolor_to_qstring(disabledTxtCol)); // %12 = disabled text colour
+        // Every GUI instance reloads on a theme change, and applying a stylesheet repolishes
+        // every widget even when nothing in it changed.
+        if (qApp->styleSheet() != content) {
 #ifdef DEBUG
-        boost_adaptbx::floating_point::exception_trapping trap(0);
+            boost_adaptbx::floating_point::exception_trapping trap(0);
 #endif
-        qApp->setStyleSheet( content
-                             .arg( qcolor_to_qstring(selCol) ) // %1: selection-color
-                             .arg( qcolor_to_qstring(baseCol) ) // %2: medium background
-                             .arg( qcolor_to_qstring(raisedCol) ) // %3: soft background
-                             .arg( qcolor_to_qstring(sunkCol) ) // %4: strong background
-                             .arg( qcolor_to_qstring(txtCol) ) // %5: text colour
-                             .arg( qcolor_to_qstring(intCol) ) // %6: interpolated value color
-                             .arg( qcolor_to_qstring(kfCol) ) // %7: keyframe value color
-                             .arg( qcolor_to_qstring(disCol) ) // %8: disabled editable text
-                             .arg( qcolor_to_qstring(eCol) ) // %9: expression background color
-                             .arg( qcolor_to_qstring(altCol) ) // %10 = altered text color
-                             .arg( qcolor_to_qstring(lightSelCol) ) ); // %11 = mouse over selection color
+            qApp->setStyleSheet(content);
+        }
     } else {
         Dialogs::errorDialog( tr("Stylesheet").toStdString(), tr("Failure to load stylesheet file ").toStdString() + qss.fileName().toStdString() );
     }
@@ -843,27 +842,38 @@ Gui::findOrCreateToolButton(const PluginGroupNodePtr & plugin)
     }
 
     QIcon toolButtonIcon, menuIcon;
-    if ( !plugin->getIconPath().isEmpty() && QFile::exists( plugin->getIconPath() ) ) {
-        QPixmap pix( plugin->getIconPath() );
+    if (!plugin->getIconPath().isEmpty() && QFile::exists(plugin->getIconPath())) {
         int menuSize = TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE);
         int toolButtonSize = !plugin->hasParent() ? TO_DPIX(NATRON_TOOL_BUTTON_ICON_SIZE) : TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE);
-        QPixmap menuPix = pix, toolbuttonPix = pix;
-        if ( (std::max( menuPix.width(), menuPix.height() ) != menuSize) && !menuPix.isNull() ) {
-            menuPix = menuPix.scaled(menuSize, menuSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        if (ThemedIcon::isSvgPath(plugin->getIconPath())) {
+            // A built-in plugin (e.g. RotoPaint) pointed at a vendored glyph gets the
+            // same themed Normal/On/Disabled states as the toolbox grouping icons.
+            // An OFX plugin's own icon is always a PNG, so it never reaches this branch.
+            menuIcon = ThemedIcon::icon(plugin->getIconPath(), menuSize);
+            toolButtonIcon = ThemedIcon::icon(plugin->getIconPath(), toolButtonSize);
+        } else if (!plugin->hasParent() && !plugin->getChildren().empty()) {
+            // A plugin bundle's own top-level grouping (e.g. openfx-arena's "Extra") brings a
+            // colour PNG into the otherwise monochrome toolbox. Its silhouette is kept and drawn
+            // in the theme colour; plugins' own icons, which may be colour-coded, keep theirs.
+            menuIcon = ThemedIcon::tintedIcon(plugin->getIconPath(), menuSize);
+            toolButtonIcon = ThemedIcon::tintedIcon(plugin->getIconPath(), toolButtonSize);
+        } else {
+            QPixmap pix(plugin->getIconPath());
+            QPixmap menuPix = pix, toolbuttonPix = pix;
+            if ((std::max(menuPix.width(), menuPix.height()) != menuSize) && !menuPix.isNull()) {
+                menuPix = menuPix.scaled(menuSize, menuSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            }
+            if ((std::max(toolbuttonPix.width(), toolbuttonPix.height()) != toolButtonSize) && !toolbuttonPix.isNull()) {
+                toolbuttonPix = toolbuttonPix.scaled(toolButtonSize, toolButtonSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            }
+            menuIcon.addPixmap(menuPix);
+            toolButtonIcon.addPixmap(toolbuttonPix);
         }
-        if ( (std::max( toolbuttonPix.width(), toolbuttonPix.height() ) != toolButtonSize) && !toolbuttonPix.isNull() ) {
-            toolbuttonPix = toolbuttonPix.scaled(toolButtonSize, toolButtonSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-        }
-        menuIcon.addPixmap(menuPix);
-        toolButtonIcon.addPixmap(toolbuttonPix);
     } else {
         //add the default group icon only if it has no parent
         if ( !plugin->hasParent() ) {
-            QPixmap toolbuttonPix, menuPix;
-            getPixmapForGrouping( &toolbuttonPix, TO_DPIX(NATRON_TOOL_BUTTON_ICON_SIZE), plugin->getLabel() );
-            toolButtonIcon.addPixmap(toolbuttonPix);
-            getPixmapForGrouping( &menuPix, TO_DPIX(NATRON_TOOL_BUTTON_ICON_SIZE), plugin->getLabel() );
-            menuIcon.addPixmap(menuPix);
+            getIconForGrouping(&toolButtonIcon, TO_DPIX(NATRON_TOOL_BUTTON_ICON_SIZE), plugin->getLabel());
+            getIconForGrouping(&menuIcon, TO_DPIX(NATRON_TOOL_BUTTON_ICON_SIZE), plugin->getLabel());
         }
     }
     //if the tool-button has no children, this is a leaf, we must create an action

@@ -191,8 +191,6 @@ KnobGuiChannelSet::createWidget(QHBoxLayout* layout)
     QWidget* addContainer = new QWidget(getContainer());
     QHBoxLayout* addLayout = new QHBoxLayout(addContainer);
     addLayout->setContentsMargins(0, 0, 0, 0);
-    // Sized and left-aligned like each row's [-] button, so it reads as the next cell of
-    // that column rather than a button of its own.
     _imp->addLayerButton = new Button(QString::fromUtf8("+"), addContainer);
     _imp->addLayerButton->setToolTip(tr("Add a layer row"));
     _imp->addLayerButton->setFocusPolicy(Qt::StrongFocus);
@@ -229,7 +227,6 @@ KnobGuiChannelSet::refreshWidgets()
         const bool first = _imp->rows.empty();
         LayerChannelRow* row = new LayerChannelRow(first ? LayerChannelRow::eModeSetRow0 : LayerChannelRow::eModeSetRowN, getContainer());
         row->setRowRemovable(!first);
-        row->setRemoveColumnReserved(true);
         getContainerLayout()->insertWidget((int)_imp->rows.size(), row);
         QObject::connect(row, &LayerChannelRow::modeChosen, this, [this, row](LayerChannelRow::SetRowModeEnum mode) {
             onRowModeChosen(row, mode);

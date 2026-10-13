@@ -170,6 +170,7 @@ set(GuiTests_SOURCES
     ScaleSliderQWidget_Test.cpp
     ShuffleMatrix_Test.cpp
     TabMenuBridge_Test.cpp
+    ThemedIcon_Test.cpp
     ViewerDataSerialization_Test.cpp
     guimain.cpp
 )

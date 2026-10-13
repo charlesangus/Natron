@@ -72,10 +72,11 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/Label.h"
 #include "Gui/NewLayerDialog.h"
 #include "Gui/ProjectGui.h"
+#include "Gui/PropertiesBinWrapper.h"
 #include "Gui/ScaleSliderQWidget.h"
 #include "Gui/SpinBox.h"
 #include "Gui/TabGroup.h"
-#include "Gui/PropertiesBinWrapper.h"
+#include "Gui/ThemedIcon.h"
 
 #include <ofxNatron.h>
 
@@ -97,13 +98,10 @@ void
 GroupBoxLabel::setChecked(bool b)
 {
     _checked = b;
-    QPixmap pix;
-    if (b) {
-        appPTR->getIcon(NATRON_PIXMAP_GROUPBOX_UNFOLDED, NATRON_SMALL_BUTTON_ICON_SIZE, &pix);
-    } else {
-        appPTR->getIcon(NATRON_PIXMAP_GROUPBOX_FOLDED, NATRON_SMALL_BUTTON_ICON_SIZE, &pix);
-    }
-    setPixmap(pix);
+    const int size = TO_DPIX(NATRON_SMALL_BUTTON_ICON_SIZE);
+    QIcon icon;
+    appPTR->getIcon(b ? NATRON_PIXMAP_GROUPBOX_UNFOLDED : NATRON_PIXMAP_GROUPBOX_FOLDED, size, &icon);
+    ThemedIcon::setLabelIcon(this, icon, size);
 }
 
 NATRON_NAMESPACE_EXIT

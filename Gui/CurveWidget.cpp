@@ -62,6 +62,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/KnobGui.h"
 #include "Gui/PythonPanels.h" // PyModelDialog
 #include "Gui/TabWidget.h"
+#include "Gui/ThemedIcon.h"
 #include "Gui/ViewerGL.h"
 
 #include <QOpenGLContext>
@@ -1614,20 +1615,22 @@ CurveWidget::keyPressEvent(QKeyEvent* e)
         horizontalInterpForSelectedKeyFrames();
     } else if ( isKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorBreak, modifiers, key) ) {
         breakDerivativesForSelectedKeyFrames();
-    } else if ( isKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorCenterAll, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorFree, modifiers, key)) {
+        freeInterpForSelectedKeyFrames();
+    } else if (isKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorCenterAll, modifiers, key)) {
         frameAll();
-    } else if ( isKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorCenter, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorCenter, modifiers, key)) {
         frameSelectedCurve();
-    } else if ( isKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorSelectAll, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorSelectAll, modifiers, key)) {
         selectAllKeyFrames();
-    } else if ( isKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorCopy, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorCopy, modifiers, key)) {
         copySelectedKeyFramesToClipBoard();
-    } else if ( isKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorPaste, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorPaste, modifiers, key)) {
         pasteKeyFramesFromClipBoardToSelectedCurve();
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionZoomIn, Qt::NoModifier, key) ) { // zoom in/out doesn't care about modifiers
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionZoomIn, Qt::NoModifier, key)) { // zoom in/out doesn't care about modifiers
         QWheelEvent e(mapFromGlobal( QCursor::pos() ), QCursor::pos(), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
         wheelEvent(&e);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionZoomOut, Qt::NoModifier, key) ) { // zoom in/out doesn't care about modifiers
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionZoomOut, Qt::NoModifier, key)) { // zoom in/out doesn't care about modifiers
         QWheelEvent e(mapFromGlobal( QCursor::pos() ), QCursor::pos(), QPoint(), QPoint(0, -120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
         wheelEvent(&e);
     } else {
@@ -1775,6 +1778,14 @@ CurveWidget::breakDerivativesForSelectedKeyFrames()
     assert( qApp && qApp->thread() == QThread::currentThread() );
 
     _imp->setSelectedKeysInterpolation(eKeyframeTypeBroken);
+}
+
+void
+CurveWidget::freeInterpForSelectedKeyFrames()
+{
+    assert(qApp && qApp->thread() == QThread::currentThread());
+
+    _imp->setSelectedKeysInterpolation(eKeyframeTypeFree);
 }
 
 void
@@ -2072,13 +2083,13 @@ CurveWidget::onTimeLineBoundariesChanged(int,
     update();
 }
 
-const QColor &
+QColor
 CurveWidget::getSelectedCurveColor() const
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
 
-    return _imp->_selectedCurveColor;
+    return ThemedIcon::themeSelectionColor();
 }
 
 const QFont &

@@ -152,7 +152,7 @@ KnobGuiGroup::createWidget(QHBoxLayout* layout)
         return;
     }
     _checked = knob->getValue();
-    _button->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
+    _button->setFixedSize(TO_DPIX(NATRON_MEDIUM_BUTTON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_SIZE));
     _button->setChecked(_checked);
     QObject::connect( _button, SIGNAL(checked(bool)), this, SLOT(onCheckboxChecked(bool)) );
     layout->addWidget(_button);

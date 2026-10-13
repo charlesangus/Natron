@@ -66,9 +66,10 @@ InfoViewerWidget::InfoViewerWidget(const QString& description,
     QFontMetrics fm(font(), 0);
     setFixedHeight( fm.height() );
 
-    setStyleSheet( QString::fromUtf8("background-color: black;\n"
-                                     "color : rgba(200,200,200,255);\n"
-                                     "QToolTip { background-color: black;}") );
+    // No text colour here: the application stylesheet's theme text colour applies, so a
+    // Preferences change recolours the info bar along with every other label.
+    setStyleSheet(QString::fromUtf8("background-color: black;\n"
+                                    "QToolTip { background-color: black;}"));
 
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 
@@ -99,9 +100,9 @@ InfoViewerWidget::InfoViewerWidget(const QString& description,
     descriptionLabel = new Label(this);
     {
         const QFont& font = descriptionLabel->font();
-        QString descriptionText = QString::fromUtf8("<font color=\"#DBE0E0\" face=\"%1\" size=%2>")
-                                  .arg( font.family() )
-                                  .arg( font.pixelSize() );
+        QString descriptionText = QString::fromUtf8("<font face=\"%1\" size=%2>")
+                                      .arg(font.family())
+                                      .arg(font.pixelSize());
         descriptionText.append(description);
         descriptionText.append( QString::fromUtf8("</font>") );
         descriptionLabel->setText(descriptionText);
@@ -267,7 +268,7 @@ void
 InfoViewerWidget::setDeepSamplesUnavailable()
 {
     const QFont& font = deepValues->font();
-    QString text = QString::fromUtf8("<font color=\"#DBE0E0\" face=\"%1\" size=%2>deep: %3</font>")
+    QString text = QString::fromUtf8("<font face=\"%1\" size=%2>deep: %3</font>")
                        .arg(font.family())
                        .arg(font.pixelSize())
                        .arg(QChar(0x2013));
@@ -295,7 +296,7 @@ InfoViewerWidget::setDeepSamples(const std::vector<std::string>& channelNames,
                            .arg(QChar(0x2013))
                            .arg(QString::number(zMax, 'f', 2)));
     }
-    deepValues->setText(QString::fromUtf8("<font color=\"#DBE0E0\" face=\"%1\" size=%2>%3</font>")
+    deepValues->setText(QString::fromUtf8("<font face=\"%1\" size=%2>%3</font>")
                             .arg(font.family())
                             .arg(font.pixelSize())
                             .arg(summary));
@@ -402,8 +403,10 @@ InfoViewerWidget::setColor(float r,
     if ( (_comp.getNumComponents() == 0) || (_comp.getNumComponents() > 4) ) {
         values = QString();
     } else if (_comp.getNumComponents() == 1) {
-        values = QString::fromUtf8("<font color=\"#DBE0E0\" face=\"%2\" size=%3>%1</font>")
-                 .arg(aS).arg( font.family() ).arg( font.pixelSize() );
+        values = QString::fromUtf8("<font face=\"%2\" size=%3>%1</font>")
+                     .arg(aS)
+                     .arg(font.family())
+                     .arg(font.pixelSize());
     } else if (_comp.getNumComponents() == 2) {
         values = QString::fromUtf8("<font color='#d93232' face=\"%3\" size=%4>%1  </font>"
                                    "<font color='#00a700' face=\"%3\" size=%4>%2  </font>")
@@ -424,13 +427,13 @@ InfoViewerWidget::setColor(float r,
         values = QString::fromUtf8("<font color='#d93232' face=\"%5\" size=%6>%1  </font>"
                                    "<font color='#00a700' face=\"%5\" size=%6>%2  </font>"
                                    "<font color='#5858ff' face=\"%5\" size=%6>%3  </font>"
-                                   "<font color=\"#DBE0E0\" face=\"%5\" size=%6>%4</font>")
-                 .arg(rS)
-                 .arg(gS)
-                 .arg(bS)
-                 .arg(aS)
-                 .arg( font.family() )
-                 .arg( font.pixelSize() );
+                                   "<font face=\"%5\" size=%6>%4</font>")
+                     .arg(rS)
+                     .arg(gS)
+                     .arg(bS)
+                     .arg(aS)
+                     .arg(font.family())
+                     .arg(font.pixelSize());
     }
 
     if (_colorApprox) {
@@ -478,13 +481,13 @@ InfoViewerWidget::setColor(float r,
     QString sS = _colorValid ? QString::number(s, 'f', 2) : QString::fromUtf8("?");
     QString vS = _colorValid ? QString::number(v, 'f', 2) : QString::fromUtf8("?");
     QString hsvlValues;
-    hsvlValues = QString::fromUtf8("<font color=\"#DBE0E0\" face=\"%5\" size=%6>H:%1 S:%2 V:%3  L:%4</font>")
-                 .arg(hS)
-                 .arg(sS)
-                 .arg(vS)
-                 .arg(lS)
-                 .arg( hsvFont.family() )
-                 .arg( hsvFont.pixelSize() );
+    hsvlValues = QString::fromUtf8("<font face=\"%5\" size=%6>H:%1 S:%2 V:%3  L:%4</font>")
+                     .arg(hS)
+                     .arg(sS)
+                     .arg(vS)
+                     .arg(lS)
+                     .arg(hsvFont.family())
+                     .arg(hsvFont.pixelSize());
 
     hvl_lastOption->setText(hsvlValues);
     hvl_lastOption->update();
@@ -508,11 +511,11 @@ InfoViewerWidget::setMousePos(QPoint p)
     QString coord;
     const QFont& font = coordMouse->font();
 
-    coord = QString::fromUtf8("<font color=\"#DBE0E0\" face=\"%3\" size=%4>x=%1 y=%2</font>")
-            .arg( p.x() )
-            .arg( p.y() )
-            .arg( font.family() )
-            .arg( font.pixelSize() );
+    coord = QString::fromUtf8("<font face=\"%3\" size=%4>x=%1 y=%2</font>")
+                .arg(p.x())
+                .arg(p.y())
+                .arg(font.family())
+                .arg(font.pixelSize());
     coordMouse->setText(coord);
 }
 
@@ -523,10 +526,10 @@ InfoViewerWidget::setResolution(const QString & f)
     assert( QThread::currentThread() == qApp->thread() );
     const QFont& font = resolution->font();
     QString reso;
-    reso = QString::fromUtf8("<font color=\"#DBE0E0\" face=\"%2\" size=%3>%1</font>")
-    .arg(f)
-    .arg( font.family() )
-    .arg( font.pixelSize() );
+    reso = QString::fromUtf8("<font face=\"%2\" size=%3>%1</font>")
+               .arg(f)
+               .arg(font.family())
+               .arg(font.pixelSize());
     resolution->setText(reso);
 
 }
@@ -543,13 +546,13 @@ InfoViewerWidget::setDataWindow(const RectI & r)
     x2.setNum(r.x2);
     y2.setNum(r.y2);
 
-    bbox = QString::fromUtf8("<font color=\"#DBE0E0\" face=\"%5\" size=%6>RoD: %1 %2 %3 %4</font>")
-           .arg(x1)
-           .arg(y1)
-           .arg(x2)
-           .arg(y2)
-           .arg( font.family() )
-           .arg( font.pixelSize() );
+    bbox = QString::fromUtf8("<font face=\"%5\" size=%6>RoD: %1 %2 %3 %4</font>")
+               .arg(x1)
+               .arg(y1)
+               .arg(x2)
+               .arg(y2)
+               .arg(font.family())
+               .arg(font.pixelSize());
 
     coordDispWindow->setText(bbox);
 }
@@ -559,9 +562,9 @@ InfoViewerWidget::setImageFormat(const ImageLayerDesc& comp,
                                  ImageBitDepthEnum depth)
 {
     const QFont& font = imageFormat->font();
-    QString text = QString::fromUtf8("<font color=\"#DBE0E0\" face=\"%1\" size=%2>")
-                   .arg( font.family() )
-                   .arg( font.pixelSize() );
+    QString text = QString::fromUtf8("<font face=\"%1\" size=%2>")
+                       .arg(font.family())
+                       .arg(font.pixelSize());
     QString format = QString::fromUtf8( Image::getFormatString(comp, depth).c_str() );
 
     text.append(format);

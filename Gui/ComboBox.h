@@ -159,6 +159,12 @@ public:
 
     void setMaximumWidthFromText(const QString & str);
 
+    /**
+     * @brief The width at which paintEvent() draws the widest of texts without clipping:
+     * the text plus the indent, the drop-down arrow and the frame.
+     **/
+    int widthToFit(const QStringList& texts) const;
+
     int activeIndex() const;
 
     void clear();

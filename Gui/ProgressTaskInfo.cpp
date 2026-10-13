@@ -694,17 +694,13 @@ ProgressTaskInfo::createCellWidgets()
     layout->setSpacing(0);
 
     int medSizeIcon = TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE);
-    QPixmap restartPix, pauseOnPix, pauseOffPix, clearTasksPix;
+    QIcon restartPix, clearTasksPix, pauseIc;
     appPTR->getIcon(NATRON_PIXMAP_PLAYER_PLAY_DISABLED, medSizeIcon, &restartPix);
     appPTR->getIcon(NATRON_PIXMAP_PLAYER_STOP_DISABLED, medSizeIcon, &clearTasksPix);
-    appPTR->getIcon(NATRON_PIXMAP_PLAYER_PAUSE_ENABLED, medSizeIcon, &pauseOnPix);
-    appPTR->getIcon(NATRON_PIXMAP_PLAYER_PAUSE_DISABLED, medSizeIcon, &pauseOffPix);
+    appPTR->getIcon(NATRON_PIXMAP_PLAYER_PAUSE_DISABLED, NATRON_PIXMAP_PLAYER_PAUSE_ENABLED, medSizeIcon, &pauseIc);
 
     const QSize medButtonIconSize( TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_ICON_SIZE) );
-    const QSize medButtonSize( TO_DPIX(NATRON_MEDIUM_BUTTON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_SIZE) );
-    QIcon pauseIc;
-    pauseIc.addPixmap(pauseOnPix, QIcon::Normal, QIcon::On);
-    pauseIc.addPixmap(pauseOffPix, QIcon::Normal, QIcon::Off);
+    const QSize medButtonSize(TO_DPIX(NATRON_MEDIUM_BUTTON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_SIZE));
     _imp->pauseTasksButton = new Button(pauseIc, QString(), _imp->controlsButtonsContainer);
     _imp->pauseTasksButton->setFixedSize(medButtonSize);
     _imp->pauseTasksButton->setIconSize(medButtonIconSize);
@@ -715,7 +711,7 @@ ProgressTaskInfo::createCellWidgets()
     _imp->pauseTasksButton->setEnabled(_imp->canBePaused);
     layout->addWidget(_imp->pauseTasksButton);
 
-    _imp->restartTasksButton = new Button(QIcon(restartPix), QString(), _imp->controlsButtonsContainer);
+    _imp->restartTasksButton = new Button(restartPix, QString(), _imp->controlsButtonsContainer);
     _imp->restartTasksButton->setFixedSize(medButtonSize);
     _imp->restartTasksButton->setIconSize(medButtonIconSize);
     _imp->restartTasksButton->setFocusPolicy(Qt::NoFocus);
@@ -724,8 +720,7 @@ ProgressTaskInfo::createCellWidgets()
     _imp->restartTasksButton->setEnabled(false);
     layout->addWidget(_imp->restartTasksButton);
 
-
-    _imp->cancelTasksButton = new Button(QIcon(clearTasksPix), QString(), _imp->controlsButtonsContainer);
+    _imp->cancelTasksButton = new Button(clearTasksPix, QString(), _imp->controlsButtonsContainer);
     _imp->cancelTasksButton->setFixedSize(medButtonSize);
     _imp->cancelTasksButton->setIconSize(medButtonIconSize);
     _imp->cancelTasksButton->setFocusPolicy(Qt::NoFocus);

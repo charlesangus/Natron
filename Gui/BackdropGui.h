@@ -74,6 +74,11 @@ private:
         return true;
     }
 
+    virtual bool wantsLabelWrap() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
     virtual void adjustSizeToContent(int *w, int *h, bool adjustToTextSize) OVERRIDE FINAL;
     virtual void getInitialSize(int *w, int *h) const OVERRIDE FINAL;
 

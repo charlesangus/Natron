@@ -391,14 +391,14 @@ TrackerPanel::TrackerPanel(const NodeGuiPtr& n,
     trackLayout->addWidget(_imp->totalKeyframes);
 
     int medIconSize = TO_DPIY(NATRON_MEDIUM_BUTTON_ICON_SIZE);
-    QPixmap prevPix, nextPix, addPix, removePix, clearAnimPix;
+    QIcon prevPix, nextPix, addPix, removePix, clearAnimPix;
     appPTR->getIcon(NATRON_PIXMAP_PREV_USER_KEY, medIconSize, &prevPix);
     appPTR->getIcon(NATRON_PIXMAP_NEXT_USER_KEY, medIconSize, &nextPix);
     appPTR->getIcon(NATRON_PIXMAP_ADD_USER_KEY, medIconSize, &addPix);
     appPTR->getIcon(NATRON_PIXMAP_REMOVE_USER_KEY, medIconSize, &removePix);
     appPTR->getIcon(NATRON_PIXMAP_CLEAR_ALL_ANIMATION, medIconSize, &clearAnimPix);
 
-    _imp->prevKeyframe = new Button(QIcon(prevPix), QString(), trackContainer);
+    _imp->prevKeyframe = new Button(prevPix, QString(), trackContainer);
     _imp->prevKeyframe->setFixedSize(medButtonSize);
     _imp->prevKeyframe->setIconSize(medButtonIconSize);
     _imp->prevKeyframe->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Go to the previous pattern keyframe."), NATRON_NAMESPACE::WhiteSpaceNormal) );
@@ -406,7 +406,7 @@ TrackerPanel::TrackerPanel(const NodeGuiPtr& n,
     QObject::connect( _imp->prevKeyframe, SIGNAL(clicked(bool)), this, SLOT(onGoToPrevKeyframeButtonClicked()) );
     trackLayout->addWidget(_imp->prevKeyframe);
 
-    _imp->nextKeyframe = new Button(QIcon(nextPix), QString(), trackContainer);
+    _imp->nextKeyframe = new Button(nextPix, QString(), trackContainer);
     _imp->nextKeyframe->setFixedSize(medButtonSize);
     _imp->nextKeyframe->setIconSize(medButtonIconSize);
     _imp->nextKeyframe->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Go to the next pattern keyframe."), NATRON_NAMESPACE::WhiteSpaceNormal) );
@@ -414,7 +414,7 @@ TrackerPanel::TrackerPanel(const NodeGuiPtr& n,
     QObject::connect( _imp->nextKeyframe, SIGNAL(clicked(bool)), this, SLOT(onGoToNextKeyframeButtonClicked()) );
     trackLayout->addWidget(_imp->nextKeyframe);
 
-    _imp->addKeyframe = new Button(QIcon(addPix), QString(), trackContainer);
+    _imp->addKeyframe = new Button(addPix, QString(), trackContainer);
     _imp->addKeyframe->setFixedSize(medButtonSize);
     _imp->addKeyframe->setIconSize(medButtonIconSize);
     _imp->addKeyframe->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Add a keyframe to the pattern at the current timeline's time."), NATRON_NAMESPACE::WhiteSpaceNormal) );
@@ -422,7 +422,7 @@ TrackerPanel::TrackerPanel(const NodeGuiPtr& n,
     QObject::connect( _imp->addKeyframe, SIGNAL(clicked(bool)), this, SLOT(onAddKeyframeButtonClicked()) );
     trackLayout->addWidget(_imp->addKeyframe);
 
-    _imp->removeKeyframe = new Button(QIcon(removePix), QString(), trackContainer);
+    _imp->removeKeyframe = new Button(removePix, QString(), trackContainer);
     _imp->removeKeyframe->setFixedSize(medButtonSize);
     _imp->removeKeyframe->setIconSize(medButtonIconSize);
     _imp->removeKeyframe->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Remove keyframe on the pattern at the current timeline's time."), NATRON_NAMESPACE::WhiteSpaceNormal) );
@@ -430,7 +430,7 @@ TrackerPanel::TrackerPanel(const NodeGuiPtr& n,
     QObject::connect( _imp->removeKeyframe, SIGNAL(clicked(bool)), this, SLOT(onRemoveKeyframeButtonClicked()) );
     trackLayout->addWidget(_imp->removeKeyframe);
 
-    _imp->clearAnimation = new Button(QIcon(clearAnimPix), QString(), trackContainer);
+    _imp->clearAnimation = new Button(clearAnimPix, QString(), trackContainer);
     _imp->clearAnimation->setFixedSize(medButtonSize);
     _imp->clearAnimation->setIconSize(medButtonIconSize);
     _imp->clearAnimation->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Remove all keyframes on the pattern for the selected track(s)."), NATRON_NAMESPACE::WhiteSpaceNormal) );
@@ -493,10 +493,10 @@ TrackerPanel::TrackerPanel(const NodeGuiPtr& n,
     _imp->removeButton->setIconSize(smallButtonIconSize);
     _imp->buttonsLayout->addWidget(_imp->removeButton);
     QObject::connect( _imp->removeButton, SIGNAL(clicked(bool)), this, SLOT(onRemoveButtonClicked()) );
-    QPixmap selectAll;
-    appPTR->getIcon(NATRON_PIXMAP_SELECT_ALL, &selectAll);
+    QIcon selectAll;
+    appPTR->getIcon(NATRON_PIXMAP_SELECT_ALL, smallButtonIconSize.width(), &selectAll);
 
-    _imp->selectAllButton = new Button(QIcon(selectAll), QString(), _imp->buttonsContainer);
+    _imp->selectAllButton = new Button(selectAll, QString(), _imp->buttonsContainer);
     _imp->selectAllButton->setFixedSize(medButtonSize);
     _imp->selectAllButton->setIconSize(smallButtonIconSize);
     _imp->selectAllButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Select all tracks"), NATRON_NAMESPACE::WhiteSpaceNormal) );

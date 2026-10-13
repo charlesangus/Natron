@@ -78,19 +78,9 @@ ClickableLabel::mousePressEvent(QMouseEvent* e)
 void
 ClickableLabel::changeEvent(QEvent* e)
 {
-    if (e->type() == QEvent::EnabledChange) {
-        if ( !isEnabled() ) {
-            QString paintTxt = text();
-            paintTxt.prepend( QString::fromUtf8("<font color=\"#000000\">") );
-            paintTxt.append( QString::fromUtf8("</font>") );
-            setText(paintTxt);
-        } else {
-            QString str = text();
-            str = str.remove( QString::fromUtf8("<font color=\"#000000\">") );
-            str = str.remove( QString::fromUtf8("</font>") );
-            setText(str);
-        }
-    }
+    // Disabled text takes the stylesheet's disabled colour (QLabel:disabled), the same tone
+    // as disabled icons; markup here would override it.
+    Label::changeEvent(e);
 }
 
 void
@@ -98,10 +88,6 @@ ClickableLabel::setText_overload(const QString & str)
 {
     QString paintTxt = str;
 
-    if ( !isEnabled() ) {
-        paintTxt.prepend( QString::fromUtf8("<font color=\"#000000\">") );
-        paintTxt.append( QString::fromUtf8("</font>") );
-    }
     if (_bold) {
         paintTxt.prepend( QString::fromUtf8("<b>") );
         paintTxt.append( QString::fromUtf8("</b>") );

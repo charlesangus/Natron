@@ -235,8 +235,6 @@ public:
     bool getRenderOnEditingFinishedOnly() const;
     void setRenderOnEditingFinishedOnly(bool render);
 
-    bool getIconsBlackAndWhite() const;
-
     std::string getHostName() const;
     const std::string& getKnownHostName(KnownHostNameEnum e) const
     {
@@ -405,8 +403,6 @@ public:
 
     int getMaxOpenGLContexts() const;
 
-    bool isDriveLetterToUNCPathConversionEnabled() const;
-
 Q_SIGNALS:
 
     void settingChanged(KnobI* knob);
@@ -496,7 +492,6 @@ private:
     KnobBoolPtr _firstReadSetProjectFormat;
     KnobBoolPtr _autoPreviewEnabledForNewProjects;
     KnobBoolPtr _fixPathsOnProjectPathChanged;
-    KnobBoolPtr _enableMappingFromDriveLettersToUNCShareNames;
 
     // General/Documentation
     KnobPagePtr _documentationPage;
@@ -574,7 +569,6 @@ private:
     KnobBoolPtr _autoScroll;
     KnobBoolPtr _autoTurbo;
     KnobBoolPtr _snapNodesToConnections;
-    KnobBoolPtr _useBWIcons;
     KnobIntPtr _maxUndoRedoNodeGraph;
     KnobIntPtr _disconnectedArrowLength;
     KnobBoolPtr _useInputAForMergeAutoConnect;

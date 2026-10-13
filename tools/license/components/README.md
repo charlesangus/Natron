@@ -10,6 +10,7 @@ Natron binaries include components from the following libraries:
 * Cairo (LGPL 2.1) http://cairographics.org/
 * GLAD (MIT) http://glad.dav1d.de/
 * GLFW (libpng/zlib license) http://www.glfw.org/
+* Lucide icons (ISC; Feather-derived glyphs MIT) https://github.com/lucide-icons/lucide
 * openfx (Modified BSD) https://github.com/ofxa/openfx
 * openfx-io (GPLv2) https://github.com/NatronGitHub/openfx-io
 * openfx-misc (GPLv2) https://github.com/NatronGitHub/openfx-misc

@@ -528,6 +528,9 @@ public:
 
     static void setQMessageBoxAppropriateFont(QMessageBox* widget);
 
+    // Replaces the platform's severity icon with Natron's themed glyph.
+    static void setQMessageBoxThemedIcon(QMessageBox* widget);
+
     void updateAboutWindowLibrariesVersion();
 
 protected:

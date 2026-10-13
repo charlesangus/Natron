@@ -40,6 +40,7 @@
 #include "Gui/NodeClipBoard.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
+#include "Gui/ThemedIcon.h"
 
 #include "Serialization/NodeSerialization.h"
 #include "Serialization/ProjectGuiSerialization.h"
@@ -92,12 +93,15 @@ NodeGraphPrivate::NodeGraphPrivate(NodeGraph* p,
     , autoScrollTimer()
 {
     appPTR->getIcon(NATRON_PIXMAP_LOCKED, &unlockIcon);
+    ThemedIcon::connectThemeChanged(_publicInterface, [this]() {
+        appPTR->getIcon(NATRON_PIXMAP_LOCKED, &unlockIcon);
+    });
 }
 
 QPoint
 NodeGraphPrivate::getPyPlugUnlockPos() const
 {
-    return QPoint(_publicInterface->width() - unlockIcon.width() - 10,   10);
+    return QPoint(_publicInterface->width() - qRound(unlockIcon.deviceIndependentSize().width()) - 10, 10);
 }
 
 void

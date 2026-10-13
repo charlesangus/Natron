@@ -1663,7 +1663,7 @@ AppManager::loadBuiltinNodePlugins()
     registerBuiltInPlugin<EdgeDetect>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/eu.cimg.EdgeDetect.png"), false, false);
     registerBuiltInPlugin<ColorLookup>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.ColorLookupPlugin.png"), false, false);
     registerBuiltInPlugin<DiskCacheNode>(QString::fromUtf8(NATRON_IMAGES_PATH "diskcache_icon.png"), false, false);
-    registerBuiltInPlugin<RotoPaint>(QString::fromUtf8(NATRON_IMAGES_PATH "GroupingIcons/Set2/paint_grouping_2.png"), false, false);
+    registerBuiltInPlugin<RotoPaint>(QString::fromUtf8(NATRON_ICONS_PATH "lucide/brush.svg"), false, false);
     registerBuiltInPlugin<RotoNode>(QString::fromUtf8(NATRON_IMAGES_PATH "rotoNodeIcon.png"), false, false);
     registerBuiltInPlugin<RotoSmear>(QString::fromUtf8(""), false, true);
     registerBuiltInPlugin<PrecompNode>(QString::fromUtf8(NATRON_IMAGES_PATH "precompNodeIcon.png"), false, false);

@@ -32,17 +32,18 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
-#include <QDebug>
-#include <QLayout>
 #include <QAction>
-#include <QThread>
+#include <QApplication>
+#include <QCursor>
+#include <QDebug>
+#include <QFile>
 #include <QFontMetrics>
+#include <QGridLayout>
+#include <QLayout>
 #include <QTextBlockFormat>
 #include <QTextCursor>
-#include <QGridLayout>
-#include <QCursor>
-#include <QFile>
-#include <QApplication>
+#include <QTextDocument>
+#include <QThread>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -101,6 +102,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/QtEnumConvert.h"
 #include "Gui/SequenceFileDialog.h"
 #include "Gui/SpinBox.h"
+#include "Gui/ThemedIcon.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
 
@@ -123,6 +125,9 @@ CLANG_DIAG_ON(uninitialized)
 
 #define NATRON_PLUGIN_ICON_SIZE 20
 #define PLUGIN_ICON_OFFSET 2
+
+// Logical px that a wrapped label's continuation lines sit right of its first line.
+#define NATRON_NODE_LABEL_WRAP_INDENT 8
 
 NATRON_NAMESPACE_ENTER
 
@@ -163,6 +168,34 @@ static void
 replaceLineBreaksWithHtmlParagraph(QString &txt)
 {
     txt.replace( QString::fromUtf8("\n"), QString::fromUtf8("<br />") );
+}
+
+/**
+ * @brief Splits each <br /> line of the label into its own block and gives every block a hanging
+ * indent, so a line that wraps reads as the continuation of the line above while the label's own
+ * line breaks still start flush left.
+ **/
+static void
+applyLabelHangingIndent(QTextDocument* doc,
+                        qreal indent)
+{
+    const QString lineSeparator(QChar::LineSeparator);
+    QTextCursor found = doc->find(lineSeparator);
+
+    while (!found.isNull()) {
+        const QTextCharFormat charFormat = found.charFormat();
+        const QTextBlockFormat blockFormat = found.blockFormat();
+        found.removeSelectedText();
+        found.insertBlock(blockFormat, charFormat);
+        found = doc->find(lineSeparator, found);
+    }
+
+    QTextBlockFormat hanging;
+    hanging.setLeftMargin(indent);
+    hanging.setTextIndent(-indent);
+    QTextCursor all(doc);
+    all.select(QTextCursor::Document);
+    all.mergeBlockFormat(hanging);
 }
 
 static void
@@ -751,16 +784,26 @@ NodeGui::createGui()
 
         int size = TO_DPIX(NATRON_PLUGIN_ICON_SIZE);
         QPixmap pix;
-        pix.load(iconFilePath);
-        if (!pix.isNull()) {
-            if (std::max( pix.width(), pix.height() ) != size) {
+        if (ThemedIcon::isSvgPath(iconFilePath)) {
+            pix = ThemedIcon::renderPixmap(iconFilePath, size, ThemedIcon::themeTextColor(), qApp->devicePixelRatio());
+        } else {
+            pix.load(iconFilePath);
+            if (!pix.isNull() && (std::max(pix.width(), pix.height()) != size)) {
                 pix = pix.scaled(size, size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
             }
+        }
+        if (!pix.isNull()) {
             _pluginIcon->setPixmap(pix);
         } else {
             _pluginIcon->hide();
         }
-
+        if (ThemedIcon::isSvgPath(iconFilePath)) {
+            NodeGraphPixmapItem* pluginIcon = _pluginIcon;
+            const QString path = iconFilePath;
+            ThemedIcon::connectThemeChanged(this, [pluginIcon, path, size]() {
+                pluginIcon->setPixmap(ThemedIcon::renderPixmap(path, size, ThemedIcon::themeTextColor(), qApp->devicePixelRatio()));
+            });
+        }
     }
 
     _presetIcon = new NodeGraphPixmapItem(getDagGui(), this);
@@ -894,6 +937,7 @@ NodeGui::togglePreview_internal(bool refreshPreview)
 void
 NodeGui::ensurePreviewCreated()
 {
+    bool created = false;
     if (!_previewPixmap) {
         QImage prev(NATRON_PREVIEW_WIDTH, NATRON_PREVIEW_HEIGHT, QImage::Format_ARGB32);
         prev.fill(Qt::black);
@@ -904,6 +948,7 @@ NodeGui::ensurePreviewCreated()
         _previewPixmap->setTransform(QTransform::fromScale( appPTR->getLogicalDPIXRATIO(), appPTR->getLogicalDPIYRATIO() ), true);
         _previewPixmap->setPixmap(prev_pixmap);
         _previewPixmap->setZValue(getBaseDepth() + 1);
+        created = true;
     }
     QSize size = getSize();
     int w, h;
@@ -911,6 +956,17 @@ NodeGui::ensurePreviewCreated()
     if ( (size.width() < w) ||
          ( size.height() < h) ) {
         resize(w, h);
+        _previewPixmap->stackBefore(_nameItem);
+    } else if (created) {
+        // Already big enough for the preview, but a wrapped label still has to grow the node
+        // to stack under it. getSize() carries the outline pen, so resize from the laid-out size.
+        int curW, curH;
+        {
+            QMutexLocker k(&_mtSafeSizeMutex);
+            curW = _mtSafeWidth;
+            curH = _mtSafeHeight;
+        }
+        resize(curW, curH);
         _previewPixmap->stackBefore(_nameItem);
     }
 }
@@ -997,14 +1053,33 @@ NodeGui::isNearbyResizeHandle(const QPointF& pos) const
 }
 
 void
-NodeGui::adjustSizeToContent(int* /*w*/,
-                             int *h,
+NodeGui::adjustSizeToContent(int* w,
+                             int* h,
                              bool adjustToTextSize)
 {
+    bool labelWrapped = false;
+    if (wantsLabelWrap()) {
+        _nameItem->setTextWidth(-1);
+        const qreal naturalWidth = _nameItem->document()->idealWidth();
+        const int iconWidth = getPluginIconWidth();
+        const qreal maxContentWidth = std::max(0., TO_DPIX(NODE_MAX_WIDTH) - iconWidth);
+        // idealWidth() is the text layout width alone; boundingRect() (and so the item's
+        // on-screen width) also carries the document's left/right margins.
+        const qreal padding = 2. * _nameItem->document()->documentMargin();
+        const qreal contentWidth = std::min(naturalWidth + padding, maxContentWidth);
+
+        *w = std::max(*w, (int)std::ceil(contentWidth) + iconWidth);
+        if (naturalWidth > contentWidth) {
+            _nameItem->setTextWidth(contentWidth);
+            labelWrapped = true;
+        }
+    }
+
     QRectF labelBbox = _nameItem->boundingRect();
 
+    const bool hasPreview = _previewPixmap && _previewPixmap->isVisible();
     if (adjustToTextSize) {
-        if ( _previewPixmap && _previewPixmap->isVisible() ) {
+        if (hasPreview) {
             int pw, ph;
             getSizeWithPreview(&pw, &ph);
             *h = ph;
@@ -1013,6 +1088,11 @@ NodeGui::adjustSizeToContent(int* /*w*/,
         }
     } else {
         *h = std::max( (double)*h, labelBbox.height() * 1.2 );
+    }
+    if (hasPreview && labelWrapped) {
+        // The label stacks under the preview, so a wrapped label needs a taller node to hold both.
+        const double stacked = TO_DPIY(NATRON_PREVIEW_HEIGHT) + 10 + labelBbox.height() * 1.2;
+        *h = std::max(*h, (int)std::ceil(stacked));
     }
     if (_pluginIcon && _pluginIcon->isVisible() && _presetIcon && _presetIcon->isVisible()) {
         int iconsHeight = _pluginIcon->boundingRect().height() + _presetIcon->boundingRect().height();
@@ -1057,7 +1137,7 @@ NodeGui::refreshPreviewAndLabelPosition(const QRectF& bbox)
 
     {
         int nameWidth = labelBbox.width();
-        double textX = bbox.x() + iconWidth +  ( (bbox.width() - iconWidth) / 2 ) - (nameWidth / 2);
+        double textX = bbox.x() + iconWidth + ((bbox.width() - iconWidth) / 2) - (nameWidth / 2);
         //double textY = topLeft.y() + labelHeight * 0.1;
         double textY;
         if ( mustFrameName() ) {
@@ -1523,8 +1603,10 @@ NodeGui::onPreviewImageComputed()
 {
     assert( QThread::currentThread() == qApp->thread() );
     assert(_previewPixmap);
+    bool becameVisible = false;
     if ( !_previewPixmap->isVisible() ) {
         _previewPixmap->setVisible(true);
+        becameVisible = true;
     }
 
     {
@@ -1540,8 +1622,13 @@ NodeGui::onPreviewImageComputed()
         height = _mtSafeHeight;
         width = _mtSafeWidth;
     }
-    QRectF bbox(topLeft.x(), topLeft.y(), width, height);
-    refreshPreviewAndLabelPosition(bbox);
+    if (becameVisible) {
+        // The node was last sized without the preview, so a wrapped label may need more height.
+        resize(width, height);
+    } else {
+        QRectF bbox(topLeft.x(), topLeft.y(), width, height);
+        refreshPreviewAndLabelPosition(bbox);
+    }
 }
 
 void
@@ -3314,7 +3401,8 @@ NodeGui::setNameItemHtml(const QString & name,
 
     replaceLineBreaksWithHtmlParagraph(finalText);
 
-    finalText.prepend( QString::fromUtf8("<div align=\"center\">") );
+    // A backdrop's framed title stays centred; every other node's label reads left-aligned.
+    finalText.prepend(QString::fromUtf8(mustFrameName() ? "<div align=\"center\">" : "<div align=\"left\">"));
     finalText.append( QString::fromUtf8("</div>") );
 
     QColor userFontColor;
@@ -3342,6 +3430,9 @@ NodeGui::setNameItemHtml(const QString & name,
     _nameItem->setDefaultTextColor(color);
     _nameItem->setFont(f);
     _nameItem->setHtml(finalText);
+    if (!mustFrameName()) {
+        applyLabelHangingIndent(_nameItem->document(), TO_DPIX(NATRON_NODE_LABEL_WRAP_INDENT));
+    }
     _nameItem->adjustSize();
 
 

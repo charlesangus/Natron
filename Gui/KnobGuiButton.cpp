@@ -76,6 +76,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/ScaleSliderQWidget.h"
 #include "Gui/SpinBox.h"
 #include "Gui/TabGroup.h"
+#include "Gui/ThemedIcon.h"
 
 #include <ofxNatron.h>
 
@@ -127,14 +128,24 @@ KnobGuiButton::createWidget(QHBoxLayout* layout)
     bool checkable = knob->getIsCheckable();
     QIcon icon;
     QPixmap pixChecked, pixUnchecked;
-    if ( !offIconFilePath.isEmpty() ) {
-        if ( pixUnchecked.load(offIconFilePath) ) {
-            icon.addPixmap(pixUnchecked, QIcon::Normal, QIcon::Off);
+    const bool onIsSvg = !onIconFilePath.isEmpty() && ThemedIcon::isSvgPath(onIconFilePath);
+    const bool offIsSvg = !offIconFilePath.isEmpty() && ThemedIcon::isSvgPath(offIconFilePath);
+    if ((onIsSvg || onIconFilePath.isEmpty()) && (offIsSvg || offIconFilePath.isEmpty()) && (onIsSvg || offIsSvg)) {
+        // One glyph for both states shows the checked state in the selection colour; two
+        // different shapes carry the state themselves.
+        const QString offPath = offIconFilePath.isEmpty() ? onIconFilePath : offIconFilePath;
+        const QString onPath = onIconFilePath.isEmpty() ? offIconFilePath : onIconFilePath;
+        icon = ThemedIcon::icon(offPath, onPath, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE));
+    } else {
+        if (!offIconFilePath.isEmpty()) {
+            if (pixUnchecked.load(offIconFilePath)) {
+                icon.addPixmap(pixUnchecked, QIcon::Normal, QIcon::Off);
+            }
         }
-    }
-    if ( !onIconFilePath.isEmpty() ) {
-        if ( pixChecked.load(onIconFilePath) ) {
-            icon.addPixmap(pixChecked, QIcon::Normal, QIcon::On);
+        if (!onIconFilePath.isEmpty()) {
+            if (pixChecked.load(onIconFilePath)) {
+                icon.addPixmap(pixChecked, QIcon::Normal, QIcon::On);
+            }
         }
     }
 

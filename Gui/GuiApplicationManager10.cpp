@@ -36,15 +36,16 @@
 ///gui
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
-#include <QtGlobal> // for Q_OS_*
-#include <QDebug>
-#include <QSettings>
-#include <QFileInfo>
 #include <QApplication>
-#include <QGuiApplication>
-#include <QScreen>
+#include <QDebug>
+#include <QFileInfo>
 #include <QFileOpenEvent>
+#include <QGuiApplication>
+#include <QPixmapCache>
 #include <QScreen>
+#include <QSettings>
+#include <QWidget>
+#include <QtGlobal> // for Q_OS_*
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -964,6 +965,7 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorCubic, kShortcutDescActionCurveEditorCubic, Qt::NoModifier, Qt::Key_C);
     registerKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorHorizontal, kShortcutDescActionCurveEditorHorizontal, Qt::NoModifier, Qt::Key_H);
     registerKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorBreak, kShortcutDescActionCurveEditorBreak, Qt::NoModifier, Qt::Key_X);
+    registerKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorFree, kShortcutDescActionCurveEditorFree, Qt::NoModifier, (Qt::Key)0);
     registerKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorSelectAll, kShortcutDescActionCurveEditorSelectAll, Qt::ControlModifier, Qt::Key_A);
     registerKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorCenterAll, kShortcutDescActionCurveEditorCenterAll
                     , Qt::NoModifier, Qt::Key_A);
@@ -984,6 +986,7 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupDopeSheetEditor, kShortcutIDActionCurveEditorCubic, kShortcutDescActionCurveEditorCubic, Qt::NoModifier, Qt::Key_C);
     registerKeybind(kShortcutGroupDopeSheetEditor, kShortcutIDActionCurveEditorHorizontal, kShortcutDescActionCurveEditorHorizontal, Qt::NoModifier, Qt::Key_H);
     registerKeybind(kShortcutGroupDopeSheetEditor, kShortcutIDActionCurveEditorBreak, kShortcutDescActionCurveEditorBreak, Qt::NoModifier, Qt::Key_X);
+    registerKeybind(kShortcutGroupDopeSheetEditor, kShortcutIDActionCurveEditorFree, kShortcutDescActionCurveEditorFree, Qt::NoModifier, (Qt::Key)0);
 
     registerKeybind(kShortcutGroupDopeSheetEditor, kShortcutIDActionDopeSheetEditorCopySelectedKeyframes, kShortcutDescActionDopeSheetEditorCopySelectedKeyframes, Qt::ControlModifier, Qt::Key_C);
     registerKeybind(kShortcutGroupDopeSheetEditor, kShortcutIDActionDopeSheetEditorPasteKeyframes, kShortcutDescActionDopeSheetEditorPasteKeyframes, Qt::ControlModifier, Qt::Key_V);
@@ -1185,6 +1188,18 @@ GuiApplicationManager::getUserPythonCommands() const
 void
 GuiApplicationManager::reloadStylesheets()
 {
+    _imp->themeReloadTimer.start();
+}
+
+void
+GuiApplicationManager::onThemeReloadTimerTriggered()
+{
+    // Themed pixmaps are keyed by colour, so the old theme's entries would never be hit again.
+    QPixmapCache::clear();
+    _imp->createColorPickerCursor();
+    _imp->createLinkToCursor();
+    _imp->createLinkMultCursor();
+
     const AppInstanceVec& instances = getAppInstances();
 
     for (AppInstanceVec::const_iterator it = instances.begin(); it != instances.end(); ++it) {
@@ -1192,6 +1207,16 @@ GuiApplicationManager::reloadStylesheets()
         if (guiApp) {
             guiApp->reloadStylesheet();
         }
+    }
+
+    Q_EMIT themeChanged();
+
+    // Colours that are not in the stylesheet (curve editor, timeline, script editor) and
+    // ThemedIcon icons are read at paint time; when the stylesheet itself did not change,
+    // nothing else would repaint them.
+    const QWidgetList widgets = QApplication::allWidgets();
+    for (QWidgetList::const_iterator it = widgets.begin(); it != widgets.end(); ++it) {
+        (*it)->update();
     }
 }
 

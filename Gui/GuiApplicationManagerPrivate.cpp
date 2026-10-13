@@ -25,30 +25,32 @@
 
 #include "GuiApplicationManagerPrivate.h"
 
+#include <cmath>
 #include <stdexcept>
 
 #include <fontconfig/fontconfig.h>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QApplication>
 #include <QDebug>
+#include <QPainter>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
-#include "Gui/Gui.h"
-#include "Gui/KnobGuiFactory.h"
-#include "Gui/GuiAppInstance.h"
 #include "Gui/DocumentationManager.h"
-
+#include "Gui/Gui.h"
+#include "Gui/GuiAppInstance.h"
+#include "Gui/KnobGuiFactory.h"
+#include "Gui/ThemedIcon.h"
 
 NATRON_NAMESPACE_ENTER
 
-
 GuiApplicationManagerPrivate::GuiApplicationManagerPrivate(GuiApplicationManager* publicInterface)
-    :   _publicInterface(publicInterface)
+    : _publicInterface(publicInterface)
     , _topLevelToolButtons()
     , _knobsClipBoard(new KnobsClipBoard)
-    , _knobGuiFactory( new KnobGuiFactory() )
+    , _knobGuiFactory(new KnobGuiFactory())
     , _colorPickerCursor()
     , _linkToCursor()
     , _splashScreen(NULL)
@@ -62,6 +64,7 @@ GuiApplicationManagerPrivate::GuiApplicationManagerPrivate(GuiApplicationManager
     , startupArgs()
     , fontconfigUpdateWatcher()
     , updateSplashscreenTimer()
+    , themeReloadTimer()
     , fontconfigMessageDots(3)
     , previewRenderThread()
     , dpiX(96)
@@ -188,40 +191,45 @@ GuiApplicationManagerPrivate::findPluginToolButtonInternal(const std::list<Plugi
 void
 GuiApplicationManagerPrivate::createColorPickerCursor()
 {
-    QImage originalImage;
+    // The pipette's tip is its bottom-left corner. Drawing it in the top-right quarter of a
+    // canvas twice its size puts the tip on QCursor's default hotspot, the canvas centre.
+    const int glyphSize = 16;
+    const double dpr = qApp->devicePixelRatio();
+    const QPixmap glyph = ThemedIcon::renderPixmap(QString::fromUtf8(NATRON_ICONS_PATH "lucide/pipette.svg"),
+                                                   glyphSize, ThemedIcon::themeTextColor(), dpr);
+    QPixmap pix((int)std::lround(2 * glyphSize * dpr), (int)std::lround(2 * glyphSize * dpr));
 
-    originalImage.load( QString::fromUtf8(NATRON_IMAGES_PATH "color_picker.png") );
-    originalImage = originalImage.scaled(16, 16);
-    QImage dstImage(32, 32, QImage::Format_ARGB32);
-    dstImage.fill( QColor(0, 0, 0, 0) );
-
-    int oW = originalImage.width();
-    int oH = originalImage.height();
-    for (int y = 0; y < oH; ++y) {
-        for (int x = 0; x < oW; ++x) {
-            dstImage.setPixel( x + oW, y, originalImage.pixel(x, y) );
-        }
+    pix.setDevicePixelRatio(dpr);
+    pix.fill(Qt::transparent);
+    {
+        QPainter painter(&pix);
+        painter.drawPixmap(QPointF(glyphSize, 0), glyph);
     }
-    QPixmap pix = QPixmap::fromImage(dstImage);
     _colorPickerCursor = QCursor(pix);
 }
 
 void
 GuiApplicationManagerPrivate::createLinkToCursor()
 {
-    QPixmap p;
+    // The cursor's hotspot (the arrow tip) sits at (2, 2) on the glyph's 24-unit grid;
+    // scale it to whatever logical size the cursor is rendered at.
+    const int cursorSize = 22;
+    const QPixmap p = ThemedIcon::renderPixmap(QString::fromUtf8(NATRON_ICONS_PATH "natron/link-cursor.svg"),
+                                               cursorSize, ThemedIcon::themeTextColor(), qApp->devicePixelRatio());
+    const int hotspot = (int)std::lround(2. * cursorSize / 24.);
 
-    appPTR->getIcon(NATRON_PIXMAP_LINK_CURSOR, &p);
-    _linkToCursor = QCursor(p);
+    _linkToCursor = QCursor(p, hotspot, hotspot);
 }
 
 void
 GuiApplicationManagerPrivate::createLinkMultCursor()
 {
-    QPixmap p;
+    const int cursorSize = 22;
+    const QPixmap p = ThemedIcon::renderPixmap(QString::fromUtf8(NATRON_ICONS_PATH "natron/link-mult-cursor.svg"),
+                                               cursorSize, ThemedIcon::themeTextColor(), qApp->devicePixelRatio());
+    const int hotspot = (int)std::lround(2. * cursorSize / 24.);
 
-    appPTR->getIcon(NATRON_PIXMAP_LINK_MULT_CURSOR, &p);
-    _linkMultCursor = QCursor(p);
+    _linkMultCursor = QCursor(p, hotspot, hotspot);
 }
 
 void

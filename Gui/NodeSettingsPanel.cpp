@@ -87,9 +87,9 @@ NodeSettingsPanel::NodeSettingsPanel(const MultiInstancePanelPtr & multiPanel,
     QObject::connect( this, SIGNAL(closeChanged(bool)), NodeUi.get(), SLOT(onSettingsPanelClosedChanged(bool)) );
     const QSize mediumBSize( TO_DPIX(NATRON_MEDIUM_BUTTON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_SIZE) );
     const QSize mediumIconSize( TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_ICON_SIZE) );
-    QPixmap pixSettings;
+    QIcon pixSettings;
     appPTR->getIcon(NATRON_PIXMAP_SETTINGS, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &pixSettings);
-    _settingsButton = new Button( QIcon(pixSettings), QString(), getHeaderWidget() );
+    _settingsButton = new Button(pixSettings, QString(), getHeaderWidget());
     _settingsButton->setFixedSize(mediumBSize);
     _settingsButton->setIconSize(mediumIconSize);
     _settingsButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Settings and presets."), NATRON_NAMESPACE::WhiteSpaceNormal) );

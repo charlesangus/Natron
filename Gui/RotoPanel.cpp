@@ -75,6 +75,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/SpinBox.h"
+#include "Gui/ThemedIcon.h"
 
 #define COL_LABEL 0
 #define COL_ACTIVATED 1
@@ -539,14 +540,14 @@ RotoPanel::RotoPanel(const NodeGuiPtr&  n,
     _imp->splineLayout->addWidget(_imp->totalKeyframes);
 
     int medIconSize = TO_DPIY(NATRON_MEDIUM_BUTTON_ICON_SIZE);
-    QPixmap prevPix, nextPix, addPix, removePix, clearAnimPix;
+    QIcon prevPix, nextPix, addPix, removePix, clearAnimPix;
     appPTR->getIcon(NATRON_PIXMAP_PLAYER_PREVIOUS_KEY, medIconSize, &prevPix);
     appPTR->getIcon(NATRON_PIXMAP_PLAYER_NEXT_KEY, medIconSize, &nextPix);
     appPTR->getIcon(NATRON_PIXMAP_ADD_KEYFRAME, medIconSize, &addPix);
     appPTR->getIcon(NATRON_PIXMAP_REMOVE_KEYFRAME, medIconSize, &removePix);
     appPTR->getIcon(NATRON_PIXMAP_CLEAR_ALL_ANIMATION, medIconSize, &clearAnimPix);
 
-    _imp->prevKeyframe = new Button(QIcon(prevPix), QString(), _imp->splineContainer);
+    _imp->prevKeyframe = new Button(prevPix, QString(), _imp->splineContainer);
     _imp->prevKeyframe->setFixedSize(medButtonSize);
     _imp->prevKeyframe->setIconSize(medButtonIconSize);
     _imp->prevKeyframe->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Go to the previous keyframe."), NATRON_NAMESPACE::WhiteSpaceNormal) );
@@ -554,7 +555,7 @@ RotoPanel::RotoPanel(const NodeGuiPtr&  n,
     QObject::connect( _imp->prevKeyframe, SIGNAL(clicked(bool)), this, SLOT(onGoToPrevKeyframeButtonClicked()) );
     _imp->splineLayout->addWidget(_imp->prevKeyframe);
 
-    _imp->nextKeyframe = new Button(QIcon(nextPix), QString(), _imp->splineContainer);
+    _imp->nextKeyframe = new Button(nextPix, QString(), _imp->splineContainer);
     _imp->nextKeyframe->setFixedSize(medButtonSize);
     _imp->nextKeyframe->setIconSize(medButtonIconSize);
     _imp->nextKeyframe->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Go to the next keyframe."), NATRON_NAMESPACE::WhiteSpaceNormal) );
@@ -562,7 +563,7 @@ RotoPanel::RotoPanel(const NodeGuiPtr&  n,
     QObject::connect( _imp->nextKeyframe, SIGNAL(clicked(bool)), this, SLOT(onGoToNextKeyframeButtonClicked()) );
     _imp->splineLayout->addWidget(_imp->nextKeyframe);
 
-    _imp->addKeyframe = new Button(QIcon(addPix), QString(), _imp->splineContainer);
+    _imp->addKeyframe = new Button(addPix, QString(), _imp->splineContainer);
     _imp->addKeyframe->setFixedSize(medButtonSize);
     _imp->addKeyframe->setIconSize(medButtonIconSize);
     _imp->addKeyframe->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Add keyframe at the current timeline's time."), NATRON_NAMESPACE::WhiteSpaceNormal) );
@@ -570,7 +571,7 @@ RotoPanel::RotoPanel(const NodeGuiPtr&  n,
     QObject::connect( _imp->addKeyframe, SIGNAL(clicked(bool)), this, SLOT(onAddKeyframeButtonClicked()) );
     _imp->splineLayout->addWidget(_imp->addKeyframe);
 
-    _imp->removeKeyframe = new Button(QIcon(removePix), QString(), _imp->splineContainer);
+    _imp->removeKeyframe = new Button(removePix, QString(), _imp->splineContainer);
     _imp->removeKeyframe->setFixedSize(medButtonSize);
     _imp->removeKeyframe->setIconSize(medButtonIconSize);
     _imp->removeKeyframe->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Remove keyframe at the current timeline's time."), NATRON_NAMESPACE::WhiteSpaceNormal) );
@@ -578,7 +579,7 @@ RotoPanel::RotoPanel(const NodeGuiPtr&  n,
     QObject::connect( _imp->removeKeyframe, SIGNAL(clicked(bool)), this, SLOT(onRemoveKeyframeButtonClicked()) );
     _imp->splineLayout->addWidget(_imp->removeKeyframe);
 
-    _imp->clearAnimation = new Button(QIcon(clearAnimPix), QString(), _imp->splineContainer);
+    _imp->clearAnimation = new Button(clearAnimPix, QString(), _imp->splineContainer);
     _imp->clearAnimation->setFixedSize(medButtonSize);
     _imp->clearAnimation->setIconSize(medButtonIconSize);
     _imp->clearAnimation->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Remove all animation for the selected shape(s)."), NATRON_NAMESPACE::WhiteSpaceNormal) );
@@ -621,57 +622,39 @@ RotoPanel::RotoPanel(const NodeGuiPtr&  n,
     _imp->treeHeader = new QTreeWidgetItem;
     _imp->treeHeader->setText( COL_LABEL, tr("Label") );
 
-    QPixmap pixLayer, pixBezier, pixVisible, pixUnvisible, pixLocked, pixUnlocked, pixInverted, pixUninverted, pixWheel, pixDefault, pixmerge;
-    QPixmap pixPaintBrush, pixEraser, pixBlur, pixSmear, pixSharpen, pixDodge, pixBurn, pixClone, pixReveal;
-    appPTR->getIcon(NATRON_PIXMAP_LAYER, medIconSize, &pixLayer);
-    appPTR->getIcon(NATRON_PIXMAP_BEZIER, medIconSize, &pixBezier);
-    appPTR->getIcon(NATRON_PIXMAP_VISIBLE, medIconSize, &pixVisible);
-    appPTR->getIcon(NATRON_PIXMAP_UNVISIBLE, medIconSize, &pixUnvisible);
-    appPTR->getIcon(NATRON_PIXMAP_LOCKED, medIconSize, &pixLocked);
-    appPTR->getIcon(NATRON_PIXMAP_UNLOCKED, medIconSize, &pixUnlocked);
-    appPTR->getIcon(NATRON_PIXMAP_INVERTED, medIconSize, &pixInverted);
-    appPTR->getIcon(NATRON_PIXMAP_UNINVERTED, medIconSize, &pixUninverted);
-    appPTR->getIcon(NATRON_PIXMAP_COLORWHEEL, medIconSize, &pixWheel);
-    appPTR->getIcon(NATRON_PIXMAP_ROTO_MERGE, medIconSize, &pixmerge);
-    appPTR->getIcon(NATRON_PIXMAP_OVERLAY, medIconSize, &pixDefault);
-    appPTR->getIcon(NATRON_PIXMAP_ROTOPAINT_SOLID, medIconSize, &pixPaintBrush);
-    appPTR->getIcon(NATRON_PIXMAP_ROTOPAINT_ERASER, medIconSize, &pixEraser);
-    appPTR->getIcon(NATRON_PIXMAP_ROTOPAINT_BLUR, medIconSize, &pixBlur);
-    appPTR->getIcon(NATRON_PIXMAP_ROTOPAINT_SMEAR, medIconSize, &pixSmear);
-    appPTR->getIcon(NATRON_PIXMAP_ROTOPAINT_SHARPEN, medIconSize, &pixSharpen);
-    appPTR->getIcon(NATRON_PIXMAP_ROTOPAINT_DODGE, medIconSize, &pixDodge);
-    appPTR->getIcon(NATRON_PIXMAP_ROTOPAINT_BURN, medIconSize, &pixBurn);
-    appPTR->getIcon(NATRON_PIXMAP_ROTOPAINT_CLONE, medIconSize, &pixClone);
-    appPTR->getIcon(NATRON_PIXMAP_ROTOPAINT_REVEAL, medIconSize, &pixReveal);
-
-    _imp->iconLayer.addPixmap(pixLayer);
-    _imp->iconBezier.addPixmap(pixBezier);
-    _imp->iconInverted.addPixmap(pixInverted);
-    _imp->iconUninverted.addPixmap(pixUninverted);
-    _imp->iconVisible.addPixmap(pixVisible);
-    _imp->iconUnvisible.addPixmap(pixUnvisible);
-    _imp->iconLocked.addPixmap(pixLocked);
-    _imp->iconUnlocked.addPixmap(pixUnlocked);
-    _imp->iconWheel.addPixmap(pixWheel);
-
-    _imp->iconStroke.addPixmap(pixPaintBrush);
-    _imp->iconEraser.addPixmap(pixEraser);
-    _imp->iconBlur.addPixmap(pixBlur);
-    _imp->iconSmear.addPixmap(pixSmear);
-    _imp->iconSharpen.addPixmap(pixSharpen);
-    _imp->iconDodge.addPixmap(pixDodge);
-    _imp->iconBurn.addPixmap(pixBurn);
-    _imp->iconClone.addPixmap(pixClone);
-    _imp->iconReveal.addPixmap(pixReveal);
+    appPTR->getIcon(NATRON_PIXMAP_LAYER, medIconSize, &_imp->iconLayer);
+    appPTR->getIcon(NATRON_PIXMAP_BEZIER, medIconSize, &_imp->iconBezier);
+    appPTR->getIcon(NATRON_PIXMAP_VISIBLE, medIconSize, &_imp->iconVisible);
+    appPTR->getIcon(NATRON_PIXMAP_UNVISIBLE, medIconSize, &_imp->iconUnvisible);
+    appPTR->getIcon(NATRON_PIXMAP_LOCKED, medIconSize, &_imp->iconLocked);
+    appPTR->getIcon(NATRON_PIXMAP_UNLOCKED, medIconSize, &_imp->iconUnlocked);
+    // Inverted and uninverted share one glyph; a tree cell has no checked state to
+    // recolour it, so the inverted cell is drawn in the selection colour directly.
+    _imp->iconInverted = ThemedIcon::selectionIcon(QString::fromUtf8(NATRON_ICONS_PATH "natron/inverted.svg"), medIconSize);
+    appPTR->getIcon(NATRON_PIXMAP_UNINVERTED, medIconSize, &_imp->iconUninverted);
+    appPTR->getIcon(NATRON_PIXMAP_COLORWHEEL, medIconSize, &_imp->iconWheel);
+    appPTR->getIcon(NATRON_PIXMAP_ROTOPAINT_SOLID, medIconSize, &_imp->iconStroke);
+    appPTR->getIcon(NATRON_PIXMAP_ROTOPAINT_ERASER, medIconSize, &_imp->iconEraser);
+    appPTR->getIcon(NATRON_PIXMAP_ROTOPAINT_BLUR, medIconSize, &_imp->iconBlur);
+    appPTR->getIcon(NATRON_PIXMAP_ROTOPAINT_SMEAR, medIconSize, &_imp->iconSmear);
+    appPTR->getIcon(NATRON_PIXMAP_ROTOPAINT_SHARPEN, medIconSize, &_imp->iconSharpen);
+    appPTR->getIcon(NATRON_PIXMAP_ROTOPAINT_DODGE, medIconSize, &_imp->iconDodge);
+    appPTR->getIcon(NATRON_PIXMAP_ROTOPAINT_BURN, medIconSize, &_imp->iconBurn);
+    appPTR->getIcon(NATRON_PIXMAP_ROTOPAINT_CLONE, medIconSize, &_imp->iconClone);
+    appPTR->getIcon(NATRON_PIXMAP_ROTOPAINT_REVEAL, medIconSize, &_imp->iconReveal);
 
     _imp->treeHeader->setIcon(COL_ACTIVATED, _imp->iconVisible);
     _imp->treeHeader->setIcon(COL_LOCKED, _imp->iconLocked);
-    _imp->treeHeader->setIcon( COL_OVERLAY, QIcon(pixDefault) );
+    QIcon overlayIcon;
+    appPTR->getIcon(NATRON_PIXMAP_OVERLAY, medIconSize, &overlayIcon);
+    _imp->treeHeader->setIcon(COL_OVERLAY, overlayIcon);
     _imp->treeHeader->setIcon(COL_COLOR, _imp->iconWheel);
 #ifdef NATRON_ROTO_INVERTIBLE
     _imp->treeHeader->setIcon(COL_INVERTED, _imp->iconUninverted);
 #endif
-    _imp->treeHeader->setIcon( COL_OPERATOR, QIcon(pixmerge) );
+    QIcon mergeIcon;
+    appPTR->getIcon(NATRON_PIXMAP_ROTO_MERGE, medIconSize, &mergeIcon);
+    _imp->treeHeader->setIcon(COL_OPERATOR, mergeIcon);
     _imp->tree->setHeaderItem(_imp->treeHeader);
     _imp->tree->setMinimumHeight( TO_DPIY(350) );
     _imp->tree->header()->setSectionResizeMode(QHeaderView::ResizeToContents);

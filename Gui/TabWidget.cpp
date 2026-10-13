@@ -66,14 +66,15 @@ CLANG_DIAG_ON(deprecated)
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiDefines.h"
+#include "Gui/GuiDensity.h"
 #include "Gui/GuiMacros.h"
 #include "Gui/Histogram.h"
 #include "Gui/Menu.h"
 #include "Gui/NodeGraph.h"
+#include "Gui/ProgressPanel.h"
 #include "Gui/PropertiesBinWrapper.h"
 #include "Gui/PythonPanels.h"
 #include "Gui/RegisteredTabs.h"
-#include "Gui/ProgressPanel.h"
 #include "Gui/ScriptEditor.h"
 #include "Gui/Splitter.h"
 #include "Gui/ViewerTab.h"
@@ -257,7 +258,7 @@ TabWidget::TabWidget(Gui* gui,
     _imp->transparentFloatingWidget = new TransparentDropRect(this, 0);
 
     _imp->mainLayout = new QVBoxLayout(this);
-    _imp->mainLayout->setContentsMargins(0, 5, 0, 0);
+    _imp->mainLayout->setContentsMargins(0, TO_DPIY(NATRON_DENSITY_PANE_TOP_MARGIN), 0, 0);
     _imp->mainLayout->setSpacing(0);
 
     _imp->header = new TabWidgetHeader(this);
@@ -267,22 +268,21 @@ TabWidget::TabWidget(Gui* gui,
     _imp->headerLayout->setSpacing(0);
     _imp->header->setLayout(_imp->headerLayout);
 
-
-    QPixmap pixC, pixM, pixL;
-    appPTR->getIcon(NATRON_PIXMAP_CLOSE_WIDGET, &pixC);
-    appPTR->getIcon(NATRON_PIXMAP_MAXIMIZE_WIDGET, &pixM);
-    appPTR->getIcon(NATRON_PIXMAP_TAB_WIDGET_LAYOUT_BUTTON, &pixL);
+    QIcon icC, icM, icL;
+    appPTR->getIcon(NATRON_PIXMAP_CLOSE_WIDGET, TO_DPIX(NATRON_SMALL_BUTTON_ICON_SIZE), &icC);
+    appPTR->getIcon(NATRON_PIXMAP_MAXIMIZE_WIDGET, TO_DPIX(NATRON_SMALL_BUTTON_ICON_SIZE), &icM);
+    appPTR->getIcon(NATRON_PIXMAP_TAB_WIDGET_LAYOUT_BUTTON, TO_DPIX(NATRON_SMALL_BUTTON_ICON_SIZE), &icL);
 
     const QSize smallButtonSize( TO_DPIX(NATRON_SMALL_BUTTON_SIZE), TO_DPIY(NATRON_SMALL_BUTTON_SIZE) );
     const QSize smallButtonIconSize( TO_DPIX(NATRON_SMALL_BUTTON_ICON_SIZE), TO_DPIY(NATRON_SMALL_BUTTON_ICON_SIZE) );
 
-    _imp->leftCornerButton = new Button(QIcon(pixL), QString(), _imp->header);
+    _imp->leftCornerButton = new Button(icL, QString(), _imp->header);
     _imp->leftCornerButton->setFixedSize(smallButtonSize);
     _imp->leftCornerButton->setIconSize(smallButtonIconSize);
     _imp->leftCornerButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr(LEFT_HAND_CORNER_BUTTON_TT), NATRON_NAMESPACE::WhiteSpaceNormal) );
     _imp->leftCornerButton->setFocusPolicy(Qt::NoFocus);
     _imp->headerLayout->addWidget(_imp->leftCornerButton);
-    _imp->headerLayout->addSpacing(10);
+    _imp->headerLayout->addSpacing(TO_DPIX(NATRON_DENSITY_TOOLBAR_GROUP_GAP));
 
     _imp->tabBar = new TabBar(this, _imp->header);
     _imp->tabBar->setShape(QTabBar::RoundedNorth);
@@ -291,7 +291,7 @@ TabWidget::TabWidget(Gui* gui,
     QObject::connect( _imp->tabBar, SIGNAL(mouseLeftTabBar()), this, SLOT(onTabBarMouseLeft()) );
     _imp->headerLayout->addWidget(_imp->tabBar);
     _imp->headerLayout->addStretch();
-    _imp->floatButton = new Button(QIcon(pixM), QString(), _imp->header);
+    _imp->floatButton = new Button(icM, QString(), _imp->header);
     _imp->floatButton->setFixedSize(smallButtonSize);
     _imp->floatButton->setIconSize(smallButtonIconSize);
     _imp->floatButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Float pane"), NATRON_NAMESPACE::WhiteSpaceNormal) );
@@ -300,7 +300,7 @@ TabWidget::TabWidget(Gui* gui,
     QObject::connect( _imp->floatButton, SIGNAL(clicked()), this, SLOT(floatCurrentWidget()) );
     _imp->headerLayout->addWidget(_imp->floatButton);
 
-    _imp->closeButton = new Button(QIcon(pixC), QString(), _imp->header);
+    _imp->closeButton = new Button(icC, QString(), _imp->header);
     _imp->closeButton->setFixedSize(smallButtonSize);
     _imp->closeButton->setIconSize(smallButtonIconSize);
     _imp->closeButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Close pane"), NATRON_NAMESPACE::WhiteSpaceNormal) );
@@ -385,21 +385,21 @@ TabWidget::createMenu()
     MenuWithToolTips menu(_imp->gui);
     //QFont f(appFont,appFontSize);
     //menu.setFont(f) ;
-    QPixmap pixV, pixM, pixH, pixC, pixA;
+    QIcon pixV, pixM, pixH, pixC, pixA;
 
     appPTR->getIcon(NATRON_PIXMAP_TAB_WIDGET_SPLIT_VERTICALLY, NATRON_MEDIUM_BUTTON_ICON_SIZE, &pixV);
     appPTR->getIcon(NATRON_PIXMAP_TAB_WIDGET_SPLIT_HORIZONTALLY, NATRON_MEDIUM_BUTTON_ICON_SIZE, &pixH);
     appPTR->getIcon(NATRON_PIXMAP_MAXIMIZE_WIDGET, NATRON_MEDIUM_BUTTON_ICON_SIZE, &pixM);
     appPTR->getIcon(NATRON_PIXMAP_CLOSE_WIDGET, NATRON_MEDIUM_BUTTON_ICON_SIZE, &pixC);
     appPTR->getIcon(NATRON_PIXMAP_TAB_WIDGET_LAYOUT_BUTTON_ANCHOR, NATRON_MEDIUM_BUTTON_ICON_SIZE, &pixA);
-    QAction* splitVerticallyAction = new QAction(QIcon(pixV), tr("Split vertical"), &menu);
+    QAction* splitVerticallyAction = new QAction(pixV, tr("Split vertical"), &menu);
     QObject::connect( splitVerticallyAction, SIGNAL(triggered()), this, SLOT(onSplitVertically()) );
     menu.addAction(splitVerticallyAction);
-    QAction* splitHorizontallyAction = new QAction(QIcon(pixH), tr("Split horizontal"), &menu);
+    QAction* splitHorizontallyAction = new QAction(pixH, tr("Split horizontal"), &menu);
     QObject::connect( splitHorizontallyAction, SIGNAL(triggered()), this, SLOT(onSplitHorizontally()) );
     menu.addAction(splitHorizontallyAction);
     menu.addSeparator();
-    QAction* floatAction = new QAction(QIcon(pixM), tr("Float pane"), &menu);
+    QAction* floatAction = new QAction(pixM, tr("Float pane"), &menu);
     QObject::connect( floatAction, SIGNAL(triggered()), this, SLOT(floatCurrentWidget()) );
     menu.addAction(floatAction);
 
@@ -408,7 +408,7 @@ TabWidget::createMenu()
         floatAction->setEnabled(false);
     }
 
-    QAction* closeAction = new QAction(QIcon(pixC), tr("Close pane"), &menu);
+    QAction* closeAction = new QAction(pixC, tr("Close pane"), &menu);
     closeAction->setEnabled( _imp->closeButton->isEnabled() );
     QObject::connect( closeAction, SIGNAL(triggered()), this, SLOT(closePane()) );
     menu.addAction(closeAction);
@@ -457,7 +457,7 @@ TabWidget::createMenu()
     }
     menu.addSeparator();
 
-    QAction* isAnchorAction = new QAction(QIcon(pixA), tr("Set this as anchor"), &menu);
+    QAction* isAnchorAction = new QAction(pixA, tr("Set this as anchor"), &menu);
     isAnchorAction->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("The anchor pane is where viewers will be created by default."), NATRON_NAMESPACE::WhiteSpaceNormal) );
     isAnchorAction->setCheckable(true);
     bool isVA = isAnchor();
@@ -1778,14 +1778,14 @@ TabWidget::setAsAnchor(bool anchor)
             mustUpdate = true;
         }
     }
-    QPixmap pix;
+    QIcon icon;
 
     if (anchor) {
-        appPTR->getIcon(NATRON_PIXMAP_TAB_WIDGET_LAYOUT_BUTTON_ANCHOR, &pix);
+        appPTR->getIcon(NATRON_PIXMAP_TAB_WIDGET_LAYOUT_BUTTON_ANCHOR, TO_DPIX(NATRON_SMALL_BUTTON_ICON_SIZE), &icon);
     } else {
-        appPTR->getIcon(NATRON_PIXMAP_TAB_WIDGET_LAYOUT_BUTTON, &pix);
+        appPTR->getIcon(NATRON_PIXMAP_TAB_WIDGET_LAYOUT_BUTTON, TO_DPIX(NATRON_SMALL_BUTTON_ICON_SIZE), &icon);
     }
-    _imp->leftCornerButton->setIcon( QIcon(pix) );
+    _imp->leftCornerButton->setIcon(icon);
     if (mustUpdate) {
         update();
     }

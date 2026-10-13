@@ -233,10 +233,9 @@ ExportGroupTemplateDialog::ExportGroupTemplateDialog(NodeCollection* group,
 
     _imp->fileEdit->setToolTip(fileTt);
 
-
-    QPixmap openPix;
-    appPTR->getIcon(NATRON_PIXMAP_OPEN_FILE, NATRON_MEDIUM_BUTTON_ICON_SIZE, &openPix);
-    _imp->openButton = new Button(QIcon(openPix), QString(), this);
+    QIcon openPix;
+    appPTR->getIcon(NATRON_PIXMAP_OPEN_FILE, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &openPix);
+    _imp->openButton = new Button(openPix, QString(), this);
     _imp->openButton->setFocusPolicy(Qt::NoFocus);
     _imp->openButton->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
     QObject::connect( _imp->openButton, SIGNAL(clicked()), this, SLOT(onButtonClicked()) );

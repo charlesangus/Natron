@@ -35,11 +35,12 @@
 #include <QDebug>
 
 #include "Engine/Bezier.h"
-#include "Engine/TimeLine.h"
-#include "Engine/Settings.h"
-#include "Engine/KnobTypes.h"
 #include "Engine/Image.h" // Image::clamp
+#include "Engine/KnobTypes.h"
+#include "Engine/Settings.h"
+#include "Engine/TimeLine.h"
 #include "Engine/Utils.h"
+#include "Gui/ThemedIcon.h"
 
 #include "Gui/ActionShortcuts.h"
 #include "Gui/CurveEditor.h"
@@ -67,7 +68,6 @@
 
 NATRON_NAMESPACE_ENTER
 
-
 CurveWidgetPrivate::CurveWidgetPrivate(Gui* gui,
                                        CurveSelection* selectionModel,
                                        TimeLinePtr timeline,
@@ -75,8 +75,7 @@ CurveWidgetPrivate::CurveWidgetPrivate(Gui* gui,
     : _lastMousePos()
     , zoomCtx(0.000001, 1000000.)
     , _state(eEventStateNone)
-    , _rightClickMenu( new Menu(widget) )
-    , _selectedCurveColor(255, 255, 89, 255)
+    , _rightClickMenu(new Menu(widget))
     , _nextCurveAddedColor()
     , textRenderer()
     , _screenPixelRatio(0.)
@@ -253,6 +252,11 @@ CurveWidgetPrivate::createMenu()
     QObject::connect( breakDerivatives, SIGNAL(triggered()), _widget, SLOT(breakDerivativesForSelectedKeyFrames()) );
     interpMenu->addAction(breakDerivatives);
 
+    QAction* freeInterp = new ActionWithShortcut(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorFree,
+                                                 kShortcutDescActionCurveEditorFree, interpMenu);
+    QObject::connect(freeInterp, SIGNAL(triggered()), _widget, SLOT(freeInterpForSelectedKeyFrames()));
+    interpMenu->addAction(freeInterp);
+
     QAction* frameAll = new ActionWithShortcut(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorCenterAll,
                                                kShortcutDescActionCurveEditorCenterAll, interpMenu);
     frameAll->setShortcut( QKeySequence(Qt::Key_A) );
@@ -301,7 +305,8 @@ CurveWidgetPrivate::drawSelectionRectangle(double screenPixelRatio)
         glEnable(GL_LINE_SMOOTH);
         glHint(GL_LINE_SMOOTH_HINT, GL_DONT_CARE);
 
-        glColor4f(0.3, 0.3, 0.3, 0.2);
+        const QColor selColor = ThemedIcon::themeSelectionColor();
+        glColor4f(selColor.redF(), selColor.greenF(), selColor.blueF(), 0.2);
         QPointF btmRight = _selectionRectangle.bottomRight();
         QPointF topLeft = _selectionRectangle.topLeft();
 
@@ -315,7 +320,7 @@ CurveWidgetPrivate::drawSelectionRectangle(double screenPixelRatio)
 
         glLineWidth(1.5 * screenPixelRatio);
 
-        glColor4f(0.5, 0.5, 0.5, 1.);
+        glColor4f(selColor.redF(), selColor.greenF(), selColor.blueF(), 1.);
         glBegin(GL_LINE_LOOP);
         glVertex2f( topLeft.x(), btmRight.y() );
         glVertex2f( topLeft.x(), topLeft.y() );
@@ -579,7 +584,8 @@ CurveWidgetPrivate::drawSelectedKeyFramesBbox(double screenPixelRatio)
         double xMid = ( topLeft.x() + btmRight.x() ) / 2.;
         double yMid = ( topLeft.y() + btmRight.y() ) / 2.;
 
-        glColor4f(0.5, 0.5, 0.5, 1.);
+        const QColor bboxColor = ThemedIcon::themeTextColor();
+        glColor4f(bboxColor.redF(), bboxColor.greenF(), bboxColor.blueF(), 1.);
         glLineWidth(1.5 * screenPixelRatio);
         glBegin(GL_LINE_LOOP);
         glVertex2f( topLeft.x(), btmRight.y() );

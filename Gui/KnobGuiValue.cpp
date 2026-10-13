@@ -532,6 +532,12 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
         if (wantsPerDimensionSliders() && _imp->belowRowColumn && !spinBoxesGrid) {
             createDimensionLines(containerLayout, boxContainers, dimensionLabelSlotWidth, displayMins, displayMaxs, mins, maxs);
         }
+        if (!_imp->dimensionLines) {
+            // Expanded, the slider hides and the fixed-size boxes would spread across the row;
+            // this keeps them packed and the switch button at the row's end, where it sits
+            // while folded. A folded slider's stretch factor outweighs this one's.
+            containerLayout->insertStretch(containerLayout->indexOf(_imp->dimensionSwitchButton), 0);
+        }
 
         bool showSlider = true;
         double firstDimensionValue = 0.;

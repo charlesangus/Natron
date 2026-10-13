@@ -1145,11 +1145,6 @@ Gui::fileSequencesFromUrls(const QList<QUrl>& urls,
         const QUrl rl = urls.at(i);
         QString path = rl.toLocalFile();
 
-#ifdef __NATRON_WIN32__
-        if (appPTR->getCurrentSettings()->isDriveLetterToUNCPathConversionEnabled()) {
-            path = FileSystemModel::mapPathWithDriveLetterToPathWithNetworkShareName(path);
-        }
-#endif
         QDir dir(path);
         
         //if the path dropped is not a directory append it

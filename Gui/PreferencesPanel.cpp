@@ -50,17 +50,18 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Utils.h" // convertFromPlainText
 
 #include "Gui/ActionShortcuts.h"
-#include "Gui/GuiDefines.h"
 #include "Gui/AnimatedCheckBox.h"
-#include "Gui/DockablePanel.h"
 #include "Gui/Button.h"
 #include "Gui/DialogButtonBox.h"
+#include "Gui/DockablePanel.h"
 #include "Gui/Gui.h"
-#include "Gui/LineEdit.h"
-#include "Gui/Label.h"
 #include "Gui/GuiApplicationManager.h"
+#include "Gui/GuiDefines.h"
+#include "Gui/Label.h"
+#include "Gui/LineEdit.h"
 #include "Gui/Splitter.h"
 #include "Gui/TableModelView.h"
+#include "Gui/ThemedIcon.h"
 
 #define COL_PLUGIN_LABEL 0
 #define COL_PLUGINID COL_PLUGIN_LABEL + 1
@@ -1388,14 +1389,14 @@ ShortcutDelegate::paint(QPainter * painter,
     if (isTopLevel) {
         font.setBold(true);
         font.setPointSize(13);
-        pen.setColor(Qt::gray);
+        pen.setColor(ThemedIcon::themeTextColor());
     } else {
         font.setBold(false);
         font.setPointSize(11);
         if ( item->isDisabled() ) {
-            pen.setColor(Qt::gray);
+            pen.setColor(ThemedIcon::themeDisabledColor());
         } else {
-            pen.setColor(Qt::lightGray);
+            pen.setColor(ThemedIcon::themeTextColor());
         }
     }
     painter->setFont(font);

@@ -886,9 +886,9 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
     _colorSelectorButton->setFixedSize(medSize);
 
     if (_adjustPanel) {
-        QPixmap dropdownPix;
-        appPTR->getIcon(NATRON_PIXMAP_COLOR_ADJUST_DROPDOWN, NATRON_MEDIUM_BUTTON_ICON_SIZE, &dropdownPix);
-        _colorSelectorButton->setIcon(QIcon(dropdownPix));
+        QIcon dropdownIcon;
+        appPTR->getIcon(NATRON_PIXMAP_COLOR_ADJUST_DROPDOWN, NATRON_MEDIUM_BUTTON_ICON_SIZE, &dropdownIcon);
+        _colorSelectorButton->setIcon(dropdownIcon);
         _colorSelectorButton->setIconSize(medIconSize);
         _colorSelectorButton->setArrowType(Qt::NoArrow);
         _colorSelectorButton->setAutoRaise(false);
@@ -905,9 +905,9 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
         _globalModeButton = new QToolButton(containerLayout->widget());
         _globalModeButton->setObjectName(QString::fromUtf8("ColorGlobalModeButton"));
         _globalModeButton->setFixedSize(medSize);
-        QPixmap globalModePix;
-        appPTR->getIcon(NATRON_PIXMAP_COLOR_GLOBAL_TRACKBALL, NATRON_MEDIUM_BUTTON_ICON_SIZE, &globalModePix);
-        _globalModeButton->setIcon(QIcon(globalModePix));
+        QIcon globalModeIcon;
+        appPTR->getIcon(NATRON_PIXMAP_COLOR_GLOBAL_TRACKBALL, NATRON_MEDIUM_BUTTON_ICON_SIZE, &globalModeIcon);
+        _globalModeButton->setIcon(globalModeIcon);
         _globalModeButton->setIconSize(medIconSize);
         _globalModeButton->setCheckable(true);
         _globalModeButton->setChecked(false);
@@ -921,9 +921,9 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
         return;
     }
 
-    QPixmap colorSelectorPix;
-    appPTR->getIcon(NATRON_PIXMAP_COLORWHEEL, NATRON_MEDIUM_BUTTON_ICON_SIZE, &colorSelectorPix);
-    _colorSelectorButton->setIcon(QIcon(colorSelectorPix));
+    QIcon colorSelectorPix;
+    appPTR->getIcon(NATRON_PIXMAP_COLORWHEEL, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &colorSelectorPix);
+    _colorSelectorButton->setIcon(colorSelectorPix);
     _colorSelectorButton->setIconSize(medIconSize);
     _colorSelectorButton->setPopupMode(QToolButton::InstantPopup);
     _colorSelectorButton->setArrowType(Qt::NoArrow);

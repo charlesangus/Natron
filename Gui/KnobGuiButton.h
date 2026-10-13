@@ -81,6 +81,11 @@ public:
         return false;
     }
 
+    virtual bool startsInFieldColumn() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
 public Q_SLOTS:
 
     void emitValueChanged(bool clicked);

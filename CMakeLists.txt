@@ -76,7 +76,7 @@ if(IS_DEBUG_BUILD AND WIN32)
 endif()
 
 set(QT_COMPONENTS Core Gui Network Widgets Concurrent)
-list(APPEND QT_COMPONENTS OpenGLWidgets)
+list(APPEND QT_COMPONENTS OpenGLWidgets Svg)
 find_package(Qt6 6.8 CONFIG REQUIRED COMPONENTS ${QT_COMPONENTS})
 find_package(Shiboken6 6.8 CONFIG REQUIRED COMPONENTS libshiboken6)
 find_package(Shiboken6Tools 6.8 CONFIG REQUIRED COMPONENTS shiboken6)

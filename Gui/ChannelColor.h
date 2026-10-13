@@ -33,6 +33,8 @@
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QColor>
+#include <QGuiApplication>
+#include <QPalette>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -69,6 +71,26 @@ getChannelColorFromName(const std::string& name,
     }
 
     return false;
+}
+
+/**
+ * @brief The fill a checked channel toggle button uses for @p channelColor: halfway between it
+ * and the raised button colour, so R, G and B stay recognisable without outshouting the panel.
+ * A grey channel colour (alpha) is returned unchanged, since blending it would only bring it
+ * closer to an unchecked button.
+ **/
+inline QColor
+getChannelButtonColor(const QColor& channelColor)
+{
+    if (channelColor.hsvSaturationF() <= 0.) {
+        return channelColor;
+    }
+    const QColor raised = QGuiApplication::palette().color(QPalette::Light);
+    const double t = 0.5;
+
+    return QColor::fromRgbF((float)(channelColor.redF() * (1. - t) + raised.redF() * t),
+                            (float)(channelColor.greenF() * (1. - t) + raised.greenF() * t),
+                            (float)(channelColor.blueF() * (1. - t) + raised.blueF() * t));
 }
 
 NATRON_NAMESPACE_EXIT

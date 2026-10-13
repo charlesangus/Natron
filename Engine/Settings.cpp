@@ -622,14 +622,6 @@ Settings::initializeKnobsProjectSetup()
     _fixPathsOnProjectPathChanged->setName("autoFixRelativePaths");
 
     _projectsPage->addKnob(_fixPathsOnProjectPathChanged);
-
-    _enableMappingFromDriveLettersToUNCShareNames = AppManager::createKnob<KnobBool>( this, tr("Use drive letters instead of server names (Windows only)") );
-    _enableMappingFromDriveLettersToUNCShareNames->setHintToolTip( tr("This is only relevant for Windows: If checked, %1 will not convert a path starting with a drive letter from the file dialog to a network share name. You may use this if for example you want to share a same project with several users across facilities with different servers but where users have all the same drive attached to a server.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ) );
-    _enableMappingFromDriveLettersToUNCShareNames->setName("useDriveLetters");
-#ifndef __NATRON_WIN32__
-    _enableMappingFromDriveLettersToUNCShareNames->setAllDimensionsEnabled(false);
-#endif
-    _projectsPage->addKnob(_enableMappingFromDriveLettersToUNCShareNames);
 }
 
 void
@@ -784,13 +776,6 @@ Settings::initializeKnobsGuiColors()
 {
     _guiColorsTab = AppManager::createKnob<KnobPage>( this, tr("Main Window") );
     _appearanceTab->addKnob(_guiColorsTab);
-
-    _useBWIcons = AppManager::createKnob<KnobBool>( this, tr("Use black & white toolbutton icons") );
-    _useBWIcons->setName("useBwIcons");
-    _useBWIcons->setHintToolTip( tr("When checked, the tools icons in the left toolbar are greyscale. Changing this takes "
-                                    "effect upon the next launch of the application.") );
-    _guiColorsTab->addKnob(_useBWIcons);
-
 
     _sunkenColor =  AppManager::createKnob<KnobColor>(this, tr("Sunken"), 3);
     _sunkenColor->setName("sunken");
@@ -1626,7 +1611,6 @@ Settings::setDefaultValues()
     _firstReadSetProjectFormat->setDefaultValue(true);
     _autoPreviewEnabledForNewProjects->setDefaultValue(true, 0);
     _fixPathsOnProjectPathChanged->setDefaultValue(true);
-    //_enableMappingFromDriveLettersToUNCShareNames
 
     // General/Documentation
     _wwwServerPort->setDefaultValue(0);
@@ -1679,7 +1663,6 @@ Settings::setDefaultValues()
     _autoScroll->setDefaultValue(false);
     _autoTurbo->setDefaultValue(false);
     _snapNodesToConnections->setDefaultValue(true);
-    _useBWIcons->setDefaultValue(false);
     _maxUndoRedoNodeGraph->setDefaultValue(20, 0);
     _disconnectedArrowLength->setDefaultValue(30);
     _useInputAForMergeAutoConnect->setDefaultValue(true);
@@ -1764,15 +1747,15 @@ Settings::setDefaultValues()
     _sliderColor->setDefaultValue(0.44, 2);
 
     // Apprance/Curve Editor
-    _curveEditorBGColor->setDefaultValue(0., 0);
-    _curveEditorBGColor->setDefaultValue(0., 1);
-    _curveEditorBGColor->setDefaultValue(0., 2);
-    _gridColor->setDefaultValue(0.46, 0);
-    _gridColor->setDefaultValue(0.84, 1);
-    _gridColor->setDefaultValue(0.35, 2);
-    _curveEditorScaleColor->setDefaultValue(0.26, 0);
-    _curveEditorScaleColor->setDefaultValue(0.48, 1);
-    _curveEditorScaleColor->setDefaultValue(0.2, 2);
+    _curveEditorBGColor->setDefaultValue(0.12, 0);
+    _curveEditorBGColor->setDefaultValue(0.12, 1);
+    _curveEditorBGColor->setDefaultValue(0.12, 2);
+    _gridColor->setDefaultValue(0.32, 0);
+    _gridColor->setDefaultValue(0.32, 1);
+    _gridColor->setDefaultValue(0.32, 2);
+    _curveEditorScaleColor->setDefaultValue(0.6, 0);
+    _curveEditorScaleColor->setDefaultValue(0.6, 1);
+    _curveEditorScaleColor->setDefaultValue(0.6, 2);
 
     // Appearance/Dope Sheet
     _dopeSheetEditorBackgroundColor->setDefaultValue(0.208, 0);
@@ -3328,12 +3311,6 @@ Settings::setRenderOnEditingFinishedOnly(bool render)
     _renderOnEditingFinished->setValue(render);
 }
 
-bool
-Settings::getIconsBlackAndWhite() const
-{
-    return _useBWIcons->getValue();
-}
-
 std::string
 Settings::getDefaultLayoutFile() const
 {
@@ -3961,12 +3938,6 @@ bool
 Settings::isFileDialogEnabledForNewWriters() const
 {
     return _filedialogForWriters->getValue();
-}
-
-bool
-Settings::isDriveLetterToUNCPathConversionEnabled() const
-{
-    return !_enableMappingFromDriveLettersToUNCShareNames->getValue();
 }
 
 NATRON_NAMESPACE_EXIT

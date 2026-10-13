@@ -65,6 +65,7 @@ target_link_libraries(NatronGui
         Qt::Gui
         Qt::Widgets
         ${QT_OPENGLWIDGETS}
+        Qt::Svg
         Python3::Module
         NatronEngine
     PRIVATE

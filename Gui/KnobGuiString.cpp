@@ -428,14 +428,8 @@ KnobGuiString::createWidget(QHBoxLayout* layout)
             _fontSizeSpinBox->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Font size."), NATRON_NAMESPACE::WhiteSpaceNormal) );
             _richTextOptionsLayout->addWidget(_fontSizeSpinBox);
 
-            QPixmap pixBoldChecked, pixBoldUnchecked, pixItalicChecked, pixItalicUnchecked;
-            appPTR->getIcon(NATRON_PIXMAP_BOLD_CHECKED, &pixBoldChecked);
-            appPTR->getIcon(NATRON_PIXMAP_BOLD_UNCHECKED, &pixBoldUnchecked);
-            appPTR->getIcon(NATRON_PIXMAP_ITALIC_CHECKED, &pixItalicChecked);
-            appPTR->getIcon(NATRON_PIXMAP_ITALIC_UNCHECKED, &pixItalicUnchecked);
             QIcon boldIcon;
-            boldIcon.addPixmap(pixBoldChecked, QIcon::Normal, QIcon::On);
-            boldIcon.addPixmap(pixBoldUnchecked, QIcon::Normal, QIcon::Off);
+            appPTR->getIcon(NATRON_PIXMAP_BOLD_CHECKED, NATRON_MEDIUM_BUTTON_ICON_SIZE, &boldIcon);
             _setBoldButton = new Button(boldIcon, QString(), _richTextOptions);
             _setBoldButton->setIconSize( QSize(NATRON_MEDIUM_BUTTON_ICON_SIZE, NATRON_MEDIUM_BUTTON_ICON_SIZE) );
             _setBoldButton->setCheckable(true);
@@ -445,8 +439,7 @@ KnobGuiString::createWidget(QHBoxLayout* layout)
             _richTextOptionsLayout->addWidget(_setBoldButton);
 
             QIcon italicIcon;
-            italicIcon.addPixmap(pixItalicChecked, QIcon::Normal, QIcon::On);
-            italicIcon.addPixmap(pixItalicUnchecked, QIcon::Normal, QIcon::Off);
+            appPTR->getIcon(NATRON_PIXMAP_ITALIC_CHECKED, NATRON_MEDIUM_BUTTON_ICON_SIZE, &italicIcon);
 
             _setItalicButton = new Button(italicIcon, QString(), _richTextOptions);
             _setItalicButton->setCheckable(true);
@@ -515,7 +508,9 @@ bool
 KnobGuiString::isLabelOnSameColumn() const
 {
     KnobStringPtr knob = _knob.lock();
-    return knob && knob->isLabel();
+    // A label that other knobs follow on its row titles that row, so it sits in the label
+    // column like any knob's label; a label alone on its row spans both columns.
+    return knob && knob->isLabel() && knob->isNewLineActivated();
 }
 
 void

@@ -566,9 +566,9 @@ MultiInstancePanel::createMultiInstanceGui(QVBoxLayout* layout)
     _imp->buttonsLayout->addWidget(_imp->removeButton);
 
     QObject::connect( _imp->removeButton, SIGNAL(clicked(bool)), this, SLOT(onRemoveButtonClicked()) );
-    QPixmap selectAll;
+    QIcon selectAll;
     appPTR->getIcon(NATRON_PIXMAP_SELECT_ALL, NATRON_SMALL_BUTTON_ICON_SIZE, &selectAll);
-    _imp->selectAll = new Button(QIcon(selectAll), QString(), _imp->buttonsContainer);
+    _imp->selectAll = new Button(selectAll, QString(), _imp->buttonsContainer);
     _imp->selectAll->setFixedSize(NATRON_SMALL_BUTTON_SIZE, NATRON_SMALL_BUTTON_SIZE);
     _imp->selectAll->setIconSize( QSize(NATRON_SMALL_BUTTON_ICON_SIZE, NATRON_SMALL_BUTTON_ICON_SIZE) );
     _imp->selectAll->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Select all."), NATRON_NAMESPACE::WhiteSpaceNormal) );
@@ -1886,13 +1886,13 @@ TrackerPanelV1::setIconForButton(KnobButton* knob)
     const std::string name = knob->getName();
 
     if (name == kNatronParamTrackingPrevious) {
-        knob->setIconLabel(NATRON_IMAGES_PATH "back1.png");
+        knob->setIconLabel(NATRON_ICONS_PATH "lucide/step-back.svg");
     } else if (name == kNatronParamTrackingNext) {
-        knob->setIconLabel(NATRON_IMAGES_PATH "forward1.png");
+        knob->setIconLabel(NATRON_ICONS_PATH "lucide/step-forward.svg");
     } else if (name == kNatronParamTrackingBackward) {
-        knob->setIconLabel(NATRON_IMAGES_PATH "rewind.png");
+        knob->setIconLabel(NATRON_ICONS_PATH "natron/play-reverse.svg");
     } else if (name == kNatronParamTrackingForward) {
-        knob->setIconLabel(NATRON_IMAGES_PATH "play.png");
+        knob->setIconLabel(NATRON_ICONS_PATH "lucide/play.svg");
     }
 }
 

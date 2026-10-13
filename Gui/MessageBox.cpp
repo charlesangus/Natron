@@ -45,6 +45,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/Label.h"
 #include "Gui/QtEnumConvert.h"
+#include "Gui/ThemedIcon.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -131,28 +132,31 @@ MessageBox::init(const QString & title,
     _imp->iconLabel = new Label;
     _imp->iconLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 
-    QStyle::StandardPixmap pixType = QStyle::SP_MessageBoxCritical;
+    ThemedIcon::MessageGlyphEnum glyph = ThemedIcon::eMessageGlyphError;
     switch (_imp->type) {
         case eMessageBoxTypeError:
-            pixType = QStyle::SP_MessageBoxCritical;
+            glyph = ThemedIcon::eMessageGlyphError;
             break;
         case eMessageBoxTypeWarning:
-            pixType = QStyle::SP_MessageBoxWarning;
+            glyph = ThemedIcon::eMessageGlyphWarning;
             break;
         case eMessageBoxTypeInformation:
-            pixType = QStyle::SP_MessageBoxInformation;
+            glyph = ThemedIcon::eMessageGlyphInformation;
             break;
         case eMessageBoxTypeQuestion:
-            pixType = QStyle::SP_MessageBoxQuestion;
+            glyph = ThemedIcon::eMessageGlyphQuestion;
             break;
     }
 
-    QIcon icon = style()->standardIcon(pixType, 0, this);
-    int iconSize = style()->pixelMetric(QStyle::PM_MessageBoxIconSize, 0, this);
-    _imp->iconLabel->setPixmap( icon.pixmap(iconSize, iconSize) );
+    const int iconSize = style()->pixelMetric(QStyle::PM_MessageBoxIconSize, 0, this);
+    ThemedIcon::setLabelIcon(_imp->iconLabel, ThemedIcon::messageIcon(glyph, iconSize), iconSize);
 
     _imp->buttonBox = new DialogButtonBox(QDialogButtonBox::StandardButtons( int( QtEnumConvert::toQtStandarButtons(buttons) ) ),
                                           Qt::Horizontal);
+    const QList<QAbstractButton*> stdButtons = _imp->buttonBox->buttons();
+    for (QAbstractButton* b : stdButtons) {
+        b->setIcon(QIcon());
+    }
     QPushButton* defaultB = _imp->buttonBox->button( QDialogButtonBox::StandardButton(
                                                                                       (QDialogButtonBox::StandardButton)QtEnumConvert::toQtStandardButton(defaultButton) ) );
     if ( _imp->buttonBox->buttons().contains(defaultB) ) {

@@ -53,14 +53,15 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include <QApplication>
 #include <QMenuBar>
 
-#include <QToolBar>
+#include <QFontMetrics>
+#include <QImage>
 #include <QKeySequence>
+#include <QMessageBox>
+#include <QProgressDialog>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QToolBar>
 #include <QToolButton>
-#include <QMessageBox>
-#include <QImage>
-#include <QProgressDialog>
 
 #include <cairo/cairo.h>
 
@@ -91,6 +92,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
+#include "Gui/GuiDensity.h"
 #include "Gui/Histogram.h"
 #include "Gui/Menu.h"
 #include "Gui/MessageBox.h"
@@ -110,6 +112,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/SpinBox.h"
 #include "Gui/Splitter.h"
 #include "Gui/TabWidget.h"
+#include "Gui/ThemedIcon.h"
 #include "Gui/ToolButton.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
@@ -327,14 +330,14 @@ GuiPrivate::createPropertiesBinGui()
     QWidget* propertiesAreaButtonsContainer = new QWidget(_propertiesBin);
     QHBoxLayout* propertiesAreaButtonsLayout = new QHBoxLayout(propertiesAreaButtonsContainer);
     propertiesAreaButtonsLayout->setContentsMargins(0, 0, 0, 0);
-    propertiesAreaButtonsLayout->setSpacing(5);
-    QPixmap closePanelPix;
-    int smallSizeIcon = TO_DPIX(NATRON_SMALL_BUTTON_ICON_SIZE);
-    appPTR->getIcon(NATRON_PIXMAP_CLOSE_PANEL, smallSizeIcon, &closePanelPix);
-    _clearAllPanelsButton = new Button(QIcon(closePanelPix), QString(), propertiesAreaButtonsContainer);
+    propertiesAreaButtonsLayout->setSpacing(TO_DPIX(NATRON_DENSITY_TOOLBAR_SPACING));
+    const int smallSizeIcon = TO_DPIX(NATRON_SMALL_BUTTON_ICON_SIZE);
+    QIcon closePanelIcon;
+    appPTR->getIcon(NATRON_PIXMAP_CLOSE_PANEL, smallSizeIcon, &closePanelIcon);
+    _clearAllPanelsButton = new Button(closePanelIcon, QString(), propertiesAreaButtonsContainer);
 
     const QSize smallButtonSize( TO_DPIX(NATRON_SMALL_BUTTON_SIZE), TO_DPIY(NATRON_SMALL_BUTTON_SIZE) );
-    const QSize smallButtonIconSize( TO_DPIX(NATRON_SMALL_BUTTON_ICON_SIZE), TO_DPIY(NATRON_SMALL_BUTTON_ICON_SIZE) );
+    const QSize smallButtonIconSize(smallSizeIcon, TO_DPIY(NATRON_SMALL_BUTTON_ICON_SIZE));
 
     _clearAllPanelsButton->setFixedSize(smallButtonSize);
     _clearAllPanelsButton->setIconSize(smallButtonIconSize);
@@ -342,12 +345,7 @@ GuiPrivate::createPropertiesBinGui()
                                                                       NATRON_NAMESPACE::WhiteSpaceNormal) );
     _clearAllPanelsButton->setFocusPolicy(Qt::NoFocus);
     QObject::connect( _clearAllPanelsButton, SIGNAL(clicked(bool)), _gui, SLOT(clearAllVisiblePanels()) );
-    QPixmap minimizePix, maximizePix;
-    appPTR->getIcon(NATRON_PIXMAP_MINIMIZE_WIDGET, smallSizeIcon, &minimizePix);
-    appPTR->getIcon(NATRON_PIXMAP_MAXIMIZE_WIDGET, smallSizeIcon, &maximizePix);
-    QIcon mIc;
-    mIc.addPixmap(minimizePix, QIcon::Normal, QIcon::On);
-    mIc.addPixmap(maximizePix, QIcon::Normal, QIcon::Off);
+    const QIcon mIc = ThemedIcon::icon(QString::fromUtf8(NATRON_ICONS_PATH "lucide/chevrons-down-up.svg"), smallSizeIcon);
     _minimizeAllPanelsButtons = new Button(mIc, QString(), propertiesAreaButtonsContainer);
     _minimizeAllPanelsButtons->setCheckable(true);
     _minimizeAllPanelsButtons->setChecked(false);
@@ -358,10 +356,15 @@ GuiPrivate::createPropertiesBinGui()
     QObject::connect( _minimizeAllPanelsButtons, SIGNAL(clicked(bool)), _gui, SLOT(minimizeMaximizeAllPanels(bool)) );
 
     _maxPanelsOpenedSpinBox = new SpinBox(propertiesAreaButtonsContainer);
-    const int fontSize = appPTR->getAppFontSize();
-    const QSize maxPanelsOpenedSpinBoxSize(TO_DPIX(std::max(NATRON_SMALL_BUTTON_SIZE, 2 * fontSize)),
-                                           TO_DPIY(std::max(NATRON_SMALL_BUTTON_SIZE, fontSize * 3 / 2)));
-    _maxPanelsOpenedSpinBox->setFixedSize(maxPanelsOpenedSpinBoxSize);
+    // Sized from the font rather than the 15 px button height, which is shorter than one
+    // line of text plus the line edit's frame and padding.
+    {
+        const QFontMetrics fm(_maxPanelsOpenedSpinBox->font());
+        const int frame = TO_DPIX(4);
+        _maxPanelsOpenedSpinBox->setFixedSize(fm.horizontalAdvance(QString::fromUtf8("99")) + 2 * frame,
+                                              std::max<int>(TO_DPIY(NATRON_SMALL_BUTTON_SIZE), fm.height() + frame));
+    }
+    _maxPanelsOpenedSpinBox->setAlignment(Qt::AlignCenter);
     _maxPanelsOpenedSpinBox->setMinimum(0);
     _maxPanelsOpenedSpinBox->setMaximum(99);
     _maxPanelsOpenedSpinBox->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Set the maximum of panels that can be opened at the same time "
@@ -371,9 +374,9 @@ GuiPrivate::createPropertiesBinGui()
     _maxPanelsOpenedSpinBox->setValue( appPTR->getCurrentSettings()->getMaxPanelsOpened() );
     QObject::connect( _maxPanelsOpenedSpinBox, SIGNAL(valueChanged(double)), _gui, SLOT(onMaxPanelsSpinBoxValueChanged(double)) );
 
-    propertiesAreaButtonsLayout->addWidget(_maxPanelsOpenedSpinBox);
-    propertiesAreaButtonsLayout->addWidget(_clearAllPanelsButton);
-    propertiesAreaButtonsLayout->addWidget(_minimizeAllPanelsButtons);
+    propertiesAreaButtonsLayout->addWidget(_maxPanelsOpenedSpinBox, 0, Qt::AlignVCenter);
+    propertiesAreaButtonsLayout->addWidget(_clearAllPanelsButton, 0, Qt::AlignVCenter);
+    propertiesAreaButtonsLayout->addWidget(_minimizeAllPanelsButtons, 0, Qt::AlignVCenter);
     propertiesAreaButtonsLayout->addStretch();
 
     mainPropertiesLayout->addWidget(propertiesAreaButtonsContainer);

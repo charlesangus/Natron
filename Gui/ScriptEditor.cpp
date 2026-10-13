@@ -118,20 +118,19 @@ ScriptEditor::ScriptEditor(Gui* gui)
     _imp->buttonsContainerLayout->setContentsMargins(0, 0, 0, 0);
     _imp->buttonsContainerLayout->setSpacing(2);
 
-    QPixmap undoPix, redoPix, clearHistoPix, sourceScriptPix, loadScriptPix, saveScriptPix, execScriptPix, outputVisiblePix, outputHiddenPix, clearOutpoutPix;
-    appPTR->getIcon(NATRON_PIXMAP_SCRIPT_PREVIOUS_SCRIPT, NATRON_MEDIUM_BUTTON_ICON_SIZE, &undoPix);
-    appPTR->getIcon(NATRON_PIXMAP_SCRIPT_NEXT_SCRIPT, NATRON_MEDIUM_BUTTON_ICON_SIZE, &redoPix);
-    appPTR->getIcon(NATRON_PIXMAP_CLOSE_PANEL, NATRON_MEDIUM_BUTTON_ICON_SIZE, &clearHistoPix);
-    appPTR->getIcon(NATRON_PIXMAP_CLEAR_ALL_ANIMATION, NATRON_MEDIUM_BUTTON_ICON_SIZE, &clearHistoPix);
-    appPTR->getIcon(NATRON_PIXMAP_SCRIPT_CLEAR_OUTPUT, NATRON_MEDIUM_BUTTON_ICON_SIZE, &clearOutpoutPix);
-    appPTR->getIcon(NATRON_PIXMAP_SCRIPT_EXEC_SCRIPT, NATRON_MEDIUM_BUTTON_ICON_SIZE, &execScriptPix);
-    appPTR->getIcon(NATRON_PIXMAP_SCRIPT_OUTPUT_PANE_ACTIVATED, NATRON_MEDIUM_BUTTON_ICON_SIZE, &outputVisiblePix);
-    appPTR->getIcon(NATRON_PIXMAP_SCRIPT_OUTPUT_PANE_DEACTIVATED, NATRON_MEDIUM_BUTTON_ICON_SIZE, &outputHiddenPix);
-    appPTR->getIcon(NATRON_PIXMAP_SCRIPT_LOAD_EXEC_SCRIPT, NATRON_MEDIUM_BUTTON_ICON_SIZE, &sourceScriptPix);
-    appPTR->getIcon(NATRON_PIXMAP_SCRIPT_LOAD_SCRIPT, NATRON_MEDIUM_BUTTON_ICON_SIZE, &loadScriptPix);
-    appPTR->getIcon(NATRON_PIXMAP_SCRIPT_SAVE_SCRIPT, NATRON_MEDIUM_BUTTON_ICON_SIZE, &saveScriptPix);
+    QIcon undoPix, redoPix, clearHistoPix, sourceScriptPix, loadScriptPix, saveScriptPix, execScriptPix, clearOutpoutPix;
+    QIcon icShowHide;
+    appPTR->getIcon(NATRON_PIXMAP_SCRIPT_PREVIOUS_SCRIPT, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &undoPix);
+    appPTR->getIcon(NATRON_PIXMAP_SCRIPT_NEXT_SCRIPT, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &redoPix);
+    appPTR->getIcon(NATRON_PIXMAP_CLEAR_ALL_ANIMATION, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &clearHistoPix);
+    appPTR->getIcon(NATRON_PIXMAP_SCRIPT_CLEAR_OUTPUT, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &clearOutpoutPix);
+    appPTR->getIcon(NATRON_PIXMAP_SCRIPT_EXEC_SCRIPT, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &execScriptPix);
+    appPTR->getIcon(NATRON_PIXMAP_SCRIPT_OUTPUT_PANE_ACTIVATED, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &icShowHide);
+    appPTR->getIcon(NATRON_PIXMAP_SCRIPT_LOAD_EXEC_SCRIPT, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &sourceScriptPix);
+    appPTR->getIcon(NATRON_PIXMAP_SCRIPT_LOAD_SCRIPT, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &loadScriptPix);
+    appPTR->getIcon(NATRON_PIXMAP_SCRIPT_SAVE_SCRIPT, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &saveScriptPix);
 
-    _imp->undoB = new Button(QIcon(undoPix), QString(), _imp->buttonsContainer);
+    _imp->undoB = new Button(undoPix, QString(), _imp->buttonsContainer);
     QKeySequence undoSeq(Qt::CTRL | Qt::Key_BracketLeft);
     _imp->undoB->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
     _imp->undoB->setIconSize( QSize(NATRON_MEDIUM_BUTTON_ICON_SIZE, NATRON_MEDIUM_BUTTON_ICON_SIZE) );
@@ -140,7 +139,7 @@ ScriptEditor::ScriptEditor(Gui* gui)
     _imp->undoB->setEnabled(false);
     QObject::connect( _imp->undoB, SIGNAL(clicked(bool)), this, SLOT(onUndoClicked()) );
 
-    _imp->redoB = new Button(QIcon(redoPix), QString(), _imp->buttonsContainer);
+    _imp->redoB = new Button(redoPix, QString(), _imp->buttonsContainer);
     QKeySequence redoSeq(Qt::CTRL | Qt::Key_BracketRight);
     _imp->redoB->setFocusPolicy(Qt::NoFocus);
     _imp->redoB->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
@@ -149,7 +148,7 @@ ScriptEditor::ScriptEditor(Gui* gui)
     _imp->redoB->setEnabled(false);
     QObject::connect( _imp->redoB, SIGNAL(clicked(bool)), this, SLOT(onRedoClicked()) );
 
-    _imp->clearHistoB = new Button(QIcon(clearHistoPix), QString(), _imp->buttonsContainer);
+    _imp->clearHistoB = new Button(clearHistoPix, QString(), _imp->buttonsContainer);
     _imp->clearHistoB->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
     _imp->clearHistoB->setIconSize( QSize(NATRON_MEDIUM_BUTTON_ICON_SIZE, NATRON_MEDIUM_BUTTON_ICON_SIZE) );
     _imp->clearHistoB->setFocusPolicy(Qt::NoFocus);
@@ -158,38 +157,35 @@ ScriptEditor::ScriptEditor(Gui* gui)
 
     QObject::connect( _imp->clearHistoB, SIGNAL(clicked(bool)), this, SLOT(onClearHistoryClicked()) );
 
-    _imp->sourceScriptB = new Button(QIcon(sourceScriptPix), QString(), _imp->buttonsContainer);
+    _imp->sourceScriptB = new Button(sourceScriptPix, QString(), _imp->buttonsContainer);
     _imp->sourceScriptB->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Open and execute a script."), NATRON_NAMESPACE::WhiteSpaceNormal) );
     _imp->sourceScriptB->setFocusPolicy(Qt::NoFocus);
     _imp->sourceScriptB->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
     _imp->sourceScriptB->setIconSize( QSize(NATRON_MEDIUM_BUTTON_ICON_SIZE, NATRON_MEDIUM_BUTTON_ICON_SIZE) );
     QObject::connect( _imp->sourceScriptB, SIGNAL(clicked(bool)), this, SLOT(onSourceScriptClicked()) );
 
-    _imp->loadScriptB = new Button(QIcon(loadScriptPix), QString(), _imp->buttonsContainer);
+    _imp->loadScriptB = new Button(loadScriptPix, QString(), _imp->buttonsContainer);
     _imp->loadScriptB->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Open a script without executing it."), NATRON_NAMESPACE::WhiteSpaceNormal) );
     _imp->loadScriptB->setFocusPolicy(Qt::NoFocus);
     _imp->loadScriptB->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
     _imp->loadScriptB->setIconSize( QSize(NATRON_MEDIUM_BUTTON_ICON_SIZE, NATRON_MEDIUM_BUTTON_ICON_SIZE) );
     QObject::connect( _imp->loadScriptB, SIGNAL(clicked(bool)), this, SLOT(onLoadScriptClicked()) );
 
-    _imp->saveScriptB = new Button(QIcon(saveScriptPix), QString(), _imp->buttonsContainer);
+    _imp->saveScriptB = new Button(saveScriptPix, QString(), _imp->buttonsContainer);
     _imp->saveScriptB->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Save the current script."), NATRON_NAMESPACE::WhiteSpaceNormal) );
     _imp->saveScriptB->setFocusPolicy(Qt::NoFocus);
     _imp->saveScriptB->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
     _imp->saveScriptB->setIconSize( QSize(NATRON_MEDIUM_BUTTON_ICON_SIZE, NATRON_MEDIUM_BUTTON_ICON_SIZE) );
     QObject::connect( _imp->saveScriptB, SIGNAL(clicked(bool)), this, SLOT(onSaveScriptClicked()) );
 
-    _imp->execScriptB = new Button(QIcon(execScriptPix), QString(), _imp->buttonsContainer);
+    _imp->execScriptB = new Button(execScriptPix, QString(), _imp->buttonsContainer);
     QKeySequence execSeq(Qt::CTRL | Qt::Key_Return);
     _imp->execScriptB->setFocusPolicy(Qt::NoFocus);
     _imp->execScriptB->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
     _imp->execScriptB->setIconSize( QSize(NATRON_MEDIUM_BUTTON_ICON_SIZE, NATRON_MEDIUM_BUTTON_ICON_SIZE) );
     setToolTipWithShortcut(kShortcutGroupScriptEditor, kShortcutIDActionScriptExecScript, "<p>" + tr("Execute the current script").toStdString() + "</p>" + "<p><b>" + tr("Keyboard shortcut: %1").toStdString() + "</b></p>", _imp->execScriptB);
 
-    QObject::connect( _imp->execScriptB, SIGNAL(clicked(bool)), this, SLOT(onExecScriptClicked()) );
-    QIcon icShowHide;
-    icShowHide.addPixmap(outputVisiblePix, QIcon::Normal, QIcon::On);
-    icShowHide.addPixmap(outputHiddenPix, QIcon::Normal, QIcon::Off);
+    QObject::connect(_imp->execScriptB, SIGNAL(clicked(bool)), this, SLOT(onExecScriptClicked()));
     _imp->showHideOutputB = new Button(icShowHide, QString(), _imp->buttonsContainer);
     setToolTipWithShortcut(kShortcutGroupScriptEditor, kShortcutIDActionScriptShowOutput, "<p>" + tr("Show/Hide the output area").toStdString() + "</p>" +  "<p><b>" + tr("Keyboard shortcut: %1").toStdString() + "</b></p>", _imp->showHideOutputB);
     _imp->showHideOutputB->setFocusPolicy(Qt::NoFocus);
@@ -200,7 +196,7 @@ ScriptEditor::ScriptEditor(Gui* gui)
     _imp->showHideOutputB->setIconSize( QSize(NATRON_MEDIUM_BUTTON_ICON_SIZE, NATRON_MEDIUM_BUTTON_ICON_SIZE) );
     QObject::connect( _imp->showHideOutputB, SIGNAL(clicked(bool)), this, SLOT(onShowHideOutputClicked(bool)) );
 
-    _imp->clearOutputB = new Button(QIcon(clearOutpoutPix), QString(), _imp->buttonsContainer);
+    _imp->clearOutputB = new Button(clearOutpoutPix, QString(), _imp->buttonsContainer);
     QKeySequence clearSeq(Qt::CTRL | Qt::Key_Backspace);
     _imp->clearOutputB->setFocusPolicy(Qt::NoFocus);
     _imp->clearOutputB->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);

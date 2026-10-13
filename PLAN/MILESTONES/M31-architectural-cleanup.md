@@ -76,4 +76,18 @@ M62.P5.T1 (2026-10-03, massif on a 300-node OFX Grade chain, release build at `a
   - verify: no `getLabel`/`getLabel_mt_safe` call reachable from a render thread (audit with grep plus the debug build's main-thread assert); a plugin log message and an OpenGL-required error still show the node's label in the GUI, and show the new label after a rename; ctest green.
   - size: M
 
+## Phase 31.6: Trimap render-tracking races (surfaced by M27 - Real Debug Build's review)
+
+- [ ] M31.P6.T1 — Stop a thread treating its own marked pixels as rendered elsewhere
+  - files: `Engine/EffectInstancePrivate.cpp` (`waitForImageBeingRenderedElsewhere`, `markImagesAsBeingRendered`), `Engine/Image.cpp` / `Engine/Bitmap` trimap code
+  - approach: the trimap bitmap records "being rendered" without an owner, so the wait loop in `waitForImageBeingRenderedElsewhere` counts the calling thread's own marks as another render's. Two threads that each saw the other's marks can wait on each other until the render is aborted. Track ownership of in-flight regions (per render or per thread) so a thread waits only on regions someone else owns.
+  - verify: a concurrency test where two renders of overlapping RoIs on the same multi-layer image both finish without abort; whole ctest green in the debug build with assertions live.
+  - size: L
+
+- [ ] M31.P6.T2 — Mark only this render's own regions rendered when it finishes
+  - files: `Engine/EffectInstanceRenderRoI.cpp` (`ImageBitMapMarker_RAII` destructor), `Engine/EffectInstancePrivate.cpp`
+  - approach: on success the RAII destructor marks every layer image rendered over the whole rects-to-render list, which can flag as done a region another thread is still rendering. Mark only the regions this render actually produced, building on the ownership tracking from M31.P6.T1.
+  - verify: a test where one render finishes while an overlapping render is still in flight, and a reader of the second region waits instead of reading stale pixels; ctest green.
+  - size: L
+
 **Verification gate:** every task's verify holds; whole ctest suite green; AppImage packaged and a manual GUI session (playback, render-to-disk with abort, Python `app.render()`) reports no regression.

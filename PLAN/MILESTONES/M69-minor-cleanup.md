@@ -293,7 +293,7 @@ Line numbers are from `milestone/m69-minor-cleanup` at `a2e90be96`. They will sh
     - **REBASE (M56):** M56.P9.T2 edits the colour code in the same files.
   - verify: the GUI `curve-join` (`:924`) slope checks pass. During a long Ctrl-drag, nothing is drawn near the cursor beyond the handle's length.
   - size: M
-- [ ] M69.P10.T9 — Show one curve for a folded multi-component knob, and refresh on fold/expand
+- [x] M69.P10.T9 — Show one curve for a folded multi-component knob, and refresh on fold/expand
   - files: `Gui/KnobGui.h`, `Gui/KnobGuiValue.cpp`, `Gui/CurveEditor.cpp`, `Gui/CurveEditor.h`, `Tests/gui/m69_cleanup.py`
   - approach:
     - `createElementsForKnob` (`CurveEditor.cpp:400-497`) makes one curve per dimension.
@@ -392,3 +392,4 @@ Acceptance sketch:
 - 2026-10-12 — **Phase 69.10 execution (coordinator):** T1, T2, T6, T7 and T8 run in parallel and change product code and gtests only. Their `m69_cleanup.py` sections are written in one pass by P10.T4, which also adds the paste repro, because every task edits that one file and parallel edits would mix the commits.
 - 2026-10-12 — **P10.T7:** no roto gtest was added, because `RotoLayer_Test.cpp` needs render fixtures that can't be checked without a build; the GUI section covers the task. `BezierCP::cuspPoint` now also marks the point broken, and `smoothPoint` clears the flag.
 - 2026-10-12 — **P10.T2:** the old "anchor feeds every node" planner is kept as `planFeedSourceIntoTargets`, for P10.T3's U and Shift+U to reuse. `NodeGraph::connectSelectedNodesToLastSelected` and `connectLastSelectedToSelectedNodes` keep their old names; P10.T3 renames them.
+- 2026-10-12 — **P10.T9:** `CurveEditor::isFoldedKnobDimensionZero(const CurveGui*)` is the accessor P10.T10 uses. Roto item knobs have no fold button, so they auto-fold while every dimension's curves match.

@@ -250,7 +250,7 @@ Line numbers are from `milestone/m69-minor-cleanup` at `a2e90be96`. They will sh
     - Add a pure id-based planner beside the Y planners, with gtest cases.
   - verify: the `NodeGraphConnect` gtest cases for both planners pass, and a GUI `u-shift-u` section checks the connections and a one-step undo.
   - size: M
-- [ ] M69.P10.T4 — Reproduce the copy/paste error in a GUI test and capture its text
+- [x] M69.P10.T4 — Reproduce the copy/paste error in a GUI test and capture its text
   - files: `Tests/gui/m69_cleanup.py`
   - approach:
     - Add a new `paste-after-create` section that follows the UI flow. Create Blur1 with `CreateNodeArgsPropSettingsOpened` and `CreateNodeArgsPropAutoConnect`, then press Ctrl+C through `graph_key`. Create Blur2 with Blur1 selected, then press Ctrl+V. Repeat with Grade and Constant.
@@ -399,3 +399,4 @@ Acceptance sketch:
   - **Extra files:** a fold-state hold (`KnobGuiValue::setFoldStateHeld`, `CurveEditor::setFoldStateHeld`) stops the knob unfolding mid-edit. That put `KnobGuiValue.*` and `CurveEditor.*` beyond the brief's file list.
   - **Known gaps:** undo doesn't restore the other dimensions' static values after an edit that removes every key, and a drag runs n−1 `cloneCurve` calls on every mouse move.
 - 2026-10-12 — **P10.T5 diagnosis confirmed (user):** the second node was created from the Tab menu, Ctrl+V was pressed, and the error appeared in the Script Editor. The key-routing cause is confirmed.
+- 2026-10-12 — **P10.T4:** the sections were written without a run. Three checks are proxies because Python can't read the undo index, the interpolation type or a viewer re-render. A Grade `gain`/`multiply` fallback, the Tab-popup row prefix and Merge's preferred input B are the guesses most likely to need fixing at the first run.

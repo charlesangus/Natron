@@ -101,7 +101,7 @@ NodeGraphPrivate::NodeGraphPrivate(NodeGraph* p,
 QPoint
 NodeGraphPrivate::getPyPlugUnlockPos() const
 {
-    return QPoint(_publicInterface->width() - unlockIcon.width() - 10,   10);
+    return QPoint(_publicInterface->width() - qRound(unlockIcon.deviceIndependentSize().width()) - 10, 10);
 }
 
 void

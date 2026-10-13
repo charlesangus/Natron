@@ -346,8 +346,8 @@ NodeGraph::paintEvent(QPaintEvent* e)
         if (isGroupEditable) {
             ///Draw the unlock icon
             QPoint pixPos = _imp->getPyPlugUnlockPos();
-            int pixW = _imp->unlockIcon.width();
-            int pixH = _imp->unlockIcon.height();
+            int pixW = qRound(_imp->unlockIcon.deviceIndependentSize().width());
+            int pixH = qRound(_imp->unlockIcon.deviceIndependentSize().height());
             QRect pixRect(pixPos.x(), pixPos.y(), pixW, pixH);
             pixRect.adjust(-2, -2, 2, 2);
             QRect selRect = pixRect;
@@ -358,7 +358,7 @@ NodeGraph::paintEvent(QPaintEvent* e)
             p.drawRoundedRect(selRect, 5, 5);
             p.setBrush( QColor(100, 100, 100) );
             p.drawRoundedRect(pixRect, 5, 5);
-            p.drawPixmap(pixPos.x(), pixPos.y(), pixW, pixH, _imp->unlockIcon, 0, 0, pixW, pixH);
+            p.drawPixmap(pixPos.x(), pixPos.y(), pixW, pixH, _imp->unlockIcon, 0, 0, _imp->unlockIcon.width(), _imp->unlockIcon.height());
         }
     }
 

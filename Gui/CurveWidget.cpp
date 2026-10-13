@@ -1783,7 +1783,6 @@ CurveWidget::breakDerivativesForSelectedKeyFrames()
 void
 CurveWidget::freeInterpForSelectedKeyFrames()
 {
-    // always running in the main thread
     assert(qApp && qApp->thread() == QThread::currentThread());
 
     _imp->setSelectedKeysInterpolation(eKeyframeTypeFree);

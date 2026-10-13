@@ -436,8 +436,8 @@ NodeGraph::mouseMoveEvent(QMouseEvent* e)
         ///check if user is nearby unlock
         // see NodeGraph::paintEvent()
         QPoint pixPos = _imp->getPyPlugUnlockPos();
-        int pixW = _imp->unlockIcon.width();
-        int pixH = _imp->unlockIcon.height();
+        int pixW = qRound(_imp->unlockIcon.deviceIndependentSize().width());
+        int pixH = qRound(_imp->unlockIcon.deviceIndependentSize().height());
         QRect pixRect(pixPos.x(), pixPos.y(), pixW, pixH);
         pixRect.adjust(-2, -2, 2, 2);
         QRect selRect = pixRect;

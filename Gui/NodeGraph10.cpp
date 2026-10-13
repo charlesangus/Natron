@@ -237,8 +237,8 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
     if (!groupEdited) {
         if (isGroupEditable) {
             ///check if user clicked unlock
-            int iw = _imp->unlockIcon.width();
-            int ih = _imp->unlockIcon.height();
+            int iw = qRound(_imp->unlockIcon.deviceIndependentSize().width());
+            int ih = qRound(_imp->unlockIcon.deviceIndependentSize().height());
             int w = width();
             int offset = 20;
             if ( ( e->position().x() >= (w - iw - 10 - offset) ) && ( e->position().x() <= (w - 10 + offset) ) &&

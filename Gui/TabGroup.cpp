@@ -109,7 +109,8 @@ TabGroup::addTab(const KnobGroupPtr& group,
         tabGroup->tab->setObjectName(label);
         tabGroup->layout = new QGridLayout(tabGroup->tab);
         tabGroup->layout->setColumnStretch(1, 1);
-        tabGroup->layout->setSpacing(TO_DPIY(NATRON_DENSITY_ROW_GAP)); // unfortunately, this leaves extra space when parameters are hidden
+        tabGroup->layout->setHorizontalSpacing(TO_DPIX(NATRON_DENSITY_LABEL_GAP));
+        tabGroup->layout->setVerticalSpacing(0);
 
         if (visible) {
             _imp->tabWidget->addTab(tabGroup->tab, label);

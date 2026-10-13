@@ -786,6 +786,7 @@ BezierCP::cuspPoint(bool useGuiCurves,
 
     bool keyframeSet = false;
 
+    setBroken(true);
     if (autoKeying || isOnKeyframe) {
         setLeftBezierPointAtTime(useGuiCurves, time, newLeftX, newLeftY);
         setRightBezierPointAtTime(useGuiCurves, time, newRightX, newRightY);
@@ -839,6 +840,7 @@ BezierCP::smoothPoint(bool useGuiCurves,
 
     transform = Transform::matInverse(transform);
 
+    setBroken(false);
     if (autoKeying || isOnKeyframe) {
         setLeftBezierPointAtTime(useGuiCurves, time, left.x, left.y);
         setRightBezierPointAtTime(useGuiCurves, time, right.x, right.y);
@@ -927,6 +929,7 @@ BezierCP::clone(const BezierCP & other)
         _imp->guiLeftY = other._imp->leftY;
         _imp->guiRightX = other._imp->rightX;
         _imp->guiRightY = other._imp->rightY;
+        _imp->broken = other._imp->broken;
     }
 }
 

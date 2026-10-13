@@ -844,6 +844,9 @@ dragTangent(double time,
     bool isOnKeyframe;
     double otherDiffX, otherDiffY, otherFpDiffX, otherFpDiffY;
 
+    // A broken handle stays broken until Smooth is applied.
+    breakTangents = breakTangents || cp.getBroken() || fp.getBroken();
+
     getDeltaForPoint(cp, time, transform, dx, dy, left, breakTangents, &otherDiffX, &otherDiffY, &isOnKeyframe);
     getDeltaForPoint(fp, time, transform, dx, dy, left, breakTangents, &otherFpDiffX, &otherFpDiffY, &isOnKeyframe);
 

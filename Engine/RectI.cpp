@@ -114,6 +114,56 @@ std::vector<RectI> RectI::splitIntoSmallerRects(int splitsCount) const
     return ret;
 } // RectI::splitIntoSmallerRects
 
+namespace {
+void
+appendDifference(const RectI& r,
+                 const RectI& hole,
+                 std::list<RectI>* out)
+{
+    if (!r.intersects(hole)) {
+        out->push_back(r);
+
+        return;
+    }
+    if (hole.y1 > r.y1) {
+        out->push_back(RectI(r.x1, r.y1, r.x2, hole.y1));
+    }
+    if (hole.y2 < r.y2) {
+        out->push_back(RectI(r.x1, hole.y2, r.x2, r.y2));
+    }
+    const int bandBottom = std::max(r.y1, hole.y1);
+    const int bandTop = std::min(r.y2, hole.y2);
+    if (hole.x1 > r.x1) {
+        out->push_back(RectI(r.x1, bandBottom, hole.x1, bandTop));
+    }
+    if (hole.x2 < r.x2) {
+        out->push_back(RectI(hole.x2, bandBottom, r.x2, bandTop));
+    }
+}
+}
+
+std::list<RectI>
+RectI::disjointUnion(const std::list<RectI>& rects)
+{
+    std::list<RectI> ret;
+    for (std::list<RectI>::const_iterator it = rects.begin(); it != rects.end(); ++it) {
+        if (it->isNull()) {
+            continue;
+        }
+        std::list<RectI> uncovered(1, *it);
+        for (std::list<RectI>::const_iterator covered = ret.begin(); covered != ret.end() && !uncovered.empty(); ++covered) {
+            std::list<RectI> remaining;
+            for (std::list<RectI>::const_iterator piece = uncovered.begin(); piece != uncovered.end(); ++piece) {
+                appendDifference(*piece, *covered, &remaining);
+            }
+            uncovered.swap(remaining);
+        }
+        ret.splice(ret.end(), uncovered);
+    }
+
+    return ret;
+}
+
 RectD
 RectI::toCanonical(unsigned int thisLevel,
                    double par,

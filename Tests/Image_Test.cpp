@@ -32,6 +32,7 @@
 #include <cstring>
 #include <gtest/gtest.h>
 #include <limits>
+#include <list>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -131,6 +132,75 @@ TEST(BitmapTest,
     ASSERT_TRUE(beingRenderedElseWhere == true);
     EXPECT_TRUE(nonRenderedRects.size() == 3);
 } // TEST
+
+namespace {
+// How many rectangles of rects cover each pixel of area, row-major from area's bottom-left.
+std::vector<int>
+coverageCounts(const std::list<RectI>& rects,
+               const RectI& area)
+{
+    std::vector<int> counts(area.area(), 0);
+    for (const RectI& r : rects) {
+        for (int y = r.y1; y < r.y2; ++y) {
+            for (int x = r.x1; x < r.x2; ++x) {
+                ++counts[(y - area.y1) * area.width() + (x - area.x1)];
+            }
+        }
+    }
+
+    return counts;
+}
+}
+
+TEST(RectIDisjointUnionTest, IdenticalRectsCollapseToOne)
+{
+    const RectI roi(0, 0, 64, 32);
+    const std::list<RectI> rests = { roi, roi, roi };
+
+    const std::list<RectI> merged = RectI::disjointUnion(rests);
+
+    ASSERT_EQ(merged.size(), 1u);
+    EXPECT_TRUE(merged.front() == roi);
+}
+
+TEST(RectIDisjointUnionTest, OverlappingRectsCoverTheUnionExactlyOnce)
+{
+    const RectI area(-10, -10, 60, 60);
+    const std::list<RectI> rests = {
+        RectI(0, 0, 40, 40),
+        RectI(20, 20, 50, 50),
+        RectI(10, -10, 30, 60),
+        RectI(0, 0, 40, 40),
+        RectI(-10, 45, 5, 55),
+    };
+
+    const std::list<RectI> merged = RectI::disjointUnion(rests);
+
+    const std::vector<int> inputCoverage = coverageCounts(rests, area);
+    const std::vector<int> mergedCoverage = coverageCounts(merged, area);
+    for (std::size_t i = 0; i < inputCoverage.size(); ++i) {
+        ASSERT_EQ(mergedCoverage[i], inputCoverage[i] ? 1 : 0) << "pixel index " << i;
+    }
+    for (const RectI& r : merged) {
+        EXPECT_FALSE(r.isNull());
+    }
+}
+
+TEST(RectIDisjointUnionTest, DisjointListIsReturnedUnchangedAndNullRectsDropped)
+{
+    // The four rectangles one bitmap query returns around an already rendered centre.
+    Bitmap bm(RectI(0, 0, 100, 100));
+    bm.markForRendered(RectI(20, 20, 80, 80));
+    std::list<RectI> rest;
+    bool beingRenderedElsewhere = false;
+    bm.minimalNonMarkedRects_trimap(RectI(0, 0, 100, 100), rest, &beingRenderedElsewhere);
+    ASSERT_EQ(rest.size(), 4u);
+
+    std::list<RectI> withNull = rest;
+    withNull.push_back(RectI());
+
+    EXPECT_TRUE(RectI::disjointUnion(withNull) == rest);
+}
 
 TEST(ImageKeyTest, Equality) {
     srand(2000);

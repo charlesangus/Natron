@@ -232,6 +232,7 @@ public:
         , _isValid(true)
         , _renderFullScale(renderFullScale)
     {
+        std::vector<ImagePtr> cacheImages;
         for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::const_iterator it = _image.begin(); it != _image.end(); ++it) {
             ImagePtr cacheImage;
             if (!renderFullScale) {
@@ -240,9 +241,10 @@ public:
                 cacheImage = it->second.fullscaleImage;
             }
             if (cacheImage && cacheImage->usesBitMap()) {
-                _effect->_imp->markImageAsBeingRendered(cacheImage, roi, &_rectsToRender, &_isBeingRenderedElseWhere);
+                cacheImages.push_back(cacheImage);
             }
         }
+        _effect->_imp->markImagesAsBeingRendered(cacheImages, roi, &_rectsToRender, &_isBeingRenderedElseWhere);
     }
 
     const std::list<RectI>& getRectsToRender() const

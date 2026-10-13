@@ -28,13 +28,14 @@
 
 #include "Global/Macros.h"
 
-#include <cassert>
-#include <iostream>
-#include <vector>
-#include <utility>
-#include <cmath>
 #include <algorithm> // min, max
+#include <cassert>
+#include <cmath>
+#include <iostream>
 #include <limits>
+#include <list>
+#include <utility>
+#include <vector>
 
 #include "Global/GlobalDefines.h"
 
@@ -502,6 +503,13 @@ public:
 
 #endif
     std::vector<RectI> splitIntoSmallerRects(int splitsCount) const;
+
+    /**
+     * @brief Returns pairwise non-overlapping rectangles covering exactly the union of rects. Null rectangles are dropped,
+     * and a list that is already pairwise non-overlapping is returned unchanged.
+     **/
+    static std::list<RectI> disjointUnion(const std::list<RectI>& rects);
+
     static RectI fromOfxRectI(const OfxRectI & r)
     {
         RectI ret(r.x1, r.y1, r.x2, r.y2);

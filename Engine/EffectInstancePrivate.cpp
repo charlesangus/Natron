@@ -589,45 +589,60 @@ EffectInstance::Implementation::setDuringInteractAction(bool b)
 }
 
 #if NATRON_ENABLE_TRIMAP
-namespace {
-// restToRender accumulates across the layers of one render, whereas getRestToRender_trimap() requires an empty output list.
-// Every rectangle gathered so far is marked on this image too, as all layers are rendered over the same rectangles.
-void
-appendRestToRender(const ImagePtr& img, const RectI& roi, std::list<RectI>* restToRender, bool* renderedElsewhere)
+EffectInstance::Implementation::ImageBeingRenderedPtr
+EffectInstance::Implementation::acquireImageBeingRendered(const ImagePtr& img)
 {
-    std::list<RectI> imageRest;
-    img->getRestToRender_trimap(roi, imageRest, renderedElsewhere);
-    restToRender->splice(restToRender->end(), imageRest);
-    for (std::list<RectI>::const_iterator it = restToRender->begin(); it != restToRender->end(); ++it) {
-        img->markForRendering(*it);
+    QMutexLocker k(&imagesBeingRenderedMutex);
+    ImageBeingRenderedPtr& ibr = imagesBeingRendered[img];
+    if (!ibr) {
+        ibr = std::make_shared<Implementation::ImageBeingRendered>();
     }
-}
+    QMutexLocker k2(&ibr->lock);
+    ++(ibr->refCount);
+
+    return ibr;
 }
 
 void
-EffectInstance::Implementation::markImageAsBeingRendered(const ImagePtr & img, const RectI& roi, std::list<RectI>* restToRender, bool *renderedElsewhere)
+EffectInstance::Implementation::markImagesAsBeingRendered(const std::vector<ImagePtr>& imgs,
+                                                          const RectI& roi,
+                                                          std::list<RectI>* restToRender,
+                                                          bool* renderedElsewhere)
 {
-    if ( !img->usesBitMap() ) {
+    std::vector<std::pair<ImagePtr, ImageBeingRenderedPtr>> marked;
+    std::list<RectI> allRests;
+    for (const ImagePtr& img : imgs) {
+        if (!img->usesBitMap()) {
+            continue;
+        }
+        ImageBeingRenderedPtr ibr = acquireImageBeingRendered(img);
+        marked.push_back(std::make_pair(img, ibr));
+
+        // A query that finds nothing left to render writes false, so each image needs its own flag.
+        std::list<RectI> imageRest;
+        bool imageRenderedElsewhere = false;
+        QMutexLocker k(&ibr->lock);
+        img->getRestToRender_trimap(roi, imageRest, &imageRenderedElsewhere);
+        for (const RectI& rect : imageRest) {
+            img->markForRendering(rect);
+        }
+        *renderedElsewhere = *renderedElsewhere || imageRenderedElsewhere;
+        allRests.splice(allRests.end(), imageRest);
+    }
+
+    *restToRender = RectI::disjointUnion(allRests);
+    if (marked.size() < 2) {
         return;
     }
 
-    QMutexLocker k(&imagesBeingRenderedMutex);
-    ImageBeingRenderedMap::iterator found = imagesBeingRendered.find(img);
-    if ( found != imagesBeingRendered.end() ) {
-        ImageBeingRenderedPtr ibr = found->second;
-        k.unlock(); // imagesBeingRenderedMutex
-        QMutexLocker k2(&ibr->lock);
-        ++(ibr->refCount);
-        appendRestToRender(img, roi, restToRender, renderedElsewhere);
-    } else {
-        ImageBeingRenderedPtr ibr = std::make_shared<Implementation::ImageBeingRendered>();
-        ++ibr->refCount;
-        std::pair<ImageBeingRenderedMap::iterator, bool> ok = imagesBeingRendered.insert( std::make_pair(img, ibr) );
-        assert(ok.second);
-        Q_UNUSED(ok);
-        k.unlock(); // imagesBeingRenderedMutex
-        QMutexLocker k2(&ibr->lock);
-        appendRestToRender(img, roi, restToRender, renderedElsewhere);
+    // Every layer is rendered over the whole union, so each image must show all of it as being rendered. Each image's
+    // lock is held on its own: no rendering starts before this returns, so the window between the two passes only
+    // exposes pixels that are still valid.
+    for (const std::pair<ImagePtr, ImageBeingRenderedPtr>& it : marked) {
+        QMutexLocker k(&it.second->lock);
+        for (const RectI& rect : *restToRender) {
+            it.first->markForRendering(rect);
+        }
     }
 }
 
@@ -700,11 +715,15 @@ EffectInstance::Implementation::unmarkImageAsBeingRendered(const ImagePtr & img,
     --ibr->refCount;
     ibr->cond.wakeAll();
     if (!ibr->refCount) {
-        kk.unlock(); // < unlock before erase which is going to delete the lock
+        kk.unlock(); // imagesBeingRenderedMutex must be taken before an image's lock, as acquireImageBeingRendered() does
         k.relock(); // imagesBeingRenderedMutex
         ImageBeingRenderedMap::iterator found = imagesBeingRendered.find(img);
-        if( found != imagesBeingRendered.end() ) {
-            imagesBeingRendered.erase(found);
+        if ((found != imagesBeingRendered.end()) && (found->second == ibr)) {
+            // acquireImageBeingRendered() may have taken this entry again after refCount dropped to zero above.
+            QMutexLocker kk2(&ibr->lock);
+            if (!ibr->refCount) {
+                imagesBeingRendered.erase(found);
+            }
         }
     }
 }

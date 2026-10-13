@@ -30,9 +30,10 @@
 
 #include "EffectInstance.h"
 
-#include <map>
 #include <list>
+#include <map>
 #include <string>
+#include <vector>
 
 #include <QCoreApplication>
 #include <QWaitCondition>
@@ -219,6 +220,8 @@ public:
     typedef std::shared_ptr<ImageBeingRendered> ImageBeingRenderedPtr;
     typedef std::map<ImagePtr, ImageBeingRenderedPtr> ImageBeingRenderedMap;
     ImageBeingRenderedMap imagesBeingRendered;
+
+    ImageBeingRenderedPtr acquireImageBeingRendered(const ImagePtr& img);
 #endif
 
     ///A cache for components available
@@ -251,7 +254,12 @@ public:
     void setDuringInteractAction(bool b);
 
 #if NATRON_ENABLE_TRIMAP
-    void markImageAsBeingRendered(const ImagePtr & img, const RectI& roi, std::list<RectI>* restToRender, bool *renderedElsewhere);
+    /**
+     * @brief Marks, on every image of imgs, the union of what is left to render in roi across all of them,
+     * and returns it in restToRender as non-overlapping rectangles. renderedElsewhere is set if any image has a portion of
+     * roi being rendered by another thread. Each image must later be passed to unmarkImageAsBeingRendered with restToRender.
+     **/
+    void markImagesAsBeingRendered(const std::vector<ImagePtr>& imgs, const RectI& roi, std::list<RectI>* restToRender, bool* renderedElsewhere);
 
     bool waitForImageBeingRenderedElsewhere(const RectI & roi, const ImagePtr & img);
 

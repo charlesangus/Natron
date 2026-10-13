@@ -834,6 +834,7 @@ Clamp holds its CPU class, exact, except where a divisor, mask or mix below 1
 enters, which hold `arithmetic()` (`Tests/Native/NativeClampGpu_Test.cpp`).
 Invert holds its CPU class, exact, except where a divisor, mask or mix below 1
 enters, which hold `arithmetic()` (`Tests/Native/NativeInvertGpu_Test.cpp`).
+Add and Multiply hold `arithmetic()` and Gamma holds `transcendental()`, where a subnormal input may come back as 0 on a device that flushes denormals (`Tests/Native/NativeColorMathGpu_Test.cpp`).
 
 `Tests/Native/NativeGpuParity.{h,cpp}` is the shared harness. A test names its
 bound with `ParityTolerance` and compares through `compareImages()`.

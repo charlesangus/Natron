@@ -35,6 +35,10 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/RenderScale.h"
 
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
+
 NATRON_NAMESPACE_ENTER
 
 namespace {
@@ -66,6 +70,13 @@ processedBits(const RowIO& io,
         const int bit = pixelKernelChannelBit(io.nComps, c);
         bits[c] = io.channels[bit] ? bit : -1;
     }
+}
+
+double
+gammaExponent(double value,
+              bool invert)
+{
+    return invert ? value : (1. / (std::max)(1e-8, value));
 }
 
 class AddKernel
@@ -137,7 +148,7 @@ public:
                 bool invert)
     {
         for (int i = 0; i < 4; ++i) {
-            _exponent[i] = invert ? values.value[i] : (1. / (std::max)(1e-8, values.value[i]));
+            _exponent[i] = gammaExponent(values.value[i], invert);
             _isUnit[i] = (_exponent[i] == 1.);
             _exponentFloat[i] = (float)_exponent[i];
         }
@@ -286,6 +297,15 @@ ColorMathNode::initializeKnobs()
     addMaskMixKnobs(page);
 }
 
+bool
+ColorMathNode::readInvert(double time,
+                          ViewIdx view) const
+{
+    KnobBoolPtr invert = _invert.lock();
+
+    return invert ? invert->getValueAtTime(time, 0, view) : false;
+}
+
 PixelKernelPtr
 ColorMathNode::makeKernel(const KernelContext& context)
 {
@@ -297,14 +317,53 @@ ColorMathNode::makeKernel(const KernelContext& context)
         return std::make_shared<AddKernel>(values);
     case eColorMathOperationMultiply:
         return std::make_shared<MultiplyKernel>(values);
-    case eColorMathOperationGamma: {
-        KnobBoolPtr invert = _invert.lock();
-
-        return std::make_shared<GammaKernel>(values, invert ? invert->getValueAtTime(context.time, 0, context.view) : false);
-    }
+    case eColorMathOperationGamma:
+        return std::make_shared<GammaKernel>(values, readInvert(context.time, context.view));
     }
 
     return PixelKernelPtr();
+}
+
+int
+ColorMathNode::gpuKernelId(const GpuQuery& /*query*/) const
+{
+#ifdef NATRON_HAVE_GPU
+    switch (_operation) {
+    case eColorMathOperationAdd:
+        return (int)gpu::GpuKernelId::add_wrapped;
+    case eColorMathOperationMultiply:
+        return (int)gpu::GpuKernelId::multiply_wrapped;
+    case eColorMathOperationGamma:
+        return (int)gpu::GpuKernelId::gamma_wrapped;
+    }
+#endif
+
+    return -1;
+}
+
+bool
+ColorMathNode::makeGpuKernel(const KernelContext& context,
+                             PixelKernelGpu* gpuKernel)
+{
+#ifdef NATRON_HAVE_GPU
+    ColorMathValues values;
+
+    readValue(_value, context.time, context.view, neutralValue(_operation), &values);
+    const bool invert = (_operation == eColorMathOperationGamma) && readInvert(context.time, context.view);
+    float params[4];
+    for (int i = 0; i < 4; ++i) {
+        params[i] = (float)((_operation == eColorMathOperationGamma) ? gammaExponent(values.value[i], invert) : values.value[i]);
+    }
+    gpuKernel->kernel = gpuKernelId(GpuQuery());
+    gpuKernel->setParams(params);
+
+    return gpuKernel->kernel >= 0;
+#else
+    Q_UNUSED(context);
+    Q_UNUSED(gpuKernel);
+
+    return false;
+#endif
 }
 
 bool

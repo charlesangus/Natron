@@ -1,0 +1,102 @@
+--- a/tabtabtab_nuke_core.py
++++ b/tabtabtab_nuke_core.py
+@@ -532,6 +532,8 @@
+                     self._items[target_pos] = new_item
+                     idx = self.index(target_pos)
+                     self.dataChanged.emit(idx, idx)
++                else:
++                    self._refresh_menuobj(self._items[target_pos], new_item)
+                 continue
+ 
+             source_pos = None
+@@ -557,6 +559,8 @@
+                         self._items[target_pos] = new_item
+                         idx = self.index(target_pos)
+                         self.dataChanged.emit(idx, idx)
++                    else:
++                        self._refresh_menuobj(self._items[target_pos], new_item)
+                 else:
+                     self.beginRemoveRows(parent, source_pos, source_pos)
+                     del self._items[source_pos]
+@@ -570,6 +574,20 @@
+                 self.endInsertRows()
+ 
+     @staticmethod
++    def _refresh_menuobj(old_row, new_row):
++        """Point a retained, visually unchanged row at new_row's menuobj.
++
++        The row dict is kept (so the refresh stays quiet), but the host
++        handle must be current: invoke() acts on it, and a host may carry
++        per-refresh state on it (such as a colour). When the handle
++        changed, the cached colour came from the old one, so drop it and
++        let the next paint re-resolve it. A keystroke re-filters the same
++        menuobjs, so this costs nothing there."""
++        if old_row['menuobj'] is not new_row['menuobj']:
++            old_row['menuobj'] = new_row['menuobj']
++            old_row.pop('color', None)
++
++    @staticmethod
+     def _row_visually_equal(old_row, new_row):
+         """True if two rows would render identically. Compares only the
+         fields the delegate reads — skipping `menuobj` (host handle,
+@@ -581,9 +599,10 @@
+         old_row may (once lazily resolved by a prior paint) — comparing
+         them would spuriously treat every already-painted stable row as
+         changed on each keystroke. Colour is a function of the row's
+-        (stable) menuobj identity, so an unchanged menupath already
+-        implies unchanged colour; staleness after a host-side colour edit
+-        is handled separately by NodeModel.invalidate_color_cache()."""
++        menuobj; when a refresh hands in a new menuobj for an unchanged
++        row, _refresh_menuobj swaps it in and drops the cached colour.
++        Staleness after a host-side colour edit is handled separately by
++        NodeModel.invalidate_color_cache()."""
+         return (
+             old_row.get('display_text') == new_row.get('display_text')
+             and old_row.get('score') == new_row.get('score')
+--- a/tests/test_node_model_diff.py
++++ b/tests/test_node_model_diff.py
+@@ -299,6 +299,44 @@
+     assert model.recorded_ops == []
+ 
+ 
++def test_visually_identical_refresh_adopts_new_menuobj_and_drops_colour():
++    """A refresh can hand in a fresh menuobj for a row that looks the
++    same (a host rebuilding its handles, with new per-handle colours or
++    actions). The retained row must adopt it, so invoke() acts on the
++    current handle, and drop the colour cached from the old one — still
++    without emitting anything."""
++    module = _load_core()
++    old_row = _row("A", score=5, color=("old", "old"))
++    moved_old_row = _row("B", score=5, color=("old", "old"))
++    model = _make_model(module, items=[old_row, moved_old_row])
++
++    fresh_a = _row("A", score=5)
++    fresh_b = _row("B", score=5)
++    del fresh_a["color"]
++    del fresh_b["color"]
++    model._apply_items([fresh_b, fresh_a])
++
++    assert [op[0] for op in model.recorded_ops] == ["begin_move", "end_move"]
++    assert model._items[0] is moved_old_row
++    assert model._items[0]["menuobj"] is fresh_b["menuobj"]
++    assert "color" not in model._items[0]
++    assert model._items[1] is old_row
++    assert model._items[1]["menuobj"] is fresh_a["menuobj"]
++    assert "color" not in model._items[1]
++
++
++def test_same_menuobj_refresh_keeps_cached_colour():
++    module = _load_core()
++    row = _row("A", score=5, color=("cached", "cached"))
++    model = _make_model(module, items=[row])
++
++    same = dict(row)
++    del same["color"]
++    model._apply_items([same])
++
++    assert model._items[0]["color"] == ("cached", "cached")
++
++
+ def test_mixed_remove_insert_and_reorder_orders_removes_first():
+     """Removes must precede inserts/moves so that beginInsert/Move
+     indices are interpreted against a list whose stale rows are gone."""

@@ -69,7 +69,18 @@ def _natron_row_height():
     return metrics.height() + _ROW_HEIGHT_PADDING
 
 
-set_main_window_finder(_find_natron_main_window)
+def _is_alive(obj):
+    try:
+        return obj is not None and shiboken6.isValid(obj)
+    except RuntimeError:
+        return False
+
+
+def _launch_window():
+    return _plugin.main_window()
+
+
+set_main_window_finder(_launch_window)
 set_row_metrics(row_height=_natron_row_height(), visible_rows=_VISIBLE_ROWS)
 
 
@@ -108,8 +119,7 @@ def _node_items(app):
     return items
 
 
-def _command_items():
-    window = _find_natron_main_window()
+def _command_items(window):
     if window is None:
         return []
     menubar = window.menuBar()
@@ -147,6 +157,7 @@ def _trigger_action(action):
 class NatronPlugin(TabTabTabPlugin):
     def __init__(self):
         self._app = None
+        self._window = None
         self._storage_dir = None
         self._icon_cache = {}
         self._pending = []
@@ -154,11 +165,22 @@ class NatronPlugin(TabTabTabPlugin):
     def set_app(self, app):
         self._app = app
 
+    def set_window(self, window):
+        self._window = window
+
+    def main_window(self):
+        # The popup itself becomes the active window once shown, so the
+        # deferred refresh must not rediscover the window from focus: that
+        # walks the popup's parent chain, which may lead to another project.
+        if _is_alive(self._window):
+            return self._window
+        return _find_natron_main_window()
+
     def set_storage_dir(self, path):
         self._storage_dir = path
 
     def get_items(self):
-        return _make_menupaths_unique(_node_items(self._app) + _command_items())
+        return _make_menupaths_unique(_node_items(self._app) + _command_items(self.main_window()))
 
     def get_weights_file(self):
         if self._storage_dir is not None:
@@ -236,9 +258,25 @@ def _read_preferences():
     return space_mode_order, scroll_enabled
 
 
+def _attach_popup_to(window):
+    # The popup is cached process-wide by the core; keep it owned by, and
+    # stacked with, the window it is opened from.
+    popup = tabtabtab_nuke_core._tabtabtab_instance
+    if window is None or not _is_alive(popup):
+        return
+    try:
+        if popup.parent() is not window:
+            popup.setParent(window, popup.windowFlags())
+    except RuntimeError:
+        pass
+
+
 def launch(app):
     """Open the tab menu for `app`, the GuiApp whose node graph has focus."""
+    window = _find_natron_main_window()
     _plugin.set_app(app)
+    _plugin.set_window(window)
+    _attach_popup_to(window)
     space_mode_order, scroll_enabled = _read_preferences()
     tabtabtab_nuke_core.launch(
         _plugin,

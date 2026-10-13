@@ -3,10 +3,9 @@ Gui/Resources/TabTabTab with a Natron adapter) that replaces the old NodeCreatio
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m45_tab_menu.py
 
-Conventions shared with Tests/gui/m55_node_graph.py and Tests/gui/m75_read.py:
+Conventions:
   - the popup is Gui/Resources/TabTabTab's TabTabTabWidget, found through gt.widgets_of(), with a
-    QLineEdit (the filter/line-edit) and a QListView (the results) among its children, exactly as
-    m75_read.py's open_node_dialog() already uses it;
+    QLineEdit (the filter/line-edit) and a QListView (the results) among its children;
   - a QEnterEvent is sent to a NodeGraph viewport before QTest.keyClick(view, Qt.Key_Tab), because
     Xvfb has no real pointer to hover the graph with;
   - events are sent straight to specific widgets with QApplication.sendEvent()/QTest.keyClick()
@@ -60,8 +59,6 @@ try:
     STORAGE_DIR = os.path.join(gt.OUT, "tabtabtab")
     WEIGHTS_PATH = os.path.join(STORAGE_DIR, "tabtabtab_weights.json")
 
-    # ---- plumbing shared with m55_node_graph.py / m75_read.py ---------------------------------
-
     def main_window():
         for w in QApplication.topLevelWidgets():
             if isinstance(w, QMainWindow) and w.isVisible():
@@ -108,8 +105,6 @@ try:
                 return a
         return None
 
-    # ---- the popup itself ---------------------------------------------------------------------
-
     def enter_graph(view):
         centre = QPointF(view.rect().center())
         QApplication.sendEvent(view, QEnterEvent(centre, centre, QPointF(view.mapToGlobal(view.rect().center()))))
@@ -136,9 +131,7 @@ try:
     def row_name(entry):
         return entry.split("[")[0].strip()
 
-    # ---- an application-wide filter recording Show/Move on the popup, installed before the
-    # first Tab so the very first open's own positioning (M69) is covered, not just later ones.
-
+    # Installed before the first Tab so the very first open's positioning is recorded too.
     class _PopupEventFilter(QObject):
         def __init__(self):
             super(_PopupEventFilter, self).__init__()
@@ -193,8 +186,6 @@ try:
         if popup2 is not None:
             close_menu(popup2)
 
-    # ---- search, including the colour of a node row vs. a command row -------------------------
-
     def search_section(main_graph):
         gt.section("search")
         popup, line_edit, view = yield from open_menu(main_graph)
@@ -247,8 +238,6 @@ try:
         gt.shot("m45-category-filter.png")
         close_menu(popup)
 
-    # ---- keyboard: wrap-around selection, Escape, and losing window focus ----------------------
-
     def keys_section(main_graph):
         gt.section("keys")
         before = len(app.getChildren())
@@ -277,15 +266,12 @@ try:
         popup, _line_edit, _view = yield from open_menu(main_graph)
         if not check(popup is not None, "keys: the tab menu reopens"):
             return
-        # Covers both "an outside click" and "activating the main window": TabTabTabWidget.event()
-        # closes on WindowDeactivate regardless of what caused it, so this is the one mechanism
-        # behind both of the brief's phrasings.
+        # TabTabTabWidget.event() closes on WindowDeactivate whatever caused it, so this one event
+        # stands in for both an outside click and activating the main window.
         QApplication.sendEvent(popup, QEvent(QEvent.WindowDeactivate))
         ok = yield ("until", lambda: not popup.isVisible(), 5.0)
         check(ok, "keys: deactivating the popup's window closes it (outside click / main window activation)")
         check(len(app.getChildren()) == before, "keys: closing by deactivation created no node")
-
-    # ---- insert after the selected node, then Tab-Tab to repeat it ----------------------------
 
     def insert_after_selected_section(main_graph, read_node, global_point):
         gt.section("insert after selected")
@@ -353,8 +339,6 @@ try:
               "tab-tab: the unconnected Blur is within 150px of the cursor's scene position (got %.1f)" % dist)
         return new_node
 
-    # ---- Tab inside a Group's own graph creates the node inside that group --------------------
-
     def group_section(main_graph):
         gt.section("group")
         group_node = create_node(GROUP_ID, 900, 900)
@@ -384,8 +368,6 @@ try:
         ok = yield ("until", lambda: len(group_node.getChildren()) > before_children, 5.0)
         check(ok, "group: a node was created inside the group")
         check(len(app.getChildren()) == after_group, "group: the inner node did not appear at the root graph")
-
-    # ---- the main menu bar's commands in the same list -----------------------------------------
 
     def commands_section(main_graph):
         gt.section("commands")
@@ -432,8 +414,6 @@ try:
                  % (found_tab_menu, found_tabtabtab))
             close_menu(popup3)
 
-    # ---- weights: usage counts land in the scratch folder set with set_storage_dir ------------
-
     def weights_section(blur_item):
         gt.section("weights")
         if not check(blur_item is not None, "weights: resolved Blur's node item"):
@@ -446,8 +426,6 @@ try:
             weights = json.load(f)
         check(weights.get(menupath, 0) > 0,
              "weights: %r has a positive entry (got %r)" % (menupath, weights.get(menupath)))
-
-    # ---- preferences read through natron.getSettings() on every open --------------------------
 
     def preferences_section(main_graph):
         gt.section("preferences")
@@ -491,10 +469,8 @@ try:
             search_param.setValue(original_search)
             scroll_param.setValue(original_scroll)
 
-    # ---- rebinding Create Node in the Preferences shortcut editor -----------------------------
-    # There is no Python API to rebind a keybind (confirmed against PyGuiApp.h/typesystem_natronGui.xml),
-    # so this drives the real Shortcut Editor page of Preferences the way a person would.
-
+    # There is no Python API to rebind a keybind, so the rebinding check drives the real
+    # Shortcut Editor page of Preferences the way a person would.
     def _find_tree_item(tree, text):
         # Walking topLevelItem()/child() from Python fails on the Preferences trees: the second
         # item's wrapper already reports its C++ object deleted. findItems() does not.
@@ -624,8 +600,6 @@ try:
         for popup in gt.widgets_of("TabTabTabWidget"):
             if popup.isVisible():
                 close_menu(popup)
-
-    # ---- steps ----------------------------------------------------------------------------------
 
     def steps():
         ok = yield ("until", lambda: root_graph() is not None, STARTUP_TIMEOUT_S)

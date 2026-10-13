@@ -299,6 +299,44 @@ def test_visually_identical_refresh_emits_nothing():
     assert model.recorded_ops == []
 
 
+def test_visually_identical_refresh_adopts_new_menuobj_and_drops_colour():
+    """A refresh can hand in a fresh menuobj for a row that looks the
+    same (a host rebuilding its handles, with new per-handle colours or
+    actions). The retained row must adopt it, so invoke() acts on the
+    current handle, and drop the colour cached from the old one — still
+    without emitting anything."""
+    module = _load_core()
+    old_row = _row("A", score=5, color=("old", "old"))
+    moved_old_row = _row("B", score=5, color=("old", "old"))
+    model = _make_model(module, items=[old_row, moved_old_row])
+
+    fresh_a = _row("A", score=5)
+    fresh_b = _row("B", score=5)
+    del fresh_a["color"]
+    del fresh_b["color"]
+    model._apply_items([fresh_b, fresh_a])
+
+    assert [op[0] for op in model.recorded_ops] == ["begin_move", "end_move"]
+    assert model._items[0] is moved_old_row
+    assert model._items[0]["menuobj"] is fresh_b["menuobj"]
+    assert "color" not in model._items[0]
+    assert model._items[1] is old_row
+    assert model._items[1]["menuobj"] is fresh_a["menuobj"]
+    assert "color" not in model._items[1]
+
+
+def test_same_menuobj_refresh_keeps_cached_colour():
+    module = _load_core()
+    row = _row("A", score=5, color=("cached", "cached"))
+    model = _make_model(module, items=[row])
+
+    same = dict(row)
+    del same["color"]
+    model._apply_items([same])
+
+    assert model._items[0]["color"] == ("cached", "cached")
+
+
 def test_mixed_remove_insert_and_reorder_orders_removes_first():
     """Removes must precede inserts/moves so that beginInsert/Move
     indices are interpreted against a list whose stale rows are gone."""

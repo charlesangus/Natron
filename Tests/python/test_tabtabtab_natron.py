@@ -149,6 +149,23 @@ def _make_main_window_instance(main_window_cls, classname="", parent=None, menub
     return instance
 
 
+class _FakePopup(object):
+    def __init__(self, parent=None, flags="DialogFlags"):
+        self._parent = parent
+        self._flags = flags
+        self.set_parent_calls = []
+
+    def parent(self):
+        return self._parent
+
+    def windowFlags(self):
+        return self._flags
+
+    def setParent(self, parent, flags):
+        self.set_parent_calls.append((parent, flags))
+        self._parent = parent
+
+
 def _make_qapp(active=None, top_level=None):
     return types.SimpleNamespace(
         activeWindow=lambda: active,
@@ -248,6 +265,7 @@ class NatronAdapterTests(unittest.TestCase):
         core.set_main_window_finder = MagicMock()
         core.set_row_metrics = MagicMock()
         core.launch = MagicMock()
+        core._tabtabtab_instance = None
 
         stub_modules = {
             "PySide6": pyside6,
@@ -596,6 +614,83 @@ class NatronAdapterTests(unittest.TestCase):
         _args, kwargs = h.core.launch.call_args
         self.assertEqual(kwargs["space_mode_order"], _DEFAULT_SPACE_MODE_ORDER)
         self.assertTrue(kwargs["scroll_enabled"])
+
+    def test_launch_reparents_cached_popup_to_launching_window(self):
+        h = self._load_adapter()
+        first_window = _FakeWidget(classname="Natron::Gui", menubar=object())
+        second_window = _FakeWidget(classname="Natron::Gui", menubar=object())
+        popup = _FakePopup(parent=first_window)
+        h.core._tabtabtab_instance = popup
+        h.app_holder["instance"] = _make_qapp(active=second_window)
+
+        h.module.launch(_FakeApp("[]"))
+
+        self.assertEqual(popup.set_parent_calls, [(second_window, "DialogFlags")])
+        self.assertIs(popup.parent(), second_window)
+
+    def test_launch_keeps_popup_parent_when_window_unchanged(self):
+        h = self._load_adapter()
+        window = _FakeWidget(classname="Natron::Gui", menubar=object())
+        popup = _FakePopup(parent=window)
+        h.core._tabtabtab_instance = popup
+        h.app_holder["instance"] = _make_qapp(active=window)
+
+        h.module.launch(_FakeApp("[]"))
+
+        self.assertEqual(popup.set_parent_calls, [])
+
+    def test_command_items_come_from_launching_window_after_focus_moves(self):
+        h = self._load_adapter()
+        first_menubar = object()
+        second_menubar = object()
+        first_window = _FakeWidget(classname="Natron::Gui", menubar=first_menubar)
+        second_window = _FakeWidget(classname="Natron::Gui", menubar=second_menubar)
+        first_save = _FakeAction()
+        second_save = _FakeAction()
+        actions = {first_menubar: first_save, second_menubar: second_save}
+        h.module.find_qt_menu_items = lambda menubar: [
+            {"menuobj": actions[menubar], "menupath": "File/Save"}
+        ]
+
+        h.app_holder["instance"] = _make_qapp(active=second_window)
+        h.module.launch(_FakeApp("[]"))
+        # Once shown, the popup is the active window, and a stale popup
+        # would lead the focus walk back to the first project.
+        stale_popup = _FakeWidget(classname="TabTabTabWidget", parent=first_window)
+        h.app_holder["instance"] = _make_qapp(active=stale_popup)
+
+        items = h.module._plugin.get_items()
+
+        self.assertEqual(len(items), 1)
+        self.assertIs(items[0]["menuobj"], second_save)
+        self.assertIs(h.module._launch_window(), second_window)
+
+    def test_main_window_falls_back_to_focus_when_launch_window_destroyed(self):
+        h = self._load_adapter()
+        gone = _FakeWidget(classname="Natron::Gui")
+        current = _FakeWidget(classname="Natron::Gui")
+        h.app_holder["instance"] = _make_qapp(active=gone)
+        h.module.launch(_FakeApp("[]"))
+
+        h.shiboken6.isValid = lambda obj: obj is not gone
+        h.app_holder["instance"] = _make_qapp(active=current)
+
+        self.assertIs(h.module._plugin.main_window(), current)
+
+    def test_get_items_returns_fresh_node_entries_with_current_colour(self):
+        h = self._load_adapter()
+        app = _FakeApp('[{"id": "BlurOFX", "major": 1, "label": "Blur", '
+                       '"grouping": ["Filter"], "color": "#111111"}]')
+        plugin = h.module.NatronPlugin()
+        plugin.set_app(app)
+        first = plugin.get_items()[0]["menuobj"]
+
+        app._node_items_json = ('[{"id": "BlurOFX", "major": 1, "label": "Blur", '
+                                '"grouping": ["Filter"], "color": "#222222"}]')
+        second = plugin.get_items()[0]["menuobj"]
+
+        self.assertIsNot(first, second)
+        self.assertEqual(plugin.get_color(second)[0].value, "#222222")
 
     # --- row metrics ---------------------------------------------------------
 

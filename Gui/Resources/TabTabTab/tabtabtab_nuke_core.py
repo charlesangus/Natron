@@ -532,6 +532,8 @@ class NodeModel(QtCore.QAbstractListModel):
                     self._items[target_pos] = new_item
                     idx = self.index(target_pos)
                     self.dataChanged.emit(idx, idx)
+                else:
+                    self._refresh_menuobj(self._items[target_pos], new_item)
                 continue
 
             source_pos = None
@@ -557,6 +559,8 @@ class NodeModel(QtCore.QAbstractListModel):
                         self._items[target_pos] = new_item
                         idx = self.index(target_pos)
                         self.dataChanged.emit(idx, idx)
+                    else:
+                        self._refresh_menuobj(self._items[target_pos], new_item)
                 else:
                     self.beginRemoveRows(parent, source_pos, source_pos)
                     del self._items[source_pos]
@@ -570,6 +574,20 @@ class NodeModel(QtCore.QAbstractListModel):
                 self.endInsertRows()
 
     @staticmethod
+    def _refresh_menuobj(old_row, new_row):
+        """Point a retained, visually unchanged row at new_row's menuobj.
+
+        The row dict is kept (so the refresh stays quiet), but the host
+        handle must be current: invoke() acts on it, and a host may carry
+        per-refresh state on it (such as a colour). When the handle
+        changed, the cached colour came from the old one, so drop it and
+        let the next paint re-resolve it. A keystroke re-filters the same
+        menuobjs, so this costs nothing there."""
+        if old_row['menuobj'] is not new_row['menuobj']:
+            old_row['menuobj'] = new_row['menuobj']
+            old_row.pop('color', None)
+
+    @staticmethod
     def _row_visually_equal(old_row, new_row):
         """True if two rows would render identically. Compares only the
         fields the delegate reads — skipping `menuobj` (host handle,
@@ -581,9 +599,10 @@ class NodeModel(QtCore.QAbstractListModel):
         old_row may (once lazily resolved by a prior paint) — comparing
         them would spuriously treat every already-painted stable row as
         changed on each keystroke. Colour is a function of the row's
-        (stable) menuobj identity, so an unchanged menupath already
-        implies unchanged colour; staleness after a host-side colour edit
-        is handled separately by NodeModel.invalidate_color_cache()."""
+        menuobj; when a refresh hands in a new menuobj for an unchanged
+        row, _refresh_menuobj swaps it in and drops the cached colour.
+        Staleness after a host-side colour edit is handled separately by
+        NodeModel.invalidate_color_cache()."""
         return (
             old_row.get('display_text') == new_row.get('display_text')
             and old_row.get('score') == new_row.get('score')

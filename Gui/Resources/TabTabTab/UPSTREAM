@@ -34,6 +34,15 @@ Local patches:
   so a host can size the popup to its own row height; defaults are
   unchanged, so Nuke's sizing is untouched. The popup's placement is
   upstream's, unchanged.
+- patches/0003-refresh-retained-row-menuobj.patch — tabtabtab_nuke_core.py's
+  NodeModel._apply_items keeps a visually unchanged row's dict as before
+  (still no dataChanged), but now swaps in the refresh's menuobj and, when
+  it is a different object, drops the row's cached colour. Without it a
+  host that builds fresh handles per refresh (Natron: per-project QActions,
+  node entries carrying the current category colour) kept invoking and
+  colouring from the first open's handles. Re-filtering on a keystroke
+  reuses the same menuobjs, so Nuke's per-keystroke cost is unchanged.
+  tests/test_node_model_diff.py gains two tests for it.
 - tests/test_host_hooks.py is a new test file, added by Natron (not from
   upstream), covering set_main_window_finder(), _find_main_window(),
   set_row_metrics(), _row_height() and _visible_rows().

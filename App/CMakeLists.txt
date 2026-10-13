@@ -46,17 +46,29 @@ target_include_directories(Natron
 )
 
 # TabMenuBridge::bootstrap() looks for the vendored tabtabtab files at
-# <bin>/../Resources/tabtabtab. Copy them on every build so edited scripts are
-# picked up, ensuring a dev build at build/fast/App/Natron always finds them at
-# build/fast/Resources/tabtabtab. No install() rule is added, as for PyPlugs:
-# an FHS prefix would put this under /usr/Resources.
-add_custom_target(NatronTabTabTabResources ALL
+# <bin>/../Resources/tabtabtab, so a dev build at build/fast/App/Natron needs
+# them at build/fast/Resources/tabtabtab. Natron depends on the copy, rather
+# than the copy running after Natron, so building just the Natron target also
+# refreshes edited scripts when nothing relinks. The destination is spelled
+# from Natron's default output directory: $<TARGET_FILE_DIR:Natron> would make
+# the copy depend on Natron and form a cycle. No install() rule is added, as
+# for PyPlugs: an FHS prefix would put this under /usr/Resources.
+set(NatronTabTabTab_SOURCE_DIR ${CMAKE_SOURCE_DIR}/Gui/Resources/TabTabTab)
+set(NatronTabTabTab_STAMP ${CMAKE_CURRENT_BINARY_DIR}/NatronTabTabTabResources.stamp)
+file(GLOB_RECURSE NatronTabTabTab_FILES CONFIGURE_DEPENDS ${NatronTabTabTab_SOURCE_DIR}/*)
+list(FILTER NatronTabTabTab_FILES EXCLUDE REGEX "/__pycache__/")
+add_custom_command(
+    OUTPUT ${NatronTabTabTab_STAMP}
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${CMAKE_SOURCE_DIR}/Gui/Resources/TabTabTab
-        $<TARGET_FILE_DIR:Natron>/../Resources/tabtabtab
+        ${NatronTabTabTab_SOURCE_DIR}
+        ${CMAKE_CURRENT_BINARY_DIR}/../Resources/tabtabtab
+    COMMAND ${CMAKE_COMMAND} -E touch ${NatronTabTabTab_STAMP}
+    DEPENDS ${NatronTabTabTab_FILES}
+    COMMENT "Copying tabtabtab resources"
     VERBATIM
 )
-add_dependencies(NatronTabTabTabResources Natron)
+add_custom_target(NatronTabTabTabResources DEPENDS ${NatronTabTabTab_STAMP})
+add_dependencies(Natron NatronTabTabTabResources)
 
 install(TARGETS Natron DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(FILES ../Gui/Resources/Applications/fr.natron.Natron.desktop

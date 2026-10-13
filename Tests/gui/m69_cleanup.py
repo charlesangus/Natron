@@ -1,8 +1,10 @@
 """Interaction checks and screenshots for the minor-cleanup changes: no crash when a node dies with
-its panel's undo stack active, easier-to-grab input stubs, pick-up connection mode, Y/Shift+Y
-connection shortcuts, paste-onto-a-node, the pane menu from the empty tab header, scene-referred
-viewer picking with input/output modifiers, the multi-point roto feather drag, and curve-editor
-tangent break and join.
+its panel's undo stack active, easier-to-grab input stubs, pick-up connection mode and the
+disconnect on a click away from a node, Y/Shift+Y and U/Shift+U connection shortcuts,
+paste-onto-a-node and paste when the graph holds only the click focus, the pane menu from
+anywhere in the tab header, scene-referred viewer picking with input/output modifiers, the
+multi-point roto feather drag and broken tangent, curve-editor tangent break, join and handle
+length, and a folded knob's single curve and its edits.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
     docker exec -e NATRON_GUI_TEST_OUT=build/m69-shots/out -e GUI_TEST_TIMEOUT=300 \
@@ -54,7 +56,8 @@ try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Q_ARG, Qt, QTimer
     from PySide6.QtGui import QContextMenuEvent, QGuiApplication, QKeyEvent, QMouseEvent, QWheelEvent
-    from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QTreeWidget, QWidget
+    from PySide6.QtWidgets import (QApplication, QLabel, QLineEdit, QListView, QMainWindow, QMenu,
+                                   QTextEdit, QTreeWidget, QWidget)
 
     import guitest as gt
     from guitest import check, report
@@ -107,6 +110,11 @@ try:
 
     def new_children(before):
         return [n for n in app.getChildren() if n.getScriptName() not in before]
+
+    def destroy_nodes(nodes):
+        for n in nodes:
+            n.destroy()
+        QApplication.processEvents()
 
     _viewer = {}
 
@@ -233,6 +241,39 @@ try:
     def graph_shot(name):
         g = root_graph()
         widget_shot(g.viewport() if g is not None else None, name)
+
+    def widget_image(widget):
+        QApplication.processEvents()
+        origin = widget.mapToGlobal(QPoint(0, 0))
+        return QGuiApplication.primaryScreen().grabWindow(0, origin.x(), origin.y(), widget.width(), widget.height()).toImage()
+
+    def time_cursor_x(cw):
+        """The column of the curve widget's orange current-time line."""
+        img = widget_image(cw)
+        best, best_x = 0, None
+        for x in range(img.width()):
+            n = 0
+            for y in range(0, img.height(), 4):
+                c = img.pixelColor(x, y)
+                if c.red() > 200 and 80 < c.green() < 190 and c.blue() < 90:
+                    n += 1
+            if n > best:
+                best, best_x = n, x
+        return best_x
+
+    def differing_pixels(a, b, bounds, tolerance=60):
+        """(x, y, colour of a) of every pixel inside bounds = (x0, y0, x1, y1) where the two
+        same-sized images differ."""
+        out = []
+        x0, y0, x1, y1 = bounds
+        for y in range(max(0, int(y0)), min(a.height(), b.height(), int(y1) + 1)):
+            for x in range(max(0, int(x0)), min(a.width(), b.width(), int(x1) + 1)):
+                if a.pixel(x, y) == b.pixel(x, y):
+                    continue
+                ca, cb = a.pixelColor(x, y), b.pixelColor(x, y)
+                if abs(ca.red() - cb.red()) + abs(ca.green() - cb.green()) + abs(ca.blue() - cb.blue()) > tolerance:
+                    out.append((x, y, ca))
+        return out
 
     def drawn_near(graph, vp_pos, radius=5, tolerance=40):
         """How many pixels within radius of vp_pos differ from the viewport's corner colour."""
@@ -706,60 +747,232 @@ try:
         yield ("sleep", 100)
         cancel_run("right click", lambda p: (press(vp, p, Qt.RightButton), release(vp, p, Qt.RightButton)))
         yield ("sleep", 100)
-        cancel_run("empty click", lambda p: click(vp, p))
+        cancel_run("empty click on an unconnected stub", lambda p: click(vp, p))
         yield ("sleep", 100)
 
+        pp_src = create("net.sf.openfx.ConstantPlugin", 2200, -300)
+        pp_dst = create("net.sf.cimg.CImgBlur", 2200, 0)
+        pp_dst.connectInput(0, pp_src)
+        pb2.connectInput(0, pk)
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+
+        def pipe_scene():
+            sx, sy, sw, sh = box(pp_src)
+            dx, dy, dw, dh = box(pp_dst)
+            return (dx + dw / 2.0, (sy + sh + dy) / 2.0)
+
+        def held_connected_run(label, how, target, disconnects, nodes):
+            app.clearSelection()
+            frame(graph, nodes, max_zoom=1.0)
+            pb2.connectInput(0, pk)
+            QApplication.processEvents()
+            check(same(input_of(pb2, 0), pk), "%s: the Blur starts connected to the CheckerBoard" % label)
+            x2, y2, w2, h2 = box(pb2)
+            undo_then = undo_text()
+            pick_up(pb2, (x2 + w2 / 2.0, y2 - 20.0))
+            held_pt = aim(target())
+            check(drawn_near(graph, held_pt) > 0, "%s: the connected input is held at the cursor" % label)
+            popups.arm()
+            if how == "click":
+                click(vp, held_pt)
+            elif how == "right click":
+                press(vp, held_pt, Qt.RightButton)
+                release(vp, held_pt, Qt.RightButton)
+            else:
+                graph_key(Qt.Key_Escape)
+            popups.disarm()
+            QApplication.processEvents()
+            check(not popups.seen, "%s: no menu opened (%d seen)" % (label, len(popups.seen)))
+            graph_shot("pickup-%s" % label.replace(" ", "-"))
+            click(vp, aim(centre(pc)))
+            QApplication.processEvents()
+            if disconnects:
+                check(input_of(pb2, 0) is None, "%s: the held input is dropped, disconnected" % label)
+                trigger("undo")
+                QApplication.processEvents()
+                check(same(input_of(pb2, 0), pk), "%s: one undo reconnects the CheckerBoard" % label)
+                check(undo_text() == undo_then, "%s: that undo leaves the stack as it was (%r)" % (label, undo_text()[0]))
+            else:
+                check(same(input_of(pb2, 0), pk), "%s: the connection is unchanged and the input no longer held" % label)
+                check(undo_text() == undo_then, "%s: no undo entry was added (%r)" % (label, undo_text()[0]))
+
+        pu_nodes = [pb, pc, pk, pb2, pp_src, pp_dst]
+        held_connected_run("empty canvas click", "click", empty_scene, True, pu_nodes)
+        yield ("sleep", 100)
+        held_connected_run("pipe click", "click", pipe_scene, True, pu_nodes)
+        yield ("sleep", 100)
+        held_connected_run("holding node click", "click", lambda: centre(pb2), False, pu_nodes)
+        yield ("sleep", 100)
+        held_connected_run("right click", "right click", empty_scene, False, pu_nodes)
+        yield ("sleep", 100)
+        held_connected_run("escape", "escape", empty_scene, False, pu_nodes)
+        yield ("sleep", 100)
+
+        bx0, by0 = pb.getPosition()
+        backdrop = create("fr.inria.built-in.BackDrop", bx0 - 230, by0 - 230)
+        backdrop.setSize(220, 120)
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+        held_connected_run("backdrop click", "click", lambda: centre(backdrop), True, pu_nodes + [backdrop])
+        yield ("sleep", 100)
         app.clearSelection()
-        frame(graph, [pb, pc, pk, pb2], max_zoom=1.0)
-        x2, y2, w2, h2 = box(pb2)
-        on_pipe = (x2 + w2 / 2.0, y2 - 20.0)
-        pick_up(pb2, on_pipe)
-        move(vp, empty_point())
-        yield ("sleep", 100)
-        graph_shot("pickup-05-connected-input-held")
-        graph_key(Qt.Key_Escape)
-        yield ("sleep", 100)
-        check(same(input_of(pb2, 0), pk), "pick-up: a connected input picked up and cancelled keeps its source")
-        graph_shot("pickup-06-connected-input-restored")
+        destroy_nodes([backdrop, pp_dst, pp_src, pb2, pk, pc, pb])
+        yield ("sleep", SETTLE_MS)
 
         # =====================================================================================
         gt.section("y-shift-y")
-        yc = create("net.sf.openfx.ConstantPlugin", 3000, -300)
-        yk = create("net.sf.openfx.CheckerBoardPlugin", 3300, -300)
-        ym = create("net.sf.openfx.MergePlugin", 3150, 0)
+        graph = root_graph()
+        ys = create("net.sf.openfx.ConstantPlugin", 3000, -600)
+        ma = create("net.sf.openfx.MergePlugin", 3150, 0)
+        gb = create("net.sf.openfx.GradePlugin", 3000, -300)
+        gc = create("net.sf.openfx.GradePlugin", 3300, -300)
+        sa = create("net.sf.openfx.GradePlugin", 3600, -300)
+        sb = create("net.sf.openfx.GradePlugin", 3900, -300)
+        sm = create("net.sf.openfx.MergePlugin", 3750, 0)
+        for fed in (gb, gc, sa, sb):
+            fed.connectInput(0, ys)
         gt.close_all_panels()
         app.clearSelection()
-        graph = root_graph()
-        frame(graph, [yc, yk, ym], max_zoom=1.0)
-        app.setSelection([yc, yk, ym])
-        QApplication.processEvents()
-        graph_key(Qt.Key_Y)
+        frame(graph, [ys, ma, gb, gc, sa, sb, sm], max_zoom=1.0)
+
+        def merge_slots(merge):
+            preferred = input_index(merge, "B")
+            if preferred is None:
+                preferred = 0
+            return preferred, [i for i in range(merge.getMaxInputCount()) if i != preferred][0]
+
+        def select_in_order(nodes):
+            app.setSelection(nodes)
+            QApplication.processEvents()
+
+        y_pref, y_next = merge_slots(ma)
+        for order, (first, second) in (("B then C", (gb, gc)), ("C then B", (gc, gb))):
+            select_in_order([ma, first, second])
+            graph_key(Qt.Key_Y)
+            yield ("sleep", SETTLE_MS)
+            check(same(input_of(ma, y_pref), first),
+                  "Y (%s): the first later-selected node feeds the Merge's preferred input" % order)
+            check(same(input_of(ma, y_next), second),
+                  "Y (%s): the second later-selected node feeds its next free input" % order)
+            check(same(input_of(gb, 0), ys) and same(input_of(gc, 0), ys),
+                  "Y (%s): the later-selected nodes keep their own inputs" % order)
+            text = undo_text()[0]
+            check(text is not None and "Connect Later-Selected Nodes into First Selected" in text,
+                  "Y (%s): the undo entry reads %r" % (order, text))
+            graph_shot("y-01-merge-fed-%s" % order.replace(" ", "-"))
+            trigger("undo")
+            yield ("sleep", 200)
+            check(all(input_of(ma, i) is None for i in range(ma.getMaxInputCount())),
+                  "Y (%s): one undo removes both connections" % order)
+
+        s_pref, s_next = merge_slots(sm)
+        for order, (first, second) in (("A then B", (sa, sb)), ("B then A", (sb, sa))):
+            select_in_order([first, second, sm])
+            graph_key(Qt.Key_Y, Qt.ShiftModifier)
+            yield ("sleep", SETTLE_MS)
+            check(same(input_of(sm, s_pref), first),
+                  "Shift+Y (%s): the first earlier-selected node feeds the Merge's preferred input" % order)
+            check(same(input_of(sm, s_next), second),
+                  "Shift+Y (%s): the second earlier-selected node feeds its next free input" % order)
+            check(same(input_of(sa, 0), ys) and same(input_of(sb, 0), ys),
+                  "Shift+Y (%s): the earlier-selected nodes keep their own inputs" % order)
+            text = undo_text()[0]
+            check(text is not None and "Connect Earlier-Selected Nodes into Last Selected" in text,
+                  "Shift+Y (%s): the undo entry reads %r" % (order, text))
+            graph_shot("y-02-shift-y-%s" % order.replace(" ", "-"))
+            trigger("undo")
+            yield ("sleep", 200)
+            check(all(input_of(sm, i) is None for i in range(sm.getMaxInputCount())),
+                  "Shift+Y (%s): one undo removes both connections" % order)
+        app.clearSelection()
+        destroy_nodes([sm, sb, sa, gc, gb, ma, ys])
         yield ("sleep", SETTLE_MS)
-        a_in, b_in = input_index(ym, "A"), input_index(ym, "B")
-        feeds = set()
-        for i in (a_in, b_in):
-            if i is not None and ym.getInput(i) is not None:
-                feeds.add(ym.getInput(i).getScriptName())
-        check(feeds == {yc.getScriptName(), yk.getScriptName()},
-              "Y: Merge's A and B are fed by the Constant and the CheckerBoard (got %r)" % sorted(feeds))
-        graph_shot("y-01-merge-fed")
+
+        # =====================================================================================
+        gt.section("u-shift-u")
+        graph = root_graph()
+        ux = create("net.sf.openfx.ConstantPlugin", 4200, -600)
+        ua = create("net.sf.openfx.GradePlugin", 4200, -300)
+        ub = create("net.sf.openfx.GradePlugin", 4500, -300)
+        uc = create("net.sf.openfx.GradePlugin", 4800, -300)
+        um = create("net.sf.openfx.MergePlugin", 4500, 100)
+        ud = create("net.sf.openfx.GradePlugin", 4800, 100)
+        gt.close_all_panels()
+        app.clearSelection()
+        frame(graph, [ux, ua, ub, uc, um, ud], max_zoom=1.0)
+
+        def free_main_input(node):
+            for i in range(node.getMaxInputCount()):
+                if node.getInput(i) is None and node.getInputLabel(i).lower() != "mask":
+                    return i
+            return None
+
+        select_in_order([ua, ub, uc])
+        graph_key(Qt.Key_U)
+        yield ("sleep", SETTLE_MS)
+        check(same(input_of(ub, 0), ua) and same(input_of(uc, 0), ua), "U: the first-selected node feeds both later-selected nodes")
+        text = undo_text()[0]
+        check(text is not None and "Connect First Selected into Later-Selected Nodes" in text, "U: the undo entry reads %r" % text)
+        graph_shot("u-01-first-into-later")
         trigger("undo")
         yield ("sleep", 200)
-        check(all(ym.getInput(i) is None for i in range(ym.getMaxInputCount())), "Y: one undo removes both connections")
+        check(input_of(ub, 0) is None and input_of(uc, 0) is None, "U: one undo reverts both connections")
 
-        sg = create("net.sf.openfx.GradePlugin", 3600, 0)
-        sb = create("net.sf.cimg.CImgBlur", 3850, 0)
-        sc = create("net.sf.openfx.ConstantPlugin", 3725, -300)
-        gt.close_all_panels()
-        frame(graph, [sg, sb, sc], max_zoom=1.0)
-        app.setSelection([sg, sb, sc])
-        QApplication.processEvents()
-        graph_key(Qt.Key_Y, Qt.ShiftModifier)
+        select_in_order([ua, ub, uc])
+        graph_key(Qt.Key_U, Qt.ShiftModifier)
         yield ("sleep", SETTLE_MS)
-        check(input_connected_from(sg, sc) is not None, "Shift+Y: the Grade takes the Constant")
-        check(input_connected_from(sb, sc) is not None, "Shift+Y: the Blur takes the Constant")
-        graph_shot("y-02-shift-y")
+        check(same(input_of(ua, 0), uc) and same(input_of(ub, 0), uc), "Shift+U: the last-selected node feeds both earlier-selected nodes")
+        text = undo_text()[0]
+        check(text is not None and "Connect Last Selected into Other Selected Nodes" in text, "Shift+U: the undo entry reads %r" % text)
+        graph_shot("u-02-last-into-others")
+        trigger("undo")
+        yield ("sleep", 200)
+        check(input_of(ua, 0) is None and input_of(ub, 0) is None, "Shift+U: one undo reverts both connections")
+
+        um_b = input_index(um, "B")
+        um.connectInput(0 if um_b is None else um_b, ux)
+        ud.connectInput(0, ux)
+        QApplication.processEvents()
+        um_want = free_main_input(um)
+        ud_mask = [i for i in range(ud.getMaxInputCount()) if ud.getInputLabel(i).lower() == "mask"]
+        select_in_order([ua, um, ud])
+        graph_key(Qt.Key_U)
+        yield ("sleep", SETTLE_MS)
+        check(um_want is not None and same(input_of(um, um_want), ua), "U: a Merge with one input taken is fed on its next free input (%r)" % um_want)
+        check(same(input_of(ud, 0), ux) and all(input_of(ud, i) is None for i in ud_mask),
+              "U: a node with no free non-mask input is skipped, its mask left alone")
+        graph_shot("u-03-next-free-input")
+        trigger("undo")
+        yield ("sleep", 200)
+        check(um_want is not None and input_of(um, um_want) is None, "U: one undo reverts the Merge's new connection")
+        um.disconnectInput(0 if um_b is None else um_b)
+        ud.disconnectInput(0)
+
+        ua.connectInput(0, ub)
+        QApplication.processEvents()
+        select_in_order([ua, ub, uc])
+        graph_key(Qt.Key_U)
+        yield ("sleep", SETTLE_MS)
+        message = main_window().statusBar().currentMessage()
+        check(input_of(ub, 0) is None, "U: a node upstream of the first-selected one is skipped")
+        check(same(input_of(uc, 0), ua), "U: the other later-selected node is still connected")
+        check(message.startswith("Skipped"), "U: the status bar reports the skipped node (%r)" % message)
+        graph_shot("u-04-skipped-upstream")
+        trigger("undo")
+        yield ("sleep", 200)
+        check(input_of(uc, 0) is None and same(input_of(ua, 0), ub), "U: one undo reverts only the new connection")
+        ua.disconnectInput(0)
+
         app.clearSelection()
+        key_event = QKeyEvent(QEvent.KeyPress, Qt.Key_U, Qt.NoModifier)
+        key_event.ignore()
+        QApplication.sendEvent(root_graph(), key_event)
+        QApplication.processEvents()
+        check(key_event.isAccepted(), "U in the node graph is consumed by the graph, so it does not reach the viewer's Refresh")
+        report("NOTE u-shift-u: whether the viewer re-rendered has no Python hook, so only the graph taking the key is checked")
+        destroy_nodes([ud, um, uc, ub, ua, ux])
+        yield ("sleep", SETTLE_MS)
 
         # =====================================================================================
         gt.section("paste-attach")
@@ -862,6 +1075,96 @@ try:
         graph_shot("paste-03-exceptions")
 
         # =====================================================================================
+        gt.section("paste-focus")
+        graph = root_graph()
+        blur_one = create("net.sf.cimg.CImgBlur", 6500, 0)
+        blur_two = create("net.sf.cimg.CImgBlur", 6500, 250)
+        gt.close_all_panels()
+        pasted_here = []
+        frame(graph, [blur_one, blur_two], max_zoom=1.0)
+
+        def script_error_count():
+            total = 0
+            for editor in gt.widgets_of("ScriptEditor"):
+                for edit in editor.findChildren(QTextEdit):
+                    text = edit.toPlainText()
+                    total += text.count("Python exception") + text.count("SyntaxError")
+            return total
+
+        if not gt.widgets_of("ScriptEditor"):
+            report("NOTE paste-focus: no Script Editor widget exists, so the paste is judged by the graph alone")
+
+        def paste_through_main_window(target):
+            frame(graph, [blur_one, blur_two], max_zoom=1.0)
+            x0, y0, w0, h0 = box(blur_two)
+            click(graph.viewport(), to_vp(graph, (x0 - 50.0, y0 + h0 / 2.0)))
+            app.setSelection([target])
+            QApplication.processEvents()
+            graph.clearFocus()
+            QApplication.processEvents()
+            before = child_names()
+            errors_before = script_error_count()
+            send_key(graph.window(), Qt.Key_V, Qt.ControlModifier)
+            return before, errors_before
+
+        app.setSelection([blur_one])
+        QApplication.processEvents()
+        graph_key(Qt.Key_C, Qt.ControlModifier)
+
+        before, errors_before = paste_through_main_window(blur_two)
+        yield ("sleep", SETTLE_MS)
+        pasted = new_children(before)
+        pasted_here.extend(pasted)
+        if check(len(pasted) == 1, "Ctrl+V sent to the main window pastes one node (got %d)" % len(pasted)):
+            check("Blur" in pasted[0].getPluginID(), "the pasted node is a Blur")
+            check(same(input_of(pasted[0], 0), blur_two), "the pasted Blur takes the selected Blur")
+        check(script_error_count() == errors_before, "the Script Editor shows no new Python exception or SyntaxError")
+        graph_shot("paste-focus-01-main-window")
+
+        app.clearSelection()
+        before_tab = child_names()
+        graph_key(Qt.Key_Tab)
+        yield ("sleep", SETTLE_MS)
+        dialogs = [d for d in gt.widgets_of("NodeCreationDialog") if d.isVisible()]
+        tab_node = None
+        if check(dialogs, "the Tab key opens the node creation popup"):
+            dialog = dialogs[0]
+            edits = [w for w in dialog.findChildren(QLineEdit) if gt.class_name(w) == "CompleterLineEdit"]
+            if check(edits, "the popup has its completer line edit"):
+                edits[0].setText("Grade")
+                yield ("sleep", SETTLE_MS)
+                chosen = None
+                for view_widget in dialog.findChildren(QListView):
+                    model = view_widget.model()
+                    for row in range(model.rowCount()):
+                        index = model.index(row, 0)
+                        if str(index.data()).startswith("Grade  ["):
+                            chosen = (view_widget, index)
+                if check(chosen is not None, "the popup lists the Grade plugin"):
+                    chosen[0].clicked.emit(chosen[1])
+                else:
+                    send_key(edits[0], Qt.Key_Escape)
+        yield ("sleep", SETTLE_MS)
+        made = new_children(before_tab)
+        pasted_here.extend(made)
+        if check(len(made) == 1, "the popup created one node (got %d)" % len(made)):
+            tab_node = made[0]
+        gt.close_all_panels()
+        if tab_node is not None:
+            before, errors_before = paste_through_main_window(tab_node)
+            yield ("sleep", SETTLE_MS)
+            pasted = new_children(before)
+            pasted_here.extend(pasted)
+            if check(len(pasted) == 1, "after the popup, Ctrl+V sent to the main window pastes one node (got %d)" % len(pasted)):
+                check(same(input_of(pasted[0], 0), tab_node), "after the popup, the pasted Blur takes the node the popup created")
+            check(script_error_count() == errors_before, "after the popup, the Script Editor shows no new Python exception or SyntaxError")
+            graph_shot("paste-focus-02-after-tab-popup")
+        app.clearSelection()
+        gt.close_all_panels()
+        destroy_nodes(pasted_here + [blur_two, blur_one])
+        yield ("sleep", SETTLE_MS)
+
+        # =====================================================================================
         gt.section("pane-header-menu")
         graph = root_graph()
         pane = ancestor_of_class(graph, "TabWidget")
@@ -899,16 +1202,42 @@ try:
                         check(corner_texts == header_texts, "the header menu has the corner menu's entries")
                         check(abs(corner["pos"].x() - glob.x()) > 20,
                               "the corner menu opens at the icon, not at the header cursor (%r)" % corner["pos"])
+            def pane_menu_after(widget, local_pos, label):
+                glob_pos = widget.mapToGlobal(local_pos)
+                popups.arm()
+                QApplication.sendEvent(widget, QContextMenuEvent(QContextMenuEvent.Mouse, local_pos, glob_pos))
+                QApplication.processEvents()
+                popups.disarm()
+                if not check(len(popups.seen) == 1, "a right-click on %s opens one menu (got %d)" % (label, len(popups.seen))):
+                    return
+                seen = popups.seen[0]
+                check(corner_texts and seen["texts"] == corner_texts, "the menu from %s is the pane menu" % label)
+                check(abs(seen["pos"].x() - glob_pos.x()) <= 2 and abs(seen["pos"].y() - glob_pos.y()) <= 2,
+                      "the menu from %s opens with its top-left at the cursor" % label)
+
             bars = [w for w in pane.findChildren(QWidget) if gt.class_name(w) == "TabBar"]
             if check(bars, "found the pane's tab bar"):
                 bar = bars[0]
-                tab_pos = bar.tabRect(0).center()
-                popups.arm()
-                QApplication.sendEvent(bar, QContextMenuEvent(QContextMenuEvent.Mouse, tab_pos, bar.mapToGlobal(tab_pos)))
-                QApplication.processEvents()
-                popups.disarm()
-                pane_menu = [s for s in popups.seen if corner_texts and s["texts"] == corner_texts]
-                check(not pane_menu, "a right-click on a tab does not open the pane menu")
+                tab_count = bar.count()
+                original = bar.currentIndex()
+                if check(tab_count >= 2, "the graph pane has two or more tabs (got %d)" % tab_count):
+                    target = [i for i in range(tab_count) if i != original][0]
+                    pane_menu_after(bar, bar.tabRect(target).center(), "a non-current tab")
+                    check(bar.currentIndex() == target, "the right-clicked tab became current")
+                    bar.setCurrentIndex(original)
+                    QApplication.processEvents()
+                buttons = [w for w in header.findChildren(QWidget) if gt.class_name(w) == "Button"]
+                buttons.sort(key=lambda b: b.mapTo(header, QPoint(0, 0)).x())
+                float_buttons = [b for b in buttons if "Float pane" in b.toolTip()]
+                close_buttons = [b for b in buttons if "Close pane" in b.toolTip()]
+                if check(buttons and float_buttons and close_buttons, "found the header's corner, float and close buttons"):
+                    for button, label in ((buttons[0], "the left corner button"),
+                                          (float_buttons[0], "the float button"),
+                                          (close_buttons[0], "the close button")):
+                        pane_menu_after(button, button.rect().center(), label)
+                    check(pane.isVisible() and bar.count() == tab_count and root_graph() is not None
+                          and root_graph().window() is main_window(),
+                          "right-clicking the float and close buttons neither floated nor closed the pane")
             # A capture of the open menu itself, taken from inside its event loop.
             def shoot_menu():
                 pop = QApplication.activePopupWidget()
@@ -951,29 +1280,13 @@ try:
             y0, y1 = 0.0 - 0.1, 1.0 + 0.1
             sy = H / (y1 - y0)
 
-            def time_cursor_x():
-                """The column of the curve widget's orange current-time line."""
-                QApplication.processEvents()
-                origin = cw.mapToGlobal(QPoint(0, 0))
-                img = QGuiApplication.primaryScreen().grabWindow(0, origin.x(), origin.y(), cw.width(), cw.height()).toImage()
-                best, best_x = 0, None
-                for x in range(img.width()):
-                    n = 0
-                    for y in range(0, img.height(), 4):
-                        c = img.pixelColor(x, y)
-                        if c.red() > 200 and 80 < c.green() < 190 and c.blue() < 90:
-                            n += 1
-                    if n > best:
-                        best, best_x = n, x
-                return best_x
-
             pyviewer = app.getViewer(viewer.getScriptName())
             pyviewer.seek(1)
             yield ("sleep", SETTLE_MS)
-            xa = time_cursor_x()
+            xa = time_cursor_x(cw)
             pyviewer.seek(21)
             yield ("sleep", SETTLE_MS)
-            xb = time_cursor_x()
+            xb = time_cursor_x(cw)
             pyviewer.seek(1)
             yield ("sleep", SETTLE_MS)
             report("NOTE curve widget %dx%d, time line at frame 1: %r, frame 21: %r" % (W, H, xa, xb))
@@ -988,10 +1301,13 @@ try:
                 v = mix.getValueAtTime(11.0)
                 return ((v - mix.getValueAtTime(11.0 - e)) / e, (mix.getValueAtTime(11.0 + e) - v) / e)
 
+            def handle_clamp():
+                xmax = min(W / 8.0, (to_w(21, 0).x() - to_w(11, 0.5).x()) / 3.0)
+                return xmax, min(H / 8.0, xmax)
+
             def right_handle(slope):
                 key = to_w(11, 0.5)
-                xmax = min(W / 8.0, (to_w(21, 0).x() - key.x()) / 3.0)
-                ymax = min(H / 8.0, xmax)
+                xmax, ymax = handle_clamp()
                 pix_slope = slope * sy / sx
                 if xmax * abs(pix_slope) < ymax:
                     return key + QPointF(xmax, -xmax * pix_slope)
@@ -1026,12 +1342,201 @@ try:
             check(abs(left3 - right3) < 1e-3 and abs(right3 - right2) > 1e-3,
                   "after Join a plain drag moves both slopes together")
             widget_shot(cw, "curve-03-plain-drag")
+
+            xmax, ymax = handle_clamp()
+            key_pt = to_w(11, 0.5)
+            max_length = math.hypot(xmax, ymax) + 8.0
+            handle = right_handle(right3)
+            far = key_pt + QPointF(3.0 * xmax, -1.5 * xmax)
+            press(cw, handle, Qt.LeftButton, Qt.ControlModifier)
+            for i in range(1, DRAG_STEPS + 1):
+                move(cw, handle + (far - handle) * (i / float(DRAG_STEPS)), Qt.LeftButton, Qt.ControlModifier)
+            yield ("sleep", SETTLE_MS)
+            held_img = widget_image(cw)
+            widget_shot(cw, "curve-04-handle-held-far")
+            release(cw, far, Qt.LeftButton, Qt.ControlModifier)
+            yield ("sleep", SETTLE_MS)
+            released_img = widget_image(cw)
+            click(cw, QPointF(10, 10))
+            yield ("sleep", SETTLE_MS)
+            bare_img = widget_image(cw)
+            bounds = (key_pt.x() - 10, key_pt.y() - 3 * xmax, key_pt.x() + 4 * xmax, key_pt.y() + 3 * xmax)
+
+            def handle_extent(img):
+                """Count and farthest distance from the key of the handle-coloured pixels that
+                selecting the key adds to the picture."""
+                dists = [math.hypot(x - key_pt.x(), y - key_pt.y())
+                         for x, y, c in differing_pixels(img, bare_img, bounds)
+                         if c.red() > 200 and 50 < c.green() < 140 and 50 < c.blue() < 140]
+                return len(dists), (max(dists) if dists else 0.0)
+
+            n_held, far_held = handle_extent(held_img)
+            n_released, far_released = handle_extent(released_img)
+            report("NOTE tangent handle while held: %d px out to %.1f; after release: %d px out to %.1f; clamp %.1f, cursor %.1f"
+                   % (n_held, far_held, n_released, far_released, max_length, math.hypot(far.x() - key_pt.x(), far.y() - key_pt.y())))
+            check(n_held >= 10, "the dragged tangent handle is drawn while the button is held")
+            check(far_held <= max_length, "a held tangent handle stays within its normal length, not at the cursor")
+            check(n_released >= 10 and abs(far_held - far_released) <= 3.0,
+                  "the tangent handle does not change length when the button is released")
         graphs = gt.widgets_of("NodeGraph")
         if graphs:
             make_tab_current(graphs[0])
         yield ("sleep", SETTLE_MS)
         gt.close_all_panels()
         cg.getParam("mix").removeAnimation(0)
+        destroy_nodes([cg])
+
+        # =====================================================================================
+        gt.section("folded-curve")
+        gt.close_all_panels()
+        fg = create("net.sf.openfx.GradePlugin", 11200, 0)
+        gain_name = "gain" if fg.getParam("gain") is not None else "multiply"
+        gain = fg.getParam(gain_name)
+        n_dims = gain.getNumDimensions()
+        gain_label = gain.getLabel().strip().lower()
+        report("NOTE folded-curve: using the Grade's %r knob, %d components" % (gain_name, n_dims))
+        smooth = NatronEngine.Natron.KeyframeTypeEnum.eKeyframeTypeSmooth
+        for t, v in ((1, 1.0), (11, 1.5), (21, 2.0)):
+            for d in range(n_dims):
+                gain.setValueAtTime(v, t, d)
+                gain.setInterpolationAtTime(t, smooth, d)
+        yield ("sleep", SETTLE_MS)
+
+        def gain_children():
+            """Labels of the visible curve-editor rows under the knob's row, or None."""
+            for tree in editors[0].findChildren(QTreeWidget):
+                for i in range(tree.topLevelItemCount()):
+                    node_item = tree.topLevelItem(i)
+                    if node_item.text(0) != fg.getLabel():
+                        continue
+                    for j in range(node_item.childCount()):
+                        knob_item = node_item.child(j)
+                        if knob_item.text(0).strip().lower() == gain_label:
+                            return [knob_item.child(k).text(0).strip().lower()
+                                    for k in range(knob_item.childCount()) if not knob_item.child(k).isHidden()]
+            return None
+
+        def dimension_switch():
+            for w in QApplication.allWidgets():
+                try:
+                    if not (isinstance(w, QLabel) and w.isVisible() and ancestor_of_class(w, "NodeSettingsPanel") is not None
+                            and strip_tags(w.text()).rstrip(":").strip().lower() == gain_label):
+                        continue
+                    y = w.mapToGlobal(w.rect().center()).y()
+                    for b in QApplication.allWidgets():
+                        if gt.class_name(b) == "Button" and b.isVisible() and "Switch between" in b.toolTip():
+                            top = b.mapToGlobal(QPoint(0, 0)).y()
+                            if top <= y <= top + b.height():
+                                return b
+                except RuntimeError:
+                    continue
+            return None
+
+        editors = gt.widgets_of("CurveEditor")
+        switch = dimension_switch()
+        if check(editors and switch is not None, "found the curve editor and the knob's dimension switch"):
+            check(not switch.isChecked(), "the knob starts folded")
+            rows = gain_children()
+            check(rows == [gain_label], "folded: the curve editor shows one curve under the knob, named like it (got %r)" % (rows,))
+            switch.click()
+            yield ("sleep", SETTLE_MS)
+            rows = gain_children()
+            check(rows is not None and len(rows) == n_dims, "expanded: one curve per component (got %r)" % (rows,))
+            switch.click()
+            yield ("sleep", SETTLE_MS)
+            rows = gain_children()
+            check(rows == [gain_label], "folded again: one curve named like the knob (got %r)" % (rows,))
+            for d in range(n_dims):
+                gain.setValueAtTime(2.5, 31, d)
+                gain.setInterpolationAtTime(31, smooth, d)
+            yield ("sleep", SETTLE_MS)
+            rows = gain_children()
+            check(rows == [gain_label], "a key set while folded keeps it at one curve (got %r)" % (rows,))
+            check(not switch.isChecked(), "the knob is still folded after the key")
+
+            check(make_tab_current(editors[0]), "brought the curve editor's tab to the front")
+            yield ("sleep", SETTLE_MS)
+            for tree in editors[0].findChildren(QTreeWidget):
+                for i in range(tree.topLevelItemCount()):
+                    if tree.topLevelItem(i).text(0) == fg.getLabel():
+                        tree.topLevelItem(i).setSelected(True)
+            QApplication.processEvents()
+            visible_cws = [w for w in gt.widgets_of("CurveWidget") if w.isVisible()]
+            fcw = visible_cws[0] if visible_cws else None
+        else:
+            fcw = None
+        if check(fcw is not None, "the curve widget is visible"):
+            send_key(fcw, Qt.Key_A)
+            yield ("sleep", SETTLE_MS)
+            FW, FH = float(fcw.width()), float(fcw.height())
+            lo, hi = 1.0, 2.5
+            fy0, fy1 = lo - 0.1 * (hi - lo), hi + 0.1 * (hi - lo)
+            fsy = FH / (fy1 - fy0)
+            fviewer = app.getViewer(viewer.getScriptName())
+            fviewer.seek(1)
+            yield ("sleep", SETTLE_MS)
+            fxa = time_cursor_x(fcw)
+            fviewer.seek(31)
+            yield ("sleep", SETTLE_MS)
+            fxb = time_cursor_x(fcw)
+            fviewer.seek(1)
+            yield ("sleep", SETTLE_MS)
+            gt.require(fxa is not None and fxb is not None and fxb > fxa, "found the curve widget's time line at frames 1 and 31")
+            fsx = (fxb - fxa) / 30.0
+
+            def to_f(t, v):
+                return QPointF(fxa + (t - 1) * fsx, FH - (v - fy0) * fsy)
+
+            samples = (1, 6, 11, 16, 21, 26, 31)
+
+            def profile(d):
+                e = 0.01
+                out = []
+                for t in samples:
+                    v = gain.getValueAtTime(t, d)
+                    out.append((v, (v - gain.getValueAtTime(t - e, d)) / e, (gain.getValueAtTime(t + e, d) - v) / e))
+                return out
+
+            def agree(a, b):
+                return all(abs(x - y) <= 1e-4 for ta, tb in zip(a, b) for x, y in zip(ta, tb))
+
+            def components_follow_first(label):
+                base = profile(0)
+                same_as_first = all(agree(base, profile(d)) for d in range(1, n_dims))
+                check(same_as_first, "%s: every component has the first component's values and slopes at every key" % label)
+                check(gain_children() == [gain_label] and not switch.isChecked(),
+                      "%s: the knob is still folded, with one curve row" % label)
+
+            start = [profile(d) for d in range(n_dims)]
+            components_follow_first("before editing")
+            key_start = to_f(11, 1.5)
+            drag(fcw, key_start, key_start + QPointF(0, -40))
+            yield ("sleep", SETTLE_MS)
+            moved = gain.getValueAtTime(11, 0)
+            check(abs(moved - 1.5) > 1e-3, "dragging the key on the single curve moved it (value at frame 11 now %.4f)" % moved)
+            components_follow_first("after the drag")
+            widget_shot(fcw, "folded-01-after-drag")
+            send_key(fcw, Qt.Key_X)
+            yield ("sleep", SETTLE_MS)
+            components_follow_first("after Break")
+            send_key(fcw, Qt.Key_X, Qt.ShiftModifier)
+            yield ("sleep", SETTLE_MS)
+            components_follow_first("after Join")
+            for _ in range(3):
+                trigger("undo")
+                yield ("sleep", 200)
+            check(all(agree(start[d], profile(d)) for d in range(n_dims)),
+                  "three undos return every component to its starting curve")
+            components_follow_first("after the undos")
+            report("NOTE folded-curve: the undo index and the keys' interpolation types have no Python hook; "
+                   "three undos restoring the start state stands for the drag being one step, and equal slopes for equal interpolation")
+        graphs = gt.widgets_of("NodeGraph")
+        if graphs:
+            make_tab_current(graphs[0])
+        yield ("sleep", SETTLE_MS)
+        gt.close_all_panels()
+        destroy_nodes([fg])
+        yield ("sleep", SETTLE_MS)
 
         # =====================================================================================
         gt.section("picker-in-out")
@@ -1264,6 +1769,117 @@ try:
         check(all(abs(o[0]) < 1e-6 and abs(o[1]) < 1e-6 for o in restored), "one undo restores all three feathers")
         gt.shot("roto-03-after-undo.png")
         gt.close_all_panels()
+
+        # =====================================================================================
+        gt.section("roto-broken-tangent")
+        t = 1.0
+        roto2 = create("fr.inria.built-in.Roto", 10600, 0)
+        ctx2 = roto2.getRotoContext()
+        gt.require(ctx2 is not None, "the second Roto node has a roto context")
+        gl = viewer_gl()
+        gt.require(gl is not None, "the viewer is visible")
+        view(roto2)
+        yield ("sleep", RENDER_MS)
+        vmap = ViewerMap(gl)
+        gt.require(vmap.ok, "calibrated the viewer for the broken-tangent drag")
+        send_key(gl, Qt.Key_Q)
+        click(gl, QPointF(5, 5))
+        cx, cy = vmap.to_canonical(QPointF(gl.width() / 2.0, gl.height() / 2.0))
+        r = 90.0 * vmap.pixel_scale()
+        angles = [math.radians(90 - 72 * i) for i in range(5)]
+        pts = [(cx + r * math.cos(a), cy + r * math.sin(a)) for a in angles]
+        bez = ctx2.createBezier(pts[0][0], pts[0][1], t)
+        gt.require(bez is not None, "created a Bezier")
+        for p in pts[1:]:
+            bez.addControlPoint(p[0], p[1])
+        bez.setCurveFinished(True)
+        tl = 0.25 * r
+        for i, a in enumerate(angles):
+            tx, ty = math.sin(a), -math.cos(a)
+            x, y = pts[i]
+            bez.setPointAtIndex(i, t, x, y, x - tx * tl, y - ty * tl, x + tx * tl, y + ty * tl)
+            bez.setFeatherPointAtIndex(i, t, x, y, x - tx * tl, y - ty * tl, x + tx * tl, y + ty * tl)
+        yield ("sleep", RENDER_MS)
+        click(gl, vmap.to_widget(pts[0][0], pts[0][1]))
+        yield ("sleep", SETTLE_MS)
+
+        def top_point():
+            return bez.getControlPointPosition(0, t)
+
+        def left_of(pt):
+            return (pt[2], pt[3])
+
+        def right_of(pt):
+            return (pt[4], pt[5])
+
+        def moved(a, b):
+            return math.hypot(a[0] - b[0], a[1] - b[1]) > 1e-4
+
+        def same_point(a, b):
+            return all(abs(a[i] - b[i]) < 1e-6 for i in range(6))
+
+        def drag_right_tangent(pt, dy_px, modifiers):
+            handle = vmap.to_widget(pt[4], pt[5])
+            if modifiers & Qt.ControlModifier:
+                QApplication.sendEvent(gl, QKeyEvent(QEvent.KeyPress, Qt.Key_Control, Qt.ControlModifier))
+            drag(gl, handle, handle + QPointF(0, dy_px), Qt.LeftButton, modifiers)
+            if modifiers & Qt.ControlModifier:
+                QApplication.sendEvent(gl, QKeyEvent(QEvent.KeyRelease, Qt.Key_Control, Qt.NoModifier))
+            QApplication.processEvents()
+
+        def undo_until(want, limit):
+            for _ in range(limit):
+                if same_point(top_point(), want):
+                    return True
+                trigger("undo")
+                QApplication.processEvents()
+            return same_point(top_point(), want)
+
+        start = top_point()
+        drag_right_tangent(start, 30, Qt.ControlModifier)
+        yield ("sleep", SETTLE_MS)
+        after_ctrl = top_point()
+        check(moved(right_of(after_ctrl), right_of(start)), "Ctrl-drag of the right tangent moved it")
+        check(not moved(left_of(after_ctrl), left_of(start)), "Ctrl-drag of the right tangent left the left tangent alone")
+        gt.shot("roto-04-broken.png")
+
+        drag_right_tangent(after_ctrl, -25, Qt.NoModifier)
+        yield ("sleep", SETTLE_MS)
+        after_plain = top_point()
+        check(moved(right_of(after_plain), right_of(after_ctrl)), "a plain drag of the broken right tangent moved it")
+        check(not moved(left_of(after_plain), left_of(start)),
+              "a plain drag of a broken tangent leaves the left tangent alone")
+
+        smooth_button = roto2.getParam("SmoothItemsAction")
+        if check(smooth_button is not None, "the Roto node has its Smooth action"):
+            smooth_button.trigger()
+            yield ("sleep", SETTLE_MS)
+        after_smooth = top_point()
+        check(moved(left_of(after_smooth), left_of(after_plain)) or moved(right_of(after_smooth), right_of(after_plain)),
+              "Smooth changed the broken point's tangents")
+
+        drag_right_tangent(after_smooth, 25, Qt.NoModifier)
+        yield ("sleep", SETTLE_MS)
+        after_joined = top_point()
+        check(moved(right_of(after_joined), right_of(after_smooth)), "a plain drag after Smooth moved the right tangent")
+        check(moved(left_of(after_joined), left_of(after_smooth)), "a plain drag after Smooth moved the left tangent too")
+        gt.shot("roto-05-smoothed-drag.png")
+
+        check(undo_until(after_smooth, 3), "one undo reverts the plain drag after Smooth")
+        check(undo_until(after_plain, 3), "undoing the Smooth restores the broken point's tangents")
+        yield ("sleep", SETTLE_MS)
+        drag_right_tangent(after_plain, 25, Qt.NoModifier)
+        yield ("sleep", SETTLE_MS)
+        after_redrag = top_point()
+        check(moved(right_of(after_redrag), right_of(after_plain)), "a plain drag after undoing the Smooth moved the right tangent")
+        check(not moved(left_of(after_redrag), left_of(after_plain)),
+              "after undoing the Smooth the point is broken again: a plain drag leaves the left tangent alone")
+
+        check(undo_until(start, 8), "undoing the drags and the Ctrl-drag restores both tangents to where they started")
+        gt.shot("roto-06-after-undo.png")
+        gt.close_all_panels()
+        destroy_nodes([roto2])
+        yield ("sleep", SETTLE_MS)
 
         faulthandler.cancel_dump_traceback_later()
 

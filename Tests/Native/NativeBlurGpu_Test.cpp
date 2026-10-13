@@ -140,7 +140,7 @@ TEST_F(NativeBlurGpuTest, EligibilityFollowsTheSupportedSettings)
     {
         GpuQuery q = eligibleQuery();
         q.hasMask = true;
-        EXPECT_FALSE(blur->canRenderOnGpu(q)) << "a mask channel outside the plane";
+        EXPECT_EQ(supported, blur->canRenderOnGpu(q)) << "a mask channel outside the plane, read in its own layer";
         q.maskInPlane = true;
         EXPECT_EQ(supported, blur->canRenderOnGpu(q)) << "mask";
     }

@@ -55,8 +55,8 @@ struct GpuQuery {
     ImageBitDepthEnum bitDepth;
     bool hasMask;
 
-    // Whether the channel the mask reads is a channel of the rendered plane, the layout every
-    // input is handed over in, or the mask resolves to no channel and reads zero.
+    // Whether the channel the mask reads is a channel of the rendered plane, or the mask resolves
+    // to no channel and reads zero. The mask itself is handed over in the layer of its channel.
     bool maskInPlane;
 
     double mix;

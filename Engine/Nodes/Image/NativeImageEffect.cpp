@@ -45,6 +45,7 @@
 #ifdef NATRON_HAVE_GPU
 #include <span>
 
+#include "Engine/Gpu/GpuBlur.h"
 #include "Engine/Gpu/GpuBuffer.h"
 #include "Engine/Gpu/GpuRecord.h"
 #include "Engine/Gpu/GpuWrap.h"
@@ -239,26 +240,6 @@ toWrapView(const GpuImageView& view,
     return true;
 }
 
-// A mask the region engine hands over is in the plane of the node it feeds, so a colour mask
-// may arrive in another colour layout than the layer the mask channel was resolved in. Returns
-// the component of the view holding that channel, or -1 when the view does not hold it.
-int
-maskViewComponent(const ImageLayerDesc& maskLayer,
-                  int maskChannel,
-                  int viewNComps)
-{
-    const int layerNComps = maskLayer.getNumComponents();
-
-    if (viewNComps == layerNComps) {
-        return maskChannel;
-    }
-    if (!maskLayer.isColorLayer()) {
-        return -1;
-    }
-    const int bit = ImageLayerDesc::colorViewChannelBit(ImageLayerDesc::colorViewForNComps(layerNComps).getLayerID(), maskChannel);
-
-    return ImageLayerDesc::colorViewChannelIndex(ImageLayerDesc::colorViewForNComps(viewNComps).getLayerID(), bit);
-}
 #endif // NATRON_HAVE_GPU
 } // anonymous namespace
 
@@ -347,9 +328,6 @@ NativeImageEffect::canRenderOnGpu(const GpuQuery& query) const
     if ((query.unPremultChannel >= 0) && !query.unPremultInPlane) {
         return false;
     }
-    if (query.hasMask && !query.maskInPlane) {
-        return false;
-    }
 
     return gpuKernelId(query) >= 0;
 #else
@@ -357,6 +335,94 @@ NativeImageEffect::canRenderOnGpu(const GpuQuery& query) const
 
     return false;
 #endif
+}
+
+bool
+NativeImageEffect::isUsableGpuView(const GpuImageView& view,
+                                   int nComps)
+{
+    return view.buffer && (view.nComps == nComps) && (view.rowStrideFloats >= view.bounds.width() * nComps) && ((view.byteOffset % sizeof(float)) == 0);
+}
+
+GpuImageView
+NativeImageEffect::cropGpuView(const GpuImageView& view,
+                               const RectI& r)
+{
+    GpuImageView out;
+    if ((r.x2 <= r.x1) || (r.y2 <= r.y1)) {
+        return out;
+    }
+    out = view;
+    out.bounds = r;
+    out.byteOffset += ((uint64_t)(r.y1 - view.bounds.y1) * view.rowStrideFloats + (uint64_t)(r.x1 - view.bounds.x1) * view.nComps) * sizeof(float);
+
+    return out;
+}
+
+int
+NativeImageEffect::getGpuMaskViewComponent(const ImageLayerDesc& maskLayer,
+                                           int maskChannel,
+                                           int viewNComps)
+{
+    const int layerNComps = maskLayer.getNumComponents();
+
+    if (viewNComps == layerNComps) {
+        return maskChannel;
+    }
+    if (!maskLayer.isColorLayer()) {
+        return -1;
+    }
+    const int bit = ImageLayerDesc::colorViewChannelBit(ImageLayerDesc::colorViewForNComps(layerNComps).getLayerID(), maskChannel);
+
+    return ImageLayerDesc::colorViewChannelIndex(ImageLayerDesc::colorViewForNComps(viewNComps).getLayerID(), bit);
+}
+
+#ifdef NATRON_HAVE_GPU
+gpu::GpuBlurRect
+NativeImageEffect::toGpuBlurRect(const RectI& r)
+{
+    gpu::GpuBlurRect g;
+    g.x1 = r.x1;
+    g.y1 = r.y1;
+    g.x2 = r.x2;
+    g.y2 = r.y2;
+
+    return g;
+}
+
+gpu::GpuBlurImage
+NativeImageEffect::toGpuBlurImage(const GpuImageView& view)
+{
+    gpu::GpuBlurImage g;
+    g.buffer = view.buffer;
+    g.offsetFloats = view.byteOffset / sizeof(float);
+    g.bounds = toGpuBlurRect(view.bounds);
+    g.strideFloats = (uint32_t)view.rowStrideFloats;
+
+    return g;
+}
+#endif // NATRON_HAVE_GPU
+
+bool
+NativeImageEffect::getGpuInputLayer(int inputNb,
+                                    const ImageLayerDesc& plane,
+                                    double time,
+                                    ViewIdx view,
+                                    ImageLayerDesc* layer) const
+{
+    *layer = plane;
+    if (!isInputMask(inputNb)) {
+        return true;
+    }
+    ImageLayerDesc maskLayer;
+    int maskChannel = -1;
+    // Resolving only reads the node's selectors and its inputs' layers.
+    NativeImageEffect* self = const_cast<NativeImageEffect*>(this);
+    if (self->resolveInputPlaneForRender(inputNb, time, view, &maskLayer, &maskChannel)) {
+        *layer = maskLayer;
+    }
+
+    return true;
 }
 
 bool
@@ -435,7 +501,7 @@ NativeImageEffect::makeGpuWrap(const GpuRenderArgs& args,
         int maskChannel = -1;
         if (hasMask && resolveInputPlaneForRender(maskInput, time, view, &maskLayer, &maskChannel) && (maskChannel >= 0) && (maskChannel < maskLayer.getNumComponents())) {
             const GpuImageView& maskView = args.inputs[maskInput];
-            const int component = maskViewComponent(maskLayer, maskChannel, maskView.nComps);
+            const int component = getGpuMaskViewComponent(maskLayer, maskChannel, maskView.nComps);
             if ((component < 0) || (component >= maskView.nComps) || !toWrapView(maskView, &wrap->mask)) {
                 return false;
             }

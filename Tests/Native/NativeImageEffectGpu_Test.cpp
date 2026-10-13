@@ -58,7 +58,6 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
-#include "Engine/Nodes/Color/Saturation.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
@@ -548,7 +547,7 @@ TEST_F(NativeImageEffectGpuTest, BaseAcceptsAPointOpOnlyWithAKernel)
         c.hasMask = true;
         c.mix = 0.5;
         c.processChannels[3] = false;
-        EXPECT_FALSE(effect->canRenderOnGpu(c)) << "a mask channel outside the plane";
+        EXPECT_EQ(supported, effect->canRenderOnGpu(c)) << "a mask channel outside the plane, read in its own layer";
         c.maskInPlane = true;
         EXPECT_EQ(supported, effect->canRenderOnGpu(c)) << "mask, mix and a channel subset";
     }
@@ -561,13 +560,10 @@ TEST_F(NativeImageEffectGpuTest, BaseAcceptsAPointOpOnlyWithAKernel)
         EXPECT_EQ(supported, effect->canRenderOnGpu(c)) << "a divisor in the plane";
     }
 
-    // A production point op keeps the base's default: no kernel, so no GPU.
-    NodePtr saturation = createNode(QString::fromUtf8(PLUGINID_NATRON_SATURATION));
-    ASSERT_TRUE(bool(saturation));
-    NativeImageEffect* saturationEffect = effectOf(saturation);
-    ASSERT_TRUE(saturationEffect != NULL);
-    ASSERT_TRUE(saturationEffect->isPointOp());
-    EXPECT_FALSE(saturationEffect->canRenderOnGpu(q));
+    // A point op naming no kernel stays on the CPU however plain its query.
+    gScaleKernel = -1;
+    ASSERT_TRUE(effect->isPointOp());
+    EXPECT_FALSE(effect->canRenderOnGpu(q));
 }
 
 #ifdef NATRON_HAVE_GPU
@@ -640,7 +636,7 @@ TEST_F(NativeImageEffectGpuTest, RenderGpuMatchesTheCpuRender)
             }
             const RenderedPlane sourcePlane = inLayout(sourceRendered, plane);
             const RenderedPlane sourceOverWindow = inLayout(sourceOverWindowRendered, plane);
-            const RenderedPlane maskPlane = inLayout(maskRendered, plane);
+            const RenderedPlane maskInPlane = inLayout(maskRendered, plane);
             for (int maskMode = 0; maskMode < 3; ++maskMode) {
                 enableMask(op, maskMode != 0);
                 ASSERT_TRUE(setKnobValues(op, kOfxMaskInvertParamName, std::vector<double>(1, maskMode == 2 ? 1. : 0.)));
@@ -661,7 +657,8 @@ TEST_F(NativeImageEffectGpuTest, RenderGpuMatchesTheCpuRender)
                                                   ((nComps == 1) && (std::string(divisor) == "rgba.R"));
                         // The mask selects alpha, which an RGB plane drops.
                         const bool maskOutsidePlane = (maskMode != 0) && (nComps == 3);
-                        EXPECT_EQ(!outsidePlane && !maskOutsidePlane, effect->canRenderOnGpu(query)) << name;
+                        EXPECT_TRUE(!query.hasMask || (query.maskInPlane == !maskOutsidePlane)) << name;
+                        EXPECT_EQ(!outsidePlane, effect->canRenderOnGpu(query)) << name;
                         if (!effect->canRenderOnGpu(query)) {
                             continue;
                         }
@@ -673,7 +670,11 @@ TEST_F(NativeImageEffectGpuTest, RenderGpuMatchesTheCpuRender)
                         ASSERT_EQ((std::size_t)nComps, cpu.channels.size()) << name;
 
                         std::vector<GpuParityImage> inputs(1, imageOf(sourcePlane));
-                        GpuParityImage mask = imageOf(maskPlane);
+                        // The region engine hands the mask over in the layer its channel was resolved in; a mask
+                        // the plane holds may also arrive in the plane's layout.
+                        ImageLayerDesc maskLayer;
+                        ASSERT_TRUE(effect->getGpuInputLayer(maskInput, plane, kTime, ViewIdx(0), &maskLayer)) << name;
+                        GpuParityImage mask = imageOf((maskOutsidePlane || (nCase % 3 == 0)) ? inLayout(maskRendered, maskLayer) : maskInPlane);
                         GpuViewLayout layout;
                         if (nCase % 2) {
                             inputs[0].layout.padFloats = 16;

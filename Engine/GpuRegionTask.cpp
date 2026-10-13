@@ -97,6 +97,14 @@ const char* const kFallbackDeviceError = "GPU error";
 const char* const kFallbackNoGpu = "no GPU";
 const char* const kFallbackTooLarge = "too large for the GPU";
 
+// Two layers with one ID can still differ in channel names.
+bool
+sameLayer(const ImageLayerDesc& a,
+          const ImageLayerDesc& b)
+{
+    return (a == b) && (a.getChannels() == b.getChannels());
+}
+
 bool
 isContextAborted(const FrameRenderContextPtr& context)
 {
@@ -492,7 +500,7 @@ private:
     {
         for (std::size_t s = 0; s < _slots.size(); ++s) {
             Slot& slot = _slots[s];
-            if ((slot.externalTask == task) && (slot.layout.layer == layer) && (slot.layout.layer.getChannels() == layer.getChannels())) {
+            if ((slot.externalTask == task) && sameLayer(slot.layout.layer, layer)) {
                 slot.neededRoI.merge(needed);
 
                 return (int)s;
@@ -584,13 +592,40 @@ private:
             }
 
             member.inputSlots.assign(std::max(0, member.effect->getNInputs()), -1);
+            // The request pass records one edge per input node, so a node wired to two inputs of the member, such as
+            // its source and its mask, is an edge of only one of them.
+            const std::size_t nRecordedEdges = edges.size();
+            for (int inputNb = 0; inputNb < (int)member.inputSlots.size(); ++inputNb) {
+                bool recorded = false;
+                for (std::size_t e = 0; e < nRecordedEdges; ++e) {
+                    recorded = recorded || (edges[e].first == inputNb);
+                }
+                EffectInstancePtr input = member.effect->getInput(inputNb);
+                if (recorded || !input || (member.effect->isInputMask(inputNb) && !member.effect->isMaskEnabled(inputNb))) {
+                    continue;
+                }
+                for (std::size_t e = 0; e < nRecordedEdges; ++e) {
+                    if (_graph.tasks[edges[e].second].key.node == input->getNode()) {
+                        edges.push_back(std::make_pair(inputNb, edges[e].second));
+                        break;
+                    }
+                }
+            }
             for (std::size_t e = 0; e < edges.size(); ++e) {
                 const int inputNb = edges[e].first;
                 if ((inputNb < 0) || (inputNb >= (int)member.inputSlots.size())) {
                     continue;
                 }
+                ImageLayerDesc layer;
+                if (!member.effect->getGpuInputLayer(inputNb, plane, task.key.time, task.key.view, &layer)) {
+                    return fail(taskIndex, "the node cannot read an input on the GPU");
+                }
+                const int producer = _position[edges[e].second];
+                if ((producer >= 0) && !sameLayer(_slots[_members[producer].outSlot].layout.layer, layer)) {
+                    return fail(taskIndex, "an input produced in the region is not in the layer the node reads");
+                }
                 const RectI needed = member.effect->getGpuInputRoI(inputNb, task.renderedRoI, member.query.mappedScale);
-                const int slot = slotOfTask(edges[e].second, plane, needed);
+                const int slot = slotOfTask(edges[e].second, layer, needed);
                 member.inputSlots[inputNb] = slot;
             }
 

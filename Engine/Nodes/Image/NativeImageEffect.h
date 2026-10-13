@@ -38,6 +38,8 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 
 namespace gpu {
+struct GpuBlurImage;
+struct GpuBlurRect;
 struct GpuWrap;
 }
 
@@ -138,7 +140,7 @@ public:
     /**
      * @brief Whether renderGpu() can produce this query. Nodes that cannot are rendered on the
      * CPU. The base accepts a point operator's float query of 1 to 4 channels when gpuKernelId()
-     * names a kernel and any "(Un)premult by" or mask channel lies in the rendered plane.
+     * names a kernel and any "(Un)premult by" channel lies in the rendered plane.
      **/
     virtual bool canRenderOnGpu(const GpuQuery& query) const WARN_UNUSED_RETURN;
 
@@ -152,6 +154,19 @@ public:
     {
         return outputRect;
     }
+
+    /**
+     * @brief The layer renderGpu() reads input inputNb in when this node renders plane at time and
+     * view; the region engine hands that input over in it. The base answers plane, except for an
+     * input described as a mask, which is read in the layer its mask channel was resolved in, so
+     * that the channel indexes the mask view's own layout. False when the GPU path cannot read
+     * the input at all, which keeps the node on the CPU.
+     **/
+    virtual bool getGpuInputLayer(int inputNb,
+                                  const ImageLayerDesc& plane,
+                                  double time,
+                                  ViewIdx view,
+                                  ImageLayerDesc* layer) const WARN_UNUSED_RETURN;
 
     /**
      * @brief Records the dispatches that fill args.output over args.outputRect. Only called
@@ -250,6 +265,29 @@ protected:
     StatusEnum recordGpuFinish(const GpuRenderArgs& args,
                                const GpuImageView& filtered,
                                float alphaThreshold = 0.f) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether view holds nComps float components per pixel in a buffer, with rows at least
+     * as long as its bounds.
+     **/
+    static bool isUsableGpuView(const GpuImageView& view, int nComps) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief view over r, a rect inside view.bounds; no buffer when r is empty, which reads as zero.
+     **/
+    static GpuImageView cropGpuView(const GpuImageView& view, const RectI& r) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The component of a mask view of viewNComps components that holds maskChannel of
+     * maskLayer, or -1 when the view does not hold it. The region engine hands a mask over in
+     * maskLayer, but a caller may hand a colour mask over in another colour layout.
+     **/
+    static int getGpuMaskViewComponent(const ImageLayerDesc& maskLayer, int maskChannel, int viewNComps) WARN_UNUSED_RETURN;
+
+#ifdef NATRON_HAVE_GPU
+    static gpu::GpuBlurRect toGpuBlurRect(const RectI& r) WARN_UNUSED_RETURN;
+    static gpu::GpuBlurImage toGpuBlurImage(const GpuImageView& view) WARN_UNUSED_RETURN;
+#endif
 
     bool getMaskInvertValue(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 

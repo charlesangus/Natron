@@ -190,7 +190,7 @@ TEST_F(NativeGradeGpuTest, EligibilityFollowsTheSupportedSettings)
         q.unPremultInPlane = true;
         EXPECT_EQ(supported, grade->canRenderOnGpu(q)) << "mask, mix and unpremult by alpha";
         q.maskInPlane = false;
-        EXPECT_FALSE(grade->canRenderOnGpu(q)) << "a mask channel outside the plane";
+        EXPECT_EQ(supported, grade->canRenderOnGpu(q)) << "a mask channel outside the plane, read in its own layer";
         q.maskInPlane = true;
         q.unPremultInPlane = false;
         EXPECT_FALSE(grade->canRenderOnGpu(q)) << "an unpremult channel outside the plane";

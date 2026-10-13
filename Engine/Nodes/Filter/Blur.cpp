@@ -855,56 +855,6 @@ Blur::render(const RenderActionArgs& args)
     return eStatusOK;
 } // Blur::render
 
-#ifdef NATRON_HAVE_GPU
-namespace {
-gpu::GpuBlurRect
-gpuRect(const RectI& r)
-{
-    gpu::GpuBlurRect g;
-    g.x1 = r.x1;
-    g.y1 = r.y1;
-    g.x2 = r.x2;
-    g.y2 = r.y2;
-
-    return g;
-}
-
-gpu::GpuBlurImage
-gpuImage(const GpuImageView& view)
-{
-    gpu::GpuBlurImage g;
-    g.buffer = view.buffer;
-    g.offsetFloats = view.byteOffset / sizeof(float);
-    g.bounds = gpuRect(view.bounds);
-    g.strideFloats = (uint32_t)view.rowStrideFloats;
-
-    return g;
-}
-
-bool
-usableView(const GpuImageView& view,
-           int nComps)
-{
-    return view.buffer && (view.nComps == nComps) && (view.rowStrideFloats >= view.bounds.width() * nComps) && ((view.byteOffset % sizeof(float)) == 0);
-}
-
-// view over r, a rect inside view.bounds; no buffer when r is empty, which reads as zero.
-GpuImageView
-cropView(const GpuImageView& view,
-         const RectI& r)
-{
-    GpuImageView out;
-    if (isEmptyRect(r)) {
-        return out;
-    }
-    out = view;
-    out.bounds = r;
-    out.byteOffset += ((uint64_t)(r.y1 - view.bounds.y1) * view.rowStrideFloats + (uint64_t)(r.x1 - view.bounds.x1) * view.nComps) * sizeof(float);
-
-    return out;
-}
-} // anonymous namespace
-#endif
 
 bool
 Blur::canRenderOnGpu(const GpuQuery& query) const
@@ -913,7 +863,7 @@ Blur::canRenderOnGpu(const GpuQuery& query) const
     if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps < 1) || (query.nComps > (int)gpu::kGpuBlurMaxChannels)) {
         return false;
     }
-    if ((query.hasMask && !query.maskInPlane) || ((query.unPremultChannel >= 0) && !query.unPremultInPlane)) {
+    if ((query.unPremultChannel >= 0) && !query.unPremultInPlane) {
         return false;
     }
     BlurParams params;
@@ -957,7 +907,7 @@ Blur::renderGpu(const GpuRenderArgs& args)
     const int nComps = args.query.nComps;
     const RectI& rect = args.outputRect;
     EffectInstancePtr input = getInput(0);
-    if (!input || !usableView(src, nComps) || !usableView(dst, nComps) || isEmptyRect(rect) || !dst.bounds.contains(rect)) {
+    if (!input || !isUsableGpuView(src, nComps) || !isUsableGpuView(dst, nComps) || isEmptyRect(rect) || !dst.bounds.contains(rect)) {
         return eStatusFailed;
     }
 
@@ -1012,12 +962,12 @@ Blur::renderGpu(const GpuRenderArgs& args)
     // The source view may extend past the input's region of definition; render() reads the
     // divisor there as 1, as the wrap does outside its source view.
     GpuRenderArgs wrapArgs(args);
-    wrapArgs.inputs[0] = cropView(src, valid);
+    wrapArgs.inputs[0] = cropGpuView(src, valid);
 
     gpu::GpuRecordContext& ctx = args.context;
     gpu::GpuSeparableBlur blur;
-    blur.src = gpuImage(src);
-    blur.srcValid = gpuRect(valid);
+    blur.src = toGpuBlurImage(src);
+    blur.srcValid = toGpuBlurRect(valid);
     if ((divisor >= 0) && !isEmptyRect(valid)) {
         GpuImageView divided;
         divided.bounds = valid;
@@ -1027,7 +977,7 @@ Blur::renderGpu(const GpuRenderArgs& args)
             return eStatusFailed;
         }
         ctx.computeBarrier();
-        blur.src = gpuImage(divided);
+        blur.src = toGpuBlurImage(divided);
     }
 
     GpuImageView filtered = dst;
@@ -1040,9 +990,9 @@ Blur::renderGpu(const GpuRenderArgs& args)
             return eStatusFailed;
         }
     }
-    blur.dst = gpuImage(filtered);
-    blur.output = gpuRect(rect);
-    blur.domain = gpuRect(domain);
+    blur.dst = toGpuBlurImage(filtered);
+    blur.output = toGpuBlurRect(rect);
+    blur.domain = toGpuBlurRect(domain);
     blur.channels = (uint32_t)nComps;
     blur.neumann = params.neumann;
     blur.weightsX = weightsX;

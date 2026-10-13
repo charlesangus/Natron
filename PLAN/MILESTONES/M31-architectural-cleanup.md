@@ -68,4 +68,12 @@ M62.P5.T1 (2026-10-03, massif on a 300-node OFX Grade chain, release build at `a
   - verify: a design note the user approves; once implemented, a gtest that a keyframe set on a folded knob is visible through every dimension without a copy, and unfolding yields independent curves.
   - size: L
 
+## Phase 31.5: Presentation off the render thread (from M27 - Real Debug Build)
+
+- [ ] M31.P5.T1 — Resolve node labels in log and persistent-message display, not on render threads
+  - files: `Engine/LogEntry.h` (or wherever `LogEntry` lives), `Engine/AppManager.cpp` (`writeToErrorLog_mt_safe`), `Engine/OfxImageEffectInstance.cpp` (`kOfxMessageLog` path), `Engine/EffectInstanceRenderRoI.cpp` (OpenGL-required persistent messages), the Gui error-log and persistent-message views
+  - approach: render threads only stringify the node label to tag user-facing text — the OFX log message and the "OpenGL render is required for %1" errors. M27 made those calls `getLabel_mt_safe()`, which is correct but puts presentation on the render thread. Instead, have log entries and persistent messages carry a weak node reference and let the UI resolve the label on the main thread at display time, so a renamed node's messages show its current name and no render-path code reads the label. Keep a fallback name for entries whose node is gone.
+  - verify: no `getLabel`/`getLabel_mt_safe` call reachable from a render thread (audit with grep plus the debug build's main-thread assert); a plugin log message and an OpenGL-required error still show the node's label in the GUI, and show the new label after a rename; ctest green.
+  - size: M
+
 **Verification gate:** every task's verify holds; whole ctest suite green; AppImage packaged and a manual GUI session (playback, render-to-disk with abort, Python `app.render()`) reports no regression.

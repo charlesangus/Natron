@@ -353,7 +353,7 @@ User UAT on `M69-2e5e0477d`, 2026-10-13, given in chat.
   - approach: the user said, "It should never automatically fold. Once unfolded, it only folds at user request." The auto-fold in `updateGUI` is removed. The fold state lives on the engine knob (`setDimensionsUnfoldedInGui`), so it survives a GUI rebuild. A new knob GUI starts folded only when its components are equal. Auto-expand on differing components stays.
   - verify: the GUI `expanded-curve` section: equal values plus time-line moves, and close/reopen of the panel, both leave the knob expanded.
   - size: L
-- [ ] M69.P11.T6 — Save the fold state with the project: one saved value means folded, one per component means expanded
+- [x] M69.P11.T6 — Save the fold state with the project: one saved value means folded, one per component means expanded
   - files: TBD after the rebase onto M93's serialization layer (`Serialization/`, `Engine/Knob*.cpp`)
   - approach:
     - User decision: "Save with the project. If a knob has one value saved, it's folded, if it has a value per component saved, it's unfolded, and vice versa."
@@ -457,3 +457,10 @@ Acceptance sketch:
   - **Undo:** fold/expand is `DimensionsFoldCommand` on the panel's undo stack.
   - **Known limit:** the fold state isn't serialized, as before, so a reload re-derives it from values and keys.
 - 2026-10-13 — **Fold state (user):** the knob never auto-folds (P11.T5, `17a952426`), and the fold state is saved with the project (P11.T6). The rebase onto M93 must come first, so T4 splits: rebase, then T6, then the build.
+- 2026-10-13 — **P11.T6 done** (`62431ea4f`):
+  - **Format:** knob serialization v16 adds `<SavedDimensions>`. A folded Int/Double knob whose components are identical saves 1 entry; anything else saves every component.
+  - **Old projects:** data from v15 and older keeps the old equal-components start rule.
+  - **Colour adjust panel:** the re-fold on close is removed.
+  - **Goldens:** all 7 were updated by a script, not regenerated. If a golden fails at the build, regenerate with `NATRON_REGEN_GOLDEN=1` and diff.
+  - **Limit:** PyPlug export doesn't carry the fold state.
+  - **Rebase:** onto `main` with M93 (`e76ee77a6`). M93's `KnobLoadCompat` and its `ChoiceOptionIDFilter` hook are removed with the legacy filters, along with two legacy golden cases.

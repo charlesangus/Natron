@@ -267,7 +267,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - verify: ctest is green, including `ThemedIcon`. `m56_visual.py` reports 0 FAIL in both runs, and the other scripts report 0 FAIL. Show the before and after shots side by side to the user.
   - size: L
 
-- [ ] M56.P7.T2 — Package the AppImage for the user checkpoint
+- [x] M56.P7.T2 — Package the AppImage for the user checkpoint
   - files: `build/appimages/M56-<sha>.AppImage`, `build/appimages/M56-uat.md`
   - approach: `tools/ci/local/package.sh fast` (M24's `--no-appstream` wrapper note applies). The UAT script walks through:
     - renaming a node to a long name and watching it widen, then wrap;
@@ -279,6 +279,38 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
     - general density in the user's own project.
   - verify: the user signs off on the AppImage.
   - size: M
+
+## Phase 56.9: UAT round 3 fixes (2026-10-12)
+
+- [ ] M56.P9.T1 — Strip the platform icons from the standard buttons of Natron's message boxes
+  - files: `Gui/Gui30.cpp`, `Gui/MessageBox.cpp`
+  - approach:
+    - The "Save changes to %1?" dialog (`Gui::saveWarning`, `Gui/Gui20.cpp:1334`) reaches `Gui::onDoDialog` (`Gui/Gui30.cpp`, question branch ~line 397). That builds a `QMessageBox` whose main glyph is already themed by `Gui::setQMessageBoxThemedIcon` (`Gui30.cpp:295`).
+    - Its standard buttons (Save, Discard, Cancel, Ok, Yes, No…) still get the style's `SP_Dialog*Button` icons.
+    - Next to `setQMessageBoxThemedIcon`'s call sites (lines ~369, 376, 384, 403), loop over `widget->buttons()` and call `setIcon(QIcon())`, so no standard button carries an icon. User decision: no icons on any button.
+    - Do the same for Natron's own `MessageBox` (`Gui/MessageBox.cpp`), after its `DialogButtonBox` is built (~line 154).
+    - Leave the main glyph alone.
+  - verify: at the end build, change a project and close it. The Save, Discard and Cancel buttons show text only, and so do an info dialog and a question dialog.
+  - size: M
+- [ ] M56.P9.T2 — Re-derive the curve editor's colours from the theme greys
+  - files: `Engine/Settings.cpp`, `Gui/CurveWidgetPrivate.cpp`, `Gui/CurveWidgetPrivate.h`, `Gui/CurveWidget.cpp`, `Gui/CurveGui.cpp`
+  - approach:
+    - Change the curve-editor defaults (`Settings.cpp:1698-1707`) to the node graph's greys: background the sunken grey (0.12), grid a low-contrast grey (~0.30–0.35), scale text the alt-text grey (0.6).
+    - User decision: a clean break, with no migration, no appearance-version bump and no prompt.
+    - In the paint code, replace the fixed colours:
+      - the selected-curve yellow `_selectedCurveColor` (`CurveWidgetPrivate.cpp:79`) → `Settings::getSelectionColor` (the theme orange, user decision);
+      - the fixed `glColor4f` greys at `CurveWidgetPrivate.cpp:309`, `:323` and `:587` → the text and selection colours at suitable alpha;
+      - `QColor(240,240,240)` in `CurveGui.cpp:530-544` → the theme text colour (`ThemedIcon::themeTextColor()` or `getTextColor`).
+    - Keep the per-curve hue rotation and the white default, so channels stay distinguishable.
+    - Read the settings on the main thread only.
+    - Leave the dope sheet unchanged.
+  - verify: `grep -n "glColor4f(0\.\|QColor(2" Gui/CurveWidget*.cpp Gui/CurveGui.cpp` finds no fixed greys left. At the end build, screenshot the curve editor with a Grade's curves next to the node graph at 1× and 2× for the user.
+  - size: M
+- [ ] M56.P9.T3 — End build, regression scripts, and the UAT AppImage
+  - files: `build/appimages/M56-<sha>.AppImage`, `build/appimages/M56-uat.md`
+  - approach: rebase onto `main` (M45 merges first). Run one `tools/ci/local/build.sh fast`, ctest, `m56_visual.py` at 1× and 2× and the gate's regression scripts, then `tools/ci/local/package.sh fast`. The UAT script covers the button-free dialogs and the curve-editor screenshot.
+  - verify: ctest and the scripts are green, and the user signs off on the AppImage.
+  - size: L
 
 **Verification gate:**
 - One `fast` build at the end, with CI `format`, `lint-ci` and `build-and-test` green.
@@ -347,3 +379,4 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - **Needs the gate build:** these have only been compiled object by object so far. The build waits for M69's end-build agent.
 - 2026-10-12 — **The 21 new UAT-fix icons are approved (user)** (claude.ai artifact `VL8xyza9LEeqzorFzdNJvf`). The one exception is Reload Project, which uses the standard `refresh-cw` instead of `folder-sync` (`c12e54587`). `folder-sync` was removed.
 - 2026-10-12 — **UAT fixes verified:** live recolouring now reaches labels. The viewer info bar had hard-coded its text colour (`e8c57b03b`). `m56_visual.py` 272/0 at 1× and 2×; ctest 2042/2042. The Vulkan loader is bundled (decision `2026-10-12-bundle-vulkan-loader`), and the round-2 AppImage is being repackaged.
+- 2026-10-12 — **UAT round 3 (user, `.local/uat-feedback-2026-10-12.md`):** the save/discard/cancel dialog still has old-style icons, and the curve editor's colours should match the M56 look. The curve-editor item came from the UAT's "possibly not for one of these milestones" list, and the user chose to fold it in here. User answers: no icons on any standard button; the curve editor uses the node graph's greys, with the theme orange for the selected curve; a clean break for the defaults, with no migration or prompt. These became Phase 56.9.

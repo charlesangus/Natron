@@ -415,7 +415,6 @@ KnobGuiColor::KnobGuiColor(KnobIPtr knob,
     , _globalModeButton(0)
     , _lastColor()
     , _useSimplifiedUI(true)
-    , _dimensionsWereFoldedWhenPanelOpened(false)
     , _adjustPanel()
     , _rowContainer()
     , _editSession()
@@ -721,18 +720,11 @@ KnobGuiColor::onAdjustPanelToggled(bool expanded)
         if (knob && !_adjustPanel->isEditing()) {
             _adjustPanel->setKnobValue(ColorKnobEditSession::readKnobValue(knob));
         }
-        // Remembered so closing can restore a fold the user had, without copying dimension 0
-        // into the others the way the dimension-switch button would.
-        _dimensionsWereFoldedWhenPanelOpened = !getAllDimensionsVisible();
-        setAutoFoldSuppressed(true);
         setDimensionsExpanded(true);
         _adjustPanel->setVisible(true);
     } else {
         _adjustPanel->setVisible(false);
-        setAutoFoldSuppressed(false);
-        if (_dimensionsWereFoldedWhenPanelOpened) {
-            setDimensionsExpanded(false);
-        }
+        setDimensionsExpanded(false);
     }
 
     if (columnWidget) {
@@ -954,7 +946,7 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
 void
 KnobGuiColor::onMustShowAllDimension()
 {
-    setDimensionsExpanded(true);
+    setDimensionsFolded(false);
 }
 
 void

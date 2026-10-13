@@ -73,16 +73,16 @@ public:
     virtual bool getAllDimensionsVisible() const OVERRIDE FINAL;
 
     /**
-     * @brief While set, a refresh neither folds nor unfolds the dimensions, whatever their values.
+     * @brief While set, a refresh never unfolds the dimensions, whatever their values.
      **/
     void setFoldStateHeld(bool held);
 
     /**
      * @brief Folds or expands the dimensions the way the dimension-switch button asks, without
-     * pushing an undo command. A knob expanded this way stays expanded when every dimension
-     * comes to hold the same value, until it is folded the same way.
+     * pushing an undo command or copying any value, and records the result on the knob so a
+     * GUI rebuilt for it starts the same way. Nothing else ever folds an unfolded knob.
      **/
-    void setDimensionsFoldedByUser(bool folded);
+    void setDimensionsFolded(bool folded);
 
     /**
      * @brief Gives every other dimension dimension 0's value at the current time, as folding
@@ -183,15 +183,9 @@ protected:
     QVBoxLayout* getBelowRowColumnLayout() const;
 
     /**
-     * @brief While set, a refresh never folds the dimensions back into one, even when they
-     * all hold the same value.
-     **/
-    void setAutoFoldSuppressed(bool suppressed);
-
-    /**
-     * @brief Unfolds freely. Folds only when every dimension already holds the same value and
-     * curve, so, unlike the dimension-switch button, it never copies dimension 0 into the others,
-     * and never when the user expanded the knob with that button.
+     * @brief Unfolds for the time being, without recording it on the knob, and folds back only
+     * a knob that has not been unfolded any other way since and whose dimensions all still hold
+     * the same value and curve. Never copies dimension 0 into the others.
      **/
     void setDimensionsExpanded(bool expanded);
 

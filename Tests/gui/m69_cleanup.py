@@ -4,7 +4,8 @@ disconnect on a click away from a node, Y/Shift+Y and U/Shift+U connection short
 paste-onto-a-node and paste when the graph holds only the click focus, the pane menu from
 anywhere in the tab header, scene-referred viewer picking with input/output modifiers, the
 multi-point roto feather drag and broken tangent, curve-editor tangent break, join and handle
-length, and a folded knob's single curve and its edits.
+length, a folded knob's single curve and its edits, and an expanded knob staying expanded until
+it is folded by hand.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
     docker exec -e NATRON_GUI_TEST_OUT=build/m69-shots/out -e GUI_TEST_TIMEOUT=300 \
@@ -1717,8 +1718,8 @@ try:
             eviewer.seek(1)
             yield ("sleep", SETTLE_MS)
             exa = time_cursor_x(ecw)
-            # The drag happens with the time line where both components keep the same value, the
-            # case that used to fold the knob back.
+            # The drag happens with the time line where both components keep the same value, so a
+            # refresh there would find nothing to keep the knob expanded for but the user's click.
             eviewer.seek(21)
             yield ("sleep", SETTLE_MS)
             exb = time_cursor_x(ecw)
@@ -1757,6 +1758,37 @@ try:
             check(eswitch.isChecked(), "size is still expanded after the undo, with both components equal again")
             rows = size_rows()
             check(rows is not None and len(rows) == 2, "both curves are still listed after the undo (got %r)" % (rows,))
+
+            # Equal values and equal keys in every component are what a new panel folds a knob for.
+            for d in range(2):
+                size.setValueAtTime(4.0, 11, d)
+            yield ("sleep", SETTLE_MS)
+            for t in (11, 1, 21):
+                eviewer.seek(t)
+                yield ("sleep", SETTLE_MS)
+            check(all(abs(v - 4.0) <= 1e-6 for v in size_at(11)),
+                  "a script gave X and Y the same key at frame 11 (got %r)" % (size_at(11),))
+            check(eswitch.isChecked(), "size is still expanded after a script made X and Y equal and the time line moved")
+
+            graphs = gt.widgets_of("NodeGraph")
+            if graphs:
+                make_tab_current(graphs[0])
+            yield ("sleep", SETTLE_MS)
+            gt.close_all_panels()
+            yield ("sleep", SETTLE_MS)
+            check(size_switch() is None, "closed the Blur's properties panel")
+            egraph = root_graph()
+            gt.require(egraph is not None, "the node graph is on screen")
+            app.clearSelection()
+            app.selectNode(eb, True)
+            QMetaObject.invokeMethod(egraph, "showSelectedNodeSettingsPanel")
+            reopened = yield ("until", lambda: size_switch() is not None, 10.0)
+            gt.require(reopened, "reopened the Blur's properties panel")
+            yield ("sleep", SETTLE_MS)
+            eswitch = size_switch()
+            check(eswitch.isChecked(), "size is still expanded after its properties panel closes and reopens")
+            rows = size_rows()
+            check(rows is not None and len(rows) == 2, "after reopening: one curve per component (got %r)" % (rows,))
 
             eswitch.click()
             yield ("sleep", SETTLE_MS)

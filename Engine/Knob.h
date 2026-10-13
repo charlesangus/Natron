@@ -422,6 +422,13 @@ public:
     virtual void setKnobGuiPointer(const std::shared_ptr<KnobGuiI>& ptr) = 0;
     virtual std::shared_ptr<KnobGuiI> getKnobGuiPointer() const = 0;
     virtual bool getAllDimensionVisible() const = 0;
+
+    /**
+     * @brief Whether the knob GUI has shown this knob's dimensions unfolded, so that a GUI built
+     * for it later starts unfolded too. Not saved with the project.
+     **/
+    virtual void setDimensionsUnfoldedInGui(bool unfolded) = 0;
+    virtual bool getDimensionsUnfoldedInGui() const = 0;
     static bool areTypesCompatibleForSlave(KnobI* lhs, KnobI* rhs);
 
     /**
@@ -1409,6 +1416,8 @@ public:
     virtual void setKnobGuiPointer(const std::shared_ptr<KnobGuiI>& ptr) OVERRIDE FINAL;
     virtual std::shared_ptr<KnobGuiI> getKnobGuiPointer() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool getAllDimensionVisible() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void setDimensionsUnfoldedInGui(bool unfolded) OVERRIDE FINAL;
+    virtual bool getDimensionsUnfoldedInGui() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     /**
      * @brief Returns the knob was created by a plugin or added automatically by Natron (e.g like mask knobs)
      **/

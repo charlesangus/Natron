@@ -100,10 +100,8 @@ struct KnobGuiValuePrivate
     QWidget* dimensionLines;
     QGridLayout* dimensionLinesLayout;
     std::vector<ScaleSliderQWidget*> dimensionSliders; // indexed by dimension; entry 0 stays null, the row's slider drives it
-    bool autoFoldSuppressed;
     bool foldStateHeld;
     bool dimensionsFolded;
-    bool expandedByUser;
 
     KnobGuiValuePrivate(KnobIPtr knob)
         : knob(knob)
@@ -119,10 +117,8 @@ struct KnobGuiValuePrivate
         , dimensionLines(0)
         , dimensionLinesLayout(0)
         , dimensionSliders()
-        , autoFoldSuppressed(false)
         , foldStateHeld(false)
         , dimensionsFolded(false)
-        , expandedByUser(false)
     {
     }
 
@@ -563,7 +559,8 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
                 break;
             }
         }
-        if (!showSlider || !isAutoFoldDimensionsEnabled() || !areAllDimensionCurvesEqual()) {
+        if (!showSlider || !isAutoFoldDimensionsEnabled() || !areAllDimensionCurvesEqual() || knob->getDimensionsUnfoldedInGui()) {
+            knob->setDimensionsUnfoldedInGui(true);
             if (_imp->dimensionLines) {
                 expandAllDimensions();
             } else {
@@ -720,12 +717,6 @@ KnobGuiValue::getBelowRowColumnLayout() const
 }
 
 void
-KnobGuiValue::setAutoFoldSuppressed(bool suppressed)
-{
-    _imp->autoFoldSuppressed = suppressed;
-}
-
-void
 KnobGuiValue::setFoldStateHeld(bool held)
 {
     _imp->foldStateHeld = held;
@@ -741,8 +732,11 @@ KnobGuiValue::setDimensionsExpanded(bool expanded)
         if (!_imp->dimensionSwitchButton->isChecked()) {
             expandAllDimensions();
         }
-    } else if (_imp->dimensionSwitchButton->isChecked() && !_imp->expandedByUser && areAllDimensionsEqual()) {
-        foldAllDimensions();
+    } else {
+        KnobIPtr knob = _imp->getKnob();
+        if (_imp->dimensionSwitchButton->isChecked() && knob && !knob->getDimensionsUnfoldedInGui() && areAllDimensionsEqual()) {
+            foldAllDimensions();
+        }
     }
 }
 
@@ -788,12 +782,15 @@ KnobGuiValue::areAllDimensionCurvesEqual() const
 }
 
 void
-KnobGuiValue::setDimensionsFoldedByUser(bool folded)
+KnobGuiValue::setDimensionsFolded(bool folded)
 {
     if (!_imp->dimensionSwitchButton) {
         return;
     }
-    _imp->expandedByUser = !folded;
+    KnobIPtr knob = _imp->getKnob();
+    if (knob) {
+        knob->setDimensionsUnfoldedInGui(!folded);
+    }
     if (folded) {
         foldAllDimensions();
     } else {
@@ -1022,7 +1019,7 @@ public:
         if (knob && _knobBeforeFold) {
             knob->cloneAndUpdateGui(_knobBeforeFold.get());
         }
-        isValue->setDimensionsFoldedByUser(!_fold);
+        isValue->setDimensionsFolded(!_fold);
     }
 
     virtual void redo() OVERRIDE FINAL
@@ -1032,7 +1029,7 @@ public:
         if (!isValue) {
             return;
         }
-        isValue->setDimensionsFoldedByUser(_fold);
+        isValue->setDimensionsFolded(_fold);
         if (_fold) {
             isValue->copyDimensionZeroValueToOthers();
         }
@@ -1288,13 +1285,12 @@ KnobGuiValue::updateGUI(const int dimension)
             allValuesNotEqual = true;
         }
     }
-    if (!_imp->foldStateHeld) {
-        if (!isAutoFoldDimensionsEnabled() || (_imp->dimensionSwitchButton && !_imp->dimensionSwitchButton->isChecked() && allValuesNotEqual)) {
+    if (!_imp->foldStateHeld && _imp->dimensionSwitchButton) {
+        if (allValuesNotEqual) {
+            knob->setDimensionsUnfoldedInGui(true);
+        }
+        if (!isAutoFoldDimensionsEnabled() || (allValuesNotEqual && !_imp->dimensionSwitchButton->isChecked())) {
             expandAllDimensions();
-        } else if (isAutoFoldDimensionsEnabled() && !_imp->autoFoldSuppressed && !_imp->expandedByUser && _imp->dimensionSwitchButton && _imp->dimensionSwitchButton->isChecked() && !allValuesNotEqual && areAllDimensionCurvesEqual()) {
-            // Equal values at the current frame alone would fold dimensions animated apart, and the
-            // curve editor then edits a folded knob's other dimensions through its first one.
-            foldAllDimensions();
         }
     }
 

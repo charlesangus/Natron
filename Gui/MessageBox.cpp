@@ -153,6 +153,10 @@ MessageBox::init(const QString & title,
 
     _imp->buttonBox = new DialogButtonBox(QDialogButtonBox::StandardButtons( int( QtEnumConvert::toQtStandarButtons(buttons) ) ),
                                           Qt::Horizontal);
+    const QList<QAbstractButton*> stdButtons = _imp->buttonBox->buttons();
+    for (QAbstractButton* b : stdButtons) {
+        b->setIcon(QIcon());
+    }
     QPushButton* defaultB = _imp->buttonBox->button( QDialogButtonBox::StandardButton(
                                                                                       (QDialogButtonBox::StandardButton)QtEnumConvert::toQtStandardButton(defaultButton) ) );
     if ( _imp->buttonBox->buttons().contains(defaultB) ) {

@@ -294,6 +294,15 @@ Gui::informationDialog(const std::string & title,
 void
 Gui::setQMessageBoxThemedIcon(QMessageBox* widget)
 {
+    // A box built with NoButton only gets its Ok button when first shown, too late to strip its icon.
+    if (widget->buttons().isEmpty()) {
+        widget->addButton(QMessageBox::Ok);
+    }
+    const QList<QAbstractButton*> boxButtons = widget->buttons();
+    for (QAbstractButton* b : boxButtons) {
+        b->setIcon(QIcon());
+    }
+
     ThemedIcon::MessageGlyphEnum kind;
 
     switch (widget->icon()) {

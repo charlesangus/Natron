@@ -31,19 +31,19 @@
 
 NATRON_NAMESPACE_USING
 
-TEST(NodeGraphConnect, FeedLastSelectedUsesPreferredInputFirst)
+TEST(NodeGraphConnect, FeedAnchorUsesPreferredInputFirst)
 {
     std::vector<int> freeInputs;
     freeInputs.push_back(0);
     freeInputs.push_back(1);
     freeInputs.push_back(2);
 
-    std::vector<ConnectNodeId> others;
-    others.push_back(10);
-    others.push_back(11);
+    std::vector<ConnectNodeId> sources;
+    sources.push_back(10);
+    sources.push_back(11);
 
     // The preferred input is 1, not the first free input (0): it must still be tried first.
-    std::vector<ConnectPlanEntry> plan = planFeedLastSelected(1, freeInputs, 1, others);
+    std::vector<ConnectPlanEntry> plan = planFeedAnchor(1, freeInputs, 1, sources);
 
     ASSERT_EQ(2u, plan.size());
     EXPECT_EQ(10, plan[0].sourceId);
@@ -54,73 +54,98 @@ TEST(NodeGraphConnect, FeedLastSelectedUsesPreferredInputFirst)
     EXPECT_EQ(0, plan[1].destInput);
 }
 
-TEST(NodeGraphConnect, FeedLastSelectedWithNoPreferredFallsBackToInputOrder)
+TEST(NodeGraphConnect, FeedAnchorWithNoPreferredFallsBackToInputOrder)
 {
     std::vector<int> freeInputs;
     freeInputs.push_back(0);
     freeInputs.push_back(2);
 
-    std::vector<ConnectNodeId> others;
-    others.push_back(10);
-    others.push_back(11);
+    std::vector<ConnectNodeId> sources;
+    sources.push_back(10);
+    sources.push_back(11);
 
-    std::vector<ConnectPlanEntry> plan = planFeedLastSelected(1, freeInputs, -1, others);
+    std::vector<ConnectPlanEntry> plan = planFeedAnchor(1, freeInputs, -1, sources);
 
     ASSERT_EQ(2u, plan.size());
     EXPECT_EQ(0, plan[0].destInput);
     EXPECT_EQ(2, plan[1].destInput);
 }
 
-TEST(NodeGraphConnect, FeedLastSelectedMoreOthersThanFreeInputsDropsExtras)
+TEST(NodeGraphConnect, FeedAnchorMoreSourcesThanFreeInputsDropsExtras)
 {
     std::vector<int> freeInputs;
     freeInputs.push_back(0);
 
-    std::vector<ConnectNodeId> others;
-    others.push_back(10);
-    others.push_back(11);
-    others.push_back(12);
+    std::vector<ConnectNodeId> sources;
+    sources.push_back(10);
+    sources.push_back(11);
+    sources.push_back(12);
 
-    std::vector<ConnectPlanEntry> plan = planFeedLastSelected(1, freeInputs, 0, others);
+    std::vector<ConnectPlanEntry> plan = planFeedAnchor(1, freeInputs, 0, sources);
 
     ASSERT_EQ(1u, plan.size());
     EXPECT_EQ(10, plan[0].sourceId);
 }
 
-TEST(NodeGraphConnect, FeedLastSelectedMoreFreeInputsThanOthersConnectsAllOthers)
+TEST(NodeGraphConnect, FeedAnchorMoreFreeInputsThanSourcesConnectsAllSources)
 {
     std::vector<int> freeInputs;
     freeInputs.push_back(0);
     freeInputs.push_back(1);
     freeInputs.push_back(2);
 
-    std::vector<ConnectNodeId> others;
-    others.push_back(10);
+    std::vector<ConnectNodeId> sources;
+    sources.push_back(10);
 
-    std::vector<ConnectPlanEntry> plan = planFeedLastSelected(1, freeInputs, 0, others);
+    std::vector<ConnectPlanEntry> plan = planFeedAnchor(1, freeInputs, 0, sources);
 
     ASSERT_EQ(1u, plan.size());
     EXPECT_EQ(0, plan[0].destInput);
 }
 
-TEST(NodeGraphConnect, FeedLastSelectedWithNoFreeInputIsEmpty)
+TEST(NodeGraphConnect, FeedAnchorMapsSourceOrderToInputOrder)
 {
     std::vector<int> freeInputs;
-    std::vector<ConnectNodeId> others;
-    others.push_back(10);
+    freeInputs.push_back(0);
+    freeInputs.push_back(1);
+    freeInputs.push_back(2);
 
-    std::vector<ConnectPlanEntry> plan = planFeedLastSelected(1, freeInputs, -1, others);
+    // Selection order A(20), B(10), C(30) after the anchor: the sources must land on the inputs
+    // in that order, not sorted by id.
+    std::vector<ConnectNodeId> sources;
+    sources.push_back(20);
+    sources.push_back(10);
+    sources.push_back(30);
+
+    std::vector<ConnectPlanEntry> plan = planFeedAnchor(1, freeInputs, -1, sources);
+
+    ASSERT_EQ(3u, plan.size());
+    EXPECT_EQ(20, plan[0].sourceId);
+    EXPECT_EQ(0, plan[0].destInput);
+    EXPECT_EQ(10, plan[1].sourceId);
+    EXPECT_EQ(1, plan[1].destInput);
+    EXPECT_EQ(30, plan[2].sourceId);
+    EXPECT_EQ(2, plan[2].destInput);
+}
+
+TEST(NodeGraphConnect, FeedAnchorWithNoFreeInputIsEmpty)
+{
+    std::vector<int> freeInputs;
+    std::vector<ConnectNodeId> sources;
+    sources.push_back(10);
+
+    std::vector<ConnectPlanEntry> plan = planFeedAnchor(1, freeInputs, -1, sources);
 
     EXPECT_TRUE(plan.empty());
 }
 
-TEST(NodeGraphConnect, FeedSelectionFromLastConnectsEveryPreferredInput)
+TEST(NodeGraphConnect, FeedSourceIntoTargetsConnectsEveryPreferredInput)
 {
-    std::vector<ConnectOtherNode> others;
-    others.push_back(ConnectOtherNode(10, 0));
-    others.push_back(ConnectOtherNode(11, 2));
+    std::vector<ConnectTargetNode> targets;
+    targets.push_back(ConnectTargetNode(10, 0));
+    targets.push_back(ConnectTargetNode(11, 2));
 
-    std::vector<ConnectPlanEntry> plan = planFeedSelectionFromLast(1, others);
+    std::vector<ConnectPlanEntry> plan = planFeedSourceIntoTargets(1, targets);
 
     ASSERT_EQ(2u, plan.size());
     EXPECT_EQ(1, plan[0].sourceId);
@@ -131,23 +156,23 @@ TEST(NodeGraphConnect, FeedSelectionFromLastConnectsEveryPreferredInput)
     EXPECT_EQ(2, plan[1].destInput);
 }
 
-TEST(NodeGraphConnect, FeedSelectionFromLastSkipsNodesWithNoFreeInput)
+TEST(NodeGraphConnect, FeedSourceIntoTargetsSkipsNodesWithNoFreeInput)
 {
-    std::vector<ConnectOtherNode> others;
-    others.push_back(ConnectOtherNode(10, -1));
-    others.push_back(ConnectOtherNode(11, 0));
+    std::vector<ConnectTargetNode> targets;
+    targets.push_back(ConnectTargetNode(10, -1));
+    targets.push_back(ConnectTargetNode(11, 0));
 
-    std::vector<ConnectPlanEntry> plan = planFeedSelectionFromLast(1, others);
+    std::vector<ConnectPlanEntry> plan = planFeedSourceIntoTargets(1, targets);
 
     ASSERT_EQ(1u, plan.size());
     EXPECT_EQ(11, plan[0].destId);
 }
 
-TEST(NodeGraphConnect, FeedSelectionFromLastWithNoOthersIsEmpty)
+TEST(NodeGraphConnect, FeedSourceIntoTargetsWithNoTargetsIsEmpty)
 {
-    std::vector<ConnectOtherNode> others;
+    std::vector<ConnectTargetNode> targets;
 
-    std::vector<ConnectPlanEntry> plan = planFeedSelectionFromLast(1, others);
+    std::vector<ConnectPlanEntry> plan = planFeedSourceIntoTargets(1, targets);
 
     EXPECT_TRUE(plan.empty());
 }

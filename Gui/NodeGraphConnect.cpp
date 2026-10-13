@@ -35,54 +35,58 @@
 NATRON_NAMESPACE_ENTER
 
 std::vector<ConnectPlanEntry>
-planFeedLastSelected(ConnectNodeId lastId,
-                     const std::vector<int>& lastFreeInputs,
-                     int lastPreferredInput,
-                     const std::vector<ConnectNodeId>& othersInSelectionOrder)
+planFeedAnchor(ConnectNodeId anchorId,
+               const std::vector<int>& anchorFreeInputs,
+               int anchorPreferredInput,
+               const std::vector<ConnectNodeId>& sourcesInOrder)
 {
     std::vector<ConnectPlanEntry> plan;
 
     std::vector<int> orderedFreeInputs;
-    orderedFreeInputs.reserve(lastFreeInputs.size());
-    for (std::size_t i = 0; i < lastFreeInputs.size(); ++i) {
-        if (lastFreeInputs[i] == lastPreferredInput) {
-            orderedFreeInputs.push_back(lastPreferredInput);
+    orderedFreeInputs.reserve(anchorFreeInputs.size());
+    for (std::size_t i = 0; i < anchorFreeInputs.size(); ++i) {
+        if (anchorFreeInputs[i] == anchorPreferredInput) {
+            orderedFreeInputs.push_back(anchorPreferredInput);
             break;
         }
     }
-    for (std::size_t i = 0; i < lastFreeInputs.size(); ++i) {
-        if (lastFreeInputs[i] != lastPreferredInput) {
-            orderedFreeInputs.push_back(lastFreeInputs[i]);
+    for (std::size_t i = 0; i < anchorFreeInputs.size(); ++i) {
+        if (anchorFreeInputs[i] != anchorPreferredInput) {
+            orderedFreeInputs.push_back(anchorFreeInputs[i]);
         }
     }
 
-    const std::size_t count = std::min(orderedFreeInputs.size(), othersInSelectionOrder.size());
+    const std::size_t count = std::min(orderedFreeInputs.size(), sourcesInOrder.size());
     plan.reserve(count);
     for (std::size_t i = 0; i < count; ++i) {
-        plan.push_back(ConnectPlanEntry(othersInSelectionOrder[i], lastId, orderedFreeInputs[i]));
+        plan.push_back(ConnectPlanEntry(sourcesInOrder[i], anchorId, orderedFreeInputs[i]));
     }
 
     return plan;
-} // planFeedLastSelected
+} // planFeedAnchor
 
 std::vector<ConnectPlanEntry>
-planFeedSelectionFromLast(ConnectNodeId lastId,
-                          const std::vector<ConnectOtherNode>& others)
+planFeedSourceIntoTargets(ConnectNodeId sourceId,
+                          const std::vector<ConnectTargetNode>& targets)
 {
     std::vector<ConnectPlanEntry> plan;
 
-    plan.reserve(others.size());
-    for (std::size_t i = 0; i < others.size(); ++i) {
-        if (others[i].preferredInput >= 0) {
-            plan.push_back(ConnectPlanEntry(lastId, others[i].id, others[i].preferredInput));
+    plan.reserve(targets.size());
+    for (std::size_t i = 0; i < targets.size(); ++i) {
+        if (targets[i].preferredInput >= 0) {
+            plan.push_back(ConnectPlanEntry(sourceId, targets[i].id, targets[i].preferredInput));
         }
     }
 
     return plan;
-} // planFeedSelectionFromLast
+} // planFeedSourceIntoTargets
 
+namespace {
+// The anchor is the node whose inputs change; every other selected node is a source, kept in
+// selection order.
 std::vector<ConnectPlanConnection>
-planFeedLastSelectedForSelection(const NodesGuiList& selection)
+planFeedAnchorForSelection(const NodesGuiList& selection,
+                           bool anchorIsFirst)
 {
     std::vector<ConnectPlanConnection> result;
 
@@ -91,16 +95,16 @@ planFeedLastSelectedForSelection(const NodesGuiList& selection)
     }
 
     std::map<ConnectNodeId, NodeGuiPtr> byId;
-    std::vector<ConnectNodeId> othersInSelectionOrder;
-    NodeGuiPtr lastNodeGui = selection.back();
-    NodePtr lastNode = lastNodeGui->getNode();
-    if (!lastNode) {
+    std::vector<ConnectNodeId> sourcesInOrder;
+    NodeGuiPtr anchorGui = anchorIsFirst ? selection.front() : selection.back();
+    NodePtr anchorNode = anchorGui->getNode();
+    if (!anchorNode) {
         return result;
     }
-    const ConnectNodeId lastId = reinterpret_cast<ConnectNodeId>(lastNode.get());
+    const ConnectNodeId anchorId = reinterpret_cast<ConnectNodeId>(anchorNode.get());
 
     for (NodesGuiList::const_iterator it = selection.begin(); it != selection.end(); ++it) {
-        if (*it == lastNodeGui) {
+        if (*it == anchorGui) {
             continue;
         }
         NodePtr node = (*it)->getNode();
@@ -109,18 +113,18 @@ planFeedLastSelectedForSelection(const NodesGuiList& selection)
         }
         ConnectNodeId id = reinterpret_cast<ConnectNodeId>(node.get());
         byId[id] = *it;
-        othersInSelectionOrder.push_back(id);
+        sourcesInOrder.push_back(id);
     }
 
-    std::vector<int> lastFreeInputs;
-    const std::vector<NodeWPtr>& lastInputs = lastNode->getGuiInputs();
-    for (std::size_t i = 0; i < lastInputs.size(); ++i) {
-        if (!lastInputs[i].lock()) {
-            lastFreeInputs.push_back((int)i);
+    std::vector<int> anchorFreeInputs;
+    const std::vector<NodeWPtr>& anchorInputs = anchorNode->getGuiInputs();
+    for (std::size_t i = 0; i < anchorInputs.size(); ++i) {
+        if (!anchorInputs[i].lock()) {
+            anchorFreeInputs.push_back((int)i);
         }
     }
 
-    std::vector<ConnectPlanEntry> plan = planFeedLastSelected(lastId, lastFreeInputs, lastNode->getPreferredInputForConnection(), othersInSelectionOrder);
+    std::vector<ConnectPlanEntry> plan = planFeedAnchor(anchorId, anchorFreeInputs, anchorNode->getPreferredInputForConnection(), sourcesInOrder);
 
     result.reserve(plan.size());
     for (std::size_t i = 0; i < plan.size(); ++i) {
@@ -128,55 +132,23 @@ planFeedLastSelectedForSelection(const NodesGuiList& selection)
         if (foundSrc == byId.end()) {
             continue;
         }
-        result.push_back(ConnectPlanConnection(foundSrc->second, lastNodeGui, plan[i].destInput));
+        result.push_back(ConnectPlanConnection(foundSrc->second, anchorGui, plan[i].destInput));
     }
 
     return result;
-} // planFeedLastSelectedForSelection
+}
+} // anonymous namespace
 
 std::vector<ConnectPlanConnection>
-planFeedSelectionFromLastForSelection(const NodesGuiList& selection)
+planFeedFirstSelectedForSelection(const NodesGuiList& selection)
 {
-    std::vector<ConnectPlanConnection> result;
+    return planFeedAnchorForSelection(selection, true);
+}
 
-    if (selection.size() < 2) {
-        return result;
-    }
-
-    std::map<ConnectNodeId, NodeGuiPtr> byId;
-    std::vector<ConnectOtherNode> others;
-    NodeGuiPtr lastNodeGui = selection.back();
-    NodePtr lastNode = lastNodeGui->getNode();
-    if (!lastNode) {
-        return result;
-    }
-    const ConnectNodeId lastId = reinterpret_cast<ConnectNodeId>(lastNode.get());
-
-    for (NodesGuiList::const_iterator it = selection.begin(); it != selection.end(); ++it) {
-        if (*it == lastNodeGui) {
-            continue;
-        }
-        NodePtr node = (*it)->getNode();
-        if (!node) {
-            continue;
-        }
-        ConnectNodeId id = reinterpret_cast<ConnectNodeId>(node.get());
-        byId[id] = *it;
-        others.push_back(ConnectOtherNode(id, node->getPreferredInputForConnection()));
-    }
-
-    std::vector<ConnectPlanEntry> plan = planFeedSelectionFromLast(lastId, others);
-
-    result.reserve(plan.size());
-    for (std::size_t i = 0; i < plan.size(); ++i) {
-        std::map<ConnectNodeId, NodeGuiPtr>::const_iterator foundDst = byId.find(plan[i].destId);
-        if (foundDst == byId.end()) {
-            continue;
-        }
-        result.push_back(ConnectPlanConnection(lastNodeGui, foundDst->second, plan[i].destInput));
-    }
-
-    return result;
-} // planFeedSelectionFromLastForSelection
+std::vector<ConnectPlanConnection>
+planFeedLastSelectedForSelection(const NodesGuiList& selection)
+{
+    return planFeedAnchorForSelection(selection, false);
+}
 
 NATRON_NAMESPACE_EXIT

@@ -703,17 +703,17 @@ NodeGraph::applyConnectPlan(const std::vector<ConnectPlanConnection>& plan,
 void
 NodeGraph::connectSelectedNodesToLastSelected()
 {
-    std::vector<ConnectPlanConnection> plan = planFeedLastSelectedForSelection(_imp->_selection);
+    std::vector<ConnectPlanConnection> plan = planFeedFirstSelectedForSelection(_imp->_selection);
 
-    applyConnectPlan(plan, tr("Connect Selected Nodes to Last Selected"));
+    applyConnectPlan(plan, tr("Connect Later-Selected Nodes into First Selected"));
 }
 
 void
 NodeGraph::connectLastSelectedToSelectedNodes()
 {
-    std::vector<ConnectPlanConnection> plan = planFeedSelectionFromLastForSelection(_imp->_selection);
+    std::vector<ConnectPlanConnection> plan = planFeedLastSelectedForSelection(_imp->_selection);
 
-    applyConnectPlan(plan, tr("Connect Last Selected to Selected Nodes"));
+    applyConnectPlan(plan, tr("Connect Earlier-Selected Nodes into Last Selected"));
 }
 
 NATRON_NAMESPACE_EXIT

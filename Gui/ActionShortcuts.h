@@ -500,10 +500,10 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutDescActionGraphExpandGroup "Expand Group"
 
 #define kShortcutIDActionGraphConnectSelectedToLast "connectSelectedToLast"
-#define kShortcutDescActionGraphConnectSelectedToLast "Connect Selected Nodes to Last Selected"
+#define kShortcutDescActionGraphConnectSelectedToLast "Connect Later-Selected Nodes into First Selected"
 
 #define kShortcutIDActionGraphConnectLastToSelected "connectLastToSelected"
-#define kShortcutDescActionGraphConnectLastToSelected "Connect Last Selected to Selected Nodes"
+#define kShortcutDescActionGraphConnectLastToSelected "Connect Earlier-Selected Nodes into Last Selected"
 
 ///////////CURVEEDITOR SHORTCUTS
 #define kShortcutIDActionCurveEditorRemoveKeys "remove"

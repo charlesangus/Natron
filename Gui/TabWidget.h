@@ -148,13 +148,15 @@ private:
 
     virtual void contextMenuEvent(QContextMenuEvent* e) OVERRIDE FINAL
     {
-        // Only the empty stretch area should open the pane menu: a click on the
-        // TabBar or on the float/close buttons has its own context behaviour.
-        if (!childAt(e->pos())) {
-            Q_EMIT paneMenuRequested(e->globalPos());
-        } else {
-            QWidget::contextMenuEvent(e);
+        // "Float pane" acts on the current tab, so a right-click on a tab selects it first.
+        QTabBar* bar = findChild<QTabBar*>();
+        if (bar) {
+            const int index = bar->tabAt(bar->mapFrom(this, e->pos()));
+            if (index >= 0) {
+                bar->setCurrentIndex(index);
+            }
         }
+        Q_EMIT paneMenuRequested(e->globalPos());
     }
 };
 

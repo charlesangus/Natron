@@ -309,9 +309,7 @@ TabWidget::TabWidget(Gui* gui,
     QObject::connect( _imp->closeButton, SIGNAL(clicked()), this, SLOT(closePane()) );
     _imp->headerLayout->addWidget(_imp->closeButton);
 
-
     /*adding menu to the left corner button*/
-    _imp->leftCornerButton->setContextMenuPolicy(Qt::CustomContextMenu);
     QObject::connect(_imp->leftCornerButton, SIGNAL(clicked()), this, SLOT(onPaneMenuButtonClicked()));
 
     _imp->mainLayout->addWidget(_imp->header);

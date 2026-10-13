@@ -95,7 +95,7 @@ future core work has solid ground to build on.
 | M28 | Free RAM Fix | done |  |  | E6 | [M28-free-ram-reads-memfree.md](PLAN/MILESTONES/M28-free-ram-reads-memfree.md) |
 | M30 | Automated Beta Releases | done |  |  | E2 | [M30-automated-beta-releases.md](PLAN/MILESTONES/M30-automated-beta-releases.md) |
 | M73 | Native Core Nodes Wrap-Up | done |  |  | E3 | [M73-native-core-nodes-wrap-up.md](PLAN/MILESTONES/M73-native-core-nodes-wrap-up.md) |
-| M64 | Tiled Rendering | blocked |  |  | E6 | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
+| M64 | Tiled Rendering | blocked | M63 |  | E6 | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
 | M74 | Native Metadata Core | done |  |  | E3 | [M74-native-metadata-core.md](PLAN/MILESTONES/M74-native-metadata-core.md) |
 | M75 | Native Read | done |  |  | E3 | [M75-native-read.md](PLAN/MILESTONES/M75-native-read.md) |
 | M76 | Native Write | done | M75 |  | E3 | [M76-native-write.md](PLAN/MILESTONES/M76-native-write.md) |
@@ -110,7 +110,7 @@ future core work has solid ground to build on.
 | M111 | Native Node Identity Cleanup | todo | M76, M101 |  | E3 | [M111-native-node-identity-cleanup.md](PLAN/MILESTONES/M111-native-node-identity-cleanup.md) |
 | M112 | Native Node Behaviour Fixes | todo | - |  | E3 | [M112-native-node-behaviour-fixes.md](PLAN/MILESTONES/M112-native-node-behaviour-fixes.md) |
 | M81 | Raw GPU Kernels | todo |  |  | E5 | [M81-raw-gpu-kernels.md](PLAN/MILESTONES/M81-raw-gpu-kernels.md) |
-| M85 | Native GPU Kernels | doing |  | gpu | E5 | [M85-native-gpu-kernels.md](PLAN/MILESTONES/M85-native-gpu-kernels.md) |
+| M85 | Native GPU Kernels | doing | M84 | gpu | E5 | [M85-native-gpu-kernels.md](PLAN/MILESTONES/M85-native-gpu-kernels.md) |
 | M107 | GPU Viewer Hand-off | todo | M85 |  | E5 | [M107-gpu-viewer-hand-off.md](PLAN/MILESTONES/M107-gpu-viewer-hand-off.md) |
 | M108 | Retire Engine GL Host Path | todo | M85 |  | E5 | [M108-retire-engine-gl-host-path.md](PLAN/MILESTONES/M108-retire-engine-gl-host-path.md) |
 | M86 | OFX 1.5 GPU Suites | todo |  |  | E5 | [M86-ofx-gpu-suites.md](PLAN/MILESTONES/M86-ofx-gpu-suites.md) |

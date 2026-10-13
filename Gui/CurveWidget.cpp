@@ -1243,13 +1243,6 @@ CurveWidget::mouseReleaseEvent(QMouseEvent*)
     if (prevState == eEventStateSelecting) { // should other cases be considered?
         update();
     }
-
-    if ((prevState == eEventStateDraggingTangent) && _imp->_selectedDerivative.second) {
-        // The dragged handle was drawn at the cursor; now that the drag is over, put it back at
-        // its real, clamped length.
-        _imp->refreshKeyTangents(_imp->_selectedDerivative.second);
-        update();
-    }
 } // CurveWidget::mouseReleaseEvent
 
 void

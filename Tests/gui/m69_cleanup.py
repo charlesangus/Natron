@@ -2302,6 +2302,43 @@ try:
                         gt.close_all_panels()
                         yield ("sleep", SETTLE_MS)
 
+        # =====================================================================================
+        gt.section("header-button-sizes")
+        gt.close_all_panels()
+        sized = create("net.sf.openfx.GradePlugin", 0, -2000)
+        yield ("sleep", SETTLE_MS)
+
+        def named_buttons(name):
+            found = []
+            for w in QApplication.allWidgets():
+                try:
+                    if w.objectName() == name and w.isVisible():
+                        found.append(w)
+                except RuntimeError:
+                    continue
+            return found
+
+        panel_floats = named_buttons("DockablePanelFloatButton")
+        if check(len(panel_floats) > 0, "the Grade's panel header has a float button"):
+            ref = panel_floats[0]
+            ref_size = (ref.width(), ref.height())
+            ref_icon = (ref.iconSize().width(), ref.iconSize().height())
+            report("NOTE panel header button: size=%r icon=%r" % (ref_size, ref_icon))
+            for name in ("TabWidgetFloatButton", "TabWidgetCloseButton",
+                         "PropertiesBinClearAllButton", "PropertiesBinMinimizeAllButton"):
+                buttons = named_buttons(name)
+                if check(len(buttons) > 0, "%s is on screen" % name):
+                    b = buttons[0]
+                    check((b.width(), b.height()) == ref_size,
+                          "%s is the same size as a panel header button (%dx%d vs %dx%d)"
+                          % (name, b.width(), b.height(), ref_size[0], ref_size[1]))
+                    check((b.iconSize().width(), b.iconSize().height()) == ref_icon,
+                          "%s has the same icon size as a panel header button" % name)
+        gt.shot("header-button-sizes.png")
+        sized.destroy()
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+
         faulthandler.cancel_dump_traceback_later()
 
     gt.run(steps())

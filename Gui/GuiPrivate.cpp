@@ -331,26 +331,28 @@ GuiPrivate::createPropertiesBinGui()
     QHBoxLayout* propertiesAreaButtonsLayout = new QHBoxLayout(propertiesAreaButtonsContainer);
     propertiesAreaButtonsLayout->setContentsMargins(0, 0, 0, 0);
     propertiesAreaButtonsLayout->setSpacing(TO_DPIX(NATRON_DENSITY_TOOLBAR_SPACING));
-    const int smallSizeIcon = TO_DPIX(NATRON_SMALL_BUTTON_ICON_SIZE);
+    const int mediumSizeIcon = TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE);
     QIcon closePanelIcon;
-    appPTR->getIcon(NATRON_PIXMAP_CLOSE_PANEL, smallSizeIcon, &closePanelIcon);
+    appPTR->getIcon(NATRON_PIXMAP_CLOSE_PANEL, mediumSizeIcon, &closePanelIcon);
     _clearAllPanelsButton = new Button(closePanelIcon, QString(), propertiesAreaButtonsContainer);
 
-    const QSize smallButtonSize( TO_DPIX(NATRON_SMALL_BUTTON_SIZE), TO_DPIY(NATRON_SMALL_BUTTON_SIZE) );
-    const QSize smallButtonIconSize(smallSizeIcon, TO_DPIY(NATRON_SMALL_BUTTON_ICON_SIZE));
+    const QSize mediumButtonSize(TO_DPIX(NATRON_MEDIUM_BUTTON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_SIZE));
+    const QSize mediumButtonIconSize(mediumSizeIcon, TO_DPIY(NATRON_MEDIUM_BUTTON_ICON_SIZE));
 
-    _clearAllPanelsButton->setFixedSize(smallButtonSize);
-    _clearAllPanelsButton->setIconSize(smallButtonIconSize);
+    _clearAllPanelsButton->setObjectName(QString::fromUtf8("PropertiesBinClearAllButton"));
+    _clearAllPanelsButton->setFixedSize(mediumButtonSize);
+    _clearAllPanelsButton->setIconSize(mediumButtonIconSize);
     _clearAllPanelsButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Clears all the panels in the properties bin pane."),
                                                                       NATRON_NAMESPACE::WhiteSpaceNormal) );
     _clearAllPanelsButton->setFocusPolicy(Qt::NoFocus);
     QObject::connect( _clearAllPanelsButton, SIGNAL(clicked(bool)), _gui, SLOT(clearAllVisiblePanels()) );
-    const QIcon mIc = ThemedIcon::icon(QString::fromUtf8(NATRON_ICONS_PATH "lucide/chevrons-down-up.svg"), smallSizeIcon);
+    const QIcon mIc = ThemedIcon::icon(QString::fromUtf8(NATRON_ICONS_PATH "lucide/chevrons-down-up.svg"), mediumSizeIcon);
     _minimizeAllPanelsButtons = new Button(mIc, QString(), propertiesAreaButtonsContainer);
     _minimizeAllPanelsButtons->setCheckable(true);
     _minimizeAllPanelsButtons->setChecked(false);
-    _minimizeAllPanelsButtons->setFixedSize(smallButtonSize);
-    _minimizeAllPanelsButtons->setIconSize(smallButtonIconSize);
+    _minimizeAllPanelsButtons->setObjectName(QString::fromUtf8("PropertiesBinMinimizeAllButton"));
+    _minimizeAllPanelsButtons->setFixedSize(mediumButtonSize);
+    _minimizeAllPanelsButtons->setIconSize(mediumButtonIconSize);
     _minimizeAllPanelsButtons->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Minimize / Maximize all panels."), NATRON_NAMESPACE::WhiteSpaceNormal) );
     _minimizeAllPanelsButtons->setFocusPolicy(Qt::NoFocus);
     QObject::connect( _minimizeAllPanelsButtons, SIGNAL(clicked(bool)), _gui, SLOT(minimizeMaximizeAllPanels(bool)) );

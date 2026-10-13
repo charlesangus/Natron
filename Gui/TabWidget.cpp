@@ -1407,6 +1407,12 @@ TabBar::setClickFocus(bool focus)
 void
 TabBar::mousePressEvent(QMouseEvent* e)
 {
+    if (e->button() == Qt::RightButton) {
+        // QTabBar would make the pressed tab current; the right-click only opens the pane menu.
+        e->accept();
+
+        return;
+    }
     if ( buttonDownIsLeft(e) ) {
         _dragPos = e->pos();
     }

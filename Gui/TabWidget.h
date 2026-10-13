@@ -148,14 +148,6 @@ private:
 
     virtual void contextMenuEvent(QContextMenuEvent* e) OVERRIDE FINAL
     {
-        // "Float pane" acts on the current tab, so a right-click on a tab selects it first.
-        QTabBar* bar = findChild<QTabBar*>();
-        if (bar) {
-            const int index = bar->tabAt(bar->mapFrom(this, e->pos()));
-            if (index >= 0) {
-                bar->setCurrentIndex(index);
-            }
-        }
         Q_EMIT paneMenuRequested(e->globalPos());
     }
 };

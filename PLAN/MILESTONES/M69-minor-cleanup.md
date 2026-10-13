@@ -303,7 +303,7 @@ Line numbers are from `milestone/m69-minor-cleanup` at `a2e90be96`. They will sh
     - If the fold button doesn't exist before the panel opens, fall back to "auto-fold enabled and every dimension's curve equal".
   - verify: in the GUI, key a folded Grade `gain`, and the curve-editor tree shows one curve. Expand it and four appear; fold it and one shows again.
   - size: M
-- [ ] M69.P10.T10 — Make edits on a folded curve apply to every dimension, as one undo step
+- [x] M69.P10.T10 — Make edits on a folded curve apply to every dimension, as one undo step
   - files: `Gui/CurveWidget.cpp`, `Gui/CurveEditorUndoRedo.h`, `Gui/CurveEditorUndoRedo.cpp`, `Tests/gui/m69_cleanup.py`
   - approach:
     - Wrap the command in `CurveWidget::pushUndoCommand` when its curve is a folded dimension 0. The wrapper is a `FoldedCurveEditCommand(inner, knob)`:
@@ -394,3 +394,7 @@ Acceptance sketch:
 - 2026-10-12 — **P10.T2:** the old "anchor feeds every node" planner is kept as `planFeedSourceIntoTargets`, for P10.T3's U and Shift+U to reuse. `NodeGraph::connectSelectedNodesToLastSelected` and `connectLastSelectedToSelectedNodes` keep their old names; P10.T3 renames them.
 - 2026-10-12 — **P10.T9:** `CurveEditor::isFoldedKnobDimensionZero(const CurveGui*)` is the accessor P10.T10 uses. Roto item knobs have no fold button, so they auto-fold while every dimension's curves match.
 - 2026-10-12 — **P10.T5 (paste error, consultant diagnosis, ~65% confidence):** this is not a deserialization failure. Ctrl+V reached `Gui::keyPressEvent` when the graph had click focus but not keyboard focus, for example after the Tab popup closed, and the main window ran the clipboard XML as Python, so the Script Editor showed a SyntaxError. `main` has the same bug. The fix (`Gui50.cpp`) offers the paste to the click-focused graph first and matches the rebindable paste keybind. The stale `keyPressEventHasVisitedFocusWidget` flag is never reset and could misroute other keys too. That is left alone because a correct reset needs an event-filter-level change. P10.T4's repro sends Ctrl+V to the main window with the graph unfocused, to confirm the diagnosis.
+- 2026-10-12 — **P10.T10:**
+  - **Wrapper:** a `CurveEditorCommand` base class exposes `getEditedCurves()`, and `FoldedCurveEditCommand` wraps every command whose curve is a folded dimension 0. Undo runs the inner undo first, then restores the snapshots. Commands are not re-copied after a merge, because Qt's redo runs before `mergeWith`.
+  - **Extra files:** a fold-state hold (`KnobGuiValue::setFoldStateHeld`, `CurveEditor::setFoldStateHeld`) stops the knob unfolding mid-edit. That put `KnobGuiValue.*` and `CurveEditor.*` beyond the brief's file list.
+  - **Known gaps:** undo doesn't restore the other dimensions' static values after an edit that removes every key, and a drag runs n−1 `cloneCurve` calls on every mouse move.

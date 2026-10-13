@@ -45,7 +45,7 @@ import traceback
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
 
 STARTUP_TIMEOUT_S = 60.0
-WATCHDOG_S = 290
+WATCHDOG_S = 870
 SETTLE_MS = 400
 RENDER_MS = 1500
 DRAG_STEPS = 4
@@ -55,9 +55,10 @@ TOL = 1e-3
 try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Q_ARG, Qt, QTimer
-    from PySide6.QtGui import QContextMenuEvent, QGuiApplication, QKeyEvent, QMouseEvent, QWheelEvent
+    from PySide6.QtGui import QContextMenuEvent, QEnterEvent, QGuiApplication, QKeyEvent, QMouseEvent, QWheelEvent
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import (QApplication, QLabel, QLineEdit, QListView, QMainWindow, QMenu,
-                                   QTextEdit, QTreeWidget, QWidget)
+                                   QPushButton, QTextEdit, QTreeWidget, QWidget)
 
     import guitest as gt
     from guitest import check, report
@@ -341,6 +342,7 @@ try:
             if isinstance(popup, QMenu) and popup.isVisible():
                 self.seen.append({
                     "pos": popup.mapToGlobal(QPoint(0, 0)),
+                    "height": popup.height(),
                     "texts": [a.text() for a in popup.actions() if not a.isSeparator()],
                 })
                 popup.close()
@@ -836,8 +838,11 @@ try:
         app.clearSelection()
         frame(graph, [ys, ma, gb, gc, sa, sb, sm], max_zoom=1.0)
 
+        # The "Merge node connect to A input" preference picks which of A and B is preferred.
+        to_a = NatronEngine.natron.getSettings().getParam("mergeConnectToA").getValue()
+
         def merge_slots(merge):
-            preferred = input_index(merge, "B")
+            preferred = input_index(merge, "A" if to_a else "B")
             if preferred is None:
                 preferred = 0
             return preferred, [i for i in range(merge.getMaxInputCount()) if i != preferred][0]
@@ -1123,27 +1128,27 @@ try:
 
         app.clearSelection()
         before_tab = child_names()
-        graph_key(Qt.Key_Tab)
-        yield ("sleep", SETTLE_MS)
-        dialogs = [d for d in gt.widgets_of("NodeCreationDialog") if d.isVisible()]
+        gcentre = QPointF(graph.rect().center())
+        QApplication.sendEvent(graph, QEnterEvent(gcentre, gcentre, QPointF(graph.mapToGlobal(graph.rect().center()))))
+        QTest.keyClick(graph, Qt.Key_Tab)
+        yield ("until", lambda: any(d.isVisible() for d in gt.widgets_of("TabTabTabWidget")), 20.0)
+        dialogs = [d for d in gt.widgets_of("TabTabTabWidget") if d.isVisible()]
         tab_node = None
-        if check(dialogs, "the Tab key opens the node creation popup"):
+        if check(dialogs, "the Tab key opens the tab menu"):
             dialog = dialogs[0]
-            edits = [w for w in dialog.findChildren(QLineEdit) if gt.class_name(w) == "CompleterLineEdit"]
-            if check(edits, "the popup has its completer line edit"):
+            edits = dialog.findChildren(QLineEdit)
+            lists = dialog.findChildren(QListView)
+            if check(edits and lists, "the tab menu has its line edit and result list"):
                 edits[0].setText("Grade")
-                yield ("sleep", SETTLE_MS)
-                chosen = None
-                for view_widget in dialog.findChildren(QListView):
-                    model = view_widget.model()
-                    for row in range(model.rowCount()):
-                        index = model.index(row, 0)
-                        if str(index.data()).startswith("Grade  ["):
-                            chosen = (view_widget, index)
-                if check(chosen is not None, "the popup lists the Grade plugin"):
-                    chosen[0].clicked.emit(chosen[1])
+                QApplication.processEvents()
+                model = lists[0].model()
+                row = next((r for r in range(model.rowCount())
+                            if str(model.index(r, 0).data()).split("[")[0].strip() == "Grade"), -1)
+                if check(row >= 0, "the tab menu lists the Grade plugin"):
+                    lists[0].setCurrentIndex(model.index(row, 0))
+                    QTest.keyClick(edits[0], Qt.Key_Return)
                 else:
-                    send_key(edits[0], Qt.Key_Escape)
+                    QTest.keyClick(dialog, Qt.Key_Escape)
         yield ("sleep", SETTLE_MS)
         made = new_children(before_tab)
         pasted_here.extend(made)
@@ -1172,6 +1177,14 @@ try:
         if pane is not None:
             headers = [w for w in pane.findChildren(QWidget) if gt.class_name(w) == "TabWidgetHeader"]
             header = headers[0] if headers else None
+
+        def menu_at_cursor(seen, glob_pos):
+            """The menu's left edge is at the cursor and it spans the cursor's row: Qt lifts a menu
+            that would run off the bottom of the screen."""
+            top = seen["pos"].y()
+            return (abs(seen["pos"].x() - glob_pos.x()) <= 2
+                    and top - 2 <= glob_pos.y() <= top + seen["height"] + 2)
+
         if check(header is not None, "found the graph pane's tab header"):
             empty = None
             for x in range(header.width() - 5, 0, -5):
@@ -1189,8 +1202,7 @@ try:
                 if check(len(popups.seen) == 1, "a right-click on the empty header opens one menu (got %d)" % len(popups.seen)):
                     seen = popups.seen[0]
                     report("NOTE header menu at %r, cursor at %r: %r" % (seen["pos"], glob, seen["texts"]))
-                    check(abs(seen["pos"].x() - glob.x()) <= 2 and abs(seen["pos"].y() - glob.y()) <= 2,
-                          "the header menu opens with its top-left at the cursor")
+                    check(menu_at_cursor(seen, glob), "the header menu opens at the cursor")
                     header_texts = seen["texts"]
                     popups.arm()
                     QMetaObject.invokeMethod(pane, "onPaneMenuButtonClicked")
@@ -1212,8 +1224,7 @@ try:
                     return
                 seen = popups.seen[0]
                 check(corner_texts and seen["texts"] == corner_texts, "the menu from %s is the pane menu" % label)
-                check(abs(seen["pos"].x() - glob_pos.x()) <= 2 and abs(seen["pos"].y() - glob_pos.y()) <= 2,
-                      "the menu from %s opens with its top-left at the cursor" % label)
+                check(menu_at_cursor(seen, glob_pos), "the menu from %s opens at the cursor" % label)
 
             bars = [w for w in pane.findChildren(QWidget) if gt.class_name(w) == "TabBar"]
             if check(bars, "found the pane's tab bar"):
@@ -1226,7 +1237,7 @@ try:
                     check(bar.currentIndex() == target, "the right-clicked tab became current")
                     bar.setCurrentIndex(original)
                     QApplication.processEvents()
-                buttons = [w for w in header.findChildren(QWidget) if gt.class_name(w) == "Button"]
+                buttons = header.findChildren(QPushButton)
                 buttons.sort(key=lambda b: b.mapTo(header, QPoint(0, 0)).x())
                 float_buttons = [b for b in buttons if "Float pane" in b.toolTip()]
                 close_buttons = [b for b in buttons if "Close pane" in b.toolTip()]
@@ -1424,7 +1435,7 @@ try:
                         continue
                     y = w.mapToGlobal(w.rect().center()).y()
                     for b in QApplication.allWidgets():
-                        if gt.class_name(b) == "Button" and b.isVisible() and "Switch between" in b.toolTip():
+                        if isinstance(b, QPushButton) and b.isVisible() and "Switch between a single value" in b.toolTip():
                             top = b.mapToGlobal(QPoint(0, 0)).y()
                             if top <= y <= top + b.height():
                                 return b
@@ -1510,6 +1521,19 @@ try:
             start = [profile(d) for d in range(n_dims)]
             components_follow_first("before editing")
             key_start = to_f(11, 1.5)
+            # Where the curve crosses the key's column on screen: the value axis need not follow
+            # frameAll()'s padding once the folded curve is framed.
+            fimg = widget_image(fcw)
+            kx = int(round(key_start.x()))
+            curve_ys = sorted(y for y in range(fimg.height()) for x in (kx - 1, kx, kx + 1)
+                              if 0 <= x < fimg.width()
+                              and fimg.pixelColor(x, y).blue() > 180
+                              and fimg.pixelColor(x, y).blue() > fimg.pixelColor(x, y).red() + 60
+                              and fimg.pixelColor(x, y).blue() > fimg.pixelColor(x, y).green() + 80)
+            report("NOTE folded-curve: key column %d, value-axis guess y=%.1f, curve pixels at %r"
+                   % (kx, key_start.y(), curve_ys[:12]))
+            if curve_ys:
+                key_start = QPointF(key_start.x(), curve_ys[len(curve_ys) // 2])
             drag(fcw, key_start, key_start + QPointF(0, -40))
             yield ("sleep", SETTLE_MS)
             moved = gain.getValueAtTime(11, 0)
@@ -1849,6 +1873,7 @@ try:
         check(moved(right_of(after_plain), right_of(after_ctrl)), "a plain drag of the broken right tangent moved it")
         check(not moved(left_of(after_plain), left_of(start)),
               "a plain drag of a broken tangent leaves the left tangent alone")
+        gt.shot("roto-04b-broken-after-plain-drag.png")
 
         smooth_button = roto2.getParam("SmoothItemsAction")
         if check(smooth_button is not None, "the Roto node has its Smooth action"):

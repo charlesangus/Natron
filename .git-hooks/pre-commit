@@ -27,6 +27,14 @@ fail_missing_tool() {
 	exit 1
 }
 
+# Hooks are shared by every worktree, including the .plan/ worktree of the
+# orphan plan branch, so a commit with no C/C++ to format must not demand the
+# pinned toolchain.
+if ! git diff --cached --name-only --diff-filter=ACMR "${PATHSPEC[@]}" |
+	grep -qE "\.(${EXTENSIONS//,/|})$"; then
+	exit 0
+fi
+
 if ! command -v python3 >/dev/null 2>&1; then
 	fail_missing_tool "python3 not found."
 fi

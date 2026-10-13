@@ -62,6 +62,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/KnobGui.h"
 #include "Gui/PythonPanels.h" // PyModelDialog
 #include "Gui/TabWidget.h"
+#include "Gui/ThemedIcon.h"
 #include "Gui/ViewerGL.h"
 
 #include <QOpenGLContext>
@@ -2083,13 +2084,13 @@ CurveWidget::onTimeLineBoundariesChanged(int,
     update();
 }
 
-const QColor &
+QColor
 CurveWidget::getSelectedCurveColor() const
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
 
-    return _imp->_selectedCurveColor;
+    return ThemedIcon::themeSelectionColor();
 }
 
 const QFont &

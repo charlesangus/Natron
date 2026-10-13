@@ -154,7 +154,6 @@ public:
     ZoomContext zoomCtx;
     EventStateEnum _state;
     Menu* _rightClickMenu;
-    QColor _selectedCurveColor;
     QColor _nextCurveAddedColor;
     TextRenderer textRenderer;
     double _screenPixelRatio;

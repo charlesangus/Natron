@@ -45,6 +45,7 @@
 #include "Gui/CurveWidget.h"
 #include "Gui/CurveWidgetPrivate.h"
 #include "Gui/KnobGui.h"
+#include "Gui/ThemedIcon.h"
 
 #include <QOpenGLContext>
 
@@ -526,10 +527,10 @@ CurveGui::drawCurve(int curveIndex,
 
                     glColor4f(1., 1., 1., 1.);
                     glCheckFramebufferError();
-                    _curveWidget->renderText( isSelected->leftTan.first, _curveWidget->toZoomCoordinates(0, yLeftWidgetCoord).y(),
-                                              leftDerivStr, QColor(240, 240, 240), _curveWidget->getFont() );
-                    _curveWidget->renderText( isSelected->rightTan.first, _curveWidget->toZoomCoordinates(0, yRightWidgetCoord).y(),
-                                              rightDerivStr, QColor(240, 240, 240), _curveWidget->getFont() );
+                    _curveWidget->renderText(isSelected->leftTan.first, _curveWidget->toZoomCoordinates(0, yLeftWidgetCoord).y(),
+                                             leftDerivStr, ThemedIcon::themeTextColor(), _curveWidget->getFont());
+                    _curveWidget->renderText(isSelected->rightTan.first, _curveWidget->toZoomCoordinates(0, yRightWidgetCoord).y(),
+                                             rightDerivStr, ThemedIcon::themeTextColor(), _curveWidget->getFont());
                 }
 
 
@@ -540,8 +541,8 @@ CurveGui::drawCurve(int curveIndex,
                     yWidgetCoord += (m.height() + 4);
                     glColor4f(1., 1., 1., 1.);
                     glCheckFramebufferError();
-                    _curveWidget->renderText( x, _curveWidget->toZoomCoordinates(0, yWidgetCoord).y(),
-                                              coordStr, QColor(240, 240, 240), _curveWidget->getFont() );
+                    _curveWidget->renderText(x, _curveWidget->toZoomCoordinates(0, yWidgetCoord).y(),
+                                             coordStr, ThemedIcon::themeTextColor(), _curveWidget->getFont());
                 }
                 glPointSize(7.f * screenPixelRatio);
                 glBegin(GL_POINTS);

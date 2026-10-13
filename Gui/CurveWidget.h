@@ -256,7 +256,7 @@ private:
      **/
     QPointF toWidgetCoordinates(double x, double y) const;
 
-    const QColor & getSelectedCurveColor() const;
+    QColor getSelectedCurveColor() const;
     const QFont & getFont() const;
     const SelectedKeys & getSelectedKeyFrames() const;
 

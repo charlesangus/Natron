@@ -1,0 +1,3 @@
+# Bundle the Vulkan loader in release AppImages
+
+2026-10-12 (user). After M84 - GPU Placement And Residency, Natron links `libvulkan.so.1` directly. The release excludelist left it out as "driver-specific", so AppImages failed to start on machines with no Vulkan loader installed; the dev host is one of them. The user chose to bundle the loader by removing `libvulkan.so.1` from `tools/release/excludelist.txt`. The loader is ICD-agnostic, and the GPU drivers (ICDs) still come from the system. A runtime `dlopen` with CPU fallback is still the cleaner long-term design that M84's own acceptance sketch implies ("silent CPU fallback with no device"). It is noted for the GPU milestones, but not done here.

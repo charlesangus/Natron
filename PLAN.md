@@ -48,6 +48,17 @@ future core work has solid ground to build on.
   explicit user go-ahead; add tasks to it as they surface instead of folding
   refactors into feature milestones.
 
+- **Build mode (local vs remote).** Before building, a PM reads this host's
+  `.local/build-mode` with `tools/ci/remote/build.sh --mode`. A missing file means
+  **remote**, so prefer remote unless the host is powerful. Remote: build with
+  `tools/ci/remote/build.sh <fast|release> [--tests]` on pushed HEAD; lanes don't
+  share a container, so `--parallel` lanes are fine; run GUI checks locally under
+  Xvfb against the downloaded AppImage. Local: `tools/ci/local/build.sh`, one build
+  in the container at a time. Either way, batch one build per phase. UAT/GUI checks
+  use the `fast` preset; performance work uses the stripped `release` AppImage,
+  measured on the target host, never on a GitHub runner. **Until M115 - Build Speed
+  And Artifact Size merges, the remote tooling doesn't exist: build locally.**
+
 - **History:** the sequencing notes, shipped-milestone summaries and backlog-reordering log that used to sit here moved verbatim to `PLAN/ARCHIVE/board-context-history.md` (off the startup path).
 
 # Board

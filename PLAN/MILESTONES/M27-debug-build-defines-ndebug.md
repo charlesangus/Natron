@@ -18,7 +18,7 @@ source would look identical from the compile line.
 
 ## Phase 27.1: Fix and prove it
 
-- [ ] M27.P1.T1 — Stop `NDEBUG` reaching debug builds
+- [x] M27.P1.T1 — Stop `NDEBUG` reaching debug builds
   - files: `CMakeLists.txt`, `Engine/CMakeLists.txt` (only if the leak is not the Shiboken interface), `tools/ci/local/README.md`
   - approach: find where `-DNDEBUG` enters a debug compile — start by narrowing the `WIN32` gate at `CMakeLists.txt:97-102`, and verify with `cmake --graphviz` or by dumping `INTERFACE_COMPILE_DEFINITIONS` on the Shiboken and PySide targets rather than by assuming. Fix it at the source so it holds for every target, not just `NatronEngine`; a blanket `remove_definitions(-DNDEBUG)` is the wrong shape because it leaves a release build's own `NDEBUG` at the mercy of target ordering. Check whether the debug build should also be carrying an explicit `-O0` while in here, and say so rather than widening scope.
   - verify: `grep NDEBUG build/debug/compile_commands.json` comes back empty for `Engine/`, `Gui/` and `Tests/` translation units after a `--reconfigure`; a temporary `assert(false)` in an engine function reached by a ctest case aborts the run (remove it after); the release build still defines `NDEBUG`; whole ctest suite green.

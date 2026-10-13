@@ -374,7 +374,7 @@ User UAT on `M69-2e5e0477d`, 2026-10-13, given in chat.
 
 User UAT on `M69-7e3c0cea8`, 2026-10-13, given in chat with a screenshot.
 
-- [ ] M69.P12.T1 — Size the pane header's float/close buttons and the properties bin's toolbar buttons like the panel header buttons
+- [x] M69.P12.T1 — Size the pane header's float/close buttons and the properties bin's toolbar buttons like the panel header buttons
   - files: `Gui/TabWidget.cpp`, `Gui/PropertiesBinWrapper*`/`Gui/Gui*.cpp` (wherever the properties bin's max-panels spinbox row is built), the panel header in `Gui/DockablePanel*.cpp` as the reference; `Tests/gui/m69_cleanup.py`
   - approach:
     - Too small: each pane header's float and close buttons, at the right end of the tab bar (every pane), and the two buttons beside the properties bin's max-panels spinbox ("2"), i.e. minimize-all and close-all.
@@ -484,3 +484,4 @@ Acceptance sketch:
   - **Rebase:** onto `main` with M93 (`e76ee77a6`). M93's `KnobLoadCompat` and its `ChoiceOptionIDFilter` hook are removed with the legacy filters, along with two legacy golden cases.
 - 2026-10-13 — **P11.T4 end build green, awaiting UAT:** rebased onto `main` with M56; one conflict in the Break/Join commit (kept main's Free Interpolation and M69's Join). Built clean, no build fixes. ctest 2151/2151 after regenerating one golden. All GUI scripts pass: `m69_cleanup.py` 373 checks, `m56_visual.py` at 1× and 2×, `m55_*`, `m45_tab_menu.py`; m56 needs the same preferences file as the M56 container (system font). Script fixes are in `942af32bd`. The AppImage is `build/appimages/M69-7e3c0cea8.AppImage`. **Open:** in the regenerated golden, the Tracker's `pmScoreType` knob is no longer saved (`KnobsCount` 38→37). A consultant is diagnosing it before that golden is committed.
 - 2026-10-13 — **pmScoreType resolved:** it's not an M69 change. `pmScoreType` only exists in Debug builds (`NATRON_TRACKER_ENABLE_TRACKER_PM` under `#ifdef DEBUG`, `TrackerContextPrivate.h:68`), and the local `fast` build is Release. The Release-built golden was discarded; the committed golden is the Debug one, which is what CI uses. Branch pushed at `942af32bd`.
+- 2026-10-13 — **P12.T1 done** (`28b58377a` on `milestone/m69-minor-cleanup`): the pane header's float, close and pane-menu corner buttons, and the properties bin's clear-all and minimize-all buttons, moved from `NATRON_SMALL_BUTTON_SIZE`/`_ICON_SIZE` (15/13 px) to the panel header's `NATRON_MEDIUM_*` (22/18 px), still through `TO_DPIX/TO_DPIY`. The GUI section `header-button-sizes` compares them with a Grade panel's float button. At the build, check two things: the tab header may grow a few px, and the max-panels spinbox may now be shorter than the buttons beside it.

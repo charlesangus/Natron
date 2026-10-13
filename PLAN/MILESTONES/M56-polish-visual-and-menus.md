@@ -292,7 +292,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
     - Leave the main glyph alone.
   - verify: at the end build, change a project and close it. The Save, Discard and Cancel buttons show text only, and so do an info dialog and a question dialog.
   - size: M
-- [ ] M56.P9.T2 — Re-derive the curve editor's colours from the theme greys
+- [x] M56.P9.T2 — Re-derive the curve editor's colours from the theme greys
   - files: `Engine/Settings.cpp`, `Gui/CurveWidgetPrivate.cpp`, `Gui/CurveWidgetPrivate.h`, `Gui/CurveWidget.cpp`, `Gui/CurveGui.cpp`
   - approach:
     - Change the curve-editor defaults (`Settings.cpp:1698-1707`) to the node graph's greys: background the sunken grey (0.12), grid a low-contrast grey (~0.30–0.35), scale text the alt-text grey (0.6).

@@ -401,6 +401,14 @@ public:
      **/
     bool isFoldedKnobDimensionZero(const CurveGui* curve) const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief While set, the editor keeps every knob folded or expanded as it is, even when the
+     * dimensions of a folded knob stop holding the same curve.
+     **/
+    void setFoldStateHeld(bool held);
+
+    bool isFoldStateHeld() const WARN_UNUSED_RETURN;
+
     void refreshCurrentExpression();
 
     void setSelectedCurveExpression(const QString& expression);

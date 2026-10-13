@@ -95,6 +95,22 @@ CurveWidget::isSelectedKey(const CurveGuiPtr& curve,
 void
 CurveWidget::pushUndoCommand(QUndoCommand* cmd)
 {
+    CurveEditor* editor = dynamic_cast<CurveEditor*>(_imp->_selectionModel);
+    CurveEditorCommand* curveCmd = dynamic_cast<CurveEditorCommand*>(cmd);
+    if (editor && curveCmd) {
+        std::list<CurveGuiPtr> editedCurves;
+        curveCmd->getEditedCurves(&editedCurves);
+        std::list<CurveGuiPtr> foldedCurves;
+        for (std::list<CurveGuiPtr>::const_iterator it = editedCurves.begin(); it != editedCurves.end(); ++it) {
+            if (editor->isFoldedKnobDimensionZero(it->get()) && (std::find(foldedCurves.begin(), foldedCurves.end(), *it) == foldedCurves.end())) {
+                foldedCurves.push_back(*it);
+            }
+        }
+        if (!foldedCurves.empty()) {
+            cmd = new FoldedCurveEditCommand(editor, cmd, foldedCurves);
+        }
+    }
+
     _imp->_undoStack->setActive();
     _imp->_undoStack->push(cmd);
 }

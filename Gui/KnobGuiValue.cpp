@@ -101,6 +101,7 @@ struct KnobGuiValuePrivate
     QGridLayout* dimensionLinesLayout;
     std::vector<ScaleSliderQWidget*> dimensionSliders; // indexed by dimension; entry 0 stays null, the row's slider drives it
     bool autoFoldSuppressed;
+    bool foldStateHeld;
     bool dimensionsFolded;
 
     KnobGuiValuePrivate(KnobIPtr knob)
@@ -118,6 +119,7 @@ struct KnobGuiValuePrivate
         , dimensionLinesLayout(0)
         , dimensionSliders()
         , autoFoldSuppressed(false)
+        , foldStateHeld(false)
         , dimensionsFolded(false)
     {
     }
@@ -722,6 +724,12 @@ KnobGuiValue::setAutoFoldSuppressed(bool suppressed)
 }
 
 void
+KnobGuiValue::setFoldStateHeld(bool held)
+{
+    _imp->foldStateHeld = held;
+}
+
+void
 KnobGuiValue::setDimensionsExpanded(bool expanded)
 {
     if (!_imp->dimensionSwitchButton) {
@@ -1179,11 +1187,12 @@ KnobGuiValue::updateGUI(const int dimension)
             allValuesNotEqual = true;
         }
     }
-    if ( !isAutoFoldDimensionsEnabled() ||
-         (_imp->dimensionSwitchButton && !_imp->dimensionSwitchButton->isChecked() && allValuesNotEqual) ){
-        expandAllDimensions();
-    } else if (isAutoFoldDimensionsEnabled() && !_imp->autoFoldSuppressed && _imp->dimensionSwitchButton && _imp->dimensionSwitchButton->isChecked() && !allValuesNotEqual) {
-        foldAllDimensions();
+    if (!_imp->foldStateHeld) {
+        if (!isAutoFoldDimensionsEnabled() || (_imp->dimensionSwitchButton && !_imp->dimensionSwitchButton->isChecked() && allValuesNotEqual)) {
+            expandAllDimensions();
+        } else if (isAutoFoldDimensionsEnabled() && !_imp->autoFoldSuppressed && _imp->dimensionSwitchButton && _imp->dimensionSwitchButton->isChecked() && !allValuesNotEqual) {
+            foldAllDimensions();
+        }
     }
 
     if (dimension != -1) {

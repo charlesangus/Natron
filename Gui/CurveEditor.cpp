@@ -135,6 +135,7 @@ struct CurveEditorPrivate
     LineEdit* knobLineEdit;
     Label* resultLabel;
     KnobCurveGuiWPtr selectedKnobCurve;
+    bool foldStateHeld;
 
     CurveEditorPrivate()
         : nodes()
@@ -158,6 +159,7 @@ struct CurveEditorPrivate
         , knobLineEdit(0)
         , resultLabel(0)
         , selectedKnobCurve()
+        , foldStateHeld(false)
     {
     }
 };
@@ -679,7 +681,7 @@ void
 NodeCurveEditorElement::checkVisibleState(bool autoSelectOnShow)
 {
     if (!_curve) {
-        if (!_dimensionElements.empty()) {
+        if (!_dimensionElements.empty() && !_curveWidget->isFoldStateHeld()) {
             const bool folded = isKnobFoldedInCurveEditor(_knob.lock(), getInternalKnob());
             if (folded != _knobFolded) {
                 applyFoldState(folded);
@@ -1803,6 +1805,18 @@ CurveEditor::isFoldedKnobDimensionZero(const CurveGui* curve) const
     }
 
     return false;
+}
+
+void
+CurveEditor::setFoldStateHeld(bool held)
+{
+    _imp->foldStateHeld = held;
+}
+
+bool
+CurveEditor::isFoldStateHeld() const
+{
+    return _imp->foldStateHeld;
 }
 
 void

@@ -72,6 +72,11 @@ public:
     virtual KnobIPtr getKnob() const OVERRIDE FINAL;
     virtual bool getAllDimensionsVisible() const OVERRIDE FINAL;
 
+    /**
+     * @brief While set, a refresh neither folds nor unfolds the dimensions, whatever their values.
+     **/
+    void setFoldStateHeld(bool held);
+
     int getDimensionForSpinBox(const SpinBox* spinbox) const;
 
 public Q_SLOTS:

@@ -25,7 +25,9 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <bitset>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -46,6 +48,7 @@
 #include "Gpu/GradeFixture.h"
 
 #include "Engine/EffectInstance.h"
+#include "Engine/KnobChannelSelect.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Image/GpuRender.h"
@@ -161,10 +164,15 @@ TEST_F(NativeGradeGpuTest, EligibilityFollowsTheSupportedSettings)
 #else
     const bool supported = false;
 #endif
-    for (int nComps : { 1, 3, 4 }) {
+    for (int nComps : { 1, 2, 3, 4 }) {
         GpuQuery q = eligibleQuery();
         q.nComps = nComps;
         EXPECT_EQ(supported, grade->canRenderOnGpu(q)) << nComps << " components";
+    }
+    for (int nComps : { 0, 5 }) {
+        GpuQuery q = eligibleQuery();
+        q.nComps = nComps;
+        EXPECT_FALSE(grade->canRenderOnGpu(q)) << nComps << " components";
     }
     {
         GpuQuery q = eligibleQuery();
@@ -175,23 +183,17 @@ TEST_F(NativeGradeGpuTest, EligibilityFollowsTheSupportedSettings)
 
     {
         GpuQuery q = eligibleQuery();
-        q.nComps = 2;
-        EXPECT_FALSE(grade->canRenderOnGpu(q)) << "two components";
-    }
-    {
-        GpuQuery q = eligibleQuery();
         q.hasMask = true;
-        EXPECT_FALSE(grade->canRenderOnGpu(q)) << "mask";
-    }
-    for (double mix : { 0., 0.5, 0.999 }) {
-        GpuQuery q = eligibleQuery();
-        q.mix = mix;
-        EXPECT_FALSE(grade->canRenderOnGpu(q)) << "mix " << mix;
-    }
-    for (int channel = 0; channel < 4; ++channel) {
-        GpuQuery q = eligibleQuery();
-        q.unPremultChannel = channel;
-        EXPECT_FALSE(grade->canRenderOnGpu(q)) << "unpremult by channel " << channel;
+        q.maskInPlane = true;
+        q.mix = 0.5;
+        q.unPremultChannel = 3;
+        q.unPremultInPlane = true;
+        EXPECT_EQ(supported, grade->canRenderOnGpu(q)) << "mask, mix and unpremult by alpha";
+        q.maskInPlane = false;
+        EXPECT_FALSE(grade->canRenderOnGpu(q)) << "a mask channel outside the plane";
+        q.maskInPlane = true;
+        q.unPremultInPlane = false;
+        EXPECT_FALSE(grade->canRenderOnGpu(q)) << "an unpremult channel outside the plane";
     }
     for (ImageBitDepthEnum depth : { eImageBitDepthByte, eImageBitDepthShort, eImageBitDepthHalf, eImageBitDepthNone }) {
         GpuQuery q = eligibleQuery();
@@ -364,6 +366,236 @@ TEST_F(NativeGradeGpuTest, HonoursOffsetsAndStridesOfTheViews)
         EXPECT_TRUE(gradefix::matches(got[i], want[i], conditioned, bounds))
             << "window float " << i << " gpu=" << got[i] << " cpu=" << want[i];
     }
+}
+
+
+namespace {
+
+struct WrapCase {
+    const char* name;
+    // 0 none, 1 an RGBA mask image, 2 an alpha-only mask image
+    int maskKind;
+    bool invert;
+    double mix;
+    bool unPremult;
+    unsigned channelMask;
+    GradeSetting setting;
+};
+
+const GradeSetting kLinear = { { 1.5, 0.75, 2., 1.25 }, { 0.1, -0.05, 0.2, 0.05 }, { 1., 1., 1., 1. }, false, false, false };
+const GradeSetting kGamma = { { 1.5, 0.75, 2., 1.25 }, { 0.1, -0.05, 0.2, 0. }, { 2.2, 1.8, 0.8, 1.4 }, false, true, true };
+const GradeSetting kReverse = { { 1.5, 0.75, 2., 1.25 }, { 0.1, -0.05, 0.2, 0. }, { 2.2, 1.8, 0.8, 1.4 }, true, true, false };
+
+float
+sampleValue(size_t i,
+            float scale)
+{
+    if (i % 29 == 0) {
+        return 0.f;
+    }
+
+    return scale * (-0.4f + (float)((i * 37) % 211) / 100.f);
+}
+
+// The pixels of a window of `bounds`, with alpha ramps that include exact zero and values the
+// "(Un)premult by" division refuses.
+std::vector<float>
+makeImage(const RectI& bounds,
+          int nComps,
+          bool alphaRamp)
+{
+    std::vector<float> px((size_t)bounds.area() * nComps);
+    for (size_t i = 0; i < px.size(); ++i) {
+        const int c = (int)(i % nComps);
+        const size_t pixel = i / nComps;
+        if (alphaRamp && (c == nComps - 1)) {
+            px[i] = (pixel % 17 == 0) ? 0.f : ((pixel % 13 == 0) ? 1e-8f : 0.1f + (float)((pixel * 7) % 90) / 100.f);
+        } else {
+            px[i] = sampleValue(i, 1.f);
+        }
+    }
+
+    return px;
+}
+
+} // namespace
+
+TEST_F(NativeGradeGpuTest, WrapsMaskMixPremultAndChannelsAroundTheGrade)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+
+    const WrapCase cases[] = {
+        { "rgba mask", 1, false, 1., false, 0xF, kLinear },
+        { "rgba mask inverted", 1, true, 1., false, 0xF, kGamma },
+        { "alpha mask", 2, false, 1., false, 0xF, kGamma },
+        { "alpha mask inverted", 2, true, 1., false, 0xF, kReverse },
+        { "mask and mix", 1, false, 0.5, false, 0xF, kGamma },
+        { "mix 0.5", 0, false, 0.5, false, 0xF, kGamma },
+        { "mix 0.5 reverse", 0, false, 0.5, false, 0xF, kReverse },
+        { "mix 0", 0, false, 0., false, 0xF, kGamma },
+        { "unpremult by alpha", 0, false, 1., true, 0xF, kLinear },
+        { "unpremult by alpha, mix 0.5", 0, false, 0.5, true, 0xF, kLinear },
+        { "unpremult, mask and mix", 2, true, 0.5, true, 0x7, kLinear },
+        { "channel subset rg", 0, false, 1., false, 0x3, kGamma },
+        { "channel subset a with mask", 1, false, 1., false, 0x8, kGamma },
+        { "channel subset rb mix", 0, false, 0.75, false, 0x5, kReverse },
+    };
+
+    const int nComps = 4;
+    // The source covers less than the window, and the mask less than the source.
+    const RectI window(0, 0, 30, 20);
+    const RectI srcBounds(4, 3, 4 + 21, 3 + 11);
+    const RectI maskBounds(10, 6, 10 + 14, 6 + 9);
+    const std::vector<float> srcPixels = makeImage(srcBounds, nComps, true);
+    const std::vector<float> maskRgba = makeImage(maskBounds, 4, false);
+    std::vector<float> maskAlpha((size_t)maskBounds.area());
+    for (size_t i = 0; i < maskAlpha.size(); ++i) {
+        maskAlpha[i] = (i % 5 == 0) ? 1.f : (float)((i * 11) % 101) / 100.f;
+    }
+    std::vector<float> maskRgbaClamped = maskRgba;
+    for (size_t i = 3; i < maskRgbaClamped.size(); i += 4) {
+        maskRgbaClamped[i] = (i % 6 == 3) ? 1.f : (float)((i * 11) % 101) / 100.f;
+    }
+
+    const gradefix::Bounds bounds { gradefix::kUlpBound, true };
+    NodePtr rgbaSource = createNode(QString::fromUtf8(kTestPluginIDParitySource));
+    ASSERT_TRUE(bool(rgbaSource));
+    setParitySourceComponents(rgbaSource, "rgba");
+    uint64_t compared = 0;
+
+    for (const WrapCase& c : cases) {
+        NodePtr node;
+        NativeImageEffect* grade = makeGrade(node);
+        ASSERT_TRUE(grade != NULL);
+        connectNodes(rgbaSource, node, 0, true);
+        applySetting(node, c.setting);
+        ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { c.mix }));
+        ASSERT_TRUE(setKnobValues(node, kOfxMaskInvertParamName, { c.invert ? 1. : 0. }));
+        if (c.maskKind) {
+            NodePtr maskSource = createNode(QString::fromUtf8(kTestPluginIDParitySource));
+            ASSERT_TRUE(bool(maskSource));
+            setParitySourceComponents(maskSource, c.maskKind == 1 ? "rgba" : "alpha");
+            const int maskInput = grade->getMaskInput();
+            ASSERT_GE(maskInput, 0);
+            connectNodes(maskSource, node, maskInput, true);
+            ASSERT_TRUE(setKnobValues(node, "enableMask_Mask", { 1. }));
+            KnobChannelSelect* channel = dynamic_cast<KnobChannelSelect*>(node->getKnobByName("maskChannel_Mask").get());
+            ASSERT_TRUE(channel != NULL);
+            channel->set("rgba.A");
+        }
+        if (c.unPremult) {
+            KnobChannelSelect* by = dynamic_cast<KnobChannelSelect*>(node->getKnobByName("hostUnPremultBy").get());
+            ASSERT_TRUE(by != NULL);
+            by->set("rgba.A");
+        }
+        if (HasFatalFailure()) {
+            return;
+        }
+
+        GpuQuery query = eligibleQuery();
+        query.mix = c.mix;
+        query.hasMask = c.maskKind != 0;
+        query.maskInPlane = true;
+        for (int i = 0; i < 4; ++i) {
+            query.processChannels[i] = (c.channelMask >> i) & 1u;
+        }
+        if (c.unPremult) {
+            query.unPremultChannel = 3;
+            query.unPremultInPlane = true;
+        }
+        ASSERT_TRUE(grade->canRenderOnGpu(query)) << c.name;
+
+        GpuParityImage src;
+        src.bounds = srcBounds;
+        src.nComps = nComps;
+        src.pixels = srcPixels;
+        src.layout.padFloats = 4;
+        src.layout.rowPadFloats = 2;
+        GpuParityImage mask;
+        mask.bounds = maskBounds;
+        mask.nComps = c.maskKind == 2 ? 1 : 4;
+        mask.pixels = c.maskKind == 2 ? maskAlpha : maskRgbaClamped;
+        const GpuViewLayout outLayout;
+        std::vector<GpuParityImage> inputs(1, src);
+        const GpuRunResult run = runRenderGpu(*runtime, *grade, query, inputs, c.maskKind ? &mask : nullptr, window, outLayout);
+        ASSERT_TRUE(run.ok) << c.name;
+        EXPECT_EQ(0u, run.writtenOutside) << c.name;
+        ASSERT_EQ((size_t)window.area() * nComps, run.pixels.size()) << c.name;
+
+        size_t failures = 0;
+        for (int y = window.y1; y < window.y2; ++y) {
+            for (int x = window.x1; x < window.x2; ++x) {
+                float s[4] = { 0, 0, 0, 0 };
+                if (srcBounds.contains(x, y)) {
+                    const size_t at = ((size_t)(y - srcBounds.y1) * srcBounds.width() + (x - srcBounds.x1)) * nComps;
+                    for (int k = 0; k < 4; ++k) {
+                        s[k] = srcPixels[at + k];
+                    }
+                }
+                float m = 0.f;
+                if (c.maskKind && maskBounds.contains(x, y)) {
+                    const size_t at = (size_t)(y - maskBounds.y1) * maskBounds.width() + (x - maskBounds.x1);
+                    m = c.maskKind == 2 ? maskAlpha[at] : maskRgbaClamped[at * 4 + 3];
+                }
+                // render() reads the divisor as 1 outside the source, and multiplies back by
+                // max(0, d) even where d was too small to divide by.
+                const float d = srcBounds.contains(x, y) ? s[3] : 1.f;
+                const bool divide = c.unPremult && d > FLT_EPSILON;
+                std::vector<float> in(s, s + 4);
+                if (divide) {
+                    for (int k = 0; k < 3; ++k) {
+                        in[k] = s[k] / d;
+                    }
+                }
+                const std::vector<float> g = cpuRender(grade, in, 1, 1, 4, c.channelMask);
+                double alpha = c.mix;
+                if (c.maskKind) {
+                    alpha = (c.invert ? 1.0 - m : m) * c.mix;
+                }
+                const size_t outAt = ((size_t)(y - window.y1) * window.width() + (x - window.x1)) * nComps;
+                for (int k = 0; k < 4; ++k) {
+                    const float got = run.pixels[outAt + k];
+                    if (!((c.channelMask >> k) & 1u)) {
+                        if (std::memcmp(&got, &s[k], sizeof(float)) != 0) {
+                            ++failures;
+                            ADD_FAILURE() << c.name << " (" << x << "," << y << ") channel " << k << " changed outside the channel mask";
+                        }
+                        continue;
+                    }
+                    const bool scaled = divide && k != 3;
+                    const double back = (c.unPremult && k != 3) ? std::max(0.f, d) : 1.;
+                    double v = g[k] * back;
+                    const graderef::Channel chan { c.setting.multiply[k], c.setting.offset[k], c.setting.gamma[k] };
+                    double tol = gradefix::conditionedTolerance(in[k], chan, c.setting.reverse, g[k], true) * back;
+                    if (scaled) {
+                        tol += 3. * FLT_EPSILON * (std::fabs(in[k]) * std::fabs(chan.a) + std::fabs(g[k])) * back;
+                    }
+                    double want;
+                    if (alpha == 0.) {
+                        want = s[k];
+                        tol = 0.;
+                    } else if (alpha == 1.) {
+                        want = v;
+                    } else {
+                        want = v * alpha + (1. - alpha) * s[k];
+                        tol = tol * alpha + 4. * FLT_EPSILON * std::max(std::fabs(v * alpha), std::fabs((1. - alpha) * s[k]));
+                    }
+                    ++compared;
+                    if (!gradefix::matches(got, want, tol, bounds)) {
+                        ++failures;
+                        if (failures < 10) {
+                            ADD_FAILURE() << c.name << " (" << x << "," << y << ") channel " << k << " gpu=" << got << " want=" << want;
+                        }
+                    }
+                }
+            }
+        }
+        EXPECT_EQ(0u, failures) << c.name;
+    }
+    EXPECT_GT(compared, 0u);
 }
 
 #endif // NATRON_HAVE_GPU

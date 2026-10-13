@@ -261,7 +261,7 @@ struct WrapScale : IPixelOp
     }
 }
 
-struct WrapGrade : IPixelOp
+struct GradeOp : IPixelOp
 {
     float4 a;
     float4 b;
@@ -328,8 +328,16 @@ struct Chain<A : IPixelOp, B : IPixelOp> : IPixelOp
 [numthreads(8, 8, 1)]
 void pixelwrap_grade(uint3 tid : SV_DispatchThreadID)
 {
-    WrapGrade op;
-    runWrapped<WrapGrade>(op, tid);
+    GradeOp op;
+    runWrapped<GradeOp>(op, tid);
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void grade_wrapped(uint3 tid : SV_DispatchThreadID)
+{
+    GradeOp op;
+    runWrapped<GradeOp>(op, tid);
 }
 
 [shader("compute")]
@@ -344,8 +352,8 @@ void pixelwrap_invert(uint3 tid : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void pixelwrap_chain(uint3 tid : SV_DispatchThreadID)
 {
-    Chain<WrapGrade, WrapInvert> op;
-    runWrapped<Chain<WrapGrade, WrapInvert>>(op, tid);
+    Chain<GradeOp, WrapInvert> op;
+    runWrapped<Chain<GradeOp, WrapInvert>>(op, tid);
 }
 
 [shader("compute")]

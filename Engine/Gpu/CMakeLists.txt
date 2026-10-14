@@ -35,6 +35,7 @@ slang_add_kernel(add_wrapped Kernels/colormath.slang ENTRY add_wrapped REGISTRY 
 slang_add_kernel(multiply_wrapped Kernels/colormath.slang ENTRY multiply_wrapped REGISTRY NatronGpu)
 slang_add_kernel(gamma_wrapped Kernels/colormath.slang ENTRY gamma_wrapped REGISTRY NatronGpu)
 slang_add_kernel(resample Kernels/resample.slang ENTRY resample_main REGISTRY NatronGpu)
+slang_add_kernel(keyer Kernels/keyer.slang ENTRY keyer_main REGISTRY NatronGpu)
 
 slang_write_kernel_table(NatronGpu OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/gen/GpuKernels.inc")
 get_property(NatronGpu_KERNELS GLOBAL PROPERTY SLANG_REGISTRY_NatronGpu)

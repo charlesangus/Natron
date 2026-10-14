@@ -97,6 +97,14 @@ public:
                                              ViewIdx view,
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Every mode and output of render() for a float RGBA plane whose Source and Bg, when
+     * resolved, are RGB or RGBA; the masks are read in their own layers.
+     **/
+    virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 protected:
     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -122,6 +130,14 @@ private:
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
     virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // The knob values render() and renderGpu() key with; defined in Keyer.cpp.
+    struct Settings;
+
+    void readSettings(double time, ViewIdx view, Settings* settings) const;
+
+    // The number of components render() reads input inputNb in, or 0 when it reads no image.
+    int getResolvedInputNComps(int inputNb, double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     // Whether render() reads input inputNb as a mask: it is connected and its selector is on.
     bool isKeyMaskUsed(int inputNb) const WARN_UNUSED_RETURN;

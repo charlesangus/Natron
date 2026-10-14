@@ -405,7 +405,7 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - verify: a test asserts `kernelMs <= wallMs` for an unstripped region whose last member downloads, and that the region's `kernelMs` is unchanged by adding a download; the GPU sweep stays green.
   - size: M
 
-- [ ] M85.P6.T2 — Measure the new kernels and seed their cost rows
+- [x] M85.P6.T2 — Measure the new kernels and seed their cost rows
   - files: `tools/bench/render-profile-report.py` (`GPU_KERNEL_UHD_MS`, plus CPU rows for native nodes the M82 comps lack), `Engine/GpuCostSeed.inc` (regenerated), `Engine/GpuCostModel.cpp` (if traits need it)
   - approach:
     - On RADV in the container, take the UHD kernel-only time of each node ported in Phases 85.2–85.5 from the region record's GPU timestamps on a single-node region (`NATRON_RENDER_PROFILE`).
@@ -614,3 +614,31 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
     | box | 5.0 ms | 4.9 ms |
     | triangle | 6.5 ms | 7.0 ms |
     | quadratic | 8.5 ms | 8.8 ms |
+
+- 2026-10-14 — **P6.T2 done** (`7545f2ede`). `GpuCostSeed.inc` has CPU and GPU rows for every ported node; `Placement|CostModel` pass 25/25 and the report self-test passes. RADV 7900 XTX, debug build for GPU, release build for CPU, `nproc` 16. GPU ms is the median region `kernelMs` of a lone node at UHD.
+
+  | node | GPU ms | CPU ms/Mpx 1 thread | CPU ms/Mpx 16 threads |
+  |---|---|---|---|
+  | Grade | 0.497 | 13.31 | 2.85 |
+  | ColorCorrect | 0.514 | 34.20 | 5.23 |
+  | Invert | 0.477 | 9.51 | 2.35 |
+  | Clamp | 0.494 | 12.39 | 2.55 |
+  | Add / Multiply | 0.480 / 0.482 | 9.32 / 9.36 | 2.32 / 2.34 |
+  | Gamma | 0.487 | 19.70 | 4.03 |
+  | Saturation | 0.482 | 11.38 | 2.48 |
+  | ColorLookup | 0.504 | 20.35 | 3.73 |
+  | Keyer | 0.441 | 12.59 | 2.70 |
+  | ChromaKeyer | 0.514 | 61.47 | 7.55 |
+  | Erode / Dilate 6 | 6.83 / 6.92 | 51.29 / 45.05 | 12.29 / 11.94 |
+  | Constant / Solid | 0.520 / 0.510 | 4.79 / 4.85 | 3.63 / 3.59 |
+  | CheckerBoard | 0.550 | 5.68 | 3.62 |
+  | Transform plain | 0.670 | 26.13 | 6.10 |
+  | Transform motion blur q1 | 9.79 | 744.6 | 75.1 |
+  | Blur FIR σ3 / σ25 / σ100 | 9.51 / 7.07 / 18.75 | 35.4 / 81.7 / 172.8 | 6.76 / 12.4 / 24.2 |
+  | Blur Quasi-Gaussian 240 | 20.01 | 32.6 | 4.81 |
+  | Blur Gaussian IIR 240 / box 240 | 16.19 / 13.50 | 37.7 / 34.9 | 5.34 / 6.46 |
+
+  - **Region vs isolated:** a lone spatial node's region `kernelMs` reads 1.7–3× the isolated Blur numbers (probably the halo pass over cold, just-uploaded input; unconfirmed). Seeded from the lone-node figures, which is what `observeGpu` converges to. Placement is unaffected: CPU costs are 10–100× larger. Point ops agree between lone and chained regions.
+  - **Seed limits:** `GpuTaskTraits` has no Erode size or Blur-filter detail beyond `iir` and `motionBlur`, so Erode/Dilate seed at size 6, the IIR row is Quasi-Gaussian (the slower), and box/triangle/quadratic use the FIR rows. Motion blur q4 (27.1 ms) is not seeded.
+  - **Generators** vary 0.45–0.63 ms run to run; the seed is the mean of 4.
+  - Blur FIR σ100 CPU now reads 173 against 267 in the old seed; other M82 rows agree within 20% and are unchanged.

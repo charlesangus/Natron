@@ -1,0 +1,85 @@
+# Remote builds
+
+`tools/ci/remote/build.sh` runs a Natron build on GitHub Actions through the
+dispatch-only `.github/workflows/remote-build.yml` workflow and downloads the
+results into `build/remote/<preset>/`. It is the remote twin of
+`tools/ci/local/build.sh`; the presets (`fast`, `release`) are the ones
+documented in `tools/ci/local/README.md`.
+
+## Local or remote
+
+Remote is the default. GitHub-hosted runners are free for this public repo and
+run about 20 jobs concurrently, 4 vCPU each. Remote therefore gains
+parallelism (several lanes building at once, a slow host stays idle), not
+per-build speed.
+
+Use local builds on a powerful host, or for tight single-file iteration where
+a persistent build tree rebuilds in seconds (see `tools/ci/local/README.md`).
+
+In both modes, batch one build per phase rather than building after every edit.
+
+## Selecting the mode per host
+
+`.local/build-mode` at the repo root holds `local` or `remote`. The first
+non-blank line that does not start with `#` is the value; a missing file means
+`remote`. Any other value is an error. `.local/` is gitignored.
+
+```
+tools/ci/remote/build.sh --mode    # prints the resolved mode
+```
+
+`--mode` takes no other arguments.
+
+## Two build kinds
+
+- UAT: a `fast` AppImage (-O1) for GUI checks.
+- Performance: a `release` AppImage (-O2), measured on the target host. Never take performance numbers from a GitHub runner.
+
+`stage-bundle.sh` strips the ELF files of every preset's bundle, `fast`
+included, not only `release`. Set `NATRON_STAGE_NO_STRIP=1` to opt out.
+
+## Usage
+
+```
+tools/ci/remote/build.sh <fast|release> [--tests] [--no-appimage]
+```
+
+- `--tests` also runs the ctest suite and the Python bindings smoke test on
+  the runner. Without it the build skips tests.
+- `--no-appimage` skips packaging and downloading the AppImage.
+
+HEAD must already be pushed: the workflow builds the pushed commit, not the
+working tree. The script refuses on a detached HEAD, or when HEAD differs from
+`origin/<current branch>`, and it never pushes. Uncommitted changes only
+produce a warning.
+
+The script dispatches the workflow, finds its run by a token echoed into the
+run name, watches it, then downloads the artifacts (kept 7 days on GitHub):
+
+| Artifact | Contents |
+| --- | --- |
+| `natron-<preset>-<sha>` | the `.AppImage`, made executable |
+| `ctest-logs-<preset>-<sha>` | the ctest logs, `ctest-legacy.log` and `ctest-taskgraph.log` (`--tests` only), uploaded even when the run fails |
+
+Both land in `build/remote/<preset>/`, which is wiped at the start of each
+download. The script prints the run URL, the `AppImage:` path and, with
+`--tests`, the `ctest logs:` directory. It exits 0 only when the run
+succeeded and, if requested, the AppImage was downloaded; otherwise it exits
+with the run's failure status (or 1).
+
+A push to `main` also triggers the workflow as a `fast` build with no tests
+and no AppImage. It only keeps the ccache warm for branch runs.
+
+## GUI checks in remote mode
+
+Run GUI scripts inside the natron-dev container (through the main
+`tools/ci/local/devshell.sh`), against the downloaded AppImage under
+`build/`, under Xvfb:
+
+```
+Tests/gui/run-gui-test.sh Tests/gui/<script>.py build/remote/fast/<name>.AppImage
+```
+
+`run-gui-test.sh` extracts the AppImage once and launches its `AppRun`, so no
+FUSE is needed. It needs the container's `/usr/lib64` GL, EGL, Mesa and LLVM
+libraries (it exits 2 if one is missing), plus `Xvfb` and `xset`.

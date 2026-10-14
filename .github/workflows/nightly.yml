@@ -70,14 +70,10 @@ jobs:
       # container: job), and build.sh/test.sh never set it themselves, so
       # this job-level value flows straight through to ccache.
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      # CCACHE_MAXSIZE: same 6 GiB figure ci.yml measured as comfortably
-      # above one full build's working set while leaving headroom under
-      # GitHub's 10 GB per-repository actions/cache quota for the debug
-      # cache entries ci.yml maintains to coexist (see ci.yml's env block
-      # for the full measurement notes). This job's cache uses its own
-      # "release" key prefix below, so it doesn't evict or get evicted by
-      # ci.yml's debug entries.
-      CCACHE_MAXSIZE: 6G
+      # CCACHE_MAXSIZE: saved release entries are ~2.0 GB; 3G leaves
+      # room under GitHub's 10 GB per-repository actions/cache quota for
+      # the debug (3G) and fast (2G) families to coexist.
+      CCACHE_MAXSIZE: 3G
 
     steps:
       - name: Checkout branch
@@ -85,23 +81,19 @@ jobs:
         with:
           submodules: recursive
 
-      # Cache key design mirrors ci.yml's (see its comments for the full
-      # walkthrough of restore-key prefix matching); the only change is a
-      # "release" segment so this job's ccache entries never collide with,
-      # evict, or get evicted by ci.yml's debug-build entries. This
-      # workflow only ever builds the "main" ref (push-to-main, the
-      # nightly schedule runs against the default branch, and
-      # workflow_dispatch defaults to it too), so there is no per-PR
-      # branch scenario to cover here the way ci.yml has -- just "warm
-      # from last time" via the trailing restore-key.
+      # Same key scheme as ci.yml (see its comments for restore-key prefix
+      # matching) with a "release" family segment. remote-build.yml's
+      # release preset shares this family, so a dispatch on another branch
+      # falls back to main's entry saved here.
       - name: Restore ccache
         id: restore_ccache
         uses: actions/cache/restore@v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-linux-release-${{ github.ref_name }}-${{ github.run_id }}
+          key: ccache-linux-release-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}
           restore-keys: |
-            ccache-linux-release-${{ github.ref_name }}-
+            ccache-linux-release-${{ github.head_ref || github.ref_name }}-
+            ccache-linux-release-main-
 
       # build/assets is no longer just downloads: fetch-assets.sh now compiles
       # the openfx-io plugin bundle from source (see that script's header for

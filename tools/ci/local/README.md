@@ -12,6 +12,9 @@ build tree, so a one-file edit rebuilds in seconds and `ctest`/`smoke_test.py`/
 Follow this file top to bottom from a clean clone and you'll reach a passing
 `test.sh ctest`.
 
+To build on GitHub Actions instead, and to choose local or remote per host
+(`.local/build-mode`), see [`../remote/README.md`](../remote/README.md).
+
 ## Prerequisites
 
 - A working Docker daemon. If you are inside a container yourself, the host
@@ -95,17 +98,41 @@ that bumping a pin correctly invalidates it.
 ## 3. Build
 
 ```
-tools/ci/local/build.sh [debug|release|fast] [--reconfigure]
+tools/ci/local/build.sh [debug|release|fast] [--tests] [--reconfigure] [--no-ccache-stats]
 ```
 
-`debug` (default) builds `build/debug` with `-DDEBUG` and without `NDEBUG`, so
-`assert()` is live; `release` builds `build/release`
-with no explicit `-DCMAKE_BUILD_TYPE`, matching CI's release job exactly.
-`fast` builds `build/fast`: release semantics (no `-DDEBUG`, `NDEBUG` on,
-so it packages and runs under llvmpipe like `release` does) but compiled at
-`-O1` with no debug info -- roughly half the compile time of `release`'s
-`RelWithDebInfo`. Use it for quick UAT checkpoints; use `release` for
-anything you'd ship or profile.
+`build.sh` prints the resolved preset, `CMAKE_BUILD_TYPE`, compile flags and
+whether debug info is on at the start of every run, so you can confirm what
+you are about to build.
+
+**`debug`** (default) -- `build/debug`, `-DCMAKE_BUILD_TYPE=Debug`, compiled
+with `-O0 -g -DDEBUG`. Assertions are live: `NDEBUG` is not defined, and
+`CMakeLists.txt` strips the `NDEBUG` that the installed Shiboken6 package
+exports as an interface definition, which would otherwise silence `assert()`
+in every target linking it. Unoptimised, so it runs slowest. Reach for it when
+iterating on a single file or chasing a bug where you want assertions and a
+debugger-friendly binary.
+
+**`release`** -- `build/release`, no explicit `-DCMAKE_BUILD_TYPE`, so
+`CMakeLists.txt` defaults it to `RelWithDebInfo`: `-O2 -g -DNDEBUG`. This
+matches CI's release job exactly and is the slowest to build. Use it for
+anything you'd ship, profile, or compare against CI.
+
+**`fast`** -- `build/fast`, `-DCMAKE_BUILD_TYPE=Release` with
+`CMAKE_C_FLAGS_RELEASE` and `CMAKE_CXX_FLAGS_RELEASE` overridden to
+`-O1 -DNDEBUG`: no `-g`, no `-DDEBUG`. Release semantics, so it packages and
+runs under llvmpipe like `release` does, at roughly half `release`'s compile
+time. Use it for UI/UAT checkpoints where render performance doesn't matter.
+It is not a CI configuration.
+
+`fast` builds without the gtest suite (`NATRON_BUILD_TESTS=OFF`) unless
+`--tests` is given, so a UI edit does not relink the large Tests binary.
+`--tests` is for `fast` only; `debug` and `release` always build tests. The
+requested value is passed on every configure, and a cached value that differs
+forces a reconfigure.
+
+`--no-ccache-stats` skips the `ccache -s` summary printed at the end.
+
 Configure only runs once, when `CMakeCache.txt` doesn't exist yet; pass
 `--reconfigure` after editing `CMakeLists.txt` or similar to force it again.
 This is also what re-execs you into the dev container (see "Getting a
@@ -124,15 +151,27 @@ each target.
 ## 4. Test
 
 ```
-tools/ci/local/test.sh <ctest|smoke> [debug|release|fast] [--gdb]
+[NATRON_RENDER_SCHEDULER=legacy|taskgraph] [NATRON_CTEST_JOBS=<n>] \
+  tools/ci/local/test.sh <ctest|smoke> [debug|release|fast] [--gdb]
 ```
 
-- `ctest` runs `ctest -V` against the build dir, exactly as CI does.
+- `ctest` runs against the build dir. By default (`NATRON_CTEST_JOBS` unset)
+  that is the serial `ctest -V`; PR CI sets `NATRON_CTEST_JOBS=4`, which runs
+  `ctest -j 4 --output-on-failure`.
 - `smoke` locates the built `NatronRenderer` and runs
   `tools/ci/smoke_test.py` through it. This script only exists on branches
   that carry the M2-era `tools/ci/smoke_test.py` addition -- it is not on
   `RB-2.6`, and `test.sh` will tell you plainly and exit if it's missing on
   your checkout.
+- `NATRON_RENDER_SCHEDULER` selects the render scheduler for `ctest` and
+  `smoke`; unset leaves Natron's default. It is forwarded into the container
+  when set.
+- `NATRON_CTEST_JOBS` (`ctest` only) is how many cases run at once, all as
+  clients of the one Xvfb server. Unset or 1 is the serial `ctest -V` run.
+  Above 1 only failing cases' output is printed as each finishes; the full
+  output of every case is in `Testing/Temporary/LastTest.log`. Cases that
+  assert a wall-clock bound run alone (`Tests/SerialTests.cmake`). It is
+  forwarded into the container when set.
 - `--gdb` applies only to `smoke` (`ctest` runs many binaries, not one): it
   runs the target under
   `gdb -batch -ex run -ex "thread apply all bt" -ex bt --args <binary> ...`

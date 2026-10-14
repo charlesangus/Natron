@@ -11,10 +11,22 @@
 #
 # Usage:
 #   [NATRON_RENDER_SCHEDULER=legacy|taskgraph] tools/ci/local/test.sh <ctest|smoke> [debug|release|fast] [--gdb]
+#   [NATRON_CTEST_JOBS=<n>] tools/ci/local/test.sh ctest ...
 #   [NATRON_SMOKE_OUTPUT_DIR=<dir>|NATRON_SMOKE_REFERENCE_DIR=<dir>] tools/ci/local/test.sh smoke ...
 #
 #   NATRON_RENDER_SCHEDULER -> selects the render scheduler for ctest and the
 #                              smoke test; unset leaves Natron's default.
+#                              Forwarded into the container when set.
+#   NATRON_CTEST_JOBS       -> ctest only: how many cases run at once, all as
+#                              clients of the one Xvfb server. Unset or 1 is
+#                              the serial `ctest -V` run. Above 1, `ctest -V`
+#                              would interleave the cases' output line by line,
+#                              so the run prints only failing cases' output as
+#                              each finishes, and the complete output of every
+#                              case is in Testing/Temporary/LastTest.log
+#                              (printed after the run, folded, under GitHub
+#                              Actions). Cases that assert a wall-clock bound
+#                              run alone: see Tests/SerialTests.cmake.
 #                              Forwarded into the container when set.
 #   NATRON_SMOKE_OUTPUT_DIR -> smoke only: the graded PNG is copied here.
 #   NATRON_SMOKE_REFERENCE_DIR -> smoke only: the graded PNG must be
@@ -23,7 +35,8 @@
 #                              Both smoke dirs must be paths the container
 #                              sees, i.e. under the repo.
 #
-#   ctest                  -> `ctest -V` in the build dir, exactly as ci.yml.
+#   ctest                  -> `ctest -V` (or `ctest -j`, see NATRON_CTEST_JOBS)
+#                              in the build dir, exactly as ci.yml.
 #   smoke                  -> tools/ci/smoke_test.py run through the built
 #                              NatronRenderer, located the same way ci.yml
 #                              locates it (`find . -maxdepth 4 -type f -name
@@ -123,7 +136,7 @@ if ! in_container; then
     # long-lived container, so variables that steer the run are re-applied
     # through env(1) on the container side.
     forwarded_env=()
-    for var in NATRON_RENDER_SCHEDULER NATRON_SMOKE_OUTPUT_DIR NATRON_SMOKE_REFERENCE_DIR; do
+    for var in NATRON_RENDER_SCHEDULER NATRON_CTEST_JOBS NATRON_SMOKE_OUTPUT_DIR NATRON_SMOKE_REFERENCE_DIR; do
         if [[ -n "${!var:-}" ]]; then
             forwarded_env+=("${var}=${!var}")
         fi
@@ -152,6 +165,12 @@ if [[ ! -d "${BUILD_DIR}" ]]; then
     exit 1
 fi
 
+if [[ "${SUBCOMMAND}" == "ctest" ]] && grep -qs '^NATRON_BUILD_TESTS:[A-Z]*=OFF$' "${BUILD_DIR}/CMakeCache.txt"; then
+    echo "test.sh: ERROR: ${BUILD_DIR} was configured without tests." >&2
+    echo "Run tools/ci/local/build.sh ${BUILD_TYPE} --tests first." >&2
+    exit 1
+fi
+
 ASSETS_DIR="${REPO_ROOT}/build/assets"
 OFX_PLUGIN_PATH="${ASSETS_DIR}/Plugins"
 
@@ -176,11 +195,36 @@ case "${SUBCOMMAND}" in
             echo "test.sh: --gdb has no effect on 'ctest' (ctest runs many binaries," >&2
             echo "not a single target) -- ignoring." >&2
         fi
-        echo "== test.sh: ctest -V (${BUILD_TYPE}) =="
-        echo "+ cd ${BUILD_DIR}"
-        echo "+ OFX_PLUGIN_PATH=${OFX_PLUGIN_PATH} xvfb-run --auto-servernum ctest -V"
+        CTEST_JOBS="${NATRON_CTEST_JOBS:-1}"
+        if [[ ! "${CTEST_JOBS}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "test.sh: ERROR: NATRON_CTEST_JOBS must be a positive integer, got '${CTEST_JOBS}'" >&2
+            exit 1
+        fi
         cd "${BUILD_DIR}"
-        exec xvfb-run --auto-servernum ctest -V
+        echo "+ cd ${BUILD_DIR}"
+        if [[ "${CTEST_JOBS}" -eq 1 ]]; then
+            echo "== test.sh: ctest -V (${BUILD_TYPE}) =="
+            echo "+ OFX_PLUGIN_PATH=${OFX_PLUGIN_PATH} xvfb-run --auto-servernum ctest -V"
+            exec xvfb-run --auto-servernum ctest -V
+        fi
+
+        echo "== test.sh: ctest -j ${CTEST_JOBS} (${BUILD_TYPE}) =="
+        echo "+ OFX_PLUGIN_PATH=${OFX_PLUGIN_PATH} xvfb-run --auto-servernum ctest -j ${CTEST_JOBS} --output-on-failure"
+        if xvfb-run --auto-servernum ctest -j "${CTEST_JOBS}" --output-on-failure; then
+            rc=0
+        else
+            rc=$?
+        fi
+        FULL_LOG="${BUILD_DIR}/Testing/Temporary/LastTest.log"
+        if [[ -f "${FULL_LOG}" ]]; then
+            echo "Complete output of every case: ${FULL_LOG}"
+            if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+                echo "::group::Complete ctest output (LastTest.log)"
+                cat "${FULL_LOG}"
+                echo "::endgroup::"
+            fi
+        fi
+        exit "${rc}"
         ;;
 
     smoke)

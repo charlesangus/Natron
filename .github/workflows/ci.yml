@@ -21,9 +21,13 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
-    name: build-and-test
+  ctest:
+    name: ctest (${{ matrix.scheduler }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scheduler: [legacy, taskgraph]
     container:
       image: aswf/ci-vfxall:2027-clang21.1
     defaults:
@@ -51,19 +55,14 @@ jobs:
       # -DCMAKE_*_COMPILER_LAUNCHER=ccache), so this value flows straight
       # through to the compiler-launcher ccache invocations.
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      # CCACHE_MAXSIZE: ccache's built-in 5 GiB default was measured to
-      # thrash on a single cold build of this repo -- 193 cleanup cycles
-      # and a 0.18% hit rate, because one full debug build's object
-      # working set exceeds 5 GiB before the build finishes. Do not copy
-      # devshell.sh's local 40G: that is sized to hold several build
-      # trees across branch switches, while actions/cache has a 10 GB
-      # total-per-repository quota and the restore-key design below
-      # intentionally keeps more than one entry alive (this branch's and
-      # main's). 6 GiB clears the observed thrashing point while leaving
-      # room under the quota for a second entry to coexist. If the
-      # end-of-job `ccache -s` keeps reporting cleanups, raise this
-      # first.
-      CCACHE_MAXSIZE: 6G
+      # CCACHE_MAXSIZE: ccache's built-in 5 GiB default thrashed on a
+      # cold debug build (193 cleanup cycles, 0.18% hit rate). Saved
+      # debug entries are ~1.7-2.1 GB, and actions/cache has a 10 GB
+      # per-repository quota shared with the release and fast families
+      # (3G + 3G + 2G caps) plus per-branch entries, so this is held at
+      # 3G. If the end-of-job `ccache -s` keeps reporting cleanups,
+      # raise this first.
+      CCACHE_MAXSIZE: 3G
       NATRON_DEPS_CACHE: ${{ github.workspace }}/.natron-deps
 
     steps:
@@ -74,8 +73,9 @@ jobs:
 
       # Cache key design:
       #
-      #   key (primary):    ccache-linux-<branch>-<run_id>
-      #   restore-keys:     ccache-linux-<branch>-
+      #   key (primary):    ccache-linux-debug-<branch>-<run_id>
+      #   restore-keys:     ccache-linux-debug-<branch>-
+      #                     ccache-linux-debug-main-
       #                     ccache-linux-main-
       #
       # <branch> is `github.head_ref || github.ref_name`: on pull_request
@@ -93,11 +93,13 @@ jobs:
       # dropped because an earlier run claimed the key. Every real hit
       # comes from restore-keys, which prefix-match the most recently
       # created matching entry:
-      #   1. ccache-linux-<branch>-  -> this branch's own last run, so an
-      #      Nth push to a PR reuses the previous push's warm cache.
-      #   2. ccache-linux-main-      -> main's last run, so the first run
-      #      on a brand-new branch starts warm instead of cold.
-      # A merge to main saves a fresh "ccache-linux-main-<run_id>" entry,
+      #   1. ccache-linux-debug-<branch>-  -> this branch's own last run,
+      #      so an Nth push to a PR reuses the previous push's warm cache.
+      #   2. ccache-linux-debug-main-      -> main's last run, so the first
+      #      run on a brand-new branch starts warm instead of cold.
+      #   3. ccache-linux-main-            -> the pre-preset main entries;
+      #      only matters until the first debug-main entry exists.
+      # A merge to main saves a fresh "ccache-linux-debug-main-<run_id>" entry,
       # which becomes the newest match for every later lookup -- that is
       # how main's cache refreshes without anything ever being explicitly
       # deleted.
@@ -106,9 +108,10 @@ jobs:
         uses: actions/cache/restore@v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-linux-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}
+          key: ccache-linux-debug-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}
           restore-keys: |
-            ccache-linux-${{ github.head_ref || github.ref_name }}-
+            ccache-linux-debug-${{ github.head_ref || github.ref_name }}-
+            ccache-linux-debug-main-
             ccache-linux-main-
 
       # build/assets is not just downloads: fetch-assets.sh compiles the
@@ -157,44 +160,32 @@ jobs:
       - name: Build (debug)
         run: tools/ci/local/build.sh debug --no-ccache-stats
 
-      # Both render scheduler modes run in this one job rather than as a
-      # matrix: a matrix would build the debug tree twice and rename the
-      # required `build-and-test` check to `build-and-test (legacy)` etc.,
-      # which branch protection would no longer match. The taskgraph
-      # smoke leg compares its PNG byte for byte against the one the
-      # legacy leg left in smoke-reference.
-      - name: Run ctest suite (debug, legacy scheduler)
+      # lavapipe is the CPU Vulkan device; without it the Gpu tests would
+      # skip silently, so REQUIRE_GPU turns that into a failure.
+      - name: Run ctest suite (debug)
         env:
-          # lavapipe is the CPU Vulkan device; without it the Gpu tests
-          # would skip silently, so REQUIRE_GPU turns that into a failure.
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           NATRON_TEST_REQUIRE_GPU: 1
-          NATRON_RENDER_SCHEDULER: legacy
+          NATRON_RENDER_SCHEDULER: ${{ matrix.scheduler }}
+          # One case per vCPU of the hosted runner; 1 restores the serial `ctest -V` run.
+          NATRON_CTEST_JOBS: 4
         run: tools/ci/local/test.sh ctest debug
 
-      - name: Run ctest suite (debug, taskgraph scheduler)
+      - name: Python bindings smoke test (debug)
         if: success() || failure()
         env:
-          # lavapipe is the CPU Vulkan device; without it the Gpu tests
-          # would skip silently, so REQUIRE_GPU turns that into a failure.
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-          NATRON_TEST_REQUIRE_GPU: 1
-          NATRON_RENDER_SCHEDULER: taskgraph
-        run: tools/ci/local/test.sh ctest debug
-
-      - name: Python bindings smoke test (debug, legacy scheduler)
-        if: success() || failure()
-        env:
-          NATRON_RENDER_SCHEDULER: legacy
+          NATRON_RENDER_SCHEDULER: ${{ matrix.scheduler }}
           NATRON_SMOKE_OUTPUT_DIR: ${{ github.workspace }}/build/smoke-reference
         run: tools/ci/local/test.sh smoke debug
 
-      - name: Python bindings smoke test (debug, taskgraph scheduler)
+      - name: Upload smoke renders
         if: success() || failure()
-        env:
-          NATRON_RENDER_SCHEDULER: taskgraph
-          NATRON_SMOKE_REFERENCE_DIR: ${{ github.workspace }}/build/smoke-reference
-        run: tools/ci/local/test.sh smoke debug
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-render-${{ matrix.scheduler }}
+          path: build/smoke-reference
+          if-no-files-found: ignore
+          retention-days: 1
 
       # if: always() is load-bearing: a step defaults to success() and is
       # skipped once an earlier step has failed, so without it a red build
@@ -208,8 +199,12 @@ jobs:
       # key reuses the restore step's resolved cache-primary-key output
       # rather than re-interpolating the expression, so restore and save
       # can never drift apart.
+      #
+      # Only the legacy leg saves: both legs restore the same entry and
+      # end with near-identical ccache contents, so a second save would
+      # just double the cache quota used.
       - name: Save ccache
-        if: always()
+        if: always() && matrix.scheduler == 'legacy'
         uses: actions/cache/save@v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
@@ -218,3 +213,34 @@ jobs:
       - name: ccache stats
         if: always()
         run: ccache -s
+
+  # Branch protection requires a check named exactly `build-and-test`; the
+  # matrix legs are named `ctest (<scheduler>)`, so this job keeps the
+  # required name stable. It also holds the byte-for-byte comparison of the
+  # two schedulers' smoke renders, which can no longer happen inside one job.
+  build-and-test:
+    name: build-and-test
+    needs: ctest
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every ctest leg to pass
+        env:
+          RESULT: ${{ needs.ctest.result }}
+        run: |
+          if [ "$RESULT" != success ]; then
+            echo "ctest matrix result: $RESULT" >&2
+            exit 1
+          fi
+
+      - name: Download smoke renders
+        uses: actions/download-artifact@v4
+        with:
+          pattern: smoke-render-*
+          path: smoke-renders
+
+      - name: Compare smoke renders across schedulers
+        run: |
+          test -d smoke-renders/smoke-render-legacy
+          test -d smoke-renders/smoke-render-taskgraph
+          diff -r smoke-renders/smoke-render-legacy smoke-renders/smoke-render-taskgraph

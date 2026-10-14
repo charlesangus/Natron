@@ -155,11 +155,11 @@ jobs:
 
           actionlint -version
 
-      - name: shellcheck tools/ci/local
+      - name: shellcheck tools/ci/local and tools/ci/remote
         shell: bash
         run: |
           set -euo pipefail
-          shellcheck tools/ci/local/*.sh
+          shellcheck tools/ci/local/*.sh tools/ci/remote/*.sh
 
       - name: shellcheck tools/bench
         shell: bash

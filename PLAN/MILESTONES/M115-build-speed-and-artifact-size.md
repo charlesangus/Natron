@@ -65,7 +65,7 @@ build ~30 min. No workflow produces an AppImage except `release.yml` on tag push
 
 ## Phase 115.1: Faster local builds for UI/UAT iteration
 
-- [ ] M115.P1.T1 — Trim what a UI-only edit rebuilds under the `fast` preset
+- [x] M115.P1.T1 — Trim what a UI-only edit rebuilds under the `fast` preset
   - files: `tools/ci/local/build.sh`, `CMakeLists.txt` (only if a new build option is needed)
   - approach: touch a `Gui/`-only file, rebuild with `fast`, and check ninja's
     build graph (`ninja -t targets` / `ninja -n`) for anything unnecessary
@@ -168,7 +168,7 @@ build ~30 min. No workflow produces an AppImage except `release.yml` on tag push
     exit non-zero with the ctest log downloaded.
   - size: M
 
-- [ ] M115.P4.T4 — Let the GUI test runner use a downloaded AppImage
+- [x] M115.P4.T4 — Let the GUI test runner use a downloaded AppImage
   - files: `Tests/gui/run-gui-test.sh`
   - approach: when the binary argument ends in `.AppImage`, run it with
     `--appimage-extract-and-run` (or extract once to a temp dir) so it works
@@ -248,3 +248,5 @@ throughout.
 - 2026-10-14 — **PR CI matrix (P6.T1):** run 38506076648 (751c9331a) green, 40.5 min wall time vs ~57 min serial baseline; short of the ~33 min target, and P6.T2's `ctest -j4` is the next cut. `build-and-test` is now an aggregating job because branch protection requires that exact name (required: `format`, `lint-ci`, `build-and-test`); it also diffs both legs' smoke renders to keep cross-scheduler parity. `beta-release.yml` keys off the `Tests` workflow's conclusion, so it needs no change — confirm the beta fires on the first merge to main.
 - 2026-10-14 — **`ctest -j4` adopted (P6.T2):** first three runs at 0605f6f85 took ~20 min each but one hit a new flake — `SchedulerEquivalence.TwoWritersOnTwoBranchesRenderedTogether` aborted with "QThread: Destroyed while thread is still running". Root cause was a product race, not test isolation: `removeQuitRenderThreadsInternal` `deleteLater()`'d a retired render thread on `hasQuit` while it could still be blocked on `renderThreadsMutex`; it now also requires `isFinished()` (cb85aa3d9). Three consecutive runs at cb85aa3d9 green: 18.2, 21.1, 19.6 min (vs 40.5 min matrix-only, ~57 min serial baseline).
 - 2026-10-14 — **Build READMEs (P5.T2):** a read-only audit against the scripts found the ctest-logs artifact described as also holding smoke logs, `run-gui-test.sh` presented as host-runnable (it needs the natron-dev container's GL/LLVM libs, Xvfb and xset), and the local README missing `--tests`, `--no-ccache-stats`, `fast`'s tests-off default, `NATRON_CTEST_JOBS` and `NATRON_RENDER_SCHEDULER`; all fixed (ad8429225). The branch was rebased onto main after M69 - Minor Cleanup merged (7ae110e9c).
+- 2026-10-14 — **UI-only rebuild under `fast` (P1.T1):** no further cut. A `ninja -t query` read of fresh `fast` trees: tests ON has 1487 targets / 172 custom commands, tests OFF 1108 / 134; a Gui `.cpp` edit recompiles one TU, re-archives `libNatronGui.a` and relinks `App/Natron` (plus `Tests/GuiTests` with tests ON). No always-dirty custom command; the link is ~1 s (GNU ld), so a faster linker isn't worth it. Measured in the container, a real one-line `Gui/NodeGraph.cpp` change rebuilds in 9 s with tests ON and 9 s OFF — tests-off (34042b643) pays off on full and reconfigured builds, not on incremental ones. Header fan-out (`Gui/Gui.h` 101 objects, `GuiApplicationManager.h` 110) is the remaining cost and needs header work, out of scope. The `fast` build-tree binary passes `m75_read.py` under Xvfb.
+- 2026-10-14 — **AppImage GUI runs (P4.T4, 25a6afeaa):** `run-gui-test.sh` against the downloaded remote `fast` AppImage first hung on the first-launch "check for updates?" dialog; it now runs the AppImage under a throwaway HOME seeded with `checkForUpdates=false` (as `check-startup.sh` does), adds the container's matching `PySide6.QtTest` to the extracted bundle (the bundle ships only QtCore/QtGui/QtWidgets by design), and wraps `oiiotool` with the container's library path. `m75_read.py`: 88 checks pass against the AppImage (remote fast run 38569591962, 87 MB, downloaded by `tools/ci/remote/build.sh`) and against the build tree.

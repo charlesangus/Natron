@@ -382,7 +382,7 @@ User UAT on `M69-7e3c0cea8`, 2026-10-13, given in chat with a screenshot.
     - Keep the scaling with the UI scale factor that M56 added.
   - verify: the GUI script measures the pane header's float/close buttons and the properties bin's toolbar buttons and checks they equal the panel header buttons' size; shots at 1× and 2× for the user.
   - size: M
-- [ ] M69.P12.T2 — End build, scripts and the round-5 UAT AppImage
+- [x] M69.P12.T2 — End build, scripts and the round-5 UAT AppImage
   - files: `build/appimages/M69-<sha>.AppImage`, `build/appimages/M69-uat.md`
   - approach: one `fast` build, ctest, `m69_cleanup.py`, `m56_visual.py` at 1× and 2×, then package.
   - verify: the gate is green, and the user signs off.
@@ -486,3 +486,4 @@ Acceptance sketch:
 - 2026-10-13 — **pmScoreType resolved:** it's not an M69 change. `pmScoreType` only exists in Debug builds (`NATRON_TRACKER_ENABLE_TRACKER_PM` under `#ifdef DEBUG`, `TrackerContextPrivate.h:68`), and the local `fast` build is Release. The Release-built golden was discarded; the committed golden is the Debug one, which is what CI uses. Branch pushed at `942af32bd`.
 - 2026-10-13 — **P12.T1 done** (`28b58377a` on `milestone/m69-minor-cleanup`): the pane header's float, close and pane-menu corner buttons, and the properties bin's clear-all and minimize-all buttons, moved from `NATRON_SMALL_BUTTON_SIZE`/`_ICON_SIZE` (15/13 px) to the panel header's `NATRON_MEDIUM_*` (22/18 px), still through `TO_DPIX/TO_DPIY`. The GUI section `header-button-sizes` compares them with a Grade panel's float button. At the build, check two things: the tab header may grow a few px, and the max-panels spinbox may now be shorter than the buttons beside it.
 - 2026-10-13 — **P12.T2 end build green, awaiting UAT:** `fast` build clean, built in the `natron-dev-m69` container (`NATRON_DEV_CONTAINER=natron-dev-m69`), because the default container mounts only the m56 worktree. ctest 2150/2151. The one failure is the known Release-only `pmScoreType` golden diff; CI's Debug golden stands. GUI scripts, PASS/FAIL: `m69_cleanup.py` 390/0 (`header-button-sizes` 14/0), `m56_visual.py` 263/0 at both 1× and 2×, `m55_node_graph.py` 162/0, `m55_input_pipes.py` 118/0, `m45_tab_menu.py` 97/0. `m56_visual.py`'s header-button probe still expected the old small size; it was moved to the medium size (`463994174`). Buttons are 22×22 with 18 px icons, the tab header isn't clipped, and the spinbox is 23 px and centred. AppImage: `build/appimages/M69-28b58377a.AppImage`; UAT script section F.
+- 2026-10-13 — **UAT round 5 signed off (user).** PR #60 opened; Codex review running.

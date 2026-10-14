@@ -212,7 +212,7 @@ Scouted facts this plan relies on (2026-10-12, `milestone/m85-native-gpu-kernels
   - verify: GPU vs CPU within the `iir()` class (1e-4 absolute, `Engine/Nodes/README.md`) for each filter at sizes 3, 25 and 100, both edges, and a 1-channel alpha. Also runs on RADV, recording the UHD kernel times in Decisions.
   - size: L
 
-- [ ] M85.P2.T5 — Speed up the FIR vertical pass for wide radii
+- [x] M85.P2.T5 — Speed up the FIR vertical pass for wide radii
   - files: `Engine/Gpu/Kernels/blur.slang`, `Engine/Gpu/GpuBlur.{h,cpp}`, `Tests/Gpu/BlurGpu_Test.cpp`, `tools/gpu-spike/bench/GpuBench_main.cpp`
   - approach:
     - For r > 32, replace the column pass with either a 2D-tiled pass or a transpose → horizontal pass → transpose (design note §2.4 and §4 #5). Pick by measurement on RADV.
@@ -373,7 +373,7 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
     - A rotated Transform in a stripped region equals the whole region exactly.
   - size: L
 
-- [ ] M85.P5.T2 — Transform motion blur on the GPU
+- [x] M85.P5.T2 — Transform motion blur on the GPU
   - files: `Engine/Gpu/Kernels/resample.slang`, `Engine/Nodes/Transform/Transform.cpp`, `Engine/GpuCostModel.{h,cpp}` (motion-blur traits), `Tests/Native/NativeTransformGpu_Test.cpp`
   - approach:
     - Port `motionBlurPixel` (`Resampler.h:507`) as a per-pixel loop: van der Corput sample times, per-time matrices precomputed on the host into the params buffer (bounded by `motionBlurMaxIterations`), and the same adaptive error stop.
@@ -588,3 +588,17 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - **`kernelMs` is double-counted on the non-pipelined paths** (found from a profile reporting 390 ms kernel against 195 ms wall), and it is a host interval that includes pipeline compilation there. P6.T1b fixes it before P6.T2 seeds from it.
 
 - 2026-10-13 — **P6.T1b done** (`565396a7e`). `submit()` accounts only for a submitted recorder, and each submitted segment on the unpipelined paths is bracketed by a 2-query timestamp pool, with the host interval as fallback. `GpuResidencyTest.RegionKernelTimeIsNotCountedTwiceWhenTheLastMemberDownloads` passes on lavapipe and RADV in both modes and skips with no ICD.
+- 2026-10-14 — **P2.T5** (`1f4f17947`) and **P5.T2** (`e1b72fd64`) done. The sweep passes 1080/1080 on lavapipe, RADV and no-ICD in both scheduler modes.
+  - **P2.T5, vertical pass:** two variants were built and measured on RADV (7900 XTX): transpose → H → transpose, and the single-dispatch shared tile with a float4-per-pixel tile and column-order groups. The tile won at every size, so the transpose route was removed. GpuBench kernel ms, H / V:
+
+    | | M84 base | M85 |
+    |---|---|---|
+    | UHD σ25 | 4.28 / 13.19 | 1.57 / 1.92 (1.22×) |
+    | UHD σ100 | 16.11 / 26.69 | 5.47 / 5.53 (1.01×) |
+    | 8K σ25 | 16.55 / 141.48 | 5.26 / 6.45 (1.23×) |
+    | 8K σ100 | 64.01 / 185.23 | 18.90 / 19.22 (1.02×) |
+
+    σ3 (r ≤ 32, the coalesced path) is unchanged at V ≈ 4.0 ms UHD and 15.0 ms 8K; its H halved, so V/H reads ~10×. A follow-up for M109 - GPU Region Engine Hardening if the narrow vertical pass matters. The bench's weight table bug is fixed.
+  - **P5.T2, motion blur:** motion blur at any quality, every shutter offset and directional blur are on the GPU. Only concatenated inputs, non-float images and > 4 channels refuse. `GpuTaskTraits` gains `motionBlur`; the 996 ms/Mpx seed row moved to `NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROWS`, so a plain Transform takes the spatial default.
+    - **Tolerance:** `iir()` with an exception for motion-blurred cases only: at most 1 pixel in 250 per window may miss it, none by more than `Resampler::motionBlurMaxError` (quality / 1000). Cause: the CPU filters each sample in double, the device in float, so a pixel at a sample-count boundary takes one sample more or fewer. Exact agreement would need double-accurate filtering on the device; moving the variance to fp64 alone changes nothing (its error is 2^24 smaller than the per-sample one). Measured worst on lavapipe 6.1e-4 at quality 4 (allowed 4e-3); RADV misses 1 pixel.
+    - **8K kernel time on RADV** (debug build, source resident): quality 1 26.3 ms (0.79 ms/Mpx), quality 4 74.3 ms (2.24 ms/Mpx), against the 996 ms/Mpx CPU row.

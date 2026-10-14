@@ -110,6 +110,11 @@ private:
 
     virtual PixelKernelPtr makeKernel(const KernelContext& context) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual int gpuKernelId(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool makeGpuKernel(const KernelContext& context,
+                               PixelKernelGpu* gpuKernel) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual bool isIdentityOp(double time,
                               const RenderScale& scale,
                               const RectI& roi,

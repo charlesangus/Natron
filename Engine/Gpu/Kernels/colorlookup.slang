@@ -1,20 +1,15 @@
+import curvesnapshot;
 import pixelwrap;
 
 // Parameter block, in words. Every offset is mirrored by ColorLookupGpu in ColorLookup.cpp.
 static const uint CL_CURVES = 5;
-static const uint CL_LUT_SIZE = 1024;
-static const uint CL_MAX_KEYS = 128;
-static const uint CL_SEGMENT_WORDS = 6;
-// Per curve: the key time thresholds, then one cubic segment per gap between keys, with a
-// segment before the first key and after the last.
-static const uint CL_CURVE_WORDS = CL_MAX_KEYS + (CL_MAX_KEYS + 1) * CL_SEGMENT_WORDS;
 static const uint CL_HEADER_WORDS = 32;
 static const uint CL_Y_MIN = 16;
 static const uint CL_Y_MAX = 21;
 static const uint CL_KEY_COUNT = 8;
-static const uint CL_SPLIT_RANGE = 26;
+static const uint CL_TABLE_RANGE = 26;
 static const uint CL_LUT_BASE = CL_HEADER_WORDS;
-static const uint CL_CURVE_BASE = CL_LUT_BASE + CL_CURVES * CL_LUT_SIZE;
+static const uint CL_CURVE_BASE = CL_LUT_BASE + CL_CURVES * CS_TABLE_SIZE;
 
 static const uint CL_MASTER = 0;
 static const uint CL_RED = 1;
@@ -27,25 +22,6 @@ static const uint CL_MODE_WEIGHTED = 1;
 static const uint CL_MODE_FILMLIKE = 2;
 static const uint CL_MODE_LUMINANCE = 3;
 
-// Floats ordered as integers: devices may flush denormals to zero in a float comparison, while
-// the CPU orders a denormal below or above zero. -0 and +0 share key 0.
-int clOrderKey(float f)
-{
-    const uint u = asuint(f);
-    return (u & 0x80000000u) != 0 ? -int(u & 0x7fffffffu) : int(u);
-}
-
-bool clIsNaN(float f)
-{
-    return (asuint(f) & 0x7fffffffu) > 0x7f800000u;
-}
-
-// a < b as IEEE orders them, false when either is a NaN.
-bool clLess(float a, float b)
-{
-    return !clIsNaN(a) && !clIsNaN(b) && clOrderKey(a) < clOrderKey(b);
-}
-
 // The tables are read from the bound parameter buffer, wrapAux, since an op cannot hold a buffer.
 struct ColorLookupOp : IPixelOp
 {
@@ -53,15 +29,7 @@ struct ColorLookupOp : IPixelOp
     uint luminanceMath;
     bool clampBlack;
     bool clampWhite;
-    // A float v is outside the table range exactly when v < lowOut or v > highOut; the bounds are
-    // the range rounded so that this agrees with the double comparison on the CPU.
-    float lowOut;
-    float highOut;
-    // The range start and kLutIntervals / span, each as a float and its remainder.
-    float rangeMinHi;
-    float rangeMinLo;
-    float scaleHi;
-    float scaleLo;
+    CurveTableRange range;
 
     [mutating] void load(StructuredBuffer<uint> params)
     {
@@ -69,12 +37,7 @@ struct ColorLookupOp : IPixelOp
         luminanceMath = params[1];
         clampBlack = (params[2] & 1) != 0;
         clampWhite = (params[2] & 2) != 0;
-        lowOut = wrapParamFloat(params, 4);
-        highOut = wrapParamFloat(params, 5);
-        rangeMinHi = wrapParamFloat(params, CL_SPLIT_RANGE);
-        rangeMinLo = wrapParamFloat(params, CL_SPLIT_RANGE + 1);
-        scaleHi = wrapParamFloat(params, CL_SPLIT_RANGE + 2);
-        scaleLo = wrapParamFloat(params, CL_SPLIT_RANGE + 3);
+        range.load(params, CL_TABLE_RANGE);
     }
 
     bool isStandard()
@@ -91,38 +54,10 @@ struct ColorLookupOp : IPixelOp
         return v;
     }
 
-    // The curve at t, as CurveSnapshot::valueAt: the segment after the last key not above t, a
-    // Hermite cubic, clamped to the curve's value range.
     float curveAt(uint curve, float t)
     {
-        const uint base = CL_CURVE_BASE + curve * CL_CURVE_WORDS;
-        const uint count = wrapAux[CL_KEY_COUNT + curve];
-        uint lo = 0;
-        uint hi = count;
-        while (lo < hi)
-        {
-            const uint mid = (lo + hi) >> 1;
-            if (t < asfloat(wrapAux[base + mid]))
-                hi = mid;
-            else
-                lo = mid + 1;
-        }
-        const uint s = base + CL_MAX_KEYS + lo * CL_SEGMENT_WORDS;
-        const float u = (t - asfloat(wrapAux[s])) / asfloat(wrapAux[s + 1]);
-        const float c1 = asfloat(wrapAux[s + 3]);
-        const float c2 = asfloat(wrapAux[s + 4]);
-        const float c3 = asfloat(wrapAux[s + 5]);
-        const float u2 = u * u;
-        const float u3 = u2 * u;
-        float v = asfloat(wrapAux[s + 2]) + (c1 != 0.0 ? c1 * u : 0.0) + (c2 != 0.0 ? c2 * u2 : 0.0) +
-                  (c3 != 0.0 ? c3 * u3 : 0.0);
-        const float yMax = asfloat(wrapAux[CL_Y_MAX + curve]);
-        const float yMin = asfloat(wrapAux[CL_Y_MIN + curve]);
-        if (v > yMax)
-            return yMax;
-        else if (v < yMin)
-            return yMin;
-        return v;
+        return curveSnapshotAt(CL_CURVE_BASE + curve * CS_CURVE_WORDS, wrapAux[CL_KEY_COUNT + curve],
+                               asfloat(wrapAux[CL_Y_MIN + curve]), asfloat(wrapAux[CL_Y_MAX + curve]), t);
     }
 
     float curveValue(uint curve, float pos)
@@ -135,66 +70,24 @@ struct ColorLookupOp : IPixelOp
 
     float lookup(uint curve, float value)
     {
-        if (clLess(value, lowOut) || clLess(highOut, value))
+        if (range.outside(value))
             return clampOut(curveValue(curve, value));
-        // The CPU finds the table position and blends in double, and the weighted mode divides the
-        // blend's error by 1 - value: the position and the blend are carried as two floats each, so
-        // that the result rounds as the double one does.
-        const uint lut = CL_LUT_BASE + curve * CL_LUT_SIZE;
-        precise float dh = value - rangeMinHi;
-        precise float dv = dh - value;
-        precise float dl = ((value - (dh - dv)) + (-rangeMinHi - dv)) - rangeMinLo;
-        precise float d = dh + dl;
-        precise float dRest = dl - (d - dh);
-        precise float ph = d * scaleHi;
-        precise float pl = fma(d, scaleHi, -ph) + (d * scaleLo + dRest * scaleHi);
-        precise float sh = ph + pl;
-        precise float sl = pl - (sh - ph);
-        const float last = float(CL_LUT_SIZE - 1);
-        if (isnan(sh) || sh < 0.0 || (sh == 0.0 && !(sl > 0.0)))
-            return asfloat(wrapAux[lut]);
-        else if (sh > last || (sh == last && !(sl < 0.0)))
-            return asfloat(wrapAux[lut + CL_LUT_SIZE - 1]);
-        int i = int(sh);
-        if (float(i) == sh && sl < 0.0)
-            i -= 1;
-        i = clamp(i, 0, int(CL_LUT_SIZE) - 2);
-        precise float ah = sh - float(i);
-        precise float al = sl;
-        if (ah + al <= 0.0)
-        {
-            ah = 0.0;
-            al = 0.0;
-        }
-        else if (ah + al >= 1.0)
-        {
-            ah = 1.0;
-            al = 0.0;
-        }
-        const float a = asfloat(wrapAux[lut + uint(i)]);
-        const float b = asfloat(wrapAux[lut + uint(i) + 1]);
-        precise float eh = b - a;
-        precise float ev = eh - b;
-        precise float el = (b - (eh - ev)) + (-a - ev);
-        precise float qh = ah * eh;
-        precise float ql = fma(ah, eh, -qh) + (ah * el + al * eh);
-        precise float r = a + qh;
-        precise float rv = r - a;
-        precise float rErr = (a - (r - rv)) + (qh - rv);
-        return r + (rErr + ql);
+        // The weighted mode divides the blend's error by 1 - value, which the table's two-float
+        // blend holds to the CPU's double rounding.
+        return range.at(CL_LUT_BASE + curve * CS_TABLE_SIZE, value);
     }
 
     // A denormal a is compared by its bits, and the CPU's b + 0 * x / a is b while a is not zero
     // and b finite: a device that flushes the denormal a would divide by zero instead.
     float triangle(float a, float a1, float b)
     {
-        if (clIsNaN(a) || clIsNaN(b) || clOrderKey(a) != clOrderKey(b))
+        if (curveIsNaN(a) || curveIsNaN(b) || curveOrderKey(a) != curveOrderKey(b))
         {
             const float a2 = a1 - a;
             const bool bFinite = (asuint(b) & 0x7fffffffu) < 0x7f800000u;
-            if (clLess(b, a))
+            if (curveLess(b, a))
             {
-                if (a2 == 0.0 && bFinite && clOrderKey(a) != 0)
+                if (a2 == 0.0 && bFinite && curveOrderKey(a) != 0)
                     return b;
                 return b + a2 * b / a;
             }

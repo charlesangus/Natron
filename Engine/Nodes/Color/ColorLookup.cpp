@@ -69,45 +69,18 @@ const int kLutIntervals = 1023;
 #ifdef NATRON_HAVE_GPU
 // The parameter block of ColorLookupOp in colorlookup.slang, in words.
 const int kGpuLutSize = kLutIntervals + 1;
-const int kGpuMaxKeys = 128;
-const int kGpuSegmentWords = 6;
-const int kGpuCurveWords = kGpuMaxKeys + (kGpuMaxKeys + 1) * kGpuSegmentWords;
+const int kGpuCurveWords = CurveSnapshot::kGpuWords;
 const int kGpuHeaderWords = 32;
 const int kGpuYMin = 16;
 const int kGpuYMax = 21;
 const int kGpuKeyCount = 8;
-const int kGpuSplitRange = 26;
+const int kGpuTableRange = 26;
 const int kGpuLutBase = kGpuHeaderWords;
 const int kGpuCurveBase = kGpuLutBase + ColorLookup::eCurveCount * kGpuLutSize;
 const int kGpuTotalWords = kGpuCurveBase + ColorLookup::eCurveCount * kGpuCurveWords;
 
-static_assert(kLutIntervals + 1 == 1024, "must match CL_LUT_SIZE in colorlookup.slang");
-
-// The smallest float not below d: a float v is below d exactly when it is below this.
-float
-ceilToFloat(double d)
-{
-    float f = (float)d;
-
-    if ((double)f < d) {
-        f = std::nextafter(f, std::numeric_limits<float>::infinity());
-    }
-
-    return f;
-}
-
-// The largest float not above d: a float v is above d exactly when it is above this.
-float
-floorToFloat(double d)
-{
-    float f = (float)d;
-
-    if ((double)f > d) {
-        f = std::nextafter(f, -std::numeric_limits<float>::infinity());
-    }
-
-    return f;
-}
+static_assert(kLutIntervals + 1 == 1024, "must match CS_TABLE_SIZE in curvesnapshot.slang");
+static_assert(kGpuTableRange + CurveSnapshot::kGpuTableRangeWords <= kGpuHeaderWords, "the table range lies in the header");
 
 void
 putFloat(std::vector<std::uint32_t>& words,
@@ -225,39 +198,21 @@ public:
     // The tables colorlookup.slang reads, or false when a curve has more keys than it holds.
     bool packGpu(std::vector<std::uint32_t>* words) const
     {
-        for (int curve = 0; curve < ColorLookup::eCurveCount; ++curve) {
-            if ((int)_curves[curve].keys().size() > kGpuMaxKeys) {
-                return false;
-            }
-        }
         words->assign(kGpuTotalWords, 0);
         (*words)[0] = (std::uint32_t)_mode;
         (*words)[1] = (std::uint32_t)_luminanceMath;
         (*words)[2] = (_clampBlack ? 1u : 0u) | (_clampWhite ? 2u : 0u);
-        putFloat(*words, 4, ceilToFloat(_rangeMin));
-        putFloat(*words, 5, floorToFloat(_rangeMax));
-        // The range start and the table scale as a float and its remainder, so the shader finds the
-        // table position to the precision of the double arithmetic here.
-        const double scale = kLutIntervals / (_rangeMax - _rangeMin);
-        putFloat(*words, kGpuSplitRange, (float)_rangeMin);
-        putFloat(*words, kGpuSplitRange + 1, (float)(_rangeMin - (double)(float)_rangeMin));
-        putFloat(*words, kGpuSplitRange + 2, (float)scale);
-        putFloat(*words, kGpuSplitRange + 3, (float)(scale - (double)(float)scale));
+        CurveSnapshot::packGpuTableRange(_rangeMin, _rangeMax, kLutIntervals, &(*words)[kGpuTableRange]);
         for (int curve = 0; curve < ColorLookup::eCurveCount; ++curve) {
             const CurveSnapshot& snapshot = _curves[curve];
-            const std::vector<KeyFrame>& keys = snapshot.keys();
+            if (!snapshot.packGpu(&(*words)[kGpuCurveBase + curve * kGpuCurveWords])) {
+                return false;
+            }
             putFloat(*words, kGpuYMin + curve, (float)snapshot.yMin());
             putFloat(*words, kGpuYMax + curve, (float)snapshot.yMax());
-            (*words)[kGpuKeyCount + curve] = (std::uint32_t)keys.size();
+            (*words)[kGpuKeyCount + curve] = (std::uint32_t)snapshot.keys().size();
             for (std::size_t i = 0; i < _lut[curve].size(); ++i) {
                 putFloat(*words, kGpuLutBase + curve * kGpuLutSize + (int)i, _lut[curve][i]);
-            }
-            const int base = kGpuCurveBase + curve * kGpuCurveWords;
-            for (std::size_t i = 0; i < keys.size(); ++i) {
-                putFloat(*words, base + (int)i, ceilToFloat(keys[i].getTime()));
-            }
-            for (std::size_t segment = 0; segment <= keys.size(); ++segment) {
-                packSegment(keys, segment, &(*words)[base + kGpuMaxKeys + (int)segment * kGpuSegmentWords]);
             }
         }
 
@@ -266,82 +221,6 @@ public:
 #endif
 
 private:
-#ifdef NATRON_HAVE_GPU
-    // The Hermite cubic CurveSnapshot::valueAt() evaluates between the keys before and after
-    // `segment`, as t offset, span and the four coefficients over (t - offset) / span.
-    static void packSegment(const std::vector<KeyFrame>& keys,
-                            std::size_t segment,
-                            std::uint32_t* out)
-    {
-        double c[4] = { 0., 0., 0., 0. };
-        double tcur = 0.;
-        double span = 1.;
-
-        if (!keys.empty()) {
-            double vcur, vcurDerivRight, tnext, vnext, vnextDerivLeft;
-            KeyframeTypeEnum interp, interpNext;
-            if (segment == 0) {
-                const KeyFrame& next = keys.front();
-                tnext = next.getTime();
-                vnext = next.getValue();
-                vnextDerivLeft = next.getLeftDerivative();
-                interpNext = next.getInterpolation();
-                tcur = tnext - 1.;
-                vcur = vnext;
-                vcurDerivRight = 0.;
-                interp = eKeyframeTypeNone;
-            } else if (segment == keys.size()) {
-                const KeyFrame& last = keys.back();
-                tcur = last.getTime();
-                vcur = last.getValue();
-                vcurDerivRight = last.getRightDerivative();
-                interp = last.getInterpolation();
-                tnext = tcur + 1.;
-                vnext = vcur;
-                vnextDerivLeft = 0.;
-                interpNext = eKeyframeTypeNone;
-            } else {
-                const KeyFrame& cur = keys[segment - 1];
-                const KeyFrame& next = keys[segment];
-                tcur = cur.getTime();
-                vcur = cur.getValue();
-                vcurDerivRight = cur.getRightDerivative();
-                interp = cur.getInterpolation();
-                tnext = next.getTime();
-                vnext = next.getValue();
-                vnextDerivLeft = next.getLeftDerivative();
-                interpNext = next.getInterpolation();
-            }
-            // Interpolation::interpolate() up to the cubic's evaluation.
-            double P0 = vcur;
-            double P3 = vnext;
-            double P0pr = vcurDerivRight * (tnext - tcur);
-            double P3pl = vnextDerivLeft * (tnext - tcur);
-            if (interp == eKeyframeTypeNone) {
-                P0 = P3 - P3pl;
-                P0pr = P3pl;
-                tcur = tnext - 1.;
-            } else if (interp == eKeyframeTypeConstant) {
-                P0pr = 0.;
-                P3pl = 0.;
-                P3 = P0;
-            }
-            if (interpNext == eKeyframeTypeNone) {
-                P3pl = P0pr;
-                P3 = P0 + P0pr;
-                tnext = tcur + 1;
-            }
-            c[0] = P0;
-            c[1] = P0pr;
-            c[2] = 3 * (P3 - P0) - 2 * P0pr - P3pl;
-            c[3] = -2 * (P3 - P0) + P0pr + P3pl;
-            span = tnext - tcur;
-        }
-        const float values[kGpuSegmentWords] = { (float)tcur, (float)span, (float)c[0], (float)c[1], (float)c[2], (float)c[3] };
-        std::memcpy(out, values, sizeof(values));
-    }
-#endif
-
     bool isStandard() const
     {
         return (_mode == ColorLookup::eMasterCurveModeStandard) || (_mode == ColorLookup::eMasterCurveModeWeightedStandard);

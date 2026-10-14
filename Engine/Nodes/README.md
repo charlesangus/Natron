@@ -845,6 +845,7 @@ components stay on the CPU, as does a curve of more than 128 keys
 (`Tests/Native/NativeColorLookupGpu_Test.cpp`).
 Saturation holds its CPU class, transcendental, for every luminance option; the kernel takes the
 weights from the CPU's `ColorMath::luminance` (`Tests/Native/NativeSaturationGpu_Test.cpp`).
+ColorCorrect holds its CPU class, transcendental, in every group and luminance option, with the tone curves read from the CPU's table inside `range` and evaluated from their keys outside it, as ColorLookup does (shared through `CurveSnapshot::packGpu` and `Kernels/curvesnapshot.slang`); a curve of more than 128 keys stays on the CPU (`Tests/Native/NativeColorCorrectGpu_Test.cpp`).
 Constant and Solid hold their CPU class, exact, for every target layer and channel selection, with a source connected or not (`Tests/Native/NativeConstantGpu_Test.cpp`).
 Add and Multiply hold `arithmetic()` and Gamma holds `transcendental()`, where a subnormal input may come back as 0 on a device that flushes denormals (`Tests/Native/NativeColorMathGpu_Test.cpp`).
 Erode and Dilate hold exact, bit for bit on NaNs, signed zeros and denormals, except where "(Un)premult by" divides, which holds Blur's 2e-6 absolute plus 1e-6 relative (`Tests/Native/NativeErodeDilateGpu_Test.cpp`).

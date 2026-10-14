@@ -28,6 +28,7 @@ slang_add_kernel(constant Kernels/generators.slang ENTRY constant_main REGISTRY 
 slang_add_kernel(grade_wrapped Kernels/pixelwrap.slang ENTRY grade_wrapped REGISTRY NatronGpu)
 slang_add_kernel(clamp_wrapped Kernels/clamp.slang ENTRY clamp_wrapped REGISTRY NatronGpu)
 slang_add_kernel(colorlookup_wrapped Kernels/colorlookup.slang ENTRY colorlookup_wrapped REGISTRY NatronGpu)
+slang_add_kernel(colorcorrect_wrapped Kernels/colorcorrect.slang ENTRY colorcorrect_wrapped REGISTRY NatronGpu)
 slang_add_kernel(saturation_wrapped Kernels/saturation.slang ENTRY saturation_wrapped REGISTRY NatronGpu)
 slang_add_kernel(add_wrapped Kernels/colormath.slang ENTRY add_wrapped REGISTRY NatronGpu)
 slang_add_kernel(multiply_wrapped Kernels/colormath.slang ENTRY multiply_wrapped REGISTRY NatronGpu)

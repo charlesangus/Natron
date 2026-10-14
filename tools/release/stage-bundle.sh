@@ -154,10 +154,59 @@ set_bundle_runpath() {
     patchelf --set-rpath "$rpath" "$target"
 }
 
+STRIP_COUNT=0
+STRIP_FAILED=0
+STRIP_BYTES_BEFORE=0
+STRIP_BYTES_AFTER=0
+
+# The bundle is what gets shipped, so it carries no debug info whatever the
+# build type was; developers debug the build tree, which is never touched here.
+# --strip-unneeded drops .symtab and the debug sections but keeps .dynsym, so
+# everything the loader, dlopen and OfxGetPlugin lookups resolve by name still
+# resolves. Stripping rewrites each file through a temporary and renames it
+# over the original, so a file hardlinked into another tree is replaced rather
+# than mutated.
+#
+# This must run before patchelf ever touches the file. When a longer RUNPATH
+# does not fit, older patchelf grows a non-PIE executable by mapping a new
+# page below its base address and leaves .dynsym straddling that page and the
+# next PT_LOAD. ld.so copes, but strip cannot represent a section outside any
+# segment: it moves .dynsym to a file offset nothing maps while DT_SYMTAB keeps
+# the old address, and the executable segfaults in the loader. A stripped file
+# fed to patchelf is just a smaller ELF, which every patchelf handles.
+strip_elf() {
+    local target="$1" size_before size_after
+
+    [[ -n "$STRIP" ]] || return 0
+
+    size_before="$(stat -c %s "$target")"
+    chmod u+w "$target"
+    if ! "$STRIP" --strip-unneeded "$target"; then
+        echo "  warning: could not strip ${target#"$STAGE_DIR"/}" >&2
+        STRIP_FAILED=$((STRIP_FAILED + 1))
+        return 0
+    fi
+    size_after="$(stat -c %s "$target")"
+
+    STRIP_COUNT=$((STRIP_COUNT + 1))
+    STRIP_BYTES_BEFORE=$((STRIP_BYTES_BEFORE + size_before))
+    STRIP_BYTES_AFTER=$((STRIP_BYTES_AFTER + size_after))
+}
+
+# For a file's first arrival in the tree. A file that has already been
+# through here must go back through set_bundle_runpath alone, never strip_elf.
+stage_elf() {
+    local target="$1"
+
+    is_elf "$target" || return 0
+    strip_elf "$target"
+    set_bundle_runpath "$target"
+}
+
 stage_library() {
     local src="$1" name="$2"
     cp -L "$src" "$STAGE_DIR/lib/$name"
-    set_bundle_runpath "$STAGE_DIR/lib/$name"
+    stage_elf "$STAGE_DIR/lib/$name"
 }
 
 echo "==> Installing from CMake build to $STAGE_DIR"
@@ -166,7 +215,7 @@ cmake --install "$BUILD_DIR" --prefix "$STAGE_DIR"
 mkdir -p "$STAGE_DIR/lib"
 
 while IFS= read -r installed; do
-    set_bundle_runpath "$installed"
+    stage_elf "$installed"
 done < <(find "$STAGE_DIR/bin" "$STAGE_DIR/lib" -type f 2>/dev/null)
 
 QT_PLUGIN_DIR=""
@@ -184,7 +233,7 @@ for subdir in platforms imageformats iconengines xcbglintegrations; do
         mkdir -p "$STAGE_DIR/plugins/$subdir"
         cp -a "$src"/*.so "$STAGE_DIR/plugins/$subdir/" 2>/dev/null || true
         while IFS= read -r plugin; do
-            set_bundle_runpath "$plugin"
+            stage_elf "$plugin"
         done < <(find "$STAGE_DIR/plugins/$subdir" -type f -name "*.so" 2>/dev/null)
     fi
 done
@@ -272,7 +321,7 @@ else
 fi
 
 while IFS= read -r staged_py_binary; do
-    set_bundle_runpath "$staged_py_binary"
+    stage_elf "$staged_py_binary"
 done < <(find "$PY_DEST" -type f -name "*.so" 2>/dev/null)
 
 echo "==> Staging bundle-relative resources"
@@ -323,7 +372,7 @@ if compgen -G "$OFX_ASSETS/*.ofx.bundle" > /dev/null; then
         copy_tree "$ofx_bundle" "$STAGE_DIR/Plugins/OFX/Natron/$(basename "$ofx_bundle")"
     done
     while IFS= read -r staged_ofx_file; do
-        set_bundle_runpath "$staged_ofx_file"
+        stage_elf "$staged_ofx_file"
     done < <(find "$STAGE_DIR/Plugins/OFX/Natron" -type f 2>/dev/null)
 else
     echo "warning: no *.ofx.bundle under $OFX_ASSETS — this bundle will ship no OFX" >&2
@@ -583,45 +632,12 @@ split_optional_runtime_libs
 echo "==> Installing the launcher shims"
 install_launcher
 
-# The bundle is what gets shipped, so it carries no debug info whatever the
-# build type was; developers debug the build tree, which is never touched here.
-# --strip-unneeded drops .symtab and the debug sections but keeps .dynsym, so
-# everything the loader, dlopen and OfxGetPlugin lookups resolve by name still
-# resolves. Stripping rewrites each file through a temporary and renames it
-# over the original, so a file hardlinked into another tree is replaced rather
-# than mutated.
-strip_staged_elfs() {
-    local f magic size_before size_after
-    local count=0 failed=0 total_before=0 total_after=0
-
-    if [[ "${NATRON_STAGE_NO_STRIP:-0}" == "1" ]]; then
-        echo "  skipped: NATRON_STAGE_NO_STRIP=1"
-        return 0
-    fi
-
-    while IFS= read -r f; do
-        magic="$(head -c 4 "$f" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
-        [[ "$magic" == "7f454c46" ]] || continue
-
-        size_before="$(stat -c %s "$f")"
-        chmod u+w "$f"
-        if ! "$STRIP" --strip-unneeded "$f" 2>/dev/null; then
-            echo "  warning: could not strip ${f#"$STAGE_DIR"/}" >&2
-            failed=$((failed + 1))
-            continue
-        fi
-        size_after="$(stat -c %s "$f")"
-
-        count=$((count + 1))
-        total_before=$((total_before + size_before))
-        total_after=$((total_after + size_after))
-    done < <(find "$STAGE_DIR" -type f)
-
-    echo "  stripped $count files ($failed failed): $total_before -> $total_after bytes"
-}
-
-echo "==> Stripping debug info from staged ELF files"
-strip_staged_elfs
+echo "==> Debug info stripped from staged ELF files"
+if [[ -n "$STRIP" ]]; then
+    echo "  stripped $STRIP_COUNT files ($STRIP_FAILED failed): $STRIP_BYTES_BEFORE -> $STRIP_BYTES_AFTER bytes"
+else
+    echo "  skipped: NATRON_STAGE_NO_STRIP=1"
+fi
 
 # ldd is the right tool above -- finding host libraries to bundle is exactly
 # its job -- and the wrong one here, because it would answer using this

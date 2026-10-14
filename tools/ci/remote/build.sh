@@ -6,11 +6,16 @@
 #
 # Usage:
 #   tools/ci/remote/build.sh <fast|release> [--tests] [--no-appimage]
+#   tools/ci/remote/build.sh --mode
 #
 #   fast | release   -> the build preset, same meaning as in local/build.sh.
 #   --tests           -> also run the ctest suite and smoke tests remotely; the
 #                        ctest logs are downloaded even when the run fails.
 #   --no-appimage     -> skip packaging and downloading the AppImage.
+#   --mode            -> print the build mode (local or remote) and exit. Takes
+#                        no other arguments. The mode is the first non-blank,
+#                        non-# line of .local/build-mode at the repo root; a
+#                        missing file means remote.
 #
 # The workflow runs the commit that is pushed, not the working tree, so this
 # refuses unless HEAD equals origin/<current branch>. It never pushes.
@@ -24,12 +29,50 @@ WATCH_INTERVAL_SECS=30
 
 usage() {
     echo "usage: build.sh <fast|release> [--tests] [--no-appimage]" >&2
+    echo "       build.sh --mode" >&2
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+REPO_ROOT="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel)"
+
+print_mode() {
+    local file="${REPO_ROOT}/.local/build-mode"
+    local line value=""
+    if [[ -f "${file}" ]]; then
+        while IFS= read -r line || [[ -n "${line}" ]]; do
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
+            if [[ -z "${line}" || "${line}" == \#* ]]; then
+                continue
+            fi
+            value="${line}"
+            break
+        done < "${file}"
+    fi
+    case "${value}" in
+        ""|remote) echo "remote" ;;
+        local) echo "local" ;;
+        *)
+            echo "build.sh: ${file}: invalid build mode '${value}' (expected 'local' or 'remote')" >&2
+            exit 1
+            ;;
+    esac
 }
 
 # --- argument parsing --------------------------------------------------------
 PRESET=""
 RUN_TESTS=false
 WANT_APPIMAGE=true
+
+if [[ " $* " == *" --mode "* ]]; then
+    if [[ $# -ne 1 ]]; then
+        echo "build.sh: --mode takes no other arguments" >&2
+        usage
+        exit 1
+    fi
+    print_mode
+    exit 0
+fi
 
 for arg in "$@"; do
     case "${arg}" in
@@ -65,8 +108,6 @@ if [[ -z "${PRESET}" ]]; then
     exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." >/dev/null 2>&1 && pwd)"
 cd "${REPO_ROOT}"
 
 # --- the commit to build must already be on origin --------------------------

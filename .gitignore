@@ -255,3 +255,6 @@ moc_predefs.h
 
 # Slang download cache (cmake/FetchSlang.cmake)
 .natron-deps/
+
+# Per-clone local state (build mode, etc.)
+.local/

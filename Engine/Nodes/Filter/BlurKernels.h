@@ -129,6 +129,31 @@ public:
      **/
     static LineFilter forFilter(Filter filter, float size, unsigned int order, bool neumann);
 
+    enum Kind {
+        eKindIdentity,
+        eKindDeriche,
+        eKindVanVliet,
+        eKindBox,
+        eKindFIRGaussian
+    };
+
+    /**
+     * @brief What apply() runs, for a device that runs the same recursion: the kind, the order,
+     * and the coefficients apply() reads, as computed at construction.
+     **/
+    Kind kind() const { return _kind; }
+    unsigned int order() const { return _order; }
+
+    /// Deriche: a0, a1, a2, a3, b1, b2, coefp, coefn.
+    void dericheCoefficients(double out[8]) const;
+
+    /// Van Vliet: [B, -b1, -b2, -b3], then the 3x3 Triggs matrix row by row.
+    void vanVlietCoefficients(double filter[4], double triggs[9]) const;
+
+    /// Box: the width and the number of box passes.
+    float boxSize() const { return _boxSize; }
+    unsigned int boxIterations() const { return _iterations; }
+
     /// The column count applyColumns() works on at once.
     static const int kColumnBlock = 64;
 
@@ -150,14 +175,6 @@ public:
     void applyColumns(float* data, int n, std::ptrdiff_t stride, int count, LineScratch& scratch) const;
 
 private:
-    enum Kind {
-        eKindIdentity,
-        eKindDeriche,
-        eKindVanVliet,
-        eKindBox,
-        eKindFIRGaussian
-    };
-
     void applyDeriche(float* data, int n, std::ptrdiff_t stride, LineScratch& scratch) const;
     void applyVanVliet(float* data, int n, std::ptrdiff_t stride) const;
     void applyBox(float* data, int n, std::ptrdiff_t stride, LineScratch& scratch) const;

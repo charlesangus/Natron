@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace gpu {
 
@@ -63,6 +64,115 @@ namespace {
             return s;
         }
         return ctx.updateBuffer(*out, 0, std::as_bytes(w));
+    }
+
+    // Must match numthreads in Kernels/blur_lines.slang.
+    constexpr uint32_t kLinesGroup = 64;
+
+    GpuStatus invalidLines(const char* what)
+    {
+        return { VK_ERROR_INITIALIZATION_FAILED, std::string("recordLineBlur: ") + what };
+    }
+
+    void pushTwoFloat(std::vector<float>& out, double v)
+    {
+        const float hi = static_cast<float>(v);
+        out.push_back(hi);
+        out.push_back(static_cast<float>(v - static_cast<double>(hi)));
+    }
+
+    // The words blur_lines reads from coefBuf, derived from f with the expressions and operand types
+    // of LineFilter::applyVanVliet and applyBox, and the box's half window.
+    std::vector<float> lineCoefficients(const GpuLineFilter& f, int32_t& half)
+    {
+        std::vector<float> c;
+        half = 0;
+        switch (f.kind) {
+        case GpuLineFilterKind::deriche:
+            for (double v : f.deriche) {
+                pushTwoFloat(c, v);
+            }
+            break;
+        case GpuLineFilterKind::vanVliet: {
+            const double sumsq = f.vanVliet[0], sum = sumsq * sumsq, a1 = f.vanVliet[1], a2 = f.vanVliet[2], a3 = f.vanVliet[3];
+            pushTwoFloat(c, sumsq);
+            pushTwoFloat(c, sum);
+            pushTwoFloat(c, a1);
+            pushTwoFloat(c, a2);
+            pushTwoFloat(c, a3);
+            pushTwoFloat(c, 1. - a1 - a2 - a3);
+            for (double v : f.triggs) {
+                pushTwoFloat(c, v);
+            }
+            break;
+        }
+        case GpuLineFilterKind::box: {
+            const float boxsize = f.boxSize;
+            const int w2 = (int)(boxsize - 1) / 2;
+            const unsigned int winsize = 2 * w2 + 1U;
+            const double frac = (boxsize - winsize) / 2.;
+            pushTwoFloat(c, frac);
+            pushTwoFloat(c, boxsize);
+            half = w2;
+            break;
+        }
+        case GpuLineFilterKind::identity:
+            pushTwoFloat(c, 0.);
+            break;
+        }
+        return c;
+    }
+
+    bool validLineFilter(const GpuLineFilter& f)
+    {
+        if (f.kind != GpuLineFilterKind::box) {
+            return true;
+        }
+        return f.boxSize > 1.f && f.iterations >= 1 && f.iterations <= 3;
+    }
+
+    // One pass of blur_lines with its coefficients, ring and stored lines, the scratch ones from ctx.
+    GpuStatus dispatchLines(GpuRecordContext& ctx, const GpuLineFilter& f, GpuLineBlurParams p, const GpuBuffer* src,
+                            const GpuBuffer* dst, const GpuBuffer* lines, uint64_t storedFloats, const GpuBuffer* window)
+    {
+        int32_t half = 0;
+        const std::vector<float> words = lineCoefficients(f, half);
+        GpuBuffer* coefficients = nullptr;
+        if (GpuStatus s = ctx.scratch(words.size() * sizeof(float), coefficients); !s) {
+            return s;
+        }
+        if (GpuStatus s = ctx.updateBuffer(*coefficients, 0, std::as_bytes(std::span(words))); !s) {
+            return s;
+        }
+        p.kind = static_cast<uint32_t>(f.kind);
+        p.half = half;
+        p.iterations = f.kind == GpuLineFilterKind::box ? f.iterations : 0;
+
+        const bool stores = f.kind == GpuLineFilterKind::vanVliet || (f.kind == GpuLineFilterKind::box && f.iterations > 1);
+        if (stores && !lines) {
+            if (storedFloats > UINT32_MAX) {
+                return invalidLines("stored lines exceed 32-bit indexing");
+            }
+            GpuBuffer* stored = nullptr;
+            if (GpuStatus s = ctx.scratch(std::max<uint64_t>(storedFloats, 1) * sizeof(float), stored); !s) {
+                return s;
+            }
+            lines = stored;
+        }
+        const GpuBuffer* ring = window;
+        if (f.kind == GpuLineFilterKind::box) {
+            const uint64_t pixels = uint64_t(2 * half + 1) * p.lineCount;
+            if (pixels * 4 > UINT32_MAX) {
+                return invalidLines("box window exceeds 32-bit indexing");
+            }
+            GpuBuffer* r = nullptr;
+            if (GpuStatus s = ctx.scratch(pixels * 4 * sizeof(float), r); !s) {
+                return s;
+            }
+            ring = r;
+        }
+        return ctx.dispatch(GpuKernelId::blur_lines, { src, dst, lines ? lines : dst, ring, coefficients, window }, p,
+                            { p.lineCount, 1, 1 });
     }
 
 } // namespace
@@ -208,6 +318,92 @@ recordSeparableBlur(GpuRecordContext& ctx, const GpuSeparableBlur& b)
     const GpuBlurPass pass { uint32_t(b.output.x2 - b.output.x1), uint32_t(b.output.y2 - b.output.y1), nc,
                              uint32_t(b.weightsY.size() - 1), true, b.neumann, v };
     return dispatchPass(ctx, scratch, b.dst.buffer, wy, pass);
+}
+
+GpuStatus
+recordLineBlur(GpuRecordContext& ctx, const GpuLineBlur& b)
+{
+    const uint32_t nc = b.channels;
+    if (nc == 0 || nc > kGpuBlurMaxChannels) {
+        return { VK_ERROR_FEATURE_NOT_PRESENT, "recordLineBlur: unsupported channel count" };
+    }
+    if (!b.src.buffer || !b.dst.buffer || !b.window || b.output.empty() || !contains(b.dst.bounds, b.output)
+        || (!b.srcValid.empty() && !contains(b.src.bounds, b.srcValid))) {
+        return invalidLines("invalid source, destination or window");
+    }
+    if (!validLineFilter(b.filterX) || !validLineFilter(b.filterY)) {
+        return invalidLines("invalid box filter");
+    }
+
+    // The row pass covers the output's columns over every row of the domain, which holds every row
+    // the column pass reads.
+    GpuBlurRect mid { b.output.x1, b.domain.y1, b.output.x2, b.domain.y2 };
+    if (b.domain.empty()) {
+        mid.y2 = mid.y1;
+    }
+    const uint32_t midWidth = uint32_t(mid.x2 - mid.x1);
+    const uint32_t midHeight = uint32_t(mid.y2 - mid.y1);
+    const uint64_t midFloats = uint64_t(midWidth) * midHeight * nc;
+    if (midFloats > UINT32_MAX) {
+        return invalidLines("intermediate rows exceed 32-bit indexing");
+    }
+    GpuBuffer* midBuffer = nullptr;
+    if (GpuStatus s = ctx.scratch(std::max<uint64_t>(midFloats, 4) * sizeof(float), midBuffer); !s) {
+        return s;
+    }
+
+    if (midHeight > 0) {
+        const uint32_t domainWidth = uint32_t(b.domain.x2 - b.domain.x1);
+        GpuLineBlurParams p {};
+        p.vertical = 0;
+        p.neumann = b.neumann ? 1u : 0u;
+        p.channels = nc;
+        p.lineCount = midHeight;
+        p.lineOrigin = mid.y1;
+        p.outLo = b.output.x1;
+        p.outHi = b.output.x2;
+        p.dstPosStep = nc;
+        p.dstLineStep = midWidth * nc;
+        // Position-major, so that the threads of a wave, on adjacent rows, touch adjacent pixels.
+        p.storeLo = b.domain.x1;
+        p.storePosStep = midHeight * nc;
+        p.storeLineStep = nc;
+        p.fromSource = 1;
+        if (!b.srcValid.empty()) {
+            p.srcX1 = b.srcValid.x1;
+            p.srcY1 = b.srcValid.y1;
+            p.srcX2 = b.srcValid.x2;
+            p.srcY2 = b.srcValid.y2;
+            p.srcStride = b.src.strideFloats;
+            if (!floatIndex(b.src, b.srcValid.x1, b.srcValid.y1, nc, p.srcOffset)) {
+                return invalidLines("source exceeds 32-bit indexing");
+            }
+        }
+        const uint64_t storedFloats = uint64_t(domainWidth) * midHeight * nc;
+        if (GpuStatus s = dispatchLines(ctx, b.filterX, p, b.src.buffer, midBuffer, nullptr, storedFloats, b.window); !s) {
+            return s;
+        }
+        ctx.computeBarrier();
+    }
+
+    GpuLineBlurParams p {};
+    p.vertical = 1;
+    p.neumann = b.neumann ? 1u : 0u;
+    p.channels = nc;
+    p.lineCount = uint32_t(b.output.x2 - b.output.x1);
+    p.lineOrigin = b.output.x1;
+    p.outLo = b.output.y1;
+    p.outHi = b.output.y2;
+    if (!floatIndex(b.dst, b.output.x1, b.output.y1, nc, p.dstOffset)) {
+        return invalidLines("destination exceeds 32-bit indexing");
+    }
+    p.dstPosStep = b.dst.strideFloats;
+    p.dstLineStep = nc;
+    p.storeLo = mid.y1;
+    p.storePosStep = midWidth * nc;
+    p.storeLineStep = nc;
+    p.fromSource = 0;
+    return dispatchLines(ctx, b.filterY, p, midBuffer, b.dst.buffer, midBuffer, midFloats, b.window);
 }
 
 } // namespace gpu

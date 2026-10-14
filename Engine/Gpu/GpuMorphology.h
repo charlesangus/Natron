@@ -57,6 +57,13 @@ struct GpuMorphMask {
     bool invert = false;
 };
 
+// The buffer the CPU's spatial filters run over for `output`: output, or with a mask the part of it
+// that shrinkToMask() keeps, grown by the halo and clipped to rod, or empty. Records its computation
+// into a scratch buffer of 8 ints held by ctx, whose [4, 8) receive the rect as (x1, y1, x2, y2),
+// all zero when empty, followed by a compute barrier.
+GpuStatus recordFilterWindow(GpuRecordContext& ctx, const GpuBlurRect& output, const GpuBlurRect& rod, int32_t haloX,
+                             int32_t haloY, const std::optional<GpuMorphMask>& mask, GpuBuffer*& window);
+
 // ErodeDilateKernels::filterLine over the lines of a buffer, as ErodeDilate::render() runs it. The
 // buffer is output, or with a mask the part of output that shrinkToMask() keeps, grown by the
 // halo and clipped to rod; each line clamps its windows to the buffer, and output pixels outside

@@ -827,9 +827,12 @@ plugin, and states its tolerance in this section: a node row above gets a GPU
 bound beside its CPU class, or a measured exception below it, in the same change
 that lets the node answer `canRenderOnGpu()`. Vulkan division is 2.5 ulp and
 `pow` and the trigonometric functions are looser still, so a GPU bound is
-usually wider than the CPU class of the same node. Grade holds `gradefix::kUlpBound` (`Tests/Gpu/GradeFixture.h`) and Blur holds
+usually wider than the CPU class of the same node. Grade holds `gradefix::kUlpBound` (`Tests/Gpu/GradeFixture.h`) and Blur's FIR Gaussian holds
 2e-6 absolute, plus 1e-6 relative with "(Un)premult by", whose divided values
-reach far above 1.
+reach far above 1. Blur's quasi-Gaussian, Gaussian (IIR), box, triangle and quadratic filters hold `iir()`: one thread runs
+each line through the CPU's recursion with its state in two floats where the CPU uses double (plain float drifts past 1e-3
+for the IIR Gaussian at large sizes), and filters the same rect as render(), the window shrunk to the mask, grown by the
+halo and clipped to the region of definition. Derivative orders stay on the CPU (`Tests/Native/NativeBlurGpu_Test.cpp`).
 Clamp holds its CPU class, exact, except where a divisor, mask or mix below 1
 enters, which hold `arithmetic()` (`Tests/Native/NativeClampGpu_Test.cpp`).
 Invert holds its CPU class, exact, except where a divisor, mask or mix below 1

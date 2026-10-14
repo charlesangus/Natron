@@ -88,7 +88,7 @@ build ~30 min. No workflow produces an AppImage except `release.yml` on tag push
     makes it obvious it ships debug info today, without reading the script.
   - verify: running `build.sh` with no args, `debug`, `release`, and `fast` each
     prints its resolved type/flags before `cmake` runs.
-  - size: S
+  - size: M
 
 - [ ] M115.P2.T2 — Document the three presets in `tools/ci/local/README.md`
   - files: `tools/ci/local/README.md`
@@ -98,7 +98,7 @@ build ~30 min. No workflow produces an AppImage except `release.yml` on tag push
     single-file iteration with live assertions, `release` to match CI/ship).
   - verify: README's description of each preset's flags matches
     `CMAKE_BUILD_TYPE_ARGS` in `build.sh` exactly.
-  - size: S
+  - size: M
 
 ## Phase 115.3: Minimize and verify release artifact size
 
@@ -176,7 +176,7 @@ build ~30 min. No workflow produces an AppImage except `release.yml` on tag push
     build-tree path unchanged.
   - verify: `run-gui-test.sh Tests/gui/m75_read.py build/remote/fast/<AppImage>`
     passes under Xvfb in the container.
-  - size: S
+  - size: M
 
 ## Phase 115.5: Per-host build-mode selection
 
@@ -189,7 +189,7 @@ build ~30 min. No workflow produces an AppImage except `release.yml` on tag push
     query it with one command.
   - verify: `--mode` prints `remote` with no file, and `local`/`remote` per the file;
     `git status` stays clean with a `.local/` present.
-  - size: S
+  - size: M
 
 - [ ] M115.P5.T2 — Document local vs remote builds and the two build kinds
   - files: `tools/ci/remote/README.md`, `tools/ci/local/README.md`
@@ -199,7 +199,7 @@ build ~30 min. No workflow produces an AppImage except `release.yml` on tag push
     phase in both modes. In remote mode, run GUI checks locally against the
     downloaded AppImage via `run-gui-test.sh`. Cross-link from the local README.
   - verify: every command and flag in the README matches the scripts.
-  - size: S
+  - size: M
 
 ## Phase 115.6: Faster PR CI
 
@@ -235,3 +235,7 @@ The stripped `release` AppImage's size is recorded as a clear improvement over t
 pre-milestone baseline, and PR CI wall time is recorded before and after.
 `check-relocatable.sh`, `check-startup.sh` and the ctest suite stay green
 throughout.
+
+## Decisions
+- 2026-10-13 — **Claimed by takeover as a second lane** (`--claim --parallel 2`, `.worktrees/m115`, branch `milestone/m115-build-speed-and-artifact-size`) while M27 - Real Debug Build awaits CI. The claim's file-overlap test failed against M27 - Real Debug Build (`CMakeLists.txt`, `tools/ci/local/README.md`) and M64 - Tiled Rendering (`.github/workflows/ci.yml`, `tools/ci/local/test.sh` via M64.P6.T2); the user waived both — run every task now and rebase/resolve when those land. Freshness check passed.
+- 2026-10-13 — **Resized S → M:** P2.T1, P2.T2, P4.T4, P5.T1, P5.T2 — each changes script logic, keeps docs consistent with scripts, or touches two files. P3.T2 stays S (measurement only).

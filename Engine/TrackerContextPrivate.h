@@ -64,11 +64,9 @@ GCC_DIAG_ON(maybe-uninitialized)
 
 #define kTrackBaseName "track"
 
-
-#ifdef DEBUG
-// Enable usage of markers that track using TrackerPM internally
-#define NATRON_TRACKER_ENABLE_TRACKER_PM
-#endif
+// Define NATRON_TRACKER_ENABLE_TRACKER_PM to let markers track through the TrackerPM plug-in.
+// It adds knobs to the serialized Tracker node, so it is an explicit opt-in rather than tied
+// to DEBUG: a project saved by a debug build must match one saved by a release build.
 
 #define TRACKER_MAX_TRACKS_FOR_PARTIAL_VIEWER_UPDATE 8
 

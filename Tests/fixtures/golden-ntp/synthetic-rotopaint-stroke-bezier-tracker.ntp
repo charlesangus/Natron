@@ -3478,26 +3478,7 @@
 			<PythonModuleVersion>0</PythonModuleVersion>
 			<Plugin_major_version>1</Plugin_major_version>
 			<Plugin_minor_version>0</Plugin_minor_version>
-			<KnobsCount>38</KnobsCount>
-			<item>
-				<Name>pmScoreType</Name>
-				<Type>Choice</Type>
-				<Dimension>1</Dimension>
-				<Secret>1</Secret>
-				<MasterIsAlias>0</MasterIsAlias>
-				<SavedDimensions>1</SavedDimensions>
-				<item>
-					<Enabled>1</Enabled>
-					<HasAnimation>0</HasAnimation>
-					<Value>1</Value>
-					<Default>1</Default>
-					<HasMaster>0</HasMaster>
-					<Expression></Expression>
-					<ExprHasRet>0</ExprHasRet>
-				</item>
-				<ChoiceLabel>SAD</ChoiceLabel>
-				<UserKnob>0</UserKnob>
-			</item>
+			<KnobsCount>37</KnobsCount>
 			<item>
 				<Name>defPatternWinSize</Name>
 				<Type>Int</Type>

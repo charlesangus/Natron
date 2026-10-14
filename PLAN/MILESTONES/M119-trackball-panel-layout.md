@@ -12,6 +12,7 @@ Follow-up to M44 - Trackball Colour Editing. At the default properties width the
   - **Slider style:** Natron `ScaleSliderQWidget` + `SpinBox` lines (today); the restored custom `ColorEditSlider` (absolute marker, relative drag elsewhere, chevrons) paired with Natron's real `SpinBox`; or vertical Natron sliders as columns to the right of the wheel.
   - **Placement:** in the knob (today) or a full-width trackball at the top of the properties bin.
 - The bin-top placement: shown on demand, bound to one colour knob, retargeting as global mode does.
+- Global mode starts in "C" on every fresh engage instead of remembering the last mode across invocations and nodes.
 - An AppImage and test card for the user's pick, then a cleanup that makes the winner the only layout.
 
 **Out:**
@@ -110,12 +111,21 @@ Every variant lives in the real panel. Tests go in `GuiTests`; the GUI evidence 
   - verify: `GuiTests --gtest_filter=ColorTrackballGlobalMode*:KnobGuiColor*` in BinTop: ▾ on `gain` shows the bin panel bound to `gain` and unfolds r/g/b/a inline with no inline adjust panel; Ctrl+E then Ctrl+Down rebinds to `gamma`; the HUD's parent is the bin panel. InKnob cases stay green.
   - size: M
 
+- [ ] M119.P1.T10 — Reset global mode to "C" on every fresh engage, so the mode no longer carries over between invocations or nodes
+  - files: `Gui/ColorTrackballGlobalMode.cpp`, `Gui/ColorTrackballGlobalMode.h`, `Tests/ColorTrackballGlobalMode_Test.cpp`
+  - approach:
+    - `ColorTrackballGlobalMode` is one controller per `Gui` (`instanceFor`), so `_mode` outlives `exit()` and the next Ctrl+E on any node starts in whatever mode was last picked. In `engage()`, in the `if (!_engaged)` branch (a fresh invocation), set the mode back to `eColorGlobalModeC` through the same path `setMode` uses, so the HUD and readouts update; do it before `Q_EMIT engagedChanged(true)`.
+    - An `engage()` that only moves an already-engaged mode onto another knob (Ctrl+Up/Down, BinTop retargeting from T7/T8) keeps the current mode: only leaving and re-engaging resets it. Update the doc comment on `engage` and `getMode` to say so.
+    - No setting, no serialization: the default is always "C".
+  - verify: `GuiTests --gtest_filter=ColorTrackballGlobalMode*`: engage, `setMode(eColorGlobalModeH)` (any non-C mode), `exit()`, engage on a different knob, and `getMode()` is `eColorGlobalModeC` with `stateChanged` emitted; engage, set a non-C mode, then engage on a second knob without exiting, and the mode is unchanged. Existing cases stay green.
+  - size: S
+
 - [ ] M119.P1.T9 — End build: run every suite, write the GUI evidence script, and capture each combination at two bin widths
   - files: `Tests/gui/m119_trackball_layout.py` (new)
   - approach:
     - One `fast` build and full ctest.
     - The script opens Grade and ColorCorrect with `NATRON_COLOR_PANEL_DEV=1`, and for each meaningful combination (both bound toggles × three styles × two placements) at the default bin width and at 2× captures a screenshot and records the wheel's diameter and the Hue track's length to `results.txt`.
-    - It also checks no paint at a stale geometry on an axis switch (the M44.P7.T8 paint logger) and that a drag on each style is one undo step.
+    - It also checks no paint at a stale geometry on an axis switch (the M44.P7.T8 paint logger), that a drag on each style is one undo step, and that Ctrl+E on a second node after leaving the mode in a non-C mode shows "C" in the HUD (T10).
   - verify: ctest all green; `results.txt` has no FAIL and a wheel diameter and track length for every combination; the shots exist and are listed for the test card.
   - size: M
 
@@ -147,6 +157,7 @@ These briefs name every file a losing axis could leave behind; the PM narrows ea
 
 ## Decisions
 
+- 2026-10-14 — **Global mode resets to "C" on a fresh engage (user):** the controller is per-`Gui`, so the last-used mode persisted across exits and nodes, which was confusing. Only a fresh invocation resets; retargeting an engaged mode keeps its mode. Task M119.P1.T10.
 - 2026-10-13 — **Scope set by the user:** the trackball is too small; reconsider M44's "use Natron's normal float sliders" call. Candidates to try: sliders overflowing into the button column, the old custom sliders with a proper twiddle box, the wheel extending into the label column and into both label and button columns, vertical Hue…Tint sliders, and a full-width trackball at the top of the properties bin that reuses global mode's knob switching, with ▾ becoming a "push up" control.
 - 2026-10-13 — **Tried in Natron, behind a dev switch:** the candidates are built in the real panel and compared on one AppImage, not in a mockup: real knobs and real bin widths are what decide it.
 - 2026-10-13 — **Independent axes, not presets:** left edge, right edge, slider style and placement switch separately, so the best mix can be found.

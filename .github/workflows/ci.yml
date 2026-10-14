@@ -21,9 +21,13 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
-    name: build-and-test
+  ctest:
+    name: ctest (${{ matrix.scheduler }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scheduler: [legacy, taskgraph]
     container:
       image: aswf/ci-vfxall:2027-clang21.1
     defaults:
@@ -157,44 +161,30 @@ jobs:
       - name: Build (debug)
         run: tools/ci/local/build.sh debug --no-ccache-stats
 
-      # Both render scheduler modes run in this one job rather than as a
-      # matrix: a matrix would build the debug tree twice and rename the
-      # required `build-and-test` check to `build-and-test (legacy)` etc.,
-      # which branch protection would no longer match. The taskgraph
-      # smoke leg compares its PNG byte for byte against the one the
-      # legacy leg left in smoke-reference.
-      - name: Run ctest suite (debug, legacy scheduler)
+      # lavapipe is the CPU Vulkan device; without it the Gpu tests would
+      # skip silently, so REQUIRE_GPU turns that into a failure.
+      - name: Run ctest suite (debug)
         env:
-          # lavapipe is the CPU Vulkan device; without it the Gpu tests
-          # would skip silently, so REQUIRE_GPU turns that into a failure.
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           NATRON_TEST_REQUIRE_GPU: 1
-          NATRON_RENDER_SCHEDULER: legacy
+          NATRON_RENDER_SCHEDULER: ${{ matrix.scheduler }}
         run: tools/ci/local/test.sh ctest debug
 
-      - name: Run ctest suite (debug, taskgraph scheduler)
+      - name: Python bindings smoke test (debug)
         if: success() || failure()
         env:
-          # lavapipe is the CPU Vulkan device; without it the Gpu tests
-          # would skip silently, so REQUIRE_GPU turns that into a failure.
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-          NATRON_TEST_REQUIRE_GPU: 1
-          NATRON_RENDER_SCHEDULER: taskgraph
-        run: tools/ci/local/test.sh ctest debug
-
-      - name: Python bindings smoke test (debug, legacy scheduler)
-        if: success() || failure()
-        env:
-          NATRON_RENDER_SCHEDULER: legacy
+          NATRON_RENDER_SCHEDULER: ${{ matrix.scheduler }}
           NATRON_SMOKE_OUTPUT_DIR: ${{ github.workspace }}/build/smoke-reference
         run: tools/ci/local/test.sh smoke debug
 
-      - name: Python bindings smoke test (debug, taskgraph scheduler)
+      - name: Upload smoke renders
         if: success() || failure()
-        env:
-          NATRON_RENDER_SCHEDULER: taskgraph
-          NATRON_SMOKE_REFERENCE_DIR: ${{ github.workspace }}/build/smoke-reference
-        run: tools/ci/local/test.sh smoke debug
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-render-${{ matrix.scheduler }}
+          path: build/smoke-reference
+          if-no-files-found: ignore
+          retention-days: 1
 
       # if: always() is load-bearing: a step defaults to success() and is
       # skipped once an earlier step has failed, so without it a red build
@@ -208,8 +198,12 @@ jobs:
       # key reuses the restore step's resolved cache-primary-key output
       # rather than re-interpolating the expression, so restore and save
       # can never drift apart.
+      #
+      # Only the legacy leg saves: both legs restore the same entry and
+      # end with near-identical ccache contents, so a second save would
+      # just double the cache quota used.
       - name: Save ccache
-        if: always()
+        if: always() && matrix.scheduler == 'legacy'
         uses: actions/cache/save@v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
@@ -218,3 +212,34 @@ jobs:
       - name: ccache stats
         if: always()
         run: ccache -s
+
+  # Branch protection requires a check named exactly `build-and-test`; the
+  # matrix legs are named `ctest (<scheduler>)`, so this job keeps the
+  # required name stable. It also holds the byte-for-byte comparison of the
+  # two schedulers' smoke renders, which can no longer happen inside one job.
+  build-and-test:
+    name: build-and-test
+    needs: ctest
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every ctest leg to pass
+        env:
+          RESULT: ${{ needs.ctest.result }}
+        run: |
+          if [ "$RESULT" != success ]; then
+            echo "ctest matrix result: $RESULT" >&2
+            exit 1
+          fi
+
+      - name: Download smoke renders
+        uses: actions/download-artifact@v4
+        with:
+          pattern: smoke-render-*
+          path: smoke-renders
+
+      - name: Compare smoke renders across schedulers
+        run: |
+          test -d smoke-renders/smoke-render-legacy
+          test -d smoke-renders/smoke-render-taskgraph
+          diff -r smoke-renders/smoke-render-legacy smoke-renders/smoke-render-taskgraph

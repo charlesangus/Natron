@@ -152,6 +152,12 @@ if [[ ! -d "${BUILD_DIR}" ]]; then
     exit 1
 fi
 
+if [[ "${SUBCOMMAND}" == "ctest" ]] && grep -qs '^NATRON_BUILD_TESTS:[A-Z]*=OFF$' "${BUILD_DIR}/CMakeCache.txt"; then
+    echo "test.sh: ERROR: ${BUILD_DIR} was configured without tests." >&2
+    echo "Run tools/ci/local/build.sh ${BUILD_TYPE} --tests first." >&2
+    exit 1
+fi
+
 ASSETS_DIR="${REPO_ROOT}/build/assets"
 OFX_PLUGIN_PATH="${ASSETS_DIR}/Plugins"
 

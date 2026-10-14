@@ -94,7 +94,9 @@ jobs:
 
       - name: Build
         id: build
-        run: tools/ci/local/build.sh "$PRESET" --no-ccache-stats
+        env:
+          WITH_TESTS: ${{ inputs.tests && '1' || '' }}
+        run: tools/ci/local/build.sh "$PRESET" ${WITH_TESTS:+--tests} --no-ccache-stats
 
       - name: Run ctest suite (legacy scheduler)
         if: inputs.tests

@@ -7,7 +7,7 @@
 # and ccache serves most of the compiler invocations from the previous run.
 #
 # Usage:
-#   tools/ci/local/build.sh [debug|release|fast] [--reconfigure] [--no-ccache-stats]
+#   tools/ci/local/build.sh [debug|release|fast] [--tests] [--reconfigure] [--no-ccache-stats]
 #
 #   debug (default)      -> build/debug,   configured with -DCMAKE_BUILD_TYPE=Debug
 #   release               -> build/release, configured with NO explicit build
@@ -20,6 +20,12 @@
 #                            of its object/link size; meant for quick UAT
 #                            checkpoints where a full release build is
 #                            overkill. Not a CI configuration.
+#   --tests                -> fast only: also build the gtest suite (ctest).
+#                            Without it fast configures NATRON_BUILD_TESTS=OFF,
+#                            so a UI edit does not relink the large Tests
+#                            binary; debug and release always build tests.
+#                            The requested value is passed on every configure
+#                            and a differing cached value forces a reconfigure.
 #   --reconfigure         -> force re-running `cmake` even if the build
 #                            directory already has a CMakeCache.txt (use this
 #                            after e.g. editing CMakeLists.txt).
@@ -70,11 +76,15 @@ set -euo pipefail
 BUILD_TYPE="debug"
 RECONFIGURE=0
 SHOW_CCACHE_STATS=1
+WANT_TESTS_FLAG=0
 
 for arg in "$@"; do
     case "${arg}" in
         debug|release|fast)
             BUILD_TYPE="${arg}"
+            ;;
+        --tests)
+            WANT_TESTS_FLAG=1
             ;;
         --reconfigure)
             RECONFIGURE=1
@@ -84,7 +94,7 @@ for arg in "$@"; do
             ;;
         *)
             echo "build.sh: unknown argument '${arg}'" >&2
-            echo "usage: build.sh [debug|release|fast] [--reconfigure] [--no-ccache-stats]" >&2
+            echo "usage: build.sh [debug|release|fast] [--tests] [--reconfigure] [--no-ccache-stats]" >&2
             exit 1
             ;;
     esac
@@ -123,6 +133,12 @@ case "${BUILD_TYPE}" in
         ;;
 esac
 
+if [[ "${BUILD_TYPE}" == "fast" && "${WANT_TESTS_FLAG}" -eq 0 ]]; then
+    BUILD_TESTS="OFF"
+else
+    BUILD_TESTS="ON"
+fi
+
 # Flags are derived from CMAKE_BUILD_TYPE_ARGS, the array handed to cmake
 # below, so this cannot drift from what is actually configured. The per-config
 # defaults are CMake's GNU ones; the top-level CMakeLists adds -DDEBUG for
@@ -146,6 +162,7 @@ print_build_banner() {
     done
     echo "== build.sh: preset=${BUILD_TYPE} CMAKE_BUILD_TYPE=${cmake_type:-<unset, CMakeLists defaults to RelWithDebInfo>} =="
     echo "   compile flags: ${flags}"
+    echo "   tests: ${BUILD_TESTS}"
     case "${flags}" in
         *" -g"*|"-g"*) echo "   debug info: yes" ;;
         *)             echo "   debug info: no" ;;
@@ -234,8 +251,19 @@ CMAKE_ARGS=(
     -DCMAKE_C_COMPILER_LAUNCHER=ccache
     -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+    -DNATRON_BUILD_TESTS="${BUILD_TESTS}"
     "${REPO_ROOT}"
 )
+
+# The cache outlives the invocation, so a changed --tests would otherwise be
+# ignored. A cache without the entry predates the option, which defaulted ON.
+if [[ -f "${CMAKE_CACHE}" ]]; then
+    CACHED_TESTS="$(sed -n 's/^NATRON_BUILD_TESTS:[A-Z]*=//p' "${CMAKE_CACHE}")"
+    if [[ "${CACHED_TESTS:-ON}" != "${BUILD_TESTS}" ]]; then
+        echo "== build.sh: NATRON_BUILD_TESTS is ${CACHED_TESTS:-ON} in the cache, want ${BUILD_TESTS} -- reconfiguring =="
+        RECONFIGURE=1
+    fi
+fi
 
 if [[ -f "${CMAKE_CACHE}" && "${RECONFIGURE}" -eq 0 ]]; then
     echo "== build.sh: ${BUILD_DIR}/CMakeCache.txt already exists -- skipping configure =="

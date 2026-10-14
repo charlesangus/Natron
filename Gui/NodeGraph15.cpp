@@ -390,7 +390,7 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
             }
         }
     } else if (state == eEventStateSelectionRect) {
-        _imp->editSelectionFromSelectionRectangle( modCASIsShift(e) );
+        _imp->editSelectionFromSelectionRectangle(modCASIsShift(e));
     }
     resetSplicePlan();
     _imp->_nodesWithinBDAtPenDown.clear();

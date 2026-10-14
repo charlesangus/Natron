@@ -357,7 +357,7 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphToggleAutoTurbo, modifiers, key)) {
         toggleAutoTurbo();
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFindNode, modifiers, key)) {
-        popFindDialog( QCursor::pos() );
+        popFindDialog(QCursor::pos());
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphRenameNode, modifiers, key)) {
         renameNode();
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphExtractNode, modifiers, key)) {

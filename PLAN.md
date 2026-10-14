@@ -192,6 +192,8 @@ future core work has solid ground to build on.
 | M117 | GUI Perf Harness And Baseline | todo | - |  | E10 | [M117-gui-perf-harness-and-baseline.md](PLAN/MILESTONES/M117-gui-perf-harness-and-baseline.md) |
 | M118 | Large Graph GUI Responsiveness | todo | M117, M56 |  | E10 | [M118-large-graph-gui-responsiveness.md](PLAN/MILESTONES/M118-large-graph-gui-responsiveness.md) |
 | M119 | Trackball Panel Layout | todo | M56, M69 |  | E10 | [M119-trackball-panel-layout.md](PLAN/MILESTONES/M119-trackball-panel-layout.md) |
+| M134 | Output Picker Pixel Aspect | todo | - |  | E10 | [M134-output-picker-pixel-aspect.md](PLAN/MILESTONES/M134-output-picker-pixel-aspect.md) |
+| M135 | Pool Sharing Flake Fix | todo | - |  | E2 | [M135-pool-sharing-flake-fix.md](PLAN/MILESTONES/M135-pool-sharing-flake-fix.md) |
 
 # Epics
 

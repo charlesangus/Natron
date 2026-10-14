@@ -203,7 +203,7 @@ build ~30 min. No workflow produces an AppImage except `release.yml` on tag push
 
 ## Phase 115.6: Faster PR CI
 
-- [ ] M115.P6.T1 — Run the two scheduler ctest passes as parallel matrix jobs
+- [x] M115.P6.T1 — Run the two scheduler ctest passes as parallel matrix jobs
   - files: `.github/workflows/ci.yml`, `.github/workflows/beta-release.yml` (only if its `workflow_run` check needs the new job names)
   - approach: a matrix over `NATRON_RENDER_SCHEDULER` (`legacy`, `taskgraph`). Each
     job builds debug from the warm ccache and runs one ctest pass and one smoke
@@ -245,3 +245,4 @@ throughout.
 - 2026-10-13 — **Release AppImage size (P3.T2):** unstripped 419 MB (run 38505842066) → stripped 88 MB (run 38507504893, 0605f6f85), artifact sizes; staging stripped 268 ELFs, 1.38 GB → 257 MB. `check-relocatable.sh` and `check-startup.sh` pass on the stripped tree.
 - 2026-10-13 — **ccache families (P4.T2):** measured entries before the change — debug 1.31–2.12 GB, release 1.52–2.02 GB, no fast entry; deps 0.16 GB, assets 0.01 GB. Caps: debug 3G, release 3G, fast 2G (8G of the 10 GB quota; raise fast first if it thrashes). Second `release` dispatch on the branch restored the branch's own entry and hit 871/876 compiles (99.4%), build ~4 min; release entry 1.93 GB. The old unprefixed debug key is a last restore-key so main's first post-merge run stays warm.
 - 2026-10-14 — **Remote builds (P4.T1):** both presets produced an AppImage that passed `check-startup.sh` (release run 38507504893; fast runs 38505839868 and 38508837067). Cold `fast` 34 min (empty fast cache); warm `fast` 5 min 23 s wall time, 656/657 hits, stripped fast AppImage 86 MB. The local download step can't be exercised from this host until `*.blob.core.windows.net` is reachable.
+- 2026-10-14 — **PR CI matrix (P6.T1):** run 38506076648 (751c9331a) green, 40.5 min wall time vs ~57 min serial baseline; short of the ~33 min target, and P6.T2's `ctest -j4` is the next cut. `build-and-test` is now an aggregating job because branch protection requires that exact name (required: `format`, `lint-ci`, `build-and-test`); it also diffs both legs' smoke renders to keep cross-scheduler parity. `beta-release.yml` keys off the `Tests` workflow's conclusion, so it needs no change — confirm the beta fires on the first merge to main.

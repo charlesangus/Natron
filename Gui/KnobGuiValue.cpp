@@ -802,6 +802,32 @@ KnobGuiValue::setDimensionsFolded(bool folded)
     }
 }
 
+namespace {
+
+class FoldStateHoldGuard {
+public:
+    explicit FoldStateHoldGuard(bool& held)
+        : _held(held)
+        , _wasHeld(held)
+    {
+        _held = true;
+    }
+
+    ~FoldStateHoldGuard()
+    {
+        _held = _wasHeld;
+    }
+
+private:
+    FoldStateHoldGuard(const FoldStateHoldGuard&) = delete;
+    FoldStateHoldGuard& operator=(const FoldStateHoldGuard&) = delete;
+
+    bool& _held;
+    const bool _wasHeld;
+};
+
+} // namespace
+
 void
 KnobGuiValue::copyDimensionZeroValueToOthers()
 {
@@ -820,6 +846,9 @@ KnobGuiValue::copyDimensionZeroValueToOthers()
     if (getNormalizationPolicy(0) != eValueIsNormalizedNone) {
         firstDimensionValue = denormalize(0, time, firstDimensionValue);
     }
+    // Each dimension's value change refreshes the GUI at once, while the dimensions after it still
+    // differ, which would otherwise record the knob as unfolded.
+    FoldStateHoldGuard holdFoldState(_imp->foldStateHeld);
     knob->beginChanges();
     for (int i = 1; i < nDims; ++i) {
         double v = firstDimensionValue;
@@ -1033,10 +1062,10 @@ public:
         if (!isValue) {
             return;
         }
-        isValue->setDimensionsFolded(_fold);
         if (_fold) {
             isValue->copyDimensionZeroValueToOthers();
         }
+        isValue->setDimensionsFolded(_fold);
     }
 
 private:

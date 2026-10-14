@@ -189,11 +189,6 @@ findNodeGui(const NodesGuiList& nodes,
     return NodeGuiPtr();
 }
 
-/*
- * Places and wires the pasted nodes below the one selected node, as node creation does,
- * and pushes their creation and the new connections as one undo step. Returns false,
- * having changed nothing, when the paste does not splice.
- */
 static bool
 pasteOntoNode(NodeGraph* graph,
               const NodesGuiList& selection,
@@ -229,6 +224,18 @@ pasteOntoNode(NodeGraph* graph,
         inputsBefore.push_back(watchedNodes[i]->getGuiInputs());
     }
 
+    // The outputs map holds one input per downstream node, so a node the target feeds through
+    // several inputs, such as both A and B of a Merge, needs every one of them found here.
+    std::map<NodePtr, std::vector<int>> targetUses;
+    for (std::size_t i = 1; i < watchedNodes.size(); ++i) {
+        const std::vector<NodeWPtr>& inputs = inputsBefore[i];
+        for (std::size_t j = 0; j < inputs.size(); ++j) {
+            if (inputs[j].lock() == targetNode) {
+                targetUses[watchedNodes[i]].push_back((int)j);
+            }
+        }
+    }
+
     const QPointF entryPosBefore = entryGui->getPos_mt_safe();
     graph->moveNodesForIdealPosition(entryGui, targetGui, true);
     const QPointF delta = entryGui->getPos_mt_safe() - entryPosBefore;
@@ -240,16 +247,34 @@ pasteOntoNode(NodeGraph* graph,
         (*it)->setPosition(pos.x() + delta.x(), pos.y() + delta.y());
     }
 
-    if (entryGui != exitGui) {
-        // Node creation re-routes the target's outputs to the node it placed, which for a
-        // pasted chain is the entry; the chain's result comes out of the exit.
-        for (std::map<NodePtr, int>::const_iterator it = targetOutputs.begin(); it != targetOutputs.end(); ++it) {
-            const std::vector<NodeWPtr>& inputs = it->first->getGuiInputs();
-            if ((it->second >= 0) && (it->second < (int)inputs.size()) && (inputs[it->second].lock() == entryNode)) {
-                ignore_result(it->first->replaceInput(exitNode, it->second));
+    // Node creation re-routes one input of each of the target's outputs to the node it placed,
+    // the entry, and leaves alone the outputs it chose not to splice; a node it re-routed has
+    // every input that took the target fed from the exit, where the pasted nodes' result comes out.
+    for (std::map<NodePtr, std::vector<int>>::const_iterator it = targetUses.begin(); it != targetUses.end(); ++it) {
+        const std::vector<NodeWPtr> inputs = it->first->getGuiInputs();
+        bool spliced = false;
+        for (std::size_t k = 0; k < it->second.size(); ++k) {
+            const int inputNb = it->second[k];
+            if ((inputNb < (int)inputs.size()) && (inputs[inputNb].lock() == entryNode)) {
+                spliced = true;
             }
         }
+        if (!spliced) {
+            continue;
+        }
+        for (std::size_t k = 0; k < it->second.size(); ++k) {
+            const int inputNb = it->second[k];
+            if (inputNb >= (int)inputs.size()) {
+                continue;
+            }
+            const NodePtr input = inputs[inputNb].lock();
+            if ((input == targetNode) || ((input == entryNode) && (entryNode != exitNode))) {
+                ignore_result(it->first->replaceInput(exitNode, inputNb));
+            }
+        }
+    }
 
+    if (entryGui != exitGui) {
         QRectF pastedRect;
         for (NodesGuiList::const_iterator it = pasted.begin(); it != pasted.end(); ++it) {
             pastedRect |= (*it)->mapToScene((*it)->boundingRect()).boundingRect();

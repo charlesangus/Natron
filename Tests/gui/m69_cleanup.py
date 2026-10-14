@@ -1120,6 +1120,30 @@ try:
             check(same(input_of(viewer, 0), reader), "chain: one undo restores Read -> Viewer")
             check(all(app.getNode(n.getScriptName()) is None for n in pasted), "chain: one undo removes both pasted nodes")
 
+        split_src = create("net.sf.cimg.CImgBlur", 6400, 0)
+        connect(split_src, 0, reader)
+        split_merge = create("net.sf.openfx.MergePlugin", 6400, 300)
+        split_a = input_index(split_merge, "A")
+        split_b = input_index(split_merge, "B")
+        gt.require(split_a is not None and split_b is not None, "the Merge has A and B inputs")
+        connect(split_merge, split_a, split_src)
+        connect(split_merge, split_b, split_src)
+        gt.close_all_panels()
+        copy([copy_blur, copy_grade])
+        pasted = paste_onto([split_src])
+        yield ("sleep", SETTLE_MS)
+        if check(len(pasted) == 2, "paste a chain onto a node feeding a Merge's A and B: two nodes (got %d)" % len(pasted)):
+            pgrade = [n for n in pasted if "Grade" in n.getPluginID()]
+            if check(len(pgrade) == 1, "the chain pasted onto the Merge's source has one Grade"):
+                check(same(input_of(split_merge, split_a), pgrade[0]), "A and B: the Merge's A takes the pasted Grade (exit)")
+                check(same(input_of(split_merge, split_b), pgrade[0]), "A and B: the Merge's B takes the pasted Grade (exit)")
+            trigger("undo")
+            yield ("sleep", SETTLE_MS)
+            check(same(input_of(split_merge, split_a), split_src) and same(input_of(split_merge, split_b), split_src),
+                  "A and B: one undo restores both Merge inputs to the source")
+            check(all(app.getNode(n.getScriptName()) is None for n in pasted), "A and B: one undo removes both pasted nodes")
+        destroy_nodes([split_merge, split_src])
+
         copy([copy_blur])
         pasted = paste_onto([])
         yield ("sleep", SETTLE_MS)

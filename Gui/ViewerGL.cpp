@@ -4512,13 +4512,13 @@ ViewerGL::getViewedNodeInput(int textureIndex,
 }
 
 bool
-ViewerGL::getInputColorAtPixelRect(int textureIndex,
-                                   const ImagePtr& displayed,
-                                   const RectI& pixelRect,
-                                   float* r,
-                                   float* g,
-                                   float* b,
-                                   float* a)
+ViewerGL::getInputColorAtCanonicalRect(int textureIndex,
+                                       const ImagePtr& displayed,
+                                       const RectD& canonicalRect,
+                                       float* r,
+                                       float* g,
+                                       float* b,
+                                       float* a)
 {
     double time;
     {
@@ -4530,9 +4530,27 @@ ViewerGL::getInputColorAtPixelRect(int textureIndex,
         return false;
     }
 
+    // The viewed node may change the pixel aspect ratio, so its input's own ratio, not the
+    // displayed image's, places canonicalRect in the input's pixels.
+    double par = input->getEffectInstance()->getAspectRatio(-1);
+    if (par <= 0.) {
+        par = 1.;
+    }
+    const unsigned int mm = displayed->getMipmapLevel();
+    RectI pixelRect(int(std::floor(canonicalRect.left() / par)) >> mm,
+                    int(std::floor(canonicalRect.bottom())) >> mm,
+                    int(std::floor(canonicalRect.right() / par)) >> mm,
+                    int(std::floor(canonicalRect.top())) >> mm);
+    if (pixelRect.x2 <= pixelRect.x1) {
+        pixelRect.x2 = pixelRect.x1 + 1;
+    }
+    if (pixelRect.y2 <= pixelRect.y1) {
+        pixelRect.y2 = pixelRect.y1 + 1;
+    }
+
     const ImageLayerDesc& layer = displayed->getComponents();
     float rgba[4];
-    if (!sampleNodeColor(input, time, getCurrentView(), displayed->getMipmapLevel(), pixelRect, layer, rgba)) {
+    if (!sampleNodeColor(input, time, getCurrentView(), mm, pixelRect, layer, rgba)) {
         return false;
     }
 
@@ -4569,11 +4587,7 @@ ViewerGL::pickColorAt(double x,
     if (!pickOutput) {
         ImagePtr displayed = getLastRenderedImageByMipmapLevel(textureIndex, getMipmapLevelCombinedToZoomFactor());
         if (displayed) {
-            const double par = displayed->getPixelAspectRatio();
-            const double scale = 1. / (1 << displayed->getMipmapLevel());
-            const int xPixel = std::floor(x * scale / par);
-            const int yPixel = std::floor(y * scale);
-            if (getInputColorAtPixelRect(textureIndex, displayed, RectI(xPixel, yPixel, xPixel + 1, yPixel + 1), r, g, b, a)) {
+            if (getInputColorAtCanonicalRect(textureIndex, displayed, RectD(x, y, x, y), r, g, b, a)) {
                 *mipmapLevel = displayed->getMipmapLevel();
                 *fromInput = true;
 
@@ -4600,14 +4614,8 @@ ViewerGL::pickColorAtRect(const RectD& rect, // rectangle in canonical coordinat
     if (!pickOutput) {
         ImagePtr displayed = getLastRenderedImageByMipmapLevel(textureIndex, getMipmapLevelCombinedToZoomFactor());
         if (displayed) {
-            // Converted exactly as getColorAtRect() converts it, so input and output average the same pixels.
-            const unsigned int mm = displayed->getMipmapLevel();
-            const RectI pixelRect(int(std::floor(rect.left())) >> mm,
-                                  int(std::floor(rect.bottom())) >> mm,
-                                  int(std::floor(rect.right())) >> mm,
-                                  int(std::floor(rect.top())) >> mm);
-            if (getInputColorAtPixelRect(textureIndex, displayed, pixelRect, r, g, b, a)) {
-                *mipmapLevel = mm;
+            if (getInputColorAtCanonicalRect(textureIndex, displayed, rect, r, g, b, a)) {
+                *mipmapLevel = displayed->getMipmapLevel();
                 *fromInput = true;
 
                 return true;

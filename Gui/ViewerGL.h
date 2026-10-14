@@ -661,12 +661,13 @@ private:
     NodePtr getViewedNodeInput(int textureIndex, double time) const WARN_UNUSED_RETURN;
 
     /**
-     * @brief Mean colour of the viewed node's input over pixelRect, in the pixel coordinates of
-     * displayed, the image last rendered in textureIndex, at the time, view, scale and layer
-     * displayed was rendered with. Channels displayed lacks are filled as getColorAt() fills them.
+     * @brief Mean colour of the viewed node's input over canonicalRect, at least one pixel wide
+     * and high, read at the time, view, scale and layer displayed, the image last rendered in
+     * textureIndex, was rendered with, and converted to pixels with the input's own pixel aspect
+     * ratio. Channels displayed lacks are filled as getColorAt() fills them.
      **/
-    bool getInputColorAtPixelRect(int textureIndex, const ImagePtr& displayed, const RectI& pixelRect,
-                                  float* r, float* g, float* b, float* a) WARN_UNUSED_RETURN;
+    bool getInputColorAtCanonicalRect(int textureIndex, const ImagePtr& displayed, const RectD& canonicalRect,
+                                      float* r, float* g, float* b, float* a) WARN_UNUSED_RETURN;
 
     /**
      * @brief getColorAt() and getColorAtRect() read from the viewed node's input unless pickOutput

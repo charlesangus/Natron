@@ -191,7 +191,7 @@ build ~30 min. No workflow produces an AppImage except `release.yml` on tag push
     `git status` stays clean with a `.local/` present.
   - size: M
 
-- [ ] M115.P5.T2 — Document local vs remote builds and the two build kinds
+- [x] M115.P5.T2 — Document local vs remote builds and the two build kinds
   - files: `tools/ci/remote/README.md`, `tools/ci/local/README.md`
   - approach: when to use remote (default, slow hosts, parallel lanes) vs local
     (powerful host, tight single-file iteration). UAT = `fast` AppImage, perf =
@@ -247,3 +247,4 @@ throughout.
 - 2026-10-14 — **Remote builds (P4.T1):** both presets produced an AppImage that passed `check-startup.sh` (release run 38507504893; fast runs 38505839868 and 38508837067). Cold `fast` 34 min (empty fast cache); warm `fast` 5 min 23 s wall time, 656/657 hits, stripped fast AppImage 86 MB. The local download step can't be exercised from this host until `*.blob.core.windows.net` is reachable.
 - 2026-10-14 — **PR CI matrix (P6.T1):** run 38506076648 (751c9331a) green, 40.5 min wall time vs ~57 min serial baseline; short of the ~33 min target, and P6.T2's `ctest -j4` is the next cut. `build-and-test` is now an aggregating job because branch protection requires that exact name (required: `format`, `lint-ci`, `build-and-test`); it also diffs both legs' smoke renders to keep cross-scheduler parity. `beta-release.yml` keys off the `Tests` workflow's conclusion, so it needs no change — confirm the beta fires on the first merge to main.
 - 2026-10-14 — **`ctest -j4` adopted (P6.T2):** first three runs at 0605f6f85 took ~20 min each but one hit a new flake — `SchedulerEquivalence.TwoWritersOnTwoBranchesRenderedTogether` aborted with "QThread: Destroyed while thread is still running". Root cause was a product race, not test isolation: `removeQuitRenderThreadsInternal` `deleteLater()`'d a retired render thread on `hasQuit` while it could still be blocked on `renderThreadsMutex`; it now also requires `isFinished()` (cb85aa3d9). Three consecutive runs at cb85aa3d9 green: 18.2, 21.1, 19.6 min (vs 40.5 min matrix-only, ~57 min serial baseline).
+- 2026-10-14 — **Build READMEs (P5.T2):** a read-only audit against the scripts found the ctest-logs artifact described as also holding smoke logs, `run-gui-test.sh` presented as host-runnable (it needs the natron-dev container's GL/LLVM libs, Xvfb and xset), and the local README missing `--tests`, `--no-ccache-stats`, `fast`'s tests-off default, `NATRON_CTEST_JOBS` and `NATRON_RENDER_SCHEDULER`; all fixed (ad8429225). The branch was rebased onto main after M69 - Minor Cleanup merged (7ae110e9c).

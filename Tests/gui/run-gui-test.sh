@@ -11,7 +11,12 @@
 # symlinks (all of /usr/lib64 first would shadow the ASWF freetype, harfbuzz, zlib...).
 #
 # An AppImage binary (name ending in .AppImage) is extracted once into a temp directory and its
-# AppRun is launched, so no FUSE is needed. Its bundled plugins and libraries are used as shipped.
+# AppRun is launched, so no FUSE is needed. Its bundled plugins and libraries are used as shipped,
+# with two test-only additions: PySide6.QtTest from the container's matching PySide6 (the bundle
+# leaves QtTest out and the test scripts import it), and an oiiotool shim that keeps the
+# container's library path. It runs under a throwaway HOME seeded only with
+# checkForUpdates=false, so it neither depends on nor rewrites the container's Natron settings
+# and caches, and the first-run "check for updates?" question cannot block the script.
 #
 # Environment: NATRON_GUI_TEST_OUT (screenshots, results.txt and natron.log, default build/gui-test-out),
 # GUI_TEST_TIMEOUT (seconds, default 300), GUI_TEST_DISPLAY (default 79).
@@ -70,6 +75,40 @@ if [ "$APPIMAGE" -eq 1 ]; then
         exit 2
     fi
     NATRON="$EXTRACT_DIR/squashfs-root/AppRun"
+
+    BUNDLE_PYSIDE="$(ls -d "$EXTRACT_DIR"/squashfs-root/lib/python3*/site-packages/PySide6 2>/dev/null | head -n 1)"
+    HOST_PYSIDE="$(python3 -c 'import os, PySide6; print(os.path.dirname(PySide6.__file__))' 2>/dev/null)"
+    if [ -z "$BUNDLE_PYSIDE" ] || [ -z "$HOST_PYSIDE" ]; then
+        echo "no PySide6 in the bundle or in the container's python3" >&2
+        exit 2
+    fi
+    if [ ! -e "$BUNDLE_PYSIDE/QtTest.abi3.so" ]; then
+        if ! cmp -s "$BUNDLE_PYSIDE/_git_pyside_version.py" "$HOST_PYSIDE/_git_pyside_version.py"; then
+            echo "the container's PySide6 ($HOST_PYSIDE) is not the bundle's version; cannot add QtTest" >&2
+            exit 2
+        fi
+        QTTEST_LIB="$(ldd "$HOST_PYSIDE/QtTest.abi3.so" 2>/dev/null | sed -n 's/^[[:space:]]*libQt6Test\.so\.6 => \([^ ]*\).*/\1/p')"
+        if [ -z "$QTTEST_LIB" ]; then
+            echo "cannot find PySide6.QtTest or libQt6Test.so.6 in the container" >&2
+            exit 2
+        fi
+        # QtTest.abi3.so's RUNPATH starts with $ORIGIN, so libQt6Test goes beside it.
+        cp "$HOST_PYSIDE/QtTest.abi3.so" "$BUNDLE_PYSIDE/"
+        cp -L "$QTTEST_LIB" "$BUNDLE_PYSIDE/libQt6Test.so.6"
+    fi
+
+    TEST_HOME="$EXTRACT_DIR/home"
+    mkdir -p "$TEST_HOME/.config/INRIA" "$TEST_HOME/.cache"
+    printf '[General]\ncheckForUpdates=false\n' > "$TEST_HOME/.config/INRIA/Natron.conf"
+
+    # Scripts write fixtures with the container's oiiotool, which needs the library path that
+    # Natron itself must not see.
+    TOOL_DIR="$EXTRACT_DIR/tools"
+    mkdir -p "$TOOL_DIR"
+    if OIIOTOOL="$(command -v oiiotool)"; then
+        printf '#!/bin/bash\nLD_LIBRARY_PATH=%q exec %q "$@"\n' "${LD_LIBRARY_PATH:-}" "$OIIOTOOL" > "$TOOL_DIR/oiiotool"
+        chmod +x "$TOOL_DIR/oiiotool"
+    fi
 fi
 
 for lib in libGLX.so.0 libGL.so.1 libOpenGL.so.0 libGLdispatch.so.0 libEGL.so.1 libGLX_mesa.so.0 libLLVM.so.21.1; do
@@ -108,6 +147,8 @@ cd "$ROOT" || exit 2
 if [ "$APPIMAGE" -eq 1 ]; then
     # The bundle carries its own plugins and libraries; /usr/local would shadow them.
     export LD_LIBRARY_PATH="$GLDIR"
+    export HOME="$TEST_HOME" XDG_CONFIG_HOME="$TEST_HOME/.config" XDG_CACHE_HOME="$TEST_HOME/.cache"
+    export PATH="$TOOL_DIR:$PATH"
 else
     export OFX_PLUGIN_PATH="$ROOT/build/assets/Plugins"
     export LD_LIBRARY_PATH="$GLDIR:/usr/local/lib:/usr/local/lib64"

@@ -59,7 +59,6 @@ print_mode() {
     esac
 }
 
-# --- argument parsing --------------------------------------------------------
 PRESET=""
 RUN_TESTS=false
 WANT_APPIMAGE=true
@@ -110,7 +109,6 @@ fi
 
 cd "${REPO_ROOT}"
 
-# --- the commit to build must already be on origin --------------------------
 BRANCH="$(git symbolic-ref --quiet --short HEAD || true)"
 if [[ -z "${BRANCH}" ]]; then
     echo "build.sh: HEAD is detached; check out a branch that is pushed to origin" >&2
@@ -130,11 +128,10 @@ if [[ "${HEAD_SHA}" != "${REMOTE_SHA}" ]]; then
     exit 1
 fi
 
-if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
     echo "build.sh: warning: uncommitted changes are not part of the remote build" >&2
 fi
 
-# --- dispatch ----------------------------------------------------------------
 TOKEN="${PRESET}-${HEAD_SHA:0:8}-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
 
 echo "== build.sh: dispatching ${WORKFLOW} on ${BRANCH} (${HEAD_SHA:0:10}) token=${TOKEN} =="
@@ -151,9 +148,11 @@ deadline=$((SECONDS + FIND_TIMEOUT_SECS))
 while [[ -z "${RUN_ID}" ]]; do
     RUN_ID="$(gh run list --workflow "${WORKFLOW}" --branch "${BRANCH}" \
         --json databaseId,displayTitle,headSha --limit 20 \
-        --jq ".[] | select(.displayTitle | contains(\"${TOKEN}\")) | .databaseId" \
+        --jq ".[] | select(.displayTitle | contains(\"${TOKEN}\")) | [.databaseId, .headSha] | @tsv" \
         | head -n1 || true)"
     if [[ -n "${RUN_ID}" ]]; then
+        RUN_SHA="${RUN_ID#*$'\t'}"
+        RUN_ID="${RUN_ID%%$'\t'*}"
         break
     fi
     if (( SECONDS >= deadline )); then
@@ -166,12 +165,14 @@ done
 
 RUN_URL="$(gh run view "${RUN_ID}" --json url --jq .url)"
 echo "== build.sh: run ${RUN_ID}: ${RUN_URL} =="
+if [[ "${RUN_SHA}" != "${HEAD_SHA}" ]]; then
+    echo "build.sh: ERROR: run ${RUN_ID} built ${RUN_SHA:0:10}, expected ${HEAD_SHA:0:10}: ${RUN_URL}" >&2
+    exit 1
+fi
 
-# --- wait --------------------------------------------------------------------
 RUN_STATUS=0
 gh run watch "${RUN_ID}" --exit-status --interval "${WATCH_INTERVAL_SECS}" || RUN_STATUS=$?
 
-# --- download ----------------------------------------------------------------
 OUT_DIR="${REPO_ROOT}/build/remote/${PRESET}"
 rm -rf "${OUT_DIR}"
 mkdir -p "${OUT_DIR}"
@@ -205,7 +206,6 @@ if [[ "${RUN_TESTS}" == "true" ]]; then
     fi
 fi
 
-# --- report ------------------------------------------------------------------
 if [[ "${RUN_STATUS}" -eq 0 ]]; then
     echo "== build.sh: remote build succeeded: ${RUN_URL} =="
     if [[ -n "${APPIMAGE}" ]]; then

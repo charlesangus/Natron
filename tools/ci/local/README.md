@@ -155,7 +155,9 @@ each target.
   tools/ci/local/test.sh <ctest|smoke> [debug|release|fast] [--gdb]
 ```
 
-- `ctest` runs `ctest -V` against the build dir, exactly as CI does.
+- `ctest` runs against the build dir. By default (`NATRON_CTEST_JOBS` unset)
+  that is the serial `ctest -V`; PR CI sets `NATRON_CTEST_JOBS=4`, which runs
+  `ctest -j 4 --output-on-failure`.
 - `smoke` locates the built `NatronRenderer` and runs
   `tools/ci/smoke_test.py` through it. This script only exists on branches
   that carry the M2-era `tools/ci/smoke_test.py` addition -- it is not on

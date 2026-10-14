@@ -182,7 +182,7 @@ strip_elf() {
     size_before="$(stat -c %s "$target")"
     chmod u+w "$target"
     if ! "$STRIP" --strip-unneeded "$target"; then
-        echo "  warning: could not strip ${target#"$STAGE_DIR"/}" >&2
+        echo "  error: could not strip ${target#"$STAGE_DIR"/}" >&2
         STRIP_FAILED=$((STRIP_FAILED + 1))
         return 0
     fi
@@ -635,6 +635,10 @@ install_launcher
 echo "==> Debug info stripped from staged ELF files"
 if [[ -n "$STRIP" ]]; then
     echo "  stripped $STRIP_COUNT files ($STRIP_FAILED failed): $STRIP_BYTES_BEFORE -> $STRIP_BYTES_AFTER bytes"
+    if [[ "$STRIP_FAILED" -gt 0 ]]; then
+        echo "error: $STRIP_FAILED staged ELF files could not be stripped (set NATRON_STAGE_NO_STRIP=1 to stage unstripped)" >&2
+        exit 1
+    fi
 else
     echo "  skipped: NATRON_STAGE_NO_STRIP=1"
 fi

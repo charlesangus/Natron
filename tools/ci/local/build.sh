@@ -183,11 +183,6 @@ in_container() {
     return 1
 }
 
-# The in-container pass of a host run is skipped: the host already printed it.
-if [[ "${NATRON_IN_CONTAINER:-}" != "1" ]]; then
-    print_build_banner
-fi
-
 # --- host-side: submodules, then hop into the container ---------------------
 if ! in_container; then
     echo "== build.sh: ensuring submodules are initialized (host side) =="
@@ -217,6 +212,8 @@ if ! in_container; then
 fi
 
 # --- from here on, we are inside the dev container ---------------------------
+
+print_build_banner
 
 # Object keys hash absolute paths, so a worktree would never hit entries built
 # in the main tree. base_dir rewrites paths under the main root to ones

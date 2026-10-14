@@ -102,7 +102,7 @@ build ~30 min. No workflow produces an AppImage except `release.yml` on tag push
 
 ## Phase 115.3: Minimize and verify release artifact size
 
-- [ ] M115.P3.T1 — Strip debug info when staging a bundle, regardless of build type
+- [x] M115.P3.T1 — Strip debug info when staging a bundle, regardless of build type
   - files: `tools/release/stage-bundle.sh`
   - approach: after the ldd-closure walk and before (or as part of)
     `check-relocatable.sh`, strip every staged ELF (binaries, `lib/*.so*`, Qt
@@ -116,7 +116,7 @@ build ~30 min. No workflow produces an AppImage except `release.yml` on tag push
     and `check-startup.sh` still pass on the stripped tree.
   - size: M
 
-- [ ] M115.P3.T2 — Re-measure AppImage size and record the before/after
+- [x] M115.P3.T2 — Re-measure AppImage size and record the before/after
   - files: none (measurement and decision log only)
   - approach: build the `release` preset, package it via the normal pipeline
     before and after Phase 115.3's stripping change, and note both sizes.
@@ -242,3 +242,4 @@ throughout.
 - 2026-10-13 — **Docker down after a host reboot**, so verification runs remotely: the dispatch-only workflow is registered on the milestone branch by a temporary `push` trigger (reverted in the next commit; a workflow absent from `main` can't be dispatched until it has run once).
 - 2026-10-13 — **Stripping must precede patchelf** (P3.T1): stripping after patchelf segfaulted the non-PIE executables at startup, because the container's old patchelf leaves `.dynsym` straddling the page it adds below the image base and strip then moves it to an unmapped offset. Each ELF is now stripped as it lands in the stage, before its RUNPATH is set (0605f6f85). Unstripped `release` AppImage artifact: 419 MB (run 38505842066).
 - 2026-10-13 — **P6.T2 also gives each test process its own disk-cache, config and data dirs** (`Tests/PerProcessUserDirs.h`), since `--clear-cache` wiped caches a concurrent case was using; seven wall-clock-bound cases are `RUN_SERIAL`. Knob `NATRON_CTEST_JOBS` (CI: 4; 1 = old serial run).
+- 2026-10-13 — **Release AppImage size (P3.T2):** unstripped 419 MB (run 38505842066) → stripped 88 MB (run 38507504893, 0605f6f85), artifact sizes; staging stripped 268 ELFs, 1.38 GB → 257 MB. `check-relocatable.sh` and `check-startup.sh` pass on the stripped tree.

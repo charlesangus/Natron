@@ -254,6 +254,12 @@ computeBarrier(VkCommandBuffer cmd)
 struct Kernels {
     std::unique_ptr<GpuKernel> grade;
     std::unique_ptr<GpuKernel> blur;
+
+    void releaseDescriptors()
+    {
+        grade->releaseDescriptors();
+        blur->releaseDescriptors();
+    }
 };
 
 bool
@@ -382,8 +388,7 @@ struct Weights {
 bool
 makeWeights(GpuDevice& dev, double sigma, DevBuf& out, std::string& err)
 {
-    const std::vector<double> wd = blurref::makeWeights(sigma);
-    const std::vector<float> wf(wd.begin(), wd.end());
+    const std::vector<float> wf = blurfix::halfWeights(sigma);
     return makeStorage(dev, wf.size() * sizeof(float), out, err, wf.data());
 }
 
@@ -478,8 +483,7 @@ measureKernel(GpuDevice& dev, Kernels& k, const SizeSpec& s, Wl wl, const std::v
             return false;
         }
         vkWaitForFences(dev.device(), 1, &fence, VK_TRUE, UINT64_MAX);
-        k.grade->releaseDescriptors();
-        k.blur->releaseDescriptors();
+        k.releaseDescriptors();
         if (it < 0) {
             continue;
         }
@@ -621,8 +625,7 @@ runOnce(const Pipeline& pl, Images& im, Wl wl, const std::vector<Unit>& units, b
         }
     }
     if (pl.k) {
-        pl.k->grade->releaseDescriptors();
-        pl.k->blur->releaseDescriptors();
+        pl.k->releaseDescriptors();
     }
     const double n = double(im.src.size());
     for (double* v : { &out.wall, &out.hostUp, &out.gpuUp, &out.gpuComp, &out.gpuDown, &out.hostDown }) {

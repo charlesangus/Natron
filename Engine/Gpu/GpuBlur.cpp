@@ -107,6 +107,9 @@ blurGroupCount(const GpuBlurPass& pass)
     if (pass.vertical && pass.radius <= kDirectMaxRadius) {
         return { divUp(len, kGroup), divUp(lines, kColumns), 1 };
     }
+    if (pass.vertical) {
+        return { lines, divUp(len, kGroup), 1 };
+    }
     return { divUp(len, kGroup), lines, 1 };
 }
 

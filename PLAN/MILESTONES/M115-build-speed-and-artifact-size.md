@@ -141,7 +141,7 @@ build ~30 min. No workflow produces an AppImage except `release.yml` on tag push
     in `## Decisions`.
   - size: M
 
-- [ ] M115.P4.T2 — Give each preset its own capped ccache family
+- [x] M115.P4.T2 — Give each preset its own capped ccache family
   - files: `.github/workflows/remote-build.yml`, `.github/workflows/ci.yml`, `.github/workflows/nightly.yml`
   - approach: key `ccache-linux-<preset>-<branch>-<run_id>`, restoring the branch's
     own entry first, then `ccache-linux-<preset>-main-`. `release` shares the
@@ -243,3 +243,4 @@ throughout.
 - 2026-10-13 — **Stripping must precede patchelf** (P3.T1): stripping after patchelf segfaulted the non-PIE executables at startup, because the container's old patchelf leaves `.dynsym` straddling the page it adds below the image base and strip then moves it to an unmapped offset. Each ELF is now stripped as it lands in the stage, before its RUNPATH is set (0605f6f85). Unstripped `release` AppImage artifact: 419 MB (run 38505842066).
 - 2026-10-13 — **P6.T2 also gives each test process its own disk-cache, config and data dirs** (`Tests/PerProcessUserDirs.h`), since `--clear-cache` wiped caches a concurrent case was using; seven wall-clock-bound cases are `RUN_SERIAL`. Knob `NATRON_CTEST_JOBS` (CI: 4; 1 = old serial run).
 - 2026-10-13 — **Release AppImage size (P3.T2):** unstripped 419 MB (run 38505842066) → stripped 88 MB (run 38507504893, 0605f6f85), artifact sizes; staging stripped 268 ELFs, 1.38 GB → 257 MB. `check-relocatable.sh` and `check-startup.sh` pass on the stripped tree.
+- 2026-10-13 — **ccache families (P4.T2):** measured entries before the change — debug 1.31–2.12 GB, release 1.52–2.02 GB, no fast entry; deps 0.16 GB, assets 0.01 GB. Caps: debug 3G, release 3G, fast 2G (8G of the 10 GB quota; raise fast first if it thrashes). Second `release` dispatch on the branch restored the branch's own entry and hit 871/876 compiles (99.4%), build ~4 min; release entry 1.93 GB. The old unprefixed debug key is a last restore-key so main's first post-merge run stays warm.

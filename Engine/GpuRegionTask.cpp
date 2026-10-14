@@ -313,6 +313,9 @@ public:
         if (_queries) {
             vkDestroyQueryPool(_runtime.device().device(), _queries, nullptr);
         }
+        if (_segmentQueries) {
+            vkDestroyQueryPool(_runtime.device().device(), _segmentQueries, nullptr);
+        }
         if (_computeTimeline) {
             vkDestroySemaphore(_runtime.device().device(), _computeTimeline, nullptr);
         }
@@ -896,26 +899,73 @@ private:
         }
     }
 
+    // Brackets a segment's device work with a timestamp pair so submit() can report device time. A device without
+    // timestamps, or a pool that cannot be made, leaves the segment on its host interval.
+    void beginTimedSegment(gpu::GpuRecordContext& recorder)
+    {
+        _segmentTimed = false;
+        if (!_segmentQueries) {
+            if (!_runtime.transfer().timestampsSupported()) {
+                return;
+            }
+            VkQueryPoolCreateInfo info { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+            info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+            info.queryCount = 2;
+            if (vkCreateQueryPool(_runtime.device().device(), &info, nullptr, &_segmentQueries) != VK_SUCCESS) {
+                _segmentQueries = VK_NULL_HANDLE;
+
+                return;
+            }
+        }
+        recorder.resetQueries(_segmentQueries, 0, 2);
+        recorder.writeTimestamp(_segmentQueries, 0);
+        _segmentTimed = true;
+    }
+
+    // The device time between the segment's timestamps, or a negative value when they cannot be read.
+    long long segmentDeviceNs() const
+    {
+        std::uint64_t results[4] = { 0, 0, 0, 0 };
+        const VkResult read = vkGetQueryPoolResults(_runtime.device().device(), _segmentQueries, 0, 2, sizeof(results), results, 2 * sizeof(std::uint64_t),
+                                                    VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+        if ((read != VK_SUCCESS) || (results[1] == 0) || (results[3] == 0) || (results[2] < results[0])) {
+            return -1;
+        }
+
+        return (long long)((double)(results[2] - results[0]) * _runtime.transfer().timestampPeriodNs());
+    }
+
     bool submit(std::unique_ptr<gpu::GpuRecordContext>* recorder,
                 const std::vector<int>& segment,
                 Clock::time_point segmentBegin)
     {
-        if (*recorder) {
+        // A segment with no recorder was already submitted, and its time already counted.
+        const bool submitted = (bool)*recorder;
+        long long deviceNs = -1;
+        if (submitted) {
+            const bool timed = _segmentTimed;
+            if (timed) {
+                (*recorder)->writeTimestamp(_segmentQueries, 1);
+            }
+            _segmentTimed = false;
             // The runtime's own entry points report to its state machine; a record context's submission does not.
             const gpu::GpuStatus status = _runtime.note((*recorder)->submitAndWait());
             recorder->reset();
             if (!status) {
                 return failGpu(segment.empty() ? -1 : _members[segment.front()].task, "the device work failed", status);
             }
+            if (timed) {
+                deviceNs = segmentDeviceNs();
+            }
         }
-        const Clock::time_point end = Clock::now();
-        const long long ns = nsBetween(segmentBegin, end);
-        double weights = 0.;
-        for (int position : segment) {
-            weights += _members[position].weight;
-        }
-        if (_report) {
-            _report->kernelMs += msBetween(segmentBegin, end);
+        if (submitted && _report) {
+            const Clock::time_point end = Clock::now();
+            const long long ns = (deviceNs >= 0) ? deviceNs : nsBetween(segmentBegin, end);
+            double weights = 0.;
+            for (int position : segment) {
+                weights += _members[position].weight;
+            }
+            _report->kernelMs += (double)ns * 1e-6;
             for (int position : segment) {
                 _report->memberNs[position] += (weights > 0.) ? (long long)((double)ns * _members[position].weight / weights) : 0;
             }
@@ -1019,6 +1069,7 @@ private:
                         return EffectInstance::eRenderRoIRetCodeFailed;
                     }
                     segmentBegin = Clock::now();
+                    beginTimedSegment(*recorder);
                 } else if (!segment.empty()) {
                     recorder->computeBarrier();
                 }
@@ -1436,6 +1487,7 @@ private:
             return EffectInstance::eRenderRoIRetCodeFailed;
         }
         const Clock::time_point segmentBegin = Clock::now();
+        beginTimedSegment(*recorder);
         const EffectInstance::RenderRoIRetCode recorded = recordStripMembers(strip, *recorder, &segment);
         if (recorded != EffectInstance::eRenderRoIRetCodeOk) {
             return recorded;
@@ -2051,6 +2103,8 @@ private:
     // Timestamps of the pipelined strips, when the device writes them on both queues. A strip's pairs are its compute,
     // then those of the slots _uploadQuery and _downloadQuery number, -1 for a slot without one.
     VkQueryPool _queries = VK_NULL_HANDLE;
+    VkQueryPool _segmentQueries = VK_NULL_HANDLE;
+    bool _segmentTimed = false;
     std::uint32_t _queriesPerStrip = 0;
     std::vector<int> _uploadQuery;
     std::vector<int> _downloadQuery;

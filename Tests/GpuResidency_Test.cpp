@@ -814,6 +814,60 @@ TEST_F(GpuResidencyTest, ChainUploadsOnceAndDownloadsOnce)
 }
 
 // The Grade feeds a Blur followed by a Grade, a second Blur, and a CPU Invert; the Merges joining them are on the CPU.
+// A region whose last member downloads submits its device work once; the time it reports is the device's, so it
+// cannot exceed the region's wall time.
+TEST_F(GpuResidencyTest, RegionKernelTimeIsNotCountedTwiceWhenTheLastMemberDownloads)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr grade1 = makeGrade(1.5, 0.1);
+    NodePtr blur = makeBlur(9.);
+    NodePtr grade2 = makeGrade(0.75, -0.05);
+    NodePtr sink = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
+    ASSERT_TRUE(source && grade1 && blur && grade2 && sink);
+    connectNodes(source, grade1, 0, true);
+    connectNodes(grade1, blur, 0, true);
+    connectNodes(blur, grade2, 0, true);
+    connectNodes(grade2, sink, 0, true);
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(sink, &run, &error)) << error;
+    placeOnGpu(&run, { grade1, blur, grade2 });
+    ASSERT_EQ(1u, run.graph.regions.size());
+
+    QTemporaryDir profileDir;
+    ASSERT_TRUE(profileDir.isValid());
+    RenderScheduler::setProfilePath((profileDir.path() + QString::fromUtf8("/profile")).toStdString());
+    const bool rendered = render(&run);
+    RenderScheduler::flushProfile();
+    const std::string profilePath = RenderScheduler::getProfileFilePath();
+    RenderScheduler::setProfilePath(std::string());
+    ASSERT_TRUE(rendered);
+
+    const std::vector<std::string> records = readProfileRecords(profilePath);
+    const auto numberOf = [](const std::string& record, const std::string& key) {
+        const std::size_t at = record.find("\"" + key + "\":");
+        return (at == std::string::npos) ? -1. : std::atof(record.c_str() + at + key.size() + 3);
+    };
+    int regionRecords = 0;
+    for (const std::string& record : records) {
+        if (record.compare(0, 17, "{\"kind\":\"region\",") != 0 || (record.find("\"regionId\":0,") == std::string::npos)) {
+            continue;
+        }
+        ++regionRecords;
+        const double kernelMs = numberOf(record, "kernelMs");
+        const double wallMs = numberOf(record, "wallMs");
+        EXPECT_GT(kernelMs, 0.) << record;
+        EXPECT_GT(wallMs, 0.) << record;
+        EXPECT_LE(kernelMs, wallMs) << record;
+    }
+    EXPECT_EQ(1, regionRecords);
+    EXPECT_EQ(1, run.stats->getDownloadCount());
+}
+
 TEST_F(GpuResidencyTest, SharedProducerRendersOnceAndDownloadsOnlyCpuOutputs)
 {
     if (!gpuOrSkip()) {

@@ -5,13 +5,17 @@
 # Environment:
 #   BENCH_TOPO    chain | mixed | wide | comp (generator-fed), or the plate-fed families
 #                 readchain | footagecomp | iobound | rambound | deepcomp (see README "Realistic workloads"),
-#                 or the per-node chains ccchain | blurchain | xfchain | mergechain | mergesrcchain
+#                 or the per-node chains ccchain | blurchain | xfchain | mergechain | mergesrcchain,
+#                 or the fixed GPU-region graphs gtg (Grade -> Transform with motion blur -> Grade) and
+#                 gebg (Grade -> Erode -> Blur -> Grade); BENCH_N is ignored by those two
 #   BENCH_N       approximate number of processing nodes
 #   BENCH_SIZE    WxH: render generator-fed topologies at this size; BENCH_RES is then only the record's label
 #   BENCH_BLUR_SIZE  size parameter of the Blur nodes (default 3; sigma = size / 2.4)
 #   BENCH_RES     tiny (32x32, isolates per-node overhead) | hd (1920x1080) | uhd (3840x2160); for the
 #                 plate-fed families it also picks the plate resolution (deepcomp always uses HD)
 #   BENCH_BLUR_FILTER  Blur "filter" choice (default: the plugin's own default)
+#   BENCH_MOTION_BLUR  Transform motion blur quality in gtg (default 1)
+#   BENCH_ERODE_SIZE  Erode size in gebg (default 6)
 #   BENCH_PLATES_DIR  where make_plates.py wrote the plates (default build/bench/fixtures)
 #   BENCH_FRAMES  frames timed one at a time after the warm-up frame (default 3)
 #   BENCH_RANGE   frames rendered as one range, to measure frame-parallel throughput (default 0)
@@ -146,6 +150,8 @@ if CUSTOM_SIZE:
     SIZES[RES] = tuple(int(v) for v in CUSTOM_SIZE.lower().split("x"))
 # Blur "size" (diameter): the Gaussian standard deviation is size / 2.4.
 BLUR_SIZE = float(os.environ.get("BENCH_BLUR_SIZE", "3"))
+MOTION_BLUR = float(os.environ.get("BENCH_MOTION_BLUR", "1"))
+ERODE_SIZE = int(os.environ.get("BENCH_ERODE_SIZE", "6"))
 
 counts = {}
 majors = {}
@@ -366,6 +372,30 @@ def build_mergesrcchain():
     for i in range(N):
         out = merge(source(i + 1), out)
     return out
+
+
+def build_gtg():
+    xf = make("net.sf.openfx.TransformPlugin")
+    xf.connectInput(0, grade(source(0), 0))
+    w, h = SIZES[RES]
+    param(xf, "center").set(w / 2.0, h / 2.0)
+    # Motion blur samples the transform across the shutter, so it must change from frame to frame.
+    translate = param(xf, "translate")
+    rotate = param(xf, "rotate")
+    for f in range(1, LAST_FRAME + 1):
+        translate.setValueAtTime(14.0 * f, f, 0)
+        translate.setValueAtTime(6.0 * f, f, 1)
+        rotate.setValueAtTime(0.8 * f, f, 0)
+    param(xf, "motionBlur").set(MOTION_BLUR)
+    param(xf, "shutter").set(1.0)
+    return grade(xf, 1)
+
+
+def build_gebg():
+    er = make("net.sf.cimg.CImgErode")
+    er.connectInput(0, grade(source(0), 0))
+    param(er, "size").set(ERODE_SIZE, ERODE_SIZE)
+    return grade(blur(er, 0), 1)
 
 
 def build_mixed():
@@ -625,7 +655,7 @@ def main():
                 "readchain": build_readchain, "footagecomp": build_footagecomp, "iobound": build_iobound,
                 "rambound": build_rambound, "deepcomp": build_deepcomp, "ccchain": build_ccchain,
                 "blurchain": build_blurchain, "xfchain": build_xfchain, "mergechain": build_mergechain,
-                "mergesrcchain": build_mergesrcchain}
+                "mergesrcchain": build_mergesrcchain, "gtg": build_gtg, "gebg": build_gebg}
     t0 = time.time()
     root = builders[TOPO]()
     build_s = time.time() - t0

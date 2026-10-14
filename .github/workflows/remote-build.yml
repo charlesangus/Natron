@@ -3,9 +3,6 @@ name: Remote build
 run-name: remote-build ${{ inputs.preset }} ${{ inputs.token }}
 
 on:
-  push:
-    branches: [milestone/m115-build-speed-and-artifact-size]
-    paths: [.github/workflows/remote-build.yml]
   workflow_dispatch:
     inputs:
       preset:
@@ -38,7 +35,6 @@ permissions:
 jobs:
   remote-build:
     name: remote-build
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     container:
       image: aswf/ci-vfxall:2027-clang21.1

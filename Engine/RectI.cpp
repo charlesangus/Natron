@@ -28,6 +28,7 @@
 #include <algorithm> // min, max
 #include <cassert>
 #include <stdexcept>
+#include <utility>
 
 #include "Engine/RectD.h"
 
@@ -113,6 +114,75 @@ std::vector<RectI> RectI::splitIntoSmallerRects(int splitsCount) const
 
     return ret;
 } // RectI::splitIntoSmallerRects
+
+namespace {
+typedef std::vector<std::pair<int, int>> XSpans;
+
+void
+appendBandRects(const XSpans& spans,
+                int bottom,
+                int top,
+                std::list<RectI>* out)
+{
+    for (const std::pair<int, int>& span : spans) {
+        out->push_back(RectI(span.first, bottom, span.second, top));
+    }
+}
+}
+
+std::list<RectI>
+RectI::disjointUnion(const std::list<RectI>& rects)
+{
+    std::vector<RectI> input;
+    std::vector<int> ys;
+    for (const RectI& r : rects) {
+        if (!r.isNull()) {
+            input.push_back(r);
+            ys.push_back(r.y1);
+            ys.push_back(r.y2);
+        }
+    }
+    std::sort(ys.begin(), ys.end());
+    ys.erase(std::unique(ys.begin(), ys.end()), ys.end());
+
+    // Every rectangle edge is a band boundary, so a rectangle either covers a whole band [ys[i], ys[i + 1]) or misses it.
+    std::list<RectI> ret;
+    XSpans openSpans;
+    int openBottom = 0;
+    XSpans spans;
+    for (std::size_t i = 0; i + 1 < ys.size(); ++i) {
+        const int bottom = ys[i];
+        const int top = ys[i + 1];
+        spans.clear();
+        for (const RectI& r : input) {
+            if ((r.y1 <= bottom) && (r.y2 >= top)) {
+                spans.push_back(std::make_pair(r.x1, r.x2));
+            }
+        }
+        std::sort(spans.begin(), spans.end());
+        std::size_t merged = 0;
+        for (std::size_t j = 0; j < spans.size(); ++j) {
+            const std::pair<int, int> span = spans[j];
+            if ((merged > 0) && (span.first <= spans[merged - 1].second)) {
+                spans[merged - 1].second = std::max(spans[merged - 1].second, span.second);
+            } else {
+                spans[merged++] = span;
+            }
+        }
+        spans.resize(merged);
+
+        if (spans != openSpans) {
+            appendBandRects(openSpans, openBottom, bottom, &ret);
+            openSpans.swap(spans);
+            openBottom = bottom;
+        }
+    }
+    if (!ys.empty()) {
+        appendBandRects(openSpans, openBottom, ys.back(), &ret);
+    }
+
+    return ret;
+}
 
 RectD
 RectI::toCanonical(unsigned int thisLevel,

@@ -434,6 +434,7 @@ EffectInstance::Implementation::Implementation(EffectInstance* publicInterface)
     , supportsRenderScale(eSupportsMaybe)
     , actionsCache()
 #if NATRON_ENABLE_TRIMAP
+    , imagesReservationMutex()
     , imagesBeingRenderedMutex()
     , imagesBeingRendered()
 #endif
@@ -455,29 +456,30 @@ EffectInstance::Implementation::Implementation(EffectInstance* publicInterface)
 }
 
 EffectInstance::Implementation::Implementation(const Implementation& other)
-: _publicInterface(0)
-, tlsData(other.tlsData)
-, duringInteractActionMutex()
-, duringInteractAction(other.duringInteractAction)
-, pluginMemoryChunksMutex()
-, pluginMemoryChunks()
-, supportsRenderScale(other.supportsRenderScale)
-, actionsCache(other.actionsCache)
+    : _publicInterface(0)
+    , tlsData(other.tlsData)
+    , duringInteractActionMutex()
+    , duringInteractAction(other.duringInteractAction)
+    , pluginMemoryChunksMutex()
+    , pluginMemoryChunks()
+    , supportsRenderScale(other.supportsRenderScale)
+    , actionsCache(other.actionsCache)
 #if NATRON_ENABLE_TRIMAP
-, imagesBeingRenderedMutex()
-, imagesBeingRendered()
+    , imagesReservationMutex()
+    , imagesBeingRenderedMutex()
+    , imagesBeingRendered()
 #endif
-, overlaySlaves(other.overlaySlaves)
-, metadataMutex()
-, metadata(other.metadata)
-, runningClipPreferences(other.runningClipPreferences)
-, overlaysViewport(other.overlaysViewport)
-, attachedContextsMutex()
-, attachedContexts()
-, mainInstance(other._publicInterface)
-, isDoingInstanceSafeRender(false)
-, renderClonesMutex()
-, renderClonesPool()
+    , overlaySlaves(other.overlaySlaves)
+    , metadataMutex()
+    , metadata(other.metadata)
+    , runningClipPreferences(other.runningClipPreferences)
+    , overlaysViewport(other.overlaysViewport)
+    , attachedContextsMutex()
+    , attachedContexts()
+    , mainInstance(other._publicInterface)
+    , isDoingInstanceSafeRender(false)
+    , renderClonesMutex()
+    , renderClonesPool()
 {
 
 }
@@ -589,35 +591,58 @@ EffectInstance::Implementation::setDuringInteractAction(bool b)
 }
 
 #if NATRON_ENABLE_TRIMAP
-void
-EffectInstance::Implementation::markImageAsBeingRendered(const ImagePtr & img, const RectI& roi, std::list<RectI>* restToRender, bool *renderedElsewhere)
+EffectInstance::Implementation::ImageBeingRenderedPtr
+EffectInstance::Implementation::acquireImageBeingRendered(const ImagePtr& img)
 {
-    if ( !img->usesBitMap() ) {
+    QMutexLocker k(&imagesBeingRenderedMutex);
+    ImageBeingRenderedPtr& ibr = imagesBeingRendered[img];
+    if (!ibr) {
+        ibr = std::make_shared<Implementation::ImageBeingRendered>();
+    }
+    QMutexLocker k2(&ibr->lock);
+    ++(ibr->refCount);
+
+    return ibr;
+}
+
+void
+EffectInstance::Implementation::markImagesAsBeingRendered(const std::vector<ImagePtr>& imgs,
+                                                          const RectI& roi,
+                                                          std::list<RectI>* restToRender,
+                                                          bool* renderedElsewhere)
+{
+    QMutexLocker reservation(&imagesReservationMutex);
+    std::vector<std::pair<ImagePtr, ImageBeingRenderedPtr>> marked;
+    std::list<RectI> allRests;
+    for (const ImagePtr& img : imgs) {
+        if (!img->usesBitMap()) {
+            continue;
+        }
+        ImageBeingRenderedPtr ibr = acquireImageBeingRendered(img);
+        marked.push_back(std::make_pair(img, ibr));
+
+        // A query that finds nothing left to render writes false, so each image needs its own flag.
+        std::list<RectI> imageRest;
+        bool imageRenderedElsewhere = false;
+        QMutexLocker k(&ibr->lock);
+        img->getRestToRender_trimap(roi, imageRest, &imageRenderedElsewhere);
+        for (const RectI& rect : imageRest) {
+            img->markForRendering(rect);
+        }
+        *renderedElsewhere = *renderedElsewhere || imageRenderedElsewhere;
+        allRests.splice(allRests.end(), imageRest);
+    }
+
+    *restToRender = RectI::disjointUnion(allRests);
+    if (marked.size() < 2) {
         return;
     }
 
-    QMutexLocker k(&imagesBeingRenderedMutex);
-    ImageBeingRenderedMap::iterator found = imagesBeingRendered.find(img);
-    if ( found != imagesBeingRendered.end() ) {
-        ImageBeingRenderedPtr ibr = found->second;
-        k.unlock(); // imagesBeingRenderedMutex
-        QMutexLocker k2(&ibr->lock);
-        ++(ibr->refCount);
-        img->getRestToRender_trimap(roi, *restToRender, renderedElsewhere);
-        for (std::list<RectI>::const_iterator it = restToRender->begin(); it!=restToRender->end();++it) {
-            img->markForRendering(*it);
-        }
-    } else {
-        ImageBeingRenderedPtr ibr = std::make_shared<Implementation::ImageBeingRendered>();
-        ++ibr->refCount;
-        std::pair<ImageBeingRenderedMap::iterator, bool> ok = imagesBeingRendered.insert( std::make_pair(img, ibr) );
-        assert(ok.second);
-        Q_UNUSED(ok);
-        k.unlock(); // imagesBeingRenderedMutex
-        QMutexLocker k2(&ibr->lock);
-        img->getRestToRender_trimap(roi, *restToRender, renderedElsewhere);
-        for (std::list<RectI>::const_iterator it = restToRender->begin(); it!=restToRender->end();++it) {
-            img->markForRendering(*it);
+    // Every layer is rendered over the whole union, so each image must show all of it as being rendered.
+    for (const std::pair<ImagePtr, ImageBeingRenderedPtr>& it : marked) {
+        QMutexLocker k(&it.second->lock);
+        for (const RectI& rect : *restToRender) {
+            it.first->markForRendering(rect);
         }
     }
 }
@@ -691,11 +716,15 @@ EffectInstance::Implementation::unmarkImageAsBeingRendered(const ImagePtr & img,
     --ibr->refCount;
     ibr->cond.wakeAll();
     if (!ibr->refCount) {
-        kk.unlock(); // < unlock before erase which is going to delete the lock
+        kk.unlock(); // imagesBeingRenderedMutex must be taken before an image's lock, as acquireImageBeingRendered() does
         k.relock(); // imagesBeingRenderedMutex
         ImageBeingRenderedMap::iterator found = imagesBeingRendered.find(img);
-        if( found != imagesBeingRendered.end() ) {
-            imagesBeingRendered.erase(found);
+        if ((found != imagesBeingRendered.end()) && (found->second == ibr)) {
+            // acquireImageBeingRendered() may have taken this entry again after refCount dropped to zero above.
+            QMutexLocker kk2(&ibr->lock);
+            if (!ibr->refCount) {
+                imagesBeingRendered.erase(found);
+            }
         }
     }
 }

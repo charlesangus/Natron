@@ -232,6 +232,7 @@ public:
         , _isValid(true)
         , _renderFullScale(renderFullScale)
     {
+        std::vector<ImagePtr> cacheImages;
         for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::const_iterator it = _image.begin(); it != _image.end(); ++it) {
             ImagePtr cacheImage;
             if (!renderFullScale) {
@@ -240,9 +241,10 @@ public:
                 cacheImage = it->second.fullscaleImage;
             }
             if (cacheImage && cacheImage->usesBitMap()) {
-                _effect->_imp->markImageAsBeingRendered(cacheImage, roi, &_rectsToRender, &_isBeingRenderedElseWhere);
+                cacheImages.push_back(cacheImage);
             }
         }
+        _effect->_imp->markImagesAsBeingRendered(cacheImages, roi, &_rectsToRender, &_isBeingRenderedElseWhere);
     }
 
     const std::list<RectI>& getRectsToRender() const
@@ -730,7 +732,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         // Enable GPU render if the plug-in cannot render another way or if all conditions are met
 
         if (openGLSupport == ePluginOpenGLRenderSupportNeeded && !getNode()->getPlugin()->isOpenGLEnabled()) {
-            QString message = tr("OpenGL render is required for  %1 but was disabled in the Preferences for this plug-in, please enable it and restart %2").arg(QString::fromUtf8(getNode()->getLabel().c_str())).arg(QString::fromUtf8(NATRON_APPLICATION_NAME));
+            QString message = tr("OpenGL render is required for  %1 but was disabled in the Preferences for this plug-in, please enable it and restart %2").arg(QString::fromUtf8(getNode()->getLabel_mt_safe().c_str())).arg(QString::fromUtf8(NATRON_APPLICATION_NAME));
             setPersistentMessage(eMessageTypeError, message.toStdString());
             return eRenderRoIRetCodeFailed;
         }
@@ -768,7 +770,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     } else if (wantsGLStorage && (openGLSupport == ePluginOpenGLRenderSupportNeeded)) {
         // The thread is beyond the OpenGL context limit or its context could not be created, and the plug-in has no
         // CPU path to fall back on.
-        QString message = tr("OpenGL render is required for %1 but no OpenGL context is available").arg(QString::fromUtf8(getNode()->getLabel().c_str()));
+        QString message = tr("OpenGL render is required for %1 but no OpenGL context is available").arg(QString::fromUtf8(getNode()->getLabel_mt_safe().c_str()));
         setPersistentMessage(eMessageTypeError, message.toStdString());
         return eRenderRoIRetCodeFailed;
     }

@@ -98,7 +98,8 @@ that bumping a pin correctly invalidates it.
 tools/ci/local/build.sh [debug|release|fast] [--reconfigure]
 ```
 
-`debug` (default) builds `build/debug`; `release` builds `build/release`
+`debug` (default) builds `build/debug` with `-DDEBUG` and without `NDEBUG`, so
+`assert()` is live; `release` builds `build/release`
 with no explicit `-DCMAKE_BUILD_TYPE`, matching CI's release job exactly.
 `fast` builds `build/fast`: release semantics (no `-DDEBUG`, `NDEBUG` on,
 so it packages and runs under llvmpipe like `release` does) but compiled at

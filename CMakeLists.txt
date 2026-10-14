@@ -102,11 +102,12 @@ set(SHIBOKEN_EXE Shiboken6::shiboken6)
 set(SHIBOKEN_LIB Shiboken6::libshiboken)
 set(PYSIDE_LIB PySide6::pyside6)
 
-if(IS_DEBUG_BUILD AND WIN32)
-    # Remove NDEBUG from Shiboken INTERFACE_COMPILE_DEFINITIONS so it is not inherited in debug builds.
+if(IS_DEBUG_BUILD)
+    # The installed Shiboken6 package exports NDEBUG as an interface definition, which would
+    # silence assert() in every target linking it.
     get_property(SHIBOKEN_DEFS TARGET ${SHIBOKEN_LIB} PROPERTY INTERFACE_COMPILE_DEFINITIONS)
     list(REMOVE_ITEM SHIBOKEN_DEFS NDEBUG)
-    set_property(TARGET ${SHIBOKEN_LIB} PROPERTY INTERFACE_COMPILE_DEFINITIONS SHIBOKEN_DEFS)
+    set_property(TARGET ${SHIBOKEN_LIB} PROPERTY INTERFACE_COMPILE_DEFINITIONS "${SHIBOKEN_DEFS}")
 endif()
 
 #Since in Natron and OpenFX all strings are supposed UTF-8 and that the constructor

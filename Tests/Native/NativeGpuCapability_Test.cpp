@@ -43,6 +43,7 @@
 #include "Engine/Nodes/Color/ColorMathNode.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Color/Invert.h"
+#include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Color/Saturation.h"
 #include "Engine/Nodes/Filter/Blur.h"
@@ -68,6 +69,7 @@ gpuCapableIds()
         PLUGINID_NATRON_COLORCORRECT,
         PLUGINID_NATRON_CONSTANT,
         PLUGINID_NATRON_SOLID,
+        PLUGINID_NATRON_CHECKERBOARD,
         PLUGINID_NATRON_SATURATION,
         PLUGINID_NATRON_ADD,
         PLUGINID_NATRON_MULTIPLY,

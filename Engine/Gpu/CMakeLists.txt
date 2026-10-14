@@ -25,6 +25,7 @@ slang_add_kernel(wrap_divide Kernels/pixelwrap.slang ENTRY wrap_divide REGISTRY 
 slang_add_kernel(wrap_finish Kernels/pixelwrap.slang ENTRY wrap_finish REGISTRY NatronGpu)
 slang_add_kernel(invert Kernels/invert.slang ENTRY invert_main REGISTRY NatronGpu)
 slang_add_kernel(constant Kernels/generators.slang ENTRY constant_main REGISTRY NatronGpu)
+slang_add_kernel(checkerboard Kernels/generators.slang ENTRY checkerboard_main REGISTRY NatronGpu)
 slang_add_kernel(grade_wrapped Kernels/pixelwrap.slang ENTRY grade_wrapped REGISTRY NatronGpu)
 slang_add_kernel(clamp_wrapped Kernels/clamp.slang ENTRY clamp_wrapped REGISTRY NatronGpu)
 slang_add_kernel(colorlookup_wrapped Kernels/colorlookup.slang ENTRY colorlookup_wrapped REGISTRY NatronGpu)

@@ -434,6 +434,7 @@ EffectInstance::Implementation::Implementation(EffectInstance* publicInterface)
     , supportsRenderScale(eSupportsMaybe)
     , actionsCache()
 #if NATRON_ENABLE_TRIMAP
+    , imagesReservationMutex()
     , imagesBeingRenderedMutex()
     , imagesBeingRendered()
 #endif
@@ -455,29 +456,30 @@ EffectInstance::Implementation::Implementation(EffectInstance* publicInterface)
 }
 
 EffectInstance::Implementation::Implementation(const Implementation& other)
-: _publicInterface(0)
-, tlsData(other.tlsData)
-, duringInteractActionMutex()
-, duringInteractAction(other.duringInteractAction)
-, pluginMemoryChunksMutex()
-, pluginMemoryChunks()
-, supportsRenderScale(other.supportsRenderScale)
-, actionsCache(other.actionsCache)
+    : _publicInterface(0)
+    , tlsData(other.tlsData)
+    , duringInteractActionMutex()
+    , duringInteractAction(other.duringInteractAction)
+    , pluginMemoryChunksMutex()
+    , pluginMemoryChunks()
+    , supportsRenderScale(other.supportsRenderScale)
+    , actionsCache(other.actionsCache)
 #if NATRON_ENABLE_TRIMAP
-, imagesBeingRenderedMutex()
-, imagesBeingRendered()
+    , imagesReservationMutex()
+    , imagesBeingRenderedMutex()
+    , imagesBeingRendered()
 #endif
-, overlaySlaves(other.overlaySlaves)
-, metadataMutex()
-, metadata(other.metadata)
-, runningClipPreferences(other.runningClipPreferences)
-, overlaysViewport(other.overlaysViewport)
-, attachedContextsMutex()
-, attachedContexts()
-, mainInstance(other._publicInterface)
-, isDoingInstanceSafeRender(false)
-, renderClonesMutex()
-, renderClonesPool()
+    , overlaySlaves(other.overlaySlaves)
+    , metadataMutex()
+    , metadata(other.metadata)
+    , runningClipPreferences(other.runningClipPreferences)
+    , overlaysViewport(other.overlaysViewport)
+    , attachedContextsMutex()
+    , attachedContexts()
+    , mainInstance(other._publicInterface)
+    , isDoingInstanceSafeRender(false)
+    , renderClonesMutex()
+    , renderClonesPool()
 {
 
 }
@@ -609,6 +611,7 @@ EffectInstance::Implementation::markImagesAsBeingRendered(const std::vector<Imag
                                                           std::list<RectI>* restToRender,
                                                           bool* renderedElsewhere)
 {
+    QMutexLocker reservation(&imagesReservationMutex);
     std::vector<std::pair<ImagePtr, ImageBeingRenderedPtr>> marked;
     std::list<RectI> allRests;
     for (const ImagePtr& img : imgs) {
@@ -635,9 +638,7 @@ EffectInstance::Implementation::markImagesAsBeingRendered(const std::vector<Imag
         return;
     }
 
-    // Every layer is rendered over the whole union, so each image must show all of it as being rendered. Each image's
-    // lock is held on its own: no rendering starts before this returns, so the window between the two passes only
-    // exposes pixels that are still valid.
+    // Every layer is rendered over the whole union, so each image must show all of it as being rendered.
     for (const std::pair<ImagePtr, ImageBeingRenderedPtr>& it : marked) {
         QMutexLocker k(&it.second->lock);
         for (const RectI& rect : *restToRender) {

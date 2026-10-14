@@ -150,6 +150,22 @@ coverageCounts(const std::list<RectI>& rects,
 
     return counts;
 }
+
+// merged must cover every pixel of area that rests covers exactly once, and nothing else.
+void
+expectExactDisjointCover(const std::list<RectI>& rests,
+                         const std::list<RectI>& merged,
+                         const RectI& area)
+{
+    const std::vector<int> inputCoverage = coverageCounts(rests, area);
+    const std::vector<int> mergedCoverage = coverageCounts(merged, area);
+    for (std::size_t i = 0; i < inputCoverage.size(); ++i) {
+        ASSERT_EQ(mergedCoverage[i], inputCoverage[i] ? 1 : 0) << "pixel index " << i;
+    }
+    for (const RectI& r : merged) {
+        EXPECT_FALSE(r.isNull());
+    }
+}
 }
 
 TEST(RectIDisjointUnionTest, IdenticalRectsCollapseToOne)
@@ -174,19 +190,10 @@ TEST(RectIDisjointUnionTest, OverlappingRectsCoverTheUnionExactlyOnce)
         RectI(-10, 45, 5, 55),
     };
 
-    const std::list<RectI> merged = RectI::disjointUnion(rests);
-
-    const std::vector<int> inputCoverage = coverageCounts(rests, area);
-    const std::vector<int> mergedCoverage = coverageCounts(merged, area);
-    for (std::size_t i = 0; i < inputCoverage.size(); ++i) {
-        ASSERT_EQ(mergedCoverage[i], inputCoverage[i] ? 1 : 0) << "pixel index " << i;
-    }
-    for (const RectI& r : merged) {
-        EXPECT_FALSE(r.isNull());
-    }
+    expectExactDisjointCover(rests, RectI::disjointUnion(rests), area);
 }
 
-TEST(RectIDisjointUnionTest, DisjointListIsReturnedUnchangedAndNullRectsDropped)
+TEST(RectIDisjointUnionTest, DisjointListKeepsItsCoverAndNullRectsDropped)
 {
     // The four rectangles one bitmap query returns around an already rendered centre.
     Bitmap bm(RectI(0, 0, 100, 100));
@@ -199,7 +206,23 @@ TEST(RectIDisjointUnionTest, DisjointListIsReturnedUnchangedAndNullRectsDropped)
     std::list<RectI> withNull = rest;
     withNull.push_back(RectI());
 
-    EXPECT_TRUE(RectI::disjointUnion(withNull) == rest);
+    const RectI area(0, 0, 100, 100);
+    const std::list<RectI> merged = RectI::disjointUnion(withNull);
+    expectExactDisjointCover(rest, merged, area);
+    EXPECT_EQ(merged.size(), rest.size());
+}
+
+TEST(RectIDisjointUnionTest, CrossingStripsCoverTheUnionExactlyOnce)
+{
+    const int stripCount = 50;
+    const int extent = 4 * stripCount;
+    std::list<RectI> rests;
+    for (int i = 0; i < stripCount; ++i) {
+        rests.push_back(RectI(0, 4 * i, extent, 4 * i + 2));
+        rests.push_back(RectI(4 * i + 1, 0, 4 * i + 3, extent));
+    }
+
+    expectExactDisjointCover(rests, RectI::disjointUnion(rests), RectI(0, 0, extent, extent));
 }
 
 TEST(ImageKeyTest, Equality) {

@@ -505,8 +505,8 @@ public:
     std::vector<RectI> splitIntoSmallerRects(int splitsCount) const;
 
     /**
-     * @brief Returns pairwise non-overlapping rectangles covering exactly the union of rects. Null rectangles are dropped,
-     * and a list that is already pairwise non-overlapping is returned unchanged.
+     * @brief Returns pairwise non-overlapping, non-null rectangles covering exactly the union of rects, ordered by
+     * bottom edge. The result may tile the union differently from rects even when rects are already non-overlapping.
      **/
     static std::list<RectI> disjointUnion(const std::list<RectI>& rects);
 

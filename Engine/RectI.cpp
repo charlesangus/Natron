@@ -28,6 +28,7 @@
 #include <algorithm> // min, max
 #include <cassert>
 #include <stdexcept>
+#include <utility>
 
 #include "Engine/RectD.h"
 
@@ -115,29 +116,16 @@ std::vector<RectI> RectI::splitIntoSmallerRects(int splitsCount) const
 } // RectI::splitIntoSmallerRects
 
 namespace {
-void
-appendDifference(const RectI& r,
-                 const RectI& hole,
-                 std::list<RectI>* out)
-{
-    if (!r.intersects(hole)) {
-        out->push_back(r);
+typedef std::vector<std::pair<int, int>> XSpans;
 
-        return;
-    }
-    if (hole.y1 > r.y1) {
-        out->push_back(RectI(r.x1, r.y1, r.x2, hole.y1));
-    }
-    if (hole.y2 < r.y2) {
-        out->push_back(RectI(r.x1, hole.y2, r.x2, r.y2));
-    }
-    const int bandBottom = std::max(r.y1, hole.y1);
-    const int bandTop = std::min(r.y2, hole.y2);
-    if (hole.x1 > r.x1) {
-        out->push_back(RectI(r.x1, bandBottom, hole.x1, bandTop));
-    }
-    if (hole.x2 < r.x2) {
-        out->push_back(RectI(hole.x2, bandBottom, r.x2, bandTop));
+void
+appendBandRects(const XSpans& spans,
+                int bottom,
+                int top,
+                std::list<RectI>* out)
+{
+    for (const std::pair<int, int>& span : spans) {
+        out->push_back(RectI(span.first, bottom, span.second, top));
     }
 }
 }
@@ -145,20 +133,52 @@ appendDifference(const RectI& r,
 std::list<RectI>
 RectI::disjointUnion(const std::list<RectI>& rects)
 {
+    std::vector<RectI> input;
+    std::vector<int> ys;
+    for (const RectI& r : rects) {
+        if (!r.isNull()) {
+            input.push_back(r);
+            ys.push_back(r.y1);
+            ys.push_back(r.y2);
+        }
+    }
+    std::sort(ys.begin(), ys.end());
+    ys.erase(std::unique(ys.begin(), ys.end()), ys.end());
+
+    // Every rectangle edge is a band boundary, so a rectangle either covers a whole band [ys[i], ys[i + 1]) or misses it.
     std::list<RectI> ret;
-    for (std::list<RectI>::const_iterator it = rects.begin(); it != rects.end(); ++it) {
-        if (it->isNull()) {
-            continue;
-        }
-        std::list<RectI> uncovered(1, *it);
-        for (std::list<RectI>::const_iterator covered = ret.begin(); covered != ret.end() && !uncovered.empty(); ++covered) {
-            std::list<RectI> remaining;
-            for (std::list<RectI>::const_iterator piece = uncovered.begin(); piece != uncovered.end(); ++piece) {
-                appendDifference(*piece, *covered, &remaining);
+    XSpans openSpans;
+    int openBottom = 0;
+    XSpans spans;
+    for (std::size_t i = 0; i + 1 < ys.size(); ++i) {
+        const int bottom = ys[i];
+        const int top = ys[i + 1];
+        spans.clear();
+        for (const RectI& r : input) {
+            if ((r.y1 <= bottom) && (r.y2 >= top)) {
+                spans.push_back(std::make_pair(r.x1, r.x2));
             }
-            uncovered.swap(remaining);
         }
-        ret.splice(ret.end(), uncovered);
+        std::sort(spans.begin(), spans.end());
+        std::size_t merged = 0;
+        for (std::size_t j = 0; j < spans.size(); ++j) {
+            const std::pair<int, int> span = spans[j];
+            if ((merged > 0) && (span.first <= spans[merged - 1].second)) {
+                spans[merged - 1].second = std::max(spans[merged - 1].second, span.second);
+            } else {
+                spans[merged++] = span;
+            }
+        }
+        spans.resize(merged);
+
+        if (spans != openSpans) {
+            appendBandRects(openSpans, openBottom, bottom, &ret);
+            openSpans.swap(spans);
+            openBottom = bottom;
+        }
+    }
+    if (!ys.empty()) {
+        appendBandRects(openSpans, openBottom, ys.back(), &ret);
     }
 
     return ret;

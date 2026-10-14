@@ -80,7 +80,7 @@ build ~30 min. No workflow produces an AppImage except `release.yml` on tag push
 
 ## Phase 115.2: Make build options discoverable and correct
 
-- [ ] M115.P2.T1 — Print the resolved build type and flags at the start of every `build.sh` run
+- [x] M115.P2.T1 — Print the resolved build type and flags at the start of every `build.sh` run
   - files: `tools/ci/local/build.sh`
   - approach: before configuring, echo which preset was selected and its
     resolved `CMAKE_BUILD_TYPE` plus the actual compile flags that implies

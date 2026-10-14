@@ -203,7 +203,7 @@ Scouted facts this plan relies on (2026-10-12, `milestone/m85-native-gpu-kernels
     Runs on lavapipe and RADV.
   - size: L
 
-- [ ] M85.P2.T4 — GPU IIR (Deriche, van Vliet) and box/triangle/quadratic Blur
+- [x] M85.P2.T4 — GPU IIR (Deriche, van Vliet) and box/triangle/quadratic Blur
   - files: `Engine/Gpu/Kernels/blur_lines.slang` (new), `Engine/Gpu/GpuBlur.{h,cpp}`, `Engine/Gpu/CMakeLists.txt`, `Engine/Nodes/Filter/Blur.cpp`, `Tests/Native/NativeBlurGpu_Test.cpp`
   - approach:
     - One thread per line, running the same recursions as `BlurKernels::deriche`/`vanVliet`/`boxFilter` (`BlurKernels.h:186-188`) in float: coefficients computed on the host by the same functions, causal and anticausal passes, and Neumann/zero boundaries.
@@ -602,3 +602,15 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - **P5.T2, motion blur:** motion blur at any quality, every shutter offset and directional blur are on the GPU. Only concatenated inputs, non-float images and > 4 channels refuse. `GpuTaskTraits` gains `motionBlur`; the 996 ms/Mpx seed row moved to `NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROWS`, so a plain Transform takes the spatial default.
     - **Tolerance:** `iir()` with an exception for motion-blurred cases only: at most 1 pixel in 250 per window may miss it, none by more than `Resampler::motionBlurMaxError` (quality / 1000). Cause: the CPU filters each sample in double, the device in float, so a pixel at a sample-count boundary takes one sample more or fewer. Exact agreement would need double-accurate filtering on the device; moving the variance to fp64 alone changes nothing (its error is 2^24 smaller than the per-sample one). Measured worst on lavapipe 6.1e-4 at quality 4 (allowed 4e-3); RADV misses 1 pixel.
     - **8K kernel time on RADV** (debug build, source resident): quality 1 26.3 ms (0.79 ms/Mpx), quality 4 74.3 ms (2.24 ms/Mpx), against the 996 ms/Mpx CPU row.
+
+- 2026-10-14 — **P2.T4 done** (`d29005d05`). Deriche, van Vliet, box, triangle and quadratic Blur run on the GPU at order 0. `NativeBlurGpuTest.*` and the other Blur tests pass 83/83 on lavapipe and RADV.
+  - **Precision bug fixed:** the double-float state's product error used `fma`, which Vulkan doesn't guarantee to round once; on lavapipe the van Vliet state (gain ~2e4 at size 100) drifted to 1.7e-3 with nearest edges. `ffMul` now uses Veltkamp/Dekker splitting (`ffSplit`, `ffProductError`), exact on any conforming device.
+  - **UHD RGBA kernel time on RADV (7900 XTX, debug build):**
+
+    | filter | size 10 | size 100 |
+    |---|---|---|
+    | quasigaussian | 5.1 ms | 6.5 ms |
+    | gaussian | 5.9 ms | 5.9 ms |
+    | box | 5.0 ms | 4.9 ms |
+    | triangle | 6.5 ms | 7.0 ms |
+    | quadratic | 8.5 ms | 8.8 ms |

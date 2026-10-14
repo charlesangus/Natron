@@ -95,6 +95,22 @@ CurveWidget::isSelectedKey(const CurveGuiPtr& curve,
 void
 CurveWidget::pushUndoCommand(QUndoCommand* cmd)
 {
+    CurveEditor* editor = dynamic_cast<CurveEditor*>(_imp->_selectionModel);
+    CurveEditorCommand* curveCmd = dynamic_cast<CurveEditorCommand*>(cmd);
+    if (editor && curveCmd) {
+        std::list<CurveGuiPtr> editedCurves;
+        curveCmd->getEditedCurves(&editedCurves);
+        std::list<CurveGuiPtr> foldedCurves;
+        for (std::list<CurveGuiPtr>::const_iterator it = editedCurves.begin(); it != editedCurves.end(); ++it) {
+            if (editor->isFoldedKnobDimensionZero(it->get()) && (std::find(foldedCurves.begin(), foldedCurves.end(), *it) == foldedCurves.end())) {
+                foldedCurves.push_back(*it);
+            }
+        }
+        if (!foldedCurves.empty()) {
+            cmd = new FoldedCurveEditCommand(editor, cmd, foldedCurves);
+        }
+    }
+
     _imp->_undoStack->setActive();
     _imp->_undoStack->push(cmd);
 }
@@ -1080,6 +1096,7 @@ CurveWidget::mousePressEvent(QMouseEvent* e)
         _imp->_mustSetDragOrientation = true;
         _imp->_state = eEventStateDraggingTangent;
         _imp->_selectedDerivative = selectedTan;
+        _imp->_tangentDragForceBreak = modCASIsControl(e);
         _imp->_lastMousePos = e->pos();
         //no need to set _imp->_dragStartPoint
         update();
@@ -1617,6 +1634,8 @@ CurveWidget::keyPressEvent(QKeyEvent* e)
         breakDerivativesForSelectedKeyFrames();
     } else if (isKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorFree, modifiers, key)) {
         freeInterpForSelectedKeyFrames();
+    } else if (isKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorJoin, modifiers, key)) {
+        joinTangentsForSelectedKeyFrames();
     } else if (isKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorCenterAll, modifiers, key)) {
         frameAll();
     } else if (isKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorCenter, modifiers, key)) {
@@ -1786,6 +1805,15 @@ CurveWidget::freeInterpForSelectedKeyFrames()
     assert(qApp && qApp->thread() == QThread::currentThread());
 
     _imp->setSelectedKeysInterpolation(eKeyframeTypeFree);
+}
+
+void
+CurveWidget::joinTangentsForSelectedKeyFrames()
+{
+    // always running in the main thread
+    assert(qApp && qApp->thread() == QThread::currentThread());
+
+    pushUndoCommand(new JoinTangentsCommand(this, _imp->_selectedKeyFrames));
 }
 
 void

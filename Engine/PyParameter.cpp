@@ -40,7 +40,6 @@
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
-#include "Engine/KnobLoadCompat.h"
 #include "Engine/KnobShuffleMap.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
@@ -1677,15 +1676,7 @@ ChoiceParam::set(const QString& label)
     if (!knob) {
         return;
     }
-    std::string choiceID = label.toStdString();
-    AppInstancePtr app = knob->getHolder()->getApp();
-    if (app && app->isCreatingPythonGroup()) {
-        // Before Natron 2.2.3, all dynamic choice parameters for multiplane had a string parameter.
-        // The string parameter had the same name as the choice parameter plus "Choice" appended.
-        // If we found such a parameter, retrieve the string from it.
-        filterKnobChoiceOptionCompat(std::string(), -1, -1, -1, -1, -1, knob->getName(), &choiceID);
-    }
-    KnobHelper::ValueChangedReturnCodeEnum s = knob->setValueFromID(choiceID, 0);
+    KnobHelper::ValueChangedReturnCodeEnum s = knob->setValueFromID(label.toStdString(), 0);
 
     Q_UNUSED(s);
 }

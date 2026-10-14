@@ -46,8 +46,9 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/Edge.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
-#include "Gui/GuiMacros.h"
 #include "Gui/GuiApplicationManager.h"
+#include "Gui/GuiMacros.h"
+#include "Gui/NodeGraphPickUp.h"
 #include "Gui/NodeGui.h"
 
 #include "Global/QtCompat.h"
@@ -129,6 +130,149 @@ handleConnectionError(const NodeGuiPtr& outputNode,
     return true;
 } // handleConnectionError
 
+bool
+NodeGraph::connectInputArrowToNode(Edge* arrow,
+                                   const NodeGuiPtr& target)
+{
+    assert(arrow && !arrow->isOutputEdge());
+    NodeGuiPtr nodeHoldingEdge = arrow->getDest();
+    assert(nodeHoldingEdge);
+
+    bool ok = handleConnectionError(nodeHoldingEdge, target, arrow->getInputNumber());
+    arrow->stackBefore(target.get());
+    if (ok) {
+        pushUndoCommand(new ConnectCommand(this, arrow, arrow->getSource(), target));
+    }
+
+    return ok;
+}
+
+Edge*
+NodeGraph::getPickedUpArrow() const
+{
+    if (_imp->_pickedUpArrowInput < 0) {
+        return 0;
+    }
+    NodeGuiPtr dest = _imp->_pickedUpArrowDest.lock();
+    if (!dest || !dest->getNode() || !dest->getNode()->isActivated()) {
+        return 0;
+    }
+
+    return dest->getInputArrow(_imp->_pickedUpArrowInput);
+}
+
+void
+NodeGraph::pickUpArrow(Edge* arrow)
+{
+    assert(arrow && !arrow->isOutputEdge());
+    _imp->_pickedUpArrowDest = arrow->getDest();
+    _imp->_pickedUpArrowInput = arrow->getInputNumber();
+    dragPickedUpArrowToCursor();
+}
+
+// _lastMousePos rather than QCursor::pos(): every mouse and wheel handler keeps it current, and it
+// also follows synthesized events, which never move the system cursor.
+void
+NodeGraph::dragPickedUpArrowToCursor()
+{
+    Edge* arrow = getPickedUpArrow();
+    if (!arrow) {
+        return;
+    }
+    QPointF cursorScene = mapToScene(_imp->_lastMousePos.x(), _imp->_lastMousePos.y());
+    arrow->dragSource(arrow->mapFromScene(cursorScene));
+    update();
+}
+
+// The arrow's source is never changed while it is held, only its drawn line, so restoring the
+// line restores the original connection and nothing reaches the undo stack.
+void
+NodeGraph::dropPickedUpArrow()
+{
+    Edge* arrow = getPickedUpArrow();
+    _imp->_pickedUpArrowDest.reset();
+    _imp->_pickedUpArrowInput = -1;
+    if (arrow) {
+        arrow->initLine();
+        update();
+    }
+}
+
+bool
+NodeGraph::handlePickUpPress(QMouseEvent* e)
+{
+    Edge* arrow = getPickedUpArrow();
+    if (!arrow) {
+        dropPickedUpArrow();
+
+        return false;
+    }
+
+    PickUpButtonEnum button = ePickUpButtonOther;
+    if (buttonDownIsLeft(e)) {
+        button = ePickUpButtonLeft;
+    } else if (buttonDownIsRight(e)) {
+        button = ePickUpButtonRight;
+    } else if (buttonDownIsMiddle(e)) {
+        button = ePickUpButtonMiddle;
+    }
+
+    NodeGuiPtr nodeHoldingEdge = arrow->getDest();
+    NodeGui* nearbyNode = 0;
+    Edge* nearbyEdge = 0;
+    PickUpClickTargetEnum target = ePickUpClickTargetOther;
+    QPointF navigatorScenePos;
+    if (isNearbyNavigator(e->pos(), navigatorScenePos)) {
+        target = ePickUpClickTargetNavigator;
+    } else if ((hasItemNearbyMouse(e->pos(), &nearbyNode, &nearbyEdge) == eNearbyItemNode) && nearbyNode) {
+        target = (nearbyNode == nodeHoldingEdge.get()) ? ePickUpClickTargetHoldingNode : ePickUpClickTargetNode;
+    }
+
+    switch (decidePickUpPress(button, target)) {
+    case ePickUpPressPassThrough:
+        return false;
+    case ePickUpPressIgnore:
+        return true;
+    case ePickUpPressCancel:
+        dropPickedUpArrow();
+
+        return true;
+    case ePickUpPressDisconnect: {
+        _imp->_pickedUpArrowDest.reset();
+        _imp->_pickedUpArrowInput = -1;
+        if (arrow->getSource()) {
+            pushUndoCommand(new ConnectCommand(this, arrow, arrow->getSource(), NodeGuiPtr()));
+        }
+        if (nodeHoldingEdge) {
+            nodeHoldingEdge->refreshEdges();
+        }
+        arrow->initLine();
+        scene()->update();
+        update();
+
+        return true;
+    }
+    case ePickUpPressConnect: {
+        NodeGuiPtr targetNode = nearbyNode->shared_from_this();
+        // Let go of the arrow before connecting: a rejected connection opens a dialog, and the
+        // focus loss that causes must not find the arrow still held.
+        _imp->_pickedUpArrowDest.reset();
+        _imp->_pickedUpArrowInput = -1;
+        connectInputArrowToNode(arrow, targetNode);
+        if (nodeHoldingEdge) {
+            nodeHoldingEdge->refreshEdges();
+        }
+        arrow->initLine();
+        scene()->update();
+        update();
+
+        return true;
+    }
+    }
+
+    return true;
+}
+
 void
 NodeGraph::mouseReleaseEvent(QMouseEvent* e)
 {
@@ -155,12 +299,7 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
             NodeGuiPtr targetNode = nearbyNode->shared_from_this();
             if (targetNode != nodeHoldingEdge) {
                 if ( !_imp->_arrowSelected->isOutputEdge() ) {
-                    bool ok = handleConnectionError( nodeHoldingEdge, targetNode, _imp->_arrowSelected->getInputNumber() );
-                    _imp->_arrowSelected->stackBefore( targetNode.get() );
-                    if (ok) {
-                        foundSrc = true;
-                        pushUndoCommand( new ConnectCommand(this, _imp->_arrowSelected, _imp->_arrowSelected->getSource(), targetNode) );
-                    }
+                    foundSrc = connectInputArrowToNode(_imp->_arrowSelected, targetNode);
                 } else {
                     // Find the input edge of the node we just released the mouse over,
                     // and use that edge to connect to the source of the selected edge.
@@ -190,6 +329,8 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
 
         nodeHoldingEdge->refreshEdges();
         scene()->update();
+    } else if ((state == eEventStateDraggingArrow) && _imp->_arrowSelected && shouldStartPickUp(triggerButtonIsLeft(e) ? ePickUpButtonLeft : ePickUpButtonOther, hasMovedOnce, _imp->_arrowSelected->isOutputEdge())) {
+        pickUpArrow(_imp->_arrowSelected);
     } else if (state == eEventStateDraggingNode) {
         if ( !_imp->_hasMovedOnce ) {
             if ( modCASIsControl(e) ) { // control-click is the same as double-click, see NodeGraph::mouseDoubleClickEvent
@@ -249,8 +390,7 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
             }
         }
     } else if (state == eEventStateSelectionRect) {
-        _imp->editSelectionFromSelectionRectangle( modCASIsShift(e) );
-
+        _imp->editSelectionFromSelectionRectangle(modCASIsShift(e));
     }
     resetSplicePlan();
     _imp->_nodesWithinBDAtPenDown.clear();

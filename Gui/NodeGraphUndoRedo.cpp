@@ -640,6 +640,87 @@ InsertNodeCommand::redo()
     _graph->update();
 } // InsertNodeCommand::redo
 
+ReconnectInputsCommand::ReconnectInputsCommand(NodeGraph* graph,
+                                               const std::vector<InputChange>& changes,
+                                               QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , _changes(changes)
+    , _graph(graph)
+    , _firstRedoCalled(false)
+{
+    setText(tr("Connect nodes"));
+}
+
+void
+ReconnectInputsCommand::apply(bool toAfter)
+{
+    std::list<ViewerInstance*> viewersToRefresh;
+    const std::size_t nChanges = _changes.size();
+
+    for (std::size_t n = 0; n < nChanges; ++n) {
+        // Undo walks the changes backwards so a slot touched twice ends in its first state.
+        const InputChange& change = _changes[toAfter ? n : (nChanges - 1 - n)];
+        NodePtr node = change.node.lock();
+        if (!node) {
+            continue;
+        }
+        NodePtr input = toAfter ? change.after.lock() : change.before.lock();
+        if (input) {
+            ignore_result(node->replaceInput(input, change.inputNb));
+        } else {
+            ignore_result(node->disconnectInput(change.inputNb));
+        }
+
+        NodeGuiIPtr nodeGuiI = node->getNodeGui();
+        NodeGui* nodeGui = dynamic_cast<NodeGui*>(nodeGuiI.get());
+        if (nodeGui) {
+            nodeGui->refreshEdges();
+            nodeGui->refreshEdgesVisility();
+        }
+        NodePtr sources[2] = { change.before.lock(), change.after.lock() };
+        for (int i = 0; i < 2; ++i) {
+            if (!sources[i]) {
+                continue;
+            }
+            NodeGuiIPtr sourceGuiI = sources[i]->getNodeGui();
+            NodeGui* sourceGui = dynamic_cast<NodeGui*>(sourceGuiI.get());
+            if (sourceGui) {
+                sourceGui->refreshEdgesVisility();
+            }
+        }
+
+        std::list<ViewerInstance*> viewers;
+        node->hasViewersConnected(&viewers);
+        for (std::list<ViewerInstance*>::iterator it = viewers.begin(); it != viewers.end(); ++it) {
+            if (std::find(viewersToRefresh.begin(), viewersToRefresh.end(), *it) == viewersToRefresh.end()) {
+                viewersToRefresh.push_back(*it);
+            }
+        }
+    }
+
+    _graph->getGui()->getApp()->triggerAutoSave();
+
+    for (std::list<ViewerInstance*>::iterator it = viewersToRefresh.begin(); it != viewersToRefresh.end(); ++it) {
+        (*it)->renderCurrentFrame(true);
+    }
+    _graph->update();
+} // ReconnectInputsCommand::apply
+
+void
+ReconnectInputsCommand::undo()
+{
+    apply(false);
+}
+
+void
+ReconnectInputsCommand::redo()
+{
+    if (_firstRedoCalled) {
+        apply(true);
+    }
+    _firstRedoCalled = true;
+}
+
 ResizeBackdropCommand::ResizeBackdropCommand(const NodeGuiPtr& bd,
                                              int w,
                                              int h,

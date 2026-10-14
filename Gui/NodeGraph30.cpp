@@ -194,6 +194,7 @@ NodeGraph::wheelEvent(QWheelEvent* e)
     }
     wheelEventInternal( modCASIsControl(e), e->angleDelta().y() );
     _imp->_lastMousePos = QPoint(e->position().x(), e->position().y());
+    dragPickedUpArrowToCursor();
     update();
 }
 

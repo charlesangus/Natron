@@ -415,7 +415,6 @@ KnobGuiColor::KnobGuiColor(KnobIPtr knob,
     , _globalModeButton(0)
     , _lastColor()
     , _useSimplifiedUI(true)
-    , _dimensionsWereFoldedWhenPanelOpened(false)
     , _adjustPanel()
     , _rowContainer()
     , _editSession()
@@ -721,18 +720,10 @@ KnobGuiColor::onAdjustPanelToggled(bool expanded)
         if (knob && !_adjustPanel->isEditing()) {
             _adjustPanel->setKnobValue(ColorKnobEditSession::readKnobValue(knob));
         }
-        // Remembered so closing can restore a fold the user had, without copying dimension 0
-        // into the others the way the dimension-switch button would.
-        _dimensionsWereFoldedWhenPanelOpened = !getAllDimensionsVisible();
-        setAutoFoldSuppressed(true);
-        setDimensionsExpanded(true);
+        setDimensionsFolded(false);
         _adjustPanel->setVisible(true);
     } else {
         _adjustPanel->setVisible(false);
-        setAutoFoldSuppressed(false);
-        if (_dimensionsWereFoldedWhenPanelOpened) {
-            setDimensionsExpanded(false);
-        }
     }
 
     if (columnWidget) {
@@ -861,12 +852,10 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
     _colorLabel = new ColorPickerLabel( _useSimplifiedUI ? NULL : this, containerLayout->widget() );
     if (!_useSimplifiedUI) {
         _colorLabel->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("To pick a color on a viewer, click this and then press control + left click on any viewer.\n"
-                                                                          "You can also pick the average color of a given rectangle by holding control + shift + left click\n. "
-                                                                          "To deselect the picker left click anywhere."
-                                                                          "Note that by default %1 converts to linear the color picked\n"
-                                                                          "because all the processing pipeline is linear, but you can turn this off in the\n"
-                                                                          "preferences panel.")
-                                                                           .arg(QString::fromUtf8(NATRON_APPLICATION_NAME)),
+                                                                          "You can also pick the average color of a given rectangle by holding control + shift + left click.\n"
+                                                                          "To deselect the picker left click anywhere.\n"
+                                                                          "Picked values are the image's scene-referred values, before the viewer's "
+                                                                          "gain, gamma and display transform."),
                                                                        NATRON_NAMESPACE::WhiteSpaceNormal));
     }
 
@@ -956,7 +945,7 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
 void
 KnobGuiColor::onMustShowAllDimension()
 {
-    onDimensionSwitchClicked(true);
+    setDimensionsFolded(false);
 }
 
 void

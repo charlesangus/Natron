@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <memory>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -100,12 +101,69 @@ struct SelectedKey_compare_time
 typedef SelectedKeyPtr KeyPtr;
 typedef std::map<CurveGuiPtr, std::list<KeyPtr> > SelectedKeys;
 
+/**
+ * @brief Base of the commands that edit curves in a curve widget, so that the widget can
+ * tell which curves a command edits before pushing it.
+ **/
+class CurveEditorCommand
+    : public QUndoCommand {
+public:
+    explicit CurveEditorCommand(QUndoCommand* parent = 0)
+        : QUndoCommand(parent)
+    {
+    }
+
+    virtual ~CurveEditorCommand() OVERRIDE
+    {
+    }
+
+    virtual void getEditedCurves(std::list<CurveGuiPtr>* curves) const = 0;
+};
+
+/**
+ * @brief Wraps a command that edits the dimension 0 curve of one or more folded knobs, the only
+ * curve the curve editor shows for such a knob, and copies that curve into every other dimension
+ * so that they keep the same animation. Undo restores the other dimensions as they were before
+ * the first redo, then undoes the wrapped command.
+ **/
+class FoldedCurveEditCommand
+    : public QUndoCommand {
+public:
+    FoldedCurveEditCommand(CurveEditor* editor,
+                           QUndoCommand* inner,
+                           const std::list<CurveGuiPtr>& foldedDimensionZeroCurves,
+                           QUndoCommand* parent = 0);
+
+    virtual ~FoldedCurveEditCommand() OVERRIDE;
+
+private:
+    virtual void undo() OVERRIDE FINAL;
+    virtual void redo() OVERRIDE FINAL;
+    virtual int id() const OVERRIDE FINAL;
+    virtual bool mergeWith(const QUndoCommand* command) OVERRIDE FINAL;
+
+    void copyDimensionZeroToOthers();
+    void restoreOtherDimensions();
+
+    struct FoldedKnob {
+        KnobIPtr knob;
+        CurveGuiPtr dimensionZeroCurve;
+
+        // Indexed by dimension; entry 0 stays null.
+        std::vector<CurvePtr> curvesBeforeFirstRedo;
+    };
+
+    CurveEditor* _editor;
+    std::unique_ptr<QUndoCommand> _inner;
+    std::list<FoldedKnob> _knobs;
+    std::list<KnobGuiWPtr> _knobGuis;
+    bool _snapshotsTaken;
+};
 
 //////////////////////////////ADD MULTIPLE KEYS COMMAND//////////////////////////////////////////////
 
 class AddKeysCommand
-    : public QUndoCommand
-{
+    : public CurveEditorCommand {
     Q_DECLARE_TR_FUNCTIONS(AddKeysCommand)
 
 public:
@@ -133,6 +191,8 @@ public:
     {
     }
 
+    virtual void getEditedCurves(std::list<CurveGuiPtr>* curves) const OVERRIDE FINAL;
+
 protected:
 
     void addOrRemoveKeyframe(bool isSetKeyCommand, bool add);
@@ -145,7 +205,6 @@ private:
     KeysToAddList _keys;
     CurveWidget *_curveWidget;
 };
-
 
 class SetKeysCommand
     : public AddKeysCommand
@@ -178,8 +237,7 @@ private:
 //////////////////////////////REMOVE  MULTIPLE KEYS COMMAND//////////////////////////////////////////////
 
 class RemoveKeysCommand
-    : public QUndoCommand
-{
+    : public CurveEditorCommand {
     Q_DECLARE_TR_FUNCTIONS(RemoveKeysCommand)
 
 public:
@@ -190,6 +248,8 @@ public:
     virtual ~RemoveKeysCommand() OVERRIDE
     {
     }
+
+    virtual void getEditedCurves(std::list<CurveGuiPtr>* curves) const OVERRIDE FINAL;
 
 private:
     virtual void undo() OVERRIDE FINAL;
@@ -205,8 +265,7 @@ private:
 //////////////////////////////MOVE KEY COMMAND//////////////////////////////////////////////
 
 class MoveKeysCommand
-    : public QUndoCommand
-{
+    : public CurveEditorCommand {
     Q_DECLARE_TR_FUNCTIONS(MoveKeysCommand)
 
 public:
@@ -227,6 +286,8 @@ public:
     {
     }
 
+    virtual void getEditedCurves(std::list<CurveGuiPtr>* curves) const OVERRIDE FINAL;
+
 private:
     virtual void undo() OVERRIDE FINAL;
     virtual void redo() OVERRIDE FINAL;
@@ -243,7 +304,6 @@ private:
     std::map<CurveGuiPtr, std::vector<MoveKeysCommand::KeyToMove> > _keys;
     CurveWidget* _widget;
 };
-
 
 //////////////////////////////SET MULTIPLE KEYS INTERPOLATION COMMAND//////////////////////////////////////////////
 
@@ -264,10 +324,8 @@ struct KeyInterpolationChange
     }
 };
 
-
 class SetKeysInterpolationCommand
-    : public QUndoCommand
-{
+    : public CurveEditorCommand {
     Q_DECLARE_TR_FUNCTIONS(SetKeysInterpolationCommand)
 
 public:
@@ -278,6 +336,8 @@ public:
     virtual ~SetKeysInterpolationCommand() OVERRIDE
     {
     }
+
+    virtual void getEditedCurves(std::list<CurveGuiPtr>* curves) const OVERRIDE FINAL;
 
 private:
     virtual void undo() OVERRIDE FINAL;
@@ -292,8 +352,7 @@ private:
 };
 
 class MoveTangentCommand
-    : public QUndoCommand
-{
+    : public CurveEditorCommand {
     Q_DECLARE_TR_FUNCTIONS(MoveTangentCommand)
 
 public:
@@ -304,14 +363,14 @@ public:
         eSelectedTangentRight
     };
 
-
     MoveTangentCommand(CurveWidget* widget,
                        SelectedTangentEnum deriv,
                        const KeyPtr& key,
                        double dx,
                        double dy,
                        bool updateOnFirstRedo,
-                       QUndoCommand *parent = 0);
+                       bool forceBreak = false,
+                       QUndoCommand* parent = 0);
 
     MoveTangentCommand(CurveWidget* widget,
                        SelectedTangentEnum deriv,
@@ -322,6 +381,8 @@ public:
     virtual ~MoveTangentCommand() OVERRIDE
     {
     }
+
+    virtual void getEditedCurves(std::list<CurveGuiPtr>* curves) const OVERRIDE FINAL;
 
 private:
 
@@ -344,9 +405,46 @@ private:
     bool _firstRedoCalled;
 };
 
+// The slope of the mean of the two tangent angles, so joining a 45-degree rise with a
+// flat run gives a 22.5-degree slope rather than splitting the difference in run/rise space.
+double joinedDerivative(double left, double right);
+
+class JoinTangentsCommand
+    : public CurveEditorCommand {
+    Q_DECLARE_TR_FUNCTIONS(JoinTangentsCommand)
+
+public:
+    JoinTangentsCommand(CurveWidget* widget,
+                        const SelectedKeys& keys,
+                        QUndoCommand* parent = 0);
+
+    virtual ~JoinTangentsCommand() OVERRIDE
+    {
+    }
+
+    virtual void getEditedCurves(std::list<CurveGuiPtr>* curves) const OVERRIDE FINAL;
+
+private:
+    virtual void undo() OVERRIDE FINAL;
+    virtual void redo() OVERRIDE FINAL;
+
+    void setNewDerivatives(bool undo);
+
+private:
+    struct JoinedTangentChange {
+        KeyPtr key;
+        KeyframeTypeEnum oldInterp;
+        double oldLeft;
+        double oldRight;
+        double joined;
+    };
+
+    std::list<JoinedTangentChange> _keys;
+    CurveWidget* _widget;
+};
+
 class TransformKeysCommand
-    : public QUndoCommand
-{
+    : public CurveEditorCommand {
 public:
 
     TransformKeysCommand(CurveWidget* widget,
@@ -360,6 +458,8 @@ public:
                          bool updateOnFirstRedo,
                          QUndoCommand *parent = 0);
     virtual ~TransformKeysCommand();
+
+    virtual void getEditedCurves(std::list<CurveGuiPtr>* curves) const OVERRIDE FINAL;
 
 private:
     virtual void undo() OVERRIDE FINAL;

@@ -332,13 +332,16 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutDescActionShowAll "Show All"
 
 #define kShortcutIDMousePickColor "pick"
-#define kShortcutDescMousePickColor "Pick a Color"
+#define kShortcutDescMousePickColor "Pick a Color from the viewed node's input"
 
-#define kShortcutIDMousePickInputColor "pickInput"
-#define kShortcutDescMousePickInputColor "Pick a Color from input of viewed node"
+#define kShortcutIDMousePickOutputColor "pickOutput"
+#define kShortcutDescMousePickOutputColor "Pick a Color from the viewed node's output"
 
 #define kShortcutIDMouseRectanglePick "rectanglePick"
-#define kShortcutDescMouseRectanglePick "Rectangle Color Picker"
+#define kShortcutDescMouseRectanglePick "Rectangle Color Picker on the viewed node's input"
+
+#define kShortcutIDMouseRectanglePickOutput "rectanglePickOutput"
+#define kShortcutDescMouseRectanglePickOutput "Rectangle Color Picker on the viewed node's output"
 
 #define kShortcutIDToggleWipe "toggleWipe"
 #define kShortcutDescToggleWipe "Toggle Wipe"
@@ -496,6 +499,18 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionGraphExpandGroup "expandGroup"
 #define kShortcutDescActionGraphExpandGroup "Expand Group"
 
+#define kShortcutIDActionGraphConnectSelectedToLast "connectSelectedToLast"
+#define kShortcutDescActionGraphConnectSelectedToLast "Connect Later-Selected Nodes into First Selected"
+
+#define kShortcutIDActionGraphConnectLastToSelected "connectLastToSelected"
+#define kShortcutDescActionGraphConnectLastToSelected "Connect Earlier-Selected Nodes into Last Selected"
+
+#define kShortcutIDActionGraphFeedFirstIntoLater "feedFirstIntoLater"
+#define kShortcutDescActionGraphFeedFirstIntoLater "Connect First Selected into Later-Selected Nodes"
+
+#define kShortcutIDActionGraphFeedLastIntoOthers "feedLastIntoOthers"
+#define kShortcutDescActionGraphFeedLastIntoOthers "Connect Last Selected into Other Selected Nodes"
+
 ///////////CURVEEDITOR SHORTCUTS
 #define kShortcutIDActionCurveEditorRemoveKeys "remove"
 #define kShortcutDescActionCurveEditorRemoveKeys "Delete Keyframes"
@@ -523,6 +538,8 @@ CLANG_DIAG_ON(uninitialized)
 
 #define kShortcutIDActionCurveEditorFree "free"
 #define kShortcutDescActionCurveEditorFree "Free Interpolation"
+#define kShortcutIDActionCurveEditorJoin "join"
+#define kShortcutDescActionCurveEditorJoin "Join"
 
 #define kShortcutIDActionCurveEditorSelectAll "selectAll"
 #define kShortcutDescActionCurveEditorSelectAll "Select All Keyframes"

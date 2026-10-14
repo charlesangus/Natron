@@ -258,6 +258,7 @@ DockablePanel::DockablePanel(Gui* gui,
         QObject::connect( _imp->_minimize, SIGNAL(toggled(bool)), this, SLOT(minimizeOrMaximize(bool)) );
 
         _imp->_floatButton = new Button(pixF, QString(), _imp->_headerWidget);
+        _imp->_floatButton->setObjectName(QString::fromUtf8("DockablePanelFloatButton"));
         _imp->_floatButton->setFixedSize(mediumBSize);
         _imp->_floatButton->setIconSize(mediumIconSize);
         _imp->_floatButton->setFocusPolicy(Qt::NoFocus);

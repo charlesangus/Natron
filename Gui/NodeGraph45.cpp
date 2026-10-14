@@ -162,6 +162,7 @@ NodeGraph::focusOutEvent(QFocusEvent* e)
         _imp->setNodesBendPointsVisible(false);
     }
     cancelSplice();
+    dropPickedUpArrow();
     QGraphicsView::focusOutEvent(e);
 }
 

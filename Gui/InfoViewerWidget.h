@@ -72,6 +72,12 @@ public:
     void setColor(float r, float g, float b, float a);
 
     /**
+     * @brief Marks the RGBA values as read from the viewed node's input ("in") or from its
+     * output ("out").
+     **/
+    void setColorSource(bool fromInput);
+
+    /**
      * @brief Shows the deep sample summary for the hovered pixel, with every sample listed in
      * the label's tooltip, the info bar being a single line. samples may be empty.
      **/
@@ -123,6 +129,7 @@ private:
     Label* resolution;
     Label* coordDispWindow;
     Label* coordMouse;
+    Label* colorSource;
     Label* rgbaValues;
     Label* color;
     Label* hvl_lastOption;

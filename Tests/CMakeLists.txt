@@ -73,6 +73,7 @@ set(Tests_SOURCES
     NativeParity.cpp
     NodeCategory_Test.cpp
     TabMenuSettings_Test.cpp
+    NodeColorSampler_Test.cpp
     OSGLContext_Test.cpp
     PersistentMessage_Test.cpp
     PluginIdentity_Test.cpp
@@ -97,6 +98,7 @@ set(Tests_SOURCES
     RenderScheduler_Test.cpp
     RenderSchedulerAbort_Test.cpp
     RenderSchedulerMode_Test.cpp
+    RotoFeatherDrag_Test.cpp
     RotoLayer_Test.cpp
     SchedulerEquivalence_Test.cpp
     SchedulerWriters_Test.cpp
@@ -161,8 +163,12 @@ set(GuiTests_SOURCES
     ColorTrackballHud_Test.cpp
     ColorTrackballTarget_Test.cpp
     ColorWheelWidget_Test.cpp
+    CurveTangentJoin_Test.cpp
+    EdgeNearbyGrab_Test.cpp
     KnobGuiString_Test.cpp
     LayerChannelRow_Test.cpp
+    NodeGraphConnect_Test.cpp
+    NodeGraphPickUp_Test.cpp
     NodeGraphSplice_Test.cpp
     NodeGuiUserColorSerialization_Test.cpp
     ProjectGuiXmlEquivalence_Test.cpp

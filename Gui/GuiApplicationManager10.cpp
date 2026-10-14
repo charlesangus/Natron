@@ -849,6 +849,8 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionMatteOverlay, kShortcutDescActionMatteOverlay, Qt::NoModifier, Qt::Key_M);
 
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionLuminanceA, kShortcutDescActionLuminanceA, Qt::ShiftModifier, Qt::Key_Y);
+    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFeedFirstIntoLater, kShortcutDescActionGraphFeedFirstIntoLater, Qt::NoModifier, Qt::Key_U);
+    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFeedLastIntoOthers, kShortcutDescActionGraphFeedLastIntoOthers, Qt::ShiftModifier, Qt::Key_U);
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionRedA, kShortcutDescActionRedA, Qt::ShiftModifier, Qt::Key_R);
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionGreenA, kShortcutDescActionGreenA, Qt::ShiftModifier, Qt::Key_G);
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionBlueA, kShortcutDescActionBlueA, Qt::ShiftModifier, Qt::Key_B);
@@ -899,8 +901,8 @@ GuiApplicationManager::populateShortcuts()
 
     registerMouseShortcut(kShortcutGroupViewer, kShortcutIDMousePickColor, kShortcutDescMousePickColor, Qt::ControlModifier, Qt::LeftButton);
     registerMouseShortcut(kShortcutGroupViewer, kShortcutIDMouseRectanglePick, kShortcutDescMouseRectanglePick, Qt::ShiftModifier | Qt::ControlModifier, Qt::LeftButton);
-    //registerMouseShortcut(kShortcutGroupViewer, kShortcutIDMousePickInputColor, kShortcutDescMousePickInputColor, Qt::ControlModifier | Qt::AltModifier, Qt::LeftButton);
-
+    registerMouseShortcut(kShortcutGroupViewer, kShortcutIDMousePickOutputColor, kShortcutDescMousePickOutputColor, Qt::ControlModifier | Qt::AltModifier, Qt::LeftButton);
+    registerMouseShortcut(kShortcutGroupViewer, kShortcutIDMouseRectanglePickOutput, kShortcutDescMouseRectanglePickOutput, Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier, Qt::LeftButton);
 
     ///Player
     registerKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevious, kShortcutDescActionPlayerPrevious, Qt::NoModifier, Qt::Key_Left);
@@ -953,6 +955,11 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphExpandGroup, kShortcutDescActionGraphExpandGroup, Qt::ControlModifier | Qt::AltModifier,
                     Qt::Key_G);
 
+    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphConnectSelectedToLast, kShortcutDescActionGraphConnectSelectedToLast, Qt::NoModifier, Qt::Key_Y);
+    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphConnectLastToSelected, kShortcutDescActionGraphConnectLastToSelected, Qt::ShiftModifier, Qt::Key_Y);
+    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFeedFirstIntoLater, kShortcutDescActionGraphFeedFirstIntoLater, Qt::NoModifier, Qt::Key_U);
+    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFeedLastIntoOthers, kShortcutDescActionGraphFeedLastIntoOthers, Qt::ShiftModifier, Qt::Key_U);
+
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphOpenNodePanel, kShortcutDescActionGraphOpenNodePanel, Qt::NoModifier, Qt::Key_Return);
 
 
@@ -966,6 +973,7 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorHorizontal, kShortcutDescActionCurveEditorHorizontal, Qt::NoModifier, Qt::Key_H);
     registerKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorBreak, kShortcutDescActionCurveEditorBreak, Qt::NoModifier, Qt::Key_X);
     registerKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorFree, kShortcutDescActionCurveEditorFree, Qt::NoModifier, (Qt::Key)0);
+    registerKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorJoin, kShortcutDescActionCurveEditorJoin, Qt::ShiftModifier, Qt::Key_X);
     registerKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorSelectAll, kShortcutDescActionCurveEditorSelectAll, Qt::ControlModifier, Qt::Key_A);
     registerKeybind(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorCenterAll, kShortcutDescActionCurveEditorCenterAll
                     , Qt::NoModifier, Qt::Key_A);

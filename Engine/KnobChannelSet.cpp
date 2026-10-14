@@ -109,17 +109,6 @@ KnobChannelSet::defaultRows()
     return rows;
 }
 
-std::vector<ChannelSetRow>
-KnobChannelSet::legacyColorDefaultRows()
-{
-    std::vector<ChannelSetRow> rows(1);
-
-    rows[0].mode = ChannelSetRow::eModeLayer;
-    rows[0].layerOrPattern = kNatronColorLayerID;
-
-    return rows;
-}
-
 static const char*
 modeToTag(ChannelSetRow::ModeEnum mode)
 {

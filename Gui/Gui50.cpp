@@ -523,9 +523,14 @@ Gui::keyPressEvent(QKeyEvent* e)
                 const_cast<DockablePanel*>(dock)->closePanel();
             }
         }
-    } else if ( (key == Qt::Key_V) && modCASIsControl(e) ) {
-        // CTRL +V should have been caught by the Nodegraph if it contained a valid Natron graph.
-        // We still try to check if it is a readable Python script
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphPaste, modifiers, key)) {
+        // The graph can hold the click focus without the keyboard focus (e.g. after a popup window
+        // closes), in which case it never saw this key press: offer it the paste first.
+        NodeGraph* focusedGraph = dynamic_cast<NodeGraph*>(_imp->currentPanelFocus);
+        if (focusedGraph && focusedGraph->pasteNodeClipBoards()) {
+            return;
+        }
+        // Not a Natron graph: fall back to interpreting the clipboard as a Python script.
         QClipboard* clipboard = QApplication::clipboard();
         const QMimeData* mimedata = clipboard->mimeData();
         if ( mimedata->hasFormat( QLatin1String("text/plain") ) ) {
@@ -548,89 +553,89 @@ Gui::keyPressEvent(QKeyEvent* e)
             QList<QUrl> urls = mimedata->urls();
             handleOpenFilesFromUrls( urls, QCursor::pos() );
         }
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevious, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevious, modifiers, key)) {
         if ( getNodeGraph()->getLastSelectedViewer() ) {
             getNodeGraph()->getLastSelectedViewer()->previousFrame();
         }
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerForward, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerForward, modifiers, key)) {
         if ( getNodeGraph()->getLastSelectedViewer() ) {
             getNodeGraph()->getLastSelectedViewer()->toggleStartForward();
         }
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerBackward, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerBackward, modifiers, key)) {
         if ( getNodeGraph()->getLastSelectedViewer() ) {
             getNodeGraph()->getLastSelectedViewer()->toggleStartBackward();
         }
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerStop, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerStop, modifiers, key)) {
         if ( getNodeGraph()->getLastSelectedViewer() ) {
             getNodeGraph()->getLastSelectedViewer()->abortRendering();
         }
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerNext, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerNext, modifiers, key)) {
         if ( getNodeGraph()->getLastSelectedViewer() ) {
             getNodeGraph()->getLastSelectedViewer()->nextFrame();
         }
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerFirst, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerFirst, modifiers, key)) {
         if ( getNodeGraph()->getLastSelectedViewer() ) {
             getNodeGraph()->getLastSelectedViewer()->firstFrame();
         }
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerLast, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerLast, modifiers, key)) {
         if ( getNodeGraph()->getLastSelectedViewer() ) {
             getNodeGraph()->getLastSelectedViewer()->lastFrame();
         }
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevIncr, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevIncr, modifiers, key)) {
         if ( getNodeGraph()->getLastSelectedViewer() ) {
             getNodeGraph()->getLastSelectedViewer()->previousIncrement();
         }
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerNextIncr, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerNextIncr, modifiers, key)) {
         if ( getNodeGraph()->getLastSelectedViewer() ) {
             getNodeGraph()->getLastSelectedViewer()->nextIncrement();
         }
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevKF, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevKF, modifiers, key)) {
         getApp()->goToPreviousKeyframe();
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerNextKF, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerNextKF, modifiers, key)) {
         getApp()->goToNextKeyframe();
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphDisableNodes, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphDisableNodes, modifiers, key)) {
         _imp->_nodeGraphArea->toggleSelectedNodesEnabled();
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFindNode, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFindNode, modifiers, key)) {
         _imp->_nodeGraphArea->popFindDialog();
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput1, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput1, modifiers, key)) {
         connectAInput(0);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput2, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput2, modifiers, key)) {
         connectAInput(1);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput3, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput3, modifiers, key)) {
         connectAInput(2);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput4, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput4, modifiers, key)) {
         connectAInput(3);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput5, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput5, modifiers, key)) {
         connectAInput(4);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput6, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput6, modifiers, key)) {
         connectAInput(5);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput7, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput7, modifiers, key)) {
         connectAInput(6);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput8, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput8, modifiers, key)) {
         connectAInput(7);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput9, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput9, modifiers, key)) {
         connectAInput(8);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput10, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput10, modifiers, key)) {
         connectAInput(9);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput1, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput1, modifiers, key)) {
         connectBInput(0);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput2, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput2, modifiers, key)) {
         connectBInput(1);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput3, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput3, modifiers, key)) {
         connectBInput(2);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput4, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput4, modifiers, key)) {
         connectBInput(3);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput5, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput5, modifiers, key)) {
         connectBInput(4);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput6, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput6, modifiers, key)) {
         connectBInput(5);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput7, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput7, modifiers, key)) {
         connectBInput(6);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput8, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput8, modifiers, key)) {
         connectBInput(7);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput9, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput9, modifiers, key)) {
         connectBInput(8);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput10, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput10, modifiers, key)) {
         connectBInput(9);
     } else {
         /*

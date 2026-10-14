@@ -361,24 +361,6 @@ protected:
     }
 };
 
-TEST_F(GoldenXmlTest, FixtureChannelSetLegacyDefaults)
-{
-    QTemporaryDir tmp;
-    ASSERT_TRUE(tmp.isValid());
-
-    ASSERT_NO_FATAL_FAILURE(assertFixtureProjectLoaded(std::string(NATRON_TESTS_FIXTURES_DIR "/channel-set-legacy-defaults.ntp"), tmp));
-    compareAgainstGolden("channel-set-legacy-defaults", tmp);
-}
-
-TEST_F(GoldenXmlTest, FixtureM65LegacyColor)
-{
-    QTemporaryDir tmp;
-    ASSERT_TRUE(tmp.isValid());
-
-    ASSERT_NO_FATAL_FAILURE(assertFixtureProjectLoaded(std::string(NATRON_TESTS_FIXTURES_DIR "/m65-legacy-color.ntp"), tmp));
-    compareAgainstGolden("m65-legacy-color", tmp);
-}
-
 TEST_F(GoldenXmlTest, FixtureReadTimeOffset)
 {
     QTemporaryDir tmp;

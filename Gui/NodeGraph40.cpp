@@ -26,9 +26,13 @@
 #include "NodeGraph.h"
 #include "NodeGraphPrivate.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <limits>
+#include <map>
 #include <sstream> // stringstream
 #include <stdexcept>
+#include <vector>
 
 #if !defined(Q_MOC_RUN) && !defined(SBK_RUN)
 GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_OFF
@@ -49,6 +53,8 @@ GCC_DIAG_ON(unused-parameter)
 #include <QClipboard>
 #include <QDebug>
 #include <QMimeData>
+#include <QStatusBar>
+#include <QStringList>
 #include <QThread>
 
 #include "Engine/Node.h"
@@ -59,10 +65,13 @@ GCC_DIAG_ON(unused-parameter)
 
 #include "Gui/BackdropGui.h"
 #include "Gui/CurveEditor.h"
+#include "Gui/Edge.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/NodeClipBoard.h"
+#include "Gui/NodeGraphConnect.h"
+#include "Gui/NodeGraphSplice.h"
 #include "Gui/NodeGui.h"
 
 #include "Global/QtCompat.h"
@@ -167,6 +176,145 @@ NodeGraph::cutSelectedNodes()
     deleteSelection();
 }
 
+static NodeGuiPtr
+findNodeGui(const NodesGuiList& nodes,
+            SpliceNodeId id)
+{
+    for (NodesGuiList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        if (reinterpret_cast<SpliceNodeId>((*it)->getNode().get()) == id) {
+            return *it;
+        }
+    }
+
+    return NodeGuiPtr();
+}
+
+static bool
+pasteOntoNode(NodeGraph* graph,
+              const NodesGuiList& selection,
+              const NodesGuiList& pasted)
+{
+    PasteSplicePlan plan = planPasteSpliceForSelection(selection, pasted);
+
+    if (!plan.valid) {
+        return false;
+    }
+
+    NodeGuiPtr targetGui = findNodeGui(selection, plan.targetId);
+    NodeGuiPtr entryGui = findNodeGui(pasted, plan.splice.entryId);
+    NodeGuiPtr exitGui = findNodeGui(pasted, plan.splice.exitId);
+    if (!targetGui || !entryGui || !exitGui) {
+        return false;
+    }
+
+    NodePtr targetNode = targetGui->getNode();
+    NodePtr entryNode = entryGui->getNode();
+    NodePtr exitNode = exitGui->getNode();
+
+    std::map<NodePtr, int> targetOutputs;
+    targetNode->getOutputsConnectedToThisNode(&targetOutputs);
+
+    std::vector<NodePtr> watchedNodes;
+    watchedNodes.push_back(entryNode);
+    for (std::map<NodePtr, int>::const_iterator it = targetOutputs.begin(); it != targetOutputs.end(); ++it) {
+        watchedNodes.push_back(it->first);
+    }
+    std::vector<std::vector<NodeWPtr>> inputsBefore;
+    for (std::size_t i = 0; i < watchedNodes.size(); ++i) {
+        inputsBefore.push_back(watchedNodes[i]->getGuiInputs());
+    }
+
+    // The outputs map holds one input per downstream node, so a node the target feeds through
+    // several inputs, such as both A and B of a Merge, needs every one of them found here.
+    std::map<NodePtr, std::vector<int>> targetUses;
+    for (std::size_t i = 1; i < watchedNodes.size(); ++i) {
+        const std::vector<NodeWPtr>& inputs = inputsBefore[i];
+        for (std::size_t j = 0; j < inputs.size(); ++j) {
+            if (inputs[j].lock() == targetNode) {
+                targetUses[watchedNodes[i]].push_back((int)j);
+            }
+        }
+    }
+
+    const QPointF entryPosBefore = entryGui->getPos_mt_safe();
+    graph->moveNodesForIdealPosition(entryGui, targetGui, true);
+    const QPointF delta = entryGui->getPos_mt_safe() - entryPosBefore;
+    for (NodesGuiList::const_iterator it = pasted.begin(); it != pasted.end(); ++it) {
+        if (*it == entryGui) {
+            continue;
+        }
+        const QPointF pos = (*it)->getPos_mt_safe();
+        (*it)->setPosition(pos.x() + delta.x(), pos.y() + delta.y());
+    }
+
+    // Node creation re-routes one input of each of the target's outputs to the node it placed,
+    // the entry, and leaves alone the outputs it chose not to splice; a node it re-routed has
+    // every input that took the target fed from the exit, where the pasted nodes' result comes out.
+    for (std::map<NodePtr, std::vector<int>>::const_iterator it = targetUses.begin(); it != targetUses.end(); ++it) {
+        const std::vector<NodeWPtr> inputs = it->first->getGuiInputs();
+        bool spliced = false;
+        for (std::size_t k = 0; k < it->second.size(); ++k) {
+            const int inputNb = it->second[k];
+            if ((inputNb < (int)inputs.size()) && (inputs[inputNb].lock() == entryNode)) {
+                spliced = true;
+            }
+        }
+        if (!spliced) {
+            continue;
+        }
+        for (std::size_t k = 0; k < it->second.size(); ++k) {
+            const int inputNb = it->second[k];
+            if (inputNb >= (int)inputs.size()) {
+                continue;
+            }
+            const NodePtr input = inputs[inputNb].lock();
+            if ((input == targetNode) || ((input == entryNode) && (entryNode != exitNode))) {
+                ignore_result(it->first->replaceInput(exitNode, inputNb));
+            }
+        }
+    }
+
+    if (entryGui != exitGui) {
+        QRectF pastedRect;
+        for (NodesGuiList::const_iterator it = pasted.begin(); it != pasted.end(); ++it) {
+            pastedRect |= (*it)->mapToScene((*it)->boundingRect()).boundingRect();
+        }
+        for (std::map<NodePtr, int>::const_iterator it = targetOutputs.begin(); it != targetOutputs.end(); ++it) {
+            NodeGuiIPtr outputGuiI = it->first->getNodeGui();
+            NodeGui* outputGui = dynamic_cast<NodeGui*>(outputGuiI.get());
+            if (outputGui) {
+                outputGui->moveBelowPositionRecursively(pastedRect);
+            }
+        }
+    }
+
+    std::vector<ReconnectInputsCommand::InputChange> changes;
+    for (std::size_t i = 0; i < watchedNodes.size(); ++i) {
+        const std::vector<NodeWPtr>& before = inputsBefore[i];
+        const std::vector<NodeWPtr>& after = watchedNodes[i]->getGuiInputs();
+        const std::size_t nInputs = std::max(before.size(), after.size());
+        for (std::size_t j = 0; j < nInputs; ++j) {
+            NodePtr beforeInput = (j < before.size()) ? before[j].lock() : NodePtr();
+            NodePtr afterInput = (j < after.size()) ? after[j].lock() : NodePtr();
+            if (beforeInput != afterInput) {
+                ReconnectInputsCommand::InputChange change;
+                change.node = watchedNodes[i];
+                change.inputNb = (int)j;
+                change.before = beforeInput;
+                change.after = afterInput;
+                changes.push_back(change);
+            }
+        }
+    }
+
+    QUndoCommand* pasteCommand = new QUndoCommand(NodeGraph::tr("Paste node(s)"));
+    new AddMultipleNodesCommand(graph, pasted, pasteCommand);
+    new ReconnectInputsCommand(graph, changes, pasteCommand);
+    graph->pushUndoCommand(pasteCommand);
+
+    return true;
+} // pasteOntoNode
+
 void
 NodeGraph::pasteCliboard(const NodeClipBoard& clipboard,
                          std::list<std::pair<std::string, NodeGuiPtr> >* newNodes)
@@ -197,10 +345,28 @@ NodeGraph::pasteNodeClipBoards(const QPointF& pos)
         return false;
     }
 
-    _imp->pasteNodesInternal(cb, _imp->_root->mapFromScene(pos), true, &newNodes);
+    const NodesGuiList selectionBeforePaste = _imp->_selection;
+    if (selectionBeforePaste.empty()) {
+        _imp->pasteNodesInternal(cb, _imp->_root->mapFromScene(pos), true, &newNodes);
+
+        return true;
+    }
+
+    _imp->pasteNodesInternal(cb, _imp->_root->mapFromScene(pos), false, &newNodes);
+    if (newNodes.empty() || (newNodes.size() != cb.nodes.size())) {
+        return true;
+    }
+
+    NodesGuiList pastedNodes;
+    for (std::list<std::pair<std::string, NodeGuiPtr>>::const_iterator it = newNodes.begin(); it != newNodes.end(); ++it) {
+        pastedNodes.push_back(it->second);
+    }
+    if (!pasteOntoNode(this, selectionBeforePaste, pastedNodes)) {
+        pushUndoCommand(new AddMultipleNodesCommand(this, pastedNodes));
+    }
 
     return true;
-}
+} // pasteNodeClipBoards
 
 bool
 NodeGraph::pasteNodeClipBoards()
@@ -487,5 +653,108 @@ NodeGraph::centerOnAllNodes()
     _imp->_refreshOverlays = true;
     update();
 } // NodeGraph::centerOnAllNodes
+
+static QString
+briefConnectFailureReason(Node::CanConnectInputReturnValue ret)
+{
+    switch (ret) {
+    case Node::eCanConnectInput_graphCycles:
+        return QCoreApplication::translate("NodeGraph", "would create a cycle");
+    case Node::eCanConnectInput_groupHasNoOutput:
+        return QCoreApplication::translate("NodeGraph", "the group has no output");
+    case Node::eCanConnectInput_differentPars:
+        return QCoreApplication::translate("NodeGraph", "different pixel aspect ratios");
+    case Node::eCanConnectInput_differentFPS:
+        return QCoreApplication::translate("NodeGraph", "different frame rates");
+    case Node::eCanConnectInput_multiResNotSupported:
+        return QCoreApplication::translate("NodeGraph", "multi-resolution isn't supported");
+    case Node::eCanConnectInput_incompatibleDataKind:
+        return QCoreApplication::translate("NodeGraph", "incompatible data kind");
+    case Node::eCanConnectInput_givenNodeNotConnectable:
+        return QCoreApplication::translate("NodeGraph", "it can't be connected to");
+    case Node::eCanConnectInput_indexOutOfRange:
+    case Node::eCanConnectInput_inputAlreadyConnected:
+    case Node::eCanConnectInput_ok:
+        break;
+    }
+
+    return QCoreApplication::translate("NodeGraph", "the connection was rejected");
+}
+
+void
+NodeGraph::applyConnectPlan(const std::vector<ConnectPlanConnection>& plan,
+                            const QString& undoText)
+{
+    QStringList skipped;
+    QUndoCommand* parentCommand = new QUndoCommand(undoText);
+
+    for (std::size_t i = 0; i < plan.size(); ++i) {
+        const ConnectPlanConnection& entry = plan[i];
+        NodePtr srcNode = entry.source ? entry.source->getNode() : NodePtr();
+        NodePtr dstNode = entry.dest ? entry.dest->getNode() : NodePtr();
+        if (!srcNode || !dstNode) {
+            continue;
+        }
+
+        Node::CanConnectInputReturnValue ret = dstNode->canConnectInput(srcNode, entry.destInput);
+        if (ret != Node::eCanConnectInput_ok) {
+            skipped << tr("%1 to %2's input %3 (%4)")
+                           .arg(QString::fromUtf8(srcNode->getLabel().c_str()))
+                           .arg(QString::fromUtf8(dstNode->getLabel().c_str()))
+                           .arg(entry.destInput + 1)
+                           .arg(briefConnectFailureReason(ret));
+            continue;
+        }
+
+        Edge* edge = entry.dest->getInputArrow(entry.destInput);
+        assert(edge);
+        if (!edge) {
+            continue;
+        }
+        new ConnectCommand(this, edge, edge->getSource(), entry.source, parentCommand);
+    }
+
+    if (parentCommand->childCount() > 0) {
+        pushUndoCommand(parentCommand);
+    } else {
+        delete parentCommand;
+    }
+
+    if (!skipped.isEmpty()) {
+        getGui()->statusBar()->showMessage(tr("Skipped: %1").arg(skipped.join(QLatin1String("; "))), 5000);
+    }
+} // NodeGraph::applyConnectPlan
+
+void
+NodeGraph::connectLaterSelectedNodesIntoFirstSelected()
+{
+    std::vector<ConnectPlanConnection> plan = planFeedFirstSelectedForSelection(_imp->_selection);
+
+    applyConnectPlan(plan, tr("Connect Later-Selected Nodes into First Selected"));
+}
+
+void
+NodeGraph::connectEarlierSelectedNodesIntoLastSelected()
+{
+    std::vector<ConnectPlanConnection> plan = planFeedLastSelectedForSelection(_imp->_selection);
+
+    applyConnectPlan(plan, tr("Connect Earlier-Selected Nodes into Last Selected"));
+}
+
+void
+NodeGraph::connectFirstSelectedIntoLaterSelectedNodes()
+{
+    std::vector<ConnectPlanConnection> plan = planFeedFirstSelectedIntoLaterForSelection(_imp->_selection);
+
+    applyConnectPlan(plan, tr("Connect First Selected into Later-Selected Nodes"));
+}
+
+void
+NodeGraph::connectLastSelectedIntoOtherSelectedNodes()
+{
+    std::vector<ConnectPlanConnection> plan = planFeedLastSelectedIntoOthersForSelection(_imp->_selection);
+
+    applyConnectPlan(plan, tr("Connect Last Selected into Other Selected Nodes"));
+}
 
 NATRON_NAMESPACE_EXIT

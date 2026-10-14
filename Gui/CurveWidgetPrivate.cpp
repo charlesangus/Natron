@@ -94,6 +94,7 @@ CurveWidgetPrivate::CurveWidgetPrivate(Gui* gui,
     , _timeline(timeline)
     , _timelineEnabled(bool(timeline))
     , _selectedDerivative()
+    , _tangentDragForceBreak(false)
     , _evaluateOnPenUp(false)
     , _keyDragLastMovement()
     , _undoStack(new QUndoStack)
@@ -256,6 +257,11 @@ CurveWidgetPrivate::createMenu()
                                                  kShortcutDescActionCurveEditorFree, interpMenu);
     QObject::connect(freeInterp, SIGNAL(triggered()), _widget, SLOT(freeInterpForSelectedKeyFrames()));
     interpMenu->addAction(freeInterp);
+    QAction* joinTangents = new ActionWithShortcut(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorJoin,
+                                                   kShortcutDescActionCurveEditorJoin, interpMenu);
+    joinTangents->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_X));
+    QObject::connect(joinTangents, SIGNAL(triggered()), _widget, SLOT(joinTangentsForSelectedKeyFrames()));
+    interpMenu->addAction(joinTangents);
 
     QAction* frameAll = new ActionWithShortcut(kShortcutGroupCurveEditor, kShortcutIDActionCurveEditorCenterAll,
                                                kShortcutDescActionCurveEditorCenterAll, interpMenu);
@@ -1461,7 +1467,7 @@ CurveWidgetPrivate::moveSelectedTangent(const QPointF & pos)
     ///to modifying the keyframe, and set it back to its original value afterwards.
     bool updateOnPenUpOnly = appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
 
-    _widget->pushUndoCommand( new MoveTangentCommand(_widget, _selectedDerivative.first, key, dx, dy, !updateOnPenUpOnly) );
+    _widget->pushUndoCommand(new MoveTangentCommand(_widget, _selectedDerivative.first, key, dx, dy, !updateOnPenUpOnly, _tangentDragForceBreak));
 } // moveSelectedTangent
 
 void

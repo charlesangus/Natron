@@ -116,8 +116,6 @@ public:
 
     double getUnreachableRamPercent() const;
 
-    bool getColorPickerLinear() const;
-
     int getNumberOfThreads() const;
 
     void setNumberOfThreads(int threadsNb);
@@ -506,7 +504,6 @@ private:
 
     KnobBoolPtr _filedialogForWriters;
     KnobBoolPtr _renderOnEditingFinished;
-    KnobBoolPtr _linearPickers;
     KnobIntPtr _maxPanelsOpened;
     KnobBoolPtr _useCursorPositionIncrements;
     KnobFilePtr _defaultLayoutFile;

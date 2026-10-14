@@ -34,12 +34,13 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
-#include <QSize>
 #include <QCoreApplication>
-#include <QMutex>
-#include <QWaitCondition>
-#include <QToolBar>
 #include <QMessageBox>
+#include <QMutex>
+#include <QPointer>
+#include <QSize>
+#include <QToolBar>
+#include <QWaitCondition>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -75,8 +76,8 @@ public:
     bool _lastStopAskingAnswer;
 
     ///ptrs to the undo/redo actions from the active stack.
-    QAction* _currentUndoAction;
-    QAction* _currentRedoAction;
+    QPointer<QAction> _currentUndoAction;
+    QPointer<QAction> _currentRedoAction;
 
     ///all the undo stacks of Natron are gathered here
     QUndoGroup* _undoStacksGroup;

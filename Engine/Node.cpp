@@ -77,7 +77,6 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobLayerSelect.h"
-#include "Engine/KnobLoadCompat.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/LibraryBinary.h"
 #include "Engine/Log.h"
@@ -1426,166 +1425,6 @@ Node::refreshDataKindConflictMessage()
     }
 } // refreshDataKindConflictMessage
 
-static bool
-isLayerKnob(const KnobI* knob)
-{
-    return dynamic_cast<const KnobChannelSet*>(knob) || dynamic_cast<const KnobLayerSelect*>(knob) || dynamic_cast<const KnobChannelSelect*>(knob);
-}
-
-static bool
-rewriteLegacyColorRows(std::vector<ChannelSetRow>* rows)
-{
-    bool changed = false;
-    int rgbaRow = -1;
-
-    for (std::size_t i = 0; i < rows->size(); ++i) {
-        if ((*rows)[i].mode == ChannelSetRow::eModeLayer && (*rows)[i].layerOrPattern == kNatronColorViewRGBA) {
-            rgbaRow = (int)i;
-            break;
-        }
-    }
-    for (std::size_t i = 0; i < rows->size();) {
-        ChannelSetRow& row = (*rows)[i];
-        if (row.mode != ChannelSetRow::eModeLayer || row.layerOrPattern != kNatronColorLayerID) {
-            ++i;
-            continue;
-        }
-        changed = true;
-        if (rgbaRow == -1) {
-            row.layerOrPattern = kNatronColorViewRGBA;
-            rgbaRow = (int)i;
-            ++i;
-            continue;
-        }
-
-        // A channel set holds one row per layer, so a row that already names rgba absorbs the
-        // old one. An empty channel list means every channel, which absorbs any other list.
-        std::vector<std::string>& merged = (*rows)[rgbaRow].channels;
-        if (row.channels.empty()) {
-            merged.clear();
-        } else if (!merged.empty()) {
-            for (std::size_t c = 0; c < row.channels.size(); ++c) {
-                if (std::find(merged.begin(), merged.end(), row.channels[c]) == merged.end()) {
-                    merged.push_back(row.channels[c]);
-                }
-            }
-        }
-        rows->erase(rows->begin() + i);
-        if (rgbaRow > (int)i) {
-            --rgbaRow;
-        }
-    }
-
-    return changed;
-}
-
-// Rewrites a raw layer-knob value naming the retired colour storage ID so it names the rgba
-// view instead, channels unchanged. Returns false, leaving *rewritten alone, when there is
-// nothing to rewrite.
-static bool
-rewriteLegacyColorValue(KnobI* knob,
-                        const std::string& raw,
-                        std::string* rewritten)
-{
-    if (raw.empty() || (raw.find(kNatronColorLayerID) == std::string::npos)) {
-        return false;
-    }
-
-    if (KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(knob)) {
-        std::vector<ChannelSetRow> rows = isChannelSet->decodeRows(raw);
-        if (!rewriteLegacyColorRows(&rows)) {
-            return false;
-        }
-        *rewritten = isChannelSet->encodeRows(rows);
-
-        return true;
-    }
-
-    KnobTable* isTable = 0;
-    if (dynamic_cast<KnobLayerSelect*>(knob) || dynamic_cast<KnobChannelSelect*>(knob)) {
-        isTable = dynamic_cast<KnobTable*>(knob);
-    }
-    if (!isTable) {
-        return false;
-    }
-
-    std::list<std::vector<std::string>> table;
-    isTable->decodeFromKnobTableFormat(raw, &table);
-    if (table.empty() || table.front().empty()) {
-        return false;
-    }
-
-    std::string& cell = table.front()[0];
-    const std::string storageID(kNatronColorLayerID);
-    if (cell == storageID) {
-        cell = kNatronColorViewRGBA;
-    } else if ((cell.size() > storageID.size()) && (cell.compare(0, storageID.size(), storageID) == 0) && (cell[storageID.size()] == '.')) {
-        cell = std::string(kNatronColorViewRGBA) + cell.substr(storageID.size());
-    } else {
-        return false;
-    }
-    *rewritten = isTable->encodeToKnobTableFormat(table);
-
-    return true;
-}
-
-bool
-Node::resetLegacyColorLayerKnobs(const std::map<const KnobI*, std::string>& liveDefaults)
-{
-    bool valueChanged = false;
-    const KnobsVec& knobs = getKnobs();
-
-    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-        if (!isLayerKnob(it->get())) {
-            continue;
-        }
-        KnobStringBase* isString = dynamic_cast<KnobStringBase*>(it->get());
-        if (!isString) {
-            continue;
-        }
-
-        std::string rewritten;
-        if (rewriteLegacyColorValue(it->get(), isString->getDefaultValue(0), &rewritten)) {
-            // The file's saved default, or the pre-v17 gate's, names the retired ID; "Reset to
-            // default" must land on the knob's own default instead.
-            std::map<const KnobI*, std::string>::const_iterator live = liveDefaults.find(it->get());
-            std::string unused;
-            if ((live != liveDefaults.end()) && !rewriteLegacyColorValue(it->get(), live->second, &unused)) {
-                rewritten = live->second;
-            }
-            isString->setDefaultValueWithoutApplying(rewritten, 0);
-        }
-
-        if (rewriteLegacyColorValue(it->get(), isString->getValue(), &rewritten)) {
-            isString->setValue(rewritten, ViewSpec::all(), 0, eValueChangedReasonNatronInternalEdited, NULL);
-            valueChanged = true;
-        }
-    }
-
-    return valueChanged;
-}
-
-void
-Node::postPendingLegacyColorLayerWarning()
-{
-    if (!_imp->legacyColorLayerWarningPending) {
-        return;
-    }
-    _imp->legacyColorLayerWarningPending = false;
-    const std::string warning = tr("Colour layer from an older project was reset to rgba").toStdString();
-    setPersistentMessage(eMessageTypeWarning, warning);
-    markPersistentMessageFromProjectLoad(warning);
-}
-
-void
-Node::markPersistentMessageFromProjectLoad(const std::string& content)
-{
-    QMutexLocker k(&_imp->persistentMessageMutex);
-    if (_imp->persistentMessage == QString::fromUtf8(content.c_str())) {
-        _imp->persistentMessageFromProjectLoad = true;
-    }
-}
-
 void
 Node::fromSerialization(const Serialization::NodeSerialization& serialization,
                         bool updateKnobGui)
@@ -1596,37 +1435,9 @@ Node::fromSerialization(const Serialization::NodeSerialization& serialization,
 
     const std::vector<KnobIPtr> & nodeKnobs = getKnobs();
 
-    // Loading overwrites each knob's default with the one saved in the file.
-    std::map<const KnobI*, std::string> liveLayerDefaults;
-    for (U32 j = 0; j < nodeKnobs.size(); ++j) {
-        KnobStringBase* isString = dynamic_cast<KnobStringBase*>(nodeKnobs[j].get());
-        if (isString && isLayerKnob(nodeKnobs[j].get())) {
-            liveLayerDefaults[nodeKnobs[j].get()] = isString->getDefaultValue(0);
-        }
-    }
-
     ///for all knobs of the node
     for (U32 j = 0; j < nodeKnobs.size(); ++j) {
         loadKnob(nodeKnobs[j], serialization, updateKnobGui);
-    }
-
-    // Older files saved the channel set only when it differed from its default, and back then
-    // every node defaulted to the Color layer: an absent value means Color, not today's "All".
-    if ((serialization.version < NATRON_SERIALIZATION_NODE_ALWAYS_SAVES_CHANNEL_SET) && _imp->effect->defaultProcessesAllLayers()) {
-        KnobChannelSetPtr channelSet = std::dynamic_pointer_cast<KnobChannelSet>(_imp->layerKnob.lock());
-        if (channelSet && !_imp->legacyChannelSetDefault.empty()) {
-            bool saved = false;
-            const std::list<Serialization::KnobSerialization>& knobsValues = serialization.knobs;
-            for (std::list<Serialization::KnobSerialization>::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
-                if (NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) == channelSet->getName()) {
-                    saved = true;
-                    break;
-                }
-            }
-            if (!saved) {
-                channelSet->setDefaultValue(_imp->legacyChannelSetDefault);
-            }
-        }
     }
 
     ///now restore the roto context if the node has a roto context
@@ -1642,15 +1453,6 @@ Node::fromSerialization(const Serialization::NodeSerialization& serialization,
 
     if (OfxEffectInstance* isOfxEffect = dynamic_cast<OfxEffectInstance*>(_imp->effect.get())) {
         isOfxEffect->syncMultiplaneTwinsAfterLoad();
-    }
-
-    // Only the rgba, rgb, alpha and xy views are valid layer values now; the colour storage ID
-    // resolves to nothing, so an old value naming it would silently process no colour at all.
-    if (resetLegacyColorLayerKnobs(liveLayerDefaults)) {
-        _imp->legacyColorLayerWarningPending = true;
-        if (_imp->nodeCreated) {
-            postPendingLegacyColorLayerWarning();
-        }
     }
 
     setKnobsAge(serialization.knobsAge);
@@ -1704,59 +1506,15 @@ Node::loadKnob(const KnobIPtr& knob,
 
     const std::list<Serialization::KnobSerialization>& knobsValues = serialization.knobs;
 
-    ///try to find a serialized value for this knob
-    const ProjectBeingLoadedInfo projectInfos = getApp()->getProjectBeingLoadedInfo();
-
-    std::string pluginID = getPluginID();
-
-    KnobChoice* isChoice = dynamic_cast<KnobChoice*>( knob.get() );
-    if (isChoice) {
-
-        if (projectInfos.vMajor == 2 && projectInfos.vMinor < 3) {
-            // Before Natron 2.2.3, all dynamic choice parameters for multiplane had a string parameter.
-            // The string parameter had the same name as the choice parameter plus "Choice" appended.
-            // If we found such a parameter, retrieve the string from it.
-            std::string stringParamName = isChoice->getName() + "Choice";
-            for (std::list<Serialization::KnobSerialization>::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
-                if (NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) == stringParamName) {
-                    KnobStringPtr stringKnob = std::dynamic_pointer_cast<KnobString>(createDetachedKnobFromSerialization(*it));
-                    if (stringKnob) {
-                        std::string serializedString = stringKnob->getValue();
-                        if (it->version < NATRON_SERIALIZATION_KNOB_CHANGE_LAYERS_SERIALIZATION) {
-                            filterKnobChoiceOptionCompat(getPluginID(), getMajorVersion(), getMinorVersion(), projectInfos.vMajor, projectInfos.vMinor, projectInfos.vRev, isChoice->getName(), &serializedString);
-                        }
-                        isChoice->setActiveEntry(ChoiceOption(serializedString));
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
     for (std::list<Serialization::KnobSerialization>::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
 
-        std::string serializedName = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name);
-        bool foundMatch = false;
-        if (serializedName == knob->getName()) {
-            foundMatch = true;
-        } else {
-            if (filterKnobNameCompat(getPluginID(), getMajorVersion(), getMinorVersion(), projectInfos.vMajor, projectInfos.vMinor, projectInfos.vRev, &serializedName)) {
-                if (serializedName == knob->getName()) {
-                    foundMatch = true;
-                }
-            }
-
-        }
-        if (!foundMatch) {
+        if (NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) != knob->getName()) {
             continue;
         }
 
         // Non persistent knobs are loaded too when the project saved a value for them.
         // A knob might change its type between versions: fromSerialization() then loads nothing.
-        const KnobI::ChoiceOptionIDFilter choiceOptionIDFilter = [this, &serialization, &projectInfos, &serializedName](std::string* optionID) {
-            filterKnobChoiceOptionCompat(getPluginID(), serialization.pluginMajorVersion, serialization.pluginMinorVersion, projectInfos.vMajor, projectInfos.vMinor, projectInfos.vRev, serializedName, optionID);
-        };
-        if (!knob->fromSerialization(*it, choiceOptionIDFilter)) {
+        if (!knob->fromSerialization(*it)) {
             continue;
         }
 
@@ -2774,9 +2532,6 @@ Node::adoptChannelQuad()
     KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(layerKnob.get());
     const bool defaultsToAll = isChannelSet && _imp->effect->defaultProcessesAllLayers();
 
-    if (isChannelSet) {
-        _imp->legacyChannelSetDefault = isChannelSet->encodeRows(KnobChannelSet::legacyColorDefaultRows());
-    }
     if (defaultsToAll) {
         std::vector<ChannelSetRow> allRows(1);
         allRows[0].mode = ChannelSetRow::eModeAll;
@@ -2833,18 +2588,12 @@ Node::adoptChannelQuad()
     // already matches, so there is nothing to seed on it.
     if (enabledChannels.size() != 4) {
         if (isChannelSet) {
-            // The legacy default names the colour storage ID so that an old project it lands on
-            // is recognised and rewritten with a warning on load; the live default names the view.
-            std::vector<ChannelSetRow> legacyRows = KnobChannelSet::legacyColorDefaultRows();
             std::vector<ChannelSetRow> rows = KnobChannelSet::defaultRows();
             if (enabledChannels.empty()) {
-                legacyRows[0].mode = ChannelSetRow::eModeNone;
                 rows[0].mode = ChannelSetRow::eModeNone;
             } else {
-                legacyRows[0].channels = enabledChannels;
                 rows[0].channels = enabledChannels;
             }
-            _imp->legacyChannelSetDefault = isChannelSet->encodeRows(legacyRows);
             if (!defaultsToAll) {
                 isChannelSet->setDefaultValue(isChannelSet->encodeRows(rows));
             }
@@ -4643,7 +4392,6 @@ Node::storePersistentMessage(MessageTypeEnum type,
         return false;
     }
     setChannelSelectorOwnership(fromChannelSelector);
-    _imp->persistentMessageFromProjectLoad = false;
     _imp->nanWarningHash = 0;
     _imp->persistentMessageRenderSequence = fromChannelSelector ? renderSequence : 0;
     _imp->persistentMessageType = (int)type;
@@ -4750,7 +4498,6 @@ Node::clearPersistentMessageInternal()
     {
         QMutexLocker k(&_imp->persistentMessageMutex);
         setChannelSelectorOwnership(false);
-        _imp->persistentMessageFromProjectLoad = false;
         _imp->nanWarningHash = 0;
         _imp->persistentMessageRenderSequence = 0;
         changed = !_imp->persistentMessage.isEmpty();
@@ -4875,7 +4622,7 @@ Node::clearPersistentMessageForPreview()
     bool changed = false;
     {
         QMutexLocker k(&_imp->persistentMessageMutex);
-        if (!_imp->persistentMessageFromChannelSelector && !_imp->persistentMessageFromProjectLoad) {
+        if (!_imp->persistentMessageFromChannelSelector) {
             changed = !_imp->persistentMessage.isEmpty();
             _imp->persistentMessage.clear();
         }

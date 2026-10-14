@@ -443,6 +443,10 @@ struct KnobHelperPrivate
 
     ///Pointer to the knobGui interface if it has any
     KnobGuiIWPtr gui;
+
+    // Outlives the knob GUI, which a panel destroys and rebuilds whenever it recreates its knobs.
+    bool dimensionsUnfoldedInGui;
+    bool hasDimensionsFoldState;
     mutable QMutex mustCloneGuiCurvesMutex;
     /// Set to true if gui curves were modified by the user instead of the real internal curves.
     /// If true then when finished rendering, the knob should clone the guiCurves into the internal curves.
@@ -522,6 +526,8 @@ struct KnobHelperPrivate
         , userKnob(false)
         , customInteract()
         , gui()
+        , dimensionsUnfoldedInGui(false)
+        , hasDimensionsFoldState(false)
         , mustCloneGuiCurvesMutex()
         , mustCloneGuiCurves()
         , mustCloneInternalCurves()
@@ -701,6 +707,35 @@ KnobHelper::getAllDimensionVisible() const
     }
 
     return true;
+}
+
+void
+KnobHelper::setDimensionsUnfoldedInGui(bool unfolded)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    _imp->dimensionsUnfoldedInGui = unfolded;
+    _imp->hasDimensionsFoldState = true;
+}
+
+bool
+KnobHelper::getDimensionsUnfoldedInGui() const
+{
+    return _imp->dimensionsUnfoldedInGui;
+}
+
+bool
+KnobHelper::hasDimensionsFoldState() const
+{
+    return _imp->hasDimensionsFoldState;
+}
+
+void
+KnobHelper::restoreDimensionsUnfoldedInGui(bool unfolded)
+{
+    setDimensionsUnfoldedInGui(unfolded);
+    if (_signalSlotHandler) {
+        _signalSlotHandler->s_dimensionsFoldStateRestored();
+    }
 }
 
 #ifdef DEBUG

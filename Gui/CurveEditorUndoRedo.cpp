@@ -34,8 +34,9 @@
 
 #include "Gui/CurveEditor.h"
 #include "Gui/CurveGui.h"
-#include "Gui/KnobGui.h"
 #include "Gui/CurveWidget.h"
+#include "Gui/KnobGui.h"
+#include "Gui/KnobGuiValue.h"
 
 #include "Engine/Bezier.h"
 #include "Engine/Knob.h"
@@ -48,20 +49,20 @@
 NATRON_NAMESPACE_ENTER
 
 //////////////////////////////ADD MULTIPLE KEYS COMMAND//////////////////////////////////////////////
-AddKeysCommand::AddKeysCommand(CurveWidget *editor,
-                               const KeysToAddList & keys,
-                               QUndoCommand *parent)
-    : QUndoCommand(parent)
+AddKeysCommand::AddKeysCommand(CurveWidget* editor,
+                               const KeysToAddList& keys,
+                               QUndoCommand* parent)
+    : CurveEditorCommand(parent)
     , _keys(keys)
     , _curveWidget(editor)
 {
 }
 
-AddKeysCommand::AddKeysCommand(CurveWidget *editor,
+AddKeysCommand::AddKeysCommand(CurveWidget* editor,
                                const CurveGuiPtr& curve,
-                               const std::vector<KeyFrame> & keys,
-                               QUndoCommand *parent)
-    : QUndoCommand(parent)
+                               const std::vector<KeyFrame>& keys,
+                               QUndoCommand* parent)
+    : CurveEditorCommand(parent)
     , _keys()
     , _curveWidget(editor)
 {
@@ -199,6 +200,14 @@ AddKeysCommand::redo()
     addOrRemoveKeyframe(false, true);
 }
 
+void
+AddKeysCommand::getEditedCurves(std::list<CurveGuiPtr>* curves) const
+{
+    for (KeysToAddList::const_iterator it = _keys.begin(); it != _keys.end(); ++it) {
+        curves->push_back(it->curveUI);
+    }
+}
+
 SetKeysCommand::SetKeysCommand(CurveWidget *editor,
                                const AddKeysCommand::KeysToAddList & keys,
                                QUndoCommand *parent)
@@ -247,9 +256,9 @@ SetKeysCommand::redo()
 
 //////////////////////////////REMOVE  MULTIPLE KEYS COMMAND//////////////////////////////////////////////
 RemoveKeysCommand::RemoveKeysCommand(CurveWidget* editor,
-                                     const std::map<CurveGuiPtr, std::vector<KeyFrame> > & keys,
-                                     QUndoCommand *parent )
-    : QUndoCommand(parent)
+                                     const std::map<CurveGuiPtr, std::vector<KeyFrame>>& keys,
+                                     QUndoCommand* parent)
+    : CurveEditorCommand(parent)
     , _keys(keys)
     , _curveWidget(editor)
 {
@@ -362,14 +371,22 @@ RemoveKeysCommand::redo()
     addOrRemoveKeyframe(false);
 }
 
+void
+RemoveKeysCommand::getEditedCurves(std::list<CurveGuiPtr>* curves) const
+{
+    for (std::map<CurveGuiPtr, std::vector<KeyFrame>>::const_iterator it = _keys.begin(); it != _keys.end(); ++it) {
+        curves->push_back(it->first);
+    }
+}
+
 //////////////////////////////MOVE MULTIPLE KEYS COMMAND//////////////////////////////////////////////
 MoveKeysCommand::MoveKeysCommand(CurveWidget* widget,
-                                 const std::map<CurveGuiPtr, std::vector<MoveKeysCommand::KeyToMove> > &keys,
+                                 const std::map<CurveGuiPtr, std::vector<MoveKeysCommand::KeyToMove>>& keys,
                                  double dt,
                                  double dv,
                                  bool updateOnFirstRedo,
-                                 QUndoCommand *parent )
-    : QUndoCommand(parent)
+                                 QUndoCommand* parent)
+    : CurveEditorCommand(parent)
     , _firstRedoCalled(false)
     , _updateOnFirstRedo(updateOnFirstRedo)
     , _dt(dt)
@@ -536,11 +553,19 @@ MoveKeysCommand::id() const
     return kCurveEditorMoveMultipleKeysCommandCompressionID;
 }
 
+void
+MoveKeysCommand::getEditedCurves(std::list<CurveGuiPtr>* curves) const
+{
+    for (std::map<CurveGuiPtr, std::vector<MoveKeysCommand::KeyToMove>>::const_iterator it = _keys.begin(); it != _keys.end(); ++it) {
+        curves->push_back(it->first);
+    }
+}
+
 //////////////////////////////SET MULTIPLE KEYS INTERPOLATION COMMAND//////////////////////////////////////////////
 SetKeysInterpolationCommand::SetKeysInterpolationCommand(CurveWidget* widget,
-                                                         const std::list<KeyInterpolationChange > & keys,
-                                                         QUndoCommand *parent)
-    : QUndoCommand(parent)
+                                                         const std::list<KeyInterpolationChange>& keys,
+                                                         QUndoCommand* parent)
+    : CurveEditorCommand(parent)
     , _keys(keys)
     , _widget(widget)
 {
@@ -628,22 +653,31 @@ SetKeysInterpolationCommand::redo()
     setNewInterpolation(false);
 }
 
+void
+SetKeysInterpolationCommand::getEditedCurves(std::list<CurveGuiPtr>* curves) const
+{
+    for (std::list<KeyInterpolationChange>::const_iterator it = _keys.begin(); it != _keys.end(); ++it) {
+        curves->push_back(it->key->curve);
+    }
+}
+
 /////////////////////////// MoveTangentCommand
 
 MoveTangentCommand::MoveTangentCommand(CurveWidget* widget,
                                        SelectedTangentEnum deriv,
                                        const KeyPtr& key,
                                        double dx,
-                                       double dy,           //< dx dy relative to the center of the keyframe
+                                       double dy, //< dx dy relative to the center of the keyframe
                                        bool updateOnFirstRedo,
-                                       QUndoCommand *parent)
-    : QUndoCommand(parent)
+                                       bool forceBreak,
+                                       QUndoCommand* parent)
+    : CurveEditorCommand(parent)
     , _widget(widget)
     , _key(key)
     , _deriv(deriv)
-    , _oldInterp( key->key.getInterpolation() )
-    , _oldLeft( key->key.getLeftDerivative() )
-    , _oldRight( key->key.getRightDerivative() )
+    , _oldInterp(key->key.getInterpolation())
+    , _oldLeft(key->key.getLeftDerivative())
+    , _oldRight(key->key.getRightDerivative())
     , _setBoth(false)
     , _updateOnFirstRedo(updateOnFirstRedo)
     , _firstRedoCalled(false)
@@ -676,6 +710,12 @@ MoveTangentCommand::MoveTangentCommand(CurveWidget* widget,
                                             interp == eKeyframeTypeCubic ||
                                             interp == eKeyframeTypeFree);
     _setBoth = keyframeIsFirstOrLast ? interpIsCatmullRomOrCubicOrFree  || internalCurve->isCurvePeriodic() : interpIsNotBroken;
+
+    // Ctrl-drag always breaks the key, even one whose first/last or periodic status would
+    // otherwise keep both sides linked.
+    if (forceBreak) {
+        _setBoth = false;
+    }
 
     bool isLeft;
     if (deriv == eSelectedTangentLeft) {
@@ -713,14 +753,14 @@ MoveTangentCommand::MoveTangentCommand(CurveWidget* widget,
                                        SelectedTangentEnum deriv,
                                        const KeyPtr& key,
                                        double derivative,
-                                       QUndoCommand *parent)
-    : QUndoCommand(parent)
+                                       QUndoCommand* parent)
+    : CurveEditorCommand(parent)
     , _widget(widget)
     , _key(key)
     , _deriv(deriv)
-    , _oldInterp( key->key.getInterpolation() )
-    , _oldLeft( key->key.getLeftDerivative() )
-    , _oldRight( key->key.getRightDerivative() )
+    , _oldInterp(key->key.getInterpolation())
+    , _oldLeft(key->key.getLeftDerivative())
+    , _oldRight(key->key.getRightDerivative())
     , _setBoth(true)
     , _updateOnFirstRedo(true)
     , _firstRedoCalled(false)
@@ -806,6 +846,12 @@ MoveTangentCommand::id() const
     return kCurveEditorMoveTangentsCommandCompressionID;
 }
 
+void
+MoveTangentCommand::getEditedCurves(std::list<CurveGuiPtr>* curves) const
+{
+    curves->push_back(_key->curve);
+}
+
 bool
 MoveTangentCommand::mergeWith(const QUndoCommand * command)
 {
@@ -827,8 +873,98 @@ MoveTangentCommand::mergeWith(const QUndoCommand * command)
     }
 }
 
+/////////////////////////// JoinTangentsCommand
+
+double
+joinedDerivative(double left,
+                 double right)
+{
+    return std::tan((std::atan(left) + std::atan(right)) / 2.);
+}
+
+JoinTangentsCommand::JoinTangentsCommand(CurveWidget* widget,
+                                         const SelectedKeys& keys,
+                                         QUndoCommand* parent)
+    : CurveEditorCommand(parent)
+    , _keys()
+    , _widget(widget)
+{
+    for (SelectedKeys::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        for (std::list<KeyPtr>::const_iterator it2 = it->second.begin(); it2 != it->second.end(); ++it2) {
+            const KeyPtr& key = *it2;
+            if (key->key.getInterpolation() != eKeyframeTypeBroken) {
+                continue;
+            }
+
+            JoinedTangentChange change;
+            change.key = key;
+            change.oldInterp = eKeyframeTypeBroken;
+            change.oldLeft = key->key.getLeftDerivative();
+            change.oldRight = key->key.getRightDerivative();
+            change.joined = joinedDerivative(change.oldLeft, change.oldRight);
+            _keys.push_back(change);
+        }
+    }
+    setText(tr("Join tangents"));
+}
+
+void
+JoinTangentsCommand::setNewDerivatives(bool undo)
+{
+    for (std::list<JoinedTangentChange>::iterator it = _keys.begin(); it != _keys.end(); ++it) {
+        KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>(it->key->curve.get());
+        if (!isKnobCurve) {
+            continue;
+        }
+
+        KnobIPtr attachedKnob = isKnobCurve->getInternalKnob();
+        assert(attachedKnob);
+        KnobParametric* isParametric = dynamic_cast<KnobParametric*>(attachedKnob.get());
+        double left = undo ? it->oldLeft : it->joined;
+        double right = undo ? it->oldRight : it->joined;
+        KeyframeTypeEnum interp = undo ? it->oldInterp : eKeyframeTypeFree;
+
+        if (!isParametric) {
+            attachedKnob->beginChanges();
+            attachedKnob->moveDerivativesAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), it->key->key.getTime(), left, right);
+            attachedKnob->setInterpolationAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), it->key->key.getTime(), interp, &it->key->key);
+            attachedKnob->endChanges();
+        } else {
+            int keyframeIndexInCurve = it->key->curve->getInternalCurve()->keyFrameIndex(it->key->key.getTime());
+            it->key->key = it->key->curve->getInternalCurve()->setKeyFrameInterpolation(interp, keyframeIndexInCurve);
+            it->key->key = it->key->curve->getInternalCurve()->setKeyFrameDerivatives(left, right, keyframeIndexInCurve);
+            attachedKnob->evaluateValueChange(isKnobCurve->getDimension(), it->key->key.getTime(), ViewIdx(0), eValueChangedReasonUserEdited);
+        }
+    }
+
+    // Null when a unit test exercises the command without a real curve widget behind it.
+    if (_widget) {
+        _widget->refreshSelectedKeysAndUpdate();
+    }
+}
+
+void
+JoinTangentsCommand::undo()
+{
+    setNewDerivatives(true);
+}
+
+void
+JoinTangentsCommand::redo()
+{
+    setNewDerivatives(false);
+}
+
+void
+JoinTangentsCommand::getEditedCurves(std::list<CurveGuiPtr>* curves) const
+{
+    for (std::list<JoinedTangentChange>::const_iterator it = _keys.begin(); it != _keys.end(); ++it) {
+        curves->push_back(it->key->curve);
+    }
+}
+
 TransformKeysCommand::TransformKeysCommand(CurveWidget* widget,
-                                           const SelectedKeys & keys,
+                                           const SelectedKeys& keys,
                                            double centerX,
                                            double centerY,
                                            double tx,
@@ -836,8 +972,8 @@ TransformKeysCommand::TransformKeysCommand(CurveWidget* widget,
                                            double sx,
                                            double sy,
                                            bool updateOnFirstRedo,
-                                           QUndoCommand *parent)
-    : QUndoCommand(parent)
+                                           QUndoCommand* parent)
+    : CurveEditorCommand(parent)
     , _firstRedoCalled(false)
     , _updateOnFirstRedo(updateOnFirstRedo)
     , _keys(keys)
@@ -986,6 +1122,14 @@ TransformKeysCommand::id() const
     return kCurveEditorTransformKeysCommandCompressionID;
 }
 
+void
+TransformKeysCommand::getEditedCurves(std::list<CurveGuiPtr>* curves) const
+{
+    for (SelectedKeys::const_iterator it = _keys.begin(); it != _keys.end(); ++it) {
+        curves->push_back(it->first);
+    }
+}
+
 bool
 TransformKeysCommand::mergeWith(const QUndoCommand * command)
 {
@@ -1010,6 +1154,205 @@ TransformKeysCommand::mergeWith(const QUndoCommand * command)
     } else {
         return false;
     }
+}
+
+//////////////////////////////FOLDED KNOB CURVE EDIT COMMAND//////////////////////////////////////////////
+
+namespace {
+
+// Until the copy is done, dimension 0 holds a different curve from the others: each value change
+// in between would otherwise unfold the knob in its panel and show its hidden curves again.
+class FoldStateHold {
+public:
+    FoldStateHold(CurveEditor* editor,
+                  const std::list<KnobGuiWPtr>& knobGuis)
+        : _editor(editor)
+        , _knobGuis()
+    {
+        for (std::list<KnobGuiWPtr>::const_iterator it = knobGuis.begin(); it != knobGuis.end(); ++it) {
+            KnobGuiPtr knobGui = it->lock();
+            KnobGuiValue* isValue = dynamic_cast<KnobGuiValue*>(knobGui.get());
+            if (isValue) {
+                isValue->setFoldStateHeld(true);
+                _knobGuis.push_back(knobGui);
+            }
+        }
+        if (_editor) {
+            _editor->setFoldStateHeld(true);
+        }
+    }
+
+    ~FoldStateHold()
+    {
+        if (_editor) {
+            _editor->setFoldStateHeld(false);
+        }
+        for (std::list<KnobGuiPtr>::const_iterator it = _knobGuis.begin(); it != _knobGuis.end(); ++it) {
+            dynamic_cast<KnobGuiValue*>(it->get())->setFoldStateHeld(false);
+        }
+    }
+
+private:
+    CurveEditor* _editor;
+    std::list<KnobGuiPtr> _knobGuis;
+};
+
+// A knob without keys reads its static value, which copying the curve leaves alone.
+void
+copyDimensionZeroStaticValue(KnobI* knob,
+                             int dimension)
+{
+    if (KnobDoubleBase* isDouble = dynamic_cast<KnobDoubleBase*>(knob)) {
+        isDouble->setValue(isDouble->getValue(0, ViewIdx(0), false), ViewSpec::all(), dimension, true);
+    } else if (KnobIntBase* isInt = dynamic_cast<KnobIntBase*>(knob)) {
+        isInt->setValue(isInt->getValue(0, ViewIdx(0), false), ViewSpec::all(), dimension, true);
+    } else if (KnobBoolBase* isBool = dynamic_cast<KnobBoolBase*>(knob)) {
+        isBool->setValue(isBool->getValue(0, ViewIdx(0), false), ViewSpec::all(), dimension, true);
+    }
+}
+
+} // namespace
+
+FoldedCurveEditCommand::FoldedCurveEditCommand(CurveEditor* editor,
+                                               QUndoCommand* inner,
+                                               const std::list<CurveGuiPtr>& foldedDimensionZeroCurves,
+                                               QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , _editor(editor)
+    , _inner(inner)
+    , _knobs()
+    , _knobGuis()
+    , _snapshotsTaken(false)
+{
+    for (std::list<CurveGuiPtr>::const_iterator it = foldedDimensionZeroCurves.begin(); it != foldedDimensionZeroCurves.end(); ++it) {
+        KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>(it->get());
+        if (!isKnobCurve) {
+            continue;
+        }
+        KnobIPtr knob = isKnobCurve->getInternalKnob();
+        if (!knob || (knob->getDimension() <= 1) || dynamic_cast<KnobParametric*>(knob.get())) {
+            continue;
+        }
+        bool alreadyListed = false;
+        for (std::list<FoldedKnob>::const_iterator it2 = _knobs.begin(); it2 != _knobs.end(); ++it2) {
+            if (it2->knob == knob) {
+                alreadyListed = true;
+                break;
+            }
+        }
+        if (alreadyListed) {
+            continue;
+        }
+        FoldedKnob folded;
+        folded.knob = knob;
+        folded.dimensionZeroCurve = *it;
+        _knobs.push_back(folded);
+        KnobGuiPtr knobGui = isKnobCurve->getKnobGui();
+        if (knobGui) {
+            _knobGuis.push_back(knobGui);
+        }
+    }
+    setText(_inner->text());
+}
+
+FoldedCurveEditCommand::~FoldedCurveEditCommand()
+{
+}
+
+void
+FoldedCurveEditCommand::copyDimensionZeroToOthers()
+{
+    for (std::list<FoldedKnob>::iterator it = _knobs.begin(); it != _knobs.end(); ++it) {
+        CurvePtr dimensionZero = it->dimensionZeroCurve->getInternalCurve();
+        if (!dimensionZero) {
+            continue;
+        }
+        const Curve source(*dimensionZero);
+        const bool hasKeys = source.getKeyFramesCount() > 0;
+        it->knob->beginChanges();
+        for (int d = 1; d < it->knob->getDimension(); ++d) {
+            it->knob->cloneCurve(ViewSpec::all(), d, source);
+            if (!hasKeys) {
+                copyDimensionZeroStaticValue(it->knob.get(), d);
+            }
+        }
+        it->knob->endChanges();
+    }
+}
+
+void
+FoldedCurveEditCommand::restoreOtherDimensions()
+{
+    for (std::list<FoldedKnob>::iterator it = _knobs.begin(); it != _knobs.end(); ++it) {
+        it->knob->beginChanges();
+        for (std::size_t d = 1; d < it->curvesBeforeFirstRedo.size(); ++d) {
+            if (it->curvesBeforeFirstRedo[d]) {
+                it->knob->cloneCurve(ViewSpec::all(), (int)d, *it->curvesBeforeFirstRedo[d]);
+            }
+        }
+        it->knob->endChanges();
+    }
+}
+
+void
+FoldedCurveEditCommand::undo()
+{
+    FoldStateHold hold(_editor, _knobGuis);
+
+    // The wrapped command undoes first so that the restore has the last word on dimensions 1..n,
+    // even for one the wrapped command also edited.
+    _inner->undo();
+    restoreOtherDimensions();
+}
+
+void
+FoldedCurveEditCommand::redo()
+{
+    FoldStateHold hold(_editor, _knobGuis);
+
+    if (!_snapshotsTaken) {
+        for (std::list<FoldedKnob>::iterator it = _knobs.begin(); it != _knobs.end(); ++it) {
+            const int nDims = it->knob->getDimension();
+            it->curvesBeforeFirstRedo.assign(nDims, CurvePtr());
+            for (int d = 1; d < nDims; ++d) {
+                CurvePtr curve = it->knob->getCurve(ViewIdx(0), d, true);
+                if (curve) {
+                    it->curvesBeforeFirstRedo[d] = std::make_shared<Curve>(*curve);
+                }
+            }
+        }
+        _snapshotsTaken = true;
+    }
+    _inner->redo();
+    copyDimensionZeroToOthers();
+}
+
+int
+FoldedCurveEditCommand::id() const
+{
+    return _inner->id();
+}
+
+bool
+FoldedCurveEditCommand::mergeWith(const QUndoCommand* command)
+{
+    const FoldedCurveEditCommand* other = dynamic_cast<const FoldedCurveEditCommand*>(command);
+
+    if (!other || (other->_knobs.size() != _knobs.size())) {
+        return false;
+    }
+    std::list<FoldedKnob>::const_iterator itOther = other->_knobs.begin();
+    for (std::list<FoldedKnob>::const_iterator it = _knobs.begin(); it != _knobs.end(); ++it, ++itOther) {
+        if (it->knob != itOther->knob) {
+            return false;
+        }
+    }
+
+    // The stack redoes a command before offering it for a merge, so the other command has
+    // already copied dimension 0 into the others and there is nothing left to copy here.
+    // Its snapshots were taken mid-drag and are dropped; this command's still hold the state
+    // from before the drag began.
+    return _inner->mergeWith(other->_inner.get());
 }
 
 NATRON_NAMESPACE_EXIT

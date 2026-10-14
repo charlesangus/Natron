@@ -72,6 +72,24 @@ public:
     virtual KnobIPtr getKnob() const OVERRIDE FINAL;
     virtual bool getAllDimensionsVisible() const OVERRIDE FINAL;
 
+    /**
+     * @brief While set, a refresh never unfolds the dimensions, whatever their values.
+     **/
+    void setFoldStateHeld(bool held);
+
+    /**
+     * @brief Folds or expands the dimensions the way the dimension-switch button asks, without
+     * pushing an undo command or copying any value, and records the result on the knob so a
+     * GUI rebuilt for it starts the same way. Nothing else ever folds an unfolded knob.
+     **/
+    void setDimensionsFolded(bool folded);
+
+    /**
+     * @brief Gives every other dimension dimension 0's value at the current time, as folding
+     * with the dimension-switch button does.
+     **/
+    void copyDimensionZeroValueToOthers();
+
     int getDimensionForSpinBox(const SpinBox* spinbox) const;
 
 public Q_SLOTS:
@@ -85,6 +103,8 @@ public Q_SLOTS:
     void onDecimalsChanged(int deci, int index = 0);
 
     void onDimensionSwitchClicked(bool);
+
+    void onDimensionsFoldStateRestored();
 
     void onRectangleFormatButtonClicked();
 
@@ -165,18 +185,6 @@ protected:
     QVBoxLayout* getBelowRowColumnLayout() const;
 
     /**
-     * @brief While set, a refresh never folds the dimensions back into one, even when they
-     * all hold the same value.
-     **/
-    void setAutoFoldSuppressed(bool suppressed);
-
-    /**
-     * @brief Unfolds freely. Folds only when every dimension already holds the same value,
-     * so, unlike the dimension-switch button, it never copies dimension 0 into the others.
-     **/
-    void setDimensionsExpanded(bool expanded);
-
-    /**
      * @brief Lets a subclass supply a widget placed below the knob's row, spanning the
      * field area. It starts hidden; the subclass that created it is responsible for
      * showing and hiding it. Returning non-null also relaxes the row's fixed height so it
@@ -216,6 +224,7 @@ private:
     void foldAllDimensions();
     void setDimensionLabelVisible(std::size_t index, bool visible);
     bool areAllDimensionsEqual() const;
+    bool areAllDimensionCurvesEqual() const;
 
     void sliderEditingEnd(double d);
 

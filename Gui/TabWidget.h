@@ -33,9 +33,10 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QContextMenuEvent>
 #include <QFrame>
-#include <QTabBar>
 #include <QMutex>
+#include <QTabBar>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -135,12 +136,19 @@ Q_SIGNALS:
 
     void mouseLeftTabBar();
 
+    void paneMenuRequested(QPoint globalPos);
+
 private:
 
     virtual void leaveEvent(QEvent* e) OVERRIDE FINAL
     {
         Q_EMIT mouseLeftTabBar();
         QWidget::leaveEvent(e);
+    }
+
+    virtual void contextMenuEvent(QContextMenuEvent* e) OVERRIDE FINAL
+    {
+        Q_EMIT paneMenuRequested(e->globalPos());
     }
 };
 
@@ -282,7 +290,9 @@ public Q_SLOTS:
        index out of range will have no effect.*/
     void makeCurrentTab(int index);
 
-    void createMenu();
+    void createMenu(const QPoint& globalPos);
+
+    void onPaneMenuButtonClicked();
 
     void addNewViewer();
 

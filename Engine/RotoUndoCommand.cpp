@@ -25,6 +25,7 @@
 
 #include "RotoUndoCommand.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 CLANG_DIAG_OFF(deprecated)
@@ -42,13 +43,13 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoFeatherDrag.h"
 #include "Engine/RotoLayer.h"
-#include "Engine/RotoStrokeItem.h"
-#include "Engine/RotoPaintInteract.h"
 #include "Engine/RotoPaint.h"
+#include "Engine/RotoPaintInteract.h"
+#include "Engine/RotoStrokeItem.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
-
 
 NATRON_NAMESPACE_ENTER
 
@@ -843,6 +844,9 @@ dragTangent(double time,
     bool isOnKeyframe;
     double otherDiffX, otherDiffY, otherFpDiffX, otherFpDiffY;
 
+    // A broken handle stays broken until Smooth is applied.
+    breakTangents = breakTangents || cp.getBroken() || fp.getBroken();
+
     getDeltaForPoint(cp, time, transform, dx, dy, left, breakTangents, &otherDiffX, &otherDiffY, &isOnKeyframe);
     getDeltaForPoint(fp, time, transform, dx, dy, left, breakTangents, &otherFpDiffX, &otherFpDiffY, &isOnKeyframe);
 
@@ -965,32 +969,78 @@ MoveTangentUndoCommand::mergeWith(const UndoCommandPtr &other)
 
 //////////////////////////
 
-
 MoveFeatherBarUndoCommand::MoveFeatherBarUndoCommand(const RotoPaintInteractPtr& roto,
                                                      double dx,
                                                      double dy,
-                                                     const std::pair<BezierCPPtr, BezierCPPtr> & point,
+                                                     const std::pair<BezierCPPtr, BezierCPPtr>& point,
+                                                     const std::list<std::pair<BezierCPPtr, BezierCPPtr>>& selectedPoints,
                                                      double time)
     : UndoCommand()
     , _roto(roto)
     , _firstRedoCalled(false)
     , _dx(dx)
     , _dy(dy)
-    , _rippleEditEnabled( roto->getContext()->isRippleEditEnabled() )
+    , _rippleEditEnabled(roto->getContext()->isRippleEditEnabled())
     , _time(time)
-    , _curve()
-    , _oldPoint()
-    , _newPoint(point)
+    , _selectedCurves()
+    , _selectedPoints()
+    , _grabbedPoint(point)
+    , _bars()
 {
-    _curve = std::dynamic_pointer_cast<Bezier>( roto->getContext()->getItemByName( point.first->getBezier()->getScriptName() ) );
-    assert(_curve);
-    _oldPoint.first.reset( new BezierCP(*_newPoint.first) );
-    _oldPoint.second.reset( new BezierCP(*_newPoint.second) );
+    assert(point.first && point.second);
+    roto->getSelection(&_selectedCurves, &_selectedPoints);
+
+    addFeatherBar(point);
+    const BezierCPPtr grabbedCp = _bars.empty() ? BezierCPPtr() : _bars.front().cp;
+    bool grabbedIsSelected = false;
+    for (SelectedCpList::const_iterator it = selectedPoints.begin(); it != selectedPoints.end(); ++it) {
+        if (grabbedCp && ((it->first == grabbedCp) || (it->second == grabbedCp))) {
+            grabbedIsSelected = true;
+            break;
+        }
+    }
+
+    if (grabbedIsSelected) {
+        for (SelectedCpList::const_iterator it = selectedPoints.begin(); it != selectedPoints.end(); ++it) {
+            addFeatherBar(*it);
+        }
+    } else {
+        _selectedCurves.clear();
+        _selectedCurves.push_back(point.first->getBezier());
+        _selectedPoints.clear();
+        _selectedPoints.push_back(point);
+    }
     setText( tr("Move control point feather bar").toStdString() );
 }
 
 MoveFeatherBarUndoCommand::~MoveFeatherBarUndoCommand()
 {
+}
+
+void
+MoveFeatherBarUndoCommand::addFeatherBar(const std::pair<BezierCPPtr, BezierCPPtr>& point)
+{
+    if (!point.first || !point.second) {
+        return;
+    }
+    const bool firstIsFeather = point.first->isFeatherPoint();
+    FeatherBar bar;
+    bar.cp = firstIsFeather ? point.second : point.first;
+    bar.fp = firstIsFeather ? point.first : point.second;
+
+    BezierPtr curve = bar.cp->getBezier();
+    if (!curve || curve->isOpenBezier() || !curve->useFeatherPoints()) {
+        return;
+    }
+    // A rectangle selection can list a point both as (cp, fp) and as (fp, cp).
+    for (std::list<FeatherBar>::const_iterator it = _bars.begin(); it != _bars.end(); ++it) {
+        if (it->fp == bar.fp) {
+            return;
+        }
+    }
+    bar.oldCp.reset(new BezierCP(*bar.cp));
+    bar.oldFp.reset(new BezierCP(*bar.fp));
+    _bars.push_back(bar);
 }
 
 void
@@ -1001,108 +1051,130 @@ MoveFeatherBarUndoCommand::undo()
     if (!roto) {
         return;
     }
-    _newPoint.first->clone(*_oldPoint.first);
-    _newPoint.second->clone(*_oldPoint.second);
-    _newPoint.first->getBezier()->incrementNodesAge();
+    std::list<BezierPtr> curves;
+    for (std::list<FeatherBar>::const_iterator it = _bars.begin(); it != _bars.end(); ++it) {
+        it->cp->clone(*it->oldCp);
+        it->fp->clone(*it->oldFp);
+        BezierPtr curve = it->cp->getBezier();
+        if (std::find(curves.begin(), curves.end(), curve) == curves.end()) {
+            curves.push_back(curve);
+        }
+    }
+    for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+        (*it)->incrementNodesAge();
+    }
     roto->evaluate(true);
-    roto->setSelection(_curve, _newPoint);
+    roto->setSelection(_selectedCurves, _selectedPoints);
 }
+
+namespace {
+struct FeatherBarDrag {
+    BezierCPPtr fp;
+    Point from;
+    Point dir;
+    bool isOnKeyframe;
+};
+
+bool
+computeFeatherBarDrag(const BezierCPPtr& cp,
+                      const BezierCPPtr& fp,
+                      double time,
+                      FeatherBarDrag* drag)
+{
+    BezierPtr curve = cp->getBezier();
+    Transform::Matrix3x3 transform;
+
+    curve->getTransformAtTime(time, &transform);
+
+    Transform::Point3D featherPoint, controlPoint;
+    featherPoint.z = controlPoint.z = 1.;
+    cp->getPositionAtTime(true, time, ViewIdx(0), &controlPoint.x, &controlPoint.y);
+    drag->isOnKeyframe = fp->getPositionAtTime(true, time, ViewIdx(0), &featherPoint.x, &featherPoint.y);
+
+    controlPoint = Transform::matApply(transform, controlPoint);
+    featherPoint = Transform::matApply(transform, featherPoint);
+
+    Point c, f, left, right;
+    c.x = controlPoint.x;
+    c.y = controlPoint.y;
+    f.x = featherPoint.x;
+    f.y = featherPoint.y;
+    left.x = left.y = right.x = right.y = 0.;
+    bool clockWise = true;
+
+    if (featherSitsOnControlPoint(c, f)) {
+        const std::list<BezierCPPtr>& fps = curve->getFeatherPoints();
+        if (fps.size() < 2) {
+            return false;
+        }
+        std::list<BezierCPPtr>::const_iterator cur = std::find(fps.begin(), fps.end(), fp);
+        if (cur == fps.end()) {
+            return false;
+        }
+        std::list<BezierCPPtr>::const_iterator prev = cur;
+        if (prev == fps.begin()) {
+            prev = fps.end();
+        }
+        --prev;
+        std::list<BezierCPPtr>::const_iterator next = cur;
+        ++next;
+        if (next == fps.end()) {
+            next = fps.begin();
+        }
+        Bezier::leftDerivativeAtPoint(true, time, **cur, **prev, transform, &left.x, &left.y);
+        Bezier::rightDerivativeAtPoint(true, time, **cur, **next, transform, &right.x, &right.y);
+        clockWise = curve->isFeatherPolygonClockwiseOriented(true, time);
+    }
+
+    drag->fp = fp;
+    drag->from = f;
+    drag->dir = featherDragDirection(c, f, left, right, clockWise);
+
+    return true;
+}
+} // anonymous namespace
 
 void
 MoveFeatherBarUndoCommand::redo()
 {
     RotoPaintInteractPtr roto = _roto.lock();
 
-    if (!roto) {
+    if (!roto || _bars.empty()) {
         return;
     }
-    BezierCPPtr p = _newPoint.first->isFeatherPoint() ?
-                                    _newPoint.second : _newPoint.first;
-    BezierCPPtr fp = _newPoint.first->isFeatherPoint() ?
-                                     _newPoint.first : _newPoint.second;
-    Point delta;
-    Transform::Matrix3x3 transform;
 
-    p->getBezier()->getTransformAtTime(_time, &transform);
-
-    Transform::Point3D featherPoint, controlPoint;
-    featherPoint.z = controlPoint.z = 1.;
-    p->getPositionAtTime(true, _time, ViewIdx(0), &controlPoint.x, &controlPoint.y);
-    bool isOnKeyframe = fp->getPositionAtTime(true, _time, ViewIdx(0), &featherPoint.x, &featherPoint.y);
-
-    controlPoint = Transform::matApply(transform, controlPoint);
-    featherPoint = Transform::matApply(transform, featherPoint);
-
-    if ( (controlPoint.x != featherPoint.x) || (controlPoint.y != featherPoint.y) ) {
-        Point featherVec;
-        featherVec.x = featherPoint.x - controlPoint.x;
-        featherVec.y = featherPoint.y - controlPoint.y;
-        double norm = sqrt( (featherPoint.x - controlPoint.x) * (featherPoint.x - controlPoint.x)
-                            + (featherPoint.y - controlPoint.y) * (featherPoint.y - controlPoint.y) );
-        assert(norm != 0);
-        delta.x = featherVec.x / norm;
-        delta.y = featherVec.y / norm;
-
-        double dotProduct = delta.x * _dx + delta.y * _dy;
-        delta.x = delta.x * dotProduct;
-        delta.y = delta.y * dotProduct;
-    } else {
-        ///the feather point equals the control point, use derivatives
-        const std::list<BezierCPPtr> & cps = p->getBezier()->getFeatherPoints();
-        assert(cps.size() > 1);
-
-        std::list<BezierCPPtr>::const_iterator cur = std::find(cps.begin(), cps.end(), fp);
-        if ( cur == cps.end() ) {
+    // Every direction is read before any feather moves: moving one feather shifts its tangents,
+    // which changes the derivative normal of a neighbour sitting on its control point.
+    std::list<FeatherBarDrag> drags;
+    for (std::list<FeatherBar>::const_iterator it = _bars.begin(); it != _bars.end(); ++it) {
+        FeatherBarDrag drag;
+        if (computeFeatherBarDrag(it->cp, it->fp, _time, &drag)) {
+            drags.push_back(drag);
+        } else if (it == _bars.begin()) {
             return;
         }
-        // compute previous and next element in the cyclic list
-        std::list<BezierCPPtr>::const_iterator prev = cur;
-        if ( prev == cps.begin() ) {
-            prev = cps.end();
-        }
-        --prev; // the list has at least one element
-        std::list<BezierCPPtr>::const_iterator next = cur;
-        ++next; // the list has at least one element
-        if ( next == cps.end() ) {
-            next = cps.begin();
-        }
-
-        double leftX, leftY, rightX, rightY, norm;
-        Bezier::leftDerivativeAtPoint(true, _time, **cur, **prev, transform, &leftX, &leftY);
-        Bezier::rightDerivativeAtPoint(true, _time, **cur, **next, transform, &rightX, &rightY);
-        norm = sqrt( (rightX - leftX) * (rightX - leftX) + (rightY - leftY) * (rightY - leftY) );
-
-        ///normalize derivatives by their norm
-        if (norm != 0) {
-            delta.x = -( (rightY - leftY) / norm );
-            delta.y = ( (rightX - leftX) / norm );
-        } else {
-            ///both derivatives are the same, use the direction of the left one
-            norm = sqrt( (leftX - featherPoint.x) * (leftX - featherPoint.x) + (leftY - featherPoint.y) * (leftY - featherPoint.y) );
-            if (norm != 0) {
-                delta.x = -( (leftY - featherPoint.y) / norm );
-                delta.y = ( (leftX - featherPoint.x) / norm );
-            } else {
-                ///both derivatives and control point are equal, just use 0
-                delta.x = delta.y = 0;
-            }
-        }
-
-        double dotProduct = delta.x * _dx + delta.y * _dy;
-        delta.x = delta.x * dotProduct;
-        delta.y = delta.y * dotProduct;
     }
 
-    if (roto->getContext()->isAutoKeyingEnabled() || isOnKeyframe) {
-        int index = fp->getBezier()->getFeatherPointIndex(fp);
-        fp->getBezier()->moveFeatherByIndex(index, _time, delta.x, delta.y);
+    const double s = featherDragDistance(drags.front().dir, _dx, _dy);
+    const bool autoKeying = roto->getContext()->isAutoKeyingEnabled();
+    for (std::list<FeatherBarDrag>::const_iterator it = drags.begin(); it != drags.end(); ++it) {
+        if (!autoKeying && !it->isOnKeyframe) {
+            continue;
+        }
+        BezierPtr curve = it->fp->getBezier();
+        const int index = curve->getFeatherPointIndex(it->fp);
+        if (index < 0) {
+            continue;
+        }
+        const Point to = applyFeatherDistance(it->from, it->dir, s);
+        curve->moveFeatherByIndex(index, _time, to.x - it->from.x, to.y - it->from.y);
     }
 
     if (_firstRedoCalled) {
         roto->evaluate(true);
     }
 
-    roto->setSelection(_curve, _newPoint);
+    roto->setSelection(_selectedCurves, _selectedPoints);
 
     _firstRedoCalled = true;
 } // redo
@@ -1115,9 +1187,14 @@ MoveFeatherBarUndoCommand::mergeWith(const UndoCommandPtr& other)
     if (!mvCmd) {
         return false;
     }
-    if ( (mvCmd->_newPoint.first != _newPoint.first) || (mvCmd->_newPoint.second != _newPoint.second) ||
-         ( mvCmd->_rippleEditEnabled != _rippleEditEnabled) || ( mvCmd->_time != _time) ) {
+    if ((mvCmd->_grabbedPoint != _grabbedPoint) || (mvCmd->_bars.size() != _bars.size()) || (mvCmd->_rippleEditEnabled != _rippleEditEnabled) || (mvCmd->_time != _time)) {
         return false;
+    }
+    std::list<FeatherBar>::const_iterator otherIt = mvCmd->_bars.begin();
+    for (std::list<FeatherBar>::const_iterator it = _bars.begin(); it != _bars.end(); ++it, ++otherIt) {
+        if ((it->cp != otherIt->cp) || (it->fp != otherIt->fp)) {
+            return false;
+        }
     }
 
     _dx += mvCmd->_dx;

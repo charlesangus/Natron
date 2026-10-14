@@ -22,6 +22,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <list>
 #include <map>
 #include <optional>
@@ -303,6 +304,8 @@ namespace serialization {
         ar& ::boost::serialization::make_nvp("Dimension", knob.dimension);
         ar& ::boost::serialization::make_nvp("Secret", knob.secret);
         ar& ::boost::serialization::make_nvp("MasterIsAlias", knob.masterIsAlias);
+        int savedDimensions = (int)knob.dimensions.size();
+        ar& ::boost::serialization::make_nvp("SavedDimensions", savedDimensions);
 
         for (std::vector<NATRON_NAMESPACE::Serialization::KnobDimensionSerialization>::const_iterator it = knob.dimensions.begin(); it != knob.dimensions.end(); ++it) {
             NATRON_NAMESPACE::Serialization::KnobDimensionXml item(&(*it));
@@ -473,6 +476,12 @@ namespace serialization {
             ar& ::boost::serialization::make_nvp("MasterIsAlias", knob.masterIsAlias);
         } else {
             knob.masterIsAlias = false;
+        }
+
+        if (version >= NATRON_SERIALIZATION_KNOB_SAVES_FOLDED_DIMENSIONS) {
+            int savedDimensions = 0;
+            ar& ::boost::serialization::make_nvp("SavedDimensions", savedDimensions);
+            knob.dimensions.resize(static_cast<std::size_t>(std::max(savedDimensions, 0)));
         }
 
         if (traits.isChoice) {

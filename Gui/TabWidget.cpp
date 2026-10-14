@@ -263,22 +263,23 @@ TabWidget::TabWidget(Gui* gui,
 
     _imp->header = new TabWidgetHeader(this);
     QObject::connect( _imp->header, SIGNAL(mouseLeftTabBar()), this, SLOT(onTabBarMouseLeft()) );
+    QObject::connect(_imp->header, SIGNAL(paneMenuRequested(QPoint)), this, SLOT(createMenu(QPoint)));
     _imp->headerLayout = new QHBoxLayout(_imp->header);
     _imp->headerLayout->setContentsMargins(0, 0, 0, 0);
     _imp->headerLayout->setSpacing(0);
     _imp->header->setLayout(_imp->headerLayout);
 
     QIcon icC, icM, icL;
-    appPTR->getIcon(NATRON_PIXMAP_CLOSE_WIDGET, TO_DPIX(NATRON_SMALL_BUTTON_ICON_SIZE), &icC);
-    appPTR->getIcon(NATRON_PIXMAP_MAXIMIZE_WIDGET, TO_DPIX(NATRON_SMALL_BUTTON_ICON_SIZE), &icM);
-    appPTR->getIcon(NATRON_PIXMAP_TAB_WIDGET_LAYOUT_BUTTON, TO_DPIX(NATRON_SMALL_BUTTON_ICON_SIZE), &icL);
+    appPTR->getIcon(NATRON_PIXMAP_CLOSE_WIDGET, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &icC);
+    appPTR->getIcon(NATRON_PIXMAP_MAXIMIZE_WIDGET, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &icM);
+    appPTR->getIcon(NATRON_PIXMAP_TAB_WIDGET_LAYOUT_BUTTON, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &icL);
 
-    const QSize smallButtonSize( TO_DPIX(NATRON_SMALL_BUTTON_SIZE), TO_DPIY(NATRON_SMALL_BUTTON_SIZE) );
-    const QSize smallButtonIconSize( TO_DPIX(NATRON_SMALL_BUTTON_ICON_SIZE), TO_DPIY(NATRON_SMALL_BUTTON_ICON_SIZE) );
+    const QSize mediumButtonSize(TO_DPIX(NATRON_MEDIUM_BUTTON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_SIZE));
+    const QSize mediumButtonIconSize(TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_ICON_SIZE));
 
     _imp->leftCornerButton = new Button(icL, QString(), _imp->header);
-    _imp->leftCornerButton->setFixedSize(smallButtonSize);
-    _imp->leftCornerButton->setIconSize(smallButtonIconSize);
+    _imp->leftCornerButton->setFixedSize(mediumButtonSize);
+    _imp->leftCornerButton->setIconSize(mediumButtonIconSize);
     _imp->leftCornerButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr(LEFT_HAND_CORNER_BUTTON_TT), NATRON_NAMESPACE::WhiteSpaceNormal) );
     _imp->leftCornerButton->setFocusPolicy(Qt::NoFocus);
     _imp->headerLayout->addWidget(_imp->leftCornerButton);
@@ -292,8 +293,9 @@ TabWidget::TabWidget(Gui* gui,
     _imp->headerLayout->addWidget(_imp->tabBar);
     _imp->headerLayout->addStretch();
     _imp->floatButton = new Button(icM, QString(), _imp->header);
-    _imp->floatButton->setFixedSize(smallButtonSize);
-    _imp->floatButton->setIconSize(smallButtonIconSize);
+    _imp->floatButton->setObjectName(QString::fromUtf8("TabWidgetFloatButton"));
+    _imp->floatButton->setFixedSize(mediumButtonSize);
+    _imp->floatButton->setIconSize(mediumButtonIconSize);
     _imp->floatButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Float pane"), NATRON_NAMESPACE::WhiteSpaceNormal) );
     _imp->floatButton->setEnabled(true);
     _imp->floatButton->setFocusPolicy(Qt::NoFocus);
@@ -301,18 +303,16 @@ TabWidget::TabWidget(Gui* gui,
     _imp->headerLayout->addWidget(_imp->floatButton);
 
     _imp->closeButton = new Button(icC, QString(), _imp->header);
-    _imp->closeButton->setFixedSize(smallButtonSize);
-    _imp->closeButton->setIconSize(smallButtonIconSize);
+    _imp->closeButton->setObjectName(QString::fromUtf8("TabWidgetCloseButton"));
+    _imp->closeButton->setFixedSize(mediumButtonSize);
+    _imp->closeButton->setIconSize(mediumButtonIconSize);
     _imp->closeButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Close pane"), NATRON_NAMESPACE::WhiteSpaceNormal) );
     _imp->closeButton->setFocusPolicy(Qt::NoFocus);
     QObject::connect( _imp->closeButton, SIGNAL(clicked()), this, SLOT(closePane()) );
     _imp->headerLayout->addWidget(_imp->closeButton);
 
-
     /*adding menu to the left corner button*/
-    _imp->leftCornerButton->setContextMenuPolicy(Qt::CustomContextMenu);
-    QObject::connect( _imp->leftCornerButton, SIGNAL(clicked()), this, SLOT(createMenu()) );
-
+    QObject::connect(_imp->leftCornerButton, SIGNAL(clicked()), this, SLOT(onPaneMenuButtonClicked()));
 
     _imp->mainLayout->addWidget(_imp->header);
     _imp->mainLayout->addStretch();
@@ -380,7 +380,13 @@ TabWidget::setClosable(bool closable)
 }
 
 void
-TabWidget::createMenu()
+TabWidget::onPaneMenuButtonClicked()
+{
+    createMenu(_imp->leftCornerButton->mapToGlobal(QPoint(0, 0)));
+}
+
+void
+TabWidget::createMenu(const QPoint& globalPos)
 {
     MenuWithToolTips menu(_imp->gui);
     //QFont f(appFont,appFontSize);
@@ -466,7 +472,7 @@ TabWidget::createMenu()
     QObject::connect( isAnchorAction, SIGNAL(triggered()), this, SLOT(onSetAsAnchorActionTriggered()) );
     menu.addAction(isAnchorAction);
 
-    menu.exec( _imp->leftCornerButton->mapToGlobal( QPoint(0, 0) ) );
+    menu.exec(globalPos);
 } // TabWidget::createMenu
 
 void
@@ -1403,6 +1409,12 @@ TabBar::setClickFocus(bool focus)
 void
 TabBar::mousePressEvent(QMouseEvent* e)
 {
+    if (e->button() == Qt::RightButton) {
+        // QTabBar would make the pressed tab current; the right-click only opens the pane menu.
+        e->accept();
+
+        return;
+    }
     if ( buttonDownIsLeft(e) ) {
         _dragPos = e->pos();
     }
@@ -1781,9 +1793,9 @@ TabWidget::setAsAnchor(bool anchor)
     QIcon icon;
 
     if (anchor) {
-        appPTR->getIcon(NATRON_PIXMAP_TAB_WIDGET_LAYOUT_BUTTON_ANCHOR, TO_DPIX(NATRON_SMALL_BUTTON_ICON_SIZE), &icon);
+        appPTR->getIcon(NATRON_PIXMAP_TAB_WIDGET_LAYOUT_BUTTON_ANCHOR, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &icon);
     } else {
-        appPTR->getIcon(NATRON_PIXMAP_TAB_WIDGET_LAYOUT_BUTTON, TO_DPIX(NATRON_SMALL_BUTTON_ICON_SIZE), &icon);
+        appPTR->getIcon(NATRON_PIXMAP_TAB_WIDGET_LAYOUT_BUTTON, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &icon);
     }
     _imp->leftCornerButton->setIcon(icon);
     if (mustUpdate) {

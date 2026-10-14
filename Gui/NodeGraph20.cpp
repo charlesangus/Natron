@@ -528,6 +528,7 @@ NodeGraph::mouseMoveEvent(QMouseEvent* e)
             _imp->_refreshOverlays = true;
             centerOn(mousePosSceneCoordinates);
             _imp->_lastMousePos = e->pos();
+            dragPickedUpArrowToCursor();
             update();
 
             return;
@@ -600,6 +601,8 @@ NodeGraph::mouseMoveEvent(QMouseEvent* e)
 
     _imp->_lastMousePos = e->pos();
 
+    // Runs after the switch so that a pan or zoom done by this same move is already applied.
+    dragPickedUpArrowToCursor();
 
     if (mustUpdateNavigator) {
         _imp->_refreshOverlays = true;

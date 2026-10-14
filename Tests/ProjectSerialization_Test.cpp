@@ -39,18 +39,22 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/Curve.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobLayerSelect.h"
-#include "Engine/KnobLoadCompat.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
+#include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
+#include "Engine/ViewIdx.h"
+
+#include "Serialization/KnobSerialization.h"
 
 #include <ofxImageEffect.h>
 #include <ofxNatron.h>
@@ -283,230 +287,6 @@ TEST_F(BaseTest, SavedProjectContainsNoUserComponents)
 
 namespace {
 
-const char* const kLegacyColorWarning = "Colour layer from an older project was reset to rgba";
-
-bool
-hasLegacyColorWarning(const NodePtr& node)
-{
-    QString message;
-    int type = 0;
-
-    node->getPersistentMessage(&message, &type, false);
-
-    return type == eMessageTypeWarning && message == QString::fromUtf8(kLegacyColorWarning);
-}
-
-bool
-ownsChannelSelectorMessage(const NodePtr& node)
-{
-    NodesList owners;
-
-    Node::getNodesOwningChannelSelectorMessage(&owners);
-
-    return std::find(owners.begin(), owners.end(), node) != owners.end();
-}
-
-} // namespace
-
-// Tests/fixtures/m65-legacy-color.ntp is hand-written at node serialization version 16 and
-// Natron 2.2. Grade1 saves channels = Color {R,G,B} (with Color as its saved default) and its
-// mask on Color.A; Shuffle1 reads and writes Color; Blur1 saves no channel set, so the pre-v17
-// gate lands it on Color.
-class LegacyColorProjectTest
-    : public BaseTest {
-protected:
-    virtual void SetUp() OVERRIDE
-    {
-        BaseTest::SetUp();
-        getApp()->getProject()->reset(false, true);
-    }
-
-    virtual void TearDown() OVERRIDE
-    {
-        getApp()->getProject()->reset(false, true);
-        BaseTest::TearDown();
-    }
-
-    bool loadFixture(const QTemporaryDir& tmp)
-    {
-        const QString dirPath = tmp.path() + QLatin1Char('/');
-        const QString fileName = QString::fromUtf8("m65-legacy-color.ntp");
-
-        if (!QFile::copy(QString::fromUtf8(NATRON_TESTS_FIXTURES_DIR "/m65-legacy-color.ntp"), dirPath + fileName)) {
-            return false;
-        }
-
-        return getApp()->getProject()->loadProject(dirPath, fileName);
-    }
-};
-
-TEST_F(LegacyColorProjectTest, ColorLayerValuesResetToRgbaKeepingChannelsWithAWarning)
-{
-    QTemporaryDir tmp;
-
-    ASSERT_TRUE(tmp.isValid());
-    bool loaded = false;
-    EXPECT_NO_THROW(loaded = loadFixture(tmp));
-    ASSERT_TRUE(loaded);
-
-    ProjectPtr project = getApp()->getProject();
-    NodePtr grade = project->getNodeByName("Grade1");
-    NodePtr shuffle = project->getNodeByName("Shuffle1");
-    NodePtr blur = project->getNodeByName("Blur1");
-    ASSERT_TRUE(bool(grade) && bool(shuffle) && bool(blur));
-
-    KnobChannelSetPtr gradeChannels = std::dynamic_pointer_cast<KnobChannelSet>(grade->getKnobByName(kNodeParamChannelSet));
-    ASSERT_TRUE(bool(gradeChannels));
-    std::vector<ChannelSetRow> rows = gradeChannels->getRows();
-    ASSERT_EQ(1u, rows.size());
-    EXPECT_EQ(ChannelSetRow::eModeLayer, rows[0].mode);
-    EXPECT_EQ(std::string(kNatronColorViewRGBA), rows[0].layerOrPattern);
-    std::vector<std::string> rgb;
-    rgb.push_back("R");
-    rgb.push_back("G");
-    rgb.push_back("B");
-    EXPECT_EQ(rgb, rows[0].channels);
-
-    // The saved default named Color too; it goes back to what a new Grade defaults to.
-    {
-        NodePtr freshGrade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
-        ASSERT_TRUE(bool(freshGrade));
-        KnobChannelSetPtr freshChannels = std::dynamic_pointer_cast<KnobChannelSet>(freshGrade->getKnobByName(kNodeParamChannelSet));
-        ASSERT_TRUE(bool(freshChannels));
-        EXPECT_EQ(freshChannels->getDefaultValue(0), gradeChannels->getDefaultValue(0));
-        EXPECT_EQ(std::string::npos, gradeChannels->getDefaultValue(0).find(kNatronColorLayerID));
-    }
-
-    KnobChannelSelectPtr mask = std::dynamic_pointer_cast<KnobChannelSelect>(grade->getKnobByName(std::string(kMaskChannelKnobName) + "_Mask"));
-    ASSERT_TRUE(bool(mask));
-    EXPECT_EQ(std::string(kNatronColorViewRGBA ".A"), mask->get());
-    EXPECT_EQ(std::string::npos, mask->getDefaultValue(0).find(kNatronColorLayerID));
-    EXPECT_TRUE(hasLegacyColorWarning(grade));
-
-    KnobLayerSelectPtr in1 = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle->getKnobByName(kShuffleParamIn1));
-    KnobLayerSelectPtr out1 = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle->getKnobByName(kShuffleParamOut1));
-    ASSERT_TRUE(bool(in1) && bool(out1));
-    EXPECT_EQ(std::string(kNatronColorViewRGBA), in1->getLayer());
-    EXPECT_TRUE(in1->getChannels().empty());
-    EXPECT_EQ(std::string(kNatronColorViewRGBA), out1->getLayer());
-    EXPECT_TRUE(out1->getChannels().empty());
-    EXPECT_TRUE(hasLegacyColorWarning(shuffle));
-
-    // Blur defaults to All, but the pre-v17 gate first restores the Color it defaulted to
-    // back then; that value resets to rgba (not All, which would process other layers too) and
-    // warns, while "Reset to default" still gives All.
-    KnobChannelSetPtr blurChannels = std::dynamic_pointer_cast<KnobChannelSet>(blur->getKnobByName(kNodeParamChannelSet));
-    ASSERT_TRUE(bool(blurChannels));
-    rows = blurChannels->getRows();
-    ASSERT_EQ(1u, rows.size());
-    EXPECT_EQ(ChannelSetRow::eModeLayer, rows[0].mode);
-    EXPECT_EQ(std::string(kNatronColorViewRGBA), rows[0].layerOrPattern);
-    EXPECT_TRUE(rows[0].channels.empty());
-    std::vector<ChannelSetRow> blurDefault = blurChannels->decodeRows(blurChannels->getDefaultValue(0));
-    ASSERT_EQ(1u, blurDefault.size());
-    EXPECT_EQ(ChannelSetRow::eModeAll, blurDefault[0].mode);
-    EXPECT_TRUE(hasLegacyColorWarning(blur));
-}
-
-// The colour storage ID is not a valid layer value, so Natron <= 2.2 colour option IDs must pass through unfiltered.
-TEST_F(LegacyColorProjectTest, LegacyColourChoiceOptionFallsBackWithoutThrowing)
-{
-    std::string option("a");
-    EXPECT_FALSE(filterKnobChoiceOptionCompat("net.sf.openfx.GradePlugin", 2, 0, 2, 2, 0, "maskChannel", &option));
-    EXPECT_EQ(std::string("a"), option);
-}
-
-TEST_F(LegacyColorProjectTest, LegacyColorWarningSurvivesARender)
-{
-    QTemporaryDir tmp;
-
-    ASSERT_TRUE(tmp.isValid());
-    ASSERT_TRUE(loadFixture(tmp));
-
-    NodePtr grade = getApp()->getProject()->getNodeByName("Grade1");
-    ASSERT_TRUE(bool(grade));
-    ASSERT_TRUE(hasLegacyColorWarning(grade));
-    EXPECT_FALSE(ownsChannelSelectorMessage(grade));
-
-    CreateNodeArgs readArgs(_readPluginID.toStdString(), getApp()->getProject());
-    readArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr"));
-    NodePtr reader = getApp()->createNode(readArgs);
-    ASSERT_TRUE(bool(reader));
-
-    int sourceInput = -1;
-    for (int i = 0; i < grade->getNInputs(); ++i) {
-        if (grade->getInputLabel(i) == "Source") {
-            sourceInput = i;
-        }
-    }
-    ASSERT_GE(sourceInput, 0);
-    connectNodes(reader, grade, sourceInput, true);
-
-    NodePtr writer = createNativeWriter();
-    ASSERT_TRUE(bool(writer));
-    connectNodes(grade, writer, 0, true);
-
-    const std::string path = (tmp.path() + QString::fromUtf8("/legacy-color-render.exr")).toStdString();
-    writer->setOutputFilesForWriter(path);
-    OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(writer->getEffectInstance().get());
-    ASSERT_TRUE(writerEffect != NULL);
-    std::list<AppInstance::RenderWork> works;
-    works.push_back(AppInstance::RenderWork(writerEffect, 1, 1, 1, false));
-    getApp()->startWritersRendering(false, works);
-    EXPECT_TRUE(QFile::exists(QString::fromStdString(path)));
-
-    EXPECT_TRUE(hasLegacyColorWarning(grade));
-
-    // A preview render clears the node's other persistent messages first.
-    const int size = 32;
-    std::vector<unsigned int> buffer(size * size, 0);
-    int width = size;
-    int height = size;
-    grade->makePreviewImage(1, &width, &height, &buffer[0]);
-    EXPECT_TRUE(hasLegacyColorWarning(grade));
-
-    // What a completed render calls to drop a channel-selector error it no longer reproduces.
-    grade->clearChannelSelectorMessage();
-    EXPECT_TRUE(hasLegacyColorWarning(grade));
-}
-
-TEST_F(LegacyColorProjectTest, ResavingWritesRgbaNeverTheStorageID)
-{
-    QTemporaryDir legacyDir;
-
-    ASSERT_TRUE(legacyDir.isValid());
-    ASSERT_TRUE(loadFixture(legacyDir));
-
-    ProjectPtr project = getApp()->getProject();
-    QTemporaryDir tmp;
-    ASSERT_TRUE(tmp.isValid());
-    const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("m65-resaved.ntp");
-    QString savedFilePath;
-    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
-
-    {
-        QFile f(savedFilePath);
-        ASSERT_TRUE(f.open(QIODevice::ReadOnly | QIODevice::Text));
-        const QString contents = QString::fromUtf8(f.readAll());
-        EXPECT_FALSE(contents.contains(QString::fromUtf8("&lt;Layer&gt;" kNatronColorLayerID)));
-        EXPECT_FALSE(contents.contains(QString::fromUtf8("&lt;Channel&gt;" kNatronColorLayerID)));
-        EXPECT_TRUE(contents.contains(QString::fromUtf8("&lt;Layer&gt;" kNatronColorViewRGBA "&lt;")));
-    }
-
-    project->reset(false, true);
-    ASSERT_TRUE(project->loadProject(dirPath, fileName));
-
-    const char* const names[] = { "Grade1", "Shuffle1", "Blur1" };
-    for (std::size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
-        NodePtr node = project->getNodeByName(names[i]);
-        ASSERT_TRUE(bool(node)) << names[i];
-        EXPECT_FALSE(hasLegacyColorWarning(node)) << names[i];
-    }
-}
-
-namespace {
-
 std::string
 activeOptionID(const NodePtr& node,
                const char* pluginKnob)
@@ -628,4 +408,193 @@ TEST_F(MultiplaneTwinProjectTest, TwinsRoundTripAndArePushedIntoThePluginChoices
     EXPECT_TRUE(boolValue(premult, kNatronOfxParamProcessG));
     EXPECT_TRUE(boolValue(premult, kNatronOfxParamProcessB));
     EXPECT_TRUE(boolValue(premult, kNatronOfxParamProcessA));
+}
+
+class DimensionsFoldStateProjectTest
+    : public BaseTest {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        BaseTest::SetUp();
+        getApp()->getProject()->reset(false, true);
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        getApp()->getProject()->reset(false, true);
+        BaseTest::TearDown();
+    }
+
+    KnobDoublePtr createBlurSize(std::string* blurName)
+    {
+        NodePtr blur = createNode(QString::fromUtf8(PLUGINID_NATRON_BLUR));
+        if (!blur) {
+            return KnobDoublePtr();
+        }
+        *blurName = blur->getScriptName();
+
+        return std::dynamic_pointer_cast<KnobDouble>(blur->getKnobByName(kBlurParamSize));
+    }
+
+    static std::size_t savedDimensionCount(const KnobDoublePtr& knob)
+    {
+        Serialization::KnobSerialization serialization;
+        knob->toSerialization(&serialization);
+
+        return serialization.dimensions.size();
+    }
+
+    // Saves the project, resets it and loads it back, then returns the reloaded Blur's size.
+    KnobDoublePtr saveResetAndReload(const std::string& blurName)
+    {
+        ProjectPtr project = getApp()->getProject();
+        QTemporaryDir tmp;
+        if (!tmp.isValid()) {
+            ADD_FAILURE() << "no temporary directory";
+
+            return KnobDoublePtr();
+        }
+        const QString dirPath = tmp.path() + QLatin1Char('/');
+        const QString fileName = QString::fromUtf8("fold-state.ntp");
+        QString savedFilePath;
+        if (!project->saveProject(dirPath, fileName, &savedFilePath)) {
+            ADD_FAILURE() << "saveProject() failed";
+
+            return KnobDoublePtr();
+        }
+        project->reset(false, true);
+        if (!project->loadProject(dirPath, fileName)) {
+            ADD_FAILURE() << "loadProject() failed";
+
+            return KnobDoublePtr();
+        }
+        NodePtr blur = project->getNodeByName(blurName);
+        if (!blur) {
+            ADD_FAILURE() << "the reloaded project has no " << blurName;
+
+            return KnobDoublePtr();
+        }
+
+        return std::dynamic_pointer_cast<KnobDouble>(blur->getKnobByName(kBlurParamSize));
+    }
+};
+
+TEST_F(DimensionsFoldStateProjectTest, FoldedKnobSavesOneValueAndLoadsFolded)
+{
+    std::string blurName;
+    KnobDoublePtr size = createBlurSize(&blurName);
+    ASSERT_TRUE(bool(size));
+    ASSERT_EQ(2, size->getDimension());
+    size->setValue(5., ViewSpec::all(), 0);
+    size->setValue(5., ViewSpec::all(), 1);
+    size->setDimensionsUnfoldedInGui(false);
+    EXPECT_EQ(1u, savedDimensionCount(size));
+
+    KnobDoublePtr reloaded = saveResetAndReload(blurName);
+    ASSERT_TRUE(bool(reloaded));
+    EXPECT_TRUE(reloaded->hasDimensionsFoldState());
+    EXPECT_FALSE(reloaded->getDimensionsUnfoldedInGui());
+    EXPECT_DOUBLE_EQ(5., reloaded->getValue(0));
+    EXPECT_DOUBLE_EQ(5., reloaded->getValue(1));
+    EXPECT_EQ(1u, savedDimensionCount(reloaded));
+}
+
+TEST_F(DimensionsFoldStateProjectTest, ExpandedKnobWithEqualValuesSavesEveryValueAndLoadsExpanded)
+{
+    std::string blurName;
+    KnobDoublePtr size = createBlurSize(&blurName);
+    ASSERT_TRUE(bool(size));
+    size->setValue(5., ViewSpec::all(), 0);
+    size->setValue(5., ViewSpec::all(), 1);
+    size->setDimensionsUnfoldedInGui(true);
+    EXPECT_EQ(2u, savedDimensionCount(size));
+
+    KnobDoublePtr reloaded = saveResetAndReload(blurName);
+    ASSERT_TRUE(bool(reloaded));
+    EXPECT_TRUE(reloaded->hasDimensionsFoldState());
+    EXPECT_TRUE(reloaded->getDimensionsUnfoldedInGui());
+    EXPECT_DOUBLE_EQ(5., reloaded->getValue(0));
+    EXPECT_DOUBLE_EQ(5., reloaded->getValue(1));
+    EXPECT_EQ(2u, savedDimensionCount(reloaded));
+}
+
+TEST_F(DimensionsFoldStateProjectTest, ExpandedKnobWithDifferentValuesLoadsExpanded)
+{
+    std::string blurName;
+    KnobDoublePtr size = createBlurSize(&blurName);
+    ASSERT_TRUE(bool(size));
+    size->setValue(3., ViewSpec::all(), 0);
+    size->setValue(7., ViewSpec::all(), 1);
+    size->setDimensionsUnfoldedInGui(true);
+    EXPECT_EQ(2u, savedDimensionCount(size));
+
+    KnobDoublePtr reloaded = saveResetAndReload(blurName);
+    ASSERT_TRUE(bool(reloaded));
+    EXPECT_TRUE(reloaded->hasDimensionsFoldState());
+    EXPECT_TRUE(reloaded->getDimensionsUnfoldedInGui());
+    EXPECT_DOUBLE_EQ(3., reloaded->getValue(0));
+    EXPECT_DOUBLE_EQ(7., reloaded->getValue(1));
+}
+
+// Values that differ say nothing about what the user folded: they are saved per dimension
+// whatever the fold state, so loading never hides one.
+TEST_F(DimensionsFoldStateProjectTest, FoldedKnobWithDifferentValuesSavesEveryValue)
+{
+    std::string blurName;
+    KnobDoublePtr size = createBlurSize(&blurName);
+    ASSERT_TRUE(bool(size));
+    size->setValue(3., ViewSpec::all(), 0);
+    size->setValue(7., ViewSpec::all(), 1);
+    size->setDimensionsUnfoldedInGui(false);
+    EXPECT_EQ(2u, savedDimensionCount(size));
+
+    KnobDoublePtr reloaded = saveResetAndReload(blurName);
+    ASSERT_TRUE(bool(reloaded));
+    EXPECT_TRUE(reloaded->getDimensionsUnfoldedInGui());
+    EXPECT_DOUBLE_EQ(3., reloaded->getValue(0));
+    EXPECT_DOUBLE_EQ(7., reloaded->getValue(1));
+}
+
+TEST_F(DimensionsFoldStateProjectTest, AnimatedFoldedKnobSavesOneCurveForEveryDimension)
+{
+    std::string blurName;
+    KnobDoublePtr size = createBlurSize(&blurName);
+    ASSERT_TRUE(bool(size));
+    for (int d = 0; d < 2; ++d) {
+        size->setValueAtTime(1, 2., ViewSpec::all(), d);
+        size->setValueAtTime(11, 8., ViewSpec::all(), d);
+    }
+    size->setDimensionsUnfoldedInGui(false);
+    EXPECT_EQ(1u, savedDimensionCount(size));
+
+    KnobDoublePtr reloaded = saveResetAndReload(blurName);
+    ASSERT_TRUE(bool(reloaded));
+    EXPECT_TRUE(reloaded->hasDimensionsFoldState());
+    EXPECT_FALSE(reloaded->getDimensionsUnfoldedInGui());
+    for (int d = 0; d < 2; ++d) {
+        SCOPED_TRACE(d);
+        CurvePtr curve = reloaded->getCurve(ViewIdx(0), d);
+        ASSERT_TRUE(bool(curve));
+        EXPECT_EQ(2, curve->getKeyFramesCount());
+        EXPECT_DOUBLE_EQ(2., reloaded->getValueAtTime(1, d));
+        EXPECT_DOUBLE_EQ(8., reloaded->getValueAtTime(11, d));
+    }
+    EXPECT_DOUBLE_EQ(reloaded->getValueAtTime(6, 0), reloaded->getValueAtTime(6, 1));
+    EXPECT_EQ(1u, savedDimensionCount(reloaded));
+}
+
+TEST_F(DimensionsFoldStateProjectTest, ExpandedKnobAtItsDefaultIsSavedAndLoadsExpanded)
+{
+    std::string blurName;
+    KnobDoublePtr size = createBlurSize(&blurName);
+    ASSERT_TRUE(bool(size));
+    size->setDimensionsUnfoldedInGui(true);
+    Serialization::KnobSerialization serialization;
+    EXPECT_TRUE(size->toSerialization(&serialization));
+    EXPECT_EQ(2u, serialization.dimensions.size());
+
+    KnobDoublePtr reloaded = saveResetAndReload(blurName);
+    ASSERT_TRUE(bool(reloaded));
+    EXPECT_TRUE(reloaded->hasDimensionsFoldState());
+    EXPECT_TRUE(reloaded->getDimensionsUnfoldedInGui());
 }

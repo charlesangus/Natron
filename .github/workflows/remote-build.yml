@@ -1,8 +1,13 @@
 name: Remote build
 
-run-name: remote-build ${{ inputs.preset }} ${{ inputs.token }}
+run-name: remote-build ${{ inputs.preset || 'fast' }} ${{ inputs.token }}
 
 on:
+  # A push run builds fast with no tests and no AppImage; it exists to
+  # keep main's fast ccache entry warm for branch runs to fall back on.
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       preset:
@@ -47,9 +52,9 @@ jobs:
       OCIO_CONFIG_VERSION: 2.5
       NATRON_IN_CONTAINER: 1
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 6G
+      CCACHE_MAXSIZE: ${{ (inputs.preset || 'fast') == 'release' && '3G' || '2G' }}
       NATRON_DEPS_CACHE: ${{ github.workspace }}/.natron-deps
-      PRESET: ${{ inputs.preset }}
+      PRESET: ${{ inputs.preset || 'fast' }}
 
     steps:
       - name: Checkout branch
@@ -65,10 +70,10 @@ jobs:
         uses: actions/cache/restore@v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-linux-${{ inputs.preset }}-${{ github.ref_name }}-${{ github.run_id }}
+          key: ccache-linux-${{ env.PRESET }}-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}
           restore-keys: |
-            ccache-linux-${{ inputs.preset }}-${{ github.ref_name }}-
-            ccache-linux-${{ inputs.preset }}-main-
+            ccache-linux-${{ env.PRESET }}-${{ github.head_ref || github.ref_name }}-
+            ccache-linux-${{ env.PRESET }}-main-
 
       - name: Cache test assets
         uses: actions/cache@v6.1.0
@@ -131,7 +136,7 @@ jobs:
         if: always() && inputs.tests
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: ctest-logs-${{ inputs.preset }}-${{ github.sha }}
+          name: ctest-logs-${{ env.PRESET }}-${{ github.sha }}
           path: ctest-logs/*
           if-no-files-found: ignore
           retention-days: 7
@@ -151,7 +156,7 @@ jobs:
         if: inputs.appimage && !cancelled() && steps.build.outcome == 'success'
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: natron-${{ inputs.preset }}-${{ github.sha }}
+          name: natron-${{ env.PRESET }}-${{ github.sha }}
           path: /tmp/artifacts/*.AppImage
           if-no-files-found: error
           retention-days: 7

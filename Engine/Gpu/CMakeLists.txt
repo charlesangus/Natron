@@ -35,6 +35,7 @@ slang_add_kernel(add_wrapped Kernels/colormath.slang ENTRY add_wrapped REGISTRY 
 slang_add_kernel(multiply_wrapped Kernels/colormath.slang ENTRY multiply_wrapped REGISTRY NatronGpu)
 slang_add_kernel(gamma_wrapped Kernels/colormath.slang ENTRY gamma_wrapped REGISTRY NatronGpu)
 slang_add_kernel(resample Kernels/resample.slang ENTRY resample_main REGISTRY NatronGpu)
+slang_add_kernel(resample_blur Kernels/resample.slang ENTRY resample_blur_main REGISTRY NatronGpu)
 slang_add_kernel(keyer Kernels/keyer.slang ENTRY keyer_main REGISTRY NatronGpu)
 slang_add_kernel(chromakeyer Kernels/chromakeyer.slang ENTRY chromakeyer_main REGISTRY NatronGpu)
 

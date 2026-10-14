@@ -53,14 +53,16 @@ enum class GpuCostClass {
 };
 
 /**
- * @brief What the cost of a task depends on besides its size: the plugin, and for a blur its sigma in pixels at the
- * level it renders at and whether its filter is recursive. The cost class and the input count only matter for a
- * plugin without rows of its own.
+ * @brief What the cost of a task depends on besides its size: the plugin, for a blur its sigma in pixels at the
+ * level it renders at and whether its filter is recursive, and whether it renders with motion blur, which only rows
+ * measured with motion blur price. The cost class and the input count only matter for a plugin without rows of its
+ * own.
  **/
 struct GpuTaskTraits {
     std::string pluginId;
     double sigma = 0.;
     bool iir = false;
+    bool motionBlur = false;
     GpuCostClass costClass = GpuCostClass::eOther;
     int inputCount = 1;
 
@@ -91,7 +93,8 @@ struct GpuTransferRates {
  * @brief Per-task CPU and GPU time estimates, and the gain of running a region on the GPU, in milliseconds.
  *
  * Costs start from the checked-in seed table (GpuCostSeed.inc) and are refined during the session by an exponential
- * moving average of measured times, per plugin and, for a blur, per sigma row. Nothing is kept across sessions.
+ * moving average of measured times, per plugin and motion blur and, for a blur, per sigma row. Nothing is kept across
+ * sessions.
  *
  * The CPU cost is kept as thread-milliseconds per megapixel, the measured wallNs × budget / Mpx, so that tasks run
  * with any thread budget refine the same figure; a task's CPU time is that over the pool size. The seed's serial cost
@@ -130,13 +133,14 @@ public:
     GpuTransferRates transferRates() const;
 
     /**
-     * @brief Replaces how the traits of a task are found. Unset: from its node, reading a Blur's size and filter.
+     * @brief Replaces how the traits of a task are found. Unset: from its node, reading a Blur's size and filter and
+     * whether a Transform renders with motion blur.
      **/
     void setTraitsHint(const std::function<GpuTaskTraits(const FrameGraph::Task&)>& hint);
 
     /**
-     * @brief Replaces the CPU seed of a plugin's plain row, or of each of its sigma rows, and forgets what was
-     * measured for it.
+     * @brief Replaces the CPU seed of a plugin's plain row, or of each of its sigma and motion-blur rows, and forgets
+     * what was measured for it.
      **/
     void setCpuSeed(const std::string& pluginId, double serialMsPerMpx, double parallelSpeedup);
 
@@ -185,6 +189,7 @@ private:
         // Negative for a plugin's plain row.
         double sigmaMax = -1.;
         bool iir = false;
+        bool motionBlur = false;
         double serialMsPerMpx = 0.;
         double parallelSpeedup = 1.;
         bool measured = false;
@@ -193,6 +198,7 @@ private:
 
     struct GpuRow {
         double sigmaMax = 0.;
+        bool motionBlur = false;
         double kernelMsPerMpx = 0.;
     };
 

@@ -132,8 +132,9 @@ public:
     void resetCenter(double time);
 
     /**
-     * @brief Accepts a float query of 1 to 4 channels without motion or directional blur and
-     * without a transform concatenated from upstream, whose single sampling matrix is affine.
+     * @brief Accepts a float query of 1 to 4 channels without a transform concatenated from
+     * upstream, whose sampling matrices are all affine and finite: motion blur over the shutter
+     * and directional blur included.
      **/
     virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -146,6 +147,13 @@ public:
                                  const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether the knobs ask render() to average several matrices per pixel at (time,
+     * view): motion blur on, with an open shutter or a directional blur. A transform that does
+     * not move over the shutter still counts, although render() then samples it once.
+     **/
+    bool rendersWithMotionBlur(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
 protected:
     TransformNode(NodePtr node,
@@ -206,10 +214,11 @@ private:
     RectI getSourceRoIPixels(double time, ViewIdx view, const RectI& outputRect, const RenderScale& scale) const WARN_UNUSED_RETURN;
 
     /**
-     * @brief The single destination-to-source pixel matrix render() samples at (time, view, scale)
-     * without motion blur; false when render() would sample more than one.
+     * @brief The destination-to-source pixel matrices render() samples at (time, view, scale) with
+     * their weights and blur quality, reduced to the single matrix render() samples when it does not
+     * blur; false when one of them is not affine and finite.
      **/
-    bool getGpuSamplingMatrix(double time, ViewIdx view, const RenderScale& scale, TransformMath::Mat3* matrix) const WARN_UNUSED_RETURN;
+    bool getGpuSamplingTransforms(double time, ViewIdx view, const RenderScale& scale, Resampler::SamplingTransforms* transforms) const WARN_UNUSED_RETURN;
 
     RectD getProjectRect() const WARN_UNUSED_RETURN;
 

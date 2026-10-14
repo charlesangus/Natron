@@ -1256,24 +1256,42 @@ TransformNode::render(const RenderActionArgs& args)
 } // TransformNode::render
 
 bool
-TransformNode::getGpuSamplingMatrix(double time,
-                                    ViewIdx view,
-                                    const RenderScale& scale,
-                                    Mat3* matrix) const
+TransformNode::rendersWithMotionBlur(double time,
+                                     ViewIdx view) const
 {
     const Resampler::BlurSettings blur = getBlurSettings(time, view);
-    if ((blur.motionBlur != 0.) || blur.directionalBlur) {
-        return false;
+
+    return (blur.motionBlur != 0.) && ((blur.shutter != 0.) || blur.directionalBlur);
+}
+
+bool
+TransformNode::getGpuSamplingTransforms(double time,
+                                        ViewIdx view,
+                                        const RenderScale& scale,
+                                        Resampler::SamplingTransforms* transforms) const
+{
+    Resampler::BlurSettings blur = getBlurSettings(time, view);
+    if (blur.directionalBlur) {
+        blur.shutter = 0.;
     }
     KnobBoolPtr invertKnob = _invert.lock();
     const bool invert = invertKnob ? invertKnob->getValueAtTime(time, 0, view) : false;
     const OfxPointD s = scale.toOfxPointD();
-    Resampler::SamplingTransforms transforms;
-    Resampler::buildSamplingTransforms(makeCanonicalTransformFn(view), time, invert, blur, s.x, s.y, false, getAspectRatio(0), getAspectRatio(-1), &transforms);
-    if (transforms.invTransforms.size() != 1) {
+    Resampler::buildSamplingTransforms(makeCanonicalTransformFn(view), time, invert, blur, s.x, s.y, false, getAspectRatio(0), getAspectRatio(-1), transforms);
+    if (transforms->invTransforms.empty()) {
         return false;
     }
-    *matrix = transforms.invTransforms[0];
+    // A directional blur at quality 0 still builds every matrix, but render() samples the first.
+    if ((transforms->motionBlur == 0.) || (transforms->invTransforms.size() == 1)) {
+        transforms->invTransforms.resize(1);
+        transforms->alphas.clear();
+        transforms->motionBlur = 0.;
+    }
+    for (const Mat3& H : transforms->invTransforms) {
+        if (!isAffineMatrix(H)) {
+            return false;
+        }
+    }
 
     return true;
 }
@@ -1311,9 +1329,10 @@ TransformNode::canRenderOnGpu(const GpuQuery& query) const
     if (query.hasConcatenatedInput) {
         return false;
     }
-    Mat3 H;
+    Resampler::SamplingTransforms transforms;
 
-    return getGpuSamplingMatrix(query.time, query.view, query.mappedScale, &H) && isAffineMatrix(H);
+    return getGpuSamplingTransforms(query.time, query.view, query.mappedScale, &transforms) &&
+           (transforms.invTransforms.size() <= gpu::kGpuResampleMaxMatrices);
 #else
     Q_UNUSED(query);
 
@@ -1346,8 +1365,8 @@ TransformNode::renderGpu(const GpuRenderArgs& args)
     const double time = query.time;
     const ViewIdx view = query.view;
     const RenderScale& scale = query.mappedScale;
-    Mat3 H;
-    if (!getGpuSamplingMatrix(time, view, scale, &H) || !isAffineMatrix(H)) {
+    Resampler::SamplingTransforms transforms;
+    if (!getGpuSamplingTransforms(time, view, scale, &transforms)) {
         return eStatusFailed;
     }
 
@@ -1385,25 +1404,41 @@ TransformNode::renderGpu(const GpuRenderArgs& args)
     resample.filter = (uint32_t)filter;
     resample.clamp = clamp && Resampler::filterHonoursClamp(filter);
     resample.blackOutside = blackOutside;
-    for (int k = 0; k < 6; ++k) {
-        resample.matrix[k] = H.m[k];
-    }
-    // The Jacobian render() samples with, by which axes fall inside the source.
-    for (int state = 1; state < 4; ++state) {
-        const bool x = (state & 1) != 0;
-        const bool y = (state & 2) != 0;
-        const double Jxx = x ? H(0, 0) : 0.;
-        const double Jxy = x ? H(0, 1) : 0.;
-        const double Jyx = y ? H(1, 0) : 0.;
-        const double Jyy = y ? H(1, 1) : 0.;
-        gpu::GpuResampleJacobian& j = resample.jacobians[state];
-        j.zero = (Jxx == 0.) && (Jxy == 0.) && (Jyx == 0.) && (Jyy == 0.);
-        int levelX = 0;
-        int levelY = 0;
-        if (!j.zero && Resampler::supersampleLevels(Jxx, Jxy, Jyx, Jyy, &levelX, &levelY)) {
-            j.levelX = (uint32_t)levelX;
-            j.levelY = (uint32_t)levelY;
+    resample.matrices.resize(transforms.invTransforms.size());
+    for (std::size_t i = 0; i < transforms.invTransforms.size(); ++i) {
+        const Mat3& H = transforms.invTransforms[i];
+        gpu::GpuResampleMatrix& m = resample.matrices[i];
+        for (int k = 0; k < 6; ++k) {
+            m.matrix[k] = H.m[k];
         }
+        if (!transforms.alphas.empty()) {
+            m.weight = transforms.alphas[i];
+        }
+        // The Jacobian render() samples with, by which axes fall inside the source.
+        for (int state = 1; state < 4; ++state) {
+            const bool x = (state & 1) != 0;
+            const bool y = (state & 2) != 0;
+            const double Jxx = x ? H(0, 0) : 0.;
+            const double Jxy = x ? H(0, 1) : 0.;
+            const double Jyx = y ? H(1, 0) : 0.;
+            const double Jyy = y ? H(1, 1) : 0.;
+            gpu::GpuResampleJacobian& j = m.jacobians[state];
+            j.zero = (Jxx == 0.) && (Jxy == 0.) && (Jyx == 0.) && (Jyy == 0.);
+            int levelX = 0;
+            int levelY = 0;
+            if (!j.zero && Resampler::supersampleLevels(Jxx, Jxy, Jyx, Jyy, &levelX, &levelY)) {
+                j.levelX = (uint32_t)levelX;
+                j.levelY = (uint32_t)levelY;
+            }
+        }
+    }
+    if (resample.matrices.size() > 1) {
+        const double quality = transforms.motionBlur;
+        resample.blur.minSamples = (uint32_t)Resampler::motionBlurMinSamples(quality);
+        resample.blur.maxIterations = (uint32_t)Resampler::motionBlurMaxIterations(quality);
+        resample.blur.maxError = Resampler::motionBlurMaxError(quality);
+        resample.blur.seedOffset = (uint32_t)(unsigned int)(0x10000 * quality);
+        resample.blur.weighted = !transforms.alphas.empty();
     }
 
     // TransformMasked blends with the source under the output pixel by mask x mix; with neither it

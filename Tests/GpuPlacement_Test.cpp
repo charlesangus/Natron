@@ -685,6 +685,37 @@ TEST(GpuCostModel, ClassDefaultsFollowGradeAndBlurRows)
     EXPECT_EQ(model.cpuMs(other, 1.), 0.);
 }
 
+// The seed's Transform row was measured with motion blur: it prices a motion-blurred Transform only, a plain one
+// taking the spatial default, and measurements of either leave the other alone.
+TEST(GpuCostModel, MotionBlurRowsPriceOnlyMotionBlur)
+{
+    GpuCostModel model;
+
+    model.setThreadCount(1);
+    GpuTaskTraits plain("net.sf.openfx.TransformPlugin");
+    plain.costClass = GpuCostClass::eSpatial;
+    GpuTaskTraits blurred = plain;
+    blurred.motionBlur = true;
+    const double spatialCpu = model.cpuMs(GpuTaskTraits(kBlurId, 25.), 1.);
+    EXPECT_NEAR(model.cpuMs(plain, 1.), spatialCpu, 1e-12);
+    EXPECT_NEAR(model.gpuMs(plain, 1.), model.gpuMs(GpuTaskTraits(kBlurId, 25.), 1.), 1e-12);
+    const double blurredCpu = model.cpuMs(blurred, 1.);
+    EXPECT_GT(blurredCpu, 0.);
+    EXPECT_NE(blurredCpu, spatialCpu);
+
+    model.observeCpu(plain, 7000000, 1, 1.);
+    EXPECT_NEAR(model.cpuMs(plain, 1.), 7., 1e-9);
+    EXPECT_NEAR(model.cpuMs(blurred, 1.), blurredCpu, 1e-9);
+    EXPECT_NEAR(model.cpuMs(GpuTaskTraits(kBlurId, 25.), 1.), spatialCpu, 1e-9);
+
+    model.observeGpu(blurred, 50000000, 1.);
+    EXPECT_NEAR(model.gpuMs(blurred, 1.), 50., 1e-9);
+    EXPECT_NEAR(model.gpuMs(plain, 1.), model.gpuMs(GpuTaskTraits(kBlurId, 25.), 1.), 1e-12);
+    model.observeGpu(plain, 2000000, 1.);
+    EXPECT_NEAR(model.gpuMs(plain, 1.), 2., 1e-9);
+    EXPECT_NEAR(model.gpuMs(blurred, 1.), 50., 1e-9);
+}
+
 TEST(GpuCostModel, MeasuredRowsBeatClassDefaults)
 {
     GpuCostModel model;

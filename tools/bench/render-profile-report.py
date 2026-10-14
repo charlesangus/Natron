@@ -272,6 +272,11 @@ def print_report(results, args):
 
 BLUR_PLUGIN_ID = "net.sf.cimg.CImgBlur"
 GRADE_PLUGIN_ID = "net.sf.openfx.GradePlugin"
+TRANSFORM_PLUGIN_ID = "net.sf.openfx.TransformPlugin"
+
+# Profile records carry no knob values. The bench comps render every one of these with motion
+# blur (tools/bench/comps/build_comps.py), so their rows price only a task with motion blur.
+MOTION_BLUR_PLUGIN_IDS = frozenset([TRANSFORM_PLUGIN_ID])
 UHD_MPX = 3840 * 2160 / 1e6
 OPEN_SIGMA = 1e9
 
@@ -319,19 +324,21 @@ def plugin_costs(paths):
 
 
 def cost_table_rows(threaded_paths, serial_paths):
-    """Returns (cpu rows, sigma rows, gpu rows) for the seed table.
+    """Returns (cpu rows, motion-blur cpu rows, sigma rows, gpu rows) for the seed table.
 
     The parallel speedup is the serial cost per pixel over the threaded one, 1 for a plugin
     the threaded profiles lack."""
     serial = plugin_costs(serial_paths)
     threaded = plugin_costs(threaded_paths)
     cpu = []
+    motion_blur = []
     for plugin in sorted(serial):
         speedup = serial[plugin] / threaded[plugin] if threaded.get(plugin, 0) > 0 else 1.0
-        cpu.append((plugin, serial[plugin], speedup))
+        rows = motion_blur if plugin in MOTION_BLUR_PLUGIN_IDS else cpu
+        rows.append((plugin, serial[plugin], speedup))
     sigma = [(BLUR_PLUGIN_ID, algo, top, ser, ser / par) for algo, top, ser, par in BLUR_SIGMA_MEASURED]
     gpu = [(plugin, top, ms / UHD_MPX) for plugin, top, ms in GPU_KERNEL_UHD_MS]
-    return cpu, sigma, gpu
+    return cpu, motion_blur, sigma, gpu
 
 
 def file_date(path):
@@ -342,12 +349,14 @@ def emit_cost_table(pairs, command):
     """Returns the text of Engine/GpuCostSeed.inc; pairs maps each threaded profile to its serial one."""
     threaded = list(pairs)
     serial = [pairs[path] for path in threaded]
-    cpu, sigma, gpu = cost_table_rows(threaded, serial)
+    cpu, motion_blur, sigma, gpu = cost_table_rows(threaded, serial)
 
     def sigma_text(top):
         return "1e9" if top >= OPEN_SIGMA else repr(float(top))
 
     def block(name, rows):
+        if not rows:
+            return "#define %s\n" % name
         lines = ["#define %s \\" % name]
         lines += ["    %s, \\" % row for row in rows]
         lines[-1] = lines[-1][:-3]
@@ -366,6 +375,8 @@ def emit_cost_table(pairs, command):
             "// Each macro expands to an initialiser list; the consuming code defines the row structs.",
             "// CPU rows: { plugin id, serial ms per Mpx (median over tasks weighted by RoI pixels),",
             "//   parallel speedup (serial over threaded ms per Mpx) }.",
+            "// CPU motion-blur rows: the same, for the plugins the bench comps render with motion blur;",
+            "//   they price only a task that renders with motion blur.",
             "// CPU sigma rows: { plugin id, algorithm, largest sigma covered, serial ms per Mpx, parallel",
             "//   speedup }. Use the first row of the algorithm whose sigma bound is at least the sigma.",
             "//   Measured in situ on UHD float at 16 threads, so they are hard-coded here.",
@@ -375,6 +386,8 @@ def emit_cost_table(pairs, command):
             ""]
     out.append(block("NATRON_GPU_COST_SEED_CPU_ROWS",
                      ['{ "%s", %.4f, %.4f }' % row for row in cpu]))
+    out.append(block("NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROWS",
+                     ['{ "%s", %.4f, %.4f }' % row for row in motion_blur]))
     out.append(block("NATRON_GPU_COST_SEED_CPU_SIGMA_ROWS",
                      ['{ "%s", "%s", %s, %.4f, %.4f }' % (p, a, sigma_text(t), s, k)
                       for p, a, t, s, k in sigma]))
@@ -460,9 +473,10 @@ def self_test(args):
                 if "wallNs" in rec:
                     rec["wallNs"] //= 2
                 dst.write(json.dumps(rec) + "\n")
-        cpu, sigma, gpu = cost_table_rows([fast], [sample])
+        cpu, motion_blur, sigma, gpu = cost_table_rows([fast], [sample])
         rows = {plugin: (cost, speedup) for plugin, cost, speedup in cpu}
         assert set(rows) == {"Read", "Blur", "Grade", "Write", "Defocus", "Merge"}, rows.keys()
+        assert motion_blur == [], motion_blur
         assert close(rows["Blur"][0], 100.0) and close(rows["Blur"][1], 2.0), rows["Blur"]
         assert close(rows["Grade"][0], 5.0) and close(rows["Defocus"][0], 200.0)
         assert [r[1:3] for r in sigma] == [("fir", 3.0), ("fir", 25.0), ("fir", 1e9), ("iir", 1e9)]
@@ -475,11 +489,26 @@ def self_test(args):
         text = emit_cost_table({fast: sample}, "cmd")
         assert text == emit_cost_table({fast: sample}, "cmd"), "output must be deterministic"
         assert '    { "Blur", 100.0000, 2.0000 }, \\\n' in text, text
-        assert text.count("#define NATRON_GPU_COST_SEED_") == 3
+        assert text.count("#define NATRON_GPU_COST_SEED_") == 4
+        assert "#define NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROWS\n" in text, text
         assert '{ "net.sf.cimg.CImgBlur", "fir", 3.0, 46.0000, 3.4848 }' in text, text
         assert "(%s)" % file_date(sample) in text and "//   cmd\n" in text
         body = [line for line in text.splitlines() if not line.startswith("//")]
         assert not any(line.endswith("\\") for line in body if line.startswith("}")), body
+
+        moving = os.path.join(tmp, "transform.jsonl")
+        with open(moving, "w", encoding="utf-8") as out:
+            out.write('{"frame":0,"task":0,"plugin":"%s","node":"T","deps":[],"roiPixels":1000000,'
+                      '"estimatedBytes":1,"wallNs":300000000,"device":"cpu","regionId":-1,"ok":true}\n'
+                      % TRANSFORM_PLUGIN_ID)
+            out.write('{"frame":0,"task":1,"plugin":"Grade","node":"G","deps":[0],"roiPixels":1000000,'
+                      '"estimatedBytes":1,"wallNs":10000000,"device":"cpu","regionId":-1,"ok":true}\n')
+        cpu, motion_blur, _, _ = cost_table_rows([moving], [moving])
+        assert [r[0] for r in cpu] == ["Grade"], cpu
+        assert [r[0] for r in motion_blur] == [TRANSFORM_PLUGIN_ID] and close(motion_blur[0][1], 300.0), motion_blur
+        text = emit_cost_table({moving: moving}, "cmd")
+        assert ('#define NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROWS \\\n    { "%s", 300.0000, 1.0000 }\n'
+                % TRANSFORM_PLUGIN_ID) in text, text
     print("self-test passed")
 
 

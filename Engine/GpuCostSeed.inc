@@ -15,6 +15,8 @@
 // Each macro expands to an initialiser list; the consuming code defines the row structs.
 // CPU rows: { plugin id, serial ms per Mpx (median over tasks weighted by RoI pixels),
 //   parallel speedup (serial over threaded ms per Mpx) }.
+// CPU motion-blur rows: the same, for the plugins the bench comps render with motion blur;
+//   they price only a task that renders with motion blur.
 // CPU sigma rows: { plugin id, algorithm, largest sigma covered, serial ms per Mpx, parallel
 //   speedup }. Use the first row of the algorithm whose sigma bound is at least the sigma.
 //   Measured in situ on UHD float at 16 threads, so they are hard-coded here.
@@ -39,7 +41,9 @@
     { "net.sf.openfx.Ramp", 5.1916, 0.6209 }, \
     { "net.sf.openfx.Rectangle", 4.5997, 0.5637 }, \
     { "net.sf.openfx.Retime", 0.0008, 0.3011 }, \
-    { "net.sf.openfx.TimeBlur", 0.1879, 0.9461 }, \
+    { "net.sf.openfx.TimeBlur", 0.1879, 0.9461 }
+
+#define NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROWS \
     { "net.sf.openfx.TransformPlugin", 996.1061, 2.8736 }
 
 #define NATRON_GPU_COST_SEED_CPU_SIGMA_ROWS \

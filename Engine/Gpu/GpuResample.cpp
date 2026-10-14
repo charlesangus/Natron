@@ -2,8 +2,10 @@
 
 #include "GpuRecord.h"
 
+#include <algorithm>
 #include <climits>
 #include <cmath>
+#include <cstring>
 #include <string>
 
 namespace gpu {
@@ -37,6 +39,97 @@ namespace {
         return true;
     }
 
+    // Mirrors kBlurHeaderWords and kBlurMatrixWords in Kernels/resample.slang.
+    constexpr uint32_t kBlurHeaderWords = 8;
+    constexpr uint32_t kBlurMatrixWords = 16;
+
+    // updateBuffer's limit per call.
+    constexpr std::size_t kUpdateChunkBytes = 65536;
+
+    void splitDouble(double v, float& hi, float& lo)
+    {
+        hi = static_cast<float>(v);
+        lo = static_cast<float>(v - static_cast<double>(hi));
+    }
+
+    uint32_t floatBits(float f)
+    {
+        uint32_t u;
+        std::memcpy(&u, &f, sizeof(u));
+        return u;
+    }
+
+    uint32_t packStates(const std::array<GpuResampleJacobian, 4>& jacobians)
+    {
+        uint32_t states = 0;
+        for (uint32_t s = 0; s < 4; ++s) {
+            const GpuResampleJacobian& j = jacobians[s];
+            const uint32_t bits = j.levelX | (j.levelY << 3) | (j.zero ? 0x40u : 0u);
+            states |= bits << (8 * s);
+        }
+        return states;
+    }
+
+    GpuStatus validateMatrix(const GpuResampleMatrix& m, bool weighted)
+    {
+        if (!m.jacobians[0].zero) {
+            return invalid("the Jacobian with both axes outside must be zero");
+        }
+        for (double v : m.matrix) {
+            if (!std::isfinite(v)) {
+                return invalid("the matrix is not finite");
+            }
+        }
+        for (const GpuResampleJacobian& j : m.jacobians) {
+            if (j.levelX > kGpuResampleMaxLevel || j.levelY > kGpuResampleMaxLevel) {
+                return invalid("supersampling level out of range");
+            }
+        }
+        if (weighted && !std::isfinite(m.weight)) {
+            return invalid("a matrix weight is not finite");
+        }
+        return {};
+    }
+
+    GpuStatus uploadBlurMatrices(GpuRecordContext& ctx, const GpuResample& r, GpuBuffer*& out)
+    {
+        const GpuResampleBlur& b = r.blur;
+        std::vector<uint32_t> words(kBlurHeaderWords + r.matrices.size() * kBlurMatrixWords, 0u);
+        words[0] = static_cast<uint32_t>(r.matrices.size());
+        words[1] = b.minSamples;
+        words[2] = b.maxIterations;
+        words[3] = b.seedOffset;
+        float hi, lo;
+        splitDouble(b.maxError * b.maxError, hi, lo);
+        words[4] = floatBits(hi);
+        words[5] = floatBits(lo);
+        words[6] = b.weighted ? 1u : 0u;
+        for (std::size_t i = 0; i < r.matrices.size(); ++i) {
+            const GpuResampleMatrix& m = r.matrices[i];
+            uint32_t* w = &words[kBlurHeaderWords + i * kBlurMatrixWords];
+            for (int k = 0; k < 6; ++k) {
+                splitDouble(m.matrix[k], hi, lo);
+                w[k] = floatBits(hi);
+                w[6 + k] = floatBits(lo);
+            }
+            w[12] = packStates(m.jacobians);
+            splitDouble(m.weight, hi, lo);
+            w[13] = floatBits(hi);
+            w[14] = floatBits(lo);
+        }
+        const std::span<const std::byte> bytes = std::as_bytes(std::span<const uint32_t>(words));
+        if (GpuStatus s = ctx.scratch(bytes.size(), out); !s) {
+            return s;
+        }
+        for (std::size_t offset = 0; offset < bytes.size(); offset += kUpdateChunkBytes) {
+            const std::size_t n = std::min(kUpdateChunkBytes, bytes.size() - offset);
+            if (GpuStatus s = ctx.updateBuffer(*out, offset, bytes.subspan(offset, n)); !s) {
+                return s;
+            }
+        }
+        return {};
+    }
+
 } // namespace
 
 GpuStatus
@@ -51,8 +144,17 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
     if (!r.dst.buffer || r.output.empty() || !contains(r.dst.bounds, r.output)) {
         return invalid("invalid destination window");
     }
-    if (!r.jacobians[0].zero) {
-        return invalid("the Jacobian with both axes outside must be zero");
+    if (r.matrices.empty() || r.matrices.size() > kGpuResampleMaxMatrices) {
+        return invalid("the matrix count is out of range");
+    }
+    const bool blurred = r.matrices.size() > 1;
+    for (const GpuResampleMatrix& m : r.matrices) {
+        if (GpuStatus s = validateMatrix(m, blurred && r.blur.weighted); !s) {
+            return s;
+        }
+    }
+    if (blurred && (r.blur.minSamples == 0 || !std::isfinite(r.blur.maxError))) {
+        return invalid("invalid motion blur sampling");
     }
 
     GpuResampleParams p {};
@@ -81,26 +183,23 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
         p.flags |= kFlagSrcValid;
     }
 
-    for (int k = 0; k < 6; ++k) {
-        const double v = r.matrix[k];
-        if (!std::isfinite(v)) {
-            return invalid("the matrix is not finite");
+    // An invalid source is never read, but the binding still needs a buffer, and so does the
+    // matrices' binding when they travel in the push constants.
+    const GpuBuffer* src = srcValid ? r.src.buffer : r.dst.buffer;
+    if (!blurred) {
+        const GpuResampleMatrix& m = r.matrices[0];
+        for (int k = 0; k < 6; ++k) {
+            splitDouble(m.matrix[k], p.hHi[k], p.hLo[k]);
         }
-        p.hHi[k] = static_cast<float>(v);
-        p.hLo[k] = static_cast<float>(v - static_cast<double>(p.hHi[k]));
-    }
-    for (uint32_t s = 0; s < 4; ++s) {
-        const GpuResampleJacobian& j = r.jacobians[s];
-        if (j.levelX > kGpuResampleMaxLevel || j.levelY > kGpuResampleMaxLevel) {
-            return invalid("supersampling level out of range");
-        }
-        const uint32_t bits = j.levelX | (j.levelY << 3) | (j.zero ? 0x40u : 0u);
-        p.states |= bits << (8 * s);
+        p.states = packStates(m.jacobians);
+        return ctx.dispatch(GpuKernelId::resample, { src, r.dst.buffer, r.dst.buffer }, p, { p.width, p.height, 1 });
     }
 
-    // An invalid source is never read, but the binding still needs a buffer.
-    const GpuBuffer* src = srcValid ? r.src.buffer : r.dst.buffer;
-    return ctx.dispatch(GpuKernelId::resample, { src, r.dst.buffer }, p, { p.width, p.height, 1 });
+    GpuBuffer* matrices = nullptr;
+    if (GpuStatus s = uploadBlurMatrices(ctx, r, matrices); !s) {
+        return s;
+    }
+    return ctx.dispatch(GpuKernelId::resample_blur, { src, r.dst.buffer, matrices }, p, { p.width, p.height, 1 });
 }
 
 } // namespace gpu

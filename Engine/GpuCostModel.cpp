@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <vector>
 
 #include <QThreadPool>
 
@@ -37,6 +38,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Transform/Transform.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -65,6 +67,8 @@ struct SeedGpuRow {
 #include "Engine/GpuCostSeed.inc"
 
 const SeedCpuRow kSeedCpuRows[] = { NATRON_GPU_COST_SEED_CPU_ROWS };
+// A vector, since the generator emits no rows when the bench comps render nothing with motion blur.
+const std::vector<SeedCpuRow> kSeedCpuMotionBlurRows = { NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROWS };
 const SeedCpuSigmaRow kSeedCpuSigmaRows[] = { NATRON_GPU_COST_SEED_CPU_SIGMA_ROWS };
 const SeedGpuRow kSeedGpuRows[] = { NATRON_GPU_COST_SEED_GPU_ROWS };
 
@@ -120,6 +124,13 @@ GpuCostModel::GpuCostModel()
 {
     for (const SeedCpuRow& seed : kSeedCpuRows) {
         CpuRow row;
+        row.serialMsPerMpx = seed.serialMsPerMpx;
+        row.parallelSpeedup = seed.parallelSpeedup;
+        _cpu[seed.pluginId].push_back(row);
+    }
+    for (const SeedCpuRow& seed : kSeedCpuMotionBlurRows) {
+        CpuRow row;
+        row.motionBlur = true;
         row.serialMsPerMpx = seed.serialMsPerMpx;
         row.parallelSpeedup = seed.parallelSpeedup;
         _cpu[seed.pluginId].push_back(row);
@@ -240,6 +251,9 @@ GpuCostModel::traitsOf(const FrameGraph::Task& task) const
         traits.sigma = std::max(params.sizeX, params.sizeY) * scale / 2.4;
         traits.iir = (params.filter == BlurKernels::eFilterQuasiGaussian) || (params.filter == BlurKernels::eFilterGaussian);
     }
+    if (const TransformNode* transform = dynamic_cast<const TransformNode*>(effect.get())) {
+        traits.motionBlur = transform->rendersWithMotionBlur(task.key.time, task.key.view);
+    }
 
     return traits;
 }
@@ -261,6 +275,9 @@ GpuCostModel::findCpuRowLocked(const GpuTaskTraits& traits) const
     }
     const CpuRow* plain = nullptr;
     for (const CpuRow& row : found->second) {
+        if (row.motionBlur != traits.motionBlur) {
+            continue;
+        }
         if (row.sigmaMax < 0.) {
             plain = &row;
         } else if ((row.iir == traits.iir) && (row.sigmaMax >= traits.sigma)) {
@@ -281,16 +298,21 @@ const GpuCostModel::GpuRow*
 GpuCostModel::findGpuRowLocked(const GpuTaskTraits& traits) const
 {
     std::map<std::string, std::vector<GpuRow>>::const_iterator found = _gpu.find(traits.pluginId);
-    if ((found == _gpu.end()) || found->second.empty()) {
+    if (found == _gpu.end()) {
         return nullptr;
     }
+    const GpuRow* last = nullptr;
     for (const GpuRow& row : found->second) {
+        if (row.motionBlur != traits.motionBlur) {
+            continue;
+        }
         if (row.sigmaMax >= traits.sigma) {
             return &row;
         }
+        last = &row;
     }
 
-    return &found->second.back();
+    return last;
 }
 
 GpuCostModel::GpuRow*
@@ -463,6 +485,7 @@ GpuCostModel::observeCpu(const GpuTaskTraits& traits,
 
     if (!row) {
         CpuRow fresh;
+        fresh.motionBlur = traits.motionBlur;
         fresh.measured = true;
         fresh.threadMsPerMpx = sample;
         _cpu[traits.pluginId].push_back(fresh);
@@ -496,6 +519,7 @@ GpuCostModel::observeGpu(const GpuTaskTraits& traits,
 
     if (!row) {
         GpuRow fresh;
+        fresh.motionBlur = traits.motionBlur;
         fresh.sigmaMax = kInfinity;
         fresh.kernelMsPerMpx = sample;
         _gpu[traits.pluginId].push_back(fresh);

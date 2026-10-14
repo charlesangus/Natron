@@ -27,7 +27,10 @@
 
 #include <algorithm>
 #include <bitset>
+#include <chrono>
+#include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <list>
 #include <memory>
@@ -50,12 +53,14 @@
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/GpuCostModel.h"
 #include "Engine/GpuRegionStrips.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
 #include "Engine/Nodes/Image/Resampler.h"
@@ -67,6 +72,11 @@
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#include "Engine/Gpu/GpuRuntime.h"
+#endif
 
 NATRON_NAMESPACE_USING
 
@@ -142,6 +152,37 @@ protected:
         return node ? dynamic_cast<TransformNode*>(node->getEffectInstance().get()) : NULL;
     }
 
+    // Keys translate, rotate and scale at times 0 and 2 about the centre (32, 24), so the matrices
+    // change over any shutter around kTime and the scale minifies at its start.
+    static bool animate(const NodePtr& node)
+    {
+        if (!setKnobValues(node, kTransformNodeParamCenter, { 32., 24. })) {
+            return false;
+        }
+        const struct {
+            const char* name;
+            std::vector<double> at0;
+            std::vector<double> at2;
+        } keys[] = {
+            { kTransformNodeParamTranslate, { -6., 3. }, { 8., -4. } },
+            { kTransformNodeParamRotate, { -12. }, { 18. } },
+            { kTransformNodeParamScale, { 0.7, 0.7 }, { 1.1, 0.9 } },
+        };
+        for (const auto& k : keys) {
+            KnobDouble* knob = dynamic_cast<KnobDouble*>(node->getKnobByName(k.name).get());
+            EXPECT_TRUE(knob != NULL) << k.name;
+            if (!knob) {
+                return false;
+            }
+            for (int d = 0; d < (int)k.at0.size(); ++d) {
+                knob->setValueAtTime(0., k.at0[d], ViewSpec::all(), d);
+                knob->setValueAtTime(2., k.at2[d], ViewSpec::all(), d);
+            }
+        }
+
+        return true;
+    }
+
     static bool setGeometry(const NodePtr& node,
                             const GeometryCase& g)
     {
@@ -198,15 +239,50 @@ TEST_F(NativeTransformGpuTest, EligibilityFollowsTheSupportedSettings)
             EXPECT_EQ(supported, effect->canRenderOnGpu(q)) << name << " mask and mix";
         }
 
+        ASSERT_TRUE(animate(node));
         ASSERT_TRUE(setKnobValues(node, kTransformNodeParamMotionBlur, { 1. }));
-        EXPECT_FALSE(effect->canRenderOnGpu(eligibleQuery())) << name << " motion blur";
+        EXPECT_EQ(supported, effect->canRenderOnGpu(eligibleQuery())) << name << " motion blur";
         ASSERT_TRUE(setKnobValues(node, kTransformNodeParamShutter, { 0. }));
-        EXPECT_FALSE(effect->canRenderOnGpu(eligibleQuery())) << name << " motion blur with a closed shutter";
+        EXPECT_EQ(supported, effect->canRenderOnGpu(eligibleQuery())) << name << " motion blur with a closed shutter";
         ASSERT_TRUE(setKnobValues(node, kTransformNodeParamMotionBlur, { 0. }));
         EXPECT_EQ(supported, effect->canRenderOnGpu(eligibleQuery())) << name << " no motion blur";
         ASSERT_TRUE(setKnobValues(node, kTransformNodeParamDirectionalBlur, { 1. }));
-        EXPECT_FALSE(effect->canRenderOnGpu(eligibleQuery())) << name << " directional blur";
+        EXPECT_EQ(supported, effect->canRenderOnGpu(eligibleQuery())) << name << " directional blur at quality 0";
+        ASSERT_TRUE(setKnobValues(node, kTransformNodeParamMotionBlur, { 1. }));
+        EXPECT_EQ(supported, effect->canRenderOnGpu(eligibleQuery())) << name << " directional blur";
+        {
+            GpuQuery q = eligibleQuery();
+            q.hasConcatenatedInput = true;
+            EXPECT_FALSE(effect->canRenderOnGpu(q)) << name << " directional blur with a transform concatenated from upstream";
+        }
     }
+}
+
+// The cost model prices a Transform with its motion blur rows only while the knobs ask for motion blur.
+TEST_F(NativeTransformGpuTest, CostTraitsFollowMotionBlur)
+{
+    resetProject();
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    ASSERT_TRUE(bool(source));
+    NodePtr node = makeNode(false);
+    ASSERT_TRUE(bool(node));
+    connectNodes(source, node, 0, true);
+    ASSERT_TRUE(animate(node));
+
+    GpuCostModel model;
+    FrameGraph::Task task;
+    task.key.node = node;
+    task.key.time = kTime;
+    task.key.view = ViewIdx(0);
+    task.key.mipmapLevel = 0;
+    EXPECT_FALSE(model.traitsOf(task).motionBlur) << "motion blur 0";
+    EXPECT_EQ(GpuCostClass::eSpatial, model.traitsOf(task).costClass);
+    ASSERT_TRUE(setKnobValues(node, kTransformNodeParamMotionBlur, { 1. }));
+    EXPECT_TRUE(model.traitsOf(task).motionBlur) << "motion blur 1";
+    ASSERT_TRUE(setKnobValues(node, kTransformNodeParamShutter, { 0. }));
+    EXPECT_FALSE(model.traitsOf(task).motionBlur) << "closed shutter";
+    ASSERT_TRUE(setKnobValues(node, kTransformNodeParamDirectionalBlur, { 1. }));
+    EXPECT_TRUE(model.traitsOf(task).motionBlur) << "directional blur";
 }
 
 TEST_F(NativeTransformGpuTest, InputRegionIsTheCpuRegionOfInterest)
@@ -381,15 +457,61 @@ testWindows(const RectI& rod)
     return rois;
 }
 
+// Pixels of a window that may miss the tolerance, as long as every value of theirs is within
+// `absolute`: one in `pixelsPer` of the window's pixels, and at least `minPixels`.
+struct ToleranceExceptions {
+    double absolute = 0.;
+    std::size_t pixelsPer = 0;
+    std::size_t minPixels = 0;
+};
+
+// Expects the pixels of `got` missing `tolerance` to be few enough and close enough for
+// `exceptions`.
+void
+expectWithinExceptions(const std::vector<float>& cpu,
+                       const std::vector<float>& got,
+                       const ParityTolerance& tolerance,
+                       const ToleranceExceptions& exceptions,
+                       const std::string& what)
+{
+    const ParityTolerance loose = ParityTolerance::make(exceptions.absolute, 0.);
+    const std::size_t nPixels = cpu.size() / 4;
+    std::size_t missed = 0;
+    std::size_t beyond = 0;
+    double worst = 0.;
+    for (std::size_t p = 0; p < nPixels; ++p) {
+        bool misses = false;
+        for (std::size_t c = 0; c < 4; ++c) {
+            const std::size_t i = p * 4 + c;
+            if (!tolerance.accepts(cpu[i], got[i])) {
+                misses = true;
+                worst = (std::max)(worst, std::fabs((double)cpu[i] - (double)got[i]));
+                if (!loose.accepts(cpu[i], got[i])) {
+                    ++beyond;
+                }
+            }
+        }
+        if (misses) {
+            ++missed;
+        }
+    }
+    const std::size_t allowed = (std::max)(exceptions.minPixels, nPixels / exceptions.pixelsPer);
+    EXPECT_EQ(0u, beyond) << what << ": " << beyond << " values beyond " << exceptions.absolute << ", worst " << worst;
+    EXPECT_LE(missed, allowed) << what << ": " << missed << " of " << nPixels << " pixels miss the tolerance, worst " << worst;
+}
+
 // Renders node on the CPU and through renderGpu() over each test window at both mipmap levels,
-// expecting the resampling bound; `mask`, when given, is the mask input's source.
+// expecting the resampling bound; `mask`, when given, is the mask input's source. With
+// `exceptions`, a few pixels may miss the tolerance as those allow.
 void
 expectGpuMatchesCpu(GpuParityRuntime& runtime,
                     const NodePtr& source,
                     const NodePtr& maskSource,
                     const NodePtr& node,
                     const std::string& base,
-                    int* nCompared)
+                    int* nCompared,
+                    const ParityTolerance& tolerance = ParityTolerance::resampling(),
+                    const ToleranceExceptions* exceptions = nullptr)
 {
     TransformNode* effect = dynamic_cast<TransformNode*>(node->getEffectInstance().get());
     ASSERT_TRUE(effect != NULL);
@@ -426,8 +548,12 @@ expectGpuMatchesCpu(GpuParityRuntime& runtime,
             EXPECT_EQ(0u, run.writtenOutside) << what << ": floats outside the window were written";
 
             ASSERT_EQ(cpu.pixels.size(), run.pixels.size()) << what;
-            const ImageDiff diff = compareImages(cpu.pixels, run.pixels, ParityTolerance::resampling());
+            const ImageDiff diff = compareImages(cpu.pixels, run.pixels, tolerance);
             *nCompared += (int)diff.compared;
+            if (exceptions) {
+                expectWithinExceptions(cpu.pixels, run.pixels, tolerance, *exceptions, what);
+                continue;
+            }
             const std::size_t at = diff.firstMismatchIndex / 4;
             EXPECT_EQ(0u, diff.mismatches) << what << ": " << diff.mismatches << " mismatches, worst " << diff.worstAbsolute << ", first at ("
                                            << (roi.x1 + (int)(at % roi.width())) << "," << (roi.y1 + (int)(at / roi.width())) << ") channel " << (diff.firstMismatchIndex % 4)
@@ -546,6 +672,209 @@ TEST_F(NativeTransformGpuTest, MaskedMatchesTheCpuRender)
         }
     }
     EXPECT_GT(nCompared, 0);
+}
+
+namespace {
+
+struct MotionBlurCase {
+    const char* name;
+    double motionBlur;
+    bool directional;
+    const char* shutterOffset;
+    double customOffset;
+    const char* filter;
+    bool blackOutside;
+};
+
+} // namespace
+
+// Motion blur at qualities 0.5, 1 and 4 over every shutter offset, and directional blur, which
+// weights its matrices, against the CPU render under the IIR bound: a pixel averages up to
+// motionBlur x 40 samples. A directional blur at quality 0 samples one matrix, under the resampling
+// bound.
+//
+// A few blurred pixels may miss the IIR bound by up to the sampler's error target,
+// motionBlurMaxError(). Each pixel stops sampling once floor(variance / maxError^2) is reached, and
+// the device's float filters round each sample a few ulps away from the CPU's double ones, so a
+// pixel whose quotient lies that close to an integer takes one sample more or fewer. That moves its
+// mean by about maxError / sqrt(samples), an estimate the stop test accepts as readily as the CPU's.
+// Lavapipe misses the IIR bound on at most 7 values per mipmap level here, RADV on one; one pixel
+// in 250 of a window, and at least 2, leaves headroom.
+TEST_F(NativeTransformGpuTest, MotionBlurMatchesTheCpuRender)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    resetProject();
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    ASSERT_TRUE(bool(source));
+    setParitySourceOrigin(source, 3, 5);
+
+    const MotionBlurCase cases[] = {
+        { "motion-blur-05-start", 0.5, false, "start", 0., "bilinear", false },
+        { "motion-blur-1-centered", 1., false, "centered", 0., "cubic", true },
+        { "motion-blur-4-end", 4., false, "end", 0., "cubic", false },
+        { "motion-blur-1-custom", 1., false, "custom", -0.35, "keys", false },
+        { "directional-blur-1", 1., true, "start", 0., "cubic", false },
+        { "directional-blur-0", 0., true, "start", 0., "cubic", false },
+    };
+    int nCompared = 0;
+    for (const MotionBlurCase& c : cases) {
+        NodePtr node = makeNode(false);
+        TransformNode* effect = effectOf(node);
+        ASSERT_TRUE(effect != NULL);
+        connectNodes(source, node, 0, true);
+        ASSERT_TRUE(animate(node));
+        ASSERT_TRUE(setKnobValues(node, kTransformNodeParamMotionBlur, { c.motionBlur }));
+        ASSERT_TRUE(setKnobValues(node, kTransformNodeParamDirectionalBlur, { c.directional ? 1. : 0. }));
+        ASSERT_TRUE(setKnobValues(node, kTransformNodeParamShutter, { 1. }));
+        ASSERT_TRUE(setKnobValue(node, kResamplerParamShutterOffset, std::string(c.shutterOffset)));
+        ASSERT_TRUE(setKnobValues(node, kResamplerParamShutterCustomOffset, { c.customOffset }));
+        ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(c.filter)));
+        ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { c.blackOutside ? 1. : 0. }));
+        const bool blurred = c.motionBlur != 0.;
+        EXPECT_EQ(blurred, effect->rendersWithMotionBlur(kTime, ViewIdx(0))) << c.name;
+
+        ToleranceExceptions exceptions;
+        exceptions.absolute = Resampler::motionBlurMaxError(c.motionBlur);
+        exceptions.pixelsPer = 250;
+        exceptions.minPixels = 2;
+        expectGpuMatchesCpu(*runtime, source, NodePtr(), node, c.name, &nCompared,
+                            blurred ? ParityTolerance::iir() : ParityTolerance::resampling(), blurred ? &exceptions : nullptr);
+        if (HasFatalFailure()) {
+            return;
+        }
+    }
+    EXPECT_GT(nCompared, 0);
+}
+
+namespace {
+
+bool
+moveToDevice(gpu::GpuRuntime& runtime,
+             gpu::GpuBuffer& buffer,
+             std::vector<float>& data)
+{
+    gpu::TimelineValue done;
+    gpu::GpuStatus s = runtime.upload(gpu::HostRange { data.data(), data.size() * sizeof(float) }, buffer, 0, done);
+    if (s) {
+        s = runtime.wait(done);
+    }
+    EXPECT_TRUE(bool(s)) << s.message;
+
+    return bool(s);
+}
+
+} // namespace
+
+// The device time of an 8K (7680x4320) RGBA Transform with motion blur at qualities 1 and 4, its
+// source and output resident: the wall time of submitting renderGpu()'s work alone and waiting for
+// it, the fastest of three after a warm-up. Only runs with NATRON_GPU_BENCH=1, and is meant for a
+// discrete device such as RADV; the times go to stdout and to the test's properties.
+TEST_F(NativeTransformGpuTest, MotionBlur8kKernelTime)
+{
+    const char* bench = std::getenv("NATRON_GPU_BENCH");
+    if (!bench || (std::string(bench) != "1")) {
+        std::printf("skipped: set NATRON_GPU_BENCH=1 to time the 8K motion blur\n");
+
+        return;
+    }
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    const int width = 7680;
+    const int height = 4320;
+    ProjectPtr project = getApp()->getProject();
+    project->reset(false, true);
+    project->setAutoSetProjectFormatEnabled(false);
+    project->setOrAddProjectFormat(Format(0, 0, width, height, "nativeTransformGpu8k", 1.));
+
+    NodePtr source = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    NodePtr node = makeNode(false);
+    TransformNode* effect = effectOf(node);
+    ASSERT_TRUE(bool(source) && (effect != NULL));
+    connectNodes(source, node, 0, true);
+    ASSERT_TRUE(setKnobValues(node, kTransformNodeParamCenter, { width / 2., height / 2. }));
+    for (const char* name : { kTransformNodeParamTranslate, kTransformNodeParamRotate }) {
+        KnobDouble* knob = dynamic_cast<KnobDouble*>(node->getKnobByName(name).get());
+        ASSERT_TRUE(knob != NULL) << name;
+        const bool translate = std::string(name) == kTransformNodeParamTranslate;
+        knob->setValueAtTime(0., translate ? -200. : -5., ViewSpec::all(), 0);
+        knob->setValueAtTime(2., translate ? 200. : 5., ViewSpec::all(), 0);
+        if (translate) {
+            knob->setValueAtTime(0., -80., ViewSpec::all(), 1);
+            knob->setValueAtTime(2., 80., ViewSpec::all(), 1);
+        }
+    }
+    ASSERT_TRUE(setKnobValues(node, kTransformNodeParamShutter, { 1. }));
+    ASSERT_TRUE(setKnobValue(node, kResamplerParamShutterOffset, std::string("centered")));
+    ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("cubic")));
+
+    const RectI rect(0, 0, width, height);
+    GpuQuery query = eligibleQuery();
+    query.mappedScale = RenderScale::identity;
+    ASSERT_TRUE(setKnobValues(node, kTransformNodeParamMotionBlur, { 1. }));
+    const RectI inputRoI = effect->getGpuInputRoI(0, rect, RenderScale::identity);
+    ASSERT_FALSE(inputRoI.isNull());
+
+    // A pattern with edges in every direction, so the variance asks for more samples where it moves.
+    std::vector<float> pixels((std::size_t)inputRoI.area() * 4);
+    for (int y = 0; y < inputRoI.height(); ++y) {
+        for (int x = 0; x < inputRoI.width(); ++x) {
+            float* p = &pixels[((std::size_t)y * inputRoI.width() + x) * 4];
+            const bool cell = (((x / 37) + (y / 23)) & 1) != 0;
+            p[0] = cell ? 0.9f : 0.1f;
+            p[1] = (float)(x % 256) / 255.f;
+            p[2] = (float)(y % 512) / 511.f;
+            p[3] = 1.f;
+        }
+    }
+    gpu::GpuRuntime& vk = runtime->runtime();
+    gpu::GpuBuffer* srcBuffer = runtime->buffer(0, pixels.size());
+    ASSERT_TRUE(srcBuffer != NULL);
+    ASSERT_TRUE(moveToDevice(vk, *srcBuffer, pixels));
+    std::vector<float>().swap(pixels);
+    gpu::GpuBuffer* dstBuffer = runtime->buffer(1, (std::size_t)rect.area() * 4);
+    ASSERT_TRUE(dstBuffer != NULL);
+
+    GpuImageView input;
+    input.buffer = srcBuffer;
+    input.bounds = inputRoI;
+    input.rowStrideFloats = inputRoI.width() * 4;
+    input.nComps = 4;
+    const double megapixels = (double)rect.area() / 1e6;
+    for (double quality : { 1., 4. }) {
+        ASSERT_TRUE(setKnobValues(node, kTransformNodeParamMotionBlur, { quality }));
+        ASSERT_TRUE(effect->canRenderOnGpu(query)) << "quality " << quality;
+        ASSERT_EQ(inputRoI, effect->getGpuInputRoI(0, rect, RenderScale::identity)) << "quality " << quality;
+        double best = 0.;
+        for (int run = 0; run < 4; ++run) {
+            std::unique_ptr<gpu::GpuRecordContext> context;
+            const gpu::GpuStatus created = vk.newRecordContext(context);
+            ASSERT_TRUE(bool(created)) << created.message;
+            GpuRenderArgs args(*context);
+            args.query = query;
+            args.outputRect = rect;
+            args.inputs.push_back(input);
+            args.output.buffer = dstBuffer;
+            args.output.bounds = rect;
+            args.output.rowStrideFloats = rect.width() * 4;
+            args.output.nComps = 4;
+            ASSERT_EQ(eStatusOK, effect->renderGpu(args)) << "quality " << quality;
+            const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+            const gpu::GpuStatus submitted = context->submitAndWait(600'000'000'000ull);
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            ASSERT_TRUE(bool(submitted)) << submitted.message;
+            if ((run == 1) || ((run > 1) && (ms < best))) {
+                best = ms;
+            }
+        }
+        std::printf("transform motion blur %g, 8K: %.1f ms, %.3f ms/Mpx\n", quality, best, best / megapixels);
+        const std::string key = "motion_blur_" + std::to_string((int)quality) + "_8k_ms";
+        RecordProperty(key, std::to_string(best));
+    }
 }
 
 #endif // NATRON_HAVE_GPU

@@ -1,16 +1,21 @@
-// Resampler::resampleRow for one affine inverse matrix without motion blur: the ten filters of
-// Resampler::filter1D, Resampler::interpolate and Resampler::interpolateSuper (supersampling and the
-// box integration), reading the source from a storage buffer. Sample positions are carried in two
+// Resampler::resampleRow for affine inverse matrices: the ten filters of Resampler::filter1D,
+// Resampler::interpolate and Resampler::interpolateSuper (supersampling and the box integration),
+// reading the source from a storage buffer. resample_main samples one matrix; resample_blur_main
+// averages several per pixel as Resampler::motionBlurPixel does. Sample positions are carried in two
 // floats, so that the filter taps and the integer cells the CPU picks with its double positions are
 // the same here. GpuResampleParams in Engine/Gpu/GpuResample.h mirrors ResampleParams.
 
 StructuredBuffer<float> srcBuf;
 RWStructuredBuffer<float> dstBuf;
+// resample_blur_main's matrices, laid out as Engine/Gpu/GpuResample.cpp writes them: a header of
+// kBlurHeaderWords words, then kBlurMatrixWords words per matrix.
+StructuredBuffer<uint> blurBuf;
 
 // The destination's offset addresses the output origin. The source's addresses (srcX1, srcY1).
 // The matrix rows (h00 h01 h02) and (h10 h11 h12) are each a double split into hi + lo. `states`
 // holds one byte per Jacobian state (bit 0: x inside, bit 1: y inside): levelX in bits 0-2,
-// levelY in bits 3-5, bit 6 set when that Jacobian is zero.
+// levelY in bits 3-5, bit 6 set when that Jacobian is zero. resample_blur_main reads the matrices
+// and their states from blurBuf instead.
 struct ResampleParams
 {
     int outX;
@@ -122,6 +127,31 @@ FF ffHalf(FF a)
 FF ffNeg(FF a)
 {
     return ffMake(-a.hi, -a.lo);
+}
+
+FF ffMul(FF a, FF b)
+{
+    precise float p = a.hi * b.hi;
+    precise float e = fma(a.hi, b.hi, -p);
+    precise float lo = e + (a.hi * b.lo + a.lo * b.hi);
+    return ffQuick(p, lo);
+}
+
+// One correction step after the float quotient, whose rounding the device may not make exact.
+FF ffDivF(FF a, float b)
+{
+    precise float q1 = a.hi / b;
+    const FF r = ffAdd(a, ffNeg(ffMulF(ffMake(q1, 0.0), b)));
+    precise float q2 = (r.hi + r.lo) / b;
+    return ffQuick(q1, q2);
+}
+
+FF ffDiv(FF a, FF b)
+{
+    precise float q1 = a.hi / b.hi;
+    const FF r = ffAdd(a, ffNeg(ffMul(ffMake(q1, 0.0), b)));
+    precise float q2 = (r.hi + r.lo) / b.hi;
+    return ffQuick(q1, q2);
 }
 
 bool ffLess(FF a, FF b)
@@ -515,10 +545,10 @@ int pow3(int e)
 ///////////////////////////////////////////////////////////////////////////////
 // Resampler's interpolateSuperT for the Jacobian (Jxx Jxy; Jyx Jyy) of state `state`.
 
-float4 interpolateSuper(uint filter, bool clampOn, FF fx, FF fy, FF Jxx, FF Jxy, FF Jyx, FF Jyy, uint state)
+float4 interpolateSuper(uint filter, bool clampOn, FF fx, FF fy, FF Jxx, FF Jxy, FF Jyx, FF Jyy, uint states, uint state)
 {
     float4 tmp;
-    const uint bits = (rp.states >> (8 * state)) & 0xffu;
+    const uint bits = (states >> (8 * state)) & 0xffu;
     if ((bits & 0x40u) != 0)
     {
         interpolate(filter, clampOn, fx, fy, tmp);
@@ -596,22 +626,28 @@ float4 interpolateSuper(uint filter, bool clampOn, FF fx, FF fy, FF Jxx, FF Jxy,
 
 ///////////////////////////////////////////////////////////////////////////////
 
-float4 samplePixel(int x, int y)
+// The matrix rows (h00 h01 h02) and (h10 h11 h12), with `states` as in ResampleParams.
+struct Matrix
+{
+    FF h00;
+    FF h01;
+    FF h02;
+    FF h10;
+    FF h11;
+    FF h12;
+    uint states;
+};
+
+float4 samplePixel(Matrix m, int x, int y)
 {
     if (!srcValid())
         return float4(0.0, 0.0, 0.0, 0.0);
     const uint filter = rp.filter;
     const bool clampOn = (rp.flags & kFlagClamp) != 0;
-    const FF h00 = ffMake(rp.h00Hi, rp.h00Lo);
-    const FF h01 = ffMake(rp.h01Hi, rp.h01Lo);
-    const FF h02 = ffMake(rp.h02Hi, rp.h02Lo);
-    const FF h10 = ffMake(rp.h10Hi, rp.h10Lo);
-    const FF h11 = ffMake(rp.h11Hi, rp.h11Lo);
-    const FF h12 = ffMake(rp.h12Hi, rp.h12Lo);
     const float px = float(x) + 0.5;
     const float py = float(y) + 0.5;
-    const FF fx = ffAdd(ffAdd(ffMulF(h00, px), ffMulF(h01, py)), h02);
-    const FF fy = ffAdd(ffAdd(ffMulF(h10, px), ffMulF(h11, py)), h12);
+    const FF fx = ffAdd(ffAdd(ffMulF(m.h00, px), ffMulF(m.h01, py)), m.h02);
+    const FF fy = ffAdd(ffAdd(ffMulF(m.h10, px), ffMulF(m.h11, py)), m.h12);
 
     float4 r;
     if (filter == kFilterImpulse)
@@ -629,8 +665,15 @@ float4 samplePixel(int x, int y)
     }
     const FF zero = ffMake(0.0, 0.0);
     const uint state = (xinside ? 1u : 0u) | (yinside ? 2u : 0u);
-    return interpolateSuper(filter, clampOn, fx, fy, xinside ? h00 : zero, xinside ? h01 : zero, yinside ? h10 : zero,
-                            yinside ? h11 : zero, state);
+    return interpolateSuper(filter, clampOn, fx, fy, xinside ? m.h00 : zero, xinside ? m.h01 : zero, yinside ? m.h10 : zero,
+                            yinside ? m.h11 : zero, m.states, state);
+}
+
+void storePixel(uint3 tid, float4 v)
+{
+    const uint base = rp.dstOffset + tid.y * rp.dstStride + tid.x * rp.nComps;
+    for (uint c = 0; c < rp.nComps && c < 4; ++c)
+        dstBuf[base + c] = v[c];
 }
 
 [shader("compute")]
@@ -639,8 +682,168 @@ void resample_main(uint3 tid : SV_DispatchThreadID)
 {
     if (tid.x >= rp.width || tid.y >= rp.height)
         return;
-    const float4 v = samplePixel(rp.outX + int(tid.x), rp.outY + int(tid.y));
-    const uint base = rp.dstOffset + tid.y * rp.dstStride + tid.x * rp.nComps;
-    for (uint c = 0; c < rp.nComps && c < 4; ++c)
-        dstBuf[base + c] = v[c];
+    Matrix m;
+    m.h00 = ffMake(rp.h00Hi, rp.h00Lo);
+    m.h01 = ffMake(rp.h01Hi, rp.h01Lo);
+    m.h02 = ffMake(rp.h02Hi, rp.h02Lo);
+    m.h10 = ffMake(rp.h10Hi, rp.h10Lo);
+    m.h11 = ffMake(rp.h11Hi, rp.h11Lo);
+    m.h12 = ffMake(rp.h12Hi, rp.h12Lo);
+    m.states = rp.states;
+    storePixel(tid, samplePixel(m, rp.outX + int(tid.x), rp.outY + int(tid.y)));
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Resampler's motionBlurPixelT. The CPU accumulates in doubles and stops on the variance, so the
+// sums here are kept in two floats: a sample more or less moves the mean by far more than the
+// tolerance.
+
+// The header: matrix count, minimum samples, maximum samples, the seed's offset
+// (unsigned(0x10000 * motionBlur)), the squared maximum error as hi and lo float bits, and 1 when the
+// matrices are weighted. A matrix: hi of h00 h01 h02 h10 h11 h12, then their lo, its states, and its
+// weight as hi and lo float bits.
+static const uint kBlurHeaderWords = 8;
+static const uint kBlurMatrixWords = 16;
+
+uint motionBlurHash(uint a)
+{
+    a = (a ^ 61u) ^ (a >> 16);
+    a = a + (a << 3);
+    a = a ^ (a >> 4);
+    a = a * 0x27d4eb2du;
+    a = a ^ (a >> 15);
+    return a;
+}
+
+// floor(vanDerCorput2(seed) * count) exactly: the sequence's element is reversebits(seed) / 2^32,
+// and count is below 2^16.
+uint vanDerCorputIndex(uint rev, uint count)
+{
+    return ((rev >> 16) * count + (((rev & 0xffffu) * count) >> 16)) >> 16;
+}
+
+Matrix blurMatrix(uint t)
+{
+    const uint base = kBlurHeaderWords + t * kBlurMatrixWords;
+    Matrix m;
+    m.h00 = ffMake(asfloat(blurBuf[base + 0]), asfloat(blurBuf[base + 6]));
+    m.h01 = ffMake(asfloat(blurBuf[base + 1]), asfloat(blurBuf[base + 7]));
+    m.h02 = ffMake(asfloat(blurBuf[base + 2]), asfloat(blurBuf[base + 8]));
+    m.h10 = ffMake(asfloat(blurBuf[base + 3]), asfloat(blurBuf[base + 9]));
+    m.h11 = ffMake(asfloat(blurBuf[base + 4]), asfloat(blurBuf[base + 10]));
+    m.h12 = ffMake(asfloat(blurBuf[base + 5]), asfloat(blurBuf[base + 11]));
+    m.states = blurBuf[base + 12];
+    return m;
+}
+
+FF blurWeight(uint t)
+{
+    const uint base = kBlurHeaderWords + t * kBlurMatrixWords;
+    return ffMake(asfloat(blurBuf[base + 13]), asfloat(blurBuf[base + 14]));
+}
+
+// The samples the variance asks for, as the CPU's (int)(var / maxErr2); 0 asks for none more. On
+// x86 the CPU's conversion of a quotient at or past 2^31, or of a NaN, gives INT_MIN, which asks for
+// none more either.
+int samplesForVariance(FF var, FF maxErr2)
+{
+    const FF q = ffDiv(var, maxErr2);
+    if (!(q.hi >= 0.0) || !(q.hi < 2147483648.0))
+        return 0;
+    return max(toPos(q).i, 0);
+}
+
+float4 motionBlurPixel(int x, int y)
+{
+    const uint count = blurBuf[0];
+    const int minSamples = int(blurBuf[1]);
+    const int maxIt = int(blurBuf[2]);
+    const FF maxErr2 = ffMake(asfloat(blurBuf[4]), asfloat(blurBuf[5]));
+    const bool weighted = blurBuf[6] != 0;
+    const uint nComps = min(rp.nComps, 4u);
+    const FF zero = ffMake(0.0, 0.0);
+
+    FF acc = zero;
+    FF accPix[4] = { zero, zero, zero, zero };
+    FF accPix2[4] = { zero, zero, zero, zero };
+    FF mean[4] = { zero, zero, zero, zero };
+
+    uint seed = motionBlurHash(motionBlurHash(uint(x) + blurBuf[3]) + uint(y));
+    int sample = 0;
+    int maxSamples = minSamples;
+    while (sample < maxSamples)
+    {
+        for (; sample < maxSamples; ++sample, ++seed)
+        {
+            const uint index = vanDerCorputIndex(reversebits(seed), count);
+            // (sample + vanDerCorput2(seed)) * count / minSamples, floored: the fraction left over
+            // from the index cannot carry the integer quotient past the next integer.
+            const uint t = (sample < minSamples) ? (uint(sample) * count + index) / uint(minSamples) : index;
+            const float4 v = samplePixel(blurMatrix(t), x, y);
+            if (!weighted)
+            {
+                for (uint c = 0; c < nComps; ++c)
+                {
+                    precise float sq = v[c] * v[c];
+                    accPix[c] = ffAddF(accPix[c], v[c]);
+                    accPix2[c] = ffAddF(accPix2[c], sq);
+                }
+            }
+            else
+            {
+                const FF w = blurWeight(t);
+                acc = ffAdd(acc, w);
+                for (uint c = 0; c < nComps; ++c)
+                {
+                    precise float sq = v[c] * v[c];
+                    accPix[c] = ffAdd(accPix[c], ffMulF(w, v[c]));
+                    accPix2[c] = ffAdd(accPix2[c], ffMulF(w, sq));
+                }
+            }
+        }
+        if (!weighted)
+        {
+            for (uint c = 0; c < nComps; ++c)
+            {
+                mean[c] = ffDivF(accPix[c], float(sample));
+                if (sample > 1)
+                {
+                    const FF spread = ffAdd(accPix2[c], ffNeg(ffMulF(ffMul(mean[c], mean[c]), float(sample))));
+                    const FF var = ffDivF(spread, float(sample - 1));
+                    if (maxSamples < maxIt)
+                        maxSamples = max(maxSamples, min(samplesForVariance(var, maxErr2), maxIt));
+                }
+            }
+        }
+        else if (ffLess(zero, acc))
+        {
+            for (uint c = 0; c < nComps; ++c)
+            {
+                mean[c] = ffDiv(accPix[c], acc);
+                if (sample > 1)
+                {
+                    const FF var = ffAdd(ffDiv(accPix2[c], acc), ffNeg(ffMul(mean[c], mean[c])));
+                    if (maxSamples < maxIt)
+                        maxSamples = max(maxSamples, min(samplesForVariance(var, maxErr2), maxIt));
+                }
+            }
+        }
+    }
+    float4 r = float4(0.0, 0.0, 0.0, 0.0);
+    for (uint c = 0; c < nComps; ++c)
+        r[c] = mean[c].hi + mean[c].lo;
+    return r;
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void resample_blur_main(uint3 tid : SV_DispatchThreadID)
+{
+    if (tid.x >= rp.width || tid.y >= rp.height)
+        return;
+    // Every sample of a source that is not there is zero, and so is their mean.
+    float4 v = float4(0.0, 0.0, 0.0, 0.0);
+    if (srcValid())
+        v = motionBlurPixel(rp.outX + int(tid.x), rp.outY + int(tid.y));
+    storePixel(tid, v);
 }

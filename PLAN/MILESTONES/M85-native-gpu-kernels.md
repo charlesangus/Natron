@@ -396,7 +396,7 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - verify: `RenderProfileTest` asserts both fields on an injected-OOM fallback and on a clean region, and the report self-test passes.
   - size: M
 
-- [ ] M85.P6.T1b — Device-timed kernelMs on the non-pipelined region paths
+- [x] M85.P6.T1b — Device-timed kernelMs on the non-pipelined region paths
   - files: `Engine/GpuRegionTask.cpp` (`submit()`, `record()`, `recordStrip`), `Tests/RenderProfile_Test.cpp` or `Tests/GpuResidency_Test.cpp`
   - approach:
     - **Bug:** `submit()` (`GpuRegionTask.cpp:899-925`) adds `msBetween(segmentBegin, end)` to `kernelMs` even when there is no recorder to submit, and `segmentBegin` is only reset when a recorder is created (`:1021`). A member that downloads inside `record()`'s loop (`:1066`) submits, then the unconditional final `submit()` (`:1072`) adds the same interval again, so a region whose last member downloads reports about 2× its wall time.
@@ -587,3 +587,4 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - **Transform:** motion blur, directional blur and concatenated inputs stay on the CPU; `GpuQuery` gains `hasConcatenatedInput` and `draftMode`. `ResamplingMatchesTheCpuRender` takes ~100 s (about 900 GPU runs), on RADV as on lavapipe.
   - **`kernelMs` is double-counted on the non-pipelined paths** (found from a profile reporting 390 ms kernel against 195 ms wall), and it is a host interval that includes pipeline compilation there. P6.T1b fixes it before P6.T2 seeds from it.
 
+- 2026-10-13 — **P6.T1b done** (`565396a7e`). `submit()` accounts only for a submitted recorder, and each submitted segment on the unpipelined paths is bracketed by a 2-query timestamp pool, with the host interval as fallback. `GpuResidencyTest.RegionKernelTimeIsNotCountedTwiceWhenTheLastMemberDownloads` passes on lavapipe and RADV in both modes and skips with no ICD.

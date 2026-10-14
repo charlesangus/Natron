@@ -495,7 +495,7 @@ TEST(GpuCostModel, GradeCostsFollowSeedOverride)
     model.setThreadCount(16);
     model.setCpuSeed(kGradeId, 16., 16.);
     EXPECT_NEAR(model.cpuMs(GpuTaskTraits(kGradeId), kUhdMpx), kUhdMpx, 1e-9);
-    EXPECT_NEAR(model.gpuMs(GpuTaskTraits(kGradeId), kUhdMpx), 0.0482 * kUhdMpx, 1e-9);
+    EXPECT_NEAR(model.gpuMs(GpuTaskTraits(kGradeId), kUhdMpx), 0.497, 1e-3);
     EXPECT_FALSE(model.hasGpuCost(GpuTaskTraits("net.sf.openfx.MergePlugin")));
 }
 
@@ -685,8 +685,8 @@ TEST(GpuCostModel, ClassDefaultsFollowGradeAndBlurRows)
     EXPECT_EQ(model.cpuMs(other, 1.), 0.);
 }
 
-// The seed's Transform row was measured with motion blur: it prices a motion-blurred Transform only, a plain one
-// taking the spatial default, and measurements of either leave the other alone.
+// The seed prices a Transform that renders with motion blur apart from a plain one, and measurements of either leave
+// the other alone.
 TEST(GpuCostModel, MotionBlurRowsPriceOnlyMotionBlur)
 {
     GpuCostModel model;
@@ -696,24 +696,67 @@ TEST(GpuCostModel, MotionBlurRowsPriceOnlyMotionBlur)
     plain.costClass = GpuCostClass::eSpatial;
     GpuTaskTraits blurred = plain;
     blurred.motionBlur = true;
-    const double spatialCpu = model.cpuMs(GpuTaskTraits(kBlurId, 25.), 1.);
-    EXPECT_NEAR(model.cpuMs(plain, 1.), spatialCpu, 1e-12);
-    EXPECT_NEAR(model.gpuMs(plain, 1.), model.gpuMs(GpuTaskTraits(kBlurId, 25.), 1.), 1e-12);
+    const double plainCpu = model.cpuMs(plain, 1.);
     const double blurredCpu = model.cpuMs(blurred, 1.);
-    EXPECT_GT(blurredCpu, 0.);
-    EXPECT_NE(blurredCpu, spatialCpu);
+    const double plainGpu = model.gpuMs(plain, 1.);
+    const double blurredGpu = model.gpuMs(blurred, 1.);
+    EXPECT_NE(plainCpu, model.cpuMs(GpuTaskTraits(kBlurId, 25.), 1.));
+    EXPECT_NE(plainGpu, model.gpuMs(GpuTaskTraits(kBlurId, 25.), 1.));
+    EXPECT_GT(blurredCpu, plainCpu);
+    EXPECT_GT(blurredGpu, plainGpu);
 
+    const double weight = GpuCostModel::kEmaWeight;
     model.observeCpu(plain, 7000000, 1, 1.);
-    EXPECT_NEAR(model.cpuMs(plain, 1.), 7., 1e-9);
+    EXPECT_NEAR(model.cpuMs(plain, 1.), plainCpu + weight * (7. - plainCpu), 1e-9);
     EXPECT_NEAR(model.cpuMs(blurred, 1.), blurredCpu, 1e-9);
-    EXPECT_NEAR(model.cpuMs(GpuTaskTraits(kBlurId, 25.), 1.), spatialCpu, 1e-9);
 
     model.observeGpu(blurred, 50000000, 1.);
-    EXPECT_NEAR(model.gpuMs(blurred, 1.), 50., 1e-9);
-    EXPECT_NEAR(model.gpuMs(plain, 1.), model.gpuMs(GpuTaskTraits(kBlurId, 25.), 1.), 1e-12);
+    EXPECT_NEAR(model.gpuMs(blurred, 1.), blurredGpu + weight * (50. - blurredGpu), 1e-9);
+    EXPECT_NEAR(model.gpuMs(plain, 1.), plainGpu, 1e-12);
+    const double blurredAfter = model.gpuMs(blurred, 1.);
     model.observeGpu(plain, 2000000, 1.);
-    EXPECT_NEAR(model.gpuMs(plain, 1.), 2., 1e-9);
-    EXPECT_NEAR(model.gpuMs(blurred, 1.), 50., 1e-9);
+    EXPECT_NEAR(model.gpuMs(plain, 1.), plainGpu + weight * (2. - plainGpu), 1e-9);
+    EXPECT_NEAR(model.gpuMs(blurred, 1.), blurredAfter, 1e-12);
+}
+
+// The recursive Blur filters have a GPU row of their own, which a measurement of the FIR rows does not touch.
+TEST(GpuCostModel, RecursiveBlurFiltersHaveTheirOwnGpuRow)
+{
+    GpuCostModel model;
+
+    model.setThreadCount(1);
+    const GpuTaskTraits fir(kBlurId, 100., false);
+    const GpuTaskTraits iir(kBlurId, 100., true);
+    const double firGpu = model.gpuMs(fir, 1.);
+    const double iirGpu = model.gpuMs(iir, 1.);
+    EXPECT_GT(firGpu, 0.);
+    EXPECT_NE(firGpu, iirGpu);
+
+    model.observeGpu(iir, 4000000, 1.);
+    EXPECT_NEAR(model.gpuMs(iir, 1.), iirGpu + GpuCostModel::kEmaWeight * (4. - iirGpu), 1e-9);
+    EXPECT_NEAR(model.gpuMs(fir, 1.), firGpu, 1e-12);
+}
+
+// Every node with a GPU kernel has seed rows of its own, so none of them falls back on a class default.
+TEST(GpuCostModel, EveryGpuNodeIsSeeded)
+{
+    GpuCostModel model;
+
+    model.setThreadCount(16);
+    const char* const ids[] = {
+        "net.sf.openfx.GradePlugin", "net.sf.openfx.ColorCorrectPlugin", "net.sf.openfx.Invert", "net.sf.openfx.Clamp",
+        "net.sf.openfx.AddPlugin", "net.sf.openfx.MultiplyPlugin", "net.sf.openfx.GammaPlugin",
+        "net.sf.openfx.SaturationPlugin", "net.sf.openfx.ColorLookupPlugin", "net.sf.openfx.KeyerPlugin",
+        "net.sf.openfx.ChromaKeyerPlugin", "net.sf.cimg.CImgErode", "net.sf.cimg.CImgDilate",
+        "net.sf.openfx.ConstantPlugin", "net.sf.openfx.Solid", "net.sf.openfx.CheckerBoardPlugin",
+        "net.sf.openfx.TransformPlugin", "net.sf.cimg.CImgBlur",
+    };
+    for (const char* id : ids) {
+        GpuTaskTraits traits(id);
+        traits.costClass = GpuCostClass::eOther;
+        EXPECT_TRUE(model.hasGpuCost(traits)) << id;
+        EXPECT_GT(model.cpuMs(traits, 1.), 0.) << id;
+    }
 }
 
 TEST(GpuCostModel, MeasuredRowsBeatClassDefaults)

@@ -93,7 +93,7 @@ struct GpuTransferRates {
  * @brief Per-task CPU and GPU time estimates, and the gain of running a region on the GPU, in milliseconds.
  *
  * Costs start from the checked-in seed table (GpuCostSeed.inc) and are refined during the session by an exponential
- * moving average of measured times, per plugin and motion blur and, for a blur, per sigma row. Nothing is kept across
+ * moving average of measured times, per plugin and motion blur and, for a blur, per filter kind and sigma row. Nothing is kept across
  * sessions.
  *
  * The CPU cost is kept as thread-milliseconds per megapixel, the measured wallNs × budget / Mpx, so that tasks run
@@ -198,6 +198,7 @@ private:
 
     struct GpuRow {
         double sigmaMax = 0.;
+        bool iir = false;
         bool motionBlur = false;
         double kernelMsPerMpx = 0.;
     };

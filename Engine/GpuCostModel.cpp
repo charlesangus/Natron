@@ -60,6 +60,7 @@ struct SeedCpuSigmaRow {
 
 struct SeedGpuRow {
     const char* pluginId;
+    const char* kind;
     double sigmaMax;
     double kernelMsPerMpx;
 };
@@ -145,6 +146,8 @@ GpuCostModel::GpuCostModel()
     }
     for (const SeedGpuRow& seed : kSeedGpuRows) {
         GpuRow row;
+        row.iir = (std::strcmp(seed.kind, "iir") == 0);
+        row.motionBlur = (std::strcmp(seed.kind, "motion_blur") == 0);
         row.sigmaMax = seed.sigmaMax;
         row.kernelMsPerMpx = seed.kernelMsPerMpx;
         _gpu[seed.pluginId].push_back(row);
@@ -303,7 +306,7 @@ GpuCostModel::findGpuRowLocked(const GpuTaskTraits& traits) const
     }
     const GpuRow* last = nullptr;
     for (const GpuRow& row : found->second) {
-        if (row.motionBlur != traits.motionBlur) {
+        if ((row.motionBlur != traits.motionBlur) || (row.iir != traits.iir)) {
             continue;
         }
         if (row.sigmaMax >= traits.sigma) {
@@ -520,6 +523,7 @@ GpuCostModel::observeGpu(const GpuTaskTraits& traits,
     if (!row) {
         GpuRow fresh;
         fresh.motionBlur = traits.motionBlur;
+        fresh.iir = traits.iir;
         fresh.sigmaMax = kInfinity;
         fresh.kernelMsPerMpx = sample;
         _gpu[traits.pluginId].push_back(fresh);

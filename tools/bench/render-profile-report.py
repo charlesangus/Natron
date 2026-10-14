@@ -273,6 +273,21 @@ def print_report(results, args):
 BLUR_PLUGIN_ID = "net.sf.cimg.CImgBlur"
 GRADE_PLUGIN_ID = "net.sf.openfx.GradePlugin"
 TRANSFORM_PLUGIN_ID = "net.sf.openfx.TransformPlugin"
+COLOR_CORRECT_PLUGIN_ID = "net.sf.openfx.ColorCorrectPlugin"
+INVERT_PLUGIN_ID = "net.sf.openfx.Invert"
+CLAMP_PLUGIN_ID = "net.sf.openfx.Clamp"
+ADD_PLUGIN_ID = "net.sf.openfx.AddPlugin"
+MULTIPLY_PLUGIN_ID = "net.sf.openfx.MultiplyPlugin"
+GAMMA_PLUGIN_ID = "net.sf.openfx.GammaPlugin"
+SATURATION_PLUGIN_ID = "net.sf.openfx.SaturationPlugin"
+COLOR_LOOKUP_PLUGIN_ID = "net.sf.openfx.ColorLookupPlugin"
+KEYER_PLUGIN_ID = "net.sf.openfx.KeyerPlugin"
+CHROMA_KEYER_PLUGIN_ID = "net.sf.openfx.ChromaKeyerPlugin"
+ERODE_PLUGIN_ID = "net.sf.cimg.CImgErode"
+DILATE_PLUGIN_ID = "net.sf.cimg.CImgDilate"
+CONSTANT_PLUGIN_ID = "net.sf.openfx.ConstantPlugin"
+SOLID_PLUGIN_ID = "net.sf.openfx.Solid"
+CHECKER_BOARD_PLUGIN_ID = "net.sf.openfx.CheckerBoardPlugin"
 
 # Profile records carry no knob values. The bench comps render every one of these with motion
 # blur (tools/bench/comps/build_comps.py), so their rows price only a task with motion blur.
@@ -291,13 +306,48 @@ BLUR_SIGMA_MEASURED = (
     ("iir", OPEN_SIGMA, 71.0, 18.9),
 )
 
-# Kernel-only GPU time per UHD image in ms (RX 7900 XTX, data already resident), from the
-# GPU compute backend design notes, section 2.3. Rows are (plugin id, largest sigma covered, ms).
+# The nodes with a GPU kernel. Each needs a CPU and a GPU seed row.
+PORTED_PLUGIN_IDS = (
+    GRADE_PLUGIN_ID, COLOR_CORRECT_PLUGIN_ID, INVERT_PLUGIN_ID, CLAMP_PLUGIN_ID, ADD_PLUGIN_ID, MULTIPLY_PLUGIN_ID,
+    GAMMA_PLUGIN_ID, SATURATION_PLUGIN_ID, COLOR_LOOKUP_PLUGIN_ID, KEYER_PLUGIN_ID, CHROMA_KEYER_PLUGIN_ID,
+    ERODE_PLUGIN_ID, DILATE_PLUGIN_ID, CONSTANT_PLUGIN_ID, SOLID_PLUGIN_ID, CHECKER_BOARD_PLUGIN_ID,
+    TRANSFORM_PLUGIN_ID, BLUR_PLUGIN_ID,
+)
+
+# Plain Transform CPU cost (serial, threaded ms/Mpx), in situ at UHD float. The profile records
+# carry no motion blur flag, so the comps' Transform records all go to the motion blur row and a
+# plain one is measured apart (tools/bench/node_profile.sh serial|cpu, node "transform").
+TRANSFORM_PLAIN_MEASURED = (26.126, 6.096)
+
+# Kernel-only GPU time per UHD image in ms on an RX 7900 XTX: the median kernelMs of the region
+# record of a lone node whose source is uploaded and whose result is downloaded
+# (tools/bench/node_profile.sh gpu 1). Rows are (plugin id, kind, largest sigma covered, ms); kind
+# is "plain", "iir" for the recursive Blur filters or "motion_blur" for a Transform that renders
+# with motion blur (quality 1, as the CPU row). The Blur rows after the first are FIR Gaussians
+# (size 7.2, 60 and 240); the IIR row is the slower of Quasi-Gaussian and Gaussian at size 240.
 GPU_KERNEL_UHD_MS = (
-    (GRADE_PLUGIN_ID, 0.0, 0.4),
-    (BLUR_PLUGIN_ID, 3.0, 3.3),
-    (BLUR_PLUGIN_ID, 25.0, 21.5),
-    (BLUR_PLUGIN_ID, OPEN_SIGMA, 52.5),
+    (GRADE_PLUGIN_ID, "plain", 0.0, 0.497),
+    (COLOR_CORRECT_PLUGIN_ID, "plain", 0.0, 0.514),
+    (INVERT_PLUGIN_ID, "plain", 0.0, 0.477),
+    (CLAMP_PLUGIN_ID, "plain", 0.0, 0.494),
+    (ADD_PLUGIN_ID, "plain", 0.0, 0.480),
+    (MULTIPLY_PLUGIN_ID, "plain", 0.0, 0.482),
+    (GAMMA_PLUGIN_ID, "plain", 0.0, 0.487),
+    (SATURATION_PLUGIN_ID, "plain", 0.0, 0.482),
+    (COLOR_LOOKUP_PLUGIN_ID, "plain", 0.0, 0.504),
+    (KEYER_PLUGIN_ID, "plain", 0.0, 0.441),
+    (CHROMA_KEYER_PLUGIN_ID, "plain", 0.0, 0.514),
+    (ERODE_PLUGIN_ID, "plain", 0.0, 6.827),
+    (DILATE_PLUGIN_ID, "plain", 0.0, 6.915),
+    (CONSTANT_PLUGIN_ID, "plain", 0.0, 0.520),
+    (SOLID_PLUGIN_ID, "plain", 0.0, 0.510),
+    (CHECKER_BOARD_PLUGIN_ID, "plain", 0.0, 0.550),
+    (TRANSFORM_PLUGIN_ID, "plain", 0.0, 0.670),
+    (TRANSFORM_PLUGIN_ID, "motion_blur", 0.0, 9.790),
+    (BLUR_PLUGIN_ID, "plain", 3.0, 9.514),
+    (BLUR_PLUGIN_ID, "plain", 25.0, 7.073),
+    (BLUR_PLUGIN_ID, "plain", OPEN_SIGMA, 18.745),
+    (BLUR_PLUGIN_ID, "iir", OPEN_SIGMA, 20.014),
 )
 
 
@@ -336,8 +386,10 @@ def cost_table_rows(threaded_paths, serial_paths):
         speedup = serial[plugin] / threaded[plugin] if threaded.get(plugin, 0) > 0 else 1.0
         rows = motion_blur if plugin in MOTION_BLUR_PLUGIN_IDS else cpu
         rows.append((plugin, serial[plugin], speedup))
+    cpu.append((TRANSFORM_PLUGIN_ID, TRANSFORM_PLAIN_MEASURED[0], TRANSFORM_PLAIN_MEASURED[0] / TRANSFORM_PLAIN_MEASURED[1]))
+    cpu.sort()
     sigma = [(BLUR_PLUGIN_ID, algo, top, ser, ser / par) for algo, top, ser, par in BLUR_SIGMA_MEASURED]
-    gpu = [(plugin, top, ms / UHD_MPX) for plugin, top, ms in GPU_KERNEL_UHD_MS]
+    gpu = [(plugin, kind, top, ms / UHD_MPX) for plugin, kind, top, ms in GPU_KERNEL_UHD_MS]
     return cpu, motion_blur, sigma, gpu
 
 
@@ -380,9 +432,9 @@ def emit_cost_table(pairs, command):
             "// CPU sigma rows: { plugin id, algorithm, largest sigma covered, serial ms per Mpx, parallel",
             "//   speedup }. Use the first row of the algorithm whose sigma bound is at least the sigma.",
             "//   Measured in situ on UHD float at 16 threads, so they are hard-coded here.",
-            "// GPU rows: { plugin id, largest sigma covered (0 when the kernel has no sigma), kernel-only",
-            "//   ms per Mpx on an RX 7900 XTX, from the UHD kernel times of the GPU compute backend",
-            "//   design notes, section 2.3 }.",
+            "// GPU rows: { plugin id, kind (plain, iir or motion_blur), largest sigma covered (0 when the",
+            "//   kernel has no sigma), kernel-only ms per Mpx on an RX 7900 XTX, from the kernelMs of lone-node",
+            "//   regions at UHD }.",
             ""]
     out.append(block("NATRON_GPU_COST_SEED_CPU_ROWS",
                      ['{ "%s", %.4f, %.4f }' % row for row in cpu]))
@@ -392,7 +444,7 @@ def emit_cost_table(pairs, command):
                      ['{ "%s", "%s", %s, %.4f, %.4f }' % (p, a, sigma_text(t), s, k)
                       for p, a, t, s, k in sigma]))
     out.append(block("NATRON_GPU_COST_SEED_GPU_ROWS",
-                     ['{ "%s", %s, %.4f }' % (p, sigma_text(t), ms) for p, t, ms in gpu]))
+                     ['{ "%s", "%s", %s, %.4f }' % (p, k, sigma_text(t), ms) for p, k, t, ms in gpu]))
     return "\n".join(out)
 
 
@@ -475,23 +527,28 @@ def self_test(args):
                 dst.write(json.dumps(rec) + "\n")
         cpu, motion_blur, sigma, gpu = cost_table_rows([fast], [sample])
         rows = {plugin: (cost, speedup) for plugin, cost, speedup in cpu}
-        assert set(rows) == {"Read", "Blur", "Grade", "Write", "Defocus", "Merge"}, rows.keys()
+        assert set(rows) == {"Read", "Blur", "Grade", "Write", "Defocus", "Merge", TRANSFORM_PLUGIN_ID}, rows.keys()
+        assert close(rows[TRANSFORM_PLUGIN_ID][0], TRANSFORM_PLAIN_MEASURED[0]), rows[TRANSFORM_PLUGIN_ID]
+        assert close(rows[TRANSFORM_PLUGIN_ID][1], TRANSFORM_PLAIN_MEASURED[0] / TRANSFORM_PLAIN_MEASURED[1])
         assert motion_blur == [], motion_blur
         assert close(rows["Blur"][0], 100.0) and close(rows["Blur"][1], 2.0), rows["Blur"]
         assert close(rows["Grade"][0], 5.0) and close(rows["Defocus"][0], 200.0)
         assert [r[1:3] for r in sigma] == [("fir", 3.0), ("fir", 25.0), ("fir", 1e9), ("iir", 1e9)]
         assert close(sigma[0][4], 46.0 / 13.2) and close(sigma[3][4], 71.0 / 18.9), sigma
-        assert [(r[0], r[1]) for r in gpu] == [("net.sf.openfx.GradePlugin", 0.0),
-                                                ("net.sf.cimg.CImgBlur", 3.0),
-                                                ("net.sf.cimg.CImgBlur", 25.0),
-                                                ("net.sf.cimg.CImgBlur", 1e9)], gpu
-        assert close(gpu[1][2], 3.3 / (3840 * 2160 / 1e6)), gpu
+        assert [r[:3] for r in gpu] == [(p, k, t) for p, k, t, _ in GPU_KERNEL_UHD_MS], gpu
+        grade_gpu = [r for r in gpu if r[0] == GRADE_PLUGIN_ID]
+        assert len(grade_gpu) == 1 and close(grade_gpu[0][3], 0.497 / UHD_MPX), grade_gpu
+        for plugin in PORTED_PLUGIN_IDS:
+            assert any(r[0] == plugin for r in gpu), plugin
+        assert [r[1] for r in gpu if r[0] == BLUR_PLUGIN_ID] == ["plain", "plain", "plain", "iir"], gpu
+        assert [r[1] for r in gpu if r[0] == TRANSFORM_PLUGIN_ID] == ["plain", "motion_blur"], gpu
         text = emit_cost_table({fast: sample}, "cmd")
         assert text == emit_cost_table({fast: sample}, "cmd"), "output must be deterministic"
         assert '    { "Blur", 100.0000, 2.0000 }, \\\n' in text, text
         assert text.count("#define NATRON_GPU_COST_SEED_") == 4
         assert "#define NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROWS\n" in text, text
         assert '{ "net.sf.cimg.CImgBlur", "fir", 3.0, 46.0000, 3.4848 }' in text, text
+        assert '{ "net.sf.cimg.CImgBlur", "iir", 1e9, ' in text, text
         assert "(%s)" % file_date(sample) in text and "//   cmd\n" in text
         body = [line for line in text.splitlines() if not line.startswith("//")]
         assert not any(line.endswith("\\") for line in body if line.startswith("}")), body
@@ -504,11 +561,20 @@ def self_test(args):
             out.write('{"frame":0,"task":1,"plugin":"Grade","node":"G","deps":[0],"roiPixels":1000000,'
                       '"estimatedBytes":1,"wallNs":10000000,"device":"cpu","regionId":-1,"ok":true}\n')
         cpu, motion_blur, _, _ = cost_table_rows([moving], [moving])
-        assert [r[0] for r in cpu] == ["Grade"], cpu
+        assert [r[0] for r in cpu] == ["Grade", TRANSFORM_PLUGIN_ID], cpu
         assert [r[0] for r in motion_blur] == [TRANSFORM_PLUGIN_ID] and close(motion_blur[0][1], 300.0), motion_blur
         text = emit_cost_table({moving: moving}, "cmd")
         assert ('#define NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROWS \\\n    { "%s", 300.0000, 1.0000 }\n'
                 % TRANSFORM_PLUGIN_ID) in text, text
+    seed_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "Engine", "GpuCostSeed.inc")
+    if os.path.exists(seed_path):
+        with open(seed_path, encoding="utf-8") as handle:
+            seed = handle.read()
+        cpu_block = seed[seed.index("#define NATRON_GPU_COST_SEED_CPU_ROWS"):seed.index("#define NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROWS")]
+        gpu_block = seed[seed.index("#define NATRON_GPU_COST_SEED_GPU_ROWS"):]
+        for plugin in PORTED_PLUGIN_IDS:
+            assert '"%s"' % plugin in cpu_block, "no CPU seed row for " + plugin
+            assert '"%s"' % plugin in gpu_block, "no GPU seed row for " + plugin
     print("self-test passed")
 
 

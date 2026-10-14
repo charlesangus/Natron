@@ -1641,14 +1641,14 @@ try:
             components_follow_first("before editing")
             key_start = to_f(11, 1.5)
             # Where the curve crosses the key's column on screen: the value axis need not follow
-            # frameAll()'s padding once the folded curve is framed.
+            # frameAll()'s padding once the folded curve is framed, and the curve's colour is the
+            # knob's own, so it is found as the only saturated colour in the column.
             fimg = widget_image(fcw)
             kx = int(round(key_start.x()))
             curve_ys = sorted(y for y in range(fimg.height()) for x in (kx - 1, kx, kx + 1)
                               if 0 <= x < fimg.width()
-                              and fimg.pixelColor(x, y).blue() > 180
-                              and fimg.pixelColor(x, y).blue() > fimg.pixelColor(x, y).red() + 60
-                              and fimg.pixelColor(x, y).blue() > fimg.pixelColor(x, y).green() + 80)
+                              and max(fimg.pixelColor(x, y).red(), fimg.pixelColor(x, y).green(), fimg.pixelColor(x, y).blue())
+                              - min(fimg.pixelColor(x, y).red(), fimg.pixelColor(x, y).green(), fimg.pixelColor(x, y).blue()) > 150)
             report("NOTE folded-curve: key column %d, value-axis guess y=%.1f, curve pixels at %r"
                    % (kx, key_start.y(), curve_ys[:12]))
             if curve_ys:
@@ -1795,12 +1795,13 @@ try:
             img = widget_image(ecw)
             kx = int(round(key_pt.x()))
             # The key sits where X's curve crosses frame 1's column; the value axis need not
-            # follow frameAll()'s padding, so the row is found on screen.
-            marked = sorted(y for y in range(img.height()) for x in (kx - 1, kx, kx + 1)
+            # follow frameAll()'s padding, so the row is found on screen as the only saturated
+            # colour left of the key, where the curve is flat and the frame 1 time line is not in
+            # the way (the curve's colour is the knob's own).
+            marked = sorted(y for y in range(img.height()) for x in (kx - 8, kx - 7, kx - 6)
                             if 0 <= x < img.width()
-                            and img.pixelColor(x, y).blue() > 180
-                            and img.pixelColor(x, y).blue() > img.pixelColor(x, y).red() + 60
-                            and img.pixelColor(x, y).blue() > img.pixelColor(x, y).green() + 80)
+                            and max(img.pixelColor(x, y).red(), img.pixelColor(x, y).green(), img.pixelColor(x, y).blue())
+                            - min(img.pixelColor(x, y).red(), img.pixelColor(x, y).green(), img.pixelColor(x, y).blue()) > 150)
             report("NOTE expanded-curve: %dx%d, frames 1/21 at x=%r/%r, key guess y=%.1f, curve rows in its column %r"
                    % (EW, EH, exa, exb, key_pt.y(), marked[:12]))
             if marked:

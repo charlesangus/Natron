@@ -800,10 +800,20 @@ formatRegionRecord(unsigned long long frameSequence,
     }
     std::snprintf(num, sizeof(num),
                   "],\"uploadMs\":%.6f,\"uploadBytes\":%llu,\"kernelMs\":%.6f,\"downloadMs\":%.6f,\"downloadBytes\":%llu,"
-                  "\"wallMs\":%.6f,\"strips\":%d,\"stripsInFlight\":%d,\"transferHiddenMs\":%.6f,\"transferExposedMs\":%.6f}\n",
+                  "\"wallMs\":%.6f,\"strips\":%d,\"stripsInFlight\":%d,\"transferHiddenMs\":%.6f,\"transferExposedMs\":%.6f,\"fallback\":\"",
                   times.uploadMs, times.uploadBytes, times.kernelMs, times.downloadMs, times.downloadBytes,
                   times.wallMs, times.strips, times.stripsInFlight, times.transferHiddenMs, times.transferExposedMs);
     line.append(num);
+    for (std::size_t i = 0; i < times.fallback.size(); ++i) {
+        const char c = times.fallback[i];
+        if ((c == '"') || (c == '\\')) {
+            line.push_back('\\');
+        }
+        line.push_back(c);
+    }
+    line.append("\",\"retries\":");
+    line.append(std::to_string(times.retries));
+    line.append("}\n");
 
     return line;
 }

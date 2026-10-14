@@ -344,7 +344,8 @@ formatTaskRecord(const FrameGraph::Task& task,
                  unsigned long long frameSequence,
                  int taskIndex,
                  long long wallNs,
-                 bool ok)
+                 bool ok,
+                 bool ranOnCpu = false)
 {
     const NodePtr& node = task.key.node;
     const NativeImageEffect* native = dynamic_cast<const NativeImageEffect*>(effect.get());
@@ -386,7 +387,7 @@ formatTaskRecord(const FrameGraph::Task& task,
     line.append(",\"glSupport\":");
     line.append(glSupport ? "true" : "false");
     std::snprintf(num, sizeof(num), ",\"device\":\"%s\",\"regionId\":%d,\"ok\":",
-                  (task.device == FrameGraph::Device::Gpu) ? "gpu" : "cpu", task.regionId);
+                  (!ranOnCpu && (task.device == FrameGraph::Device::Gpu)) ? "gpu" : "cpu", task.regionId);
     line.append(num);
     line.append(ok ? "true" : "false");
     line.append("}\n");
@@ -1237,7 +1238,7 @@ RenderScheduler::executeRegion(const FramePtr& frame,
                 const FrameGraph::Task& member = frame->graph.tasks[members[i]];
                 const EffectInstancePtr effect = member.key.node ? member.key.node->getEffectInstance() : EffectInstancePtr();
                 const long long memberNs = (i < report.memberNs.size()) ? report.memberNs[i] : 0;
-                lines += formatTaskRecord(member, effect, frame->sequence, members[i], memberNs, ok);
+                lines += formatTaskRecord(member, effect, frame->sequence, members[i], memberNs, ok, !report.cpuFallback.empty());
             }
             GpuRegionTimes times;
             times.uploadMs = report.uploadMs;
@@ -1250,6 +1251,8 @@ RenderScheduler::executeRegion(const FramePtr& frame,
             times.stripsInFlight = report.stripsInFlight;
             times.transferHiddenMs = report.transferHiddenMs;
             times.transferExposedMs = report.transferExposedMs;
+            times.fallback = report.cpuFallback;
+            times.retries = report.retries;
             lines += formatRegionRecord(frame->sequence, region, members, times);
             sink.append(lines);
         }

@@ -55,6 +55,11 @@ def load_records(paths):
     return frames
 
 
+def is_fallback(rec):
+    """A member of a GPU region that was rendered on the CPU instead."""
+    return rec.get("device") == "cpu" and rec.get("regionId", -1) >= 0
+
+
 def is_writer(rec):
     return rec["plugin"].rsplit(".", 1)[-1].lower().startswith("write")
 
@@ -162,6 +167,7 @@ def analyse(frames, args):
     for path, plist in by_file.items():
         plugin_ms = collections.defaultdict(float)
         plugin_heavy_ms = collections.defaultdict(float)
+        fallbacks = collections.Counter()
         heavy_ms = 0.0
         sigs = collections.OrderedDict()
         gain_pcie = gain_unified = 0.0
@@ -175,6 +181,8 @@ def analyse(frames, args):
             for t, rec in tasks.items():
                 ms = rec["wallNs"] / 1e6
                 plugin_ms[rec["plugin"]] += ms
+                if is_fallback(rec):
+                    fallbacks[rec["plugin"]] += 1
                 if t in heavy:
                     heavy_ms += ms
                     plugin_heavy_ms[rec["plugin"]] += ms
@@ -213,6 +221,7 @@ def analyse(frames, args):
             "region_instances": sum(r["frames"] for r in regions_out),
             "offloaded_region_instances": offloaded_regions,
             "region_signatures": regions_out,
+            "gpu_fallbacks": dict(sorted(fallbacks.items())),
             "net_gain_ms": gain_pcie,
             "net_gain_unified_ms": gain_unified,
             "net_gain_share": gain_pcie / wall_ms if wall_ms else 0.0,
@@ -237,6 +246,9 @@ def print_report(results, args):
         print("%-28s %12s %12s" % ("plugin", "ms", "heavy ms"))
         for p in res["plugins"]:
             print("%-28s %12.2f %12.2f" % (p["plugin"][:28], p["ms"], p["heavy_ms"]))
+        if res["gpu_fallbacks"]:
+            print("GPU region members that fell back to the CPU: %s"
+                  % ", ".join("%s x%d" % (p, n) for p, n in res["gpu_fallbacks"].items()))
         sizes = [len(r["nodes"]) for r in res["region_signatures"] for _ in range(r["frames"])]
         print("regions: %d (sizes %s), offloaded over PCIe-like link: %d"
               % (len(sizes), sorted(sizes), res["offloaded_region_instances"]))
@@ -400,6 +412,18 @@ def self_test(args):
                       '"estimatedBytes":1,"wallNs":1,"device":"gpu","regionId":3,"ok":true}\n')
         rec = load_records([gpu_path])[(gpu_path, 0)][0]
         assert rec["device"] == "gpu" and rec["regionId"] == 3, rec
+        assert analyse(load_records([gpu_path]), args)[0]["gpu_fallbacks"] == {}
+        fb_path = os.path.join(tmp, "fallback.jsonl")
+        with open(fb_path, "w", encoding="utf-8") as out:
+            out.write('{"frame":0,"task":0,"plugin":"Blur","node":"B","deps":[],"roiPixels":1,'
+                      '"estimatedBytes":1,"wallNs":1,"device":"cpu","regionId":3,"ok":true}\n')
+            out.write('{"frame":0,"task":1,"plugin":"Grade","node":"G","deps":[0],"roiPixels":1,'
+                      '"estimatedBytes":1,"wallNs":1,"device":"cpu","regionId":3,"ok":true}\n')
+            out.write('{"frame":0,"task":2,"plugin":"Blur","node":"B2","deps":[1],"roiPixels":1,'
+                      '"estimatedBytes":1,"wallNs":1,"device":"cpu","regionId":-1,"ok":true}\n')
+            out.write('{"kind":"region","frame":0,"regionId":3,"tasks":[0,1],"fallback":"out of device memory",'
+                      '"retries":2}\n')
+        assert analyse(load_records([fb_path]), args)[0]["gpu_fallbacks"] == {"Blur": 1, "Grade": 1}
     assert close(res["total_task_ms"], 427.0), res["total_task_ms"]
     assert close(res["heavy_task_ms"], 400.0), res["heavy_task_ms"]
     regions = {tuple(r["nodes"]): r for r in res["region_signatures"]}

@@ -2084,6 +2084,7 @@ runGpuRegion(const FrameRenderContextPtr& context,
     const RenderStatsPtr& stats = context->getStats();
     const char* reason = kFallbackNoGpu;
     std::string detail = "no GPU is available";
+    int retries = 0;
     NodePtr node;
     gpu::GpuRuntime* runtime = nullptr;
 
@@ -2112,6 +2113,8 @@ runGpuRegion(const FrameRenderContextPtr& context,
                 RegionRun run(context, graph, region, *runtime, forcedRows, !serial, report);
                 const EffectInstance::RenderRoIRetCode code = run.run(rootPlanes);
                 if (code != EffectInstance::eRenderRoIRetCodeFailed) {
+                    report->retries = retries;
+
                     return code;
                 }
                 kind = run.failureKind();
@@ -2146,11 +2149,13 @@ runGpuRegion(const FrameRenderContextPtr& context,
                     stats->noteGpuRegionRetry();
                 }
                 logRegion(node, QString::fromUtf8("GPU out of memory; retrying after evicting device buffers: %1").arg(QString::fromUtf8(detail.c_str())));
+                ++retries;
                 continue;
             }
             if (inFlight > 1) {
                 // The same strips one at a time hold a fraction of the buffers.
                 serial = true;
+                ++retries;
                 forcedRows = rows;
                 if (stats) {
                     stats->noteGpuStripPipelineSerialized();
@@ -2161,6 +2166,7 @@ runGpuRegion(const FrameRenderContextPtr& context,
             if (rows <= kGpuStripRowQuantum) {
                 break;
             }
+            ++retries;
             forcedRows = std::max(kGpuStripRowQuantum, rows / 2 / kGpuStripRowQuantum * kGpuStripRowQuantum);
             if (stats) {
                 stats->noteGpuStripHalving();
@@ -2171,6 +2177,7 @@ runGpuRegion(const FrameRenderContextPtr& context,
 #endif
 
     report->cpuFallback = reason;
+    report->retries = retries;
     if (stats) {
         stats->noteCpuFallback(reason);
     }

@@ -254,6 +254,9 @@ public:
 
         // Why the members were rendered on the CPU rather than the GPU; empty when they were not.
         std::string cpuFallback;
+
+        // How many times the region was run again on the GPU after running out of device memory.
+        int retries = 0;
     };
 
     /**

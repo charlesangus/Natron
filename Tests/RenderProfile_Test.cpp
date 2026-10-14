@@ -314,5 +314,22 @@ TEST(RenderStatsGpuCounters, RegionRecordFormat)
               "{\"kind\":\"region\",\"frame\":7,\"regionId\":3,\"tasks\":[1,2],"
               "\"uploadMs\":1.500000,\"uploadBytes\":64,\"kernelMs\":2.250000,"
               "\"downloadMs\":0.500000,\"downloadBytes\":32,\"wallMs\":3.000000,\"strips\":4,"
-              "\"stripsInFlight\":3,\"transferHiddenMs\":1.750000,\"transferExposedMs\":0.250000}\n");
+              "\"stripsInFlight\":3,\"transferHiddenMs\":1.750000,\"transferExposedMs\":0.250000,"
+              "\"fallback\":\"\",\"retries\":0}\n");
+}
+
+TEST(RenderStatsGpuCounters, RegionRecordFormatCarriesTheFallbackAndRetries)
+{
+    std::vector<int> tasks;
+    tasks.push_back(4);
+
+    GpuRegionTimes times;
+    times.fallback = "out of device memory";
+    times.retries = 3;
+
+    const std::string line = formatRegionRecord(2, 1, tasks, times);
+    EXPECT_NE(line.find("\"fallback\":\"out of device memory\",\"retries\":3}\n"), std::string::npos) << line;
+
+    times.fallback = "a \"quoted\" \\ reason";
+    EXPECT_NE(formatRegionRecord(2, 1, tasks, times).find("\"fallback\":\"a \\\"quoted\\\" \\\\ reason\""), std::string::npos);
 }

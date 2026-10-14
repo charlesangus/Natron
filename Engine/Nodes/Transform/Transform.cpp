@@ -48,6 +48,11 @@
 #include "Engine/RectI.h"
 #include "Engine/TimeLine.h"
 
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#include "Engine/Gpu/GpuResample.h"
+#endif
+
 NATRON_NAMESPACE_ENTER
 
 using TransformMath::Mat3;
@@ -168,6 +173,54 @@ readMaskRow(const Image::ReadAccess* access,
     for (int x = xStart; x < xEnd; ++x, pix += nComps) {
         row[x - x0] = pix[channel];
     }
+}
+
+// The farthest canonical coordinate a GPU region is computed for, so a region with an infinite edge
+// still converts to pixels.
+const double kMaxCanonicalCoord = 1e9;
+
+double
+clampCanonical(double v)
+{
+    return std::max(-kMaxCanonicalCoord, std::min(v, kMaxCanonicalCoord));
+}
+
+RectI
+clampedPixelEnclosing(const RectD& r,
+                      const RenderScale& scale,
+                      double par)
+{
+    if ((r.x2 <= r.x1) || (r.y2 <= r.y1)) {
+        return RectI();
+    }
+    const RectD clamped(clampCanonical(r.x1), clampCanonical(r.y1), clampCanonical(r.x2), clampCanonical(r.y2));
+
+    return clamped.toPixelEnclosing(scale, par);
+}
+
+RectI
+intersectPixels(const RectI& a,
+                const RectI& b)
+{
+    const RectI r(std::max(a.x1, b.x1), std::max(a.y1, b.y1), std::min(a.x2, b.x2), std::min(a.y2, b.y2));
+
+    return r.isNull() ? RectI() : r;
+}
+
+// Resampler's isAffine: render() samples such a matrix without the perspective division.
+bool
+isAffineMatrix(const Mat3& H)
+{
+    if ((H(2, 0) != 0.) || (H(2, 1) != 0.) || (H(2, 2) != 1.)) {
+        return false;
+    }
+    for (int k = 0; k < 6; ++k) {
+        if (!std::isfinite(H.m[k])) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 NativeImageTraits
@@ -1201,5 +1254,197 @@ TransformNode::render(const RenderActionArgs& args)
 
     return eStatusOK;
 } // TransformNode::render
+
+bool
+TransformNode::getGpuSamplingMatrix(double time,
+                                    ViewIdx view,
+                                    const RenderScale& scale,
+                                    Mat3* matrix) const
+{
+    const Resampler::BlurSettings blur = getBlurSettings(time, view);
+    if ((blur.motionBlur != 0.) || blur.directionalBlur) {
+        return false;
+    }
+    KnobBoolPtr invertKnob = _invert.lock();
+    const bool invert = invertKnob ? invertKnob->getValueAtTime(time, 0, view) : false;
+    const OfxPointD s = scale.toOfxPointD();
+    Resampler::SamplingTransforms transforms;
+    Resampler::buildSamplingTransforms(makeCanonicalTransformFn(view), time, invert, blur, s.x, s.y, false, getAspectRatio(0), getAspectRatio(-1), &transforms);
+    if (transforms.invTransforms.size() != 1) {
+        return false;
+    }
+    *matrix = transforms.invTransforms[0];
+
+    return true;
+}
+
+RectI
+TransformNode::getSourceRoIPixels(double time,
+                                  ViewIdx view,
+                                  const RectI& outputRect,
+                                  const RenderScale& scale) const
+{
+    EffectInstancePtr source = getInput(0);
+    if (!source || outputRect.isNull()) {
+        return outputRect;
+    }
+    const RectD window = outputRect.toCanonical_noClipping(scale.toMipmapLevel(), getAspectRatio(-1));
+    RoIMap rois;
+    // Computing the regions only reads knobs and the inputs' regions of definition.
+    TransformNode* self = const_cast<TransformNode*>(this);
+    self->getRegionsOfInterest(time, scale, window, window, view, &rois);
+    RoIMap::const_iterator found = rois.find(source);
+    if (found == rois.end()) {
+        return outputRect;
+    }
+
+    return clampedPixelEnclosing(found->second, scale, getAspectRatio(0));
+}
+
+bool
+TransformNode::canRenderOnGpu(const GpuQuery& query) const
+{
+#ifdef NATRON_HAVE_GPU
+    if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps < 1) || (query.nComps > (int)gpu::kGpuResampleMaxChannels)) {
+        return false;
+    }
+    if (query.hasConcatenatedInput) {
+        return false;
+    }
+    Mat3 H;
+
+    return getGpuSamplingMatrix(query.time, query.view, query.mappedScale, &H) && isAffineMatrix(H);
+#else
+    Q_UNUSED(query);
+
+    return false;
+#endif
+}
+
+RectI
+TransformNode::getGpuInputRoI(int inputNb,
+                              const RectI& outputRect,
+                              const RenderScale& scale) const
+{
+    if (inputNb != 0) {
+        return NativeImageEffect::getGpuInputRoI(inputNb, outputRect, scale);
+    }
+
+    return getSourceRoIPixels(getCurrentTime(), getCurrentView(), outputRect, scale);
+}
+
+StatusEnum
+TransformNode::renderGpu(const GpuRenderArgs& args)
+{
+#ifdef NATRON_HAVE_GPU
+    const GpuQuery& query = args.query;
+    const RectI& rect = args.outputRect;
+    const int nComps = query.nComps;
+    if (!canRenderOnGpu(query) || rect.isNull() || !isUsableGpuView(args.output, nComps) || !args.output.bounds.contains(rect)) {
+        return eStatusFailed;
+    }
+    const double time = query.time;
+    const ViewIdx view = query.view;
+    const RenderScale& scale = query.mappedScale;
+    Mat3 H;
+    if (!getGpuSamplingMatrix(time, view, scale, &H) || !isAffineMatrix(H)) {
+        return eStatusFailed;
+    }
+
+    KnobChoicePtr filterKnob = _filter.lock();
+    KnobBoolPtr clampKnob = _clamp.lock();
+    KnobBoolPtr blackOutsideKnob = _blackOutside.lock();
+    Resampler::FilterEnum filter = Resampler::eFilterImpulse;
+    if (!query.draftMode) {
+        filter = filterKnob ? (Resampler::FilterEnum)filterKnob->getValueAtTime(time, 0, view) : Resampler::eFilterCubic;
+    }
+    const bool clamp = clampKnob ? clampKnob->getValueAtTime(time, 0, view) : false;
+    const bool blackOutside = blackOutsideKnob ? blackOutsideKnob->getValueAtTime(time, 0, view) : false;
+
+    // render() is handed the source over its region of interest clipped to the source's region of
+    // definition, and the filters clamp to and read zero outside exactly that.
+    GpuImageView source;
+    if (getInput(0) && !args.inputs.empty() && args.inputs[0].buffer) {
+        const GpuImageView& input = args.inputs[0];
+        if (!isUsableGpuView(input, nComps)) {
+            return eStatusFailed;
+        }
+        RectD srcRoD;
+        if (getSourceRoD(time, scale, view, &srcRoD)) {
+            const RectI valid = intersectPixels(intersectPixels(input.bounds, clampedPixelEnclosing(srcRoD, scale, getAspectRatio(0))),
+                                                getSourceRoIPixels(time, view, rect, scale));
+            source = cropGpuView(input, valid);
+        }
+    }
+
+    gpu::GpuResample resample;
+    if (source.buffer) {
+        resample.src = toGpuBlurImage(source);
+    }
+    resample.channels = (uint32_t)nComps;
+    resample.filter = (uint32_t)filter;
+    resample.clamp = clamp && Resampler::filterHonoursClamp(filter);
+    resample.blackOutside = blackOutside;
+    for (int k = 0; k < 6; ++k) {
+        resample.matrix[k] = H.m[k];
+    }
+    // The Jacobian render() samples with, by which axes fall inside the source.
+    for (int state = 1; state < 4; ++state) {
+        const bool x = (state & 1) != 0;
+        const bool y = (state & 2) != 0;
+        const double Jxx = x ? H(0, 0) : 0.;
+        const double Jxy = x ? H(0, 1) : 0.;
+        const double Jyx = y ? H(1, 0) : 0.;
+        const double Jyy = y ? H(1, 1) : 0.;
+        gpu::GpuResampleJacobian& j = resample.jacobians[state];
+        j.zero = (Jxx == 0.) && (Jxy == 0.) && (Jyx == 0.) && (Jyy == 0.);
+        int levelX = 0;
+        int levelY = 0;
+        if (!j.zero && Resampler::supersampleLevels(Jxx, Jxy, Jyx, Jyy, &levelX, &levelY)) {
+            j.levelX = (uint32_t)levelX;
+            j.levelY = (uint32_t)levelY;
+        }
+    }
+
+    // TransformMasked blends with the source under the output pixel by mask x mix; with neither it
+    // writes the resampled pixels, as Transform does.
+    const bool finish = _masked && (query.hasMask || (getMixValue(time, view) != 1.));
+    gpu::GpuRecordContext& ctx = args.context;
+    GpuImageView filtered = args.output;
+    if (finish) {
+        filtered = GpuImageView();
+        filtered.bounds = rect;
+        filtered.nComps = nComps;
+        filtered.rowStrideFloats = rect.width() * nComps;
+        if (!ctx.scratch((VkDeviceSize)rect.area() * nComps * sizeof(float), filtered.buffer)) {
+            return eStatusFailed;
+        }
+    }
+    resample.dst = toGpuBlurImage(filtered);
+    resample.output = toGpuBlurRect(rect);
+    if (!gpu::recordResample(ctx, resample)) {
+        return eStatusFailed;
+    }
+    if (!finish) {
+        return eStatusOK;
+    }
+    ctx.computeBarrier();
+
+    // render() blends every channel, whatever the channel selection says, and divides by nothing.
+    GpuRenderArgs wrapArgs(args);
+    for (int c = 0; c < 4; ++c) {
+        wrapArgs.query.processChannels[c] = true;
+    }
+    if (!wrapArgs.inputs.empty()) {
+        wrapArgs.inputs[0] = source;
+    }
+
+    return recordGpuFinish(wrapArgs, filtered);
+#else
+    Q_UNUSED(args);
+
+    return eStatusFailed;
+#endif
+} // TransformNode::renderGpu
 
 NATRON_NAMESPACE_EXIT

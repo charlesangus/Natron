@@ -523,6 +523,17 @@ makeGpuQueryForTask(const FrameGraph::Task& task,
         query->processChannels[i] = channels[i];
     }
 
+    // The same redirections renderRoI() hands getImage().
+    query->hasConcatenatedInput = false;
+    const FrameViewRequest* frameView = nodeRequest->second->getFrameViewRequest(task.key.time, task.key.view);
+    if (frameView && frameView->globalData.transforms) {
+        for (InputMatrixMap::const_iterator it = frameView->globalData.transforms->begin(); it != frameView->globalData.transforms->end(); ++it) {
+            query->hasConcatenatedInput = query->hasConcatenatedInput || bool(it->second.newInputEffect);
+        }
+    }
+    const ParallelRenderArgsPtr frameArgs = context.getArgs(node);
+    query->draftMode = frameArgs && frameArgs->draftMode;
+
     query->unPremultChannel = -1;
     query->unPremultInPlane = false;
     KnobChannelSelectPtr unPremultBy = native->wantsHostUnPremultSelector() ? node->getUnPremultBySelector() : KnobChannelSelectPtr();

@@ -69,6 +69,13 @@ struct GpuQuery {
     // source pixel being divided.
     bool unPremultInPlane;
 
+    // Whether an input is fetched through transforms concatenated from upstream nodes, which
+    // render() folds into its own sampling and renderGpu() cannot.
+    bool hasConcatenatedInput;
+
+    // Whether the frame renders in draft quality.
+    bool draftMode;
+
     GpuQuery()
         : time(0.)
         , view(0)
@@ -80,6 +87,8 @@ struct GpuQuery {
         , mix(1.)
         , unPremultChannel(-1)
         , unPremultInPlane(false)
+        , hasConcatenatedInput(false)
+        , draftMode(false)
     {
         for (int i = 0; i < 4; ++i) {
             processChannels[i] = true;

@@ -131,6 +131,22 @@ public:
      **/
     void resetCenter(double time);
 
+    /**
+     * @brief Accepts a float query of 1 to 4 channels without motion or directional blur and
+     * without a transform concatenated from upstream, whose single sampling matrix is affine.
+     **/
+    virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For the source, the pixels getRegionsOfInterest() asks for outputRect, clipped to the
+     * source's region of definition, as render() is handed them.
+     **/
+    virtual RectI getGpuInputRoI(int inputNb,
+                                 const RectI& outputRect,
+                                 const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 protected:
     TransformNode(NodePtr node,
                   bool masked);
@@ -186,6 +202,14 @@ private:
     Resampler::RegionParams getRegionParams(double time, ViewIdx view) const;
 
     bool getSourceRoD(double time, const RenderScale& scale, ViewIdx view, RectD* rod) const;
+
+    RectI getSourceRoIPixels(double time, ViewIdx view, const RectI& outputRect, const RenderScale& scale) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The single destination-to-source pixel matrix render() samples at (time, view, scale)
+     * without motion blur; false when render() would sample more than one.
+     **/
+    bool getGpuSamplingMatrix(double time, ViewIdx view, const RenderScale& scale, TransformMath::Mat3* matrix) const WARN_UNUSED_RETURN;
 
     RectD getProjectRect() const WARN_UNUSED_RETURN;
 

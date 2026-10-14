@@ -50,6 +50,7 @@
 #include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
 
 NATRON_NAMESPACE_USING
@@ -76,6 +77,8 @@ gpuCapableIds()
         PLUGINID_NATRON_GAMMA,
         PLUGINID_NATRON_ERODE,
         PLUGINID_NATRON_DILATE,
+        PLUGINID_NATRON_TRANSFORM,
+        PLUGINID_NATRON_TRANSFORMMASKED,
     };
 
     return ids;

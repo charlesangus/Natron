@@ -415,7 +415,7 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - verify: the regenerated `GpuCostSeed.inc` has rows for every ported node, `GpuPlacement_Test` and `GpuCostModel` tests pass, and the self-test in `render-profile-report.py` is updated and passes.
   - size: M
 
-- [ ] M85.P6.T3 — Quick directional bench (~1 hour)
+- [x] M85.P6.T3 — Quick directional bench (~1 hour)
   - files: none (results go in Decisions); a `gbg`/spatial topology may be added to `tools/bench/graph_bench.py` if the M84 local copy's G-B-G case is still uncommitted
   - approach:
     - Release build in the RADV container (`devshell.sh --gpu`), `NATRON_RENDER_SCHEDULER=taskgraph`, with GPU Auto against Off on the same host.
@@ -642,3 +642,23 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - **Seed limits:** `GpuTaskTraits` has no Erode size or Blur-filter detail beyond `iir` and `motionBlur`, so Erode/Dilate seed at size 6, the IIR row is Quasi-Gaussian (the slower), and box/triangle/quadratic use the FIR rows. Motion blur q4 (27.1 ms) is not seeded.
   - **Generators** vary 0.45–0.63 ms run to run; the seed is the mean of 4.
   - Blur FIR σ100 CPU now reads 173 against 267 in the old seed; other M82 rows agree within 20% and are unchanged.
+
+- 2026-10-14 — **P6.T3 done** (`5271ea4b0`). Quick directional bench: the direction holds on all three criteria. Release build, RADV (7900 XTX), `NATRON_RENDER_SCHEDULER=taskgraph`, Auto vs Off alternated over 2 rounds.
+  - **Host:** `nproc` is 16 (Ryzen 7 7800X3D, 188 GB), not the 4 cores the plan assumed, so the numbers compare directly with M84's. Render pool 16 threads; measured CPU parallelism under Off reached 14.3.
+  - **Per-frame wall time (6 frames for comps, first dropped; graph_bench: 1 warm-up + 5 UHD / 2 at 16k):**
+
+    | workload | Off s | Auto s | speed-up | M84 |
+    |---|---|---|---|---|
+    | keying_grade UHD | 0.945 | 0.349 | 2.71× | 1.12× |
+    | cg_multipass UHD | 0.852 | 0.418 | 2.04× | 1.26× |
+    | defocus_retime UHD | 2.610 | 0.884 | 2.95× | – |
+    | Grade→Transform(mb 1)→Grade UHD / 16k | 1.384 / 64.05 | 0.153 / 3.05 | 9.0× / 21.0× | – |
+    | Grade→Erode 6→Blur σ25→Grade UHD / 16k | 0.383 / 14.75 | 0.110 / 2.54 | 3.5× / 5.8× | – |
+
+  - **Regions (Auto):** keying_grade 6 regions (4, 3, 2, 2, 1, 1 nodes), cg_multipass 9 (largest 5), defocus_retime 9 (largest 3, with the motion-blur Transform). Both graph_bench chains form one region; the 16k ones run 9 strips. No fallbacks, no retries. Transfer is hidden only on strip-pipelined regions (16k: 159/22 ms hidden/exposed gtg, 136/19 gebg).
+  - **CPU-only vs `main` 6fcf9c4fa** (UHD, median frame): chain:30 −1.7%, comp:50 0.0%, blurchain:10 −0.3%.
+  - **Caveats:**
+    - defocus_retime alternates by frame (Auto 0.51 s then 1.43 s, Off 2.5 s and 2.8 s); the slow frames have a ~1.0 s CPU FrameBlend in both modes.
+    - cg_multipass has six lone-Grade regions that each move ~171 MB for a 0.3 ms kernel, all exposed. The comp is still 2× faster, but this placement is the likeliest to turn negative on a slower bus.
+    - The uncompressed EXR Write dominates 16k Auto frames (~2.4 s of 3.05 s).
+  - Raw results: `.local/m85/batchF/bench3/summary-gpu.txt`.

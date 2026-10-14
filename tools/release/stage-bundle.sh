@@ -22,6 +22,15 @@ for tool in patchelf ldd file tar; do
     fi
 done
 
+STRIP=""
+if [[ "${NATRON_STAGE_NO_STRIP:-0}" != "1" ]]; then
+    STRIP="$(command -v strip || true)"
+    if [[ -z "$STRIP" ]]; then
+        echo "error: strip not found in PATH (set NATRON_STAGE_NO_STRIP=1 to stage unstripped)" >&2
+        exit 1
+    fi
+fi
+
 if [[ ! -f "$BUILD_DIR/CMakeCache.txt" ]]; then
     echo "error: $BUILD_DIR does not look like a CMake build directory (no CMakeCache.txt)" >&2
     exit 1
@@ -573,6 +582,46 @@ split_optional_runtime_libs
 
 echo "==> Installing the launcher shims"
 install_launcher
+
+# The bundle is what gets shipped, so it carries no debug info whatever the
+# build type was; developers debug the build tree, which is never touched here.
+# --strip-unneeded drops .symtab and the debug sections but keeps .dynsym, so
+# everything the loader, dlopen and OfxGetPlugin lookups resolve by name still
+# resolves. Stripping rewrites each file through a temporary and renames it
+# over the original, so a file hardlinked into another tree is replaced rather
+# than mutated.
+strip_staged_elfs() {
+    local f magic size_before size_after
+    local count=0 failed=0 total_before=0 total_after=0
+
+    if [[ "${NATRON_STAGE_NO_STRIP:-0}" == "1" ]]; then
+        echo "  skipped: NATRON_STAGE_NO_STRIP=1"
+        return 0
+    fi
+
+    while IFS= read -r f; do
+        magic="$(head -c 4 "$f" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+        [[ "$magic" == "7f454c46" ]] || continue
+
+        size_before="$(stat -c %s "$f")"
+        chmod u+w "$f"
+        if ! "$STRIP" --strip-unneeded "$f" 2>/dev/null; then
+            echo "  warning: could not strip ${f#"$STAGE_DIR"/}" >&2
+            failed=$((failed + 1))
+            continue
+        fi
+        size_after="$(stat -c %s "$f")"
+
+        count=$((count + 1))
+        total_before=$((total_before + size_before))
+        total_after=$((total_after + size_after))
+    done < <(find "$STAGE_DIR" -type f)
+
+    echo "  stripped $count files ($failed failed): $total_before -> $total_after bytes"
+}
+
+echo "==> Stripping debug info from staged ELF files"
+strip_staged_elfs
 
 # ldd is the right tool above -- finding host libraries to bundle is exactly
 # its job -- and the wrong one here, because it would answer using this

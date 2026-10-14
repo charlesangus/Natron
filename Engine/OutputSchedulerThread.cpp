@@ -490,7 +490,11 @@ struct OutputSchedulerThreadPrivate
         for (;; ) {
             bool hasRemoved = false;
             for (RenderThreads::iterator it = renderThreads.begin(); it != renderThreads.end(); ++it) {
-                if ( it->thread->hasQuit() ) {
+                // hasQuit() turns true before run() returns, and the caller holds renderThreadsMutex,
+                // which the quitting thread still takes in notifyThreadAboutToQuit(), so waiting here
+                // could deadlock. A thread that has not finished stays listed until a later sweep or
+                // waitForRenderThreadsToQuit(); deleting it earlier aborts in ~QThread.
+                if (it->thread->hasQuit() && it->thread->isFinished()) {
                     it->thread->deleteLater();
                     renderThreads.erase(it);
                     hasRemoved = true;

@@ -98,14 +98,30 @@ that bumping a pin correctly invalidates it.
 tools/ci/local/build.sh [debug|release|fast] [--reconfigure]
 ```
 
-`debug` (default) builds `build/debug` with `-DDEBUG` and without `NDEBUG`, so
-`assert()` is live; `release` builds `build/release`
-with no explicit `-DCMAKE_BUILD_TYPE`, matching CI's release job exactly.
-`fast` builds `build/fast`: release semantics (no `-DDEBUG`, `NDEBUG` on,
-so it packages and runs under llvmpipe like `release` does) but compiled at
-`-O1` with no debug info -- roughly half the compile time of `release`'s
-`RelWithDebInfo`. Use it for quick UAT checkpoints; use `release` for
-anything you'd ship or profile.
+`build.sh` prints the resolved preset, `CMAKE_BUILD_TYPE`, compile flags and
+whether debug info is on at the start of every run, so you can confirm what
+you are about to build.
+
+**`debug`** (default) -- `build/debug`, `-DCMAKE_BUILD_TYPE=Debug`, compiled
+with `-O0 -g -DDEBUG`. Assertions are live: `NDEBUG` is not defined, and
+`CMakeLists.txt` strips the `NDEBUG` that the installed Shiboken6 package
+exports as an interface definition, which would otherwise silence `assert()`
+in every target linking it. Unoptimised, so it runs slowest. Reach for it when
+iterating on a single file or chasing a bug where you want assertions and a
+debugger-friendly binary.
+
+**`release`** -- `build/release`, no explicit `-DCMAKE_BUILD_TYPE`, so
+`CMakeLists.txt` defaults it to `RelWithDebInfo`: `-O2 -g -DNDEBUG`. This
+matches CI's release job exactly and is the slowest to build. Use it for
+anything you'd ship, profile, or compare against CI.
+
+**`fast`** -- `build/fast`, `-DCMAKE_BUILD_TYPE=Release` with
+`CMAKE_C_FLAGS_RELEASE` and `CMAKE_CXX_FLAGS_RELEASE` overridden to
+`-O1 -DNDEBUG`: no `-g`, no `-DDEBUG`. Release semantics, so it packages and
+runs under llvmpipe like `release` does, at roughly half `release`'s compile
+time. Use it for UI/UAT checkpoints where render performance doesn't matter.
+It is not a CI configuration.
+
 Configure only runs once, when `CMakeCache.txt` doesn't exist yet; pass
 `--reconfigure` after editing `CMakeLists.txt` or similar to force it again.
 This is also what re-execs you into the dev container (see "Getting a

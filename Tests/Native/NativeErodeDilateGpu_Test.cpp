@@ -39,7 +39,10 @@
 
 #include <gtest/gtest.h>
 
+#include <QByteArray>
+#include <QFile>
 #include <QString>
+#include <QTemporaryDir>
 
 #include "BaseTest.h"
 #include "NativeParity.h"
@@ -63,6 +66,7 @@
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
+#include "Engine/RenderScheduler.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -754,6 +758,47 @@ public:
     }
 };
 
+// The pool allocates every buffer at a size class of at least 64 kB, so a cap below that makes even
+// the thinnest strip too large and the region falls back to the CPU. Up to 131072 the classes are
+// multiples of 16 kB, so a buffer fits exactly when its raw size does.
+const std::uint64_t kStripBufferBytes = 131072;
+
+// Grows the 64x48 source's region of definition by 100 pixels on every side, to 264x248, with a halo
+// of 100 rows: the output is 1047552 bytes, eight times the cap.
+const double kStripFilterSize = 100.;
+
+RectI
+pixelRoD(const NodePtr& node)
+{
+    EffectInstancePtr effect = node->getEffectInstance();
+    RectD rod;
+    EXPECT_NE(eStatusFailed, effect->getRegionOfDefinition(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod));
+
+    return rod.toPixelEnclosing(0u, 1.);
+}
+
+// The "strips" of every region record in the profile at path.
+std::vector<int>
+profiledRegionStrips(const std::string& path)
+{
+    std::vector<int> strips;
+    QFile file(QString::fromStdString(path));
+    if (!file.open(QIODevice::ReadOnly)) {
+        return strips;
+    }
+    const std::string key = "{\"kind\":\"region\",";
+    const std::string field = "\"strips\":";
+    for (const QByteArray& bytes : file.readAll().split('\n')) {
+        const std::string line = bytes.toStdString();
+        const std::size_t at = line.find(field);
+        if ((line.compare(0, key.size(), key) == 0) && (at != std::string::npos)) {
+            strips.push_back(std::atoi(line.c_str() + at + field.size()));
+        }
+    }
+
+    return strips;
+}
+
 int
 regionsHolding(const EndToEndResult& result,
                const StripChain& chain,
@@ -810,8 +855,8 @@ TEST_F(NativeErodeDilateGpuTest, GradeErodeGradeChainRunsAsOneRegion)
     }
 }
 
-// With a 16 kB storage buffer range the 64x48 region runs as strips, each filtering its own rows
-// plus the halo, and its pixels are those of the region run whole.
+// With a storage buffer range below the output's size the region runs on the GPU as strips, each
+// filtering its own rows plus the halo, and its pixels are those of the region run whole.
 TEST_F(NativeErodeDilateGpuTest, StripsMatchTheWholeRegionExactly)
 {
     for (bool dilate : { false, true }) {
@@ -825,11 +870,15 @@ TEST_F(NativeErodeDilateGpuTest, StripsMatchTheWholeRegionExactly)
         connectNodes(chain.first, chain.filter, 0, true);
         connectNodes(chain.filter, chain.second, 0, true);
         ASSERT_TRUE(setKnobValues(chain.first, "multiply", std::vector<double>(4, 1.5)));
-        ASSERT_TRUE(setKnobValues(chain.filter, kErodeDilateParamSize, { -6., 3. }));
+        const double size = dilate ? kStripFilterSize : -kStripFilterSize;
+        ASSERT_TRUE(setKnobValues(chain.filter, kErodeDilateParamSize, { size, size }));
         ASSERT_TRUE(setKnobValues(chain.second, "offset", std::vector<double>(4, 0.25)));
         const std::vector<NodePtr> graph({ chain.first, chain.filter, chain.second });
-        const RectI window = paritySourceWindow(chain.source, kTime, 0);
+        const RectI window = pixelRoD(chain.second);
+        ASSERT_FALSE(window.isNull());
         const std::string name = dilate ? "dilate" : "erode";
+        const std::uint64_t outputBytes = (std::uint64_t)window.width() * (std::uint64_t)window.height() * 4u * sizeof(float);
+        ASSERT_GT(outputBytes, 2 * kStripBufferBytes) << name << ": the output is too small to need strips";
 
         const EndToEndResult whole = renderEndToEnd(graph, chain.second, window, kTime);
         if (whole.skipped) {
@@ -837,14 +886,25 @@ TEST_F(NativeErodeDilateGpuTest, StripsMatchTheWholeRegionExactly)
         }
         ASSERT_TRUE(whole.ok) << name << ": " << whole.error;
         EXPECT_TRUE(whole.ranInRegion(chain.filter)) << name;
+        EXPECT_EQ(1u, whole.gpuTasksPerNode.count(chain.filter->getScriptName_mt_safe())) << name << ": the region fell back to the CPU";
 
+        QTemporaryDir profileDir;
+        ASSERT_TRUE(profileDir.isValid());
         EndToEndResult stripped;
+        std::string profileFile;
         {
-            StripOverride strips(16384);
+            StripOverride strips(kStripBufferBytes);
+            RenderScheduler::setProfilePath(profileDir.path().toStdString() + "/profile.jsonl");
+            profileFile = RenderScheduler::getProfileFilePath();
             stripped = renderEndToEnd(graph, chain.second, window, kTime);
+            RenderScheduler::setProfilePath(std::string());
         }
         ASSERT_TRUE(stripped.ok) << name << ": " << stripped.error;
         EXPECT_TRUE(stripped.ranInRegion(chain.filter)) << name << " ran on the CPU when stripped";
+        EXPECT_EQ(1u, stripped.gpuTasksPerNode.count(chain.filter->getScriptName_mt_safe())) << name << ": the stripped region fell back to the CPU";
+        const std::vector<int> regionStrips = profiledRegionStrips(profileFile);
+        ASSERT_EQ(1u, regionStrips.size()) << name << ": one GPU region expected in the profile";
+        EXPECT_GT(regionStrips[0], 1) << name << ": the region did not run as strips";
 
         ASSERT_EQ(whole.gpu.size(), stripped.gpu.size()) << name;
         const ImageDiff diff = compareImages(whole.gpu, stripped.gpu, ParityTolerance::exact());

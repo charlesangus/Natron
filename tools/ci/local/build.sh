@@ -95,6 +95,63 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." >/dev/null 2>&1 && pwd)"
 
+case "${BUILD_TYPE}" in
+    debug)
+        BUILD_DIR="${REPO_ROOT}/build/debug"
+        # Mirrors ci.yml's "Build Unix (debug)" step.
+        CMAKE_BUILD_TYPE_ARGS=(-DCMAKE_BUILD_TYPE=Debug)
+        ;;
+    release)
+        BUILD_DIR="${REPO_ROOT}/build/release"
+        # Mirrors ci.yml's "Build Unix (release)" step, which passes no
+        # explicit -DCMAKE_BUILD_TYPE at all -- match that exactly, don't
+        # "fix" it to Release.
+        CMAKE_BUILD_TYPE_ARGS=()
+        ;;
+    fast)
+        BUILD_DIR="${REPO_ROOT}/build/fast"
+        # CMake's own Release flags are "-O3 -DNDEBUG"; override the
+        # per-config flags to keep NDEBUG (so this stays a release-semantics
+        # binary) but compile at -O1 with no -g. The top-level CMakeLists
+        # only special-cases the Debug build type, so "Release" here gets
+        # exactly the same code paths as build/release.
+        CMAKE_BUILD_TYPE_ARGS=(
+            -DCMAKE_BUILD_TYPE=Release
+            "-DCMAKE_C_FLAGS_RELEASE=-O1 -DNDEBUG"
+            "-DCMAKE_CXX_FLAGS_RELEASE=-O1 -DNDEBUG"
+        )
+        ;;
+esac
+
+# Flags are derived from CMAKE_BUILD_TYPE_ARGS, the array handed to cmake
+# below, so this cannot drift from what is actually configured. The per-config
+# defaults are CMake's GNU ones; the top-level CMakeLists adds -DDEBUG for
+# Debug only and defaults an unset build type to RelWithDebInfo.
+print_build_banner() {
+    local cmake_type="" flags="" arg
+    for arg in "${CMAKE_BUILD_TYPE_ARGS[@]}"; do
+        [[ "${arg}" == -DCMAKE_BUILD_TYPE=* ]] && cmake_type="${arg#-DCMAKE_BUILD_TYPE=}"
+    done
+    local effective="${cmake_type:-RelWithDebInfo}"
+    case "${effective}" in
+        Debug)          flags="-O0 -g -DDEBUG" ;;
+        RelWithDebInfo) flags="-O2 -g -DNDEBUG" ;;
+        Release)        flags="-O3 -DNDEBUG" ;;
+        *)              flags="(unknown build type)" ;;
+    esac
+    for arg in "${CMAKE_BUILD_TYPE_ARGS[@]}"; do
+        if [[ "${arg}" == -DCMAKE_CXX_FLAGS_${effective^^}=* ]]; then
+            flags="${arg#*=}"
+        fi
+    done
+    echo "== build.sh: preset=${BUILD_TYPE} CMAKE_BUILD_TYPE=${cmake_type:-<unset, CMakeLists defaults to RelWithDebInfo>} =="
+    echo "   compile flags: ${flags}"
+    case "${flags}" in
+        *" -g"*|"-g"*) echo "   debug info: yes" ;;
+        *)             echo "   debug info: no" ;;
+    esac
+}
+
 # Returns success if we're already running inside a dev/CI container (see
 # the big comment block above for why each of these checks exists).
 in_container() {
@@ -108,6 +165,11 @@ in_container() {
     fi
     return 1
 }
+
+# The in-container pass of a host run is skipped: the host already printed it.
+if [[ "${NATRON_IN_CONTAINER:-}" != "1" ]]; then
+    print_build_banner
+fi
 
 # --- host-side: submodules, then hop into the container ---------------------
 if ! in_container; then
@@ -138,34 +200,6 @@ if ! in_container; then
 fi
 
 # --- from here on, we are inside the dev container ---------------------------
-
-case "${BUILD_TYPE}" in
-    debug)
-        BUILD_DIR="${REPO_ROOT}/build/debug"
-        # Mirrors ci.yml's "Build Unix (debug)" step.
-        CMAKE_BUILD_TYPE_ARGS=(-DCMAKE_BUILD_TYPE=Debug)
-        ;;
-    release)
-        BUILD_DIR="${REPO_ROOT}/build/release"
-        # Mirrors ci.yml's "Build Unix (release)" step, which passes no
-        # explicit -DCMAKE_BUILD_TYPE at all -- match that exactly, don't
-        # "fix" it to Release.
-        CMAKE_BUILD_TYPE_ARGS=()
-        ;;
-    fast)
-        BUILD_DIR="${REPO_ROOT}/build/fast"
-        # CMake's own Release flags are "-O3 -DNDEBUG"; override the
-        # per-config flags to keep NDEBUG (so this stays a release-semantics
-        # binary) but compile at -O1 with no -g. The top-level CMakeLists
-        # only special-cases the Debug build type, so "Release" here gets
-        # exactly the same code paths as build/release.
-        CMAKE_BUILD_TYPE_ARGS=(
-            -DCMAKE_BUILD_TYPE=Release
-            "-DCMAKE_C_FLAGS_RELEASE=-O1 -DNDEBUG"
-            "-DCMAKE_CXX_FLAGS_RELEASE=-O1 -DNDEBUG"
-        )
-        ;;
-esac
 
 # Object keys hash absolute paths, so a worktree would never hit entries built
 # in the main tree. base_dir rewrites paths under the main root to ones

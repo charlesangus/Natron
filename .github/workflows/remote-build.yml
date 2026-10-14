@@ -1,0 +1,168 @@
+name: Remote build
+
+run-name: remote-build ${{ inputs.preset }} ${{ inputs.token }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      preset:
+        description: 'Build preset'
+        required: true
+        type: choice
+        options:
+          - fast
+          - release
+        default: fast
+      tests:
+        description: 'Run the ctest suite and smoke test'
+        required: true
+        type: boolean
+        default: false
+      appimage:
+        description: 'Package and upload an AppImage'
+        required: true
+        type: boolean
+        default: true
+      token:
+        description: 'Opaque marker echoed into the run name so a script can find this run'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  remote-build:
+    name: remote-build
+    runs-on: ubuntu-latest
+    container:
+      image: aswf/ci-vfxall:2027-clang21.1
+    defaults:
+      run:
+        shell: bash -l {0}
+    env:
+      CI: 'True'
+      PYTHON_VERSION: '3.13'
+      OCIO_CONFIG_VERSION: 2.5
+      NATRON_IN_CONTAINER: 1
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 6G
+      NATRON_DEPS_CACHE: ${{ github.workspace }}/.natron-deps
+      PRESET: ${{ inputs.preset }}
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v5.0.1
+        with:
+          submodules: recursive
+
+      # The primary key ends in run_id so every run saves a fresh entry
+      # (a save under an existing exact key is a silent no-op); hits come
+      # from the restore-keys prefixes.
+      - name: Restore ccache
+        id: restore_ccache
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-linux-${{ inputs.preset }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-linux-${{ inputs.preset }}-${{ github.ref_name }}-
+            ccache-linux-${{ inputs.preset }}-main-
+
+      - name: Cache test assets
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            build/assets/Plugins
+            build/assets/CImg
+          key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
+
+      - name: Cache Slang
+        uses: actions/cache@v6.1.0
+        with:
+          path: .natron-deps
+          key: natron-deps-linux-${{ hashFiles('cmake/FetchSlang.cmake') }}
+
+      - name: Fetch test assets
+        run: tools/ci/local/fetch-assets.sh
+
+      - name: Build
+        id: build
+        run: tools/ci/local/build.sh "$PRESET" --no-ccache-stats
+
+      - name: Run ctest suite (legacy scheduler)
+        if: inputs.tests
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          NATRON_TEST_REQUIRE_GPU: 1
+          NATRON_RENDER_SCHEDULER: legacy
+        run: |
+          set -o pipefail
+          mkdir -p ctest-logs
+          tools/ci/local/test.sh ctest "$PRESET" 2>&1 | tee ctest-logs/ctest-legacy.log
+
+      - name: Run ctest suite (taskgraph scheduler)
+        if: inputs.tests && (success() || failure())
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          NATRON_TEST_REQUIRE_GPU: 1
+          NATRON_RENDER_SCHEDULER: taskgraph
+        run: |
+          set -o pipefail
+          mkdir -p ctest-logs
+          tools/ci/local/test.sh ctest "$PRESET" 2>&1 | tee ctest-logs/ctest-taskgraph.log
+
+      - name: Python bindings smoke test (legacy scheduler)
+        if: inputs.tests && (success() || failure())
+        env:
+          NATRON_RENDER_SCHEDULER: legacy
+          NATRON_SMOKE_OUTPUT_DIR: ${{ github.workspace }}/build/smoke-reference
+        run: tools/ci/local/test.sh smoke "$PRESET"
+
+      - name: Python bindings smoke test (taskgraph scheduler)
+        if: inputs.tests && (success() || failure())
+        env:
+          NATRON_RENDER_SCHEDULER: taskgraph
+          NATRON_SMOKE_REFERENCE_DIR: ${{ github.workspace }}/build/smoke-reference
+        run: tools/ci/local/test.sh smoke "$PRESET"
+
+      - name: Upload ctest logs
+        if: always() && inputs.tests
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: ctest-logs-${{ inputs.preset }}-${{ github.sha }}
+          path: ctest-logs/*
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # Gated on the build rather than on test success: a red test leg
+      # should not withhold the binary someone is trying to inspect.
+      # check-startup.sh runs inside make-appimage.sh.
+      - name: Stage bundle
+        if: inputs.appimage && !cancelled() && steps.build.outcome == 'success'
+        run: tools/release/stage-bundle.sh "build/$PRESET" /tmp/natron-stage
+
+      - name: Create AppImage
+        if: inputs.appimage && !cancelled() && steps.build.outcome == 'success'
+        run: tools/release/make-appimage.sh /tmp/natron-stage /tmp/artifacts
+
+      - name: Upload AppImage
+        if: inputs.appimage && !cancelled() && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: natron-${{ inputs.preset }}-${{ github.sha }}
+          path: /tmp/artifacts/*.AppImage
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.restore_ccache.outputs.cache-primary-key }}
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s

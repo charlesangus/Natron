@@ -267,7 +267,7 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - verify: `transcendental()` for each luminance option. Runs on lavapipe and RADV.
   - size: M
 
-- [ ] M85.P3.T5 — ColorCorrect on the GPU, tone curves included
+- [x] M85.P3.T5 — ColorCorrect on the GPU, tone curves included
   - files: `Engine/Nodes/Color/ColorCorrect.{h,cpp}`, `Engine/Nodes/Image/CurveSnapshot.h` (a flat export of keys for the GPU), `Engine/Gpu/Kernels/colorcorrect.slang` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeColorCorrectGpu_Test.cpp` (new)
   - approach:
     - Port the per-range (shadows/midtones/highlights/master) saturation, contrast, gamma, gain and offset maths.
@@ -300,7 +300,7 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
     - An end-to-end Constant → Grade → Blur frame forms one region with **zero uploads** (region record).
   - size: M
 
-- [ ] M85.P3.T8 — CheckerBoard on the GPU
+- [x] M85.P3.T8 — CheckerBoard on the GPU
   - files: `Engine/Nodes/Generator/CheckerBoard.{h,cpp}`, `Engine/Gpu/Kernels/generators.slang`, `Tests/Native/NativeCheckerBoardGpu_Test.cpp` (new), `Tests/Native/NativeGpuCapability_Test.cpp`
   - approach:
     - Follow P3.T7's pattern, with the square size, line width and colours in the params.
@@ -310,7 +310,7 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
 
 ## Phase 85.4: Keyers and morphology
 
-- [ ] M85.P4.T1 — Keyer on the GPU
+- [x] M85.P4.T1 — Keyer on the GPU
   - files: `Engine/Nodes/Keyer/Keyer.{h,cpp}`, `Engine/Gpu/Kernels/keyer.slang` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeKeyerGpu_Test.cpp` (new)
   - approach:
     - Override `canRenderOnGpu`/`renderGpu` directly, as a multi-input node: Source, InM, OutM and Bg come through `args.inputs` by input number.
@@ -323,7 +323,7 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
     - An end-to-end Grade → Keyer → Grade frame forms one region.
   - size: M
 
-- [ ] M85.P4.T2 — ChromaKeyer on the GPU
+- [x] M85.P4.T2 — ChromaKeyer on the GPU
   - files: `Engine/Nodes/Keyer/ChromaKeyer.{h,cpp}`, `Engine/Gpu/Kernels/chromakeyer.slang` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeChromaKeyerGpu_Test.cpp` (new)
   - approach:
     - Follow P4.T1's pattern. ChromaKeyer is the heaviest per-pixel node in `keying_grade`: 64 ms/Mpx serial.
@@ -350,7 +350,7 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
 
 ## Phase 85.5: Transform
 
-- [ ] M85.P5.T1 — Transform and TransformMasked on the GPU without motion blur
+- [x] M85.P5.T1 — Transform and TransformMasked on the GPU without motion blur
   - files: `Engine/Gpu/Kernels/resample.slang` (new), `Engine/Gpu/CMakeLists.txt`, `Engine/Nodes/Transform/Transform.{h,cpp}`, `Tests/Native/NativeTransformGpu_Test.cpp` (new)
   - approach:
     - Resample from **storage buffers** with the CPU filter maths, not `VkImage` sampling (see Decisions):
@@ -386,7 +386,7 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
 
 ## Phase 85.6: Benches and close-out
 
-- [ ] M85.P6.T1 — Label fallen-back members in profiles
+- [x] M85.P6.T1 — Label fallen-back members in profiles
   - files: `Engine/GpuRegionTask.{h,cpp}`, `Engine/RenderScheduler.cpp` (`formatTaskRecord`/`formatRegionRecord`), `tools/bench/render-profile-report.py`, `Tests/RenderProfile_Test.cpp`
   - approach:
     - Members of a region that fell back to the CPU are recorded as `"device":"cpu"`, keeping their `regionId`.
@@ -394,6 +394,15 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
     - The report script counts fallbacks per plugin.
     - This is the profile half of the M84 hand-off. The fallback thread budget goes to the proposed M109.
   - verify: `RenderProfileTest` asserts both fields on an injected-OOM fallback and on a clean region, and the report self-test passes.
+  - size: M
+
+- [ ] M85.P6.T1b — Device-timed kernelMs on the non-pipelined region paths
+  - files: `Engine/GpuRegionTask.cpp` (`submit()`, `record()`, `recordStrip`), `Tests/RenderProfile_Test.cpp` or `Tests/GpuResidency_Test.cpp`
+  - approach:
+    - **Bug:** `submit()` (`GpuRegionTask.cpp:899-925`) adds `msBetween(segmentBegin, end)` to `kernelMs` even when there is no recorder to submit, and `segmentBegin` is only reset when a recorder is created (`:1021`). A member that downloads inside `record()`'s loop (`:1066`) submits, then the unconditional final `submit()` (`:1072`) adds the same interval again, so a region whose last member downloads reports about 2× its wall time.
+    - Account only when a recorder was actually submitted, and reset `segmentBegin` after each submit.
+    - On the non-pipelined paths, `kernelMs` is a host interval that includes recording, pipeline creation, submit and fence wait. Write a timestamp pair around each segment as the pipelined path does (`:1652`, `:1671`), read it back after `submitAndWait`, and report device time. Where timestamps are unavailable, keep the host interval.
+  - verify: a test asserts `kernelMs <= wallMs` for an unstripped region whose last member downloads, and that the region's `kernelMs` is unchanged by adding a download; the GPU sweep stays green.
   - size: M
 
 - [ ] M85.P6.T2 — Measure the new kernels and seed their cost rows
@@ -459,6 +468,7 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
 - **Phase 5:** P5.T1 after P2.T3, then P5.T2.
 - **Phase 6:**
   - P6.T1 after P2.T2 (same `GpuRegionTask.cpp`);
+  - P6.T1b after P6.T1, and before P6.T2, which seeds from `kernelMs`;
   - P6.T2 after all of Phases 2–5;
   - P6.T3 after P6.T1 and P6.T2;
   - P6.T4 after P6.T3;
@@ -570,3 +580,10 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - **Follow-ups for M109 - GPU Region Engine Hardening:**
     - A region whose member had an empty input slot hung instead of falling back to the CPU. It wasn't diagnosed: ptrace isn't allowed in the container.
     - `collectPreRenderFrames` records one edge when a node feeds two inputs of one consumer, which contradicts `FrameGraph::Task`'s comment. The CPU pre-renders one input and fetches the other on demand.
+- 2026-10-13 — **P6.T1** (`881ce8501`), **P3.T5** (`e56fb6638`), **P3.T8** (`12d3983b8`), **P5.T1** (`cd8473e25`), **P4.T1** (`acdf52617`) and **P4.T2** (`f218b474a`) done as one parallel batch, plus `25cba7ba4` fixing P4.T3's strips test. The sweep passes 1073/1073 on lavapipe, RADV and no-ICD in both scheduler modes; `DefaultChannelSetTest`'s two project round-trips failed once under `ctest -j8` with temp-file errors and passed 3/3 alone.
+  - **Strip tests:** `GpuBufferPool` never allocates less than 64 KiB (`kMinClass`), and the planner checks allocated sizes against the cap, so any cap below 65536 makes even a 4-row strip too large and the region falls back to the CPU. The Transform and Erode/Dilate strips tests now use a 128 KiB cap on outputs several times larger and assert the node ran on the GPU and `strips > 1` (about 4 and 9 strips).
+  - **ColorCorrect:** tone curves read the CPU table inside its range and evaluate keys outside it, shared with ColorLookup through `CurveSnapshot::packGpu` and `curvesnapshot.slang`.
+  - **ChromaKeyer:** unpremultiplied mode holds 1e-3 relative (it divides by the key alpha); the other modes hold `transcendental()`.
+  - **Transform:** motion blur, directional blur and concatenated inputs stay on the CPU; `GpuQuery` gains `hasConcatenatedInput` and `draftMode`. `ResamplingMatchesTheCpuRender` takes ~100 s (about 900 GPU runs), on RADV as on lavapipe.
+  - **`kernelMs` is double-counted on the non-pipelined paths** (found from a profile reporting 390 ms kernel against 195 ms wall), and it is a host interval that includes pipeline compilation there. P6.T1b fixes it before P6.T2 seeds from it.
+

@@ -98,7 +98,7 @@ that bumping a pin correctly invalidates it.
 ## 3. Build
 
 ```
-tools/ci/local/build.sh [debug|release|fast] [--reconfigure]
+tools/ci/local/build.sh [debug|release|fast] [--tests] [--reconfigure] [--no-ccache-stats]
 ```
 
 `build.sh` prints the resolved preset, `CMAKE_BUILD_TYPE`, compile flags and
@@ -125,6 +125,14 @@ runs under llvmpipe like `release` does, at roughly half `release`'s compile
 time. Use it for UI/UAT checkpoints where render performance doesn't matter.
 It is not a CI configuration.
 
+`fast` builds without the gtest suite (`NATRON_BUILD_TESTS=OFF`) unless
+`--tests` is given, so a UI edit does not relink the large Tests binary.
+`--tests` is for `fast` only; `debug` and `release` always build tests. The
+requested value is passed on every configure, and a cached value that differs
+forces a reconfigure.
+
+`--no-ccache-stats` skips the `ccache -s` summary printed at the end.
+
 Configure only runs once, when `CMakeCache.txt` doesn't exist yet; pass
 `--reconfigure` after editing `CMakeLists.txt` or similar to force it again.
 This is also what re-execs you into the dev container (see "Getting a
@@ -143,7 +151,8 @@ each target.
 ## 4. Test
 
 ```
-tools/ci/local/test.sh <ctest|smoke> [debug|release|fast] [--gdb]
+[NATRON_RENDER_SCHEDULER=legacy|taskgraph] [NATRON_CTEST_JOBS=<n>] \
+  tools/ci/local/test.sh <ctest|smoke> [debug|release|fast] [--gdb]
 ```
 
 - `ctest` runs `ctest -V` against the build dir, exactly as CI does.
@@ -152,6 +161,15 @@ tools/ci/local/test.sh <ctest|smoke> [debug|release|fast] [--gdb]
   that carry the M2-era `tools/ci/smoke_test.py` addition -- it is not on
   `RB-2.6`, and `test.sh` will tell you plainly and exit if it's missing on
   your checkout.
+- `NATRON_RENDER_SCHEDULER` selects the render scheduler for `ctest` and
+  `smoke`; unset leaves Natron's default. It is forwarded into the container
+  when set.
+- `NATRON_CTEST_JOBS` (`ctest` only) is how many cases run at once, all as
+  clients of the one Xvfb server. Unset or 1 is the serial `ctest -V` run.
+  Above 1 only failing cases' output is printed as each finishes; the full
+  output of every case is in `Testing/Temporary/LastTest.log`. Cases that
+  assert a wall-clock bound run alone (`Tests/SerialTests.cmake`). It is
+  forwarded into the container when set.
 - `--gdb` applies only to `smoke` (`ctest` runs many binaries, not one): it
   runs the target under
   `gdb -batch -ex run -ex "thread apply all bt" -ex bt --args <binary> ...`

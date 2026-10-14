@@ -33,8 +33,10 @@ tools/ci/remote/build.sh --mode    # prints the resolved mode
 ## Two build kinds
 
 - UAT: a `fast` AppImage (-O1) for GUI checks.
-- Performance: a `release` AppImage (-O2, stripped at staging), measured on
-  the target host. Never take performance numbers from a GitHub runner.
+- Performance: a `release` AppImage (-O2), measured on the target host. Never take performance numbers from a GitHub runner.
+
+`stage-bundle.sh` strips the ELF files of every preset's bundle, `fast`
+included, not only `release`. Set `NATRON_STAGE_NO_STRIP=1` to opt out.
 
 ## Usage
 
@@ -57,7 +59,7 @@ run name, watches it, then downloads the artifacts (kept 7 days on GitHub):
 | Artifact | Contents |
 | --- | --- |
 | `natron-<preset>-<sha>` | the `.AppImage`, made executable |
-| `ctest-logs-<preset>-<sha>` | ctest and smoke logs (`--tests` only), uploaded even when the run fails |
+| `ctest-logs-<preset>-<sha>` | the ctest logs, `ctest-legacy.log` and `ctest-taskgraph.log` (`--tests` only), uploaded even when the run fails |
 
 Both land in `build/remote/<preset>/`, which is wiped at the start of each
 download. The script prints the run URL, the `AppImage:` path and, with
@@ -70,11 +72,14 @@ and no AppImage. It only keeps the ccache warm for branch runs.
 
 ## GUI checks in remote mode
 
-Run GUI scripts locally against the downloaded AppImage, under Xvfb:
+Run GUI scripts inside the natron-dev container (through the main
+`tools/ci/local/devshell.sh`), against the downloaded AppImage under
+`build/`, under Xvfb:
 
 ```
 Tests/gui/run-gui-test.sh Tests/gui/<script>.py build/remote/fast/<name>.AppImage
 ```
 
 `run-gui-test.sh` extracts the AppImage once and launches its `AppRun`, so no
-FUSE is needed.
+FUSE is needed. It needs the container's `/usr/lib64` GL, EGL, Mesa and LLVM
+libraries (it exits 2 if one is missing), plus `Xvfb` and `xset`.

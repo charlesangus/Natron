@@ -51,6 +51,7 @@
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
 #include "Engine/Nodes/Transform/Transform.h"
+#include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Plugin.h"
 
@@ -81,6 +82,7 @@ gpuCapableIds()
         PLUGINID_NATRON_TRANSFORM,
         PLUGINID_NATRON_TRANSFORMMASKED,
         PLUGINID_NATRON_KEYER,
+        PLUGINID_NATRON_CHROMAKEYER,
     };
 
     return ids;

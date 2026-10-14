@@ -36,6 +36,8 @@
 #include "Engine/AppManager.h"
 #include "Engine/CLArgs.h"
 
+#include "PerProcessUserDirs.h"
+
 using namespace NATRON_NAMESPACE;
 
 namespace {
@@ -81,6 +83,7 @@ main(int argc, char** argv)
         qputenv("QT_QPA_PLATFORM", "offscreen");
     }
     int retval;
+    PerProcessUserDirs userDirs;
     {
         WidgetTestAppManager manager;
 

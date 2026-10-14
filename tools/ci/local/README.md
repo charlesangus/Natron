@@ -12,6 +12,9 @@ build tree, so a one-file edit rebuilds in seconds and `ctest`/`smoke_test.py`/
 Follow this file top to bottom from a clean clone and you'll reach a passing
 `test.sh ctest`.
 
+To build on GitHub Actions instead, and to choose local or remote per host
+(`.local/build-mode`), see [`../remote/README.md`](../remote/README.md).
+
 ## Prerequisites
 
 - A working Docker daemon. If you are inside a container yourself, the host

@@ -125,7 +125,7 @@ build ~30 min. No workflow produces an AppImage except `release.yml` on tag push
 
 ## Phase 115.4: Remote builds on GitHub Actions
 
-- [ ] M115.P4.T1 — Add a dispatch-only `remote-build.yml` workflow
+- [x] M115.P4.T1 — Add a dispatch-only `remote-build.yml` workflow
   - files: `.github/workflows/remote-build.yml`
   - approach: `workflow_dispatch` with inputs `preset` (`fast`|`release`), `tests`
     (bool), `appimage` (bool, default true) and `token` (string), and a `run-name`
@@ -244,3 +244,4 @@ throughout.
 - 2026-10-13 — **P6.T2 also gives each test process its own disk-cache, config and data dirs** (`Tests/PerProcessUserDirs.h`), since `--clear-cache` wiped caches a concurrent case was using; seven wall-clock-bound cases are `RUN_SERIAL`. Knob `NATRON_CTEST_JOBS` (CI: 4; 1 = old serial run).
 - 2026-10-13 — **Release AppImage size (P3.T2):** unstripped 419 MB (run 38505842066) → stripped 88 MB (run 38507504893, 0605f6f85), artifact sizes; staging stripped 268 ELFs, 1.38 GB → 257 MB. `check-relocatable.sh` and `check-startup.sh` pass on the stripped tree.
 - 2026-10-13 — **ccache families (P4.T2):** measured entries before the change — debug 1.31–2.12 GB, release 1.52–2.02 GB, no fast entry; deps 0.16 GB, assets 0.01 GB. Caps: debug 3G, release 3G, fast 2G (8G of the 10 GB quota; raise fast first if it thrashes). Second `release` dispatch on the branch restored the branch's own entry and hit 871/876 compiles (99.4%), build ~4 min; release entry 1.93 GB. The old unprefixed debug key is a last restore-key so main's first post-merge run stays warm.
+- 2026-10-14 — **Remote builds (P4.T1):** both presets produced an AppImage that passed `check-startup.sh` (release run 38507504893; fast runs 38505839868 and 38508837067). Cold `fast` 34 min (empty fast cache); warm `fast` 5 min 23 s wall time, 656/657 hits, stripped fast AppImage 86 MB. The local download step can't be exercised from this host until `*.blob.core.windows.net` is reachable.

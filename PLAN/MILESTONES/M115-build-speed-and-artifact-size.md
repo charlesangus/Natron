@@ -180,7 +180,7 @@ build ~30 min. No workflow produces an AppImage except `release.yml` on tag push
 
 ## Phase 115.5: Per-host build-mode selection
 
-- [ ] M115.P5.T1 — Define `.local/build-mode` and ignore `.local/` in the repo
+- [x] M115.P5.T1 — Define `.local/build-mode` and ignore `.local/` in the repo
   - files: `.gitignore`, `tools/ci/remote/build.sh`
   - approach: `.local/build-mode` holds `local` or `remote` (first non-blank,
     non-`#` line). A missing file means `remote`. Add `.local/` to `.gitignore`;

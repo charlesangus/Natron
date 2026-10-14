@@ -496,3 +496,4 @@ Acceptance sketch:
   - Local re-verify: ctest 2150/2151 (the known Release golden); `m69_cleanup.py` 402/0; `m56_visual.py` 263/0 at 1×.
   - The curve checks needed a saturation-based detector (`a86963ddc`). Curve colours follow a per-widget hue counter that moves 60° for every curve created, so adding nodes earlier in the script changed them. No product change.
   - **Follow-up:** the output picker path (`ViewerGL::getColorAtRect`) also ignores pixel aspect ratio. This predates M69.
+- 2026-10-14 — **Merged:** PR #60 squash-merged as `f3f2ac58d`, and the lane worktree and branch were removed. CI `build-and-test` failed once on `PoolSharing.WideGraphLeavesGetOneThreadEach` (leaf 63 got two threads instead of one). It passed on rerun and in both local runs, and M69 touches no pool or scheduler code, so it is a flaky timing test, not an M69 regression.

@@ -90,7 +90,7 @@ build ~30 min. No workflow produces an AppImage except `release.yml` on tag push
     prints its resolved type/flags before `cmake` runs.
   - size: M
 
-- [ ] M115.P2.T2 — Document the three presets in `tools/ci/local/README.md`
+- [x] M115.P2.T2 — Document the three presets in `tools/ci/local/README.md`
   - files: `tools/ci/local/README.md`
   - approach: one short section per preset — what it compiles with, how long it
     roughly takes relative to the others, and when to reach for it (`fast` for

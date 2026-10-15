@@ -207,9 +207,10 @@ TEST_F(BaseTest, RoundTripsLayerRegistry)
     }
 
     int layersChangedCount = 0;
-    QObject::connect(project.get(), &Project::projectLayersChanged, [&layersChangedCount]() {
-        ++layersChangedCount;
-    });
+    // The project outlives this test in a single-process run; the scoped receiver drops the
+    // connection before layersChangedCount goes out of scope.
+    QObject connectionScope;
+    QObject::connect(project.get(), &Project::projectLayersChanged, &connectionScope, [&layersChangedCount]() { ++layersChangedCount; }, Qt::DirectConnection);
     ASSERT_TRUE(project->loadProject(dirPath, fileName));
     EXPECT_EQ(1, layersChangedCount);
 

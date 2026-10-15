@@ -50,7 +50,8 @@
 #define kNatronWriteParamReadBackLabel "Read back file"
 #define kNatronWriteParamReadBackHint "When checked, the output of this node comes from reading the written file instead of the input node"
 
-#define kNatronWriteParamReadBackStamp "readBackStamp"
+// The EXR header attribute holding the content hash of the Write when the file was written.
+#define kNatronWriteOutputHashAttribute "natron:outputHash"
 
 #define kNatronWriteParamReload "reload"
 
@@ -152,13 +153,14 @@ public:
         return EffectInstance::ePassThroughBlockNonRenderedLayers;
     }
 
-    // While reading back, the output is the file: the input is not needed, so a Viewer shows the
-    // file with the input disconnected, and the channel set does not gate the render.
+    // While reading back a frame whose file is current, the output is the file: the input is not
+    // needed, so a Viewer shows the file with the input disconnected, and the channel set does
+    // not gate the render.
     virtual bool isInputOptional(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual bool outputFollowsLayerKnob(double time, ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // Forgets what was read of the read-back files.
+    // Forgets what was read of the read-back files and the images cached for them.
     virtual void purgeCaches() OVERRIDE FINAL;
 
     virtual StatusEnum getRegionOfDefinition(U64 hash,
@@ -172,6 +174,9 @@ public:
     virtual void getFrameRange(double* first, double* last) OVERRIDE FINAL;
 
     virtual bool dependsOnProjectFrameRange() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // How a node hash is stored in the file's header.
+    static std::string outputHashText(U64 hash) WARN_UNUSED_RETURN;
 
 private:
     /**
@@ -228,9 +233,9 @@ private:
     // The input's planes the channel set selects, whole, before the file's format narrows them.
     std::vector<ImageLayerDesc> inputPlanes(double time, ViewIdx view) WARN_UNUSED_RETURN;
 
-    // The colour plane, when the file has one, and every other layer of the file of `time` and
-    // `view` as the native Read groups them; read back declares these whatever the input offers.
-    std::list<ImageLayerDesc> readBackLayers(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+    // The colour plane, when the file has one, and every other layer of `header` as the native
+    // Read groups them for `view`; read back declares these whatever the input offers.
+    std::list<ImageLayerDesc> readBackLayers(const OiioReadSupport::Header& header, ViewIdx view) const WARN_UNUSED_RETURN;
 
     // The views a render of `view` puts in its file: several when one file takes every view of
     // the project (rendered under view 0), none when another view's render writes the file.
@@ -245,22 +250,25 @@ private:
 
     bool resolveWindow(double time, ViewIdx view, Window* window) const WARN_UNUSED_RETURN;
 
-    // Whether the output comes from the written file: the knob is on and the file is not being written.
+    // Whether read back is offered: only an EXR file can hold the hash it is gated on.
+    bool readBackAvailable() const WARN_UNUSED_RETURN;
+
+    // Whether the knob asks for the file and the file is not being written. The frame shows the
+    // file only when readBackFrame() finds one.
     bool readBackActive() const WARN_UNUSED_RETURN;
 
-    // The headers of the file of `time` and `view`, or null with a persistent error set.
-    std::shared_ptr<const OiioReadSupport::Header> readBackHeader(double time, ViewIdx view, std::string* path) WARN_UNUSED_RETURN;
+    // The headers of the file of `time` and `view` when read back is on and the hash stored in the
+    // file is the node's current hash, so the file is what the input would render; null otherwise,
+    // and the frame passes the input through.
+    std::shared_ptr<const OiioReadSupport::Header> readBackFrame(double time, ViewIdx view, std::string* path) const WARN_UNUSED_RETURN;
 
-    StatusEnum renderReadBack(const RenderActionArgs& args) WARN_UNUSED_RETURN;
+    StatusEnum renderReadBack(const RenderActionArgs& args, const OiioReadSupport::Header& header, const std::string& path) WARN_UNUSED_RETURN;
 
     // The Render button is off while the node shows the file, and Reload is on only then.
     void refreshReadBackState();
 
-    // A finished sequence changed the file, which the hash must tell the viewer.
+    // A finished sequence wrote files that the cached images, layers and headers do not reflect.
     void onSequenceRenderFinished();
-
-    // The file name alone cannot tell the hash that the file's content changed while the node shows it.
-    void bumpReadBackStamp();
 
     // Menus and visibility follow the format of the file name and the chosen compression.
     void refreshOptions();
@@ -292,7 +300,6 @@ private:
     KnobChoiceWPtr _partSplitting;
     KnobBoolWPtr _writeMetadata;
     KnobBoolWPtr _readBack;
-    KnobIntWPtr _readBackStamp;
     KnobButtonWPtr _reload;
     KnobChoiceWPtr _views;
     std::string _viewToKeep;

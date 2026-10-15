@@ -907,6 +907,11 @@ NativeRead::knobChanged(KnobI* k,
     if (reload && (k == reload.get())) {
         purgeCaches();
         clearPersistentMessage(false);
+        // The Reload bracket hashed this node before purgeCaches() dropped the file stamps.
+        NodePtr node = getNode();
+        if (node) {
+            node->computeHash();
+        }
 
         return true;
     }

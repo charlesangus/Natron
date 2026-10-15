@@ -269,6 +269,22 @@ RotoDrawableItem::createNodes(bool connectNodes)
     }
     assert(_imp->mergeNode);
 
+    // Attached before any value or input is set on the nodes: each of those recomputes their
+    // hashes, and a hash computed before the attach leaves out the item and follows the
+    // RotoPaint input.
+    if (_imp->effectNode) {
+        _imp->effectNode->attachRotoItem(thisShared);
+    }
+    if (_imp->mergeNode) {
+        _imp->mergeNode->attachRotoItem(thisShared);
+    }
+    if (_imp->timeOffsetNode) {
+        _imp->timeOffsetNode->attachRotoItem(thisShared);
+    }
+    if (_imp->frameHoldNode) {
+        _imp->frameHoldNode->attachRotoItem(thisShared);
+    }
+
     if ( (type != eRotoStrokeTypeSolid) && (type != eRotoStrokeTypeSmear) ) {
         int maxInp = _imp->mergeNode->getNInputs();
         for (int i = 0; i < maxInp; ++i) {
@@ -319,21 +335,6 @@ RotoDrawableItem::createNodes(bool connectNodes)
 
         setNodesThreadSafetyForRotopainting();
     }
-
-    ///Attach this stroke to the underlying nodes used
-    if (_imp->effectNode) {
-        _imp->effectNode->attachRotoItem(thisShared);
-    }
-    if (_imp->mergeNode) {
-        _imp->mergeNode->attachRotoItem(thisShared);
-    }
-    if (_imp->timeOffsetNode) {
-        _imp->timeOffsetNode->attachRotoItem(thisShared);
-    }
-    if (_imp->frameHoldNode) {
-        _imp->frameHoldNode->attachRotoItem(thisShared);
-    }
-
 
     if (connectNodes) {
         refreshNodesConnections();

@@ -880,12 +880,12 @@ Node::auditHashTransition(U64 ageHash,
     if (!first) {
         if (ageChanged && !contentChanged) {
             const std::string reason = cause.empty() ? std::string("unknown") : cause;
-            if (audit.logged.insert(pluginID + "|content-missed|" + reason).second) {
+            if (audit.logged.insert(pluginID + "|" + scriptName + "|content-missed|" + reason).second) {
                 fprintf(stderr, "NATRON_HASH_AUDIT: content-missed? plugin=%s node=%s knob=%s\n",
                         pluginID.c_str(), scriptName.c_str(), reason.c_str());
             }
         } else if (contentChanged && !ageChanged) {
-            if (audit.logged.insert(pluginID + "|age-missed").second) {
+            if (audit.logged.insert(pluginID + "|" + scriptName + "|age-missed").second) {
                 fprintf(stderr, "NATRON_HASH_AUDIT: age-missed plugin=%s node=%s\n",
                         pluginID.c_str(), scriptName.c_str());
             }
@@ -1105,6 +1105,25 @@ Node::computeContentHash() const
         h.appendString("rotoItem");
         h.appendU64(strokeItem->getContentHash());
     }
+
+    // isNodeDisabled() inherits the disabled state of every enclosing group, and identity results
+    // are cached under this hash, so toggling a group must move the hashes of the nodes inside it.
+    U64 enclosingGroups = 0;
+    NodeCollectionPtr collection = getGroup();
+    while (NodeGroup* enclosingGroup = dynamic_cast<NodeGroup*>(collection.get())) {
+        NodePtr groupNode = enclosingGroup->getNode();
+        if (!groupNode) {
+            break;
+        }
+        KnobBoolPtr groupDisabled = groupNode->getDisabledKnob();
+        h.appendBool(bool(groupDisabled));
+        if (groupDisabled) {
+            groupDisabled->appendContentHash(h);
+        }
+        ++enclosingGroups;
+        collection = groupNode->getGroup();
+    }
+    h.appendU64(enclosingGroups);
 
     h.appendU64(getApp()->getProject()->getContentDigest());
 
@@ -5917,7 +5936,10 @@ Node::onEffectKnobValueChanged(KnobI* what,
         if (isGroup) {
             ///When a group is disabled we have to force a hash change of all nodes inside otherwise the image will stay cached
 
-            NodesList nodes = isGroup->getNodes();
+            // Nodes in nested groups inherit this state too, and the graph walk below does not
+            // reach those that are not downstream of a GroupInput.
+            NodesList nodes;
+            isGroup->getNodes_recursive(nodes, false);
             std::list<Node*> markedNodes;
             for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
                 //This will not trigger a hash recomputation
@@ -7642,6 +7664,8 @@ Node::attachRotoItem(const RotoDrawableItemPtr& stroke)
 {
     assert( QThread::currentThread() == qApp->thread() );
     _imp->paintStroke = stroke;
+    // Both hashes read the attached item, so the stored ones must not predate it.
+    computeHash();
 }
 
 RotoDrawableItemPtr

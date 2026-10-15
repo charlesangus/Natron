@@ -127,7 +127,7 @@ This phase runs now. It edits only `renderHandler`'s tmpImage decision block in 
   - verify: a Decisions entry lists each class with its verdict and evidence; P2.T2 consumes the opt-out list.
   - size: M
 
-- [ ] M90.P2.T2 — Let opted-in effects render into the cache-backed mapped image, with no temporary and no paste
+- [x] M90.P2.T2 — Let opted-in effects render into the cache-backed mapped image, with no temporary and no paste
   - files: `Engine/EffectInstance.h`, `Engine/EffectInstance.cpp` (the `renderHandler` block at `:2966-2994` only), `Engine/Nodes/NativeEffectBase.h`, plus the opt-out overrides from P2.T1
   - approach:
     - Add a virtual `EffectInstance::rendersOnlyInsideRenderWindow() const`, default `false`. Override it to `true` in `NativeEffectBase`, and to `false` in each class P2.T1 flagged.
@@ -138,7 +138,7 @@ This phase runs now. It edits only `renderHandler`'s tmpImage decision block in 
   - verify: P2.T3's tests; plus `Tests/Native/*` and `RenderBothWaysSelf_Test` passing in both scheduler modes at the phase build.
   - size: M
 
-- [ ] M90.P2.T3 — Test that direct output is correct, in both schedulers and under concurrency
+- [x] M90.P2.T3 — Test that direct output is correct, in both schedulers and under concurrency
   - files: `Tests/Native/NativeDirectOutput_Test.cpp` (new; picked up by the `Native/*_Test.cpp` GLOB), and a new test-only effect header if needed. Don't edit `Tests/CountingTestEffect.h`, so parallel lanes don't share a file.
   - approach:
     - **Path taken.** A test effect with `rendersOnlyInsideRenderWindow()` true records `args.outputLayers.front().second->usesBitMap()` in `render()`. With `forceCaching` on, it must see a bitmap-backed image (temporaries are created with `useBitmap=false`). With the override false, or with two rects, it must see a temporary.
@@ -195,7 +195,7 @@ This phase starts only after M85 - Native GPU Kernels has merged into `main`. M8
   - verify: `render-profile-report.py --self-test` and `ctest -R "GpuPlacement|GpuCostModel"` pass, and the diff of `GpuCostSeed.inc` shows lower CPU ms/Mpx for Grade and Blur with the GPU rows unchanged.
   - size: M
 
-**Verification gate:** full ctest passes in both `NATRON_RENDER_SCHEDULER=legacy` and `taskgraph`, with no new failures (CImg-asset failure excepted). `NativeDirectOutput`, `ImagePasteBands` and `ImageNaNBands` pass. The P2.T4 and P3.T2 Decisions entries show in-graph UHD Grade and Blur at 16 threads within ~1.5× of their bare-kernel ms/Mpx (`graph_bench.py` `chain`/`blurchain` under `NATRON_RENDER_PROFILE`), or put any measured exception to the user. `Engine/GpuCostSeed.inc` is regenerated on top of M85's version.
+**Verification gate:** full ctest passes in both `NATRON_RENDER_SCHEDULER=legacy` and `taskgraph`, with no new failures (CImg-asset failure excepted). `NativeDirectOutput` and `ImagePasteBands` pass (`ImageNaNBands` was deleted with the NaN check in P1.T5). The P2.T4 and P3.T2 Decisions entries show in-graph UHD Grade and Blur at 16 threads within ~1.5× of their bare-kernel ms/Mpx (`graph_bench.py` `chain`/`blurchain` under `NATRON_RENDER_PROFILE`), or put any measured exception to the user. `Engine/GpuCostSeed.inc` is regenerated on top of M85's version.
 
 ## Decisions
 

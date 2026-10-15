@@ -38,6 +38,7 @@
 #include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
+#include <unordered_map>
 #include <vector>
 
 #include "Global/Macros.h"
@@ -941,7 +942,7 @@ Node::resetHashAudit(bool seedFromCurrentHashes)
 }
 
 bool
-Node::computeHashInternal()
+Node::computeHashInternal(U64 projectDigest)
 {
     if (!_imp->effect) {
         return false;
@@ -954,7 +955,7 @@ Node::computeHashInternal()
 
     // Computed before taking knobsAgeMutex: knob content hashing and input reads must not run
     // under this node's write lock.
-    const U64 contentHash = computeContentHash();
+    const U64 contentHash = computeContentHash(projectDigest);
 
     U64 oldContentHash, oldHash, newHash;
     {
@@ -1048,7 +1049,82 @@ Node::computeHashInternal()
 } // Node::computeHashInternal
 
 U64
-Node::computeContentHash() const
+Node::getKnobsContentDigest(bool* hasExpression) const
+{
+    // Read before any knob: an edit made meanwhile invalidates after it lands, so it moves the
+    // generation past the one stored here and the next call rebuilds.
+    const U64 generation = _imp->effect->getKnobsContentGeneration();
+    const KnobHolder* holder = _imp->effect.get();
+
+    QMutexLocker l(&_imp->knobsDigestMutex);
+    if (!_imp->knobsDigestValid || (_imp->knobsDigestGeneration != generation)) {
+        std::vector<Implementation::KnobsDigestEntry>& entries = _imp->knobsDigestEntries;
+        entries.clear();
+        bool anyExpression = false;
+        bool anyLive = false;
+        const KnobsVec& knobs = _imp->effect->getKnobs();
+        for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            const KnobIPtr& knob = *it;
+            if (!knob) {
+                continue;
+            }
+            bool knobHasExpression = false;
+            bool readsOutsideKnob = false;
+            knob->getContentHashDependencies(&knobHasExpression, &readsOutsideKnob);
+            anyExpression = anyExpression || knobHasExpression;
+            if (!knob->isRenderHashed()) {
+                continue;
+            }
+            Implementation::KnobsDigestEntry entry;
+            entry.name = knob->getName();
+            entry.hash = 0;
+            // A knob owned by another holder invalidates that holder's generation, not this one,
+            // so it is hashed live like a knob that reads another knob or a file.
+            if (readsOutsideKnob || (knob->getHolder() != holder)) {
+                entry.liveKnob = knob;
+                anyLive = true;
+            } else {
+                entry.hash = knob->getContentHash();
+            }
+            entries.push_back(entry);
+        }
+        std::sort(entries.begin(), entries.end(),
+                  [](const Implementation::KnobsDigestEntry& a, const Implementation::KnobsDigestEntry& b) {
+                      return a.name < b.name;
+                  });
+        _imp->knobsDigestHasExpression = anyExpression;
+        _imp->knobsDigestHasLiveEntries = anyLive;
+        _imp->knobsDigestGeneration = generation;
+        _imp->knobsDigestValid = true;
+        if (!anyLive) {
+            ContentHasher h;
+            h.appendU64(entries.size());
+            for (std::size_t i = 0; i < entries.size(); ++i) {
+                h.appendString(entries[i].name);
+                h.appendU64(entries[i].hash);
+            }
+            _imp->knobsDigest = h.finalize();
+        }
+    }
+
+    *hasExpression = _imp->knobsDigestHasExpression;
+    if (!_imp->knobsDigestHasLiveEntries) {
+        return _imp->knobsDigest;
+    }
+
+    const std::vector<Implementation::KnobsDigestEntry>& entries = _imp->knobsDigestEntries;
+    ContentHasher h;
+    h.appendU64(entries.size());
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        h.appendString(entries[i].name);
+        h.appendU64(entries[i].liveKnob ? entries[i].liveKnob->getContentHash() : entries[i].hash);
+    }
+
+    return h.finalize();
+} // Node::getKnobsContentDigest
+
+U64
+Node::computeContentHash(U64 projectDigest) const
 {
     ContentHasher h;
 
@@ -1061,36 +1137,8 @@ Node::computeContentHash() const
         h.appendBool(false);
     }
 
-    const KnobsVec& knobs = _imp->effect->getKnobs();
-    std::vector<std::pair<std::string, KnobIPtr>> hashedKnobs;
-    hashedKnobs.reserve(knobs.size());
     bool hasExpression = false;
-    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-        const KnobIPtr& knob = *it;
-        if (!knob) {
-            continue;
-        }
-        if (!hasExpression) {
-            for (int d = 0; d < knob->getDimension(); ++d) {
-                if (!knob->getExpression(d).empty()) {
-                    hasExpression = true;
-                    break;
-                }
-            }
-        }
-        if (knob->isRenderHashed()) {
-            hashedKnobs.push_back(std::make_pair(knob->getName(), knob));
-        }
-    }
-    std::sort(hashedKnobs.begin(), hashedKnobs.end(),
-              [](const std::pair<std::string, KnobIPtr>& a, const std::pair<std::string, KnobIPtr>& b) {
-                  return a.first < b.first;
-              });
-    h.appendU64(hashedKnobs.size());
-    for (std::size_t i = 0; i < hashedKnobs.size(); ++i) {
-        h.appendString(hashedKnobs[i].first);
-        hashedKnobs[i].second->appendContentHash(h);
-    }
+    h.appendU64(getKnobsContentDigest(&hasExpression));
 
     // Expressions resolve thisNode/thisGroup and other nodes by name, so the same expression
     // under another name can evaluate differently.
@@ -1178,7 +1226,7 @@ Node::computeContentHash() const
         h.appendDouble(last);
     }
 
-    h.appendU64(project->getContentDigest());
+    h.appendU64(projectDigest ? projectDigest : project->getContentDigest());
 
     return h.finalize();
 } // Node::computeContentHash
@@ -1208,45 +1256,181 @@ Node::dependsOnProjectFrameRange() const
 }
 
 void
-Node::computeHashRecursive(std::list<Node*>& marked)
+Node::getHashDependents(NodesList* dependents) const
 {
-    if ( std::find(marked.begin(), marked.end(), this) != marked.end() ) {
+    if (!_imp->effect) {
         return;
     }
-
-    bool hasChanged = computeHashInternal();
-    marked.push_back(this);
-    if (!hasChanged) {
-        //Nothing changed, no need to recurse on outputs
-        return;
-    }
-
-
-    bool isRotoPaint = _imp->effect->isRotoPaintNode();
-
-    ///call it on all the outputs
+    const bool isRotoPaint = _imp->effect->isRotoPaintNode();
     NodesList outputs;
     getOutputsWithGroupRedirection(outputs);
     for (NodesList::iterator it = outputs.begin(); it != outputs.end(); ++it) {
         assert(*it);
-
-        //Since the rotopaint node is connected to the internal nodes of the tree, don't change their hash
+        // The paint tree's own nodes are added from the context below.
         RotoDrawableItemPtr attachedStroke = (*it)->getAttachedRotoItem();
         if ( isRotoPaint && attachedStroke && (attachedStroke->getContext()->getNode().get() == this) ) {
             continue;
         }
-        (*it)->computeHashRecursive(marked);
+        dependents->push_back(*it);
     }
 
-    ///If the node has a rotopaint tree, compute the hash of the nodes in the tree
     if (_imp->rotoContext) {
-        NodesList allItems;
-        _imp->rotoContext->getRotoPaintTreeNodes(&allItems);
-        for (NodesList::iterator it = allItems.begin(); it != allItems.end(); ++it) {
-            (*it)->computeHashRecursive(marked);
-        }
+        _imp->rotoContext->getRotoPaintTreeNodes(dependents);
     }
 }
+
+namespace {
+// One project digest per project for a whole walk: every node in it then hashes the same project
+// state, and a file stamp the digest folds in is taken once. A walk can cross into a precomp's
+// project, hence one entry per project.
+class WalkProjectDigests {
+public:
+    U64 get(const Node& node)
+    {
+        AppInstancePtr app = node.getApp();
+        if (!app) {
+            return 0;
+        }
+        ProjectPtr project = app->getProject();
+        if (!project) {
+            return 0;
+        }
+        for (std::size_t i = 0; i < _digests.size(); ++i) {
+            if (_digests[i].first == project) {
+                return _digests[i].second;
+            }
+        }
+        const U64 digest = project->getContentDigest();
+        _digests.push_back(std::make_pair(project, digest));
+
+        return digest;
+    }
+
+private:
+    std::vector<std::pair<ProjectPtr, U64>> _digests;
+};
+} // anonymous namespace
+
+void
+Node::computeHashesDownstream(const NodesList& roots)
+{
+    if (roots.empty()) {
+        return;
+    }
+    WalkProjectDigests projectDigests;
+
+    // A lone root whose hashes did not move changes nothing below it, so the graph is not walked.
+    const bool loneRoot = (roots.size() == 1);
+    if (loneRoot) {
+        if (!roots.front()) {
+            return;
+        }
+        if (!roots.front()->computeHashInternal(projectDigests.get(*roots.front()))) {
+            return;
+        }
+    }
+
+    // Everything a recompute can reach, with the edges between those nodes. Nodes are held so
+    // that none is destroyed while the walk still refers to it.
+    std::vector<NodePtr> nodes;
+    std::vector<std::vector<std::size_t>> dependents;
+    std::unordered_map<const Node*, std::size_t> indexOf;
+    std::vector<std::size_t> toExpand;
+    auto addNode = [&](const NodePtr& node) -> std::size_t {
+        std::pair<std::unordered_map<const Node*, std::size_t>::iterator, bool> inserted = indexOf.insert(std::make_pair(node.get(), nodes.size()));
+        if (inserted.second) {
+            nodes.push_back(node);
+            dependents.push_back(std::vector<std::size_t>());
+            toExpand.push_back(inserted.first->second);
+        }
+
+        return inserted.first->second;
+    };
+    for (NodesList::const_iterator it = roots.begin(); it != roots.end(); ++it) {
+        if (*it) {
+            addNode(*it);
+        }
+    }
+    const std::size_t nRoots = nodes.size();
+    while (!toExpand.empty()) {
+        const std::size_t i = toExpand.back();
+        toExpand.pop_back();
+        NodesList deps;
+        nodes[i]->getHashDependents(&deps);
+        for (NodesList::const_iterator it = deps.begin(); it != deps.end(); ++it) {
+            if (!*it) {
+                continue;
+            }
+            const std::size_t j = addNode(*it);
+            dependents[i].push_back(j);
+        }
+    }
+
+    const std::size_t n = nodes.size();
+    std::vector<char> done(n, 0);
+    std::vector<char> mustRecompute(n, 0);
+    for (std::size_t i = 0; i < nRoots; ++i) {
+        mustRecompute[i] = 1;
+    }
+    if (loneRoot) {
+        // Already recomputed above, and it changed.
+        done[0] = 1;
+        for (std::size_t k = 0; k < dependents[0].size(); ++k) {
+            mustRecompute[dependents[0][k]] = 1;
+        }
+    }
+
+    // Kahn's algorithm over the reached subgraph: a node waits for every input of it that is in
+    // the set. Edges out of a node already done are satisfied from the start.
+    std::vector<std::size_t> pendingInputs(n, 0);
+    for (std::size_t i = 0; i < n; ++i) {
+        if (done[i]) {
+            continue;
+        }
+        for (std::size_t k = 0; k < dependents[i].size(); ++k) {
+            ++pendingInputs[dependents[i][k]];
+        }
+    }
+    std::vector<std::size_t> ready;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!done[i] && (pendingInputs[i] == 0)) {
+            ready.push_back(i);
+        }
+    }
+    std::size_t nextUnprocessed = 0;
+    for (;;) {
+        std::size_t i;
+        if (!ready.empty()) {
+            i = ready.back();
+            ready.pop_back();
+            if (done[i]) {
+                continue;
+            }
+        } else {
+            // Only a cycle can leave nodes waiting with nothing ready. It is broken at the
+            // earliest reached node, which is what the visit-once walk this replaces did.
+            while ((nextUnprocessed < n) && done[nextUnprocessed]) {
+                ++nextUnprocessed;
+            }
+            if (nextUnprocessed == n) {
+                break;
+            }
+            i = nextUnprocessed;
+        }
+        done[i] = 1;
+
+        const bool changed = mustRecompute[i] && nodes[i]->computeHashInternal(projectDigests.get(*nodes[i]));
+        for (std::size_t k = 0; k < dependents[i].size(); ++k) {
+            const std::size_t j = dependents[i][k];
+            if (changed) {
+                mustRecompute[j] = 1;
+            }
+            if (!done[j] && (pendingInputs[j] > 0) && (--pendingInputs[j] == 0)) {
+                ready.push_back(j);
+            }
+        }
+    }
+} // Node::computeHashesDownstream
 
 void
 Node::removeAllImagesFromCache(bool blocking)
@@ -1279,8 +1463,15 @@ Node::computeHash()
 
         return;
     }
-    std::list<Node*> marked;
-    computeHashRecursive(marked);
+    NodePtr self = weak_from_this().lock();
+    if (!self) {
+        // Not owned yet, so not in any graph: nothing downstream to refresh.
+        const bool changed = computeHashInternal();
+        Q_UNUSED(changed);
+
+        return;
+    }
+    computeHashesDownstream(NodesList(1, self));
 } // computeHash
 
 namespace {
@@ -5999,12 +6190,11 @@ Node::onEffectKnobValueChanged(KnobI* what,
             // reach those that are not downstream of a GroupInput.
             NodesList nodes;
             isGroup->getNodes_recursive(nodes, false);
-            std::list<Node*> markedNodes;
             for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
                 //This will not trigger a hash recomputation
                 (*it)->incrementKnobsAge_internal();
-                (*it)->computeHashRecursive(markedNodes);
             }
+            computeHashesDownstream(nodes);
         }
     } else if ( what == _imp->nodeLabelKnob.lock().get() ) {
         Q_EMIT nodeExtraLabelChanged( QString::fromUtf8( _imp->nodeLabelKnob.lock()->getValue().c_str() ) );

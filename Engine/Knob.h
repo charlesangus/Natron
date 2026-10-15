@@ -1428,6 +1428,15 @@ public:
      * Persistence alone qualifies so that secret OFX state params stay hashed.
      **/
     virtual bool isRenderHashed() const = 0;
+
+    /**
+     * @brief Reports whether any dimension has an expression, and whether getContentHash() can
+     * change without this knob's invalidateContentHash() being called: a master link or an
+     * expression reads another knob, and some knobs hash state outside the memo (a file on disk).
+     * Only the expression set, the master links and the knob type decide this, and all of them
+     * invalidate the knob's hash when they change.
+     **/
+    virtual void getContentHashDependencies(bool* hasExpression, bool* readsOutsideKnob) const = 0;
 };
 
 
@@ -1753,6 +1762,7 @@ public:
     virtual void setHashExempt(bool exempt) OVERRIDE FINAL;
     virtual bool isHashExempt() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool isRenderHashed() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void getContentHashDependencies(bool* hasExpression, bool* readsOutsideKnob) const OVERRIDE FINAL;
 
 protected:
     /**
@@ -1785,6 +1795,14 @@ protected:
      **/
     virtual void appendUnmemoizedContentHash(ContentHasher& /*h*/) const
     {
+    }
+
+    /**
+     * @brief True if appendUnmemoizedContentHash() appends anything. Constant for a knob type.
+     **/
+    virtual bool hasUnmemoizedContentHash() const
+    {
+        return false;
     }
 
 private:
@@ -2844,6 +2862,12 @@ public:
     void insertKnob(int idx, const KnobIPtr& k);
     void removeKnobFromList(const KnobI* knob);
 
+    /**
+     * @brief Moves whenever the content hash of a knob owned by this holder may have changed, or
+     * the knob list changed. Lets a holder-wide digest of its knobs be memoized. MT-safe.
+     **/
+    U64 getKnobsContentGeneration() const;
+    void bumpKnobsContentGeneration();
 
     void initializeKnobsPublic();
 

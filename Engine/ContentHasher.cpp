@@ -27,7 +27,6 @@
 
 #include <cstdint>
 #include <cstring>
-#include <new>
 #include <utility>
 
 // Header-only and defined only in this translation unit so the XXH symbols stay internal.
@@ -43,55 +42,63 @@ constexpr U64 kZeroDigestReplacement = 0x9E3779B97F4A7C15ULL;
 
 constexpr std::uint64_t kCanonicalNaNBits = 0x7FF8000000000000ULL;
 
+static_assert(sizeof(XXH3_state_t) <= ContentHasher::kStateSize, "ContentHasher state buffer too small");
+static_assert(alignof(XXH3_state_t) <= ContentHasher::kStateAlign, "ContentHasher state buffer under-aligned");
+
 XXH3_state_t*
-asState(void* p)
+asState(unsigned char* p)
 {
-    return static_cast<XXH3_state_t*>(p);
+    return reinterpret_cast<XXH3_state_t*>(p);
 }
 
-XXH3_state_t*
-createState()
+const XXH3_state_t*
+asState(const unsigned char* p)
 {
-    XXH3_state_t* s = XXH3_createState();
-    if (!s) {
-        throw std::bad_alloc();
-    }
-    XXH3_64bits_reset(s);
-
-    return s;
+    return reinterpret_cast<const XXH3_state_t*>(p);
 }
 
 } // anon namespace
 
-void
-ContentHasher::StateDeleter::operator()(void* state) const noexcept
-{
-    XXH3_freeState(asState(state));
-}
-
 ContentHasher::ContentHasher()
-    : _state(createState())
 {
+    // A seeded reset would compare against the previous seed, so start from a defined state.
+    std::memset(_state, 0, sizeof(_state));
+    XXH3_64bits_reset(asState(_state));
 }
 
-ContentHasher::ContentHasher(ContentHasher&& other) noexcept = default;
-ContentHasher& ContentHasher::operator=(ContentHasher&& other) noexcept = default;
+// The state holds no pointer into itself (only into the static default secret), so a byte copy
+// is a valid copy of the state, which is what XXH3_copyState() does too.
+ContentHasher::ContentHasher(ContentHasher&& other) noexcept
+{
+    std::memcpy(_state, other._state, sizeof(_state));
+}
+
+ContentHasher&
+ContentHasher::operator=(ContentHasher&& other) noexcept
+{
+    if (this != &other) {
+        std::memcpy(_state, other._state, sizeof(_state));
+    }
+
+    return *this;
+}
+
 ContentHasher::~ContentHasher() = default;
 
 void
 ContentHasher::appendBytes(const void* data, std::size_t size)
 {
     const std::uint64_t len = size;
-    XXH3_64bits_update(asState(_state.get()), &len, sizeof(len));
+    XXH3_64bits_update(asState(_state), &len, sizeof(len));
     if (size > 0) {
-        XXH3_64bits_update(asState(_state.get()), data, size);
+        XXH3_64bits_update(asState(_state), data, size);
     }
 }
 
 void
 ContentHasher::appendU64(U64 value)
 {
-    XXH3_64bits_update(asState(_state.get()), &value, sizeof(value));
+    XXH3_64bits_update(asState(_state), &value, sizeof(value));
 }
 
 void
@@ -129,7 +136,7 @@ ContentHasher::appendString(const std::string& value)
 U64
 ContentHasher::finalize() const
 {
-    const U64 digest = XXH3_64bits_digest(asState(_state.get()));
+    const U64 digest = XXH3_64bits_digest(asState(_state));
 
     return digest == 0 ? kZeroDigestReplacement : digest;
 }
@@ -137,7 +144,7 @@ ContentHasher::finalize() const
 void
 ContentHasher::reset()
 {
-    XXH3_64bits_reset(asState(_state.get()));
+    XXH3_64bits_reset(asState(_state));
 }
 
 NATRON_NAMESPACE_EXIT

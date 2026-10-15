@@ -119,6 +119,10 @@ Q_SIGNALS:
 
 private:
     virtual void appendUnmemoizedContentHash(ContentHasher& h) const OVERRIDE FINAL;
+    virtual bool hasUnmemoizedContentHash() const OVERRIDE FINAL
+    {
+        return true;
+    }
 
     /**
      * @brief a KnobFile is never animated but it's value may change, indicate this to the plug-in

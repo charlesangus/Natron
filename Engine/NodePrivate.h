@@ -378,6 +378,21 @@ public:
     mutable QReadWriteLock knobsAgeMutex; //< protects knobsAge, hash and contentHash
     Hash64 hash; //< recomputed every time knobsAge is changed.
     U64 contentHash; //< recomputed with hash; 0 until first computed
+
+    // The knob part of the content hash, memoized against the effect's knobs content generation.
+    // Knobs that read another knob or a file are kept as live entries and hashed on every use.
+    struct KnobsDigestEntry {
+        std::string name;
+        KnobIPtr liveKnob; //< null when hash below is memoized
+        U64 hash;
+    };
+    mutable QMutex knobsDigestMutex; //< protects the knobsDigest* fields
+    mutable bool knobsDigestValid = false;
+    mutable U64 knobsDigestGeneration = 0;
+    mutable std::vector<KnobsDigestEntry> knobsDigestEntries; //< sorted by name
+    mutable bool knobsDigestHasLiveEntries = false;
+    mutable U64 knobsDigest = 0; //< valid when there are no live entries
+    mutable bool knobsDigestHasExpression = false;
     mutable QMutex masterNodeMutex; //< protects masterNode and nodeLinks
     NodeWPtr masterNode; //< this points to the master when the node is a clone
     KnobLinkList nodeLinks; //< these point to the parents of the params links

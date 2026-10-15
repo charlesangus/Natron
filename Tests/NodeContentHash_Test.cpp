@@ -152,6 +152,48 @@ TEST_F(NodeContentHashTest, UpstreamKnobChangeReachesDownstream)
     EXPECT_EQ(before, downstream->getContentHash());
 }
 
+// A -> {B, C} -> Merge D -> E. An edit of A must reach D only once both B and C hold their new
+// hashes; otherwise D keys a state (new B, old C) that never existed and can collide later.
+TEST_F(NodeContentHashTest, DiamondJoinHashesAfterAllItsInputs)
+{
+    NodePtr constant = createConstant();
+    NodePtr a = createBlur();
+    NodePtr b = createBlur();
+    NodePtr c = createBlur();
+    NodePtr d = createMerge();
+    NodePtr e = createBlur();
+    ASSERT_TRUE(constant && a && b && c && d && e);
+    connectNodes(constant, a, 0, true);
+    connectNodes(a, b, 0, true);
+    connectNodes(a, c, 0, true);
+    connectNodes(b, d, kMergeInputB, true);
+    connectNodes(c, d, kMergeInputA, true);
+    connectNodes(d, e, 0, true);
+
+    KnobDoublePtr aSize = blurSize(a);
+    KnobDoublePtr cSize = blurSize(c);
+    ASSERT_TRUE(aSize && cSize);
+    cSize->setValue(cSize->getValue(0) + 2., ViewSpec::all(), 0);
+    refreshHashes({ constant, a, b, c, d, e });
+
+    for (int edit = 1; edit <= 3; ++edit) {
+        const U64 dBefore = d->getContentHash();
+        aSize->setValue(aSize->getValue(0) + 1.5, ViewSpec::all(), 0);
+        a->doComputeHashOnMainThread();
+
+        const U64 dAfterEdit = d->getContentHash();
+        const U64 eAfterEdit = e->getContentHash();
+        EXPECT_NE(dBefore, dAfterEdit) << "edit " << edit;
+
+        d->doComputeHashOnMainThread();
+        EXPECT_EQ(dAfterEdit, d->getContentHash()) << "edit " << edit;
+        EXPECT_EQ(eAfterEdit, e->getContentHash()) << "edit " << edit;
+
+        e->doComputeHashOnMainThread();
+        EXPECT_EQ(eAfterEdit, e->getContentHash()) << "edit " << edit;
+    }
+}
+
 TEST_F(NodeContentHashTest, ConnectingAndDisconnectingChangesHash)
 {
     NodePtr constant = createConstant();
@@ -257,6 +299,31 @@ TEST_F(NodeContentHashTest, ExpressionDependencyOutsideTheGraphChangesHash)
     refreshHashes({ y, x });
     EXPECT_EQ(knobBefore, xSize->getContentHash());
     EXPECT_EQ(before, x->getContentHash());
+}
+
+// A slaved knob reads its master on another node, whose edits never invalidate the slave's
+// node; the node's knob digest must still see them.
+TEST_F(NodeContentHashTest, MasterOnAnotherNodeChangesSlaveNodeHash)
+{
+    NodePtr master = createBlur();
+    NodePtr slave = createBlur();
+    ASSERT_TRUE(master && slave);
+    KnobDoublePtr masterSize = blurSize(master);
+    KnobDoublePtr slaveSize = blurSize(slave);
+    ASSERT_TRUE(masterSize && slaveSize);
+
+    ASSERT_TRUE(slaveSize->slaveTo(0, masterSize, 0));
+    refreshHashes({ master, slave });
+    const U64 before = slave->getContentHash();
+
+    const double original = masterSize->getValue(0);
+    masterSize->setValue(original + 4., ViewSpec::all(), 0);
+    refreshHashes({ master, slave });
+    EXPECT_NE(before, slave->getContentHash());
+
+    masterSize->setValue(original, ViewSpec::all(), 0);
+    refreshHashes({ master, slave });
+    EXPECT_EQ(before, slave->getContentHash());
 }
 
 TEST_F(NodeContentHashTest, CyclicExpressionsHashTerminates)

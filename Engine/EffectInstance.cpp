@@ -3427,6 +3427,10 @@ EffectInstance::onSignificantEvaluateAboutToBeCalled(KnobI* knob)
     if (isMT) {
         node->refreshIdentityState();
 
+        if (Node::isHashAuditEnabled()) {
+            node->noteHashAuditCause(knob ? knob->getName() : std::string("<no knob>"));
+        }
+
         //Increments the knobs age following a change
         node->incrementKnobsAge();
     }

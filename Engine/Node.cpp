@@ -754,6 +754,14 @@ Node::getHashValue() const
 {
     QReadLocker l(&_imp->knobsAgeMutex);
 
+    return _imp->contentHash;
+}
+
+U64
+Node::getAgeHashValue() const
+{
+    QReadLocker l(&_imp->knobsAgeMutex);
+
     return _imp->hash.value();
 }
 
@@ -948,10 +956,11 @@ Node::computeHashInternal()
     // under this node's write lock.
     const U64 contentHash = computeContentHash();
 
-    U64 oldHash, newHash;
+    U64 oldContentHash, oldHash, newHash;
     {
         QWriteLocker l(&_imp->knobsAgeMutex);
 
+        oldContentHash = _imp->contentHash;
         _imp->contentHash = contentHash;
 
         oldHash = _imp->hash.value();
@@ -978,7 +987,7 @@ Node::computeHashInternal()
                 for (int i = 0; i < 2; ++i) {
                     NodePtr input = getInput(activeInput[i]);
                     if (input) {
-                        _imp->hash.append( input->getHashValue() );
+                        _imp->hash.append(input->getAgeHashValue());
                     }
                 }
             } else {
@@ -992,7 +1001,7 @@ Node::computeHashInternal()
                         ///Add the index of the input to its hash.
                         ///Explanation: if we didn't add this, just switching inputs would produce a similar
                         ///hash.
-                        _imp->hash.append(input->getHashValue() + i);
+                        _imp->hash.append(input->getAgeHashValue() + i);
                     }
                 }
             }
@@ -1008,11 +1017,10 @@ Node::computeHashInternal()
         //            _imp->hash.append(rotoAge);
         //        }
 
-        ///Also append the effect's label to distinguish 2 instances with the same parameters
+        // The name and the project creation time feed only the age hash, which nothing is keyed
+        // on. The content hash leaves them out so that nodes in the same state share cache entries.
         Hash64_appendQString( &_imp->hash, QString::fromUtf8( getScriptName().c_str() ) );
 
-        ///Also append the project's creation time in the hash because 2 projects opened concurrently
-        ///could reproduce the same (especially simple graphs like Viewer-Reader)
         qint64 creationTime =  getApp()->getProject()->getProjectCreationTime();
         _imp->hash.append(creationTime);
 
@@ -1020,24 +1028,27 @@ Node::computeHashInternal()
 
         newHash = _imp->hash.value();
     } // QWriteLocker l(&_imp->knobsAgeMutex);
-    bool hashChanged = oldHash != newHash;
+    const bool contentChanged = oldContentHash != contentHash;
+    const bool ageChanged = oldHash != newHash;
 
     if (isHashAuditEnabled()) {
         auditHashTransition(newHash, contentHash);
     }
 
-    if (hashChanged) {
-        _imp->effect->onNodeHashChanged(newHash);
-        if ( _imp->nodeCreated && !getApp()->getProject()->isProjectClosing() ) {
-            /*
-             * We changed the node hash. That means all cache entries for this node with a different hash
-             * are impossible to re-create again. Just discard them all. This is done in a separate thread.
-             */
-            removeAllImagesFromCacheWithMatchingIDAndDifferentKey(newHash);
-        }
+    // An age-only change still runs the change hooks: they also drop metadata and expression
+    // results, which some age bumps exist to refresh. Everything keyed is keyed on the content hash.
+    if (contentChanged || ageChanged) {
+        _imp->effect->onNodeHashChanged(contentHash);
+    }
+    if (contentChanged && _imp->nodeCreated && !getApp()->getProject()->isProjectClosing()) {
+        // Discards, in a separate thread, the entries this node made under its other keys. A
+        // content key names one state only, so they are not stale and dropping them only costs a
+        // re-render if the node returns to that state.
+        removeAllImagesFromCacheWithMatchingIDAndDifferentKey(contentHash);
     }
 
-    return hashChanged;
+    // Downstream hashes fold this node's in, so they are recomputed whenever either one moves.
+    return contentChanged || ageChanged;
 } // Node::computeHashInternal
 
 U64
@@ -4008,7 +4019,6 @@ Node::makePreviewImage(SequenceTime time,
     ComputingPreviewSetter_RAII computingPreviewRAII( _imp.get() );
     RectD rod;
     bool isProjectFormat;
-    U64 nodeHash = getHashValue();
     EffectInstance* effect = 0;
     NodeGroup* isGroup = dynamic_cast<NodeGroup*>( _imp->effect.get() );
     if (isGroup) {
@@ -4020,6 +4030,9 @@ Node::makePreviewImage(SequenceTime time,
     if (!_imp->effect) {
         return false;
     }
+    // A group's hash does not cover its inner graph, so the output node's own hash must key its
+    // actions cache here.
+    U64 nodeHash = effect->getHash();
 
     effect->getNode()->clearPersistentMessageForPreview();
 

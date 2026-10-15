@@ -98,6 +98,16 @@ ActionsCache::invalidateAll(U64 newHash)
 {
     QMutexLocker l(&_cacheMutex);
 
+    // A content hash comes back when the node returns to an earlier state, and the node is also
+    // re-hashed without a content change when state the hash misses must be re-read (a reload),
+    // so results already stored under newHash are dropped rather than looked up first.
+    for (std::list<ActionsCacheInstance>::iterator it = _instances.begin(); it != _instances.end();) {
+        if (it->_hash == newHash) {
+            it = _instances.erase(it);
+        } else {
+            ++it;
+        }
+    }
     createActionCacheInternal(newHash);
 }
 
@@ -433,11 +443,6 @@ EffectInstance::Implementation::Implementation(EffectInstance* publicInterface)
     , pluginMemoryChunks()
     , supportsRenderScale(eSupportsMaybe)
     , actionsCache()
-#if NATRON_ENABLE_TRIMAP
-    , imagesReservationMutex()
-    , imagesBeingRenderedMutex()
-    , imagesBeingRendered()
-#endif
     , overlaySlaves()
     , metadataMutex()
     , metadata()
@@ -464,11 +469,6 @@ EffectInstance::Implementation::Implementation(const Implementation& other)
     , pluginMemoryChunks()
     , supportsRenderScale(other.supportsRenderScale)
     , actionsCache(other.actionsCache)
-#if NATRON_ENABLE_TRIMAP
-    , imagesReservationMutex()
-    , imagesBeingRenderedMutex()
-    , imagesBeingRendered()
-#endif
     , overlaySlaves(other.overlaySlaves)
     , metadataMutex()
     , metadata(other.metadata)
@@ -591,11 +591,45 @@ EffectInstance::Implementation::setDuringInteractAction(bool b)
 }
 
 #if NATRON_ENABLE_TRIMAP
+namespace {
+// A cached image is shared by every node whose content hash matches, so which of its regions are being rendered is
+// recorded per image for the whole process: with a record per effect, a node would take the regions another node is
+// still rendering for finished ones.
+struct ImagesBeingRenderedRegistry {
+    // Held across the whole of markImagesAsBeingRendered() so that one render reserves its rectangles on all its layer
+    // images before another render can query any of them. Renders that can share an image share its key's node hash,
+    // so they always take the same stripe; unrelated renders mostly do not contend. Taken before `mutex` and never
+    // held while waiting on another render.
+    static const std::size_t kReservationStripes = 64;
+    QMutex reservation[kReservationStripes];
+    // Protects `images`. Taken before an image's ImageBeingRendered::lock.
+    QMutex mutex;
+    EffectInstance::Implementation::ImageBeingRenderedMap images;
+
+    QMutex& reservationFor(const std::vector<ImagePtr>& imgs)
+    {
+        const U64 nodeHash = imgs.empty() ? 0 : imgs.front()->getKey().getTreeVersion();
+
+        return reservation[nodeHash % kReservationStripes];
+    }
+};
+
+// Deliberately leaked: a render may still unmark its images during static destruction.
+ImagesBeingRenderedRegistry&
+imagesBeingRenderedRegistry()
+{
+    static ImagesBeingRenderedRegistry* registry = new ImagesBeingRenderedRegistry;
+
+    return *registry;
+}
+} // anonymous namespace
+
 EffectInstance::Implementation::ImageBeingRenderedPtr
 EffectInstance::Implementation::acquireImageBeingRendered(const ImagePtr& img)
 {
-    QMutexLocker k(&imagesBeingRenderedMutex);
-    ImageBeingRenderedPtr& ibr = imagesBeingRendered[img];
+    ImagesBeingRenderedRegistry& registry = imagesBeingRenderedRegistry();
+    QMutexLocker k(&registry.mutex);
+    ImageBeingRenderedPtr& ibr = registry.images[img];
     if (!ibr) {
         ibr = std::make_shared<Implementation::ImageBeingRendered>();
     }
@@ -611,7 +645,7 @@ EffectInstance::Implementation::markImagesAsBeingRendered(const std::vector<Imag
                                                           std::list<RectI>* restToRender,
                                                           bool* renderedElsewhere)
 {
-    QMutexLocker reservation(&imagesReservationMutex);
+    QMutexLocker reservation(&imagesBeingRenderedRegistry().reservationFor(imgs));
     std::vector<std::pair<ImagePtr, ImageBeingRenderedPtr>> marked;
     std::list<RectI> allRests;
     for (const ImagePtr& img : imgs) {
@@ -654,16 +688,17 @@ EffectInstance::Implementation::waitForImageBeingRenderedElsewhere(const RectI &
     if ( !img->usesBitMap() ) {
         return true;
     }
+    ImagesBeingRenderedRegistry& registry = imagesBeingRenderedRegistry();
     ImageBeingRenderedPtr ibr;
-    QMutexLocker k(&imagesBeingRenderedMutex);
-    ImageBeingRenderedMap::iterator found = imagesBeingRendered.find(img);
-    if( found != imagesBeingRendered.end() ) {
+    QMutexLocker k(&registry.mutex);
+    ImageBeingRenderedMap::iterator found = registry.images.find(img);
+    if (found != registry.images.end()) {
         ibr = found->second;
     }
     if (!ibr) {
         return true;
     }
-    k.unlock(); // imagesBeingRenderedMutex
+    k.unlock(); // registry.mutex
     std::list<RectI> restToRender;
     bool isBeingRenderedElseWhere = false;
 
@@ -691,16 +726,17 @@ EffectInstance::Implementation::unmarkImageAsBeingRendered(const ImagePtr & img,
     if ( !img->usesBitMap() ) {
         return;
     }
+    ImagesBeingRenderedRegistry& registry = imagesBeingRenderedRegistry();
     ImageBeingRenderedPtr ibr;
-    QMutexLocker k(&imagesBeingRenderedMutex);
-    ImageBeingRenderedMap::iterator found = imagesBeingRendered.find(img);
-    if( found != imagesBeingRendered.end() ) {
+    QMutexLocker k(&registry.mutex);
+    ImageBeingRenderedMap::iterator found = registry.images.find(img);
+    if (found != registry.images.end()) {
         ibr = found->second;
     }
     if (!ibr) {
         return;
     }
-    k.unlock(); // imagesBeingRenderedMutex
+    k.unlock(); // registry.mutex
     QMutexLocker kk(&ibr->lock);
     if (renderFailed) {
         ibr->failed = true;
@@ -716,14 +752,14 @@ EffectInstance::Implementation::unmarkImageAsBeingRendered(const ImagePtr & img,
     --ibr->refCount;
     ibr->cond.wakeAll();
     if (!ibr->refCount) {
-        kk.unlock(); // imagesBeingRenderedMutex must be taken before an image's lock, as acquireImageBeingRendered() does
-        k.relock(); // imagesBeingRenderedMutex
-        ImageBeingRenderedMap::iterator found = imagesBeingRendered.find(img);
-        if ((found != imagesBeingRendered.end()) && (found->second == ibr)) {
+        kk.unlock(); // registry.mutex must be taken before an image's lock, as acquireImageBeingRendered() does
+        k.relock(); // registry.mutex
+        ImageBeingRenderedMap::iterator found = registry.images.find(img);
+        if ((found != registry.images.end()) && (found->second == ibr)) {
             // acquireImageBeingRendered() may have taken this entry again after refCount dropped to zero above.
             QMutexLocker kk2(&ibr->lock);
             if (!ibr->refCount) {
-                imagesBeingRendered.erase(found);
+                registry.images.erase(found);
             }
         }
     }

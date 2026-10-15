@@ -311,3 +311,11 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - wide N=100: 7 rehashed, 0.63 / 0.67 ms.
   
   That is about 0.15 ms per rehashed node, **far over the 1 ms target**, so P6.T5 was added. The roto case aborted: `movePoint` changed 0 of 21 downstream hashes. This confirms live that roto item edits don't reach the Roto node's hash (the P4.T3 "roto item edits dirty the context node" item), and it is a stale-cache path on this branch until P4.T3. Data: `build/m100/hash_bench.jsonl`.
+- 2026-10-15 — **Rehash cost profile** (consultant; probes in `build/m100/*_probe.py`). The cost is per downstream node, about 125 µs for a Grade:
+  - per-knob scan in `computeContentHash`: about 50 µs (getExpression/getMaster/isRenderHashed locks and copies; knob values are already memoized);
+  - `ActionsCache::useHash` linear scan: about 22 µs;
+  - `getProjectCreationTime` doing a tz stat: 16 µs;
+  - project digest recomputed per node: about 10 µs;
+  - `clearExpressionsResults` on every knob: about 10 µs (EffectInstance.cpp, held until P4.T3).
+  
+  **Correctness bug found:** `computeHashRecursive` is a depth-first walk with visit-once marks, so a diamond join is hashed before all of its inputs are updated. It stores a key for a mixed state that never existed, and a genuine later state can collide with it. Being fixed now, with topological order and a gtest, together with the memo/LRU/creation-time/digest work, which avoids EffectInstance.{h,cpp}. P4.T3's lazy model makes the keystroke a dirty-mark walk, but the recompute costs remain at render-args time.

@@ -234,12 +234,15 @@ include(GoogleTest)
 # and wmain.cpp passes --clear-openfx-cache, so every discovery pays a cold rescan
 # of all four OFX bundles plus Python and OCIO init before gtest prints the list.
 # Blowing the 5s budget is a FATAL_ERROR that fails ctest before a single test runs.
-gtest_discover_tests(Tests DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 120 PROPERTIES TIMEOUT 300)
+# NATRON_HASH_AUDIT=1 turns on the age/content hash cross-check, which only writes NATRON_HASH_AUDIT:
+# lines to stderr and never fails a case. It is set per case, not on one aggregate run of the binary,
+# because cases leak state into each other inside a single process (stale Python app attributes,
+# precomp sub-apps) and only pass when each gets its own. The ENVIRONMENT property here is the only
+# one on a Tests case (SerialTests.cmake sets RUN_SERIAL alone); ctest's own environment, e.g.
+# NATRON_RENDER_SCHEDULER, is inherited by the case and is not part of this property.
+gtest_discover_tests(Tests DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 120
+    PROPERTIES TIMEOUT 300 ENVIRONMENT NATRON_HASH_AUDIT=1)
 gtest_discover_tests(GuiTests DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 120 PROPERTIES TIMEOUT 300)
-# Single aggregate run of the whole binary with the age/content hash cross-check on; it only
-# writes NATRON_HASH_AUDIT: lines to the log and never fails on them.
-add_test(NAME Tests_HashAudit COMMAND Tests)
-set_tests_properties(Tests_HashAudit PROPERTIES ENVIRONMENT NATRON_HASH_AUDIT=1 TIMEOUT 1800 RUN_SERIAL TRUE)
 # PRE_TEST discovery only learns the case names at ctest time, so per-case properties are applied
 # from an include that ctest runs after the discovery includes registered above.
 set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/SerialTests.cmake)

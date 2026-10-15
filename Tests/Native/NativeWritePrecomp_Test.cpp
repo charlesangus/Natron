@@ -95,8 +95,9 @@ protected:
     }
 
     // Dropping a Precomp quits its sub-app asynchronously, through a render watcher that reports back
-    // with a queued signal. Left pending, it fires in a later test of the same process (Tests_HashAudit),
-    // after that test's SetUp took the still top-level sub-app as its app, and tears that app down.
+    // with a queued signal. Left pending, it fires in a later test of the same process (running the
+    // whole binary directly), after that test's SetUp took the still top-level sub-app as its app, and
+    // tears that app down.
     void waitForSubAppsToQuit() const
     {
         QElapsedTimer timer;

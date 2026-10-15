@@ -249,6 +249,12 @@ public:
      **/
     U64 getContentHash() const;
 
+    /**
+     * @brief True when the project frame range is part of this node's content hash: the effect
+     * reads it, or an expression on one of its knobs can.
+     **/
+    bool dependsOnProjectFrameRange() const;
+
     static bool isHashAuditEnabled();
     void noteHashAuditCause(const std::string& cause);
 
@@ -1710,6 +1716,10 @@ private:
 
     U64 computeContentHash() const;
     void auditHashTransition(U64 ageHash, U64 contentHash);
+
+    // Forgets this node's audit state and logged lines; with seedFromCurrentHashes, the stored
+    // hashes become the baseline the next transition is compared with.
+    void resetHashAudit(bool seedFromCurrentHashes);
 
     void refreshCreatedViews(KnobI* knob, bool silent);
 

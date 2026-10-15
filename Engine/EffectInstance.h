@@ -1589,6 +1589,15 @@ public:
     void getFrameRange_public(U64 hash, double *first, double *last, bool bypasscache = false);
 
     /**
+     * @brief True when the project frame range can reach what this effect renders or reports from
+     * its actions. Those results are cached under the node hash, which then has to include the range.
+     **/
+    virtual bool dependsOnProjectFrameRange() const
+    {
+        return false;
+    }
+
+    /**
      * @brief Override to initialize the overlay interact. It is called only on the
      * live instance.
      **/

@@ -161,6 +161,15 @@ public:
                                       RoIMap* ret) OVERRIDE FINAL;
     virtual FramesNeededMap getFramesNeeded(double time, ViewIdx view) OVERRIDE WARN_UNUSED_RETURN;
     virtual void getFrameRange(double *first, double *last) OVERRIDE;
+
+    // The host answers an unconnected clip's frame range, the effect duration of a node without a
+    // lifetime and the timeline bounds with the project range, and a plug-in may read any of them
+    // from any action.
+    virtual bool dependsOnProjectFrameRange() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
     virtual void initializeOverlayInteract() OVERRIDE FINAL;
     virtual bool hasOverlay() const OVERRIDE FINAL;
     virtual void redrawOverlayInteract() OVERRIDE FINAL;

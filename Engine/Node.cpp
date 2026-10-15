@@ -842,7 +842,7 @@ Node::isHashAuditEnabled()
 void
 Node::noteHashAuditCause(const std::string& cause)
 {
-    if (!isHashAuditEnabled()) {
+    if (!isHashAuditEnabled() || !_imp->hashAuditArmed) {
         return;
     }
     {
@@ -860,6 +860,11 @@ void
 Node::auditHashTransition(U64 ageHash,
                           U64 contentHash)
 {
+    // A node still being built is neither checked nor recorded: Node::load() seeds the baseline
+    // once it is done.
+    if (!_imp->hashAuditArmed) {
+        return;
+    }
     {
         QMutexLocker k(&_imp->isBeingDestroyedMutex);
         if (_imp->isBeingDestroyed) {
@@ -896,6 +901,35 @@ Node::auditHashTransition(U64 ageHash,
     st.ageHash = ageHash;
     st.contentHash = contentHash;
     st.seenContent.insert(contentHash);
+}
+
+void
+Node::resetHashAudit(bool seedFromCurrentHashes)
+{
+    if (!isHashAuditEnabled()) {
+        return;
+    }
+    const std::string loggedPrefix = getPluginID() + "|" + getScriptName() + "|";
+    U64 ageHash = 0, contentHash = 0;
+    if (seedFromCurrentHashes) {
+        QReadLocker l(&_imp->knobsAgeMutex);
+        ageHash = _imp->hash.value();
+        contentHash = _imp->contentHash;
+    }
+    HashAudit& audit = hashAudit();
+    std::lock_guard<std::mutex> g(audit.mutex);
+    std::set<std::string>::iterator it = audit.logged.lower_bound(loggedPrefix);
+    while ((it != audit.logged.end()) && (it->compare(0, loggedPrefix.size(), loggedPrefix) == 0)) {
+        audit.logged.erase(it++);
+    }
+    HashAuditNodeState& st = audit.nodes[this];
+    st = HashAuditNodeState();
+    // A content hash is never 0 once computed, so 0 means there is nothing to compare against yet.
+    if (contentHash != 0) {
+        st.ageHash = ageHash;
+        st.contentHash = contentHash;
+        st.seenContent.insert(contentHash);
+    }
 }
 
 bool
@@ -1125,10 +1159,46 @@ Node::computeContentHash() const
     }
     h.appendU64(enclosingGroups);
 
-    h.appendU64(getApp()->getProject()->getContentDigest());
+    ProjectPtr project = getApp()->getProject();
+    // The project digest leaves the frame range out, so only the nodes that can read it re-key
+    // when it changes. An expression may read it through the project's parameters.
+    const bool usesProjectFrameRange = hasExpression || _imp->effect->dependsOnProjectFrameRange();
+    h.appendBool(usesProjectFrameRange);
+    if (usesProjectFrameRange) {
+        double first = 0., last = 0.;
+        project->getFrameRange(&first, &last);
+        h.appendDouble(first);
+        h.appendDouble(last);
+    }
+
+    h.appendU64(project->getContentDigest());
 
     return h.finalize();
 } // Node::computeContentHash
+
+bool
+Node::dependsOnProjectFrameRange() const
+{
+    if (!_imp->effect) {
+        return false;
+    }
+    if (_imp->effect->dependsOnProjectFrameRange()) {
+        return true;
+    }
+    const KnobsVec& knobs = _imp->effect->getKnobs();
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        if (!*it) {
+            continue;
+        }
+        for (int d = 0; d < (*it)->getDimension(); ++d) {
+            if (!(*it)->getExpression(d).empty()) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
 
 void
 Node::computeHashRecursive(std::list<Node*>& marked)
@@ -7664,6 +7734,9 @@ Node::attachRotoItem(const RotoDrawableItemPtr& stroke)
 {
     assert( QThread::currentThread() == qApp->thread() );
     _imp->paintStroke = stroke;
+    // The node starts over as the item's node: what the audit saw of it before the attach, and
+    // the lines it already logged, would hide the item's own transitions.
+    resetHashAudit(false);
     // Both hashes read the attached item, so the stored ones must not predate it.
     computeHash();
 }

@@ -171,6 +171,8 @@ public:
 
     virtual void getFrameRange(double* first, double* last) OVERRIDE FINAL;
 
+    virtual bool dependsOnProjectFrameRange() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 private:
     /**
      * @brief What a frame writes: the data window, and the display window it sits in, both in the
@@ -256,6 +258,9 @@ private:
 
     // A finished sequence changed the file, which the hash must tell the viewer.
     void onSequenceRenderFinished();
+
+    // The file name alone cannot tell the hash that the file's content changed while the node shows it.
+    void bumpReadBackStamp();
 
     // Menus and visibility follow the format of the file name and the chosen compression.
     void refreshOptions();

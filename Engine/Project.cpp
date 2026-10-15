@@ -2358,6 +2358,7 @@ Project::onKnobValueChanged(KnobI* knob,
     } else if ( knob == _imp->frameRange.get() ) {
         int first = _imp->frameRange->getValue(0);
         int last = _imp->frameRange->getValue(1);
+        rehashNodesUsingFrameRange();
         Q_EMIT frameRangeChanged(first, last);
         shouldAutoSave = true;
     } else if ( knob == _imp->gpuSupport.get() ) {
@@ -2920,11 +2921,9 @@ Project::getContentDigest() const
     h.appendI64(format.y2);
     h.appendDouble(format.getPixelAspectRatio());
 
+    // The frame range is left out: adding a sequence Read grows it, which would re-key every node.
+    // The nodes that depend on it hash it themselves (Node::dependsOnProjectFrameRange()).
     h.appendDouble(getProjectFrameRate());
-    double first = 0., last = 0.;
-    getFrameRange(&first, &last);
-    h.appendDouble(first);
-    h.appendDouble(last);
 
     const std::vector<std::string>& views = getProjectViewNames();
     h.appendU64(views.size());
@@ -3432,12 +3431,20 @@ Project::unionFrameRangeWith(int first,
 
     curFirst = _imp->frameRange->getValue(0);
     curLast = _imp->frameRange->getValue(1);
+    const int oldFirst = curFirst;
+    const int oldLast = curLast;
     curFirst = !mustSet ? std::min(first, curFirst) : first;
     curLast = !mustSet ? std::max(last, curLast) : last;
+    const bool changed = (curFirst != oldFirst) || (curLast != oldLast);
     beginChanges();
     _imp->frameRange->setValue(curFirst, ViewSpec::all(), 0);
     _imp->frameRange->setValue(curLast, ViewSpec::all(), 1);
     endChanges();
+    // No value-changed handler runs while a project loads, and nodes hashed earlier in the load
+    // saw the saved range.
+    if (changed && isLoadingProject()) {
+        rehashNodesUsingFrameRange();
+    }
 }
 
 void
@@ -3447,10 +3454,35 @@ Project::recomputeFrameRangeFromReaders()
 
     recomputeFrameRangeForAllReaders(&first, &last);
 
+    const bool changed = (first != _imp->frameRange->getValue(0)) || (last != _imp->frameRange->getValue(1));
     beginChanges();
     _imp->frameRange->setValue(first, ViewSpec::all(), 0);
     _imp->frameRange->setValue(last,  ViewSpec::all(), 1);
     endChanges();
+    // No value-changed handler runs while a project loads, and nodes hashed earlier in the load
+    // saw the saved range.
+    if (changed && isLoadingProject()) {
+        rehashNodesUsingFrameRange();
+    }
+}
+
+void
+Project::rehashNodesUsingFrameRange()
+{
+    NodesList nodes;
+    getNodes_recursive(nodes, false);
+
+    // The age bump keeps the age hash in step with the content hash, and recomputes downstream
+    // nodes, whose hashes include their inputs'.
+    for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        if (!(*it)->isNodeCreated() || !(*it)->dependsOnProjectFrameRange()) {
+            continue;
+        }
+        if (Node::isHashAuditEnabled()) {
+            (*it)->noteHashAuditCause("<project frame range>");
+        }
+        (*it)->incrementKnobsAge();
+    }
 }
 
 void

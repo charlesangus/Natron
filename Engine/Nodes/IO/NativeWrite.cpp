@@ -1484,6 +1484,12 @@ NativeWrite::purgeCaches()
 void
 NativeWrite::onSequenceRenderFinished()
 {
+    bumpReadBackStamp();
+}
+
+void
+NativeWrite::bumpReadBackStamp()
+{
     const KnobBoolPtr readBack = _readBack.lock();
     const KnobIntPtr stamp = _readBackStamp.lock();
 
@@ -1596,6 +1602,19 @@ NativeWrite::getFrameRange(double* first,
     }
 }
 
+bool
+NativeWrite::dependsOnProjectFrameRange() const
+{
+    KnobChoicePtr frameRange = _frameRange.lock();
+    const int choice = frameRange ? frameRange->getValue() : (int)eFrameRangeProject;
+
+    if ((choice == eFrameRangeManual) && _firstFrame.lock() && _lastFrame.lock()) {
+        return false;
+    }
+
+    return choice != eFrameRangeUnion;
+}
+
 void
 NativeWrite::seedFrame(const KnobIntPtr& knob,
                        bool isFirst,
@@ -1631,6 +1650,9 @@ NativeWrite::knobChanged(KnobI* k,
     if (reload && (k == reload.get())) {
         purgeCaches();
         clearPersistentMessage(false);
+        // The file may have been rewritten outside Natron, which leaves the file name, and so the
+        // hash, unchanged; the stamp change re-keys this node and everything downstream of it.
+        bumpReadBackStamp();
 
         return true;
     }

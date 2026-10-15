@@ -202,6 +202,14 @@ DiskCacheNode::getFrameRange(double *first,
     }
 }
 
+bool
+DiskCacheNode::dependsOnProjectFrameRange() const
+{
+    KnobChoicePtr frameRange = _imp->frameRange.lock();
+
+    return frameRange && (frameRange->getValue() == 1);
+}
+
 StatusEnum
 DiskCacheNode::render(const RenderActionArgs& args)
 {

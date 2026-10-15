@@ -232,3 +232,50 @@ TEST_F(NodeContentHashTest, RenamingWithAnExpressionChangesHash)
     refreshHashes({ blur });
     EXPECT_NE(before, blur->getContentHash());
 }
+
+TEST_F(NodeContentHashTest, ExpressionDependencyOutsideTheGraphChangesHash)
+{
+    NodePtr x = createBlur();
+    NodePtr y = createBlur();
+    ASSERT_TRUE(x && y);
+    KnobDoublePtr xSize = blurSize(x);
+    KnobDoublePtr ySize = blurSize(y);
+    ASSERT_TRUE(xSize && ySize);
+
+    ASSERT_NO_THROW(xSize->setExpression(0, y->getScriptName() + ".size.getValue(0)", false, true));
+    refreshHashes({ y, x });
+    const U64 before = x->getContentHash();
+    const U64 knobBefore = xSize->getContentHash();
+
+    const double original = ySize->getValue(0);
+    ySize->setValue(original + 5., ViewSpec::all(), 0);
+    refreshHashes({ y, x });
+    EXPECT_NE(knobBefore, xSize->getContentHash());
+    EXPECT_NE(before, x->getContentHash());
+
+    ySize->setValue(original, ViewSpec::all(), 0);
+    refreshHashes({ y, x });
+    EXPECT_EQ(knobBefore, xSize->getContentHash());
+    EXPECT_EQ(before, x->getContentHash());
+}
+
+TEST_F(NodeContentHashTest, CyclicExpressionsHashTerminates)
+{
+    NodePtr x = createBlur();
+    NodePtr y = createBlur();
+    ASSERT_TRUE(x && y);
+    KnobDoublePtr xSize = blurSize(x);
+    KnobDoublePtr ySize = blurSize(y);
+    ASSERT_TRUE(xSize && ySize);
+
+    ASSERT_NO_THROW(xSize->setExpression(0, y->getScriptName() + ".size.getValue(0)", false, false));
+    ASSERT_NO_THROW(ySize->setExpression(0, x->getScriptName() + ".size.getValue(0)", false, false));
+
+    const U64 xHash = xSize->getContentHash();
+    const U64 yHash = ySize->getContentHash();
+    EXPECT_EQ(xHash, xSize->getContentHash());
+    EXPECT_EQ(yHash, ySize->getContentHash());
+
+    refreshHashes({ x, y });
+    EXPECT_NE(U64(0), x->getContentHash());
+}

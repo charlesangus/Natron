@@ -31,6 +31,8 @@
 #include <atomic>
 #include <cassert>
 #include <cctype> // isspace
+#include <random>
+#include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
 
@@ -4960,18 +4962,108 @@ KnobHelper::getContentHash() const
     return h.finalize();
 }
 
+namespace {
+// Calls whose result changes between runs or machines without any knob changing. "frame" and the
+// time argument are deliberately absent: a content hash is time-independent.
+const char* const kVolatileExpressionTokens[] = {
+    "random", "time.", "datetime", "os.", "sys.", "open(", "uuid", "getpass", "subprocess", "socket"
+};
+
+U64
+sessionSalt()
+{
+    static const U64 salt = []() {
+        std::random_device rd;
+
+        return ((U64)rd() << 32) ^ (U64)rd();
+    }();
+
+    return salt;
+}
+
+bool
+expressionIsVolatile(const std::string& expr)
+{
+    for (const char* token : kVolatileExpressionTokens) {
+        if (expr.find(token) != std::string::npos) {
+            return true;
+        }
+    }
+
+    return false;
+}
+} // namespace
+
 U64
 KnobHelper::getDimensionContentHash(int dimension) const
+{
+    ContentHashPath path;
+
+    return getDimensionContentHashRecursive(dimension, path);
+}
+
+U64
+KnobHelper::getDimensionContentHashRecursive(int dimension,
+                                             ContentHashPath& path) const
 {
     if ((dimension < 0) || (dimension >= getDimension())) {
         return 0;
     }
     std::pair<int, KnobIPtr> master = getMaster(dimension);
     if (master.second && (master.first >= 0) && (master.first < master.second->getDimension())) {
+        const KnobHelper* masterHelper = dynamic_cast<const KnobHelper*>(master.second.get());
+        if (masterHelper) {
+            return masterHelper->getDimensionContentHashRecursive(master.first, path);
+        }
+
         return master.second->getDimensionContentHash(master.first);
     }
 
-    return getOwnDimensionContentHash(dimension);
+    const U64 own = getOwnDimensionContentHash(dimension);
+
+    std::list<std::pair<KnobIWPtr, int>> dependencies;
+    bool isVolatile;
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        const Expr& expr = _imp->expressions[dimension];
+        if (expr.originalExpression.empty()) {
+            return own;
+        }
+        dependencies = expr.dependencies;
+        isVolatile = expressionIsVolatile(expr.originalExpression);
+    }
+    if (dependencies.empty() && !isVolatile) {
+        return own;
+    }
+
+    // A knob reached again while its own hash is being built closes a cycle; a fixed marker keeps
+    // the result deterministic. Removing the entry on the way out keeps shared dependencies exact.
+    const std::pair<const KnobHelper*, int> key(this, dimension);
+    if (!path.insert(key).second) {
+        return 1;
+    }
+
+    ContentHasher h;
+    h.appendU64(own);
+    h.appendBool(isVolatile);
+    if (isVolatile) {
+        h.appendU64(sessionSalt());
+    }
+    for (std::list<std::pair<KnobIWPtr, int>>::const_iterator it = dependencies.begin(); it != dependencies.end(); ++it) {
+        KnobIPtr dep = it->first.lock();
+        if (!dep) {
+            h.appendBool(false);
+            continue;
+        }
+        h.appendBool(true);
+        h.appendI64(it->second);
+        const KnobHelper* depHelper = dynamic_cast<const KnobHelper*>(dep.get());
+        h.appendU64(depHelper ? depHelper->getDimensionContentHashRecursive(it->second, path)
+                              : dep->getDimensionContentHash(it->second));
+    }
+    path.erase(key);
+
+    return h.finalize();
 }
 
 void

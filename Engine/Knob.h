@@ -1391,8 +1391,10 @@ public:
      * beside them (the selected choice entry ID, parametric curves, string keyframes). A slaved
      * dimension hashes as the master dimension it follows. Two knobs in the same state hash
      * equal whatever edits led there; labels, visibility and other GUI state do not count.
-     * Values an expression reads from other knobs are not included.
-     * Cheap to call repeatedly: each dimension's hash is memoized until the knob changes.
+     * The hash of every knob an expression reads is folded in, and an expression calling something
+     * volatile (random, time, files) hashes differently in each session.
+     * Cheap to call repeatedly: each dimension's own hash is memoized until the knob changes;
+     * the dependency part of an expression is recomputed on every call.
      * MT-safe.
      **/
     virtual U64 getContentHash() const = 0;
@@ -1778,7 +1780,10 @@ protected:
     }
 
 private:
+    typedef std::set<std::pair<const KnobHelper*, int>> ContentHashPath;
+
     U64 getOwnDimensionContentHash(int dimension) const;
+    U64 getDimensionContentHashRecursive(int dimension, ContentHashPath& path) const;
 
     virtual bool slaveToInternal(int dimension, const KnobIPtr &  other, int otherDimension, Natron::ValueChangedReasonEnum reason
                                  , bool ignoreMasterPersistence) OVERRIDE FINAL WARN_UNUSED_RETURN;

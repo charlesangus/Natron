@@ -98,6 +98,7 @@ struct NodeSerialization {
     // index instead of by label; such a node has these and no inputs.
     std::vector<std::string> oldInputs;
 
+    // Still read and written so the file layout is stable, but ignored on load and saved as 0.
     std::uint64_t knobsAge;
 
     // The fully qualified name of the node all knobs of this node are slaved to, if any.

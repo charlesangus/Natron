@@ -155,7 +155,8 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
         userKnobLayoutToSerialization(*it, &serialization->userPages.back());
     }
 
-    serialization->knobsAge = getKnobsAge();
+    // Kept in the file format but no longer meaningful, so it is always written as 0.
+    serialization->knobsAge = 0;
     serialization->label = getLabel_mt_safe();
     serialization->scriptName = getScriptName_mt_safe();
     serialization->cacheID = getCacheID();

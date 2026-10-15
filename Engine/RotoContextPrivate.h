@@ -28,13 +28,14 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
+#include <limits>
 #include <list>
 #include <map>
-#include <string>
-#include <vector>
-#include <limits>
 #include <sstream> // stringstream
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -553,8 +554,16 @@ struct RotoItemPrivate
     ////A locked item should not be modifiable by the GUI
     bool locked;
 
+    // Bumped by every invalidation. A memo is only valid for the generation read before its
+    // computation started, so a change racing with a computation is never hidden by it.
+    std::atomic<U64> contentGeneration;
+    mutable QMutex contentHashMutex; // protects the 3 members below
+    mutable U64 geometryHash;
+    mutable U64 geometryHashGeneration;
+    mutable bool geometryHashValid;
+
     RotoItemPrivate(const RotoContextPtr context,
-                    const std::string & n,
+                    const std::string& n,
                     const RotoLayerPtr& parent)
         : context(context)
         , scriptName(n)
@@ -562,6 +571,11 @@ struct RotoItemPrivate
         , parentLayer(parent)
         , globallyActivated(true)
         , locked(false)
+        , contentGeneration(0)
+        , contentHashMutex()
+        , geometryHash(0)
+        , geometryHashGeneration(0)
+        , geometryHashValid(false)
     {
     }
 };

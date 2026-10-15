@@ -80,6 +80,9 @@ public:
 
     void setNodesThreadSafetyForRotopainting();
 
+    /**
+     * @brief Also invalidates the item's content hash, so it must follow the change it reports.
+     **/
     void incrementNodesAge();
 
     void refreshNodesConnections();
@@ -230,6 +233,8 @@ protected:
     virtual void onTransformSet(double /*time*/) {}
 
     void addKnob(const KnobIPtr& knob);
+
+    virtual void appendLiveContentHash(ContentHasher& h) const OVERRIDE;
 
 private:
 

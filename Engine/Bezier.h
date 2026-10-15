@@ -596,6 +596,9 @@ public:
 
     bool dequeueGuiActions();
 
+protected:
+    virtual void appendGeometryContentHash(ContentHasher& h) const OVERRIDE;
+
 private:
 
     virtual void onTransformSet(double time) OVERRIDE FINAL;

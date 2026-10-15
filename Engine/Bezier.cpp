@@ -40,6 +40,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/BezierCP.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/CoonsRegularization.h"
 #include "Engine/FeatherPoint.h"
 #include "Engine/Format.h"
@@ -1032,6 +1033,31 @@ Bezier::clearAllPoints()
     _imp->featherPoints.clear();
     _imp->isClockwiseOriented.clear();
     _imp->finished = false;
+    invalidateContentHash();
+}
+
+void
+Bezier::appendGeometryContentHash(ContentHasher& h) const
+{
+    // Distinguishes a Bezier from a stroke whose own fields happen to hash alike.
+    h.appendI64(1);
+
+    const bool useFeather = useFeatherPoints();
+    QMutexLocker l(&itemMutex);
+
+    h.appendBool(_imp->isOpenBezier);
+    h.appendBool(_imp->finished);
+    h.appendBool(useFeather);
+    h.appendU64(_imp->points.size());
+    for (BezierCPs::const_iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
+        (*it)->appendContentHash(h);
+    }
+    if (useFeather) {
+        h.appendU64(_imp->featherPoints.size());
+        for (BezierCPs::const_iterator it = _imp->featherPoints.begin(); it != _imp->featherPoints.end(); ++it) {
+            (*it)->appendContentHash(h);
+        }
+    }
 }
 
 void
@@ -2393,6 +2419,7 @@ Bezier::setKeyframe(double time)
             }
         }
     }
+    invalidateContentHash();
     // _imp->setMustCopyGuiBezier(true);
     Q_EMIT keyframeSet(time);
 }
@@ -3374,6 +3401,7 @@ Bezier::setKeyFrameInterpolation(KeyframeTypeEnum interp,
             ++fp;
         }
     }
+    invalidateContentHash();
 }
 
 void

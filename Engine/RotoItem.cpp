@@ -37,6 +37,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/BezierCP.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/CoonsRegularization.h"
 #include "Engine/FeatherPoint.h"
 #include "Engine/Format.h"
@@ -558,6 +559,56 @@ RotoItem::getPreviousItemInLayer() const
     }
 
     return getPreviousInLayer( layer, shared_from_this() );
+}
+
+void
+RotoItem::invalidateContentHash()
+{
+    _imp->contentGeneration.fetch_add(1, std::memory_order_acq_rel);
+}
+
+U64
+RotoItem::getContentHash() const
+{
+    const U64 generation = _imp->contentGeneration.load(std::memory_order_acquire);
+    U64 geometry = 0;
+    {
+        QMutexLocker k(&_imp->contentHashMutex);
+        if (_imp->geometryHashValid && (_imp->geometryHashGeneration == generation)) {
+            geometry = _imp->geometryHash;
+        }
+    }
+    if (geometry == 0) {
+        ContentHasher g;
+        appendGeometryContentHash(g);
+        geometry = g.finalize();
+
+        QMutexLocker k(&_imp->contentHashMutex);
+        if (!_imp->geometryHashValid || (_imp->geometryHashGeneration <= generation)) {
+            _imp->geometryHash = geometry;
+            _imp->geometryHashGeneration = generation;
+            _imp->geometryHashValid = true;
+        }
+    }
+
+    ContentHasher h;
+    h.appendU64(geometry);
+    appendLiveContentHash(h);
+
+    return h.finalize();
+}
+
+void
+RotoItem::appendGeometryContentHash(ContentHasher& /*h*/) const
+{
+}
+
+void
+RotoItem::appendLiveContentHash(ContentHasher& h) const
+{
+    // Recursive so that the hash of a lone item, as folded by its internal nodes, still sees
+    // a deactivated ancestor layer.
+    h.appendBool(isDeactivatedRecursive());
 }
 
 NATRON_NAMESPACE_EXIT

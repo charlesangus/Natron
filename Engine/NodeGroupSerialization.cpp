@@ -40,6 +40,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/Settings.h"
@@ -237,10 +238,10 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
             minorVersion = (*it)->pluginMinorVersion;
         }
 
-        if (!n) {
-            CreateNodeArgs args(pluginID, group);
-            args.setProperty<int>(kCreateNodeArgsPropPluginVersion, majorVersion, 0);
-            args.setProperty<int>(kCreateNodeArgsPropPluginVersion, minorVersion, 1);
+        const auto makeCreateArgs = [&](const std::string& id, int major, int minor) {
+            CreateNodeArgs args(id, group);
+            args.setProperty<int>(kCreateNodeArgsPropPluginVersion, major, 0);
+            args.setProperty<int>(kCreateNodeArgsPropPluginVersion, minor, 1);
             args.setProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization, *it);
             args.setProperty<bool>(kCreateNodeArgsPropSilent, true);
             args.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true); // also load deprecated plugins
@@ -248,8 +249,14 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
                 args.setProperty<std::string>(kCreateNodeArgsPropMultiInstanceParentName, (*it)->multiInstanceParentName);
             }
             args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
-            n = appInst->createNode(args);
+
+            return args;
+        };
+
+        if (!n) {
+            n = appInst->createNode(makeCreateArgs(pluginID, majorVersion, minorVersion));
         }
+        bool isPlaceholder = false;
         if (!n) {
             QString text( tr("ERROR: The node %1 version %2.%3"
                              " was found in the script but does not"
@@ -258,7 +265,25 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
                           .arg(majorVersion).arg(minorVersion) );
             appPTR->writeToErrorLog_mt_safe(tr("Project"), QDateTime::currentDateTime(), text);
             mustShowErrorsLog = true;
-            continue;
+
+            // Creation can also fail for a plug-in that exists: only a missing one gets a placeholder.
+            bool pluginIsMissing = false;
+            try {
+                (void)appPTR->getPluginBinary(QString::fromUtf8(pluginID.c_str()), majorVersion, minorVersion, true);
+            } catch (const std::exception&) {
+                try {
+                    (void)appPTR->getPluginBinaryFromOldID(QString::fromUtf8(pluginID.c_str()), majorVersion, minorVersion);
+                } catch (const std::exception&) {
+                    pluginIsMissing = true;
+                }
+            }
+            if (pluginIsMissing) {
+                n = appInst->createNode(makeCreateArgs(PLUGINID_NATRON_MISSING_PLUGIN, -1, -1));
+                isPlaceholder = bool(n);
+            }
+            if (!n) {
+                continue;
+            }
         } else {
             if (!usingPythonModule && n->getPlugin() && (n->getPlugin()->getMajorVersion() != (int)majorVersion) && (n->getPluginID() == pluginID)) {
                 QString text(tr("WARNING: The node %1 (%2) version %3.%4 "
@@ -283,7 +308,8 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
         createdNodes[n] = *it;
 
         const std::list<Serialization::NodeSerializationPtr>& children = (*it)->children;
-        if ( !children.empty() && !usingPythonModule) {
+        // A placeholder keeps its children inside its stored serialization only.
+        if (!children.empty() && !usingPythonModule && !isPlaceholder) {
             NodeGroup* isGrp = n->isEffectGroup();
             if (isGrp) {
                 EffectInstancePtr sharedEffect = isGrp->shared_from_this();
@@ -351,9 +377,11 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
             for (U32 j = 0; j < oldInputs.size(); ++j) {
                 if ( !oldInputs[j].empty() && !group->connectNodes(isOfxEffect ? oldInputs.size() - 1 - j : j, oldInputs[j], it->first) ) {
                     if (createNodes) {
-                        qDebug() << tr("Failed to connect node %1 to %2 (this is normal if loading a PyPlug)")
-                                        .arg(QString::fromUtf8(it->second->scriptName.c_str()))
-                                        .arg(QString::fromUtf8(oldInputs[j].c_str()));
+                        appPTR->writeToErrorLog_mt_safe(tr("Project"), QDateTime::currentDateTime(),
+                                                        tr("Failed to connect node %1 to %2")
+                                                            .arg(QString::fromUtf8(it->second->scriptName.c_str()))
+                                                            .arg(QString::fromUtf8(oldInputs[j].c_str())));
+                        mustShowErrorsLog = true;
                     }
                 }
             }
@@ -372,9 +400,11 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
                 }
                 if ( !it2->second.empty() && !group->connectNodes(index, it2->second, it->first) ) {
                     if (createNodes) {
-                        qDebug() << tr("Failed to connect node %1 to %2 (this is normal if loading a PyPlug)")
-                                        .arg(QString::fromUtf8(it->second->scriptName.c_str()))
-                                        .arg(QString::fromUtf8(it2->second.c_str()));
+                        appPTR->writeToErrorLog_mt_safe(tr("Project"), QDateTime::currentDateTime(),
+                                                        tr("Failed to connect node %1 to %2")
+                                                            .arg(QString::fromUtf8(it->second->scriptName.c_str()))
+                                                            .arg(QString::fromUtf8(it2->second.c_str())));
+                        mustShowErrorsLog = true;
                     }
                 }
             }

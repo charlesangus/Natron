@@ -117,8 +117,9 @@ ViewMetadata::getNativePluginDescription() const
 
     desc.id = PLUGINID_NATRON_VIEWMETADATA;
     desc.label = "ViewMetadata";
-    desc.description = tr("Shows the metadata of its input as a table in the Metadata tab. The image "
-                          "and its metadata are passed through unchanged.")
+    desc.description = tr("Shows the metadata of its input at the current frame in its Metadata tab. The "
+                          "list follows the timeline and upstream changes; Refresh updates it on demand. "
+                          "The image and its metadata are passed through unchanged.")
                            .toStdString();
     desc.grouping = PLUGIN_GROUP_METADATA;
     desc.majorVersion = 1;

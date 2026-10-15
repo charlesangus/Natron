@@ -49,7 +49,8 @@ CopyMetadata::getNativePluginDescription() const
     desc.id = PLUGINID_NATRON_COPYMETADATA;
     desc.label = "CopyMetadata";
     desc.description = tr("Copies the metadata of B onto the metadata of A, restricted to the keys matching "
-                          "the key filter (every key if it is empty). The image of A is passed through "
+                          "the Keys filter, a comma- or newline-separated list of globs where * matches any "
+                          "characters and ? one (every key if it is empty). The image of A is passed through "
                           "unchanged, and so is its metadata while B is not connected.\n\n"
                           "Replace: the keys of A matching the filter are dropped and replaced by those "
                           "of B matching the filter; the keys of A that do not match survive, so a key "

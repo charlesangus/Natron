@@ -46,9 +46,11 @@ RemoveMetadata::getNativePluginDescription() const
 
     desc.id = PLUGINID_NATRON_REMOVEMETADATA;
     desc.label = "RemoveMetadata";
-    desc.description = tr("Removes the metadata keys matching a list of globs, or all of them. No key is "
-                          "protected, so the ofx/ keys go too if matched. The image itself is passed "
-                          "through unchanged.")
+    desc.description = tr("Removes the metadata keys matching the Keys list, or every key when Remove All "
+                          "is on. Keys is a comma- or newline-separated list of globs, where * matches any "
+                          "characters, including /, and ? matches one, for example exr/*, exif/Make. No key "
+                          "is protected, so the engine's ofx/ keys go too if matched. The image itself is "
+                          "passed through unchanged.")
                            .toStdString();
     desc.grouping = PLUGIN_GROUP_METADATA;
     desc.majorVersion = 1;

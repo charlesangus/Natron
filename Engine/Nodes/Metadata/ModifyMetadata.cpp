@@ -46,8 +46,13 @@ ModifyMetadata::getNativePluginDescription() const
 
     desc.id = PLUGINID_NATRON_MODIFYMETADATA;
     desc.label = "ModifyMetadata";
-    desc.description = tr("Sets, removes or renames keys of the image's metadata. Operations are applied "
-                          "in slot order. The image itself is passed through unchanged.")
+    desc.description = tr("Sets, removes or renames keys of the image's metadata. Each of the eight "
+                          "operation slots has an Operation (None, Set, Remove or Rename), a Key with its "
+                          "prefix, for example exr/owner, and, for Set, a Type (Integer, Float or String) "
+                          "and a Value, which can be animated or driven by an expression. Rename moves the "
+                          "value of Key to New Key, replacing any value already there. Slots are applied in "
+                          "order, so a later slot sees the result of an earlier one. The image itself is "
+                          "passed through unchanged.")
                            .toStdString();
     desc.grouping = PLUGIN_GROUP_METADATA;
     desc.majorVersion = 1;

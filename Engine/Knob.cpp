@@ -28,10 +28,11 @@
 #include "KnobImpl.h"
 
 #include <algorithm> // min, max
+#include <atomic>
 #include <cassert>
-#include <stdexcept>
-#include <sstream> // stringstream
 #include <cctype> // isspace
+#include <sstream> // stringstream
+#include <stdexcept>
 
 #include <QDataStream>
 #include <QDateTime>
@@ -44,6 +45,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/Curve.h"
 #include "Engine/DockablePanelI.h"
 #include "Engine/Hash64.h"
@@ -477,6 +479,14 @@ struct KnobHelperPrivate
     int listenersNotificationBlocked; // protected by valueChangedBlockedMutex
     bool isClipPreferenceSlave;
 
+    // Bumped by every invalidation. A memo is only valid for the generation read before its
+    // computation started, so a change racing with a computation is never hidden by it.
+    std::atomic<U64> contentGeneration;
+    mutable QMutex contentHashMutex; // protects the 3 members below
+    mutable std::vector<U64> contentDimensionHashes;
+    mutable U64 contentHashesGeneration;
+    mutable bool contentHashesValid;
+
     KnobHelperPrivate(KnobHelper* publicInterface_,
                       KnobHolder* holder_,
                       int dimension_,
@@ -545,6 +555,11 @@ struct KnobHelperPrivate
         , valueChangedBlocked(0)
         , listenersNotificationBlocked(0)
         , isClipPreferenceSlave(false)
+        , contentGeneration(0)
+        , contentHashMutex()
+        , contentDimensionHashes()
+        , contentHashesGeneration(0)
+        , contentHashesValid(false)
     {
         tlsData = std::make_shared<TLSHolder<KnobHelper::KnobTLSData> >();
         if ( holder && !holder->canKnobsAnimate() ) {
@@ -2831,6 +2846,7 @@ KnobHelper::setExpressionInvalid(int dimension,
         wasValid = _imp->expressions[dimension].exprInvalid.empty();
         _imp->expressions[dimension].exprInvalid = error;
     }
+    invalidateContentHash();
     if ( getHolder() && getHolder()->getApp() ) {
         if (wasValid && !valid) {
             getHolder()->getApp()->addInvalidExpressionKnob( std::const_pointer_cast<KnobI>( shared_from_this() ) );
@@ -3070,6 +3086,7 @@ KnobHelper::clearExpression(int dimension,
 void
 KnobHelper::expressionChanged(int dimension)
 {
+    invalidateContentHash();
     if (_imp->holder) {
         _imp->holder->updateHasAnimation();
     }
@@ -3746,6 +3763,7 @@ KnobHelper::slaveToInternal(int dimension,
         _imp->masters[dimension].second = other;
         _imp->masters[dimension].first = otherDimension;
     }
+    invalidateContentHash();
 
     KnobHelper* masterKnob = dynamic_cast<KnobHelper*>( other.get() );
     assert(masterKnob);
@@ -3810,9 +3828,13 @@ void
 KnobHelper::resetMaster(int dimension)
 {
     assert(dimension >= 0);
-    _imp->masters[dimension].second.reset();
-    _imp->masters[dimension].first = -1;
-    _imp->ignoreMasterPersistence = false;
+    {
+        QWriteLocker l(&_imp->mastersMutex);
+        _imp->masters[dimension].second.reset();
+        _imp->masters[dimension].first = -1;
+        _imp->ignoreMasterPersistence = false;
+    }
+    invalidateContentHash();
 }
 
 bool
@@ -4892,6 +4914,102 @@ KnobHelper::getAliasMaster()  const
     QReadLocker k(&_imp->mastersMutex);
 
     return _imp->slaveForAlias;
+}
+
+void
+KnobI::appendContentHash(ContentHasher& h) const
+{
+    h.appendU64(getContentHash());
+}
+
+U64
+KnobHelper::getContentHash() const
+{
+    ContentHasher h;
+    const int nDims = getDimension();
+
+    h.appendI64(nDims);
+    for (int i = 0; i < nDims; ++i) {
+        h.appendU64(getDimensionContentHash(i));
+    }
+
+    return h.finalize();
+}
+
+U64
+KnobHelper::getDimensionContentHash(int dimension) const
+{
+    if ((dimension < 0) || (dimension >= getDimension())) {
+        return 0;
+    }
+    std::pair<int, KnobIPtr> master = getMaster(dimension);
+    if (master.second && (master.first >= 0) && (master.first < master.second->getDimension())) {
+        return master.second->getDimensionContentHash(master.first);
+    }
+
+    return getOwnDimensionContentHash(dimension);
+}
+
+void
+KnobHelper::invalidateContentHash()
+{
+    _imp->contentGeneration.fetch_add(1, std::memory_order_acq_rel);
+}
+
+U64
+KnobHelper::getOwnDimensionContentHash(int dimension) const
+{
+    const U64 generation = _imp->contentGeneration.load(std::memory_order_acquire);
+    {
+        QMutexLocker k(&_imp->contentHashMutex);
+        if (_imp->contentHashesValid && (_imp->contentHashesGeneration == generation)) {
+            return _imp->contentDimensionHashes[dimension];
+        }
+    }
+
+    const int nDims = getDimension();
+    const bool hashed = isContentHashed();
+    std::vector<U64> hashes(nDims);
+    ContentHasher h;
+    for (int i = 0; i < nDims; ++i) {
+        h.reset();
+        if (!hashed) {
+            hashes[i] = h.finalize();
+            continue;
+        }
+        appendValueContentHash(h, i);
+
+        CurvePtr curve = _imp->curves[i];
+        h.appendBool(bool(curve));
+        if (curve) {
+            curve->appendContentHash(h);
+        }
+
+        {
+            QMutexLocker k(&_imp->expressionMutex);
+            const Expr& expr = _imp->expressions[i];
+            h.appendString(expr.originalExpression);
+            // clearExpression() leaves hasRet behind, so it only counts while there is an expression.
+            if (!expr.originalExpression.empty()) {
+                h.appendBool(expr.hasRet);
+                h.appendBool(expr.exprInvalid.empty());
+            }
+        }
+
+        appendExtraContentHash(h, i);
+        hashes[i] = h.finalize();
+    }
+
+    {
+        QMutexLocker k(&_imp->contentHashMutex);
+        if (!_imp->contentHashesValid || (_imp->contentHashesGeneration <= generation)) {
+            _imp->contentDimensionHashes = hashes;
+            _imp->contentHashesGeneration = generation;
+            _imp->contentHashesValid = true;
+        }
+    }
+
+    return hashes[dimension];
 }
 
 void
@@ -6528,6 +6646,7 @@ AnimatingKnobStringHelper::cloneExtraData(KnobI* other,
 
     if (isAnimatedString) {
         _animation->clone( isAnimatedString->getAnimation() );
+        invalidateContentHash();
     }
 }
 
@@ -6539,7 +6658,12 @@ AnimatingKnobStringHelper::cloneExtraDataAndCheckIfChanged(KnobI* other,
     AnimatingKnobStringHelper* isAnimatedString = dynamic_cast<AnimatingKnobStringHelper*>(other);
 
     if (isAnimatedString) {
-        return _animation->cloneAndCheckIfChanged( isAnimatedString->getAnimation() );
+        bool changed = _animation->cloneAndCheckIfChanged(isAnimatedString->getAnimation());
+        if (changed) {
+            invalidateContentHash();
+        }
+
+        return changed;
     }
 
     return false;
@@ -6556,6 +6680,7 @@ AnimatingKnobStringHelper::cloneExtraData(KnobI* other,
 
     if (isAnimatedString) {
         _animation->clone(isAnimatedString->getAnimation(), offset, range);
+        invalidateContentHash();
     }
 }
 
@@ -6579,6 +6704,7 @@ AnimatingKnobStringHelper::stringToKeyFrameValue(double time,
                                                  double* returnValue)
 {
     _animation->insertKeyFrame(time, v, returnValue);
+    invalidateContentHash();
 }
 
 void
@@ -6595,6 +6721,7 @@ void
 AnimatingKnobStringHelper::animationRemoved_virtual(int /*dimension*/)
 {
     _animation->clearKeyFrames();
+    invalidateContentHash();
 }
 
 void
@@ -6602,6 +6729,7 @@ AnimatingKnobStringHelper::keyframeRemoved_virtual(int /*dimension*/,
                                                    double time)
 {
     _animation->removeKeyFrame(time);
+    invalidateContentHash();
 }
 
 std::string
@@ -6641,6 +6769,20 @@ void
 AnimatingKnobStringHelper::loadAnimation(const std::map<int, std::string> & keyframes)
 {
     _animation->load(keyframes);
+    invalidateContentHash();
+}
+
+void
+AnimatingKnobStringHelper::appendExtraContentHash(ContentHasher& h,
+                                                  int /*dimension*/) const
+{
+    std::map<int, std::string> keyframes;
+    _animation->save(&keyframes);
+    h.appendU64(keyframes.size());
+    for (std::map<int, std::string>::const_iterator it = keyframes.begin(); it != keyframes.end(); ++it) {
+        h.appendI64(it->first);
+        h.appendString(it->second);
+    }
 }
 
 void

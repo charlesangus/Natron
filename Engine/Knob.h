@@ -40,6 +40,8 @@
 #include <QCoreApplication>
 #include <QRecursiveMutex>
 
+#include "Global/GlobalDefines.h"
+
 #include "Engine/Variant.h"
 #include "Engine/AppManager.h" // for AppManager::createKnob
 #include "Engine/OverlaySupport.h"
@@ -52,6 +54,8 @@
 #define NATRON_USER_MANAGED_KNOBS_PAGE "userNatron"
 
 NATRON_NAMESPACE_ENTER
+
+class ContentHasher;
 
 /**
  * @brief KnobI is deliberately not a QObject: knobs are created in large
@@ -1380,6 +1384,34 @@ public:
      **/
     virtual bool isTypeCompatible(const KnobIPtr & other) const = 0;
     std::shared_ptr<KnobPage> getTopLevelPage() const;
+
+    /**
+     * @brief A hash of what this knob feeds a render: for each dimension its static value and
+     * clamping range, its whole animation curve, its expression and any data the knob type keeps
+     * beside them (the selected choice entry ID, parametric curves, string keyframes). A slaved
+     * dimension hashes as the master dimension it follows. Two knobs in the same state hash
+     * equal whatever edits led there; labels, visibility and other GUI state do not count.
+     * Values an expression reads from other knobs are not included.
+     * Cheap to call repeatedly: each dimension's hash is memoized until the knob changes.
+     * MT-safe.
+     **/
+    virtual U64 getContentHash() const = 0;
+
+    /**
+     * @brief Appends getContentHash() to h.
+     **/
+    void appendContentHash(ContentHasher& h) const;
+
+    /**
+     * @brief The memoized hash of one dimension, through its master if it is slaved. MT-safe.
+     **/
+    virtual U64 getDimensionContentHash(int dimension) const = 0;
+
+    /**
+     * @brief Discards the memoized content hash. Must be called after, never before, any change
+     * to what getContentHash() covers. MT-safe.
+     **/
+    virtual void invalidateContentHash() = 0;
 };
 
 
@@ -1699,9 +1731,37 @@ public:
                                             bool isUserKnob) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual KnobIPtr getAliasMaster() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool setKnobAsAliasOfThis(const KnobIPtr& master, bool doAlias) OVERRIDE FINAL;
+    virtual U64 getContentHash() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual U64 getDimensionContentHash(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void invalidateContentHash() OVERRIDE FINAL;
+
+protected:
+    /**
+     * @brief False for knobs that feed no render (pages, groups, separators, plain buttons):
+     * their content hash then covers nothing, whatever GUI state their value carries.
+     **/
+    virtual bool isContentHashed() const
+    {
+        return true;
+    }
+
+    /**
+     * @brief Appends the static value of the dimension and anything else the value type keeps
+     * per dimension, as stored by this knob (never through a master).
+     **/
+    virtual void appendValueContentHash(ContentHasher& h, int dimension) const = 0;
+
+    /**
+     * @brief Appends the data a derived knob keeps for the dimension beside its value, curve
+     * and expression. Implementations must call invalidateContentHash() after changing it.
+     **/
+    virtual void appendExtraContentHash(ContentHasher& /*h*/,
+                                        int /*dimension*/) const
+    {
+    }
 
 private:
-
+    U64 getOwnDimensionContentHash(int dimension) const;
 
     virtual bool slaveToInternal(int dimension, const KnobIPtr &  other, int otherDimension, Natron::ValueChangedReasonEnum reason
                                  , bool ignoreMasterPersistence) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -2196,6 +2256,8 @@ protected:
 
     virtual void resetExtraToDefaultValue(int /*dimension*/) {}
 
+    virtual void appendValueContentHash(ContentHasher& h, int dimension) const OVERRIDE FINAL;
+
 private:
 
     virtual void copyValuesFromCurve(int dim) OVERRIDE FINAL;
@@ -2409,6 +2471,7 @@ protected:
     virtual void cloneExtraData(KnobI* other, double offset, const RangeD* range, int dimension = -1, int otherDimension = -1) OVERRIDE;
     virtual void keyframeRemoved_virtual(int dimension, double time) OVERRIDE;
     virtual void animationRemoved_virtual(int dimension) OVERRIDE;
+    virtual void appendExtraContentHash(ContentHasher& h, int dimension) const OVERRIDE;
 
 private:
     std::unique_ptr<StringAnimationManager> _animation;

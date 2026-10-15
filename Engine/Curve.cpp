@@ -31,6 +31,7 @@
 #include <stdexcept>
 
 #include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 
 #include "Engine/CurvePrivate.h"
 #include "Engine/Interpolation.h"
@@ -290,9 +291,9 @@ Curve::Curve(const Curve & other)
 {
 }
 
+// Does not clear through clearKeyFrames(): that would notify an owner that may be mid-destruction.
 Curve::~Curve()
 {
-    clearKeyFrames();
 }
 
 void
@@ -301,6 +302,7 @@ Curve::setPeriodic(bool periodic)
     QMutexLocker k(&_imp->_lock);
     _imp->isPeriodic = periodic;
     _imp->keyFrames.clear();
+    invalidateOwnerContentHash();
 }
 
 bool
@@ -313,6 +315,7 @@ void
 Curve::operator=(const Curve & other)
 {
     *_imp = *other._imp;
+    invalidateOwnerContentHash();
 }
 
 void
@@ -321,6 +324,7 @@ Curve::clearKeyFrames()
     QMutexLocker l(&_imp->_lock);
 
     _imp->keyFrames.clear();
+    invalidateOwnerContentHash();
 }
 
 bool
@@ -372,6 +376,27 @@ Curve::fromSerialization(const Serialization::CurveSerialization& serialization)
 
     QMutexLocker l(&_imp->_lock);
     _imp->keyFrames = keys;
+    invalidateOwnerContentHash();
+}
+
+void
+Curve::appendContentHash(ContentHasher& h) const
+{
+    QMutexLocker l(&_imp->_lock);
+
+    h.appendBool(_imp->isPeriodic);
+    h.appendDouble(_imp->xMin);
+    h.appendDouble(_imp->xMax);
+    h.appendDouble(_imp->yMin);
+    h.appendDouble(_imp->yMax);
+    h.appendU64(_imp->keyFrames.size());
+    for (KeyFrameSet::const_iterator it = _imp->keyFrames.begin(); it != _imp->keyFrames.end(); ++it) {
+        h.appendDouble(it->getTime());
+        h.appendDouble(it->getValue());
+        h.appendI64((int)it->getInterpolation());
+        h.appendDouble(it->getLeftDerivative());
+        h.appendDouble(it->getRightDerivative());
+    }
 }
 
 bool
@@ -1281,6 +1306,7 @@ Curve::setXRange(double a,
 
     _imp->xMin = a;
     _imp->xMax = b;
+    invalidateOwnerContentHash();
 }
 
 std::pair<double, double> Curve::getXRange() const
@@ -1846,6 +1872,7 @@ Curve::setYRange(double yMin,
 
     _imp->yMin = yMin;
     _imp->yMax = yMax;
+    invalidateOwnerContentHash();
 }
 
 bool
@@ -1865,6 +1892,15 @@ Curve::onCurveChanged()
 #ifdef NATRON_CURVE_USE_CACHE
     _imp->resultCache.clear();
 #endif
+    invalidateOwnerContentHash();
+}
+
+void
+Curve::invalidateOwnerContentHash()
+{
+    if (_imp->owner) {
+        _imp->owner->invalidateContentHash();
+    }
 }
 
 void

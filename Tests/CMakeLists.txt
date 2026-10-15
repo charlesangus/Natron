@@ -64,6 +64,7 @@ set(Tests_SOURCES
     KnobFile_Test.cpp
     KnobLayerSelect_Test.cpp
     KnobShuffleMap_Test.cpp
+    KnobContentHash_Test.cpp
     Knob_Test.cpp
     LayerKnobsRender_Test.cpp
     LayerKnobs_Test.cpp

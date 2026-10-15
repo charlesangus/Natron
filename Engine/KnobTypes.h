@@ -442,6 +442,7 @@ public:
     void setCheckable(bool b)
     {
         _checkable = b;
+        invalidateContentHash();
     }
 
     bool getIsCheckable() const
@@ -464,6 +465,10 @@ private:
 
     virtual bool canAnimate() const OVERRIDE FINAL;
     virtual const std::string & typeName() const OVERRIDE FINAL;
+    virtual bool isContentHashed() const OVERRIDE FINAL
+    {
+        return _checkable;
+    }
 
 private:
     static const std::string _typeNameStr;
@@ -616,6 +621,7 @@ private:
     virtual void cloneExtraData(KnobI* other, int dimension = -1, int otherDimension = -1) OVERRIDE FINAL;
     virtual bool cloneExtraDataAndCheckIfChanged(KnobI* other, int dimension = -1, int otherDimension = -1) OVERRIDE FINAL;
     virtual void cloneExtraData(KnobI* other, double offset, const RangeD* range, int dimension = -1, int otherDimension = -1) OVERRIDE FINAL;
+    virtual void appendExtraContentHash(ContentHasher& h, int dimension) const OVERRIDE FINAL;
 
 private:
 
@@ -663,6 +669,10 @@ private:
 
     virtual bool canAnimate() const OVERRIDE FINAL;
     virtual const std::string & typeName() const OVERRIDE FINAL;
+    virtual bool isContentHashed() const OVERRIDE FINAL
+    {
+        return false;
+    }
 
 private:
     static const std::string _typeNameStr;
@@ -957,6 +967,10 @@ private:
 
     virtual bool canAnimate() const OVERRIDE FINAL;
     virtual const std::string & typeName() const OVERRIDE FINAL;
+    virtual bool isContentHashed() const OVERRIDE FINAL
+    {
+        return false;
+    }
 
 private:
 
@@ -1018,6 +1032,10 @@ public:
 private:
     virtual bool canAnimate() const OVERRIDE FINAL;
     virtual const std::string & typeName() const OVERRIDE FINAL;
+    virtual bool isContentHashed() const OVERRIDE FINAL
+    {
+        return false;
+    }
 
 private:
 
@@ -1242,6 +1260,7 @@ private:
     virtual void cloneExtraData(KnobI* other, int dimension = -1, int otherDimension = -1) OVERRIDE FINAL;
     virtual bool cloneExtraDataAndCheckIfChanged(KnobI* other, int dimension = -1, int otherDimension = -1) OVERRIDE FINAL;
     virtual void cloneExtraData(KnobI* other, double offset, const RangeD* range, int dimension = -1, int otherDimension = -1) OVERRIDE FINAL;
+    virtual void appendExtraContentHash(ContentHasher& h, int dimension) const OVERRIDE FINAL;
     static const std::string _typeNameStr;
 };
 

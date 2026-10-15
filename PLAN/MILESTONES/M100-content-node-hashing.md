@@ -77,34 +77,34 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - M19 - USD/Hydra Foundation's `stackHash` should reuse the knob hash.
 
 ## Phase 100.1: Hasher and knob content hash
-- [ ] M100.P1.T1 — Vendor XXH3 and add a streaming ContentHasher
+- [x] M100.P1.T1 — Vendor XXH3 and add a streaming ContentHasher
   - files: libs/xxhash/xxhash.h, libs/CMakeLists.txt, Engine/ContentHasher.h, Engine/ContentHasher.cpp, Tests/ContentHasher_Test.cpp
   - approach: header-only XXH3-64 behind ContentHasher (appendU64, appendDouble with canonicalization, length-prefixed appendString and appendBytes; finalize never returns 0). First check whether the container's OIIO `hash.h` exposes XXH3; if it does, use it and skip vendoring.
   - verify: `ctest -R ContentHasher` covers known vectors, -0/+0 and NaN canonicalization, and ("ab","c") ≠ ("a","bc")
   - size: M
-- [ ] M100.P1.T2 — Add memoized KnobI::appendContentHash for every knob type
+- [x] M100.P1.T2 — Add memoized KnobI::appendContentHash for every knob type
   - files: Engine/Knob.h, Engine/Knob.cpp, Engine/KnobImpl.h, Engine/KnobTypes.cpp, Engine/Curve.cpp
   - approach: for each view and dimension, hash the static value, the full curve and the expression string. Memoize behind a dirty bit that is cleared in onInternalValueChanged and on curve or expression changes. Linked dimensions hash through their master.
   - verify: Tests/KnobContentHash_Test.cpp: every kind of mutation changes the hash, reverting restores it, and a slaved knob hashes equal to its master
   - size: L
-- [ ] M100.P1.T3 — Classify render-hashed knobs and exempt UI-only ones
+- [x] M100.P1.T3 — Classify render-hashed knobs and exempt UI-only ones
   - files: Engine/Knob.h, Engine/Knob.cpp, Engine/Node.cpp, Engine/OfxParamInstance.cpp
   - approach: add the new KnobI API setHashExempt()/isRenderHashed() (neither exists yet). isRenderHashed() = value type && !hashExempt && (persistent || evaluateOnChange). Call setHashExempt on label, sublabel, preview, hide-inputs, info text and user colour.
   - verify: a test shows that editing the label or info text leaves the hash unchanged, and editing a secret persistent param changes it
   - size: M
 
 ## Phase 100.2: Node content hash in shadow
-- [ ] M100.P2.T1 — Compute the Node content hash beside the age
+- [x] M100.P2.T1 — Compute the Node content hash beside the age
   - files: Engine/Node.cpp, Engine/Node.h, Engine/NodePrivate.h, Engine/Project.cpp, Engine/Project.h
   - approach: identity + sorted hashed knobs + inputs by index (mixed, with an unconnected marker) + the project digest, stored as contentHash. getHashValue is unchanged.
   - verify: Tests/NodeContentHash_Test.cpp: two freshly built identical graphs hash equal; topology changes and input swaps produce different hashes
   - size: M
-- [ ] M100.P2.T2 — Hash roto/paint items and IO containers
+- [x] M100.P2.T2 — Hash roto/paint items and IO containers
   - files: Engine/RotoItem.cpp, Engine/RotoDrawableItem.cpp, Engine/Bezier.cpp, Engine/RotoStrokeItem.cpp, Engine/RotoUndoCommand.cpp, Engine/Node.cpp
   - approach: a per-item memoized appendContentHash, dirtied wherever incrementNodesAge is called (RotoDrawableItem::incrementNodesAge at :651; callers in Bezier.cpp ×15, RotoUndoCommand.cpp ×8, RotoItem.cpp:189, RotoStrokeItem.cpp). Stroke internal nodes fold in their item's hash, and the container's knobs fold into the embedded IO node.
   - verify: moving one control point changes the hash and undo restores it; a micro-benchmark measures hash cost on a 5k-stroke comp
   - size: L
-- [ ] M100.P2.T3 — Fold expression dependencies into knob hashes
+- [x] M100.P2.T3 — Fold expression dependencies into knob hashes
   - files: Engine/Knob.cpp, Engine/Knob.h, Engine/Node.cpp
   - approach: fold in each dependency knob's content hash (visited set to stop cycles), the owner's fully qualified name when the node has expressions, and a session salt when a volatile token appears.
   - verify: a test shows that changing a referenced knob on a node that is not upstream changes the hash, and that an expression cycle terminates
@@ -116,7 +116,7 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - size: M
 
 ## Phase 100.3: File identity
-- [ ] M100.P3.T1 — Add FileStampRegistry and single-file stamps
+- [x] M100.P3.T1 — Add FileStampRegistry and single-file stamps
   - files: Engine/FileStampRegistry.h, Engine/FileStampRegistry.cpp, Engine/KnobFile.cpp, Engine/Project.cpp, Tests/FileStamp_Test.cpp
   - approach: statx stamps with a TTL memo. The hashes of KnobFile and the OCIO config include the stamp, which is re-validated at render start.
   - verify: touching the file changes the hash; an unchanged file keeps a stable hash
@@ -126,7 +126,7 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - approach: hash all frame stamps from the existing directory scan (SequenceParsing via KnobFile). NativeRead's Reload knob is at NativeRead.cpp:186, its purge at :586; NativeWrite has its own purgeCaches/Reload too. The only existing QFileSystemWatcher is in FileSystemModel (file dialog), so this adds the first engine-side watcher. Watch the directory with QFileSystemWatcher, rescan on app focus-in, and force a rescan on Reload.
   - verify: rewriting one frame of a sequence changes the Read's hash; confirm the viewer re-renders in a GUI test or UAT
   - size: L
-- [ ] M100.P3.T3 — Add a per-render current-frame stat guard
+- [x] M100.P3.T3 — Add a per-render current-frame stat guard
   - files: Engine/ParallelRenderArgs.cpp, Engine/FileStampRegistry.cpp, Engine/ViewerInstance.cpp
   - approach: stat each Read's frame file when render args are set up. On a mismatch, update the registry, recompute the hash, abort and restart the render.
   - verify: a test overwrites a frame between two renders and gets the new pixels; the M82 profiler shows no serial regression
@@ -202,3 +202,4 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
 - 2026-10-14 — **P3.T2 gap** (code: b63c1dfd2): a watcher event or focus-in only clears the stamp registry; nothing recomputes the affected nodes' hashes or re-renders the viewer, and in-place content writes that don't change mtime-visible attributes are caught only by focus-in or Reload. Close it in P4.T3 (lazy hash): the registry notifies listeners, and nodes whose file knobs match the invalidated directory mark themselves dirty and request a re-render. The viewer-refresh half of P3.T2's verify waits for that.
 - 2026-10-14 — **P3.T3** (code: f51cfcc93): the guard adds one virtual, `EffectInstance::refreshInputFilesForRender`, to `Engine/EffectInstance.h`. That is a one-line, region-disjoint addition next to M90's `rendersOnlyInsideRenderWindow`, so it was not held behind M90. Limits: the proxy file isn't checked; an overwrite that changes resolution still needs Reload for metadata; the test bypasses the image cache, so the downstream purge is untested until Phase 100.4's reuse tests.
 - 2026-10-14 — **NaN preference out of the project digest**: the NaN-handling preference is being removed app-wide (`DECISIONS/2026-10-14-drop-nan-check.md`, executed by M90 - Render Path Serial Overhead), so the digest stops hashing it.
+- 2026-10-14 — **Phases 100.1–100.3 green** at e2a7b5d (remote run 38666840782): 2198/2199 in legacy and taskgraph, with every new suite passing (ContentHasher, KnobContentHash, NodeContentHash, RotoContentHash, FileStamp). The one failure is the new Tests_HashAudit aggregate run, which segfaults in its own per-node map partway through; a fix is in progress. P3.T2 stays open until the viewer-refresh half lands (P4.T3). Code: P1.T1 a2a600901, P1.T2 85ef62afd, P1.T3 9d8011db8, P2.T1 3dad48a52, P2.T2 bd38484fa + f21d85b68, P2.T3 e82e1975c, P2.T4 c89795b9b, P3.T1 f3ae86637, P3.T2 b63c1dfd2, P3.T3 f51cfcc93, build fixes ad1c147cf/e2cf55f4f/the include pin.

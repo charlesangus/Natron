@@ -29,6 +29,7 @@ set(Tests_SOURCES
     ColorViews_Test.cpp
     ColorViewsRender_Test.cpp
     ColorWheelMath_Test.cpp
+    ContentHasher_Test.cpp
     Curve_Test.cpp
     DataKind_Test.cpp
     DataKindProjectLoad_Test.cpp
@@ -154,6 +155,7 @@ target_include_directories(Tests
         .
         ..
         ../libs/SequenceParsing
+        ../libs/xxhash
         google-test/include
         google-test
         google-mock/include

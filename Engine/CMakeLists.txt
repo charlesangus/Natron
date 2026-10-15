@@ -144,6 +144,7 @@ target_include_directories(NatronEngine
         ..
         ../Global
         ../libs/SequenceParsing
+        ../libs/xxhash
         ${X11_INCLUDE_DIR}
 )
 if(NATRON_GPU)

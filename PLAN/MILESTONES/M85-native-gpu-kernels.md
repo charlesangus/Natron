@@ -437,7 +437,7 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
     - Release build, RADV, interleaved Auto/Off, 3 rounds.
     - The three M82 comps at UHD and 8K.
     - The heavy spatial nodes alone and in G-X-G chains at UHD, 8K, 16k and 24k, tiled (stripped) against untiled where the frame fits: Transform with and without motion blur, Blur FIR σ25/σ100 and IIR, Erode 6/40, ChromaKeyer.
-    - The host has 188 GB of RAM, so 24k frames (9.2 GB each) fit.
+    - Probe the host's available memory before each case and skip, with the reason recorded, any size whose footprint (about 4× the float RGBA frame) doesn't fit. Nothing assumes a particular machine.
     - Report each case's speed-up and the per-node share of region time.
   - verify: a Decisions table with a measured end-to-end speed-up on each M82 comp, and no Auto case slower than Off. Any limit found becomes a follow-up in the proposed M109.
   - size: M
@@ -536,7 +536,7 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - M108 stays separate from M86 - OFX 1.5 GPU Suites;
   - port Blur's IIR and box filters to the GPU (P2.T4);
   - decide how OCIO runs on Vulkan when M107 starts.
-- 2026-10-12 — The bench host is a Ryzen 7 7800X3D with 8 cores, 16 threads and 188 GB of RAM, not the 4-core host M64 - Tiled Rendering was benched on.
+- 2026-10-12 — The bench host is a Ryzen 7 7800X3D with 8 cores and 16 threads, not the 4-core host M64 - Tiled Rendering was benched on.
 - 2026-10-12 — **P1.T1** (`6be53a69d`), **P1.T2** (`cea3e3ef2`) and **P1.T4** (`4fd4b3920`) done. Their verify set passes 64/64 on lavapipe and on RADV in both scheduler modes, and on RADV without push descriptors. With no ICD the GPU cases skip.
   - **P1.T1 notes for later tasks:**
     - `WrapParams` is 112 B.
@@ -644,7 +644,7 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - Blur FIR σ100 CPU now reads 173 against 267 in the old seed; other M82 rows agree within 20% and are unchanged.
 
 - 2026-10-14 — **P6.T3 done** (`5271ea4b0`). Quick directional bench: the direction holds on all three criteria. Release build, RADV (7900 XTX), `NATRON_RENDER_SCHEDULER=taskgraph`, Auto vs Off alternated over 2 rounds.
-  - **Host:** `nproc` is 16 (Ryzen 7 7800X3D, 188 GB), not the 4 cores the plan assumed, so the numbers compare directly with M84's. Render pool 16 threads; measured CPU parallelism under Off reached 14.3.
+  - **Host:** `nproc` is 16 (Ryzen 7 7800X3D), not the 4 cores the plan assumed, so the numbers compare directly with M84's. Render pool 16 threads; measured CPU parallelism under Off reached 14.3.
   - **Per-frame wall time (6 frames for comps, first dropped; graph_bench: 1 warm-up + 5 UHD / 2 at 16k):**
 
     | workload | Off s | Auto s | speed-up | M84 |
@@ -666,4 +666,4 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
 - 2026-10-14 — **P6.T4 in progress: two gate failures found, one fixed.** First full pass (UHD/8K/15k/16k/24k, 3 rounds) is in `.local/m85/batchF/bench4/summary.txt`.
   - **Erode 40 at 16k was slower than Off** (21 ms/Mpx). The wide van Herk pass read each column one 4-byte load per row pitch, so a power-of-two width aliased every load onto one memory channel. Rewritten register-blocked (16 outputs per thread, all four channels, adjacent columns per group) in `eacf34f98`: 0.5–0.6 ms/Mpx at every size (was 7.6 at UHD/8K), bit-exact, `ErodeDilate` 16/16 on RADV and lavapipe; Auto ≈ 5× Off at 16k.
   - **24k Transform/Blur Auto slower than Off was a bench artifact:** Off timed one cold frame, Auto a warm-up plus two, and from the second ~4.7 GB EXR on, dirty-page throttling made the Write disk-bound (Auto frame 0 wrote in the same 3.3 s as Off). `graph_bench.py` now deletes each output and syncs outside the timed part; 16k/24k rerun with equal frame counts in both modes.
-  - **The bench host has 64 GB of RAM**, not the 188 GB recorded on 2026-10-12 (`/proc/meminfo`).
+  - **No host RAM figure is assumed anywhere** (user, 2026-10-14): the drivers probe available memory before each case and skip what won't fit, and the dirty-page drain wait is absolute, not sized to a machine. The figure recorded on 2026-10-12 was wrong; RAM figures are dropped from these notes.

@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
 #include <exception>
 #include <list>
 #include <sstream>
@@ -36,6 +37,7 @@
 #include <gtest/gtest.h>
 
 #include <QFile>
+#include <QRegularExpression>
 #include <QString>
 #include <QTemporaryDir>
 
@@ -63,6 +65,23 @@ saveProjectXml(const Serialization::ProjectSerialization& serialization)
     }
 
     return buffer.str();
+}
+
+// KnobsAge and CacheID are session counters, not saved state: a node's age moves on as soon as
+// the loaded graph is connected and its expressions are restored.
+inline std::string
+withoutSessionCounters(const std::string& xml)
+{
+    QString normalized = QString::fromUtf8(xml.c_str());
+    const char* const sessionCounterTags[] = { "KnobsAge", "CacheID" };
+
+    for (std::size_t i = 0; i < sizeof(sessionCounterTags) / sizeof(sessionCounterTags[0]); ++i) {
+        const QString tag = QString::fromUtf8(sessionCounterTags[i]);
+        QRegularExpression pattern(QString::fromUtf8("<%1>[^<]*</%1>").arg(tag));
+        normalized.replace(pattern, QString::fromUtf8("<%1>SESSION_COUNTER</%1>").arg(tag));
+    }
+
+    return normalized.toStdString();
 }
 
 inline bool

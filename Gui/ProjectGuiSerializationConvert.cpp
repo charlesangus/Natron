@@ -62,6 +62,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/MissingPluginNode.h"
 #include "Engine/Project.h"
 #include "Engine/PyParameter.h" // Param
 #include "Engine/RectD.h"
@@ -90,6 +91,26 @@ CLANG_DIAG_ON(uninitialized)
 NATRON_NAMESPACE_ENTER
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+// Node graph entries name their node by its fully qualified name, so the entries of the nodes
+// inside a renamed or moved placeholder must follow the placeholder's new name.
+Serialization::NodeGuiSerializationPtr
+copyNodeGuiSerializationRenamingParent(const Serialization::NodeGuiSerialization& source,
+                                       const std::string& oldParentName,
+                                       const std::string& newParentName)
+{
+    Serialization::NodeGuiSerializationPtr copy = std::make_shared<Serialization::NodeGuiSerialization>(source);
+    const std::string oldPrefix = oldParentName + '.';
+
+    if (copy->nodeName.compare(0, oldPrefix.size(), oldPrefix) == 0) {
+        copy->nodeName = newParentName + '.' + copy->nodeName.substr(oldPrefix.size());
+    }
+    for (std::list<Serialization::NodeGuiSerializationPtr>::iterator it = copy->children.begin(); it != copy->children.end(); ++it) {
+        *it = copyNodeGuiSerializationRenamingParent(**it, oldParentName, newParentName);
+    }
+
+    return copy;
+}
 
 void
 paneToSerialization(TabWidget* tab,
@@ -404,6 +425,15 @@ restoreNodeGuiFromSerialization(Gui* gui,
         gui->getNodeGraph()->selectNode(nodeGui, true);
     }
 
+    // The nodes a placeholder stands in for were never created, so their entries are kept for the
+    // next save instead.
+    MissingPluginNode* placeholder = dynamic_cast<MissingPluginNode*>(internalNode->getEffectInstance().get());
+    if (placeholder) {
+        placeholder->setStoredGuiChildren(name, serialization.children);
+
+        return;
+    }
+
     for (std::list<Serialization::NodeGuiSerializationPtr>::const_iterator it = serialization.children.begin(); it != serialization.children.end(); ++it) {
         restoreNodeGuiFromSerialization(gui, viewers, settings, leftBound, rightBound, **it);
     }
@@ -460,6 +490,15 @@ NodeGui::toSerialization(Serialization::NodeGuiSerialization* serialization) con
             Serialization::NodeGuiSerializationPtr child = std::make_shared<Serialization::NodeGuiSerialization>();
             childGui->toSerialization(child.get());
             serialization->children.push_back(child);
+        }
+    }
+
+    const MissingPluginNode* placeholder = dynamic_cast<const MissingPluginNode*>(node->getEffectInstance().get());
+    if (placeholder) {
+        std::string storedName;
+        const std::list<Serialization::NodeGuiSerializationPtr> storedChildren = placeholder->getStoredGuiChildren(&storedName);
+        for (std::list<Serialization::NodeGuiSerializationPtr>::const_iterator it = storedChildren.begin(); it != storedChildren.end(); ++it) {
+            serialization->children.push_back(copyNodeGuiSerializationRenamingParent(**it, storedName, serialization->nodeName));
         }
     }
 }

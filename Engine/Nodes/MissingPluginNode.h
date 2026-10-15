@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <list>
 #include <string>
 #include <vector>
 
@@ -69,6 +70,19 @@ public:
      **/
     Serialization::NodeSerializationPtr getStoredSerialization() const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Keeps the node graph state of the nodes the replaced node held, as read for it from a
+     * project file in which the node was named nodeName, so a later save can write it back.
+     **/
+    void setStoredGuiChildren(const std::string& nodeName,
+                              const std::list<Serialization::NodeGuiSerializationPtr>& children);
+
+    /**
+     * @brief The node graph state set by setStoredGuiChildren(), and in nodeName the fully
+     * qualified name the node had then.
+     **/
+    std::list<Serialization::NodeGuiSerializationPtr> getStoredGuiChildren(std::string* nodeName) const WARN_UNUSED_RETURN;
+
 private:
     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -86,6 +100,8 @@ private:
     mutable QMutex _storedMutex;
     Serialization::NodeSerializationPtr _stored;
     std::vector<std::string> _inputLabels;
+    std::string _guiChildrenNodeName;
+    std::list<Serialization::NodeGuiSerializationPtr> _guiChildren;
 };
 
 NATRON_NAMESPACE_EXIT

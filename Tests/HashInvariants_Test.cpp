@@ -589,6 +589,17 @@ TEST_F(HashInvariantsTest, DivergedSaveAsCopiesDoNotCollide)
     ASSERT_TRUE(project()->saveProject(dirPath, copyName, &savedFilePath));
     ASSERT_EQ(copyName, project()->getProjectFilename());
 
+    // Background instances all publish their nodes to Python as app.<name>, so the second
+    // instance cannot load nodes under names this one still holds: they would keep no name and
+    // lose their connections. Names are not part of the key, so renaming here changes no hash.
+    const U64 copyBlurHash = chain.blur->getHashValue();
+    chain.constant->setScriptName("copyConstant");
+    chain.blur->setScriptName("copyBlur");
+    ASSERT_EQ(std::string("copyConstant"), chain.constant->getScriptName());
+    ASSERT_EQ(std::string("copyBlur"), chain.blur->getScriptName());
+    settle({ chain.constant, chain.blur });
+    ASSERT_EQ(copyBlurHash, chain.blur->getHashValue());
+
     ScopedSecondApp second(getApp());
     ASSERT_TRUE(bool(second.get()));
     ProjectPtr originalProject = second.get()->getProject();

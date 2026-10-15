@@ -662,3 +662,8 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
     - cg_multipass has six lone-Grade regions that each move ~171 MB for a 0.3 ms kernel, all exposed. The comp is still 2× faster, but this placement is the likeliest to turn negative on a slower bus.
     - The uncompressed EXR Write dominates 16k Auto frames (~2.4 s of 3.05 s).
   - Raw results: `.local/m85/batchF/bench3/summary-gpu.txt`.
+
+- 2026-10-14 — **P6.T4 in progress: two gate failures found, one fixed.** First full pass (UHD/8K/15k/16k/24k, 3 rounds) is in `.local/m85/batchF/bench4/summary.txt`.
+  - **Erode 40 at 16k was slower than Off** (21 ms/Mpx). The wide van Herk pass read each column one 4-byte load per row pitch, so a power-of-two width aliased every load onto one memory channel. Rewritten register-blocked (16 outputs per thread, all four channels, adjacent columns per group) in `eacf34f98`: 0.5–0.6 ms/Mpx at every size (was 7.6 at UHD/8K), bit-exact, `ErodeDilate` 16/16 on RADV and lavapipe; Auto ≈ 5× Off at 16k.
+  - **24k Transform/Blur Auto slower than Off was a bench artifact:** Off timed one cold frame, Auto a warm-up plus two, and from the second ~4.7 GB EXR on, dirty-page throttling made the Write disk-bound (Auto frame 0 wrote in the same 3.3 s as Off). `graph_bench.py` now deletes each output and syncs outside the timed part; 16k/24k rerun with equal frame counts in both modes.
+  - **The bench host has 64 GB of RAM**, not the 188 GB recorded on 2026-10-12 (`/proc/meminfo`).

@@ -222,9 +222,9 @@ TEST_F(BaseTest, StructuralKnobsAreNotRenderHashed)
     ASSERT_TRUE(bool(node));
     KnobHolder* holder = node->getEffectInstance().get();
 
-    KnobPagePtr page = AppManager::createKnob<KnobPage>(holder, "hashPage", 1, false);
-    KnobSeparatorPtr separator = AppManager::createKnob<KnobSeparator>(holder, "hashSeparator", 1, false);
-    KnobButtonPtr button = AppManager::createKnob<KnobButton>(holder, "hashButton", 1, false);
+    KnobPagePtr page = AppManager::createKnob<KnobPage>(holder, std::string("hashPage"), 1, false);
+    KnobSeparatorPtr separator = AppManager::createKnob<KnobSeparator>(holder, std::string("hashSeparator"), 1, false);
+    KnobButtonPtr button = AppManager::createKnob<KnobButton>(holder, std::string("hashButton"), 1, false);
     ASSERT_TRUE(bool(page));
     ASSERT_TRUE(bool(separator));
     ASSERT_TRUE(bool(button));

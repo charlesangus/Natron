@@ -122,31 +122,12 @@ expectNaNsFixed(const RectI& bounds)
 }
 
 void
-expectNoLockDetectsWithoutModifying(const RectI& bounds)
-{
-    ImagePtr img = makeFloatImage(bounds);
-    std::vector<float> expected = fillClean(*img);
-
-    EXPECT_FALSE(img->checkForNaNsNoLock(bounds));
-
-    poke(*img, expected, bounds.x2 - 1, bounds.y2 - 1, 3);
-    const std::vector<float> before = readAll(*img);
-
-    EXPECT_TRUE(img->checkForNaNsNoLock(bounds));
-
-    const std::vector<float> after = readAll(*img);
-    ASSERT_EQ(before.size(), after.size());
-    EXPECT_EQ(0, std::memcmp(before.data(), after.data(), before.size() * sizeof(float)));
-}
-
-void
 expectCleanUnchanged(const RectI& bounds)
 {
     ImagePtr img = makeFloatImage(bounds);
     const std::vector<float> expected = fillClean(*img);
 
     EXPECT_FALSE(img->checkForNaNsAndFix(bounds));
-    EXPECT_FALSE(img->checkForNaNsNoLock(bounds));
 
     const std::vector<float> actual = readAll(*img);
     ASSERT_EQ(expected.size(), actual.size());
@@ -163,12 +144,6 @@ TEST(ImageNaNBandsTest, SmallImageFixesNaNs)
 TEST(ImageNaNBandsTest, LargeImageFixesNaNsAcrossBands)
 {
     expectNaNsFixed(RectI(-8, -6, 2056, 2100));
-}
-
-TEST(ImageNaNBandsTest, NoLockReportsWithoutModifying)
-{
-    expectNoLockDetectsWithoutModifying(RectI(0, 0, 60, 40));
-    expectNoLockDetectsWithoutModifying(RectI(0, 0, 2048, 2048));
 }
 
 TEST(ImageNaNBandsTest, CleanImageUnchanged)

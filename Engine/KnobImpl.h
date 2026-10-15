@@ -42,14 +42,14 @@
 
 #include "Global/PythonUtils.h"
 
-#include "Engine/Curve.h"
 #include "Engine/AppInstance.h"
-#include "Engine/Project.h"
+#include "Engine/ContentHasher.h"
+#include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
-#include "Engine/KnobTypes.h"
-#include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
-
+#include "Engine/KnobTypes.h"
+#include "Engine/Project.h"
+#include "Engine/ViewIdx.h"
 
 #define EXPR_RECURSION_LEVEL() KnobHelper::ExprRecursionLevel_RAII __recursionLevelIncrementer__(this)
 
@@ -165,6 +165,7 @@ Knob<T>::setMinimum(const T& mini,
         _minimums[dimension] = mini;
         maxi = _maximums[dimension];
     }
+    invalidateContentHash();
 
     signalMinMaxChanged(mini, maxi, dimension);
 }
@@ -180,6 +181,7 @@ Knob<T>::setMaximum(const T& maxi,
         _maximums[dimension] = maxi;
         mini = _minimums[dimension];
     }
+    invalidateContentHash();
 
     signalMinMaxChanged(mini, maxi, dimension);
 }
@@ -224,6 +226,7 @@ Knob<T>::setMinimumsAndMaximums(const std::vector<T> &minis,
         _minimums = minis;
         _maximums = maxis;
     }
+    invalidateContentHash();
     for (unsigned int i = 0; i < minis.size(); ++i) {
         signalMinMaxChanged(minis[i], maxis[i], i);
     }
@@ -1196,6 +1199,7 @@ Knob<T>::setValue(const T & v,
         _values[dimension] = v;
         _guiValues[dimension] = v;
     }
+    invalidateContentHash();
 
     double time;
     bool timeSet = false;
@@ -2572,6 +2576,7 @@ Knob<T>::copyValueForType(Knob<OTHERTYPE>* other,
                 otherDimension >= 0 && otherDimension < other->getDimension() );
         _values[dimension] = _guiValues[dimension] = T( other->getRawValue(otherDimension) );
     }
+    invalidateContentHash();
 }
 
 template<typename T>
@@ -2607,6 +2612,9 @@ Knob<T>::copyValueForTypeAndCheckIfChanged(Knob<OTHERTYPE>* other,
             _values[dimension] = _guiValues[dimension] = otherValue;
             ret = true;
         }
+    }
+    if (ret) {
+        invalidateContentHash();
     }
 
     return ret;
@@ -2870,6 +2878,7 @@ Knob<T>::dequeueValuesSet(bool disableEvaluation)
 {
     std::map<int, ValueChangedReasonEnum> dimensionChanged;
     bool ret = false;
+    bool valueWritten = false;
 
     cloneGuiCurvesIfNeeded(dimensionChanged);
     {
@@ -2893,6 +2902,7 @@ Knob<T>::dequeueValuesSet(bool disableEvaluation)
                     if ( _values[(*it)->dimension()] != (*it)->value() ) {
                         _values[(*it)->dimension()] = (*it)->value();
                         _guiValues[(*it)->dimension()] = (*it)->value();
+                        valueWritten = true;
                         if (!blockValueChanges) {
                             dimensionChanged.insert( std::make_pair( (*it)->dimension(), (*it)->reason() ) );
                         }
@@ -2920,6 +2930,9 @@ Knob<T>::dequeueValuesSet(bool disableEvaluation)
             }
         }
         _setValuesQueue.clear();
+    }
+    if (valueWritten) {
+        invalidateContentHash();
     }
     cloneInternalCurvesIfNeeded(dimensionChanged);
 
@@ -3002,9 +3015,60 @@ Knob<T>::copyValuesFromCurve(int dim)
     double time = getCurrentTime();
     assert(dim >= 0 && dim < getDimension());
     T v = getValueAtTime(time, dim);
-    QMutexLocker l(&_valueMutex);
-    _guiValues[dim] = _values[dim] = v;
+    {
+        QMutexLocker l(&_valueMutex);
+        _guiValues[dim] = _values[dim] = v;
+    }
+    invalidateContentHash();
+}
 
+inline void
+appendKnobValueToContentHash(ContentHasher& h,
+                             bool v)
+{
+    h.appendBool(v);
+}
+
+inline void
+appendKnobValueToContentHash(ContentHasher& h,
+                             int v)
+{
+    h.appendI64(v);
+}
+
+inline void
+appendKnobValueToContentHash(ContentHasher& h,
+                             double v)
+{
+    h.appendDouble(v);
+}
+
+inline void
+appendKnobValueToContentHash(ContentHasher& h,
+                             const std::string& v)
+{
+    h.appendString(v);
+}
+
+template <typename T>
+void
+Knob<T>::appendValueContentHash(ContentHasher& h,
+                                int dimension) const
+{
+    T value;
+    {
+        QMutexLocker k(&_valueMutex);
+        value = _values[dimension];
+    }
+    T mini, maxi;
+    {
+        QReadLocker k(&_minMaxMutex);
+        mini = _minimums[dimension];
+        maxi = _maximums[dimension];
+    }
+    appendKnobValueToContentHash(h, value);
+    appendKnobValueToContentHash(h, mini);
+    appendKnobValueToContentHash(h, maxi);
 }
 
 NATRON_NAMESPACE_EXIT

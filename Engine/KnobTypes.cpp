@@ -41,6 +41,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
@@ -586,8 +587,11 @@ KnobChoice::cloneExtraData(KnobI* other,
         return;
     }
 
-    QMutexLocker k(&_entriesMutex);
-    _currentEntry = isChoice->getActiveEntry();
+    {
+        QMutexLocker k(&_entriesMutex);
+        _currentEntry = isChoice->getActiveEntry();
+    }
+    invalidateContentHash();
 }
 
 bool
@@ -602,14 +606,16 @@ KnobChoice::cloneExtraDataAndCheckIfChanged(KnobI* other,
     }
 
     ChoiceOption otherEntry = isChoice->getActiveEntry();
-    QMutexLocker k(&_entriesMutex);
-    if (_currentEntry.id != otherEntry.id) {
+    {
+        QMutexLocker k(&_entriesMutex);
+        if (_currentEntry.id == otherEntry.id) {
+            return false;
+        }
         _currentEntry = otherEntry;
-
-        return true;
     }
+    invalidateContentHash();
 
-    return false;
+    return true;
 }
 
 void
@@ -626,8 +632,11 @@ KnobChoice::cloneExtraData(KnobI* other,
         return;
     }
 
-    QMutexLocker k(&_entriesMutex);
-    _currentEntry = isChoice->getActiveEntry();
+    {
+        QMutexLocker k(&_entriesMutex);
+        _currentEntry = isChoice->getActiveEntry();
+    }
+    invalidateContentHash();
 }
 
 
@@ -638,10 +647,40 @@ KnobChoice::onInternalValueChanged(int dimension,
 {
     // by-pass any master/slave link here
     int index = getValueAtTime(time, dimension, ViewSpec::current(), true, true);
-    QMutexLocker k(&_entriesMutex);
+    {
+        QMutexLocker k(&_entriesMutex);
 
-    if ( (index >= 0) && ( index < (int)_entries.size() ) ) {
+        if ((index < 0) || (index >= (int)_entries.size())) {
+            return;
+        }
         _currentEntry = _entries[index];
+    }
+    invalidateContentHash();
+}
+
+void
+KnobChoice::appendExtraContentHash(ContentHasher& h,
+                                   int dimension) const
+{
+    // The plug-in reads the index, so the entry it lands on is what counts; _currentEntry only
+    // stands in when the index is outside the menu, as after loading an option that no longer exists.
+    CurvePtr curve = getCurve(ViewIdx(0), dimension, true);
+    KeyFrameSet keys;
+    if (curve) {
+        keys = curve->getKeyFrames_mt_safe();
+    }
+    const int index = getRawValue(dimension);
+
+    QMutexLocker k(&_entriesMutex);
+    const int nEntries = (int)_entries.size();
+    if ((index >= 0) && (index < nEntries)) {
+        h.appendString(_entries[index].id);
+    } else {
+        h.appendString(_currentEntry.id);
+    }
+    for (KeyFrameSet::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        const int keyIndex = (int)std::floor(it->getValue() + 0.5);
+        h.appendString(((keyIndex >= 0) && (keyIndex < nEntries)) ? _entries[keyIndex].id : std::string());
     }
 }
 
@@ -686,6 +725,7 @@ KnobChoice::findAndSetOldChoice()
             }
         }
     }
+    invalidateContentHash();
     if (found != -1) {
         // Make sure we don't call knobChanged if we found the value
         blockValueChanges();
@@ -716,6 +756,7 @@ KnobChoice::populateChoices(const std::vector<ChoiceOption> &entries)
         hasChanged = true;
 
     }
+    invalidateContentHash();
 
     /*
        Try to restore the last choice.
@@ -740,6 +781,7 @@ KnobChoice::resetChoices()
         QMutexLocker l(&_entriesMutex);
         _entries.clear();
     }
+    invalidateContentHash();
     findAndSetOldChoice();
     if (_signalSlotHandler) {
         _signalSlotHandler->s_helpChanged();
@@ -760,6 +802,7 @@ KnobChoice::appendChoice(const ChoiceOption& entry)
             opt.label = opt.id;
         }
     }
+    invalidateContentHash();
 
     findAndSetOldChoice();
     if (_signalSlotHandler) {
@@ -814,8 +857,11 @@ KnobChoice::getNumEntries() const
 void
 KnobChoice::setActiveEntry(const ChoiceOption& opt)
 {
-    QMutexLocker l(&_entriesMutex);
-    _currentEntry = opt;
+    {
+        QMutexLocker l(&_entriesMutex);
+        _currentEntry = opt;
+    }
+    invalidateContentHash();
 }
 
 
@@ -944,6 +990,7 @@ KnobChoice::setValueFromID(const std::string & value,
         QMutexLocker k(&_entriesMutex);
         i = choiceMatch(value, _entries, &_currentEntry);
     }
+    invalidateContentHash();
     if (i >= 0) {
         return setValue(i, ViewIdx(0), dimension, turnOffAutoKeying);
     }
@@ -1136,6 +1183,7 @@ KnobChoice::choiceRestorationId(KnobChoice* knob,
         QMutexLocker k(&_entriesMutex);
         i = choiceMatch(optionID, _entries, &_currentEntry);
     }
+    invalidateContentHash();
 
     if (i >= 0) {
         return i;
@@ -1170,6 +1218,7 @@ KnobChoice::choiceRestoration(KnobChoice* knob,
             _currentEntry.id = optionID;
         }
     }
+    invalidateContentHash();
 
     if (id >= 0) {
         setValue(id, ViewSpec::all(), 0, eValueChangedReasonNatronInternalEdited, NULL, true);
@@ -2314,6 +2363,15 @@ KnobParametric::cloneExtraData(KnobI* other,
         }
         assert( dimension >= 0 && dimension < getDimension() && otherDimension >= 0 && otherDimension < other->getDimension() );
         _curves[dimension]->clone(*isParametric->_curves[otherDimension], offset, range);
+    }
+}
+
+void
+KnobParametric::appendExtraContentHash(ContentHasher& h,
+                                       int dimension) const
+{
+    if ((dimension >= 0) && (dimension < (int)_curves.size())) {
+        _curves[dimension]->appendContentHash(h);
     }
 }
 

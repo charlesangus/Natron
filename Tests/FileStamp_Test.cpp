@@ -48,6 +48,8 @@
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 
+#include <ofxImageEffect.h>
+
 NATRON_NAMESPACE_USING
 
 namespace {

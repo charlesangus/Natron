@@ -325,3 +325,4 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - wide: 0.63 → 0.22 ms.
   
   That is about 4.8× faster, but still over 1 ms on the 200-node comp (4-thread N100). The rest of P6.T5 rides on P4.T3: the keystroke becomes a dirty-mark walk, and `clearExpressionsResults` (EffectInstance.cpp, about 10 µs/node) is removed from it. P6.T5 stays open.
+- 2026-10-15 — **Rebased onto post-M85 `main`** (7ad45061e) cleanly; branch now at ce0ffd022, gate re-run pending. P4.T3/P5.T1/P7.T1 still held until M90 - Render Path Serial Overhead merges.

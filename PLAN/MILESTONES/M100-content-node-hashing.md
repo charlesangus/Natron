@@ -266,3 +266,16 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - **Aborted render:** an aborted render can hand a waiter an unfinished image (EffectInstanceRenderRoI.cpp ~1512-1523). This predates M100 within one node, but identical nodes can now hit it. Fix before the gate: the waiter re-renders instead of returning the image.
   - **Native build stamp:** `GIT_COMMIT` is a committed constant, so dev builds reuse disk-cache entries across native code changes. This is already noted.
   - **Efficiency only:** the taskgraph shared-output key includes the node pointer (RenderScheduler.cpp:1400), so identical nodes block a pool thread instead of being held back.
+- 2026-10-15 — **P4.T2** (code: bd67402dc).
+  - **Purge removed:** the purge on hash change is gone, and the purge helpers (Node/AppManager/Cache `...WithMatchingIDAndDifferentKey`) are deleted.
+  - **ActionsCache reuse:** `ActionsCache::invalidateAll` is split into `useHash` (reuse on return to a state) and `clearResults`. The cache is now a true LRU, with a limit of max(64, 2× threads).
+  - **Reload:** OFX `KnobFile::reloadFile` clears action results.
+  - **Tests:** the Deep purge tests are rewritten as reuse-plus-explicit-purge tests, and `DeepReadWrite LayersFollowAFileRewrittenInPlace` now invalidates the stamp. There is a new 1 → 2 → 1 reuse test with a region-of-definition call counter.
+  
+  **New equivalence risks for P4.T3/P6.T4:**
+  - **Purges only reach the purged node's own entries:** they are per creating node, so an identical node's entries under the same key survive another node's Reload. This is only stale in combination with a stamp miss.
+  - **Cached RoD failures replay:** a failure is cached as an empty RoD under the hash (EffectInstance.cpp ~4332), so a transient failure replays on return to that state. Don't cache failures, or drop them on any purge.
+  - **Stamp misses:** a coarse mtime, or a rewrite within the 1 s stamp memo, gives the same key. Reload clears action results but not images.
+  - **P4.T3 gaps reach ActionsCache:** the open gaps, now that the age-only drop is gone, are group lifetime, the Roto context node, Tracker slaving, off-thread edits, expression dependencies and the Reformat write-back. **P4.T3 is a hard prerequisite of the gate.**
+  
+  The ActionsCache is bounded by count, not memory.

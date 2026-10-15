@@ -21,35 +21,40 @@ load with the plugin present is indistinguishable from never having lost it.
 ## Phase 22.1: Preserve the node
 
 - [ ] M22.P1.T1 — `MissingPluginNode` placeholder effect
-  - files: `Engine/Nodes/MissingPluginNode.h`, `Engine/Nodes/MissingPluginNode.cpp`, `Engine/EffectInstance.h` (plugin id constant)
-  - approach: an `EffectInstance` holding a `NodeSerializationPtr` verbatim plus the inputs it needs to keep connections alive: `getNInputs()`/`getInputLabel()` come from the stored `_inputs` map, so every edge has a slot to land in. Declares an error via `setPersistentMessage(eMessageTypeError, ...)` naming the missing plugin id and version, and refuses to render rather than passing through. Follow `ReadNode`'s precedent for a container that survives without the thing it wraps (`ReadNode.cpp:446-563`, `:602-624`). It must **not** be registrable from the node menu — it is only ever constructed by the loader.
-  - verify: unit test — constructing one from a hand-built `NodeSerialization` exposes the right input count and labels and reports an error state; it does not appear in the plugin menu.
+  - files: `Engine/Nodes/MissingPluginNode.h`/`.cpp` (new), `Engine/EffectInstance.h` (`PLUGINID_NATRON_MISSING_PLUGIN` beside `PLUGINID_NATRON_READ`), `Engine/AppManager.cpp` (`loadBuiltinNodePlugins`), `Engine/CMakeLists.txt`
+  - approach: derive from `NativeEffectBase`; register with `registerBuiltInPlugin<MissingPluginNode>("", false, true)` (`internalUseOnly`, like `RotoSmear`), not a reader or writer so the node picker excludes it. Holds the `Serialization::NodeSerializationPtr` passed through `kCreateNodeArgsPropNodeSerialization`; input count and labels come from its `inputs` keys (override `getNInputs()`/`getInputLabel()` if the description is static). Calls `setPersistentMessage(eMessageTypeError, ...)` naming the missing `pluginID` and version; `render` fails rather than passing through.
+  - verify: gtest in `Tests/Serialization/` building one from a hand-built `NodeSerialization` (right input labels, error state), plus a `Tests/PluginIdentity_Test.cpp`-style check that the id is registered and internal-only.
   - size: M
 
 - [ ] M22.P1.T2 — Create the placeholder instead of skipping the node
-  - files: `Engine/NodeGroupSerialization.cpp` (the `continue` at ~:262-270)
-  - approach: where the loader logs "does not exist in the loaded plug-ins" and skips, construct a `MissingPluginNode` holding `*it` and register it in `createdNodes` under its serialized script name, so the existing connection-restoration pass below (~:320-395) wires it like any other node. Keep the error-log entry; it is how the user finds out. Also promote the edge-restore failure at ~:386-392 from `qDebug()` to the error log — a dropped connection is not console-only news.
-  - verify: integration test — a project referencing an unavailable plugin loads with the placeholder present, its script name intact, and every edge into and out of it still connected.
+  - files: `Engine/NodeGroupSerialization.cpp` (`NodeCollection::restoreFromSerialization`: the `if (!n)` block ~:251-259, the connect pass ~:310-380)
+  - approach: when `createNode` fails, retry once with `PLUGINID_NATRON_MISSING_PLUGIN` and the same serialization, keep the "does not exist in the loaded plug-ins" error-log entry and `mustShowErrorsLog`, and register the node in `createdNodes` so the connect pass wires it. Promote the connect-pass `qDebug()` failures to `appPTR->writeToErrorLog_mt_safe` when `createNodes` is true. Never recurse into a placeholder's `children`.
+  - verify: a `Tests/Serialization/` test loads a project with a bogus plugin id: the placeholder exists with its script name and every edge in and out is intact.
   - size: M
 
 - [ ] M22.P1.T3 — Re-emit the stored serialization verbatim on save
-  - files: `Engine/NodeGroupSerialization.cpp` (`NodeCollectionSerialization::initialize()`), `Engine/NodeSerialization.cpp`/`.h`
-  - approach: `initialize()` builds a fresh `NodeSerialization` from each live node; for a placeholder it must instead emit the stored one unchanged, so plugin id, version, knob values, user pages, planes and children all survive exactly. The placeholder contributes nothing of its own — no marker, no substituted id. Watch the connection data specifically: `_inputs` must reflect the graph as it stands (the user may have rewired around the placeholder), not blindly echo the loaded map.
-  - verify: round-trip test — load a project with a missing plugin, save it, and diff the node's serialized form against the original; they must be equivalent. Then load again with the plugin available and confirm a normal node with its knob values restored.
+  - files: `Engine/ProjectSerializationConvert.cpp` (`Node::toSerialization`), `Engine/Nodes/MissingPluginNode.h` (getter for the stored serialization)
+  - approach: early branch in `Node::toSerialization` for a placeholder: copy the stored serialization, then overwrite only `inputs` (from the live graph, since the user may rewire), `label`, `scriptName` and position/GUI fields from the live node; clear `oldInputs`. `knobsAge`/`cacheID` are session counters. `nodesToSerialization` needs no change.
+  - verify: `ProjectXmlEquivalence`-style test (copy or hoist `saveProjectXml`/`loadProjectXml`/`reloadProjectXml`/`withoutSessionCounters`/`findSerializedNode` from `Tests/Serialization/ProjectXmlEquivalence_Test.cpp`): serialize a real built-in node, rename its `pluginID`, load, save, diff the node after `withoutSessionCounters`, rename back and reload to get the normal node with its knob values; plus a rewired-input case.
   - size: L
 
 - [ ] M22.P1.T4 — Stop the load-time silent save from committing losses
-  - files: `Engine/Project.cpp` (~:261-266), `Engine/ProjectPrivate.cpp`
-  - approach: `mustSave` (set by the PyPlug version prompt) triggers `saveProject()` immediately after load. With M22.P1.T3 in place a placeholder round-trips safely, so this is no longer destructive — but the auto-save should still not fire while any node is in a load-error state, since the user has not seen the error log yet and has consented to nothing. Gate it, and say plainly in the log if an auto-save was skipped for that reason.
-  - verify: test — a project with both a PyPlug version bump and a missing plugin does not silently rewrite itself on load.
-  - size: S
+  - files: `Engine/Project.cpp` (`loadProject`, ~:268-272), `Engine/ProjectPrivate.cpp` (~:214-220, where `mustSave` is set)
+  - approach: in the `mustSave` branch after `loadProjectInternal`, skip `saveProject` when any node in `getNodes_recursive` is a `MissingPluginNode`, and log the skip to the error log.
+  - verify: a test with a PyPlug-bump project plus a missing plugin leaves the file on disk unchanged (reuse `Tests/PyPlugInstantiate_Test.cpp`'s fixture if it can load a project; otherwise test the gate directly).
+  - size: M
 
 ## Phase 22.2: Make it legible
 
 - [ ] M22.P2.T1 — Placeholder appearance in the node graph
-  - files: `Gui/NodeGui.cpp`, `Gui/NodeGui.h`
-  - approach: the persistent error message from M22.P1.T1 should already surface through the existing error indicator; confirm that and make the node read as a placeholder rather than a broken ordinary node — it should be obvious at a glance which nodes are standing in for something absent. Reuse the existing error affordances; do not add a new indicator vocabulary.
-  - verify: manual GUI check (no GUI test harness exists in this repo) plus a reviewer checklist in the PR.
-  - size: S
+  - files: `Gui/NodeGui.cpp` (`onPersistentMessageChanged`, the `_persistentMessage` item ~:823-832, layout ~:1220), `Gui/NodeGui.h`
+  - approach: confirm the error text/colour/tooltip already arrive via `persistentMessageChanged`, then give a `MissingPluginNode` a distinct placeholder look (dashed or desaturated outline, or a "missing" label) using the existing error colour; no new indicator vocabulary.
+  - verify: Xvfb screenshot (recipe `build/deeprepro/run-gui.sh`) shared with the user before sign-off, plus a PR checklist.
+  - size: M
 
 **Verification gate:** full build + ctest green; a project with a missing plugin loads with the node and all its edges intact and the node errored; save/reload with the plugin still missing is content-identical for that node; installing the plugin and reloading yields the original graph with knob values restored and no trace of the placeholder; no silent auto-save occurs while a load error is outstanding.
+
+## Decisions
+
+- 2026-10-15 — **Freshness check at claim**: every task's files were stale after M93 - Serialization Boundary (no `NodeSerialization.cpp`, no `NodeCollectionSerialization::initialize()`; save is `Node::toSerialization` in `ProjectSerializationConvert.cpp`, the boundary type is `Serialization::NodeSerialization`). Intent unchanged; all five briefs rewritten in place. P1.T4 and P2.T1 re-sized S→M.
+- 2026-10-15 — **Claimed with known small overlap** (user): `Engine/EffectInstance.h` (one plugin-id define) and the `Project.cpp` load region overlap M100 - Content Node Hashing; resolved at rebase rather than waiting.

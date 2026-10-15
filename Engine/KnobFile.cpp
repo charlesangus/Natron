@@ -34,14 +34,16 @@
 #include <QMutexLocker>
 #include <QDebug>
 
+#include "Engine/AppInstance.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/EffectInstance.h"
-#include "Engine/Transform.h"
-#include "Engine/StringAnimationManager.h"
+#include "Engine/EngineFwd.h"
+#include "Engine/FileStampRegistry.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Project.h"
+#include "Engine/StringAnimationManager.h"
+#include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
-#include "Engine/EngineFwd.h"
-#include "Engine/AppInstance.h"
 
 #include <SequenceParsing.h>
 #include "Global/QtCompat.h"
@@ -69,6 +71,8 @@ KnobFile::~KnobFile()
 void
 KnobFile::reloadFile()
 {
+    FileStampRegistry::instance().invalidateAll();
+    invalidateContentHash();
     assert( getHolder() );
     EffectInstance* effect = dynamic_cast<EffectInstance*>( getHolder() );
     if (effect) {
@@ -82,6 +86,34 @@ bool
 KnobFile::canAnimate() const
 {
     return true;
+}
+
+std::string
+KnobFile::getSingleFilePath()
+{
+    std::string path = getValue();
+
+    if (path.empty() || FileStampRegistry::hasFramePattern(path)) {
+        return std::string();
+    }
+    KnobHolder* holder = getHolder();
+    if (holder && holder->getApp()) {
+        holder->getApp()->getProject()->canonicalizePath(path);
+    }
+
+    return path;
+}
+
+void
+KnobFile::appendUnmemoizedContentHash(ContentHasher& h) const
+{
+    // getValue() is not const; it only reads the stored value.
+    const std::string path = const_cast<KnobFile*>(this)->getSingleFilePath();
+
+    h.appendBool(!path.empty());
+    if (!path.empty()) {
+        h.appendU64(FileStampRegistry::instance().stamp(path));
+    }
 }
 
 const std::string KnobFile::_typeNameStr("InputFile");

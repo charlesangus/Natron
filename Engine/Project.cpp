@@ -81,6 +81,7 @@
 #include "Engine/ContentHasher.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/FileStampRegistry.h"
 #include "Engine/FormatSerialization.h"
 #include "Engine/Hash64.h"
 #include "Engine/KnobFile.h"
@@ -2953,7 +2954,14 @@ Project::getContentDigest() const
         h.appendString(views[i]);
     }
 
-    h.appendString(getOCIOConfigSource());
+    const std::string ocioSource = getOCIOConfigSource();
+    h.appendString(ocioSource);
+    // A "scheme://" source is a built-in config, not a file on disk.
+    const bool ocioIsFile = !ocioSource.empty() && (ocioSource.find("://") == std::string::npos);
+    h.appendBool(ocioIsFile);
+    if (ocioIsFile) {
+        h.appendU64(FileStampRegistry::instance().stamp(ocioSource));
+    }
     h.appendString(getWorkingColorSpace());
 
     std::shared_ptr<const std::vector<LayerRegistryEntry>> layers = getLayerRegistrySnapshot();

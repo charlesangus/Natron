@@ -97,6 +97,11 @@ public:
     QString getMissingSummary() const WARN_UNUSED_RETURN;
 
 private:
+    virtual bool getCanManageUserParameters() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void initializeKnobs() OVERRIDE FINAL;

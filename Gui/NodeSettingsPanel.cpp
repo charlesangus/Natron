@@ -189,6 +189,7 @@ NodeSettingsPanel::onSettingsButtonClicked()
 
     QAction* manageUserParams = new QAction(tr("Manage user parameters..."), &menu);
     QObject::connect( manageUserParams, SIGNAL(triggered()), this, SLOT(onManageUserParametersActionTriggered()) );
+    manageUserParams->setEnabled(node->getNode()->getEffectInstance()->getCanManageUserParameters());
     menu.addAction(manageUserParams);
 
     menu.addSeparator();

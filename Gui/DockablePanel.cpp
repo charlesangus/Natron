@@ -1595,6 +1595,7 @@ DockablePanel::onRightClickMenuRequested(const QPoint & pos)
         Menu menu(this);
         //menu.setFont( QFont(appFont,appFontSize) );
         QAction* userParams = new QAction(tr("Manage user parameters..."), &menu);
+        userParams->setEnabled(isEffect->getCanManageUserParameters());
         menu.addAction(userParams);
 
 
@@ -1628,7 +1629,7 @@ DockablePanel::onManageUserParametersActionTriggered()
         return;
     }
     EffectInstance* isEffect = dynamic_cast<EffectInstance*>(holder);
-    if (!isEffect) {
+    if (!isEffect || !isEffect->getCanManageUserParameters()) {
         return;
     }
     NodePtr node = isEffect->getNode();

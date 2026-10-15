@@ -550,6 +550,11 @@ public:
     virtual bool getMakeSettingsPanel() const { return true; }
 
     /**
+     * @brief Whether the user may add, edit or remove user parameters on this node.
+     **/
+    virtual bool getCanManageUserParameters() const { return true; }
+
+    /**
      * @brief The layer/channel knob the host adds to this effect's main page. Image-producing
      * effects that own their planes (multiplanar, readers, writers, Furnace) get none.
      **/

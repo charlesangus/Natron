@@ -300,6 +300,13 @@ public:
     QString getPluginID() const;
 
     /**
+     * @brief Returns the node's content hash, the key its cached results are stored under. It changes when a
+     * knob or an upstream node changes in a way that affects the output, so scripts can check that a rehash
+     * happened and time it.
+     **/
+    unsigned long long getContentHash() const;
+
+    /**
      * @brief Returns the label of the input at the given index
      **/
     QString getInputLabel(int inputNumber);

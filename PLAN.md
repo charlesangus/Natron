@@ -56,8 +56,7 @@ future core work has solid ground to build on.
   Xvfb against the downloaded AppImage. Local: `tools/ci/local/build.sh`, one build
   in the container at a time. Either way, batch one build per phase. UAT/GUI checks
   use the `fast` preset; performance work uses the stripped `release` AppImage,
-  measured on the target host, never on a GitHub runner. **Until M115 - Build Speed
-  And Artifact Size merges, the remote tooling doesn't exist: build locally.**
+  measured on the target host, never on a GitHub runner.
 
 - **GUI bench rule.** Every milestone whose diff touches `Gui/NodeGraph*`, `Gui/NodeGui*`, `Gui/Edge*`, knob expressions (`Engine/Knob*`) or node naming (`Engine/NodeGroup*`) runs the GUI bench at its gate: `tools/bench/gui/run.sh --xvfb`, then `compare.py` against `tools/bench/gui/baselines/xvfb.jsonl`. It records the result in its `## Decisions`. A regression blocks the gate unless the user accepts it. Xvfb numbers only catch regressions. Budgets are judged on the user's real host. The bench lands with M117 - GUI Perf Harness And Baseline, and the rule applies from then on. See `DECISIONS/2026-10-13-gui-bench-gate-rule.md`.
 

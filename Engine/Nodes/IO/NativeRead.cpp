@@ -578,6 +578,11 @@ NativeRead::purgeCaches()
         addPaths(_listing);
         addPaths(_proxyListing);
     }
+    for (const KnobFilePtr& file : { _filename.lock(), _proxy.lock() }) {
+        if (file) {
+            file->invalidateFileStamp();
+        }
+    }
     invalidateFrameListing();
     addPaths(frameListing(false));
     addPaths(frameListing(true));

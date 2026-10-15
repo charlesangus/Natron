@@ -29,8 +29,10 @@
 #include "Global/Macros.h"
 
 #include <chrono>
+#include <cstdint>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 
 #include "Global/GlobalDefines.h"
@@ -41,6 +43,8 @@ NATRON_NAMESPACE_ENTER
  * @brief Process-wide, thread-safe source of file identity stamps. A stamp hashes the path with
  * the file's modification time (ns), size and inode, so a file changed on disk gets a new stamp.
  * Stamps are memoized per path for a short time to keep repeated hashing from stat'ing again.
+ * Sequence stamps are memoized until invalidated, either explicitly or by a file system watcher
+ * on the sequence's directory that lives on the application's main thread.
  **/
 class FileStampRegistry {
 public:
@@ -52,7 +56,23 @@ public:
      **/
     U64 stamp(const std::string& path);
 
+    /**
+     * @brief Stamp of the frame sequence named by pattern: the stamps of every file on disk that
+     * matches it, in frame then view order. Never 0.
+     **/
+    U64 sequenceStamp(const std::string& pattern);
+
+    /**
+     * @brief Drops the memo of the file or sequence pattern at path, and of every sequence in
+     * the directory holding it.
+     **/
     void invalidate(const std::string& path);
+
+    /**
+     * @brief Drops the memo of every file and sequence directly inside directory.
+     **/
+    void invalidateDirectory(const std::string& directory);
+
     void invalidateAll();
 
     /**
@@ -69,8 +89,20 @@ private:
         std::chrono::steady_clock::time_point computedAt;
     };
 
+    struct SequenceEntry {
+        U64 stamp;
+        std::string directory;
+    };
+
+    void watchDirectory(const std::string& directory);
+    void addWatchOnMainThread(const std::string& directory);
+
     std::mutex _mutex;
     std::map<std::string, Entry> _entries;
+    std::map<std::string, SequenceEntry> _sequences;
+    std::set<std::string> _watchedDirectories;
+    // Bumped by every invalidation, so a scan that raced one is not memoized.
+    std::uint64_t _generation = 0;
 };
 
 NATRON_NAMESPACE_EXIT

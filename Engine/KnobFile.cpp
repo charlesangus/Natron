@@ -89,12 +89,12 @@ KnobFile::canAnimate() const
 }
 
 std::string
-KnobFile::getSingleFilePath()
+KnobFile::getResolvedPath()
 {
     std::string path = getValue();
 
-    if (path.empty() || FileStampRegistry::hasFramePattern(path)) {
-        return std::string();
+    if (path.empty()) {
+        return path;
     }
     KnobHolder* holder = getHolder();
     if (holder && holder->getApp()) {
@@ -104,15 +104,44 @@ KnobFile::getSingleFilePath()
     return path;
 }
 
+std::string
+KnobFile::getSingleFilePath()
+{
+    const std::string path = getResolvedPath();
+
+    if (FileStampRegistry::hasFramePattern(path)) {
+        return std::string();
+    }
+
+    return path;
+}
+
+void
+KnobFile::invalidateFileStamp()
+{
+    const std::string path = getResolvedPath();
+
+    if (!path.empty()) {
+        FileStampRegistry::instance().invalidate(path);
+    }
+    invalidateContentHash();
+}
+
 void
 KnobFile::appendUnmemoizedContentHash(ContentHasher& h) const
 {
     // getValue() is not const; it only reads the stored value.
-    const std::string path = const_cast<KnobFile*>(this)->getSingleFilePath();
+    const std::string path = const_cast<KnobFile*>(this)->getResolvedPath();
+    FileStampRegistry& registry = FileStampRegistry::instance();
 
-    h.appendBool(!path.empty());
-    if (!path.empty()) {
-        h.appendU64(FileStampRegistry::instance().stamp(path));
+    if (path.empty()) {
+        h.appendI64(0);
+    } else if (FileStampRegistry::hasFramePattern(path)) {
+        h.appendI64(2);
+        h.appendU64(registry.sequenceStamp(path));
+    } else {
+        h.appendI64(1);
+        h.appendU64(registry.stamp(path));
     }
 }
 

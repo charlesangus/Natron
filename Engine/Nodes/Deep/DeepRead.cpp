@@ -42,6 +42,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
@@ -105,6 +106,25 @@ DeepRead::getFilenameAtTime(double time) const
     }
 
     return filename->getFileName((int)std::floor(time + 0.5), ViewIdx(0));
+}
+
+bool
+DeepRead::refreshInputFilesForRender(double time)
+{
+    KnobFilePtr filename = _filename.lock();
+    NodePtr node = getNode();
+
+    if (!filename || !node || node->isNodeDisabled(time)) {
+        return false;
+    }
+    const std::string path = getFilenameAtTime(time);
+    if (path.empty() || !_frameGuard.changed(path)) {
+        return false;
+    }
+    filename->invalidateFileStamp();
+    clearActionsCache();
+
+    return true;
 }
 
 StatusEnum

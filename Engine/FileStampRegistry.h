@@ -81,6 +81,11 @@ public:
      **/
     static bool hasFramePattern(const std::string& path);
 
+    /**
+     * @brief Stamp of the file at path from a stat made now, ignoring and not touching any memo.
+     **/
+    static U64 freshStamp(const std::string& path);
+
 private:
     FileStampRegistry() { }
 
@@ -103,6 +108,26 @@ private:
     std::set<std::string> _watchedDirectories;
     // Bumped by every invalidation, so a scan that raced one is not memoized.
     std::uint64_t _generation = 0;
+};
+
+/**
+ * @brief Remembers the stamp each file had when its owner last rendered it, so that a file
+ * overwritten in place is noticed by a single stat even when no file system event announced it.
+ * One guard belongs to one node: a change is reported to every node that reads the file, not
+ * only to the first that looks.
+ **/
+class FrameStatGuard {
+public:
+    /**
+     * @brief True if the file at path differs from the one last seen through this guard. The
+     * first sight of a path is not a change. A change also drops the registry's memos covering
+     * the path.
+     **/
+    bool changed(const std::string& path);
+
+private:
+    std::mutex _mutex;
+    std::map<std::string, U64> _seen;
 };
 
 NATRON_NAMESPACE_EXIT

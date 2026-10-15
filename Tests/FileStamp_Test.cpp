@@ -28,9 +28,13 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
+#include <list>
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
+
+#include <OpenImageIO/imageio.h>
 
 #include <QDir>
 #include <QFile>
@@ -38,15 +42,19 @@
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
+#include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/FileStampRegistry.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
+#include "Engine/RectI.h"
+#include "Engine/ViewIdx.h"
 
 #include <ofxImageEffect.h>
 
@@ -75,6 +83,44 @@ setMTime(const std::string& path,
     times[1].tv_sec = seconds;
     times[1].tv_nsec = 0;
     ASSERT_EQ(0, utimensat(AT_FDCWD, path.c_str(), times, 0));
+}
+
+bool
+writeFlatExr(const std::string& path,
+             int width,
+             int height,
+             float value)
+{
+    OIIO::ImageSpec spec(width, height, 4, OIIO::TypeDesc::FLOAT);
+
+    spec.channelnames = { "R", "G", "B", "A" };
+    spec.alpha_channel = 3;
+    std::vector<float> pixels((std::size_t)width * height * 4, value);
+    for (std::size_t i = 3; i < pixels.size(); i += 4) {
+        pixels[i] = 1.f;
+    }
+    OIIO::ImageOutput::unique_ptr out = OIIO::ImageOutput::create(path);
+
+    return out && out->open(path, spec) && out->write_image(OIIO::TypeDesc::FLOAT, pixels.data()) && out->close();
+}
+
+bool
+renderedRed(const NodePtr& node,
+            int width,
+            int height,
+            float* red)
+{
+    std::vector<RenderedPlane> planes;
+    std::string error;
+
+    if (!renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, width, height), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error) || (planes.size() != 1) || planes[0].pixels.empty()) {
+        ADD_FAILURE() << error;
+
+        return false;
+    }
+    *red = planes[0].pixels[0];
+
+    return true;
 }
 
 } // namespace
@@ -244,4 +290,48 @@ TEST_F(BaseTest, FileKnobContentHashFollowsASequenceOnDisk)
     setMTime(frames[2], 1000000);
     fileKnob->invalidateFileStamp();
     EXPECT_EQ(before, fileKnob->getContentHash());
+}
+
+TEST(FileStamp, FrameStatGuardReportsOnlyChangesSinceItLastLooked)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("frame.exr")).toStdString();
+    writeFile(path, "first");
+    setMTime(path, 1000000);
+
+    FrameStatGuard guard;
+    FrameStatGuard other;
+    EXPECT_FALSE(guard.changed(path));
+    EXPECT_FALSE(guard.changed(path));
+    EXPECT_FALSE(other.changed(path));
+
+    setMTime(path, 2000000);
+    EXPECT_TRUE(guard.changed(path));
+    EXPECT_FALSE(guard.changed(path));
+    EXPECT_TRUE(other.changed(path));
+}
+
+TEST_F(BaseTest, ReadServesAFileOverwrittenInPlaceWithoutAReload)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("inplace.exr")).toStdString();
+    const int width = 16;
+    const int height = 12;
+    ASSERT_TRUE(writeFlatExr(path, width, height, 0.25f));
+    setMTime(path, 1000000);
+
+    NodePtr reader = createWorkingSpaceRead(path);
+    ASSERT_TRUE(bool(reader));
+
+    float red = 0.f;
+    ASSERT_TRUE(renderedRed(reader, width, height, &red));
+    EXPECT_FLOAT_EQ(0.25f, red);
+
+    ASSERT_TRUE(writeFlatExr(path, width, height, 0.75f));
+    setMTime(path, 2000000);
+
+    ASSERT_TRUE(renderedRed(reader, width, height, &red));
+    EXPECT_FLOAT_EQ(0.75f, red);
 }

@@ -34,7 +34,9 @@
 #include <QFileInfo>
 #include <QMutex>
 
+#include <ofxhImageEffect.h>
 #include <ofxhImageEffectAPI.h>
+#include <ofxhPluginAPICache.h>
 #include <ofxhPluginCache.h>
 
 #include "Global/GitVersion.h"

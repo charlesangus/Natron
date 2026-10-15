@@ -268,6 +268,34 @@ FileStampRegistry::addWatchOnMainThread(const std::string& directory)
     }
 }
 
+U64
+FileStampRegistry::freshStamp(const std::string& path)
+{
+    return computeStamp(path);
+}
+
+bool
+FrameStatGuard::changed(const std::string& path)
+{
+    const U64 now = FileStampRegistry::freshStamp(path);
+    bool differs = false;
+    {
+        std::lock_guard<std::mutex> k(_mutex);
+        std::map<std::string, U64>::iterator it = _seen.find(path);
+        if (it == _seen.end()) {
+            _seen.insert(std::make_pair(path, now));
+        } else if (it->second != now) {
+            it->second = now;
+            differs = true;
+        }
+    }
+    if (differs) {
+        FileStampRegistry::instance().invalidate(path);
+    }
+
+    return differs;
+}
+
 bool
 FileStampRegistry::hasFramePattern(const std::string& path)
 {

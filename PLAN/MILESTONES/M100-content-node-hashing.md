@@ -253,3 +253,16 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - **Audit hygiene:** ignore transitions before creation completes, and reset the audit state on roto attach.
   
   P2.T4 is done.
+- 2026-10-15 — **P4.T1** (code: 51ba0cd09 + fix). `getHashValue` returns the content hash; NATRON_CACHE_VERSION is 10; the age hash survives only for the audit. Scope grew past the file list, out of necessity:
+  - **Shared in-flight tracking:** identical nodes now share cache entries, so the being-rendered tracking became a process-wide registry keyed by image, with 64 locks sharded by hash (`EffectInstancePrivate.{h,cpp}`). With per-node tracking, a second identical node would read unfilled pixels.
+  - **ActionsCache:** `ActionsCache::invalidateAll(h)` now drops results stored under `h`, so an age-only bump such as Reload doesn't serve old action results. A 1 → 2 → 1 toggle therefore loses its action-cache reuse; P4.T2 revisits that.
+  - **Downstream propagation:** `computeHashInternal` now propagates on a content change as well as an age change.
+  - **Group preview:** it looked up the Output node's cache under the Group's hash; it now uses the Output node's own hash.
+  
+  `EffectInstancePrivate.{h,cpp}` is outside M100's original file list and is a likely M90 rebase overlap.
+  
+  **Cache-equivalence risks found:** P6.T4 must cover them; this one fixes or tests each:
+  - **File-stamp TTL:** the registry caches stamps for 1 s (FileStampRegistry.cpp:46), so an in-place rewrite within that second plus a bare age bump serves old pixels. Reload clears the stamps, so it is safe.
+  - **Aborted render:** an aborted render can hand a waiter an unfinished image (EffectInstanceRenderRoI.cpp ~1512-1523). This predates M100 within one node, but identical nodes can now hit it. Fix before the gate: the waiter re-renders instead of returning the image.
+  - **Native build stamp:** `GIT_COMMIT` is a committed constant, so dev builds reuse disk-cache entries across native code changes. This is already noted.
+  - **Efficiency only:** the taskgraph shared-output key includes the node pointer (RenderScheduler.cpp:1400), so identical nodes block a pool thread instead of being held back.

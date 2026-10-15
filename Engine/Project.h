@@ -91,6 +91,10 @@ public:
      **/
     bool loadProject(const QString & path, const QString & name, bool isUntitledAutosave = false, bool attemptToLoadAutosave = true);
 
+    /**
+     * @brief True if any node in the project, groups included, is a placeholder for a missing plug-in.
+     **/
+    bool hasMissingPluginNode() const;
 
     /**
      * @brief Saves the project with the given path and name corresponding to a file on disk.

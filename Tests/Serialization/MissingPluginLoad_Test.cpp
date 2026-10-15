@@ -97,3 +97,26 @@ TEST_F(MissingPluginLoadTest, PlaceholderKeepsItsNodeAndEdges)
     EXPECT_EQ(loadedGenerator, placeholder->getInput(0));
     EXPECT_EQ(placeholder, loadedDownstream->getInput(0));
 }
+
+TEST_F(MissingPluginLoadTest, HasMissingPluginNodeSeesOnlyPlaceholders)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+
+    NodePtr generator = createNode(_generatorPluginID);
+    NodePtr missing = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
+    ASSERT_TRUE(generator && missing);
+    connectNodes(generator, missing, 0, true);
+    EXPECT_FALSE(getApp()->getProject()->hasMissingPluginNode());
+
+    Serialization::ProjectSerialization saved;
+    getApp()->getProject()->toSerialization(&saved);
+    Serialization::NodeSerializationPtr grade = findSerializedNode(saved.nodes.nodes, PLUGINID_NATRON_GRADE);
+    ASSERT_TRUE(bool(grade));
+    grade->pluginID = "com.example.NotInstalled";
+    const std::string xml = saveProjectXml(saved);
+
+    getApp()->getProject()->reset(false, true);
+    ASSERT_FALSE(reloadProjectXml(getApp()->getProject(), tmp, QString::fromUtf8("missing-plugin.ntp"), xml).empty());
+    EXPECT_TRUE(getApp()->getProject()->hasMissingPluginNode());
+}

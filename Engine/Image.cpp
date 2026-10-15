@@ -27,16 +27,18 @@
 
 #include <algorithm> // min, max
 #include <cassert>
+#include <cstddef>
 #include <cstring> // for std::memcpy, std::memset
 #include <stdexcept>
 
 #include <QDebug>
 
 #include "Engine/AppManager.h"
-#include "Engine/ViewIdx.h"
+#include "Engine/GLShader.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/OSGLContext.h"
-#include "Engine/GLShader.h"
+#include "Engine/PoolParallelFor.h"
+#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -918,25 +920,27 @@ Image::pasteFromForDepth(const Image & srcImg,
     }
     // now we're safe: both images contain the area in roi
 
-    int srcRowElements = _nbComponents * srcBounds.width();
-    int dstRowElements = _nbComponents * bounds.width();
+    const std::ptrdiff_t srcRowElements = (std::ptrdiff_t)_nbComponents * srcBounds.width();
+    const std::ptrdiff_t dstRowElements = (std::ptrdiff_t)_nbComponents * bounds.width();
     const PIX* src = (const PIX*)srcImg.pixelAt(roi.x1, roi.y1);
     PIX* dst = (PIX*)pixelAt(roi.x1, roi.y1);
 
     assert(src && dst);
 
-    for (int y = roi.y1; y < roi.y2;
-         ++y,
-         src += srcRowElements,
-         dst += dstRowElements) {
-        std::memcpy(dst, src, roi.width() * sizeof(PIX) * _nbComponents);
+    const size_t rowBytes = (size_t)roi.width() * sizeof(PIX) * _nbComponents;
+    forEachRowBand(roi, kMinParallelRowBandArea, [&](int y1, int y2) {
+        const PIX* bandSrc = src + (std::ptrdiff_t)(y1 - roi.y1) * srcRowElements;
+        PIX* bandDst = dst + (std::ptrdiff_t)(y1 - roi.y1) * dstRowElements;
+        for (int y = y1; y < y2; ++y, bandSrc += srcRowElements, bandDst += dstRowElements) {
+            std::memcpy(bandDst, bandSrc, rowBytes);
 #ifdef DEBUG_NAN
-        for (int i = 0; i < roi.width() * _nbComponents; ++i) {
-            assert( !std::isnan(src[i]) ); // check for NaN
-            assert( !std::isnan(dst[i]) ); // check for NaN
-        }
+            for (int i = 0; i < roi.width() * _nbComponents; ++i) {
+                assert(!std::isnan(bandSrc[i])); // check for NaN
+                assert(!std::isnan(bandDst[i])); // check for NaN
+            }
 #endif
-    }
+        }
+    });
 } // Image::pasteFromForDepth
 
 void

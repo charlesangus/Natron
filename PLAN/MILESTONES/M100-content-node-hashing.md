@@ -184,7 +184,7 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - approach: create each plugin from appPTR's list. For each isRenderHashed knob, perturb it by type, assert the hash changed, revert, and assert it is restored. The allowlist explains every exemption.
   - verify: ctest passes with the OFX bundle
   - size: L
-- [ ] M100.P6.T3 — Benchmark hash cost
+- [x] M100.P6.T3 — Benchmark hash cost
   - files: tools/bench/hash_bench.py
   - approach: time the hash recompute on the bench comps and on a heavy roto comp. Target: keystroke to rehash under 1 ms on HD comps.
   - verify: record the results in `## Decisions`
@@ -206,6 +206,12 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
     Also sweep the bundled plugins: perturb one knob, revert it, and require the cached render to equal a cold render for each knob.
   - note: `renderNodePlanesDirect`/`renderBothWaysDirect` bypass the cache for the whole upstream tree and clear all caches by default. Warm renders must pass `byPassCache = false` (3b63ccde6).
   - verify: `ctest -R CacheEquivalence` passes in both scheduler modes. Any mismatch is a hash gap and blocks the gate. The test can't be skipped or allowlisted.
+  - size: L
+
+- [ ] M100.P6.T5 — Bring keystroke-to-rehash under 1 ms on HD comps
+  - files: Engine/Node.cpp, Engine/Knob*.cpp, Engine/ContentHasher.*, tools/bench/hash_bench.py
+  - approach: profile `hash_bench.py` on `comp` N=200. The cost is ~0.15 ms per rehashed node; check knob memoization (is each knob's hash cached behind its dirty bit, or is every knob rehashed on each node recompute?), the age-hash path still computed alongside, per-node project digest work, and string building in the hasher. After P4.T3, a keystroke should only mark nodes dirty; measure keystroke cost and the lazy recompute at render-args time separately.
+  - verify: `hash_bench.py` on comp N=200, chain N=50 and roto at HD gives net p95 < 1 ms per keystroke (or, after P4.T3, a dirty-mark p95 < 1 ms and a recompute cost recorded in Decisions); results recorded in `## Decisions`.
   - size: L
 
 ## Phase 100.7: Write read back gated by the hash
@@ -299,3 +305,9 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
     
     P4.T3's dirty flag must catch every value change of a render-hashed knob, not only significant evaluates.
 - 2026-10-15 — **Green at 14616cb12** (run 38718037290): 2236/2236 in both schedulers. P5.T3 b0387543c; P6.T1 (13efd16f0, 13e7437f6; the bug-4 off-thread regression is deferred to P4.T3); P6.T2 (2780a6476, 14616cb12; zero failures, 12 allowlisted host mirrors). P6.T3's bench tool is 635897c81 (`tools/bench/hash_bench.py`, plus `Effect.getContentHash()`); the run is pending a release AppImage.
+- 2026-10-15 — **P6.T3 hash cost** (release AppImage of 14616cb12, run 38723036373, 4-thread N100 in natron-dev, 200 samples, the net figure subtracts a hash-exempt label-edit control). Keystroke on the top Grade's `multiply`:
+  - comp N=200: 166 nodes rehashed, net median 24.7 ms, p95 27.0;
+  - chain N=50: 50 rehashed, 4.9 / 6.0 ms;
+  - wide N=100: 7 rehashed, 0.63 / 0.67 ms.
+  
+  That is about 0.15 ms per rehashed node, **far over the 1 ms target**, so P6.T5 was added. The roto case aborted: `movePoint` changed 0 of 21 downstream hashes. This confirms live that roto item edits don't reach the Roto node's hash (the P4.T3 "roto item edits dirty the context node" item), and it is a stale-cache path on this branch until P4.T3. Data: `build/m100/hash_bench.jsonl`.

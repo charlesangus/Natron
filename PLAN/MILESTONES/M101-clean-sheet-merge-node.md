@@ -32,11 +32,11 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
   - Planes come from `getComponentsNeededAndProduced` (Shuffle's is at `Shuffle.cpp:615-672`).
   - Mask and mix are in the base class (`NativeImageEffect.h:171-182`).
 - **GPU interface (M84 - GPU Placement And Residency):**
-  - `Engine/Gpu/GpuRender.h` defines `GpuQuery`, `GpuImageView` and `GpuRenderArgs`, the latter with a vector of input views.
+  - `Engine/Nodes/Image/GpuRender.h` (not `Engine/Gpu/`) defines `GpuQuery`, `GpuImageView` and `GpuRenderArgs`; `GpuRenderArgs::inputs` is indexed by input number.
   - The virtuals on `NativeImageEffect` are `canRenderOnGpu`, `getGpuInputRoI` and `renderGpu`.
   - Kernels are Slang, compiled offline to SPIR-V and listed in `GpuKernelRegistry`. Storage buffers go in set 0 and push constants are at most 128 B.
-  - `Engine/Gpu/Kernels/pointops.slang` has a single-input `IPixelOp { float4 apply(float4 v, uint2 xy); }` plus `Chain`.
-  - M84's decisions note that placement cannot chain one region into another while every GPU node has a single input.
+  - M85 retired `pointops.slang`. Mask, mix, process channels and premult live in `Engine/Gpu/Kernels/pixelwrap.slang`, which reproduces `NativeImageEffect::render()`; `merge.slang` uses its helpers rather than its own blend.
+  - Keyer and ChromaKeyer (M85) are multi-input GPU nodes: they override `renderGpu` and use `pixelwrap.slang`'s helpers, the pattern Merge follows. Regions already take several external inputs, each uploaded in its own layer.
 
 ## Design
 
@@ -257,3 +257,10 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
 - 2026-10-12 — **Per-channel alpha comes from an alpha layer** whose channel *i* is the alpha of merged channel *i* (user). This fits the 4-channel layer cap.
 - 2026-10-12 — **Placed after M84 - GPU Placement And Residency and before M85 - Native GPU Kernels** (user). M85 no longer ports Merge.
 - 2026-10-12 — **Plain ID `Merge`, not a reverse-domain ID** (user): native nodes drop reverse-domain IDs. The operation presets stay as menu entries; Merge is the one exception to "no duplicate menu entries".
+
+## Hand-off from M85 - Native GPU Kernels
+
+- `slang_add_kernel` has no include path, so `merge.slang` cannot `import pixelwrap` as things stand. Either add an include path to `cmake/SlangKernels.cmake` (P4.T1's first step), or put the Merge op inside `pixelwrap.slang`, as M85 did for Grade.
+- Op parameters go in a storage buffer and wrap geometry in push constants (`WrapParams`, 116 B of the 128 B limit). A per-channel alpha binding table belongs in the buffer.
+- "(Un)premult by" runs on the GPU only when the divisor is in the task's plane, otherwise the node renders on the CPU. Masks may come from any layer.
+- Seed a GPU cost row by measuring a lone node's region `kernelMs` at UHD (`render-profile-report.py --emit-cost-table`). A node without a row only gets the class default.

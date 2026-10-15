@@ -9,3 +9,18 @@ Blocked on: evidence from M82 - Render Cost Profiling or the M85 - Native GPU Ke
 Acceptance sketch:
 - Fused output matches unfused output within tolerance.
 - A measured gain on a real comp justifies the complexity.
+
+## Evidence from M85 - Native GPU Kernels (2026-10-15)
+
+Point-op runs inside GPU regions on the three M82 comps (UHD, Auto; a run is a chain of point ops, generators included, each feeding only the next):
+
+| comp | regions | point-op runs by length |
+|---|---|---|
+| keying_grade | 6 | 1 ×1, 2 ×1, 4 ×1 |
+| cg_multipass | 9 | 1 ×8, 2 ×3 |
+| defocus_retime | 9 | 1 ×8, 2 ×1 |
+
+- That is 23 runs. 17 are a single op, so there is nothing to fuse. Fusing the rest would save about 7 dispatches per frame.
+- A point-op dispatch costs ~0.5 ms at UHD (M85 cost seeds), so fusion saves ~3.5 ms of 340–880 ms frames.
+- Exposed transfer is 59–84% of region time in these comps, and it is M109 - GPU Region Engine Hardening's to fix.
+- **On this evidence fusion would not measurably help the M82 comps.** It stays low priority until a comp with long point-op chains turns up.

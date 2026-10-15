@@ -12,7 +12,7 @@ Spike code: `tools/gpu-spike/` on `milestone/m83-gpu-backend-spike` (worktree `b
 |---|---|
 | Backend | **Vulkan 1.3 compute**, headless (no WSI, X, Wayland or EGL). It needs timeline semaphores and synchronization2. Optional extensions are detected: external memory and semaphore fd, external memory host, memory budget, push descriptors. One compute queue plus a transfer-only queue when the device has one. VMA (v3.3.0, vendored) allocates. |
 | Kernel language | **Slang, compiled offline to SPIR-V and embedded as `const uint32_t[]`.** Slang does not ship at runtime and `libslang` is never linked. The runtime dependency is the system `libvulkan.so.1`. Slang is pinned to v2026.19, fetched at configure time with its SHA256 checked, and cached in `~/.cache/natron-deps`. |
-| Data layout | Storage buffers that hold Natron's interleaved float rows byte for byte. `VkImage` is not used yet; sampled images arrive with M85's filtered Transform. |
+| Data layout | Storage buffers that hold Natron's interleaved float rows byte for byte. `VkImage` is not used. M85 resamples Transform from storage buffers with the CPU's filter maths instead of sampled images (§10). |
 | CPU fallback | **The hand-written CPU kernels stay the primary CPU path.** The Slang C++-target twin is a **test oracle only**: it runs 14–31× slower than native FIR on Blur and fits `PixelKernel::processRow` poorly. |
 | Viewer interop | Export a `VkBuffer` (opaque fd), import it in GL as a memory object bound as `GL_PIXEL_UNPACK_BUFFER`, then `glTexSubImage2D` into the viewer texture. The PBO path stays in `ViewerGL`, which only binds a different buffer. Synchronisation uses exported semaphores (`glWaitSemaphoreEXT` / `glSignalSemaphoreEXT`). **Fallbacks:** (1) **hostsync**: the same memory import, ordered by a Vulkan fence and `glFinish` when semaphores are missing; (2) **readback + PBO**: the existing upload path when memory import is missing or the device and driver UUIDs differ. |
 | Rejected | GL 4.3 compute performs about the same, but Natron would need a regenerated glad (GL 2.0 compat today, about half a day of work) and 4.3 contexts everywhere. OpenCL has no runtime on the host or in the image, and the user dropped it. The Slang C++ twin as the CPU path is rejected for the reasons in §2.6. |
@@ -329,3 +329,42 @@ The main build gains `find_package(Vulkan)` behind an option that defaults to on
   - keying_grade is 1.12× and cg_multipass 1.26× at UHD. No comp was slower under Auto.
   - CPU-only renders are 10–43% faster than `main`.
 
+## 10. Outcomes from M85 - Native GPU Kernels (2026-10-15)
+
+- **Ported:** Grade, Blur (FIR, quasi-Gaussian, Gaussian IIR, box, triangle and quadratic, order 0), Invert, Clamp, Add/Multiply/Gamma, Saturation, ColorCorrect, ColorLookup, Constant/Solid, CheckerBoard, Keyer, ChromaKeyer, Erode/Dilate and Transform/TransformMasked, motion and directional blur included. `NativeGpuCapability_Test`'s allowlist is exactly this set.
+- **Wrap layout (`Kernels/pixelwrap.slang`):**
+  - Mask, mix, process channels and "(Un)premult by" reproduce `NativeImageEffect::render()` in its order: divide where the divisor is usable, op, multiply back by `(0 < d) ? d : 0`, blend by `mix · mask`, pass unprocessed channels through from the undivided source. The blend uses `precise`.
+  - `WrapParams` (116 B) carries the wrap geometry in push constants. Op parameters go in a storage buffer, read with `wrapParamFloat`/`wrapParamFloat4`, because 128 B can't hold both.
+  - Flags include `applyMask` and Blur's alpha threshold, which `wrap_finish` applies.
+  - Spatial nodes run divide → filter → finish passes from the same module.
+  - `slang_add_kernel` has no include path, so the shared ops (`GradeOp`, `Chain`) live inside `pixelwrap.slang`.
+  - "(Un)premult by" runs on the GPU only when the divisor is in the task's plane. Masks may come from any layer.
+- **Tolerances:** every ported node's bound is in `Engine/Nodes/README.md` "GPU parity". Notable:
+  - compares are integer-keyed (Clamp, Erode/Dilate), because devices flush denormals in float compares;
+  - unpremultiplied cases hold 2e-6 absolute plus 1e-6 relative;
+  - ColorLookup's weighted and luminance modes hold 5e-4 and 3e-5 relative;
+  - unpremultiplied ChromaKeyer holds 1e-3 relative;
+  - motion blur holds `iir()`, with up to one pixel in 250 allowed `motionBlurMaxError()`;
+  - double-float accumulators use Veltkamp/Dekker splitting, because Vulkan doesn't guarantee a single-rounding `fma`.
+- **Resampling from storage buffers, not `VkImage` (supersedes §1's data-layout note and §6's "Filtered Transform needs `VkImage`"):** hardware filtering has coarse fixed-point weights and only bilinear, so it can't meet the 1e-5 resampling bound or Natron's ten filters. Sample positions travel as two floats.
+- **Blur vertical pass:** a single-dispatch shared tile (float4 per pixel, column-order groups) beat transpose → H → transpose at every size. V/H is now 1.01–1.23× at σ25/σ100 (was 3–9×). The narrow σ3 path (r ≤ 32) is still V ≈ 10× H.
+- **Erode/Dilate wide pass:** van Herk/Gil-Werman above half-width 16, register-blocked at 16 outputs per thread with adjacent columns per group. A one-load-per-row-pitch column walk aliased onto one memory channel at power-of-two widths (7.6 → 0.5 ms/Mpx).
+- **Bench (release, RADV 7900 XTX, taskgraph, Auto vs Off; median of per-round ratios):**
+
+  | | UHD | 8K | 16k | 24k |
+  |---|---|---|---|---|
+  | keying_grade | 2.77× | 2.90× | – | – |
+  | cg_multipass | 1.99× | 2.09× | – | – |
+  | defocus_retime | 2.94× | 2.88× | – | – |
+  | Transform, alone / between Grades | 1.36× / 1.72× | 1.45× / 1.84× | 1.65× / 2.30× | 1.79× / 2.50× |
+  | Transform motion blur | 8.5× / 8.7× | 12× / 12× | 20× / 20× | 21× / 21× |
+  | Blur FIR σ25 | 2.18× / 2.64× | 2.56× / 3.07× | 3.11× / 3.73× | 3.22× / 3.48× |
+  | Erode 40 | 2.52× / 2.91× | 2.93× / 3.48× | 3.63× / 4.20× | 2.99× / 3.59× |
+  | ChromaKeyer | 1.93× / 2.29× | 2.05× / 2.54× | 2.46× / 3.18× | 2.18× / 2.81× |
+
+  No Auto case is slower than Off in any round. CPU-only renders are within ±2% of `main`. The full tables are in M85's decisions.
+- **What limits it now:**
+  - unstripped regions expose their transfer (~0.5 ms/Mpx, ~2 ms/Mpx for Transform), which is 59–84% of region time in the comps;
+  - stripped regions hide it;
+  - at 16k and 24k the uncompressed EXR Write is 60–90% of an Auto frame.
+- **The bench host is transient:** its hardware can change across a reboot. Compare only Auto/Off pairs measured on one boot.

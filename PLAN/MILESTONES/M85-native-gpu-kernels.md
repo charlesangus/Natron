@@ -442,7 +442,7 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - verify: a Decisions table with a measured end-to-end speed-up on each M82 comp, and no Auto case slower than Off. Any limit found becomes a follow-up in the proposed M109.
   - size: M
 
-- [ ] M85.P6.T5 — Record outcomes and hand-offs
+- [x] M85.P6.T5 — Record outcomes and hand-offs
   - files: `.plan/PLAN/DESIGN/2026-10-10-gpu-compute-backend.md` (a §10 "Outcomes from M85"), `.plan/PLAN/MILESTONES/M101-clean-sheet-merge-node.md`, `.plan/PLAN/MILESTONES/M87-point-op-kernel-fusion.md`, the proposed split milestones
   - approach:
     - **Design note:** the wrap layout and tolerances, the bench tables, the vertical-pass result, and the decision to resample from storage buffers rather than sampled images (it supersedes §1's "sampled images arrive with M85's filtered Transform").
@@ -701,3 +701,5 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
     - find where plain Transform's "other" region time goes, and why its unstripped exposed transfer is 4× other nodes';
     - find why exposed transfer rises again at 24k for ChromaKeyer and Erode.
   - Raw results: `.local/m85/batchF/bench4/summary.txt` (comps, UHD, 8K) and `.local/m85/batchF/bench5/summary.txt`.
+
+- 2026-10-15 — **P6.T5 done.** Hand-offs written directly with the user's go-ahead (they are other rows' files): design note §10, M101 (`GpuRender.h` path, `pixelwrap.slang`, the missing Slang include path), M87 (point-op run lengths: fusion would not measurably help the M82 comps), M109 (ranked bench follow-ups). The benches found nothing for M107, M108 or M110.

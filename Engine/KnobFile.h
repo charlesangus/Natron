@@ -95,11 +95,18 @@ public:
      */
     std::string getFileName(int time, ViewSpec view);
 
+    /**
+     * @brief Resolved path of the single file the knob currently names, or an empty string
+     * when the value is empty or names a frame sequence.
+     **/
+    std::string getSingleFilePath();
+
 Q_SIGNALS:
 
     void openFile();
 
 private:
+    virtual void appendUnmemoizedContentHash(ContentHasher& h) const OVERRIDE FINAL;
 
     /**
      * @brief a KnobFile is never animated but it's value may change, indicate this to the plug-in

@@ -4957,6 +4957,7 @@ KnobHelper::getContentHash() const
     for (int i = 0; i < nDims; ++i) {
         h.appendU64(getDimensionContentHash(i));
     }
+    appendUnmemoizedContentHash(h);
 
     return h.finalize();
 }

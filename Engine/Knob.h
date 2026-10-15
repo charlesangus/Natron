@@ -1779,6 +1779,14 @@ protected:
     {
     }
 
+    /**
+     * @brief Appends state that can change without any knob edit (such as a file on disk).
+     * It is read on every getContentHash() call, outside the per-dimension memo.
+     **/
+    virtual void appendUnmemoizedContentHash(ContentHasher& /*h*/) const
+    {
+    }
+
 private:
     typedef std::set<std::pair<const KnobHelper*, int>> ContentHashPath;
 

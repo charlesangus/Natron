@@ -204,6 +204,7 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
     - two identical nodes that share an entry;
     - the M93/bench comps.
     Also sweep the bundled plugins: perturb one knob, revert it, and require the cached render to equal a cold render for each knob.
+  - note: `renderNodePlanesDirect`/`renderBothWaysDirect` bypass the cache for the whole upstream tree and clear all caches by default. Warm renders must pass `byPassCache = false` (3b63ccde6).
   - verify: `ctest -R CacheEquivalence` passes in both scheduler modes. Any mismatch is a hash gap and blocks the gate. The test can't be skipped or allowlisted.
   - size: L
 
@@ -279,3 +280,4 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - **P4.T3 gaps reach ActionsCache:** the open gaps, now that the age-only drop is gone, are group lifetime, the Roto context node, Tracker slaving, off-thread edits, expression dependencies and the Reformat write-back. **P4.T3 is a hard prerequisite of the gate.**
   
   The ActionsCache is bounded by count, not memory.
+- 2026-10-15 — **Phase 100.4 first build** (run 38691283645): 2201/2203. The two new reuse tests failed because the test render helper always bypassed and cleared the cache. That is a harness issue, not an engine one: the region-of-definition counter showed the hashes matched. The fix is the `byPassCache` parameter (3b63ccde6).

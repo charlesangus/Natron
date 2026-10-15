@@ -45,6 +45,7 @@
 #include "Engine/Image.h"
 #include "Engine/ImageParams.h"
 #include "Engine/Interpolation.h"
+#include "Engine/Node.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContextPrivate.h"
 #include "Engine/RotoLayer.h"
@@ -565,6 +566,13 @@ void
 RotoItem::invalidateContentHash()
 {
     _imp->contentGeneration.fetch_add(1, std::memory_order_acq_rel);
+
+    // The context's node hashes the items, and marking it marks the paint tree's nodes too.
+    RotoContextPtr context = getContext();
+    NodePtr node = context ? context->getNode() : NodePtr();
+    if (node) {
+        node->markHashDirty();
+    }
 }
 
 U64

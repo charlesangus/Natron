@@ -29,12 +29,14 @@
 #include <sys/stat.h>
 
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include <OpenImageIO/imageio.h>
 
+#include <QCoreApplication>
 #include <QFile>
 #include <QString>
 #include <QTemporaryDir>
@@ -64,20 +66,9 @@ NATRON_NAMESPACE_USING
 // however it was reached, and any render-affecting difference must give a different one, or a
 // cached image is served for the wrong state.
 //
-// Off-thread edits (a knob set from a worker thread or during inputChanged) are not covered here:
-// they rely on the lazy dirty-flag recompute, and their regression lives with that work.
+// No test refreshes a hash itself: every edit must mark what it changes, and a read recomputes.
 
 namespace {
-
-// Loading a project, setting an expression and invalidating a file stamp don't yet mark nodes for
-// a recompute, so after those the tests refresh the hashes themselves, upstream first.
-void
-settle(const std::vector<NodePtr>& upstreamFirst)
-{
-    for (const NodePtr& node : upstreamFirst) {
-        node->doComputeHashOnMainThread();
-    }
-}
 
 KnobDoublePtr
 blurSize(const NodePtr& blur)
@@ -123,7 +114,6 @@ buildChain(const AppInstancePtr& app,
     if (knob) {
         knob->setValue(size, ViewSpec::all(), 0);
     }
-    settle({ chain.constant, chain.blur });
 
     return chain;
 }
@@ -281,7 +271,6 @@ TEST_F(HashInvariantsTest, SameGraphHashesEqualAfterSaveAndLoad)
     NodePtr constant = project()->getNodeByName(constantName);
     NodePtr blur = project()->getNodeByName(blurName);
     ASSERT_TRUE(constant && blur);
-    settle({ constant, blur });
     EXPECT_EQ(constantHash, constant->getHashValue());
     EXPECT_EQ(blurHash, blur->getHashValue());
 
@@ -354,6 +343,42 @@ TEST_F(HashInvariantsTest, ToggledValuesAlternateBetweenTwoHashes)
     }
 }
 
+// An edit made off the main thread gets no knobs age bump, so only its own mark can tell a later
+// read that the state moved; without it the new state renders under the old key.
+TEST_F(HashInvariantsTest, KnobEditFromAWorkerThreadChangesHashUpToDownstream)
+{
+    Chain chain = buildChain(getApp(), 4.);
+    ASSERT_TRUE(bool(chain.blur));
+    NodePtr downstream = createBlur();
+    ASSERT_TRUE(bool(downstream));
+    connectNodes(chain.blur, downstream, 0, true);
+
+    KnobDoublePtr size = blurSize(chain.blur);
+    ASSERT_TRUE(bool(size));
+    const U64 before = chain.blur->getHashValue();
+    const U64 downstreamBefore = downstream->getHashValue();
+
+    std::thread editor([&size]() {
+        size->setValue(7., ViewSpec::all(), 0);
+    });
+    editor.join();
+    const U64 offThread = chain.blur->getHashValue();
+    const U64 downstreamOffThread = downstream->getHashValue();
+    EXPECT_NE(before, offThread);
+    EXPECT_NE(downstreamBefore, downstreamOffThread);
+    // Lets the main thread finish the worker's edit bracket before editing on the main thread.
+    QCoreApplication::processEvents();
+    EXPECT_EQ(offThread, chain.blur->getHashValue());
+
+    size->setValue(4., ViewSpec::all(), 0);
+    EXPECT_EQ(before, chain.blur->getHashValue());
+    EXPECT_EQ(downstreamBefore, downstream->getHashValue());
+
+    size->setValue(7., ViewSpec::all(), 0);
+    EXPECT_EQ(offThread, chain.blur->getHashValue()) << "the state reached off the main thread hashes like the same state reached on it";
+    EXPECT_EQ(downstreamOffThread, downstream->getHashValue());
+}
+
 TEST_F(HashInvariantsTest, AnimationKeyEditChangesHashAndRemovingItRestoresIt)
 {
     Chain chain = buildChain(getApp(), 4.);
@@ -363,22 +388,18 @@ TEST_F(HashInvariantsTest, AnimationKeyEditChangesHashAndRemovingItRestoresIt)
     const U64 before = chain.blur->getHashValue();
 
     size->setValueAtTime(10., 4., ViewSpec::all(), 0);
-    settle({ chain.blur });
     const U64 oneKey = chain.blur->getHashValue();
     EXPECT_NE(before, oneKey) << "a key equal to the static value still changes the curve";
 
     size->setValueAtTime(20., 8., ViewSpec::all(), 0);
-    settle({ chain.blur });
     const U64 twoKeys = chain.blur->getHashValue();
     EXPECT_NE(oneKey, twoKeys);
 
     size->setValueAtTime(20., 6., ViewSpec::all(), 0);
-    settle({ chain.blur });
     EXPECT_NE(twoKeys, chain.blur->getHashValue()) << "moving a key's value must change the hash";
 
     size->removeAnimation(ViewSpec::all(), 0);
     size->setValue(4., ViewSpec::all(), 0);
-    settle({ chain.blur });
     EXPECT_EQ(before, chain.blur->getHashValue());
 }
 
@@ -391,16 +412,13 @@ TEST_F(HashInvariantsTest, ExpressionEditChangesHashAndClearingItRestoresIt)
     const U64 before = chain.blur->getHashValue();
 
     ASSERT_NO_THROW(size->setExpression(0, "2 * 2", false, true));
-    settle({ chain.blur });
     const U64 withExpression = chain.blur->getHashValue();
     EXPECT_NE(before, withExpression) << "an expression evaluating to the static value is still a different state";
 
     ASSERT_NO_THROW(size->setExpression(0, "3 * 2", false, true));
-    settle({ chain.blur });
     EXPECT_NE(withExpression, chain.blur->getHashValue());
 
     size->clearExpression(0, true);
-    settle({ chain.blur });
     EXPECT_EQ(before, chain.blur->getHashValue());
 }
 
@@ -466,12 +484,10 @@ TEST_F(HashInvariantsTest, RewrittenReadFileChangesHashUpToDownstream)
     ASSERT_TRUE(bool(fileKnob));
 
     FileStampRegistry::instance().invalidateAll();
-    settle({ reader, blur });
     const U64 readerBefore = reader->getHashValue();
     const U64 blurBefore = blur->getHashValue();
 
     fileKnob->invalidateFileStamp();
-    settle({ reader, blur });
     EXPECT_EQ(readerBefore, reader->getHashValue()) << "an untouched file must keep its hash";
     EXPECT_EQ(blurBefore, blur->getHashValue());
 
@@ -480,7 +496,6 @@ TEST_F(HashInvariantsTest, RewrittenReadFileChangesHashUpToDownstream)
     ASSERT_TRUE(writeFlatExr(path, 32, 24, 0.75f));
     setMTime(path, 2000000);
     fileKnob->invalidateFileStamp();
-    settle({ reader, blur });
     EXPECT_NE(readerBefore, reader->getHashValue());
     EXPECT_NE(blurBefore, blur->getHashValue());
 }
@@ -496,13 +511,11 @@ TEST_F(HashInvariantsTest, LabelEditsKeepHash)
     const U64 before = chain.blur->getHashValue();
 
     chain.blur->setLabel("A label that renders nothing");
-    settle({ chain.blur });
     EXPECT_EQ(before, chain.blur->getHashValue());
 
     KnobStringPtr labelKnob = std::dynamic_pointer_cast<KnobString>(chain.blur->getKnobByName(kUserLabelKnobName));
     ASSERT_TRUE(bool(labelKnob));
     labelKnob->setValue(std::string("note shown under the node name"));
-    settle({ chain.blur });
     EXPECT_EQ(before, chain.blur->getHashValue());
 }
 
@@ -515,7 +528,6 @@ TEST_F(HashInvariantsTest, NodePositionEditKeepsHash)
     const U64 before = chain.blur->getHashValue();
 
     chain.blur->setPosition(250., -120.);
-    settle({ chain.blur });
     EXPECT_EQ(before, chain.blur->getHashValue());
 }
 
@@ -554,7 +566,6 @@ TEST_F(HashInvariantsTest, DifferentEditAfterReopenDoesNotReuseTheUnsavedEditsHa
     NodePtr constant = project()->getNodeByName(constantName);
     NodePtr blur = project()->getNodeByName(blurName);
     ASSERT_TRUE(constant && blur);
-    settle({ constant, blur });
     EXPECT_EQ(saved, blur->getHashValue());
 
     size = blurSize(blur);
@@ -597,7 +608,6 @@ TEST_F(HashInvariantsTest, DivergedSaveAsCopiesDoNotCollide)
     chain.blur->setScriptName("copyBlur");
     ASSERT_EQ(std::string("copyConstant"), chain.constant->getScriptName());
     ASSERT_EQ(std::string("copyBlur"), chain.blur->getScriptName());
-    settle({ chain.constant, chain.blur });
     ASSERT_EQ(copyBlurHash, chain.blur->getHashValue());
 
     ScopedSecondApp second(getApp());
@@ -608,7 +618,6 @@ TEST_F(HashInvariantsTest, DivergedSaveAsCopiesDoNotCollide)
         NodePtr originalConstant = originalProject->getNodeByName(constantName);
         NodePtr originalBlur = originalProject->getNodeByName(blurName);
         ASSERT_TRUE(originalConstant && originalBlur);
-        settle({ originalConstant, originalBlur });
         EXPECT_EQ(chain.blur->getHashValue(), originalBlur->getHashValue()) << "the copies start in the same state";
 
         KnobDoublePtr copySize = blurSize(chain.blur);

@@ -45,8 +45,8 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-// Hashes propagate downstream only when the age-based hash changes, so the tests recompute
-// explicitly, upstream first, to compare graphs built at different project states.
+// Reads recompute dirty hashes on their own; these refreshes also force a recompute of nodes
+// nothing marked, which the diamond test relies on to compare a forced result with a lazy one.
 void
 refreshHashes(const std::vector<NodePtr>& upstreamFirst)
 {

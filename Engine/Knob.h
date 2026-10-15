@@ -2867,7 +2867,20 @@ public:
      * the knob list changed. Lets a holder-wide digest of its knobs be memoized. MT-safe.
      **/
     U64 getKnobsContentGeneration() const;
-    void bumpKnobsContentGeneration();
+
+    /**
+     * @brief Moves the generation and calls onKnobContentChanged() with the knob that changed,
+     * was added or was removed.
+     **/
+    void bumpKnobsContentGeneration(const KnobI* knob);
+
+    /**
+     * @brief Called after the content hash of knob may have moved: knob is owned by this holder
+     * and changed, was added or was removed, or it reads (through an expression or a master link)
+     * a knob that changed. Called on any thread, possibly while the knob's own locks are held, so
+     * an implementation may only mark state.
+     **/
+    virtual void onKnobContentChanged(const KnobI* /*knob*/) { }
 
     void initializeKnobsPublic();
 

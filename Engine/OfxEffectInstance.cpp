@@ -1887,13 +1887,13 @@ OfxEffectInstance::onNodeHashChanged(U64 hash)
     EffectInstance::onNodeHashChanged(hash);
 
 #ifdef OFX_SUPPORTS_METADATA
-    // No walk of its own: Node::computeHashesDownstream already visits every node downstream of
-    // the one that changed, and a node's hash folds in its inputs', so every effect whose
-    // metadata could have gone stale gets here on its own.
+    // No walk of its own: a change marks every node downstream of it, and each of them
+    // recomputes its hash, which folds in its inputs', before that hash is next read, so every
+    // effect whose metadata could have gone stale gets here on its own.
     //
     // Never take Instance::_metadataMutex on this path. getOutputMetadata() holds it across
     // the getMetadata() calls it makes on its input clips, so that mutex is only ever taken
-    // downstream to upstream, while this runs upstream to downstream; taking it here would
+    // downstream to upstream, while recomputes run upstream to downstream; taking it here would
     // be an ABBA deadlock against a render thread. invalidateMetadata() is safe as it stands
     // because it takes no lock on the instance and ClipInstance::_metadataCacheMutex, which
     // it does take, is a leaf that is released before anything else is touched.

@@ -3433,6 +3433,20 @@ EffectInstance::onSignificantEvaluateAboutToBeCalled(KnobI* knob)
 
         //Increments the knobs age following a change
         node->incrementKnobsAge();
+    } else {
+        // The edit has marked the hash dirty already; recomputing it on the main thread runs the
+        // change hooks there for the GUI.
+        Q_EMIT node->mustComputeHashOnMainThread();
+    }
+}
+
+void
+EffectInstance::onKnobContentChanged(const KnobI* knob)
+{
+    NodePtr node = _node.lock();
+
+    if (node) {
+        node->onKnobContentChanged(knob);
     }
 }
 
@@ -5893,6 +5907,12 @@ EffectInstance::onNodeHashChanged(U64 hash)
     // through its stamp; Reload drops the node's results itself, for changes the stamp misses.
     _imp->actionsCache->useHash(hash);
 
+    // Only expressions cache results, and walking every knob of every node a change reaches is
+    // what an edit would otherwise pay for.
+    NodePtr node = _node.lock();
+    if (node && !node->mayHaveKnobExpressions()) {
+        return;
+    }
     const KnobsVec & knobs = getKnobs();
     for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
         for (int i = 0; i < (*it)->getDimension(); ++i) {
@@ -6535,6 +6555,11 @@ EffectInstance::refreshMetadata_internal()
 {
     NodeMetadata metadata;
 
+    // Recomputing a dirty hash drops the metadata the plug-in cached for the state it replaced.
+    NodePtr node = _node.lock();
+    if (node) {
+        node->getHashValue();
+    }
     getPreferredMetadata_public(metadata);
     _imp->checkMetadata(metadata);
 

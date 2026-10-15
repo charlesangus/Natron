@@ -239,17 +239,46 @@ public:
 
     /**
      * @brief The key the node's cached results are stored under: its content hash, so nodes in
-     * the same state share their cache entries whatever their name, age or project. Returns 0
-     * if it has never been computed.
+     * the same state share their cache entries whatever their name, age or project. A hash
+     * marked dirty is recomputed first, after the dirty hashes it folds in. MT-safe.
      **/
     U64 getHashValue() const;
 
     /**
      * @brief Hash of what the node renders: plug-in identity, render-affecting knob values,
      * inputs' content hashes and the project's render settings. Equal state gives an equal
-     * hash whatever the node's name or age. Returns 0 if it has never been computed.
+     * hash whatever the node's name or age. Recomputed first if it is dirty. MT-safe.
      **/
     U64 getContentHash() const;
+
+    /**
+     * @brief Marks the hash for a recompute on its next read, and with it the hashes of every
+     * node that folds this one in. Callable from any thread, under any lock: the nodes downstream
+     * are marked before the next hash read on any thread.
+     **/
+    void markHashDirty();
+
+    /**
+     * @brief Marks every node's hash dirty, for changes to state all of them fold in, such as
+     * the project's render settings. Lock-free.
+     **/
+    static void invalidateAllHashes();
+
+    /**
+     * @brief Marks the hash dirty and recomputes it now. Returns true if it changed.
+     **/
+    bool refreshHashNow();
+
+    /**
+     * @brief Called by the effect when the content of knob may have changed; see
+     * KnobHolder::onKnobContentChanged().
+     **/
+    void onKnobContentChanged(const KnobI* knob);
+
+    /**
+     * @brief True unless the knobs were last seen without any expression. Cheap.
+     **/
+    bool mayHaveKnobExpressions() const;
 
     /**
      * @brief True when the project frame range is part of this node's content hash: the effect
@@ -1708,29 +1737,59 @@ private:
     bool findDataKindConflictDownstream(const DataKindConstraint& constraint, NodePtr* conflictingNode) const;
 
     /**
-     * @brief Recomputes the hashes of roots, then of every node downstream of them that an input
-     * change reaches. A node is recomputed only once all of its inputs in that set are final, so
-     * a join below a diamond never folds in an input hash that is about to change.
-     **/
-    static void computeHashesDownstream(const NodesList& roots);
-
-    /**
      * @brief The nodes whose hash folds in this one's: outputs through group redirections, and
      * the internal nodes of a roto paint tree.
      **/
     void getHashDependents(NodesList* dependents) const;
 
     /**
-     * @brief Refreshes the node's content hash and its age hash from its knobs, age and inputs.
-     * @param projectDigest The project's content digest, taken once for a whole recompute walk so
-     * that every node in it sees the same project state; 0 takes a fresh one.
+     * @brief The nodes whose stored hashes this node's hashes fold in.
+     **/
+    void getHashInputs(std::vector<NodePtr>* inputs) const;
+
+    U32 getInputSlotCount() const;
+
+    /**
+     * @brief Marks this node, and if includeGroupContents every node inside it when it is a
+     * group. Its dependents are marked by the next flushHashDirtyMarks().
+     **/
+    void markHashDirtyInternal(bool includeGroupContents);
+
+    /**
+     * @brief Marks the dependents of every node marked since the last flush. Any hash read
+     * calls it first.
+     **/
+    static void flushHashDirtyMarks();
+
+    bool isHashDirty() const;
+
+    /**
+     * @brief Recomputes this node's dirty hash and, inputs first, every dirty hash it folds in.
+     **/
+    void refreshDirtyHashes();
+
+    struct HashWalk;
+
+    /**
+     * @brief Recomputes the hashes if they are dirty. With requireCleanInputs, gives up and
+     * returns false if a hash it folds in is dirty, which only a concurrent mark or a cycle causes.
+     **/
+    bool recomputeHashIfDirty(bool requireCleanInputs, HashWalk* walk);
+
+    /**
+     * @brief Refreshes the node's content hash and its age hash from its knobs, age and inputs,
+     * reading the inputs' stored hashes. Leaves the dirty state and the change hooks to the caller.
+     * @param projectDigest The project's content digest; 0 takes a fresh one.
      * @return True if either hash has changed, false otherwise
      **/
-    bool computeHashInternal(U64 projectDigest = 0) WARN_UNUSED_RETURN;
+    bool computeHashInternal(U64 projectDigest, U64* contentHash) WARN_UNUSED_RETURN;
 
     // The hash built from the knobs age. Nothing is keyed on it; it is kept so the audit can
     // compare it with the content hash.
     U64 getAgeHashValue() const;
+
+    // The content hash as last computed, dirty or not.
+    U64 getStoredContentHash() const;
 
     U64 computeContentHash(U64 projectDigest) const;
 
@@ -1811,6 +1870,10 @@ public Q_SLOTS:
 
     void onParentMultiInstanceInputChanged(int input);
 
+    /**
+     * @brief Marks the hash dirty, then recomputes it and every hash downstream of it now, so
+     * that the change hooks of an edit made on another thread run.
+     **/
     void doComputeHashOnMainThread();
 
 Q_SIGNALS:
@@ -1913,10 +1976,8 @@ Q_SIGNALS:
     void mustDequeueActions();
 
 protected:
-
     /**
-     * @brief Recompute the hash value of this node and notify all the clone effects that the values they store in their
-     * knobs is dirty and that they should refresh it by cloning the live instance.
+     * @brief Marks the hash of this node, and of every node downstream of it, for a recompute.
      **/
     void computeHash();
 

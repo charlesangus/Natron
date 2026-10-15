@@ -166,50 +166,120 @@ void
 FileStampRegistry::invalidate(const std::string& path)
 {
     const std::string directory = parentDirectory(path);
-    std::lock_guard<std::mutex> k(_mutex);
+    {
+        std::lock_guard<std::mutex> k(_mutex);
 
-    ++_generation;
-    _entries.erase(path);
-    _sequences.erase(path);
-    for (std::map<std::string, SequenceEntry>::iterator it = _sequences.begin(); it != _sequences.end();) {
-        if (it->second.directory == directory) {
-            it = _sequences.erase(it);
-        } else {
-            ++it;
+        ++_generation;
+        _entries.erase(path);
+        _sequences.erase(path);
+        for (std::map<std::string, SequenceEntry>::iterator it = _sequences.begin(); it != _sequences.end();) {
+            if (it->second.directory == directory) {
+                it = _sequences.erase(it);
+            } else {
+                ++it;
+            }
         }
     }
+    notifyInvalidation(eInvalidationScopePath, path);
 }
 
 void
 FileStampRegistry::invalidateDirectory(const std::string& directory)
 {
-    std::lock_guard<std::mutex> k(_mutex);
+    {
+        std::lock_guard<std::mutex> k(_mutex);
 
-    ++_generation;
-    for (std::map<std::string, Entry>::iterator it = _entries.begin(); it != _entries.end();) {
-        if (parentDirectory(it->first) == directory) {
-            it = _entries.erase(it);
-        } else {
-            ++it;
+        ++_generation;
+        for (std::map<std::string, Entry>::iterator it = _entries.begin(); it != _entries.end();) {
+            if (parentDirectory(it->first) == directory) {
+                it = _entries.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (std::map<std::string, SequenceEntry>::iterator it = _sequences.begin(); it != _sequences.end();) {
+            if (it->second.directory == directory) {
+                it = _sequences.erase(it);
+            } else {
+                ++it;
+            }
         }
     }
-    for (std::map<std::string, SequenceEntry>::iterator it = _sequences.begin(); it != _sequences.end();) {
-        if (it->second.directory == directory) {
-            it = _sequences.erase(it);
-        } else {
-            ++it;
-        }
-    }
+    notifyInvalidation(eInvalidationScopeDirectory, directory);
 }
 
 void
 FileStampRegistry::invalidateAll()
 {
-    std::lock_guard<std::mutex> k(_mutex);
+    {
+        std::lock_guard<std::mutex> k(_mutex);
 
-    ++_generation;
-    _entries.clear();
-    _sequences.clear();
+        ++_generation;
+        _entries.clear();
+        _sequences.clear();
+    }
+    notifyInvalidation(eInvalidationScopeAll, std::string());
+}
+
+int
+FileStampRegistry::addInvalidationListener(const InvalidationListener& listener)
+{
+    std::lock_guard<std::mutex> k(_listenersMutex);
+    const int id = _nextListenerId++;
+
+    _listeners.push_back(std::make_pair(id, listener));
+
+    return id;
+}
+
+void
+FileStampRegistry::removeInvalidationListener(int id)
+{
+    std::lock_guard<std::mutex> k(_listenersMutex);
+
+    for (std::vector<std::pair<int, InvalidationListener>>::iterator it = _listeners.begin(); it != _listeners.end(); ++it) {
+        if (it->first == id) {
+            _listeners.erase(it);
+
+            return;
+        }
+    }
+}
+
+void
+FileStampRegistry::notifyInvalidation(InvalidationScopeEnum scope,
+                                      const std::string& pathOrDirectory)
+{
+    std::vector<std::pair<int, InvalidationListener>> listeners;
+    {
+        std::lock_guard<std::mutex> k(_listenersMutex);
+        listeners = _listeners;
+    }
+    for (std::size_t i = 0; i < listeners.size(); ++i) {
+        listeners[i].second(scope, pathOrDirectory);
+    }
+}
+
+bool
+FileStampRegistry::invalidationCovers(InvalidationScopeEnum scope,
+                                      const std::string& pathOrDirectory,
+                                      const std::string& path)
+{
+    if (path.empty()) {
+        return false;
+    }
+    if (scope == eInvalidationScopeAll) {
+        return true;
+    }
+    if (scope == eInvalidationScopeDirectory) {
+        return parentDirectory(path) == pathOrDirectory;
+    }
+    if (path == pathOrDirectory) {
+        return true;
+    }
+
+    // invalidate() also drops every sequence memoized in the directory of the path.
+    return hasFramePattern(path) && (parentDirectory(path) == parentDirectory(pathOrDirectory));
 }
 
 void

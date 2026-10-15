@@ -2324,6 +2324,12 @@ Settings::getDefaultOCIOConfigSourceForNewProjects() const
     return NATRON_DEFAULT_OCIO_CONFIG_NAME;
 }
 
+void
+Settings::onKnobContentChanged(const KnobI* /*knob*/)
+{
+    Node::invalidateAllHashes();
+}
+
 bool
 Settings::onKnobValueChanged(KnobI* k,
                              ValueChangedReasonEnum reason,

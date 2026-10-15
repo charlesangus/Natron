@@ -169,6 +169,8 @@ RotoLayer::addItem(const RotoItemPtr & item,
     if (declareToPython) {
         getContext()->declareItemAsPythonField(item);
     }
+    // The children are hashed in order.
+    invalidateContentHash();
     getContext()->refreshRotoPaintTree();
 }
 
@@ -205,6 +207,7 @@ RotoLayer::insertItem(const RotoItemPtr & item,
         ///insert before the iterator
         _imp->items.insert(it, item);
     }
+    invalidateContentHash();
     getContext()->declareItemAsPythonField(item);
     getContext()->refreshRotoPaintTree();
 }
@@ -227,6 +230,7 @@ RotoLayer::removeItem(const RotoItemPtr& item)
         }
     }
     item->setParentLayer( RotoLayerPtr() );
+    invalidateContentHash();
     RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>( item.get() );
     if (isStroke) {
         isStroke->disconnectNodes();

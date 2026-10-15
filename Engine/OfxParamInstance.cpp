@@ -3835,6 +3835,9 @@ OfxStringInstance::OfxStringInstance(const OfxEffectInstancePtr& node,
         _imp->pathKnob.lock()->setMultiPath(false);
     } else if ( (mode == kOfxParamStringIsSingleLine) || (mode == kOfxParamStringIsLabel) || (mode == kOfxParamStringIsMultiLine) || richText ) {
         _imp->stringKnob = checkIfKnobExistsWithNameOrCreate<KnobString>(descriptor.getName(), this, 1);
+        if (descriptor.getName() == kNatronOfxParamStringSublabelName) {
+            _imp->stringKnob.lock()->setHashExempt(true);
+        }
         if (mode == kOfxParamStringIsLabel) {
             _imp->stringKnob.lock()->setAllDimensionsEnabled(false);
             _imp->stringKnob.lock()->setAsLabel();

@@ -482,6 +482,7 @@ struct KnobHelperPrivate
     // Bumped by every invalidation. A memo is only valid for the generation read before its
     // computation started, so a change racing with a computation is never hidden by it.
     std::atomic<U64> contentGeneration;
+    std::atomic<bool> hashExempt;
     mutable QMutex contentHashMutex; // protects the 3 members below
     mutable std::vector<U64> contentDimensionHashes;
     mutable U64 contentHashesGeneration;
@@ -556,6 +557,7 @@ struct KnobHelperPrivate
         , listenersNotificationBlocked(0)
         , isClipPreferenceSlave(false)
         , contentGeneration(0)
+        , hashExempt(false)
         , contentHashMutex()
         , contentDimensionHashes()
         , contentHashesGeneration(0)
@@ -3462,6 +3464,28 @@ bool
 KnobHelper::getIsMetadataSlave() const
 {
     return _imp->isClipPreferenceSlave;
+}
+
+void
+KnobHelper::setHashExempt(bool exempt)
+{
+    _imp->hashExempt = exempt;
+}
+
+bool
+KnobHelper::isHashExempt() const
+{
+    return _imp->hashExempt;
+}
+
+bool
+KnobHelper::isRenderHashed() const
+{
+    if (!isContentHashed() || isHashExempt()) {
+        return false;
+    }
+
+    return getIsPersistent() || getEvaluateOnChange();
 }
 
 bool

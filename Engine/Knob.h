@@ -1412,6 +1412,20 @@ public:
      * to what getContentHash() covers. MT-safe.
      **/
     virtual void invalidateContentHash() = 0;
+
+    /**
+     * @brief Marks a node-level GUI knob whose value never feeds a render, even though it is
+     * persistent or evaluates on change. Set once at creation.
+     **/
+    virtual void setHashExempt(bool exempt) = 0;
+    virtual bool isHashExempt() const = 0;
+
+    /**
+     * @brief True if this knob's content belongs in the node hash: it holds data (not a page,
+     * group, separator or plain button), is not hash-exempt, and is saved or evaluates on change.
+     * Persistence alone qualifies so that secret OFX state params stay hashed.
+     **/
+    virtual bool isRenderHashed() const = 0;
 };
 
 
@@ -1734,6 +1748,9 @@ public:
     virtual U64 getContentHash() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual U64 getDimensionContentHash(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void invalidateContentHash() OVERRIDE FINAL;
+    virtual void setHashExempt(bool exempt) OVERRIDE FINAL;
+    virtual bool isHashExempt() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool isRenderHashed() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
 protected:
     /**

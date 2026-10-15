@@ -94,3 +94,4 @@
 - 2026-10-13 — gui-bench-gate-rule: GUI/Engine-touching milestones run the Xvfb GUI bench at their gate against the committed baseline; no CI timing gate; budgets judged on the user's real host → DECISIONS/2026-10-13-gui-bench-gate-rule.md
 - 2026-10-13 — native-port-round-two: next OFX→native round: families, redesign+consolidate depth, GPU in each port, no order (port kit first), retired and stay-on-OFX lists → DECISIONS/2026-10-13-native-port-round-two.md
 - 2026-10-14 — parked-and-manifest-overlap: unowned blocked milestones (M64) and shared manifests/dirs (Tests/CMakeLists.txt, README, test/bench dirs) do not block claims; real shared sources still do → DECISIONS/2026-10-14-parked-and-manifest-overlap.md
+- 2026-10-14 — drop-nan-check: no app-wide NaN scan/replace after render; checkForNaNsAndFix, its renderHandler call and the NaN preference are removed (user) → DECISIONS/2026-10-14-drop-nan-check.md

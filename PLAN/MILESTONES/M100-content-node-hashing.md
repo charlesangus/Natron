@@ -133,12 +133,12 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - size: M
 
 ## Phase 100.4: Switch keys and drop the purge
-- [ ] M100.P4.T1 — Make getHashValue return the content hash and bump the cache version
+- [x] M100.P4.T1 — Make getHashValue return the content hash and bump the cache version
   - files: Engine/Node.cpp, Global/GlobalDefines.h, Engine/Hash64.cpp, Tests/BaseTest.cpp
   - approach: remove the script name (except on nodes with expressions), the creation time and the age from the key. Set NATRON_CACHE_VERSION to 10.
   - verify: the existing hash tests pass; two identical nodes share one cache entry (a counting effect renders once)
   - size: M
-- [ ] M100.P4.T2 — Replace purge-on-hash-change with LRU eviction
+- [x] M100.P4.T2 — Replace purge-on-hash-change with LRU eviction
   - files: Engine/Node.cpp, Engine/EffectInstancePrivate.cpp, Tests/DeepRenderPipeline_Test.cpp, Tests/DeepImageCache_Test.cpp
   - approach: remove the purge in computeHashInternal and keep the delete, Reload and Clear Cache purges. Raise the ActionsCache instance limit. Rewrite the tests that assert a purge as tests that assert reuse.
   - verify: going value 1 → 2 → 1 causes zero re-renders on the third step
@@ -281,3 +281,4 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   
   The ActionsCache is bounded by count, not memory.
 - 2026-10-15 — **Phase 100.4 first build** (run 38691283645): 2201/2203. The two new reuse tests failed because the test render helper always bypassed and cleared the cache. That is a harness issue, not an engine one: the region-of-definition counter showed the hashes matched. The fix is the `byPassCache` parameter (3b63ccde6).
+- 2026-10-15 — **Phase 100.4 (T1, T2) green** at 3b63ccde6 (run 38700227762): 2203/2203 in both schedulers. P4.T3 is still held until M90 merges. P5.T1 is held (EffectInstance.cpp), and P5.T2 needs P5.T1's `markHashDirty`. Proceeding with P5.T3, P6.T1 (the bug-4 off-thread regression waits for P4.T3) and P6.T2. P6.T4 waits for P4.T3, since its gaps would fail it.

@@ -29,9 +29,12 @@
 #include <bitset>
 #include <cassert>
 #include <cctype>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <locale>
 #include <map>
+#include <mutex>
 #include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
@@ -770,6 +773,92 @@ Node::getCacheID() const
     return _imp->cacheID;
 }
 
+namespace {
+struct HashAuditNodeState {
+    U64 ageHash = 0;
+    U64 contentHash = 0;
+    std::set<U64> seenContent;
+    std::string pendingCause;
+};
+
+struct HashAudit {
+    std::mutex mutex;
+    std::map<const Node*, HashAuditNodeState> nodes;
+    std::set<std::string> logged;
+    std::map<std::string, unsigned long> reuse;
+
+    ~HashAudit()
+    {
+        for (std::map<std::string, unsigned long>::const_iterator it = reuse.begin(); it != reuse.end(); ++it) {
+            fprintf(stderr, "NATRON_HASH_AUDIT: reuse-opportunity plugin=%s count=%lu\n", it->first.c_str(), it->second);
+        }
+    }
+};
+
+HashAudit&
+hashAudit()
+{
+    static HashAudit audit;
+
+    return audit;
+}
+} // anonymous namespace
+
+bool
+Node::isHashAuditEnabled()
+{
+    static const bool enabled = (std::getenv("NATRON_HASH_AUDIT") != nullptr);
+
+    return enabled;
+}
+
+void
+Node::noteHashAuditCause(const std::string& cause)
+{
+    if (!isHashAuditEnabled()) {
+        return;
+    }
+    HashAudit& audit = hashAudit();
+    std::lock_guard<std::mutex> g(audit.mutex);
+    audit.nodes[this].pendingCause = cause;
+}
+
+void
+Node::auditHashTransition(U64 ageHash,
+                          U64 contentHash)
+{
+    HashAudit& audit = hashAudit();
+    std::string pluginID = getPluginID();
+    std::string scriptName = getScriptName();
+    std::lock_guard<std::mutex> g(audit.mutex);
+    HashAuditNodeState& st = audit.nodes[this];
+    const bool first = st.seenContent.empty();
+    const bool ageChanged = ageHash != st.ageHash;
+    const bool contentChanged = contentHash != st.contentHash;
+    std::string cause;
+    cause.swap(st.pendingCause);
+
+    if (!first) {
+        if (ageChanged && !contentChanged) {
+            const std::string reason = cause.empty() ? std::string("unknown") : cause;
+            if (audit.logged.insert(pluginID + "|content-missed|" + reason).second) {
+                fprintf(stderr, "NATRON_HASH_AUDIT: content-missed? plugin=%s node=%s knob=%s\n",
+                        pluginID.c_str(), scriptName.c_str(), reason.c_str());
+            }
+        } else if (contentChanged && !ageChanged) {
+            if (audit.logged.insert(pluginID + "|age-missed").second) {
+                fprintf(stderr, "NATRON_HASH_AUDIT: age-missed plugin=%s node=%s\n",
+                        pluginID.c_str(), scriptName.c_str());
+            }
+        } else if (ageChanged && contentChanged && (st.seenContent.find(contentHash) != st.seenContent.end())) {
+            ++audit.reuse[pluginID];
+        }
+    }
+    st.ageHash = ageHash;
+    st.contentHash = contentHash;
+    st.seenContent.insert(contentHash);
+}
+
 bool
 Node::computeHashInternal()
 {
@@ -859,6 +948,10 @@ Node::computeHashInternal()
         newHash = _imp->hash.value();
     } // QWriteLocker l(&_imp->knobsAgeMutex);
     bool hashChanged = oldHash != newHash;
+
+    if (isHashAuditEnabled()) {
+        auditHashTransition(newHash, contentHash);
+    }
 
     if (hashChanged) {
         _imp->effect->onNodeHashChanged(newHash);

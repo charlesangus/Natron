@@ -249,6 +249,9 @@ public:
      **/
     U64 getContentHash() const;
 
+    static bool isHashAuditEnabled();
+    void noteHashAuditCause(const std::string& cause);
+
     virtual std::string getCacheID() const OVERRIDE FINAL;
 
     /**
@@ -1706,6 +1709,7 @@ private:
     bool computeHashInternal() WARN_UNUSED_RETURN;
 
     U64 computeContentHash() const;
+    void auditHashTransition(U64 ageHash, U64 contentHash);
 
     void refreshCreatedViews(KnobI* knob, bool silent);
 

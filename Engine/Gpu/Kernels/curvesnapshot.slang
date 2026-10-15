@@ -4,7 +4,7 @@ import pixelwrap;
 // time thresholds, then one cubic segment per gap between keys, with a segment before the first
 // key and after the last.
 static const uint CS_MAX_KEYS = 128;
-static const uint CS_SEGMENT_WORDS = 6;
+static const uint CS_SEGMENT_WORDS = 12;
 static const uint CS_CURVE_WORDS = CS_MAX_KEYS + (CS_MAX_KEYS + 1) * CS_SEGMENT_WORDS;
 // Samples of a table taken from a curve over a range.
 static const uint CS_TABLE_SIZE = 1024;
@@ -28,8 +28,60 @@ bool curveLess(float a, float b)
     return !curveIsNaN(a) && !curveIsNaN(b) && curveOrderKey(a) < curveOrderKey(b);
 }
 
+// The value hi + lo, lo within half an ulp of hi.
+struct CurveFF
+{
+    float hi;
+    float lo;
+}
+
+CurveFF curveFF(float hi, float lo)
+{
+    CurveFF r;
+    r.hi = hi;
+    r.lo = lo;
+    return r;
+}
+
+CurveFF curveQuickSum(float a, float b)
+{
+    precise float s = a + b;
+    precise float e = b - (s - a);
+    return curveFF(s, e);
+}
+
+CurveFF curveTwoSum(float a, float b)
+{
+    precise float s = a + b;
+    precise float v = s - a;
+    precise float e = (a - (s - v)) + (b - v);
+    return curveFF(s, e);
+}
+
+CurveFF curveAdd(CurveFF a, CurveFF b)
+{
+    const CurveFF s = curveTwoSum(a.hi, b.hi);
+    precise float lo = s.lo + (a.lo + b.lo);
+    return curveQuickSum(s.hi, lo);
+}
+
+CurveFF curveMul(CurveFF a, CurveFF b)
+{
+    precise float p = a.hi * b.hi;
+    precise float e = fma(a.hi, b.hi, -p);
+    precise float lo = e + (a.hi * b.lo + a.lo * b.hi);
+    return curveQuickSum(p, lo);
+}
+
+CurveFF curvePair(uint index)
+{
+    return curveFF(asfloat(wrapAux[index]), asfloat(wrapAux[index + 1]));
+}
+
 // The curve at t, as CurveSnapshot::valueAt: the segment after the last key not above t, a
 // Hermite cubic, clamped to the curve's value range. The curve is read from wrapAux at `base`.
+// A key time lies between floats and a slope may be steep, so t - origin and the cubic are
+// carried in two floats as the CPU's double carries them.
 float curveSnapshotAt(uint base, uint count, float yMin, float yMax, float t)
 {
     uint lo = 0;
@@ -43,14 +95,27 @@ float curveSnapshotAt(uint base, uint count, float yMin, float yMax, float t)
             lo = mid + 1;
     }
     const uint s = base + CS_MAX_KEYS + lo * CS_SEGMENT_WORDS;
-    const float u = (t - asfloat(wrapAux[s])) / asfloat(wrapAux[s + 1]);
-    const float c1 = asfloat(wrapAux[s + 3]);
-    const float c2 = asfloat(wrapAux[s + 4]);
-    const float c3 = asfloat(wrapAux[s + 5]);
-    const float u2 = u * u;
-    const float u3 = u2 * u;
-    float v = asfloat(wrapAux[s + 2]) + (c1 != 0.0 ? c1 * u : 0.0) + (c2 != 0.0 ? c2 * u2 : 0.0) +
-              (c3 != 0.0 ? c3 * u3 : 0.0);
+    const CurveFF origin = curvePair(s);
+    const CurveFF invSpan = curvePair(s + 2);
+    const CurveFF c0 = curvePair(s + 4);
+    const CurveFF c1 = curvePair(s + 6);
+    const CurveFF c2 = curvePair(s + 8);
+    const CurveFF c3 = curvePair(s + 10);
+    const CurveFF dt = curveAdd(curveTwoSum(t, -origin.hi), curveFF(-origin.lo, 0.0));
+    const CurveFF u = curveMul(dt, invSpan);
+    CurveFF r = curveAdd(curveMul(c3, u), c2);
+    r = curveAdd(curveMul(r, u), c1);
+    r = curveAdd(curveMul(r, u), c0);
+    float v = r.hi + r.lo;
+    if (!isfinite(r.hi))
+    {
+        // An infinite t, or a cubic past the float range: the CPU's terms one by one, a zero
+        // coefficient contributing nothing rather than a NaN from 0 times infinity.
+        const float uf = (t - origin.hi - origin.lo) * invSpan.hi;
+        const float u2 = uf * uf;
+        const float u3 = u2 * uf;
+        v = c0.hi + (c1.hi != 0.0 ? c1.hi * uf : 0.0) + (c2.hi != 0.0 ? c2.hi * u2 : 0.0) + (c3.hi != 0.0 ? c3.hi * u3 : 0.0);
+    }
     if (v > yMax)
         return yMax;
     else if (v < yMin)

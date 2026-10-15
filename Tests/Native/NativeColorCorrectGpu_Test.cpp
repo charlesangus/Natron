@@ -326,16 +326,16 @@ testValues(const CorrectSetting& s,
 }
 
 void
-checkKernel(GpuParityRuntime& runtime,
-            NativeImageEffect* effect,
-            const CorrectSetting& setting,
-            int nComps,
-            unsigned channelMask,
-            std::size_t* nCompared)
+checkKernelOn(GpuParityRuntime& runtime,
+              NativeImageEffect* effect,
+              const CorrectSetting& setting,
+              const std::vector<float>& src,
+              int width,
+              int height,
+              int nComps,
+              unsigned channelMask,
+              std::size_t* nCompared)
 {
-    const int width = 32;
-    const int height = 9;
-    const std::vector<float> src = testValues(setting, (size_t)width * height * nComps);
     const std::vector<float> want = cpuKernelRender(effect, src, width, height, nComps, channelMask);
 
     GpuQuery query;
@@ -359,6 +359,20 @@ checkKernel(GpuParityRuntime& runtime,
                                    << diff.firstMismatchIndex << " in " << src[diff.firstMismatchIndex] << " gpu " << run.pixels[diff.firstMismatchIndex]
                                    << " cpu " << want[diff.firstMismatchIndex] << ", largest difference " << diff.worstAbsolute;
     *nCompared += diff.compared;
+}
+
+void
+checkKernel(GpuParityRuntime& runtime,
+            NativeImageEffect* effect,
+            const CorrectSetting& setting,
+            int nComps,
+            unsigned channelMask,
+            std::size_t* nCompared)
+{
+    const int width = 32;
+    const int height = 9;
+
+    checkKernelOn(runtime, effect, setting, testValues(setting, (size_t)width * height * nComps), width, height, nComps, channelMask, nCompared);
 }
 #endif // NATRON_HAVE_GPU
 
@@ -533,6 +547,67 @@ TEST_F(NativeColorCorrectGpuTest, MatchesTheCpuRender)
                                            << ", largest difference " << diff.worstAbsolute;
         }
     }
+}
+// Outside `range` the shader evaluates the tone curves from their keys. A key at 0.100000001
+// rounds to the float 0.1f, which lies 4.9e-10 past it, and a slope of 1e9 after the key makes
+// that a weight of 0.49: the shader must take t minus the key time to the CPU's double precision.
+// The luminance is the largest channel, so that it lands on the floats around the key exactly.
+TEST_F(NativeColorCorrectGpuTest, MatchesTheCpuPastASteepKeyBetweenFloats)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_COLORCORRECT));
+    ASSERT_TRUE(bool(node));
+    NativeImageEffect* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+
+    CorrectSetting setting;
+    setting.groups = 0xFu;
+    setting.luminanceMath = ColorMath::eLuminanceMathMax;
+    setting.clampBlack = false;
+    setting.clampWhite = false;
+    setting.rangeMin = 0.;
+    setting.rangeMax = 0.05;
+    setting.editedCurves = false;
+    applySetting(node, setting);
+    if (HasFatalFailure()) {
+        return;
+    }
+    const double key = 0.100000001;
+    KnobParametric* tones = dynamic_cast<KnobParametric*>(node->getKnobByName(kColorCorrectParamToneRanges).get());
+    ASSERT_TRUE(tones != NULL);
+    for (int d = 0; d < 2; ++d) {
+        ASSERT_EQ(eStatusOK, tones->deleteAllControlPoints(eValueChangedReasonPluginEdited, d));
+        ASSERT_EQ(eStatusOK, tones->addControlPoint(eValueChangedReasonPluginEdited, d, 0., 0., 0., 0., eKeyframeTypeBroken));
+        ASSERT_EQ(eStatusOK, tones->addControlPoint(eValueChangedReasonPluginEdited, d, key, 0., 0., 1e9, eKeyframeTypeBroken));
+    }
+
+    const float inf = std::numeric_limits<float>::infinity();
+    std::vector<float> values = { 0.f, 0.07f, 0.0999f, 0.12f, 0.5f, 1.f, 2.f };
+    float above = 0.1f;
+    float below = 0.1f;
+    for (int i = 0; i < 12; ++i) {
+        values.push_back(above);
+        values.push_back(below);
+        above = std::nextafter(above, inf);
+        below = std::nextafter(below, -inf);
+    }
+    const int width = (int)values.size();
+    const int height = 4;
+    std::size_t nCompared = 0;
+    for (int nComps : { 1, 4 }) {
+        std::vector<float> src((size_t)width * height * nComps);
+        for (std::size_t i = 0; i < src.size(); ++i) {
+            src[i] = values[(i * 7 + i / values.size()) % values.size()];
+        }
+        checkKernelOn(*runtime, effect, setting, src, width, height, nComps, 0xF, &nCompared);
+        if (HasFatalFailure()) {
+            return;
+        }
+    }
+    EXPECT_GT(nCompared, 0u);
 }
 
 #endif // NATRON_HAVE_GPU

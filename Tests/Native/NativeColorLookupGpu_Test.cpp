@@ -52,6 +52,7 @@
 #include "Engine/Nodes/Color/ColorLookup.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Image/ColorMath.h"
+#include "Engine/Nodes/Image/CurveSnapshot.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
 #include "Engine/ViewIdx.h"
@@ -73,6 +74,17 @@ struct KernelProbe
 
         return (effect->*member)(context);
     }
+
+#ifdef NATRON_HAVE_GPU
+    static bool makeGpu(NativeImageEffect* effect,
+                        const KernelContext& context,
+                        PixelKernelGpu* gpuKernel)
+    {
+        bool (NativeImageEffect::*member)(const KernelContext&, PixelKernelGpu*) = &KernelProbe::makeGpuKernel;
+
+        return (effect->*member)(context, gpuKernel);
+    }
+#endif
 };
 
 NativeImageEffect*
@@ -298,16 +310,16 @@ testValues(const LookupSetting& s,
 }
 
 void
-checkKernel(GpuParityRuntime& runtime,
-            NativeImageEffect* effect,
-            const LookupSetting& setting,
-            int nComps,
-            unsigned channelMask,
-            std::size_t* nCompared)
+checkKernelOn(GpuParityRuntime& runtime,
+              NativeImageEffect* effect,
+              const LookupSetting& setting,
+              const std::vector<float>& src,
+              int width,
+              int height,
+              int nComps,
+              unsigned channelMask,
+              std::size_t* nCompared)
 {
-    const int width = 32;
-    const int height = 9;
-    const std::vector<float> src = testValues(setting, (size_t)width * height * nComps);
     const std::vector<float> want = cpuKernelRender(effect, src, width, height, nComps, channelMask);
 
     GpuQuery query;
@@ -352,6 +364,48 @@ checkKernel(GpuParityRuntime& runtime,
                                    << " in " << srcCompared[diff.firstMismatchIndex] << " gpu " << gotCompared[diff.firstMismatchIndex] << " cpu "
                                    << wantCompared[diff.firstMismatchIndex];
     *nCompared += diff.compared;
+}
+
+void
+checkKernel(GpuParityRuntime& runtime,
+            NativeImageEffect* effect,
+            const LookupSetting& setting,
+            int nComps,
+            unsigned channelMask,
+            std::size_t* nCompared)
+{
+    const int width = 32;
+    const int height = 9;
+
+    checkKernelOn(runtime, effect, setting, testValues(setting, (size_t)width * height * nComps), width, height, nComps, channelMask, nCompared);
+}
+
+// Every curve flat at 0 from a key at 0 to a broken key at `key`, which leaves with
+// `rightDerivative`; `leftDerivative` is the slope into the first key, extrapolated before it.
+void
+setSteepCurves(const NodePtr& node,
+               double leftDerivative,
+               double key,
+               double rightDerivative)
+{
+    KnobParametric* table = dynamic_cast<KnobParametric*>(node->getKnobByName(kColorLookupParamLookupTable).get());
+    ASSERT_TRUE(table != NULL);
+    for (int d = 0; d < ColorLookup::eCurveCount; ++d) {
+        ASSERT_EQ(eStatusOK, table->deleteAllControlPoints(eValueChangedReasonPluginEdited, d));
+        ASSERT_EQ(eStatusOK, table->addControlPoint(eValueChangedReasonPluginEdited, d, 0., 0., leftDerivative, 0., eKeyframeTypeBroken));
+        ASSERT_EQ(eStatusOK, table->addControlPoint(eValueChangedReasonPluginEdited, d, key, 0., 0., rightDerivative, eKeyframeTypeBroken));
+    }
+}
+
+bool
+makesGpuKernel(NativeImageEffect* effect)
+{
+    KernelContext context;
+    context.time = kTime;
+    context.processChannels = std::bitset<4>(0xF);
+    PixelKernelGpu gpuKernel;
+
+    return KernelProbe::makeGpu(effect, context, &gpuKernel);
 }
 #endif // NATRON_HAVE_GPU
 
@@ -545,6 +599,83 @@ TEST_F(NativeColorLookupGpuTest, MatchesTheCpuRender)
     }
 }
 
+// Outside `range` the shader evaluates the curve from its keys. A key at 0.100000001 rounds to the
+// float 0.1f, which lies 4.9e-10 past it, and a slope of 1e9 after the key makes that 0.49: the
+// shader must take t minus the key time to the CPU's double precision. Floats around the key,
+// below it, and far past it, in the modes that hold transcendental().
+TEST_F(NativeColorLookupGpuTest, MatchesTheCpuPastASteepKeyBetweenFloats)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_COLORLOOKUP));
+    ASSERT_TRUE(bool(node));
+    NativeImageEffect* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+
+    const double key = 0.100000001;
+    const float inf = std::numeric_limits<float>::infinity();
+    std::vector<float> values = { 0.f, 0.07f, 0.0999f, 0.12f, 0.5f, 1.f, 2.f, -1.f };
+    float above = 0.1f;
+    float below = 0.1f;
+    for (int i = 0; i < 12; ++i) {
+        values.push_back(above);
+        values.push_back(below);
+        above = std::nextafter(above, inf);
+        below = std::nextafter(below, -inf);
+    }
+    const int width = (int)values.size();
+    const int height = 4;
+    std::vector<float> src((size_t)width * height * 4);
+    for (std::size_t i = 0; i < src.size(); ++i) {
+        src[i] = values[(i * 7 + i / values.size()) % values.size()];
+    }
+    std::size_t nCompared = 0;
+
+    for (int mode : { (int)ColorLookup::eMasterCurveModeStandard, (int)ColorLookup::eMasterCurveModeFilmLike }) {
+        LookupSetting setting = { mode, 0, false, false, 0., 0.05, 0 };
+        applySetting(node, setting);
+        setSteepCurves(node, 0., key, 1e9);
+        if (HasFatalFailure()) {
+            return;
+        }
+        KnobParametric* table = dynamic_cast<KnobParametric*>(node->getKnobByName(kColorLookupParamLookupTable).get());
+        ASSERT_TRUE(table != NULL);
+        const double atKey = CurveSnapshot(table->getParametricCurve(0)).valueAt(0.1f);
+        EXPECT_NEAR(1e9 * ((double)0.1f - key), atKey, 1e-6);
+        EXPECT_GT(atKey, 0.4);
+        ASSERT_TRUE(makesGpuKernel(effect)) << "mode " << mode;
+        checkKernelOn(*runtime, effect, setting, src, width, height, 4, 0xF, &nCompared);
+        if (HasFatalFailure()) {
+            return;
+        }
+    }
+    EXPECT_GT(nCompared, 0u);
+}
+
+// The line before the first key is, about the virtual key one before it, a difference of two terms
+// its slope scales, and at a slope of 1e12 the CPU's own double rounding of that difference is
+// above the tolerance: the GPU cannot repeat it, so the node keeps such a curve on the CPU.
+TEST_F(NativeColorLookupGpuTest, ACurveTooSteepToRepeatStaysOnTheCpu)
+{
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_COLORLOOKUP));
+    ASSERT_TRUE(bool(node));
+    NativeImageEffect* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+    LookupSetting setting = { 0, 0, false, false, 0., 1., 0 };
+    applySetting(node, setting);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_TRUE(makesGpuKernel(effect));
+
+    setSteepCurves(node, 1e12, 0.5, 0.);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_FALSE(makesGpuKernel(effect));
+}
 
 #endif // NATRON_HAVE_GPU
 

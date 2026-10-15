@@ -838,17 +838,20 @@ enters, which hold `arithmetic()` (`Tests/Native/NativeClampGpu_Test.cpp`).
 Invert holds its CPU class, exact, except where a divisor, mask or mix below 1
 enters, which hold `arithmetic()` (`Tests/Native/NativeInvertGpu_Test.cpp`).
 ColorLookup holds `transcendental()` in the standard and film-like modes, including values outside
-`range`, which the shader evaluates from the curve's keys in float, and blends the table in two floats
-to round as the CPU's double does. Weighted standard holds 5e-4 relative and luminance 3e-5: they
+`range`, which the shader evaluates from the curve's keys with the key time and the cubic in two
+floats (a key time between two floats, times a steep slope, would otherwise move the value far
+beyond the bound), and blends the table in two floats to round as the CPU's double does. Weighted standard holds 5e-4 relative and luminance 3e-5: they
 divide a curve value by a channel's distance to 0 or 1, or by the luminance, which grows a float
 rounding as the divisor nears 0 (measured 2.1e-4 on RADV with "(Un)premult by", 1.3e-5 without, and
 1.05e-5 for luminance at the 1e-8 floor). Weighted standard also skips the colour of a pixel with a
 denormal colour channel, whose quotient depends on the device's denormal arithmetic. Pixels of two
-components stay on the CPU, as does a curve of more than 128 keys
+components stay on the CPU, as does a curve of more than 128 keys, and a curve `CurveSnapshot::packGpu`
+cannot bound within 1e-6 of the CPU: so steep before its first key that the CPU's own double
+rounding exceeds that, or with values and slopes so large that two floats do not hold them
 (`Tests/Native/NativeColorLookupGpu_Test.cpp`).
 Saturation holds its CPU class, transcendental, for every luminance option; the kernel takes the
 weights from the CPU's `ColorMath::luminance` (`Tests/Native/NativeSaturationGpu_Test.cpp`).
-ColorCorrect holds its CPU class, transcendental, in every group and luminance option, with the tone curves read from the CPU's table inside `range` and evaluated from their keys outside it, as ColorLookup does (shared through `CurveSnapshot::packGpu` and `Kernels/curvesnapshot.slang`); a curve of more than 128 keys stays on the CPU (`Tests/Native/NativeColorCorrectGpu_Test.cpp`).
+ColorCorrect holds its CPU class, transcendental, in every group and luminance option, with the tone curves read from the CPU's table inside `range` and evaluated from their keys outside it, as ColorLookup does (shared through `CurveSnapshot::packGpu` and `Kernels/curvesnapshot.slang`, so in two floats past a steep key between two floats too); a curve of more than 128 keys, or one `packGpu` cannot bound within 1e-6 of the CPU, stays on the CPU (`Tests/Native/NativeColorCorrectGpu_Test.cpp`).
 Constant and Solid hold their CPU class, exact, for every target layer and channel selection, with a source connected or not (`Tests/Native/NativeConstantGpu_Test.cpp`).
 CheckerBoard holds its CPU class, exact, at mipmap 0 and 1: the host classes every column and row of the region of definition with the CPU's double comparisons and the device looks the class up (`Tests/Native/NativeCheckerBoardGpu_Test.cpp`).
 Add and Multiply hold `arithmetic()` and Gamma holds `transcendental()`, where a subnormal input may come back as 0 on a device that flushes denormals (`Tests/Native/NativeColorMathGpu_Test.cpp`).

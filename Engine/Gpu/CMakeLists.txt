@@ -17,12 +17,31 @@ include("${NATRON_GPU_CMAKE_DIR}/SlangKernels.cmake")
 
 slang_add_kernel(grade Kernels/grade.slang ENTRY grade_main REGISTRY NatronGpu)
 slang_add_kernel(blur Kernels/blur.slang ENTRY blurPass REGISTRY NatronGpu)
-slang_add_kernel(pointop_grade Kernels/pointops.slang ENTRY pointop_grade REGISTRY NatronGpu)
-slang_add_kernel(pointop_invert Kernels/pointops.slang ENTRY pointop_invert REGISTRY NatronGpu)
-slang_add_kernel(pointop_chain Kernels/pointops.slang ENTRY pointop_chain REGISTRY NatronGpu)
-slang_add_kernel(pointop_masked Kernels/pointops.slang ENTRY pointop_masked REGISTRY NatronGpu)
+slang_add_kernel(blur_lines Kernels/blur_lines.slang ENTRY blur_lines REGISTRY NatronGpu)
+slang_add_kernel(morph_direct Kernels/morphology.slang ENTRY morph_direct REGISTRY NatronGpu)
+slang_add_kernel(morph_wide Kernels/morphology.slang ENTRY morph_wide REGISTRY NatronGpu)
+slang_add_kernel(morph_mask_bbox Kernels/morphology.slang ENTRY morph_mask_bbox REGISTRY NatronGpu)
+slang_add_kernel(morph_window Kernels/morphology.slang ENTRY morph_window REGISTRY NatronGpu)
+slang_add_kernel(wrap_divide Kernels/pixelwrap.slang ENTRY wrap_divide REGISTRY NatronGpu)
+slang_add_kernel(wrap_finish Kernels/pixelwrap.slang ENTRY wrap_finish REGISTRY NatronGpu)
+slang_add_kernel(invert Kernels/invert.slang ENTRY invert_main REGISTRY NatronGpu)
+slang_add_kernel(constant Kernels/generators.slang ENTRY constant_main REGISTRY NatronGpu)
+slang_add_kernel(checkerboard Kernels/generators.slang ENTRY checkerboard_main REGISTRY NatronGpu)
+slang_add_kernel(grade_wrapped Kernels/pixelwrap.slang ENTRY grade_wrapped REGISTRY NatronGpu)
+slang_add_kernel(clamp_wrapped Kernels/clamp.slang ENTRY clamp_wrapped REGISTRY NatronGpu)
+slang_add_kernel(colorlookup_wrapped Kernels/colorlookup.slang ENTRY colorlookup_wrapped REGISTRY NatronGpu)
+slang_add_kernel(colorcorrect_wrapped Kernels/colorcorrect.slang ENTRY colorcorrect_wrapped REGISTRY NatronGpu)
+slang_add_kernel(saturation_wrapped Kernels/saturation.slang ENTRY saturation_wrapped REGISTRY NatronGpu)
+slang_add_kernel(add_wrapped Kernels/colormath.slang ENTRY add_wrapped REGISTRY NatronGpu)
+slang_add_kernel(multiply_wrapped Kernels/colormath.slang ENTRY multiply_wrapped REGISTRY NatronGpu)
+slang_add_kernel(gamma_wrapped Kernels/colormath.slang ENTRY gamma_wrapped REGISTRY NatronGpu)
+slang_add_kernel(resample Kernels/resample.slang ENTRY resample_main REGISTRY NatronGpu)
+slang_add_kernel(resample_blur Kernels/resample.slang ENTRY resample_blur_main REGISTRY NatronGpu)
+slang_add_kernel(keyer Kernels/keyer.slang ENTRY keyer_main REGISTRY NatronGpu)
+slang_add_kernel(chromakeyer Kernels/chromakeyer.slang ENTRY chromakeyer_main REGISTRY NatronGpu)
 
 slang_write_kernel_table(NatronGpu OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/gen/GpuKernels.inc")
+get_property(NatronGpu_KERNELS GLOBAL PROPERTY SLANG_REGISTRY_NatronGpu)
 
 add_library(NatronGpu STATIC
     GpuDevice.cpp
@@ -34,6 +53,9 @@ add_library(NatronGpu STATIC
     GpuRuntime.cpp
     GpuTransfer.cpp
     GpuBlur.cpp
+    GpuMorphology.cpp
+    GpuResample.cpp
+    GpuWrap.cpp
     GlInterop.cpp
     Vma.cpp
 )
@@ -44,12 +66,7 @@ target_link_libraries(NatronGpu
     PUBLIC
         Vulkan::Vulkan
         Threads::Threads
-        grade
-        blur
-        pointop_grade
-        pointop_invert
-        pointop_chain
-        pointop_masked
+        ${NatronGpu_KERNELS}
 )
 target_compile_options(NatronGpu PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
 set_target_properties(NatronGpu PROPERTIES POSITION_INDEPENDENT_CODE ON)

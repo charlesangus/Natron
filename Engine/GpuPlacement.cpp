@@ -504,6 +504,16 @@ makeGpuQueryForTask(const FrameGraph::Task& task,
 
     const int maskInput = native->getMaskInput();
     query->hasMask = (maskInput >= 0) && native->getInput(maskInput) && native->isMaskEnabled(maskInput);
+    query->maskInPlane = false;
+    if (query->hasMask) {
+        ImageLayerDesc maskLayer;
+        int maskChannel = -1;
+        if (!native->resolveInputPlaneForRender(maskInput, task.key.time, task.key.view, &maskLayer, &maskChannel) || (maskChannel < 0)) {
+            query->maskInPlane = true;
+        } else {
+            query->maskInPlane = Node::getUnPremultSkipChannel(plane, maskLayer, maskChannel) >= 0;
+        }
+    }
 
     KnobDoublePtr mix = std::dynamic_pointer_cast<KnobDouble>(native->getKnobByName(kOfxMixParamName));
     query->mix = mix ? mix->getValueAtTime(task.key.time, 0, task.key.view) : 1.;
@@ -513,7 +523,19 @@ makeGpuQueryForTask(const FrameGraph::Task& task,
         query->processChannels[i] = channels[i];
     }
 
+    // The same redirections renderRoI() hands getImage().
+    query->hasConcatenatedInput = false;
+    const FrameViewRequest* frameView = nodeRequest->second->getFrameViewRequest(task.key.time, task.key.view);
+    if (frameView && frameView->globalData.transforms) {
+        for (InputMatrixMap::const_iterator it = frameView->globalData.transforms->begin(); it != frameView->globalData.transforms->end(); ++it) {
+            query->hasConcatenatedInput = query->hasConcatenatedInput || bool(it->second.newInputEffect);
+        }
+    }
+    const ParallelRenderArgsPtr frameArgs = context.getArgs(node);
+    query->draftMode = frameArgs && frameArgs->draftMode;
+
     query->unPremultChannel = -1;
+    query->unPremultInPlane = false;
     KnobChannelSelectPtr unPremultBy = native->wantsHostUnPremultSelector() ? node->getUnPremultBySelector() : KnobChannelSelectPtr();
     if (unPremultBy && !unPremultBy->isNone() && native->getInput(0)) {
         std::list<ImageLayerDesc> availableLayers;
@@ -522,6 +544,7 @@ makeGpuQueryForTask(const FrameGraph::Task& task,
         const int divisorChannel = node->getUnPremultChannel(availableLayers, &divisorLayer);
         if (divisorLayer.getNumComponents() > 0) {
             query->unPremultChannel = divisorChannel;
+            query->unPremultInPlane = (divisorChannel >= 0) && (Node::getUnPremultSkipChannel(plane, divisorLayer, divisorChannel) >= 0);
         }
     }
 

@@ -28,6 +28,9 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -40,6 +43,10 @@
 #include "Engine/Nodes/Image/CurveSnapshot.h"
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -58,6 +65,31 @@ const float kHistogramColors[3][3] = {
 
 // Intervals of the lookup table over `range`.
 const int kLutIntervals = 1023;
+
+#ifdef NATRON_HAVE_GPU
+// The parameter block of ColorLookupOp in colorlookup.slang, in words.
+const int kGpuLutSize = kLutIntervals + 1;
+const int kGpuCurveWords = CurveSnapshot::kGpuWords;
+const int kGpuHeaderWords = 32;
+const int kGpuYMin = 16;
+const int kGpuYMax = 21;
+const int kGpuKeyCount = 8;
+const int kGpuTableRange = 26;
+const int kGpuLutBase = kGpuHeaderWords;
+const int kGpuCurveBase = kGpuLutBase + ColorLookup::eCurveCount * kGpuLutSize;
+const int kGpuTotalWords = kGpuCurveBase + ColorLookup::eCurveCount * kGpuCurveWords;
+
+static_assert(kLutIntervals + 1 == 1024, "must match CS_TABLE_SIZE in curvesnapshot.slang");
+static_assert(kGpuTableRange + CurveSnapshot::kGpuTableRangeWords <= kGpuHeaderWords, "the table range lies in the header");
+
+void
+putFloat(std::vector<std::uint32_t>& words,
+         int index,
+         float value)
+{
+    std::memcpy(&words[index], &value, sizeof(float));
+}
+#endif // NATRON_HAVE_GPU
 
 int
 curveOfChannel(int channelBit)
@@ -161,6 +193,32 @@ public:
             }
         }
     }
+
+#ifdef NATRON_HAVE_GPU
+    // The tables colorlookup.slang reads, or false when a curve has more keys than it holds.
+    bool packGpu(std::vector<std::uint32_t>* words) const
+    {
+        words->assign(kGpuTotalWords, 0);
+        (*words)[0] = (std::uint32_t)_mode;
+        (*words)[1] = (std::uint32_t)_luminanceMath;
+        (*words)[2] = (_clampBlack ? 1u : 0u) | (_clampWhite ? 2u : 0u);
+        CurveSnapshot::packGpuTableRange(_rangeMin, _rangeMax, kLutIntervals, &(*words)[kGpuTableRange]);
+        for (int curve = 0; curve < ColorLookup::eCurveCount; ++curve) {
+            const CurveSnapshot& snapshot = _curves[curve];
+            if (!snapshot.packGpu(&(*words)[kGpuCurveBase + curve * kGpuCurveWords])) {
+                return false;
+            }
+            putFloat(*words, kGpuYMin + curve, (float)snapshot.yMin());
+            putFloat(*words, kGpuYMax + curve, (float)snapshot.yMax());
+            (*words)[kGpuKeyCount + curve] = (std::uint32_t)snapshot.keys().size();
+            for (std::size_t i = 0; i < _lut[curve].size(); ++i) {
+                putFloat(*words, kGpuLutBase + curve * kGpuLutSize + (int)i, _lut[curve][i]);
+            }
+        }
+
+        return true;
+    }
+#endif
 
 private:
     bool isStandard() const
@@ -675,6 +733,43 @@ ColorLookup::makeKernel(const KernelContext& context)
     }
 
     return std::make_shared<ColorLookupKernel>(params, curves);
+}
+
+int
+ColorLookup::gpuKernelId(const GpuQuery& query) const
+{
+#ifdef NATRON_HAVE_GPU
+    // Two-component pixels take a per-channel path the wrapped op does not see.
+    return (query.nComps == 2) ? -1 : (int)gpu::GpuKernelId::colorlookup_wrapped;
+#else
+    Q_UNUSED(query);
+
+    return -1;
+#endif
+}
+
+bool
+ColorLookup::makeGpuKernel(const KernelContext& context,
+                           PixelKernelGpu* gpuKernel)
+{
+#ifdef NATRON_HAVE_GPU
+    const std::shared_ptr<const ColorLookupKernel> kernel = std::static_pointer_cast<const ColorLookupKernel>(makeKernel(context));
+    std::vector<std::uint32_t> words;
+
+    if (!kernel->packGpu(&words)) {
+        return false;
+    }
+    gpuKernel->kernel = (int)gpu::GpuKernelId::colorlookup_wrapped;
+    gpuKernel->params.resize(words.size() * sizeof(std::uint32_t));
+    std::memcpy(gpuKernel->params.data(), words.data(), gpuKernel->params.size());
+
+    return true;
+#else
+    Q_UNUSED(context);
+    Q_UNUSED(gpuKernel);
+
+    return false;
+#endif
 }
 
 void

@@ -5,16 +5,26 @@
 # Environment:
 #   BENCH_TOPO    chain | mixed | wide | comp (generator-fed), or the plate-fed families
 #                 readchain | footagecomp | iobound | rambound | deepcomp (see README "Realistic workloads"),
-#                 or the per-node chains ccchain | blurchain | xfchain | mergechain | mergesrcchain
+#                 or the per-node chains ccchain | blurchain | xfchain | mergechain | mergesrcchain,
+#                 or the fixed GPU-region graphs gtg (Grade -> Transform with motion blur -> Grade) and
+#                 gebg (Grade -> Erode -> Blur -> Grade), and node (BENCH_NODE alone) and gxg (Grade -> BENCH_NODE
+#                 -> Grade); BENCH_N is ignored by these four
+#   BENCH_NODE    the node of the node and gxg topologies: transform (animated, motion blur per BENCH_MOTION_BLUR)
+#                 | blur (BENCH_BLUR_SIZE, BENCH_BLUR_FILTER) | erode (BENCH_ERODE_SIZE) | chromakeyer
 #   BENCH_N       approximate number of processing nodes
 #   BENCH_SIZE    WxH: render generator-fed topologies at this size; BENCH_RES is then only the record's label
 #   BENCH_BLUR_SIZE  size parameter of the Blur nodes (default 3; sigma = size / 2.4)
 #   BENCH_RES     tiny (32x32, isolates per-node overhead) | hd (1920x1080) | uhd (3840x2160); for the
 #                 plate-fed families it also picks the plate resolution (deepcomp always uses HD)
 #   BENCH_BLUR_FILTER  Blur "filter" choice (default: the plugin's own default)
+#   BENCH_MOTION_BLUR  Transform motion blur quality in gtg and the transform BENCH_NODE (default 1)
+#   BENCH_ERODE_SIZE  Erode size in gebg and the erode BENCH_NODE (default 6)
 #   BENCH_PLATES_DIR  where make_plates.py wrote the plates (default build/bench/fixtures)
 #   BENCH_FRAMES  frames timed one at a time after the warm-up frame (default 3)
+#   BENCH_WARMUP  0 times the first frame too instead of rendering it as an untimed warm-up (default 1)
 #   BENCH_RANGE   frames rendered as one range, to measure frame-parallel throughput (default 0)
+#   BENCH_KEEP_OUTPUT  1 keeps the rendered EXR files; by default each render's files are deleted and the
+#                 filesystem synced outside the timed interval, so dirty pages never throttle later frames
 #   BENCH_OUT     JSON-lines file the result is appended to
 #   BENCH_SEED    seed for the comp topology (default 1)
 #   BENCH_SETTINGS  semicolon-separated name=value Natron settings, recorded as "settings"; the shell
@@ -36,6 +46,7 @@ import os
 import random
 import re
 import resource
+import statistics
 import subprocess
 import sys
 import time
@@ -115,8 +126,11 @@ TOPO = os.environ.get("BENCH_TOPO", "chain")
 N = int(os.environ.get("BENCH_N", "10"))
 RES = os.environ.get("BENCH_RES", "tiny")
 FRAMES = int(os.environ.get("BENCH_FRAMES", "3"))
+WARMUP = os.environ.get("BENCH_WARMUP", "1") != "0"
+NODE = os.environ.get("BENCH_NODE", "transform")
 RANGE = int(os.environ.get("BENCH_RANGE", "0"))
 OUT = os.environ.get("BENCH_OUT", "")
+KEEP_OUTPUT = os.environ.get("BENCH_KEEP_OUTPUT") == "1"
 SEED = int(os.environ.get("BENCH_SEED", "1"))
 BLUR_FILTER = os.environ.get("BENCH_BLUR_FILTER", "")
 HOLD = float(os.environ.get("BENCH_HOLD", "0"))
@@ -146,6 +160,8 @@ if CUSTOM_SIZE:
     SIZES[RES] = tuple(int(v) for v in CUSTOM_SIZE.lower().split("x"))
 # Blur "size" (diameter): the Gaussian standard deviation is size / 2.4.
 BLUR_SIZE = float(os.environ.get("BENCH_BLUR_SIZE", "3"))
+MOTION_BLUR = float(os.environ.get("BENCH_MOTION_BLUR", "1"))
+ERODE_SIZE = int(os.environ.get("BENCH_ERODE_SIZE", "6"))
 
 counts = {}
 majors = {}
@@ -368,6 +384,60 @@ def build_mergesrcchain():
     return out
 
 
+def animated_transform(inp):
+    xf = make("net.sf.openfx.TransformPlugin")
+    xf.connectInput(0, inp)
+    w, h = SIZES[RES]
+    param(xf, "center").set(w / 2.0, h / 2.0)
+    # Motion blur samples the transform across the shutter, so it must change from frame to frame.
+    translate = param(xf, "translate")
+    rotate = param(xf, "rotate")
+    for f in range(1, LAST_FRAME + 1):
+        translate.setValueAtTime(14.0 * f, f, 0)
+        translate.setValueAtTime(6.0 * f, f, 1)
+        rotate.setValueAtTime(0.8 * f, f, 0)
+    param(xf, "motionBlur").set(MOTION_BLUR)
+    param(xf, "shutter").set(1.0)
+    return xf
+
+
+def build_gtg():
+    return grade(animated_transform(grade(source(0), 0)), 1)
+
+
+def erode(inp):
+    n = make("net.sf.cimg.CImgErode")
+    n.connectInput(0, inp)
+    param(n, "size").set(ERODE_SIZE, ERODE_SIZE)
+    return n
+
+
+def chromakeyer(inp):
+    n = make("net.sf.openfx.ChromaKeyerPlugin")
+    n.connectInput(0, inp)
+    return n
+
+
+def bench_node(inp):
+    makers = {"transform": animated_transform, "blur": lambda i: blur(i, 0), "erode": erode,
+              "chromakeyer": chromakeyer}
+    if NODE not in makers:
+        raise RuntimeError("BENCH_NODE must be one of %s, got %r" % (", ".join(sorted(makers)), NODE))
+    return makers[NODE](inp)
+
+
+def build_node():
+    return bench_node(source(0))
+
+
+def build_gxg():
+    return grade(bench_node(grade(source(0), 0)), 1)
+
+
+def build_gebg():
+    return grade(blur(erode(grade(source(0), 0)), 0), 1)
+
+
 def build_mixed():
     ops = (grade, blur, transform, colorcorrect)
     out = source(0)
@@ -565,12 +635,30 @@ def load_pressure():
     return out
 
 
+written_glob = ""
+output_bytes = 0
+output_files = 0
+
+
+def settle_output():
+    # Deleting before the sync drops the dirty pages instead of writing them back.
+    global output_bytes, output_files
+    for p in glob.glob(written_glob):
+        output_bytes += os.path.getsize(p)
+        output_files += 1
+        if not KEEP_OUTPUT:
+            os.remove(p)
+    os.sync()
+
+
 def render(writer, first, last):
     io0 = proc_io()
     c0, t0 = rusage(), time.time()
     app.render(writer, first, last)
     t1, c1 = time.time(), rusage()
-    return t1 - t0, c1 - c0, io_delta(io0, proc_io())
+    io = io_delta(io0, proc_io())
+    settle_output()
+    return t1 - t0, c1 - c0, io
 
 
 def mem_total_mb():
@@ -625,7 +713,8 @@ def main():
                 "readchain": build_readchain, "footagecomp": build_footagecomp, "iobound": build_iobound,
                 "rambound": build_rambound, "deepcomp": build_deepcomp, "ccchain": build_ccchain,
                 "blurchain": build_blurchain, "xfchain": build_xfchain, "mergechain": build_mergechain,
-                "mergesrcchain": build_mergesrcchain}
+                "mergesrcchain": build_mergesrcchain, "gtg": build_gtg, "gebg": build_gebg,
+                "node": build_node, "gxg": build_gxg}
     t0 = time.time()
     root = builders[TOPO]()
     build_s = time.time() - t0
@@ -638,6 +727,8 @@ def main():
     os.makedirs(WORK, exist_ok=True)
     path = os.path.join(WORK, "%s_%d_%s_####.exr" % (TOPO, N, RES))
     written = os.path.join(WORK, "%s_%d_%s_[0-9][0-9][0-9][0-9].exr" % (TOPO, N, RES))
+    global written_glob
+    written_glob = written
     for stale in glob.glob(written):
         os.remove(stale)
     writer = app.createWriter(path)
@@ -666,23 +757,24 @@ def main():
 
     rss_before = vm("VmRSS")
     pressure_start = load_pressure()
-    warm_wall, warm_cpu, warm_io = render(writer, 1, 1)
+    warm_wall = warm_cpu = warm_io = None
+    if WARMUP:
+        warm_wall, warm_cpu, warm_io = render(writer, 1, 1)
+    first_timed = 2 if WARMUP else 1
     walls, cpus, ios = [], [], []
-    for f in range(2, 2 + FRAMES):
+    for f in range(first_timed, first_timed + FRAMES):
         w, c, io = render(writer, f, f)
         walls.append(w)
         cpus.append(c)
         ios.append(io)
     range_wall = range_cpu = range_io = None
     if RANGE > 0:
-        first = 2 + FRAMES
+        first = first_timed + FRAMES
         range_wall, range_cpu, range_io = render(writer, first, first + RANGE - 1)
     pressure_end = load_pressure()
-    outputs = glob.glob(written)
-    output_bytes = sum(os.path.getsize(p) for p in outputs)
 
     stats_fields = render_stats(writer) if os.environ.get("BENCH_RENDER_STATS") == "1" else {}
-    med = sorted(walls)[len(walls) // 2] if walls else None
+    med = statistics.median(walls) if walls else None
     result = {
         "topo": TOPO,
         "n": N,
@@ -693,8 +785,11 @@ def main():
         "blur_filter": BLUR_FILTER,
         "named": NAMED,
         "build_s": round(build_s, 4),
-        "warm_wall_s": round(warm_wall, 4),
-        "warm_cpu_s": round(warm_cpu, 4),
+        "warm_wall_s": round(warm_wall, 4) if warm_wall is not None else None,
+        "warm_cpu_s": round(warm_cpu, 4) if warm_cpu is not None else None,
+        "bench_node": NODE if TOPO in ("node", "gxg") else None,
+        "erode_size": ERODE_SIZE,
+        "motion_blur": MOTION_BLUR,
         "frame_wall_s": [round(w, 4) for w in walls],
         "frame_wall_med_s": round(med, 4) if med is not None else None,
         "frame_cpu_s": [round(c, 4) for c in cpus],
@@ -715,7 +810,7 @@ def main():
         "plate_res": PLATE_RES if TOPO in READ_TOPOS else None,
         "plate_bytes": sum(plate_reads),
         "output_bytes": output_bytes,
-        "output_frames": len(outputs),
+        "output_frames": output_files,
         "io_phases": {"warm": warm_io, "frames": io_sum(ios), "range": range_io},
     }
     for key, value in pressure_start.items():

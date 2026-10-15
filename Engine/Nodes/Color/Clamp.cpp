@@ -26,6 +26,9 @@
 #include "Clamp.h"
 
 #include <cfloat>
+#include <cmath>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 
@@ -34,9 +37,12 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/RenderScale.h"
 
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
+
 NATRON_NAMESPACE_ENTER
 
-namespace {
 struct ClampValues {
     double minimum[4];
     double maximum[4];
@@ -48,6 +54,7 @@ struct ClampValues {
     bool maxClampToEnable;
 };
 
+namespace {
 class ClampKernel
     : public PixelKernel {
 public:
@@ -167,6 +174,52 @@ readBool(const KnobBoolWPtr& weak,
 
     return knob ? knob->getValueAtTime(time, 0, view) : defaultValue;
 }
+
+#ifdef NATRON_HAVE_GPU
+// The parameter block of ClampOp in clamp.slang, which has no padding between members.
+struct ClampGpuParams {
+    float minTest[4];
+    float maxTest[4];
+    float minValue[4];
+    float maxValue[4];
+    float minClampTo[4];
+    float maxClampTo[4];
+    uint32_t flags;
+};
+
+static_assert(sizeof(ClampGpuParams) == 100, "must match ClampOp in clamp.slang");
+
+constexpr uint32_t kClampGpuMinimumEnable = 1;
+constexpr uint32_t kClampGpuMaximumEnable = 2;
+constexpr uint32_t kClampGpuMinClampToEnable = 4;
+constexpr uint32_t kClampGpuMaxClampToEnable = 8;
+
+// The smallest float not below d: a float v is below d exactly when it is below this.
+float
+ceilToFloat(double d)
+{
+    float f = (float)d;
+
+    if ((double)f < d) {
+        f = std::nextafter(f, std::numeric_limits<float>::infinity());
+    }
+
+    return f;
+}
+
+// The largest float not above d: a float v is above d exactly when it is above this.
+float
+floorToFloat(double d)
+{
+    float f = (float)d;
+
+    if ((double)f > d) {
+        f = std::nextafter(f, -std::numeric_limits<float>::infinity());
+    }
+
+    return f;
+}
+#endif
 } // anonymous namespace
 
 Clamp::Clamp(NodePtr node)
@@ -247,21 +300,67 @@ Clamp::initializeKnobs()
     addMaskMixKnobs(page);
 }
 
-PixelKernelPtr
-Clamp::makeKernel(const KernelContext& context)
+ClampValues
+Clamp::readValues(double time,
+                  ViewIdx view) const
 {
     ClampValues values;
 
-    readColor(_minimum, context.time, context.view, 0., values.minimum);
-    readColor(_maximum, context.time, context.view, 1., values.maximum);
-    readColor(_minClampTo, context.time, context.view, 0., values.minClampTo);
-    readColor(_maxClampTo, context.time, context.view, 1., values.maxClampTo);
-    values.minimumEnable = readBool(_minimumEnable, context.time, context.view, true);
-    values.maximumEnable = readBool(_maximumEnable, context.time, context.view, true);
-    values.minClampToEnable = readBool(_minClampToEnable, context.time, context.view, false);
-    values.maxClampToEnable = readBool(_maxClampToEnable, context.time, context.view, false);
+    readColor(_minimum, time, view, 0., values.minimum);
+    readColor(_maximum, time, view, 1., values.maximum);
+    readColor(_minClampTo, time, view, 0., values.minClampTo);
+    readColor(_maxClampTo, time, view, 1., values.maxClampTo);
+    values.minimumEnable = readBool(_minimumEnable, time, view, true);
+    values.maximumEnable = readBool(_maximumEnable, time, view, true);
+    values.minClampToEnable = readBool(_minClampToEnable, time, view, false);
+    values.maxClampToEnable = readBool(_maxClampToEnable, time, view, false);
 
-    return std::make_shared<ClampKernel>(values);
+    return values;
+}
+
+PixelKernelPtr
+Clamp::makeKernel(const KernelContext& context)
+{
+    return std::make_shared<ClampKernel>(readValues(context.time, context.view));
+}
+
+int
+Clamp::gpuKernelId(const GpuQuery& /*query*/) const
+{
+#ifdef NATRON_HAVE_GPU
+    return (int)gpu::GpuKernelId::clamp_wrapped;
+#else
+    return -1;
+#endif
+}
+
+bool
+Clamp::makeGpuKernel(const KernelContext& context,
+                     PixelKernelGpu* gpuKernel)
+{
+#ifdef NATRON_HAVE_GPU
+    const ClampValues values = readValues(context.time, context.view);
+
+    ClampGpuParams p = {};
+    for (int i = 0; i < 4; ++i) {
+        p.minTest[i] = ceilToFloat(values.minimum[i]);
+        p.maxTest[i] = floorToFloat(values.maximum[i]);
+        p.minValue[i] = (float)values.minimum[i];
+        p.maxValue[i] = (float)values.maximum[i];
+        p.minClampTo[i] = (float)values.minClampTo[i];
+        p.maxClampTo[i] = (float)values.maxClampTo[i];
+    }
+    p.flags = (values.minimumEnable ? kClampGpuMinimumEnable : 0) | (values.maximumEnable ? kClampGpuMaximumEnable : 0) | (values.minClampToEnable ? kClampGpuMinClampToEnable : 0) | (values.maxClampToEnable ? kClampGpuMaxClampToEnable : 0);
+    gpuKernel->kernel = (int)gpu::GpuKernelId::clamp_wrapped;
+    gpuKernel->setParams(p);
+
+    return true;
+#else
+    Q_UNUSED(context);
+    Q_UNUSED(gpuKernel);
+
+    return false;
+#endif
 }
 
 bool

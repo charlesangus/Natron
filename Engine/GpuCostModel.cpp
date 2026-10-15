@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <vector>
 
 #include <QThreadPool>
 
@@ -36,6 +37,8 @@
 #include "Engine/GpuContext.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Transform/Transform.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -57,6 +60,7 @@ struct SeedCpuSigmaRow {
 
 struct SeedGpuRow {
     const char* pluginId;
+    const char* kind;
     double sigmaMax;
     double kernelMsPerMpx;
 };
@@ -64,11 +68,17 @@ struct SeedGpuRow {
 #include "Engine/GpuCostSeed.inc"
 
 const SeedCpuRow kSeedCpuRows[] = { NATRON_GPU_COST_SEED_CPU_ROWS };
+// A vector, since the generator emits no rows when the bench comps render nothing with motion blur.
+const std::vector<SeedCpuRow> kSeedCpuMotionBlurRows = { NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROWS };
 const SeedCpuSigmaRow kSeedCpuSigmaRows[] = { NATRON_GPU_COST_SEED_CPU_SIGMA_ROWS };
 const SeedGpuRow kSeedGpuRows[] = { NATRON_GPU_COST_SEED_GPU_ROWS };
 
 // The thread count the seed's threaded profiles ran with.
 const int kSeedThreads = 16;
+
+const char* const kGradePluginId = "net.sf.openfx.GradePlugin";
+const char* const kBlurPluginId = "net.sf.cimg.CImgBlur";
+const double kBlurDefaultSigma = 25.;
 
 const double kInfinity = std::numeric_limits<double>::infinity();
 
@@ -119,6 +129,13 @@ GpuCostModel::GpuCostModel()
         row.parallelSpeedup = seed.parallelSpeedup;
         _cpu[seed.pluginId].push_back(row);
     }
+    for (const SeedCpuRow& seed : kSeedCpuMotionBlurRows) {
+        CpuRow row;
+        row.motionBlur = true;
+        row.serialMsPerMpx = seed.serialMsPerMpx;
+        row.parallelSpeedup = seed.parallelSpeedup;
+        _cpu[seed.pluginId].push_back(row);
+    }
     for (const SeedCpuSigmaRow& seed : kSeedCpuSigmaRows) {
         CpuRow row;
         row.sigmaMax = seed.sigmaMax;
@@ -129,6 +146,8 @@ GpuCostModel::GpuCostModel()
     }
     for (const SeedGpuRow& seed : kSeedGpuRows) {
         GpuRow row;
+        row.iir = (std::strcmp(seed.kind, "iir") == 0);
+        row.motionBlur = (std::strcmp(seed.kind, "motion_blur") == 0);
         row.sigmaMax = seed.sigmaMax;
         row.kernelMsPerMpx = seed.kernelMsPerMpx;
         _gpu[seed.pluginId].push_back(row);
@@ -223,13 +242,20 @@ GpuCostModel::traitsOf(const FrameGraph::Task& task) const
         return GpuTaskTraits();
     }
     GpuTaskTraits traits(node->getPluginID());
+    traits.inputCount = node->getNInputs();
     EffectInstancePtr effect = node->getEffectInstance();
+    if (const NativeImageEffect* native = dynamic_cast<const NativeImageEffect*>(effect.get())) {
+        traits.costClass = native->isPointOp() ? GpuCostClass::ePointOp : GpuCostClass::eSpatial;
+    }
     if (const Blur* blur = dynamic_cast<const Blur*>(effect.get())) {
         BlurParams params;
         blur->getParams(task.key.time, task.key.view, &params);
         const double scale = std::ldexp(1., -(int)task.cacheMipmapLevel);
         traits.sigma = std::max(params.sizeX, params.sizeY) * scale / 2.4;
         traits.iir = (params.filter == BlurKernels::eFilterQuasiGaussian) || (params.filter == BlurKernels::eFilterGaussian);
+    }
+    if (const TransformNode* transform = dynamic_cast<const TransformNode*>(effect.get())) {
+        traits.motionBlur = transform->rendersWithMotionBlur(task.key.time, task.key.view);
     }
 
     return traits;
@@ -252,6 +278,9 @@ GpuCostModel::findCpuRowLocked(const GpuTaskTraits& traits) const
     }
     const CpuRow* plain = nullptr;
     for (const CpuRow& row : found->second) {
+        if (row.motionBlur != traits.motionBlur) {
+            continue;
+        }
         if (row.sigmaMax < 0.) {
             plain = &row;
         } else if ((row.iir == traits.iir) && (row.sigmaMax >= traits.sigma)) {
@@ -272,16 +301,21 @@ const GpuCostModel::GpuRow*
 GpuCostModel::findGpuRowLocked(const GpuTaskTraits& traits) const
 {
     std::map<std::string, std::vector<GpuRow>>::const_iterator found = _gpu.find(traits.pluginId);
-    if ((found == _gpu.end()) || found->second.empty()) {
+    if (found == _gpu.end()) {
         return nullptr;
     }
+    const GpuRow* last = nullptr;
     for (const GpuRow& row : found->second) {
+        if ((row.motionBlur != traits.motionBlur) || (row.iir != traits.iir)) {
+            continue;
+        }
         if (row.sigmaMax >= traits.sigma) {
             return &row;
         }
+        last = &row;
     }
 
-    return &found->second.back();
+    return last;
 }
 
 GpuCostModel::GpuRow*
@@ -298,12 +332,54 @@ GpuCostModel::seedThreadMsPerMpxLocked(const CpuRow& row) const
     return row.serialMsPerMpx * threads / speedupAt(threads, row.parallelSpeedup);
 }
 
+const GpuCostModel::CpuRow*
+GpuCostModel::findCpuRowOrDefaultLocked(const GpuTaskTraits& traits) const
+{
+    if (const CpuRow* row = findCpuRowLocked(traits)) {
+        return row;
+    }
+    if (traits.costClass == GpuCostClass::ePointOp) {
+        return findCpuRowLocked(GpuTaskTraits(kGradePluginId));
+    }
+    if (traits.costClass == GpuCostClass::eSpatial) {
+        return findCpuRowLocked(GpuTaskTraits(kBlurPluginId, kBlurDefaultSigma, false));
+    }
+
+    return nullptr;
+}
+
+bool
+GpuCostModel::gpuMsPerMpxLocked(const GpuTaskTraits& traits,
+                                double* msPerMpx) const
+{
+    if (const GpuRow* row = findGpuRowLocked(traits)) {
+        *msPerMpx = row->kernelMsPerMpx;
+
+        return true;
+    }
+    if (traits.costClass == GpuCostClass::ePointOp) {
+        if (const GpuRow* row = findGpuRowLocked(GpuTaskTraits(kGradePluginId))) {
+            *msPerMpx = row->kernelMsPerMpx * (std::max(1, traits.inputCount) + 1) / 2.;
+
+            return true;
+        }
+    } else if (traits.costClass == GpuCostClass::eSpatial) {
+        if (const GpuRow* row = findGpuRowLocked(GpuTaskTraits(kBlurPluginId, kBlurDefaultSigma, false))) {
+            *msPerMpx = row->kernelMsPerMpx;
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
 double
 GpuCostModel::cpuMs(const GpuTaskTraits& traits,
                     double megapixels) const
 {
     std::lock_guard<std::mutex> lock(_mutex);
-    const CpuRow* row = findCpuRowLocked(traits);
+    const CpuRow* row = findCpuRowOrDefaultLocked(traits);
 
     if (!row) {
         return 0.;
@@ -318,9 +394,9 @@ GpuCostModel::gpuMs(const GpuTaskTraits& traits,
                     double megapixels) const
 {
     std::lock_guard<std::mutex> lock(_mutex);
-    const GpuRow* row = findGpuRowLocked(traits);
+    double msPerMpx = 0.;
 
-    return row ? row->kernelMsPerMpx * megapixels : kInfinity;
+    return gpuMsPerMpxLocked(traits, &msPerMpx) ? msPerMpx * megapixels : kInfinity;
 }
 
 bool
@@ -328,7 +404,9 @@ GpuCostModel::hasGpuCost(const GpuTaskTraits& traits) const
 {
     std::lock_guard<std::mutex> lock(_mutex);
 
-    return findGpuRowLocked(traits) != nullptr;
+    double msPerMpx = 0.;
+
+    return gpuMsPerMpxLocked(traits, &msPerMpx);
 }
 
 double
@@ -410,6 +488,7 @@ GpuCostModel::observeCpu(const GpuTaskTraits& traits,
 
     if (!row) {
         CpuRow fresh;
+        fresh.motionBlur = traits.motionBlur;
         fresh.measured = true;
         fresh.threadMsPerMpx = sample;
         _cpu[traits.pluginId].push_back(fresh);
@@ -443,6 +522,8 @@ GpuCostModel::observeGpu(const GpuTaskTraits& traits,
 
     if (!row) {
         GpuRow fresh;
+        fresh.motionBlur = traits.motionBlur;
+        fresh.iir = traits.iir;
         fresh.sigmaMax = kInfinity;
         fresh.kernelMsPerMpx = sample;
         _gpu[traits.pluginId].push_back(fresh);

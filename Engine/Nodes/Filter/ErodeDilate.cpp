@@ -48,9 +48,39 @@
 #include "Engine/Nodes/Filter/SpatialFilterSupport.h"
 #include "Engine/RectD.h"
 
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuMorphology.h"
+#include "Engine/Gpu/GpuRecord.h"
+#endif
+
 NATRON_NAMESPACE_ENTER
 
 using namespace SpatialFilter;
+
+namespace {
+struct Phase {
+    int halfX;
+    int halfY;
+    bool takeMax;
+};
+
+// The operation of the positive axes first, then the opposite one on the negative axes.
+void
+getPhases(const RenderScale& scale,
+          const ErodeDilateParams& params,
+          bool dilate,
+          Phase phases[2])
+{
+    const OfxPointD rs = scale.toOfxPointD();
+
+    phases[0].halfX = (int)std::floor(std::max(0, params.sizeX) * rs.x);
+    phases[0].halfY = (int)std::floor(std::max(0, params.sizeY) * rs.y);
+    phases[0].takeMax = dilate;
+    phases[1].halfX = (int)std::floor(std::max(0, -params.sizeX) * rs.x);
+    phases[1].halfY = (int)std::floor(std::max(0, -params.sizeY) * rs.y);
+    phases[1].takeMax = !dilate;
+}
+} // anonymous namespace
 
 namespace ErodeDilateKernels {
 namespace {
@@ -372,21 +402,8 @@ ErodeDilate::render(const RenderActionArgs& args)
     ErodeDilateParams params;
     getParams(args.time, args.view, &params);
 
-    const OfxPointD rs = args.mappedScale.toOfxPointD();
-    // The operation of the positive axes first, then the opposite one on the negative axes.
-    const int positiveHalfX = (int)std::floor(std::max(0, params.sizeX) * rs.x);
-    const int positiveHalfY = (int)std::floor(std::max(0, params.sizeY) * rs.y);
-    const int negativeHalfX = (int)std::floor(std::max(0, -params.sizeX) * rs.x);
-    const int negativeHalfY = (int)std::floor(std::max(0, -params.sizeY) * rs.y);
-    struct Phase {
-        int halfX;
-        int halfY;
-        bool takeMax;
-    };
-    const Phase phases[2] = {
-        { positiveHalfX, positiveHalfY, _dilate },
-        { negativeHalfX, negativeHalfY, !_dilate }
-    };
+    Phase phases[2];
+    getPhases(args.mappedScale, params, _dilate, phases);
 
     const double mixValue = getMixValue(args.time, args.view);
     const float mix = (float)mixValue;
@@ -576,5 +593,195 @@ ErodeDilate::render(const RenderActionArgs& args)
 
     return eStatusOK;
 } // ErodeDilate::render
+
+bool
+ErodeDilate::canRenderOnGpu(const GpuQuery& query) const
+{
+#ifdef NATRON_HAVE_GPU
+    if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps < 1) || (query.nComps > (int)gpu::kGpuMorphMaxChannels)) {
+        return false;
+    }
+    if ((query.unPremultChannel >= 0) && !query.unPremultInPlane) {
+        return false;
+    }
+    ErodeDilateParams params;
+    getParams(query.time, query.view, &params);
+    Phase phases[2];
+    getPhases(query.mappedScale, params, _dilate, phases);
+    for (int ph = 0; ph < 2; ++ph) {
+        if ((phases[ph].halfX > (int)gpu::kGpuMorphMaxRadius) || (phases[ph].halfY > (int)gpu::kGpuMorphMaxRadius)) {
+            return false;
+        }
+    }
+
+    return true;
+#else
+    Q_UNUSED(query);
+
+    return false;
+#endif
+}
+
+RectI
+ErodeDilate::getGpuInputRoI(int inputNb,
+                            const RectI& outputRect,
+                            const RenderScale& scale) const
+{
+    if (inputNb != 0) {
+        return NativeImageEffect::getGpuInputRoI(inputNb, outputRect, scale);
+    }
+    ErodeDilateParams params;
+    getParams(getCurrentTime(), getCurrentView(), &params);
+
+    return getSourceRoI(outputRect, scale, params);
+}
+
+StatusEnum
+ErodeDilate::renderGpu(const GpuRenderArgs& args)
+{
+#ifdef NATRON_HAVE_GPU
+    if (!canRenderOnGpu(args.query) || args.inputs.empty()) {
+        return eStatusFailed;
+    }
+    const GpuImageView& src = args.inputs[0];
+    const GpuImageView& dst = args.output;
+    const int nComps = args.query.nComps;
+    const RectI& rect = args.outputRect;
+    EffectInstancePtr input = getInput(0);
+    if (!input || !isUsableGpuView(src, nComps) || !isUsableGpuView(dst, nComps) || isEmptyRect(rect) || !dst.bounds.contains(rect)) {
+        return eStatusFailed;
+    }
+
+    const double time = args.query.time;
+    const ViewIdx view = args.query.view;
+    const RenderScale& scale = args.query.mappedScale;
+    ErodeDilateParams params;
+    getParams(time, view, &params);
+    Phase phases[2];
+    getPhases(scale, params, _dilate, phases);
+    std::vector<gpu::GpuMorphPass> passes;
+    for (int ph = 0; ph < 2; ++ph) {
+        if (phases[ph].halfX > 0) {
+            passes.push_back(gpu::GpuMorphPass { (uint32_t)phases[ph].halfX, false, phases[ph].takeMax });
+        }
+        if (phases[ph].halfY > 0) {
+            passes.push_back(gpu::GpuMorphPass { (uint32_t)phases[ph].halfY, true, phases[ph].takeMax });
+        }
+    }
+
+    RectD ownRoD;
+    bool isProjectFormat = false;
+    if (getRegionOfDefinition_public(getRenderHash(), time, scale, view, &ownRoD, &isProjectFormat) == eStatusFailed) {
+        return eStatusFailed;
+    }
+    const RectI rodPixel = toPixelEnclosing(ownRoD, scale, getAspectRatio(-1));
+    const RectI sourceRoI = getSourceRoI(rect, scale, params);
+
+    const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
+    RectD srcRoD;
+    if (input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &srcRoD, &isProjectFormat) == eStatusFailed) {
+        return eStatusFailed;
+    }
+    RectI valid;
+    intersectRects(src.bounds, toPixelEnclosing(srcRoD, scale, getAspectRatio(0)), &valid);
+
+    int divisor = -1;
+    if (!getGpuUnPremultComponent(args.query, &divisor)) {
+        return eStatusFailed;
+    }
+    const double mix = getMixValue(time, view);
+    bool allChannels = true;
+    for (int c = 0; c < 4; ++c) {
+        allChannels = allChannels && args.query.processChannels[c];
+    }
+    // With mix 0 render() processes nothing and the finish passes the source through.
+    const bool filtering = !passes.empty() && (mix != 0.);
+    const bool finish = !filtering || args.query.hasMask || (mix != 1.) || !allChannels || (divisor >= 0);
+
+    // The source view may extend past the input's region of definition; render() reads the
+    // divisor there as 1, as the wrap does outside its source view.
+    GpuRenderArgs wrapArgs(args);
+    wrapArgs.inputs[0] = cropGpuView(src, valid);
+
+    gpu::GpuRecordContext& ctx = args.context;
+    GpuImageView filterSource = wrapArgs.inputs[0];
+    if ((divisor >= 0) || !filtering) {
+        // render()'s buffer: the source divided where the divisor is usable, zero outside it.
+        RectI dividedRect = rect;
+        if (filtering) {
+            intersectRects(sourceRoI, rodPixel, &dividedRect);
+        }
+        filterSource = GpuImageView();
+        if (!isEmptyRect(dividedRect)) {
+            filterSource.bounds = dividedRect;
+            filterSource.nComps = nComps;
+            filterSource.rowStrideFloats = dividedRect.width() * nComps;
+            if (!ctx.scratch((VkDeviceSize)dividedRect.area() * nComps * sizeof(float), filterSource.buffer) || (recordGpuDivide(wrapArgs, filterSource) != eStatusOK)) {
+                return eStatusFailed;
+            }
+            ctx.computeBarrier();
+        }
+    }
+    if (!filtering) {
+        return recordGpuFinish(wrapArgs, filterSource);
+    }
+
+    GpuImageView filtered = dst;
+    if (finish) {
+        filtered = GpuImageView();
+        filtered.bounds = rect;
+        filtered.nComps = nComps;
+        filtered.rowStrideFloats = rect.width() * nComps;
+        if (!ctx.scratch((VkDeviceSize)rect.area() * nComps * sizeof(float), filtered.buffer)) {
+            return eStatusFailed;
+        }
+    }
+
+    gpu::GpuMorphology morph;
+    morph.src = toGpuBlurImage(filterSource);
+    morph.dst = toGpuBlurImage(filtered);
+    morph.output = toGpuBlurRect(rect);
+    morph.rod = toGpuBlurRect(rodPixel);
+    morph.haloX = rect.x1 - sourceRoI.x1;
+    morph.haloY = rect.y1 - sourceRoI.y1;
+    morph.passes = passes;
+    morph.channels = (uint32_t)nComps;
+
+    // render() shrinks the processed window to the mask it fetched, so a mask it cannot fetch
+    // leaves the window whole.
+    const int maskInput = getMaskInput();
+    if (args.query.hasMask && (maskInput >= 0) && (maskInput < (int)args.inputs.size()) && args.inputs[maskInput].buffer) {
+        const GpuImageView& maskView = args.inputs[maskInput];
+        ImageLayerDesc maskLayer;
+        int maskChannel = -1;
+        if (resolveInputPlaneForRender(maskInput, time, view, &maskLayer, &maskChannel) && (maskChannel >= 0) && (maskChannel < maskLayer.getNumComponents())) {
+            const int component = getGpuMaskViewComponent(maskLayer, maskChannel, maskView.nComps);
+            if ((component < 0) || (component >= maskView.nComps) || (maskView.rowStrideFloats < maskView.bounds.width() * maskView.nComps) || ((maskView.byteOffset % sizeof(float)) != 0)) {
+                return eStatusFailed;
+            }
+            gpu::GpuMorphMask mask;
+            mask.image = toGpuBlurImage(maskView);
+            mask.nComps = (uint32_t)maskView.nComps;
+            mask.channel = (uint32_t)component;
+            mask.invert = getMaskInvertValue(time, view);
+            morph.mask = mask;
+        }
+    }
+
+    if (!gpu::recordMorphology(ctx, morph)) {
+        return eStatusFailed;
+    }
+    if (!finish) {
+        return eStatusOK;
+    }
+    ctx.computeBarrier();
+
+    return recordGpuFinish(wrapArgs, filtered);
+#else
+    Q_UNUSED(args);
+
+    return eStatusFailed;
+#endif
+} // ErodeDilate::renderGpu
 
 NATRON_NAMESPACE_EXIT

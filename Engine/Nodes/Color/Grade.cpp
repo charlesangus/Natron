@@ -53,6 +53,13 @@ struct GradeValues {
     double gamma[4];
 };
 
+struct GradeSettings {
+    GradeValues values;
+    bool reverse;
+    bool clampBlack;
+    bool clampWhite;
+};
+
 namespace {
 struct GradeChannel {
     double a;
@@ -78,15 +85,12 @@ gradeChannels(const GradeValues& values,
 class GradeKernel
     : public PixelKernel {
 public:
-    GradeKernel(const GradeValues& values,
-                bool reverse,
-                bool clampBlack,
-                bool clampWhite)
-        : _reverse(reverse)
-        , _clampBlack(clampBlack)
-        , _clampWhite(clampWhite)
+    explicit GradeKernel(const GradeSettings& settings)
+        : _reverse(settings.reverse)
+        , _clampBlack(settings.clampBlack)
+        , _clampWhite(settings.clampWhite)
     {
-        gradeChannels(values, _channels);
+        gradeChannels(settings.values, _channels);
     }
 
     virtual void processRow(const RowIO& io) const OVERRIDE FINAL
@@ -230,46 +234,21 @@ readBool(const KnobBoolWPtr& weak,
 }
 
 #ifdef NATRON_HAVE_GPU
-// Mirrors GradeParams in grade.slang, which has no padding between members.
+// The parameter block of GradeOp in pixelwrap.slang, which has no padding between members.
 struct GradeGpuParams {
     float a[4];
     float b[4];
     float gamma[4];
     float invGamma[4];
-    uint32_t width;
-    uint32_t height;
-    uint32_t nComps;
     uint32_t channelMask;
     uint32_t flags;
-    uint32_t srcOffset;
-    uint32_t srcStride;
-    uint32_t dstOffset;
-    uint32_t dstStride;
 };
 
-static_assert(sizeof(GradeGpuParams) == 100, "must match GradeParams in grade.slang");
+static_assert(sizeof(GradeGpuParams) == 72, "must match GradeOp in pixelwrap.slang");
 
 constexpr uint32_t kGradeGpuReverse = 1;
 constexpr uint32_t kGradeGpuClampBlack = 2;
 constexpr uint32_t kGradeGpuClampWhite = 4;
-
-// Float offset of the first pixel of `rect` inside view, or false when the view cannot hold it.
-bool
-windowOffset(const GpuImageView& view,
-             const RectI& rect,
-             uint32_t& offset)
-{
-    if (!view.buffer || (view.byteOffset % sizeof(float) != 0) || (view.rowStrideFloats <= 0) || !view.bounds.contains(rect)) {
-        return false;
-    }
-    const uint64_t floats = view.byteOffset / sizeof(float) + (uint64_t)(rect.y1 - view.bounds.y1) * (uint64_t)view.rowStrideFloats + (uint64_t)(rect.x1 - view.bounds.x1) * (uint64_t)view.nComps;
-    if (floats > UINT32_MAX) {
-        return false;
-    }
-    offset = (uint32_t)floats;
-
-    return true;
-}
 #endif
 } // anonymous namespace
 
@@ -377,81 +356,63 @@ Grade::readValues(double time,
     return values;
 }
 
+GradeSettings
+Grade::readSettings(double time,
+                    ViewIdx view) const
+{
+    GradeSettings settings;
+
+    settings.values = readValues(time, view);
+    settings.reverse = readBool(_reverse, time, view, false);
+    settings.clampBlack = readBool(_clampBlack, time, view, true);
+    settings.clampWhite = readBool(_clampWhite, time, view, false);
+
+    return settings;
+}
+
 PixelKernelPtr
 Grade::makeKernel(const KernelContext& context)
 {
-    return std::make_shared<GradeKernel>(readValues(context.time, context.view),
-                                         readBool(_reverse, context.time, context.view, false),
-                                         readBool(_clampBlack, context.time, context.view, true),
-                                         readBool(_clampWhite, context.time, context.view, false));
+    return std::make_shared<GradeKernel>(readSettings(context.time, context.view));
 }
 
-bool
-Grade::canRenderOnGpu(const GpuQuery& query) const
+int
+Grade::gpuKernelId(const GpuQuery& /*query*/) const
 {
 #ifdef NATRON_HAVE_GPU
-    return query.bitDepth == eImageBitDepthFloat && (query.nComps == 1 || query.nComps == 3 || query.nComps == 4) && !query.hasMask && query.mix >= 1. && query.unPremultChannel == -1;
+    return (int)gpu::GpuKernelId::grade_wrapped;
 #else
-    Q_UNUSED(query);
-
-    return false;
+    return -1;
 #endif
 }
 
-StatusEnum
-Grade::renderGpu(const GpuRenderArgs& args)
+bool
+Grade::makeGpuKernel(const KernelContext& context,
+                     PixelKernelGpu* gpuKernel)
 {
 #ifdef NATRON_HAVE_GPU
-    if (!canRenderOnGpu(args.query) || args.inputs.empty()) {
-        return eStatusFailed;
-    }
-    const GpuImageView& src = args.inputs[0];
-    const GpuImageView& dst = args.output;
-    const int nComps = args.query.nComps;
-    const RectI& rect = args.outputRect;
-    if ((src.nComps != nComps) || (dst.nComps != nComps) || rect.isNull()) {
-        return eStatusFailed;
-    }
-    GradeGpuParams p = {};
-    if (!windowOffset(src, rect, p.srcOffset) || !windowOffset(dst, rect, p.dstOffset)) {
-        return eStatusFailed;
-    }
-
-    const double time = args.query.time;
-    const ViewIdx view = args.query.view;
+    const GradeSettings settings = readSettings(context.time, context.view);
     GradeChannel channels[4];
-    gradeChannels(readValues(time, view), channels);
+    gradeChannels(settings.values, channels);
+
+    GradeGpuParams p = {};
     for (int i = 0; i < 4; ++i) {
         p.a[i] = (float)channels[i].a;
         p.b[i] = (float)channels[i].b;
         p.gamma[i] = (float)channels[i].gamma;
         p.invGamma[i] = (float)(1. / channels[i].gamma);
-        if (args.query.processChannels[i]) {
-            p.channelMask |= 1u << i;
-        }
     }
-    p.width = (uint32_t)rect.width();
-    p.height = (uint32_t)rect.height();
-    p.nComps = (uint32_t)nComps;
-    p.srcStride = (uint32_t)src.rowStrideFloats;
-    p.dstStride = (uint32_t)dst.rowStrideFloats;
-    if (readBool(_reverse, time, view, false)) {
-        p.flags |= kGradeGpuReverse;
-    }
-    if (readBool(_clampBlack, time, view, true)) {
-        p.flags |= kGradeGpuClampBlack;
-    }
-    if (readBool(_clampWhite, time, view, false)) {
-        p.flags |= kGradeGpuClampWhite;
-    }
+    p.channelMask = 0xF;
+    p.flags = (settings.reverse ? kGradeGpuReverse : 0) | (settings.clampBlack ? kGradeGpuClampBlack : 0) | (settings.clampWhite ? kGradeGpuClampWhite : 0);
+    gpuKernel->kernel = (int)gpu::GpuKernelId::grade_wrapped;
+    gpuKernel->setParams(p);
 
-    const gpu::GpuStatus status = args.context.dispatch(gpu::GpuKernelId::grade, { src.buffer, dst.buffer }, p, { p.width, p.height, 1 });
-
-    return status ? eStatusOK : eStatusFailed;
+    return true;
 #else
-    Q_UNUSED(args);
+    Q_UNUSED(context);
+    Q_UNUSED(gpuKernel);
 
-    return eStatusFailed;
+    return false;
 #endif
 }
 

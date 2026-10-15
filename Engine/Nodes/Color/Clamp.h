@@ -45,6 +45,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+struct ClampValues;
+
 /**
  * @brief Clamp: per processed channel, a value below `minimum` becomes minClampTo when
  * minClampToEnable is on and `minimum` otherwise, and a value above `maximum` becomes maxClampTo
@@ -83,6 +85,14 @@ private:
                               const RenderScale& scale,
                               const RectI& roi,
                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual int gpuKernelId(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool makeGpuKernel(const KernelContext& context,
+                               PixelKernelGpu* gpuKernel) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    ClampValues readValues(double time,
+                           ViewIdx view) const WARN_UNUSED_RETURN;
 
     KnobColorWPtr _minimum;
     KnobBoolWPtr _minimumEnable;

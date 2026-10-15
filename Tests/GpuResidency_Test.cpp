@@ -65,11 +65,13 @@
 #include "Engine/GpuRegionTask.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Filter/EdgeDetect.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
@@ -374,6 +376,26 @@ protected:
         return blur;
     }
 
+    // Connects mask to the mask input of grade and enables it, reading the channel named channel.
+    bool connectMask(const NodePtr& mask,
+                     const NodePtr& grade,
+                     const std::string& channel)
+    {
+        const NativeImageEffect* effect = dynamic_cast<const NativeImageEffect*>(grade->getEffectInstance().get());
+        const int maskInput = effect ? effect->getMaskInput() : -1;
+        if (maskInput < 0) {
+            return false;
+        }
+        connectNodes(mask, grade, maskInput, true);
+        KnobChannelSelect* selector = dynamic_cast<KnobChannelSelect*>(grade->getKnobByName("maskChannel_Mask").get());
+        if (!selector || !setKnobValues(grade, "enableMask_Mask", { 1. })) {
+            return false;
+        }
+        selector->set(channel);
+
+        return grade->getEffectInstance()->getInput(maskInput) == mask->getEffectInstance();
+    }
+
     bool prepareFrame(const NodePtr& root,
                       FrameRun* run,
                       std::string* error,
@@ -664,6 +686,54 @@ protected:
         return (found == reasons.end()) ? 0 : found->second;
     }
 
+    static std::vector<std::string> readProfileRecords(const std::string& path)
+    {
+        std::vector<std::string> records;
+        QFile file(QString::fromStdString(path));
+        if (!file.open(QIODevice::ReadOnly)) {
+            return records;
+        }
+        for (const QByteArray& line : file.readAll().split('\n')) {
+            if (!line.isEmpty()) {
+                records.push_back(line.toStdString());
+            }
+        }
+
+        return records;
+    }
+
+    // The "fallback" and "retries" fields of region's record, or an empty string when it has none.
+    static std::string regionOutcomeOf(const std::vector<std::string>& records,
+                                       int region)
+    {
+        const std::string key = "{\"kind\":\"region\",";
+        const std::string id = "\"regionId\":" + std::to_string(region) + ",";
+        for (const std::string& record : records) {
+            const std::size_t at = record.find("\"fallback\":");
+            if ((record.compare(0, key.size(), key) == 0) && (record.find(id) != std::string::npos) && (at != std::string::npos)) {
+                return record.substr(at, record.size() - at - 1);
+            }
+        }
+
+        return std::string();
+    }
+
+    // The "device" and "regionId" fields of task's record, or an empty string when it has none.
+    static std::string taskPlacementOf(const std::vector<std::string>& records,
+                                       int task)
+    {
+        const std::string id = "\"task\":" + std::to_string(task) + ",";
+        for (const std::string& record : records) {
+            const std::size_t at = record.find("\"device\":");
+            const std::size_t end = record.find(",\"ok\":");
+            if ((record.compare(0, 9, "{\"frame\":") == 0) && (record.find(id) != std::string::npos) && (at != std::string::npos) && (end > at)) {
+                return record.substr(at, end - at);
+            }
+        }
+
+        return std::string();
+    }
+
     static int fallbacksOf(const FrameRun& run)
     {
         int total = 0;
@@ -744,6 +814,60 @@ TEST_F(GpuResidencyTest, ChainUploadsOnceAndDownloadsOnce)
 }
 
 // The Grade feeds a Blur followed by a Grade, a second Blur, and a CPU Invert; the Merges joining them are on the CPU.
+// A region whose last member downloads submits its device work once; the time it reports is the device's, so it
+// cannot exceed the region's wall time.
+TEST_F(GpuResidencyTest, RegionKernelTimeIsNotCountedTwiceWhenTheLastMemberDownloads)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr grade1 = makeGrade(1.5, 0.1);
+    NodePtr blur = makeBlur(9.);
+    NodePtr grade2 = makeGrade(0.75, -0.05);
+    NodePtr sink = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
+    ASSERT_TRUE(source && grade1 && blur && grade2 && sink);
+    connectNodes(source, grade1, 0, true);
+    connectNodes(grade1, blur, 0, true);
+    connectNodes(blur, grade2, 0, true);
+    connectNodes(grade2, sink, 0, true);
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(sink, &run, &error)) << error;
+    placeOnGpu(&run, { grade1, blur, grade2 });
+    ASSERT_EQ(1u, run.graph.regions.size());
+
+    QTemporaryDir profileDir;
+    ASSERT_TRUE(profileDir.isValid());
+    RenderScheduler::setProfilePath((profileDir.path() + QString::fromUtf8("/profile")).toStdString());
+    const bool rendered = render(&run);
+    RenderScheduler::flushProfile();
+    const std::string profilePath = RenderScheduler::getProfileFilePath();
+    RenderScheduler::setProfilePath(std::string());
+    ASSERT_TRUE(rendered);
+
+    const std::vector<std::string> records = readProfileRecords(profilePath);
+    const auto numberOf = [](const std::string& record, const std::string& key) {
+        const std::size_t at = record.find("\"" + key + "\":");
+        return (at == std::string::npos) ? -1. : std::atof(record.c_str() + at + key.size() + 3);
+    };
+    int regionRecords = 0;
+    for (const std::string& record : records) {
+        if (record.compare(0, 17, "{\"kind\":\"region\",") != 0 || (record.find("\"regionId\":0,") == std::string::npos)) {
+            continue;
+        }
+        ++regionRecords;
+        const double kernelMs = numberOf(record, "kernelMs");
+        const double wallMs = numberOf(record, "wallMs");
+        EXPECT_GT(kernelMs, 0.) << record;
+        EXPECT_GT(wallMs, 0.) << record;
+        EXPECT_LE(kernelMs, wallMs) << record;
+    }
+    EXPECT_EQ(1, regionRecords);
+    EXPECT_EQ(1, run.stats->getDownloadCount());
+}
+
 TEST_F(GpuResidencyTest, SharedProducerRendersOnceAndDownloadsOnlyCpuOutputs)
 {
     if (!gpuOrSkip()) {
@@ -862,6 +986,153 @@ TEST_F(GpuResidencyTest, DownloadedOutputsKeepTheirTimeAndView)
     expectMatchesCpu(blend, run);
 }
 
+// The Grade's mask is an alpha-only image rendered on the CPU: the region uploads it once, in its single channel.
+TEST_F(GpuResidencyTest, CpuAlphaMaskIsUploadedOnceInItsOwnLayer)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr mask = createNode(QString::fromUtf8(kTestPluginIDParitySource));
+    NodePtr grade = makeGrade(1.5, 0.1);
+    ASSERT_TRUE(source && mask && grade);
+    setParitySourceComponents(mask, "alpha");
+    connectNodes(source, grade, 0, true);
+    ASSERT_TRUE(connectMask(mask, grade, "rgba.A"));
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(grade, &run, &error)) << error;
+    placeOnGpu(&run, { grade });
+    ASSERT_EQ(1u, run.graph.regions.size());
+    ASSERT_EQ(1u, run.graph.regions[0].members.size());
+    ASSERT_EQ(2u, run.graph.regions[0].externalInputs.size());
+    const int sourceTask = taskOf(run.graph, source);
+    const int maskTask = taskOf(run.graph, mask);
+    ASSERT_TRUE(sourceTask >= 0 && maskTask >= 0);
+    const unsigned long long sourceBytes = (unsigned long long)run.graph.tasks[sourceTask].renderedRoI.area() * 4 * sizeof(float);
+    const unsigned long long maskRgbaBytes = (unsigned long long)run.graph.tasks[maskTask].renderedRoI.area() * 4 * sizeof(float);
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(1, gpuRunsOf(run, grade));
+    EXPECT_EQ(0, renderRoICallsOf(run, grade)) << "the Grade rendered on the CPU";
+    EXPECT_EQ(2, run.stats->getUploadCount()) << "the source and the mask, once each";
+    EXPECT_LT(run.stats->getUploadBytes(), sourceBytes + maskRgbaBytes) << "the mask was uploaded in the Grade's plane rather than its own layer";
+    EXPECT_EQ(1, run.stats->getDownloadCount());
+    expectReleased(run);
+    expectMatchesCpu(grade, run);
+}
+
+// The Grade's RGBA mask is a Grade in the same region: it is read where it was rendered, never downloaded.
+TEST_F(GpuResidencyTest, MaskRenderedInTheRegionIsNeverDownloaded)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr maskSource = createNode(QString::fromUtf8(kTestPluginIDParitySource));
+    // Keeps the mask's alpha bands inside [0, 1].
+    NodePtr maskGrade = makeGrade(0.5, 0.25);
+    NodePtr grade = makeGrade(1.5, 0.1);
+    ASSERT_TRUE(source && maskSource && maskGrade && grade);
+    setParitySourceComponents(maskSource, "rgba");
+    connectNodes(maskSource, maskGrade, 0, true);
+    connectNodes(source, grade, 0, true);
+    ASSERT_TRUE(connectMask(maskGrade, grade, "rgba.A"));
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(grade, &run, &error)) << error;
+    placeOnGpu(&run, { maskGrade, grade });
+    ASSERT_EQ(1u, run.graph.regions.size());
+    ASSERT_EQ(2u, run.graph.regions[0].members.size());
+    ASSERT_EQ(2u, run.graph.regions[0].externalInputs.size());
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(1, gpuRunsOf(run, maskGrade));
+    EXPECT_EQ(1, gpuRunsOf(run, grade));
+    EXPECT_EQ(0, renderRoICallsOf(run, maskGrade)) << "the mask rendered on the CPU";
+    EXPECT_EQ(2, run.stats->getUploadCount());
+    EXPECT_EQ(1, run.stats->getDownloadCount()) << "only the root is downloaded";
+    EXPECT_EQ(0, run.context->getStore().downloadCount());
+    expectReleased(run);
+    expectMatchesCpu(grade, run);
+}
+
+// The mask is the extra layer of the Grade feeding the source, the one layer that member renders, so the source,
+// read in the colour plane, is not in its producer's layer.
+TEST_F(GpuResidencyTest, MaskInAnotherLayerThanItsProducersPlaneRendersOnTheCpu)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
+    NodePtr producer = makeGrade(0.5, 0.25);
+    NodePtr grade = makeGrade(1.5, 0.1);
+    ASSERT_TRUE(source && producer && grade);
+    setParitySourceComponents(source, "rgba");
+    setParitySourceExtraLayer(source, true);
+    connectNodes(source, producer, 0, true);
+    connectNodes(producer, grade, 0, true);
+    ASSERT_TRUE(connectMask(producer, grade, kParitySourceExtraLayerID ".R"));
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(grade, &run, &error)) << error;
+    const int producerTask = taskOf(run.graph, producer);
+    const int gradeTask = taskOf(run.graph, grade);
+    ASSERT_TRUE(producerTask >= 0 && gradeTask >= 0);
+    ASSERT_EQ(1u, run.graph.tasks[producerTask].components.size());
+    EXPECT_EQ(std::string(kParitySourceExtraLayerID), run.graph.tasks[producerTask].components.front().getLayerID()) << "the producer renders the mask's layer";
+    assignRegions(&run.graph, { { producerTask, gradeTask } });
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(1, fallbacksOf(run));
+    EXPECT_EQ(1, fallbacksOf(run, "GPU refused"));
+    EXPECT_EQ(0, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(1, renderRoICallsOf(run, grade));
+    expectReleased(run);
+    expectMatchesCpu(grade, run);
+}
+
+// The Grade's source and its mask are the same member of the region, which the request records as one edge: both
+// inputs read the member's one slot.
+TEST_F(GpuResidencyTest, ProducerWiredToSourceAndMaskIsReadFromOneSlot)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
+    NodePtr producer = makeGrade(0.5, 0.25);
+    NodePtr grade = makeGrade(1.5, 0.1);
+    ASSERT_TRUE(source && producer && grade);
+    setParitySourceComponents(source, "rgba");
+    connectNodes(source, producer, 0, true);
+    connectNodes(producer, grade, 0, true);
+    ASSERT_TRUE(connectMask(producer, grade, "rgba.A"));
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(grade, &run, &error)) << error;
+    placeOnGpu(&run, { producer, grade });
+    ASSERT_EQ(1u, run.graph.regions.size());
+    ASSERT_EQ(2u, run.graph.regions[0].members.size());
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(1, gpuRunsOf(run, producer));
+    EXPECT_EQ(1, gpuRunsOf(run, grade));
+    EXPECT_EQ(1, run.stats->getUploadCount());
+    EXPECT_EQ(1, run.stats->getDownloadCount());
+    expectReleased(run);
+    expectMatchesCpu(grade, run);
+}
+
 #ifdef NATRON_HAVE_GPU
 
 // The second region runs out of device memory once: it is run again on the GPU after evicting, the first region's
@@ -912,11 +1183,27 @@ TEST_F(GpuResidencyTest, OutOfMemoryAtTheSecondRegionRendersItOnTheCpu)
             runtime()->pool().setUserBudget(1);
         }
     });
+    const int grade1Task = taskOf(run.graph, chain.grade1);
+    const int blurTask = taskOf(run.graph, chain.blur);
+    const int grade2Task = taskOf(run.graph, chain.grade2);
+    QTemporaryDir profileDir;
+    ASSERT_TRUE(profileDir.isValid());
+    RenderScheduler::setProfilePath(profileDir.path().toStdString() + "/profile.jsonl");
+    const std::string profileFile = RenderScheduler::getProfileFilePath();
 
-    ASSERT_TRUE(render(&run));
+    const bool rendered = render(&run);
+    RenderScheduler::setProfilePath(std::string());
+    ASSERT_TRUE(rendered);
     EXPECT_EQ(1, fallbacksOf(run));
     EXPECT_EQ(1, fallbacksOf(run, "out of device memory"));
     EXPECT_EQ(1, run.stats->getGpuRegionRetries());
+
+    const std::vector<std::string> records = readProfileRecords(profileFile);
+    EXPECT_EQ("\"fallback\":\"\",\"retries\":0", regionOutcomeOf(records, 0));
+    EXPECT_EQ("\"fallback\":\"out of device memory\",\"retries\":1", regionOutcomeOf(records, 1));
+    EXPECT_EQ("\"device\":\"gpu\",\"regionId\":0", taskPlacementOf(records, grade1Task));
+    EXPECT_EQ("\"device\":\"gpu\",\"regionId\":0", taskPlacementOf(records, blurTask));
+    EXPECT_EQ("\"device\":\"cpu\",\"regionId\":1", taskPlacementOf(records, grade2Task));
     EXPECT_EQ(1, run.stats->getGpuRegionsRun());
     EXPECT_EQ(1, run.context->getStore().downloadCount()) << "the Blur's device image was not downloaded once";
     EXPECT_EQ(1, renderRoICallsOf(run, chain.grade2));
@@ -926,7 +1213,7 @@ TEST_F(GpuResidencyTest, OutOfMemoryAtTheSecondRegionRendersItOnTheCpu)
     expectMatchesCpu(chain.sink, run);
 }
 
-// The Invert has no GPU path: the region holding it renders on the CPU, root included, rather than failing the frame.
+// The EdgeDetect has no GPU path: the region holding it renders on the CPU, root included, rather than failing the frame.
 TEST_F(GpuResidencyTest, MemberWithoutAGpuPathRendersTheRegionOnTheCpu)
 {
     if (!gpuOrSkip()) {
@@ -934,18 +1221,18 @@ TEST_F(GpuResidencyTest, MemberWithoutAGpuPathRendersTheRegionOnTheCpu)
     }
     NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
     NodePtr grade = makeGrade(1.25, 0.05);
-    NodePtr invert = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
-    ASSERT_TRUE(source && grade && invert);
+    NodePtr edge = makeNode(PLUGINID_NATRON_EDGEDETECT, PLUGIN_MAJOR_NATRON_EDGEDETECT);
+    ASSERT_TRUE(source && grade && edge);
     connectNodes(source, grade, 0, true);
-    connectNodes(grade, invert, 0, true);
+    connectNodes(grade, edge, 0, true);
 
     FrameRun run;
     std::string error;
-    ASSERT_TRUE(prepareFrame(invert, &run, &error)) << error;
+    ASSERT_TRUE(prepareFrame(edge, &run, &error)) << error;
     const int gradeTask = taskOf(run.graph, grade);
-    const int invertTask = taskOf(run.graph, invert);
-    ASSERT_TRUE(gradeTask >= 0 && invertTask >= 0);
-    assignRegions(&run.graph, { { gradeTask, invertTask } });
+    const int edgeTask = taskOf(run.graph, edge);
+    ASSERT_TRUE(gradeTask >= 0 && edgeTask >= 0);
+    assignRegions(&run.graph, { { gradeTask, edgeTask } });
 
     ASSERT_TRUE(render(&run));
     EXPECT_EQ(1, fallbacksOf(run));
@@ -953,9 +1240,9 @@ TEST_F(GpuResidencyTest, MemberWithoutAGpuPathRendersTheRegionOnTheCpu)
     EXPECT_EQ(0, run.stats->getGpuRegionRetries());
     EXPECT_EQ(0, run.stats->getGpuRegionsRun());
     EXPECT_EQ(1, renderRoICallsOf(run, grade));
-    EXPECT_EQ(1, renderRoICallsOf(run, invert));
+    EXPECT_EQ(1, renderRoICallsOf(run, edge));
     expectReleased(run);
-    expectMatchesCpu(invert, run);
+    expectMatchesCpu(edge, run);
 }
 
 // The device is lost in the middle of the second region: the frame renders again, all on the CPU, and the next render

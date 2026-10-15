@@ -139,6 +139,34 @@ GPU_TEST_F(BlurGpuTest, LargestSupportedRadiusMatchesReference)
     }
 }
 
+// Radii just past the direct path's 32 up to 300, on sizes that leave partial blur tiles on both axes,
+// and lines shorter than the radius.
+GPU_TEST_F(BlurGpuTest, WideRadiiMatchReference)
+{
+    constexpr double kWideSigmas[] = { 11.0, 11.2, 16.67, 21.5, 50.0, 100.0 };
+    constexpr blurfix::Size kWideSizes[] = { { 33, 401 }, { 129, 131 }, { 300, 7 }, { 5, 97 }, { 1, 1 } };
+    std::vector<BlurCase> cases;
+    uint32_t seed = 500;
+    for (double sigma : kWideSigmas) {
+        ASSERT_GT(blurref::radiusForSigma(sigma), 32);
+        for (const blurfix::Size& s : kWideSizes)
+            for (int ch : blurfix::kChannelCounts)
+                for (bool neumann : { false, true })
+                    cases.push_back({ s.w, s.h, ch, sigma, neumann, blurfix::makeImage(s.w, s.h, ch, seed++) });
+    }
+    const std::vector<std::vector<float>> dst = run(cases);
+    for (size_t k = 0; k < cases.size(); ++k) {
+        const BlurCase& c = cases[k];
+        const std::vector<double> ref = blurfix::reference(c.src, c.w, c.h, c.ch, c.sigma, c.neumann);
+        tol::ErrorStats stats;
+        for (size_t i = 0; i < ref.size(); ++i)
+            stats.add(dst[k][i], ref[i], k, i);
+        EXPECT_EQ(stats.classMismatches, 0u);
+        EXPECT_LE(stats.maxAbs, blurfix::kTolerance) << "sigma=" << c.sigma << " " << c.w << "x" << c.h
+                                                     << " ch=" << c.ch << " neumann=" << c.neumann;
+    }
+}
+
 GPU_TEST_F(BlurGpuTest, RefusesRadiusAndChannelsBeyondTheTile)
 {
     auto kernel = makeKernel(blur_spirv, blur_spirv_words, "main", 3, sizeof(blurfix::BlurParams), blur_group_size);
@@ -159,7 +187,7 @@ GPU_TEST_F(BlurGpuTest, RefusesRadiusAndChannelsBeyondTheTile)
 TEST(BlurGroupCount, VerticalDirectPathCoversColumnBlocks)
 {
     EXPECT_EQ(blurGroupCount({ 1000, 300, 4, 32, true, true }), (std::array<uint32_t, 3> { 3, 32, 1 }));
-    EXPECT_EQ(blurGroupCount({ 1000, 300, 4, 33, true, true }), (std::array<uint32_t, 3> { 3, 1000, 1 }));
+    EXPECT_EQ(blurGroupCount({ 1000, 300, 4, 33, true, true }), (std::array<uint32_t, 3> { 1000, 3, 1 }));
     EXPECT_EQ(blurGroupCount({ 1000, 300, 4, 3, false, true }), (std::array<uint32_t, 3> { 8, 300, 1 }));
 }
 
@@ -256,7 +284,8 @@ struct RegionCase {
 } // namespace
 
 // Sub-rects inside padded buffers at non-zero offsets, outputs reaching past the domain, and a
-// domain reaching past the source, through the record context's scratch buffers.
+// domain reaching past the source, through the record context's scratch buffers. Sigma 11 and up
+// take the shared-tile vertical pass, and the last case's output is taller than its domain.
 TEST(BlurRegionGpu, SubRectsMatchReference)
 {
     gputest::ValidationCheck validation;
@@ -271,10 +300,11 @@ TEST(BlurRegionGpu, SubRectsMatchReference)
         { { 0, 0, 61, 47 }, { 0, 0, 61, 47 }, { 0, 0, 61, 47 }, { 0, 0, 61, 47 }, { 7, 5, 30, 40 } },
         { { 2, 3, 9, 6 }, { 2, 3, 9, 6 }, { -40, -30, 51, 39 }, { -40, -30, 51, 39 }, { -40, -30, 51, 39 } },
         { { 0, 0, 4, 4 }, {}, { 0, 0, 13, 9 }, { 0, 0, 13, 9 }, { 0, 0, 13, 9 } },
+        { { 0, 0, 40, 30 }, { 0, 0, 40, 30 }, { 0, 5, 40, 20 }, { -2, -4, 43, 35 }, { -1, -3, 41, 33 } },
     };
     uint32_t seed = 100;
     for (const RegionCase& rc : cases) {
-        for (double sigma : blurfix::kSigmas) {
+        for (double sigma : { 0.5, 3.0, 11.0, 25.0, 100.0 }) {
             for (int nc : blurfix::kChannelCounts) {
                 for (bool neumann : { false, true }) {
                     GpuBlurImage srcImage;

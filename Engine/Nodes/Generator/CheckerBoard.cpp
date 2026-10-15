@@ -29,11 +29,19 @@
 #include <cfloat>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/RectD.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -395,8 +403,11 @@ CheckerBoard::initializeKnobs()
                                                 tr("Width, in pixels, of the center lines.").toStdString(), 1.);
 } // CheckerBoard::initializeKnobs
 
-PixelKernelPtr
-CheckerBoard::makeKernel(const KernelContext& context)
+void
+CheckerBoard::readParams(const KernelContext& context,
+                         CheckerBoardGeometry* g,
+                         float colors[6][4],
+                         RectD* rodOut) const
 {
     const OfxPointD renderScale = context.mappedScale.toOfxPointD();
     const double rsX = renderScale.x;
@@ -416,16 +427,127 @@ CheckerBoard::makeKernel(const KernelContext& context)
     const double lineWidth = readDouble(_lineWidth, context, 0, 0.);
     const double centerlineWidth = readDouble(_centerlineWidth, context, 0, 1.);
 
-    const CheckerBoardGeometry g = checkerBoardGeometry(boxSizeX, boxSizeY, lineWidth, centerlineWidth, rod, rsX, rsY, par);
-    float colors[6][4];
+    *g = checkerBoardGeometry(boxSizeX, boxSizeY, lineWidth, centerlineWidth, rod, rsX, rsY, par);
     readColor(_color0, context, colors[eCheckerBoardColor0]);
     readColor(_color1, context, colors[eCheckerBoardColor1]);
     readColor(_color2, context, colors[eCheckerBoardColor2]);
     readColor(_color3, context, colors[eCheckerBoardColor3]);
     readColor(_lineColor, context, colors[eCheckerBoardColorLine]);
     readColor(_centerlineColor, context, colors[eCheckerBoardColorCenterline]);
+    *rodOut = rod;
+}
+
+PixelKernelPtr
+CheckerBoard::makeKernel(const KernelContext& context)
+{
+    CheckerBoardGeometry g;
+    float colors[6][4];
+    RectD rod;
+
+    readParams(context, &g, colors, &rod);
 
     return std::make_shared<CheckerBoardKernel>(g, colors);
 } // CheckerBoard::makeKernel
+
+int
+CheckerBoard::gpuKernelId(const GpuQuery& /*query*/) const
+{
+#ifdef NATRON_HAVE_GPU
+    return (int)gpu::GpuKernelId::checkerboard;
+#else
+    return -1;
+#endif
+}
+
+bool
+CheckerBoard::makeGpuKernel(const KernelContext& context,
+                            PixelKernelGpu* gpu)
+{
+#ifdef NATRON_HAVE_GPU
+    CheckerBoardGeometry g;
+    float colors[6][4];
+    RectD rod;
+
+    readParams(context, &g, colors, &rod);
+
+    // Pixels only exist inside the region of definition; the margin keeps the tables clear of
+    // the rounding of its edges.
+    const double par = (getAspectRatio(-1) == 0) ? 1. : getAspectRatio(-1);
+    const double rsX = context.mappedScale.toOfxPointD().x;
+    const double rsY = context.mappedScale.toOfxPointD().y;
+    const double x1 = std::floor(rod.x1 * rsX / par) - 2.;
+    const double x2 = std::ceil(rod.x2 * rsX / par) + 2.;
+    const double y1 = std::floor(rod.y1 * rsY) - 2.;
+    const double y2 = std::ceil(rod.y2 * rsY) + 2.;
+    const double limit = 65536.;
+    if (!(x2 - x1 >= 1.) || !(y2 - y1 >= 1.) || !(x2 - x1 <= limit) || !(y2 - y1 <= limit) || !(std::fabs(x1) < 1e9) || !(std::fabs(y1) < 1e9)) {
+        return false;
+    }
+    const int baseX = (int)x1;
+    const int baseY = (int)y1;
+    const int countX = (int)(x2 - x1);
+    const int countY = (int)(y2 - y1);
+    const std::size_t wordsX = ((std::size_t)countX + 15) / 16;
+    const std::size_t wordsY = ((std::size_t)countY + 15) / 16;
+    const std::size_t header = 32;
+    std::vector<std::uint32_t> words(header + wordsX + wordsY, 0u);
+
+    std::memcpy(words.data(), colors, sizeof(float) * 24);
+    words[24] = (std::uint32_t)baseX;
+    words[25] = (std::uint32_t)baseY;
+    words[26] = (std::uint32_t)countX;
+    words[27] = (std::uint32_t)countY;
+    words[28] = (std::uint32_t)header;
+    words[29] = (std::uint32_t)(header + wordsX);
+
+    // Columns are classed with the per-pixel test of a box row, whose even and odd box colours
+    // stand for the box parities.
+    CheckerBoardRow boxRow;
+    boxRow.uniform = false;
+    boxRow.uniformColor = eCheckerBoardColor0;
+    boxRow.evenColor = eCheckerBoardColor0;
+    boxRow.oddColor = eCheckerBoardColor1;
+    const int xEnd = baseX + countX;
+    for (int x = baseX; x < xEnd;) {
+        CheckerBoardColorEnum color = eCheckerBoardColor0;
+        const int end = checkerBoardRunEnd(g, boxRow, x, xEnd, &color);
+        std::uint32_t cls = 2u;
+        if (color == eCheckerBoardColorCenterline) {
+            cls = 0u;
+        } else if (color == eCheckerBoardColorLine) {
+            cls = 1u;
+        } else if (color == eCheckerBoardColor1) {
+            cls = 3u;
+        }
+        for (int i = x; i < end; ++i) {
+            const std::size_t n = (std::size_t)(i - baseX);
+            words[header + n / 16] |= cls << ((n % 16) * 2);
+        }
+        x = end;
+    }
+    for (int y = baseY; y < baseY + countY; ++y) {
+        const CheckerBoardRow row = checkerBoardRow(g, y);
+        std::uint32_t cls;
+        if (row.uniform) {
+            cls = (row.uniformColor == eCheckerBoardColorCenterline) ? 0u : 1u;
+        } else {
+            cls = (row.evenColor == eCheckerBoardColor0) ? 2u : 3u;
+        }
+        const std::size_t n = (std::size_t)(y - baseY);
+        words[header + wordsX + n / 16] |= cls << ((n % 16) * 2);
+    }
+
+    gpu->kernel = (int)gpu::GpuKernelId::checkerboard;
+    gpu->params.resize(words.size() * sizeof(std::uint32_t));
+    std::memcpy(gpu->params.data(), words.data(), gpu->params.size());
+
+    return true;
+#else
+    Q_UNUSED(context);
+    Q_UNUSED(gpu);
+
+    return false;
+#endif
+}
 
 NATRON_NAMESPACE_EXIT

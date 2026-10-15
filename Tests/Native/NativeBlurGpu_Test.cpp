@@ -26,6 +26,8 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <bitset>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -41,6 +43,7 @@
 #include <QString>
 
 #include "BaseTest.h"
+#include "Native/NativeGpuParity.h"
 #include "NativeParity.h"
 #include "RenderBothWays.h"
 
@@ -48,8 +51,12 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobChannelSet.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
 #include "Engine/Project.h"
@@ -59,6 +66,7 @@
 #include "Engine/ViewIdx.h"
 
 #ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
 #include "Engine/Gpu/GpuRuntime.h"
 #endif
 
@@ -128,23 +136,28 @@ TEST_F(NativeBlurGpuTest, EligibilityFollowsTheSupportedSettings)
     }
     {
         GpuQuery q = eligibleQuery();
-        q.processChannels[3] = false;
-        EXPECT_FALSE(blur->canRenderOnGpu(q)) << "a channel subset";
+        q.processChannels[1] = false;
+        q.processChannels[2] = false;
+        EXPECT_EQ(supported, blur->canRenderOnGpu(q)) << "a channel subset";
     }
     {
         GpuQuery q = eligibleQuery();
         q.hasMask = true;
-        EXPECT_FALSE(blur->canRenderOnGpu(q)) << "mask";
+        EXPECT_EQ(supported, blur->canRenderOnGpu(q)) << "a mask channel outside the plane, read in its own layer";
+        q.maskInPlane = true;
+        EXPECT_EQ(supported, blur->canRenderOnGpu(q)) << "mask";
     }
     for (double mix : { 0., 0.5, 0.999 }) {
         GpuQuery q = eligibleQuery();
         q.mix = mix;
-        EXPECT_FALSE(blur->canRenderOnGpu(q)) << "mix " << mix;
+        EXPECT_EQ(supported, blur->canRenderOnGpu(q)) << "mix " << mix;
     }
     {
         GpuQuery q = eligibleQuery();
         q.unPremultChannel = 3;
-        EXPECT_FALSE(blur->canRenderOnGpu(q)) << "unpremult";
+        EXPECT_FALSE(blur->canRenderOnGpu(q)) << "a divisor outside the plane";
+        q.unPremultInPlane = true;
+        EXPECT_EQ(supported, blur->canRenderOnGpu(q)) << "unpremult";
     }
     for (ImageBitDepthEnum depth : { eImageBitDepthByte, eImageBitDepthShort, eImageBitDepthHalf }) {
         GpuQuery q = eligibleQuery();
@@ -152,10 +165,17 @@ TEST_F(NativeBlurGpuTest, EligibilityFollowsTheSupportedSettings)
         EXPECT_FALSE(blur->canRenderOnGpu(q)) << "bit depth " << (int)depth;
     }
 
-    ASSERT_TRUE(setKnobValue(node, kBlurParamFilter, std::string(kBlurParamFilterGaussian)));
-    EXPECT_FALSE(blur->canRenderOnGpu(eligibleQuery())) << "IIR Gaussian";
-    ASSERT_TRUE(setKnobValue(node, kBlurParamFilter, std::string(kBlurParamFilterBox)));
-    EXPECT_FALSE(blur->canRenderOnGpu(eligibleQuery())) << "box";
+    for (const char* filter : { kBlurParamFilterQuasiGaussian, kBlurParamFilterGaussian, kBlurParamFilterBox, kBlurParamFilterTriangle, kBlurParamFilterQuadratic }) {
+        ASSERT_TRUE(setKnobValue(node, kBlurParamFilter, std::string(filter)));
+        EXPECT_EQ(supported, blur->canRenderOnGpu(eligibleQuery())) << filter;
+        // Any size: the recursive filters have no tile to outgrow.
+        ASSERT_TRUE(setKnobValues(node, kBlurParamSize, { 1000., 1000. }));
+        EXPECT_EQ(supported, blur->canRenderOnGpu(eligibleQuery())) << filter << " at size 1000";
+        ASSERT_TRUE(setKnobValues(node, kBlurParamSize, { 10., 10. }));
+        ASSERT_TRUE(setKnobValues(node, kBlurParamOrderX, { 1. }));
+        EXPECT_FALSE(blur->canRenderOnGpu(eligibleQuery())) << filter << " X derivative";
+        ASSERT_TRUE(setKnobValues(node, kBlurParamOrderX, { 0. }));
+    }
     ASSERT_TRUE(setKnobValue(node, kBlurParamFilter, std::string(kBlurParamFilterFIRGaussian)));
     EXPECT_EQ(supported, blur->canRenderOnGpu(eligibleQuery())) << "FIR Gaussian";
 
@@ -167,7 +187,7 @@ TEST_F(NativeBlurGpuTest, EligibilityFollowsTheSupportedSettings)
     ASSERT_TRUE(setKnobValues(node, kBlurParamOrderY, { 0. }));
 
     ASSERT_TRUE(setKnobValues(node, kBlurParamAlphaThreshold, { 0.003 }));
-    EXPECT_FALSE(blur->canRenderOnGpu(eligibleQuery())) << "alpha threshold";
+    EXPECT_EQ(supported, blur->canRenderOnGpu(eligibleQuery())) << "alpha threshold";
     ASSERT_TRUE(setKnobValues(node, kBlurParamAlphaThreshold, { 0. }));
 
     // Size 1000 is sigma 416.7, a radius of about 1250 at full scale and 313 at a quarter.
@@ -203,57 +223,6 @@ TEST_F(NativeBlurGpuTest, InputRegionIsTheSourceRegionOfInterest)
 #ifdef NATRON_HAVE_GPU
 
 namespace {
-
-// A runtime on whatever Vulkan device exists, software ones included: the application's context
-// refuses CPU devices outside Force mode. Returns false after printing the reason when there is
-// none, unless NATRON_TEST_REQUIRE_GPU=1 makes that a failure.
-bool
-createRuntime(std::unique_ptr<gpu::GpuRuntime>& runtime)
-{
-    gpu::GpuRuntimeOptions options;
-    const gpu::GpuStatus status = gpu::GpuRuntime::create(options, runtime);
-    if (status) {
-        std::printf("vulkan device: %s\n", runtime->device().info().name.c_str());
-
-        return true;
-    }
-    const char* require = std::getenv("NATRON_TEST_REQUIRE_GPU");
-    if (require && (std::strcmp(require, "1") == 0)) {
-        ADD_FAILURE() << "no usable Vulkan device: " << status.message;
-    } else {
-        std::printf("[  SKIPPED ] no usable Vulkan device: %s\n", status.message.c_str());
-    }
-
-    return false;
-}
-
-bool
-transfer(gpu::GpuRuntime& runtime,
-         gpu::GpuBuffer& buffer,
-         std::vector<float>& data,
-         bool toDevice)
-{
-    gpu::TimelineValue done;
-    const gpu::HostRange range { data.data(), data.size() * sizeof(float) };
-    gpu::GpuStatus s = toDevice ? runtime.upload(range, buffer, 0, done) : runtime.download(buffer, 0, range, done);
-    if (s) {
-        s = runtime.wait(done);
-    }
-    EXPECT_TRUE(bool(s)) << s.message;
-
-    return bool(s);
-}
-
-gpu::GpuBuffer
-makeBuffer(gpu::GpuRuntime& runtime,
-           size_t floats)
-{
-    gpu::GpuBuffer buffer;
-    const gpu::GpuStatus s = gpu::GpuBuffer::createDeviceLocal(runtime.device(), std::max<size_t>(floats, 1) * sizeof(float), gpu::kGpuBufferDefaultUsage, buffer);
-    EXPECT_TRUE(bool(s)) << s.message;
-
-    return buffer;
-}
 
 ImageLayerDesc
 colorLayer(const NodePtr& node)
@@ -327,7 +296,7 @@ describeCase(const GpuBlurCase& c,
 // edges all fall inside the filtered extent.
 TEST_F(NativeBlurGpuTest, MatchesTheCpuRender)
 {
-    std::unique_ptr<gpu::GpuRuntime> runtime;
+    std::unique_ptr<GpuParityRuntime> runtime;
     if (!createRuntime(runtime)) {
         return;
     }
@@ -336,8 +305,7 @@ TEST_F(NativeBlurGpuTest, MatchesTheCpuRender)
     ASSERT_TRUE(bool(source));
     setParitySourceOrigin(source, 3, 5);
 
-    const float kTolerance = 2e-6f;
-    const float kSentinel = -1234.f;
+    const ParityTolerance kTolerance = ParityTolerance::make(2e-6, 0.);
     int nCompared = 0;
     for (double sigma : { 0.5, 3., 25., 100. }) {
         for (bool nearest : { false, true }) {
@@ -379,83 +347,466 @@ TEST_F(NativeBlurGpuTest, MatchesTheCpuRender)
 
                         const int nComps = 4;
                         // Both views sit inside larger buffers, at an offset and with padded rows.
-                        const int srcPadFloats = 6;
-                        const int srcStride = inputRoI.width() * nComps + 8;
-                        std::vector<float> src(srcPadFloats + (size_t)srcStride * inputRoI.height(), 0.f);
-                        for (int y = 0; y < inputRoI.height(); ++y) {
-                            std::copy(in.pixels.begin() + (size_t)y * inputRoI.width() * nComps,
-                                      in.pixels.begin() + (size_t)(y + 1) * inputRoI.width() * nComps,
-                                      src.begin() + srcPadFloats + (size_t)y * srcStride);
-                        }
-                        const RectI dstBounds(roi.x1 - 2, roi.y1 - 1, roi.x2 + 3, roi.y2 + 2);
-                        const int dstPadFloats = 4;
-                        const int dstStride = dstBounds.width() * nComps + 4;
-                        std::vector<float> dst(dstPadFloats + (size_t)dstStride * dstBounds.height(), kSentinel);
+                        GpuParityImage image;
+                        image.bounds = inputRoI;
+                        image.nComps = nComps;
+                        image.pixels = in.pixels;
+                        image.layout.padFloats = 6;
+                        image.layout.rowPadFloats = 8;
+                        GpuViewLayout layout;
+                        layout.padFloats = 4;
+                        layout.rowPadFloats = 4;
+                        layout.marginLeft = 2;
+                        layout.marginBottom = 1;
+                        layout.marginRight = 3;
+                        layout.marginTop = 2;
 
-                        gpu::GpuBuffer srcBuffer = makeBuffer(*runtime, src.size());
-                        gpu::GpuBuffer dstBuffer = makeBuffer(*runtime, dst.size());
-                        ASSERT_TRUE(bool(srcBuffer) && bool(dstBuffer)) << what;
-                        ASSERT_TRUE(transfer(*runtime, srcBuffer, src, true)) << what;
-                        ASSERT_TRUE(transfer(*runtime, dstBuffer, dst, true)) << what;
+                        GpuQuery query = eligibleQuery();
+                        query.mappedScale = scale;
+                        const GpuRunResult run = runRenderGpu(*runtime, *blur, query, std::vector<GpuParityImage>(1, image), nullptr, roi, layout);
+                        ASSERT_TRUE(run.ok) << what;
+                        EXPECT_EQ(0u, run.writtenOutside) << what << ": floats outside the window were written";
 
-                        std::unique_ptr<gpu::GpuRecordContext> context;
-                        ASSERT_TRUE(bool(runtime->newRecordContext(context))) << what;
-                        GpuRenderArgs args(*context);
-                        args.query = eligibleQuery();
-                        args.query.mappedScale = scale;
-                        ASSERT_TRUE(blur->canRenderOnGpu(args.query)) << what;
-                        args.outputRect = roi;
-                        GpuImageView view;
-                        view.buffer = &srcBuffer;
-                        view.byteOffset = srcPadFloats * sizeof(float);
-                        view.bounds = inputRoI;
-                        view.rowStrideFloats = srcStride;
-                        view.nComps = nComps;
-                        args.inputs.push_back(view);
-                        args.output.buffer = &dstBuffer;
-                        args.output.byteOffset = dstPadFloats * sizeof(float);
-                        args.output.bounds = dstBounds;
-                        args.output.rowStrideFloats = dstStride;
-                        args.output.nComps = nComps;
-                        ASSERT_EQ(eStatusOK, blur->renderGpu(args)) << what;
-                        const gpu::GpuStatus submitted = context->submitAndWait();
-                        ASSERT_TRUE(bool(submitted)) << what << ": " << submitted.message;
-                        context.reset();
-                        ASSERT_TRUE(transfer(*runtime, dstBuffer, dst, false)) << what;
-
-                        float worst = 0.f;
-                        int worstX = 0;
-                        int worstY = 0;
-                        int written = 0;
-                        for (int y = dstBounds.y1; y < dstBounds.y2; ++y) {
-                            for (int x = dstBounds.x1; x < dstBounds.x2; ++x) {
-                                const float* got = &dst[dstPadFloats + (size_t)(y - dstBounds.y1) * dstStride + (size_t)(x - dstBounds.x1) * nComps];
-                                if (!roi.contains(x, y)) {
-                                    for (int k = 0; k < nComps; ++k) {
-                                        written += (got[k] != kSentinel);
-                                    }
-                                    continue;
-                                }
-                                const float* want = &cpu.pixels[((size_t)(y - roi.y1) * roi.width() + (x - roi.x1)) * nComps];
-                                for (int k = 0; k < nComps; ++k) {
-                                    const float d = std::fabs(got[k] - want[k]);
-                                    if (!(d <= worst)) {
-                                        worst = d;
-                                        worstX = x;
-                                        worstY = y;
-                                    }
-                                    ++nCompared;
-                                }
-                            }
-                        }
-                        EXPECT_EQ(0, written) << what << ": floats outside the window were written";
-                        EXPECT_LE(worst, kTolerance) << what << ", worst at (" << worstX << "," << worstY << ")";
+                        ASSERT_EQ(cpu.pixels.size(), run.pixels.size()) << what;
+                        const ImageDiff diff = compareImages(cpu.pixels, run.pixels, kTolerance);
+                        nCompared += (int)diff.compared;
+                        const std::size_t at = diff.worstIndex / nComps;
+                        EXPECT_EQ(0u, diff.mismatches) << what << ", worst at (" << (roi.x1 + (int)(at % roi.width())) << "," << (roi.y1 + (int)(at / roi.width())) << ")";
                     }
                 }
             }
         }
     }
     EXPECT_GT(nCompared, 0);
+}
+
+namespace {
+
+// What the placement asks renderGpu() for when rendering the colour plane of node.
+GpuQuery
+queryFor(const NodePtr& node,
+         unsigned mipmapLevel)
+{
+    NativeImageEffect* effect = dynamic_cast<NativeImageEffect*>(node->getEffectInstance().get());
+    const ImageLayerDesc plane = colorLayer(node);
+    GpuQuery q = eligibleQuery();
+
+    q.mappedScale = RenderScale::fromMipmapLevel(mipmapLevel);
+    q.nComps = plane.getNumComponents();
+    const int maskInput = effect->getMaskInput();
+    q.hasMask = (maskInput >= 0) && effect->getInput(maskInput) && effect->isMaskEnabled(maskInput);
+    if (q.hasMask) {
+        ImageLayerDesc maskLayer;
+        int maskChannel = -1;
+        q.maskInPlane = !effect->resolveInputPlaneForRender(maskInput, kTime, ViewIdx(0), &maskLayer, &maskChannel) || (maskChannel < 0) || (Node::getUnPremultSkipChannel(plane, maskLayer, maskChannel) >= 0);
+    }
+    KnobDoublePtr mix = std::dynamic_pointer_cast<KnobDouble>(effect->getKnobByName(kOfxMixParamName));
+    q.mix = mix ? mix->getValueAtTime(kTime, 0, ViewIdx(0)) : 1.;
+    const std::bitset<4> channels = effect->getProcessChannelsForPlane(effect->getRenderHash(), kTime, ViewIdx(0), plane);
+    for (int i = 0; i < 4; ++i) {
+        q.processChannels[i] = channels[i];
+    }
+    KnobChannelSelectPtr unPremultBy = node->getUnPremultBySelector();
+    if (unPremultBy && !unPremultBy->isNone() && effect->getInput(0)) {
+        std::list<ImageLayerDesc> available;
+        effect->getAvailableLayers(kTime, ViewIdx(0), 0, &available);
+        ImageLayerDesc divisorLayer;
+        const int divisorChannel = node->getUnPremultChannel(available, &divisorLayer);
+        if (divisorLayer.getNumComponents() > 0) {
+            q.unPremultChannel = divisorChannel;
+            q.unPremultInPlane = (divisorChannel >= 0) && (Node::getUnPremultSkipChannel(plane, divisorLayer, divisorChannel) >= 0);
+        }
+    }
+
+    return q;
+}
+
+enum MaskMode {
+    eMaskNone,
+    eMaskOn,
+    eMaskInverted
+};
+
+struct GpuWrappedBlurCase {
+    const char* name;
+    double sigma;
+    bool nearest;
+    bool expandRoD;
+    MaskMode mask;
+    double mix;
+    bool unPremultByAlpha;
+    bool redAndAlpha;
+    double alphaThreshold;
+    unsigned maxMipmapLevel;
+    const char* filter = kBlurParamFilterFIRGaussian;
+};
+
+} // namespace
+
+// The settings renderGpu() wraps around the blur: the mask (partly covering the source, plain and
+// inverted), mix, "(Un)premult by" alpha, an R+A channel subset and the alpha threshold, alone and
+// combined, against the CPU render.
+TEST_F(NativeBlurGpuTest, MatchesTheCpuRenderWithMaskMixUnpremultChannelsAndThreshold)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    resetProject();
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    ASSERT_TRUE(bool(source));
+    setParitySourceOrigin(source, 3, 5);
+    NodePtr maskSource = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    ASSERT_TRUE(bool(maskSource));
+    setParitySourceOrigin(maskSource, 8, 4);
+
+    const GpuWrappedBlurCase cases[] = {
+        { "mask", 3., false, false, eMaskOn, 1., false, false, 0., 1 },
+        { "inverted mask", 3., true, true, eMaskInverted, 1., false, false, 0., 0 },
+        { "mix", 25., true, false, eMaskNone, 0.3, false, false, 0., 1 },
+        { "unpremult", 3., false, true, eMaskNone, 1., true, false, 0., 0 },
+        { "unpremult", 25., true, false, eMaskNone, 1., true, false, 0., 0 },
+        { "R+A", 3., true, false, eMaskNone, 1., false, true, 0., 1 },
+        { "R+A unpremult", 0.5, true, true, eMaskNone, 1., true, true, 0., 0 },
+        { "threshold", 3., false, false, eMaskNone, 1., false, false, 0.003, 1 },
+        { "threshold", 0.5, true, false, eMaskNone, 1., false, false, 0.003, 0 },
+        { "everything", 25., false, true, eMaskOn, 0.3, true, true, 0.003, 0 },
+        { "everything", 100., true, false, eMaskInverted, 0.3, true, true, 0.003, 0 },
+        // The recursive filters filter the window shrunk to the mask, so a mask changes their lines.
+        { "IIR mask", 3., true, true, eMaskOn, 1., false, false, 0., 1, kBlurParamFilterGaussian },
+        { "IIR inverted mask, mix", 10., false, false, eMaskInverted, 0.3, false, false, 0., 0, kBlurParamFilterGaussian },
+        { "IIR R+A", 10., true, false, eMaskNone, 1., false, true, 0., 0, kBlurParamFilterGaussian },
+    };
+
+    const ParityTolerance kTolerance = ParityTolerance::make(2e-6, 0.);
+    // Dividing by "(Un)premult by" makes values far above 1, and Vulkan division is only 2.5 ulp
+    // (RADV takes a reciprocal), so the filtered sums also carry a few ulp relative to their size.
+    const ParityTolerance kDividedTolerance = ParityTolerance::make(2e-6, 1e-6);
+    int nCompared = 0;
+    for (const GpuWrappedBlurCase& c : cases) {
+        NodePtr node = makeBlur();
+        Blur* blur = blurOf(node);
+        ASSERT_TRUE(blur != NULL);
+        connectNodes(source, node, 0, true);
+        const int maskInput = blur->getMaskInput();
+        ASSERT_GE(maskInput, 0);
+        connectNodes(maskSource, node, maskInput, true);
+        KnobChannelSelect* maskChannel = dynamic_cast<KnobChannelSelect*>(node->getKnobByName("maskChannel_Mask").get());
+        ASSERT_TRUE(maskChannel != NULL);
+        maskChannel->set("rgba.A");
+        ASSERT_TRUE(setKnobValues(node, "enableMask_Mask", { (c.mask != eMaskNone) ? 1. : 0. }));
+        ASSERT_TRUE(setKnobValues(node, kOfxMaskInvertParamName, { (c.mask == eMaskInverted) ? 1. : 0. }));
+        ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { c.mix }));
+        KnobChannelSelect* unPremultBy = dynamic_cast<KnobChannelSelect*>(node->getKnobByName(kUnPremultByKnobName).get());
+        ASSERT_TRUE(unPremultBy != NULL);
+        if (c.unPremultByAlpha) {
+            unPremultBy->set("rgba.A");
+        } else {
+            unPremultBy->setNone();
+        }
+        if (c.redAndAlpha) {
+            KnobChannelSetPtr channelSet = std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet));
+            ASSERT_TRUE(bool(channelSet));
+            channelSet->setChannels(0, std::vector<std::string> { "R", "A" });
+        }
+        ASSERT_TRUE(setKnobValues(node, kBlurParamSize, { 2.4 * c.sigma, 2.4 * c.sigma }));
+        ASSERT_TRUE(setKnobValue(node, kBlurParamBoundary, std::string(c.nearest ? kBlurParamBoundaryNearest : kBlurParamBoundaryBlack)));
+        ASSERT_TRUE(setKnobValues(node, kBlurParamExpandRoD, { c.expandRoD ? 1. : 0. }));
+        ASSERT_TRUE(setKnobValues(node, kBlurParamAlphaThreshold, { c.alphaThreshold }));
+        ASSERT_TRUE(setKnobValue(node, kBlurParamFilter, std::string(c.filter)));
+        const bool recursive = std::string(c.filter) != kBlurParamFilterFIRGaussian;
+
+        for (unsigned mipmapLevel = 0; mipmapLevel <= c.maxMipmapLevel; ++mipmapLevel) {
+            const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
+            const RectI rod = pixelRegionOfDefinition(node, mipmapLevel);
+            ASSERT_FALSE(rod.isNull());
+            const GpuQuery query = queryFor(node, mipmapLevel);
+            const std::string base = std::string(c.name) + " " + describeCase({ c.sigma, c.nearest, c.expandRoD }, mipmapLevel, rod);
+            ASSERT_EQ(4, query.nComps) << base;
+            EXPECT_EQ(c.mask != eMaskNone, query.hasMask) << base;
+            EXPECT_EQ(c.unPremultByAlpha, query.unPremultChannel >= 0) << base;
+            EXPECT_EQ(!c.redAndAlpha, query.processChannels[1] && query.processChannels[2]) << base;
+            ASSERT_TRUE(blur->canRenderOnGpu(query)) << base;
+
+            RenderedPlane maskRendered;
+            ASSERT_TRUE(renderColor(maskSource, mipmapLevel, paritySourceWindow(maskSource, kTime, mipmapLevel), &maskRendered)) << base;
+            GpuParityImage mask;
+            mask.bounds = maskRendered.window;
+            mask.nComps = (int)maskRendered.channels.size();
+            mask.pixels = maskRendered.pixels;
+            mask.layout.padFloats = 3;
+            mask.layout.rowPadFloats = 5;
+
+            std::vector<RectI> rois;
+            rois.push_back(rod);
+            rois.push_back(RectI(rod.x1 + 5, rod.y1 + 3, std::min(rod.x2 - 2, rod.x1 + 5 + 23), std::min(rod.y2 - 1, rod.y1 + 3 + 17)));
+            for (const RectI& roi : rois) {
+                const std::string what = std::string(c.name) + " " + describeCase({ c.sigma, c.nearest, c.expandRoD }, mipmapLevel, roi);
+                RenderedPlane cpu;
+                ASSERT_TRUE(renderColor(node, mipmapLevel, roi, &cpu)) << what;
+                ASSERT_EQ(4u, cpu.channels.size()) << what;
+                ASSERT_EQ(roi, cpu.window) << what;
+
+                const RectI inputRoI = blur->getGpuInputRoI(0, roi, scale);
+                RenderedPlane in;
+                ASSERT_TRUE(renderColor(source, mipmapLevel, inputRoI, &in)) << what;
+                ASSERT_EQ(inputRoI, in.window) << what;
+
+                const int nComps = 4;
+                GpuParityImage image;
+                image.bounds = inputRoI;
+                image.nComps = nComps;
+                image.pixels = in.pixels;
+                image.layout.padFloats = 6;
+                image.layout.rowPadFloats = 8;
+                GpuViewLayout layout;
+                layout.padFloats = 4;
+                layout.rowPadFloats = 4;
+                layout.marginLeft = 2;
+                layout.marginBottom = 1;
+                layout.marginRight = 3;
+                layout.marginTop = 2;
+
+                const GpuRunResult run = runRenderGpu(*runtime, *blur, query, std::vector<GpuParityImage>(1, image), query.hasMask ? &mask : nullptr, roi, layout);
+                ASSERT_TRUE(run.ok) << what;
+                EXPECT_EQ(0u, run.writtenOutside) << what << ": floats outside the window were written";
+
+                ASSERT_EQ(cpu.pixels.size(), run.pixels.size()) << what;
+                const ImageDiff diff = compareImages(cpu.pixels, run.pixels, recursive ? ParityTolerance::iir() : (c.unPremultByAlpha ? kDividedTolerance : kTolerance));
+                nCompared += (int)diff.compared;
+                const std::size_t at = diff.worstIndex / nComps;
+                EXPECT_EQ(0u, diff.mismatches) << what << ", worst " << diff.worstAbsolute << " at (" << (roi.x1 + (int)(at % roi.width())) << "," << (roi.y1 + (int)(at / roi.width())) << ") channel " << (diff.worstIndex % nComps) << " gpu " << run.pixels[diff.worstIndex] << " cpu " << cpu.pixels[diff.worstIndex];
+            }
+        }
+    }
+    EXPECT_GT(nCompared, 0);
+}
+
+namespace {
+
+const char* const kRecursiveFilters[] = {
+    kBlurParamFilterQuasiGaussian,
+    kBlurParamFilterGaussian,
+    kBlurParamFilterBox,
+    kBlurParamFilterTriangle,
+    kBlurParamFilterQuadratic,
+};
+
+// One channel of a packed image of nComps channels.
+std::vector<float>
+channelOf(const std::vector<float>& pixels,
+          int nComps,
+          int channel)
+{
+    std::vector<float> out(pixels.size() / nComps);
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        out[i] = pixels[i * nComps + channel];
+    }
+
+    return out;
+}
+
+} // namespace
+
+// The IIR Gaussians and the box, triangle and quadratic filters against the CPU render, at sizes
+// 3, 25 and 100 under both boundary conditions, over the whole region of definition, and over an
+// odd window at size 25, whose lines the halo cuts short. Then each on a one-channel image: the
+// alpha of the source, against the alpha of the CPU's RGBA render, which filters each channel alone.
+TEST_F(NativeBlurGpuTest, RecursiveAndBoxFiltersMatchTheCpuRender)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    resetProject();
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    ASSERT_TRUE(bool(source));
+    setParitySourceOrigin(source, 3, 5);
+
+    int nCompared = 0;
+    for (const char* filter : kRecursiveFilters) {
+        for (double size : { 3., 25., 100. }) {
+            for (bool nearest : { false, true }) {
+                NodePtr node = makeBlur();
+                Blur* blur = blurOf(node);
+                ASSERT_TRUE(blur != NULL);
+                connectNodes(source, node, 0, true);
+                ASSERT_TRUE(setKnobValue(node, kBlurParamFilter, std::string(filter)));
+                ASSERT_TRUE(setKnobValues(node, kBlurParamSize, { size, size }));
+                ASSERT_TRUE(setKnobValue(node, kBlurParamBoundary, std::string(nearest ? kBlurParamBoundaryNearest : kBlurParamBoundaryBlack)));
+
+                const RectI rod = pixelRegionOfDefinition(node, 0);
+                ASSERT_FALSE(rod.isNull());
+                std::vector<RectI> rois;
+                rois.push_back(rod);
+                if (size == 25.) {
+                    rois.push_back(RectI(rod.x1 + 41, rod.y1 + 37, std::min(rod.x2 - 2, rod.x1 + 41 + 23), std::min(rod.y2 - 1, rod.y1 + 37 + 17)));
+                }
+                for (const RectI& roi : rois) {
+                    std::ostringstream what;
+                    what << filter << " size " << size << (nearest ? " nearest" : " black") << " roi (" << roi.x1 << "," << roi.y1 << ")-(" << roi.x2 << "," << roi.y2 << ")";
+                    RenderedPlane cpu;
+                    ASSERT_TRUE(renderColor(node, 0, roi, &cpu)) << what.str();
+                    ASSERT_EQ(4u, cpu.channels.size()) << what.str();
+
+                    const RectI inputRoI = blur->getGpuInputRoI(0, roi, RenderScale::identity);
+                    RenderedPlane in;
+                    ASSERT_TRUE(renderColor(source, 0, inputRoI, &in)) << what.str();
+
+                    GpuParityImage image;
+                    image.bounds = inputRoI;
+                    image.nComps = 4;
+                    image.pixels = in.pixels;
+                    image.layout.padFloats = 6;
+                    image.layout.rowPadFloats = 8;
+                    GpuViewLayout layout;
+                    layout.padFloats = 4;
+                    layout.rowPadFloats = 4;
+                    layout.marginLeft = 2;
+                    layout.marginBottom = 1;
+                    layout.marginRight = 3;
+                    layout.marginTop = 2;
+
+                    const GpuRunResult run = runRenderGpu(*runtime, *blur, eligibleQuery(), std::vector<GpuParityImage>(1, image), nullptr, roi, layout);
+                    ASSERT_TRUE(run.ok) << what.str();
+                    EXPECT_EQ(0u, run.writtenOutside) << what.str() << ": floats outside the window were written";
+                    ASSERT_EQ(cpu.pixels.size(), run.pixels.size()) << what.str();
+                    const ImageDiff diff = compareImages(cpu.pixels, run.pixels, ParityTolerance::iir());
+                    nCompared += (int)diff.compared;
+                    EXPECT_EQ(0u, diff.mismatches) << what.str() << ", worst " << diff.worstAbsolute << " at float " << diff.worstIndex;
+
+                    if ((size != 25.) || !nearest || (roi != rod)) {
+                        continue;
+                    }
+                    GpuParityImage alpha;
+                    alpha.bounds = inputRoI;
+                    alpha.nComps = 1;
+                    alpha.pixels = channelOf(in.pixels, 4, 3);
+                    GpuQuery query = eligibleQuery();
+                    query.nComps = 1;
+                    ASSERT_TRUE(blur->canRenderOnGpu(query)) << what.str();
+                    const GpuRunResult runAlpha = runRenderGpu(*runtime, *blur, query, std::vector<GpuParityImage>(1, alpha), nullptr, roi);
+                    ASSERT_TRUE(runAlpha.ok) << what.str() << " alpha";
+                    const std::vector<float> cpuAlpha = channelOf(cpu.pixels, 4, 3);
+                    ASSERT_EQ(cpuAlpha.size(), runAlpha.pixels.size()) << what.str() << " alpha";
+                    const ImageDiff alphaDiff = compareImages(cpuAlpha, runAlpha.pixels, ParityTolerance::iir());
+                    nCompared += (int)alphaDiff.compared;
+                    EXPECT_EQ(0u, alphaDiff.mismatches) << what.str() << " alpha, worst " << alphaDiff.worstAbsolute << " at pixel " << alphaDiff.worstIndex;
+                }
+            }
+        }
+    }
+    EXPECT_GT(nCompared, 0);
+}
+
+namespace {
+
+bool
+moveToDevice(gpu::GpuRuntime& runtime,
+             gpu::GpuBuffer& buffer,
+             std::vector<float>& data)
+{
+    gpu::TimelineValue done;
+    gpu::GpuStatus s = runtime.upload(gpu::HostRange { data.data(), data.size() * sizeof(float) }, buffer, 0, done);
+    if (s) {
+        s = runtime.wait(done);
+    }
+    EXPECT_TRUE(bool(s)) << s.message;
+
+    return bool(s);
+}
+
+} // namespace
+
+// The device time of a UHD (3840x2160) RGBA Blur with each recursive and box filter at sizes 10 and
+// 100, its source and output resident: the wall time of submitting renderGpu()'s work alone and
+// waiting for it, the fastest of three after a warm-up. Only runs with NATRON_GPU_BENCH=1, and is
+// meant for a discrete device such as RADV; the times go to stdout and to the test's properties.
+TEST_F(NativeBlurGpuTest, RecursiveFiltersUhdKernelTime)
+{
+    const char* bench = std::getenv("NATRON_GPU_BENCH");
+    if (!bench || (std::string(bench) != "1")) {
+        std::printf("skipped: set NATRON_GPU_BENCH=1 to time the UHD recursive blurs\n");
+
+        return;
+    }
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    const int width = 3840;
+    const int height = 2160;
+    ProjectPtr project = getApp()->getProject();
+    project->reset(false, true);
+    project->setAutoSetProjectFormatEnabled(false);
+    project->setOrAddProjectFormat(Format(0, 0, width, height, "nativeBlurGpuUhd", 1.));
+
+    NodePtr source = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    NodePtr node = makeBlur();
+    Blur* blur = blurOf(node);
+    ASSERT_TRUE(bool(source) && (blur != NULL));
+    connectNodes(source, node, 0, true);
+
+    const RectI rect(0, 0, width, height);
+    gpu::GpuRuntime& vk = runtime->runtime();
+    gpu::GpuBuffer* dstBuffer = runtime->buffer(1, (std::size_t)rect.area() * 4);
+    ASSERT_TRUE(dstBuffer != NULL);
+    const double megapixels = (double)rect.area() / 1e6;
+    for (const char* filter : kRecursiveFilters) {
+        for (double size : { 10., 100. }) {
+            ASSERT_TRUE(setKnobValue(node, kBlurParamFilter, std::string(filter)));
+            ASSERT_TRUE(setKnobValues(node, kBlurParamSize, { size, size }));
+            ASSERT_TRUE(blur->canRenderOnGpu(eligibleQuery())) << filter;
+            const RectI inputRoI = blur->getGpuInputRoI(0, rect, RenderScale::identity);
+            ASSERT_FALSE(inputRoI.isNull());
+
+            // Edges in every direction, so no line is constant.
+            std::vector<float> pixels((std::size_t)inputRoI.area() * 4);
+            for (int y = 0; y < inputRoI.height(); ++y) {
+                for (int x = 0; x < inputRoI.width(); ++x) {
+                    float* p = &pixels[((std::size_t)y * inputRoI.width() + x) * 4];
+                    const bool cell = (((x / 37) + (y / 23)) & 1) != 0;
+                    p[0] = cell ? 0.9f : 0.1f;
+                    p[1] = (float)(x % 256) / 255.f;
+                    p[2] = (float)(y % 512) / 511.f;
+                    p[3] = 1.f;
+                }
+            }
+            gpu::GpuBuffer* srcBuffer = runtime->buffer(0, pixels.size());
+            ASSERT_TRUE(srcBuffer != NULL);
+            ASSERT_TRUE(moveToDevice(vk, *srcBuffer, pixels));
+
+            GpuImageView input;
+            input.buffer = srcBuffer;
+            input.bounds = inputRoI;
+            input.rowStrideFloats = inputRoI.width() * 4;
+            input.nComps = 4;
+            double best = 0.;
+            for (int run = 0; run < 4; ++run) {
+                std::unique_ptr<gpu::GpuRecordContext> context;
+                const gpu::GpuStatus created = vk.newRecordContext(context);
+                ASSERT_TRUE(bool(created)) << created.message;
+                GpuRenderArgs args(*context);
+                args.query = eligibleQuery();
+                args.outputRect = rect;
+                args.inputs.push_back(input);
+                args.output.buffer = dstBuffer;
+                args.output.bounds = rect;
+                args.output.rowStrideFloats = rect.width() * 4;
+                args.output.nComps = 4;
+                ASSERT_EQ(eStatusOK, blur->renderGpu(args)) << filter << " size " << size;
+                const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+                const gpu::GpuStatus submitted = context->submitAndWait(600'000'000'000ull);
+                const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+                ASSERT_TRUE(bool(submitted)) << submitted.message;
+                if ((run == 1) || ((run > 1) && (ms < best))) {
+                    best = ms;
+                }
+            }
+            std::printf("blur %s size %g, UHD: %.1f ms, %.3f ms/Mpx\n", filter, size, best, best / megapixels);
+            RecordProperty(std::string(filter) + "_" + std::to_string((int)size) + "_uhd_ms", std::to_string(best));
+        }
+    }
 }
 
 #endif // NATRON_HAVE_GPU

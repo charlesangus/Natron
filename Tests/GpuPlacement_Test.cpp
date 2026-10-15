@@ -495,7 +495,7 @@ TEST(GpuCostModel, GradeCostsFollowSeedOverride)
     model.setThreadCount(16);
     model.setCpuSeed(kGradeId, 16., 16.);
     EXPECT_NEAR(model.cpuMs(GpuTaskTraits(kGradeId), kUhdMpx), kUhdMpx, 1e-9);
-    EXPECT_NEAR(model.gpuMs(GpuTaskTraits(kGradeId), kUhdMpx), 0.0482 * kUhdMpx, 1e-9);
+    EXPECT_NEAR(model.gpuMs(GpuTaskTraits(kGradeId), kUhdMpx), 0.497, 1e-3);
     EXPECT_FALSE(model.hasGpuCost(GpuTaskTraits("net.sf.openfx.MergePlugin")));
 }
 
@@ -647,4 +647,188 @@ TEST(GpuCostModel, ShrinkingNeverBreaksConvexity)
     EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
     EXPECT_TRUE(isConvex(fixture.graph, 0));
     EXPECT_TRUE(isContractionAcyclic(fixture.graph));
+}
+
+namespace {
+
+GpuTaskTraits
+unseededTraits(GpuCostClass costClass,
+               int inputCount = 1)
+{
+    GpuTaskTraits traits("test.NoSeedRows");
+
+    traits.costClass = costClass;
+    traits.inputCount = inputCount;
+
+    return traits;
+}
+
+} // namespace
+
+TEST(GpuCostModel, ClassDefaultsFollowGradeAndBlurRows)
+{
+    GpuCostModel model;
+
+    model.setThreadCount(16);
+    const GpuTaskTraits point = unseededTraits(GpuCostClass::ePointOp);
+    EXPECT_TRUE(model.hasGpuCost(point));
+    EXPECT_NEAR(model.gpuMs(point, 1.), model.gpuMs(GpuTaskTraits(kGradeId), 1.), 1e-12);
+    EXPECT_NEAR(model.cpuMs(point, 1.), model.cpuMs(GpuTaskTraits(kGradeId), 1.), 1e-12);
+    EXPECT_NEAR(model.gpuMs(unseededTraits(GpuCostClass::ePointOp, 3), 1.), 2. * model.gpuMs(GpuTaskTraits(kGradeId), 1.), 1e-12);
+
+    const GpuTaskTraits spatial = unseededTraits(GpuCostClass::eSpatial);
+    EXPECT_NEAR(model.gpuMs(spatial, 1.), model.gpuMs(GpuTaskTraits(kBlurId, 25.), 1.), 1e-12);
+    EXPECT_NEAR(model.cpuMs(spatial, 1.), model.cpuMs(GpuTaskTraits(kBlurId, 25.), 1.), 1e-12);
+
+    const GpuTaskTraits other = unseededTraits(GpuCostClass::eOther);
+    EXPECT_FALSE(model.hasGpuCost(other));
+    EXPECT_EQ(model.cpuMs(other, 1.), 0.);
+}
+
+// The seed prices a Transform that renders with motion blur apart from a plain one, and measurements of either leave
+// the other alone.
+TEST(GpuCostModel, MotionBlurRowsPriceOnlyMotionBlur)
+{
+    GpuCostModel model;
+
+    model.setThreadCount(1);
+    GpuTaskTraits plain("net.sf.openfx.TransformPlugin");
+    plain.costClass = GpuCostClass::eSpatial;
+    GpuTaskTraits blurred = plain;
+    blurred.motionBlur = true;
+    const double plainCpu = model.cpuMs(plain, 1.);
+    const double blurredCpu = model.cpuMs(blurred, 1.);
+    const double plainGpu = model.gpuMs(plain, 1.);
+    const double blurredGpu = model.gpuMs(blurred, 1.);
+    EXPECT_NE(plainCpu, model.cpuMs(GpuTaskTraits(kBlurId, 25.), 1.));
+    EXPECT_NE(plainGpu, model.gpuMs(GpuTaskTraits(kBlurId, 25.), 1.));
+    EXPECT_GT(blurredCpu, plainCpu);
+    EXPECT_GT(blurredGpu, plainGpu);
+
+    const double weight = GpuCostModel::kEmaWeight;
+    model.observeCpu(plain, 7000000, 1, 1.);
+    EXPECT_NEAR(model.cpuMs(plain, 1.), plainCpu + weight * (7. - plainCpu), 1e-9);
+    EXPECT_NEAR(model.cpuMs(blurred, 1.), blurredCpu, 1e-9);
+
+    model.observeGpu(blurred, 50000000, 1.);
+    EXPECT_NEAR(model.gpuMs(blurred, 1.), blurredGpu + weight * (50. - blurredGpu), 1e-9);
+    EXPECT_NEAR(model.gpuMs(plain, 1.), plainGpu, 1e-12);
+    const double blurredAfter = model.gpuMs(blurred, 1.);
+    model.observeGpu(plain, 2000000, 1.);
+    EXPECT_NEAR(model.gpuMs(plain, 1.), plainGpu + weight * (2. - plainGpu), 1e-9);
+    EXPECT_NEAR(model.gpuMs(blurred, 1.), blurredAfter, 1e-12);
+}
+
+// The recursive Blur filters have a GPU row of their own, which a measurement of the FIR rows does not touch.
+TEST(GpuCostModel, RecursiveBlurFiltersHaveTheirOwnGpuRow)
+{
+    GpuCostModel model;
+
+    model.setThreadCount(1);
+    const GpuTaskTraits fir(kBlurId, 100., false);
+    const GpuTaskTraits iir(kBlurId, 100., true);
+    const double firGpu = model.gpuMs(fir, 1.);
+    const double iirGpu = model.gpuMs(iir, 1.);
+    EXPECT_GT(firGpu, 0.);
+    EXPECT_NE(firGpu, iirGpu);
+
+    model.observeGpu(iir, 4000000, 1.);
+    EXPECT_NEAR(model.gpuMs(iir, 1.), iirGpu + GpuCostModel::kEmaWeight * (4. - iirGpu), 1e-9);
+    EXPECT_NEAR(model.gpuMs(fir, 1.), firGpu, 1e-12);
+}
+
+// Every node with a GPU kernel has seed rows of its own, so none of them falls back on a class default.
+TEST(GpuCostModel, EveryGpuNodeIsSeeded)
+{
+    GpuCostModel model;
+
+    model.setThreadCount(16);
+    const char* const ids[] = {
+        "net.sf.openfx.GradePlugin",
+        "net.sf.openfx.ColorCorrectPlugin",
+        "net.sf.openfx.Invert",
+        "net.sf.openfx.Clamp",
+        "net.sf.openfx.AddPlugin",
+        "net.sf.openfx.MultiplyPlugin",
+        "net.sf.openfx.GammaPlugin",
+        "net.sf.openfx.SaturationPlugin",
+        "net.sf.openfx.ColorLookupPlugin",
+        "net.sf.openfx.KeyerPlugin",
+        "net.sf.openfx.ChromaKeyerPlugin",
+        "net.sf.cimg.CImgErode",
+        "net.sf.cimg.CImgDilate",
+        "net.sf.openfx.ConstantPlugin",
+        "net.sf.openfx.Solid",
+        "net.sf.openfx.CheckerBoardPlugin",
+        "net.sf.openfx.TransformPlugin",
+        "net.sf.cimg.CImgBlur",
+    };
+    for (const char* id : ids) {
+        GpuTaskTraits traits(id);
+        traits.costClass = GpuCostClass::eOther;
+        EXPECT_TRUE(model.hasGpuCost(traits)) << id;
+        EXPECT_GT(model.cpuMs(traits, 1.), 0.) << id;
+    }
+}
+
+TEST(GpuCostModel, MeasuredRowsBeatClassDefaults)
+{
+    GpuCostModel model;
+
+    model.setThreadCount(16);
+    const GpuTaskTraits point = unseededTraits(GpuCostClass::ePointOp);
+    model.observeGpu(point, 7000000, 1.);
+    model.observeCpu(point, 9000000, 16, 1.);
+    EXPECT_NEAR(model.gpuMs(point, 1.), 7., 1e-9);
+    EXPECT_NEAR(model.cpuMs(point, 1.), 9., 1e-9);
+}
+
+// sink 0 (CPU) <- Grade 1 <- X 2 <- Grade 3 <- reader 4 (CPU), X a point op with no rows.
+TEST(GpuCostModel, UnseededPointOpJoinsGradeRegion)
+{
+    CostFixture fixture(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
+
+    fixture.traits[1] = GpuTaskTraits(kGradeId);
+    fixture.traits[2] = unseededTraits(GpuCostClass::ePointOp);
+    fixture.traits[3] = GpuTaskTraits(kGradeId);
+    fixture.place();
+
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    EXPECT_EQ(fixture.graph.regions[0].members.size(), 3u);
+    EXPECT_EQ(fixture.graph.tasks[2].device, FrameGraph::Device::Gpu);
+}
+
+TEST(GpuCostModel, UnseededOtherNodeIsNeverPlaced)
+{
+    CostFixture fixture(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
+
+    fixture.traits[1] = GpuTaskTraits(kGradeId);
+    fixture.traits[2] = unseededTraits(GpuCostClass::eOther);
+    fixture.traits[3] = GpuTaskTraits(kGradeId);
+    fixture.place();
+
+    EXPECT_EQ(fixture.graph.tasks[2].device, FrameGraph::Device::Cpu);
+}
+
+// X is a point op that cannot render on the GPU, whatever its default cost.
+TEST(GpuCostModel, NodeThatCannotRenderOnGpuIsNeverPlaced)
+{
+    CostFixture fixture(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
+
+    fixture.traits[1] = GpuTaskTraits(kGradeId);
+    fixture.traits[2] = unseededTraits(GpuCostClass::ePointOp);
+    fixture.traits[3] = GpuTaskTraits(kGradeId);
+
+    PlacementInputs inputs;
+    inputs.canRenderOnGpu = [&fixture](const FrameGraph::Task& task) {
+        const int index = indexOf(fixture.graph, task);
+
+        return (index != 2) && (fixture.traits.count(index) != 0);
+    };
+    inputs.regionGain = [&fixture](const FrameGraph& g, const FrameGraph::Region& region) {
+        return fixture.model.regionGainMs(g, region);
+    };
+    placeGraph(fixture.graph, inputs);
+
+    EXPECT_EQ(fixture.graph.tasks[2].device, FrameGraph::Device::Cpu);
 }

@@ -36,7 +36,9 @@ static const uint kDirectMaxRadius = 32;
 static const uint kMaxRadius = 512;
 static const uint kMaxTile = kGroup + 2 * kMaxRadius;
 
-groupshared float tile[kMaxTile * 4];
+// Whole pixels, so a tap is one 16-byte read and a wave reads consecutive pixels: with the channels
+// as separate floats, lanes four floats apart pile onto a quarter of the LDS banks.
+groupshared float4 tile[kMaxTile];
 
 bool insideLine(int a)
 {
@@ -108,8 +110,10 @@ float firAt(int a, int line, uint c)
 
 // Dispatch shape comes from blurGroupCount in Engine/Gpu/GpuBlur.cpp, which also refuses
 // radius > kMaxRadius and more than 4 channels, the limits of `tile`. group.x is the tile along
-// the blur axis; group.y is the line it filters, or a block of kColumns columns on the vertical
-// direct path. weights holds radius + 1 floats, for offsets 0 to radius.
+// the blur axis and group.y the line it filters, except on the vertical paths: the direct path
+// takes a block of kColumns columns as group.y, and the shared-tile path swaps the two so that
+// groups dispatched together filter neighbouring columns and share the cache lines of each row.
+// weights holds radius + 1 floats, for offsets 0 to radius.
 [shader("compute")]
 [numthreads(128, 1, 1)]
 void blurPass(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
@@ -118,8 +122,9 @@ void blurPass(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
     const int lines = int(params.vertical != 0 ? params.width : params.height);
     const int R = int(params.radius);
     const uint nc = params.channels;
-    const uint line = gid.y;
-    const int base = int(gid.x * kGroup);
+    const bool columnMajor = params.vertical != 0 && R > int(kDirectMaxRadius);
+    const uint line = columnMajor ? gid.x : gid.y;
+    const int base = int((columnMajor ? gid.y : gid.x) * kGroup);
     const int pos = base + int(tid.x);
     const bool active = pos < len && int(line) < lines;
     const int a0 = axisOrigin();
@@ -129,20 +134,25 @@ void blurPass(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
     {
     case cpp:
         // The C++ target runs a group's threads one after another, so a
-        // barrier cannot publish a cooperatively loaded tile there.
-        if (active)
+        // barrier cannot publish a cooperatively loaded tile there. Its
+        // callers dispatch every pass with group.x along the blur axis.
         {
-            const bool inside = insideLine(a0 + pos);
-            for (uint c = 0; c < nc; ++c)
-                dstBuf[outputIndex(line, uint(pos)) + c] = inside ? firAt(a0 + pos, l0 + int(line), c) : 0.0;
+            const int p = int(gid.x * kGroup + tid.x);
+            if (p < len && int(gid.y) < lines)
+            {
+                const bool inside = insideLine(a0 + p);
+                for (uint c = 0; c < nc; ++c)
+                    dstBuf[outputIndex(gid.y, uint(p)) + c] = inside ? firAt(a0 + p, l0 + int(gid.y), c) : 0.0;
+            }
         }
         break;
     default:
         if (params.vertical != 0 && R <= int(kDirectMaxRadius))
         {
             // Small radii: threads of a wave take adjacent columns so every load is a contiguous
-            // row segment. Wide kernels reuse each sample so often that the shared tile wins
-            // despite its strided loads. group.y selects a block of kColumns columns.
+            // row segment. group.y selects a block of kColumns columns. Wider kernels reuse each
+            // sample often enough to want the shared tile, which a column fills with one strided
+            // load per row.
             const uint col = gid.y * kColumns + (tid.x % kColumns);
             if (col < params.width)
             {
@@ -164,21 +174,33 @@ void blurPass(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
             for (int t = int(tid.x); t < tileLen; t += int(kGroup))
             {
                 uint idx = 0;
-                const bool ok = int(line) < lines && sourceIndex(a0 + base - R + t, l0 + int(line), idx);
-                for (uint c = 0; c < nc; ++c)
-                    tile[uint(t) * nc + c] = ok ? srcBuf[idx + c] : 0.0;
+                float4 v = float4(0.0);
+                if (int(line) < lines && sourceIndex(a0 + base - R + t, l0 + int(line), idx))
+                {
+                    [ForceUnroll]
+                    for (uint c = 0; c < 4; ++c)
+                    {
+                        if (c < nc)
+                            v[c] = srcBuf[idx + c];
+                    }
+                }
+                tile[t] = v;
             }
             GroupMemoryBarrierWithGroupSync();
             if (active)
             {
                 const bool inside = insideLine(a0 + pos);
                 const uint centre = tid.x + uint(R);
-                for (uint c = 0; c < nc; ++c)
+                // Componentwise, so every channel is summed in the same order as firAt.
+                float4 acc = weights[0] * tile[centre];
+                for (uint k = 1; k <= uint(R); ++k)
+                    acc += weights[k] * (tile[centre - k] + tile[centre + k]);
+                const uint o = outputIndex(line, uint(pos));
+                [ForceUnroll]
+                for (uint c = 0; c < 4; ++c)
                 {
-                    float acc = weights[0] * tile[centre * nc + c];
-                    for (uint k = 1; k <= uint(R); ++k)
-                        acc += weights[k] * (tile[(centre - k) * nc + c] + tile[(centre + k) * nc + c]);
-                    dstBuf[outputIndex(line, uint(pos)) + c] = inside ? acc : 0.0;
+                    if (c < nc)
+                        dstBuf[o + c] = inside ? acc[c] : 0.0;
                 }
             }
         }

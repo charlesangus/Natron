@@ -819,3 +819,58 @@ Measured exceptions and what they are not:
   ACES AP1 coefficients above. Keyer and ChromaKeyer with an RGB source treat
   alpha as 1 for Normal and add nothing for "Add to Inside Mask", where OFX
   reads out of bounds, and neither mirrors OFX's output-premult preference.
+
+### GPU parity
+
+A native node's GPU path is held to the node's own CPU render, not to the OFX
+plugin, and states its tolerance in this section: a node row above gets a GPU
+bound beside its CPU class, or a measured exception below it, in the same change
+that lets the node answer `canRenderOnGpu()`. Vulkan division is 2.5 ulp and
+`pow` and the trigonometric functions are looser still, so a GPU bound is
+usually wider than the CPU class of the same node. Grade holds `gradefix::kUlpBound` (`Tests/Gpu/GradeFixture.h`) and Blur's FIR Gaussian holds
+2e-6 absolute, plus 1e-6 relative with "(Un)premult by", whose divided values
+reach far above 1. Blur's quasi-Gaussian, Gaussian (IIR), box, triangle and quadratic filters hold `iir()`: one thread runs
+each line through the CPU's recursion with its state in two floats where the CPU uses double (plain float drifts past 1e-3
+for the IIR Gaussian at large sizes), and filters the same rect as render(), the window shrunk to the mask, grown by the
+halo and clipped to the region of definition. Derivative orders stay on the CPU (`Tests/Native/NativeBlurGpu_Test.cpp`).
+Clamp holds its CPU class, exact, except where a divisor, mask or mix below 1
+enters, which hold `arithmetic()` (`Tests/Native/NativeClampGpu_Test.cpp`).
+Invert holds its CPU class, exact, except where a divisor, mask or mix below 1
+enters, which hold `arithmetic()` (`Tests/Native/NativeInvertGpu_Test.cpp`).
+ColorLookup holds `transcendental()` in the standard and film-like modes, including values outside
+`range`, which the shader evaluates from the curve's keys with the key time and the cubic in two
+floats (a key time between two floats, times a steep slope, would otherwise move the value far
+beyond the bound), and blends the table in two floats to round as the CPU's double does. Weighted standard holds 5e-4 relative and luminance 3e-5: they
+divide a curve value by a channel's distance to 0 or 1, or by the luminance, which grows a float
+rounding as the divisor nears 0 (measured 2.1e-4 on RADV with "(Un)premult by", 1.3e-5 without, and
+1.05e-5 for luminance at the 1e-8 floor). Weighted standard also skips the colour of a pixel with a
+denormal colour channel, whose quotient depends on the device's denormal arithmetic. Pixels of two
+components stay on the CPU, as does a curve of more than 128 keys, and a curve `CurveSnapshot::packGpu`
+cannot bound within 1e-6 of the CPU: so steep before its first key that the CPU's own double
+rounding exceeds that, or with values and slopes so large that two floats do not hold them
+(`Tests/Native/NativeColorLookupGpu_Test.cpp`).
+Saturation holds its CPU class, transcendental, for every luminance option; the kernel takes the
+weights from the CPU's `ColorMath::luminance` (`Tests/Native/NativeSaturationGpu_Test.cpp`).
+ColorCorrect holds its CPU class, transcendental, in every group and luminance option, with the tone curves read from the CPU's table inside `range` and evaluated from their keys outside it, as ColorLookup does (shared through `CurveSnapshot::packGpu` and `Kernels/curvesnapshot.slang`, so in two floats past a steep key between two floats too); a curve of more than 128 keys, or one `packGpu` cannot bound within 1e-6 of the CPU, stays on the CPU (`Tests/Native/NativeColorCorrectGpu_Test.cpp`).
+Constant and Solid hold their CPU class, exact, for every target layer and channel selection, with a source connected or not (`Tests/Native/NativeConstantGpu_Test.cpp`).
+CheckerBoard holds its CPU class, exact, at mipmap 0 and 1: the host classes every column and row of the region of definition with the CPU's double comparisons and the device looks the class up (`Tests/Native/NativeCheckerBoardGpu_Test.cpp`).
+Add and Multiply hold `arithmetic()` and Gamma holds `transcendental()`, where a subnormal input may come back as 0 on a device that flushes denormals (`Tests/Native/NativeColorMathGpu_Test.cpp`).
+Erode and Dilate hold exact, bit for bit on NaNs, signed zeros and denormals, except where "(Un)premult by" divides, which holds Blur's 2e-6 absolute plus 1e-6 relative (`Tests/Native/NativeErodeDilateGpu_Test.cpp`).
+Transform and TransformMasked hold their CPU class, `resampling()`, for every filter with clamp and black outside on and off, with mask and mix, at mipmap 0 and 1; sample positions travel in two floats so the filters pick the CPU's taps. Motion blur at quality 0.5, 1 and 4 over every shutter offset, and directional blur, hold `iir()`: each pixel draws the CPU's van der Corput sequence over the same host-built matrices and stops on the same variance test, its sums kept in two floats. The device filters each sample in float where the CPU uses double, a few ulps apart, so a pixel whose variance quotient lies that close to an integer takes one sample more or fewer and moves by about `motionBlurMaxError()` / sqrt(samples); up to one pixel in 250 of a window (at least 2) may therefore miss `iir()`, by no more than `motionBlurMaxError()` (quality / 1000), the standard error the sampler itself targets. Matching the CPU's sample counts exactly would need double-precision filtering on the device. A transform concatenated from upstream stays on the CPU (`Tests/Native/NativeTransformGpu_Test.cpp`).
+ChromaKeyer holds its CPU class, transcendental, in the intermediate, premultiplied and composite modes, with every source alpha option, Bg and masks or not, and an RGB source; the host derives the key's per-frame constants as the CPU does and the device keys in float. The unpremultiplied mode holds 1e-3 relative: it divides by the key alpha, so a one-ulp difference in the float key the CPU rounds from double becomes a relative error of about 6e-8 over that alpha (a float model of the kernel measured 1.02e-4 on the parity source, where the alpha reaches 5.8e-4) (`Tests/Native/NativeChromaKeyerGpu_Test.cpp`).
+Keyer holds its CPU class, transcendental, in every key, output and source alpha mode, with each of InM, OutM and Bg or none, partly covering the window, an RGB source and a channel subset; the host decides every threshold comparison and derives the key colour terms in double, and the device takes the distance to the key axis from the orthogonal part of the colour rather than the CPU's squared-norm difference, which float cannot hold near the axis (`Tests/Native/NativeKeyerGpu_Test.cpp`).
+
+`Tests/Native/NativeGpuParity.{h,cpp}` is the shared harness. A test names its
+bound with `ParityTolerance` and compares through `compareImages()`.
+
+- `createRuntime()` makes a runtime on whatever Vulkan device exists, software
+  ones included. With none, the test prints a skip notice and returns, or fails
+  under `NATRON_TEST_REQUIRE_GPU=1`.
+- `runRenderGpu()` uploads the inputs and an optional mask into views with a
+  chosen offset, row padding and bounds (the source may be smaller than the
+  window), records `renderGpu()`, and returns the window. It also counts the
+  floats written outside it.
+- `renderEndToEnd()` renders a small graph once as a scheduler frame with a
+  forced GPU context and once under `GpuPlacementOffGuard`. It returns both
+  images and the frame's regions, so a test can assert with `ranInRegion()` that
+  the node ran on the device.

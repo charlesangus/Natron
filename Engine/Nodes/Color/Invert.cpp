@@ -31,6 +31,10 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
+
 NATRON_NAMESPACE_ENTER
 
 namespace {
@@ -122,6 +126,31 @@ PixelKernelPtr
 Invert::makeKernel(const KernelContext& /*context*/)
 {
     return std::make_shared<InvertKernel>();
+}
+
+int
+Invert::gpuKernelId(const GpuQuery& /*query*/) const
+{
+#ifdef NATRON_HAVE_GPU
+    return (int)gpu::GpuKernelId::invert;
+#else
+    return -1;
+#endif
+}
+
+bool
+Invert::makeGpuKernel(const KernelContext& /*context*/,
+                      PixelKernelGpu* gpu)
+{
+#ifdef NATRON_HAVE_GPU
+    gpu->kernel = (int)gpu::GpuKernelId::invert;
+
+    return true;
+#else
+    Q_UNUSED(gpu);
+
+    return false;
+#endif
 }
 
 NATRON_NAMESPACE_EXIT

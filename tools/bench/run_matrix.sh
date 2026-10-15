@@ -6,7 +6,8 @@
 #   e.g. tools/bench/run_matrix.sh overhead tiny 5 0 chain:0,10,100 wide:10,100
 # BENCH_SETTINGS="name=value;name=value" is passed to NatronRenderer as --setting arguments.
 # BENCH_KEEP=1 copies each configuration's written frames to build/bench/keep/<tag>/ first.
-# BENCH_PLATES_DIR (plates from make_plates.py, default build/bench/fixtures) is forwarded when set.
+# BENCH_PLATES_DIR (plates from make_plates.py, default build/bench/fixtures), NATRON_GPU and
+# NATRON_RENDER_SCHEDULER are forwarded when set.
 # Each configuration waits for the load average to drop (BENCH_MAX_LOAD, BENCH_COOLDOWN_TIMEOUT)
 # and then sleeps BENCH_COOLDOWN seconds, and its CPU clock is logged to
 # build/bench/freq-<tag>-<topo>-<n>.txt and summarised into the result record.
@@ -48,7 +49,7 @@ for spec in "$@"; do
             -e BENCH_FRAMES="$frames" -e BENCH_RANGE="$range" -e BENCH_OUT="$out" -e BENCH_NAMED="${BENCH_NAMED:-1}" \
             -e BENCH_SETTINGS="${BENCH_SETTINGS:-}" -e BENCH_TIMEOUT="${BENCH_TIMEOUT:-1800}" -e REPO="$repo" \
             -e OMP_WAIT_POLICY -e GOMP_SPINCOUNT -e OMP_THREAD_LIMIT -e OMP_DISPLAY_ENV -e BENCH_RENDER_STATS -e BENCH_PLATES_DIR \
-            -e BENCH_IMPL -e BENCH_RENDERER="$renderer_dir/Renderer/NatronRenderer" -e BENCH_RENDERER_DIR="$renderer_dir" \
+            -e NATRON_GPU -e NATRON_RENDER_SCHEDULER -e BENCH_IMPL -e BENCH_RENDERER="$renderer_dir/Renderer/NatronRenderer" -e BENCH_RENDERER_DIR="$renderer_dir" \
             -e OFX_PLUGIN_PATH="$plugin_path" natron-dev bash -lc "$inner" \
             > "$log" 2>&1
         code=$?

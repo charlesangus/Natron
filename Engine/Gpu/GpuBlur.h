@@ -131,4 +131,78 @@ struct GpuSeparableBlur {
 // held by ctx and a compute barrier between the passes.
 GpuStatus recordSeparableBlur(GpuRecordContext& ctx, const GpuSeparableBlur& blur);
 
+// The recursive line filters of Kernels/blur_lines.slang, the CPU's LineFilter kinds at order 0.
+enum class GpuLineFilterKind : uint32_t {
+    identity = 0,
+    deriche = 1,
+    vanVliet = 2,
+    box = 3,
+};
+
+// One axis of a GpuLineBlur, with the coefficients LineFilter computed for it, in double.
+struct GpuLineFilter {
+    GpuLineFilterKind kind = GpuLineFilterKind::identity;
+    // deriche: a0, a1, a2, a3, b1, b2, coefp, coefn.
+    std::array<double, 8> deriche {};
+    // vanVliet: [B, -b1, -b2, -b3] and the 3x3 Triggs matrix row by row.
+    std::array<double, 4> vanVliet {};
+    std::array<double, 9> triggs {};
+    // box: the width (above 1) and the number of passes (1 to 3).
+    float boxSize = 0.f;
+    uint32_t iterations = 0;
+};
+
+// Mirrors LinesParams in Kernels/blur_lines.slang, which has no padding between members.
+struct GpuLineBlurParams {
+    uint32_t kind;
+    uint32_t vertical;
+    uint32_t neumann;
+    uint32_t channels;
+    uint32_t lineCount;
+    int32_t lineOrigin;
+    int32_t outLo;
+    int32_t outHi;
+    uint32_t dstOffset;
+    uint32_t dstPosStep;
+    uint32_t dstLineStep;
+    int32_t storeLo;
+    uint32_t storePosStep;
+    uint32_t storeLineStep;
+    uint32_t fromSource;
+    int32_t srcX1;
+    int32_t srcY1;
+    int32_t srcX2;
+    int32_t srcY2;
+    uint32_t srcOffset;
+    uint32_t srcStride;
+    int32_t half;
+    uint32_t iterations;
+};
+static_assert(sizeof(GpuLineBlurParams) == 92);
+
+// A separable recursive blur of `output`, as Blur::render() runs LineFilter: every row of the
+// filtered rect, then every column, each over the whole rect along its axis, with the boundary
+// condition at the rect's edges. Samples outside srcValid are black, or the nearest srcValid pixel
+// under neumann. Output pixels outside the filtered rect are zero.
+struct GpuLineBlur {
+    GpuBlurImage src;
+    // Within src.bounds, or empty when the source has no pixels.
+    GpuBlurRect srcValid;
+    GpuBlurImage dst;
+    // Within dst.bounds.
+    GpuBlurRect output;
+    // Holds every filtered rect the window may give.
+    GpuBlurRect domain;
+    // From recordFilterWindow(): its [4, 8) are the filtered rect, within domain.
+    const GpuBuffer* window = nullptr;
+    uint32_t channels = 0;
+    bool neumann = false;
+    GpuLineFilter filterX;
+    GpuLineFilter filterY;
+};
+
+// Records the row pass, a compute barrier and the column pass into ctx, with the intermediate
+// rows, the stored lines and the coefficients in scratch buffers held by ctx.
+GpuStatus recordLineBlur(GpuRecordContext& ctx, const GpuLineBlur& blur);
+
 } // namespace gpu

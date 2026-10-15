@@ -256,6 +256,10 @@ struct GpuRegionTimes {
     int stripsInFlight = 0;
     double transferHiddenMs = 0.;
     double transferExposedMs = 0.;
+
+    // Why the members rendered on the CPU instead; empty for a region that rendered on the GPU.
+    std::string fallback;
+    int retries = 0;
 };
 
 /**

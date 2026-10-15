@@ -56,6 +56,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+struct ChromaKeyerSettings;
+
 /**
  * @brief Chroma keyer after Keith Jack's "Video Demystified": the key colour and the foreground
  * are taken to Y'PbPr, the chrominance is rotated so the key colour lies on one axis, and the
@@ -92,6 +94,20 @@ public:
                                              ViewIdx view,
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Accepts the RGBA plane in float whatever the settings, with or without Bg and the
+     * masks; the Source and Bg are read in the layer render() fetches them in.
+     **/
+    virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool getGpuInputLayer(int inputNb,
+                                  const ImageLayerDesc& plane,
+                                  double time,
+                                  ViewIdx view,
+                                  ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 protected:
     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -112,6 +128,17 @@ private:
 
     // Whether render() reads input inputNb as a mask: it is connected and its selector is on.
     bool isKeyMaskUsed(int inputNb) const WARN_UNUSED_RETURN;
+
+    // The knob values render() and renderGpu() key with at time and view.
+    void readSettings(double time, ViewIdx view, ChromaKeyerSettings* settings) const;
+
+    // The layer render() fetches the Source or Bg in, false when it fetches nothing.
+    bool resolveColorInputLayer(int inputNb, double time, ViewIdx view, ImageLayerDesc* layer) const WARN_UNUSED_RETURN;
+
+    // The part of input inputNb's view that render() would read pixels from: the view within the
+    // input's region of definition, without a buffer when render() reads none. False when the
+    // region of definition cannot be computed.
+    bool getGpuReadableInput(const GpuRenderArgs& args, int inputNb, GpuImageView* view) WARN_UNUSED_RETURN;
 
     KnobColorWPtr _keyColor;
     KnobChoiceWPtr _colorspace;

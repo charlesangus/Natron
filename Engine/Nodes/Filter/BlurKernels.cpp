@@ -259,6 +259,27 @@ LineFilter::forFilter(Filter filter,
 }
 
 void
+LineFilter::dericheCoefficients(double out[8]) const
+{
+    out[0] = _a0;
+    out[1] = _a1;
+    out[2] = _a2;
+    out[3] = _a3;
+    out[4] = _b1;
+    out[5] = _b2;
+    out[6] = _coefp;
+    out[7] = _coefn;
+}
+
+void
+LineFilter::vanVlietCoefficients(double filter[4],
+                                 double triggs[9]) const
+{
+    std::copy(_filter, _filter + 4, filter);
+    std::copy(_triggs, _triggs + 9, triggs);
+}
+
+void
 LineFilter::apply(float* data,
                   int n,
                   std::ptrdiff_t stride,

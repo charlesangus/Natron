@@ -17,7 +17,7 @@
 # along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
 # ***** END LICENSE BLOCK *****
 
-set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h CountingTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h)
+set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h CountingTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h NativeMetadataTestEffect.h NativeParity.h Native/NativeGpuParity.h PerProcessUserDirs.h RenderBothWays.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -71,6 +71,7 @@ set(Tests_SOURCES
     MemoryInfo_Test.cpp
     Metadata_Test.cpp
     NativeParity.cpp
+    Native/NativeGpuParity.cpp
     NodeCategory_Test.cpp
     TabMenuSettings_Test.cpp
     NodeColorSampler_Test.cpp
@@ -133,6 +134,14 @@ target_link_libraries(Tests
         Python3::Python
         openMVG
 )
+if(NATRON_GPU)
+    include(${CMAKE_SOURCE_DIR}/cmake/FetchSlang.cmake)
+    include(${CMAKE_SOURCE_DIR}/cmake/SlangKernels.cmake)
+    # NativeImageEffectGpu_Test registers this at run time as its test node's GPU kernel. GpuTests
+    # already owns a target named pixelwrap_scale.
+    slang_add_kernel(native_test_pixelwrap_scale ${CMAKE_SOURCE_DIR}/Engine/Gpu/Kernels/pixelwrap.slang ENTRY pixelwrap_scale)
+    target_link_libraries(Tests PRIVATE native_test_pixelwrap_scale)
+endif()
 target_compile_definitions(Tests
     PRIVATE
         NATRON_TESTS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"

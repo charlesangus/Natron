@@ -118,8 +118,8 @@ int checkerBoardRunEnd(const CheckerBoardGeometry& g,
  * @brief CheckerBoard: boxes of boxSize canonical units in four colours around the centre of the
  * region of definition (of the project for Default extent), with optional lines between boxes
  * and centre lines, with the openfx-misc CheckerBoardPlugin's knobs, defaults and pixel maths.
- * Its pixel depends on where it is, so it is not a point operator; its kernel reads the row's
- * position. It registers under that plugin's ID one major above.
+ * Its pixel depends on where it is; it is a point operator whose input is ignored, and both
+ * kernels read the pixel's position. It registers under that plugin's ID one major above.
  **/
 class CheckerBoard
     : public NativeGenerator {
@@ -139,7 +139,24 @@ protected:
 private:
     virtual void initializeKnobs() OVERRIDE FINAL;
 
+    virtual bool isPointOp() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
     virtual PixelKernelPtr makeKernel(const KernelContext& context) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual int gpuKernelId(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool makeGpuKernel(const KernelContext& context,
+                               PixelKernelGpu* gpu) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // The geometry and colours at context's time, view and render scale; both kernels are built
+    // from one read.
+    void readParams(const KernelContext& context,
+                    CheckerBoardGeometry* g,
+                    float colors[6][4],
+                    RectD* rodOut) const;
 
     KnobDoubleWPtr _boxSize;
     KnobColorWPtr _color0;

@@ -30,6 +30,11 @@
 #include <string>
 
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/Image/PixelKernel.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -120,20 +125,60 @@ Constant::initializeKnobs()
     _color = color;
 }
 
-PixelKernelPtr
-Constant::makeKernel(const KernelContext& context)
+void
+Constant::readColor(const KernelContext& context,
+                    float rgba[4]) const
 {
     KnobColorPtr color = _color.lock();
-    float rgba[4] = { 0.f, 0.f, 0.f, _solid ? 1.f : 0.f };
 
+    rgba[0] = rgba[1] = rgba[2] = 0.f;
+    rgba[3] = _solid ? 1.f : 0.f;
     if (color) {
         const int dims = _solid ? 3 : 4;
         for (int i = 0; i < dims; ++i) {
             rgba[i] = (float)color->getValueAtTime(context.time, i, context.view);
         }
     }
+}
+
+PixelKernelPtr
+Constant::makeKernel(const KernelContext& context)
+{
+    float rgba[4];
+
+    readColor(context, rgba);
 
     return std::make_shared<ConstantKernel>(rgba);
+}
+
+int
+Constant::gpuKernelId(const GpuQuery& /*query*/) const
+{
+#ifdef NATRON_HAVE_GPU
+    return (int)gpu::GpuKernelId::constant;
+#else
+    return -1;
+#endif
+}
+
+bool
+Constant::makeGpuKernel(const KernelContext& context,
+                        PixelKernelGpu* gpu)
+{
+#ifdef NATRON_HAVE_GPU
+    float rgba[4];
+
+    readColor(context, rgba);
+    gpu->kernel = (int)gpu::GpuKernelId::constant;
+    gpu->setParams(rgba);
+
+    return true;
+#else
+    Q_UNUSED(context);
+    Q_UNUSED(gpu);
+
+    return false;
+#endif
 }
 
 Solid::Solid(NodePtr node)

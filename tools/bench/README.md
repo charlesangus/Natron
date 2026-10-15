@@ -25,6 +25,9 @@ Per-node chains isolate one node's cost: `ccchain` and `blurchain` (N ColorCorre
 Merges, each with the same second source) and `mergesrcchain` (each Merge with a fresh
 CheckerBoard). Take the marginal cost between two sizes, and subtract `chain` from `xfchain` and
 `mergechain` from `mergesrcchain`.
+Two fixed graphs measure GPU regions on spatial nodes: `gtg` (Grade -> Transform with motion blur
+`BENCH_MOTION_BLUR`, default 1 -> Grade) and `gebg` (Grade -> Erode `BENCH_ERODE_SIZE`, default 6 ->
+Blur -> Grade); `BENCH_N` does not apply to them.
 Resolutions: `tiny` (32x32, isolates per-node overhead), `hd`, `uhd`. Sources are animated so
 nothing is cached as frame-invariant.
 

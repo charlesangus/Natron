@@ -43,6 +43,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+struct SaturationValues;
+
 /**
  * @brief Saturation: moves each processed colour channel away from, or towards, the pixel's
  * luminance l: c' = (1 - saturation) * l + saturation * c, with clampBlack/clampWhite clamping
@@ -81,6 +83,14 @@ private:
                               const RenderScale& scale,
                               const RectI& roi,
                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual int gpuKernelId(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool makeGpuKernel(const KernelContext& context,
+                               PixelKernelGpu* gpuKernel) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    SaturationValues readValues(double time,
+                                ViewIdx view) const WARN_UNUSED_RETURN;
 
     KnobDoubleWPtr _saturation;
     KnobChoiceWPtr _luminanceMath;

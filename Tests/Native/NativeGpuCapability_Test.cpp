@@ -37,10 +37,22 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Color/Clamp.h"
+#include "Engine/Nodes/Color/ColorCorrect.h"
+#include "Engine/Nodes/Color/ColorLookup.h"
+#include "Engine/Nodes/Color/ColorMathNode.h"
 #include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Color/Invert.h"
+#include "Engine/Nodes/Color/Saturation.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Filter/ErodeDilate.h"
+#include "Engine/Nodes/Generator/CheckerBoard.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Keyer/ChromaKeyer.h"
+#include "Engine/Nodes/Keyer/Keyer.h"
+#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
 
 NATRON_NAMESPACE_USING
@@ -54,6 +66,23 @@ gpuCapableIds()
     static const std::set<std::string> ids = {
         PLUGINID_NATRON_GRADE,
         PLUGINID_NATRON_BLUR,
+        PLUGINID_NATRON_CLAMP,
+        PLUGINID_NATRON_INVERT,
+        PLUGINID_NATRON_COLORLOOKUP,
+        PLUGINID_NATRON_COLORCORRECT,
+        PLUGINID_NATRON_CONSTANT,
+        PLUGINID_NATRON_SOLID,
+        PLUGINID_NATRON_CHECKERBOARD,
+        PLUGINID_NATRON_SATURATION,
+        PLUGINID_NATRON_ADD,
+        PLUGINID_NATRON_MULTIPLY,
+        PLUGINID_NATRON_GAMMA,
+        PLUGINID_NATRON_ERODE,
+        PLUGINID_NATRON_DILATE,
+        PLUGINID_NATRON_TRANSFORM,
+        PLUGINID_NATRON_TRANSFORMMASKED,
+        PLUGINID_NATRON_KEYER,
+        PLUGINID_NATRON_CHROMAKEYER,
     };
 
     return ids;

@@ -1,0 +1,129 @@
+# Renders one native node, alone or in a short chain, at UHD float with NATRON_RENDER_PROFILE on, so
+# that the profile holds that node's CPU task times or its GPU region's kernel times.
+# Run inside NatronRenderer; tools/bench/node_profile.sh drives it and summarises the result.
+#
+#   NP_NODE=grade NP_CHAIN=8 NP_FRAMES=6 NatronRenderer -b tools/bench/node_profile.py
+#
+# Environment:
+#   NP_NODE    key of a node in NODES (below)
+#   NP_CHAIN   copies of the node in series (default 8). A generator is never chained. A chain
+#              lets the placement see a region worth its transfers; kernel time is then per chain.
+#   NP_FRAMES  frames rendered one at a time (default 6); the first is cold and is dropped later
+#   NP_WORK    directory the frames are written to
+
+import os
+
+import NatronEngine
+
+NODE = os.environ["NP_NODE"]
+CHAIN = int(os.environ.get("NP_CHAIN", "8"))
+FRAMES = int(os.environ.get("NP_FRAMES", "6"))
+WORK = os.environ.get("NP_WORK", os.path.join(os.getcwd(), "build", "bench", "work"))
+LAST_FRAME = FRAMES + 1
+
+
+def make(plugin_id, name):
+    props = {"CreateNodeArgsPropNodeInitialName": NatronEngine.StringNodeCreationProperty(name)}
+    node = app.createNode(plugin_id, -1, None, props)
+    if node is None:
+        raise RuntimeError("could not create " + plugin_id)
+    return node
+
+
+def param(node, name):
+    prm = node.getParam(name)
+    if prm is None:
+        raise RuntimeError("%s has no param %s" % (node.getPluginID(), name))
+    return prm
+
+
+def animate(prm, base, per_frame):
+    for dim in range(len(base)):
+        for f in range(1, LAST_FRAME + 1):
+            prm.setValueAtTime(base[dim] + per_frame[dim] * f, f, dim)
+
+
+# key: (plugin id, params, generator). Params leave the node doing work: an identity would be
+# passed through. A tuple sets several dimensions of one parameter.
+NODES = {
+    "grade": ("net.sf.openfx.GradePlugin", {"multiply": (1.1, 1.05, 1.0, 1.0), "offset": (0.01, 0.0, 0.0, 0.0)}, False),
+    "colorcorrect": ("net.sf.openfx.ColorCorrectPlugin",
+                     {"MasterSaturation": (1.2, 1.2, 1.2, 1.0), "MasterGain": (1.1, 1.1, 1.1, 1.0)}, False),
+    "invert": ("net.sf.openfx.Invert", {}, False),
+    "clamp": ("net.sf.openfx.Clamp", {"minimum": (0.1, 0.1, 0.1, 0.1), "maximum": (0.9, 0.9, 0.9, 0.9)}, False),
+    "add": ("net.sf.openfx.AddPlugin", {"value": (0.05, 0.05, 0.05, 0.0)}, False),
+    "multiply": ("net.sf.openfx.MultiplyPlugin", {"value": (1.1, 1.1, 1.1, 1.0)}, False),
+    "gamma": ("net.sf.openfx.GammaPlugin", {"value": (1.2, 1.2, 1.2, 1.0)}, False),
+    "saturation": ("net.sf.openfx.SaturationPlugin", {"saturation": 1.3}, False),
+    "colorlookup": ("net.sf.openfx.ColorLookupPlugin", {"clampBlack": True, "clampWhite": True}, False),
+    "keyer": ("net.sf.openfx.KeyerPlugin", {"mode": 1, "keyColor": (0.5, 0.5, 0.5, 1.0)}, False),
+    "chromakeyer": ("net.sf.openfx.ChromaKeyerPlugin", {"keyColor": (0.1, 0.9, 0.1, 1.0)}, False),
+    "erode": ("net.sf.cimg.CImgErode", {"size": (6, 6)}, False),
+    "erode21": ("net.sf.cimg.CImgErode", {"size": (21, 21)}, False),
+    "dilate": ("net.sf.cimg.CImgDilate", {"size": (6, 6)}, False),
+    "transform": ("net.sf.openfx.TransformPlugin",
+                  {"translate": (10.5, 7.25), "rotate": 1.0, "center": (1920.0, 1080.0)}, False),
+    "transform_mb1": ("net.sf.openfx.TransformPlugin", {"center": (1920.0, 1080.0), "motionBlur": 1.0, "shutter": 1.0}, False),
+    "transform_mb4": ("net.sf.openfx.TransformPlugin", {"center": (1920.0, 1080.0), "motionBlur": 4.0, "shutter": 1.0}, False),
+    "blur_fir3": ("net.sf.cimg.CImgBlur", {"size": (7.2, 7.2)}, False),
+    "blur_fir25": ("net.sf.cimg.CImgBlur", {"size": (60.0, 60.0)}, False),
+    "blur_fir100": ("net.sf.cimg.CImgBlur", {"size": (240.0, 240.0)}, False),
+    "blur_qg100": ("net.sf.cimg.CImgBlur", {"size": (240.0, 240.0), "filter": 0}, False),
+    "blur_gauss100": ("net.sf.cimg.CImgBlur", {"size": (240.0, 240.0), "filter": 1}, False),
+    "blur_box100": ("net.sf.cimg.CImgBlur", {"size": (240.0, 240.0), "filter": 2}, False),
+    "constant": ("net.sf.openfx.ConstantPlugin", {}, True),
+    "solid": ("net.sf.openfx.Solid", {}, True),
+    "checkerboard": ("net.sf.openfx.CheckerBoardPlugin", {}, True),
+}
+
+
+def configure(name, index):
+    plugin_id, values, generator = NODES[name]
+    node = make(plugin_id, "np_%s_%d" % (name, index))
+    for key, value in values.items():
+        if isinstance(value, tuple):
+            param(node, key).set(*value)
+        else:
+            param(node, key).set(value)
+    if plugin_id == "net.sf.openfx.TransformPlugin" and "translate" not in values:
+        animate(param(node, "translate"), (0.0, 0.0), (14.0, 6.0))
+        animate(param(node, "rotate"), (0.0,), (0.8,))
+    if generator:
+        color = "color0" if plugin_id.endswith("CheckerBoardPlugin") else "color"
+        animate(param(node, color), (0.1, 0.2, 0.3, 1.0), (0.01, 0.0, 0.0, 0.0))
+    return node
+
+
+def main():
+    app.getProjectParam("outputFormat").set("UHD_4K")
+    app.getProjectParam("frameRange").set(1, LAST_FRAME)
+    plugin_id, _, generator = NODES[NODE]
+    if generator:
+        last = configure(NODE, 0)
+        count = 1
+    else:
+        source = make("net.sf.openfx.Ramp", "np_source")
+        param(source, "point0").set(0.0, 0.0)
+        param(source, "point1").set(3840.0, 2160.0)
+        animate(param(source, "color0"), (0.1, 0.2, 0.3, 1.0), (0.01, 0.0, 0.0, 0.0))
+        param(source, "color1").set(0.9, 0.8, 0.7, 1.0)
+        last = source
+        count = CHAIN
+        for i in range(count):
+            node = configure(NODE, i)
+            node.connectInput(0, last)
+            last = node
+    os.makedirs(WORK, exist_ok=True)
+    path = os.path.join(WORK, "np_%s_####.exr" % NODE)
+    writer = app.createWriter(path)
+    writer.connectInput(0, last)
+    comp = writer.getParam("compression")
+    if comp is not None:
+        comp.set("none")
+    print("[node_profile] node=%s plugin=%s chain=%d frames=%d" % (NODE, plugin_id, count, FRAMES))
+    for f in range(1, LAST_FRAME + 1):
+        app.render(writer, f, f)
+    print("[node_profile] done")
+
+
+main()

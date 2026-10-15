@@ -97,6 +97,14 @@ const char* const kFallbackDeviceError = "GPU error";
 const char* const kFallbackNoGpu = "no GPU";
 const char* const kFallbackTooLarge = "too large for the GPU";
 
+// Two layers with one ID can still differ in channel names.
+bool
+sameLayer(const ImageLayerDesc& a,
+          const ImageLayerDesc& b)
+{
+    return (a == b) && (a.getChannels() == b.getChannels());
+}
+
 bool
 isContextAborted(const FrameRenderContextPtr& context)
 {
@@ -305,6 +313,9 @@ public:
         if (_queries) {
             vkDestroyQueryPool(_runtime.device().device(), _queries, nullptr);
         }
+        if (_segmentQueries) {
+            vkDestroyQueryPool(_runtime.device().device(), _segmentQueries, nullptr);
+        }
         if (_computeTimeline) {
             vkDestroySemaphore(_runtime.device().device(), _computeTimeline, nullptr);
         }
@@ -492,7 +503,7 @@ private:
     {
         for (std::size_t s = 0; s < _slots.size(); ++s) {
             Slot& slot = _slots[s];
-            if ((slot.externalTask == task) && (slot.layout.layer == layer) && (slot.layout.layer.getChannels() == layer.getChannels())) {
+            if ((slot.externalTask == task) && sameLayer(slot.layout.layer, layer)) {
                 slot.neededRoI.merge(needed);
 
                 return (int)s;
@@ -584,13 +595,40 @@ private:
             }
 
             member.inputSlots.assign(std::max(0, member.effect->getNInputs()), -1);
+            // The request pass records one edge per input node, so a node wired to two inputs of the member, such as
+            // its source and its mask, is an edge of only one of them.
+            const std::size_t nRecordedEdges = edges.size();
+            for (int inputNb = 0; inputNb < (int)member.inputSlots.size(); ++inputNb) {
+                bool recorded = false;
+                for (std::size_t e = 0; e < nRecordedEdges; ++e) {
+                    recorded = recorded || (edges[e].first == inputNb);
+                }
+                EffectInstancePtr input = member.effect->getInput(inputNb);
+                if (recorded || !input || (member.effect->isInputMask(inputNb) && !member.effect->isMaskEnabled(inputNb))) {
+                    continue;
+                }
+                for (std::size_t e = 0; e < nRecordedEdges; ++e) {
+                    if (_graph.tasks[edges[e].second].key.node == input->getNode()) {
+                        edges.push_back(std::make_pair(inputNb, edges[e].second));
+                        break;
+                    }
+                }
+            }
             for (std::size_t e = 0; e < edges.size(); ++e) {
                 const int inputNb = edges[e].first;
                 if ((inputNb < 0) || (inputNb >= (int)member.inputSlots.size())) {
                     continue;
                 }
+                ImageLayerDesc layer;
+                if (!member.effect->getGpuInputLayer(inputNb, plane, task.key.time, task.key.view, &layer)) {
+                    return fail(taskIndex, "the node cannot read an input on the GPU");
+                }
+                const int producer = _position[edges[e].second];
+                if ((producer >= 0) && !sameLayer(_slots[_members[producer].outSlot].layout.layer, layer)) {
+                    return fail(taskIndex, "an input produced in the region is not in the layer the node reads");
+                }
                 const RectI needed = member.effect->getGpuInputRoI(inputNb, task.renderedRoI, member.query.mappedScale);
-                const int slot = slotOfTask(edges[e].second, plane, needed);
+                const int slot = slotOfTask(edges[e].second, layer, needed);
                 member.inputSlots[inputNb] = slot;
             }
 
@@ -861,26 +899,73 @@ private:
         }
     }
 
+    // Brackets a segment's device work with a timestamp pair so submit() can report device time. A device without
+    // timestamps, or a pool that cannot be made, leaves the segment on its host interval.
+    void beginTimedSegment(gpu::GpuRecordContext& recorder)
+    {
+        _segmentTimed = false;
+        if (!_segmentQueries) {
+            if (!_runtime.transfer().timestampsSupported()) {
+                return;
+            }
+            VkQueryPoolCreateInfo info { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+            info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+            info.queryCount = 2;
+            if (vkCreateQueryPool(_runtime.device().device(), &info, nullptr, &_segmentQueries) != VK_SUCCESS) {
+                _segmentQueries = VK_NULL_HANDLE;
+
+                return;
+            }
+        }
+        recorder.resetQueries(_segmentQueries, 0, 2);
+        recorder.writeTimestamp(_segmentQueries, 0);
+        _segmentTimed = true;
+    }
+
+    // The device time between the segment's timestamps, or a negative value when they cannot be read.
+    long long segmentDeviceNs() const
+    {
+        std::uint64_t results[4] = { 0, 0, 0, 0 };
+        const VkResult read = vkGetQueryPoolResults(_runtime.device().device(), _segmentQueries, 0, 2, sizeof(results), results, 2 * sizeof(std::uint64_t),
+                                                    VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+        if ((read != VK_SUCCESS) || (results[1] == 0) || (results[3] == 0) || (results[2] < results[0])) {
+            return -1;
+        }
+
+        return (long long)((double)(results[2] - results[0]) * _runtime.transfer().timestampPeriodNs());
+    }
+
     bool submit(std::unique_ptr<gpu::GpuRecordContext>* recorder,
                 const std::vector<int>& segment,
                 Clock::time_point segmentBegin)
     {
-        if (*recorder) {
+        // A segment with no recorder was already submitted, and its time already counted.
+        const bool submitted = (bool)*recorder;
+        long long deviceNs = -1;
+        if (submitted) {
+            const bool timed = _segmentTimed;
+            if (timed) {
+                (*recorder)->writeTimestamp(_segmentQueries, 1);
+            }
+            _segmentTimed = false;
             // The runtime's own entry points report to its state machine; a record context's submission does not.
             const gpu::GpuStatus status = _runtime.note((*recorder)->submitAndWait());
             recorder->reset();
             if (!status) {
                 return failGpu(segment.empty() ? -1 : _members[segment.front()].task, "the device work failed", status);
             }
+            if (timed) {
+                deviceNs = segmentDeviceNs();
+            }
         }
-        const Clock::time_point end = Clock::now();
-        const long long ns = nsBetween(segmentBegin, end);
-        double weights = 0.;
-        for (int position : segment) {
-            weights += _members[position].weight;
-        }
-        if (_report) {
-            _report->kernelMs += msBetween(segmentBegin, end);
+        if (submitted && _report) {
+            const Clock::time_point end = Clock::now();
+            const long long ns = (deviceNs >= 0) ? deviceNs : nsBetween(segmentBegin, end);
+            double weights = 0.;
+            for (int position : segment) {
+                weights += _members[position].weight;
+            }
+            _report->kernelMs += (double)ns * 1e-6;
             for (int position : segment) {
                 _report->memberNs[position] += (weights > 0.) ? (long long)((double)ns * _members[position].weight / weights) : 0;
             }
@@ -984,6 +1069,7 @@ private:
                         return EffectInstance::eRenderRoIRetCodeFailed;
                     }
                     segmentBegin = Clock::now();
+                    beginTimedSegment(*recorder);
                 } else if (!segment.empty()) {
                     recorder->computeBarrier();
                 }
@@ -1401,6 +1487,7 @@ private:
             return EffectInstance::eRenderRoIRetCodeFailed;
         }
         const Clock::time_point segmentBegin = Clock::now();
+        beginTimedSegment(*recorder);
         const EffectInstance::RenderRoIRetCode recorded = recordStripMembers(strip, *recorder, &segment);
         if (recorded != EffectInstance::eRenderRoIRetCodeOk) {
             return recorded;
@@ -2016,6 +2103,8 @@ private:
     // Timestamps of the pipelined strips, when the device writes them on both queues. A strip's pairs are its compute,
     // then those of the slots _uploadQuery and _downloadQuery number, -1 for a slot without one.
     VkQueryPool _queries = VK_NULL_HANDLE;
+    VkQueryPool _segmentQueries = VK_NULL_HANDLE;
+    bool _segmentTimed = false;
     std::uint32_t _queriesPerStrip = 0;
     std::vector<int> _uploadQuery;
     std::vector<int> _downloadQuery;
@@ -2049,6 +2138,7 @@ runGpuRegion(const FrameRenderContextPtr& context,
     const RenderStatsPtr& stats = context->getStats();
     const char* reason = kFallbackNoGpu;
     std::string detail = "no GPU is available";
+    int retries = 0;
     NodePtr node;
     gpu::GpuRuntime* runtime = nullptr;
 
@@ -2077,6 +2167,8 @@ runGpuRegion(const FrameRenderContextPtr& context,
                 RegionRun run(context, graph, region, *runtime, forcedRows, !serial, report);
                 const EffectInstance::RenderRoIRetCode code = run.run(rootPlanes);
                 if (code != EffectInstance::eRenderRoIRetCodeFailed) {
+                    report->retries = retries;
+
                     return code;
                 }
                 kind = run.failureKind();
@@ -2111,11 +2203,13 @@ runGpuRegion(const FrameRenderContextPtr& context,
                     stats->noteGpuRegionRetry();
                 }
                 logRegion(node, QString::fromUtf8("GPU out of memory; retrying after evicting device buffers: %1").arg(QString::fromUtf8(detail.c_str())));
+                ++retries;
                 continue;
             }
             if (inFlight > 1) {
                 // The same strips one at a time hold a fraction of the buffers.
                 serial = true;
+                ++retries;
                 forcedRows = rows;
                 if (stats) {
                     stats->noteGpuStripPipelineSerialized();
@@ -2126,6 +2220,7 @@ runGpuRegion(const FrameRenderContextPtr& context,
             if (rows <= kGpuStripRowQuantum) {
                 break;
             }
+            ++retries;
             forcedRows = std::max(kGpuStripRowQuantum, rows / 2 / kGpuStripRowQuantum * kGpuStripRowQuantum);
             if (stats) {
                 stats->noteGpuStripHalving();
@@ -2136,6 +2231,7 @@ runGpuRegion(const FrameRenderContextPtr& context,
 #endif
 
     report->cpuFallback = reason;
+    report->retries = retries;
     if (stats) {
         stats->noteCpuFallback(reason);
     }

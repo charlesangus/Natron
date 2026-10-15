@@ -28,6 +28,8 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
@@ -39,11 +41,49 @@
 #include "Engine/Nodes/Image/CurveSnapshot.h"
 #include "Engine/RenderScale.h"
 
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
+
 NATRON_NAMESPACE_ENTER
 
 namespace {
 // The tone LUT has this many intervals over `range`, as the OpenFX plugin's float path.
 const int kToneLutIntervals = 1023;
+
+#ifdef NATRON_HAVE_GPU
+// The parameter block of ColorCorrectOp in colorcorrect.slang, in words.
+const int kGpuFlags = 0;
+const int kGpuWeights = 1;
+const int kGpuTableRange = 4;
+const int kGpuKeyCount = 10;
+const int kGpuYMin = 12;
+const int kGpuYMax = 14;
+const int kGpuGroups = 16;
+const int kGpuGroupWords = 20;
+const int kGpuHeaderWords = kGpuGroups + ColorCorrect::eGroupCount * kGpuGroupWords;
+const int kGpuLutSize = kToneLutIntervals + 1;
+const int kGpuLutBase = kGpuHeaderWords;
+const int kGpuCurveBase = kGpuLutBase + 2 * kGpuLutSize;
+const int kGpuTotalWords = kGpuCurveBase + 2 * CurveSnapshot::kGpuWords;
+
+const std::uint32_t kGpuClampBlack = 1;
+const std::uint32_t kGpuClampWhite = 2;
+const std::uint32_t kGpuLumaMax = 4;
+const int kGpuActiveShift = 4;
+
+static_assert(kGpuHeaderWords == 96, "must match CC_HEADER_WORDS in colorcorrect.slang");
+static_assert(kToneLutIntervals + 1 == 1024, "must match CS_TABLE_SIZE in curvesnapshot.slang");
+static_assert(kGpuTableRange + CurveSnapshot::kGpuTableRangeWords <= kGpuKeyCount, "the table range lies before the key counts");
+
+void
+putFloat(std::vector<std::uint32_t>& words,
+         int index,
+         float value)
+{
+    std::memcpy(&words[index], &value, sizeof(float));
+}
+#endif // NATRON_HAVE_GPU
 
 struct GroupValues {
     double saturation[4];
@@ -119,6 +159,52 @@ public:
             }
         }
     }
+
+#ifdef NATRON_HAVE_GPU
+    // The tables and values colorcorrect.slang reads, or false when a curve has more keys than it
+    // holds. Gamma travels as the reciprocal the CPU raises to.
+    bool packGpu(std::vector<std::uint32_t>* words) const
+    {
+        words->assign(kGpuTotalWords, 0);
+        std::uint32_t flags = (_clampBlack ? kGpuClampBlack : 0) | (_clampWhite ? kGpuClampWhite : 0) | ((_luminanceMath == ColorMath::eLuminanceMathMax) ? kGpuLumaMax : 0);
+        for (int g = 0; g < ColorCorrect::eGroupCount; ++g) {
+            if (_active[g]) {
+                flags |= 1u << (kGpuActiveShift + g);
+            }
+        }
+        (*words)[kGpuFlags] = flags;
+        // The luminance of the unit colours, from the function the CPU kernel calls.
+        putFloat(*words, kGpuWeights, (float)ColorMath::luminance(_luminanceMath, 1., 0., 0.));
+        putFloat(*words, kGpuWeights + 1, (float)ColorMath::luminance(_luminanceMath, 0., 1., 0.));
+        putFloat(*words, kGpuWeights + 2, (float)ColorMath::luminance(_luminanceMath, 0., 0., 1.));
+        CurveSnapshot::packGpuTableRange(_rangeMin, _rangeMax, kToneLutIntervals, &(*words)[kGpuTableRange]);
+        for (int g = 0; g < ColorCorrect::eGroupCount; ++g) {
+            const GroupValues& group = _groups[g];
+            const int base = kGpuGroups + g * kGpuGroupWords;
+            for (int i = 0; i < 4; ++i) {
+                putFloat(*words, base + i, (float)group.saturation[i]);
+                putFloat(*words, base + 4 + i, (float)group.contrast[i]);
+                putFloat(*words, base + 8 + i, (float)_invGamma[g][i]);
+                putFloat(*words, base + 12 + i, (float)group.gain[i]);
+                putFloat(*words, base + 16 + i, (float)group.offset[i]);
+            }
+        }
+        for (int curve = 0; curve < 2; ++curve) {
+            const CurveSnapshot& snapshot = _curves[curve];
+            if (!snapshot.packGpu(&(*words)[kGpuCurveBase + curve * CurveSnapshot::kGpuWords])) {
+                return false;
+            }
+            (*words)[kGpuKeyCount + curve] = (std::uint32_t)snapshot.keys().size();
+            putFloat(*words, kGpuYMin + curve, (float)snapshot.yMin());
+            putFloat(*words, kGpuYMax + curve, (float)snapshot.yMax());
+            for (int i = 0; i < kGpuLutSize; ++i) {
+                putFloat(*words, kGpuLutBase + curve * kGpuLutSize + i, _lut[curve][i]);
+            }
+        }
+
+        return true;
+    }
+#endif // NATRON_HAVE_GPU
 
     virtual void processRow(const RowIO& io) const OVERRIDE FINAL
     {
@@ -524,6 +610,40 @@ ColorCorrect::makeKernel(const KernelContext& context)
                                                 readBool(_clampBlack, context.time, context.view, true),
                                                 readBool(_clampWhite, context.time, context.view, false),
                                                 curves);
+}
+
+int
+ColorCorrect::gpuKernelId(const GpuQuery& /*query*/) const
+{
+#ifdef NATRON_HAVE_GPU
+    return (int)gpu::GpuKernelId::colorcorrect_wrapped;
+#else
+    return -1;
+#endif
+}
+
+bool
+ColorCorrect::makeGpuKernel(const KernelContext& context,
+                            PixelKernelGpu* gpuKernel)
+{
+#ifdef NATRON_HAVE_GPU
+    const std::shared_ptr<const ColorCorrectKernel> kernel = std::static_pointer_cast<const ColorCorrectKernel>(makeKernel(context));
+    std::vector<std::uint32_t> words;
+
+    if (!kernel->packGpu(&words)) {
+        return false;
+    }
+    gpuKernel->kernel = (int)gpu::GpuKernelId::colorcorrect_wrapped;
+    gpuKernel->params.resize(words.size() * sizeof(std::uint32_t));
+    std::memcpy(gpuKernel->params.data(), words.data(), gpuKernel->params.size());
+
+    return true;
+#else
+    Q_UNUSED(context);
+    Q_UNUSED(gpuKernel);
+
+    return false;
+#endif
 }
 
 bool

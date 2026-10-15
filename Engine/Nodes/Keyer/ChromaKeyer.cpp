@@ -31,6 +31,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <list>
 #include <memory>
@@ -46,6 +47,13 @@
 #include "Engine/Nodes/Image/ColorMath.h"
 #include "Engine/PoolParallelFor.h"
 #include "Engine/RectD.h"
+
+#ifdef NATRON_HAVE_GPU
+#include <span>
+
+#include "Engine/Gpu/GpuRecord.h"
+#include "Engine/Gpu/GpuWrap.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -97,13 +105,21 @@ typedef void (*ToRGBFunc)(float y, float pb, float pr, float* r, float* g, float
         *g = (y - Kr * *r - Kb * *b) / (1 - Kr - Kb);                                \
     }
 
-CHROMAKEYER_YPBPR(601, 0.299f, 0.114f)
-CHROMAKEYER_YPBPR(709, 0.2126390058f, 0.07219231534f)
-CHROMAKEYER_YPBPR(2020, 0.2627f, 0.0593f)
+const float kKr601 = 0.299f;
+const float kKb601 = 0.114f;
+const float kKr709 = 0.2126390058f;
+const float kKb709 = 0.07219231534f;
+const float kKr2020 = 0.2627f;
+const float kKb2020 = 0.0593f;
+
+CHROMAKEYER_YPBPR(601, kKr601, kKb601)
+CHROMAKEYER_YPBPR(709, kKr709, kKb709)
+CHROMAKEYER_YPBPR(2020, kKr2020, kKb2020)
 
 #undef CHROMAKEYER_YPBPR
+} // anonymous namespace
 
-struct KeyerSettings {
+struct ChromaKeyerSettings {
     float keyColor[3];
     ColorspaceEnum colorspace;
     bool linear;
@@ -114,7 +130,7 @@ struct KeyerSettings {
     ShowEnum show;
     SourceAlphaEnum sourceAlpha;
 
-    KeyerSettings()
+    ChromaKeyerSettings()
         : colorspace(eColorspaceRec709)
         , linear(false)
         , acceptanceAngle(120.)
@@ -128,11 +144,59 @@ struct KeyerSettings {
     }
 };
 
+namespace {
+#ifdef NATRON_HAVE_GPU
+// Mirrors the parameter block of Kernels/chromakeyer.slang, word for word.
+struct ChromaKeyGpuView {
+    uint32_t offset;
+    uint32_t stride;
+    int32_t x1;
+    int32_t y1;
+    int32_t x2;
+    int32_t y2;
+    uint32_t comps;
+};
+
+struct ChromaKeyGpuParams {
+    float cosKey;
+    float sinKey;
+    float ys;
+    float tanAcceptance;
+    float tanSuppression;
+    float keyLift;
+    float oneMinusLift;
+    float gainXKey;
+    float kr;
+    float kb;
+    float kg;
+    float twoOneMinusKb;
+    float twoOneMinusKr;
+    uint32_t flags;
+    uint32_t gainMode;
+    uint32_t show;
+    uint32_t sourceAlpha;
+    uint32_t channelMask;
+    ChromaKeyGpuView bg;
+    ChromaKeyGpuView outMask;
+    uint32_t outMaskChannel;
+};
+static_assert(sizeof(ChromaKeyGpuParams) == 33 * 4, "the kernel reads 33 words");
+
+const uint32_t kChromaKeyGpuLinear = 1;
+const uint32_t kChromaKeyGpuAcceptAll = 2;
+const uint32_t kChromaKeyGpuSuppressAll = 4;
+
+const uint32_t kChromaKeyGpuGainRamp = 0;
+const uint32_t kChromaKeyGpuGainNonPositive = 1;
+const uint32_t kChromaKeyGpuLiftFull = 2;
+#endif // NATRON_HAVE_GPU
+
 class ChromaKeyKernel {
 public:
-    explicit ChromaKeyKernel(const KeyerSettings& settings)
+    explicit ChromaKeyKernel(const ChromaKeyerSettings& settings)
         : _toYPbPr(NULL)
         , _toRGB(NULL)
+        , _colorspace(settings.colorspace)
         , _linear(settings.linear)
         , _acceptanceAngle(settings.acceptanceAngle)
         , _tanAcceptanceAngle2(0.)
@@ -337,9 +401,50 @@ public:
         out[3] = (float)fga;
     }
 
+#ifdef NATRON_HAVE_GPU
+    // The per-frame constants of process() for the GPU kernel, which keys in float: the branches
+    // on the angles, the gain and the lift become flags and modes, and the colourspace's
+    // coefficients and their sums are rounded to float as the conversions above round them.
+    void getGpuParams(ChromaKeyGpuParams* p) const
+    {
+        float kr = kKr709;
+        float kb = kKb709;
+        switch (_colorspace) {
+        case eColorspaceCcir601:
+            kr = kKr601;
+            kb = kKb601;
+            break;
+        case eColorspaceRec709:
+            break;
+        case eColorspaceRec2020:
+            kr = kKr2020;
+            kb = kKb2020;
+            break;
+        }
+        p->cosKey = (float)_cosKey;
+        p->sinKey = (float)_sinKey;
+        p->ys = (float)_ys;
+        p->tanAcceptance = (float)_tanAcceptanceAngle2;
+        p->tanSuppression = (float)_tanSuppressionAngle2;
+        p->keyLift = (float)_keyLift;
+        p->oneMinusLift = (float)(1. - _keyLift);
+        p->gainXKey = (float)(_keyGain * _xKey);
+        p->kr = kr;
+        p->kb = kb;
+        p->kg = 1 - kr - kb;
+        p->twoOneMinusKb = 2 * (1 - kb);
+        p->twoOneMinusKr = 2 * (1 - kr);
+        p->flags = (_linear ? kChromaKeyGpuLinear : 0u) | ((_acceptanceAngle >= 180.) ? kChromaKeyGpuAcceptAll : 0u) | (((_suppressionAngle <= 0.) || (_suppressionAngle >= 180.)) ? kChromaKeyGpuSuppressAll : 0u);
+        p->gainMode = (_keyGain <= 0.) ? kChromaKeyGpuGainNonPositive : ((_keyLift >= 1.) ? kChromaKeyGpuLiftFull : kChromaKeyGpuGainRamp);
+        p->show = (uint32_t)_show;
+        p->sourceAlpha = (uint32_t)_sourceAlpha;
+    }
+#endif // NATRON_HAVE_GPU
+
 private:
     ToYPbPrFunc _toYPbPr;
     ToRGBFunc _toRGB;
+    ColorspaceEnum _colorspace;
     bool _linear;
     double _acceptanceAngle;
     double _tanAcceptanceAngle2;
@@ -779,25 +884,33 @@ ChromaKeyer::isKeyMaskUsed(int inputNb) const
     return getInput(inputNb) && isMaskEnabled(inputNb);
 }
 
-StatusEnum
-ChromaKeyer::render(const RenderActionArgs& args)
+void
+ChromaKeyer::readSettings(double time,
+                          ViewIdx view,
+                          ChromaKeyerSettings* settings) const
 {
-    KeyerSettings settings;
     KnobColorPtr keyColor = _keyColor.lock();
     if (keyColor) {
         for (int i = 0; i < 3; ++i) {
-            settings.keyColor[i] = (float)keyColor->getValueAtTime(args.time, i, args.view);
+            settings->keyColor[i] = (float)keyColor->getValueAtTime(time, i, view);
         }
     }
-    settings.colorspace = (ColorspaceEnum)readChoice(_colorspace, args.time, args.view, (int)eColorspaceRec709, (int)eColorspaceRec2020);
+    settings->colorspace = (ColorspaceEnum)readChoice(_colorspace, time, view, (int)eColorspaceRec709, (int)eColorspaceRec2020);
     KnobBoolPtr linear = _linear.lock();
-    settings.linear = linear ? linear->getValueAtTime(args.time, 0, args.view) : false;
-    settings.acceptanceAngle = readDouble(_acceptanceAngle, args.time, args.view, 120.);
-    settings.suppressionAngle = readDouble(_suppressionAngle, args.time, args.view, 40.);
-    settings.keyLift = readDouble(_keyLift, args.time, args.view, 0.);
-    settings.keyGain = readDouble(_keyGain, args.time, args.view, 1.);
-    settings.show = (ShowEnum)readChoice(_show, args.time, args.view, (int)eShowComposite, (int)eShowComposite);
-    settings.sourceAlpha = (SourceAlphaEnum)readChoice(_sourceAlpha, args.time, args.view, (int)eSourceAlphaIgnore, (int)eSourceAlphaNormal);
+    settings->linear = linear ? linear->getValueAtTime(time, 0, view) : false;
+    settings->acceptanceAngle = readDouble(_acceptanceAngle, time, view, 120.);
+    settings->suppressionAngle = readDouble(_suppressionAngle, time, view, 40.);
+    settings->keyLift = readDouble(_keyLift, time, view, 0.);
+    settings->keyGain = readDouble(_keyGain, time, view, 1.);
+    settings->show = (ShowEnum)readChoice(_show, time, view, (int)eShowComposite, (int)eShowComposite);
+    settings->sourceAlpha = (SourceAlphaEnum)readChoice(_sourceAlpha, time, view, (int)eSourceAlphaIgnore, (int)eSourceAlphaNormal);
+}
+
+StatusEnum
+ChromaKeyer::render(const RenderActionArgs& args)
+{
+    ChromaKeyerSettings settings;
+    readSettings(args.time, args.view, &settings);
     const ChromaKeyKernel kernel(settings);
 
     // Every image is fetched before any is locked: fetching renders upstream, which may write into a
@@ -946,5 +1059,257 @@ ChromaKeyer::render(const RenderActionArgs& args)
 
     return eStatusOK;
 } // ChromaKeyer::render
+
+#ifdef NATRON_HAVE_GPU
+namespace {
+// The float index of pixel (x, y) of v, false when the view does not fit the kernel's 32-bit
+// indices.
+bool
+gpuFloatIndex(const GpuImageView& v,
+              int x,
+              int y,
+              uint32_t* index)
+{
+    const uint64_t base = v.byteOffset / sizeof(float);
+    const uint64_t rows = (uint64_t)std::max(0, v.bounds.height());
+
+    if (base + rows * (uint64_t)v.rowStrideFloats > UINT32_MAX) {
+        return false;
+    }
+    *index = (uint32_t)(base + (uint64_t)(y - v.bounds.y1) * v.rowStrideFloats + (uint64_t)(x - v.bounds.x1) * v.nComps);
+
+    return true;
+}
+
+// A view without a buffer packs as empty bounds, which the kernel reads as zero.
+bool
+packGpuView(const GpuImageView& v,
+            ChromaKeyGpuView* out)
+{
+    *out = ChromaKeyGpuView();
+    if (!v.buffer || v.bounds.isNull()) {
+        return true;
+    }
+    if (!gpuFloatIndex(v, v.bounds.x1, v.bounds.y1, &out->offset)) {
+        return false;
+    }
+    out->stride = (uint32_t)v.rowStrideFloats;
+    out->x1 = v.bounds.x1;
+    out->y1 = v.bounds.y1;
+    out->x2 = v.bounds.x2;
+    out->y2 = v.bounds.y2;
+    out->comps = (uint32_t)v.nComps;
+
+    return true;
+}
+} // anonymous namespace
+#endif // NATRON_HAVE_GPU
+
+bool
+ChromaKeyer::resolveColorInputLayer(int inputNb,
+                                    double time,
+                                    ViewIdx view,
+                                    ImageLayerDesc* layer) const
+{
+    if (!getInput(inputNb)) {
+        return false;
+    }
+    // Resolving only reads the node's selectors and its inputs' layers.
+    ChromaKeyer* self = const_cast<ChromaKeyer*>(this);
+
+    return self->resolveInputPlaneForRender(inputNb, time, view, layer, NULL);
+}
+
+bool
+ChromaKeyer::canRenderOnGpu(const GpuQuery& query) const
+{
+#ifdef NATRON_HAVE_GPU
+    if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps != 4)) {
+        return false;
+    }
+    const int colorInputs[2] = { kChromaKeyerInputSource, kChromaKeyerInputBg };
+    for (int k = 0; k < 2; ++k) {
+        ImageLayerDesc layer;
+        if (resolveColorInputLayer(colorInputs[k], query.time, query.view, &layer) && ((layer.getNumComponents() < 1) || (layer.getNumComponents() > 4))) {
+            return false;
+        }
+    }
+
+    return true;
+#else
+    Q_UNUSED(query);
+
+    return false;
+#endif
+}
+
+bool
+ChromaKeyer::getGpuInputLayer(int inputNb,
+                              const ImageLayerDesc& plane,
+                              double time,
+                              ViewIdx view,
+                              ImageLayerDesc* layer) const
+{
+    if ((inputNb != kChromaKeyerInputSource) && (inputNb != kChromaKeyerInputBg)) {
+        return NativeImageEffect::getGpuInputLayer(inputNb, plane, time, view, layer);
+    }
+    // render() reads an RGB Source or Bg as RGB, whatever plane it renders.
+    *layer = plane;
+    ImageLayerDesc resolved;
+    if (resolveColorInputLayer(inputNb, time, view, &resolved) && (resolved.getNumComponents() > 0)) {
+        *layer = resolved;
+    }
+
+    return true;
+}
+
+bool
+ChromaKeyer::getGpuReadableInput(const GpuRenderArgs& args,
+                                 int inputNb,
+                                 GpuImageView* view)
+{
+    *view = GpuImageView();
+    if ((inputNb < 0) || (inputNb >= (int)args.inputs.size())) {
+        return true;
+    }
+    const GpuImageView& in = args.inputs[inputNb];
+    EffectInstancePtr input = getInput(inputNb);
+    if (!input || !in.buffer) {
+        return true;
+    }
+    if ((in.nComps < 1) || (in.nComps > 4) || !isUsableGpuView(in, in.nComps)) {
+        return false;
+    }
+    // render() reads no pixel outside the input image, whose bounds lie within the input's
+    // region of definition; the view may extend past it.
+    const RenderScale& scale = args.query.mappedScale;
+    const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
+    RectD rod;
+    bool isProjectFormat = false;
+    if (input->getRegionOfDefinition_public(input->getRenderHash(), args.query.time, inputScale, args.query.view, &rod, &isProjectFormat) == eStatusFailed) {
+        return false;
+    }
+    *view = cropGpuView(in, in.bounds.intersect(rod.toPixelEnclosing(scale, getAspectRatio(inputNb))));
+
+    return true;
+}
+
+StatusEnum
+ChromaKeyer::renderGpu(const GpuRenderArgs& args)
+{
+#ifdef NATRON_HAVE_GPU
+    const GpuQuery& query = args.query;
+    const RectI& rect = args.outputRect;
+    if (!canRenderOnGpu(query) || rect.isNull() || !isUsableGpuView(args.output, 4) || !args.output.bounds.contains(rect)) {
+        return eStatusFailed;
+    }
+
+    ChromaKeyerSettings settings;
+    readSettings(query.time, query.view, &settings);
+    ChromaKeyGpuParams params = ChromaKeyGpuParams();
+    ChromaKeyKernel(settings).getGpuParams(&params);
+    for (int c = 0; c < 4; ++c) {
+        if (query.processChannels[c]) {
+            params.channelMask |= 1u << c;
+        }
+    }
+
+    // Views of the inputs as render() fetches them; one without a buffer reads zero.
+    GpuImageView views[4];
+    const int colorInputs[2] = { kChromaKeyerInputSource, kChromaKeyerInputBg };
+    for (int k = 0; k < 2; ++k) {
+        ImageLayerDesc layer;
+        if (resolveColorInputLayer(colorInputs[k], query.time, query.view, &layer) && !getGpuReadableInput(args, colorInputs[k], &views[colorInputs[k]])) {
+            return eStatusFailed;
+        }
+    }
+    const int maskInputs[2] = { kChromaKeyerInputInsideMask, kChromaKeyerInputOutsideMask };
+    uint32_t maskComponents[2] = { 0, 0 };
+    for (int k = 0; k < 2; ++k) {
+        if (!isKeyMaskUsed(maskInputs[k])) {
+            continue;
+        }
+        ImageLayerDesc maskLayer;
+        int maskChannel = -1;
+        if (!resolveInputPlaneForRender(maskInputs[k], query.time, query.view, &maskLayer, &maskChannel) || (maskChannel < 0) || (maskChannel >= maskLayer.getNumComponents())) {
+            continue;
+        }
+        GpuImageView mask;
+        if (!getGpuReadableInput(args, maskInputs[k], &mask)) {
+            return eStatusFailed;
+        }
+        if (!mask.buffer) {
+            continue;
+        }
+        const int component = getGpuMaskViewComponent(maskLayer, maskChannel, mask.nComps);
+        if ((component < 0) || (component >= mask.nComps)) {
+            return eStatusFailed;
+        }
+        views[maskInputs[k]] = mask;
+        maskComponents[k] = (uint32_t)component;
+    }
+
+    gpu::GpuWrapParams wrap = gpu::GpuWrapParams();
+    wrap.outX = rect.x1;
+    wrap.outY = rect.y1;
+    wrap.width = (uint32_t)rect.width();
+    wrap.height = (uint32_t)rect.height();
+    if (!gpuFloatIndex(args.output, rect.x1, rect.y1, &wrap.dstOffset)) {
+        return eStatusFailed;
+    }
+    wrap.dstStride = (uint32_t)args.output.rowStrideFloats;
+
+    ChromaKeyGpuView packed;
+    if (!packGpuView(views[kChromaKeyerInputSource], &packed)) {
+        return eStatusFailed;
+    }
+    wrap.srcOffset = packed.offset;
+    wrap.srcStride = packed.stride;
+    wrap.srcX1 = packed.x1;
+    wrap.srcY1 = packed.y1;
+    wrap.srcX2 = packed.x2;
+    wrap.srcY2 = packed.y2;
+    wrap.nComps = packed.comps;
+
+    if (!packGpuView(views[kChromaKeyerInputInsideMask], &packed)) {
+        return eStatusFailed;
+    }
+    wrap.maskOffset = packed.offset;
+    wrap.maskStride = packed.stride;
+    wrap.maskX1 = packed.x1;
+    wrap.maskY1 = packed.y1;
+    wrap.maskX2 = packed.x2;
+    wrap.maskY2 = packed.y2;
+    wrap.maskComps = packed.comps;
+    wrap.maskChannel = maskComponents[0];
+
+    if (!packGpuView(views[kChromaKeyerInputBg], &params.bg) || !packGpuView(views[kChromaKeyerInputOutsideMask], &params.outMask)) {
+        return eStatusFailed;
+    }
+    params.outMaskChannel = maskComponents[1];
+
+    gpu::GpuRecordContext& ctx = args.context;
+    gpu::GpuBuffer* paramBuffer = nullptr;
+    if (!ctx.scratch(sizeof(params), paramBuffer) || !paramBuffer || !ctx.updateBuffer(*paramBuffer, 0, std::as_bytes(std::span<const ChromaKeyGpuParams>(&params, 1)))) {
+        return eStatusFailed;
+    }
+    // The kernel reads no pixel of an input with empty bounds, so the parameter block stands in
+    // for its buffer.
+    const gpu::GpuBuffer* buffers[4];
+    for (int i = 0; i < 4; ++i) {
+        buffers[i] = views[i].buffer ? views[i].buffer : paramBuffer;
+    }
+    const gpu::GpuStatus status = ctx.dispatch(gpu::GpuKernelId::chromakeyer,
+                                               { buffers[kChromaKeyerInputSource], args.output.buffer, buffers[kChromaKeyerInputInsideMask], paramBuffer,
+                                                 buffers[kChromaKeyerInputBg], buffers[kChromaKeyerInputOutsideMask] },
+                                               wrap, { wrap.width, wrap.height, 1u });
+
+    return status ? eStatusOK : eStatusFailed;
+#else
+    Q_UNUSED(args);
+
+    return eStatusFailed;
+#endif
+} // ChromaKeyer::renderGpu
 
 NATRON_NAMESPACE_EXIT

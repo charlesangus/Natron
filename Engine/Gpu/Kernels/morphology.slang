@@ -43,13 +43,12 @@ struct MorphParams
 };
 [[vk::push_constant]] ConstantBuffer<MorphParams> params;
 
-// kGroup, kColumns, kDirectMaxRadius and kMaxRadius are mirrored in Engine/Gpu/GpuMorphology.cpp.
+// kGroup, kColumns, kChunk and kDirectMaxRadius are mirrored in Engine/Gpu/GpuMorphology.cpp.
 static const uint kGroup = 128;
 static const uint kColumns = 32;
+static const uint kChunk = 16;
 static const uint kDirectMaxRadius = 16;
-static const uint kMaxRadius = 1024;
 static const uint kDirectTile = kGroup + 2 * kDirectMaxRadius;
-static const uint kWideTile = kGroup + 2 * kMaxRadius;
 
 static const int kIntMax = 0x7fffffff;
 static const int kIntMin = int(0x80000000u);
@@ -202,7 +201,7 @@ void writeDirect(uint line, uint pos, Extent ax, Extent ln, bool fromTile, int t
         dstBuf[o + c] = shortLine_ ? shortLine(ax, l, c) : directWindow(a - ax.lo, ax, l, c, fromTile, tileStart);
 }
 
-// Dispatch shape from morphGroupCount in Engine/Gpu/GpuMorphology.cpp, which sends here only
+// Dispatch shape from dispatchPass in Engine/Gpu/GpuMorphology.cpp, which sends here only
 // halfWidth <= kDirectMaxRadius. group.x is the tile along the axis; group.y is the line, or a
 // block of kColumns columns on the vertical pass.
 [shader("compute")]
@@ -249,95 +248,144 @@ void morph_direct(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
         writeDirect(line, uint(pos), ax, ln, true, tileStart);
 }
 
-groupshared uint wideRaw[kWideTile];
-groupshared uint widePrefix[kWideTile];
+uint4 reduce4(uint4 a, uint4 b)
+{
+    return uint4(reduce(a.x, b.x), reduce(a.y, b.y), reduce(a.z, b.z), reduce(a.w, b.w));
+}
 
-// van Herk / Gil-Werman over a tile of kGroup + 2 * halfWidth padded values, one channel at a time:
-// one thread per block folds the prefix, then the suffix in place over the raw values, each in
-// the CPU's order. A window needs the prefix of a block starting at or after the tile start and
-// the suffix of a block ending inside the tile, so the blocks the tile cuts are never read where
-// they are incomplete.
-[shader("compute")]
-[numthreads(128, 1, 1)]
-void morph_wide(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
+// Every channel of padded index j of the line, the channels past params.channels left zero.
+uint4 paddedPixel(int j, Extent ax, int line)
+{
+    const int a = ax.lo + j - int(params.half);
+    if (a < ax.lo || a >= ax.hi)
+        return uint4(neutral());
+    const int x = params.vertical != 0 ? line : a;
+    const int y = params.vertical != 0 ? a : line;
+    uint4 v = uint4(0u);
+    if (x < params.srcX1 || x >= params.srcX2 || y < params.srcY1 || y >= params.srcY2)
+        return v;
+    const uint idx = params.srcOffset + uint(y - params.srcY1) * params.srcStride + uint(x - params.srcX1) * params.channels;
+    const uint nc = params.channels;
+    v.x = srcBuf[idx];
+    if (nc > 1)
+        v.y = srcBuf[idx + 1];
+    if (nc > 2)
+        v.z = srcBuf[idx + 2];
+    if (nc > 3)
+        v.w = srcBuf[idx + 3];
+    return v;
+}
+
+// van Herk / Gil-Werman, each thread filtering kChunk consecutive values of one line: it folds
+// their suffixes backwards, kept in registers, then their prefixes forwards, each in the CPU's
+// order from the end or start of the block, or of the padded line, the value lies in.
+void wideLine(uint line, int p0)
 {
     const int len = int(params.vertical != 0 ? params.height : params.width);
     const int lines = int(params.vertical != 0 ? params.width : params.height);
+    if (int(line) >= lines || p0 >= len)
+        return;
     const int h = int(params.half);
     const int w = 2 * h + 1;
     const uint nc = params.channels;
-    const uint line = gid.y;
-    const int base = int(gid.x * kGroup);
     const Extent ax = axisExtent();
     const Extent ln = lineExtent();
     const int l = lineOrigin() + int(line);
     const int n = (ax.hi - ax.lo) + 2 * h;
-    const int pos = base + int(tid.x);
-    const int a = axisOrigin() + pos;
-    const bool active = pos < len && int(line) < lines;
-    const bool inside = active && insideExtents(a, l, ax, ln);
+    const int s0 = axisOrigin() + p0 - ax.lo;
+    const int sLo = max(s0, 0);
+    const int sHi = (l >= ln.lo && l < ln.hi) ? min(s0 + min(int(kChunk), len - p0), ax.hi - ax.lo) : sLo;
     const bool shortLine_ = isShort(ax);
 
-    const int tileStart = axisOrigin() + base - ax.lo;
-    const int tileLen = int(kGroup) + 2 * h;
-    const int validLo = max(tileStart, 0);
-    const int validHi = min(tileStart + tileLen, n);
-    const int firstBlock = validLo < validHi ? validLo / w : 0;
-    const int nBlocks = validLo < validHi ? (validHi - 1) / w - firstBlock + 1 : 0;
-    const bool scan = !shortLine_ && int(line) < lines;
+    uint4 res[kChunk];
+    [ForceUnroll]
+    for (int i = 0; i < int(kChunk); ++i)
+        res[i] = uint4(0u);
 
-    for (uint c = 0; c < nc; ++c)
+    if (sLo < sHi && shortLine_)
     {
-        for (int t = int(tid.x); t < tileLen; t += int(kGroup))
+        uint4 v = uint4(0u);
+        for (uint c = 0; c < nc; ++c)
+            v[c] = shortLine(ax, l, c);
+        [ForceUnroll]
+        for (int i = 0; i < int(kChunk); ++i)
         {
-            const int j = tileStart + t;
-            wideRaw[t] = (scan && j >= 0 && j < n) ? paddedAt(j, ax, l, c) : 0u;
+            if (s0 + i >= sLo && s0 + i < sHi)
+                res[i] = v;
         }
-        GroupMemoryBarrierWithGroupSync();
-        if (scan && int(tid.x) < nBlocks)
-        {
-            const int k = firstBlock + int(tid.x);
-            const int jLo = max(k * w, validLo);
-            const int jHi = min((k + 1) * w, validHi);
-            uint acc = wideRaw[jLo - tileStart];
-            widePrefix[jLo - tileStart] = acc;
-            for (int j = jLo + 1; j < jHi; ++j)
-            {
-                acc = reduce(acc, wideRaw[j - tileStart]);
-                widePrefix[j - tileStart] = acc;
-            }
-        }
-        GroupMemoryBarrierWithGroupSync();
-        if (scan && int(tid.x) < nBlocks)
-        {
-            const int k = firstBlock + int(tid.x);
-            const int jLo = max(k * w, validLo);
-            const int jHi = min((k + 1) * w, validHi);
-            uint acc = wideRaw[jHi - 1 - tileStart];
-            for (int j = jHi - 2; j >= jLo; --j)
-            {
-                acc = reduce(acc, wideRaw[j - tileStart]);
-                wideRaw[j - tileStart] = acc;
-            }
-        }
-        GroupMemoryBarrierWithGroupSync();
-        if (active)
-        {
-            uint v = 0u;
-            if (inside)
-            {
-                if (shortLine_)
-                    v = shortLine(ax, l, c);
-                else
-                {
-                    const int s = a - ax.lo;
-                    v = reduce(wideRaw[s - tileStart], widePrefix[s + 2 * h - tileStart]);
-                }
-            }
-            dstBuf[outputIndex(line, uint(pos)) + c] = v;
-        }
-        GroupMemoryBarrierWithGroupSync();
     }
+    else if (sLo < sHi)
+    {
+        const int top = min(n - 1, (sHi - 1) - (sHi - 1) % w + w - 1);
+        uint4 acc = uint4(0u);
+        int r = top % w;
+        for (int j = top; j >= sHi; --j)
+        {
+            const uint4 v = paddedPixel(j, ax, l);
+            acc = (j == top || r == w - 1) ? v : reduce4(acc, v);
+            r = r == 0 ? w - 1 : r - 1;
+        }
+        [ForceUnroll]
+        for (int i = int(kChunk) - 1; i >= 0; --i)
+        {
+            const int j = s0 + i;
+            if (j >= sLo && j < sHi)
+            {
+                const uint4 v = paddedPixel(j, ax, l);
+                acc = (j == top || r == w - 1) ? v : reduce4(acc, v);
+                r = r == 0 ? w - 1 : r - 1;
+                res[i] = acc;
+            }
+        }
+
+        const int eLo = sLo + 2 * h;
+        r = 0;
+        for (int e = eLo - eLo % w; e < eLo; ++e)
+        {
+            const uint4 v = paddedPixel(e, ax, l);
+            acc = r == 0 ? v : reduce4(acc, v);
+            r = r == w - 1 ? 0 : r + 1;
+        }
+        [ForceUnroll]
+        for (int i = 0; i < int(kChunk); ++i)
+        {
+            const int j = s0 + i;
+            if (j >= sLo && j < sHi)
+            {
+                const uint4 v = paddedPixel(j + 2 * h, ax, l);
+                acc = r == 0 ? v : reduce4(acc, v);
+                r = r == w - 1 ? 0 : r + 1;
+                res[i] = reduce4(res[i], acc);
+            }
+        }
+    }
+
+    [ForceUnroll]
+    for (int i = 0; i < int(kChunk); ++i)
+    {
+        const int pos = p0 + i;
+        if (pos < len)
+        {
+            const uint o = outputIndex(line, uint(pos));
+            for (uint c = 0; c < nc; ++c)
+                dstBuf[o + c] = res[i][c];
+        }
+    }
+}
+
+// Dispatch shape from dispatchPass in Engine/Gpu/GpuMorphology.cpp. On the vertical pass a
+// group's threads take adjacent columns, so a wave's loads are contiguous row segments: threads
+// walking down one column would stride by whole rows, which at power-of-two row pitches puts every
+// load on the same memory channel. On the horizontal pass group.y is the row and the threads take
+// consecutive chunks of it.
+[shader("compute")]
+[numthreads(128, 1, 1)]
+void morph_wide(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
+{
+    if (params.vertical != 0)
+        wideLine(gid.x * kGroup + tid.x, int(gid.y * kChunk));
+    else
+        wideLine(gid.y, int((gid.x * kGroup + tid.x) * kChunk));
 }
 
 groupshared int boxMin[2];

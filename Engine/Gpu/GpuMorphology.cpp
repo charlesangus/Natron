@@ -12,9 +12,10 @@ namespace gpu {
 
 namespace {
 
-    // Must match kGroup, kColumns and kDirectMaxRadius in Kernels/morphology.slang.
+    // Must match kGroup, kColumns, kChunk and kDirectMaxRadius in Kernels/morphology.slang.
     constexpr uint32_t kGroup = 128;
     constexpr uint32_t kColumns = 32;
+    constexpr uint32_t kChunk = 16;
     constexpr uint32_t kDirectMaxRadius = 16;
     constexpr uint32_t kBoxGroup = 8;
 
@@ -101,10 +102,14 @@ namespace {
         const uint32_t len = pass.vertical ? p.height : p.width;
         const uint32_t lines = pass.vertical ? p.width : p.height;
         const bool direct = pass.half <= kDirectMaxRadius;
-        const uint32_t groupsY = (direct && pass.vertical) ? divUp(lines, kColumns) : lines;
         const GpuBuffer* srcBuffer = src.buffer ? src.buffer : window;
-        return ctx.dispatch(direct ? GpuKernelId::morph_direct : GpuKernelId::morph_wide, { srcBuffer, dst.buffer, window },
-                            p, { divUp(len, kGroup) * kGroup, groupsY, 1 });
+        if (!direct) {
+            const std::array<uint32_t, 3> threads = pass.vertical ? std::array<uint32_t, 3> { divUp(lines, kGroup) * kGroup, divUp(len, kChunk), 1 }
+                                                                  : std::array<uint32_t, 3> { divUp(divUp(len, kChunk), kGroup) * kGroup, lines, 1 };
+            return ctx.dispatch(GpuKernelId::morph_wide, { srcBuffer, dst.buffer, window }, p, threads);
+        }
+        return ctx.dispatch(GpuKernelId::morph_direct, { srcBuffer, dst.buffer, window }, p,
+                            { divUp(len, kGroup) * kGroup, pass.vertical ? divUp(lines, kColumns) : lines, 1 });
     }
 
     GpuStatus writeWindow(GpuRecordContext& ctx, const GpuBuffer& window, const std::array<int32_t, 8>& values)

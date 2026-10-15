@@ -196,3 +196,4 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
 
 - 2026-10-12 — **Absorbed M97 - Value-Based Node Hashing** (user): M97 duplicated this milestone, and its blocker (the scope call) was settled here. Its prior art and the Write EXR read back moved into the intro and Phase 100.7.
 - 2026-10-14 — **Freshness check at claim**: P3.T2, P5.T2, P5.T3 and P7.T1 had stale `files`/approach and were rewritten in place (NativeWrite already has a file-driven read back; KnobsAge lives in M93's `Serialization/` struct). P5.T3 re-sized S→M. Notes line numbers refreshed.
+- 2026-10-14 — **Overlap hold**: M100.P4.T3, M100.P5.T1 and M100.P7.T1 touch `Engine/EffectInstance.{h,cpp}`, which M90 - Render Path Serial Overhead (earlier on the board) also edits in M90.P2.T2. Those three tasks wait until M90 merges; everything else proceeds.

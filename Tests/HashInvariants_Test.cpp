@@ -246,13 +246,13 @@ TEST_F(HashInvariantsTest, SameGraphHashesEqualAfterProjectResetAndRebuild)
     U64 before = 0;
     {
         Chain chain = buildChain(getApp(), 4.);
-        ASSERT_TRUE(chain.blur);
+        ASSERT_TRUE(bool(chain.blur));
         before = chain.blur->getHashValue();
     }
 
     project()->reset(false, true);
     Chain rebuilt = buildChain(getApp(), 4.);
-    ASSERT_TRUE(rebuilt.blur);
+    ASSERT_TRUE(bool(rebuilt.blur));
     EXPECT_EQ(before, rebuilt.blur->getHashValue());
 
     project()->reset(false, true);
@@ -261,7 +261,7 @@ TEST_F(HashInvariantsTest, SameGraphHashesEqualAfterProjectResetAndRebuild)
 TEST_F(HashInvariantsTest, SameGraphHashesEqualAfterSaveAndLoad)
 {
     Chain chain = buildChain(getApp(), 4.);
-    ASSERT_TRUE(chain.blur);
+    ASSERT_TRUE(bool(chain.blur));
     const std::string constantName = chain.constant->getScriptName();
     const std::string blurName = chain.blur->getScriptName();
     const U64 constantHash = chain.constant->getHashValue();
@@ -291,14 +291,14 @@ TEST_F(HashInvariantsTest, SameGraphHashesEqualAfterSaveAndLoad)
 TEST_F(HashInvariantsTest, SameGraphHashesEqualInASecondAppInstance)
 {
     Chain local = buildChain(getApp(), 4.);
-    ASSERT_TRUE(local.blur);
+    ASSERT_TRUE(bool(local.blur));
 
     ScopedSecondApp second(getApp());
     ASSERT_TRUE(bool(second.get()));
     ASSERT_NE(getApp()->getAppID(), second.get()->getAppID());
     {
         Chain remote = buildChain(second.get(), 4.);
-        ASSERT_TRUE(remote.blur);
+        ASSERT_TRUE(bool(remote.blur));
         EXPECT_EQ(local.constant->getHashValue(), remote.constant->getHashValue());
         EXPECT_EQ(local.blur->getHashValue(), remote.blur->getHashValue());
     }
@@ -313,7 +313,7 @@ TEST_F(HashInvariantsTest, SameGraphHashesEqualInASecondAppInstance)
 TEST_F(HashInvariantsTest, KnobValueEditChangesHashUpToDownstreamAndRevertRestoresIt)
 {
     Chain chain = buildChain(getApp(), 4.);
-    ASSERT_TRUE(chain.blur);
+    ASSERT_TRUE(bool(chain.blur));
     NodePtr downstream = createBlur();
     ASSERT_TRUE(bool(downstream));
     connectNodes(chain.blur, downstream, 0, true);
@@ -337,7 +337,7 @@ TEST_F(HashInvariantsTest, KnobValueEditChangesHashUpToDownstreamAndRevertRestor
 TEST_F(HashInvariantsTest, ToggledValuesAlternateBetweenTwoHashes)
 {
     Chain chain = buildChain(getApp(), 4.);
-    ASSERT_TRUE(chain.blur);
+    ASSERT_TRUE(bool(chain.blur));
     KnobDoublePtr size = blurSize(chain.blur);
     ASSERT_TRUE(bool(size));
 
@@ -357,7 +357,7 @@ TEST_F(HashInvariantsTest, ToggledValuesAlternateBetweenTwoHashes)
 TEST_F(HashInvariantsTest, AnimationKeyEditChangesHashAndRemovingItRestoresIt)
 {
     Chain chain = buildChain(getApp(), 4.);
-    ASSERT_TRUE(chain.blur);
+    ASSERT_TRUE(bool(chain.blur));
     KnobDoublePtr size = blurSize(chain.blur);
     ASSERT_TRUE(bool(size));
     const U64 before = chain.blur->getHashValue();
@@ -385,7 +385,7 @@ TEST_F(HashInvariantsTest, AnimationKeyEditChangesHashAndRemovingItRestoresIt)
 TEST_F(HashInvariantsTest, ExpressionEditChangesHashAndClearingItRestoresIt)
 {
     Chain chain = buildChain(getApp(), 4.);
-    ASSERT_TRUE(chain.blur);
+    ASSERT_TRUE(bool(chain.blur));
     KnobDoublePtr size = blurSize(chain.blur);
     ASSERT_TRUE(bool(size));
     const U64 before = chain.blur->getHashValue();
@@ -492,7 +492,7 @@ TEST_F(HashInvariantsTest, RewrittenReadFileChangesHashUpToDownstream)
 TEST_F(HashInvariantsTest, LabelEditsKeepHash)
 {
     Chain chain = buildChain(getApp(), 4.);
-    ASSERT_TRUE(chain.blur);
+    ASSERT_TRUE(bool(chain.blur));
     const U64 before = chain.blur->getHashValue();
 
     chain.blur->setLabel("A label that renders nothing");
@@ -511,7 +511,7 @@ TEST_F(HashInvariantsTest, LabelEditsKeepHash)
 TEST_F(HashInvariantsTest, NodePositionEditKeepsHash)
 {
     Chain chain = buildChain(getApp(), 4.);
-    ASSERT_TRUE(chain.blur);
+    ASSERT_TRUE(bool(chain.blur));
     const U64 before = chain.blur->getHashValue();
 
     chain.blur->setPosition(250., -120.);
@@ -529,7 +529,7 @@ TEST_F(HashInvariantsTest, NodePositionEditKeepsHash)
 TEST_F(HashInvariantsTest, DifferentEditAfterReopenDoesNotReuseTheUnsavedEditsHash)
 {
     Chain chain = buildChain(getApp(), 4.);
-    ASSERT_TRUE(chain.blur);
+    ASSERT_TRUE(bool(chain.blur));
     const std::string constantName = chain.constant->getScriptName();
     const std::string blurName = chain.blur->getScriptName();
     const U64 saved = chain.blur->getHashValue();
@@ -575,7 +575,7 @@ TEST_F(HashInvariantsTest, DifferentEditAfterReopenDoesNotReuseTheUnsavedEditsHa
 TEST_F(HashInvariantsTest, DivergedSaveAsCopiesDoNotCollide)
 {
     Chain chain = buildChain(getApp(), 4.);
-    ASSERT_TRUE(chain.blur);
+    ASSERT_TRUE(bool(chain.blur));
     const std::string constantName = chain.constant->getScriptName();
     const std::string blurName = chain.blur->getScriptName();
 

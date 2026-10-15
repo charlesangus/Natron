@@ -91,19 +91,14 @@ public:
     void initialize(const RectI & bounds)
     {
         _bounds = bounds;
-        _map.resize( _bounds.area() );
-
-        std::fill(_map.begin(), _map.end(), 0);
+        _map.assign(_bounds.area(), 0);
     }
 
     ~Bitmap()
     {
     }
 
-    void setTo1()
-    {
-        std::fill(_map.begin(), _map.end(), 1);
-    }
+    void setTo1();
 
     const RectI & getBounds() const
     {

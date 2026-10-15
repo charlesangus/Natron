@@ -26,6 +26,7 @@
 #include "Image.h"
 
 #include <algorithm> // min, max
+#include <atomic>
 #include <cassert>
 #include <cstddef>
 #include <cstring> // for std::memcpy, std::memset
@@ -532,13 +533,27 @@ Bitmap::markFor(const RectI & roi, char value)
     int x2 = std::min(roi.x2, _bounds.x2);
     int y2 = std::min(roi.y2, _bounds.y2);
 
-    char* buf = BM_GET(y1, x1);
-    int w = _bounds.width();
-    int roiw = x2 - x1;
-
-    for (int i = y1; i < y2; ++i, buf += w) {
-        std::memset( buf, value, roiw);
+    if (x1 >= x2 || y1 >= y2) {
+        return;
     }
+    const std::size_t w = _bounds.width();
+    const std::size_t roiw = x2 - x1;
+    char* const origin = BM_GET(y1, x1);
+    forEachRowBand(RectI(x1, y1, x2, y2), kMinParallelRowBandArea, [&](int by1, int by2) {
+        char* buf = origin + (std::size_t)(by1 - y1) * w;
+        for (int i = by1; i < by2; ++i, buf += w) {
+            std::memset(buf, value, roiw);
+        }
+    });
+}
+
+void
+Bitmap::setTo1()
+{
+    if (_map.empty()) {
+        return;
+    }
+    markFor(_bounds, 1);
 }
 
 bool
@@ -2097,25 +2112,31 @@ Image::checkForNaNsAndFix(const RectI& roi)
 
     QWriteLocker k(&_entryLock);
     unsigned int compsCount = getComponentsCount();
-    bool hasnan = false;
-    for (int y = roi.y1; y < roi.y2; ++y) {
-        float* pix = (float*)pixelAt(roi.x1, y);
-        float* const end = pix +  compsCount * roi.width();
+    std::atomic<bool> hasnan(false);
+    forEachRowBand(roi, kMinParallelRowBandArea, [&](int y1, int y2) {
+        bool bandHasNaN = false;
+        for (int y = y1; y < y2; ++y) {
+            float* pix = (float*)pixelAt(roi.x1, y);
+            float* const end = pix + compsCount * roi.width();
 
-        for (; pix < end; ++pix) {
-            // we remove NaNs, but infinity values should pose no problem
-            // (if they do, please explain here which ones)
+            for (; pix < end; ++pix) {
+                // we remove NaNs, but infinity values should pose no problem
+                // (if they do, please explain here which ones)
 #ifdef DEBUG_NAN
-            assert( !std::isnan(*pix) ); // check for NaN
+                assert(!std::isnan(*pix)); // check for NaN
 #endif
-            if ( std::isnan(*pix) ) { // check for NaN (std::isnan(x) is not slower than x != x and works with -Ofast)
-                *pix = 1.;
-                hasnan = true;
+                if (std::isnan(*pix)) { // check for NaN (std::isnan(x) is not slower than x != x and works with -Ofast)
+                    *pix = 1.;
+                    bandHasNaN = true;
+                }
             }
         }
-    }
+        if (bandHasNaN) {
+            hasnan.store(true, std::memory_order_relaxed);
+        }
+    });
 
-    return hasnan;
+    return hasnan.load();
 }
 
 bool
@@ -2130,24 +2151,30 @@ Image::checkForNaNsNoLock(const RectI& roi) const
 
     //QWriteLocker k(&_entryLock);
     unsigned int compsCount = getComponentsCount();
-    bool hasnan = false;
-    for (int y = roi.y1; y < roi.y2; ++y) {
-        float* pix = (float*)pixelAt(roi.x1, y);
-        float* const end = pix +  compsCount * roi.width();
+    std::atomic<bool> hasnan(false);
+    forEachRowBand(roi, kMinParallelRowBandArea, [&](int y1, int y2) {
+        bool bandHasNaN = false;
+        for (int y = y1; y < y2; ++y) {
+            float* pix = (float*)pixelAt(roi.x1, y);
+            float* const end = pix + compsCount * roi.width();
 
-        for (; pix < end; ++pix) {
-            // we remove NaNs, but infinity values should pose no problem
-            // (if they do, please explain here which ones)
+            for (; pix < end; ++pix) {
+                // we remove NaNs, but infinity values should pose no problem
+                // (if they do, please explain here which ones)
 #ifdef DEBUG_NAN
-            assert( !std::isnan(*pix) ); // check for NaN
+                assert(!std::isnan(*pix)); // check for NaN
 #endif
-            if ( std::isnan(*pix) ) { // check for NaN (std::isnan(x) is not slower than x != x and works with -Ofast)
-                hasnan = true;
+                if (std::isnan(*pix)) { // check for NaN (std::isnan(x) is not slower than x != x and works with -Ofast)
+                    bandHasNaN = true;
+                }
             }
         }
-    }
+        if (bandHasNaN) {
+            hasnan.store(true, std::memory_order_relaxed);
+        }
+    });
 
-    return hasnan;
+    return hasnan.load();
 }
 
 // code proofread and fixed by @devernay on 8/8/2014

@@ -857,3 +857,51 @@ TEST(HostImageMemoryTest, PoolStaysBounded)
 
     HostImageMemory::removeFreeHook(id);
 }
+
+namespace {
+void
+checkBitmapMarking(const RectI& bounds)
+{
+    Bitmap bm(bounds);
+    const RectI marked(bounds.x1 + 3, bounds.y1 + 2, bounds.x2 - 5, bounds.y2 - 4);
+    bm.markForRendered(marked);
+
+    std::list<RectI> rest;
+    bm.minimalNonMarkedRects(bounds, rest);
+    for (int y = bounds.y1; y < bounds.y2; ++y) {
+        for (int x = bounds.x1; x < bounds.x2; ++x) {
+            const bool inMarked = x >= marked.x1 && x < marked.x2 && y >= marked.y1 && y < marked.y2;
+            ASSERT_EQ(*bm.getBitmapAt(x, y), inMarked ? 1 : 0);
+        }
+    }
+    ASSERT_FALSE(rest.empty());
+    ASSERT_TRUE(bm.isNonMarked(RectI(bounds.x1, bounds.y1, bounds.x2, bounds.y1 + 2)));
+    ASSERT_FALSE(bm.isNonMarked(marked));
+
+    // The cleared rect overhangs the bitmap and must be clipped to it.
+    const RectI cleared(marked.x1 + 1, marked.y1 + 1, bounds.x2 + 10, bounds.y2 + 10);
+    bm.clear(cleared);
+    for (int y = bounds.y1; y < bounds.y2; ++y) {
+        for (int x = bounds.x1; x < bounds.x2; ++x) {
+            const bool inMarked = x >= marked.x1 && x < marked.x2 && y >= marked.y1 && y < marked.y2;
+            const bool inCleared = x >= cleared.x1 && y >= cleared.y1;
+            ASSERT_EQ(*bm.getBitmapAt(x, y), (inMarked && !inCleared) ? 1 : 0);
+        }
+    }
+
+    bm.setTo1();
+    rest.clear();
+    bm.minimalNonMarkedRects(bounds, rest);
+    ASSERT_TRUE(rest.empty());
+
+    bm.initialize(bounds);
+    ASSERT_TRUE(bm.isNonMarked(bounds));
+}
+}
+
+TEST(BitmapTest,
+     MarkAndClearSmallAndLarge)
+{
+    checkBitmapMarking(RectI(-7, 4, 50, 40));
+    checkBitmapMarking(RectI(-100, -50, 700, 450));
+}

@@ -221,6 +221,8 @@ public:
 
     // The images being rendered are tracked process-wide rather than per effect (see EffectInstancePrivate.cpp): a
     // cached image is shared by every node whose content hash matches, not only by the clones of one node.
+    struct ImagesBeingRenderedRegistry;
+    static ImagesBeingRenderedRegistry& imagesBeingRenderedRegistry();
     static ImageBeingRenderedPtr acquireImageBeingRendered(const ImagePtr& img);
 #endif
 

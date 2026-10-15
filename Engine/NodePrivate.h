@@ -305,8 +305,6 @@ public:
                                    const std::map<std::string, std::string>& oldNewScriptNamesMapping,
                                    bool throwOnFailure);
 
-    void ifGroupForceHashChangeOfInputs();
-
     void runOnNodeCreatedCB(bool userEdited);
 
     void runOnNodeDeleteCB();

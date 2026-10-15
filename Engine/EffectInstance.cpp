@@ -3431,8 +3431,7 @@ EffectInstance::onSignificantEvaluateAboutToBeCalled(KnobI* knob)
             node->noteHashAuditCause(knob ? knob->getName() : std::string("<no knob>"));
         }
 
-        //Increments the knobs age following a change
-        node->incrementKnobsAge();
+        node->markHashDirty();
     } else {
         // The edit has marked the hash dirty already; recomputing it on the main thread runs the
         // change hooks there for the GUI.
@@ -5670,10 +5669,7 @@ EffectInstance::clearLastRenderedImage()
 void
 EffectInstance::aboutToRestoreDefaultValues()
 {
-    ///Invalidate the cache by incrementing the age
     NodePtr node = getNode();
-
-    node->incrementKnobsAge();
 
     if ( node->areKeyframesVisibleOnTimeline() ) {
         node->hideKeyframesFromTimeline(true);

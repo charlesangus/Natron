@@ -2454,31 +2454,13 @@ Node::setKnobsAge(U64 newAge)
         }
     }
     if (changed) {
-        Q_EMIT knobsAgeChanged(newAge);
         computeHash();
-    }
-}
-
-void
-Node::incrementKnobsAge_internal()
-{
-    {
-        QWriteLocker l(&_imp->knobsAgeMutex);
-        ++_imp->knobsAge;
-
-        ///if the age of an effect somehow reaches the maximum age (will never happen)
-        ///handle it by clearing the cache and resetting the age to 0.
-        if ( _imp->knobsAge == std::numeric_limits<U64>::max() ) {
-            appPTR->clearAllCaches();
-            _imp->knobsAge = 0;
-        }
     }
 }
 
 void
 Node::incrementKnobsAge()
 {
-    U32 newAge;
     {
         QWriteLocker l(&_imp->knobsAgeMutex);
         ++_imp->knobsAge;
@@ -2489,9 +2471,7 @@ Node::incrementKnobsAge()
             appPTR->clearAllCaches();
             _imp->knobsAge = 0;
         }
-        newAge = _imp->knobsAge;
     }
-    Q_EMIT knobsAgeChanged(newAge);
 
     computeHash();
 }
@@ -5761,14 +5741,12 @@ Node::onAllKnobsSlaved(bool isSlave,
                 QMutexLocker l(&_imp->masterNodeMutex);
                 _imp->masterNode = masterNode;
             }
-            QObject::connect( masterNode.get(), SIGNAL(deactivated(bool)), this, SLOT(onMasterNodeDeactivated()) );
-            QObject::connect( masterNode.get(), SIGNAL(knobsAgeChanged(U64)), this, SLOT(setKnobsAge(U64)) );
+            QObject::connect(masterNode.get(), SIGNAL(deactivated(bool)), this, SLOT(onMasterNodeDeactivated()));
             QObject::connect( masterNode.get(), SIGNAL(previewImageChanged(double)), this, SLOT(refreshPreviewImage(double)) );
         }
     } else {
         NodePtr master = getMasterNode();
-        QObject::disconnect( master.get(), SIGNAL(deactivated(bool)), this, SLOT(onMasterNodeDeactivated()) );
-        QObject::disconnect( master.get(), SIGNAL(knobsAgeChanged(U64)), this, SLOT(setKnobsAge(U64)) );
+        QObject::disconnect(master.get(), SIGNAL(deactivated(bool)), this, SLOT(onMasterNodeDeactivated()));
         QObject::disconnect( master.get(), SIGNAL(previewImageChanged(double)), this, SLOT(refreshPreviewImage(double)) );
         {
             QMutexLocker l(&_imp->masterNodeMutex);
@@ -6120,11 +6098,7 @@ Node::onParentMultiInstanceInputChanged(int input)
 void
 Node::onFileNameParameterChanged(KnobI* fileKnob)
 {
-    if ( _imp->effect->isReader() ) {
-        ///Refresh the preview automatically if the filename changed
-        incrementKnobsAge(); //< since evaluate() is called after knobChanged we have to do this  by hand
-        //computePreviewImage( getApp()->getTimeLine()->currentFrame() );
-
+    if (_imp->effect->isReader()) {
         ///union the project frame range if not locked with the reader frame range
         bool isLocked = getApp()->getProject()->isFrameRangeLocked();
         if (!isLocked) {
@@ -6137,7 +6111,7 @@ Node::onFileNameParameterChanged(KnobI* fileKnob)
                 }
             }
         }
-    } else if ( _imp->effect->isWriter() ) {
+    } else if (_imp->effect->isWriter()) {
         KnobIPtr sublabelKnob = getKnobByName(kNatronOfxParamStringSublabelName);
         KnobOutputFile* isFile = dynamic_cast<KnobOutputFile*>(fileKnob);
         if (isFile && sublabelKnob) {
@@ -6535,19 +6509,6 @@ Node::onEffectKnobValueChanged(KnobI* what,
         Q_EMIT disabledKnobToggled( _imp->disableNodeKnob.lock()->getValue() );
         if ( QThread::currentThread() == qApp->thread() ) {
             getApp()->redrawAllViewers();
-        }
-        NodeGroup* isGroup = dynamic_cast<NodeGroup*>( _imp->effect.get() );
-        if (isGroup) {
-            ///When a group is disabled we have to force a hash change of all nodes inside otherwise the image will stay cached
-
-            // Nodes in nested groups inherit this state too, and a downstream walk does not reach
-            // those that are not downstream of a GroupInput.
-            NodesList nodes;
-            isGroup->getNodes_recursive(nodes, false);
-            for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
-                (*it)->incrementKnobsAge_internal();
-                (*it)->markHashDirty();
-            }
         }
     } else if ( what == _imp->nodeLabelKnob.lock().get() ) {
         Q_EMIT nodeExtraLabelChanged( QString::fromUtf8( _imp->nodeLabelKnob.lock()->getValue().c_str() ) );
@@ -7057,22 +7018,13 @@ Node::registerProducedLayers()
         return;
     }
 
-    // The union of a file's channels can grow an already-registered layer's channel count;
-    // nodes that reference it may have cached actions keyed on the old count.
     LayerRegistryEntry::OriginEnum origin = _imp->effect->isReader() ? LayerRegistryEntry::eOriginFile : LayerRegistryEntry::eOriginPlugin;
     for (std::list<ImageLayerDesc>::const_iterator it = foundOutput->second.begin(); it != foundOutput->second.end(); ++it) {
         if (it->isColorLayer()) {
             continue;
         }
         std::string error;
-        LayerRegistry::AddResultEnum ret = project->addLayer(*it, origin, &error);
-        if (ret == LayerRegistry::eAddResultGrown) {
-            std::list<NodePtr> users;
-            project->getLayerUsers(it->getLayerID(), &users);
-            for (std::list<NodePtr>::const_iterator uit = users.begin(); uit != users.end(); ++uit) {
-                (*uit)->incrementKnobsAge();
-            }
-        }
+        project->addLayer(*it, origin, &error);
     }
 } // Node::registerProducedLayers
 

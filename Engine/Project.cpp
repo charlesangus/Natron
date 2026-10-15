@@ -2369,14 +2369,6 @@ Project::onKnobValueChanged(KnobI* knob,
             (*it)->refreshFormatParamChoice(entries, index, false);
         }
         if (found) {
-            if (reason == eValueChangedReasonUserEdited) {
-                ///Increase all nodes age in the project so all cache is invalidated: some effects images might rely on the project format
-                for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
-                    (*it)->incrementKnobsAge();
-                }
-
-
-            }
             ///Format change, hence probably the PAR so run getClipPreferences again
             forceComputeInputDependentDataOnAllTrees();
             Q_EMIT formatChanged(frmt);
@@ -3554,8 +3546,6 @@ Project::rehashNodesUsingFrameRange()
     NodesList nodes;
     getNodes_recursive(nodes, false);
 
-    // The age bump keeps the age hash in step with the content hash, and recomputes downstream
-    // nodes, whose hashes include their inputs'.
     for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
         if (!(*it)->isNodeCreated() || !(*it)->dependsOnProjectFrameRange()) {
             continue;
@@ -3563,7 +3553,7 @@ Project::rehashNodesUsingFrameRange()
         if (Node::isHashAuditEnabled()) {
             (*it)->noteHashAuditCause("<project frame range>");
         }
-        (*it)->incrementKnobsAge();
+        (*it)->markHashDirty();
     }
 }
 

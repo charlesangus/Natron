@@ -170,7 +170,9 @@
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Nodes/Metadata/CopyMetadata.h"
 #include "Engine/Nodes/Metadata/ModifyMetadata.h"
+#include "Engine/Nodes/Metadata/RemoveMetadata.h"
 #include "Engine/Nodes/MissingPluginNode.h"
 #include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Nodes/Transform/Position.h"
@@ -1616,6 +1618,8 @@ AppManager::loadBuiltinNodePlugins()
     registerBuiltInPlugin<Dot>(QString::fromUtf8(NATRON_IMAGES_PATH "dot_icon.png"), false, false);
     registerBuiltInPlugin<TypedPassthrough>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<ModifyMetadata>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<CopyMetadata>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<RemoveMetadata>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<DeepRead>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<DeepWrite>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<DeepMerge>(QString::fromUtf8(""), false, false);

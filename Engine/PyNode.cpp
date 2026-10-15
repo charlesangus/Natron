@@ -395,6 +395,14 @@ Effect::getPluginID() const
     return QString::fromUtf8( getInternalNode()->getPluginID().c_str() );
 }
 
+unsigned long long
+Effect::getContentHash() const
+{
+    NodePtr node = getInternalNode();
+
+    return node ? node->getContentHash() : 0;
+}
+
 Param*
 Effect::createParamWrapperForKnob(const KnobIPtr& knob)
 {

@@ -34,9 +34,12 @@
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QString>
 #include <QTemporaryDir>
+#include <QThread>
 
 #include <ofxImageEffect.h>
 
@@ -74,6 +77,7 @@ protected:
     virtual void SetUp() OVERRIDE
     {
         BaseTest::SetUp();
+        _baselineInstances = appPTR->getNumInstances();
         project()->reset(false, true);
         project()->setAutoSetProjectFormatEnabled(true);
         project()->setOrAddProjectFormat(Format(0, 0, kWidth, kHeight, "nativeWritePrecomp", 1.));
@@ -86,7 +90,23 @@ protected:
         _precomp.reset();
         _downstream.reset();
         project()->reset(false, true);
+        waitForSubAppsToQuit();
         BaseTest::TearDown();
+    }
+
+    // Dropping a Precomp quits its sub-app asynchronously, through a render watcher that reports back
+    // with a queued signal. Left pending, it fires in a later test of the same process (Tests_HashAudit),
+    // after that test's SetUp took the still top-level sub-app as its app, and tears that app down.
+    void waitForSubAppsToQuit() const
+    {
+        QElapsedTimer timer;
+
+        timer.start();
+        while (appPTR->getNumInstances() > _baselineInstances && timer.elapsed() < 10000) {
+            QCoreApplication::processEvents();
+            QThread::msleep(5);
+        }
+        EXPECT_EQ(_baselineInstances, appPTR->getNumInstances());
     }
 
     ProjectPtr project() const
@@ -229,6 +249,7 @@ protected:
     NodePtr _precomp;
     NodePtr _downstream;
     std::unique_ptr<QTemporaryDir> _dir;
+    int _baselineInstances = 0;
 };
 
 TEST_F(NativeWritePrecompTest, ThePrecompListsTheNativeWriteAndSelectsIt)

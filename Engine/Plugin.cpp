@@ -34,10 +34,16 @@
 #include <QFileInfo>
 #include <QMutex>
 
+// clang-format off
+CLANG_DIAG_OFF(unknown-pragmas)
+CLANG_DIAG_OFF(tautological-undefined-compare) // appeared in clang 3.5
+#include <ofxhPluginCache.h>
+#include <ofxhPluginAPICache.h>
 #include <ofxhImageEffect.h>
 #include <ofxhImageEffectAPI.h>
-#include <ofxhPluginAPICache.h>
-#include <ofxhPluginCache.h>
+CLANG_DIAG_ON(tautological-undefined-compare)
+CLANG_DIAG_ON(unknown-pragmas)
+// clang-format on
 
 #include "Global/GitVersion.h"
 

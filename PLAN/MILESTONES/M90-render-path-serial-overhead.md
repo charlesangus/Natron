@@ -57,7 +57,7 @@ Phase 90.3 waits for M85 - Native GPU Kernels to merge, because M85 edits `Blur.
 
 All of this phase runs now. It touches neither `Blur.cpp` nor `NativeImageEffect.*`, nor `EffectInstance.cpp`.
 
-- [ ] M90.P1.T1 — Measure the baseline on current `main` and split the ~100 ms serial time by function
+- [x] M90.P1.T1 — Measure the baseline on current `main` and split the ~100 ms serial time by function
   - files: none (results go in this file's `## Decisions`); `tools/bench/` only if a flag is missing
   - approach:
     - Use a stripped release AppImage of `main` on the user's host, 16 threads.
@@ -167,6 +167,7 @@ This phase starts only after M85 - Native GPU Kernels has merged into `main`. M8
     - Add a fast path for rows fully inside both `processWindow` and `bufferRect` with no divisor, no mask and `mix == 1`. It writes from the planar buffer straight to `dstPix` without the per-pixel branches, and reads the source row only when an unprocessed channel needs it.
     - Keep the operation order (output → premultiply → mix) exactly as it is. M85's `recordGpuFinish` mirrors it.
     - Don't touch `fillBuffer` or the H and V passes.
+    - Also cut `Blur::render`'s planar buffer allocate/zero/free (26% of busy samples in P1.T1's σ3 profile): reuse or skip zeroing where every element is written.
   - verify: `NativeBlur_Test`, `NativeErodeDilate_Test`, `NativeEdgeDetect_Test`, `NativeBlurGpu_Test` and `BlurFIRGaussian_Test` pass bit for bit. The `eu-stack` share of `writeWindow` per UHD task drops below ~5 ms (recorded in Decisions).
   - size: M
 
@@ -195,3 +196,4 @@ This phase starts only after M85 - Native GPU Kernels has merged into `main`. M8
 - 2026-10-14 — **Elaborated at claim** (consultant scouting `main` at `e93abc919`): the paste is `EffectInstance.cpp:3279`, not `:3163`; it is serial because native effects are `FullySafe` and render the whole RoI in one call, and it exists because cached images carry a bitmap. Fix order: band the image passes, then render natives straight into the mapped image, then (post-M85) `writeWindow` and the cost seed.
 - 2026-10-14 — **Bench host** (user): this PM's host has 4 cores / 15 GB. Benches run here at 4 threads to steer the work, judged as ratios to the bare kernel; the user re-runs P2.T4 and P3.T2 on their 16-thread host before the gate.
 - 2026-10-14 — **P2.T1 audit: no opt-outs.** Every `NativeEffectBase` class that writes an `Image` (NativeImageEffect and its point ops, Blur, ErodeDilate, EdgeDetect via `SpatialFilter::writeWindow`, Merge, Dissolve, Keyer, ChromaKeyer, Crop, Reformat, Position, Transform, NativeGenerator, Shuffle, AddLayers, RemoveLayers, NativeRead, NativeWrite, DeepToImage) writes only inside `args.roi` or a rect clipped to it. Deep nodes write `DeepImage`s, outside the cached `Image` path. The audit flagged that whole-image `WriteAccess`/`fillZero` locks serialise disjoint-RoI renders of one cached image; that is the accepted edge case in `## Scope`.
+- 2026-10-14 — **P1.T1 baseline (4-thread Intel N100, base AppImage `e93abc91` run inside natron-dev, UHD, 3-repeat medians; taskgraph per-task ms/Mpx, frame 0 dropped).** Grade chain: Grade 15.5. Blur FIR σ3 33.7, σ25 132.3, σ100 414.9; IIR 71.3. readchain: Read 23.7, Grade 15.3. Legacy wall (no per-task profile in legacy): chain 403 ms, fir3 706, fir25 1538, fir100 3888, iir 1009, read 738. IIR scales ~linearly from the 16-thread figure (71 vs 19); Grade doesn't (15.5 vs 9.4), consistent with a serial residue. No bare-kernel bench here (`CpuTwinBench` needs building). **Serial split** (eu-stack, legacy, symbolised but older M83-era NatronRenderer, so indicative only; thread-samples, which understate serial wall share): Grade: paste 46%, `checkForNaNsAndFix` 35%, kernel 19%. Blur FIR σ3: `Blur::render` plane memset/munmap 26%, `checkForNaNsAndFix` 20%, `writeWindow` outside kernel 20%, kernel 18%, paste 17%. Bitmap init/mark/getRestToRender <1%, so P1.T4 needs nothing beyond its fixed part. Blur's plane allocate/zero/free lives in `Blur.cpp`; it joins P3.T1. Rerun scripts: `build/bench/m90/{run.sh,matrix.sh,an.py,samp-rel.sh,split.py}` (paths hard-coded to this host).

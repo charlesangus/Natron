@@ -109,7 +109,7 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - approach: fold in each dependency knob's content hash (visited set to stop cycles), the owner's fully qualified name when the node has expressions, and a session salt when a volatile token appears.
   - verify: a test shows that changing a referenced knob on a node that is not upstream changes the hash, and that an expression cycle terminates
   - size: M
-- [ ] M100.P2.T4 — Add a NATRON_HASH_AUDIT shadow cross-check
+- [x] M100.P2.T4 — Add a NATRON_HASH_AUDIT shadow cross-check
   - files: Engine/Node.cpp, Engine/Node.h, Tests/CMakeLists.txt
   - approach: log once per knob whenever the age and content hashes disagree, in either direction. Run the full ctest with the audit on and record what it finds in `## Decisions`.
   - verify: an audit ctest run in which every discrepancy is explained or fixed
@@ -146,6 +146,13 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
 - [ ] M100.P4.T3 — Make the hash recompute lazy and thread-safe
   - files: Engine/Node.cpp, Engine/Node.h, Engine/EffectInstance.cpp, Engine/Knob.cpp
   - approach: an atomic dirty flag that any thread can set. getHashValue and the render snapshot recompute under the node lock. Remove the main-thread assert; edits during inputChanged mark the node dirty.
+  - also mark nodes dirty (from the full-suite audit, see Decisions 2026-10-15):
+    - project digest changes, e.g. a layer registry add, dirty all nodes;
+    - roto item edits dirty the Roto/RotoPaint context node;
+    - the invalidate-only roto paths (Bezier.cpp setKeyframe/setKeyFrameInterpolation/clearAllPoints, RotoStrokeItem.cpp ~308/439) dirty the item's nodes;
+    - master changes under blockValueChanges/cloneCurve dirty the slaves;
+    - content changes that skip the bump (load, inputChanged, setExpression, the OCIO push);
+    - KnobFile stamp invalidation dirties its node.
   - verify: a test sets a knob from a worker thread and the next render sees the new hash; run TSan if it is available
   - size: L
 
@@ -232,3 +239,17 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - `RotoLayer::clone` (RotoLayer.cpp ~120-131) calls `createNodes` while holding the non-recursive `itemMutex`, and hashing reaches `isGloballyActivated`, which locks it again. This is a pre-existing deadlock risk from Gui/RotoPanel.cpp:2832. Fix by creating the nodes after releasing the lock.
   - A group's lifetime knobs and the current time affect `isNodeDisabled` on inner nodes, but no hash covers them. Fold this into P4.T3/P5.T1.
 - 2026-10-15 — **Phases 100.1–100.3 green** at adc196a82 (remote run 38683432238): 2199/2199 in legacy and taskgraph. The audit now runs inside every `Tests` case's own process (`Tests_HashAudit` removed), so it covers the full suite: 1558 lines, classification in progress.
+- 2026-10-15 — **Full-suite audit classified** (run 38683432238, 1558 lines, legacy = taskgraph). Every group is explained:
+  - **Benign:**
+    - roto internal-node `age-missed` is the attach-time recompute;
+    - their `content-missed` unknown and globalMerge's are redundant `incrementNodesAge`/`setCurveFinished` bumps;
+    - Read unknown ×153 is the forced bump in `onFileNameParameterChanged`;
+    - Write/Read `<no knob>` is the restore-default helper;
+    - renamedBlur is by design;
+    - Reformat `boxSize` is a write-back of identical values in a two-dimension `setValues`.
+  - **Real gap:** NativeWrite Reload in read-back mode never changes the content hash. Fix in progress: bump `_readBackStamp`.
+  - **Design fix (PM):** sequence Read creation unions the project frame range, which is in the digest, and nothing recomputes the other nodes. Drop the frame range from `getContentDigest`. Nodes whose cached results depend on the project range hash it themselves.
+  - **P4.T3:** load and save/load `age-missed`, the Roto context node not dirtied by item edits (new), Tracker CornerPin, DeepRead, expressions.
+  - **Audit hygiene:** ignore transitions before creation completes, and reset the audit state on roto attach.
+  
+  P2.T4 is done.

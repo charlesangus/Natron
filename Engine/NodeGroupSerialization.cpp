@@ -254,7 +254,8 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
         };
 
         if (!n) {
-            n = appInst->createNode(makeCreateArgs(pluginID, majorVersion, minorVersion));
+            CreateNodeArgs args = makeCreateArgs(pluginID, majorVersion, minorVersion);
+            n = appInst->createNode(args);
         }
         bool isPlaceholder = false;
         if (!n) {
@@ -278,7 +279,8 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
                 }
             }
             if (pluginIsMissing) {
-                n = appInst->createNode(makeCreateArgs(PLUGINID_NATRON_MISSING_PLUGIN, -1, -1));
+                CreateNodeArgs placeholderArgs = makeCreateArgs(PLUGINID_NATRON_MISSING_PLUGIN, -1, -1);
+                n = appInst->createNode(placeholderArgs);
                 isPlaceholder = bool(n);
             }
             if (!n) {

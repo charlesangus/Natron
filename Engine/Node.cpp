@@ -2051,6 +2051,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
     KnobBoolPtr hideInputs = AppManager::createKnob<KnobBool>(_imp->effect.get(), tr("Hide inputs"), 1, false);
 
     hideInputs->setName("hideInputs");
+    hideInputs->setHashExempt(true);
     hideInputs->setDefaultValue(false);
     hideInputs->setAnimationEnabled(false);
     hideInputs->setAddNewLine(false);
@@ -2063,6 +2064,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
 
     KnobBoolPtr fCaching = AppManager::createKnob<KnobBool>(_imp->effect.get(), tr("Force caching"), 1, false);
     fCaching->setName("forceCaching");
+    fCaching->setHashExempt(true);
     fCaching->setDefaultValue(false);
     fCaching->setAnimationEnabled(false);
     fCaching->setAddNewLine(false);
@@ -2077,6 +2079,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
     assert(previewEnabled);
     previewEnabled->setDefaultValue( makePreviewByDefault() );
     previewEnabled->setName(kEnablePreviewKnobName);
+    previewEnabled->setHashExempt(true);
     previewEnabled->setAnimationEnabled(false);
     previewEnabled->setAddNewLine(false);
     previewEnabled->setIsPersistent(false);
@@ -2173,6 +2176,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
                                             "- thisGroup: The group holding thisNode (only if thisNode belongs to a group)") );
     knobChangedCallback->setAnimationEnabled(false);
     knobChangedCallback->setName("onParamChanged");
+    knobChangedCallback->setHashExempt(true);
     settingsPage->addKnob(knobChangedCallback);
     _imp->knobChangedCallback = knobChangedCallback;
 
@@ -2190,6 +2194,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
 
     inputChangedCallback->setAnimationEnabled(false);
     inputChangedCallback->setName("onInputChanged");
+    inputChangedCallback->setHashExempt(true);
     settingsPage->addKnob(inputChangedCallback);
     _imp->inputChangedCallback = inputChangedCallback;
 
@@ -2197,6 +2202,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
     if (isGroup) {
         KnobStringPtr onNodeCreated = AppManager::createKnob<KnobString>(_imp->effect.get(), tr("After Node Created"), 1, false);
         onNodeCreated->setName("afterNodeCreated");
+        onNodeCreated->setHashExempt(true);
         onNodeCreated->setHintToolTip( tr("Name of a Python function to be called each time a node "
                                           "is created in the group. This is called in addition to the After Node Created "
                                           " callback of the project for the group node and all nodes within it (not recursively).\n"
@@ -2213,6 +2219,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
 
         KnobStringPtr onNodeDeleted = AppManager::createKnob<KnobString>(_imp->effect.get(), tr("Before Node Removal"), 1, false);
         onNodeDeleted->setName("beforeNodeRemoval");
+        onNodeDeleted->setHashExempt(true);
         onNodeDeleted->setHintToolTip( tr("Add here the name of a Python-defined function that will be called each time a node "
                                           "is about to be deleted. This will be called in addition to the Before Node Removal "
                                           " callback of the project for the group node and all nodes within it (not recursively).\n"
@@ -2228,6 +2235,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
         KnobStringPtr beforeFrameRender =  AppManager::createKnob<KnobString>(_imp->effect.get(), tr("Before frame render"), 1, false);
 
         beforeFrameRender->setName("beforeFrameRender");
+        beforeFrameRender->setHashExempt(true);
         beforeFrameRender->setAnimationEnabled(false);
         beforeFrameRender->setHintToolTip( tr("Add here the name of a Python defined function that will be called before rendering "
                                               "any frame.\n "
@@ -2240,6 +2248,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
 
         KnobStringPtr beforeRender =  AppManager::createKnob<KnobString>(_imp->effect.get(), tr("Before render"), 1, false);
         beforeRender->setName("beforeRender");
+        beforeRender->setHashExempt(true);
         beforeRender->setAnimationEnabled(false);
         beforeRender->setHintToolTip( tr("Add here the name of a Python defined function that will be called once when "
                                          "starting rendering.\n "
@@ -2251,6 +2260,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
 
         KnobStringPtr afterFrameRender =  AppManager::createKnob<KnobString>(_imp->effect.get(), tr("After frame render"), 1, false);
         afterFrameRender->setName("afterFrameRender");
+        afterFrameRender->setHashExempt(true);
         afterFrameRender->setAnimationEnabled(false);
         afterFrameRender->setHintToolTip( tr("Add here the name of a Python defined function that will be called after rendering "
                                              "any frame.\n "
@@ -2263,6 +2273,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
 
         KnobStringPtr afterRender =  AppManager::createKnob<KnobString>(_imp->effect.get(), tr("After render"), 1, false);
         afterRender->setName("afterRender");
+        afterRender->setHashExempt(true);
         afterRender->setAnimationEnabled(false);
         afterRender->setHintToolTip( tr("Add here the name of a Python defined function that will be called once when the rendering "
                                         "is finished.\n "
@@ -2285,6 +2296,7 @@ Node::createInfoPage()
 
     KnobStringPtr nodeInfos = AppManager::createKnob<KnobString>(_imp->effect.get(), std::string(), 1, false);
     nodeInfos->setName("nodeInfos");
+    nodeInfos->setHashExempt(true);
     nodeInfos->setAnimationEnabled(false);
     nodeInfos->setIsPersistent(false);
     nodeInfos->setAsMultiLine();
@@ -2504,6 +2516,7 @@ Node::createLabelKnob(const KnobPagePtr& settingsPage,
 
     assert(nodeLabel);
     nodeLabel->setName(kUserLabelKnobName);
+    nodeLabel->setHashExempt(true);
     nodeLabel->setAnimationEnabled(false);
     nodeLabel->setEvaluateOnChange(false);
     nodeLabel->setAsMultiLine();

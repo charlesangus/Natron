@@ -170,3 +170,65 @@ TEST_F(BaseTest, SlavedKnobHashesAsItsMaster)
     master->setValueAtTime(5, 1., ViewSpec::all(), 0);
     EXPECT_EQ(master->getContentHash(), slave->getContentHash());
 }
+
+TEST_F(BaseTest, NodeUiKnobsAreNotRenderHashed)
+{
+    NodePtr node = createNode(_generatorPluginID);
+    ASSERT_TRUE(bool(node));
+    EffectInstancePtr effect = node->getEffectInstance();
+
+    const char* const uiKnobs[] = { kUserLabelKnobName, kEnablePreviewKnobName, "hideInputs", "nodeInfos" };
+    for (const char* name : uiKnobs) {
+        KnobIPtr knob = effect->getKnobByName(name);
+        ASSERT_TRUE(bool(knob)) << name;
+        EXPECT_TRUE(knob->isHashExempt()) << name;
+        EXPECT_FALSE(knob->isRenderHashed()) << name;
+    }
+}
+
+TEST_F(BaseTest, ValueKnobsAreRenderHashed)
+{
+    NodePtr node = createNode(_generatorPluginID);
+    ASSERT_TRUE(bool(node));
+
+    KnobDoublePtr normal = makeDoubleKnob(node, "hashNormal");
+    ASSERT_TRUE(bool(normal));
+    normal->setEvaluateOnChange(true);
+    EXPECT_TRUE(normal->isRenderHashed());
+
+    KnobDoublePtr secretState = makeDoubleKnob(node, "hashSecretState");
+    ASSERT_TRUE(bool(secretState));
+    secretState->setSecret(true);
+    secretState->setIsPersistent(true);
+    secretState->setEvaluateOnChange(false);
+    EXPECT_TRUE(secretState->isRenderHashed());
+
+    KnobDoublePtr transient = makeDoubleKnob(node, "hashTransient");
+    ASSERT_TRUE(bool(transient));
+    transient->setIsPersistent(false);
+    transient->setEvaluateOnChange(false);
+    EXPECT_FALSE(transient->isRenderHashed());
+
+    KnobDoublePtr exempt = makeDoubleKnob(node, "hashExempt");
+    ASSERT_TRUE(bool(exempt));
+    exempt->setEvaluateOnChange(true);
+    exempt->setHashExempt(true);
+    EXPECT_FALSE(exempt->isRenderHashed());
+}
+
+TEST_F(BaseTest, StructuralKnobsAreNotRenderHashed)
+{
+    NodePtr node = createNode(_generatorPluginID);
+    ASSERT_TRUE(bool(node));
+    KnobHolder* holder = node->getEffectInstance().get();
+
+    KnobPagePtr page = AppManager::createKnob<KnobPage>(holder, "hashPage", 1, false);
+    KnobSeparatorPtr separator = AppManager::createKnob<KnobSeparator>(holder, "hashSeparator", 1, false);
+    KnobButtonPtr button = AppManager::createKnob<KnobButton>(holder, "hashButton", 1, false);
+    ASSERT_TRUE(bool(page));
+    ASSERT_TRUE(bool(separator));
+    ASSERT_TRUE(bool(button));
+    EXPECT_FALSE(page->isRenderHashed());
+    EXPECT_FALSE(separator->isRenderHashed());
+    EXPECT_FALSE(button->isRenderHashed());
+}

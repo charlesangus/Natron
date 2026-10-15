@@ -785,7 +785,7 @@ public:
      * @brief As above, flattening each of layers into its own float Image: outputImages receives
      * one image per entry of layers, in the same order. A colour view is flattened as the colour
      * storage of its component count. Each layer is cached separately under this node's hash, so
-     * the hash purge still removes them all, and the layers that miss the cache are flattened
+     * a purge of the node removes them all, and the layers that miss the cache are flattened
      * together from a single deep render. A channel the deep stream lacks reads zero, and every
      * layer is composited with the deep "A". An entry of layers with no components gets a NULL
      * image.

@@ -4318,7 +4318,7 @@ EffectInstance::getRegionOfDefinition_public(U64 hash,
             if ( (ret != eStatusOK) && (ret != eStatusReplyDefault) ) {
                 // rod is not valid
                 //if (!isDuringStrokeCreation) {
-                _imp->actionsCache->invalidateAll(hash);
+                _imp->actionsCache->clearResults(hash);
                 _imp->actionsCache->setRoDResult( hash, time, view, mipmapLevel, RectD() );
 
                 // }
@@ -5888,8 +5888,10 @@ EffectInstance::getNearestNonIdentity(double time)
 void
 EffectInstance::onNodeHashChanged(U64 hash)
 {
-    ///Invalidate actions cache
-    _imp->actionsCache->invalidateAll(hash);
+    // A hash stands for one state, so the results stored under it stay valid and a node returning
+    // to an earlier state is served the ones it had then. A file changed on disk re-keys the node
+    // through its stamp; Reload drops the node's results itself, for changes the stamp misses.
+    _imp->actionsCache->useHash(hash);
 
     const KnobsVec & knobs = getKnobs();
     for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {

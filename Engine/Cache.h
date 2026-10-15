@@ -1600,13 +1600,6 @@ public:
     /*Restores the cache from disk.*/
     void restore(const CacheTOC & tableOfContents);
 
-
-    void removeAllEntriesWithDifferentNodeHashForHolderPublic(const CacheEntryHolder* holder,
-                                                              U64 nodeHash)
-    {
-        _cleanerThread.appendToQueue(holder->getCacheID(), nodeHash, false);
-    }
-
     void removeAllEntriesForHolderPublic(const CacheEntryHolder* holder,
                                          bool blocking)
     {

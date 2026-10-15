@@ -77,6 +77,8 @@ KnobFile::reloadFile()
     EffectInstance* effect = dynamic_cast<EffectInstance*>( getHolder() );
     if (effect) {
         effect->purgeCaches();
+        // The file may have changed in a way its stamp misses, which leaves the hash as it was.
+        effect->clearActionsCache();
         effect->clearPersistentMessage(false);
     }
     evaluateValueChange(0, getCurrentTime(), ViewIdx(0), eValueChangedReasonNatronInternalEdited);

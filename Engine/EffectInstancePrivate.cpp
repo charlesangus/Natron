@@ -25,9 +25,10 @@
 
 #include "EffectInstancePrivate.h"
 
+#include <algorithm>
 #include <cassert>
-#include <stdexcept>
 #include <sstream> // stringstream
+#include <stdexcept>
 
 #include "Engine/AppInstance.h"
 #include "Engine/Node.h"
@@ -36,6 +37,10 @@
 
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+const int kActionsCacheMinStates = 64;
+} // anonymous namespace
 
 ActionsCache::ActionsCacheInstance::ActionsCacheInstance()
     : _hash(0)
@@ -72,6 +77,8 @@ ActionsCache::getOrCreateActionCache(U64 newHash)
     }
     if ( found == _instances.end() ) {
         found = createActionCacheInternal(newHash);
+    } else {
+        _instances.splice(_instances.end(), _instances, found);
     }
     assert( found != _instances.end() );
 
@@ -94,21 +101,25 @@ ActionsCache::clearAll()
 }
 
 void
-ActionsCache::invalidateAll(U64 newHash)
+ActionsCache::useHash(U64 hash)
 {
     QMutexLocker l(&_cacheMutex);
 
-    // A content hash comes back when the node returns to an earlier state, and the node is also
-    // re-hashed without a content change when state the hash misses must be re-read (a reload),
-    // so results already stored under newHash are dropped rather than looked up first.
+    getOrCreateActionCache(hash);
+}
+
+void
+ActionsCache::clearResults(U64 hash)
+{
+    QMutexLocker l(&_cacheMutex);
+
     for (std::list<ActionsCacheInstance>::iterator it = _instances.begin(); it != _instances.end();) {
-        if (it->_hash == newHash) {
+        if (it->_hash == hash) {
             it = _instances.erase(it);
         } else {
             ++it;
         }
     }
-    createActionCacheInternal(newHash);
 }
 
 bool
@@ -457,7 +468,10 @@ EffectInstance::Implementation::Implementation(EffectInstance* publicInterface)
     , mustSyncPrivateData(false)
 {
     tlsData = std::make_shared<TLSHolder<EffectTLSData> >();
-    actionsCache = std::make_shared<ActionsCache>(appPTR->getHardwareIdealThreadCount() * 2);
+    // Enough states for a node to go back to the one it held before a slider drag or a run of
+    // undos without its action results being recomputed. The thread term keeps the room the
+    // states of concurrent renders need on many-core machines.
+    actionsCache = std::make_shared<ActionsCache>(std::max(kActionsCacheMinStates, appPTR->getHardwareIdealThreadCount() * 2));
 }
 
 EffectInstance::Implementation::Implementation(const Implementation& other)

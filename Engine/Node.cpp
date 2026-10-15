@@ -1037,14 +1037,10 @@ Node::computeHashInternal()
 
     // An age-only change still runs the change hooks: they also drop metadata and expression
     // results, which some age bumps exist to refresh. Everything keyed is keyed on the content hash.
+    // The entries made under the node's other keys are left to the caches' LRU: a content key
+    // names one state only, so they are still valid and are reused if the node returns to it.
     if (contentChanged || ageChanged) {
         _imp->effect->onNodeHashChanged(contentHash);
-    }
-    if (contentChanged && _imp->nodeCreated && !getApp()->getProject()->isProjectClosing()) {
-        // Discards, in a separate thread, the entries this node made under its other keys. A
-        // content key names one state only, so they are not stale and dropping them only costs a
-        // re-render if the node returns to that state.
-        removeAllImagesFromCacheWithMatchingIDAndDifferentKey(contentHash);
     }
 
     // Downstream hashes fold this node's in, so they are recomputed whenever either one moves.
@@ -1249,28 +1245,6 @@ Node::computeHashRecursive(std::list<Node*>& marked)
         for (NodesList::iterator it = allItems.begin(); it != allItems.end(); ++it) {
             (*it)->computeHashRecursive(marked);
         }
-    }
-}
-
-void
-Node::removeAllImagesFromCacheWithMatchingIDAndDifferentKey(U64 nodeHashKey)
-{
-    AppInstancePtr app = getApp();
-
-    if (!app) {
-        return;
-    }
-    ProjectPtr proj = app->getProject();
-
-    if ( proj->isProjectClosing() || proj->isLoadingProject() ) {
-        return;
-    }
-    appPTR->removeAllImagesFromCacheWithMatchingIDAndDifferentKey(this, nodeHashKey);
-    appPTR->removeAllImagesFromDiskCacheWithMatchingIDAndDifferentKey(this, nodeHashKey);
-    ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>( _imp->effect.get() );
-    if (isViewer) {
-        //Also remove from viewer cache
-        appPTR->removeAllTexturesFromCacheWithMatchingIDAndDifferentKey(this, nodeHashKey);
     }
 }
 

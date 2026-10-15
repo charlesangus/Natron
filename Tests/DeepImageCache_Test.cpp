@@ -97,9 +97,9 @@ private:
     std::string _id;
 };
 
-// AppManager::removeAllImagesFromCacheWithMatchingIDAndDifferentKey() queues the actual removal
-// on the cache's cleaner thread, so it is not reflected synchronously. Poll for it, bounded, so
-// the test fails (rather than hangs) if the removal never happens.
+// AppManager::removeAllCacheEntriesForHolder() without blocking queues the actual removal on the
+// cache's cleaner thread, so it is not reflected synchronously. Poll for it, bounded, so the test
+// fails (rather than hangs) if the removal never happens.
 bool
 waitUntilDeepImageAbsent(const DeepImageKey& key,
                          int timeoutMs = 5000)
@@ -279,60 +279,61 @@ TEST(DeepImageCacheTest, ClearAllCachesEmptiesAppWideDeepCache)
     EXPECT_TRUE(entryWeak.expired());
 }
 
-TEST(DeepImageCacheTest, HashChangePurgeRemovesOnlyThatNodesStaleDeepEntries)
+TEST(DeepImageCacheTest, HolderPurgeRemovesEveryStateOfThatNodeOnly)
 {
     DisableUnreachableRAMPurging noPurging;
 
     const RectI bounds(0, 0, 4, 4);
     const RenderScale scale = RenderScale::identity;
-    TestCacheHolder holderA("DeepImageCacheTest.HashChangePurge.HolderA");
-    TestCacheHolder holderB("DeepImageCacheTest.HashChangePurge.HolderB");
+    TestCacheHolder holderA("DeepImageCacheTest.HolderPurge.HolderA");
+    TestCacheHolder holderB("DeepImageCacheTest.HolderPurge.HolderB");
 
-    const U64 staleHashA = 90101;
-    const U64 freshHashA = 90102;
+    const U64 earlierHashA = 90101;
+    const U64 currentHashA = 90102;
     const U64 hashB = 90103;
 
-    DeepImageKey staleKeyA(&holderA, staleHashA, 1., ViewIdx(0), scale);
-    DeepImageKey freshKeyA(&holderA, freshHashA, 1., ViewIdx(0), scale);
+    DeepImageKey earlierKeyA(&holderA, earlierHashA, 1., ViewIdx(0), scale);
+    DeepImageKey currentKeyA(&holderA, currentHashA, 1., ViewIdx(0), scale);
     DeepImageKey keyB(&holderB, hashB, 1., ViewIdx(0), scale);
 
-    DeepImageParamsPtr paramsStaleA = std::make_shared<DeepImageParams>(bounds);
-    DeepImageParamsPtr paramsFreshA = std::make_shared<DeepImageParams>(bounds);
+    DeepImageParamsPtr paramsEarlierA = std::make_shared<DeepImageParams>(bounds);
+    DeepImageParamsPtr paramsCurrentA = std::make_shared<DeepImageParams>(bounds);
     DeepImageParamsPtr paramsB = std::make_shared<DeepImageParams>(bounds);
 
-    DeepImageCacheEntryPtr staleA, freshA, entryB;
-    ASSERT_FALSE(appPTR->getDeepImageOrCreate(staleKeyA, paramsStaleA, &staleA));
-    fillDeepImage(*staleA->getDeepImage());
-    staleA->allocateMemory();
-    staleA.reset();
+    DeepImageCacheEntryPtr earlierA, currentA, entryB;
+    ASSERT_FALSE(appPTR->getDeepImageOrCreate(earlierKeyA, paramsEarlierA, &earlierA));
+    fillDeepImage(*earlierA->getDeepImage());
+    earlierA->allocateMemory();
+    earlierA.reset();
 
-    ASSERT_FALSE(appPTR->getDeepImageOrCreate(freshKeyA, paramsFreshA, &freshA));
-    fillDeepImage(*freshA->getDeepImage());
-    freshA->allocateMemory();
-    freshA.reset();
+    ASSERT_FALSE(appPTR->getDeepImageOrCreate(currentKeyA, paramsCurrentA, &currentA));
+    fillDeepImage(*currentA->getDeepImage());
+    currentA->allocateMemory();
+    currentA.reset();
 
     ASSERT_FALSE(appPTR->getDeepImageOrCreate(keyB, paramsB, &entryB));
     fillDeepImage(*entryB->getDeepImage());
     entryB->allocateMemory();
     entryB.reset();
 
-    // Sanity check: all three are resident before the purge, so the removal checked below is a
-    // genuine transition rather than something that was already missing.
-    std::list<DeepImageCacheEntryPtr> foundStaleABefore;
-    ASSERT_TRUE(appPTR->getDeepImage(staleKeyA, &foundStaleABefore));
-    foundStaleABefore.clear();
+    // A node's entries for a state it has left stay servable next to those of its current state,
+    // for when it returns to that state. This also makes the removal checked below a genuine
+    // transition rather than something that was already missing.
+    std::list<DeepImageCacheEntryPtr> foundEarlierABefore;
+    ASSERT_TRUE(appPTR->getDeepImage(earlierKeyA, &foundEarlierABefore));
+    foundEarlierABefore.clear();
+    std::list<DeepImageCacheEntryPtr> foundCurrentABefore;
+    ASSERT_TRUE(appPTR->getDeepImage(currentKeyA, &foundCurrentABefore));
+    foundCurrentABefore.clear();
 
-    // Simulates what Node::computeHashInternal() does when a node's hash changes: entries left
-    // over from the old hash are no longer reachable and must be purged, but only for that node.
-    appPTR->removeAllImagesFromCacheWithMatchingIDAndDifferentKey(&holderA, freshHashA);
+    // What deleting a node runs: every entry of that node goes, whatever its state, and only
+    // that node's.
+    appPTR->removeAllCacheEntriesForHolder(&holderA, false);
 
-    ASSERT_TRUE(waitUntilDeepImageAbsent(staleKeyA))
-        << "holder A's stale-hash deep entry was not purged within the timeout";
-
-    std::list<DeepImageCacheEntryPtr> foundFreshA;
-    EXPECT_TRUE(appPTR->getDeepImage(freshKeyA, &foundFreshA));
-    EXPECT_FALSE(foundFreshA.empty());
-    foundFreshA.clear();
+    ASSERT_TRUE(waitUntilDeepImageAbsent(earlierKeyA))
+        << "holder A's earlier-state deep entry was not purged within the timeout";
+    ASSERT_TRUE(waitUntilDeepImageAbsent(currentKeyA))
+        << "holder A's current-state deep entry was not purged within the timeout";
 
     std::list<DeepImageCacheEntryPtr> foundB;
     EXPECT_TRUE(appPTR->getDeepImage(keyB, &foundB));
@@ -341,7 +342,6 @@ TEST(DeepImageCacheTest, HashChangePurgeRemovesOnlyThatNodesStaleDeepEntries)
 
     // Hermetic cleanup: leave the app-wide cache as we found it for whatever test runs next in
     // this binary. Blocking removal is synchronous, so no further waiting is needed.
-    appPTR->removeAllCacheEntriesForHolder(&holderA, true);
     appPTR->removeAllCacheEntriesForHolder(&holderB, true);
 }
 

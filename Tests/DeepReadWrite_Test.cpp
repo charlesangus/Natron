@@ -970,8 +970,14 @@ TEST_F(DeepReadWriteTest, LayersFollowAFileRewrittenInPlace)
     ASSERT_EQ((qint64)bytes.size(), target.write(bytes));
     target.close();
 
-    // A reload bumps the node's hash, which only clears the actions cached under the old one.
-    read->incrementKnobsAge();
+    // The actions cached for the old file stay under the old stamp's key. Dropping the stamp, as
+    // the file system watcher does, re-keys the node on the new file.
+    const U64 hashBefore = read->getHashValue();
+    KnobFile* knob = dynamic_cast<KnobFile*>(read->getKnobByName("filename").get());
+    ASSERT_TRUE(knob != NULL);
+    knob->invalidateFileStamp();
+    read->doComputeHashOnMainThread();
+    ASSERT_NE(hashBefore, read->getHashValue());
     EXPECT_EQ(strings({ "Color(1)", "AOV" }), presentLayersAt(read, 1.));
 }
 

@@ -242,6 +242,13 @@ public:
      **/
     U64 getHashValue() const;
 
+    /**
+     * @brief Hash of what the node renders: plug-in identity, render-affecting knob values,
+     * inputs' content hashes and the project's render settings. Equal state gives an equal
+     * hash whatever the node's name or age. Returns 0 if it has never been computed.
+     **/
+    U64 getContentHash() const;
+
     virtual std::string getCacheID() const OVERRIDE FINAL;
 
     /**
@@ -1697,6 +1704,8 @@ private:
      * @return True if the hash has changed, false otherwise
      **/
     bool computeHashInternal() WARN_UNUSED_RETURN;
+
+    U64 computeContentHash() const;
 
     void refreshCreatedViews(KnobI* knob, bool silent);
 

@@ -30,9 +30,17 @@
 #include <locale>
 #include <stdexcept>
 
+#include <QDateTime>
+#include <QFileInfo>
 #include <QMutex>
 
+#include <ofxhImageEffectAPI.h>
+#include <ofxhPluginCache.h>
+
+#include "Global/GitVersion.h"
+
 #include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/LibraryBinary.h"
 #include "Engine/Settings.h"
 
@@ -250,6 +258,35 @@ OFX::Host::ImageEffect::ImageEffectPlugin*
 Plugin::getOfxPlugin() const
 {
     return _ofxPlugin;
+}
+
+U64
+Plugin::getBinaryContentStamp() const
+{
+    U64 stamp = _binaryContentStamp.load(std::memory_order_acquire);
+    if (stamp != 0) {
+        return stamp;
+    }
+
+    ContentHasher h;
+    OFX::Host::PluginBinary* binary = _ofxPlugin ? _ofxPlugin->getBinary() : 0;
+    if (binary) {
+        h.appendString("ofx");
+        const std::string& path = binary->getFilePath();
+        h.appendString(path);
+        QFileInfo info(QString::fromUtf8(path.c_str()));
+        h.appendBool(info.exists());
+        h.appendI64(info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0);
+        h.appendI64(info.exists() ? info.size() : 0);
+    } else {
+        h.appendString("native");
+        h.appendString(NATRON_VERSION_STRING);
+        h.appendString(GIT_COMMIT);
+    }
+    stamp = h.finalize();
+    _binaryContentStamp.store(stamp, std::memory_order_release);
+
+    return stamp;
 }
 
 OFX::Host::ImageEffect::Descriptor*

@@ -59,6 +59,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Backdrop.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/Curve.h"
 #include "Engine/DiskCacheNode.h"
@@ -753,6 +754,14 @@ Node::getHashValue() const
     return _imp->hash.value();
 }
 
+U64
+Node::getContentHash() const
+{
+    QReadLocker l(&_imp->knobsAgeMutex);
+
+    return _imp->contentHash;
+}
+
 std::string
 Node::getCacheID() const
 {
@@ -773,9 +782,15 @@ Node::computeHashInternal()
         qDebug() << "Node::computeHash(): inputs not initialized";
     }
 
+    // Computed before taking knobsAgeMutex: knob content hashing and input reads must not run
+    // under this node's write lock.
+    const U64 contentHash = computeContentHash();
+
     U64 oldHash, newHash;
     {
         QWriteLocker l(&_imp->knobsAgeMutex);
+
+        _imp->contentHash = contentHash;
 
         oldHash = _imp->hash.value();
 
@@ -858,6 +873,99 @@ Node::computeHashInternal()
 
     return hashChanged;
 } // Node::computeHashInternal
+
+U64
+Node::computeContentHash() const
+{
+    ContentHasher h;
+
+    h.appendString(getPluginID());
+    if (_imp->plugin) {
+        h.appendI64(_imp->plugin->getMajorVersion());
+        h.appendI64(_imp->plugin->getMinorVersion());
+        h.appendU64(_imp->plugin->getBinaryContentStamp());
+    } else {
+        h.appendBool(false);
+    }
+
+    const KnobsVec& knobs = _imp->effect->getKnobs();
+    std::vector<std::pair<std::string, KnobIPtr>> hashedKnobs;
+    hashedKnobs.reserve(knobs.size());
+    bool hasExpression = false;
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        const KnobIPtr& knob = *it;
+        if (!knob) {
+            continue;
+        }
+        if (!hasExpression) {
+            for (int d = 0; d < knob->getDimension(); ++d) {
+                if (!knob->getExpression(d).empty()) {
+                    hasExpression = true;
+                    break;
+                }
+            }
+        }
+        if (knob->isRenderHashed()) {
+            hashedKnobs.push_back(std::make_pair(knob->getName(), knob));
+        }
+    }
+    std::sort(hashedKnobs.begin(), hashedKnobs.end(),
+              [](const std::pair<std::string, KnobIPtr>& a, const std::pair<std::string, KnobIPtr>& b) {
+                  return a.first < b.first;
+              });
+    h.appendU64(hashedKnobs.size());
+    for (std::size_t i = 0; i < hashedKnobs.size(); ++i) {
+        h.appendString(hashedKnobs[i].first);
+        hashedKnobs[i].second->appendContentHash(h);
+    }
+
+    // Expressions resolve thisNode/thisGroup and other nodes by name, so the same expression
+    // under another name can evaluate differently.
+    h.appendBool(hasExpression);
+    if (hasExpression) {
+        h.appendString(getFullyQualifiedName());
+    }
+
+    // Content hashes are never 0, so 0 marks an unconnected viewer input unambiguously.
+    ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>(_imp->effect.get());
+    if (isViewer) {
+        int activeInput[2];
+        isViewer->getActiveInputs(activeInput[0], activeInput[1]);
+        for (int i = 0; i < 2; ++i) {
+            h.appendI64(activeInput[i]);
+            NodePtr input = getInput(activeInput[i]);
+            h.appendU64(input ? input->getContentHash() : 0);
+        }
+    } else {
+        RotoDrawableItemPtr attachedStroke = _imp->paintStroke.lock();
+        NodePtr attachedStrokeContextNode;
+        if (attachedStroke) {
+            attachedStrokeContextNode = attachedStroke->getContext()->getNode();
+        }
+        // Unconnected inputs are skipped rather than marked: nodes such as Merge grow and keep
+        // empty input slots, which must not make an otherwise identical graph hash differently.
+        U64 connectedInputs = 0;
+        for (U32 i = 0; i < _imp->inputs.size(); ++i) {
+            NodePtr input = getInput(i);
+            if (!input) {
+                continue;
+            }
+            // The RotoPaint node is connected to the internal nodes of its paint tree; hashing
+            // it would make every stroke node change with it.
+            if (attachedStroke && (input == attachedStrokeContextNode)) {
+                continue;
+            }
+            h.appendI64(i);
+            h.appendU64(input->getContentHash());
+            ++connectedInputs;
+        }
+        h.appendU64(connectedInputs);
+    }
+
+    h.appendU64(getApp()->getProject()->getContentDigest());
+
+    return h.finalize();
+} // Node::computeContentHash
 
 void
 Node::computeHashRecursive(std::list<Node*>& marked)

@@ -190,6 +190,7 @@ public:
         , renderInstancesSharedMutex()
         , knobsAge(0)
         , knobsAgeMutex()
+        , contentHash(0)
         , masterNodeMutex()
         , masterNode()
         , nodeLinks()
@@ -373,8 +374,9 @@ public:
     QMutex renderInstancesSharedMutex; //< see eRenderSafetyInstanceSafe in EffectInstance::renderRoI
     //only 1 clone can render at any time
     U64 knobsAge; //< the age of the knobs in this effect. It gets incremented every times the effect has its evaluate() function called.
-    mutable QReadWriteLock knobsAgeMutex; //< protects knobsAge and hash
+    mutable QReadWriteLock knobsAgeMutex; //< protects knobsAge, hash and contentHash
     Hash64 hash; //< recomputed every time knobsAge is changed.
+    U64 contentHash; //< recomputed with hash; 0 until first computed
     mutable QMutex masterNodeMutex; //< protects masterNode and nodeLinks
     NodeWPtr masterNode; //< this points to the master when the node is a clone
     KnobLinkList nodeLinks; //< these point to the parents of the params links

@@ -78,6 +78,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/FormatSerialization.h"
@@ -2925,6 +2926,55 @@ Project::getProjectCreationTime() const
     QMutexLocker l(&_imp->projectLock);
 
     return _imp->projectCreationTime.toMSecsSinceEpoch();
+}
+
+U64
+Project::getContentDigest() const
+{
+    ContentHasher h;
+
+    Format format;
+    getProjectDefaultFormat(&format);
+    h.appendI64(format.x1);
+    h.appendI64(format.y1);
+    h.appendI64(format.x2);
+    h.appendI64(format.y2);
+    h.appendDouble(format.getPixelAspectRatio());
+
+    h.appendDouble(getProjectFrameRate());
+    double first = 0., last = 0.;
+    getFrameRange(&first, &last);
+    h.appendDouble(first);
+    h.appendDouble(last);
+
+    const std::vector<std::string>& views = getProjectViewNames();
+    h.appendU64(views.size());
+    for (std::size_t i = 0; i < views.size(); ++i) {
+        h.appendString(views[i]);
+    }
+
+    h.appendString(getOCIOConfigSource());
+    h.appendString(getWorkingColorSpace());
+
+    std::shared_ptr<const std::vector<LayerRegistryEntry>> layers = getLayerRegistrySnapshot();
+    h.appendU64(layers ? layers->size() : 0);
+    if (layers) {
+        for (std::vector<LayerRegistryEntry>::const_iterator it = layers->begin(); it != layers->end(); ++it) {
+            h.appendString(it->desc.getLayerID());
+            h.appendString(it->desc.getLayerLabel());
+            const std::vector<std::string>& channels = it->desc.getChannels();
+            h.appendU64(channels.size());
+            for (std::size_t c = 0; c < channels.size(); ++c) {
+                h.appendString(channels[c]);
+            }
+        }
+    }
+
+    SettingsPtr settings = appPTR->getCurrentSettings();
+    h.appendBool(settings->isTransformConcatenationEnabled());
+    h.appendBool(isGPURenderingEnabledInProject());
+
+    return h.finalize();
 }
 
 // Functions to escape / unescape characters from UTF-8 XML strings.

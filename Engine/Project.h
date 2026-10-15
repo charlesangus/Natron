@@ -213,6 +213,13 @@ public:
     qint64 getProjectCreationTime() const;
 
     /**
+     * @brief Hash of the project settings that change what nodes render: output format,
+     * frame rate and range, views, OpenColorIO config and working space, layer registry and
+     * render-affecting preferences. Computed on each call, never 0.
+     **/
+    U64 getContentDigest() const;
+
+    /**
      * @brief The OpenColorIO config the project actually uses: an "ocio://" URI or an absolute
      * path. After a failed load this is the config still in use, not the requested one.
      **/

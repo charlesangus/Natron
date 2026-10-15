@@ -108,12 +108,14 @@ typedef std::map<ActionKey, ComponentsNeededResults, CompareActionsCacheKeys> Co
 
 /**
  * @brief This class stores all results of the following actions:
-   - getRegionOfDefinition (invalidated on hash change, mapped across time + scale)
-   - getTimeDomain (invalidated on hash change, only 1 value possible
-   - isIdentity (invalidated on hash change,mapped across time + scale)
+   - getRegionOfDefinition (stored per node hash, mapped across time + scale)
+   - getTimeDomain (stored per node hash, only 1 value possible
+   - isIdentity (stored per node hash,mapped across time + scale)
  * The reason we store them is that the OFX Clip API can potentially call these actions recursively
  * but this is forbidden by the spec:
  * http://openfx.sourceforge.net/Documentation/1.3/ofxProgrammingReference.html#id475585
+ * A hash names one state of the node, so the results of the states it held recently are kept, up
+ * to a fixed count, and served again when it returns to one of them.
  **/
 class ActionsCache
 {
@@ -122,7 +124,16 @@ public:
 
     void clearAll();
 
-    void invalidateAll(U64 newHash);
+    /**
+     * @brief Makes the results stored under hash the last to be evicted, starting an empty set
+     * for it if there is none. The results already stored are kept.
+     **/
+    void useHash(U64 hash);
+
+    /**
+     * @brief Drops the results stored under hash, leaving those of other hashes.
+     **/
+    void clearResults(U64 hash);
 
     bool getIdentityResult(U64 hash, double time, ViewIdx view, int* inputNbIdentity, ViewIdx *inputView, double* identityTime);
 
@@ -165,7 +176,7 @@ private:
         ActionsCacheInstance();
     };
 
-    //In  a list to track the LRU
+    // Least recently used first.
     std::list<ActionsCacheInstance> _instances;
     std::size_t _maxInstances;
     std::list<ActionsCacheInstance>::iterator createActionCacheInternal(U64 newHash);

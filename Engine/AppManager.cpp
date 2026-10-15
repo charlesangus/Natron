@@ -2466,28 +2466,6 @@ AppManager::getMemoryStatsForCacheEntryHolder(const CacheEntryHolder* holder,
 }
 
 void
-AppManager::removeAllImagesFromCacheWithMatchingIDAndDifferentKey(const CacheEntryHolder* holder,
-                                                                  U64 treeVersion)
-{
-    _imp->_nodeCache->removeAllEntriesWithDifferentNodeHashForHolderPublic(holder, treeVersion);
-    _imp->_deepImageCache->removeAllEntriesWithDifferentNodeHashForHolderPublic(holder, treeVersion);
-}
-
-void
-AppManager::removeAllImagesFromDiskCacheWithMatchingIDAndDifferentKey(const CacheEntryHolder* holder,
-                                                                      U64 treeVersion)
-{
-    _imp->_diskCache->removeAllEntriesWithDifferentNodeHashForHolderPublic(holder, treeVersion);
-}
-
-void
-AppManager::removeAllTexturesFromCacheWithMatchingIDAndDifferentKey(const CacheEntryHolder* holder,
-                                                                    U64 treeVersion)
-{
-    _imp->_viewerCache->removeAllEntriesWithDifferentNodeHashForHolderPublic(holder, treeVersion);
-}
-
-void
 AppManager::removeAllCacheEntriesForHolder(const CacheEntryHolder* holder,
                                            bool blocking)
 {

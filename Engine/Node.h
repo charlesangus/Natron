@@ -1524,7 +1524,6 @@ public:
 
     double getHostMixingValue(double time, ViewIdx view) const;
 
-    void removeAllImagesFromCacheWithMatchingIDAndDifferentKey(U64 nodeHashKey);
     void removeAllImagesFromCache(bool blocking);
 
     bool isDraftModeUsed() const;

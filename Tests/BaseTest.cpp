@@ -60,6 +60,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
+#include "CacheMemoryPressureGuard.h"
 #include "CountingTestEffect.h"
 #include "RenderBothWays.h"
 
@@ -521,6 +522,72 @@ TEST_F(BaseTest, IdenticalNodesShareOneCacheEntry)
     EXPECT_EQ(1, CountingTestRegistry::renders(first) + CountingTestRegistry::renders(second))
         << "first rendered " << CountingTestRegistry::renders(first) << " times, second " << CountingTestRegistry::renders(second);
     EXPECT_EQ(1, CountingTestRegistry::renders(merge));
+
+    CountingTestRegistry::reset();
+    appPTR->clearAllCaches();
+    getApp()->getProject()->reset(false, true);
+}
+
+/// A node's results are keyed by its state, so leaving a state does not drop them:
+/// going back to it is served from the image cache and the actions cache, with
+/// neither a render nor a region of definition call on the node.
+TEST_F(BaseTest, ReturningToAnEarlierStateReusesItsCachedResults)
+{
+    DisableUnreachableRAMPurging noPurging;
+    getApp()->getProject()->reset(false, true);
+    appPTR->clearAllCaches();
+    CountingTestRegistry::reset();
+
+    NodePtr leaf = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    NodePtr root = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(leaf && root);
+    KnobDouble* leafValue = dynamic_cast<KnobDouble*>(leaf->getKnobByName("value").get());
+    KnobBool* leafCacheOutput = dynamic_cast<KnobBool*>(leaf->getKnobByName("cacheOutput").get());
+    KnobDouble* rootValue = dynamic_cast<KnobDouble*>(root->getKnobByName("value").get());
+    ASSERT_TRUE(leafValue && leafCacheOutput && rootValue);
+    leafCacheOutput->setValue(true);
+    leafValue->setValue(1.);
+    rootValue->setValue(0.);
+    connectNodes(leaf, root, 0, true);
+
+    // The root passes the leaf's value through; the root itself is never cached by this render.
+    const RectI window(0, 0, kCountingTestSize, kCountingTestSize);
+    const auto renderRoot = [&](float* out) {
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        ASSERT_TRUE(renderNodePlanesDirect(root, 1., ViewIdx(0), 0, window,
+                                           std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error))
+            << error;
+        ASSERT_EQ(1u, planes.size());
+        ASSERT_FALSE(planes[0].pixels.empty());
+        *out = planes[0].pixels[0];
+    };
+
+    const U64 firstHash = leaf->getHashValue();
+    float corner = 0.f;
+    CountingTestRegistry::reset();
+    renderRoot(&corner);
+    EXPECT_FLOAT_EQ(1.f, corner);
+    EXPECT_EQ(1, CountingTestRegistry::renders(leaf));
+
+    // Counted from before the edit, so that a region of definition worked out while the edit is
+    // handled counts too.
+    CountingTestRegistry::reset();
+    leafValue->setValue(2.);
+    ASSERT_NE(firstHash, leaf->getHashValue());
+    renderRoot(&corner);
+    EXPECT_FLOAT_EQ(2.f, corner);
+    EXPECT_EQ(1, CountingTestRegistry::renders(leaf)) << "a new state was served another state's image";
+    EXPECT_GT(CountingTestRegistry::regionOfDefinitionCalls(leaf), 0) << "a new state was served another state's region of definition";
+
+    CountingTestRegistry::reset();
+    leafValue->setValue(1.);
+    ASSERT_EQ(firstHash, leaf->getHashValue());
+    renderRoot(&corner);
+    EXPECT_FLOAT_EQ(1.f, corner);
+    EXPECT_EQ(0, CountingTestRegistry::renders(leaf)) << "the image of the earlier state was not reused";
+    EXPECT_EQ(0, CountingTestRegistry::regionOfDefinitionCalls(leaf)) << "the actions of the earlier state were not reused";
+    EXPECT_EQ(1, CountingTestRegistry::renders(root));
 
     CountingTestRegistry::reset();
     appPTR->clearAllCaches();

@@ -837,22 +837,33 @@ TEST_F(DeepRenderPipelineTest, AbortDuringFlattenLeavesNothingCached)
     expectFlattenedImageMatchesSource(complete, roi);
 }
 
-TEST_F(DeepRenderPipelineTest, FlattenCacheInvalidatesWhenTheDeepNodesHashChanges)
+TEST_F(DeepRenderPipelineTest, FlattenCacheFollowsTheDeepNodesState)
 {
     const RectI roi(0, 0, kDeepRenderTestWidth, kDeepRenderTestHeight);
+
+    // The source has no parameter of its own. One it never reads still takes part in its hash,
+    // which is all the cache keys on.
+    KnobDoublePtr variant = AppManager::createKnob<KnobDouble>(_source->getEffectInstance().get(), std::string("variant"), 1, false);
+    ASSERT_TRUE(variant != NULL);
+    variant->setValue(1.);
     const U64 firstHash = _source->getHashValue();
 
     ImagePtr first;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderFlattenedFrame(_source, 1., roi, &first));
     ASSERT_TRUE(first != NULL);
     EXPECT_EQ(1, deepRenderTestSourceRenderCount().load());
-
-    // The entry is keyed on the deep node's own hash. That is what makes the purge
-    // Node::computeHashInternal() fires on any hash change land on exactly these entries, so it
-    // is the property to assert, not just the re-render it produces below.
     EXPECT_EQ(firstHash, first->getKey().getTreeVersion());
 
-    _source->incrementKnobsAge();
+    // Only a cache hit leaves this in place: a flatten would write over it.
+    const float sentinel = -1234.5f;
+    {
+        Image::WriteAccess access = first->getWriteRights();
+        float* pixel = (float*)access.pixelAt(2, 3);
+        ASSERT_TRUE(pixel != NULL);
+        pixel[0] = sentinel;
+    }
+
+    variant->setValue(2.);
     const U64 secondHash = _source->getHashValue();
     ASSERT_NE(firstHash, secondHash);
 
@@ -863,6 +874,34 @@ TEST_F(DeepRenderPipelineTest, FlattenCacheInvalidatesWhenTheDeepNodesHashChange
     EXPECT_EQ(secondHash, second->getKey().getTreeVersion());
     EXPECT_EQ(2, deepRenderTestSourceRenderCount().load());
     expectFlattenedImageMatchesSource(second, roi);
+
+    // Back in the first state, the entry made in it is served again.
+    variant->setValue(1.);
+    ASSERT_EQ(firstHash, _source->getHashValue());
+
+    ImagePtr third;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderFlattenedFrame(_source, 1., roi, &third));
+    ASSERT_TRUE(third != NULL);
+    EXPECT_EQ(first.get(), third.get());
+    EXPECT_EQ(2, deepRenderTestSourceRenderCount().load());
+    {
+        Image::ReadAccess access = third->getReadRights();
+        const float* pixel = (const float*)access.pixelAt(2, 3);
+        ASSERT_TRUE(pixel != NULL);
+        EXPECT_FLOAT_EQ(sentinel, pixel[0]);
+    }
+
+    // An explicit purge of the node still drops what it cached, whatever the state.
+    first.reset();
+    second.reset();
+    third.reset();
+    _source->removeAllImagesFromCache(true);
+
+    ImagePtr purged;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderFlattenedFrame(_source, 1., roi, &purged));
+    ASSERT_TRUE(purged != NULL);
+    EXPECT_EQ(3, deepRenderTestSourceRenderCount().load());
+    expectFlattenedImageMatchesSource(purged, roi);
 }
 
 namespace {
@@ -992,8 +1031,8 @@ readSentinel(const ImagePtr& image)
     return pixel ? pixel[0] : 0.f;
 }
 
-// The hash purge runs on the cache's cleaner thread, so poll for it, bounded, so the test fails
-// rather than hangs if it never happens.
+// A purge that does not block runs on the cache's cleaner thread, so poll for it, bounded, so the
+// test fails rather than hangs if it never happens.
 bool
 waitUntilFlattenedImagesAbsent(const ImageKey& key,
                                int timeoutMs = 5000)
@@ -1184,7 +1223,7 @@ TEST_F(DeepFlattenLayersTest, EachLayerKeepsItsOwnCacheEntry)
     EXPECT_EQ(4, (int)rgba->getComponentsCount());
     writeSentinel(rgba, -2.f);
 
-    // Both entries live under one key, the node's hash, which is what keeps the hash purge exact.
+    // Both entries live under one key, the node's hash, so a return to this state finds both.
     EXPECT_TRUE(diffuse->getKey() == rgba->getKey());
     std::list<ImagePtr> cached;
     ASSERT_TRUE(appPTR->getImage(diffuse->getKey(), &cached));
@@ -1260,21 +1299,65 @@ TEST_F(DeepFlattenLayersTest, LayersSharingAnIdAndWidthButNotChannelsAreFlattene
     EXPECT_EQ(rgb.get(), fromCache.get());
 }
 
-TEST_F(DeepFlattenLayersTest, AHashChangePurgesEveryLayer)
+TEST_F(DeepFlattenLayersTest, EveryLayerFollowsTheStateAndAPurgeDropsThemAll)
 {
     NodePtr source = createLayeredSource();
     ASSERT_TRUE(source != NULL);
+    KnobInt* slot = dynamic_cast<KnobInt*>(source->getKnobByName("slot").get());
+    ASSERT_TRUE(slot != NULL);
+    const int firstSlot = slot->getValue();
+
+    std::vector<std::string> channels;
+    channels.push_back("R");
+    channels.push_back("G");
+    channels.push_back("B");
+    channels.push_back("A");
+    channels.push_back("diffuse.R");
+    channels.push_back("diffuse.G");
+    channels.push_back("diffuse.B");
+    const int otherSlot = _nextSlot++;
+    deepSyntheticSourceImages()[otherSlot] = makeLayeredFlattenImage(channels);
+    std::vector<std::string> diffuseChannels;
+    diffuseChannels.push_back("diffuse.R");
+    diffuseChannels.push_back("diffuse.G");
+    diffuseChannels.push_back("diffuse.B");
 
     const ImagePtr diffuse = renderFlattenedLayer(source, diffuseLayer());
     const ImagePtr rgba = renderFlattenedLayer(source, ImageLayerDesc::getRGBAComponents());
     ASSERT_TRUE(diffuse != NULL);
     ASSERT_TRUE(rgba != NULL);
-    const ImageKey oldKey = diffuse->getKey();
-    EXPECT_EQ(source->getHashValue(), oldKey.getTreeVersion());
+    writeSentinel(diffuse, -1.f);
+    writeSentinel(rgba, -2.f);
+    const ImageKey firstKey = diffuse->getKey();
+    EXPECT_EQ(source->getHashValue(), firstKey.getTreeVersion());
 
-    source->incrementKnobsAge();
-    ASSERT_NE(oldKey.getTreeVersion(), source->getHashValue());
-    EXPECT_TRUE(waitUntilFlattenedImagesAbsent(oldKey));
+    // Another state is another key, flattened afresh.
+    slot->setValue(otherSlot);
+    ASSERT_NE(firstKey.getTreeVersion(), source->getHashValue());
+    const ImagePtr diffuseOther = renderFlattenedLayer(source, diffuseLayer());
+    const ImagePtr rgbaOther = renderFlattenedLayer(source, ImageLayerDesc::getRGBAComponents());
+    ASSERT_TRUE(diffuseOther != NULL);
+    ASSERT_TRUE(rgbaOther != NULL);
+    EXPECT_NE(diffuse.get(), diffuseOther.get());
+    EXPECT_NE(rgba.get(), rgbaOther.get());
+    EXPECT_EQ(source->getHashValue(), diffuseOther->getKey().getTreeVersion());
+    expectLayeredFlatten(diffuseOther, diffuseChannels);
+    const ImageKey otherKey = diffuseOther->getKey();
+
+    // Back in the first state, every layer cached in it is served again.
+    slot->setValue(firstSlot);
+    ASSERT_EQ(firstKey.getTreeVersion(), source->getHashValue());
+    const ImagePtr diffuseBack = renderFlattenedLayer(source, diffuseLayer());
+    const ImagePtr rgbaBack = renderFlattenedLayer(source, ImageLayerDesc::getRGBAComponents());
+    EXPECT_EQ(diffuse.get(), diffuseBack.get());
+    EXPECT_EQ(rgba.get(), rgbaBack.get());
+    EXPECT_FLOAT_EQ(-1.f, readSentinel(diffuseBack));
+    EXPECT_FLOAT_EQ(-2.f, readSentinel(rgbaBack));
+
+    // A purge of the node, as deleting it runs, drops every layer of every state.
+    source->removeAllImagesFromCache(false);
+    EXPECT_TRUE(waitUntilFlattenedImagesAbsent(firstKey));
+    EXPECT_TRUE(waitUntilFlattenedImagesAbsent(otherKey));
 
     const ImagePtr diffuseAfter = renderFlattenedLayer(source, diffuseLayer());
     const ImagePtr rgbaAfter = renderFlattenedLayer(source, ImageLayerDesc::getRGBAComponents());
@@ -1283,6 +1366,7 @@ TEST_F(DeepFlattenLayersTest, AHashChangePurgesEveryLayer)
     EXPECT_NE(diffuse.get(), diffuseAfter.get());
     EXPECT_NE(rgba.get(), rgbaAfter.get());
     EXPECT_EQ(source->getHashValue(), diffuseAfter->getKey().getTreeVersion());
+    expectLayeredFlatten(diffuseAfter, diffuseChannels);
 }
 
 TEST_F(DeepFlattenLayersTest, AlphaDisplayOnAnAlphaOnlySourceShowsItsAlpha)

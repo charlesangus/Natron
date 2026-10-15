@@ -596,9 +596,9 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
 
     EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
     // No fallback frame args here, deliberately, unlike renderDeepRoI(): the hash this keys the
-    // flattened Image with must be the one the scheduler assigned this node, because that is the
-    // hash Node::computeHashInternal()'s purge compares against. A hash invented here instead
-    // would be outside the purge's reach and the entry would never be invalidated.
+    // flattened Image with must be the one the scheduler assigned this node, the content hash of
+    // the state being rendered. A hash read here instead could name a state the node has moved
+    // to since, and the entry would then be served for a state it was not rendered in.
     assert(tls && !tls->frameArgs.empty());
     if (!tls || tls->frameArgs.empty()) {
         return eRenderRoIRetCodeFailed;
@@ -655,7 +655,7 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
 
     // An effect whose output kind is eDataKindDeep never produces Cache<Image> entries of its own
     // -- its renders live in the deep cache under DeepImageKey -- so this node's hash identifies
-    // the flattened layers and nothing else, and the purge fired on any hash change is exact.
+    // the flattened layers and nothing else, and a purge of the node reaches all of them.
     // Every layer shares this key; ImageParams' components keep their entries apart.
     const ImageKey key(getNode().get(),
                        nodeHash,

@@ -263,14 +263,6 @@ public:
 
     void removeFromNodeCache(U64 hash);
     void removeFromViewerCache(U64 hash);
-    /**
-     * @brief Given the following tree version, removes all images from the node cache with a matching
-     * tree version. This is useful to wipe the cache for one particular node.
-     **/
-    void  removeAllImagesFromCacheWithMatchingIDAndDifferentKey(const CacheEntryHolder* holder, U64 treeVersion);
-    void  removeAllImagesFromDiskCacheWithMatchingIDAndDifferentKey(const CacheEntryHolder* holder, U64 treeVersion);
-    void  removeAllTexturesFromCacheWithMatchingIDAndDifferentKey(const CacheEntryHolder* holder, U64 treeVersion);
-
     void removeAllCacheEntriesForHolder(const CacheEntryHolder* holder, bool blocking);
 
     SettingsPtr getCurrentSettings() const WARN_UNUSED_RETURN;

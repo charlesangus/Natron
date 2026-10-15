@@ -786,21 +786,48 @@ struct HashAudit {
     std::map<const Node*, HashAuditNodeState> nodes;
     std::set<std::string> logged;
     std::map<std::string, unsigned long> reuse;
-
-    ~HashAudit()
-    {
-        for (std::map<std::string, unsigned long>::const_iterator it = reuse.begin(); it != reuse.end(); ++it) {
-            fprintf(stderr, "NATRON_HASH_AUDIT: reuse-opportunity plugin=%s count=%lu\n", it->first.c_str(), it->second);
-        }
-    }
 };
+
+HashAudit* hashAuditInstance();
+
+void
+printHashAuditReport()
+{
+    HashAudit* audit = hashAuditInstance();
+    std::lock_guard<std::mutex> g(audit->mutex);
+
+    for (std::map<std::string, unsigned long>::const_iterator it = audit->reuse.begin(); it != audit->reuse.end(); ++it) {
+        fprintf(stderr, "NATRON_HASH_AUDIT: reuse-opportunity plugin=%s count=%lu\n", it->first.c_str(), it->second);
+    }
+}
+
+// Deliberately leaked: nodes can still be destroyed (and erase their entry) during static
+// destruction, after a function-local static audit would already be gone.
+HashAudit*
+hashAuditInstance()
+{
+    static HashAudit* audit = []() {
+        HashAudit* a = new HashAudit;
+        std::atexit(printHashAuditReport);
+        return a;
+    }();
+
+    return audit;
+}
 
 HashAudit&
 hashAudit()
 {
-    static HashAudit audit;
+    return *hashAuditInstance();
+}
 
-    return audit;
+void
+forgetHashAuditNode(const Node* node)
+{
+    HashAudit& audit = hashAudit();
+    std::lock_guard<std::mutex> g(audit.mutex);
+
+    audit.nodes.erase(node);
 }
 } // anonymous namespace
 
@@ -818,6 +845,12 @@ Node::noteHashAuditCause(const std::string& cause)
     if (!isHashAuditEnabled()) {
         return;
     }
+    {
+        QMutexLocker k(&_imp->isBeingDestroyedMutex);
+        if (_imp->isBeingDestroyed) {
+            return;
+        }
+    }
     HashAudit& audit = hashAudit();
     std::lock_guard<std::mutex> g(audit.mutex);
     audit.nodes[this].pendingCause = cause;
@@ -827,6 +860,12 @@ void
 Node::auditHashTransition(U64 ageHash,
                           U64 contentHash)
 {
+    {
+        QMutexLocker k(&_imp->isBeingDestroyedMutex);
+        if (_imp->isBeingDestroyed) {
+            return;
+        }
+    }
     HashAudit& audit = hashAudit();
     std::string pluginID = getPluginID();
     std::string scriptName = getScriptName();
@@ -2053,6 +2092,11 @@ Node::~Node()
 
     QMutexLocker k(&channelSelectorOwnersMutex);
     channelSelectorOwners.erase(this);
+
+    // The audit is keyed by address; a later node allocated here must not inherit this state.
+    if (isHashAuditEnabled()) {
+        forgetHashAuditNode(this);
+    }
 }
 
 

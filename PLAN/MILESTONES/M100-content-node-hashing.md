@@ -167,19 +167,19 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - approach: apply the same replacement (AddLayers.cpp:404, DeepAddLayers.cpp:376, NodeGraphPrivate10.cpp:257, MultiInstancePanel.cpp:1612), and delete the bump that forces paste and clone to hash differently. Tests that bump or read the age switch to markHashDirty/getHashValue.
   - verify: `grep incrementKnobsAge` finds nothing; ctest passes
   - size: M
-- [ ] M100.P5.T3 — Stop reading KnobsAge on load
+- [x] M100.P5.T3 — Stop reading KnobsAge on load
   - files: Engine/Node.cpp (:1458 setKnobsAge on load), Engine/ProjectSerializationConvert.cpp (:158 save), Serialization/NodeSerialization.h (:101), Serialization/BoostXml/NodeXml.h (:127, :219)
   - approach: ignore the field on load and write 0; keep the struct field and XML I/O so the format is unchanged. M16 - Project Format Redesign deletes it.
   - verify: the M93 golden harness is unchanged; load → save → load gives an identical hash
   - size: M
 
 ## Phase 100.6: Invariant tests and cost
-- [ ] M100.P6.T1 — Add a hash-invariant and regression suite
+- [x] M100.P6.T1 — Add a hash-invariant and regression suite
   - files: Tests/HashInvariants_Test.cpp, Tests/CMakeLists.txt
   - approach: the same state gives the same hash (fresh build, save/load, a second app instance); every edit changes it; undo restores it; topology changes and file touches change it; label and position changes don't. Add regressions for Notes bugs 1, 2 and 4.
   - verify: `ctest -R HashInvariants`
   - size: M
-- [ ] M100.P6.T2 — Add a plugin sweep: every render-hashed knob of every bundled plugin changes the hash
+- [x] M100.P6.T2 — Add a plugin sweep: every render-hashed knob of every bundled plugin changes the hash
   - files: Tests/HashPluginSweep_Test.cpp, Tests/CMakeLists.txt, Tests/hash_exempt_allowlist.txt
   - approach: create each plugin from appPTR's list. For each isRenderHashed knob, perturb it by type, assert the hash changed, revert, and assert it is restored. The allowlist explains every exemption.
   - verify: ctest passes with the OFX bundle
@@ -298,3 +298,4 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
     - the `NatronParamFormatSize`/`Par` knobs on 16 generators.
     
     P4.T3's dirty flag must catch every value change of a render-hashed knob, not only significant evaluates.
+- 2026-10-15 — **Green at 14616cb12** (run 38718037290): 2236/2236 in both schedulers. P5.T3 b0387543c; P6.T1 (13efd16f0, 13e7437f6; the bug-4 off-thread regression is deferred to P4.T3); P6.T2 (2780a6476, 14616cb12; zero failures, 12 allowlisted host mirrors). P6.T3's bench tool is 92-ish (`tools/bench/hash_bench.py`, plus `Effect.getContentHash()`); the run is pending a release AppImage.

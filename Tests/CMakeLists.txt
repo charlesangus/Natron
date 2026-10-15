@@ -59,6 +59,7 @@ set(Tests_SOURCES
     GraphScalingNaming_Test.cpp
     GraphScalingTLS_Test.cpp
     Hash64_Test.cpp
+    HashInvariants_Test.cpp
     Image_Test.cpp
     KnobChannelSet_Test.cpp
     KnobFile_Test.cpp

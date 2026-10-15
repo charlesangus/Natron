@@ -173,6 +173,7 @@
 #include "Engine/Nodes/Metadata/CopyMetadata.h"
 #include "Engine/Nodes/Metadata/ModifyMetadata.h"
 #include "Engine/Nodes/Metadata/RemoveMetadata.h"
+#include "Engine/Nodes/Metadata/ViewMetadata.h"
 #include "Engine/Nodes/MissingPluginNode.h"
 #include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Nodes/Transform/Position.h"
@@ -1620,6 +1621,7 @@ AppManager::loadBuiltinNodePlugins()
     registerBuiltInPlugin<ModifyMetadata>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<CopyMetadata>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<RemoveMetadata>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<ViewMetadata>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<DeepRead>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<DeepWrite>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<DeepMerge>(QString::fromUtf8(""), false, false);

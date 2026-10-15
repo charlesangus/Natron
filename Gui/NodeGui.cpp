@@ -139,6 +139,13 @@ using std::make_pair;
 #endif
 
 static const qreal kDisabledCrossPenWidth = 2.;
+static const qreal kMissingPluginOutlineWidth = 2.;
+
+static QColor
+persistentErrorColor()
+{
+    return QColor(128, 0, 0, 255);
+}
 
 // A wide stroke ending on the box's corners would stick out of the box: pull each end in along
 // the diagonal until both corners of its flat cap sit inside the box.
@@ -753,6 +760,11 @@ NodeGui::createGui()
     int cornerRadiusPx = 0;
     _boundingBox = new NodeGraphRectItem(this, cornerRadiusPx);
     _boundingBox->setZValue(depth);
+    if (node->getPluginID() == PLUGINID_NATRON_MISSING_PLUGIN) {
+        QPen outline(persistentErrorColor(), TO_DPIX(kMissingPluginOutlineWidth), Qt::DashLine);
+        outline.setJoinStyle(Qt::MiterJoin);
+        _boundingBox->setPen(outline);
+    }
 
     _userColorBorder = new NodeGraphRectItem(this, cornerRadiusPx);
     _userColorBorder->setZValue(depth + 1.5);
@@ -2477,8 +2489,7 @@ NodeGui::onPersistentMessageChanged()
     } else if ((type == 1) || (type == 2)) {
         if (type == 1) {
             _persistentMessage->setText( tr("ERROR") );
-            QColor errColor(128, 0, 0, 255);
-            _persistentMessage->setBrush(errColor);
+            _persistentMessage->setBrush(persistentErrorColor());
         } else {
             _persistentMessage->setText( tr("WARNING") );
             QColor warColor(180, 180, 0, 255);

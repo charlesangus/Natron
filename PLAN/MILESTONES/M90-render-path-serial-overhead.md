@@ -72,7 +72,7 @@ All of this phase runs now. It touches neither `Blur.cpp` nor `NativeImageEffect
   - verify: a Decisions entry with per-task ms/Mpx per case and mode, the per-function split of the serial time, and the bare-kernel ratios. P3.T2 reuses these as its "before" numbers.
   - size: M
 
-- [ ] M90.P1.T2 — Factor out a shared row-band helper and band `Image::pasteFromForDepth`
+- [x] M90.P1.T2 — Factor out a shared row-band helper and band `Image::pasteFromForDepth`
   - files: `Engine/PoolParallelFor.h`, `Engine/ImageCopyChannels.cpp`, `Engine/Image.cpp`, `Tests/ImagePasteBands_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - Move `forEachCopyUnProcessedRowBand` (`ImageCopyChannels.cpp:152-176`, anonymous namespace) into `PoolParallelFor.h` as a general `forEachRowBand(const RectI&, qint64 minArea, const std::function<void(int y1, int y2)>&)`. It keeps the band sizing on `appPTR->getNCPUsAvailableForEffect()` and the `kMinParallelCopyUnProcessedArea`-style threshold, and dispatches through `parallelForOnGlobalPool`. Switch `ImageCopyChannels.cpp` over to it with no change in behaviour.
@@ -84,7 +84,7 @@ All of this phase runs now. It touches neither `Blur.cpp` nor `NativeImageEffect
     - `ImageCopyUnProcessedChannelsTest.*` in `Tests/Image_Test.cpp` still passes.
   - size: M
 
-- [ ] M90.P1.T3 — Band `Image::checkForNaNsAndFix` and `checkForNaNsNoLock`
+- [x] M90.P1.T3 — Band `Image::checkForNaNsAndFix` and `checkForNaNsNoLock`
   - files: `Engine/Image.cpp`, `Tests/ImageNaNBands_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - In `checkForNaNsAndFix` (`Image.cpp:2085`), keep the write lock on the caller and run the row scan through `forEachRowBand` from P1.T2. Each band writes its own `hasnan` flag, and the flags are ORed after the join.
@@ -96,7 +96,7 @@ All of this phase runs now. It touches neither `Blur.cpp` nor `NativeImageEffect
     - `Tests/Native/NativeNaNWarning_Test.cpp` passes.
   - size: M
 
-- [ ] M90.P1.T4 — Remove the serial `renderRoI` residue that P1.T1 attributes to image and bitmap setup
+- [x] M90.P1.T4 — Remove the serial `renderRoI` residue that P1.T1 attributes to image and bitmap setup
   - files: `Engine/Image.h` (`Bitmap`), `Engine/Image.cpp`, `Tests/Image_Test.cpp` (the `BitmapTest` cases), plus at most one more `Engine/Image*.cpp` named by P1.T1
   - approach:
     - Always: `Bitmap::initialize` (`Image.h:91-97`) zeroes the map twice, once in `_map.resize()` and again in `std::fill`. Zero it once.
@@ -205,3 +205,4 @@ This phase starts only after M85 - Native GPU Kernels has merged into `main`. M8
 - 2026-10-14 — **P1.T1 baseline (4-thread Intel N100, base AppImage `e93abc91` run inside natron-dev, UHD, 3-repeat medians; taskgraph per-task ms/Mpx, frame 0 dropped).** Grade chain: Grade 15.5. Blur FIR σ3 33.7, σ25 132.3, σ100 414.9; IIR 71.3. readchain: Read 23.7, Grade 15.3. Legacy wall (no per-task profile in legacy): chain 403 ms, fir3 706, fir25 1538, fir100 3888, iir 1009, read 738. IIR scales ~linearly from the 16-thread figure (71 vs 19); Grade doesn't (15.5 vs 9.4), consistent with a serial residue. No bare-kernel bench here (`CpuTwinBench` needs building). **Serial split** (eu-stack, legacy, symbolised but older M83-era NatronRenderer, so indicative only; thread-samples, which understate serial wall share): Grade: paste 46%, `checkForNaNsAndFix` 35%, kernel 19%. Blur FIR σ3: `Blur::render` plane memset/munmap 26%, `checkForNaNsAndFix` 20%, `writeWindow` outside kernel 20%, kernel 18%, paste 17%. Bitmap init/mark/getRestToRender <1%, so P1.T4 needs nothing beyond its fixed part. Blur's plane allocate/zero/free lives in `Blur.cpp`; it joins P3.T1. Rerun scripts: `build/bench/m90/{run.sh,matrix.sh,an.py,samp-rel.sh,split.py}` (paths hard-coded to this host).
 - 2026-10-14 — **NaN check dropped app-wide** (user; `DECISIONS/2026-10-14-drop-nan-check.md`): P1.T3's banding is superseded by P1.T5, which deletes the pass.
 - 2026-10-14 — **P1.T5** (code: 1da538805): removing the preference also removed the `doNansHandling` render arg from `Engine/ParallelRenderArgs.{h,cpp}` and `ViewerInstance.cpp`, and the scan's warning plumbing from `Engine/Node.{h,cpp}` / `NodePrivate.h` (`setNaNWarning`, `clearStaleNaNWarning`, `nanWarningHash`). That breaks this milestone's `Out` on `ParallelRenderArgs.cpp`, a file M100 - Content Node Hashing also edits (P3.T3, `buildArgsMap`). The edits are small deletions, so whichever lands second resolves them at rebase. `Tests/Native/NativeNaNWarning_Test.cpp` and `Tests/ImageNaNBands_Test.cpp` are deleted.
+- 2026-10-14 — **Phase 90.1 gate green** at b378b0e41 (remote run 38663940820): 2171/2171 in legacy and taskgraph. P1.T2 0d13f81a5, P1.T3+T4 92ffc6870 (P1.T3's banded NaN scan was later deleted by P1.T5).

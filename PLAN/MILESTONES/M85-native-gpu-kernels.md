@@ -709,3 +709,4 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - `-DNATRON_GPU=OFF` builds. Host `GpuTests` passes 94/94 on RADV (RX 7900 XTX) through `run-host.sh`.
   - The P6.T3 and P6.T4 benches ran on the pre-rebase tree (`eacf34f98`). The rebase adds no GPU or render-path code.
   - Published `docs/decisions/2026-10-12-clean-sheet-merge.md`.
+- 2026-10-15 — **PR #62 review round (Codex, one finding) closed.** Major: GPU curve evaluation outside the LUT range packed segment origins as single floats, so a steep key between two floats returned 0 where the CPU gives 0.49. Fixed in `2a5b97efb`: origins, 1/span and coefficients are two-float, and `packSegment` refuses segments it can't bound within 1e-6 (CPU fallback). Three regression tests; the curve and GPU registry suites pass 52/52 in all six configurations. No second round: the fix is local to `CurveSnapshot` and `curvesnapshot.slang`.

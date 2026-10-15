@@ -122,7 +122,7 @@ compareImages(const std::vector<float>& reference,
 
 struct GpuParityRuntime::Impl {
     std::unique_ptr<gpu::GpuRuntime> runtime;
-    std::vector<std::unique_ptr<gpu::GpuBuffer> > buffers;
+    std::vector<std::unique_ptr<gpu::GpuBuffer>> buffers;
     std::vector<std::size_t> capacities;
 };
 
@@ -327,8 +327,7 @@ runRenderGpu(GpuParityRuntime& runtime,
             const std::size_t row = rel / outStride;
             const std::size_t col = rel % outStride;
             const std::size_t firstCol = (std::size_t)layout.marginLeft * nComps;
-            if ((row >= (std::size_t)layout.marginBottom) && (row < (std::size_t)layout.marginBottom + outputRect.height()) &&
-                (col >= firstCol) && (col < firstCol + windowRowFloats)) {
+            if ((row >= (std::size_t)layout.marginBottom) && (row < (std::size_t)layout.marginBottom + outputRect.height()) && (col >= firstCol) && (col < firstCol + windowRowFloats)) {
                 inside = true;
                 result.pixels[(row - layout.marginBottom) * windowRowFloats + (col - firstCol)] = dst[i];
             }

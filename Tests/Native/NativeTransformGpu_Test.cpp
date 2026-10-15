@@ -46,8 +46,8 @@
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
-#include "NativeParity.h"
 #include "Native/NativeGpuParity.h"
+#include "NativeParity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -67,10 +67,10 @@
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
-#include "Engine/RenderScheduler.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
+#include "Engine/RenderScheduler.h"
 #include "Engine/ViewIdx.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -186,13 +186,7 @@ protected:
     static bool setGeometry(const NodePtr& node,
                             const GeometryCase& g)
     {
-        return setKnobValues(node, kTransformNodeParamCenter, { 32., 24. }) &&
-               setKnobValues(node, kTransformNodeParamTranslate, { g.translateX, g.translateY }) &&
-               setKnobValues(node, kTransformNodeParamRotate, { g.rotate }) &&
-               setKnobValues(node, kTransformNodeParamScale, { g.scaleX, g.scaleY }) &&
-               setKnobValues(node, kTransformNodeParamSkewX, { g.skewX }) &&
-               setKnobValues(node, kTransformNodeParamSkewY, { g.skewY }) &&
-               setKnobValue(node, kTransformNodeParamSkewOrder, std::string(g.skewOrderYX ? "YX" : "XY"));
+        return setKnobValues(node, kTransformNodeParamCenter, { 32., 24. }) && setKnobValues(node, kTransformNodeParamTranslate, { g.translateX, g.translateY }) && setKnobValues(node, kTransformNodeParamRotate, { g.rotate }) && setKnobValues(node, kTransformNodeParamScale, { g.scaleX, g.scaleY }) && setKnobValues(node, kTransformNodeParamSkewX, { g.skewX }) && setKnobValues(node, kTransformNodeParamSkewY, { g.skewY }) && setKnobValue(node, kTransformNodeParamSkewOrder, std::string(g.skewOrderYX ? "YX" : "XY"));
     }
 };
 
@@ -381,8 +375,7 @@ queryFor(const NodePtr& node,
     if (q.hasMask) {
         ImageLayerDesc maskLayer;
         int maskChannel = -1;
-        q.maskInPlane = !effect->resolveInputPlaneForRender(maskInput, kTime, ViewIdx(0), &maskLayer, &maskChannel) || (maskChannel < 0) ||
-                        (Node::getUnPremultSkipChannel(plane, maskLayer, maskChannel) >= 0);
+        q.maskInPlane = !effect->resolveInputPlaneForRender(maskInput, kTime, ViewIdx(0), &maskLayer, &maskChannel) || (maskChannel < 0) || (Node::getUnPremultSkipChannel(plane, maskLayer, maskChannel) >= 0);
     }
     KnobDoublePtr mix = std::dynamic_pointer_cast<KnobDouble>(effect->getKnobByName(kOfxMixParamName));
     q.mix = mix ? mix->getValueAtTime(kTime, 0, ViewIdx(0)) : 1.;

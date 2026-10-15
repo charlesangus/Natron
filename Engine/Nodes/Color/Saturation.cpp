@@ -275,8 +275,7 @@ Saturation::makeGpuKernel(const KernelContext& context,
     // calls; Max is no weighted sum and is flagged instead.
     SaturationGpuParams p = {};
     p.saturation = (float)v.saturation;
-    p.flags = (v.clampBlack ? kSaturationGpuClampBlack : 0) | (v.clampWhite ? kSaturationGpuClampWhite : 0) |
-              ((v.luminanceMath == ColorMath::eLuminanceMathMax) ? kSaturationGpuLumaMax : 0);
+    p.flags = (v.clampBlack ? kSaturationGpuClampBlack : 0) | (v.clampWhite ? kSaturationGpuClampWhite : 0) | ((v.luminanceMath == ColorMath::eLuminanceMathMax) ? kSaturationGpuLumaMax : 0);
     p.weights[0] = (float)ColorMath::luminance(v.luminanceMath, 1., 0., 0.);
     p.weights[1] = (float)ColorMath::luminance(v.luminanceMath, 0., 1., 0.);
     p.weights[2] = (float)ColorMath::luminance(v.luminanceMath, 0., 0., 1.);

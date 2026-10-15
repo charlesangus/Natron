@@ -744,12 +744,24 @@ TEST(GpuCostModel, EveryGpuNodeIsSeeded)
 
     model.setThreadCount(16);
     const char* const ids[] = {
-        "net.sf.openfx.GradePlugin", "net.sf.openfx.ColorCorrectPlugin", "net.sf.openfx.Invert", "net.sf.openfx.Clamp",
-        "net.sf.openfx.AddPlugin", "net.sf.openfx.MultiplyPlugin", "net.sf.openfx.GammaPlugin",
-        "net.sf.openfx.SaturationPlugin", "net.sf.openfx.ColorLookupPlugin", "net.sf.openfx.KeyerPlugin",
-        "net.sf.openfx.ChromaKeyerPlugin", "net.sf.cimg.CImgErode", "net.sf.cimg.CImgDilate",
-        "net.sf.openfx.ConstantPlugin", "net.sf.openfx.Solid", "net.sf.openfx.CheckerBoardPlugin",
-        "net.sf.openfx.TransformPlugin", "net.sf.cimg.CImgBlur",
+        "net.sf.openfx.GradePlugin",
+        "net.sf.openfx.ColorCorrectPlugin",
+        "net.sf.openfx.Invert",
+        "net.sf.openfx.Clamp",
+        "net.sf.openfx.AddPlugin",
+        "net.sf.openfx.MultiplyPlugin",
+        "net.sf.openfx.GammaPlugin",
+        "net.sf.openfx.SaturationPlugin",
+        "net.sf.openfx.ColorLookupPlugin",
+        "net.sf.openfx.KeyerPlugin",
+        "net.sf.openfx.ChromaKeyerPlugin",
+        "net.sf.cimg.CImgErode",
+        "net.sf.cimg.CImgDilate",
+        "net.sf.openfx.ConstantPlugin",
+        "net.sf.openfx.Solid",
+        "net.sf.openfx.CheckerBoardPlugin",
+        "net.sf.openfx.TransformPlugin",
+        "net.sf.cimg.CImgBlur",
     };
     for (const char* id : ids) {
         GpuTaskTraits traits(id);

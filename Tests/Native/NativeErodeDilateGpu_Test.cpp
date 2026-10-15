@@ -45,8 +45,8 @@
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
-#include "NativeParity.h"
 #include "Native/NativeGpuParity.h"
+#include "NativeParity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -256,8 +256,7 @@ queryFor(const NodePtr& node,
     if (q.hasMask) {
         ImageLayerDesc maskLayer;
         int maskChannel = -1;
-        q.maskInPlane = !effect->resolveInputPlaneForRender(maskInput, kTime, ViewIdx(0), &maskLayer, &maskChannel) || (maskChannel < 0) ||
-                        (Node::getUnPremultSkipChannel(plane, maskLayer, maskChannel) >= 0);
+        q.maskInPlane = !effect->resolveInputPlaneForRender(maskInput, kTime, ViewIdx(0), &maskLayer, &maskChannel) || (maskChannel < 0) || (Node::getUnPremultSkipChannel(plane, maskLayer, maskChannel) >= 0);
     }
     KnobDoublePtr mix = std::dynamic_pointer_cast<KnobDouble>(effect->getKnobByName(kOfxMixParamName));
     q.mix = mix ? mix->getValueAtTime(kTime, 0, ViewIdx(0)) : 1.;
@@ -350,9 +349,18 @@ struct SizeCase {
 // vertical pass before a horizontal one; 46 and 63 make lines no longer than halfWidth + 2 on the
 // 64x48 source, and at a half scale size -1 is no pass at all without being identity.
 const SizeCase kSizes[] = {
-    { 1., 1. }, { 2., 2. }, { 6., 6. }, { 40., 40. },
-    { -1., -1. }, { -2., 6. }, { 6., -40. }, { -40., -2. }, { 0., 6. }, { -6., 0. },
-    { 46., 46. }, { 63., -1. },
+    { 1., 1. },
+    { 2., 2. },
+    { 6., 6. },
+    { 40., 40. },
+    { -1., -1. },
+    { -2., 6. },
+    { 6., -40. },
+    { -40., -2. },
+    { 0., 6. },
+    { -6., 0. },
+    { 46., 46. },
+    { 63., -1. },
 };
 
 std::string
@@ -616,8 +624,20 @@ specialValue(int x,
              int c)
 {
     static const uint32_t kBits[] = {
-        0x7fc00000u, 0xffc00001u, 0x80000000u, 0x00000000u, 0x00000001u, 0x80000001u, 0x007fffffu, 0x807fffffu,
-        0x7f800000u, 0xff800000u, 0x3f000000u, 0xbf000000u, 0x3f800000u, 0x40000000u,
+        0x7fc00000u,
+        0xffc00001u,
+        0x80000000u,
+        0x00000000u,
+        0x00000001u,
+        0x80000001u,
+        0x007fffffu,
+        0x807fffffu,
+        0x7f800000u,
+        0xff800000u,
+        0x3f000000u,
+        0xbf000000u,
+        0x3f800000u,
+        0x40000000u,
     };
     const int n = (int)(sizeof(kBits) / sizeof(kBits[0]));
     const int k = ((x * 7 + y * 13 + c * 5) % 23 + 23) % 23;

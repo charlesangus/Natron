@@ -40,9 +40,9 @@
 #include <QString>
 
 #include "Tests/BaseTest.h"
+#include "Tests/Native/NativeGpuParity.h"
 #include "Tests/NativeParity.h"
 #include "Tests/RenderBothWays.h"
-#include "Tests/Native/NativeGpuParity.h"
 
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
@@ -130,8 +130,7 @@ queryFor(const NodePtr& op)
     if (q.hasMask) {
         ImageLayerDesc maskLayer;
         int maskChannel = -1;
-        q.maskInPlane = !effect->resolveInputPlaneForRender(maskInput, kTime, ViewIdx(0), &maskLayer, &maskChannel) || (maskChannel < 0) ||
-                        (Node::getUnPremultSkipChannel(plane, maskLayer, maskChannel) >= 0);
+        q.maskInPlane = !effect->resolveInputPlaneForRender(maskInput, kTime, ViewIdx(0), &maskLayer, &maskChannel) || (maskChannel < 0) || (Node::getUnPremultSkipChannel(plane, maskLayer, maskChannel) >= 0);
     }
     KnobDoublePtr mix = std::dynamic_pointer_cast<KnobDouble>(effect->getKnobByName(kOfxMixParamName));
     q.mix = mix ? mix->getValueAtTime(kTime, 0, ViewIdx(0)) : 1.;
@@ -241,10 +240,8 @@ curvePoints(bool edited,
         { { 0.5, 0., 0., 0., eKeyframeTypeHorizontal }, { 1., 1., 0., 0., eKeyframeTypeHorizontal } },
     };
     static const std::vector<CurvePoint> editedPoints[2] = {
-        { { -0.2, 1., 0., 0., eKeyframeTypeConstant }, { 0.05, 0.8, 0., 0., eKeyframeTypeLinear },
-          { 0.2, 0.3, -1., -4., eKeyframeTypeBroken }, { 0.4, 0., 0., 0., eKeyframeTypeSmooth } },
-        { { 0.3, 0., 0., 0., eKeyframeTypeSmooth }, { 0.6, 0.4, 2., 0.5, eKeyframeTypeBroken },
-          { 0.85, 0.9, 0., 0., eKeyframeTypeLinear }, { 1.2, 1., 0., 0., eKeyframeTypeConstant } },
+        { { -0.2, 1., 0., 0., eKeyframeTypeConstant }, { 0.05, 0.8, 0., 0., eKeyframeTypeLinear }, { 0.2, 0.3, -1., -4., eKeyframeTypeBroken }, { 0.4, 0., 0., 0., eKeyframeTypeSmooth } },
+        { { 0.3, 0., 0., 0., eKeyframeTypeSmooth }, { 0.6, 0.4, 2., 0.5, eKeyframeTypeBroken }, { 0.85, 0.9, 0., 0., eKeyframeTypeLinear }, { 1.2, 1., 0., 0., eKeyframeTypeConstant } },
     };
 
     return edited ? editedPoints[dimension] : defaults[dimension];

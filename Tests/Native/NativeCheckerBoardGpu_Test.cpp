@@ -37,9 +37,9 @@
 #include <QString>
 
 #include "Tests/BaseTest.h"
+#include "Tests/Native/NativeGpuParity.h"
 #include "Tests/NativeParity.h"
 #include "Tests/RenderBothWays.h"
-#include "Tests/Native/NativeGpuParity.h"
 
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"

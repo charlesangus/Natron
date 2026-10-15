@@ -45,9 +45,9 @@
 #include <QStringList>
 
 #include "Tests/BaseTest.h"
+#include "Tests/Native/NativeGpuParity.h"
 #include "Tests/NativeParity.h"
 #include "Tests/RenderBothWays.h"
-#include "Tests/Native/NativeGpuParity.h"
 
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
@@ -333,8 +333,7 @@ queryFor(const NodePtr& op,
     if (q.hasMask) {
         ImageLayerDesc maskLayer;
         int maskChannel = -1;
-        q.maskInPlane = !effect->resolveInputPlaneForRender(maskInput, kTime, ViewIdx(0), &maskLayer, &maskChannel) || (maskChannel < 0) ||
-                        (Node::getUnPremultSkipChannel(plane, maskLayer, maskChannel) >= 0);
+        q.maskInPlane = !effect->resolveInputPlaneForRender(maskInput, kTime, ViewIdx(0), &maskLayer, &maskChannel) || (maskChannel < 0) || (Node::getUnPremultSkipChannel(plane, maskLayer, maskChannel) >= 0);
     }
     KnobDoublePtr mix = std::dynamic_pointer_cast<KnobDouble>(effect->getKnobByName(kOfxMixParamName));
     q.mix = mix ? mix->getValueAtTime(kTime, 0, ViewIdx(0)) : 1.;
@@ -653,8 +652,7 @@ TEST_F(NativeImageEffectGpuTest, RenderGpuMatchesTheCpuRender)
                         gScaleKernel = kernel;
                         const GpuQuery query = queryFor(op, plane);
                         EXPECT_EQ(maskMode != 0, query.hasMask) << name;
-                        const bool outsidePlane = ((nComps == 3) && (std::string(divisor) == "rgba.A")) ||
-                                                  ((nComps == 1) && (std::string(divisor) == "rgba.R"));
+                        const bool outsidePlane = ((nComps == 3) && (std::string(divisor) == "rgba.A")) || ((nComps == 1) && (std::string(divisor) == "rgba.R"));
                         // The mask selects alpha, which an RGB plane drops.
                         const bool maskOutsidePlane = (maskMode != 0) && (nComps == 3);
                         EXPECT_TRUE(!query.hasMask || (query.maskInPlane == !maskOutsidePlane)) << name;

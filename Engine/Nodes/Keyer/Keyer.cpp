@@ -1406,8 +1406,7 @@ Keyer::renderGpu(const GpuRenderArgs& args)
 
     gpu::GpuRecordContext& ctx = args.context;
     gpu::GpuBuffer* paramsBuffer = nullptr;
-    if (!ctx.scratch(sizeof(params), paramsBuffer) || !paramsBuffer ||
-        !ctx.updateBuffer(*paramsBuffer, 0, std::as_bytes(std::span<const KeyerGpuParams>(&params, 1)))) {
+    if (!ctx.scratch(sizeof(params), paramsBuffer) || !paramsBuffer || !ctx.updateBuffer(*paramsBuffer, 0, std::as_bytes(std::span<const KeyerGpuParams>(&params, 1)))) {
         return eStatusFailed;
     }
     // An absent input binds the parameter block, which the kernel never reads through it.
@@ -1418,7 +1417,9 @@ Keyer::renderGpu(const GpuRenderArgs& args)
     return ctx.dispatch(gpu::GpuKernelId::keyer,
                         { bufferOf(params.src, kKeyerInputSource), bufferOf(params.inMask, kKeyerInputInsideMask), bufferOf(params.outMask, kKeyerInputOutsideMask),
                           bufferOf(params.bg, kKeyerInputBg), dst.buffer, paramsBuffer },
-                        push, { push.width, push.height, 1 }) ? eStatusOK : eStatusFailed;
+                        push, { push.width, push.height, 1 })
+        ? eStatusOK
+        : eStatusFailed;
 #else
     Q_UNUSED(args);
 

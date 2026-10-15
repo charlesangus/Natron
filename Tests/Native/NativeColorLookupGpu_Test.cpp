@@ -40,9 +40,9 @@
 #include <QString>
 
 #include "Tests/BaseTest.h"
+#include "Tests/Native/NativeGpuParity.h"
 #include "Tests/NativeParity.h"
 #include "Tests/RenderBothWays.h"
-#include "Tests/Native/NativeGpuParity.h"
 
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
@@ -142,8 +142,7 @@ queryFor(const NodePtr& op)
     if (q.hasMask) {
         ImageLayerDesc maskLayer;
         int maskChannel = -1;
-        q.maskInPlane = !effect->resolveInputPlaneForRender(maskInput, kTime, ViewIdx(0), &maskLayer, &maskChannel) || (maskChannel < 0) ||
-                        (Node::getUnPremultSkipChannel(plane, maskLayer, maskChannel) >= 0);
+        q.maskInPlane = !effect->resolveInputPlaneForRender(maskInput, kTime, ViewIdx(0), &maskLayer, &maskChannel) || (maskChannel < 0) || (Node::getUnPremultSkipChannel(plane, maskLayer, maskChannel) >= 0);
     }
     KnobDoublePtr mix = std::dynamic_pointer_cast<KnobDouble>(effect->getKnobByName(kOfxMixParamName));
     q.mix = mix ? mix->getValueAtTime(kTime, 0, ViewIdx(0)) : 1.;
@@ -232,12 +231,16 @@ curvePoints(int curves,
         { { 0., 0.2, eKeyframeTypeSmooth }, { 0.6, 0.5, eKeyframeTypeCubic }, { 1., 0.9, eKeyframeTypeSmooth } },
     };
     static const std::vector<CurvePoint> single[5] = {
-        { { 0.5, 0.6, eKeyframeTypeSmooth } }, { { 0.5, 0.4, eKeyframeTypeSmooth } }, { { 0.5, 0.7, eKeyframeTypeSmooth } },
-        { { 0.5, 0.2, eKeyframeTypeSmooth } }, { { 0.5, 0.8, eKeyframeTypeSmooth } },
+        { { 0.5, 0.6, eKeyframeTypeSmooth } },
+        { { 0.5, 0.4, eKeyframeTypeSmooth } },
+        { { 0.5, 0.7, eKeyframeTypeSmooth } },
+        { { 0.5, 0.2, eKeyframeTypeSmooth } },
+        { { 0.5, 0.8, eKeyframeTypeSmooth } },
     };
     static const std::vector<CurvePoint> diagonal = { { 0., 0., eKeyframeTypeLinear }, { 1., 1., eKeyframeTypeLinear } };
 
-    return (curves == 1) ? edited[dimension] : (curves == 2) ? single[dimension] : diagonal;
+    return (curves == 1) ? edited[dimension] : (curves == 2) ? single[dimension]
+                                                             : diagonal;
 }
 
 void
@@ -720,4 +723,3 @@ TEST_F(NativeColorLookupGpuTest, GradeColorLookupGradeChainRunsAsOneRegion)
     const ImageDiff diff = compareImages(result.cpu, result.gpu, ParityTolerance::transcendental());
     EXPECT_EQ(0u, diff.mismatches) << "first at float " << diff.firstMismatchIndex;
 }
-

@@ -38,9 +38,9 @@
 #include "NativeParity.h"
 
 #include "Engine/EngineFwd.h"
-#include "Engine/RectI.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/RectI.h"
 #include "Engine/RenderScheduler.h"
 
 namespace gpu {
@@ -160,7 +160,7 @@ struct EndToEndResult {
 
     // The regions the GPU frame was placed in, and the nodes of each one's members.
     std::vector<FrameGraph::Region> regions;
-    std::vector<std::vector<NodePtr> > regionNodes;
+    std::vector<std::vector<NodePtr>> regionNodes;
 
     // Tasks the GPU frame ran on the device, by node script name.
     std::map<std::string, int> gpuTasksPerNode;

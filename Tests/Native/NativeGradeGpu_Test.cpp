@@ -42,8 +42,8 @@
 #include <QString>
 
 #include "BaseTest.h"
-#include "NativeParity.h"
 #include "Native/NativeGpuParity.h"
+#include "NativeParity.h"
 
 #include "Gpu/GradeFixture.h"
 
@@ -367,7 +367,6 @@ TEST_F(NativeGradeGpuTest, HonoursOffsetsAndStridesOfTheViews)
             << "window float " << i << " gpu=" << got[i] << " cpu=" << want[i];
     }
 }
-
 
 namespace {
 

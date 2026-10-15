@@ -434,8 +434,7 @@ public:
         p->kg = 1 - kr - kb;
         p->twoOneMinusKb = 2 * (1 - kb);
         p->twoOneMinusKr = 2 * (1 - kr);
-        p->flags = (_linear ? kChromaKeyGpuLinear : 0u) | ((_acceptanceAngle >= 180.) ? kChromaKeyGpuAcceptAll : 0u) |
-                   (((_suppressionAngle <= 0.) || (_suppressionAngle >= 180.)) ? kChromaKeyGpuSuppressAll : 0u);
+        p->flags = (_linear ? kChromaKeyGpuLinear : 0u) | ((_acceptanceAngle >= 180.) ? kChromaKeyGpuAcceptAll : 0u) | (((_suppressionAngle <= 0.) || (_suppressionAngle >= 180.)) ? kChromaKeyGpuSuppressAll : 0u);
         p->gainMode = (_keyGain <= 0.) ? kChromaKeyGpuGainNonPositive : ((_keyLift >= 1.) ? kChromaKeyGpuLiftFull : kChromaKeyGpuGainRamp);
         p->show = (uint32_t)_show;
         p->sourceAlpha = (uint32_t)_sourceAlpha;
@@ -1291,8 +1290,7 @@ ChromaKeyer::renderGpu(const GpuRenderArgs& args)
 
     gpu::GpuRecordContext& ctx = args.context;
     gpu::GpuBuffer* paramBuffer = nullptr;
-    if (!ctx.scratch(sizeof(params), paramBuffer) || !paramBuffer ||
-        !ctx.updateBuffer(*paramBuffer, 0, std::as_bytes(std::span<const ChromaKeyGpuParams>(&params, 1)))) {
+    if (!ctx.scratch(sizeof(params), paramBuffer) || !paramBuffer || !ctx.updateBuffer(*paramBuffer, 0, std::as_bytes(std::span<const ChromaKeyGpuParams>(&params, 1)))) {
         return eStatusFailed;
     }
     // The kernel reads no pixel of an input with empty bounds, so the parameter block stands in

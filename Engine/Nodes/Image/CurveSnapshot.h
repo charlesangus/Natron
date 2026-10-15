@@ -321,8 +321,7 @@ private:
                 // difference of two terms its slope scales, which cancel in the shader's precision:
                 // the same cubic about the first key, in u - 1, has no such terms. The CPU's own
                 // rounding of that difference cannot be repeated, so it counts against the bound.
-                cpuError = kCpuDoubleError * (std::fabs(c[0]) + std::fabs(c[1]) + std::fabs(c[2]) + std::fabs(c[3])) *
-                           (std::max)(1., std::fabs(tnext));
+                cpuError = kCpuDoubleError * (std::fabs(c[0]) + std::fabs(c[1]) + std::fabs(c[2]) + std::fabs(c[3])) * (std::max)(1., std::fabs(tnext));
                 const double shifted[4] = { c[0] + c[1] + c[2] + c[3], c[1] + 2 * c[2] + 3 * c[3], c[2] + 3 * c[3], c[3] };
                 std::copy(shifted, shifted + 4, c);
                 tcur = _keys.front().getTime();

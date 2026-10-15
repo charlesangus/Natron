@@ -1331,8 +1331,7 @@ TransformNode::canRenderOnGpu(const GpuQuery& query) const
     }
     Resampler::SamplingTransforms transforms;
 
-    return getGpuSamplingTransforms(query.time, query.view, query.mappedScale, &transforms) &&
-           (transforms.invTransforms.size() <= gpu::kGpuResampleMaxMatrices);
+    return getGpuSamplingTransforms(query.time, query.view, query.mappedScale, &transforms) && (transforms.invTransforms.size() <= gpu::kGpuResampleMaxMatrices);
 #else
     Q_UNUSED(query);
 

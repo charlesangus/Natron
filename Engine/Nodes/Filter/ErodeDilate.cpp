@@ -594,7 +594,6 @@ ErodeDilate::render(const RenderActionArgs& args)
     return eStatusOK;
 } // ErodeDilate::render
 
-
 bool
 ErodeDilate::canRenderOnGpu(const GpuQuery& query) const
 {

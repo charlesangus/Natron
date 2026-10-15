@@ -886,7 +886,6 @@ Blur::render(const RenderActionArgs& args)
     return eStatusOK;
 } // Blur::render
 
-
 bool
 Blur::canRenderOnGpu(const GpuQuery& query) const
 {

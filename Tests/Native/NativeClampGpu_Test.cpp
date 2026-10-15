@@ -40,9 +40,9 @@
 #include <QString>
 
 #include "Tests/BaseTest.h"
+#include "Tests/Native/NativeGpuParity.h"
 #include "Tests/NativeParity.h"
 #include "Tests/RenderBothWays.h"
-#include "Tests/Native/NativeGpuParity.h"
 
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
@@ -168,8 +168,7 @@ queryFor(const NodePtr& op)
     if (q.hasMask) {
         ImageLayerDesc maskLayer;
         int maskChannel = -1;
-        q.maskInPlane = !effect->resolveInputPlaneForRender(maskInput, kTime, ViewIdx(0), &maskLayer, &maskChannel) || (maskChannel < 0) ||
-                        (Node::getUnPremultSkipChannel(plane, maskLayer, maskChannel) >= 0);
+        q.maskInPlane = !effect->resolveInputPlaneForRender(maskInput, kTime, ViewIdx(0), &maskLayer, &maskChannel) || (maskChannel < 0) || (Node::getUnPremultSkipChannel(plane, maskLayer, maskChannel) >= 0);
     }
     KnobDoublePtr mix = std::dynamic_pointer_cast<KnobDouble>(effect->getKnobByName(kOfxMixParamName));
     q.mix = mix ? mix->getValueAtTime(kTime, 0, ViewIdx(0)) : 1.;

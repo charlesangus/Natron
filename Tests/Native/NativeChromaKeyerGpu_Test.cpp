@@ -41,9 +41,9 @@
 #include <ofxNatron.h>
 
 #include "Tests/BaseTest.h"
+#include "Tests/Native/NativeGpuParity.h"
 #include "Tests/NativeParity.h"
 #include "Tests/RenderBothWays.h"
-#include "Tests/Native/NativeGpuParity.h"
 
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
@@ -306,9 +306,7 @@ TEST_F(NativeChromaKeyerGpuTest, MatchesTheCpuRender)
                             return;
                         }
 
-                        const std::string what = std::string(componentsID) + " source, " + setting.name + ", " + (hasBg ? "Bg" : "no Bg") + ", " +
-                                                 (hasMasks ? "masks" : "no masks") + ", " + kShowNames[show] + ", source alpha " + kSourceAlphaNames[sourceAlpha] +
-                                                 (alphaUnprocessed ? ", alpha unprocessed" : "");
+                        const std::string what = std::string(componentsID) + " source, " + setting.name + ", " + (hasBg ? "Bg" : "no Bg") + ", " + (hasMasks ? "masks" : "no masks") + ", " + kShowNames[show] + ", source alpha " + kSourceAlphaNames[sourceAlpha] + (alphaUnprocessed ? ", alpha unprocessed" : "");
                         const GpuQuery query = queryFor(keyer);
                         ASSERT_TRUE(effect->canRenderOnGpu(query)) << what;
 

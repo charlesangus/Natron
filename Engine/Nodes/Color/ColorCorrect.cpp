@@ -166,8 +166,7 @@ public:
     bool packGpu(std::vector<std::uint32_t>* words) const
     {
         words->assign(kGpuTotalWords, 0);
-        std::uint32_t flags = (_clampBlack ? kGpuClampBlack : 0) | (_clampWhite ? kGpuClampWhite : 0) |
-                              ((_luminanceMath == ColorMath::eLuminanceMathMax) ? kGpuLumaMax : 0);
+        std::uint32_t flags = (_clampBlack ? kGpuClampBlack : 0) | (_clampWhite ? kGpuClampWhite : 0) | ((_luminanceMath == ColorMath::eLuminanceMathMax) ? kGpuLumaMax : 0);
         for (int g = 0; g < ColorCorrect::eGroupCount; ++g) {
             if (_active[g]) {
                 flags |= 1u << (kGpuActiveShift + g);

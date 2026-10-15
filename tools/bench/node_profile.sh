@@ -27,7 +27,8 @@ case "$mode" in
         shell=()
         binary=build/release/Renderer/NatronRenderer
         gpu=off
-        args=$([ "$mode" = serial ] && echo "--setting noRenderThreads=1" || true)
+        args=
+        if [ "$mode" = serial ]; then args="--setting noRenderThreads=1"; fi
         tag="$mode"
         ;;
     *)

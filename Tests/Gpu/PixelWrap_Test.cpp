@@ -460,8 +460,7 @@ runTwin(Kernel kernel, const Case& c)
     std::vector<float> src = c.src.data.empty() ? unused : c.src.data;
     std::vector<float> mask = c.mask.data.empty() ? unused : c.mask.data;
     std::vector<float> aux = kernel == Kernel::Finish ? c.filtered.data : unused;
-    TwinGlobals g { { src.data(), src.size() }, { dst.data(), dst.size() }, { mask.data(), mask.size() },
-                    { aux.data(), aux.size() }, &p };
+    TwinGlobals g { { src.data(), src.size() }, { dst.data(), dst.size() }, { mask.data(), mask.size() }, { aux.data(), aux.size() }, &p };
     TwinVarying vi { { 0, 0, 0 }, { (p.width + 7) / 8, (p.height + 7) / 8, 1 } };
     twinEntry(kernel)(&vi, nullptr, &g);
     return dst;

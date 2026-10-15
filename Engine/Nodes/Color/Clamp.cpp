@@ -350,8 +350,7 @@ Clamp::makeGpuKernel(const KernelContext& context,
         p.minClampTo[i] = (float)values.minClampTo[i];
         p.maxClampTo[i] = (float)values.maxClampTo[i];
     }
-    p.flags = (values.minimumEnable ? kClampGpuMinimumEnable : 0) | (values.maximumEnable ? kClampGpuMaximumEnable : 0) |
-              (values.minClampToEnable ? kClampGpuMinClampToEnable : 0) | (values.maxClampToEnable ? kClampGpuMaxClampToEnable : 0);
+    p.flags = (values.minimumEnable ? kClampGpuMinimumEnable : 0) | (values.maximumEnable ? kClampGpuMaximumEnable : 0) | (values.minClampToEnable ? kClampGpuMinClampToEnable : 0) | (values.maxClampToEnable ? kClampGpuMaxClampToEnable : 0);
     gpuKernel->kernel = (int)gpu::GpuKernelId::clamp_wrapped;
     gpuKernel->setParams(p);
 

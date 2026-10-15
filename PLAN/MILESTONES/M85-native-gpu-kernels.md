@@ -703,3 +703,9 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - Raw results: `.local/m85/batchF/bench4/summary.txt` (comps, UHD, 8K) and `.local/m85/batchF/bench5/summary.txt`.
 
 - 2026-10-15 — **P6.T5 done.** Hand-offs written directly with the user's go-ahead (they are other rows' files): design note §10, M101 (`GpuRender.h` path, `pixelwrap.slang`, the missing Slang include path), M87 (point-op run lengths: fusion would not measurably help the M82 comps), M109 (ranked bench follow-ups). The benches found nothing for M107, M108 or M110.
+- 2026-10-15 — **Rebased onto `main` `e93abc919` and gate run** (code `b8619b8fe`). One conflict, `Tests/CMakeLists.txt` headers, kept both sides. Full ctest, 2239 tests per configuration:
+  - lavapipe, no ICD and RADV × legacy and taskgraph: all green except 3 project round-trip tests (`DimensionsFoldStateProjectTest.AnimatedFoldedKnob…`, two `DefaultChannelSetTest`), each failing in one configuration under `-j8` with `QIODevice::read (/tmp/<timestamp>): device not open`. They pass 3/3 alone in every configuration: a temp-file name collision between parallel tests, outside M85's code.
+  - lavapipe skips only the GL-interop zero-copy cases and the opt-in strips benchmark. No `Native*Gpu` suite was skipped.
+  - `-DNATRON_GPU=OFF` builds. Host `GpuTests` passes 94/94 on RADV (RX 7900 XTX) through `run-host.sh`.
+  - The P6.T3 and P6.T4 benches ran on the pre-rebase tree (`eacf34f98`). The rebase adds no GPU or render-path code.
+  - Published `docs/decisions/2026-10-12-clean-sheet-merge.md`.

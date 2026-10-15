@@ -1780,7 +1780,9 @@ Node::fromSerialization(const Serialization::NodeSerialization& serialization,
         isOfxEffect->syncMultiplaneTwinsAfterLoad();
     }
 
-    setKnobsAge(serialization.knobsAge);
+    // The serialized age is not read: the node cache key is a content hash, so a saved age carries
+    // no information and the hash must be recomputed from the freshly restored knobs and inputs.
+    computeHash();
 
     _imp->effect->onKnobsLoaded();
 }

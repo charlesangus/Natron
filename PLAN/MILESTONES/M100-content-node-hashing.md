@@ -298,4 +298,4 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
     - the `NatronParamFormatSize`/`Par` knobs on 16 generators.
     
     P4.T3's dirty flag must catch every value change of a render-hashed knob, not only significant evaluates.
-- 2026-10-15 — **Green at 14616cb12** (run 38718037290): 2236/2236 in both schedulers. P5.T3 b0387543c; P6.T1 (13efd16f0, 13e7437f6; the bug-4 off-thread regression is deferred to P4.T3); P6.T2 (2780a6476, 14616cb12; zero failures, 12 allowlisted host mirrors). P6.T3's bench tool is 92-ish (`tools/bench/hash_bench.py`, plus `Effect.getContentHash()`); the run is pending a release AppImage.
+- 2026-10-15 — **Green at 14616cb12** (run 38718037290): 2236/2236 in both schedulers. P5.T3 b0387543c; P6.T1 (13efd16f0, 13e7437f6; the bug-4 off-thread regression is deferred to P4.T3); P6.T2 (2780a6476, 14616cb12; zero failures, 12 allowlisted host mirrors). P6.T3's bench tool is 635897c81 (`tools/bench/hash_bench.py`, plus `Effect.getContentHash()`); the run is pending a release AppImage.

@@ -591,11 +591,10 @@ EffectInstance::Implementation::setDuringInteractAction(bool b)
 }
 
 #if NATRON_ENABLE_TRIMAP
-namespace {
 // A cached image is shared by every node whose content hash matches, so which of its regions are being rendered is
 // recorded per image for the whole process: with a record per effect, a node would take the regions another node is
 // still rendering for finished ones.
-struct ImagesBeingRenderedRegistry {
+struct EffectInstance::Implementation::ImagesBeingRenderedRegistry {
     // Held across the whole of markImagesAsBeingRendered() so that one render reserves its rectangles on all its layer
     // images before another render can query any of them. Renders that can share an image share its key's node hash,
     // so they always take the same stripe; unrelated renders mostly do not contend. Taken before `mutex` and never
@@ -604,7 +603,7 @@ struct ImagesBeingRenderedRegistry {
     QMutex reservation[kReservationStripes];
     // Protects `images`. Taken before an image's ImageBeingRendered::lock.
     QMutex mutex;
-    EffectInstance::Implementation::ImageBeingRenderedMap images;
+    ImageBeingRenderedMap images;
 
     QMutex& reservationFor(const std::vector<ImagePtr>& imgs)
     {
@@ -615,14 +614,13 @@ struct ImagesBeingRenderedRegistry {
 };
 
 // Deliberately leaked: a render may still unmark its images during static destruction.
-ImagesBeingRenderedRegistry&
-imagesBeingRenderedRegistry()
+EffectInstance::Implementation::ImagesBeingRenderedRegistry&
+EffectInstance::Implementation::imagesBeingRenderedRegistry()
 {
     static ImagesBeingRenderedRegistry* registry = new ImagesBeingRenderedRegistry;
 
     return *registry;
 }
-} // anonymous namespace
 
 EffectInstance::Implementation::ImageBeingRenderedPtr
 EffectInstance::Implementation::acquireImageBeingRendered(const ImagePtr& img)

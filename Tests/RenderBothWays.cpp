@@ -91,19 +91,23 @@ private:
     int _saved;
 };
 
-// Restores the mode the app was in, with empty caches, however the comparison exits, so a failing
-// or throwing comparison cannot leak a mode or the cache entries of either pass into later tests.
+// Restores the mode the app was in, with empty caches unless told to keep them, however the
+// comparison exits, so a failing or throwing comparison cannot leak a mode or the cache entries of
+// either pass into later tests.
 class SchedulerModeGuard {
 public:
-    SchedulerModeGuard()
+    explicit SchedulerModeGuard(bool clearCaches = true)
         : _saved(appPTR->getRenderSchedulerMode())
+        , _clearCaches(clearCaches)
     {
     }
 
     ~SchedulerModeGuard()
     {
         appPTR->setRenderSchedulerMode(_saved);
-        appPTR->clearAllCaches();
+        if (_clearCaches) {
+            appPTR->clearAllCaches();
+        }
     }
 
     SchedulerModeGuard(const SchedulerModeGuard&) = delete;
@@ -111,17 +115,21 @@ public:
 
 private:
     RenderSchedulerModeEnum _saved;
+    bool _clearCaches;
 };
 
 void
 enterMode(RenderSchedulerModeEnum mode,
-          int poolSize)
+          int poolSize,
+          bool clearCaches = true)
 {
     if (poolSize > 0) {
         QThreadPool::globalInstance()->setMaxThreadCount(poolSize);
     }
     appPTR->setRenderSchedulerMode(mode);
-    appPTR->clearAllCaches();
+    if (clearCaches) {
+        appPTR->clearAllCaches();
+    }
 }
 
 RenderMismatch
@@ -346,7 +354,8 @@ renderDirect(const NodePtr& node,
              unsigned mipmapLevel,
              const RectI& roi,
              bool throughScheduler,
-             const std::list<ImageLayerDesc>& requestedComponents = std::list<ImageLayerDesc>())
+             const std::list<ImageLayerDesc>& requestedComponents = std::list<ImageLayerDesc>(),
+             bool byPassCache = true)
 {
     DirectPass pass;
     const int frame = static_cast<int>(time);
@@ -405,7 +414,7 @@ renderDirect(const NodePtr& node,
                                            RenderScale::fromMipmapLevel(mipmapLevel),
                                            mipmapLevel,
                                            view,
-                                           true /*byPassCache*/,
+                                           byPassCache,
                                            roi,
                                            RectD(),
                                            components,
@@ -498,7 +507,8 @@ renderNodePlanesDirect(const NodePtr& node,
                        const RectI& roi,
                        const std::list<ImageLayerDesc>& layers,
                        std::vector<RenderedPlane>* out,
-                       std::string* error)
+                       std::string* error,
+                       bool byPassCache)
 {
     out->clear();
     if (!node) {
@@ -516,11 +526,12 @@ renderNodePlanesDirect(const NodePtr& node,
         return false;
     }
 
+    // A render through the cache is there to see what it reuses, from earlier calls too.
     DisableUnreachableRAMPurging noPurge;
-    SchedulerModeGuard modeGuard;
-    enterMode(eRenderSchedulerModeLegacy, 0);
+    SchedulerModeGuard modeGuard(byPassCache /*clearCaches*/);
+    enterMode(eRenderSchedulerModeLegacy, 0, byPassCache /*clearCaches*/);
 
-    const DirectPass pass = renderDirect(node, time, view, mipmapLevel, roi, false /*throughScheduler*/, layers);
+    const DirectPass pass = renderDirect(node, time, view, mipmapLevel, roi, false /*throughScheduler*/, layers, byPassCache);
     if (pass.error.any) {
         if (error) {
             *error = pass.error.error;

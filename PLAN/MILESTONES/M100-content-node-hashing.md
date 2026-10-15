@@ -183,6 +183,23 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - verify: record the results in `## Decisions`
   - size: M
 
+- [ ] M100.P6.T4 — Cached results are bit-identical to uncached results
+  - files: Tests/CacheEquivalence_Test.cpp, Tests/CMakeLists.txt
+  - approach: For every scenario, render a frame through the warm cache, then render it again cold and compare the two. Cold means every cache cleared (image, deep and ActionsCache) or caching bypassed; use the same switch the engine has, or add a test-only one. The two renders must be bit-exact on every plane, including RoD/metadata and deep samples where they apply. Both scheduler modes. The warm render must come after an edit sequence that could leave a stale entry behind:
+    - value toggles 1 → 2 → 1, and undo/redo;
+    - a group disable, both outer and nested;
+    - a GroupInput rewire and input swaps;
+    - expression and linked-knob (master/slave) changes;
+    - roto strokes added and edited;
+    - a Read whose file is rewritten in place, then Reload or a stamp touch;
+    - layer registry changes;
+    - a Precomp;
+    - two identical nodes that share an entry;
+    - the M93/bench comps.
+    Also sweep the bundled plugins: perturb one knob, revert it, and require the cached render to equal a cold render for each knob.
+  - verify: `ctest -R CacheEquivalence` passes in both scheduler modes. Any mismatch is a hash gap and blocks the gate. The test can't be skipped or allowlisted.
+  - size: L
+
 ## Phase 100.7: Write read back gated by the hash
 - [ ] M100.P7.T1 — Read back an EXR frame only when its stored hash matches the node
   - files: Engine/Nodes/IO/NativeWrite.{h,cpp}, Engine/EffectInstance.h, Tests/Native/NativeWriteReadBack_Test.cpp, Tests/gui/m76_write.py, Engine/Nodes/README.md
@@ -190,7 +207,7 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - verify: `NativeWriteReadBack_Test` covers match, mismatch after an edit, and a restored match after undo; the GUI script repeats the undo flow under Xvfb.
   - size: M
 
-**Verification gate:** full ctest green in both scheduler modes; the HashInvariants and HashPluginSweep suites pass; the audit run leaves no discrepancy unexplained; the regressions for bugs 1, 2 and 4 pass; value toggling and undo hit the cache; touching a frame file refreshes the viewer in the AppImage; `incrementKnobsAge`/`knobsAge` appear nowhere outside serialization. Renaming a node or reopening the project in another session leaves its hash unchanged; the Write reads back an EXR only on a hash match (M100.P7.T1).
+**Verification gate:** full ctest green in both scheduler modes; the HashInvariants, HashPluginSweep and CacheEquivalence suites pass (cached renders bit-identical to uncached, in both schedulers); the audit run leaves no discrepancy unexplained; the regressions for bugs 1, 2 and 4 pass; value toggling and undo hit the cache; touching a frame file refreshes the viewer in the AppImage; `incrementKnobsAge`/`knobsAge` appear nowhere outside serialization. Renaming a node or reopening the project in another session leaves its hash unchanged; the Write reads back an EXR only on a hash match (M100.P7.T1).
 
 ## Decisions
 
@@ -210,3 +227,4 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - LayerRegistry reports `Grown` for a reordered identical channel set, which bumps every node using the layer.
   
   **Goes to P4.T3:** mark slave nodes dirty when a master changes under blockValueChanges/cloneCurve (Tracker CornerPin); mark the node dirty on content changes that skip the bump (load, inputChanged, setExpression, the OCIO push); KnobFile stamp invalidation must mark its node dirty (DeepRead in-place rewrite). **Unresolved:** Reformat `boxSize`, probably the OFX twin's write-back. No reuse-opportunity count suggests a collision. The audit dedupe now keys on the node, so the post-fix rerun shows every case.
+- 2026-10-14 — **Cache equivalence** (user): cached results must always be identical to uncached results. Added M100.P6.T4 (warm-vs-cold bit-exact renders after stale-prone edit sequences, plus a plugin knob sweep) and made it part of the gate.

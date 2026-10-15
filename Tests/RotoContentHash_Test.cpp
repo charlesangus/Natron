@@ -115,6 +115,33 @@ TEST_F(RotoContentHashTest, MovingAPointAndBackRestoresTheHash)
     getApp()->getProject()->reset(false, true);
 }
 
+TEST_F(RotoContentHashTest, MovingAPointChangesTheRotoNodeHash)
+{
+    getApp()->getProject()->reset(false, true);
+
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(bool(roto));
+    RotoContextPtr context = roto->getRotoContext();
+    ASSERT_TRUE(bool(context));
+    BezierPtr square = makeKeyedSquare(context, 1., 6., 4.);
+    ASSERT_TRUE(bool(square));
+    const double time = context->getTimelineCurrentTime();
+
+    roto->doComputeHashOnMainThread();
+    const U64 initial = roto->getContentHash();
+    EXPECT_NE(0u, initial);
+
+    square->movePointByIndex(0, time, 2., 3.);
+    roto->doComputeHashOnMainThread();
+    EXPECT_NE(initial, roto->getContentHash());
+
+    square->movePointByIndex(0, time, -2., -3.);
+    roto->doComputeHashOnMainThread();
+    EXPECT_EQ(initial, roto->getContentHash());
+
+    getApp()->getProject()->reset(false, true);
+}
+
 TEST_F(RotoContentHashTest, AddingAKeyframeChangesTheHash)
 {
     getApp()->getProject()->reset(false, true);

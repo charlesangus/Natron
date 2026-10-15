@@ -962,6 +962,18 @@ Node::computeContentHash() const
         h.appendU64(connectedInputs);
     }
 
+    // Roto geometry lives in the context and the items, not in knobs, so it is hashed here. The
+    // tags keep absent and present contributions from colliding.
+    if (_imp->rotoContext) {
+        h.appendString("rotoContext");
+        h.appendU64(_imp->rotoContext->getContentHash());
+    }
+    RotoDrawableItemPtr strokeItem = _imp->paintStroke.lock();
+    if (strokeItem) {
+        h.appendString("rotoItem");
+        h.appendU64(strokeItem->getContentHash());
+    }
+
     h.appendU64(getApp()->getProject()->getContentDigest());
 
     return h.finalize();

@@ -42,6 +42,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/BezierCP.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/CoonsRegularization.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/FeatherPoint.h"
@@ -648,8 +649,26 @@ RotoDrawableItem::rotoKnobChanged(const KnobIPtr& knob,
 } // RotoDrawableItem::rotoKnobChanged
 
 void
+RotoDrawableItem::appendLiveContentHash(ContentHasher& h) const
+{
+    RotoItem::appendLiveContentHash(h);
+
+    const std::list<KnobIPtr>& knobs = getKnobs();
+    // The knob list is fixed at construction, so positions identify knobs without their names.
+    for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        const bool hashed = (*it)->isRenderHashed();
+        h.appendBool(hashed);
+        if (hashed) {
+            h.appendU64((*it)->getContentHash());
+        }
+    }
+}
+
+void
 RotoDrawableItem::incrementNodesAge()
 {
+    // Unlike the age bump below, the content hash must also see edits made while loading.
+    invalidateContentHash();
     if ( getContext()->getNode()->getApp()->getProject()->isLoadingProject() ) {
         return;
     }

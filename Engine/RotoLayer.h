@@ -102,6 +102,9 @@ public:
     ///MT-safe
     std::list<RotoItemPtr> getItems_mt_safe() const;
 
+protected:
+    virtual void appendLiveContentHash(ContentHasher& h) const OVERRIDE;
+
 private:
 
     std::unique_ptr<RotoLayerPrivate> _imp;

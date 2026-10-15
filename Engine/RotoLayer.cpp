@@ -38,6 +38,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/CoonsRegularization.h"
 #include "Engine/FeatherPoint.h"
 #include "Engine/Format.h"
@@ -263,6 +264,19 @@ RotoLayer::getItems_mt_safe() const
     QMutexLocker l(&itemMutex);
 
     return _imp->items;
+}
+
+void
+RotoLayer::appendLiveContentHash(ContentHasher& h) const
+{
+    RotoItem::appendLiveContentHash(h);
+
+    // Children render in reverse list order, so the order is part of the content.
+    RotoItems items = getItems_mt_safe();
+    h.appendU64(items.size());
+    for (RotoItems::const_iterator it = items.begin(); it != items.end(); ++it) {
+        h.appendU64((*it)->getContentHash());
+    }
 }
 
 NATRON_NAMESPACE_EXIT

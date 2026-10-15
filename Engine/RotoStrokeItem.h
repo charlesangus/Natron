@@ -136,6 +136,9 @@ public:
     std::list<CurvePtr> getXControlPoints() const;
     std::list<CurvePtr> getYControlPoints() const;
 
+protected:
+    virtual void appendGeometryContentHash(ContentHasher& h) const OVERRIDE;
+
 private:
 
     RectD computeBoundingBox(double time) const;

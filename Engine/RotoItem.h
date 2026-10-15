@@ -63,6 +63,8 @@ CLANG_DIAG_ON(deprecated-declarations)
 
 NATRON_NAMESPACE_ENTER
 
+class ContentHasher;
+
 struct RotoItemPrivate;
 class RotoItem
     : public QObject
@@ -148,8 +150,32 @@ public:
     RotoContextPtr getContext() const;
     RotoItemPtr getPreviousItemInLayer() const;
 
-protected:
+    /**
+     * @brief Hash of everything this item contributes to a render: its activation, its
+     * render-hashed knobs, its geometry and, for a layer, its children in order. Equal states
+     * hash equal whatever the item's identity or name. Never 0. MT-safe.
+     **/
+    U64 getContentHash() const;
 
+    /**
+     * @brief Must follow every change to the state appendGeometryContentHash() covers.
+     * Lock-free, so it may be called with itemMutex held.
+     **/
+    void invalidateContentHash();
+
+protected:
+    /**
+     * @brief Appends the state only the roto API mutates (control points, stroke curves...).
+     * Memoized by getContentHash() until the next invalidateContentHash().
+     **/
+    virtual void appendGeometryContentHash(ContentHasher& h) const;
+
+    /**
+     * @brief Appends the state that can change without passing through
+     * invalidateContentHash(): knobs (edited, animated or slaved through the knob API) and
+     * children. Recomputed by every getContentHash(); what it reads is memoized at its own level.
+     **/
+    virtual void appendLiveContentHash(ContentHasher& h) const;
 
     ///This mutex protects every-member this class and the derived class might have.
     ///That is for the RotoItem class:

@@ -274,16 +274,15 @@ TransformUndoCommand::undo()
         beziers.insert( it->first->getBezier().get() );
     }
 
-    for (std::set<Bezier*>::iterator it = beziers.begin(); it != beziers.end(); ++it) {
-        (*it)->incrementNodesAge();
-    }
-
-
     for (SelectedCpList::iterator it = _selectedPoints.begin(); it != _selectedPoints.end(); ++it, ++cpIt) {
         it->first->clone(*cpIt->first);
         if (it->second) {
             it->second->clone(*cpIt->second);
         }
+    }
+
+    for (std::set<Bezier*>::iterator it = beziers.begin(); it != beziers.end(); ++it) {
+        (*it)->incrementNodesAge();
     }
 
     RotoPaintInteractPtr roto = _roto.lock();

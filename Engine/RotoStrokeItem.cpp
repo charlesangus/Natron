@@ -38,6 +38,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/CoonsRegularization.h"
 #include "Engine/FeatherPoint.h"
 #include "Engine/Format.h"
@@ -112,6 +113,28 @@ RotoStrokeType
 RotoStrokeItem::getBrushType() const
 {
     return _imp->type;
+}
+
+void
+RotoStrokeItem::appendGeometryContentHash(ContentHasher& h) const
+{
+    // Distinguishes a stroke from a Bezier whose own fields happen to hash alike.
+    h.appendI64(2);
+
+    QMutexLocker k(&itemMutex);
+
+    h.appendI64((int)_imp->type);
+    h.appendBool(_imp->finished);
+    h.appendU64(_imp->strokes.size());
+    for (std::vector<RotoStrokeItemPrivate::StrokeCurves>::const_iterator it = _imp->strokes.begin(); it != _imp->strokes.end(); ++it) {
+        const CurvePtr curves[3] = { it->xCurve, it->yCurve, it->pressureCurve };
+        for (int i = 0; i < 3; ++i) {
+            h.appendBool(bool(curves[i]));
+            if (curves[i]) {
+                curves[i]->appendContentHash(h);
+            }
+        }
+    }
 }
 
 static void
@@ -282,6 +305,7 @@ RotoStrokeItem::setStrokeFinished()
         }
         _imp->strokeDotPatterns.clear();
     }
+    invalidateContentHash();
 
     resetTransformCenter();
 
@@ -412,7 +436,7 @@ RotoStrokeItem::appendPoint(bool newStroke,
         stroke->yCurve->setKeyFrameInterpolation(eKeyframeTypeCatmullRom, ki);
         stroke->pressureCurve->setKeyFrameInterpolation(eKeyframeTypeCatmullRom, ki);
     } // QMutexLocker k(&itemMutex);
-
+    invalidateContentHash();
 
     return true;
 } // RotoStrokeItem::appendPoint

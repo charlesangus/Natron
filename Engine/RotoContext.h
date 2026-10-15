@@ -235,6 +235,13 @@ public:
      **/
     U64 getAge();
 
+    /**
+     * @brief Hash of every item of the context, as rendered: the base layer, which folds its
+     * children in order (see RotoItem::getContentHash()). Equal trees hash equal. Never 0.
+     * MT-safe.
+     **/
+    U64 getContentHash() const;
+
     void toSerialization(Serialization::RotoContextSerialization* serialization) const;
 
     /**

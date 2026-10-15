@@ -1,6 +1,6 @@
 """The native Write in the GUI: the create-time save dialog and its filter, the panel's layout,
 a viewed Write writing nothing until rendered, rendering from the Render button through the render dialog and its progress dialog,
-read back and the Reload button, the output colourspace menu, no WriteOIIO / WritePNG left in the
+read back gated by the hash stored in the file (including setting an edit back) and the Reload button, the output colourspace menu, no WriteOIIO / WritePNG left in the
 node search, and Render Selected on a non-writer node.
 
 Fixtures are written under $NATRON_GUI_TEST_OUT/fixtures/m76 by the Write itself. The Reload
@@ -553,17 +553,25 @@ try:
         yield ("sleep", 500)
         check([(p, os.path.getmtime(p)) for p in sequence_files()] == written, "viewing the blue input leaves the written files alone")
         write.getParam("readBack").setValue(True)
-        ok = yield ("until", lambda: viewer_shows("green"), POLL_TIMEOUT_S)
-        check(ok, "with read back on the viewer shows the written file, still green (%r)" % (gt.viewer_centre_colour(),))
+        yield ("sleep", 1000)
+        check(viewer_shows("blue"), "the files were written from the green input, so read back still shows the input, blue (%r)" % (gt.viewer_centre_colour(),))
         check(not write.getParam("startRender").getIsEnabled(), "the Render button is disabled while reading back")
         check(not (write.getPersistentMessage() or ""), "the Write reports no error (%r)" % write.getPersistentMessage())
+        constant.getParam("color").set(GREEN[0], GREEN[1], GREEN[2], 1.0)
+        ok = yield ("until", lambda: viewer_shows("green"), POLL_TIMEOUT_S)
+        check(ok, "setting the input back to green shows the written file again (%r)" % (gt.viewer_centre_colour(),))
+        check(not (write.getPersistentMessage() or ""), "the Write reports no error (%r)" % write.getPersistentMessage())
         write.getParam("readBack").setValue(False)
+        constant.getParam("color").set(BLUE[0], BLUE[1], BLUE[2], 1.0)
         ok = yield ("until", lambda: viewer_shows("blue"), POLL_TIMEOUT_S)
-        check(ok, "turning read back off shows the input again (%r)" % (gt.viewer_centre_colour(),))
+        check(ok, "turning read back off shows the input again, blue (%r)" % (gt.viewer_centre_colour(),))
+        constant.getParam("color").set(GREEN[0], GREEN[1], GREEN[2], 1.0)
+        ok = yield ("until", lambda: viewer_shows("green"), POLL_TIMEOUT_S)
+        check(ok, "the input is green again (%r)" % (gt.viewer_centre_colour(),))
 
     def reload_section():
         gt.section("Reload")
-        write = state["write"]
+        write, constant = state["write"], state["constant"]
         frame = app.timelineGetTime()
         require(1 <= frame <= 3, "the viewer shows a rendered frame (%d)" % frame)
         shown = frame_file(frame)
@@ -591,9 +599,16 @@ try:
         check(not (write.getPersistentMessage() or ""), "the Write reports no error (%r)" % write.getPersistentMessage())
         gt.close_all_panels()
 
-        write.getParam("readBack").setValue(False)
+        constant.getParam("color").set(BLUE[0], BLUE[1], BLUE[2], 1.0)
         ok = yield ("until", lambda: viewer_shows("blue"), POLL_TIMEOUT_S)
-        check(ok, "turning read back off shows the input again (%r)" % (gt.viewer_centre_colour(),))
+        check(ok, "an edit upstream stops the file being shown, the input is, blue (%r)" % (gt.viewer_centre_colour(),))
+        constant.getParam("color").set(GREEN[0], GREEN[1], GREEN[2], 1.0)
+        ok = yield ("until", lambda: viewer_shows("red"), POLL_TIMEOUT_S)
+        check(ok, "setting the edit back restores the match and the file shows again, red (%r)" % (gt.viewer_centre_colour(),))
+
+        write.getParam("readBack").setValue(False)
+        ok = yield ("until", lambda: viewer_shows("green"), POLL_TIMEOUT_S)
+        check(ok, "turning read back off shows the input again, green (%r)" % (gt.viewer_centre_colour(),))
         check(not write.getParam("reload").getIsEnabled(), "Reload is disabled again")
 
     def render_selected_section():

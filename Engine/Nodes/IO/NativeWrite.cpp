@@ -30,6 +30,7 @@
 #include <bitset>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
@@ -1073,6 +1074,8 @@ NativeWrite::initializeKnobs()
     readBack->setDefaultValue(false);
     readBack->setAnimationEnabled(false);
     readBack->setIsMetadataSlave(true);
+    // Switching between the input and the file must not move the hash the file is gated on.
+    readBack->setHashExempt(true);
     readBack->setAddNewLine(false);
     page->addKnob(readBack);
     _readBack = readBack;
@@ -1087,17 +1090,6 @@ NativeWrite::initializeKnobs()
     reload->setAllDimensionsEnabled(false);
     page->addKnob(reload);
     _reload = reload;
-
-    // A change to this knob is how a finished sequence reaches the hash, which no effect may bump directly.
-    KnobIntPtr stamp = createKnob<KnobInt>(tr("Read Back Stamp"));
-    stamp->setName(kNatronWriteParamReadBackStamp);
-    stamp->setSecretByDefault(true);
-    stamp->setIsPersistent(false);
-    stamp->setAnimationEnabled(false);
-    stamp->setDefaultValue(0);
-    stamp->setIsMetadataSlave(true);
-    page->addKnob(stamp);
-    _readBackStamp = stamp;
 
     RenderEnginePtr engine = getRenderEngine();
     if (engine) {
@@ -1123,7 +1115,6 @@ NativeWrite::onKnobsLoaded()
     const std::string saved = views ? views->getActiveEntry().id : std::string();
     _viewToKeep = saved == kNatronWriteViewsAll ? std::string() : saved;
     refreshOptions();
-    refreshReadBackState();
 }
 
 std::optional<std::string>
@@ -1159,7 +1150,10 @@ NativeWrite::getPreferredMetadata(NodeMetadata& metadata)
     if (!filename) {
         return eStatusOK;
     }
-    if (!readBackActive()) {
+    // The node's format is that of the frame on show: the file's when that frame is read back.
+    std::string path;
+    const std::shared_ptr<const OiioReadSupport::Header> header = readBackFrame(getCurrentTime(), ViewIdx(0), &path);
+    if (!header) {
         // An RGBA input whose file gets no alpha, because the format has none or the channel set
         // leaves it out, makes an RGB output: the alpha is not in the file, so not in the output.
         if ((metadata.getComponentsType(-1) == kNatronColorLayerID) && (metadata.getNComps(-1) == 4) && getNode()->getLayerKnob()) {
@@ -1175,16 +1169,6 @@ NativeWrite::getPreferredMetadata(NodeMetadata& metadata)
             }
         }
 
-        return eStatusOK;
-    }
-    // A missing or unreadable file keeps the input's metadata: the render reports the error.
-    const std::string path = filename->generateFileNameAtTime((SequenceTime)std::floor(getCurrentTime() + 0.5), ViewIdx(0)).toStdString();
-    if (path.empty() || !OiioReadSupport::isReadablePath(path)) {
-        return eStatusOK;
-    }
-    std::string error;
-    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error);
-    if (!header || header->subimages.empty()) {
         return eStatusOK;
     }
     OiioReadSupport::PartChannels colour;
@@ -1260,7 +1244,8 @@ FramesNeededMap
 NativeWrite::getFramesNeeded(double time,
                              ViewIdx view)
 {
-    if (readBackActive()) {
+    std::string path;
+    if (readBackFrame(time, view, &path)) {
         return FramesNeededMap();
     }
     FramesNeededMap ret = NativeEffectBase::getFramesNeeded(time, view);
@@ -1289,13 +1274,15 @@ NativeWrite::getComponentsNeededAndProduced(double time,
     EffectInstance::getComponentsNeededAndProduced(time, view, comps, passThroughTime, passThroughView, passThroughInputNb);
 
     std::list<ImageLayerDesc>& produced = (*comps)[-1];
-    if (readBackActive()) {
+    std::string path;
+    const std::shared_ptr<const OiioReadSupport::Header> header = readBackFrame(time, view, &path);
+    if (header) {
         for (EffectInstance::ComponentsNeededMap::iterator it = comps->begin(); it != comps->end(); ++it) {
             if (it->first >= 0) {
                 it->second.clear();
             }
         }
-        produced = readBackLayers(time, view);
+        produced = readBackLayers(*header, view);
 
         return;
     }
@@ -1324,7 +1311,7 @@ NativeWrite::inputPlanes(double time,
 }
 
 std::list<ImageLayerDesc>
-NativeWrite::readBackLayers(double time,
+NativeWrite::readBackLayers(const OiioReadSupport::Header& header,
                             ViewIdx view) const
 {
     std::list<ImageLayerDesc> layers;
@@ -1332,25 +1319,13 @@ NativeWrite::readBackLayers(double time,
     ImageLayerDesc pairedLayer;
     getMetadataComponents(-1, &colourLayer, &pairedLayer);
 
-    const KnobOutputFilePtr filename = _filename.lock();
-    const std::string path = filename ? filename->generateFileNameAtTime((SequenceTime)std::floor(time + 0.5), view).toStdString() : std::string();
-    std::string error;
-    const std::shared_ptr<const OiioReadSupport::Header> header = (path.empty() || !OiioReadSupport::isReadablePath(path)) ? std::shared_ptr<const OiioReadSupport::Header>() : OiioReadSupport::readHeader(path, &error);
-    // Without a readable file the render fails with the reason; a colour plane gives it a plane to fail on.
-    if (!header || header->subimages.empty()) {
-        if (colourLayer.isColorLayer()) {
-            layers.push_back(colourLayer);
-        }
-
-        return layers;
-    }
     const std::string viewName = viewNameOf(getApp()->getProject()->getProjectViewNames(), view);
     OiioReadSupport::PartChannels colourPart;
-    if (OiioReadSupport::colourPartOf(*header, viewName, &colourPart)) {
+    if (OiioReadSupport::colourPartOf(header, viewName, &colourPart)) {
         layers.push_back(colourLayer.isColorLayer() ? colourLayer : ImageLayerDesc::mapNCompsToColorLayer(OiioReadSupport::ColourChannels::of(colourPart.names, colourPart.index).nComps()));
     }
     std::vector<OiioReadSupport::FileLayer> fileLayers;
-    OiioReadSupport::fileLayers(*header, &fileLayers, viewName);
+    OiioReadSupport::fileLayers(header, &fileLayers, viewName);
     for (std::size_t i = 0; i < fileLayers.size(); ++i) {
         layers.push_back(fileLayers[i].desc);
     }
@@ -1423,11 +1398,58 @@ NativeWrite::onEffectCreated(bool mayCreateFileDialog,
 }
 
 bool
+NativeWrite::readBackAvailable() const
+{
+    const KnobOutputFilePtr filename = _filename.lock();
+    const std::string pattern = filename ? filename->getValue() : std::string();
+
+    return !pattern.empty() && OiioWriteSupport::formatNameForWritableExtension(extensionOf(pattern)) == "openexr";
+}
+
+bool
 NativeWrite::readBackActive() const
 {
     const KnobBoolPtr readBack = _readBack.lock();
 
-    return readBack && readBack->getValue() && !isDoingSequentialRender();
+    return readBack && readBack->getValue() && readBackAvailable() && !isDoingSequentialRender();
+}
+
+std::string
+NativeWrite::outputHashText(U64 hash)
+{
+    char text[17];
+    std::snprintf(text, sizeof(text), "%016llx", (unsigned long long)hash);
+
+    return std::string(text);
+}
+
+std::shared_ptr<const OiioReadSupport::Header>
+NativeWrite::readBackFrame(double time,
+                           ViewIdx view,
+                           std::string* path) const
+{
+    path->clear();
+    if (!readBackActive()) {
+        return std::shared_ptr<const OiioReadSupport::Header>();
+    }
+    const KnobOutputFilePtr filename = _filename.lock();
+    const std::string candidate = filename ? filename->generateFileNameAtTime((SequenceTime)std::floor(time + 0.5), view).toStdString() : std::string();
+    std::error_code ec;
+    if (candidate.empty() || !std::filesystem::is_regular_file(std::filesystem::path(candidate), ec)) {
+        return std::shared_ptr<const OiioReadSupport::Header>();
+    }
+    std::string error;
+    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(candidate, &error);
+    if (!header || header->subimages.empty()) {
+        return std::shared_ptr<const OiioReadSupport::Header>();
+    }
+    // Every part of the file carries the attribute, so the first one speaks for the file.
+    if (header->subimages[0].get_string_attribute(kNatronWriteOutputHashAttribute) != outputHashText(getRenderHash())) {
+        return std::shared_ptr<const OiioReadSupport::Header>();
+    }
+    *path = candidate;
+
+    return header;
 }
 
 bool
@@ -1437,10 +1459,12 @@ NativeWrite::isInputOptional(int inputNb) const
 }
 
 bool
-NativeWrite::outputFollowsLayerKnob(double /*time*/,
-                                    ViewIdx /*view*/) const
+NativeWrite::outputFollowsLayerKnob(double time,
+                                    ViewIdx view) const
 {
-    return !readBackActive();
+    std::string path;
+
+    return !readBackFrame(time, view, &path);
 }
 
 void
@@ -1449,12 +1473,16 @@ NativeWrite::refreshReadBackState()
     const KnobBoolPtr readBack = _readBack.lock();
     const KnobButtonPtr reload = _reload.lock();
     const KnobIPtr button = getKnobByName(kNatronWriteParamStartRender);
+    const bool available = readBackAvailable();
+    const bool on = available && readBack && readBack->getValue();
 
+    setSecretAndDisabled(readBack, !available);
     if (reload) {
-        reload->setAllDimensionsEnabled(readBack && readBack->getValue());
+        reload->setSecret(!available);
+        reload->setAllDimensionsEnabled(on);
     }
-    if (readBack && button) {
-        button->setAllDimensionsEnabled(!readBack->getValue());
+    if (button) {
+        button->setAllDimensionsEnabled(!on);
     }
 }
 
@@ -1479,52 +1507,19 @@ NativeWrite::purgeCaches()
     }
     invalidateOutputMetadata();
     clearActionsCache();
+    // A file read or rewritten under an unchanged hash makes the node show other pixels than the
+    // images cached under that hash hold.
+    getNode()->removeAllImagesFromCache(false);
 }
 
 void
 NativeWrite::onSequenceRenderFinished()
 {
-    bumpReadBackStamp();
-}
-
-void
-NativeWrite::bumpReadBackStamp()
-{
     const KnobBoolPtr readBack = _readBack.lock();
-    const KnobIntPtr stamp = _readBackStamp.lock();
 
-    if (readBack && stamp && readBack->getValue()) {
-        stamp->setValue(stamp->getValue() + 1);
+    if (readBack && readBack->getValue()) {
+        purgeCaches();
     }
-}
-
-std::shared_ptr<const OiioReadSupport::Header>
-NativeWrite::readBackHeader(double time,
-                            ViewIdx view,
-                            std::string* path)
-{
-    KnobOutputFilePtr filename = _filename.lock();
-
-    *path = filename ? filename->generateFileNameAtTime((SequenceTime)std::floor(time + 0.5), view).toStdString() : std::string();
-    if (path->empty()) {
-        setPersistentMessage(eMessageTypeError, tr("No output file is set").toStdString());
-
-        return std::shared_ptr<const OiioReadSupport::Header>();
-    }
-    if (!OiioReadSupport::isReadablePath(*path)) {
-        setPersistentMessage(eMessageTypeError, tr("Unsupported format: %1").arg(QString::fromStdString(*path)).toStdString());
-
-        return std::shared_ptr<const OiioReadSupport::Header>();
-    }
-    std::string error;
-    std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(*path, &error);
-    if (!header || header->subimages.empty()) {
-        setPersistentMessage(eMessageTypeError, error.empty() ? tr("Could not read %1").arg(QString::fromStdString(*path)).toStdString() : error);
-
-        return std::shared_ptr<const OiioReadSupport::Header>();
-    }
-
-    return header;
 }
 
 bool
@@ -1581,6 +1576,7 @@ NativeWrite::refreshOptions()
     const bool manual = frameRange && frameRange->getValue() == eFrameRangeManual;
     setSecretAndDisabled(_firstFrame.lock(), !manual);
     setSecretAndDisabled(_lastFrame.lock(), !manual);
+    refreshReadBackState();
 }
 
 void
@@ -1643,6 +1639,8 @@ NativeWrite::knobChanged(KnobI* k,
     if (readBack && (k == readBack.get())) {
         refreshReadBackState();
         clearPersistentMessage(false);
+        // The hash is the same on and off, so what was cached for the other state is stale.
+        purgeCaches();
 
         return true;
     }
@@ -1650,9 +1648,6 @@ NativeWrite::knobChanged(KnobI* k,
     if (reload && (k == reload.get())) {
         purgeCaches();
         clearPersistentMessage(false);
-        // The file may have been rewritten outside Natron, which leaves the file name, and so the
-        // hash, unchanged; the stamp change re-keys this node and everything downstream of it.
-        bumpReadBackStamp();
 
         return true;
     }
@@ -1784,23 +1779,13 @@ NativeWrite::getRegionOfDefinition(U64 /*hash*/,
                                    ViewIdx view,
                                    RectD* rod)
 {
-    if (readBackActive()) {
-        std::string path;
-        const std::shared_ptr<const OiioReadSupport::Header> header = readBackHeader(time, view, &path);
-        if (!header) {
-            // The request pass only treats a failed RoD as an error when the RoD it leaves is not
-            // null; a null one reads as an empty image and the render goes on to produce a plane.
-            Format format;
-            getApp()->getProject()->getProjectDefaultFormat(&format);
-            *rod = format.toCanonicalFormat();
-
-            return eStatusFailed;
-        }
+    std::string path;
+    const std::shared_ptr<const OiioReadSupport::Header> header = readBackFrame(time, view, &path);
+    if (header) {
         OiioReadSupport::PartChannels colour;
         const bool hasColour = OiioReadSupport::colourPartOf(*header, viewNameOf(getApp()->getProject()->getProjectViewNames(), view), &colour);
         const OIIO::ImageSpec& spec = header->subimages[hasColour ? (std::size_t)colour.subimage : 0];
         *rod = OiioReadSupport::dataWindowOf(spec).toCanonical_noClipping(0, OiioReadSupport::pixelAspectOf(spec));
-        clearPersistentMessage(false);
 
         return eStatusOK;
     }
@@ -1815,14 +1800,15 @@ NativeWrite::getRegionOfDefinition(U64 /*hash*/,
 }
 
 void
-NativeWrite::getRegionsOfInterest(double /*time*/,
+NativeWrite::getRegionsOfInterest(double time,
                                   const RenderScale& /*scale*/,
                                   const RectD& outputRoD,
                                   const RectD& /*renderWindow*/,
-                                  ViewIdx /*view*/,
+                                  ViewIdx view,
                                   RoIMap* ret)
 {
-    if (readBackActive()) {
+    std::string path;
+    if (readBackFrame(time, view, &path)) {
         return;
     }
     EffectInstancePtr input = getInput(0);
@@ -1833,19 +1819,16 @@ NativeWrite::getRegionsOfInterest(double /*time*/,
 }
 
 StatusEnum
-NativeWrite::renderReadBack(const RenderActionArgs& args)
+NativeWrite::renderReadBack(const RenderActionArgs& args,
+                            const OiioReadSupport::Header& header,
+                            const std::string& path)
 {
-    std::string path;
-    const std::shared_ptr<const OiioReadSupport::Header> header = readBackHeader(args.time, args.view, &path);
-    if (!header) {
-        return eStatusFailed;
-    }
     ProjectPtr project = getApp()->getProject();
     const std::string viewName = viewNameOf(project->getProjectViewNames(), args.view);
     std::vector<OiioReadSupport::FileLayer> fileLayers;
     OiioReadSupport::PartChannels colourPart;
-    OiioReadSupport::fileLayers(*header, &fileLayers, viewName);
-    const bool hasColour = OiioReadSupport::colourPartOf(*header, viewName, &colourPart);
+    OiioReadSupport::fileLayers(header, &fileLayers, viewName);
+    const bool hasColour = OiioReadSupport::colourPartOf(header, viewName, &colourPart);
 
     // The file's own tag or a file rule could name another space, but what the file holds is what this node wrote.
     OCIO_NAMESPACE::ConstCPUProcessorRcPtr toWorking;
@@ -1881,7 +1864,7 @@ NativeWrite::renderReadBack(const RenderActionArgs& args)
         if (it->first.isColorLayer()) {
             if (hasColour) {
                 subimage = colourPart.subimage;
-                dataWindow = OiioReadSupport::dataWindowOf(header->subimages[(std::size_t)subimage]);
+                dataWindow = OiioReadSupport::dataWindowOf(header.subimages[(std::size_t)subimage]);
                 const OiioReadSupport::ColourChannels colour = OiioReadSupport::ColourChannels::of(colourPart.names, colourPart.index);
                 for (int c = 0; c < nComps; ++c) {
                     fileChannels[(std::size_t)c] = colour.fileChannelForComponent(nComps, c);
@@ -1894,7 +1877,7 @@ NativeWrite::renderReadBack(const RenderActionArgs& args)
                     continue;
                 }
                 subimage = layer->subimage;
-                dataWindow = OiioReadSupport::dataWindowOf(header->subimages[(std::size_t)subimage]);
+                dataWindow = OiioReadSupport::dataWindowOf(header.subimages[(std::size_t)subimage]);
                 const std::vector<std::string>& present = layer->desc.getChannels();
                 for (int c = 0; c < nComps && (std::size_t)c < wanted.size(); ++c) {
                     const std::vector<std::string>::const_iterator found = std::find(present.begin(), present.end(), wanted[(std::size_t)c]);
@@ -1970,8 +1953,12 @@ NativeWrite::renderReadBack(const RenderActionArgs& args)
 StatusEnum
 NativeWrite::render(const RenderActionArgs& args)
 {
-    if (readBackActive()) {
-        return renderReadBack(args);
+    {
+        std::string path;
+        const std::shared_ptr<const OiioReadSupport::Header> header = readBackFrame(args.time, args.view, &path);
+        if (header) {
+            return renderReadBack(args, *header, path);
+        }
     }
     std::vector<ResolvedLayer> selected;
     const bool hasLayerKnob = getNode()->resolveLayerKnob(args.time, args.view, &selected);
@@ -2164,6 +2151,11 @@ NativeWrite::render(const RenderActionArgs& args)
         const KnobBoolPtr writeMetadata = _writeMetadata.lock();
         if (!writeMetadata || writeMetadata->getValue()) {
             OiioWriteSupport::applyMetadata(spec, getUpstreamMetadata(args.time, args.view), formatName);
+        }
+        if (formatName == "openexr") {
+            // The hash this render started under, not the node's current one, so that an edit made
+            // while the frame is written leaves it not matching.
+            spec.attribute(kNatronWriteOutputHashAttribute, outputHashText(getRenderHash()));
         }
 
         const std::string compressionID = activeID(compression);

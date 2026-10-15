@@ -258,8 +258,7 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   `ocioOutputSpace`, `ocioOutputSpaceIndex`, `ocioOutputSpaceSet`, the `Context`
   group of `key1`..`key4` and `value1`..`value4`, the hidden `ocioConfigFile`
   and `ocioWorkingSpace`, `startRender`, `writeMetadata`, `readBack`,
-  `reload` (a Reload button on the `readBack` row) and the hidden
-  `readBackStamp`. The compression, bit-depth and per-format knobs follow the
+  and `reload` (a Reload button on the `readBack` row). The compression, bit-depth and per-format knobs follow the
   file name through `OiioWriteSupport::paramVisibility()`.
 - **Encoder.** `OiioWriteSupport::writeFile()` pulls rows from a `RowSource` one
   band (about `kDefaultBandBytes`) at a time and is the only pixel memory held:
@@ -306,24 +305,32 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   `isPassThroughForNonRenderedLayers()` blocks the rest). Without a writable
   format, only the channel set restricts the output. A colour row selecting
   alpha alone keeps an RGBA plane whose RGB is zero.
-- **Read back.** With `readBack` on, the node outputs the written file instead
-  of its input, decoded by `OiioReadSupport::decode()` inside the Write
-  (`renderReadBack()`), with the file read in the output space it was written in.
-  The produced planes then come from the file's header too
-  (`readBackLayers()`: its colour part and the layers
-  `OiioReadSupport::fileLayers()` groups for the view), so the channel set and
-  the input, even a disconnected one, no longer decide what downstream sees.
-  The input is optional while reading back (`isInputOptional()`), so a Viewer
-  renders the Write without it, and `outputFollowsLayerKnob()` is false, so a
-  channel set that selects nothing does not make the Write an identity of its
-  input.
+- **Read back.** `readBack` is offered only while the file name is an EXR (the
+  one format whose header can hold the gate below). A frame written to an EXR
+  carries the header attribute `natron:outputHash`, the Write's own node hash
+  (`getRenderHash()`, the content hash the frame started rendering under) as 16
+  hex digits, on every part of the file. With `readBack` on, a frame shows its
+  file only when `readBackFrame()` finds the file, reads its header and finds
+  the stored hash equal to the node's current hash; any other frame (no file,
+  no attribute, another hash) passes the input through with no error. The node
+  hash covers the Write's own knobs, the upstream graph and the project render
+  settings, so an edit anywhere upstream turns the file away and setting the
+  edit back (or undoing it) brings the file back. `readBack` is exempt from the
+  hash so that turning it on does not invalidate the files; the Render button
+  is disabled and Reload enabled while it is on. A file shown is decoded by
+  `OiioReadSupport::decode()` inside the Write (`renderReadBack()`), read in the
+  output space it was written in, and the produced planes, format and RoD come
+  from its header (`readBackLayers()`), so the channel set and a disconnected
+  input no longer decide what downstream sees. The input is optional while
+  `readBack` is on (`isInputOptional()`), and `outputFollowsLayerKnob()` is false
+  for a frame shown from its file. The hash is the same whether the node shows
+  the input or the file, so turning `readBack` on or off and a finished
+  sequence call `purgeCaches()` to retire what was cached for the other state.
 - **Reload.** The Reload button on the `readBack` row is enabled only while
   `readBack` is on. It runs `purgeCaches()`: the cached headers of the files of
-  the frame range, the output metadata and the action results are dropped, and
-  the button triggers a render, so the node hash moves and the images and
-  action results cached under the old hash are retired. Until then a file
-  changed on disk is not seen: the produced layers and the cached images stay
-  those of the file read before.
+  the frame range, the output metadata, the action results and this node's
+  cached images are dropped, so a file changed on disk is read again. Images
+  cached downstream of the Write under an unchanged hash are not retired.
 
 ## Writing a node, start to finish
 

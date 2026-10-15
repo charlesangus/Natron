@@ -269,6 +269,9 @@ public:
         return true;
     }
 
+    // Every node's hash folds in the project's render settings.
+    virtual void onKnobContentChanged(const KnobI* knob) OVERRIDE FINAL;
+
     /**
      * @brief Returns the user environment variables for the project
      **/

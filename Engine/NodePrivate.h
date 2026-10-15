@@ -33,6 +33,8 @@
 
 #include "Engine/EffectInstance.h"
 
+#include <atomic>
+
 #include <QWaitCondition>
 #include <QReadWriteLock>
 #include <QMutex>
@@ -378,6 +380,16 @@ public:
     mutable QReadWriteLock knobsAgeMutex; //< protects knobsAge, hash and contentHash
     Hash64 hash; //< recomputed every time knobsAge is changed.
     U64 contentHash; //< recomputed with hash; 0 until first computed
+
+    // The hashes are recomputed lazily. Any thread marks the node by moving hashDirtyGeneration; a
+    // recompute records the generation and the global hash epoch it started from, so an edit
+    // landing during it leaves the node dirty. The node is dirty while either differs.
+    std::atomic<U64> hashDirtyGeneration { 1 };
+    std::atomic<U64> hashCleanGeneration { 0 };
+    std::atomic<U64> hashCleanEpoch { 0 };
+    // Set while a mark of this node waits for its dependents to be marked too.
+    std::atomic<bool> hashDirtyQueued { false };
+    QMutex hashRecomputeMutex; //< serializes recomputes of this node; no other node's is taken under it
 
     // The knob part of the content hash, memoized against the effect's knobs content generation.
     // Knobs that read another knob or a file are kept as live entries and hashed on every use.

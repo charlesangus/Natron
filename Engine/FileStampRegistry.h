@@ -30,10 +30,12 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "Global/GlobalDefines.h"
 
@@ -75,6 +77,28 @@ public:
 
     void invalidateAll();
 
+    enum InvalidationScopeEnum {
+        eInvalidationScopePath, //< invalidate(): pathOrDirectory is the file or pattern
+        eInvalidationScopeDirectory, //< invalidateDirectory()
+        eInvalidationScopeAll //< invalidateAll(); pathOrDirectory is empty
+    };
+
+    typedef std::function<void(InvalidationScopeEnum scope, const std::string& pathOrDirectory)> InvalidationListener;
+
+    /**
+     * @brief Registers a function called after every invalidation, on the thread that
+     * invalidated, with no registry lock held. Returns an id for removeInvalidationListener().
+     **/
+    int addInvalidationListener(const InvalidationListener& listener);
+
+    void removeInvalidationListener(int id);
+
+    /**
+     * @brief True if an invalidation of scope at pathOrDirectory dropped a memo that the stamp of
+     * path, a file or a sequence pattern, is read from.
+     **/
+    static bool invalidationCovers(InvalidationScopeEnum scope, const std::string& pathOrDirectory, const std::string& path);
+
     /**
      * @brief True if path contains a frame-number or view pattern (#, %04d, %v, %V) and so
      * names a sequence rather than a single file.
@@ -101,6 +125,7 @@ private:
 
     void watchDirectory(const std::string& directory);
     void addWatchOnMainThread(const std::string& directory);
+    void notifyInvalidation(InvalidationScopeEnum scope, const std::string& pathOrDirectory);
 
     std::mutex _mutex;
     std::map<std::string, Entry> _entries;
@@ -108,6 +133,10 @@ private:
     std::set<std::string> _watchedDirectories;
     // Bumped by every invalidation, so a scan that raced one is not memoized.
     std::uint64_t _generation = 0;
+
+    std::mutex _listenersMutex; //< never held with _mutex
+    std::vector<std::pair<int, InvalidationListener>> _listeners;
+    int _nextListenerId = 1;
 };
 
 /**

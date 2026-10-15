@@ -1294,6 +1294,7 @@ Project::initializeKnobs()
 
         _imp->builtinFormats.push_back(f);
         ++_imp->formatsGeneration;
+        Node::invalidateAllHashes();
     }
     _imp->formatKnob->setAddNewLine(false);
 
@@ -1723,6 +1724,9 @@ Project::refreshColorManagement(bool warnOnFallback)
     onOCIOConfigPathChanged(cm.getConfigDirectory(), false);
 
     cm.setWorkingSpace(getWorkingColorSpace());
+    // The digest folds in the loaded config's source, which no project knob holds when the
+    // environment overrides it.
+    Node::invalidateAllHashes();
     pushOCIOConfigToNodes();
     cm.notifyConfigChanged();
 
@@ -1921,6 +1925,7 @@ Project::tryAddProjectFormat(const Format & f, bool* existed)
     QString formatStr = ProjectPrivate::generateStringFromFormat(f);
     _imp->additionalFormats.push_back(f);
     ++_imp->formatsGeneration;
+    Node::invalidateAllHashes();
     if ( !f.getName().empty() ) {
         _imp->formatKnob->appendChoice( ChoiceOption(f.getName(), formatStr.toStdString(), "") );
     } else {
@@ -2017,8 +2022,11 @@ LayerRegistry::AddResultEnum
 Project::addLayer(const ImageLayerDesc& desc, LayerRegistryEntry::OriginEnum origin, std::string* error)
 {
     LayerRegistry::AddResultEnum ret = _imp->layers->add(desc, origin, error);
-    if ((ret == LayerRegistry::eAddResultAdded || ret == LayerRegistry::eAddResultGrown) && !isLoadingProject()) {
-        notifyLayersChanged();
+    if (ret == LayerRegistry::eAddResultAdded || ret == LayerRegistry::eAddResultGrown) {
+        Node::invalidateAllHashes();
+        if (!isLoadingProject()) {
+            notifyLayersChanged();
+        }
     }
     return ret;
 }
@@ -2047,8 +2055,11 @@ Project::removeLayer(const std::string& id, std::string* error)
     }
 
     bool ok = _imp->layers->remove(id, error);
-    if (ok && !isLoadingProject()) {
-        notifyLayersChanged();
+    if (ok) {
+        Node::invalidateAllHashes();
+        if (!isLoadingProject()) {
+            notifyLayersChanged();
+        }
     }
     return ok;
 }
@@ -2415,6 +2426,12 @@ Project::refreshOpenGLRenderingFlagOnNodes()
     }
 }
 
+void
+Project::onKnobContentChanged(const KnobI* /*knob*/)
+{
+    Node::invalidateAllHashes();
+}
+
 bool
 Project::isLoadingProject() const
 {
@@ -2719,6 +2736,7 @@ Project::doResetEnd(bool aboutToQuit)
             _imp->autoSaveTimer->stop();
             _imp->additionalFormats.clear();
             ++_imp->formatsGeneration;
+            Node::invalidateAllHashes();
             _imp->layers.reset(new LayerRegistry());
         }
         {

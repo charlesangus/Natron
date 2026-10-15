@@ -100,6 +100,9 @@ public:
         return false;
     }
 
+    // Project digests fold in application settings such as transform concatenation and GPU use.
+    virtual void onKnobContentChanged(const KnobI* knob) OVERRIDE FINAL;
+
     virtual bool onKnobValueChanged(KnobI* k,
                                     ValueChangedReasonEnum reason,
                                     double time,

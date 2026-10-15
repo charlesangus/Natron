@@ -619,10 +619,10 @@ KnobHelper::setHolder(KnobHolder* holder)
     _imp->holder = holder;
     // A holder-wide memo trusts only its own knobs' invalidations, so both holders re-check.
     if (previous) {
-        previous->bumpKnobsContentGeneration();
+        previous->bumpKnobsContentGeneration(this);
     }
     if (holder) {
-        holder->bumpKnobsContentGeneration();
+        holder->bumpKnobsContentGeneration(this);
     }
 }
 
@@ -5093,7 +5093,37 @@ KnobHelper::invalidateContentHash()
     _imp->contentGeneration.fetch_add(1, std::memory_order_acq_rel);
     KnobHolder* holder = _imp->holder;
     if (holder) {
-        holder->bumpKnobsContentGeneration();
+        holder->bumpKnobsContentGeneration(this);
+    }
+
+    // A knob reading this one through an expression or a master link hashes it live, so its
+    // holder's generation stays put; the holder is told directly, and so on down the chain.
+    KnobI::ListenerDimsMap listeners;
+    getListeners(listeners);
+    if (listeners.empty()) {
+        return;
+    }
+    std::set<const KnobI*> visited;
+    visited.insert(this);
+    std::vector<KnobIPtr> toVisit;
+    for (;;) {
+        for (KnobI::ListenerDimsMap::const_iterator it = listeners.begin(); it != listeners.end(); ++it) {
+            KnobIPtr listener = it->first.lock();
+            if (listener && visited.insert(listener.get()).second) {
+                toVisit.push_back(listener);
+            }
+        }
+        if (toVisit.empty()) {
+            break;
+        }
+        KnobIPtr listener = toVisit.back();
+        toVisit.pop_back();
+        KnobHolder* listenerHolder = listener->getHolder();
+        if (listenerHolder) {
+            listenerHolder->onKnobContentChanged(listener.get());
+        }
+        listeners.clear();
+        listener->getListeners(listeners);
     }
 }
 
@@ -5414,7 +5444,7 @@ KnobHolder::addKnob(const KnobIPtr& k)
         }
     }
     _imp->knobs.push_back(k);
-    bumpKnobsContentGeneration();
+    bumpKnobsContentGeneration(k.get());
 }
 
 void
@@ -5437,7 +5467,7 @@ KnobHolder::insertKnob(int index,
         std::advance(it, index);
         _imp->knobs.insert(it, k);
     }
-    bumpKnobsContentGeneration();
+    bumpKnobsContentGeneration(k.get());
 }
 
 void
@@ -5448,7 +5478,7 @@ KnobHolder::removeKnobFromList(const KnobI* knob)
     for (KnobsVec::iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
         if (it->get() == knob) {
             _imp->knobs.erase(it);
-            bumpKnobsContentGeneration();
+            bumpKnobsContentGeneration(knob);
 
             return;
         }
@@ -5462,9 +5492,10 @@ KnobHolder::getKnobsContentGeneration() const
 }
 
 void
-KnobHolder::bumpKnobsContentGeneration()
+KnobHolder::bumpKnobsContentGeneration(const KnobI* knob)
 {
     _imp->knobsContentGeneration.fetch_add(1, std::memory_order_acq_rel);
+    onKnobContentChanged(knob);
 }
 
 void
@@ -5536,7 +5567,7 @@ KnobHolder::deleteKnob(KnobI* knob,
             }
         }
     }
-    bumpKnobsContentGeneration();
+    bumpKnobsContentGeneration(knob);
 
     if (alsoDeleteGui && _imp->settingsPanel) {
         _imp->settingsPanel->deleteKnobGui(sharedKnob);

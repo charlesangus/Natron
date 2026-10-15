@@ -1913,8 +1913,8 @@ public:
     bool getThreadLocalUnPremultDivisor(ImagePtr* image, ImageLayerDesc* layer, int* channelIndex) const;
 
     /**
-     * @brief Called when the associated node's hash has changed.
-     * This is always called on the main-thread.
+     * @brief Called when the associated node's hash has changed, on the thread that recomputed
+     * it, after the hashes of its inputs and with no node lock held.
      **/
     virtual void onNodeHashChanged(U64 hash);
 
@@ -2758,6 +2758,11 @@ private:
                             ImagePtr* downscaleImage);
 
     virtual void onSignificantEvaluateAboutToBeCalled(KnobI* knob) OVERRIDE FINAL;
+
+public:
+    virtual void onKnobContentChanged(const KnobI* knob) OVERRIDE FINAL;
+
+private:
     virtual void onAllKnobsSlaved(bool isSlave, KnobHolder* master) OVERRIDE FINAL;
     enum RenderingFunctorRetEnum
     {

@@ -826,11 +826,7 @@ Node::connectInput(const NodePtr & input,
         onInputChanged(inputNumber);
     }
 
-    bool creatingNodeTree = getApp()->isCreatingNodeTree();
-    if (!creatingNodeTree) {
-        ///Recompute the hash
-        computeHash();
-    }
+    computeHash();
 
     _imp->ifGroupForceHashChangeOfInputs();
 
@@ -932,11 +928,7 @@ Node::replaceInputInternal(const NodePtr& input, int inputNumber, bool useGuiInp
         onInputChanged(inputNumber);
     }
 
-    bool creatingNodeTree = getApp()->isCreatingNodeTree();
-    if (!creatingNodeTree) {
-        ///Recompute the hash
-        computeHash();
-    }
+    computeHash();
 
     _imp->ifGroupForceHashChangeOfInputs();
 
@@ -1035,11 +1027,7 @@ Node::switchInput0And1()
         onInputChanged(inputAIndex);
         onInputChanged(inputBIndex);
     }
-    bool creatingNodeTree = getApp()->isCreatingNodeTree();
-    if (!creatingNodeTree) {
-        ///Recompute the hash
-        computeHash();
-    }
+    computeHash();
 
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
@@ -1156,11 +1144,7 @@ Node::disconnectInput(int inputNumber)
         mustCallEnd = true;
         onInputChanged(inputNumber);
     }
-    bool creatingNodeTree = getApp()->isCreatingNodeTree();
-    if (!creatingNodeTree) {
-        ///Recompute the hash
-        computeHash();
-    }
+    computeHash();
 
     _imp->ifGroupForceHashChangeOfInputs();
 
@@ -1225,14 +1209,7 @@ Node::disconnectInputInternal(Node* input, bool useGuiValues)
             mustCallEnd = true;
             onInputChanged(found);
         }
-        bool creatingNodeTree = getApp()->isCreatingNodeTree();
-        if (!creatingNodeTree) {
-            ///Recompute the hash
-            if ( !getApp()->getProject()->isProjectClosing() ) {
-                computeHash();
-            }
-        }
-
+        computeHash();
 
         _imp->ifGroupForceHashChangeOfInputs();
 
@@ -1821,11 +1798,7 @@ InspectorNode::connectInput(const NodePtr& input,
     }
 
     if ( !Node::connectInput(input, inputNumber) ) {
-        bool creatingNodeTree = getApp()->isCreatingNodeTree();
-        if (!creatingNodeTree) {
-            ///Recompute the hash
-            computeHash();
-        }
+        computeHash();
     }
 
     return true;
@@ -1842,11 +1815,7 @@ InspectorNode::setActiveInputAndRefresh(int inputNb,
         return;
     }
 
-    bool creatingNodeTree = getApp()->isCreatingNodeTree();
-    if (!creatingNodeTree) {
-        ///Recompute the hash
-        computeHash();
-    }
+    computeHash();
 
     Q_EMIT inputChanged(inputNb);
     onInputChanged(inputNb, isASide);

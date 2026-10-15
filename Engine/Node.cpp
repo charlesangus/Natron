@@ -26,6 +26,7 @@
 #include "NodePrivate.h"
 
 #include <algorithm> // min, max
+#include <atomic>
 #include <bitset>
 #include <cassert>
 #include <cctype>
@@ -39,6 +40,8 @@
 #include <sstream> // stringstream
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "Global/Macros.h"
@@ -69,6 +72,7 @@
 #include "Engine/DiskCacheNode.h"
 #include "Engine/Dot.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/FileStampRegistry.h"
 #include "Engine/FileSystemModel.h"
 #include "Engine/Format.h"
 #include "Engine/GenericSchedulerThreadWatcher.h"
@@ -178,12 +182,112 @@ toBGRA(unsigned char r,
     return (a << 24) | (r << 16) | (g << 8) | b;
 }
 
+namespace {
+// Set while this thread computes a hash. A hash read from inside it, such as an expression's
+// random seed, gets the stored hash: recomputing there would nest node locks in no fixed order.
+thread_local int hashComputeDepth = 0;
+
+class HashComputeScope {
+public:
+    HashComputeScope() { ++hashComputeDepth; }
+
+    ~HashComputeScope() { --hashComputeDepth; }
+};
+
+bool
+readsFileCoveredBy(const NodePtr& node,
+                   FileStampRegistry::InvalidationScopeEnum scope,
+                   const std::string& pathOrDirectory)
+{
+    EffectInstancePtr effect = node->getEffectInstance();
+
+    if (!effect) {
+        return false;
+    }
+    const KnobsVec& knobs = effect->getKnobs();
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        KnobFile* file = dynamic_cast<KnobFile*>(it->get());
+        if (file && FileStampRegistry::invalidationCovers(scope, pathOrDirectory, file->getResolvedPath())) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void
+refreshNodesAfterFileStampInvalidation(FileStampRegistry::InvalidationScopeEnum scope,
+                                       const std::string& pathOrDirectory)
+{
+    if (!appPTR) {
+        return;
+    }
+    const AppInstanceVec apps = appPTR->getAppInstances();
+    for (AppInstanceVec::const_iterator app = apps.begin(); app != apps.end(); ++app) {
+        ProjectPtr project = (*app)->getProject();
+        if (!project) {
+            continue;
+        }
+        const bool settled = !project->isLoadingProject() && !project->isProjectClosing();
+        // The project digest folds in the stamp of a config file, so every node depends on it.
+        const std::string ocioSource = project->getOCIOConfigSource();
+        const bool ocioIsFile = !ocioSource.empty() && (ocioSource.find("://") == std::string::npos);
+        const bool ocioCovered = ocioIsFile && FileStampRegistry::invalidationCovers(scope, pathOrDirectory, ocioSource);
+        if (ocioCovered) {
+            Node::invalidateAllHashes();
+        }
+        NodesList nodes;
+        project->getNodes_recursive(nodes, false);
+        bool changed = false;
+        for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+            if (!ocioCovered && !readsFileCoveredBy(*it, scope, pathOrDirectory)) {
+                continue;
+            }
+            if (settled && (*it)->isNodeCreated()) {
+                changed |= (*it)->refreshHashNow();
+            } else {
+                (*it)->markHashDirty();
+            }
+        }
+        // Only a file that really changed re-renders: invalidations also come from every focus-in.
+        if (changed) {
+            (*app)->renderAllViewers(true);
+        }
+    }
+}
+
+// Invalidations come from render threads, from inside render setup and from knob callbacks, so
+// the nodes are refreshed later, from the main thread's event loop.
+void
+onFileStampsInvalidated(FileStampRegistry::InvalidationScopeEnum scope,
+                        const std::string& pathOrDirectory)
+{
+    QCoreApplication* app = QCoreApplication::instance();
+
+    if (!app) {
+        return;
+    }
+    QMetaObject::invokeMethod(app, [scope, pathOrDirectory]() { refreshNodesAfterFileStampInvalidation(scope, pathOrDirectory); }, Qt::QueuedConnection);
+}
+
+void
+listenToFileStampInvalidations()
+{
+    static std::once_flag once;
+
+    std::call_once(once, []() {
+        FileStampRegistry::instance().addInvalidationListener(onFileStampsInvalidated);
+    });
+}
+} // anonymous namespace
+
 Node::Node(const AppInstancePtr& app,
            const NodeCollectionPtr& group,
            Plugin* plugin)
     : QObject()
     , _imp( new Implementation(this, app, group, plugin) )
 {
+    listenToFileStampInvalidations();
     QObject::connect( this, SIGNAL(pluginMemoryUsageChanged(qint64)), appPTR, SLOT(onNodeMemoryRegistered(qint64)) );
     QObject::connect( this, SIGNAL(mustDequeueActions()), this, SLOT(dequeueActions()) );
     QObject::connect( this, SIGNAL(mustComputeHashOnMainThread()), this, SLOT(doComputeHashOnMainThread()) );
@@ -753,9 +857,7 @@ Node::getChildrenMultiInstance(NodesList* children) const
 U64
 Node::getHashValue() const
 {
-    QReadLocker l(&_imp->knobsAgeMutex);
-
-    return _imp->contentHash;
+    return getContentHash();
 }
 
 U64
@@ -768,6 +870,19 @@ Node::getAgeHashValue() const
 
 U64
 Node::getContentHash() const
+{
+    if (hashComputeDepth == 0) {
+        flushHashDirtyMarks();
+        if (isHashDirty()) {
+            const_cast<Node*>(this)->refreshDirtyHashes();
+        }
+    }
+
+    return getStoredContentHash();
+}
+
+U64
+Node::getStoredContentHash() const
 {
     QReadLocker l(&_imp->knobsAgeMutex);
 
@@ -921,6 +1036,7 @@ Node::resetHashAudit(bool seedFromCurrentHashes)
     const std::string loggedPrefix = getPluginID() + "|" + getScriptName() + "|";
     U64 ageHash = 0, contentHash = 0;
     if (seedFromCurrentHashes) {
+        getHashValue();
         QReadLocker l(&_imp->knobsAgeMutex);
         ageHash = _imp->hash.value();
         contentHash = _imp->contentHash;
@@ -942,13 +1058,13 @@ Node::resetHashAudit(bool seedFromCurrentHashes)
 }
 
 bool
-Node::computeHashInternal(U64 projectDigest)
+Node::computeHashInternal(U64 projectDigest,
+                          U64* newContentHash)
 {
+    *newContentHash = 0;
     if (!_imp->effect) {
         return false;
     }
-    ///Always called in the main thread
-    assert( QThread::currentThread() == qApp->thread() );
     if (!_imp->inputsInitialized) {
         qDebug() << "Node::computeHash(): inputs not initialized";
     }
@@ -992,7 +1108,7 @@ Node::computeHashInternal(U64 projectDigest)
                     }
                 }
             } else {
-                for (U32 i = 0; i < _imp->inputs.size(); ++i) {
+                for (U32 i = 0, n = getInputSlotCount(); i < n; ++i) {
                     NodePtr input = getInput(i);
                     if (input) {
                         //Since the rotopaint node is connected to the internal nodes of the tree, don't change their hash
@@ -1035,16 +1151,8 @@ Node::computeHashInternal(U64 projectDigest)
     if (isHashAuditEnabled()) {
         auditHashTransition(newHash, contentHash);
     }
+    *newContentHash = contentHash;
 
-    // An age-only change still runs the change hooks: they also drop metadata and expression
-    // results, which some age bumps exist to refresh. Everything keyed is keyed on the content hash.
-    // The entries made under the node's other keys are left to the caches' LRU: a content key
-    // names one state only, so they are still valid and are reused if the node returns to it.
-    if (contentChanged || ageChanged) {
-        _imp->effect->onNodeHashChanged(contentHash);
-    }
-
-    // Downstream hashes fold this node's in, so they are recomputed whenever either one moves.
     return contentChanged || ageChanged;
 } // Node::computeHashInternal
 
@@ -1155,7 +1263,7 @@ Node::computeContentHash(U64 projectDigest) const
         for (int i = 0; i < 2; ++i) {
             h.appendI64(activeInput[i]);
             NodePtr input = getInput(activeInput[i]);
-            h.appendU64(input ? input->getContentHash() : 0);
+            h.appendU64(input ? input->getStoredContentHash() : 0);
         }
     } else {
         RotoDrawableItemPtr attachedStroke = _imp->paintStroke.lock();
@@ -1166,7 +1274,7 @@ Node::computeContentHash(U64 projectDigest) const
         // Unconnected inputs are skipped rather than marked: nodes such as Merge grow and keep
         // empty input slots, which must not make an otherwise identical graph hash differently.
         U64 connectedInputs = 0;
-        for (U32 i = 0; i < _imp->inputs.size(); ++i) {
+        for (U32 i = 0, n = getInputSlotCount(); i < n; ++i) {
             NodePtr input = getInput(i);
             if (!input) {
                 continue;
@@ -1177,7 +1285,7 @@ Node::computeContentHash(U64 projectDigest) const
                 continue;
             }
             h.appendI64(i);
-            h.appendU64(input->getContentHash());
+            h.appendU64(input->getStoredContentHash());
             ++connectedInputs;
         }
         h.appendU64(connectedInputs);
@@ -1195,8 +1303,9 @@ Node::computeContentHash(U64 projectDigest) const
         h.appendU64(strokeItem->getContentHash());
     }
 
-    // isNodeDisabled() inherits the disabled state of every enclosing group, and identity results
-    // are cached under this hash, so toggling a group must move the hashes of the nodes inside it.
+    // isNodeDisabled() inherits the disabled state and the lifetime of the enclosing groups, and
+    // identity results are cached under this hash, so editing either on a group must move the
+    // hashes of the nodes inside it.
     U64 enclosingGroups = 0;
     NodeCollectionPtr collection = getGroup();
     while (NodeGroup* enclosingGroup = dynamic_cast<NodeGroup*>(collection.get())) {
@@ -1208,6 +1317,16 @@ Node::computeContentHash(U64 projectDigest) const
         h.appendBool(bool(groupDisabled));
         if (groupDisabled) {
             groupDisabled->appendContentHash(h);
+        }
+        KnobBoolPtr groupLifetimeEnabled = groupNode->_imp->enableLifeTimeKnob.lock();
+        h.appendBool(bool(groupLifetimeEnabled));
+        if (groupLifetimeEnabled) {
+            groupLifetimeEnabled->appendContentHash(h);
+        }
+        KnobIntPtr groupLifetime = groupNode->_imp->lifeTimeKnob.lock();
+        h.appendBool(bool(groupLifetime));
+        if (groupLifetime) {
+            groupLifetime->appendContentHash(h);
         }
         ++enclosingGroups;
         collection = groupNode->getGroup();
@@ -1279,13 +1398,98 @@ Node::getHashDependents(NodesList* dependents) const
     }
 }
 
+U32
+Node::getInputSlotCount() const
+{
+    // Hashes are recomputed on render threads while the main thread may grow the inputs.
+    QMutexLocker l(&_imp->inputsMutex);
+
+    return (U32)_imp->inputs.size();
+}
+
+void
+Node::getHashInputs(std::vector<NodePtr>* inputs) const
+{
+    if (!_imp->effect) {
+        return;
+    }
+    ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>(_imp->effect.get());
+    if (isViewer) {
+        int activeInput[2];
+        isViewer->getActiveInputs(activeInput[0], activeInput[1]);
+        for (int i = 0; i < 2; ++i) {
+            NodePtr input = getInput(activeInput[i]);
+            if (input) {
+                inputs->push_back(input);
+            }
+        }
+
+        return;
+    }
+    RotoDrawableItemPtr attachedStroke = _imp->paintStroke.lock();
+    NodePtr attachedStrokeContextNode;
+    if (attachedStroke) {
+        attachedStrokeContextNode = attachedStroke->getContext()->getNode();
+    }
+    for (U32 i = 0, n = getInputSlotCount(); i < n; ++i) {
+        NodePtr input = getInput(i);
+        if (!input || (attachedStroke && (input == attachedStrokeContextNode))) {
+            continue;
+        }
+        inputs->push_back(input);
+    }
+}
+
 namespace {
-// One project digest per project for a whole walk: every node in it then hashes the same project
-// state, and a file stamp the digest folds in is taken once. A walk can cross into a precomp's
-// project, hence one entry per project.
-class WalkProjectDigests {
+std::atomic<U64>&
+hashEpoch()
+{
+    static std::atomic<U64> epoch(1);
+
+    return epoch;
+}
+
+// Nodes marked since the last flush, whose dependents are still to be marked. A mark is queued
+// rather than walked at once because knob setters mark while holding knob, curve or roto locks,
+// under which the walk through outputs and paint trees must not run.
+struct HashDirtyQueue {
+    std::mutex entriesMutex; //< a leaf: nothing is taken under it
+    std::vector<std::pair<NodeWPtr, bool>> entries; //< with whether the nodes inside a group are marked too
+    std::atomic<std::size_t> pending { 0 }; //< entries not yet fully walked
+    std::mutex flushMutex; //< held through a flush, so that a reader waits for the marks it must see
+};
+
+// Deliberately leaked, like the audit: nodes can still be marked during static destruction.
+HashDirtyQueue&
+hashDirtyQueue()
+{
+    static HashDirtyQueue* queue = new HashDirtyQueue;
+
+    return *queue;
+}
+
+thread_local bool flushingHashDirtyMarks = false;
+
+class FlushingHashDirtyMarksFlag {
 public:
-    U64 get(const Node& node)
+    FlushingHashDirtyMarksFlag() { flushingHashDirtyMarks = true; }
+
+    ~FlushingHashDirtyMarksFlag() { flushingHashDirtyMarks = false; }
+};
+} // anonymous namespace
+
+// One project digest per project and hash epoch for a whole refresh: every node in it then hashes
+// the same project state, and a file stamp the digest folds in is taken once. A refresh can cross
+// into a precomp's project, hence one entry per project.
+struct Node::HashWalk {
+    struct Digest {
+        ProjectPtr project;
+        U64 epoch;
+        U64 digest;
+    };
+
+    U64 projectDigest(const Node& node,
+                      U64 epoch)
     {
         AppInstancePtr app = node.getApp();
         if (!app) {
@@ -1295,142 +1499,277 @@ public:
         if (!project) {
             return 0;
         }
-        for (std::size_t i = 0; i < _digests.size(); ++i) {
-            if (_digests[i].first == project) {
-                return _digests[i].second;
+        for (std::size_t i = 0; i < digests.size(); ++i) {
+            if (digests[i].project == project) {
+                // A digest taken before the epoch moved may predate the change that moved it.
+                if (digests[i].epoch != epoch) {
+                    digests[i].epoch = epoch;
+                    digests[i].digest = project->getContentDigest();
+                }
+
+                return digests[i].digest;
             }
         }
-        const U64 digest = project->getContentDigest();
-        _digests.push_back(std::make_pair(project, digest));
+        Digest entry;
+        entry.project = project;
+        entry.epoch = epoch;
+        entry.digest = project->getContentDigest();
+        digests.push_back(entry);
 
-        return digest;
+        return entry.digest;
     }
 
-private:
-    std::vector<std::pair<ProjectPtr, U64>> _digests;
+    std::vector<Digest> digests;
 };
-} // anonymous namespace
 
 void
-Node::computeHashesDownstream(const NodesList& roots)
+Node::markHashDirty()
 {
-    if (roots.empty()) {
+    markHashDirtyInternal(false);
+}
+
+void
+Node::markHashDirtyInternal(bool includeGroupContents)
+{
+    // Raised before the generation moves: a walk that finds the node dirty must also see that its
+    // mark is pending, or it would stop at the node and leave the dependents clean.
+    const bool alreadyQueued = _imp->hashDirtyQueued.exchange(true);
+    _imp->hashDirtyGeneration.fetch_add(1);
+    if (alreadyQueued && !includeGroupContents) {
         return;
     }
-    WalkProjectDigests projectDigests;
+    NodePtr self = weak_from_this().lock();
+    if (!self) {
+        // Not owned yet, or being destroyed: in no graph, so there is nothing downstream to mark.
+        _imp->hashDirtyQueued.store(false);
 
-    // A lone root whose hashes did not move changes nothing below it, so the graph is not walked.
-    const bool loneRoot = (roots.size() == 1);
-    if (loneRoot) {
-        if (!roots.front()) {
-            return;
-        }
-        if (!roots.front()->computeHashInternal(projectDigests.get(*roots.front()))) {
-            return;
-        }
+        return;
     }
+    HashDirtyQueue& queue = hashDirtyQueue();
+    std::lock_guard<std::mutex> l(queue.entriesMutex);
+    queue.entries.push_back(std::make_pair(NodeWPtr(self), includeGroupContents));
+    ++queue.pending;
+}
 
-    // Everything a recompute can reach, with the edges between those nodes. Nodes are held so
-    // that none is destroyed while the walk still refers to it.
-    std::vector<NodePtr> nodes;
-    std::vector<std::vector<std::size_t>> dependents;
-    std::unordered_map<const Node*, std::size_t> indexOf;
-    std::vector<std::size_t> toExpand;
-    auto addNode = [&](const NodePtr& node) -> std::size_t {
-        std::pair<std::unordered_map<const Node*, std::size_t>::iterator, bool> inserted = indexOf.insert(std::make_pair(node.get(), nodes.size()));
-        if (inserted.second) {
-            nodes.push_back(node);
-            dependents.push_back(std::vector<std::size_t>());
-            toExpand.push_back(inserted.first->second);
-        }
+void
+Node::invalidateAllHashes()
+{
+    hashEpoch().fetch_add(1);
+}
 
-        return inserted.first->second;
-    };
-    for (NodesList::const_iterator it = roots.begin(); it != roots.end(); ++it) {
-        if (*it) {
-            addNode(*it);
-        }
-    }
-    const std::size_t nRoots = nodes.size();
-    while (!toExpand.empty()) {
-        const std::size_t i = toExpand.back();
-        toExpand.pop_back();
-        NodesList deps;
-        nodes[i]->getHashDependents(&deps);
-        for (NodesList::const_iterator it = deps.begin(); it != deps.end(); ++it) {
-            if (!*it) {
-                continue;
-            }
-            const std::size_t j = addNode(*it);
-            dependents[i].push_back(j);
-        }
-    }
+void
+Node::flushHashDirtyMarks()
+{
+    HashDirtyQueue& queue = hashDirtyQueue();
 
-    const std::size_t n = nodes.size();
-    std::vector<char> done(n, 0);
-    std::vector<char> mustRecompute(n, 0);
-    for (std::size_t i = 0; i < nRoots; ++i) {
-        mustRecompute[i] = 1;
+    if ((queue.pending.load() == 0) || flushingHashDirtyMarks) {
+        return;
     }
-    if (loneRoot) {
-        // Already recomputed above, and it changed.
-        done[0] = 1;
-        for (std::size_t k = 0; k < dependents[0].size(); ++k) {
-            mustRecompute[dependents[0][k]] = 1;
-        }
-    }
-
-    // Kahn's algorithm over the reached subgraph: a node waits for every input of it that is in
-    // the set. Edges out of a node already done are satisfied from the start.
-    std::vector<std::size_t> pendingInputs(n, 0);
-    for (std::size_t i = 0; i < n; ++i) {
-        if (done[i]) {
-            continue;
-        }
-        for (std::size_t k = 0; k < dependents[i].size(); ++k) {
-            ++pendingInputs[dependents[i][k]];
-        }
-    }
-    std::vector<std::size_t> ready;
-    for (std::size_t i = 0; i < n; ++i) {
-        if (!done[i] && (pendingInputs[i] == 0)) {
-            ready.push_back(i);
-        }
-    }
-    std::size_t nextUnprocessed = 0;
+    std::lock_guard<std::mutex> flushLock(queue.flushMutex);
+    FlushingHashDirtyMarksFlag flushing;
     for (;;) {
-        std::size_t i;
-        if (!ready.empty()) {
-            i = ready.back();
-            ready.pop_back();
-            if (done[i]) {
+        std::vector<std::pair<NodeWPtr, bool>> batch;
+        {
+            std::lock_guard<std::mutex> l(queue.entriesMutex);
+            batch.swap(queue.entries);
+        }
+        if (batch.empty()) {
+            break;
+        }
+        // Per batch: a node marked again after a walk went past it must be walked again.
+        std::unordered_set<const Node*> visited;
+        std::vector<NodePtr> toExpand;
+        auto reach = [&visited, &toExpand](const NodePtr& node) {
+            if (!node || !visited.insert(node.get()).second) {
+                return;
+            }
+            const U64 previous = node->_imp->hashDirtyGeneration.fetch_add(1);
+            const bool wasDirty = (previous != node->_imp->hashCleanGeneration.load()) || (hashEpoch().load() != node->_imp->hashCleanEpoch.load());
+            // Whatever folds in a dirty node is dirty too, except below a node whose own mark is
+            // still pending, so the walk stops at dirty nodes that are not pending.
+            if (!wasDirty || node->_imp->hashDirtyQueued.load()) {
+                toExpand.push_back(node);
+            }
+        };
+        for (std::size_t i = 0; i < batch.size(); ++i) {
+            NodePtr root = batch[i].first.lock();
+            if (!root) {
                 continue;
             }
-        } else {
-            // Only a cycle can leave nodes waiting with nothing ready. It is broken at the
-            // earliest reached node, which is what the visit-once walk this replaces did.
-            while ((nextUnprocessed < n) && done[nextUnprocessed]) {
-                ++nextUnprocessed;
+            root->_imp->hashDirtyQueued.store(false);
+            if (visited.insert(root.get()).second) {
+                toExpand.push_back(root);
             }
-            if (nextUnprocessed == n) {
+            if (batch[i].second) {
+                NodeGroup* isGroup = dynamic_cast<NodeGroup*>(root->_imp->effect.get());
+                if (isGroup) {
+                    NodesList inner;
+                    isGroup->getNodes_recursive(inner, false);
+                    for (NodesList::const_iterator it = inner.begin(); it != inner.end(); ++it) {
+                        reach(*it);
+                    }
+                }
+            }
+            while (!toExpand.empty()) {
+                NodePtr node = toExpand.back();
+                toExpand.pop_back();
+                NodesList dependents;
+                node->getHashDependents(&dependents);
+                for (NodesList::const_iterator it = dependents.begin(); it != dependents.end(); ++it) {
+                    reach(*it);
+                }
+            }
+        }
+        queue.pending.fetch_sub(batch.size());
+    }
+} // Node::flushHashDirtyMarks
+
+bool
+Node::isHashDirty() const
+{
+    return (_imp->hashDirtyGeneration.load() != _imp->hashCleanGeneration.load()) || (hashEpoch().load() != _imp->hashCleanEpoch.load());
+}
+
+bool
+Node::recomputeHashIfDirty(bool requireCleanInputs,
+                           HashWalk* walk)
+{
+    if (!_imp->effect) {
+        return true;
+    }
+    bool changed = false;
+    U64 contentHash = 0;
+    {
+        QMutexLocker k(&_imp->hashRecomputeMutex);
+        // Both are read before anything the hashes cover, so an edit landing from here on leaves
+        // the node dirty.
+        const U64 generation = _imp->hashDirtyGeneration.load();
+        const U64 epoch = hashEpoch().load();
+        if ((generation == _imp->hashCleanGeneration.load()) && (epoch == _imp->hashCleanEpoch.load())) {
+            return true;
+        }
+        // Checked after the generation is read: an input marked after this check marks this
+        // node again, while one dirty now would be folded in with its stale hash.
+        if (requireCleanInputs) {
+            std::vector<NodePtr> inputs;
+            getHashInputs(&inputs);
+            for (std::size_t i = 0; i < inputs.size(); ++i) {
+                if (inputs[i]->isHashDirty()) {
+                    return false;
+                }
+            }
+        }
+        {
+            HashComputeScope computing;
+            changed = computeHashInternal(walk->projectDigest(*this, epoch), &contentHash);
+        }
+        _imp->hashCleanEpoch.store(epoch);
+        _imp->hashCleanGeneration.store(generation);
+    }
+
+    // Run outside the recompute lock, since they take the effect's and knobs' locks. An age-only
+    // change still runs them: they also drop metadata and expression results, which some age bumps
+    // exist to refresh. The cache entries made under the node's other keys are left to the
+    // caches' LRU: a content key names one state only, so they stay valid for a return to it.
+    if (changed) {
+        _imp->effect->onNodeHashChanged(contentHash);
+    }
+
+    return true;
+} // Node::recomputeHashIfDirty
+
+void
+Node::refreshDirtyHashes()
+{
+    // Another attempt is only needed when a concurrent mark lands mid-refresh. The last one
+    // accepts dirty inputs, so that a cycle still settles.
+    const int attempts = 4;
+    NodePtr self = weak_from_this().lock();
+
+    for (int attempt = 0; attempt < attempts; ++attempt) {
+        if (!isHashDirty()) {
+            return;
+        }
+        const bool lastAttempt = (attempt + 1 == attempts);
+        HashWalk walk;
+        if (!self) {
+            recomputeHashIfDirty(false, &walk);
+
+            return;
+        }
+
+        // Depth-first post-order over the dirty inputs, so every node comes after the inputs it
+        // folds in. Clean inputs are not entered: marking a node marks everything that folds it
+        // in, so nothing above a clean node is dirty.
+        std::vector<NodePtr> order;
+        std::unordered_map<const Node*, char> state; // 1: entered, 2: ordered
+        std::vector<std::pair<NodePtr, bool>> stack(1, std::make_pair(self, false));
+        while (!stack.empty()) {
+            NodePtr node = stack.back().first;
+            if (stack.back().second) {
+                stack.pop_back();
+                state[node.get()] = 2;
+                order.push_back(node);
+                continue;
+            }
+            char& nodeState = state[node.get()];
+            if (nodeState != 0) {
+                // Reached again through another path, or through a cycle.
+                stack.pop_back();
+                continue;
+            }
+            nodeState = 1;
+            stack.back().second = true;
+            std::vector<NodePtr> inputs;
+            node->getHashInputs(&inputs);
+            for (std::size_t i = 0; i < inputs.size(); ++i) {
+                if (inputs[i]->isHashDirty() && (state.find(inputs[i].get()) == state.end())) {
+                    stack.push_back(std::make_pair(inputs[i], false));
+                }
+            }
+        }
+
+        bool complete = true;
+        for (std::size_t i = 0; i < order.size(); ++i) {
+            if (!order[i]->recomputeHashIfDirty(!lastAttempt, &walk)) {
+                complete = false;
                 break;
             }
-            i = nextUnprocessed;
         }
-        done[i] = 1;
-
-        const bool changed = mustRecompute[i] && nodes[i]->computeHashInternal(projectDigests.get(*nodes[i]));
-        for (std::size_t k = 0; k < dependents[i].size(); ++k) {
-            const std::size_t j = dependents[i][k];
-            if (changed) {
-                mustRecompute[j] = 1;
-            }
-            if (!done[j] && (pendingInputs[j] > 0) && (--pendingInputs[j] == 0)) {
-                ready.push_back(j);
-            }
+        if (complete) {
+            return;
         }
     }
-} // Node::computeHashesDownstream
+} // Node::refreshDirtyHashes
+
+bool
+Node::refreshHashNow()
+{
+    const U64 before = getStoredContentHash();
+
+    markHashDirty();
+
+    return getHashValue() != before;
+}
+
+void
+Node::onKnobContentChanged(const KnobI* knob)
+{
+    // isNodeDisabled() of the nodes inside a group reads the group's disabled and lifetime knobs.
+    bool groupState = false;
+    if (knob && dynamic_cast<NodeGroup*>(_imp->effect.get())) {
+        groupState = (knob == _imp->disableNodeKnob.lock().get()) || (knob == _imp->lifeTimeKnob.lock().get()) || (knob == _imp->enableLifeTimeKnob.lock().get());
+    }
+    markHashDirtyInternal(groupState);
+}
+
+bool
+Node::mayHaveKnobExpressions() const
+{
+    QMutexLocker l(&_imp->knobsDigestMutex);
+
+    return !_imp->knobsDigestValid || _imp->knobsDigestHasExpression;
+}
 
 void
 Node::removeAllImagesFromCache(bool blocking)
@@ -1452,27 +1791,42 @@ void
 Node::doComputeHashOnMainThread()
 {
     assert( QThread::currentThread() == qApp->thread() );
-    computeHash();
-}
+    markHashDirty();
+    flushHashDirtyMarks();
+    NodePtr self = weak_from_this().lock();
+    if (!self) {
+        getHashValue();
+
+        return;
+    }
+    // Each read recomputes the dirty inputs first, so the order of the reads does not matter.
+    std::unordered_set<const Node*> visited;
+    std::vector<NodePtr> toVisit(1, self);
+    visited.insert(self.get());
+    while (!toVisit.empty()) {
+        NodePtr node = toVisit.back();
+        toVisit.pop_back();
+        node->getHashValue();
+        NodesList dependents;
+        node->getHashDependents(&dependents);
+        for (NodesList::const_iterator it = dependents.begin(); it != dependents.end(); ++it) {
+            if (*it && visited.insert(it->get()).second) {
+                toVisit.push_back(*it);
+            }
+        }
+    }
+} // Node::doComputeHashOnMainThread
 
 void
 Node::computeHash()
 {
+    markHashDirty();
+    // The change hooks of a hash run when it is next read; reading it now on the main thread
+    // runs them there for the GUI.
     if ( QThread::currentThread() != qApp->thread() ) {
         Q_EMIT mustComputeHashOnMainThread();
-
-        return;
     }
-    NodePtr self = weak_from_this().lock();
-    if (!self) {
-        // Not owned yet, so not in any graph: nothing downstream to refresh.
-        const bool changed = computeHashInternal();
-        Q_UNUSED(changed);
-
-        return;
-    }
-    computeHashesDownstream(NodesList(1, self));
-} // computeHash
+}
 
 namespace {
 // One node whose data-kind resolution is in progress on this thread. A resolution recurses into
@@ -6186,15 +6540,14 @@ Node::onEffectKnobValueChanged(KnobI* what,
         if (isGroup) {
             ///When a group is disabled we have to force a hash change of all nodes inside otherwise the image will stay cached
 
-            // Nodes in nested groups inherit this state too, and the graph walk below does not
-            // reach those that are not downstream of a GroupInput.
+            // Nodes in nested groups inherit this state too, and a downstream walk does not reach
+            // those that are not downstream of a GroupInput.
             NodesList nodes;
             isGroup->getNodes_recursive(nodes, false);
             for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
-                //This will not trigger a hash recomputation
                 (*it)->incrementKnobsAge_internal();
+                (*it)->markHashDirty();
             }
-            computeHashesDownstream(nodes);
         }
     } else if ( what == _imp->nodeLabelKnob.lock().get() ) {
         Q_EMIT nodeExtraLabelChanged( QString::fromUtf8( _imp->nodeLabelKnob.lock()->getValue().c_str() ) );
@@ -7536,9 +7889,7 @@ Node::refreshAllInputRelatedData(bool /*canChangeValues*/,
     refreshIdentityState();
 
     if (loadingProject) {
-        //When loading the project, refresh the hash of the nodes in a recursive manner in the proper order
-        //for the disk cache to work
-        hasChanged |= computeHashInternal();
+        hasChanged |= refreshHashNow();
     }
 
     {

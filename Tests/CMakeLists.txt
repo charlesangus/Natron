@@ -67,6 +67,7 @@ set(Tests_SOURCES
     KnobLayerSelect_Test.cpp
     KnobShuffleMap_Test.cpp
     KnobContentHash_Test.cpp
+    LazyHash_Test.cpp
     NodeContentHash_Test.cpp
     FileStamp_Test.cpp
     RotoContentHash_Test.cpp

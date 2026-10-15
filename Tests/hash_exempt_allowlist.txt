@@ -1,0 +1,10 @@
+# Render-hashed knobs that HashPluginSweep_Test does not perturb.
+#
+# Format, one entry per line:
+#   pluginID knobName  # reason
+# A knobName of * exempts the whole plugin (for one that cannot be built on its own).
+#
+# Every entry needs a reason. List only knobs that do not affect rendering: UI-only knobs that
+# are still render-hashed, or knobs whose edit the plugin always clamps or resets. A knob whose
+# change does not reach the hash is a hash gap: fix the hash instead of listing it here.
+# The sweep fails on an entry that no longer matches a knob, or whose knob now passes.

@@ -214,7 +214,8 @@ public:
     /**
      * @brief Hash of the project settings that change what nodes render: output format,
      * frame rate, views, OpenColorIO config and working space, layer registry and
-     * render-affecting preferences. Computed on each call, never 0.
+     * render-affecting preferences. Never 0. Memoized until one of those changes; the OCIO
+     * config file's stamp is taken on every call.
      **/
     U64 getContentDigest() const;
 
@@ -474,6 +475,11 @@ Q_SIGNALS:
     void projectLayersChanged();
 
 private:
+    U64 computeContentDigestWithoutFileStamps(const std::shared_ptr<const std::vector<LayerRegistryEntry>>& layers,
+                                              const std::string& ocioSource,
+                                              bool concatenation,
+                                              bool gpu) const;
+
     // Emits projectLayersChanged() and refreshes every node's channel selector menus;
     // called after a registry mutation outside of project load (load batches its own
     // single emission after all nodes are restored, see ProjectPrivate::restoreFromSerialization).

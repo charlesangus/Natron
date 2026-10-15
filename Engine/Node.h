@@ -1707,19 +1707,38 @@ private:
 
     bool findDataKindConflictDownstream(const DataKindConstraint& constraint, NodePtr* conflictingNode) const;
 
-    void computeHashRecursive(std::list<Node*>& marked);
+    /**
+     * @brief Recomputes the hashes of roots, then of every node downstream of them that an input
+     * change reaches. A node is recomputed only once all of its inputs in that set are final, so
+     * a join below a diamond never folds in an input hash that is about to change.
+     **/
+    static void computeHashesDownstream(const NodesList& roots);
+
+    /**
+     * @brief The nodes whose hash folds in this one's: outputs through group redirections, and
+     * the internal nodes of a roto paint tree.
+     **/
+    void getHashDependents(NodesList* dependents) const;
 
     /**
      * @brief Refreshes the node's content hash and its age hash from its knobs, age and inputs.
+     * @param projectDigest The project's content digest, taken once for a whole recompute walk so
+     * that every node in it sees the same project state; 0 takes a fresh one.
      * @return True if either hash has changed, false otherwise
      **/
-    bool computeHashInternal() WARN_UNUSED_RETURN;
+    bool computeHashInternal(U64 projectDigest = 0) WARN_UNUSED_RETURN;
 
     // The hash built from the knobs age. Nothing is keyed on it; it is kept so the audit can
     // compare it with the content hash.
     U64 getAgeHashValue() const;
 
-    U64 computeContentHash() const;
+    U64 computeContentHash(U64 projectDigest) const;
+
+    /**
+     * @brief Digest of the render-hashed knobs by name, memoized until the effect's knobs content
+     * generation moves. hasExpression is set if any knob, hashed or not, has an expression.
+     **/
+    U64 getKnobsContentDigest(bool* hasExpression) const;
     void auditHashTransition(U64 ageHash, U64 contentHash);
 
     // Forgets this node's audit state and logged lines; with seedFromCurrentHashes, the stored

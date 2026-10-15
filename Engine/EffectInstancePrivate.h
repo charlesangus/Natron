@@ -33,6 +33,7 @@
 #include <list>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <QCoreApplication>
@@ -125,8 +126,9 @@ public:
     void clearAll();
 
     /**
-     * @brief Makes the results stored under hash the last to be evicted, starting an empty set
-     * for it if there is none. The results already stored are kept.
+     * @brief Makes the results stored under hash the last to be evicted. The results already
+     * stored are kept. A hash with no results gets its set on its first stored result, so a
+     * node that is only re-keyed costs no allocation and evicts nothing.
      **/
     void useHash(U64 hash);
 
@@ -176,10 +178,13 @@ private:
         ActionsCacheInstance();
     };
 
-    // Least recently used first.
-    std::list<ActionsCacheInstance> _instances;
+    typedef std::list<ActionsCacheInstance> InstancesList;
+
+    // Least recently used first, with an index by hash so no lookup scans the list.
+    InstancesList _instances;
+    std::unordered_map<U64, InstancesList::iterator> _instancesByHash;
     std::size_t _maxInstances;
-    std::list<ActionsCacheInstance>::iterator createActionCacheInternal(U64 newHash);
+    ActionsCacheInstance* findActionCache(U64 hash);
     ActionsCacheInstance & getOrCreateActionCache(U64 newHash);
 };
 

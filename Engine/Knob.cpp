@@ -614,7 +614,16 @@ KnobHelper::~KnobHelper()
 void
 KnobHelper::setHolder(KnobHolder* holder)
 {
+    KnobHolder* previous = _imp->holder;
+
     _imp->holder = holder;
+    // A holder-wide memo trusts only its own knobs' invalidations, so both holders re-check.
+    if (previous) {
+        previous->bumpKnobsContentGeneration();
+    }
+    if (holder) {
+        holder->bumpKnobsContentGeneration();
+    }
 }
 
 void
@@ -3235,6 +3244,12 @@ void
 KnobHelper::setName(const std::string & name,
                     bool throwExceptions)
 {
+    // Node hashes cover knob names, so every way out of a rename must move the holder's generation.
+    struct InvalidateOnExit {
+        KnobHelper* knob;
+        ~InvalidateOnExit() { knob->invalidateContentHash(); }
+    } invalidateOnExit = { this };
+
     _imp->originalName = name;
     _imp->name = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(name);
 
@@ -3427,6 +3442,8 @@ KnobHelper::setEvaluateOnChange(bool b)
         QMutexLocker k(&_imp->evaluateOnChangeMutex);
         _imp->evaluateOnChange = b;
     }
+    // isRenderHashed() reads this flag.
+    invalidateContentHash();
     if (_signalSlotHandler) {
         _signalSlotHandler->s_evaluateOnChangeChanged(b);
     }
@@ -3442,6 +3459,8 @@ void
 KnobHelper::setIsPersistent(bool b)
 {
     _imp->IsPersistent = b;
+    // isRenderHashed() reads this flag.
+    invalidateContentHash();
 }
 
 void
@@ -3472,6 +3491,8 @@ void
 KnobHelper::setHashExempt(bool exempt)
 {
     _imp->hashExempt = exempt;
+    // isRenderHashed() moved, which changes the knob set a holder-wide digest covers.
+    invalidateContentHash();
 }
 
 bool
@@ -5070,6 +5091,39 @@ void
 KnobHelper::invalidateContentHash()
 {
     _imp->contentGeneration.fetch_add(1, std::memory_order_acq_rel);
+    KnobHolder* holder = _imp->holder;
+    if (holder) {
+        holder->bumpKnobsContentGeneration();
+    }
+}
+
+void
+KnobHelper::getContentHashDependencies(bool* hasExpression,
+                                       bool* readsOutsideKnob) const
+{
+    const int nDims = getDimension();
+
+    *hasExpression = false;
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        for (int i = 0; i < nDims; ++i) {
+            if (!_imp->expressions[i].originalExpression.empty()) {
+                *hasExpression = true;
+                break;
+            }
+        }
+    }
+    bool hasMaster = false;
+    {
+        QReadLocker k(&_imp->mastersMutex);
+        for (int i = 0; i < nDims; ++i) {
+            if (_imp->masters[i].second.lock()) {
+                hasMaster = true;
+                break;
+            }
+        }
+    }
+    *readsOutsideKnob = *hasExpression || hasMaster || hasUnmemoizedContentHash();
 }
 
 U64
@@ -5207,6 +5261,7 @@ struct KnobHolder::KnobHolderPrivate
     mutable QMutex hasAnimationMutex;
     bool hasAnimation;
     DockablePanelI* settingsPanel;
+    std::atomic<U64> knobsContentGeneration { 0 };
 
     KnobHolderPrivate(const AppInstancePtr& appInstance_)
         : app(appInstance_)
@@ -5359,6 +5414,7 @@ KnobHolder::addKnob(const KnobIPtr& k)
         }
     }
     _imp->knobs.push_back(k);
+    bumpKnobsContentGeneration();
 }
 
 void
@@ -5381,6 +5437,7 @@ KnobHolder::insertKnob(int index,
         std::advance(it, index);
         _imp->knobs.insert(it, k);
     }
+    bumpKnobsContentGeneration();
 }
 
 void
@@ -5391,10 +5448,23 @@ KnobHolder::removeKnobFromList(const KnobI* knob)
     for (KnobsVec::iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
         if (it->get() == knob) {
             _imp->knobs.erase(it);
+            bumpKnobsContentGeneration();
 
             return;
         }
     }
+}
+
+U64
+KnobHolder::getKnobsContentGeneration() const
+{
+    return _imp->knobsContentGeneration.load(std::memory_order_acquire);
+}
+
+void
+KnobHolder::bumpKnobsContentGeneration()
+{
+    _imp->knobsContentGeneration.fetch_add(1, std::memory_order_acq_rel);
 }
 
 void
@@ -5466,6 +5536,7 @@ KnobHolder::deleteKnob(KnobI* knob,
             }
         }
     }
+    bumpKnobsContentGeneration();
 
     if (alsoDeleteGui && _imp->settingsPanel) {
         _imp->settingsPanel->deleteKnobGui(sharedKnob);

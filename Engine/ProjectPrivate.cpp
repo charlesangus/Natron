@@ -61,7 +61,7 @@ ProjectPrivate::ProjectPrivate(Project* project)
     , hasProjectBeenSavedByUser(false)
     , ageSinceLastSave(QDateTime::currentDateTime())
     , lastAutoSave()
-    , projectCreationTime(ageSinceLastSave)
+    , projectCreationTime(ageSinceLastSave.toMSecsSinceEpoch())
     , builtinFormats()
     , additionalFormats()
     , formatMutex()
@@ -128,7 +128,7 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
     {
         CreatingNodeTreeFlag_RAII creatingNodeTreeFlag( _publicInterface->getApp() );
 
-        projectCreationTime = QDateTime::fromMSecsSinceEpoch(creationDate);
+        projectCreationTime = creationDate;
 
         _publicInterface->getApp()->updateProjectLoadStatus( tr("Restoring project settings...") );
 
@@ -153,6 +153,7 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
             }
         }
         additionalFormats = serializedAdditionalFormats;
+        ++formatsGeneration;
 
         formatKnob->populateChoices(entries);
         autoSetProjectFormat = false;

@@ -1944,7 +1944,7 @@ OfxEffectInstance::onNodeHashChanged(U64 hash)
     EffectInstance::onNodeHashChanged(hash);
 
 #ifdef OFX_SUPPORTS_METADATA
-    // No walk of its own: Node::computeHashRecursive already visits every node downstream of
+    // No walk of its own: Node::computeHashesDownstream already visits every node downstream of
     // the one that changed, and a node's hash folds in its inputs', so every effect whose
     // metadata could have gone stale gets here on its own.
     //

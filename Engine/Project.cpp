@@ -1293,6 +1293,7 @@ Project::initializeKnobs()
         }
 
         _imp->builtinFormats.push_back(f);
+        ++_imp->formatsGeneration;
     }
     _imp->formatKnob->setAddNewLine(false);
 
@@ -1919,6 +1920,7 @@ Project::tryAddProjectFormat(const Format & f, bool* existed)
     }
     QString formatStr = ProjectPrivate::generateStringFromFormat(f);
     _imp->additionalFormats.push_back(f);
+    ++_imp->formatsGeneration;
     if ( !f.getName().empty() ) {
         _imp->formatKnob->appendChoice( ChoiceOption(f.getName(), formatStr.toStdString(), "") );
     } else {
@@ -2711,11 +2713,12 @@ Project::doResetEnd(bool aboutToQuit)
             QMutexLocker l(&_imp->projectLock);
             _imp->autoSetProjectFormat = appPTR->getCurrentSettings()->isAutoProjectFormatEnabled();
             _imp->hasProjectBeenSavedByUser = false;
-            _imp->projectCreationTime = QDateTime::currentDateTime();
+            _imp->projectCreationTime = QDateTime::currentDateTime().toMSecsSinceEpoch();
             _imp->setProjectFilename(NATRON_PROJECT_UNTITLED);
             _imp->setProjectPath("");
             _imp->autoSaveTimer->stop();
             _imp->additionalFormats.clear();
+            ++_imp->formatsGeneration;
             _imp->layers.reset(new LayerRegistry());
         }
         {
@@ -2903,13 +2906,61 @@ Project::unlock() const
 qint64
 Project::getProjectCreationTime() const
 {
-    QMutexLocker l(&_imp->projectLock);
-
-    return _imp->projectCreationTime.toMSecsSinceEpoch();
+    return _imp->projectCreationTime.load();
 }
 
 U64
 Project::getContentDigest() const
+{
+    // The memo key: every input that is not a project knob is read here, and the project knobs
+    // (format, frame rate, views, working space, GPU support) are covered by the project's knobs
+    // generation. The format menu also maps onto the format lists, which have their own counter.
+    // The generations are read before anything they cover.
+    const U64 knobsGeneration = getKnobsContentGeneration();
+    const U64 formatsGeneration = _imp->formatsGeneration.load();
+    std::shared_ptr<const std::vector<LayerRegistryEntry>> layers = getLayerRegistrySnapshot();
+    const std::string ocioSource = getOCIOConfigSource();
+    SettingsPtr settings = appPTR->getCurrentSettings();
+    const bool concatenation = settings->isTransformConcatenationEnabled();
+    const bool gpu = isGPURenderingEnabledInProject();
+
+    U64 digest;
+    {
+        QMutexLocker l(&_imp->contentDigestMutex);
+        if (_imp->contentDigestValid && (_imp->contentDigestKnobsGeneration == knobsGeneration) && (_imp->contentDigestFormatsGeneration == formatsGeneration) && (_imp->contentDigestLayers == layers) && (_imp->contentDigestOCIOSource == ocioSource) && (_imp->contentDigestConcatenation == concatenation) && (_imp->contentDigestGPU == gpu)) {
+            digest = _imp->contentDigest;
+        } else {
+            digest = computeContentDigestWithoutFileStamps(layers, ocioSource, concatenation, gpu);
+            _imp->contentDigestValid = true;
+            _imp->contentDigestKnobsGeneration = knobsGeneration;
+            _imp->contentDigestFormatsGeneration = formatsGeneration;
+            // Holding the snapshot keeps its address from being reused by a later one.
+            _imp->contentDigestLayers = layers;
+            _imp->contentDigestOCIOSource = ocioSource;
+            _imp->contentDigestConcatenation = concatenation;
+            _imp->contentDigestGPU = gpu;
+            _imp->contentDigest = digest;
+        }
+    }
+
+    // The config file can change on disk with no project edit, so its stamp stays out of the memo.
+    ContentHasher h;
+    h.appendU64(digest);
+    // A "scheme://" source is a built-in config, not a file on disk.
+    const bool ocioIsFile = !ocioSource.empty() && (ocioSource.find("://") == std::string::npos);
+    h.appendBool(ocioIsFile);
+    if (ocioIsFile) {
+        h.appendU64(FileStampRegistry::instance().stamp(ocioSource));
+    }
+
+    return h.finalize();
+}
+
+U64
+Project::computeContentDigestWithoutFileStamps(const std::shared_ptr<const std::vector<LayerRegistryEntry>>& layers,
+                                               const std::string& ocioSource,
+                                               bool concatenation,
+                                               bool gpu) const
 {
     ContentHasher h;
 
@@ -2931,17 +2982,9 @@ Project::getContentDigest() const
         h.appendString(views[i]);
     }
 
-    const std::string ocioSource = getOCIOConfigSource();
     h.appendString(ocioSource);
-    // A "scheme://" source is a built-in config, not a file on disk.
-    const bool ocioIsFile = !ocioSource.empty() && (ocioSource.find("://") == std::string::npos);
-    h.appendBool(ocioIsFile);
-    if (ocioIsFile) {
-        h.appendU64(FileStampRegistry::instance().stamp(ocioSource));
-    }
     h.appendString(getWorkingColorSpace());
 
-    std::shared_ptr<const std::vector<LayerRegistryEntry>> layers = getLayerRegistrySnapshot();
     h.appendU64(layers ? layers->size() : 0);
     if (layers) {
         for (std::vector<LayerRegistryEntry>::const_iterator it = layers->begin(); it != layers->end(); ++it) {
@@ -2955,9 +2998,8 @@ Project::getContentDigest() const
         }
     }
 
-    SettingsPtr settings = appPTR->getCurrentSettings();
-    h.appendBool(settings->isTransformConcatenationEnabled());
-    h.appendBool(isGPURenderingEnabledInProject());
+    h.appendBool(concatenation);
+    h.appendBool(gpu);
 
     return h.finalize();
 }

@@ -52,43 +52,40 @@ ActionsCache::ActionsCacheInstance::ActionsCacheInstance()
 {
 }
 
-std::list<ActionsCache::ActionsCacheInstance>::iterator
-ActionsCache::createActionCacheInternal(U64 newHash)
+ActionsCache::ActionsCacheInstance*
+ActionsCache::findActionCache(U64 hash)
 {
-    if (_instances.size() >= _maxInstances) {
-        _instances.pop_front();
-    }
-    ActionsCacheInstance cache;
-    cache._hash = newHash;
+    std::unordered_map<U64, InstancesList::iterator>::iterator found = _instancesByHash.find(hash);
 
-    return _instances.insert(_instances.end(), cache);
+    return found == _instancesByHash.end() ? 0 : &*found->second;
 }
 
 ActionsCache::ActionsCacheInstance &
 ActionsCache::getOrCreateActionCache(U64 newHash)
 {
-    std::list<ActionsCacheInstance>::iterator found = _instances.end();
+    std::unordered_map<U64, InstancesList::iterator>::iterator found = _instancesByHash.find(newHash);
 
-    for (std::list<ActionsCacheInstance>::iterator it = _instances.begin(); it != _instances.end(); ++it) {
-        if (it->_hash == newHash) {
-            found = it;
-            break;
-        }
-    }
-    if ( found == _instances.end() ) {
-        found = createActionCacheInternal(newHash);
-    } else {
-        _instances.splice(_instances.end(), _instances, found);
-    }
-    assert( found != _instances.end() );
+    if (found != _instancesByHash.end()) {
+        _instances.splice(_instances.end(), _instances, found->second);
 
-    return *found;
+        return *found->second;
+    }
+    if (!_instances.empty() && (_instances.size() >= _maxInstances)) {
+        _instancesByHash.erase(_instances.front()._hash);
+        _instances.pop_front();
+    }
+    InstancesList::iterator created = _instances.insert(_instances.end(), ActionsCacheInstance());
+    created->_hash = newHash;
+    _instancesByHash[newHash] = created;
+
+    return *created;
 }
 
 ActionsCache::ActionsCache(int maxAvailableHashes)
     : _cacheMutex()
     , _instances()
-    , _maxInstances( (std::size_t)maxAvailableHashes )
+    , _instancesByHash()
+    , _maxInstances((std::size_t)maxAvailableHashes)
 {
 }
 
@@ -98,27 +95,29 @@ ActionsCache::clearAll()
     QMutexLocker l(&_cacheMutex);
 
     _instances.clear();
+    _instancesByHash.clear();
 }
 
 void
 ActionsCache::useHash(U64 hash)
 {
     QMutexLocker l(&_cacheMutex);
+    std::unordered_map<U64, InstancesList::iterator>::iterator found = _instancesByHash.find(hash);
 
-    getOrCreateActionCache(hash);
+    if (found != _instancesByHash.end()) {
+        _instances.splice(_instances.end(), _instances, found->second);
+    }
 }
 
 void
 ActionsCache::clearResults(U64 hash)
 {
     QMutexLocker l(&_cacheMutex);
+    std::unordered_map<U64, InstancesList::iterator>::iterator found = _instancesByHash.find(hash);
 
-    for (std::list<ActionsCacheInstance>::iterator it = _instances.begin(); it != _instances.end();) {
-        if (it->_hash == hash) {
-            it = _instances.erase(it);
-        } else {
-            ++it;
-        }
+    if (found != _instancesByHash.end()) {
+        _instances.erase(found->second);
+        _instancesByHash.erase(found);
     }
 }
 
@@ -131,28 +130,25 @@ ActionsCache::getIdentityResult(U64 hash,
                                 double* identityTime)
 {
     QMutexLocker l(&_cacheMutex);
+    const ActionsCacheInstance* cache = findActionCache(hash);
 
-    for (std::list<ActionsCacheInstance>::iterator it = _instances.begin(); it != _instances.end(); ++it) {
-        if (it->_hash == hash) {
-            ActionKey key;
-            key.time = time;
-            key.view = view;
-            key.mipmapLevel = 0;
-
-            IdentityCacheMap::const_iterator found = it->_identityCache.find(key);
-            if ( found != it->_identityCache.end() ) {
-                *inputNbIdentity = found->second.inputIdentityNb;
-                *identityTime = found->second.inputIdentityTime;
-                *inputView = found->second.inputView;
-
-                return true;
-            }
-
-            return false;
-        }
+    if (!cache) {
+        return false;
     }
+    ActionKey key;
+    key.time = time;
+    key.view = view;
+    key.mipmapLevel = 0;
 
-    return false;
+    IdentityCacheMap::const_iterator found = cache->_identityCache.find(key);
+    if (found == cache->_identityCache.end()) {
+        return false;
+    }
+    *inputNbIdentity = found->second.inputIdentityNb;
+    *identityTime = found->second.inputIdentityTime;
+    *inputView = found->second.inputView;
+
+    return true;
 }
 
 void
@@ -183,31 +179,29 @@ ActionsCache::getComponentsNeededResults(U64 hash, double time, ViewIdx view, Ef
                                          std::list<ImageLayerDesc>* passThroughLayers, int* passThroughInputNb, ViewIdx* passThroughView, double* passThroughTime)
 {
     QMutexLocker l(&_cacheMutex);
+    const ActionsCacheInstance* cache = findActionCache(hash);
 
-    for (std::list<ActionsCacheInstance>::iterator it = _instances.begin(); it != _instances.end(); ++it) {
-        if (it->_hash == hash) {
-            ActionKey key;
-            key.time = time;
-            key.view = view;
-            key.mipmapLevel = 0;
-
-            ComponentsNeededCacheMap::const_iterator found = it->_componentsNeededCache.find(key);
-            if ( found != it->_componentsNeededCache.end() ) {
-                *passThroughInputNb = found->second.passThroughInputNb;
-                *passThroughTime = found->second.passThroughTime;
-                *passThroughView = found->second.passThroughView;
-                *neededComps = found->second.neededComps;
-                *processChannels = found->second.processChannels;
-                *processChannelsPerPlane = found->second.processChannelsPerPlane;
-                *passThroughLayers = found->second.passThroughLayers;
-                return true;
-            }
-
-            return false;
-        }
+    if (!cache) {
+        return false;
     }
-    
-    return false;
+    ActionKey key;
+    key.time = time;
+    key.view = view;
+    key.mipmapLevel = 0;
+
+    ComponentsNeededCacheMap::const_iterator found = cache->_componentsNeededCache.find(key);
+    if (found == cache->_componentsNeededCache.end()) {
+        return false;
+    }
+    *passThroughInputNb = found->second.passThroughInputNb;
+    *passThroughTime = found->second.passThroughTime;
+    *passThroughView = found->second.passThroughView;
+    *neededComps = found->second.neededComps;
+    *processChannels = found->second.processChannels;
+    *processChannelsPerPlane = found->second.processChannelsPerPlane;
+    *passThroughLayers = found->second.passThroughLayers;
+
+    return true;
 }
 
 void
@@ -252,26 +246,23 @@ ActionsCache::getRoDResult(U64 hash,
                            RectD* rod)
 {
     QMutexLocker l(&_cacheMutex);
+    const ActionsCacheInstance* cache = findActionCache(hash);
 
-    for (std::list<ActionsCacheInstance>::iterator it = _instances.begin(); it != _instances.end(); ++it) {
-        if (it->_hash == hash) {
-            ActionKey key;
-            key.time = time;
-            key.view = view;
-            key.mipmapLevel = mipmapLevel;
-
-            RoDCacheMap::const_iterator found = it->_rodCache.find(key);
-            if ( found != it->_rodCache.end() ) {
-                *rod = found->second;
-
-                return true;
-            }
-
-            return false;
-        }
+    if (!cache) {
+        return false;
     }
+    ActionKey key;
+    key.time = time;
+    key.view = view;
+    key.mipmapLevel = mipmapLevel;
 
-    return false;
+    RoDCacheMap::const_iterator found = cache->_rodCache.find(key);
+    if (found == cache->_rodCache.end()) {
+        return false;
+    }
+    *rod = found->second;
+
+    return true;
 }
 
 void
@@ -300,26 +291,23 @@ ActionsCache::getFramesNeededResult(U64 hash,
                                     FramesNeededMap* framesNeeded)
 {
     QMutexLocker l(&_cacheMutex);
+    const ActionsCacheInstance* cache = findActionCache(hash);
 
-    for (std::list<ActionsCacheInstance>::iterator it = _instances.begin(); it != _instances.end(); ++it) {
-        if (it->_hash == hash) {
-            ActionKey key;
-            key.time = time;
-            key.view = view;
-            key.mipmapLevel = mipmapLevel;
-
-            FramesNeededCacheMap::const_iterator found = it->_framesNeededCache.find(key);
-            if ( found != it->_framesNeededCache.end() ) {
-                *framesNeeded = found->second;
-
-                return true;
-            }
-
-            return false;
-        }
+    if (!cache) {
+        return false;
     }
+    ActionKey key;
+    key.time = time;
+    key.view = view;
+    key.mipmapLevel = mipmapLevel;
 
-    return false;
+    FramesNeededCacheMap::const_iterator found = cache->_framesNeededCache.find(key);
+    if (found == cache->_framesNeededCache.end()) {
+        return false;
+    }
+    *framesNeeded = found->second;
+
+    return true;
 }
 
 void
@@ -346,17 +334,15 @@ ActionsCache::getTimeDomainResult(U64 hash,
                                   double* last)
 {
     QMutexLocker l(&_cacheMutex);
+    const ActionsCacheInstance* cache = findActionCache(hash);
 
-    for (std::list<ActionsCacheInstance>::iterator it = _instances.begin(); it != _instances.end(); ++it) {
-        if ( (it->_hash == hash) && it->_timeDomainSet ) {
-            *first = it->_timeDomain.min;
-            *last = it->_timeDomain.max;
-
-            return true;
-        }
+    if (!cache || !cache->_timeDomainSet) {
+        return false;
     }
+    *first = cache->_timeDomain.min;
+    *last = cache->_timeDomain.max;
 
-    return false;
+    return true;
 }
 
 void

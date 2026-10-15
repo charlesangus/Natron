@@ -29,7 +29,6 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
-#include <memory>
 #include <string>
 
 #include "Global/GlobalDefines.h"
@@ -42,7 +41,8 @@ NATRON_NAMESPACE_ENTER
  * (-0.0 vs +0.0, differing NaN payloads), and variable-length data is length-prefixed so
  * adjacent fields cannot shift bytes between each other.
  *
- * Move-only: the XXH3 state is heap allocated and not worth duplicating.
+ * The XXH3 state lives inline, so a hasher on the stack costs no allocation: hashing runs once
+ * per node and knob on every recompute.
  **/
 class ContentHasher {
 public:
@@ -69,12 +69,12 @@ public:
 
     void reset();
 
-private:
-    struct StateDeleter {
-        void operator()(void* state) const noexcept;
-    };
+    // Large enough and aligned for XXH3_state_t; ContentHasher.cpp static_asserts both.
+    static constexpr std::size_t kStateSize = 640;
+    static constexpr std::size_t kStateAlign = 64;
 
-    std::unique_ptr<void, StateDeleter> _state;
+private:
+    alignas(kStateAlign) unsigned char _state[kStateSize];
 };
 
 NATRON_NAMESPACE_EXIT

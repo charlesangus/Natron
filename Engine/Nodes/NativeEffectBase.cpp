@@ -361,7 +361,7 @@ NativeEffectBase::onNodeHashChanged(U64 hash)
 {
     OutputEffectInstance::onNodeHashChanged(hash);
 
-    // Node::computeHashRecursive visits every node downstream of the one that changed and a
+    // Node::computeHashesDownstream visits every node downstream of the one that changed and a
     // node's hash folds in its inputs', so each node whose cached metadata could be stale gets
     // here without a walk of its own. Taking no lock but the cache's keeps this safe against a
     // render thread deriving metadata downstream to upstream.

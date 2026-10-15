@@ -17,7 +17,10 @@ EXR header and tests (`Tests/Native/NativeWriteReadBack_Test.cpp`). Its Xvfb che
 full undo-restores-the-match flow. Mine it for Phases 100.1–100.2, but don't merge it as is: it
 sits on pre-review M76 - Native Write code.
 
-## Notes (investigation 2026-10-11, code reading only; re-check line numbers)
+## Notes (investigation 2026-10-11, code reading only; line numbers re-checked 2026-10-14)
+
+Current line numbers (2026-10-14): computeHashInternal `Node.cpp:765-861`, purge call `:856` (guard `:851`), helper `removeAllImagesFromCacheWithMatchingIDAndDifferentKey` `:905` (loading guard `:914`, `:936`); `Hash64.cpp:43`; knobsAge load `Node.cpp:1458`, save `ProjectSerializationConvert.cpp:158`; creation date `ProjectPrivate.cpp:131`; cache lookup equality `Cache.h:1025`; `isMT` guard `EffectInstance.cpp:3433` (bump `:3442`); knobsAgeChanged slaving `Node.cpp:4907/4913`; `U32 newAge` `Node.cpp:1609`; paste/clone bump `NodeGraphPrivate10.cpp:257`; ActionsCache limit `EffectInstancePrivate.cpp:455` (`hardwareIdealThreadCount() * 2`); NATRON_CACHE_VERSION 9 at `GlobalDefines.h:97`. P5.T1 age hacks: reader filename `Node.cpp:5267`, group-disable loop `:5689`, layer-user bump `:6214`, group-input force `NodeInputs.cpp:861`, format loop `Project.cpp:2338`, restore defaults `EffectInstance.cpp:5669`. `Tests/BaseTest.cpp:365-380` asserts the hash is path-dependent; P4.T1 rewrites it.
+
 
 **Current scheme:**
 - `computeHashInternal` hashes the following (`Node.cpp:762-865`), via vector + boost CRC-64 (`Hash64.cpp:42`):
@@ -86,7 +89,7 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - size: L
 - [ ] M100.P1.T3 — Classify render-hashed knobs and exempt UI-only ones
   - files: Engine/Knob.h, Engine/Knob.cpp, Engine/Node.cpp, Engine/OfxParamInstance.cpp
-  - approach: isRenderHashed() = value type && !hashExempt && (persistent || evaluateOnChange). Call setHashExempt on label, sublabel, preview, hide-inputs, info text and user colour.
+  - approach: add the new KnobI API setHashExempt()/isRenderHashed() (neither exists yet). isRenderHashed() = value type && !hashExempt && (persistent || evaluateOnChange). Call setHashExempt on label, sublabel, preview, hide-inputs, info text and user colour.
   - verify: a test shows that editing the label or info text leaves the hash unchanged, and editing a secret persistent param changes it
   - size: M
 
@@ -97,8 +100,8 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - verify: Tests/NodeContentHash_Test.cpp: two freshly built identical graphs hash equal; topology changes and input swaps produce different hashes
   - size: M
 - [ ] M100.P2.T2 — Hash roto/paint items and IO containers
-  - files: Engine/RotoItem.cpp, Engine/RotoDrawableItem.cpp, Engine/Bezier.cpp, Engine/RotoStrokeItem.cpp, Engine/Node.cpp
-  - approach: a per-item memoized appendContentHash, dirtied wherever incrementNodesAge is called. Stroke internal nodes fold in their item's hash, and the container's knobs fold into the embedded IO node.
+  - files: Engine/RotoItem.cpp, Engine/RotoDrawableItem.cpp, Engine/Bezier.cpp, Engine/RotoStrokeItem.cpp, Engine/RotoUndoCommand.cpp, Engine/Node.cpp
+  - approach: a per-item memoized appendContentHash, dirtied wherever incrementNodesAge is called (RotoDrawableItem::incrementNodesAge at :651; callers in Bezier.cpp ×15, RotoUndoCommand.cpp ×8, RotoItem.cpp:189, RotoStrokeItem.cpp). Stroke internal nodes fold in their item's hash, and the container's knobs fold into the embedded IO node.
   - verify: moving one control point changes the hash and undo restores it; a micro-benchmark measures hash cost on a 5k-stroke comp
   - size: L
 - [ ] M100.P2.T3 — Fold expression dependencies into knob hashes
@@ -119,8 +122,8 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - verify: touching the file changes the hash; an unchanged file keeps a stable hash
   - size: M
 - [ ] M100.P3.T2 — Add sequence stamps with inotify and focus-in rescan
-  - files: Engine/FileStampRegistry.cpp, the native Read node source (M75 - Native Read), the DeepRead source, Engine/PrecompNode.cpp, Gui/GuiApplicationManager.cpp
-  - approach: hash all frame stamps from the existing directory scan. Watch the directory with QFileSystemWatcher, rescan on app focus-in, and force a rescan on Reload.
+  - files: Engine/FileStampRegistry.cpp, Engine/Nodes/IO/NativeRead.cpp, Engine/Nodes/IO/ReadTimeDomain.cpp, Engine/Nodes/Deep/DeepRead.cpp, Engine/PrecompNode.cpp, Gui/GuiApplicationManager.cpp
+  - approach: hash all frame stamps from the existing directory scan (SequenceParsing via KnobFile). NativeRead's Reload knob is at NativeRead.cpp:186, its purge at :586; NativeWrite has its own purgeCaches/Reload too. The only existing QFileSystemWatcher is in FileSystemModel (file dialog), so this adds the first engine-side watcher. Watch the directory with QFileSystemWatcher, rescan on app focus-in, and force a rescan on Reload.
   - verify: rewriting one frame of a sequence changes the Read's hash; confirm the viewer re-renders in a GUI test or UAT
   - size: L
 - [ ] M100.P3.T3 — Add a per-render current-frame stat guard
@@ -153,15 +156,15 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - verify: full ctest, plus disabled-Group and GroupInput rewire tests
   - size: L
 - [ ] M100.P5.T2 — Migrate the remaining age-bump callers
-  - files: Engine/RotoDrawableItem.cpp, Engine/RotoStrokeItem.cpp, AddLayers and DeepAddLayers sources, Gui/NodeGraphPrivate10.cpp, Gui/MultiInstancePanel.cpp
-  - approach: apply the same replacement, and delete the bump that forces paste and clone to hash differently.
+  - files: Engine/RotoDrawableItem.cpp, Engine/RotoStrokeItem.cpp, Engine/RotoUndoCommand.cpp, Engine/Nodes/Channel/AddLayers.cpp, Engine/Nodes/Deep/DeepAddLayers.cpp, Gui/NodeGraphPrivate10.cpp, Gui/MultiInstancePanel.cpp, plus the test callers Tests/DeepReadWrite_Test.cpp:974, Tests/DeepRenderPipeline_Test.cpp:855,1275, Tests/DeepChannelNodes_Test.cpp:894-896
+  - approach: apply the same replacement (AddLayers.cpp:404, DeepAddLayers.cpp:376, NodeGraphPrivate10.cpp:257, MultiInstancePanel.cpp:1612), and delete the bump that forces paste and clone to hash differently. Tests that bump or read the age switch to markHashDirty/getHashValue.
   - verify: `grep incrementKnobsAge` finds nothing; ctest passes
   - size: M
 - [ ] M100.P5.T3 — Stop reading KnobsAge on load
-  - files: Engine/Node.cpp, Engine/NodeSerialization.cpp (or M93's plain struct)
-  - approach: ignore the field on load and write 0; M16 - Project Format Redesign deletes it.
+  - files: Engine/Node.cpp (:1458 setKnobsAge on load), Engine/ProjectSerializationConvert.cpp (:158 save), Serialization/NodeSerialization.h (:101), Serialization/BoostXml/NodeXml.h (:127, :219)
+  - approach: ignore the field on load and write 0; keep the struct field and XML I/O so the format is unchanged. M16 - Project Format Redesign deletes it.
   - verify: the M93 golden harness is unchanged; load → save → load gives an identical hash
-  - size: S
+  - size: M
 
 ## Phase 100.6: Invariant tests and cost
 - [ ] M100.P6.T1 — Add a hash-invariant and regression suite
@@ -182,10 +185,14 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
 
 ## Phase 100.7: Write read back gated by the hash
 - [ ] M100.P7.T1 — Read back an EXR frame only when its stored hash matches the node
-  - files: Engine/Nodes/IO/NativeWrite.{h,cpp}, Tests/Native/NativeWriteReadBack_Test.cpp, Tests/gui/m76_write.py, Engine/Nodes/README.md
-  - approach: port the read-back half of `f1fbe003a` onto the shipped NativeWrite, using the Phase 100.4 content hash. The Write stores its node's hash as `natron:outputHash` in each EXR it writes. Read back shows the file only when the stored hash equals the current hash, and shows the input otherwise. Read back is offered only for EXR. This replaces M76.P3.T2, which was cancelled.
+  - files: Engine/Nodes/IO/NativeWrite.{h,cpp}, Engine/EffectInstance.h, Tests/Native/NativeWriteReadBack_Test.cpp, Tests/gui/m76_write.py, Engine/Nodes/README.md
+  - approach: the shipped NativeWrite already has a file-driven read back (readBackLayers(), readBackActive() gated on the readBack knob, a Reload button, and a secret non-persistent Read Back Stamp knob `kNatronWriteParamReadBackStamp` that pokes the age-based hash). Port only the hash-gate half of `f1fbe003a` (origin/m76/hash-gated-readback-wip) onto it, using the Phase 100.4 content hash: the Write stores its node's hash as `natron:outputHash` in each EXR it writes; read back shows the file only when the stored hash equals the current hash, and shows the input otherwise; offered only for EXR. Delete the Read Back Stamp knob once the content hash makes it redundant. The test and GUI script exist on main: extend them, don't recreate. This replaces M76.P3.T2, which was cancelled.
   - verify: `NativeWriteReadBack_Test` covers match, mismatch after an edit, and a restored match after undo; the GUI script repeats the undo flow under Xvfb.
   - size: M
 
 **Verification gate:** full ctest green in both scheduler modes; the HashInvariants and HashPluginSweep suites pass; the audit run leaves no discrepancy unexplained; the regressions for bugs 1, 2 and 4 pass; value toggling and undo hit the cache; touching a frame file refreshes the viewer in the AppImage; `incrementKnobsAge`/`knobsAge` appear nowhere outside serialization. Renaming a node or reopening the project in another session leaves its hash unchanged; the Write reads back an EXR only on a hash match (M100.P7.T1).
+
+## Decisions
+
 - 2026-10-12 — **Absorbed M97 - Value-Based Node Hashing** (user): M97 duplicated this milestone, and its blocker (the scope call) was settled here. Its prior art and the Write EXR read back moved into the intro and Phase 100.7.
+- 2026-10-14 — **Freshness check at claim**: P3.T2, P5.T2, P5.T3 and P7.T1 had stale `files`/approach and were rewritten in place (NativeWrite already has a file-driven read back; KnobsAge lives in M93's `Serialization/` struct). P5.T3 re-sized S→M. Notes line numbers refreshed.

@@ -319,3 +319,9 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - `clearExpressionsResults` on every knob: about 10 µs (EffectInstance.cpp, held until P4.T3).
   
   **Correctness bug found:** `computeHashRecursive` is a depth-first walk with visit-once marks, so a diamond join is hashed before all of its inputs are updated. It stores a key for a mixed state that never existed, and a genuine later state can collide with it. Being fixed now, with topological order and a gtest, together with the memo/LRU/creation-time/digest work, which avoids EffectInstance.{h,cpp}. P4.T3's lazy model makes the keystroke a dirty-mark walk, but the recompute costs remain at render-args time.
+- 2026-10-15 — **Topological rehash and memos** (code: 3d0bd88b1; release run 38730817726, 2238/2238 in both schedulers). The diamond probe is now ok 3/3, with a gtest `DiamondJoinHashesAfterAllItsInputs`. Hash bench net per keystroke, median / p95, before → after:
+  - comp N=200: 24.7 / 27.0 → **5.2 / 6.3 ms**, about 31 µs per node;
+  - chain N=50: 4.9 / 6.0 → **0.90 / 1.08 ms**;
+  - wide: 0.63 → 0.22 ms.
+  
+  That is about 4.8× faster, but still over 1 ms on the 200-node comp (4-thread N100). The rest of P6.T5 rides on P4.T3: the keystroke becomes a dirty-mark walk, and `clearExpressionsResults` (EffectInstance.cpp, about 10 µs/node) is removed from it. P6.T5 stays open.

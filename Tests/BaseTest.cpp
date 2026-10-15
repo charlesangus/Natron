@@ -512,8 +512,10 @@ TEST_F(BaseTest, IdenticalNodesShareOneCacheEntry)
 
     std::vector<RenderedPlane> planes;
     std::string error;
+    // Through the cache: bypassing it would make each leaf drop the entry it finds and render again.
     ASSERT_TRUE(renderNodePlanesDirect(merge, 1., ViewIdx(0), 0, RectI(0, 0, kCountingTestSize, kCountingTestSize),
-                                       std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error))
+                                       std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error,
+                                       false /*byPassCache*/))
         << error;
     ASSERT_EQ(1u, planes.size());
     ASSERT_FALSE(planes[0].pixels.empty());
@@ -550,13 +552,15 @@ TEST_F(BaseTest, ReturningToAnEarlierStateReusesItsCachedResults)
     rootValue->setValue(0.);
     connectNodes(leaf, root, 0, true);
 
-    // The root passes the leaf's value through; the root itself is never cached by this render.
+    // The root passes the leaf's value through and does not cache its own output. The renders go
+    // through the cache, which they leave as it is between calls.
     const RectI window(0, 0, kCountingTestSize, kCountingTestSize);
     const auto renderRoot = [&](float* out) {
         std::vector<RenderedPlane> planes;
         std::string error;
         ASSERT_TRUE(renderNodePlanesDirect(root, 1., ViewIdx(0), 0, window,
-                                           std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error))
+                                           std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error,
+                                           false /*byPassCache*/))
             << error;
         ASSERT_EQ(1u, planes.size());
         ASSERT_FALSE(planes[0].pixels.empty());

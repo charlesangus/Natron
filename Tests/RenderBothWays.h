@@ -119,10 +119,13 @@ struct RenderedPlane {
 };
 
 // Renders the planes in `layers` of `node` over `roi` (pixel coordinates at `mipmapLevel`) in one
-// Legacy-mode renderRoI call that bypasses the cache, and reads each back as float over the whole
-// of `roi`, zero where the render was clipped to the node's region of definition. `out` gets one
-// plane for each entry of `layers`, in the same order. The scheduler mode and the caches are
-// restored before returning. On failure `out` is empty and `error`, when given, says why.
+// Legacy-mode renderRoI call, and reads each back as float over the whole of `roi`, zero where the
+// render was clipped to the node's region of definition. `out` gets one plane for each entry of
+// `layers`, in the same order. The scheduler mode is restored before returning.
+// On failure `out` is empty and `error`, when given, says why. With `byPassCache`, the render
+// bypasses the cache for the whole tree, not just for `node`: every node upstream drops the entry
+// it finds and renders again, and the caches are emptied before and after. A test of cache reuse
+// passes false, which also leaves the caches as they are.
 bool renderNodePlanesDirect(const NodePtr& node,
                             double time,
                             ViewIdx view,
@@ -130,7 +133,8 @@ bool renderNodePlanesDirect(const NodePtr& node,
                             const RectI& roi,
                             const std::list<ImageLayerDesc>& layers,
                             std::vector<RenderedPlane>* out,
-                            std::string* error = 0);
+                            std::string* error = 0,
+                            bool byPassCache = true);
 
 NATRON_NAMESPACE_EXIT
 

@@ -112,7 +112,7 @@ All of this phase runs now. It touches neither `Blur.cpp` nor `NativeImageEffect
 
 This phase runs now. It edits only `renderHandler`'s tmpImage decision block in `EffectInstance.cpp` (`:2966-2994`), which M100 doesn't touch, plus `EffectInstance.h` and `NativeEffectBase.h`, which M85 doesn't touch. It stays out of `NativeImageEffect.*` and `Blur.cpp`.
 
-- [ ] M90.P2.T1 — Check that every native effect writes only inside `args.roi`
+- [x] M90.P2.T1 — Check that every native effect writes only inside `args.roi`
   - files: read-only across `Engine/Nodes/**`; results go in `## Decisions`. Opt-out overrides go only in classes outside M85's file list.
   - approach:
     - For every class under `Engine/Nodes` that reaches `NativeEffectBase`, check that `render()` writes only inside `args.roi` and never sizes a loop from the output image's `getBounds()`. That covers `NativeImageEffect` and its subclasses, and `NativeEffectBase` direct subclasses: `Shuffle`, `AddLayers`, `RemoveLayers`, `TypedPassthrough`, `NativeWrite`, and the Deep nodes.
@@ -194,3 +194,4 @@ This phase starts only after M85 - Native GPU Kernels has merged into `main`. M8
 
 - 2026-10-14 — **Elaborated at claim** (consultant scouting `main` at `e93abc919`): the paste is `EffectInstance.cpp:3279`, not `:3163`; it is serial because native effects are `FullySafe` and render the whole RoI in one call, and it exists because cached images carry a bitmap. Fix order: band the image passes, then render natives straight into the mapped image, then (post-M85) `writeWindow` and the cost seed.
 - 2026-10-14 — **Bench host** (user): this PM's host has 4 cores / 15 GB. Benches run here at 4 threads to steer the work, judged as ratios to the bare kernel; the user re-runs P2.T4 and P3.T2 on their 16-thread host before the gate.
+- 2026-10-14 — **P2.T1 audit: no opt-outs.** Every `NativeEffectBase` class that writes an `Image` (NativeImageEffect and its point ops, Blur, ErodeDilate, EdgeDetect via `SpatialFilter::writeWindow`, Merge, Dissolve, Keyer, ChromaKeyer, Crop, Reformat, Position, Transform, NativeGenerator, Shuffle, AddLayers, RemoveLayers, NativeRead, NativeWrite, DeepToImage) writes only inside `args.roi` or a rect clipped to it. Deep nodes write `DeepImage`s, outside the cached `Image` path. The audit flagged that whole-image `WriteAccess`/`fillZero` locks serialise disjoint-RoI renders of one cached image; that is the accepted edge case in `## Scope`.

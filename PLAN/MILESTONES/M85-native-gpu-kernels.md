@@ -431,7 +431,7 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
     - Any slower case is explained by the cost model and fixed before P6.T4.
   - size: M
 
-- [ ] M85.P6.T4 — Thorough bench matrix (only after P6.T3's direction holds)
+- [x] M85.P6.T4 — Thorough bench matrix (only after P6.T3's direction holds)
   - files: none (results go in Decisions)
   - approach:
     - Release build, RADV, interleaved Auto/Off, 3 rounds.
@@ -667,3 +667,37 @@ Tolerance classes are those of `Engine/Nodes/README.md`, applied GPU-vs-CPU. A n
   - **Erode 40 at 16k was slower than Off** (21 ms/Mpx). The wide van Herk pass read each column one 4-byte load per row pitch, so a power-of-two width aliased every load onto one memory channel. Rewritten register-blocked (16 outputs per thread, all four channels, adjacent columns per group) in `eacf34f98`: 0.5–0.6 ms/Mpx at every size (was 7.6 at UHD/8K), bit-exact, `ErodeDilate` 16/16 on RADV and lavapipe; Auto ≈ 5× Off at 16k.
   - **24k Transform/Blur Auto slower than Off was a bench artifact:** Off timed one cold frame, Auto a warm-up plus two, and from the second ~4.7 GB EXR on, dirty-page throttling made the Write disk-bound (Auto frame 0 wrote in the same 3.3 s as Off). `graph_bench.py` now deletes each output and syncs outside the timed part; 16k/24k rerun with equal frame counts in both modes.
   - **No host RAM figure is assumed anywhere** (user, 2026-10-14): the drivers probe available memory before each case and skip what won't fit, and the dirty-page drain wait is absolute, not sized to a machine. The figure recorded on 2026-10-12 was wrong; RAM figures are dropped from these notes.
+
+- 2026-10-15 — **P6.T4 done.** The gate holds: every M82 comp is faster end to end, and no Auto case is slower than Off in any round. Release build, RADV, `NATRON_RENDER_SCHEDULER=taskgraph`, Auto and Off interleaved, 3 rounds. The code under test is `eacf34f98` (Erode wide pass) plus `90f27cc64` (bench only).
+  - **Transient host (user, 2026-10-15):** the host rebooted during the 24k phase and can come back on different hardware even when the model strings match. Off motion blur ran 25% slower and the EXR Write ~40% slower after the reboot. So speed-ups are the **median of per-round Auto/Off ratios**, each pair measured on one boot, and absolute seconds are not comparable across rounds. The one pair split across the reboot (gxg-blur25 24k, round 2) was rerun as `r2b`.
+  - **M82 comps** (bench4, one boot; median s/frame, 6 frames, first dropped):
+
+    | comp | UHD Off / Auto | UHD speed-up | 8K Off / Auto | 8K speed-up |
+    |---|---|---|---|---|
+    | keying_grade | 0.946 / 0.342 | 2.77× | 3.754 / 1.295 | 2.90× |
+    | cg_multipass | 0.855 / 0.429 | 1.99× | 3.412 / 1.635 | 2.09× |
+    | defocus_retime | 2.602 / 0.886 | 2.94× | 9.775 / 3.392 | 2.88× |
+
+    Exposed transfer is 59–84% of region time in the comps: regions there are unstripped, so nothing overlaps their uploads and downloads.
+  - **Heavy spatial nodes**, alone (`node-`) and between Grades (`gxg-`). Median end-to-end speed-up, Write included. UHD and 8K come from bench4 (Erode 40 from bench5, after its fix); 15k, 16k and 24k from bench5:
+
+    | case | UHD | 8K | 16k | 24k | worst round |
+    |---|---|---|---|---|---|
+    | Transform | 1.36× / 1.72× | 1.45× / 1.84× | 1.65× / 2.30× | 1.79× / 2.50× | 1.35× |
+    | Transform motion blur | 8.46× / 8.70× | 11.95× / 12.29× | 19.64× / 19.76× | 21.13× / 20.85× | 8.42× |
+    | Blur FIR σ25 | 2.18× / 2.64× | 2.56× / 3.07× | 3.11× / 3.73× | 3.22× / 3.48× | 2.16× |
+    | Blur FIR σ100 | 3.53× / 3.90× | 4.13× / 4.44× | 5.03× / 5.50× | – | 3.44× |
+    | Blur IIR σ25 | 1.54× / 1.90× | 2.04× / 2.44× | 2.31× / 2.86× | 2.23× / 2.77× | 1.52× |
+    | Erode 6 | 2.16× / 2.56× | 2.48× / 2.94× | 3.46× / 4.08× | – | 2.09× |
+    | Erode 40 | 2.52× / 2.91× | 2.93× / 3.48× | 3.63× / 4.20× | 2.99× / 3.59× | 2.41× |
+    | ChromaKeyer | 1.93× / 2.29× | 2.05× / 2.54× | 2.46× / 3.18× | 2.18× / 2.81× | 1.86× |
+
+    Each cell is node / gxg. Blur σ100 and Erode 6 were not run at 24k. Probing memory before each case skipped nothing.
+  - **Excluding the Write**, Auto is 4.5–61× faster. The uncompressed EXR Write is 60–90% of every Auto frame at 16k and 24k.
+  - **Tiled vs untiled:** a 15k frame already strips (8 strips) on this 24 GB device, so "untiled" means UHD and 8K. Stripped regions hide their transfer (exposed 0.00–0.07 ms/Mpx at 16k), while unstripped ones expose ~0.5 ms/Mpx, and ~2 ms/Mpx for Transform. So region time per Mpx is lower tiled than untiled for every node, e.g. Blur σ25 0.79 tiled against 1.34 untiled. At 24k, ChromaKeyer and Erode 40 expose more again (0.24–0.40 ms/Mpx).
+  - **Per-node share of region time** (16k gxg): Blur σ100 91%, IIR 92%, Erode 77%, Transform motion blur 83%. ChromaKeyer is only 19%, behind Grade at 37%. Plain Transform regions are 55% "other" (time outside member kernels and transfer), which is unexplained.
+  - **Follow-ups for M109 - GPU Region Engine Hardening:**
+    - overlap transfer in unstripped regions, or strip them anyway: this is the comps' largest cost;
+    - find where plain Transform's "other" region time goes, and why its unstripped exposed transfer is 4× other nodes';
+    - find why exposed transfer rises again at 24k for ChromaKeyer and Erode.
+  - Raw results: `.local/m85/batchF/bench4/summary.txt` (comps, UHD, 8K) and `.local/m85/batchF/bench5/summary.txt`.

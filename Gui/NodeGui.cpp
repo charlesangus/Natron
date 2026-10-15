@@ -60,6 +60,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/MissingPluginNode.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/Plugin.h"
@@ -3460,6 +3461,10 @@ NodeGui::onLayerSelectionChanged()
     }
 
     QString extraLayerStr;
+    const MissingPluginNode* placeholder = dynamic_cast<const MissingPluginNode*>(internalNode->getEffectInstance().get());
+    if (placeholder) {
+        extraLayerStr = placeholder->getMissingSummary();
+    }
     KnobIPtr layerKnob = internalNode->getLayerKnob();
     if (layerKnob) {
         std::string summary;

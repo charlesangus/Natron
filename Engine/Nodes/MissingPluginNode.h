@@ -33,6 +33,7 @@
 #include <vector>
 
 #include <QMutex>
+#include <QString>
 
 #include "Engine/EffectInstance.h" // for PLUGINID_NATRON_MISSING_PLUGIN
 #include "Engine/EngineFwd.h"
@@ -83,12 +84,22 @@ public:
      **/
     std::list<Serialization::NodeGuiSerializationPtr> getStoredGuiChildren(std::string* nodeName) const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The last dot-separated part of a plug-in id with a trailing "Plugin" removed, so
+     * net.sf.openfx.GradePlugin reads Grade.
+     **/
+    static std::string getShortPluginName(const std::string& pluginID) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief A one-line identification of the missing plug-in such as "missing: Grade 2.0", empty
+     * until the node was created from a serialization.
+     **/
+    QString getMissingSummary() const WARN_UNUSED_RETURN;
+
 private:
     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    virtual void initializeKnobs() OVERRIDE FINAL
-    {
-    }
+    virtual void initializeKnobs() OVERRIDE FINAL;
 
     virtual void onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& serialization) OVERRIDE FINAL;
 
@@ -97,6 +108,7 @@ private:
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    KnobStringWPtr _info;
     mutable QMutex _storedMutex;
     Serialization::NodeSerializationPtr _stored;
     std::vector<std::string> _inputLabels;

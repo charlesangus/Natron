@@ -38,6 +38,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/MissingPluginNode.h"
 #include "Engine/Plugin.h"
@@ -119,4 +120,36 @@ TEST_F(BaseTest, MissingPluginNodeExposesStoredInputsAndErrors)
 
     ASSERT_TRUE(placeholder.get() != nullptr);
     EXPECT_EQ(serialization, placeholder->getStoredSerialization());
+}
+
+TEST(MissingPluginNodeSummary, ShortNameDropsNamespaceAndTrailingPlugin)
+{
+    EXPECT_EQ("Grade", MissingPluginNode::getShortPluginName("net.sf.openfx.GradePlugin"));
+    EXPECT_EQ("NotInstalled", MissingPluginNode::getShortPluginName("com.example.NotInstalled"));
+    EXPECT_EQ("Plugin", MissingPluginNode::getShortPluginName("com.example.Plugin"));
+    EXPECT_EQ("Bare", MissingPluginNode::getShortPluginName("Bare"));
+}
+
+TEST_F(BaseTest, MissingPluginNodeShowsItsPluginInAnInfoKnobThatIsNotSaved)
+{
+    NodePtr node = createPlaceholder(getApp(), makeSerialization());
+
+    ASSERT_TRUE(node.get() != nullptr);
+
+    std::shared_ptr<MissingPluginNode> placeholder = std::dynamic_pointer_cast<MissingPluginNode>(node->getEffectInstance());
+
+    ASSERT_TRUE(placeholder.get() != nullptr);
+    EXPECT_EQ(QString::fromUtf8("missing: NotInstalled 3.7"), placeholder->getMissingSummary());
+
+    KnobStringPtr info;
+    const std::vector<KnobIPtr> knobs = placeholder->getKnobs_mt_safe();
+    for (const KnobIPtr& knob : knobs) {
+        KnobStringPtr isString = std::dynamic_pointer_cast<KnobString>(knob);
+        if (isString && !isString->getIsPersistent() && isString->isLabel()) {
+            info = isString;
+        }
+    }
+    ASSERT_TRUE(info.get() != nullptr);
+    EXPECT_NE(std::string::npos, info->getValue().find("com.example.NotInstalled"));
+    EXPECT_NE(std::string::npos, info->getValue().find("3.7"));
 }

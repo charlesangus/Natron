@@ -27,6 +27,7 @@
 
 #include <QMutexLocker>
 
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 
 #include "Serialization/NodeSerialization.h"
@@ -59,6 +60,49 @@ MissingPluginNode::getStoredGuiChildren(std::string* nodeName) const
     *nodeName = _guiChildrenNodeName;
 
     return _guiChildren;
+}
+
+std::string
+MissingPluginNode::getShortPluginName(const std::string& pluginID)
+{
+    static const std::string suffix = "Plugin";
+
+    std::string name = pluginID.substr(pluginID.rfind('.') == std::string::npos ? 0 : pluginID.rfind('.') + 1);
+
+    if (name.size() > suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) {
+        name.erase(name.size() - suffix.size());
+    }
+
+    return name.empty() ? pluginID : name;
+}
+
+QString
+MissingPluginNode::getMissingSummary() const
+{
+    const Serialization::NodeSerializationPtr stored = getStoredSerialization();
+
+    if (!stored) {
+        return QString();
+    }
+
+    return tr("missing: %1 %2.%3")
+        .arg(QString::fromStdString(getShortPluginName(stored->pluginID)))
+        .arg(stored->pluginMajorVersion)
+        .arg(stored->pluginMinorVersion);
+}
+
+void
+MissingPluginNode::initializeKnobs()
+{
+    KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
+    KnobStringPtr info = createKnob<KnobString>(tr("Missing plug-in"));
+
+    info->setAnimationEnabled(false);
+    info->setAsLabel();
+    info->setEvaluateOnChange(false);
+    info->setIsPersistent(false);
+    page->addKnob(info);
+    _info = info;
 }
 
 NativePluginDescription
@@ -116,6 +160,17 @@ MissingPluginNode::onEffectCreated(bool /*mayCreateFileDialog*/,
 
     if (!stored) {
         return;
+    }
+    KnobStringPtr info = _info.lock();
+
+    if (info) {
+        info->setValue(tr("Plug-in: %1\nVersion: %2.%3\n"
+                          "This plug-in is not installed. The settings and connections of this node are preserved "
+                          "and will be restored when the plug-in is installed.")
+                           .arg(QString::fromStdString(stored->pluginID))
+                           .arg(stored->pluginMajorVersion)
+                           .arg(stored->pluginMinorVersion)
+                           .toStdString());
     }
     setPersistentMessage(eMessageTypeError,
                          tr("The plug-in %1 (version %2.%3) is not installed. This node is kept as a placeholder and is saved back unchanged.")

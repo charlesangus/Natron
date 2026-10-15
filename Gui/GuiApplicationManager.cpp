@@ -47,6 +47,7 @@ CLANG_DIAG_ON(uninitialized)
 #endif
 
 #include "Engine/EffectInstance.h" // PLUGINID_OFX_*
+#include "Engine/FileStampRegistry.h"
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/Settings.h"
 #include "Gui/DocumentationManager.h"
@@ -1025,6 +1026,13 @@ GuiApplicationManager::initGui(const CLArgs& args)
     ///Copy the args that will be used when fontconfig cache is updated
     _imp->startupArgs = args;
 
+    // Network file systems raise no inotify events, so files may have changed while another
+    // application had focus.
+    QObject::connect(qApp, &QGuiApplication::applicationStateChanged, this, [](Qt::ApplicationState state) {
+        if (state == Qt::ApplicationActive) {
+            FileStampRegistry::instance().invalidateAll();
+        }
+    });
 
     _imp->fontconfigUpdateWatcher.reset(new QFutureWatcher<void>);
     QObject::connect( _imp->fontconfigUpdateWatcher.get(), SIGNAL(finished()), this, SLOT(onFontconfigCacheUpdateFinished()) );

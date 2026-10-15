@@ -169,3 +169,77 @@ TEST_F(BaseTest, FileKnobContentHashFollowsTheFileOnDisk)
     FileStampRegistry::instance().invalidate(path);
     EXPECT_EQ(before, fileKnob->getContentHash());
 }
+
+TEST(FileStamp, SequenceStampFollowsItsFrames)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString fixture = QString::fromUtf8(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr");
+    std::string frames[4];
+    for (int i = 0; i < 4; ++i) {
+        frames[i] = dir.filePath(QString::fromUtf8("name.%1.exr").arg(i + 1, 4, 10, QLatin1Char('0'))).toStdString();
+    }
+    for (int i = 0; i < 3; ++i) {
+        ASSERT_TRUE(QFile::copy(fixture, QString::fromStdString(frames[i])));
+        setMTime(frames[i], 1000000);
+    }
+    const std::string pattern = dir.filePath(QString::fromUtf8("name.####.exr")).toStdString();
+
+    FileStampRegistry& registry = FileStampRegistry::instance();
+    registry.invalidateAll();
+    const U64 original = registry.sequenceStamp(pattern);
+    EXPECT_NE(0u, original);
+    registry.invalidate(pattern);
+    EXPECT_EQ(original, registry.sequenceStamp(pattern));
+
+    setMTime(frames[1], 2000000);
+    registry.invalidate(pattern);
+    const U64 touched = registry.sequenceStamp(pattern);
+    EXPECT_NE(original, touched);
+
+    setMTime(frames[1], 1000000);
+    registry.invalidate(pattern);
+    EXPECT_EQ(original, registry.sequenceStamp(pattern));
+
+    ASSERT_TRUE(QFile::copy(fixture, QString::fromStdString(frames[3])));
+    setMTime(frames[3], 1000000);
+    registry.invalidateDirectory(dir.path().toStdString());
+    const U64 extended = registry.sequenceStamp(pattern);
+    EXPECT_NE(original, extended);
+    registry.invalidateAll();
+    EXPECT_EQ(extended, registry.sequenceStamp(pattern));
+}
+
+TEST_F(BaseTest, FileKnobContentHashFollowsASequenceOnDisk)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString fixture = QString::fromUtf8(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr");
+    std::string frames[3];
+    for (int i = 0; i < 3; ++i) {
+        frames[i] = dir.filePath(QString::fromUtf8("seq.%1.exr").arg(i + 1, 4, 10, QLatin1Char('0'))).toStdString();
+        ASSERT_TRUE(QFile::copy(fixture, QString::fromStdString(frames[i])));
+        setMTime(frames[i], 1000000);
+    }
+    const std::string pattern = dir.filePath(QString::fromUtf8("seq.####.exr")).toStdString();
+
+    CreateNodeArgs readerArgs(_readPluginID.toStdString(), getApp()->getProject());
+    readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, pattern);
+    NodePtr reader = getApp()->createNode(readerArgs);
+    ASSERT_TRUE(bool(reader));
+
+    KnobFilePtr fileKnob = std::dynamic_pointer_cast<KnobFile>(reader->getKnobByName(kOfxImageEffectFileParamName));
+    ASSERT_TRUE(bool(fileKnob));
+
+    FileStampRegistry::instance().invalidateAll();
+    const U64 before = fileKnob->getContentHash();
+    EXPECT_EQ(before, fileKnob->getContentHash());
+
+    setMTime(frames[2], 2000000);
+    fileKnob->invalidateFileStamp();
+    EXPECT_NE(before, fileKnob->getContentHash());
+
+    setMTime(frames[2], 1000000);
+    fileKnob->invalidateFileStamp();
+    EXPECT_EQ(before, fileKnob->getContentHash());
+}

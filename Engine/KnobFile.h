@@ -101,6 +101,18 @@ public:
      **/
     std::string getSingleFilePath();
 
+    /**
+     * @brief The knob's current value with project variables expanded: a single file or a
+     * frame sequence pattern.
+     **/
+    std::string getResolvedPath();
+
+    /**
+     * @brief Forces the file or sequence the knob names to be stamped again on the next
+     * content hash.
+     **/
+    void invalidateFileStamp();
+
 Q_SIGNALS:
 
     void openFile();

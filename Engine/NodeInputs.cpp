@@ -828,8 +828,6 @@ Node::connectInput(const NodePtr & input,
 
     computeHash();
 
-    _imp->ifGroupForceHashChangeOfInputs();
-
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
         _imp->runInputChangedCallback(inputNumber, inputChangedCB);
@@ -841,24 +839,6 @@ Node::connectInput(const NodePtr & input,
 
     return true;
 } // Node::connectInput
-
-
-
-void
-Node::Implementation::ifGroupForceHashChangeOfInputs()
-{
-    ///If the node is a group, force a change of the outputs of the GroupInput nodes so the hash of the tree changes downstream
-    NodeGroup* isGrp = dynamic_cast<NodeGroup*>( effect.get() );
-
-    if ( isGrp && !isGrp->getApp()->isCreatingNodeTree() ) {
-        NodesList inputsOutputs;
-        isGrp->getInputsOutputs(&inputsOutputs, false);
-        for (NodesList::iterator it = inputsOutputs.begin(); it != inputsOutputs.end(); ++it) {
-            (*it)->incrementKnobsAge_internal();
-            (*it)->computeHash();
-        }
-    }
-}
 
 bool
 Node::replaceInputInternal(const NodePtr& input, int inputNumber, bool useGuiInputs)
@@ -929,8 +909,6 @@ Node::replaceInputInternal(const NodePtr& input, int inputNumber, bool useGuiInp
     }
 
     computeHash();
-
-    _imp->ifGroupForceHashChangeOfInputs();
 
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
@@ -1034,9 +1012,6 @@ Node::switchInput0And1()
         _imp->runInputChangedCallback(inputAIndex, inputChangedCB);
         _imp->runInputChangedCallback(inputBIndex, inputChangedCB);
     }
-
-
-    _imp->ifGroupForceHashChangeOfInputs();
 
     if (mustCallEnd) {
         endInputEdition(true);
@@ -1146,8 +1121,6 @@ Node::disconnectInput(int inputNumber)
     }
     computeHash();
 
-    _imp->ifGroupForceHashChangeOfInputs();
-
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
         _imp->runInputChangedCallback(inputNumber, inputChangedCB);
@@ -1210,8 +1183,6 @@ Node::disconnectInputInternal(Node* input, bool useGuiValues)
             onInputChanged(found);
         }
         computeHash();
-
-        _imp->ifGroupForceHashChangeOfInputs();
 
         std::string inputChangedCB = getInputChangedCallback();
         if ( !inputChangedCB.empty() ) {

@@ -45,6 +45,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/FileStampRegistry.h"
@@ -52,6 +53,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Project.h"
@@ -120,6 +122,31 @@ protected:
     NodePtr createBlur()
     {
         return createNode(QString::fromUtf8(PLUGINID_NATRON_BLUR), PLUGIN_MAJOR_NATRON_BLUR);
+    }
+
+    // A group with no Input or Output yet, so that each test wires its own.
+    NodePtr createEmptyGroup(const NodeCollectionPtr& parent)
+    {
+        CreateNodeArgs args(PLUGINID_NATRON_GROUP, parent);
+        args.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+        args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+
+        return getApp()->createNode(args);
+    }
+
+    NodePtr createInside(const NodePtr& group,
+                         const std::string& pluginID,
+                         int majorVersion = -1)
+    {
+        NodeCollectionPtr collection = std::dynamic_pointer_cast<NodeCollection>(group->getEffectInstance());
+        if (!collection) {
+            return NodePtr();
+        }
+        CreateNodeArgs args(pluginID, collection);
+        args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+        args.setProperty<int>(kCreateNodeArgsPropPluginVersion, majorVersion, 0);
+
+        return getApp()->createNode(args);
     }
 };
 
@@ -329,4 +356,92 @@ TEST_F(LazyHashTest, WatchedDirectoryChangeGivesTheReaderANewHash)
     QCoreApplication::processEvents();
     EXPECT_NE(readerBefore, reader->getHashValue());
     EXPECT_NE(blurBefore, blur->getHashValue());
+}
+
+// Every node inside a group inherits its disabled state, including the nodes that are not downstream
+// of a GroupInput and those in nested groups, which no walk through the outputs reaches.
+TEST_F(LazyHashTest, GroupDisableChangesTheHashesOfAllItsInnerNodes)
+{
+    NodePtr source = createConstant();
+    NodePtr group = createEmptyGroup(getApp()->getProject());
+    ASSERT_TRUE(source && group);
+    NodePtr groupInput = createInside(group, PLUGINID_NATRON_INPUT);
+    NodePtr innerBlur = createInside(group, PLUGINID_NATRON_BLUR, PLUGIN_MAJOR_NATRON_BLUR);
+    NodePtr groupOutput = createInside(group, PLUGINID_NATRON_OUTPUT);
+    NodePtr looseConstant = createInside(group, PLUGINID_NATRON_CONSTANT);
+    ASSERT_TRUE(groupInput && innerBlur && groupOutput && looseConstant);
+    NodePtr nested = createEmptyGroup(std::dynamic_pointer_cast<NodeCollection>(group->getEffectInstance()));
+    ASSERT_TRUE(bool(nested));
+    NodePtr nestedConstant = createInside(nested, PLUGINID_NATRON_CONSTANT);
+    ASSERT_TRUE(bool(nestedConstant));
+
+    ASSERT_TRUE(innerBlur->connectInput(groupInput, 0));
+    ASSERT_TRUE(groupOutput->connectInput(innerBlur, 0));
+    ASSERT_GE(group->getNInputs(), 1);
+    connectNodes(source, group, 0, true);
+    NodePtr below = createBlur();
+    ASSERT_TRUE(bool(below));
+    ASSERT_TRUE(below->connectInput(group, 0));
+
+    KnobBoolPtr disabled = group->getDisabledKnob();
+    ASSERT_TRUE(bool(disabled));
+    ASSERT_FALSE(disabled->getValue());
+
+    const U64 innerBefore = innerBlur->getHashValue();
+    const U64 looseBefore = looseConstant->getHashValue();
+    const U64 nestedBefore = nestedConstant->getHashValue();
+    const U64 belowBefore = below->getHashValue();
+
+    disabled->setValue(true);
+    EXPECT_NE(innerBefore, innerBlur->getHashValue());
+    EXPECT_NE(looseBefore, looseConstant->getHashValue());
+    EXPECT_NE(nestedBefore, nestedConstant->getHashValue());
+    EXPECT_NE(belowBefore, below->getHashValue());
+
+    disabled->setValue(false);
+    EXPECT_EQ(innerBefore, innerBlur->getHashValue());
+    EXPECT_EQ(looseBefore, looseConstant->getHashValue());
+    EXPECT_EQ(nestedBefore, nestedConstant->getHashValue());
+    EXPECT_EQ(belowBefore, below->getHashValue());
+}
+
+// The nodes below a GroupInput read the group's input through it: rewiring the group must move
+// their hashes, and those of the nodes below the group, though none of them was rewired.
+TEST_F(LazyHashTest, GroupInputRewireChangesTheHashesDownstreamOfIt)
+{
+    NodePtr sourceA = createConstant();
+    NodePtr sourceB = createBlur();
+    NodePtr group = createEmptyGroup(getApp()->getProject());
+    ASSERT_TRUE(sourceA && sourceB && group);
+    NodePtr groupInput = createInside(group, PLUGINID_NATRON_INPUT);
+    NodePtr innerBlur = createInside(group, PLUGINID_NATRON_BLUR, PLUGIN_MAJOR_NATRON_BLUR);
+    NodePtr groupOutput = createInside(group, PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(groupInput && innerBlur && groupOutput);
+    ASSERT_TRUE(innerBlur->connectInput(groupInput, 0));
+    ASSERT_TRUE(groupOutput->connectInput(innerBlur, 0));
+    ASSERT_GE(group->getNInputs(), 1);
+    NodePtr below = createBlur();
+    ASSERT_TRUE(bool(below));
+    ASSERT_TRUE(below->connectInput(group, 0));
+
+    const U64 innerUnconnected = innerBlur->getHashValue();
+    const U64 belowUnconnected = below->getHashValue();
+
+    connectNodes(sourceA, group, 0, true);
+    const U64 innerOnA = innerBlur->getHashValue();
+    const U64 belowOnA = below->getHashValue();
+    EXPECT_NE(innerUnconnected, innerOnA);
+    EXPECT_NE(belowUnconnected, belowOnA);
+
+    ASSERT_TRUE(group->replaceInput(sourceB, 0));
+    EXPECT_NE(innerOnA, innerBlur->getHashValue());
+    EXPECT_NE(belowOnA, below->getHashValue());
+
+    ASSERT_TRUE(group->replaceInput(sourceA, 0));
+    EXPECT_EQ(innerOnA, innerBlur->getHashValue());
+    EXPECT_EQ(belowOnA, below->getHashValue());
+
+    ASSERT_NE(-1, group->disconnectInput(0));
+    EXPECT_EQ(innerUnconnected, innerBlur->getHashValue());
+    EXPECT_EQ(belowUnconnected, below->getHashValue());
 }

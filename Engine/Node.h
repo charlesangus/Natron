@@ -1120,8 +1120,6 @@ public:
 
     void incrementKnobsAge();
 
-    void incrementKnobsAge_internal();
-
 public:
 
 
@@ -1900,8 +1898,6 @@ Q_SIGNALS:
     void mustComputeHashOnMainThread();
 
     void settingsPanelClosed(bool);
-
-    void knobsAgeChanged(U64 age);
 
     void persistentMessageChanged();
 

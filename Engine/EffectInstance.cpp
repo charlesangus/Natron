@@ -2977,8 +2977,16 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
             prefComp = outputClipPrefsComps;
         }
 
+        const bool mappedMatchesOutput = (prefComp == it->second.renderMappedImage->getComponents()) && (outputClipPrefDepth == it->second.renderMappedImage->getBitDepth());
+        // Rendering straight into the cached image is safe: the trimap marks the render window as
+        // being rendered so readers wait for it, the effect's Image::WriteAccess holds the image's
+        // write lock so a concurrent ensureBounds() cannot reallocate the buffer under the kernel,
+        // and an abort clears the bitmap over the window. Host-tiled renders keep the temporary
+        // because tiles writing into one image would serialise on its write lock.
+        const bool rendersIntoMappedImage = mappedMatchesOutput && !layers.useOpenGL && (it->second.renderMappedImage->getStorageMode() == eStorageModeRAM) && (layers.rectsToRender.size() == 1) && _publicInterface->rendersOnlyInsideRenderWindow();
+
         // OpenGL render never use the cache and bitmaps, all images are local to a render.
-        if ((it->second.renderMappedImage->usesBitMap() || (prefComp != it->second.renderMappedImage->getComponents()) || (outputClipPrefDepth != it->second.renderMappedImage->getBitDepth())) && !_publicInterface->isPaintingOverItselfEnabled() && !layers.useOpenGL) {
+        if ((it->second.renderMappedImage->usesBitMap() || !mappedMatchesOutput) && !rendersIntoMappedImage && !_publicInterface->isPaintingOverItselfEnabled() && !layers.useOpenGL) {
             it->second.tmpImage = std::make_shared<Image>(prefComp,
                                                           it->second.renderMappedImage->getRoD(),
                                                           actionArgs.roi,

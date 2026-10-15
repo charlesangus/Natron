@@ -2166,6 +2166,16 @@ public:
     }
 
     /**
+     * @brief Reimplement to return true when render() writes no pixel outside args.roi. The host
+     * may then hand render() the cached output image itself instead of a temporary image the size
+     * of the render window, which it would otherwise copy into the cached image afterwards.
+     **/
+    virtual bool rendersOnlyInsideRenderWindow() const
+    {
+        return false;
+    }
+
+    /**
      * @brief Reimplement to return false at a time and view where the output does not come from
      * the planes the layer knob selects, such as a Write showing the file it wrote. A layer knob
      * that selects no channel there then does not make the effect an identity of its input.

@@ -1016,6 +1016,15 @@ TEST_F(RenderSchedulerTest, CachedOutputsOfTwoFramesAtOnce)
     for (std::size_t i = 0; i < nodes.size(); ++i) {
         ASSERT_NO_FATAL_FAILURE(setBool(nodes[i], "cacheOutput", true));
     }
+    // Identical leaves would share one cached image, and so would the merges above them: each leaf gets its own
+    // value so that every node's cached output is its own and only the two frames share it.
+    float expected = 0.f;
+    for (int i = 0; i < leaves; ++i) {
+        KnobDouble* value = dynamic_cast<KnobDouble*>(nodes[i]->getKnobByName("value").get());
+        ASSERT_TRUE(value != NULL);
+        value->setValue(1. + i);
+        expected += 1.f + i;
+    }
     // Long enough that the second frame's leaves are ready while the first frame's still render.
     for (int i = 0; i < leaves; ++i) {
         ASSERT_NO_FATAL_FAILURE(setDelay(nodes[i], kOverlapDelayMs));
@@ -1060,7 +1069,7 @@ TEST_F(RenderSchedulerTest, CachedOutputsOfTwoFramesAtOnce)
             Image::ReadAccess access = image->getReadRights();
             const float* pixel = (const float*)access.pixelAt(0, 0);
             ASSERT_TRUE(pixel != NULL);
-            EXPECT_FLOAT_EQ((float)leaves, pixel[0]);
+            EXPECT_FLOAT_EQ(expected, pixel[0]);
         }
         // A leaf's second task waits for the first one and then finds its image in the cache.
         for (int i = 0; i < leaves; ++i) {

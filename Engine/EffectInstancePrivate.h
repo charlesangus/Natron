@@ -216,16 +216,12 @@ public:
         }
     };
 
-    // Held across the whole of markImagesAsBeingRendered() so that one render reserves its rectangles on all its layer
-    // images before another render can query any of them. Taken before imagesBeingRenderedMutex and never held while
-    // waiting on another render.
-    QMutex imagesReservationMutex;
-    QMutex imagesBeingRenderedMutex;
     typedef std::shared_ptr<ImageBeingRendered> ImageBeingRenderedPtr;
     typedef std::map<ImagePtr, ImageBeingRenderedPtr> ImageBeingRenderedMap;
-    ImageBeingRenderedMap imagesBeingRendered;
 
-    ImageBeingRenderedPtr acquireImageBeingRendered(const ImagePtr& img);
+    // The images being rendered are tracked process-wide rather than per effect (see EffectInstancePrivate.cpp): a
+    // cached image is shared by every node whose content hash matches, not only by the clones of one node.
+    static ImageBeingRenderedPtr acquireImageBeingRendered(const ImagePtr& img);
 #endif
 
     ///A cache for components available

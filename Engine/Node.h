@@ -238,7 +238,9 @@ public:
     void getChildrenMultiInstance(NodesList* children) const;
 
     /**
-     * @brief Returns the hash value of the node, or 0 if it has never been computed.
+     * @brief The key the node's cached results are stored under: its content hash, so nodes in
+     * the same state share their cache entries whatever their name, age or project. Returns 0
+     * if it has never been computed.
      **/
     U64 getHashValue() const;
 
@@ -1709,10 +1711,14 @@ private:
     void computeHashRecursive(std::list<Node*>& marked);
 
     /**
-     * @brief Refreshes the node hash depending on its context (knobs age, inputs etc...)
-     * @return True if the hash has changed, false otherwise
+     * @brief Refreshes the node's content hash and its age hash from its knobs, age and inputs.
+     * @return True if either hash has changed, false otherwise
      **/
     bool computeHashInternal() WARN_UNUSED_RETURN;
+
+    // The hash built from the knobs age. Nothing is keyed on it; it is kept so the audit can
+    // compare it with the content hash.
+    U64 getAgeHashValue() const;
 
     U64 computeContentHash() const;
     void auditHashTransition(U64 ageHash, U64 contentHash);

@@ -193,3 +193,4 @@ This phase starts only after M85 - Native GPU Kernels has merged into `main`. M8
 ## Decisions
 
 - 2026-10-14 — **Elaborated at claim** (consultant scouting `main` at `e93abc919`): the paste is `EffectInstance.cpp:3279`, not `:3163`; it is serial because native effects are `FullySafe` and render the whole RoI in one call, and it exists because cached images carry a bitmap. Fix order: band the image passes, then render natives straight into the mapped image, then (post-M85) `writeWindow` and the cost seed.
+- 2026-10-14 — **Bench host** (user): this PM's host has 4 cores / 15 GB. Benches run here at 4 threads to steer the work, judged as ratios to the bare kernel; the user re-runs P2.T4 and P3.T2 on their 16-thread host before the gate.

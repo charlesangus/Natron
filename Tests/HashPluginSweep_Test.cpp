@@ -47,12 +47,16 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobFile.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
+#include "Engine/ProjectColorManagement.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -380,6 +384,44 @@ makeValueEdit(Knob<T>* knob,
     edit->what = valueString(original) + " -> " + valueString(target);
 }
 
+bool
+isOCIOColorSpaceKnob(const std::string& name)
+{
+    return (name == "ocioInputSpace") || (name == "ocioOutputSpace");
+}
+
+// openfx-io's GenericOCIO resets a name the config does not know to its default colourspace,
+// and folds any name back to the role its colourspace plays (scene_linear, ...). A sticking
+// edit therefore has to name a colourspace other than the one the current value resolves to.
+bool
+pickOtherColorSpace(const std::string& original,
+                    std::string* target)
+{
+    AppInstancePtr app = appPTR->getTopLevelInstance();
+    if (!app) {
+        return false;
+    }
+    ProjectColorManagementPtr colorManagement = app->getProject()->getColorManagement();
+    if (!colorManagement) {
+        return false;
+    }
+    OCIO_NAMESPACE::ConstConfigRcPtr config = colorManagement->getConfig();
+    if (!config) {
+        return false;
+    }
+    const int originalIndex = config->getIndexForColorSpace(original.c_str());
+    const std::vector<std::string> names = colorManagement->getColorSpaces();
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        if (!names[i].empty() && (config->getIndexForColorSpace(names[i].c_str()) != originalIndex)) {
+            *target = names[i];
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
 /**
  * @brief Builds a reversible edit that changes the content of one dimension of the knob.
  * @returns An empty string, or why this dimension cannot be perturbed (a skip, not a failure).
@@ -432,9 +474,27 @@ makeEdit(const KnobIPtr& knob,
         return std::string();
     }
 
+    if (KnobChannelSelect* channel = dynamic_cast<KnobChannelSelect*>(k)) {
+        const std::string current = channel->get();
+        const std::string targetChannel = current == kNatronColorViewRGBA ".R" ? kNatronColorViewRGBA ".G" : kNatronColorViewRGBA ".R";
+        makeValueEdit<std::string>(channel, dimension, channel->getValue(dimension, ViewSpec::current(), false), channel->encode(targetChannel), edit);
+        edit->what = (current.empty() ? std::string("None") : current) + " -> " + targetChannel;
+
+        return std::string();
+    }
+
+    if (KnobLayerSelect* layer = dynamic_cast<KnobLayerSelect*>(k)) {
+        const std::string current = layer->getLayer();
+        const std::string targetLayer = current == kNatronColorViewRGBA ? kNatronColorViewAlpha : kNatronColorViewRGBA;
+        makeValueEdit<std::string>(layer, dimension, layer->getValue(dimension, ViewSpec::current(), false), layer->encode(targetLayer, layer->getChannels()), edit);
+        edit->what = (current.empty() ? std::string("None") : current) + " -> " + targetLayer;
+
+        return std::string();
+    }
+
     if (dynamic_cast<KnobTable*>(k)) {
-        // Table knobs (paths, layers, channel sets, shuffle maps) store an encoded string whose
-        // valid forms differ per type, so a generic edit would be rejected or normalized.
+        // The remaining table knobs (paths, layers, channel sets, shuffle maps) store an encoded
+        // string whose valid forms differ per type, so a generic edit would be rejected or normalized.
         return "table knob, encoded content has no generic edit";
     }
 
@@ -484,6 +544,10 @@ makeEdit(const KnobIPtr& knob,
         std::string target;
         if (dynamic_cast<KnobFile*>(k) || dynamic_cast<KnobOutputFile*>(k)) {
             target = original == kSweepFilePathA ? kSweepFilePathB : kSweepFilePathA;
+        } else if (isOCIOColorSpaceKnob(knob->getName())) {
+            if (!pickOtherColorSpace(original, &target)) {
+                return "no other colourspace in the project's OpenColorIO config";
+            }
         } else {
             target = original + "_hashsweep";
         }

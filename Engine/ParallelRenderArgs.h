@@ -141,9 +141,6 @@ public:
     ///If true, the attached paint stroke is being drawn currently
     bool isDuringPaintStrokeCreation : 1;
 
-    ///When true, all NaNs will be converted to 1
-    bool doNansHandling : 1;
-
     ///When true, this is a hint for plug-ins that the render will be used for draft such as previewing while scrubbing the timeline
     bool draftMode : 1;
 

@@ -846,7 +846,6 @@ Node::computeHashInternal()
     bool hashChanged = oldHash != newHash;
 
     if (hashChanged) {
-        clearStaleNaNWarning(newHash);
         _imp->effect->onNodeHashChanged(newHash);
         if ( _imp->nodeCreated && !getApp()->getProject()->isProjectClosing() ) {
             /*
@@ -4333,38 +4332,6 @@ Node::setChannelSelectorMessageFromRender(const std::string& content,
     postPersistentMessage(eMessageTypeError, content, true, render ? render->getRenderSequence() : 0, render.get());
 }
 
-void
-Node::setNaNWarning(const std::string& content,
-                    U64 renderedHash)
-{
-    if ((renderedHash == 0) || (renderedHash != getHashValue())) {
-        return;
-    }
-    postPersistentMessage(eMessageTypeWarning, content, false, 0, NULL);
-
-    QMutexLocker k(&_imp->persistentMessageMutex);
-    if ((_imp->persistentMessage == QString::fromUtf8(content.c_str())) && (_imp->persistentMessageType == (int)eMessageTypeWarning)) {
-        _imp->nanWarningHash = renderedHash;
-    }
-}
-
-void
-Node::clearStaleNaNWarning(U64 currentHash)
-{
-    bool changed = false;
-    {
-        QMutexLocker k(&_imp->persistentMessageMutex);
-        if ((_imp->nanWarningHash != 0) && (_imp->nanWarningHash != currentHash)) {
-            _imp->nanWarningHash = 0;
-            _imp->persistentMessage.clear();
-            changed = true;
-        }
-    }
-    if (changed) {
-        Q_EMIT persistentMessageChanged();
-    }
-}
-
 bool
 Node::storePersistentMessage(MessageTypeEnum type,
                              const std::string& content,
@@ -4392,7 +4359,6 @@ Node::storePersistentMessage(MessageTypeEnum type,
         return false;
     }
     setChannelSelectorOwnership(fromChannelSelector);
-    _imp->nanWarningHash = 0;
     _imp->persistentMessageRenderSequence = fromChannelSelector ? renderSequence : 0;
     _imp->persistentMessageType = (int)type;
     _imp->persistentMessage = mess;
@@ -4498,7 +4464,6 @@ Node::clearPersistentMessageInternal()
     {
         QMutexLocker k(&_imp->persistentMessageMutex);
         setChannelSelectorOwnership(false);
-        _imp->nanWarningHash = 0;
         _imp->persistentMessageRenderSequence = 0;
         changed = !_imp->persistentMessage.isEmpty();
         if (changed) {

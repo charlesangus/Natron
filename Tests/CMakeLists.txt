@@ -78,7 +78,6 @@ set(Tests_SOURCES
     OSGLContext_Test.cpp
     PersistentMessage_Test.cpp
     PluginIdentity_Test.cpp
-    ImageNaNBands_Test.cpp
     ImagePasteBands_Test.cpp
     PoolParallelFor_Test.cpp
     PoolSharing_Test.cpp

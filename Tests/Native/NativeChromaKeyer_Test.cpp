@@ -306,11 +306,6 @@ TEST_F(NativeChromaKeyerTest, ProblemPixelsKeyToFiniteValues)
         { big, 0., 0. },
     };
 
-    KnobBoolPtr convertNaNs = std::dynamic_pointer_cast<KnobBool>(appPTR->getCurrentSettings()->getKnobByName("convertNaNs"));
-    ASSERT_TRUE(bool(convertNaNs));
-    const bool convertNaNsWas = convertNaNs->getValue();
-    convertNaNs->setValue(false);
-
     resetProject();
     NodePtr source = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
     NodePtr keyer = createNode(QString::fromUtf8(kChromaKeyerID));
@@ -343,5 +338,4 @@ TEST_F(NativeChromaKeyerTest, ProblemPixelsKeyToFiniteValues)
             }
         }
     }
-    convertNaNs->setValue(convertNaNsWas);
 }

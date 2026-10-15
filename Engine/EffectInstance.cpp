@@ -297,24 +297,23 @@ EffectInstance::setParallelRenderArgsTLS(double time,
                                          bool isSequential,
                                          U64 nodeHash,
                                          const AbortableRenderInfoPtr& abortInfo,
-                                         const NodePtr & treeRoot,
+                                         const NodePtr& treeRoot,
                                          int visitsCount,
-                                         const NodeFrameRequestPtr & nodeRequest,
+                                         const NodeFrameRequestPtr& nodeRequest,
                                          const OSGLContextPtr& glContext,
                                          int textureIndex,
                                          const TimeLine* timeline,
                                          bool isAnalysis,
                                          bool isDuringPaintStrokeCreation,
-                                         const NodesList & rotoPaintNodes,
+                                         const NodesList& rotoPaintNodes,
                                          RenderSafetyEnum currentThreadSafety,
                                          PluginOpenGLRenderSupport currentOpenGLSupport,
-                                         bool doNanHandling,
                                          bool draftMode,
-                                         const RenderStatsPtr & stats)
+                                         const RenderStatsPtr& stats)
 {
     EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
     std::list<ParallelRenderArgsPtr>& argsList = tls->frameArgs;
-    ParallelRenderArgsPtr args = createParallelRenderArgs(time, view, isRenderUserInteraction, isSequential, nodeHash, abortInfo, treeRoot, visitsCount, nodeRequest, glContext, textureIndex, timeline, isAnalysis, isDuringPaintStrokeCreation, rotoPaintNodes, currentThreadSafety, currentOpenGLSupport, doNanHandling, draftMode, stats);
+    ParallelRenderArgsPtr args = createParallelRenderArgs(time, view, isRenderUserInteraction, isSequential, nodeHash, abortInfo, treeRoot, visitsCount, nodeRequest, glContext, textureIndex, timeline, isAnalysis, isDuringPaintStrokeCreation, rotoPaintNodes, currentThreadSafety, currentOpenGLSupport, draftMode, stats);
 
     argsList.push_back(args);
 }
@@ -337,7 +336,6 @@ EffectInstance::createParallelRenderArgs(double time,
                                          const NodesList& rotoPaintNodes,
                                          RenderSafetyEnum currentThreadSafety,
                                          PluginOpenGLRenderSupport currentOpenGLSupport,
-                                         bool doNanHandling,
                                          bool draftMode,
                                          const RenderStatsPtr& stats) const
 {
@@ -364,7 +362,6 @@ EffectInstance::createParallelRenderArgs(double time,
     args->currentThreadSafety = currentThreadSafety;
     args->currentOpenglSupport = currentOpenGLSupport;
     args->rotoPaintNodes = rotoPaintNodes;
-    args->doNansHandling = isAnalysis ? false : doNanHandling;
     args->draftMode = draftMode;
     args->tilesSupported = getNode()->getCurrentSupportTiles();
     args->stats = stats;
@@ -3130,24 +3127,8 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
     bool doMask = useMaskMix ? _publicInterface->getNode()->isMaskEnabled(_publicInterface->getNInputs() - 1) : false;
     const bool rendersUnprocessed = _publicInterface->rendersUnprocessedChannels();
 
-    //Check for NaNs, copy to output image and mark for rendered
+    // Copy to output image and mark for rendered
     for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::const_iterator it = outputLayers.begin(); it != outputLayers.end(); ++it) {
-        if ( frameArgs->doNansHandling && it->second.tmpImage->checkForNaNsAndFix(actionArgs.roi) ) {
-            QString warning = QString::fromUtf8( _publicInterface->getNode()->getScriptName_mt_safe().c_str() );
-            warning.append( QString::fromUtf8(": ") );
-            warning.append( tr("rendered rectangle (") );
-            warning.append( QString::number(actionArgs.roi.x1) );
-            warning.append( QChar::fromLatin1(',') );
-            warning.append( QString::number(actionArgs.roi.y1) );
-            warning.append( QString::fromUtf8(")-(") );
-            warning.append( QString::number(actionArgs.roi.x2) );
-            warning.append( QChar::fromLatin1(',') );
-            warning.append( QString::number(actionArgs.roi.y2) );
-            warning.append( QString::fromUtf8(") ") );
-            warning.append( tr("contains NaN values. They have been converted to 1.") );
-            _publicInterface->getNode()->setNaNWarning(warning.toStdString(), _publicInterface->getRenderHash());
-        }
-
         // Per the no-shuffle invariant (see EffectInstance::resolveInputPlaneForRender), the channels
         // of plane L the node does not process come from the preferred input's plane L, with
         // L's own bits: one bitset and one source image for every plane would shuffle planes.

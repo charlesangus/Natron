@@ -426,11 +426,9 @@ public:
         ///for the File Dialog preview.
         if ( viewerInput && !viewerInput->getGroup() ) {
             viewerInputNode = viewerInput;
-            bool doNanHandling = appPTR->getCurrentSettings()->isNaNHandlingEnabled();
             U64 nodeHash = viewerInput->getHashValue();
 
-
-            viewerInput->getEffectInstance()->setParallelRenderArgsTLS(time, view, isRenderUserInteraction, isSequential, nodeHash,  abortInfo, treeRoot, 1, NodeFrameRequestPtr(), _openGLContext.lock(), textureIndex, timeline, isAnalysis, false, NodesList(), viewerInput->getCurrentRenderThreadSafety(), viewerInput->getCurrentOpenGLRenderSupport(), doNanHandling, draftMode, stats);
+            viewerInput->getEffectInstance()->setParallelRenderArgsTLS(time, view, isRenderUserInteraction, isSequential, nodeHash, abortInfo, treeRoot, 1, NodeFrameRequestPtr(), _openGLContext.lock(), textureIndex, timeline, isAnalysis, false, NodesList(), viewerInput->getCurrentRenderThreadSafety(), viewerInput->getCurrentOpenGLRenderSupport(), draftMode, stats);
         }
     }
 

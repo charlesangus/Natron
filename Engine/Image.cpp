@@ -26,7 +26,6 @@
 #include "Image.h"
 
 #include <algorithm> // min, max
-#include <atomic>
 #include <cassert>
 #include <cstddef>
 #include <cstring> // for std::memcpy, std::memset
@@ -1827,9 +1826,6 @@ Image::halveRoIForDepth(const RectI & roi,
 
     RectI dstRoI;
     const RectI srcRoI = roi.intersect(srcBounds); // intersect RoI with the region of definition
-#ifdef DEBUG_NAN
-    assert(!checkForNaNsNoLock(srcRoI));
-#endif
     dstRoI.x1 = (srcRoI.x1 + 1) / 2; // equivalent to ceil(srcRoI.x1/2.0)
     dstRoI.y1 = (srcRoI.y1 + 1) / 2; // equivalent to ceil(srcRoI.y1/2.0)
     dstRoI.x2 = srcRoI.x2 / 2; // equivalent to floor(srcRoI.x2/2.0)
@@ -2098,83 +2094,6 @@ Image::downscaleMipmap(const RectD& dstRod,
 
     ///Now copy the result of tmpImg into the output image
     output->pasteFrom(*tmpImg, dstRoI, copyBitMap);
-}
-
-bool
-Image::checkForNaNsAndFix(const RectI& roi)
-{
-    if (getBitDepth() != eImageBitDepthFloat) {
-        return false;
-    }
-    if (getStorageMode() == eStorageModeGLTex) {
-        return false;
-    }
-
-    QWriteLocker k(&_entryLock);
-    unsigned int compsCount = getComponentsCount();
-    std::atomic<bool> hasnan(false);
-    forEachRowBand(roi, kMinParallelRowBandArea, [&](int y1, int y2) {
-        bool bandHasNaN = false;
-        for (int y = y1; y < y2; ++y) {
-            float* pix = (float*)pixelAt(roi.x1, y);
-            float* const end = pix + compsCount * roi.width();
-
-            for (; pix < end; ++pix) {
-                // we remove NaNs, but infinity values should pose no problem
-                // (if they do, please explain here which ones)
-#ifdef DEBUG_NAN
-                assert(!std::isnan(*pix)); // check for NaN
-#endif
-                if (std::isnan(*pix)) { // check for NaN (std::isnan(x) is not slower than x != x and works with -Ofast)
-                    *pix = 1.;
-                    bandHasNaN = true;
-                }
-            }
-        }
-        if (bandHasNaN) {
-            hasnan.store(true, std::memory_order_relaxed);
-        }
-    });
-
-    return hasnan.load();
-}
-
-bool
-Image::checkForNaNsNoLock(const RectI& roi) const
-{
-    if (getBitDepth() != eImageBitDepthFloat) {
-        return false;
-    }
-    if (getStorageMode() == eStorageModeGLTex) {
-        return false;
-    }
-
-    //QWriteLocker k(&_entryLock);
-    unsigned int compsCount = getComponentsCount();
-    std::atomic<bool> hasnan(false);
-    forEachRowBand(roi, kMinParallelRowBandArea, [&](int y1, int y2) {
-        bool bandHasNaN = false;
-        for (int y = y1; y < y2; ++y) {
-            float* pix = (float*)pixelAt(roi.x1, y);
-            float* const end = pix + compsCount * roi.width();
-
-            for (; pix < end; ++pix) {
-                // we remove NaNs, but infinity values should pose no problem
-                // (if they do, please explain here which ones)
-#ifdef DEBUG_NAN
-                assert(!std::isnan(*pix)); // check for NaN
-#endif
-                if (std::isnan(*pix)) { // check for NaN (std::isnan(x) is not slower than x != x and works with -Ofast)
-                    bandHasNaN = true;
-                }
-            }
-        }
-        if (bandHasNaN) {
-            hasnan.store(true, std::memory_order_relaxed);
-        }
-    });
-
-    return hasnan.load();
 }
 
 // code proofread and fixed by @devernay on 8/8/2014

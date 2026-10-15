@@ -374,8 +374,6 @@ public:
     void getPluginIconFrameColor(int *r, int *g, int *b) const;
     int getDopeSheetEditorNodeSeparationWith() const;
 
-    bool isNaNHandlingEnabled() const;
-
     bool isCopyInputImageForPluginRenderEnabled() const;
 
     bool isDefaultAppearanceOutdated() const;
@@ -471,7 +469,6 @@ private:
 
     // General/Rendering
     KnobPagePtr _renderingPage;
-    KnobBoolPtr _convertNaNValues;
     KnobBoolPtr _pluginUseImageCopyForSource;
     KnobBoolPtr _activateRGBSupport;
     KnobBoolPtr _activateTransformConcatenationSupport;

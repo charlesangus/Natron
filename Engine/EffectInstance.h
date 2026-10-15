@@ -868,20 +868,19 @@ public:
                                   bool isSequential,
                                   U64 nodeHash,
                                   const AbortableRenderInfoPtr& abortInfo,
-                                  const NodePtr & treeRoot,
+                                  const NodePtr& treeRoot,
                                   int visitsCount,
-                                  const NodeFrameRequestPtr & nodeRequest,
+                                  const NodeFrameRequestPtr& nodeRequest,
                                   const OSGLContextPtr& glContext,
                                   int textureIndex,
                                   const TimeLine* timeline,
                                   bool isAnalysis,
                                   bool isDuringPaintStrokeCreation,
-                                  const NodesList & rotoPaintNodes,
+                                  const NodesList& rotoPaintNodes,
                                   RenderSafetyEnum currentThreadSafety,
                                   PluginOpenGLRenderSupport currentOpenGLSupport,
-                                  bool doNanHandling,
                                   bool draftMode,
-                                  const RenderStatsPtr & stats);
+                                  const RenderStatsPtr& stats);
 
     /**
      * @brief The frame args setParallelRenderArgsTLS() would install, without installing them.
@@ -903,7 +902,6 @@ public:
                                                    const NodesList& rotoPaintNodes,
                                                    RenderSafetyEnum currentThreadSafety,
                                                    PluginOpenGLRenderSupport currentOpenGLSupport,
-                                                   bool doNanHandling,
                                                    bool draftMode,
                                                    const RenderStatsPtr& stats) const;
 

@@ -214,7 +214,7 @@ public:
 
     /**
      * @brief Hash of the project settings that change what nodes render: output format,
-     * frame rate and range, views, OpenColorIO config and working space, layer registry and
+     * frame rate, views, OpenColorIO config and working space, layer registry and
      * render-affecting preferences. Computed on each call, never 0.
      **/
     U64 getContentDigest() const;
@@ -479,6 +479,9 @@ private:
     // called after a registry mutation outside of project load (load batches its own
     // single emission after all nodes are restored, see ProjectPrivate::restoreFromSerialization).
     void notifyLayersChanged();
+
+    // Re-keys the nodes whose hash includes the project frame range.
+    void rehashNodesUsingFrameRange();
 
     std::string encodeLayersKnobTable() const;
 

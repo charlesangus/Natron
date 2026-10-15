@@ -245,6 +245,7 @@ public:
         , nativeOverlays()
         , nodeCreated(false)
         , wasCreatedSilently(false)
+        , hashAuditArmed(false)
         , paintStroke()
         , pluginsPropMutex()
         , pluginSafety(eRenderSafetyInstanceSafe)
@@ -467,6 +468,9 @@ public:
     std::list<HostOverlayKnobsPtr> nativeOverlays;
     bool nodeCreated;
     bool wasCreatedSilently;
+    // Set once Node::load() has returned: the hash audit ignores the transitions of a node still
+    // being built, which would otherwise take the one line its dedupe allows.
+    bool hashAuditArmed;
     RotoDrawableItemWPtr paintStroke;
 
     // These are dynamic props

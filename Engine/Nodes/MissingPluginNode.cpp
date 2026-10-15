@@ -153,6 +153,17 @@ MissingPluginNode::onKnobsAboutToBeLoaded(const Serialization::NodeSerialization
 }
 
 void
+MissingPluginNode::onKnobsLoaded()
+{
+    // A save writes the stored serialization back, so an edit to any knob would be lost.
+    const std::vector<KnobIPtr>& knobs = getKnobs();
+
+    for (const KnobIPtr& knob : knobs) {
+        knob->setAllDimensionsEnabled(false);
+    }
+}
+
+void
 MissingPluginNode::onEffectCreated(bool /*mayCreateFileDialog*/,
                                    const CreateNodeArgs& /*args*/)
 {

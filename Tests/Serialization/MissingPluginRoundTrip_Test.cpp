@@ -166,6 +166,17 @@ TEST_F(MissingPluginRoundTripTest, SaveWritesTheMissingNodeBackUnchanged)
     ASSERT_TRUE(bool(placeholder));
     ASSERT_EQ(std::string(PLUGINID_NATRON_MISSING_PLUGIN), placeholder->getPluginID());
 
+    const std::vector<KnobIPtr>& placeholderKnobs = placeholder->getEffectInstance()->getKnobs();
+    ASSERT_FALSE(placeholderKnobs.empty());
+    bool foundUserKnob = false;
+    for (const KnobIPtr& knob : placeholderKnobs) {
+        foundUserKnob = foundUserKnob || knob->getName() == "myUserValue";
+        for (int dim = 0; dim < knob->getDimension(); ++dim) {
+            EXPECT_FALSE(knob->isEnabled(dim)) << knob->getName() << " dimension " << dim;
+        }
+    }
+    EXPECT_TRUE(foundUserKnob);
+
     Serialization::ProjectSerialization resaved;
     ASSERT_TRUE(loadProjectXml(resavedXml, &resaved));
     Serialization::NodeSerializationPtr resavedMissing = findSerializedNode(resaved.nodes.nodes, kNotInstalledPluginID);

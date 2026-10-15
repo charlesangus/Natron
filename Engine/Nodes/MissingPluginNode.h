@@ -103,6 +103,8 @@ private:
 
     virtual void onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& serialization) OVERRIDE FINAL;
 
+    virtual void onKnobsLoaded() OVERRIDE FINAL;
+
     virtual void onEffectCreated(bool mayCreateFileDialog,
                                  const CreateNodeArgs& args) OVERRIDE FINAL;
 

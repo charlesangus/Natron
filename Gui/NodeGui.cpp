@@ -2482,7 +2482,10 @@ NodeGui::onPersistentMessageChanged()
     if (node) {
         node->getPersistentMessage(&message, &type);
     }
-    _persistentMessage->setVisible( !message.isEmpty() );
+    // A placeholder is already marked by its dashed outline and "missing:" caption, which the
+    // overlay would be printed over; the message stays in the tooltip.
+    const bool isPlaceholder = node && node->getPluginID() == PLUGINID_NATRON_MISSING_PLUGIN;
+    _persistentMessage->setVisible(!message.isEmpty() && !isPlaceholder);
 
     if ( !node || message.isEmpty() ) {
         setToolTip( QString() );
@@ -3463,7 +3466,9 @@ NodeGui::onLayerSelectionChanged()
     QString extraLayerStr;
     const MissingPluginNode* placeholder = dynamic_cast<const MissingPluginNode*>(internalNode->getEffectInstance().get());
     if (placeholder) {
-        extraLayerStr = placeholder->getMissingSummary();
+        extraLayerStr = QString::fromUtf8("<font color=\"%1\">%2</font>")
+                            .arg(persistentErrorColor().name())
+                            .arg(placeholder->getMissingSummary().toHtmlEscaped());
     }
     KnobIPtr layerKnob = internalNode->getLayerKnob();
     if (layerKnob) {

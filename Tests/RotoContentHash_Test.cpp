@@ -127,16 +127,16 @@ TEST_F(RotoContentHashTest, MovingAPointChangesTheRotoNodeHash)
     ASSERT_TRUE(bool(square));
     const double time = context->getTimelineCurrentTime();
 
-    roto->doComputeHashOnMainThread();
+    roto->refreshHashNow();
     const U64 initial = roto->getContentHash();
     EXPECT_NE(0u, initial);
 
     square->movePointByIndex(0, time, 2., 3.);
-    roto->doComputeHashOnMainThread();
+    roto->refreshHashNow();
     EXPECT_NE(initial, roto->getContentHash());
 
     square->movePointByIndex(0, time, -2., -3.);
-    roto->doComputeHashOnMainThread();
+    roto->refreshHashNow();
     EXPECT_EQ(initial, roto->getContentHash());
 
     getApp()->getProject()->reset(false, true);

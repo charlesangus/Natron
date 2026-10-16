@@ -426,7 +426,7 @@ TEST_F(BaseTest, HashIgnoresTheEditPathTheProjectAndTheName)
 
         firstProjectHash = direct->getHashValue();
         direct->setScriptName("renamedCounting");
-        direct->doComputeHashOnMainThread();
+        direct->refreshHashNow();
         EXPECT_EQ(std::string("renamedCounting"), direct->getScriptName());
         EXPECT_EQ(firstProjectHash, direct->getHashValue()) << "renaming a node without expressions changed its hash";
 

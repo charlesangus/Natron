@@ -51,7 +51,7 @@ void
 refreshHashes(const std::vector<NodePtr>& upstreamFirst)
 {
     for (const NodePtr& node : upstreamFirst) {
-        node->doComputeHashOnMainThread();
+        node->refreshHashNow();
     }
 }
 
@@ -179,17 +179,17 @@ TEST_F(NodeContentHashTest, DiamondJoinHashesAfterAllItsInputs)
     for (int edit = 1; edit <= 3; ++edit) {
         const U64 dBefore = d->getContentHash();
         aSize->setValue(aSize->getValue(0) + 1.5, ViewSpec::all(), 0);
-        a->doComputeHashOnMainThread();
+        a->refreshHashNow();
 
         const U64 dAfterEdit = d->getContentHash();
         const U64 eAfterEdit = e->getContentHash();
         EXPECT_NE(dBefore, dAfterEdit) << "edit " << edit;
 
-        d->doComputeHashOnMainThread();
+        d->refreshHashNow();
         EXPECT_EQ(dAfterEdit, d->getContentHash()) << "edit " << edit;
         EXPECT_EQ(eAfterEdit, e->getContentHash()) << "edit " << edit;
 
-        e->doComputeHashOnMainThread();
+        e->refreshHashNow();
         EXPECT_EQ(eAfterEdit, e->getContentHash()) << "edit " << edit;
     }
 }

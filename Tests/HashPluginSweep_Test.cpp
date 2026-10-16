@@ -613,7 +613,7 @@ perturbDimension(const NodePtr& node,
     }
     ++report->dimensionsPerturbed;
 
-    node->doComputeHashOnMainThread();
+    node->refreshHashNow();
     const U64 before = node->getHashValue();
     const U64 knobBefore = knob->getContentHash();
     const KnobHashSnapshot snapshot = snapshotKnobHashes(node);
@@ -632,7 +632,7 @@ perturbDimension(const NodePtr& node,
         // on change, for one) leave the stored hash stale until something recomputes it. That
         // is a separate defect from the knob's content missing the hash, so recompute here and
         // report it as a note.
-        node->doComputeHashOnMainThread();
+        node->refreshHashNow();
         changed = node->getHashValue();
     }
     if (changed == before) {
@@ -653,7 +653,7 @@ perturbDimension(const NodePtr& node,
     U64 restored = node->getHashValue();
     const bool recomputedOnRevert = restored == before;
     if (!recomputedOnRevert) {
-        node->doComputeHashOnMainThread();
+        node->refreshHashNow();
         restored = node->getHashValue();
     }
     if (restored == before) {

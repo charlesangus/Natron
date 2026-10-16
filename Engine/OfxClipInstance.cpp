@@ -1816,6 +1816,22 @@ private:
 };
 } // namespace
 
+OFX::Host::ImageEffect::MetadataSet*
+OfxClipInstance::getCurrentMetadata(OFX::Host::ImageEffect::ClipInstance* clip,
+                                    OfxTime time)
+{
+    if (!clip) {
+        return NULL;
+    }
+    OfxClipInstance* natronClip = dynamic_cast<OfxClipInstance*>(clip);
+    OfxEffectInstancePtr effect = natronClip ? natronClip->_imp->nodeInstance.lock() : OfxEffectInstancePtr();
+    if (effect) {
+        effect->dropStaleClipMetadata();
+    }
+
+    return clip->getMetadata(time);
+}
+
 void
 OfxClipInstance::fetchMetadata(OfxTime time,
                                OFX::Host::Property::Set& metadata)
@@ -1834,7 +1850,7 @@ OfxClipInstance::fetchMetadata(OfxTime time,
     }
 
     if (upstreamOutput) {
-        OFX::Host::ImageEffect::MetadataSet* upstream = upstreamOutput->getMetadata(time);
+        OFX::Host::ImageEffect::MetadataSet* upstream = getCurrentMetadata(upstreamOutput, time);
         if (upstream) {
             // the copies stand on their own, so the reference getMetadata() handed out is
             // dropped as soon as they are made: holding it for the lifetime of this clip

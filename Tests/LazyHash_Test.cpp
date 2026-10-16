@@ -28,6 +28,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
+#include <list>
 #include <memory>
 #include <string>
 #include <thread>
@@ -42,6 +43,7 @@
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
+#include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
@@ -49,6 +51,7 @@
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/FileStampRegistry.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
@@ -57,6 +60,7 @@
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Project.h"
+#include "Engine/RectI.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
@@ -188,6 +192,49 @@ TEST_F(LazyHashTest, KnobSetOnAWorkerIsSeenByAReadOnAnotherWorker)
     size->setValue(original, ViewSpec::all(), 0);
     EXPECT_EQ(before, blur->getHashValue());
     EXPECT_EQ(downstreamBefore, downstream->getHashValue());
+}
+
+// A branch nothing reads is never rehashed: an edit only marks, and a render pulls the hashes of
+// the nodes it renders. The stored hash of a node folding in the edited one changes as soon as it
+// is recomputed, so it staying put says the node was not.
+TEST_F(LazyHashTest, AnEditRehashesOnlyTheBranchThatIsRead)
+{
+    NodePtr constant = createConstant();
+    NodePtr source = createBlur();
+    NodePtr viewed = createBlur();
+    NodePtr viewedTail = createBlur();
+    NodePtr unviewed = createBlur();
+    NodePtr unviewedTail = createBlur();
+    ASSERT_TRUE(constant && source && viewed && viewedTail && unviewed && unviewedTail);
+    connectNodes(constant, source, 0, true);
+    connectNodes(source, viewed, 0, true);
+    connectNodes(viewed, viewedTail, 0, true);
+    connectNodes(source, unviewed, 0, true);
+    connectNodes(unviewed, unviewedTail, 0, true);
+
+    const U64 viewedBefore = viewedTail->getHashValue();
+    const U64 unviewedBefore = unviewed->getHashValue();
+    const U64 unviewedTailBefore = unviewedTail->getHashValue();
+
+    KnobDoublePtr size = blurSize(source);
+    ASSERT_TRUE(bool(size));
+    size->setValue(size->getValue(0) + 2., ViewSpec::all(), 0);
+
+    EXPECT_EQ(unviewedBefore, unviewed->getStoredContentHash()) << "the edit rehashed a node downstream of it";
+    EXPECT_EQ(unviewedTailBefore, unviewedTail->getStoredContentHash()) << "the edit rehashed a node downstream of it";
+
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    const std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
+    ASSERT_TRUE(renderNodePlanesDirect(viewedTail, 1., ViewIdx(0), 0, RectI(0, 0, 8, 8), layers, &planes, &error)) << error;
+    EXPECT_NE(viewedBefore, viewedTail->getStoredContentHash()) << "the render did not rehash what it rendered";
+
+    EXPECT_EQ(unviewedBefore, unviewed->getStoredContentHash()) << "rendering one branch rehashed the other";
+    EXPECT_EQ(unviewedTailBefore, unviewedTail->getStoredContentHash()) << "rendering one branch rehashed the other";
+
+    const U64 unviewedTailAfter = unviewedTail->getHashValue();
+    EXPECT_NE(unviewedTailBefore, unviewedTailAfter);
+    EXPECT_NE(unviewedBefore, unviewed->getStoredContentHash()) << "reading the tail did not rehash its dirty input";
 }
 
 // A persistent knob that does not evaluate on change still renders differently, yet its edits

@@ -75,6 +75,7 @@ OFX::Host::ImageEffect::ClipInstance* getOfxOutputClip(const EffectInstancePtr& 
 /**
  * @brief The metadata effect's OpenFX output clip carries at time, read through the clip's own
  * cache exactly as a downstream OpenFX input clip reads it, or empty if effect has no such clip.
+ * Reads effect's node hash first, which may recompute dirty hashes, to drop a stale cache.
  * Takes the clip-cache and instance metadata locks of effect and of the OpenFX effects upstream
  * of it, so the caller must not hold a lock that an invalidation of those effects could wait on.
  **/

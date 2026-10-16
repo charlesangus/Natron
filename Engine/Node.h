@@ -252,6 +252,11 @@ public:
     U64 getContentHash() const;
 
     /**
+     * @brief The content hash as last computed, dirty or not: reading it recomputes nothing.
+     **/
+    U64 getStoredContentHash() const;
+
+    /**
      * @brief Marks the hash for a recompute on its next read, and with it the hashes of every
      * node that folds this one in. Callable from any thread, under any lock: the nodes downstream
      * are marked before the next hash read on any thread.
@@ -1786,9 +1791,6 @@ private:
     // compare it with the content hash.
     U64 getAgeHashValue() const;
 
-    // The content hash as last computed, dirty or not.
-    U64 getStoredContentHash() const;
-
     U64 computeContentHash(U64 projectDigest) const;
 
     /**
@@ -1868,13 +1870,6 @@ public Q_SLOTS:
 
     void onParentMultiInstanceInputChanged(int input);
 
-    /**
-     * @brief Marks the hash dirty, then recomputes it and every hash downstream of it now, so
-     * that the change hooks of an edit run. They drop state read without reading the hash, such
-     * as the metadata OpenFX clips cache and stale NaN warnings.
-     **/
-    void doComputeHashOnMainThread();
-
 Q_SIGNALS:
 
     void rightClickMenuKnobPopulated();
@@ -1895,8 +1890,6 @@ Q_SIGNALS:
      * may have changed.
      **/
     void layerListRefreshed();
-
-    void mustComputeHashOnMainThread();
 
     void settingsPanelClosed(bool);
 
@@ -1974,9 +1967,8 @@ Q_SIGNALS:
 
 protected:
     /**
-     * @brief Marks the hash of this node, and of every node downstream of it, for a recompute,
-     * and recomputes them on the main thread so that their change hooks run, at once when called
-     * there outside a project load.
+     * @brief Marks the hash of this node, and of every node downstream of it, for a recompute
+     * when each is next read. Callable from any thread.
      **/
     void computeHash();
 

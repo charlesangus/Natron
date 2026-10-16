@@ -228,6 +228,16 @@ public:
 
     EffectInstancePtr getAssociatedNode() const WARN_UNUSED_RETURN;
 
+#ifdef OFX_SUPPORTS_METADATA
+    /**
+     * @brief What clip->getMetadata(time) gives, once the clip caches of the clip's effect have
+     * been dropped if they were filled under another node hash (see
+     * OfxEffectInstance::dropStaleClipMetadata()). ClipInstance::getMetadata() serves its cache
+     * without asking the host, so the host reads clip metadata through this. The caller releases
+     * the returned set as for getMetadata().
+     **/
+    static OFX::Host::ImageEffect::MetadataSet* getCurrentMetadata(OFX::Host::ImageEffect::ClipInstance* clip, OfxTime time) WARN_UNUSED_RETURN;
+#endif
 
     /**
      * @brief Converts Natron components to OpenFX components.

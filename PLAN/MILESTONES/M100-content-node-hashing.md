@@ -362,3 +362,4 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
     - Off-main renders with no main-thread entry, such as tracker threads.
     - Unviewed nodes' GUI badges until they are read.
     - Reconnecting a group's input still refreshes the inner nodes directly below its GroupInput.
+- 2026-10-16 — **Laziness test green** at 4dd66fe29 (release run 38853063978): 2340/2340 in both schedulers. The real culprit was `Node::shouldCacheOutput`'s consumer walk, which read (and so recomputed) the hashes of unreached nodes below every render; it now uses `getHashValueIfUpToDate`. That was a production bug, not a test artefact. The audit was ruled out.

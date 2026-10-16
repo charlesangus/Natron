@@ -1870,7 +1870,8 @@ public Q_SLOTS:
 
     /**
      * @brief Marks the hash dirty, then recomputes it and every hash downstream of it now, so
-     * that the change hooks of an edit made on another thread run.
+     * that the change hooks of an edit run. They drop state read without reading the hash, such
+     * as the metadata OpenFX clips cache and stale NaN warnings.
      **/
     void doComputeHashOnMainThread();
 
@@ -1973,7 +1974,9 @@ Q_SIGNALS:
 
 protected:
     /**
-     * @brief Marks the hash of this node, and of every node downstream of it, for a recompute.
+     * @brief Marks the hash of this node, and of every node downstream of it, for a recompute,
+     * and recomputes them on the main thread so that their change hooks run, at once when called
+     * there outside a project load.
      **/
     void computeHash();
 

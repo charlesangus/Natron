@@ -326,9 +326,10 @@ public:
 
     /**
      * @brief The metadata of the image this node outputs at time and view: what
-     * deriveOutputMetadata() gives, cached per (time, view). The cache is dropped whenever a knob
-     * of this node or anything upstream of it changes, a connection changes, or the node's clip
-     * preferences are refreshed. Callable from any thread.
+     * deriveOutputMetadata() gives, cached per (time, view) under the node's hash, which moves
+     * whenever a knob of this node or anything upstream of it changes or a connection changes.
+     * The cache is also dropped when the node's clip preferences are refreshed. Callable from
+     * any thread, holding no lock: it reads the node's hash, which may recompute dirty hashes.
      **/
     ImageMetadata getOutputMetadata(double time, ViewIdx view) WARN_UNUSED_RETURN;
 
@@ -520,6 +521,7 @@ private:
     std::mutex _metadataCacheMutex;
     std::map<MetadataKey, ImageMetadata> _metadataCache;
     U64 _metadataGeneration;
+    U64 _metadataCacheHash; //< the node hash every entry of _metadataCache was derived under
 
     typedef std::function<void(const RectI& chunk)> DeepChunkFunc;
 

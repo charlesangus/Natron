@@ -3431,10 +3431,8 @@ EffectInstance::onSignificantEvaluateAboutToBeCalled(KnobI* knob)
             node->noteHashAuditCause(knob ? knob->getName() : std::string("<no knob>"));
         }
 
-        node->markHashDirty();
+        node->doComputeHashOnMainThread();
     } else {
-        // The edit has marked the hash dirty already; recomputing it on the main thread runs the
-        // change hooks there for the GUI.
         Q_EMIT node->mustComputeHashOnMainThread();
     }
 }

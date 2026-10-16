@@ -178,6 +178,7 @@ NativeEffectBase::NativeEffectBase(NodePtr node)
     , _metadataCacheMutex()
     , _metadataCache()
     , _metadataGeneration(0)
+    , _metadataCacheHash(0)
 {
     // Left unresolved, render-scale support is settled only by the probe in
     // Node::refreshAllInputRelatedData(), which runs when inputs change and needs
@@ -308,13 +309,24 @@ NativeEffectBase::getOutputMetadata(double time,
                                     ViewIdx view)
 {
     const MetadataKey key(time, view.value());
+    // The hash covers this node's knobs and everything upstream of it, and an edit only marks it
+    // dirty: reading it recomputes it, so a cache filled under another hash is stale.
+    const NodePtr node = getNode();
+    const U64 hash = node ? node->getHashValue() : 0;
     U64 generation;
+    std::map<MetadataKey, ImageMetadata> dropped;
 
     {
         std::lock_guard<std::mutex> locker(_metadataCacheMutex);
-        std::map<MetadataKey, ImageMetadata>::const_iterator it = _metadataCache.find(key);
-        if (it != _metadataCache.end()) {
-            return it->second;
+        if (hash != _metadataCacheHash) {
+            dropped.swap(_metadataCache);
+            ++_metadataGeneration;
+            _metadataCacheHash = hash;
+        } else {
+            std::map<MetadataKey, ImageMetadata>::const_iterator it = _metadataCache.find(key);
+            if (it != _metadataCache.end()) {
+                return it->second;
+            }
         }
         generation = _metadataGeneration;
     }
@@ -361,10 +373,9 @@ NativeEffectBase::onNodeHashChanged(U64 hash)
 {
     OutputEffectInstance::onNodeHashChanged(hash);
 
-    // A change marks every node downstream of it, and each recomputes its hash, which folds in
-    // its inputs', before that hash is next read, so each node whose cached metadata could be
-    // stale gets here without a walk of its own. Taking no lock but the cache's keeps this safe against a
-    // render thread deriving metadata downstream to upstream.
+    // getOutputMetadata() already turns away a cache filled under another hash; this releases it
+    // early. Taking no lock but the cache's keeps this safe against a render thread deriving
+    // metadata downstream to upstream.
     invalidateOutputMetadata();
 }
 

@@ -46,7 +46,7 @@ load with the plugin present is indistinguishable from never having lost it.
 
 ## Phase 22.2: Make it legible
 
-- [ ] M22.P2.T1 — Placeholder appearance in the node graph
+- [x] M22.P2.T1 — Placeholder appearance in the node graph
   - files: `Gui/NodeGui.cpp` (`onPersistentMessageChanged`, the `_persistentMessage` item ~:823-832, layout ~:1220), `Gui/NodeGui.h`
   - approach: confirm the error text/colour/tooltip already arrive via `persistentMessageChanged`, then give a `MissingPluginNode` a distinct placeholder look (dashed or desaturated outline, or a "missing" label) using the existing error colour; no new indicator vocabulary.
   - verify: Xvfb screenshot (recipe `build/deeprepro/run-gui.sh`) shared with the user before sign-off, plus a PR checklist.
@@ -65,3 +65,4 @@ load with the plugin present is indistinguishable from never having lost it.
 - 2026-10-16 — **Gate green; PR #63 opened** at 5d6b10989 (fast run 38847194125, 2250/2250 in both schedulers; Xvfb check passes, with all mutating panel actions greyed). Codex review running. P2.T1 stays open until the user signs off the screenshots.
 - 2026-10-16 — **Review round 1** (Codex, PR #63, 5 findings, fixed in 6f15ad86d): a missing PyPlug now becomes a placeholder instead of an editable Group; any failed creation goes through the shared `AppInstance::createNodeOrMissingPluginPlaceholder` (canonical-id retry first), which paste and duplicate use too; cloning a placeholder is refused; Python writes to a placeholder raise `ValueError`; narrative comments removed. Follow-ups from the user: fix the inverted "Load PyPlugs from .py" preference here, and suppress the per-knob "Could not find a parameter" log noise on placeholders.
 - 2026-10-16 — **Review round 1 closed** (fixes 6f15ad86d, 2708c08da, 05a74faaa, ad64cc6d9; fast run 38869334642 and PR CI green, 2256/2256; all five threads replied). The "Load PyPlugs from .py" preference now matches its tooltip. The placeholder's knob-not-found log noise is gone (the error log now shows one line). Python parameter creation is rejected before the binding's ownership transfer, which used to clear the error. The Xvfb check passes. Merge waits only on the user's screenshot sign-off (P2.T1).
+- 2026-10-16 — **Signed off** (user) and **merged** as e34045b42 (PR #63; PR CI green in debug, both schedulers).

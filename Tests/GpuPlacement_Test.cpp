@@ -503,17 +503,17 @@ TEST(GpuCostModel, SerialSeedScalesToPoolSize)
 {
     GpuCostModel model;
 
-    // Blur FIR up to sigma 25: 100 ms/Mpx serial, 4.7619 at 16 threads.
+    // Blur FIR up to sigma 25: 84.6 ms/Mpx serial, 6.9458 at 16 threads.
     const GpuTaskTraits blur(kBlurId, 25.);
     model.setThreadCount(16);
-    EXPECT_NEAR(model.cpuMs(blur, 1.), 100. / 4.7619, 1e-6);
+    EXPECT_NEAR(model.cpuMs(blur, 1.), 84.6 / 6.9458, 1e-6);
     model.setThreadCount(1);
-    EXPECT_NEAR(model.cpuMs(blur, 1.), 100., 1e-6);
+    EXPECT_NEAR(model.cpuMs(blur, 1.), 84.6, 1e-6);
     model.setThreadCount(4);
     const double four = model.cpuMs(blur, 1.);
-    EXPECT_GT(four, 100. / 4.7619);
-    EXPECT_LT(four, 100.);
-    EXPECT_GE(four, 100. / 4.);
+    EXPECT_GT(four, 84.6 / 6.9458);
+    EXPECT_LT(four, 84.6);
+    EXPECT_GE(four, 84.6 / 4.);
 }
 
 TEST(GpuCostModel, MeasurementsRefineByMovingAverage)
@@ -605,7 +605,7 @@ TEST(GpuCostModel, HalvingBandwidthRejectsMarginalRegion)
     }
 }
 
-// sink 0 (CPU) reads Blur 1 (sigma 3) and CPU 2, which both read Grade 3, which reads reader 4 (CPU). On a 3 GB/s link
+// sink 0 (CPU) reads Blur 1 (sigma 3) and CPU 2, which both read Grade 3, which reads reader 4 (CPU). On a 10 GB/s link
 // the Grade's extra download sinks the region, but the Blur alone still gains.
 TEST(GpuCostModel, RejectedRegionShrinksToItsProfitableMember)
 {
@@ -613,7 +613,7 @@ TEST(GpuCostModel, RejectedRegionShrinksToItsProfitableMember)
 
     fixture.traits[1] = GpuTaskTraits(kBlurId, 3.);
     fixture.traits[3] = GpuTaskTraits(kGradeId);
-    fixture.model.setTransferRates(rates(3e9));
+    fixture.model.setTransferRates(rates(10e9));
     fixture.place();
 
     ASSERT_EQ(fixture.graph.regions.size(), 1u);

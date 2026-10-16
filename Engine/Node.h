@@ -257,6 +257,13 @@ public:
     U64 getStoredContentHash() const;
 
     /**
+     * @brief Sets hash to the content hash and returns true if it is up to date, and returns false
+     * if it is dirty: unlike getHashValue(), it never recomputes, so a caller that only looks at a
+     * node does not make an edit rehash it.
+     **/
+    bool getHashValueIfUpToDate(U64* hash) const;
+
+    /**
      * @brief Marks the hash for a recompute on its next read, and with it the hashes of every
      * node that folds this one in. Callable from any thread, under any lock: the nodes downstream
      * are marked before the next hash read on any thread.

@@ -896,6 +896,20 @@ Node::getStoredContentHash() const
     return _imp->contentHash;
 }
 
+bool
+Node::getHashValueIfUpToDate(U64* hash) const
+{
+    if (hashComputeDepth == 0) {
+        flushHashDirtyMarks();
+    }
+    if (isHashDirty()) {
+        return false;
+    }
+    *hash = getStoredContentHash();
+
+    return true;
+}
+
 std::string
 Node::getCacheID() const
 {
@@ -7532,22 +7546,27 @@ addIdentityNodesRecursively(const Node* caller,
         }
 
         if (!request) {
-            /*
-               Very unlikely that there's no request pass. But we still check
-             */
-            double inputTimeId;
-            ViewIdx identityView;
-            int inputNbId;
-            U64 renderHash;
+            // An output this render does not reach. Its identity is asked under its own hash, and
+            // recomputing a dirty one here would rehash every branch below the rendered nodes that
+            // no viewer reads. Taken as not identity, it counts as one consumer of the image.
+            U64 renderHash = 0;
+            bool hashKnown = true;
+            if (inputFrameArgs) {
+                renderHash = node->getEffectInstance()->getRenderHash();
+            } else {
+                hashKnown = node->getHashValueIfUpToDate(&renderHash);
+            }
+            if (hashKnown) {
+                double inputTimeId;
+                ViewIdx identityView;
+                int inputNbId;
+                RectI format = node->getEffectInstance()->getOutputFormat();
 
-            renderHash = node->getEffectInstance()->getRenderHash();
-
-            RectI format = node->getEffectInstance()->getOutputFormat();
-
-            // Uncached: the output format is not the node's image, and the identity cache keeps
-            // whole-image answers keyed on the hash alone, which the node's own render would then
-            // take for its region of definition.
-            isIdentity = node->getEffectInstance()->isIdentity_public(false, renderHash, time, RenderScale::identity, format, view, &inputTimeId, &identityView, &inputNbId);
+                // Uncached: the output format is not the node's image, and the identity cache keeps
+                // whole-image answers keyed on the hash alone, which the node's own render would then
+                // take for its region of definition.
+                isIdentity = node->getEffectInstance()->isIdentity_public(false, renderHash, time, RenderScale::identity, format, view, &inputTimeId, &identityView, &inputNbId);
+            }
         }
 
 

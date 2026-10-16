@@ -368,3 +368,12 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - **Remaining stats:** `OiioReadSupport::readHeader` still stats on each uncached header read, as before this milestone.
 - 2026-10-16 — **P4.T3, P5.T1, P7.T1 done** (green at 4dd66fe29, run 38853063978). **P4.T4/P4.T5/P3.T4** pass in run 38871959783 (2342/2343); the one failure was the roto/tracker golden, whose two Reads now save `ocioInputSpaceSet` = 1 after the BaseTest helper fix (8416048a6). Golden updated in f8fb1eff5; they're ticked at the next green build.
 - 2026-10-16 — **P3.T4, P4.T4, P4.T5, P5.T2 done**: green at ef3c4b760 (release run 38881916549, 2343/2343 in both schedulers). P5.T2 (ef3c4b760) deleted the age hash and the audit. AddLayers and DeepAddLayers now append their registry signature through a new `EffectInstance::appendNodeContentHash`. P6.T4's suite (827d79bf1) and the Clear All Caches fix (4e587eed1) are not built yet.
+- 2026-10-16 — **P6.T5 measurement** (release ef3c4b760, 4-thread N100 in natron-dev, 200 samples, net of a label-edit control; data in `build/m100/`). Two numbers per keystroke: the edit (a dirty-mark walk), and the recompute at the next read. Each is median / p95 ms, and "read between keystrokes" is the realistic mode:
+  - **comp N=200** (166 nodes): edit 1.79 / 2.26, recompute 1.53 / 1.70. The eager scheme cost 5.2 / 6.3.
+  - **chain N=50:** edit 0.54 / 0.64, recompute 0.39 / 0.45.
+  - **wide N=100:** edit 0.21 / 0.25, recompute 0.10 / 0.12.
+  - **roto** (200 shapes, 3200 points; it runs now, and movePoint re-keys 21/21): edit 0.13 / 0.19, recompute **8–12 ms**, which is the Roto node's own content hash.
+
+  The stock `hash_bench.py` times only the edit with nodes already dirty, so it understates comp (0.67 p95).
+
+  **Still to fix for P6.T5:** the comp dirty-mark walk costs ~11 µs/node and should cost far less for a mark. The Roto content-hash recompute should rehash only the edited item.

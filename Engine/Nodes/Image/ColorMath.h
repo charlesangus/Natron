@@ -147,7 +147,8 @@ addLuminanceMathKnob(KnobHolder* holder,
 
 /**
  * @brief The sRGB and Rec. 709 transfer functions: from_* decodes to linear, to_* encodes from
- * linear, negatives clamped to 0. Rec. 709 uses the Rec. 2020 constants, as ofxsLut.h does.
+ * linear, negatives clamped to 0. The Rec. 709 pair deliberately uses the BT.2020 constants
+ * (1.0993, 0.0181) rather than BT.709's (1.099, 0.018); only ChromaKeyer relies on them.
  **/
 inline float
 fromSRGB(float v)

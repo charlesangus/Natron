@@ -35,7 +35,9 @@
 #include "BaseTest.h"
 #include "NativeMetadataTestEffect.h"
 
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Metadata/ViewMetadata.h"
@@ -43,6 +45,7 @@
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
+NATRON_PYTHON_NAMESPACE_USING
 
 namespace {
 
@@ -166,4 +169,48 @@ TEST_F(ViewMetadataTest, UnconnectedNodeShowsAnEmptyNotice)
     loneEffect->refreshMetadataDisplay(1.);
 
     EXPECT_TRUE(contains(loneEffect->getMetadataDisplayText(), "No metadata"));
+}
+
+TEST_F(ViewMetadataTest, RefreshRunsNeitherKnobChangedNorEvaluation)
+{
+    std::string error, output;
+    const std::string define = "viewMetadataParamCalls = 0\n"
+                               "def viewMetadataOnParamChanged(thisParam, thisNode, thisGroup, app, userEdited):\n"
+                               "    global viewMetadataParamCalls\n"
+                               "    viewMetadataParamCalls += 1\n";
+    ASSERT_TRUE(interpretPythonScript(define, &error, &output)) << error;
+
+    KnobStringPtr callback = std::dynamic_pointer_cast<KnobString>(view->getKnobByName("onParamChanged"));
+    KnobStringPtr display = std::dynamic_pointer_cast<KnobString>(view->getKnobByName("metadataDisplay"));
+    ASSERT_TRUE(bool(callback) && bool(display));
+    callback->setValue("viewMetadataOnParamChanged");
+
+    const auto callCount = [&](int expected) {
+        const std::string check = "if viewMetadataParamCalls != " + std::to_string(expected) + ":\n"
+                                                                                               "    raise ValueError(str(viewMetadataParamCalls))\n";
+        std::string err, out;
+
+        return interpretPythonScript(check, &err, &out);
+    };
+    const auto reset = []() {
+        std::string err, out;
+
+        return interpretPythonScript("viewMetadataParamCalls = 0\n", &err, &out);
+    };
+
+    // An ordinary setValue() must reach the callback, or the passive check below proves nothing.
+    ASSERT_TRUE(reset());
+    display->setValue("plain edit");
+    ASSERT_TRUE(callCount(1));
+
+    ASSERT_TRUE(reset());
+    const U64 hashBefore = view->getHashValue();
+    effect->refreshMetadataDisplay(1.);
+    effect->refreshMetadataDisplay(2.);
+
+    EXPECT_NE(std::string("plain edit"), effect->getMetadataDisplayText());
+    EXPECT_TRUE(callCount(0));
+    EXPECT_EQ(hashBefore, view->getHashValue());
+    EXPECT_FALSE(effect->isEvaluationBlocked());
+    EXPECT_FALSE(display->isValueChangesBlocked());
 }

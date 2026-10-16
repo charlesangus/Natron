@@ -38,11 +38,6 @@
 
 NATRON_NAMESPACE_ENTER
 
-/**
- * @brief Shows the metadata of its input as an HTML table in its settings panel and passes the
- * image and the metadata through untouched. The table follows the timeline frame and any change
- * upstream while the panel is open, and the Refresh button redraws it by hand.
- **/
 class ViewMetadata
     : public NativeEffectBase {
 public:

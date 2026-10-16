@@ -35,11 +35,7 @@
 
 NATRON_NAMESPACE_ENTER
 
-/**
- * @brief Drops the metadata keys matching a glob list from its input, or all of them. Nothing
- * is protected: the keys the engine itself writes, such as the ofx/ ones, go too if matched. The
- * image passes through untouched, as an isIdentity() answer.
- **/
+// No key is protected: the ofx/ keys the engine writes go too when matched.
 class RemoveMetadata
     : public NativeEffectBase {
 public:

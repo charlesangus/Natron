@@ -35,11 +35,6 @@
 
 NATRON_NAMESPACE_ENTER
 
-/**
- * @brief Copies the metadata of input B onto that of input A, restricted to the keys matching a
- * glob list. The image of A passes through untouched, as an isIdentity() answer. With B
- * disconnected the metadata of A is unchanged.
- **/
 class CopyMetadata
     : public NativeEffectBase {
 public:

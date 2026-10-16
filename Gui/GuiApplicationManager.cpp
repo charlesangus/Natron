@@ -310,6 +310,9 @@ pixmapEnumToPath(PixmapEnum e)
     case NATRON_PIXMAP_DEEP_GROUPING:
         path = NATRON_ICONS_PATH "natron/deep.svg";
         break;
+    case NATRON_PIXMAP_METADATA_GROUPING:
+        path = NATRON_ICONS_PATH "lucide/info.svg";
+        break;
     case NATRON_PIXMAP_FILTER_GROUPING:
         path = NATRON_ICONS_PATH "natron/filter.svg";
         break;

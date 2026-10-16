@@ -39,12 +39,7 @@
 
 NATRON_NAMESPACE_ENTER
 
-/**
- * @brief Edits the per-frame metadata of its input: each of a fixed number of slots, applied in
- * order, sets, removes or renames one key. The image passes through untouched, as an
- * isIdentity() answer. The slots are knobs rather than table rows so that values animate and
- * take expressions.
- **/
+// The slots are ordinary knobs rather than table rows so that values animate and take expressions.
 class ModifyMetadata
     : public NativeEffectBase {
 public:

@@ -79,6 +79,37 @@ joinValues(const std::vector<T>& values,
     return joined;
 }
 
+// Updating the display must not look like an edit: a plain setValue() would still run knobChanged,
+// the Python param-changed callback and a viewer redraw. Blocking the knob's value-change handlers
+// and discarding the evaluation when the bracket closes leaves only the new text.
+class PassiveKnobUpdate {
+public:
+    PassiveKnobUpdate(KnobHolder* holder,
+                      const KnobIPtr& knob)
+        : _holder(holder)
+        , _knob(knob)
+    {
+        _knob->blockValueChanges();
+        _holder->beginChanges();
+    }
+
+    ~PassiveKnobUpdate()
+    {
+        try {
+            _holder->endChanges(true);
+        } catch (...) {
+        }
+        _knob->unblockValueChanges();
+    }
+
+    PassiveKnobUpdate(const PassiveKnobUpdate&) = delete;
+    PassiveKnobUpdate& operator=(const PassiveKnobUpdate&) = delete;
+
+private:
+    KnobHolder* _holder;
+    KnobIPtr _knob;
+};
+
 std::string
 formatValue(const ImageMetadata::Value& value)
 {
@@ -191,6 +222,7 @@ ViewMetadata::refreshMetadataDisplay(double time)
     const std::string html = text.str();
 
     if (html != display->getValue()) {
+        PassiveKnobUpdate passive(this, display);
         display->setValue(html);
     }
 }

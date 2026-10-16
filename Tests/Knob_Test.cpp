@@ -150,3 +150,35 @@ TEST_F(BaseTest, DuplicateOnHolderAndAliasKnobLayers)
 
     EXPECT_TRUE(source->setKnobAsAliasOfThis(duplicate, true));
 }
+
+TEST_F(BaseTest, DuplicateOnHolderKeepsStringKnobPreferredRows)
+{
+    NodePtr nodeA = createNode(_generatorPluginID);
+    NodePtr nodeB = createNode(_generatorPluginID);
+
+    ASSERT_TRUE(bool(nodeA));
+    ASSERT_TRUE(bool(nodeB));
+
+    KnobStringPtr source = AppManager::createKnob<KnobString>(nodeA->getEffectInstance().get(), std::string("notes"), 1, false);
+    ASSERT_TRUE(bool(source));
+    source->setName("notes");
+    source->setAsMultiLine();
+    source->setPreferredRows(20);
+
+    KnobIPtr duplicate = source->createDuplicateOnHolder(nodeB->getEffectInstance().get(),
+                                                         KnobPagePtr(),
+                                                         KnobGroupPtr(),
+                                                         -1,
+                                                         false,
+                                                         "notesDuplicate",
+                                                         "Notes Duplicate",
+                                                         "",
+                                                         false,
+                                                         true);
+
+    ASSERT_TRUE(bool(duplicate));
+    KnobStringPtr duplicateString = std::dynamic_pointer_cast<KnobString>(duplicate);
+    ASSERT_TRUE(bool(duplicateString));
+    EXPECT_TRUE(duplicateString->isMultiLine());
+    EXPECT_EQ(20, duplicateString->getPreferredRows());
+}

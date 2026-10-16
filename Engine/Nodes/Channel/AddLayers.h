@@ -30,6 +30,7 @@
 
 #include <bitset>
 #include <list>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -142,6 +143,8 @@ private:
 
     virtual void onChannelsSelectorRefreshed() OVERRIDE FINAL;
 
+    virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
+
     virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual StatusEnum getRegionOfDefinition(U64 hash,
@@ -188,6 +191,7 @@ private:
 
     KnobChannelSetWPtr _layers;
     KnobStringWPtr _subLabel;
+    mutable std::mutex _registrySignatureMutex;
     std::string _registrySignature;
 };
 

@@ -80,11 +80,6 @@ public:
 
     void setNodesThreadSafetyForRotopainting();
 
-    /**
-     * @brief Also invalidates the item's content hash, so it must follow the change it reports.
-     **/
-    void incrementNodesAge();
-
     void refreshNodesConnections();
 
     virtual void clone(const RotoItem*  other) OVERRIDE;

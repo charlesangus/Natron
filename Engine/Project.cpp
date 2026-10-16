@@ -3540,9 +3540,6 @@ Project::rehashNodesUsingFrameRange()
         if (!(*it)->isNodeCreated() || !(*it)->dependsOnProjectFrameRange()) {
             continue;
         }
-        if (Node::isHashAuditEnabled()) {
-            (*it)->noteHashAuditCause("<project frame range>");
-        }
         (*it)->markHashDirty();
     }
 }

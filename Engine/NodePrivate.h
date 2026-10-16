@@ -190,8 +190,7 @@ public:
         , mustQuitPreviewMutex()
         , mustQuitPreviewCond()
         , renderInstancesSharedMutex()
-        , knobsAge(0)
-        , knobsAgeMutex()
+        , contentHashMutex()
         , contentHash(0)
         , masterNodeMutex()
         , masterNode()
@@ -247,7 +246,6 @@ public:
         , nativeOverlays()
         , nodeCreated(false)
         , wasCreatedSilently(false)
-        , hashAuditArmed(false)
         , paintStroke()
         , pluginsPropMutex()
         , pluginSafety(eRenderSafetyInstanceSafe)
@@ -374,10 +372,8 @@ public:
     QWaitCondition mustQuitPreviewCond;
     QMutex renderInstancesSharedMutex; //< see eRenderSafetyInstanceSafe in EffectInstance::renderRoI
     //only 1 clone can render at any time
-    U64 knobsAge; //< the age of the knobs in this effect. It gets incremented every times the effect has its evaluate() function called.
-    mutable QReadWriteLock knobsAgeMutex; //< protects knobsAge, hash and contentHash
-    Hash64 hash; //< recomputed every time knobsAge is changed.
-    U64 contentHash; //< recomputed with hash; 0 until first computed
+    mutable QReadWriteLock contentHashMutex; //< protects contentHash
+    U64 contentHash; //< 0 until first computed
 
     // The hashes are recomputed lazily. Any thread marks the node by moving hashDirtyGeneration; a
     // recompute records the generation and the global hash epoch it started from, so an edit
@@ -499,9 +495,6 @@ public:
     std::list<HostOverlayKnobsPtr> nativeOverlays;
     bool nodeCreated;
     bool wasCreatedSilently;
-    // Set once Node::load() has returned: the hash audit ignores the transitions of a node still
-    // being built, which would otherwise take the one line its dedupe allows.
-    bool hashAuditArmed;
     RotoDrawableItemWPtr paintStroke;
 
     // These are dynamic props

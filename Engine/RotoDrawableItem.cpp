@@ -645,8 +645,7 @@ RotoDrawableItem::rotoKnobChanged(const KnobIPtr& knob,
         }
     }
 
-
-    incrementNodesAge();
+    invalidateContentHash();
 } // RotoDrawableItem::rotoKnobChanged
 
 void
@@ -662,28 +661,6 @@ RotoDrawableItem::appendLiveContentHash(ContentHasher& h) const
         if (hashed) {
             h.appendU64((*it)->getContentHash());
         }
-    }
-}
-
-void
-RotoDrawableItem::incrementNodesAge()
-{
-    // Unlike the age bump below, the content hash must also see edits made while loading.
-    invalidateContentHash();
-    if ( getContext()->getNode()->getApp()->getProject()->isLoadingProject() ) {
-        return;
-    }
-    if (_imp->effectNode) {
-        _imp->effectNode->incrementKnobsAge();
-    }
-    if (_imp->mergeNode) {
-        _imp->mergeNode->incrementKnobsAge();
-    }
-    if (_imp->timeOffsetNode) {
-        _imp->timeOffsetNode->incrementKnobsAge();
-    }
-    if (_imp->frameHoldNode) {
-        _imp->frameHoldNode->incrementKnobsAge();
     }
 }
 

@@ -116,8 +116,8 @@ KnobFile::reloadOtherNodesReadingTheseFiles()
             other->purgeCaches();
             other->clearActionsCache();
             other->clearPersistentMessage(false);
-            // Moves the age hash with the content hash, as the node's own Reload does.
-            (*it)->incrementKnobsAge();
+            // The file stamps were just dropped, so the stored hashes predate them.
+            (*it)->markHashDirty();
         }
     }
 }

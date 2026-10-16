@@ -353,15 +353,14 @@ public:
      **/
     U64 getRenderHash() const WARN_UNUSED_RETURN;
 
-    U64 getKnobsAge() const WARN_UNUSED_RETURN;
-
     /**
-     * @brief Set the knobs age of this node to be 'age'. Note that this can be called
-     * for 2 reasons:
-     * - loading a project
-     * - If this node is a clone and the master node changed its hash.
+     * @brief Appends render-affecting state the effect keeps outside its knobs. Called under no
+     * node lock, from any thread; whoever changes that state must follow it with
+     * Node::markHashDirty().
      **/
-    void setKnobsAge(U64 age);
+    virtual void appendNodeContentHash(ContentHasher& /*h*/) const
+    {
+    }
 
     /**
      * @brief Forwarded to the node's name

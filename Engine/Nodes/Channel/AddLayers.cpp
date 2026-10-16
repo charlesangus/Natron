@@ -34,6 +34,7 @@
 #include <ofxNatron.h>
 
 #include "Engine/AppInstance.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/Image.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
@@ -396,13 +397,23 @@ AddLayers::refreshForRegistryChange()
         signature += it->desc.getLayerID() + ":" + it->channels.to_string() + ":" + it->zeroChannels.to_string() + ";";
     }
 
-    if (signature == _registrySignature) {
-        return;
+    {
+        std::lock_guard<std::mutex> lock(_registrySignatureMutex);
+        if (signature == _registrySignature) {
+            return;
+        }
+        _registrySignature = signature;
     }
-    _registrySignature = signature;
 
-    node->incrementKnobsAge();
+    node->markHashDirty();
     refreshMetadata_public(true);
+}
+
+void
+AddLayers::appendNodeContentHash(ContentHasher& h) const
+{
+    std::lock_guard<std::mutex> lock(_registrySignatureMutex);
+    h.appendString(_registrySignature);
 }
 
 void

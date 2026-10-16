@@ -298,9 +298,6 @@ public:
      **/
     bool dependsOnProjectFrameRange() const;
 
-    static bool isHashAuditEnabled();
-    void noteHashAuditCause(const std::string& cause);
-
     virtual std::string getCacheID() const OVERRIDE FINAL;
 
     /**
@@ -1130,13 +1127,7 @@ public:
 
     void refreshPreviewsRecursivelyUpstream(double time);
 
-    void incrementKnobsAge();
-
 public:
-
-
-    U64 getKnobsAge() const;
-
     void onAllKnobsSlaved(bool isSlave, KnobHolder* master);
 
     void onKnobSlaved(const KnobIPtr& slave, const KnobIPtr& master, int dimension, bool isSlave);
@@ -1840,16 +1831,12 @@ private:
     bool recomputeHashIfDirty(bool requireCleanInputs, HashWalk* walk);
 
     /**
-     * @brief Refreshes the node's content hash and its age hash from its knobs, age and inputs,
+     * @brief Refreshes the node's content hash from its knobs, state and inputs,
      * reading the inputs' stored hashes. Leaves the dirty state and the change hooks to the caller.
      * @param projectDigest The project's content digest; 0 takes a fresh one.
-     * @return True if either hash has changed, false otherwise
+     * @return True if the content hash has changed, false otherwise
      **/
     bool computeHashInternal(U64 projectDigest, U64* contentHash) WARN_UNUSED_RETURN;
-
-    // The hash built from the knobs age. Nothing is keyed on it; it is kept so the audit can
-    // compare it with the content hash.
-    U64 getAgeHashValue() const;
 
     U64 computeContentHash(U64 projectDigest) const;
 
@@ -1858,11 +1845,6 @@ private:
      * generation moves. hasExpression is set if any knob, hashed or not, has an expression.
      **/
     U64 getKnobsContentDigest(bool* hasExpression) const;
-    void auditHashTransition(U64 ageHash, U64 contentHash);
-
-    // Forgets this node's audit state and logged lines; with seedFromCurrentHashes, the stored
-    // hashes become the baseline the next transition is compared with.
-    void resetHashAudit(bool seedFromCurrentHashes);
 
     void refreshCreatedViews(KnobI* knob, bool silent);
 
@@ -1900,9 +1882,6 @@ public Q_SLOTS:
     void onProcessingQuitInDestroyNodeInternal(int taskID, const GenericWatcherCallerArgsPtr& args);
 
     void onRefreshIdentityStateRequestReceived();
-
-    void setKnobsAge(U64 newAge);
-
 
     void doRefreshEdgesGUI()
     {

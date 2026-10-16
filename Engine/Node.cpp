@@ -792,14 +792,6 @@ Node::getHashValue() const
 }
 
 U64
-Node::getAgeHashValue() const
-{
-    QReadLocker l(&_imp->knobsAgeMutex);
-
-    return _imp->hash.value();
-}
-
-U64
 Node::getContentHash() const
 {
     if (hashComputeDepth == 0) {
@@ -815,7 +807,7 @@ Node::getContentHash() const
 U64
 Node::getStoredContentHash() const
 {
-    QReadLocker l(&_imp->knobsAgeMutex);
+    QReadLocker l(&_imp->contentHashMutex);
 
     return _imp->contentHash;
 }
@@ -842,166 +834,6 @@ Node::getCacheID() const
     return _imp->cacheID;
 }
 
-namespace {
-struct HashAuditNodeState {
-    U64 ageHash = 0;
-    U64 contentHash = 0;
-    std::set<U64> seenContent;
-    std::string pendingCause;
-};
-
-struct HashAudit {
-    std::mutex mutex;
-    std::map<const Node*, HashAuditNodeState> nodes;
-    std::set<std::string> logged;
-    std::map<std::string, unsigned long> reuse;
-};
-
-HashAudit* hashAuditInstance();
-
-void
-printHashAuditReport()
-{
-    HashAudit* audit = hashAuditInstance();
-    std::lock_guard<std::mutex> g(audit->mutex);
-
-    for (std::map<std::string, unsigned long>::const_iterator it = audit->reuse.begin(); it != audit->reuse.end(); ++it) {
-        fprintf(stderr, "NATRON_HASH_AUDIT: reuse-opportunity plugin=%s count=%lu\n", it->first.c_str(), it->second);
-    }
-}
-
-// Deliberately leaked: nodes can still be destroyed (and erase their entry) during static
-// destruction, after a function-local static audit would already be gone.
-HashAudit*
-hashAuditInstance()
-{
-    static HashAudit* audit = []() {
-        HashAudit* a = new HashAudit;
-        std::atexit(printHashAuditReport);
-        return a;
-    }();
-
-    return audit;
-}
-
-HashAudit&
-hashAudit()
-{
-    return *hashAuditInstance();
-}
-
-void
-forgetHashAuditNode(const Node* node)
-{
-    HashAudit& audit = hashAudit();
-    std::lock_guard<std::mutex> g(audit.mutex);
-
-    audit.nodes.erase(node);
-}
-} // anonymous namespace
-
-bool
-Node::isHashAuditEnabled()
-{
-    static const bool enabled = (std::getenv("NATRON_HASH_AUDIT") != nullptr);
-
-    return enabled;
-}
-
-void
-Node::noteHashAuditCause(const std::string& cause)
-{
-    if (!isHashAuditEnabled() || !_imp->hashAuditArmed) {
-        return;
-    }
-    {
-        QMutexLocker k(&_imp->isBeingDestroyedMutex);
-        if (_imp->isBeingDestroyed) {
-            return;
-        }
-    }
-    HashAudit& audit = hashAudit();
-    std::lock_guard<std::mutex> g(audit.mutex);
-    audit.nodes[this].pendingCause = cause;
-}
-
-void
-Node::auditHashTransition(U64 ageHash,
-                          U64 contentHash)
-{
-    // A node still being built is neither checked nor recorded: Node::load() seeds the baseline
-    // once it is done.
-    if (!_imp->hashAuditArmed) {
-        return;
-    }
-    {
-        QMutexLocker k(&_imp->isBeingDestroyedMutex);
-        if (_imp->isBeingDestroyed) {
-            return;
-        }
-    }
-    HashAudit& audit = hashAudit();
-    std::string pluginID = getPluginID();
-    std::string scriptName = getScriptName();
-    std::lock_guard<std::mutex> g(audit.mutex);
-    HashAuditNodeState& st = audit.nodes[this];
-    const bool first = st.seenContent.empty();
-    const bool ageChanged = ageHash != st.ageHash;
-    const bool contentChanged = contentHash != st.contentHash;
-    std::string cause;
-    cause.swap(st.pendingCause);
-
-    if (!first) {
-        if (ageChanged && !contentChanged) {
-            const std::string reason = cause.empty() ? std::string("unknown") : cause;
-            if (audit.logged.insert(pluginID + "|" + scriptName + "|content-missed|" + reason).second) {
-                fprintf(stderr, "NATRON_HASH_AUDIT: content-missed? plugin=%s node=%s knob=%s\n",
-                        pluginID.c_str(), scriptName.c_str(), reason.c_str());
-            }
-        } else if (contentChanged && !ageChanged) {
-            if (audit.logged.insert(pluginID + "|" + scriptName + "|age-missed").second) {
-                fprintf(stderr, "NATRON_HASH_AUDIT: age-missed plugin=%s node=%s\n",
-                        pluginID.c_str(), scriptName.c_str());
-            }
-        } else if (ageChanged && contentChanged && (st.seenContent.find(contentHash) != st.seenContent.end())) {
-            ++audit.reuse[pluginID];
-        }
-    }
-    st.ageHash = ageHash;
-    st.contentHash = contentHash;
-    st.seenContent.insert(contentHash);
-}
-
-void
-Node::resetHashAudit(bool seedFromCurrentHashes)
-{
-    if (!isHashAuditEnabled()) {
-        return;
-    }
-    const std::string loggedPrefix = getPluginID() + "|" + getScriptName() + "|";
-    U64 ageHash = 0, contentHash = 0;
-    if (seedFromCurrentHashes) {
-        getHashValue();
-        QReadLocker l(&_imp->knobsAgeMutex);
-        ageHash = _imp->hash.value();
-        contentHash = _imp->contentHash;
-    }
-    HashAudit& audit = hashAudit();
-    std::lock_guard<std::mutex> g(audit.mutex);
-    std::set<std::string>::iterator it = audit.logged.lower_bound(loggedPrefix);
-    while ((it != audit.logged.end()) && (it->compare(0, loggedPrefix.size(), loggedPrefix) == 0)) {
-        audit.logged.erase(it++);
-    }
-    HashAuditNodeState& st = audit.nodes[this];
-    st = HashAuditNodeState();
-    // A content hash is never 0 once computed, so 0 means there is nothing to compare against yet.
-    if (contentHash != 0) {
-        st.ageHash = ageHash;
-        st.contentHash = contentHash;
-        st.seenContent.insert(contentHash);
-    }
-}
-
 bool
 Node::computeHashInternal(U64 projectDigest,
                           U64* newContentHash)
@@ -1014,91 +846,20 @@ Node::computeHashInternal(U64 projectDigest,
         qDebug() << "Node::computeHash(): inputs not initialized";
     }
 
-    // Computed before taking knobsAgeMutex: knob content hashing and input reads must not run
+    // Computed before taking contentHashMutex: knob content hashing and input reads must not run
     // under this node's write lock.
     const U64 contentHash = computeContentHash(projectDigest);
 
-    U64 oldContentHash, oldHash, newHash;
+    U64 oldContentHash;
     {
-        QWriteLocker l(&_imp->knobsAgeMutex);
+        QWriteLocker l(&_imp->contentHashMutex);
 
         oldContentHash = _imp->contentHash;
         _imp->contentHash = contentHash;
-
-        oldHash = _imp->hash.value();
-
-        ///reset the hash value
-        _imp->hash.reset();
-
-        ///append the effect's own age
-        _imp->hash.append(_imp->knobsAge);
-
-        ///append all inputs hash
-        RotoDrawableItemPtr attachedStroke = _imp->paintStroke.lock();
-        NodePtr attachedStrokeContextNode;
-        if (attachedStroke) {
-            attachedStrokeContextNode = attachedStroke->getContext()->getNode();
-        }
-        {
-            ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>( _imp->effect.get() );
-
-            if (isViewer) {
-                int activeInput[2];
-                isViewer->getActiveInputs(activeInput[0], activeInput[1]);
-
-                for (int i = 0; i < 2; ++i) {
-                    NodePtr input = getInput(activeInput[i]);
-                    if (input) {
-                        _imp->hash.append(input->getAgeHashValue());
-                    }
-                }
-            } else {
-                for (U32 i = 0, n = getInputSlotCount(); i < n; ++i) {
-                    NodePtr input = getInput(i);
-                    if (input) {
-                        //Since the rotopaint node is connected to the internal nodes of the tree, don't change their hash
-                        if ( attachedStroke && (input == attachedStrokeContextNode) ) {
-                            continue;
-                        }
-                        ///Add the index of the input to its hash.
-                        ///Explanation: if we didn't add this, just switching inputs would produce a similar
-                        ///hash.
-                        _imp->hash.append(input->getAgeHashValue() + i);
-                    }
-                }
-            }
-        }
-
-        // We do not append the roto age any longer since now every tool in the RotoContext is backed-up by nodes which
-        // have their own age. Instead each action in the Rotocontext is followed by a incrementNodesAge() call so that each
-        // node respecitively have their hash correctly set.
-
-        //        RotoContextPtr roto = attachedStroke ? attachedStroke->getContext() : getRotoContext();
-        //        if (roto) {
-        //            U64 rotoAge = roto->getAge();
-        //            _imp->hash.append(rotoAge);
-        //        }
-
-        // The name and the project creation time feed only the age hash, which nothing is keyed
-        // on. The content hash leaves them out so that nodes in the same state share cache entries.
-        Hash64_appendQString( &_imp->hash, QString::fromUtf8( getScriptName().c_str() ) );
-
-        qint64 creationTime =  getApp()->getProject()->getProjectCreationTime();
-        _imp->hash.append(creationTime);
-
-        _imp->hash.computeHash();
-
-        newHash = _imp->hash.value();
-    } // QWriteLocker l(&_imp->knobsAgeMutex);
-    const bool contentChanged = oldContentHash != contentHash;
-    const bool ageChanged = oldHash != newHash;
-
-    if (isHashAuditEnabled()) {
-        auditHashTransition(newHash, contentHash);
     }
     *newContentHash = contentHash;
 
-    return contentChanged || ageChanged;
+    return oldContentHash != contentHash;
 } // Node::computeHashInternal
 
 U64
@@ -1192,6 +953,7 @@ Node::computeContentHash(U64 projectDigest) const
 
     bool hasExpression = false;
     h.appendU64(getKnobsContentDigest(&hasExpression));
+    _imp->effect->appendNodeContentHash(h);
 
     // Expressions resolve thisNode/thisGroup and other nodes by name, so the same expression
     // under another name can evaluate differently.
@@ -1621,10 +1383,8 @@ Node::recomputeHashIfDirty(bool requireCleanInputs,
         _imp->hashCleanGeneration.store(generation);
     }
 
-    // Run outside the recompute lock, since they take the effect's and knobs' locks. An age-only
-    // change still runs them: they also drop metadata and expression results, which some age bumps
-    // exist to refresh. The cache entries made under the node's other keys are left to the
-    // caches' LRU: a content key names one state only, so they stay valid for a return to it.
+    // Run outside the recompute lock, since they take the effect's and knobs' locks. The cache entries
+    // made under the node's other keys are left to the caches' LRU: a content key names one state only, so they stay valid for a return to it.
     if (changed) {
         _imp->effect->onNodeHashChanged(contentHash);
     }
@@ -2357,52 +2117,6 @@ Node::getPagesOrder() const
     return ret;
 }
 
-
-void
-Node::setKnobsAge(U64 newAge)
-{
-    ////Only called by the main-thread
-    assert( QThread::currentThread() == qApp->thread() );
-
-    bool changed;
-    {
-        QWriteLocker l(&_imp->knobsAgeMutex);
-        changed = _imp->knobsAge != newAge || !_imp->hash.value();
-        if (changed) {
-            _imp->knobsAge = newAge;
-        }
-    }
-    if (changed) {
-        computeHash();
-    }
-}
-
-void
-Node::incrementKnobsAge()
-{
-    {
-        QWriteLocker l(&_imp->knobsAgeMutex);
-        ++_imp->knobsAge;
-
-        ///if the age of an effect somehow reaches the maximum age (will never happen)
-        ///handle it by clearing the cache and resetting the age to 0.
-        if ( _imp->knobsAge == std::numeric_limits<U64>::max() ) {
-            appPTR->clearAllCaches();
-            _imp->knobsAge = 0;
-        }
-    }
-
-    computeHash();
-}
-
-U64
-Node::getKnobsAge() const
-{
-    QReadLocker l(&_imp->knobsAgeMutex);
-
-    return _imp->knobsAge;
-}
-
 bool
 Node::isRenderingPreview() const
 {
@@ -2612,11 +2326,6 @@ Node::~Node()
 
     QMutexLocker k(&channelSelectorOwnersMutex);
     channelSelectorOwners.erase(this);
-
-    // The audit is keyed by address; a later node allocated here must not inherit this state.
-    if (isHashAuditEnabled()) {
-        forgetHashAuditNode(this);
-    }
 }
 
 
@@ -8354,10 +8063,7 @@ Node::attachRotoItem(const RotoDrawableItemPtr& stroke)
 {
     assert( QThread::currentThread() == qApp->thread() );
     _imp->paintStroke = stroke;
-    // The node starts over as the item's node: what the audit saw of it before the attach, and
-    // the lines it already logged, would hide the item's own transitions.
-    resetHashAudit(false);
-    // Both hashes read the attached item, so the stored ones must not predate it.
+    // The hash reads the attached item, so the stored one must not predate it.
     computeHash();
 }
 

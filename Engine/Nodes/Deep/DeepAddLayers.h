@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -102,6 +103,8 @@ private:
 
     virtual void onChannelsSelectorRefreshed() OVERRIDE FINAL;
 
+    virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
+
     virtual bool isIdentity(double time,
                             const RenderScale& scale,
                             const RectI& roi,
@@ -133,6 +136,7 @@ private:
 
     KnobChannelSetWPtr _layers;
     KnobStringWPtr _subLabel;
+    mutable std::mutex _registrySignatureMutex;
     std::string _registrySignature;
 };
 

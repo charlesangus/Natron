@@ -1608,8 +1608,7 @@ MultiInstancePanel::resetInstances(const std::list<Node*> & instances)
     for (std::list<Node*>::const_iterator it = instances.begin();
          it != instances.end();
          ++it) {
-        //invalidate the cache by incrementing the age
-        (*it)->incrementKnobsAge();
+        (*it)->markHashDirty();
         if ( (*it)->areKeyframesVisibleOnTimeline() ) {
             (*it)->hideKeyframesFromTimeline( next == instances.end() );
         }

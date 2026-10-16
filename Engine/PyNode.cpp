@@ -40,6 +40,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
+#include "Engine/PyParameter.h" // checkHolderIsEditable
 #include "Engine/PyRoto.h"
 #include "Engine/PyTracker.h"
 #include "Engine/TimeLine.h"
@@ -610,6 +611,9 @@ IntParam*
 UserParamHolder::createIntParam(const QString& name,
                                 const QString& label)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
     KnobIntPtr knob = _holder->createIntKnob(name.toStdString(), label.toStdString(), 1);
 
     if (knob) {
@@ -628,6 +632,9 @@ Int2DParam*
 UserParamHolder::createInt2DParam(const QString& name,
                                   const QString& label)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
     KnobIntPtr knob = _holder->createIntKnob(name.toStdString(), label.toStdString(), 2);
 
     if (knob) {
@@ -646,6 +653,9 @@ Int3DParam*
 UserParamHolder::createInt3DParam(const QString& name,
                                   const QString& label)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
     KnobIntPtr knob = _holder->createIntKnob(name.toStdString(), label.toStdString(), 3);
 
     if (knob) {
@@ -664,6 +674,9 @@ DoubleParam*
 UserParamHolder::createDoubleParam(const QString& name,
                                    const QString& label)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
     KnobDoublePtr knob = _holder->createDoubleKnob(name.toStdString(), label.toStdString(), 1);
 
     if (knob) {
@@ -682,6 +695,9 @@ Double2DParam*
 UserParamHolder::createDouble2DParam(const QString& name,
                                      const QString& label)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
     KnobDoublePtr knob = _holder->createDoubleKnob(name.toStdString(), label.toStdString(), 2);
 
     if (knob) {
@@ -700,6 +716,9 @@ Double3DParam*
 UserParamHolder::createDouble3DParam(const QString& name,
                                      const QString& label)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
     KnobDoublePtr knob = _holder->createDoubleKnob(name.toStdString(), label.toStdString(), 3);
 
     if (knob) {
@@ -718,6 +737,9 @@ BooleanParam*
 UserParamHolder::createBooleanParam(const QString& name,
                                     const QString& label)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
     KnobBoolPtr knob = _holder->createBoolKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
@@ -736,6 +758,9 @@ ChoiceParam*
 UserParamHolder::createChoiceParam(const QString& name,
                                    const QString& label)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
     KnobChoicePtr knob = _holder->createChoiceKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
@@ -755,6 +780,9 @@ UserParamHolder::createColorParam(const QString& name,
                                   const QString& label,
                                   bool useAlpha)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
     KnobColorPtr knob = _holder->createColorKnob(name.toStdString(), label.toStdString(), useAlpha ? 4 : 3);
 
     if (knob) {
@@ -773,6 +801,9 @@ StringParam*
 UserParamHolder::createStringParam(const QString& name,
                                    const QString& label)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
     KnobStringPtr knob = _holder->createStringKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
@@ -791,6 +822,9 @@ FileParam*
 UserParamHolder::createFileParam(const QString& name,
                                  const QString& label)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
     KnobFilePtr knob = _holder->createFileKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
@@ -809,6 +843,9 @@ OutputFileParam*
 UserParamHolder::createOutputFileParam(const QString& name,
                                        const QString& label)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
     KnobOutputFilePtr knob = _holder->createOuptutFileKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
@@ -827,6 +864,9 @@ PathParam*
 UserParamHolder::createPathParam(const QString& name,
                                  const QString& label)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
     KnobPathPtr knob = _holder->createPathKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
@@ -845,6 +885,9 @@ ChannelSetParam*
 UserParamHolder::createChannelSetParam(const QString& name,
                                        const QString& label)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
     KnobChannelSetPtr knob = _holder->createChannelSetKnob(name.toStdString(), label.toStdString());
 
     if (knob) {
@@ -864,6 +907,9 @@ UserParamHolder::createLayerSelectParam(const QString& name,
                                         const QString& label,
                                         bool withChannelButtons)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
     KnobLayerSelectPtr knob = _holder->createLayerSelectKnob(name.toStdString(), label.toStdString(), withChannelButtons);
 
     if (knob) {
@@ -882,6 +928,9 @@ ChannelSelectParam*
 UserParamHolder::createChannelSelectParam(const QString& name,
                                           const QString& label)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
     KnobChannelSelectPtr knob = _holder->createChannelSelectKnob(name.toStdString(), label.toStdString());
 
     if (knob) {
@@ -900,6 +949,9 @@ ButtonParam*
 UserParamHolder::createButtonParam(const QString& name,
                                    const QString& label)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
     KnobButtonPtr knob = _holder->createButtonKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
@@ -918,6 +970,9 @@ SeparatorParam*
 UserParamHolder::createSeparatorParam(const QString& name,
                                       const QString& label)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
     KnobSeparatorPtr knob = _holder->createSeparatorKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
@@ -936,6 +991,9 @@ GroupParam*
 UserParamHolder::createGroupParam(const QString& name,
                                   const QString& label)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
     KnobGroupPtr knob = _holder->createGroupKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
@@ -954,6 +1012,9 @@ PageParam*
 UserParamHolder::createPageParam(const QString& name,
                                  const QString& label)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
     if (!_holder) {
         assert(false);
 
@@ -972,6 +1033,9 @@ UserParamHolder::createParametricParam(const QString& name,
                                        const QString& label,
                                        int nbCurves)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
     KnobParametricPtr knob = _holder->createParametricKnob(name.toStdString(), label.toStdString(), nbCurves);
 
     if (knob) {
@@ -989,6 +1053,9 @@ UserParamHolder::createParametricParam(const QString& name,
 bool
 UserParamHolder::removeParam(Param* param)
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return false;
+    }
     if (!param) {
         return false;
     }
@@ -1007,6 +1074,9 @@ UserParamHolder::removeParam(Param* param)
 PageParam*
 Effect::getUserPageParam() const
 {
+    if (!checkHolderIsEditable(getInternalNode()->getEffectInstance().get())) {
+        return 0;
+    }
     KnobPagePtr page = getInternalNode()->getEffectInstance()->getOrCreateUserPageKnob();
 
     assert(page);
@@ -1017,6 +1087,9 @@ Effect::getUserPageParam() const
 void
 UserParamHolder::refreshUserParamsGUI()
 {
+    if (!checkHolderIsEditable(_holder)) {
+        return;
+    }
     _holder->recreateUserKnobs(false);
 }
 
@@ -1147,7 +1220,7 @@ Effect::getBitDepth() const
 void
 Effect::setPagesOrder(const QStringList& pages)
 {
-    if ( !getInternalNode() ) {
+    if (!getInternalNode() || !checkHolderIsEditable(getInternalNode()->getEffectInstance().get())) {
         return;
     }
 

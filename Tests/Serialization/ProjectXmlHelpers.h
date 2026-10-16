@@ -84,6 +84,18 @@ withoutSessionCounters(const std::string& xml)
     return normalized.toStdString();
 }
 
+inline std::string
+saveNodeXml(const Serialization::NodeSerialization& serialization)
+{
+    std::stringstream buffer;
+    {
+        boost::archive::xml_oarchive archive(buffer);
+        archive << boost::serialization::make_nvp("Node", serialization);
+    }
+
+    return withoutSessionCounters(buffer.str());
+}
+
 inline bool
 loadProjectXml(const std::string& xml,
                Serialization::ProjectSerialization* serialization)

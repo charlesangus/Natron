@@ -35,6 +35,7 @@
 #include <stdexcept>
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDebug>
 #include <QDir>
 #include <QEventLoop>
@@ -65,6 +66,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/CLArgs.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/DiskCacheNode.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/FileDownloader.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/KnobFile.h"
@@ -1093,8 +1095,15 @@ isEntitledForInspector(Plugin* plugin,
 }
 
 NodePtr
-AppInstance::createNodeInternal(CreateNodeArgs& args)
+AppInstance::createNodeInternal(CreateNodeArgs& args,
+                                CreateNodeStatusEnum* status)
 {
+    CreateNodeStatusEnum localStatus;
+    if (!status) {
+        status = &localStatus;
+    }
+    *status = eCreateNodeStatusFailed;
+
     NodePtr node;
     Plugin* plugin = 0;
     QString findId;
@@ -1128,11 +1137,13 @@ AppInstance::createNodeInternal(CreateNodeArgs& args)
             } else {
                 std::cerr << tr("Cannot load plug-in executable.").toStdString() + ": " + e2.what() << std::endl;
             }
+            *status = eCreateNodeStatusPluginNotFound;
             return node;
         }
     }
 
     if (!plugin) {
+        *status = eCreateNodeStatusPluginNotFound;
         return node;
     }
 
@@ -1157,7 +1168,11 @@ AppInstance::createNodeInternal(CreateNodeArgs& args)
         bool disableLoadFromScript = args.getProperty<bool>(kCreateNodeArgsPropDoNotLoadPyPlugFromScript);
         if (!disableLoadFromScript) {
             try {
-                return createNodeFromPythonModule(plugin, args);
+                node = createNodeFromPythonModule(plugin, args);
+                if (node) {
+                    *status = eCreateNodeStatusCreated;
+                }
+                return node;
             } catch (const std::exception& e) {
                 if (!isSilentCreation) {
                     Dialogs::errorDialog(tr("Plugin error").toStdString(),
@@ -1362,12 +1377,78 @@ AppInstance::createNodeInternal(CreateNodeArgs& args)
         }
     }
 
+    *status = eCreateNodeStatusCreated;
     return node;
 } // createNodeInternal
 
 NodePtr
 AppInstance::createNode(CreateNodeArgs & args)
 {
+    return createNodeInternal(args);
+}
+
+NodePtr
+AppInstance::createNodeOrMissingPluginPlaceholder(CreateNodeArgs& args,
+                                                  bool* isPlaceholder)
+{
+    *isPlaceholder = false;
+
+    const std::string pluginID = args.getProperty<std::string>(kCreateNodeArgsPropPluginID);
+    const int majorVersion = args.getProperty<int>(kCreateNodeArgsPropPluginVersion, 0);
+    const int minorVersion = args.getProperty<int>(kCreateNodeArgsPropPluginVersion, 1);
+    CreateNodeStatusEnum status;
+    NodePtr node = createNodeInternal(args, &status);
+
+    if (node) {
+        return node;
+    }
+
+    // createNodeInternal() only matches plug-in IDs regardless of case for the projects known to
+    // have been saved with lowercase IDs, but any file may carry one.
+    if (status == eCreateNodeStatusPluginNotFound) {
+        Plugin* plugin = 0;
+        try {
+            plugin = appPTR->getPluginBinary(QString::fromUtf8(pluginID.c_str()).toLower(), majorVersion, minorVersion, true);
+        } catch (const std::exception&) {
+            plugin = 0;
+        }
+        const std::string canonicalID = plugin ? plugin->getPluginID().toStdString() : std::string();
+        if (!canonicalID.empty() && (canonicalID != pluginID)) {
+            args.setProperty<std::string>(kCreateNodeArgsPropPluginID, canonicalID);
+            node = createNodeInternal(args, &status);
+            if (node) {
+                return node;
+            }
+        }
+    }
+
+    const Serialization::NodeSerializationPtr serialization = args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
+    const QString nodeName = serialization ? QString::fromUtf8(serialization->scriptName.c_str()) : QString();
+    QString text;
+    if (status == eCreateNodeStatusPluginNotFound) {
+        text = tr("ERROR: The node %1 uses the plug-in %2 version %3.%4, which is not installed.");
+    } else {
+        text = tr("ERROR: The node %1 could not be created with the plug-in %2 version %3.%4.");
+    }
+    text = text.arg(nodeName).arg(QString::fromUtf8(pluginID.c_str())).arg(majorVersion).arg(minorVersion);
+    text += QLatin1Char(' ') + tr("It is kept as a placeholder and saved unchanged.");
+    appPTR->writeToErrorLog_mt_safe(tr("Project"), QDateTime::currentDateTime(), text);
+
+    node = createMissingPluginPlaceholder(args);
+    *isPlaceholder = bool(node);
+
+    return node;
+}
+
+NodePtr
+AppInstance::createMissingPluginPlaceholder(CreateNodeArgs& args)
+{
+    assert(args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization));
+    args.setProperty<std::string>(kCreateNodeArgsPropPluginID, PLUGINID_NATRON_MISSING_PLUGIN);
+    args.setProperty<int>(kCreateNodeArgsPropPluginVersion, -1, 0);
+    args.setProperty<int>(kCreateNodeArgsPropPluginVersion, -1, 1);
+    args.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
+
     return createNodeInternal(args);
 }
 

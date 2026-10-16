@@ -63,7 +63,7 @@ static QString lookForFileRecursively(const QString& dirPath, const QString& fil
     }
     QStringList subDirs = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
     for (QStringList::const_iterator it = subDirs.begin(); it != subDirs.end(); ++it) {
-        QString ret = lookForFileRecursively(*it, filenameUnPathed);
+        QString ret = lookForFileRecursively(d.absoluteFilePath(*it), filenameUnPathed);
         if (!ret.isEmpty()) {
             return ret;
         }
@@ -148,6 +148,7 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
         const std::string& pythonModuleAbsolutePath = (*it)->pythonModule;
         NodePtr n;
         bool usingPythonModule = false;
+        bool pythonModuleIsMissing = false;
         if ( !pythonModuleAbsolutePath.empty() ) {
             unsigned int savedPythonModuleVersion = (*it)->pythonModuleVersion;
             QString qPyModulePath = QString::fromUtf8( pythonModuleAbsolutePath.c_str() );
@@ -166,7 +167,7 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
                 qPyModulePath.clear();
                 QStringList natronPaths = appPTR->getAllNonOFXPluginsPaths();
                 for (int i = 0; i < natronPaths.size(); ++i) {
-                    qPyModulePath = lookForFileRecursively(natronPaths[i], QString::fromUtf8(pythonModuleAbsolutePath.c_str()));
+                    qPyModulePath = lookForFileRecursively(natronPaths[i], QString::fromUtf8(pythonModuleUnPathed.c_str()));
                     if (!qPyModulePath.isEmpty()) {
                         break;
                     }
@@ -176,7 +177,9 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
 
             //This is a python group plug-in, try to find the corresponding .py file, maybe a more recent version of the plug-in exists.
             QFileInfo pythonModuleInfo(qPyModulePath);
-            if (!pythonModuleInfo.exists() || appPTR->getCurrentSettings()->isLoadFromPyPlugsEnabled() ) {
+            if (!pythonModuleInfo.exists()) {
+                pythonModuleIsMissing = true;
+            } else if (appPTR->getCurrentSettings()->isLoadFromPyPlugsEnabled()) {
                 pluginID = PLUGINID_NATRON_GROUP;
                 usingPythonModule = false;
             } else {
@@ -238,10 +241,11 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
             minorVersion = (*it)->pluginMinorVersion;
         }
 
-        const auto makeCreateArgs = [&](const std::string& id, int major, int minor) {
-            CreateNodeArgs args(id, group);
-            args.setProperty<int>(kCreateNodeArgsPropPluginVersion, major, 0);
-            args.setProperty<int>(kCreateNodeArgsPropPluginVersion, minor, 1);
+        bool isPlaceholder = false;
+        if (!n) {
+            CreateNodeArgs args(pluginID, group);
+            args.setProperty<int>(kCreateNodeArgsPropPluginVersion, majorVersion, 0);
+            args.setProperty<int>(kCreateNodeArgsPropPluginVersion, minorVersion, 1);
             args.setProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization, *it);
             args.setProperty<bool>(kCreateNodeArgsPropSilent, true);
             args.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true); // also load deprecated plugins
@@ -250,43 +254,29 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
             }
             args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
 
-            return args;
-        };
-
-        if (!n) {
-            CreateNodeArgs args = makeCreateArgs(pluginID, majorVersion, minorVersion);
-            n = appInst->createNode(args);
-        }
-        bool isPlaceholder = false;
-        if (!n) {
-            QString text( tr("ERROR: The node %1 version %2.%3"
-                             " was found in the script but does not"
-                             " exist in the loaded plug-ins.")
-                          .arg( QString::fromUtf8( pluginID.c_str() ) )
-                          .arg(majorVersion).arg(minorVersion) );
-            appPTR->writeToErrorLog_mt_safe(tr("Project"), QDateTime::currentDateTime(), text);
-            mustShowErrorsLog = true;
-
-            // Creation can also fail for a plug-in that exists: only a missing one gets a placeholder.
-            bool pluginIsMissing = false;
-            try {
-                (void)appPTR->getPluginBinary(QString::fromUtf8(pluginID.c_str()), majorVersion, minorVersion, true);
-            } catch (const std::exception&) {
-                // Unlike getPluginBinary, the old-ID lookup reports "not found" by returning null.
-                try {
-                    pluginIsMissing = !appPTR->getPluginBinaryFromOldID(QString::fromUtf8(pluginID.c_str()), majorVersion, minorVersion);
-                } catch (const std::exception&) {
-                    pluginIsMissing = true;
-                }
-            }
-            if (pluginIsMissing) {
-                CreateNodeArgs placeholderArgs = makeCreateArgs(PLUGINID_NATRON_MISSING_PLUGIN, -1, -1);
-                n = appInst->createNode(placeholderArgs);
+            if (pythonModuleIsMissing) {
+                appPTR->writeToErrorLog_mt_safe(tr("Project"), QDateTime::currentDateTime(),
+                                                tr("ERROR: The node %1 uses the PyPlug %2 (%3), which is not installed. "
+                                                   "It is kept as a placeholder and saved unchanged.")
+                                                    .arg(QString::fromUtf8((*it)->scriptName.c_str()))
+                                                    .arg(QString::fromUtf8(pluginID.c_str()))
+                                                    .arg(QString::fromUtf8(pythonModuleAbsolutePath.c_str())));
+                n = appInst->createMissingPluginPlaceholder(args);
                 isPlaceholder = bool(n);
+            } else {
+                n = appInst->createNodeOrMissingPluginPlaceholder(args, &isPlaceholder);
             }
-            if (!n) {
-                continue;
+            if (isPlaceholder) {
+                mustShowErrorsLog = true;
             }
+        }
+        if (!n) {
+            appPTR->writeToErrorLog_mt_safe(tr("Project"), QDateTime::currentDateTime(),
+                                            tr("ERROR: The node %1 (%2) could not be created.")
+                                                .arg(QString::fromUtf8((*it)->scriptName.c_str()))
+                                                .arg(QString::fromUtf8(pluginID.c_str())));
+            mustShowErrorsLog = true;
+            continue;
         } else {
             if (!usingPythonModule && n->getPlugin() && (n->getPlugin()->getMajorVersion() != (int)majorVersion) && (n->getPluginID() == pluginID)) {
                 QString text(tr("WARNING: The node %1 (%2) version %3.%4 "

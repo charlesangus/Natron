@@ -57,18 +57,6 @@ const char* const kNotInstalledPluginID = "com.example.NotInstalled";
 const double kWhitePointRed = 0.75;
 const double kUserKnobValue = 3.25;
 
-std::string
-saveNodeXml(const Serialization::NodeSerialization& serialization)
-{
-    std::stringstream buffer;
-    {
-        boost::archive::xml_oarchive archive(buffer);
-        archive << boost::serialization::make_nvp("Node", serialization);
-    }
-
-    return withoutSessionCounters(buffer.str());
-}
-
 } // anonymous namespace
 
 class MissingPluginRoundTripTest

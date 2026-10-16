@@ -36,6 +36,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/MissingPluginNode.h"
 #include "Engine/Project.h"
 #include "Engine/RotoLayer.h"
 
@@ -204,8 +205,9 @@ NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr& internalS
     args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
     args.setProperty<bool>(kCreateNodeArgsPropSettingsOpened, false);
     args.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
-    
-    NodePtr n = _publicInterface->getGui()->getApp()->createNode(args);
+
+    bool isPlaceholder = false;
+    NodePtr n = _publicInterface->getGui()->getApp()->createNodeOrMissingPluginPlaceholder(args, &isPlaceholder);
 
     if (!n) {
         return NodeGuiPtr();
@@ -257,6 +259,12 @@ NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr& internalS
     n->incrementKnobsAge();
     if (guiSerialization) {
         gui->fromSerialization(*guiSerialization);
+        if (isPlaceholder) {
+            MissingPluginNode* placeholder = dynamic_cast<MissingPluginNode*>(n->getEffectInstance().get());
+            if (placeholder) {
+                placeholder->setStoredGuiChildren(guiSerialization->nodeName, guiSerialization->children);
+            }
+        }
     }
     QPointF newPos = gui->getPos_mt_safe() + offset;
     gui->setPosition( newPos.x(), newPos.y() );
@@ -285,7 +293,7 @@ NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr& internalS
     }
 
     // For PyPlugs, don't recurse otherwise we would recreate all nodes on top of the ones created by the python script
-    if ( !nodes.empty() && n->getPluginPythonModule().empty()) {
+    if (!nodes.empty() && n->getPluginPythonModule().empty() && !isPlaceholder) {
         std::string parentName;
         NodeCollectionPtr collection;
         if (isGrp) {

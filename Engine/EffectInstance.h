@@ -549,10 +549,7 @@ public:
 
     virtual bool getMakeSettingsPanel() const { return true; }
 
-    /**
-     * @brief Whether the user may change this node: edit its parameters, restore defaults, import presets,
-     * add or remove animation, or manage user parameters.
-     **/
+    // False for a node that is saved back exactly as it was read, where any change would be lost.
     virtual bool getIsEditable() const { return true; }
 
     /**

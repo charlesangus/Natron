@@ -2056,6 +2056,7 @@
     <rejection class="App" field-name="_instance"/>
     <rejection class="Effect" field-name="_node"/>
     <rejection class="*" field-name="_imp"/>
+    <rejection class="Param" function-name="checkIsEditable"/>
     
     <object-type name="PyCoreApplication">
         <modify-function signature="getActiveInstance()const">

@@ -43,15 +43,6 @@
 
 NATRON_NAMESPACE_ENTER
 
-/**
- * @brief Stands in for a node whose plug-in is not installed. It keeps the node's serialization
- * so a later save can write it back, takes one input per connection that serialization records
- * so the edges survive, shows an error naming the missing plug-in, and fails every render
- * instead of passing an input through.
- *
- * The inputs are taken from the serialization once it reaches the node, which is after the node's
- * first input initialization, so the node initializes its inputs again at that point.
- **/
 class MissingPluginNode
     : public NativeEffectBase {
 public:
@@ -65,35 +56,15 @@ public:
     {
     }
 
-    /**
-     * @brief The serialization of the node this one replaces, null until the node was created
-     * from one.
-     **/
     Serialization::NodeSerializationPtr getStoredSerialization() const WARN_UNUSED_RETURN;
 
-    /**
-     * @brief Keeps the node graph state of the nodes the replaced node held, as read for it from a
-     * project file in which the node was named nodeName, so a later save can write it back.
-     **/
     void setStoredGuiChildren(const std::string& nodeName,
                               const std::list<Serialization::NodeGuiSerializationPtr>& children);
 
-    /**
-     * @brief The node graph state set by setStoredGuiChildren(), and in nodeName the fully
-     * qualified name the node had then.
-     **/
     std::list<Serialization::NodeGuiSerializationPtr> getStoredGuiChildren(std::string* nodeName) const WARN_UNUSED_RETURN;
 
-    /**
-     * @brief The last dot-separated part of a plug-in id with a trailing "Plugin" removed, so
-     * net.sf.openfx.GradePlugin reads Grade.
-     **/
     static std::string getShortPluginName(const std::string& pluginID) WARN_UNUSED_RETURN;
 
-    /**
-     * @brief A one-line identification of the missing plug-in such as "missing: Grade 2.0", empty
-     * until the node was created from a serialization.
-     **/
     QString getMissingSummary() const WARN_UNUSED_RETURN;
 
 private:
@@ -106,6 +77,8 @@ private:
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 
+    // The inputs come from the serialization, which reaches the node only after its first input
+    // initialization, so this initializes them again.
     virtual void onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& serialization) OVERRIDE FINAL;
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;

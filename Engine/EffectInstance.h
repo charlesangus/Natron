@@ -1047,9 +1047,17 @@ public:
     EffectInstancePtr getNearestNonIdentity(double time);
 
     /**
-     * @brief This is purely for the OfxEffectInstance derived class, but passed here for the sake of abstraction
+     * @brief Refreshes this effect's metadata, and with recurse its identity state and channel
+     * selectors too, while the input-related data of the nodes downstream is only marked stale
+     * (see Node::markDownstreamInputRelatedDataStale()). Main thread only.
      **/
     bool refreshMetadata_public(bool recurse);
+
+    /**
+     * @brief Node::refreshInputRelatedDataIfStale() on this effect's node: what a reader of the
+     * metadata or layers outside a render calls first. Callable from any thread.
+     **/
+    void refreshInputRelatedDataIfStale() const;
 
     virtual void onChannelsSelectorRefreshed() {}
 
@@ -1077,8 +1085,6 @@ protected:
     bool setMetadataInternal(const NodeMetadata& metadata);
 
     virtual void onMetadataRefreshed(const NodeMetadata& /*metadata*/) {}
-
-    bool refreshMetadata_recursive(std::list<Node*> & markedNodes);
 
     friend class ClipPreferencesRunning_RAII;
     void setClipPreferencesRunning(bool running);

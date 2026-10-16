@@ -34,6 +34,9 @@
 #include <tuple>
 #include <vector>
 
+#include <QCoreApplication>
+#include <QThread>
+
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppManager.h"
 #include "Engine/Settings.h"
@@ -1108,6 +1111,27 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
         n.recursed = true;
         n.visitCounter = 1;
         dependenciesMap.insert(std::make_pair(treeRoot, n));
+    }
+
+    // Before any hash is read below: a refresh can change knobs, and with them hashes. A render
+    // set up off the main thread renders with the data as it stands, and has the main thread
+    // catch up for the next one.
+    if (setUpstreamArgs) {
+        const bool isMainThread = (QThread::currentThread() == qApp->thread());
+        for (FindDependenciesMap::iterator it = dependenciesMap.begin(); it != dependenciesMap.end(); ++it) {
+            NodesList pulled(1, it->first);
+            RotoContextPtr roto = it->first->getRotoContext();
+            if (roto) {
+                roto->getRotoPaintTreeNodes(&pulled);
+            }
+            for (NodesList::const_iterator node = pulled.begin(); node != pulled.end(); ++node) {
+                if (isMainThread) {
+                    (*node)->refreshInputRelatedDataIfStale();
+                } else if ((*node)->isInputRelatedDataStale()) {
+                    (*node)->requestInputRelatedDataRefresh();
+                }
+            }
+        }
     }
 
     auto add = [out, installSequence](const NodePtr& node, const ParallelRenderArgsPtr& args) {

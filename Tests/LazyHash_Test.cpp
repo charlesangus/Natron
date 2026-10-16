@@ -28,10 +28,12 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <list>
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -59,6 +61,7 @@
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/RotoContext.h"
@@ -118,9 +121,114 @@ writeFlatExr(const std::string& path,
 class LazyHashTest
     : public BaseTest {
 protected:
+    // A source feeding two branches: the tests render the viewed one and leave the other unread.
+    struct SplitGraph {
+        NodePtr constant;
+        NodePtr source;
+        NodePtr viewed;
+        NodePtr viewedTail;
+        NodePtr unviewed;
+        NodePtr unviewedTail;
+    };
+
     NodePtr createConstant()
     {
         return createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    }
+
+    // Its output format is its Size knob, which the clip preferences depend on.
+    NodePtr createSizedConstant(double width,
+                                double height)
+    {
+        NodePtr constant = createConstant();
+        if (!constant) {
+            return NodePtr();
+        }
+        KnobChoicePtr extent = std::dynamic_pointer_cast<KnobChoice>(constant->getKnobByName(kNativeGeneratorParamExtent));
+        KnobBoolPtr reformat = std::dynamic_pointer_cast<KnobBool>(constant->getKnobByName(kNativeGeneratorParamReformat));
+        KnobDoublePtr bottomLeft = std::dynamic_pointer_cast<KnobDouble>(constant->getKnobByName(kNativeGeneratorParamBottomLeft));
+        KnobDoublePtr size = std::dynamic_pointer_cast<KnobDouble>(constant->getKnobByName(kNativeGeneratorParamSize));
+        if (!extent || !reformat || !bottomLeft || !size) {
+            return NodePtr();
+        }
+        extent->setValue((int)ExtentKnobs::eExtentSize);
+        reformat->setValue(true);
+        bottomLeft->setValue(0., ViewSpec::all(), 0);
+        bottomLeft->setValue(0., ViewSpec::all(), 1);
+        size->setValue(width, ViewSpec::all(), 0);
+        size->setValue(height, ViewSpec::all(), 1);
+
+        return constant;
+    }
+
+    bool buildSplit(const NodePtr& constant,
+                    SplitGraph* graph)
+    {
+        graph->constant = constant;
+        graph->source = createBlur();
+        graph->viewed = createBlur();
+        graph->viewedTail = createBlur();
+        graph->unviewed = createBlur();
+        graph->unviewedTail = createBlur();
+        if (!graph->constant || !graph->source || !graph->viewed || !graph->viewedTail || !graph->unviewed || !graph->unviewedTail) {
+            return false;
+        }
+
+        const std::pair<NodePtr, NodePtr> links[] = {
+            { graph->constant, graph->source },
+            { graph->source, graph->viewed },
+            { graph->viewed, graph->viewedTail },
+            { graph->source, graph->unviewed },
+            { graph->unviewed, graph->unviewedTail },
+        };
+        for (const std::pair<NodePtr, NodePtr>& link : links) {
+            if (!link.second->connectInput(link.first, 0)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // After an edit above the split that moved the output format to formatAfter: the edit left
+    // the nodes below it stale, a render of the viewed branch refreshed that branch only, and the
+    // unviewed branch is refreshed, and rehashed, once its tail is read.
+    void expectOnlyTheReadBranchRefreshes(const SplitGraph& g,
+                                          U64 viewedTailBefore,
+                                          U64 unviewedBefore,
+                                          U64 unviewedTailBefore,
+                                          const RectI& formatAfter)
+    {
+        EXPECT_TRUE(g.viewedTail->isInputRelatedDataStale());
+        EXPECT_TRUE(g.unviewed->isInputRelatedDataStale());
+        EXPECT_TRUE(g.unviewedTail->isInputRelatedDataStale());
+        EXPECT_EQ(unviewedBefore, g.unviewed->getStoredContentHash()) << "the edit rehashed a node downstream of it";
+        EXPECT_EQ(unviewedTailBefore, g.unviewedTail->getStoredContentHash()) << "the edit rehashed a node downstream of it";
+
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        const std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
+        // Through the cache: a render that bypasses it first clears every cache, which refreshes
+        // every node in the project.
+        ASSERT_TRUE(renderNodePlanesDirect(g.viewedTail, 1., ViewIdx(0), 0, RectI(0, 0, 8, 8), layers, &planes, &error, false)) << error;
+
+        EXPECT_FALSE(g.viewed->isInputRelatedDataStale()) << "the render did not refresh what it rendered";
+        EXPECT_FALSE(g.viewedTail->isInputRelatedDataStale()) << "the render did not refresh what it rendered";
+        EXPECT_NE(viewedTailBefore, g.viewedTail->getStoredContentHash()) << "the render did not rehash what it rendered";
+        EXPECT_EQ(formatAfter, g.viewedTail->getEffectInstance()->getOutputFormat());
+        std::list<ImageLayerDesc> present;
+        g.viewedTail->getEffectInstance()->getPresentLayers(1., ViewIdx(0), -1, &present);
+        EXPECT_TRUE(std::find(present.begin(), present.end(), ImageLayerDesc::getRGBAComponents()) != present.end());
+
+        EXPECT_TRUE(g.unviewed->isInputRelatedDataStale()) << "rendering one branch refreshed the other";
+        EXPECT_TRUE(g.unviewedTail->isInputRelatedDataStale()) << "rendering one branch refreshed the other";
+        EXPECT_EQ(unviewedBefore, g.unviewed->getStoredContentHash()) << "rendering one branch rehashed the other";
+        EXPECT_EQ(unviewedTailBefore, g.unviewedTail->getStoredContentHash()) << "rendering one branch rehashed the other";
+
+        EXPECT_EQ(formatAfter, g.unviewedTail->getEffectInstance()->getOutputFormat());
+        EXPECT_FALSE(g.unviewed->isInputRelatedDataStale());
+        EXPECT_FALSE(g.unviewedTail->isInputRelatedDataStale());
+        EXPECT_NE(unviewedBefore, g.unviewed->getStoredContentHash()) << "reading the tail did not refresh its stale input";
     }
 
     NodePtr createBlur()
@@ -237,6 +345,46 @@ TEST_F(LazyHashTest, AnEditRehashesOnlyTheBranchThatIsRead)
     const U64 unviewedTailAfter = unviewedTail->getHashValue();
     EXPECT_NE(unviewedTailBefore, unviewedTailAfter);
     EXPECT_NE(unviewedBefore, unviewed->getStoredContentHash()) << "reading the tail did not rehash its dirty input";
+}
+
+// The metadata of every node below an edit of a knob the clip preferences depend on changes too,
+// yet is refreshed only where it is read, which is what keeps an unread branch from being rehashed.
+TEST_F(LazyHashTest, AClipPreferenceEditRefreshesOnlyTheBranchThatIsRead)
+{
+    SplitGraph g;
+    ASSERT_TRUE(buildSplit(createSizedConstant(32., 24.), &g));
+    const RectI formatBefore = g.constant->getEffectInstance()->getOutputFormat();
+    ASSERT_EQ(formatBefore, g.viewedTail->getEffectInstance()->getOutputFormat());
+    ASSERT_EQ(formatBefore, g.unviewedTail->getEffectInstance()->getOutputFormat());
+    const U64 viewedTailBefore = g.viewedTail->getHashValue();
+    const U64 unviewedBefore = g.unviewed->getHashValue();
+    const U64 unviewedTailBefore = g.unviewedTail->getHashValue();
+
+    KnobDoublePtr size = std::dynamic_pointer_cast<KnobDouble>(g.constant->getKnobByName(kNativeGeneratorParamSize));
+    ASSERT_TRUE(size && size->getIsMetadataSlave());
+    size->setValue(48., ViewSpec::all(), 0);
+    const RectI formatAfter = g.constant->getEffectInstance()->getOutputFormat();
+    ASSERT_NE(formatBefore, formatAfter);
+
+    expectOnlyTheReadBranchRefreshes(g, viewedTailBefore, unviewedBefore, unviewedTailBefore, formatAfter);
+}
+
+TEST_F(LazyHashTest, AReconnectionAboveASplitRefreshesOnlyTheBranchThatIsRead)
+{
+    SplitGraph g;
+    ASSERT_TRUE(buildSplit(createSizedConstant(32., 24.), &g));
+    NodePtr replacement = createSizedConstant(40., 30.);
+    ASSERT_TRUE(bool(replacement));
+    const RectI formatAfter = replacement->getEffectInstance()->getOutputFormat();
+    ASSERT_NE(g.constant->getEffectInstance()->getOutputFormat(), formatAfter);
+    const U64 viewedTailBefore = g.viewedTail->getHashValue();
+    const U64 unviewedBefore = g.unviewed->getHashValue();
+    const U64 unviewedTailBefore = g.unviewedTail->getHashValue();
+
+    ASSERT_TRUE(g.source->replaceInput(replacement, 0));
+    EXPECT_EQ(formatAfter, g.source->getEffectInstance()->getOutputFormat());
+
+    expectOnlyTheReadBranchRefreshes(g, viewedTailBefore, unviewedBefore, unviewedTailBefore, formatAfter);
 }
 
 // A persistent knob that does not evaluate on change still renders differently, yet its edits

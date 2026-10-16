@@ -229,7 +229,7 @@ struct WindowLayout {
  * source by mask x mix; unprocessed channels and the pixels outside the processed window pass
  * through. A buffer value outside bufferRect reads as zero.
  **/
-void
+inline void
 writeWindow(const PlaneJob& job,
             const ProcessedPlanes& planes,
             const MaskInput& mask,

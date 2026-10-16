@@ -550,9 +550,10 @@ public:
     virtual bool getMakeSettingsPanel() const { return true; }
 
     /**
-     * @brief Whether the user may add, edit or remove user parameters on this node.
+     * @brief Whether the user may change this node: edit its parameters, restore defaults, import presets,
+     * add or remove animation, or manage user parameters.
      **/
-    virtual bool getCanManageUserParameters() const { return true; }
+    virtual bool getIsEditable() const { return true; }
 
     /**
      * @brief The layer/channel knob the host adds to this effect's main page. Image-producing

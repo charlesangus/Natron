@@ -259,6 +259,10 @@ Q_SIGNALS:
     void colorChanged(QColor);
 
 protected:
+    /**
+     * @brief False when the held node must not be modified from its panel.
+     **/
+    bool isHolderEditable() const;
 
     /**
      * @brief Called when the "center on..." button is clicked

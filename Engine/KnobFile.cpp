@@ -40,6 +40,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/FileStampRegistry.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/StringAnimationManager.h"
 #include "Engine/Transform.h"
@@ -71,9 +72,35 @@ KnobFile::~KnobFile()
 void
 KnobFile::reloadFile()
 {
+    const std::string path = getResolvedPath();
+
     invalidateFileStamp();
     assert( getHolder() );
     EffectInstance* effect = dynamic_cast<EffectInstance*>( getHolder() );
+    if (effect && !path.empty() && effect->getApp()) {
+        // The stamp is shared per path, so every other node reading these files must re-key too.
+        NodesList nodes;
+        effect->getApp()->getProject()->getNodes_recursive(nodes, false);
+        for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+            EffectInstancePtr other = (*it)->getEffectInstance();
+            if (!other || other.get() == effect) {
+                continue;
+            }
+            const KnobsVec& knobs = other->getKnobs();
+            bool affected = false;
+            for (KnobsVec::const_iterator k = knobs.begin(); k != knobs.end(); ++k) {
+                KnobFile* otherFile = dynamic_cast<KnobFile*>(k->get());
+                if (otherFile && FileStampRegistry::coversSameFiles(path, otherFile->getResolvedPath())) {
+                    otherFile->invalidateContentHash();
+                    affected = true;
+                }
+            }
+            if (affected) {
+                other->clearActionsCache();
+                (*it)->markHashDirty();
+            }
+        }
+    }
     if (effect) {
         effect->purgeCaches();
         // The file may have changed in a way its stamp misses, which leaves the hash as it was.

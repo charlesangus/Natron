@@ -296,8 +296,6 @@ public:
      **/
     bool didSettingsExistOnStartup() const;
 
-    bool notifyOnFileChange() const;
-
     bool isAggressiveCachingEnabled() const;
 
     RenderSchedulerModeEnum getRenderSchedulerMode() const;
@@ -500,7 +498,6 @@ private:
 
     // General/User Interface
     KnobPagePtr _uiPage;
-    KnobBoolPtr _notifyOnFileChange;
 
     KnobBoolPtr _filedialogForWriters;
     KnobBoolPtr _renderOnEditingFinished;

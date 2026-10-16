@@ -1618,33 +1618,6 @@ GuiAppInstance::getKnobDnDData(QDrag** drag,
     *drag = _imp->knobDnd.drag;
 }
 
-bool
-GuiAppInstance::checkAllReadersModificationDate(bool errorAndWarn)
-{
-    NodesList allNodes;
-    SequenceTime time = getProject()->getCurrentTime();
-
-    getProject()->getNodes_recursive(allNodes, true);
-    bool changed =  false;
-    for (NodesList::iterator it = allNodes.begin(); it != allNodes.end(); ++it) {
-        if ( (*it)->getEffectInstance()->isReader() ) {
-            KnobIPtr fileKnobI = (*it)->getKnobByName(kOfxImageEffectFileParamName);
-            if (!fileKnobI) {
-                continue;
-            }
-            KnobGuiIPtr knobUi_i = fileKnobI->getKnobGuiPointer();
-            KnobGuiFile* isFileKnob = dynamic_cast<KnobGuiFile*>( knobUi_i.get() );
-
-            if (!isFileKnob) {
-                continue;
-            }
-            changed |= isFileKnob->checkFileModificationAndWarn(time, errorAndWarn);
-        }
-    }
-
-    return changed;
-}
-
 void
 GuiAppInstance::reloadScriptEditorFonts()
 {

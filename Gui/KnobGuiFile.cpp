@@ -65,13 +65,12 @@ NATRON_NAMESPACE_ENTER
 
 //===========================FILE_KNOB_GUI=====================================
 KnobGuiFile::KnobGuiFile(KnobIPtr knob,
-                         KnobGuiContainerI *container)
+                         KnobGuiContainerI* container)
     : KnobGui(knob, container)
     , _lineEdit(0)
     , _openFileButton(0)
     , _reloadButton(0)
     , _lastOpened()
-    , _lastModificationDates()
 {
     KnobFilePtr k = std::dynamic_pointer_cast<KnobFile>(knob);
 
@@ -95,13 +94,6 @@ void
 KnobGuiFile::createWidget(QHBoxLayout* layout)
 {
     KnobFilePtr knob = _knob.lock();
-    EffectInstance* holderIsEffect = dynamic_cast<EffectInstance*>( knob->getHolder() );
-
-    if ( holderIsEffect && holderIsEffect->isReader() && (knob->getName() == kOfxImageEffectFileParamName) ) {
-        TimeLinePtr timeline = getGui()->getApp()->getTimeLine();
-        QObject::connect( timeline.get(), SIGNAL(frameChanged(SequenceTime,int)), this, SLOT(onTimelineFrameChanged(SequenceTime,int)) );
-    }
-
 
     _lineEdit = new LineEdit( layout->parentWidget() );
     //layout->parentWidget()->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
@@ -204,106 +196,7 @@ KnobGuiFile::updateGUI(int /*dimension*/)
 {
     KnobFilePtr knob = _knob.lock();
 
-    _lineEdit->setText( QString::fromUtf8( knob->getValue().c_str() ) );
-
-    bool useNotifications = appPTR->getCurrentSettings()->notifyOnFileChange();
-    if ( useNotifications && knob->getHolder() && knob->getEvaluateOnChange() ) {
-        std::string newValue = knob->getFileName( knob->getCurrentTime(), ViewIdx(0) );
-        if ( knob->getHolder()->getApp() ) {
-            knob->getHolder()->getApp()->getProject()->canonicalizePath(newValue);
-        }
-        QString file( QString::fromUtf8( newValue.c_str() ) );
-
-        //The sequence probably changed, clear modification dates
-        _lastModificationDates.clear();
-
-        if ( QFile::exists(file) ) {
-            //If the file exists at the current time, set the modification date in the tooltip
-            QFileInfo info(file);
-            QDateTime dateTime = info.lastModified();
-
-            _lastModificationDates[newValue] = dateTime;
-
-            QString tt = toolTip();
-            tt.append( QString::fromUtf8("\n\nLast modified: ") );
-            tt.append( QLocale().toString(dateTime, QLocale::ShortFormat));
-            _lineEdit->setToolTip(tt);
-        }
-    }
-}
-
-void
-KnobGuiFile::onTimelineFrameChanged(SequenceTime time,
-                                    int /*reason*/)
-{
-    checkFileModificationAndWarnInternal(false, time, false);
-}
-
-bool
-KnobGuiFile::checkFileModificationAndWarnInternal(bool doCheck,
-                                                  SequenceTime time,
-                                                  bool errorAndAbortRender)
-{
-    bool useNotifications = appPTR->getCurrentSettings()->notifyOnFileChange();
-
-    if (!useNotifications) {
-        return false;
-    }
-    KnobFilePtr knob = _knob.lock();
-    if (!knob) {
-        return false;
-    }
-    EffectInstance* effect = dynamic_cast<EffectInstance*>( knob->getHolder() );
-    assert(effect);
-    if ( !effect || !effect->getNode()->isActivated() ) {
-        return false;
-    }
-
-    ///Get the current file, if it exists, add the file path to the file system watcher
-    ///to get notified if the file changes.
-    std::string filepath = knob->getFileName( time, knob->getCurrentView() );
-    if ( !filepath.empty() && knob->getHolder() && knob->getHolder()->getApp() ) {
-        knob->getHolder()->getApp()->getProject()->canonicalizePath(filepath);
-    }
-
-    QString qfilePath = QString::fromUtf8( filepath.c_str() );
-    if ( !QFile::exists(qfilePath) ) {
-        return false;
-    }
-
-    QDateTime date;
-    std::map<std::string, QDateTime>::iterator foundModificationDate = _lastModificationDates.find(filepath);
-    QFileInfo info(qfilePath);
-    date = info.lastModified();
-
-    //We already have a modification date
-    bool ret = false;
-    if ( foundModificationDate != _lastModificationDates.end() ) {
-        if ( doCheck && (date != foundModificationDate->second) ) {
-            if (errorAndAbortRender) {
-                QString warn = tr("The file \"%1\" has changed on disk.\n"
-                                  "Press reload file to load the new version of the file").arg(qfilePath);
-                effect->setPersistentMessage( eMessageTypeError, warn.toStdString() );
-                effect->abortAnyEvaluation();
-            }
-            effect->purgeCaches();
-            effect->getNode()->removeAllImagesFromCache(true);
-            _lastModificationDates.clear();
-            ret = true;
-        } else {
-            return false;
-        }
-    }
-    _lastModificationDates.insert( std::make_pair(filepath, date) );
-
-    return ret;
-} // KnobGuiFile::checkFileModificationAndWarnInternal
-
-bool
-KnobGuiFile::checkFileModificationAndWarn(SequenceTime time,
-                                          bool errorAndAbortRender)
-{
-    return checkFileModificationAndWarnInternal(true, time, errorAndAbortRender);
+    _lineEdit->setText(QString::fromUtf8(knob->getValue().c_str()));
 }
 
 void

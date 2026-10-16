@@ -194,6 +194,17 @@ FileStampRegistry::diskAccessCount() const
 }
 
 bool
+FileStampRegistry::coversSameFiles(const std::string& a,
+                                   const std::string& b)
+{
+    if (a == b) {
+        return true;
+    }
+
+    return (hasFramePattern(a) || hasFramePattern(b)) && (parentDirectory(a) == parentDirectory(b));
+}
+
+bool
 FileStampRegistry::hasFramePattern(const std::string& path)
 {
     for (std::size_t i = 0; i < path.size(); ++i) {

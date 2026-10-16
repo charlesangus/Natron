@@ -46,12 +46,16 @@
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
+#include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Nodes/Transform/Reformat.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -90,6 +94,32 @@ regionOfDefinition(const NodePtr& node,
     EXPECT_NE(eStatusFailed, stat) << node->getPluginID();
 
     return rod;
+}
+
+// A Crop generating a w x h format, whose output format is that size.
+NodePtr
+createFormatSource(const AppInstancePtr& app,
+                   double w,
+                   double h)
+{
+    NodePtr node = createNodeAtMajor(app, PLUGINID_NATRON_CROP, PLUGIN_MAJOR_NATRON_CROP);
+    KnobChoice* extent = node ? dynamic_cast<KnobChoice*>(node->getKnobByName(kNativeGeneratorParamExtent).get()) : NULL;
+
+    EXPECT_TRUE(extent != NULL);
+    if (!extent) {
+        return NodePtr();
+    }
+    const std::vector<ChoiceOption> entries = extent->getEntries_mt_safe();
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (entries[i].id == kNativeGeneratorExtentFormat) {
+            extent->setValue((int)i, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+        }
+    }
+    if (!setKnobValues(node, kNatronParamFormatSize, { w, h }) || !setKnobValues(node, kNatronParamFormatPar, { 1. }) || !setKnobValues(node, kCropParamReformat, { 1. })) {
+        return NodePtr();
+    }
+
+    return node;
 }
 
 bool
@@ -338,6 +368,101 @@ TEST_F(NativeReformatTest, RendersTheSameInBothSchedulerModes)
         EXPECT_FALSE(m.any) << "mipmap " << mipmapLevel << ": " << describe(m);
         for (std::size_t p = 0; p < unplannedPulls.size(); ++p) {
             EXPECT_EQ(0, unplannedPulls[p]) << "mipmap " << mipmapLevel << ", pool " << poolSizes[p];
+        }
+    }
+}
+
+TEST_F(NativeReformatTest, SourceFormatFollowsTheActionTimeNotTheTimeline)
+{
+    resetProject();
+    NodePtr a = createFormatSource(getApp(), 50., 40.);
+    NodePtr b = createFormatSource(getApp(), 30., 20.);
+    NodePtr dissolve = createNode(QString::fromUtf8(PLUGINID_NATRON_DISSOLVE), PLUGIN_MAJOR_NATRON_DISSOLVE);
+    NodePtr reformat = createNode(QString::fromUtf8(kReformatID), kNativeReformatMajor);
+    ASSERT_TRUE(bool(a) && bool(b) && bool(dissolve) && isNative(reformat));
+    connectNodes(a, dissolve, Dissolve::sourceInput(0), true);
+    connectNodes(b, dissolve, Dissolve::sourceInput(1), true);
+    connectNodes(dissolve, reformat, 0, true);
+    KnobDouble* which = dynamic_cast<KnobDouble*>(dissolve->getKnobByName(kDissolveParamWhich).get());
+    ASSERT_TRUE(which != NULL);
+    which->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    which->setValueAtTime(5., 1., ViewSpec::all(), 0);
+    ASSERT_TRUE(setKnobValue(reformat, kReformatParamType, kReformatParamTypeOptionToBox));
+    ASSERT_TRUE(setKnobValues(reformat, kReformatParamBoxSize, { 10., 10. }));
+    ASSERT_TRUE(setKnobValues(reformat, kReformatParamBoxFixed, { 0. }));
+    ASSERT_TRUE(setKnobValue(reformat, kReformatParamResize, kReformatParamResizeOptionNone));
+    ASSERT_TRUE(setKnobValues(reformat, kReformatParamCenter, { 0. }));
+
+    Reformat* effect = dynamic_cast<Reformat*>(reformat->getEffectInstance().get());
+    ASSERT_TRUE(effect != NULL);
+    getApp()->getTimeLine()->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
+
+    double par = 1.;
+    RectD rect;
+    RectI format;
+    effect->computeOutputFormat(5., ViewIdx(0), 1., &par, &rect, &format);
+    EXPECT_EQ(RectI(0, 0, 30, 20), format);
+    effect->computeOutputFormat(1., ViewIdx(0), 1., &par, &rect, &format);
+    EXPECT_EQ(RectI(0, 0, 50, 40), format);
+}
+
+TEST_F(NativeReformatTest, AnimatedBoxGivesTheOutputFormatAtTheMetadataFrame)
+{
+    resetProject();
+    ParityPair pair = makePair();
+    ASSERT_TRUE(bool(pair.native));
+    ASSERT_TRUE(setFixedBox(pair));
+    KnobInt* box = dynamic_cast<KnobInt*>(pair.native->getKnobByName(kReformatParamBoxSize).get());
+    ASSERT_TRUE(box != NULL);
+    box->setValueAtTime(1., 50, ViewSpec::all(), 0);
+    box->setValueAtTime(1., 20, ViewSpec::all(), 1);
+    box->setValueAtTime(5., 60, ViewSpec::all(), 0);
+    box->setValueAtTime(5., 40, ViewSpec::all(), 1);
+
+    EffectInstancePtr effect = pair.native->getEffectInstance();
+    getApp()->getTimeLine()->seekFrame(5, false, NULL, eTimelineChangeReasonOtherSeek);
+    effect->refreshMetadata_public(false);
+    EXPECT_EQ(RectI(0, 0, 60, 40), effect->getOutputFormat());
+    getApp()->getTimeLine()->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
+    effect->refreshMetadata_public(false);
+    EXPECT_EQ(RectI(0, 0, 50, 20), effect->getOutputFormat());
+}
+
+TEST_F(NativeReformatTest, EdgePixelsDoNotDependOnTheRequestWindow)
+{
+    resetProject();
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    NodePtr reformat = createNode(QString::fromUtf8(kReformatID), kNativeReformatMajor);
+    ASSERT_TRUE(bool(source));
+    ASSERT_TRUE(isNative(reformat));
+    connectNodes(source, reformat, 0, true);
+    ASSERT_TRUE(setKnobValue(reformat, kReformatParamType, kReformatParamTypeOptionToBox));
+    ASSERT_TRUE(setKnobValues(reformat, kReformatParamBoxSize, { 100., 80. }));
+    ASSERT_TRUE(setKnobValues(reformat, kReformatParamBoxFixed, { 1. }));
+    ASSERT_TRUE(setKnobValue(reformat, kReformatParamResize, kReformatParamResizeOptionDistort));
+    ASSERT_TRUE(setKnobValues(reformat, kResamplerParamFilterBlackOutside, { 0. }));
+
+    const RectI full = regionOfDefinition(reformat, kTime).toPixelEnclosing(0, 1.);
+    const RectI corner(full.x2 - 6, full.y2 - 6, full.x2, full.y2);
+    std::list<ImageLayerDesc> layers;
+    layers.push_back(ImageLayerDesc::getRGBAComponents());
+    std::vector<RenderedPlane> wide;
+    std::vector<RenderedPlane> narrow;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(reformat, kTime, ViewIdx(0), 0, full, layers, &wide, &error)) << error;
+    ASSERT_TRUE(renderNodePlanesDirect(reformat, kTime, ViewIdx(0), 0, corner, layers, &narrow, &error)) << error;
+    ASSERT_EQ(1u, wide.size());
+    ASSERT_EQ(1u, narrow.size());
+
+    const std::size_t nComps = wide[0].channels.size();
+    ASSERT_GT(nComps, 0u);
+    for (int y = corner.y1; y < corner.y2; ++y) {
+        for (int x = corner.x1; x < corner.x2; ++x) {
+            const std::size_t wi = ((std::size_t)(y - full.y1) * full.width() + (x - full.x1)) * nComps;
+            const std::size_t ni = ((std::size_t)(y - corner.y1) * corner.width() + (x - corner.x1)) * nComps;
+            for (std::size_t c = 0; c < nComps; ++c) {
+                EXPECT_EQ(wide[0].pixels[wi + c], narrow[0].pixels[ni + c]) << x << "," << y << " channel " << c;
+            }
         }
     }
 }

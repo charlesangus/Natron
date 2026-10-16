@@ -717,7 +717,7 @@ Reformat::getInputFormat(double time,
         RectI format;
         EffectInstancePtr input = getInput(0);
         if (input) {
-            input = input->getNearestNonIdentity(getCurrentTime());
+            input = input->getNearestNonIdentity(time);
         }
         if (input) {
             format = input->getOutputFormat();
@@ -751,9 +751,9 @@ Reformat::getBoxValues(double time,
         // The host fills the size and the pixel aspect ratio from the chosen format.
         KnobIntPtr formatSize = _formatSize.lock();
         KnobDoublePtr formatPar = _formatPar.lock();
-        *w = formatSize ? formatSize->getValue(0) : 0;
-        *h = formatSize ? formatSize->getValue(1) : 0;
-        *par = formatPar ? formatPar->getValue() : 1.;
+        *w = formatSize ? formatSize->getValueAtTime(time, 0, view) : 0;
+        *h = formatSize ? formatSize->getValueAtTime(time, 1, view) : 0;
+        *par = formatPar ? formatPar->getValueAtTime(time, 0, view) : 1.;
         *boxFixed = true;
         break;
     }
@@ -761,19 +761,19 @@ Reformat::getBoxValues(double time,
         KnobIntPtr boxSize = _boxSize.lock();
         KnobDoublePtr boxPar = _boxPar.lock();
         KnobBoolPtr boxFixedKnob = _boxFixed.lock();
-        *w = boxSize ? boxSize->getValue(0) : 0;
-        *h = boxSize ? boxSize->getValue(1) : 0;
-        *par = boxPar ? boxPar->getValue() : 1.;
-        *boxFixed = boxFixedKnob && boxFixedKnob->getValue();
+        *w = boxSize ? boxSize->getValueAtTime(time, 0, view) : 0;
+        *h = boxSize ? boxSize->getValueAtTime(time, 1, view) : 0;
+        *par = boxPar ? boxPar->getValueAtTime(time, 0, view) : 1.;
+        *boxFixed = boxFixedKnob && boxFixedKnob->getValueAtTime(time, 0, view);
 
         return false;
     }
     case eReformatTypeScale: {
         KnobDoublePtr scaleKnob = _scale.lock();
         KnobBoolPtr scaleUniform = _scaleUniform.lock();
-        double scaleX = scaleKnob ? scaleKnob->getValue(0) : 1.;
-        double scaleY = scaleKnob ? scaleKnob->getValue(1) : 1.;
-        if (scaleUniform && scaleUniform->getValue()) {
+        double scaleX = scaleKnob ? scaleKnob->getValueAtTime(time, 0, view) : 1.;
+        double scaleY = scaleKnob ? scaleKnob->getValueAtTime(time, 1, view) : 1.;
+        if (scaleUniform && scaleUniform->getValueAtTime(time, 0, view)) {
             scaleY = scaleX;
         }
         RectD srcRod;
@@ -1117,7 +1117,7 @@ Reformat::getPreferredMetadata(NodeMetadata& metadata)
     RectD rect;
     RectI format;
 
-    computeOutputFormat(0., ViewIdx(0), srcPar, &par, &rect, &format);
+    computeOutputFormat(getCurrentTime(), ViewIdx(0), srcPar, &par, &rect, &format);
     switch (getReformatType()) {
     case eReformatTypeToFormat:
     case eReformatTypeToBox:
@@ -1155,10 +1155,8 @@ Reformat::render(const RenderActionArgs& args)
     // Every source image is fetched before any is locked: fetching renders upstream, which may
     // write into a cached image this render would otherwise already hold a read lock on.
     std::vector<ReformatPlaneJob> jobs;
-    std::vector<RectI> sourceWindows;
     for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
         ReformatPlaneJob job;
-        RectI sourceWindow;
         job.dst = it->second;
         if (job.dst) {
             if (job.dst->getBitDepth() != eImageBitDepthFloat) {
@@ -1167,14 +1165,13 @@ Reformat::render(const RenderActionArgs& args)
             ImageLayerDesc sourceLayer;
             if (getInput(0) && resolveInputPlaneForRender(0, args.time, args.view, &sourceLayer, NULL)) {
                 // Mapped to the clip's components, which is the layout the output plane is rendered in.
-                job.src = getImage(0, args.time, args.mappedScale, args.view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &sourceWindow, &job.inputTransform);
+                job.src = getImage(0, args.time, args.mappedScale, args.view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, NULL, &job.inputTransform);
                 if (job.src && (job.src->getBitDepth() != eImageBitDepthFloat)) {
                     return eStatusFailed;
                 }
             }
         }
         jobs.push_back(job);
-        sourceWindows.push_back(sourceWindow);
     }
 
     const RectI& roi = args.roi;
@@ -1200,15 +1197,11 @@ Reformat::render(const RenderActionArgs& args)
             const RectI srcBounds = job.src->getBounds();
             const int srcNComps = (int)job.src->getComponentsCount();
             job.srcAccess = std::make_shared<Image::ReadAccess>(job.src.get());
-            // An OpenFX plug-in sees the source only over the window it asked for, and the edge
-            // clamping of the filters (black_outside off) happens at that window's edge.
-            RectI seen = srcBounds;
-            if (!sourceWindows[j].isNull()) {
-                seen = sourceWindows[j].intersect(srcBounds);
-            }
-            if (!seen.isNull() && (srcNComps >= 1) && (srcNComps <= 4)) {
-                job.source.data = (const float*)job.srcAccess->pixelAt(seen.x1, seen.y1);
-                job.source.bounds = seen;
+            // The filters clamp (black_outside off) at the source image's own edge, so a pixel
+            // does not depend on which window was requested.
+            if (!srcBounds.isNull() && (srcNComps >= 1) && (srcNComps <= 4)) {
+                job.source.data = (const float*)job.srcAccess->pixelAt(srcBounds.x1, srcBounds.y1);
+                job.source.bounds = srcBounds;
                 job.source.nComps = srcNComps;
                 job.source.rowStride = (std::size_t)srcBounds.width() * (std::size_t)srcNComps;
             }

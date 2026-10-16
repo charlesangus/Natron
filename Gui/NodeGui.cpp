@@ -601,6 +601,11 @@ NodeGui::ensurePanelCreated(bool minimized, bool hideUnmodified)
         return;
     }
     _panelCreated = true;
+    // Before the knob GUIs are built from it: a panel is shown as it is created.
+    NodePtr shownNode = getNode();
+    if (shownNode) {
+        shownNode->refreshInputRelatedDataIfStale();
+    }
     Gui* gui = getDagGui()->getGui();
     QVBoxLayout* propsLayout = gui->getPropertiesLayout();
     assert(propsLayout);
@@ -663,6 +668,11 @@ NodeGui::ensurePanelCreated(bool minimized, bool hideUnmodified)
 void
 NodeGui::onSettingsPanelClosed(bool closed)
 {
+    // A node nobody looks at is left stale by the edits upstream of it, and its panel shows it.
+    NodePtr node = closed ? NodePtr() : getNode();
+    if (node) {
+        node->refreshInputRelatedDataIfStale();
+    }
     Q_EMIT settingsPanelClosed(closed);
 }
 

@@ -1826,6 +1826,9 @@ OfxClipInstance::getCurrentMetadata(OFX::Host::ImageEffect::ClipInstance* clip,
     OfxClipInstance* natronClip = dynamic_cast<OfxClipInstance*>(clip);
     OfxEffectInstancePtr effect = natronClip ? natronClip->_imp->nodeInstance.lock() : OfxEffectInstancePtr();
     if (effect) {
+        // A refresh invalidates the clip caches: run from inside the fetch below, it would leave
+        // the fetched set uncached and drop the caches of the effect's other clips.
+        effect->refreshInputRelatedDataIfStale();
         effect->dropStaleClipMetadata();
     }
 

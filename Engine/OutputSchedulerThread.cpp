@@ -3179,6 +3179,17 @@ RenderEngine::getOutput() const
 }
 
 void
+RenderEngine::refreshInputRelatedDataForRender()
+{
+    OutputEffectInstancePtr output = _imp->output.lock();
+    NodePtr node = output ? output->getNode() : NodePtr();
+
+    if (node) {
+        node->refreshInputRelatedDataForRender();
+    }
+}
+
+void
 RenderEngine::renderFrameRange(bool isBlocking,
                                bool enableRenderStats,
                                int firstFrame,
@@ -3188,6 +3199,7 @@ RenderEngine::renderFrameRange(bool isBlocking,
                                RenderDirectionEnum forward)
 {
     setPlaybackAutoRestartEnabled(true);
+    refreshInputRelatedDataForRender();
 
     {
         QMutexLocker k(&_imp->schedulerCreationLock);
@@ -3205,6 +3217,7 @@ RenderEngine::renderFromCurrentFrame(bool enableRenderStats,
                                      RenderDirectionEnum forward)
 {
     setPlaybackAutoRestartEnabled(true);
+    refreshInputRelatedDataForRender();
 
     {
         QMutexLocker k(&_imp->schedulerCreationLock);
@@ -3252,7 +3265,7 @@ RenderEngine::renderCurrentFrameInternal(bool enableRenderStats,
 
         return;
     }
-
+    refreshInputRelatedDataForRender();
 
     ///If the scheduler is already doing playback, continue it
     if (_imp->scheduler) {

@@ -4926,6 +4926,9 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
                                                       int* passThroughInputNb)
 
 {
+    // The layers follow the metadata, and a refresh that changes it drops the results cached here.
+    refreshInputRelatedDataIfStale();
+
     RECURSIVE_ACTION();
 
     // Computed while this effect's own isIdentity() is choosing its pass-through input, the
@@ -6362,6 +6365,7 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
 RectI
 EffectInstance::getOutputFormat() const
 {
+    refreshInputRelatedDataIfStale();
     QMutexLocker k(&_imp->metadataMutex);
     return _imp->metadata.getOutputFormat();
 }
@@ -6399,6 +6403,7 @@ metadataNComps(const NodeMetadata& metadata,
 void
 EffectInstance::getMetadataComponents(int inputNb, ImageLayerDesc* layer, ImageLayerDesc* pairedLayer) const
 {
+    refreshInputRelatedDataIfStale();
     int nComps;
     std::string componentsType;
     {
@@ -6412,6 +6417,7 @@ EffectInstance::getMetadataComponents(int inputNb, ImageLayerDesc* layer, ImageL
 void
 EffectInstance::getMetadataOutputClipComponents(ImageLayerDesc* layer, ImageLayerDesc* pairedLayer) const
 {
+    refreshInputRelatedDataIfStale();
     int nComps;
     std::string componentsType;
     {
@@ -6425,6 +6431,7 @@ EffectInstance::getMetadataOutputClipComponents(ImageLayerDesc* layer, ImageLaye
 int
 EffectInstance::getMetadataNComps(int inputNb) const
 {
+    refreshInputRelatedDataIfStale();
     QMutexLocker k(&_imp->metadataMutex);
     return metadataNComps(_imp->metadata, inputNb);
 }
@@ -6432,6 +6439,7 @@ EffectInstance::getMetadataNComps(int inputNb) const
 ImageBitDepthEnum
 EffectInstance::getBitDepth(int inputNb) const
 {
+    refreshInputRelatedDataIfStale();
     QMutexLocker k(&_imp->metadataMutex);
 
     return _imp->metadata.getBitDepth(inputNb);
@@ -6440,6 +6448,7 @@ EffectInstance::getBitDepth(int inputNb) const
 double
 EffectInstance::getFrameRate() const
 {
+    refreshInputRelatedDataIfStale();
     QMutexLocker k(&_imp->metadataMutex);
 
     return _imp->metadata.getOutputFrameRate();
@@ -6448,6 +6457,7 @@ EffectInstance::getFrameRate() const
 double
 EffectInstance::getAspectRatio(int inputNb) const
 {
+    refreshInputRelatedDataIfStale();
     QMutexLocker k(&_imp->metadataMutex);
 
     return _imp->metadata.getPixelAspectRatio(inputNb);
@@ -6456,6 +6466,7 @@ EffectInstance::getAspectRatio(int inputNb) const
 bool
 EffectInstance::isFrameVarying() const
 {
+    refreshInputRelatedDataIfStale();
     QMutexLocker k(&_imp->metadataMutex);
 
     return _imp->metadata.getIsFrameVarying();
@@ -6464,6 +6475,7 @@ EffectInstance::isFrameVarying() const
 bool
 EffectInstance::canRenderContinuously() const
 {
+    refreshInputRelatedDataIfStale();
     QMutexLocker k(&_imp->metadataMutex);
 
     return _imp->metadata.getIsContinuous();
@@ -6475,43 +6487,25 @@ EffectInstance::canRenderContinuously() const
 ImageFieldingOrderEnum
 EffectInstance::getFieldingOrder() const
 {
+    refreshInputRelatedDataIfStale();
     QMutexLocker k(&_imp->metadataMutex);
 
     return _imp->metadata.getOutputFielding();
 }
 
-bool
-EffectInstance::refreshMetadata_recursive(std::list<Node*> & markedNodes)
+void
+EffectInstance::refreshInputRelatedDataIfStale() const
 {
-    NodePtr node = getNode();
-    std::list<Node*>::iterator found = std::find( markedNodes.begin(), markedNodes.end(), node.get() );
-
-    if ( found != markedNodes.end() ) {
-        return false;
+    // Checked before the node is locked: the getters calling this are hot on render threads, which
+    // never refresh.
+    if (QThread::currentThread() != qApp->thread()) {
+        return;
     }
+    NodePtr node = _node.lock();
 
-    if (_imp->runningClipPreferences) {
-        return false;
+    if (node) {
+        node->refreshInputRelatedDataIfStale();
     }
-
-    ClipPreferencesRunning_RAII runningflag_(this);
-    bool ret = refreshMetadata_public(false);
-    node->refreshIdentityState();
-
-    if ( !node->duringInputChangedAction() ) {
-        ///The channels selector refreshing is already taken care of in the inputChanged action
-        node->refreshChannelSelectors();
-    }
-
-    markedNodes.push_back( node.get() );
-
-    NodesList outputs;
-    node->getOutputsWithGroupRedirection(outputs);
-    for (NodesList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
-        (*it)->getEffectInstance()->refreshMetadata_recursive(markedNodes);
-    }
-
-    return ret;
 }
 
 void
@@ -6575,12 +6569,24 @@ EffectInstance::refreshMetadata_public(bool recurse)
     assert( QThread::currentThread() == qApp->thread() );
 
     if (recurse) {
-
-        {
-            std::list<Node*> markedNodes;
-
-            return refreshMetadata_recursive(markedNodes);
+        if (_imp->runningClipPreferences) {
+            return false;
         }
+        NodePtr node = getNode();
+        bool ret;
+        {
+            ClipPreferencesRunning_RAII runningflag_(this);
+            ret = refreshMetadata_public(false);
+            node->refreshIdentityState();
+
+            if (!node->duringInputChangedAction()) {
+                /// The channels selector refreshing is already taken care of in the inputChanged action
+                node->refreshChannelSelectors();
+            }
+        }
+        node->markDownstreamInputRelatedDataStale();
+
+        return ret;
     } else {
         bool ret = refreshMetadata_internal();
         if (ret) {

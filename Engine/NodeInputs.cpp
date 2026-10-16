@@ -1538,7 +1538,7 @@ Node::endInputEdition(bool triggerRender)
 
         if (hasChanged) {
             if ( !getApp()->isCreatingNodeTree() ) {
-                forceRefreshAllInputRelatedData();
+                refreshInputRelatedDataAfterInputChange();
             }
             refreshDynamicProperties();
         }

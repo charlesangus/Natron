@@ -194,6 +194,18 @@ public:
     ~HashComputeScope() { --hashComputeDepth; }
 };
 
+// Set while the main thread refreshes a node's input-related data. The refresh orders the nodes
+// it reaches itself, inputs first, so a reader inside it takes the data as it stands instead of
+// starting another refresh from the middle of this one.
+int inputRelatedDataRefreshDepth = 0;
+
+class InputRelatedDataRefreshScope {
+public:
+    InputRelatedDataRefreshScope() { ++inputRelatedDataRefreshDepth; }
+
+    ~InputRelatedDataRefreshScope() { --inputRelatedDataRefreshDepth; }
+};
+
 bool
 isSkippedByHashInputs(const Node& node)
 {
@@ -5291,6 +5303,16 @@ Node::getPersistentMessage(QString* message,
                            int* type,
                            bool prefixLabelAndType) const
 {
+    bool hasChannelSelectorMessage;
+    {
+        QMutexLocker k(&_imp->persistentMessageMutex);
+        hasChannelSelectorMessage = _imp->persistentMessageFromChannelSelector;
+    }
+    // The refresh is what clears a missing-channel message an upstream edit resolved.
+    if (hasChannelSelectorMessage) {
+        const_cast<Node*>(this)->refreshInputRelatedDataIfStale();
+    }
+
     QMutexLocker k(&_imp->persistentMessageMutex);
 
     *type = _imp->persistentMessageType;
@@ -7800,6 +7822,14 @@ Node::refreshAllInputRelatedData(bool /*canChangeValues*/,
 {
     assert( QThread::currentThread() == qApp->thread() );
     RefreshingInputData_RAII _refreshingflag( _imp.get() );
+    InputRelatedDataRefreshScope refreshing;
+    // Cleared before the refresh reads anything, so that an edit landing during it leaves the
+    // node to be refreshed again.
+    _imp->inputRelatedDataStale.store(false);
+    {
+        QMutexLocker k(&_imp->pluginsPropMutex);
+        _imp->mustComputeInputRelatedData = false;
+    }
     bool hasChanged = false;
     hasChanged |= refreshDraftFlagInternal(inputs);
 
@@ -7842,11 +7872,6 @@ Node::refreshAllInputRelatedData(bool /*canChangeValues*/,
 
     if (loadingProject) {
         hasChanged |= refreshHashNow();
-    }
-
-    {
-        QMutexLocker k(&_imp->pluginsPropMutex);
-        _imp->mustComputeInputRelatedData = false;
     }
 
     return hasChanged;
@@ -8009,6 +8034,207 @@ Node::refreshInputRelatedDataRecursive()
     std::set<Node*> markedNodes;
 
     refreshInputRelatedDataRecursiveInternal(markedNodes);
+}
+
+bool
+Node::refreshShownInputRelatedData(std::set<Node*>& visited)
+{
+    if (!visited.insert(this).second) {
+        return false;
+    }
+    if (!isInputRelatedDataDirty()) {
+        _imp->inputRelatedDataStale.store(false);
+
+        return false;
+    }
+
+    int shown[2] = { -1, -1 };
+    ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>(_imp->effect.get());
+    if (isViewer) {
+        isViewer->getActiveInputs(shown[0], shown[1]);
+    }
+    const int maxInputs = getNInputs();
+    std::vector<NodeWPtr> inputsCopy(maxInputs);
+    for (int i = 0; i < maxInputs; ++i) {
+        NodePtr input = getInput(i);
+        inputsCopy[i] = input;
+        if (!input || (isViewer && (i != shown[0]) && (i != shown[1]))) {
+            continue;
+        }
+        input->refreshShownInputRelatedData(visited);
+    }
+
+    bool hasChanged = refreshAllInputRelatedData(false, inputsCopy);
+
+    if (isRotoPaintingNode()) {
+        RotoContextPtr roto = getRotoContext();
+        assert(roto);
+        NodePtr bottomMerge = roto->getRotoPaintBottomMergeNode();
+        if (bottomMerge) {
+            bottomMerge->refreshInputRelatedDataRecursiveInternal(visited);
+        }
+    }
+
+    return hasChanged;
+} // Node::refreshShownInputRelatedData
+
+void
+Node::refreshInputRelatedDataAfterInputChange()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    markAllInputRelatedDataDirty();
+    markDownstreamInputRelatedDataStale();
+
+    NodeGroup* isGroup = dynamic_cast<NodeGroup*>(_imp->effect.get());
+    if (isGroup) {
+        // A container's inputs feed the nodes inside it, which are refreshed as nodes downstream
+        // of the edit. A container with a host layer knob (Write) lists its own inputs' layers on
+        // it, so its selectors are refreshed here like those of the node the edit is on.
+        _imp->inputRelatedDataStale.store(true);
+        if (_imp->layerKnob.lock()) {
+            refreshChannelSelectors();
+        }
+
+        return;
+    }
+
+    std::set<Node*> visited;
+    refreshShownInputRelatedData(visited);
+}
+
+void
+Node::markDownstreamInputRelatedDataStale()
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    std::unordered_set<const Node*> visited;
+    visited.insert(this);
+    NodesList toVisit;
+    getOutputsWithGroupRedirection(toVisit);
+    std::vector<NodePtr> shown;
+    while (!toVisit.empty()) {
+        NodePtr node = toVisit.front();
+        toVisit.pop_front();
+        if (!node || !visited.insert(node.get()).second) {
+            continue;
+        }
+        node->markAllInputRelatedDataDirty();
+        node->_imp->inputRelatedDataStale.store(true);
+        if (node->isSettingsPanelVisible()) {
+            shown.push_back(node);
+        }
+        node->getOutputsWithGroupRedirection(toVisit);
+    }
+
+    for (std::size_t i = 0; i < shown.size(); ++i) {
+        shown[i]->refreshInputRelatedDataIfStale();
+    }
+}
+
+bool
+Node::isInputRelatedDataStale() const
+{
+    return _imp->inputRelatedDataStale.load();
+}
+
+void
+Node::refreshInputRelatedDataIfStale()
+{
+    if (!_imp->inputRelatedDataStale.load() || (QThread::currentThread() != qApp->thread())) {
+        return;
+    }
+    if ((hashComputeDepth > 0) || (inputRelatedDataRefreshDepth > 0)) {
+        return;
+    }
+    if (!_imp->effect || !isNodeCreated() || !isActivated()) {
+        return;
+    }
+    {
+        QMutexLocker k(&_imp->isBeingDestroyedMutex);
+        if (_imp->isBeingDestroyed) {
+            return;
+        }
+    }
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    if (!project || app->isCreatingNodeTree() || project->isLoadingProject() || project->isProjectClosing()) {
+        return;
+    }
+
+    std::set<Node*> visited;
+    refreshShownInputRelatedData(visited);
+}
+
+void
+Node::refreshInputRelatedDataForRender()
+{
+    if (QThread::currentThread() != qApp->thread()) {
+        return;
+    }
+    NodePtr self = weak_from_this().lock();
+    if (!self) {
+        return;
+    }
+    std::unordered_set<const Node*> visited;
+    std::vector<NodePtr> toVisit(1, self);
+    std::vector<NodePtr> reached;
+    visited.insert(self.get());
+    auto reach = [&visited, &toVisit](const NodePtr& node) {
+        if (node && visited.insert(node.get()).second) {
+            toVisit.push_back(node);
+        }
+    };
+    while (!toVisit.empty()) {
+        NodePtr node = toVisit.back();
+        toVisit.pop_back();
+        reached.push_back(node);
+
+        int shown[2] = { -1, -1 };
+        ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>(node->_imp->effect.get());
+        if (isViewer) {
+            isViewer->getActiveInputs(shown[0], shown[1]);
+        }
+        const int maxInputs = node->getNInputs();
+        for (int i = 0; i < maxInputs; ++i) {
+            if (!isViewer || (i == shown[0]) || (i == shown[1])) {
+                reach(node->getInput(i));
+            }
+        }
+        // The inputs of a group lead around the nodes inside it, which render it.
+        NodeGroup* isGroup = node->isEffectGroup();
+        if (isGroup) {
+            reach(isGroup->getOutputNode(false));
+        }
+        // The paint tree is rendered through the RotoPaint node without being upstream of it, so
+        // its edits leave the RotoPaint node itself clean.
+        RotoContextPtr roto = node->getRotoContext();
+        if (roto) {
+            NodesList paintTree;
+            roto->getRotoPaintTreeNodes(&paintTree);
+            for (NodesList::const_iterator it = paintTree.begin(); it != paintTree.end(); ++it) {
+                reach(*it);
+            }
+        }
+    }
+
+    for (std::size_t i = 0; i < reached.size(); ++i) {
+        reached[i]->refreshInputRelatedDataIfStale();
+    }
+} // Node::refreshInputRelatedDataForRender
+
+void
+Node::requestInputRelatedDataRefresh()
+{
+    if (_imp->inputRelatedDataRefreshRequested.exchange(true)) {
+        return;
+    }
+    NodeWPtr weakSelf = weak_from_this();
+    QMetaObject::invokeMethod(qApp, [weakSelf]() {
+        NodePtr node = weakSelf.lock();
+        if (node) {
+            node->_imp->inputRelatedDataRefreshRequested.store(false);
+            node->refreshInputRelatedDataIfStale();
+        } }, Qt::QueuedConnection);
 }
 
 bool

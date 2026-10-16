@@ -4,3 +4,7 @@
 - refs: none
 - New milestone requested (user accepted the miss in M90 - Render Path Serial Overhead): **Blur In-Graph Overhead** (E6). In-graph native Blur at UHD on 16 threads is 3.1× its bare kernel at FIR σ3 (4.70 vs 1.51 ms/Mpx) and 2.0× for IIR (6.83 vs 3.37). Profile on the 16-thread host (symbolised build) and cut the fixed per-task overhead (fill, `writeWindow` finish, planar buffer allocation) and the padded-region cost at large σ. Data: `M90-render-path-serial-overhead.md` Decisions 2026-10-16. Deps: M90.
 
+
+### 2026-10-16T02:40:00-04:00 — change-request
+- refs: M110
+- When M109 - GPU Region Engine Hardening was elaborated, it moved multi-plane placement candidates, which Shuffle-family nodes need to join regions, out of its scope and into M110 - Remaining Native GPU Ports. The work needs a multi-plane `GpuQuery`/`GpuRenderArgs` in `Engine/Nodes/Image/GpuRender.h`, which M126 - Runtime GPU Shaders edits. M110's stub says it is blocked on "M109's multi-plane placement". Make that a task of M110's own instead, starting after M126 merges, and add M126 to M110's Deps.

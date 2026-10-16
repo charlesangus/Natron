@@ -186,7 +186,7 @@ This phase starts only after M85 - Native GPU Kernels has merged into `main`. M8
   - verify: a before/after Decisions table against P1.T1: in-graph UHD Blur IIR and FIR σ3 within ~1.5× of bare (IIR ≤ ~5.1, FIR σ3 ≤ ~2.2 ms/Mpx); Grade still ≤ ~5.1; any case above 1.5× is listed with its remaining profile split and put to the user, not fixed here.
   - size: M
 
-- [ ] M90.P3.T3 — Regenerate `Engine/GpuCostSeed.inc` from the new CPU numbers
+- [x] M90.P3.T3 — Regenerate `Engine/GpuCostSeed.inc` from the new CPU numbers
   - files: `tools/bench/render-profile-report.py` (`BLUR_SIGMA_MEASURED`, `:270-275`), `Engine/GpuCostSeed.inc` (regenerated)
   - approach:
     - Replace the hard-coded Blur σ rows (serial and threaded ms/Mpx per bucket) with P3.T2's numbers.
@@ -224,3 +224,4 @@ This phase starts only after M85 - Native GPU Kernels has merged into `main`. M8
   
   **Miss accepted** (user): Blur stays above 1.5× of bare. At σ3, about 3 ms/Mpx of fixed per-task overhead remains (fill, finish, allocation). At large σ the gap scales with the padded input region the in-graph Blur reads (σ100 pads ~300 px per side), which the bare kernel doesn't. It goes to a follow-up milestone, not M90.
 - 2026-10-16 — **P3.T3 scope** (user): regenerate only the Blur and Grade CPU rows of `Engine/GpuCostSeed.inc` from P3.T2's numbers; the other native nodes keep M85's rows (now somewhat pessimistic, since Phases 90.1–90.2 cut overhead for every native node).
+- 2026-10-16 — **Gate green; PR #65 opened** (P3.T3 code: 8d86257fa; release run 38861518460, 2258/2258 in legacy and taskgraph, all 25 GpuPlacement/GpuCostModel tests pass). The Grade CPU row is now 11.48 serial / 1.46 threaded ms/Mpx, and the Blur σ rows come from P3.T2. `RejectedRegionShrinksToItsProfitableMember` now runs at 10 GB/s, because the faster CPU Blur no longer gains at 3 GB/s. Published `docs/decisions/` (ddbc609fb): drop-nan-check, parked-and-manifest-overlap. The Codex review is running.

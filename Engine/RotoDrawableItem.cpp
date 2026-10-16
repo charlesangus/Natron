@@ -122,6 +122,7 @@ RotoDrawableItem::~RotoDrawableItem()
 void
 RotoDrawableItem::addKnob(const KnobIPtr& knob)
 {
+    _imp->observeKnob(knob);
     _imp->knobs.push_back(knob);
 }
 
@@ -653,13 +654,40 @@ RotoDrawableItem::appendLiveContentHash(ContentHasher& h) const
 {
     RotoItem::appendLiveContentHash(h);
 
-    const std::list<KnobIPtr>& knobs = getKnobs();
+    // Read before any knob: a change made meanwhile moves it past the one stored, so the next call
+    // rebuilds.
+    const U64 generation = _imp->knobsGeneration->load(std::memory_order_acquire);
+    QMutexLocker l(&_imp->knobsHashMutex);
+    std::vector<RotoDrawableItemPrivate::KnobHashEntry>& entries = _imp->knobsHashEntries;
+    if (!_imp->knobsHashValid || (_imp->knobsHashGeneration != generation)) {
+        entries.clear();
+        const std::list<KnobIPtr>& knobs = getKnobs();
+        for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            RotoDrawableItemPrivate::KnobHashEntry entry;
+            entry.hashed = (*it)->isRenderHashed();
+            entry.hash = 0;
+            if (entry.hashed) {
+                bool hasExpression = false;
+                bool readsOutsideKnob = false;
+                (*it)->getContentHashDependencies(&hasExpression, &readsOutsideKnob);
+                if (readsOutsideKnob) {
+                    entry.liveKnob = *it;
+                } else {
+                    entry.hash = (*it)->getContentHash();
+                }
+            }
+            entries.push_back(entry);
+        }
+        _imp->knobsHashGeneration = generation;
+        _imp->knobsHashValid = true;
+        notifyContentRehashedForTests();
+    }
+
     // The knob list is fixed at construction, so positions identify knobs without their names.
-    for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-        const bool hashed = (*it)->isRenderHashed();
-        h.appendBool(hashed);
-        if (hashed) {
-            h.appendU64((*it)->getContentHash());
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        h.appendBool(entries[i].hashed);
+        if (entries[i].hashed) {
+            h.appendU64(entries[i].liveKnob ? entries[i].liveKnob->getContentHash() : entries[i].hash);
         }
     }
 }

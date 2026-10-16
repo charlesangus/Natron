@@ -484,6 +484,7 @@ struct KnobHelperPrivate
     // Bumped by every invalidation. A memo is only valid for the generation read before its
     // computation started, so a change racing with a computation is never hidden by it.
     std::atomic<U64> contentGeneration;
+    std::shared_ptr<std::atomic<U64>> contentGenerationObserver;
     std::atomic<bool> hashExempt;
     mutable QMutex contentHashMutex; // protects the 3 members below
     mutable std::vector<U64> contentDimensionHashes;
@@ -5091,6 +5092,9 @@ void
 KnobHelper::invalidateContentHash()
 {
     _imp->contentGeneration.fetch_add(1, std::memory_order_acq_rel);
+    if (_imp->contentGenerationObserver) {
+        _imp->contentGenerationObserver->fetch_add(1, std::memory_order_acq_rel);
+    }
     KnobHolder* holder = _imp->holder;
     if (holder) {
         holder->bumpKnobsContentGeneration(this);
@@ -5125,6 +5129,12 @@ KnobHelper::invalidateContentHash()
         listeners.clear();
         listener->getListeners(listeners);
     }
+}
+
+void
+KnobHelper::setContentGenerationObserver(const std::shared_ptr<std::atomic<U64>>& generation)
+{
+    _imp->contentGenerationObserver = generation;
 }
 
 void
@@ -5286,6 +5296,8 @@ struct KnobHolder::KnobHolderPrivate
     int nbSignificantChangesDuringEvaluationBlock;
     int nbChangesDuringEvaluationBlock;
     int nbChangesRequiringMetadataRefresh;
+    // An abort asked for inside a nested bracket, run when the outermost one ends.
+    bool abortAtEndOfChanges = false;
     QMutex knobsFrozenMutex;
     bool knobsFrozen;
     mutable QMutex hasAnimationMutex;
@@ -6159,6 +6171,23 @@ KnobHolder::onDoEvaluateOnMainThread(bool significant,
 }
 
 void
+KnobHolder::abortAnyEvaluationForChange()
+{
+    {
+        QMutexLocker l(&_imp->evaluationBlockedMutex);
+        // The bracket of the change being made counts once: more means it is nested in another,
+        // whose end aborts once for every change made inside it, instead of a walk to the
+        // outputs below this holder per change.
+        if (_imp->evaluationBlocked > 1) {
+            _imp->abortAtEndOfChanges = true;
+
+            return;
+        }
+    }
+    abortAnyEvaluation();
+}
+
+void
 KnobHolder::incrHashAndEvaluate(bool isSignificant,
                                 bool refreshMetadata)
 {
@@ -6278,6 +6307,7 @@ KnobHolder::endChanges(bool discardRendering)
     bool hasHadAnyChange = false;
     bool mustRefreshMetadata = false;
 
+    bool mustAbort = false;
     {
         QMutexLocker l(&_imp->evaluationBlockedMutex);
         if (_imp->evaluationBlocked > 0) {
@@ -6285,6 +6315,8 @@ KnobHolder::endChanges(bool discardRendering)
         }
         evaluationBlocked = _imp->evaluationBlocked;
         if (evaluationBlocked == 0) {
+            mustAbort = _imp->abortAtEndOfChanges;
+            _imp->abortAtEndOfChanges = false;
             if (_imp->nbSignificantChangesDuringEvaluationBlock) {
                 hasHadSignificantChange = true;
             }
@@ -6300,6 +6332,9 @@ KnobHolder::endChanges(bool discardRendering)
         }
     }
 
+    if (mustAbort) {
+        abortAnyEvaluation();
+    }
 
     // Call getClipPreferences & render
     if ( hasHadAnyChange && !discardRendering && !isLoadingProject && !duringInputChangeAction && !isChangeDueToTimeChange && (evaluationBlocked == 0) ) {

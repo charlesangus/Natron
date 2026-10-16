@@ -28,8 +28,10 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <functional>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -1764,6 +1766,13 @@ public:
     virtual bool isRenderHashed() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void getContentHashDependencies(bool* hasExpression, bool* readsOutsideKnob) const OVERRIDE FINAL;
 
+    /**
+     * @brief Has every invalidateContentHash() of this knob also move generation, for an owner
+     * that is not its holder (a roto item) and memoizes over the knob's content hash. Set before
+     * the knob is shared.
+     **/
+    void setContentGenerationObserver(const std::shared_ptr<std::atomic<U64>>& generation);
+
 protected:
     /**
      * @brief False for knobs that feed no render (pages, groups, separators, plain buttons):
@@ -2684,6 +2693,12 @@ public:
      * final image.
      **/
     virtual void abortAnyEvaluation(bool keepOldestRender = true) { Q_UNUSED(keepOldestRender); }
+
+    /**
+     * @brief abortAnyEvaluation() for a change being made, deferred to the end of the outermost
+     * begin/endChanges bracket when the change is made inside a nested one.
+     **/
+    void abortAnyEvaluationForChange();
 
     /**
      * @brief Dequeues all values set in the queues for all knobs

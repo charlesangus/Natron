@@ -187,6 +187,28 @@ Node::getOutputsWithGroupRedirection(NodesList& outputs) const
     }
 }
 
+void
+Node::appendOutputsWithGroupRedirection(std::vector<NodePtr>* outputs) const
+{
+    // The redirections only start at a group, a GroupOutput or a precomp's output node; any
+    // other node's outputs are its own, and the downstream walks of every edit read them.
+    const EffectInstance* effect = _imp->effect.get();
+    const bool mayRedirect = isEffectGroup() || dynamic_cast<const GroupOutput*>(effect) || _imp->precomp.lock();
+    if (!mayRedirect) {
+        QMutexLocker l(&_imp->outputsMutex);
+        for (NodesWList::const_iterator it = _imp->outputs.begin(); it != _imp->outputs.end(); ++it) {
+            NodePtr output = it->lock();
+            if (output) {
+                outputs->push_back(std::move(output));
+            }
+        }
+
+        return;
+    }
+    NodesList redirected;
+    getOutputsWithGroupRedirection(redirected);
+    outputs->insert(outputs->end(), redirected.begin(), redirected.end());
+}
 
 NodePtr
 Node::getInput(int index) const

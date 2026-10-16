@@ -795,6 +795,30 @@ public:
     //Used to prevent 2 threads from writing the same image in the rotocontext
     mutable QReadWriteLock cacheAccessMutex;
 
+    // The knob part of the item's content hash, one entry per knob in list order, memoized against
+    // knobsGeneration, which every content change of the knobs moves. A knob reading another knob
+    // through a master link or an expression changes with it, so it is kept live and rehashed on
+    // every use.
+    struct KnobHashEntry {
+        bool hashed;
+        U64 hash;
+        KnobIPtr liveKnob;
+    };
+    std::shared_ptr<std::atomic<U64>> knobsGeneration { std::make_shared<std::atomic<U64>>(0) };
+    mutable QMutex knobsHashMutex;
+    mutable std::vector<KnobHashEntry> knobsHashEntries;
+    mutable U64 knobsHashGeneration = 0;
+    mutable bool knobsHashValid = false;
+
+    void observeKnob(const KnobIPtr& knob)
+    {
+        KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
+        if (helper) {
+            helper->setContentGenerationObserver(knobsGeneration);
+        }
+        knobsGeneration->fetch_add(1, std::memory_order_acq_rel);
+    }
+
     RotoDrawableItemPrivate(bool isPaintingNode)
         : effectNode()
         , mergeNode()
@@ -1270,6 +1294,10 @@ public:
         overlayColor[1] = 0.196936;
         overlayColor[2] = 0.196936;
         overlayColor[3] = 1.;
+
+        for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            observeKnob(*it);
+        }
     }
 
     ~RotoDrawableItemPrivate()

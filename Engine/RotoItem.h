@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <list>
 #include <set>
 #include <string>
@@ -163,7 +164,15 @@ public:
      **/
     void invalidateContentHash();
 
+    /**
+     * @brief hook is called with the item each time an item recomputes a memoized part of its
+     * content hash. An empty hook removes it.
+     **/
+    static void setContentRehashedHookForTests(const std::function<void(const RotoItem*)>& hook);
+
 protected:
+    void notifyContentRehashedForTests() const;
+
     /**
      * @brief Appends the state only the roto API mutates (control points, stroke curves...).
      * Memoized by getContentHash() until the next invalidateContentHash().
@@ -173,7 +182,7 @@ protected:
     /**
      * @brief Appends the state that can change without passing through
      * invalidateContentHash(): knobs (edited, animated or slaved through the knob API) and
-     * children. Recomputed by every getContentHash(); what it reads is memoized at its own level.
+     * children. Called by every getContentHash(); what it reads is memoized at its own level.
      **/
     virtual void appendLiveContentHash(ContentHasher& h) const;
 

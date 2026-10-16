@@ -795,7 +795,7 @@ U64
 Node::getContentHash() const
 {
     if (hashComputeDepth == 0) {
-        flushHashDirtyMarks();
+        flushHashDirtyMarksBeforeRead(this);
         if (isHashDirty()) {
             const_cast<Node*>(this)->refreshDirtyHashes();
         }
@@ -816,7 +816,7 @@ bool
 Node::getHashValueIfUpToDate(U64* hash) const
 {
     if (hashComputeDepth == 0) {
-        flushHashDirtyMarks();
+        flushHashDirtyMarksBeforeRead(this);
     }
     if (isHashDirty()) {
         return false;
@@ -836,6 +836,7 @@ Node::getCacheID() const
 
 bool
 Node::computeHashInternal(U64 projectDigest,
+                          const HashInputs& inputs,
                           U64* newContentHash)
 {
     *newContentHash = 0;
@@ -848,7 +849,7 @@ Node::computeHashInternal(U64 projectDigest,
 
     // Computed before taking contentHashMutex: knob content hashing and input reads must not run
     // under this node's write lock.
-    const U64 contentHash = computeContentHash(projectDigest);
+    const U64 contentHash = computeContentHash(projectDigest, inputs);
 
     U64 oldContentHash;
     {
@@ -938,7 +939,8 @@ Node::getKnobsContentDigest(bool* hasExpression) const
 } // Node::getKnobsContentDigest
 
 U64
-Node::computeContentHash(U64 projectDigest) const
+Node::computeContentHash(U64 projectDigest,
+                         const HashInputs& inputs) const
 {
     ContentHasher h;
 
@@ -963,39 +965,18 @@ Node::computeContentHash(U64 projectDigest) const
     }
 
     // Content hashes are never 0, so 0 marks an unconnected viewer input unambiguously.
-    ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>(_imp->effect.get());
-    if (isViewer) {
-        int activeInput[2];
-        isViewer->getActiveInputs(activeInput[0], activeInput[1]);
-        for (int i = 0; i < 2; ++i) {
-            h.appendI64(activeInput[i]);
-            NodePtr input = getInput(activeInput[i]);
+    if (inputs.isViewer) {
+        for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
+            h.appendI64(inputs.bySlot[i].first);
+            const NodePtr& input = inputs.bySlot[i].second;
             h.appendU64(input ? input->getStoredContentHash() : 0);
         }
     } else {
-        RotoDrawableItemPtr attachedStroke = _imp->paintStroke.lock();
-        NodePtr attachedStrokeContextNode;
-        if (attachedStroke) {
-            attachedStrokeContextNode = attachedStroke->getContext()->getNode();
+        for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
+            h.appendI64(inputs.bySlot[i].first);
+            h.appendU64(inputs.bySlot[i].second->getStoredContentHash());
         }
-        // Unconnected inputs are skipped rather than marked: nodes such as Merge grow and keep
-        // empty input slots, which must not make an otherwise identical graph hash differently.
-        U64 connectedInputs = 0;
-        for (U32 i = 0, n = getInputSlotCount(); i < n; ++i) {
-            NodePtr input = getInput(i);
-            if (!input) {
-                continue;
-            }
-            // The RotoPaint node is connected to the internal nodes of its paint tree; hashing
-            // it would make every stroke node change with it.
-            if (attachedStroke && (input == attachedStrokeContextNode)) {
-                continue;
-            }
-            h.appendI64(i);
-            h.appendU64(input->getStoredContentHash());
-            ++connectedInputs;
-        }
-        h.appendU64(connectedInputs);
+        h.appendU64(inputs.bySlot.size());
     }
 
     // Roto geometry lives in the context and the items, not in knobs, so it is hashed here. The
@@ -1082,35 +1063,42 @@ Node::dependsOnProjectFrameRange() const
 }
 
 void
-Node::getHashDependents(NodesList* dependents) const
+Node::getHashDependents(std::vector<NodePtr>* dependents) const
 {
     if (!_imp->effect) {
         return;
     }
     const bool isRotoPaint = _imp->effect->isRotoPaintNode();
-    NodesList outputs;
-    getOutputsWithGroupRedirection(outputs);
-    std::unordered_set<const Node*> passedThrough;
-    while (!outputs.empty()) {
-        NodePtr output = outputs.front();
-        outputs.pop_front();
+    // The appended range doubles as the queue of outputs still to look at; entries it drops are
+    // compacted away behind the read position.
+    std::size_t write = dependents->size();
+    appendOutputsWithGroupRedirection(dependents);
+    std::vector<const Node*> passedThrough;
+    for (std::size_t read = write; read < dependents->size(); ++read) {
+        NodePtr output = (*dependents)[read];
         assert(output);
         // The paint tree's own nodes are added from the context below.
-        RotoDrawableItemPtr attachedStroke = output->getAttachedRotoItem();
-        if ( isRotoPaint && attachedStroke && (attachedStroke->getContext()->getNode().get() == this) ) {
-            continue;
+        if (isRotoPaint) {
+            RotoDrawableItemPtr attachedStroke = output->getAttachedRotoItem();
+            if (attachedStroke && (attachedStroke->getContext()->getNode().get() == this)) {
+                continue;
+            }
         }
-        dependents->push_back(output);
         // Inputs read through a group, its GroupInput and GroupOutput nodes and a precomp, so no
         // hash folds these in and they can stay dirty while the nodes below them are recomputed.
         // A dirty mark walk stops at a dirty node, so the nodes past them are listed here too.
-        if (isSkippedByHashInputs(*output) && passedThrough.insert(output.get()).second) {
-            output->getOutputsWithGroupRedirection(outputs);
+        if (isSkippedByHashInputs(*output) && (std::find(passedThrough.begin(), passedThrough.end(), output.get()) == passedThrough.end())) {
+            passedThrough.push_back(output.get());
+            output->appendOutputsWithGroupRedirection(dependents);
         }
+        (*dependents)[write++] = std::move(output);
     }
+    dependents->resize(write);
 
     if (_imp->rotoContext) {
-        _imp->rotoContext->getRotoPaintTreeNodes(dependents);
+        NodesList paintTree;
+        _imp->rotoContext->getRotoPaintTreeNodes(&paintTree);
+        dependents->insert(dependents->end(), paintTree.begin(), paintTree.end());
     }
 }
 
@@ -1124,20 +1112,20 @@ Node::getInputSlotCount() const
 }
 
 void
-Node::getHashInputs(std::vector<NodePtr>* inputs) const
+Node::getHashInputs(HashInputs* inputs) const
 {
+    inputs->isViewer = false;
+    inputs->bySlot.clear();
     if (!_imp->effect) {
         return;
     }
     ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>(_imp->effect.get());
     if (isViewer) {
+        inputs->isViewer = true;
         int activeInput[2];
         isViewer->getActiveInputs(activeInput[0], activeInput[1]);
         for (int i = 0; i < 2; ++i) {
-            NodePtr input = getInput(activeInput[i]);
-            if (input) {
-                inputs->push_back(input);
-            }
+            inputs->bySlot.push_back(std::make_pair(activeInput[i], getInput(activeInput[i])));
         }
 
         return;
@@ -1147,12 +1135,16 @@ Node::getHashInputs(std::vector<NodePtr>* inputs) const
     if (attachedStroke) {
         attachedStrokeContextNode = attachedStroke->getContext()->getNode();
     }
+    // Unconnected inputs are left out rather than marked: nodes such as Merge grow and keep empty
+    // input slots, which must not make an otherwise identical graph hash differently. The RotoPaint
+    // node is connected to the internal nodes of its paint tree; hashing it would make every stroke
+    // node change with it.
     for (U32 i = 0, n = getInputSlotCount(); i < n; ++i) {
         NodePtr input = getInput(i);
         if (!input || (attachedStroke && (input == attachedStrokeContextNode))) {
             continue;
         }
-        inputs->push_back(input);
+        inputs->bySlot.push_back(std::make_pair((int)i, std::move(input)));
     }
 }
 
@@ -1168,11 +1160,23 @@ hashEpoch()
 // Nodes marked since the last flush, whose dependents are still to be marked. A mark is queued
 // rather than walked at once because knob setters mark while holding knob, curve or roto locks,
 // under which the walk through outputs and paint trees must not run.
+struct HashDirtyEntry {
+    NodeWPtr node;
+    const Node* address; //< compared, never dereferenced
+    bool includeGroupContents; //< whether the nodes inside a group are marked too
+};
+
 struct HashDirtyQueue {
     std::mutex entriesMutex; //< a leaf: nothing is taken under it
-    std::vector<std::pair<NodeWPtr, bool>> entries; //< with whether the nodes inside a group are marked too
+    std::vector<HashDirtyEntry> entries;
     std::atomic<std::size_t> pending { 0 }; //< entries not yet fully walked
     std::mutex flushMutex; //< held through a flush, so that a reader waits for the marks it must see
+
+    // Reused by every flush, under flushMutex, so that a walk allocates nothing per node.
+    U64 pass = 0;
+    std::vector<HashDirtyEntry> batch;
+    std::vector<NodePtr> toExpand;
+    std::vector<NodePtr> dependents;
 };
 
 // Deliberately leaked, like the audit: nodes can still be marked during static destruction.
@@ -1263,7 +1267,11 @@ Node::markHashDirtyInternal(bool includeGroupContents)
     }
     HashDirtyQueue& queue = hashDirtyQueue();
     std::lock_guard<std::mutex> l(queue.entriesMutex);
-    queue.entries.push_back(std::make_pair(NodeWPtr(self), includeGroupContents));
+    HashDirtyEntry entry;
+    entry.node = self;
+    entry.address = this;
+    entry.includeGroupContents = includeGroupContents;
+    queue.entries.push_back(entry);
     ++queue.pending;
 }
 
@@ -1271,6 +1279,37 @@ void
 Node::invalidateAllHashes()
 {
     hashEpoch().fetch_add(1);
+}
+
+void
+Node::flushHashDirtyMarksBeforeRead(const Node* reader)
+{
+    HashDirtyQueue& queue = hashDirtyQueue();
+
+    if ((queue.pending.load() == 0) || flushingHashDirtyMarks) {
+        return;
+    }
+    {
+        // A node's mark only reaches its dependents, and in an acyclic graph none of them is folded
+        // into its own hash, so a read of the only node marked leaves the walk to the next read of
+        // another one. This is what keeps an edit's own reads (the instance-changed action, the
+        // metadata refresh) from walking everything downstream of it. Not while a batch is being
+        // walked: its marks may be ones the reader must see.
+        std::lock_guard<std::mutex> l(queue.entriesMutex);
+        if (!queue.entries.empty() && (queue.pending.load() == queue.entries.size())) {
+            bool onlyReader = true;
+            for (std::size_t i = 0; i < queue.entries.size(); ++i) {
+                if (queue.entries[i].address != reader) {
+                    onlyReader = false;
+                    break;
+                }
+            }
+            if (onlyReader) {
+                return;
+            }
+        }
+    }
+    flushHashDirtyMarks();
 }
 
 void
@@ -1283,8 +1322,11 @@ Node::flushHashDirtyMarks()
     }
     std::lock_guard<std::mutex> flushLock(queue.flushMutex);
     FlushingHashDirtyMarksFlag flushing;
+    std::vector<HashDirtyEntry>& batch = queue.batch;
+    std::vector<NodePtr>& toExpand = queue.toExpand;
+    std::vector<NodePtr>& dependents = queue.dependents;
     for (;;) {
-        std::vector<std::pair<NodeWPtr, bool>> batch;
+        batch.clear();
         {
             std::lock_guard<std::mutex> l(queue.entriesMutex);
             batch.swap(queue.entries);
@@ -1293,10 +1335,17 @@ Node::flushHashDirtyMarks()
             break;
         }
         // Per batch: a node marked again after a walk went past it must be walked again.
-        std::unordered_set<const Node*> visited;
-        std::vector<NodePtr> toExpand;
-        auto reach = [&visited, &toExpand](const NodePtr& node) {
-            if (!node || !visited.insert(node.get()).second) {
+        const U64 pass = ++queue.pass;
+        auto visit = [pass](const NodePtr& node) {
+            if (node->_imp->hashFlushVisit == pass) {
+                return false;
+            }
+            node->_imp->hashFlushVisit = pass;
+
+            return true;
+        };
+        auto reach = [&visit, &toExpand](const NodePtr& node) {
+            if (!node || !visit(node)) {
                 return;
             }
             const U64 previous = node->_imp->hashDirtyGeneration.fetch_add(1);
@@ -1308,15 +1357,15 @@ Node::flushHashDirtyMarks()
             }
         };
         for (std::size_t i = 0; i < batch.size(); ++i) {
-            NodePtr root = batch[i].first.lock();
+            NodePtr root = batch[i].node.lock();
             if (!root) {
                 continue;
             }
             root->_imp->hashDirtyQueued.store(false);
-            if (visited.insert(root.get()).second) {
+            if (visit(root)) {
                 toExpand.push_back(root);
             }
-            if (batch[i].second) {
+            if (batch[i].includeGroupContents) {
                 NodeGroup* isGroup = dynamic_cast<NodeGroup*>(root->_imp->effect.get());
                 if (isGroup) {
                     NodesList inner;
@@ -1327,16 +1376,20 @@ Node::flushHashDirtyMarks()
                 }
             }
             while (!toExpand.empty()) {
-                NodePtr node = toExpand.back();
+                NodePtr node = std::move(toExpand.back());
                 toExpand.pop_back();
-                NodesList dependents;
+                dependents.clear();
                 node->getHashDependents(&dependents);
-                for (NodesList::const_iterator it = dependents.begin(); it != dependents.end(); ++it) {
-                    reach(*it);
+                for (std::size_t d = 0; d < dependents.size(); ++d) {
+                    reach(dependents[d]);
                 }
             }
         }
-        queue.pending.fetch_sub(batch.size());
+        const std::size_t walked = batch.size();
+        // Nodes are not kept alive past the flush by the reused containers.
+        batch.clear();
+        dependents.clear();
+        queue.pending.fetch_sub(walked);
     }
 } // Node::flushHashDirtyMarks
 
@@ -1364,20 +1417,22 @@ Node::recomputeHashIfDirty(bool requireCleanInputs,
         if ((generation == _imp->hashCleanGeneration.load()) && (epoch == _imp->hashCleanEpoch.load())) {
             return true;
         }
-        // Checked after the generation is read: an input marked after this check marks this
-        // node again, while one dirty now would be folded in with its stale hash.
+        // Gathered and checked after the generation is read: an input marked or reconnected after
+        // this marks this node again, while one dirty now would be folded in with its stale hash.
+        // The inputs checked are the ones hashed.
+        HashInputs inputs;
+        getHashInputs(&inputs);
         if (requireCleanInputs) {
-            std::vector<NodePtr> inputs;
-            getHashInputs(&inputs);
-            for (std::size_t i = 0; i < inputs.size(); ++i) {
-                if (inputs[i]->isHashDirty()) {
+            for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
+                const NodePtr& input = inputs.bySlot[i].second;
+                if (input && input->isHashDirty()) {
                     return false;
                 }
             }
         }
         {
             HashComputeScope computing;
-            changed = computeHashInternal(walk->projectDigest(*this, epoch), &contentHash);
+            changed = computeHashInternal(walk->projectDigest(*this, epoch), inputs, &contentHash);
         }
         _imp->hashCleanEpoch.store(epoch);
         _imp->hashCleanGeneration.store(generation);
@@ -1418,6 +1473,7 @@ Node::refreshDirtyHashes()
         std::vector<NodePtr> order;
         std::unordered_map<const Node*, char> state; // 1: entered, 2: ordered
         std::vector<std::pair<NodePtr, bool>> stack(1, std::make_pair(self, false));
+        HashInputs inputs;
         while (!stack.empty()) {
             NodePtr node = stack.back().first;
             if (stack.back().second) {
@@ -1434,11 +1490,11 @@ Node::refreshDirtyHashes()
             }
             nodeState = 1;
             stack.back().second = true;
-            std::vector<NodePtr> inputs;
             node->getHashInputs(&inputs);
-            for (std::size_t i = 0; i < inputs.size(); ++i) {
-                if (inputs[i]->isHashDirty() && (state.find(inputs[i].get()) == state.end())) {
-                    stack.push_back(std::make_pair(inputs[i], false));
+            for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
+                const NodePtr& input = inputs.bySlot[i].second;
+                if (input && input->isHashDirty() && (state.find(input.get()) == state.end())) {
+                    stack.push_back(std::make_pair(input, false));
                 }
             }
         }
@@ -3523,74 +3579,68 @@ Node::getEffectInstance() const
     return _imp->effect;
 }
 
+namespace {
+// Depth first through the outputs, visiting each node once; stop decides at a node whether to
+// collect it and go no further below it. Every edit runs it over everything downstream of it, so
+// the visited test is a hash lookup and the outputs are gathered into reused vectors.
+template <typename Stop>
 void
-Node::hasViewersConnectedInternal(std::list<ViewerInstance* >* viewers,
-                                 std::list<const Node*>* markedNodes) const
+walkDownstreamUntil(const Node* start,
+                    Stop stop)
 {
+    std::unordered_set<const Node*> visited;
+    std::vector<NodePtr> outputs;
+    std::vector<NodePtr> stack;
 
-    if (std::find(markedNodes->begin(), markedNodes->end(), this) != markedNodes->end()) {
+    visited.insert(start);
+    if (stop(start)) {
         return;
     }
-
-    markedNodes->push_back(this);
-    ViewerInstance* thisViewer = dynamic_cast<ViewerInstance*>( _imp->effect.get() );
-
-    if (thisViewer) {
-        viewers->push_back(thisViewer);
-    } else {
-        NodesList outputs;
-        getOutputsWithGroupRedirection(outputs);
-
-        for (NodesList::iterator it = outputs.begin(); it != outputs.end(); ++it) {
-            assert(*it);
-            (*it)->hasViewersConnectedInternal(viewers, markedNodes);
+    start->appendOutputsWithGroupRedirection(&outputs);
+    stack.insert(stack.end(), outputs.rbegin(), outputs.rend());
+    while (!stack.empty()) {
+        NodePtr node = std::move(stack.back());
+        stack.pop_back();
+        assert(node);
+        if (!visited.insert(node.get()).second || stop(node.get())) {
+            continue;
         }
+        outputs.clear();
+        node->appendOutputsWithGroupRedirection(&outputs);
+        stack.insert(stack.end(), outputs.rbegin(), outputs.rend());
     }
 }
+} // anonymous namespace
 
 void
-Node::hasOutputNodesConnectedInternal(std::list<OutputEffectInstance* >* writers,
-                                     std::list<const Node*>* markedNodes) const
+Node::hasOutputNodesConnected(std::list<OutputEffectInstance*>* writers) const
 {
-    if (std::find(markedNodes->begin(), markedNodes->end(), this) != markedNodes->end()) {
-        return;
-    }
+    walkDownstreamUntil(this, [writers](const Node* node) {
+        OutputEffectInstance* writer = dynamic_cast<OutputEffectInstance*>(node->getEffectInstance().get());
+        if (writer && writer->isOutput() && !dynamic_cast<GroupOutput*>(writer)) {
+            writers->push_back(writer);
 
-    markedNodes->push_back(this);
-
-    OutputEffectInstance* thisWriter = dynamic_cast<OutputEffectInstance*>( _imp->effect.get() );
-
-    if ( thisWriter && thisWriter->isOutput() && !dynamic_cast<GroupOutput*>(thisWriter) ) {
-        writers->push_back(thisWriter);
-    } else {
-        NodesList outputs;
-        getOutputsWithGroupRedirection(outputs);
-
-        for (NodesList::iterator it = outputs.begin(); it != outputs.end(); ++it) {
-            assert(*it);
-            (*it)->hasOutputNodesConnectedInternal(writers, markedNodes);
+            return true;
         }
-    }
-}
 
-void
-Node::hasOutputNodesConnected(std::list<OutputEffectInstance* >* writers) const
-{
-    std::list<const Node*> m;
-    hasOutputNodesConnectedInternal(writers, &m);
+        return false;
+    });
 }
 
 void
 Node::hasViewersConnected(std::list<ViewerInstance* >* viewers) const
 {
+    walkDownstreamUntil(this, [viewers](const Node* node) {
+        ViewerInstance* viewer = dynamic_cast<ViewerInstance*>(node->getEffectInstance().get());
+        if (viewer) {
+            viewers->push_back(viewer);
 
-    std::list<const Node*> m;
-    hasViewersConnectedInternal(viewers, &m);
+            return true;
+        }
 
+        return false;
+    });
 }
-
-
-
 
 int
 Node::getMajorVersion() const
@@ -5314,9 +5364,9 @@ Node::getRenderInstancesSharedMutex()
 static void
 refreshPreviewsRecursivelyUpstreamInternal(double time,
                                            Node* node,
-                                           std::list<Node*>& marked)
+                                           std::unordered_set<Node*>& marked)
 {
-    if ( std::find(marked.begin(), marked.end(), node) != marked.end() ) {
+    if (!marked.insert(node).second) {
         return;
     }
 
@@ -5324,14 +5374,12 @@ refreshPreviewsRecursivelyUpstreamInternal(double time,
         node->refreshPreviewImage( time );
     }
 
-    marked.push_back(node);
-
     std::vector<NodeWPtr> inputs = node->getInputs_copy();
 
     for (std::size_t i = 0; i < inputs.size(); ++i) {
         NodePtr input = inputs[i].lock();
         if (input) {
-            input->refreshPreviewsRecursivelyUpstream(time);
+            refreshPreviewsRecursivelyUpstreamInternal(time, input.get(), marked);
         }
     }
 }
@@ -5339,17 +5387,19 @@ refreshPreviewsRecursivelyUpstreamInternal(double time,
 void
 Node::refreshPreviewsRecursivelyUpstream(double time)
 {
-    std::list<Node*> marked;
+    std::unordered_set<Node*> marked;
 
     refreshPreviewsRecursivelyUpstreamInternal(time, this, marked);
 }
 
+// The set is shared by the whole walk: a node below several paths is visited once, where a set per
+// call made the walk exponential in the number of merges below an edit.
 static void
 refreshPreviewsRecursivelyDownstreamInternal(double time,
                                              Node* node,
-                                             std::list<Node*>& marked)
+                                             std::unordered_set<Node*>& marked)
 {
-    if ( std::find(marked.begin(), marked.end(), node) != marked.end() ) {
+    if (!node->getNodeGui() || !marked.insert(node).second) {
         return;
     }
 
@@ -5357,14 +5407,12 @@ refreshPreviewsRecursivelyDownstreamInternal(double time,
         node->refreshPreviewImage( time );
     }
 
-    marked.push_back(node);
-
     NodesWList outputs;
     node->getOutputs_mt_safe(outputs);
     for (NodesWList::iterator it = outputs.begin(); it != outputs.end(); ++it) {
         NodePtr output = it->lock();
         if (output) {
-            output->refreshPreviewsRecursivelyDownstream(time);
+            refreshPreviewsRecursivelyDownstreamInternal(time, output.get(), marked);
         }
     }
 }
@@ -5372,10 +5420,7 @@ refreshPreviewsRecursivelyDownstreamInternal(double time,
 void
 Node::refreshPreviewsRecursivelyDownstream(double time)
 {
-    if ( !getNodeGui() ) {
-        return;
-    }
-    std::list<Node*> marked;
+    std::unordered_set<Node*> marked;
     refreshPreviewsRecursivelyDownstreamInternal(time, this, marked);
 }
 
@@ -7746,12 +7791,12 @@ Node::markDownstreamInputRelatedDataStale()
 
     std::unordered_set<const Node*> visited;
     visited.insert(this);
-    NodesList toVisit;
-    getOutputsWithGroupRedirection(toVisit);
+    // Breadth first: the vector is the queue, read from the front without erasing.
+    std::vector<NodePtr> toVisit;
+    appendOutputsWithGroupRedirection(&toVisit);
     std::vector<NodePtr> shown;
-    while (!toVisit.empty()) {
-        NodePtr node = toVisit.front();
-        toVisit.pop_front();
+    for (std::size_t next = 0; next < toVisit.size(); ++next) {
+        NodePtr node = toVisit[next];
         if (!node || !visited.insert(node.get()).second) {
             continue;
         }
@@ -7760,7 +7805,7 @@ Node::markDownstreamInputRelatedDataStale()
         if (node->isSettingsPanelVisible()) {
             shown.push_back(node);
         }
-        node->getOutputsWithGroupRedirection(toVisit);
+        node->appendOutputsWithGroupRedirection(&toVisit);
     }
 
     for (std::size_t i = 0; i < shown.size(); ++i) {

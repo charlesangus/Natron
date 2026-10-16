@@ -158,3 +158,4 @@ Scouted facts (2026-10-12, read-only audit on `milestone/m45-native-tab-menu`; r
   - golden projects `cg_multipass`, `defocus_retime`, `keying_grade` and `synthetic-generator-grade-write`: the trimmed Blur knobs and the project-list formats change what is saved.
   
   The Blur render tests moved to a box filter, because the window-dependent IIR filter no longer matches a mask-shrunk OFX replay.
+- 2026-10-16 — **Review round (Codex, PR #66)**: 7 findings, all fixed in d747cfdb4 — clamp greying now follows an animated filter in Reformat and Transform; the alpha-threshold GPU path (`recordGpuFinish`, `GpuWrap`, `pixelwrap.slang`) and the `writeWindow` output callback and `alphaPlane` left over from the Blur trim are removed; four restating comments are deleted.

@@ -156,6 +156,17 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - verify: a test sets a knob from a worker thread and the next render sees the new hash; run TSan if it is available
   - size: L
 
+- [ ] M100.P4.T4 — Check OFX metadata against the hash in overlay interacts
+  - files: Engine/OfxOverlayInteract.{h,cpp} (or wherever `Interact::Instance::callEntry` is reachable host-side), Engine/OfxEffectInstance.cpp
+  - approach: overlay interacts reach the plug-in through `Interact::Instance::callEntry`, bypassing `OfxImageEffectInstance::mainEntry`, so an overlay reading clip metadata on an unrendered branch can see a stale cache. Override `callEntry` host-side to run `OfxEffectInstance::dropStaleClipMetadata()` first; no `libs/OpenFX` change.
+  - verify: a test (or a documented read of the call path if no headless overlay harness exists) shows an overlay action after an upstream edit sees fresh metadata.
+  - size: M
+- [ ] M100.P4.T5 — Make the downstream metadata refresh lazy
+  - files: Engine/EffectInstance.cpp (`refreshMetadata_recursive`, `refreshMetadata_internal`), Engine/Node.cpp (`refreshAllInputRelatedData`, `registerProducedLayers`, channel selectors), Engine/NodeInputs.cpp
+  - approach: clip-preference knob edits and reconnections still walk every downstream node eagerly, refreshing metadata, layer registration and channel menus, and each refresh reads its hash. Mark downstream nodes metadata-dirty instead, and refresh a node's metadata, produced layers and channel selectors when they are read (render-args setup, panel open, viewer, channel menus), keyed by its hash. Clear All Caches may stay eager.
+  - verify: `LazyHashTest` gains a case where a clip-preference edit and a reconnection don't rehash an unviewed branch; the metadata, layer and channel tests stay green in both schedulers.
+  - size: L
+
 ## Phase 100.5: Remove knobsAge
 - [ ] M100.P5.T1 — Turn core age bumps into dirty marks and delete the age hacks
   - files: Engine/Node.cpp, Engine/NodeInputs.cpp, Engine/EffectInstance.cpp, Engine/Project.cpp, Engine/Node.h
@@ -335,3 +346,4 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - `EffectInstance::refreshMetadata_recursive` still walks the whole downstream eagerly on clip-preference knob edits and connection changes (predates M100's lazy work); making it lazy is follow-up work.
   - Every OFX action now reads the hash first: cheap when clean, but a mid-render edit recomputes at action entry.
 - 2026-10-16 — **Laziness test and Write pull** (run 38840003254: 2338/2340; fix 52f69fde2). The unviewed branch was rehashed by the test helper, not by the edit or the render. The default `byPassCache` runs Clear All Caches, which via `forceComputeInputDependentDataOnAllTrees` (M75) refreshes metadata, layers and channel menus on every tree, and each of those reads its node's hash. The test now renders through the cache. Clear All Caches stays eager: it is an explicit user action, and making it lazy would mean computing metadata, channel selectors and layer registration on read. Write pull: a Write's read back depends on disk state, which no hash covers, so a downstream Dot cached a stale layer list. `NativeWrite::purgeCaches` now also clears the action and image caches of everything downstream, without rehashing.
+- 2026-10-16 — **Both laziness gaps go in M100** (user): added P4.T4 (overlay interacts check the hash) and P4.T5 (lazy downstream metadata refresh).

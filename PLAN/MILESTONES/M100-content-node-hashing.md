@@ -132,7 +132,7 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - verify: a test overwrites a frame between two renders and gets the new pixels; the M82 profiler shows no serial regression
   - size: M
 
-- [ ] M100.P3.T4 — Simplify file identity: stamp files on load and Reload only
+- [x] M100.P3.T4 — Simplify file identity: stamp files on load and Reload only
   - files: Engine/FileStampRegistry.{h,cpp}, Engine/KnobFile.cpp, Engine/Nodes/IO/NativeRead.cpp, Engine/Nodes/IO/ReadTimeDomain.cpp, Engine/Nodes/IO/NativeWrite.cpp, Engine/Nodes/Deep/DeepRead.cpp, Engine/PrecompNode.cpp, Engine/ParallelRenderArgs.cpp, Engine/ViewerInstance.cpp, Engine/EffectInstance.h, Gui/GuiApplicationManager.cpp, Tests/FileStamp_Test.cpp and the tests that rewrite files in place
   - approach: Reads (and a Write's read back) check the files on disk only when the user presses Reload. Delete the directory watcher, the focus-in rescan, the per-render current-frame stat guard (`refreshInputFilesForRender`) and the stamp TTL. A file's stamp (single file or the frames of a sequence) is taken once, the first time its node is hashed in a session, and kept until Reload, which re-stamps it and so re-keys the node. The disk cache stays correct across sessions because the stamp is re-taken at the next session's first hash. A Write's read back caches each frame's header and stored hash until Reload or the Write finishing a render.
   - verify: rewriting a frame in place doesn't change the Read's hash or pixels until Reload, after which both follow the file; a test shows no stat happens per render; the CacheEquivalence Read-rewrite case uses Reload.
@@ -162,12 +162,12 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - verify: a test sets a knob from a worker thread and the next render sees the new hash; run TSan if it is available
   - size: L
 
-- [ ] M100.P4.T4 — Check OFX metadata against the hash in overlay interacts
+- [x] M100.P4.T4 — Check OFX metadata against the hash in overlay interacts
   - files: Engine/OfxOverlayInteract.{h,cpp} (or wherever `Interact::Instance::callEntry` is reachable host-side), Engine/OfxEffectInstance.cpp
   - approach: overlay interacts reach the plug-in through `Interact::Instance::callEntry`, bypassing `OfxImageEffectInstance::mainEntry`, so an overlay reading clip metadata on an unrendered branch can see a stale cache. Override `callEntry` host-side to run `OfxEffectInstance::dropStaleClipMetadata()` first; no `libs/OpenFX` change.
   - verify: a test (or a documented read of the call path if no headless overlay harness exists) shows an overlay action after an upstream edit sees fresh metadata.
   - size: M
-- [ ] M100.P4.T5 — Make the downstream metadata refresh lazy
+- [x] M100.P4.T5 — Make the downstream metadata refresh lazy
   - files: Engine/EffectInstance.cpp (`refreshMetadata_recursive`, `refreshMetadata_internal`), Engine/Node.cpp (`refreshAllInputRelatedData`, `registerProducedLayers`, channel selectors), Engine/NodeInputs.cpp
   - approach: clip-preference knob edits and reconnections still walk every downstream node eagerly, refreshing metadata, layer registration and channel menus, and each refresh reads its hash. Mark downstream nodes metadata-dirty instead, and refresh a node's metadata, produced layers and channel selectors when they are read (render-args setup, panel open, viewer, channel menus), keyed by its hash. Clear All Caches may stay eager.
   - verify: `LazyHashTest` gains a case where a clip-preference edit and a reconnection don't rehash an unviewed branch; the metadata, layer and channel tests stay green in both schedulers.
@@ -179,7 +179,7 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - approach: incrementKnobsAge becomes markHashDirty. Delete the knobsAgeChanged slaving, the group-input force, the group-disable loop, the format loop and the layer-user bump.
   - verify: full ctest, plus disabled-Group and GroupInput rewire tests
   - size: L
-- [ ] M100.P5.T2 — Migrate the remaining age-bump callers
+- [x] M100.P5.T2 — Migrate the remaining age-bump callers
   - files: Engine/RotoDrawableItem.cpp, Engine/RotoStrokeItem.cpp, Engine/RotoUndoCommand.cpp, Engine/Nodes/Channel/AddLayers.cpp, Engine/Nodes/Deep/DeepAddLayers.cpp, Gui/NodeGraphPrivate10.cpp, Gui/MultiInstancePanel.cpp, plus the test callers Tests/DeepReadWrite_Test.cpp:974, Tests/DeepRenderPipeline_Test.cpp:855,1275, Tests/DeepChannelNodes_Test.cpp:894-896
   - approach: apply the same replacement (AddLayers.cpp:404, DeepAddLayers.cpp:376, NodeGraphPrivate10.cpp:257, MultiInstancePanel.cpp:1612), and delete the bump that forces paste and clone to hash differently. Tests that bump or read the age switch to markHashDirty/getHashValue.
   - verify: `grep incrementKnobsAge` finds nothing; ctest passes
@@ -367,3 +367,4 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - **Also removed:** upstream Natron's seek/play modification-date check (`GuiAppInstance::checkAllReadersModificationDate`, the KnobGuiFile timeline hook, the "Last modified" tooltip and the `warnOnExternalChange` setting).
   - **Remaining stats:** `OiioReadSupport::readHeader` still stats on each uncached header read, as before this milestone.
 - 2026-10-16 — **P4.T3, P5.T1, P7.T1 done** (green at 4dd66fe29, run 38853063978). **P4.T4/P4.T5/P3.T4** pass in run 38871959783 (2342/2343); the one failure was the roto/tracker golden, whose two Reads now save `ocioInputSpaceSet` = 1 after the BaseTest helper fix (8416048a6). Golden updated in f8fb1eff5; they're ticked at the next green build.
+- 2026-10-16 — **P3.T4, P4.T4, P4.T5, P5.T2 done**: green at ef3c4b760 (release run 38881916549, 2343/2343 in both schedulers). P5.T2 (ef3c4b760) deleted the age hash and the audit. AddLayers and DeepAddLayers now append their registry signature through a new `EffectInstance::appendNodeContentHash`. P6.T4's suite (827d79bf1) and the Clear All Caches fix (4e587eed1) are not built yet.

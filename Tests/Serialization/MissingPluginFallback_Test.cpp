@@ -243,8 +243,7 @@ TEST_F(MissingPluginFallbackTest, PythonCannotModifyAPlaceholderButCanReadIt)
     }
     {
         std::string error, output;
-        EXPECT_TRUE(interpretPythonScript("print(" + param + ".get())\n", &error, &output)) << error;
-        EXPECT_NE(std::string::npos, output.find("3.25")) << output;
+        EXPECT_TRUE(interpretPythonScript("if " + param + ".get() != 3.25:\n    raise ValueError(str(" + param + ".get()))\n", &error, &output)) << error;
     }
 
     KnobDouble* userKnob = dynamic_cast<KnobDouble*>(placeholder->getKnobByName("myUserValue").get());

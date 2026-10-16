@@ -201,6 +201,12 @@ UserParamHolder::setHolder(KnobHolder* holder)
     _holder = holder;
 }
 
+bool
+UserParamHolder::checkIsEditable() const
+{
+    return checkHolderIsEditable(_holder);
+}
+
 Effect::Effect(const NodePtr& node)
     : Group()
     , UserParamHolder(node ? node->getEffectInstance().get() : 0)

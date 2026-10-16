@@ -46,8 +46,8 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief The render plumbing Blur, ErodeDilate and EdgeDetect share, ported from openfx-misc's
- * CImgFilterPluginHelper: the source over a planar buffer, the filtered extent shrunk to the
- * mask, whole-line parallelism, and the write back with premultiply, mask and mix.
+ * CImgFilterPluginHelper: the source over a planar buffer, whole-line parallelism, and the write
+ * back with premultiply, mask and mix.
  **/
 namespace SpatialFilter {
 // How many lines a worker filters or writes between two abort checks.
@@ -160,15 +160,6 @@ struct MaskInput {
 
     void lock();
 };
-
-/**
- * @brief window shrunk past its outer rows and columns where the mask is zero, as
- * CImgFilterPluginHelper::render() does with maskLineIsZero() and maskColumnIsZero(); that
- * includes their treatment of the last column of the mask image as outside it when the mask is
- * inverted, which decides the extent the filters run over and so must match. window itself
- * without a locked mask image.
- **/
-RectI shrinkToMask(const RectI& window, const MaskInput& mask) WARN_UNUSED_RETURN;
 
 /**
  * @brief The processed channels of job, one buffer plane each in channel order, the way

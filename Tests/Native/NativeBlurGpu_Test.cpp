@@ -472,7 +472,7 @@ TEST_F(NativeBlurGpuTest, MatchesTheCpuRenderWithMaskMixUnpremultChannelsAndThre
         { "threshold", 0.5, true, false, eMaskNone, 1., false, false, 0.003, 0 },
         { "everything", 25., false, true, eMaskOn, 0.3, true, true, 0.003, 0 },
         { "everything", 100., true, false, eMaskInverted, 0.3, true, true, 0.003, 0 },
-        // The recursive filters filter the window shrunk to the mask, so a mask changes their lines.
+        // The recursive filters depend on whole lines, which a mask must leave as they are.
         { "IIR mask", 3., true, true, eMaskOn, 1., false, false, 0., 1, kBlurParamFilterGaussian },
         { "IIR inverted mask, mix", 10., false, false, eMaskInverted, 0.3, false, false, 0., 0, kBlurParamFilterGaussian },
         { "IIR R+A", 10., true, false, eMaskNone, 1., false, true, 0., 0, kBlurParamFilterGaussian },

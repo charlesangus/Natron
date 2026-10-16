@@ -193,7 +193,7 @@ struct GpuLineBlur {
     GpuBlurRect output;
     // Holds every filtered rect the window may give.
     GpuBlurRect domain;
-    // From recordFilterWindow(): its [4, 8) are the filtered rect, within domain.
+    // From recordFilterWindow(): the filtered rect, within domain.
     const GpuBuffer* window = nullptr;
     uint32_t channels = 0;
     bool neumann = false;

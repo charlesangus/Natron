@@ -254,6 +254,8 @@ TEST_F(NativeBlurTest, AnisotropicSize40By5)
     expectParity(pair, "gaussian-40x5", kBlurTolerance, true);
 }
 
+// The OpenFX plug-in shrank the filtered window past the mask's zero rows and columns; with this
+// mask those all lie within the halo of the frame's edge, so its buffer was the whole frame too.
 TEST_F(NativeBlurTest, MaskAndMix)
 {
     resetProject();

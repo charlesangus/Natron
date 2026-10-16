@@ -462,11 +462,9 @@ struct WrappedCase {
 
 } // namespace
 
-// The settings renderGpu() wraps around the filter: the mask (its zero bands shrink render()'s
-// processed window, plain and inverted), mix, "(Un)premult by" alpha and an R+A channel subset,
-// alone and combined, against the CPU render. A mask two columns wide at the source's right edge
-// shrinks the window to a buffer short enough for halfWidth 40 to take the short-line rule, which
-// the whole window would not.
+// The settings renderGpu() wraps around the filter: the mask (plain and inverted, and one two
+// columns wide at the source's right edge, mostly zero over the window), mix, "(Un)premult by"
+// alpha and an R+A channel subset, alone and combined, against the CPU render.
 TEST_F(NativeErodeDilateGpuTest, MatchesTheCpuRenderWithMaskMixAndUnpremult)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -483,8 +481,8 @@ TEST_F(NativeErodeDilateGpuTest, MatchesTheCpuRenderWithMaskMixAndUnpremult)
         { "mask", true, { 1., -40. }, eMaskOn, 8, 6, 1., false, false },
         { "inverted mask", false, { 2., -6. }, eMaskInverted, 8, 4, 1., false, false },
         { "inverted mask", true, { 40., 2. }, eMaskInverted, 0, 2, 1., false, false },
-        { "short line under the mask", false, { 40., 1. }, eMaskOn, 65, 4, 1., false, false },
-        { "short line under the mask", true, { -40., 2. }, eMaskOn, 65, 4, 1., false, false },
+        { "narrow mask", false, { 40., 1. }, eMaskOn, 65, 4, 1., false, false },
+        { "narrow mask", true, { -40., 2. }, eMaskOn, 65, 4, 1., false, false },
         { "mix", false, { 40., 6. }, eMaskNone, 0, 0, 0.5, false, false },
         { "mix 0", true, { 6., 6. }, eMaskNone, 0, 0, 0., false, false },
         { "unpremult", false, { 6., 6. }, eMaskNone, 0, 0, 1., true, false },

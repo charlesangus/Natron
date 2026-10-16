@@ -12,7 +12,7 @@ RWStructuredBuffer<float> lineBuf;
 RWStructuredBuffer<float4> ringBuf;
 // Coefficients as (hi, lo) float pairs, laid out by Engine/Gpu/GpuBlur.cpp.
 StructuredBuffer<float> coefBuf;
-// [4, 8): the rect (x1, y1, x2, y2) the CPU filters, which bounds every line.
+// The rect (x1, y1, x2, y2) the CPU filters, which bounds every line.
 StructuredBuffer<int> windowBuf;
 
 // Positions run along the blur axis and lines across it, both in image pixels; li is the line's
@@ -480,10 +480,10 @@ void blur_lines(uint3 dtid : SV_DispatchThreadID)
         return;
     const int line = params.lineOrigin + int(li);
     const bool vertical = params.vertical != 0;
-    const int lo = vertical ? windowBuf[5] : windowBuf[4];
-    const int hi = vertical ? windowBuf[7] : windowBuf[6];
-    const int crossLo = vertical ? windowBuf[4] : windowBuf[5];
-    const int crossHi = vertical ? windowBuf[6] : windowBuf[7];
+    const int lo = vertical ? windowBuf[1] : windowBuf[0];
+    const int hi = vertical ? windowBuf[3] : windowBuf[2];
+    const int crossLo = vertical ? windowBuf[0] : windowBuf[1];
+    const int crossHi = vertical ? windowBuf[2] : windowBuf[3];
     const bool filtered = lo < hi && line >= crossLo && line < crossHi;
 
     if (vertical)

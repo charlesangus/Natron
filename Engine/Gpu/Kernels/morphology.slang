@@ -5,15 +5,11 @@
 
 StructuredBuffer<uint> srcBuf;
 RWStructuredBuffer<uint> dstBuf;
-// [0, 4): the bounding box (minX, minY, maxX, maxY) of the mask pixels the CPU's shrinkToMask()
-// keeps, reduced by morph_mask_bbox. [4, 8): the rect (x1, y1, x2, y2) the CPU's filter buffer
-// covers, which bounds every filtered line.
+// The rect (x1, y1, x2, y2) the CPU's filter buffer covers, which bounds every filtered line.
 RWStructuredBuffer<int> windowBuf;
 
 // A pass writes the rect of width x height pixels at (outX, outY) of the destination. The source
-// rect [srcX1, srcX2) x [srcY1, srcY2) reads zero outside. morph_mask_bbox reads the mask from the
-// source fields, over the output rect, with `channels` its component count; morph_window resolves
-// the buffer rect from the box, the source fields then holding the mask's bounds.
+// rect [srcX1, srcX2) x [srcY1, srcY2) reads zero outside.
 struct MorphParams
 {
     uint width;
@@ -32,14 +28,6 @@ struct MorphParams
     int srcY2;
     uint srcOffset;
     uint srcStride;
-    int rodX1;
-    int rodY1;
-    int rodX2;
-    int rodY2;
-    int haloX;
-    int haloY;
-    uint maskChannel;
-    uint maskInvert;
 };
 [[vk::push_constant]] ConstantBuffer<MorphParams> params;
 
@@ -50,11 +38,8 @@ static const uint kChunk = 16;
 static const uint kDirectMaxRadius = 16;
 static const uint kDirectTile = kGroup + 2 * kDirectMaxRadius;
 
-static const int kIntMax = 0x7fffffff;
-static const int kIntMin = int(0x80000000u);
 static const uint kPlusInf = 0x7f800000u;
 static const uint kMinusInf = 0xff800000u;
-static const uint kOne = 0x3f800000u;
 
 bool isNaNBits(uint u)
 {
@@ -93,16 +78,16 @@ struct Extent
 Extent axisExtent()
 {
     Extent e;
-    e.lo = windowBuf[params.vertical != 0 ? 5 : 4];
-    e.hi = windowBuf[params.vertical != 0 ? 7 : 6];
+    e.lo = windowBuf[params.vertical != 0 ? 1 : 0];
+    e.hi = windowBuf[params.vertical != 0 ? 3 : 2];
     return e;
 }
 
 Extent lineExtent()
 {
     Extent e;
-    e.lo = windowBuf[params.vertical != 0 ? 4 : 5];
-    e.hi = windowBuf[params.vertical != 0 ? 6 : 7];
+    e.lo = windowBuf[params.vertical != 0 ? 0 : 1];
+    e.hi = windowBuf[params.vertical != 0 ? 2 : 3];
     return e;
 }
 
@@ -386,121 +371,4 @@ void morph_wide(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
         wideLine(gid.x * kGroup + tid.x, int(gid.y * kChunk));
     else
         wideLine(gid.y, int((gid.x * kGroup + tid.x) * kChunk));
-}
-
-groupshared int boxMin[2];
-groupshared int boxMax[2];
-
-// Whether shrinkToMask() keeps pixel (x, y): the mask is not zero there, or with an inverted mask
-// not one, a pixel outside the mask's bounds reading zero.
-bool keptByMask(int x, int y)
-{
-    const bool inBounds = x >= params.srcX1 && x < params.srcX2 && y >= params.srcY1 && y < params.srcY2;
-    uint v = 0u;
-    if (inBounds)
-        v = srcBuf[params.srcOffset + uint(y - params.srcY1) * params.srcStride + uint(x - params.srcX1) * params.channels + params.maskChannel];
-    if (params.maskInvert != 0)
-        return !inBounds || v != kOne;
-    return inBounds && (v & 0x7fffffffu) != 0u;
-}
-
-// windowBuf[0, 4) must start as (INT_MAX, INT_MAX, INT_MIN, INT_MIN).
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void morph_mask_bbox(uint3 dtid : SV_DispatchThreadID, uint gi : SV_GroupIndex)
-{
-    if (gi == 0)
-    {
-        boxMin[0] = kIntMax;
-        boxMin[1] = kIntMax;
-        boxMax[0] = kIntMin;
-        boxMax[1] = kIntMin;
-    }
-    GroupMemoryBarrierWithGroupSync();
-    if (dtid.x < params.width && dtid.y < params.height)
-    {
-        const int x = params.outX + int(dtid.x);
-        const int y = params.outY + int(dtid.y);
-        if (keptByMask(x, y))
-        {
-            InterlockedMin(boxMin[0], x);
-            InterlockedMin(boxMin[1], y);
-            InterlockedMax(boxMax[0], x);
-            InterlockedMax(boxMax[1], y);
-        }
-    }
-    GroupMemoryBarrierWithGroupSync();
-    if (gi == 0 && boxMin[0] <= boxMax[0])
-    {
-        InterlockedMin(windowBuf[0], boxMin[0]);
-        InterlockedMin(windowBuf[1], boxMin[1]);
-        InterlockedMax(windowBuf[2], boxMax[0]);
-        InterlockedMax(windowBuf[3], boxMax[1]);
-    }
-}
-
-// shrinkToMask() over the output rect from the box, including CImg's rule that an inverted mask
-// only drops rows when the rect lies strictly inside the mask's bounds horizontally, and columns
-// when the kept rows do vertically; then the filter buffer, that window plus the halo clipped to
-// the region of definition, or empty.
-[shader("compute")]
-[numthreads(1, 1, 1)]
-void morph_window(uint3 dtid : SV_DispatchThreadID)
-{
-    const int rx1 = params.outX;
-    const int ry1 = params.outY;
-    const int rx2 = params.outX + int(params.width);
-    const int ry2 = params.outY + int(params.height);
-    const bool inv = params.maskInvert != 0;
-    const bool any = windowBuf[0] <= windowBuf[2];
-
-    int y1 = 0;
-    int y2 = 0;
-    if (inv && (rx1 < params.srcX1 || rx2 >= params.srcX2))
-    {
-        y1 = ry1;
-        y2 = ry2;
-    }
-    else if (any)
-    {
-        y1 = windowBuf[1];
-        y2 = windowBuf[3] + 1;
-    }
-    int x1 = 0;
-    int x2 = 0;
-    if (y1 < y2)
-    {
-        if (inv && (y1 < params.srcY1 || y2 >= params.srcY2))
-        {
-            x1 = rx1;
-            x2 = rx2;
-        }
-        else if (any)
-        {
-            x1 = windowBuf[0];
-            x2 = windowBuf[2] + 1;
-        }
-    }
-    int bx1 = 0;
-    int by1 = 0;
-    int bx2 = 0;
-    int by2 = 0;
-    if (x1 < x2 && y1 < y2)
-    {
-        bx1 = max(x1 - params.haloX, params.rodX1);
-        by1 = max(y1 - params.haloY, params.rodY1);
-        bx2 = min(x2 + params.haloX, params.rodX2);
-        by2 = min(y2 + params.haloY, params.rodY2);
-        if (bx1 >= bx2 || by1 >= by2)
-        {
-            bx1 = 0;
-            by1 = 0;
-            bx2 = 0;
-            by2 = 0;
-        }
-    }
-    windowBuf[4] = bx1;
-    windowBuf[5] = by1;
-    windowBuf[6] = bx2;
-    windowBuf[7] = by2;
 }

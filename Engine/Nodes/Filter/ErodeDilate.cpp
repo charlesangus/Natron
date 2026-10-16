@@ -500,14 +500,13 @@ ErodeDilate::render(const RenderActionArgs& args)
         jobs[j].lock();
     }
 
-    // The processed window shrinks past the rows and columns where the mask is zero, exactly as
-    // CImgFilterPluginHelper::render() does: the shrunk window decides the filtered extent.
+    // The whole window is filtered whatever the mask, so that a pixel's value does not depend on
+    // where the mask is zero; the mask only blends in writeWindow().
     RectI processWindow = roi;
     if (mixValue == 0.) {
         processWindow.x2 = processWindow.x1;
         processWindow.y2 = processWindow.y1;
     }
-    processWindow = shrinkToMask(processWindow, maskSource);
     const bool processing = !isEmptyRect(processWindow);
 
     RectI bufferRect(0, 0, 0, 0);
@@ -746,27 +745,6 @@ ErodeDilate::renderGpu(const GpuRenderArgs& args)
     morph.haloY = rect.y1 - sourceRoI.y1;
     morph.passes = passes;
     morph.channels = (uint32_t)nComps;
-
-    // render() shrinks the processed window to the mask it fetched, so a mask it cannot fetch
-    // leaves the window whole.
-    const int maskInput = getMaskInput();
-    if (args.query.hasMask && (maskInput >= 0) && (maskInput < (int)args.inputs.size()) && args.inputs[maskInput].buffer) {
-        const GpuImageView& maskView = args.inputs[maskInput];
-        ImageLayerDesc maskLayer;
-        int maskChannel = -1;
-        if (resolveInputPlaneForRender(maskInput, time, view, &maskLayer, &maskChannel) && (maskChannel >= 0) && (maskChannel < maskLayer.getNumComponents())) {
-            const int component = getGpuMaskViewComponent(maskLayer, maskChannel, maskView.nComps);
-            if ((component < 0) || (component >= maskView.nComps) || (maskView.rowStrideFloats < maskView.bounds.width() * maskView.nComps) || ((maskView.byteOffset % sizeof(float)) != 0)) {
-                return eStatusFailed;
-            }
-            gpu::GpuMorphMask mask;
-            mask.image = toGpuBlurImage(maskView);
-            mask.nComps = (uint32_t)maskView.nComps;
-            mask.channel = (uint32_t)component;
-            mask.invert = getMaskInvertValue(time, view);
-            morph.mask = mask;
-        }
-    }
 
     if (!gpu::recordMorphology(ctx, morph)) {
         return eStatusFailed;

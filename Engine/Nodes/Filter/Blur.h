@@ -100,9 +100,9 @@ struct BlurParams {
  * CImgFilterPluginHelper base included); it registers under that plug-in's ID one major above.
  *
  * Each render filters one float buffer covering the render window plus the filter's halo,
- * clipped to the output's region of definition, exactly as the OpenFX plug-in does: the IIR
- * filters' result depends on the extent of the lines they run over, so that extent must not
- * depend on how the work is shared. The buffer is therefore never split by the host (FullySafe),
+ * clipped to the output's region of definition, whatever the mask. The IIR filters' result
+ * depends on the extent of the lines they run over, so that extent must not depend on how the
+ * work is shared. The buffer is therefore never split by the host (FullySafe),
  * and the horizontal pass runs over whole rows and the vertical pass over whole columns on the
  * global pool, which gives the same pixels at any thread count.
  *
@@ -157,9 +157,8 @@ public:
 
     /**
      * @brief The pixels render() gives for the same query: the filtered extent is the source
-     * region of interest clipped to this effect's region of definition, for the recursive filters
-     * of the window shrunk to the mask as render() shrinks it, and the source is resolved against
-     * the input's region of definition.
+     * region of interest of the window clipped to this effect's region of definition, and the
+     * source is resolved against the input's region of definition.
      **/
     virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 

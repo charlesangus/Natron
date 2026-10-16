@@ -721,6 +721,18 @@ suite does. Each node parallelises its own render, within the thread budget
 - **Spatial filters** (`Blur`, `EdgeDetect`, `ErodeDilate`) parallelise over
   whole rows or whole columns, one line per task, never over the host's tile
   split. Their result is then independent of thread count and band layout.
+  Each filters the render window plus its halo, clipped to its region of
+  definition, whatever the mask; the mask and mix only blend the filtered
+  window with the source. A pixel's value then never depends on the mask
+  elsewhere, and through two render windows it is identical for the FIR
+  Gaussian, the finite-difference EdgeDetect filters and Erode/Dilate. The IIR
+  filters (quasi-Gaussian, Gaussian) start their recursion at the buffer's
+  edge, so their value at a pixel moves with the window: the halo,
+  max(3, ceil(1.5 size)), is about 3.6 sigma, and on the parity source at sizes
+  3 to 20 a pixel moved by up to 1.8e-2 (quasi-Gaussian) and 1e-2 (Gaussian)
+  between the full frame and a 1x1 window, about 1% of the input's range;
+  `NativeSpatialFilterWindow_Test.cpp` holds them to 2e-2. The box family is a
+  running sum in double whose rounding to float measured identical.
 - Other nodes with their own `render()` (`Merge`, `Dissolve`, `TransformNode`,
   `Crop`, `Reformat`, `Position`, `Keyer`, `ChromaKeyer`, the generators) split
   row bands the same way as point ops.
@@ -856,7 +868,13 @@ Measured exceptions and what they are not:
   node is an identity and passes negatives and values above 1 through; the
   recorded cases turn it on, as OFX's default had it. Grade raises a gamma
   below 0.01 to 0.01, where OFX made a gamma at or below 0 a step at 1; no
-  recorded case sets such a gamma.
+  recorded case sets such a gamma. Blur, EdgeDetect and Erode/Dilate filter the
+  whole window plus the halo whatever the mask, where CImg shrinks it past
+  mask-zero rows and columns, which moves the IIR filters' lines. Blur's
+  `mask-mix` case trims only rows and columns within the halo of the frame's
+  edge, so its buffer, and its reference, are unchanged; EdgeDetect's is
+  replaced by a check of the mask blend against the node's own unmasked
+  render.
 
 ### GPU parity
 
@@ -869,7 +887,7 @@ usually wider than the CPU class of the same node. Grade holds `gradefix::kUlpBo
 2e-6 absolute, plus 1e-6 relative with "(Un)premult by", whose divided values
 reach far above 1. Blur's quasi-Gaussian, Gaussian (IIR), box, triangle and quadratic filters hold `iir()`: one thread runs
 each line through the CPU's recursion with its state in two floats where the CPU uses double (plain float drifts past 1e-3
-for the IIR Gaussian at large sizes), and filters the same rect as render(), the window shrunk to the mask, grown by the
+for the IIR Gaussian at large sizes), and filters the same rect as render(), the window grown by the
 halo and clipped to the region of definition. Derivative orders stay on the CPU (`Tests/Native/NativeBlurGpu_Test.cpp`).
 Clamp holds its CPU class, exact, except where a divisor, mask or mix below 1
 enters, which hold `arithmetic()` (`Tests/Native/NativeClampGpu_Test.cpp`).

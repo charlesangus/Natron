@@ -753,14 +753,13 @@ Blur::render(const RenderActionArgs& args)
         jobs[j].lock();
     }
 
-    // The processed window shrinks past the rows and columns where the mask is zero, exactly as
-    // CImgFilterPluginHelper::render() does: the shrunk window decides the filtered extent.
+    // The whole window is filtered whatever the mask, so that a pixel's value does not depend on
+    // where the mask is zero; the mask only blends in writeWindow().
     RectI processWindow = roi;
     if (mixValue == 0.) {
         processWindow.x2 = processWindow.x1;
         processWindow.y2 = processWindow.y1;
     }
-    processWindow = shrinkToMask(processWindow, maskSource);
     const bool processing = !isEmptyRect(processWindow);
 
     RectI bufferRect(0, 0, 0, 0);
@@ -1065,30 +1064,10 @@ Blur::renderGpu(const GpuRenderArgs& args)
             return eStatusFailed;
         }
     } else {
-        // A recursive filter depends on whole lines, so the filtered rect must be render()'s:
-        // the window shrunk to the mask render() fetches, grown by the halo and clipped to the
-        // region of definition. A mask it cannot fetch leaves the window whole.
-        std::optional<gpu::GpuMorphMask> mask;
-        const int maskInput = getMaskInput();
-        if (args.query.hasMask && (maskInput >= 0) && (maskInput < (int)args.inputs.size()) && args.inputs[maskInput].buffer) {
-            const GpuImageView& maskView = args.inputs[maskInput];
-            ImageLayerDesc maskLayer;
-            int maskChannel = -1;
-            if (resolveInputPlaneForRender(maskInput, time, view, &maskLayer, &maskChannel) && (maskChannel >= 0) && (maskChannel < maskLayer.getNumComponents())) {
-                const int component = getGpuMaskViewComponent(maskLayer, maskChannel, maskView.nComps);
-                if ((component < 0) || (component >= maskView.nComps) || (maskView.rowStrideFloats < maskView.bounds.width() * maskView.nComps) || ((maskView.byteOffset % sizeof(float)) != 0)) {
-                    return eStatusFailed;
-                }
-                gpu::GpuMorphMask m;
-                m.image = toGpuBlurImage(maskView);
-                m.nComps = (uint32_t)maskView.nComps;
-                m.channel = (uint32_t)component;
-                m.invert = getMaskInvertValue(time, view);
-                mask = m;
-            }
-        }
+        // A recursive filter depends on whole lines, so the filtered rect must be render()'s: the
+        // window grown by the halo and clipped to the region of definition.
         gpu::GpuBuffer* window = nullptr;
-        if (!gpu::recordFilterWindow(ctx, toGpuBlurRect(rect), toGpuBlurRect(rodPixel), rect.x1 - sourceRoI.x1, rect.y1 - sourceRoI.y1, mask, window)) {
+        if (!gpu::recordFilterWindow(ctx, toGpuBlurRect(rect), toGpuBlurRect(rodPixel), rect.x1 - sourceRoI.x1, rect.y1 - sourceRoI.y1, window)) {
             return eStatusFailed;
         }
         gpu::GpuLineBlur blur;

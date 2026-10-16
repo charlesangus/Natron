@@ -694,14 +694,13 @@ EdgeDetect::render(const RenderActionArgs& args)
         jobs[j].lock();
     }
 
-    // The processed window shrinks past the rows and columns where the mask is zero, exactly as
-    // CImgFilterPluginHelper::render() does: the shrunk window decides the filtered extent.
+    // The whole window is filtered whatever the mask, so that a pixel's value does not depend on
+    // where the mask is zero; the mask only blends in writeWindow().
     RectI processWindow = roi;
     if (mixValue == 0.) {
         processWindow.x2 = processWindow.x1;
         processWindow.y2 = processWindow.y1;
     }
-    processWindow = shrinkToMask(processWindow, maskSource);
     const bool processing = !isEmptyRect(processWindow);
 
     RectI bufferRect(0, 0, 0, 0);

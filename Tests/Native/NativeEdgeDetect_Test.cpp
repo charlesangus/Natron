@@ -27,6 +27,7 @@
 
 #include <functional>
 #include <iostream>
+#include <list>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
@@ -299,18 +301,70 @@ TEST_F(NativeEdgeDetectTest, ErodeWithSuppression)
     expectParity(pair, "gaussian-separate-erode2-nms", kEdgeDetectTolerance, true);
 }
 
-TEST_F(NativeEdgeDetectTest, MaskAndMix)
+// The filter runs over the window plus its halo whatever the mask, so the masked node is its
+// unmasked render blended with the source by mask x mix. The OpenFX plug-in shrank the filtered
+// window past mask-zero rows and columns, which moves the recursive filters' lines, so this is
+// checked against the node itself rather than a recorded reference.
+TEST_F(NativeEdgeDetectTest, MaskAndMixBlendTheUnmaskedRender)
 {
     resetProject();
-    ParityPair pair = makePair(true);
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(bool(pair.mask));
-    setParitySourceOrigin(pair.mask, 8, 4);
-    ASSERT_TRUE(setKnobOnBoth(pair, "enableMask_Mask", { 1. }));
-    ASSERT_TRUE(setChannelSelect(pair.native, "maskChannel_Mask", "rgba.A"));
-    ASSERT_TRUE(setKnobOnBoth(pair, kOfxMixParamName, { 0.5 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamBlurSize, { 3. }));
-    expectParity(pair, "mask-mix", kEdgeDetectTolerance, true);
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    NodePtr mask = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    NodePtr plain = createNode(QString::fromUtf8(kEdgeDetectID), kNativeEdgeDetectMajor);
+    NodePtr masked = createNode(QString::fromUtf8(kEdgeDetectID), kNativeEdgeDetectMajor);
+    ASSERT_TRUE(bool(source) && bool(mask));
+    ASSERT_TRUE(isNative(plain) && isNative(masked));
+    setParitySourceOrigin(source, 0, 0);
+    setParitySourceOrigin(mask, 8, 4);
+    connectNodes(source, plain, 0, true);
+    connectNodes(source, masked, 0, true);
+    connectNodes(mask, masked, 1, true);
+    for (const NodePtr& node : { plain, masked }) {
+        ASSERT_TRUE(processRGBA(node));
+        ASSERT_TRUE(setKnobValues(node, kEdgeDetectParamBlurSize, { 3. }));
+    }
+    ASSERT_TRUE(setKnobValues(masked, "enableMask_Mask", { 1. }));
+    ASSERT_TRUE(setChannelSelect(masked, "maskChannel_Mask", "rgba.A"));
+    const float mix = 0.5f;
+    ASSERT_TRUE(setKnobValues(masked, kOfxMixParamName, { (double)mix }));
+
+    const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
+    const ParityTolerance tolerance = ParityTolerance::arithmetic();
+    for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
+        const RectI window = paritySourceWindow(source, kTime, mipmapLevel);
+        std::vector<RenderedPlane> planes[4];
+        const NodePtr nodes[4] = { source, mask, plain, masked };
+        for (int n = 0; n < 4; ++n) {
+            std::string error;
+            ASSERT_TRUE(renderNodePlanesDirect(nodes[n], kTime, ViewIdx(0), mipmapLevel, window, rgba, &planes[n], &error)) << error;
+            ASSERT_EQ(1u, planes[n].size());
+            ASSERT_EQ(4u, planes[n][0].channels.size());
+            ASSERT_EQ((std::size_t)window.area() * 4, planes[n][0].pixels.size());
+        }
+        const std::vector<float>& src = planes[0][0].pixels;
+        const std::vector<float>& maskPixels = planes[1][0].pixels;
+        const std::vector<float>& filtered = planes[2][0].pixels;
+        const std::vector<float>& got = planes[3][0].pixels;
+        std::size_t mismatches = 0;
+        std::size_t partlyMasked = 0;
+        for (std::size_t i = 0; i < got.size(); i += 4) {
+            const float alpha = maskPixels[i + 3] * mix;
+            partlyMasked += ((alpha > 0.f) && (alpha < mix)) ? 1 : 0;
+            for (int c = 0; c < 4; ++c) {
+                const float want = (alpha == 0.f) ? src[i + c] : filtered[i + c] * alpha + (1.f - alpha) * src[i + c];
+                if (!tolerance.accepts(want, got[i + c])) {
+                    if (mismatches == 0) {
+                        const std::size_t at = i / 4;
+                        ADD_FAILURE() << "mipmap " << mipmapLevel << ": first at (" << (window.x1 + (int)(at % window.width())) << "," << (window.y1 + (int)(at / window.width())) << ") channel " << c
+                                      << " got " << got[i + c] << " want " << want;
+                    }
+                    ++mismatches;
+                }
+            }
+        }
+        EXPECT_EQ(0u, mismatches) << "mipmap " << mipmapLevel;
+        EXPECT_GT(partlyMasked, 0u) << "mipmap " << mipmapLevel << ": the mask has no fractional values";
+    }
 }
 
 TEST_F(NativeEdgeDetectTest, RendersTheSameInBothSchedulerModesAtAnyPoolSize)

@@ -51,6 +51,7 @@
 #include "Engine/PoolParallelFor.h"
 #include "Engine/Project.h"
 #include "Engine/RenderScale.h"
+#include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
 
 NATRON_NAMESPACE_ENTER
@@ -504,7 +505,7 @@ Reformat::initializeKnobs()
     _blackOutside = blackOutside;
 
     refreshVisibility();
-    updateClampEnabled();
+    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 } // Reformat::initializeKnobs
 
 Reformat::ReformatTypeEnum
@@ -534,7 +535,7 @@ Reformat::refreshVisibility()
 }
 
 void
-Reformat::updateClampEnabled()
+Reformat::updateClampEnabled(double time, ViewSpec view)
 {
     KnobChoicePtr filter = _filter.lock();
     KnobBoolPtr clamp = _clamp.lock();
@@ -542,23 +543,29 @@ Reformat::updateClampEnabled()
     if (!filter || !clamp) {
         return;
     }
-    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValue()));
+    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
 }
 
 void
 Reformat::onKnobsLoaded()
 {
     refreshVisibility();
-    updateClampEnabled();
+    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 bool
 Reformat::knobChanged(KnobI* k,
                       ValueChangedReasonEnum reason,
-                      ViewSpec /*view*/,
+                      ViewSpec view,
                       double time,
                       bool /*originatedFromMainThread*/)
 {
+    KnobChoicePtr filterKnob = _filter.lock();
+    if (filterKnob && (k == filterKnob.get())) {
+        updateClampEnabled(time, view);
+
+        return true;
+    }
     if (reason == eValueChangedReasonTimeChanged) {
         return false;
     }
@@ -566,13 +573,6 @@ Reformat::knobChanged(KnobI* k,
     KnobChoicePtr format = _format.lock();
     KnobDoublePtr scale = _scale.lock();
     KnobBoolPtr scaleUniform = _scaleUniform.lock();
-
-    KnobChoicePtr filterKnob = _filter.lock();
-    if (filterKnob && (k == filterKnob.get())) {
-        updateClampEnabled();
-
-        return true;
-    }
 
     const bool isType = type && (k == type.get());
     if (isType) {

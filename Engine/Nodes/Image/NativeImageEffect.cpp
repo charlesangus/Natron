@@ -590,8 +590,7 @@ NativeImageEffect::recordGpuDivide(const GpuRenderArgs& args,
 
 StatusEnum
 NativeImageEffect::recordGpuFinish(const GpuRenderArgs& args,
-                                   const GpuImageView& filtered,
-                                   float alphaThreshold)
+                                   const GpuImageView& filtered)
 {
 #ifdef NATRON_HAVE_GPU
     gpu::GpuWrap wrap;
@@ -600,13 +599,11 @@ NativeImageEffect::recordGpuFinish(const GpuRenderArgs& args,
         return eStatusFailed;
     }
     wrap.output = gpu::GpuWrapRect { args.outputRect.x1, args.outputRect.y1, args.outputRect.x2, args.outputRect.y2 };
-    wrap.alphaThreshold = alphaThreshold;
 
     return gpu::recordWrapFinish(args.context, wrap, filteredView) ? eStatusOK : eStatusFailed;
 #else
     Q_UNUSED(args);
     Q_UNUSED(filtered);
-    Q_UNUSED(alphaThreshold);
 
     return eStatusFailed;
 #endif

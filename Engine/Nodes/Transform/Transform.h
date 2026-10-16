@@ -224,10 +224,7 @@ private:
 
     void updateShutterEnabled();
 
-    /**
-     * @brief Enables the clamp knob only for a filter it affects.
-     **/
-    void updateClampEnabled();
+    void updateClampEnabled(double time, ViewSpec view);
 
     /**
      * @brief Shows the uniform knob once it is checked or animated; with allowHiding, hides it

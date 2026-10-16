@@ -247,10 +247,7 @@ private:
      **/
     void refreshVisibility();
 
-    /**
-     * @brief Enables the clamp knob only for a filter it affects.
-     **/
-    void updateClampEnabled();
+    void updateClampEnabled(double time, ViewSpec view);
 
     KnobBoolWPtr _useRoD;
     KnobChoiceWPtr _type;

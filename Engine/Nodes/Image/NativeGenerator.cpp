@@ -283,7 +283,6 @@ NativeGenerator::getRegionOfDefinition(U64 /*hash*/,
         return eStatusOK;
     }
 
-    // With a Source clip connected the extent follows it, else it is the full project format.
     EffectInstancePtr source = getInput(0);
     if (source) {
         const RenderScale sourceScale = source->supportsRenderScale() ? scale : RenderScale::identity;

@@ -1104,7 +1104,7 @@ EdgeDetect::render(const RenderActionArgs& args)
         layout.bufferRect = bufferRect;
         layout.buffer = buffer.empty() ? NULL : &buffer[0];
         layout.mix = mix;
-        writeWindow(job, planes, maskSource, layout, nThreads, cancel, [](float v, int) -> float { return v; });
+        writeWindow(job, planes, maskSource, layout, nThreads, cancel);
         if (cancel.check()) {
             return eStatusOK;
         }

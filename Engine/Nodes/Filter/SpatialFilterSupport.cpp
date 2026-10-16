@@ -266,7 +266,6 @@ MaskInput::lock()
 
 ProcessedPlanes::ProcessedPlanes(const PlaneJob& job)
     : channel()
-    , alphaPlane(-1)
 {
     for (int c = 0; c < 4; ++c) {
         planeOfChannel[c] = -1;
@@ -275,9 +274,6 @@ ProcessedPlanes::ProcessedPlanes(const PlaneJob& job)
         const int bit = pixelKernelChannelBit(job.nComps, c);
         if (job.channels[bit]) {
             planeOfChannel[c] = (int)channel.size();
-            if (bit == 3) {
-                alphaPlane = (int)channel.size();
-            }
             channel.push_back(c);
         }
     }

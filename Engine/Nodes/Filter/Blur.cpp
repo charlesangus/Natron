@@ -721,7 +721,7 @@ Blur::render(const RenderActionArgs& args)
         layout.bufferRect = bufferRect;
         layout.buffer = buffer;
         layout.mix = mix;
-        writeWindow(job, planes, maskSource, layout, nThreads, cancel, [](float v, int) -> float { return v; });
+        writeWindow(job, planes, maskSource, layout, nThreads, cancel);
         if (cancel.check()) {
             return eStatusOK;
         }
@@ -812,25 +812,19 @@ Blur::renderGpu(const GpuRenderArgs& args)
     RectI valid;
     intersectRects(src.bounds, toPixelEnclosing(srcRoD, scale, getAspectRatio(0)), &valid);
 
-    // The filters render() builds.
     const bool fir = (params.filter == BlurKernels::eFilterFIRGaussian);
     const double sx = rs.x * params.sizeX;
     const double sy = rs.y * params.sizeY;
     BlurKernels::LineFilter filterX;
     BlurKernels::LineFilter filterY;
-    bool blurred = true;
-    if (fir) {
-        blurred = (firRadius(sx) > 0) || (firRadius(sy) > 0);
-    } else if (isGaussianFamily(params.filter)) {
+    if (!fir && isGaussianFamily(params.filter)) {
         const float sigmax = (float)(sx / 2.4);
         const float sigmay = (float)(sy / 2.4);
-        if ((sigmax < 0.1) && (sigmay < 0.1)) {
-            blurred = false;
-        } else {
+        if ((sigmax >= 0.1) || (sigmay >= 0.1)) {
             filterX = BlurKernels::LineFilter::forFilter(params.filter, sigmax, 0, false);
             filterY = BlurKernels::LineFilter::forFilter(params.filter, sigmay, 0, false);
         }
-    } else {
+    } else if (!fir) {
         filterX = BlurKernels::LineFilter::forFilter(params.filter, static_cast<float>(sx), 0, false);
         filterY = BlurKernels::LineFilter::forFilter(params.filter, static_cast<float>(sy), 0, false);
     }

@@ -163,13 +163,11 @@ struct MaskInput {
 
 /**
  * @brief The processed channels of job, one buffer plane each in channel order, the way
- * CImgFilterPluginHelper extracts them. planeOfChannel maps a channel to its plane or -1, and
- * alphaPlane is the plane of colour bit 3, or -1.
+ * CImgFilterPluginHelper extracts them. planeOfChannel maps a channel to its plane or -1.
  **/
 struct ProcessedPlanes {
     std::vector<int> channel;
     int planeOfChannel[4];
-    int alphaPlane;
 
     explicit ProcessedPlanes(const PlaneJob& job);
 
@@ -227,19 +225,17 @@ struct WindowLayout {
 
 /**
  * @brief Writes job's window in row bands: each processed channel of the processed window is
- * output(buffer value, plane) multiplied back by the divisor, then blended with the undivided
+ * the buffer value multiplied back by the divisor, then blended with the undivided
  * source by mask x mix; unprocessed channels and the pixels outside the processed window pass
  * through. A buffer value outside bufferRect reads as zero.
  **/
-template <class Output>
 void
 writeWindow(const PlaneJob& job,
             const ProcessedPlanes& planes,
             const MaskInput& mask,
             const WindowLayout& layout,
             int nThreads,
-            RenderCancellation& cancel,
-            const Output& output)
+            RenderCancellation& cancel)
 {
     const RectI& roi = layout.roi;
     const RectI& processWindow = layout.processWindow;
@@ -267,7 +263,7 @@ writeWindow(const PlaneJob& job,
             allProcessed = allProcessed && (planeOfComp[c] >= 0);
         }
         // A window row with no divisor, no mask and mix 1 has alpha 1 at every pixel, so a processed channel is
-        // just its output value.
+        // just its buffer value.
         const bool plainBlend = !job.divisor && !doMask && (mix == 1.f);
         const int fastX1 = std::max(roi.x1, processWindow.x1);
         const int fastX2 = std::min(roi.x2, processWindow.x2);
@@ -307,7 +303,7 @@ writeWindow(const PlaneJob& job,
                     }
                     const float* in = layout.buffer + (std::size_t)p * planeSize + offset;
                     for (int i = 0; i < midWidth; ++i, out += nComps) {
-                        *out = output(in[i], p);
+                        *out = in[i];
                     }
                 }
                 if (right > 0) {
@@ -347,7 +343,7 @@ writeWindow(const PlaneJob& job,
                         dstPix[c] = srcPix[c];
                         continue;
                     }
-                    float v = inBuffer ? output(layout.buffer[(std::size_t)p * planeSize + offset], p) : output(0.f, p);
+                    float v = inBuffer ? layout.buffer[(std::size_t)p * planeSize + offset] : 0.f;
                     if (job.divisor && (c != job.skipChannel)) {
                         v = Image::premultiplyValue(v, divisorRow[i]);
                     }

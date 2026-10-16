@@ -47,7 +47,6 @@
 #include "Engine/AppManager.h"
 #include "Engine/CLArgs.h"
 #include "Engine/CreateNodeArgs.h"
-#include "Engine/FileStampRegistry.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
@@ -464,9 +463,9 @@ TEST_F(HashInvariantsTest, InputSwapChangesHashAndSwappingBackRestoresIt)
     EXPECT_EQ(straight, merge->getHashValue());
 }
 
-// A file rewritten on disk is a different input even though no knob moved; without its stamp in
-// the key, the old pixels would be served until a manual Reload.
-TEST_F(HashInvariantsTest, RewrittenReadFileChangesHashUpToDownstream)
+// A file rewritten on disk and reloaded is a different input even though no knob moved; without
+// its stamp in the key, the old pixels would be served under the old hash.
+TEST_F(HashInvariantsTest, ReloadedRewrittenReadFileChangesHashUpToDownstream)
 {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
@@ -483,11 +482,10 @@ TEST_F(HashInvariantsTest, RewrittenReadFileChangesHashUpToDownstream)
     KnobFilePtr fileKnob = std::dynamic_pointer_cast<KnobFile>(reader->getKnobByName(kOfxImageEffectFileParamName));
     ASSERT_TRUE(bool(fileKnob));
 
-    FileStampRegistry::instance().invalidateAll();
     const U64 readerBefore = reader->getHashValue();
     const U64 blurBefore = blur->getHashValue();
 
-    fileKnob->invalidateFileStamp();
+    fileKnob->reloadFile();
     EXPECT_EQ(readerBefore, reader->getHashValue()) << "an untouched file must keep its hash";
     EXPECT_EQ(blurBefore, blur->getHashValue());
 
@@ -495,7 +493,8 @@ TEST_F(HashInvariantsTest, RewrittenReadFileChangesHashUpToDownstream)
     // and the larger image makes sure the size moves too.
     ASSERT_TRUE(writeFlatExr(path, 32, 24, 0.75f));
     setMTime(path, 2000000);
-    fileKnob->invalidateFileStamp();
+    EXPECT_EQ(readerBefore, reader->getHashValue()) << "a file is only looked at again on Reload";
+    fileKnob->reloadFile();
     EXPECT_NE(readerBefore, reader->getHashValue());
     EXPECT_NE(blurBefore, blur->getHashValue());
 }

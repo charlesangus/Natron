@@ -604,26 +604,6 @@ NativeRead::purgeCaches()
     endChanges(true);
 }
 
-bool
-NativeRead::refreshInputFilesForRender(double time)
-{
-    KnobFilePtr filename = _filename.lock();
-    NodePtr node = getNode();
-
-    if (!filename || !node || node->isNodeDisabled(time)) {
-        return false;
-    }
-    const Target target = targetAtTime(time);
-    if ((target.kind != ReadTimeDomain::Result::eFile) || target.path.empty() || !_frameGuard.changed(target.path)) {
-        return false;
-    }
-    filename->invalidateFileStamp();
-    OiioReadSupport::evictHeaders(std::vector<std::string>(1, target.path));
-    clearActionsCache();
-
-    return true;
-}
-
 ReadTimeDomain::Settings
 NativeRead::settingsAt(double time) const
 {

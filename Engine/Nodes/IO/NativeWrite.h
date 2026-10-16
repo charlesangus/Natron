@@ -28,8 +28,11 @@
 
 #include "Global/Macros.h"
 
+#include <cstdint>
 #include <list>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -262,6 +265,14 @@ private:
     // and the frame passes the input through.
     std::shared_ptr<const OiioReadSupport::Header> readBackFrame(double time, ViewIdx view, std::string* path) const WARN_UNUSED_RETURN;
 
+    struct ReadBackFile {
+        std::shared_ptr<const OiioReadSupport::Header> header; //< null when no readable file is there
+        std::string storedHash; //< the file's natron:outputHash, empty if it has none
+    };
+
+    // What readBackFrame() found at `path`, looked up on disk the first time only.
+    ReadBackFile readBackFile(const std::string& path) const WARN_UNUSED_RETURN;
+
     StatusEnum renderReadBack(const RenderActionArgs& args, const OiioReadSupport::Header& header, const std::string& path) WARN_UNUSED_RETURN;
 
     // The Render button is off while the node shows the file, and Reload is on only then.
@@ -301,6 +312,11 @@ private:
     KnobBoolWPtr _writeMetadata;
     KnobBoolWPtr _readBack;
     KnobButtonWPtr _reload;
+    // The files read back, kept until purgeCaches() (Reload, a finished render, turning readBack
+    // on or off) so that rendering a frame does not look at the disk again.
+    mutable std::mutex _readBackFilesMutex;
+    mutable std::map<std::string, ReadBackFile> _readBackFiles;
+    mutable std::uint64_t _readBackFilesPurges = 0;
     KnobChoiceWPtr _views;
     std::string _viewToKeep;
     KnobChoiceWPtr _frameRange;

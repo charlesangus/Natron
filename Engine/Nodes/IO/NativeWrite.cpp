@@ -37,6 +37,7 @@
 #include <iterator>
 #include <limits>
 #include <list>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -93,6 +94,8 @@ enum FrameRangeEnum {
 const int kMinBandPixels = 16384;
 
 const double kMaxEvictedFrames = 1 << 16;
+
+const std::size_t kMaxReadBackFiles = 4096;
 
 void
 setSecretAndDisabled(const KnobIPtr& knob,
@@ -1435,22 +1438,53 @@ NativeWrite::readBackFrame(double time,
     }
     const KnobOutputFilePtr filename = _filename.lock();
     const std::string candidate = filename ? filename->generateFileNameAtTime((SequenceTime)std::floor(time + 0.5), view).toStdString() : std::string();
-    std::error_code ec;
-    if (candidate.empty() || !std::filesystem::is_regular_file(std::filesystem::path(candidate), ec)) {
+    if (candidate.empty()) {
         return std::shared_ptr<const OiioReadSupport::Header>();
     }
-    std::string error;
-    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(candidate, &error);
-    if (!header || header->subimages.empty()) {
-        return std::shared_ptr<const OiioReadSupport::Header>();
-    }
-    // Every part of the file carries the attribute, so the first one speaks for the file.
-    if (header->subimages[0].get_string_attribute(kNatronWriteOutputHashAttribute) != outputHashText(getRenderHash())) {
+    const ReadBackFile file = readBackFile(candidate);
+    if (!file.header || (file.storedHash != outputHashText(getRenderHash()))) {
         return std::shared_ptr<const OiioReadSupport::Header>();
     }
     *path = candidate;
 
-    return header;
+    return file.header;
+}
+
+NativeWrite::ReadBackFile
+NativeWrite::readBackFile(const std::string& path) const
+{
+    std::uint64_t purges = 0;
+    {
+        std::lock_guard<std::mutex> lock(_readBackFilesMutex);
+        const std::map<std::string, ReadBackFile>::const_iterator it = _readBackFiles.find(path);
+        if (it != _readBackFiles.end()) {
+            return it->second;
+        }
+        purges = _readBackFilesPurges;
+    }
+
+    ReadBackFile file;
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(std::filesystem::path(path), ec)) {
+        std::string error;
+        const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error);
+        if (header && !header->subimages.empty()) {
+            file.header = header;
+            // Every part of the file carries the attribute, so the first one speaks for the file.
+            file.storedHash = header->subimages[0].get_string_attribute(kNatronWriteOutputHashAttribute);
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(_readBackFilesMutex);
+    // A purge during the read may have been for a file rewritten after it was looked at.
+    if (purges == _readBackFilesPurges) {
+        if ((_readBackFiles.size() >= kMaxReadBackFiles) && (_readBackFiles.find(path) == _readBackFiles.end())) {
+            _readBackFiles.clear();
+        }
+        _readBackFiles[path] = file;
+    }
+
+    return file;
 }
 
 bool
@@ -1490,7 +1524,12 @@ NativeWrite::refreshReadBackState()
 void
 NativeWrite::purgeCaches()
 {
-    // The header cache already parses a file again when its time or size changed; this also
+    {
+        std::lock_guard<std::mutex> lock(_readBackFilesMutex);
+        _readBackFiles.clear();
+        ++_readBackFilesPurges;
+    }
+    // The shared header cache parses a file again when its time or size changed; this also
     // catches a file rewritten within one tick of the clock at the same size.
     const KnobOutputFilePtr filename = _filename.lock();
     double first = 0.;

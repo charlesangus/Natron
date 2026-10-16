@@ -71,8 +71,7 @@ KnobFile::~KnobFile()
 void
 KnobFile::reloadFile()
 {
-    FileStampRegistry::instance().invalidateAll();
-    invalidateContentHash();
+    invalidateFileStamp();
     assert( getHolder() );
     EffectInstance* effect = dynamic_cast<EffectInstance*>( getHolder() );
     if (effect) {

@@ -39,7 +39,6 @@
 
 #include "Engine/EffectInstance.h" // for PLUGINID_NATRON_READ
 #include "Engine/EngineFwd.h"
-#include "Engine/FileStampRegistry.h"
 #include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Nodes/IO/ReadTimeDomain.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -124,12 +123,6 @@ public:
      * one refresh of the whole project.
      **/
     virtual void purgeCaches() OVERRIDE FINAL;
-
-    /**
-     * @brief Stats the file read at time and, if it was overwritten since this node last read it,
-     * drops its stamp and its header so the frame is decoded again. Costs one stat.
-     **/
-    virtual bool refreshInputFilesForRender(double time) OVERRIDE FINAL;
 
     /**
      * @brief Calls `hook` each time a Read has listed the files of a pattern on disk, before it
@@ -238,8 +231,6 @@ private:
     mutable std::shared_ptr<const FrameListing> _listing;
     mutable std::shared_ptr<const FrameListing> _proxyListing;
     std::uint64_t _listingInvalidations;
-
-    FrameStatGuard _frameGuard;
 };
 
 NATRON_NAMESPACE_EXIT

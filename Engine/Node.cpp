@@ -72,7 +72,6 @@
 #include "Engine/DiskCacheNode.h"
 #include "Engine/Dot.h"
 #include "Engine/EffectInstance.h"
-#include "Engine/FileStampRegistry.h"
 #include "Engine/FileSystemModel.h"
 #include "Engine/Format.h"
 #include "Engine/GenericSchedulerThreadWatcher.h"
@@ -213,92 +212,6 @@ isSkippedByHashInputs(const Node& node)
 
     return node.isEffectGroup() || dynamic_cast<GroupInput*>(effect.get()) || dynamic_cast<GroupOutput*>(effect.get()) || dynamic_cast<PrecompNode*>(effect.get());
 }
-
-bool
-readsFileCoveredBy(const NodePtr& node,
-                   FileStampRegistry::InvalidationScopeEnum scope,
-                   const std::string& pathOrDirectory)
-{
-    EffectInstancePtr effect = node->getEffectInstance();
-
-    if (!effect) {
-        return false;
-    }
-    const KnobsVec& knobs = effect->getKnobs();
-    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-        KnobFile* file = dynamic_cast<KnobFile*>(it->get());
-        if (file && FileStampRegistry::invalidationCovers(scope, pathOrDirectory, file->getResolvedPath())) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-void
-refreshNodesAfterFileStampInvalidation(FileStampRegistry::InvalidationScopeEnum scope,
-                                       const std::string& pathOrDirectory)
-{
-    if (!appPTR) {
-        return;
-    }
-    const AppInstanceVec apps = appPTR->getAppInstances();
-    for (AppInstanceVec::const_iterator app = apps.begin(); app != apps.end(); ++app) {
-        ProjectPtr project = (*app)->getProject();
-        if (!project) {
-            continue;
-        }
-        const bool settled = !project->isLoadingProject() && !project->isProjectClosing();
-        // The project digest folds in the stamp of a config file, so every node depends on it.
-        const std::string ocioSource = project->getOCIOConfigSource();
-        const bool ocioIsFile = !ocioSource.empty() && (ocioSource.find("://") == std::string::npos);
-        const bool ocioCovered = ocioIsFile && FileStampRegistry::invalidationCovers(scope, pathOrDirectory, ocioSource);
-        if (ocioCovered) {
-            Node::invalidateAllHashes();
-        }
-        NodesList nodes;
-        project->getNodes_recursive(nodes, false);
-        bool changed = false;
-        for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
-            if (!ocioCovered && !readsFileCoveredBy(*it, scope, pathOrDirectory)) {
-                continue;
-            }
-            if (settled && (*it)->isNodeCreated()) {
-                changed |= (*it)->refreshHashNow();
-            } else {
-                (*it)->markHashDirty();
-            }
-        }
-        // Only a file that really changed re-renders: invalidations also come from every focus-in.
-        if (changed) {
-            (*app)->renderAllViewers(true);
-        }
-    }
-}
-
-// Invalidations come from render threads, from inside render setup and from knob callbacks, so
-// the nodes are refreshed later, from the main thread's event loop.
-void
-onFileStampsInvalidated(FileStampRegistry::InvalidationScopeEnum scope,
-                        const std::string& pathOrDirectory)
-{
-    QCoreApplication* app = QCoreApplication::instance();
-
-    if (!app) {
-        return;
-    }
-    QMetaObject::invokeMethod(app, [scope, pathOrDirectory]() { refreshNodesAfterFileStampInvalidation(scope, pathOrDirectory); }, Qt::QueuedConnection);
-}
-
-void
-listenToFileStampInvalidations()
-{
-    static std::once_flag once;
-
-    std::call_once(once, []() {
-        FileStampRegistry::instance().addInvalidationListener(onFileStampsInvalidated);
-    });
-}
 } // anonymous namespace
 
 Node::Node(const AppInstancePtr& app,
@@ -307,7 +220,6 @@ Node::Node(const AppInstancePtr& app,
     : QObject()
     , _imp( new Implementation(this, app, group, plugin) )
 {
-    listenToFileStampInvalidations();
     QObject::connect( this, SIGNAL(pluginMemoryUsageChanged(qint64)), appPTR, SLOT(onNodeMemoryRegistered(qint64)) );
     QObject::connect(this, SIGNAL(mustDequeueActions()), this, SLOT(dequeueActions()));
     QObject::connect(this, SIGNAL(refreshIdentityStateRequested()), this, SLOT(onRefreshIdentityStateRequestReceived()), Qt::QueuedConnection);

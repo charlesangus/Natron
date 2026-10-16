@@ -33,7 +33,6 @@
 #include <string>
 
 #include "Engine/EngineFwd.h"
-#include "Engine/FileStampRegistry.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #define PLUGINID_NATRON_DEEPREAD "fr.natron.DeepRead"
@@ -74,10 +73,9 @@ public:
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
-     * @brief Stats the file read at time and drops the stamp of one overwritten since this node
-     * last read it. Costs one stat.
+     * @brief Forgets the layers read from the file, so that Reload reads them again.
      **/
-    virtual bool refreshInputFilesForRender(double time) OVERRIDE FINAL;
+    virtual void purgeCaches() OVERRIDE FINAL;
 
 private:
     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -94,15 +92,12 @@ private:
 
     KnobFileWPtr _filename;
 
-    FrameStatGuard _frameGuard;
-
     // The header of the last file asked about, so scrubbing between uncached queries of one
-    // frame does not reopen it each time. The file's modification time and size are part of the
-    // key because a file rewritten in place keeps its name but can change its channels.
+    // frame does not reopen it each time. Kept until Reload, like the file's stamp, so a file
+    // rewritten in place shows its new channels only once the node re-keys on it.
     std::mutex _layersMemoMutex;
+    bool _layersMemoValid = false;
     std::string _layersMemoFilename;
-    long long _layersMemoModified = 0;
-    long long _layersMemoSize = -1;
     std::list<ImageLayerDesc> _layersMemo;
 };
 

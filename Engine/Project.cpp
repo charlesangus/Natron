@@ -308,6 +308,13 @@ const char* const ocioConfigFileKnobName = "ocioConfigFile";
 const char* const ocioWorkingSpaceKnobName = "ocioWorkingSpace";
 const char* const ocioColorSpaceKnobNames[] = { "ocioInputSpace", "ocioOutputSpace" };
 
+// A "scheme://" source is a built-in config, not a file on disk.
+bool
+isOCIOConfigFile(const std::string& source)
+{
+    return !source.empty() && (source.find("://") == std::string::npos);
+}
+
 std::string
 getStringKnobValue(const NodePtr& node,
                    const char* knobName)
@@ -1662,11 +1669,17 @@ Project::refreshColorManagement(bool warnOnFallback)
     const std::string envOverride = appPTR->getCurrentSettings()->getOCIOEnvOverride();
     std::string envOverrideError;
 
+    // The config in use must be the file the digest's stamp describes: once Reload re-stamps a
+    // file that changed on disk, the same source is loaded again.
+    const U64 sourceStamp = isOCIOConfigFile(source) ? FileStampRegistry::instance().stamp(source) : 0;
+
     // Choosing Custom before picking a file is an intermediate state, not an error.
-    if (!source.empty() && (!cm.getConfig() || (source != cm.getConfigSource()))) {
+    if (!source.empty() && (!cm.getConfig() || (source != cm.getConfigSource()) || (sourceStamp != _imp->loadedOCIOConfigStamp))) {
         std::string error;
         // The Color page is built before the project path knob exists.
-        if (cm.load(source, _imp->projectPath ? _imp->getProjectPath() : std::string(), &error) != ProjectColorManagement::eLoadErrorNone) {
+        if (cm.load(source, _imp->projectPath ? _imp->getProjectPath() : std::string(), &error) == ProjectColorManagement::eLoadErrorNone) {
+            _imp->loadedOCIOConfigStamp = sourceStamp;
+        } else {
             const QString consequence = envOverride.empty()
                 ? tr("The previous config stays in use.")
                 : tr("Nothing renders until the OCIO environment variable names a config that loads.");
@@ -2953,11 +2966,10 @@ Project::getContentDigest() const
         }
     }
 
-    // The config file can change on disk with no project edit, so its stamp stays out of the memo.
+    // Reloading the config file re-stamps it with no project edit, so its stamp stays out of the memo.
     ContentHasher h;
     h.appendU64(digest);
-    // A "scheme://" source is a built-in config, not a file on disk.
-    const bool ocioIsFile = !ocioSource.empty() && (ocioSource.find("://") == std::string::npos);
+    const bool ocioIsFile = isOCIOConfigFile(ocioSource);
     h.appendBool(ocioIsFile);
     if (ocioIsFile) {
         h.appendU64(FileStampRegistry::instance().stamp(ocioSource));

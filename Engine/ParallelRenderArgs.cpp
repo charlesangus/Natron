@@ -1059,28 +1059,6 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
     }
 }
 
-namespace {
-// Everything downstream of a reader was rendered from the file it has just been found to have
-// replaced, and is cached under hashes that do not change with the file.
-void
-purgeCachedImagesFrom(const NodePtr& node,
-                      std::set<Node*>* visited)
-{
-    if (!visited->insert(node.get()).second) {
-        return;
-    }
-    node->removeAllImagesFromCache(true);
-    NodesWList outputs;
-    node->getOutputs_mt_safe(outputs);
-    for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
-        NodePtr output = it->lock();
-        if (output) {
-            purgeCachedImagesFrom(output, visited);
-        }
-    }
-}
-} // namespace
-
 void
 ParallelRenderArgsSetter::buildArgsMap(double time,
                                        ViewIdx view,
@@ -1151,11 +1129,6 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
 
         EffectInstancePtr liveInstance = node->getEffectInstance();
         assert(liveInstance);
-        // Before the arguments of this frame exist, so that no render of it has read the old file yet.
-        if (liveInstance->refreshInputFilesForRender(time)) {
-            std::set<Node*> purged;
-            purgeCachedImagesFrom(node, &purged);
-        }
         bool duringPaintStrokeCreation = activeRotoPaintNode && node->isDuringPaintStrokeCreation();
         RenderSafetyEnum safety = node->getCurrentRenderThreadSafety();
         PluginOpenGLRenderSupport glSupport = node->getCurrentOpenGLRenderSupport();

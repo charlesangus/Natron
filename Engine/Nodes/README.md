@@ -852,6 +852,11 @@ Measured exceptions and what they are not:
   ACES AP1 coefficients above. Keyer and ChromaKeyer with an RGB source treat
   alpha as 1 for Normal and add nothing for "Add to Inside Mask", where OFX
   reads out of bounds, and neither mirrors OFX's output-premult preference.
+  Grade, ColorCorrect and Saturation default "Clamp Black" off, so a default
+  node is an identity and passes negatives and values above 1 through; the
+  recorded cases turn it on, as OFX's default had it. Grade raises a gamma
+  below 0.01 to 0.01, where OFX made a gamma at or below 0 a step at 1; no
+  recorded case sets such a gamma.
 
 ### GPU parity
 
@@ -860,7 +865,7 @@ plugin, and states its tolerance in this section: a node row above gets a GPU
 bound beside its CPU class, or a measured exception below it, in the same change
 that lets the node answer `canRenderOnGpu()`. Vulkan division is 2.5 ulp and
 `pow` and the trigonometric functions are looser still, so a GPU bound is
-usually wider than the CPU class of the same node. Grade holds `gradefix::kUlpBound` (`Tests/Gpu/GradeFixture.h`) and Blur's FIR Gaussian holds
+usually wider than the CPU class of the same node. Grade holds `gradefix::kUlpBound` (`Tests/Gpu/GradeFixture.h`), or a per-value bound that grows with |ln y| and 1 / gamma for the float rounding of the exponent and of A * input + B; its 0.01 gamma floor is applied on the host before the parameters are packed, so the device never sees a gamma at or below 0, and is what keeps 1 / gamma, and with it that bound, small. Blur's FIR Gaussian holds
 2e-6 absolute, plus 1e-6 relative with "(Un)premult by", whose divided values
 reach far above 1. Blur's quasi-Gaussian, Gaussian (IIR), box, triangle and quadratic filters hold `iir()`: one thread runs
 each line through the CPU's recursion with its state in two floats where the CPU uses double (plain float drifts past 1e-3

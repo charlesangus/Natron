@@ -436,6 +436,57 @@ TEST_F(NativeColorCorrectGpuTest, MatchesTheCpuKernelInEveryRange)
     std::printf("colorcorrect node gpu vs cpu: %d renders, %zu floats compared\n", nCase, nCompared);
 }
 
+// At its defaults the node is an identity. Its kernels, run anyway, blend three copies of each
+// value by tone weights that sum to one only within rounding, so they hold transcendental() of the
+// input, below 0 and above 1 included, and of each other.
+TEST_F(NativeColorCorrectGpuTest, DefaultKnobsPassEveryValueThrough)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_COLORCORRECT));
+    ASSERT_TRUE(bool(node));
+    NativeImageEffect* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+
+    CorrectSetting setting;
+    setting.groups = 0;
+    setting.luminanceMath = 0;
+    setting.clampBlack = false;
+    setting.clampWhite = false;
+    setting.rangeMin = 0.;
+    setting.rangeMax = 1.;
+    setting.editedCurves = false;
+    const int width = 32;
+    const int height = 9;
+    const int nComps = 4;
+    const std::vector<float> src = testValues(setting, (size_t)width * height * nComps);
+    const std::vector<float> cpu = cpuKernelRender(effect, src, width, height, nComps, 0xF);
+    const ImageDiff cpuDiff = compareImages(src, cpu, ParityTolerance::transcendental());
+    EXPECT_EQ(0u, cpuDiff.mismatches) << "cpu: first at float " << cpuDiff.firstMismatchIndex << " in " << src[cpuDiff.firstMismatchIndex] << " out "
+                                      << cpu[cpuDiff.firstMismatchIndex];
+
+    std::size_t nCompared = 0;
+    checkKernelOn(*runtime, effect, setting, src, width, height, nComps, 0xF, &nCompared);
+    if (HasFatalFailure()) {
+        return;
+    }
+    GpuQuery query;
+    query.time = kTime;
+    query.nComps = nComps;
+    GpuParityImage image;
+    image.bounds = RectI(0, 0, width, height);
+    image.nComps = nComps;
+    image.pixels = src;
+    const GpuRunResult run = runRenderGpu(*runtime, *effect, query, std::vector<GpuParityImage>(1, image), nullptr, image.bounds);
+    ASSERT_TRUE(run.ok);
+    ASSERT_EQ(src.size(), run.pixels.size());
+    const ImageDiff gpuDiff = compareImages(src, run.pixels, ParityTolerance::transcendental());
+    EXPECT_EQ(0u, gpuDiff.mismatches) << "gpu: first at float " << gpuDiff.firstMismatchIndex << " in " << src[gpuDiff.firstMismatchIndex] << " out "
+                                      << run.pixels[gpuDiff.firstMismatchIndex];
+}
+
 // The wrapped render against the node's own render() over the parity sources: a plain render, a
 // mask, an inverted mask, mix 0.5, a divide by alpha, and all of them at once, over the default
 // and edited curves with every group edited. Within transcendental().

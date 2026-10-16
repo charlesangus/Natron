@@ -552,7 +552,7 @@ ColorCorrect::initializeKnobs()
     KnobBoolPtr clampBlack = createKnob<KnobBool>(tr("Clamp Black"));
     clampBlack->setName(kColorCorrectParamClampBlack);
     clampBlack->setHintToolTip(tr("All colors below 0 on output are set to 0."));
-    clampBlack->setDefaultValue(true);
+    clampBlack->setDefaultValue(false);
     clampBlack->setAddNewLine(false);
     page->addKnob(clampBlack);
     _clampBlack = clampBlack;
@@ -607,7 +607,7 @@ ColorCorrect::makeKernel(const KernelContext& context)
                                                 luminanceMath,
                                                 rangeMin,
                                                 rangeMax,
-                                                readBool(_clampBlack, context.time, context.view, true),
+                                                readBool(_clampBlack, context.time, context.view, false),
                                                 readBool(_clampWhite, context.time, context.view, false),
                                                 curves);
 }
@@ -652,7 +652,7 @@ ColorCorrect::isIdentityOp(double time,
                            const RectI& /*roi*/,
                            ViewIdx view)
 {
-    if (readBool(_clampBlack, time, view, true) || readBool(_clampWhite, time, view, false)) {
+    if (readBool(_clampBlack, time, view, false) || readBool(_clampWhite, time, view, false)) {
         return false;
     }
     for (int g = 0; g < eGroupCount; ++g) {

@@ -42,6 +42,8 @@ constexpr uint32_t kClampBlack = 2;
 constexpr uint32_t kClampWhite = 4;
 
 constexpr int64_t kUlpBound = 4;
+// Mirrors kGradeMinGamma in Grade.cpp: the host raises any lower gamma to it before packing.
+constexpr double kMinGamma = 0.01;
 constexpr uint32_t kHeight = 3;
 
 struct KnobSet {
@@ -87,6 +89,12 @@ makeKnobs(std::mt19937& rng)
     return k;
 }
 
+inline float
+hostGamma(float knobGamma)
+{
+    return static_cast<float>((knobGamma > kMinGamma) ? static_cast<double>(knobGamma) : kMinGamma);
+}
+
 inline std::vector<float>
 makeSweep()
 {
@@ -103,6 +111,8 @@ makeSweep()
 
 struct GradeCase {
     GradeParams p;
+    // The gamma knob as set, which may lie below kMinGamma; p.gamma holds what the host packs.
+    float knobGamma[4];
     bool reverse;
     std::vector<float> src;
 };
@@ -124,8 +134,9 @@ makeCases()
                 for (int i = 0; i < 4; ++i) {
                     p.a[i] = knobs.a[i];
                     p.b[i] = knobs.b[i];
-                    p.gamma[i] = knobs.gamma[i];
-                    p.invGamma[i] = static_cast<float>(1.0 / static_cast<double>(knobs.gamma[i]));
+                    c.knobGamma[i] = knobs.gamma[i];
+                    p.gamma[i] = hostGamma(knobs.gamma[i]);
+                    p.invGamma[i] = static_cast<float>(1.0 / static_cast<double>(p.gamma[i]));
                 }
                 p.width = n;
                 p.height = kHeight;
@@ -163,7 +174,8 @@ specPowError(double x, double e, double y)
 }
 
 // The kernel's pow exponent is a float, so its rounding moves the result by
-// about |ln(pow result)| * 2^-24 relative; the reverse path additionally
+// about |ln(pow result)| * 2^-24 relative, and the float rounding of a*v+b
+// moves it by up to 1/gamma * 2^-24 relative; the reverse path additionally
 // cancels pow(v, gamma) against b. Both are properties of float arithmetic,
 // not of the kernel, so the fallback bound grows with them. `spec` adds what
 // a conforming GPU may do beyond that (see specPowError).
@@ -176,12 +188,17 @@ conditionedTolerance(double v, const graderef::Channel& ch, bool reverse, double
     if (!reverse) {
         const double x = ch.a * v + ch.b;
         const double unfusedProduct = spec ? ulpOf(ch.a * v) : 0;
-        if (ch.gamma > 0 && ch.gamma != 1. && x > 0) {
+        if (ch.gamma != 1. && x > 0) {
             const double inv = 1. / ch.gamma;
             const double y = std::pow(x, inv);
-            double t = (kBase + 2 * std::fabs(std::log(y))) * ulpOf(y);
-            if (spec)
+            const double logY = (y > 0) ? std::fabs(std::log(y)) : 0;
+            double t = (kBase + 2 * logY + inv) * ulpOf(y);
+            if (spec) {
                 t += specPowError(x, inv, y) + std::fabs(y * inv / x) * unfusedProduct;
+                // A large 1/gamma takes pow below the normal range, where a device may flush to zero.
+                if (y < std::numeric_limits<float>::min())
+                    t += std::numeric_limits<float>::min();
+            }
             return t;
         }
         return kBase * ulpOf(result) + unfusedProduct;

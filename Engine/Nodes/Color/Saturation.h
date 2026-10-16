@@ -50,7 +50,8 @@ struct SaturationValues;
  * luminance l: c' = (1 - saturation) * l + saturation * c, with clampBlack/clampWhite clamping
  * every processed channel, alpha included, to [0, 1]. RGB and RGBA only. Knob names, defaults
  * and maths are the openfx-misc SaturationPlugin's, except that the ACES AP1 luminance uses the
- * AP1 coefficients; it registers under that plugin's ID one major above.
+ * AP1 coefficients and clampBlack defaults off so that a default node is an identity; it
+ * registers under that plugin's ID one major above.
  **/
 class Saturation
     : public NativeImageEffect {

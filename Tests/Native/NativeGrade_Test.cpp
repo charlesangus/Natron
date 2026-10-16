@@ -54,6 +54,7 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
+#include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -62,6 +63,7 @@ NATRON_PYTHON_NAMESPACE_USING
 namespace {
 
 const char* const kGradeID = PLUGINID_NATRON_GRADE;
+const double kTime = 1.;
 const int kOfxGradeMajor = 2;
 const int kNativeGradeMajor = PLUGIN_MAJOR_NATRON_GRADE;
 
@@ -88,6 +90,19 @@ bool
 isNative(const NodePtr& node)
 {
     return node && dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
+}
+
+bool
+identityOf(const NodePtr& node,
+           const RectI& window,
+           int* inputNb)
+{
+    double inputTime = 0.;
+    ViewIdx inputView;
+
+    *inputNb = -1;
+
+    return node->getEffectInstance()->isIdentity_public(false, 0, kTime, RenderScale::identity, window, ViewIdx(0), &inputTime, &inputView, inputNb);
 }
 
 } // namespace
@@ -130,6 +145,7 @@ TEST_F(NativeGradeTest, MultiplyOffset)
     ASSERT_TRUE(setKnobOnBoth(pair, "offset", { 0.1, -0.05, 0.2, 0. }));
     ASSERT_TRUE(setKnobOnBoth(pair, "blackPoint", { 0.05 }));
     ASSERT_TRUE(setKnobOnBoth(pair, "white", { 1.1 }));
+    ASSERT_TRUE(setKnobOnBoth(pair, "clampBlack", { 1. }));
     expectParity(pair, "multiply-offset", true);
 }
 
@@ -154,7 +170,35 @@ TEST_F(NativeGradeTest, MaskAndMix)
     ASSERT_TRUE(setKnobOnBoth(pair, "mix", { 0.5 }));
     ASSERT_TRUE(setKnobOnBoth(pair, "multiply", { 1.5 }));
     ASSERT_TRUE(setKnobOnBoth(pair, "gamma", { 0.8 }));
+    ASSERT_TRUE(setKnobOnBoth(pair, "clampBlack", { 1. }));
     expectParity(pair, "mask-mix", true);
+}
+
+TEST_F(NativeGradeTest, IdentityConditions)
+{
+    ParityPair pair = makePair();
+    ASSERT_TRUE(bool(pair.native));
+    const RectI window = paritySourceWindow(pair.source, kTime, 0);
+    int inputNb = -1;
+
+    EXPECT_TRUE(identityOf(pair.native, window, &inputNb));
+    EXPECT_EQ(0, inputNb);
+
+    ASSERT_TRUE(setKnobOnBoth(pair, "clampBlack", { 1. }));
+    EXPECT_FALSE(identityOf(pair.native, window, &inputNb));
+    ASSERT_TRUE(setKnobOnBoth(pair, "clampBlack", { 0. }));
+
+    ASSERT_TRUE(setKnobOnBoth(pair, "clampWhite", { 1. }));
+    EXPECT_FALSE(identityOf(pair.native, window, &inputNb));
+    ASSERT_TRUE(setKnobOnBoth(pair, "clampWhite", { 0. }));
+    EXPECT_TRUE(identityOf(pair.native, window, &inputNb));
+
+    ASSERT_TRUE(setKnobOnBoth(pair, "gamma", { 0. }));
+    EXPECT_FALSE(identityOf(pair.native, window, &inputNb));
+
+    ASSERT_TRUE(setKnobOnBoth(pair, "mix", { 0. }));
+    EXPECT_TRUE(identityOf(pair.native, window, &inputNb));
+    EXPECT_EQ(0, inputNb);
 }
 
 TEST_F(NativeGradeTest, NormalizeSetsTheBlackAndWhitePoints)

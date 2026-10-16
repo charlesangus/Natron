@@ -60,7 +60,8 @@ NATRON_NAMESPACE_ENTER
  *   gamma:      c = pow(c, 1 / gamma), for c > 0
  *   gain, then offset
  * and clampBlack/clampWhite clamp the result. Knob names, defaults and maths are the
- * openfx-misc ColorCorrectPlugin's; it registers under that plugin's ID one major above.
+ * openfx-misc ColorCorrectPlugin's, except that clampBlack defaults off so that a default node is
+ * an identity; it registers under that plugin's ID one major above.
  **/
 class ColorCorrect
     : public NativeImageEffect {

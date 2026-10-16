@@ -241,6 +241,7 @@ TEST_F(NativeColorCorrectTest, EditedToneRanges)
     ASSERT_TRUE(editToneRanges(pair.native));
     setGroup(pair, kColorCorrectGroupShadows);
     setGroup(pair, kColorCorrectGroupHighlights);
+    ASSERT_TRUE(setKnobOnBoth(pair, kColorCorrectParamClampBlack, { 1. }));
     expectParity(pair, "tone-ranges", true);
 }
 
@@ -249,7 +250,9 @@ TEST_F(NativeColorCorrectTest, IdentityConditions)
     ParityPair pair = makePair();
     const RectI window = paritySourceWindow(pair.source, kTime, 0);
 
-    // clampBlack is on by default, so the default node is not an identity.
+    EXPECT_TRUE(identityOf(pair.native, window));
+
+    ASSERT_TRUE(setKnobOnBoth(pair, kColorCorrectParamClampBlack, { 1. }));
     EXPECT_FALSE(identityOf(pair.native, window));
 
     ASSERT_TRUE(setKnobOnBoth(pair, kColorCorrectParamClampBlack, { 0. }));

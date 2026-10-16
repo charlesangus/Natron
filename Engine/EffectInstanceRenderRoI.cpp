@@ -217,6 +217,7 @@ class ImageBitMapMarker_RAII
     std::list<RectI> _rectsToRender;
     bool _isBeingRenderedElseWhere;
     bool _isValid;
+    bool _committed;
     bool _renderFullScale;
 
 public:
@@ -230,6 +231,7 @@ public:
         , _rectsToRender()
         , _isBeingRenderedElseWhere(false)
         , _isValid(true)
+        , _committed(false)
         , _renderFullScale(renderFullScale)
     {
         std::vector<ImagePtr> cacheImages;
@@ -255,6 +257,14 @@ public:
     void invalidate()
     {
         _isValid = false;
+    }
+
+    // Effects may render straight into the cached image, so whatever an unsuccessful render left
+    // there must not be published: the rectangles are marked rendered only once the render has
+    // succeeded, and a failure, an abort or an exception unwinding through renderRoI() clears them.
+    void commit()
+    {
+        _committed = true;
     }
 
     void waitForPendingRegions()
@@ -287,7 +297,7 @@ public:
                 cacheImage = it->second.fullscaleImage;
             }
             if (cacheImage && cacheImage->usesBitMap()) {
-                _effect->_imp->unmarkImageAsBeingRendered(cacheImage, _rectsToRender, !_isValid);
+                _effect->_imp->unmarkImageAsBeingRendered(cacheImage, _rectsToRender, !_isValid || !_committed);
             }
         }
     }
@@ -1237,11 +1247,6 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
 
         //Render was aborted
         if (inputCode != eRenderRoIRetCodeOk) {
-#if NATRON_ENABLE_TRIMAP
-            if (guard) {
-                guard->invalidate();
-            }
-#endif
             return inputCode;
         }
     }
@@ -1511,10 +1516,9 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
 
 #if NATRON_ENABLE_TRIMAP
     assert(guard);
-    if (renderAborted && renderRetCode != EffectInstance::eRenderRoIStatusImageRendered  && renderRetCode != EffectInstance::eRenderRoIStatusImageAlreadyRendered) {
-        guard->invalidate();
-    } else {
+    if ((renderRetCode == EffectInstance::eRenderRoIStatusImageRendered) || (renderRetCode == EffectInstance::eRenderRoIStatusImageAlreadyRendered)) {
         guard->waitForPendingRegions();
+        guard->commit();
     }
 #endif // NATRON_ENABLE_TRIMAP
 

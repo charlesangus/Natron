@@ -36,6 +36,7 @@
 #include <map>
 #include <mutex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -84,7 +85,8 @@ NATRON_NAMESPACE_ENTER
 
 const int kDirectOutputProbeWidth = 50;
 const int kDirectOutputProbeHeight = 40;
-const float kDirectOutputProbeAbortedValue = -7.f;
+const float kDirectOutputProbeUnfinishedValue = -7.f;
+const char* const kDirectOutputProbeThrowMessage = "the direct output probe threw on purpose";
 
 inline float
 directOutputProbeValue(int x,
@@ -93,6 +95,17 @@ directOutputProbeValue(int x,
 {
     return (float)x + 128.f * (float)y + 0.25f * (float)channel;
 }
+
+struct DirectOutputProbeOutcome {
+    AbortableRenderInfoPtr abortInfo;
+    bool fail = false;
+    bool throwException = false;
+
+    bool unfinished() const
+    {
+        return abortInfo || fail || throwException;
+    }
+};
 
 // Render clones may run render(), so what it sees is kept here rather than on the instance.
 class DirectOutputProbeLog {
@@ -103,26 +116,51 @@ public:
         state() = State();
     }
 
-    // The next render() call writes kDirectOutputProbeAbortedValue and then aborts this render.
+    // The next render() call writes kDirectOutputProbeUnfinishedValue and then aborts this render.
     static void abortNextRender(const AbortableRenderInfoPtr& abortInfo)
     {
         std::lock_guard<std::mutex> lock(mutex());
-        state().abortNext = abortInfo;
+        state().next.abortInfo = abortInfo;
     }
 
-    static AbortableRenderInfoPtr noteRender(bool outputUsesBitmap)
+    // The next render() call writes kDirectOutputProbeUnfinishedValue over the bottom half of its
+    // window and then returns eStatusFailed.
+    static void failNextRender()
+    {
+        std::lock_guard<std::mutex> lock(mutex());
+        state().next.fail = true;
+    }
+
+    // As failNextRender(), but throwing kDirectOutputProbeThrowMessage instead of returning.
+    static void throwNextRender()
+    {
+        std::lock_guard<std::mutex> lock(mutex());
+        state().next.throwException = true;
+    }
+
+    static DirectOutputProbeOutcome noteRender(const ImagePtr& output)
     {
         std::lock_guard<std::mutex> lock(mutex());
         State& s = state();
 
         ++s.renders;
-        if (outputUsesBitmap) {
+        if (output->usesBitMap()) {
             ++s.bitmapRenders;
+            s.lastBitmapOutput = output;
         }
-        AbortableRenderInfoPtr abortInfo = s.abortNext;
-        s.abortNext.reset();
+        DirectOutputProbeOutcome outcome = s.next;
+        s.next = DirectOutputProbeOutcome();
 
-        return abortInfo;
+        return outcome;
+    }
+
+    // The last cached image render() was handed, kept alive so a test can read its bitmap after
+    // the render that wrote into it has failed.
+    static ImagePtr lastBitmapOutput()
+    {
+        std::lock_guard<std::mutex> lock(mutex());
+
+        return state().lastBitmapOutput;
     }
 
     static int renders()
@@ -143,7 +181,8 @@ private:
     struct State {
         int renders = 0;
         int bitmapRenders = 0;
-        AbortableRenderInfoPtr abortNext;
+        DirectOutputProbeOutcome next;
+        ImagePtr lastBitmapOutput;
     };
 
     static std::mutex& mutex()
@@ -211,31 +250,36 @@ private:
             return eStatusFailed;
         }
         const ImagePtr& image = args.outputLayers.front().second;
-        const AbortableRenderInfoPtr abortInfo = DirectOutputProbeLog::noteRender(image->usesBitMap());
+        const DirectOutputProbeOutcome outcome = DirectOutputProbeLog::noteRender(image);
 
         if (image->getBitDepth() != eImageBitDepthFloat) {
             return eStatusFailed;
         }
         const int numChannels = (int)image->getComponentsCount();
+        const bool stopsHalfway = outcome.fail || outcome.throwException;
+        const int lastRow = stopsHalfway ? args.roi.y1 + args.roi.height() / 2 : args.roi.y2;
         {
             Image::WriteAccess access(image.get());
-            for (int y = args.roi.y1; y < args.roi.y2; ++y) {
+            for (int y = args.roi.y1; y < lastRow; ++y) {
                 for (int x = args.roi.x1; x < args.roi.x2; ++x) {
                     float* pixel = (float*)access.pixelAt(x, y);
                     if (!pixel) {
                         return eStatusFailed;
                     }
                     for (int c = 0; c < numChannels; ++c) {
-                        pixel[c] = abortInfo ? kDirectOutputProbeAbortedValue : directOutputProbeValue(x, y, c);
+                        pixel[c] = outcome.unfinished() ? kDirectOutputProbeUnfinishedValue : directOutputProbeValue(x, y, c);
                     }
                 }
             }
         }
-        if (abortInfo) {
-            abortInfo->setAborted();
+        if (outcome.abortInfo) {
+            outcome.abortInfo->setAborted();
+        }
+        if (outcome.throwException) {
+            throw std::runtime_error(kDirectOutputProbeThrowMessage);
         }
 
-        return eStatusOK;
+        return outcome.fail ? eStatusFailed : eStatusOK;
     }
 };
 
@@ -572,6 +616,32 @@ bitmapMarksWholeWindow(const ImagePtr& image,
     return rest.empty();
 }
 
+// The pixels of window whose bitmap entry is anything but unrendered, or -1 when the image does
+// not cover window.
+long
+countPixelsNotUnrendered(const ImagePtr& image,
+                         const RectI& window)
+{
+    if (!image->getBounds().contains(window)) {
+        return -1;
+    }
+    long count = 0;
+    Image::ReadAccess access = image->getReadRights();
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            const char* bit = access.bitmapAt(x, y);
+            if (!bit) {
+                return -1;
+            }
+            if (*bit != 0) {
+                ++count;
+            }
+        }
+    }
+
+    return count;
+}
+
 void
 expectCachedImage(const CachedRender& render,
                   const RectI& window,
@@ -759,6 +829,80 @@ TEST_F(NativeDirectOutputTest, AbortedDirectRenderIsRenderedAgain)
     EXPECT_EQ(2, DirectOutputProbeLog::renders()) << "the aborted window was served from the cache instead of being rendered again";
     EXPECT_EQ(2, DirectOutputProbeLog::bitmapRenders());
     expectCachedImage(again, window, probePixels(window, (int)again.image->getComponentsCount()), "after abort");
+}
+
+namespace {
+
+enum UnsuccessfulRenderEnum {
+    eUnsuccessfulRenderFails,
+    eUnsuccessfulRenderThrows,
+};
+
+// The unsuccessful render leaves half-written pixels in the image it rendered into, which is the
+// cached image itself on the direct path, so only an unrendered bitmap keeps the next render from
+// serving them as complete.
+void
+expectUnsuccessfulRenderIsRenderedAgain(const NodePtr& probe,
+                                        UnsuccessfulRenderEnum how,
+                                        bool rendersIntoCachedImage,
+                                        const std::string& what)
+{
+    ASSERT_TRUE(bool(probe)) << what;
+    ASSERT_TRUE(setForceCaching(probe, true)) << what;
+
+    const RectI window(7, 5, 44, 34);
+    DisableUnreachableRAMPurging noPurge;
+    LegacyModeGuard legacy;
+    DirectOutputProbeLog::reset();
+
+    if (how == eUnsuccessfulRenderFails) {
+        DirectOutputProbeLog::failNextRender();
+    } else {
+        DirectOutputProbeLog::throwNextRender();
+    }
+    const CachedRender unsuccessful = renderCached(probe, window, AbortableRenderInfo::create(false, 0));
+    EXPECT_NE(EffectInstance::eRenderRoIRetCodeOk, unsuccessful.code) << what << ": the unsuccessful render completed";
+    if (how == eUnsuccessfulRenderThrows) {
+        EXPECT_NE(std::string::npos, unsuccessful.error.find(kDirectOutputProbeThrowMessage)) << what << ": the exception render() threw did not reach the caller of renderRoI: " << unsuccessful.error;
+    }
+    ASSERT_EQ(1, DirectOutputProbeLog::renders()) << what;
+    EXPECT_EQ(rendersIntoCachedImage ? 1 : 0, DirectOutputProbeLog::bitmapRenders()) << what;
+
+    const ImagePtr cachedImage = DirectOutputProbeLog::lastBitmapOutput();
+    if (rendersIntoCachedImage) {
+        ASSERT_TRUE(bool(cachedImage)) << what;
+        EXPECT_EQ(0, countPixelsNotUnrendered(cachedImage, window)) << what << ": the cached image the render failed in is not unrendered over the whole window";
+    }
+
+    const CachedRender again = renderCached(probe, window, AbortableRenderInfo::create(false, 0));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, again.code) << what << ": " << again.error;
+    EXPECT_EQ(2, DirectOutputProbeLog::renders()) << what << ": the window of the unsuccessful render was served from the cache instead of being rendered again";
+    if (rendersIntoCachedImage) {
+        EXPECT_EQ(cachedImage, again.image) << what << ": the render after the failure did not go through the cached image the failure left behind";
+    }
+    expectCachedImage(again, window, probePixels(window, (int)again.image->getComponentsCount()), what + ", rendered again");
+}
+
+} // namespace
+
+TEST_F(NativeDirectOutputTest, FailedDirectRenderIsRenderedAgain)
+{
+    expectUnsuccessfulRenderIsRenderedAgain(createNode(QString::fromUtf8(kDirectOutputProbePluginID)), eUnsuccessfulRenderFails, true, "failed direct render");
+}
+
+TEST_F(NativeDirectOutputTest, ThrowingDirectRenderIsRenderedAgain)
+{
+    expectUnsuccessfulRenderIsRenderedAgain(createNode(QString::fromUtf8(kDirectOutputProbePluginID)), eUnsuccessfulRenderThrows, true, "throwing direct render");
+}
+
+TEST_F(NativeDirectOutputTest, FailedRenderViaTemporaryIsRenderedAgain)
+{
+    expectUnsuccessfulRenderIsRenderedAgain(createNode(QString::fromUtf8(kDirectOutputProbeViaTemporaryPluginID)), eUnsuccessfulRenderFails, false, "failed render via temporary");
+}
+
+TEST_F(NativeDirectOutputTest, ThrowingRenderViaTemporaryIsRenderedAgain)
+{
+    expectUnsuccessfulRenderIsRenderedAgain(createNode(QString::fromUtf8(kDirectOutputProbeViaTemporaryPluginID)), eUnsuccessfulRenderThrows, false, "throwing render via temporary");
 }
 
 TEST_F(NativeDirectOutputTest, GradeCachedMatchesUncached)

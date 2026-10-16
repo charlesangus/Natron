@@ -2978,8 +2978,9 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
         // Rendering straight into the cached image is safe: the trimap marks the render window as
         // being rendered so readers wait for it, the effect's Image::WriteAccess holds the image's
         // write lock so a concurrent ensureBounds() cannot reallocate the buffer under the kernel,
-        // and an abort clears the bitmap over the window. Host-tiled renders keep the temporary
-        // because tiles writing into one image would serialise on its write lock.
+        // and renderRoI() marks the window rendered only after the render succeeded, so what a
+        // failed, aborted or throwing kernel left there is rendered again. Host-tiled renders keep
+        // the temporary because tiles writing into one image would serialise on its write lock.
         const bool rendersIntoMappedImage = mappedMatchesOutput && !layers.useOpenGL && (it->second.renderMappedImage->getStorageMode() == eStorageModeRAM) && (layers.rectsToRender.size() == 1) && _publicInterface->rendersOnlyInsideRenderWindow();
 
         // OpenGL render never use the cache and bitmaps, all images are local to a render.
@@ -3127,7 +3128,6 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
     bool doMask = useMaskMix ? _publicInterface->getNode()->isMaskEnabled(_publicInterface->getNInputs() - 1) : false;
     const bool rendersUnprocessed = _publicInterface->rendersUnprocessedChannels();
 
-    // Copy to output image and mark for rendered
     for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::const_iterator it = outputLayers.begin(); it != outputLayers.end(); ++it) {
         // Per the no-shuffle invariant (see EffectInstance::resolveInputPlaneForRender), the channels
         // of plane L the node does not process come from the preferred input's plane L, with

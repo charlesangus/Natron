@@ -363,3 +363,6 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
     - Unviewed nodes' GUI badges until they are read.
     - Reconnecting a group's input still refreshes the inner nodes directly below its GroupInput.
 - 2026-10-16 — **Laziness test green** at 4dd66fe29 (release run 38853063978): 2340/2340 in both schedulers. The real culprit was `Node::shouldCacheOutput`'s consumer walk, which read (and so recomputed) the hashes of unreached nodes below every render; it now uses `getHashValueIfUpToDate`. That was a production bug, not a test artefact. The audit was ruled out.
+- 2026-10-16 — **P3.T4 implemented** (code: b1b7afc87, f483b22c6; building). Stamps are taken on first hash and on Reload, with no TTL, watcher, focus rescan or per-render stat. Reload re-keys every node whose file knob covers the same files (`FileStampRegistry::coversSameFiles`). It also reloads the OCIO config when its stamp moved, and clears the Write read-back header cache and DeepRead's layer memo.
+  - **Also removed:** upstream Natron's seek/play modification-date check (`GuiAppInstance::checkAllReadersModificationDate`, the KnobGuiFile timeline hook, the "Last modified" tooltip and the `warnOnExternalChange` setting).
+  - **Remaining stats:** `OiioReadSupport::readHeader` still stats on each uncached header read, as before this milestone.

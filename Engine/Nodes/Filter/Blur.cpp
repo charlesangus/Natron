@@ -774,15 +774,20 @@ Blur::render(const RenderActionArgs& args)
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
     RenderCancellation cancel(this);
 
+    // Left uninitialised: fillBuffer() writes every element, and zeroing here would fault the pages in
+    // on this thread alone. Kept across jobs so that a later plane reuses the pages the first one faulted in.
+    std::unique_ptr<float[]> bufferStorage;
+    std::size_t bufferCapacity = 0;
     for (std::size_t j = 0; j < jobs.size(); ++j) {
         const PlaneJob& job = jobs[j];
         const ProcessedPlanes planes(job);
         const int nPlanes = planes.count();
-        // Left uninitialised: fillBuffer() writes every element, and zeroing here would fault the pages in
-        // on this thread alone.
         const std::size_t bufferSize = processing ? planeSize * nPlanes : 0;
-        const std::unique_ptr<float[]> bufferStorage(bufferSize ? new float[bufferSize] : NULL);
-        float* const buffer = bufferStorage.get();
+        if (bufferSize > bufferCapacity) {
+            bufferStorage.reset(new float[bufferSize]);
+            bufferCapacity = bufferSize;
+        }
+        float* const buffer = bufferSize ? bufferStorage.get() : NULL;
 
         if (buffer) {
             // 1. The source over the buffer, outside its image by the boundary condition, divided by the "(Un)premult by"

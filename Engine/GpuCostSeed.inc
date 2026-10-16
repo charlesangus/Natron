@@ -57,7 +57,7 @@
     { "net.sf.openfx.Despill", 9.0678, 0.8832 }, \
     { "net.sf.openfx.FrameBlend", 20.6113, 0.9152 }, \
     { "net.sf.openfx.GammaPlugin", 19.7045, 4.8891 }, \
-    { "net.sf.openfx.GradePlugin", 13.5443, 1.1202 }, \
+    { "net.sf.openfx.GradePlugin", 11.4800, 7.8630 }, \
     { "net.sf.openfx.Invert", 9.5062, 4.0413 }, \
     { "net.sf.openfx.KeyerPlugin", 17.9119, 1.3066 }, \
     { "net.sf.openfx.MergePlugin", 5.8797, 1.0836 }, \
@@ -75,10 +75,10 @@
     { "net.sf.openfx.TransformPlugin", 996.1061, 2.8736 }
 
 #define NATRON_GPU_COST_SEED_CPU_SIGMA_ROWS \
-    { "net.sf.cimg.CImgBlur", "fir", 3.0, 46.0000, 3.4848 }, \
-    { "net.sf.cimg.CImgBlur", "fir", 25.0, 100.0000, 4.7619 }, \
-    { "net.sf.cimg.CImgBlur", "fir", 1e9, 267.0000, 6.1521 }, \
-    { "net.sf.cimg.CImgBlur", "iir", 1e9, 71.0000, 3.7566 }
+    { "net.sf.cimg.CImgBlur", "fir", 3.0, 30.1300, 6.4106 }, \
+    { "net.sf.cimg.CImgBlur", "fir", 25.0, 84.6000, 6.9458 }, \
+    { "net.sf.cimg.CImgBlur", "fir", 1e9, 252.8000, 7.2937 }, \
+    { "net.sf.cimg.CImgBlur", "iir", 1e9, 52.8400, 7.7365 }
 
 #define NATRON_GPU_COST_SEED_GPU_ROWS \
     { "net.sf.openfx.GradePlugin", "plain", 0.0, 0.0599 }, \

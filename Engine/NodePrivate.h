@@ -238,7 +238,6 @@ public:
         , persistentMessageMutex()
         , persistentMessageFromChannelSelector(false)
         , persistentMessageRenderSequence(0)
-        , nanWarningHash(0)
         , channelSelectorResolvedSequence(0)
         , dataKindConflictMessage()
         , guiPointer()
@@ -452,10 +451,6 @@ public:
     // The AbortableRenderInfo sequence number of the render that posted the channel-selector
     // message, 0 when it was posted outside a render. Guarded by persistentMessageMutex.
     U64 persistentMessageRenderSequence;
-
-    // The node hash of the render that posted persistentMessage through Node::setNaNWarning(), 0
-    // when the message is anything else. Guarded by persistentMessageMutex.
-    U64 nanWarningHash;
 
     // Renders created at or before this sequence number are older than the latest verdict that
     // the selected channels are present, so their failures are stale and are not posted.

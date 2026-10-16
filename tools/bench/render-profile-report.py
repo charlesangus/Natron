@@ -295,16 +295,21 @@ MOTION_BLUR_PLUGIN_IDS = frozenset([TRANSFORM_PLUGIN_ID])
 UHD_MPX = 3840 * 2160 / 1e6
 OPEN_SIGMA = 1e9
 
-# Profile records carry no sigma, so these come from in-situ Blur measurements
-# (UHD float, 16 threads vs noRenderThreads=1, per-task ms/Mpx) taken after the
-# uninitialised-buffer fix. Rows are (algorithm, largest sigma covered, serial, threaded);
-# the last bucket of each algorithm is open-ended and was measured at sigma 100.
+# Profile records carry no sigma, so these come from in-situ Blur measurements (UHD float,
+# native node, GPU off, taskgraph per-task ms/Mpx, 16 threads vs noRenderThreads=1) of the
+# four Blur comps. Rows are (algorithm, largest sigma covered, serial, threaded); the last FIR
+# bucket is open-ended and was measured at sigma 100. The recursive filter costs the same at
+# any sigma, so its one measurement at sigma 3 covers every sigma.
 BLUR_SIGMA_MEASURED = (
-    ("fir", 3.0, 46.0, 13.2),
-    ("fir", 25.0, 100.0, 21.0),
-    ("fir", OPEN_SIGMA, 267.0, 43.4),
-    ("iir", OPEN_SIGMA, 71.0, 18.9),
+    ("fir", 3.0, 30.13, 4.70),
+    ("fir", 25.0, 84.6, 12.18),
+    ("fir", OPEN_SIGMA, 252.8, 34.66),
+    ("iir", OPEN_SIGMA, 52.84, 6.83),
 )
+
+# Grade's CPU cost (serial, threaded ms/Mpx) from the same in-situ measurement, in place of
+# the comp profiles' median, which predates the render path's serial-overhead cuts.
+GRADE_CPU_MEASURED = (11.48, 1.46)
 
 # The nodes with a GPU kernel. Each needs a CPU and a GPU seed row.
 PORTED_PLUGIN_IDS = (
@@ -385,7 +390,10 @@ def cost_table_rows(threaded_paths, serial_paths):
     for plugin in sorted(serial):
         speedup = serial[plugin] / threaded[plugin] if threaded.get(plugin, 0) > 0 else 1.0
         rows = motion_blur if plugin in MOTION_BLUR_PLUGIN_IDS else cpu
-        rows.append((plugin, serial[plugin], speedup))
+        if plugin == GRADE_PLUGIN_ID:
+            rows.append((plugin, GRADE_CPU_MEASURED[0], GRADE_CPU_MEASURED[0] / GRADE_CPU_MEASURED[1]))
+        else:
+            rows.append((plugin, serial[plugin], speedup))
     cpu.append((TRANSFORM_PLUGIN_ID, TRANSFORM_PLAIN_MEASURED[0], TRANSFORM_PLAIN_MEASURED[0] / TRANSFORM_PLAIN_MEASURED[1]))
     cpu.sort()
     sigma = [(BLUR_PLUGIN_ID, algo, top, ser, ser / par) for algo, top, ser, par in BLUR_SIGMA_MEASURED]
@@ -532,9 +540,9 @@ def self_test(args):
         assert close(rows[TRANSFORM_PLUGIN_ID][1], TRANSFORM_PLAIN_MEASURED[0] / TRANSFORM_PLAIN_MEASURED[1])
         assert motion_blur == [], motion_blur
         assert close(rows["Blur"][0], 100.0) and close(rows["Blur"][1], 2.0), rows["Blur"]
-        assert close(rows["Grade"][0], 5.0) and close(rows["Defocus"][0], 200.0)
+        assert close(rows["Defocus"][0], 200.0)
         assert [r[1:3] for r in sigma] == [("fir", 3.0), ("fir", 25.0), ("fir", 1e9), ("iir", 1e9)]
-        assert close(sigma[0][4], 46.0 / 13.2) and close(sigma[3][4], 71.0 / 18.9), sigma
+        assert close(sigma[0][4], 30.13 / 4.70) and close(sigma[3][4], 52.84 / 6.83), sigma
         assert [r[:3] for r in gpu] == [(p, k, t) for p, k, t, _ in GPU_KERNEL_UHD_MS], gpu
         grade_gpu = [r for r in gpu if r[0] == GRADE_PLUGIN_ID]
         assert len(grade_gpu) == 1 and close(grade_gpu[0][3], 0.497 / UHD_MPX), grade_gpu
@@ -547,7 +555,7 @@ def self_test(args):
         assert '    { "Blur", 100.0000, 2.0000 }, \\\n' in text, text
         assert text.count("#define NATRON_GPU_COST_SEED_") == 4
         assert "#define NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROWS\n" in text, text
-        assert '{ "net.sf.cimg.CImgBlur", "fir", 3.0, 46.0000, 3.4848 }' in text, text
+        assert '{ "net.sf.cimg.CImgBlur", "fir", 3.0, 30.1300, 6.4106 }' in text, text
         assert '{ "net.sf.cimg.CImgBlur", "iir", 1e9, ' in text, text
         assert "(%s)" % file_date(sample) in text and "//   cmd\n" in text
         body = [line for line in text.splitlines() if not line.startswith("//")]

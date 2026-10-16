@@ -54,9 +54,6 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 
-// Splitting a copy smaller than this across threads costs more in scheduling than it saves.
-const qint64 kMinParallelCopyUnProcessedArea = 256 * 256;
-
 template <typename PIX>
 struct CopyUnProcessedRowsArgs {
     RectI roi;
@@ -145,35 +142,6 @@ copyUnProcessedRows(const CopyUnProcessedRowsArgs<PIX>& args,
     }
 }
 
-// The callers may already run on render workers (host frame threading, parallel frame renders), so
-// the row bands only go wide when the pool has idle threads to spare for this effect.
-void
-forEachCopyUnProcessedRowBand(const RectI& roi,
-                              const std::function<void(int, int)>& copyRows)
-{
-    const int width = roi.x2 - roi.x1;
-    const int height = roi.y2 - roi.y1;
-    int nBands = 1;
-
-    if ((width > 0) && (height > 0) && ((qint64)width * height >= kMinParallelCopyUnProcessedArea) && appPTR) {
-        nBands = std::min(height, appPTR->getNCPUsAvailableForEffect());
-    }
-    if (nBands <= 1) {
-        copyRows(roi.y1, roi.y2);
-
-        return;
-    }
-
-    const int rowsPerBand = (height + nBands - 1) / nBands;
-    std::vector<RectI> bands;
-    for (int y = roi.y1; y < roi.y2; y += rowsPerBand) {
-        bands.push_back(RectI(roi.x1, y, roi.x2, std::min(y + rowsPerBand, roi.y2)));
-    }
-    parallelForOnGlobalPool((int)bands.size(), nBands, [&](int i) {
-        copyRows(bands[i].y1, bands[i].y2);
-    });
-}
-
 template <typename PIX>
 CopyUnProcessedRowsArgs<PIX>
 makeCopyUnProcessedRowsArgs(const RectI& roi,
@@ -216,7 +184,7 @@ Image::copyUnProcessedChannelsForChannels(const std::bitset<4> processChannels,
     const unsigned char* srcOrigin = originalImage ? acc.pixelAt(srcBounds.x1, srcBounds.y1) : 0;
     const CopyUnProcessedRowsArgs<PIX> args = makeCopyUnProcessedRowsArgs<PIX>(roi, dst_pixels, dstNComps, _bounds.width(), srcBounds, srcOrigin, srcNComps);
 
-    forEachCopyUnProcessedRowBand(roi, [&](int y1, int y2) {
+    forEachRowBand(roi, kMinParallelRowBandArea, [&](int y1, int y2) {
         copyUnProcessedRows<PIX, maxValue, srcNComps, dstNComps>(args, y1, y2,
                                                                  std::integral_constant<bool, doR>(),
                                                                  std::integral_constant<bool, doG>(),
@@ -244,7 +212,7 @@ Image::copyUnProcessedChannelsForChannels(const std::bitset<4> processChannels,
     const unsigned char* srcOrigin = originalImage ? acc.pixelAt(srcBounds.x1, srcBounds.y1) : 0;
     const CopyUnProcessedRowsArgs<PIX> args = makeCopyUnProcessedRowsArgs<PIX>(roi, dst_pixels, dstNComps, _bounds.width(), srcBounds, srcOrigin, srcNComps);
 
-    forEachCopyUnProcessedRowBand(roi, [&](int y1, int y2) {
+    forEachRowBand(roi, kMinParallelRowBandArea, [&](int y1, int y2) {
         copyUnProcessedRows<PIX, maxValue, srcNComps, dstNComps>(args, y1, y2, doR, doG, doB, doA);
     });
 } // Image::copyUnProcessedChannelsForChannels

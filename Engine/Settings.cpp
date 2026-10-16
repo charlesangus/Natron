@@ -454,14 +454,6 @@ Settings::initializeKnobsRendering()
 {
     _renderingPage = AppManager::createKnob<KnobPage>( this, tr("Rendering") );
 
-    _convertNaNValues = AppManager::createKnob<KnobBool>( this, tr("Convert NaN values") );
-    _convertNaNValues->setName("convertNaNs");
-    _convertNaNValues->setHintToolTip( tr("When activated, any pixel that is a Not-a-Number will be converted to 1 to avoid potential crashes from "
-                                          "downstream nodes. These values can be produced by faulty plug-ins when they use wrong arithmetic such as "
-                                          "division by zero. Disabling this option will keep the NaN(s) in the buffers: this may lead to an "
-                                          "undefined behavior.") );
-    _renderingPage->addKnob(_convertNaNValues);
-
     _pluginUseImageCopyForSource = AppManager::createKnob<KnobBool>( this, tr("Copy input image before rendering any plug-in") );
     _pluginUseImageCopyForSource->setName("copyInputImage");
     _pluginUseImageCopyForSource->setHintToolTip( tr("If checked, when before rendering any node, %1 will copy "
@@ -1585,7 +1577,6 @@ Settings::setDefaultValues()
     _queueRenders->setDefaultValue(false);
 
     // General/Rendering
-    _convertNaNValues->setDefaultValue(true);
     _pluginUseImageCopyForSource->setDefaultValue(false);
     _activateRGBSupport->setDefaultValue(true);
     _activateTransformConcatenationSupport->setDefaultValue(true);
@@ -3849,12 +3840,6 @@ int
 Settings::getDopeSheetEditorNodeSeparationWith() const
 {
     return 4;
-}
-
-bool
-Settings::isNaNHandlingEnabled() const
-{
-    return _convertNaNValues->getValue();
 }
 
 bool

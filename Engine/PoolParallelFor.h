@@ -38,8 +38,10 @@
 #include <QMutexLocker>
 #include <QThreadPool>
 #include <QWaitCondition>
+#include <QtGlobal>
 
 #include "Engine/OpenMPThreads.h"
+#include "Engine/RectI.h"
 #include "Engine/TLSHolder.h"
 
 NATRON_NAMESPACE_ENTER
@@ -137,6 +139,20 @@ parallelForOnGlobalPool(int count,
         std::rethrow_exception(state->error);
     }
 }
+
+// Splitting a copy smaller than this across threads costs more in scheduling than it saves.
+const qint64 kMinParallelRowBandArea = 256 * 256;
+
+/**
+ * @brief Calls fn(y1, y2) on disjoint row ranges that together cover [rect.y1, rect.y2), on the calling thread and on
+ * pool threads, and returns once every call has returned.
+ *
+ * The callers may already run on render workers (host frame threading, parallel frame renders), so the bands only go
+ * wide when the pool has idle threads to spare for this effect, and a rect smaller than minArea is not split.
+ **/
+void forEachRowBand(const RectI& rect,
+                    qint64 minArea,
+                    const std::function<void(int y1, int y2)>& fn);
 
 NATRON_NAMESPACE_EXIT
 

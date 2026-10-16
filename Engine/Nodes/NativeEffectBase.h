@@ -319,6 +319,11 @@ public:
         return eRenderSafetyFullySafeFrame;
     }
 
+    virtual bool rendersOnlyInsideRenderWindow() const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
     /**
      * @brief The metadata of the image this node outputs at time and view: what
      * deriveOutputMetadata() gives, cached per (time, view). The cache is dropped whenever a knob

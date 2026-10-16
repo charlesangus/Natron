@@ -27,16 +27,18 @@
 
 #include <algorithm> // min, max
 #include <cassert>
+#include <cstddef>
 #include <cstring> // for std::memcpy, std::memset
 #include <stdexcept>
 
 #include <QDebug>
 
 #include "Engine/AppManager.h"
-#include "Engine/ViewIdx.h"
+#include "Engine/GLShader.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/OSGLContext.h"
-#include "Engine/GLShader.h"
+#include "Engine/PoolParallelFor.h"
+#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -530,13 +532,27 @@ Bitmap::markFor(const RectI & roi, char value)
     int x2 = std::min(roi.x2, _bounds.x2);
     int y2 = std::min(roi.y2, _bounds.y2);
 
-    char* buf = BM_GET(y1, x1);
-    int w = _bounds.width();
-    int roiw = x2 - x1;
-
-    for (int i = y1; i < y2; ++i, buf += w) {
-        std::memset( buf, value, roiw);
+    if (x1 >= x2 || y1 >= y2) {
+        return;
     }
+    const std::size_t w = _bounds.width();
+    const std::size_t roiw = x2 - x1;
+    char* const origin = BM_GET(y1, x1);
+    forEachRowBand(RectI(x1, y1, x2, y2), kMinParallelRowBandArea, [&](int by1, int by2) {
+        char* buf = origin + (std::size_t)(by1 - y1) * w;
+        for (int i = by1; i < by2; ++i, buf += w) {
+            std::memset(buf, value, roiw);
+        }
+    });
+}
+
+void
+Bitmap::setTo1()
+{
+    if (_map.empty()) {
+        return;
+    }
+    markFor(_bounds, 1);
 }
 
 bool
@@ -918,25 +934,27 @@ Image::pasteFromForDepth(const Image & srcImg,
     }
     // now we're safe: both images contain the area in roi
 
-    int srcRowElements = _nbComponents * srcBounds.width();
-    int dstRowElements = _nbComponents * bounds.width();
+    const std::ptrdiff_t srcRowElements = (std::ptrdiff_t)_nbComponents * srcBounds.width();
+    const std::ptrdiff_t dstRowElements = (std::ptrdiff_t)_nbComponents * bounds.width();
     const PIX* src = (const PIX*)srcImg.pixelAt(roi.x1, roi.y1);
     PIX* dst = (PIX*)pixelAt(roi.x1, roi.y1);
 
     assert(src && dst);
 
-    for (int y = roi.y1; y < roi.y2;
-         ++y,
-         src += srcRowElements,
-         dst += dstRowElements) {
-        std::memcpy(dst, src, roi.width() * sizeof(PIX) * _nbComponents);
+    const size_t rowBytes = (size_t)roi.width() * sizeof(PIX) * _nbComponents;
+    forEachRowBand(roi, kMinParallelRowBandArea, [&](int y1, int y2) {
+        const PIX* bandSrc = src + (std::ptrdiff_t)(y1 - roi.y1) * srcRowElements;
+        PIX* bandDst = dst + (std::ptrdiff_t)(y1 - roi.y1) * dstRowElements;
+        for (int y = y1; y < y2; ++y, bandSrc += srcRowElements, bandDst += dstRowElements) {
+            std::memcpy(bandDst, bandSrc, rowBytes);
 #ifdef DEBUG_NAN
-        for (int i = 0; i < roi.width() * _nbComponents; ++i) {
-            assert( !std::isnan(src[i]) ); // check for NaN
-            assert( !std::isnan(dst[i]) ); // check for NaN
-        }
+            for (int i = 0; i < roi.width() * _nbComponents; ++i) {
+                assert(!std::isnan(bandSrc[i])); // check for NaN
+                assert(!std::isnan(bandDst[i])); // check for NaN
+            }
 #endif
-    }
+        }
+    });
 } // Image::pasteFromForDepth
 
 void
@@ -1808,9 +1826,6 @@ Image::halveRoIForDepth(const RectI & roi,
 
     RectI dstRoI;
     const RectI srcRoI = roi.intersect(srcBounds); // intersect RoI with the region of definition
-#ifdef DEBUG_NAN
-    assert(!checkForNaNsNoLock(srcRoI));
-#endif
     dstRoI.x1 = (srcRoI.x1 + 1) / 2; // equivalent to ceil(srcRoI.x1/2.0)
     dstRoI.y1 = (srcRoI.y1 + 1) / 2; // equivalent to ceil(srcRoI.y1/2.0)
     dstRoI.x2 = srcRoI.x2 / 2; // equivalent to floor(srcRoI.x2/2.0)
@@ -2079,71 +2094,6 @@ Image::downscaleMipmap(const RectD& dstRod,
 
     ///Now copy the result of tmpImg into the output image
     output->pasteFrom(*tmpImg, dstRoI, copyBitMap);
-}
-
-bool
-Image::checkForNaNsAndFix(const RectI& roi)
-{
-    if (getBitDepth() != eImageBitDepthFloat) {
-        return false;
-    }
-    if (getStorageMode() == eStorageModeGLTex) {
-        return false;
-    }
-
-    QWriteLocker k(&_entryLock);
-    unsigned int compsCount = getComponentsCount();
-    bool hasnan = false;
-    for (int y = roi.y1; y < roi.y2; ++y) {
-        float* pix = (float*)pixelAt(roi.x1, y);
-        float* const end = pix +  compsCount * roi.width();
-
-        for (; pix < end; ++pix) {
-            // we remove NaNs, but infinity values should pose no problem
-            // (if they do, please explain here which ones)
-#ifdef DEBUG_NAN
-            assert( !std::isnan(*pix) ); // check for NaN
-#endif
-            if ( std::isnan(*pix) ) { // check for NaN (std::isnan(x) is not slower than x != x and works with -Ofast)
-                *pix = 1.;
-                hasnan = true;
-            }
-        }
-    }
-
-    return hasnan;
-}
-
-bool
-Image::checkForNaNsNoLock(const RectI& roi) const
-{
-    if (getBitDepth() != eImageBitDepthFloat) {
-        return false;
-    }
-    if (getStorageMode() == eStorageModeGLTex) {
-        return false;
-    }
-
-    //QWriteLocker k(&_entryLock);
-    unsigned int compsCount = getComponentsCount();
-    bool hasnan = false;
-    for (int y = roi.y1; y < roi.y2; ++y) {
-        float* pix = (float*)pixelAt(roi.x1, y);
-        float* const end = pix +  compsCount * roi.width();
-
-        for (; pix < end; ++pix) {
-            // we remove NaNs, but infinity values should pose no problem
-            // (if they do, please explain here which ones)
-#ifdef DEBUG_NAN
-            assert( !std::isnan(*pix) ); // check for NaN
-#endif
-            if ( std::isnan(*pix) ) { // check for NaN (std::isnan(x) is not slower than x != x and works with -Ofast)
-                hasnan = true;
-            }
-        }
-    }
-
-    return hasnan;
 }
 
 // code proofread and fixed by @devernay on 8/8/2014

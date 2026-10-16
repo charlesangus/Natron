@@ -269,6 +269,19 @@ writeWindow(const PlaneJob& job,
         std::vector<float> maskRow(doMask ? width : 0);
         std::vector<float> divisorRow(job.divisor ? width : 0);
 
+        std::vector<int> planeOfComp(nComps, -1);
+        bool allProcessed = true;
+        for (int c = 0; c < nComps; ++c) {
+            planeOfComp[c] = (c < 4) ? planes.planeOfChannel[c] : -1;
+            allProcessed = allProcessed && (planeOfComp[c] >= 0);
+        }
+        // A window row with no divisor, no mask and mix 1 has alpha 1 at every pixel, so a processed channel is
+        // just its output value.
+        const bool plainBlend = !job.divisor && !doMask && (mix == 1.f);
+        const int fastX1 = std::max(roi.x1, processWindow.x1);
+        const int fastX2 = std::min(roi.x2, processWindow.x2);
+        const bool fastColumns = plainBlend && (fastX1 < fastX2) && (fastX1 >= bufferRect.x1) && (fastX2 <= bufferRect.x2);
+
         for (int y = band.y1; y < band.y2; ++y) {
             if ((((y - band.y1) % kAbortCheckLines) == 0) && cancel.check()) {
                 return;
@@ -277,8 +290,41 @@ writeWindow(const PlaneJob& job,
             if (!dstPix) {
                 continue;
             }
-            readSourceRow(job.src.get(), job.srcAccess.get(), job.srcBounds, job.srcNComps, roi.x1, y, width, nComps, &sourceRow[0]);
             const bool rowProcessed = layout.processing && (y >= processWindow.y1) && (y < processWindow.y2);
+            const bool rowInBuffer = (y >= bufferRect.y1) && (y < bufferRect.y2);
+            if (rowProcessed && fastColumns && rowInBuffer) {
+                const int left = fastX1 - roi.x1;
+                const int right = roi.x2 - fastX2;
+                if ((left > 0) || (right > 0) || !allProcessed) {
+                    readSourceRow(job.src.get(), job.srcAccess.get(), job.srcBounds, job.srcNComps, roi.x1, y, width, nComps, &sourceRow[0]);
+                }
+                if (left > 0) {
+                    std::copy(sourceRow.begin(), sourceRow.begin() + (std::size_t)left * nComps, dstPix);
+                }
+                const std::size_t offset = (std::size_t)(y - bufferRect.y1) * bufferWidth + (std::size_t)(fastX1 - bufferRect.x1);
+                float* midPix = dstPix + (std::size_t)left * nComps;
+                const int midWidth = fastX2 - fastX1;
+                for (int c = 0; c < nComps; ++c) {
+                    const int p = planeOfComp[c];
+                    float* out = midPix + c;
+                    if (p < 0) {
+                        const float* in = &sourceRow[(std::size_t)left * nComps + c];
+                        for (int i = 0; i < midWidth; ++i, out += nComps, in += nComps) {
+                            *out = *in;
+                        }
+                        continue;
+                    }
+                    const float* in = layout.buffer + (std::size_t)p * planeSize + offset;
+                    for (int i = 0; i < midWidth; ++i, out += nComps) {
+                        *out = output(in[i], p);
+                    }
+                }
+                if (right > 0) {
+                    std::copy(sourceRow.begin() + (std::size_t)(width - right) * nComps, sourceRow.end(), midPix + (std::size_t)midWidth * nComps);
+                }
+                continue;
+            }
+            readSourceRow(job.src.get(), job.srcAccess.get(), job.srcBounds, job.srcNComps, roi.x1, y, width, nComps, &sourceRow[0]);
             if (!rowProcessed) {
                 std::copy(sourceRow.begin(), sourceRow.end(), dstPix);
                 continue;
@@ -289,7 +335,6 @@ writeWindow(const PlaneJob& job,
             if (doMask) {
                 readChannelRow(mask.image.get(), mask.access.get(), mask.bounds, mask.nComps, mask.channel, roi.x1, y, width, 0.f, &maskRow[0]);
             }
-            const bool rowInBuffer = (y >= bufferRect.y1) && (y < bufferRect.y2);
             const std::size_t bufferRow = rowInBuffer ? (std::size_t)(y - bufferRect.y1) * bufferWidth : 0;
             for (int i = 0; i < width; ++i, dstPix += nComps) {
                 const int x = roi.x1 + i;
@@ -306,7 +351,7 @@ writeWindow(const PlaneJob& job,
                     alpha = maskScale * mix;
                 }
                 for (int c = 0; c < nComps; ++c) {
-                    const int p = (c < 4) ? planes.planeOfChannel[c] : -1;
+                    const int p = planeOfComp[c];
                     if (p < 0) {
                         dstPix[c] = srcPix[c];
                         continue;

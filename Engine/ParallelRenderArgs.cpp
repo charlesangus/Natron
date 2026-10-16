@@ -1078,8 +1078,6 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
     assert(treeRoot);
     assert(out);
 
-    bool doNanHandling = appPTR->getCurrentSettings()->isNaNHandlingEnabled();
-
     FindDependenciesMap dependenciesMap;
     if (setUpstreamArgs) {
         getAllUpstreamNodesRecursiveWithDependencies_internal(treeRoot, dependenciesMap);
@@ -1120,7 +1118,7 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
         {
             U64 nodeHash = node->getHashValue();
             nodeArgs = liveInstance->createParallelRenderArgs(time, view, isRenderUserInteraction, isSequential, nodeHash,
-                                                              abortInfo, treeRoot, it->second.visitCounter, NodeFrameRequestPtr(), glContext, textureIndex, timeline, isAnalysis, duringPaintStrokeCreation, rotoPaintNodes, safety, glSupport, doNanHandling, draftMode, stats);
+                                                              abortInfo, treeRoot, it->second.visitCounter, NodeFrameRequestPtr(), glContext, textureIndex, timeline, isAnalysis, duringPaintStrokeCreation, rotoPaintNodes, safety, glSupport, draftMode, stats);
             add(node, nodeArgs);
         }
         // Only nodes the render pulls through inputs get the value: walking upstream of an expression dependency, or
@@ -1137,7 +1135,7 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
             (*it2)->getOutputs_mt_safe(outputs);
             int visitsCounter = (int)outputs.size();
 
-            add(*it2, (*it2)->getEffectInstance()->createParallelRenderArgs(time, view, isRenderUserInteraction, isSequential, nodeHash, abortInfo, treeRoot, visitsCounter, NodeFrameRequestPtr(), glContext, textureIndex, timeline, isAnalysis, activeRotoPaintNode && (*it2)->isDuringPaintStrokeCreation(), NodesList(), (*it2)->getCurrentRenderThreadSafety(), (*it2)->getCurrentOpenGLRenderSupport(), doNanHandling, draftMode, stats));
+            add(*it2, (*it2)->getEffectInstance()->createParallelRenderArgs(time, view, isRenderUserInteraction, isSequential, nodeHash, abortInfo, treeRoot, visitsCounter, NodeFrameRequestPtr(), glContext, textureIndex, timeline, isAnalysis, activeRotoPaintNode && (*it2)->isDuringPaintStrokeCreation(), NodesList(), (*it2)->getCurrentRenderThreadSafety(), (*it2)->getCurrentOpenGLRenderSupport(), draftMode, stats));
         }
 
         if ( node->isMultiInstance() ) {
@@ -1153,7 +1151,7 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
                 assert(childLiveInstance);
                 RenderSafetyEnum childSafety = (*it2)->getCurrentRenderThreadSafety();
                 PluginOpenGLRenderSupport childGlSupport = (*it2)->getCurrentOpenGLRenderSupport();
-                add(*it2, childLiveInstance->createParallelRenderArgs(time, view, isRenderUserInteraction, isSequential, nodeHash, abortInfo, treeRoot, 1, NodeFrameRequestPtr(), glContext, textureIndex, timeline, isAnalysis, false, NodesList(), childSafety, childGlSupport, doNanHandling, draftMode, stats));
+                add(*it2, childLiveInstance->createParallelRenderArgs(time, view, isRenderUserInteraction, isSequential, nodeHash, abortInfo, treeRoot, 1, NodeFrameRequestPtr(), glContext, textureIndex, timeline, isAnalysis, false, NodesList(), childSafety, childGlSupport, draftMode, stats));
             }
         }
     }
@@ -1274,7 +1272,6 @@ ParallelRenderArgs::ParallelRenderArgs()
     , isSequentialRender(false)
     , isAnalysis(false)
     , isDuringPaintStrokeCreation(false)
-    , doNansHandling(true)
     , draftMode(false)
     , tilesSupported(false)
     , isFrameVaryingOrAnimated(false)

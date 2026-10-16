@@ -91,19 +91,14 @@ public:
     void initialize(const RectI & bounds)
     {
         _bounds = bounds;
-        _map.resize( _bounds.area() );
-
-        std::fill(_map.begin(), _map.end(), 0);
+        _map.assign(_bounds.area(), 0);
     }
 
     ~Bitmap()
     {
     }
 
-    void setTo1()
-    {
-        std::fill(_map.begin(), _map.end(), 1);
-    }
+    void setTo1();
 
     const RectI & getBounds() const
     {
@@ -837,12 +832,6 @@ public:
                        float mix,
                        const OSGLContextPtr& glContext = OSGLContextPtr() );
 
-    /**
-     * @brief Eeturns true if image contains NaNs or infinite values, and fix them.
-     * Currently, no OpenGL implementation is provided.
-     */
-    bool checkForNaNsAndFix(const RectI& roi) WARN_UNUSED_RETURN;
-
     void copyBitmapRowPortion(int x1, int x2, int y, const Image& other);
 
     void copyBitmapPortion(const RectI& roi, const Image& other);
@@ -979,8 +968,6 @@ private:
 
     template<typename PIX>
     void scaleBoxForDepth(const RectI & roi, Image* output) const;
-
-    bool checkForNaNsNoLock(const RectI& roi) const WARN_UNUSED_RETURN;
 
 private:
     ImageBitDepthEnum _bitDepth;

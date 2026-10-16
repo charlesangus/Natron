@@ -24,7 +24,7 @@ All four nodes derive from `NativeEffectBase`, modelled on `Engine/Nodes/TypedPa
   - verify: gtest that the text holds every key and value and that `ofx/frame` follows the frame; Xvfb GUI check (Read an EXR with custom attributes, add the node, see the table, change the frame), screenshot shared with the user before sign-off.
   - size: M
 
-- [ ] M77.P1.T4 — Help text and docs
+- [x] M77.P1.T4 — Help text and docs
   - files: `Engine/Nodes/Metadata/{Modify,Copy,Remove,View}Metadata.cpp` (`description` strings only), `Engine/Nodes/README.md`, `Tests/Native/NativePluginList_Test.cpp` (or a new test beside it)
   - approach: one-paragraph help per node; a README "Metadata" section listing the key prefix convention (`ofx/`, `exr/`, `exif/`, `tiff/`, `dpx/`, `cin/`, `oiio/`) and the Write routing rules as implemented in `OiioWriteSupport::applyMetadata()`, plus the slot-based UI rationale.
   - verify: a gtest that four plugins have grouping `Metadata` and non-empty descriptions; README prefixes match `applyMetadata()`.
@@ -38,3 +38,4 @@ All four nodes derive from `NativeEffectBase`, modelled on `Engine/Nodes/TypedPa
 - 2026-10-15 — **ModifyMetadata uses 8 fixed operation slots** (PM, on the consultant's advice): `KnobTable` can't hold per-cell expressions, and per-frame values were the point. A real dynamic table is a later milestone if wanted.
 - 2026-10-15 — **Claimed with known small overlap** (user): `Engine/Nodes/README.md` (M100 - Content Node Hashing) and the `AppManager.cpp` registration list; resolved at rebase rather than waiting.
 - 2026-10-15 — **P1.T1, P1.T2 green** (code: da3f7c4b9, 524d2e196; fast run 38824627050, 2272/2272 in legacy and taskgraph). RemoveMetadata may remove engine `ofx/` keys; no reserved-key policy exists (flagged to the user).
+- 2026-10-16 — **P1.T3, P1.T4 built** (code: 83a666604, 8c46b8ebe, test fix 226862b04; fast run 38833778052, 2280/2280 in legacy and taskgraph). Xvfb check (`build/m77-gui/run.sh`) passes: the table follows frames 1→2. The window title is empty under Xvfb, so the not-modified check proves nothing. Screenshots sent; P1.T3 stays open until the user approves them.

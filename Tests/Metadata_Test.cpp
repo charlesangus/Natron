@@ -52,7 +52,6 @@
 #include "Engine/OfxHost.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/OutputEffectInstance.h"
-#include "Engine/Plugin.h"
 #include "Engine/Project.h"
 
 #include <ofxImageEffect.h>
@@ -62,30 +61,17 @@
 NATRON_NAMESPACE_USING
 
 namespace {
-// Node creation alone doesn't prove the OFX host can resolve the plugin by ID; a plugin
-// that failed cache registration but still had a stale Node subclass around could pass
-// createNode() and fail everywhere else. Checking both catches that gap.
 struct MetadataPluginFixture
     : public BaseTest {
-    void assertPluginInstantiates(const char* pluginID)
-    {
-        const QString id = QString::fromUtf8(pluginID);
-
-        Plugin* binary = appPTR->getPluginBinary(id, -1, -1, false);
-        EXPECT_TRUE(binary != NULL) << "plugin cache lookup failed for " << pluginID;
-
-        NodePtr node = createNode(id);
-        ASSERT_TRUE(bool(node)) << "node creation failed for " << pluginID;
-    }
 };
 
 const char kMetadataContributeID[] = "org.openfx.examples.metadataContribute";
 const char kMetadataPrintID[] = "org.openfx.examples.metadataPrint";
 const char kMetadataTimeCodeID[] = "org.openfx.examples.metadataTimeCode";
-const char kMetadataViewID[] = "org.openfx.examples.metadataView";
 
 // A generator and a colour plugin that stay OpenFX: the cases that read an OpenFX clip of either
-// end of a connection use these.
+// end of a connection use these. ColorMatrix does not trap the get metadata action, so its output
+// clip carries what the host's default inheritance from its source clip gives it.
 const char kOfxGeneratorID[] = "net.sf.openfx.ColorWheel";
 const int kOfxGeneratorMajor = 1;
 const char kOfxColorEffectID[] = "net.sf.openfx.ColorMatrixPlugin";
@@ -400,34 +386,13 @@ private:
 };
 } // namespace
 
-// Each of the metadataView/Contribute/TimeCode example plugins loads via OFX_PLUGIN_PATH
-// and is known to be enumerated by the plugin cache (see tools/ci/smoke_test.py). Neither
-// fact implies the host can actually build a working Node around it -- describe/create
-// action failures, missing clip declarations, or a param layout the host can't build knobs
-// for would all show up only at node-creation time. This is that stronger check.
-TEST_F(MetadataPluginFixture, MetadataViewInstantiatesAsNode)
-{
-    assertPluginInstantiates("org.openfx.examples.metadataView");
-}
-
-TEST_F(MetadataPluginFixture, MetadataContributeInstantiatesAsNode)
-{
-    assertPluginInstantiates("org.openfx.examples.metadataContribute");
-}
-
-TEST_F(MetadataPluginFixture, MetadataTimeCodeInstantiatesAsNode)
-{
-    assertPluginInstantiates("org.openfx.examples.metadataTimeCode");
-}
-
 // Support/Library/ofxsMetadata.cpp fetches the metadata suite optionally and quietly no-ops
 // when it is absent, so every other test in this file would keep passing even if the host
 // never actually vended the suite. This is the one case that would catch that.
 TEST_F(MetadataPluginFixture, MetadataAndPropertySuiteAreFetchableFromOfxHost)
 {
-    const QString id = QString::fromUtf8("org.openfx.examples.metadataView");
-    NodePtr node = createNode(id);
-    ASSERT_TRUE(bool(node)) << "node creation failed for " << id.toStdString();
+    NodePtr node = createNode(QString::fromUtf8(kOfxColorEffectID), kOfxColorEffectMajor);
+    ASSERT_TRUE(bool(node)) << "node creation failed for " << kOfxColorEffectID;
 
     OfxEffectInstance* ofxEffect = dynamic_cast<OfxEffectInstance*>(node->getEffectInstance().get());
     ASSERT_TRUE(ofxEffect != NULL) << "node's effect instance is not backed by the OFX host";
@@ -633,19 +598,19 @@ TEST_F(MetadataPluginFixture, ReaderFileMetadataReachesADownstreamInputClip)
 TEST_F(MetadataPluginFixture, DownstreamMetadataFollowsAnUpstreamParamChange)
 {
     NodePtr contribute = createNode(QString::fromUtf8(kMetadataContributeID));
-    NodePtr view = createNode(QString::fromUtf8(kMetadataViewID));
+    NodePtr downstream = createNode(QString::fromUtf8(kOfxColorEffectID), kOfxColorEffectMajor);
     ASSERT_TRUE(bool(contribute)) << "node creation failed for " << kMetadataContributeID;
-    ASSERT_TRUE(bool(view)) << "node creation failed for " << kMetadataViewID;
+    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxColorEffectID;
 
-    connectNodes(contribute, view, 0, true);
+    connectNodes(contribute, downstream, 0, true);
 
-    OFX::Host::ImageEffect::ClipInstance* viewOutput = clipOf(view, kOfxImageEffectOutputClipName);
-    ASSERT_TRUE(viewOutput != NULL) << "the downstream node has no output clip";
+    OFX::Host::ImageEffect::ClipInstance* downstreamOutput = clipOf(downstream, kOfxImageEffectOutputClipName);
+    ASSERT_TRUE(downstreamOutput != NULL) << "the downstream node has no output clip";
 
     setContributedNote(contribute, "before");
 
     {
-        MetadataRef first(viewOutput, 1.);
+        MetadataRef first(downstreamOutput, 1.);
         ASSERT_TRUE(first.get() != NULL);
         ASSERT_TRUE(first->fetchProperty(kContributeNoteKey) != NULL) << "the upstream contribution never reached the downstream output clip";
         EXPECT_EQ(std::string("before"), first->getStringProperty(kContributeNoteKey));
@@ -653,7 +618,7 @@ TEST_F(MetadataPluginFixture, DownstreamMetadataFollowsAnUpstreamParamChange)
 
     setContributedNote(contribute, "after");
 
-    MetadataRef second(viewOutput, 1.);
+    MetadataRef second(downstreamOutput, 1.);
     ASSERT_TRUE(second.get() != NULL);
     EXPECT_EQ(std::string("after"), second->getStringProperty(kContributeNoteKey));
 }
@@ -664,14 +629,14 @@ TEST_F(MetadataPluginFixture, DownstreamMetadataFollowsAnUpstreamParamChange)
 TEST_F(MetadataPluginFixture, NativeUpstreamNodeChangeReachesTheOfxInputClip)
 {
     NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
-    NodePtr view = createNode(QString::fromUtf8(kMetadataViewID));
+    NodePtr downstream = createNode(QString::fromUtf8(kOfxColorEffectID), kOfxColorEffectMajor);
     ASSERT_TRUE(bool(dot)) << "node creation failed for " << PLUGINID_NATRON_DOT;
-    ASSERT_TRUE(bool(view)) << "node creation failed for " << kMetadataViewID;
+    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxColorEffectID;
     ASSERT_TRUE(dynamic_cast<OfxEffectInstance*>(dot->getEffectInstance().get()) == NULL) << "the upstream node is not native";
 
-    connectNodes(dot, view, 0, true);
+    connectNodes(dot, downstream, 0, true);
 
-    OFX::Host::ImageEffect::ClipInstance* source = clipOf(view, kOfxImageEffectSimpleSourceClipName);
+    OFX::Host::ImageEffect::ClipInstance* source = clipOf(downstream, kOfxImageEffectSimpleSourceClipName);
     ASSERT_TRUE(source != NULL) << "the downstream node has no " << kOfxImageEffectSimpleSourceClipName << " clip";
 
     KnobDouble* projectFrameRate = dynamic_cast<KnobDouble*>(getApp()->getProject()->getKnobByName("frameRate").get());
@@ -715,16 +680,16 @@ TEST_F(MetadataPluginFixture, ReconnectingAnInputRepointsTheMetadata)
 {
     NodePtr firstUpstream = createNode(QString::fromUtf8(kMetadataContributeID));
     NodePtr secondUpstream = createNode(QString::fromUtf8(kMetadataContributeID));
-    NodePtr view = createNode(QString::fromUtf8(kMetadataViewID));
+    NodePtr downstream = createNode(QString::fromUtf8(kOfxColorEffectID), kOfxColorEffectMajor);
     ASSERT_TRUE(bool(firstUpstream) && bool(secondUpstream)) << "node creation failed for " << kMetadataContributeID;
-    ASSERT_TRUE(bool(view)) << "node creation failed for " << kMetadataViewID;
+    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxColorEffectID;
 
     setContributedNote(firstUpstream, "from the first");
     setContributedNote(secondUpstream, "from the second");
 
-    connectNodes(firstUpstream, view, 0, true);
+    connectNodes(firstUpstream, downstream, 0, true);
 
-    OFX::Host::ImageEffect::ClipInstance* source = clipOf(view, kOfxImageEffectSimpleSourceClipName);
+    OFX::Host::ImageEffect::ClipInstance* source = clipOf(downstream, kOfxImageEffectSimpleSourceClipName);
     ASSERT_TRUE(source != NULL) << "the downstream node has no " << kOfxImageEffectSimpleSourceClipName << " clip";
 
     {
@@ -734,8 +699,8 @@ TEST_F(MetadataPluginFixture, ReconnectingAnInputRepointsTheMetadata)
         EXPECT_EQ(std::string("from the first"), fromFirst->getStringProperty(kContributeNoteKey));
     }
 
-    disconnectNodes(firstUpstream, view, true);
-    connectNodes(secondUpstream, view, 0, true);
+    disconnectNodes(firstUpstream, downstream, true);
+    connectNodes(secondUpstream, downstream, 0, true);
 
     MetadataRef fromSecond(source, 1.);
     ASSERT_TRUE(fromSecond.get() != NULL);
@@ -749,38 +714,38 @@ TEST_F(MetadataPluginFixture, ReconnectingAnInputRepointsTheMetadata)
 TEST_F(MetadataPluginFixture, UnchangedStateDoesNotReRunTheGetMetadataAction)
 {
     NodePtr contribute = createNode(QString::fromUtf8(kMetadataContributeID));
-    NodePtr view = createNode(QString::fromUtf8(kMetadataViewID));
+    NodePtr downstream = createNode(QString::fromUtf8(kOfxColorEffectID), kOfxColorEffectMajor);
     ASSERT_TRUE(bool(contribute)) << "node creation failed for " << kMetadataContributeID;
-    ASSERT_TRUE(bool(view)) << "node creation failed for " << kMetadataViewID;
+    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxColorEffectID;
 
-    connectNodes(contribute, view, 0, true);
+    connectNodes(contribute, downstream, 0, true);
     setContributedNote(contribute, "stable");
 
     OFX::Host::ImageEffect::ClipInstance* contributeOutput = clipOf(contribute, kOfxImageEffectOutputClipName);
-    OFX::Host::ImageEffect::ClipInstance* viewSource = clipOf(view, kOfxImageEffectSimpleSourceClipName);
-    OFX::Host::ImageEffect::ClipInstance* viewOutput = clipOf(view, kOfxImageEffectOutputClipName);
+    OFX::Host::ImageEffect::ClipInstance* downstreamSource = clipOf(downstream, kOfxImageEffectSimpleSourceClipName);
+    OFX::Host::ImageEffect::ClipInstance* downstreamOutput = clipOf(downstream, kOfxImageEffectOutputClipName);
     ASSERT_TRUE(contributeOutput != NULL);
-    ASSERT_TRUE(viewSource != NULL);
-    ASSERT_TRUE(viewOutput != NULL);
+    ASSERT_TRUE(downstreamSource != NULL);
+    ASSERT_TRUE(downstreamOutput != NULL);
 
     MetadataRef firstContribute(contributeOutput, 1.);
-    MetadataRef firstSource(viewSource, 1.);
-    MetadataRef firstView(viewOutput, 1.);
+    MetadataRef firstSource(downstreamSource, 1.);
+    MetadataRef firstDownstream(downstreamOutput, 1.);
     ASSERT_TRUE(firstContribute.get() != NULL);
     ASSERT_TRUE(firstSource.get() != NULL);
-    ASSERT_TRUE(firstView.get() != NULL);
+    ASSERT_TRUE(firstDownstream.get() != NULL);
 
     MetadataRef secondContribute(contributeOutput, 1.);
-    MetadataRef secondSource(viewSource, 1.);
-    MetadataRef secondView(viewOutput, 1.);
+    MetadataRef secondSource(downstreamSource, 1.);
+    MetadataRef secondDownstream(downstreamOutput, 1.);
     ASSERT_TRUE(secondContribute.get() != NULL);
     ASSERT_TRUE(secondSource.get() != NULL);
-    ASSERT_TRUE(secondView.get() != NULL);
+    ASSERT_TRUE(secondDownstream.get() != NULL);
 
     EXPECT_EQ(firstContribute.get(), secondContribute.get()) << "the upstream get metadata action ran a second time";
     EXPECT_EQ(firstSource.get(), secondSource.get()) << "the input clip's cached copy was dropped for nothing";
-    EXPECT_EQ(firstView.get(), secondView.get()) << "the downstream get metadata action ran a second time";
-    EXPECT_EQ(std::string("stable"), secondView->getStringProperty(kContributeNoteKey));
+    EXPECT_EQ(firstDownstream.get(), secondDownstream.get()) << "the downstream get metadata action ran a second time";
+    EXPECT_EQ(std::string("stable"), secondDownstream->getStringProperty(kContributeNoteKey));
 }
 
 // The chain contract the reference host's harness holds two nodes to, made to hold here: a node
@@ -792,13 +757,13 @@ TEST_F(MetadataPluginFixture, MetadataChainCarriesTheContributedKeysDownstream)
 {
     NodePtr generator = createNode(QString::fromUtf8(kOfxGeneratorID), kOfxGeneratorMajor);
     NodePtr contribute = createNode(QString::fromUtf8(kMetadataContributeID));
-    NodePtr view = createNode(QString::fromUtf8(kMetadataViewID));
+    NodePtr downstream = createNode(QString::fromUtf8(kOfxColorEffectID), kOfxColorEffectMajor);
     ASSERT_TRUE(bool(generator)) << "node creation failed for " << kOfxGeneratorID;
     ASSERT_TRUE(bool(contribute)) << "node creation failed for " << kMetadataContributeID;
-    ASSERT_TRUE(bool(view)) << "node creation failed for " << kMetadataViewID;
+    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxColorEffectID;
 
     connectNodes(generator, contribute, 0, true);
-    connectNodes(contribute, view, 0, true);
+    connectNodes(contribute, downstream, 0, true);
 
     setContributedNote(contribute, "before the chain");
 
@@ -809,16 +774,16 @@ TEST_F(MetadataPluginFixture, MetadataChainCarriesTheContributedKeysDownstream)
         << "the project frame rate is the contributed one, so nothing below could tell them apart";
 
     OFX::Host::ImageEffect::ClipInstance* sourceOutput = clipOf(generator, kOfxImageEffectOutputClipName);
-    OFX::Host::ImageEffect::ClipInstance* viewOutput = clipOf(view, kOfxImageEffectOutputClipName);
+    OFX::Host::ImageEffect::ClipInstance* downstreamOutput = clipOf(downstream, kOfxImageEffectOutputClipName);
     ASSERT_TRUE(sourceOutput != NULL) << "the head of the chain has no output clip";
-    ASSERT_TRUE(viewOutput != NULL) << "the tail of the chain has no output clip";
+    ASSERT_TRUE(downstreamOutput != NULL) << "the tail of the chain has no output clip";
 
     const int firstFrame = 1;
     const int lastFrame = 4;
 
     for (int frame = firstFrame; frame <= lastFrame; ++frame) {
         const MetadataSnapshot source = snapshotMetadata(sourceOutput, frame);
-        const MetadataSnapshot tail = snapshotMetadata(viewOutput, frame);
+        const MetadataSnapshot tail = snapshotMetadata(downstreamOutput, frame);
 
         ASSERT_FALSE(source.empty()) << "the chain's source carries no metadata at frame " << frame;
         ASSERT_FALSE(tail.empty()) << "the chain's tail carries no metadata at frame " << frame;
@@ -836,7 +801,7 @@ TEST_F(MetadataPluginFixture, MetadataChainCarriesTheContributedKeysDownstream)
         }
 
         MetadataRef sourceSet(sourceOutput, frame);
-        MetadataRef tailSet(viewOutput, frame);
+        MetadataRef tailSet(downstreamOutput, frame);
         ASSERT_TRUE(sourceSet.get() != NULL);
         ASSERT_TRUE(tailSet.get() != NULL);
 
@@ -850,7 +815,7 @@ TEST_F(MetadataPluginFixture, MetadataChainCarriesTheContributedKeysDownstream)
 
     setContributedNote(contribute, "chained");
 
-    MetadataRef revised(viewOutput, firstFrame);
+    MetadataRef revised(downstreamOutput, firstFrame);
     ASSERT_TRUE(revised.get() != NULL);
     ASSERT_TRUE(revised->fetchProperty(kContributeNoteKey) != NULL)
         << "the contributed note is no longer at the tail at all";

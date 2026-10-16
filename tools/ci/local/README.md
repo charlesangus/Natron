@@ -75,6 +75,14 @@ and `Arena.ofx` -- along with the dependency libraries (lcms2, libzip,
 ImageMagick) `Arena.ofx` needs. Idempotent -- a second run is instant, it
 skips anything already present and matching the pins.
 
+It also builds three OpenFX metadata example plug-ins (`metadataContribute`,
+`metadataPrint`, `metadataTimeCode`) into `build/assets/TestPlugins/`. Only
+the tests load them: `test.sh ctest` adds that directory to
+`OFX_PLUGIN_PATH`, while `test.sh smoke` and the release bundle see
+`build/assets/Plugins/` alone. Running a test binary by hand with
+`OFX_PLUGIN_PATH=build/assets/Plugins` leaves the metadata bridge cases
+without their fixtures; append `:build/assets/TestPlugins`.
+
 ```
 tools/ci/local/fetch-assets.sh
 ```

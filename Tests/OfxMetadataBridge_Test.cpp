@@ -72,7 +72,8 @@ NATRON_NAMESPACE_USING
 
 namespace {
 const char kMetadataContributeID[] = "org.openfx.examples.metadataContribute";
-const char kMetadataViewID[] = "org.openfx.examples.metadataView";
+const char kOfxColorMatrixID[] = "net.sf.openfx.ColorMatrixPlugin";
+const int kOfxColorMatrixMajor = 2;
 const char kContributeNoteParam[] = "note";
 const char kContributeNoteKey[] = "org.openfx.examples.metadataContribute.note";
 const double kContributedFrameRate = 30.;
@@ -254,10 +255,10 @@ TEST_F(BaseTest, OfxMetadataBridgeNativeKeysReachTheOfxInputClip)
 {
     NodePtr source = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
     NodePtr shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
-    NodePtr view = createNode(QString::fromUtf8(kMetadataViewID));
+    NodePtr downstream = createNode(QString::fromUtf8(kOfxColorMatrixID), kOfxColorMatrixMajor);
 
     ASSERT_TRUE(bool(source) && bool(shuffle));
-    ASSERT_TRUE(bool(view)) << "node creation failed for " << kMetadataViewID;
+    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxColorMatrixID;
 
     MetadataSourceTestEffect* sourceEffect = dynamic_cast<MetadataSourceTestEffect*>(source->getEffectInstance().get());
     NativeEffectBase* shuffleEffect = nativeEffectOf(shuffle);
@@ -271,7 +272,7 @@ TEST_F(BaseTest, OfxMetadataBridgeNativeKeysReachTheOfxInputClip)
     sourceEffect->setExtraMetadata(extra);
 
     connectNodes(source, shuffle, 0, true);
-    connectNodes(shuffle, view, 0, true);
+    connectNodes(shuffle, downstream, 0, true);
 
     const double time = 3.;
     const ImageMetadata expected = shuffleEffect->getOutputMetadata(time, ViewIdx(0));
@@ -280,8 +281,8 @@ TEST_F(BaseTest, OfxMetadataBridgeNativeKeysReachTheOfxInputClip)
     ASSERT_TRUE(expected.contains(kOfxMetadataKeyFilePath));
     ASSERT_TRUE(expected.contains("exr/tag"));
 
-    OFX::Host::ImageEffect::ClipInstance* clip = clipOf(view, kOfxImageEffectSimpleSourceClipName);
-    ASSERT_TRUE(clip != NULL) << "metadataView has no " << kOfxImageEffectSimpleSourceClipName << " clip";
+    OFX::Host::ImageEffect::ClipInstance* clip = clipOf(downstream, kOfxImageEffectSimpleSourceClipName);
+    ASSERT_TRUE(clip != NULL) << "ColorMatrix has no " << kOfxImageEffectSimpleSourceClipName << " clip";
 
     MetadataRef received(clip, time);
     ASSERT_TRUE(received.get() != NULL);
@@ -297,18 +298,18 @@ TEST_F(BaseTest, OfxMetadataBridgeNativeKeysReachTheOfxInputClip)
 TEST_F(BaseTest, OfxMetadataBridgeNativeGeneratorKeysReachTheOfxInputClipWithoutSourceKeys)
 {
     NodePtr generator = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
-    NodePtr view = createNode(QString::fromUtf8(kMetadataViewID));
+    NodePtr downstream = createNode(QString::fromUtf8(kOfxColorMatrixID), kOfxColorMatrixMajor);
 
     ASSERT_TRUE(bool(generator));
-    ASSERT_TRUE(bool(view)) << "node creation failed for " << kMetadataViewID;
+    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxColorMatrixID;
 
     NativeEffectBase* generatorEffect = nativeEffectOf(generator);
     ASSERT_TRUE(generatorEffect != NULL);
 
-    connectNodes(generator, view, 0, true);
+    connectNodes(generator, downstream, 0, true);
 
-    OFX::Host::ImageEffect::ClipInstance* clip = clipOf(view, kOfxImageEffectSimpleSourceClipName);
-    ASSERT_TRUE(clip != NULL) << "metadataView has no " << kOfxImageEffectSimpleSourceClipName << " clip";
+    OFX::Host::ImageEffect::ClipInstance* clip = clipOf(downstream, kOfxImageEffectSimpleSourceClipName);
+    ASSERT_TRUE(clip != NULL) << "ColorMatrix has no " << kOfxImageEffectSimpleSourceClipName << " clip";
 
     const double time = 7.;
     MetadataRef received(clip, time);
@@ -405,9 +406,9 @@ TEST_F(BaseTest, OfxMetadataBridgeReadKeysReachAnOfxNodeThroughNativeNodes)
     NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
     NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE));
     NodePtr write = createNativeWriter();
-    NodePtr view = createNode(QString::fromUtf8(kMetadataViewID));
+    NodePtr downstream = createNode(QString::fromUtf8(kOfxColorMatrixID), kOfxColorMatrixMajor);
     ASSERT_TRUE(bool(grade) && bool(merge) && bool(write));
-    ASSERT_TRUE(bool(view)) << "node creation failed for " << kMetadataViewID;
+    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxColorMatrixID;
     ASSERT_TRUE(nativeEffectOf(grade) != NULL);
     ASSERT_TRUE(nativeEffectOf(merge) != NULL);
 
@@ -416,9 +417,9 @@ TEST_F(BaseTest, OfxMetadataBridgeReadKeysReachAnOfxNodeThroughNativeNodes)
     connectNodes(reader, grade, 0, true);
     connectNodes(grade, merge, 1, true);
     connectNodes(merge, write, 0, true);
-    connectNodes(merge, view, 0, true);
+    connectNodes(merge, downstream, 0, true);
 
-    OFX::Host::ImageEffect::ClipInstance* source = clipOf(view, kOfxImageEffectSimpleSourceClipName);
+    OFX::Host::ImageEffect::ClipInstance* source = clipOf(downstream, kOfxImageEffectSimpleSourceClipName);
     ASSERT_TRUE(source != NULL) << "the downstream node has no " << kOfxImageEffectSimpleSourceClipName << " clip";
 
     MetadataRef received(source, lastFrame);

@@ -571,12 +571,22 @@ EdgeDetect::render(const RenderActionArgs& args)
         normX = sx;
         normY = sy;
         break;
-    case BlurKernels::eFilterTriangle:
+    case BlurKernels::eFilterTriangle: {
+        // The box of size s has 2w+1 taps of 1/s and two end taps of f/s, f = (s - 2w - 1) / 2.
+        // Squared, it gives the triangle's centre tap (2w + 1 + 2f^2) / s^2 and its next one
+        // (2w + 2f) / s^2. The centred difference of a step between two pixels peaks at the mean
+        // of those two taps, (2s - 1 - 2f(1 - f)) / (2s^2).
+        const auto triangleNorm = [](double s) {
+            const double f = (s - (2 * ((int)(s - 1) / 2) + 1)) / 2.;
+
+            return 2 * s * s / (2 * s - 1 - 2 * f * (1 - f));
+        };
         normalizeX = (sx > 1.);
         normalizeY = (sy > 1.);
-        normX = 2 * sx * sx / (2 * sx + 1);
-        normY = 2 * sy * sy / (2 * sy + 1);
+        normX = triangleNorm(sx);
+        normY = triangleNorm(sy);
         break;
+    }
     case BlurKernels::eFilterQuadratic:
         normalizeX = (sx > 1.);
         normalizeY = (sy > 1.);

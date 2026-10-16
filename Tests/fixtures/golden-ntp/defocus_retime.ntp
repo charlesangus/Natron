@@ -1365,7 +1365,7 @@
 			<PythonModuleVersion>0</PythonModuleVersion>
 			<Plugin_major_version>5</Plugin_major_version>
 			<Plugin_minor_version>1</Plugin_minor_version>
-			<KnobsCount>3</KnobsCount>
+			<KnobsCount>2</KnobsCount>
 			<item>
 				<Name>size</Name>
 				<Type>Double</Type>
@@ -1378,24 +1378,6 @@
 					<HasAnimation>0</HasAnimation>
 					<Value>1.20000000000000000e+01</Value>
 					<Default>0.00000000000000000e+00</Default>
-					<HasMaster>0</HasMaster>
-					<Expression></Expression>
-					<ExprHasRet>0</ExprHasRet>
-				</item>
-				<UserKnob>0</UserKnob>
-			</item>
-			<item>
-				<Name>uniform</Name>
-				<Type>Bool</Type>
-				<Dimension>1</Dimension>
-				<Secret>1</Secret>
-				<MasterIsAlias>0</MasterIsAlias>
-				<SavedDimensions>1</SavedDimensions>
-				<item>
-					<Enabled>0</Enabled>
-					<HasAnimation>0</HasAnimation>
-					<Value>0</Value>
-					<Default>0</Default>
 					<HasMaster>0</HasMaster>
 					<Expression></Expression>
 					<ExprHasRet>0</ExprHasRet>
@@ -1715,7 +1697,7 @@
 			<PythonModuleVersion>0</PythonModuleVersion>
 			<Plugin_major_version>5</Plugin_major_version>
 			<Plugin_minor_version>1</Plugin_minor_version>
-			<KnobsCount>3</KnobsCount>
+			<KnobsCount>2</KnobsCount>
 			<item>
 				<Name>size</Name>
 				<Type>Double</Type>
@@ -1728,24 +1710,6 @@
 					<HasAnimation>0</HasAnimation>
 					<Value>3.00000000000000000e+02</Value>
 					<Default>0.00000000000000000e+00</Default>
-					<HasMaster>0</HasMaster>
-					<Expression></Expression>
-					<ExprHasRet>0</ExprHasRet>
-				</item>
-				<UserKnob>0</UserKnob>
-			</item>
-			<item>
-				<Name>uniform</Name>
-				<Type>Bool</Type>
-				<Dimension>1</Dimension>
-				<Secret>1</Secret>
-				<MasterIsAlias>0</MasterIsAlias>
-				<SavedDimensions>1</SavedDimensions>
-				<item>
-					<Enabled>0</Enabled>
-					<HasAnimation>0</HasAnimation>
-					<Value>0</Value>
-					<Default>0</Default>
 					<HasMaster>0</HasMaster>
 					<Expression></Expression>
 					<ExprHasRet>0</ExprHasRet>
@@ -1892,7 +1856,7 @@
 			<PythonModuleVersion>0</PythonModuleVersion>
 			<Plugin_major_version>5</Plugin_major_version>
 			<Plugin_minor_version>1</Plugin_minor_version>
-			<KnobsCount>3</KnobsCount>
+			<KnobsCount>2</KnobsCount>
 			<item>
 				<Name>size</Name>
 				<Type>Double</Type>
@@ -1905,24 +1869,6 @@
 					<HasAnimation>0</HasAnimation>
 					<Value>1.00000000000000000e+02</Value>
 					<Default>0.00000000000000000e+00</Default>
-					<HasMaster>0</HasMaster>
-					<Expression></Expression>
-					<ExprHasRet>0</ExprHasRet>
-				</item>
-				<UserKnob>0</UserKnob>
-			</item>
-			<item>
-				<Name>uniform</Name>
-				<Type>Bool</Type>
-				<Dimension>1</Dimension>
-				<Secret>1</Secret>
-				<MasterIsAlias>0</MasterIsAlias>
-				<SavedDimensions>1</SavedDimensions>
-				<item>
-					<Enabled>0</Enabled>
-					<HasAnimation>0</HasAnimation>
-					<Value>0</Value>
-					<Default>0</Default>
 					<HasMaster>0</HasMaster>
 					<Expression></Expression>
 					<ExprHasRet>0</ExprHasRet>
@@ -2070,7 +2016,7 @@
 			<PythonModuleVersion>0</PythonModuleVersion>
 			<Plugin_major_version>2</Plugin_major_version>
 			<Plugin_minor_version>0</Plugin_minor_version>
-			<KnobsCount>5</KnobsCount>
+			<KnobsCount>6</KnobsCount>
 			<item>
 				<Name>translate</Name>
 				<Type>Double</Type>
@@ -2296,6 +2242,24 @@
 					</Curve>
 					<Value>8.00000000000000044e-01</Value>
 					<Default>0.00000000000000000e+00</Default>
+					<HasMaster>0</HasMaster>
+					<Expression></Expression>
+					<ExprHasRet>0</ExprHasRet>
+				</item>
+				<UserKnob>0</UserKnob>
+			</item>
+			<item>
+				<Name>clamp</Name>
+				<Type>Bool</Type>
+				<Dimension>1</Dimension>
+				<Secret>0</Secret>
+				<MasterIsAlias>0</MasterIsAlias>
+				<SavedDimensions>1</SavedDimensions>
+				<item>
+					<Enabled>0</Enabled>
+					<HasAnimation>0</HasAnimation>
+					<Value>0</Value>
+					<Default>0</Default>
 					<HasMaster>0</HasMaster>
 					<Expression></Expression>
 					<ExprHasRet>0</ExprHasRet>

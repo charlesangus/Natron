@@ -560,8 +560,9 @@ TEST_F(LayerKnobsRenderTest, GradeDefaultRowKeepsAlphaByHostMasking)
     expectPlane(image, "specular.", 0.f, 0.f, 1.f);
 }
 
-// A constant plane blurred with nearest-pixel borders is itself, so a real (non-identity) blur
-// of one plane must leave all three planes equal to the input.
+// A size 3 box blur of a constant plane is itself away from the border row and column, which see
+// black outside, and the output is cropped to the 8x8 format, so a real (non-identity) blur of one
+// plane must leave all three planes equal to the input at the checked pixel.
 TEST_F(LayerKnobsRenderTest, BlurOnOnePlaneRoutesEveryPlaneThrough)
 {
     NodePtr reader = createReader();
@@ -573,12 +574,9 @@ TEST_F(LayerKnobsRenderTest, BlurOnOnePlaneRoutesEveryPlaneThrough)
     KnobDouble* size = dynamic_cast<KnobDouble*>(blur->getKnobByName("size").get());
     ASSERT_TRUE(size != NULL);
     size->setValues(3., 3., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
-    KnobChoice* boundary = dynamic_cast<KnobChoice*>(blur->getKnobByName("boundary").get());
-    ASSERT_TRUE(boundary != NULL);
-    boundary->setValueFromID("nearest", 0);
-    KnobBool* expandRoD = dynamic_cast<KnobBool*>(blur->getKnobByName("expandRoD").get());
-    ASSERT_TRUE(expandRoD != NULL);
-    expandRoD->setValue(false);
+    KnobChoice* filter = dynamic_cast<KnobChoice*>(blur->getKnobByName("filter").get());
+    ASSERT_TRUE(filter != NULL);
+    filter->setValueFromID("box", 0);
 
     KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(blur->getKnobByName(kNodeParamChannelSet));
     ASSERT_TRUE(bool(channels));

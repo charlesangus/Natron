@@ -353,13 +353,13 @@
 				<item>
 					<Enabled>0</Enabled>
 					<HasAnimation>0</HasAnimation>
-					<Value>0</Value>
+					<Value>6</Value>
 					<Default>6</Default>
 					<HasMaster>0</HasMaster>
 					<Expression></Expression>
 					<ExprHasRet>0</ExprHasRet>
 				</item>
-				<ChoiceLabel>PC_Video</ChoiceLabel>
+				<ChoiceLabel>HD</ChoiceLabel>
 				<UserKnob>0</UserKnob>
 			</item>
 			<item>

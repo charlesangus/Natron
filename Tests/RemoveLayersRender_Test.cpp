@@ -301,8 +301,10 @@ protected:
         expectPlane(image2, "", 1.f, 0.f, 0.f);
     }
 
-    // A constant plane blurred with nearest-pixel borders is itself, so the Blur really renders
-    // (it is not an identity) and still leaves every value unchanged.
+    // A size 3 box blur averages each pixel with its two neighbours, so on a constant plane it is
+    // the identity everywhere but the border row and column, which see black outside. The output
+    // is cropped to the 8x8 format, which keeps the checked pixel off that border: the Blur really
+    // renders (it is not an identity) and still leaves the checked value unchanged.
     NodePtr appendBlurOnAll()
     {
         NodePtr blur = createNode(QString::fromUtf8(kBlurPluginID));
@@ -317,15 +319,10 @@ protected:
         if (size) {
             size->setValues(3., 3., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
         }
-        KnobChoice* boundary = dynamic_cast<KnobChoice*>(blur->getKnobByName("boundary").get());
-        EXPECT_TRUE(boundary != NULL);
-        if (boundary) {
-            boundary->setValueFromID("nearest", 0);
-        }
-        KnobBool* expandRoD = dynamic_cast<KnobBool*>(blur->getKnobByName("expandRoD").get());
-        EXPECT_TRUE(expandRoD != NULL);
-        if (expandRoD) {
-            expandRoD->setValue(false);
+        KnobChoice* filter = dynamic_cast<KnobChoice*>(blur->getKnobByName("filter").get());
+        EXPECT_TRUE(filter != NULL);
+        if (filter) {
+            filter->setValueFromID("box", 0);
         }
         KnobChannelSetPtr blurChannels = std::dynamic_pointer_cast<KnobChannelSet>(blur->getKnobByName(kNodeParamChannelSet));
         EXPECT_TRUE(bool(blurChannels));

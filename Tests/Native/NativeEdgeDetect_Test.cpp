@@ -272,17 +272,18 @@ TEST_F(NativeEdgeDetectTest, UnitStepEdgeHasUnitGradientMagnitude)
         double tolerance;
     };
     // The Gaussian-based operators are held to 3%: the step lies between two pixels, so the
-    // sampled peak sits half a pixel off the continuous one. The box family's normalisation
-    // is for CImg's discrete box sums.
+    // sampled peak sits half a pixel off the continuous one. The box and triangle normalisations
+    // are exact for CImg's discrete box sums followed by a centred difference; the quadratic one
+    // is the OpenFX plug-in's approximation, 0.6% off at size 12 and 1.5% at worst from size 7 up.
     const Operator operators[] = {
         { kEdgeDetectParamFilterGaussian, 0.03 },
         { kEdgeDetectParamFilterQuasiGaussian, 0.03 },
         { kEdgeDetectParamFilterSimple, 0.03 },
         { kEdgeDetectParamFilterSobel, 0.03 },
         { kEdgeDetectParamFilterRotationInvariant, 0.03 },
-        { kEdgeDetectParamFilterBox, 0.06 },
-        { kEdgeDetectParamFilterTriangle, 0.06 },
-        { kEdgeDetectParamFilterQuadratic, 0.06 },
+        { kEdgeDetectParamFilterBox, 1e-3 },
+        { kEdgeDetectParamFilterTriangle, 1e-3 },
+        { kEdgeDetectParamFilterQuadratic, 0.01 },
     };
     const char* const combinations[] = {
         kEdgeDetectParamMultiChannelSeparate,

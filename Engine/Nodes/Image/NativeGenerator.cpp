@@ -283,8 +283,7 @@ NativeGenerator::getRegionOfDefinition(U64 /*hash*/,
         return eStatusOK;
     }
 
-    // The host's default for an OpenFX general-context effect: the Source clip when it is
-    // connected, else the project extent from the origin.
+    // With a Source clip connected the extent follows it, else it is the full project format.
     EffectInstancePtr source = getInput(0);
     if (source) {
         const RenderScale sourceScale = source->supportsRenderScale() ? scale : RenderScale::identity;
@@ -292,11 +291,7 @@ NativeGenerator::getRegionOfDefinition(U64 /*hash*/,
 
         return source->getRegionOfDefinition_public(source->getRenderHash(), time, sourceScale, view, rod, &isProjectFormat);
     }
-    const RectD project = getProjectExtentRect();
-    rod->x1 = 0.;
-    rod->y1 = 0.;
-    rod->x2 = project.x2;
-    rod->y2 = project.y2;
+    *rod = getProjectExtentRect();
 
     return eStatusOK;
 }

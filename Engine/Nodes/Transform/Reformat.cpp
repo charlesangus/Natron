@@ -59,36 +59,6 @@ namespace {
 // How many rows render() runs between two abort checks.
 const int kAbortCheckRows = 16;
 
-struct FormatEntry {
-    const char* id;
-    const char* label;
-};
-
-// The openfx-misc format list (SupportExt/ofxsFormatResolution.h), in its order. The host
-// replaces these entries with the project's formats once the node is created.
-const FormatEntry kFormats[] = {
-    { "PC_Video", "PC_Video 640x480" },
-    { "NTSC", "NTSC 720x486 0.91" },
-    { "PAL", "PAL 720x576 1.09" },
-    { "NTSC_16:9", "NTSC_16:9 720x486 1.21" },
-    { "PAL_16:9", "PAL_16:9 720x576 1.46" },
-    { "HD_720", "HD_720 1280x1720" },
-    { "HD", "HD 1920x1080" },
-    { "UHD_4K", "UHD_4K 3840x2160" },
-    { "1K_Super35(full-ap)", "1K_Super35(full-ap) 1024x778" },
-    { "1K_Cinemascope", "1K_Cinemascope 914x778 2" },
-    { "2K_Super35(full-ap)", "2K_Super35(full-ap) 2048x1556" },
-    { "2K_Cinemascope", "2K_Cinemascope 1828x1556 2" },
-    { "2K_DCP", "2K_DCP 2048x1080" },
-    { "4K_Super35(full-ap)", "4K_Super35(full-ap) 4096x3112" },
-    { "4K_Cinemascope", "4K_Cinemascope 3656x3112 2" },
-    { "4K_DCP", "4K_DCP 4096x2160" },
-    { "square_256", "square_256 256x256" },
-    { "square_512", "square_512 512x512" },
-    { "square_1K", "square_1K 1024x1024" },
-    { "square_2K", "square_2K 2048x2048" },
-};
-
 // The rectangle helpers below repeat the OpenFX support library's Coords functions, which the
 // output format and the transform are computed with, so the results are the same to the bit.
 
@@ -319,12 +289,13 @@ Reformat::initializeKnobs()
     format->setHintToolTip(tr("The output format"));
     {
         std::vector<ChoiceOption> options;
-        for (std::size_t i = 0; i < sizeof(kFormats) / sizeof(kFormats[0]); ++i) {
-            options.push_back(ChoiceOption(kFormats[i].id, kFormats[i].label, std::string()));
-        }
+        int projectFormatIndex = 0;
+        getApp()->getProject()->getProjectFormatEntries(&options, &projectFormatIndex);
         format->populateChoices(options);
+        // The host's refresh moves the default without touching the value, so the value is
+        // seeded here to start on the project's own format.
+        format->setDefaultValue(projectFormatIndex);
     }
-    format->setDefaultValue(0);
     format->setAnimationEnabled(false);
     format->setIsMetadataSlave(true);
     page->addKnob(format);

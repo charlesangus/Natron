@@ -43,39 +43,6 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
-struct FormatResolution {
-    const char* id;
-    const char* label;
-    int width;
-    int height;
-    double par;
-};
-
-// The openfx-misc format list (SupportExt/ofxsFormatResolution.h), in its order. The host
-// replaces these entries with the project's formats once the node is created.
-const FormatResolution kFormats[] = {
-    { "PC_Video", "PC_Video 640x480", 640, 480, 1. },
-    { "NTSC", "NTSC 720x486 0.91", 720, 486, 0.91 },
-    { "PAL", "PAL 720x576 1.09", 720, 576, 1.09 },
-    { "NTSC_16:9", "NTSC_16:9 720x486 1.21", 720, 486, 1.21 },
-    { "PAL_16:9", "PAL_16:9 720x576 1.46", 720, 576, 1.46 },
-    { "HD_720", "HD_720 1280x1720", 1280, 720, 1. },
-    { "HD", "HD 1920x1080", 1920, 1080, 1. },
-    { "UHD_4K", "UHD_4K 3840x2160", 3840, 2160, 1. },
-    { "1K_Super35(full-ap)", "1K_Super35(full-ap) 1024x778", 1024, 778, 1. },
-    { "1K_Cinemascope", "1K_Cinemascope 914x778 2", 914, 778, 2. },
-    { "2K_Super35(full-ap)", "2K_Super35(full-ap) 2048x1556", 2048, 1556, 1. },
-    { "2K_Cinemascope", "2K_Cinemascope 1828x1556 2", 1828, 1556, 2. },
-    { "2K_DCP", "2K_DCP 2048x1080", 2048, 1080, 1. },
-    { "4K_Super35(full-ap)", "4K_Super35(full-ap) 4096x3112", 4096, 3112, 1. },
-    { "4K_Cinemascope", "4K_Cinemascope 3656x3112 2", 3656, 3112, 2. },
-    { "4K_DCP", "4K_DCP 4096x2160", 4096, 2160, 1. },
-    { "square_256", "square_256 256x256", 256, 256, 1. },
-    { "square_512", "square_512 512x512", 512, 512, 1. },
-    { "square_1K", "square_1K 1024x1024", 1024, 1024, 1. },
-    { "square_2K", "square_2K 2048x2048", 2048, 2048, 1. },
-};
-
 void
 setSecretAndDisabled(const KnobIPtr& knob,
                      bool secret)
@@ -119,14 +86,18 @@ ExtentKnobs::createFormatKnobs(EffectInstance* effect,
     KnobChoicePtr format = AppManager::createKnob<KnobChoice>(effect, EffectInstance::tr("Format"));
     format->setName(kNatronParamFormatChoice);
     format->setHintToolTip(EffectInstance::tr("The output format"));
+    ProjectPtr project = effect->getApp()->getProject();
+    Format projectFormat;
+    project->getProjectDefaultFormat(&projectFormat);
     {
         std::vector<ChoiceOption> options;
-        for (std::size_t i = 0; i < sizeof(kFormats) / sizeof(kFormats[0]); ++i) {
-            options.push_back(ChoiceOption(kFormats[i].id, kFormats[i].label, std::string()));
-        }
+        int projectFormatIndex = 0;
+        project->getProjectFormatEntries(&options, &projectFormatIndex);
         format->populateChoices(options);
+        // The host's refresh moves the default without touching the value, so the value is
+        // seeded here to start on the project's own format.
+        format->setDefaultValue(projectFormatIndex);
     }
-    format->setDefaultValue(0);
     format->setAnimationEnabled(false);
     format->setIsMetadataSlave(true);
     page->addKnob(format);
@@ -134,8 +105,8 @@ ExtentKnobs::createFormatKnobs(EffectInstance* effect,
     KnobIntPtr formatSize = AppManager::createKnob<KnobInt>(effect, EffectInstance::tr("Size"), 2);
     formatSize->setName(kNatronParamFormatSize);
     formatSize->setHintToolTip(EffectInstance::tr("The output dimensions of the image in pixels."));
-    formatSize->setDefaultValue(kFormats[0].width, 0);
-    formatSize->setDefaultValue(kFormats[0].height, 1);
+    formatSize->setDefaultValue(projectFormat.width(), 0);
+    formatSize->setDefaultValue(projectFormat.height(), 1);
     formatSize->setAnimationEnabled(false);
     formatSize->setIsMetadataSlave(true);
     formatSize->setSecretByDefault(true);
@@ -149,7 +120,7 @@ ExtentKnobs::createFormatKnobs(EffectInstance* effect,
     formatPar->setMaximum(DBL_MAX);
     formatPar->setDisplayMinimum(0.5);
     formatPar->setDisplayMaximum(2.);
-    formatPar->setDefaultValue(kFormats[0].par);
+    formatPar->setDefaultValue(projectFormat.getPixelAspectRatio());
     formatPar->setAnimationEnabled(false);
     formatPar->setIsMetadataSlave(true);
     formatPar->setSecretByDefault(true);
@@ -277,8 +248,11 @@ ExtentKnobs::createKnobs(const KnobPagePtr& page)
     frameRange->setHintToolTip(EffectInstance::tr("Time domain."));
     frameRange->setDimensionName(0, "min");
     frameRange->setDimensionName(1, "max");
-    frameRange->setDefaultValue(1, 0);
-    frameRange->setDefaultValue(1, 1);
+    double projectFirst = 1.;
+    double projectLast = 1.;
+    _effect->getApp()->getProject()->getFrameRange(&projectFirst, &projectLast);
+    frameRange->setDefaultValue((int)projectFirst, 0);
+    frameRange->setDefaultValue((int)projectLast, 1);
     frameRange->setAnimationEnabled(false);
     page->addKnob(frameRange);
     _frameRange = frameRange;
@@ -341,7 +315,14 @@ ExtentKnobs::getProjectExtentRect(double* par) const
 {
     Format format;
 
-    _effect->getApp()->getProject()->getProjectDefaultFormat(&format);
+    // The project's format list keeps the offset, which the default format's label does not.
+    ProjectPtr project = _effect->getApp()->getProject();
+    std::vector<ChoiceOption> entries;
+    int currentIndex = 0;
+    project->getProjectFormatEntries(&entries, &currentIndex);
+    if (!project->getProjectFormatAtIndex(currentIndex, &format)) {
+        project->getProjectDefaultFormat(&format);
+    }
     if (par) {
         *par = format.getPixelAspectRatio();
     }

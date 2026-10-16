@@ -272,8 +272,9 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
             try {
                 (void)appPTR->getPluginBinary(QString::fromUtf8(pluginID.c_str()), majorVersion, minorVersion, true);
             } catch (const std::exception&) {
+                // Unlike getPluginBinary, the old-ID lookup reports "not found" by returning null.
                 try {
-                    (void)appPTR->getPluginBinaryFromOldID(QString::fromUtf8(pluginID.c_str()), majorVersion, minorVersion);
+                    pluginIsMissing = !appPTR->getPluginBinaryFromOldID(QString::fromUtf8(pluginID.c_str()), majorVersion, minorVersion);
                 } catch (const std::exception&) {
                     pluginIsMissing = true;
                 }

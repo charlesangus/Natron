@@ -232,8 +232,12 @@ script-name prefix so the Write can share it.
   and the images and action results cached under the old hash are retired.
   Until then a file changed on disk is not seen: the hash, the produced
   layers, the region of definition and the cached images stay those of the
-  file read before. The file knob's own reload (`KnobFile::reloadFile()`) does
-  the same.
+  file read before. An image that is not in the cache is decoded from the file
+  as it is on disk now, though, so a Read whose output is not cached can show
+  new pixels under the old hash. Every other node whose file knob covers the
+  same files is reloaded with it
+  (`KnobFile::reloadOtherNodesReadingTheseFiles()`). The file knob's own reload
+  (`KnobFile::reloadFile()`) does the same.
 - **Colour.** Pixels are converted to the project's working space through the
   project's OCIO config (`IoColorSpace::toWorkingProcessor()`). The default
   input space (`IoColorSpace::defaultInputSpace()`) is, in order: the config's

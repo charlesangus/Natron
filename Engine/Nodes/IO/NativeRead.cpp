@@ -893,6 +893,11 @@ NativeRead::knobChanged(KnobI* k,
         if (node) {
             node->incrementKnobsAge();
         }
+        for (const KnobFilePtr& file : { _filename.lock(), _proxy.lock() }) {
+            if (file) {
+                file->reloadOtherNodesReadingTheseFiles();
+            }
+        }
 
         return true;
     }

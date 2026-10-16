@@ -188,9 +188,14 @@ void
 BaseTest::readInWorkingSpace(const NodePtr& reader)
 {
     KnobStringBase* inputSpace = dynamic_cast<KnobStringBase*>(reader->getKnobByName("ocioInputSpace").get());
+    KnobBool* inputSpaceSet = dynamic_cast<KnobBool*>(reader->getKnobByName("ocioInputSpaceSet").get());
 
     ASSERT_TRUE(inputSpace != NULL) << reader->getScriptName_mt_safe();
+    ASSERT_TRUE(inputSpaceSet != NULL) << reader->getScriptName_mt_safe();
     inputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
+    // Marked as chosen by hand: otherwise a reload or a new file re-guesses the space from the
+    // file and the pixels the tests compare get converted after all.
+    inputSpaceSet->setValue(true);
     reader->getEffectInstance()->refreshMetadata_public(false);
 }
 

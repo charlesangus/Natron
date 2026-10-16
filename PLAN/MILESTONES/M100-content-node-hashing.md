@@ -121,7 +121,7 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - approach: statx stamps with a TTL memo. The hashes of KnobFile and the OCIO config include the stamp, which is re-validated at render start.
   - verify: touching the file changes the hash; an unchanged file keeps a stable hash
   - size: M
-- [ ] M100.P3.T2 — Add sequence stamps with inotify and focus-in rescan
+- [ ] ~~M100.P3.T2~~ (superseded by P3.T4) — Add sequence stamps with inotify and focus-in rescan
   - files: Engine/FileStampRegistry.cpp, Engine/Nodes/IO/NativeRead.cpp, Engine/Nodes/IO/ReadTimeDomain.cpp, Engine/Nodes/Deep/DeepRead.cpp, Engine/PrecompNode.cpp, Gui/GuiApplicationManager.cpp
   - approach: hash all frame stamps from the existing directory scan (SequenceParsing via KnobFile). NativeRead's Reload knob is at NativeRead.cpp:186, its purge at :586; NativeWrite has its own purgeCaches/Reload too. The only existing QFileSystemWatcher is in FileSystemModel (file dialog), so this adds the first engine-side watcher. Watch the directory with QFileSystemWatcher, rescan on app focus-in, and force a rescan on Reload.
   - verify: rewriting one frame of a sequence changes the Read's hash; confirm the viewer re-renders in a GUI test or UAT
@@ -131,6 +131,12 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - approach: stat each Read's frame file when render args are set up. On a mismatch, update the registry, recompute the hash, abort and restart the render.
   - verify: a test overwrites a frame between two renders and gets the new pixels; the M82 profiler shows no serial regression
   - size: M
+
+- [ ] M100.P3.T4 — Simplify file identity: stamp files on load and Reload only
+  - files: Engine/FileStampRegistry.{h,cpp}, Engine/KnobFile.cpp, Engine/Nodes/IO/NativeRead.cpp, Engine/Nodes/IO/ReadTimeDomain.cpp, Engine/Nodes/IO/NativeWrite.cpp, Engine/Nodes/Deep/DeepRead.cpp, Engine/PrecompNode.cpp, Engine/ParallelRenderArgs.cpp, Engine/ViewerInstance.cpp, Engine/EffectInstance.h, Gui/GuiApplicationManager.cpp, Tests/FileStamp_Test.cpp and the tests that rewrite files in place
+  - approach: Reads (and a Write's read back) check the files on disk only when the user presses Reload. Delete the directory watcher, the focus-in rescan, the per-render current-frame stat guard (`refreshInputFilesForRender`) and the stamp TTL. A file's stamp (single file or the frames of a sequence) is taken once, the first time its node is hashed in a session, and kept until Reload, which re-stamps it and so re-keys the node. The disk cache stays correct across sessions because the stamp is re-taken at the next session's first hash. A Write's read back caches each frame's header and stored hash until Reload or the Write finishing a render.
+  - verify: rewriting a frame in place doesn't change the Read's hash or pixels until Reload, after which both follow the file; a test shows no stat happens per render; the CacheEquivalence Read-rewrite case uses Reload.
+  - size: L
 
 ## Phase 100.4: Switch keys and drop the purge
 - [x] M100.P4.T1 — Make getHashValue return the content hash and bump the cache version
@@ -347,3 +353,5 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - Every OFX action now reads the hash first: cheap when clean, but a mid-render edit recomputes at action entry.
 - 2026-10-16 — **Laziness test and Write pull** (run 38840003254: 2338/2340; fix 52f69fde2). The unviewed branch was rehashed by the test helper, not by the edit or the render. The default `byPassCache` runs Clear All Caches, which via `forceComputeInputDependentDataOnAllTrees` (M75) refreshes metadata, layers and channel menus on every tree, and each of those reads its node's hash. The test now renders through the cache. Clear All Caches stays eager: it is an explicit user action, and making it lazy would mean computing metadata, channel selectors and layer registration on read. Write pull: a Write's read back depends on disk state, which no hash covers, so a downstream Dot cached a stale layer list. `NativeWrite::purgeCaches` now also clears the action and image caches of everything downstream, without rehashing.
 - 2026-10-16 — **Both laziness gaps go in M100** (user): added P4.T4 (overlay interacts check the hash) and P4.T5 (lazy downstream metadata refresh).
+
+- 2026-10-16 — **Files are checked only on Reload** (user): watching directories, rescanning on focus-in and stat-ing each frame per render are more machinery than wanted, and a Read that changes under you is more surprising than one that waits for Reload. P3.T4 removes the watcher, focus-in rescan, per-render guard (P3.T3's work) and TTL. The one remaining stat is the first hash of each file per session, which keeps the disk cache from serving a previous session's pixels for a file that changed in between. P3.T2's watcher/focus-in design is superseded.

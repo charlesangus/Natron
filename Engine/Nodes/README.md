@@ -150,6 +150,42 @@ B if no A is connected), never B's; `NativeGenerator` outputs only
 frame number within the source, so it is omitted); transforms and filters
 keep the default.
 
+## Metadata
+
+Keys are strings whose prefix names the namespace: `ofx/` (standard keys the
+engine and the OpenFX host define), `exr/`, `exif/`, `tiff/`, `dpx/`, `cin/`
+(format attributes), `oiio/` (OpenImageIO attributes) and `quicktime/`. Write
+routes a key by that prefix, in `OiioWriteSupport::applyMetadata()`:
+
+- `exr/` goes to OpenEXR files only; `exif/` goes to every format; `tiff/`,
+  `dpx/` and `cin/` go to TIFF, DPX and Cineon files respectively; `oiio/` goes
+  to every format.
+- `ofx/timecode` and `ofx/edgecode` are written as `smpte:TimeCode` and
+  `smpte:KeyCode`.
+- Other `ofx/` keys, `quicktime/` keys, keys that describe the source file's
+  layout and a few excluded `oiio/`, `tiff/` and `dpx/` names are never written.
+- A key the target format does not take is dropped, with a debug log line.
+
+`Engine/Nodes/Metadata/` holds four nodes, grouped under Metadata:
+
+- `ModifyMetadata`: sets, removes or renames keys through eight operation slots.
+- `CopyMetadata`: copies the keys of B matching a glob filter onto A, in
+  Replace, Merge B wins or Merge A wins mode; B disconnected passes A through.
+- `RemoveMetadata`: removes the keys matching a glob list, or all of them,
+  `ofx/` keys included.
+- `ViewMetadata`: shows the metadata at the current frame in its panel.
+
+All four derive from `NativeEffectBase` and override `isIdentity()` to return
+input 0, so the image is passed through without a render and costs nothing.
+The three editing nodes override `deriveOutputMetadata()`; `ViewMetadata` keeps
+the default pass-through. Key filters are
+`MetadataKeyFilter`: comma- or newline-separated globs, `*` matching any
+characters including `/`, `?` one, an empty list matching every key.
+
+`ModifyMetadata` has a fixed eight slots because a `KnobTable` packs its rows
+into one string: its cells could neither take an expression nor animate, and a
+`Set` value must do both. Each slot is a group of ordinary knobs instead.
+
 ## I/O nodes
 
 `Engine/Nodes/IO/` holds the native Read and Write. `NativeRead` (`NativeRead.h`) is the
@@ -275,11 +311,8 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   (`IoColorSpace::fileTag()`).
 - **Metadata.** With `writeMetadata` on, the upstream metadata is written by
   `OiioWriteSupport::applyMetadata()`, the inverse of
-  `OiioReadSupport::attributeMetadata()`, routed by key prefix: `exr/` to
-  OpenEXR only, `exif/` to every format, `tiff/`, `dpx/` and `cin/` to their own
-  format, `oiio/` to every format, and `ofx/timecode` and `ofx/edgecode` as
-  `smpte:TimeCode` and `smpte:KeyCode`. File-identity keys, `oiio/ColorSpace`,
-  other `ofx/` keys and the file-layout keys are never written.
+  `OiioReadSupport::attributeMetadata()`. The routing rules are in the
+  Metadata section above.
 - **When the file is written.** Only a frame of the Write's own render to
   disk encodes: the panel's Render button, Render Selected, `app.render` and
   the `-w` command-line render all run through `startWritersRendering()` and

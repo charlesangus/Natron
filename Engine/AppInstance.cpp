@@ -1473,6 +1473,7 @@ AppInstance::exportDocs(const QString path)
         groups << QString::fromUtf8(PLUGIN_GROUP_KEYER);
         groups << QString::fromUtf8(PLUGIN_GROUP_MERGE);
         groups << QString::fromUtf8(PLUGIN_GROUP_TRANSFORM);
+        groups << QString::fromUtf8(PLUGIN_GROUP_METADATA);
         groups << QString::fromUtf8(PLUGIN_GROUP_MULTIVIEW);
         groups << QString::fromUtf8(PLUGIN_GROUP_OTHER);
         groups << QString::fromUtf8("Extra"); // openfx-arena

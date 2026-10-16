@@ -1375,13 +1375,13 @@ KnobColor::getColorRole() const
 
 /******************************KnobString**************************************/
 
-
 KnobString::KnobString(KnobHolder* holder,
-                       const std::string &label,
+                       const std::string& label,
                        int dimension,
                        bool declaredByPlugin)
     : AnimatingKnobStringHelper(holder, label, dimension, declaredByPlugin)
     , _multiLine(false)
+    , _preferredRows(0)
     , _richText(false)
     , _customHtmlText(false)
     , _isLabel(false)
@@ -1390,11 +1390,12 @@ KnobString::KnobString(KnobHolder* holder,
 }
 
 KnobString::KnobString(KnobHolder* holder,
-                       const QString &label,
+                       const QString& label,
                        int dimension,
                        bool declaredByPlugin)
     : AnimatingKnobStringHelper(holder, label.toStdString(), dimension, declaredByPlugin)
     , _multiLine(false)
+    , _preferredRows(0)
     , _richText(false)
     , _customHtmlText(false)
     , _isLabel(false)

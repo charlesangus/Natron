@@ -77,7 +77,7 @@
 
 #include <SequenceParsing.h> // for removePath
 
-#define NAMED_PLUGIN_GROUP_NO 15
+#define NAMED_PLUGIN_GROUP_NO 16
 
 #define PLUGIN_GROUP_DEFAULT_ICON_PATH NATRON_ICONS_PATH "lucide/puzzle.svg"
 
@@ -96,6 +96,7 @@ static std::string namedGroupsOrdered[NAMED_PLUGIN_GROUP_NO] = {
     PLUGIN_GROUP_TRANSFORM,
     PLUGIN_GROUP_3D,
     PLUGIN_GROUP_DEEP,
+    PLUGIN_GROUP_METADATA,
     PLUGIN_GROUP_MULTIVIEW,
     PLUGIN_GROUP_TOOLSETS,
     PLUGIN_GROUP_OTHER,
@@ -133,11 +134,13 @@ getIconForGrouping(QIcon* icon,
         e = NATRON_PIXMAP_3D_GROUPING;
     } else if ( grouping == QString::fromUtf8(PLUGIN_GROUP_DEEP) ) {
         e = NATRON_PIXMAP_DEEP_GROUPING;
-    } else if ( grouping == QString::fromUtf8(PLUGIN_GROUP_MULTIVIEW) ) {
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_METADATA)) {
+        e = NATRON_PIXMAP_METADATA_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_MULTIVIEW)) {
         e = NATRON_PIXMAP_MULTIVIEW_GROUPING;
-    } else if ( grouping == QString::fromUtf8(PLUGIN_GROUP_TOOLSETS) ) {
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_TOOLSETS)) {
         e = NATRON_PIXMAP_TOOLSETS_GROUPING;
-    } else if ( grouping == QString::fromUtf8(PLUGIN_GROUP_OTHER) ) {
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_OTHER)) {
         e = NATRON_PIXMAP_MISC_GROUPING;
     }
     appPTR->getIcon(e, size, icon);

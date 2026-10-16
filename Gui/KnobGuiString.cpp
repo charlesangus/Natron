@@ -401,6 +401,9 @@ KnobGuiString::createWidget(QHBoxLayout* layout)
         QObject::connect( _textEdit, SIGNAL(editingFinished()), this, SLOT(onTextChanged()) );
         // layout->parentWidget()->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
         _textEdit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        if (knob->getPreferredRows() > 0) {
+            _textEdit->setMinimumHeight(_textEdit->fontMetrics().lineSpacing() * knob->getPreferredRows() + 2 * _textEdit->frameWidth());
+        }
 
         ///set the copy/link actions in the right click menu
         enableRightClickMenu(_textEdit, 0);

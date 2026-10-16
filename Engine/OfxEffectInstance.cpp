@@ -1488,113 +1488,56 @@ ofxExtractAllPartsOfGrouping(const QString & pluginIdentifier,
     } else if ( ( pluginIdentifier == QString::fromUtf8("uk.co.thefoundry.noisetools.denoise") ) ||
                 pluginIdentifier.startsWith( QString::fromUtf8("com.rubbermonkey:FilmConvert") ) ) {
         s = QString::fromUtf8(PLUGIN_GROUP_FILTER);
-    } else if ( pluginIdentifier.startsWith( QString::fromUtf8("com.NewBlue.Titler") ) ) {
+    } else if ((stdIdentifier == "org.openfx.examples.metadataCompare") || (stdIdentifier == "org.openfx.examples.metadataContribute") || (stdIdentifier == "org.openfx.examples.metadataTimeCode")) {
+        // The examples declare their own grouping; the native metadata nodes share this folder.
+        s = QString::fromUtf8(PLUGIN_GROUP_METADATA);
+    } else if (pluginIdentifier.startsWith(QString::fromUtf8("com.NewBlue.Titler"))) {
         s = QString::fromUtf8(PLUGIN_GROUP_PAINT);
-    } else if ( pluginIdentifier.startsWith( QString::fromUtf8("com.FXHOME.HitFilm") ) ) {
+    } else if (pluginIdentifier.startsWith(QString::fromUtf8("com.FXHOME.HitFilm"))) {
         // HitFilm uses grouping such as "HitFilm - Keying - Matte Enhancement"
         s.replace( QString::fromUtf8(" - "), QString::fromUtf8("/") );
-    } else if ( pluginIdentifier.startsWith( QString::fromUtf8("com.redgiantsoftware.Universe") ) && s.startsWith( QString::fromUtf8("Universe ") ) ) {
+    } else if (pluginIdentifier.startsWith(QString::fromUtf8("com.redgiantsoftware.Universe")) && s.startsWith(QString::fromUtf8("Universe "))) {
         // Red Giant Universe uses grouping such as "Universe Blur"
         out.push_back( QString::fromUtf8("Universe") );
-    } else if ( pluginIdentifier.startsWith( QString::fromUtf8("com.NewBlue.") ) && s.startsWith( QString::fromUtf8("NewBlue ") ) ) {
+    } else if (pluginIdentifier.startsWith(QString::fromUtf8("com.NewBlue.")) && s.startsWith(QString::fromUtf8("NewBlue "))) {
         // NewBlueFX uses grouping such as "NewBlue Elements"
         out.push_back( QString::fromUtf8("NewBlue") );
-    } else if ( (stdIdentifier == "tuttle.avreader") ||
-                (stdIdentifier == "tuttle.avwriter") ||
-                (stdIdentifier == "tuttle.dpxwriter") ||
-                (stdIdentifier == "tuttle.exrreader") ||
-                (stdIdentifier == "tuttle.exrwriter") ||
-                (stdIdentifier == "tuttle.imagemagickreader") ||
-                (stdIdentifier == "tuttle.jpeg2000reader") ||
-                (stdIdentifier == "tuttle.jpeg2000writer") ||
-                (stdIdentifier == "tuttle.jpegreader") ||
-                (stdIdentifier == "tuttle.jpegwriter") ||
-                (stdIdentifier == "tuttle.oiioreader") ||
-                (stdIdentifier == "tuttle.oiiowriter") ||
-                (stdIdentifier == "tuttle.pngreader") ||
-                (stdIdentifier == "tuttle.pngwriter") ||
-                (stdIdentifier == "tuttle.rawreader") ||
-                (stdIdentifier == "tuttle.turbojpegreader") ||
-                (stdIdentifier == "tuttle.turbojpegwriter") ) {
+    } else if ((stdIdentifier == "tuttle.avreader") || (stdIdentifier == "tuttle.avwriter") || (stdIdentifier == "tuttle.dpxwriter") || (stdIdentifier == "tuttle.exrreader") || (stdIdentifier == "tuttle.exrwriter") || (stdIdentifier == "tuttle.imagemagickreader") || (stdIdentifier == "tuttle.jpeg2000reader") || (stdIdentifier == "tuttle.jpeg2000writer") || (stdIdentifier == "tuttle.jpegreader") || (stdIdentifier == "tuttle.jpegwriter") || (stdIdentifier == "tuttle.oiioreader") || (stdIdentifier == "tuttle.oiiowriter") || (stdIdentifier == "tuttle.pngreader") || (stdIdentifier == "tuttle.pngwriter") || (stdIdentifier == "tuttle.rawreader") || (stdIdentifier == "tuttle.turbojpegreader") || (stdIdentifier == "tuttle.turbojpegwriter")) {
         out.push_back( QString::fromUtf8(PLUGIN_GROUP_IMAGE) );
         if ( pluginIdentifier.endsWith( QString::fromUtf8("reader") ) ) {
             s = QString::fromUtf8(PLUGIN_GROUP_IMAGE_READERS);
         } else {
             s = QString::fromUtf8(PLUGIN_GROUP_IMAGE_WRITERS);
         }
-    } else if ( (stdIdentifier == "tuttle.checkerboard") ||
-                (stdIdentifier == "tuttle.colorbars") ||
-                (stdIdentifier == "tuttle.colorcube") || // TuttleColorCube
-                (stdIdentifier == "tuttle.colorgradient") ||
-                (stdIdentifier == "tuttle.colorwheel") ||
-                (stdIdentifier == "tuttle.constant") ||
-                (stdIdentifier == "tuttle.inputbuffer") ||
-                (stdIdentifier == "tuttle.outputbuffer") ||
-                (stdIdentifier == "tuttle.ramp") ||
-                (stdIdentifier == "tuttle.seexpr") ) {
+    } else if ((stdIdentifier == "tuttle.checkerboard") || (stdIdentifier == "tuttle.colorbars") || (stdIdentifier == "tuttle.colorcube") || // TuttleColorCube
+               (stdIdentifier == "tuttle.colorgradient") || (stdIdentifier == "tuttle.colorwheel") || (stdIdentifier == "tuttle.constant") || (stdIdentifier == "tuttle.inputbuffer") || (stdIdentifier == "tuttle.outputbuffer") || (stdIdentifier == "tuttle.ramp") || (stdIdentifier == "tuttle.seexpr")) {
         s = QString::fromUtf8(PLUGIN_GROUP_IMAGE);
-    } else if ( (stdIdentifier == "tuttle.bitdepth") ||
-                (stdIdentifier == "tuttle.colorgradation") ||
-                (stdIdentifier == "tuttle.colorspace") ||
-                (stdIdentifier == "tuttle.colorsuppress") ||
-                (stdIdentifier == "tuttle.colortransfer") ||
-                (stdIdentifier == "tuttle.colortransform") ||
-                (stdIdentifier == "tuttle.ctl") ||
-                (stdIdentifier == "tuttle.invert") ||
-                (stdIdentifier == "tuttle.lut") ||
-                (stdIdentifier == "tuttle.normalize") ) {
+    } else if ((stdIdentifier == "tuttle.bitdepth") || (stdIdentifier == "tuttle.colorgradation") || (stdIdentifier == "tuttle.colorspace") || (stdIdentifier == "tuttle.colorsuppress") || (stdIdentifier == "tuttle.colortransfer") || (stdIdentifier == "tuttle.colortransform") || (stdIdentifier == "tuttle.ctl") || (stdIdentifier == "tuttle.invert") || (stdIdentifier == "tuttle.lut") || (stdIdentifier == "tuttle.normalize")) {
         s = QString::fromUtf8(PLUGIN_GROUP_COLOR);
-    } else if ( (stdIdentifier == "tuttle.ocio.colorspace") ||
-                (stdIdentifier == "tuttle.ocio.lut") ) {
+    } else if ((stdIdentifier == "tuttle.ocio.colorspace") || (stdIdentifier == "tuttle.ocio.lut")) {
         out.push_back( QString::fromUtf8(PLUGIN_GROUP_COLOR) );
         s = QString::fromUtf8("OCIO");
-    } else if ( (stdIdentifier == "tuttle.gamma") ||
-                (stdIdentifier == "tuttle.mathoperator") ) {
+    } else if ((stdIdentifier == "tuttle.gamma") || (stdIdentifier == "tuttle.mathoperator")) {
         out.push_back( QString::fromUtf8(PLUGIN_GROUP_COLOR) );
         s = QString::fromUtf8("Math");
-    } else if ( (stdIdentifier == "tuttle.channelshuffle") ) {
+    } else if ((stdIdentifier == "tuttle.channelshuffle")) {
         s = QString::fromUtf8(PLUGIN_GROUP_CHANNEL);
-    } else if ( (stdIdentifier == "tuttle.component") ||
-                (stdIdentifier == "tuttle.fade") ||
-                (stdIdentifier == "tuttle.merge") ) {
+    } else if ((stdIdentifier == "tuttle.component") || (stdIdentifier == "tuttle.fade") || (stdIdentifier == "tuttle.merge")) {
         s = QString::fromUtf8(PLUGIN_GROUP_MERGE);
-    } else if ( (stdIdentifier == "tuttle.anisotropicdiffusion") ||
-                (stdIdentifier == "tuttle.anisotropictensors") ||
-                (stdIdentifier == "tuttle.blur") ||
-                (stdIdentifier == "tuttle.convolution") ||
-                (stdIdentifier == "tuttle.floodfill") ||
-                (stdIdentifier == "tuttle.localmaxima") ||
-                (stdIdentifier == "tuttle.nlmdenoiser") ||
-                (stdIdentifier == "tuttle.sobel") ||
-                (stdIdentifier == "tuttle.thinning") ) {
+    } else if ((stdIdentifier == "tuttle.anisotropicdiffusion") || (stdIdentifier == "tuttle.anisotropictensors") || (stdIdentifier == "tuttle.blur") || (stdIdentifier == "tuttle.convolution") || (stdIdentifier == "tuttle.floodfill") || (stdIdentifier == "tuttle.localmaxima") || (stdIdentifier == "tuttle.nlmdenoiser") || (stdIdentifier == "tuttle.sobel") || (stdIdentifier == "tuttle.thinning")) {
         s = QString::fromUtf8(PLUGIN_GROUP_FILTER);
-    } else if ( (stdIdentifier == "tuttle.crop") ||
-                (stdIdentifier == "tuttle.flip") ||
-                (stdIdentifier == "tuttle.lensdistort") ||
-                (stdIdentifier == "tuttle.move2d") ||
-                (stdIdentifier == "tuttle.pinning") ||
-                (stdIdentifier == "tuttle.pushpixel") ||
-                (stdIdentifier == "tuttle.resize") ||
-                (stdIdentifier == "tuttle.swscale") ||
-                (stdIdentifier == "tuttle.warp") ) {
+    } else if ((stdIdentifier == "tuttle.crop") || (stdIdentifier == "tuttle.flip") || (stdIdentifier == "tuttle.lensdistort") || (stdIdentifier == "tuttle.move2d") || (stdIdentifier == "tuttle.pinning") || (stdIdentifier == "tuttle.pushpixel") || (stdIdentifier == "tuttle.resize") || (stdIdentifier == "tuttle.swscale") || (stdIdentifier == "tuttle.warp")) {
         s = QString::fromUtf8(PLUGIN_GROUP_TRANSFORM);
-    } else if ( (stdIdentifier == "tuttle.timeshift") ) {
+    } else if ((stdIdentifier == "tuttle.timeshift")) {
         s = QString::fromUtf8(PLUGIN_GROUP_TIME);
-    } else if ( (stdIdentifier == "tuttle.text") ) {
+    } else if ((stdIdentifier == "tuttle.text")) {
         s = QString::fromUtf8(PLUGIN_GROUP_PAINT);
-    } else if ( (stdIdentifier == "tuttle.basickeyer") ||
-                (stdIdentifier == "tuttle.colorspacekeyer") ||
-                (stdIdentifier == "tuttle.histogramkeyer") ||
-                (stdIdentifier == "tuttle.idkeyer") ) {
+    } else if ((stdIdentifier == "tuttle.basickeyer") || (stdIdentifier == "tuttle.colorspacekeyer") || (stdIdentifier == "tuttle.histogramkeyer") || (stdIdentifier == "tuttle.idkeyer")) {
         s = QString::fromUtf8(PLUGIN_GROUP_KEYER);
-    } else if ( (stdIdentifier == "tuttle.colorCube") || // TuttleColorCubeViewer
-                (stdIdentifier == "tuttle.colorcubeviewer") ||
-                (stdIdentifier == "tuttle.diff") ||
-                (stdIdentifier == "tuttle.dummy") ||
-                (stdIdentifier == "tuttle.histogram") ||
-                (stdIdentifier == "tuttle.imagestatistics") ) {
+    } else if ((stdIdentifier == "tuttle.colorCube") || // TuttleColorCubeViewer
+               (stdIdentifier == "tuttle.colorcubeviewer") || (stdIdentifier == "tuttle.diff") || (stdIdentifier == "tuttle.dummy") || (stdIdentifier == "tuttle.histogram") || (stdIdentifier == "tuttle.imagestatistics")) {
         s = QString::fromUtf8(PLUGIN_GROUP_OTHER);
-    } else if ( (stdIdentifier == "tuttle.debugimageeffectapi") ) {
+    } else if ((stdIdentifier == "tuttle.debugimageeffectapi")) {
         out.push_back( QString::fromUtf8(PLUGIN_GROUP_OTHER) );
         s = QString::fromUtf8("Test");
     }

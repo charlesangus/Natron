@@ -53,7 +53,8 @@
 NATRON_NAMESPACE_USING
 
 namespace {
-const char kMetadataViewID[] = "org.openfx.examples.metadataView";
+const char kOfxColorMatrixID[] = "net.sf.openfx.ColorMatrixPlugin";
+const int kOfxColorMatrixMajor = 2;
 
 NativeEffectBase*
 nativeEffectOf(const NodePtr& node)
@@ -117,10 +118,10 @@ sourceClipOf(const NodePtr& node)
 
 // The keys the OpenFX input clip holds, read back the way a plug-in sees them.
 ImageMetadata
-receivedBy(const NodePtr& view,
+receivedBy(const NodePtr& downstream,
            double time)
 {
-    MetadataRef received(sourceClipOf(view), time);
+    MetadataRef received(sourceClipOf(downstream), time);
 
     EXPECT_TRUE(received.get() != NULL);
 
@@ -239,10 +240,10 @@ TEST_F(BaseTest, DotChainMetadataReachesOfxInputClipExactly)
     NodePtr source = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
     NodePtr dotA = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
     NodePtr dotB = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
-    NodePtr view = createNode(QString::fromUtf8(kMetadataViewID));
+    NodePtr downstream = createNode(QString::fromUtf8(kOfxColorMatrixID), kOfxColorMatrixMajor);
 
     ASSERT_TRUE(source && dotA && dotB);
-    ASSERT_TRUE(bool(view)) << "node creation failed for " << kMetadataViewID;
+    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxColorMatrixID;
 
     NativeEffectBase* sourceEffect = nativeEffectOf(source);
 
@@ -250,45 +251,45 @@ TEST_F(BaseTest, DotChainMetadataReachesOfxInputClipExactly)
 
     connectNodes(source, dotA, 0, true);
     connectNodes(dotA, dotB, 0, true);
-    connectNodes(dotB, view, 0, true);
+    connectNodes(dotB, downstream, 0, true);
 
     const double time = 3.;
     const ImageMetadata expected = sourceEffect->getOutputMetadata(time, ViewIdx(0));
 
     ASSERT_EQ(std::optional<int>(static_cast<int>(time)), expected.getInt(kOfxMetadataKeySourceFrame));
-    EXPECT_EQ(expected, receivedBy(view, time));
+    EXPECT_EQ(expected, receivedBy(downstream, time));
 }
 
 TEST_F(BaseTest, DotMetadataReachesOfxInputClipAfterKnobChangeOnTheSource)
 {
     NodePtr source = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
     NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
-    NodePtr view = createNode(QString::fromUtf8(kMetadataViewID));
+    NodePtr downstream = createNode(QString::fromUtf8(kOfxColorMatrixID), kOfxColorMatrixMajor);
 
     ASSERT_TRUE(source && dot);
-    ASSERT_TRUE(bool(view)) << "node creation failed for " << kMetadataViewID;
+    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxColorMatrixID;
 
     connectNodes(source, dot, 0, true);
-    connectNodes(dot, view, 0, true);
+    connectNodes(dot, downstream, 0, true);
 
-    EXPECT_EQ(std::optional<int>(1), receivedBy(view, 1.).getInt("exr/tag"));
+    EXPECT_EQ(std::optional<int>(1), receivedBy(downstream, 1.).getInt("exr/tag"));
 
     setTag(source, 42);
 
-    EXPECT_EQ(std::optional<int>(42), receivedBy(view, 1.).getInt("exr/tag"));
+    EXPECT_EQ(std::optional<int>(42), receivedBy(downstream, 1.).getInt("exr/tag"));
 }
 
 TEST_F(BaseTest, DisconnectedDotKeepsTheHostFallbackOnOfxInputClip)
 {
     NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
-    NodePtr view = createNode(QString::fromUtf8(kMetadataViewID));
+    NodePtr downstream = createNode(QString::fromUtf8(kOfxColorMatrixID), kOfxColorMatrixMajor);
 
     ASSERT_TRUE(bool(dot));
-    ASSERT_TRUE(bool(view)) << "node creation failed for " << kMetadataViewID;
+    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxColorMatrixID;
 
-    connectNodes(dot, view, 0, true);
+    connectNodes(dot, downstream, 0, true);
 
-    MetadataRef received(sourceClipOf(view), 4.);
+    MetadataRef received(sourceClipOf(downstream), 4.);
 
     ASSERT_TRUE(received.get() != NULL);
     EXPECT_TRUE(received->fetchProperty(kOfxMetadataKeyFrameRate) != NULL);

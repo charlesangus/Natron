@@ -2,11 +2,11 @@
 #
 # Prepare the external assets the test suite and Natron's shipped plugin set
 # need: the openfx-io OFX plugin bundle that Tests/BaseTest.cpp loads
-# through OFX_PLUGIN_PATH, and the openfx-misc/
-# openfx-arena/openfx-metadata OFX plugin bundles that ship with Natron but
-# that no test currently loads -- they are built here so CI proves they
-# still build against the pinned toolchain, the same way the rest of Natron
-# is proven to build.
+# through OFX_PLUGIN_PATH, the openfx-misc/openfx-arena OFX plugin bundles
+# that ship with Natron -- built here so CI proves they still build against
+# the pinned toolchain, the same way the rest of Natron is proven to build --
+# and the openfx metadata example plug-ins: Compare, Contribute and TimeCode
+# ship, Print is a test-only fixture.
 #
 # Result (idempotent, safe to re-run):
 #   build/assets/Plugins/IO.ofx.bundle/
@@ -15,11 +15,8 @@
 #   build/assets/Plugins/Arena.ofx.bundle/
 #   build/assets/Plugins/metadataCompare.ofx.bundle/
 #   build/assets/Plugins/metadataContribute.ofx.bundle/
-#   build/assets/Plugins/metadataCopy.ofx.bundle/
-#   build/assets/Plugins/metadataModify.ofx.bundle/
-#   build/assets/Plugins/metadataPrint.ofx.bundle/
 #   build/assets/Plugins/metadataTimeCode.ofx.bundle/
-#   build/assets/Plugins/metadataView.ofx.bundle/
+#   build/assets/TestPlugins/metadataPrint.ofx.bundle/   (tests only)
 #   build/assets/plugin-src/deps-install/  (lcms2, libzip, ImageMagick --
 #                                           for openfx-arena)
 #
@@ -212,11 +209,16 @@ OPENFX_ARENA_REF="32d8a2a00cffe9dc34071d4d38282827ae2fd57a"
 
 # OPENFX_METADATA_REF: charlesangus/openfx -- our ASWF-lineage OpenFX fork,
 # whose Support/Plugins/Metadata* examples exercise the clip and image
-# metadata suite.
+# metadata suite. Compare, Contribute and TimeCode have no native equivalent
+# and ship in Plugins/. Copy, Modify and View are redundant with the native
+# metadata nodes and are not built. Print is only a test fixture, so it goes
+# to TestPlugins/: tools/release/stage-bundle.sh ships every bundle under
+# Plugins/, and smoke_test.py asserts that set exactly.
 OPENFX_METADATA_REPO="https://github.com/charlesangus/openfx.git"
 OPENFX_METADATA_REF="ba379b1f7bba325e6d52bdb6a315309e48c236dc"
 
 PLUGINS_TARGET="${ASSETS_DIR}/Plugins"
+TEST_PLUGINS_TARGET="${ASSETS_DIR}/TestPlugins"
 PLUGINS_SRC_DIR="${ASSETS_DIR}/plugin-src"
 DEPS_PREFIX="${PLUGINS_SRC_DIR}/deps-install"
 PLUGINS_STAMP="${PLUGINS_TARGET}/.natron-plugin-pins"
@@ -233,18 +235,29 @@ MISC_OFX="${PLUGINS_TARGET}/Misc.ofx.bundle/Contents/Linux-x86-64/Misc.ofx"
 CIMG_OFX="${PLUGINS_TARGET}/CImg.ofx.bundle/Contents/Linux-x86-64/CImg.ofx"
 ARENA_OFX="${PLUGINS_TARGET}/Arena.ofx.bundle/Contents/Linux-x86-64/Arena.ofx"
 
-# openfx-metadata's seven example plugins, one bundle each. Directory name
-# (Support/Plugins/<dir> in the fork) paired with the lowerCamel
-# plugin/bundle name it produces, which is also the tail of that plugin's
-# org.openfx.examples.<name> identifier.
-METADATA_PLUGIN_DIRS=(MetadataCompare MetadataContribute MetadataCopy MetadataModify MetadataPrint MetadataTimeCode MetadataView)
-METADATA_PLUGIN_NAMES=(metadataCompare metadataContribute metadataCopy metadataModify metadataPrint metadataTimeCode metadataView)
+# The openfx-metadata example plugins, one bundle each. Directory name
+# (Support/Plugins/<dir> in the fork) paired with the lowerCamel plugin/bundle
+# name it produces, which is also the tail of that plugin's
+# org.openfx.examples.<name> identifier, and the directory it is installed to.
+METADATA_PLUGIN_DIRS=(MetadataCompare MetadataContribute MetadataTimeCode MetadataPrint)
+METADATA_PLUGIN_NAMES=(metadataCompare metadataContribute metadataTimeCode metadataPrint)
+METADATA_PLUGIN_TARGETS=("${PLUGINS_TARGET}" "${PLUGINS_TARGET}" "${PLUGINS_TARGET}" "${TEST_PLUGINS_TARGET}")
 METADATA_OFX=()
 for i in "${!METADATA_PLUGIN_NAMES[@]}"; do
-    METADATA_OFX+=("${PLUGINS_TARGET}/${METADATA_PLUGIN_NAMES[$i]}.ofx.bundle/Contents/Linux-x86-64/${METADATA_PLUGIN_NAMES[$i]}.ofx")
+    METADATA_OFX+=("${METADATA_PLUGIN_TARGETS[$i]}/${METADATA_PLUGIN_NAMES[$i]}.ofx.bundle/Contents/Linux-x86-64/${METADATA_PLUGIN_NAMES[$i]}.ofx")
 done
 
-if [ -f "${PLUGINS_STAMP}" ] && [ "$(cat "${PLUGINS_STAMP}")" = "${PLUGINS_WANT}" ] && [ -f "${CIMG_HEADER_KEPT}" ]; then
+# The stamp lives in Plugins/, so a cache that restored Plugins/ without
+# TestPlugins/ would otherwise pass for complete.
+metadata_plugins_present() {
+    local ofx
+    for ofx in "${METADATA_OFX[@]}"; do
+        [ -f "${ofx}" ] || return 1
+    done
+    return 0
+}
+
+if [ -f "${PLUGINS_STAMP}" ] && [ "$(cat "${PLUGINS_STAMP}")" = "${PLUGINS_WANT}" ] && [ -f "${CIMG_HEADER_KEPT}" ] && metadata_plugins_present; then
     echo "[Plugins] already built at the pinned refs -- skipping."
     echo "[Plugins]   ${PLUGINS_WANT}"
 else
@@ -483,7 +496,7 @@ else
     # Makefile (via Makefile.master) that needs only libGL and the C++
     # toolchain, so `make CONFIG=release` builds it straight from this
     # container's own libraries.
-    echo "[Plugins] building openfx-metadata example plugins..."
+    echo "[Plugins] building the openfx-metadata example plugins..."
     METADATA_SRC="${PLUGINS_SRC_DIR}/openfx-metadata"
     for dir in "${METADATA_PLUGIN_DIRS[@]}"; do
         make -C "${METADATA_SRC}/Support/Plugins/${dir}" CONFIG=release
@@ -496,21 +509,21 @@ else
     # CImg.ofx.bundle) into the same prefix as IO.ofx.bundle; the rm -rf
     # happens once, before any --install, so a run interrupted partway never
     # leaves PLUGINS_TARGET in a mixed old/new state.
-    rm -rf "${PLUGINS_TARGET}"
-    mkdir -p "${PLUGINS_TARGET}"
+    rm -rf "${PLUGINS_TARGET}" "${TEST_PLUGINS_TARGET}"
+    mkdir -p "${PLUGINS_TARGET}" "${TEST_PLUGINS_TARGET}"
     cmake --install "${IO_BUILD}" --prefix "${PLUGINS_TARGET}" > /dev/null
     cmake --install "${MISC_BUILD}" --prefix "${PLUGINS_TARGET}" > /dev/null
     cmake --install "${ARENA_BUILD}" --prefix "${PLUGINS_TARGET}" > /dev/null
 
     # openfx-metadata's Makefile build emits its own bundle layout directly
     # under Support/Plugins/<Name>/Linux-64-release/, one bundle per plugin --
-    # copy each into PLUGINS_TARGET alongside the CMake-installed bundles
-    # above. This has to happen after the rm -rf above, not before, or it
-    # gets deleted along with the previous run's bundles.
+    # copy each into its target. This has to happen after the rm -rf
+    # above, not before, or it gets deleted along with the previous run's
+    # bundles.
     for dir_i in "${!METADATA_PLUGIN_DIRS[@]}"; do
         dir="${METADATA_PLUGIN_DIRS[$dir_i]}"
         name="${METADATA_PLUGIN_NAMES[$dir_i]}"
-        cp -R "${METADATA_SRC}/Support/Plugins/${dir}/Linux-64-release/${name}.ofx.bundle" "${PLUGINS_TARGET}/"
+        cp -R "${METADATA_SRC}/Support/Plugins/${dir}/Linux-64-release/${name}.ofx.bundle" "${METADATA_PLUGIN_TARGETS[$dir_i]}/"
     done
 
     for ofx in "${IO_OFX}" "${MISC_OFX}" "${CIMG_OFX}" "${ARENA_OFX}" "${METADATA_OFX[@]}"; do
@@ -627,7 +640,7 @@ for ofx in "${MISC_OFX}" "${CIMG_OFX}" "${ARENA_OFX}"; do
     "${VERIFY_LOADER_BIN}" "${ofx}"
 done
 
-# The seven openfx-metadata IDs have the same "not one contiguous run of
+# The openfx-metadata IDs have the same "not one contiguous run of
 # bytes" problem as net.fxarena.openfx.Text below -- see the comment by
 # ARENA_PROBE_OUT -- so each is asserted from this probe's own output
 # rather than via `strings`. Capture to a file first for the same

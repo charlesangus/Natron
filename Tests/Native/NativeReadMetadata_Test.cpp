@@ -63,7 +63,8 @@
 NATRON_NAMESPACE_USING
 
 namespace {
-const char kMetadataViewID[] = "org.openfx.examples.metadataView";
+const char kOfxColorMatrixID[] = "net.sf.openfx.ColorMatrixPlugin";
+const int kOfxColorMatrixMajor = 2;
 const int kSize = 4;
 
 std::string
@@ -162,10 +163,10 @@ private:
 
 // The keys the OpenFX input clip holds, read back the way a plug-in sees them.
 ImageMetadata
-receivedBy(const NodePtr& view,
+receivedBy(const NodePtr& downstream,
            double time)
 {
-    OfxEffectInstance* ofxEffect = dynamic_cast<OfxEffectInstance*>(view->getEffectInstance().get());
+    OfxEffectInstance* ofxEffect = dynamic_cast<OfxEffectInstance*>(downstream->getEffectInstance().get());
     OFX::Host::ImageEffect::ClipInstance* clip = (ofxEffect && ofxEffect->effectInstance()) ? ofxEffect->effectInstance()->getClip(kOfxImageEffectSimpleSourceClipName) : NULL;
     MetadataRef received(clip, time);
 
@@ -423,17 +424,17 @@ TEST_F(NativeReadMetadataTest, KeysReachAnOfxInputClipPastADot)
     writeSequence(dir, "ofx", frames);
     NodePtr read = createRead(framePath(dir, "ofx", 1));
     NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
-    NodePtr view = createNode(QString::fromUtf8(kMetadataViewID));
+    NodePtr downstream = createNode(QString::fromUtf8(kOfxColorMatrixID), kOfxColorMatrixMajor);
     ASSERT_TRUE(read && dot);
-    ASSERT_TRUE(bool(view)) << "node creation failed for " << kMetadataViewID;
+    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxColorMatrixID;
 
     connectNodes(read, dot, 0, true);
-    connectNodes(dot, view, 0, true);
+    connectNodes(dot, downstream, 0, true);
 
     const ImageMetadata expected = metadataOf(read, 1.);
 
     ASSERT_EQ(std::optional<std::string>(framePath(dir, "ofx", 1)), expected.getString("ofx/filepath"));
-    EXPECT_EQ(expected, receivedBy(view, 1.));
+    EXPECT_EQ(expected, receivedBy(downstream, 1.));
 }
 
 TEST_F(NativeReadMetadataTest, KeysReachAnOfxInputClipDirectly)
@@ -442,13 +443,13 @@ TEST_F(NativeReadMetadataTest, KeysReachAnOfxInputClipDirectly)
     std::vector<int> frames(1, 1);
     writeSequence(dir, "direct", frames);
     NodePtr read = createRead(framePath(dir, "direct", 1));
-    NodePtr view = createNode(QString::fromUtf8(kMetadataViewID));
+    NodePtr downstream = createNode(QString::fromUtf8(kOfxColorMatrixID), kOfxColorMatrixMajor);
     ASSERT_TRUE(bool(read));
-    ASSERT_TRUE(bool(view)) << "node creation failed for " << kMetadataViewID;
+    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxColorMatrixID;
 
-    connectNodes(read, view, 0, true);
+    connectNodes(read, downstream, 0, true);
 
-    const ImageMetadata received = receivedBy(view, 1.);
+    const ImageMetadata received = receivedBy(downstream, 1.);
 
     EXPECT_EQ(metadataOf(read, 1.), received);
     EXPECT_EQ(std::optional<std::string>(framePath(dir, "direct", 1)), received.getString("ofx/filepath"));

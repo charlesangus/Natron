@@ -165,7 +165,7 @@ This phase runs now. It edits only `renderHandler`'s tmpImage decision block in 
 
 This phase starts only after M85 - Native GPU Kernels has merged into `main`. M85 rewrites `Engine/Nodes/Filter/Blur.{h,cpp}` and `NativeImageEffect.{h,cpp}`, and its GPU finish pass must stay bit-exact with `SpatialFilter::writeWindow`. It also regenerates `Engine/GpuCostSeed.inc`, which this phase regenerates again on top of M85's version. Rebase onto the post-M85 `main` before starting.
 
-- [ ] M90.P3.T1 — Cut `writeWindow`'s overhead without changing its output
+- [x] M90.P3.T1 — Cut `writeWindow`'s overhead without changing its output
   - files: `Engine/Nodes/Filter/SpatialFilterSupport.h`, `Engine/Nodes/Filter/SpatialFilterSupport.cpp` (`readSourceRow` / `readChannelRow`), `Engine/Nodes/Filter/Blur.cpp` (only if the call at `:840` must change), plus any Phase 90.2 opt-out that P2.T1 assigned to `NativeImageEffect` or `Blur`
   - approach:
     - First profile `writeWindow` on the post-M85 build.
@@ -212,3 +212,4 @@ This phase starts only after M85 - Native GPU Kernels has merged into `main`. M8
 - 2026-10-15 — **P2.T4 accepted** (PM): in-graph Grade is 1.65 ms/Mpx at 16 threads, against a ≤ ~5.1 target. Read has no regression (−14%), and the Blur numbers are recorded. The ~1.5×-of-bare-kernel ratio is unmeasured because no bare-kernel run was made; P3.T2 should include a `CpuTwinBench` bare-kernel run on the 16-thread host so that the gate ratio is measured for both Grade and Blur.
 - 2026-10-15 — **Waiting on M85** (user): M90 is not split. Both lanes wait until M85 - Native GPU Kernels merges, then M90 Phase 90.3 runs, M90 ships, and M100 resumes P4.T3/P5.T1/P7.T1.
 - 2026-10-15 — **Rebased onto post-M85 `main`** (7ad45061e) cleanly; branch now at 86805ce57. Phase 90.3 started.
+- 2026-10-15 — **P3.T1** (code: 87bad7d43; release run 38820048036, 2258/2258 in legacy and taskgraph, all five bit-exact Blur/filter suites plus NativeDirectOutput and ImagePasteBands pass). Per-band plane lookup, a branch-free fast path for unmasked `mix == 1` rows inside the window and buffer, and the Blur planar buffer reused across planes. The scratch rows were already per band, and the buffer was already left unzeroed (`fillBuffer` writes every element). The `writeWindow` share wasn't re-profiled: the AppImage is stripped, so P3.T2's bench measures the effect instead. The bench kit (`.local/m90-p3-bench/`, with `CLAUDE.md` for an agent run) is ready for the user's 16-thread host.

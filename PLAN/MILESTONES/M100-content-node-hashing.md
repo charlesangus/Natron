@@ -377,3 +377,15 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   The stock `hash_bench.py` times only the edit with nodes already dirty, so it understates comp (0.67 p95).
 
   **Still to fix for P6.T5:** the comp dirty-mark walk costs ~11 µs/node and should cost far less for a mark. The Roto content-hash recompute should rehash only the edited item.
+- 2026-10-16 — **Cache-equivalence failures** (release run 38893994724 at d142e9285: 18 failures, all CacheEquivalence; fix fbef9e95d, building). Engine gaps:
+  - **Reload of a shared file:** a second Read of the same file kept its old format. Reload now refreshes those Reads' metadata.
+  - **Precomp:** the sub-project was cleared without waiting, so destroys finished after the app was gone. It is now cleared blocking, with null-app and null-effect guards.
+  - **Null RoD status:** a cached null RoD reported a different status from a freshly computed one. Both now report the same.
+  - **Unwired output clips:** ImageMagick plugins skipped writing an output with nothing wired below it. The output clip now always reports connected.
+  
+  The test now renders Groups and PyPlugs through a Dot below them, renders DeepFromImage deep, and makes its second cold render only on a mismatch. Locally the scenarios and 13 of 16 sweep shards pass. **Three bundled-plugin bugs remain**, outside this repo:
+  - CImg EdgeExtend `mergeOver` assumes 4 channels and aborts (shard 4);
+  - an uninitialised variable in the CImg expression parser segfaults (shard 7; patch in `build/ceq/cimg-undefined-variable.patch`);
+  - fxarena Sketch uses unseeded noise, so it is non-deterministic (shard 5).
+  
+  **Timeout risk:** each defocus_retime bench case takes about 1000 s locally, against ctest's 300 s limit.

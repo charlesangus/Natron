@@ -221,13 +221,19 @@ script-name prefix so the Write can share it.
   `key1`..`key4` and `value1`..`value4`, and the hidden `ocioConfigFile`,
   `ocioWorkingSpace` and `availableViews`. `reload` (`kNatronReadParamReload`)
   is a Reload button on the `filename` row.
-- **Reload.** The Reload button runs `purgeCaches()`: the frame listings, the
-  cached headers of the files and proxy files, the output metadata and the
-  action results are dropped, and the frame range is read from disk again. The
-  button triggers a render, so the node hash moves and the images and action
-  results cached under the old hash are retired. Until then a file changed on
-  disk is not seen: the produced layers, the region of definition and the
-  cached images stay those of the file read before.
+- **Reload.** The node hash folds in a stamp of the file or sequence
+  (`FileStampRegistry`: path, modification time, size and inode of every
+  file). A file is stamped once, the first time the node is hashed in a
+  session, and nothing watches or stats it again until Reload. The Reload
+  button runs `purgeCaches()`: the file and proxy stamps are taken again, the
+  frame listings, the cached headers of the files and proxy files, the output
+  metadata and the action results are dropped, and the frame range is read
+  from disk again. A file that changed gets a new stamp, so the node hash moves
+  and the images and action results cached under the old hash are retired.
+  Until then a file changed on disk is not seen: the hash, the produced
+  layers, the region of definition and the cached images stay those of the
+  file read before. The file knob's own reload (`KnobFile::reloadFile()`) does
+  the same.
 - **Colour.** Pixels are converted to the project's working space through the
   project's OCIO config (`IoColorSpace::toWorkingProcessor()`). The default
   input space (`IoColorSpace::defaultInputSpace()`) is, in order: the config's
@@ -359,11 +365,14 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   for a frame shown from its file. The hash is the same whether the node shows
   the input or the file, so turning `readBack` on or off and a finished
   sequence call `purgeCaches()` to retire what was cached for the other state.
-- **Reload.** The Reload button on the `readBack` row is enabled only while
-  `readBack` is on. It runs `purgeCaches()`: the cached headers of the files of
-  the frame range, the output metadata, the action results and this node's
-  cached images are dropped, so a file changed on disk is read again. Images
-  cached downstream of the Write under an unchanged hash are not retired.
+- **Reload.** `readBackFrame()` looks at each file once, keeping its header
+  and stored hash, and does not stat it again while frames render. The Reload
+  button on the `readBack` row is enabled only while `readBack` is on. It runs
+  `purgeCaches()`, as do a finished sequence and turning `readBack` on or off:
+  the kept files, the cached headers of the files of the frame range, the
+  output metadata, the action results and the cached images of this node and
+  of every node downstream are dropped, so a file changed on disk is read
+  again.
 
 ## Writing a node, start to finish
 

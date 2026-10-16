@@ -5900,8 +5900,8 @@ void
 EffectInstance::onNodeHashChanged(U64 hash)
 {
     // A hash stands for one state, so the results stored under it stay valid and a node returning
-    // to an earlier state is served the ones it had then. A file changed on disk re-keys the node
-    // through its stamp; Reload drops the node's results itself, for changes the stamp misses.
+    // to an earlier state is served the ones it had then. Reloading a file changed on disk re-keys
+    // the node through its stamp; Reload also drops the node's results, for changes the stamp misses.
     _imp->actionsCache->useHash(hash);
 
     // Only expressions cache results, and walking every knob of every node a change reaches is

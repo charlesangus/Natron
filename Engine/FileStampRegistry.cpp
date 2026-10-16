@@ -31,26 +31,20 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
-#include <QCoreApplication>
-#include <QFileSystemWatcher>
-#include <QMetaObject>
-#include <QPointer>
-#include <QString>
-
 #include "Engine/ContentHasher.h"
 #include "Engine/FileSystemModel.h"
 
 NATRON_NAMESPACE_ENTER
 
 namespace {
-const std::chrono::milliseconds kStampTTL(1000);
-
 U64
-computeStamp(const std::string& path)
+computeStamp(const std::string& path,
+             std::atomic<std::uint64_t>* diskAccesses)
 {
     ContentHasher h;
 
     h.appendString(path);
+    diskAccesses->fetch_add(1, std::memory_order_relaxed);
     struct statx st;
     if (statx(AT_FDCWD, path.c_str(), 0, STATX_MTIME | STATX_SIZE | STATX_INO, &st) != 0) {
         h.appendBool(false);
@@ -82,11 +76,13 @@ parentDirectory(const std::string& path)
 }
 
 U64
-computeSequenceStamp(const std::string& pattern)
+computeSequenceStamp(const std::string& pattern,
+                     std::atomic<std::uint64_t>* diskAccesses)
 {
     ContentHasher h;
     std::map<int, std::map<int, std::string>> sequence;
 
+    diskAccesses->fetch_add(1, std::memory_order_relaxed);
     FileSystemModel::filesListFromPattern(pattern, &sequence);
     h.appendString(pattern);
     h.appendU64(sequence.size());
@@ -95,7 +91,7 @@ computeSequenceStamp(const std::string& pattern)
         h.appendU64(frame->second.size());
         for (std::map<int, std::string>::const_iterator view = frame->second.begin(); view != frame->second.end(); ++view) {
             h.appendI64(view->first);
-            h.appendU64(computeStamp(view->second));
+            h.appendU64(computeStamp(view->second, diskAccesses));
         }
     }
 
@@ -114,25 +110,26 @@ FileStampRegistry::instance()
 U64
 FileStampRegistry::stamp(const std::string& path)
 {
-    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    std::uint64_t generation = 0;
     {
         std::lock_guard<std::mutex> k(_mutex);
-        std::map<std::string, Entry>::const_iterator it = _entries.find(path);
-        if ((it != _entries.end()) && (now - it->second.computedAt < kStampTTL)) {
-            return it->second.stamp;
+        std::map<std::string, U64>::const_iterator it = _entries.find(path);
+        if (it != _entries.end()) {
+            return it->second;
         }
+        generation = _generation;
     }
 
     // The stat runs unlocked so a slow filesystem does not serialize every other path.
-    Entry entry;
-    entry.stamp = computeStamp(path);
-    entry.computedAt = now;
+    const U64 stamp = computeStamp(path, &_diskAccesses);
     {
         std::lock_guard<std::mutex> k(_mutex);
-        _entries[path] = entry;
+        if (generation == _generation) {
+            _entries[path] = stamp;
+        }
     }
 
-    return entry.stamp;
+    return stamp;
 }
 
 U64
@@ -149,7 +146,7 @@ FileStampRegistry::sequenceStamp(const std::string& pattern)
     }
 
     SequenceEntry entry;
-    entry.stamp = computeSequenceStamp(pattern);
+    entry.stamp = computeSequenceStamp(pattern, &_diskAccesses);
     entry.directory = parentDirectory(pattern);
     {
         std::lock_guard<std::mutex> k(_mutex);
@@ -157,7 +154,6 @@ FileStampRegistry::sequenceStamp(const std::string& pattern)
             _sequences[pattern] = entry;
         }
     }
-    watchDirectory(entry.directory);
 
     return entry.stamp;
 }
@@ -166,204 +162,35 @@ void
 FileStampRegistry::invalidate(const std::string& path)
 {
     const std::string directory = parentDirectory(path);
-    {
-        std::lock_guard<std::mutex> k(_mutex);
+    const bool isPattern = hasFramePattern(path);
+    std::lock_guard<std::mutex> k(_mutex);
 
-        ++_generation;
-        _entries.erase(path);
-        _sequences.erase(path);
-        for (std::map<std::string, SequenceEntry>::iterator it = _sequences.begin(); it != _sequences.end();) {
-            if (it->second.directory == directory) {
-                it = _sequences.erase(it);
-            } else {
-                ++it;
-            }
+    ++_generation;
+    _entries.erase(path);
+    _sequences.erase(path);
+    for (std::map<std::string, SequenceEntry>::iterator it = _sequences.begin(); it != _sequences.end();) {
+        if (it->second.directory == directory) {
+            it = _sequences.erase(it);
+        } else {
+            ++it;
         }
     }
-    notifyInvalidation(eInvalidationScopePath, path);
-}
-
-void
-FileStampRegistry::invalidateDirectory(const std::string& directory)
-{
-    {
-        std::lock_guard<std::mutex> k(_mutex);
-
-        ++_generation;
-        for (std::map<std::string, Entry>::iterator it = _entries.begin(); it != _entries.end();) {
-            if (parentDirectory(it->first) == directory) {
-                it = _entries.erase(it);
-            } else {
-                ++it;
-            }
-        }
-        for (std::map<std::string, SequenceEntry>::iterator it = _sequences.begin(); it != _sequences.end();) {
-            if (it->second.directory == directory) {
-                it = _sequences.erase(it);
-            } else {
-                ++it;
-            }
-        }
-    }
-    notifyInvalidation(eInvalidationScopeDirectory, directory);
-}
-
-void
-FileStampRegistry::invalidateAll()
-{
-    {
-        std::lock_guard<std::mutex> k(_mutex);
-
-        ++_generation;
-        _entries.clear();
-        _sequences.clear();
-    }
-    notifyInvalidation(eInvalidationScopeAll, std::string());
-}
-
-int
-FileStampRegistry::addInvalidationListener(const InvalidationListener& listener)
-{
-    std::lock_guard<std::mutex> k(_listenersMutex);
-    const int id = _nextListenerId++;
-
-    _listeners.push_back(std::make_pair(id, listener));
-
-    return id;
-}
-
-void
-FileStampRegistry::removeInvalidationListener(int id)
-{
-    std::lock_guard<std::mutex> k(_listenersMutex);
-
-    for (std::vector<std::pair<int, InvalidationListener>>::iterator it = _listeners.begin(); it != _listeners.end(); ++it) {
-        if (it->first == id) {
-            _listeners.erase(it);
-
-            return;
-        }
-    }
-}
-
-void
-FileStampRegistry::notifyInvalidation(InvalidationScopeEnum scope,
-                                      const std::string& pathOrDirectory)
-{
-    std::vector<std::pair<int, InvalidationListener>> listeners;
-    {
-        std::lock_guard<std::mutex> k(_listenersMutex);
-        listeners = _listeners;
-    }
-    for (std::size_t i = 0; i < listeners.size(); ++i) {
-        listeners[i].second(scope, pathOrDirectory);
-    }
-}
-
-bool
-FileStampRegistry::invalidationCovers(InvalidationScopeEnum scope,
-                                      const std::string& pathOrDirectory,
-                                      const std::string& path)
-{
-    if (path.empty()) {
-        return false;
-    }
-    if (scope == eInvalidationScopeAll) {
-        return true;
-    }
-    if (scope == eInvalidationScopeDirectory) {
-        return parentDirectory(path) == pathOrDirectory;
-    }
-    if (path == pathOrDirectory) {
-        return true;
-    }
-
-    // invalidate() also drops every sequence memoized in the directory of the path.
-    return hasFramePattern(path) && (parentDirectory(path) == parentDirectory(pathOrDirectory));
-}
-
-void
-FileStampRegistry::watchDirectory(const std::string& directory)
-{
-    if (directory.empty()) {
+    if (!isPattern) {
         return;
     }
-    QCoreApplication* app = QCoreApplication::instance();
-    {
-        std::lock_guard<std::mutex> k(_mutex);
-        if (!app || !_watchedDirectories.insert(directory).second) {
-            return;
-        }
-    }
-    // QFileSystemWatcher is a QObject bound to the thread that created it, while stamps are
-    // requested from render threads, so the watch is always set up on the main thread.
-    QMetaObject::invokeMethod(app, [this, directory]() { addWatchOnMainThread(directory); }, Qt::QueuedConnection);
-}
-
-void
-FileStampRegistry::addWatchOnMainThread(const std::string& directory)
-{
-    static QPointer<QFileSystemWatcher> watcher;
-
-    if (!watcher) {
-        QFileSystemWatcher* created = new QFileSystemWatcher(QCoreApplication::instance());
-        watcher = created;
-        QObject::connect(created, &QFileSystemWatcher::directoryChanged, created, [this, created](const QString& changed) {
-            const std::string changedDirectory = changed.toStdString();
-            invalidateDirectory(changedDirectory);
-            // inotify drops the watch of a removed directory; forgetting it lets the next scan
-            // watch the directory again once it exists.
-            if (!created->directories().contains(changed)) {
-                std::lock_guard<std::mutex> k(_mutex);
-                _watchedDirectories.erase(changedDirectory);
-            }
-        });
-    }
-
-    const QString path = QString::fromStdString(directory);
-    const bool alreadyWatched = watcher->directories().contains(path);
-    const bool watched = alreadyWatched || watcher->addPath(path);
-    {
-        std::lock_guard<std::mutex> k(_mutex);
-        if (watched) {
-            _watchedDirectories.insert(directory);
+    for (std::map<std::string, U64>::iterator it = _entries.begin(); it != _entries.end();) {
+        if (parentDirectory(it->first) == directory) {
+            it = _entries.erase(it);
         } else {
-            _watchedDirectories.erase(directory);
+            ++it;
         }
-    }
-    // A change between the scan that asked for this watch and the watch taking effect raised no
-    // event, so what was memoized before it is scanned again.
-    if (watched && !alreadyWatched) {
-        invalidateDirectory(directory);
     }
 }
 
-U64
-FileStampRegistry::freshStamp(const std::string& path)
+std::uint64_t
+FileStampRegistry::diskAccessCount() const
 {
-    return computeStamp(path);
-}
-
-bool
-FrameStatGuard::changed(const std::string& path)
-{
-    const U64 now = FileStampRegistry::freshStamp(path);
-    bool differs = false;
-    {
-        std::lock_guard<std::mutex> k(_mutex);
-        std::map<std::string, U64>::iterator it = _seen.find(path);
-        if (it == _seen.end()) {
-            _seen.insert(std::make_pair(path, now));
-        } else if (it->second != now) {
-            it->second = now;
-            differs = true;
-        }
-    }
-    if (differs) {
-        FileStampRegistry::instance().invalidate(path);
-    }
-
-    return differs;
+    return _diskAccesses.load(std::memory_order_relaxed);
 }
 
 bool

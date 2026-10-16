@@ -87,6 +87,11 @@ public:
         Q_EMIT openFile();
     }
 
+    /**
+     * @brief What a Reload does: stamps the file or sequence again, so the node re-keys when the
+     * file on disk differs from its last stamp, and drops what the holder cached of it. A file is
+     * otherwise only looked at the first time it is hashed in a session.
+     **/
     void reloadFile();
 
     /**
@@ -109,7 +114,7 @@ public:
 
     /**
      * @brief Forces the file or sequence the knob names to be stamped again on the next
-     * content hash.
+     * content hash, and marks the holder's hash dirty.
      **/
     void invalidateFileStamp();
 

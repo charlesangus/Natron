@@ -1660,16 +1660,6 @@ public:
     }
 
     /**
-     * @brief Called once per frame while the render arguments are set up, before any of the frame
-     * renders. A node reading files checks that the file it reads at time is still the one it last
-     * rendered, and drops what it cached of a file overwritten in place. Returns true if it did.
-     **/
-    virtual bool refreshInputFilesForRender(double /*time*/)
-    {
-        return false;
-    }
-
-    /**
      * @brief Can be overloaded to clear any cache the plugin might be
      * handling on his side.
      **/

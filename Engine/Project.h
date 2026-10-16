@@ -216,7 +216,7 @@ public:
      * @brief Hash of the project settings that change what nodes render: output format,
      * frame rate, views, OpenColorIO config and working space, layer registry and
      * render-affecting preferences. Never 0. Memoized until one of those changes; the OCIO
-     * config file's stamp is taken on every call.
+     * config file's stamp is looked up on every call, since Reload changes it with no edit.
      **/
     U64 getContentDigest() const;
 

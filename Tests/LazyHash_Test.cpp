@@ -52,7 +52,6 @@
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
-#include "Engine/FileStampRegistry.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobFile.h"
@@ -504,30 +503,13 @@ TEST_F(LazyHashTest, SlaveNodeHashFollowsItsMaster)
     EXPECT_EQ(belowBefore, belowSlave->getHashValue());
 }
 
-TEST_F(LazyHashTest, InvalidationScopesCoverTheStampsTheyDrop)
-{
-    typedef FileStampRegistry R;
-
-    EXPECT_TRUE(R::invalidationCovers(R::eInvalidationScopeAll, std::string(), "/shots/a/plate.exr"));
-    EXPECT_FALSE(R::invalidationCovers(R::eInvalidationScopeAll, std::string(), std::string()));
-
-    EXPECT_TRUE(R::invalidationCovers(R::eInvalidationScopeDirectory, "/shots/a", "/shots/a/plate.exr"));
-    EXPECT_TRUE(R::invalidationCovers(R::eInvalidationScopeDirectory, "/shots/a", "/shots/a/plate.####.exr"));
-    EXPECT_FALSE(R::invalidationCovers(R::eInvalidationScopeDirectory, "/shots/a", "/shots/b/plate.exr"));
-
-    EXPECT_TRUE(R::invalidationCovers(R::eInvalidationScopePath, "/shots/a/plate.exr", "/shots/a/plate.exr"));
-    EXPECT_FALSE(R::invalidationCovers(R::eInvalidationScopePath, "/shots/a/plate.exr", "/shots/a/other.exr"));
-    EXPECT_TRUE(R::invalidationCovers(R::eInvalidationScopePath, "/shots/a/plate.0001.exr", "/shots/a/plate.####.exr"));
-    EXPECT_FALSE(R::invalidationCovers(R::eInvalidationScopePath, "/shots/b/plate.0001.exr", "/shots/a/plate.####.exr"));
-}
-
-// A file system watcher event is the only notice of a file rewritten on disk; the node reading
-// it, otherwise untouched, must take a new hash once the event is handled.
-TEST_F(LazyHashTest, WatchedDirectoryChangeGivesTheReaderANewHash)
+// A file rewritten on disk is only noticed on Reload; the node reading it, otherwise untouched,
+// and everything downstream must then take a new hash.
+TEST_F(LazyHashTest, ReloadGivesTheReaderOfARewrittenFileANewHash)
 {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
-    const std::string path = dir.filePath(QString::fromUtf8("watched.exr")).toStdString();
+    const std::string path = dir.filePath(QString::fromUtf8("reloaded.exr")).toStdString();
     ASSERT_TRUE(writeFlatExr(path, 16, 12, 0.25f));
     setMTime(path, 1000000);
 
@@ -538,10 +520,6 @@ TEST_F(LazyHashTest, WatchedDirectoryChangeGivesTheReaderANewHash)
     connectNodes(reader, blur, 0, true);
     KnobFilePtr fileKnob = std::dynamic_pointer_cast<KnobFile>(reader->getKnobByName(kOfxImageEffectFileParamName));
     ASSERT_TRUE(bool(fileKnob));
-    const std::string resolved = fileKnob->getResolvedPath();
-    const std::size_t slash = resolved.find_last_of('/');
-    ASSERT_NE(std::string::npos, slash);
-    const std::string directory = resolved.substr(0, slash);
 
     QCoreApplication::processEvents();
     const U64 readerBefore = reader->getHashValue();
@@ -549,8 +527,11 @@ TEST_F(LazyHashTest, WatchedDirectoryChangeGivesTheReaderANewHash)
 
     ASSERT_TRUE(writeFlatExr(path, 32, 24, 0.75f));
     setMTime(path, 2000000);
-    FileStampRegistry::instance().invalidateDirectory(directory);
     QCoreApplication::processEvents();
+    EXPECT_EQ(readerBefore, reader->getHashValue());
+    EXPECT_EQ(blurBefore, blur->getHashValue());
+
+    fileKnob->reloadFile();
     EXPECT_NE(readerBefore, reader->getHashValue());
     EXPECT_NE(blurBefore, blur->getHashValue());
 }

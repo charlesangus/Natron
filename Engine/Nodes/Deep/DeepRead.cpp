@@ -33,8 +33,6 @@
 #include <OpenImageIO/deepdata.h>
 #include <OpenImageIO/imageio.h>
 
-#include <QDateTime>
-#include <QFileInfo>
 #include <QString>
 
 #include "Engine/DeepImage.h"
@@ -42,7 +40,6 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
-#include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
@@ -106,25 +103,6 @@ DeepRead::getFilenameAtTime(double time) const
     }
 
     return filename->getFileName((int)std::floor(time + 0.5), ViewIdx(0));
-}
-
-bool
-DeepRead::refreshInputFilesForRender(double time)
-{
-    KnobFilePtr filename = _filename.lock();
-    NodePtr node = getNode();
-
-    if (!filename || !node || node->isNodeDisabled(time)) {
-        return false;
-    }
-    const std::string path = getFilenameAtTime(time);
-    if (path.empty() || !_frameGuard.changed(path)) {
-        return false;
-    }
-    filename->invalidateFileStamp();
-    clearActionsCache();
-
-    return true;
 }
 
 StatusEnum
@@ -233,14 +211,9 @@ DeepRead::getDeepLayers(double time,
         return;
     }
 
-    const QFileInfo info(QString::fromUtf8(filename.c_str()));
-    const bool exists = info.exists();
-    const long long sizeStamp = exists ? (long long)info.size() : -1;
-    const long long modifiedStamp = exists ? (long long)info.lastModified().toMSecsSinceEpoch() : 0;
-
     {
         std::lock_guard<std::mutex> locker(_layersMemoMutex);
-        if ((filename == _layersMemoFilename) && (modifiedStamp == _layersMemoModified) && (sizeStamp == _layersMemoSize)) {
+        if (_layersMemoValid && (filename == _layersMemoFilename)) {
             *layers = _layersMemo;
 
             return;
@@ -256,9 +229,16 @@ DeepRead::getDeepLayers(double time,
 
     std::lock_guard<std::mutex> locker(_layersMemoMutex);
     _layersMemoFilename = filename;
-    _layersMemoModified = modifiedStamp;
-    _layersMemoSize = sizeStamp;
+    _layersMemoValid = true;
     _layersMemo = *layers;
+}
+
+void
+DeepRead::purgeCaches()
+{
+    std::lock_guard<std::mutex> locker(_layersMemoMutex);
+    _layersMemoValid = false;
+    _layersMemo.clear();
 }
 
 StatusEnum

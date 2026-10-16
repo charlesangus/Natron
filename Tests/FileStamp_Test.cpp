@@ -28,6 +28,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
+#include <cstdint>
 #include <list>
 #include <string>
 #include <vector>
@@ -52,6 +53,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
@@ -106,6 +108,7 @@ writeFlatExr(const std::string& path,
 
 bool
 renderedRed(const NodePtr& node,
+            double time,
             int width,
             int height,
             float* red)
@@ -113,7 +116,7 @@ renderedRed(const NodePtr& node,
     std::vector<RenderedPlane> planes;
     std::string error;
 
-    if (!renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, width, height), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error) || (planes.size() != 1) || planes[0].pixels.empty()) {
+    if (!renderNodePlanesDirect(node, time, ViewIdx(0), 0, RectI(0, 0, width, height), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error, false) || (planes.size() != 1) || planes[0].pixels.empty()) {
         ADD_FAILURE() << error;
 
         return false;
@@ -121,6 +124,21 @@ renderedRed(const NodePtr& node,
     *red = planes[0].pixels[0];
 
     return true;
+}
+
+KnobFilePtr
+fileKnobOf(const NodePtr& reader)
+{
+    return std::dynamic_pointer_cast<KnobFile>(reader->getKnobByName(kOfxImageEffectFileParamName));
+}
+
+void
+pressReload(const NodePtr& reader)
+{
+    KnobButton* reload = dynamic_cast<KnobButton*>(reader->getKnobByName(kNatronReadParamReload).get());
+
+    ASSERT_TRUE(reload != NULL);
+    reload->trigger();
 }
 
 } // namespace
@@ -133,14 +151,13 @@ TEST(FileStamp, UnchangedFileKeepsItsStamp)
     writeFile(path, "hello");
 
     FileStampRegistry& registry = FileStampRegistry::instance();
-    registry.invalidateAll();
     const U64 first = registry.stamp(path);
     registry.invalidate(path);
     EXPECT_EQ(first, registry.stamp(path));
     EXPECT_NE(0u, first);
 }
 
-TEST(FileStamp, ChangedMTimeOrSizeChangesStampAfterInvalidate)
+TEST(FileStamp, ChangedFileKeepsItsStampUntilInvalidated)
 {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
@@ -149,19 +166,39 @@ TEST(FileStamp, ChangedMTimeOrSizeChangesStampAfterInvalidate)
     setMTime(path, 1000000);
 
     FileStampRegistry& registry = FileStampRegistry::instance();
-    registry.invalidate(path);
     const U64 original = registry.stamp(path);
 
     setMTime(path, 2000000);
-    EXPECT_EQ(original, registry.stamp(path)); // still within the memo window
+    EXPECT_EQ(original, registry.stamp(path));
     registry.invalidate(path);
     const U64 touched = registry.stamp(path);
     EXPECT_NE(original, touched);
 
     writeFile(path, "hello, longer content");
     setMTime(path, 2000000);
+    EXPECT_EQ(touched, registry.stamp(path));
     registry.invalidate(path);
     EXPECT_NE(touched, registry.stamp(path));
+}
+
+TEST(FileStamp, AStampedFileIsNotLookedAtAgain)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("a.txt")).toStdString();
+    writeFile(path, "hello");
+
+    FileStampRegistry& registry = FileStampRegistry::instance();
+    const U64 first = registry.stamp(path);
+    const std::uint64_t accesses = registry.diskAccessCount();
+    for (int i = 0; i < 100; ++i) {
+        EXPECT_EQ(first, registry.stamp(path));
+    }
+    EXPECT_EQ(accesses, registry.diskAccessCount());
+
+    registry.invalidate(path);
+    EXPECT_EQ(first, registry.stamp(path));
+    EXPECT_EQ(accesses + 1, registry.diskAccessCount());
 }
 
 TEST(FileStamp, MissingFileIsStableAndDistinctPerPath)
@@ -172,7 +209,6 @@ TEST(FileStamp, MissingFileIsStableAndDistinctPerPath)
     const std::string b = dir.filePath(QString::fromUtf8("missing_b")).toStdString();
 
     FileStampRegistry& registry = FileStampRegistry::instance();
-    registry.invalidateAll();
     const U64 stampA = registry.stamp(a);
     registry.invalidate(a);
     EXPECT_EQ(stampA, registry.stamp(a));
@@ -188,7 +224,7 @@ TEST(FileStamp, DetectsFramePatterns)
     EXPECT_FALSE(FileStampRegistry::hasFramePattern("/tmp/100%.exr"));
 }
 
-TEST_F(BaseTest, FileKnobContentHashFollowsTheFileOnDisk)
+TEST_F(BaseTest, FileKnobContentHashFollowsTheFileOnlyOnReload)
 {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
@@ -201,24 +237,24 @@ TEST_F(BaseTest, FileKnobContentHashFollowsTheFileOnDisk)
     NodePtr reader = getApp()->createNode(readerArgs);
     ASSERT_TRUE(bool(reader));
 
-    KnobFilePtr fileKnob = std::dynamic_pointer_cast<KnobFile>(reader->getKnobByName(kOfxImageEffectFileParamName));
+    KnobFilePtr fileKnob = fileKnobOf(reader);
     ASSERT_TRUE(bool(fileKnob));
 
-    FileStampRegistry::instance().invalidateAll();
     const U64 before = fileKnob->getContentHash();
-    FileStampRegistry::instance().invalidateAll();
+    fileKnob->reloadFile();
     EXPECT_EQ(before, fileKnob->getContentHash());
 
     setMTime(path, 2000000);
-    FileStampRegistry::instance().invalidate(path);
+    EXPECT_EQ(before, fileKnob->getContentHash());
+    fileKnob->reloadFile();
     EXPECT_NE(before, fileKnob->getContentHash());
 
     setMTime(path, 1000000);
-    FileStampRegistry::instance().invalidate(path);
+    fileKnob->reloadFile();
     EXPECT_EQ(before, fileKnob->getContentHash());
 }
 
-TEST(FileStamp, SequenceStampFollowsItsFrames)
+TEST(FileStamp, SequenceStampFollowsItsFramesOnInvalidate)
 {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
@@ -234,31 +270,32 @@ TEST(FileStamp, SequenceStampFollowsItsFrames)
     const std::string pattern = dir.filePath(QString::fromUtf8("name.####.exr")).toStdString();
 
     FileStampRegistry& registry = FileStampRegistry::instance();
-    registry.invalidateAll();
     const U64 original = registry.sequenceStamp(pattern);
     EXPECT_NE(0u, original);
     registry.invalidate(pattern);
     EXPECT_EQ(original, registry.sequenceStamp(pattern));
 
     setMTime(frames[1], 2000000);
+    EXPECT_EQ(original, registry.sequenceStamp(pattern));
     registry.invalidate(pattern);
     const U64 touched = registry.sequenceStamp(pattern);
     EXPECT_NE(original, touched);
 
+    // Invalidating one frame also drops the sequence it belongs to.
     setMTime(frames[1], 1000000);
-    registry.invalidate(pattern);
+    registry.invalidate(frames[1]);
     EXPECT_EQ(original, registry.sequenceStamp(pattern));
 
     ASSERT_TRUE(QFile::copy(fixture, QString::fromStdString(frames[3])));
     setMTime(frames[3], 1000000);
-    registry.invalidateDirectory(dir.path().toStdString());
+    EXPECT_EQ(original, registry.sequenceStamp(pattern));
+    registry.invalidate(pattern);
     const U64 extended = registry.sequenceStamp(pattern);
     EXPECT_NE(original, extended);
-    registry.invalidateAll();
     EXPECT_EQ(extended, registry.sequenceStamp(pattern));
 }
 
-TEST_F(BaseTest, FileKnobContentHashFollowsASequenceOnDisk)
+TEST_F(BaseTest, FileKnobContentHashFollowsASequenceOnlyOnReload)
 {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
@@ -276,43 +313,23 @@ TEST_F(BaseTest, FileKnobContentHashFollowsASequenceOnDisk)
     NodePtr reader = getApp()->createNode(readerArgs);
     ASSERT_TRUE(bool(reader));
 
-    KnobFilePtr fileKnob = std::dynamic_pointer_cast<KnobFile>(reader->getKnobByName(kOfxImageEffectFileParamName));
+    KnobFilePtr fileKnob = fileKnobOf(reader);
     ASSERT_TRUE(bool(fileKnob));
 
-    FileStampRegistry::instance().invalidateAll();
     const U64 before = fileKnob->getContentHash();
     EXPECT_EQ(before, fileKnob->getContentHash());
 
     setMTime(frames[2], 2000000);
-    fileKnob->invalidateFileStamp();
+    EXPECT_EQ(before, fileKnob->getContentHash());
+    fileKnob->reloadFile();
     EXPECT_NE(before, fileKnob->getContentHash());
 
     setMTime(frames[2], 1000000);
-    fileKnob->invalidateFileStamp();
+    fileKnob->reloadFile();
     EXPECT_EQ(before, fileKnob->getContentHash());
 }
 
-TEST(FileStamp, FrameStatGuardReportsOnlyChangesSinceItLastLooked)
-{
-    QTemporaryDir dir;
-    ASSERT_TRUE(dir.isValid());
-    const std::string path = dir.filePath(QString::fromUtf8("frame.exr")).toStdString();
-    writeFile(path, "first");
-    setMTime(path, 1000000);
-
-    FrameStatGuard guard;
-    FrameStatGuard other;
-    EXPECT_FALSE(guard.changed(path));
-    EXPECT_FALSE(guard.changed(path));
-    EXPECT_FALSE(other.changed(path));
-
-    setMTime(path, 2000000);
-    EXPECT_TRUE(guard.changed(path));
-    EXPECT_FALSE(guard.changed(path));
-    EXPECT_TRUE(other.changed(path));
-}
-
-TEST_F(BaseTest, ReadServesAFileOverwrittenInPlaceWithoutAReload)
+TEST_F(BaseTest, ReadKeepsAFileOverwrittenInPlaceUntilReload)
 {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
@@ -326,12 +343,47 @@ TEST_F(BaseTest, ReadServesAFileOverwrittenInPlaceWithoutAReload)
     ASSERT_TRUE(bool(reader));
 
     float red = 0.f;
-    ASSERT_TRUE(renderedRed(reader, width, height, &red));
+    ASSERT_TRUE(renderedRed(reader, 1., width, height, &red));
     EXPECT_FLOAT_EQ(0.25f, red);
+    const U64 before = reader->getHashValue();
 
     ASSERT_TRUE(writeFlatExr(path, width, height, 0.75f));
     setMTime(path, 2000000);
 
-    ASSERT_TRUE(renderedRed(reader, width, height, &red));
+    EXPECT_EQ(before, reader->getHashValue());
+    ASSERT_TRUE(renderedRed(reader, 1., width, height, &red));
+    EXPECT_FLOAT_EQ(0.25f, red);
+
+    pressReload(reader);
+    EXPECT_NE(before, reader->getHashValue());
+    ASSERT_TRUE(renderedRed(reader, 1., width, height, &red));
     EXPECT_FLOAT_EQ(0.75f, red);
+}
+
+TEST_F(BaseTest, RenderingASequenceLooksAtNoFileAfterTheFirstHash)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const int width = 16;
+    const int height = 12;
+    const int frameCount = 5;
+    for (int i = 1; i <= frameCount; ++i) {
+        const std::string frame = dir.filePath(QString::fromUtf8("render.%1.exr").arg(i, 4, 10, QLatin1Char('0'))).toStdString();
+        ASSERT_TRUE(writeFlatExr(frame, width, height, 0.125f * i));
+    }
+    const std::string pattern = dir.filePath(QString::fromUtf8("render.####.exr")).toStdString();
+
+    NodePtr reader = createWorkingSpaceRead(pattern);
+    ASSERT_TRUE(bool(reader));
+    const U64 hash = reader->getHashValue();
+
+    FileStampRegistry& registry = FileStampRegistry::instance();
+    const std::uint64_t accesses = registry.diskAccessCount();
+    for (int i = 1; i <= frameCount; ++i) {
+        float red = 0.f;
+        ASSERT_TRUE(renderedRed(reader, i, width, height, &red));
+        EXPECT_FLOAT_EQ(0.125f * i, red);
+    }
+    EXPECT_EQ(hash, reader->getHashValue());
+    EXPECT_EQ(accesses, registry.diskAccessCount());
 }

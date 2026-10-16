@@ -44,9 +44,9 @@ makeImage(int width, int height, int channels, uint32_t seed)
 
 inline std::vector<double>
 reference(const std::vector<float>& img, int width, int height, int channels,
-          double sigma, bool neumann)
+          double sigma)
 {
-    return blurref::blur(std::vector<double>(img.begin(), img.end()), width, height, channels, sigma, neumann);
+    return blurref::blur(std::vector<double>(img.begin(), img.end()), width, height, channels, sigma, false);
 }
 
 } // namespace blurfix

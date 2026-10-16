@@ -517,13 +517,11 @@ protected:
 
     // Renders `blur` over its region of definition at `mipmapLevel` and compares its alpha with
     // the separable double-precision truncated Gaussian of `source` (1 inside `box`, 0 elsewhere
-    // in `format`, extended outside `format` by the boundary condition). `format`, `box` and
-    // `sigma` are in pixels at that level.
+    // in `format`, black outside it). `format`, `box` and `sigma` are in pixels at that level.
     void expectMatchesReference(const NodePtr& blur,
                                 const RectI& format,
                                 const RectI& box,
                                 double sigma,
-                                bool neumann,
                                 const std::string& caseName,
                                 unsigned mipmapLevel = 0)
     {
@@ -540,10 +538,7 @@ protected:
         const std::vector<double> w = referenceWeights(sigma);
         const int radius = static_cast<int>(w.size() / 2);
         const auto source = [&](int x, int y) -> double {
-            if (neumann) {
-                x = std::min(std::max(x, format.x1), format.x2 - 1);
-                y = std::min(std::max(y, format.y1), format.y2 - 1);
-            } else if ((x < format.x1) || (x >= format.x2) || (y < format.y1) || (y >= format.y2)) {
+            if ((x < format.x1) || (x >= format.x2) || (y < format.y1) || (y >= format.y2)) {
                 return 0.;
             }
 
@@ -632,13 +627,9 @@ TEST_F(BlurFIRGaussianTest, ImpulseAndStepThroughTheNodeMatchTheReference)
         ASSERT_EQ(kFIRChoiceIndex, filterIndexOf(blur));
         for (std::size_t s = 0; s < sizeof(sigmas) / sizeof(sigmas[0]); ++s) {
             ASSERT_TRUE(setKnobValues(blur, kBlurParamSize, { 2.4 * sigmas[s], 2.4 * sigmas[s] }));
-            for (int boundary = 0; boundary < 2; ++boundary) {
-                const bool neumann = (boundary == 1);
-                ASSERT_TRUE(setKnobValue(blur, kBlurParamBoundary, std::string(neumann ? kBlurParamBoundaryNearest : kBlurParamBoundaryBlack)));
-                std::ostringstream caseName;
-                caseName << (shape ? "step" : "impulse") << ", sigma " << sigmas[s] << (neumann ? ", nearest" : ", black");
-                expectMatchesReference(blur, format, box, sigmas[s], neumann, caseName.str());
-            }
+            std::ostringstream caseName;
+            caseName << (shape ? "step" : "impulse") << ", sigma " << sigmas[s];
+            expectMatchesReference(blur, format, box, sigmas[s], caseName.str());
         }
     }
 }
@@ -655,7 +646,7 @@ TEST_F(BlurFIRGaussianTest, ReducedRenderScaleScalesSigma)
     ASSERT_TRUE(bool(blur));
     ASSERT_TRUE(blur->getEffectInstance()->supportsRenderScale());
     ASSERT_TRUE(setKnobValues(blur, kBlurParamSize, { 14.4, 14.4 }));
-    expectMatchesReference(blur, halfFormat, halfBox, 3., false, "size 14.4 at mipmap level 1", 1);
+    expectMatchesReference(blur, halfFormat, halfBox, 3., "size 14.4 at mipmap level 1", 1);
 
     BlurParams params;
     params.filter = BlurKernels::eFilterFIRGaussian;
@@ -678,15 +669,7 @@ TEST_F(BlurFIRGaussianTest, RegionOfDefinitionGrowsByTheRadius)
     EXPECT_EQ(RectI(-9, -3, kParitySourceWidth + 9, kParitySourceHeight + 3), renderWindow(blur));
     EXPECT_EQ(RectI(-5, -2, kParitySourceWidth / 2 + 5, kParitySourceHeight / 2 + 2), renderWindow(blur, 1));
 
-    ASSERT_TRUE(setKnobValues(blur, kBlurParamOrderX, { 1. }));
-    EXPECT_EQ(RectI(-10, -3, kParitySourceWidth + 10, kParitySourceHeight + 3), renderWindow(blur));
-
-    ASSERT_TRUE(setKnobValues(blur, kBlurParamOrderX, { 0. }));
     ASSERT_TRUE(setKnobValues(blur, kBlurParamSize, { 0.2, 0.2 }));
-    EXPECT_EQ(format, renderWindow(blur));
-
-    ASSERT_TRUE(setKnobValues(blur, kBlurParamSize, { 7.2, 7.2 }));
-    ASSERT_TRUE(setKnobValues(blur, kBlurParamExpandRoD, { 0. }));
     EXPECT_EQ(format, renderWindow(blur));
 }
 
@@ -697,19 +680,12 @@ TEST_F(BlurFIRGaussianTest, SubRectRenderEqualsCropOfFullRender)
     ASSERT_TRUE(bool(blur));
 
     ASSERT_TRUE(setKnobValues(blur, kBlurParamSize, { 9., 4. }));
-    expectSubRectEqualsCrop(blur, RectI(20, 10, 45, 30), "size 9x4, black");
+    expectSubRectEqualsCrop(blur, RectI(20, 10, 45, 30), "size 9x4");
 
     ASSERT_TRUE(setKnobValues(blur, kBlurParamSize, { 30., 30. }));
     expectSubRectEqualsCrop(blur, RectI(0, 0, 20, 17), "size 30, black, bottom-left corner");
     expectSubRectEqualsCrop(blur, RectI(40, 30, 64, 48), "size 30, black, top-right corner");
-
-    ASSERT_TRUE(setKnobValue(blur, kBlurParamBoundary, std::string(kBlurParamBoundaryNearest)));
-    expectSubRectEqualsCrop(blur, RectI(0, 0, 20, 17), "size 30, nearest, bottom-left corner");
-    expectSubRectEqualsCrop(blur, RectI(25, 20, 50, 40), "size 30, nearest");
-
-    ASSERT_TRUE(setKnobValues(blur, kBlurParamSize, { 12., 6. }));
-    ASSERT_TRUE(setKnobValues(blur, kBlurParamOrderX, { 1. }));
-    expectSubRectEqualsCrop(blur, RectI(25, 20, 50, 40), "size 12x6, nearest, x derivative");
+    expectSubRectEqualsCrop(blur, RectI(25, 20, 50, 40), "size 30, black");
 }
 
 TEST_F(BlurFIRGaussianTest, RegionOfInterestPaddingIsTheRadius)
@@ -722,11 +698,6 @@ TEST_F(BlurFIRGaussianTest, RegionOfInterestPaddingIsTheRadius)
     RectI roi = Blur::getSourceRoI(rect, RenderScale::identity, params);
     EXPECT_EQ(RectI(10 - 9, 20 - 9, 30 + 9, 40 + 9), roi);
 
-    params.orderY = 1;
-    roi = Blur::getSourceRoI(rect, RenderScale::identity, params);
-    EXPECT_EQ(RectI(10 - 9, 20 - 10, 30 + 9, 40 + 10), roi);
-
-    params.orderY = 0;
     params.sizeX = params.sizeY = 0.2;
     EXPECT_TRUE(Blur::paramsAreIdentity(RenderScale::identity, params));
 }

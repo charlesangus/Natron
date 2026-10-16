@@ -3,9 +3,9 @@ RWStructuredBuffer<float> dstBuf;
 StructuredBuffer<float> weights;
 
 // Coordinates are image pixels. The pass writes the rect of width x height pixels at (outX, outY);
-// along the blur axis a tap is first resolved against [lineLo, lineHi), then the sample against
-// the source rect [srcX1, srcX2) x [srcY1, srcY2), each by the boundary mode. An output pixel
-// whose position along the axis lies outside [lineLo, lineHi) is written as zero.
+// along the blur axis a tap outside [lineLo, lineHi) reads zero, as does a sample outside the
+// source rect [srcX1, srcX2) x [srcY1, srcY2). An output pixel whose position along the axis lies
+// outside [lineLo, lineHi) is written as zero.
 struct BlurParams
 {
     uint width;
@@ -13,7 +13,6 @@ struct BlurParams
     uint channels;
     uint radius;
     uint vertical;
-    uint neumann;
     int outX;
     int outY;
     uint dstOffset;
@@ -50,26 +49,14 @@ bool insideLine(int a)
 bool sourceIndex(int a, int line, out uint idx)
 {
     idx = 0;
-    const bool neumann = params.neumann != 0;
-    if (params.lineLo >= params.lineHi)
-        return false;
     if (!insideLine(a))
-    {
-        if (!neumann)
-            return false;
-        a = clamp(a, params.lineLo, params.lineHi - 1);
-    }
-    int x = params.vertical != 0 ? line : a;
-    int y = params.vertical != 0 ? a : line;
+        return false;
+    const int x = params.vertical != 0 ? line : a;
+    const int y = params.vertical != 0 ? a : line;
     if (params.srcX1 >= params.srcX2 || params.srcY1 >= params.srcY2)
         return false;
     if (x < params.srcX1 || x >= params.srcX2 || y < params.srcY1 || y >= params.srcY2)
-    {
-        if (!neumann)
-            return false;
-        x = clamp(x, params.srcX1, params.srcX2 - 1);
-        y = clamp(y, params.srcY1, params.srcY2 - 1);
-    }
+        return false;
     idx = params.srcOffset + uint(y - params.srcY1) * params.srcStride + uint(x - params.srcX1) * params.channels;
     return true;
 }

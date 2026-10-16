@@ -874,7 +874,11 @@ Measured exceptions and what they are not:
   `mask-mix` case trims only rows and columns within the halo of the frame's
   edge, so its buffer, and its reference, are unchanged; EdgeDetect's is
   replaced by a check of the mask blend against the node's own unmasked
-  render.
+  render. Blur has no derivative orders (EdgeDetect computes derivatives), no
+  border-condition choice (it is black outside the image), no alpha threshold, no
+  "Expand RoD" (the region of definition always grows by the filter's reach) and no
+  "Uniform" toggle (the size knob folds its dimensions); the OFX plug-in's defaults
+  are those behaviours, so the recorded cases are unchanged.
 
 ### GPU parity
 
@@ -888,7 +892,9 @@ usually wider than the CPU class of the same node. Grade holds `gradefix::kUlpBo
 reach far above 1. Blur's quasi-Gaussian, Gaussian (IIR), box, triangle and quadratic filters hold `iir()`: one thread runs
 each line through the CPU's recursion with its state in two floats where the CPU uses double (plain float drifts past 1e-3
 for the IIR Gaussian at large sizes), and filters the same rect as render(), the window grown by the
-halo and clipped to the region of definition. Derivative orders stay on the CPU (`Tests/Native/NativeBlurGpu_Test.cpp`).
+halo and clipped to the region of definition. Blur's knobs are size, filter, "Crop To Format" and the standard channel, mask and mix
+knobs, so every setting of it is eligible for the GPU unless the FIR Gaussian's radius exceeds the kernel's tile
+(`Tests/Native/NativeBlurGpu_Test.cpp`).
 Clamp holds its CPU class, exact, except where a divisor, mask or mix below 1
 enters, which hold `arithmetic()` (`Tests/Native/NativeClampGpu_Test.cpp`).
 Invert holds its CPU class, exact, except where a divisor, mask or mix below 1

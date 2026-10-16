@@ -42,9 +42,7 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief Separable 1-D blur and derivative filters over a strided float line. The IIR and box
- * filters keep the arithmetic (float vs double rounding points included) of the CImg functions
- * they port, so a line filtered here equals the same line filtered by CImg<float>; the FIR
- * Gaussian has no CImg counterpart.
+ * filters are ports of the CImg functions named above; the FIR Gaussian has no CImg counterpart.
  *
  * Each filter runs in place over `n` samples at `data[0]`, `data[stride]`, ...,
  * `data[(n - 1) * stride]`. A row of an interleaved image is `stride = nComps`, a column is

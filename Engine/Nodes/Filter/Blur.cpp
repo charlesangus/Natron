@@ -28,7 +28,6 @@
 #include <algorithm>
 #include <atomic>
 #include <bitset>
-#include <cfloat>
 #include <cmath>
 #include <cstddef>
 #include <functional>
@@ -79,20 +78,8 @@ firRadius(double size)
     return BlurKernels::LineFilter::firGaussianRadius(size / 2.4);
 }
 
-/// The source pixels the FIR Gaussian reads beyond each side: its support plus one per derivative.
-void
-firPadding(double sx,
-           double sy,
-           const BlurParams& params,
-           int* padX,
-           int* padY)
-{
-    *padX = firRadius(sx) + ((params.orderX > 0) ? 1 : 0);
-    *padY = firRadius(sy) + ((params.orderY > 0) ? 1 : 0);
-}
-
 #ifdef NATRON_HAVE_GPU
-/// The device form of a LineFilter at order 0 other than the FIR Gaussian.
+/// The device form of a LineFilter other than the FIR Gaussian.
 gpu::GpuLineFilter
 toGpuLineFilter(const BlurKernels::LineFilter& filter)
 {
@@ -132,14 +119,8 @@ Blur::Blur(NodePtr node)
         return traits;
     }())
     , _size()
-    , _uniform()
-    , _orderX()
-    , _orderY()
-    , _boundary()
     , _filter()
-    , _expandRoD()
     , _cropToFormat()
-    , _alphaThreshold()
 {
 }
 
@@ -164,7 +145,7 @@ Blur::getNativePluginDescription() const
 
     desc.id = PLUGINID_NATRON_BLUR;
     desc.label = "Blur";
-    desc.description = tr("Blur input stream or compute derivatives.\n"
+    desc.description = tr("Blur the input stream.\n"
                           "The blur filter can be a Gaussian (FIR), a quasi-Gaussian or a Gaussian (both IIR), a box, a triangle or a quadratic filter.\n"
                           "\n"
                           "The default filter, Gaussian (FIR), is a Gaussian [1] implemented as a FIR (finite impulse response) filter, as in most compositing software: the Gaussian impulse response, of standard deviation sigma = size/2.4, is cropped at 3 sigma (rounded up to a whole pixel) and normalised. Its result is exactly zero further than that from any non-zero pixel.\n"
@@ -217,48 +198,6 @@ Blur::initializeKnobs()
     page->addKnob(size);
     _size = size;
 
-    KnobBoolPtr uniform = createKnob<KnobBool>(tr("Uniform"));
-    uniform->setName(kBlurParamUniform);
-    uniform->setHintToolTip(tr("Apply the same amount of blur on X and Y."));
-    uniform->setDefaultValue(false);
-    page->addKnob(uniform);
-    _uniform = uniform;
-
-    KnobIntPtr orderX = createKnob<KnobInt>(tr("X derivation order"));
-    orderX->setName(kBlurParamOrderX);
-    orderX->setHintToolTip(tr("Derivation order in the X direction. (orderX=0,orderY=0) does smoothing, (orderX=1,orderY=0) computes the X component of the image gradient."));
-    orderX->setMinimum(0);
-    orderX->setMaximum(2);
-    orderX->setDisplayMinimum(0);
-    orderX->setDisplayMaximum(2);
-    orderX->setDefaultValue(0);
-    page->addKnob(orderX);
-    _orderX = orderX;
-
-    KnobIntPtr orderY = createKnob<KnobInt>(tr("Y derivation order"));
-    orderY->setName(kBlurParamOrderY);
-    orderY->setHintToolTip(tr("Derivation order in the Y direction. (orderX=0,orderY=0) does smoothing, (orderX=0,orderY=1) computes the X component of the image gradient."));
-    orderY->setMinimum(0);
-    orderY->setMaximum(2);
-    orderY->setDisplayMinimum(0);
-    orderY->setDisplayMaximum(2);
-    orderY->setDefaultValue(0);
-    page->addKnob(orderY);
-    _orderY = orderY;
-
-    KnobChoicePtr boundary = createKnob<KnobChoice>(tr("Border Conditions"));
-    boundary->setName(kBlurParamBoundary);
-    boundary->setHintToolTip(tr("Specifies how pixel values are computed out of the image domain. This mostly affects values at the boundary of the image. If the image represents intensities, Nearest (Neumann) conditions should be used. If the image represents gradients or derivatives, Black (Dirichlet) boundary conditions should be used."));
-    {
-        std::vector<ChoiceOption> options;
-        options.push_back(ChoiceOption(kBlurParamBoundaryBlack, tr("Black").toStdString(), tr("Dirichlet boundary condition: pixel values out of the image domain are zero.").toStdString()));
-        options.push_back(ChoiceOption(kBlurParamBoundaryNearest, tr("Nearest").toStdString(), tr("Neumann boundary condition: pixel values out of the image domain are those of the closest pixel location in the image domain.").toStdString()));
-        boundary->populateChoices(options);
-    }
-    boundary->setDefaultValue(0);
-    page->addKnob(boundary);
-    _boundary = boundary;
-
     KnobChoicePtr filter = createKnob<KnobChoice>(tr("Filter"));
     filter->setName(kBlurParamFilter);
     filter->setHintToolTip(tr("Bluring filter. The default, Gaussian (FIR), has a finite support of 3 sigma, so it leaves pixels far from any detail exactly unchanged, which also suits the premult-blur-unpremult process; it is fast for small and moderate sizes. The IIR filters cost the same at any size: the quasi-Gaussian is the faster, the Gaussian is more isotropic (its impulse response has rotational symmetry), but both produce very small non-zero values far from any detail."));
@@ -276,14 +215,6 @@ Blur::initializeKnobs()
     page->addKnob(filter);
     _filter = filter;
 
-    KnobBoolPtr expandRoD = createKnob<KnobBool>(tr("Expand RoD"));
-    expandRoD->setName(kBlurParamExpandRoD);
-    expandRoD->setHintToolTip(tr("Expand the source region of definition by 1.5*size (3.6*sigma), or by the filter's support for the FIR filters (3*sigma, rounded up, for the Gaussian (FIR))."));
-    expandRoD->setDefaultValue(true);
-    expandRoD->setAddNewLine(false);
-    page->addKnob(expandRoD);
-    _expandRoD = expandRoD;
-
     KnobBoolPtr cropToFormat = createKnob<KnobBool>(tr("Crop To Format"));
     cropToFormat->setName(kBlurParamCropToFormat);
     cropToFormat->setHintToolTip(tr("If the source is inside the format and the effect extends it outside of the format, crop it to avoid unnecessary calculations. To avoid unwanted crops, only the borders that were inside of the format in the source clip will be cropped."));
@@ -291,40 +222,8 @@ Blur::initializeKnobs()
     page->addKnob(cropToFormat);
     _cropToFormat = cropToFormat;
 
-    KnobDoublePtr alphaThreshold = createKnob<KnobDouble>(tr("Alpha Threshold"));
-    alphaThreshold->setName(kBlurParamAlphaThreshold);
-    alphaThreshold->setHintToolTip(tr("If this value is non-zero, any alpha value below this is set to zero. This is only useful for IIR filters (Gaussian and Quasi-Gaussian), which may produce alpha values very close to zero due to arithmetic precision. Remind that, in theory, a black image with a single white pixel should produce non-zero values everywhere, but a few VFX tricks rely on the fact that alpha should be zero far from the alpha edges (e.g. the premult-blur-unpremult trick to fill holes)). A threshold value of 0.003 is reasonable, and values between 0.001 and 0.01 are usually enough to remove these artifacts."));
-    alphaThreshold->setMinimum(0.);
-    alphaThreshold->setMaximum(DBL_MAX);
-    alphaThreshold->setDisplayMinimum(0.);
-    alphaThreshold->setDisplayMaximum(1.);
-    alphaThreshold->setDefaultValue(0.);
-    page->addKnob(alphaThreshold);
-    _alphaThreshold = alphaThreshold;
-
     addMaskMixKnobs(page);
-
-    updateUniformVisibility();
 } // Blur::initializeKnobs
-
-void
-Blur::updateUniformVisibility()
-{
-    KnobBoolPtr uniform = _uniform.lock();
-
-    if (!uniform) {
-        return;
-    }
-    const bool hide = !uniform->getValue() && !uniform->isAnimated(0);
-    uniform->setSecret(hide);
-    uniform->setAllDimensionsEnabled(!hide);
-}
-
-void
-Blur::onKnobsLoaded()
-{
-    updateUniformVisibility();
-}
 
 void
 Blur::getParams(double time,
@@ -332,39 +231,25 @@ Blur::getParams(double time,
                 BlurParams* params) const
 {
     KnobDoublePtr size = _size.lock();
-    KnobBoolPtr uniform = _uniform.lock();
-    KnobIntPtr orderX = _orderX.lock();
-    KnobIntPtr orderY = _orderY.lock();
-    KnobChoicePtr boundary = _boundary.lock();
     KnobChoicePtr filter = _filter.lock();
-    KnobBoolPtr expandRoD = _expandRoD.lock();
     KnobBoolPtr cropToFormat = _cropToFormat.lock();
-    KnobDoublePtr alphaThreshold = _alphaThreshold.lock();
 
     *params = BlurParams();
     if (size) {
         params->sizeX = size->getValueAtTime(time, 0, view);
         params->sizeY = size->getValueAtTime(time, 1, view);
     }
-    if (uniform && uniform->getValueAtTime(time, 0, view)) {
-        params->sizeY = params->sizeX;
-    }
     const double par = getInput(0) ? getAspectRatio(0) : 0.;
     if (par != 0.) {
         params->sizeX /= par;
     }
-    params->orderX = orderX ? std::max(0, orderX->getValueAtTime(time, 0, view)) : 0;
-    params->orderY = orderY ? std::max(0, orderY->getValueAtTime(time, 0, view)) : 0;
-    params->neumann = boundary ? (boundary->getValueAtTime(time, 0, view) == 1) : false;
     if (filter) {
         const int f = filter->getValueAtTime(time, 0, view);
         if ((f >= (int)BlurKernels::eFilterQuasiGaussian) && (f <= (int)BlurKernels::eFilterFIRGaussian)) {
             params->filter = (BlurKernels::Filter)f;
         }
     }
-    params->expandRoD = expandRoD ? expandRoD->getValueAtTime(time, 0, view) : true;
     params->cropToFormat = cropToFormat ? cropToFormat->getValueAtTime(time, 0, view) : true;
-    params->alphaThreshold = alphaThreshold ? alphaThreshold->getValueAtTime(time, 0, view) : 0.;
 } // Blur::getParams
 
 RectI
@@ -379,33 +264,25 @@ Blur::getSourceRoI(const RectI& rect,
     if (isGaussianFamily(params.filter)) {
         const float sigmax = (float)(sx / 2.4);
         const float sigmay = (float)(sy / 2.4);
-        if ((sigmax < 0.1) && (sigmay < 0.1) && (params.orderX == 0) && (params.orderY == 0)) {
+        if ((sigmax < 0.1) && (sigmay < 0.1)) {
             return rect;
         }
         const int deltaX = std::max(3, (int)std::ceil(sx * 1.5));
         const int deltaY = std::max(3, (int)std::ceil(sy * 1.5));
 
-        return RectI(rect.x1 - deltaX - params.orderX,
-                     rect.y1 - deltaY - params.orderY,
-                     rect.x2 + deltaX + params.orderX,
-                     rect.y2 + deltaY + params.orderY);
+        return RectI(rect.x1 - deltaX, rect.y1 - deltaY, rect.x2 + deltaX, rect.y2 + deltaY);
     }
     if (params.filter == BlurKernels::eFilterFIRGaussian) {
-        int padX, padY;
-        firPadding(sx, sy, params, &padX, &padY);
+        const int padX = firRadius(sx);
+        const int padY = firRadius(sy);
 
         return RectI(rect.x1 - padX, rect.y1 - padY, rect.x2 + padX, rect.y2 + padY);
     }
-    const int derivX = (params.orderX > 0) ? 1 : 0;
-    const int derivY = (params.orderY > 0) ? 1 : 0;
     const int iter = boxIterations(params.filter);
     const int deltaX = iter * static_cast<int>(std::floor((sx - 1) / 2) + 1);
     const int deltaY = iter * static_cast<int>(std::floor((sy - 1) / 2) + 1);
 
-    return RectI(rect.x1 - deltaX - derivX,
-                 rect.y1 - deltaY - derivY,
-                 rect.x2 + deltaX + derivX,
-                 rect.y2 + deltaY + derivY);
+    return RectI(rect.x1 - deltaX, rect.y1 - deltaY, rect.x2 + deltaX, rect.y2 + deltaY);
 }
 
 bool
@@ -416,9 +293,6 @@ Blur::paramsAreIdentity(const RenderScale& scale,
     const double sx = rs.x * params.sizeX;
     const double sy = rs.y * params.sizeY;
 
-    if ((params.orderX != 0) || (params.orderY != 0)) {
-        return false;
-    }
     if (isGaussianFamily(params.filter)) {
         const float sigmax = (float)(sx / 2.4);
         const float sigmay = (float)(sy / 2.4);
@@ -474,22 +348,22 @@ Blur::getRegionOfDefinition(U64 hash,
     // CImgBlurPlugin::getRegionOfDefinition(): an identity blur keeps the default region.
     RectI rodPixel = srcRoDPixel;
     bool changed = false;
-    if (params.expandRoD && !isEmptyRect(srcRoDPixel)) {
+    if (!isEmptyRect(srcRoDPixel)) {
         if (isGaussianFamily(params.filter)) {
             const float sigmax = (float)(sx / 2.4);
             const float sigmay = (float)(sy / 2.4);
-            if ((sigmax < 0.1) && (sigmay < 0.1) && (params.orderX == 0) && (params.orderY == 0)) {
+            if ((sigmax < 0.1) && (sigmay < 0.1)) {
                 return EffectInstance::getRegionOfDefinition(hash, time, scale, view, rod);
             }
             const int deltaX = std::max(3, (int)std::ceil(sx * 1.5));
             const int deltaY = std::max(3, (int)std::ceil(sy * 1.5));
-            rodPixel.x1 -= deltaX + params.orderX;
-            rodPixel.x2 += deltaX + params.orderX;
-            rodPixel.y1 -= deltaY + params.orderY;
-            rodPixel.y2 += deltaY + params.orderY;
+            rodPixel.x1 -= deltaX;
+            rodPixel.x2 += deltaX;
+            rodPixel.y1 -= deltaY;
+            rodPixel.y2 += deltaY;
         } else if (params.filter == BlurKernels::eFilterFIRGaussian) {
-            int padX, padY;
-            firPadding(sx, sy, params, &padX, &padY);
+            const int padX = firRadius(sx);
+            const int padY = firRadius(sy);
             if (!padX && !padY) {
                 return EffectInstance::getRegionOfDefinition(hash, time, scale, view, rod);
             }
@@ -498,18 +372,16 @@ Blur::getRegionOfDefinition(U64 hash,
             rodPixel.y1 -= padY;
             rodPixel.y2 += padY;
         } else {
-            if ((sx <= 1) && (sy <= 1) && (params.orderX == 0) && (params.orderY == 0)) {
+            if ((sx <= 1) && (sy <= 1)) {
                 return EffectInstance::getRegionOfDefinition(hash, time, scale, view, rod);
             }
             const int iter = boxIterations(params.filter);
             const int deltaX = iter * (int)std::ceil((sx - 1) / 2);
             const int deltaY = iter * (int)std::ceil((sy - 1) / 2);
-            const int derivX = (params.orderX > 0) ? 1 : 0;
-            const int derivY = (params.orderY > 0) ? 1 : 0;
-            rodPixel.x1 -= deltaX + derivX;
-            rodPixel.x2 += deltaX + derivX;
-            rodPixel.y1 -= deltaY + derivY;
-            rodPixel.y2 += deltaY + derivY;
+            rodPixel.x1 -= deltaX;
+            rodPixel.x2 += deltaX;
+            rodPixel.y1 -= deltaY;
+            rodPixel.y2 += deltaY;
         }
         changed = true;
     }
@@ -621,42 +493,20 @@ Blur::render(const RenderActionArgs& args)
     if (isGaussianFamily(params.filter)) {
         const float sigmax = (float)(sx / 2.4);
         const float sigmay = (float)(sy / 2.4);
-        if ((sigmax < 0.1) && (sigmay < 0.1) && (params.orderX == 0) && (params.orderY == 0)) {
+        if ((sigmax < 0.1) && (sigmay < 0.1)) {
             blurred = false;
         } else {
-            filterX = BlurKernels::LineFilter::forFilter(params.filter, sigmax, (unsigned int)params.orderX, params.neumann);
-            filterY = BlurKernels::LineFilter::forFilter(params.filter, sigmay, (unsigned int)params.orderY, params.neumann);
+            filterX = BlurKernels::LineFilter::forFilter(params.filter, sigmax, 0, false);
+            filterY = BlurKernels::LineFilter::forFilter(params.filter, sigmay, 0, false);
         }
     } else if (params.filter == BlurKernels::eFilterFIRGaussian) {
-        filterX = BlurKernels::LineFilter::firGaussian(sx / 2.4, (unsigned int)params.orderX, params.neumann);
-        filterY = BlurKernels::LineFilter::firGaussian(sy / 2.4, (unsigned int)params.orderY, params.neumann);
+        filterX = BlurKernels::LineFilter::firGaussian(sx / 2.4, 0, false);
+        filterY = BlurKernels::LineFilter::firGaussian(sy / 2.4, 0, false);
         blurred = !filterX.isIdentity() || !filterY.isIdentity();
     } else {
-        // CImg's box filter is the identity at size 0, but a derivative is still wanted there.
-        const double boxX = (params.orderX && (sx <= 0.)) ? 1e-8 : sx;
-        const double boxY = (params.orderY && (sy <= 0.)) ? 1e-8 : sy;
-        filterX = BlurKernels::LineFilter::forFilter(params.filter, static_cast<float>(boxX), (unsigned int)params.orderX, params.neumann);
-        filterY = BlurKernels::LineFilter::forFilter(params.filter, static_cast<float>(boxY), (unsigned int)params.orderY, params.neumann);
+        filterX = BlurKernels::LineFilter::forFilter(params.filter, static_cast<float>(sx), 0, false);
+        filterY = BlurKernels::LineFilter::forFilter(params.filter, static_cast<float>(sy), 0, false);
     }
-
-    // d f(a x) / dx = a f'(a x): a derivative computed at a reduced scale is scaled back.
-    double derivativeScale = 1.;
-    if (blurred && (((params.orderX > 0) && (rs.x != 1)) || ((params.orderY > 0) && (rs.y != 1)))) {
-        if (params.orderX > 0) {
-            derivativeScale *= rs.x;
-            if (params.orderX > 1) {
-                derivativeScale *= rs.x;
-            }
-        }
-        if (params.orderY > 0) {
-            derivativeScale *= rs.y;
-            if (params.orderY > 1) {
-                derivativeScale *= rs.y;
-            }
-        }
-    }
-    const bool scaleDerivative = (derivativeScale != 1.);
-    const bool thresholdAlpha = blurred && (params.alphaThreshold > 0.);
 
     const double mixValue = getMixValue(args.time, args.view);
     const float mix = (float)mixValue;
@@ -789,9 +639,9 @@ Blur::render(const RenderActionArgs& args)
         float* const buffer = bufferSize ? bufferStorage.get() : NULL;
 
         if (buffer) {
-            // 1. The source over the buffer, outside its image by the boundary condition, divided by the "(Un)premult by"
+            // 1. The source over the buffer, black outside its image, divided by the "(Un)premult by"
             // channel where that is usable.
-            fillBuffer(job, planes, bufferRect, params.neumann ? Boundary::Nearest : Boundary::Zero, nThreads, cancel, buffer);
+            fillBuffer(job, planes, bufferRect, Boundary::Zero, nThreads, cancel, buffer);
             if (cancel.check()) {
                 return eStatusOK;
             }
@@ -862,9 +712,8 @@ Blur::render(const RenderActionArgs& args)
             }
         }
 
-        // 4. The window: derivative scale and alpha threshold, multiply back, mask and mix
-        // against the undivided source; unprocessed channels and the pixels outside the
-        // processed window pass through.
+        // 4. The window: multiply back, mask and mix against the undivided source; unprocessed
+        // channels and the pixels outside the processed window pass through.
         WindowLayout layout;
         layout.roi = roi;
         layout.processWindow = processWindow;
@@ -872,16 +721,7 @@ Blur::render(const RenderActionArgs& args)
         layout.bufferRect = bufferRect;
         layout.buffer = buffer;
         layout.mix = mix;
-        writeWindow(job, planes, maskSource, layout, nThreads, cancel, [&](float v, int p) -> float {
-            if (scaleDerivative) {
-                v = (float)(v * derivativeScale);
-            }
-            if (thresholdAlpha && (p == planes.alphaPlane) && (v < params.alphaThreshold)) {
-                v = 0.f;
-            }
-
-            return v;
-        });
+        writeWindow(job, planes, maskSource, layout, nThreads, cancel, [](float v, int) -> float { return v; });
         if (cancel.check()) {
             return eStatusOK;
         }
@@ -902,9 +742,6 @@ Blur::canRenderOnGpu(const GpuQuery& query) const
     }
     BlurParams params;
     getParams(query.time, query.view, &params);
-    if ((params.orderX != 0) || (params.orderY != 0)) {
-        return false;
-    }
     if (params.filter != BlurKernels::eFilterFIRGaussian) {
         return true;
     }
@@ -975,7 +812,7 @@ Blur::renderGpu(const GpuRenderArgs& args)
     RectI valid;
     intersectRects(src.bounds, toPixelEnclosing(srcRoD, scale, getAspectRatio(0)), &valid);
 
-    // The filters render() builds, at order 0.
+    // The filters render() builds.
     const bool fir = (params.filter == BlurKernels::eFilterFIRGaussian);
     const double sx = rs.x * params.sizeX;
     const double sy = rs.y * params.sizeY;
@@ -990,32 +827,23 @@ Blur::renderGpu(const GpuRenderArgs& args)
         if ((sigmax < 0.1) && (sigmay < 0.1)) {
             blurred = false;
         } else {
-            filterX = BlurKernels::LineFilter::forFilter(params.filter, sigmax, 0, params.neumann);
-            filterY = BlurKernels::LineFilter::forFilter(params.filter, sigmay, 0, params.neumann);
+            filterX = BlurKernels::LineFilter::forFilter(params.filter, sigmax, 0, false);
+            filterY = BlurKernels::LineFilter::forFilter(params.filter, sigmay, 0, false);
         }
     } else {
-        filterX = BlurKernels::LineFilter::forFilter(params.filter, static_cast<float>(sx), 0, params.neumann);
-        filterY = BlurKernels::LineFilter::forFilter(params.filter, static_cast<float>(sy), 0, params.neumann);
+        filterX = BlurKernels::LineFilter::forFilter(params.filter, static_cast<float>(sx), 0, false);
+        filterY = BlurKernels::LineFilter::forFilter(params.filter, static_cast<float>(sy), 0, false);
     }
 
     int divisor = -1;
     if (!getGpuUnPremultComponent(args.query, &divisor)) {
         return eStatusFailed;
     }
-    float alphaThreshold = 0.f;
-    if (blurred && (params.alphaThreshold > 0.)) {
-        // The smallest float not below the threshold, so that a float alpha compares with it as
-        // render() compares it with the double.
-        alphaThreshold = (float)params.alphaThreshold;
-        if ((double)alphaThreshold < params.alphaThreshold) {
-            alphaThreshold = std::nextafter(alphaThreshold, FLT_MAX);
-        }
-    }
     bool allChannels = true;
     for (int c = 0; c < 4; ++c) {
         allChannels = allChannels && args.query.processChannels[c];
     }
-    const bool finish = args.query.hasMask || (getMixValue(time, view) != 1.) || !allChannels || (divisor >= 0) || (alphaThreshold > 0.f);
+    const bool finish = args.query.hasMask || (getMixValue(time, view) != 1.) || !allChannels || (divisor >= 0);
 
     // The source view may extend past the input's region of definition; render() reads the
     // divisor there as 1, as the wrap does outside its source view.
@@ -1057,7 +885,6 @@ Blur::renderGpu(const GpuRenderArgs& args)
         blur.output = toGpuBlurRect(rect);
         blur.domain = toGpuBlurRect(domain);
         blur.channels = (uint32_t)nComps;
-        blur.neumann = params.neumann;
         blur.weightsX = weightsX;
         blur.weightsY = weightsY;
         if (!gpu::recordSeparableBlur(ctx, blur)) {
@@ -1078,7 +905,6 @@ Blur::renderGpu(const GpuRenderArgs& args)
         blur.domain = toGpuBlurRect(domain);
         blur.window = window;
         blur.channels = (uint32_t)nComps;
-        blur.neumann = params.neumann;
         blur.filterX = toGpuLineFilter(filterX);
         blur.filterY = toGpuLineFilter(filterY);
         if (!gpu::recordLineBlur(ctx, blur)) {
@@ -1090,7 +916,7 @@ Blur::renderGpu(const GpuRenderArgs& args)
     }
     ctx.computeBarrier();
 
-    return recordGpuFinish(wrapArgs, filtered, alphaThreshold);
+    return recordGpuFinish(wrapArgs, filtered);
 #else
     Q_UNUSED(args);
 

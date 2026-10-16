@@ -141,18 +141,6 @@ def createInstance(app,group):
     lastNode.fgblur = param
     del param
 
-    param = lastNode.createChoiceParam("fgblurBoundary", "FGBlur Border Conditions")
-
-    # Add the param to the page
-    lastNode.controlsPage.addParam(param)
-
-    # Set param properties
-    param.setHelp("Border conditions of the blur applied to the alpha channel of the foreground (i.e. the foreground matte). Use \"Black\" in most cases, and \"Nearest\" if the foreground matte should be extended beyond image borders when it touches them.")
-    param.setAddNewLine(True)
-    param.setAnimationEnabled(False)
-    lastNode.fgblurBoundary = param
-    del param
-
     param = lastNode.createDouble2DParam("bgblur", "BGBlur")
     param.setMinimum(0, 0)
     param.setMaximum(1000, 0)
@@ -1114,11 +1102,6 @@ def createInstance(app,group):
         param.setLayer("rgba")
         del param
 
-    param = lastNode.getParam("expandRoD")
-    if param is not None:
-        param.setValue(False)
-        del param
-
     del lastNode
     # End of node "BGBlur"
 
@@ -1305,11 +1288,6 @@ def createInstance(app,group):
         param.setValue(1, 1)
         del param
 
-    param = lastNode.getParam("expandRoD")
-    if param is not None:
-        param.setValue(False)
-        del param
-
     del lastNode
     # End of node "FGBlur"
 
@@ -1420,11 +1398,6 @@ def createInstance(app,group):
     if param is not None:
         param.setValue(15, 0)
         param.setValue(15, 1)
-        del param
-
-    param = lastNode.getParam("expandRoD")
-    if param is not None:
-        param.setValue(False)
         del param
 
     del lastNode
@@ -1656,9 +1629,6 @@ def createInstance(app,group):
     del param
     param = groupFGBlur.getParam("size")
     group.getParam("fgblur").setAsAlias(param)
-    del param
-    param = groupFGBlur.getParam("boundary")
-    group.getParam("fgblurBoundary").setAsAlias(param)
     del param
     param = groupDiffuse.getParam("size")
     group.getParam("diffuse").setAsAlias(param)

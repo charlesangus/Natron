@@ -1,6 +1,6 @@
 // BlurKernels::LineFilter's recursive filters, one thread per line: Deriche, van Vliet (order 0) and
-// the box filter iterated 1, 2 or 3 times, with the CPU's recursions, rounding points and boundary
-// conditions. The CPU keeps the recursion state in double; here it is kept in two floats, as plain
+// the box filter iterated 1, 2 or 3 times, with the CPU's recursions and rounding points, and black
+// outside the line. The CPU keeps the recursion state in double; here it is kept in two floats, as plain
 // float state drifts by more than 1e-3 for van Vliet at large sigma. GpuLineBlurParams in
 // Engine/Gpu/GpuBlur.h mirrors LinesParams.
 
@@ -23,7 +23,6 @@ struct LinesParams
 {
     uint kind;
     uint vertical;
-    uint neumann;
     uint channels;
     uint lineCount;
     int lineOrigin;
@@ -244,21 +243,15 @@ void storeOut(int pos, uint li, float4 v)
     }
 }
 
-// The source pixel at (x, y), as the CPU's buffer fill reads its image: outside the source rect
-// the nearest of its pixels under neumann, zero otherwise.
+// The source pixel at (x, y), as the CPU's buffer fill reads its image: zero outside the source rect.
 float4 sourceAt(int pos, int line)
 {
-    int x = params.vertical != 0 ? line : pos;
-    int y = params.vertical != 0 ? pos : line;
+    const int x = params.vertical != 0 ? line : pos;
+    const int y = params.vertical != 0 ? pos : line;
     if (params.srcX1 >= params.srcX2 || params.srcY1 >= params.srcY2)
         return float4(0.0);
     if (x < params.srcX1 || x >= params.srcX2 || y < params.srcY1 || y >= params.srcY2)
-    {
-        if (params.neumann == 0)
-            return float4(0.0);
-        x = clamp(x, params.srcX1, params.srcX2 - 1);
-        y = clamp(y, params.srcY1, params.srcY2 - 1);
-    }
+        return float4(0.0);
     const uint idx = params.srcOffset + uint(y - params.srcY1) * params.srcStride + uint(x - params.srcX1) * params.channels;
     float4 v = float4(0.0);
     [ForceUnroll]
@@ -295,17 +288,10 @@ void dericheLine(int lo, int hi, int line, uint li)
     const FF a3 = coef(3);
     const FF b1 = coef(4);
     const FF b2 = coef(5);
-    const bool neumann = params.neumann != 0;
 
     FF4 yb = ff4(float4(0.0));
     FF4 yp = yb;
     float4 xp = float4(0.0);
-    if (neumann)
-    {
-        xp = inputAt(lo, line, li);
-        yp = ffMul(ff4(xp), coef(6));
-        yb = yp;
-    }
     const int causalEnd = min(hi, params.outHi);
     for (int pos = lo; pos < causalEnd; ++pos)
     {
@@ -322,13 +308,6 @@ void dericheLine(int lo, int hi, int line, uint li)
     float4 xa = float4(0.0);
     FF4 yn = ff4(float4(0.0));
     FF4 ya = yn;
-    if (neumann)
-    {
-        xn = inputAt(hi - 1, line, li);
-        xa = xn;
-        yn = ffMul(ff4(xn), coef(7));
-        ya = yn;
-    }
     const int anticausalEnd = max(lo, params.outLo);
     for (int pos = hi - 1; pos >= anticausalEnd; --pos)
     {
@@ -347,18 +326,13 @@ void dericheLine(int lo, int hi, int line, uint li)
 // to float as the CPU stores them in place, and the anticausal pass reads them back.
 void vanVlietLine(int lo, int hi, int line, uint li)
 {
-    const FF sumsq = coef(0);
     const FF sum = coef(1);
     const FF f1 = coef(2);
     const FF f2 = coef(3);
     const FF f3 = coef(4);
     const FF denom = coef(5);
-    const bool neumann = params.neumann != 0;
 
-    const float4 iplus = neumann ? inputAt(hi - 1, line, li) : float4(0.0);
     FF4 v1 = ff4(float4(0.0));
-    if (neumann)
-        v1 = ffDiv(ff4(inputAt(lo, line, li)), sumsq);
     FF4 v2 = v1;
     FF4 v3 = v1;
     for (int pos = lo; pos < hi; ++pos)
@@ -373,7 +347,7 @@ void vanVlietLine(int lo, int hi, int line, uint li)
         v1 = v0;
     }
 
-    const FF4 uplus = ffDiv(ff4(iplus), denom);
+    const FF4 uplus = ffDiv(ff4(float4(0.0)), denom);
     const FF4 vplus = ffDiv(uplus, denom);
     const FF4 unp = ffSub(v1, uplus);
     const FF4 unp1 = ffSub(v2, uplus);
@@ -405,16 +379,11 @@ void vanVlietLine(int lo, int hi, int line, uint li)
     }
 }
 
-// boxSample() of the line as the pass reads it: positions before the line read its first sample
-// and positions after it its last under neumann, zero otherwise.
+// boxSample() of the line as the pass reads it: positions outside the line read zero.
 float4 boxSample(int rel, int lo, int n, bool first, int line, uint li)
 {
     if (rel < 0 || rel >= n)
-    {
-        if (params.neumann == 0)
-            return float4(0.0);
-        rel = rel < 0 ? 0 : n - 1;
-    }
+        return float4(0.0);
     return first ? inputAt(lo + rel, line, li) : loadLine(lo + rel, li);
 }
 

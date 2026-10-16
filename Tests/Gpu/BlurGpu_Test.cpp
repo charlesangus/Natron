@@ -20,7 +20,6 @@ namespace {
 struct BlurCase {
     int w, h, ch;
     double sigma;
-    bool neumann;
     std::vector<float> src;
 };
 
@@ -33,9 +32,7 @@ protected:
         for (double sigma : blurfix::kSigmas) {
             for (const auto& s : blurfix::kSizes)
                 for (int ch : blurfix::kChannelCounts)
-                    for (bool neumann : { false, true }) {
-                        cases.push_back({ s.w, s.h, ch, sigma, neumann, blurfix::makeImage(s.w, s.h, ch, seed++) });
-                    }
+                    cases.push_back({ s.w, s.h, ch, sigma, blurfix::makeImage(s.w, s.h, ch, seed++) });
         }
         return cases;
     }
@@ -69,7 +66,7 @@ protected:
                 [&](VkCommandBuffer cmd, const ComputeBinding& b, size_t k) -> GpuStatus {
                     const BlurCase& c = cases[k];
                     GpuBlurPass pass { uint32_t(c.w), uint32_t(c.h), uint32_t(c.ch),
-                                       uint32_t(blurref::radiusForSigma(c.sigma)), false, c.neumann };
+                                       uint32_t(blurref::radiusForSigma(c.sigma)), false };
                     const VkBuffer w = weights[k].buffer;
                     const VkBuffer tmp = scratch[k].buffer;
                     if (GpuStatus s = recordBlurPass(*kernel, cmd, b.input, tmp, w, pass); !s) {
@@ -95,7 +92,7 @@ GPU_TEST_F(BlurGpuTest, MatchesReference)
         const BlurCase& c = cases[k];
         const size_t sigmaIndex = std::find(std::begin(blurfix::kSigmas), std::end(blurfix::kSigmas), c.sigma)
             - std::begin(blurfix::kSigmas);
-        const std::vector<double> ref = blurfix::reference(c.src, c.w, c.h, c.ch, c.sigma, c.neumann);
+        const std::vector<double> ref = blurfix::reference(c.src, c.w, c.h, c.ch, c.sigma);
         tol::ErrorStats caseStats;
         for (size_t i = 0; i < ref.size(); ++i) {
             perSigma[sigmaIndex].add(dst[k][i], ref[i], k, i);
@@ -103,7 +100,7 @@ GPU_TEST_F(BlurGpuTest, MatchesReference)
         }
         EXPECT_EQ(caseStats.classMismatches, 0u);
         EXPECT_LE(caseStats.maxAbs, blurfix::kTolerance)
-            << "sigma=" << c.sigma << " " << c.w << "x" << c.h << " ch=" << c.ch << " neumann=" << c.neumann;
+            << "sigma=" << c.sigma << " " << c.w << "x" << c.h << " ch=" << c.ch;
     }
 
     std::printf("blur gpu (%s) vs reference, abs bound %.1e\n", dev_->info().name.c_str(), blurfix::kTolerance);
@@ -113,8 +110,8 @@ GPU_TEST_F(BlurGpuTest, MatchesReference)
         perSigma[s].print(label);
         const BlurCase& w = cases[perSigma[s].worst.group];
         const size_t pix = perSigma[s].worst.index / w.ch;
-        std::printf("  worst case: %dx%d ch=%d neumann=%d pixel=(%zu,%zu) channel=%zu\n", w.w, w.h, w.ch,
-                    w.neumann, pix % w.w, pix / w.w, perSigma[s].worst.index % w.ch);
+        std::printf("  worst case: %dx%d ch=%d pixel=(%zu,%zu) channel=%zu\n", w.w, w.h, w.ch, pix % w.w, pix / w.w,
+                    perSigma[s].worst.index % w.ch);
     }
 }
 
@@ -125,17 +122,16 @@ GPU_TEST_F(BlurGpuTest, LargestSupportedRadiusMatchesReference)
     constexpr double kSigma = 170.0;
     ASSERT_LE(uint32_t(blurref::radiusForSigma(kSigma)), kGpuBlurMaxRadius);
     std::vector<BlurCase> cases;
-    for (bool neumann : { false, true })
-        cases.push_back({ 333, 290, 4, kSigma, neumann, blurfix::makeImage(333, 290, 4, neumann ? 2 : 1) });
+    cases.push_back({ 333, 290, 4, kSigma, blurfix::makeImage(333, 290, 4, 1) });
     const std::vector<std::vector<float>> dst = run(cases);
     for (size_t k = 0; k < cases.size(); ++k) {
         const BlurCase& c = cases[k];
-        const std::vector<double> ref = blurfix::reference(c.src, c.w, c.h, c.ch, c.sigma, c.neumann);
+        const std::vector<double> ref = blurfix::reference(c.src, c.w, c.h, c.ch, c.sigma);
         tol::ErrorStats stats;
         for (size_t i = 0; i < ref.size(); ++i)
             stats.add(dst[k][i], ref[i], k, i);
         EXPECT_EQ(stats.classMismatches, 0u);
-        EXPECT_LE(stats.maxAbs, blurfix::kTolerance) << "neumann=" << c.neumann;
+        EXPECT_LE(stats.maxAbs, blurfix::kTolerance);
     }
 }
 
@@ -151,19 +147,18 @@ GPU_TEST_F(BlurGpuTest, WideRadiiMatchReference)
         ASSERT_GT(blurref::radiusForSigma(sigma), 32);
         for (const blurfix::Size& s : kWideSizes)
             for (int ch : blurfix::kChannelCounts)
-                for (bool neumann : { false, true })
-                    cases.push_back({ s.w, s.h, ch, sigma, neumann, blurfix::makeImage(s.w, s.h, ch, seed++) });
+                cases.push_back({ s.w, s.h, ch, sigma, blurfix::makeImage(s.w, s.h, ch, seed++) });
     }
     const std::vector<std::vector<float>> dst = run(cases);
     for (size_t k = 0; k < cases.size(); ++k) {
         const BlurCase& c = cases[k];
-        const std::vector<double> ref = blurfix::reference(c.src, c.w, c.h, c.ch, c.sigma, c.neumann);
+        const std::vector<double> ref = blurfix::reference(c.src, c.w, c.h, c.ch, c.sigma);
         tol::ErrorStats stats;
         for (size_t i = 0; i < ref.size(); ++i)
             stats.add(dst[k][i], ref[i], k, i);
         EXPECT_EQ(stats.classMismatches, 0u);
         EXPECT_LE(stats.maxAbs, blurfix::kTolerance) << "sigma=" << c.sigma << " " << c.w << "x" << c.h
-                                                     << " ch=" << c.ch << " neumann=" << c.neumann;
+                                                     << " ch=" << c.ch;
     }
 }
 
@@ -194,12 +189,12 @@ TEST(BlurGroupCount, VerticalDirectPathCoversColumnBlocks)
 namespace {
 
 // The blur recordSeparableBlur promises: a source resolved against srcValid, filtered over the lines
-// of domain with the boundary condition at the domain's edges, zero outside it. In float with half
+// of domain, black outside the source and beyond the domain's edges, zero outside it. In float with half
 // weights it also follows the CPU FIR's order of operations.
 template <typename T>
 std::vector<double>
 regionReference(const std::vector<float>& src, const GpuBlurImage& srcImage, const GpuBlurRect& valid,
-                const GpuBlurRect& domain, const GpuBlurRect& out, int nc, const std::vector<T>& hw, bool neumann)
+                const GpuBlurRect& domain, const GpuBlurRect& out, int nc, const std::vector<T>& hw)
 {
     const int r = int(hw.size()) - 1;
     const auto sourceAt = [&](int x, int y, int c) -> T {
@@ -207,26 +202,10 @@ regionReference(const std::vector<float>& src, const GpuBlurImage& srcImage, con
             return 0.0;
         }
         if (x < valid.x1 || x >= valid.x2 || y < valid.y1 || y >= valid.y2) {
-            if (!neumann) {
-                return 0.0;
-            }
-            x = std::clamp(x, valid.x1, valid.x2 - 1);
-            y = std::clamp(y, valid.y1, valid.y2 - 1);
+            return 0.0;
         }
         return src[srcImage.offsetFloats + size_t(y - srcImage.bounds.y1) * srcImage.strideFloats
                    + size_t(x - srcImage.bounds.x1) * nc + c];
-    };
-    // Resolves a tap against [lo, hi); false when it reads zero.
-    const auto resolve = [&](int p, int lo, int hi, int& q) {
-        q = p;
-        if (p >= lo && p < hi) {
-            return true;
-        }
-        if (!neumann) {
-            return false;
-        }
-        q = std::clamp(p, lo, hi - 1);
-        return true;
     };
     const int midW = out.x2 - out.x1;
     const int midH = domain.y2 - domain.y1;
@@ -238,8 +217,7 @@ regionReference(const std::vector<float>& src, const GpuBlurImage& srcImage, con
             }
             for (int c = 0; c < nc; ++c) {
                 const auto tap = [&](int p) -> T {
-                    int q;
-                    return resolve(p, domain.x1, domain.x2, q) ? sourceAt(q, y, c) : T(0);
+                    return (p >= domain.x1 && p < domain.x2) ? sourceAt(p, y, c) : T(0);
                 };
                 T acc = hw[0] * tap(x);
                 for (int k = 1; k <= r; ++k) {
@@ -258,9 +236,8 @@ regionReference(const std::vector<float>& src, const GpuBlurImage& srcImage, con
         for (int x = out.x1; x < out.x2; ++x) {
             for (int c = 0; c < nc; ++c) {
                 const auto tap = [&](int p) -> T {
-                    int q;
-                    return resolve(p, domain.y1, domain.y2, q) ? mid[(size_t(q - domain.y1) * midW + (x - out.x1)) * nc + c]
-                                                               : T(0);
+                    return (p >= domain.y1 && p < domain.y2) ? mid[(size_t(p - domain.y1) * midW + (x - out.x1)) * nc + c]
+                                                             : T(0);
                 };
                 T acc = hw[0] * tap(y);
                 for (int k = 1; k <= r; ++k) {
@@ -306,88 +283,85 @@ TEST(BlurRegionGpu, SubRectsMatchReference)
     for (const RegionCase& rc : cases) {
         for (double sigma : { 0.5, 3.0, 11.0, 25.0, 100.0 }) {
             for (int nc : blurfix::kChannelCounts) {
-                for (bool neumann : { false, true }) {
-                    GpuBlurImage srcImage;
-                    srcImage.bounds = rc.srcBounds;
-                    srcImage.offsetFloats = 7;
-                    srcImage.strideFloats = uint32_t((rc.srcBounds.x2 - rc.srcBounds.x1 + 3) * nc);
-                    const size_t srcFloats = srcImage.offsetFloats
-                        + size_t(rc.srcBounds.y2 - rc.srcBounds.y1) * srcImage.strideFloats;
-                    std::vector<float> src = blurfix::makeImage(int(srcFloats), 1, 1, seed++);
+                GpuBlurImage srcImage;
+                srcImage.bounds = rc.srcBounds;
+                srcImage.offsetFloats = 7;
+                srcImage.strideFloats = uint32_t((rc.srcBounds.x2 - rc.srcBounds.x1 + 3) * nc);
+                const size_t srcFloats = srcImage.offsetFloats
+                    + size_t(rc.srcBounds.y2 - rc.srcBounds.y1) * srcImage.strideFloats;
+                std::vector<float> src = blurfix::makeImage(int(srcFloats), 1, 1, seed++);
 
-                    GpuBlurImage dstImage;
-                    dstImage.bounds = rc.dstBounds;
-                    dstImage.offsetFloats = 5;
-                    dstImage.strideFloats = uint32_t((rc.dstBounds.x2 - rc.dstBounds.x1 + 1) * nc);
-                    const size_t dstFloats = dstImage.offsetFloats
-                        + size_t(rc.dstBounds.y2 - rc.dstBounds.y1) * dstImage.strideFloats;
-                    std::vector<float> dst(dstFloats, -7.0f);
+                GpuBlurImage dstImage;
+                dstImage.bounds = rc.dstBounds;
+                dstImage.offsetFloats = 5;
+                dstImage.strideFloats = uint32_t((rc.dstBounds.x2 - rc.dstBounds.x1 + 1) * nc);
+                const size_t dstFloats = dstImage.offsetFloats
+                    + size_t(rc.dstBounds.y2 - rc.dstBounds.y1) * dstImage.strideFloats;
+                std::vector<float> dst(dstFloats, -7.0f);
 
-                    GpuBufferHandle srcBuf, dstBuf;
-                    ASSERT_TRUE(rt->acquire(srcFloats * sizeof(float), srcBuf).ok());
-                    ASSERT_TRUE(rt->acquire(dstFloats * sizeof(float), dstBuf).ok());
-                    TimelineValue done;
-                    ASSERT_TRUE(rt->upload({ src.data(), srcFloats * sizeof(float) }, srcBuf.buffer(), 0, done).ok());
-                    ASSERT_TRUE(rt->wait(done).ok());
-                    ASSERT_TRUE(rt->upload({ dst.data(), dstFloats * sizeof(float) }, dstBuf.buffer(), 0, done).ok());
-                    ASSERT_TRUE(rt->wait(done).ok());
+                GpuBufferHandle srcBuf, dstBuf;
+                ASSERT_TRUE(rt->acquire(srcFloats * sizeof(float), srcBuf).ok());
+                ASSERT_TRUE(rt->acquire(dstFloats * sizeof(float), dstBuf).ok());
+                TimelineValue done;
+                ASSERT_TRUE(rt->upload({ src.data(), srcFloats * sizeof(float) }, srcBuf.buffer(), 0, done).ok());
+                ASSERT_TRUE(rt->wait(done).ok());
+                ASSERT_TRUE(rt->upload({ dst.data(), dstFloats * sizeof(float) }, dstBuf.buffer(), 0, done).ok());
+                ASSERT_TRUE(rt->wait(done).ok());
 
-                    const std::vector<float> weights = blurfix::halfWeights(sigma);
-                    GpuSeparableBlur b;
-                    srcImage.buffer = &srcBuf.buffer();
-                    dstImage.buffer = &dstBuf.buffer();
-                    b.src = srcImage;
-                    b.srcValid = rc.valid;
-                    b.dst = dstImage;
-                    b.output = rc.output;
-                    b.domain = rc.domain;
-                    b.channels = uint32_t(nc);
-                    b.neumann = neumann;
-                    b.weightsX = weights;
-                    b.weightsY = weights;
+                const std::vector<float> weights = blurfix::halfWeights(sigma);
+                GpuSeparableBlur b;
+                srcImage.buffer = &srcBuf.buffer();
+                dstImage.buffer = &dstBuf.buffer();
+                b.src = srcImage;
+                b.srcValid = rc.valid;
+                b.dst = dstImage;
+                b.output = rc.output;
+                b.domain = rc.domain;
+                b.channels = uint32_t(nc);
+                b.weightsX = weights;
+                b.weightsY = weights;
 
-                    std::unique_ptr<GpuRecordContext> ctx;
-                    ASSERT_TRUE(rt->newRecordContext(ctx).ok());
-                    s = recordSeparableBlur(*ctx, b);
-                    ASSERT_TRUE(s.ok()) << s.message;
-                    s = ctx->submitAndWait();
-                    ASSERT_TRUE(s.ok()) << s.message;
-                    ctx.reset();
-                    ASSERT_TRUE(rt->download(dstBuf.buffer(), 0, { dst.data(), dstFloats * sizeof(float) }, done).ok());
-                    ASSERT_TRUE(rt->wait(done).ok());
+                std::unique_ptr<GpuRecordContext> ctx;
+                ASSERT_TRUE(rt->newRecordContext(ctx).ok());
+                s = recordSeparableBlur(*ctx, b);
+                ASSERT_TRUE(s.ok()) << s.message;
+                s = ctx->submitAndWait();
+                ASSERT_TRUE(s.ok()) << s.message;
+                ctx.reset();
+                ASSERT_TRUE(rt->download(dstBuf.buffer(), 0, { dst.data(), dstFloats * sizeof(float) }, done).ok());
+                ASSERT_TRUE(rt->wait(done).ok());
 
-                    const std::vector<double> full = blurref::makeWeights(sigma);
-                    const std::vector<double> ref = regionReference(src, srcImage, rc.valid, rc.domain, rc.output, nc,
-                                                                    std::vector<double>(full.begin() + full.size() / 2, full.end()), neumann);
-                    const std::vector<double> refF = regionReference(src, srcImage, rc.valid, rc.domain, rc.output, nc, weights, neumann);
-                    const int outW = rc.output.x2 - rc.output.x1;
-                    double worst = 0.0;
-                    double worstF = 0.0;
-                    size_t untouchedChanged = 0;
-                    for (int y = rc.dstBounds.y1; y < rc.dstBounds.y2; ++y) {
-                        for (int x = rc.dstBounds.x1; x < rc.dstBounds.x2; ++x) {
-                            const bool inOut = x >= rc.output.x1 && x < rc.output.x2 && y >= rc.output.y1
-                                && y < rc.output.y2;
-                            for (int c = 0; c < nc; ++c) {
-                                const float got = dst[dstImage.offsetFloats + size_t(y - rc.dstBounds.y1) * dstImage.strideFloats
-                                                      + size_t(x - rc.dstBounds.x1) * nc + c];
-                                if (!inOut) {
-                                    untouchedChanged += got != -7.0f;
-                                    continue;
-                                }
-                                const double want
-                                    = ref[(size_t(y - rc.output.y1) * outW + (x - rc.output.x1)) * nc + c];
-                                worst = std::max(worst, std::abs(double(got) - want));
-                                worstF = std::max(worstF, std::abs(double(got) - refF[(size_t(y - rc.output.y1) * outW + (x - rc.output.x1)) * nc + c]));
+                const std::vector<double> full = blurref::makeWeights(sigma);
+                const std::vector<double> ref = regionReference(src, srcImage, rc.valid, rc.domain, rc.output, nc,
+                                                                std::vector<double>(full.begin() + full.size() / 2, full.end()));
+                const std::vector<double> refF = regionReference(src, srcImage, rc.valid, rc.domain, rc.output, nc, weights);
+                const int outW = rc.output.x2 - rc.output.x1;
+                double worst = 0.0;
+                double worstF = 0.0;
+                size_t untouchedChanged = 0;
+                for (int y = rc.dstBounds.y1; y < rc.dstBounds.y2; ++y) {
+                    for (int x = rc.dstBounds.x1; x < rc.dstBounds.x2; ++x) {
+                        const bool inOut = x >= rc.output.x1 && x < rc.output.x2 && y >= rc.output.y1
+                            && y < rc.output.y2;
+                        for (int c = 0; c < nc; ++c) {
+                            const float got = dst[dstImage.offsetFloats + size_t(y - rc.dstBounds.y1) * dstImage.strideFloats
+                                                  + size_t(x - rc.dstBounds.x1) * nc + c];
+                            if (!inOut) {
+                                untouchedChanged += got != -7.0f;
+                                continue;
                             }
+                            const double want
+                                = ref[(size_t(y - rc.output.y1) * outW + (x - rc.output.x1)) * nc + c];
+                            worst = std::max(worst, std::abs(double(got) - want));
+                            worstF = std::max(worstF, std::abs(double(got) - refF[(size_t(y - rc.output.y1) * outW + (x - rc.output.x1)) * nc + c]));
                         }
                     }
-                    EXPECT_EQ(untouchedChanged, 0u);
-                    EXPECT_LE(worst, blurfix::kTolerance)
-                        << "sigma=" << sigma << " nc=" << nc << " neumann=" << neumann << " domain x1=" << rc.domain.x1;
-                    EXPECT_LE(worstF, blurfix::kTolerance)
-                        << "float order, sigma=" << sigma << " nc=" << nc << " neumann=" << neumann << " domain x1=" << rc.domain.x1;
                 }
+                EXPECT_EQ(untouchedChanged, 0u);
+                EXPECT_LE(worst, blurfix::kTolerance)
+                    << "sigma=" << sigma << " nc=" << nc << " domain x1=" << rc.domain.x1;
+                EXPECT_LE(worstF, blurfix::kTolerance)
+                    << "float order, sigma=" << sigma << " nc=" << nc << " domain x1=" << rc.domain.x1;
             }
         }
     }

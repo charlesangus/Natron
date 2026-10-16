@@ -208,25 +208,23 @@ TEST_F(NativeBlurTest, SourceRegionOfInterestIsTheOfxHalo)
     EXPECT_EQ(rect.x1, roi.x1);
     EXPECT_EQ(rect.y2, roi.y2);
 
-    // max(3, ceil(1.5 * 25)) = 38, plus the derivative order.
+    // max(3, ceil(1.5 * 25)) = 38.
     params.sizeX = params.sizeY = 25.;
-    params.orderX = 1;
     EXPECT_FALSE(Blur::paramsAreIdentity(RenderScale::identity, params));
     roi = Blur::getSourceRoI(rect, RenderScale::identity, params);
-    EXPECT_EQ(10 - 38 - 1, roi.x1);
-    EXPECT_EQ(30 + 38 + 1, roi.x2);
+    EXPECT_EQ(10 - 38, roi.x1);
+    EXPECT_EQ(30 + 38, roi.x2);
     EXPECT_EQ(20 - 38, roi.y1);
     EXPECT_EQ(40 + 38, roi.y2);
 
-    // Quadratic: 3 * (floor((25 - 1) / 2) + 1) = 39, plus one for any derivative.
+    // Quadratic: 3 * (floor((25 - 1) / 2) + 1) = 39.
     params.filter = BlurKernels::eFilterQuadratic;
     roi = Blur::getSourceRoI(rect, RenderScale::identity, params);
-    EXPECT_EQ(10 - 39 - 1, roi.x1);
+    EXPECT_EQ(10 - 39, roi.x1);
     EXPECT_EQ(20 - 39, roi.y1);
 
-    // A box no wider than one pixel and no derivative leaves the image alone.
+    // A box no wider than one pixel leaves the image alone.
     params.filter = BlurKernels::eFilterBox;
-    params.orderX = 0;
     params.sizeX = params.sizeY = 1.;
     EXPECT_TRUE(Blur::paramsAreIdentity(RenderScale::identity, params));
     params.sizeX = params.sizeY = 2.;
@@ -283,9 +281,8 @@ TEST_F(NativeBlurTest, RendersTheSameInBothSchedulerModesAtAnyPoolSize)
     ASSERT_TRUE(setKnobValues(blur, kBlurParamCropToFormat, { 0. }));
     expectSameBothWays(blur, "fir-gaussian-9x4");
 
-    ASSERT_TRUE(setKnobValue(blur, kBlurParamBoundary, std::string(kBlurParamBoundaryNearest)));
     ASSERT_TRUE(setKnobValue(blur, kBlurParamFilter, std::string(kBlurParamFilterQuadratic)));
-    expectSameBothWays(blur, "quadratic-9x4-nearest");
+    expectSameBothWays(blur, "quadratic-9x4");
 
     NodePtr mask = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
     ASSERT_TRUE(bool(mask));

@@ -1970,7 +1970,8 @@ AppInstance::clearOpenFXPluginsCaches()
 {
     NodesList activeNodes;
 
-    _imp->_currentProject->getActiveNodes(&activeNodes);
+    // Inactive nodes keep their caches too: reactivating one must not replay stale results.
+    _imp->_currentProject->getNodes_recursive(activeNodes, false);
 
     for (NodesList::iterator it = activeNodes.begin(); it != activeNodes.end(); ++it) {
         (*it)->purgeAllInstancesCaches();

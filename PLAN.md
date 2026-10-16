@@ -180,7 +180,7 @@ future core work has solid ground to build on.
 | M123 | Native Sharpen And Glow | todo | M120 |  | E3 | [M123-native-sharpen-and-glow.md](PLAN/MILESTONES/M123-native-sharpen-and-glow.md) |
 | M124 | Native Time Remaps | todo | M120 |  | E3 | [M124-native-time-remaps.md](PLAN/MILESTONES/M124-native-time-remaps.md) |
 | M125 | Native Multi-Frame Nodes | todo | M124 |  | E3 | [M125-native-multi-frame-nodes.md](PLAN/MILESTONES/M125-native-multi-frame-nodes.md) |
-| M126 | Runtime GPU Shaders | todo | M85 |  | E5 | [M126-runtime-gpu-shaders.md](PLAN/MILESTONES/M126-runtime-gpu-shaders.md) |
+| M126 | Runtime GPU Shaders | doing | M85 | gpu | E5 | [M126-runtime-gpu-shaders.md](PLAN/MILESTONES/M126-runtime-gpu-shaders.md) |
 | M127 | Native OCIO Nodes | todo | M120, M126 |  | E3 | [M127-native-ocio-nodes.md](PLAN/MILESTONES/M127-native-ocio-nodes.md) |
 | M128 | Native Shape Generators | todo | M120 |  | E3 | [M128-native-shape-generators.md](PLAN/MILESTONES/M128-native-shape-generators.md) |
 | M129 | Clean-Sheet Noise Node | todo | M120 |  | E3 | [M129-clean-sheet-noise-node.md](PLAN/MILESTONES/M129-clean-sheet-noise-node.md) |

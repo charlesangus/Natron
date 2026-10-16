@@ -282,24 +282,31 @@ checkCase(GradeStats& stats, size_t caseIndex, const GradeCase& c, const float* 
         const double in = c.src[i];
         const double want = graderef::apply(c.src[i], chan, c.reverse, clampBlack, clampWhite);
         if (bounds.gpu && in != 0 && std::fabs(in) < std::numeric_limits<float>::min()) {
-            // A driver may flush a subnormal to zero in some operations and not in others, so pow
-            // of one can land anywhere between the two readings. Grade is monotonic in its input,
-            // so the result must still lie between the values for zero and for the input.
+            // A driver may flush a subnormal to zero in some operations and not in others, and its
+            // log2 may ignore a subnormal's leading zero mantissa bits (llvmpipe gives log2(2^-149)
+            // as about -127), so pow of one can land anywhere between the readings for zero and
+            // for the smallest normal. A small gamma's exponent turns that into an order-one
+            // difference. Grade is monotonic in its input, so the result must still lie between
+            // those two readings.
             ++stats.subnormalInputs;
+            const float minNormal = std::copysign(std::numeric_limits<float>::min(), c.src[i]);
             const double zero = graderef::apply(0.0f, chan, c.reverse, clampBlack, clampWhite);
+            const double normal = graderef::apply(minNormal, chan, c.reverse, clampBlack, clampWhite);
             const double tolWant = conditionedTolerance(in, chan, c.reverse, want, true);
             const double tolZero = conditionedTolerance(0, chan, c.reverse, zero, true);
+            const double tolNormal = conditionedTolerance(minNormal, chan, c.reverse, normal, true);
             if (matches(dst[i], want, tolWant, bounds) || matches(dst[i], zero, tolZero, bounds)) {
                 ++stats.subnormalMatched;
                 continue;
             }
             const double got = dst[i];
-            const double lo = std::min(want, zero) - std::max(tolWant, tolZero);
-            const double hi = std::max(want, zero) + std::max(tolWant, tolZero);
+            const double slack = std::max({ tolWant, tolZero, tolNormal });
+            const double lo = std::min({ want, zero, normal }) - slack;
+            const double hi = std::max({ want, zero, normal }) + slack;
             if (std::isfinite(got) && got >= lo && got <= hi)
                 ++stats.subnormalBetween;
             else
-                violation(i, " subnormal input ", c.src[i], " got=", dst[i], " outside [", want, ", ", zero, "]");
+                violation(i, " subnormal input ", c.src[i], " got=", dst[i], " outside [", zero, ", ", normal, "]");
             continue;
         }
         const double conditioned = conditionedTolerance(in, chan, c.reverse, want, bounds.gpu);

@@ -177,7 +177,7 @@ This phase starts only after M85 - Native GPU Kernels has merged into `main`. M8
   - verify: `NativeBlur_Test`, `NativeErodeDilate_Test`, `NativeEdgeDetect_Test`, `NativeBlurGpu_Test` and `BlurFIRGaussian_Test` pass bit for bit. The `eu-stack` share of `writeWindow` per UHD task drops below ~5 ms (recorded in Decisions).
   - size: M
 
-- [ ] M90.P3.T2 — Measure the Blur half of the acceptance criteria
+- [x] M90.P3.T2 — Measure the Blur half of the acceptance criteria
   - files: none (results go in `## Decisions`)
   - approach:
     - Stripped release AppImage. Rerun P1.T1's `blurchain` cases (FIR σ 3/25/100 and IIR) and `chain`, at UHD on 16 threads, in both scheduler modes, under `NATRON_RENDER_PROFILE`.
@@ -213,3 +213,14 @@ This phase starts only after M85 - Native GPU Kernels has merged into `main`. M8
 - 2026-10-15 — **Waiting on M85** (user): M90 is not split. Both lanes wait until M85 - Native GPU Kernels merges, then M90 Phase 90.3 runs, M90 ships, and M100 resumes P4.T3/P5.T1/P7.T1.
 - 2026-10-15 — **Rebased onto post-M85 `main`** (7ad45061e) cleanly; branch now at 86805ce57. Phase 90.3 started.
 - 2026-10-15 — **P3.T1** (code: 87bad7d43; release run 38820048036, 2258/2258 in legacy and taskgraph, all five bit-exact Blur/filter suites plus NativeDirectOutput and ImagePasteBands pass). Per-band plane lookup, a branch-free fast path for unmasked `mix == 1` rows inside the window and buffer, and the Blur planar buffer reused across planes. The scratch rows were already per band, and the buffer was already left unzeroed (`fillBuffer` writes every element). The `writeWindow` share wasn't re-profiled: the AppImage is stripped, so P3.T2's bench measures the effect instead. The bench kit (`.local/m90-p3-bench/`, with `CLAUDE.md` for an agent run) is ready for the user's 16-thread host.
+- 2026-10-16 — **P3.T2 at 16 threads** (user's host, `.local/m90-p3-bench`, `NATRON_GPU=off`, UHD, 3 reps × 5 frames, base e93abc91 vs p3 87bad7d43; raw data in `.local/m90-p3-results/`). Taskgraph per-task ms/Mpx, base → p3, then the bare `CpuTwinBench` kernel at 16 threads:
+  - Grade 2.50 → **1.46** (bare 3.58 → ratio 0.41×, under target);
+  - FIR σ3 6.13 → **4.70** (bare 1.51 → **3.11×**, target 1.5×);
+  - IIR 8.14 → **6.83** (bare 3.37 → **2.03×**);
+  - FIR σ25 13.54 → 12.18 (bare 5.52); FIR σ100 36.17 → 34.66 (bare 19.71); 8K FIR σ25 13.12 → 11.72 (bare 5.62 → 2.09×);
+  - Read 5.82 → 4.74; Write ~16 → ~15 in every graph.
+  
+  Every case is faster in both schedulers, in frame wall and per task. Single-thread FIR σ3 35.7 → 30.1 and IIR 60.0 → 52.8 ms/Mpx. P3 alone (p2 → p3) took FIR σ3 from 5.87 to 4.70.
+  
+  **Miss accepted** (user): Blur stays above 1.5× of bare. At σ3, about 3 ms/Mpx of fixed per-task overhead remains (fill, finish, allocation). At large σ the gap scales with the padded input region the in-graph Blur reads (σ100 pads ~300 px per side), which the bare kernel doesn't. It goes to a follow-up milestone, not M90.
+- 2026-10-16 — **P3.T3 scope** (user): regenerate only the Blur and Grade CPU rows of `Engine/GpuCostSeed.inc` from P3.T2's numbers; the other native nodes keep M85's rows (now somewhat pessimistic, since Phases 90.1–90.2 cut overhead for every native node).

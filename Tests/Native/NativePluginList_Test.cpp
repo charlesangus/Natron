@@ -178,6 +178,28 @@ TEST_F(NativePluginListTest, MetadataNodesAreGroupedAndDescribed)
     }
 }
 
+TEST_F(NativePluginListTest, OfxMetadataNodesAreGroupedWithTheNativeOnes)
+{
+    const char* const ids[] = {
+        "org.openfx.examples.metadataCompare",
+        "org.openfx.examples.metadataContribute",
+        "org.openfx.examples.metadataTimeCode",
+    };
+    const PluginsMap& plugins = appPTR->getPluginsList();
+
+    for (const char* id : ids) {
+        const PluginsMap::const_iterator it = plugins.find(id);
+        if (it == plugins.end()) {
+            ADD_FAILURE() << id << " is not loaded; it is bundled in build/assets/Plugins";
+            continue;
+        }
+        ASSERT_FALSE(it->second.empty()) << id;
+        const QStringList grouping = (*it->second.begin())->getGrouping();
+        ASSERT_EQ(1, grouping.size()) << id;
+        EXPECT_EQ(QString::fromUtf8(PLUGIN_GROUP_METADATA), grouping.front()) << id;
+    }
+}
+
 TEST_F(NativePluginListTest, NativeReadIsTheOnlyReader)
 {
     for (const auto& versions : appPTR->getPluginsList()) {

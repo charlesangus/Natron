@@ -118,6 +118,13 @@ public:
      **/
     void invalidateFileStamp();
 
+    /**
+     * @brief The part of a Reload that reaches the other nodes: every other node with a file knob
+     * covering the same files has its stamps dropped and its caches purged, and is re-keyed. Both
+     * the knob's own reload and a node's Reload button call it, after reloading their own node.
+     **/
+    void reloadOtherNodesReadingTheseFiles();
+
 Q_SIGNALS:
 
     void openFile();

@@ -341,6 +341,11 @@ TEST_F(BaseTest, ReadKeepsAFileOverwrittenInPlaceUntilReload)
 
     NodePtr reader = createWorkingSpaceRead(path);
     ASSERT_TRUE(bool(reader));
+    // A Read with no output does not cache what it renders, so each render decodes the file as it
+    // is now. Only an image cached under the unchanged hash keeps the old pixels until Reload.
+    KnobBoolPtr forceCaching = std::dynamic_pointer_cast<KnobBool>(reader->getKnobByName("forceCaching"));
+    ASSERT_TRUE(bool(forceCaching));
+    forceCaching->setValue(true);
 
     float red = 0.f;
     ASSERT_TRUE(renderedRed(reader, 1., width, height, &red));

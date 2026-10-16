@@ -72,42 +72,54 @@ KnobFile::~KnobFile()
 void
 KnobFile::reloadFile()
 {
-    const std::string path = getResolvedPath();
-
     invalidateFileStamp();
     assert( getHolder() );
-    EffectInstance* effect = dynamic_cast<EffectInstance*>( getHolder() );
-    if (effect && !path.empty() && effect->getApp()) {
-        // The stamp is shared per path, so every other node reading these files must re-key too.
-        NodesList nodes;
-        effect->getApp()->getProject()->getNodes_recursive(nodes, false);
-        for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
-            EffectInstancePtr other = (*it)->getEffectInstance();
-            if (!other || other.get() == effect) {
-                continue;
-            }
-            const KnobsVec& knobs = other->getKnobs();
-            bool affected = false;
-            for (KnobsVec::const_iterator k = knobs.begin(); k != knobs.end(); ++k) {
-                KnobFile* otherFile = dynamic_cast<KnobFile*>(k->get());
-                if (otherFile && FileStampRegistry::coversSameFiles(path, otherFile->getResolvedPath())) {
-                    otherFile->invalidateContentHash();
-                    affected = true;
-                }
-            }
-            if (affected) {
-                other->clearActionsCache();
-                (*it)->markHashDirty();
-            }
-        }
-    }
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(getHolder());
     if (effect) {
         effect->purgeCaches();
         // The file may have changed in a way its stamp misses, which leaves the hash as it was.
         effect->clearActionsCache();
         effect->clearPersistentMessage(false);
     }
+    reloadOtherNodesReadingTheseFiles();
     evaluateValueChange(0, getCurrentTime(), ViewIdx(0), eValueChangedReasonNatronInternalEdited);
+}
+
+void
+KnobFile::reloadOtherNodesReadingTheseFiles()
+{
+    const std::string path = getResolvedPath();
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(getHolder());
+
+    if (path.empty() || !effect || !effect->getApp()) {
+        return;
+    }
+    // The stamp is shared per path, so every other node reading these files must re-key too, and
+    // drop the frame listing, headers and metadata it read from them.
+    NodesList nodes;
+    effect->getApp()->getProject()->getNodes_recursive(nodes, false);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        EffectInstancePtr other = (*it)->getEffectInstance();
+        if (!other || other.get() == effect) {
+            continue;
+        }
+        const KnobsVec& knobs = other->getKnobs();
+        bool affected = false;
+        for (KnobsVec::const_iterator k = knobs.begin(); k != knobs.end(); ++k) {
+            KnobFile* otherFile = dynamic_cast<KnobFile*>(k->get());
+            if (otherFile && FileStampRegistry::coversSameFiles(path, otherFile->getResolvedPath())) {
+                otherFile->invalidateFileStamp();
+                affected = true;
+            }
+        }
+        if (affected) {
+            other->purgeCaches();
+            other->clearActionsCache();
+            other->clearPersistentMessage(false);
+            // Moves the age hash with the content hash, as the node's own Reload does.
+            (*it)->incrementKnobsAge();
+        }
+    }
 }
 
 bool
@@ -223,7 +235,7 @@ void
 KnobOutputFile::rewriteFile()
 {
     assert( getHolder() );
-    EffectInstance* effect = dynamic_cast<EffectInstance*>( getHolder() );
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(getHolder());
     if (effect) {
         effect->purgeCaches();
         effect->clearPersistentMessage(false);

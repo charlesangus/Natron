@@ -50,6 +50,7 @@
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Metadata/OfxMetadataBridge.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/OfxClipInstance.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/Project.h"
@@ -137,7 +138,7 @@ class MetadataRef {
 public:
     MetadataRef(OFX::Host::ImageEffect::ClipInstance* clip,
                 OfxTime time)
-        : _set(clip ? clip->getMetadata(time) : NULL)
+        : _set(OfxClipInstance::getCurrentMetadata(clip, time))
     {
     }
 

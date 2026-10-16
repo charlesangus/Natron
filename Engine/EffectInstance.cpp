@@ -3430,11 +3430,11 @@ EffectInstance::onSignificantEvaluateAboutToBeCalled(KnobI* knob)
         if (Node::isHashAuditEnabled()) {
             node->noteHashAuditCause(knob ? knob->getName() : std::string("<no knob>"));
         }
-
-        node->doComputeHashOnMainThread();
-    } else {
-        Q_EMIT node->mustComputeHashOnMainThread();
     }
+    // Each reader recomputes what it reads, so only the nodes between this one and what is
+    // looked at are rehashed. The viewers re-render through the evaluate() that follows, on the
+    // main thread for an edit made on another one, and so read the hashes they need.
+    node->markHashDirty();
 }
 
 void

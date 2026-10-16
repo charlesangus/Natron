@@ -42,6 +42,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/NoOpBase.h"
 #include "Engine/Node.h"
+#include "Engine/OfxClipInstance.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
 
@@ -224,7 +225,7 @@ getOfxEffectOutputMetadata(const EffectInstancePtr& effect,
 
     // getMetadata() hands out a reference that pins the clip's cache entry until it is given
     // back, so it is dropped however this scope is left, a throwing conversion included.
-    std::unique_ptr<OFX::Host::ImageEffect::MetadataSet, ReleaseMetadataSet> set(output->getMetadata(time));
+    std::unique_ptr<OFX::Host::ImageEffect::MetadataSet, ReleaseMetadataSet> set(OfxClipInstance::getCurrentMetadata(output, time));
 
     return set ? fromOfxPropertySet(*set) : ImageMetadata();
 #else

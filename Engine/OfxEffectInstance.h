@@ -118,6 +118,18 @@ public:
      **/
     void syncPrivateData_other_thread();
 
+    /**
+     * @brief Drops the metadata cached in this effect's OpenFX clips if it was cached under
+     * another node hash than the current one. Edits only mark hashes dirty, and the OpenFX
+     * clips serve their caches without asking the host, so every host path that reads a clip's
+     * metadata, or hands control to the plug-in, which may read it, calls this first. Reads the
+     * node's hash, which recomputes it and its dirty inputs. Does nothing before the node is
+     * created or while its project loads: the hash is left to settle, and the first call after
+     * the load compares against it. Callable from any thread, holding no lock a hash recompute
+     * or a clip cache takes.
+     **/
+    void dropStaleClipMetadata();
+
 public:
     /********OVERRIDDEN FROM EFFECT INSTANCE*************/
     virtual int getMajorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -335,6 +347,8 @@ private:
     void hideDeprecatedPremultKnobs();
 
     void pushMultiplaneTwin(std::size_t index, bool pushChannelQuad);
+
+    void dropClipMetadataNotCachedUnder(U64 hash);
 
 private:
 

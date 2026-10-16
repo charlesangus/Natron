@@ -297,8 +297,7 @@ Node::Node(const AppInstancePtr& app,
 {
     listenToFileStampInvalidations();
     QObject::connect( this, SIGNAL(pluginMemoryUsageChanged(qint64)), appPTR, SLOT(onNodeMemoryRegistered(qint64)) );
-    QObject::connect( this, SIGNAL(mustDequeueActions()), this, SLOT(dequeueActions()) );
-    QObject::connect( this, SIGNAL(mustComputeHashOnMainThread()), this, SLOT(doComputeHashOnMainThread()) );
+    QObject::connect(this, SIGNAL(mustDequeueActions()), this, SLOT(dequeueActions()));
     QObject::connect(this, SIGNAL(refreshIdentityStateRequested()), this, SLOT(onRefreshIdentityStateRequestReceived()), Qt::QueuedConnection);
 
     if (plugin && plugin->getPluginID().startsWith(QLatin1String("com.FXHOME.HitFilm"))) {
@@ -1805,54 +1804,9 @@ Node::removeAllImagesFromCache(bool blocking)
 }
 
 void
-Node::doComputeHashOnMainThread()
-{
-    assert( QThread::currentThread() == qApp->thread() );
-    markHashDirty();
-    flushHashDirtyMarks();
-    NodePtr self = weak_from_this().lock();
-    if (!self) {
-        getHashValue();
-
-        return;
-    }
-    // Each read recomputes the dirty inputs first, so the order of the reads does not matter.
-    std::unordered_set<const Node*> visited;
-    std::vector<NodePtr> toVisit(1, self);
-    visited.insert(self.get());
-    while (!toVisit.empty()) {
-        NodePtr node = toVisit.back();
-        toVisit.pop_back();
-        node->getHashValue();
-        NodesList dependents;
-        node->getHashDependents(&dependents);
-        for (NodesList::const_iterator it = dependents.begin(); it != dependents.end(); ++it) {
-            if (*it && visited.insert(it->get()).second) {
-                toVisit.push_back(*it);
-            }
-        }
-    }
-} // Node::doComputeHashOnMainThread
-
-void
 Node::computeHash()
 {
-    if ( QThread::currentThread() != qApp->thread() ) {
-        markHashDirty();
-        Q_EMIT mustComputeHashOnMainThread();
-
-        return;
-    }
-    // A loading project refreshes every hash once its nodes are restored, and no cache of theirs
-    // holds anything yet.
-    AppInstancePtr app = getApp();
-    ProjectPtr project = app ? app->getProject() : ProjectPtr();
-    if (project && project->isLoadingProject()) {
-        markHashDirty();
-
-        return;
-    }
-    doComputeHashOnMainThread();
+    markHashDirty();
 }
 
 namespace {

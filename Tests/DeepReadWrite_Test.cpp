@@ -976,7 +976,7 @@ TEST_F(DeepReadWriteTest, LayersFollowAFileRewrittenInPlace)
     KnobFile* knob = dynamic_cast<KnobFile*>(read->getKnobByName("filename").get());
     ASSERT_TRUE(knob != NULL);
     knob->invalidateFileStamp();
-    read->doComputeHashOnMainThread();
+    read->refreshHashNow();
     ASSERT_NE(hashBefore, read->getHashValue());
     EXPECT_EQ(strings({ "Color(1)", "AOV" }), presentLayersAt(read, 1.));
 }

@@ -48,6 +48,7 @@
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/OfxClipInstance.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxHost.h"
 #include "Engine/OfxImageEffectInstance.h"
@@ -117,7 +118,7 @@ class MetadataRef {
 public:
     MetadataRef(OFX::Host::ImageEffect::ClipInstance* clip,
                 OfxTime time)
-        : _set(clip ? clip->getMetadata(time) : NULL)
+        : _set(OfxClipInstance::getCurrentMetadata(clip, time))
     {
     }
 
@@ -203,7 +204,7 @@ snapshotMetadata(OFX::Host::ImageEffect::ClipInstance* clip,
                  OfxTime time)
 {
     MetadataSnapshot snapshot;
-    OFX::Host::ImageEffect::MetadataSet* set = clip->getMetadata(time);
+    OFX::Host::ImageEffect::MetadataSet* set = OfxClipInstance::getCurrentMetadata(clip, time);
 
     if (!set) {
         return snapshot;

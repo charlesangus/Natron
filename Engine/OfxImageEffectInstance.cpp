@@ -48,6 +48,7 @@ CLANG_DIAG_ON(uninitialized)
 #include <ofxParametricParam.h>
 
 #include <ofxColour.h>
+#include <ofxMetadata.h>
 #include <ofxNatron.h>
 #include <ofxhPluginCache.h>
 #include <ofxhUtilities.h> // for StatStr
@@ -158,13 +159,21 @@ OfxImageEffectInstance::mainEntry(const char *action,
 #endif
     ThreadIsActionCaller_RAII t(this);
 
+    OfxEffectInstancePtr effect = getOfxEffectInstance();
+
+#ifdef OFX_SUPPORTS_METADATA
+    // The plug-in may read any clip's metadata from any action, straight from the clip caches.
+    // The get metadata action only runs inside a clip cache read whose caller has checked already.
+    if (effect && action && (std::strcmp(action, kOfxImageEffectActionGetMetadata) != 0)) {
+        effect->dropStaleClipMetadata();
+    }
+#endif
+
     OfxStatus retval = OFX::Host::ImageEffect::Instance::mainEntry(action, handle, inArgs, outArgs);
 
     // Maybe paramEditBegin() was called by the effect without a matching paramEditEnd(). Let us fix that.
     // See issue https://github.com/NatronGitHub/Natron/issues/708
     // test for getMultipleParamsEditLevel() first, because it costs less.
-    OfxEffectInstancePtr effect = getOfxEffectInstance();
-
     if (effect && (effect->getMultipleParamsEditLevel() != KnobHolder::eMultipleParamsEditOff) && !effect->getApp()->isCreatingPythonGroup() ) {
         while (effect->getMultipleParamsEditLevel() != KnobHolder::eMultipleParamsEditOff) {
             effect->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);

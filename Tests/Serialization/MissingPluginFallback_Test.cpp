@@ -47,6 +47,7 @@
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/MissingPluginNode.h"
 #include "Engine/Project.h"
+#include "Engine/Settings.h"
 #include "Engine/ViewIdx.h"
 
 #include "Serialization/NodeSerialization.h"
@@ -80,6 +81,32 @@ countNodesRecursively(const ProjectPtr& project)
 
     return nodes.size();
 }
+
+// Restores the "load PyPlugs from .py" preference when a test changes it.
+class LoadFromPyFileScope {
+public:
+    explicit LoadFromPyFileScope(bool value)
+        : _knob(std::dynamic_pointer_cast<KnobBool>(appPTR->getCurrentSettings()->getKnobByName("loadFromPyFile")))
+    {
+        if (_knob) {
+            _previous = _knob->getValue();
+            _knob->setValue(value);
+        }
+    }
+
+    ~LoadFromPyFileScope()
+    {
+        if (_knob) {
+            _knob->setValue(_previous);
+        }
+    }
+
+    bool valid() const { return bool(_knob); }
+
+private:
+    KnobBoolPtr _knob;
+    bool _previous = true;
+};
 
 } // anonymous namespace
 
@@ -350,4 +377,49 @@ TEST_F(MissingPluginFallbackTest, MissingPyPlugIsAPlaceholderAndComesBackWhenIns
     NodesList innerNodes;
     group->getNodes_recursive(innerNodes, false);
     EXPECT_FALSE(innerNodes.empty());
+}
+
+TEST_F(MissingPluginFallbackTest, LoadFromPyFilePreferenceChoosesModuleOrEmbeddedGroup)
+{
+    if (!isPluginLoaded(kBundledPyPlugID)) {
+        std::cerr << "Skipping: the bundled PyPlugs were not registered as plugins." << std::endl;
+
+        return;
+    }
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+
+    NodePtr pyPlug = createNode(QString::fromUtf8(kBundledPyPlugID));
+    ASSERT_TRUE(bool(pyPlug));
+    const std::string pyPlugName = pyPlug->getScriptName_mt_safe();
+
+    ProjectPtr project = getApp()->getProject();
+    Serialization::ProjectSerialization saved;
+    project->toSerialization(&saved);
+    ASSERT_TRUE(bool(findSerializedNode(saved.nodes.nodes, kBundledPyPlugID)));
+    const std::string xml = saveProjectXml(saved);
+
+    {
+        LoadFromPyFileScope enabled(true);
+        ASSERT_TRUE(enabled.valid());
+        project->reset(false, true);
+        ASSERT_FALSE(reloadProjectXml(project, tmp, QString::fromUtf8("pyfile-on.ntp"), xml).empty());
+        NodePtr node = project->getNodeByName(pyPlugName);
+        ASSERT_TRUE(bool(node));
+        EXPECT_EQ(std::string(kBundledPyPlugID), node->getPluginID());
+    }
+    {
+        LoadFromPyFileScope disabled(false);
+        ASSERT_TRUE(disabled.valid());
+        project->reset(false, true);
+        ASSERT_FALSE(reloadProjectXml(project, tmp, QString::fromUtf8("pyfile-off.ntp"), xml).empty());
+        NodePtr node = project->getNodeByName(pyPlugName);
+        ASSERT_TRUE(bool(node));
+        EXPECT_EQ(std::string(PLUGINID_NATRON_GROUP), node->getPluginID());
+        NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(node->getEffectInstance());
+        ASSERT_TRUE(bool(group));
+        NodesList innerNodes;
+        group->getNodes_recursive(innerNodes, false);
+        EXPECT_FALSE(innerNodes.empty());
+    }
 }

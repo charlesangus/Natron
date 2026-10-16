@@ -179,7 +179,7 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
             QFileInfo pythonModuleInfo(qPyModulePath);
             if (!pythonModuleInfo.exists()) {
                 pythonModuleIsMissing = true;
-            } else if (appPTR->getCurrentSettings()->isLoadFromPyPlugsEnabled()) {
+            } else if (!appPTR->getCurrentSettings()->isLoadFromPyPlugsEnabled()) {
                 pluginID = PLUGINID_NATRON_GROUP;
                 usingPythonModule = false;
             } else {

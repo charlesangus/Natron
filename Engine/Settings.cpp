@@ -650,12 +650,6 @@ Settings::initializeKnobsUserInterface()
     _uiPage = AppManager::createKnob<KnobPage>( this, tr("User Interface") );
     _uiPage->setName("userInterfacePage");
 
-    _notifyOnFileChange = AppManager::createKnob<KnobBool>( this, tr("Warn when a file changes externally") );
-    _notifyOnFileChange->setName("warnOnExternalChange");
-    _notifyOnFileChange->setHintToolTip( tr("When checked, if a file read from a file parameter changes externally, a warning will be displayed "
-                                            "on the viewer. Turning this off will suspend the notification system.") );
-    _uiPage->addKnob(_notifyOnFileChange);
-
     _filedialogForWriters = AppManager::createKnob<KnobBool>( this, tr("Prompt with file dialog when creating Write node") );
     _filedialogForWriters->setName("writeUseDialog");
     _filedialogForWriters->setDefaultValue(true);
@@ -1602,7 +1596,6 @@ Settings::setDefaultValues()
 #endif
 
     // General/User Interface
-    _notifyOnFileChange->setDefaultValue(true);
     _renderOnEditingFinished->setDefaultValue(false);
     _maxPanelsOpened->setDefaultValue(10, 0);
     _useCursorPositionIncrements->setDefaultValue(true);
@@ -3385,12 +3378,6 @@ bool
 Settings::didSettingsExistOnStartup() const
 {
     return _settingsExisted;
-}
-
-bool
-Settings::notifyOnFileChange() const
-{
-    return _notifyOnFileChange->getValue();
 }
 
 bool

@@ -258,7 +258,7 @@ ViewerTab::startPause(bool b)
             return;
         }
         GuiAppInstancePtr app = gui->getApp();
-        if ( !app || app->checkAllReadersModificationDate(true) ) {
+        if (!app) {
             return;
         }
         app->setLastViewerUsingTimeline( _imp->viewerNode->getNode() );
@@ -392,7 +392,7 @@ ViewerTab::startBackward(bool b)
             return;
         }
         GuiAppInstancePtr app = gui->getApp();
-        if ( !app || app->checkAllReadersModificationDate(true) ) {
+        if (!app) {
             return;
         }
         app->setLastViewerUsingTimeline( _imp->viewerNode->getNode() );
@@ -408,16 +408,6 @@ ViewerTab::startBackward(bool b)
 void
 ViewerTab::refresh(bool enableRenderStats)
 {
-    //Check if readers files have changed on disk
-    Gui* gui = getGui();
-    if (!gui) {
-        return;
-    }
-    GuiAppInstancePtr app = gui->getApp();
-    if (!app) {
-        return;
-    }
-    app->checkAllReadersModificationDate(false);
     abortRendering();
     _imp->viewerNode->forceFullComputationOnNextFrame();
     _imp->viewerNode->clearPersistentMessage(true); // clear the error message, since they should be redrawn by the new render

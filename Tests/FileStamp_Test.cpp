@@ -360,6 +360,38 @@ TEST_F(BaseTest, ReadKeepsAFileOverwrittenInPlaceUntilReload)
     EXPECT_FLOAT_EQ(0.75f, red);
 }
 
+TEST_F(BaseTest, ReloadOnOneReadRekeysEveryReadOfTheSameFile)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("shared.exr")).toStdString();
+    const int width = 16;
+    const int height = 12;
+    ASSERT_TRUE(writeFlatExr(path, width, height, 0.25f));
+    setMTime(path, 1000000);
+
+    NodePtr first = createWorkingSpaceRead(path);
+    NodePtr second = createWorkingSpaceRead(path);
+    ASSERT_TRUE(bool(first));
+    ASSERT_TRUE(bool(second));
+
+    float red = 0.f;
+    ASSERT_TRUE(renderedRed(second, 1., width, height, &red));
+    EXPECT_FLOAT_EQ(0.25f, red);
+    const U64 firstBefore = first->getHashValue();
+    const U64 secondBefore = second->getHashValue();
+
+    ASSERT_TRUE(writeFlatExr(path, width, height, 0.75f));
+    setMTime(path, 2000000);
+    EXPECT_EQ(secondBefore, second->getHashValue());
+
+    pressReload(first);
+    EXPECT_NE(firstBefore, first->getHashValue());
+    EXPECT_NE(secondBefore, second->getHashValue());
+    ASSERT_TRUE(renderedRed(second, 1., width, height, &red));
+    EXPECT_FLOAT_EQ(0.75f, red);
+}
+
 TEST_F(BaseTest, RenderingASequenceLooksAtNoFileAfterTheFirstHash)
 {
     QTemporaryDir dir;

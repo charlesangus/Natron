@@ -76,6 +76,12 @@ public:
     static bool hasFramePattern(const std::string& path);
 
     /**
+     * @brief True if invalidating either path drops the stamp of the other: the same path, or a
+     * sequence pattern and any path in the same directory.
+     **/
+    static bool coversSameFiles(const std::string& a, const std::string& b);
+
+    /**
      * @brief Number of stat calls and directory scans made so far, for tests counting disk
      * accesses.
      **/

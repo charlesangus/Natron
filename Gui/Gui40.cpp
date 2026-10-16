@@ -972,15 +972,7 @@ Gui::renderViewersAndRefreshKnobsAfterTimelineTimeChange(SequenceTime time,
         return;
     }
 
-    assert( QThread::currentThread() == qApp->thread() );
-    if ( (reason == eTimelineChangeReasonUserSeek) ||
-         ( reason == eTimelineChangeReasonDopeSheetEditorSeek) ||
-         ( reason == eTimelineChangeReasonCurveEditorSeek) ) {
-        if ( getApp()->checkAllReadersModificationDate(true) ) {
-            return;
-        }
-    }
-
+    assert(QThread::currentThread() == qApp->thread());
     AppInstancePtr app = appPTR->getTopLevelInstance();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
     bool isPlayback = reason == eTimelineChangeReasonPlaybackSeek;

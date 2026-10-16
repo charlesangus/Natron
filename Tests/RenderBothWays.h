@@ -26,6 +26,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
+#include "Global/Enums.h"
 #include "Global/Macros.h"
 
 #include <functional>
@@ -135,6 +136,24 @@ bool renderNodePlanesDirect(const NodePtr& node,
                             std::vector<RenderedPlane>* out,
                             std::string* error = 0,
                             bool byPassCache = true);
+
+// Renders `node` over `roi` the way `mode` renders a frame, and reads every plane back as
+// renderNodePlanesDirect() does. Legacy renders the planes in `layers` (RGBA when it is empty) in
+// one renderRoI call on this thread; Task graph runs a frame built by the RenderScheduler, which
+// renders the planes its request pass plans for the node and ignores `layers`. `out` gets every
+// plane rendered: in `layers` order for Legacy, in layer order for Task graph. The scheduler always
+// renders through the cache, so there `byPassCache` only empties the caches before and after the
+// render. The scheduler mode is restored before returning.
+bool renderNodePlanesInMode(const NodePtr& node,
+                            double time,
+                            ViewIdx view,
+                            unsigned mipmapLevel,
+                            const RectI& roi,
+                            const std::list<ImageLayerDesc>& layers,
+                            RenderSchedulerModeEnum mode,
+                            bool byPassCache,
+                            std::vector<RenderedPlane>* out,
+                            std::string* error = 0);
 
 NATRON_NAMESPACE_EXIT
 

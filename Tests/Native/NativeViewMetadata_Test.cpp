@@ -84,6 +84,11 @@ protected:
     ViewMetadata* effect;
 };
 
+TEST_F(ViewMetadataTest, HasNoChannelSelector)
+{
+    EXPECT_FALSE(bool(view->getLayerKnob()));
+}
+
 TEST_F(ViewMetadataTest, PassesMetadataThrough)
 {
     EXPECT_EQ(dynamic_cast<NativeEffectBase*>(source->getEffectInstance().get())->getOutputMetadata(1., ViewIdx(0)),

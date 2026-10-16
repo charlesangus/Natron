@@ -141,6 +141,7 @@ ViewMetadata::initializeKnobs()
     display->setIsPersistent(false);
     display->setAsMultiLine();
     display->setAsCustomHTMLText(true);
+    display->setPreferredRows(20);
     display->setEvaluateOnChange(false);
     display->setHintToolTip(tr("The metadata of the input at the current frame. It follows the timeline "
                                "and upstream changes, or press Refresh to update it.")
@@ -181,7 +182,7 @@ ViewMetadata::refreshMetadataDisplay(double time)
     } else {
         text << "<table cellspacing=\"4\">";
         for (ImageMetadata::const_iterator it = metadata.begin(); it != metadata.end(); ++it) {
-            text << "<tr><td><b>" << escapeHtml(it->first) << "</b></td><td><font color=#c8c8c8>"
+            text << "<tr><td style=\"white-space:nowrap\"><b>" << escapeHtml(it->first) << "</b></td><td><font color=#c8c8c8>"
                  << escapeHtml(formatValue(it->second)) << "</font></td></tr>";
         }
         text << "</table>";

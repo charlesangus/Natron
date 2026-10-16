@@ -164,6 +164,11 @@ protected:
     NodePtr copy;
 };
 
+TEST_F(CopyMetadataTest, HasNoChannelSelector)
+{
+    EXPECT_FALSE(bool(copy->getLayerKnob()));
+}
+
 TEST_F(CopyMetadataTest, DisconnectedBPassesAThrough)
 {
     setMode(CopyMetadata::eModeReplace);

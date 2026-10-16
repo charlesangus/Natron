@@ -79,6 +79,11 @@ private:
         KnobStringWPtr stringValue;
     };
 
+    virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return LayerKnobSpec();
+    }
+
     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void initializeKnobs() OVERRIDE FINAL;

@@ -100,6 +100,11 @@ protected:
     NodePtr modify;
 };
 
+TEST_F(ModifyMetadataTest, HasNoChannelSelector)
+{
+    EXPECT_FALSE(bool(modify->getLayerKnob()));
+}
+
 TEST_F(ModifyMetadataTest, UntouchedPassesUpstreamThrough)
 {
     const ImageMetadata result = metadataOf(modify, 1.);

@@ -816,6 +816,20 @@ public:
         _multiLine = true;
     }
 
+    /**
+     * @brief Asks a multi-line field to be at least this many text lines tall in the GUI.
+     * 0, the default, leaves the height to the layout.
+     **/
+    void setPreferredRows(int rows)
+    {
+        _preferredRows = rows;
+    }
+
+    int getPreferredRows() const
+    {
+        return _preferredRows;
+    }
+
     void setUsesRichText(bool useRichText)
     {
         _richText = useRichText;
@@ -877,6 +891,7 @@ private:
 private:
     static const std::string _typeNameStr;
     bool _multiLine;
+    int _preferredRows;
     bool _richText;
     bool _customHtmlText;
     bool _isLabel;

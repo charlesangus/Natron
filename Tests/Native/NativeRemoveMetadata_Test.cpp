@@ -89,6 +89,11 @@ protected:
     NodePtr remove;
 };
 
+TEST_F(RemoveMetadataTest, HasNoChannelSelector)
+{
+    EXPECT_FALSE(bool(remove->getLayerKnob()));
+}
+
 TEST_F(RemoveMetadataTest, EmptyListKeepsEverything)
 {
     EXPECT_EQ(metadataOf(source, 1.), metadataOf(remove, 1.));

@@ -120,7 +120,7 @@ future core work has solid ground to build on.
 | M84 | GPU Placement And Residency | done |  |  | E5 | [M84-gpu-placement-and-residency.md](PLAN/MILESTONES/M84-gpu-placement-and-residency.md) |
 | M101 | Clean-Sheet Merge Node | todo | M84 |  | E3 | [M101-clean-sheet-merge-node.md](PLAN/MILESTONES/M101-clean-sheet-merge-node.md) |
 | M111 | Native Node Identity Cleanup | todo | M76, M101 |  | E3 | [M111-native-node-identity-cleanup.md](PLAN/MILESTONES/M111-native-node-identity-cleanup.md) |
-| M112 | Native Node Behaviour Fixes | todo | - |  | E3 | [M112-native-node-behaviour-fixes.md](PLAN/MILESTONES/M112-native-node-behaviour-fixes.md) |
+| M112 | Native Node Behaviour Fixes | doing | - | bosley-native-nodes | E3 | [M112-native-node-behaviour-fixes.md](PLAN/MILESTONES/M112-native-node-behaviour-fixes.md) |
 | M81 | Raw GPU Kernels | todo | M80, M85 |  | E5 | [M81-raw-gpu-kernels.md](PLAN/MILESTONES/M81-raw-gpu-kernels.md) |
 | M85 | Native GPU Kernels | done | M84 | gpu | E5 | [M85-native-gpu-kernels.md](PLAN/MILESTONES/M85-native-gpu-kernels.md) |
 | M107 | GPU Viewer Hand-off | todo | M85 |  | E5 | [M107-gpu-viewer-hand-off.md](PLAN/MILESTONES/M107-gpu-viewer-hand-off.md) |

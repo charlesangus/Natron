@@ -67,6 +67,18 @@ OfxOverlayInteract::isColorPickerRequired() const
     return (bool)getProperties().getIntProperty(kNatronOfxInteractColourPicking);
 }
 
+OfxStatus
+OfxOverlayInteract::callEntry(const char* action,
+                              OFX::Host::Property::Set* inArgs)
+{
+    // Interact actions do not go through the effect's main entry, yet the overlay may read clip metadata.
+    OfxEffectInstancePtr effect = static_cast<OfxImageEffectInstance&>(_instance).getOfxEffectInstance();
+    if (effect) {
+        effect->dropStaleClipMetadata();
+    }
+
+    return OFX::Host::ImageEffect::OverlayInteract::callEntry(action, inArgs);
+}
 
 // overridden from OFX::Host::Interact::Instance
 ////////////////////////////////////////////////////////////////////////////////////////////
@@ -223,12 +235,27 @@ OfxOverlayInteract::redraw()
 }
 
 OfxParamOverlayInteract::OfxParamOverlayInteract(KnobI* knob,
-                                                 OFX::Host::Interact::Descriptor &desc,
-                                                 void *effectInstance)
+                                                 OFX::Host::Interact::Descriptor& desc,
+                                                 void* effectInstance,
+                                                 const OfxEffectInstanceWPtr& effect)
     : OFX::Host::Interact::Instance(desc, effectInstance)
     , NatronOverlayInteractSupport()
+    , _effect(effect)
 {
     setCallingViewport(knob);
+}
+
+OfxStatus
+OfxParamOverlayInteract::callEntry(const char* action,
+                                   OFX::Host::Property::Set* inArgs)
+{
+    // Interact actions do not go through the effect's main entry, yet the interact may read clip metadata.
+    OfxEffectInstancePtr effect = _effect.lock();
+    if (effect) {
+        effect->dropStaleClipMetadata();
+    }
+
+    return OFX::Host::Interact::Instance::callEntry(action, inArgs);
 }
 
 bool

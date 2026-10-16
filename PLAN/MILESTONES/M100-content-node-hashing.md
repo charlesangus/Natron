@@ -149,7 +149,7 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - approach: remove the purge in computeHashInternal and keep the delete, Reload and Clear Cache purges. Raise the ActionsCache instance limit. Rewrite the tests that assert a purge as tests that assert reuse.
   - verify: going value 1 → 2 → 1 causes zero re-renders on the third step
   - size: M
-- [ ] M100.P4.T3 — Make the hash recompute lazy and thread-safe
+- [x] M100.P4.T3 — Make the hash recompute lazy and thread-safe
   - files: Engine/Node.cpp, Engine/Node.h, Engine/EffectInstance.cpp, Engine/Knob.cpp
   - approach: an atomic dirty flag that any thread can set. getHashValue and the render snapshot recompute under the node lock. Remove the main-thread assert; edits during inputChanged mark the node dirty.
   - also mark nodes dirty (from the full-suite audit, see Decisions 2026-10-15):
@@ -174,7 +174,7 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - size: L
 
 ## Phase 100.5: Remove knobsAge
-- [ ] M100.P5.T1 — Turn core age bumps into dirty marks and delete the age hacks
+- [x] M100.P5.T1 — Turn core age bumps into dirty marks and delete the age hacks
   - files: Engine/Node.cpp, Engine/NodeInputs.cpp, Engine/EffectInstance.cpp, Engine/Project.cpp, Engine/Node.h
   - approach: incrementKnobsAge becomes markHashDirty. Delete the knobsAgeChanged slaving, the group-input force, the group-disable loop, the format loop and the layer-user bump.
   - verify: full ctest, plus disabled-Group and GroupInput rewire tests
@@ -232,7 +232,7 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - size: L
 
 ## Phase 100.7: Write read back gated by the hash
-- [ ] M100.P7.T1 — Read back an EXR frame only when its stored hash matches the node
+- [x] M100.P7.T1 — Read back an EXR frame only when its stored hash matches the node
   - files: Engine/Nodes/IO/NativeWrite.{h,cpp}, Engine/EffectInstance.h, Tests/Native/NativeWriteReadBack_Test.cpp, Tests/gui/m76_write.py, Engine/Nodes/README.md
   - approach: the shipped NativeWrite already has a file-driven read back (readBackLayers(), readBackActive() gated on the readBack knob, a Reload button, and a secret non-persistent Read Back Stamp knob `kNatronWriteParamReadBackStamp` that pokes the age-based hash). Port only the hash-gate half of `f1fbe003a` (origin/m76/hash-gated-readback-wip) onto it, using the Phase 100.4 content hash: the Write stores its node's hash as `natron:outputHash` in each EXR it writes; read back shows the file only when the stored hash equals the current hash, and shows the input otherwise; offered only for EXR. Delete the Read Back Stamp knob once the content hash makes it redundant. The test and GUI script exist on main: extend them, don't recreate. This replaces M76.P3.T2, which was cancelled.
   - verify: `NativeWriteReadBack_Test` covers match, mismatch after an edit, and a restored match after undo; the GUI script repeats the undo flow under Xvfb.
@@ -366,3 +366,4 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
 - 2026-10-16 — **P3.T4 implemented** (code: b1b7afc87, f483b22c6; building). Stamps are taken on first hash and on Reload, with no TTL, watcher, focus rescan or per-render stat. Reload re-keys every node whose file knob covers the same files (`FileStampRegistry::coversSameFiles`). It also reloads the OCIO config when its stamp moved, and clears the Write read-back header cache and DeepRead's layer memo.
   - **Also removed:** upstream Natron's seek/play modification-date check (`GuiAppInstance::checkAllReadersModificationDate`, the KnobGuiFile timeline hook, the "Last modified" tooltip and the `warnOnExternalChange` setting).
   - **Remaining stats:** `OiioReadSupport::readHeader` still stats on each uncached header read, as before this milestone.
+- 2026-10-16 — **P4.T3, P5.T1, P7.T1 done** (green at 4dd66fe29, run 38853063978). **P4.T4/P4.T5/P3.T4** pass in run 38871959783 (2342/2343); the one failure was the roto/tracker golden, whose two Reads now save `ocioInputSpaceSet` = 1 after the BaseTest helper fix (8416048a6). Golden updated in f8fb1eff5; they're ticked at the next green build.

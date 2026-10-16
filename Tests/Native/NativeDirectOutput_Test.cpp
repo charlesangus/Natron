@@ -693,6 +693,14 @@ protected:
         DirectOutputProbeLog::reset();
     }
 
+    // The log is a static that would otherwise keep the last cached image alive past the
+    // AppManager, and that image's destructor calls into the image cache the AppManager owns.
+    virtual void TearDown() OVERRIDE
+    {
+        DirectOutputProbeLog::reset();
+        BaseTest::TearDown();
+    }
+
     // A project whose format is the parity source's 64x48, with the source at the origin, so a
     // render window inside it holds non-uniform pixels.
     NodePtr createSource()

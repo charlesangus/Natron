@@ -513,7 +513,10 @@ Node::onProcessingQuitInDestroyNodeInternal(int taskID,
     assert(args);
     NodeDestroyNodeInternalArgs* thisArgs = dynamic_cast<NodeDestroyNodeInternalArgs*>( args.get() );
     assert(thisArgs);
-    doDestroyNodeInternalEnd(thisArgs ? thisArgs->autoReconnect : false);
+    // A blocking destroy, such as its app quitting, may have finished the node while it waited.
+    if (_imp->effect) {
+        doDestroyNodeInternalEnd(thisArgs ? thisArgs->autoReconnect : false);
+    }
     _imp->renderWatcher.reset();
 }
 

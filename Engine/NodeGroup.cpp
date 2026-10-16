@@ -432,7 +432,10 @@ NodeCollection::clearNodesInternal(bool blocking)
         }
         PrecompNode* isPrecomp = dynamic_cast<PrecompNode*>( (*it)->getEffectInstance().get() );
         if (isPrecomp) {
-            isPrecomp->getPrecompApp()->getProject()->clearNodesInternal(blocking);
+            // The Precomp quits its app once it is destroyed, so the sub-project's nodes must be
+            // gone by then: a destroy left waiting on their renders would end with no app to
+            // unregister them from, and their Python names would clash with the next sub-project.
+            isPrecomp->getPrecompApp()->getProject()->clearNodesBlocking();
         }
     }
 

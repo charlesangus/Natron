@@ -4290,7 +4290,7 @@ EffectInstance::getRegionOfDefinition_public(U64 hash,
                     *isProjectFormat = false;
                 }
 
-                return eStatusOK;
+                return rod->isNull() ? eStatusFailed : eStatusOK;
             }
         }
 
@@ -4324,7 +4324,9 @@ EffectInstance::getRegionOfDefinition_public(U64 hash,
                 // RoD is empty, which means output is black and transparent
                 _imp->actionsCache->setRoDResult( hash, time, view, mipmapLevel, RectD() );
 
-                return ret;
+                // What the cached result reports, so that whether the RoD came from the cache
+                // never shows in the status.
+                return eStatusFailed;
             }
 
             assert( (ret == eStatusOK || ret == eStatusReplyDefault) && (rod->x1 <= rod->x2 && rod->y1 <= rod->y2) );
@@ -4339,7 +4341,8 @@ EffectInstance::getRegionOfDefinition_public(U64 hash,
         _imp->actionsCache->setRoDResult(hash, time, view,  mipmapLevel, *rod);
 
         //}
-        return ret;
+        // The cached result cannot tell a default reply from an explicit one, so neither can this.
+        return eStatusOK;
     }
 } // EffectInstance::getRegionOfDefinition_public
 

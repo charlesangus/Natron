@@ -5158,6 +5158,22 @@ Node::purgeAllInstancesCaches()
     assert( QThread::currentThread() == qApp->thread() );
     assert(_imp->effect);
     _imp->effect->purgeCaches();
+    // Native effects leave purgeCaches() empty, and their ActionsCache is keyed by content hash
+    // and never dropped on a hash change, so the only thing that empties it is this.
+    _imp->effect->clearActionsCache();
+    // The paint tree's nodes are not in any node collection.
+    RotoContextPtr roto = getRotoContext();
+    if (roto) {
+        NodesList tree;
+        roto->getRotoPaintTreeNodes(&tree);
+        for (NodesList::const_iterator it = tree.begin(); it != tree.end(); ++it) {
+            const EffectInstancePtr treeEffect = (*it)->getEffectInstance();
+            if (treeEffect) {
+                treeEffect->purgeCaches();
+                treeEffect->clearActionsCache();
+            }
+        }
+    }
 }
 
 bool

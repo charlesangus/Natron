@@ -429,49 +429,6 @@ private:
 };
 
 void
-collectActionCacheOwners(const NodePtr& node,
-                         NodesList* out)
-{
-    out->push_back(node);
-    RotoContextPtr roto = node->getRotoContext();
-    if (roto) {
-        NodesList tree;
-        roto->getRotoPaintTreeNodes(&tree);
-        out->insert(out->end(), tree.begin(), tree.end());
-    }
-}
-
-// Clear All Caches empties the image, disk and deep caches and asks OpenFX plug-ins to purge their
-// own, but leaves the ActionsCache of every native node as it is, so a render after it alone would
-// still replay cached regions of definition, identities and frame ranges.
-void
-clearEveryCache()
-{
-    const AppInstanceVec apps = appPTR->getAppInstances();
-
-    for (AppInstanceVec::const_iterator app = apps.begin(); app != apps.end(); ++app) {
-        if (!*app || !(*app)->getProject()) {
-            continue;
-        }
-        NodesList nodes;
-        (*app)->getProject()->getNodes_recursive(nodes, false);
-        NodesList owners;
-        for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
-            if (*it) {
-                collectActionCacheOwners(*it, &owners);
-            }
-        }
-        for (NodesList::const_iterator it = owners.begin(); it != owners.end(); ++it) {
-            EffectInstancePtr effect = *it ? (*it)->getEffectInstance() : EffectInstancePtr();
-            if (effect) {
-                effect->clearActionsCache();
-            }
-        }
-    }
-    appPTR->clearAllCaches();
-}
-
-void
 setMTime(const std::string& path,
          time_t seconds)
 {
@@ -647,7 +604,7 @@ protected:
         OutputState state;
 
         if (cold) {
-            clearEveryCache();
+            appPTR->clearAllCaches();
         }
         if (s.deep) {
             renderDeep(s.output, s.time, s.roi, &state);
@@ -691,7 +648,7 @@ protected:
                 if (prefix > s.steps.size()) {
                     break;
                 }
-                clearEveryCache();
+                appPTR->clearAllCaches();
                 const std::list<ImageLayerDesc> baseLayers = legacyLayersFor(s);
                 ignore_result(render(s, baseLayers, false));
                 std::string path = "start";
@@ -1515,7 +1472,7 @@ protected:
 
         Scenario s;
         s.output = node;
-        clearEveryCache();
+        appPTR->clearAllCaches();
         compareNow(s, where + " as created", failures);
 
         std::vector<std::pair<KnobIPtr, int>> candidates;

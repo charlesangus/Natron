@@ -154,7 +154,7 @@ TEST_F(ViewMetadataTest, RefreshDoesNotChangeTheNodeHash)
 TEST_F(ViewMetadataTest, UnconnectedNodeShowsAnEmptyNotice)
 {
     NodePtr lone = createNode(QString::fromUtf8(PLUGINID_NATRON_VIEWMETADATA));
-    ASSERT_TRUE(lone);
+    ASSERT_TRUE(lone != nullptr);
     ViewMetadata* loneEffect = dynamic_cast<ViewMetadata*>(lone->getEffectInstance().get());
 
     ASSERT_TRUE(loneEffect != NULL);

@@ -87,6 +87,7 @@ writeExr(const std::string& path,
          const std::vector<std::string>& names,
          const std::vector<float>& values,
          int alphaChannel,
+         const std::string& outputHash,
          std::string* error)
 {
     const int n = (int)names.size();
@@ -95,6 +96,9 @@ writeExr(const std::string& path,
     spec.channelnames = names;
     spec.alpha_channel = alphaChannel;
     spec.attribute("compression", "none");
+    if (!outputHash.empty()) {
+        spec.attribute(kNatronWriteOutputHashAttribute, outputHash);
+    }
     std::vector<float> pixels((std::size_t)kSize * kSize * n);
     for (int p = 0; p < kSize * kSize; ++p) {
         for (int c = 0; c < n; ++c) {
@@ -123,7 +127,7 @@ writeSource(const std::string& path,
         values.push_back(kSourceChannels[c].value);
     }
 
-    return writeExr(path, names, values, 3, error);
+    return writeExr(path, names, values, 3, std::string(), error);
 }
 
 std::set<std::string>
@@ -244,6 +248,17 @@ protected:
         ASSERT_TRUE(file != NULL);
         _output = pathOf(name);
         file->setValue(_output);
+    }
+
+    // Replaces the output with an EXR of `names` holding `values`, stamped with the Write's current
+    // hash: read back shows a file only while the hash it holds is the node's.
+    void overwriteOutput(const std::vector<std::string>& names,
+                         const std::vector<float>& values)
+    {
+        std::string error;
+
+        ASSERT_TRUE(writeExr(_output, names, values, 3, NativeWrite::outputHashText(_writer->getHashValue()), &error)) << error;
+        _writer->getEffectInstance()->purgeCaches();
     }
 
     bool pull(const NodePtr& node,
@@ -480,8 +495,7 @@ TEST_F(NativeWritePullTest, ReadBackThroughADownstreamNodeIsTheFile)
 {
     renderToDisk();
     ASSERT_TRUE(outputExists());
-    std::string error;
-    ASSERT_TRUE(writeExr(_output, { "R", "G", "B", "A" }, { 0.5f, 0.5f, 0.5f, 1.f }, 3, &error)) << error;
+    overwriteOutput({ "R", "G", "B", "A" }, { 0.5f, 0.5f, 0.5f, 1.f });
 
     setReadBack(true);
 
@@ -494,14 +508,15 @@ TEST_F(NativeWritePullTest, ReadBackShowsTheFilesLayersWhateverTheInputOffers)
 {
     renderToDisk();
     ASSERT_TRUE(outputExists());
-    // Values the source does not have, and a specular of one channel and no mask, so that what
-    // downstream sees can only come from the file.
-    std::string error;
-    ASSERT_TRUE(writeExr(_output, { "R", "G", "B", "A", "diffuse.R", "diffuse.G", "diffuse.B", "specular.G" }, { 0.5f, 0.25f, 0.125f, 1.f, 0.75f, 0.5f, 0.25f, 0.625f }, 3, &error)) << error;
     setReadBack(true);
 
+    // Each edit below moves the Write's hash, which turns away a file stamped before it, so the
+    // file is stamped again: these check that what downstream sees of a current file is the file.
     const auto expectTheFile = [&](const char* when) {
         SCOPED_TRACE(when);
+        // Values the source does not have, and a specular of one channel and no mask, so that
+        // what downstream sees can only come from the file.
+        overwriteOutput({ "R", "G", "B", "A", "diffuse.R", "diffuse.G", "diffuse.B", "specular.G" }, { 0.5f, 0.25f, 0.125f, 1.f, 0.75f, 0.5f, 0.25f, 0.625f });
         const std::list<ImageLayerDesc> layers = layersSeenDownstream();
         ASSERT_EQ(std::set<std::string>({ kNatronColorLayerID, "diffuse", "specular" }), layerIDs(layers));
         std::vector<float> pixels;

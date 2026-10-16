@@ -195,6 +195,14 @@ public:
 };
 
 bool
+isSkippedByHashInputs(const Node& node)
+{
+    const EffectInstancePtr effect = node.getEffectInstance();
+
+    return node.isEffectGroup() || dynamic_cast<GroupInput*>(effect.get()) || dynamic_cast<GroupOutput*>(effect.get()) || dynamic_cast<PrecompNode*>(effect.get());
+}
+
+bool
 readsFileCoveredBy(const NodePtr& node,
                    FileStampRegistry::InvalidationScopeEnum scope,
                    const std::string& pathOrDirectory)
@@ -1383,14 +1391,23 @@ Node::getHashDependents(NodesList* dependents) const
     const bool isRotoPaint = _imp->effect->isRotoPaintNode();
     NodesList outputs;
     getOutputsWithGroupRedirection(outputs);
-    for (NodesList::iterator it = outputs.begin(); it != outputs.end(); ++it) {
-        assert(*it);
+    std::unordered_set<const Node*> passedThrough;
+    while (!outputs.empty()) {
+        NodePtr output = outputs.front();
+        outputs.pop_front();
+        assert(output);
         // The paint tree's own nodes are added from the context below.
-        RotoDrawableItemPtr attachedStroke = (*it)->getAttachedRotoItem();
+        RotoDrawableItemPtr attachedStroke = output->getAttachedRotoItem();
         if ( isRotoPaint && attachedStroke && (attachedStroke->getContext()->getNode().get() == this) ) {
             continue;
         }
-        dependents->push_back(*it);
+        dependents->push_back(output);
+        // Inputs read through a group, its GroupInput and GroupOutput nodes and a precomp, so no
+        // hash folds these in and they can stay dirty while the nodes below them are recomputed.
+        // A dirty mark walk stops at a dirty node, so the nodes past them are listed here too.
+        if (isSkippedByHashInputs(*output) && passedThrough.insert(output.get()).second) {
+            output->getOutputsWithGroupRedirection(outputs);
+        }
     }
 
     if (_imp->rotoContext) {
@@ -1820,12 +1837,22 @@ Node::doComputeHashOnMainThread()
 void
 Node::computeHash()
 {
-    markHashDirty();
-    // The change hooks of a hash run when it is next read; reading it now on the main thread
-    // runs them there for the GUI.
     if ( QThread::currentThread() != qApp->thread() ) {
+        markHashDirty();
         Q_EMIT mustComputeHashOnMainThread();
+
+        return;
     }
+    // A loading project refreshes every hash once its nodes are restored, and no cache of theirs
+    // holds anything yet.
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    if (project && project->isLoadingProject()) {
+        markHashDirty();
+
+        return;
+    }
+    doComputeHashOnMainThread();
 }
 
 namespace {

@@ -109,7 +109,9 @@ using namespace NATRON_NAMESPACE::HashSweep;
 // empty: pixels of every plane, region of definition, metadata, and deep samples. Each scenario
 // walks an edit sequence that could leave an entry keyed under the wrong state behind, renders
 // through the caches after every edit, and then compares the last of those renders with a cold
-// one. The cold render is the ground truth, so a mismatch is a hash gap.
+// one. The cold render is the ground truth, so a mismatch is a hash gap. It is only ground truth
+// when a second cold render, made on a mismatch, agrees with it: two that differ fail as a
+// non-deterministic render rather than as a hash gap, since no cached render could match both.
 
 namespace {
 
@@ -245,13 +247,23 @@ captureMetadata(const NodePtr& node,
     }
 }
 
+// The two renders a comparison is between, by the names its messages give them.
+struct Sides {
+    std::string first;
+    std::string second;
+};
+
+const Sides kCachedAndCold = { "cached", "cold" };
+const Sides kTwoColdRenders = { "first cold", "second cold" };
+
 std::string
 comparePlanes(const std::vector<RenderedPlane>& warm,
-              const std::vector<RenderedPlane>& cold)
+              const std::vector<RenderedPlane>& cold,
+              const Sides& sides)
 {
     if (warm.size() != cold.size()) {
         std::ostringstream ss;
-        ss << "the cached render has " << warm.size() << " planes, the cold one " << cold.size();
+        ss << "the " << sides.first << " render has " << warm.size() << " planes, the " << sides.second << " one " << cold.size();
 
         return ss.str();
     }
@@ -259,7 +271,7 @@ comparePlanes(const std::vector<RenderedPlane>& warm,
         const RenderedPlane& a = warm[p];
         const RenderedPlane& b = cold[p];
         if (!(a.layer == b.layer) || (a.channels != b.channels)) {
-            return "plane " + std::to_string(p) + " is " + describeLayer(a.layer) + " cached and " + describeLayer(b.layer) + " cold";
+            return "plane " + std::to_string(p) + " is " + describeLayer(a.layer) + " " + sides.first + " and " + describeLayer(b.layer) + " " + sides.second;
         }
         if (a.pixels.size() != b.pixels.size()) {
             return "plane " + a.layer.getLayerID() + " differs in size";
@@ -276,7 +288,7 @@ comparePlanes(const std::vector<RenderedPlane>& warm,
                 ss << "plane " << a.layer.getLayerID() << " pixel (" << a.window.x1 + (int)(pixel % a.window.width()) << ","
                    << a.window.y1 + (int)(pixel / a.window.width()) << ") channel "
                    << (a.channels.empty() ? std::string("?") : a.channels[i % nComps])
-                   << ": cached " << a.pixels[i] << ", cold " << b.pixels[i];
+                   << ": " << sides.first << " " << a.pixels[i] << ", " << sides.second << " " << b.pixels[i];
 
                 return ss.str();
             }
@@ -288,13 +300,14 @@ comparePlanes(const std::vector<RenderedPlane>& warm,
 
 std::string
 compareDeep(const DeepImagePtr& warm,
-            const DeepImagePtr& cold)
+            const DeepImagePtr& cold,
+            const Sides& sides)
 {
     if (!warm || !cold) {
         return (warm || cold) ? "only one render produced a deep image" : std::string();
     }
     if (!(warm->getBounds() == cold->getBounds())) {
-        return "deep bounds " + describeRect(warm->getBounds()) + " cached, " + describeRect(cold->getBounds()) + " cold";
+        return "deep bounds " + describeRect(warm->getBounds()) + " " + sides.first + ", " + describeRect(cold->getBounds()) + " " + sides.second;
     }
     if (warm->isTidy() != cold->isTidy()) {
         return "deep tidiness differs";
@@ -312,7 +325,7 @@ compareDeep(const DeepImagePtr& warm,
     for (std::map<std::string, DeepChannelBuffer>::const_iterator it = ca.begin(); it != ca.end(); ++it) {
         std::map<std::string, DeepChannelBuffer>::const_iterator found = cb.find(it->first);
         if (found == cb.end()) {
-            return "deep channel " + it->first + " is missing from the cold render";
+            return "deep channel " + it->first + " is missing from the " + sides.second + " render";
         }
         if (it->second.size() != found->second.size()) {
             return "deep channel " + it->first + " differs in size";
@@ -322,7 +335,7 @@ compareDeep(const DeepImagePtr& warm,
                 if (std::memcmp(&it->second.data()[s], &found->second.data()[s], sizeof(float)) != 0) {
                     std::ostringstream ss;
                     ss.precision(9);
-                    ss << "deep channel " << it->first << " sample " << s << ": cached " << it->second.data()[s] << ", cold " << found->second.data()[s];
+                    ss << "deep channel " << it->first << " sample " << s << ": " << sides.first << " " << it->second.data()[s] << ", " << sides.second << " " << found->second.data()[s];
 
                     return ss.str();
                 }
@@ -337,14 +350,15 @@ template <typename T>
 std::string
 compareField(const char* name,
              const T& warm,
-             const T& cold)
+             const T& cold,
+             const Sides& sides)
 {
     if (warm == cold) {
         return std::string();
     }
     std::ostringstream ss;
     ss.precision(17);
-    ss << name << ": cached " << warm << ", cold " << cold;
+    ss << name << ": " << sides.first << " " << warm << ", " << sides.second << " " << cold;
 
     return ss.str();
 }
@@ -364,41 +378,42 @@ joinedNames(const std::vector<std::string>& names)
 // Empty when the two states are bit-identical, else the first difference.
 std::string
 compareStates(const OutputState& warm,
-              const OutputState& cold)
+              const OutputState& cold,
+              const Sides& sides = kCachedAndCold)
 {
     if (warm.rendered != cold.rendered) {
-        return warm.rendered ? "the cold render failed (" + cold.error + ") where the cached one succeeded"
-                             : "the cached render failed (" + warm.error + ") where the cold one succeeded";
+        return warm.rendered ? "the " + sides.second + " render failed (" + cold.error + ") where the " + sides.first + " one succeeded"
+                             : "the " + sides.first + " render failed (" + warm.error + ") where the " + sides.second + " one succeeded";
     }
     std::string diff;
     if (warm.rendered) {
-        diff = comparePlanes(warm.planes, cold.planes);
+        diff = comparePlanes(warm.planes, cold.planes, sides);
         if (diff.empty()) {
-            diff = compareDeep(warm.deep, cold.deep);
+            diff = compareDeep(warm.deep, cold.deep, sides);
         }
         if (!diff.empty()) {
             return diff;
         }
     }
     if ((warm.rodStatus != cold.rodStatus) || !sameRect(warm.rod, cold.rod) || (warm.rodIsProjectFormat != cold.rodIsProjectFormat)) {
-        return "region of definition " + describeRect(warm.rod) + " cached, " + describeRect(cold.rod) + " cold"
+        return "region of definition " + describeRect(warm.rod) + " " + sides.first + ", " + describeRect(cold.rod) + " " + sides.second
             + " (status " + std::to_string(warm.rodStatus) + "/" + std::to_string(cold.rodStatus) + ")";
     }
     if (!(warm.format == cold.format)) {
-        return "output format " + describeRect(warm.format) + " cached, " + describeRect(cold.format) + " cold";
+        return "output format " + describeRect(warm.format) + " " + sides.first + ", " + describeRect(cold.format) + " " + sides.second;
     }
     const std::string fields[] = {
-        sameBits(warm.par, cold.par) ? std::string() : compareField("pixel aspect ratio", warm.par, cold.par),
-        sameBits(warm.fps, cold.fps) ? std::string() : compareField("frame rate", warm.fps, cold.fps),
-        compareField("fielding", warm.fielding, cold.fielding),
-        compareField("continuous", warm.continuous, cold.continuous),
-        compareField("frame varying", warm.frameVarying, cold.frameVarying),
-        compareField("components", warm.components, cold.components),
-        compareField("component count", warm.nComps, cold.nComps),
-        compareField("bit depth", warm.bitDepth, cold.bitDepth),
-        sameBits(warm.firstFrame, cold.firstFrame) ? std::string() : compareField("first frame", warm.firstFrame, cold.firstFrame),
-        sameBits(warm.lastFrame, cold.lastFrame) ? std::string() : compareField("last frame", warm.lastFrame, cold.lastFrame),
-        compareField("present layers", joinedNames(warm.presentLayers), joinedNames(cold.presentLayers)),
+        sameBits(warm.par, cold.par) ? std::string() : compareField("pixel aspect ratio", warm.par, cold.par, sides),
+        sameBits(warm.fps, cold.fps) ? std::string() : compareField("frame rate", warm.fps, cold.fps, sides),
+        compareField("fielding", warm.fielding, cold.fielding, sides),
+        compareField("continuous", warm.continuous, cold.continuous, sides),
+        compareField("frame varying", warm.frameVarying, cold.frameVarying, sides),
+        compareField("components", warm.components, cold.components, sides),
+        compareField("component count", warm.nComps, cold.nComps, sides),
+        compareField("bit depth", warm.bitDepth, cold.bitDepth, sides),
+        sameBits(warm.firstFrame, cold.firstFrame) ? std::string() : compareField("first frame", warm.firstFrame, cold.firstFrame, sides),
+        sameBits(warm.lastFrame, cold.lastFrame) ? std::string() : compareField("last frame", warm.lastFrame, cold.lastFrame, sides),
+        compareField("present layers", joinedNames(warm.presentLayers), joinedNames(cold.presentLayers), sides),
     };
     for (std::size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i) {
         if (!fields[i].empty()) {
@@ -616,6 +631,70 @@ protected:
         return state;
     }
 
+    struct Verdict {
+        // Set when the cached render differs from a cold render that a second cold render agrees with.
+        std::string hashGap;
+        // Set when that second cold render differs, which leaves the cached render with no ground
+        // truth to be judged against.
+        std::string nondeterminism;
+        bool coldRendered = false;
+        std::string coldError;
+    };
+
+    // Cold renders already made in a scenario, by the content hash of the node they rendered.
+    typedef std::map<U64, OutputState> ColdRenders;
+
+    // The cached render must equal the cold one, and a state whose hash was rendered cold before
+    // must equal that render too: equal hashes must render equal pixels. Only a difference costs a
+    // second cold render, which tells a node that renders non-deterministically from a hash that
+    // misses some of the state; the UHD bench comps cannot afford one for every state.
+    Verdict judgeCachedRender(const Scenario& s,
+                              const std::list<ImageLayerDesc>& layers,
+                              ColdRenders* earlier = 0)
+    {
+        Verdict verdict;
+        const OutputState cached = render(s, layers, false);
+        const OutputState cold = render(s, layers, true);
+        const U64 hash = s.output->getHashValue();
+        const ColdRenders::const_iterator found = earlier ? earlier->find(hash) : ColdRenders::const_iterator();
+        const bool seenBefore = earlier && (found != earlier->end());
+
+        verdict.coldRendered = cold.rendered;
+        verdict.coldError = cold.error;
+        std::string diff;
+        if (seenBefore) {
+            const std::string acrossStates = compareStates(found->second, cold, kTwoColdRenders);
+            if (!acrossStates.empty()) {
+                diff = "an earlier state with the same hash renders differently cold: " + acrossStates;
+            }
+        }
+        if (diff.empty()) {
+            diff = compareStates(cached, cold);
+        }
+        if (diff.empty()) {
+            if (earlier && !seenBefore) {
+                (*earlier)[hash] = cold;
+            }
+
+            return verdict;
+        }
+        verdict.nondeterminism = compareStates(cold, render(s, layers, true), kTwoColdRenders);
+        if (verdict.nondeterminism.empty()) {
+            verdict.hashGap = diff;
+        }
+
+        return verdict;
+    }
+
+    static std::string nondeterminismMessage(const std::string& where,
+                                             const std::string& diff)
+    {
+        return where + ": two cold renders of the same state differ, so the node renders non-deterministically"
+                       " (unwritten output pixels, unseeded randomness or a thread-dependent reduction) and its cached render"
+                       " cannot be checked: "
+            + diff;
+    }
+
     // Renders `node` through the caches in the mode under test, for steps that warm a node other
     // than the one compared.
     void warm(const NodePtr& node,
@@ -631,11 +710,18 @@ protected:
     void runScenario(const std::string& name,
                      const Builder& build)
     {
-        const RenderSchedulerModeEnum ambient = _mode;
-        const RenderSchedulerModeEnum modes[] = { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph };
+        runScenario(name, build, { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph });
+    }
 
-        for (std::size_t m = 0; m < sizeof(modes) / sizeof(modes[0]); ++m) {
+    void runScenario(const std::string& name,
+                     const Builder& build,
+                     const std::vector<RenderSchedulerModeEnum>& modes)
+    {
+        const RenderSchedulerModeEnum ambient = _mode;
+
+        for (std::size_t m = 0; m < modes.size(); ++m) {
             _mode = modes[m];
+            ColdRenders coldRenders;
             for (std::size_t prefix = 0;; ++prefix) {
                 resetProject();
                 Scenario s;
@@ -658,13 +744,12 @@ protected:
                     ignore_result(render(s, legacyLayersFor(s), false));
                 }
                 const std::list<ImageLayerDesc> layers = legacyLayersFor(s);
-                const OutputState cached = render(s, layers, false);
-                const OutputState cold = render(s, layers, true);
-                const std::string diff = compareStates(cached, cold);
-                EXPECT_TRUE(diff.empty()) << name << " [" << modeName(_mode) << "] after " << path << ": " << diff;
-                if (!cold.rendered) {
-                    std::cout << "[cache equivalence] " << name << " [" << modeName(_mode) << "] after " << path
-                              << ": both renders failed: " << cold.error << std::endl;
+                const std::string where = name + " [" + modeName(_mode) + "] after " + path;
+                const Verdict verdict = judgeCachedRender(s, layers, &coldRenders);
+                EXPECT_TRUE(verdict.nondeterminism.empty()) << nondeterminismMessage(where, verdict.nondeterminism);
+                EXPECT_TRUE(verdict.hashGap.empty()) << where << ": the cached render differs from a cold one, a hash gap: " << verdict.hashGap;
+                if (!verdict.coldRendered) {
+                    std::cout << "[cache equivalence] " << where << ": the cold renders failed: " << verdict.coldError << std::endl;
                 }
             }
         }
@@ -1352,57 +1437,83 @@ TEST_F(CacheEquivalenceTest, SyntheticRotoPaintGraph)
     });
 }
 
-// The bench comps are UHD, so a window at the centre of the format stands for the frame.
-TEST_F(CacheEquivalenceTest, BenchComps)
+// The bench comps are UHD, so a window at the centre of the format stands for the frame. Each comp
+// and scheduler mode is its own case, which keeps every one inside the per-case timeout.
+struct BenchComp {
+    const char* file;
+    RenderSchedulerModeEnum mode;
+};
+
+static void
+PrintTo(const BenchComp& comp,
+        std::ostream* os)
+{
+    *os << comp.file << " [" << modeName(comp.mode) << "]";
+}
+
+class CacheEquivalenceBenchCompTest
+    : public CacheEquivalenceTest,
+      public ::testing::WithParamInterface<BenchComp> {
+};
+
+TEST_P(CacheEquivalenceBenchCompTest, EditsAndDisables)
 {
     const QString dir = QString::fromUtf8(NATRON_TESTS_FIXTURES_DIR "/../../tools/bench/comps/");
-    const char* const comps[] = { "keying_grade.ntp", "cg_multipass.ntp", "defocus_retime.ntp" };
+    const QString name = QString::fromUtf8(GetParam().file);
 
-    for (std::size_t c = 0; c < sizeof(comps) / sizeof(comps[0]); ++c) {
-        const QString name = QString::fromUtf8(comps[c]);
-        runScenario(comps[c], [this, &dir, &name](Scenario* s) {
-            if (!project()->loadProject(dir, name, false, false)) {
-                return false;
+    runScenario(GetParam().file, [this, &dir, &name](Scenario* s) {
+        if (!project()->loadProject(dir, name, false, false)) {
+            return false;
+        }
+        NodesList nodes = project()->getNodes();
+        NodePtr writer;
+        std::vector<NodePtr> editable;
+        for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+            if (!*it) {
+                continue;
             }
-            NodesList nodes = project()->getNodes();
-            NodePtr writer;
-            std::vector<NodePtr> editable;
-            for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
-                if (!*it) {
-                    continue;
-                }
-                if ((*it)->getEffectInstance()->isWriter()) {
-                    writer = writer ? writer : *it;
-                } else {
-                    editable.push_back(*it);
-                }
+            if ((*it)->getEffectInstance()->isWriter()) {
+                writer = writer ? writer : *it;
+            } else {
+                editable.push_back(*it);
             }
-            if (!writer || !writer->getInput(0) || editable.empty()) {
-                return false;
-            }
-            std::sort(editable.begin(), editable.end(), [](const NodePtr& a, const NodePtr& b) { return a->getScriptName() < b->getScriptName(); });
-            s->output = writer->getInput(0);
-            const RectI format = s->output->getEffectInstance()->getOutputFormat();
-            const int cx = (format.x1 + format.x2) / 2;
-            const int cy = (format.y1 + format.y2) / 2;
-            s->roi = RectI(cx - kSize / 2, cy - kSize / 2, cx + kSize / 2, cy + kSize / 2);
-            const std::size_t picks = std::min<std::size_t>(4, editable.size());
-            for (std::size_t i = 0; i < picks; ++i) {
-                ignore_result(appendFirstKnobToggle(editable[i * editable.size() / picks], &s->steps));
-            }
-            NodePtr middle = editable[editable.size() / 2];
-            s->steps.push_back(setBool(middle->getScriptName() + " disabled", middle->getDisabledKnob(), true));
-            s->steps.push_back(setBool(middle->getScriptName() + " enabled", middle->getDisabledKnob(), false));
+        }
+        if (!writer || !writer->getInput(0) || editable.empty()) {
+            return false;
+        }
+        std::sort(editable.begin(), editable.end(), [](const NodePtr& a, const NodePtr& b) { return a->getScriptName() < b->getScriptName(); });
+        s->output = writer->getInput(0);
+        const RectI format = s->output->getEffectInstance()->getOutputFormat();
+        const int cx = (format.x1 + format.x2) / 2;
+        const int cy = (format.y1 + format.y2) / 2;
+        s->roi = RectI(cx - kSize / 2, cy - kSize / 2, cx + kSize / 2, cy + kSize / 2);
+        const std::size_t picks = std::min<std::size_t>(4, editable.size());
+        for (std::size_t i = 0; i < picks; ++i) {
+            ignore_result(appendFirstKnobToggle(editable[i * editable.size() / picks], &s->steps));
+        }
+        NodePtr middle = editable[editable.size() / 2];
+        s->steps.push_back(setBool(middle->getScriptName() + " disabled", middle->getDisabledKnob(), true));
+        s->steps.push_back(setBool(middle->getScriptName() + " enabled", middle->getDisabledKnob(), false));
 
-            return true;
-        });
-    }
+        return true;
+    },
+                { GetParam().mode });
 }
+
+INSTANTIATE_TEST_CASE_P(Comps,
+                        CacheEquivalenceBenchCompTest,
+                        ::testing::Values(BenchComp { "keying_grade.ntp", eRenderSchedulerModeLegacy },
+                                          BenchComp { "keying_grade.ntp", eRenderSchedulerModeTaskGraph },
+                                          BenchComp { "cg_multipass.ntp", eRenderSchedulerModeLegacy },
+                                          BenchComp { "cg_multipass.ntp", eRenderSchedulerModeTaskGraph },
+                                          BenchComp { "defocus_retime.ntp", eRenderSchedulerModeLegacy },
+                                          BenchComp { "defocus_retime.ntp", eRenderSchedulerModeTaskGraph }));
 
 // Each bundled plugin is rendered on a checkerboard feeding every input, and each sampled knob
 // dimension is perturbed, rendered, reverted and rendered again through the caches before that
-// last render is compared with a cold one. It runs in the scheduler mode the process was started
-// in, so the gate's run in each mode covers that mode.
+// last render is compared with a cold one, and with a second cold one when they differ. It runs
+// in the scheduler mode the process was started in, so the gate's run in each mode covers that
+// mode.
 class CacheEquivalenceSweepTest
     : public CacheEquivalenceTest,
       public ::testing::WithParamInterface<int> {
@@ -1429,31 +1540,55 @@ protected:
         return !node->isEffectViewer() && (node->getPluginID() != PLUGINID_NATRON_BACKDROP);
     }
 
+    struct Findings {
+        std::vector<std::string> hashGaps;
+        std::vector<std::string> nondeterministic;
+    };
+
     void compareNow(const Scenario& s,
                     const std::string& where,
-                    std::vector<std::string>* failures)
+                    Findings* findings)
     {
         const std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
-        const OutputState cached = render(s, layers, false);
-        const OutputState cold = render(s, layers, true);
-        const std::string diff = compareStates(cached, cold);
-        if (!diff.empty()) {
-            failures->push_back(where + ": " + diff);
+        const Verdict verdict = judgeCachedRender(s, layers);
+
+        if (!verdict.nondeterminism.empty()) {
+            findings->nondeterministic.push_back(nondeterminismMessage(where, verdict.nondeterminism));
+        } else if (!verdict.hashGap.empty()) {
+            findings->hashGaps.push_back(where + ": " + verdict.hashGap);
         }
+    }
+
+    // A Group or a Precomp renders nothing of its own: what consumes one pulls the node its output
+    // redirects to, so a Dot below it stands in for that consumer. Anything else is rendered itself.
+    NodePtr consumerOf(const NodePtr& node)
+    {
+        EffectInstancePtr effect = node->getEffectInstance();
+        if (!std::dynamic_pointer_cast<NodeGroup>(effect) && !std::dynamic_pointer_cast<PrecompNode>(effect)) {
+            return NodePtr();
+        }
+        NodePtr dot = create(PLUGINID_NATRON_DOT);
+        if (dot && !dot->connectInput(node, 0)) {
+            dot->destroyNode(true, false);
+
+            return NodePtr();
+        }
+
+        return dot;
     }
 
     void sweepPlugin(const PluginVersion& plugin,
                      const Allowlist& allowlist,
                      const NodePtr& source,
                      const QTemporaryDir& tmp,
-                     std::vector<std::string>* failures,
+                     Findings* findings,
                      int* editsMade)
     {
         const std::string where = plugin.describe() + " [" + modeName(_mode) + "]";
         NodePtr node = createPluginNode(plugin);
 
         if (!node) {
-            failures->push_back(where + ": the node could not be created");
+            findings->hashGaps.push_back(where + ": the node could not be created");
 
             return;
         }
@@ -1470,10 +1605,13 @@ protected:
             node->setOutputFilesForWriter(QDir(tmp.path()).filePath(QString::fromUtf8("sweep.####.exr")).toStdString());
         }
 
+        NodePtr consumer = consumerOf(node);
         Scenario s;
-        s.output = node;
+        s.output = consumer ? consumer : node;
+        // A node putting deep data on its output is only ever asked for a deep render.
+        s.deep = node->getEffectInstance()->producesDeepData();
         appPTR->clearAllCaches();
-        compareNow(s, where + " as created", failures);
+        compareNow(s, where + " as created", findings);
 
         std::vector<std::pair<KnobIPtr, int>> candidates;
         if (!allowlist.exemptsPlugin(plugin.id)) {
@@ -1506,7 +1644,10 @@ protected:
             ++*editsMade;
             ignore_result(render(s, layers, false));
             edit.revert();
-            compareNow(s, label + " and back", failures);
+            compareNow(s, label + " and back", findings);
+        }
+        if (consumer) {
+            consumer->destroyNode(true, false);
         }
         node->destroyNode(true, false);
     }
@@ -1524,28 +1665,37 @@ TEST_P(CacheEquivalenceSweepTest, CachedRenderAfterAPerturbedAndRevertedKnobEqua
     NodePtr source = createChecker();
     ASSERT_TRUE(bool(source));
 
-    std::vector<std::string> failures;
+    Findings findings;
     int pluginsSwept = 0;
     int editsMade = 0;
     for (std::size_t i = GetParam(); i < plugins.size(); i += kSweepShardCount) {
         const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
-        const std::size_t failuresBefore = failures.size();
+        const std::size_t gapsBefore = findings.hashGaps.size();
+        const std::size_t nondeterministicBefore = findings.nondeterministic.size();
         const int editsBefore = editsMade;
-        sweepPlugin(plugins[i], allowlist, source, tmp, &failures, &editsMade);
+        sweepPlugin(plugins[i], allowlist, source, tmp, &findings, &editsMade);
         ++pluginsSwept;
         const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
         std::cout << "[cache equivalence sweep] " << plugins[i].describe() << ": " << (editsMade - editsBefore) << " edits, "
-                  << (failures.size() - failuresBefore) << " mismatches, " << ms << " ms" << std::endl;
+                  << (findings.hashGaps.size() - gapsBefore) << " mismatches, "
+                  << (findings.nondeterministic.size() - nondeterministicBefore) << " non-deterministic, " << ms << " ms" << std::endl;
     }
     std::cout << "[cache equivalence sweep] shard " << GetParam() << "/" << kSweepShardCount << " [" << modeName(_mode) << "]: "
               << pluginsSwept << " plugins, " << editsMade << " edits" << std::endl;
 
-    std::ostringstream summary;
-    for (std::size_t i = 0; i < failures.size(); ++i) {
-        summary << "  " << failures[i] << "\n";
+    std::ostringstream gaps;
+    for (std::size_t i = 0; i < findings.hashGaps.size(); ++i) {
+        gaps << "  " << findings.hashGaps[i] << "\n";
     }
-    EXPECT_TRUE(failures.empty()) << failures.size() << " cached render(s) differ from a cold render, each a hash gap:\n"
-                                  << summary.str();
+    EXPECT_TRUE(findings.hashGaps.empty()) << findings.hashGaps.size() << " cached render(s) differ from a cold render, each a hash gap:\n"
+                                           << gaps.str();
+    std::ostringstream nondeterministic;
+    for (std::size_t i = 0; i < findings.nondeterministic.size(); ++i) {
+        nondeterministic << "  " << findings.nondeterministic[i] << "\n";
+    }
+    EXPECT_TRUE(findings.nondeterministic.empty()) << findings.nondeterministic.size()
+                                                   << " state(s) render non-deterministically, which no cache can be checked against:\n"
+                                                   << nondeterministic.str();
 }
 
 INSTANTIATE_TEST_CASE_P(Shards, CacheEquivalenceSweepTest, ::testing::Range(0, kSweepShardCount));

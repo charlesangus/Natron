@@ -1581,7 +1581,9 @@ void
 Node::onInputChanged(int inputNb,
                      bool isInputA)
 {
-    if ( getApp()->getProject()->isProjectClosing() ) {
+    // A destroy deferred until the node's renders quit can finish after its app is gone.
+    AppInstancePtr app = getApp();
+    if (!app || app->getProject()->isProjectClosing()) {
         return;
     }
     assert( QThread::currentThread() == qApp->thread() );

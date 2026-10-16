@@ -495,7 +495,11 @@ OfxClipInstance::getConnected() const
         return true;
     } else {
         if (_isOutput) {
-            return effect->hasOutputConnected();
+            // Whatever asks for a render consumes the output, whether or not a node is wired
+            // below. Reporting the downstream wiring instead would let plug-ins that skip writing
+            // an unconnected output (the Magick ones do) render from state the node hash does
+            // not see, leaving the output buffer unwritten.
+            return true;
         } else {
             int inputNb = getInputNb();
             EffectInstancePtr input;

@@ -584,12 +584,19 @@ EdgeDetect::render(const RenderActionArgs& args)
         normY = (12 * sy * sy * sy) / (9 * sy * sy - 4);
         break;
     case BlurKernels::eFilterGaussian:
-    case BlurKernels::eFilterQuasiGaussian:
-        // The second factor is 1 / 2.4 where sigma would be expected, as in the OpenFX plug-in.
+        // The derivative of a unit step blurred by a Gaussian peaks at 1 / (sigma sqrt(2 pi)).
         normalizeX = (sx / 2.4 >= 0.1);
         normalizeY = (sy / 2.4 >= 0.1);
-        normX = 2. * M_PI * (sx / 2.4) * (1. / 2.4);
-        normY = 2. * M_PI * (sy / 2.4) * (1. / 2.4);
+        normX = (sx / 2.4) * std::sqrt(2. * M_PI);
+        normY = (sy / 2.4) * std::sqrt(2. * M_PI);
+        break;
+    case BlurKernels::eFilterQuasiGaussian:
+        // Deriche's derivative kernel is c x exp(-alpha |x|) with alpha = 1.695 / sigma and
+        // c = alpha^3 / 4, so a unit step peaks at alpha / 4.
+        normalizeX = (sx / 2.4 >= 0.1);
+        normalizeY = (sy / 2.4 >= 0.1);
+        normX = 4. * (sx / 2.4) / 1.695;
+        normY = 4. * (sy / 2.4) / 1.695;
         break;
     }
 
@@ -870,18 +877,34 @@ EdgeDetect::render(const RenderActionArgs& args)
                                 buffer[k] = static_cast<float>(std::sqrt(std::max(sqe, 0.)));
                             }
                         } else if (params.multiChannel == eEdgeDetectMultiChannelRMS) {
-                            // The direction is the plain sum of the channel gradients: the OpenFX
-                            // plug-in's sign alignment never triggers, and its result is kept.
+                            // The direction is the sum of the channel gradients, each flipped to
+                            // point the same way as the strongest channel's: opposite gradients
+                            // would otherwise cancel and turn the suppression direction.
                             double sumsq = 0.;
+                            double refx = 0.;
+                            double refy = 0.;
+                            double refsq = -1.;
+                            for (int p = 0; p < nPlanes; ++p) {
+                                const std::size_t k = (std::size_t)p * planeSize + o;
+                                const double gxd = gx[k];
+                                const double gyd = gy[k];
+                                const double sq = gxd * gxd + gyd * gyd;
+                                sumsq += sq;
+                                if (sq > refsq) {
+                                    refsq = sq;
+                                    refx = gxd;
+                                    refy = gyd;
+                                }
+                            }
                             double gradx = 0.;
                             double grady = 0.;
                             for (int p = 0; p < nPlanes; ++p) {
                                 const std::size_t k = (std::size_t)p * planeSize + o;
                                 const double gxd = gx[k];
                                 const double gyd = gy[k];
-                                sumsq += gxd * gxd + gyd * gyd;
-                                gradx += gxd;
-                                grady += gyd;
+                                const double sign = (gxd * refx + gyd * refy < 0.) ? -1. : 1.;
+                                gradx += sign * gxd;
+                                grady += sign * gyd;
                             }
                             const double sqe = sumsq / nPlanes;
                             const double e = std::sqrt(std::max(sqe, 0.));

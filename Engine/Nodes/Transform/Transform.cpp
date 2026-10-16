@@ -574,6 +574,7 @@ TransformNode::initializeKnobs()
     _srcClipChanged = srcClipChanged;
 
     updateShutterEnabled();
+    updateClampEnabled();
 
     NodePtr node = getNode();
     if (node) {
@@ -605,6 +606,18 @@ TransformNode::updateShutterEnabled()
 }
 
 void
+TransformNode::updateClampEnabled()
+{
+    KnobChoicePtr filter = _filter.lock();
+    KnobBoolPtr clamp = _clamp.lock();
+
+    if (!filter || !clamp) {
+        return;
+    }
+    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValue()));
+}
+
+void
 TransformNode::updateUniformVisibility(bool allowHiding)
 {
     KnobBoolPtr uniform = _uniform.lock();
@@ -624,6 +637,7 @@ void
 TransformNode::onKnobsLoaded()
 {
     updateShutterEnabled();
+    updateClampEnabled();
     updateUniformVisibility(true);
 }
 
@@ -661,6 +675,12 @@ TransformNode::knobChanged(KnobI* k,
         if (edited && centerChanged && !centerChanged->getValue()) {
             centerChanged->setValue(true);
         }
+
+        return true;
+    }
+    KnobChoicePtr filterKnob = _filter.lock();
+    if (filterKnob && (k == filterKnob.get())) {
+        updateClampEnabled();
 
         return true;
     }
@@ -1023,10 +1043,6 @@ TransformNode::isIdentity(double time,
 
     const Resampler::BlurSettings blur = getBlurSettings(time, view);
     if ((blur.shutter != 0.) && (blur.motionBlur != 0.)) {
-        return false;
-    }
-    KnobBoolPtr clamp = _clamp.lock();
-    if (clamp && clamp->getValueAtTime(time, 0, view)) {
         return false;
     }
     TransformMath::TransformParams p;

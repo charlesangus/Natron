@@ -150,9 +150,8 @@ channelIndexForBit(int nComps,
 }
 
 // Copies `width` pixels of row y starting at x0 into row (nComps floats per pixel). Pixels outside
-// `bounds` repeat the nearest edge pixel, as OFX Image::getPixelAddressNearest() does in the OFX
-// Crop, so a rectangle larger than the source extends its edges. An image in another layout is
-// mapped channel by colour bit, a channel it lacks reading as zero.
+// `bounds` read as black. An image in another layout is mapped channel by colour bit, a channel
+// it lacks reading as zero.
 void
 readSourceRow(const Image* image,
               const Image::ReadAccess* access,
@@ -167,20 +166,23 @@ readSourceRow(const Image* image,
     if (!image || (bounds.x2 <= bounds.x1) || (bounds.y2 <= bounds.y1)) {
         return;
     }
-    const int sy = std::max(bounds.y1, std::min(y, bounds.y2 - 1));
+    if ((y < bounds.y1) || (y >= bounds.y2)) {
+        return;
+    }
     const int srcNComps = (int)image->getComponentsCount();
     int srcIndex[4] = { -1, -1, -1, -1 };
     for (int c = 0; (c < nComps) && (c < 4); ++c) {
         srcIndex[c] = (srcNComps == nComps) ? c : channelIndexForBit(srcNComps, pixelKernelChannelBit(nComps, c));
     }
-    const float* rowStart = (const float*)access->pixelAt(bounds.x1, sy);
+    const float* rowStart = (const float*)access->pixelAt(bounds.x1, y);
     if (!rowStart) {
         return;
     }
-    float* dstPix = row;
-    for (int x = x0; x < x0 + width; ++x, dstPix += nComps) {
-        const int sx = std::max(bounds.x1, std::min(x, bounds.x2 - 1));
-        const float* srcPix = rowStart + (std::size_t)(sx - bounds.x1) * srcNComps;
+    const int xBegin = std::max(x0, bounds.x1);
+    const int xEnd = std::min(x0 + width, bounds.x2);
+    float* dstPix = row + (std::size_t)std::max(xBegin - x0, 0) * nComps;
+    for (int x = xBegin; x < xEnd; ++x, dstPix += nComps) {
+        const float* srcPix = rowStart + (std::size_t)(x - bounds.x1) * srcNComps;
         for (int c = 0; (c < nComps) && (c < 4); ++c) {
             if (srcIndex[c] >= 0) {
                 dstPix[c] = srcPix[srcIndex[c]];

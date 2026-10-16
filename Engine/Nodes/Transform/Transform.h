@@ -225,6 +225,11 @@ private:
     void updateShutterEnabled();
 
     /**
+     * @brief Enables the clamp knob only for a filter it affects.
+     **/
+    void updateClampEnabled();
+
+    /**
      * @brief Shows the uniform knob once it is checked or animated; with allowHiding, hides it
      * otherwise, as the OpenFX plug-in does when an instance is created.
      **/

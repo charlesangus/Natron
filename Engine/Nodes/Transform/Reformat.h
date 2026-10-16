@@ -247,6 +247,11 @@ private:
      **/
     void refreshVisibility();
 
+    /**
+     * @brief Enables the clamp knob only for a filter it affects.
+     **/
+    void updateClampEnabled();
+
     KnobBoolWPtr _useRoD;
     KnobChoiceWPtr _type;
     KnobChoiceWPtr _format;

@@ -533,6 +533,7 @@ Reformat::initializeKnobs()
     _blackOutside = blackOutside;
 
     refreshVisibility();
+    updateClampEnabled();
 } // Reformat::initializeKnobs
 
 Reformat::ReformatTypeEnum
@@ -562,9 +563,22 @@ Reformat::refreshVisibility()
 }
 
 void
+Reformat::updateClampEnabled()
+{
+    KnobChoicePtr filter = _filter.lock();
+    KnobBoolPtr clamp = _clamp.lock();
+
+    if (!filter || !clamp) {
+        return;
+    }
+    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValue()));
+}
+
+void
 Reformat::onKnobsLoaded()
 {
     refreshVisibility();
+    updateClampEnabled();
 }
 
 bool
@@ -581,6 +595,13 @@ Reformat::knobChanged(KnobI* k,
     KnobChoicePtr format = _format.lock();
     KnobDoublePtr scale = _scale.lock();
     KnobBoolPtr scaleUniform = _scaleUniform.lock();
+
+    KnobChoicePtr filterKnob = _filter.lock();
+    if (filterKnob && (k == filterKnob.get())) {
+        updateClampEnabled();
+
+        return true;
+    }
 
     const bool isType = type && (k == type.get());
     if (isType) {
@@ -656,13 +677,6 @@ Reformat::isIdentityOp(double time,
                        const RectI& /*roi*/,
                        ViewIdx view)
 {
-    KnobBoolPtr clamp = _clamp.lock();
-
-    // Clamping changes values above the source's range even without any movement.
-    if (clamp && clamp->getValueAtTime(time, 0, view)) {
-        return false;
-    }
-
     return isIdentityParams(time, view);
 }
 

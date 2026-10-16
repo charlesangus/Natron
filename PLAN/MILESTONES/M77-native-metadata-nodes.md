@@ -18,7 +18,7 @@ All four nodes derive from `NativeEffectBase`, modelled on `Engine/Nodes/TypedPa
   - verify: gtests with two `MetadataSource` nodes: each mode, filter on/off, disconnected B, a glob such as `exr/*`.
   - size: M
 
-- [ ] M77.P1.T3 — ViewMetadata node
+- [x] M77.P1.T3 — ViewMetadata node
   - files: new `Engine/Nodes/Metadata/ViewMetadata.h/.cpp`, `Engine/AppManager.cpp`, new `Tests/Native/NativeViewMetadata_Test.cpp`
   - approach: a passthrough with a `Metadata` page holding a multi-line HTML `KnobString` built like `Node::createInfoPage()` (`Engine/Node.cpp`: not animated, not persistent, multi-line, custom HTML, not evaluate-on-change) showing an HTML-escaped key/value table of `getOutputMetadata(currentFrame)`. Refresh on a Refresh button, on time change, and on metadata refresh / hash change; find the right hooks, and make sure a time-driven refresh doesn't mark the project dirty or trigger a render. No custom Qt widget.
   - verify: gtest that the text holds every key and value and that `ofx/frame` follows the frame; Xvfb GUI check (Read an EXR with custom attributes, add the node, see the table, change the frame), screenshot shared with the user before sign-off.
@@ -42,3 +42,4 @@ All four nodes derive from `NativeEffectBase`, modelled on `Engine/Nodes/TypedPa
 - 2026-10-16 — **Polish before sign-off** (user): hide the unused Channels selector on all four metadata nodes, and give ViewMetadata a taller table with keys that don't wrap.
 - 2026-10-16 — **Polish green; PR #64 opened** (code: 30046d795; fast run 38857748619, 2284/2284 in both schedulers). The Xvfb check passes: no channel selector, a 20-row table, keys unwrapped. The screenshot was sent for sign-off and the Codex review is running. P1.T3 stays open until the user approves.
 - 2026-10-16 — **Review round 1 closed** (Codex, PR #64, 4 findings, all fixed in cf5c7c981: passive display refresh, Metadata group in the menu and docs order, preferred rows kept on duplicate, comments trimmed). Fast run 38864562910 and PR CI green, 2286/2286. The Xvfb check passes again. Merge waits only on the user's screenshot sign-off (P1.T3).
+- 2026-10-16 — **Signed off** (user), with two changes before merge: the Metadata category icon becomes Lucide `tags` (no category colour), and the OFX `org.openfx.examples.metadata*` nodes are removed as redundant.

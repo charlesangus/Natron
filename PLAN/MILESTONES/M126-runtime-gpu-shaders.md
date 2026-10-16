@@ -59,7 +59,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: the design note records the measurements and the recommendation, and the user confirms the choice before P1.T2 starts.
   - size: M
 
-- [ ] M126.P1.T2 — Add the chosen compiler to the build and the AppImage
+- [x] M126.P1.T2 — Add the chosen compiler to the build and the AppImage
   - files: `cmake/` (a new `Find` or fetch module), `Engine/Gpu/CMakeLists.txt`, `tools/ci/local/fetch-assets.sh`, `tools/package/` (bundle list; locate the AppImage library list)
   - approach:
     - Link the compiler into the GPU library behind `NATRON_HAVE_GPU`.
@@ -69,7 +69,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 125.2: Runtime kernels and descriptors
 
-- [ ] M126.P2.T1 — Compile GLSL to SPIR-V at runtime behind a small interface
+- [x] M126.P2.T1 — Compile GLSL to SPIR-V at runtime behind a small interface
   - files: `Engine/Gpu/GpuShaderCompiler.{h,cpp}` (new), `Tests/GpuShaderCompiler_Test.cpp` (new)
   - approach:
     - `compileGlsl(source, stage, entry) -> expected<SpirV, CompileLog>`. It is thread-safe, with one compile per hash in flight; other callers wait on it.
@@ -118,3 +118,4 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 - 2026-10-13 — **OCIO's GPU path compiles OCIO's own shader at runtime** (user). This was chosen over translating OCIO ops into our kernels or baking a shaped 3D LUT. This milestone is split out from M127 - Native OCIO Nodes because it is backend infrastructure in E5 - GPU Compute that other runtime-generated shaders can reuse.
 - 2026-10-16 — **Runtime compiler: glslang, called directly, linked statically into `NatronGpu`** (user-confirmed, from M126.P1.T1's spike; see `PLAN/DESIGN/2026-10-13-runtime-shader-compiler.md`). Fetched by a new `cmake/FetchGlslang.cmake` on the `FetchSlang.cmake` pattern, built with `ENABLE_OPT=OFF` and no tools, installs or tests. A static link needs no change to `fetch-assets.sh` or the AppImage bundle. Descriptor layouts come from vendored SPIRV-Reflect. Rejected: shaderc, which only wraps glslang, and Slang's GLSL mode, which takes 182–254 ms per compile, uses a deprecated flag and adds 12.6 MB. Measured: about 63 ms for the first compile in a process, then 2.3 ms for a 317-line OCIO-style shader. Not yet confirmed: whether OCIO emits the `layout(set, binding)` qualifiers we need, and the Vulkan and SPIR-V target versions.
+- 2026-10-16 — **The GPU compiler test lives in `Tests/Gpu/GpuShaderCompiler_Test.cpp`**, inside the existing `GpuTests` target, rather than in `Tests/`. Compile results, failures included, are cached for the process lifetime per stage, entry and source, so a late caller never recompiles. The result is a plain struct (`ok`, `spirv`, `log`), since `std::expected` is C++23. glslang 16.6.0 is pinned, along with SPIRV-Reflect at tag `vulkan-sdk-1.4.363.0`, vendored under `libs/SPIRV-Reflect/`.

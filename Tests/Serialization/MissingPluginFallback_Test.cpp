@@ -391,11 +391,44 @@ TEST_F(MissingPluginFallbackTest, LoadFromPyFilePreferenceChoosesModuleOrEmbedde
     NodePtr pyPlug = createNode(QString::fromUtf8(kBundledPyPlugID));
     ASSERT_TRUE(bool(pyPlug));
     const std::string pyPlugName = pyPlug->getScriptName_mt_safe();
+    NodeGroupPtr pyPlugGroup = std::dynamic_pointer_cast<NodeGroup>(pyPlug->getEffectInstance());
+    ASSERT_TRUE(bool(pyPlugGroup));
+    NodesList moduleNodes;
+    pyPlugGroup->getNodes_recursive(moduleNodes, false);
+    const std::size_t moduleNodeCount = moduleNodes.size();
+    ASSERT_GT(moduleNodeCount, std::size_t(1));
 
     ProjectPtr project = getApp()->getProject();
     Serialization::ProjectSerialization saved;
     project->toSerialization(&saved);
-    ASSERT_TRUE(bool(findSerializedNode(saved.nodes.nodes, kBundledPyPlugID)));
+    Serialization::NodeSerializationPtr serializedPyPlug = findSerializedNode(saved.nodes.nodes, kBundledPyPlugID);
+    ASSERT_TRUE(bool(serializedPyPlug));
+
+    // Both load paths yield a Group node that reports the PyPlug's identity, so the embedded
+    // serialization is told apart from the module by dropping an inner node from it: the module
+    // script recreates that node, the embedded serialization does not.
+    std::list<Serialization::NodeSerializationPtr>& children = serializedPyPlug->children;
+    std::list<Serialization::NodeSerializationPtr>::iterator dropped = children.end();
+    for (std::list<Serialization::NodeSerializationPtr>::iterator it = children.begin(); it != children.end(); ++it) {
+        if (((*it)->pluginID == PLUGINID_NATRON_INPUT) || ((*it)->pluginID == PLUGINID_NATRON_OUTPUT)) {
+            continue;
+        }
+        bool referenced = false;
+        for (std::list<Serialization::NodeSerializationPtr>::const_iterator other = children.begin(); other != children.end(); ++other) {
+            for (std::map<std::string, std::string>::const_iterator input = (*other)->inputs.begin(); input != (*other)->inputs.end(); ++input) {
+                referenced = referenced || (input->second == (*it)->scriptName);
+            }
+        }
+        if (!referenced) {
+            dropped = it;
+            break;
+        }
+        if (dropped == children.end()) {
+            dropped = it;
+        }
+    }
+    ASSERT_TRUE(dropped != children.end());
+    children.erase(dropped);
     const std::string xml = saveProjectXml(saved);
 
     {
@@ -406,6 +439,11 @@ TEST_F(MissingPluginFallbackTest, LoadFromPyFilePreferenceChoosesModuleOrEmbedde
         NodePtr node = project->getNodeByName(pyPlugName);
         ASSERT_TRUE(bool(node));
         EXPECT_EQ(std::string(kBundledPyPlugID), node->getPluginID());
+        NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(node->getEffectInstance());
+        ASSERT_TRUE(bool(group));
+        NodesList innerNodes;
+        group->getNodes_recursive(innerNodes, false);
+        EXPECT_EQ(moduleNodeCount, innerNodes.size());
     }
     {
         LoadFromPyFileScope disabled(false);
@@ -414,11 +452,10 @@ TEST_F(MissingPluginFallbackTest, LoadFromPyFilePreferenceChoosesModuleOrEmbedde
         ASSERT_FALSE(reloadProjectXml(project, tmp, QString::fromUtf8("pyfile-off.ntp"), xml).empty());
         NodePtr node = project->getNodeByName(pyPlugName);
         ASSERT_TRUE(bool(node));
-        EXPECT_EQ(std::string(PLUGINID_NATRON_GROUP), node->getPluginID());
         NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(node->getEffectInstance());
         ASSERT_TRUE(bool(group));
         NodesList innerNodes;
         group->getNodes_recursive(innerNodes, false);
-        EXPECT_FALSE(innerNodes.empty());
+        EXPECT_EQ(moduleNodeCount - 1, innerNodes.size());
     }
 }

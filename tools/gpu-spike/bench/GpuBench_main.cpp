@@ -347,7 +347,7 @@ recordWork(VkCommandBuffer cmd, const Work& wk, Wl wl, uint32_t w, uint32_t h, V
     const uint32_t radius = uint32_t(blurref::radiusForSigma(wi.sigma));
     auto blurPass = [&](VkBuffer src, VkBuffer dst, bool vertical, GpuTimer* tm) {
         begin(tm);
-        check(recordBlurPass(*wk.k->blur, cmd, src, dst, wk.weights, GpuBlurPass { w, h, kChannels, radius, vertical, true }));
+        check(recordBlurPass(*wk.k->blur, cmd, src, dst, wk.weights, GpuBlurPass { w, h, kChannels, radius, vertical }));
         end(tm);
     };
     if (wi.grade) {

@@ -170,20 +170,20 @@ GPU_TEST_F(BlurGpuTest, RefusesRadiusAndChannelsBeyondTheTile)
     ASSERT_GT(over, kGpuBlurMaxRadius);
     for (bool vertical : { false, true }) {
         const GpuStatus s = recordBlurPass(*kernel, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
-                                           GpuBlurPass { 64, 64, 4, over, vertical, true });
+                                           GpuBlurPass { 64, 64, 4, over, vertical });
         EXPECT_EQ(s.result, VK_ERROR_FEATURE_NOT_PRESENT) << s.message;
         EXPECT_NE(s.message.find("radius"), std::string::npos) << s.message;
     }
     const GpuStatus s = recordBlurPass(*kernel, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
-                                       GpuBlurPass { 64, 64, 5, 3, false, true });
+                                       GpuBlurPass { 64, 64, 5, 3, false });
     EXPECT_EQ(s.result, VK_ERROR_FEATURE_NOT_PRESENT) << s.message;
 }
 
 TEST(BlurGroupCount, VerticalDirectPathCoversColumnBlocks)
 {
-    EXPECT_EQ(blurGroupCount({ 1000, 300, 4, 32, true, true }), (std::array<uint32_t, 3> { 3, 32, 1 }));
-    EXPECT_EQ(blurGroupCount({ 1000, 300, 4, 33, true, true }), (std::array<uint32_t, 3> { 1000, 3, 1 }));
-    EXPECT_EQ(blurGroupCount({ 1000, 300, 4, 3, false, true }), (std::array<uint32_t, 3> { 8, 300, 1 }));
+    EXPECT_EQ(blurGroupCount({ 1000, 300, 4, 32, true }), (std::array<uint32_t, 3> { 3, 32, 1 }));
+    EXPECT_EQ(blurGroupCount({ 1000, 300, 4, 33, true }), (std::array<uint32_t, 3> { 1000, 3, 1 }));
+    EXPECT_EQ(blurGroupCount({ 1000, 300, 4, 3, false }), (std::array<uint32_t, 3> { 8, 300, 1 }));
 }
 
 namespace {

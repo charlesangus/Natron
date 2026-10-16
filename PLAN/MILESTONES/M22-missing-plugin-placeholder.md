@@ -20,25 +20,25 @@ load with the plugin present is indistinguishable from never having lost it.
 
 ## Phase 22.1: Preserve the node
 
-- [ ] M22.P1.T1 — `MissingPluginNode` placeholder effect
+- [x] M22.P1.T1 — `MissingPluginNode` placeholder effect
   - files: `Engine/Nodes/MissingPluginNode.h`/`.cpp` (new), `Engine/EffectInstance.h` (`PLUGINID_NATRON_MISSING_PLUGIN` beside `PLUGINID_NATRON_READ`), `Engine/AppManager.cpp` (`loadBuiltinNodePlugins`), `Engine/CMakeLists.txt`
   - approach: derive from `NativeEffectBase`; register with `registerBuiltInPlugin<MissingPluginNode>("", false, true)` (`internalUseOnly`, like `RotoSmear`), not a reader or writer so the node picker excludes it. Holds the `Serialization::NodeSerializationPtr` passed through `kCreateNodeArgsPropNodeSerialization`; input count and labels come from its `inputs` keys (override `getNInputs()`/`getInputLabel()` if the description is static). Calls `setPersistentMessage(eMessageTypeError, ...)` naming the missing `pluginID` and version; `render` fails rather than passing through.
   - verify: gtest in `Tests/Serialization/` building one from a hand-built `NodeSerialization` (right input labels, error state), plus a `Tests/PluginIdentity_Test.cpp`-style check that the id is registered and internal-only.
   - size: M
 
-- [ ] M22.P1.T2 — Create the placeholder instead of skipping the node
+- [x] M22.P1.T2 — Create the placeholder instead of skipping the node
   - files: `Engine/NodeGroupSerialization.cpp` (`NodeCollection::restoreFromSerialization`: the `if (!n)` block ~:251-259, the connect pass ~:310-380)
   - approach: when `createNode` fails, retry once with `PLUGINID_NATRON_MISSING_PLUGIN` and the same serialization, keep the "does not exist in the loaded plug-ins" error-log entry and `mustShowErrorsLog`, and register the node in `createdNodes` so the connect pass wires it. Promote the connect-pass `qDebug()` failures to `appPTR->writeToErrorLog_mt_safe` when `createNodes` is true. Never recurse into a placeholder's `children`.
   - verify: a `Tests/Serialization/` test loads a project with a bogus plugin id: the placeholder exists with its script name and every edge in and out is intact.
   - size: M
 
-- [ ] M22.P1.T3 — Re-emit the stored serialization verbatim on save
+- [x] M22.P1.T3 — Re-emit the stored serialization verbatim on save
   - files: `Engine/ProjectSerializationConvert.cpp` (`Node::toSerialization`), `Engine/Nodes/MissingPluginNode.h` (getter for the stored serialization)
   - approach: early branch in `Node::toSerialization` for a placeholder: copy the stored serialization, then overwrite only `inputs` (from the live graph, since the user may rewire), `label`, `scriptName` and position/GUI fields from the live node; clear `oldInputs`. `knobsAge`/`cacheID` are session counters. `nodesToSerialization` needs no change.
   - verify: `ProjectXmlEquivalence`-style test (copy or hoist `saveProjectXml`/`loadProjectXml`/`reloadProjectXml`/`withoutSessionCounters`/`findSerializedNode` from `Tests/Serialization/ProjectXmlEquivalence_Test.cpp`): serialize a real built-in node, rename its `pluginID`, load, save, diff the node after `withoutSessionCounters`, rename back and reload to get the normal node with its knob values; plus a rewired-input case.
   - size: L
 
-- [ ] M22.P1.T4 — Stop the load-time silent save from committing losses
+- [x] M22.P1.T4 — Stop the load-time silent save from committing losses
   - files: `Engine/Project.cpp` (`loadProject`, ~:268-272), `Engine/ProjectPrivate.cpp` (~:214-220, where `mustSave` is set)
   - approach: in the `mustSave` branch after `loadProjectInternal`, skip `saveProject` when any node in `getNodes_recursive` is a `MissingPluginNode`, and log the skip to the error log.
   - verify: a test with a PyPlug-bump project plus a missing plugin leaves the file on disk unchanged (reuse `Tests/PyPlugInstantiate_Test.cpp`'s fixture if it can load a project; otherwise test the gate directly).
@@ -61,3 +61,4 @@ load with the plugin present is indistinguishable from never having lost it.
 - 2026-10-15 — **The placeholder must name the missing plug-in** (user): a dashed outline alone doesn't tell the user what the node was. The node shows a second line with the plug-in's short name and version, the tooltip and error carry the full id, and the panel gets a non-persistent info knob. Part of P2.T1.
 - 2026-10-15 — **P1 trade-offs** (P1.T3): user knobs are restored on the placeholder so expressions resolve, but edits to them are discarded on save; pre-label-format projects (inputs by index) lose a placeholder's connections after a re-save (no backward compat); copy/paste of a placeholder is untested.
 - 2026-10-15 — **Placeholder knobs are read-only** (user): the save writes the stored serialization verbatim, so edits would be silently lost. Every knob on a placeholder (restored user knobs, its info knob, the standard node knobs) is disabled; reading and expressions still work, renaming and rewiring stay allowed. Supersedes the "edits are discarded" trade-off above.
+- 2026-10-16 — **Phase 22.1 green** at 04114d053 (fast run 38833721805): 2252/2252 in legacy and taskgraph, all eight placeholder tests pass. Code: P1.T1 f5cb5042c, P1.T2 c5ccf7892 (+ 2b355f909 compile fix, 04114d053: `getPluginBinaryFromOldID` returns null rather than throwing, so the missing check never fired), P1.T3 84672be3f, P1.T4 136ea9827 (`hasMissingPluginNode` is tested directly; the skip itself only by reading). P2.T1 (2aa03bc4e, a93318759, 0f094e770, d77341eab) is built and green; its screenshot is pending.

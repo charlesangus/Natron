@@ -29,8 +29,10 @@
 #include <sys/stat.h>
 
 #include <algorithm>
+#include <functional>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
@@ -448,6 +450,84 @@ TEST_F(LazyHashTest, RotoPointMoveChangesTheRotoAndDownstreamHashesAndUndoRestor
 
     square->movePointByIndex(0, time, 2., 3.);
     EXPECT_EQ(rotoMoved, roto->getHashValue());
+
+    getApp()->getProject()->reset(false, true);
+}
+
+// Each shape memoizes its part of the Roto node's hash, so an edit of one shape rehashes that shape
+// and only combines the others' memos, however many there are.
+TEST_F(LazyHashTest, AnEditOfOneRotoShapeRehashesOnlyThatShape)
+{
+    getApp()->getProject()->reset(false, true);
+
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    NodePtr blur = createBlur();
+    ASSERT_TRUE(roto && blur);
+    connectNodes(roto, blur, 0, true);
+    RotoContextPtr context = roto->getRotoContext();
+    ASSERT_TRUE(bool(context));
+    const double time = context->getTimelineCurrentTime();
+    std::vector<BezierPtr> shapes;
+    for (int i = 0; i < 12; ++i) {
+        BezierPtr square = context->makeSquare(10. * i, 5., 4., time);
+        ASSERT_TRUE(bool(square));
+        shapes.push_back(square);
+    }
+    // A selected shape's knobs are slaved to the node's, which an edit of a shape knob would go
+    // through instead.
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    const U64 before = roto->getHashValue();
+    const U64 blurBefore = blur->getHashValue();
+
+    std::mutex rehashedMutex;
+    std::vector<const RotoItem*> rehashed;
+    // The hook refers to this frame, so it must not outlive it, even past a failed assertion.
+    struct HookGuard {
+        ~HookGuard() { RotoItem::setContentRehashedHookForTests(std::function<void(const RotoItem*)>()); }
+    } hookGuard;
+    RotoItem::setContentRehashedHookForTests([&rehashedMutex, &rehashed](const RotoItem* item) {
+        std::lock_guard<std::mutex> lock(rehashedMutex);
+        rehashed.push_back(item);
+    });
+    auto takeRehashed = [&rehashedMutex, &rehashed]() {
+        std::lock_guard<std::mutex> lock(rehashedMutex);
+        std::vector<const RotoItem*> taken;
+        taken.swap(rehashed);
+
+        return taken;
+    };
+
+    EXPECT_EQ(before, roto->getHashValue());
+    EXPECT_TRUE(takeRehashed().empty()) << "a read with no edit rehashed a shape";
+
+    const RotoItem* moved = shapes[7].get();
+    shapes[7]->movePointByIndex(0, time, 2., 3.);
+    const U64 afterMove = roto->getHashValue();
+    EXPECT_NE(before, afterMove);
+    EXPECT_NE(blurBefore, blur->getHashValue());
+    std::vector<const RotoItem*> afterMoveRehashed = takeRehashed();
+    EXPECT_FALSE(afterMoveRehashed.empty());
+    for (const RotoItem* item : afterMoveRehashed) {
+        EXPECT_EQ(moved, item) << "a point move rehashed a shape it did not touch";
+    }
+
+    const RotoItem* faded = shapes[3].get();
+    KnobDoublePtr opacity = shapes[3]->getOpacityKnob();
+    ASSERT_TRUE(bool(opacity));
+    const double opacityBefore = opacity->getValue();
+    opacity->setValue(opacityBefore * 0.5, ViewSpec::all(), 0);
+    const U64 afterFade = roto->getHashValue();
+    EXPECT_NE(afterMove, afterFade);
+    std::vector<const RotoItem*> afterFadeRehashed = takeRehashed();
+    EXPECT_FALSE(afterFadeRehashed.empty());
+    for (const RotoItem* item : afterFadeRehashed) {
+        EXPECT_EQ(faded, item) << "a knob edit rehashed a shape it did not touch";
+    }
+
+    opacity->setValue(opacityBefore, ViewSpec::all(), 0);
+    shapes[7]->movePointByIndex(0, time, -2., -3.);
+    EXPECT_EQ(before, roto->getHashValue()) << "the memos did not follow the edits back";
+    EXPECT_EQ(blurBefore, blur->getHashValue());
 
     getApp()->getProject()->reset(false, true);
 }

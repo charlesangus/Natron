@@ -4,13 +4,15 @@
 #   BENCH_TOPO=comp BENCH_N=200 BENCH_RES=hd NatronRenderer -b tools/bench/hash_bench.py
 #   BENCH_TOPO=roto BENCH_ROTO_SHAPES=200 BENCH_ROTO_POINTS=16 NatronRenderer -b tools/bench/hash_bench.py
 #
-# A "keystroke" is one setValue on a node at the top of the graph, timed from the call until it
-# returns. On the main thread that call recomputes the node's hash and every downstream hash
-# synchronously (Node::endChanges -> incrementKnobsAge -> computeHash), and nothing renders in
-# background mode, so the call is the keystroke-to-rehash latency plus the fixed cost of the
-# setValue path itself. That fixed cost (knobChanged, undo bookkeeping, Python binding) is measured
-# with a control edit of a hash-exempt knob (the node's user label) on the same node, and
-# subtracted: "net" is the hash cost alone.
+# A "keystroke" is one setValue on a node at the top of the graph, followed by a read of the content
+# hash of that node and of every node downstream of it, as a viewer render would read them. Hashes
+# are lazy: the setValue only marks the edited node dirty, and the reads mark its dependents and
+# recompute every dirty hash. The two are timed apart: "setvalue" from the call until it returns,
+# "recompute" the reads that follow it. Nothing renders in background mode, so the setValue time is
+# the mark plus the fixed cost of the setValue path itself. That fixed cost (knobChanged, undo
+# bookkeeping, Python binding) is measured with a control edit of a hash-exempt knob (the node's
+# user label) on the same node, and subtracted: "net" is the cost of the mark alone. The recompute
+# time includes one Python call per node read.
 #
 # The topologies are graph_bench.py's own builders, loaded from that file, so a name means the same
 # graph in both benches; BENCH_TOPO, BENCH_N, BENCH_RES, BENCH_SIZE, BENCH_SEED, BENCH_PLATES_DIR
@@ -185,11 +187,14 @@ def measure(label, node, edit, control, by_name, reach):
             raise RuntimeError("%s: the control edit changed the node's hash, so it measures "
                                "more than the setValue path" % label)
 
+    hnodes = [by_name[n] for n in names]
     for i in range(WARMUP):
         edit(i)
+        for h in hnodes:
+            h.getContentHash()
         if control is not None:
             control(i)
-    target, ctl = [], []
+    target, ctl, recomp = [], [], []
     clock = time.perf_counter
     for i in range(SAMPLES):
         # Interleaved so slow drift in machine load hits both series alike.
@@ -197,12 +202,15 @@ def measure(label, node, edit, control, by_name, reach):
         edit(WARMUP + i)
         t1 = clock()
         target.append(t1 - t0)
+        for h in hnodes:
+            h.getContentHash()
+        recomp.append(clock() - t1)
         if control is not None:
             c0 = clock()
             control(WARMUP + i)
             ctl.append(clock() - c0)
     out = {"name": label, "node": node.getScriptName(), "downstream": len(names) - 1,
-           "rehashed": rehashed, "samples": SAMPLES, "setvalue": stats_ms(target)}
+           "rehashed": rehashed, "samples": SAMPLES, "setvalue": stats_ms(target), "recompute": stats_ms(recomp)}
     if ctl:
         c_med = sorted(ctl)[len(ctl) // 2]
         out["control"] = stats_ms(ctl)

@@ -26,10 +26,11 @@
 #include "RotoItem.h"
 
 #include <algorithm> // min, max
-#include <sstream>
-#include <locale>
-#include <limits>
 #include <cassert>
+#include <limits>
+#include <locale>
+#include <mutex>
+#include <sstream>
 #include <stdexcept>
 
 #include <QLineF>
@@ -575,6 +576,31 @@ RotoItem::invalidateContentHash()
     }
 }
 
+namespace {
+std::mutex g_contentRehashedHookMutex;
+std::function<void(const RotoItem*)> g_contentRehashedHook;
+} // anonymous namespace
+
+void
+RotoItem::setContentRehashedHookForTests(const std::function<void(const RotoItem*)>& hook)
+{
+    std::lock_guard<std::mutex> lock(g_contentRehashedHookMutex);
+    g_contentRehashedHook = hook;
+}
+
+void
+RotoItem::notifyContentRehashedForTests() const
+{
+    std::function<void(const RotoItem*)> hook;
+    {
+        std::lock_guard<std::mutex> lock(g_contentRehashedHookMutex);
+        hook = g_contentRehashedHook;
+    }
+    if (hook) {
+        hook(this);
+    }
+}
+
 U64
 RotoItem::getContentHash() const
 {
@@ -590,6 +616,7 @@ RotoItem::getContentHash() const
         ContentHasher g;
         appendGeometryContentHash(g);
         geometry = g.finalize();
+        notifyContentRehashedForTests();
 
         QMutexLocker k(&_imp->contentHashMutex);
         if (!_imp->geometryHashValid || (_imp->geometryHashGeneration <= generation)) {

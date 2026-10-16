@@ -3398,7 +3398,7 @@ void
 EffectInstance::onSignificantEvaluateAboutToBeCalled(KnobI* knob)
 {
     //We changed, abort any ongoing current render to refresh them with a newer version
-    abortAnyEvaluation();
+    abortAnyEvaluationForChange();
 
     NodePtr node = getNode();
     if ( !node->isNodeCreated() ) {

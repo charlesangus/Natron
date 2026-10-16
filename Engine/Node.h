@@ -322,16 +322,6 @@ public:
 
     void hasOutputNodesConnected(std::list<OutputEffectInstance* >* writers) const;
 
-private:
-
-    void hasViewersConnectedInternal(std::list<ViewerInstance* >* viewers,
-                                     std::list<const Node*>* markedNodes) const;
-
-    void hasOutputNodesConnectedInternal(std::list<OutputEffectInstance* >* writers,
-                                         std::list<const Node*>* markedNodes) const;
-
-public:
-
     /**
      * @brief Forwarded to the live effect instance
      **/
@@ -676,6 +666,11 @@ public:
      * @brief Same as above but enters into subgroups
      **/
     void getOutputsWithGroupRedirection(NodesList& outputs) const;
+
+    /**
+     * @brief Same as getOutputsWithGroupRedirection(), appended to outputs.
+     **/
+    void appendOutputsWithGroupRedirection(std::vector<NodePtr>* outputs) const;
 
     /**
      * @brief Each input name is appended to the vector, in the same order
@@ -1794,12 +1789,19 @@ private:
      * @brief The nodes whose hash folds in this one's: outputs through group redirections, and
      * the internal nodes of a roto paint tree.
      **/
-    void getHashDependents(NodesList* dependents) const;
+    void getHashDependents(std::vector<NodePtr>* dependents) const;
+
+    struct HashInputs {
+        bool isViewer = false;
+        // By input slot: a viewer's two shown inputs, null when unconnected; for any other node
+        // the connected inputs it folds in.
+        std::vector<std::pair<int, NodePtr>> bySlot;
+    };
 
     /**
      * @brief The nodes whose stored hashes this node's hashes fold in.
      **/
-    void getHashInputs(std::vector<NodePtr>* inputs) const;
+    void getHashInputs(HashInputs* inputs) const;
 
     U32 getInputSlotCount() const;
 
@@ -1814,6 +1816,12 @@ private:
      * calls it first.
      **/
     static void flushHashDirtyMarks();
+
+    /**
+     * @brief flushHashDirtyMarks(), except when only reader is marked: none of the marks then
+     * reaches a hash reader folds in.
+     **/
+    static void flushHashDirtyMarksBeforeRead(const Node* reader);
 
     bool isHashDirty() const;
 
@@ -1836,9 +1844,9 @@ private:
      * @param projectDigest The project's content digest; 0 takes a fresh one.
      * @return True if the content hash has changed, false otherwise
      **/
-    bool computeHashInternal(U64 projectDigest, U64* contentHash) WARN_UNUSED_RETURN;
+    bool computeHashInternal(U64 projectDigest, const HashInputs& inputs, U64* contentHash) WARN_UNUSED_RETURN;
 
-    U64 computeContentHash(U64 projectDigest) const;
+    U64 computeContentHash(U64 projectDigest, const HashInputs& inputs) const;
 
     /**
      * @brief Digest of the render-hashed knobs by name, memoized until the effect's knobs content

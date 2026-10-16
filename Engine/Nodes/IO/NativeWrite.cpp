@@ -42,6 +42,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -1509,7 +1510,27 @@ NativeWrite::purgeCaches()
     clearActionsCache();
     // A file read or rewritten under an unchanged hash makes the node show other pixels than the
     // images cached under that hash hold.
-    getNode()->removeAllImagesFromCache(false);
+    NodePtr node = getNode();
+    node->removeAllImagesFromCache(false);
+
+    // Neither do the hashes downstream change, yet what those nodes cached was derived from what
+    // this one showed before: the layers they pass through and the images they rendered.
+    std::unordered_set<const Node*> visited;
+    NodesList toVisit;
+    node->getOutputsWithGroupRedirection(toVisit);
+    while (!toVisit.empty()) {
+        NodePtr output = toVisit.front();
+        toVisit.pop_front();
+        if (!output || !visited.insert(output.get()).second) {
+            continue;
+        }
+        EffectInstancePtr effect = output->getEffectInstance();
+        if (effect) {
+            effect->clearActionsCache();
+        }
+        output->removeAllImagesFromCache(false);
+        output->getOutputsWithGroupRedirection(toVisit);
+    }
 }
 
 void

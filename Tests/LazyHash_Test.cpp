@@ -226,7 +226,9 @@ TEST_F(LazyHashTest, AnEditRehashesOnlyTheBranchThatIsRead)
     std::vector<RenderedPlane> planes;
     std::string error;
     const std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
-    ASSERT_TRUE(renderNodePlanesDirect(viewedTail, 1., ViewIdx(0), 0, RectI(0, 0, 8, 8), layers, &planes, &error)) << error;
+    // Through the cache: a render that bypasses it first clears every cache, and clearing them
+    // refreshes the metadata and layers of every node in the project, which reads every hash.
+    ASSERT_TRUE(renderNodePlanesDirect(viewedTail, 1., ViewIdx(0), 0, RectI(0, 0, 8, 8), layers, &planes, &error, false)) << error;
     EXPECT_NE(viewedBefore, viewedTail->getStoredContentHash()) << "the render did not rehash what it rendered";
 
     EXPECT_EQ(unviewedBefore, unviewed->getStoredContentHash()) << "rendering one branch rehashed the other";

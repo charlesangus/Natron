@@ -206,8 +206,6 @@ struct LookupSetting {
     int luminanceMath;
     bool clampBlack;
     bool clampWhite;
-    double rangeMin;
-    double rangeMax;
     int curves;
 };
 
@@ -251,7 +249,6 @@ applySetting(const NodePtr& node,
     ASSERT_TRUE(setKnobValues(node, "luminanceMath", std::vector<double>(1, s.luminanceMath)));
     ASSERT_TRUE(setKnobValues(node, kColorLookupParamClampBlack, std::vector<double>(1, s.clampBlack ? 1. : 0.)));
     ASSERT_TRUE(setKnobValues(node, kColorLookupParamClampWhite, std::vector<double>(1, s.clampWhite ? 1. : 0.)));
-    ASSERT_TRUE(setKnobValues(node, kColorLookupParamRange, std::vector<double>({ s.rangeMin, s.rangeMax })));
     KnobParametric* table = dynamic_cast<KnobParametric*>(node->getKnobByName(kColorLookupParamLookupTable).get());
     ASSERT_TRUE(table != NULL);
     for (int d = 0; d < ColorLookup::eCurveCount; ++d) {
@@ -288,14 +285,15 @@ isDenormal(float f)
     return (f != 0.f) && (std::fabs(f) < std::numeric_limits<float>::min());
 }
 
-// Values in and around the range, on its edges, far outside it, and each edge a float either side.
+// Values in and around the table's domain [0, 1], on its edges, far outside it, and each edge a
+// float either side.
 std::vector<float>
 testValues(const LookupSetting& s,
            std::size_t count)
 {
     const float inf = std::numeric_limits<float>::infinity();
     std::vector<float> specials = { 0.f, 1.f, 0.5f, -0.5f, 1.5f, -3.f, 4.f, 50.f, 1e-9f, 0.001f, 0.999f };
-    for (double edge : { s.rangeMin, s.rangeMax }) {
+    for (double edge : { 0., 1. }) {
         const float f = (float)edge;
         specials.push_back(f);
         specials.push_back(std::nextafter(f, inf));
@@ -362,7 +360,7 @@ checkKernelOn(GpuParityRuntime& runtime,
     }
     const ImageDiff diff = compareImages(wantCompared, gotCompared, toleranceFor(setting.mode));
     EXPECT_EQ(0u, diff.mismatches) << "mode " << setting.mode << " luminance " << setting.luminanceMath << " clamp " << setting.clampBlack
-                                   << setting.clampWhite << " range " << setting.rangeMin << ".." << setting.rangeMax << " curves " << setting.curves
+                                   << setting.clampWhite << " curves " << setting.curves
                                    << " components " << nComps << " channels " << channelMask << ": first at compared float " << diff.firstMismatchIndex
                                    << " in " << srcCompared[diff.firstMismatchIndex] << " gpu " << gotCompared[diff.firstMismatchIndex] << " cpu "
                                    << wantCompared[diff.firstMismatchIndex];
@@ -421,9 +419,8 @@ class NativeColorLookupGpuTest
 #ifdef NATRON_HAVE_GPU
 
 // Each master-curve mode over default and edited curves (the edited ones with keys beyond the
-// range, so the directly evaluated branch outside it is probed), the clamps, a swapped and a
-// narrow range, and one, three and four components. The range edges are probed a float either
-// side. Within toleranceFor() the mode; weighted standard skips the colour of a pixel holding a
+// beyond 0..1, so the directly evaluated branch outside the table is probed), the clamps, and one,
+// three and four components. The table's edges are probed a float either side. Within toleranceFor() the mode; weighted standard skips the colour of a pixel holding a
 // denormal colour channel.
 TEST_F(NativeColorLookupGpuTest, MatchesTheCpuKernelInEveryMode)
 {
@@ -436,7 +433,6 @@ TEST_F(NativeColorLookupGpuTest, MatchesTheCpuKernelInEveryMode)
     NativeImageEffect* effect = effectOf(node);
     ASSERT_TRUE(effect != NULL);
 
-    const double ranges[][2] = { { 0., 1. }, { 0.2, 0.8 }, { 1.2, -0.4 }, { 0.5, 0.5 } };
     const unsigned channelMasks[] = { 0xF, 0x5, 0x8 };
     // Rec. 709, average and max: the others weigh a channel negatively, where cancellation in float
     // moves the luminance a relative amount the CPU's double does not.
@@ -446,28 +442,24 @@ TEST_F(NativeColorLookupGpuTest, MatchesTheCpuKernelInEveryMode)
 
     for (int mode = 0; mode < 4; ++mode) {
         for (int curves = 0; curves < 3; ++curves) {
-            for (const double* range : ranges) {
-                for (int clamps = 0; clamps < 4; ++clamps) {
-                    LookupSetting setting;
-                    setting.mode = mode;
-                    setting.luminanceMath = (mode == 3) ? luminanceMaths[(clamps + curves) % 3] : 0;
-                    setting.clampBlack = (clamps & 1) != 0;
-                    setting.clampWhite = (clamps & 2) != 0;
-                    setting.rangeMin = range[0];
-                    setting.rangeMax = range[1];
-                    setting.curves = curves;
-                    applySetting(node, setting);
-                    if (HasFatalFailure()) {
-                        return;
-                    }
-                    for (int nComps : { 1, 3, 4 }) {
-                        for (unsigned channelMask : channelMasks) {
-                            checkKernel(*runtime, effect, setting, nComps, channelMask, &nCompared);
-                            if (HasFatalFailure()) {
-                                return;
-                            }
-                            ++nCase;
+            for (int clamps = 0; clamps < 4; ++clamps) {
+                LookupSetting setting;
+                setting.mode = mode;
+                setting.luminanceMath = (mode == 3) ? luminanceMaths[(clamps + curves) % 3] : 0;
+                setting.clampBlack = (clamps & 1) != 0;
+                setting.clampWhite = (clamps & 2) != 0;
+                setting.curves = curves;
+                applySetting(node, setting);
+                if (HasFatalFailure()) {
+                    return;
+                }
+                for (int nComps : { 1, 3, 4 }) {
+                    for (unsigned channelMask : channelMasks) {
+                        checkKernel(*runtime, effect, setting, nComps, channelMask, &nCompared);
+                        if (HasFatalFailure()) {
+                            return;
                         }
+                        ++nCase;
                     }
                 }
             }
@@ -550,7 +542,7 @@ TEST_F(NativeColorLookupGpuTest, MatchesTheCpuRender)
     std::vector<LookupSetting> settings;
     for (int mode = 0; mode < 4; ++mode) {
         for (int curves = 0; curves < 2; ++curves) {
-            LookupSetting setting = { mode, 0, false, mode == 2, 0., 1., curves };
+            LookupSetting setting = { mode, 0, false, mode == 2, curves };
             settings.push_back(setting);
         }
     }
@@ -602,8 +594,8 @@ TEST_F(NativeColorLookupGpuTest, MatchesTheCpuRender)
     }
 }
 
-// Outside `range` the shader evaluates the curve from its keys. A key at 0.100000001 rounds to the
-// float 0.1f, which lies 4.9e-10 past it, and a slope of 1e9 after the key makes that 0.49: the
+// Above the table's domain the shader evaluates the curve from its keys. A key at 7.9999999 rounds
+// to the float 8.0f, which lies 1e-7 past it, and a slope of 5e6 after the key makes that 0.5: the
 // shader must take t minus the key time to the CPU's double precision. Floats around the key,
 // below it, and far past it, in the modes that hold transcendental().
 TEST_F(NativeColorLookupGpuTest, MatchesTheCpuPastASteepKeyBetweenFloats)
@@ -617,11 +609,11 @@ TEST_F(NativeColorLookupGpuTest, MatchesTheCpuPastASteepKeyBetweenFloats)
     NativeImageEffect* effect = effectOf(node);
     ASSERT_TRUE(effect != NULL);
 
-    const double key = 0.100000001;
+    const double key = 7.9999999;
     const float inf = std::numeric_limits<float>::infinity();
-    std::vector<float> values = { 0.f, 0.07f, 0.0999f, 0.12f, 0.5f, 1.f, 2.f, -1.f };
-    float above = 0.1f;
-    float below = 0.1f;
+    std::vector<float> values = { 0.f, 0.07f, 0.5f, 1.f, 2.f, 7.9f, 9.f, 20.f, -1.f };
+    float above = 8.f;
+    float below = 8.f;
     for (int i = 0; i < 12; ++i) {
         values.push_back(above);
         values.push_back(below);
@@ -637,16 +629,16 @@ TEST_F(NativeColorLookupGpuTest, MatchesTheCpuPastASteepKeyBetweenFloats)
     std::size_t nCompared = 0;
 
     for (int mode : { (int)ColorLookup::eMasterCurveModeStandard, (int)ColorLookup::eMasterCurveModeFilmLike }) {
-        LookupSetting setting = { mode, 0, false, false, 0., 0.05, 0 };
+        LookupSetting setting = { mode, 0, false, false, 0 };
         applySetting(node, setting);
-        setSteepCurves(node, 0., key, 1e9);
+        setSteepCurves(node, 0., key, 5e6);
         if (HasFatalFailure()) {
             return;
         }
         KnobParametric* table = dynamic_cast<KnobParametric*>(node->getKnobByName(kColorLookupParamLookupTable).get());
         ASSERT_TRUE(table != NULL);
-        const double atKey = CurveSnapshot(table->getParametricCurve(0)).valueAt(0.1f);
-        EXPECT_NEAR(1e9 * ((double)0.1f - key), atKey, 1e-6);
+        const double atKey = CurveSnapshot(table->getParametricCurve(0)).valueAt(8.f);
+        EXPECT_NEAR(5e6 * (8. - key), atKey, 1e-6);
         EXPECT_GT(atKey, 0.4);
         ASSERT_TRUE(makesGpuKernel(effect)) << "mode " << mode;
         checkKernelOn(*runtime, effect, setting, src, width, height, 4, 0xF, &nCompared);
@@ -654,6 +646,46 @@ TEST_F(NativeColorLookupGpuTest, MatchesTheCpuPastASteepKeyBetweenFloats)
             return;
         }
     }
+    EXPECT_GT(nCompared, 0u);
+}
+
+// Weighted standard interpolates toward 1 from the pixel's channel a, which at a = 1 would divide
+// by zero. Channels at 1, 2 and above give finite values on the CPU and the same on the GPU.
+TEST_F(NativeColorLookupGpuTest, WeightedStandardAtOrAboveOneIsFinite)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_COLORLOOKUP));
+    ASSERT_TRUE(bool(node));
+    NativeImageEffect* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+
+    LookupSetting setting = { (int)ColorLookup::eMasterCurveModeWeightedStandard, 0, false, false, 1 };
+    applySetting(node, setting);
+    if (HasFatalFailure()) {
+        return;
+    }
+    const float levels[] = { 0.f, 0.5f, 1.f, 2.f, 3.f };
+    std::vector<float> src;
+    for (float r : levels) {
+        for (float g : levels) {
+            for (float b : levels) {
+                src.push_back(r);
+                src.push_back(g);
+                src.push_back(b);
+                src.push_back(1.f);
+            }
+        }
+    }
+    const int width = (int)(src.size() / 4);
+    const std::vector<float> cpu = cpuKernelRender(effect, src, width, 1, 4, 0xF);
+    for (std::size_t i = 0; i < cpu.size(); ++i) {
+        EXPECT_TRUE(std::isfinite(cpu[i])) << "float " << i << " in " << src[i];
+    }
+    std::size_t nCompared = 0;
+    checkKernelOn(*runtime, effect, setting, src, width, 1, 4, 0xF, &nCompared);
     EXPECT_GT(nCompared, 0u);
 }
 
@@ -666,7 +698,7 @@ TEST_F(NativeColorLookupGpuTest, ACurveTooSteepToRepeatStaysOnTheCpu)
     ASSERT_TRUE(bool(node));
     NativeImageEffect* effect = effectOf(node);
     ASSERT_TRUE(effect != NULL);
-    LookupSetting setting = { 0, 0, false, false, 0., 1., 0 };
+    LookupSetting setting = { 0, 0, false, false, 0 };
     applySetting(node, setting);
     if (HasFatalFailure()) {
         return;
@@ -694,7 +726,7 @@ TEST_F(NativeColorLookupGpuTest, GradeColorLookupGradeChainRunsAsOneRegion)
     connectNodes(lookup, second, 0, true);
     ASSERT_TRUE(setKnobValues(first, "multiply", std::vector<double>(4, 1.5)));
     ASSERT_TRUE(setKnobValues(second, "offset", std::vector<double>(4, 0.25)));
-    LookupSetting setting = { 0, 0, false, false, 0., 1., 1 };
+    LookupSetting setting = { 0, 0, false, false, 1 };
     applySetting(lookup, setting);
     if (HasFatalFailure()) {
         return;

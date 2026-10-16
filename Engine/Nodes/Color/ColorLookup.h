@@ -38,7 +38,6 @@
 #define PLUGIN_MAJOR_NATRON_COLORLOOKUP 2
 
 #define kColorLookupParamHasBackgroundInteract "hasBackgroundInteract"
-#define kColorLookupParamRange "range"
 #define kColorLookupParamLookupTable "lookupTable"
 #define kColorLookupParamShowRamp "showRamp"
 #define kColorLookupParamDisplay "backgroundDisplay"
@@ -66,7 +65,7 @@ NATRON_NAMESPACE_ENTER
  *                      middle one placed between them, times each channel's own curve ratio
  *  - luminance:        the master curve applied to the luminance, its gain times each channel's
  *                      own curve
- * The alpha curve alone gives alpha. Inside `range` a 1024-entry table per curve is interpolated,
+ * The alpha curve alone gives alpha. Inside [0, 1] a 1024-entry table per curve is interpolated,
  * outside it the curve is evaluated directly. Knob names, defaults and maths are the
  * openfx-misc ColorLookupPlugin's; it registers under that plugin's ID one major above.
  **/
@@ -111,7 +110,7 @@ public:
 
     /**
      * @brief Counts the red, green and blue values of the source at `time` into 256 bins per
-     * channel across `range`, the first and last bins taking everything below and above it, and
+     * channel across [0, 1], the first and last bins taking everything below and above it, and
      * asks the curve editor to repaint. Pressing Update Histogram calls it, on the GUI thread.
      **/
     void updateHistogram(double time, ViewIdx view);
@@ -158,7 +157,6 @@ private:
     void addControlPointFromButton(KnobI* button, double time, ViewIdx view);
 
     KnobBoolWPtr _hasBackgroundInteract;
-    KnobDoubleWPtr _range;
     KnobParametricWPtr _lookupTable;
     KnobChoiceWPtr _display;
     KnobButtonWPtr _updateHistogram;

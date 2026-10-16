@@ -211,14 +211,13 @@ TEST_F(NativeColorLookupTest, FilmLike)
     expectParity(pair, "filmlike", true);
 }
 
-TEST_F(NativeColorLookupTest, LuminanceWithAWiderRange)
+TEST_F(NativeColorLookupTest, LuminanceMode)
 {
     ParityPair pair = makePair();
     ASSERT_TRUE(bool(pair.native));
     ASSERT_TRUE(editCurves(pair));
     ASSERT_TRUE(setKnobOnBoth(pair, kColorLookupParamMasterCurveMode, std::string("luminance")));
     ASSERT_TRUE(setKnobOnBoth(pair, "luminanceMath", std::string("acesap1")));
-    ASSERT_TRUE(setKnobOnBoth(pair, kColorLookupParamRange, { -0.5, 2. }));
     expectParity(pair, "luminance-range", true);
 }
 
@@ -266,18 +265,6 @@ TEST_F(NativeColorLookupTest, IdentityOnlyWhenMixIsZero)
     EXPECT_FALSE(identityOf(pair.native, window));
     ASSERT_TRUE(setKnobOnBoth(pair, "mix", { 0. }));
     EXPECT_TRUE(identityOf(pair.native, window));
-}
-
-TEST_F(NativeColorLookupTest, UserEditedRangeIsSwappedWhenReversed)
-{
-    NodePtr node = createNode(QString::fromUtf8(kColorLookupID), kNativeColorLookupMajor);
-    ASSERT_TRUE(isNative(node));
-    KnobDouble* range = dynamic_cast<KnobDouble*>(node->getKnobByName(kColorLookupParamRange).get());
-    ASSERT_TRUE(range != NULL);
-
-    range->setValues(0.8, 0.2, ViewSpec::all(), eValueChangedReasonUserEdited);
-    EXPECT_EQ(0.2, range->getValue(0));
-    EXPECT_EQ(0.8, range->getValue(1));
 }
 
 TEST_F(NativeColorLookupTest, NonPersistentColoursAndBackgroundControls)

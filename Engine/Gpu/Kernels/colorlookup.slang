@@ -91,7 +91,9 @@ struct ColorLookupOp : IPixelOp
                     return b;
                 return b + a2 * b / a;
             }
-            if (a2 == 0.0 && bFinite && a != 1.0)
+            if (a >= 1.0)
+                return b + a2;
+            if (a2 == 0.0 && bFinite)
                 return b;
             return b + a2 * (1.0 - b) / (1.0 - a);
         }

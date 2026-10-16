@@ -44,7 +44,6 @@
 #define kColorCorrectParamGamma "Gamma"
 #define kColorCorrectParamGain "Gain"
 #define kColorCorrectParamOffset "Offset"
-#define kColorCorrectParamRange "range"
 #define kColorCorrectParamToneRanges "toneRanges"
 #define kColorCorrectParamClampBlack "clampBlack"
 #define kColorCorrectParamClampWhite "clampWhite"
@@ -103,12 +102,6 @@ private:
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 
-    virtual bool knobChanged(KnobI* k,
-                             ValueChangedReasonEnum reason,
-                             ViewSpec view,
-                             double time,
-                             bool originatedFromMainThread) OVERRIDE FINAL;
-
     virtual PixelKernelPtr makeKernel(const KernelContext& context) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual int gpuKernelId(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -124,7 +117,6 @@ private:
     void addGroup(const KnobPagePtr& page, GroupEnum group, const std::string& name, bool open);
 
     GroupKnobs _groups[eGroupCount];
-    KnobDoubleWPtr _range;
     KnobParametricWPtr _toneRanges;
     KnobChoiceWPtr _luminanceMath;
     KnobBoolWPtr _clampBlack;

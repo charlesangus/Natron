@@ -48,8 +48,12 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
-// The tone LUT has this many intervals over `range`, as the OpenFX plugin's float path.
+// The tone LUT has this many intervals over [kToneLutMin, kToneLutMax]; a tone curve is evaluated
+// directly outside it. The unit interval is where the tone curves vary, so the table keeps its
+// resolution there however far the scene-linear values run.
 const int kToneLutIntervals = 1023;
+const double kToneLutMin = 0.;
+const double kToneLutMax = 1.;
 
 #ifdef NATRON_HAVE_GPU
 // The parameter block of ColorCorrectOp in colorcorrect.slang, in words.
@@ -129,14 +133,10 @@ class ColorCorrectKernel
 public:
     ColorCorrectKernel(const GroupValues groups[ColorCorrect::eGroupCount],
                        ColorMath::LuminanceMathEnum luminanceMath,
-                       double rangeMin,
-                       double rangeMax,
                        bool clampBlack,
                        bool clampWhite,
                        const CurveSnapshot curves[2])
         : _luminanceMath(luminanceMath)
-        , _rangeMin((std::min)(rangeMin, rangeMax))
-        , _rangeMax((std::max)(rangeMin, rangeMax))
         , _clampBlack(clampBlack)
         , _clampWhite(clampWhite)
     {
@@ -147,15 +147,12 @@ public:
                 _invGamma[g][i] = 1. / groups[g].gamma[i];
             }
         }
-        if (_rangeMin == _rangeMax) {
-            _rangeMax = _rangeMin + 1.;
-        }
         for (int curve = 0; curve < 2; ++curve) {
             _curves[curve] = curves[curve];
             _lut[curve].resize(kToneLutIntervals + 1);
             for (int position = 0; position <= kToneLutIntervals; ++position) {
-                const double parametricPos = _rangeMin + (_rangeMax - _rangeMin) * double(position) / kToneLutIntervals;
-                _lut[curve][position] = (float)clamp(curveValue(curve, parametricPos));
+                const double parametricPos = kToneLutMin + (kToneLutMax - kToneLutMin) * double(position) / kToneLutIntervals;
+                _lut[curve][position] = (float)toneClamp(curveValue(curve, parametricPos));
             }
         }
     }
@@ -177,7 +174,7 @@ public:
         putFloat(*words, kGpuWeights, (float)ColorMath::luminance(_luminanceMath, 1., 0., 0.));
         putFloat(*words, kGpuWeights + 1, (float)ColorMath::luminance(_luminanceMath, 0., 1., 0.));
         putFloat(*words, kGpuWeights + 2, (float)ColorMath::luminance(_luminanceMath, 0., 0., 1.));
-        CurveSnapshot::packGpuTableRange(_rangeMin, _rangeMax, kToneLutIntervals, &(*words)[kGpuTableRange]);
+        CurveSnapshot::packGpuTableRange(kToneLutMin, kToneLutMax, kToneLutIntervals, &(*words)[kGpuTableRange]);
         for (int g = 0; g < ColorCorrect::eGroupCount; ++g) {
             const GroupValues& group = _groups[g];
             const int base = kGpuGroups + g * kGpuGroupWords;
@@ -276,6 +273,19 @@ private:
         return value;
     }
 
+    // The tone weights stay in [0, 1] whatever the output clamps are, or the three groups would
+    // blend with weights that do not sum to one.
+    static double toneClamp(double value)
+    {
+        if (value < 0.) {
+            return 0.;
+        } else if (value > 1.) {
+            return 1.;
+        }
+
+        return value;
+    }
+
     double curveValue(int curve,
                       double parametricPos) const
     {
@@ -283,14 +293,14 @@ private:
     }
 
     // The weight of tone curve `curve` at luminance `value`: interpolated in the LUT inside
-    // `range`, the curve itself outside it. The float steps are the OpenFX plugin's.
+    // the table's domain, the curve itself outside it.
     float interpolate(int curve,
                       float value) const
     {
-        if ((value < _rangeMin) || (_rangeMax < value)) {
-            return static_cast<float>(clamp(curveValue(curve, value)));
+        if ((value < kToneLutMin) || (kToneLutMax < value)) {
+            return static_cast<float>(toneClamp(curveValue(curve, value)));
         }
-        const double x = (value - _rangeMin) / (_rangeMax - _rangeMin);
+        const double x = (value - kToneLutMin) / (kToneLutMax - kToneLutMin);
         if (x <= 0.) {
             return _lut[curve][0];
         } else if (x >= 1.) {
@@ -358,8 +368,6 @@ private:
     bool _active[ColorCorrect::eGroupCount];
     double _invGamma[ColorCorrect::eGroupCount][4];
     ColorMath::LuminanceMathEnum _luminanceMath;
-    double _rangeMin;
-    double _rangeMax;
     bool _clampBlack;
     bool _clampWhite;
     CurveSnapshot _curves[2];
@@ -504,23 +512,6 @@ ColorCorrect::initializeKnobs()
 
     KnobPagePtr ranges = createKnob<KnobPage>(tr("Ranges"));
     {
-        KnobDoublePtr range = createKnob<KnobDouble>(tr("Range"), 2);
-        range->setName(kColorCorrectParamRange);
-        range->setHintToolTip(tr("Expected range for input values. Within this range, a lookup table is used for faster computation."));
-        range->setDimensionName(0, "min");
-        range->setDimensionName(1, "max");
-        range->setDefaultValue(0., 0);
-        range->setDefaultValue(1., 1);
-        for (int i = 0; i < 2; ++i) {
-            range->setMinimum(-DBL_MAX, i);
-            range->setMaximum(DBL_MAX, i);
-            range->setDisplayMinimum(0., i);
-            range->setDisplayMaximum(1., i);
-        }
-        ranges->addKnob(range);
-        _range = range;
-    }
-    {
         KnobParametricPtr toneRanges = createKnob<KnobParametric>(tr("Tone Ranges"), 2);
         toneRanges->setName(kColorCorrectParamToneRanges);
         toneRanges->setHintToolTip(tr("Tone ranges lookup table"));
@@ -584,13 +575,6 @@ ColorCorrect::makeKernel(const KernelContext& context)
         readColor(knobs.offset, context.time, context.view, 0., groups[g].offset);
     }
 
-    double rangeMin = 0.;
-    double rangeMax = 1.;
-    if (KnobDoublePtr range = _range.lock()) {
-        rangeMin = range->getValueAtTime(context.time, 0, context.view);
-        rangeMax = range->getValueAtTime(context.time, 1, context.view);
-    }
-
     ColorMath::LuminanceMathEnum luminanceMath = ColorMath::eLuminanceMathRec709;
     if (KnobChoicePtr choice = _luminanceMath.lock()) {
         luminanceMath = (ColorMath::LuminanceMathEnum)choice->getValueAtTime(context.time, 0, context.view);
@@ -605,8 +589,6 @@ ColorCorrect::makeKernel(const KernelContext& context)
 
     return std::make_shared<ColorCorrectKernel>(groups,
                                                 luminanceMath,
-                                                rangeMin,
-                                                rangeMax,
                                                 readBool(_clampBlack, context.time, context.view, false),
                                                 readBool(_clampWhite, context.time, context.view, false),
                                                 curves);
@@ -669,28 +651,6 @@ ColorCorrect::isIdentityOp(double time,
         if (!values.isIdentity()) {
             return false;
         }
-    }
-
-    return true;
-}
-
-bool
-ColorCorrect::knobChanged(KnobI* k,
-                          ValueChangedReasonEnum reason,
-                          ViewSpec view,
-                          double time,
-                          bool /*originatedFromMainThread*/)
-{
-    KnobDoublePtr range = _range.lock();
-
-    if (!range || (k != range.get()) || (reason != eValueChangedReasonUserEdited)) {
-        return false;
-    }
-    const ViewIdx viewIdx = (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view);
-    const double rangeMin = range->getValueAtTime(time, 0, viewIdx);
-    const double rangeMax = range->getValueAtTime(time, 1, viewIdx);
-    if (rangeMax < rangeMin) {
-        range->setValues(rangeMax, rangeMin, ViewSpec::all(), eValueChangedReasonPluginEdited);
     }
 
     return true;

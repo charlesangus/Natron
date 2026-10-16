@@ -271,18 +271,6 @@ TEST_F(NativeColorCorrectTest, IdentityConditions)
     EXPECT_TRUE(identityOf(pair.native, window));
 }
 
-TEST_F(NativeColorCorrectTest, UserEditedRangeIsSwappedWhenReversed)
-{
-    NodePtr node = createNode(QString::fromUtf8(kColorCorrectID), kNativeColorCorrectMajor);
-    ASSERT_TRUE(isNative(node));
-    KnobDouble* range = dynamic_cast<KnobDouble*>(node->getKnobByName(kColorCorrectParamRange).get());
-    ASSERT_TRUE(range != NULL);
-
-    range->setValues(0.8, 0.2, ViewSpec::all(), eValueChangedReasonUserEdited);
-    EXPECT_EQ(0.2, range->getValue(0));
-    EXPECT_EQ(0.8, range->getValue(1));
-}
-
 TEST_F(NativeColorCorrectTest, BothSchedulerModesAgreeWithNoUnplannedPull)
 {
     ParityPair pair = makePair(true);

@@ -77,12 +77,22 @@ struct ColorCorrectOp : IPixelOp
         return (flags & (1u << (CC_ACTIVE_SHIFT + group))) != 0;
     }
 
-    // The weight of tone curve `curve` at luminance `value`: the table inside the range, the curve
-    // itself outside it, both clamped as the output is.
+    // The tone weights stay in [0, 1] whatever the output clamps are.
+    float clampTone(float v)
+    {
+        if (v < 0.0)
+            return 0.0;
+        else if (v > 1.0)
+            return 1.0;
+        return v;
+    }
+
+    // The weight of tone curve `curve` at luminance `value`: the table inside its domain, the curve
+    // itself outside it.
     float toneWeight(uint curve, float value)
     {
         if (range.outside(value))
-            return clampOut(curveSnapshotAt(CC_CURVE_BASE + curve * CS_CURVE_WORDS, wrapAux[CC_KEY_COUNT + curve],
+            return clampTone(curveSnapshotAt(CC_CURVE_BASE + curve * CS_CURVE_WORDS, wrapAux[CC_KEY_COUNT + curve],
                                             asfloat(wrapAux[CC_Y_MIN + curve]), asfloat(wrapAux[CC_Y_MAX + curve]), value));
         return range.at(CC_LUT_BASE + curve * CS_TABLE_SIZE, value);
     }

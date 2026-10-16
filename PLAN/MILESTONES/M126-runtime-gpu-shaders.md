@@ -46,7 +46,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 125.1: Compiler choice
 
-- [ ] M126.P1.T1 — Spike: choose the runtime compiler
+- [x] M126.P1.T1 — Spike: choose the runtime compiler
   - files: `.plan/PLAN/DESIGN/2026-10-13-runtime-shader-compiler.md` (new)
   - approach:
     - Compare libshaderc, glslang and libslang (runtime API) on:
@@ -117,3 +117,4 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 ## Decisions
 
 - 2026-10-13 — **OCIO's GPU path compiles OCIO's own shader at runtime** (user). This was chosen over translating OCIO ops into our kernels or baking a shaped 3D LUT. This milestone is split out from M127 - Native OCIO Nodes because it is backend infrastructure in E5 - GPU Compute that other runtime-generated shaders can reuse.
+- 2026-10-16 — **Runtime compiler: glslang, called directly, linked statically into `NatronGpu`** (user-confirmed, from M126.P1.T1's spike; see `PLAN/DESIGN/2026-10-13-runtime-shader-compiler.md`). Fetched by a new `cmake/FetchGlslang.cmake` on the `FetchSlang.cmake` pattern, built with `ENABLE_OPT=OFF` and no tools, installs or tests. A static link needs no change to `fetch-assets.sh` or the AppImage bundle. Descriptor layouts come from vendored SPIRV-Reflect. Rejected: shaderc, which only wraps glslang, and Slang's GLSL mode, which takes 182–254 ms per compile, uses a deprecated flag and adds 12.6 MB. Measured: about 63 ms for the first compile in a process, then 2.3 ms for a 317-line OCIO-style shader. Not yet confirmed: whether OCIO emits the `layout(set, binding)` qualifiers we need, and the Vulkan and SPIR-V target versions.

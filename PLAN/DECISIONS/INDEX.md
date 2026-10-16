@@ -95,3 +95,4 @@
 - 2026-10-13 — native-port-round-two: next OFX→native round: families, redesign+consolidate depth, GPU in each port, no order (port kit first), retired and stay-on-OFX lists → DECISIONS/2026-10-13-native-port-round-two.md
 - 2026-10-14 — parked-and-manifest-overlap: unowned blocked milestones (M64) and shared manifests/dirs (Tests/CMakeLists.txt, README, test/bench dirs) do not block claims; real shared sources still do → DECISIONS/2026-10-14-parked-and-manifest-overlap.md
 - 2026-10-14 — drop-nan-check: no app-wide NaN scan/replace after render; checkForNaNsAndFix, its renderHandler call and the NaN preference are removed (user) → DECISIONS/2026-10-14-drop-nan-check.md
+- 2026-10-16 — glslang-runtime-compiler-licence: runtime GLSL compiled with static glslang plus SPIRV-Reflect; Apache-2.0 parts make release binaries effectively GPL-3.0-or-later, accepted (user) → DECISIONS/2026-10-16-glslang-runtime-compiler-licence.md

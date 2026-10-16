@@ -105,6 +105,11 @@ public:
     ~FlagIncrementer();
 };
 
+enum CreateNodeStatusEnum {
+    eCreateNodeStatusCreated,
+    eCreateNodeStatusPluginNotFound,
+    eCreateNodeStatusFailed
+};
 
 class AppInstance
     : public QObject
@@ -184,6 +189,17 @@ public:
     /** @brief Create a new node  in the node graph.
     **/
     NodePtr createNode(CreateNodeArgs & args);
+
+    /**
+     * @brief Creates a node from the serialization in args. When its plug-in is not installed or
+     * cannot be instantiated, creates a MissingPluginNode holding that serialization instead, so
+     * that saving writes the node back unchanged. The serialization's children are never created
+     * for a placeholder. args is modified to name the plug-in that was used.
+     **/
+    NodePtr createNodeOrMissingPluginPlaceholder(CreateNodeArgs& args, bool* isPlaceholder);
+
+    NodePtr createMissingPluginPlaceholder(CreateNodeArgs& args);
+
     NodePtr createReader(const std::string& filename,
                          CreateNodeArgs& args);
 
@@ -492,7 +508,7 @@ private:
 
     void startNextQueuedRender(OutputEffectInstance* finishedWriter);
 
-    NodePtr createNodeInternal(CreateNodeArgs& args);
+    NodePtr createNodeInternal(CreateNodeArgs& args, CreateNodeStatusEnum* status = nullptr);
 
     void setGroupLabelIDAndVersion(const NodePtr& node,
                                    const QString& pythonModulePath,

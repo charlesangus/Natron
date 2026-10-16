@@ -259,6 +259,7 @@ Q_SIGNALS:
     void colorChanged(QColor);
 
 protected:
+    bool isHolderEditable() const;
 
     /**
      * @brief Called when the "center on..." button is clicked

@@ -113,6 +113,8 @@ public:
 
     void setHolder(KnobHolder* holder);
 
+    bool checkIsEditable() const;
+
     /////////////Functions to create custom parameters//////////////////////////
     ///////////////////////////////////////////////////////////////////////////
     //////////// A parameter may have some properties set after creation, though most of them are not dynamic:

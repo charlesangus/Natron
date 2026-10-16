@@ -189,6 +189,7 @@ NodeSettingsPanel::onSettingsButtonClicked()
 
     QAction* manageUserParams = new QAction(tr("Manage user parameters..."), &menu);
     QObject::connect( manageUserParams, SIGNAL(triggered()), this, SLOT(onManageUserParametersActionTriggered()) );
+    manageUserParams->setEnabled(node->getNode()->getEffectInstance()->getIsEditable());
     menu.addAction(manageUserParams);
 
     menu.addSeparator();
@@ -200,6 +201,12 @@ NodeSettingsPanel::onSettingsButtonClicked()
     QObject::connect( removeAnimationOnAll, SIGNAL(triggered()), this, SLOT(removeAnimationOnAllParameters()) );
     menu.addAction(setKeyOnAll);
     menu.addAction(removeAnimationOnAll);
+
+    if (!node->getNode()->getEffectInstance()->getIsEditable()) {
+        importPresets->setEnabled(false);
+        setKeyOnAll->setEnabled(false);
+        removeAnimationOnAll->setEnabled(false);
+    }
 
     if ( master || !node->getDagGui() || !node->getDagGui()->getGui() || node->getDagGui()->getGui()->isGUIFrozen() ) {
         importPresets->setEnabled(false);
@@ -214,6 +221,9 @@ NodeSettingsPanel::onSettingsButtonClicked()
 void
 NodeSettingsPanel::onImportPresetsActionTriggered()
 {
+    if (!isHolderEditable()) {
+        return;
+    }
     std::vector<std::string> filters;
 
     filters.push_back(NATRON_PRESETS_FILE_EXT);

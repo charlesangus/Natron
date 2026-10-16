@@ -25,21 +25,17 @@
 
 #include "Global/Macros.h"
 
-#include <cstddef>
-#include <exception>
 #include <list>
 #include <memory>
-#include <sstream>
 #include <string>
 
 #include <gtest/gtest.h>
 
-#include <QFile>
-#include <QRegularExpression>
 #include <QString>
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
+#include "ProjectXmlHelpers.h"
 #include "SyntheticProjectGraphs.h"
 
 #include "Engine/AppInstance.h"
@@ -53,75 +49,6 @@
 #include "Serialization/ProjectSerialization.h"
 
 NATRON_NAMESPACE_USING
-
-namespace {
-
-// The project files written here carry no GUI section, so they are always marked as saved by a
-// background app: loading one into a GUI app would otherwise read a GUI section next.
-std::string
-saveProjectXml(const Serialization::ProjectSerialization& serialization)
-{
-    std::stringstream buffer;
-    {
-        boost::archive::xml_oarchive archive(buffer);
-        bool backgroundProject = true;
-        archive << boost::serialization::make_nvp("Background_project", backgroundProject);
-        archive << boost::serialization::make_nvp("Project", serialization);
-    }
-
-    return buffer.str();
-}
-
-bool
-loadProjectXml(const std::string& xml,
-               Serialization::ProjectSerialization* serialization)
-{
-    try {
-        std::stringstream buffer(xml);
-        boost::archive::xml_iarchive archive(buffer);
-        bool backgroundProject = false;
-        archive >> boost::serialization::make_nvp("Background_project", backgroundProject);
-        archive >> boost::serialization::make_nvp("Project", *serialization);
-    } catch (const std::exception& e) {
-        ADD_FAILURE() << "Loading through Serialization/BoostXml failed: " << e.what();
-
-        return false;
-    }
-
-    return true;
-}
-
-// KnobsAge and CacheID are session counters, not saved state: a node's age moves on as soon as
-// the loaded graph is connected and its expressions are restored.
-std::string
-withoutSessionCounters(const std::string& xml)
-{
-    QString normalized = QString::fromUtf8(xml.c_str());
-    const char* const sessionCounterTags[] = { "KnobsAge", "CacheID" };
-
-    for (std::size_t i = 0; i < sizeof(sessionCounterTags) / sizeof(sessionCounterTags[0]); ++i) {
-        const QString tag = QString::fromUtf8(sessionCounterTags[i]);
-        QRegularExpression pattern(QString::fromUtf8("<%1>[^<]*</%1>").arg(tag));
-        normalized.replace(pattern, QString::fromUtf8("<%1>SESSION_COUNTER</%1>").arg(tag));
-    }
-
-    return normalized.toStdString();
-}
-
-Serialization::NodeSerializationPtr
-findSerializedNode(const std::list<Serialization::NodeSerializationPtr>& nodes,
-                   const std::string& pluginID)
-{
-    for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
-        if ((*it)->pluginID == pluginID) {
-            return *it;
-        }
-    }
-
-    return Serialization::NodeSerializationPtr();
-}
-
-} // anonymous namespace
 
 class ProjectXmlEquivalenceTest
     : public SyntheticProjectGraphTest {
@@ -145,36 +72,6 @@ protected:
         // first reload's save is expected to write the same XML again.
         eReloadExpectationFixedPoint
     };
-
-    // Writes xml to fileName in tmp, loads it as a project file and returns the XML saving that
-    // project writes.
-    std::string reloadProjectXml(const QTemporaryDir& tmp,
-                                 const QString& fileName,
-                                 const std::string& xml)
-    {
-        const QString directoryPath = tmp.path() + QLatin1Char('/');
-        {
-            QFile projectFile(directoryPath + fileName);
-            if (!projectFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-                ADD_FAILURE() << "Cannot write " << fileName.toStdString();
-
-                return std::string();
-            }
-            projectFile.write(xml.c_str(), (qint64)xml.size());
-        }
-        ProjectPtr project = getApp()->getProject();
-        if (!project->loadProject(directoryPath, fileName)) {
-            ADD_FAILURE() << "Cannot load " << fileName.toStdString();
-
-            return std::string();
-        }
-
-        Serialization::ProjectSerialization reloaded;
-        project->toSerialization(&reloaded);
-        project->toSerialization(&reloaded);
-
-        return saveProjectXml(reloaded);
-    }
 
     // Saves the graph built in the current project to XML, checks that reading that XML and
     // writing it again changes nothing, then loads it as a project file from tmp into a fresh
@@ -205,12 +102,12 @@ protected:
             EXPECT_EQ((unsigned int)NATRON_SERIALIZATION_NODE_VERSION, (*it)->version);
         }
 
-        const std::string reloadedXml = reloadProjectXml(tmp, QString::fromUtf8("round-trip.ntp"), savedXml);
+        const std::string reloadedXml = reloadProjectXml(getApp()->getProject(), tmp, QString::fromUtf8("round-trip.ntp"), savedXml);
         ASSERT_FALSE(reloadedXml.empty());
         if (reloadExpectation == eReloadExpectationSameXml) {
             EXPECT_EQ(withoutSessionCounters(savedXml), withoutSessionCounters(reloadedXml));
         } else {
-            const std::string reloadedAgainXml = reloadProjectXml(tmp, QString::fromUtf8("round-trip-again.ntp"), reloadedXml);
+            const std::string reloadedAgainXml = reloadProjectXml(getApp()->getProject(), tmp, QString::fromUtf8("round-trip-again.ntp"), reloadedXml);
             EXPECT_EQ(withoutSessionCounters(reloadedXml), withoutSessionCounters(reloadedAgainXml));
         }
     }

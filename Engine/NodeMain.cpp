@@ -328,6 +328,10 @@ Node::Implementation::storeKnobLinksRecursive(const Serialization::GroupKnobSeri
             const std::string knobName = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->knob.name);
             KnobIPtr knob = _publicInterface->getKnobByName(knobName);
             if (!knob) {
+                if (!_publicInterface->getEffectInstance()->getIsEditable()) {
+                    // A placeholder has none of the original knobs by design; their values stay in the stored serialization.
+                    continue;
+                }
                 LogEntry::LogEntryColor c;
                 if (_publicInterface->getColor(&c.r, &c.g, &c.b)) {
                     c.colorSet = true;
@@ -356,6 +360,10 @@ Node::storeKnobsLinks(const Serialization::NodeSerialization& serialization,
         const std::string knobName = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name);
         KnobIPtr knob = getKnobByName(knobName);
         if (!knob) {
+            if (!getEffectInstance()->getIsEditable()) {
+                // A placeholder has none of the original knobs by design; their values stay in the stored serialization.
+                continue;
+            }
             LogEntry::LogEntryColor c;
             if (getColor(&c.r, &c.g, &c.b)) {
                 c.colorSet = true;

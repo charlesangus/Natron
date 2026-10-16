@@ -40,6 +40,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/Settings.h"
@@ -62,7 +63,7 @@ static QString lookForFileRecursively(const QString& dirPath, const QString& fil
     }
     QStringList subDirs = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
     for (QStringList::const_iterator it = subDirs.begin(); it != subDirs.end(); ++it) {
-        QString ret = lookForFileRecursively(*it, filenameUnPathed);
+        QString ret = lookForFileRecursively(d.absoluteFilePath(*it), filenameUnPathed);
         if (!ret.isEmpty()) {
             return ret;
         }
@@ -147,6 +148,7 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
         const std::string& pythonModuleAbsolutePath = (*it)->pythonModule;
         NodePtr n;
         bool usingPythonModule = false;
+        bool pythonModuleIsMissing = false;
         if ( !pythonModuleAbsolutePath.empty() ) {
             unsigned int savedPythonModuleVersion = (*it)->pythonModuleVersion;
             QString qPyModulePath = QString::fromUtf8( pythonModuleAbsolutePath.c_str() );
@@ -165,7 +167,7 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
                 qPyModulePath.clear();
                 QStringList natronPaths = appPTR->getAllNonOFXPluginsPaths();
                 for (int i = 0; i < natronPaths.size(); ++i) {
-                    qPyModulePath = lookForFileRecursively(natronPaths[i], QString::fromUtf8(pythonModuleAbsolutePath.c_str()));
+                    qPyModulePath = lookForFileRecursively(natronPaths[i], QString::fromUtf8(pythonModuleUnPathed.c_str()));
                     if (!qPyModulePath.isEmpty()) {
                         break;
                     }
@@ -175,7 +177,9 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
 
             //This is a python group plug-in, try to find the corresponding .py file, maybe a more recent version of the plug-in exists.
             QFileInfo pythonModuleInfo(qPyModulePath);
-            if (!pythonModuleInfo.exists() || appPTR->getCurrentSettings()->isLoadFromPyPlugsEnabled() ) {
+            if (!pythonModuleInfo.exists()) {
+                pythonModuleIsMissing = true;
+            } else if (!appPTR->getCurrentSettings()->isLoadFromPyPlugsEnabled()) {
                 pluginID = PLUGINID_NATRON_GROUP;
                 usingPythonModule = false;
             } else {
@@ -237,6 +241,7 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
             minorVersion = (*it)->pluginMinorVersion;
         }
 
+        bool isPlaceholder = false;
         if (!n) {
             CreateNodeArgs args(pluginID, group);
             args.setProperty<int>(kCreateNodeArgsPropPluginVersion, majorVersion, 0);
@@ -248,15 +253,28 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
                 args.setProperty<std::string>(kCreateNodeArgsPropMultiInstanceParentName, (*it)->multiInstanceParentName);
             }
             args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
-            n = appInst->createNode(args);
+
+            if (pythonModuleIsMissing) {
+                appPTR->writeToErrorLog_mt_safe(tr("Project"), QDateTime::currentDateTime(),
+                                                tr("ERROR: The node %1 uses the PyPlug %2 (%3), which is not installed. "
+                                                   "It is kept as a placeholder and saved unchanged.")
+                                                    .arg(QString::fromUtf8((*it)->scriptName.c_str()))
+                                                    .arg(QString::fromUtf8(pluginID.c_str()))
+                                                    .arg(QString::fromUtf8(pythonModuleAbsolutePath.c_str())));
+                n = appInst->createMissingPluginPlaceholder(args);
+                isPlaceholder = bool(n);
+            } else {
+                n = appInst->createNodeOrMissingPluginPlaceholder(args, &isPlaceholder);
+            }
+            if (isPlaceholder) {
+                mustShowErrorsLog = true;
+            }
         }
         if (!n) {
-            QString text( tr("ERROR: The node %1 version %2.%3"
-                             " was found in the script but does not"
-                             " exist in the loaded plug-ins.")
-                          .arg( QString::fromUtf8( pluginID.c_str() ) )
-                          .arg(majorVersion).arg(minorVersion) );
-            appPTR->writeToErrorLog_mt_safe(tr("Project"), QDateTime::currentDateTime(), text);
+            appPTR->writeToErrorLog_mt_safe(tr("Project"), QDateTime::currentDateTime(),
+                                            tr("ERROR: The node %1 (%2) could not be created.")
+                                                .arg(QString::fromUtf8((*it)->scriptName.c_str()))
+                                                .arg(QString::fromUtf8(pluginID.c_str())));
             mustShowErrorsLog = true;
             continue;
         } else {
@@ -283,7 +301,8 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
         createdNodes[n] = *it;
 
         const std::list<Serialization::NodeSerializationPtr>& children = (*it)->children;
-        if ( !children.empty() && !usingPythonModule) {
+        // A placeholder keeps its children inside its stored serialization only.
+        if (!children.empty() && !usingPythonModule && !isPlaceholder) {
             NodeGroup* isGrp = n->isEffectGroup();
             if (isGrp) {
                 EffectInstancePtr sharedEffect = isGrp->shared_from_this();
@@ -351,9 +370,11 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
             for (U32 j = 0; j < oldInputs.size(); ++j) {
                 if ( !oldInputs[j].empty() && !group->connectNodes(isOfxEffect ? oldInputs.size() - 1 - j : j, oldInputs[j], it->first) ) {
                     if (createNodes) {
-                        qDebug() << tr("Failed to connect node %1 to %2 (this is normal if loading a PyPlug)")
-                                        .arg(QString::fromUtf8(it->second->scriptName.c_str()))
-                                        .arg(QString::fromUtf8(oldInputs[j].c_str()));
+                        appPTR->writeToErrorLog_mt_safe(tr("Project"), QDateTime::currentDateTime(),
+                                                        tr("Failed to connect node %1 to %2")
+                                                            .arg(QString::fromUtf8(it->second->scriptName.c_str()))
+                                                            .arg(QString::fromUtf8(oldInputs[j].c_str())));
+                        mustShowErrorsLog = true;
                     }
                 }
             }
@@ -372,9 +393,11 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
                 }
                 if ( !it2->second.empty() && !group->connectNodes(index, it2->second, it->first) ) {
                     if (createNodes) {
-                        qDebug() << tr("Failed to connect node %1 to %2 (this is normal if loading a PyPlug)")
-                                        .arg(QString::fromUtf8(it->second->scriptName.c_str()))
-                                        .arg(QString::fromUtf8(it2->second.c_str()));
+                        appPTR->writeToErrorLog_mt_safe(tr("Project"), QDateTime::currentDateTime(),
+                                                        tr("Failed to connect node %1 to %2")
+                                                            .arg(QString::fromUtf8(it->second->scriptName.c_str()))
+                                                            .arg(QString::fromUtf8(it2->second.c_str())));
+                        mustShowErrorsLog = true;
                     }
                 }
             }

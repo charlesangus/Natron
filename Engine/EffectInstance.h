@@ -89,6 +89,7 @@
 #define PLUGINID_NATRON_JOINVIEWS     (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.JoinViews")
 #define PLUGINID_NATRON_READ    (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Read")
 #define PLUGINID_NATRON_WRITE    (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Write")
+#define PLUGINID_NATRON_MISSING_PLUGIN (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.MissingPlugin")
 #define PLUGINID_NATRON_ONEVIEW    (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.OneView")
 
 #define kReaderParamNameOriginalFrameRange "originalFrameRange"
@@ -547,6 +548,9 @@ public:
     }
 
     virtual bool getMakeSettingsPanel() const { return true; }
+
+    // False for a node that is saved back exactly as it was read, where any change would be lost.
+    virtual bool getIsEditable() const { return true; }
 
     /**
      * @brief The layer/channel knob the host adds to this effect's main page. Image-producing

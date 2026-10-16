@@ -46,6 +46,7 @@
 #endif
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDebug>
 #include <QDir>
 #include <QDirIterator>
@@ -269,7 +270,14 @@ Project::loadProject(const QString & path,
         if ( !loadProjectInternal(realPath, realName, isAutoSave, isUntitledAutosave, &mustSave) ) {
             appPTR->showErrorLog();
         } else if (mustSave) {
-            saveProject(realPath, realName, 0);
+            // Saving now would replace the file with a version that no longer matches what the
+            // missing plug-in wrote.
+            if (hasMissingPluginNode()) {
+                appPTR->writeToErrorLog_mt_safe(tr("Project loader"), QDateTime::currentDateTime(),
+                                                tr("The project was not saved automatically after loading because a plug-in it uses is missing."));
+            } else {
+                saveProject(realPath, realName, 0);
+            }
         }
     } catch (const std::exception & e) {
         Dialogs::errorDialog( tr("Project loader").toStdString(), tr("Error while loading project: %1").arg( QString::fromUtf8( e.what() ) ).toStdString() );
@@ -297,6 +305,20 @@ Project::loadProject(const QString & path,
 
     return true;
 } // loadProject
+
+bool
+Project::hasMissingPluginNode() const
+{
+    NodesList nodes;
+    getNodes_recursive(nodes, false);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        if ((*it)->getPluginID() == PLUGINID_NATRON_MISSING_PLUGIN) {
+            return true;
+        }
+    }
+
+    return false;
+}
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 

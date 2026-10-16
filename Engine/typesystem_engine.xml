@@ -72,6 +72,13 @@
         </conversion-rule>
     </container-type>
     
+    <!--A null pointer result goes through Shiboken's ownership transfer, which clears any pending Python error, so the placeholder check has to return before the call-->
+    <template name="rejectNonEditableHolder">
+        if (!%CPPSELF.checkIsEditable()) {
+        return nullptr;
+        }
+    </template>
+
     <!--Templates for type conversions used many times-->
     <template name="stdListToPyList">
         PyObject* %out = PyList_New((int) %in.size());
@@ -891,106 +898,169 @@
     
     <object-type name="UserParamHolder" copyable="false">
     	<modify-function signature="createIntParam(QString,QString)">
+    	    <inject-code class="target" position="beginning">
+    	        <insert-template name="rejectNonEditableHolder"/>
+    	    </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
         <modify-function signature="createInt2DParam(QString,QString)">
+            <inject-code class="target" position="beginning">
+                <insert-template name="rejectNonEditableHolder"/>
+            </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
         <modify-function signature="createInt3DParam(QString,QString)">
+            <inject-code class="target" position="beginning">
+                <insert-template name="rejectNonEditableHolder"/>
+            </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
         <modify-function signature="createDoubleParam(QString,QString)">
+            <inject-code class="target" position="beginning">
+                <insert-template name="rejectNonEditableHolder"/>
+            </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
         <modify-function signature="createDouble2DParam(QString,QString)">
+            <inject-code class="target" position="beginning">
+                <insert-template name="rejectNonEditableHolder"/>
+            </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
         <modify-function signature="createDouble3DParam(QString,QString)">
+            <inject-code class="target" position="beginning">
+                <insert-template name="rejectNonEditableHolder"/>
+            </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
         <modify-function signature="createBooleanParam(QString,QString)">
+            <inject-code class="target" position="beginning">
+                <insert-template name="rejectNonEditableHolder"/>
+            </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
         <modify-function signature="createChoiceParam(QString,QString)">
+            <inject-code class="target" position="beginning">
+                <insert-template name="rejectNonEditableHolder"/>
+            </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
         <modify-function signature="createColorParam(QString,QString,bool)">
+            <inject-code class="target" position="beginning">
+                <insert-template name="rejectNonEditableHolder"/>
+            </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
         <modify-function signature="createStringParam(QString,QString)">
+            <inject-code class="target" position="beginning">
+                <insert-template name="rejectNonEditableHolder"/>
+            </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
         <modify-function signature="createFileParam(QString,QString)">
+            <inject-code class="target" position="beginning">
+                <insert-template name="rejectNonEditableHolder"/>
+            </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
         <modify-function signature="createOutputFileParam(QString,QString)">
+            <inject-code class="target" position="beginning">
+                <insert-template name="rejectNonEditableHolder"/>
+            </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
         <modify-function signature="createPathParam(QString,QString)">
+            <inject-code class="target" position="beginning">
+                <insert-template name="rejectNonEditableHolder"/>
+            </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
         <modify-function signature="createChannelSetParam(QString,QString)">
+            <inject-code class="target" position="beginning">
+                <insert-template name="rejectNonEditableHolder"/>
+            </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
         <modify-function signature="createLayerSelectParam(QString,QString,bool)">
+            <inject-code class="target" position="beginning">
+                <insert-template name="rejectNonEditableHolder"/>
+            </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
         <modify-function signature="createChannelSelectParam(QString,QString)">
+            <inject-code class="target" position="beginning">
+                <insert-template name="rejectNonEditableHolder"/>
+            </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
         <modify-function signature="createButtonParam(QString,QString)">
+            <inject-code class="target" position="beginning">
+                <insert-template name="rejectNonEditableHolder"/>
+            </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
         <modify-function signature="createSeparatorParam(QString,QString)">
+            <inject-code class="target" position="beginning">
+                <insert-template name="rejectNonEditableHolder"/>
+            </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
         <modify-function signature="createGroupParam(QString,QString)">
+            <inject-code class="target" position="beginning">
+                <insert-template name="rejectNonEditableHolder"/>
+            </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
         <modify-function signature="createPageParam(QString,QString)">
+            <inject-code class="target" position="beginning">
+                <insert-template name="rejectNonEditableHolder"/>
+            </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
         <modify-function signature="createParametricParam(QString,QString,int)">
+            <inject-code class="target" position="beginning">
+                <insert-template name="rejectNonEditableHolder"/>
+            </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
@@ -1136,6 +1206,9 @@
         </modify-function>-->
         
         <modify-function signature="getUserPageParam()const">
+            <inject-code class="target" position="beginning">
+                <insert-template name="rejectNonEditableHolder"/>
+            </inject-code>
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
@@ -2056,6 +2129,8 @@
     <rejection class="App" field-name="_instance"/>
     <rejection class="Effect" field-name="_node"/>
     <rejection class="*" field-name="_imp"/>
+    <rejection class="Param" function-name="checkIsEditable"/>
+    <rejection class="UserParamHolder" function-name="checkIsEditable"/>
     
     <object-type name="PyCoreApplication">
         <modify-function signature="getActiveInstance()const">

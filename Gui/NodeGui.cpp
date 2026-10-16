@@ -60,6 +60,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/MissingPluginNode.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/Plugin.h"
@@ -139,6 +140,13 @@ using std::make_pair;
 #endif
 
 static const qreal kDisabledCrossPenWidth = 2.;
+static const qreal kMissingPluginOutlineWidth = 2.;
+
+static QColor
+persistentErrorColor()
+{
+    return QColor(128, 0, 0, 255);
+}
 
 // A wide stroke ending on the box's corners would stick out of the box: pull each end in along
 // the diagonal until both corners of its flat cap sit inside the box.
@@ -753,6 +761,11 @@ NodeGui::createGui()
     int cornerRadiusPx = 0;
     _boundingBox = new NodeGraphRectItem(this, cornerRadiusPx);
     _boundingBox->setZValue(depth);
+    if (node->getPluginID() == PLUGINID_NATRON_MISSING_PLUGIN) {
+        QPen outline(persistentErrorColor(), TO_DPIX(kMissingPluginOutlineWidth), Qt::DashLine);
+        outline.setJoinStyle(Qt::MiterJoin);
+        _boundingBox->setPen(outline);
+    }
 
     _userColorBorder = new NodeGraphRectItem(this, cornerRadiusPx);
     _userColorBorder->setZValue(depth + 1.5);
@@ -2469,7 +2482,10 @@ NodeGui::onPersistentMessageChanged()
     if (node) {
         node->getPersistentMessage(&message, &type);
     }
-    _persistentMessage->setVisible( !message.isEmpty() );
+    // A placeholder is already marked by its dashed outline and "missing:" caption, which the
+    // overlay would be printed over; the message stays in the tooltip.
+    const bool isPlaceholder = node && node->getPluginID() == PLUGINID_NATRON_MISSING_PLUGIN;
+    _persistentMessage->setVisible(!message.isEmpty() && !isPlaceholder);
 
     if ( !node || message.isEmpty() ) {
         setToolTip( QString() );
@@ -2477,8 +2493,7 @@ NodeGui::onPersistentMessageChanged()
     } else if ((type == 1) || (type == 2)) {
         if (type == 1) {
             _persistentMessage->setText( tr("ERROR") );
-            QColor errColor(128, 0, 0, 255);
-            _persistentMessage->setBrush(errColor);
+            _persistentMessage->setBrush(persistentErrorColor());
         } else {
             _persistentMessage->setText( tr("WARNING") );
             QColor warColor(180, 180, 0, 255);
@@ -3449,6 +3464,12 @@ NodeGui::onLayerSelectionChanged()
     }
 
     QString extraLayerStr;
+    const MissingPluginNode* placeholder = dynamic_cast<const MissingPluginNode*>(internalNode->getEffectInstance().get());
+    if (placeholder) {
+        extraLayerStr = QString::fromUtf8("<font color=\"%1\">%2</font>")
+                            .arg(persistentErrorColor().name())
+                            .arg(placeholder->getMissingSummary().toHtmlEscaped());
+    }
     KnobIPtr layerKnob = internalNode->getLayerKnob();
     if (layerKnob) {
         std::string summary;

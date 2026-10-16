@@ -460,7 +460,8 @@ NodeGraph::cloneSelectedNodes(const QPointF& scenePos)
 
             return;
         }
-        if ( (*it)->getNode()->isMultiInstance() ) {
+        // A missing-plugin placeholder is saved back unchanged, so a clone of it would lose its link on save.
+        if ((*it)->getNode()->isMultiInstance() || !(*it)->getNode()->getEffectInstance()->getIsEditable()) {
             QString err = QString::fromUtf8("%1 cannot be cloned.").arg( QString::fromUtf8( (*it)->getNode()->getLabel().c_str() ) );
             Dialogs::errorDialog( tr("Clone").toStdString(),
                                   tr( err.toStdString().c_str() ).toStdString() );

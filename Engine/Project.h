@@ -91,6 +91,7 @@ public:
      **/
     bool loadProject(const QString & path, const QString & name, bool isUntitledAutosave = false, bool attemptToLoadAutosave = true);
 
+    bool hasMissingPluginNode() const;
 
     /**
      * @brief Saves the project with the given path and name corresponding to a file on disk.

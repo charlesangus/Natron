@@ -337,6 +337,7 @@ DockablePanel::DockablePanel(Gui* gui,
         _imp->_restoreDefaultsButton->setIconSize(mediumIconSize);
         _imp->_restoreDefaultsButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Restore default values for this operator."), NATRON_NAMESPACE::WhiteSpaceNormal) );
         _imp->_restoreDefaultsButton->setFocusPolicy(Qt::NoFocus);
+        _imp->_restoreDefaultsButton->setEnabled(isHolderEditable());
         QObject::connect( _imp->_restoreDefaultsButton, SIGNAL(clicked()), this, SLOT(onRestoreDefaultsButtonClicked()) );
         QObject::connect( _imp->_undoButton, SIGNAL(clicked()), this, SLOT(onUndoClicked()) );
         QObject::connect( _imp->_redoButton, SIGNAL(clicked()), this, SLOT(onRedoPressed()) );
@@ -664,9 +665,20 @@ DockablePanel::getHolder() const
     return _imp->_holder;
 }
 
+bool
+DockablePanel::isHolderEditable() const
+{
+    const EffectInstance* isEffect = dynamic_cast<const EffectInstance*>(_imp->_holder);
+
+    return !isEffect || isEffect->getIsEditable();
+}
+
 void
 DockablePanel::onRestoreDefaultsButtonClicked()
 {
+    if (!isHolderEditable()) {
+        return;
+    }
     std::list<KnobIPtr> knobsList;
     MultiInstancePanelPtr multiPanel = getMultiInstancePanel();
 
@@ -1595,6 +1607,7 @@ DockablePanel::onRightClickMenuRequested(const QPoint & pos)
         Menu menu(this);
         //menu.setFont( QFont(appFont,appFontSize) );
         QAction* userParams = new QAction(tr("Manage user parameters..."), &menu);
+        userParams->setEnabled(isEffect->getIsEditable());
         menu.addAction(userParams);
 
 
@@ -1628,7 +1641,7 @@ DockablePanel::onManageUserParametersActionTriggered()
         return;
     }
     EffectInstance* isEffect = dynamic_cast<EffectInstance*>(holder);
-    if (!isEffect) {
+    if (!isEffect || !isEffect->getIsEditable()) {
         return;
     }
     NodePtr node = isEffect->getNode();
@@ -1656,7 +1669,7 @@ void
 DockablePanel::setKeyOnAllParameters()
 {
     Gui* gui = getGui();
-    if (!gui) {
+    if (!gui || !isHolderEditable()) {
         return;
     }
     double time = gui->getApp()->getTimeLine()->currentFrame();
@@ -1711,7 +1724,7 @@ void
 DockablePanel::removeAnimationOnAllParameters()
 {
     Gui* gui = getGui();
-    if (!gui) {
+    if (!gui || !isHolderEditable()) {
         return;
     }
     std::map<CurveGuiPtr, std::vector<KeyFrame> > keysToRemove;

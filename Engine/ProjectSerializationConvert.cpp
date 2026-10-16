@@ -49,6 +49,7 @@
 #include "Engine/MemoryInfo.h" // isApplication32Bits
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/MissingPluginNode.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/ProjectPrivate.h"
 #include "Engine/RotoContext.h"
@@ -107,6 +108,19 @@ nodeToSerialization(const NodePtr& node)
     return serialization;
 }
 
+// Copies the children too, so a save never shares them with the serialization a placeholder holds.
+Serialization::NodeSerializationPtr
+deepCopyNodeSerialization(const Serialization::NodeSerialization& source)
+{
+    Serialization::NodeSerializationPtr copy = std::make_shared<Serialization::NodeSerialization>(source);
+
+    for (std::list<Serialization::NodeSerializationPtr>::iterator it = copy->children.begin(); it != copy->children.end(); ++it) {
+        *it = deepCopyNodeSerialization(**it);
+    }
+
+    return copy;
+}
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 void
@@ -117,6 +131,27 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
     *serialization = Serialization::NodeSerialization();
 
     EffectInstancePtr effect = getEffectInstance();
+
+    // A placeholder writes back the node it stands in for. Only what the user can change on the
+    // placeholder itself comes from the live node: its names and its connections.
+    const MissingPluginNode* placeholder = dynamic_cast<const MissingPluginNode*>(effect.get());
+    const Serialization::NodeSerializationPtr stored = placeholder ? placeholder->getStoredSerialization() : Serialization::NodeSerializationPtr();
+    if (stored) {
+        *serialization = *deepCopyNodeSerialization(*stored);
+        serialization->version = NATRON_SERIALIZATION_NODE_VERSION;
+        serialization->label = getLabel_mt_safe();
+        serialization->scriptName = getScriptName_mt_safe();
+        serialization->knobsAge = getKnobsAge();
+        serialization->cacheID = getCacheID();
+        serialization->inputs.clear();
+        serialization->oldInputs.clear();
+        if (serializeInputs) {
+            getInputNames(serialization->inputs);
+        }
+
+        return;
+    }
+
     if (isOpenFXNode()) {
         OfxEffectInstance* ofxEffect = dynamic_cast<OfxEffectInstance*>(effect.get());
         assert(ofxEffect);

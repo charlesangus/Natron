@@ -50,9 +50,32 @@
 NATRON_NAMESPACE_ENTER
 NATRON_PYTHON_NAMESPACE_ENTER
 
+bool
+checkHolderIsEditable(const KnobHolder* holder)
+{
+    const EffectInstance* effect = dynamic_cast<const EffectInstance*>(holder);
+
+    if (!effect || effect->getIsEditable()) {
+        return true;
+    }
+    NodePtr node = effect->getNode();
+    const std::string message = "The node " + (node ? node->getScriptName_mt_safe() : std::string()) + " stands in for a plug-in that is not installed and is saved back unchanged, so it cannot be modified.";
+    PyErr_SetString(PyExc_ValueError, message.c_str());
+
+    return false;
+}
+
 Param::Param(const KnobIPtr& knob)
     : _knob(knob)
 {
+}
+
+bool
+Param::checkIsEditable() const
+{
+    KnobIPtr knob = getInternalKnob();
+
+    return !knob || checkHolderIsEditable(knob->getHolder());
 }
 
 Param::~Param()
@@ -134,6 +157,9 @@ Param::getHelp() const
 void
 Param::setHelp(const QString& help)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIPtr knob = getInternalKnob();
 
     if ( !knob || !knob->isUserKnob() ) {
@@ -156,6 +182,9 @@ Param::getIsVisible() const
 void
 Param::setVisible(bool visible)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIPtr knob = getInternalKnob();
 
     if (!knob) {
@@ -167,6 +196,9 @@ Param::setVisible(bool visible)
 void
 Param::setVisibleByDefault(bool visible)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIPtr knob = getInternalKnob();
 
     if (!knob) {
@@ -190,6 +222,9 @@ void
 Param::setEnabled(bool enabled,
                   int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIPtr knob = getInternalKnob();
 
     if (!knob) {
@@ -201,6 +236,9 @@ Param::setEnabled(bool enabled,
 void
 Param::setEnabledByDefault(bool enabled)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIPtr knob = getInternalKnob();
 
     if (!knob) {
@@ -223,6 +261,9 @@ Param::getIsPersistent() const
 void
 Param::setPersistent(bool persistent)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIPtr knob = getInternalKnob();
 
     if ( !knob || !knob->isUserKnob() ) {
@@ -245,6 +286,9 @@ Param::getEvaluateOnChange() const
 void
 Param::setEvaluateOnChange(bool eval)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIPtr knob = getInternalKnob();
 
     if ( !knob || !knob->isUserKnob() ) {
@@ -278,6 +322,9 @@ Param::getIsAnimationEnabled() const
 void
 Param::setAnimationEnabled(bool e)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIPtr knob = getInternalKnob();
 
     if ( !knob || !knob->isUserKnob() ) {
@@ -300,6 +347,9 @@ Param::getAddNewLine()
 void
 Param::setAddNewLine(bool a)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIPtr knob = getInternalKnob();
 
     if ( !knob || !knob->isUserKnob() ) {
@@ -332,6 +382,9 @@ bool
 Param::copy(Param* other,
             int dimension)
 {
+    if (!checkIsEditable()) {
+        return false;
+    }
     KnobIPtr thisKnob = _knob.lock();
     KnobIPtr otherKnob = other->_knob.lock();
 
@@ -348,6 +401,9 @@ Param::slaveTo(Param* other,
                int thisDimension,
                int otherDimension)
 {
+    if (!checkIsEditable()) {
+        return false;
+    }
     KnobIPtr thisKnob = _knob.lock();
     KnobIPtr otherKnob = other->_knob.lock();
 
@@ -364,6 +420,9 @@ Param::slaveTo(Param* other,
 void
 Param::unslave(int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIPtr thisKnob = _knob.lock();
 
     if (!thisKnob) {
@@ -442,6 +501,9 @@ Param::setAsAlias(Param* other)
     if (!other) {
         return false;
     }
+    if (!other->checkIsEditable()) {
+        return false;
+    }
     KnobIPtr otherKnob = other->_knob.lock();
     KnobIPtr thisKnob = getInternalKnob();
     if ( !otherKnob || !thisKnob || ( otherKnob->typeName() != thisKnob->typeName() ) ||
@@ -455,6 +517,9 @@ Param::setAsAlias(Param* other)
 void
 Param::setIconFilePath(const QString& icon)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIPtr thisKnob = _knob.lock();
     if (!thisKnob) {
         return;
@@ -523,6 +588,9 @@ void
 AnimatedParam::deleteValueAtTime(double time,
                                  int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIPtr knob = getInternalKnob();
 
     if (!knob) {
@@ -534,6 +602,9 @@ AnimatedParam::deleteValueAtTime(double time,
 void
 AnimatedParam::removeAnimation(int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIPtr knob = getInternalKnob();
 
     if (!knob) {
@@ -583,6 +654,9 @@ AnimatedParam::setInterpolationAtTime(double time,
                                       KeyframeTypeEnum interpolation,
                                       int dimension)
 {
+    if (!checkIsEditable()) {
+        return false;
+    }
     KnobIPtr knob = getInternalKnob();
 
     if (!knob) {
@@ -622,6 +696,9 @@ AnimatedParam::setExpression(const QString& expr,
                              bool hasRetVariable,
                              int dimension)
 {
+    if (!checkIsEditable()) {
+        return false;
+    }
     KnobIPtr thisKnob = _knob.lock();
     if (!thisKnob) {
         return false;
@@ -749,6 +826,9 @@ Int3DParam::get(double frame) const
 void
 IntParam::set(int x)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if (!knob) {
         return;
@@ -760,6 +840,9 @@ void
 Int2DParam::set(int x,
                 int y)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if (!knob) {
         return;
@@ -775,6 +858,9 @@ Int3DParam::set(int x,
                 int y,
                 int z)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if (!knob) {
         return;
@@ -791,6 +877,9 @@ void
 IntParam::set(int x,
               double frame)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if (!knob) {
         return;
@@ -803,6 +892,9 @@ Int2DParam::set(int x,
                 int y,
                 double frame)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if (!knob) {
         return;
@@ -816,6 +908,9 @@ Int3DParam::set(int x,
                 int z,
                 double frame)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if (!knob) {
         return;
@@ -837,6 +932,9 @@ void
 IntParam::setValue(int value,
                    int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if (!knob) {
         return;
@@ -860,6 +958,9 @@ IntParam::setValueAtTime(int value,
                          double time,
                          int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if (!knob) {
         return;
@@ -871,6 +972,9 @@ void
 IntParam::setDefaultValue(int value,
                           int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if (!knob) {
         return;
@@ -891,6 +995,9 @@ IntParam::getDefaultValue(int dimension) const
 void
 IntParam::restoreDefaultValue(int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if (!knob) {
         return;
@@ -902,6 +1009,9 @@ void
 IntParam::setMinimum(int minimum,
                      int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if (!knob) {
         return;
@@ -923,6 +1033,9 @@ void
 IntParam::setMaximum(int maximum,
                      int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if ( !knob || !knob->isUserKnob() ) {
         return;
@@ -944,6 +1057,9 @@ void
 IntParam::setDisplayMinimum(int minimum,
                             int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if ( !knob || !knob->isUserKnob() ) {
         return;
@@ -965,6 +1081,9 @@ void
 IntParam::setDisplayMaximum(int maximum,
                             int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobIntPtr knob = _intKnob.lock();
     if (!knob) {
         return;
@@ -1093,6 +1212,9 @@ Double3DParam::get(double frame) const
 void
 DoubleParam::set(double x)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1104,6 +1226,9 @@ void
 Double2DParam::set(double x,
                    double y)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1117,6 +1242,9 @@ Double3DParam::set(double x,
                    double y,
                    double z)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1129,6 +1257,9 @@ void
 DoubleParam::set(double x,
                  double frame)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1141,6 +1272,9 @@ Double2DParam::set(double x,
                    double y,
                    double frame)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1152,6 +1286,9 @@ Double2DParam::set(double x,
 void
 Double2DParam::setUsePointInteract(bool use)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1163,6 +1300,9 @@ Double2DParam::setUsePointInteract(bool use)
 void
 Double2DParam::setCanAutoFoldDimensions(bool can)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     std::shared_ptr<KnobDouble> knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1177,6 +1317,9 @@ Double3DParam::set(double x,
                    double z,
                    double frame)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1199,6 +1342,9 @@ void
 DoubleParam::setValue(double value,
                       int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1222,6 +1368,9 @@ DoubleParam::setValueAtTime(double value,
                             double time,
                             int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1233,6 +1382,9 @@ void
 DoubleParam::setDefaultValue(double value,
                              int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1253,6 +1405,9 @@ DoubleParam::getDefaultValue(int dimension) const
 void
 DoubleParam::restoreDefaultValue(int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1264,6 +1419,9 @@ void
 DoubleParam::setMinimum(double minimum,
                         int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1285,6 +1443,9 @@ void
 DoubleParam::setMaximum(double maximum,
                         int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if ( !knob || !knob->isUserKnob() ) {
         return;
@@ -1306,6 +1467,9 @@ void
 DoubleParam::setDisplayMinimum(double minimum,
                                int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if ( !knob || !knob->isUserKnob() ) {
         return;
@@ -1327,6 +1491,9 @@ void
 DoubleParam::setDisplayMaximum(double maximum,
                                int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobDoublePtr knob = _doubleKnob.lock();
     if (!knob) {
         return;
@@ -1408,6 +1575,9 @@ ColorParam::set(double r,
                 double b,
                 double a)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobColorPtr knob = _colorKnob.lock();
     if (!knob) {
         return;
@@ -1429,6 +1599,9 @@ ColorParam::set(double r,
                 double a,
                 double frame)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobColorPtr knob = _colorKnob.lock();
     if (!knob) {
         return;
@@ -1458,6 +1631,9 @@ void
 ColorParam::setValue(double value,
                      int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobColorPtr knob = _colorKnob.lock();
     if (!knob) {
         return;
@@ -1481,6 +1657,9 @@ ColorParam::setValueAtTime(double value,
                            double time,
                            int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobColorPtr knob = _colorKnob.lock();
     if (!knob) {
         return;
@@ -1492,6 +1671,9 @@ void
 ColorParam::setDefaultValue(double value,
                             int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobColorPtr knob = _colorKnob.lock();
     if (!knob) {
         return;
@@ -1512,6 +1694,9 @@ ColorParam::getDefaultValue(int dimension) const
 void
 ColorParam::restoreDefaultValue(int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobColorPtr knob = _colorKnob.lock();
     if (!knob) {
         return;
@@ -1523,6 +1708,9 @@ void
 ColorParam::setMinimum(double minimum,
                        int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobColorPtr knob = _colorKnob.lock();
     if (!knob) {
         return;
@@ -1544,6 +1732,9 @@ void
 ColorParam::setMaximum(double maximum,
                        int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobColorPtr knob = _colorKnob.lock();
     if ( !knob || !knob->isUserKnob() ) {
         return;
@@ -1565,6 +1756,9 @@ void
 ColorParam::setDisplayMinimum(double minimum,
                               int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobColorPtr knob = _colorKnob.lock();
     if ( !knob || !knob->isUserKnob() ) {
         return;
@@ -1586,6 +1780,9 @@ void
 ColorParam::setDisplayMaximum(double maximum,
                               int dimension)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobColorPtr knob = _colorKnob.lock();
     if (!knob) {
         return;
@@ -1651,6 +1848,9 @@ ChoiceParam::get(double frame) const
 void
 ChoiceParam::set(int x)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobChoicePtr knob = _choiceKnob.lock();
     if (!knob) {
         return;
@@ -1662,6 +1862,9 @@ void
 ChoiceParam::set(int x,
                  double frame)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobChoicePtr knob = _choiceKnob.lock();
     if (!knob) {
         return;
@@ -1672,6 +1875,9 @@ ChoiceParam::set(int x,
 void
 ChoiceParam::set(const QString& label)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobChoicePtr knob = _choiceKnob.lock();
     if (!knob) {
         return;
@@ -1694,6 +1900,9 @@ ChoiceParam::getValue() const
 void
 ChoiceParam::setValue(int value)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobChoicePtr knob = _choiceKnob.lock();
     if (!knob) {
         return;
@@ -1704,6 +1913,9 @@ ChoiceParam::setValue(int value)
 void
 ChoiceParam::setValue(const QString& label)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     set(label);
 }
 
@@ -1721,6 +1933,9 @@ void
 ChoiceParam::setValueAtTime(int value,
                             double time)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobChoicePtr knob = _choiceKnob.lock();
     if (!knob) {
         return;
@@ -1731,6 +1946,9 @@ ChoiceParam::setValueAtTime(int value,
 void
 ChoiceParam::setDefaultValue(int value)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobChoicePtr knob = _choiceKnob.lock();
     if (!knob) {
         return;
@@ -1741,6 +1959,9 @@ ChoiceParam::setDefaultValue(int value)
 void
 ChoiceParam::setDefaultValue(const QString& value)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobChoicePtr knob = _choiceKnob.lock();
     if (!knob) {
         return;
@@ -1761,6 +1982,9 @@ ChoiceParam::getDefaultValue() const
 void
 ChoiceParam::restoreDefaultValue()
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobChoicePtr knob = _choiceKnob.lock();
     if (!knob) {
         return;
@@ -1772,6 +1996,9 @@ void
 ChoiceParam::addOption(const QString& option,
                        const QString& help)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobChoicePtr knob = _choiceKnob.lock();
 
     if ( !knob || !knob->isUserKnob() ) {
@@ -1785,6 +2012,9 @@ ChoiceParam::addOption(const QString& option,
 void
 ChoiceParam::setOptions(const std::list<std::pair<QString, QString> >& options)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobChoicePtr knob = _choiceKnob.lock();
 
     if ( !knob || !knob->isUserKnob() ) {
@@ -1893,6 +2123,9 @@ BooleanParam::get(double frame) const
 void
 BooleanParam::set(bool x)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobBoolPtr knob = _boolKnob.lock();
     if (!knob) {
         return;
@@ -1905,6 +2138,9 @@ void
 BooleanParam::set(bool x,
                   double frame)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobBoolPtr knob = _boolKnob.lock();
     if (!knob) {
         return;
@@ -1927,6 +2163,9 @@ BooleanParam::getValue() const
 void
 BooleanParam::setValue(bool value)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobBoolPtr knob = _boolKnob.lock();
     if (!knob) {
         return;
@@ -1950,6 +2189,9 @@ void
 BooleanParam::setValueAtTime(bool value,
                              double time)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobBoolPtr knob = _boolKnob.lock();
     if (!knob) {
         return;
@@ -1961,6 +2203,9 @@ BooleanParam::setValueAtTime(bool value,
 void
 BooleanParam::setDefaultValue(bool value)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobBoolPtr knob = _boolKnob.lock();
     if (!knob) {
         return;
@@ -1983,6 +2228,9 @@ BooleanParam::getDefaultValue() const
 void
 BooleanParam::restoreDefaultValue()
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobBoolPtr knob = _boolKnob.lock();
     if (!knob) {
         return;
@@ -2044,6 +2292,9 @@ StringParamBase::get(double frame) const
 void
 StringParamBase::set(const QString& x)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobStringBasePtr knob = _stringKnob.lock();
     if (!knob) {
         return;
@@ -2056,6 +2307,9 @@ void
 StringParamBase::set(const QString& x,
                      double frame)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobStringBasePtr knob = _stringKnob.lock();
     if (!knob) {
         return;
@@ -2078,6 +2332,9 @@ StringParamBase::getValue() const
 void
 StringParamBase::setValue(const QString& value)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobStringBasePtr knob = _stringKnob.lock();
     if (!knob) {
         return;
@@ -2101,6 +2358,9 @@ void
 StringParamBase::setValueAtTime(const QString& value,
                                 double time)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobStringBasePtr knob = _stringKnob.lock();
     if (!knob) {
         return;
@@ -2112,6 +2372,9 @@ StringParamBase::setValueAtTime(const QString& value,
 void
 StringParamBase::setDefaultValue(const QString& value)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobStringBasePtr knob = _stringKnob.lock();
     if (!knob) {
         return;
@@ -2134,6 +2397,9 @@ StringParamBase::getDefaultValue() const
 void
 StringParamBase::restoreDefaultValue()
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobStringBasePtr knob = _stringKnob.lock();
     if (!knob) {
         return;
@@ -2172,6 +2438,9 @@ StringParam::~StringParam()
 void
 StringParam::setType(StringParam::TypeEnum type)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobStringPtr knob = _sKnob.lock();
 
     if ( !knob || !knob->isUserKnob() ) {
@@ -2212,6 +2481,9 @@ FileParam::~FileParam()
 void
 FileParam::setSequenceEnabled(bool enabled)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobFilePtr k = _sKnob.lock();
 
     if ( !k || !k->isUserKnob() ) {
@@ -2225,6 +2497,9 @@ FileParam::setSequenceEnabled(bool enabled)
 void
 FileParam::openFile()
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobFilePtr k = _sKnob.lock();
 
     if (k) {
@@ -2257,6 +2532,9 @@ OutputFileParam::~OutputFileParam()
 void
 OutputFileParam::setSequenceEnabled(bool enabled)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobOutputFilePtr knob = _sKnob.lock();
 
     if ( !knob || !knob->isUserKnob() ) {
@@ -2272,6 +2550,9 @@ OutputFileParam::setSequenceEnabled(bool enabled)
 void
 OutputFileParam::openFile()
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobOutputFilePtr knob = _sKnob.lock();
 
     if ( !knob || !knob->isUserKnob() ) {
@@ -2295,6 +2576,9 @@ PathParam::~PathParam()
 void
 PathParam::setAsMultiPathTable()
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobPathPtr knob = _sKnob.lock();
 
     if ( !knob || !knob->isUserKnob() ) {
@@ -2306,6 +2590,9 @@ PathParam::setAsMultiPathTable()
 void
 PathParam::setTable(const std::list<std::vector<std::string> >& table)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobPathPtr k = _sKnob.lock();
     if (!k) {
         return;
@@ -2412,6 +2699,9 @@ ChannelSetParam::getRows(std::list<std::string>* modes,
 void
 ChannelSetParam::setNone()
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobChannelSetPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -2427,6 +2717,9 @@ ChannelSetParam::setNone()
 void
 ChannelSetParam::setAll()
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobChannelSetPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -2444,6 +2737,9 @@ ChannelSetParam::setLayer(const QString& layerID,
                           const QStringList& channels,
                           int row)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobChannelSetPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -2464,6 +2760,9 @@ void
 ChannelSetParam::setChannels(const QStringList& channels,
                              int row)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobChannelSetPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -2481,6 +2780,9 @@ void
 ChannelSetParam::setRegex(const QString& pattern,
                           int row)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobChannelSetPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -2497,6 +2799,9 @@ void
 ChannelSetParam::setExcludedChannels(const QStringList& channels,
                                      int row)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobChannelSetPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -2535,6 +2840,9 @@ int
 ChannelSetParam::addLayer(const QString& layerID,
                           const QStringList& channels)
 {
+    if (!checkIsEditable()) {
+        return -1;
+    }
     KnobChannelSetPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -2548,6 +2856,9 @@ ChannelSetParam::addLayer(const QString& layerID,
 int
 ChannelSetParam::addRegex(const QString& pattern)
 {
+    if (!checkIsEditable()) {
+        return -1;
+    }
     KnobChannelSetPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -2560,6 +2871,9 @@ ChannelSetParam::addRegex(const QString& pattern)
 void
 ChannelSetParam::removeRow(int row)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobChannelSetPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -2611,6 +2925,9 @@ LayerSelectParam::getLayer() const
 void
 LayerSelectParam::setLayer(const QString& layerID)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobLayerSelectPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -2642,6 +2959,9 @@ LayerSelectParam::getChannels() const
 void
 LayerSelectParam::setChannels(const QStringList& channels)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobLayerSelectPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -2694,6 +3014,9 @@ ChannelSelectParam::get() const
 void
 ChannelSelectParam::set(const QString& value)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobChannelSelectPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -2710,6 +3033,9 @@ ChannelSelectParam::set(const QString& value)
 void
 ChannelSelectParam::setNone()
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobChannelSelectPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -3096,6 +3422,9 @@ void
 ShuffleMapParam::connect(const QString& src,
                          const QString& dst)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobShuffleMapPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -3118,6 +3447,9 @@ ShuffleMapParam::connect(const QString& src,
 void
 ShuffleMapParam::disconnect(const QString& dst)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobShuffleMapPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -3186,6 +3518,9 @@ ShuffleMapParam::getConnections() const
 void
 ShuffleMapParam::reset()
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobShuffleMapPtr knob = _tKnob.lock();
 
     if (!knob) {
@@ -3253,12 +3588,15 @@ GroupParam::~GroupParam()
 void
 GroupParam::addParam(const Param* param)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     if (!param) {
         return;
     }
     KnobIPtr knob = param->getInternalKnob();
 
-    if ( !knob || !knob->isUserKnob() ) {
+    if (!knob || !knob->isUserKnob() || !checkHolderIsEditable(knob->getHolder())) {
         return;
     }
     KnobGroupPtr group = _groupKnob.lock();
@@ -3271,6 +3609,9 @@ GroupParam::addParam(const Param* param)
 void
 GroupParam::setAsTab()
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobGroupPtr group = _groupKnob.lock();
     if ( !group || !group->isUserKnob() ) {
         return;
@@ -3281,6 +3622,9 @@ GroupParam::setAsTab()
 void
 GroupParam::setOpened(bool opened)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobGroupPtr group = _groupKnob.lock();
     if (!group) {
         return;
@@ -3313,12 +3657,15 @@ PageParam::~PageParam()
 void
 PageParam::addParam(const Param* param)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     if (!param) {
         return;
     }
     KnobIPtr knob = param->getInternalKnob();
 
-    if ( !knob || !knob->isUserKnob() ) {
+    if (!knob || !knob->isUserKnob() || !checkHolderIsEditable(knob->getHolder())) {
         return;
     }
     KnobPagePtr pageKnob = _pageKnob.lock();
@@ -3346,6 +3693,9 @@ ParametricParam::setCurveColor(int dimension,
                                double g,
                                double b)
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobParametricPtr param = _parametricKnob.lock();
     if (!param) {
         return;
@@ -3371,6 +3721,9 @@ ParametricParam::addControlPoint(int dimension,
                                  double value,
                                  KeyframeTypeEnum interpolation)
 {
+    if (!checkIsEditable()) {
+        return eStatusFailed;
+    }
     KnobParametricPtr param = _parametricKnob.lock();
     if (!param) {
         return eStatusFailed;
@@ -3386,6 +3739,9 @@ ParametricParam::addControlPoint(int dimension,
                                  double rightDerivative,
                                  KeyframeTypeEnum interpolation)
 {
+    if (!checkIsEditable()) {
+        return eStatusFailed;
+    }
     KnobParametricPtr param = _parametricKnob.lock();
     if (!param) {
         return eStatusFailed;
@@ -3451,6 +3807,9 @@ ParametricParam::setNthControlPoint(int dimension,
                                     double leftDerivative,
                                     double rightDerivative)
 {
+    if (!checkIsEditable()) {
+        return eStatusFailed;
+    }
     KnobParametricPtr param = _parametricKnob.lock();
     if (!param) {
         return eStatusFailed;
@@ -3463,6 +3822,9 @@ ParametricParam::setNthControlPointInterpolation(int dimension,
                                                  int nThCtl,
                                                  KeyframeTypeEnum interpolation)
 {
+    if (!checkIsEditable()) {
+        return eStatusFailed;
+    }
     KnobParametricPtr param = _parametricKnob.lock();
     if (!param) {
         return eStatusFailed;
@@ -3474,6 +3836,9 @@ StatusEnum
 ParametricParam::deleteControlPoint(int dimension,
                                     int nthCtl)
 {
+    if (!checkIsEditable()) {
+        return eStatusFailed;
+    }
     KnobParametricPtr param = _parametricKnob.lock();
     if (!param) {
         return eStatusFailed;
@@ -3484,6 +3849,9 @@ ParametricParam::deleteControlPoint(int dimension,
 StatusEnum
 ParametricParam::deleteAllControlPoints(int dimension)
 {
+    if (!checkIsEditable()) {
+        return eStatusFailed;
+    }
     KnobParametricPtr param = _parametricKnob.lock();
     if (!param) {
         return eStatusFailed;
@@ -3494,6 +3862,9 @@ ParametricParam::deleteAllControlPoints(int dimension)
 void
 ParametricParam::setDefaultCurvesFromCurrentCurves()
 {
+    if (!checkIsEditable()) {
+        return;
+    }
     KnobParametricPtr param = _parametricKnob.lock();
     if (!param) {
         return;

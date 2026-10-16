@@ -44,10 +44,16 @@
 NATRON_NAMESPACE_ENTER;
 NATRON_PYTHON_NAMESPACE_ENTER;
 
+// Python writes bypass the enabled state the GUI honours, so every Python entry point that
+// modifies a node calls this: it raises a ValueError and returns false for a read-only node.
+bool checkHolderIsEditable(const KnobHolder* holder);
+
 class Param
 {
 protected:
     KnobIWPtr _knob;
+
+    bool checkIsEditable() const;
 
 public:
 

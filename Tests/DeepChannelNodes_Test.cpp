@@ -891,9 +891,9 @@ TEST_F(DeepChannelNodesTest, RegisteringALayerARowAlreadyNamesBumpsTheAgeAndTheN
     ASSERT_TRUE(before != NULL);
     EXPECT_FALSE(before->hasChannel("mask.A"));
 
-    const U64 age = add->getKnobsAge();
+    const U64 hashBefore = add->getHashValue();
     registerMask();
-    EXPECT_GT(add->getKnobsAge(), age);
+    EXPECT_NE(add->getHashValue(), hashBefore);
 
     DeepImagePtr after;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(add, &after));

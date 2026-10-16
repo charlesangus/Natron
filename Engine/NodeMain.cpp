@@ -189,9 +189,6 @@ Node::load(const CreateNodeArgs& args)
     getApp()->getProject()->pushOCIOConfigToNode(thisShared);
 
     _imp->runOnNodeCreatedCB(!serialization && !isLoadingPyPlug);
-
-    _imp->hashAuditArmed = true;
-    resetHashAudit(true);
 } // load
 
 

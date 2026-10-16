@@ -316,17 +316,17 @@ RotoStrokeItem::setStrokeFinished()
 
     if (effectNode) {
         effectNode->setWhileCreatingPaintStroke(false);
-        effectNode->incrementKnobsAge();
+        effectNode->markHashDirty();
     }
     mergeNode->setWhileCreatingPaintStroke(false);
-    mergeNode->incrementKnobsAge();
+    mergeNode->markHashDirty();
     if (timeOffsetNode) {
         timeOffsetNode->setWhileCreatingPaintStroke(false);
-        timeOffsetNode->incrementKnobsAge();
+        timeOffsetNode->markHashDirty();
     }
     if (frameHoldNode) {
         frameHoldNode->setWhileCreatingPaintStroke(false);
-        frameHoldNode->incrementKnobsAge();
+        frameHoldNode->markHashDirty();
     }
 
     getContext()->setWhileCreatingPaintStrokeOnMergeNodes(false);
@@ -456,7 +456,7 @@ RotoStrokeItem::addStroke(const CurvePtr& xCurve,
         QMutexLocker k(&itemMutex);
         _imp->strokes.push_back(s);
     }
-    incrementNodesAge();
+    invalidateContentHash();
 }
 
 bool
@@ -478,7 +478,7 @@ RotoStrokeItem::removeLastStroke(CurvePtr* xCurve,
         empty =  _imp->strokes.empty();
     }
 
-    incrementNodesAge();
+    invalidateContentHash();
 
     return empty;
 }
@@ -644,7 +644,7 @@ RotoStrokeItem::clone(const RotoItem* other)
         _imp->finished = true;
     }
     RotoDrawableItem::clone(other);
-    incrementNodesAge();
+    invalidateContentHash();
     resetNodesThreadSafety();
 }
 

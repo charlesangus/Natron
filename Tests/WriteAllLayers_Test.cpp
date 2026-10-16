@@ -168,7 +168,7 @@ renderAndRead(const AppInstancePtr& app,
 
 // A native Write fed by the three-layer fixture, set up to write a single-part, uncompressed
 // 32-bit float EXR. The channel set is the only knob a test changes between renders, so nothing
-// else can bump the Write's knobsAge in between.
+// else can move the Write's hash in between.
 class WriteAllLayersTest
     : public BaseTest {
 protected:

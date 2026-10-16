@@ -887,11 +887,11 @@ NativeRead::knobChanged(KnobI* k,
     if (reload && (k == reload.get())) {
         purgeCaches();
         clearPersistentMessage(false);
-        // The Reload bracket hashed this node before purgeCaches() dropped the file stamps. The
-        // age bump makes the recompute reach downstream nodes, which hashed the old stamps too.
+        // The Reload bracket hashed this node before purgeCaches() dropped the file stamps, and the
+        // downstream nodes hashed the old stamps too.
         NodePtr node = getNode();
         if (node) {
-            node->incrementKnobsAge();
+            node->markHashDirty();
         }
         for (const KnobFilePtr& file : { _filename.lock(), _proxy.lock() }) {
             if (file) {

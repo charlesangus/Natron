@@ -587,18 +587,6 @@ EffectInstance::shouldCacheOutput(bool isFrameVaryingOrAnimated,
     return n->shouldCacheOutput(isFrameVaryingOrAnimated, time, view, visitsCount);
 }
 
-U64
-EffectInstance::getKnobsAge() const
-{
-    return getNode()->getKnobsAge();
-}
-
-void
-EffectInstance::setKnobsAge(U64 age)
-{
-    getNode()->setKnobsAge(age);
-}
-
 const std::string &
 EffectInstance::getScriptName() const
 {
@@ -3426,10 +3414,6 @@ EffectInstance::onSignificantEvaluateAboutToBeCalled(KnobI* knob)
 
     if (isMT) {
         node->refreshIdentityState();
-
-        if (Node::isHashAuditEnabled()) {
-            node->noteHashAuditCause(knob ? knob->getName() : std::string("<no knob>"));
-        }
     }
     // Each reader recomputes what it reads, so only the nodes between this one and what is
     // looked at are rehashed. The viewers re-render through the evaluate() that follows, on the

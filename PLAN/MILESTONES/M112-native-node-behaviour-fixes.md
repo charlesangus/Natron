@@ -125,7 +125,7 @@ Scouted facts (2026-10-12, read-only audit on `milestone/m45-native-tab-menu`; r
   - approach: lines ~181/183 still look up `gt.widgets_of("NodeCreationDialog")`, which M45 - Native Tab Menu removed (the Tab menu is `TabTabTabWidget`, the completer `CompleterLineEdit`). Drive `TabTabTabWidget` the way `Tests/gui/m75_read.py` (~428–430) does.
   - verify: `Tests/gui/run-gui-test.sh Tests/gui/m76_write.py` passes under Xvfb.
   - size: M
-- [ ] M112.P5.T1 — UAT
+- [x] M112.P5.T1 — UAT
   - files: none (user acceptance)
   - approach: hand the user a build and a checklist:
     - a default Grade, ColorCorrect and Saturation pass ACEScg negatives and values above 1 untouched
@@ -159,3 +159,4 @@ Scouted facts (2026-10-12, read-only audit on `milestone/m45-native-tab-menu`; r
   
   The Blur render tests moved to a box filter, because the window-dependent IIR filter no longer matches a mask-shrunk OFX replay.
 - 2026-10-16 — **Review round (Codex, PR #66)**: 7 findings, all fixed in d747cfdb4 — clamp greying now follows an animated filter in Reformat and Transform; the alpha-threshold GPU path (`recordGpuFinish`, `GpuWrap`, `pixelwrap.slang`) and the `writeWindow` output callback and `alphaPlane` left over from the Blur trim are removed; four restating comments are deleted.
+- 2026-10-16 — **Merged as 93339c413 (PR #66)** after the Codex review round (7 findings, all fixed in d747cfdb4 and 3b7c0d8b7) and green CI. The user directed the merge and close-out in place of a separate UAT checklist pass; no UAT findings were recorded.

@@ -25,8 +25,10 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <functional>
 #include <iostream>
+#include <list>
 #include <string>
 #include <vector>
 
@@ -41,11 +43,15 @@
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
+#include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
@@ -58,14 +64,8 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const char* const kEdgeDetectID = PLUGINID_NATRON_EDGEDETECT;
-const int kOfxEdgeDetectMajor = 4;
 const int kNativeEdgeDetectMajor = PLUGIN_MAJOR_NATRON_EDGEDETECT;
 const double kTime = 1.;
-
-// The gradients come from the IIR and box line filters (double arithmetic, float storage between
-// passes, as in CImg) or from float finite differences; the combination, erosion and non-maxima
-// suppression repeat the OpenFX arithmetic, so the whole node is held to the IIR class.
-const ParityTolerance kEdgeDetectTolerance = ParityTolerance::iir();
 
 bool
 isNative(const NodePtr& node)
@@ -137,43 +137,6 @@ protected:
         project->reset(false, true);
         project->setAutoSetProjectFormatEnabled(true);
         project->setOrAddProjectFormat(Format(0, 0, kParitySourceWidth, kParitySourceHeight, "nativeEdgeDetect64x48", 1.));
-    }
-
-    ParityPair makePair(bool withMask = false)
-    {
-        ParityPair pair = makeParityPair(getApp(), kEdgeDetectID, kOfxEdgeDetectMajor, kNativeEdgeDetectMajor, withMask ? std::string("Mask") : std::string());
-
-        EXPECT_TRUE(bool(pair.native));
-        EXPECT_FALSE(pair.live()) << "the OFX EdgeDetect is retired, so parity replays the recorded references";
-        EXPECT_TRUE(isNative(pair.native));
-        if (pair.source) {
-            setParitySourceOrigin(pair.source, 0, 0);
-        }
-        // This host keeps the OpenFX plug-in's own R, G, B, A switches all on and applies the
-        // channel set afterwards, so the OpenFX EdgeDetect always folds alpha into the RMS, Max
-        // and Tensor combinations, even with A off. The native node combines only the channels
-        // it processes, so both are compared with alpha processed.
-        EXPECT_TRUE(processRGBA(pair.native));
-
-        return pair;
-    }
-
-    // Compares the pair at mipmap 0 and 1 over the source's region of definition, which is the
-    // full frame here, and prints the largest difference of each, so the tolerance actually needed
-    // is on record.
-    void expectParity(const ParityPair& pair,
-                      const std::string& caseName,
-                      const ParityTolerance& tolerance,
-                      bool record)
-    {
-        for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
-            const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, tolerance, record);
-            EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_FALSE(r.live);
-            EXPECT_GE(r.planesCompared, 1) << caseName;
-            std::cout << "[ parity ] EdgeDetect " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
-                      << ", max abs diff " << r.maxAbsDiff << std::endl;
-        }
     }
 
     // Renders `node` in Legacy mode and as a task graph at pool sizes 1 and 4 over its own region
@@ -275,42 +238,150 @@ TEST_F(NativeEdgeDetectTest, SourceRegionOfInterestAddsErosionAndSuppression)
     EXPECT_EQ(3, ry);
 }
 
-TEST_F(NativeEdgeDetectTest, DefaultGaussianTensor)
+// A unit step edge, blurred by an operator with a known step response, gives a gradient magnitude
+// of 1 at the edge whatever the blur size. Only the red channel is processed, so every
+// multi-channel combination is the magnitude of that one gradient.
+TEST_F(NativeEdgeDetectTest, UnitStepEdgeHasUnitGradientMagnitude)
 {
     resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamBlurSize, { 3. }));
-    expectParity(pair, "gaussian-tensor-3", kEdgeDetectTolerance, true);
+    const RectI format(0, 0, kParitySourceWidth, kParitySourceHeight);
+    const RectI whiteBox(kParitySourceWidth / 2, 0, kParitySourceWidth, kParitySourceHeight);
+    NodePtr black = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
+    NodePtr white = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE), PLUGIN_MAJOR_NATRON_MERGE);
+    NodePtr edge = createNode(QString::fromUtf8(kEdgeDetectID), kNativeEdgeDetectMajor);
+    ASSERT_TRUE(bool(black) && bool(white) && bool(merge));
+    ASSERT_TRUE(isNative(edge));
+    ASSERT_TRUE(setKnobValue(black, kNativeGeneratorParamExtent, std::string(kNativeGeneratorExtentProject)));
+    ASSERT_TRUE(setKnobValues(black, kConstantParamColor, { 0., 0., 0., 0. }));
+    ASSERT_TRUE(setKnobValue(white, kNativeGeneratorParamExtent, std::string(kNativeGeneratorExtentSize)));
+    ASSERT_TRUE(setKnobValues(white, kNativeGeneratorParamBottomLeft, { (double)whiteBox.x1, (double)whiteBox.y1 }));
+    ASSERT_TRUE(setKnobValues(white, kNativeGeneratorParamSize, { (double)whiteBox.width(), (double)whiteBox.height() }));
+    ASSERT_TRUE(setKnobValues(white, kConstantParamColor, { 1., 1., 1., 1. }));
+    ASSERT_TRUE(setKnobValue(merge, kMergeParamOperation, std::string("over")));
+    connectNodes(black, merge, 0, true);
+    connectNodes(white, merge, 1, true);
+    connectNodes(merge, edge, 0, true);
+
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(edge->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(bool(channels));
+    channels->setChannels(0, { "R" });
+
+    struct Operator {
+        const char* name;
+        double tolerance;
+    };
+    // The Gaussian-based operators are held to 3%: the step lies between two pixels, so the
+    // sampled peak sits half a pixel off the continuous one. The box and triangle normalisations
+    // are exact for CImg's discrete box sums followed by a centred difference; the quadratic one
+    // is the OpenFX plug-in's approximation, 0.6% off at size 12 and 1.5% at worst from size 7 up.
+    const Operator operators[] = {
+        { kEdgeDetectParamFilterGaussian, 0.03 },
+        { kEdgeDetectParamFilterQuasiGaussian, 0.03 },
+        { kEdgeDetectParamFilterSimple, 0.03 },
+        { kEdgeDetectParamFilterSobel, 0.03 },
+        { kEdgeDetectParamFilterRotationInvariant, 0.03 },
+        { kEdgeDetectParamFilterBox, 1e-3 },
+        { kEdgeDetectParamFilterTriangle, 1e-3 },
+        { kEdgeDetectParamFilterQuadratic, 0.01 },
+    };
+    const char* const combinations[] = {
+        kEdgeDetectParamMultiChannelSeparate,
+        kEdgeDetectParamMultiChannelRMS,
+        kEdgeDetectParamMultiChannelMax,
+        kEdgeDetectParamMultiChannelTensor,
+    };
+    ASSERT_TRUE(setKnobValues(edge, kEdgeDetectParamCropToFormat, { 0. }));
+    const RectI window = regionOfDefinition(edge, kTime).toPixelEnclosing(0, 1.);
+    ASSERT_GE(window.width(), format.width());
+    const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
+    for (const Operator& op : operators) {
+        ASSERT_TRUE(setKnobValue(edge, kEdgeDetectParamFilter, std::string(op.name)));
+        for (const double blurSize : { 12., 24. }) {
+            ASSERT_TRUE(setKnobValues(edge, kEdgeDetectParamBlurSize, { blurSize }));
+            for (const char* combination : combinations) {
+                ASSERT_TRUE(setKnobValue(edge, kEdgeDetectParamMultiChannel, std::string(combination)));
+                std::vector<RenderedPlane> planes;
+                std::string error;
+                ASSERT_TRUE(renderNodePlanesDirect(edge, kTime, ViewIdx(0), 0, window, rgba, &planes, &error)) << error;
+                ASSERT_EQ(1u, planes.size());
+                ASSERT_EQ(4u, planes[0].channels.size());
+                const int midRow = format.height() / 2;
+                float peak = 0.f;
+                for (int x = format.x1; x < format.x2; ++x) {
+                    const std::size_t at = ((std::size_t)(midRow - window.y1) * window.width() + (std::size_t)(x - window.x1)) * 4;
+                    peak = std::max(peak, planes[0].pixels[at]);
+                }
+                EXPECT_NEAR(1., peak, op.tolerance) << op.name << ", blur size " << blurSize << ", " << combination;
+            }
+        }
+    }
 }
 
-// Erosion leaves flat plateaus, so suppression then compares exactly tied neighbours. Only the
-// Gaussian gradients match the OpenFX plug-in bit for bit (it is built with -Ofast); Sobel's
-// differ by ulps, which flips those ties and whole edge pixels with them.
-TEST_F(NativeEdgeDetectTest, ErodeWithSuppression)
+// The filter runs over the window plus its halo whatever the mask, so the masked node is its
+// unmasked render blended with the source by mask x mix. The OpenFX plug-in shrank the filtered
+// window past mask-zero rows and columns, which moves the recursive filters' lines, so this is
+// checked against the node itself rather than a recorded reference.
+TEST_F(NativeEdgeDetectTest, MaskAndMixBlendTheUnmaskedRender)
 {
     resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamBlurSize, { 3. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamNMS, { 1. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamMultiChannel, std::string(kEdgeDetectParamMultiChannelSeparate)));
-    ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamErodeSize, { 2. }));
-    expectParity(pair, "gaussian-separate-erode2-nms", kEdgeDetectTolerance, true);
-}
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    NodePtr mask = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    NodePtr plain = createNode(QString::fromUtf8(kEdgeDetectID), kNativeEdgeDetectMajor);
+    NodePtr masked = createNode(QString::fromUtf8(kEdgeDetectID), kNativeEdgeDetectMajor);
+    ASSERT_TRUE(bool(source) && bool(mask));
+    ASSERT_TRUE(isNative(plain) && isNative(masked));
+    setParitySourceOrigin(source, 0, 0);
+    setParitySourceOrigin(mask, 8, 4);
+    connectNodes(source, plain, 0, true);
+    connectNodes(source, masked, 0, true);
+    connectNodes(mask, masked, 1, true);
+    for (const NodePtr& node : { plain, masked }) {
+        ASSERT_TRUE(processRGBA(node));
+        ASSERT_TRUE(setKnobValues(node, kEdgeDetectParamBlurSize, { 3. }));
+    }
+    ASSERT_TRUE(setKnobValues(masked, "enableMask_Mask", { 1. }));
+    ASSERT_TRUE(setChannelSelect(masked, "maskChannel_Mask", "rgba.A"));
+    const float mix = 0.5f;
+    ASSERT_TRUE(setKnobValues(masked, kOfxMixParamName, { (double)mix }));
 
-TEST_F(NativeEdgeDetectTest, MaskAndMix)
-{
-    resetProject();
-    ParityPair pair = makePair(true);
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(bool(pair.mask));
-    setParitySourceOrigin(pair.mask, 8, 4);
-    ASSERT_TRUE(setKnobOnBoth(pair, "enableMask_Mask", { 1. }));
-    ASSERT_TRUE(setChannelSelect(pair.native, "maskChannel_Mask", "rgba.A"));
-    ASSERT_TRUE(setKnobOnBoth(pair, kOfxMixParamName, { 0.5 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamBlurSize, { 3. }));
-    expectParity(pair, "mask-mix", kEdgeDetectTolerance, true);
+    const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
+    const ParityTolerance tolerance = ParityTolerance::arithmetic();
+    for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
+        const RectI window = paritySourceWindow(source, kTime, mipmapLevel);
+        std::vector<RenderedPlane> planes[4];
+        const NodePtr nodes[4] = { source, mask, plain, masked };
+        for (int n = 0; n < 4; ++n) {
+            std::string error;
+            ASSERT_TRUE(renderNodePlanesDirect(nodes[n], kTime, ViewIdx(0), mipmapLevel, window, rgba, &planes[n], &error)) << error;
+            ASSERT_EQ(1u, planes[n].size());
+            ASSERT_EQ(4u, planes[n][0].channels.size());
+            ASSERT_EQ((std::size_t)window.area() * 4, planes[n][0].pixels.size());
+        }
+        const std::vector<float>& src = planes[0][0].pixels;
+        const std::vector<float>& maskPixels = planes[1][0].pixels;
+        const std::vector<float>& filtered = planes[2][0].pixels;
+        const std::vector<float>& got = planes[3][0].pixels;
+        std::size_t mismatches = 0;
+        std::size_t partlyMasked = 0;
+        for (std::size_t i = 0; i < got.size(); i += 4) {
+            const float alpha = maskPixels[i + 3] * mix;
+            partlyMasked += ((alpha > 0.f) && (alpha < mix)) ? 1 : 0;
+            for (int c = 0; c < 4; ++c) {
+                const float want = (alpha == 0.f) ? src[i + c] : filtered[i + c] * alpha + (1.f - alpha) * src[i + c];
+                if (!tolerance.accepts(want, got[i + c])) {
+                    if (mismatches == 0) {
+                        const std::size_t at = i / 4;
+                        ADD_FAILURE() << "mipmap " << mipmapLevel << ": first at (" << (window.x1 + (int)(at % window.width())) << "," << (window.y1 + (int)(at / window.width())) << ") channel " << c
+                                      << " got " << got[i + c] << " want " << want;
+                    }
+                    ++mismatches;
+                }
+            }
+        }
+        EXPECT_EQ(0u, mismatches) << "mipmap " << mipmapLevel;
+        EXPECT_GT(partlyMasked, 0u) << "mipmap " << mipmapLevel << ": the mask has no fractional values";
+    }
 }
 
 TEST_F(NativeEdgeDetectTest, RendersTheSameInBothSchedulerModesAtAnyPoolSize)

@@ -25,8 +25,11 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <cmath>
 #include <functional>
 #include <iostream>
+#include <list>
 #include <string>
 #include <vector>
 
@@ -41,11 +44,13 @@
 #include "Engine/AppInstance.h"
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/ColorLookup.h"
 #include "Engine/Nodes/Image/ColorMath.h"
+#include "Engine/Nodes/Image/CurveSnapshot.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
@@ -211,15 +216,94 @@ TEST_F(NativeColorLookupTest, FilmLike)
     expectParity(pair, "filmlike", true);
 }
 
-TEST_F(NativeColorLookupTest, LuminanceWithAWiderRange)
+// Luminance mode scales each curved channel by master(l) / l, with l the pixel's luminance
+// floored at 1e-8. The curves hold real values: anything outside [0, 1] is the curve itself, and
+// inside it the 1023-interval table may differ from the curve only by its linear interpolation
+// error. An OpenFX recording cannot stand in: with a table range whose grid misses 0, its
+// interpolation error across the master's bend at 0, divided by the 1e-8 floor, scales every
+// pixel of negative luminance by a large factor of either sign.
+TEST_F(NativeColorLookupTest, LuminanceModeScalesTheCurvesByTheMasterOverLuminance)
 {
     ParityPair pair = makePair();
     ASSERT_TRUE(bool(pair.native));
     ASSERT_TRUE(editCurves(pair));
-    ASSERT_TRUE(setKnobOnBoth(pair, kColorLookupParamMasterCurveMode, std::string("luminance")));
-    ASSERT_TRUE(setKnobOnBoth(pair, "luminanceMath", std::string("acesap1")));
-    ASSERT_TRUE(setKnobOnBoth(pair, kColorLookupParamRange, { -0.5, 2. }));
-    expectParity(pair, "luminance-range", true);
+    ASSERT_TRUE(setKnobValue(pair.native, kColorLookupParamMasterCurveMode, "luminance"));
+    ASSERT_TRUE(setKnobValue(pair.native, "luminanceMath", "acesap1"));
+    KnobParametric* table = tableOf(pair.native);
+    ASSERT_TRUE(table != NULL);
+
+    CurveSnapshot curves[ColorLookup::eCurveCount];
+    for (int curve = 0; curve < ColorLookup::eCurveCount; ++curve) {
+        curves[curve] = CurveSnapshot(table->getParametricCurve(curve));
+    }
+
+    // Linear interpolation between table entries at x0 and x0 + h is off by at most
+    // (x - x0) (x0 + h - x) / 2 times the curve's largest |f''| there, measured here by second
+    // differences and doubled for safety.
+    const int intervals = 1023;
+    const double h = 1. / intervals;
+    double curvature[ColorLookup::eCurveCount];
+    for (int curve = 0; curve < ColorLookup::eCurveCount; ++curve) {
+        const int samples = 16 * intervals;
+        const double d = 1. / samples;
+        double m = 0.;
+        for (int i = 1; i < samples; ++i) {
+            const double x = i * d;
+            const double second = (curves[curve].valueAt(x + d) - 2. * curves[curve].valueAt(x) + curves[curve].valueAt(x - d)) / (d * d);
+            m = (std::max)(m, std::fabs(second));
+        }
+        curvature[curve] = 2. * m;
+    }
+    const auto tableError = [&](int curve, float value) {
+        const double v = value;
+        const double rounding = 2.4e-7 * std::fabs(curves[curve].valueAt(v));
+        if ((v < 0.) || (v > 1.)) {
+            return rounding;
+        }
+        const double x0 = std::floor(v * intervals) * h;
+        const double x1 = x0 + h;
+
+        return (v - x0) * (x1 - v) / 2. * curvature[curve] + 2.4e-7 * (std::fabs(curves[curve].valueAt(x0)) + std::fabs(curves[curve].valueAt(x1))) + rounding;
+    };
+
+    const RectI window = paritySourceWindow(pair.source, kTime, 0);
+    std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(pair.native, kTime, ViewIdx(0), 0, window, layers, &planes, &error)) << error;
+    ASSERT_EQ(1u, planes.size());
+    const RenderedPlane& plane = planes[0];
+    ASSERT_EQ(4u, plane.channels.size());
+    ASSERT_EQ((std::size_t)window.area() * 4, plane.pixels.size());
+
+    int flooredLuminance = 0;
+    int outsideUnit = 0;
+    const int channelCurves[3] = { ColorLookup::eCurveRed, ColorLookup::eCurveGreen, ColorLookup::eCurveBlue };
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            float src[3];
+            for (int c = 0; c < 3; ++c) {
+                src[c] = paritySourceColorValue(c, x, y, kTime);
+                outsideUnit += ((src[c] < 0.f) || (src[c] > 1.f)) ? 1 : 0;
+            }
+            const float luma = static_cast<float>(ColorMath::luminance(ColorMath::eLuminanceMathAcesAP1, src[0], src[1], src[2]));
+            const float l = (std::max)(luma, 1.e-8f);
+            flooredLuminance += (luma < 1.e-8f) ? 1 : 0;
+            const double master = curves[ColorLookup::eCurveMaster].valueAt(l);
+            const double masterError = tableError(ColorLookup::eCurveMaster, l);
+            const double coef = master / l;
+            const float* out = &plane.pixels[((std::size_t)(y - window.y1) * window.width() + (x - window.x1)) * 4];
+            for (int c = 0; c < 3; ++c) {
+                const double channel = curves[channelCurves[c]].valueAt(src[c]);
+                const double channelError = tableError(channelCurves[c], src[c]);
+                const double expected = coef * channel;
+                const double bound = std::fabs(coef) * channelError + (masterError / l) * (std::fabs(channel) + channelError) + 2.4e-7 * std::fabs(expected) + 1e-7;
+                EXPECT_NEAR(expected, out[c], bound) << "pixel (" << x << ", " << y << ") channel " << c << ", source " << src[c] << ", luminance " << luma;
+            }
+        }
+    }
+    EXPECT_GT(flooredLuminance, 0);
+    EXPECT_GT(outsideUnit, 0);
 }
 
 TEST_F(NativeColorLookupTest, SetButtonsAddCubicControlPoints)
@@ -266,18 +350,6 @@ TEST_F(NativeColorLookupTest, IdentityOnlyWhenMixIsZero)
     EXPECT_FALSE(identityOf(pair.native, window));
     ASSERT_TRUE(setKnobOnBoth(pair, "mix", { 0. }));
     EXPECT_TRUE(identityOf(pair.native, window));
-}
-
-TEST_F(NativeColorLookupTest, UserEditedRangeIsSwappedWhenReversed)
-{
-    NodePtr node = createNode(QString::fromUtf8(kColorLookupID), kNativeColorLookupMajor);
-    ASSERT_TRUE(isNative(node));
-    KnobDouble* range = dynamic_cast<KnobDouble*>(node->getKnobByName(kColorLookupParamRange).get());
-    ASSERT_TRUE(range != NULL);
-
-    range->setValues(0.8, 0.2, ViewSpec::all(), eValueChangedReasonUserEdited);
-    EXPECT_EQ(0.2, range->getValue(0));
-    EXPECT_EQ(0.8, range->getValue(1));
 }
 
 TEST_F(NativeColorLookupTest, NonPersistentColoursAndBackgroundControls)

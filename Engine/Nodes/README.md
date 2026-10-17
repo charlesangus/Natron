@@ -721,6 +721,18 @@ suite does. Each node parallelises its own render, within the thread budget
 - **Spatial filters** (`Blur`, `EdgeDetect`, `ErodeDilate`) parallelise over
   whole rows or whole columns, one line per task, never over the host's tile
   split. Their result is then independent of thread count and band layout.
+  Each filters the render window plus its halo, clipped to its region of
+  definition, whatever the mask; the mask and mix only blend the filtered
+  window with the source. A pixel's value then never depends on the mask
+  elsewhere, and through two render windows it is identical for the FIR
+  Gaussian, the finite-difference EdgeDetect filters and Erode/Dilate. The IIR
+  filters (quasi-Gaussian, Gaussian) start their recursion at the buffer's
+  edge, so their value at a pixel moves with the window: the halo,
+  max(3, ceil(1.5 size)), is about 3.6 sigma, and on the parity source at sizes
+  3 to 20 a pixel moved by up to 1.8e-2 (quasi-Gaussian) and 1e-2 (Gaussian)
+  between the full frame and a 1x1 window, about 1% of the input's range;
+  `NativeSpatialFilterWindow_Test.cpp` holds them to 2e-2. The box family is a
+  running sum in double whose rounding to float measured identical.
 - Other nodes with their own `render()` (`Merge`, `Dissolve`, `TransformNode`,
   `Crop`, `Reformat`, `Position`, `Keyer`, `ChromaKeyer`, the generators) split
   row bands the same way as point ops.
@@ -852,6 +864,21 @@ Measured exceptions and what they are not:
   ACES AP1 coefficients above. Keyer and ChromaKeyer with an RGB source treat
   alpha as 1 for Normal and add nothing for "Add to Inside Mask", where OFX
   reads out of bounds, and neither mirrors OFX's output-premult preference.
+  Grade, ColorCorrect and Saturation default "Clamp Black" off, so a default
+  node is an identity and passes negatives and values above 1 through; the
+  recorded cases turn it on, as OFX's default had it. Grade raises a gamma
+  below 0.01 to 0.01, where OFX made a gamma at or below 0 a step at 1; no
+  recorded case sets such a gamma. Blur, EdgeDetect and Erode/Dilate filter the
+  whole window plus the halo whatever the mask, where CImg shrinks it past
+  mask-zero rows and columns, which moves the IIR filters' lines. Blur's
+  `mask-mix` case trims only rows and columns within the halo of the frame's
+  edge, so its buffer, and its reference, are unchanged; EdgeDetect's is
+  replaced by a check of the mask blend against the node's own unmasked
+  render. Blur has no derivative orders (EdgeDetect computes derivatives), no
+  border-condition choice (it is black outside the image), no alpha threshold, no
+  "Expand RoD" (the region of definition always grows by the filter's reach) and no
+  "Uniform" toggle (the size knob folds its dimensions); the OFX plug-in's defaults
+  are those behaviours, so the recorded cases are unchanged.
 
 ### GPU parity
 
@@ -860,23 +887,25 @@ plugin, and states its tolerance in this section: a node row above gets a GPU
 bound beside its CPU class, or a measured exception below it, in the same change
 that lets the node answer `canRenderOnGpu()`. Vulkan division is 2.5 ulp and
 `pow` and the trigonometric functions are looser still, so a GPU bound is
-usually wider than the CPU class of the same node. Grade holds `gradefix::kUlpBound` (`Tests/Gpu/GradeFixture.h`) and Blur's FIR Gaussian holds
+usually wider than the CPU class of the same node. Grade holds `gradefix::kUlpBound` (`Tests/Gpu/GradeFixture.h`), or a per-value bound that grows with |ln y| and 1 / gamma for the float rounding of the exponent and of A * input + B; its 0.01 gamma floor is applied on the host before the parameters are packed, so the device never sees a gamma at or below 0, and is what keeps 1 / gamma, and with it that bound, small. A subnormal input may come back as anything between the results for 0 and for the smallest normal float, as a device's `log2` may flush it or misread its exponent, which at gamma 0.01 is an order-one difference. Blur's FIR Gaussian holds
 2e-6 absolute, plus 1e-6 relative with "(Un)premult by", whose divided values
 reach far above 1. Blur's quasi-Gaussian, Gaussian (IIR), box, triangle and quadratic filters hold `iir()`: one thread runs
 each line through the CPU's recursion with its state in two floats where the CPU uses double (plain float drifts past 1e-3
-for the IIR Gaussian at large sizes), and filters the same rect as render(), the window shrunk to the mask, grown by the
-halo and clipped to the region of definition. Derivative orders stay on the CPU (`Tests/Native/NativeBlurGpu_Test.cpp`).
+for the IIR Gaussian at large sizes), and filters the same rect as render(), the window grown by the
+halo and clipped to the region of definition. Blur's knobs are size, filter, "Crop To Format" and the standard channel, mask and mix
+knobs, so every setting of it is eligible for the GPU unless the FIR Gaussian's radius exceeds the kernel's tile
+(`Tests/Native/NativeBlurGpu_Test.cpp`).
 Clamp holds its CPU class, exact, except where a divisor, mask or mix below 1
 enters, which hold `arithmetic()` (`Tests/Native/NativeClampGpu_Test.cpp`).
 Invert holds its CPU class, exact, except where a divisor, mask or mix below 1
 enters, which hold `arithmetic()` (`Tests/Native/NativeInvertGpu_Test.cpp`).
 ColorLookup holds `transcendental()` in the standard and film-like modes, including values outside
-`range`, which the shader evaluates from the curve's keys with the key time and the cubic in two
+the table's fixed domain [0, 1], which the shader evaluates from the curve's keys with the key time and the cubic in two
 floats (a key time between two floats, times a steep slope, would otherwise move the value far
 beyond the bound), and blends the table in two floats to round as the CPU's double does. Weighted standard holds 5e-4 relative and luminance 3e-5: they
 divide a curve value by a channel's distance to 0 or 1, or by the luminance, which grows a float
 rounding as the divisor nears 0 (measured 2.1e-4 on RADV with "(Un)premult by", 1.3e-5 without, and
-1.05e-5 for luminance at the 1e-8 floor). Weighted standard also skips the colour of a pixel with a
+1.05e-5 for luminance at the 1e-8 floor). Weighted standard's triangle shifts a channel above a pixel channel at or over 1 by the move of that channel, where the OpenFX plug-in divided by zero or by a negative distance, and the shader does the same. Weighted standard also skips the colour of a pixel with a
 denormal colour channel, whose quotient depends on the device's denormal arithmetic. Pixels of two
 components stay on the CPU, as does a curve of more than 128 keys, and a curve `CurveSnapshot::packGpu`
 cannot bound within 1e-6 of the CPU: so steep before its first key that the CPU's own double
@@ -884,7 +913,7 @@ rounding exceeds that, or with values and slopes so large that two floats do not
 (`Tests/Native/NativeColorLookupGpu_Test.cpp`).
 Saturation holds its CPU class, transcendental, for every luminance option; the kernel takes the
 weights from the CPU's `ColorMath::luminance` (`Tests/Native/NativeSaturationGpu_Test.cpp`).
-ColorCorrect holds its CPU class, transcendental, in every group and luminance option, with the tone curves read from the CPU's table inside `range` and evaluated from their keys outside it, as ColorLookup does (shared through `CurveSnapshot::packGpu` and `Kernels/curvesnapshot.slang`, so in two floats past a steep key between two floats too); a curve of more than 128 keys, or one `packGpu` cannot bound within 1e-6 of the CPU, stays on the CPU (`Tests/Native/NativeColorCorrectGpu_Test.cpp`).
+ColorCorrect holds its CPU class, transcendental, in every group and luminance option, with the tone curves read from the CPU's table inside [0, 1] and evaluated from their keys outside it, as ColorLookup does, and the tone weights clamped to [0, 1] on both sides whatever the output clamps are (shared through `CurveSnapshot::packGpu` and `Kernels/curvesnapshot.slang`, so in two floats past a steep key between two floats too); a curve of more than 128 keys, or one `packGpu` cannot bound within 1e-6 of the CPU, stays on the CPU (`Tests/Native/NativeColorCorrectGpu_Test.cpp`).
 Constant and Solid hold their CPU class, exact, for every target layer and channel selection, with a source connected or not (`Tests/Native/NativeConstantGpu_Test.cpp`).
 CheckerBoard holds its CPU class, exact, at mipmap 0 and 1: the host classes every column and row of the region of definition with the CPU's double comparisons and the device looks the class up (`Tests/Native/NativeCheckerBoardGpu_Test.cpp`).
 Add and Multiply hold `arithmetic()` and Gamma holds `transcendental()`, where a subnormal input may come back as 0 on a device that flushes denormals (`Tests/Native/NativeColorMathGpu_Test.cpp`).

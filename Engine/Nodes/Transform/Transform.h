@@ -224,6 +224,8 @@ private:
 
     void updateShutterEnabled();
 
+    void updateClampEnabled(double time, ViewSpec view);
+
     /**
      * @brief Shows the uniform knob once it is checked or animated; with allowHiding, hides it
      * otherwise, as the OpenFX plug-in does when an instance is created.

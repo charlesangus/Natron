@@ -44,7 +44,6 @@
 #define kColorCorrectParamGamma "Gamma"
 #define kColorCorrectParamGain "Gain"
 #define kColorCorrectParamOffset "Offset"
-#define kColorCorrectParamRange "range"
 #define kColorCorrectParamToneRanges "toneRanges"
 #define kColorCorrectParamClampBlack "clampBlack"
 #define kColorCorrectParamClampWhite "clampWhite"
@@ -60,7 +59,8 @@ NATRON_NAMESPACE_ENTER
  *   gamma:      c = pow(c, 1 / gamma), for c > 0
  *   gain, then offset
  * and clampBlack/clampWhite clamp the result. Knob names, defaults and maths are the
- * openfx-misc ColorCorrectPlugin's; it registers under that plugin's ID one major above.
+ * openfx-misc ColorCorrectPlugin's, except that clampBlack defaults off so that a default node is
+ * an identity; it registers under that plugin's ID one major above.
  **/
 class ColorCorrect
     : public NativeImageEffect {
@@ -102,12 +102,6 @@ private:
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 
-    virtual bool knobChanged(KnobI* k,
-                             ValueChangedReasonEnum reason,
-                             ViewSpec view,
-                             double time,
-                             bool originatedFromMainThread) OVERRIDE FINAL;
-
     virtual PixelKernelPtr makeKernel(const KernelContext& context) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual int gpuKernelId(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -123,7 +117,6 @@ private:
     void addGroup(const KnobPagePtr& page, GroupEnum group, const std::string& name, bool open);
 
     GroupKnobs _groups[eGroupCount];
-    KnobDoubleWPtr _range;
     KnobParametricWPtr _toneRanges;
     KnobChoiceWPtr _luminanceMath;
     KnobBoolWPtr _clampBlack;

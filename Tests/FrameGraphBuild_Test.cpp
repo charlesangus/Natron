@@ -485,6 +485,8 @@ TEST_F(FrameGraphBuild, DiamondLadderCountsBothConsumers)
         ASSERT_TRUE(bool(left));
         ASSERT_TRUE(bool(right));
         ASSERT_TRUE(bool(join));
+        ASSERT_NO_FATAL_FAILURE(setGradeMultiply(left, 0.9));
+        ASSERT_NO_FATAL_FAILURE(setGradeMultiply(right, 1.1));
         ASSERT_TRUE(left->connectInput(previous, 0));
         ASSERT_TRUE(right->connectInput(previous, 0));
         ASSERT_TRUE(join->connectInput(left, 0));
@@ -494,6 +496,7 @@ TEST_F(FrameGraphBuild, DiamondLadderCountsBothConsumers)
     }
     NodePtr bottom = createNamedNode(app, PLUGINID_OFX_GRADE, "LadderBottom");
     ASSERT_TRUE(bool(bottom));
+    ASSERT_NO_FATAL_FAILURE(setGradeMultiply(bottom, 1.01));
     ASSERT_TRUE(bottom->connectInput(previous, 0));
 
     FrameRequestMap request;

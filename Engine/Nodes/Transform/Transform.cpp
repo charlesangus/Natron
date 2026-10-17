@@ -574,6 +574,7 @@ TransformNode::initializeKnobs()
     _srcClipChanged = srcClipChanged;
 
     updateShutterEnabled();
+    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 
     NodePtr node = getNode();
     if (node) {
@@ -605,6 +606,18 @@ TransformNode::updateShutterEnabled()
 }
 
 void
+TransformNode::updateClampEnabled(double time, ViewSpec view)
+{
+    KnobChoicePtr filter = _filter.lock();
+    KnobBoolPtr clamp = _clamp.lock();
+
+    if (!filter || !clamp) {
+        return;
+    }
+    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
+}
+
+void
 TransformNode::updateUniformVisibility(bool allowHiding)
 {
     KnobBoolPtr uniform = _uniform.lock();
@@ -624,6 +637,7 @@ void
 TransformNode::onKnobsLoaded()
 {
     updateShutterEnabled();
+    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
     updateUniformVisibility(true);
 }
 
@@ -641,7 +655,7 @@ TransformNode::onInputChanged(int inputNo)
 bool
 TransformNode::knobChanged(KnobI* k,
                            ValueChangedReasonEnum reason,
-                           ViewSpec /*view*/,
+                           ViewSpec view,
                            double time,
                            bool /*originatedFromMainThread*/)
 {
@@ -661,6 +675,12 @@ TransformNode::knobChanged(KnobI* k,
         if (edited && centerChanged && !centerChanged->getValue()) {
             centerChanged->setValue(true);
         }
+
+        return true;
+    }
+    KnobChoicePtr filterKnob = _filter.lock();
+    if (filterKnob && (k == filterKnob.get())) {
+        updateClampEnabled(time, view);
 
         return true;
     }
@@ -1023,10 +1043,6 @@ TransformNode::isIdentity(double time,
 
     const Resampler::BlurSettings blur = getBlurSettings(time, view);
     if ((blur.shutter != 0.) && (blur.motionBlur != 0.)) {
-        return false;
-    }
-    KnobBoolPtr clamp = _clamp.lock();
-    if (clamp && clamp->getValueAtTime(time, 0, view)) {
         return false;
     }
     TransformMath::TransformParams p;

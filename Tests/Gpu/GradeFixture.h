@@ -42,6 +42,8 @@ constexpr uint32_t kClampBlack = 2;
 constexpr uint32_t kClampWhite = 4;
 
 constexpr int64_t kUlpBound = 4;
+// Mirrors kGradeMinGamma in Grade.cpp: the host raises any lower gamma to it before packing.
+constexpr double kMinGamma = 0.01;
 constexpr uint32_t kHeight = 3;
 
 struct KnobSet {
@@ -87,6 +89,12 @@ makeKnobs(std::mt19937& rng)
     return k;
 }
 
+inline float
+hostGamma(float knobGamma)
+{
+    return static_cast<float>((knobGamma > kMinGamma) ? static_cast<double>(knobGamma) : kMinGamma);
+}
+
 inline std::vector<float>
 makeSweep()
 {
@@ -103,6 +111,8 @@ makeSweep()
 
 struct GradeCase {
     GradeParams p;
+    // The gamma knob as set, which may lie below kMinGamma; p.gamma holds what the host packs.
+    float knobGamma[4];
     bool reverse;
     std::vector<float> src;
 };
@@ -124,8 +134,9 @@ makeCases()
                 for (int i = 0; i < 4; ++i) {
                     p.a[i] = knobs.a[i];
                     p.b[i] = knobs.b[i];
-                    p.gamma[i] = knobs.gamma[i];
-                    p.invGamma[i] = static_cast<float>(1.0 / static_cast<double>(knobs.gamma[i]));
+                    c.knobGamma[i] = knobs.gamma[i];
+                    p.gamma[i] = hostGamma(knobs.gamma[i]);
+                    p.invGamma[i] = static_cast<float>(1.0 / static_cast<double>(p.gamma[i]));
                 }
                 p.width = n;
                 p.height = kHeight;
@@ -163,7 +174,8 @@ specPowError(double x, double e, double y)
 }
 
 // The kernel's pow exponent is a float, so its rounding moves the result by
-// about |ln(pow result)| * 2^-24 relative; the reverse path additionally
+// about |ln(pow result)| * 2^-24 relative, and the float rounding of a*v+b
+// moves it by up to 1/gamma * 2^-24 relative; the reverse path additionally
 // cancels pow(v, gamma) against b. Both are properties of float arithmetic,
 // not of the kernel, so the fallback bound grows with them. `spec` adds what
 // a conforming GPU may do beyond that (see specPowError).
@@ -176,12 +188,17 @@ conditionedTolerance(double v, const graderef::Channel& ch, bool reverse, double
     if (!reverse) {
         const double x = ch.a * v + ch.b;
         const double unfusedProduct = spec ? ulpOf(ch.a * v) : 0;
-        if (ch.gamma > 0 && ch.gamma != 1. && x > 0) {
+        if (ch.gamma != 1. && x > 0) {
             const double inv = 1. / ch.gamma;
             const double y = std::pow(x, inv);
-            double t = (kBase + 2 * std::fabs(std::log(y))) * ulpOf(y);
-            if (spec)
+            const double logY = (y > 0) ? std::fabs(std::log(y)) : 0;
+            double t = (kBase + 2 * logY + inv) * ulpOf(y);
+            if (spec) {
                 t += specPowError(x, inv, y) + std::fabs(y * inv / x) * unfusedProduct;
+                // A large 1/gamma takes pow below the normal range, where a device may flush to zero.
+                if (y < std::numeric_limits<float>::min())
+                    t += std::numeric_limits<float>::min();
+            }
             return t;
         }
         return kBase * ulpOf(result) + unfusedProduct;
@@ -265,24 +282,31 @@ checkCase(GradeStats& stats, size_t caseIndex, const GradeCase& c, const float* 
         const double in = c.src[i];
         const double want = graderef::apply(c.src[i], chan, c.reverse, clampBlack, clampWhite);
         if (bounds.gpu && in != 0 && std::fabs(in) < std::numeric_limits<float>::min()) {
-            // A driver may flush a subnormal to zero in some operations and not in others, so pow
-            // of one can land anywhere between the two readings. Grade is monotonic in its input,
-            // so the result must still lie between the values for zero and for the input.
+            // A driver may flush a subnormal to zero in some operations and not in others, and its
+            // log2 may ignore a subnormal's leading zero mantissa bits (llvmpipe gives log2(2^-149)
+            // as about -127), so pow of one can land anywhere between the readings for zero and
+            // for the smallest normal. A small gamma's exponent turns that into an order-one
+            // difference. Grade is monotonic in its input, so the result must still lie between
+            // those two readings.
             ++stats.subnormalInputs;
+            const float minNormal = std::copysign(std::numeric_limits<float>::min(), c.src[i]);
             const double zero = graderef::apply(0.0f, chan, c.reverse, clampBlack, clampWhite);
+            const double normal = graderef::apply(minNormal, chan, c.reverse, clampBlack, clampWhite);
             const double tolWant = conditionedTolerance(in, chan, c.reverse, want, true);
             const double tolZero = conditionedTolerance(0, chan, c.reverse, zero, true);
+            const double tolNormal = conditionedTolerance(minNormal, chan, c.reverse, normal, true);
             if (matches(dst[i], want, tolWant, bounds) || matches(dst[i], zero, tolZero, bounds)) {
                 ++stats.subnormalMatched;
                 continue;
             }
             const double got = dst[i];
-            const double lo = std::min(want, zero) - std::max(tolWant, tolZero);
-            const double hi = std::max(want, zero) + std::max(tolWant, tolZero);
+            const double slack = std::max({ tolWant, tolZero, tolNormal });
+            const double lo = std::min({ want, zero, normal }) - slack;
+            const double hi = std::max({ want, zero, normal }) + slack;
             if (std::isfinite(got) && got >= lo && got <= hi)
                 ++stats.subnormalBetween;
             else
-                violation(i, " subnormal input ", c.src[i], " got=", dst[i], " outside [", want, ", ", zero, "]");
+                violation(i, " subnormal input ", c.src[i], " got=", dst[i], " outside [", zero, ", ", normal, "]");
             continue;
         }
         const double conditioned = conditionedTolerance(in, chan, c.reverse, want, bounds.gpu);

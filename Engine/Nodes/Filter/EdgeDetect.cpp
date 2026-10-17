@@ -571,12 +571,22 @@ EdgeDetect::render(const RenderActionArgs& args)
         normX = sx;
         normY = sy;
         break;
-    case BlurKernels::eFilterTriangle:
+    case BlurKernels::eFilterTriangle: {
+        // The box of size s has 2w+1 taps of 1/s and two end taps of f/s, f = (s - 2w - 1) / 2.
+        // Squared, it gives the triangle's centre tap (2w + 1 + 2f^2) / s^2 and its next one
+        // (2w + 2f) / s^2. The centred difference of a step between two pixels peaks at the mean
+        // of those two taps, (2s - 1 - 2f(1 - f)) / (2s^2).
+        const auto triangleNorm = [](double s) {
+            const double f = (s - (2 * ((int)(s - 1) / 2) + 1)) / 2.;
+
+            return 2 * s * s / (2 * s - 1 - 2 * f * (1 - f));
+        };
         normalizeX = (sx > 1.);
         normalizeY = (sy > 1.);
-        normX = 2 * sx * sx / (2 * sx + 1);
-        normY = 2 * sy * sy / (2 * sy + 1);
+        normX = triangleNorm(sx);
+        normY = triangleNorm(sy);
         break;
+    }
     case BlurKernels::eFilterQuadratic:
         normalizeX = (sx > 1.);
         normalizeY = (sy > 1.);
@@ -584,12 +594,19 @@ EdgeDetect::render(const RenderActionArgs& args)
         normY = (12 * sy * sy * sy) / (9 * sy * sy - 4);
         break;
     case BlurKernels::eFilterGaussian:
-    case BlurKernels::eFilterQuasiGaussian:
-        // The second factor is 1 / 2.4 where sigma would be expected, as in the OpenFX plug-in.
+        // The derivative of a unit step blurred by a Gaussian peaks at 1 / (sigma sqrt(2 pi)).
         normalizeX = (sx / 2.4 >= 0.1);
         normalizeY = (sy / 2.4 >= 0.1);
-        normX = 2. * M_PI * (sx / 2.4) * (1. / 2.4);
-        normY = 2. * M_PI * (sy / 2.4) * (1. / 2.4);
+        normX = (sx / 2.4) * std::sqrt(2. * M_PI);
+        normY = (sy / 2.4) * std::sqrt(2. * M_PI);
+        break;
+    case BlurKernels::eFilterQuasiGaussian:
+        // Deriche's derivative kernel is c x exp(-alpha |x|) with alpha = 1.695 / sigma and
+        // c = alpha^3 / 4, so a unit step peaks at alpha / 4.
+        normalizeX = (sx / 2.4 >= 0.1);
+        normalizeY = (sy / 2.4 >= 0.1);
+        normX = 4. * (sx / 2.4) / 1.695;
+        normY = 4. * (sy / 2.4) / 1.695;
         break;
     }
 
@@ -694,14 +711,13 @@ EdgeDetect::render(const RenderActionArgs& args)
         jobs[j].lock();
     }
 
-    // The processed window shrinks past the rows and columns where the mask is zero, exactly as
-    // CImgFilterPluginHelper::render() does: the shrunk window decides the filtered extent.
+    // The whole window is filtered whatever the mask, so that a pixel's value does not depend on
+    // where the mask is zero; the mask only blends in writeWindow().
     RectI processWindow = roi;
     if (mixValue == 0.) {
         processWindow.x2 = processWindow.x1;
         processWindow.y2 = processWindow.y1;
     }
-    processWindow = shrinkToMask(processWindow, maskSource);
     const bool processing = !isEmptyRect(processWindow);
 
     RectI bufferRect(0, 0, 0, 0);
@@ -871,18 +887,34 @@ EdgeDetect::render(const RenderActionArgs& args)
                                 buffer[k] = static_cast<float>(std::sqrt(std::max(sqe, 0.)));
                             }
                         } else if (params.multiChannel == eEdgeDetectMultiChannelRMS) {
-                            // The direction is the plain sum of the channel gradients: the OpenFX
-                            // plug-in's sign alignment never triggers, and its result is kept.
+                            // The direction is the sum of the channel gradients, each flipped to
+                            // point the same way as the strongest channel's: opposite gradients
+                            // would otherwise cancel and turn the suppression direction.
                             double sumsq = 0.;
+                            double refx = 0.;
+                            double refy = 0.;
+                            double refsq = -1.;
+                            for (int p = 0; p < nPlanes; ++p) {
+                                const std::size_t k = (std::size_t)p * planeSize + o;
+                                const double gxd = gx[k];
+                                const double gyd = gy[k];
+                                const double sq = gxd * gxd + gyd * gyd;
+                                sumsq += sq;
+                                if (sq > refsq) {
+                                    refsq = sq;
+                                    refx = gxd;
+                                    refy = gyd;
+                                }
+                            }
                             double gradx = 0.;
                             double grady = 0.;
                             for (int p = 0; p < nPlanes; ++p) {
                                 const std::size_t k = (std::size_t)p * planeSize + o;
                                 const double gxd = gx[k];
                                 const double gyd = gy[k];
-                                sumsq += gxd * gxd + gyd * gyd;
-                                gradx += gxd;
-                                grady += gyd;
+                                const double sign = (gxd * refx + gyd * refy < 0.) ? -1. : 1.;
+                                gradx += sign * gxd;
+                                grady += sign * gyd;
                             }
                             const double sqe = sumsq / nPlanes;
                             const double e = std::sqrt(std::max(sqe, 0.));
@@ -1072,7 +1104,7 @@ EdgeDetect::render(const RenderActionArgs& args)
         layout.bufferRect = bufferRect;
         layout.buffer = buffer.empty() ? NULL : &buffer[0];
         layout.mix = mix;
-        writeWindow(job, planes, maskSource, layout, nThreads, cancel, [](float v, int) -> float { return v; });
+        writeWindow(job, planes, maskSource, layout, nThreads, cancel);
         if (cancel.check()) {
             return eStatusOK;
         }

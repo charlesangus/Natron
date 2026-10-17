@@ -61,6 +61,11 @@ struct GradeSettings {
 };
 
 namespace {
+// Gamma at or below 0 has no meaningful power, so it is raised to this floor. Below it the GPU's
+// float rounding of A * input + B, multiplied by the exponent 1 / gamma, would exceed the
+// transcendental parity bound against the double-precision CPU path.
+constexpr double kGradeMinGamma = 0.01;
+
 struct GradeChannel {
     double a;
     double b;
@@ -78,7 +83,7 @@ gradeChannels(const GradeValues& values,
         const double A = (d != 0) ? values.multiply[i] * (values.white[i] - values.black[i]) / d : 0;
         out[i].a = A;
         out[i].b = values.offset[i] + values.black[i] - A * values.blackPoint[i];
-        out[i].gamma = values.gamma[i];
+        out[i].gamma = (values.gamma[i] > kGradeMinGamma) ? values.gamma[i] : kGradeMinGamma;
     }
 }
 
@@ -129,15 +134,6 @@ private:
     {
         const double x = (ch.a * v) + ch.b;
 
-        if (ch.gamma <= 0) {
-            if (x < 1.) {
-                return 0.;
-            } else if (x == 1.) {
-                return 1.;
-            }
-
-            return std::numeric_limits<double>::infinity();
-        }
         if (ch.gamma == 1.) {
             return x;
         }
@@ -304,7 +300,7 @@ Grade::initializeKnobs()
     _white = addGradeColorKnob(this, page, kGradeParamWhite, tr("Gain").toStdString(), tr("Colors corresponding to the whitepoint are set to this value.").toStdString(), 1., 0., 4., eColorKnobRoleGain);
     _multiply = addGradeColorKnob(this, page, kGradeParamMultiply, tr("Multiply").toStdString(), tr("Multiplies the result by this value.").toStdString(), 1., 0., 4., eColorKnobRoleGain);
     _offset = addGradeColorKnob(this, page, kGradeParamOffset, tr("Offset").toStdString(), tr("Adds this value to the result (this applies to black and white).").toStdString(), 0., -1., 1., eColorKnobRoleOffset);
-    _gamma = addGradeColorKnob(this, page, kGradeParamGamma, tr("Gamma").toStdString(), tr("Final gamma correction. Negative values are not affected by gamma.").toStdString(), 1., 0.2, 5., eColorKnobRolePower);
+    _gamma = addGradeColorKnob(this, page, kGradeParamGamma, tr("Gamma").toStdString(), tr("Final gamma correction. Negative values are not affected by gamma. A gamma below 0.01 is treated as 0.01.").toStdString(), 1., 0.2, 5., eColorKnobRolePower);
 
     KnobButtonPtr normalize = createKnob<KnobButton>(tr("Normalize"));
     normalize->setName(kGradeParamNormalize);
@@ -324,7 +320,7 @@ Grade::initializeKnobs()
     KnobBoolPtr clampBlack = createKnob<KnobBool>(tr("Clamp Black"));
     clampBlack->setName(kGradeParamClampBlack);
     clampBlack->setHintToolTip(tr("All colors below 0 on output are set to 0."));
-    clampBlack->setDefaultValue(true);
+    clampBlack->setDefaultValue(false);
     clampBlack->setAddNewLine(false);
     page->addKnob(clampBlack);
     _clampBlack = clampBlack;
@@ -364,7 +360,7 @@ Grade::readSettings(double time,
 
     settings.values = readValues(time, view);
     settings.reverse = readBool(_reverse, time, view, false);
-    settings.clampBlack = readBool(_clampBlack, time, view, true);
+    settings.clampBlack = readBool(_clampBlack, time, view, false);
     settings.clampWhite = readBool(_clampWhite, time, view, false);
 
     return settings;
@@ -422,7 +418,7 @@ Grade::isIdentityOp(double time,
                     const RectI& /*roi*/,
                     ViewIdx view)
 {
-    if (readBool(_clampBlack, time, view, true) || readBool(_clampWhite, time, view, false)) {
+    if (readBool(_clampBlack, time, view, false) || readBool(_clampWhite, time, view, false)) {
         return false;
     }
 

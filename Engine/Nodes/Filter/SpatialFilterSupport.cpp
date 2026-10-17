@@ -43,96 +43,6 @@ namespace {
     const std::size_t kMinChunkPixels = 16384;
     // Chunks per available thread, so a helper that starts late still finds work left.
     const int kChunksPerThread = 4;
-
-    // The mask channel at (x, y), or null outside the mask image.
-    const float*
-    maskValueAt(const Image::ReadAccess& access,
-                const RectI& bounds,
-                int channel,
-                int x,
-                int y)
-    {
-        if ((x < bounds.x1) || (x >= bounds.x2) || (y < bounds.y1) || (y >= bounds.y2)) {
-            return NULL;
-        }
-        const float* pix = (const float*)access.pixelAt(x, y);
-
-        return pix ? (pix + channel) : NULL;
-    }
-
-    // CImgFilterPluginHelperBase::maskLineIsZero().
-    bool
-    maskRowIsZero(const Image::ReadAccess& access,
-                  const RectI& bounds,
-                  int channel,
-                  int x1,
-                  int x2,
-                  int y,
-                  bool maskInvert)
-    {
-        if (maskInvert) {
-            if ((y < bounds.y1) || (bounds.y2 <= y) || (x1 < bounds.x1) || (bounds.x2 <= x2)) {
-                return false;
-            }
-            for (int x = x1; x < x2; ++x) {
-                const float* p = maskValueAt(access, bounds, channel, x, y);
-                if (!p || (*p != 1.)) {
-                    return false;
-                }
-            }
-        } else {
-            if ((y < bounds.y1) || (bounds.y2 <= y)) {
-                return true;
-            }
-            x1 = std::max(x1, bounds.x1);
-            x2 = std::min(x2, bounds.x2);
-            for (int x = x1; x < x2; ++x) {
-                const float* p = maskValueAt(access, bounds, channel, x, y);
-                if (p && (*p != 0.)) {
-                    return false;
-                }
-            }
-        }
-
-        return true;
-    }
-
-    // CImgFilterPluginHelperBase::maskColumnIsZero().
-    bool
-    maskColumnIsZero(const Image::ReadAccess& access,
-                     const RectI& bounds,
-                     int channel,
-                     int x,
-                     int y1,
-                     int y2,
-                     bool maskInvert)
-    {
-        if (maskInvert) {
-            if ((x < bounds.x1) || (bounds.x2 <= x) || (y1 < bounds.y1) || (bounds.y2 <= y2)) {
-                return false;
-            }
-            for (int y = y1; y < y2; ++y) {
-                const float* p = maskValueAt(access, bounds, channel, x, y);
-                if (!p || (*p != 1.)) {
-                    return false;
-                }
-            }
-        } else {
-            if ((x < bounds.x1) || (bounds.x2 <= x)) {
-                return true;
-            }
-            y1 = std::max(y1, bounds.y1);
-            y2 = std::min(y2, bounds.y2);
-            for (int y = y1; y < y2; ++y) {
-                const float* p = maskValueAt(access, bounds, channel, x, y);
-                if (p && (*p != 0.)) {
-                    return false;
-                }
-            }
-        }
-
-        return true;
-    }
 } // anonymous namespace
 
 int
@@ -354,34 +264,8 @@ MaskInput::lock()
     }
 }
 
-RectI
-shrinkToMask(const RectI& window,
-             const MaskInput& mask)
-{
-    RectI r = window;
-    if (!mask.access) {
-        return r;
-    }
-    const Image::ReadAccess& access = *mask.access;
-    while ((r.y2 > r.y1) && maskRowIsZero(access, mask.bounds, mask.channel, r.x1, r.x2, r.y2 - 1, mask.invert)) {
-        --r.y2;
-    }
-    while ((r.y2 > r.y1) && maskRowIsZero(access, mask.bounds, mask.channel, r.x1, r.x2, r.y1, mask.invert)) {
-        ++r.y1;
-    }
-    while ((r.x2 > r.x1) && maskColumnIsZero(access, mask.bounds, mask.channel, r.x1, r.y1, r.y2, mask.invert)) {
-        ++r.x1;
-    }
-    while ((r.x2 > r.x1) && maskColumnIsZero(access, mask.bounds, mask.channel, r.x2 - 1, r.y1, r.y2, mask.invert)) {
-        --r.x2;
-    }
-
-    return r;
-}
-
 ProcessedPlanes::ProcessedPlanes(const PlaneJob& job)
     : channel()
-    , alphaPlane(-1)
 {
     for (int c = 0; c < 4; ++c) {
         planeOfChannel[c] = -1;
@@ -390,9 +274,6 @@ ProcessedPlanes::ProcessedPlanes(const PlaneJob& job)
         const int bit = pixelKernelChannelBit(job.nComps, c);
         if (job.channels[bit]) {
             planeOfChannel[c] = (int)channel.size();
-            if (bit == 3) {
-                alphaPlane = (int)channel.size();
-            }
             channel.push_back(c);
         }
     }

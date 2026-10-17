@@ -178,9 +178,9 @@ try:
         centre = QPointF(view.rect().center())
         QApplication.sendEvent(view, QEnterEvent(centre, centre, QPointF(view.mapToGlobal(view.rect().center()))))
         QTest.keyClick(view, Qt.Key_Tab)
-        ok = yield ("until", lambda: any(d.isVisible() for d in gt.widgets_of("NodeCreationDialog")), POLL_TIMEOUT_S)
+        ok = yield ("until", lambda: any(d.isVisible() for d in gt.widgets_of("TabTabTabWidget")), POLL_TIMEOUT_S)
         require(ok, "the Tab menu opens")
-        dialog = next(d for d in gt.widgets_of("NodeCreationDialog") if d.isVisible())
+        dialog = next(d for d in gt.widgets_of("TabTabTabWidget") if d.isVisible())
         return dialog, dialog.findChildren(QLineEdit)[0], dialog.findChildren(QListView)[0]
 
     def listed(line_edit, view, text):

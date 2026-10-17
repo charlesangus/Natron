@@ -51,6 +51,7 @@
 #include "Engine/PoolParallelFor.h"
 #include "Engine/Project.h"
 #include "Engine/RenderScale.h"
+#include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
 
 NATRON_NAMESPACE_ENTER
@@ -58,36 +59,6 @@ NATRON_NAMESPACE_ENTER
 namespace {
 // How many rows render() runs between two abort checks.
 const int kAbortCheckRows = 16;
-
-struct FormatEntry {
-    const char* id;
-    const char* label;
-};
-
-// The openfx-misc format list (SupportExt/ofxsFormatResolution.h), in its order. The host
-// replaces these entries with the project's formats once the node is created.
-const FormatEntry kFormats[] = {
-    { "PC_Video", "PC_Video 640x480" },
-    { "NTSC", "NTSC 720x486 0.91" },
-    { "PAL", "PAL 720x576 1.09" },
-    { "NTSC_16:9", "NTSC_16:9 720x486 1.21" },
-    { "PAL_16:9", "PAL_16:9 720x576 1.46" },
-    { "HD_720", "HD_720 1280x1720" },
-    { "HD", "HD 1920x1080" },
-    { "UHD_4K", "UHD_4K 3840x2160" },
-    { "1K_Super35(full-ap)", "1K_Super35(full-ap) 1024x778" },
-    { "1K_Cinemascope", "1K_Cinemascope 914x778 2" },
-    { "2K_Super35(full-ap)", "2K_Super35(full-ap) 2048x1556" },
-    { "2K_Cinemascope", "2K_Cinemascope 1828x1556 2" },
-    { "2K_DCP", "2K_DCP 2048x1080" },
-    { "4K_Super35(full-ap)", "4K_Super35(full-ap) 4096x3112" },
-    { "4K_Cinemascope", "4K_Cinemascope 3656x3112 2" },
-    { "4K_DCP", "4K_DCP 4096x2160" },
-    { "square_256", "square_256 256x256" },
-    { "square_512", "square_512 512x512" },
-    { "square_1K", "square_1K 1024x1024" },
-    { "square_2K", "square_2K 2048x2048" },
-};
 
 // The rectangle helpers below repeat the OpenFX support library's Coords functions, which the
 // output format and the transform are computed with, so the results are the same to the bit.
@@ -319,12 +290,13 @@ Reformat::initializeKnobs()
     format->setHintToolTip(tr("The output format"));
     {
         std::vector<ChoiceOption> options;
-        for (std::size_t i = 0; i < sizeof(kFormats) / sizeof(kFormats[0]); ++i) {
-            options.push_back(ChoiceOption(kFormats[i].id, kFormats[i].label, std::string()));
-        }
+        int projectFormatIndex = 0;
+        getApp()->getProject()->getProjectFormatEntries(&options, &projectFormatIndex);
         format->populateChoices(options);
+        // The host's refresh moves the default without touching the value, so the value is
+        // seeded here to start on the project's own format.
+        format->setDefaultValue(projectFormatIndex);
     }
-    format->setDefaultValue(0);
     format->setAnimationEnabled(false);
     format->setIsMetadataSlave(true);
     page->addKnob(format);
@@ -533,6 +505,7 @@ Reformat::initializeKnobs()
     _blackOutside = blackOutside;
 
     refreshVisibility();
+    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 } // Reformat::initializeKnobs
 
 Reformat::ReformatTypeEnum
@@ -562,18 +535,37 @@ Reformat::refreshVisibility()
 }
 
 void
+Reformat::updateClampEnabled(double time, ViewSpec view)
+{
+    KnobChoicePtr filter = _filter.lock();
+    KnobBoolPtr clamp = _clamp.lock();
+
+    if (!filter || !clamp) {
+        return;
+    }
+    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
+}
+
+void
 Reformat::onKnobsLoaded()
 {
     refreshVisibility();
+    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 bool
 Reformat::knobChanged(KnobI* k,
                       ValueChangedReasonEnum reason,
-                      ViewSpec /*view*/,
+                      ViewSpec view,
                       double time,
                       bool /*originatedFromMainThread*/)
 {
+    KnobChoicePtr filterKnob = _filter.lock();
+    if (filterKnob && (k == filterKnob.get())) {
+        updateClampEnabled(time, view);
+
+        return true;
+    }
     if (reason == eValueChangedReasonTimeChanged) {
         return false;
     }
@@ -656,13 +648,6 @@ Reformat::isIdentityOp(double time,
                        const RectI& /*roi*/,
                        ViewIdx view)
 {
-    KnobBoolPtr clamp = _clamp.lock();
-
-    // Clamping changes values above the source's range even without any movement.
-    if (clamp && clamp->getValueAtTime(time, 0, view)) {
-        return false;
-    }
-
     return isIdentityParams(time, view);
 }
 
@@ -717,7 +702,7 @@ Reformat::getInputFormat(double time,
         RectI format;
         EffectInstancePtr input = getInput(0);
         if (input) {
-            input = input->getNearestNonIdentity(getCurrentTime());
+            input = input->getNearestNonIdentity(time);
         }
         if (input) {
             format = input->getOutputFormat();
@@ -751,9 +736,9 @@ Reformat::getBoxValues(double time,
         // The host fills the size and the pixel aspect ratio from the chosen format.
         KnobIntPtr formatSize = _formatSize.lock();
         KnobDoublePtr formatPar = _formatPar.lock();
-        *w = formatSize ? formatSize->getValue(0) : 0;
-        *h = formatSize ? formatSize->getValue(1) : 0;
-        *par = formatPar ? formatPar->getValue() : 1.;
+        *w = formatSize ? formatSize->getValueAtTime(time, 0, view) : 0;
+        *h = formatSize ? formatSize->getValueAtTime(time, 1, view) : 0;
+        *par = formatPar ? formatPar->getValueAtTime(time, 0, view) : 1.;
         *boxFixed = true;
         break;
     }
@@ -761,19 +746,19 @@ Reformat::getBoxValues(double time,
         KnobIntPtr boxSize = _boxSize.lock();
         KnobDoublePtr boxPar = _boxPar.lock();
         KnobBoolPtr boxFixedKnob = _boxFixed.lock();
-        *w = boxSize ? boxSize->getValue(0) : 0;
-        *h = boxSize ? boxSize->getValue(1) : 0;
-        *par = boxPar ? boxPar->getValue() : 1.;
-        *boxFixed = boxFixedKnob && boxFixedKnob->getValue();
+        *w = boxSize ? boxSize->getValueAtTime(time, 0, view) : 0;
+        *h = boxSize ? boxSize->getValueAtTime(time, 1, view) : 0;
+        *par = boxPar ? boxPar->getValueAtTime(time, 0, view) : 1.;
+        *boxFixed = boxFixedKnob && boxFixedKnob->getValueAtTime(time, 0, view);
 
         return false;
     }
     case eReformatTypeScale: {
         KnobDoublePtr scaleKnob = _scale.lock();
         KnobBoolPtr scaleUniform = _scaleUniform.lock();
-        double scaleX = scaleKnob ? scaleKnob->getValue(0) : 1.;
-        double scaleY = scaleKnob ? scaleKnob->getValue(1) : 1.;
-        if (scaleUniform && scaleUniform->getValue()) {
+        double scaleX = scaleKnob ? scaleKnob->getValueAtTime(time, 0, view) : 1.;
+        double scaleY = scaleKnob ? scaleKnob->getValueAtTime(time, 1, view) : 1.;
+        if (scaleUniform && scaleUniform->getValueAtTime(time, 0, view)) {
             scaleY = scaleX;
         }
         RectD srcRod;
@@ -1117,7 +1102,7 @@ Reformat::getPreferredMetadata(NodeMetadata& metadata)
     RectD rect;
     RectI format;
 
-    computeOutputFormat(0., ViewIdx(0), srcPar, &par, &rect, &format);
+    computeOutputFormat(getCurrentTime(), ViewIdx(0), srcPar, &par, &rect, &format);
     switch (getReformatType()) {
     case eReformatTypeToFormat:
     case eReformatTypeToBox:
@@ -1155,10 +1140,8 @@ Reformat::render(const RenderActionArgs& args)
     // Every source image is fetched before any is locked: fetching renders upstream, which may
     // write into a cached image this render would otherwise already hold a read lock on.
     std::vector<ReformatPlaneJob> jobs;
-    std::vector<RectI> sourceWindows;
     for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
         ReformatPlaneJob job;
-        RectI sourceWindow;
         job.dst = it->second;
         if (job.dst) {
             if (job.dst->getBitDepth() != eImageBitDepthFloat) {
@@ -1167,14 +1150,13 @@ Reformat::render(const RenderActionArgs& args)
             ImageLayerDesc sourceLayer;
             if (getInput(0) && resolveInputPlaneForRender(0, args.time, args.view, &sourceLayer, NULL)) {
                 // Mapped to the clip's components, which is the layout the output plane is rendered in.
-                job.src = getImage(0, args.time, args.mappedScale, args.view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &sourceWindow, &job.inputTransform);
+                job.src = getImage(0, args.time, args.mappedScale, args.view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, NULL, &job.inputTransform);
                 if (job.src && (job.src->getBitDepth() != eImageBitDepthFloat)) {
                     return eStatusFailed;
                 }
             }
         }
         jobs.push_back(job);
-        sourceWindows.push_back(sourceWindow);
     }
 
     const RectI& roi = args.roi;
@@ -1200,15 +1182,11 @@ Reformat::render(const RenderActionArgs& args)
             const RectI srcBounds = job.src->getBounds();
             const int srcNComps = (int)job.src->getComponentsCount();
             job.srcAccess = std::make_shared<Image::ReadAccess>(job.src.get());
-            // An OpenFX plug-in sees the source only over the window it asked for, and the edge
-            // clamping of the filters (black_outside off) happens at that window's edge.
-            RectI seen = srcBounds;
-            if (!sourceWindows[j].isNull()) {
-                seen = sourceWindows[j].intersect(srcBounds);
-            }
-            if (!seen.isNull() && (srcNComps >= 1) && (srcNComps <= 4)) {
-                job.source.data = (const float*)job.srcAccess->pixelAt(seen.x1, seen.y1);
-                job.source.bounds = seen;
+            // The filters clamp (black_outside off) at the source image's own edge, so a pixel
+            // does not depend on which window was requested.
+            if (!srcBounds.isNull() && (srcNComps >= 1) && (srcNComps <= 4)) {
+                job.source.data = (const float*)job.srcAccess->pixelAt(srcBounds.x1, srcBounds.y1);
+                job.source.bounds = srcBounds;
                 job.source.nComps = srcNComps;
                 job.source.rowStride = (std::size_t)srcBounds.width() * (std::size_t)srcNComps;
             }

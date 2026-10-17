@@ -335,7 +335,7 @@ TEST_F(NativeTransformTest, IdentityRules)
     EXPECT_EQ(0, inputNb);
 
     ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { 1. }));
-    EXPECT_FALSE(effect->isIdentity_public(false, effect->getRenderHash(), kTime, RenderScale::identity, window, ViewIdx(0), &inputTime, &inputView, &inputNb));
+    EXPECT_TRUE(effect->isIdentity_public(false, effect->getRenderHash(), kTime, RenderScale::identity, window, ViewIdx(0), &inputTime, &inputView, &inputNb));
     ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { 0. }));
 
     ASSERT_TRUE(setKnobValues(node, kTransformNodeParamRotate, { 10. }));
@@ -345,6 +345,21 @@ TEST_F(NativeTransformTest, IdentityRules)
 
     ASSERT_TRUE(setKnobValues(node, kTransformNodeParamMotionBlur, { 1. }));
     EXPECT_FALSE(effect->isIdentity_public(false, effect->getRenderHash(), kTime, RenderScale::identity, window, ViewIdx(0), &inputTime, &inputView, &inputNb));
+}
+
+TEST_F(NativeTransformTest, ClampIsEnabledOnlyForFiltersThatHonourIt)
+{
+    resetProject();
+    NodePtr node = createNode(QString::fromUtf8(kTransformID), kNativeTransformMajor);
+    ASSERT_TRUE(isNative(node));
+    KnobIPtr clamp = node->getKnobByName(kResamplerParamFilterClamp);
+    ASSERT_TRUE(bool(clamp));
+
+    EXPECT_FALSE(clamp->isEnabled(0));
+    ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, "keys"));
+    EXPECT_TRUE(clamp->isEnabled(0));
+    ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, "cubic"));
+    EXPECT_FALSE(clamp->isEnabled(0));
 }
 
 TEST_F(NativeTransformTest, ConnectingASourceCentresTheTransformOnce)

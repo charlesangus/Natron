@@ -172,23 +172,9 @@ TEST_F(NativeBlurGpuTest, EligibilityFollowsTheSupportedSettings)
         ASSERT_TRUE(setKnobValues(node, kBlurParamSize, { 1000., 1000. }));
         EXPECT_EQ(supported, blur->canRenderOnGpu(eligibleQuery())) << filter << " at size 1000";
         ASSERT_TRUE(setKnobValues(node, kBlurParamSize, { 10., 10. }));
-        ASSERT_TRUE(setKnobValues(node, kBlurParamOrderX, { 1. }));
-        EXPECT_FALSE(blur->canRenderOnGpu(eligibleQuery())) << filter << " X derivative";
-        ASSERT_TRUE(setKnobValues(node, kBlurParamOrderX, { 0. }));
     }
     ASSERT_TRUE(setKnobValue(node, kBlurParamFilter, std::string(kBlurParamFilterFIRGaussian)));
     EXPECT_EQ(supported, blur->canRenderOnGpu(eligibleQuery())) << "FIR Gaussian";
-
-    ASSERT_TRUE(setKnobValues(node, kBlurParamOrderX, { 1. }));
-    EXPECT_FALSE(blur->canRenderOnGpu(eligibleQuery())) << "X derivative";
-    ASSERT_TRUE(setKnobValues(node, kBlurParamOrderX, { 0. }));
-    ASSERT_TRUE(setKnobValues(node, kBlurParamOrderY, { 2. }));
-    EXPECT_FALSE(blur->canRenderOnGpu(eligibleQuery())) << "Y derivative";
-    ASSERT_TRUE(setKnobValues(node, kBlurParamOrderY, { 0. }));
-
-    ASSERT_TRUE(setKnobValues(node, kBlurParamAlphaThreshold, { 0.003 }));
-    EXPECT_EQ(supported, blur->canRenderOnGpu(eligibleQuery())) << "alpha threshold";
-    ASSERT_TRUE(setKnobValues(node, kBlurParamAlphaThreshold, { 0. }));
 
     // Size 1000 is sigma 416.7, a radius of about 1250 at full scale and 313 at a quarter.
     ASSERT_TRUE(setKnobValues(node, kBlurParamSize, { 1000., 10. }));
@@ -271,19 +257,13 @@ pixelRegionOfDefinition(const NodePtr& node,
     return rod.toPixelEnclosing(mipmapLevel, 1.);
 }
 
-struct GpuBlurCase {
-    double sigma;
-    bool nearest;
-    bool expandRoD;
-};
-
 std::string
-describeCase(const GpuBlurCase& c,
+describeCase(double sigma,
              unsigned mipmapLevel,
              const RectI& roi)
 {
     std::ostringstream s;
-    s << "sigma " << c.sigma << (c.nearest ? " nearest" : " black") << (c.expandRoD ? " expandRoD" : " no expandRoD")
+    s << "sigma " << sigma
       << " mipmap " << mipmapLevel << " roi (" << roi.x1 << "," << roi.y1 << ")-(" << roi.x2 << "," << roi.y2 << ")";
 
     return s.str();
@@ -308,72 +288,65 @@ TEST_F(NativeBlurGpuTest, MatchesTheCpuRender)
     const ParityTolerance kTolerance = ParityTolerance::make(2e-6, 0.);
     int nCompared = 0;
     for (double sigma : { 0.5, 3., 25., 100. }) {
-        for (bool nearest : { false, true }) {
-            for (bool expandRoD : { false, true }) {
-                const GpuBlurCase c = { sigma, nearest, expandRoD };
-                // A fresh node per setting, so no region of definition cached under an earlier
-                // setting is reused.
-                NodePtr node = makeBlur();
-                Blur* blur = blurOf(node);
-                ASSERT_TRUE(blur != NULL);
-                connectNodes(source, node, 0, true);
-                ASSERT_TRUE(setKnobValues(node, kBlurParamSize, { 2.4 * sigma, 2.4 * sigma }));
-                ASSERT_TRUE(setKnobValue(node, kBlurParamBoundary, std::string(nearest ? kBlurParamBoundaryNearest : kBlurParamBoundaryBlack)));
-                ASSERT_TRUE(setKnobValues(node, kBlurParamExpandRoD, { expandRoD ? 1. : 0. }));
+        // A fresh node per setting, so no region of definition cached under an earlier
+        // setting is reused.
+        NodePtr node = makeBlur();
+        Blur* blur = blurOf(node);
+        ASSERT_TRUE(blur != NULL);
+        connectNodes(source, node, 0, true);
+        ASSERT_TRUE(setKnobValues(node, kBlurParamSize, { 2.4 * sigma, 2.4 * sigma }));
 
-                for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
-                    if ((mipmapLevel > 0) && (sigma != 3.) && (sigma != 25.)) {
-                        continue;
-                    }
-                    const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
-                    const RectI rod = pixelRegionOfDefinition(node, mipmapLevel);
-                    ASSERT_FALSE(rod.isNull());
-                    // The whole region of definition, and an odd-sized window inside it.
-                    std::vector<RectI> rois;
-                    rois.push_back(rod);
-                    rois.push_back(RectI(rod.x1 + 5, rod.y1 + 3, std::min(rod.x2 - 2, rod.x1 + 5 + 23), std::min(rod.y2 - 1, rod.y1 + 3 + 17)));
+        for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
+            if ((mipmapLevel > 0) && (sigma != 3.) && (sigma != 25.)) {
+                continue;
+            }
+            const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
+            const RectI rod = pixelRegionOfDefinition(node, mipmapLevel);
+            ASSERT_FALSE(rod.isNull());
+            // The whole region of definition, and an odd-sized window inside it.
+            std::vector<RectI> rois;
+            rois.push_back(rod);
+            rois.push_back(RectI(rod.x1 + 5, rod.y1 + 3, std::min(rod.x2 - 2, rod.x1 + 5 + 23), std::min(rod.y2 - 1, rod.y1 + 3 + 17)));
 
-                    for (const RectI& roi : rois) {
-                        const std::string what = describeCase(c, mipmapLevel, roi);
-                        RenderedPlane cpu;
-                        ASSERT_TRUE(renderColor(node, mipmapLevel, roi, &cpu)) << what;
-                        ASSERT_EQ(4u, cpu.channels.size()) << what;
-                        ASSERT_EQ(roi, cpu.window) << what;
+            for (const RectI& roi : rois) {
+                const std::string what = describeCase(sigma, mipmapLevel, roi);
+                RenderedPlane cpu;
+                ASSERT_TRUE(renderColor(node, mipmapLevel, roi, &cpu)) << what;
+                ASSERT_EQ(4u, cpu.channels.size()) << what;
+                ASSERT_EQ(roi, cpu.window) << what;
 
-                        const RectI inputRoI = blur->getGpuInputRoI(0, roi, scale);
-                        RenderedPlane in;
-                        ASSERT_TRUE(renderColor(source, mipmapLevel, inputRoI, &in)) << what;
-                        ASSERT_EQ(inputRoI, in.window) << what;
+                const RectI inputRoI = blur->getGpuInputRoI(0, roi, scale);
+                RenderedPlane in;
+                ASSERT_TRUE(renderColor(source, mipmapLevel, inputRoI, &in)) << what;
+                ASSERT_EQ(inputRoI, in.window) << what;
 
-                        const int nComps = 4;
-                        // Both views sit inside larger buffers, at an offset and with padded rows.
-                        GpuParityImage image;
-                        image.bounds = inputRoI;
-                        image.nComps = nComps;
-                        image.pixels = in.pixels;
-                        image.layout.padFloats = 6;
-                        image.layout.rowPadFloats = 8;
-                        GpuViewLayout layout;
-                        layout.padFloats = 4;
-                        layout.rowPadFloats = 4;
-                        layout.marginLeft = 2;
-                        layout.marginBottom = 1;
-                        layout.marginRight = 3;
-                        layout.marginTop = 2;
+                const int nComps = 4;
+                // Both views sit inside larger buffers, at an offset and with padded rows.
+                GpuParityImage image;
+                image.bounds = inputRoI;
+                image.nComps = nComps;
+                image.pixels = in.pixels;
+                image.layout.padFloats = 6;
+                image.layout.rowPadFloats = 8;
+                GpuViewLayout layout;
+                layout.padFloats = 4;
+                layout.rowPadFloats = 4;
+                layout.marginLeft = 2;
+                layout.marginBottom = 1;
+                layout.marginRight = 3;
+                layout.marginTop = 2;
 
-                        GpuQuery query = eligibleQuery();
-                        query.mappedScale = scale;
-                        const GpuRunResult run = runRenderGpu(*runtime, *blur, query, std::vector<GpuParityImage>(1, image), nullptr, roi, layout);
-                        ASSERT_TRUE(run.ok) << what;
-                        EXPECT_EQ(0u, run.writtenOutside) << what << ": floats outside the window were written";
+                GpuQuery query = eligibleQuery();
+                query.mappedScale = scale;
+                const GpuRunResult run = runRenderGpu(*runtime, *blur, query, std::vector<GpuParityImage>(1, image), nullptr, roi, layout);
+                ASSERT_TRUE(run.ok) << what;
+                EXPECT_EQ(0u, run.writtenOutside) << what << ": floats outside the window were written";
 
-                        ASSERT_EQ(cpu.pixels.size(), run.pixels.size()) << what;
-                        const ImageDiff diff = compareImages(cpu.pixels, run.pixels, kTolerance);
-                        nCompared += (int)diff.compared;
-                        const std::size_t at = diff.worstIndex / nComps;
-                        EXPECT_EQ(0u, diff.mismatches) << what << ", worst at (" << (roi.x1 + (int)(at % roi.width())) << "," << (roi.y1 + (int)(at / roi.width())) << ")";
-                    }
-                }
+                ASSERT_EQ(cpu.pixels.size(), run.pixels.size()) << what;
+                const ImageDiff diff = compareImages(cpu.pixels, run.pixels, kTolerance);
+                nCompared += (int)diff.compared;
+                const std::size_t at = diff.worstIndex / nComps;
+                EXPECT_EQ(0u, diff.mismatches) << what << ", worst at (" << (roi.x1 + (int)(at % roi.width())) << "," << (roi.y1 + (int)(at / roi.width())) << ")";
             }
         }
     }
@@ -430,13 +403,10 @@ enum MaskMode {
 struct GpuWrappedBlurCase {
     const char* name;
     double sigma;
-    bool nearest;
-    bool expandRoD;
     MaskMode mask;
     double mix;
     bool unPremultByAlpha;
     bool redAndAlpha;
-    double alphaThreshold;
     unsigned maxMipmapLevel;
     const char* filter = kBlurParamFilterFIRGaussian;
 };
@@ -444,9 +414,9 @@ struct GpuWrappedBlurCase {
 } // namespace
 
 // The settings renderGpu() wraps around the blur: the mask (partly covering the source, plain and
-// inverted), mix, "(Un)premult by" alpha, an R+A channel subset and the alpha threshold, alone and
-// combined, against the CPU render.
-TEST_F(NativeBlurGpuTest, MatchesTheCpuRenderWithMaskMixUnpremultChannelsAndThreshold)
+// inverted), mix, "(Un)premult by" alpha and an R+A channel subset, alone and combined, against the
+// CPU render.
+TEST_F(NativeBlurGpuTest, MatchesTheCpuRenderWithMaskMixUnpremultAndChannels)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
     if (!createRuntime(runtime)) {
@@ -461,21 +431,19 @@ TEST_F(NativeBlurGpuTest, MatchesTheCpuRenderWithMaskMixUnpremultChannelsAndThre
     setParitySourceOrigin(maskSource, 8, 4);
 
     const GpuWrappedBlurCase cases[] = {
-        { "mask", 3., false, false, eMaskOn, 1., false, false, 0., 1 },
-        { "inverted mask", 3., true, true, eMaskInverted, 1., false, false, 0., 0 },
-        { "mix", 25., true, false, eMaskNone, 0.3, false, false, 0., 1 },
-        { "unpremult", 3., false, true, eMaskNone, 1., true, false, 0., 0 },
-        { "unpremult", 25., true, false, eMaskNone, 1., true, false, 0., 0 },
-        { "R+A", 3., true, false, eMaskNone, 1., false, true, 0., 1 },
-        { "R+A unpremult", 0.5, true, true, eMaskNone, 1., true, true, 0., 0 },
-        { "threshold", 3., false, false, eMaskNone, 1., false, false, 0.003, 1 },
-        { "threshold", 0.5, true, false, eMaskNone, 1., false, false, 0.003, 0 },
-        { "everything", 25., false, true, eMaskOn, 0.3, true, true, 0.003, 0 },
-        { "everything", 100., true, false, eMaskInverted, 0.3, true, true, 0.003, 0 },
-        // The recursive filters filter the window shrunk to the mask, so a mask changes their lines.
-        { "IIR mask", 3., true, true, eMaskOn, 1., false, false, 0., 1, kBlurParamFilterGaussian },
-        { "IIR inverted mask, mix", 10., false, false, eMaskInverted, 0.3, false, false, 0., 0, kBlurParamFilterGaussian },
-        { "IIR R+A", 10., true, false, eMaskNone, 1., false, true, 0., 0, kBlurParamFilterGaussian },
+        { "mask", 3., eMaskOn, 1., false, false, 1 },
+        { "inverted mask", 3., eMaskInverted, 1., false, false, 0 },
+        { "mix", 25., eMaskNone, 0.3, false, false, 1 },
+        { "unpremult", 3., eMaskNone, 1., true, false, 0 },
+        { "unpremult", 25., eMaskNone, 1., true, false, 0 },
+        { "R+A", 3., eMaskNone, 1., false, true, 1 },
+        { "R+A unpremult", 0.5, eMaskNone, 1., true, true, 0 },
+        { "everything", 25., eMaskOn, 0.3, true, true, 0 },
+        { "everything", 100., eMaskInverted, 0.3, true, true, 0 },
+        // The recursive filters depend on whole lines, which a mask must leave as they are.
+        { "IIR mask", 3., eMaskOn, 1., false, false, 1, kBlurParamFilterGaussian },
+        { "IIR inverted mask, mix", 10., eMaskInverted, 0.3, false, false, 0, kBlurParamFilterGaussian },
+        { "IIR R+A", 10., eMaskNone, 1., false, true, 0, kBlurParamFilterGaussian },
     };
 
     const ParityTolerance kTolerance = ParityTolerance::make(2e-6, 0.);
@@ -510,9 +478,6 @@ TEST_F(NativeBlurGpuTest, MatchesTheCpuRenderWithMaskMixUnpremultChannelsAndThre
             channelSet->setChannels(0, std::vector<std::string> { "R", "A" });
         }
         ASSERT_TRUE(setKnobValues(node, kBlurParamSize, { 2.4 * c.sigma, 2.4 * c.sigma }));
-        ASSERT_TRUE(setKnobValue(node, kBlurParamBoundary, std::string(c.nearest ? kBlurParamBoundaryNearest : kBlurParamBoundaryBlack)));
-        ASSERT_TRUE(setKnobValues(node, kBlurParamExpandRoD, { c.expandRoD ? 1. : 0. }));
-        ASSERT_TRUE(setKnobValues(node, kBlurParamAlphaThreshold, { c.alphaThreshold }));
         ASSERT_TRUE(setKnobValue(node, kBlurParamFilter, std::string(c.filter)));
         const bool recursive = std::string(c.filter) != kBlurParamFilterFIRGaussian;
 
@@ -521,7 +486,7 @@ TEST_F(NativeBlurGpuTest, MatchesTheCpuRenderWithMaskMixUnpremultChannelsAndThre
             const RectI rod = pixelRegionOfDefinition(node, mipmapLevel);
             ASSERT_FALSE(rod.isNull());
             const GpuQuery query = queryFor(node, mipmapLevel);
-            const std::string base = std::string(c.name) + " " + describeCase({ c.sigma, c.nearest, c.expandRoD }, mipmapLevel, rod);
+            const std::string base = std::string(c.name) + " " + describeCase(c.sigma, mipmapLevel, rod);
             ASSERT_EQ(4, query.nComps) << base;
             EXPECT_EQ(c.mask != eMaskNone, query.hasMask) << base;
             EXPECT_EQ(c.unPremultByAlpha, query.unPremultChannel >= 0) << base;
@@ -541,7 +506,7 @@ TEST_F(NativeBlurGpuTest, MatchesTheCpuRenderWithMaskMixUnpremultChannelsAndThre
             rois.push_back(rod);
             rois.push_back(RectI(rod.x1 + 5, rod.y1 + 3, std::min(rod.x2 - 2, rod.x1 + 5 + 23), std::min(rod.y2 - 1, rod.y1 + 3 + 17)));
             for (const RectI& roi : rois) {
-                const std::string what = std::string(c.name) + " " + describeCase({ c.sigma, c.nearest, c.expandRoD }, mipmapLevel, roi);
+                const std::string what = std::string(c.name) + " " + describeCase(c.sigma, mipmapLevel, roi);
                 RenderedPlane cpu;
                 ASSERT_TRUE(renderColor(node, mipmapLevel, roi, &cpu)) << what;
                 ASSERT_EQ(4u, cpu.channels.size()) << what;
@@ -609,9 +574,9 @@ channelOf(const std::vector<float>& pixels,
 } // namespace
 
 // The IIR Gaussians and the box, triangle and quadratic filters against the CPU render, at sizes
-// 3, 25 and 100 under both boundary conditions, over the whole region of definition, and over an
-// odd window at size 25, whose lines the halo cuts short. Then each on a one-channel image: the
-// alpha of the source, against the alpha of the CPU's RGBA render, which filters each channel alone.
+// 3, 25 and 100, over the whole region of definition, and over an odd window at size 25, whose
+// lines the halo cuts short. Then each on a one-channel image: the alpha of the source, against the
+// alpha of the CPU's RGBA render, which filters each channel alone.
 TEST_F(NativeBlurGpuTest, RecursiveAndBoxFiltersMatchTheCpuRender)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -626,73 +591,70 @@ TEST_F(NativeBlurGpuTest, RecursiveAndBoxFiltersMatchTheCpuRender)
     int nCompared = 0;
     for (const char* filter : kRecursiveFilters) {
         for (double size : { 3., 25., 100. }) {
-            for (bool nearest : { false, true }) {
-                NodePtr node = makeBlur();
-                Blur* blur = blurOf(node);
-                ASSERT_TRUE(blur != NULL);
-                connectNodes(source, node, 0, true);
-                ASSERT_TRUE(setKnobValue(node, kBlurParamFilter, std::string(filter)));
-                ASSERT_TRUE(setKnobValues(node, kBlurParamSize, { size, size }));
-                ASSERT_TRUE(setKnobValue(node, kBlurParamBoundary, std::string(nearest ? kBlurParamBoundaryNearest : kBlurParamBoundaryBlack)));
+            NodePtr node = makeBlur();
+            Blur* blur = blurOf(node);
+            ASSERT_TRUE(blur != NULL);
+            connectNodes(source, node, 0, true);
+            ASSERT_TRUE(setKnobValue(node, kBlurParamFilter, std::string(filter)));
+            ASSERT_TRUE(setKnobValues(node, kBlurParamSize, { size, size }));
 
-                const RectI rod = pixelRegionOfDefinition(node, 0);
-                ASSERT_FALSE(rod.isNull());
-                std::vector<RectI> rois;
-                rois.push_back(rod);
-                if (size == 25.) {
-                    rois.push_back(RectI(rod.x1 + 41, rod.y1 + 37, std::min(rod.x2 - 2, rod.x1 + 41 + 23), std::min(rod.y2 - 1, rod.y1 + 37 + 17)));
+            const RectI rod = pixelRegionOfDefinition(node, 0);
+            ASSERT_FALSE(rod.isNull());
+            std::vector<RectI> rois;
+            rois.push_back(rod);
+            if (size == 25.) {
+                rois.push_back(RectI(rod.x1 + 41, rod.y1 + 37, std::min(rod.x2 - 2, rod.x1 + 41 + 23), std::min(rod.y2 - 1, rod.y1 + 37 + 17)));
+            }
+            for (const RectI& roi : rois) {
+                std::ostringstream what;
+                what << filter << " size " << size << " roi (" << roi.x1 << "," << roi.y1 << ")-(" << roi.x2 << "," << roi.y2 << ")";
+                RenderedPlane cpu;
+                ASSERT_TRUE(renderColor(node, 0, roi, &cpu)) << what.str();
+                ASSERT_EQ(4u, cpu.channels.size()) << what.str();
+
+                const RectI inputRoI = blur->getGpuInputRoI(0, roi, RenderScale::identity);
+                RenderedPlane in;
+                ASSERT_TRUE(renderColor(source, 0, inputRoI, &in)) << what.str();
+
+                GpuParityImage image;
+                image.bounds = inputRoI;
+                image.nComps = 4;
+                image.pixels = in.pixels;
+                image.layout.padFloats = 6;
+                image.layout.rowPadFloats = 8;
+                GpuViewLayout layout;
+                layout.padFloats = 4;
+                layout.rowPadFloats = 4;
+                layout.marginLeft = 2;
+                layout.marginBottom = 1;
+                layout.marginRight = 3;
+                layout.marginTop = 2;
+
+                const GpuRunResult run = runRenderGpu(*runtime, *blur, eligibleQuery(), std::vector<GpuParityImage>(1, image), nullptr, roi, layout);
+                ASSERT_TRUE(run.ok) << what.str();
+                EXPECT_EQ(0u, run.writtenOutside) << what.str() << ": floats outside the window were written";
+                ASSERT_EQ(cpu.pixels.size(), run.pixels.size()) << what.str();
+                const ImageDiff diff = compareImages(cpu.pixels, run.pixels, ParityTolerance::iir());
+                nCompared += (int)diff.compared;
+                EXPECT_EQ(0u, diff.mismatches) << what.str() << ", worst " << diff.worstAbsolute << " at float " << diff.worstIndex;
+
+                if ((size != 25.) || (roi != rod)) {
+                    continue;
                 }
-                for (const RectI& roi : rois) {
-                    std::ostringstream what;
-                    what << filter << " size " << size << (nearest ? " nearest" : " black") << " roi (" << roi.x1 << "," << roi.y1 << ")-(" << roi.x2 << "," << roi.y2 << ")";
-                    RenderedPlane cpu;
-                    ASSERT_TRUE(renderColor(node, 0, roi, &cpu)) << what.str();
-                    ASSERT_EQ(4u, cpu.channels.size()) << what.str();
-
-                    const RectI inputRoI = blur->getGpuInputRoI(0, roi, RenderScale::identity);
-                    RenderedPlane in;
-                    ASSERT_TRUE(renderColor(source, 0, inputRoI, &in)) << what.str();
-
-                    GpuParityImage image;
-                    image.bounds = inputRoI;
-                    image.nComps = 4;
-                    image.pixels = in.pixels;
-                    image.layout.padFloats = 6;
-                    image.layout.rowPadFloats = 8;
-                    GpuViewLayout layout;
-                    layout.padFloats = 4;
-                    layout.rowPadFloats = 4;
-                    layout.marginLeft = 2;
-                    layout.marginBottom = 1;
-                    layout.marginRight = 3;
-                    layout.marginTop = 2;
-
-                    const GpuRunResult run = runRenderGpu(*runtime, *blur, eligibleQuery(), std::vector<GpuParityImage>(1, image), nullptr, roi, layout);
-                    ASSERT_TRUE(run.ok) << what.str();
-                    EXPECT_EQ(0u, run.writtenOutside) << what.str() << ": floats outside the window were written";
-                    ASSERT_EQ(cpu.pixels.size(), run.pixels.size()) << what.str();
-                    const ImageDiff diff = compareImages(cpu.pixels, run.pixels, ParityTolerance::iir());
-                    nCompared += (int)diff.compared;
-                    EXPECT_EQ(0u, diff.mismatches) << what.str() << ", worst " << diff.worstAbsolute << " at float " << diff.worstIndex;
-
-                    if ((size != 25.) || !nearest || (roi != rod)) {
-                        continue;
-                    }
-                    GpuParityImage alpha;
-                    alpha.bounds = inputRoI;
-                    alpha.nComps = 1;
-                    alpha.pixels = channelOf(in.pixels, 4, 3);
-                    GpuQuery query = eligibleQuery();
-                    query.nComps = 1;
-                    ASSERT_TRUE(blur->canRenderOnGpu(query)) << what.str();
-                    const GpuRunResult runAlpha = runRenderGpu(*runtime, *blur, query, std::vector<GpuParityImage>(1, alpha), nullptr, roi);
-                    ASSERT_TRUE(runAlpha.ok) << what.str() << " alpha";
-                    const std::vector<float> cpuAlpha = channelOf(cpu.pixels, 4, 3);
-                    ASSERT_EQ(cpuAlpha.size(), runAlpha.pixels.size()) << what.str() << " alpha";
-                    const ImageDiff alphaDiff = compareImages(cpuAlpha, runAlpha.pixels, ParityTolerance::iir());
-                    nCompared += (int)alphaDiff.compared;
-                    EXPECT_EQ(0u, alphaDiff.mismatches) << what.str() << " alpha, worst " << alphaDiff.worstAbsolute << " at pixel " << alphaDiff.worstIndex;
-                }
+                GpuParityImage alpha;
+                alpha.bounds = inputRoI;
+                alpha.nComps = 1;
+                alpha.pixels = channelOf(in.pixels, 4, 3);
+                GpuQuery query = eligibleQuery();
+                query.nComps = 1;
+                ASSERT_TRUE(blur->canRenderOnGpu(query)) << what.str();
+                const GpuRunResult runAlpha = runRenderGpu(*runtime, *blur, query, std::vector<GpuParityImage>(1, alpha), nullptr, roi);
+                ASSERT_TRUE(runAlpha.ok) << what.str() << " alpha";
+                const std::vector<float> cpuAlpha = channelOf(cpu.pixels, 4, 3);
+                ASSERT_EQ(cpuAlpha.size(), runAlpha.pixels.size()) << what.str() << " alpha";
+                const ImageDiff alphaDiff = compareImages(cpuAlpha, runAlpha.pixels, ParityTolerance::iir());
+                nCompared += (int)alphaDiff.compared;
+                EXPECT_EQ(0u, alphaDiff.mismatches) << what.str() << " alpha, worst " << alphaDiff.worstAbsolute << " at pixel " << alphaDiff.worstIndex;
             }
         }
     }

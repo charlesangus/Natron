@@ -175,6 +175,7 @@ protected:
 TEST_F(NativeSaturationTest, SaturationZeroAndAboveOne)
 {
     ParityPair pair = makePair();
+    ASSERT_TRUE(setKnobOnBoth(pair, "clampBlack", { 1. }));
     ASSERT_TRUE(setKnobOnBoth(pair, "saturation", { 0. }));
     expectParity(pair, "saturation-0", true);
 
@@ -186,6 +187,7 @@ TEST_F(NativeSaturationTest, Rec2020LuminanceMath)
 {
     ParityPair pair = makePair();
     ASSERT_TRUE(setKnobOnBoth(pair, "saturation", { 0.4 }));
+    ASSERT_TRUE(setKnobOnBoth(pair, "clampBlack", { 1. }));
     ASSERT_TRUE(setKnobOnBoth(pair, "luminanceMath", std::string("rec2020")));
     expectParity(pair, "luminance-rec2020", true);
 }
@@ -199,6 +201,7 @@ TEST_F(NativeSaturationTest, MaskAndMix)
     ASSERT_TRUE(setChannelSelect(pair.native, "maskChannel_Mask", "rgba.A"));
     ASSERT_TRUE(setKnobOnBoth(pair, "mix", { 0.5 }));
     ASSERT_TRUE(setKnobOnBoth(pair, "saturation", { 1.8 }));
+    ASSERT_TRUE(setKnobOnBoth(pair, "clampBlack", { 1. }));
     expectParity(pair, "mask-mix", true);
 }
 
@@ -243,11 +246,13 @@ TEST_F(NativeSaturationTest, IdentityConditions)
     const RectI window = paritySourceWindow(pair.source, kTime, 0);
     int inputNb = -1;
 
-    EXPECT_FALSE(identityAt(pair.native, window, &inputNb));
-
-    ASSERT_TRUE(setKnobValues(pair.native, "clampBlack", std::vector<double>(1, 0.)));
     EXPECT_TRUE(identityAt(pair.native, window, &inputNb));
     EXPECT_EQ(0, inputNb);
+
+    ASSERT_TRUE(setKnobValues(pair.native, "clampBlack", std::vector<double>(1, 1.)));
+    EXPECT_FALSE(identityAt(pair.native, window, &inputNb));
+    ASSERT_TRUE(setKnobValues(pair.native, "clampBlack", std::vector<double>(1, 0.)));
+    EXPECT_TRUE(identityAt(pair.native, window, &inputNb));
 
     ASSERT_TRUE(setKnobValues(pair.native, "clampWhite", std::vector<double>(1, 1.)));
     EXPECT_FALSE(identityAt(pair.native, window, &inputNb));

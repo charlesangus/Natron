@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <array>
-#include <climits>
 #include <span>
 #include <string>
 
@@ -17,7 +16,6 @@ namespace {
     constexpr uint32_t kColumns = 32;
     constexpr uint32_t kChunk = 16;
     constexpr uint32_t kDirectMaxRadius = 16;
-    constexpr uint32_t kBoxGroup = 8;
 
     uint32_t divUp(uint32_t v, uint32_t d)
     {
@@ -57,7 +55,7 @@ namespace {
     }
 
     // A params block whose source fields address all of `src`.
-    bool baseParams(const GpuMorphology& m, const GpuBlurImage& src, uint32_t channels, GpuMorphParams& p)
+    bool baseParams(const GpuBlurImage& src, uint32_t channels, GpuMorphParams& p)
     {
         p = GpuMorphParams {};
         p.channels = channels;
@@ -71,12 +69,6 @@ namespace {
                 return false;
             }
         }
-        p.rodX1 = m.rod.x1;
-        p.rodY1 = m.rod.y1;
-        p.rodX2 = m.rod.x2;
-        p.rodY2 = m.rod.y2;
-        p.haloX = m.haloX;
-        p.haloY = m.haloY;
         return true;
     }
 
@@ -85,7 +77,7 @@ namespace {
                            const GpuBuffer* window)
     {
         GpuMorphParams p;
-        if (!baseParams(m, src, m.channels, p)) {
+        if (!baseParams(src, m.channels, p)) {
             return invalid("source exceeds 32-bit indexing");
         }
         p.width = uint32_t(out.x2 - out.x1);
@@ -112,7 +104,7 @@ namespace {
                             { divUp(len, kGroup) * kGroup, pass.vertical ? divUp(lines, kColumns) : lines, 1 });
     }
 
-    GpuStatus writeWindow(GpuRecordContext& ctx, const GpuBuffer& window, const std::array<int32_t, 8>& values)
+    GpuStatus writeWindow(GpuRecordContext& ctx, const GpuBuffer& window, const std::array<int32_t, 4>& values)
     {
         return ctx.updateBuffer(window, 0, std::as_bytes(std::span(values)));
     }
@@ -121,61 +113,19 @@ namespace {
 
 GpuStatus
 recordFilterWindow(GpuRecordContext& ctx, const GpuBlurRect& output, const GpuBlurRect& rod, int32_t haloX, int32_t haloY,
-                   const std::optional<GpuMorphMask>& mask, GpuBuffer*& window)
+                   GpuBuffer*& window)
 {
     window = nullptr;
     if (haloX < 0 || haloY < 0) {
         return invalid("negative halo");
     }
-    if (GpuStatus s = ctx.scratch(8 * sizeof(int32_t), window); !s) {
+    if (GpuStatus s = ctx.scratch(4 * sizeof(int32_t), window); !s) {
         return s;
     }
-    if (mask && mask->image.buffer) {
-        if (mask->nComps == 0 || mask->channel >= mask->nComps) {
-            return invalid("invalid mask channel");
-        }
-        if (GpuStatus s = writeWindow(ctx, *window, { INT_MAX, INT_MAX, INT_MIN, INT_MIN, 0, 0, 0, 0 }); !s) {
-            return s;
-        }
-        GpuMorphParams p {};
-        p.channels = mask->nComps;
-        if (!mask->image.bounds.empty()) {
-            p.srcX1 = mask->image.bounds.x1;
-            p.srcY1 = mask->image.bounds.y1;
-            p.srcX2 = mask->image.bounds.x2;
-            p.srcY2 = mask->image.bounds.y2;
-            p.srcStride = mask->image.strideFloats;
-            if (!floatIndex(mask->image, mask->image.bounds.x1, mask->image.bounds.y1, mask->nComps, p.srcOffset)) {
-                return invalid("mask exceeds 32-bit indexing");
-            }
-        }
-        p.rodX1 = rod.x1;
-        p.rodY1 = rod.y1;
-        p.rodX2 = rod.x2;
-        p.rodY2 = rod.y2;
-        p.haloX = haloX;
-        p.haloY = haloY;
-        p.width = uint32_t(output.x2 - output.x1);
-        p.height = uint32_t(output.y2 - output.y1);
-        p.outX = output.x1;
-        p.outY = output.y1;
-        p.maskChannel = mask->channel;
-        p.maskInvert = mask->invert ? 1u : 0u;
-        if (GpuStatus s = ctx.dispatch(GpuKernelId::morph_mask_bbox, { mask->image.buffer, window, window }, p,
-                                       { divUp(p.width, kBoxGroup) * kBoxGroup, divUp(p.height, kBoxGroup) * kBoxGroup, 1 });
-            !s) {
-            return s;
-        }
-        ctx.computeBarrier();
-        if (GpuStatus s = ctx.dispatch(GpuKernelId::morph_window, { mask->image.buffer, window, window }, p, { 1, 1, 1 }); !s) {
-            return s;
-        }
-    } else {
-        const GpuBlurRect grown { output.x1 - haloX, output.y1 - haloY, output.x2 + haloX, output.y2 + haloY };
-        const GpuBlurRect domain = output.empty() ? GpuBlurRect() : intersect(grown, rod);
-        if (GpuStatus s = writeWindow(ctx, *window, { 0, 0, 0, 0, domain.x1, domain.y1, domain.x2, domain.y2 }); !s) {
-            return s;
-        }
+    const GpuBlurRect grown { output.x1 - haloX, output.y1 - haloY, output.x2 + haloX, output.y2 + haloY };
+    const GpuBlurRect domain = output.empty() ? GpuBlurRect() : intersect(grown, rod);
+    if (GpuStatus s = writeWindow(ctx, *window, { domain.x1, domain.y1, domain.x2, domain.y2 }); !s) {
+        return s;
     }
     ctx.computeBarrier();
     return {};
@@ -209,7 +159,7 @@ recordMorphology(GpuRecordContext& ctx, const GpuMorphology& m)
     }
 
     GpuBuffer* window = nullptr;
-    if (GpuStatus s = recordFilterWindow(ctx, m.output, m.rod, m.haloX, m.haloY, m.mask, window); !s) {
+    if (GpuStatus s = recordFilterWindow(ctx, m.output, m.rod, m.haloX, m.haloY, window); !s) {
         return s;
     }
 

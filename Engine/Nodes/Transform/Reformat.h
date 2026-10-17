@@ -247,6 +247,8 @@ private:
      **/
     void refreshVisibility();
 
+    void updateClampEnabled(double time, ViewSpec view);
+
     KnobBoolWPtr _useRoD;
     KnobChoiceWPtr _type;
     KnobChoiceWPtr _format;

@@ -258,13 +258,11 @@ protected:
      * @brief For a spatial node's renderGpu(): writes args.output over args.outputRect from
      * filtered, the filter's result over a rect containing outputRect, as render()'s spatial
      * nodes write their window: processed channels multiplied back by the divisor and blended
-     * with the undivided source by mask x mix, unprocessed channels passed through. With
-     * alphaThreshold > 0, a filtered alpha below it reads zero first. Recorded work that wrote
+     * with the undivided source by mask x mix, unprocessed channels passed through. Recorded work that wrote
      * filtered must be ordered before it with a compute barrier.
      **/
     StatusEnum recordGpuFinish(const GpuRenderArgs& args,
-                               const GpuImageView& filtered,
-                               float alphaThreshold = 0.f) WARN_UNUSED_RETURN;
+                               const GpuImageView& filtered) WARN_UNUSED_RETURN;
 
     /**
      * @brief Whether view holds nComps float components per pixel in a buffer, with rows at least

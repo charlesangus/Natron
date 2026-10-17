@@ -215,13 +215,21 @@ runGradeNative(const Frame& in, std::vector<float>& out)
 }
 
 void
-runBlurTwin(const Frame& in, std::vector<float>& tmp, std::vector<float>& out, double sigma, bool neumann)
+runBlurTwin(const Frame& in, std::vector<float>& tmp, std::vector<float>& out, double sigma)
 {
     const std::vector<double> wd = blurref::makeWeights(sigma);
     const std::vector<float> wf(wd.begin(), wd.end());
-    blurfix::BlurParams p { uint32_t(in.w), uint32_t(in.h), uint32_t(kChannels), uint32_t(wd.size() / 2), 0, neumann ? 1u : 0u };
+    blurfix::BlurParams p {};
+    p.width = uint32_t(in.w);
+    p.height = uint32_t(in.h);
+    p.channels = uint32_t(kChannels);
+    p.radius = uint32_t(wd.size() / 2);
+    p.dstStride = p.srcStride = uint32_t(in.w) * uint32_t(kChannels);
+    p.srcX2 = int32_t(in.w);
+    p.srcY2 = int32_t(in.h);
     for (int pass = 0; pass < 2; ++pass) {
         p.vertical = pass;
+        p.lineHi = pass ? in.h : in.w;
         const std::vector<float>& src = pass ? tmp : in.rgba;
         std::vector<float>& dst = pass ? out : tmp;
         BlurGlobals g { { const_cast<float*>(src.data()), src.size() },
@@ -240,8 +248,8 @@ runBlurTwin(const Frame& in, std::vector<float>& tmp, std::vector<float>& out, d
     }
 }
 
-using BlurKernels::LineFilter;
-using BlurKernels::LineScratch;
+using Natron::BlurKernels::LineFilter;
+using Natron::BlurKernels::LineScratch;
 
 void
 runBlurNative(std::vector<float>& planes, int w, int h, const LineFilter& f, bool fir)
@@ -339,7 +347,7 @@ main(int argc, char** argv)
         for (size_t i = 0; i < a.size(); ++i)
             if ((i % kChannels) != 3 && std::isfinite(a[i]) && std::isfinite(b[i]))
                 gd = std::max(gd, double(std::fabs(a[i] - b[i])));
-        runBlurTwin(f, tmp, a, 3.0, true);
+        runBlurTwin(f, tmp, a, 3.0);
         std::vector<float> planes(f.rgba.size());
         toPlanar(f, planes);
         runBlurNative(planes, f.w, f.h, LineFilter::firGaussian(3.0, 0, true), true);
@@ -362,7 +370,7 @@ main(int argc, char** argv)
         for (double sigma : sigmas) {
             char work[32];
             std::snprintf(work, sizeof work, "Blur s%g", sigma);
-            row(name.c_str(), work, "twin FIR", medianMs(none, [&] { runBlurTwin(in, tmp, out, sigma, true); }, reps), mpx);
+            row(name.c_str(), work, "twin FIR", medianMs(none, [&] { runBlurTwin(in, tmp, out, sigma); }, reps), mpx);
             struct Native {
                 const char* label;
                 LineFilter f;

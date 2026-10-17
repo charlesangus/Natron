@@ -779,11 +779,6 @@ def createInstance(app,group):
         param.set("Quadratic")
         del param
 
-    param = lastNode.getParam("expandRoD")
-    if param is not None:
-        param.setValue(False)
-        del param
-
     param = lastNode.getParam("userTextArea")
     if param is not None:
         param.setValue("<font size=\"6\" color=\"#000000\" face=\"Droid Sans\">size*3*multi</font>")
@@ -815,11 +810,6 @@ def createInstance(app,group):
     param = lastNode.getParam("filter")
     if param is not None:
         param.set("Quadratic")
-        del param
-
-    param = lastNode.getParam("expandRoD")
-    if param is not None:
-        param.setValue(False)
         del param
 
     param = lastNode.getParam("userTextArea")
@@ -884,11 +874,6 @@ def createInstance(app,group):
         param.setValue(0, 1)
         del param
 
-    param = lastNode.getParam("expandRoD")
-    if param is not None:
-        param.setValue(False)
-        del param
-
     param = lastNode.getParam("cropToFormat")
     if param is not None:
         param.setValue(False)
@@ -925,11 +910,6 @@ def createInstance(app,group):
     param = lastNode.getParam("filter")
     if param is not None:
         param.set("Box")
-        del param
-
-    param = lastNode.getParam("expandRoD")
-    if param is not None:
-        param.setValue(False)
         del param
 
     param = lastNode.getParam("cropToFormat")

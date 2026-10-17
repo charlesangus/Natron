@@ -154,9 +154,9 @@ public:
     virtual RectI getGpuInputRoI(int inputNb, const RectI& outputRect, const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
-     * @brief The pixels render() gives for the same query, including the filter buffer it shrinks
-     * to the mask and clips to this effect's region of definition, which decides where a line is
-     * short and where its windows clamp.
+     * @brief The pixels render() gives for the same query, including the filter buffer, the
+     * window plus the halo clipped to this effect's region of definition, which decides where a
+     * line is short and where its windows clamp.
      **/
     virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 

@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 
 // Double-precision transcription of GradeKernel in Engine/Nodes/Color/Grade.cpp,
 // which sits in an anonymous namespace and cannot be linked from here.
@@ -19,13 +18,6 @@ grade(double v, const Channel& ch)
 {
     const double x = (ch.a * v) + ch.b;
 
-    if (ch.gamma <= 0) {
-        if (x < 1.)
-            return 0.;
-        if (x == 1.)
-            return 1.;
-        return std::numeric_limits<double>::infinity();
-    }
     if (ch.gamma == 1.)
         return x;
     if (x <= 0)

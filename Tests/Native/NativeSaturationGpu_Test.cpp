@@ -301,6 +301,49 @@ TEST_F(NativeSaturationGpuTest, MatchesTheCpuKernelForEveryLuminanceOption)
     std::printf("saturation node gpu vs cpu: %d renders, %zu floats compared\n", nCase, nCompared);
 }
 
+// At its defaults the node is an identity; its kernels, run anyway, leave every value as it is,
+// below 0 and above 1 included.
+TEST_F(NativeSaturationGpuTest, DefaultKnobsPassEveryValueThrough)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_SATURATION));
+    ASSERT_TRUE(bool(node));
+    NativeImageEffect* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+
+    const std::vector<float> values = testValues();
+    const int width = 32;
+    const int height = 9;
+    const int nComps = 4;
+    std::vector<float> src((size_t)width * height * nComps);
+    for (size_t i = 0; i < src.size(); ++i) {
+        src[i] = values[(i * 7) % values.size()];
+    }
+    const std::vector<float> cpu = cpuKernelRender(effect, src, width, height, nComps, 0xF);
+    const ImageDiff cpuDiff = compareImages(src, cpu, ParityTolerance::exact());
+    EXPECT_EQ(0u, cpuDiff.mismatches) << "cpu: first at float " << cpuDiff.firstMismatchIndex << " in " << src[cpuDiff.firstMismatchIndex] << " out "
+                                      << cpu[cpuDiff.firstMismatchIndex];
+
+    GpuQuery query;
+    query.time = kTime;
+    query.nComps = nComps;
+    ASSERT_TRUE(effect->canRenderOnGpu(query));
+    GpuParityImage image;
+    image.bounds = RectI(0, 0, width, height);
+    image.nComps = nComps;
+    image.pixels = src;
+    const GpuRunResult run = runRenderGpu(*runtime, *effect, query, std::vector<GpuParityImage>(1, image), nullptr, image.bounds);
+    ASSERT_TRUE(run.ok);
+    EXPECT_EQ(0u, run.writtenOutside);
+    ASSERT_EQ(src.size(), run.pixels.size());
+    const ImageDiff gpuDiff = compareImages(src, run.pixels, ParityTolerance::exact());
+    EXPECT_EQ(0u, gpuDiff.mismatches) << "gpu: first at float " << gpuDiff.firstMismatchIndex << " in " << src[gpuDiff.firstMismatchIndex] << " out "
+                                      << run.pixels[gpuDiff.firstMismatchIndex];
+}
+
 // The wrapped render against the node's own render() over the parity sources: a plain render, a
 // mask, an inverted mask, mix 0.5, a divide by alpha, and all of them at once.
 TEST_F(NativeSaturationGpuTest, MatchesTheCpuRender)

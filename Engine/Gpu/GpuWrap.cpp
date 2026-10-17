@@ -152,10 +152,6 @@ wrapParams(const GpuWrap& wrap, GpuWrapParams& out, const GpuWrapView* filtered)
     out.mix = wrap.mix;
     out.divisorChannel = wrap.divisorChannel < 0 ? -1 : wrap.divisorChannel;
     out.skipChannel = wrap.skipChannel < 0 ? -1 : wrap.skipChannel;
-    if (wrap.alphaThreshold > 0.0f) {
-        out.flags |= kGpuWrapFlagAlphaThreshold;
-        out.alphaThreshold = wrap.alphaThreshold;
-    }
 
     if (GpuStatus s = outputWindow(wrap.dst, wrap.output, n, "destination", out.dstOffset, out.dstStride); !s) {
         return s;

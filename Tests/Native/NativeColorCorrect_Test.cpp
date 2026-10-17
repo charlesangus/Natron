@@ -241,6 +241,7 @@ TEST_F(NativeColorCorrectTest, EditedToneRanges)
     ASSERT_TRUE(editToneRanges(pair.native));
     setGroup(pair, kColorCorrectGroupShadows);
     setGroup(pair, kColorCorrectGroupHighlights);
+    ASSERT_TRUE(setKnobOnBoth(pair, kColorCorrectParamClampBlack, { 1. }));
     expectParity(pair, "tone-ranges", true);
 }
 
@@ -249,7 +250,9 @@ TEST_F(NativeColorCorrectTest, IdentityConditions)
     ParityPair pair = makePair();
     const RectI window = paritySourceWindow(pair.source, kTime, 0);
 
-    // clampBlack is on by default, so the default node is not an identity.
+    EXPECT_TRUE(identityOf(pair.native, window));
+
+    ASSERT_TRUE(setKnobOnBoth(pair, kColorCorrectParamClampBlack, { 1. }));
     EXPECT_FALSE(identityOf(pair.native, window));
 
     ASSERT_TRUE(setKnobOnBoth(pair, kColorCorrectParamClampBlack, { 0. }));
@@ -266,18 +269,6 @@ TEST_F(NativeColorCorrectTest, IdentityConditions)
 
     ASSERT_TRUE(setKnobOnBoth(pair, "mix", { 0. }));
     EXPECT_TRUE(identityOf(pair.native, window));
-}
-
-TEST_F(NativeColorCorrectTest, UserEditedRangeIsSwappedWhenReversed)
-{
-    NodePtr node = createNode(QString::fromUtf8(kColorCorrectID), kNativeColorCorrectMajor);
-    ASSERT_TRUE(isNative(node));
-    KnobDouble* range = dynamic_cast<KnobDouble*>(node->getKnobByName(kColorCorrectParamRange).get());
-    ASSERT_TRUE(range != NULL);
-
-    range->setValues(0.8, 0.2, ViewSpec::all(), eValueChangedReasonUserEdited);
-    EXPECT_EQ(0.2, range->getValue(0));
-    EXPECT_EQ(0.8, range->getValue(1));
 }
 
 TEST_F(NativeColorCorrectTest, BothSchedulerModesAgreeWithNoUnplannedPull)

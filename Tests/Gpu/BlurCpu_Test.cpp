@@ -40,19 +40,18 @@ runPass(const std::vector<float>& src, std::vector<float>& dst, const std::vecto
 }
 
 double
-maxError(int width, int height, int channels, double sigma, bool neumann, uint32_t seed)
+maxError(int width, int height, int channels, double sigma, uint32_t seed)
 {
     const std::vector<float> img = blurfix::makeImage(width, height, channels, seed);
 
     const std::vector<float> wf = blurfix::halfWeights(sigma);
-    gpu::GpuBlurPass pass { uint32_t(width), uint32_t(height), uint32_t(channels), uint32_t(wf.size() - 1), false,
-                            neumann };
+    gpu::GpuBlurPass pass { uint32_t(width), uint32_t(height), uint32_t(channels), uint32_t(wf.size() - 1), false };
     std::vector<float> tmp, out;
     runPass(img, tmp, wf, gpu::blurParams(pass));
     pass.vertical = true;
     runPass(tmp, out, wf, gpu::blurParams(pass));
 
-    const std::vector<double> ref = blurfix::reference(img, width, height, channels, sigma, neumann);
+    const std::vector<double> ref = blurfix::reference(img, width, height, channels, sigma);
     double worst = 0.0;
     for (size_t i = 0; i < ref.size(); ++i)
         worst = std::max(worst, std::abs(double(out[i]) - ref[i]));
@@ -67,14 +66,11 @@ TEST(BlurCpu, MatchesReference)
     uint32_t seed = 1;
     for (double sigma : blurfix::kSigmas)
         for (const auto& s : blurfix::kSizes)
-            for (int ch : blurfix::kChannelCounts)
-                for (bool neumann : { false, true }) {
-                    const double e = maxError(s.w, s.h, ch, sigma, neumann, seed++);
-                    overall = std::max(overall, e);
-                    EXPECT_LE(e, kTolerance)
-                        << "sigma=" << sigma << " " << s.w << "x" << s.h << " ch=" << ch
-                        << " neumann=" << neumann;
-                }
+            for (int ch : blurfix::kChannelCounts) {
+                const double e = maxError(s.w, s.h, ch, sigma, seed++);
+                overall = std::max(overall, e);
+                EXPECT_LE(e, kTolerance) << "sigma=" << sigma << " " << s.w << "x" << s.h << " ch=" << ch;
+            }
     RecordProperty("max_abs_error", std::to_string(overall));
     std::printf("BlurCpu max abs error over all cases: %.3e\n", overall);
 }

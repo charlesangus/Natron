@@ -216,8 +216,6 @@ struct CorrectSetting {
     int luminanceMath;
     bool clampBlack;
     bool clampWhite;
-    double rangeMin;
-    double rangeMax;
     bool editedCurves;
 };
 
@@ -270,7 +268,6 @@ applySetting(const NodePtr& node,
     ASSERT_TRUE(setKnobValues(node, "luminanceMath", std::vector<double>(1, s.luminanceMath)));
     ASSERT_TRUE(setKnobValues(node, kColorCorrectParamClampBlack, std::vector<double>(1, s.clampBlack ? 1. : 0.)));
     ASSERT_TRUE(setKnobValues(node, kColorCorrectParamClampWhite, std::vector<double>(1, s.clampWhite ? 1. : 0.)));
-    ASSERT_TRUE(setKnobValues(node, kColorCorrectParamRange, std::vector<double>({ s.rangeMin, s.rangeMax })));
     KnobParametric* tones = dynamic_cast<KnobParametric*>(node->getKnobByName(kColorCorrectParamToneRanges).get());
     ASSERT_TRUE(tones != NULL);
     for (int d = 0; d < 2; ++d) {
@@ -291,21 +288,21 @@ describe(const CorrectSetting& s)
 {
     char text[160];
 
-    std::snprintf(text, sizeof(text), "groups %x luminance %d clamp %d%d range %g..%g curves %s", s.groups, s.luminanceMath, (int)s.clampBlack,
-                  (int)s.clampWhite, s.rangeMin, s.rangeMax, s.editedCurves ? "edited" : "default");
+    std::snprintf(text, sizeof(text), "groups %x luminance %d clamp %d%d curves %s", s.groups, s.luminanceMath, (int)s.clampBlack,
+                  (int)s.clampWhite, s.editedCurves ? "edited" : "default");
 
     return text;
 }
 
-// Values in and around the range, on its edges, far below and above it, and each edge a float
-// either side.
+// Values in and around the table's domain [0, 1], on its edges, far below and above it, and each
+// edge a float either side.
 std::vector<float>
 testValues(const CorrectSetting& s,
            std::size_t count)
 {
     const float inf = std::numeric_limits<float>::infinity();
     std::vector<float> specials = { 0.f, 1.f, 0.5f, -0.5f, 1.5f, -3.f, 4.f, 20.f, 1e-9f, 0.001f, 0.999f, 0.18f };
-    for (double edge : { s.rangeMin, s.rangeMax }) {
+    for (double edge : { 0., 1. }) {
         const float f = (float)edge;
         specials.push_back(f);
         specials.push_back(std::nextafter(f, inf));
@@ -382,11 +379,10 @@ class NativeColorCorrectGpuTest
 #ifdef NATRON_HAVE_GPU
 
 // Each group edited alone and all four at once, over the default and the edited tone curves, with
-// the luminance options, the clamps, a narrow, a swapped and an empty range (so the curves are
-// evaluated directly outside it), on one to four components and channel subsets. Inputs reach
-// below 0 and above 1, and the range edges are probed a float either side. Within
-// transcendental().
-TEST_F(NativeColorCorrectGpuTest, MatchesTheCpuKernelInEveryRange)
+// the luminance options and the clamps, on one to four components and channel subsets. Inputs reach
+// below 0 and above 1, where the curves are evaluated directly, and the table's edges are probed a
+// float either side. Within transcendental().
+TEST_F(NativeColorCorrectGpuTest, MatchesTheCpuKernelInEveryClampAndCurve)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
     if (!createRuntime(runtime)) {
@@ -399,41 +395,85 @@ TEST_F(NativeColorCorrectGpuTest, MatchesTheCpuKernelInEveryRange)
 
     const unsigned groupSets[] = { 1u << ColorCorrect::eGroupMaster, 1u << ColorCorrect::eGroupShadows, 1u << ColorCorrect::eGroupMidtones,
                                    1u << ColorCorrect::eGroupHighlights, 0xFu };
-    const double ranges[][2] = { { 0., 1. }, { 0.2, 0.8 }, { 1.2, -0.4 }, { 0.5, 0.5 } };
     const unsigned channelMasks[] = { 0xF, 0x5, 0x8 };
     std::size_t nCompared = 0;
     int nCase = 0;
 
     for (unsigned groups : groupSets) {
         for (int curves = 0; curves < 2; ++curves) {
-            for (int r = 0; r < 4; ++r) {
-                for (int clamps = 0; clamps < 4; ++clamps) {
-                    CorrectSetting setting;
-                    setting.groups = groups;
-                    setting.luminanceMath = (r * 4 + clamps + curves) % 7;
-                    setting.clampBlack = (clamps & 1) != 0;
-                    setting.clampWhite = (clamps & 2) != 0;
-                    setting.rangeMin = ranges[r][0];
-                    setting.rangeMax = ranges[r][1];
-                    setting.editedCurves = curves != 0;
-                    applySetting(node, setting);
-                    if (HasFatalFailure()) {
-                        return;
-                    }
-                    for (int nComps : { 1, 2, 3, 4 }) {
-                        for (unsigned channelMask : channelMasks) {
-                            checkKernel(*runtime, effect, setting, nComps, channelMask, &nCompared);
-                            if (HasFatalFailure()) {
-                                return;
-                            }
-                            ++nCase;
+            for (int clamps = 0; clamps < 4; ++clamps) {
+                CorrectSetting setting;
+                setting.groups = groups;
+                setting.luminanceMath = (clamps + curves * 4) % 7;
+                setting.clampBlack = (clamps & 1) != 0;
+                setting.clampWhite = (clamps & 2) != 0;
+                setting.editedCurves = curves != 0;
+                applySetting(node, setting);
+                if (HasFatalFailure()) {
+                    return;
+                }
+                for (int nComps : { 1, 2, 3, 4 }) {
+                    for (unsigned channelMask : channelMasks) {
+                        checkKernel(*runtime, effect, setting, nComps, channelMask, &nCompared);
+                        if (HasFatalFailure()) {
+                            return;
                         }
+                        ++nCase;
                     }
                 }
             }
         }
     }
     std::printf("colorcorrect node gpu vs cpu: %d renders, %zu floats compared\n", nCase, nCompared);
+}
+
+// At its defaults the node is an identity. Its kernels, run anyway, blend three copies of each
+// value by tone weights that sum to one only within rounding, so they hold transcendental() of the
+// input, below 0 and above 1 included, and of each other.
+TEST_F(NativeColorCorrectGpuTest, DefaultKnobsPassEveryValueThrough)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_COLORCORRECT));
+    ASSERT_TRUE(bool(node));
+    NativeImageEffect* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+
+    CorrectSetting setting;
+    setting.groups = 0;
+    setting.luminanceMath = 0;
+    setting.clampBlack = false;
+    setting.clampWhite = false;
+    setting.editedCurves = false;
+    const int width = 32;
+    const int height = 9;
+    const int nComps = 4;
+    const std::vector<float> src = testValues(setting, (size_t)width * height * nComps);
+    const std::vector<float> cpu = cpuKernelRender(effect, src, width, height, nComps, 0xF);
+    const ImageDiff cpuDiff = compareImages(src, cpu, ParityTolerance::transcendental());
+    EXPECT_EQ(0u, cpuDiff.mismatches) << "cpu: first at float " << cpuDiff.firstMismatchIndex << " in " << src[cpuDiff.firstMismatchIndex] << " out "
+                                      << cpu[cpuDiff.firstMismatchIndex];
+
+    std::size_t nCompared = 0;
+    checkKernelOn(*runtime, effect, setting, src, width, height, nComps, 0xF, &nCompared);
+    if (HasFatalFailure()) {
+        return;
+    }
+    GpuQuery query;
+    query.time = kTime;
+    query.nComps = nComps;
+    GpuParityImage image;
+    image.bounds = RectI(0, 0, width, height);
+    image.nComps = nComps;
+    image.pixels = src;
+    const GpuRunResult run = runRenderGpu(*runtime, *effect, query, std::vector<GpuParityImage>(1, image), nullptr, image.bounds);
+    ASSERT_TRUE(run.ok);
+    ASSERT_EQ(src.size(), run.pixels.size());
+    const ImageDiff gpuDiff = compareImages(src, run.pixels, ParityTolerance::transcendental());
+    EXPECT_EQ(0u, gpuDiff.mismatches) << "gpu: first at float " << gpuDiff.firstMismatchIndex << " in " << src[gpuDiff.firstMismatchIndex] << " out "
+                                      << run.pixels[gpuDiff.firstMismatchIndex];
 }
 
 // The wrapped render against the node's own render() over the parity sources: a plain render, a
@@ -492,9 +532,9 @@ TEST_F(NativeColorCorrectGpuTest, MatchesTheCpuRender)
         { "masked, mix 0.5, divide by A", true, false, 0.5, "rgba.A" },
     };
     const CorrectSetting settings[] = {
-        { 0xFu, 0, true, false, 0., 1., false },
-        { 0xFu, 0, false, true, 0., 1., true },
-        { 0xFu, 5, false, false, 0.2, 0.8, true },
+        { 0xFu, 0, true, false, false },
+        { 0xFu, 0, false, true, true },
+        { 0xFu, 5, false, false, true },
     };
     int nCase = 0;
 
@@ -545,9 +585,9 @@ TEST_F(NativeColorCorrectGpuTest, MatchesTheCpuRender)
         }
     }
 }
-// Outside `range` the shader evaluates the tone curves from their keys. A key at 0.100000001
-// rounds to the float 0.1f, which lies 4.9e-10 past it, and a slope of 1e9 after the key makes
-// that a weight of 0.49: the shader must take t minus the key time to the CPU's double precision.
+// Above the table's domain the shader evaluates the tone curves from their keys. A key at 7.9999999
+// rounds to the float 8.0f, which lies 1e-7 past it, and a slope of 5e6 after the key makes that a
+// weight of 0.5: the shader must take t minus the key time to the CPU's double precision.
 // The luminance is the largest channel, so that it lands on the floats around the key exactly.
 TEST_F(NativeColorCorrectGpuTest, MatchesTheCpuPastASteepKeyBetweenFloats)
 {
@@ -565,26 +605,24 @@ TEST_F(NativeColorCorrectGpuTest, MatchesTheCpuPastASteepKeyBetweenFloats)
     setting.luminanceMath = ColorMath::eLuminanceMathMax;
     setting.clampBlack = false;
     setting.clampWhite = false;
-    setting.rangeMin = 0.;
-    setting.rangeMax = 0.05;
     setting.editedCurves = false;
     applySetting(node, setting);
     if (HasFatalFailure()) {
         return;
     }
-    const double key = 0.100000001;
+    const double key = 7.9999999;
     KnobParametric* tones = dynamic_cast<KnobParametric*>(node->getKnobByName(kColorCorrectParamToneRanges).get());
     ASSERT_TRUE(tones != NULL);
     for (int d = 0; d < 2; ++d) {
         ASSERT_EQ(eStatusOK, tones->deleteAllControlPoints(eValueChangedReasonPluginEdited, d));
         ASSERT_EQ(eStatusOK, tones->addControlPoint(eValueChangedReasonPluginEdited, d, 0., 0., 0., 0., eKeyframeTypeBroken));
-        ASSERT_EQ(eStatusOK, tones->addControlPoint(eValueChangedReasonPluginEdited, d, key, 0., 0., 1e9, eKeyframeTypeBroken));
+        ASSERT_EQ(eStatusOK, tones->addControlPoint(eValueChangedReasonPluginEdited, d, key, 0., 0., 5e6, eKeyframeTypeBroken));
     }
 
     const float inf = std::numeric_limits<float>::infinity();
-    std::vector<float> values = { 0.f, 0.07f, 0.0999f, 0.12f, 0.5f, 1.f, 2.f };
-    float above = 0.1f;
-    float below = 0.1f;
+    std::vector<float> values = { 0.f, 0.07f, 0.5f, 1.f, 2.f, 7.9f, 9.f, 20.f };
+    float above = 8.f;
+    float below = 8.f;
     for (int i = 0; i < 12; ++i) {
         values.push_back(above);
         values.push_back(below);
@@ -607,6 +645,63 @@ TEST_F(NativeColorCorrectGpuTest, MatchesTheCpuPastASteepKeyBetweenFloats)
     EXPECT_GT(nCompared, 0u);
 }
 
+// With the output clamps off the tone weights are still held to [0, 1]: where the shadow curve is
+// above 1 and the highlight curve below 0 the shadow weight is 1 and the highlight weight 0, so a
+// shadows-only correction scales the pixel by exactly its gain, on the CPU and the GPU.
+TEST_F(NativeColorCorrectGpuTest, ToneWeightsStayInUnitIntervalWithClampsOff)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_COLORCORRECT));
+    ASSERT_TRUE(bool(node));
+    NativeImageEffect* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+
+    CorrectSetting setting;
+    setting.groups = 1u << ColorCorrect::eGroupShadows;
+    setting.luminanceMath = ColorMath::eLuminanceMathMax;
+    setting.clampBlack = false;
+    setting.clampWhite = false;
+    setting.editedCurves = false;
+    applySetting(node, setting);
+    if (HasFatalFailure()) {
+        return;
+    }
+    KnobParametric* tones = dynamic_cast<KnobParametric*>(node->getKnobByName(kColorCorrectParamToneRanges).get());
+    ASSERT_TRUE(tones != NULL);
+    for (int d = 0; d < 2; ++d) {
+        ASSERT_EQ(eStatusOK, tones->deleteAllControlPoints(eValueChangedReasonPluginEdited, d));
+        const double value = (d == 0) ? 3. : -2.;
+        ASSERT_EQ(eStatusOK, tones->addControlPoint(eValueChangedReasonPluginEdited, d, 0., value, eKeyframeTypeConstant));
+        ASSERT_EQ(eStatusOK, tones->addControlPoint(eValueChangedReasonPluginEdited, d, 1., value, eKeyframeTypeConstant));
+    }
+    const double gain = kEdited[ColorCorrect::eGroupShadows].gain[0];
+    ASSERT_TRUE(setKnobValues(node, std::string(kGroupNames[ColorCorrect::eGroupShadows]) + kColorCorrectParamSaturation, std::vector<double>(4, 1.)));
+    ASSERT_TRUE(setKnobValues(node, std::string(kGroupNames[ColorCorrect::eGroupShadows]) + kColorCorrectParamContrast, std::vector<double>(4, 1.)));
+    ASSERT_TRUE(setKnobValues(node, std::string(kGroupNames[ColorCorrect::eGroupShadows]) + kColorCorrectParamGamma, std::vector<double>(4, 1.)));
+    ASSERT_TRUE(setKnobValues(node, std::string(kGroupNames[ColorCorrect::eGroupShadows]) + kColorCorrectParamGain, std::vector<double>(4, gain)));
+    ASSERT_TRUE(setKnobValues(node, std::string(kGroupNames[ColorCorrect::eGroupShadows]) + kColorCorrectParamOffset, std::vector<double>(4, 0.)));
+
+    const std::vector<float> values = { 0.f, 0.25f, 0.5f, 1.f, 1.5f, 4.f, -0.5f, -3.f };
+    std::vector<float> src;
+    for (float v : values) {
+        src.push_back(v);
+        src.push_back(v);
+        src.push_back(v);
+        src.push_back(1.f);
+    }
+    const int width = (int)values.size();
+    const std::vector<float> cpu = cpuKernelRender(effect, src, width, 1, 4, 0xF);
+    for (std::size_t i = 0; i < cpu.size(); ++i) {
+        EXPECT_NEAR(src[i] * gain, cpu[i], 1e-5 * (1. + std::fabs(cpu[i]))) << "float " << i;
+    }
+    std::size_t nCompared = 0;
+    checkKernelOn(*runtime, effect, setting, src, width, 1, 4, 0xF, &nCompared);
+    EXPECT_GT(nCompared, 0u);
+}
+
 #endif // NATRON_HAVE_GPU
 
 TEST_F(NativeColorCorrectGpuTest, GradeColorCorrectGradeChainRunsAsOneRegion)
@@ -621,7 +716,7 @@ TEST_F(NativeColorCorrectGpuTest, GradeColorCorrectGradeChainRunsAsOneRegion)
     connectNodes(correct, second, 0, true);
     ASSERT_TRUE(setKnobValues(first, "multiply", std::vector<double>(4, 1.5)));
     ASSERT_TRUE(setKnobValues(second, "offset", std::vector<double>(4, 0.25)));
-    const CorrectSetting setting = { 0xFu, 0, true, false, 0., 1., true };
+    const CorrectSetting setting = { 0xFu, 0, true, false, true };
     applySetting(correct, setting);
     if (HasFatalFailure()) {
         return;

@@ -151,6 +151,27 @@ protected:
     }
 };
 
+// Every value of the fixture sweep in each of the four channels, NaN, infinities, signed zeros and
+// subnormals included.
+std::vector<float>
+sweepImage(int* width)
+{
+    const std::vector<float> sweep = gradefix::makeSweep();
+    const size_t n = sweep.size();
+    std::vector<float> px(n * 4);
+
+    for (size_t i = 0; i < px.size(); ++i) {
+        px[i] = sweep[(i / 4 + (i % 4) * 37) % n];
+    }
+    *width = (int)n;
+
+    return px;
+}
+
+// Gamma knob values at and below zero, and one between zero and the floor, one per channel.
+const GradeSetting kGammaBelowFloor = { { 1., 1., 1., 1. }, { 0., 0., 0., 0. }, { 0., -1., -0.25, 0.004 }, false, false, false };
+const GradeSetting kGammaAtFloor = { { 1., 1., 1., 1. }, { 0., 0., 0., 0. }, { gradefix::kMinGamma, gradefix::kMinGamma, gradefix::kMinGamma, gradefix::kMinGamma }, false, false, false };
+
 } // namespace
 
 TEST_F(NativeGradeGpuTest, EligibilityFollowsTheSupportedSettings)
@@ -202,6 +223,58 @@ TEST_F(NativeGradeGpuTest, EligibilityFollowsTheSupportedSettings)
     }
 }
 
+TEST_F(NativeGradeGpuTest, DefaultKernelPassesEveryValueThrough)
+{
+    NodePtr node;
+    NativeImageEffect* grade = makeGrade(node);
+    ASSERT_TRUE(grade != NULL);
+
+    int width = 0;
+    const std::vector<float> src = sweepImage(&width);
+    const std::vector<float> got = cpuRender(grade, src, width, 1, 4, 0xF);
+    const ImageDiff diff = compareImages(src, got, ParityTolerance::exact());
+    EXPECT_EQ(0u, diff.mismatches) << "first at float " << diff.firstMismatchIndex << " in " << src[diff.firstMismatchIndex] << " out " << got[diff.firstMismatchIndex];
+}
+
+// A gamma at or below the floor renders as the floor, forward and reversed: pow(x, 1 / floor) for
+// a positive x, x itself otherwise.
+TEST_F(NativeGradeGpuTest, GammaAtOrBelowZeroIsRaisedToTheFloor)
+{
+    NodePtr node;
+    NativeImageEffect* grade = makeGrade(node);
+    ASSERT_TRUE(grade != NULL);
+    NodePtr floorNode;
+    NativeImageEffect* floorGrade = makeGrade(floorNode);
+    ASSERT_TRUE(floorGrade != NULL);
+
+    int width = 0;
+    const std::vector<float> src = sweepImage(&width);
+    for (int reverse = 0; reverse < 2; ++reverse) {
+        GradeSetting below = kGammaBelowFloor;
+        GradeSetting atFloor = kGammaAtFloor;
+        below.reverse = atFloor.reverse = reverse != 0;
+        applySetting(node, below);
+        applySetting(floorNode, atFloor);
+        if (HasFatalFailure()) {
+            return;
+        }
+
+        const std::vector<float> got = cpuRender(grade, src, width, 1, 4, 0xF);
+        const std::vector<float> floorGot = cpuRender(floorGrade, src, width, 1, 4, 0xF);
+        const ImageDiff same = compareImages(floorGot, got, ParityTolerance::exact());
+        EXPECT_EQ(0u, same.mismatches) << "reverse " << reverse << ": first at float " << same.firstMismatchIndex << " in " << src[same.firstMismatchIndex];
+
+        std::vector<float> want(src.size());
+        for (size_t i = 0; i < src.size(); ++i) {
+            const double v = src[i];
+            want[i] = (float)((v > 0) ? std::pow(v, reverse ? gradefix::kMinGamma : 1. / gradefix::kMinGamma) : v);
+        }
+        const ImageDiff analytic = compareImages(want, got, ParityTolerance::transcendental());
+        EXPECT_EQ(0u, analytic.mismatches) << "reverse " << reverse << ": first at float " << analytic.firstMismatchIndex << " in " << src[analytic.firstMismatchIndex]
+                                           << " got " << got[analytic.firstMismatchIndex] << " want " << want[analytic.firstMismatchIndex];
+    }
+}
+
 #ifdef NATRON_HAVE_GPU
 
 TEST_F(NativeGradeGpuTest, MatchesTheCpuKernelOnTheGradeFixtures)
@@ -230,7 +303,7 @@ TEST_F(NativeGradeGpuTest, MatchesTheCpuKernelOnTheGradeFixtures)
         for (int i = 0; i < 4; ++i) {
             setting.multiply[i] = p.a[i];
             setting.offset[i] = p.b[i];
-            setting.gamma[i] = p.gamma[i];
+            setting.gamma[i] = c.knobGamma[i];
         }
         setting.reverse = (p.flags & gradefix::kReverse) != 0;
         setting.clampBlack = (p.flags & gradefix::kClampBlack) != 0;
@@ -297,6 +370,88 @@ TEST_F(NativeGradeGpuTest, MatchesTheCpuKernelOnTheGradeFixtures)
     }
     EXPECT_GT(compared, 1000000u);
     EXPECT_EQ(0u, violations);
+}
+
+// Subnormal inputs are skipped: a device may flush them to zero.
+TEST_F(NativeGradeGpuTest, DefaultKnobsPassEveryValueThroughOnTheGpu)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    NodePtr node;
+    NativeImageEffect* grade = makeGrade(node);
+    ASSERT_TRUE(grade != NULL);
+
+    int width = 0;
+    const std::vector<float> src = sweepImage(&width);
+    GpuParityImage image;
+    image.bounds = RectI(0, 0, width, 1);
+    image.nComps = 4;
+    image.pixels = src;
+    const GpuRunResult run = runRenderGpu(*runtime, *grade, eligibleQuery(), std::vector<GpuParityImage>(1, image), nullptr, image.bounds);
+    ASSERT_TRUE(run.ok);
+    EXPECT_EQ(0u, run.writtenOutside);
+    ASSERT_EQ(src.size(), run.pixels.size());
+
+    const ParityTolerance exact = ParityTolerance::exact();
+    size_t compared = 0;
+    for (size_t i = 0; i < src.size(); ++i) {
+        if ((src[i] != 0) && (std::fabs(src[i]) < std::numeric_limits<float>::min())) {
+            continue;
+        }
+        ++compared;
+        EXPECT_TRUE(exact.accepts(src[i], run.pixels[i])) << "float " << i << " in " << src[i] << " gpu " << run.pixels[i];
+    }
+    EXPECT_GT(compared, src.size() / 2);
+}
+
+TEST_F(NativeGradeGpuTest, GammaAtOrBelowZeroMatchesTheCpuKernel)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    NodePtr node;
+    NativeImageEffect* grade = makeGrade(node);
+    ASSERT_TRUE(grade != NULL);
+
+    int width = 0;
+    const std::vector<float> src = sweepImage(&width);
+    const gradefix::Bounds bounds { gradefix::kUlpBound, true };
+    const graderef::Channel chan { 1., 0., gradefix::hostGamma(0.f) };
+    for (int variant = 0; variant < 4; ++variant) {
+        GradeSetting setting = kGammaBelowFloor;
+        setting.reverse = (variant & 1) != 0;
+        setting.clampBlack = setting.clampWhite = (variant & 2) != 0;
+        applySetting(node, setting);
+        if (HasFatalFailure()) {
+            return;
+        }
+        const std::vector<float> want = cpuRender(grade, src, width, 1, 4, 0xF);
+
+        GpuParityImage image;
+        image.bounds = RectI(0, 0, width, 1);
+        image.nComps = 4;
+        image.pixels = src;
+        const GpuRunResult run = runRenderGpu(*runtime, *grade, eligibleQuery(), std::vector<GpuParityImage>(1, image), nullptr, image.bounds);
+        ASSERT_TRUE(run.ok);
+        EXPECT_EQ(0u, run.writtenOutside);
+        ASSERT_EQ(src.size(), run.pixels.size());
+
+        size_t failures = 0;
+        for (size_t i = 0; i < src.size(); ++i) {
+            const double in = src[i];
+            if ((in != 0) && (std::fabs(in) < std::numeric_limits<float>::min())) {
+                continue;
+            }
+            const double conditioned = gradefix::conditionedTolerance(in, chan, setting.reverse, want[i], true);
+            if (!gradefix::matches(run.pixels[i], want[i], conditioned, bounds) && (++failures < 10)) {
+                ADD_FAILURE() << "variant " << variant << " float " << i << " in " << in << " gpu " << run.pixels[i] << " cpu " << want[i];
+            }
+        }
+        EXPECT_EQ(0u, failures) << "variant " << variant;
+    }
 }
 
 TEST_F(NativeGradeGpuTest, HonoursOffsetsAndStridesOfTheViews)

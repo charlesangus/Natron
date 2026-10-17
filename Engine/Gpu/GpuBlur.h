@@ -19,16 +19,14 @@ struct GpuBlurRegion {
     int32_t outY = 0;
     uint32_t dstOffset = 0;
     uint32_t dstStride = 0;
-    // The source pixels that exist, the first stored at srcOffset; samples outside are black, or
-    // the nearest of them under neumann.
+    // The source pixels that exist, the first stored at srcOffset; samples outside are black.
     int32_t srcX1 = 0;
     int32_t srcY1 = 0;
     int32_t srcX2 = 0;
     int32_t srcY2 = 0;
     uint32_t srcOffset = 0;
     uint32_t srcStride = 0;
-    // The extent of the filtered line along the blur axis: taps beyond it take the boundary
-    // condition before the source is read, and outputs beyond it are zero.
+    // The extent of the filtered line along the blur axis: taps and outputs beyond it are zero.
     int32_t lineLo = 0;
     int32_t lineHi = 0;
 };
@@ -45,8 +43,6 @@ struct GpuBlurPass {
     // 0 to radius, the kernel being symmetric.
     uint32_t radius = 0;
     bool vertical = false;
-    // Clamp to the edge pixel (true) or read zero outside the image (false).
-    bool neumann = true;
     // Unset, source and destination are both the whole tightly packed width x height image.
     std::optional<GpuBlurRegion> region;
 };
@@ -58,7 +54,6 @@ struct GpuBlurParams {
     uint32_t channels;
     uint32_t radius;
     uint32_t vertical;
-    uint32_t neumann;
     int32_t outX;
     int32_t outY;
     uint32_t dstOffset;
@@ -109,9 +104,8 @@ struct GpuBlurImage {
 };
 
 // A separable FIR blur of `output`, computed as a horizontal then a vertical pass over the lines of
-// `domain`. Samples outside srcValid are black, or the nearest srcValid pixel under neumann, and a
-// tap beyond `domain` takes the same boundary condition at the domain's edge first. Output pixels
-// outside `domain` are zero.
+// `domain`. Samples outside srcValid and taps beyond `domain` are black, and so are output pixels
+// outside `domain`.
 struct GpuSeparableBlur {
     GpuBlurImage src;
     // Within src.bounds, or empty when the source has no pixels.
@@ -121,7 +115,6 @@ struct GpuSeparableBlur {
     GpuBlurRect output;
     GpuBlurRect domain;
     uint32_t channels = 0;
-    bool neumann = false;
     // Symmetric half kernels: the weights of offsets 0 to radius.
     std::span<const float> weightsX;
     std::span<const float> weightsY;
@@ -156,7 +149,6 @@ struct GpuLineFilter {
 struct GpuLineBlurParams {
     uint32_t kind;
     uint32_t vertical;
-    uint32_t neumann;
     uint32_t channels;
     uint32_t lineCount;
     int32_t lineOrigin;
@@ -178,12 +170,12 @@ struct GpuLineBlurParams {
     int32_t half;
     uint32_t iterations;
 };
-static_assert(sizeof(GpuLineBlurParams) == 92);
+static_assert(sizeof(GpuLineBlurParams) == 88);
 
 // A separable recursive blur of `output`, as Blur::render() runs LineFilter: every row of the
-// filtered rect, then every column, each over the whole rect along its axis, with the boundary
-// condition at the rect's edges. Samples outside srcValid are black, or the nearest srcValid pixel
-// under neumann. Output pixels outside the filtered rect are zero.
+// filtered rect, then every column, each over the whole rect along its axis, with samples outside
+// it black. Samples outside srcValid are black too, and so are output pixels outside the filtered
+// rect.
 struct GpuLineBlur {
     GpuBlurImage src;
     // Within src.bounds, or empty when the source has no pixels.
@@ -193,10 +185,9 @@ struct GpuLineBlur {
     GpuBlurRect output;
     // Holds every filtered rect the window may give.
     GpuBlurRect domain;
-    // From recordFilterWindow(): its [4, 8) are the filtered rect, within domain.
+    // From recordFilterWindow(): the filtered rect, within domain.
     const GpuBuffer* window = nullptr;
     uint32_t channels = 0;
-    bool neumann = false;
     GpuLineFilter filterX;
     GpuLineFilter filterY;
 };

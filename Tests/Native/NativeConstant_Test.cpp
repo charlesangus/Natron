@@ -220,6 +220,46 @@ TEST_F(NativeConstantTest, DefaultExtent)
     expectParity(pair, "default", true);
 }
 
+TEST_F(NativeConstantTest, DefaultExtentIsTheProjectFormatIncludingItsOffset)
+{
+    resetProject();
+    getApp()->getProject()->setAutoSetProjectFormatEnabled(true);
+    getApp()->getProject()->setOrAddProjectFormat(Format(-10, -6, 50, 40, "nativeConstantOffset", 1.));
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), kNativeConstantMajor);
+    ASSERT_TRUE(isNative(node));
+
+    const RectD rod = regionOfDefinition(node, kTime);
+    EXPECT_EQ(-10., rod.x1);
+    EXPECT_EQ(-6., rod.y1);
+    EXPECT_EQ(50., rod.x2);
+    EXPECT_EQ(40., rod.y2);
+}
+
+TEST_F(NativeConstantTest, FormatChoiceListsTheProjectFormats)
+{
+    resetProject();
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), kNativeConstantMajor);
+    ASSERT_TRUE(isNative(node));
+
+    std::vector<ChoiceOption> projectEntries;
+    int projectIndex = 0;
+    getApp()->getProject()->getProjectFormatEntries(&projectEntries, &projectIndex);
+    KnobChoice* format = dynamic_cast<KnobChoice*>(node->getKnobByName(kNatronParamFormatChoice).get());
+    ASSERT_TRUE(format != NULL);
+    const std::vector<ChoiceOption> entries = format->getEntries_mt_safe();
+    ASSERT_EQ(projectEntries.size(), entries.size());
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        EXPECT_EQ(projectEntries[i].id, entries[i].id);
+        EXPECT_EQ(projectEntries[i].label, entries[i].label);
+    }
+    EXPECT_EQ(projectIndex, format->getValue());
+
+    getApp()->getProject()->setOrAddProjectFormat(Format(0, 0, 30, 20, "nativeConstantAdded", 1.));
+    std::vector<ChoiceOption> grown;
+    getApp()->getProject()->getProjectFormatEntries(&grown, &projectIndex);
+    EXPECT_EQ(grown.size(), format->getEntries_mt_safe().size());
+}
+
 TEST_F(NativeConstantTest, SizeExtentWithAnOffset)
 {
     resetProject();
@@ -252,6 +292,21 @@ TEST_F(NativeConstantTest, SolidIsOpaque)
     ParityPair pair = makeGeneratorPair(PLUGINID_NATRON_SOLID);
     ASSERT_TRUE(setKnobOnBoth(pair, kConstantParamColor, { 0.3, 0.6, 0.9 }));
     expectParity(pair, "default", true);
+}
+
+TEST_F(NativeConstantTest, NewGeneratorSpansTheProjectRange)
+{
+    resetProject();
+    getApp()->getProject()->unionFrameRangeWith(5, 20);
+    double projectFirst = 0., projectLast = 0.;
+    getApp()->getProject()->getFrameRange(&projectFirst, &projectLast);
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), kNativeConstantMajor);
+    ASSERT_TRUE(isNative(node));
+
+    double first = 0., last = 0.;
+    node->getEffectInstance()->getFrameRange_public(node->getEffectInstance()->getRenderHash(), &first, &last, true);
+    EXPECT_EQ(projectFirst, first);
+    EXPECT_EQ(projectLast, last);
 }
 
 TEST_F(NativeConstantTest, FrameRangeIsTheTimeDomain)

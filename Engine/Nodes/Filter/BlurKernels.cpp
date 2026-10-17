@@ -33,8 +33,8 @@
 NATRON_NAMESPACE_ENTER
 
 namespace BlurKernels {
-// The expressions below keep CImg's exact mix of float and double operands and its evaluation
-// order on purpose: the native Blur must round where CImgBlur does.
+// The GPU twin in Kernels/blur_lines.slang follows the operand types and evaluation order of the
+// expressions below, so they are not to be simplified.
 
 LineFilter::LineFilter()
     : _kind(eKindIdentity)

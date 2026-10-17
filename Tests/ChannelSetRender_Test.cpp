@@ -1111,6 +1111,9 @@ TEST_F(ChannelSetRenderTest, SaturationSpecularRowLeavesColorAndDiffuseUntouched
 class ChannelSetRenderBlurTest
     : public ChannelSetRenderTest {
 protected:
+    // A size 3 box blur of the constant 8x8 fixture is the identity everywhere but the border row
+    // and column, which see black outside; the output is cropped to the format, so the checked
+    // pixel, one in from the border, keeps its value while the Blur really renders.
     NodePtr createBlurOnReader(KnobChannelSetPtr* channels)
     {
         NodePtr blur = createEffectOnReader(QString::fromUtf8("net.sf.cimg.CImgBlur"), channels);
@@ -1122,16 +1125,11 @@ protected:
             return NodePtr();
         }
         size->setValues(3., 3., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
-        KnobChoice* boundary = dynamic_cast<KnobChoice*>(blur->getKnobByName("boundary").get());
-        if (!boundary) {
+        KnobChoice* filter = dynamic_cast<KnobChoice*>(blur->getKnobByName("filter").get());
+        if (!filter) {
             return NodePtr();
         }
-        boundary->setValueFromID("nearest", 0);
-        KnobBool* expandRoD = dynamic_cast<KnobBool*>(blur->getKnobByName("expandRoD").get());
-        if (!expandRoD) {
-            return NodePtr();
-        }
-        expandRoD->setValue(false);
+        filter->setValueFromID("box", 0);
 
         return blur;
     }

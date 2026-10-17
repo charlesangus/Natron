@@ -242,6 +242,49 @@ TEST_F(NativeCropTest, BlackOutside)
     expectParity(pair, "black-outside", kExactTolerance, true);
 }
 
+TEST_F(NativeCropTest, ReadsBlackOutsideTheSource)
+{
+    resetProject();
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    NodePtr crop = createNode(QString::fromUtf8(kCropID), kNativeCropMajor);
+    ASSERT_TRUE(bool(source));
+    ASSERT_TRUE(isNative(crop));
+    setParitySourceOrigin(source, 0, 0);
+    connectNodes(source, crop, 0, true);
+    ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamBottomLeft, { -10., -8. }));
+    ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamSize, { 90., 70. }));
+    ASSERT_TRUE(setKnobValues(crop, kCropParamSoftness, { 0. }));
+    ASSERT_TRUE(setKnobValues(crop, kCropParamBlackOutside, { 1. }));
+
+    const RectI window(-10, -8, 80, 62);
+    const RectI sourceWindow = paritySourceWindow(source, kTime, 0);
+    std::list<ImageLayerDesc> layers;
+    layers.push_back(ImageLayerDesc::getRGBAComponents());
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(crop, kTime, ViewIdx(0), 0, window, layers, &planes, &error)) << error;
+    ASSERT_EQ(1u, planes.size());
+
+    const std::size_t nComps = planes[0].channels.size();
+    ASSERT_EQ(4u, nComps);
+    int outside = 0;
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            const bool inside = (x >= sourceWindow.x1) && (x < sourceWindow.x2) && (y >= sourceWindow.y1) && (y < sourceWindow.y2);
+            const std::size_t i = ((std::size_t)(y - window.y1) * window.width() + (x - window.x1)) * nComps;
+            for (std::size_t c = 0; c < nComps; ++c) {
+                if (inside) {
+                    EXPECT_EQ(paritySourceColorValue((int)c, x - sourceWindow.x1, y - sourceWindow.y1, kTime), planes[0].pixels[i + c]) << x << "," << y << " channel " << c;
+                } else {
+                    EXPECT_EQ(0.f, planes[0].pixels[i + c]) << x << "," << y << " channel " << c;
+                }
+            }
+            outside += inside ? 0 : 1;
+        }
+    }
+    EXPECT_GT(outside, 0);
+}
+
 TEST_F(NativeCropTest, ReformatOnFormatSetsTheOutputFormat)
 {
     resetProject();

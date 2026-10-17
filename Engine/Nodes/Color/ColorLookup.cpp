@@ -63,8 +63,13 @@ const float kHistogramColors[3][3] = {
     { 0.288480472595996f / 2, 0.288480472595996f / 2, 0.835466579148890f / 2 }
 };
 
-// Intervals of the lookup table over `range`.
+// The lookup table has this many intervals over [kLutMin, kLutMax]; a curve is evaluated directly
+// outside it. The unit interval is the curve editor's domain, so the table keeps its resolution
+// where the curves are edited however far the scene-linear values run. The histogram and the
+// colour ramp span the same interval.
 const int kLutIntervals = 1023;
+const double kLutMin = 0.;
+const double kLutMax = 1.;
 
 #ifdef NATRON_HAVE_GPU
 // The parameter block of ColorLookupOp in colorlookup.slang, in words.
@@ -100,16 +105,12 @@ curveOfChannel(int channelBit)
 struct KernelParams {
     ColorLookup::MasterCurveModeEnum mode;
     ColorMath::LuminanceMathEnum luminanceMath;
-    double rangeMin;
-    double rangeMax;
     bool clampBlack;
     bool clampWhite;
 
     KernelParams()
         : mode(ColorLookup::eMasterCurveModeStandard)
         , luminanceMath(ColorMath::eLuminanceMathRec709)
-        , rangeMin(0.)
-        , rangeMax(1.)
         , clampBlack(false)
         , clampWhite(false)
     {
@@ -123,16 +124,11 @@ public:
                       const CurveSnapshot curves[ColorLookup::eCurveCount])
         : _mode(params.mode)
         , _luminanceMath(params.luminanceMath)
-        , _rangeMin((std::min)(params.rangeMin, params.rangeMax))
-        , _rangeMax((std::max)(params.rangeMin, params.rangeMax))
         , _clampBlack(params.clampBlack)
         , _clampWhite(params.clampWhite)
     {
         for (int i = 0; i < ColorLookup::eCurveCount; ++i) {
             _curves[i] = curves[i];
-        }
-        if (_rangeMin == _rangeMax) {
-            _rangeMax = _rangeMin + 1.;
         }
         const bool standard = isStandard();
         for (int curve = 0; curve < ColorLookup::eCurveCount; ++curve) {
@@ -141,7 +137,7 @@ public:
             }
             _lut[curve].resize(kLutIntervals + 1);
             for (int position = 0; position <= kLutIntervals; ++position) {
-                const double parametricPos = _rangeMin + (_rangeMax - _rangeMin) * double(position) / kLutIntervals;
+                const double parametricPos = kLutMin + (kLutMax - kLutMin) * double(position) / kLutIntervals;
                 _lut[curve][position] = (float)clamp(curveValue(curve, parametricPos));
             }
         }
@@ -202,7 +198,7 @@ public:
         (*words)[0] = (std::uint32_t)_mode;
         (*words)[1] = (std::uint32_t)_luminanceMath;
         (*words)[2] = (_clampBlack ? 1u : 0u) | (_clampWhite ? 2u : 0u);
-        CurveSnapshot::packGpuTableRange(_rangeMin, _rangeMax, kLutIntervals, &(*words)[kGpuTableRange]);
+        CurveSnapshot::packGpuTableRange(kLutMin, kLutMax, kLutIntervals, &(*words)[kGpuTableRange]);
         for (int curve = 0; curve < ColorLookup::eCurveCount; ++curve) {
             const CurveSnapshot& snapshot = _curves[curve];
             if (!snapshot.packGpu(&(*words)[kGpuCurveBase + curve * kGpuCurveWords])) {
@@ -261,16 +257,15 @@ private:
         return value;
     }
 
-    // Interpolated in the table inside `range`, evaluated directly outside it. The float steps
-    // are the OpenFX plug-in's.
+    // Interpolated in the table inside its domain, evaluated directly outside it.
     float interpolate(int curve,
                       float value) const
     {
-        if ((value < _rangeMin) || (_rangeMax < value)) {
+        if ((value < kLutMin) || (kLutMax < value)) {
             return static_cast<float>(clamp(curveValue(curve, value)));
         }
         const std::vector<float>& lut = _lut[curve];
-        const double x = (value - _rangeMin) / (_rangeMax - _rangeMin);
+        const double x = (value - kLutMin) / (kLutMax - kLutMin);
         if (x <= 0.) {
             return lut[0];
         } else if (x >= 1.) {
@@ -309,6 +304,9 @@ private:
 
             if (b < a) {
                 b1 = b + a2 * b / a;
+            } else if (a >= 1.f) {
+                // No anchor above a to interpolate toward: shift b by the move of a.
+                b1 = b + a2;
             } else {
                 b1 = b + a2 * (1.f - b) / (1.f - a);
             }
@@ -405,8 +403,6 @@ private:
 
     ColorLookup::MasterCurveModeEnum _mode;
     ColorMath::LuminanceMathEnum _luminanceMath;
-    double _rangeMin;
-    double _rangeMax;
     bool _clampBlack;
     bool _clampWhite;
     CurveSnapshot _curves[ColorLookup::eCurveCount];
@@ -494,14 +490,10 @@ addColorKnob(KnobHolder* holder,
 struct ColorLookup::BackgroundState {
     std::mutex mutex;
     std::vector<unsigned long long> counts;
-    double rangeMin;
-    double rangeMax;
 
     BackgroundState()
         : mutex()
         , counts()
-        , rangeMin(0.)
-        , rangeMax(1.)
     {
     }
 };
@@ -526,7 +518,6 @@ ColorLookup::getNativePluginDescription() const
     desc.description = tr("Apply a parametric lookup curve with the possibility to adjust each channel separately.\n"
                           "The master curve is combined with the red, green and blue curves, but not with the alpha curve.\n"
                           "Different algorithms are available when applying the master curve, which are selectable using the \"Master Curve Mode\" parameter.\n"
-                          "Computation is faster for values that are within the given range, so it is recommended to set the Range parameter if the input range goes beyond [0,1].\n"
                           "\n"
                           "Note that you can easily do color remapping by setting Source and Target colors and clicking \"Set RGB\" or \"Set RGBA\" below.\n"
                           "This will add control points on the curve to match the target from the source. You can add as many point as you like.\n"
@@ -560,23 +551,6 @@ ColorLookup::initializeKnobs()
         knob->setEvaluateOnChange(false);
         page->addKnob(knob);
         _hasBackgroundInteract = knob;
-    }
-    {
-        KnobDoublePtr range = createKnob<KnobDouble>(tr("Range"), 2);
-        range->setName(kColorLookupParamRange);
-        range->setHintToolTip(tr("Expected range for input values. Within this range, a lookup table is used for faster computation."));
-        range->setDimensionName(0, "min");
-        range->setDimensionName(1, "max");
-        range->setDefaultValue(0., 0);
-        range->setDefaultValue(1., 1);
-        for (int i = 0; i < 2; ++i) {
-            range->setMinimum(-DBL_MAX, i);
-            range->setMaximum(DBL_MAX, i);
-            range->setDisplayMinimum(0., i);
-            range->setDisplayMaximum(1., i);
-        }
-        page->addKnob(range);
-        _range = range;
     }
     {
         KnobParametricPtr table = createKnob<KnobParametric>(tr("Lookup Table"), eCurveCount);
@@ -720,10 +694,6 @@ ColorLookup::makeKernel(const KernelContext& context)
     params.luminanceMath = (ColorMath::LuminanceMathEnum)readChoice(_luminanceMath, context.time, context.view);
     params.clampBlack = readBool(_clampBlack, context.time, context.view);
     params.clampWhite = readBool(_clampWhite, context.time, context.view);
-    if (KnobDoublePtr range = _range.lock()) {
-        params.rangeMin = range->getValueAtTime(context.time, 0, context.view);
-        params.rangeMax = range->getValueAtTime(context.time, 1, context.view);
-    }
 
     CurveSnapshot curves[eCurveCount];
     if (KnobParametricPtr table = _lookupTable.lock()) {
@@ -805,27 +775,23 @@ ColorLookup::installBackgroundPainter()
         return;
     }
     const KnobParametricWPtr weakTable = table;
-    const KnobDoubleWPtr weakRange = _range;
     const KnobChoiceWPtr weakDisplay = _display;
     const std::shared_ptr<BackgroundState> state = _background;
 
-    table->setBackgroundPainter([weakTable, weakRange, weakDisplay, state](const ParametricBackgroundContext& context) {
+    table->setBackgroundPainter([weakTable, weakDisplay, state](const ParametricBackgroundContext& context) {
         ParametricBackground background;
         KnobParametricPtr lookup = weakTable.lock();
-        KnobDoublePtr range = weakRange.lock();
         KnobChoicePtr display = weakDisplay.lock();
 
-        if (!lookup || !range || !display) {
+        if (!lookup || !display) {
             return background;
         }
         const int mode = display->getValue();
 
         if (mode == (int)eDisplayColorRamp) {
-            const double rangeMin = range->getValue(0);
-            const double rangeMax = range->getValue(1);
-            const double x0 = (std::max)(rangeMin, context.xMin);
-            const double x1 = (std::min)(rangeMax, context.xMax);
-            if (!(rangeMax > rangeMin) || !(x1 > x0)) {
+            const double x0 = (std::max)(kLutMin, context.xMin);
+            const double x1 = (std::min)(kLutMax, context.xMax);
+            if (!(x1 > x0)) {
                 return background;
             }
             int slices = 1;
@@ -847,8 +813,8 @@ ColorLookup::installBackgroundPainter()
                     status = lookup->getValue(curveOfChannel(c), position, &value);
                     rgb[c] = (float)(value + master - position);
                 }
-                bottom[i] = ParametricBackgroundVertex(position, rangeMin, rgb[0], rgb[1], rgb[2]);
-                top[i] = ParametricBackgroundVertex(position, rangeMax, rgb[0], rgb[1], rgb[2]);
+                bottom[i] = ParametricBackgroundVertex(position, kLutMin, rgb[0], rgb[1], rgb[2]);
+                top[i] = ParametricBackgroundVertex(position, kLutMax, rgb[0], rgb[1], rgb[2]);
             }
             background.quads.resize(slices);
             for (int i = 0; i < slices; ++i) {
@@ -860,18 +826,14 @@ ColorLookup::installBackgroundPainter()
             }
         } else if (mode == (int)eDisplayHistogram) {
             std::vector<unsigned long long> counts;
-            double rangeMin;
-            double rangeMax;
             {
                 std::lock_guard<std::mutex> lock(state->mutex);
                 counts = state->counts;
-                rangeMin = state->rangeMin;
-                rangeMax = state->rangeMax;
             }
-            if (counts.size() != 3 * (std::size_t)kHistogramBins || !(rangeMax > rangeMin)) {
+            if (counts.size() != 3 * (std::size_t)kHistogramBins) {
                 return background;
             }
-            // The first and last bins collect everything outside the range and would flatten the rest.
+            // The first and last bins collect everything outside the table's domain and would flatten the rest.
             unsigned long long peak = 0;
             for (int c = 0; c < 3; ++c) {
                 for (int i = 1; i < kHistogramBins - 1; ++i) {
@@ -881,7 +843,7 @@ ColorLookup::installBackgroundPainter()
             if (peak == 0) {
                 return background;
             }
-            const double binSize = (rangeMax - rangeMin) / kHistogramBins;
+            const double binSize = (kLutMax - kLutMin) / kHistogramBins;
             background.additiveQuads.reserve(counts.size());
             for (int c = 0; c < 3; ++c) {
                 for (int i = 0; i < kHistogramBins; ++i) {
@@ -889,7 +851,7 @@ ColorLookup::installBackgroundPainter()
                     if (count == 0) {
                         continue;
                     }
-                    const double minX = rangeMin + i * binSize;
+                    const double minX = kLutMin + i * binSize;
                     const double maxX = minX + binSize;
                     const double height = (double)count / (double)peak;
                     const float* color = kHistogramColors[c];
@@ -933,9 +895,8 @@ ColorLookup::updateHistogram(double time,
                              ViewIdx view)
 {
     KnobParametricPtr table = _lookupTable.lock();
-    KnobDoublePtr range = _range.lock();
 
-    if (!table || !range || !getInput(0)) {
+    if (!table || !getInput(0)) {
         return;
     }
     RectI roi;
@@ -948,11 +909,6 @@ ColorLookup::updateHistogram(double time,
         return;
     }
     const int nHistComps = (std::min)(nComps, 3);
-    const double rangeMin = range->getValueAtTime(time, 0, view);
-    const double rangeMax = range->getValueAtTime(time, 1, view);
-    if (!(rangeMax > rangeMin)) {
-        return;
-    }
 
     std::vector<unsigned long long> counts(3 * (std::size_t)kHistogramBins, 0);
     const RectI& bounds = src->getBounds();
@@ -967,10 +923,10 @@ ColorLookup::updateHistogram(double time,
                 for (int c = 0; c < nHistComps; ++c) {
                     const double v = pix[c];
                     int bin = 0;
-                    if (v >= rangeMax) {
+                    if (v >= kLutMax) {
                         bin = kHistogramBins - 1;
-                    } else if (v >= rangeMin) {
-                        bin = (int)std::floor(kHistogramBins * (v - rangeMin) / (rangeMax - rangeMin));
+                    } else if (v >= kLutMin) {
+                        bin = (int)std::floor(kHistogramBins * (v - kLutMin) / (kLutMax - kLutMin));
                     }
                     ++counts[c * kHistogramBins + bin];
                 }
@@ -980,8 +936,6 @@ ColorLookup::updateHistogram(double time,
     {
         std::lock_guard<std::mutex> lock(_background->mutex);
         _background->counts.swap(counts);
-        _background->rangeMin = rangeMin;
-        _background->rangeMax = rangeMax;
     }
     table->notifyBackgroundChanged();
 }
@@ -1057,17 +1011,6 @@ ColorLookup::knobChanged(KnobI* k,
 
         return true;
     }
-    KnobDoublePtr range = _range.lock();
-    if (range && (k == range.get()) && (reason == eValueChangedReasonUserEdited)) {
-        const double rangeMin = range->getValueAtTime(time, 0, viewIdx);
-        const double rangeMax = range->getValueAtTime(time, 1, viewIdx);
-        if (rangeMax < rangeMin) {
-            range->setValues(rangeMax, rangeMin, ViewSpec::all(), eValueChangedReasonPluginEdited);
-        }
-
-        return true;
-    }
-
     return false;
 }
 

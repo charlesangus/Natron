@@ -257,7 +257,7 @@ Clamp::getNativePluginDescription() const
                           "to the threshold, set the \"Maximum\" to any value strictly below the threshold "
                           "(e.g. 0 if the threshold is positive), and "
                           "check \"Enable MinClampTo\" and \"Enable MaxClampTo\" while keeping the default "
-                          "values for \"MinClampTo\" (0.0) and \"MaxClampTop\" (1.0). The result is a binary "
+                          "values for \"MinClampTo\" (0.0) and \"MaxClampTo\" (1.0). The result is a binary "
                           "mask image. To create a non-binary mask, with softer edges, either blur the output "
                           "of Clamp, or use the Grade plugin instead, setting the \"Black Point\" and \"White Point\" "
                           "to values close to the threshold, and checking the \"Clamp Black\" and \"Clamp "

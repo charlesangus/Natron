@@ -57,9 +57,10 @@ struct GradeSettings;
  *   A = multiply * (white - black) / (whitePoint - blackPoint), or 0 when the points coincide
  *   B = offset + black - A * blackPoint
  *   output = pow(A * input + B, 1 / gamma)
- * with the OpenFX Grade's rules for gamma <= 0, gamma == 1 and values <= 0, reverse applying the
- * inverse, and clampBlack/clampWhite clamping the result to [0, 1]. Knob names, defaults and
- * maths are the openfx-misc GradePlugin's; it registers under that plugin's ID one major above.
+ * where a gamma below 0.01 counts as 0.01 and values <= 0 are not raised to the power, reverse
+ * applies the inverse, and clampBlack/clampWhite clamp the result to [0, 1]. Both clamps default
+ * off, so a default Grade is an identity. Knob names are the openfx-misc GradePlugin's; it
+ * registers under that plugin's ID one major above.
  **/
 class Grade
     : public NativeImageEffect {

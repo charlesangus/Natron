@@ -619,6 +619,7 @@ MergeNode::initializeKnobs()
     KnobStringPtr subLabel = createKnob<KnobString>(std::string(kNatronOfxParamStringSublabelName));
     subLabel->setName(kNatronOfxParamStringSublabelName);
     subLabel->setSecretByDefault(true);
+    subLabel->setHashExempt(true);
     subLabel->setDefaultAllDimensionsEnabled(false);
     subLabel->setIsPersistent(false);
     subLabel->setEvaluateOnChange(false);

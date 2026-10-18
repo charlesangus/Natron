@@ -3838,6 +3838,7 @@ OfxStringInstance::OfxStringInstance(const OfxEffectInstancePtr& node,
         if (descriptor.getName() == kNatronOfxParamStringSublabelName) {
             _imp->stringKnob.lock()->setHashExempt(true);
         }
+        // setAsLabel() exempts it from the hash as well.
         if (mode == kOfxParamStringIsLabel) {
             _imp->stringKnob.lock()->setAllDimensionsEnabled(false);
             _imp->stringKnob.lock()->setAsLabel();

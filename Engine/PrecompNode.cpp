@@ -320,6 +320,7 @@ PrecompNode::initializeKnobs()
     KnobStringPtr sublabel = AppManager::createKnob<KnobString>( this, tr("SubLabel") );
     sublabel->setName(kNatronOfxParamStringSublabelName);
     sublabel->setSecretByDefault(true);
+    sublabel->setHashExempt(true);
     mainPage->addKnob(sublabel);
     _imp->subLabelKnob = sublabel;
 } // PrecompNode::initializeKnobs

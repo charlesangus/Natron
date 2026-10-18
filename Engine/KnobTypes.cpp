@@ -1526,6 +1526,9 @@ KnobString::setAsLabel()
 {
     setAnimationEnabled(false); //< labels cannot animate
     _isLabel = true;
+    // A label takes no input and only shows text, which plugins rewrite from their actions; in
+    // the hash it would only re-key the node under a render.
+    setHashExempt(true);
 }
 
 /******************************KnobGroup**************************************/

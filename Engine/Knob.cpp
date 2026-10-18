@@ -74,6 +74,32 @@
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+// An expression's result is cached under the time it was evaluated for, so the knobs it reads
+// without a time (getValue()) must read at that time, not at the timeline's frame or at the time
+// of an enclosing render, or the cached result belongs to another frame.
+thread_local double tExpressionTime = 0.;
+thread_local int tExpressionTimeDepth = 0;
+
+class ExpressionTimeScope {
+    const double _previous;
+
+public:
+    explicit ExpressionTimeScope(double time)
+        : _previous(tExpressionTime)
+    {
+        tExpressionTime = time;
+        ++tExpressionTimeDepth;
+    }
+
+    ~ExpressionTimeScope()
+    {
+        tExpressionTime = _previous;
+        --tExpressionTimeDepth;
+    }
+};
+} // anon namespace
+
 using std::make_pair; using std::pair;
 
 KnobSignalSlotHandler::KnobSignalSlotHandler(const KnobIPtr& knob)
@@ -3158,6 +3184,8 @@ KnobHelper::executeExpression(double time,
 
     ss << expr << '(' << time << ", " <<  view << ")\n";
 
+    const ExpressionTimeScope timeScope(time);
+
     return executeExpression(ss.str(), ret, error);
 }
 
@@ -4481,6 +4509,10 @@ KnobHelper::getListeners(KnobI::ListenerDimsMap & listeners) const
 double
 KnobHelper::getCurrentTime() const
 {
+    if (tExpressionTimeDepth > 0) {
+        return tExpressionTime;
+    }
+
     KnobHolder* holder = getHolder();
 
     return holder && holder->getApp() ? holder->getCurrentTime() : 0;

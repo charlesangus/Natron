@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -130,6 +131,7 @@ GPU_TEST_F(GpuPipelineCacheTest, RestartHitsDiskWithoutCompiling)
 GPU_TEST_F(GpuPipelineCacheTest, CorruptEntriesAreRecompiledAndOverwritten)
 {
     enum Damage { FlipPayloadByte, FlipMagic, Truncate, Empty, Trailing };
+    std::set<fs::path> known;
     for (Damage damage : { FlipPayloadByte, FlipMagic, Truncate, Empty, Trailing }) {
         const std::string src = computeSource("corrupt" + std::to_string(damage));
         {
@@ -137,14 +139,14 @@ GPU_TEST_F(GpuPipelineCacheTest, CorruptEntriesAreRecompiledAndOverwritten)
             std::shared_ptr<GpuKernel> k;
             ASSERT_TRUE(first->get(src, ShaderStage::Compute, "main", k).ok());
         }
-        const auto files = entryFiles();
-        ASSERT_FALSE(files.empty());
-        fs::path victim = files[0];
-        for (const auto& f : files) {
-            if (fs::last_write_time(f) > fs::last_write_time(victim)) {
+        // Filesystem timestamps can tie across iterations, so the new entry is found by name.
+        fs::path victim;
+        for (const auto& f : entryFiles()) {
+            if (known.insert(f).second) {
                 victim = f;
             }
         }
+        ASSERT_FALSE(victim.empty());
         std::string bytes;
         {
             std::ifstream in(victim, std::ios::binary);

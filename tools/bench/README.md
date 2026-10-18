@@ -16,6 +16,9 @@ for finding where the time goes. Everything runs in the `natron-dev` container a
 | `compare.py` | Compares two result files per (topology, n, resolution, named); exits non-zero on a regression past `--threshold`. |
 | `stream_bench.c` | Node-at-a-time vs tiled vs fused cost of a chain of point ops on this machine. |
 | `make_plates.py` | Writes the synthetic EXR plates and the deep sequence the plate-fed families read. |
+| `gpu_region_bench.sh` | GPU Off/Auto comparison of spatial nodes (alone and between Grades) and the M82 comps from a Natron AppImage; keeps each run's render profile. |
+| `gpu_region_summary.py` | Splits the GPU region records of those profiles into per-phase times per region and per node. |
+| `gpu-region-profile-sample.jsonl` | Region records in the current format, used by `gpu_region_summary.py --self-test`. |
 | `classify.py` | Prints a boundedness verdict (CPU, bandwidth, IO, RAM, host overhead) per result record. |
 
 Topologies: `chain` (N Grades in series), `mixed` (Grade/Blur/Transform/ColorCorrect in series),
@@ -165,3 +168,37 @@ while 20-frame runs throttle. Compare only runs of equal length that started fro
   and render frame 2 once more with `NatronRenderer --render-stats -w` (`app.render` cannot enable
   stats), recording `tasks_run` and `max_concurrent_tasks` from the `-stats.txt` file. It is a separate
   cold render; Legacy reports 0.
+
+## GPU region bench
+
+`tools/bench/gpu_region_bench.sh <Natron.AppImage> [out-dir]` (default `build/bench/gpu-region`) renders
+each case with `NATRON_GPU=off` and `NATRON_GPU=auto` under `NATRON_RENDER_SCHEDULER=taskgraph` and
+`NATRON_RENDER_PROFILE`. Cases: each of `BENCH_NODES` (default `xf xfmb blur25 iir25 erode6 erode40 ck`)
+alone (`node`) and between two Grades (`gxg`) at every size in `BENCH_SIZES` (default `uhd 7680x4320
+16384x16384`), then the comps in `BENCH_COMPS` (default the three in `comps/`, frames 1-6). Rounds
+(`BENCH_ROUNDS`, default 3) interleave the modes and flip their order each round.
+
+- The AppImage runs under `env -u LD_LIBRARY_PATH`, because a host Qt on that path shadows the image's.
+  `BENCH_APP_ARGS` (default `-b`) goes before the script or project.
+- Before every case the script reads `MemAvailable` and skips the case when its estimate (four float
+  RGBA frames for the node cases, `BENCH_COMP_NEED_GB` for comps) exceeds it. Before each timed run it
+  waits for CPUs under 5% busy and `Dirty` + `Writeback` under 256 MB after a `sync`.
+- Output EXRs are deleted outside the timed part (`graph_bench.py` does this per frame; the comp's
+  files are removed after the render), so write-back never lands in a timing.
+- A case whose `.log` already holds its result is not repeated, so an interrupted run resumes.
+- `BENCH_DRY_RUN=1` prints the planned and skipped cases with the memory probe and renders nothing.
+
+`python3 -I tools/bench/gpu_region_summary.py [--skip-frames N] <out-dir>/<tag>.prof` reads a profile
+(a file, or a prefix: the profile appends a suffix) and prints, per region (members joined by `+`),
+the mean per run of: plan, wall, kernel, exposed and hidden transfer, upload, download, record,
+acquire, submit/wait, other, imports and pool misses, fallbacks and retries; then per member node its
+kernel time and share of the region's wall. The first frame is skipped by default (cold caches).
+
+Which fields lie in `wallMs`: `kernelMs`, `transferExposedMs`, `recordMs`, `acquireMs` and
+`submitWaitMs` are inside it; `planMs` is outside (a region costs `planMs + wallMs`);
+`transferHiddenMs` overlaps kernels, and `uploadMs`/`downloadMs` are transfer totals of which only the
+exposed part is in the wall. `other` = `wallMs` minus the five inside parts. Pipelined regions
+overlap recording and waiting with kernels, so `other` can go negative there. A node's kernel time is
+its task record's `wallNs` (device timestamps). Placement's predicted transfer time is shown as `pred
+xfer` when a region record carries `predictedTransferMs` and reads `n/a` otherwise.
+`--self-test` checks the breakdown on `gpu-region-profile-sample.jsonl`.

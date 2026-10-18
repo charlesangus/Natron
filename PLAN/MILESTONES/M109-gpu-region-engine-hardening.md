@@ -74,7 +74,7 @@ M85's benches show where the region engine loses time on real comps. Three items
     - The `RegionKernelTimeIsNotCountedTwice…` test still passes.
     - The new fields appear in a `NATRON_RENDER_PROFILE` record.
   - size: L
-- [ ] M109.P1.T2 — Reproduce the empty-input hang as a failing test that times out
+- [x] M109.P1.T2 — Reproduce the empty-input hang as a failing test that times out
   - files: `Tests/GpuRegionFallback_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - Build regions with a member whose input is:
@@ -273,3 +273,4 @@ M85's benches show where the region engine loses time on real comps. Three items
 
 - 2026-10-16 — **Elaborated at claim by the gpu PM** from the stub's follow-up list. The stub's own facts are folded into Scope and the scouted facts. Task files avoid every file of M126 - Runtime GPU Shaders, which runs alongside, and every file in the unchecked tasks of M90 - Render Path Serial Overhead and M100 - Content Node Hashing, except the two flagged Phase 109.7 tasks, which wait for those merges. Multi-plane placement moved Out to M110 - Remaining Native GPU Ports, because it needs `GpuRender.h`.
 - 2026-10-18 — **M109.P1.T1: new record fields sit between `transferExposedMs` and `fallback`**, because the test helper `regionOutcomeOf` reads from `fallback` to the end of the line. For pipelined strips, `submitWaitMs` is time in `submit()` plus the wait in `retireStrip`, with no device time subtracted, since the two overlap. `poolMisses`, `importCount` and `newImportBytes` are deltas of process-wide counters, so regions running at the same time leak into each other's numbers. The work was recovered from the previous session's transcript after a lane reset deleted it uncommitted, then 3-way applied onto `93339c413` with no conflicts.
+- 2026-10-18 — **M109.P1.T2: the disabled cases were chosen by reading the code, not by running it.** The Keyer/ChromaKeyer cases with an empty inside mask and the two empty-RoI cases, whose mask is a `Constant` placed off-window, are `DISABLED_`. Grade with an absent or disabled mask stays enabled. The phase build's `--gtest_also_run_disabled_tests` run settles which cases really hang, and any disabled case that passes is re-enabled there. Not yet confirmed: whether the off-window `Constant` yields a connected task with an empty RoI or gets pruned. M109.P2.T2 checks this.

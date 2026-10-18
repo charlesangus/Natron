@@ -7,6 +7,7 @@
 
 #include <array>
 #include <cstddef>
+#include <deque>
 #include <initializer_list>
 #include <memory>
 #include <span>
@@ -47,6 +48,14 @@ public:
         static_assert(std::is_trivially_copyable_v<Params>);
         return dispatch(kernel, buffers, std::as_bytes(std::span(&params, 1)), threads);
     }
+
+    // Dispatches a kernel with explicit bindings, as GpuKernel::recordBindings; the only way to
+    // dispatch a reflected kernel.
+    GpuStatus dispatchBindings(GpuKernelId kernel, std::span<const GpuBinding> bindings,
+                               std::span<const std::byte> push, std::array<uint32_t, 3> threads);
+
+    // A uniform buffer holding `data`, held until the context is destroyed.
+    GpuStatus uniform(std::span<const std::byte> data, const GpuUniformBuffer*& out);
 
     // Orders earlier dispatches' storage writes before later dispatches' storage reads and writes.
     void computeBarrier();
@@ -93,6 +102,7 @@ private:
     GpuKernelRegistry& registry_;
     GpuBufferPool* bufferPool_;
     std::vector<GpuBufferHandle> held_;
+    std::deque<GpuUniformBuffer> uniforms_;
     VkCommandPool pool_ = VK_NULL_HANDLE;
     VkCommandBuffer cmd_ = VK_NULL_HANDLE;
     bool open_ = false;

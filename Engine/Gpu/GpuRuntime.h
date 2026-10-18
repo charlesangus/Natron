@@ -8,8 +8,12 @@
 #include "GpuTransfer.h"
 
 #include <atomic>
+#include <deque>
 #include <memory>
 #include <mutex>
+#include <span>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace gpu {
@@ -58,6 +62,10 @@ public:
     // under the same id. The SPIR-V it points to must outlive the runtime.
     GpuKernelId registerKernel(const GpuKernelDesc& desc);
 
+    // Like GpuKernelRegistry::registerRuntimeKernel, and registered again after recreate() under the same id.
+    // The runtime keeps its own copy of the SPIR-V and the entry name.
+    GpuKernelId registerRuntimeKernel(std::span<const uint32_t> spirv, std::string_view entry);
+
     // Entry points that fail fast with VK_ERROR_DEVICE_LOST while Lost and otherwise report their
     // outcome to the state machine, except for an acquire() refused over budget contention, which
     // leaves the state and the budget alone.
@@ -97,6 +105,11 @@ private:
     uint64_t leaked_ = 0;
     GpuRuntimeOptions options_;
     std::vector<GpuKernelDesc> registered_;
+    struct RuntimeModule {
+        std::vector<uint32_t> spirv;
+        std::string entry;
+    };
+    std::deque<RuntimeModule> runtimeModules_;
     std::mutex mutex_;
     std::atomic<GpuRuntimeState> state_ { GpuRuntimeState::Ready };
 

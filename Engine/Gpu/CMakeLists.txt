@@ -55,6 +55,7 @@ add_library(NatronGpu STATIC
     GpuRecord.cpp
     GpuRuntime.cpp
     GpuShaderCompiler.cpp
+    GpuTexture.cpp
     GpuTransfer.cpp
     GpuBlur.cpp
     GpuMorphology.cpp

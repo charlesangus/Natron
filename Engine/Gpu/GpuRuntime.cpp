@@ -93,6 +93,22 @@ GpuRuntime::registerKernel(const GpuKernelDesc& desc)
     return registry_->registerKernel(desc);
 }
 
+GpuKernelId
+GpuRuntime::registerRuntimeKernel(std::span<const uint32_t> spirv, std::string_view entry)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    RuntimeModule& m = runtimeModules_.emplace_back();
+    m.spirv.assign(spirv.begin(), spirv.end());
+    m.entry = entry;
+    GpuKernelDesc desc;
+    desc.spirv = m.spirv.data();
+    desc.spirvWords = m.spirv.size();
+    desc.entry = m.entry.c_str();
+    desc.reflect = true;
+    registered_.push_back(desc);
+    return registry_->registerKernel(desc);
+}
+
 GpuStatus
 GpuRuntime::note(const GpuStatus& status, uint64_t requestBytes)
 {

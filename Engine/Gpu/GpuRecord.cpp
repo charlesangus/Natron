@@ -67,6 +67,39 @@ GpuRecordContext::dispatch(GpuKernelId kernel, std::span<const GpuBuffer* const>
     return k->record(cmd_, handles, push, threads);
 }
 
+GpuStatus
+GpuRecordContext::dispatchBindings(GpuKernelId kernel, std::span<const GpuBinding> bindings,
+                                   std::span<const std::byte> push, std::array<uint32_t, 3> threads)
+{
+    if (!open_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::dispatchBindings: context already submitted" };
+    }
+    GpuKernel* k = nullptr;
+    if (GpuStatus s = registry_.get(kernel, k); !s) {
+        return s;
+    }
+    return k->recordBindings(cmd_, bindings, push, k->groupCount(threads));
+}
+
+GpuStatus
+GpuRecordContext::uniform(std::span<const std::byte> data, const GpuUniformBuffer*& out)
+{
+    out = nullptr;
+    if (!open_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::uniform: context already submitted" };
+    }
+    GpuUniformBuffer buffer;
+    if (GpuStatus s = GpuUniformBuffer::create(registry_.device(), data, buffer); !s) {
+        if (s.result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            outOfMemory_ = true;
+        }
+        return s;
+    }
+    uniforms_.push_back(std::move(buffer));
+    out = &uniforms_.back();
+    return {};
+}
+
 void
 GpuRecordContext::computeBarrier()
 {

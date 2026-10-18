@@ -36,6 +36,23 @@ GpuKernelRegistry::registerKernel(const GpuKernelDesc& desc)
     return static_cast<GpuKernelId>(kGeneratedCount + registered_.size() - 1);
 }
 
+GpuKernelId
+GpuKernelRegistry::registerRuntimeKernel(std::span<const uint32_t> spirv, std::string_view entry)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    RuntimeModule& m = runtimeModules_.emplace_back();
+    m.spirv.assign(spirv.begin(), spirv.end());
+    m.entry = entry;
+    GpuKernelDesc desc;
+    desc.spirv = m.spirv.data();
+    desc.spirvWords = m.spirv.size();
+    desc.entry = m.entry.c_str();
+    desc.reflect = true;
+    registered_.push_back(desc);
+    slots_.emplace_back();
+    return static_cast<GpuKernelId>(kGeneratedCount + registered_.size() - 1);
+}
+
 const GpuKernelDesc*
 GpuKernelRegistry::descLocked(GpuKernelId id) const
 {

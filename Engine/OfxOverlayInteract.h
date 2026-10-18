@@ -317,8 +317,6 @@ class OfxParamOverlayInteract
     : public OFX::Host::Interact::Instance, public NatronOverlayInteractSupport
 {
 
-
-
 public:
     OfxParamOverlayInteract(KnobI* knob,
                             OFX::Host::Interact::Descriptor& desc,

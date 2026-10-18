@@ -120,13 +120,16 @@ public:
     // listed on GpuKernelDesc, a non-1D/2D/3D or arrayed or multisampled image, more
     // than one push-constant block or one above kMaxPushConstantBytes, or a local size
     // given by specialization constants.
+    //
+    // `pipelineCache`, when not null, is passed to vkCreateComputePipelines.
     static GpuStatus create(GpuDevice& device, const GpuKernelDesc& desc,
-                            std::unique_ptr<GpuKernel>& out);
+                            std::unique_ptr<GpuKernel>& out, VkPipelineCache pipelineCache = VK_NULL_HANDLE);
 
     // A reflected kernel over `spirv`, e.g. the output of compileGlsl. The words are only
     // read during the call.
     static GpuStatus createFromSpirv(GpuDevice& device, std::span<const uint32_t> spirv,
-                                     const char* entry, std::unique_ptr<GpuKernel>& out);
+                                     const char* entry, std::unique_ptr<GpuKernel>& out,
+                                     VkPipelineCache pipelineCache = VK_NULL_HANDLE);
     ~GpuKernel();
     GpuKernel(const GpuKernel&) = delete;
     GpuKernel& operator=(const GpuKernel&) = delete;
@@ -167,7 +170,7 @@ private:
 
     GpuStatus reflectLayout();
     // Creates the set layout, pipeline layout, pipeline and descriptor pool from bindings_ and desc_.
-    GpuStatus createPipeline();
+    GpuStatus createPipeline(VkPipelineCache pipelineCache);
     GpuStatus bindAndDispatch(VkCommandBuffer cmd, std::span<VkWriteDescriptorSet> writes,
                               std::span<const std::byte> push, std::array<uint32_t, 3> groups);
 

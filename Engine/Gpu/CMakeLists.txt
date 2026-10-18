@@ -52,6 +52,7 @@ add_library(NatronGpu STATIC
     GpuBufferPool.cpp
     GpuKernel.cpp
     GpuKernelRegistry.cpp
+    GpuPipelineCache.cpp
     GpuRecord.cpp
     GpuRuntime.cpp
     GpuShaderCompiler.cpp

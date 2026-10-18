@@ -145,6 +145,13 @@ std::shared_ptr<const ShaderCompileResult> compileGlsl(std::string_view source, 
     return future.get();
 }
 
+std::string glslangVersionString()
+{
+    initGlslang();
+    const char* v = glslang::GetGlslVersionString();
+    return v ? v : "";
+}
+
 size_t glslCompileCountForTesting()
 {
     return g_compileCount.load(std::memory_order_relaxed);

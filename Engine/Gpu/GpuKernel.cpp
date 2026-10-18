@@ -189,7 +189,7 @@ GpuBinding::texture(uint32_t binding, const GpuTexture& texture)
 
 GpuStatus
 GpuKernel::create(GpuDevice& device, const GpuKernelDesc& desc,
-                  std::unique_ptr<GpuKernel>& out)
+                  std::unique_ptr<GpuKernel>& out, VkPipelineCache pipelineCache)
 {
     if (device.isLost()) {
         return fail(VK_ERROR_DEVICE_LOST, "GpuKernel::create: device lost");
@@ -214,7 +214,7 @@ GpuKernel::create(GpuDevice& device, const GpuKernelDesc& desc,
             k->bindings_[i].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         }
     }
-    if (GpuStatus s = k->createPipeline(); !s) {
+    if (GpuStatus s = k->createPipeline(pipelineCache); !s) {
         return s;
     }
     out = std::move(k);
@@ -223,14 +223,14 @@ GpuKernel::create(GpuDevice& device, const GpuKernelDesc& desc,
 
 GpuStatus
 GpuKernel::createFromSpirv(GpuDevice& device, std::span<const uint32_t> spirv, const char* entry,
-                           std::unique_ptr<GpuKernel>& out)
+                           std::unique_ptr<GpuKernel>& out, VkPipelineCache pipelineCache)
 {
     GpuKernelDesc desc;
     desc.spirv = spirv.data();
     desc.spirvWords = spirv.size();
     desc.entry = entry;
     desc.reflect = true;
-    GpuStatus s = create(device, desc, out);
+    GpuStatus s = create(device, desc, out, pipelineCache);
     if (s && out) {
         out->desc_.spirv = nullptr;
         out->desc_.spirvWords = 0;
@@ -377,7 +377,7 @@ GpuKernel::reflectLayout()
 }
 
 GpuStatus
-GpuKernel::createPipeline()
+GpuKernel::createPipeline(VkPipelineCache pipelineCache)
 {
     const VkDevice dev = device_.device();
     const bool push = device_.info().pushDescriptor;
@@ -421,7 +421,7 @@ GpuKernel::createPipeline()
     cpi.stage = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
                   VK_SHADER_STAGE_COMPUTE_BIT, module, desc_.entry, nullptr };
     cpi.layout = pipelineLayout_;
-    s = device_.check(vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, nullptr, &pipeline_),
+    s = device_.check(vkCreateComputePipelines(dev, pipelineCache, 1, &cpi, nullptr, &pipeline_),
                       "vkCreateComputePipelines");
     vkDestroyShaderModule(dev, module, nullptr);
     if (!s) {

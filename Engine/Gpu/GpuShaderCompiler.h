@@ -34,6 +34,9 @@ struct ShaderCompileResult {
 std::shared_ptr<const ShaderCompileResult> compileGlsl(std::string_view source, ShaderStage stage,
                                                         std::string_view entry = "main");
 
+// Identifies the compiler build, so artifacts derived from its output can be invalidated when it changes.
+std::string glslangVersionString();
+
 // Number of compiles actually run by compileGlsl so far, for tests asserting de-duplication.
 size_t glslCompileCountForTesting();
 

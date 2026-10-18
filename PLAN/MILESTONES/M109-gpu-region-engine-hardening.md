@@ -57,7 +57,7 @@ M85's benches show where the region engine loses time on real comps. Three items
 
 ## Phase 109.1: Instrumentation
 
-- [ ] M109.P1.T1 — Time each member with device timestamps and break region wall time into host phases
+- [x] M109.P1.T1 — Time each member with device timestamps and break region wall time into host phases
   - files: `Engine/GpuRegionTask.cpp`, `Engine/RenderScheduler.h` (`RegionReport`), `Engine/RenderScheduler.cpp` (`executeRegion` copies the fields), `Engine/RenderStats.{h,cpp}` (`GpuRegionTimes`, `formatRegionRecord`), `Tests/GpuResidency_Test.cpp`
   - approach:
     - Write a timestamp after each non-identity member, in both the unstripped and the strip paths: one query pair per member per strip, on the existing per-segment and per-strip pools. Set `memberNs` from those timestamps.
@@ -272,3 +272,4 @@ M85's benches show where the region engine loses time on real comps. Three items
 ## Decisions
 
 - 2026-10-16 — **Elaborated at claim by the gpu PM** from the stub's follow-up list. The stub's own facts are folded into Scope and the scouted facts. Task files avoid every file of M126 - Runtime GPU Shaders, which runs alongside, and every file in the unchecked tasks of M90 - Render Path Serial Overhead and M100 - Content Node Hashing, except the two flagged Phase 109.7 tasks, which wait for those merges. Multi-plane placement moved Out to M110 - Remaining Native GPU Ports, because it needs `GpuRender.h`.
+- 2026-10-18 — **M109.P1.T1: new record fields sit between `transferExposedMs` and `fallback`**, because the test helper `regionOutcomeOf` reads from `fallback` to the end of the line. For pipelined strips, `submitWaitMs` is time in `submit()` plus the wait in `retireStrip`, with no device time subtracted, since the two overlap. `poolMisses`, `importCount` and `newImportBytes` are deltas of process-wide counters, so regions running at the same time leak into each other's numbers. The work was recovered from the previous session's transcript after a lane reset deleted it uncommitted, then 3-way applied onto `93339c413` with no conflicts.

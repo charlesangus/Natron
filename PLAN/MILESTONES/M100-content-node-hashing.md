@@ -225,7 +225,7 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - verify: `ctest -R CacheEquivalence` passes in both scheduler modes. Any mismatch is a hash gap and blocks the gate. The test can't be skipped or allowlisted.
   - size: L
 
-- [ ] M100.P6.T5 — Bring keystroke-to-rehash under 1 ms on HD comps
+- [x] M100.P6.T5 — Bring keystroke-to-rehash under 1 ms on HD comps
   - files: Engine/Node.cpp, Engine/Knob*.cpp, Engine/ContentHasher.*, tools/bench/hash_bench.py
   - approach: profile `hash_bench.py` on `comp` N=200. The cost is ~0.15 ms per rehashed node; check knob memoization (is each knob's hash cached behind its dirty bit, or is every knob rehashed on each node recompute?), the age-hash path still computed alongside, per-node project digest work, and string building in the hasher. After P4.T3, a keystroke should only mark nodes dirty; measure keystroke cost and the lazy recompute at render-args time separately.
   - verify: `hash_bench.py` on comp N=200, chain N=50 and roto at HD gives net p95 < 1 ms per keystroke (or, after P4.T3, a dirty-mark p95 < 1 ms and a recompute cost recorded in Decisions); results recorded in `## Decisions`.
@@ -392,3 +392,12 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
 - 2026-10-16 — **Known plugin bug list** (user): the sweep stays strict for hash gaps. CImg EdgeExtend, the CImg expression plugin and fxarena Sketch go on an explicit known-bug list with a reason each. The list fails once a plugin stops showing its bug. Fixing the plugins in the openfx-misc and openfx-arena forks is follow-up work, requested via the inbox.
 - 2026-10-18 — **Run 38922628415 at fbef9e95d**: 2398/2402 in both schedulers. Shards 4, 5 and 7 of the sweep are the three known plugin bugs (list in 32d20f349, not yet built); `ShuffleCopyBBoxIntersectionOfDisjointInputsIsEmpty` expected a non-failed status for an empty RoD, which now reports `eStatusFailed` fresh and cached alike (test fix 6675058ec). Remote release build of 6675058ec running.
 - 2026-10-18 — **P6.T4 done**: green at 6675058ec (release run 39141716944), 2403/2403 in legacy and taskgraph, CacheEquivalence scenarios and all 16 sweep shards passing, with the three known plugin bugs held on their list.
+- 2026-10-18 — **P6.T5 done** (code: 323ea7599; release AppImage of 6675058ec, 4-thread N100 in natron-dev, 200 samples, net of a label-edit control; data `build/m100/6675058ec-lazy.jsonl`). Edit / recompute at the next read, median / p95 ms, before (ef3c4b760) → after:
+  - comp N=200: edit 1.79 / 2.26 → **0.17 / 0.19**; recompute 1.53 / 1.70 → **0.52 / 0.56**;
+  - chain N=50: edit 0.54 / 0.64 → **0.10 / 0.12**; recompute 0.39 / 0.45 → **0.16 / 0.18**;
+  - wide N=100: edit 0.21 / 0.25 → **0.07 / 0.09**; recompute 0.10 / 0.12 → **0.04 / 0.05**;
+  - roto movePoint: edit 0.13 / 0.19 → **0.04 / 0.06**; recompute 8.2 / 11.7 → **0.46 / 0.50** (only the edited shape rehashes).
+
+  Every case is under 1 ms p95, edit and recompute both.
+- 2026-10-18 — **Gate GUI check** (`build/m100-gui/`, Xvfb, release AppImage of 6675058ec): 24/24. A rewritten file keeps its old pixels and hash until Reload, then shows the new ones; a Grade edit and its revert return the Grade and Viewer to their earlier hashes. A script edit pushes no undo step, so Edit > Undo itself is covered by the HashInvariants undo tests, not here.
+- 2026-10-18 — **Rebased onto `main`** (M22, M77, M112). One semantic conflict: M22's placeholder serialization called the deleted `getKnobsAge()`; fix in progress, gate build to follow.

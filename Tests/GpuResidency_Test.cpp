@@ -1841,7 +1841,9 @@ TEST_F(GpuResidencyTest, RegionMembersAreTimedOnTheDevice)
     for (int mode = 0; mode < 3; ++mode) {
         SCOPED_TRACE(modes[mode]);
         if (mode > 0) {
-            setGpuStripOverridesForTests(1u << 20, 0);
+            // A strip of the source carries the Blur's 75-row halo above and below it: at 512 RGBA float pixels a
+            // row, even the thinnest is over 1 MB, so a 1 MB range would leave the region too large to strip.
+            setGpuStripOverridesForTests(2u << 20, 0);
             setGpuStripPipeliningForTests((mode == 2) ? GpuStripPipelining::On : GpuStripPipelining::Off);
         }
         *last = RenderScheduler::RegionReport();
@@ -1859,6 +1861,9 @@ TEST_F(GpuResidencyTest, RegionMembersAreTimedOnTheDevice)
         const RenderScheduler::RegionReport report = *last;
         EXPECT_EQ(0, fallbacksOf(run));
         EXPECT_EQ(mode > 0, report.strips > 1);
+        if (mode > 0) {
+            EXPECT_EQ((mode == 2) && canPipeline(), report.stripsInFlight > 1);
+        }
         ASSERT_EQ(2u, report.memberNs.size());
 
         const long long blurNs = report.memberNs[(members[0] == blurTask) ? 0 : 1];
@@ -1887,7 +1892,7 @@ TEST_F(GpuResidencyTest, RegionMembersAreTimedOnTheDevice)
             continue;
         }
         ++regionRecords;
-        const char* const fields[] = { "planMs", "recordMs", "acquireMs", "submitWaitMs", "poolMisses", "importCount", "newImportBytes" };
+        const char* const fields[] = { "planMs", "recordMs", "acquireMs", "submitWaitMs", "poolMisses", "importCount", "newImportBytes", "predictedTransferMs" };
         for (const char* field : fields) {
             EXPECT_NE(std::string::npos, record.find(std::string("\"") + field + "\":")) << field << " in " << record;
         }

@@ -264,6 +264,9 @@ struct GpuRegionTimes {
     unsigned long long importCount = 0;
     unsigned long long newImportBytes = 0;
 
+    // Written as null when infinite.
+    double predictedTransferMs = 0.;
+
     // Why the members rendered on the CPU instead; empty for a region that rendered on the GPU.
     std::string fallback;
     int retries = 0;

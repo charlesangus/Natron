@@ -18,8 +18,9 @@ tells the overlap, it is not an error. Imports have no duration of their own (th
 the acquire and transfer phases), so they are shown as a count and a size.
 
 A member's kernel time is the wallNs of its task record (device timestamps, the cost-weight split
-only on devices without them). Placement's predicted transfer time is shown when a region record
-carries predictedTransferMs; the engine does not emit it yet, and the column then reads n/a.
+only on devices without them). pred xfer is predictedTransferMs: the transfer time placement's cost
+model predicts for the region's uploadBytes and downloadBytes, to compare with uploadMs + downloadMs.
+It reads n/a when the model knows no bandwidth (the record holds null) or the record has no such field.
 """
 import collections
 import glob
@@ -99,7 +100,7 @@ def summarise(rows):
         for k in FIELDS:
             entry[k] = mean([g.get(k, 0.0) for g in regs])
         entry["other"] = mean([other_ms(g) for g in regs])
-        preds = [g["predictedTransferMs"] for g in regs if "predictedTransferMs" in g]
+        preds = [g["predictedTransferMs"] for g in regs if g.get("predictedTransferMs") is not None]
         entry["predicted"] = mean(preds) if preds else None
         entry["imports"] = mean([g.get("importCount", 0) for g in regs])
         entry["importMB"] = mean([g.get("newImportBytes", 0) for g in regs]) / 1e6
@@ -156,11 +157,12 @@ def self_test():
     assert abs(pair["other"] - 4.0) < 1e-9, pair["other"]
     kernels = dict(pair["nodes"])
     assert abs(kernels["Grade1"] - 2.1) < 1e-9 and abs(kernels["Blur1"] - 9.9) < 1e-9, kernels
-    assert pair["predicted"] is None
+    assert abs(pair["predicted"] - 8.5) < 1e-9, pair["predicted"]
 
     erode = by_sig["Erode1"]
     assert abs(other_ms(rows[2]["region"]) - 5.0) < 1e-9
     assert abs(erode["other"] - 5.0) < 1e-9
+    assert erode["predicted"] is None
 
     fallback = by_sig["Blur2"]
     assert fallback["nodes"] == [("Blur2", 0.0)], fallback["nodes"]

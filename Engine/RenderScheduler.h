@@ -270,6 +270,10 @@ public:
         unsigned long long importCount = 0;
         unsigned long long newImportBytes = 0;
 
+        // The transfer time placement's cost model predicts for uploadBytes and downloadBytes, to compare with the
+        // measured uploadMs and downloadMs; infinite when the model knows no bandwidth.
+        double predictedTransferMs = 0.;
+
         // The device was lost: the scheduler renders the whole frame again on the CPU, whatever the body returned.
         bool deviceLost = false;
 

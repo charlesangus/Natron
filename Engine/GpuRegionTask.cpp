@@ -368,6 +368,7 @@ public:
             _report->poolMisses = _runtime.pool().allocationCount() - allocationsBefore;
             _report->importCount = _runtime.transfer().hostImportCount() - importsBefore;
             _report->newImportBytes = _runtime.transfer().hostImportBytes() - importBytesBefore;
+            _report->predictedTransferMs = GpuCostModel::session().transferMs((double)_report->uploadBytes, (double)_report->downloadBytes);
         }
         if (isAborted()) {
             return EffectInstance::eRenderRoIRetCodeAborted;

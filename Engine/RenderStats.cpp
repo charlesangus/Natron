@@ -28,6 +28,7 @@
 #include <atomic>
 #include <bitset>
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <stdexcept>
 #include <string>
@@ -806,9 +807,16 @@ formatRegionRecord(unsigned long long frameSequence,
     line.append(num);
     std::snprintf(num, sizeof(num),
                   "\"planMs\":%.6f,\"recordMs\":%.6f,\"acquireMs\":%.6f,\"submitWaitMs\":%.6f,\"poolMisses\":%llu,\"importCount\":%llu,"
-                  "\"newImportBytes\":%llu,\"fallback\":\"",
+                  "\"newImportBytes\":%llu,\"predictedTransferMs\":",
                   times.planMs, times.recordMs, times.acquireMs, times.submitWaitMs, times.poolMisses, times.importCount, times.newImportBytes);
     line.append(num);
+    if (std::isfinite(times.predictedTransferMs)) {
+        std::snprintf(num, sizeof(num), "%.6f", times.predictedTransferMs);
+        line.append(num);
+    } else {
+        line.append("null");
+    }
+    line.append(",\"fallback\":\"");
     for (std::size_t i = 0; i < times.fallback.size(); ++i) {
         const char c = times.fallback[i];
         if ((c == '"') || (c == '\\')) {

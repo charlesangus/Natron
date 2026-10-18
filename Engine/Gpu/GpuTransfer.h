@@ -207,6 +207,8 @@ public:
 
     // Host imports created so far, cached or not.
     uint64_t hostImportCount() const;
+    // Bytes of host memory imported so far, cached or not.
+    uint64_t hostImportBytes() const;
 
 private:
     struct Impl;

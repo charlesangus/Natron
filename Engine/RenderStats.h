@@ -256,6 +256,13 @@ struct GpuRegionTimes {
     int stripsInFlight = 0;
     double transferHiddenMs = 0.;
     double transferExposedMs = 0.;
+    double planMs = 0.;
+    double recordMs = 0.;
+    double acquireMs = 0.;
+    double submitWaitMs = 0.;
+    unsigned long long poolMisses = 0;
+    unsigned long long importCount = 0;
+    unsigned long long newImportBytes = 0;
 
     // Why the members rendered on the CPU instead; empty for a region that rendered on the GPU.
     std::string fallback;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -96,6 +97,8 @@ public:
     void setUserBudget(uint64_t bytes);
     uint64_t budget();
     GpuBufferPoolStats stats() const;
+    // Device allocations the pool has made so far, each a request no pooled buffer could serve.
+    uint64_t allocationCount() const { return allocations_.load(std::memory_order_relaxed); }
 
     // Destroys every pooled buffer.
     void trim();
@@ -123,6 +126,7 @@ private:
     mutable std::mutex mutex_;
     GpuBufferPoolStats stats_;
     uint64_t clock_ = 0;
+    std::atomic<uint64_t> allocations_ { 0 };
     std::map<VkDeviceSize, std::vector<GpuBuffer>> free_;
     // Evictable live buffers ordered by last use, oldest first.
     std::map<uint64_t, detail::BufferLease*> lru_;

@@ -1251,6 +1251,13 @@ RenderScheduler::executeRegion(const FramePtr& frame,
             times.stripsInFlight = report.stripsInFlight;
             times.transferHiddenMs = report.transferHiddenMs;
             times.transferExposedMs = report.transferExposedMs;
+            times.planMs = report.planMs;
+            times.recordMs = report.recordMs;
+            times.acquireMs = report.acquireMs;
+            times.submitWaitMs = report.submitWaitMs;
+            times.poolMisses = report.poolMisses;
+            times.importCount = report.importCount;
+            times.newImportBytes = report.newImportBytes;
             times.fallback = report.cpuFallback;
             times.retries = report.retries;
             lines += formatRegionRecord(frame->sequence, region, members, times);

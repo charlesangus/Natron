@@ -324,6 +324,7 @@ struct GpuTransfer::Impl {
     std::map<uintptr_t, CachedImport> importCache;
     std::atomic<size_t> cachedImports { 0 };
     std::atomic<uint64_t> importCount { 0 };
+    std::atomic<uint64_t> importBytes { 0 };
 
     std::mutex retireMutex;
     std::vector<Retired> retired;
@@ -670,6 +671,7 @@ struct GpuTransfer::Impl {
                     return false;
                 }
                 ++importCount;
+                importBytes += len;
                 segs.push_back({ b.buffer(), 0, pos, len, 0 });
                 owned.push_back(std::move(b));
                 pos += len;
@@ -700,6 +702,7 @@ struct GpuTransfer::Impl {
                 return false;
             }
             ++importCount;
+            importBytes += len;
             entry.bytes = len;
             segs.push_back({ entry.buffer.buffer(), 0, pos, len, addr });
             importCache.emplace(addr, std::move(entry));
@@ -1461,6 +1464,12 @@ uint64_t
 GpuTransfer::hostImportCount() const
 {
     return impl_->importCount.load();
+}
+
+uint64_t
+GpuTransfer::hostImportBytes() const
+{
+    return impl_->importBytes.load();
 }
 
 } // namespace gpu

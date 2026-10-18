@@ -1788,6 +1788,113 @@ TEST_F(GpuResidencyTest, DeviceLossMidPipelineRendersTheFrameOnTheCpu)
     expectMatchesCpu(chain.sink, run, stripWindow());
 }
 
+// A large Blur followed by a Grade, run whole, as serial strips and as pipelined strips: each member's device time is
+// its own, so the two add up to the region's compute and the Blur's is the larger; the profile's region record breaks
+// the host's time down.
+TEST_F(GpuResidencyTest, RegionMembersAreTimedOnTheDevice)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const int size = 512;
+    NodePtr source = makeNode(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
+    NodePtr blur = makeBlur(60.);
+    NodePtr grade = makeGrade(0.8, 0.02);
+    NodePtr sink = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
+    ASSERT_TRUE(source && blur && grade && sink);
+    ASSERT_TRUE(setKnobValue(source, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize));
+    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamBottomLeft, { 0., 0. }));
+    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamSize, { (double)size, (double)size }));
+    KnobBool* crop = dynamic_cast<KnobBool*>(blur->getKnobByName(kBlurParamCropToFormat).get());
+    ASSERT_TRUE(crop);
+    crop->setValue(false);
+    connectNodes(source, blur, 0, true);
+    connectNodes(blur, grade, 0, true);
+    connectNodes(grade, sink, 0, true);
+    const RectI window(0, 0, size, size);
+
+    std::shared_ptr<RenderScheduler::RegionReport> last = std::make_shared<RenderScheduler::RegionReport>();
+    _scheduler->setRegionBody([last](const FrameRenderContextPtr& context,
+                                     const FrameGraph& graph,
+                                     int region,
+                                     int budget,
+                                     std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
+                                     RenderScheduler::RegionReport* report) {
+        const EffectInstance::RenderRoIRetCode code = runGpuRegion(context, graph, region, budget, rootPlanes, report);
+        *last = *report;
+
+        return code;
+    });
+
+    QTemporaryDir profileDir;
+    ASSERT_TRUE(profileDir.isValid());
+    RenderScheduler::setProfilePath((profileDir.path() + QString::fromUtf8("/profile")).toStdString());
+    // An assertion leaving the loop early must not leave the profile on for the next tests.
+    struct ProfileOff {
+        ~ProfileOff()
+        {
+            RenderScheduler::setProfilePath(std::string());
+        }
+    } profileOff;
+
+    const char* const modes[] = { "whole", "serial strips", "pipelined strips" };
+    for (int mode = 0; mode < 3; ++mode) {
+        SCOPED_TRACE(modes[mode]);
+        if (mode > 0) {
+            setGpuStripOverridesForTests(1u << 20, 0);
+            setGpuStripPipeliningForTests((mode == 2) ? GpuStripPipelining::On : GpuStripPipelining::Off);
+        }
+        *last = RenderScheduler::RegionReport();
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(sink, &run, &error, window)) << error;
+        const int blurTask = taskOf(run.graph, blur);
+        const int gradeTask = taskOf(run.graph, grade);
+        ASSERT_TRUE(blurTask >= 0 && gradeTask >= 0);
+        assignRegions(&run.graph, { { blurTask, gradeTask } });
+        const std::vector<int> members = run.graph.regions[0].members;
+        ASSERT_EQ(2u, members.size());
+        run.future = _scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+        const RenderScheduler::RegionReport report = *last;
+        EXPECT_EQ(0, fallbacksOf(run));
+        EXPECT_EQ(mode > 0, report.strips > 1);
+        ASSERT_EQ(2u, report.memberNs.size());
+
+        const long long blurNs = report.memberNs[(members[0] == blurTask) ? 0 : 1];
+        const long long gradeNs = report.memberNs[(members[0] == blurTask) ? 1 : 0];
+        const double sumMs = (double)(blurNs + gradeNs) * 1e-6;
+        std::printf("[          ] %s: Blur %.3f ms, Grade %.3f ms, kernel %.3f ms; plan %.3f, record %.3f, acquire %.3f, submit/wait %.3f ms; "
+                    "%llu pool misses, %llu imports of %llu bytes\n",
+                    modes[mode], (double)blurNs * 1e-6, (double)gradeNs * 1e-6, report.kernelMs, report.planMs, report.recordMs, report.acquireMs,
+                    report.submitWaitMs, report.poolMisses, report.importCount, report.newImportBytes);
+        EXPECT_GT(gradeNs, 0);
+        EXPECT_GT(blurNs, gradeNs);
+        EXPECT_GT(report.kernelMs, 0.);
+        EXPECT_NEAR(report.kernelMs, sumMs, report.kernelMs * 0.05);
+        EXPECT_GT(report.recordMs, 0.);
+        EXPECT_GE(report.planMs, 0.);
+        EXPECT_GE(report.submitWaitMs, 0.);
+        expectReleased(run);
+    }
+    RenderScheduler::flushProfile();
+    const std::string profilePath = RenderScheduler::getProfileFilePath();
+    RenderScheduler::setProfilePath(std::string());
+
+    int regionRecords = 0;
+    for (const std::string& record : readProfileRecords(profilePath)) {
+        if (record.compare(0, 17, "{\"kind\":\"region\",") != 0) {
+            continue;
+        }
+        ++regionRecords;
+        const char* const fields[] = { "planMs", "recordMs", "acquireMs", "submitWaitMs", "poolMisses", "importCount", "newImportBytes" };
+        for (const char* field : fields) {
+            EXPECT_NE(std::string::npos, record.find(std::string("\"") + field + "\":")) << field << " in " << record;
+        }
+    }
+    EXPECT_EQ(3, regionRecords);
+}
+
 // Renders Constant -> Grade -> Blur (sigma 25) -> Grade over NATRON_GPU_PIPELINE_BENCH x NATRON_GPU_PIPELINE_BENCH
 // pixels as strips, one at a time and then pipelined, and prints where the region's time went. It checks no timing:
 // only that both give the same pixels. Skipped unless the variable is set.

@@ -217,6 +217,7 @@ GpuBufferPool::acquire(VkDeviceSize size, GpuBufferHandle& out)
             reserveLocked(cls);
             lock.unlock();
             GpuBuffer buf;
+            allocations_.fetch_add(1, std::memory_order_relaxed);
             GpuStatus s = GpuBuffer::createDeviceLocal(dev_, cls, kGpuBufferDefaultUsage, buf);
             if (s.ok()) {
                 wrap(std::move(buf));

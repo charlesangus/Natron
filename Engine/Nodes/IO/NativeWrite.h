@@ -178,8 +178,17 @@ public:
 
     virtual bool dependsOnProjectFrameRange() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // How a node hash is stored in the file's header.
+    // How an output content hash is stored in the file's header.
     static std::string outputHashText(U64 hash) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The hash a written EXR stores and read back compares: the node hash's content less
+     * the readBack knob. The node hash keeps readBack, because the file and the input it stands
+     * for are not the same pixels and metadata, while a file written with read back off must
+     * still match once it is on. Takes the input's render hash, so inside a render it is the
+     * hash of the frame being rendered.
+     **/
+    U64 getOutputContentHash() const WARN_UNUSED_RETURN;
 
 private:
     /**
@@ -261,7 +270,7 @@ private:
     bool readBackActive() const WARN_UNUSED_RETURN;
 
     // The headers of the file of `time` and `view` when read back is on and the hash stored in the
-    // file is the node's current hash, so the file is what the input would render; null otherwise,
+    // file is getOutputContentHash(), so the file is what the input would render; null otherwise,
     // and the frame passes the input through.
     std::shared_ptr<const OiioReadSupport::Header> readBackFrame(double time, ViewIdx view, std::string* path) const WARN_UNUSED_RETURN;
 
@@ -312,8 +321,8 @@ private:
     KnobBoolWPtr _writeMetadata;
     KnobBoolWPtr _readBack;
     KnobButtonWPtr _reload;
-    // The files read back, kept until purgeCaches() (Reload, a finished render, turning readBack
-    // on or off) so that rendering a frame does not look at the disk again.
+    // The files read back, kept until purgeCaches() (Reload, a finished render) so that rendering
+    // a frame does not look at the disk again.
     mutable std::mutex _readBackFilesMutex;
     mutable std::map<std::string, ReadBackFile> _readBackFiles;
     mutable std::uint64_t _readBackFilesPurges = 0;

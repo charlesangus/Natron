@@ -350,29 +350,33 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   alpha alone keeps an RGBA plane whose RGB is zero.
 - **Read back.** `readBack` is offered only while the file name is an EXR (the
   one format whose header can hold the gate below). A frame written to an EXR
-  carries the header attribute `natron:outputHash`, the Write's own node hash
-  (`getRenderHash()`, the content hash the frame started rendering under) as 16
-  hex digits, on every part of the file. With `readBack` on, a frame shows its
-  file only when `readBackFrame()` finds the file, reads its header and finds
-  the stored hash equal to the node's current hash; any other frame (no file,
-  no attribute, another hash) passes the input through with no error. The node
-  hash covers the Write's own knobs, the upstream graph and the project render
-  settings, so an edit anywhere upstream turns the file away and setting the
-  edit back (or undoing it) brings the file back. `readBack` is exempt from the
-  hash so that turning it on does not invalidate the files; the Render button
-  is disabled and Reload enabled while it is on. A file shown is decoded by
+  carries the header attribute `natron:outputHash`, the Write's output content
+  hash (`getOutputContentHash()`: the node hash's content without `readBack`,
+  taken when the frame's render action starts) as 16 hex digits, on every part
+  of the file. With `readBack` on, a frame shows its file only when
+  `readBackFrame()` finds the file, reads its header and finds the stored hash
+  equal to the current output content hash; any other frame (no file, no
+  attribute, another hash) passes the input through with no error. The output
+  content hash covers the Write's own knobs, the upstream graph and the project
+  render settings, so an edit anywhere upstream turns the file away and setting
+  the edit back (or undoing it) brings the file back. Leaving `readBack` out of
+  it lets a file written with read back off match once it is on. The node hash
+  does include `readBack`, because the decoded file and the input differ in
+  pixels and metadata and identical nodes share cache entries; turning it on
+  or off therefore switches cache entries rather than purging them. The Render
+  button is disabled and Reload enabled while it is on. A file shown is decoded by
   `OiioReadSupport::decode()` inside the Write (`renderReadBack()`), read in the
   output space it was written in, and the produced planes, format and RoD come
   from its header (`readBackLayers()`), so the channel set and a disconnected
   input no longer decide what downstream sees. The input is optional while
   `readBack` is on (`isInputOptional()`), and `outputFollowsLayerKnob()` is false
-  for a frame shown from its file. The hash is the same whether the node shows
-  the input or the file, so turning `readBack` on or off and a finished
-  sequence call `purgeCaches()` to retire what was cached for the other state.
+  for a frame shown from its file. A finished sequence calls `purgeCaches()`
+  whether `readBack` is on or not, since what was cached while it was on no
+  longer matches the files.
 - **Reload.** `readBackFrame()` looks at each file once, keeping its header
   and stored hash, and does not stat it again while frames render. The Reload
   button on the `readBack` row is enabled only while `readBack` is on. It runs
-  `purgeCaches()`, as do a finished sequence and turning `readBack` on or off:
+  `purgeCaches()`, as does a finished sequence:
   the kept files, the cached headers of the files of the frame range, the
   output metadata, the action results and the cached images of this node and
   of every node downstream are dropped, so a file changed on disk is read

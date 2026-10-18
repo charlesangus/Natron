@@ -56,6 +56,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/Format.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -70,6 +71,7 @@
 #include "Engine/Nodes/IO/OiioWriteSupport.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/OutputSchedulerThread.h"
+#include "Engine/Plugin.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
@@ -944,6 +946,7 @@ NativeWrite::initializeKnobs()
     KnobStringPtr sublabel = createKnob<KnobString>(tr("SubLabel"));
     sublabel->setName(kNatronOfxParamStringSublabelName);
     sublabel->setSecretByDefault(true);
+    sublabel->setHashExempt(true);
     sublabel->setAnimationEnabled(false);
     sublabel->setEvaluateOnChange(false);
     page->addKnob(sublabel);
@@ -1078,8 +1081,6 @@ NativeWrite::initializeKnobs()
     readBack->setDefaultValue(false);
     readBack->setAnimationEnabled(false);
     readBack->setIsMetadataSlave(true);
-    // Switching between the input and the file must not move the hash the file is gated on.
-    readBack->setHashExempt(true);
     readBack->setAddNewLine(false);
     page->addKnob(readBack);
     _readBack = readBack;
@@ -1442,7 +1443,7 @@ NativeWrite::readBackFrame(double time,
         return std::shared_ptr<const OiioReadSupport::Header>();
     }
     const ReadBackFile file = readBackFile(candidate);
-    if (!file.header || (file.storedHash != outputHashText(getRenderHash()))) {
+    if (!file.header || (file.storedHash != outputHashText(getOutputContentHash()))) {
         return std::shared_ptr<const OiioReadSupport::Header>();
     }
     *path = candidate;
@@ -1486,6 +1487,62 @@ NativeWrite::readBackFile(const std::string& path) const
 
     return file;
 }
+
+U64
+NativeWrite::getOutputContentHash() const
+{
+    const KnobBoolPtr readBack = _readBack.lock();
+    std::vector<std::pair<std::string, U64>> knobs;
+    bool hasExpression = false;
+    const KnobsVec& all = getKnobs();
+    for (KnobsVec::const_iterator it = all.begin(); it != all.end(); ++it) {
+        const KnobIPtr& knob = *it;
+        if (!knob) {
+            continue;
+        }
+        bool knobHasExpression = false;
+        bool readsOutsideKnob = false;
+        knob->getContentHashDependencies(&knobHasExpression, &readsOutsideKnob);
+        hasExpression = hasExpression || knobHasExpression;
+        if (!knob->isRenderHashed() || (knob == readBack)) {
+            continue;
+        }
+        knobs.push_back(std::make_pair(knob->getName(), knob->getContentHash()));
+    }
+    std::sort(knobs.begin(), knobs.end());
+
+    ContentHasher h;
+    h.appendString("natron:writeOutput");
+    h.appendString(getPluginID());
+    const Plugin* plugin = getNode()->getPlugin();
+    h.appendBool(plugin != NULL);
+    if (plugin) {
+        h.appendI64(plugin->getMajorVersion());
+        h.appendI64(plugin->getMinorVersion());
+        h.appendU64(plugin->getBinaryContentStamp());
+    }
+    h.appendU64(knobs.size());
+    for (std::size_t i = 0; i < knobs.size(); ++i) {
+        h.appendString(knobs[i].first);
+        h.appendU64(knobs[i].second);
+    }
+    h.appendBool(hasExpression);
+    if (hasExpression) {
+        h.appendString(getNode()->getFullyQualifiedName());
+    }
+    const EffectInstancePtr input = getInput(0);
+    h.appendU64(input ? input->getRenderHash() : 0);
+    ProjectPtr project = getApp()->getProject();
+    if (hasExpression || dependsOnProjectFrameRange()) {
+        double first = 0., last = 0.;
+        project->getFrameRange(&first, &last);
+        h.appendDouble(first);
+        h.appendDouble(last);
+    }
+    h.appendU64(project->getContentDigest());
+
+    return h.finalize();
+} // NativeWrite::getOutputContentHash
 
 bool
 NativeWrite::isInputOptional(int inputNb) const
@@ -1575,11 +1632,8 @@ NativeWrite::purgeCaches()
 void
 NativeWrite::onSequenceRenderFinished()
 {
-    const KnobBoolPtr readBack = _readBack.lock();
-
-    if (readBack && readBack->getValue()) {
-        purgeCaches();
-    }
+    // Also while read back is off: what was cached while it was on no longer matches the files.
+    purgeCaches();
 }
 
 bool
@@ -1699,8 +1753,6 @@ NativeWrite::knobChanged(KnobI* k,
     if (readBack && (k == readBack.get())) {
         refreshReadBackState();
         clearPersistentMessage(false);
-        // The hash is the same on and off, so what was cached for the other state is stale.
-        purgeCaches();
 
         return true;
     }
@@ -2020,6 +2072,9 @@ NativeWrite::render(const RenderActionArgs& args)
             return renderReadBack(args, *header, path);
         }
     }
+    // Taken before any knob is read, so that an edit made while the frame is written leaves the
+    // file not matching.
+    const U64 outputHash = getOutputContentHash();
     std::vector<ResolvedLayer> selected;
     const bool hasLayerKnob = getNode()->resolveLayerKnob(args.time, args.view, &selected);
     KnobOutputFilePtr filename = _filename.lock();
@@ -2213,9 +2268,7 @@ NativeWrite::render(const RenderActionArgs& args)
             OiioWriteSupport::applyMetadata(spec, getUpstreamMetadata(args.time, args.view), formatName);
         }
         if (formatName == "openexr") {
-            // The hash this render started under, not the node's current one, so that an edit made
-            // while the frame is written leaves it not matching.
-            spec.attribute(kNatronWriteOutputHashAttribute, outputHashText(getRenderHash()));
+            spec.attribute(kNatronWriteOutputHashAttribute, outputHashText(outputHash));
         }
 
         const std::string compressionID = activeID(compression);

@@ -265,14 +265,19 @@ protected:
         return true;
     }
 
+    NativeWrite* writeEffect() const
+    {
+        return dynamic_cast<NativeWrite*>(_writer->getEffectInstance().get());
+    }
+
     // The hash the Write's files must hold to be read back now.
     std::string currentHashText() const
     {
-        return NativeWrite::outputHashText(_writer->getHashValue());
+        return NativeWrite::outputHashText(writeEffect()->getOutputContentHash());
     }
 
     // Replaces the file with a flat float image of `value` in every colour channel and in each of
-    // `extra`, 1 in alpha, stamped with the Write's current hash.
+    // `extra`, 1 in alpha, stamped with the Write's current output content hash.
     void overwriteWithGray(const std::string& path,
                            float value,
                            const std::vector<std::string>& extra = std::vector<std::string>())
@@ -442,16 +447,34 @@ TEST_F(NativeWriteReadBackTest, AFileWithoutAHashIsNotShown)
     EXPECT_TRUE(outputIsGray(kGray, 1e-6f)) << message();
 }
 
-TEST_F(NativeWriteReadBackTest, TheReadBackKnobAloneDoesNotMoveTheHash)
+TEST_F(NativeWriteReadBackTest, TheReadBackKnobMovesTheNodeHashButNotTheOutputContentHash)
 {
     setFile(pathOf("same.exr"));
     const U64 before = _writer->getHashValue();
+    const U64 outputBefore = writeEffect()->getOutputContentHash();
 
     setReadBack(true);
-    EXPECT_EQ(before, _writer->getHashValue());
+    EXPECT_NE(before, _writer->getHashValue());
+    EXPECT_EQ(outputBefore, writeEffect()->getOutputContentHash());
 
     setReadBack(false);
     EXPECT_EQ(before, _writer->getHashValue());
+    EXPECT_EQ(outputBefore, writeEffect()->getOutputContentHash());
+}
+
+TEST_F(NativeWriteReadBackTest, AFileWrittenWithReadBackOnHoldsTheOutputContentHash)
+{
+    const std::string path = pathOf("written-on.exr");
+    setFile(path);
+    setBitDepth("32f");
+    pickOutputSpace(project()->getWorkingColorSpace());
+    setReadBack(true);
+    writeSequence();
+    finishSequence();
+
+    OIIO::ImageInput::unique_ptr in = OIIO::ImageInput::open(path);
+    ASSERT_TRUE(bool(in));
+    EXPECT_EQ(currentHashText(), in->spec().get_string_attribute(kNatronWriteOutputHashAttribute));
 }
 
 TEST_F(NativeWriteReadBackTest, TurningItOffPassesTheInputThrough)

@@ -251,13 +251,13 @@ protected:
     }
 
     // Replaces the output with an EXR of `names` holding `values`, stamped with the Write's current
-    // hash: read back shows a file only while the hash it holds is the node's.
+    // output content hash: read back shows a file only while it holds that hash.
     void overwriteOutput(const std::vector<std::string>& names,
                          const std::vector<float>& values)
     {
         std::string error;
 
-        ASSERT_TRUE(writeExr(_output, names, values, 3, NativeWrite::outputHashText(_writer->getHashValue()), &error)) << error;
+        ASSERT_TRUE(writeExr(_output, names, values, 3, NativeWrite::outputHashText(dynamic_cast<NativeWrite*>(_writer->getEffectInstance().get())->getOutputContentHash()), &error)) << error;
         _writer->getEffectInstance()->purgeCaches();
     }
 

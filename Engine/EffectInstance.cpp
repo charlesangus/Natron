@@ -4311,12 +4311,11 @@ EffectInstance::getRegionOfDefinition_public(U64 hash,
             ret = getRegionOfDefinition(hash, time, supportsRenderScaleMaybe() == eSupportsNo ? RenderScale::identity : scale, view, rod);
 
             if ( (ret != eStatusOK) && (ret != eStatusReplyDefault) ) {
-                // rod is not valid
-                //if (!isDuringStrokeCreation) {
+                // Not cached: a failure can be transient (inputs not ready yet during a load), and
+                // a content hash is reached again whenever its state is, so a cached failure would
+                // replay there. Only a successfully computed empty RoD is cached.
                 _imp->actionsCache->clearResults(hash);
-                _imp->actionsCache->setRoDResult( hash, time, view, mipmapLevel, RectD() );
 
-                // }
                 return ret;
             }
 

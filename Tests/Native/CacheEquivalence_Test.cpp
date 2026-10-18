@@ -212,9 +212,11 @@ captureMetadata(const NodePtr& node,
                 OutputState* state)
 {
     AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
+    // As in renderDirect(): only an output node can root a non-interactive render.
+    const bool isRenderUserInteraction = !dynamic_cast<OutputEffectInstance*>(node->getEffectInstance().get());
     ParallelRenderArgsSetter frameRenderArgs(time,
                                              view,
-                                             false /*isRenderUserInteraction*/,
+                                             isRenderUserInteraction,
                                              false /*isSequential*/,
                                              abortInfo,
                                              node,

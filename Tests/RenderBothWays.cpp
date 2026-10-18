@@ -361,9 +361,12 @@ renderDirect(const NodePtr& node,
     const int frame = static_cast<int>(time);
     AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
     RenderStatsPtr stats = throughScheduler ? std::make_shared<RenderStats>(false) : RenderStatsPtr();
+    // Only an output node starts a file render: the abort check of a non-interactive render reads
+    // the sequential-render state of its root, which other nodes do not have.
+    const bool isRenderUserInteraction = !dynamic_cast<OutputEffectInstance*>(node->getEffectInstance().get());
     ParallelRenderArgsSetter frameRenderArgs(time,
                                              view,
-                                             false /*isRenderUserInteraction*/,
+                                             isRenderUserInteraction,
                                              false /*isSequential*/,
                                              abortInfo,
                                              node,

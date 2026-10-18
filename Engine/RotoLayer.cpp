@@ -118,36 +118,51 @@ RotoLayer::clone(const RotoItem* other)
     RotoLayerPtr this_shared = std::dynamic_pointer_cast<RotoLayer>( shared_from_this() );
     assert(this_shared);
 
-    QMutexLocker l(&itemMutex);
-
-    _imp->items.clear();
-    for (std::list<RotoItemPtr>::const_iterator it = isOtherLayer->_imp->items.begin();
-         it != isOtherLayer->_imp->items.end(); ++it) {
+    // Built without itemMutex held: creating and attaching a copy's nodes hashes them, and that
+    // reads whether this layer is activated, which takes itemMutex.
+    RotoItems copies;
+    std::list<RotoStrokeItemPtr> strokes;
+    std::list<RotoLayerPtr> layers;
+    const RotoItems otherItems = isOtherLayer->getItems_mt_safe();
+    for (RotoItems::const_iterator it = otherItems.begin(); it != otherItems.end(); ++it) {
         RotoLayerPtr isLayer = std::dynamic_pointer_cast<RotoLayer>(*it);
         BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(*it);
         RotoStrokeItemPtr isStroke = std::dynamic_pointer_cast<RotoStrokeItem>(*it);
         if (isBezier) {
             BezierPtr copy( new Bezier(*isBezier, this_shared) );
             copy->createNodes();
-            _imp->items.push_back(copy);
+            copies.push_back(copy);
         } else if (isStroke) {
             RotoStrokeItemPtr copy( new RotoStrokeItem( isStroke->getBrushType(),
                                                                         isStroke->getContext(),
                                                                         isStroke->getScriptName() + "copy",
                                                                         RotoLayerPtr() ) );
             copy->createNodes();
-            _imp->items.push_back(copy);
-            copy->setParentLayer(this_shared);
+            copies.push_back(copy);
+            strokes.push_back(copy);
         } else {
             assert(isLayer);
             if (isLayer) {
                 RotoLayerPtr copy( new RotoLayer(*isLayer) );
                 copy->setParentLayer(this_shared);
-                _imp->items.push_back(copy);
-                getContext()->addLayer(copy);
+                copies.push_back(copy);
+                layers.push_back(copy);
             }
         }
     }
+
+    {
+        QMutexLocker l(&itemMutex);
+        _imp->items.swap(copies);
+    }
+    for (std::list<RotoStrokeItemPtr>::const_iterator it = strokes.begin(); it != strokes.end(); ++it) {
+        (*it)->setParentLayer(this_shared);
+    }
+    for (std::list<RotoLayerPtr>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+        getContext()->addLayer(*it);
+    }
+    // The children are hashed in order.
+    invalidateContentHash();
 }
 
 void

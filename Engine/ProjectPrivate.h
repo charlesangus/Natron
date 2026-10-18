@@ -142,7 +142,6 @@ public:
     mutable std::shared_ptr<const std::vector<LayerRegistryEntry>> contentDigestLayers;
     mutable std::string contentDigestOCIOSource;
     mutable bool contentDigestConcatenation = false;
-    mutable bool contentDigestGPU = false;
     mutable U64 contentDigest = 0;
 
     // only used on the main-thread

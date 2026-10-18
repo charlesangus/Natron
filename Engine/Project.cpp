@@ -2958,7 +2958,7 @@ U64
 Project::getContentDigest() const
 {
     // The memo key: every input that is not a project knob is read here, and the project knobs
-    // (format, frame rate, views, working space, GPU support) are covered by the project's knobs
+    // (format, frame rate, views, working space) are covered by the project's knobs
     // generation. The format menu also maps onto the format lists, which have their own counter.
     // The generations are read before anything they cover.
     const U64 knobsGeneration = getKnobsContentGeneration();
@@ -2967,15 +2967,14 @@ Project::getContentDigest() const
     const std::string ocioSource = getOCIOConfigSource();
     SettingsPtr settings = appPTR->getCurrentSettings();
     const bool concatenation = settings->isTransformConcatenationEnabled();
-    const bool gpu = isGPURenderingEnabledInProject();
 
     U64 digest;
     {
         QMutexLocker l(&_imp->contentDigestMutex);
-        if (_imp->contentDigestValid && (_imp->contentDigestKnobsGeneration == knobsGeneration) && (_imp->contentDigestFormatsGeneration == formatsGeneration) && (_imp->contentDigestLayers == layers) && (_imp->contentDigestOCIOSource == ocioSource) && (_imp->contentDigestConcatenation == concatenation) && (_imp->contentDigestGPU == gpu)) {
+        if (_imp->contentDigestValid && (_imp->contentDigestKnobsGeneration == knobsGeneration) && (_imp->contentDigestFormatsGeneration == formatsGeneration) && (_imp->contentDigestLayers == layers) && (_imp->contentDigestOCIOSource == ocioSource) && (_imp->contentDigestConcatenation == concatenation)) {
             digest = _imp->contentDigest;
         } else {
-            digest = computeContentDigestWithoutFileStamps(layers, ocioSource, concatenation, gpu);
+            digest = computeContentDigestWithoutFileStamps(layers, ocioSource, concatenation);
             _imp->contentDigestValid = true;
             _imp->contentDigestKnobsGeneration = knobsGeneration;
             _imp->contentDigestFormatsGeneration = formatsGeneration;
@@ -2983,7 +2982,6 @@ Project::getContentDigest() const
             _imp->contentDigestLayers = layers;
             _imp->contentDigestOCIOSource = ocioSource;
             _imp->contentDigestConcatenation = concatenation;
-            _imp->contentDigestGPU = gpu;
             _imp->contentDigest = digest;
         }
     }
@@ -3003,8 +3001,7 @@ Project::getContentDigest() const
 U64
 Project::computeContentDigestWithoutFileStamps(const std::shared_ptr<const std::vector<LayerRegistryEntry>>& layers,
                                                const std::string& ocioSource,
-                                               bool concatenation,
-                                               bool gpu) const
+                                               bool concatenation) const
 {
     ContentHasher h;
 
@@ -3042,8 +3039,9 @@ Project::computeContentDigestWithoutFileStamps(const std::shared_ptr<const std::
         }
     }
 
+    // GPU rendering is left out: GPU and CPU outputs differ by about a rounding step, so either
+    // may serve the other.
     h.appendBool(concatenation);
-    h.appendBool(gpu);
 
     return h.finalize();
 }

@@ -27,6 +27,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <random>
 #include <utility>
 
 // Header-only and defined only in this translation unit so the XXH symbols stay internal.
@@ -145,6 +146,18 @@ void
 ContentHasher::reset()
 {
     XXH3_64bits_reset(asState(_state));
+}
+
+U64
+ContentHasher::sessionSalt()
+{
+    static const U64 salt = []() {
+        std::random_device rd;
+
+        return ((U64)rd() << 32) ^ (U64)rd();
+    }();
+
+    return salt;
 }
 
 NATRON_NAMESPACE_EXIT

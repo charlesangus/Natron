@@ -364,9 +364,11 @@ public:
 
     /**
      * @brief Identifies the code that renders this plug-in: for OpenFX the binary's path,
-     * modification time and size, otherwise the Natron version and commit. Computed once,
-     * on first call, so a binary replaced while Natron runs keeps its first stamp, matching
-     * the already loaded code. Never 0.
+     * modification time and size, otherwise the Natron version and commit and the running
+     * executable's modification time and size. A plug-in whose output depends on state outside
+     * the project (system fonts, files in the home directory) also gets the session salt.
+     * Computed once, on first call, so a binary replaced while Natron runs keeps its first
+     * stamp, matching the already loaded code. Never 0.
      **/
     U64 getBinaryContentStamp() const;
     OFX::Host::ImageEffect::Descriptor* getOfxDesc(Natron::ContextEnum* ctx) const;

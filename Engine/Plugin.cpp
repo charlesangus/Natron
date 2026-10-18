@@ -27,8 +27,12 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
 #include <locale>
 #include <stdexcept>
+
+#include <fcntl.h>
+#include <sys/stat.h>
 
 #include <QDateTime>
 #include <QFileInfo>
@@ -53,6 +57,62 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/Settings.h"
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+// Native plug-ins are compiled into the running executable, and GIT_COMMIT is a committed
+// constant that a rebuild of changed code keeps, so the executable itself is stamped. Not its
+// path: an AppImage is mounted at a new one every launch. An executable that cannot be stamped
+// gets the session salt, since nothing then tells its code apart from another build's.
+U64
+runningExecutableStamp()
+{
+    static const U64 stamp = []() {
+        ContentHasher h;
+        struct statx st;
+        if (statx(AT_FDCWD, "/proc/self/exe", 0, STATX_MTIME | STATX_SIZE, &st) != 0) {
+            h.appendBool(false);
+            h.appendU64(ContentHasher::sessionSalt());
+        } else {
+            h.appendBool(true);
+            h.appendI64((std::int64_t)st.stx_mtime.tv_sec);
+            h.appendI64((std::int64_t)st.stx_mtime.tv_nsec);
+            h.appendU64(st.stx_size);
+        }
+
+        return h.finalize();
+    }();
+
+    return stamp;
+}
+
+// Plug-ins whose output depends on state that no hash covers. Their results are reused within a
+// session but never served from the disk cache in a later one, where that state may differ.
+struct VolatilePlugin {
+    const char* id;
+    const char* reason;
+};
+
+const VolatilePlugin kVolatilePlugins[] = {
+    { "net.fxarena.openfx.Text", "renders with the system fonts found through fontconfig" },
+    { "net.fxarena.openfx.RichText", "renders with the system fonts found through fontconfig" },
+    { "net.fxarena.openfx.MagickText", "renders with the fonts ImageMagick finds on the system" },
+    { "net.fxarena.openfx.Polaroid", "draws its caption with a system font" },
+    { "fr.inria.openfx.OIIOText", "renders with the fonts OpenImageIO finds on the system" },
+    { "net.fxarena.openfx.HaldCLUT", "reads, and can download, preset LUTs under ~/.clut" },
+};
+
+bool
+isVolatilePlugin(const std::string& id)
+{
+    for (const VolatilePlugin& plugin : kVolatilePlugins) {
+        if (id == plugin.id) {
+            return true;
+        }
+    }
+
+    return false;
+}
+} // anonymous namespace
 
 Plugin::~Plugin()
 {
@@ -290,6 +350,12 @@ Plugin::getBinaryContentStamp() const
         h.appendString("native");
         h.appendString(NATRON_VERSION_STRING);
         h.appendString(GIT_COMMIT);
+        h.appendU64(runningExecutableStamp());
+    }
+    const bool isVolatile = isVolatilePlugin(_id.toStdString());
+    h.appendBool(isVolatile);
+    if (isVolatile) {
+        h.appendU64(ContentHasher::sessionSalt());
     }
     stamp = h.finalize();
     _binaryContentStamp.store(stamp, std::memory_order_release);

@@ -5024,18 +5024,6 @@ const char* const kVolatileExpressionTokens[] = {
     "random", "time.", "datetime", "os.", "sys.", "open(", "uuid", "getpass", "subprocess", "socket"
 };
 
-U64
-sessionSalt()
-{
-    static const U64 salt = []() {
-        std::random_device rd;
-
-        return ((U64)rd() << 32) ^ (U64)rd();
-    }();
-
-    return salt;
-}
-
 bool
 expressionIsVolatile(const std::string& expr)
 {
@@ -5102,7 +5090,7 @@ KnobHelper::getDimensionContentHashRecursive(int dimension,
     h.appendU64(own);
     h.appendBool(isVolatile);
     if (isVolatile) {
-        h.appendU64(sessionSalt());
+        h.appendU64(ContentHasher::sessionSalt());
     }
     for (std::list<std::pair<KnobIWPtr, int>>::const_iterator it = dependencies.begin(); it != dependencies.end(); ++it) {
         KnobIPtr dep = it->first.lock();

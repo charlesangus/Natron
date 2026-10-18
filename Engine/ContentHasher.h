@@ -69,6 +69,13 @@ public:
 
     void reset();
 
+    /**
+     * @brief A value fixed for the whole process and different in every other one. Folded into
+     * the hash of whatever depends on state no hash covers, so that it is reused within the
+     * session but never served from the disk cache in a later one.
+     **/
+    static U64 sessionSalt();
+
     // Large enough and aligned for XXH3_state_t; ContentHasher.cpp static_asserts both.
     static constexpr std::size_t kStateSize = 640;
     static constexpr std::size_t kStateAlign = 64;

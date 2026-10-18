@@ -69,6 +69,9 @@ private:
     // thread, so it is only reset once no recording context is alive.
     void recordingBegan();
     void recordingEnded();
+    // A kernel the registry does not own, dispatched by a context; its descriptor-pool fallback is
+    // recycled with the registry's own once no context is alive.
+    void noteExternalKernel(const std::shared_ptr<GpuKernel>& kernel);
 
     struct RuntimeModule {
         std::vector<uint32_t> spirv;
@@ -89,6 +92,7 @@ private:
     std::vector<Slot> slots_;
     std::deque<GpuKernelDesc> registered_;
     std::deque<RuntimeModule> runtimeModules_;
+    std::vector<std::weak_ptr<GpuKernel>> external_;
     std::map<std::thread::id, VkCommandPool> pools_;
     uint32_t activeContexts_ = 0;
 };

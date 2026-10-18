@@ -4,6 +4,7 @@
 #include "GpuBufferPool.h"
 #include "GpuDevice.h"
 #include "GpuKernelRegistry.h"
+#include "GpuPipelineCache.h"
 #include "GpuRecord.h"
 #include "GpuTransfer.h"
 
@@ -30,10 +31,11 @@ struct GpuRuntimeOptions {
     GpuDeviceOptions device;
     GpuTransferOptions transfer;
     GpuBufferPoolOptions pool;
+    GpuPipelineCacheOptions pipelines;
 };
 
-// Owns the device, the transfer streams, the kernel registry and the buffer pool, built in that order and
-// destroyed in reverse.
+// Owns the device, the transfer streams, the kernel registry, the buffer pool and the pipeline cache of runtime
+// shaders, built in that order and destroyed in reverse.
 //
 // Fault injection: GpuDeviceOptions::fault, or when that is unset the environment variable
 // NATRON_GPU_FAULT=lost@N or oom@N read by create(). N counts runtime operations from 1: every queue
@@ -57,6 +59,8 @@ public:
     GpuTransfer& transfer() const { return *transfer_; }
     GpuKernelRegistry& registry() const { return *registry_; }
     GpuBufferPool& pool() const { return *pool_; }
+    // Rebuilt by recreate(), so a kernel taken from it must be dropped first, like any other handle.
+    GpuPipelineCache& pipelines() const { return *pipelines_; }
 
     // Like GpuKernelRegistry::registerKernel, but the descriptor is registered again after recreate(),
     // under the same id. The SPIR-V it points to must outlive the runtime.
@@ -117,6 +121,7 @@ private:
     std::unique_ptr<GpuTransfer> transfer_;
     std::unique_ptr<GpuKernelRegistry> registry_;
     std::unique_ptr<GpuBufferPool> pool_;
+    std::unique_ptr<GpuPipelineCache> pipelines_;
 };
 
 } // namespace gpu

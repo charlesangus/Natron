@@ -3,6 +3,8 @@
 #include "GpuBuffer.h"
 #include "GpuBufferPool.h"
 #include "GpuKernelRegistry.h"
+#include "GpuShaderCompiler.h"
+#include "GpuTexture.h"
 #include "GpuTransfer.h"
 
 #include <array>
@@ -11,10 +13,13 @@
 #include <initializer_list>
 #include <memory>
 #include <span>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
 namespace gpu {
+
+class GpuPipelineCache;
 
 // One command buffer on the compute queue, recorded and submitted by the thread that created it.
 // Node code goes through this class and never sees a Vulkan handle.
@@ -23,9 +28,10 @@ namespace gpu {
 // thread, so a context must be used and destroyed on that thread.
 class GpuRecordContext {
 public:
-    // Without a pool the context cannot hand out scratch buffers.
+    // Without a pool the context cannot hand out scratch buffers; without a pipeline cache it cannot
+    // hand out runtime shaders.
     static GpuStatus create(GpuKernelRegistry& registry, std::unique_ptr<GpuRecordContext>& out,
-                            GpuBufferPool* pool = nullptr);
+                            GpuBufferPool* pool = nullptr, GpuPipelineCache* pipelines = nullptr);
     ~GpuRecordContext();
     GpuRecordContext(const GpuRecordContext&) = delete;
     GpuRecordContext& operator=(const GpuRecordContext&) = delete;
@@ -49,13 +55,26 @@ public:
         return dispatch(kernel, buffers, std::as_bytes(std::span(&params, 1)), threads);
     }
 
-    // Dispatches a kernel with explicit bindings, as GpuKernel::recordBindings; the only way to
-    // dispatch a reflected kernel.
+    // Dispatches a kernel with explicit bindings, as GpuKernel::recordBindings; the way to dispatch
+    // a reflected kernel.
     GpuStatus dispatchBindings(GpuKernelId kernel, std::span<const GpuBinding> bindings,
+                               std::span<const std::byte> push, std::array<uint32_t, 3> threads);
+
+    // The kernel of a runtime shader from the pipeline cache, as GpuPipelineCache::get.
+    GpuStatus runtimeKernel(std::string_view source, ShaderStage stage, std::string_view entry,
+                            std::shared_ptr<GpuKernel>& out);
+
+    // As dispatchBindings() for a kernel the registry does not own, such as a pipeline cache's. The
+    // context holds the kernel until it is destroyed.
+    GpuStatus dispatchBindings(const std::shared_ptr<GpuKernel>& kernel, std::span<const GpuBinding> bindings,
                                std::span<const std::byte> push, std::array<uint32_t, 3> threads);
 
     // A uniform buffer holding `data`, held until the context is destroyed.
     GpuStatus uniform(std::span<const std::byte> data, const GpuUniformBuffer*& out);
+
+    // A sampled texture of `texels`, as GpuTexture::create, held until the context is destroyed. The upload
+    // completes before the call returns.
+    GpuStatus texture(const GpuTextureDesc& desc, std::span<const float> texels, const GpuTexture*& out);
 
     // Orders earlier dispatches' storage writes before later dispatches' storage reads and writes.
     void computeBarrier();
@@ -93,16 +112,20 @@ public:
     GpuStatus submit(std::span<const TimelineValue> waits, TimelineValue signal);
 
 private:
-    GpuRecordContext(GpuKernelRegistry& registry, GpuBufferPool* pool)
+    GpuRecordContext(GpuKernelRegistry& registry, GpuBufferPool* pool, GpuPipelineCache* pipelines)
         : registry_(registry)
         , bufferPool_(pool)
+        , pipelines_(pipelines)
     {
     }
 
     GpuKernelRegistry& registry_;
     GpuBufferPool* bufferPool_;
+    GpuPipelineCache* pipelines_;
     std::vector<GpuBufferHandle> held_;
     std::deque<GpuUniformBuffer> uniforms_;
+    std::vector<std::unique_ptr<GpuTexture>> textures_;
+    std::vector<std::shared_ptr<GpuKernel>> kernels_;
     VkCommandPool pool_ = VK_NULL_HANDLE;
     VkCommandBuffer cmd_ = VK_NULL_HANDLE;
     bool open_ = false;

@@ -59,12 +59,14 @@ GpuRuntime::build()
         registry_->registerKernel(d);
     }
     pool_ = std::make_unique<GpuBufferPool>(*device_, options_.pool);
+    pipelines_ = std::make_unique<GpuPipelineCache>(*device_, options_.pipelines);
     return {};
 }
 
 void
 GpuRuntime::teardown()
 {
+    pipelines_.reset();
     pool_.reset();
     if (registry_) {
         registry_->invalidate();
@@ -157,7 +159,7 @@ GpuRuntime::newRecordContext(std::unique_ptr<GpuRecordContext>& out)
     if (isLost()) {
         return lostStatus();
     }
-    return note(GpuRecordContext::create(*registry_, out, pool_.get()));
+    return note(GpuRecordContext::create(*registry_, out, pool_.get(), pipelines_.get()));
 }
 
 GpuStatus

@@ -1,8 +1,13 @@
 #include <gtest/gtest.h>
 
 #include <cstdlib>
+#include <filesystem>
 #include <memory>
+#include <span>
+#include <string>
 #include <vector>
+
+#include <unistd.h>
 
 #include "GpuRuntime.h"
 #include "GpuTestDevice.h"
@@ -31,6 +36,7 @@ protected:
         o.device.fault = fault;
         // The live heap budget drifts between reads, so budget comparisons need a fixed pool budget.
         o.pool.overrideBudgetBytes = 256ull << 20;
+        o.pipelines.directory = pipelineDir();
         GpuStatus s = GpuRuntime::create(o, rt);
         if (!s) {
             return s;
@@ -49,7 +55,14 @@ protected:
     void TearDown() override
     {
         rt.reset();
+        std::error_code ec;
+        std::filesystem::remove_all(pipelineDir(), ec);
         check.expectClean("the test");
+    }
+
+    static std::string pipelineDir()
+    {
+        return (std::filesystem::temp_directory_path() / ("natron-gpu-runtime-test-" + std::to_string(::getpid()))).string();
     }
 
     // Upload zeros, fill on the compute queue, download, and return the number of wrong words.
@@ -274,4 +287,66 @@ TEST_F(GpuRuntimeTest, MalformedEnvironmentVariableIsRejected)
     GpuStatus s = make();
     unsetenv("NATRON_GPU_FAULT");
     EXPECT_FALSE(s.ok());
+}
+
+TEST_F(GpuRuntimeTest, RuntimeShaderDispatchesThroughARecordContextAcrossRecreate)
+{
+    GpuStatus s = make();
+    GPUTEST_DEVICE_OR_SKIP(s.ok(), s.message);
+    const std::string source = "#version 460\n// GpuRuntimeTest " + std::to_string(::getpid()) + "\n"
+                               "layout(local_size_x = 8, local_size_y = 8) in;\n"
+                               "layout(std430, set = 0, binding = 0) writeonly buffer Out { uint words[]; };\n"
+                               "layout(push_constant) uniform Push { uint width; uint height; } pc;\n"
+                               "void main() {\n"
+                               "    if (gl_GlobalInvocationID.x >= pc.width || gl_GlobalInvocationID.y >= pc.height) return;\n"
+                               "    uint i = gl_GlobalInvocationID.y * pc.width + gl_GlobalInvocationID.x;\n"
+                               "    words[i] = i;\n"
+                               "}\n";
+    for (int round = 0; round < 2; ++round) {
+        std::shared_ptr<GpuKernel> kernel;
+        s = rt->pipelines().get(source, ShaderStage::Compute, "main", kernel);
+        ASSERT_TRUE(s.ok()) << s.message;
+        const GpuPipelineCache::Stats stats = rt->pipelines().stats();
+        EXPECT_EQ(stats.memoryHits, 0u) << "round " << round;
+        EXPECT_EQ(stats.compiles + stats.diskHits, 1u) << "round " << round;
+        if (round == 1) {
+            EXPECT_EQ(stats.diskHits, 1u) << "the rebuilt cache keeps the disk entries";
+        }
+
+        GpuBufferHandle h;
+        ASSERT_TRUE(rt->acquire(kBytes, h).ok());
+        std::unique_ptr<GpuRecordContext> ctx;
+        ASSERT_TRUE(rt->newRecordContext(ctx).ok());
+        const GpuBinding binding = GpuBinding::storage(0, h.buffer());
+        const uint32_t push[2] = { kW, kH };
+        s = ctx->dispatchBindings(kernel, std::span<const GpuBinding>(&binding, 1), std::as_bytes(std::span<const uint32_t>(push, 2)),
+                                  { kW, kH, 1 });
+        ASSERT_TRUE(s.ok()) << s.message;
+        // The context holds the kernel, so the recorded work outlives the cache's and the caller's references.
+        kernel.reset();
+        rt->pipelines().clearMemory();
+        ctx->computeBarrier();
+        s = ctx->submitAndWait();
+        ASSERT_TRUE(s.ok()) << s.message;
+        ctx.reset();
+
+        std::vector<uint32_t> host(kW * kH, ~0u);
+        TimelineValue down;
+        s = rt->download(h.buffer(), 0, { host.data(), kBytes }, down);
+        if (s) {
+            s = rt->wait(down);
+        }
+        ASSERT_TRUE(s.ok()) << s.message;
+        size_t bad = 0;
+        for (size_t i = 0; i < host.size(); ++i) {
+            bad += host[i] != i;
+        }
+        EXPECT_EQ(bad, 0u) << "round " << round;
+        h = GpuBufferHandle();
+
+        if (round == 0) {
+            ASSERT_TRUE(rt->recreate().ok());
+            EXPECT_EQ(rt->leakedAllocationsAtLastTeardown(), 0u);
+        }
+    }
 }

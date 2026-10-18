@@ -118,6 +118,7 @@ GpuKernelRegistry::invalidate()
     for (Slot& slot : slots_) {
         slot.kernel.reset();
     }
+    external_.clear();
     destroyPoolsLocked();
 }
 
@@ -159,7 +160,28 @@ GpuKernelRegistry::recordingEnded()
                 slot.kernel->releaseDescriptors();
             }
         }
+        for (const std::weak_ptr<GpuKernel>& weak : external_) {
+            if (std::shared_ptr<GpuKernel> kernel = weak.lock()) {
+                kernel->releaseDescriptors();
+            }
+        }
+        external_.clear();
     }
+}
+
+void
+GpuKernelRegistry::noteExternalKernel(const std::shared_ptr<GpuKernel>& kernel)
+{
+    if (!kernel || device_.info().pushDescriptor) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const std::weak_ptr<GpuKernel>& weak : external_) {
+        if (!weak.owner_before(kernel) && !kernel.owner_before(weak)) {
+            return;
+        }
+    }
+    external_.push_back(kernel);
 }
 
 } // namespace gpu

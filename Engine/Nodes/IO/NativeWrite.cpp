@@ -1494,7 +1494,8 @@ NativeWrite::getOutputContentHash() const
     const KnobBoolPtr readBack = _readBack.lock();
     std::vector<std::pair<std::string, U64>> knobs;
     bool hasExpression = false;
-    const KnobsVec& all = getKnobs();
+    // Read by the render threads, which write this hash into the file.
+    const KnobsVec all = getKnobs_mt_safe();
     for (KnobsVec::const_iterator it = all.begin(); it != all.end(); ++it) {
         const KnobIPtr& knob = *it;
         if (!knob) {

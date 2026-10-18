@@ -877,7 +877,8 @@ Node::getKnobsContentDigest(bool* hasExpression) const
         entries.clear();
         bool anyExpression = false;
         bool anyLive = false;
-        const KnobsVec& knobs = _imp->effect->getKnobs();
+        // Hashes are recomputed on render threads too, while the main thread may add or remove knobs.
+        const KnobsVec knobs = _imp->effect->getKnobs_mt_safe();
         for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
             const KnobIPtr& knob = *it;
             if (!knob) {
@@ -932,7 +933,8 @@ Node::getKnobsContentDigest(bool* hasExpression) const
     h.appendU64(entries.size());
     for (std::size_t i = 0; i < entries.size(); ++i) {
         h.appendString(entries[i].name);
-        h.appendU64(entries[i].liveKnob ? entries[i].liveKnob->getContentHash() : entries[i].hash);
+        const KnobIPtr liveKnob = entries[i].liveKnob.lock();
+        h.appendU64(liveKnob ? liveKnob->getContentHash() : entries[i].hash);
     }
 
     return h.finalize();
@@ -1047,7 +1049,7 @@ Node::dependsOnProjectFrameRange() const
     if (_imp->effect->dependsOnProjectFrameRange()) {
         return true;
     }
-    const KnobsVec& knobs = _imp->effect->getKnobs();
+    const KnobsVec knobs = _imp->effect->getKnobs_mt_safe();
     for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
         if (!*it) {
             continue;
@@ -6341,8 +6343,9 @@ Node::onEffectKnobValueChanged(KnobI* what,
                  || ( what->getName() == kNatronGroupInputIsMaskParamName) ) {
                 NodeCollectionPtr col = isInput->getNode()->getGroup();
                 assert(col);
-                NodeGroup* isGrp = dynamic_cast<NodeGroup*>( col.get() );
-                assert(isGrp);
+                // An Input node can be created at the top level of the project, where there is no
+                // group whose inputs it drives.
+                NodeGroup* isGrp = dynamic_cast<NodeGroup*>(col.get());
                 if (isGrp) {
                     ///Refresh input arrows of the node to reflect the state
                     isGrp->getNode()->initializeInputs();

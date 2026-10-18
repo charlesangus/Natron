@@ -396,7 +396,9 @@ public:
     // Knobs that read another knob or a file are kept as live entries and hashed on every use.
     struct KnobsDigestEntry {
         std::string name;
-        KnobIPtr liveKnob; //< null when hash below is memoized
+        // Weak: the node outlives its effect, and a knob kept alive past its holder would still be
+        // reached through expression rechecks with no effect to resolve against.
+        KnobIWPtr liveKnob; //< null when hash below is memoized
         U64 hash;
     };
     mutable QMutex knobsDigestMutex; //< protects the knobsDigest* fields

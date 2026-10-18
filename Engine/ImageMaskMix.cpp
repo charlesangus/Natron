@@ -211,7 +211,9 @@ Image::applyMaskMix(const RectI& roi,
     const RectI realRoI = roi.intersect(_bounds);
 
     assert( !originalImg || getBitDepth() == originalImg->getBitDepth() );
-    assert(!masked || !maskImg || maskImg->getComponents() == ImageLayerDesc::getAlphaComponents());
+    // The mask is read as one channel per pixel; a single-channel layer other than alpha may be
+    // the selected mask channel.
+    assert(!masked || !maskImg || maskImg->getComponentsCount() == 1);
 
     if (getStorageMode() == eStorageModeGLTex) {
         assert(glContext);

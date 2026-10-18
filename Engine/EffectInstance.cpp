@@ -2597,6 +2597,18 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
 
     if ( ( foundMaskInput != rectToRender.imgs.end() ) && !foundMaskInput->second.empty() ) {
         maskImage = foundMaskInput->second.front();
+        // The mask input is pre-rendered in the whole layer of the selected mask channel, while
+        // the host mix reads one channel per pixel: extract the selected one.
+        if (maskImage && (maskImage->getComponentsCount() != 1)) {
+            const int maskInputNb = foundMaskInput->first;
+            std::list<ImageLayerDesc> availableLayers;
+            _publicInterface->getAvailableLayers(time, view, maskInputNb, &availableLayers);
+            ImageLayerDesc maskLayer;
+            const int maskChannel = _publicInterface->getMaskChannel(maskInputNb, availableLayers, &maskLayer);
+            if (maskChannel >= 0) {
+                maskImage = EffectInstance::convertLayersFormatsIfNeeded(maskImage, maskImage->getBounds(), ImageLayerDesc::getAlphaComponents(), maskImage->getBitDepth(), maskChannel);
+            }
+        }
     }
 
 #ifndef NDEBUG
@@ -5896,7 +5908,8 @@ EffectInstance::onNodeHashChanged(U64 hash)
     if (node && !node->mayHaveKnobExpressions()) {
         return;
     }
-    const KnobsVec & knobs = getKnobs();
+    // Called from the hash recompute, which runs on whichever thread reads a dirty hash.
+    const KnobsVec knobs = getKnobs_mt_safe();
     for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
         for (int i = 0; i < (*it)->getDimension(); ++i) {
             (*it)->clearExpressionsResults(i);

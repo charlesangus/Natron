@@ -141,7 +141,7 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
         serialization->version = NATRON_SERIALIZATION_NODE_VERSION;
         serialization->label = getLabel_mt_safe();
         serialization->scriptName = getScriptName_mt_safe();
-        serialization->knobsAge = getKnobsAge();
+        serialization->knobsAge = 0;
         serialization->cacheID = getCacheID();
         serialization->inputs.clear();
         serialization->oldInputs.clear();

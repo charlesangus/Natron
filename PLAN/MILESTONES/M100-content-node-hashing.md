@@ -207,7 +207,7 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   - verify: record the results in `## Decisions`
   - size: M
 
-- [ ] M100.P6.T4 — Cached results are bit-identical to uncached results
+- [x] M100.P6.T4 — Cached results are bit-identical to uncached results
   - files: Tests/CacheEquivalence_Test.cpp, Tests/CMakeLists.txt
   - approach: For every scenario, render a frame through the warm cache, then render it again cold and compare the two. Cold means every cache cleared (image, deep and ActionsCache) or caching bypassed; use the same switch the engine has, or add a test-only one. The two renders must be bit-exact on every plane, including RoD/metadata and deep samples where they apply. Both scheduler modes. The warm render must come after an edit sequence that could leave a stale entry behind:
     - value toggles 1 → 2 → 1, and undo/redo;
@@ -391,3 +391,4 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
   **Timeout risk:** each defocus_retime bench case takes about 1000 s locally, against ctest's 300 s limit.
 - 2026-10-16 — **Known plugin bug list** (user): the sweep stays strict for hash gaps. CImg EdgeExtend, the CImg expression plugin and fxarena Sketch go on an explicit known-bug list with a reason each. The list fails once a plugin stops showing its bug. Fixing the plugins in the openfx-misc and openfx-arena forks is follow-up work, requested via the inbox.
 - 2026-10-18 — **Run 38922628415 at fbef9e95d**: 2398/2402 in both schedulers. Shards 4, 5 and 7 of the sweep are the three known plugin bugs (list in 32d20f349, not yet built); `ShuffleCopyBBoxIntersectionOfDisjointInputsIsEmpty` expected a non-failed status for an empty RoD, which now reports `eStatusFailed` fresh and cached alike (test fix 6675058ec). Remote release build of 6675058ec running.
+- 2026-10-18 — **P6.T4 done**: green at 6675058ec (release run 39141716944), 2403/2403 in legacy and taskgraph, CacheEquivalence scenarios and all 16 sweep shards passing, with the three known plugin bugs held on their list.

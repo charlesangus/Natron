@@ -175,8 +175,8 @@ future core work has solid ground to build on.
 | M115 | Build Speed And Artifact Size | done | - | bosley-native-nodes | E2 | [M115-build-speed-and-artifact-size.md](PLAN/MILESTONES/M115-build-speed-and-artifact-size.md) |
 | M113 | Native Warp Nodes | todo | M120, M56 |  | E3 | [M113-native-node-rewrites-continued.md](PLAN/MILESTONES/M113-native-node-rewrites-continued.md) |
 | M120 | Native Node Port Kit | todo | M85 |  | E3 | [M120-native-node-port-kit.md](PLAN/MILESTONES/M120-native-node-port-kit.md) |
-| M121 | Native Routing And Mix | todo | M120, M101 |  | E3 | [M121-native-routing-and-mix.md](PLAN/MILESTONES/M121-native-routing-and-mix.md) |
-| M122 | Native Colour Utilities | todo | M120 |  | E3 | [M122-native-colour-utilities.md](PLAN/MILESTONES/M122-native-colour-utilities.md) |
+| M121 | Native Routing And Mix | todo | M120, M101, M137 |  | E3 | [M121-native-routing-and-mix.md](PLAN/MILESTONES/M121-native-routing-and-mix.md) |
+| M122 | Native Colour Utilities | todo | M120, M137 |  | E3 | [M122-native-colour-utilities.md](PLAN/MILESTONES/M122-native-colour-utilities.md) |
 | M123 | Native Sharpen And Glow | todo | M120 |  | E3 | [M123-native-sharpen-and-glow.md](PLAN/MILESTONES/M123-native-sharpen-and-glow.md) |
 | M124 | Native Time Remaps | todo | M120 |  | E3 | [M124-native-time-remaps.md](PLAN/MILESTONES/M124-native-time-remaps.md) |
 | M125 | Native Multi-Frame Nodes | todo | M124 |  | E3 | [M125-native-multi-frame-nodes.md](PLAN/MILESTONES/M125-native-multi-frame-nodes.md) |
@@ -193,6 +193,9 @@ future core work has solid ground to build on.
 | M119 | Trackball Panel Layout | todo | M56, M69 |  | E10 | [M119-trackball-panel-layout.md](PLAN/MILESTONES/M119-trackball-panel-layout.md) |
 | M134 | Output Picker Pixel Aspect | todo | - |  | E10 | [M134-output-picker-pixel-aspect.md](PLAN/MILESTONES/M134-output-picker-pixel-aspect.md) |
 | M135 | Pool Sharing Flake Fix | todo | - |  | E2 | [M135-pool-sharing-flake-fix.md](PLAN/MILESTONES/M135-pool-sharing-flake-fix.md) |
+| M136 | Edge Policy Investigation | todo | - |  | E3 | [M136-edge-policy-investigation.md](PLAN/MILESTONES/M136-edge-policy-investigation.md) |
+| M137 | Premult Stage Extraction | todo | - |  | E3 | [M137-premult-stage-extraction.md](PLAN/MILESTONES/M137-premult-stage-extraction.md) |
+| M138 | GUI Papercuts | todo | - |  | E10 | [M138-gui-papercuts.md](PLAN/MILESTONES/M138-gui-papercuts.md) |
 
 # Epics
 

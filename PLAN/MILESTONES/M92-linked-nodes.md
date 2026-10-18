@@ -167,6 +167,11 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
   - approach: Delete `LinkToKnobDialog` and the expression-based `KnobGui::linkTo` / `onLinkToActionTriggered` (`KnobGui20.cpp:283-370`), which no menu action reaches.
   - verify: `grep -rn 'LinkToKnobDialog\|onLinkToActionTriggered' Gui/` finds nothing, and the build is clean.
   - size: S
+- [ ] M92.P3.T5 — Let a single-value knob link to a multi-value knob, per component
+  - files: `Gui/KnobGui20.cpp` (the paste/link dimension check at `:245-251`), `Engine/Knob.cpp`, `Tests/KnobLinkGroup_Test.cpp`
+  - approach: reported by the user (2026-10-18): linking a float to a size or colour knob is refused with "must have the same dimension". Remove the refusal for links. A folded multi-component knob presents as one value, so a single-value source links to it as one. An unfolded knob links the single source to each component, as P1.T1's group members allow members from different dimensions. Keep the existing same-dimension rule for value copy/paste. Do not touch the folded-storage question (M31 - Architectural Cleanup Phase 31.4).
+  - verify: in a test, a Double knob linked to a folded 2D knob drives both components; unfolding keeps each component linked to the source; unlinking leaves each with its current value. Copy/paste across mismatched dimensions is still refused.
+  - size: M
 
 ## Phase 92.4: Persistence, scripting and removal
 

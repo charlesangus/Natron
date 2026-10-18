@@ -90,4 +90,12 @@ M62.P5.T1 (2026-10-03, massif on a 300-node OFX Grade chain, release build at `a
   - verify: a test where one render finishes while an overlapping render is still in flight, and a reader of the second region waits instead of reading stale pixels; ctest green.
   - size: L
 
+## Phase 31.7: Format animation (reported 2026-10-18)
+
+- [ ] M31.P7.T1 — Investigate why animating Crop's or Reformat's output format does not change the format
+  - files: investigation first — `Engine/Nodes/Transform/Crop.cpp`, `Engine/Nodes/Transform/Reformat.cpp`, `Engine/Nodes/Image/ExtentKnobs.cpp`, the metadata/format path in `Engine/EffectInstance*.cpp`
+  - approach: the user reports that a Crop set to format, and a Reformat, do not change the output format when the knob driving it is animated. M112 - Native Node Behaviour Fixes made Reformat read the source format at metadata time and animated box size past frame 0, so this is probably not a missing evaluation but how the format is cached, hashed or propagated per frame. The user suspects an architectural cause. Find the cause, then write a design note for the user to approve before fixing anything.
+  - verify: a design note the user approves; once implemented, a gtest that renders three frames with an animated format and gets a different format on each.
+  - size: L
+
 **Verification gate:** every task's verify holds; whole ctest suite green; AppImage packaged and a manual GUI session (playback, render-to-disk with abort, Python `app.render()`) reports no regression.

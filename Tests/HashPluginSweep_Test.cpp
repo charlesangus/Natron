@@ -192,10 +192,8 @@ perturbDimension(const NodePtr& node,
     U64 changed = node->getHashValue();
     const bool recomputedOnEdit = changed != before;
     if (!recomputedOnEdit) {
-        // Changes that skip the significant-evaluate path (persistent knobs that do not evaluate
-        // on change, for one) leave the stored hash stale until something recomputes it. That
-        // is a separate defect from the knob's content missing the hash, so recompute here and
-        // report it as a note.
+        // Recomputed so that a knob whose content misses the hash is told apart from one whose
+        // edit did not mark the node dirty; both fail.
         node->refreshHashNow();
         changed = node->getHashValue();
     }
@@ -210,7 +208,7 @@ perturbDimension(const NodePtr& node,
         }
         report->failures.push_back(label + ": edit " + edit.what + " left the node hash at " + hex(before) + ", " + why);
     } else if (!recomputedOnEdit) {
-        report->notes.push_back(label + ": stale until an explicit recompute after edit " + edit.what);
+        report->failures.push_back(label + ": DIRTY GAP: edit " + edit.what + " did not mark the node hash dirty, it moved only on an explicit recompute");
     }
 
     edit.revert();
@@ -222,7 +220,7 @@ perturbDimension(const NodePtr& node,
     }
     if (restored == before) {
         if (!recomputedOnRevert && (changed != before)) {
-            report->notes.push_back(label + ": stale until an explicit recompute after reverting " + edit.what);
+            report->failures.push_back(label + ": DIRTY GAP: reverting " + edit.what + " did not mark the node hash dirty, it came back only on an explicit recompute");
         }
 
         return;

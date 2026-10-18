@@ -294,8 +294,8 @@ TEST_F(HashInvariantsTest, SameGraphHashesEqualInASecondAppInstance)
 
 // ---------------------------------------------------------------------------------------------
 // Every render-affecting edit changes the hash, and returning to the earlier state restores it.
-// The engine has no undo stack without the GUI (Node::pushUndoCommand only redoes), so undo is
-// played by setting the earlier state back.
+// Knob undo commands live in Gui/, which this binary does not link, so a return is a value set
+// back; KnobUndoHash_Test in GuiTests runs the undo command itself.
 // ---------------------------------------------------------------------------------------------
 
 TEST_F(HashInvariantsTest, KnobValueEditChangesHashUpToDownstreamAndRevertRestoresIt)

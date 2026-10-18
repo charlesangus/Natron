@@ -185,6 +185,7 @@ set(GuiTests_SOURCES
     CurveTangentJoin_Test.cpp
     EdgeNearbyGrab_Test.cpp
     KnobGuiString_Test.cpp
+    KnobUndoHash_Test.cpp
     LayerChannelRow_Test.cpp
     NodeGraphConnect_Test.cpp
     NodeGraphPickUp_Test.cpp

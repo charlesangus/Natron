@@ -38,16 +38,17 @@
 #include <QThread>
 
 #include "Engine/AbortableRenderInfo.h"
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
-#include "Engine/Settings.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/GPUContextPool.h"
 #include "Engine/Image.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/GPUContextPool.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
+#include "Engine/Settings.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
@@ -1091,11 +1092,13 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
         dependenciesMap.insert(std::make_pair(treeRoot, n));
     }
 
-    // Before any hash is read below: a refresh can change knobs, and with them hashes. A render
-    // set up off the main thread renders with the data as it stands, and has the main thread
-    // catch up for the next one.
+    // Before any hash is read below: a refresh can change knobs, and with them hashes. Off the
+    // main thread the refresh can only be posted, and the hashes read below are already the new
+    // ones, so a render using the stale metadata would store results under keys a fresh render
+    // looks up.
     if (setUpstreamArgs) {
         const bool isMainThread = (QThread::currentThread() == qApp->thread());
+        std::vector<NodeWPtr> stale;
         for (FindDependenciesMap::iterator it = dependenciesMap.begin(); it != dependenciesMap.end(); ++it) {
             NodesList pulled(1, it->first);
             RotoContextPtr roto = it->first->getRotoContext();
@@ -1107,8 +1110,29 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
                     (*node)->refreshInputRelatedDataIfStale();
                 } else if ((*node)->isInputRelatedDataStale()) {
                     (*node)->requestInputRelatedDataRefresh();
+                    stale.push_back(*node);
                 }
             }
+        }
+        // Only a viewer render is dropped and redrawn: aborting a frame of a file render or an
+        // analysis would fail the whole job. Queued after the refreshes, so it runs once they are
+        // done, and only redraws once every node is fresh, so a refresh that cannot run yet never
+        // loops back into another aborted render.
+        if (!stale.empty() && abortInfo && abortInfo->canAbort() && treeRoot->isEffectViewer()) {
+            abortInfo->setAborted();
+            AppInstanceWPtr weakApp = treeRoot->getApp();
+            QMetaObject::invokeMethod(qApp, [weakApp, stale]() {
+                AppInstancePtr app = weakApp.lock();
+                if (!app) {
+                    return;
+                }
+                for (std::size_t i = 0; i < stale.size(); ++i) {
+                    NodePtr node = stale[i].lock();
+                    if (node && node->isInputRelatedDataStale()) {
+                        return;
+                    }
+                }
+                app->renderAllViewers(true); }, Qt::QueuedConnection);
         }
     }
 

@@ -403,3 +403,19 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
 - 2026-10-18 — **Rebased onto `main`** (M22, M77, M112). One semantic conflict: M22's placeholder serialization called the deleted `getKnobsAge()`; fix in progress, gate build to follow.
 - 2026-10-18 — **Post-rebase gate** (run 39152786164 at 058ac437f, placeholder `KnobsAge` fix): 2478/2479 in both schedulers. `CacheEquivalenceTest.SyntheticGeneratorGradeGraph` found a pre-existing expression bug that M112's Grade `clampBlack` default change exposed: an untimed `getValue()` inside an expression read the timeline frame when evaluated outside a render (`isIdentity`, layer pass-through), and the result was cached under the requested frame. Fix 389e439bc: a thread-local expression time that `KnobHelper::getCurrentTime()` returns while an expression runs. Gate build running.
 - 2026-10-18 — **Gate green** at 389e439bc on post-M112 `main` (release run 39162569691): 2479/2479 in legacy and taskgraph; GUI check 24/24 on its AppImage; `knobsAge` survives only as the serialized field written as 0. Decisions published (5182c0763). PR #67 open; Codex review running.
+- 2026-10-18 — **Review round 1** (Codex, 11 findings, posted on PR #67). Fixed (code on milestone/m100-content-node-hashing, up to 91afaa409):
+  - the Write's `readBack` is hashed again, and files are stamped with a separate `getOutputContentHash()` that leaves it out;
+  - every label string is hash-exempt (`setAsLabel`, native sublabels);
+  - the GPU preference is out of the digest;
+  - the sweep fails on a dirty gap, and a GuiTests case drives the real `KnobUndoCommand` (Tests has no undo stack);
+  - native identity stamps `/proc/self/exe`;
+  - a volatile plug-in list (Text, RichText, MagickText, Polaroid, OIIOText, HaldCLUT) salts per session;
+  - the `RotoLayer::clone` deadlock is fixed;
+  - failed RoD actions aren't cached;
+  - off-main viewer renders that find stale input data abort and re-render.
+
+  **Declined:** the dirty-generation ordering race, whose window equals the value-write-to-mark window that no ordering closes.
+
+  **Still open:** a file render edited mid-render can cache stale metadata.
+
+  PR CI (debug, live asserts) found 47 aborts, mostly `getKnobs()` called off the main thread by the lazy recompute; a fix is in progress.

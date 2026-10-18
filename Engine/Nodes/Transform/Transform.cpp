@@ -680,7 +680,7 @@ TransformNode::knobChanged(KnobI* k,
     }
     KnobChoicePtr filterKnob = _filter.lock();
     if (filterKnob && (k == filterKnob.get())) {
-        updateClampEnabled(time, view);
+        updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }

@@ -42,7 +42,7 @@
 #include "Engine/DeepImage.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
-#include "Engine/Nodes/Metadata/OfxMetadataBridge.h"
+#include "Engine/Nodes/Metadata/EffectMetadata.h"
 #include "Engine/PoolParallelFor.h"
 #include "Engine/TLSHolder.h"
 
@@ -273,16 +273,7 @@ NativeEffectBase::getInputEffectMetadata(const EffectInstancePtr& connected,
                                          double time,
                                          ViewIdx view)
 {
-    const EffectInstancePtr input = OfxMetadataBridge::skipPassThroughNodes(connected);
-    NativeEffectBase* native = dynamic_cast<NativeEffectBase*>(input.get());
-
-    if (native) {
-        return native->getOutputMetadata(time, view);
-    }
-
-    // The OpenFX clip cache is keyed by time alone, so an OpenFX input has one answer for
-    // every view.
-    return OfxMetadataBridge::getOfxEffectOutputMetadata(input, time);
+    return getEffectOutputMetadata(connected, time, view);
 }
 
 ImageMetadata

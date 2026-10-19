@@ -1124,6 +1124,26 @@
                 %CPPSELF.%FUNCTION_NAME(%1);
             </inject-code>
         </modify-function>
+        <modify-function signature="metadata(QString)const">
+            <inject-documentation format="target">
+                Returns the value of the metadata key this node puts out at the current frame in the main view, as an int, a float, a str or a list, or None if the node has no such key.
+            </inject-documentation>
+        </modify-function>
+        <modify-function signature="metadata(QString,double,int)const">
+            <inject-documentation format="target">
+                Returns the value of the metadata key this node puts out at the given frame and view, as an int, a float, a str or a list, or None if the node has no such key.
+            </inject-documentation>
+        </modify-function>
+        <modify-function signature="metadataKeys()const">
+            <inject-documentation format="target">
+                Returns the sorted keys of the metadata this node puts out at the current frame in the main view.
+            </inject-documentation>
+        </modify-function>
+        <modify-function signature="metadataKeys(double,int)const">
+            <inject-documentation format="target">
+                Returns the sorted keys of the metadata this node puts out at the given frame and view.
+            </inject-documentation>
+        </modify-function>
         <modify-function signature="getPersistentMessage()const">
             <inject-documentation format="target">
                 Returns the error or warning message the node currently shows, or an empty string if it shows none.

@@ -162,6 +162,33 @@ GPU_TEST_F(BlurGpuTest, WideRadiiMatchReference)
     }
 }
 
+// Radii 1 to 32 on the narrow vertical path, on heights that leave partial 64-row tiles and widths that
+// leave partial 8-column blocks, and lines shorter than the radius.
+GPU_TEST_F(BlurGpuTest, NarrowRadiiMatchReference)
+{
+    constexpr double kNarrowSigmas[] = { 0.3, 1.0, 2.6, 3.0, 10.5, 10.6 };
+    constexpr blurfix::Size kNarrowSizes[] = { { 33, 401 }, { 129, 131 }, { 300, 7 }, { 5, 64 }, { 8, 65 }, { 1, 1 } };
+    std::vector<BlurCase> cases;
+    uint32_t seed = 900;
+    for (double sigma : kNarrowSigmas) {
+        ASSERT_LE(blurref::radiusForSigma(sigma), 32);
+        for (const blurfix::Size& s : kNarrowSizes)
+            for (int ch : blurfix::kChannelCounts)
+                cases.push_back({ s.w, s.h, ch, sigma, blurfix::makeImage(s.w, s.h, ch, seed++) });
+    }
+    const std::vector<std::vector<float>> dst = run(cases);
+    for (size_t k = 0; k < cases.size(); ++k) {
+        const BlurCase& c = cases[k];
+        const std::vector<double> ref = blurfix::reference(c.src, c.w, c.h, c.ch, c.sigma);
+        tol::ErrorStats stats;
+        for (size_t i = 0; i < ref.size(); ++i)
+            stats.add(dst[k][i], ref[i], k, i);
+        EXPECT_EQ(stats.classMismatches, 0u);
+        EXPECT_LE(stats.maxAbs, blurfix::kTolerance) << "sigma=" << c.sigma << " " << c.w << "x" << c.h
+                                                     << " ch=" << c.ch;
+    }
+}
+
 GPU_TEST_F(BlurGpuTest, RefusesRadiusAndChannelsBeyondTheTile)
 {
     auto kernel = makeKernel(blur_spirv, blur_spirv_words, "main", 3, sizeof(blurfix::BlurParams), blur_group_size);
@@ -181,7 +208,7 @@ GPU_TEST_F(BlurGpuTest, RefusesRadiusAndChannelsBeyondTheTile)
 
 TEST(BlurGroupCount, VerticalDirectPathCoversColumnBlocks)
 {
-    EXPECT_EQ(blurGroupCount({ 1000, 300, 4, 32, true }), (std::array<uint32_t, 3> { 3, 32, 1 }));
+    EXPECT_EQ(blurGroupCount({ 1000, 300, 4, 32, true }), (std::array<uint32_t, 3> { 5, 125, 1 }));
     EXPECT_EQ(blurGroupCount({ 1000, 300, 4, 33, true }), (std::array<uint32_t, 3> { 1000, 3, 1 }));
     EXPECT_EQ(blurGroupCount({ 1000, 300, 4, 3, false }), (std::array<uint32_t, 3> { 8, 300, 1 }));
 }

@@ -11,9 +11,10 @@ namespace gpu {
 
 namespace {
 
-    // Must match kGroup, kColumns and kDirectMaxRadius in Kernels/blur.slang.
+    // Must match kGroup, kNarrowColumns, kNarrowRows and kDirectMaxRadius in Kernels/blur.slang.
     constexpr uint32_t kGroup = kGpuBlurGroupSize;
-    constexpr uint32_t kColumns = 32;
+    constexpr uint32_t kNarrowColumns = 8;
+    constexpr uint32_t kNarrowRows = 64;
     constexpr uint32_t kDirectMaxRadius = 32;
 
     uint32_t divUp(uint32_t v, uint32_t d)
@@ -215,7 +216,7 @@ blurGroupCount(const GpuBlurPass& pass)
     const uint32_t len = pass.vertical ? pass.height : pass.width;
     const uint32_t lines = pass.vertical ? pass.width : pass.height;
     if (pass.vertical && pass.radius <= kDirectMaxRadius) {
-        return { divUp(len, kGroup), divUp(lines, kColumns), 1 };
+        return { divUp(len, kNarrowRows), divUp(lines, kNarrowColumns), 1 };
     }
     if (pass.vertical) {
         return { lines, divUp(len, kGroup), 1 };

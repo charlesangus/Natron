@@ -2145,6 +2145,30 @@ renderFunctor(const RectI& roi,
     }
 }
 
+void
+viewerProcessRectOnCpu(const ImageConstPtr& input,
+                       const ImageConstPtr& matte,
+                       DisplayChannelsEnum channels,
+                       ImageBitDepthEnum depth,
+                       double gain,
+                       double gamma,
+                       double offset,
+                       const ProjectColorManagement::DisplayProcessorPtr& displayProcessor,
+                       int alphaChannelIndex,
+                       const RectI& rect,
+                       void* output)
+{
+    if ( rect.isNull() || !input || !output ) {
+        return;
+    }
+    const RenderViewerArgs args(input, matte, channels, depth, gain, gamma, offset, displayProcessor, alphaChannelIndex, true, 0);
+    UpdateViewerParams::CachedTile tile;
+    tile.rect = TextureRect(rect.x1, rect.y1, rect.x2, rect.y2, 1, 1.);
+    tile.rectRounded = rect;
+    tile.ramBuffer = (unsigned char*)output;
+    renderFunctor(rect, args, NULL, tile);
+}
+
 inline
 MinMaxVal
 findAutoContrastVminVmax_generic(const ImagePtr inputImage,

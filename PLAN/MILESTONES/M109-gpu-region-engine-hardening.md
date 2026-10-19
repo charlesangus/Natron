@@ -177,12 +177,36 @@ M85's benches show where the region engine loses time on real comps. Three items
     - the same Grade on this bus, pipelined, is accepted;
     - the EMA moves the rate toward observed samples.
   - size: M
-- [ ] M109.P4.T4 — Quick directional bench of the overlap phase
+- [ ] M109.P4.T5 — Bring region host transfer up to the bus rate: cache-first imports and whole-image source imports
+  - files: `Engine/Gpu/GpuTransfer.{h,cpp}` (`resolveImports`), `Engine/GpuRegionTask.cpp` (source prepare at region start, `prepareWaitMs`), `Engine/RenderScheduler.h`/`Engine/RenderStats.{h,cpp}` (the new record field), `Engine/GpuContext.cpp` (staging copy threads), `Tests/Gpu/GpuTransfer_Test.cpp`, `Tests/GpuResidency_Test.cpp`
+  - approach:
+    - `resolveImports` looks in the cache first and accepts any sub-range that a cached import fully covers, whatever its alignment. Alignment is required only when a new import has to be created.
+    - The region prepares its source images whole at region start, as it already does for outputs (`prepareImports` without the touch step). Each strip upload is then a slice of a cached import, with no pinning or staging per strip.
+    - Time `awaitPreparedDownloads()` as a new `prepareWaitMs` record field, separate from `downloadMs`, so first-touch faults don't count as transfer.
+    - Staging for leftovers uses about 4 copy threads and bigger pieces (`GpuContext.cpp:~429`).
+    - Report `TransferPath` and `HostImportStats.atUpload`/`atDownload` in the region record.
+  - verify:
+    - At the phase build, a `GpuTransfer_Test` case checks that an unaligned sub-range of a cached import makes no new import. A residency test checks that a strip-mode region's second frame has `atUpload == 0` and `atDownload == 0` and no staging on 4096-aligned widths, on lavapipe and RADV.
+    - Host bench on RADV: before the change, ChromaKeyer at 16k shows device copy time well below host `uploadMs + downloadMs`. After it, the rate is ≥ 20 GB/s in each direction.
+  - size: L
+- [ ] M109.P4.T6 — Pipeline strips on extra compute-family queues when the device has no transfer-only family
+  - files: `Engine/Gpu/GpuDevice.{h,cpp}` (queue creation), `Engine/Gpu/GpuTransfer.{h,cpp}` (`QueueKind`, timelines), `Engine/GpuRegionStrips.cpp` (`gpuStripPipeliningAllowed`), `Engine/GpuRegionTask.cpp` (`pipelineAllowed`), `Engine/GpuPlacement.cpp`, `Tests/Gpu/GpuTransfer_Test.cpp`, `Tests/GpuResidency_Test.cpp`
+  - approach:
+    - With no transfer-only family, `GpuDevice::create` asks for `min(queueCount, 3)` compute-family queues: compute, upload and download. With only 2 queues, upload and download share the second.
+    - `transferUsesComputeQueue` is replaced by `transferSharesComputeQueue`, which is true only when there really is just one `VkQueue`. It gates `gpuStripPipeliningAllowed`, `pipelineAllowed` and placement's pipelining test.
+    - `QueueKind::Transfer` splits into Upload and Download, and `transferTL` into separate upload and download timelines, because one timeline signalled from two queues breaks increasing signal order. Ownership transfers within one family stay no-ops.
+    - Do not set `RADV_PERFTEST` in-process.
+  - verify:
+    - At the phase build, the existing pipelined-strip and residency tests pass on lavapipe (1 queue: serial path) and RADV (several queues), in both scheduler modes.
+    - On RADV with no environment variable set, a region record shows `stripsInFlight > 1`, and hidden transfer is about equal to kernel time.
+    - ChromaKeyer at 16k: wall time is about max(upload, download) + kernel.
+  - size: L
+- [ ] M109.P4.T4 — Quick directional bench of the overlap phase (after P4.T5 and P4.T6)
   - files: none (results in `## Decisions`)
   - approach:
     - Rerun P2.T1's comps and node/gxg cases at UHD and 8K with `gpu_region_bench.sh`.
     - Tune `overlapMinBytes` and record the chosen value.
-  - verify: Exposed transfer share on keying_grade and cg_multipass drops below 30% of region time. No Auto case is slower than Off in any round, and no comp regresses against M85's ratios.
+  - verify: Exposed transfer is below 30% of region time on the expensive spatial cases (Erode 40, Blur σ100 at 16k/24k) and on fused comp regions. No Auto case is slower than Off in any round, and no comp regresses against M85's ratios.
   - size: M
 
 ## Phase 109.5: Root-cause fixes and host memory
@@ -231,7 +255,7 @@ M85's benches show where the region engine loses time on real comps. Three items
 
 ## Phase 109.7: Shared-file follow-ups (FLAGGED: touch files other milestones own)
 
-- [ ] M109.P7.T1 — ⚑ Record one edge per input in `collectPreRenderFrames` (touches M100 - Content Node Hashing's `ParallelRenderArgs.cpp`; start after M100 merges)
+- [x] M109.P7.T1 — ⚑ Record one edge per input in `collectPreRenderFrames` (touches M100 - Content Node Hashing's `ParallelRenderArgs.cpp`; start after M100 merges)
   - files: `Engine/ParallelRenderArgs.cpp`, `Engine/GpuRegionTask.cpp` (delete the compensation at `:597-615`), `Tests/SchedulerEquivalence_Test.cpp`
   - approach: Key `PreRenderFrames` by (effect, inputNb), so a node feeding two inputs yields two edges, as `FrameGraph::Task` documents. Delete the region's edge re-derivation.
   - verify: At the phase build, a node wired to a member's source and mask gives two dependencies, and CPU and GPU renders are equal in both modes.
@@ -262,7 +286,7 @@ M85's benches show where the region engine loses time on real comps. Three items
 - On the M82 comps:
   - no region halves its strips after its first frame;
   - contention halvings are 0, or explained in Decisions;
-  - region exposed transfer in the comps is under 30% of region time;
+  - region exposed transfer is under 30% of region time on regions whose kernel time is at least comparable to their transfer: expensive spatial ops at 16k–24k, fused multi-node regions and resident chains. Cheap lone nodes are left to placement;
   - plain Transform "other" is under 20%.
 - Every speed-up is ≥ M85's, and no Auto case is slower than Off in any round.
 - CPU-only renders are within ±2% of `main`.
@@ -315,3 +339,5 @@ M85's benches show where the region engine loses time on real comps. Three items
   3. **Measure the gate's 30% on regions whose kernel time is at least comparable to transfer time** (expensive spatial ops, fused regions, resident chains), as M64 was judged. Placement already keeps cheap lone nodes on the CPU.
   - Rejected: setting `RADV_PERFTEST=transfer_queue` in-process, which is unstable and affects other Vulkan users such as M107's hand-off, and using the graphics family for transfers.
 - 2026-10-19 — **M109.P5.T1 was implemented in the previous session, but left uncommitted** in `.worktrees/m109`; only `-fsyntax-only` has been run on it. It adds `Engine/Gpu/GpuSizeClass.h`, a header-only file of the class maths shared by `GpuBufferPool` and `HostImageMemory`. `HostImageMemory` allocates at class size plus 1/16 growth room and reuses the smallest pooled buffer up to one class above, and its `live` map records real sizes. `GpuBufferPool::acquire` takes from its own class up to the next. A new `GpuTransferOptions::hostAllocationBytes` makes a cache-miss import run to the end of the host buffer. Tests were added in `Image_Test`, `GpuBufferPool_Test` and `GpuResidency_Test` (`GrowingImageReusesTheBuffersAndImportsOfTheFrameBefore`). Known costs: pinned imports cover up to about a third more than the request, which the Cache doesn't count. A device request that grows across a class boundary still misses once. Growth room on device classes was reverted because it broke three exact-fit residency tests.
+- 2026-10-19 — **The user took all three of the consultant's recommendations.** M109.P4.T5 fixes the region transfer rate and M109.P4.T6 adds pipelining on extra compute-family queues; P4.T4's bench follows both. The gate's 30% exposed-transfer target, and P4.T4's, now applies to regions whose kernel time is at least comparable to their transfer, as M64 was judged. Cheap lone nodes are placement's job.
+- 2026-10-19 — **M109.P7.T1 (`83390a3b3`):** `PreRenderFrames` is keyed by `(effect, inputNb)`, and the roto bottom-merge entry by `(effect, -1)`. Its two consumers, `EffectInstance::treeRecurseFunctor` and the request-pass visitor, emit one edge per entry. The region's edge re-derivation is deleted. The new `NodeFeedingSourceAndMaskIsTwoEdges` test checks the graph shape and legacy against taskgraph on the CPU only, because `SchedulerEquivalence_Test` has no GPU harness. The CPU-against-GPU case for this wiring is owed in `GpuRegionFallback_Test`. The test assumes Grade's mask knob is `enableMask_<label>`; the phase build confirms it.

@@ -111,7 +111,7 @@ Two things block the end-to-end acceptance. First, keeping the root on the devic
 
 ## Phase 107.1: Spikes
 
-- [ ] M107.P1.T1 — Spike: compile OCIO's `GLSL_VK_4_6` display shader inside a compute wrapper through `GpuPipelineCache`
+- [x] M107.P1.T1 — Spike: compile OCIO's `GLSL_VK_4_6` display shader inside a compute wrapper through `GpuPipelineCache`
   - files: `Tests/Native/OcioVkSpike_Test.cpp` (new, scratch; folded into P3.T1 or deleted), milestone Decisions entry
   - approach:
     - Build a `GpuShaderDesc` with `GPU_LANGUAGE_GLSL_VK_4_6`. Try `setDescriptorSetIndex(0, <first texture binding>)` with a function name and resource prefix, for the studio config's "sRGB - Display" / ACES 2.0 SDR view (as in `Tests/ViewerDisplayTransform_Test.cpp`), and for a config with a 3D LUT (a `.cube` look).
@@ -138,6 +138,17 @@ Two things block the end-to-end acceptance. First, keeping the root on the devic
   - verify: each environment's best rung and its `missing` string are recorded in the milestone, with a byte-exact checksum. If no environment reaches ZeroCopy or HostSync on RADV, stop and raise open question 3 before P6.
   - size: M
 
+- [ ] M107.P1.T3 — A self-contained script the user runs in a desktop session to check the hand-off rung on radeonsi
+  - files: `tools/gpu-spike/desktop-handoff-check.sh` (new), `tools/ci/local/README.md` (short section)
+  - approach:
+    - Run on the user's AMD host inside a real desktop session (X11 or Wayland), outside any container, with `env -u LD_LIBRARY_PATH`.
+    - Arguments: the path to a built `GlInteropQt` binary, or a directory of CI artifacts. Later phases add the release AppImage and the resident comp.
+    - Print the session type, `glxinfo -B`/`eglinfo` renderer and `vulkaninfo --summary` device. Run `GlInteropQt` under the desktop's own platform (xcb, then wayland), and collect its `RESULT best=… checksum=… PASS|FAIL` and `missing` lines.
+    - Write a one-file report (`handoff-report.txt`) for the user to paste back. It must say plainly whether zero-copy was reached.
+    - Fail cleanly, with an explanation, when there is no display, the GL renderer isn't radeonsi, or a binary is missing.
+  - verify: `bash -n` and `shellcheck` pass. A dry run in natron-dev under Xvfb produces a report showing llvmpipe and `best=zero-copy-hostsync`. On the user's desktop the report shows radeonsi and `best=zero-copy`, or names what is missing.
+  - size: M
+
 ## Phase 107.2: GlInterop for the viewer
 
 - [x] M107.P2.T1 — Double-buffer `GlInterop` and make it size- and format-flexible
@@ -157,7 +168,7 @@ Two things block the end-to-end acceptance. First, keeping the root on the devic
 
 ## Phase 107.3: Viewer-process kernel
 
-- [ ] M107.P3.T1 — Shared OCIO→Vulkan shader helper with a LUT texture cache
+- [x] M107.P3.T1 — Shared OCIO→Vulkan shader helper with a LUT texture cache
   - files: `Engine/OcioVulkanShader.h` (new), `Engine/OcioVulkanShader.cpp` (new), `Tests/Native/OcioVulkanShader_Test.cpp` (new, absorbs P1.T1's spike)
   - approach:
     - `OcioVulkanShader::build(const OCIO::ConstGPUProcessorRcPtr&, functionName, firstBinding)` returns the GLSL text, the texture descriptions and the UBO layout, using the binding scheme P1.T1 found.
@@ -332,3 +343,5 @@ Two things block the end-to-end acceptance. First, keeping the root on the devic
   - **M107.P2.T1 verified:** `GlInteropTest.*` 14/14 on lavapipe+llvmpipe (EGL surfaceless; best rung hostsync, zero-copy skipped for missing semaphore extensions) and 14/14 on RADV+radeonsi (best rung zero-copy). Double-buffered produce-ahead, including the timeline-wait gate, and Bgra8SubRect are byte-exact on every path. UHD end to end on RADV: zero-copy 0.79 ms, hostsync 0.81 ms, readback 22.59 ms, against M83's 0.79 / 0.87 / 33.2 ms. No regression.
   - **M107.P1.T1, partial:** the OCIO `GLSL_VK_4_6` shader compiles and reflects on lavapipe and RADV. Binding scheme: set 0, UBO reserved at binding 0, OCIO textures from binding 1 (the studio SDR view has two 1D samplers, 363×1, nearest), input storage buffer at 24, output at 25, 8 bytes of push constants. Studio cold compile 135 ms (lavapipe) / 192 ms (RADV), warm disk load 48 / 0.3 ms. Studio dispatch at 2560 px: 0.21 / 0.36 ms. Code reading says `RegionRun::run` returns after compute completes, on both the whole and the pipelined-strip paths; the instrumented case was not run. **Two test defects block the verify:** (1) the CPU reference calls `applyRGBA(float*)`, which transforms one pixel, so only pixel 0 is compared (the worst reported pixel, 11.5 → 0.963989 on the GPU, is 1.5e-6 from PyOpenColorIO's CPU result); fix it with a `PackedImageDesc`. (2) The 3D-LUT config's source colour space is `raw`, which OCIO marks as data, so the display transform becomes a no-op: 127-byte shader, no textures, no uniforms. It needs a non-data source, and a case with dynamic properties so the UBO path is exercised.
   - **M107.P1.T2: stop condition hit.** Under Xvfb, lavapipe with llvmpipe GL reaches hostsync (PASS), and RADV Vulkan with llvmpipe GL reaches only readback because the UUIDs differ (PASS). No environment on this host gives the viewer's `QOpenGLWidget` a radeonsi context: there is no desktop session, no weston or Xorg on the host or in natron-dev, `/dev/dri/card1` is 0660 `nobody`, and the container Qt has only the xcb, offscreen, minimal, linuxfb, vnc and vkkhrdisplay platforms. `xcb_egl` and zink were tried and failed. radeonsi does reach zero-copy through EGL surfaceless, but not through Qt. Per the 2026-10-18 promotion decision, the user is asked to provide a display.
+- 2026-10-19 — **The user will run a script in a desktop session to supply the radeonsi check** (answering the P1.T2 stop condition). M107.P1.T3 writes it. P3 and P4 continue meanwhile, and the zero-copy and 0-root-download gates are verified from the user's report.
+- 2026-10-19 — **M107.P1.T1 is folded into P3.T1** (`ede5f63d3`), which deleted the spike. `OcioVulkanShader::build` returns a bool, with the shader as an out-parameter, so failures carry an error string. `fillUniforms` and `dynamicProperty()` are on `OcioVulkanShader`, not on `Resources`: OCIO keeps dynamic properties on each GPU shader description, so a caller keeps the shader it dispatches and changes values on it. `glsl()` has no `#version` line, so the caller's wrapper owns the version and its own bindings. The test's LUT case uses a non-data source with a 1D shaper and a 33³ cube, and a dynamic `ExposureContrastTransform` case checks that the kernel is not recompiled. The std140 stride for OCIO's vector uniforms is inferred from the gap before the next uniform, and is the least certain part. Nothing has run on a GPU yet; the phase build verifies it.

@@ -4,7 +4,7 @@ Lets a knob expression read the metadata of any node's output: `thisNode.metadat
 
 ## Phase 78.1: Python API
 
-- [ ] M78.P1.T1 — Add `Effect.metadata()` and `Effect.metadataKeys()`
+- [x] M78.P1.T1 — Add `Effect.metadata()` and `Effect.metadataKeys()`
   - files: `Engine/PyNode.h`, `Engine/PyNode.cpp`, `Engine/typesystem_engine.xml`
   - approach: `metadata(key, frame=currentFrame, view=0)` returns the typed Python value, or `None` when absent. `metadataKeys(frame, view)` lists keys. There is no unified accessor: skip pass-through nodes with `OfxMetadataBridge::skipPassThroughNodes`, then `dynamic_cast<NativeEffectBase*>` → `getOutputMetadata(time, view)`, else `OfxMetadataBridge::getOfxEffectOutputMetadata(effect, time)` (no view for OFX; ignore it), else empty — the same dispatch as the protected `NativeEffectBase::getInputEffectMetadata`, so factor a shared free helper rather than duplicating it. `ImageMetadata::Value` is a `std::variant<int, double, std::string, std::vector<int>, std::vector<double>>`; convert int→int, double→float, string→str, vectors→list, which needs a manual conversion in `typesystem_engine.xml` (the `Effect` object-type at ~line 1075). `getFrameRate` is only a signature model — it reads `NodeMetadata`, a different system.
   - freshness (2026-10-19): `Effect::getFrameRate` at `PyNode.h:411`; `NativeEffectBase::getOutputMetadata` at `NativeEffectBase.h:334`; `getInputEffectMetadata` at `NativeEffectBase.cpp:272`. No PyNode gtest exists yet; `Tests/Native/NativeWriteMetadata_Test.cpp:66-90` generates attribute-carrying EXRs with OIIO, and `Tests/NativeMetadataTestEffect.h` injects metadata.

@@ -560,8 +560,15 @@ GpuDevice::drainQueues()
     if (device_ == VK_NULL_HANDLE) {
         return;
     }
+    waitIdleLocked();
+}
+
+VkResult
+GpuDevice::waitIdleLocked()
+{
+    // Vulkan requires every queue of the device to be externally synchronized across vkDeviceWaitIdle.
     std::scoped_lock lock(queues_[0].mutex, queues_[1].mutex, queues_[2].mutex);
-    vkDeviceWaitIdle(device_);
+    return vkDeviceWaitIdle(device_);
 }
 
 bool
@@ -642,7 +649,7 @@ GpuDevice::waitIdle()
     if (isLost()) {
         return lostStatus();
     }
-    return check(vkDeviceWaitIdle(device_), "vkDeviceWaitIdle");
+    return check(waitIdleLocked(), "vkDeviceWaitIdle");
 }
 
 GpuStatus

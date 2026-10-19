@@ -316,9 +316,6 @@ own `natron-dev-gpu-home` volume. On top of the normal container it:
 
 - refuses to start unless some `/dev/dri/renderD*` is readable and writable
   by the invoking user, rather than silently falling back to lavapipe;
-- sets `RADV_PERFTEST=transfer_queue`. Mesa 25.2's RADV only exposes its
-  transfer-only (SDMA) queue family with that set; without it the RX 7900
-  XTX shows graphics, compute, video-decode and sparse families only.
 
 On an AMD RX 7900 XTX host, the Vulkan device list inside it is:
 

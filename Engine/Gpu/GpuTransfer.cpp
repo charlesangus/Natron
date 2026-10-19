@@ -386,7 +386,7 @@ struct GpuTransfer::Impl {
         if (vk == VK_NULL_HANDLE) {
             return;
         }
-        vkDeviceWaitIdle(vk);
+        dev.drainQueues();
         if (drainThread.joinable()) {
             {
                 std::lock_guard<std::mutex> lock(drainMutex);
@@ -967,7 +967,7 @@ struct GpuTransfer::Impl {
             p.forgotten = true;
         }
         importCv.wait(lock, [&] { return pendingImports.empty(); });
-        vkDeviceWaitIdle(vk);
+        dev.drainQueues();
         importCache.clear();
         cachedImports.store(0, std::memory_order_relaxed);
         std::lock_guard<std::mutex> rl(retireMutex);
@@ -1563,11 +1563,11 @@ GpuTransfer::process(std::span<const TransferFrame> frames, const ComputeRecordF
 
     m.compValue = compBase + F;
     if (aborted) {
-        vkDeviceWaitIdle(m.vk);
+        m.dev.drainQueues();
         m.waitDrained(std::numeric_limits<uint64_t>::max());
     } else if (GpuStatus s = device_.waitSemaphore(m.compTL, m.compValue, kWaitTimeoutNs); !s) {
         raise(std::move(s));
-        vkDeviceWaitIdle(m.vk);
+        m.dev.drainQueues();
         m.waitDrained(std::numeric_limits<uint64_t>::max());
     }
     if (upException) {

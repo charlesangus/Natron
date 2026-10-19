@@ -165,6 +165,7 @@ private:
 
     Queue& queueFor(QueueKind kind);
     GpuStatus lostStatus() const;
+    VkResult waitIdleLocked();
 
     GpuDeviceInfo info_;
     GpuDebugMessageFn debugMessage_;

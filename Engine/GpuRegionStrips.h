@@ -225,6 +225,14 @@ void setGpuStripPipeliningForTests(GpuStripPipelining mode);
 GpuStripPipelining gpuStripPipelining();
 
 /**
+ * @brief Whether a device may run a region's strips pipelined, under gpuStripPipelining(). Every strip in flight
+ * holds an open record context, and without push descriptors the kernels' descriptor pools are reset only once no
+ * context is open, which a pipeline would never let happen.
+ **/
+bool gpuStripPipeliningAllowed(bool pushDescriptor,
+                               bool transferUsesComputeQueue);
+
+/**
  * @brief Calls hook with a strip's index once a pipelined region has submitted its compute, on the region's thread;
  * an empty hook removes it.
  **/

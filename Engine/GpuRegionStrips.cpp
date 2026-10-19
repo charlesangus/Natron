@@ -533,6 +533,25 @@ gpuStripPipelining()
     return gPipelining.load();
 }
 
+bool
+gpuStripPipeliningAllowed(bool pushDescriptor,
+                          bool transferUsesComputeQueue)
+{
+    if (!pushDescriptor) {
+        return false;
+    }
+    switch (gpuStripPipelining()) {
+    case GpuStripPipelining::On:
+        return true;
+    case GpuStripPipelining::Off:
+        return false;
+    case GpuStripPipelining::Auto:
+        break;
+    }
+
+    return !transferUsesComputeQueue;
+}
+
 void
 setGpuStripSubmittedHookForTests(const std::function<void(std::size_t strip)>& hook)
 {

@@ -79,12 +79,15 @@ struct GpuTaskTraits {
 };
 
 /**
- * @brief Host-device transfer rates in bytes per second. With unifiedMemory, transfers cost nothing.
+ * @brief Host-device transfer rates in bytes per second. With unifiedMemory, transfers cost nothing. With
+ * pipelinedStrips, the device may run a region as strips in flight together, overlapping their transfers with
+ * their compute.
  **/
 struct GpuTransferRates {
     double uploadBytesPerSecond = 0.;
     double downloadBytesPerSecond = 0.;
     bool unifiedMemory = false;
+    bool pipelinedStrips = false;
 
     static GpuTransferRates fromCalibration(const GpuCalibration& calibration);
 };
@@ -127,7 +130,8 @@ public:
     int threadCount() const;
 
     /**
-     * @brief Defaults to no bandwidth, which makes any transfer cost infinite unless unifiedMemory is set.
+     * @brief Defaults to no bandwidth, which makes any transfer cost infinite unless unifiedMemory is set. Keeps the
+     * correction observeTransfer() made to the rates set before.
      **/
     void setTransferRates(const GpuTransferRates& rates);
     GpuTransferRates transferRates() const;
@@ -167,14 +171,27 @@ public:
     bool hasGpuCost(const GpuTaskTraits& traits) const;
 
     /**
-     * @brief Transfer time of the given bytes, both ways.
+     * @brief Transfer time of the given bytes, both ways, at the rates set as observeTransfer() corrected them.
      **/
     double transferMs(double uploadBytes, double downloadBytes) const;
 
     /**
-     * @brief CPU time the region saves, less its GPU time, its transfers and kAcceptMarginMs: it is worth running on
-     * the GPU when positive. An external input is uploaded unless its task is on the GPU; an output is downloaded
-     * when it is the root or a task outside the region on the CPU consumes it. Identity members cost nothing.
+     * @brief Whether the strip planner would pipeline the region, so that its transfers overlap its GPU time: the
+     * rates allow pipelined strips, the region moves at least kGpuStripOverlapMinBytes between host and device, keeps
+     * no output on the device for another region, and its outputs are tall enough for kGpuStripMaxInFlight strips of
+     * kGpuStripMinPipelinedRows. The halo the strips would read is left out.
+     **/
+    bool pipelinesTransfers(const FrameGraph& graph,
+                            const FrameGraph::Region& region,
+                            double uploadBytes,
+                            double downloadBytes) const;
+
+    /**
+     * @brief CPU time the region saves, less its GPU time, the transfer time it exposes and kAcceptMarginMs: it is
+     * worth running on the GPU when positive. An external input is uploaded unless its task is on the GPU; an output
+     * is downloaded when it is the root or a task outside the region on the CPU consumes it. A region that
+     * pipelinesTransfers() exposes only the transfer time beyond its GPU time; any other exposes all of it. Identity
+     * members cost nothing.
      **/
     double regionGainMs(const FrameGraph& graph, const FrameGraph::Region& region) const;
 
@@ -183,6 +200,14 @@ public:
 
     void observeGpu(const GpuTaskTraits& traits, std::int64_t kernelNs, double megapixels);
     void observeGpu(const FrameGraph::Task& task, std::int64_t kernelNs);
+
+    /**
+     * @brief Moves the transfer rates toward a region's measured ms per byte, by a moving average of the ratio of the
+     * measured time to the time the rates set give, which then scales both directions. ms is the whole time the
+     * region spent moving the bytes, the part its compute hid included, since how much is hidden is not a property
+     * of the bus. Ignored when the rates price the bytes at nothing or at infinity.
+     **/
+    void observeTransfer(double uploadBytes, double downloadBytes, double ms);
 
 private:
     struct CpuRow {
@@ -204,6 +229,7 @@ private:
     };
 
     int threadCountLocked() const;
+    double transferMsLocked(double uploadBytes, double downloadBytes) const;
     double seedThreadMsPerMpxLocked(const CpuRow& row) const;
     const CpuRow* findCpuRowOrDefaultLocked(const GpuTaskTraits& traits) const;
     bool gpuMsPerMpxLocked(const GpuTaskTraits& traits, double* msPerMpx) const;
@@ -217,6 +243,7 @@ private:
     std::map<std::string, std::vector<GpuRow>> _gpu;
     int _threads = 0;
     GpuTransferRates _rates;
+    double _transferScale = 1.;
     std::function<GpuTaskTraits(const FrameGraph::Task&)> _traitsHint;
 };
 

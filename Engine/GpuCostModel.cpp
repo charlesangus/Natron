@@ -35,6 +35,7 @@
 
 #include "Engine/EffectInstance.h"
 #include "Engine/GpuContext.h"
+#include "Engine/GpuRegionStrips.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
@@ -413,20 +414,68 @@ double
 GpuCostModel::transferMs(double uploadBytes,
                          double downloadBytes) const
 {
-    const GpuTransferRates rates = transferRates();
+    std::lock_guard<std::mutex> lock(_mutex);
 
-    if (rates.unifiedMemory) {
+    return transferMsLocked(uploadBytes, downloadBytes);
+}
+
+double
+GpuCostModel::transferMsLocked(double uploadBytes,
+                               double downloadBytes) const
+{
+    if (_rates.unifiedMemory) {
         return 0.;
     }
     double ms = 0.;
     if (uploadBytes > 0.) {
-        ms += (rates.uploadBytesPerSecond > 0.) ? uploadBytes / rates.uploadBytesPerSecond * 1e3 : kInfinity;
+        ms += (_rates.uploadBytesPerSecond > 0.) ? uploadBytes / _rates.uploadBytesPerSecond * 1e3 : kInfinity;
     }
     if (downloadBytes > 0.) {
-        ms += (rates.downloadBytesPerSecond > 0.) ? downloadBytes / rates.downloadBytesPerSecond * 1e3 : kInfinity;
+        ms += (_rates.downloadBytesPerSecond > 0.) ? downloadBytes / _rates.downloadBytesPerSecond * 1e3 : kInfinity;
     }
 
-    return ms;
+    return ms * _transferScale;
+}
+
+bool
+GpuCostModel::pipelinesTransfers(const FrameGraph& graph,
+                                 const FrameGraph::Region& region,
+                                 double uploadBytes,
+                                 double downloadBytes) const
+{
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (!_rates.pipelinedStrips) {
+            return false;
+        }
+    }
+    if (uploadBytes + downloadBytes < (double)kGpuStripOverlapMinBytes) {
+        return false;
+    }
+    std::vector<bool> inRegion(graph.tasks.size(), false);
+    for (int m : region.members) {
+        inRegion[m] = true;
+    }
+    int y1 = 0;
+    int y2 = 0;
+    bool any = false;
+    for (const FrameGraph::Region::Output& output : region.outputs) {
+        const FrameGraph::Task& task = graph.tasks[output.task];
+        for (int c : task.consumerTasks) {
+            if (!inRegion[c] && (graph.tasks[c].device == FrameGraph::Device::Gpu)) {
+                return false;
+            }
+        }
+        const RectI& rect = task.renderedRoI.isNull() ? task.roi : task.renderedRoI;
+        if (rect.isNull()) {
+            continue;
+        }
+        y1 = any ? std::min(y1, rect.y1) : rect.y1;
+        y2 = any ? std::max(y2, rect.y2) : rect.y2;
+        any = true;
+    }
+
+    return any && (y2 - y1 >= kGpuStripMaxInFlight * kGpuStripMinPipelinedRows);
 }
 
 double
@@ -470,7 +519,12 @@ GpuCostModel::regionGainMs(const FrameGraph& graph,
         }
     }
 
-    return savedMs - gpuTotalMs - transferMs(uploadBytes, downloadBytes) - kAcceptMarginMs;
+    const double fullTransferMs = transferMs(uploadBytes, downloadBytes);
+    // std::max turns the NaN of an infinite transfer less an unseeded member's infinite GPU time into 0, which leaves
+    // the gain at minus infinity.
+    const double exposedMs = pipelinesTransfers(graph, region, uploadBytes, downloadBytes) ? std::max(0., fullTransferMs - gpuTotalMs) : fullTransferMs;
+
+    return savedMs - gpuTotalMs - exposedMs - kAcceptMarginMs;
 }
 
 void
@@ -538,6 +592,22 @@ GpuCostModel::observeGpu(const FrameGraph::Task& task,
                          std::int64_t kernelNs)
 {
     observeGpu(traitsOf(task), kernelNs, megapixelsOf(task));
+}
+
+void
+GpuCostModel::observeTransfer(double uploadBytes,
+                              double downloadBytes,
+                              double ms)
+{
+    if (!(ms > 0.) || !std::isfinite(ms)) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(_mutex);
+    const double calibratedMs = transferMsLocked(uploadBytes, downloadBytes) / _transferScale;
+    if (!(calibratedMs > 0.) || !std::isfinite(calibratedMs)) {
+        return;
+    }
+    _transferScale = ema(_transferScale, ms / calibratedMs);
 }
 
 NATRON_NAMESPACE_EXIT

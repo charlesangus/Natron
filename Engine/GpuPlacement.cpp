@@ -38,6 +38,7 @@
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GpuContext.h"
 #include "Engine/GpuCostModel.h"
+#include "Engine/GpuRegionStrips.h"
 #include "Engine/Image.h"
 #include "Engine/ImageKey.h"
 #include "Engine/KnobChannelSelect.h"
@@ -47,6 +48,10 @@
 #include "Engine/Nodes/Image/NativeImageEffect.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RenderScale.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRuntime.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -569,7 +574,14 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
     GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
     if (gpu && gpu->isAvailable()) {
         GpuCostModel* model = &GpuCostModel::session();
-        model->setTransferRates(GpuTransferRates::fromCalibration(gpu->calibration()));
+        GpuTransferRates rates = GpuTransferRates::fromCalibration(gpu->calibration());
+#ifdef NATRON_HAVE_GPU
+        if (gpu::GpuRuntime* runtime = gpu->runtime()) {
+            const gpu::GpuDeviceInfo& info = runtime->device().info();
+            rates.pipelinedStrips = gpuStripPipeliningAllowed(info.pushDescriptor, info.transferUsesComputeQueue);
+        }
+#endif
+        model->setTransferRates(rates);
         const std::function<bool(const FrameGraph::Task&)> effectCanRender = inputs.canRenderOnGpu;
         inputs.canRenderOnGpu = [model, effectCanRender](const FrameGraph::Task& task) -> bool {
             return model->hasGpuCost(model->traitsOf(task)) && effectCanRender(task);

@@ -98,9 +98,14 @@ struct GpuDeviceInfo {
     uint64_t minImportedHostPointerAlignment = 0;
     uint64_t deviceLocalHeapSize = 0;
     uint64_t maxMemoryAllocationSize = 0;
-    // Integrated GPU, or a device-local and host-visible heap that covers all device memory.
+    // See isUnifiedMemory().
     bool unifiedMemory = false;
 };
+
+// Whether the device's memory is the host's RAM, so that a host-device transfer moves nothing over a bus: an integrated
+// GPU, or a CPU implementation such as lavapipe. A discrete card with Resizable BAR also exposes a device-local,
+// host-visible type covering its whole heap, but reaching that memory still crosses PCIe.
+bool isUnifiedMemory(VkPhysicalDeviceType type);
 
 class GpuDevice {
 public:

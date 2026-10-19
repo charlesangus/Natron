@@ -1743,28 +1743,11 @@ private:
         return true;
     } // downloadStrip
 
-    /**
-     * @brief Whether the strips may run pipelined on this device. Every strip in flight holds an open record context,
-     * and without push descriptors the kernels' descriptor pools are reset only once no context is open, which a
-     * pipeline would never let happen.
-     **/
     bool pipelineAllowed() const
     {
         const gpu::GpuDeviceInfo& info = _runtime.device().info();
 
-        if (!_allowPipeline || !info.pushDescriptor) {
-            return false;
-        }
-        switch (gpuStripPipelining()) {
-        case GpuStripPipelining::On:
-            return true;
-        case GpuStripPipelining::Off:
-            return false;
-        case GpuStripPipelining::Auto:
-            break;
-        }
-
-        return !info.transferUsesComputeQueue;
+        return _allowPipeline && gpuStripPipeliningAllowed(info.pushDescriptor, info.transferUsesComputeQueue);
     }
 
     std::uint32_t queryOf(std::size_t strip,
@@ -2208,6 +2191,9 @@ private:
             if (_stats) {
                 _stats->noteGpuTaskRun(task.key.node->getScriptName_mt_safe());
             }
+        }
+        if (_report) {
+            model.observeTransfer((double)_report->uploadBytes, (double)_report->downloadBytes, _report->transferHiddenMs + _report->transferExposedMs);
         }
         if (_stats) {
             _stats->noteGpuRegionRun();

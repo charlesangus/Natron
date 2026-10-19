@@ -177,6 +177,12 @@ namespace {
 
 } // namespace
 
+bool
+isUnifiedMemory(VkPhysicalDeviceType type)
+{
+    return (type == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) || (type == VK_PHYSICAL_DEVICE_TYPE_CPU);
+}
+
 GpuStatus
 GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& out)
 {
@@ -362,16 +368,7 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
             }
         }
         dev->info_.deviceLocalHeapSize = localHeap;
-        constexpr VkMemoryPropertyFlags kBoth
-            = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-        bool covers = false;
-        for (uint32_t i = 0; i < mem.memoryTypeCount; ++i) {
-            const auto& t = mem.memoryTypes[i];
-            if ((t.propertyFlags & kBoth) == kBoth && mem.memoryHeaps[t.heapIndex].size >= localHeap) {
-                covers = true;
-            }
-        }
-        dev->info_.unifiedMemory = dev->info_.type == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU || covers;
+        dev->info_.unifiedMemory = isUnifiedMemory(dev->info_.type);
     }
 
     Features avail;

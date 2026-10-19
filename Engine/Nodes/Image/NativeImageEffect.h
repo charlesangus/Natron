@@ -29,6 +29,9 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <mutex>
+#include <set>
+#include <string>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
@@ -139,8 +142,9 @@ public:
 
     /**
      * @brief Whether renderGpu() can produce this query. Nodes that cannot are rendered on the
-     * CPU. The base accepts a point operator's float query of 1 to 4 channels when gpuKernelId()
-     * names a kernel and any "(Un)premult by" channel lies in the rendered plane.
+     * CPU. The base accepts a point operator's float query of 1 to 4 channels when any
+     * "(Un)premult by" channel lies in the rendered plane and either gpuRuntimeShader() hands over a
+     * shader the device runs, or gpuKernelId() names a kernel.
      **/
     virtual bool canRenderOnGpu(const GpuQuery& query) const WARN_UNUSED_RETURN;
 
@@ -215,6 +219,29 @@ protected:
                                PixelKernelGpu* /*gpu*/) WARN_UNUSED_RETURN
     {
         return false;
+    }
+
+    /**
+     * @brief The runtime shader the point operator renders query with, which takes the place of
+     * gpuKernelId() and makeGpuKernel(); false, the default, leaves them in charge. A cheap check of
+     * settings, called during placement. A shader that does not compile, or does not follow
+     * GpuRuntimeShader's layout, keeps the node on the CPU, is reported once in the node's
+     * persistent message and is never built again for this node.
+     **/
+    virtual bool gpuRuntimeShader(const GpuQuery& /*query*/,
+                                  GpuRuntimeShader* /*shader*/) const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief The uniform blocks and textures the runtime shader is dispatched with at context,
+     * read from the same knob values as makeKernel(). Called once per renderGpu(); false fails it.
+     **/
+    virtual bool makeGpuShaderInputs(const KernelContext& /*context*/,
+                                     GpuShaderInputs* /*inputs*/) WARN_UNUSED_RETURN
+    {
+        return true;
     }
 
     /**
@@ -309,9 +336,21 @@ private:
     // give an output and a destination.
     bool makeGpuWrap(const GpuRenderArgs& args, gpu::GpuWrap* wrap) WARN_UNUSED_RETURN;
 
+    // Whether the GPU context's device runs shader; reports a shader it cannot run.
+    bool acceptGpuRuntimeShader(const GpuRuntimeShader& shader) const WARN_UNUSED_RETURN;
+
+    StatusEnum renderGpuRuntimeShader(const GpuRenderArgs& args,
+                                      const GpuRuntimeShader& shader) WARN_UNUSED_RETURN;
+
     NativeImageTraits _traits;
     KnobDoubleWPtr _mix;
     KnobBoolWPtr _maskInvert;
+
+    mutable std::mutex _gpuShaderMutex;
+    // Entry point and source of every runtime shader that failed, so it is reported and built once.
+    mutable std::set<std::string> _rejectedGpuShaders;
+    // The persistent message last posted for a rejected shader, cleared once a shader is accepted.
+    mutable std::string _gpuShaderMessage;
 };
 
 NATRON_NAMESPACE_EXIT

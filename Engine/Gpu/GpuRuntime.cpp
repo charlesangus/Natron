@@ -59,12 +59,14 @@ GpuRuntime::build()
         registry_->registerKernel(d);
     }
     pool_ = std::make_unique<GpuBufferPool>(*device_, options_.pool);
+    pipelines_ = std::make_unique<GpuPipelineCache>(*device_, options_.pipelines);
     return {};
 }
 
 void
 GpuRuntime::teardown()
 {
+    pipelines_.reset();
     pool_.reset();
     if (registry_) {
         registry_->invalidate();
@@ -89,6 +91,22 @@ GpuKernelId
 GpuRuntime::registerKernel(const GpuKernelDesc& desc)
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    registered_.push_back(desc);
+    return registry_->registerKernel(desc);
+}
+
+GpuKernelId
+GpuRuntime::registerRuntimeKernel(std::span<const uint32_t> spirv, std::string_view entry)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    RuntimeModule& m = runtimeModules_.emplace_back();
+    m.spirv.assign(spirv.begin(), spirv.end());
+    m.entry = entry;
+    GpuKernelDesc desc;
+    desc.spirv = m.spirv.data();
+    desc.spirvWords = m.spirv.size();
+    desc.entry = m.entry.c_str();
+    desc.reflect = true;
     registered_.push_back(desc);
     return registry_->registerKernel(desc);
 }
@@ -141,7 +159,7 @@ GpuRuntime::newRecordContext(std::unique_ptr<GpuRecordContext>& out)
     if (isLost()) {
         return lostStatus();
     }
-    return note(GpuRecordContext::create(*registry_, out, pool_.get()));
+    return note(GpuRecordContext::create(*registry_, out, pool_.get(), pipelines_.get()));
 }
 
 GpuStatus

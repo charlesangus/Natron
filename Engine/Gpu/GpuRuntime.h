@@ -4,12 +4,17 @@
 #include "GpuBufferPool.h"
 #include "GpuDevice.h"
 #include "GpuKernelRegistry.h"
+#include "GpuPipelineCache.h"
 #include "GpuRecord.h"
 #include "GpuTransfer.h"
 
 #include <atomic>
+#include <deque>
 #include <memory>
 #include <mutex>
+#include <span>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace gpu {
@@ -26,10 +31,11 @@ struct GpuRuntimeOptions {
     GpuDeviceOptions device;
     GpuTransferOptions transfer;
     GpuBufferPoolOptions pool;
+    GpuPipelineCacheOptions pipelines;
 };
 
-// Owns the device, the transfer streams, the kernel registry and the buffer pool, built in that order and
-// destroyed in reverse.
+// Owns the device, the transfer streams, the kernel registry, the buffer pool and the pipeline cache of runtime
+// shaders, built in that order and destroyed in reverse.
 //
 // Fault injection: GpuDeviceOptions::fault, or when that is unset the environment variable
 // NATRON_GPU_FAULT=lost@N or oom@N read by create(). N counts runtime operations from 1: every queue
@@ -53,10 +59,16 @@ public:
     GpuTransfer& transfer() const { return *transfer_; }
     GpuKernelRegistry& registry() const { return *registry_; }
     GpuBufferPool& pool() const { return *pool_; }
+    // Rebuilt by recreate(), so a kernel taken from it must be dropped first, like any other handle.
+    GpuPipelineCache& pipelines() const { return *pipelines_; }
 
     // Like GpuKernelRegistry::registerKernel, but the descriptor is registered again after recreate(),
     // under the same id. The SPIR-V it points to must outlive the runtime.
     GpuKernelId registerKernel(const GpuKernelDesc& desc);
+
+    // Like GpuKernelRegistry::registerRuntimeKernel, and registered again after recreate() under the same id.
+    // The runtime keeps its own copy of the SPIR-V and the entry name.
+    GpuKernelId registerRuntimeKernel(std::span<const uint32_t> spirv, std::string_view entry);
 
     // Entry points that fail fast with VK_ERROR_DEVICE_LOST while Lost and otherwise report their
     // outcome to the state machine, except for an acquire() refused over budget contention, which
@@ -97,6 +109,11 @@ private:
     uint64_t leaked_ = 0;
     GpuRuntimeOptions options_;
     std::vector<GpuKernelDesc> registered_;
+    struct RuntimeModule {
+        std::vector<uint32_t> spirv;
+        std::string entry;
+    };
+    std::deque<RuntimeModule> runtimeModules_;
     std::mutex mutex_;
     std::atomic<GpuRuntimeState> state_ { GpuRuntimeState::Ready };
 
@@ -104,6 +121,7 @@ private:
     std::unique_ptr<GpuTransfer> transfer_;
     std::unique_ptr<GpuKernelRegistry> registry_;
     std::unique_ptr<GpuBufferPool> pool_;
+    std::unique_ptr<GpuPipelineCache> pipelines_;
 };
 
 } // namespace gpu

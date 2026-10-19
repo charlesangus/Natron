@@ -1,0 +1,4 @@
+upstream: https://github.com/KhronosGroup/SPIRV-Reflect
+tag: vulkan-sdk-1.4.363.0
+sha256(spirv_reflect.c): 930da6e9f5c7c7bf2bcabc1ed9d81527ab8280789424c6df4c7d53d7c2630657
+sha256(spirv_reflect.h): dc12e81a53cfae4bf07765ee03e4ee8ca04ee447a9b5a5ff010ffcd5f8d03256

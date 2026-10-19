@@ -1,17 +1,21 @@
 #include "GpuRecord.h"
 
+#include "GpuPipelineCache.h"
+
+#include <algorithm>
 #include <vector>
 
 namespace gpu {
 
 GpuStatus
-GpuRecordContext::create(GpuKernelRegistry& registry, std::unique_ptr<GpuRecordContext>& out, GpuBufferPool* pool)
+GpuRecordContext::create(GpuKernelRegistry& registry, std::unique_ptr<GpuRecordContext>& out, GpuBufferPool* pool,
+                         GpuPipelineCache* pipelines)
 {
     GpuDevice& device = registry.device();
     if (device.isLost()) {
         return { VK_ERROR_DEVICE_LOST, "GpuRecordContext::create: device lost" };
     }
-    std::unique_ptr<GpuRecordContext> ctx(new GpuRecordContext(registry, pool));
+    std::unique_ptr<GpuRecordContext> ctx(new GpuRecordContext(registry, pool, pipelines));
     registry.recordingBegan();
     // From here the destructor balances recordingBegan(), including on the error paths.
     if (GpuStatus s = registry.commandPoolForThisThread(ctx->pool_); !s) {
@@ -65,6 +69,86 @@ GpuRecordContext::dispatch(GpuKernelId kernel, std::span<const GpuBuffer* const>
         handles[i] = buffers[i]->buffer();
     }
     return k->record(cmd_, handles, push, threads);
+}
+
+GpuStatus
+GpuRecordContext::dispatchBindings(GpuKernelId kernel, std::span<const GpuBinding> bindings,
+                                   std::span<const std::byte> push, std::array<uint32_t, 3> threads)
+{
+    if (!open_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::dispatchBindings: context already submitted" };
+    }
+    GpuKernel* k = nullptr;
+    if (GpuStatus s = registry_.get(kernel, k); !s) {
+        return s;
+    }
+    return k->recordBindings(cmd_, bindings, push, k->groupCount(threads));
+}
+
+GpuStatus
+GpuRecordContext::runtimeKernel(std::string_view source, ShaderStage stage, std::string_view entry,
+                                std::shared_ptr<GpuKernel>& out)
+{
+    out.reset();
+    if (!pipelines_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::runtimeKernel: context has no pipeline cache" };
+    }
+    return pipelines_->get(source, stage, entry, out);
+}
+
+GpuStatus
+GpuRecordContext::dispatchBindings(const std::shared_ptr<GpuKernel>& kernel, std::span<const GpuBinding> bindings,
+                                   std::span<const std::byte> push, std::array<uint32_t, 3> threads)
+{
+    if (!open_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::dispatchBindings: context already submitted" };
+    }
+    if (!kernel) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::dispatchBindings: no kernel" };
+    }
+    if (std::find(kernels_.begin(), kernels_.end(), kernel) == kernels_.end()) {
+        kernels_.push_back(kernel);
+        registry_.noteExternalKernel(kernel);
+    }
+    return kernel->recordBindings(cmd_, bindings, push, kernel->groupCount(threads));
+}
+
+GpuStatus
+GpuRecordContext::texture(const GpuTextureDesc& desc, std::span<const float> texels, const GpuTexture*& out)
+{
+    out = nullptr;
+    if (!open_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::texture: context already submitted" };
+    }
+    std::unique_ptr<GpuTexture> created;
+    if (GpuStatus s = GpuTexture::create(registry_.device(), desc, texels, created); !s) {
+        if (s.result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            outOfMemory_ = true;
+        }
+        return s;
+    }
+    textures_.push_back(std::move(created));
+    out = textures_.back().get();
+    return {};
+}
+
+GpuStatus
+GpuRecordContext::uniform(std::span<const std::byte> data, const GpuUniformBuffer*& out)
+{
+    out = nullptr;
+    if (!open_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::uniform: context already submitted" };
+    }
+    GpuUniformBuffer buffer;
+    if (GpuStatus s = GpuUniformBuffer::create(registry_.device(), data, buffer); !s) {
+        if (s.result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            outOfMemory_ = true;
+        }
+        return s;
+    }
+    uniforms_.push_back(std::move(buffer));
+    out = &uniforms_.back();
+    return {};
 }
 
 void

@@ -28,7 +28,11 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <string>
+#include <type_traits>
 #include <vector>
 
 #include "Engine/RectI.h"
@@ -114,6 +118,90 @@ struct GpuImageView {
         , rowStrideFloats(0)
         , nComps(0)
     {
+    }
+};
+
+/**
+ * @brief A GLSL compute shader that renders a point operator in place of a registered kernel,
+ * compiled when it is first asked for.
+ *
+ * The base runs it between the same divide and finish passes as a spatial node, so the mask, mix,
+ * unprocessed channels and "(Un)premult by" are the base's. Binding 0 is a storage buffer holding
+ * the divided source and binding 1 one the shader writes, both nComps floats per pixel of the
+ * output rect, packed row by row from its bottom row. Its push constants, if it declares any, are
+ * GpuShaderRegion. Every other binding of set 0 is a uniform block or a texture named in
+ * GpuShaderInputs.
+ **/
+struct GpuRuntimeShader {
+    std::string source;
+    std::string entry;
+
+    GpuRuntimeShader()
+        : source()
+        , entry("main")
+    {
+    }
+};
+
+// Mirrors the push-constant block of a runtime shader.
+struct GpuShaderRegion {
+    int32_t x1;
+    int32_t y1;
+    uint32_t width;
+    uint32_t height;
+    uint32_t nComps;
+    // In the bit space of pixelKernelChannelBit: a one-channel pixel is alpha, bit 3.
+    uint32_t channelMask;
+};
+
+struct GpuShaderUniform {
+    // The block's variable name, or its type name when the block has none.
+    std::string binding;
+    std::vector<std::byte> data;
+};
+
+/**
+ * @brief A float texture with a clamp-to-edge sampler, texels x fastest, then y, then z.
+ **/
+struct GpuShaderTexture {
+    std::string binding;
+    // 1, 2 or 3; the unused extents stay 1.
+    int dimensions;
+    int width;
+    int height;
+    int depth;
+    // 1 to 4 floats per texel.
+    int channels;
+    bool linear;
+    std::vector<float> texels;
+
+    GpuShaderTexture()
+        : binding()
+        , dimensions(2)
+        , width(1)
+        , height(1)
+        , depth(1)
+        , channels(4)
+        , linear(true)
+        , texels()
+    {
+    }
+};
+
+struct GpuShaderInputs {
+    std::vector<GpuShaderUniform> uniforms;
+    std::vector<GpuShaderTexture> textures;
+
+    template <typename P>
+    void addUniform(const std::string& binding,
+                    const P& block)
+    {
+        static_assert(std::is_trivially_copyable<P>::value, "uniform blocks are copied byte for byte");
+        GpuShaderUniform u;
+        u.binding = binding;
+        u.data.resize(sizeof(P));
+        std::memcpy(u.data.data(), &block, sizeof(P));
+        uniforms.push_back(u);
     }
 };
 

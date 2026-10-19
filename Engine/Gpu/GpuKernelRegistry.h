@@ -7,6 +7,9 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <span>
+#include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -38,6 +41,11 @@ public:
     // The SPIR-V it points to must outlive the registry.
     GpuKernelId registerKernel(const GpuKernelDesc& desc);
 
+    // Adds a kernel compiled at runtime, e.g. by compileGlsl, whose layout get() reflects from
+    // the module. The registry keeps its own copy of the SPIR-V and the entry name. A module
+    // that cannot be reflected is reported by get().
+    GpuKernelId registerRuntimeKernel(std::span<const uint32_t> spirv, std::string_view entry);
+
     // Null for an id that is neither generated nor registered.
     const GpuKernelDesc* desc(GpuKernelId id) const;
 
@@ -61,6 +69,14 @@ private:
     // thread, so it is only reset once no recording context is alive.
     void recordingBegan();
     void recordingEnded();
+    // A kernel the registry does not own, dispatched by a context; its descriptor-pool fallback is
+    // recycled with the registry's own once no context is alive.
+    void noteExternalKernel(const std::shared_ptr<GpuKernel>& kernel);
+
+    struct RuntimeModule {
+        std::vector<uint32_t> spirv;
+        std::string entry;
+    };
 
     struct Slot {
         std::unique_ptr<GpuKernel> kernel;
@@ -75,6 +91,8 @@ private:
     mutable std::mutex mutex_;
     std::vector<Slot> slots_;
     std::deque<GpuKernelDesc> registered_;
+    std::deque<RuntimeModule> runtimeModules_;
+    std::vector<std::weak_ptr<GpuKernel>> external_;
     std::map<std::thread::id, VkCommandPool> pools_;
     uint32_t activeContexts_ = 0;
 };

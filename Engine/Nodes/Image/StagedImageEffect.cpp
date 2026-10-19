@@ -28,9 +28,11 @@
 #include <bitset>
 #include <optional>
 #include <string>
+#include <utility>
 
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/RectD.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -132,11 +134,28 @@ StagedImageEffect::resolveGpuPlan(const GpuQuery& query) const
 bool
 StagedImageEffect::canRenderOnGpu(const GpuQuery& query) const
 {
-    if ((imagePipelineSpec().op != OpKind::Point) || !canRunStagesGpu(resolveGpuPlan(query), query)) {
+    const OpKind kind = imagePipelineSpec().op;
+
+    if (kind == OpKind::Passes) {
+        return canRecordPassesGpu(resolveGpuPlan(query), query, opPasses(query.time, query.view, query.mappedScale));
+    }
+    if ((kind != OpKind::Point) || !canRunStagesGpu(resolveGpuPlan(query), query)) {
         return false;
     }
 
     return canRecordGpuOp(gpuOp(query.time, query.view), _gpuShaderGate, getNode());
+}
+
+RectI
+StagedImageEffect::getGpuInputRoI(int inputNb,
+                                  const RectI& outputRect,
+                                  const RenderScale& scale) const
+{
+    if ((imagePipelineSpec().op != OpKind::Passes) || (inputNb != getSourceInput())) {
+        return NativeEffectBase::getGpuInputRoI(inputNb, outputRect, scale);
+    }
+
+    return passListSourceRoI(outputRect, opPasses(getCurrentTime(), getCurrentView(), scale));
 }
 
 bool
@@ -146,7 +165,9 @@ StagedImageEffect::getGpuInputLayer(int inputNb,
                                     ViewIdx view,
                                     ImageLayerDesc* layer) const
 {
-    if (imagePipelineSpec().op != OpKind::Point) {
+    const OpKind kind = imagePipelineSpec().op;
+
+    if ((kind != OpKind::Point) && (kind != OpKind::Passes)) {
         return false;
     }
     stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
@@ -158,8 +179,12 @@ StatusEnum
 StagedImageEffect::renderGpu(const GpuRenderArgs& args)
 {
     const GpuQuery& query = args.query;
+    const OpKind kind = imagePipelineSpec().op;
 
-    if (imagePipelineSpec().op != OpKind::Point) {
+    if (kind == OpKind::Passes) {
+        return recordPassesGpu(*this, resolveGpuPlan(query), args, opPasses(query.time, query.view, query.mappedScale));
+    }
+    if (kind != OpKind::Point) {
         return eStatusFailed;
     }
     const StagePlan plan = resolveGpuPlan(query);
@@ -267,6 +292,105 @@ StagedImageEffect::isMaskApplied() const
 {
     return isStageMaskApplied(*this);
 }
+
+PassContext
+StagedImageEffect::getPassContext(const RenderScale& scale) const
+{
+    PassContext context;
+    const int source = getSourceInput();
+    const double par = ((source >= 0) && getInput(source)) ? getAspectRatio(source) : 0.;
+
+    context.scale = scale;
+    if (par != 0.) {
+        context.pixelAspectRatio = par;
+    }
+
+    return context;
+}
+
+StatusEnum
+StagedImageEffect::getRegionOfDefinition(U64 hash,
+                                         double time,
+                                         const RenderScale& scale,
+                                         ViewIdx view,
+                                         RectD* rod)
+{
+    const int source = getSourceInput();
+    EffectInstancePtr input = (source >= 0) ? getInput(source) : EffectInstancePtr();
+
+    if ((imagePipelineSpec().op != OpKind::Passes) || !input) {
+        return NativeEffectBase::getRegionOfDefinition(hash, time, scale, view, rod);
+    }
+    const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
+    RectD srcRoD;
+    bool isProjectFormat = false;
+    if (input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &srcRoD, &isProjectFormat) == eStatusFailed) {
+        return eStatusFailed;
+    }
+    const RectI srcRoDPixel = PassExec::toPixelEnclosing(srcRoD, scale, getAspectRatio(source));
+
+    RectI rodPixel = srcRoDPixel;
+    bool changed = false;
+    if (!PassExec::isEmptyRect(srcRoDPixel)) {
+        // An identity op keeps the default region, whatever clipRegionOfDefinition() would do.
+        if (isOpIdentity(time, scale, RectI(), view)) {
+            return NativeEffectBase::getRegionOfDefinition(hash, time, scale, view, rod);
+        }
+        rodPixel = passListRoD(srcRoDPixel, opPasses(time, view, scale));
+        changed = true;
+    }
+    if (clipRegionOfDefinition(time, scale, view, input, srcRoDPixel, &rodPixel)) {
+        changed = true;
+    }
+    if (!changed) {
+        return NativeEffectBase::getRegionOfDefinition(hash, time, scale, view, rod);
+    }
+    *rod = PassExec::toCanonical(rodPixel, scale, getAspectRatio(-1));
+
+    return eStatusOK;
+} // StagedImageEffect::getRegionOfDefinition
+
+void
+StagedImageEffect::getRegionsOfInterest(double time,
+                                        const RenderScale& scale,
+                                        const RectD& outputRoD,
+                                        const RectD& renderWindow,
+                                        ViewIdx view,
+                                        RoIMap* ret)
+{
+    NativeEffectBase::getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
+
+    const int source = getSourceInput();
+    EffectInstancePtr input = (source >= 0) ? getInput(source) : EffectInstancePtr();
+    if ((imagePipelineSpec().op != OpKind::Passes) || !input) {
+        return;
+    }
+    const bool doMasking = isMaskApplied();
+    double mix = 1.;
+    if (doMasking) {
+        mix = getMixValue(time, view);
+        if (mix == 0.) {
+            return;
+        }
+    }
+
+    const double par = getAspectRatio(source);
+    const RectI rectPixel = PassExec::toPixelEnclosing(renderWindow, scale, par);
+    RectD srcRoI = PassExec::toCanonical(passListSourceRoI(rectPixel, opPasses(time, view, scale)), scale, par);
+    if (doMasking && (mix != 1.)) {
+        srcRoI.merge(renderWindow);
+    }
+    // The mask may be the same effect as the source, in which case both needs share one entry.
+    RoIMap::iterator found = ret->find(input);
+    if (found != ret->end()) {
+        if (doMasking && (getInput(getMaskInput()) == input)) {
+            srcRoI.merge(found->second);
+        }
+        found->second = srcRoI;
+    } else {
+        ret->insert(std::make_pair(input, srcRoI));
+    }
+} // StagedImageEffect::getRegionsOfInterest
 
 bool
 StagedImageEffect::isIdentity(double time,

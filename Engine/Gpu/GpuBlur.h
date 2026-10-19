@@ -172,7 +172,7 @@ struct GpuLineBlurParams {
 };
 static_assert(sizeof(GpuLineBlurParams) == 88);
 
-// A separable recursive blur of `output`, as Blur::render() runs LineFilter: every row of the
+// A separable recursive blur of `output`, as Blur's CPU passes run LineFilter: every row of the
 // filtered rect, then every column, each over the whole rect along its axis, with samples outside
 // it black. Samples outside srcValid are black too, and so are output pixels outside the filtered
 // rect.

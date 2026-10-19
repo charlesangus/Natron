@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <concepts>
 #include <list>
 #include <optional>
 
@@ -35,10 +36,13 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/Image/ImagePipelineSpec.h"
 #include "Engine/Nodes/Image/Op.h"
+#include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/NodeSpec.h"
+#include "Engine/RectI.h"
+#include "Engine/RenderScale.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -55,6 +59,10 @@ NATRON_NAMESPACE_ENTER
  * then the op's own identity, then, with the MaskMix stage, a non-inverted mask whose region
  * misses the window. Every stage identity is one of the node's first Source input at the same
  * time.
+ *
+ * A Passes op also gives the node its regions: the source's region of interest is the window
+ * grown by the halo of the op's passes, and the region of definition the source's grown by their
+ * spread, which clipRegionOfDefinition() may then narrow.
  **/
 class StagedImageEffect
     : public NativeEffectBase {
@@ -104,13 +112,34 @@ public:
      * @brief For a Point op, whether the GPU executor can run the StagePlan of query
      * (canRunStagesGpu()) and the op's gpu() description at the query's time and view names work
      * the device runs. A runtime shader that does not build is reported once and never built
-     * again for this node. Every other op kind stays on the CPU.
+     * again for this node. For a Passes op, canRecordPassesGpu() with the op's passes at the
+     * query's time, view and scale. Every other op kind stays on the CPU.
      **/
     virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
-     * @brief For a Point op, the layer its plane is read in, except for the mask input, which is
-     * read in the layer its mask channel resolves in. False for every other op kind.
+     * @brief For a Passes op, outputRect grown by the halo of the op's passes at the current time
+     * and view when inputNb is the source; outputRect otherwise.
+     **/
+    virtual RectI getGpuInputRoI(int inputNb,
+                                 const RectI& outputRect,
+                                 const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For a Passes op with a connected source whose region is not empty: the default
+     * region when the op is an identity, else the source's region grown by the spread of the op's
+     * passes (passListRoD()). Then clipRegionOfDefinition() may change it; the default region when
+     * neither did, and for every other op kind.
+     **/
+    virtual StatusEnum getRegionOfDefinition(U64 hash,
+                                             double time,
+                                             const RenderScale& scale,
+                                             ViewIdx view,
+                                             RectD* rod) OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For a Point or Passes op, the layer its plane is read in, except for the mask input,
+     * which is read in the layer its mask channel resolves in. False for every other op kind.
      **/
     virtual bool getGpuInputLayer(int inputNb,
                                   const ImageLayerDesc& plane,
@@ -120,7 +149,8 @@ public:
 
     /**
      * @brief Records the op's gpu() description through the StagePlan of args.query with
-     * recordStagesGpu(). Only called when canRenderOnGpu() accepted args.query.
+     * recordStagesGpu(), or a Passes op's passes with recordPassesGpu(). Only called when
+     * canRenderOnGpu() accepted args.query.
      **/
     virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -167,6 +197,24 @@ protected:
      **/
     bool isMaskApplied() const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief What a Passes op's passes are built for at scale: the scale, and the pixel aspect
+     * ratio of the source input when it is connected and has one.
+     **/
+    PassContext getPassContext(const RenderScale& scale) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For a Passes op, the default regions of interest, with the source's replaced by the
+     * window grown by the halo of the op's passes, merged with the window under a mask with a mix
+     * other than 1. A mask with a mix of 0 keeps the defaults, as does every other op kind.
+     **/
+    virtual void getRegionsOfInterest(double time,
+                                      const RenderScale& scale,
+                                      const RectD& outputRoD,
+                                      const RectD& renderWindow,
+                                      ViewIdx view,
+                                      RoIMap* ret) OVERRIDE;
+
     virtual bool isIdentity(double time,
                             const RenderScale& scale,
                             const RectI& roi,
@@ -203,6 +251,31 @@ protected:
                            ViewIdx /*view*/) const WARN_UNUSED_RETURN
     {
         return GpuOpRef::none();
+    }
+
+    /**
+     * @brief A Passes op's passes at time, view and scale; the default is an empty list.
+     **/
+    virtual PassList opPasses(double /*time*/,
+                              ViewIdx /*view*/,
+                              const RenderScale& /*scale*/) const WARN_UNUSED_RETURN
+    {
+        return PassList();
+    }
+
+    /**
+     * @brief Lets a node narrow the region of definition its passes give, in pixels at scale:
+     * rod, which is srcRoD, the source's region, grown unless that is empty. Returns whether it
+     * changed rod; the default changes nothing.
+     **/
+    virtual bool clipRegionOfDefinition(double /*time*/,
+                                        const RenderScale& /*scale*/,
+                                        ViewIdx /*view*/,
+                                        const EffectInstancePtr& /*source*/,
+                                        const RectI& /*srcRoD*/,
+                                        RectI* /*rod*/)
+    {
+        return false;
     }
 
 private:
@@ -249,6 +322,30 @@ public:
         return staticImagePipelineSpec<PIPELINE, SPEC>();
     }
 
+    /**
+     * @brief For a Passes op, the op's costHint(params, context) when it has one, else
+     * passListCostHint() of its passes, at time, view and mipmapLevel; empty for a Point op.
+     **/
+    virtual std::optional<GpuCostHint> gpuCostHint(double time,
+                                                   ViewIdx view,
+                                                   unsigned int mipmapLevel) const OVERRIDE WARN_UNUSED_RETURN
+    {
+        if constexpr (PIPELINE.op == OpKind::Passes) {
+            const typename OP::Params params = bakeParams(_op, time, view);
+            const PassContext context = getPassContext(RenderScale::fromMipmapLevel(mipmapLevel));
+
+            if constexpr (requires(const OP& o, const typename OP::Params& p, const PassContext& c) {
+                              { o.costHint(p, c) } -> std::same_as<std::optional<GpuCostHint>>;
+                          }) {
+                return _op.costHint(params, context);
+            } else {
+                return passListCostHint(_op.passes(params, context));
+            }
+        } else {
+            return std::nullopt;
+        }
+    }
+
 protected:
     OP& op()
     {
@@ -272,29 +369,53 @@ protected:
 
 private:
     virtual bool isOpIdentity(double time,
-                              const RenderScale& /*scale*/,
+                              const RenderScale& scale,
                               const RectI& /*roi*/,
                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        return _op.isIdentity(bakeParams(_op, time, view));
+        if constexpr (PIPELINE.op == OpKind::Passes) {
+            return _op.isIdentity(bakeParams(_op, time, view), getPassContext(scale));
+        } else {
+            return _op.isIdentity(bakeParams(_op, time, view));
+        }
     }
 
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         const typename OP::Params params = bakeParams(_op, args.time, args.view);
-        const OP& rowOp = _op;
-        const auto row = [&rowOp, &params](const RowIO& io) {
-            rowOp.row(params, io);
-        };
 
-        return runStagesCpu(*this, plan, args, StageRowFn(row));
+        if constexpr (PIPELINE.op == OpKind::Passes) {
+            return runPassesCpu(*this, plan, args, _op.passes(params, getPassContext(args.mappedScale)));
+        } else {
+            const OP& rowOp = _op;
+            const auto row = [&rowOp, &params](const RowIO& io) {
+                rowOp.row(params, io);
+            };
+
+            return runStagesCpu(*this, plan, args, StageRowFn(row));
+        }
     }
 
     virtual GpuOpRef gpuOp(double time,
                            ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        return _op.gpu(bakeParams(_op, time, view));
+        if constexpr (PIPELINE.op == OpKind::Point) {
+            return _op.gpu(bakeParams(_op, time, view));
+        } else {
+            return GpuOpRef::none();
+        }
+    }
+
+    virtual PassList opPasses(double time,
+                              ViewIdx view,
+                              const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        if constexpr (PIPELINE.op == OpKind::Passes) {
+            return _op.passes(bakeParams(_op, time, view), getPassContext(scale));
+        } else {
+            return PassList();
+        }
     }
 
     OP _op;

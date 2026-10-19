@@ -58,7 +58,7 @@
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/GpuRender.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
@@ -360,7 +360,7 @@ GpuQuery
 queryFor(const NodePtr& node,
          unsigned mipmapLevel)
 {
-    NativeImageEffect* effect = dynamic_cast<NativeImageEffect*>(node->getEffectInstance().get());
+    StagedImageEffect* effect = dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get());
     const ImageLayerDesc plane = colorLayer(node);
     GpuQuery q = eligibleQuery();
 
@@ -379,17 +379,6 @@ queryFor(const NodePtr& node,
     for (int i = 0; i < 4; ++i) {
         q.processChannels[i] = channels[i];
     }
-    KnobChannelSelectPtr unPremultBy = node->getUnPremultBySelector();
-    if (unPremultBy && !unPremultBy->isNone() && effect->getInput(0)) {
-        std::list<ImageLayerDesc> available;
-        effect->getAvailableLayers(kTime, ViewIdx(0), 0, &available);
-        ImageLayerDesc divisorLayer;
-        const int divisorChannel = node->getUnPremultChannel(available, &divisorLayer);
-        if (divisorLayer.getNumComponents() > 0) {
-            q.unPremultChannel = divisorChannel;
-            q.unPremultInPlane = (divisorChannel >= 0) && (Node::getUnPremultSkipChannel(plane, divisorLayer, divisorChannel) >= 0);
-        }
-    }
 
     return q;
 }
@@ -405,7 +394,6 @@ struct GpuWrappedBlurCase {
     double sigma;
     MaskMode mask;
     double mix;
-    bool unPremultByAlpha;
     bool redAndAlpha;
     unsigned maxMipmapLevel;
     const char* filter = kBlurParamFilterFIRGaussian;
@@ -414,9 +402,8 @@ struct GpuWrappedBlurCase {
 } // namespace
 
 // The settings renderGpu() wraps around the blur: the mask (partly covering the source, plain and
-// inverted), mix, "(Un)premult by" alpha and an R+A channel subset, alone and combined, against the
-// CPU render.
-TEST_F(NativeBlurGpuTest, MatchesTheCpuRenderWithMaskMixUnpremultAndChannels)
+// inverted), mix and an R+A channel subset, alone and combined, against the CPU render.
+TEST_F(NativeBlurGpuTest, MatchesTheCpuRenderWithMaskMixAndChannels)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
     if (!createRuntime(runtime)) {
@@ -431,25 +418,19 @@ TEST_F(NativeBlurGpuTest, MatchesTheCpuRenderWithMaskMixUnpremultAndChannels)
     setParitySourceOrigin(maskSource, 8, 4);
 
     const GpuWrappedBlurCase cases[] = {
-        { "mask", 3., eMaskOn, 1., false, false, 1 },
-        { "inverted mask", 3., eMaskInverted, 1., false, false, 0 },
-        { "mix", 25., eMaskNone, 0.3, false, false, 1 },
-        { "unpremult", 3., eMaskNone, 1., true, false, 0 },
-        { "unpremult", 25., eMaskNone, 1., true, false, 0 },
-        { "R+A", 3., eMaskNone, 1., false, true, 1 },
-        { "R+A unpremult", 0.5, eMaskNone, 1., true, true, 0 },
-        { "everything", 25., eMaskOn, 0.3, true, true, 0 },
-        { "everything", 100., eMaskInverted, 0.3, true, true, 0 },
+        { "mask", 3., eMaskOn, 1., false, 1 },
+        { "inverted mask", 3., eMaskInverted, 1., false, 0 },
+        { "mix", 25., eMaskNone, 0.3, false, 1 },
+        { "R+A", 3., eMaskNone, 1., true, 1 },
+        { "everything", 25., eMaskOn, 0.3, true, 0 },
+        { "everything", 100., eMaskInverted, 0.3, true, 0 },
         // The recursive filters depend on whole lines, which a mask must leave as they are.
-        { "IIR mask", 3., eMaskOn, 1., false, false, 1, kBlurParamFilterGaussian },
-        { "IIR inverted mask, mix", 10., eMaskInverted, 0.3, false, false, 0, kBlurParamFilterGaussian },
-        { "IIR R+A", 10., eMaskNone, 1., false, true, 0, kBlurParamFilterGaussian },
+        { "IIR mask", 3., eMaskOn, 1., false, 1, kBlurParamFilterGaussian },
+        { "IIR inverted mask, mix", 10., eMaskInverted, 0.3, false, 0, kBlurParamFilterGaussian },
+        { "IIR R+A", 10., eMaskNone, 1., true, 0, kBlurParamFilterGaussian },
     };
 
     const ParityTolerance kTolerance = ParityTolerance::make(2e-6, 0.);
-    // Dividing by "(Un)premult by" makes values far above 1, and Vulkan division is only 2.5 ulp
-    // (RADV takes a reciprocal), so the filtered sums also carry a few ulp relative to their size.
-    const ParityTolerance kDividedTolerance = ParityTolerance::make(2e-6, 1e-6);
     int nCompared = 0;
     for (const GpuWrappedBlurCase& c : cases) {
         NodePtr node = makeBlur();
@@ -465,13 +446,6 @@ TEST_F(NativeBlurGpuTest, MatchesTheCpuRenderWithMaskMixUnpremultAndChannels)
         ASSERT_TRUE(setKnobValues(node, "enableMask_Mask", { (c.mask != eMaskNone) ? 1. : 0. }));
         ASSERT_TRUE(setKnobValues(node, kOfxMaskInvertParamName, { (c.mask == eMaskInverted) ? 1. : 0. }));
         ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { c.mix }));
-        KnobChannelSelect* unPremultBy = dynamic_cast<KnobChannelSelect*>(node->getKnobByName(kUnPremultByKnobName).get());
-        ASSERT_TRUE(unPremultBy != NULL);
-        if (c.unPremultByAlpha) {
-            unPremultBy->set("rgba.A");
-        } else {
-            unPremultBy->setNone();
-        }
         if (c.redAndAlpha) {
             KnobChannelSetPtr channelSet = std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet));
             ASSERT_TRUE(bool(channelSet));
@@ -489,7 +463,7 @@ TEST_F(NativeBlurGpuTest, MatchesTheCpuRenderWithMaskMixUnpremultAndChannels)
             const std::string base = std::string(c.name) + " " + describeCase(c.sigma, mipmapLevel, rod);
             ASSERT_EQ(4, query.nComps) << base;
             EXPECT_EQ(c.mask != eMaskNone, query.hasMask) << base;
-            EXPECT_EQ(c.unPremultByAlpha, query.unPremultChannel >= 0) << base;
+            EXPECT_LT(query.unPremultChannel, 0) << base;
             EXPECT_EQ(!c.redAndAlpha, query.processChannels[1] && query.processChannels[2]) << base;
             ASSERT_TRUE(blur->canRenderOnGpu(query)) << base;
 
@@ -537,7 +511,7 @@ TEST_F(NativeBlurGpuTest, MatchesTheCpuRenderWithMaskMixUnpremultAndChannels)
                 EXPECT_EQ(0u, run.writtenOutside) << what << ": floats outside the window were written";
 
                 ASSERT_EQ(cpu.pixels.size(), run.pixels.size()) << what;
-                const ImageDiff diff = compareImages(cpu.pixels, run.pixels, recursive ? ParityTolerance::iir() : (c.unPremultByAlpha ? kDividedTolerance : kTolerance));
+                const ImageDiff diff = compareImages(cpu.pixels, run.pixels, recursive ? ParityTolerance::iir() : kTolerance);
                 nCompared += (int)diff.compared;
                 const std::size_t at = diff.worstIndex / nComps;
                 EXPECT_EQ(0u, diff.mismatches) << what << ", worst " << diff.worstAbsolute << " at (" << (roi.x1 + (int)(at % roi.width())) << "," << (roi.y1 + (int)(at / roi.width())) << ") channel " << (diff.worstIndex % nComps) << " gpu " << run.pixels[diff.worstIndex] << " cpu " << cpu.pixels[diff.worstIndex];

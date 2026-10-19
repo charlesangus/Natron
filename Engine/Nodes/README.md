@@ -901,8 +901,9 @@ Measured exceptions and what they are not:
   render. Blur has no derivative orders (EdgeDetect computes derivatives), no
   border-condition choice (it is black outside the image), no alpha threshold, no
   "Expand RoD" (the region of definition always grows by the filter's reach) and no
-  "Uniform" toggle (the size knob folds its dimensions); the OFX plug-in's defaults
-  are those behaviours, so the recorded cases are unchanged.
+  "Uniform" toggle (the size knob folds its dimensions) and no "(Un)premult by"
+  (a premult-blur-unpremult chain uses the Premult and Unpremult nodes); the OFX
+  plug-in's defaults are those behaviours, so the recorded cases are unchanged.
 
 ### GPU parity
 
@@ -912,8 +913,7 @@ bound beside its CPU class, or a measured exception below it, in the same change
 that lets the node answer `canRenderOnGpu()`. Vulkan division is 2.5 ulp and
 `pow` and the trigonometric functions are looser still, so a GPU bound is
 usually wider than the CPU class of the same node. Grade holds `gradefix::kUlpBound` (`Tests/Gpu/GradeFixture.h`), or a per-value bound that grows with |ln y| and 1 / gamma for the float rounding of the exponent and of A * input + B; its 0.01 gamma floor is applied on the host before the parameters are packed, so the device never sees a gamma at or below 0, and is what keeps 1 / gamma, and with it that bound, small. A subnormal input may come back as anything between the results for 0 and for the smallest normal float, as a device's `log2` may flush it or misread its exponent, which at gamma 0.01 is an order-one difference. Blur's FIR Gaussian holds
-2e-6 absolute, plus 1e-6 relative with "(Un)premult by", whose divided values
-reach far above 1. Blur's quasi-Gaussian, Gaussian (IIR), box, triangle and quadratic filters hold `iir()`: one thread runs
+2e-6 absolute. Blur's quasi-Gaussian, Gaussian (IIR), box, triangle and quadratic filters hold `iir()`: one thread runs
 each line through the CPU's recursion with its state in two floats where the CPU uses double (plain float drifts past 1e-3
 for the IIR Gaussian at large sizes), and filters the same rect as render(), the window grown by the
 halo and clipped to the region of definition. Blur's knobs are size, filter, "Crop To Format" and the standard channel, mask and mix
@@ -941,7 +941,7 @@ ColorCorrect holds its CPU class, transcendental, in every group and luminance o
 Constant and Solid hold their CPU class, exact, for every target layer and channel selection, with a source connected or not (`Tests/Native/NativeConstantGpu_Test.cpp`).
 CheckerBoard holds its CPU class, exact, at mipmap 0 and 1: the host classes every column and row of the region of definition with the CPU's double comparisons and the device looks the class up (`Tests/Native/NativeCheckerBoardGpu_Test.cpp`).
 Add and Multiply hold `arithmetic()` and Gamma holds `transcendental()`, where a subnormal input may come back as 0 on a device that flushes denormals (`Tests/Native/NativeColorMathGpu_Test.cpp`).
-Erode and Dilate hold exact, bit for bit on NaNs, signed zeros and denormals, except where "(Un)premult by" divides, which holds Blur's 2e-6 absolute plus 1e-6 relative (`Tests/Native/NativeErodeDilateGpu_Test.cpp`).
+Erode and Dilate hold exact, bit for bit on NaNs, signed zeros and denormals, except where "(Un)premult by" divides, which holds 2e-6 absolute plus 1e-6 relative, as divided values reach far above 1 (`Tests/Native/NativeErodeDilateGpu_Test.cpp`).
 Transform and TransformMasked hold their CPU class, `resampling()`, for every filter with clamp and black outside on and off, with mask and mix, at mipmap 0 and 1; sample positions travel in two floats so the filters pick the CPU's taps. Motion blur at quality 0.5, 1 and 4 over every shutter offset, and directional blur, hold `iir()`: each pixel draws the CPU's van der Corput sequence over the same host-built matrices and stops on the same variance test, its sums kept in two floats. The device filters each sample in float where the CPU uses double, a few ulps apart, so a pixel whose variance quotient lies that close to an integer takes one sample more or fewer and moves by about `motionBlurMaxError()` / sqrt(samples); up to one pixel in 250 of a window (at least 2) may therefore miss `iir()`, by no more than `motionBlurMaxError()` (quality / 1000), the standard error the sampler itself targets. Matching the CPU's sample counts exactly would need double-precision filtering on the device. A transform concatenated from upstream stays on the CPU (`Tests/Native/NativeTransformGpu_Test.cpp`).
 ChromaKeyer holds its CPU class, transcendental, in the intermediate, premultiplied and composite modes, with every source alpha option, Bg and masks or not, and an RGB source; the host derives the key's per-frame constants as the CPU does and the device keys in float. The unpremultiplied mode holds 1e-3 relative: it divides by the key alpha, so a one-ulp difference in the float key the CPU rounds from double becomes a relative error of about 6e-8 over that alpha (a float model of the kernel measured 1.02e-4 on the parity source, where the alpha reaches 5.8e-4) (`Tests/Native/NativeChromaKeyerGpu_Test.cpp`).
 Keyer holds its CPU class, transcendental, in every key, output and source alpha mode, with each of InM, OutM and Bg or none, partly covering the window, an RGB source and a channel subset; the host decides every threshold comparison and derives the key colour terms in double, and the device takes the distance to the key axis from the orthogonal part of the colour rather than the CPU's squared-norm difference, which float cannot hold near the axis (`Tests/Native/NativeKeyerGpu_Test.cpp`).

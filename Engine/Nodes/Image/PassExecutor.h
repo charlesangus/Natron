@@ -411,10 +411,12 @@ struct PassList {
 };
 
 /**
- * @brief What a Passes op's passes() is built for: the scale the render runs at.
+ * @brief What a Passes op's passes() is built for: the scale the render runs at, and the pixel
+ * aspect ratio of the op's source, which turns a horizontal size in canonical units into pixels.
  **/
 struct PassContext {
     RenderScale scale;
+    double pixelAspectRatio = 1.;
 };
 
 /**

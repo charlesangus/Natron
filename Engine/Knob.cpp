@@ -43,6 +43,8 @@
 #include <QThread>
 #include <QDebug>
 
+#include <ofxNatron.h>
+
 #include "Global/GlobalDefines.h"
 
 #include "Engine/AppInstance.h"
@@ -3281,6 +3283,11 @@ KnobHelper::setName(const std::string & name,
 
     _imp->originalName = name;
     _imp->name = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(name);
+    // A sublabel only echoes values the node already hashes, and plugins rewrite it from their
+    // actions: in the hash it would only re-key the node under a render.
+    if (_imp->name == kNatronOfxParamStringSublabelName) {
+        _imp->hashExempt = true;
+    }
 
     if ( !getHolder() ) {
         return;

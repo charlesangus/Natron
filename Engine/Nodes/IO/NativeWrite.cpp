@@ -946,7 +946,6 @@ NativeWrite::initializeKnobs()
     KnobStringPtr sublabel = createKnob<KnobString>(tr("SubLabel"));
     sublabel->setName(kNatronOfxParamStringSublabelName);
     sublabel->setSecretByDefault(true);
-    sublabel->setHashExempt(true);
     sublabel->setAnimationEnabled(false);
     sublabel->setEvaluateOnChange(false);
     page->addKnob(sublabel);
@@ -1498,16 +1497,13 @@ NativeWrite::getOutputContentHash() const
     const KnobsVec all = getKnobs_mt_safe();
     for (KnobsVec::const_iterator it = all.begin(); it != all.end(); ++it) {
         const KnobIPtr& knob = *it;
-        if (!knob) {
+        if (!knob || !knob->isRenderHashed() || (knob == readBack)) {
             continue;
         }
         bool knobHasExpression = false;
         bool readsOutsideKnob = false;
         knob->getContentHashDependencies(&knobHasExpression, &readsOutsideKnob);
         hasExpression = hasExpression || knobHasExpression;
-        if (!knob->isRenderHashed() || (knob == readBack)) {
-            continue;
-        }
         knobs.push_back(std::make_pair(knob->getName(), knob->getContentHash()));
     }
     std::sort(knobs.begin(), knobs.end());

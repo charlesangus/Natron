@@ -881,16 +881,13 @@ Node::getKnobsContentDigest(bool* hasExpression) const
         const KnobsVec knobs = _imp->effect->getKnobs_mt_safe();
         for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
             const KnobIPtr& knob = *it;
-            if (!knob) {
+            if (!knob || !knob->isRenderHashed()) {
                 continue;
             }
             bool knobHasExpression = false;
             bool readsOutsideKnob = false;
             knob->getContentHashDependencies(&knobHasExpression, &readsOutsideKnob);
             anyExpression = anyExpression || knobHasExpression;
-            if (!knob->isRenderHashed()) {
-                continue;
-            }
             Implementation::KnobsDigestEntry entry;
             entry.name = knob->getName();
             entry.hash = 0;

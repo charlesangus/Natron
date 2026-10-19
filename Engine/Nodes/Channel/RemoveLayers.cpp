@@ -127,7 +127,6 @@ RemoveLayers::initializeKnobs()
     KnobStringPtr sublabel = createKnob<KnobString>(tr("SubLabel"));
     sublabel->setName(kNatronOfxParamStringSublabelName);
     sublabel->setSecretByDefault(true);
-    sublabel->setHashExempt(true);
     sublabel->setAnimationEnabled(false);
     page->addKnob(sublabel);
     _subLabel = sublabel;

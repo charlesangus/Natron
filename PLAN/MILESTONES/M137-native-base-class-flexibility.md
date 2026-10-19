@@ -233,7 +233,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
 
 ## Phase 137.3: Design note and approval
 
-- [ ] M137.P3.T1 — Write the design note from the spike
+- [x] M137.P3.T1 — Write the design note from the spike
   - files: `PLAN/DECISIONS/<date>-native-node-framework.md` (new), `PLAN/DECISIONS/INDEX.md`
   - approach:
     - Write it as the project-wide decision file. It covers:

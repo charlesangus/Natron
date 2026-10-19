@@ -71,10 +71,20 @@ NODES = {
     "blur_qg100": ("net.sf.cimg.CImgBlur", {"size": (240.0, 240.0), "filter": 0}, False),
     "blur_gauss100": ("net.sf.cimg.CImgBlur", {"size": (240.0, 240.0), "filter": 1}, False),
     "blur_box100": ("net.sf.cimg.CImgBlur", {"size": (240.0, 240.0), "filter": 2}, False),
+    "blur": ("net.sf.cimg.CImgBlur", {"size": (12.0, 12.0)}, False),
+    "dissolve": ("net.sf.openfx.DissolvePlugin", {"which": 0.5}, False),
+    "crop": ("net.sf.openfx.CropPlugin",
+             {"bottomLeft": (200.0, 150.0), "size": (3400.0, 1900.0), "softness": 20.0}, False),
+    "reformat": ("net.sf.openfx.Reformat", {"reformatType": 1, "boxFixed": True, "boxSize": (1920, 1080)}, False),
+    "position": ("net.sf.openfx.Position", {"translate": (12.6, 7.4)}, False),
     "constant": ("net.sf.openfx.ConstantPlugin", {}, True),
     "solid": ("net.sf.openfx.Solid", {}, True),
     "checkerboard": ("net.sf.openfx.CheckerBoardPlugin", {}, True),
 }
+
+
+# Nodes whose input 1 is fed a second source.
+TWO_INPUTS = ("dissolve",)
 
 
 def configure(name, index):
@@ -88,6 +98,9 @@ def configure(name, index):
     if plugin_id == "net.sf.openfx.TransformPlugin" and "translate" not in values:
         animate(param(node, "translate"), (0.0, 0.0), (14.0, 6.0))
         animate(param(node, "rotate"), (0.0,), (0.8,))
+    if name == "reformat":
+        # Alternating the target size keeps every copy in a chain resampling.
+        param(node, "boxSize").set(*((1920, 1080) if index % 2 == 0 else (3840, 2160)))
     if generator:
         color = "color0" if plugin_id.endswith("CheckerBoardPlugin") else "color"
         animate(param(node, color), (0.1, 0.2, 0.3, 1.0), (0.01, 0.0, 0.0, 0.0))
@@ -107,11 +120,20 @@ def main():
         param(source, "point1").set(3840.0, 2160.0)
         animate(param(source, "color0"), (0.1, 0.2, 0.3, 1.0), (0.01, 0.0, 0.0, 0.0))
         param(source, "color1").set(0.9, 0.8, 0.7, 1.0)
+        other = None
+        if NODE in TWO_INPUTS:
+            other = make("net.sf.openfx.Ramp", "np_source2")
+            param(other, "point0").set(3840.0, 0.0)
+            param(other, "point1").set(0.0, 2160.0)
+            param(other, "color0").set(0.8, 0.1, 0.2, 1.0)
+            param(other, "color1").set(0.1, 0.7, 0.9, 1.0)
         last = source
         count = CHAIN
         for i in range(count):
             node = configure(NODE, i)
             node.connectInput(0, last)
+            if other is not None:
+                node.connectInput(1, other)
             last = node
     os.makedirs(WORK, exist_ok=True)
     path = os.path.join(WORK, "np_%s_####.exr" % NODE)

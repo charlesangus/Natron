@@ -201,7 +201,7 @@ M85's benches show where the region engine loses time on real comps. Three items
     - On RADV with no environment variable set, a region record shows `stripsInFlight > 1`, and hidden transfer is about equal to kernel time.
     - ChromaKeyer at 16k: wall time is about max(upload, download) + kernel.
   - size: L
-- [ ] M109.P4.T7 — Run local RADV tests on the default queue layout, and lock every queue around device-wide waits
+- [x] M109.P4.T7 — Run local RADV tests on the default queue layout, and lock every queue around device-wide waits
   - files: `tools/ci/local/devshell.sh`, `tools/gpu-spike/run-host.sh`, `Engine/Gpu/GpuDevice.{h,cpp}`, `Engine/Gpu/GpuTransfer.cpp`
   - approach: Remove `RADV_PERFTEST=transfer_queue` from both scripts (hard cut, no opt-in). Add a `GpuDevice` helper that takes every queue mutex in a fixed order, then calls `vkDeviceWaitIdle`. Use it in `waitIdle`, the transfer destructor, `releaseCachedImports` and the `process()` abort path.
   - verify: At the phase build, the residency and transfer tests pass on RADV with no env var, and `WholeRegionWithLargeTransferRunsAsOverlappedStrips` in Auto mode pipelines.

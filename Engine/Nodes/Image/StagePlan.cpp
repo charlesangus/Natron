@@ -43,6 +43,7 @@
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/RectD.h"
@@ -65,52 +66,6 @@ namespace {
 // How many rows runStagesCpu() runs between two abort checks.
 const int kAbortCheckRows = 16;
 
-// The index in an nComps-channel pixel of the channel on colour bit `bit`, or -1.
-int
-channelIndexForBit(int nComps,
-                   int bit)
-{
-    if (nComps == 1) {
-        return (bit == 3) ? 0 : -1;
-    }
-
-    return (bit < nComps) ? bit : -1;
-}
-
-// The bits processed in a dstNComps-channel image holding `plane`. A one-channel plane rendered
-// into a wider image sits where EffectInstance's copy back reads it: alpha for a colour plane,
-// channel 0 otherwise.
-std::bitset<4>
-processedBitsForImage(const ImageLayerDesc& plane,
-                      int dstNComps,
-                      const std::bitset<4>& planeBits)
-{
-    if ((plane.getNumComponents() != 1) || (dstNComps == 1)) {
-        return planeBits;
-    }
-    std::bitset<4> bits;
-    bits[plane.isColorLayer() ? 3 : 0] = planeBits[3];
-
-    return bits;
-}
-
-// Below this many pixels a band is not worth handing to another thread.
-const std::size_t kMinBandPixels = 16384;
-// Bands per available thread, so a helper that starts late, on a pool busy with other tasks,
-// finds work left rather than leaving the band it would have had to the others.
-const int kBandsPerThread = 4;
-
-// Image::getBounds() takes the image's lock, which a band thread must never ask for: behind a
-// writer waiting on an image this render holds for reading, it blocks forever. The bounds are
-// read once on the calling thread instead.
-struct PlaneAccess {
-    std::shared_ptr<Image::ReadAccess> src;
-    std::shared_ptr<Image::ReadAccess> divisor;
-    std::shared_ptr<Image::WriteAccess> dst;
-    RectI srcBounds;
-    RectI divisorBounds;
-};
-
 struct RowBand {
     std::size_t job;
     int y1;
@@ -125,108 +80,6 @@ struct RowBand {
     {
     }
 };
-
-struct PlaneJob {
-    ImagePtr dst;
-    std::bitset<4> channels;
-    ImagePtr src;
-    ImagePtr divisor;
-    int divisorChannel;
-    int skipChannel;
-
-    PlaneJob()
-        : dst()
-        , channels()
-        , src()
-        , divisor()
-        , divisorChannel(-1)
-        , skipChannel(-1)
-    {
-    }
-};
-
-bool
-isFloatImage(const ImagePtr& image)
-{
-    return !image || (image->getBitDepth() == eImageBitDepthFloat);
-}
-
-// Copies `width` pixels of row y starting at x0 into row (nComps floats per pixel), writing zero
-// wherever the image has no pixel. An image in another layout is mapped channel by colour bit,
-// a channel it lacks reading as zero.
-void
-readSourceRow(const Image* image,
-              const Image::ReadAccess* access,
-              const RectI& bounds,
-              int x0,
-              int y,
-              int width,
-              int nComps,
-              float* row)
-{
-    std::fill(row, row + (std::size_t)width * nComps, 0.f);
-    if (!image) {
-        return;
-    }
-    if ((y < bounds.y1) || (y >= bounds.y2)) {
-        return;
-    }
-    const int xStart = std::max(x0, bounds.x1);
-    const int xEnd = std::min(x0 + width, bounds.x2);
-    if (xStart >= xEnd) {
-        return;
-    }
-    const int srcNComps = (int)image->getComponentsCount();
-    const float* srcPix = (const float*)access->pixelAt(xStart, y);
-    float* dstPix = row + (std::size_t)(xStart - x0) * nComps;
-    if (srcNComps == nComps) {
-        std::copy(srcPix, srcPix + (std::size_t)(xEnd - xStart) * nComps, dstPix);
-
-        return;
-    }
-    int srcIndex[4] = { -1, -1, -1, -1 };
-    for (int c = 0; (c < nComps) && (c < 4); ++c) {
-        srcIndex[c] = channelIndexForBit(srcNComps, pixelKernelChannelBit(nComps, c));
-    }
-    for (int x = xStart; x < xEnd; ++x, srcPix += srcNComps, dstPix += nComps) {
-        for (int c = 0; (c < nComps) && (c < 4); ++c) {
-            if (srcIndex[c] >= 0) {
-                dstPix[c] = srcPix[srcIndex[c]];
-            }
-        }
-    }
-}
-
-// One value per pixel of `channel` of row y, `fill` wherever the image has no pixel.
-void
-readChannelRow(const Image* image,
-               const Image::ReadAccess* access,
-               const RectI& bounds,
-               int channel,
-               int x0,
-               int y,
-               int width,
-               float fill,
-               float* row)
-{
-    std::fill(row, row + width, fill);
-    if (!image) {
-        return;
-    }
-    if ((y < bounds.y1) || (y >= bounds.y2)) {
-        return;
-    }
-    const int xStart = std::max(x0, bounds.x1);
-    const int xEnd = std::min(x0 + width, bounds.x2);
-    if (xStart >= xEnd) {
-        return;
-    }
-    const int nComps = (int)image->getComponentsCount();
-    const float* pix = (const float*)access->pixelAt(xStart, y);
-    for (int x = xStart; x < xEnd; ++x, pix += nComps) {
-        row[x - x0] = pix[channel];
-    }
-}
 
 void
 resolvePlanMask(EffectInstance& effect,
@@ -580,15 +433,9 @@ makeStageRowBands(const RectI& roi,
     if ((height <= 0) || (roi.width() <= 0)) {
         return;
     }
-    const std::size_t pixels = (std::size_t)roi.width() * height;
-    std::size_t nBands = 1;
-    if (nThreads > 1) {
-        nBands = std::min((std::size_t)nThreads * kBandsPerThread, pixels / kMinBandPixels);
-        nBands = std::max((std::size_t)1, std::min(nBands, (std::size_t)height));
-    }
-    const int rowsPerBand = (int)((height + nBands - 1) / nBands);
-    for (int y = roi.y1; y < roi.y2; y += rowsPerBand) {
-        bands->push_back(RectI(roi.x1, y, roi.x2, std::min(y + rowsPerBand, roi.y2)));
+    const PassExec::LineBands split = PassExec::splitLines(height, (std::size_t)roi.width(), nThreads);
+    for (int y = roi.y1; y < roi.y2; y += split.linesPerBand) {
+        bands->push_back(RectI(roi.x1, y, roi.x2, std::min(y + split.linesPerBand, roi.y2)));
     }
 }
 
@@ -621,16 +468,16 @@ runStagesCpu(EffectInstance& effect,
     const ImageLayerDesc& divisorLayer = plan.divisorLayer;
     const int divisorChannel = plan.divisorChannel;
 
-    std::vector<PlaneJob> jobs;
+    std::vector<PassExec::PlaneJob> jobs;
     for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
-        PlaneJob job;
+        PassExec::PlaneJob job;
         job.dst = it->second;
         if (!job.dst) {
             jobs.push_back(job);
             continue;
         }
-        const int dstNComps = (int)job.dst->getComponentsCount();
-        job.channels = processedBitsForImage(it->first, dstNComps, args.processChannels);
+        job.nComps = (int)job.dst->getComponentsCount();
+        job.channels = PassExec::processedBitsForImage(it->first, job.nComps, args.processChannels);
 
         ImageLayerDesc sourceLayer;
         if ((sourceInput >= 0) && effect.getInput(sourceInput) && effect.resolveInputPlaneForRender(sourceInput, args.time, args.view, &sourceLayer, NULL)) {
@@ -648,12 +495,12 @@ runStagesCpu(EffectInstance& effect,
                 job.divisor.reset();
             }
         }
-        if (!isFloatImage(job.dst) || !isFloatImage(job.src) || !isFloatImage(job.divisor)) {
+        if (!PassExec::isFloatImage(job.dst) || !PassExec::isFloatImage(job.src) || !PassExec::isFloatImage(job.divisor)) {
             return eStatusFailed;
         }
         jobs.push_back(job);
     }
-    if (!isFloatImage(mask)) {
+    if (!PassExec::isFloatImage(mask)) {
         return eStatusFailed;
     }
 
@@ -663,16 +510,11 @@ runStagesCpu(EffectInstance& effect,
         return eStatusOK;
     }
 
-    std::shared_ptr<Image::ReadAccess> maskAccess;
-    RectI maskBounds;
-    if (mask) {
-        maskBounds = mask->getBounds();
-        maskAccess = std::make_shared<Image::ReadAccess>(mask.get());
-    }
-
     // Images are locked here, on the calling thread, for the whole render; the band threads only
     // compute pixel addresses through these accesses.
-    std::vector<PlaneAccess> accesses(jobs.size());
+    PassExec::MaskInput maskSource;
+    maskSource.image = mask;
+    maskSource.lock();
     std::vector<RowBand> bands;
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
     std::vector<RectI> bandRects;
@@ -681,15 +523,7 @@ runStagesCpu(EffectInstance& effect,
         if (!jobs[j].dst) {
             continue;
         }
-        if (jobs[j].src) {
-            accesses[j].srcBounds = jobs[j].src->getBounds();
-            accesses[j].src = std::make_shared<Image::ReadAccess>(jobs[j].src.get());
-        }
-        if (jobs[j].divisor) {
-            accesses[j].divisorBounds = jobs[j].divisor->getBounds();
-            accesses[j].divisor = std::make_shared<Image::ReadAccess>(jobs[j].divisor.get());
-        }
-        accesses[j].dst = std::make_shared<Image::WriteAccess>(jobs[j].dst.get());
+        jobs[j].lock();
         for (std::size_t b = 0; b < bandRects.size(); ++b) {
             bands.push_back(RowBand(j, bandRects[b].y1, bandRects[b].y2));
         }
@@ -699,9 +533,8 @@ runStagesCpu(EffectInstance& effect,
 
     const std::function<void(int)> renderBand = [&](int bandIndex) {
         const RowBand& band = bands[bandIndex];
-        const PlaneJob& job = jobs[band.job];
-        const PlaneAccess& access = accesses[band.job];
-        const int nComps = (int)job.dst->getComponentsCount();
+        const PassExec::PlaneJob& job = jobs[band.job];
+        const int nComps = job.nComps;
         const std::size_t rowSize = (std::size_t)width * nComps;
         std::vector<float> sourceRow(rowSize);
         std::vector<float> dividedRow(rowSize);
@@ -726,10 +559,10 @@ runStagesCpu(EffectInstance& effect,
                 return;
             }
 
-            readSourceRow(job.src.get(), access.src.get(), access.srcBounds, roi.x1, y, width, nComps, &sourceRow[0]);
+            PassExec::readSourceRow(job.src.get(), job.srcAccess.get(), job.srcBounds, job.srcNComps, roi.x1, y, width, nComps, &sourceRow[0]);
             std::copy(sourceRow.begin(), sourceRow.end(), dividedRow.begin());
             if (job.divisor) {
-                readChannelRow(job.divisor.get(), access.divisor.get(), access.divisorBounds, job.divisorChannel, roi.x1, y, width, 1.f, &divisorRow[0]);
+                PassExec::readChannelRow(job.divisor.get(), job.divisorAccess.get(), job.divisorBounds, job.divisorNComps, job.divisorChannel, roi.x1, y, width, 1.f, &divisorRow[0]);
                 for (int i = 0; i < width; ++i) {
                     const float d = divisorRow[i];
                     if (!Image::unPremultDivisorIsUsable(d)) {
@@ -744,13 +577,13 @@ runStagesCpu(EffectInstance& effect,
                 }
             }
             if (doMask) {
-                readChannelRow(mask.get(), maskAccess.get(), maskBounds, maskChannel, roi.x1, y, width, 0.f, &maskRow[0]);
+                PassExec::readChannelRow(mask.get(), maskSource.access.get(), maskSource.bounds, maskSource.nComps, maskChannel, roi.x1, y, width, 0.f, &maskRow[0]);
             }
 
             io.y = y;
             row(io);
 
-            float* dstPix = (float*)access.dst->pixelAt(roi.x1, y);
+            float* dstPix = (float*)job.dstAccess->pixelAt(roi.x1, y);
             if (!dstPix) {
                 continue;
             }

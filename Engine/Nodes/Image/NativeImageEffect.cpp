@@ -42,6 +42,7 @@
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/PoolParallelFor.h"
 #include "Engine/RectD.h"
@@ -207,22 +208,14 @@ bool
 NativeImageEffect::isUsableGpuView(const GpuImageView& view,
                                    int nComps)
 {
-    return view.buffer && (view.nComps == nComps) && (view.rowStrideFloats >= view.bounds.width() * nComps) && ((view.byteOffset % sizeof(float)) == 0);
+    return PassExec::isUsableGpuView(view, nComps);
 }
 
 GpuImageView
 NativeImageEffect::cropGpuView(const GpuImageView& view,
                                const RectI& r)
 {
-    GpuImageView out;
-    if ((r.x2 <= r.x1) || (r.y2 <= r.y1)) {
-        return out;
-    }
-    out = view;
-    out.bounds = r;
-    out.byteOffset += ((uint64_t)(r.y1 - view.bounds.y1) * view.rowStrideFloats + (uint64_t)(r.x1 - view.bounds.x1) * view.nComps) * sizeof(float);
-
-    return out;
+    return PassExec::cropGpuView(view, r);
 }
 
 int
@@ -237,25 +230,13 @@ NativeImageEffect::getGpuMaskViewComponent(const ImageLayerDesc& maskLayer,
 gpu::GpuBlurRect
 NativeImageEffect::toGpuBlurRect(const RectI& r)
 {
-    gpu::GpuBlurRect g;
-    g.x1 = r.x1;
-    g.y1 = r.y1;
-    g.x2 = r.x2;
-    g.y2 = r.y2;
-
-    return g;
+    return PassExec::toGpuBlurRect(r);
 }
 
 gpu::GpuBlurImage
 NativeImageEffect::toGpuBlurImage(const GpuImageView& view)
 {
-    gpu::GpuBlurImage g;
-    g.buffer = view.buffer;
-    g.offsetFloats = view.byteOffset / sizeof(float);
-    g.bounds = toGpuBlurRect(view.bounds);
-    g.strideFloats = (uint32_t)view.rowStrideFloats;
-
-    return g;
+    return PassExec::toGpuBlurImage(view);
 }
 #endif // NATRON_HAVE_GPU
 

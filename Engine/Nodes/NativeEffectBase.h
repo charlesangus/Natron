@@ -70,6 +70,17 @@ struct GpuStageSummary {
 };
 
 /**
+ * @brief What the GPU cost model reads from an op beyond its kind to pick a row of its tables:
+ * sigma, the Gaussian-equivalent spread in pixels at the rendered scale (size / 2.4 for a
+ * blur of diameter size), and whether the filter is recursive (IIR), whose cost does not grow
+ * with sigma.
+ **/
+struct GpuCostHint {
+    double sigma = 0.;
+    bool iir = false;
+};
+
+/**
  * @brief Statically describes one input of a NativeEffectBase subclass: its label,
  * whether it may be left unconnected, the DataKindEnum it accepts, and whether it is a mask.
  * The host gives a mask input the enableMask_<label>/maskChannel_<label> selectors.
@@ -326,6 +337,17 @@ public:
      * read; empty for a node that is not an image op, which GPU placement never considers.
      **/
     virtual std::optional<OpKind> opKind() const WARN_UNUSED_RETURN
+    {
+        return std::nullopt;
+    }
+
+    /**
+     * @brief The cost model's hint for a render at time and view, mipmapLevel levels below full
+     * resolution; empty for an op whose cost the plug-in's plain row describes, as by default.
+     **/
+    virtual std::optional<GpuCostHint> gpuCostHint(double /*time*/,
+                                                   ViewIdx /*view*/,
+                                                   unsigned int /*mipmapLevel*/) const WARN_UNUSED_RETURN
     {
         return std::nullopt;
     }

@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <optional>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Filter/BlurKernels.h"
@@ -123,6 +124,12 @@ public:
      * @brief Whether params leave the image unchanged at scale: CImgBlurPlugin::isIdentity().
      **/
     static bool paramsAreIdentity(const RenderScale& scale, const BlurParams& params) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief sigma = size / 2.4 of the larger axis at the mipmap level, and whether the filter is
+     * one of the IIR Gaussians, whatever the filter.
+     **/
+    virtual std::optional<GpuCostHint> gpuCostHint(double time, ViewIdx view, unsigned int mipmapLevel) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
      * @brief Every filter, on float images of 1 to 4 components, with any

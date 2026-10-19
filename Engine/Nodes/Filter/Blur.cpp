@@ -306,6 +306,22 @@ Blur::paramsAreIdentity(const RenderScale& scale,
     return (sx <= 1) && (sy <= 1);
 }
 
+std::optional<GpuCostHint>
+Blur::gpuCostHint(double time,
+                  ViewIdx view,
+                  unsigned int mipmapLevel) const
+{
+    BlurParams params;
+
+    getParams(time, view, &params);
+    const double scale = std::ldexp(1., -(int)mipmapLevel);
+    GpuCostHint hint;
+    hint.sigma = std::max(params.sizeX, params.sizeY) * scale / 2.4;
+    hint.iir = isGaussianFamily(params.filter);
+
+    return hint;
+}
+
 bool
 Blur::isIdentityOp(double time,
                    const RenderScale& scale,

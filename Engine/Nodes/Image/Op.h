@@ -33,6 +33,7 @@
 
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/ImagePipelineSpec.h"
+#include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/KnobReader.h"
 
@@ -105,11 +106,26 @@ concept PointOp = BakesParams<OP> && std::is_trivially_copyable_v<typename OP::P
 };
 
 /**
- * @brief Whether OP satisfies the concept of op kind KIND. Only Point ops are runnable by the
- * host's executors so far; every other kind is refused here.
+ * @brief A Passes op: a node whose output pixel depends on a neighbourhood of its source,
+ * computed as a list of passes over planar scratch buffers.
+ *
+ * bake() and Params are as for a Point op. isIdentity() says whether those Params leave the
+ * source unchanged at the context's scale. passes() builds the pass list for one render at that
+ * scale; it reads no knob, so that the CPU and GPU executors and the regions the host derives
+ * from the list (halo, region of definition) all see the same list for the same Params.
+ **/
+template <typename OP>
+concept PassesOp = BakesParams<OP> && std::is_trivially_copyable_v<typename OP::Params> && requires(const OP& op, const typename OP::Params& params, const PassContext& context) {
+    { op.isIdentity(params, context) } -> std::convertible_to<bool>;
+    { op.passes(params, context) } -> std::same_as<PassList>;
+};
+
+/**
+ * @brief Whether OP satisfies the concept of op kind KIND. Only Point and Passes ops are
+ * runnable by the host's executors so far; every other kind is refused here.
  **/
 template <typename OP, OpKind KIND>
-concept OpOfKind = (KIND == OpKind::Point) && PointOp<OP>;
+concept OpOfKind = ((KIND == OpKind::Point) && PointOp<OP>) || ((KIND == OpKind::Passes) && PassesOp<OP>);
 
 NATRON_NAMESPACE_EXIT
 

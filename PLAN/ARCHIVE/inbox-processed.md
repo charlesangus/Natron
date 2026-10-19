@@ -3371,3 +3371,12 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
 ### 2026-10-16T14:10:00Z — change-request
 - refs: none
 - Bug, found by PM in PR CI (PR #64, legacy ctest, run 38894698099): `Project::saveProjectInternal` (`Engine/Project.cpp` ~:777) writes the project to a temp file named from `QDateTime::toMSecsSinceEpoch()` in the temp dir. Two processes saving in the same millisecond collide: parallel ctest did this, and so would two Natron instances. The first save fails with "device not open" and `Failed to save`. It made `ProjectSaveLoadPreservesKnobShuffleMapRows` and `...UserKnobShuffleMapRows` fail intermittently. Fix with `QTemporaryFile` or `QSaveFile` beside the target. Small; fits E2 or E7.
+
+### 2026-10-16T16:30:00Z — change-request
+- refs: none
+- New milestone requested (user accepted a known-plugin-bug list in M100 - Content Node Hashing's cache-equivalence sweep): **Bundled Plugin Bug Fixes** (E3). Fix the three bundled-plugin bugs the sweep found, in our openfx-misc and openfx-arena forks, then bump the bundled assets and empty the sweep's known-plugin-bug list:
+  - CImg EdgeExtend `mergeOver` assumes 4 channels and reads out of bounds when processA is off;
+  - the CImg expression parser reads an uninitialised variable in CImg.h (patch at `build/ceq/cimg-undefined-variable.patch` on the bosley host);
+  - fxarena Sketch uses unseeded noise, so its renders are non-deterministic; give it a fixed seed.
+  
+  Deps: M100.

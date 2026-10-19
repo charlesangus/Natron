@@ -4,15 +4,6 @@
 - refs: none
 - New milestone requested (user): **Native Metadata Utilities** (E3, after M77 - Native Metadata Nodes). Native versions of the OFX example metadata nodes that M77 left without a native equivalent — `org.openfx.examples.metadataCompare`, `metadataContribute` and `metadataTimeCode` — then retire the OFX ones from the bundle and the asset fetch. Also replace the three OFX example plug-ins the test suite uses as metadata-bridge fixtures (Contribute, Print, TimeCode in `build/assets/TestPlugins/`) with an in-repo test-only OFX plug-in, so the bridge keeps coverage once they're gone. Deps: M77.
 
-### 2026-10-16T16:30:00Z — change-request
-- refs: none
-- New milestone requested (user accepted a known-plugin-bug list in M100 - Content Node Hashing's cache-equivalence sweep): **Bundled Plugin Bug Fixes** (E3). Fix the three bundled-plugin bugs the sweep found, in our openfx-misc and openfx-arena forks, then bump the bundled assets and empty the sweep's known-plugin-bug list:
-  - CImg EdgeExtend `mergeOver` assumes 4 channels and reads out of bounds when processA is off;
-  - the CImg expression parser reads an uninitialised variable in CImg.h (patch at `build/ceq/cimg-undefined-variable.patch` on the bosley host);
-  - fxarena Sketch uses unseeded noise, so its renders are non-deterministic; give it a fixed seed.
-  
-  Deps: M100.
-
 ### 2026-10-19T08:00:00Z — change-request
 - refs: none
 - Follow-ups from M100 - Content Node Hashing (merged d521f111a), found by PM:

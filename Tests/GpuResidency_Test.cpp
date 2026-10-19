@@ -1064,8 +1064,8 @@ TEST_F(GpuResidencyTest, MaskRenderedInTheRegionIsNeverDownloaded)
     expectMatchesCpu(grade, run);
 }
 
-// The mask is the extra layer of the Grade feeding the source, the one layer that member renders, so the source,
-// read in the colour plane, is not in its producer's layer.
+// The Grade feeding the source also feeds the mask from its extra layer, so that member is asked for two planes and
+// the region, which keeps one plane per member on the device, cannot read both of them from it.
 TEST_F(GpuResidencyTest, MaskInAnotherLayerThanItsProducersPlaneRendersOnTheCpu)
 {
     if (!gpuOrSkip()) {
@@ -1087,8 +1087,14 @@ TEST_F(GpuResidencyTest, MaskInAnotherLayerThanItsProducersPlaneRendersOnTheCpu)
     const int producerTask = taskOf(run.graph, producer);
     const int gradeTask = taskOf(run.graph, grade);
     ASSERT_TRUE(producerTask >= 0 && gradeTask >= 0);
-    ASSERT_EQ(1u, run.graph.tasks[producerTask].components.size());
-    EXPECT_EQ(std::string(kParitySourceExtraLayerID), run.graph.tasks[producerTask].components.front().getLayerID()) << "the producer renders the mask's layer";
+    std::vector<std::string> producerLayers;
+    for (const ImageLayerDesc& layer : run.graph.tasks[producerTask].components) {
+        producerLayers.push_back(layer.getLayerID());
+    }
+    std::sort(producerLayers.begin(), producerLayers.end());
+    std::vector<std::string> expectedLayers = { kNatronColorLayerID, kParitySourceExtraLayerID };
+    std::sort(expectedLayers.begin(), expectedLayers.end());
+    EXPECT_EQ(expectedLayers, producerLayers) << "the producer renders the source's plane and the mask's layer";
     assignRegions(&run.graph, { { producerTask, gradeTask } });
 
     ASSERT_TRUE(render(&run));

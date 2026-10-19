@@ -667,26 +667,27 @@ pipelinedRates(double bytesPerSecond)
 
 } // namespace
 
-// sink 0 (CPU) <- Grade 1 <- reader 2 (CPU): 265 MB moved in 5.3 ms at 50 GB/s against 4.1 ms of GPU time, so
-// pipelined strips leave 1.2 ms exposed and the Grade gains; run whole it exposes all 5.3 ms and loses.
+// sink 0 (CPU) <- Grade 1 <- reader 2 (CPU): the Grade saves 8.3 ms of CPU time for 0.5 ms of GPU time, and moves
+// 265 MB in 7.6 ms at 35 GB/s. Pipelined strips hide the 0.5 ms of transfer that overlaps the kernel, so the Grade
+// gains 0.2 ms beyond the margin; run whole it exposes all 7.6 ms and falls 0.3 ms short.
 TEST(GpuCostModel, PipelinedLoneGradeIsAcceptedWhereItsTransferHides)
 {
     CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
 
     fixture.traits[1] = GpuTaskTraits(kGradeId);
-    fixture.model.setTransferRates(pipelinedRates(50e9));
+    fixture.model.setTransferRates(pipelinedRates(35e9));
     fixture.place();
     ASSERT_EQ(fixture.graph.regions.size(), 1u);
     EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({ 1 }));
     EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Gpu);
 
-    fixture.model.setTransferRates(rates(50e9));
+    fixture.model.setTransferRates(rates(35e9));
     fixture.place();
     EXPECT_TRUE(fixture.graph.regions.empty());
     EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
 }
 
-// The same Grade at 25 GB/s: its 10.6 ms of transfer leave 6.5 ms exposed even pipelined.
+// The same Grade at 25 GB/s: its 10.6 ms of transfer leave 10.1 ms exposed even pipelined.
 TEST(GpuCostModel, PipelinedLoneGradeIsRefusedOnHalfTheBandwidth)
 {
     CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });

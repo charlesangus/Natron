@@ -187,7 +187,7 @@ M85's benches show where the region engine loses time on real comps. Three items
 
 ## Phase 109.5: Root-cause fixes and host memory
 
-- [ ] M109.P5.T1 — Remove the cause of plain Transform's "other" time and its 4× exposed transfer
+- [x] M109.P5.T1 — Remove the cause of plain Transform's "other" time and its 4× exposed transfer
   - files: as P2.T1 finds. Candidates are `Engine/GpuRegionTask.cpp` (buffer sizing and reuse), `Engine/Nodes/Transform/Transform.cpp` (`renderGpu`, source RoI) and `Engine/Gpu/GpuBufferPool.{h,cpp}` (size classes), plus `Tests/GpuResidency_Test.cpp`
   - approach: Fix the named cause without touching M126 - Runtime GPU Shaders' files. If the fix needs `GpuKernel.cpp` (for example, pipeline creation per dispatch), move it to Phase 109.7 and flag it.
   - verify: At the phase build, a test asserts the specific invariant, for example no pool miss on the second frame of an animated Transform. A directional bench shows Transform "other" below 20% of region time at UHD and 16k.

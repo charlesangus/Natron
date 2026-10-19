@@ -617,25 +617,6 @@ private:
             }
 
             member.inputSlots.assign(std::max(0, member.effect->getNInputs()), -1);
-            // The request pass records one edge per input node, so a node wired to two inputs of the member, such as
-            // its source and its mask, is an edge of only one of them.
-            const std::size_t nRecordedEdges = edges.size();
-            for (int inputNb = 0; inputNb < (int)member.inputSlots.size(); ++inputNb) {
-                bool recorded = false;
-                for (std::size_t e = 0; e < nRecordedEdges; ++e) {
-                    recorded = recorded || (edges[e].first == inputNb);
-                }
-                EffectInstancePtr input = member.effect->getInput(inputNb);
-                if (recorded || !input || (member.effect->isInputMask(inputNb) && !member.effect->isMaskEnabled(inputNb))) {
-                    continue;
-                }
-                for (std::size_t e = 0; e < nRecordedEdges; ++e) {
-                    if (_graph.tasks[edges[e].second].key.node == input->getNode()) {
-                        edges.push_back(std::make_pair(inputNb, edges[e].second));
-                        break;
-                    }
-                }
-            }
             for (std::size_t e = 0; e < edges.size(); ++e) {
                 const int inputNb = edges[e].first;
                 if ((inputNb < 0) || (inputNb >= (int)member.inputSlots.size())) {

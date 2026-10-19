@@ -124,8 +124,9 @@ assignDfsPostOrder(FrameRequestMap& requests,
     }
 }
 
-/// Keyed like FramesNeededMap but by the effect each input resolves to once transform reroutes are applied
-typedef std::map<EffectInstancePtr, std::pair</*inputNb*/ int, FrameRangesMap>> PreRenderFrames;
+/// Keyed by the effect each input resolves to once transform reroutes are applied and by the input number, so an
+/// effect feeding two inputs of the same node, such as its source and its mask, is two entries.
+typedef std::map<std::pair<EffectInstancePtr, /*inputNb*/ int>, FrameRangesMap> PreRenderFrames;
 
 static void
 collectPreRenderFrames(const NodePtr& node,
@@ -176,7 +177,7 @@ collectPreRenderFrames(const NodePtr& node,
         }
 
         if (inputEffect) {
-            (*framesToRender)[inputEffect] = std::make_pair(inputNb, it->second);
+            (*framesToRender)[std::make_pair(inputEffect, inputNb)] = it->second;
         }
     }
 
@@ -191,7 +192,7 @@ collectPreRenderFrames(const NodePtr& node,
             r.min = r.max = time;
             vec.push_back(r);
             frames[view] = vec;
-            (*framesToRender)[btmMerge->getEffectInstance()] = std::make_pair(-1, frames);
+            (*framesToRender)[std::make_pair(btmMerge->getEffectInstance(), -1)] = frames;
         }
     }
 }
@@ -216,9 +217,9 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
     collectPreRenderFrames(node, framesNeeded, reroutesMap, time, view, false /*includeRotoPaintTree*/, &framesToRender);
 
     for (PreRenderFrames::const_iterator it = framesToRender.begin(); it != framesToRender.end(); ++it) {
-        const EffectInstancePtr& inputEffect = it->first;
+        const EffectInstancePtr& inputEffect = it->first.first;
 
-        int inputNb = it->second.first;
+        int inputNb = it->first.second;
 
         ImageList* inputImagesList = 0;
         {
@@ -287,7 +288,7 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
             inputNIsRendering_RAII.reset(new EffectInstance::NotifyInputNRenderingStarted_RAII(node.get(), inputNb));
 
             ///For all views requested in input
-            for (FrameRangesMap::const_iterator viewIt = it->second.second.begin(); viewIt != it->second.second.end(); ++viewIt) {
+            for (FrameRangesMap::const_iterator viewIt = it->second.begin(); viewIt != it->second.end(); ++viewIt) {
                 ///For all frames in this view
                 for (U32 range = 0; range < viewIt->second.size(); ++range) {
                     int nbFramesPreFetched = 0;
@@ -733,11 +734,11 @@ visitRequestPassItem(bool useTransforms,
 
     std::vector<RequestPassItem> inputItems;
     for (PreRenderFrames::const_iterator it = framesToRender.begin(); it != framesToRender.end(); ++it) {
-        const EffectInstancePtr& inputEffect = it->first;
+        const EffectInstancePtr& inputEffect = it->first.first;
         NodePtr inputNode = inputEffect->getNode();
         assert(inputNode);
 
-        int inputNb = it->second.first;
+        int inputNb = it->first.second;
 
         RoIMap::const_iterator foundInputRoI = fvPerRequestData.inputsRoi.find(inputEffect);
         // An infinite RoI is fine: it is intersected with the source RoD, and composed Transforms often produce one.
@@ -752,7 +753,7 @@ visitRequestPassItem(bool useTransforms,
             compsNeeded = std::make_shared<std::list<ImageLayerDesc>>(foundCompsNeeded->second);
         }
 
-        for (FrameRangesMap::const_iterator viewIt = it->second.second.begin(); viewIt != it->second.second.end(); ++viewIt) {
+        for (FrameRangesMap::const_iterator viewIt = it->second.begin(); viewIt != it->second.end(); ++viewIt) {
             for (U32 range = 0; range < viewIt->second.size(); ++range) {
                 int nbFramesPreFetched = 0;
 

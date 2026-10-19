@@ -13,20 +13,20 @@ Lets a knob expression read the metadata of any node's output: `thisNode.metadat
 
 ## Phase 78.2: Dependencies and invalidation
 
-- [ ] M78.P2.T1 — Register metadata reads as expression dependencies
+- [x] M78.P2.T1 — Register metadata reads as expression dependencies
   - files: `Engine/Knob.cpp` (`parseListenersFromExpression`, `executeExpression`), `Engine/Knob.h`
   - approach: the current scan rewrites `getValue`-style calls to `addAsDependencyOf`. Add the same treatment for `metadata(...)`/`metadataKeys(...)`: record the referenced node as a metadata dependency of the knob, then clear the knob's `_exprRes` when that node's metadata is invalidated. Keep it consistent with the read-set scan M71 - RFV Render Context plans, which is another text scan on `Knob.cpp`; do not build a second mechanism. If M71 has not landed, record the dependency in a small list that M71 can fold in.
   - freshness (2026-10-19): M71 has not landed. A metadata read is not a knob listener, so the `addAsDependencyOf` path can't carry it: a new node-level edge is needed from the referenced node B to the expression's knob on A. `EffectInstance::onNodeHashChanged` (`EffectInstance.cpp:5904`) already clears `_exprRes` on A's own hash change, and B's hash only reaches A when B is upstream. So the edge must (a) clear A's `_exprRes` when B's hash changes — hook on B's `onNodeHashChanged`, which covers OFX nodes too, unlike the native-only `invalidateOutputMetadata` — and (b) feed B into A's content hash, so the cache doesn't reuse A's renders; see `Node::getHashDependents`/`getKnobsContentDigest` (`Node.cpp:867`) and `getAllExpressionDependenciesRecursive` (`Knob.cpp:5254`). The text scan is `KnobHelperPrivate::parseListenersFromExpression` (`Knob.cpp:2610`).
   - verify: gtest: a knob expression reads `Read1.metadata('ofx/frame')`; changing the Read's file or a ModifyMetadata value upstream changes the expression result without a project reload.
   - size: L
 
-- [ ] M78.P2.T2 — Time-varying metadata and the expression cache
+- [x] M78.P2.T2 — Time-varying metadata and the expression cache
   - files: `Engine/Knob.cpp`, `Engine/KnobImpl.h`
   - approach: `_exprRes` is keyed by time only, so an expression using metadata at the current frame is already correct, but one asking for another frame's metadata must key on that frame. Decide, record the choice in this milestone's `## Decisions`, and either bypass the cache for metadata-reading expressions or key it. Metadata that depends on an RFV is out of scope, as stated in the RFV design. Note `_exprRes` (`Knob.h:2458`, lookups at `KnobImpl.h:486/515/574/603`) ignores the view too, even though `executeExpression` receives one; key on `(time, view)` if that falls out naturally.
   - verify: gtest: `metadata('ofx/frame', frame + 1)` returns the next frame's value after a frame change.
   - size: M
 
-- [ ] M78.P2.T3 — Documentation and an example project
+- [x] M78.P2.T3 — Documentation and an example project
   - files: `Engine/Nodes/README.md`, a test project fixture under `Tests/`
   - approach: document the API and key prefixes as a subsection of the existing "Per-frame metadata" section (README line ~107); add a fixture that drives a Text-type knob (a label) from a metadata key and renders in ctest. Generate the EXR at test time with OIIO rather than checking in a new asset.
   - verify: fixture loads and the evaluated label matches the file metadata.

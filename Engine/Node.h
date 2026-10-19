@@ -1830,8 +1830,8 @@ private:
         // By input slot: a viewer's two shown inputs, null when unconnected; for any other node
         // the connected inputs it folds in.
         std::vector<std::pair<int, NodePtr>> bySlot;
-        // Other nodes whose output metadata the knob expressions read; their hashes are folded
-        // in through those knobs' content hashes.
+        // Other nodes whose output metadata the render-hashed knob expressions read, any knob's
+        // for a viewer; their hashes are folded in through those knobs' content hashes.
         std::vector<NodePtr> metadataSources;
     };
 

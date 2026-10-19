@@ -1157,14 +1157,18 @@ Node::getHashInputs(HashInputs* inputs) const
         }
         inputs->bySlot.push_back(std::make_pair((int)i, std::move(input)));
     }
-    appendMetadataSources(&inputs->metadataSources, false);
+    // A hash-exempt knob is refreshed through its metadata reader registration instead, and may
+    // read a node downstream, which as a hash input would make the hash order cyclic.
+    appendMetadataSources(&inputs->metadataSources, true);
 }
 
 void
 Node::appendMetadataSources(std::vector<NodePtr>* sources,
                             bool renderHashedOnly) const
 {
-    if (!_imp->effect || (_imp->knobMetadataDependencies.load() <= 0) || !mayHaveKnobExpressions()) {
+    // mayHaveKnobExpressions() cannot gate this: it reads the knobs digest, which an expression set
+    // since the last hash recompute is missing from, and which covers render-hashed knobs only.
+    if (!_imp->effect || (_imp->knobMetadataDependencies.load() <= 0)) {
         return;
     }
     std::list<NodePtr> read;

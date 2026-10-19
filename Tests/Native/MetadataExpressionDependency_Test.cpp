@@ -314,16 +314,20 @@ TEST_F(MetadataExpressionDependencyTest, ResultComputedAcrossAnInvalidationIsNot
 
 TEST_F(MetadataExpressionDependencyTest, HashExemptOwnNodeReadFollowsTheNode)
 {
-    KnobStringPtr label = labelOf(source);
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    ASSERT_TRUE(bool(modify));
+    connectNodes(source, modify, 0, true);
+
+    KnobStringPtr label = labelOf(modify);
     ASSERT_TRUE(bool(label));
     ASSERT_FALSE(label->isRenderHashed());
     ASSERT_NO_THROW(label->setExpression(0, "str(thisNode.metadata('exr/tag', 1))", false, true));
 
-    EXPECT_TRUE(hasMetadataReader(source, label));
+    EXPECT_TRUE(hasMetadataReader(modify, label));
     EXPECT_EQ("1", label->getValue());
 
     sourceTag->setValue(4, ViewSpec::all(), 0);
-    source->getHashValue();
+    modify->getHashValue();
 
     EXPECT_EQ("4", label->getValue());
 }
@@ -387,15 +391,24 @@ TEST_F(MetadataExpressionDependencyTest, ConnectionClosingAMetadataCycleIsRefuse
 TEST_F(MetadataExpressionDependencyTest, HashExemptReadOfADownstreamNodeIsAllowed)
 {
     NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
-    ASSERT_TRUE(bool(modify));
+    NodePtr downstream = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    ASSERT_TRUE(modify && downstream);
     connectNodes(source, modify, 0, true);
+    connectNodes(modify, downstream, 0, true);
 
-    KnobStringPtr label = labelOf(source);
+    KnobStringPtr label = labelOf(modify);
     ASSERT_TRUE(bool(label));
-    ASSERT_NO_THROW(label->setExpression(0, "str(" + modify->getScriptName() + ".metadata('exr/tag', 1))", false, true));
+    ASSERT_FALSE(label->isRenderHashed());
+    ASSERT_NO_THROW(label->setExpression(0, "str(" + downstream->getScriptName() + ".metadata('exr/tag', 1))", false, true));
 
-    EXPECT_TRUE(readsMetadataOf(label, 0, modify));
+    EXPECT_TRUE(readsMetadataOf(label, 0, downstream));
+    EXPECT_TRUE(hasMetadataReader(downstream, label));
     EXPECT_EQ("1", label->getValue());
+
+    sourceTag->setValue(5, ViewSpec::all(), 0);
+    downstream->getHashValue();
+
+    EXPECT_EQ("5", label->getValue());
 }
 
 TEST_F(MetadataExpressionDependencyTest, ScanAllowsBlanksAroundTheDot)

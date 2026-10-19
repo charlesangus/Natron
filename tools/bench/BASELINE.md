@@ -958,3 +958,33 @@ M64's kill-gate premise is that plugin compute dwarfs the memory pass, so strip 
 The native point ops are fusion-ready (`PixelKernel`), so M64 can fuse the kernels as well as tile. That removes the per-node fork-join and the intermediate images, which strip pulling alone cannot do. M64's estimate should be redone with fusion of native kernels as the mechanism, not OFX strip pulls.
 
 This is one data point from a 4-core N100. On a many-core workstation the per-node compute divides across more cores while memory bandwidth grows far less, so the bandwidth share of a native node, and with it M64's possible gain, is larger there than measured here.
+
+## M137 before (2026-10-19, e349888f0)
+
+Machine: 4-core Intel N100, 15 GB RAM. Build: remote stripped release AppImage of `e349888f0` (engine identical to `main` d521f111a), extracted to `build/m137-before/squashfs-root`; `build/release/Renderer/NatronRenderer` and `build/assets/Plugins` are symlinks to its `bin/NatronRenderer` and `Plugins/OFX/Natron`. Run in the `natron-dev` container, nothing else running; three rounds, each a fresh process. Host load average at the start of the graph runs was 2.8 to 5.6, so absolute values are noisy; compare ratios.
+
+Commands (repo root, per round; `node_profile.sh` arg `8` is the chain length, threads are all 4 cores):
+
+```
+tools/bench/node_profile.sh cpu 8 grade blur transform dissolve
+tools/ci/local/devshell.sh bash -lc "cd $PWD && BENCH_TOPO=<topo> BENCH_N=50 BENCH_RES=uhd BENCH_OUT=build/bench/m137-before.jsonl xvfb-run -a build/release/Renderer/NatronRenderer -b tools/bench/graph_bench.py"
+```
+
+`<topo>` is blurchain, xfchain or ccchain. Per-node figure: the `cpuN/Mpx` statistic of `node_profile_summary.py` (pixel-weighted median task wall time, ms per megapixel, UHD, chain of 8, steady frames) via `cpu_ms_per_mpx`. Raw records are in `build/bench/m137-before-r<round>/` and `build/bench/m137-before.jsonl`.
+
+| node | r1 | r2 | r3 | median | spread (max-min)/median |
+|---|---|---|---|---|---|
+| grade (ms/Mpx) | 9.68 | 13.99 | 14.32 | 13.99 | 33% |
+| blur (ms/Mpx) | 36.80 | 40.23 | 57.05 | 40.23 | 50% |
+| transform (ms/Mpx) | 13.93 | 14.45 | 17.72 | 14.45 | 26% |
+| dissolve (ms/Mpx) | 11.01 | 10.44 | 12.49 | 11.01 | 19% |
+
+Graph benchmarks, N=50, uhd, 3 timed frames after a warm-up; round value is the median frame wall time (s):
+
+| topo | r1 | r2 | r3 | median | spread | parallelism | peak RSS (MB) |
+|---|---|---|---|---|---|---|---|
+| blurchain | 12.30 | 12.36 | 12.84 | 12.36 | 4% | 3.2 | 642 |
+| xfchain | 34.14 | 19.89 | 20.31 | 20.31 | 71% (r1 outlier; r2/r3 within 2%) | 3.4 | 4480 |
+| ccchain | 14.79 | 14.02 | 14.69 | 14.69 | 5% | 3.4 | 550 |
+
+xfchain r1's frames were 40.9, 34.1 and 20.2 s, so it was still settling; r2 and r3 are the steady figure.

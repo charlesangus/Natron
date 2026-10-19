@@ -42,6 +42,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/Nodes/NodeSpec.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/ViewIdx.h"
 
@@ -226,58 +227,46 @@ public:
 
     virtual ~NativeEffectBase();
 
-    virtual std::string getPluginID() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return getNativePluginDescription().id;
-    }
-
-    virtual std::string getPluginLabel() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return getNativePluginDescription().label;
-    }
-
-    virtual std::string getPluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return getNativePluginDescription().description;
-    }
-
+    virtual std::string getPluginID() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual std::string getPluginLabel() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual std::string getPluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void getPluginGrouping(std::list<std::string>* grouping) const OVERRIDE FINAL;
-
-    virtual int getMajorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return getNativePluginDescription().majorVersion;
-    }
-
-    virtual int getMinorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return getNativePluginDescription().minorVersion;
-    }
-
-    virtual bool isWriter() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return getNativePluginDescription().isWriter;
-    }
-
-    virtual bool isOutput() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return getNativePluginDescription().isWriter;
-    }
-
-    virtual int getNInputs() const OVERRIDE WARN_UNUSED_RETURN
-    {
-        return (int)getNativePluginDescription().inputs.size();
-    }
-
+    virtual int getMajorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual int getMinorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool isWriter() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool isOutput() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual int getNInputs() const OVERRIDE WARN_UNUSED_RETURN;
     virtual std::string getInputLabel(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
     virtual bool isInputOptional(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
     virtual bool isInputMask(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
+    virtual DataKindEnum getOutputDataKind() const OVERRIDE WARN_UNUSED_RETURN;
+    virtual DataKindEnum getInputDataKind(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
 
-    virtual DataKindEnum getOutputDataKind() const OVERRIDE WARN_UNUSED_RETURN
+    /**
+     * @brief The node's static description, which every query above answers from; null for a
+     * node that describes itself through getNativePluginDescription() instead. A node with a
+     * constexpr spec returns staticNodeSpec<kSpec>(), which rejects an invalid spec at compile
+     * time. The spec must outlive the node and never change.
+     **/
+    virtual const NodeSpec* nodeSpec() const WARN_UNUSED_RETURN
     {
-        return getNativePluginDescription().outputKind;
+        return nullptr;
     }
 
-    virtual DataKindEnum getInputDataKind(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
+    /**
+     * @brief How the output at time and view relates to the inputs. For a node with a
+     * nodeSpec(), isIdentity() answers from this: Input(i, t) is an identity of input i at t,
+     * and Black an identity of no input, which the render paths output as transparent black.
+     * The default is None: the node computes its output.
+     **/
+    virtual Route route(double time,
+                        ViewIdx view) WARN_UNUSED_RETURN
+    {
+        Q_UNUSED(time);
+        Q_UNUSED(view);
+
+        return Route::none();
+    }
 
     /**
      * @brief Supplies this node's data-kind resolution policy, consulted when its declared output
@@ -373,6 +362,18 @@ protected:
 
     virtual void onNodeHashChanged(U64 hash) OVERRIDE;
     virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE;
+
+    /**
+     * @brief For a node with a nodeSpec(), the answer of route(); otherwise not an identity,
+     * as EffectInstance answers, unless a subclass overrides this.
+     **/
+    virtual bool isIdentity(double time,
+                            const RenderScale& scale,
+                            const RectI& roi,
+                            ViewIdx view,
+                            double* inputTime,
+                            ViewIdx* inputView,
+                            int* inputNb) OVERRIDE WARN_UNUSED_RETURN;
 
     /**
      * @brief Pass 1 of a two-pass deep render: returns how many samples the pixel at (x, y) --
@@ -484,12 +485,15 @@ protected:
                                        std::vector<RectI>* chunks);
 
     /**
-     * @brief Subclasses declare their static plugin metadata by overriding this.
-     * It is queried on demand rather than cached: every call site above is off the
+     * @brief Subclasses without a nodeSpec() declare their static plugin metadata by overriding
+     * this. It is queried on demand rather than cached: every call site above is off the
      * render path (registration, UI display, project load), so re-building the
      * small description each time keeps this class free of per-instance state.
      **/
-    virtual NativePluginDescription getNativePluginDescription() const WARN_UNUSED_RETURN = 0;
+    virtual NativePluginDescription getNativePluginDescription() const WARN_UNUSED_RETURN
+    {
+        return NativePluginDescription();
+    }
 
     /**
      * @brief Wraps the AppManager::createKnob() idiom every initializeKnobs() repeats.

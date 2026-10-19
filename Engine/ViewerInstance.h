@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -145,6 +146,16 @@ public:
      * and reason is not null, *reason names the first cause.
      **/
     static bool isFrameEligibleForScheduler(const SchedulerEligibility& eligibility, const char** reason);
+
+    typedef std::function<void(const FrameRenderContextPtr& context, std::map<ImageLayerDesc, ImagePtr>* rootPlanes)>
+        SchedulerResultHook;
+
+    /**
+     * @brief Runs hook on the render thread each time a frame the viewer submitted to the RenderScheduler has
+     * finished, before the viewer reads what it rendered, so that a test can stand in for the scheduler's result. An
+     * empty hook removes it.
+     **/
+    static void setSchedulerResultHookForTests(const SchedulerResultHook& hook);
 
 private:
     /**

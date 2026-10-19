@@ -35,6 +35,9 @@
 #include "Global/Enums.h"
 
 #include "Engine/BufferableObject.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/GpuContext.h"
+#endif
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
@@ -84,6 +87,9 @@ public:
         , nbCachedTile(0)
         , colorImage()
         , deepImage()
+#ifdef NATRON_HAVE_GPU
+        , deviceColor()
+#endif
         , rod()
         , pixelAspectRatio(1.)
         , abortInfo()
@@ -136,6 +142,12 @@ public:
 
     // The deep image colorImage was flattened from; NULL unless the input is a deep stream
     DeepImagePtr deepImage;
+
+#ifdef NATRON_HAVE_GPU
+    // The colour plane in device memory, for the viewer process to run on the GPU; the tiles then hold no RAM buffer
+    // and colorImage is null.
+    GpuDeviceImagePtr deviceColor;
+#endif
 
     // The RoD of the src image
     RectD rod;

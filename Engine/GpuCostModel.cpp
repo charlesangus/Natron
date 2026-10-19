@@ -38,6 +38,7 @@
 #include "Engine/GpuRegionStrips.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
 #include "Engine/Nodes/Transform/Transform.h"
 
@@ -64,6 +65,10 @@ struct SeedGpuRow {
     const char* kind;
     double sigmaMax;
     double kernelMsPerMpx;
+    // Absent: any filter. Else a GpuBlurFilter name.
+    const char* filter = nullptr;
+    // Absent or 0: any size.
+    int sizeMax = 0;
 };
 
 #include "Engine/GpuCostSeed.inc"
@@ -73,6 +78,46 @@ const SeedCpuRow kSeedCpuRows[] = { NATRON_GPU_COST_SEED_CPU_ROWS };
 const std::vector<SeedCpuRow> kSeedCpuMotionBlurRows = { NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROWS };
 const SeedCpuSigmaRow kSeedCpuSigmaRows[] = { NATRON_GPU_COST_SEED_CPU_SIGMA_ROWS };
 const SeedGpuRow kSeedGpuRows[] = { NATRON_GPU_COST_SEED_GPU_ROWS };
+
+GpuBlurFilter
+blurFilterByName(const char* name)
+{
+    static const struct {
+        const char* name;
+        GpuBlurFilter filter;
+    } kNames[] = {
+        { "quasi_gaussian", GpuBlurFilter::eQuasiGaussian },
+        { "gaussian", GpuBlurFilter::eGaussian },
+        { "box", GpuBlurFilter::eBox },
+        { "triangle", GpuBlurFilter::eTriangle },
+        { "quadratic", GpuBlurFilter::eQuadratic },
+        { "fir_gaussian", GpuBlurFilter::eFirGaussian },
+    };
+    if (name) {
+        for (const auto& entry : kNames) {
+            if (std::strcmp(entry.name, name) == 0) {
+                return entry.filter;
+            }
+        }
+    }
+
+    return GpuBlurFilter::eAny;
+}
+
+GpuBlurFilter
+blurFilterOf(BlurKernels::Filter filter)
+{
+    switch (filter) {
+    case BlurKernels::eFilterQuasiGaussian: return GpuBlurFilter::eQuasiGaussian;
+    case BlurKernels::eFilterGaussian: return GpuBlurFilter::eGaussian;
+    case BlurKernels::eFilterBox: return GpuBlurFilter::eBox;
+    case BlurKernels::eFilterTriangle: return GpuBlurFilter::eTriangle;
+    case BlurKernels::eFilterQuadratic: return GpuBlurFilter::eQuadratic;
+    case BlurKernels::eFilterFIRGaussian: return GpuBlurFilter::eFirGaussian;
+    }
+
+    return GpuBlurFilter::eAny;
+}
 
 // The thread count the seed's threaded profiles ran with.
 const int kSeedThreads = 16;
@@ -150,12 +195,20 @@ GpuCostModel::GpuCostModel()
         row.iir = (std::strcmp(seed.kind, "iir") == 0);
         row.motionBlur = (std::strcmp(seed.kind, "motion_blur") == 0);
         row.sigmaMax = seed.sigmaMax;
+        row.sizeMax = seed.sizeMax;
+        row.filter = blurFilterByName(seed.filter);
         row.kernelMsPerMpx = seed.kernelMsPerMpx;
         _gpu[seed.pluginId].push_back(row);
     }
     for (std::pair<const std::string, std::vector<GpuRow>>& rows : _gpu) {
         std::stable_sort(rows.second.begin(), rows.second.end(), [](const GpuRow& a, const GpuRow& b) {
-            return a.sigmaMax < b.sigmaMax;
+            if (a.sigmaMax != b.sigmaMax) {
+                return a.sigmaMax < b.sigmaMax;
+            }
+            const double aSize = (a.sizeMax > 0) ? a.sizeMax : kInfinity;
+            const double bSize = (b.sizeMax > 0) ? b.sizeMax : kInfinity;
+
+            return aSize < bSize;
         });
     }
 }
@@ -254,6 +307,13 @@ GpuCostModel::traitsOf(const FrameGraph::Task& task) const
         const double scale = std::ldexp(1., -(int)task.cacheMipmapLevel);
         traits.sigma = std::max(params.sizeX, params.sizeY) * scale / 2.4;
         traits.iir = (params.filter == BlurKernels::eFilterQuasiGaussian) || (params.filter == BlurKernels::eFilterGaussian);
+        traits.filter = blurFilterOf(params.filter);
+    }
+    if (const ErodeDilate* erodeDilate = dynamic_cast<const ErodeDilate*>(effect.get())) {
+        ErodeDilateParams params;
+        erodeDilate->getParams(task.key.time, task.key.view, &params);
+        const double scale = std::ldexp(1., -(int)task.cacheMipmapLevel);
+        traits.size = (int)std::floor(std::max(std::abs(params.sizeX), std::abs(params.sizeY)) * scale);
     }
     if (const TransformNode* transform = dynamic_cast<const TransformNode*>(effect.get())) {
         traits.motionBlur = transform->rendersWithMotionBlur(task.key.time, task.key.view);
@@ -305,18 +365,32 @@ GpuCostModel::findGpuRowLocked(const GpuTaskTraits& traits) const
     if (found == _gpu.end()) {
         return nullptr;
     }
-    const GpuRow* last = nullptr;
+    // A row that names a filter or a size beats one that holds for any, among the rows that cover the traits. A row
+    // that does not cover them is kept as the fallback, the last of the most specific.
+    const GpuRow* best = nullptr;
+    int bestScore = -1;
+    const GpuRow* fallback = nullptr;
+    int fallbackScore = -1;
     for (const GpuRow& row : found->second) {
         if ((row.motionBlur != traits.motionBlur) || (row.iir != traits.iir)) {
             continue;
         }
-        if (row.sigmaMax >= traits.sigma) {
-            return &row;
+        if ((row.filter != GpuBlurFilter::eAny) && (row.filter != traits.filter)) {
+            continue;
         }
-        last = &row;
+        const int score = ((row.filter != GpuBlurFilter::eAny) ? 2 : 0) + ((row.sizeMax > 0) ? 1 : 0);
+        if ((row.sigmaMax < traits.sigma) || ((row.sizeMax > 0) && (row.sizeMax < traits.size))) {
+            if (score >= fallbackScore) {
+                fallback = &row;
+                fallbackScore = score;
+            }
+        } else if (score > bestScore) {
+            best = &row;
+            bestScore = score;
+        }
     }
 
-    return last;
+    return best ? best : fallback;
 }
 
 GpuCostModel::GpuRow*

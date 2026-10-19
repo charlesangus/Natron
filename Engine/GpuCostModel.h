@@ -53,15 +53,31 @@ enum class GpuCostClass {
 };
 
 /**
+ * @brief The Blur filter a GPU row was measured with. eAny on a row matches every filter, on a task it is a plugin
+ * that is no Blur.
+ **/
+enum class GpuBlurFilter {
+    eAny,
+    eQuasiGaussian,
+    eGaussian,
+    eBox,
+    eTriangle,
+    eQuadratic,
+    eFirGaussian,
+};
+
+/**
  * @brief What the cost of a task depends on besides its size: the plugin, for a blur its sigma in pixels at the
- * level it renders at and whether its filter is recursive, and whether it renders with motion blur, which only rows
- * measured with motion blur price. The cost class and the input count only matter for a plugin without rows of its
- * own.
+ * level it renders at, its filter and whether that is recursive, for an erode or dilate its size in pixels at the
+ * level it renders at, and whether it renders with motion blur, which only rows measured with motion blur price. The
+ * cost class and the input count only matter for a plugin without rows of its own.
  **/
 struct GpuTaskTraits {
     std::string pluginId;
     double sigma = 0.;
     bool iir = false;
+    GpuBlurFilter filter = GpuBlurFilter::eAny;
+    int size = 0;
     bool motionBlur = false;
     GpuCostClass costClass = GpuCostClass::eOther;
     int inputCount = 1;
@@ -70,10 +86,12 @@ struct GpuTaskTraits {
 
     GpuTaskTraits(const std::string& pluginId_,
                   double sigma_ = 0.,
-                  bool iir_ = false)
+                  bool iir_ = false,
+                  GpuBlurFilter filter_ = GpuBlurFilter::eAny)
         : pluginId(pluginId_)
         , sigma(sigma_)
         , iir(iir_)
+        , filter(filter_)
     {
     }
 };
@@ -96,7 +114,8 @@ struct GpuTransferRates {
  * @brief Per-task CPU and GPU time estimates, and the gain of running a region on the GPU, in milliseconds.
  *
  * Costs start from the checked-in seed table (GpuCostSeed.inc) and are refined during the session by an exponential
- * moving average of measured times, per plugin and motion blur and, for a blur, per filter kind and sigma row. Nothing is kept across
+ * moving average of measured times, per plugin and motion blur and, for a blur, per filter kind and sigma row and, for
+ * an erode or dilate, per size row. Nothing is kept across
  * sessions.
  *
  * The CPU cost is kept as thread-milliseconds per megapixel, the measured wallNs × budget / Mpx, so that tasks run
@@ -223,6 +242,9 @@ private:
 
     struct GpuRow {
         double sigmaMax = 0.;
+        // 0 for a row that holds at any size.
+        int sizeMax = 0;
+        GpuBlurFilter filter = GpuBlurFilter::eAny;
         bool iir = false;
         bool motionBlur = false;
         double kernelMsPerMpx = 0.;

@@ -871,6 +871,54 @@ TEST(GpuCostModel, RecursiveBlurFiltersHaveTheirOwnGpuRow)
     EXPECT_NEAR(model.gpuMs(fir, 1.), firGpu, 1e-12);
 }
 
+TEST(GpuCostModel, ErodeSizeSelectsItsSeedRow)
+{
+    GpuCostModel model;
+    const std::string erode = "net.sf.cimg.CImgErode";
+
+    GpuTaskTraits small(erode);
+    small.size = 6;
+    GpuTaskTraits large(erode);
+    large.size = 40;
+    GpuTaskTraits unsized(erode);
+
+    EXPECT_NEAR(model.gpuMs(small, kUhdMpx), 6.827, 1e-3);
+    EXPECT_NEAR(model.gpuMs(large, kUhdMpx), 4.170, 1e-3);
+    EXPECT_NE(model.gpuMs(small, 1.), model.gpuMs(large, 1.));
+
+    GpuTaskTraits tiny = small;
+    tiny.size = 1;
+    GpuTaskTraits huge = large;
+    huge.size = 500;
+    EXPECT_NEAR(model.gpuMs(tiny, 1.), model.gpuMs(small, 1.), 1e-12);
+    EXPECT_NEAR(model.gpuMs(huge, 1.), model.gpuMs(large, 1.), 1e-12);
+    EXPECT_NEAR(model.gpuMs(unsized, 1.), model.gpuMs(small, 1.), 1e-12);
+
+    const double largeGpu = model.gpuMs(large, 1.);
+    model.observeGpu(large, 2000000, 1.);
+    EXPECT_NEAR(model.gpuMs(large, 1.), largeGpu + GpuCostModel::kEmaWeight * (2. - largeGpu), 1e-9);
+    EXPECT_NEAR(model.gpuMs(small, kUhdMpx), 6.827, 1e-3);
+}
+
+// Dilate has one seed row for every size, and a Blur filter with no row of its own prices like the row for any filter.
+TEST(GpuCostModel, RowsWithoutSizeOrFilterHoldForAny)
+{
+    GpuCostModel model;
+
+    GpuTaskTraits dilate("net.sf.cimg.CImgDilate");
+    const double any = model.gpuMs(dilate, 1.);
+    dilate.size = 40;
+    EXPECT_NEAR(model.gpuMs(dilate, 1.), any, 1e-12);
+
+    const GpuTaskTraits plain(kBlurId, 25.);
+    const GpuTaskTraits box(kBlurId, 25., false, GpuBlurFilter::eBox);
+    const GpuTaskTraits triangle(kBlurId, 25., false, GpuBlurFilter::eTriangle);
+    EXPECT_NEAR(model.gpuMs(box, 1.), model.gpuMs(plain, 1.), 1e-12);
+    EXPECT_NEAR(model.gpuMs(triangle, 1.), model.gpuMs(plain, 1.), 1e-12);
+    const GpuTaskTraits gaussian(kBlurId, 25., true, GpuBlurFilter::eGaussian);
+    EXPECT_NEAR(model.gpuMs(gaussian, 1.), model.gpuMs(GpuTaskTraits(kBlurId, 25., true), 1.), 1e-12);
+}
+
 // Every node with a GPU kernel has seed rows of its own, so none of them falls back on a class default.
 TEST(GpuCostModel, EveryGpuNodeIsSeeded)
 {

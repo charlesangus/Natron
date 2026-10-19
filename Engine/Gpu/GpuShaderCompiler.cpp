@@ -7,9 +7,9 @@
 #include <sstream>
 #include <unordered_map>
 
+#include <SPIRV/GlslangToSpv.h>
 #include <glslang/Public/ResourceLimits.h>
 #include <glslang/Public/ShaderLang.h>
-#include <SPIRV/GlslangToSpv.h>
 
 namespace gpu {
 
@@ -100,7 +100,8 @@ namespace {
 
 } // namespace
 
-std::string ShaderCompileResult::logHead(size_t maxLines) const
+std::string
+ShaderCompileResult::logHead(size_t maxLines) const
 {
     std::istringstream in(log);
     std::string line, out;
@@ -118,7 +119,8 @@ std::string ShaderCompileResult::logHead(size_t maxLines) const
     return out;
 }
 
-std::shared_ptr<const ShaderCompileResult> compileGlsl(std::string_view source, ShaderStage stage, std::string_view entry)
+std::shared_ptr<const ShaderCompileResult>
+compileGlsl(std::string_view source, ShaderStage stage, std::string_view entry)
 {
     std::string key;
     key.reserve(source.size() + entry.size() + 2);
@@ -174,20 +176,23 @@ std::shared_ptr<const ShaderCompileResult> compileGlsl(std::string_view source, 
     return future.get();
 }
 
-std::string glslangVersionString()
+std::string
+glslangVersionString()
 {
     initGlslang();
     const char* v = glslang::GetGlslVersionString();
     return v ? v : "";
 }
 
-size_t glslCompileCacheSizeForTesting()
+size_t
+glslCompileCacheSizeForTesting()
 {
     std::lock_guard<std::mutex> lock(g_mutex);
     return g_completed.size();
 }
 
-size_t glslCompileCountForTesting()
+size_t
+glslCompileCountForTesting()
 {
     return g_compileCount.load(std::memory_order_relaxed);
 }

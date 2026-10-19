@@ -24,12 +24,13 @@ namespace fs = std::filesystem;
 
 // The comment makes each test's source unique so neither the process-wide compile memo nor an
 // earlier run's disk entries satisfy another test.
-std::string computeSource(const std::string& tag)
+std::string
+computeSource(const std::string& tag)
 {
     return "#version 460\n// " + tag + "\n"
-           "layout(local_size_x = 8, local_size_y = 8) in;\n"
-           "layout(std430, set = 0, binding = 0) buffer Out { float data[]; } outBuf;\n"
-           "void main() { outBuf.data[gl_GlobalInvocationID.x] = 1.0; }\n";
+                                       "layout(local_size_x = 8, local_size_y = 8) in;\n"
+                                       "layout(std430, set = 0, binding = 0) buffer Out { float data[]; } outBuf;\n"
+                                       "void main() { outBuf.data[gl_GlobalInvocationID.x] = 1.0; }\n";
 }
 
 class GpuPipelineCacheTest : public gputest::SkippableTest {
@@ -38,8 +39,7 @@ protected:
     {
         GpuStatus s = gputest::createDevice(dev);
         GPUTEST_DEVICE_OR_SKIP_TEST(s.ok(), s.message);
-        dir = (fs::temp_directory_path() / ("natron-gpu-pipeline-cache-test-" + std::to_string(::getpid()) + "-"
-                                            + ::testing::UnitTest::GetInstance()->current_test_info()->name()))
+        dir = (fs::temp_directory_path() / ("natron-gpu-pipeline-cache-test-" + std::to_string(::getpid()) + "-" + ::testing::UnitTest::GetInstance()->current_test_info()->name()))
                   .string();
         fs::remove_all(dir);
     }
@@ -131,7 +131,11 @@ GPU_TEST_F(GpuPipelineCacheTest, RestartHitsDiskWithoutCompiling)
 
 GPU_TEST_F(GpuPipelineCacheTest, CorruptEntriesAreRecompiledAndOverwritten)
 {
-    enum Damage { FlipPayloadByte, FlipMagic, Truncate, Empty, Trailing };
+    enum Damage { FlipPayloadByte,
+                  FlipMagic,
+                  Truncate,
+                  Empty,
+                  Trailing };
     std::set<fs::path> known;
     for (Damage damage : { FlipPayloadByte, FlipMagic, Truncate, Empty, Trailing }) {
         const std::string src = computeSource("corrupt" + std::to_string(damage));

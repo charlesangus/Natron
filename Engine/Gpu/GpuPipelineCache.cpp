@@ -76,7 +76,9 @@ namespace {
     // Real entries hold a SPIR-V module and a driver blob, a few hundred KiB at most.
     constexpr uint64_t kMaxEntryBytes = 64ull << 20;
 
-    enum class ReadResult { Missing, TooLarge, Ok };
+    enum class ReadResult { Missing,
+                            TooLarge,
+                            Ok };
 
     // The size is checked before anything is allocated, so a corrupt or foreign file cannot force a large allocation.
     ReadResult readFile(const fs::path& path, uint64_t maxBytes, std::vector<char>& out)

@@ -34,7 +34,7 @@ struct ShaderCompileResult {
 // shader evicted from it compiles again on its next request; callers that must not retry a rejected
 // shader in a loop remember the failure themselves.
 std::shared_ptr<const ShaderCompileResult> compileGlsl(std::string_view source, ShaderStage stage,
-                                                        std::string_view entry = "main");
+                                                       std::string_view entry = "main");
 
 // Identifies the compiler build, so artifacts derived from its output can be invalidated when it changes.
 std::string glslangVersionString();

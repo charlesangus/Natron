@@ -14,13 +14,14 @@ namespace {
 constexpr uint32_t kSpirvMagic = 0x07230203;
 
 // The comment makes each test's source unique so the memoised results of one test never satisfy another.
-std::string computeSource(const std::string& tag, const std::string& body = "")
+std::string
+computeSource(const std::string& tag, const std::string& body = "")
 {
     return "#version 460\n// " + tag + "\n"
-           "layout(local_size_x = 8, local_size_y = 8) in;\n"
-           "layout(std430, set = 0, binding = 0) buffer Out { float data[]; } outBuf;\n"
-           "void main() {\n"
-           "    outBuf.data[gl_GlobalInvocationID.x] = 1.0;\n"
+                                       "layout(local_size_x = 8, local_size_y = 8) in;\n"
+                                       "layout(std430, set = 0, binding = 0) buffer Out { float data[]; } outBuf;\n"
+                                       "void main() {\n"
+                                       "    outBuf.data[gl_GlobalInvocationID.x] = 1.0;\n"
         + body + "}\n";
 }
 

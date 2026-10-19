@@ -100,15 +100,15 @@ shaderSource(const std::string& tag,
              bool broken)
 {
     return "#version 460\n// " + tag + "\n"
-           "layout(local_size_x = 8, local_size_y = 8) in;\n"
-           "layout(std430, set = 0, binding = 0) readonly buffer Src { float src[]; };\n"
-           "layout(std430, set = 0, binding = 1) writeonly buffer Dst { float dst[]; };\n"
-           "layout(std140, set = 0, binding = 2) uniform Params { float gain; float offset; };\n"
-           "layout(push_constant) uniform Region { int x1; int y1; uint width; uint height; uint nComps; uint channelMask; } region;\n"
-           "void main() {\n"
-           "    if (gl_GlobalInvocationID.x >= region.width || gl_GlobalInvocationID.y >= region.height) return;\n"
-           "    uint base = (gl_GlobalInvocationID.y * region.width + gl_GlobalInvocationID.x) * region.nComps;\n"
-           "    for (uint c = 0u; c < region.nComps; ++c) {\n"
+                                       "layout(local_size_x = 8, local_size_y = 8) in;\n"
+                                       "layout(std430, set = 0, binding = 0) readonly buffer Src { float src[]; };\n"
+                                       "layout(std430, set = 0, binding = 1) writeonly buffer Dst { float dst[]; };\n"
+                                       "layout(std140, set = 0, binding = 2) uniform Params { float gain; float offset; };\n"
+                                       "layout(push_constant) uniform Region { int x1; int y1; uint width; uint height; uint nComps; uint channelMask; } region;\n"
+                                       "void main() {\n"
+                                       "    if (gl_GlobalInvocationID.x >= region.width || gl_GlobalInvocationID.y >= region.height) return;\n"
+                                       "    uint base = (gl_GlobalInvocationID.y * region.width + gl_GlobalInvocationID.x) * region.nComps;\n"
+                                       "    for (uint c = 0u; c < region.nComps; ++c) {\n"
         + std::string(broken ? "        dst[base + c] = src[base + c] * gain + ;\n" : "        dst[base + c] = src[base + c] * gain + offset;\n")
         + "    }\n"
           "}\n";

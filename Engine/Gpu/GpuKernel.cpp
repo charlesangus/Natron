@@ -126,8 +126,7 @@ GpuUniformBuffer::create(GpuDevice& device, std::span<const std::byte> data, Gpu
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(device.physicalDevice(), &props);
     if (data.empty() || data.size() > props.limits.maxUniformBufferRange) {
-        return fail(VK_ERROR_INITIALIZATION_FAILED, "GpuUniformBuffer::create: " + std::to_string(data.size())
-                        + " bytes is outside 1.." + std::to_string(props.limits.maxUniformBufferRange));
+        return fail(VK_ERROR_INITIALIZATION_FAILED, "GpuUniformBuffer::create: " + std::to_string(data.size()) + " bytes is outside 1.." + std::to_string(props.limits.maxUniformBufferRange));
     }
     VkBufferCreateInfo bci { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
     bci.size = data.size();
@@ -538,13 +537,10 @@ GpuKernel::recordBindings(VkCommandBuffer cmd, std::span<const GpuBinding> bindi
                           std::span<const std::byte> push, std::array<uint32_t, 3> groups)
 {
     if (push.size() != desc_.pushConstantBytes) {
-        return fail(VK_ERROR_INITIALIZATION_FAILED, "GpuKernel::recordBindings: push-constant size mismatch, "
-                        + std::to_string(push.size()) + " bytes for a " + std::to_string(desc_.pushConstantBytes)
-                        + "-byte block");
+        return fail(VK_ERROR_INITIALIZATION_FAILED, "GpuKernel::recordBindings: push-constant size mismatch, " + std::to_string(push.size()) + " bytes for a " + std::to_string(desc_.pushConstantBytes) + "-byte block");
     }
     if (bindings.size() != bindings_.size()) {
-        return fail(VK_ERROR_INITIALIZATION_FAILED, "GpuKernel::recordBindings: " + std::to_string(bindings.size())
-                        + " bindings for a kernel declaring " + std::to_string(bindings_.size()));
+        return fail(VK_ERROR_INITIALIZATION_FAILED, "GpuKernel::recordBindings: " + std::to_string(bindings.size()) + " bindings for a kernel declaring " + std::to_string(bindings_.size()));
     }
 
     // Reserved up front: the writes point into these arrays.
@@ -589,8 +585,7 @@ GpuKernel::recordBindings(VkCommandBuffer cmd, std::span<const GpuBinding> bindi
                 return fail(VK_ERROR_INITIALIZATION_FAILED, where + " has no buffer");
             }
             if (uniform && b.bufferSize < decl.blockBytes) {
-                return fail(VK_ERROR_INITIALIZATION_FAILED, where + " holds " + std::to_string(b.bufferSize)
-                                + " bytes for a " + std::to_string(decl.blockBytes) + "-byte uniform block");
+                return fail(VK_ERROR_INITIALIZATION_FAILED, where + " holds " + std::to_string(b.bufferSize) + " bytes for a " + std::to_string(decl.blockBytes) + "-byte uniform block");
             }
             bufferInfos.push_back({ b.buffer, 0, VK_WHOLE_SIZE });
             w.pBufferInfo = &bufferInfos.back();

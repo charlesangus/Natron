@@ -16,7 +16,8 @@ namespace {
 
     VkImageType imageType(uint32_t dimensions)
     {
-        return dimensions == 1 ? VK_IMAGE_TYPE_1D : dimensions == 2 ? VK_IMAGE_TYPE_2D : VK_IMAGE_TYPE_3D;
+        return dimensions == 1 ? VK_IMAGE_TYPE_1D : dimensions == 2 ? VK_IMAGE_TYPE_2D
+                                                                    : VK_IMAGE_TYPE_3D;
     }
 
     uint32_t storedChannels(uint32_t channels)
@@ -91,22 +92,18 @@ GpuTexture::create(GpuDevice& device, const GpuTextureDesc& desc, std::span<cons
     }
     const uint64_t texelCount = uint64_t(desc.width) * desc.height * desc.depth;
     if (texels.size() != texelCount * desc.channels) {
-        return fail(VK_ERROR_INITIALIZATION_FAILED, "GpuTexture::create: " + std::to_string(texels.size())
-                        + " floats for " + std::to_string(texelCount) + " texels of " + std::to_string(desc.channels)
-                        + " channels");
+        return fail(VK_ERROR_INITIALIZATION_FAILED, "GpuTexture::create: " + std::to_string(texels.size()) + " floats for " + std::to_string(texelCount) + " texels of " + std::to_string(desc.channels) + " channels");
     }
 
     VkFormatProperties fp;
     vkGetPhysicalDeviceFormatProperties(device.physicalDevice(), format, &fp);
     const VkFormatFeatureFlags base = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
     if ((fp.optimalTilingFeatures & base) != base) {
-        return fail(VK_ERROR_FORMAT_NOT_SUPPORTED, "GpuTexture::create: the device cannot sample "
-                        + std::to_string(desc.channels) + "-channel float textures");
+        return fail(VK_ERROR_FORMAT_NOT_SUPPORTED, "GpuTexture::create: the device cannot sample " + std::to_string(desc.channels) + "-channel float textures");
     }
     if (desc.filter == GpuTextureFilter::Linear
         && !(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) {
-        return fail(VK_ERROR_FORMAT_NOT_SUPPORTED, "GpuTexture::create: the device cannot filter "
-                        + std::to_string(desc.channels) + "-channel float textures linearly");
+        return fail(VK_ERROR_FORMAT_NOT_SUPPORTED, "GpuTexture::create: the device cannot filter " + std::to_string(desc.channels) + "-channel float textures linearly");
     }
     const VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     VkImageFormatProperties ifp {};
@@ -115,9 +112,7 @@ GpuTexture::create(GpuDevice& device, const GpuTextureDesc& desc, std::span<cons
                                                                  usage, 0, &ifp);
     if (fr != VK_SUCCESS || desc.width > ifp.maxExtent.width || desc.height > ifp.maxExtent.height
         || desc.depth > ifp.maxExtent.depth) {
-        return fail(VK_ERROR_FORMAT_NOT_SUPPORTED, "GpuTexture::create: the device does not support a "
-                        + std::to_string(desc.dimensions) + "D texture of " + std::to_string(desc.width) + "x"
-                        + std::to_string(desc.height) + "x" + std::to_string(desc.depth));
+        return fail(VK_ERROR_FORMAT_NOT_SUPPORTED, "GpuTexture::create: the device does not support a " + std::to_string(desc.dimensions) + "D texture of " + std::to_string(desc.width) + "x" + std::to_string(desc.height) + "x" + std::to_string(desc.depth));
     }
 
     std::unique_ptr<GpuTexture> t(new GpuTexture(device, desc));

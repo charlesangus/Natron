@@ -54,7 +54,8 @@ struct Lut {
 };
 
 // Analytic and not separable, so a swapped axis or channel changes the result.
-Lut makeLut(uint32_t dimensions, std::array<uint32_t, 3> size)
+Lut
+makeLut(uint32_t dimensions, std::array<uint32_t, 3> size)
 {
     Lut lut;
     lut.dimensions = dimensions;
@@ -76,25 +77,26 @@ Lut makeLut(uint32_t dimensions, std::array<uint32_t, 3> size)
     return lut;
 }
 
-std::string shaderSource(const Lut& lut, const std::string& tag)
+std::string
+shaderSource(const Lut& lut, const std::string& tag)
 {
     static const char* const samplerType[] = { "", "sampler1D", "sampler2D", "sampler3D" };
     static const char* const swizzle[] = { "", "r", "rg", "rgb" };
     const std::string size = "vec3(" + std::to_string(lut.size[0]) + ".0, " + std::to_string(lut.size[1]) + ".0, "
-                             + std::to_string(lut.size[2]) + ".0)";
+        + std::to_string(lut.size[2]) + ".0)";
     // The comment makes each test's source unique so neither the process-wide compile memo nor an
     // earlier run's disk entries satisfy another test.
     return "#version 460\n// " + tag + "\n"
-           "layout(local_size_x = 8, local_size_y = 8) in;\n"
-           "layout(std430, set = 0, binding = 0) readonly buffer InBuf { vec4 px[]; } inBuf;\n"
-           "layout(std430, set = 0, binding = 1) writeonly buffer OutBuf { vec4 px[]; } outBuf;\n"
-           "layout(std140, set = 0, binding = 2) uniform Params {\n"
-           "    vec4 gain;\n"
-           "    vec3 tint;\n"
-           "    float strength;\n"
-           "    float offset;\n"
-           "};\n"
-           "layout(set = 0, binding = 3) uniform "
+                                       "layout(local_size_x = 8, local_size_y = 8) in;\n"
+                                       "layout(std430, set = 0, binding = 0) readonly buffer InBuf { vec4 px[]; } inBuf;\n"
+                                       "layout(std430, set = 0, binding = 1) writeonly buffer OutBuf { vec4 px[]; } outBuf;\n"
+                                       "layout(std140, set = 0, binding = 2) uniform Params {\n"
+                                       "    vec4 gain;\n"
+                                       "    vec3 tint;\n"
+                                       "    float strength;\n"
+                                       "    float offset;\n"
+                                       "};\n"
+                                       "layout(set = 0, binding = 3) uniform "
         + std::string(samplerType[lut.dimensions])
         + " lut;\n"
           "layout(push_constant) uniform Push { uint width; uint height; } pc;\n"
@@ -120,8 +122,7 @@ protected:
     {
         GpuStatus s = gputest::createDevice(dev);
         GPUTEST_DEVICE_OR_SKIP_TEST(s.ok(), s.message);
-        dir = (fs::temp_directory_path() / ("natron-gpu-runtime-shader-test-" + std::to_string(::getpid()) + "-"
-                                            + ::testing::UnitTest::GetInstance()->current_test_info()->name()))
+        dir = (fs::temp_directory_path() / ("natron-gpu-runtime-shader-test-" + std::to_string(::getpid()) + "-" + ::testing::UnitTest::GetInstance()->current_test_info()->name()))
                   .string();
         fs::remove_all(dir);
         GpuPipelineCacheOptions o;
@@ -301,7 +302,7 @@ protected:
             for (int corner = 0; corner < 8; ++corner) {
                 const int cx = corner & 1, cy = (corner >> 1) & 1, cz = (corner >> 2) & 1;
                 const float w = (cx ? frac[0] : 1.f - frac[0]) * (cy ? frac[1] : 1.f - frac[1])
-                                * (cz ? frac[2] : 1.f - frac[2]);
+                    * (cz ? frac[2] : 1.f - frac[2]);
                 v += w * texel(cx ? hi[0] : lo[0], cy ? hi[1] : lo[1], cz ? hi[2] : lo[2], ch);
             }
             out[ch] = v;
@@ -352,7 +353,8 @@ protected:
     VkCommandPool pool = VK_NULL_HANDLE;
 };
 
-Params linearParams()
+Params
+linearParams()
 {
     Params p {};
     p.gain[0] = 0.5f;

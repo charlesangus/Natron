@@ -294,14 +294,14 @@ TEST_F(GpuRuntimeTest, RuntimeShaderDispatchesThroughARecordContextAcrossRecreat
     GpuStatus s = make();
     GPUTEST_DEVICE_OR_SKIP(s.ok(), s.message);
     const std::string source = "#version 460\n// GpuRuntimeTest " + std::to_string(::getpid()) + "\n"
-                               "layout(local_size_x = 8, local_size_y = 8) in;\n"
-                               "layout(std430, set = 0, binding = 0) writeonly buffer Out { uint words[]; };\n"
-                               "layout(push_constant) uniform Push { uint width; uint height; } pc;\n"
-                               "void main() {\n"
-                               "    if (gl_GlobalInvocationID.x >= pc.width || gl_GlobalInvocationID.y >= pc.height) return;\n"
-                               "    uint i = gl_GlobalInvocationID.y * pc.width + gl_GlobalInvocationID.x;\n"
-                               "    words[i] = i;\n"
-                               "}\n";
+                                                                                                 "layout(local_size_x = 8, local_size_y = 8) in;\n"
+                                                                                                 "layout(std430, set = 0, binding = 0) writeonly buffer Out { uint words[]; };\n"
+                                                                                                 "layout(push_constant) uniform Push { uint width; uint height; } pc;\n"
+                                                                                                 "void main() {\n"
+                                                                                                 "    if (gl_GlobalInvocationID.x >= pc.width || gl_GlobalInvocationID.y >= pc.height) return;\n"
+                                                                                                 "    uint i = gl_GlobalInvocationID.y * pc.width + gl_GlobalInvocationID.x;\n"
+                                                                                                 "    words[i] = i;\n"
+                                                                                                 "}\n";
     for (int round = 0; round < 2; ++round) {
         std::shared_ptr<GpuKernel> kernel;
         s = rt->pipelines().get(source, ShaderStage::Compute, "main", kernel);

@@ -76,8 +76,9 @@ private:
 
 // Pool of device-local buffers under a VRAM budget, usage being live plus pooled bytes.
 //
-// Size classes are geometric with four steps per power of two, so a request wastes at most 25% and
-// the number of distinct free lists stays small, while a power-of-two scheme would waste up to 50%.
+// Buffers are allocated in the size classes of sizeClassOf() (GpuSizeClass.h). A request takes the smallest
+// pooled buffer of its class or the class above, so a size that drifts by a few percent between frames, as
+// strip sizes do, still finds the buffers the previous frame released.
 //
 // Locking: a single mutex guards the bookkeeping. Vulkan allocation, buffer destruction and eviction
 // callbacks all run with it released, so a callback may drop handles or acquire from the pool. Bytes are
@@ -89,7 +90,7 @@ public:
     GpuBufferPool(const GpuBufferPool&) = delete;
     GpuBufferPool& operator=(const GpuBufferPool&) = delete;
 
-    // Free list, then VMA within budget, then trim the free lists, then evict least-recently-used
+    // Free lists, then VMA within budget, then trim the free lists, then evict least-recently-used
     // buffers. Out-of-memory is VK_ERROR_OUT_OF_DEVICE_MEMORY, returned without evicting when the
     // request alone exceeds the budget.
     GpuStatus acquire(VkDeviceSize size, GpuBufferHandle& out);

@@ -427,6 +427,10 @@ GpuContext::initialize()
         gpu::GpuRuntimeOptions rtOptions;
         rtOptions.device.deviceSelector = _options.device;
         rtOptions.transfer.cacheHostImports = true;
+        // The free hook forgets a buffer's whole capacity, which is what makes importing all of it safe.
+        rtOptions.transfer.hostAllocationBytes = [](const void* host) {
+            return (VkDeviceSize)HostImageMemory::bytesFrom(host);
+        };
         gpu::GpuStatus status = gpu::GpuRuntime::create(rtOptions, runtime);
         if (!status) {
             failure = status.message.empty() ? "no usable Vulkan device" : status.message;

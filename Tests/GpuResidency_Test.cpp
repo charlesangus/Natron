@@ -2151,6 +2151,91 @@ TEST_F(GpuResidencyTest, FirstDownloadFindsItsDestinationAlreadyImported)
     expectReleased(run);
 }
 
+// A Grade whose input grows by a percent on each side every frame, as the bounds of an animated rotation do. Each frame's
+// images are a little larger than the last's, yet they land in the host buffers the frame before released, whose
+// imports cover the whole buffer, and in the device buffers it released: by the third frame the region creates no
+// import and allocates nothing.
+TEST_F(GpuResidencyTest, GrowingImageReusesTheBuffersAndImportsOfTheFrameBefore)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    if (!runtime()->transfer().hostImportSupported()) {
+        std::printf("[  SKIPPED ] the device cannot import host memory\n");
+
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
+    NodePtr grade = makeGrade(1.5, 0.1);
+    ASSERT_TRUE(source && grade);
+    ASSERT_TRUE(setKnobValue(source, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize));
+    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamBottomLeft, { 0., 0. }));
+    connectNodes(source, grade, 0, true);
+
+    std::shared_ptr<RenderScheduler::RegionReport> last = std::make_shared<RenderScheduler::RegionReport>();
+    _scheduler->setRegionBody([last](const FrameRenderContextPtr& context,
+                                     const FrameGraph& graph,
+                                     int region,
+                                     const RenderScheduler::CpuFallbackLease& lease,
+                                     std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
+                                     RenderScheduler::RegionReport* report) {
+        const EffectInstance::RenderRoIRetCode code = runGpuRegion(context, graph, region, lease, rootPlanes, report);
+        *last = *report;
+
+        return code;
+    });
+
+    // Whole, so that the device buffers are the images' own sizes and not those of strips.
+    setGpuStripPipeliningForTests(GpuStripPipelining::Off);
+    // Buffers left by earlier tests could fit these frames better than their own and be new to the transfer.
+    HostImageMemory::trim();
+    runtime()->pool().trim();
+    // Each frame's RGBA float image is about 16 MB and 2% larger than the one before: the requests differ, but stay
+    // within one size class of each other.
+    const int sizes[] = { 1000, 1010, 1020 };
+    std::size_t firstBytes = 0;
+    for (int frame = 0; frame < 3; ++frame) {
+        SCOPED_TRACE(frame + 1);
+        // Released, the previous frame's images go back to the pools.
+        appPTR->clearAllCaches();
+        const int size = sizes[frame];
+        ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamSize, { (double)size, (double)size }));
+        const RectI window(0, 0, size, size);
+        const std::size_t bytes = (std::size_t)size * size * 4 * sizeof(float);
+        if (frame == 0) {
+            firstBytes = bytes;
+        } else {
+            ASSERT_NE(HostImageMemory::paddedSize(bytes), HostImageMemory::paddedSize(firstBytes));
+            ASSERT_LE(HostImageMemory::paddedSize(bytes), HostImageMemory::capacityFor(firstBytes));
+        }
+        *last = RenderScheduler::RegionReport();
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(grade, &run, &error, window)) << error;
+        const int gradeTask = taskOf(run.graph, grade);
+        ASSERT_TRUE(gradeTask >= 0);
+        assignRegions(&run.graph, { { gradeTask } });
+        run.future = _scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+        const RenderScheduler::RegionReport report = *last;
+        std::printf("[          ] frame %d, %dx%d: %llu pool misses, %llu imports of %llu bytes\n",
+                    frame + 1, size, size, report.poolMisses, report.importCount, report.newImportBytes);
+        EXPECT_EQ(0, fallbacksOf(run));
+        EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+        EXPECT_EQ(0, report.strips);
+        if (frame == 0) {
+            EXPECT_GE(report.importCount, 1u);
+            EXPECT_GE(report.poolMisses, 1u);
+        } else if (frame == 2) {
+            EXPECT_EQ(0u, report.importCount) << "a frame imported host memory again";
+            EXPECT_EQ(0u, report.newImportBytes);
+            EXPECT_EQ(0u, report.poolMisses) << "a frame allocated device memory again";
+        }
+        EXPECT_FALSE(run.future->getRootPlanes().empty());
+        expectReleased(run);
+    }
+}
+
 #endif // NATRON_HAVE_GPU
 
 namespace {

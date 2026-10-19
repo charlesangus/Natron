@@ -1,24 +1,328 @@
 # M107 - GPU Viewer Hand-off
 
-> Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
+Main has the pieces for this, but they are not connected. `GlInterop` is never called outside its tests. A GPU region always downloads its root. In the default 8-bit viewer mode, the CPU applies the OCIO display transform. In 32-bit float mode, OpenGL's fragment shader applies it. So the Vulkan OCIO kernel is only needed for 8-bit mode, which is the default. In float mode the GL shader keeps doing the display transform after the hand-off.
 
-Let a region's root output stay on the device all the way to the screen:
-- Wire `GlInterop` (`Engine/Gpu/GlInterop.h`) into `ViewerGL::transferBufferFromRAMtoGPU` (`Gui/ViewerGL.cpp:1557`), passing `QOpenGLContext::getProcAddress`. The `ViewerGL` PBO path then binds the interop buffer instead.
-- Add double-buffering in `GlInterop`, deferred from the M83 review.
-- Add a GPU viewer-process kernel to replace `scaleToTexture8bits`/`32bits` (`Engine/ViewerInstance.cpp:107/112`, called at `:2137/2140`): gain, gamma, channel display, matte overlay, the display LUT and dithering for 8-bit.
+Two things block the end-to-end acceptance. First, keeping the root on the device needs a small edit to `Engine/GpuRegionTask.cpp`, which M109 is rewriting heavily, so that task is flagged to run after M109 merges. Second, the RADV "0 downloads" check needs a radeonsi GL display on the bench host. Xvfb only gives llvmpipe, which can only use the readback path. Spike P1.T2 is there to find that display.
 
-The viewer then stops downloading the root, and the hostsync and readback fallbacks remain.
+**Scouted facts** (origin/main `2410277ee`)
 
-Blocked on:
-- how the OCIO display transform runs on Vulkan (the user decides at promotion, 2026-10-12) without runtime shader compilation: a baked 3D LUT plus shaper in a fixed Slang kernel, or a fixed set of OCIO ops ported to Slang. This needs a short spike, and the user's choice on the precision trade-off;
-- M85 merged (the `pixelwrap.slang` conventions and the registry).
+**The viewer pipeline today**
+1. `ViewerInstance::renderViewer_internal` sends the frame to the RenderScheduler (`submitViewerFrameToRenderScheduler`, `Engine/ViewerInstance.cpp:476-523`). It then calls `future->wait()` and `future->getRootPlanes()` (`:1665-1667`), which return **RAM** `ImagePtr`s. Frames the scheduler can't take go through `renderRoI(... eStorageModeRAM)` instead (`:1669-1683`).
+2. Each tile with no cached copy goes through `renderFunctor` (`:2129-2140`). It calls `scaleToTexture32bits` at **:2135** and `scaleToTexture8bits` at **:2138**. The stub said :2137/:2140; the declarations at :107/:112 are correct.
+   - **8-bit** (`scaleToTexture8bits_generic`, `:2273-2448`):
+     - converts to float, selects the channel or computes luminance (Y);
+     - calls `applyViewerDisplayTransform` (`:139-190`, with the 8-bit LUT shortcut `applyForEightBitOutput` when gamma is 1). That applies gain and offset, then OCIO on the CPU, then gamma (a threshold at gamma ≤ 0);
+     - applies the matte overlay, with the display transform also run on the matte (`:2403-2406`);
+     - dithers by error diffusion along each row from a `rand()` start (`:2408-2440`), so the CPU output is not deterministic;
+     - packs ARGB with `toBGRA` (`:127-136`).
+   - **32f** (`scaleToTexture32bitsGeneric`, `:2628-2752`): only channel select, luminance, int→float and `r += matte*0.5`. No gain, gamma or OCIO.
+3. Finished tiles go into the viewer texture cache (`FrameKey` includes gain, gamma, the OCIO `cacheHash`, depth and channels; `:1176-1245`, `:1880-1950`). `useTextureCache` is false under auto-contrast, user RoI, paint, partial updates and force-render (`:1469`). Each cache entry also keeps the RAM `colorImage` (`setInternalImage`).
+4. On the main thread, `ViewerInstancePrivate::updateViewer` (`:2890-2970`) calls `uiContext->transferBufferFromRAMtoGPU` once per tile (`:2929`), then `endTransferBufferFromRAMToGPU` (`:2959`).
+5. `ViewerGL::transferBufferFromRAMtoGPU` is at **`Gui/ViewerGL.cpp:1560-1672`** (stub said ~1557). It uses two rotating PBOs: `glBufferData(NULL)`, map, `memcpy`, then `fillOrAllocateTexture`. The texture is RGBA8 (BGRA / `8_8_8_8_REV`) or RGBA32F, depending on `getBitDepth()` (`:3186`). That is the `texturesBitDepth` setting, **default "8u"** (`Engine/Settings.cpp:1104-1123`, `:1626`); a shader failure forces 8u.
+6. OpenGL OCIO is used only when `useShader = getBitDepth() != Byte` (`Gui/ViewerGLPrivate.cpp:251`):
+   - `buildShaderRGB` (`:874-1040`) builds `GPU_LANGUAGE_GLSL_1_2` (`:895`) and its LUT textures;
+   - `activateShaderRGB` (`:1046-1103`) sets the gain, offset and gamma uniforms plus OCIO's uniforms.
+7. `endTransferBufferFromRAMToGPU` (`Gui/ViewerGL.cpp:1452-1530`) stores the RAM image in `lastRenderedTiles[mip]`. The colour picker, pixel info and `Gui/Histogram.cpp:502` all read it through `getLastRenderedImageByMipmapLevel` (`:4171`).
 
-Acceptance sketch:
-- On RADV, a resident comp displays with no device-to-host download of the root; the profile shows 0 root downloads.
-- The viewer's GPU output matches the CPU display path within a stated tolerance (8-bit: ±1 code value) for every display mode.
-- Without interop (lavapipe, CI) the viewer falls back silently and displays correctly.
+**The answer to the OCIO question:** only 8-bit mode needs OCIO in the Vulkan kernel (OCIO's VK GLSL, compiled through M126's pipeline cache). In 32f mode the kernel does channel select, luminance and matte, and the existing GL shader keeps applying gain, OCIO and gamma to the handed-off float texture.
+
+**Where a resident root lives**
+- `RegionRun::plan` (`Engine/GpuRegionTask.cpp:655-679`; `:679` on the M109 branch) sets `cpuConsumer = output.isRoot`, so the root slot always gets `download = true`.
+- `storeOutputs` (`:1958-1975`) fails with "the root was not downloaded" if it wasn't, and sets `(*rootPlanes)[layer] = slot.downloaded`.
+- Device outputs that other regions read already go through `GpuDeviceImage::create(...)` and `FrameStore::putDevice` (`:1976-2005`). `GpuDeviceImage` (`Engine/GpuContext.h:234-290`) has `pin`/`unpin`, `setEvictable`, `downloadToRam` and `layout()`. Its pixels are float, `nComps` interleaved, rows packed from the bottom (`GpuImageLayout`).
+- `RenderScheduler` keeps the root task's planes (`:1340`), then `finalizeFrames` runs `getStore().clear()` and `future->finish(Ok, rootPlanes)` (`:1745-1757`). A device root stored in the FrameStore would be dropped there. It has to travel on the `FrameRenderContext`, which the viewer creates (`ViewerInstance.cpp:505`) and keeps holding.
+- Region roots in strip mode are downloaded strip by strip (`stripSlot.interior = keep || download`, `:1164`). M109.P4.T1 also strips regions that fit whole when that hides transfer time.
+- `GpuCostModel::regionGain` charges a download for the root (`Engine/GpuCostModel.h:176-177`), so placement under-rates regions that feed the viewer.
+- Download accounting already exists:
+  - `RenderStats::noteDownload` / `getDownloadCount` (`Engine/RenderStats.h:168,209`);
+  - `NATRON_RENDER_PROFILE` writes a JSONL record per region with `downloadBytes` (`RenderScheduler.cpp:186`; sample in `tools/bench/render-profile-sample.jsonl`).
+
+**What M83 left in `GlInterop`** (`Engine/Gpu/GlInterop.{h,cpp}`)
+- It is only used by `Tests/Gpu/GlInterop_Test.cpp` (EGL surfaceless) and `tools/gpu-spike/tests/GlInteropQt_main.cpp` (Qt under Xvfb).
+- `probe` checks the Vulkan and GL external-memory and semaphore extensions plus matching device and driver UUIDs, and picks `best`.
+- `create(device, loader, w, h, path)` makes **one** RGBA32F buffer of a fixed size.
+- `produce(record)` (`:593-707`) records the caller's writes. It brackets them with acquire and release barriers to `VK_QUEUE_FAMILY_EXTERNAL`; on the readback path it copies to a host-visible buffer instead. It submits on the compute queue (with semaphores on ZeroCopy) and never waits on a timeline value it is given.
+- `upload(texture)` (`:709-770`):
+  - **ZeroCopy** waits on the GL semaphore, does `TexSubImage2D` from the imported PBO, signals and flushes;
+  - **ZeroCopyHostSync** waits on the fence first and calls `glFinish` at the end;
+  - **Readback** invalidates, orphans and maps the PBO, then copies with `memcpy`.
+- `produce` and `upload` must strictly alternate (`pendingUpload_`): a second `produce` fails. That is the single-buffer limit M83's review deferred. Uploads are always full-size from (0,0) with `GL_RGBA`/`GL_FLOAT`, so there is no 8-bit format and no sub-rectangle.
+- M83 measured on RADV/radeonsi at UHD: 0.79 ms zero-copy, 0.87 ms hostsync, 33.2 ms readback plus PBO. On lavapipe/llvmpipe, hostsync is byte-exact (including Qt under Xvfb) but semaphore zero-copy is skipped.
+
+**Other facts the plan depends on**
+- `GpuContext::holdRuntime()` stops `recoverIfLost()` from recreating the runtime while a token is held. `recreate()` invalidates every handle (`Engine/GpuRuntime.h`). `appPTR->getGpuContext()` is at `Engine/AppManager.h:430`.
+- `GpuRuntime::pipelines()` is M126's `GpuPipelineCache::get(source, stage, entry)` (thread-safe, cached in memory and on disk). `GpuKernel::recordBindings` binds reflected UBOs, storage buffers and `GpuTexture`s on a raw `VkCommandBuffer`, which is what `GlInterop::produce` hands out.
+- `GpuDevice::submit` is mutex-guarded (`Engine/Gpu/GpuDevice.h:~148`), so a viewer submit from the main thread is safe next to region submits.
+- `Engine/*.cpp` and `Gui/*.cpp` are globbed, so new files need no CMake edit. `Tests/Native/*_Test.cpp` is globbed with `CONFIGURE_DEPENDS` (`Tests/CMakeLists.txt:122`). `Tests/CMakeLists.txt`'s explicit list is touched by both M100 and M109.
+- `NATRON_HAVE_GPU` is a PUBLIC define of NatronEngine, so Gui code can `#ifdef` on it.
+- `OpenGLViewerI` (`Engine/OpenGLViewerI.h`) has exactly one implementor, `ViewerGL`.
+- M127 (todo) plans `Engine/Nodes/OCIO/OcioGpuShader.{h,cpp}` (M127.P3.T1) for the same OCIO VK work: `GPU_LANGUAGE_GLSL_VK_4_6`, LUTs as `GpuTexture`, uniforms as a UBO. M107 should own that helper and M127 should reuse it.
+- `Tests/gui/run-gui-test.sh` with `guitest.py` (PASS/FAIL/SHOT lines) is the Xvfb GUI harness. `tools/bench/gui/` does not exist on main.
+
+## Scope
+
+**In:**
+- `GlInterop` double-buffered slots, with capacity-based sizing, RGBA32F and BGRA8 formats, sub-rectangle uploads and a timeline wait before produce.
+- A runtime-GLSL viewer-process compute kernel covering:
+  - channel display (RGB/R/G/B/A/Y) and the matte overlay;
+  - gain and offset, the OCIO display/view/look (OCIO's `GLSL_VK_4_6` through M126's pipeline cache) and gamma, including the threshold at gamma ≤ 0;
+  - 8-bit packing with dither (8u mode only);
+  - float output for 32f mode, where the existing GL shader keeps gain, OCIO and gamma.
+- A shared OCIO→Vulkan shader helper, which M127 reuses, with a per-processor LUT texture cache. This lifts M126's re-upload-every-render limit for the viewer.
+- An Engine-side `ViewerHandoff` that owns the interop slots per viewer input (A/B). It picks a fallback rung: ZeroCopy → ZeroCopyHostSync → Readback (GPU kernel, then a download of the 4 B/px or 16 B/px display buffer) → the CPU path.
+- `ViewerGL` wiring: `QOpenGLContext::currentContext()->getProcAddress`, a device-image upload entry on `OpenGLViewerI`, and teardown with the context current.
+- A device root delivered on `FrameRenderContext`. The viewer consumes it and skips `scaleToTexture*`.
+- On-demand download of the displayed device root for the colour picker, pixel info and histogram.
+- The region root kept on the device when the viewer asks for it (flagged task, after M109).
+- Fallback reasons through the existing `RenderStats::incLegacyFallbacks("viewer handoff: …")`.
+- A diagnostic rung override, `NATRON_VIEWER_HANDOFF=zerocopy|hostsync|readback|cpu`, for tests and benches. It is not a setting.
+- A UAT script under Xvfb, then a quick directional bench before a thorough one.
+
+**Out:**
+- GPU min/max for auto-contrast. Auto-contrast frames take the CPU path; follow-up milestone, none owns it yet.
+- A GPU viewer process for roots that live on the CPU (uploading a RAM root to run the kernel). Follow-up, unowned.
+- Partial updates (RotoPaint/tracking), deep input and paint strokes. The scheduler doesn't take these frames (`ViewerInstance.cpp:453-465`), so they stay on the CPU.
+- Matte overlay whose alpha layer differs from the colour layer. A region renders one plane (`makeGpuQueryForTask`), so these stay on the CPU.
+- The engine GL host path: M108 - Retire Engine GL Host Path.
+- The node-graph overlay of regions feeding the viewer: M116 - GPU Region Overlay. Its "still a download" note is resolved by this milestone.
+- OCIO nodes on Vulkan: M127 - Native OCIO Nodes, which reuses the P3.T1 helper.
+- NVIDIA interop validation: M91 - NVIDIA GPU Validation.
+
+**Edge cases:**
+- The viewport grows (pan or zoom out): the slot is too small, so that frame falls back to Readback or the CPU and the main thread grows the slots for the next frame.
+- A/B wipe: one slot ring per `textureIndex`.
+- A frame dropped by the age check in `updateViewer`: release the pinned root without uploading.
+- Texture pixels outside the root's bounds are processed as (0,0,0,0) through the full transform, as the CPU path does with `src_pixels == null`.
+- Display transform changes, or `shaderFailed` flips the mode to 8u: the pipeline and LUT cache rebuild, keyed on the processor `cacheID` and the mode.
+- An OCIO VK compile failure: CPU path for that processor, one log line, no retry until the processor changes.
+- Device lost (`NATRON_GPU_FAULT=lost@N`): `ViewerHandoff` drops its interop and device images on the main thread and releases its `holdRuntime` token, the viewer uses the CPU path, and it rebuilds after `recoverIfLost`.
+- The pool is under pressure while the viewer holds the displayed root: the root is evictable, and the picker reads its RAM copy.
+- The colour picker, pixel info or histogram is open: a download happens only when they ask for pixels, and the gate measures with them closed.
+- Interop available but the device and driver UUIDs differ, for example Xvfb's llvmpipe GL next to RADV Vulkan: use the Readback rung.
+- The ViewerGL widget is destroyed before the render thread's frame arrives.
+- Proxy or mipmap levels and pixel aspect ratio: the texture rectangle comes from `roiRoundedToTileSize` as today.
+
+**Assumptions:**
+- The 8-bit tolerance is ±1 code value against the CPU path. CPU dithering is already random, and an ordered or hash dither on the GPU stays within ±1 of the same float, so the GPU kernel uses a parallel ordered dither, not row-serial error diffusion.
+- Alpha must match exactly. 32f must match within 1e-6·max(1,|v|).
+- A region returns only after its compute work has completed, or the hand-off can wait on the timeline value it publishes. P1.T1 and P5.T1 check this.
+- One shared Vulkan device and pool: the viewer's command buffers go through `GlInterop`'s own pool on the compute family, the same family the region used, so no ownership transfer is needed.
+- No new user setting (hard cut). The hand-off runs whenever the GPU context is available and a rung works.
+
+## Phase 107.1: Spikes
+
+- [ ] M107.P1.T1 — Spike: compile OCIO's `GLSL_VK_4_6` display shader inside a compute wrapper through `GpuPipelineCache`
+  - files: `Tests/Native/OcioVkSpike_Test.cpp` (new, scratch; folded into P3.T1 or deleted), milestone Decisions entry
+  - approach:
+    - Build a `GpuShaderDesc` with `GPU_LANGUAGE_GLSL_VK_4_6`. Try `setDescriptorSetIndex(0, <first texture binding>)` with a function name and resource prefix, for the studio config's "sRGB - Display" / ACES 2.0 SDR view (as in `Tests/ViewerDisplayTransform_Test.cpp`), and for a config with a 3D LUT (a `.cube` look).
+    - Wrap it in `#version 460` compute code: a storage buffer in, a storage buffer out, push constants.
+    - Compile with `runtime.pipelines().get`, then check M126's reflection: uniform block names and offsets (`UniformData::m_bufferOffset`), and the sampler bindings at 1D/2D/3D.
+    - Dispatch it on a ramp and compare with `processor->getDefaultCPUProcessor()`.
+    - Also confirm, by reading code and running one instrumented case, whether `RegionRun::run` returns after compute has completed (`record()` and `submit`).
+  - verify: on lavapipe and RADV (one local container build, `NATRON_DEV_GPU=1`), the shader compiles, both configs bind, and the max error against OCIO's CPU path is recorded (target ≤ 1e-4). A Decisions entry records:
+    - the binding scheme;
+    - whether dynamic properties come through as a UBO;
+    - the compile time when cold and when the disk cache is warm;
+    - the answer on region completion.
+  - size: M
+
+- [ ] M107.P1.T2 — Spike: find which hand-off rung the viewer's actual Qt GL context reaches, under Xvfb and on the bench host's RADV
+  - files: `tools/gpu-spike/tests/GlInteropQt_main.cpp` (print `GlInteropCaps` for a compatibility-profile `QOpenGLWidget`), `tools/ci/local/README.md` (a short "RADV GL display for GUI checks" recipe)
+  - approach:
+    - Run `GlInteropQt` in natron-dev under Xvfb on lavapipe and llvmpipe. Expect HostSync to be best.
+    - Run it on the bench host on RADV. Try, in order:
+      - an existing desktop session;
+      - `weston --backend=headless --renderer=gl` with `QT_QPA_PLATFORM=wayland`;
+      - Xorg with a dummy or modesetting config on the 7900 XTX.
+    - The goal is a radeonsi GL context, so `uuidMatch` is true and ZeroCopy is best. Record the setup that works. Use `env -u LD_LIBRARY_PATH` because Nuke's Qt shadows ours.
+  - verify: each environment's best rung and its `missing` string are recorded in the milestone, with a byte-exact checksum. If no environment reaches ZeroCopy or HostSync on RADV, stop and raise open question 3 before P6.
+  - size: M
+
+## Phase 107.2: GlInterop for the viewer
+
+- [ ] M107.P2.T1 — Double-buffer `GlInterop` and make it size- and format-flexible
+  - files: `Engine/Gpu/GlInterop.h`, `Engine/Gpu/GlInterop.cpp`, `Tests/Gpu/GlInterop_Test.cpp`
+  - approach:
+    - Replace the single buffer, semaphores, command buffer and fence with `kSlots = 2` slots. Each slot has its own exported buffer and GL memory object, readback buffer, command buffer, fence and semaphore pair, plus its own release/acquire and `pendingUpload` state.
+    - `create(device, loader, capacityBytes, path)`.
+    - `GpuStatus produce(const GlFrame& frame, record, std::span<const TimelineValue> waits, int* slot)`, where `GlFrame` is `{width, height, GlPixelFormat::Rgba32F | Bgra8}`. It picks the slot GL is not reading, fails with `VK_ERROR_OUT_OF_POOL_MEMORY` when the frame exceeds the capacity, and waits on the given timeline values in the submit.
+    - `upload(slot, texture, x, y)` sets the format and type: `GL_RGBA`/`GL_FLOAT`, or `GL_BGRA`/`GL_UNSIGNED_INT_8_8_8_8_REV`.
+    - Keep the queue-family-external bracketing for each slot.
+    - HostSync waits on the fence of the slot being uploaded, so producing frame N+1 never waits on GL reading frame N.
+  - verify: `GlInteropTest.*` gains two tests for all three paths:
+    - `DoubleBufferedProduceAheadByteExact`: produce N+1 before uploading N, byte-exact;
+    - `Bgra8SubRectByteExact`, which also covers the capacity-refusal case.
+    They pass on lavapipe/llvmpipe (EGL, ZeroCopy skipped with its reason) and on RADV/radeonsi. `UhdLatency` does not regress against M83's 0.79 / 0.87 / 33.2 ms.
+  - size: L
+
+## Phase 107.3: Viewer-process kernel
+
+- [ ] M107.P3.T1 — Shared OCIO→Vulkan shader helper with a LUT texture cache
+  - files: `Engine/OcioVulkanShader.h` (new), `Engine/OcioVulkanShader.cpp` (new), `Tests/Native/OcioVulkanShader_Test.cpp` (new, absorbs P1.T1's spike)
+  - approach:
+    - `OcioVulkanShader::build(const OCIO::ConstGPUProcessorRcPtr&, functionName, firstBinding)` returns the GLSL text, the texture descriptions and the UBO layout, using the binding scheme P1.T1 found.
+    - `OcioVulkanShader::Resources` holds the created `gpu::GpuTexture`s keyed on the processor `cacheID`, created once on the runtime's device. It also has `fillUniforms(std::vector<std::byte>&)` for each frame's dynamic values.
+    - Dynamic properties are excluded from the shader hash, so changing exposure doesn't recompile.
+    - This is the helper M127.P3.T1 is meant to reuse (see Coordination).
+  - verify: the test compiles through `pipelines()` and matches OCIO's CPU path within 1e-4 for the studio display/view, the 3D-LUT look and an identity processor. A second `Resources` lookup with the same `cacheID` makes no new `GpuTexture`. Runs on lavapipe (CI) and RADV.
+  - size: M
+
+- [ ] M107.P3.T2 — Viewer-process compute kernel with a CPU-reference parity test for every display mode
+  - files: `Engine/ViewerGpuProcess.h` (new), `Engine/ViewerGpuProcess.cpp` (new), `Engine/ViewerInstance.h`, `Engine/ViewerInstance.cpp`, `Tests/Native/ViewerGpuProcess_Test.cpp` (new)
+  - approach:
+    - A GLSL compute template is put together from:
+      - the input fetch from a `GpuImageView` (nComps 1–4, `rowStrideFloats`, bounds; (0,0,0,0) outside the bounds);
+      - channel select and luminance (0.299/0.587/0.114);
+      - the matte, read from the same plane;
+      - **8u:** gain and offset, `OCIODisplay(...)` from P3.T1 (or a pass-through), gamma or the threshold, the display transform also applied to the matte, `r += matte/2` as an integer clamp, a hash-based ordered dither to `floatToInt<0xff01>`-equivalent codes, and ARGB packing that matches `toBGRA`;
+      - **32f:** channel, luminance and matte only (`r += matte*0.5`), float RGBA out.
+    - `ViewerGpuProcess::prepare(processor, mode)` warms the pipeline and LUTs. It is callable from the render thread.
+    - `ViewerGpuProcess::record(cmd, input, outBuffer, GlFrame, params)` records the dispatch over the texture rectangle.
+    - A compile failure returns a status, and the caller takes the CPU path.
+    - Expose the existing CPU tile path as a free function, `viewerProcessRectOnCpu(...)` in `ViewerInstance.h`. It is a thin wrapper over `renderFunctor`, in a hunk away from M100's lines ~583 and ~1426.
+  - verify: the parity test sweeps:
+    - `DisplayChannels` RGB/R/G/B/A/Y/Matte;
+    - nComps 1–4;
+    - gain 0.5/4, offset ±0.2, gamma 1/2.2/0;
+    - no OCIO, the studio ACES display, and the 3D-LUT look;
+    - inputs with ramps, negatives, values above 1 and an off-bounds band.
+    In 8u, every RGB code is within ±1 and alpha is exact. In 32f, values are within 1e-6·max(1,|v|). A deliberately broken OCIO source returns a failed status. Passes on lavapipe and RADV.
+  - size: L
+
+## Phase 107.4: Viewer integration
+
+- [ ] M107.P4.T1 — `ViewerHandoff`: interop ownership, fallback ladder, device loss
+  - files: `Engine/ViewerHandoff.h` (new), `Engine/ViewerHandoff.cpp` (new), `Tests/Native/ViewerHandoff_Test.cpp` (new; EGL surfaceless loader copied from `GlInterop_Test.cpp`)
+  - approach:
+    - A GPU-API-free interface for Gui:
+      - `create(GlProcLoader)` probes on the GL thread and picks the rung: ZeroCopy, then HostSync, then Readback, honouring `NATRON_VIEWER_HANDOFF`;
+      - `rung()` is atomic, so the render thread can read it;
+      - `present(textureIndex, const GpuDeviceImagePtr& root, params, glTexture, GlFrame)` pins the root, runs `produce` (with P3.T2's `record` and the region's timeline wait), runs `upload`, then unpins once the fence signals;
+      - `ensureCapacity(bytes)` reallocates slots on the GL thread;
+      - `release()` runs with the GL context current.
+    - Hold a `GpuContext::holdRuntime()` token only while interop exists. On `runtime->isLost()`, drop everything and report `cpu` until recovery.
+    - The returned reason strings feed `incLegacyFallbacks`.
+  - verify: headless test on llvmpipe/lavapipe (HostSync and Readback) and on RADV/radeonsi (all three rungs):
+    - `present` of a hand-made `GpuDeviceImage` into a GL texture matches `viewerProcessRectOnCpu` within the P3.T2 bounds;
+    - a frame over capacity is refused with a reason;
+    - `NATRON_GPU_FAULT=lost@N` takes it to `cpu` with no crash or leak (`leakedAllocationsAtLastTeardown() == 0`).
+  - size: L
+
+- [ ] M107.P4.T2 — Deliver a device root on `FrameRenderContext` and let `ViewerInstance` consume it
+  - files: `Engine/FrameRenderContext.h`, `Engine/FrameRenderContext.cpp`, `Engine/ViewerInstancePrivate.h`, `Engine/ViewerInstance.cpp`, `Tests/Native/ViewerDeviceRoot_Test.cpp` (new)
+  - approach:
+    - `FrameRenderContext::setWantsRootOnDevice(bool)`, `wantsRootOnDevice()`, `setRootDevicePlanes(map<ImageLayerDesc, DeviceImagePtr>)` and `takeRootDevicePlanes()`. This is separate from `FrameStore`, so `finalizeFrames`' `store.clear()` leaves it alone.
+    - In `submitViewerFrameToRenderScheduler`, set the flag when `uiContext->handoffRung() != cpu` and the frame qualifies: no auto-contrast, not Matte with a separate alpha layer, not a partial rect.
+    - After `future->wait()`, prefer the context's device planes. Put them in `UpdateViewerParams::deviceColor`, skip allocating CPU tile buffers and skip `renderFunctor`, and call `ViewerGpuProcess::prepare` on the render thread so the main thread never compiles.
+    - Empty RAM planes with a device plane count as success, not `eViewerRenderRetCodeBlack`.
+    - Keep the edits in `renderViewer_internal` (~1655-1720, ~1760-2070) and the submit helper, away from M100's hunks.
+  - verify: the test installs a fake scheduler result. A context whose root device plane was set by the test makes `renderViewer_internal` produce params with `deviceColor` set and no RAM tiles. With the flag off, or under auto-contrast, the RAM path is byte-identical to main (existing `ViewerScheduler_Test` and `ViewerDisplayTransform_Test` still pass).
+  - size: L
+
+- [ ] M107.P4.T3 — `ViewerGL` uploads device roots through `ViewerHandoff`, and the picker and histogram download on demand
+  - files: `Engine/OpenGLViewerI.h`, `Gui/ViewerGL.h`, `Gui/ViewerGL.cpp`, `Gui/ViewerGLPrivate.h`, `Engine/ViewerInstance.cpp`
+  - approach:
+    - `OpenGLViewerI` gains `handoffRung()` and `transferDeviceImageToGPU(root, roiRounded, roi, textureIndex, params)`.
+    - `ViewerGL::initializeGL` (`:1205`) creates the `ViewerHandoff`, under `#ifdef NATRON_HAVE_GPU`, with a loader wrapping `QOpenGLContext::currentContext()->getProcAddress`.
+    - `transferDeviceImageToGPU` picks the `Texture` data type from `getBitDepth()`, calls `ensureTextureHasSize(roiRounded)` and `handoff->present(...)` into `displayTextures[i].texture`. On refusal it returns false; `updateViewer` then downloads the root once and runs the existing CPU path for that frame.
+    - `ViewerGL::~ViewerGL` (`:140`) releases the handoff with the context current.
+    - `endTransferBufferFromRAMToGPU` keeps a `DeviceImagePtr` beside `lastRenderedTiles`. `getLastRenderedImageByMipmapLevel` (`:4171`) downloads it lazily, once per frame, under `lastRenderedImageMutex`.
+    - `updateViewer` (`ViewerInstance.cpp:2890-2970`) branches on `params->deviceColor`.
+    - The 32f GL shader path is untouched.
+  - verify: the fast build passes. An Xvfb smoke test (`run-gui-test.sh` with an existing script) shows no regression with `NATRON_GPU=off`. `ViewerHandoff_Test` still passes. The full in-app device path is checked in P6, after P5.
+  - size: L
+
+- [ ] M107.P4.T4 — Viewer texture cache for handed-off frames (shape depends on open question 2)
+  - files: `Engine/ViewerInstance.cpp`, `Engine/ViewerHandoff.cpp`, `Engine/ViewerHandoff.h`, `Tests/Native/ViewerHandoff_Test.cpp`
+  - approach:
+    - Recommended option (a): when `useTextureCache` holds, `present` also records a copy of the display buffer into the slot's host readback buffer. After the fence signals (next `updateViewer`, or a zero-timer on the main thread), cut it into tiles of `tileSize` and write them into the `FrameEntry`s found with `getTextureOrCreate`, with internal image null. The root itself is still never downloaded.
+    - Option (b): skip cache insertion for handed-off frames, and document that already-seen frames render again.
+  - verify, option (a): a second display of the same frame is served from the viewer cache with no render, the cached tiles match the displayed texture byte for byte, and the region record still shows `downloadBytes == 0`. Option (b): the test asserts that nothing is inserted.
+  - size: M
+
+## Phase 107.5: Root stays on the device (⚑ start after M109 - GPU Region Engine Hardening merges)
+
+- [ ] M107.P5.T1 — ⚑ Keep a GPU region's root on the device when the viewer asks for it
+  - files: `Engine/GpuRegionTask.cpp`, `Engine/GpuCostModel.h`, `Engine/GpuCostModel.cpp`, `Engine/GpuRegionStrips.cpp`, `Tests/Native/ViewerRootOnDevice_Test.cpp` (new)
+  - approach:
+    - In `plan()`, when `_context->wantsRootOnDevice()` and the region runs whole, `isRoot` alone no longer sets `cpuConsumer`.
+    - In `storeOutputs`, wrap the root slot with `GpuDeviceImage::create`, make it evictable, and call `_context->setRootDevicePlanes`. `rootPlanes` stays empty.
+    - Strip runs keep downloading the root, with a "viewer handoff: strips" reason.
+    - `planGpuStrips` no longer chooses strips just to hide transfer time when the root stays on the device.
+    - `GpuCostModel::regionGain` does not charge the root's download under the flag.
+    - The CPU-restart path (`renderMembersOnCpu`) still returns RAM planes. `ViewerInstance` already handles both.
+  - verify: a CPU Read feeding Grade, Blur and ColorCorrect on the GPU into the root, on lavapipe (`NATRON_GPU=force`) and RADV:
+    - with the flag, `RenderStats::getDownloadCount() == 0`, the region JSONL record has `downloadBytes == 0`, and the device plane's pixels equal the RAM root rendered without the flag;
+    - a forced strip height still downloads and is counted;
+    - placement accepts the region at a size where it was rejected before.
+    M109's `GpuResidency_Test` and `GpuRegionFallback_Test` still pass.
+  - size: L
+
+## Phase 107.6: Verification
+
+- [ ] M107.P6.T1 — UAT under Xvfb: every display mode, every rung, CPU fallback
+  - files: `Tests/gui/m107_viewer_handoff.py` (new)
+  - approach:
+    - Fast preset in natron-dev under Xvfb. Load the resident comp from P5.T1.
+    - For 8u and 32f, × RGB/R/G/B/A/Y/Matte, × gain 2 / gamma 2.2 / gamma 0, × an ACES display/view: grab the viewer framebuffer (`ViewerGL::grabFramebuffer`) under `NATRON_GPU=off` (the reference) and under `NATRON_GPU=force` with `NATRON_VIEWER_HANDOFF=hostsync` and `=readback`.
+    - Then: a mid-session OCIO change, an A/B wipe, a pan that grows the viewport, colour picker values, and the histogram drawing.
+    - Also run once with `NATRON_GPU_FAULT=lost@40`.
+  - verify:
+    - `results.txt` has `SUMMARY 0 failure(s)`;
+    - each GPU grab is within ±1 code value of the CPU grab;
+    - the picker matches the CPU values;
+    - after a device loss the viewer keeps updating on the CPU path;
+    - with `NATRON_GPU=off` the log has no interop errors (silent fallback);
+    - SHOT lines are kept for review.
+    GUI bench rule: not triggered. The diff touches `Gui/ViewerGL*` only, none of `NodeGraph*`, `NodeGui*`, `Edge*`, knob expressions or node naming.
+  - size: M
+
+- [ ] M107.P6.T2 — Quick directional bench (~1 h) on RADV
+  - files: milestone Results section (data in `.local/m107/`)
+  - approach:
+    - Release AppImages of main and of the M107 branch, run on the same boot (probe `MemAvailable` per case; `env -u LD_LIBRARY_PATH`), in P1.T2's radeonsi display setup.
+    - The P5 comp at UHD and 8K, 8u and 32f.
+    - Measure viewer latency (request to `imageChanged`) and 48-frame playback fps with the viewer cache cleared, with `NATRON_RENDER_PROFILE` on.
+    - Compare the rungs zerocopy, hostsync, readback and cpu.
+  - verify: a table of ms per frame and fps for each case and rung, and root region `downloadBytes == 0` on zerocopy and hostsync. A direction call: hand-off beats main by X ms at UHD. If it's slower, stop and diagnose before P6.T3.
+  - size: M
+
+- [ ] M107.P6.T3 — Thorough bench matrix on the target host
+  - files: milestone Results section
+  - approach: 2K, UHD, 8K and the largest texture the viewer allows; 8u and 32f; single input and A/B wipe; cold and warm pipeline cache (cold-compile latency for the OCIO display); with the colour picker or histogram open (on-demand download cost); and option (a)'s cache readback cost if chosen. Pairs from the same boot only.
+  - verify: the matrix is recorded with medians over 3 runs. No case is slower than main beyond noise without an explanation written down.
+  - size: M
+
+**Verification gate:**
+- **CI:** `tools/ci/remote/build.sh fast --tests` passes on lavapipe, including `GlInteropTest.*`, `OcioVulkanShader_Test`, `ViewerGpuProcess_Test`, `ViewerHandoff_Test`, `ViewerDeviceRoot_Test` and `ViewerRootOnDevice_Test`, with the unchanged `ViewerScheduler_Test` and `ViewerDisplayTransform_Test`.
+- **RADV:** the local container build (`NATRON_DEV_GPU=1 tools/ci/local/build.sh`) runs the same suites on RADV/radeonsi with ZeroCopy exercised.
+- **UAT:** `Tests/gui/m107_viewer_handoff.py` passes under Xvfb on the fast preset. GPU output is within ±1 code value of the CPU path in 8u, within 1e-6 relative before the GL shader in 32f, and alpha is exact, for every display mode.
+- **0 root downloads:** on RADV in the radeonsi display setup, the release AppImage displays the resident comp with `NATRON_RENDER_PROFILE` showing `downloadBytes == 0` for the root region and `RenderStats` download count 0 (picker and histogram closed).
+- **Silent fallback:** with `NATRON_GPU=off`, or without interop, the viewer displays correctly with no error dialog or log spam.
+- **Benches:** P6.T2 and P6.T3 numbers are recorded.
+- **Merges:** P5.T1 lands only after M109 merges, and the branch is rebased on main after M100 merges.
+- **Not applicable:** GUI bench (`tools/bench/gui/run.sh`), because no `Gui/NodeGraph*`, `NodeGui*`, `Edge*`, knob-expression or naming files change.
+
+## Overlaps with running milestones
+
+| M107 file | Running owner | Handling |
+|---|---|---|
+| `Engine/GpuRegionTask.cpp` | M109 (+391/−59 on its branch, including `plan()` and `storeOutputs`) | Can't be avoided: the root's download decision lives there. It is kept to one task, **P5.T1 ⚑**, which starts after M109 merges. P3 and P4 are tested with a hand-injected `GpuDeviceImage` root, so they don't need it. |
+| `Engine/GpuCostModel.{h,cpp}`, `Engine/GpuRegionStrips.cpp` | M109 | Moved into P5.T1 ⚑, for the same reason. |
+| `Engine/RenderScheduler.{h,cpp}` | M109 | **Avoided.** The device root travels on `FrameRenderContext`, which the viewer owns, not on `FrameFuture`. `finalizeFrames`' `store.clear()` doesn't touch it. |
+| `Engine/RenderStats.*` | M109 | **Avoided.** Only the existing `incLegacyFallbacks` and `getDownloadCount` are called, and the profile JSONL already carries `downloadBytes`. |
+| `Engine/Gpu/GpuRuntime.*`, `GpuBufferPool.*`, `GpuTransfer.*` | M109 | **Avoided.** The existing `pipelines()`, `pool()` and `holdRuntime()` are used. The LUT texture cache lives in `OcioVulkanShader`, not `GpuRuntime`. |
+| `Engine/ViewerInstance.cpp` | M100 (6 lines on its branch, at ~583 and ~1426; all M100 tasks are checked and it is in review round 2) | Edited in P3.T2, P4.T2, P4.T3 and P4.T4, in hunks away from M100's (renderFunctor wrapper, the submit helper, ~1655-2070, `updateViewer`). Can proceed in parallel; **rebase over M100 when it merges, before the gate.** |
+| `Tests/CMakeLists.txt` | M100 and M109 | **Avoided.** All new tests go in globbed `Tests/Native/`. GlInterop tests stay in the existing `Tests/Gpu/GlInterop_Test.cpp`, and `Tests/Gpu/CMakeLists.txt` is unchanged. |
+| `Engine/CMakeLists.txt`, `Engine/Settings.*`, `Engine/AppManager.h` | M100 | **Avoided.** Engine sources are globbed, there is no new setting, and the existing `getGpuContext()` is used. |
+| `Engine/Gpu/CMakeLists.txt` | none (M126 merged) | Not needed. The kernel is runtime GLSL, so no Slang kernel is added. |
+| `Engine/FrameRenderContext.*`, `Engine/OpenGLViewerI.h`, `Engine/ViewerInstancePrivate.h`, `Gui/ViewerGL*`, `Engine/Gpu/GlInterop.*` | none (checked against both branches) | Free. |
+
+**Coordination (no user decision needed):** M127.P3.T1 should be amended to reuse `Engine/OcioVulkanShader.{h,cpp}` from M107.P3.T1 instead of creating `Engine/Nodes/OCIO/OcioGpuShader.*`. M116's "region feeding the viewer is still a download" note becomes stale once P5.T1 lands.
 
 ## Decisions
 
 - 2026-10-18 — **The viewer's OCIO display transform on Vulkan compiles OCIO's own generated GLSL at runtime** (user, at promotion), through M126 - Runtime GPU Shaders' pipeline cache. This matches the M127 - Native OCIO Nodes decision and supersedes the stub's "without runtime shader compilation" options, a baked 3D LUT plus shaper or ported OCIO ops. If the compile fails, the viewer falls back to the CPU display path.
 - 2026-10-18 — **Claimed by the gpu PM as the second lane** beside M109 - GPU Region Engine Hardening (user). M108 - Retire Engine GL Host Path would collide with M100 - Content Node Hashing on `Engine/EffectInstance.cpp`. M87 - Point-Op Kernel Fusion would make M109 wait and has little measured gain. M91 - NVIDIA GPU Validation has no host.
+- 2026-10-18 — **Elaborated at claim by a consultant**, scouted on `2410277ee`. The user answered its three questions. **Both texture modes are kept:** in 8u the Vulkan kernel applies OCIO's VK shader and dithers, and in 32f the kernel only selects channels while the existing GL shader applies OCIO. **Handed-off frames fill the viewer cache from an asynchronous readback of the display buffer** (P4.T4 option (a)). **The "0 root downloads" gate needs a radeonsi GL display:** if P1.T2 finds none on the bench host, stop and ask the user to set one up rather than accept Readback.
+- 2026-10-18 — **M107.P5.T1 is flagged ⚑ and waits for M109 - GPU Region Engine Hardening to merge** (`GpuRegionTask.cpp`, `GpuCostModel.*`, `GpuRegionStrips.cpp`). P3 and P4 test with a hand-made `GpuDeviceImage` root. The `Engine/ViewerInstance.cpp` hunks avoid M100 - Content Node Hashing's lines, and the branch rebases over M100 before the gate. The shared OCIO helper is `Engine/OcioVulkanShader.{h,cpp}`; M127 - Native OCIO Nodes should reuse it instead of creating `Engine/Nodes/OCIO/OcioGpuShader.*`. That change to M127 is plan-scoped and goes through the inbox.

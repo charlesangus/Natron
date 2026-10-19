@@ -45,3 +45,7 @@
   - fxarena Sketch uses unseeded noise, so its renders are non-deterministic; give it a fixed seed.
   
   Deps: M100.
+
+### 2026-10-18T23:30:00Z — change-request
+- refs: M127
+- From the gpu PM's elaboration of M107 - GPU Viewer Hand-off. M107.P3.T1 creates the shared OCIO→Vulkan helper `Engine/OcioVulkanShader.{h,cpp}`. It builds OCIO's `GPU_LANGUAGE_GLSL_VK_4_6` shader with LUTs as `GpuTexture` and dynamic properties in a UBO, and keeps a per-processor LUT texture cache keyed on `cacheID`. M127.P3.T1 should reuse that helper instead of creating `Engine/Nodes/OCIO/OcioGpuShader.*`, and M127 should add M107 to its Deps, or depend on M107.P3.T1 landing. Also stale once M107.P5.T1 lands: M116 - GPU Region Overlay's note that a region feeding the viewer is still a download.

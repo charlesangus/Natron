@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <future>
+#include <list>
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
@@ -16,8 +17,19 @@ namespace {
 
     using ResultPtr = std::shared_ptr<const ShaderCompileResult>;
 
+    // Completed results are kept only up to this many, least recently used first out, so generated
+    // shaders that keep changing cannot grow the process without bound.
+    constexpr size_t kMaxCompleted = 128;
+
+    struct Completed {
+        ResultPtr result;
+        std::list<const std::string*>::iterator lruPos;
+    };
+
     std::mutex g_mutex;
-    std::unordered_map<std::string, std::shared_future<ResultPtr>> g_compiles;
+    std::unordered_map<std::string, std::shared_future<ResultPtr>> g_inflight;
+    std::unordered_map<std::string, Completed> g_completed;
+    std::list<const std::string*> g_lru;
     std::atomic<size_t> g_compileCount { 0 };
 
     void initGlslang()
@@ -120,10 +132,15 @@ std::shared_ptr<const ShaderCompileResult> compileGlsl(std::string_view source, 
     bool owner = false;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
-        auto it = g_compiles.find(key);
-        if (it == g_compiles.end()) {
+        auto done = g_completed.find(key);
+        if (done != g_completed.end()) {
+            g_lru.splice(g_lru.begin(), g_lru, done->second.lruPos);
+            return done->second.result;
+        }
+        auto it = g_inflight.find(key);
+        if (it == g_inflight.end()) {
             future = promise.get_future().share();
-            g_compiles.emplace(std::move(key), future);
+            g_inflight.emplace(key, future);
             owner = true;
         } else {
             future = it->second;
@@ -140,6 +157,18 @@ std::shared_ptr<const ShaderCompileResult> compileGlsl(std::string_view source, 
         } catch (...) {
             result = fail("shader compiler failed");
         }
+        {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            g_inflight.erase(key);
+            auto inserted = g_completed.emplace(std::move(key), Completed { result, {} });
+            g_lru.push_front(&inserted.first->first);
+            inserted.first->second.lruPos = g_lru.begin();
+            while (g_completed.size() > kMaxCompleted) {
+                const std::string* victim = g_lru.back();
+                g_lru.pop_back();
+                g_completed.erase(g_completed.find(*victim));
+            }
+        }
         promise.set_value(std::move(result));
     }
     return future.get();
@@ -150,6 +179,12 @@ std::string glslangVersionString()
     initGlslang();
     const char* v = glslang::GetGlslVersionString();
     return v ? v : "";
+}
+
+size_t glslCompileCacheSizeForTesting()
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_completed.size();
 }
 
 size_t glslCompileCountForTesting()

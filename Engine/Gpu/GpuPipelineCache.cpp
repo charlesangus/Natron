@@ -73,20 +73,29 @@ namespace {
         return {};
     }
 
-    bool readFile(const fs::path& path, std::vector<char>& out)
+    // Real entries hold a SPIR-V module and a driver blob, a few hundred KiB at most.
+    constexpr uint64_t kMaxEntryBytes = 64ull << 20;
+
+    enum class ReadResult { Missing, TooLarge, Ok };
+
+    // The size is checked before anything is allocated, so a corrupt or foreign file cannot force a large allocation.
+    ReadResult readFile(const fs::path& path, uint64_t maxBytes, std::vector<char>& out)
     {
         std::ifstream in(path, std::ios::binary | std::ios::ate);
         if (!in) {
-            return false;
+            return ReadResult::Missing;
         }
         const std::streamoff size = in.tellg();
         if (size < 0) {
-            return false;
+            return ReadResult::Missing;
+        }
+        if (static_cast<uint64_t>(size) > maxBytes) {
+            return ReadResult::TooLarge;
         }
         out.resize(static_cast<size_t>(size));
         in.seekg(0);
         in.read(out.data(), size);
-        return static_cast<bool>(in);
+        return in ? ReadResult::Ok : ReadResult::Missing;
     }
 
     // Writes next to the destination and renames, which is atomic within a directory.
@@ -145,6 +154,10 @@ GpuPipelineCache::GpuPipelineCache(GpuDevice& device, GpuPipelineCacheOptions op
     deviceTag_ = std::to_string(p.vendorID) + ":" + std::to_string(p.deviceID) + ":" + std::to_string(p.driverVersion)
         + ":" + hex(p.pipelineCacheUUID, VK_UUID_SIZE) + ":" + hex(ids.deviceUUID, VK_UUID_SIZE);
 
+    // A zero budget means no disk entries at all.
+    if (options_.maxDiskBytes == 0) {
+        return;
+    }
     directory_ = options_.directory.empty() ? defaultDirectory() : options_.directory;
     if (!directory_.empty()) {
         std::error_code ec;
@@ -277,7 +290,10 @@ GpuPipelineCache::build(const Key& key, std::string_view source, ShaderStage sta
 
     if (!file.empty()) {
         std::vector<char> bytes;
-        if (readFile(file, bytes)) {
+        const ReadResult read = readFile(file, std::min(options_.maxDiskBytes, kMaxEntryBytes), bytes);
+        if (read == ReadResult::TooLarge) {
+            sawInvalid = true;
+        } else if (read == ReadResult::Ok) {
             FileHeader h;
             bool ok = bytes.size() >= sizeof h;
             if (ok) {
@@ -285,6 +301,7 @@ GpuPipelineCache::build(const Key& key, std::string_view source, ShaderStage sta
                 ok = h.magic == kFileMagic && h.version == kFileVersion && h.keyHi == key.hi && h.keyLo == key.lo
                     && h.spirvBytes % 4 == 0 && h.spirvBytes > 0 && h.spirvBytes <= bytes.size()
                     && h.cacheBytes <= bytes.size() && sizeof h + h.spirvBytes + h.cacheBytes == bytes.size();
+                // Each size is bounded by the file size above, so the sum cannot wrap.
             }
             if (ok) {
                 const char* payload = bytes.data() + sizeof h;
@@ -388,6 +405,19 @@ GpuPipelineCache::build(const Key& key, std::string_view source, ShaderStage sta
     }
     h.checksum = fnv1a(bytes.data() + sizeof h, h.spirvBytes + h.cacheBytes);
     std::memcpy(bytes.data(), &h, sizeof h);
+
+    if (bytes.size() > options_.maxDiskBytes) {
+        // Persisting it would break the budget; a stale entry left under the same name would stay invalid.
+        if (sawInvalid) {
+            std::error_code ec;
+            fs::remove(file, ec);
+        }
+        if (fromDisk) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            ++stats_.diskHits;
+        }
+        return result;
+    }
 
     const bool wrote = writeFileAtomic(file, bytes);
     {

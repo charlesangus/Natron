@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -276,6 +277,73 @@ GPU_TEST_F(GpuPipelineCacheTest, DiskSizeIsCappedByEvictingTheOldest)
     auto restart = makeCache();
     ASSERT_TRUE(restart->get(computeSource("cap-4"), ShaderStage::Compute, "main", k).ok());
     EXPECT_EQ(restart->stats().diskHits, 1u);
+}
+
+GPU_TEST_F(GpuPipelineCacheTest, OversizedOrLyingEntriesAreReplacedWithoutReadingThem)
+{
+    const std::string src = computeSource("oversized");
+    uint64_t one = 0;
+    {
+        auto first = makeCache();
+        std::shared_ptr<GpuKernel> k;
+        ASSERT_TRUE(first->get(src, ShaderStage::Compute, "main", k).ok());
+        ASSERT_EQ(entryFiles().size(), 1u);
+        one = fs::file_size(entryFiles()[0]);
+    }
+    const fs::path victim = entryFiles()[0];
+    std::string valid;
+    {
+        std::ifstream in(victim, std::ios::binary);
+        valid.assign(std::istreambuf_iterator<char>(in), {});
+    }
+    auto rewrite = [&](const std::string& bytes) {
+        std::ofstream out(victim, std::ios::binary | std::ios::trunc);
+        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    };
+
+    // spirvBytes and cacheBytes sit at offsets 24 and 32 of the header.
+    std::string lying = valid;
+    const uint64_t huge = ~uint64_t(0) - 7;
+    std::memcpy(&lying[24], &huge, sizeof huge);
+    std::memcpy(&lying[32], &huge, sizeof huge);
+
+    for (const std::string& damaged : { std::string(valid.size() + 4 * one, 'x'), lying }) {
+        rewrite(damaged);
+        auto cache = makeCache(64, 2 * one);
+        std::shared_ptr<GpuKernel> k;
+        ASSERT_TRUE(cache->get(src, ShaderStage::Compute, "main", k).ok());
+        const auto st = cache->stats();
+        EXPECT_EQ(st.compiles, 1u);
+        EXPECT_EQ(st.invalidEntries, 1u);
+        EXPECT_EQ(st.diskHits, 0u);
+        EXPECT_EQ(st.diskWrites, 1u);
+        EXPECT_LE(fs::file_size(victim), 2 * one);
+    }
+}
+
+GPU_TEST_F(GpuPipelineCacheTest, EntriesLargerThanTheDiskBudgetAreNotPersisted)
+{
+    uint64_t one = 0;
+    {
+        auto probe = makeCache();
+        std::shared_ptr<GpuKernel> k;
+        ASSERT_TRUE(probe->get(computeSource("budget-probe"), ShaderStage::Compute, "main", k).ok());
+        one = fs::file_size(entryFiles()[0]);
+        fs::remove_all(dir);
+    }
+    ASSERT_GT(one, 1u);
+
+    auto small = makeCache(64, one - 1);
+    std::shared_ptr<GpuKernel> k;
+    ASSERT_TRUE(small->get(computeSource("budget-small"), ShaderStage::Compute, "main", k).ok());
+    EXPECT_TRUE(entryFiles().empty());
+    EXPECT_EQ(small->stats().diskWrites, 0u);
+
+    fs::remove_all(dir);
+    auto off = makeCache(64, 0);
+    ASSERT_TRUE(off->get(computeSource("budget-zero"), ShaderStage::Compute, "main", k).ok());
+    EXPECT_FALSE(fs::exists(dir));
+    EXPECT_EQ(off->stats().diskWrites, 0u);
 }
 
 GPU_TEST_F(GpuPipelineCacheTest, CompileFailureIsReportedAndNotStored)

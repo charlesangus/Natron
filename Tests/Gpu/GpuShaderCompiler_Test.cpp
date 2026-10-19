@@ -81,3 +81,26 @@ TEST(GpuShaderCompilerTest, ConcurrentCallersShareOneCompile)
         EXPECT_EQ(results[i]->spirv, results[0]->spirv);
     }
 }
+
+TEST(GpuShaderCompilerTest, MemoisedResultsAreBounded)
+{
+    const std::string repeated = computeSource("bounded-repeat");
+    auto first = compileGlsl(repeated, ShaderStage::Compute);
+    ASSERT_TRUE(first->ok) << first->log;
+    EXPECT_EQ(first, compileGlsl(repeated, ShaderStage::Compute));
+
+    const size_t before = glslCompileCountForTesting();
+    constexpr int kDistinct = 400;
+    for (int i = 0; i < kDistinct; ++i) {
+        compileGlsl(computeSource("bounded-" + std::to_string(i)), ShaderStage::Compute);
+    }
+    EXPECT_EQ(glslCompileCountForTesting() - before, size_t(kDistinct));
+    EXPECT_LT(glslCompileCacheSizeForTesting(), size_t(kDistinct));
+
+    // The oldest entry was evicted, so asking again compiles again rather than serving a retained result.
+    const size_t beforeAgain = glslCompileCountForTesting();
+    auto again = compileGlsl(repeated, ShaderStage::Compute);
+    ASSERT_TRUE(again->ok);
+    EXPECT_EQ(glslCompileCountForTesting() - beforeAgain, 1u);
+    EXPECT_EQ(again->spirv, first->spirv);
+}

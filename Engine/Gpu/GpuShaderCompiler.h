@@ -29,13 +29,18 @@ struct ShaderCompileResult {
 // requests. `entry` names the entry point in the emitted module; the GLSL source still declares
 // `void main()`.
 //
-// Thread-safe. Results (successes and failures) are memoised per (stage, entry, source): callers
-// racing on the same source wait on the one compile in flight and share its result.
+// Thread-safe. Callers racing on the same (stage, entry, source) wait on the one compile in flight
+// and share its result. Finished results, failures included, are memoised in a bounded LRU, so a
+// shader evicted from it compiles again on its next request; callers that must not retry a rejected
+// shader in a loop remember the failure themselves.
 std::shared_ptr<const ShaderCompileResult> compileGlsl(std::string_view source, ShaderStage stage,
                                                         std::string_view entry = "main");
 
 // Identifies the compiler build, so artifacts derived from its output can be invalidated when it changes.
 std::string glslangVersionString();
+
+// Number of finished results currently memoised, for tests asserting the bound.
+size_t glslCompileCacheSizeForTesting();
 
 // Number of compiles actually run by compileGlsl so far, for tests asserting de-duplication.
 size_t glslCompileCountForTesting();

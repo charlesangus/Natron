@@ -9,6 +9,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace gpu {
 
@@ -102,13 +103,22 @@ public:
 
     // Picks a slot no upload() is pending on, preferring the one GL did not read last, and submits
     // `record` on the compute queue after GL's previous read of that slot and after every value in
-    // `waits`. Stores the chosen slot in *slot. A frame larger than capacity() fails with
+    // `waits`. With hostCopy the frame is also copied to host memory on every path, as the Readback path always
+    // does. Stores the chosen slot in *slot. A frame larger than capacity() fails with
     // VK_ERROR_OUT_OF_POOL_MEMORY, and a failed status from `record` is returned, both without
     // submitting anything.
     GpuStatus produce(const GlFrame& frame,
                       const GlRecordFn& record,
                       std::span<const TimelineValue> waits,
-                      int* slot);
+                      int* slot,
+                      bool hostCopy = false);
+
+    // The slot the next produce() will use, or -1 while every slot awaits upload().
+    int nextSlot() const;
+
+    // Copies the host copy that the last produce(hostCopy = true) into `slot` left to *out, without waiting:
+    // VK_TIMEOUT while the GPU is still writing it. The next produce() into the slot overwrites it.
+    GpuStatus readHostCopy(int slot, std::vector<unsigned char>& out);
 
     // Blocks the CPU until the last produce() into `slot` has finished on the GPU.
     GpuStatus waitProduced(int slot, uint64_t timeoutNs = UINT64_MAX);
@@ -139,6 +149,7 @@ private:
 
         GlFrame frame;
         bool inFlight = false;
+        bool hostCopyValid = false;
         bool pendingUpload = false;
         bool glSignaled = false;
         bool releasedToGl = false;
@@ -147,6 +158,7 @@ private:
     GlInterop() = default;
 
     GpuStatus initVulkan(bool exportable, bool semaphores);
+    GpuStatus ensureReadback(Slot& slot);
     GpuStatus initVulkanSlot(Slot& slot, bool exportable, bool semaphores);
     GpuStatus initGlSlot(Slot& slot, bool semaphores);
     GpuStatus glError(const char* what);

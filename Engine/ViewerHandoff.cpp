@@ -31,6 +31,7 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <mutex>
 #include <optional>
@@ -122,9 +123,15 @@ struct Device {
     std::unique_ptr<ViewerGpuProcess> process;
 };
 
+struct PendingReadback {
+    std::uint64_t token = 0;
+    ViewerHandoffFrame frame;
+};
+
 struct Ring {
     std::unique_ptr<gpu::GlInterop> interop;
     std::array<GpuDeviceImagePtr, gpu::GlInterop::kSlots> pinned;
+    std::array<PendingReadback, gpu::GlInterop::kSlots> readbacks;
 };
 
 } // namespace
@@ -168,6 +175,7 @@ struct ViewerHandoff::Imp {
     std::string reason;
 
     std::array<Ring, kTextureCount> rings;
+    std::vector<ViewerHandoffReadback> completed;
     std::size_t wantedCapacity = 0;
     unsigned dispatchesSinceRelease = 0;
 
@@ -197,6 +205,7 @@ struct ViewerHandoff::Imp {
     void destroyRing(Ring& ring)
     {
         ring.interop.reset();
+        ring.readbacks = {};
         for (int i = 0; i < gpu::GlInterop::kSlots; ++i) {
             unpinSlot(ring, i);
         }
@@ -222,10 +231,39 @@ struct ViewerHandoff::Imp {
         }
         rung.store(ViewerHandoffRung::Cpu, std::memory_order_release);
         old.reset();
+        completed.clear();
         wantedCapacity = 0;
         if (lost) {
             buildFailed = false;
         }
+    }
+
+    // Moves the host copy of a slot to `completed` once the device has written it, waiting for it when
+    // asked. A copy that cannot be read is dropped.
+    void harvest(Ring& ring,
+                 int slot,
+                 bool wait)
+    {
+        PendingReadback& pending = ring.readbacks[slot];
+        if (!pending.token || !ring.interop) {
+            return;
+        }
+        if (wait && !ring.interop->waitProduced(slot)) {
+            pending = PendingReadback();
+
+            return;
+        }
+        ViewerHandoffReadback out;
+        const gpu::GpuStatus s = ring.interop->readHostCopy(slot, out.bytes);
+        if (s.result == VK_TIMEOUT) {
+            return;
+        }
+        if (s) {
+            out.token = pending.token;
+            out.frame = pending.frame;
+            completed.push_back(std::move(out));
+        }
+        pending = PendingReadback();
     }
 
     // Unpins the root of every slot the device is done with. Returns whether a frame is still in
@@ -601,6 +639,11 @@ ViewerHandoff::present(int textureIndex,
     processParams.gamma = params.gamma;
     processParams.displayProcessor = params.displayProcessor;
 
+    // The slot produce() is about to overwrite may still hold a host copy nobody has collected.
+    if (const int next = ring.interop->nextSlot(); next >= 0) {
+        _imp->harvest(ring, next, true);
+    }
+
     const gpu::GlFrame glFrame { frame.width, frame.height, pixelFormatOf(frame.format) };
     ViewerGpuProcess& process = *dev->process;
     int slot = -1;
@@ -608,7 +651,8 @@ ViewerHandoff::present(int textureIndex,
         glFrame,
         [&](VkCommandBuffer cmd, VkBuffer dst) { return process.record(cmd, view, dst, glFrame, processParams); },
         {},
-        &slot);
+        &slot,
+        params.readbackToken != 0);
     if (!produced) {
         root->unpin();
         if (isLostStatus(produced) || dev->runtime->isLost()) {
@@ -622,6 +666,8 @@ ViewerHandoff::present(int textureIndex,
     }
     _imp->unpinSlot(ring, slot);
     ring.pinned[slot] = root;
+    ring.readbacks[slot].token = params.readbackToken;
+    ring.readbacks[slot].frame = frame;
     ++_imp->dispatchesSinceRelease;
 
     const gpu::GpuStatus uploaded = ring.interop->upload(slot, glTexture, frame.x, frame.y);
@@ -646,6 +692,20 @@ ViewerHandoff::present(int textureIndex,
     }
 
     return accept();
+}
+
+std::vector<ViewerHandoffReadback>
+ViewerHandoff::takeCompletedReadbacks()
+{
+    for (Ring& ring : _imp->rings) {
+        for (int i = 0; i < gpu::GlInterop::kSlots; ++i) {
+            _imp->harvest(ring, i, false);
+        }
+    }
+    std::vector<ViewerHandoffReadback> out;
+    out.swap(_imp->completed);
+
+    return out;
 }
 
 ViewerHandoffResult

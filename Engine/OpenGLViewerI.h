@@ -30,6 +30,7 @@
 
 #include <limits>
 #include <list>
+#include <vector>
 
 #include "Engine/OverlaySupport.h"
 #include "Engine/ViewIdx.h"
@@ -279,6 +280,15 @@ public:
         refused.reason = "rung cpu";
 
         return refused;
+    }
+
+    /**
+     * @brief The host copies of the display buffers that transferDeviceImageToGPU() was asked for through
+     * ViewerHandoffParams::readbackToken and the device has finished since the last call.
+     **/
+    virtual std::vector<ViewerHandoffReadback> takeCompletedHandoffReadbacks()
+    {
+        return std::vector<ViewerHandoffReadback>();
     }
 #endif
 };

@@ -391,6 +391,29 @@ GlInterop::initVulkan(bool exportable, bool semaphores)
 }
 
 GpuStatus
+GlInterop::ensureReadback(Slot& slot)
+{
+    if (slot.readback != VK_NULL_HANDLE) {
+        return {};
+    }
+    VkBufferCreateInfo rci { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    rci.size = capacity_;
+    rci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VmaAllocationCreateInfo rai {};
+    rai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+    rai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    VmaAllocationInfo rinfo {};
+    if (GpuStatus s = device_->check(
+            vmaCreateBuffer(device_->allocator(), &rci, &rai, &slot.readback, &slot.readbackAllocation, &rinfo),
+            "vmaCreateBuffer(readback)");
+        !s) {
+        return s;
+    }
+    slot.readbackMapped = rinfo.pMappedData;
+    return {};
+}
+
+GpuStatus
 GlInterop::initVulkanSlot(Slot& slot, bool exportable, bool semaphores)
 {
     GpuDevice& dev = *device_;
@@ -422,20 +445,9 @@ GlInterop::initVulkanSlot(Slot& slot, bool exportable, bool semaphores)
     }
 
     if (!exportable) {
-        VkBufferCreateInfo rci { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-        rci.size = capacity_;
-        rci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        VmaAllocationCreateInfo rai {};
-        rai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
-        rai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
-        VmaAllocationInfo rinfo {};
-        if (GpuStatus s = dev.check(
-                vmaCreateBuffer(dev.allocator(), &rci, &rai, &slot.readback, &slot.readbackAllocation, &rinfo),
-                "vmaCreateBuffer(readback)");
-            !s) {
+        if (GpuStatus s = ensureReadback(slot); !s) {
             return s;
         }
-        slot.readbackMapped = rinfo.pMappedData;
     }
 
     VkCommandBufferAllocateInfo cbai { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
@@ -645,11 +657,27 @@ GlInterop::waitProduced(int slot, uint64_t timeoutNs)
     return {};
 }
 
+int
+GlInterop::nextSlot() const
+{
+    int chosen = -1;
+    for (int i = 0; i < kSlots; ++i) {
+        if (slots_[i].pendingUpload) {
+            continue;
+        }
+        if (chosen < 0 || chosen == lastUploaded_) {
+            chosen = i;
+        }
+    }
+    return chosen;
+}
+
 GpuStatus
 GlInterop::produce(const GlFrame& frame,
                    const GlRecordFn& record,
                    std::span<const TimelineValue> waits,
-                   int* slot)
+                   int* slot,
+                   bool hostCopy)
 {
     if (!slot) {
         return fail(VK_ERROR_UNKNOWN, "produce() needs somewhere to store the slot");
@@ -666,15 +694,7 @@ GlInterop::produce(const GlFrame& frame,
                         + std::to_string(capacity_) + "-byte slot capacity");
     }
 
-    int chosen = -1;
-    for (int i = 0; i < kSlots; ++i) {
-        if (slots_[i].pendingUpload) {
-            continue;
-        }
-        if (chosen < 0 || chosen == lastUploaded_) {
-            chosen = i;
-        }
-    }
+    const int chosen = nextSlot();
     if (chosen < 0) {
         return fail(VK_ERROR_UNKNOWN, "produce() with every slot still awaiting upload()");
     }
@@ -682,6 +702,11 @@ GlInterop::produce(const GlFrame& frame,
 
     if (GpuStatus s = waitProduced(chosen); !s) {
         return s;
+    }
+    if (hostCopy) {
+        if (GpuStatus s = ensureReadback(sl); !s) {
+            return s;
+        }
     }
     VkCommandBuffer cmd = sl.cmd;
     if (GpuStatus s = device_->check(vkResetCommandBuffer(cmd, 0), "vkResetCommandBuffer"); !s) {
@@ -717,7 +742,8 @@ GlInterop::produce(const GlFrame& frame,
         return s;
     }
 
-    if (path_ == GlHandoffPath::Readback) {
+    const bool copyToHost = hostCopy || path_ == GlHandoffPath::Readback;
+    if (copyToHost) {
         VkBufferMemoryBarrier2 toCopy { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
         toCopy.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         toCopy.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
@@ -740,7 +766,8 @@ GlInterop::produce(const GlFrame& frame,
         toHost.buffer = sl.readback;
         toHost.size = VK_WHOLE_SIZE;
         barrier(toHost);
-    } else {
+    }
+    if (path_ != GlHandoffPath::Readback) {
         VkBufferMemoryBarrier2 release { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
         release.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         release.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
@@ -789,6 +816,7 @@ GlInterop::produce(const GlFrame& frame,
         return s;
     }
     sl.frame = frame;
+    sl.hostCopyValid = copyToHost;
     sl.glSignaled = false;
     sl.inFlight = true;
     sl.pendingUpload = true;
@@ -861,6 +889,30 @@ GlInterop::upload(int slot, unsigned int texture, int x, int y)
     sl.pendingUpload = false;
     lastUploaded_ = slot;
     return glError("upload");
+}
+
+GpuStatus
+GlInterop::readHostCopy(int slot, std::vector<unsigned char>& out)
+{
+    if (slot < 0 || slot >= kSlots) {
+        return fail(VK_ERROR_UNKNOWN, "readHostCopy() on slot " + std::to_string(slot) + " out of range");
+    }
+    Slot& sl = slots_[slot];
+    if (!sl.hostCopyValid || sl.readback == VK_NULL_HANDLE) {
+        return fail(VK_ERROR_UNKNOWN, "readHostCopy() of a slot with no host copy");
+    }
+    if (GpuStatus s = waitProduced(slot, 0); !s) {
+        return s;
+    }
+    const VkDeviceSize bytes = sl.frame.bytes();
+    if (GpuStatus s = device_->check(vmaInvalidateAllocation(device_->allocator(), sl.readbackAllocation, 0, bytes),
+                                     "vmaInvalidateAllocation");
+        !s) {
+        return s;
+    }
+    out.assign(static_cast<const unsigned char*>(sl.readbackMapped),
+               static_cast<const unsigned char*>(sl.readbackMapped) + bytes);
+    return {};
 }
 
 } // namespace gpu

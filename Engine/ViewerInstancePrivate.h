@@ -34,6 +34,8 @@
 #include <set>
 #include <vector>
 #include <cmath>
+#include <cstdint>
+#include <list>
 #include <cassert>
 #include <algorithm> // min, max
 
@@ -52,6 +54,7 @@
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/Settings.h"
 #include "Engine/TextureRect.h"
+#include "Engine/UpdateViewerParams.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -158,6 +161,29 @@ public:
         }
     }
     // clang-format on
+
+#ifdef NATRON_HAVE_GPU
+    // A device frame whose display buffer is being copied to host memory, to become cache tiles.
+    struct PendingCacheFill
+    {
+        std::uint64_t token = 0;
+        std::vector<UpdateViewerParams::DeviceCacheTile> tiles;
+        RectI roi;
+        RectI bounds;
+        int tileSize = 0;
+        int bytesPerPixel = 4;
+        int polls = 0;
+    };
+
+    // Writes the tiles of every readback that has completed into the viewer cache and drops the ones that never
+    // will. Main thread, with the GL context current.
+    void pollCacheReadbacks();
+
+    void scheduleCachePoll();
+
+    void insertCacheTiles(const PendingCacheFill& fill,
+                          const ViewerHandoffReadback& readback);
+#endif
 
     void redrawViewer()
     {
@@ -398,6 +424,13 @@ public:
     // it superseded. Protected by renderAgeMutex.
     std::weak_ptr<AbortableRenderInfo> lastRequest[2];
     bool lastRequestSequential[2];
+
+#ifdef NATRON_HAVE_GPU
+    // Only accessed from MT
+    std::list<PendingCacheFill> pendingCacheFills;
+    std::uint64_t nextReadbackToken = 1;
+    bool cachePollScheduled = false;
+#endif
 };
 
 NATRON_NAMESPACE_EXIT

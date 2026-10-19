@@ -31,9 +31,11 @@
 #ifdef NATRON_HAVE_GPU
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Global/Enums.h"
 
@@ -90,6 +92,20 @@ struct ViewerHandoffParams {
     double offset = 0.;
     double gamma = 1.;
     ProjectColorManagement::DisplayProcessorPtr displayProcessor;
+
+    // Nonzero asks for a copy of the display buffer in host memory, collected later by
+    // takeCompletedReadbacks() under this token. The frame is shown without waiting for it.
+    std::uint64_t readbackToken = 0;
+};
+
+/**
+ * @brief The display buffer of a present() whose params carried a readbackToken: the texels the
+ * texture received, tightly packed rows, frame.bytes() long.
+ **/
+struct ViewerHandoffReadback {
+    std::uint64_t token = 0;
+    ViewerHandoffFrame frame;
+    std::vector<unsigned char> bytes;
 };
 
 /**
@@ -174,6 +190,12 @@ public:
                                 const ViewerHandoffParams& params,
                                 unsigned int glTexture,
                                 const ViewerHandoffFrame& frame);
+
+    /**
+     * @brief Returns the readbacks whose device copy has finished since the last call, without
+     * waiting for the others. A readback is lost when its ring is rebuilt or the device is.
+     **/
+    std::vector<ViewerHandoffReadback> takeCompletedReadbacks();
 
     /**
      * @brief Grows every slot to hold \p bytes, waiting for the frames they hold.

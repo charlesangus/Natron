@@ -42,6 +42,7 @@ CLANG_DIAG_OFF(deprecated)
 #include <QMutex>
 #include <QThread>
 #include <QThreadPool>
+#include <QTimer>
 #include <QWaitCondition>
 #include <QtConcurrentMap> // QtCore on Qt4, QtConcurrent on Qt5
 #include <QtGlobal>
@@ -1899,6 +1900,31 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             updateParams->deviceProcess.gamma = updateParams->gamma;
             updateParams->deviceProcess.displayProcessor = updateParams->displayProcessor;
             updateParams->deviceStats = stats;
+            updateParams->deviceCacheTiles.clear();
+            if (useTextureCache) {
+                const std::string inputToRenderName = inArgs.activeInputToRender->getNode()->getScriptName_mt_safe();
+                for (std::list<UpdateViewerParams::CachedTile>::const_iterator it = updateParams->tiles.begin(); it != updateParams->tiles.end(); ++it) {
+                    UpdateViewerParams::DeviceCacheTile cacheTile;
+                    cacheTile.key = FrameKey(getNode().get(),
+                                             inArgs.params->time,
+                                             viewerHash,
+                                             inArgs.params->gain,
+                                             inArgs.params->gamma,
+                                             inArgs.params->displayProcessor ? inArgs.params->displayProcessor->cacheHash : 0,
+                                             (int)inArgs.params->depth,
+                                             inArgs.channels,
+                                             inArgs.params->view,
+                                             it->rect,
+                                             inArgs.params->mipmapLevel,
+                                             inputToRenderName,
+                                             inArgs.params->layer,
+                                             inArgs.params->alphaLayer.getLayerID() + inArgs.params->alphaChannelName,
+                                             inArgs.params->depth == eImageBitDepthFloat,
+                                             inArgs.draftModeEnabled);
+                    cacheTile.rectRounded = it->rectRounded;
+                    updateParams->deviceCacheTiles.push_back(cacheTile);
+                }
+            }
             updateParams->colorImage.reset();
             updateParams->mustFreeRamBuffer = false;
             for (std::list<UpdateViewerParams::CachedTile>::iterator it = updateParams->tiles.begin(); it != updateParams->tiles.end(); ++it) {
@@ -3083,6 +3109,12 @@ scaleToTexture32bits(const RectI& roi,
 #ifdef NATRON_HAVE_GPU
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
+// A device frame that is never read back is not worth waiting for, which also bounds how long a lost device keeps the
+// poll alive.
+const int kMaxCacheReadbackPolls = 200;
+const int kCacheReadbackPollMs = 25;
+const std::size_t kMaxPendingCacheFills = 4;
+
 // Runs the CPU viewer process of the device root of params into the display texture, for a frame whose hand-off was
 // refused, and returns the RAM copy of the root.
 ImagePtr
@@ -3129,6 +3161,96 @@ drawDeviceRootOnCpu(OpenGLViewerI* uiContext,
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 #endif // NATRON_HAVE_GPU
 
+#ifdef NATRON_HAVE_GPU
+void
+ViewerInstance::ViewerInstancePrivate::insertCacheTiles(const PendingCacheFill& fill,
+                                                        const ViewerHandoffReadback& readback)
+{
+    const std::size_t pixelBytes = (std::size_t)fill.bytesPerPixel;
+    const std::size_t frameRowBytes = (std::size_t)readback.frame.width * pixelBytes;
+    if ( (readback.frame.width != (unsigned)fill.roi.width()) || (readback.frame.height != (unsigned)fill.roi.height()) ||
+         (readback.bytes.size() != frameRowBytes * readback.frame.height) ) {
+        return;
+    }
+    const RectI tileBounds(0, 0, fill.tileSize, fill.tileSize);
+    const std::size_t tileRowBytes = (std::size_t)fill.tileSize * pixelBytes;
+    for (std::vector<UpdateViewerParams::DeviceCacheTile>::const_iterator it = fill.tiles.begin(); it != fill.tiles.end(); ++it) {
+        const RectI& r = it->rectRounded;
+        if ( (r.width() != fill.tileSize) || (r.height() != fill.tileSize) || !fill.roi.contains(r) ) {
+            continue;
+        }
+        FrameParamsPtr frameParams( new FrameParams(fill.bounds, it->key.getBitDepth(), tileBounds, ImagePtr() ) );
+        FrameEntryLocker entryLocker(this);
+        FrameEntryPtr entry;
+        // A tile that is in the cache already is complete, and another thread may be filling it.
+        if ( appPTR->getTextureOrCreate(it->key, frameParams, &entryLocker, &entry) || !entry ) {
+            continue;
+        }
+        entry->allocateMemory();
+        unsigned char* dst = entry->data();
+        if (!dst) {
+            continue;
+        }
+        const std::size_t xBytes = (std::size_t)(r.x1 - fill.roi.x1) * pixelBytes;
+        for (int row = 0; row < fill.tileSize; ++row) {
+            std::memcpy(dst + (std::size_t)row * tileRowBytes,
+                        &readback.bytes[(std::size_t)(r.y1 - fill.roi.y1 + row) * frameRowBytes + xBytes],
+                        tileRowBytes);
+        }
+    }
+}
+
+void
+ViewerInstance::ViewerInstancePrivate::pollCacheReadbacks()
+{
+    if ( pendingCacheFills.empty() ) {
+        return;
+    }
+    if (!uiContext) {
+        pendingCacheFills.clear();
+
+        return;
+    }
+    const std::vector<ViewerHandoffReadback> done = uiContext->takeCompletedHandoffReadbacks();
+    for (std::vector<ViewerHandoffReadback>::const_iterator rb = done.begin(); rb != done.end(); ++rb) {
+        for (std::list<PendingCacheFill>::iterator it = pendingCacheFills.begin(); it != pendingCacheFills.end(); ++it) {
+            if (it->token == rb->token) {
+                insertCacheTiles(*it, *rb);
+                pendingCacheFills.erase(it);
+                break;
+            }
+        }
+    }
+    for (std::list<PendingCacheFill>::iterator it = pendingCacheFills.begin(); it != pendingCacheFills.end();) {
+        if (++it->polls > kMaxCacheReadbackPolls) {
+            it = pendingCacheFills.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void
+ViewerInstance::ViewerInstancePrivate::scheduleCachePoll()
+{
+    if (cachePollScheduled || pendingCacheFills.empty()) {
+        return;
+    }
+    cachePollScheduled = true;
+    QTimer::singleShot(kCacheReadbackPollMs, this, [this]() {
+        cachePollScheduled = false;
+        if (!uiContext) {
+            pendingCacheFills.clear();
+
+            return;
+        }
+        uiContext->makeOpenGLcontextCurrent();
+        pollCacheReadbacks();
+        scheduleCachePoll();
+    });
+}
+#endif // NATRON_HAVE_GPU
+
 void
 ViewerInstance::ViewerInstancePrivate::updateViewer(UpdateViewerParamsPtr params)
 {
@@ -3138,6 +3260,9 @@ ViewerInstance::ViewerInstancePrivate::updateViewer(UpdateViewerParamsPtr params
     // QMutexLocker locker(&updateViewerMutex);
     // if (updateViewerRunning) {
     uiContext->makeOpenGLcontextCurrent();
+#ifdef NATRON_HAVE_GPU
+    pollCacheReadbacks();
+#endif
     if (params->tiles.empty()) {
         return;
     }
@@ -3166,8 +3291,24 @@ ViewerInstance::ViewerInstancePrivate::updateViewer(UpdateViewerParamsPtr params
             texRect.par = firstTile.rect.par;
             texRect.closestPo2 = firstTile.rect.closestPo2;
             texRect.set(params->roi);
+            const bool wantsCacheFill = !params->deviceCacheTiles.empty() && (params->tileSize > 0);
+            params->deviceProcess.readbackToken = wantsCacheFill ? nextReadbackToken++ : 0;
             const ViewerHandoffResult presented = uiContext->transferDeviceImageToGPU(params->deviceColor, texRect, params->roiNotRoundedToTileSize,
                                                                                       params->textureIndex, params->deviceProcess, &texture);
+            if (presented && wantsCacheFill) {
+                PendingCacheFill fill;
+                fill.token = params->deviceProcess.readbackToken;
+                fill.tiles = params->deviceCacheTiles;
+                fill.roi = params->roi;
+                fill.bounds = params->rod.toPixelEnclosing(params->mipmapLevel, params->pixelAspectRatio);
+                fill.tileSize = params->tileSize;
+                fill.bytesPerPixel = (params->depth == eImageBitDepthFloat) ? 16 : 4;
+                pendingCacheFills.push_back(fill);
+                while (pendingCacheFills.size() > kMaxPendingCacheFills) {
+                    pendingCacheFills.pop_front();
+                }
+                scheduleCachePoll();
+            }
             if (!presented) {
                 if (params->deviceStats) {
                     params->deviceStats->incLegacyFallbacks("viewer handoff: " + presented.reason);

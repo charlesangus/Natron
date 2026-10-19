@@ -30,12 +30,14 @@
 
 #include <string>
 #include <list>
+#include <vector>
 #include <cstddef>
 
 #include "Global/Enums.h"
 
 #include "Engine/BufferableObject.h"
 #ifdef NATRON_HAVE_GPU
+#include "Engine/FrameKey.h"
 #include "Engine/GpuContext.h"
 #include "Engine/ViewerHandoff.h"
 #endif
@@ -69,6 +71,16 @@ public:
             : rect(), rectRounded(), cachedData(), isCached(false), ramBuffer(0), bytesCount(0) {}
     };
 
+#ifdef NATRON_HAVE_GPU
+    // A tile of a device frame to be written to the viewer cache from the display buffer: the key it is
+    // looked up under and where its tileSize x tileSize buffer sits in the texture.
+    struct DeviceCacheTile
+    {
+        FrameKey key;
+        RectI rectRounded;
+    };
+#endif
+
     UpdateViewerParams()
         : mustFreeRamBuffer(false)
         , textureIndex(0)
@@ -92,6 +104,7 @@ public:
         , deviceColor()
         , deviceProcess()
         , deviceStats()
+        , deviceCacheTiles()
 #endif
         , rod()
         , pixelAspectRatio(1.)
@@ -156,6 +169,9 @@ public:
 
     // Counts the frames whose hand-off is refused on the main thread.
     RenderStatsPtr deviceStats;
+
+    // Set when the frame may enter the viewer cache; empty otherwise.
+    std::vector<DeviceCacheTile> deviceCacheTiles;
 #endif
 
     // The RoD of the src image

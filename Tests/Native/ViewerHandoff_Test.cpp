@@ -32,9 +32,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <dlfcn.h>
@@ -716,6 +718,77 @@ TEST(ViewerHandoff, PresentMatchesTheCpuOnEveryRung)
         handoff.release();
         EXPECT_EQ(ViewerHandoffRung::Cpu, handoff.rung());
         std::printf("[viewer-handoff] %s matches the CPU path\n", toString(wanted));
+    }
+    EXPECT_GT(ran, 0) << "not even the readback rung came up";
+#endif
+}
+
+TEST(ViewerHandoff, ReadbackMatchesTheTextureOnEveryRung)
+{
+#ifndef NATRON_HAVE_GPU
+    reportNoGpu("built without the GPU backend");
+#else
+    Harness h;
+    if (!h.init()) {
+        return;
+    }
+    const ImagePtr image = makeImage(4, 5);
+    const GpuDeviceImagePtr root = makeRoot(h.runtime(), 4, 5);
+    ASSERT_TRUE(bool(root));
+    Case c = makeCase(eDisplayChannelsRGB, 4);
+    c.gain = 0.5;
+    c.gamma = 2.2;
+    int ran = 0;
+    for (ViewerHandoffRung wanted : { ViewerHandoffRung::ZeroCopy, ViewerHandoffRung::HostSync, ViewerHandoffRung::Readback }) {
+        ScopedEnv env("NATRON_VIEWER_HANDOFF", toString(wanted));
+        ViewerHandoff handoff(h.context.get());
+        if (handoff.create(eglLoader) != wanted) {
+            continue;
+        }
+        ++ran;
+        for (ViewerHandoffFormat format : { ViewerHandoffFormat::Bgra8, ViewerHandoffFormat::Rgba32F }) {
+            const ViewerHandoffFrame frame = frameFor(kRect, format);
+            const unsigned texture = h.makeTexture(frame);
+            // More requests than the ring has slots, so that an uncollected copy has to be harvested before
+            // its slot is produced into again.
+            std::map<std::uint64_t, std::vector<unsigned char> > expected;
+            for (std::uint64_t token = 1; token <= 3; ++token) {
+                ViewerHandoffParams params = paramsFor(c, kRect);
+                params.gain = 0.25 * double(token);
+                params.readbackToken = token;
+                const ViewerHandoffResult r = handoff.present(0, root, params, texture, frame);
+                ASSERT_TRUE(bool(r)) << toString(wanted) << ": " << r.reason;
+                std::vector<unsigned char> bytes(frame.bytes());
+                h.egl.gl.BindTexture(kGlTexture2D, texture);
+                h.egl.gl.PixelStorei(kGlPackAlignment, 4);
+                if (format == ViewerHandoffFormat::Bgra8) {
+                    h.egl.gl.GetTexImage(kGlTexture2D, 0, kGlBgra, kGlUnsignedInt8888Rev, bytes.data());
+                } else {
+                    h.egl.gl.GetTexImage(kGlTexture2D, 0, kGlRgba, kGlFloat, bytes.data());
+                }
+                expected[token] = bytes;
+            }
+            ViewerHandoffParams plain = paramsFor(c, kRect);
+            ASSERT_TRUE(bool(handoff.present(1, root, plain, texture, frame)));
+
+            std::map<std::uint64_t, ViewerHandoffReadback> got;
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+            while ((got.size() < expected.size()) && (std::chrono::steady_clock::now() < deadline)) {
+                for (ViewerHandoffReadback& rb : handoff.takeCompletedReadbacks()) {
+                    got[rb.token] = std::move(rb);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            ASSERT_EQ(expected.size(), got.size()) << toString(wanted);
+            for (const auto& e : expected) {
+                const ViewerHandoffReadback& rb = got.at(e.first);
+                EXPECT_EQ(frame.width, rb.frame.width);
+                EXPECT_EQ(frame.height, rb.frame.height);
+                EXPECT_TRUE(rb.bytes == e.second) << toString(wanted) << " token " << e.first;
+            }
+            EXPECT_TRUE(handoff.takeCompletedReadbacks().empty());
+        }
+        handoff.release();
     }
     EXPECT_GT(ran, 0) << "not even the readback rung came up";
 #endif

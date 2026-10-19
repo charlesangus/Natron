@@ -1836,6 +1836,17 @@ ViewerGL::transferDeviceImageToGPU(const GpuDeviceImagePtr& root,
 
     return result;
 } // ViewerGL::transferDeviceImageToGPU
+
+std::vector<ViewerHandoffReadback>
+ViewerGL::takeCompletedHandoffReadbacks()
+{
+    assert( qApp && qApp->thread() == QThread::currentThread() );
+    if (!_imp->handoff) {
+        return std::vector<ViewerHandoffReadback>();
+    }
+
+    return _imp->handoff->takeCompletedReadbacks();
+}
 #endif // NATRON_HAVE_GPU
 
 void

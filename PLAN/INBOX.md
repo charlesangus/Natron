@@ -4,11 +4,6 @@
 - refs: none
 - New milestone requested (user): **Native Metadata Utilities** (E3, after M77 - Native Metadata Nodes). Native versions of the OFX example metadata nodes that M77 left without a native equivalent — `org.openfx.examples.metadataCompare`, `metadataContribute` and `metadataTimeCode` — then retire the OFX ones from the bundle and the asset fetch. Also replace the three OFX example plug-ins the test suite uses as metadata-bridge fixtures (Contribute, Print, TimeCode in `build/assets/TestPlugins/`) with an in-repo test-only OFX plug-in, so the bridge keeps coverage once they're gone. Deps: M77.
 
-### 2026-10-16T14:10:00Z — change-request
-- refs: none
-- Bug, found by PM in PR CI (PR #64, legacy ctest, run 38894698099): `Project::saveProjectInternal` (`Engine/Project.cpp` ~:777) writes the project to a temp file named from `QDateTime::toMSecsSinceEpoch()` in the temp dir. Two processes saving in the same millisecond collide: parallel ctest did this, and so would two Natron instances. The first save fails with "device not open" and `Failed to save`. It made `ProjectSaveLoadPreservesKnobShuffleMapRows` and `...UserKnobShuffleMapRows` fail intermittently. Fix with `QTemporaryFile` or `QSaveFile` beside the target. Small; fits E2 or E7.
-
-
 ### 2026-10-16T16:30:00Z — change-request
 - refs: none
 - New milestone requested (user accepted a known-plugin-bug list in M100 - Content Node Hashing's cache-equivalence sweep): **Bundled Plugin Bug Fixes** (E3). Fix the three bundled-plugin bugs the sweep found, in our openfx-misc and openfx-arena forks, then bump the bundled assets and empty the sweep's known-plugin-bug list:

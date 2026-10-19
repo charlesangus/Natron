@@ -198,6 +198,7 @@ future core work has solid ground to build on.
 | M138 | GUI Papercuts | todo | - |  | E10 | [M138-gui-papercuts.md](PLAN/MILESTONES/M138-gui-papercuts.md) |
 | M139 | Blur In-Graph Overhead | todo | M90 |  | E6 | [M139-blur-in-graph-overhead.md](PLAN/MILESTONES/M139-blur-in-graph-overhead.md) |
 | M141 | Complete Local Build Environment | todo | - |  | E2 | [M141-complete-local-build-environment.md](PLAN/MILESTONES/M141-complete-local-build-environment.md) |
+| M142 | Atomic Project Save | todo | - |  | E7 | [M142-atomic-project-save.md](PLAN/MILESTONES/M142-atomic-project-save.md) |
 
 # Epics
 

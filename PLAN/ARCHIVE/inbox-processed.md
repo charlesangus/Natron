@@ -3367,3 +3367,7 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
   - Document it in `tools/ci/local/README.md`.
 
   Deps: none.
+
+### 2026-10-16T14:10:00Z — change-request
+- refs: none
+- Bug, found by PM in PR CI (PR #64, legacy ctest, run 38894698099): `Project::saveProjectInternal` (`Engine/Project.cpp` ~:777) writes the project to a temp file named from `QDateTime::toMSecsSinceEpoch()` in the temp dir. Two processes saving in the same millisecond collide: parallel ctest did this, and so would two Natron instances. The first save fails with "device not open" and `Failed to save`. It made `ProjectSaveLoadPreservesKnobShuffleMapRows` and `...UserKnobShuffleMapRows` fail intermittently. Fix with `QTemporaryFile` or `QSaveFile` beside the target. Small; fits E2 or E7.

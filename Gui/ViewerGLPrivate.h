@@ -121,6 +121,10 @@ struct TextureInfo
         , pixelAspectRatio(1.)
         , lastRenderedTiles(MAX_MIP_MAP_LEVELS)
         , lastRenderedDeepTiles(MAX_MIP_MAP_LEVELS)
+#ifdef NATRON_HAVE_GPU
+        , lastRenderedDeviceTiles(MAX_MIP_MAP_LEVELS)
+        , pendingDeviceRoot()
+#endif
         , memoryHeldByLastRenderedImages(0)
         , memoryHeldByLastRenderedDeepImages(0)
         , isPartialImage(false)
@@ -146,6 +150,13 @@ struct TextureInfo
     // The deep image each entry of lastRenderedTiles was flattened from, for the sample probe;
     // NULL at a level whose image did not come from deep data
     std::vector<DeepImagePtr> lastRenderedDeepTiles;
+#ifdef NATRON_HAVE_GPU
+    // The device root a level was drawn from when it went to the texture without a RAM image; downloaded into
+    // lastRenderedTiles the first time the colour picker or the histogram reads that level.
+    std::vector<GpuDeviceImagePtr> lastRenderedDeviceTiles;
+    // Set by transferDeviceImageToGPU(), taken by the endTransferBufferFromRAMToGPU() of the same frame.
+    GpuDeviceImagePtr pendingDeviceRoot;
+#endif
     U64 memoryHeldByLastRenderedImages;
     // Registered separately from memoryHeldByLastRenderedImages: the deep payload a
     // lastRenderedDeepTiles entry keeps alive is not the same allocation as the flattened image,
@@ -188,6 +199,13 @@ struct ViewerGL::Implementation
     // Set when the driver rejects the generated shader: the viewer then renders 8-bit textures on the CPU.
     // Read from render threads through getBitDepth().
     std::atomic<bool> shaderFailed;
+#ifdef NATRON_HAVE_GPU
+    // Created with the widget so that render threads can ask its rung at any time; it only touches GL once
+    // initializeGL() has called create().
+    std::unique_ptr<ViewerHandoff> handoff;
+    // Releases the hand-off when the widget's context goes away, as it does when the viewer moves to another window.
+    QMetaObject::Connection handoffContextConnection;
+#endif
     InfoViewerWidget* infoViewer[2]; /*!< Pointer to the info bar below the viewer holding pixel/mouse/format related info*/
     ViewerTab* const viewerTab; /*!< Pointer to the viewer tab GUI*/
     bool zoomOrPannedSinceLastFit; //< true if the user zoomed or panned the image since the last call to fitToRoD

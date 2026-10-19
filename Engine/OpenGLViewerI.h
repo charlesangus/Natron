@@ -262,6 +262,24 @@ public:
 
         return refused;
     }
+
+    /**
+     * @brief Runs the GPU viewer process of root into the display texture of textureIndex, sized to roiRounded,
+     * instead of transferBufferFromRAMtoGPU(); endTransferBufferFromRAMToGPU() then gets a null image and keeps root
+     * for the colour picker. A refusal leaves nothing to keep, and the frame must take the CPU path.
+     **/
+    virtual ViewerHandoffResult transferDeviceImageToGPU(const GpuDeviceImagePtr& /*root*/,
+                                                         const TextureRect& /*roiRounded*/,
+                                                         const RectI& /*roi*/,
+                                                         int /*textureIndex*/,
+                                                         const ViewerHandoffParams& /*params*/,
+                                                         TexturePtr* /*texture*/)
+    {
+        ViewerHandoffResult refused;
+        refused.reason = "rung cpu";
+
+        return refused;
+    }
 #endif
 };
 

@@ -194,7 +194,7 @@ future core work has solid ground to build on.
 | M134 | Output Picker Pixel Aspect | todo | - |  | E10 | [M134-output-picker-pixel-aspect.md](PLAN/MILESTONES/M134-output-picker-pixel-aspect.md) |
 | M135 | Pool Sharing Flake Fix | todo | - |  | E2 | [M135-pool-sharing-flake-fix.md](PLAN/MILESTONES/M135-pool-sharing-flake-fix.md) |
 | M136 | Edge Policy Investigation | todo | - |  | E3 | [M136-edge-policy-investigation.md](PLAN/MILESTONES/M136-edge-policy-investigation.md) |
-| M137 | Native Base Class Flexibility | doing | - | bosley-native-nodes | E3 | [M137-native-base-class-flexibility.md](PLAN/MILESTONES/M137-native-base-class-flexibility.md) |
+| M137 | Native Base Class Flexibility | blocked | - | bosley-native-nodes | E3 | [M137-native-base-class-flexibility.md](PLAN/MILESTONES/M137-native-base-class-flexibility.md) |
 | M138 | GUI Papercuts | todo | - |  | E10 | [M138-gui-papercuts.md](PLAN/MILESTONES/M138-gui-papercuts.md) |
 | M139 | Blur In-Graph Overhead | todo | M90, M137 |  | E6 | [M139-blur-in-graph-overhead.md](PLAN/MILESTONES/M139-blur-in-graph-overhead.md) |
 | M140 | Native Metadata Utilities | todo | M77, M120 |  | E3 | [M140-native-metadata-utilities.md](PLAN/MILESTONES/M140-native-metadata-utilities.md) |
@@ -226,3 +226,4 @@ future core work has solid ground to build on.
 # Open questions
 
 - **M64 - Tiled Rendering:** dropped for now (user, 2026-10-08): this 4-core dev host is too slow for the Phase 64.7 re-evaluation benchmarks to be meaningful. Resume only on a faster host and with the user's go-ahead.
+- **M137 - Native Base Class Flexibility:** approval stop (P3.T2). Approve or reject the design note `PLAN/DECISIONS/2026-10-19-native-node-framework.md` — especially its "Departures for your approval" — and the spike's Grade/Blur/Switch panels (screenshots in `.worktrees/m137/build/m137-shots/out/`). Approve → migration continues on the same branch; reject → Phase 137.2 is reverted and `/cat-plan` re-elaborates.

@@ -106,11 +106,11 @@ protected:
 
 GPU_TEST_F(GpuKernelRegistryTest, LooksUpGeneratedAndRegisteredKernels)
 {
-    const GpuKernelDesc* grade = registry->desc(GpuKernelId::grade);
-    ASSERT_NE(grade, nullptr);
-    EXPECT_GT(grade->spirvWords, 0u);
-    EXPECT_GT(grade->storageBufferCount, 0u);
-    EXPECT_GT(grade->pushConstantBytes, 0u);
+    const GpuKernelDesc* blur = registry->desc(GpuKernelId::blur);
+    ASSERT_NE(blur, nullptr);
+    EXPECT_GT(blur->spirvWords, 0u);
+    EXPECT_GT(blur->storageBufferCount, 0u);
+    EXPECT_GT(blur->pushConstantBytes, 0u);
 
     const GpuKernelDesc* divide = registry->desc(GpuKernelId::wrap_divide);
     ASSERT_NE(divide, nullptr);

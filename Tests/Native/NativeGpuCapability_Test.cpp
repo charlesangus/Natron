@@ -49,9 +49,9 @@
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/GpuRender.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
 
@@ -111,7 +111,7 @@ TEST_F(NativeGpuCapabilityTest, OnlyAllowlistedNativeNodesRenderOnGpu)
             if (!node) {
                 continue;
             }
-            NativeImageEffect* effect = dynamic_cast<NativeImageEffect*>(node->getEffectInstance().get());
+            NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
             if (!effect) {
                 continue;
             }
@@ -129,7 +129,7 @@ TEST_F(NativeGpuCapabilityTest, DefaultsDeclineAndPassTheRegionThrough)
 {
     NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
     ASSERT_TRUE(bool(node));
-    NativeImageEffect* effect = dynamic_cast<NativeImageEffect*>(node->getEffectInstance().get());
+    NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
     ASSERT_TRUE(effect != nullptr);
 
     const RectI roi(10, 20, 110, 220);

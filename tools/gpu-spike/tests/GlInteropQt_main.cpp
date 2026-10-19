@@ -24,6 +24,7 @@ namespace {
 
 constexpr int kW = 256;
 constexpr int kH = 192;
+constexpr GlFrame kFrame { kW, kH, GlPixelFormat::Rgba32F };
 
 uint8_t
 patternByte(int x, int y, int c)
@@ -92,7 +93,7 @@ protected:
         if (!caps.missing.empty()) {
             std::printf("zero-copy blockers: %s\n", caps.missing.c_str());
         }
-        if (s = GlInterop::create(*dev_, loader, kW, kH, caps.best, interop_); !s) {
+        if (s = GlInterop::create(*dev_, loader, kFrame.bytes(), caps.best, interop_); !s) {
             error = "create: " + s.message;
             return;
         }
@@ -111,7 +112,7 @@ protected:
         glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
 
         VkBufferCreateInfo bci { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-        bci.size = interop_->size();
+        bci.size = kFrame.bytes();
         bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         VmaAllocationCreateInfo aci {};
         aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
@@ -129,9 +130,9 @@ protected:
                 }
             }
         }
-        std::memcpy(ai.pMappedData, expected_.data(), interop_->size());
+        std::memcpy(ai.pMappedData, expected_.data(), kFrame.bytes());
         vmaFlushAllocation(dev_->allocator(), stagingAlloc_, 0, VK_WHOLE_SIZE);
-        expectedTextureSum = fnv1a(expected_.data(), interop_->size());
+        expectedTextureSum = fnv1a(expected_.data(), kFrame.bytes());
     }
 
     void paintGL() override
@@ -142,19 +143,22 @@ protected:
             return;
         }
         if (!uploaded_) {
-            const VkDeviceSize size = interop_->size();
-            GpuStatus s = interop_->produce([&](VkCommandBuffer cb) {
-                VkBufferCopy region { 0, 0, size };
-                vkCmdCopyBuffer(cb, staging_, interop_->buffer(), 1, &region);
-                return GpuStatus {};
-            });
+            int slot = -1;
+            GpuStatus s = interop_->produce(
+                kFrame,
+                [&](VkCommandBuffer cb, VkBuffer dst) {
+                    VkBufferCopy region { 0, 0, kFrame.bytes() };
+                    vkCmdCopyBuffer(cb, staging_, dst, 1, &region);
+                    return GpuStatus {};
+                },
+                {}, &slot);
             if (s) {
-                s = interop_->waitProduced();
+                s = interop_->waitProduced(slot);
             }
             QElapsedTimer t;
             t.start();
             if (s) {
-                s = interop_->upload(tex_);
+                s = interop_->upload(slot, tex_, 0, 0);
             }
             glFinish();
             handoffMs = double(t.nsecsElapsed()) / 1e6;

@@ -293,6 +293,26 @@ public:
     bool mayHaveKnobExpressions() const;
 
     /**
+     * @brief Registers knob's expression at dimension as reading this node's output metadata:
+     * this node's hash dependents then include the knob's node, and a change of this node's hash
+     * refreshes the expression. Registered by KnobI::addMetadataDependency().
+     **/
+    void addMetadataReader(const KnobIPtr& knob, int dimension);
+    void removeMetadataReader(const KnobI* knob, int dimension);
+
+    /**
+     * @brief The live expression knobs, with their dimension, that read this node's metadata.
+     **/
+    void getMetadataReaders(std::list<std::pair<KnobIPtr, int>>* readers) const;
+
+    /**
+     * @brief Called when this node's hash, and so possibly its output metadata, changed: drops
+     * the readers' cached expression results and moves their content hashes now, and has the
+     * main thread evaluate them as changed. Callable from any thread.
+     **/
+    void onMetadataMayHaveChanged();
+
+    /**
      * @brief True when the project frame range is part of this node's content hash: the effect
      * reads it, or an expression on one of its knobs can.
      **/
@@ -1796,6 +1816,9 @@ private:
         // By input slot: a viewer's two shown inputs, null when unconnected; for any other node
         // the connected inputs it folds in.
         std::vector<std::pair<int, NodePtr>> bySlot;
+        // Other nodes whose output metadata the knob expressions read; their hashes are folded
+        // in through those knobs' content hashes.
+        std::vector<NodePtr> metadataSources;
     };
 
     /**

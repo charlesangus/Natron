@@ -1099,6 +1099,16 @@ Node::getHashDependents(std::vector<NodePtr>* dependents) const
         _imp->rotoContext->getRotoPaintTreeNodes(&paintTree);
         dependents->insert(dependents->end(), paintTree.begin(), paintTree.end());
     }
+
+    std::list<std::pair<KnobIPtr, int>> readers;
+    getMetadataReaders(&readers);
+    for (std::list<std::pair<KnobIPtr, int>>::const_iterator it = readers.begin(); it != readers.end(); ++it) {
+        EffectInstance* readerEffect = dynamic_cast<EffectInstance*>(it->first->getHolder());
+        NodePtr readerNode = readerEffect ? readerEffect->getNode() : NodePtr();
+        if (readerNode && (readerNode.get() != this)) {
+            dependents->push_back(readerNode);
+        }
+    }
 }
 
 U32
@@ -1115,6 +1125,7 @@ Node::getHashInputs(HashInputs* inputs) const
 {
     inputs->isViewer = false;
     inputs->bySlot.clear();
+    inputs->metadataSources.clear();
     if (!_imp->effect) {
         return;
     }
@@ -1144,6 +1155,22 @@ Node::getHashInputs(HashInputs* inputs) const
             continue;
         }
         inputs->bySlot.push_back(std::make_pair((int)i, std::move(input)));
+    }
+
+    if (!mayHaveKnobExpressions()) {
+        return;
+    }
+    std::list<NodePtr> sources;
+    const KnobsVec knobs = _imp->effect->getKnobs_mt_safe();
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        if (*it) {
+            (*it)->getMetadataDependencies(-1, &sources);
+        }
+    }
+    for (std::list<NodePtr>::iterator it = sources.begin(); it != sources.end(); ++it) {
+        if ((it->get() != this) && (std::find(inputs->metadataSources.begin(), inputs->metadataSources.end(), *it) == inputs->metadataSources.end())) {
+            inputs->metadataSources.push_back(std::move(*it));
+        }
     }
 }
 
@@ -1428,6 +1455,11 @@ Node::recomputeHashIfDirty(bool requireCleanInputs,
                     return false;
                 }
             }
+            for (std::size_t i = 0; i < inputs.metadataSources.size(); ++i) {
+                if (inputs.metadataSources[i]->isHashDirty()) {
+                    return false;
+                }
+            }
         }
         {
             HashComputeScope computing;
@@ -1496,6 +1528,12 @@ Node::refreshDirtyHashes()
                     stack.push_back(std::make_pair(input, false));
                 }
             }
+            for (std::size_t i = 0; i < inputs.metadataSources.size(); ++i) {
+                const NodePtr& source = inputs.metadataSources[i];
+                if (source->isHashDirty() && (state.find(source.get()) == state.end())) {
+                    stack.push_back(std::make_pair(source, false));
+                }
+            }
         }
 
         bool complete = true;
@@ -1538,6 +1576,93 @@ Node::mayHaveKnobExpressions() const
     QMutexLocker l(&_imp->knobsDigestMutex);
 
     return !_imp->knobsDigestValid || _imp->knobsDigestHasExpression;
+}
+
+void
+Node::addMetadataReader(const KnobIPtr& knob,
+                        int dimension)
+{
+    if (!knob) {
+        return;
+    }
+    QMutexLocker l(&_imp->metadataReadersMutex);
+    std::list<std::pair<KnobIWPtr, int>>& readers = _imp->metadataReaders;
+    for (std::list<std::pair<KnobIWPtr, int>>::iterator it = readers.begin(); it != readers.end();) {
+        KnobIPtr reader = it->first.lock();
+        if (!reader) {
+            it = readers.erase(it);
+            continue;
+        }
+        if ((reader == knob) && (it->second == dimension)) {
+            return;
+        }
+        ++it;
+    }
+    readers.push_back(std::make_pair(KnobIWPtr(knob), dimension));
+}
+
+void
+Node::removeMetadataReader(const KnobI* knob,
+                           int dimension)
+{
+    QMutexLocker l(&_imp->metadataReadersMutex);
+    std::list<std::pair<KnobIWPtr, int>>& readers = _imp->metadataReaders;
+
+    for (std::list<std::pair<KnobIWPtr, int>>::iterator it = readers.begin(); it != readers.end();) {
+        KnobIPtr reader = it->first.lock();
+        if (!reader || ((reader.get() == knob) && (it->second == dimension))) {
+            it = readers.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void
+Node::getMetadataReaders(std::list<std::pair<KnobIPtr, int>>* readers) const
+{
+    QMutexLocker l(&_imp->metadataReadersMutex);
+
+    for (std::list<std::pair<KnobIWPtr, int>>::const_iterator it = _imp->metadataReaders.begin(); it != _imp->metadataReaders.end(); ++it) {
+        KnobIPtr reader = it->first.lock();
+        if (reader) {
+            readers->push_back(std::make_pair(reader, it->second));
+        }
+    }
+}
+
+void
+Node::onMetadataMayHaveChanged()
+{
+    std::list<std::pair<KnobIPtr, int>> readers;
+    getMetadataReaders(&readers);
+    if (readers.empty()) {
+        return;
+    }
+    // Done here rather than on the main thread: a render reading the expression before the queued
+    // refresh runs must not be served the old result, nor reuse renders keyed on the old hash.
+    for (std::list<std::pair<KnobIPtr, int>>::const_iterator it = readers.begin(); it != readers.end(); ++it) {
+        it->first->clearExpressionsResults(it->second);
+        it->first->invalidateContentHash();
+    }
+
+    // Evaluating a knob change runs actions and requests renders, which a hash recompute on a
+    // render thread must not do.
+    if (!qApp || _imp->metadataReadersRefreshRequested.exchange(true)) {
+        return;
+    }
+    NodeWPtr weakSelf = weak_from_this();
+    QMetaObject::invokeMethod(qApp, [weakSelf]() {
+        NodePtr node = weakSelf.lock();
+        if (!node) {
+            return;
+        }
+        node->_imp->metadataReadersRefreshRequested.store(false);
+        std::list<std::pair<KnobIPtr, int>> readers;
+        node->getMetadataReaders(&readers);
+        for (std::list<std::pair<KnobIPtr, int>>::const_iterator it = readers.begin(); it != readers.end(); ++it) {
+            it->first->evaluateValueChange(it->second, it->first->getCurrentTime(), ViewSpec::all(), eValueChangedReasonSlaveRefresh);
+        } }, Qt::QueuedConnection);
 }
 
 void

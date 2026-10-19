@@ -406,6 +406,10 @@ struct Expr
     ///The list of pair<knob, dimension> dpendencies for an expression
     std::list<std::pair<KnobIWPtr, int> > dependencies;
 
+    // Nodes whose output metadata the expression reads. Metadata is not a knob, so these are
+    // node-level edges: each node lists this knob among its metadata readers.
+    std::list<NodeWPtr> metadataDependencies;
+
     //PyObject* code;
 
     Expr()
@@ -2347,6 +2351,29 @@ extractParameters(std::size_t startParenthesis,
     }
 }
 
+// The expression a method call starting at tokenStart is made on: the text from the start of
+// the symbol up to the dot before tokenStart.
+static std::string
+callReceiver(const std::string& str,
+             std::size_t tokenStart)
+{
+    int i = (int)tokenStart - 2;
+    int nClosingParenthesisMet = 0;
+
+    while (i >= 0) {
+        if (str[i] == ')') {
+            ++nClosingParenthesisMet;
+        }
+        if (std::isspace(str[i]) || (str[i] == '=') || (str[i] == '\n') || (str[i] == '\t') || (str[i] == '+') || (str[i] == '-') || (str[i] == '*') || (str[i] == '/') || (str[i] == '%') || ((str[i] == '(') && !nClosingParenthesisMet)) {
+            break;
+        }
+        --i;
+    }
+    ++i;
+
+    return str.substr(i, tokenStart - 1 - i);
+}
+
 static bool
 parseTokenFrom(int fromDim,
                int dimensionParamPos,
@@ -2444,34 +2471,41 @@ parseTokenFrom(int fromDim,
         throw std::invalid_argument("Invalid expr");
     }
 
-    //Find the start of the symbol
-    int i = (int)*tokenStart - 2;
-    int nClosingParenthesisMet = 0;
-    while (i >= 0) {
-        if (str[i] == ')') {
-            ++nClosingParenthesisMet;
-        }
-        if ( std::isspace(str[i]) ||
-             ( str[i] == '=') ||
-             ( str[i] == '\n') ||
-             ( str[i] == '\t') ||
-             ( str[i] == '+') ||
-             ( str[i] == '-') ||
-             ( str[i] == '*') ||
-             ( str[i] == '/') ||
-             ( str[i] == '%') ||
-             ( ( str[i] == '(') && !nClosingParenthesisMet ) ) {
-            break;
-        }
-        --i;
-    }
-    ++i;
-    std::string varName = str.substr(i, *tokenStart - 1 - i);
-    output->append(varName + toInsert);
+    output->append(callReceiver(str, *tokenStart) + toInsert);
 
     //assert(*tokenSize > 0);
     return true;
 } // parseTokenFrom
+
+// Appends to output, for every "<receiver>.<token>(" call in str, a line registering the
+// receiver's output metadata as read by the expression at fromDim of thisParam. The receiver
+// is only known once the line runs, so anything without the registering method is skipped.
+static void
+extractMetadataReads(const std::string& str,
+                     const std::string& token,
+                     int fromDim,
+                     std::string* output)
+{
+    for (std::size_t pos = str.find(token); pos != std::string::npos; pos = str.find(token, pos + 1)) {
+        if ((pos < 2) || (str[pos - 1] != '.')) {
+            continue;
+        }
+        std::size_t next = pos + token.size();
+        while ((next < str.size()) && (str[next] == ' ')) {
+            ++next;
+        }
+        if ((next >= str.size()) || (str[next] != '(')) {
+            continue;
+        }
+        const std::string receiver = callReceiver(str, pos);
+        if (receiver.empty()) {
+            continue;
+        }
+        std::stringstream ss;
+        ss << "getattr(" << receiver << ",'addMetadataAsDependencyOf',lambda *args: None)(" << fromDim << ",thisParam)\n";
+        output->append(ss.str());
+    }
+}
 
 static bool
 extractAllOcurrences(const std::string& str,
@@ -2609,14 +2643,15 @@ KnobHelperPrivate::declarePythonVariables(bool addTab,
 void
 KnobHelperPrivate::parseListenersFromExpression(int dimension)
 {
-    //Extract pointers to knobs referred to by the expression
-    //Our heuristic is quite simple: we replace in the python code all calls to:
-    // - getValue
-    // - getValueAtTime
-    // - getDerivativeAtTime
-    // - getIntegrateFromTimeToTime
-    // - get
-    // And replace them by addAsDependencyOf(thisParam) which will register the parameters as a dependency of this parameter
+    // Extract pointers to knobs referred to by the expression
+    // Our heuristic is quite simple: we replace in the python code all calls to:
+    //  - getValue
+    //  - getValueAtTime
+    //  - getDerivativeAtTime
+    //  - getIntegrateFromTimeToTime
+    //  - get
+    //  And replace them by addAsDependencyOf(thisParam) which will register the parameters as a dependency of this parameter
+    //  Calls to metadata and metadataKeys likewise become addMetadataAsDependencyOf(thisParam) on the node they are made on.
 
     std::string expressionCopy;
 
@@ -2645,6 +2680,9 @@ KnobHelperPrivate::parseListenersFromExpression(int dimension)
     if ( !extractAllOcurrences(expressionCopy, "get", true, -1, dimension, &script) ) {
         return;
     }
+
+    extractMetadataReads(expressionCopy, "metadata", dimension, &script);
+    extractMetadataReads(expressionCopy, "metadataKeys", dimension, &script);
 
     std::string declarations = declarePythonVariables(false, dimension);
     std::stringstream ss;
@@ -3045,6 +3083,51 @@ KnobHelper::getExpressionDependencies(int dimension,
 }
 
 void
+KnobHelper::addMetadataDependency(int dimension,
+                                  const NodePtr& node)
+{
+    if (!node || (dimension < 0) || (dimension >= _imp->dimension)) {
+        return;
+    }
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        std::list<NodeWPtr>& dependencies = _imp->expressions[dimension].metadataDependencies;
+        for (std::list<NodeWPtr>::const_iterator it = dependencies.begin(); it != dependencies.end(); ++it) {
+            if (it->lock() == node) {
+                return;
+            }
+        }
+        dependencies.push_back(node);
+    }
+    // The holder's own node rehashes, and so drops its expression results, whenever its metadata
+    // can change; registering there would only refresh the expression twice.
+    const EffectInstance* holderEffect = dynamic_cast<const EffectInstance*>(_imp->holder);
+    if (!holderEffect || (holderEffect->getNode() != node)) {
+        node->addMetadataReader(shared_from_this(), dimension);
+    }
+}
+
+void
+KnobHelper::getMetadataDependencies(int dimension,
+                                    std::list<NodePtr>* nodes) const
+{
+    QMutexLocker k(&_imp->expressionMutex);
+
+    for (int i = 0; i < _imp->dimension; ++i) {
+        if ((dimension != -1) && (dimension != i)) {
+            continue;
+        }
+        const std::list<NodeWPtr>& dependencies = _imp->expressions[i].metadataDependencies;
+        for (std::list<NodeWPtr>::const_iterator it = dependencies.begin(); it != dependencies.end(); ++it) {
+            NodePtr node = it->lock();
+            if (node) {
+                nodes->push_back(node);
+            }
+        }
+    }
+}
+
+void
 KnobHelper::clearExpression(int dimension,
                             bool clearResults)
 {
@@ -3112,6 +3195,19 @@ KnobHelper::clearExpression(int dimension,
             {
                 QWriteLocker otherMastersLocker(&other->_imp->mastersMutex);
                 other->_imp->listeners = otherListeners;
+            }
+        }
+    }
+    {
+        std::list<NodeWPtr> metadataDependencies;
+        {
+            QMutexLocker k(&_imp->expressionMutex);
+            metadataDependencies.swap(_imp->expressions[dimension].metadataDependencies);
+        }
+        for (std::list<NodeWPtr>::const_iterator it = metadataDependencies.begin(); it != metadataDependencies.end(); ++it) {
+            NodePtr node = it->lock();
+            if (node) {
+                node->removeMetadataReader(this, dimension);
             }
         }
     }
@@ -5072,6 +5168,7 @@ KnobHelper::getDimensionContentHashRecursive(int dimension,
     const U64 own = getOwnDimensionContentHash(dimension);
 
     std::list<std::pair<KnobIWPtr, int>> dependencies;
+    std::list<NodeWPtr> metadataDependencies;
     bool isVolatile;
     {
         QMutexLocker k(&_imp->expressionMutex);
@@ -5080,9 +5177,10 @@ KnobHelper::getDimensionContentHashRecursive(int dimension,
             return own;
         }
         dependencies = expr.dependencies;
+        metadataDependencies = expr.metadataDependencies;
         isVolatile = expressionIsVolatile(expr.originalExpression);
     }
-    if (dependencies.empty() && !isVolatile) {
+    if (dependencies.empty() && metadataDependencies.empty() && !isVolatile) {
         return own;
     }
 
@@ -5110,6 +5208,17 @@ KnobHelper::getDimensionContentHashRecursive(int dimension,
         const KnobHelper* depHelper = dynamic_cast<const KnobHelper*>(dep.get());
         h.appendU64(depHelper ? depHelper->getDimensionContentHashRecursive(it->second, path)
                               : dep->getDimensionContentHash(it->second));
+    }
+    // A node's metadata is a function of its hash. The holder's own node is left out: its hash
+    // folds this one in, and its metadata already follows the rest of its hash.
+    const EffectInstance* holderEffect = dynamic_cast<const EffectInstance*>(_imp->holder);
+    const NodePtr holderNode = holderEffect ? holderEffect->getNode() : NodePtr();
+    for (std::list<NodeWPtr>::const_iterator it = metadataDependencies.begin(); it != metadataDependencies.end(); ++it) {
+        NodePtr source = it->lock();
+        h.appendBool(bool(source));
+        if (source && (source != holderNode)) {
+            h.appendU64(source->getHashValue());
+        }
     }
     path.erase(key);
 
@@ -5289,6 +5398,9 @@ KnobHelper::getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) cons
         }
     }
 
+    std::list<NodePtr> metadataSources;
+    getMetadataDependencies(-1, &metadataSources);
+    nodes.insert(metadataSources.begin(), metadataSources.end());
 
     for (std::list<KnobIPtr>::iterator it = knobsToInspectRecursive.begin(); it != knobsToInspectRecursive.end(); ++it) {
         (*it)->getAllExpressionDependenciesRecursive(nodes);

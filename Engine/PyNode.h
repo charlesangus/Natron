@@ -424,6 +424,12 @@ public:
     QStringList metadataKeys() const;
     QStringList metadataKeys(double frame, int view = 0) const;
 
+    /**
+     * @brief Records that the expression at fromExprDimension of param reads this node's metadata,
+     * so that it is refreshed when the metadata changes. Called by the expression dependency scan.
+     **/
+    void addMetadataAsDependencyOf(int fromExprDimension, Param* param);
+
     double getPixelAspectRatio() const;
 
     Natron::ImageBitDepthEnum getBitDepth() const;

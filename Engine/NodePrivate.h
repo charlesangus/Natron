@@ -408,6 +408,11 @@ public:
     mutable bool knobsDigestHasLiveEntries = false;
     mutable U64 knobsDigest = 0; //< valid when there are no live entries
     mutable bool knobsDigestHasExpression = false;
+    // Expression knobs, by dimension, that read this node's output metadata.
+    mutable QMutex metadataReadersMutex; //< protects metadataReaders
+    std::list<std::pair<KnobIWPtr, int>> metadataReaders;
+    // Set while a refresh of the readers waits in the main thread's event queue.
+    std::atomic<bool> metadataReadersRefreshRequested { false };
     mutable QMutex masterNodeMutex; //< protects masterNode and nodeLinks
     NodeWPtr masterNode; //< this points to the master when the node is a clone
     KnobLinkList nodeLinks; //< these point to the parents of the params links

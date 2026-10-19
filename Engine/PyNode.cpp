@@ -1304,6 +1304,19 @@ Effect::metadataKeys(double frame,
     return keys;
 }
 
+void
+Effect::addMetadataAsDependencyOf(int fromExprDimension,
+                                  Param* param)
+{
+    NodePtr node = getInternalNode();
+    KnobIPtr expressionKnob = param ? param->getInternalKnob() : KnobIPtr();
+
+    if (!node || !expressionKnob) {
+        return;
+    }
+    expressionKnob->addMetadataDependency(fromExprDimension, node);
+}
+
 double
 Effect::getPixelAspectRatio() const
 {

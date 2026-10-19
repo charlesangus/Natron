@@ -772,6 +772,17 @@ public:
      **/
     virtual bool getExpressionDependencies(int dimension, std::list<std::pair<KnobIWPtr, int> >& dependencies) const = 0;
 
+    /**
+     * @brief Records that the expression at the given dimension reads the output metadata of node,
+     * and registers this knob as one of node's metadata readers. Cleared with the expression.
+     **/
+    virtual void addMetadataDependency(int dimension, const NodePtr& node) = 0;
+
+    /**
+     * @brief Appends the live nodes whose output metadata the expression at the given dimension
+     * reads, or every dimension's if dimension is -1.
+     **/
+    virtual void getMetadataDependencies(int dimension, std::list<NodePtr>* nodes) const = 0;
 
     /**
      * @brief Calls setValueAtTime with a reason of eValueChangedReasonUserEdited.
@@ -1646,6 +1657,8 @@ public:
 
     virtual bool isExpressionUsingRetVariable(int dimension = 0) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool getExpressionDependencies(int dimension, std::list<std::pair<KnobIWPtr, int> >& dependencies) const OVERRIDE FINAL;
+    virtual void addMetadataDependency(int dimension, const NodePtr& node) OVERRIDE FINAL;
+    virtual void getMetadataDependencies(int dimension, std::list<NodePtr>* nodes) const OVERRIDE FINAL;
     virtual std::string getExpression(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual const std::vector<std::shared_ptr<Curve>  > & getCurves() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setAnimationEnabled(bool val) OVERRIDE FINAL;

@@ -420,3 +420,13 @@ Minor: inputs are combined with `+i`; `U32 newAge` truncates (`Node.cpp:1941`); 
 
   PR CI (debug, live asserts) found 47 aborts, mostly `getKnobs()` called off the main thread by the lazy recompute; a fix is in progress.
 - 2026-10-18 — **Debug PR CI rounds.** At 731adc727 (assert fixes: `getKnobs_mt_safe` on the off-main hash paths, weak digest knobs, view-0 reads in Transform/Reformat, a host-applied mask reduced to its channel, interactive test renders of non-output roots): 47 → 5 failures. At 541daddda (top-level Input `getPreferredInputNode`, defocus_retime comp at 1/8 scale): 3 failures. Those are `RenderSchedulerTest.CachedOutputsOfTwoFramesAtOnce` (taskgraph only: a non-leaf node rendered 0 times, being diagnosed as a possible key collision) and a `NativeTransformGpuTest.ResamplingMatchesTheCpuRender` timeout. The `ProjectLoad*Edge*` failures at 731adc727 are the pending inbox temp-file-collision bug, not M100. The release build of 91afaa409 is green (2481/2481 in both schedulers).
+- 2026-10-19 — **Review round 2** (Codex, over 389e439bc..dbdde0ca4, 5 findings, all fixed):
+  - a stale-data viewer abort now returns before any RoD or request pass is cached (5a9d5ee78);
+  - the GL mask mix selects the mask channel (1b6855e75);
+  - the sublabel exemption is central by name, and excluded knobs' expressions leave the digests (18300b56e).
+
+  Every round-1 and round-2 thread has a reply. Debug-CI fixes in between:
+  - test-only: distinct leaf values per pool size (f2b8bef25), GPU resampling split per filter (dbdde0ca4);
+  - a pre-existing teardown race in `OutputSchedulerThread::waitForRenderThreadsToQuit` that left a late render thread behind (fd771303a).
+
+  **Accepted limitation, for a follow-up:** a file render (Write, non-viewer) edited mid-render can still cache a stale frame, because aborting fails the job and a blocking main-thread wait risks deadlock. The release build of dbdde0ca4 is green; the final gate on fd771303a is running.

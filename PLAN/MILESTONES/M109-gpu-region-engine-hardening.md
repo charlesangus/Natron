@@ -167,7 +167,7 @@ M85's benches show where the region engine loses time on real comps. Three items
     - At the phase build, `GpuTransfer_Test` imports one range from 8 threads at once: one cached import, with the rest dropped or reused. It also checks a `forget` during `prepareImport`.
     - A residency test sees no new import at download time on the first frame (`importCount` from P1.T1), on lavapipe and RADV.
   - size: L
-- [ ] M109.P4.T3 — Charge placement the transfer a region exposes, not the transfer it hides (if P2.T1 confirms a misprediction)
+- [x] M109.P4.T3 — Charge placement the transfer a region exposes, not the transfer it hides (if P2.T1 confirms a misprediction)
   - files: `Engine/GpuCostModel.{h,cpp}` (`regionGainMs`, new `observeTransfer`), `Engine/GpuRegionTask.cpp` (`noteSuccess`), `Tests/GpuPlacement_Test.cpp`
   - approach:
     - The gain counts exposed transfer: max(0, transfer − the kernel it overlaps) for a region that P4.T1 would strip, and full transfer otherwise.
@@ -299,3 +299,4 @@ M85's benches show where the region engine loses time on real comps. Three items
     - **P5.T1 re-scoped:** "other" is dropped, and the fix target is buffer reuse within a size class in `HostImageMemory::allocate` and the device pool, gated on the fixed-parameter check.
     - **P5.T2 dropped.**
     - **P6.T2 stays conditional on BENCH_RANGE.** No region retried in any single-frame run. The halving counters never reach the profile, so counts come from `retries`, `strips` and `stripsInFlight` in the region records.
+- 2026-10-19 — **M109.P4.T3 (`633842a63`):** unified memory now follows the device type: integrated or CPU-type is unified, and discrete, ReBAR included, is not. No upload or download path read the old flag. `pipelinesTransfers` is the cost model's "would the planner pipeline this?" test. It shares `gpuStripPipeliningAllowed` with `RegionRun::pipelineAllowed`, and it ignores halos and regions that are forced into strips. `observeTransfer(up, down, hidden+exposed ms)` scales the calibrated rate by an EMA of measured over predicted time. It is fed hidden plus exposed time, because exposed time alone would count the overlap twice. Unpipelined samples are host wall time, while pipelined samples are device timestamps. The tests take 50 GB/s as "this bus", because at 25 GB/s a lone UHD Grade is refused even when pipelined. `VIRTUAL_GPU` counts as not unified. Checked with `-fsyntax-only` only; the tests run at the phase build.

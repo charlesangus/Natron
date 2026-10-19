@@ -150,6 +150,31 @@ B if no A is connected), never B's; `NativeGenerator` outputs only
 frame number within the source, so it is omitted); transforms and filters
 keep the default.
 
+### Reading metadata from Python and expressions
+
+`Effect.metadata(key[, frame, view])` returns one value of the node's output
+metadata, `Effect.metadataKeys([frame, view])` the sorted list of its keys.
+`frame` defaults to the current frame (the evaluation frame inside an
+expression) and `view` to 0. A missing key gives `None`. Types follow the
+stored value: int to `int`, double to `float`, string to `str`, a vector to a
+`list`; an OpenFX node's one-element vector comes back as a scalar.
+
+Keys carry the prefixes listed under "Metadata" below (`ofx/`, `exr/`,
+`exif/`, `tiff/`, `dpx/`, `cin/`, `oiio/`, `quicktime/`). Use
+`thisNode.metadata('ofx/frame')` or `app.Read1.metadata('exr/myString')` in an
+expression; a frame argument reads another frame, as in
+`Read1.metadata('ofx/frame', frame + 1)`.
+
+- An expression that calls `X.metadata()` or `X.metadataKeys()` registers X as
+  a dependency of its knob and is re-evaluated whenever X's hash changes, which
+  includes an edit anywhere upstream of X. The reading node's own hash follows
+  X's.
+- An OpenFX node ignores `view`.
+- Refresh follows the source's hash only. A project format or frame-rate
+  change that does not move that hash does not refresh the readers.
+- Results are cached per evaluation time, so each frame an expression asks for
+  is derived once per hash.
+
 ## Metadata
 
 Keys are strings whose prefix names the namespace: `ofx/` (standard keys the

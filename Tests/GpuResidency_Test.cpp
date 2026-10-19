@@ -1494,8 +1494,8 @@ TEST_F(GpuResidencyTest, RegionNoStripFitsRendersOnTheCpu)
 // Eight Constant -> Grade -> Blur -> Grade branches at 1024 x 1024, summed by CPU Merges, render as two frames in flight
 // on a 64 MB pool, which holds four of their images. The first branch is split after its Grade, whose output waits in
 // the frame store on the device for the region holding the rest of the branch. Regions are not admitted on device
-// memory, so two run at once and need more than the pool holds: it evicts, and a region it cannot serve runs again,
-// as thinner strips if need be, but never on the CPU.
+// memory, so two run at once and need more than the pool holds: it evicts, or a region it cannot serve runs again as
+// thinner strips, but never on the CPU.
 TEST_F(GpuResidencyTest, LargeCompStaysWithinTheDeviceBudget)
 {
     if (!gpuOrSkip()) {
@@ -1590,6 +1590,7 @@ TEST_F(GpuResidencyTest, LargeCompStaysWithinTheDeviceBudget)
     const gpu::GpuBufferPoolStats after = runtime()->pool().stats();
 
     int evictions = 0;
+    int thinned = 0;
     for (const FrameRun& run : runs) {
         std::string reasons;
         for (const std::pair<const std::string, int>& reason : run.stats->getCpuFallbackReasons()) {
@@ -1608,13 +1609,16 @@ TEST_F(GpuResidencyTest, LargeCompStaysWithinTheDeviceBudget)
             EXPECT_EQ(0, renderRoICallsOf(run, blurs[b])) << "a Blur rendered on the CPU";
         }
         evictions += run.stats->getEvictions();
+        thinned += run.stats->getGpuStripHalvings() + run.stats->getGpuStripPipelinesSerialized();
     }
     std::printf("[          ] pool budget %llu, peak %llu, evictions %llu (frame store: %d)\n",
                 (unsigned long long)budget,
                 (unsigned long long)after.peakBytes,
                 (unsigned long long)(after.evictions - before.evictions),
                 evictions);
-    EXPECT_GT(evictions, 0);
+    // Both frames have the same region shapes, so a region can start from the strips its twin in the other frame
+    // settled on and fit without evicting the first branch's Grade.
+    EXPECT_GT(evictions + thinned, 0) << "the pool was never short, which proves nothing about the budget";
     EXPECT_LE(after.peakBytes, budget);
     EXPECT_EQ(budget, runtime()->pool().budget()) << "the device ran out of memory, which shrinks the budget";
     EXPECT_EQ(before.liveBytes, after.liveBytes);

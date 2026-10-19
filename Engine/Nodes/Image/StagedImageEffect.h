@@ -63,6 +63,10 @@ NATRON_NAMESPACE_ENTER
  * A Passes op also gives the node its regions: the source's region of interest is the window
  * grown by the halo of the op's passes, and the region of definition the source's grown by their
  * spread, which clipRegionOfDefinition() may then narrow.
+ *
+ * A Route op renders nothing: route() makes the node an identity everywhere, and its region of
+ * definition, frames needed and metadata are those of the input it routes to, or empty for
+ * Black. Its render() fails, as the engine never calls it for an identity.
  **/
 class StagedImageEffect
     : public NativeEffectBase {
@@ -126,7 +130,9 @@ public:
                                  const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
-     * @brief For a Passes op with a connected source whose region is not empty: the default
+     * @brief For a Route op, the region of the input route() chooses, at the time it chooses,
+     * and an empty region for Black or an unconnected input.
+     * For a Passes op with a connected source whose region is not empty: the default
      * region when the op is an identity, else the source's region grown by the spread of the op's
      * passes (passListRoD()). Then clipRegionOfDefinition() may change it; the default region when
      * neither did, and for every other op kind.
@@ -214,6 +220,20 @@ protected:
                                       const RectD& renderWindow,
                                       ViewIdx view,
                                       RoIMap* ret) OVERRIDE;
+
+    /**
+     * @brief For a Route op, only the input route() chooses, at the time it chooses, and no
+     * input for Black; the default for every other op kind.
+     **/
+    virtual FramesNeededMap getFramesNeeded(double time,
+                                            ViewIdx view) OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For a Route op, the metadata of the input route() chooses, at the time it chooses,
+     * and none for Black; the upstream metadata for every other op kind.
+     **/
+    virtual ImageMetadata deriveOutputMetadata(double time,
+                                               ViewIdx view) OVERRIDE WARN_UNUSED_RETURN;
 
     virtual bool isIdentity(double time,
                             const RenderScale& scale,
@@ -323,6 +343,19 @@ public:
     }
 
     /**
+     * @brief For a Route op, the op's route() at time and view; None for every other op kind.
+     **/
+    virtual Route route(double time,
+                        ViewIdx view) OVERRIDE WARN_UNUSED_RETURN
+    {
+        if constexpr (PIPELINE.op == OpKind::Route) {
+            return _op.route(bakeParams(_op, time, view), RouteContext(*this, time, view));
+        } else {
+            return StagedImageEffect::route(time, view);
+        }
+    }
+
+    /**
      * @brief For a Passes op, the op's costHint(params, context) when it has one, else
      * passListCostHint() of its passes, at time, view and mipmapLevel; empty for a Point op.
      **/
@@ -375,6 +408,8 @@ private:
     {
         if constexpr (PIPELINE.op == OpKind::Passes) {
             return _op.isIdentity(bakeParams(_op, time, view), getPassContext(scale));
+        } else if constexpr (PIPELINE.op == OpKind::Route) {
+            return false;
         } else {
             return _op.isIdentity(bakeParams(_op, time, view));
         }
@@ -383,11 +418,17 @@ private:
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        const typename OP::Params params = bakeParams(_op, args.time, args.view);
+        if constexpr (PIPELINE.op == OpKind::Route) {
+            Q_UNUSED(args);
+            Q_UNUSED(plan);
 
-        if constexpr (PIPELINE.op == OpKind::Passes) {
+            return eStatusFailed;
+        } else if constexpr (PIPELINE.op == OpKind::Passes) {
+            const typename OP::Params params = bakeParams(_op, args.time, args.view);
+
             return runPassesCpu(*this, plan, args, _op.passes(params, getPassContext(args.mappedScale)));
         } else {
+            const typename OP::Params params = bakeParams(_op, args.time, args.view);
             const OP& rowOp = _op;
             const auto row = [&rowOp, &params](const RowIO& io) {
                 rowOp.row(params, io);

@@ -75,6 +75,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Nodes/Merge/Switch.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
 #include "Engine/ProcessHandler.h"
@@ -1050,8 +1051,9 @@ isEntitledForInspector(Plugin* plugin,
     }
 
     // The native nodes that took over the IDs of OpenFX plug-ins the rule below makes inspectors,
-    // so that their inputs show and connect as they did.
-    if (plugin->getPluginID() == QString::fromUtf8(PLUGINID_NATRON_DISSOLVE)) {
+    // so that their inputs show and connect as they did, and the native Switch, whose 64 numbered
+    // inputs the rule would make one too.
+    if ((plugin->getPluginID() == QString::fromUtf8(PLUGINID_NATRON_DISSOLVE)) || (plugin->getPluginID() == QString::fromUtf8(PLUGINID_NATRON_SWITCH))) {
         return true;
     }
     for (int preset = eMergePresetMerge; preset <= eMergePresetDifference; ++preset) {

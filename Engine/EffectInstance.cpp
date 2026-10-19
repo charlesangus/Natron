@@ -4171,13 +4171,22 @@ EffectInstance::isIdentity_public(bool useIdentityCache, // only set to true whe
                                   ViewIdx* inputView,
                                   int* inputNb)
 {
+    // -1 is both what a non-identity answers and an identity of no input (transparent black), so
+    // the cache stores a non-identity under its own value to tell the two apart on a hit.
+    const int kIdentityCacheNotIdentity = std::numeric_limits<int>::min();
+
     if (useIdentityCache) {
         double timeF = 0.;
         bool foundInCache = _imp->actionsCache->getIdentityResult(hash, time, view, inputNb, inputView, &timeF);
         if (foundInCache) {
             *inputTime = timeF;
+            if (*inputNb == kIdentityCacheNotIdentity) {
+                *inputNb = -1;
 
-            return *inputNb >= 0 || *inputNb == -2;
+                return false;
+            }
+
+            return true;
         }
     }
 
@@ -4223,7 +4232,7 @@ EffectInstance::isIdentity_public(bool useIdentityCache, // only set to true whe
     }
 
     if (useIdentityCache) {
-        _imp->actionsCache->setIdentityResult(hash, time, view, *inputNb, *inputView, *inputTime);
+        _imp->actionsCache->setIdentityResult(hash, time, view, ret ? *inputNb : kIdentityCacheNotIdentity, *inputView, *inputTime);
     }
 
     return ret;

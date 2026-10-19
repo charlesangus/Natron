@@ -121,11 +121,60 @@ concept PassesOp = BakesParams<OP> && std::is_trivially_copyable_v<typename OP::
 };
 
 /**
- * @brief Whether OP satisfies the concept of op kind KIND. Only Point and Passes ops are
- * runnable by the host's executors so far; every other kind is refused here.
+ * @brief What a Route op chooses from: the time and view asked for, and which inputs of its
+ * node are connected.
+ **/
+class RouteContext {
+public:
+    RouteContext(const EffectInstance& node,
+                 double time,
+                 ViewIdx view)
+        : _node(node)
+        , _time(time)
+        , _view(view)
+    {
+    }
+
+    double time() const
+    {
+        return _time;
+    }
+
+    ViewIdx view() const
+    {
+        return _view;
+    }
+
+    bool isConnected(int inputNb) const
+    {
+        return bool(_node.getInput(inputNb));
+    }
+
+private:
+    const EffectInstance& _node;
+    double _time;
+    ViewIdx _view;
+};
+
+/**
+ * @brief A Route op: a node whose output is one of its inputs, possibly at another time, or
+ * transparent black, and which never renders pixels itself.
+ *
+ * bake() and Params are as for a Point op. route() chooses from those Params and the context
+ * which input the output is; the host answers identity, region of definition, frames needed and
+ * metadata from that choice alone.
+ **/
+template <typename OP>
+concept RouteOp = BakesParams<OP> && std::is_trivially_copyable_v<typename OP::Params> && requires(const OP& op, const typename OP::Params& params, const RouteContext& context) {
+    { op.route(params, context) } -> std::same_as<Route>;
+};
+
+/**
+ * @brief Whether OP satisfies the concept of op kind KIND. Only Point, Passes and Route ops are
+ * run by the host so far; every other kind is refused here.
  **/
 template <typename OP, OpKind KIND>
-concept OpOfKind = ((KIND == OpKind::Point) && PointOp<OP>) || ((KIND == OpKind::Passes) && PassesOp<OP>);
+concept OpOfKind = ((KIND == OpKind::Point) && PointOp<OP>) || ((KIND == OpKind::Passes) && PassesOp<OP>) || ((KIND == OpKind::Route) && RouteOp<OP>);
 
 NATRON_NAMESPACE_EXIT
 

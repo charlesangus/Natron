@@ -343,6 +343,7 @@
         <file>Resources/Images/NativeNodes/net.sf.openfx.MergeMin.png</file>
         <file>Resources/Images/NativeNodes/net.sf.openfx.MergeDifference.png</file>
         <file>Resources/Images/NativeNodes/net.sf.openfx.DissolvePlugin.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.switchPlugin.png</file>
         <file>Resources/Images/NativeNodes/net.sf.openfx.ConstantPlugin.png</file>
         <file>Resources/Images/NativeNodes/net.sf.openfx.Solid.png</file>
         <file>Resources/Images/NativeNodes/net.sf.openfx.CheckerBoardPlugin.png</file>

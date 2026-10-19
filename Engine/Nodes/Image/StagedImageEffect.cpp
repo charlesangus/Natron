@@ -29,6 +29,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -315,6 +316,31 @@ StagedImageEffect::getRegionOfDefinition(U64 hash,
                                          ViewIdx view,
                                          RectD* rod)
 {
+    if (imagePipelineSpec().op == OpKind::Route) {
+        const Route answer = route(time, view);
+        EffectInstancePtr routed = (answer.kind == Route::Kind::Input) ? getInput(answer.inputNb) : EffectInstancePtr();
+
+        if (answer.kind == Route::Kind::None) {
+            return NativeEffectBase::getRegionOfDefinition(hash, time, scale, view, rod);
+        }
+        if (!routed) {
+            *rod = RectD();
+
+            return eStatusOK;
+        }
+        const RenderScale inputScale = routed->supportsRenderScale() ? scale : RenderScale::identity;
+        bool isProjectFormat = false;
+        const StatusEnum status = routed->getRegionOfDefinition_public(routed->getRenderHash(), answer.time, inputScale, view, rod, &isProjectFormat);
+        // An input reports its empty region as a failure; it is still the region it routes to.
+        if ((status == eStatusFailed) && rod->isNull()) {
+            *rod = RectD();
+
+            return eStatusOK;
+        }
+
+        return status;
+    }
+
     const int source = getSourceInput();
     EffectInstancePtr input = (source >= 0) ? getInput(source) : EffectInstancePtr();
 
@@ -391,6 +417,51 @@ StagedImageEffect::getRegionsOfInterest(double time,
         ret->insert(std::make_pair(input, srcRoI));
     }
 } // StagedImageEffect::getRegionsOfInterest
+
+FramesNeededMap
+StagedImageEffect::getFramesNeeded(double time,
+                                   ViewIdx view)
+{
+    if (imagePipelineSpec().op != OpKind::Route) {
+        return NativeEffectBase::getFramesNeeded(time, view);
+    }
+    const Route answer = route(time, view);
+    if (answer.kind == Route::Kind::None) {
+        return NativeEffectBase::getFramesNeeded(time, view);
+    }
+    FramesNeededMap ret;
+    if ((answer.kind == Route::Kind::Input) && getInput(answer.inputNb)) {
+        RangeD range;
+        range.min = range.max = answer.time;
+        FrameRangesMap viewRanges;
+        viewRanges.insert(std::make_pair(view, std::vector<RangeD>(1, range)));
+        ret.insert(std::make_pair(answer.inputNb, viewRanges));
+    }
+
+    return ret;
+}
+
+ImageMetadata
+StagedImageEffect::deriveOutputMetadata(double time,
+                                        ViewIdx view)
+{
+    if (imagePipelineSpec().op != OpKind::Route) {
+        return NativeEffectBase::deriveOutputMetadata(time, view);
+    }
+    const Route answer = route(time, view);
+    switch (answer.kind) {
+    case Route::Kind::Input:
+
+        return getInputMetadata(answer.inputNb, answer.time, view);
+    case Route::Kind::Black:
+
+        return ImageMetadata();
+    case Route::Kind::None:
+        break;
+    }
+
+    return NativeEffectBase::deriveOutputMetadata(time, view);
+}
 
 bool
 StagedImageEffect::isIdentity(double time,

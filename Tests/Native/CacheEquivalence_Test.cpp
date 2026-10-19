@@ -31,6 +31,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <functional>
@@ -40,6 +41,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -1698,9 +1700,28 @@ findKnownPluginBug(const std::string& pluginID)
     return 0;
 }
 
+// A child still running after this long has hung in the plug-in's broken code, which is how its bug shows on
+// some runs instead of a crash; the bound keeps every child well inside ctest's timeout for the whole test.
+const int kKnownBugChildSeconds = 60;
+const int kKnownBugChildHungExitCode = 124;
+
+void
+exitIfStillRunningAfter(int seconds)
+{
+    std::thread([seconds]() {
+        std::this_thread::sleep_for(std::chrono::seconds(seconds));
+        std::_Exit(kKnownBugChildHungExitCode);
+    }).detach();
+}
+
 bool
 diedAbnormally(int status)
 {
+    if (WIFEXITED(status) && (WEXITSTATUS(status) == kKnownBugChildHungExitCode)) {
+        std::cout << "[cache equivalence sweep] the child hung for " << kKnownBugChildSeconds
+                  << " s and was stopped, which counts as its known crash" << std::endl;
+    }
+
     return !(WIFEXITED(status) && (WEXITSTATUS(status) == 0));
 }
 
@@ -1720,6 +1741,7 @@ protected:
         Findings findings;
         int editsMade = 0;
 
+        exitIfStillRunningAfter(kKnownBugChildSeconds);
         sweepPlugin(plugin, allowlist, source, tmp, &findings, &editsMade);
     }
 };

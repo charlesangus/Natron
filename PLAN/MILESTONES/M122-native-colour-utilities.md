@@ -16,7 +16,7 @@ Log2Lin and PLogLin are retired without a native replacement; the OCIO nodes cov
 Shared conventions:
 - Plain IDs at major 1, Nuke-like knob sets and scene-linear maths, with clamps off by default. The nodes don't copy OFX behaviour (`DECISIONS/2026-10-12-native-nodes-drop-ofx-legacy.md`), and there is no project compatibility (`DECISIONS/2026-09-18-clean-break-no-project-compat.md`).
 - Mask, mix and "(Un)premult by" come from the `NativeImageEffect` base.
-- Registration, kernels, cost seeds, icons, docs and retirement go through M120 - Native Node Port Kit's per-node fragment files (`Engine/Nodes/Color/<Node>.{reg.inc,costseed.inc}`, `docs/<Node>.md`; `Keyer` for HueKeyer and Despill), and `Engine/OfxRetired/M122.txt` for retired IDs.
+- Registration, kernels, cost seeds, icons, docs and retirement go through M120 - Native Node Port Kit's per-node fragment files (`Engine/Nodes/Color/<Node>.{reg.inc,costseed.inc}`, `docs/<Node>.md`; `Keyer` for HueKeyer and Despill), and one `Engine/OfxRetired/<ofx-plugin-id>` marker per retired ID.
 - Each node gets `Tests/Native/Native<Node>_Test.cpp` and `Tests/Native/Native<Node>Gpu_Test.cpp`.
 
 Deps: M120 - Native Node Port Kit. Through it, this also waits on M85 - Native GPU Kernels for `PixelKernelGpu`, `makeGpuKernel` and `pixelwrap.slang`.
@@ -236,10 +236,10 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: at the phase build, `PyPlugInstantiate_Test` and `PyPlugNativeParams_Test` pass, and the PyPlugs render on a test plate without errors.
   - size: M
 
-- [ ] M122.P6.T2 — Retired list and per-node docs
-  - files: `Engine/OfxRetired/M122.txt`, `Engine/Nodes/Color/docs/{Premult,ColorMatrix,Threshold,Colorspace,HSVTool,HueCorrect,Posterize}.md`, `Engine/Nodes/Keyer/docs/{HueKeyer,Despill}.md`, `Engine/GpuCostSeeds/ofx/<retired-id>.inc` (deleted, one per retired ID), `Engine/OfxEffectInstance.cpp`
+- [ ] M122.P6.T2 — Retired markers and per-node docs
+  - files: `Engine/OfxRetired/<ofx-plugin-id>` (one per retired ID), `Engine/Nodes/Color/docs/{Premult,ColorMatrix,Threshold,Colorspace,HSVTool,HueCorrect,Posterize}.md`, `Engine/Nodes/Keyer/docs/{HueKeyer,Despill}.md`, `Engine/GpuCostSeeds/ofx/<retired-id>.inc` (deleted, one per retired ID), `Engine/OfxEffectInstance.cpp`
   - approach:
-    - List every retired ID from `## Scope` In.
+    - Add an `Engine/OfxRetired/<ofx-plugin-id>` marker for every retired ID from `## Scope` In.
     - Document each node, its maths and its GPU tolerance.
     - Delete the Premult/Unpremult take-over rows at `OfxEffectInstance.cpp:677-678` only if nothing else reads that table. Otherwise leave it to M111.
   - verify: at the phase build, `OfxRetired_Test` and `NativePluginList_Test` pass, and `getPluginIDs()` contains no retired ID.

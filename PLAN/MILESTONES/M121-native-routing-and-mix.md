@@ -5,7 +5,7 @@ Native, redesigned replacements for the openfx-misc routing and mix nodes: `Swit
 Shared conventions:
 - Plain IDs at major 1, Nuke-like knob sets and scene-linear maths. The nodes don't copy OFX behaviour (`DECISIONS/2026-10-12-native-nodes-drop-ofx-legacy.md`), and there is no project compatibility (`DECISIONS/2026-09-18-clean-break-no-project-compat.md`).
 - Mask, mix and "(Un)premult by" come from the `NativeImageEffect` base.
-- Registration, kernels, cost seeds, icons, docs and retirement go through the per-node fragment files from M120 - Native Node Port Kit (`<Node>.reg.inc`, `<Node>.costseed.inc`, `docs/<Node>.md`, `<kernel>.cmake`; `Engine/OfxRetired/M121.txt` for retired IDs). Don't edit the shared manifests.
+- Registration, kernels, cost seeds, icons, docs and retirement go through the per-node fragment files from M120 - Native Node Port Kit (`<Node>.reg.inc`, `<Node>.costseed.inc`, `docs/<Node>.md`, `<kernel>.cmake`; one `Engine/OfxRetired/<ofx-plugin-id>` marker per retired ID). Don't edit the shared manifests.
 
 Deps:
 - M120 - Native Node Port Kit.
@@ -150,11 +150,11 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: at the phase build, `PyPlugInstantiate_Test` passes for these PyPlugs, and `PyPlugNativeParams_Test` passes or is updated for the new knob names.
   - size: M
 
-- [ ] M121.P4.T2 — ZRemap and the retired list
-  - files: `Gui/Resources/PyPlugs/ZRemap.py`, `Engine/OfxRetired/M121.txt`, `Engine/Nodes/Merge/docs/{Switch,KeyMix}.md`, `Engine/Nodes/Keyer/docs/Difference.md`, `Engine/Nodes/Transform/docs/AdjustBBox.md`
+- [ ] M121.P4.T2 — ZRemap and the retired markers
+  - files: `Gui/Resources/PyPlugs/ZRemap.py`, `Engine/OfxRetired/<ofx-plugin-id>` (four markers), `Engine/Nodes/Merge/docs/{Switch,KeyMix}.md`, `Engine/Nodes/Keyer/docs/Difference.md`, `Engine/Nodes/Transform/docs/AdjustBBox.md`
   - approach:
     - Same Switch swap for `ZRemap.py:289`.
-    - List `net.sf.openfx.switchPlugin`, `KeyMix`, `DifferencePlugin` and `AdjustRoDPlugin` in `M121.txt`.
+    - List `net.sf.openfx.switchPlugin`, `KeyMix`, `DifferencePlugin` and `AdjustRoDPlugin` as `Engine/OfxRetired/<ofx-plugin-id>` markers, one per ID.
     - Document the four nodes and their GPU tolerances, one per-node doc file each (M120 - Native Node Port Kit's scheme).
   - verify: at the phase build, `OfxRetired_Test` and `NativePluginList_Test` pass, `getPluginIDs()` has no retired ID, and a grep for `switchPlugin` in `Gui/` and `Engine/` finds nothing.
   - size: S

@@ -36,7 +36,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 **Native pieces from M113 - Native Warp Nodes:**
 - `resampleRowFromCoords` and the Jacobian helper in `Engine/Nodes/Image/Resampler.{h,cpp}`.
 - `Engine/Gpu/Kernels/coordmap.slang`.
-- Per-node fragments `Engine/Nodes/Transform/LensDistortion.{reg.inc,costseed.inc}`, `docs/LensDistortion.md`, `Engine/Gpu/Kernels/lensdistortion.cmake`, and `Engine/OfxRetired/M132.txt`.
+- Per-node fragments `Engine/Nodes/Transform/LensDistortion.{reg.inc,costseed.inc}`, `docs/LensDistortion.md`, `Engine/Gpu/Kernels/lensdistortion.cmake`, and the `Engine/OfxRetired/net.sf.openfx.LensDistortion` marker.
 
 ## Scope
 
@@ -131,8 +131,8 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 ## Phase 131.4: Retire the OFX LensDistortion
 
 - [ ] M132.P4.T1 — Retire the OFX LensDistortion
-  - files: `Engine/OfxRetired/M132.txt`, `Engine/OfxEffectInstance.cpp` (`:1279-1287` entry), `Tests/DefaultChannelSet_Test.cpp`
-  - approach: list `net.sf.openfx.LensDistortion` as retired, drop its `defaultProcessesAllLayers` entry, and move or remove test cases that name it.
+  - files: `Engine/OfxRetired/net.sf.openfx.LensDistortion`, `Engine/OfxEffectInstance.cpp` (`:1279-1287` entry), `Tests/DefaultChannelSet_Test.cpp`
+  - approach: add the `Engine/OfxRetired/net.sf.openfx.LensDistortion` marker, drop its `defaultProcessesAllLayers` entry, and move or remove test cases that name it.
   - verify: a test asserts the OFX ID no longer loads and `LensDistortion` does. The full ctest passes at the gate.
   - size: M
 

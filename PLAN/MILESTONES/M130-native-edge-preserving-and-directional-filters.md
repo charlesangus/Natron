@@ -11,7 +11,7 @@ Every node follows the native conventions:
 - host mask, mix and (un)premult from the base class;
 - no compatibility with the OFX versions.
 
-Every node ships a CPU kernel, a GPU kernel, a native test, a GPU parity test, a cost seed and an icon. It registers through M120 - Native Node Port Kit's per-node fragment files, and retires through `Engine/OfxRetired/M130.txt`.
+Every node ships a CPU kernel, a GPU kernel, a native test, a GPU parity test, a cost seed and an icon. It registers through M120 - Native Node Port Kit's per-node fragment files, and retires through one `Engine/OfxRetired/<ofx-plugin-id>` marker per retired ID.
 
 Deps: M120 - Native Node Port Kit.
 
@@ -149,9 +149,9 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 ## Phase 129.4: Retire the OFX versions
 
 - [ ] M130.P4.T1 — Retire the OFX and CImg versions and fix their references
-  - files: `Engine/OfxRetired/M130.txt`, `Engine/OfxEffectInstance.cpp`, `Engine/Settings.cpp`, `Tests/gui/m45_tab_menu.py`
+  - files: `Engine/OfxRetired/<ofx-plugin-id>` (one per retired ID), `Engine/OfxEffectInstance.cpp`, `Engine/Settings.cpp`, `Tests/gui/m45_tab_menu.py`
   - approach:
-    - List the IDs in the port kit's retirement file: CImg Median, Bilateral, BilateralGuided, Guided and RollingGuidance; `net.sf.openfx.DirBlur`; GodRays.
+    - Add an `Engine/OfxRetired/<ofx-plugin-id>` marker for each of: CImg Median, Bilateral, BilateralGuided, Guided and RollingGuidance; `net.sf.openfx.DirBlur`; GodRays.
     - Drop them from `processAllLayers` (`OfxEffectInstance.cpp:1278, 1330`) and from the CImg list (`:1311-1329`).
     - Update the `Settings.cpp:1319-1323` help text and the tab-menu GUI test (`m45_tab_menu.py:214-219`) to find the native DirBlur.
   - verify: at the phase build, `ctest` passes. The m45 tab-menu GUI script passes under Xvfb. Retired IDs load as missing-plugin nodes.

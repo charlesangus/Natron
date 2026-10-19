@@ -4,7 +4,7 @@ Port the three OFX example metadata nodes that M77 - Native Metadata Nodes left 
 
 Deps: M77 - Native Metadata Nodes, M120 - Native Node Port Kit.
 
-M120 - Native Node Port Kit is not built yet. Every native-node task below is written against its planned scheme: a per-node `Engine/Nodes/Metadata/<Node>.reg.inc` registration fragment, a per-node `Engine/Nodes/Metadata/docs/<Node>.md`, a per-node `Tests/Native/Native<Node>_Test.cpp` that asserts the node's own ID, major and label through M120's `expectNativeIdentity` helper, and `Engine/OfxRetired/M140.txt` for the retired IDs. At promotion (PLAN-FORMAT §5a), re-check these names against what M120 actually built and rewrite the briefs that differ. If M120 has not landed, the native-node tasks fall back to M77's way: an include plus a `registerBuiltInPlugin<T>` line in `AppManager::loadBuiltinNodePlugins()`.
+M120 - Native Node Port Kit is not built yet. Every native-node task below is written against its planned scheme: a per-node `Engine/Nodes/Metadata/<Node>.reg.inc` registration fragment, a per-node `Engine/Nodes/Metadata/docs/<Node>.md`, a per-node `Tests/Native/Native<Node>_Test.cpp` that asserts the node's own ID, major and label through M120's `expectNativeIdentity` helper, one `Engine/OfxRetired/<ofx-id>` marker per retired ID, and M120's test-only OFX bundle scaffolding (`Tests/OfxTestPlugins/`, `natron_add_test_ofx_bundle`, and the `OFX_PLUGIN_PATH` wiring in `Tests/wmain.cpp`). At promotion (PLAN-FORMAT §5a), re-check these names against what M120 actually built and rewrite the briefs that differ. If M120 has not landed, the native-node tasks fall back to M77's way: an include plus a `registerBuiltInPlugin<T>` line in `AppManager::loadBuiltinNodePlugins()`.
 
 ## Scope
 
@@ -13,7 +13,7 @@ M120 - Native Node Port Kit is not built yet. Every native-node task below is wr
 - A shared metadata-to-text helper, extracted from `ViewMetadata.cpp`, which CompareMetadata and ViewMetadata both use.
 - A test-only OFX bundle built in-tree from `Tests/`, written against the raw OpenFX C API (`ofxImageEffect.h`, `ofxProperty.h`, `ofxMetadata.h`). It holds three plug-ins that replace the fixtures Contribute, Print and TimeCode.
 - `Tests/Metadata_Test.cpp` and `Tests/OfxMetadataBridge_Test.cpp` repointed at those plug-ins, with the bridge coverage kept.
-- Retirement of the three OFX IDs: `Engine/OfxRetired/M140.txt`, and the `OfxEffectInstance.cpp` grouping special case, the `NativePluginList_Test.cpp` "OFX metadata nodes grouped" case and the `smoke_test.py` bundle checks removed.
+- Retirement of the three OFX IDs: one `Engine/OfxRetired/<ofx-id>` marker each, and the `OfxEffectInstance.cpp` grouping special case, the `NativePluginList_Test.cpp` "OFX metadata nodes grouped" case and the `smoke_test.py` bundle checks removed.
 - Removal of the `openfx-metadata` build (pin, clone, make, copy, verify), the `build/assets/TestPlugins/` directory and everything that reads it, from `fetch-assets.sh`, `test.sh`, the local CI README and the four workflow cache paths.
 
 **Out:**
@@ -37,7 +37,6 @@ M120 - Native Node Port Kit is not built yet. Every native-node task below is wr
 
 **Assumptions:**
 - Unconfirmed: the openfx-metadata fork's `ofxsMetadata.h` C++ wrapper is not in the in-repo `libs/OpenFX/Support/`. Scouted: only `libs/OpenFX/include/ofxMetadata.h` is, so the test plug-in uses the raw C suites rather than the Support library.
-- Unconfirmed: the test binary can append the test bundle directory to `OFX_PLUGIN_PATH` itself, in `Tests/wmain.cpp` before `AppManager::load()`, since `BaseTest::SetUp` does not read the path until after the plug-in registry is populated. If CMake's `ENVIRONMENT_MODIFICATION` (CMake 3.22; the project minimum is 3.16.7) turns out simpler, use that instead.
 - Unconfirmed: the native ContributeMetadata keeps the OFX example's six demo keys, under the prefix `fr.natron.ContributeMetadata.`, plus `ofx/framerate` = 30. The demo-key shape is exactly what the bridge tests relied on, and the namespace follows the node ID.
 - M120 - Native Node Port Kit lands before this milestone is claimed (the dep). If it does not, the fallback is stated in the intro.
 - Linux-x86-64 is the only bundle layout the test plug-in must build for locally. Use `${CMAKE_SYSTEM_NAME}`-keyed arch directory naming so CI on other platforms does not break the configure.
@@ -76,24 +75,23 @@ All three derive from `NativeEffectBase`, modelled on M77's `Engine/Nodes/Metada
 
 One OFX bundle, built from `Tests/`, holding three plug-ins. The bundle is built against `libs/OpenFX/include` only, with the raw C API (the Support library has no metadata wrapper, see Assumptions). Plug-in IDs `fr.natron.test.metadataContribute`, `fr.natron.test.metadataPrint`, `fr.natron.test.metadataTimeCode`, so the old IDs cannot be confused with them. Each is a filter-context effect with one source clip and an output clip that copies pixels through (RGBA/Alpha, UByte/UShort/Float), as the examples do. Behaviour matches the example it replaces, because the existing tests assert it.
 
-- [ ] M140.P2.T1 — Test bundle scaffolding and the Print plug-in
-  - files: new `Tests/OfxTestPlugins/CMakeLists.txt`, new `Tests/OfxTestPlugins/MetadataBridgeTestPlugins.cpp` (entry points, shared helpers, Print), `Tests/CMakeLists.txt`, `Tests/wmain.cpp`
+- [ ] M140.P2.T1 — Metadata test bundle and the Print plug-in
+  - files: new `Tests/OfxTestPlugins/natronTestMetadata/CMakeLists.txt`, new `Tests/OfxTestPlugins/natronTestMetadata/MetadataBridgeTestPlugins.cpp` (entry points, shared helpers, Print)
   - approach:
-    - CMake builds a `MODULE` library named `natronTestMetadata`, `PREFIX ""`, `SUFFIX ".ofx"`, into `${CMAKE_BINARY_DIR}/Tests/TestPlugins/natronTestMetadata.ofx.bundle/Contents/<arch>/` (arch from the platform: `Linux-x86-64`, `MacOS`, `Win64`), with the OFX entry points `OfxGetNumberOfPlugins` and `OfxGetPlugin` and `OfxSetHost` exported. It must be built before the test binary runs: make `Tests` and `GuiTests` depend on it. Add the subdirectory from `Tests/CMakeLists.txt`.
-    - `Tests/wmain.cpp` appends the bundle directory (passed as a compile definition `NATRON_TEST_OFX_PLUGIN_DIR`) to `OFX_PLUGIN_PATH` with `setenv` before `AppManager::load()`, only when `OFX_PLUGIN_PATH` is already set (so a bare run still uses the standard locations as today). This also covers gtest discovery.
+    - Add a `natronTestMetadata` bundle with M120 - Native Node Port Kit's `natron_add_test_ofx_bundle`, in its own directory, so M120's scaffolding and `natronTest` bundle stay untouched. It is a separate module because it uses the raw C API and exports its own `OfxGetNumberOfPlugins`, `OfxGetPlugin` and `OfxSetHost`. M120's `Tests/wmain.cpp` wiring already puts the test-plugin directory on `OFX_PLUGIN_PATH`.
     - Shared helpers in the .cpp: fetch the suites (`OfxImageEffectSuiteV1`, `OfxPropertySuiteV1`, `OfxParameterSuiteV1`, the metadata suite from `ofxMetadata.h`), define the source and output clips, and a pixel-copy render (RGBA/Alpha, UByte/UShort/Float/Half, as in the example's `copyPixels`).
     - Print: `render` reads its source clip's metadata at the render time through the clip-metadata suite and writes each key to the host log (the example's `logMetadata`), then copies pixels. It exists so a render-time reader runs concurrently with metadata changes.
-  - verify: at the phase build, the bundle exists at the path above, `OFX_PLUGIN_PATH=build/assets/Plugins ./Tests --gtest_list_tests` still lists the suite (discovery works), and a short gtest in `Tests/OfxTestPlugin_Test.cpp` (new; add it to `Tests_SOURCES`) shows `fr.natron.test.metadataPrint` is in `getPluginIDs()` and creates a node. Also confirm `build/assets/Plugins/` and `tools/release/stage-bundle.sh` input do not contain the bundle.
+  - verify: at the phase build, the bundle exists at the path above, `OFX_PLUGIN_PATH=build/assets/Plugins ./Tests --gtest_list_tests` still lists the suite (discovery works), and a short gtest added to M120 - Native Node Port Kit's `Tests/OfxTestPlugin_Test.cpp` shows `fr.natron.test.metadataPrint` is in `getPluginIDs()` and creates a node. Also confirm `build/assets/Plugins/` and `tools/release/stage-bundle.sh` input do not contain the bundle.
   - size: M
 
 - [ ] M140.P2.T2 — Contribute plug-in
-  - files: `Tests/OfxTestPlugins/MetadataBridgeTestPlugins.cpp`, `Tests/OfxTestPlugin_Test.cpp`
+  - files: `Tests/OfxTestPlugins/natronTestMetadata/MetadataBridgeTestPlugins.cpp`, `Tests/OfxTestPlugin_Test.cpp`
   - approach: add `fr.natron.test.metadataContribute` with the example's params: `note` (single-line string, not animated), `mode` (choice: inherit all / drop one key / inherit nothing) and `dropKey` (string, default `ofx/sampletype`). In the get-metadata action, set the six demo keys through the clip-metadata suite's typed setters, one per suite entry point (string, int, double, string-N, int-N, double-N) under the prefix `org.openfx.examples.metadataContribute.` (keep this exact prefix: `Tests/Metadata_Test.cpp`'s `kContributedKeys` and the bridge tests key on it, and it avoids any clash with the native node's `fr.natron.ContributeMetadata.` keys), and `ofx/framerate` = 30. Apply the inheritance mode through the inheritance property set (retained keys, source-clip list) as the example does. Source: `build/assets/plugin-src/openfx-metadata/Support/Plugins/MetadataContribute/metadataContribute.cpp`.
   - verify: at the phase build, a gtest creates the plug-in, reads its output clip's metadata through `OfxClipInstance::getCurrentMetadata` and finds all seven keys with the right types and dimensions; `mode` drop-one and inherit-nothing change what a downstream native `ViewMetadata`-style read sees.
   - size: M
 
 - [ ] M140.P2.T3 — TimeCode plug-in
-  - files: `Tests/OfxTestPlugins/MetadataBridgeTestPlugins.cpp`, `Tests/OfxTestPlugin_Test.cpp`
+  - files: `Tests/OfxTestPlugins/natronTestMetadata/MetadataBridgeTestPlugins.cpp`, `Tests/OfxTestPlugin_Test.cpp`
   - approach: add `fr.natron.test.metadataTimeCode` with the example's five params (`startTimecode`, `rate`, `rateFromMetadata`, `startFrame`, `useStartFrame`; same names and defaults, because `Tests/Metadata_Test.cpp:995-` looks them up by name). In get-metadata it computes the timecode and writes `ofx/timecode` and `ofx/framerate`, reading the rate from the source clip's `ofx/framerate` when `rateFromMetadata` is on. The same arithmetic as P1.T4's helpers (non-drop, 24-hour wrap, `floor(time - origin + 0.5)`), written out again here in a few lines, since test code must not link to a native node. Source: `.../MetadataTimeCode/metadataTimeCode.cpp`.
   - verify: at the phase build, the gtest reads the output clip metadata at frames around the one-second rollover and gets the expected `ofx/timecode` and `ofx/framerate`.
   - size: M
@@ -115,9 +113,9 @@ One OFX bundle, built from `Tests/`, holding three plug-ins. The bundle is built
 Do this phase last: it removes the fixtures' old source. Native nodes are in from P1; the test bundle from P2; the tests from P3.
 
 - [ ] M140.P4.T1 — Retired-ID list and host special cases
-  - files: new `Engine/OfxRetired/M140.txt`, `Engine/OfxEffectInstance.cpp`, `Tests/Native/NativePluginList_Test.cpp`
-  - approach: per M120 - Native Node Port Kit's scheme, `M140.txt` lists `org.openfx.examples.metadataCompare`, `org.openfx.examples.metadataContribute` and `org.openfx.examples.metadataTimeCode`, one per line. Remove the `stdIdentifier == "org.openfx.examples.metadata..."` branch in `OfxEffectInstance.cpp` (`:1500`), which was only there so these OFX nodes joined the Metadata menu folder. Replace `NativePluginListTest.OfxMetadataNodesAreGroupedWithTheNativeOnes` (`NativePluginList_Test.cpp:~178-195`) with a test that the three IDs are absent from `getPluginIDs()`; the new native nodes' grouping is covered by their own tests.
-  - verify: at the phase build, the replacement test passes even with the stale old bundles still on `OFX_PLUGIN_PATH` (the retired list hides them) and the full ctest is green. M120's `OfxRetired_Test` still passes.
+  - files: new `Engine/OfxRetired/org.openfx.examples.metadataCompare`, `…metadataContribute` and `…metadataTimeCode` markers, `Engine/OfxEffectInstance.cpp`, `Tests/Native/NativePluginList_Test.cpp`
+  - approach: per M120 - Native Node Port Kit's scheme, add one marker each for `org.openfx.examples.metadataCompare`, `org.openfx.examples.metadataContribute` and `org.openfx.examples.metadataTimeCode`, each naming its native replacement. Remove the `stdIdentifier == "org.openfx.examples.metadata..."` branch in `OfxEffectInstance.cpp` (`:1500`), which was only there so these OFX nodes joined the Metadata menu folder. Replace `NativePluginListTest.OfxMetadataNodesAreGroupedWithTheNativeOnes` (`NativePluginList_Test.cpp:~178-195`) with a test that the three IDs are absent from `getPluginIDs()`; the new native nodes' grouping is covered by their own tests.
+  - verify: at the phase build, the replacement test passes even with the stale old bundles still on `OFX_PLUGIN_PATH` (the retired markers hide them) and the full ctest is green. M120's `OfxRetired_Test` still passes.
   - size: M
 
 - [ ] M140.P4.T2 — Remove the openfx-metadata build from fetch-assets

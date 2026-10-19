@@ -182,12 +182,12 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - size: M
 
 - [ ] M124.P3.T3 — Retire the OFX time remaps and fix references
-  - files: `Engine/OfxRetired/M124.txt` (new), `Engine/OfxEffectInstance.cpp`, `Engine/GpuCostSeeds/ofx/<retired-id>.inc` (deleted, one per retired ID), `Tests/DefaultChannelSet_Test.cpp`, `Tests/NodeCategory_Test.cpp`
+  - files: `Engine/OfxRetired/<ofx-plugin-id>` (new, one per retired ID), `Engine/OfxEffectInstance.cpp`, `Engine/GpuCostSeeds/ofx/<retired-id>.inc` (deleted, one per retired ID), `Tests/DefaultChannelSet_Test.cpp`, `Tests/NodeCategory_Test.cpp`
   - approach:
-    - List `net.sf.openfx.timeOffset`, `FrameHold`, `FrameRange` and `Retime` in the port kit's retirement list.
+    - List `net.sf.openfx.timeOffset`, `FrameHold`, `FrameRange` and `Retime` as `Engine/OfxRetired/<ofx-plugin-id>` markers, one per ID.
     - Remove their entries from the OFX default-channel lists (`OfxEffectInstance.cpp:1298-1309`) and the OFX cost seed.
     - Repoint tests that used them, including `FrameGraphBuild_Test.cpp:74, 514-548` (the `FrameGraphBuild` case moves to native TimeOffset; keep FrameBlend on OFX until M125 - Native Multi-Frame Nodes).
-  - verify: at the phase build, the retired IDs no longer load, `git grep` finds no live use of them outside the retirement list, and ctest passes.
+  - verify: at the phase build, the retired IDs no longer load, `git grep` finds no live use of them outside the `Engine/OfxRetired/` markers, and ctest passes.
   - size: M
 
 **Verification gate:**

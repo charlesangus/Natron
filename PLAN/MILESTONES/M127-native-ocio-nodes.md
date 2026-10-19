@@ -141,12 +141,12 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - size: M
 
 - [ ] M127.P4.T2 — Retire the openfx-io OCIO plug-ins and repoint tests
-  - files: `Engine/OfxRetired/M127.txt` (new), `Tests/ProjectOCIO_Test.cpp`, `Tests/ProjectOCIOPlugins_Test.cpp`, `Tests/GLScheduler_Test.cpp`, `tools/ci/local/fetch-assets.sh` (comments at `:120-121`)
+  - files: `Engine/OfxRetired/<ofx-plugin-id>` (six new markers), `Tests/ProjectOCIO_Test.cpp`, `Tests/ProjectOCIOPlugins_Test.cpp`, `Tests/GLScheduler_Test.cpp`, `tools/ci/local/fetch-assets.sh` (comments at `:120-121`)
   - approach:
-    - List the six `fr.inria.openfx.OCIO*` IDs.
+    - Add an `Engine/OfxRetired/<ofx-plugin-id>` marker for each of the six `fr.inria.openfx.OCIO*` IDs.
     - Repoint the tests at the native nodes, and delete cases that only tested OFX config hand-off.
     - Remove GenericOCIO take-over code left dead once no OCIO OFX node loads (the `ocioInputSpace` by-name branches in `Project.cpp:300-302`, if unused).
-  - verify: at the phase build, ctest passes, the retired IDs don't load, and `git grep fr.inria.openfx.OCIO` finds only the retirement list.
+  - verify: at the phase build, ctest passes, the retired IDs don't load, and `git grep fr.inria.openfx.OCIO` finds only the `Engine/OfxRetired/` markers.
   - size: M
 
 **Verification gate:**

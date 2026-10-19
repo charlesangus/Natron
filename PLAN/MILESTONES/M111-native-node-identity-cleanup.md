@@ -11,7 +11,7 @@ Native nodes stop pretending to be OFX plug-ins:
 
 There is no compatibility: old projects and scripts that use the old IDs load the missing-plugin node, per `DECISIONS/2026-09-18-clean-break-no-project-compat.md`. User decisions 2026-10-12: `DECISIONS/2026-10-12-native-nodes-drop-ofx-legacy.md`.
 
-Deps: M101 - Clean-Sheet Merge Node (it builds the base class's multi-input support that Dissolve needs here, and it already moves Merge, RotoPaint's merges and the PyPlugs' merges to the plain `Merge` ID) and M76 - Native Write (Phase 107.5 renames its knobs).
+Deps: M101 - Clean-Sheet Merge Node (it builds the base class's multi-input support that Dissolve needs here, and it already moves Merge, RotoPaint's merges and the PyPlugs' merges to the plain `Merge` ID) and M76 - Native Write (Phase 107.5 renames its knobs). Also M120 - Native Node Port Kit (added 2026-10-19): it splits the registration, README and plug-in-list manifests this milestone edits. At promotion, rewrite the briefs against its per-node `.reg.inc`, `docs/<Node>.md` and identity tests, and rename the OFX-ID-named icons in `Gui/Resources/Images/NativeNodes/` along with the IDs.
 
 Behaviour and maths fixes are in M112 - Native Node Behaviour Fixes. The `hidpi`/`interactive` knobs and the keyers are in M95 - Knob Cleanup And Keyer Redesign.
 

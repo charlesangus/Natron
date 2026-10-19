@@ -5,7 +5,7 @@ Rewrite the OFX warp nodes users rely on as redesigned native nodes, each with a
 - **`CornerPin`**: CornerPinMasked is merged into it. It has Nuke-like knobs and concatenates like Transform. **The tracker moves to its new knob names.**
 - **`Mirror`**: flip and flop.
 
-All four use plain IDs at major 1. Maths is scene-linear, and the host provides mask, mix and premult. There is no compatibility with the OFX versions. Registration, kernel lists, cost seeds, icons, docs and OFX retirement go through the per-node fragment files that M120 - Native Node Port Kit creates (`Engine/Nodes/Transform/<Node>.{reg.inc,costseed.inc}`, `docs/<Node>.md`, `Engine/Gpu/Kernels/<kernel>.cmake`), and `Engine/OfxRetired/M113.txt`. LensDistortion is split off into M132 - Native Lens Distortion.
+All four use plain IDs at major 1. Maths is scene-linear, and the host provides mask, mix and premult. There is no compatibility with the OFX versions. Registration, kernel lists, cost seeds, icons, docs and OFX retirement go through the per-node fragment files that M120 - Native Node Port Kit creates (`Engine/Nodes/Transform/<Node>.{reg.inc,costseed.inc}`, `docs/<Node>.md`, `Engine/Gpu/Kernels/<kernel>.cmake`), and one `Engine/OfxRetired/<ofx-plugin-id>` marker file per retired OFX ID. LensDistortion is split off into M132 - Native Lens Distortion.
 
 Deps: M120 - Native Node Port Kit (per-node registration fragments), M85 - Native GPU Kernels (`resample.slang`, `pixelwrap.slang`, `PixelKernelGpu`), M56 - Visual And Menu Polish (it still changes the IDistort/STMap take-over layout this milestone replaces).
 
@@ -238,9 +238,9 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 ## Phase 113.5: Retire the OFX warps
 
 - [ ] M113.P5.T1 — Retire the OFX IDistort, STMap, CornerPin, CornerPinMasked and Mirror and fix their references
-  - files: `Engine/OfxRetired/M113.txt` (new, per M120 - Native Node Port Kit), `Engine/OfxEffectInstance.cpp` (`:1279-1287` entries), `Tests/DefaultChannelSet_Test.cpp`, `Tests/LayerKnobsRender_Test.cpp`, `Tests/ColorViewsRender_Test.cpp`
+  - files: `Engine/OfxRetired/<ofx-plugin-id>` (five new marker files, per M120 - Native Node Port Kit), `Engine/OfxEffectInstance.cpp` (`:1279-1287` entries), `Tests/DefaultChannelSet_Test.cpp`, `Tests/LayerKnobsRender_Test.cpp`, `Tests/ColorViewsRender_Test.cpp`
   - approach:
-    - List the five OFX IDs so the host skips them.
+    - Add one `Engine/OfxRetired/<ofx-plugin-id>` marker per OFX ID (IDistort, STMap, CornerPin, CornerPinMasked and Mirror), each naming its native replacement, so the host skips them.
     - Drop their `defaultProcessesAllLayers` entries.
     - Move the test cases to the native IDs where the behaviour still applies, and delete them where it was OFX-only (e.g. the multiplane UV picker).
     - `Tests/ProjectSerialization_Test.cpp:554` and `Tests/KnobLayerSelect_Test.cpp:695` are P5.T2.

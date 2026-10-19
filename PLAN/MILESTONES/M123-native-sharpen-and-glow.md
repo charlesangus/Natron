@@ -13,7 +13,7 @@ Every node follows the native conventions:
 - host mask, mix and (un)premult from the base class;
 - no compatibility with the OFX versions (`DECISIONS/2026-10-12-native-nodes-drop-ofx-legacy.md`).
 
-Every node ships a CPU kernel, a GPU kernel, a native test, a GPU parity test, a cost seed and an icon. It registers through M120 - Native Node Port Kit's per-node fragment files, and retires through `Engine/OfxRetired/M123.txt`.
+Every node ships a CPU kernel, a GPU kernel, a native test, a GPU parity test, a cost seed and an icon. It registers through M120 - Native Node Port Kit's per-node fragment files, and retires through one `Engine/OfxRetired/<ofx-plugin-id>` marker per retired ID.
 
 Deps: M120 - Native Node Port Kit (per-node registration, kernel, cost-seed and doc fragments; per-milestone OFX retirement list). M120 - Native Node Port Kit itself depends on M85 - Native GPU Kernels, whose `pixelwrap.slang` and parity harness this milestone uses.
 
@@ -195,9 +195,9 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 ## Phase 122.4: Retire the OFX versions
 
 - [ ] M123.P4.T1 — Retire CImg Sharpen, Soften, Laplacian, Bloom and EdgeExtend and fix their references
-  - files: `Engine/OfxRetired/M123.txt`, `Engine/OfxEffectInstance.cpp`, `tools/ci/smoke_test.py`, `Gui/Resources/PyPlugs/PIKColor.py`
+  - files: `Engine/OfxRetired/<ofx-plugin-id>` (five markers), `Engine/OfxEffectInstance.cpp`, `tools/ci/smoke_test.py`, `Gui/Resources/PyPlugs/PIKColor.py`
   - approach:
-    - List the five IDs in the port kit's retirement file.
+    - Add an `Engine/OfxRetired/<ofx-plugin-id>` marker for each of the five IDs.
     - Drop them from the default-channel-set table (`OfxEffectInstance.cpp:1311-1329`) and from `keepColorLayer` (`:1354-1356`), keeping ChromaBlur there.
     - Switch the smoke test's CImg bundle check (`smoke_test.py:305`) to a CImg plug-in that stays, e.g. `net.sf.cimg.CImgDenoise`.
     - Retarget PIKColor's `eu.cimg.ErodeBlur` (`:327`) to native ErodeDilate followed by Blur.

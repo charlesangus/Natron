@@ -128,11 +128,11 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 ## Phase 124.3: Retirement and measurement
 
 - [ ] M125.P3.T1 — Retire the OFX multi-frame nodes, TimeDissolve and TimeBuffer, and fix references
-  - files: `Engine/OfxRetired/M125.txt`, `Engine/EffectInstance.h`, `Engine/OfxEffectInstance.cpp`, `Engine/OfxParamInstance.cpp`, `Engine/GpuCostSeeds/ofx/<retired-id>.inc` (deleted, one per retired ID)
+  - files: `Engine/OfxRetired/<ofx-plugin-id>` (one per retired ID), `Engine/EffectInstance.h`, `Engine/OfxEffectInstance.cpp`, `Engine/OfxParamInstance.cpp`, `Engine/GpuCostSeeds/ofx/<retired-id>.inc` (deleted, one per retired ID)
   - approach:
-    - Add FrameBlend, TimeBlur, NoTimeBlur, AppendClip, SlitScan, TimeDissolve, TimeBufferRead and TimeBufferWrite to the retirement list.
+    - Add an `Engine/OfxRetired/<ofx-plugin-id>` marker for each of FrameBlend, TimeBlur, NoTimeBlur, AppendClip, SlitScan, TimeDissolve, TimeBufferRead and TimeBufferWrite.
     - Drop `PLUGINID_OFX_TIMEDISSOLVE`, the TimeDissolve curve default (`OfxParamInstance.cpp:4850-4854`), the default-channel entries, and the OFX cost seeds.
-  - verify: at the phase build, the retired IDs don't load and `git grep` finds no live use of them outside the list.
+  - verify: at the phase build, the retired IDs don't load and `git grep` finds no live use of them outside the `Engine/OfxRetired/` markers.
   - size: M
 
 - [ ] M125.P3.T2 — Repoint tests and bench comps at the native nodes

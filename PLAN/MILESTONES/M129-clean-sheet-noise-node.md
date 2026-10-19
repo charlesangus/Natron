@@ -16,7 +16,7 @@ A clean-sheet `Noise` generator replaces three OFX nodes: openfx-misc Noise (Ran
 
 **Phase 1 is a spike (user).** It compares porting Blender Cycles' noise kernels against OpenSimplex2 plus our own cellular, value and fractals, and ends with a decision and a user checkpoint. The later phases are written library-agnostic. The spike fills in which files are vendored.
 
-Plain ID `Noise`, major 1. Registration, kernel lists, cost seeds, icons, docs and OFX retirement go through M120 - Native Node Port Kit's per-node fragment files (`Engine/Nodes/Generator/Noise.{reg.inc,costseed.inc}`, `docs/Noise.md`, `Engine/Gpu/Kernels/noise.cmake`) and `Engine/OfxRetired/M129.txt`.
+Plain ID `Noise`, major 1. Registration, kernel lists, cost seeds, icons, docs and OFX retirement go through M120 - Native Node Port Kit's per-node fragment files (`Engine/Nodes/Generator/Noise.{reg.inc,costseed.inc}`, `docs/Noise.md`, `Engine/Gpu/Kernels/noise.cmake`) and one `Engine/OfxRetired/<ofx-plugin-id>` marker per retired ID.
 
 Deps: M120 - Native Node Port Kit, M85 - Native GPU Kernels (`PixelKernelGpu`, `generators.slang`, `pixelwrap.slang`).
 
@@ -164,9 +164,9 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 ## Phase 128.4: Retire the OFX noise nodes
 
 - [ ] M129.P4.T1 — Retire Rand, CImg Noise and CImg Plasma, and fix their references
-  - files: `Engine/OfxRetired/M129.txt`, `Tests/LayerKnobs_Test.cpp`, `tools/ci/smoke_test.py` (pick another CImg plugin as the bundle check), `tools/bench/make_plates.py`
+  - files: `Engine/OfxRetired/<ofx-plugin-id>` (three markers), `Tests/LayerKnobs_Test.cpp`, `tools/ci/smoke_test.py` (pick another CImg plugin as the bundle check), `tools/bench/make_plates.py`
   - approach:
-    - List `net.sf.openfx.Noise`, `net.sf.cimg.CImgNoise` and `net.sf.cimg.CImgPlasma` as retired.
+    - Add `Engine/OfxRetired/net.sf.openfx.Noise`, `Engine/OfxRetired/net.sf.cimg.CImgNoise` and `Engine/OfxRetired/net.sf.cimg.CImgPlasma` markers.
     - Move the test and bench cases to native `Noise`.
   - verify: a test asserts the three IDs no longer load and `Noise` does. The full ctest and the smoke test pass at the gate.
   - size: M

@@ -505,7 +505,9 @@ protected:
     struct Scenario {
         NodePtr output;
         bool deep = false;
+        // In pixels at mipmapLevel, which a flat render, warm or cold, renders at.
         RectI roi = RectI(0, 0, kSize, kSize);
+        unsigned mipmapLevel = 0;
         double time = 1.;
         // The planes a Legacy render asks for; empty means every layer the output presents.
         std::list<ImageLayerDesc> layers;
@@ -627,7 +629,7 @@ protected:
         if (s.deep) {
             renderDeep(s.output, s.time, s.roi, &state);
         } else {
-            state.rendered = renderNodePlanesInMode(s.output, s.time, ViewIdx(0), 0, s.roi, legacyLayers, _mode, cold, &state.planes, &state.error);
+            state.rendered = renderNodePlanesInMode(s.output, s.time, ViewIdx(0), s.mipmapLevel, s.roi, legacyLayers, _mode, cold, &state.planes, &state.error);
         }
         captureMetadata(s.output, s.time, ViewIdx(0), &state);
 
@@ -1442,9 +1444,13 @@ TEST_F(CacheEquivalenceTest, SyntheticRotoPaintGraph)
 
 // The bench comps are UHD, so a window at the centre of the format stands for the frame. Each comp
 // and scheduler mode is its own case, which keeps every one inside the per-case timeout.
+// defocus_retime pulls dozens of plate frames through blurs of up to 300 px for any window, so it
+// renders at 1/8 scale, where that upstream area is over an order of magnitude smaller and a debug
+// build fits the timeout.
 struct BenchComp {
     const char* file;
     RenderSchedulerModeEnum mode;
+    unsigned mipmapLevel;
 };
 
 static void
@@ -1486,7 +1492,8 @@ TEST_P(CacheEquivalenceBenchCompTest, EditsAndDisables)
         }
         std::sort(editable.begin(), editable.end(), [](const NodePtr& a, const NodePtr& b) { return a->getScriptName() < b->getScriptName(); });
         s->output = writer->getInput(0);
-        const RectI format = s->output->getEffectInstance()->getOutputFormat();
+        s->mipmapLevel = GetParam().mipmapLevel;
+        const RectI format = s->output->getEffectInstance()->getOutputFormat().downscalePowerOfTwoSmallestEnclosing(s->mipmapLevel);
         const int cx = (format.x1 + format.x2) / 2;
         const int cy = (format.y1 + format.y2) / 2;
         s->roi = RectI(cx - kSize / 2, cy - kSize / 2, cx + kSize / 2, cy + kSize / 2);
@@ -1505,12 +1512,12 @@ TEST_P(CacheEquivalenceBenchCompTest, EditsAndDisables)
 
 INSTANTIATE_TEST_CASE_P(Comps,
                         CacheEquivalenceBenchCompTest,
-                        ::testing::Values(BenchComp { "keying_grade.ntp", eRenderSchedulerModeLegacy },
-                                          BenchComp { "keying_grade.ntp", eRenderSchedulerModeTaskGraph },
-                                          BenchComp { "cg_multipass.ntp", eRenderSchedulerModeLegacy },
-                                          BenchComp { "cg_multipass.ntp", eRenderSchedulerModeTaskGraph },
-                                          BenchComp { "defocus_retime.ntp", eRenderSchedulerModeLegacy },
-                                          BenchComp { "defocus_retime.ntp", eRenderSchedulerModeTaskGraph }));
+                        ::testing::Values(BenchComp { "keying_grade.ntp", eRenderSchedulerModeLegacy, 0 },
+                                          BenchComp { "keying_grade.ntp", eRenderSchedulerModeTaskGraph, 0 },
+                                          BenchComp { "cg_multipass.ntp", eRenderSchedulerModeLegacy, 0 },
+                                          BenchComp { "cg_multipass.ntp", eRenderSchedulerModeTaskGraph, 0 },
+                                          BenchComp { "defocus_retime.ntp", eRenderSchedulerModeLegacy, 3 },
+                                          BenchComp { "defocus_retime.ntp", eRenderSchedulerModeTaskGraph, 3 }));
 
 // Each bundled plugin is rendered on a checkerboard feeding every input, and each sampled knob
 // dimension is perturbed, rendered, reverted and rendered again through the caches before that

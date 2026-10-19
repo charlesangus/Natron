@@ -9,6 +9,7 @@
 #include <exception>
 #include <iterator>
 #include <limits>
+#include <list>
 #include <map>
 #include <mutex>
 #include <thread>
@@ -201,6 +202,20 @@ namespace {
         uint64_t lastUse = 0;
     };
 
+    // An import being created outside the cache lock. forget() marks the ones it overlaps, which are then
+    // destroyed instead of cached, and waits until they are.
+    struct PendingImport {
+        uintptr_t lo = 0;
+        uintptr_t hi = 0;
+        bool forgotten = false;
+    };
+
+    enum class ImportOrigin {
+        Prepare,
+        Upload,
+        Download,
+    };
+
     struct Retired {
         GpuBuffer buffer;
         uint64_t value = 0;
@@ -321,10 +336,17 @@ struct GpuTransfer::Impl {
     std::thread drainThread;
 
     std::mutex importMutex;
+    std::condition_variable importCv;
     std::map<uintptr_t, CachedImport> importCache;
+    std::list<PendingImport> pendingImports;
     std::atomic<size_t> cachedImports { 0 };
+    std::atomic<size_t> pendingCount { 0 };
     std::atomic<uint64_t> importCount { 0 };
     std::atomic<uint64_t> importBytes { 0 };
+    std::atomic<uint64_t> preparedImports { 0 };
+    std::atomic<uint64_t> uploadImports { 0 };
+    std::atomic<uint64_t> downloadImports { 0 };
+    std::atomic<uint64_t> droppedImports { 0 };
 
     std::mutex retireMutex;
     std::vector<Retired> retired;
@@ -652,9 +674,52 @@ struct GpuTransfer::Impl {
         }
     }
 
+    void countImport(VkDeviceSize len, ImportOrigin origin)
+    {
+        ++importCount;
+        importBytes += len;
+        switch (origin) {
+        case ImportOrigin::Prepare:
+            ++preparedImports;
+            break;
+        case ImportOrigin::Upload:
+            ++uploadImports;
+            break;
+        case ImportOrigin::Download:
+            ++downloadImports;
+            break;
+        }
+    }
+
+    // The caller holds importMutex.
+    bool cacheOverlaps(uintptr_t lo, uintptr_t hi) const
+    {
+        auto next = importCache.upper_bound(lo);
+        if (next != importCache.end() && next->first < hi) {
+            return true;
+        }
+        if (next != importCache.begin()) {
+            auto prev = std::prev(next);
+            return prev->first + prev->second.bytes > lo;
+        }
+        return false;
+    }
+
+    // The caller holds importMutex.
+    bool pendingOverlaps(uintptr_t lo, uintptr_t hi) const
+    {
+        for (const PendingImport& p : pendingImports) {
+            if (p.lo < hi && lo < p.hi) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // Covers [p, p + bytes) with imported buffers, or returns false for the staging path. Uncached
     // imports land in `owned` and must outlive the transfer that uses them.
-    bool resolveImports(const void* p, VkDeviceSize bytes, std::vector<ImportSeg>& segs, std::vector<GpuBuffer>& owned)
+    bool resolveImports(const void* p, VkDeviceSize bytes, std::vector<ImportSeg>& segs, std::vector<GpuBuffer>& owned,
+                        ImportOrigin origin)
     {
         const uintptr_t base = reinterpret_cast<uintptr_t>(p);
         if (importAlignment == 0 || p == nullptr || base % importAlignment != 0 || bytes % importAlignment != 0) {
@@ -670,8 +735,7 @@ struct GpuTransfer::Impl {
                     owned.clear();
                     return false;
                 }
-                ++importCount;
-                importBytes += len;
+                countImport(len, origin);
                 segs.push_back({ b.buffer(), 0, pos, len, 0 });
                 owned.push_back(std::move(b));
                 pos += len;
@@ -679,7 +743,9 @@ struct GpuTransfer::Impl {
             return true;
         }
 
-        std::lock_guard<std::mutex> lock(importMutex);
+        // Pinning takes long enough that holding the lock through it would serialize every thread's imports,
+        // so the lock only guards the lookups and the insertion.
+        std::unique_lock<std::mutex> lock(importMutex);
         for (VkDeviceSize pos = 0; pos < bytes;) {
             const uintptr_t addr = base + pos;
             auto next = importCache.upper_bound(addr);
@@ -692,24 +758,70 @@ struct GpuTransfer::Impl {
                     continue;
                 }
             }
+            // Another thread is importing this address: its import serves this range too once cached.
+            if (pendingOverlaps(addr, addr + 1)) {
+                importCv.wait(lock);
+                continue;
+            }
             VkDeviceSize len = std::min(importPieceMax, bytes - pos);
             if (next != importCache.end()) {
                 len = std::min<VkDeviceSize>(len, next->first - addr);
             }
+            for (const PendingImport& other : pendingImports) {
+                if (other.lo > addr) {
+                    len = std::min<VkDeviceSize>(len, other.lo - addr);
+                }
+            }
+            auto mine = pendingImports.insert(pendingImports.end(), PendingImport { addr, addr + len, false });
+            pendingCount.store(pendingImports.size());
+            lock.unlock();
+
             CachedImport entry;
-            if (!GpuBuffer::createHostImported(dev, host + pos, len, kImportUsage, entry.buffer)) {
+            const bool created = static_cast<bool>(GpuBuffer::createHostImported(dev, host + pos, len, kImportUsage, entry.buffer));
+            if (created) {
+                countImport(len, origin);
+                if (opt.onImportCreated) {
+                    opt.onImportCreated(host + pos, len);
+                }
+            }
+
+            lock.lock();
+            const bool forgotten = mine->forgotten;
+            const bool keep = created && !forgotten && !cacheOverlaps(addr, addr + len);
+            if (keep) {
+                entry.bytes = len;
+                segs.push_back({ entry.buffer.buffer(), 0, pos, len, addr });
+                importCache.emplace(addr, std::move(entry));
+                cachedImports.store(importCache.size(), std::memory_order_relaxed);
+            } else if (created) {
+                ++droppedImports;
+                // forget() waits for the pending entry, so the import must be gone before the entry is.
+                lock.unlock();
+                entry.buffer = GpuBuffer();
+                lock.lock();
+            }
+            pendingImports.erase(mine);
+            pendingCount.store(pendingImports.size());
+            importCv.notify_all();
+            if (!created || forgotten) {
                 segs.clear();
                 return false;
             }
-            ++importCount;
-            importBytes += len;
-            entry.bytes = len;
-            segs.push_back({ entry.buffer.buffer(), 0, pos, len, addr });
-            importCache.emplace(addr, std::move(entry));
-            cachedImports.store(importCache.size(), std::memory_order_relaxed);
-            pos += len;
+            if (keep) {
+                pos += len;
+            }
         }
         return true;
+    }
+
+    bool prepare(HostRange range)
+    {
+        if (!opt.cacheHostImports || dev.isLost()) {
+            return false;
+        }
+        std::vector<ImportSeg> segs;
+        std::vector<GpuBuffer> owned;
+        return resolveImports(range.data, range.bytes, segs, owned, ImportOrigin::Prepare);
     }
 
     void markUsed(const std::vector<ImportSeg>& segs, std::vector<GpuBuffer>& owned, uint64_t value)
@@ -749,14 +861,20 @@ struct GpuTransfer::Impl {
 
     void forget(const void* ptr, size_t bytes)
     {
-        if (cachedImports.load(std::memory_order_relaxed) == 0) {
+        if (cachedImports.load() == 0 && pendingCount.load() == 0) {
             return;
         }
         const uintptr_t lo = reinterpret_cast<uintptr_t>(ptr);
         const uintptr_t hi = lo + std::max<size_t>(bytes, 1);
         std::vector<CachedImport> dropped;
         {
-            std::lock_guard<std::mutex> lock(importMutex);
+            std::unique_lock<std::mutex> lock(importMutex);
+            for (PendingImport& p : pendingImports) {
+                if (p.lo < hi && lo < p.hi) {
+                    p.forgotten = true;
+                }
+            }
+            importCv.wait(lock, [&] { return !pendingOverlaps(lo, hi); });
             auto it = importCache.upper_bound(lo);
             if (it != importCache.begin()) {
                 auto prev = std::prev(it);
@@ -779,7 +897,11 @@ struct GpuTransfer::Impl {
 
     void releaseCachedImports()
     {
-        std::lock_guard<std::mutex> lock(importMutex);
+        std::unique_lock<std::mutex> lock(importMutex);
+        for (PendingImport& p : pendingImports) {
+            p.forgotten = true;
+        }
+        importCv.wait(lock, [&] { return pendingImports.empty(); });
         vkDeviceWaitIdle(vk);
         importCache.clear();
         cachedImports.store(0, std::memory_order_relaxed);
@@ -814,10 +936,10 @@ struct GpuTransfer::Impl {
         const VkDeviceSize bytes = src.bytes;
         uint64_t v = 0;
         {
-            std::lock_guard<std::mutex> lock(upMutex);
             std::vector<ImportSeg> segs;
             std::vector<GpuBuffer> owned;
-            const bool imported = resolveImports(src.data, bytes, segs, owned);
+            const bool imported = resolveImports(src.data, bytes, segs, owned, ImportOrigin::Upload);
+            std::lock_guard<std::mutex> lock(upMutex);
             if (o.path) {
                 *o.path = imported ? TransferPath::HostImport : TransferPath::Staging;
             }
@@ -921,10 +1043,10 @@ struct GpuTransfer::Impl {
         }
 
         uint64_t v = 0;
-        std::lock_guard<std::mutex> lock(downMutex);
         std::vector<ImportSeg> segs;
         std::vector<GpuBuffer> owned;
-        const bool imported = resolveImports(dst.data, bytes, segs, owned);
+        const bool imported = resolveImports(dst.data, bytes, segs, owned, ImportOrigin::Download);
+        std::lock_guard<std::mutex> lock(downMutex);
         if (o.path) {
             *o.path = imported ? TransferPath::HostImport : TransferPath::Staging;
         }
@@ -1470,6 +1592,27 @@ uint64_t
 GpuTransfer::hostImportBytes() const
 {
     return impl_->importBytes.load();
+}
+
+HostImportStats
+GpuTransfer::hostImportStats() const
+{
+    const Impl& m = *impl_;
+    HostImportStats s;
+    s.created = m.importCount.load();
+    s.bytes = m.importBytes.load();
+    s.prepared = m.preparedImports.load();
+    s.atUpload = m.uploadImports.load();
+    s.atDownload = m.downloadImports.load();
+    s.dropped = m.droppedImports.load();
+    s.cached = m.cachedImports.load();
+    return s;
+}
+
+bool
+GpuTransfer::prepareImport(HostRange range)
+{
+    return impl_->prepare(range);
 }
 
 } // namespace gpu

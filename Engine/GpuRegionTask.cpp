@@ -340,7 +340,7 @@ public:
         const std::uint64_t importsBefore = _runtime.transfer().hostImportCount();
         const std::uint64_t importBytesBefore = _runtime.transfer().hostImportBytes();
         std::vector<GpuStrip> strips;
-        if (!plan() || !resolveInputs() || !planStrips(&strips)) {
+        if (!plan() || !resolveInputs() || !planStrips(&strips) || !allocateDownloadImages()) {
             return failed();
         }
         const Clock::time_point begin = Clock::now();
@@ -1052,6 +1052,43 @@ private:
         return true;
     }
 
+    /**
+     * @brief Allocates the RAM images every download lands in, and has the runtime's helper thread fault them in and
+     * import them while the uploads and the compute run, so that the downloads pay neither.
+     **/
+    bool allocateDownloadImages()
+    {
+        std::vector<gpu::HostRange> ranges;
+
+        for (Slot& slot : _slots) {
+            if (!slot.download || slot.pinned) {
+                continue;
+            }
+            const int producerTask = (slot.producer >= 0) ? _members[slot.producer].task : slot.externalTask;
+            slot.downloadImage = slot.layout.newRamImage();
+            if (!slot.downloadImage) {
+                return fail(producerTask, "cannot allocate the downloaded image");
+            }
+            slot.downloadAccess = std::make_shared<Image::WriteAccess>(slot.downloadImage.get());
+            unsigned char* data = slot.downloadAccess->pixelAt(slot.layout.bounds.x1, slot.layout.bounds.y1);
+            if (data) {
+                ranges.push_back({ data, (VkDeviceSize)gpuHostTransferBytes(*slot.downloadImage) });
+            }
+        }
+        _prepared = _runtime.prepareImports(std::move(ranges));
+
+        return true;
+    }
+
+    // The helper thread writes the pages it faults in, so it must be done with them before the device writes them.
+    void awaitPreparedDownloads()
+    {
+        if (_prepared) {
+            _prepared->wait();
+            _prepared.reset();
+        }
+    }
+
     bool issueDownloads(int position)
     {
         for (std::size_t s = 0; s < _slots.size(); ++s) {
@@ -1067,17 +1104,16 @@ private:
                 continue;
             }
             const Clock::time_point begin = Clock::now();
+            awaitPreparedDownloads();
             const int producerTask = (slot.producer >= 0) ? _members[slot.producer].task : slot.externalTask;
-            ImagePtr image = slot.layout.newRamImage();
-            if (!image) {
+            if (!slot.downloadImage || !slot.downloadAccess) {
                 return fail(producerTask, "cannot allocate the downloaded image");
             }
-            const std::size_t bytes = gpuHostTransferBytes(*image);
+            const std::size_t bytes = gpuHostTransferBytes(*slot.downloadImage);
             if (!slot.handle || (bytes > (std::size_t)slot.handle.size())) {
                 return fail(producerTask, "the device buffer is smaller than its image");
             }
-            std::shared_ptr<Image::WriteAccess> access = std::make_shared<Image::WriteAccess>(image.get());
-            unsigned char* data = access->pixelAt(slot.layout.bounds.x1, slot.layout.bounds.y1);
+            unsigned char* data = slot.downloadAccess->pixelAt(slot.layout.bounds.x1, slot.layout.bounds.y1);
             if (!data) {
                 return fail(producerTask, "the downloaded image has no pixels");
             }
@@ -1087,8 +1123,6 @@ private:
             if (!status) {
                 return failGpu(producerTask, "download failed", status);
             }
-            slot.downloadAccess = access;
-            slot.downloadImage = image;
             if (_stats) {
                 _stats->noteDownload(slot.layout.pixelBytes());
             }
@@ -1349,14 +1383,6 @@ private:
             Slot& slot = _slots[s];
             if (slot.source) {
                 (*sources)[s] = std::make_shared<Image::ReadAccess>(slot.source.get());
-            }
-            if (slot.download && !slot.pinned) {
-                const int producerTask = (slot.producer >= 0) ? _members[slot.producer].task : slot.externalTask;
-                slot.downloadImage = slot.layout.newRamImage();
-                if (!slot.downloadImage) {
-                    return fail(producerTask, "cannot allocate the downloaded image");
-                }
-                slot.downloadAccess = std::make_shared<Image::WriteAccess>(slot.downloadImage.get());
             }
         }
         if (_report) {
@@ -1628,6 +1654,7 @@ private:
         const Clock::time_point begin = Clock::now();
         std::vector<gpu::TimelineValue> downloads;
 
+        awaitPreparedDownloads();
         for (std::size_t s = 0; s < _slots.size(); ++s) {
             Slot& slot = _slots[s];
             const std::pair<VkDeviceSize, std::size_t> range = interiorRange(strip, s);
@@ -2173,6 +2200,10 @@ private:
     // Every transfer issued must land before the host memory it reads or writes goes away.
     void drain()
     {
+        if (_prepared) {
+            _prepared->cancel();
+            _prepared.reset();
+        }
         // Waiting for a transfer fails at once after a loss, while an injected one leaves the device running it.
         if (_runtime.isLost()) {
             _runtime.device().drainQueues();
@@ -2225,6 +2256,9 @@ private:
     // Buffers no later member of the submission being recorded reads, reused before a new one is acquired.
     std::vector<gpu::GpuBufferHandle> _spare;
     std::vector<GpuDeviceImagePtr> _unpinAfterSubmit;
+
+    // The helper thread's job faulting in and importing the download images, until a download or drain() waits for it.
+    std::shared_ptr<gpu::GpuImportJob> _prepared;
 
     // Pipelined strips: those whose device work may still run, oldest first, and the buffers of those that landed.
     std::deque<StripInFlight> _inFlightStrips;

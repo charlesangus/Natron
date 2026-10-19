@@ -1,11 +1,15 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -665,5 +669,147 @@ GPU_TEST_F(GpuTransferTest, ForgottenHostAllocationIsReimported)
     EXPECT_EQ(t->hostImportCount(), imports + 1) << "the reallocated range was not imported again";
 
     t->forgetHostAllocation(p, kBytes);
+    munmap(p, kBytes);
+}
+
+namespace {
+
+// Anonymous pages at an address aligned for import, or null when the import alignment exceeds the page size.
+void*
+mapImportable(size_t bytes, VkDeviceSize alignment)
+{
+    void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) {
+        return nullptr;
+    }
+    if (reinterpret_cast<uintptr_t>(p) % alignment != 0 || bytes % alignment != 0) {
+        munmap(p, bytes);
+        return nullptr;
+    }
+    return p;
+}
+
+} // namespace
+
+GPU_TEST_F(GpuTransferTest, ConcurrentImportsOfOneRangeCacheOne)
+{
+    GpuTransferOptions o;
+    o.cacheHostImports = true;
+    auto t = make(o);
+    ASSERT_TRUE(t != nullptr);
+    if (!t->hostImportSupported()) {
+        GPUTEST_SKIP() << "VK_EXT_external_memory_host unavailable";
+    }
+    constexpr size_t kBytes = size_t(8) << 20;
+    void* p = mapImportable(kBytes, t->hostImportAlignment());
+    if (!p) {
+        GPUTEST_SKIP() << "import alignment exceeds the page size";
+    }
+
+    constexpr int kThreads = 8;
+    const HostImportStats before = t->hostImportStats();
+    std::atomic<int> ready { 0 };
+    std::atomic<int> cached { 0 };
+    std::vector<std::thread> threads;
+    for (int i = 0; i < kThreads; ++i) {
+        threads.emplace_back([&] {
+            ++ready;
+            while (ready.load() < kThreads) {
+                std::this_thread::yield();
+            }
+            if (t->prepareImport({ p, kBytes })) {
+                ++cached;
+            }
+        });
+    }
+    for (std::thread& th : threads) {
+        th.join();
+    }
+    const HostImportStats after = t->hostImportStats();
+    EXPECT_EQ(cached.load(), kThreads);
+    EXPECT_EQ(after.cached - before.cached, 1u);
+    EXPECT_GE(after.created - before.created, 1u);
+    EXPECT_EQ((after.created - before.created) - (after.dropped - before.dropped), 1u)
+        << "every import but the cached one must have been dropped";
+    EXPECT_EQ(after.prepared - before.prepared, after.created - before.created);
+
+    GpuBuffer buf;
+    ASSERT_TRUE(GpuBuffer::createDeviceLocal(*dev_, kBytes, kGpuBufferDefaultUsage, buf).ok());
+    StreamOptions up;
+    up.handoff = ComputeHandoff::None;
+    TimelineValue uploaded;
+    ASSERT_TRUE(t->upload({ srcs_[0].get(), kBytes }, buf, 0, uploaded, up).ok());
+    TransferPath path = TransferPath::Staging;
+    StreamOptions down;
+    down.handoff = ComputeHandoff::None;
+    down.waits = { &uploaded, 1 };
+    down.path = &path;
+    TimelineValue downloaded;
+    const HostImportStats beforeDownload = t->hostImportStats();
+    ASSERT_TRUE(t->download(buf, 0, { p, kBytes }, downloaded, down).ok());
+    ASSERT_TRUE(t->wait(downloaded).ok());
+    EXPECT_EQ(path, TransferPath::HostImport);
+    EXPECT_EQ(t->hostImportStats().atDownload, beforeDownload.atDownload) << "the prepared range was imported again";
+    expectSame(srcs_[0].get(), p, kBytes, 1);
+
+    t->forgetHostAllocation(p, kBytes);
+    munmap(p, kBytes);
+}
+
+GPU_TEST_F(GpuTransferTest, ForgetDuringPrepareDropsTheImport)
+{
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool created = false;
+    bool release = false;
+    GpuTransferOptions o;
+    o.cacheHostImports = true;
+    o.onImportCreated = [&](const void*, VkDeviceSize) {
+        std::unique_lock<std::mutex> lock(mutex);
+        created = true;
+        cv.notify_all();
+        cv.wait(lock, [&] { return release; });
+    };
+    auto t = make(o);
+    ASSERT_TRUE(t != nullptr);
+    if (!t->hostImportSupported()) {
+        GPUTEST_SKIP() << "VK_EXT_external_memory_host unavailable";
+    }
+    constexpr size_t kBytes = size_t(2) << 20;
+    void* p = mapImportable(kBytes, t->hostImportAlignment());
+    if (!p) {
+        GPUTEST_SKIP() << "import alignment exceeds the page size";
+    }
+
+    const HostImportStats before = t->hostImportStats();
+    bool prepared = true;
+    std::thread preparer([&] { prepared = t->prepareImport({ p, kBytes }); });
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        cv.wait(lock, [&] { return created; });
+    }
+    // forget() blocks until the import it marks is destroyed, so the import is held open from another thread, for
+    // far longer than forget() takes to mark it.
+    std::thread releaser([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::lock_guard<std::mutex> lock(mutex);
+        release = true;
+        cv.notify_all();
+    });
+    t->forgetHostAllocation(p, kBytes);
+    const HostImportStats forgotten = t->hostImportStats();
+    preparer.join();
+    releaser.join();
+
+    EXPECT_FALSE(prepared) << "an import of a forgotten range was cached";
+    EXPECT_EQ(forgotten.cached, before.cached);
+    EXPECT_EQ(forgotten.dropped - before.dropped, 1u) << "forget() returned before the import was destroyed";
+    EXPECT_EQ(t->hostImportStats().cached, before.cached);
+
+    EXPECT_TRUE(t->prepareImport({ p, kBytes })) << "the range could not be imported again";
+    EXPECT_EQ(t->hostImportStats().cached, before.cached + 1);
+
+    t->forgetHostAllocation(p, kBytes);
+    EXPECT_EQ(t->hostImportStats().cached, before.cached);
     munmap(p, kBytes);
 }

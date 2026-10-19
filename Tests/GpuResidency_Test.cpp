@@ -63,6 +63,7 @@
 #include "Engine/GpuPlacement.h"
 #include "Engine/GpuRegionStrips.h"
 #include "Engine/GpuRegionTask.h"
+#include "Engine/HostImageMemory.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
@@ -2062,6 +2063,54 @@ TEST_F(GpuResidencyTest, PipelinedStripsOverlapBenchmark)
             expectReleased(run);
         }
     }
+}
+
+// The RAM image a region downloads into is new to the transfer, yet the helper thread imports it while the region
+// uploads and computes, so the download itself creates no import.
+TEST_F(GpuResidencyTest, FirstDownloadFindsItsDestinationAlreadyImported)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    if (!runtime()->transfer().hostImportSupported()) {
+        std::printf("[  SKIPPED ] the device cannot import host memory\n");
+
+        return;
+    }
+    // 512 x 512 RGBA float pixels is 4 MB, large enough for HostImageMemory to align the image for import.
+    const int size = 512;
+    NodePtr source = makeNode(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
+    NodePtr grade = makeGrade(1.5, 0.1);
+    NodePtr sink = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
+    ASSERT_TRUE(source && grade && sink);
+    ASSERT_TRUE(setKnobValue(source, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize));
+    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamBottomLeft, { 0., 0. }));
+    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamSize, { (double)size, (double)size }));
+    connectNodes(source, grade, 0, true);
+    connectNodes(grade, sink, 0, true);
+    const RectI window(0, 0, size, size);
+
+    // Pooled buffers may still be imported from earlier renders; freed, every image of this frame is new memory.
+    HostImageMemory::trim();
+    const gpu::HostImportStats before = runtime()->transfer().hostImportStats();
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(sink, &run, &error, window)) << error;
+    const int gradeTask = taskOf(run.graph, grade);
+    ASSERT_TRUE(gradeTask >= 0);
+    assignRegions(&run.graph, { { gradeTask } });
+    run.future = _scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+    const gpu::HostImportStats after = runtime()->transfer().hostImportStats();
+
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_GE(run.stats->getDownloadCount(), 1);
+    EXPECT_GE(after.prepared - before.prepared, 1u) << "the download destination was not imported ahead of time";
+    EXPECT_EQ(after.atDownload, before.atDownload) << "the download imported its destination itself";
+    EXPECT_EQ(after.dropped, before.dropped);
+    const std::map<ImageLayerDesc, ImagePtr> planes = run.future->getRootPlanes();
+    EXPECT_FALSE(planes.empty());
+    expectReleased(run);
 }
 
 #endif // NATRON_HAVE_GPU

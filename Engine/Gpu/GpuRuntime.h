@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <deque>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -25,6 +26,33 @@ enum class GpuRuntimeState {
     Degraded,
     // VK_ERROR_DEVICE_LOST was seen. Sticky until recreate().
     Lost,
+};
+
+struct GpuImportPreparer;
+
+// Host ranges the runtime's helper thread faults in and imports ahead of the transfers that will use them. The
+// ranges must stay allocated, and untouched by the device, until wait() or cancel() returns.
+class GpuImportJob {
+public:
+    // Blocks until every range was prepared or skipped.
+    void wait();
+
+    // Skips the ranges not started yet, then waits for the one in progress.
+    void cancel();
+
+    bool finished() const;
+
+private:
+    friend class GpuRuntime;
+    friend struct GpuImportPreparer;
+
+    void finish();
+
+    std::vector<HostRange> ranges_;
+    std::atomic<bool> cancelled_ { false };
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    bool finished_ = false;
 };
 
 struct GpuRuntimeOptions {
@@ -82,6 +110,12 @@ public:
     GpuStatus wait(TimelineValue value);
     GpuStatus waitIdle();
 
+    // Faults in `ranges` and imports them into the transfer's cache on a helper thread, so that the transfers
+    // into them find their imports made. Null when there is nothing to do: the transfer caches no imports, the
+    // device cannot import, the runtime is lost or `ranges` is empty. Jobs run one after another; teardown and
+    // recreate() skip the ranges of those not finished.
+    std::shared_ptr<GpuImportJob> prepareImports(std::vector<HostRange> ranges);
+
     // Feeds the outcome of a call made directly on a component into the state machine: a lost result latches
     // Lost, an out-of-memory result calls noteOutOfMemory(requestBytes). Returns `status` unchanged.
     GpuStatus note(const GpuStatus& status, uint64_t requestBytes = 0);
@@ -122,6 +156,7 @@ private:
     std::unique_ptr<GpuKernelRegistry> registry_;
     std::unique_ptr<GpuBufferPool> pool_;
     std::unique_ptr<GpuPipelineCache> pipelines_;
+    std::unique_ptr<GpuImportPreparer> preparer_;
 };
 
 } // namespace gpu

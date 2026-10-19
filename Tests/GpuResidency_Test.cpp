@@ -2236,6 +2236,117 @@ TEST_F(GpuResidencyTest, GrowingImageReusesTheBuffersAndImportsOfTheFrameBefore)
     }
 }
 
+// A Blur and a Grade run as serial strips, each strip of the source carrying the Blur's halo rows. The region imports
+// its source whole at its start and its download destinations ahead of the downloads, so on the second frame, whose
+// host buffers the first one released, no upload or download creates an import, and with rows a multiple of 4096 bytes
+// none goes through staging either.
+TEST_F(GpuResidencyTest, StripTransfersCopyOutOfWholeImageImports)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    if (!runtime()->transfer().hostImportSupported()) {
+        std::printf("[  SKIPPED ] the device cannot import host memory\n");
+
+        return;
+    }
+    // 1024 RGBA float pixels make a 16 KB row.
+    const int size = 1024;
+    NodePtr source = makeNode(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
+    NodePtr blur = makeBlur(60.);
+    NodePtr grade = makeGrade(0.8, 0.02);
+    NodePtr sink = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
+    ASSERT_TRUE(source && blur && grade && sink);
+    ASSERT_TRUE(setKnobValue(source, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize));
+    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamBottomLeft, { 0., 0. }));
+    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamSize, { (double)size, (double)size }));
+    KnobBool* crop = dynamic_cast<KnobBool*>(blur->getKnobByName(kBlurParamCropToFormat).get());
+    ASSERT_TRUE(crop);
+    crop->setValue(false);
+    connectNodes(source, blur, 0, true);
+    connectNodes(blur, grade, 0, true);
+    connectNodes(grade, sink, 0, true);
+    const RectI window(0, 0, size, size);
+    ASSERT_EQ(0u, ((std::size_t)size * 4 * sizeof(float)) % runtime()->transfer().hostImportAlignment());
+
+    std::shared_ptr<RenderScheduler::RegionReport> last = std::make_shared<RenderScheduler::RegionReport>();
+    _scheduler->setRegionBody([last](const FrameRenderContextPtr& context,
+                                     const FrameGraph& graph,
+                                     int region,
+                                     const RenderScheduler::CpuFallbackLease& lease,
+                                     std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
+                                     RenderScheduler::RegionReport* report) {
+        const EffectInstance::RenderRoIRetCode code = runGpuRegion(context, graph, region, lease, rootPlanes, report);
+        *last = *report;
+
+        return code;
+    });
+
+    QTemporaryDir profileDir;
+    ASSERT_TRUE(profileDir.isValid());
+    RenderScheduler::setProfilePath((profileDir.path() + QString::fromUtf8("/profile")).toStdString());
+    struct ProfileOff {
+        ~ProfileOff()
+        {
+            RenderScheduler::setProfilePath(std::string());
+        }
+    } profileOff;
+
+    // A strip of the source is its interior and the Blur's halo above and below it, over 2 MB at 16 KB a row.
+    setGpuStripOverridesForTests(8u << 20, 0);
+    setGpuStripPipeliningForTests(GpuStripPipelining::Off);
+    HostImageMemory::trim();
+    runtime()->pool().trim();
+    for (int frame = 0; frame < 2; ++frame) {
+        SCOPED_TRACE(frame + 1);
+        appPTR->clearAllCaches();
+        *last = RenderScheduler::RegionReport();
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(sink, &run, &error, window)) << error;
+        const int blurTask = taskOf(run.graph, blur);
+        const int gradeTask = taskOf(run.graph, grade);
+        ASSERT_TRUE(blurTask >= 0 && gradeTask >= 0);
+        assignRegions(&run.graph, { { blurTask, gradeTask } });
+        run.future = _scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+        const RenderScheduler::RegionReport report = *last;
+        std::printf("[          ] frame %d: %d strips; uploads %llu imported, %llu staged; downloads %llu imported, %llu staged; "
+                    "%llu imports at upload, %llu at download; prepare %.3f ms, upload %.3f ms, download %.3f ms\n",
+                    frame + 1, report.strips, report.uploadsImported, report.uploadsStaged, report.downloadsImported,
+                    report.downloadsStaged, report.importsAtUpload, report.importsAtDownload, report.prepareWaitMs,
+                    report.uploadMs, report.downloadMs);
+        EXPECT_EQ(0, fallbacksOf(run));
+        EXPECT_GT(report.strips, 1);
+        EXPECT_LE(report.stripsInFlight, 1);
+        EXPECT_EQ((unsigned long long)report.strips, report.uploadsImported + report.uploadsStaged);
+        EXPECT_EQ((unsigned long long)report.strips, report.downloadsImported + report.downloadsStaged);
+        if (frame == 1) {
+            EXPECT_EQ(0u, report.importsAtUpload) << "a strip upload imported its rows itself";
+            EXPECT_EQ(0u, report.importsAtDownload) << "a strip download imported its rows itself";
+            EXPECT_EQ(0u, report.uploadsStaged);
+            EXPECT_EQ(0u, report.downloadsStaged);
+        }
+        expectReleased(run);
+    }
+    RenderScheduler::flushProfile();
+    const std::string profilePath = RenderScheduler::getProfileFilePath();
+    RenderScheduler::setProfilePath(std::string());
+
+    std::string lastRecord;
+    for (const std::string& record : readProfileRecords(profilePath)) {
+        if (record.compare(0, 17, "{\"kind\":\"region\",") == 0) {
+            lastRecord = record;
+        }
+    }
+    ASSERT_FALSE(lastRecord.empty());
+    const char* const zeros[] = { "\"uploadsStaged\":0,", "\"downloadsStaged\":0,", "\"importsAtUpload\":0,", "\"importsAtDownload\":0," };
+    for (const char* field : zeros) {
+        EXPECT_NE(std::string::npos, lastRecord.find(field)) << field << " in " << lastRecord;
+    }
+    EXPECT_NE(std::string::npos, lastRecord.find("\"prepareWaitMs\":")) << lastRecord;
+}
+
 #endif // NATRON_HAVE_GPU
 
 namespace {

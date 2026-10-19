@@ -813,3 +813,65 @@ GPU_TEST_F(GpuTransferTest, ForgetDuringPrepareDropsTheImport)
     EXPECT_EQ(t->hostImportStats().cached, before.cached);
     munmap(p, kBytes);
 }
+
+GPU_TEST_F(GpuTransferTest, UnalignedPartOfACachedImportCreatesNoImport)
+{
+    GpuTransferOptions o;
+    o.cacheHostImports = true;
+    auto t = make(o);
+    ASSERT_TRUE(t != nullptr);
+    if (!t->hostImportSupported()) {
+        GPUTEST_SKIP() << "VK_EXT_external_memory_host unavailable";
+    }
+    constexpr size_t kBytes = size_t(4) << 20;
+    void* p = mapImportable(kBytes, t->hostImportAlignment());
+    if (!p) {
+        GPUTEST_SKIP() << "import alignment exceeds the page size";
+    }
+    uint8_t* host = static_cast<uint8_t*>(p);
+    fillFrame(host, kBytes, 21);
+    ASSERT_TRUE(t->prepareImport({ p, kBytes }));
+
+    // A strip of rows whose width is no multiple of the alignment: neither its start nor its size is aligned.
+    constexpr VkDeviceSize kOffset = (VkDeviceSize(1) << 20) + 48;
+    constexpr VkDeviceSize kPart = (VkDeviceSize(2) << 20) + 1000;
+    GpuBuffer buf;
+    ASSERT_TRUE(GpuBuffer::createDeviceLocal(*dev_, kPart, kGpuBufferDefaultUsage, buf).ok());
+    const HostImportStats before = t->hostImportStats();
+
+    TransferPath upPath = TransferPath::Staging;
+    StreamOptions up;
+    up.handoff = ComputeHandoff::None;
+    up.path = &upPath;
+    TimelineValue uploaded;
+    ASSERT_TRUE(t->upload({ host + kOffset, kPart }, buf, 0, uploaded, up).ok());
+    EXPECT_EQ(upPath, TransferPath::HostImport);
+
+    // Downloaded back into another unaligned part of the same import.
+    constexpr VkDeviceSize kBack = 16;
+    std::vector<uint8_t> expected(host + kOffset, host + kOffset + kPart);
+    TransferPath downPath = TransferPath::Staging;
+    StreamOptions down;
+    down.handoff = ComputeHandoff::None;
+    down.waits = { &uploaded, 1 };
+    down.path = &downPath;
+    TimelineValue downloaded;
+    ASSERT_TRUE(t->download(buf, 0, { host + kBack, kPart }, downloaded, down).ok());
+    ASSERT_TRUE(t->wait(downloaded).ok());
+    EXPECT_EQ(downPath, TransferPath::HostImport);
+    expectSame(expected.data(), host + kBack, kPart, 1);
+
+    const HostImportStats after = t->hostImportStats();
+    EXPECT_EQ(after.created, before.created) << "a part of a cached import was imported again";
+    EXPECT_EQ(after.atUpload, before.atUpload);
+    EXPECT_EQ(after.atDownload, before.atDownload);
+    EXPECT_EQ(after.cached, before.cached);
+
+    // Forgotten, the same unaligned range goes through staging again.
+    t->forgetHostAllocation(p, kBytes);
+    TimelineValue staged;
+    ASSERT_TRUE(t->upload({ host + kOffset, kPart }, buf, 0, staged, up).ok());
+    ASSERT_TRUE(t->wait(staged).ok());
+    EXPECT_EQ(upPath, TransferPath::Staging);
+    munmap(p, kBytes);
+}

@@ -431,6 +431,10 @@ GpuContext::initialize()
         rtOptions.transfer.hostAllocationBytes = [](const void* host) {
             return (VkDeviceSize)HostImageMemory::bytesFrom(host);
         };
+        // One memcpy thread moves a fraction of the bus rate; the ranges left to staging are those that cannot be
+        // imported, and they are worth splitting across several threads in large pieces.
+        rtOptions.transfer.copyThreads = 4;
+        rtOptions.transfer.stripBytes = VkDeviceSize(32) << 20;
         gpu::GpuStatus status = gpu::GpuRuntime::create(rtOptions, runtime);
         if (!status) {
             failure = status.message.empty() ? "no usable Vulkan device" : status.message;

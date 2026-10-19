@@ -51,6 +51,7 @@
 #include "Engine/GpuCostModel.h"
 #include "Engine/GpuPlacement.h"
 #include "Engine/GpuRegionStrips.h"
+#include "Engine/HostImageMemory.h"
 #include "Engine/Image.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/GpuRender.h"
@@ -342,6 +343,7 @@ public:
         const std::uint64_t allocationsBefore = _runtime.pool().allocationCount();
         const std::uint64_t importsBefore = _runtime.transfer().hostImportCount();
         const std::uint64_t importBytesBefore = _runtime.transfer().hostImportBytes();
+        const gpu::HostImportStats importStatsBefore = _runtime.transfer().hostImportStats();
         std::vector<GpuStrip> strips;
         if (!plan() || !resolveInputs() || !planStrips(&strips) || !allocateDownloadImages()) {
             return failed();
@@ -353,6 +355,7 @@ public:
             _report->stripsInFlight = strips.empty() ? 0 : _inFlight;
             _report->overlapStrips = _overlapped;
         }
+        importSources();
         if (strips.empty()) {
             if (!upload()) {
                 return failed();
@@ -381,6 +384,9 @@ public:
             _report->poolMisses = _runtime.pool().allocationCount() - allocationsBefore;
             _report->importCount = _runtime.transfer().hostImportCount() - importsBefore;
             _report->newImportBytes = _runtime.transfer().hostImportBytes() - importBytesBefore;
+            const gpu::HostImportStats importStats = _runtime.transfer().hostImportStats();
+            _report->importsAtUpload = importStats.atUpload - importStatsBefore.atUpload;
+            _report->importsAtDownload = importStats.atDownload - importStatsBefore.atDownload;
             _report->predictedTransferMs = GpuCostModel::session().transferMs((double)_report->uploadBytes, (double)_report->downloadBytes);
         }
         if (isAborted()) {
@@ -859,6 +865,8 @@ private:
             }
             gpu::StreamOptions options;
             options.handoff = gpu::ComputeHandoff::Submit;
+            gpu::TransferPath path = gpu::TransferPath::Staging;
+            options.path = &path;
             gpu::TimelineValue done;
             // upload() only reads the host range.
             const gpu::GpuStatus status = _runtime.upload({ const_cast<unsigned char*>(data), bytes }, slot.handle.buffer(), 0, done, options);
@@ -867,6 +875,7 @@ private:
 
                 return failGpu(slot.externalTask, "upload failed", status);
             }
+            notePath(path, true);
             uploads.push_back(done);
             accesses.push_back(access);
             slot.view = viewOf(&slot.handle.buffer(), slot.layout);
@@ -1046,6 +1055,51 @@ private:
     }
 
     /**
+     * @brief Imports each RAM input whole into the transfer's cache, so that every upload from it, a strip's rows at
+     * any alignment included, copies out of that import rather than pinning or staging its part. Only a buffer of
+     * HostImageMemory is imported: the cache must forget an import before its memory goes back to the OS, and only
+     * those buffers call the free hook that does.
+     **/
+    void importSources()
+    {
+        const Clock::time_point begin = Clock::now();
+        bool imported = false;
+
+        for (Slot& slot : _slots) {
+            if (!slot.source) {
+                continue;
+            }
+            const std::size_t bytes = gpuHostTransferBytes(*slot.source);
+            const RectI bounds = slot.source->getBounds();
+            Image::ReadAccess access(slot.source.get());
+            const unsigned char* data = access.pixelAt(bounds.x1, bounds.y1);
+            if (!data || (bytes == 0) || (HostImageMemory::bytesFrom(data) < bytes)) {
+                continue;
+            }
+            // prepareImport() only pins the range.
+            _runtime.transfer().prepareImport({ const_cast<unsigned char*>(data), (VkDeviceSize)bytes });
+            imported = true;
+        }
+        if (imported && _report) {
+            _report->prepareWaitMs += msBetween(begin, Clock::now());
+        }
+    }
+
+    void notePath(gpu::TransferPath path,
+                  bool upload)
+    {
+        if (!_report) {
+            return;
+        }
+        const bool direct = (path == gpu::TransferPath::HostImport);
+        if (upload) {
+            ++(direct ? _report->uploadsImported : _report->uploadsStaged);
+        } else {
+            ++(direct ? _report->downloadsImported : _report->downloadsStaged);
+        }
+    }
+
+    /**
      * @brief Allocates the RAM images every download lands in, and has the runtime's helper thread fault them in and
      * import them while the uploads and the compute run, so that the downloads pay neither.
      **/
@@ -1080,8 +1134,12 @@ private:
     void awaitPreparedDownloads()
     {
         if (_prepared) {
+            const Clock::time_point begin = Clock::now();
             _prepared->wait();
             _prepared.reset();
+            if (_report) {
+                _report->prepareWaitMs += msBetween(begin, Clock::now());
+            }
         }
     }
 
@@ -1099,8 +1157,8 @@ private:
                 }
                 continue;
             }
-            const Clock::time_point begin = Clock::now();
             awaitPreparedDownloads();
+            const Clock::time_point begin = Clock::now();
             const int producerTask = (slot.producer >= 0) ? _members[slot.producer].task : slot.externalTask;
             if (!slot.downloadImage || !slot.downloadAccess) {
                 return fail(producerTask, "cannot allocate the downloaded image");
@@ -1115,10 +1173,13 @@ private:
             }
             gpu::StreamOptions options;
             options.handoff = gpu::ComputeHandoff::Submit;
+            gpu::TransferPath path = gpu::TransferPath::Staging;
+            options.path = &path;
             const gpu::GpuStatus status = _runtime.download(slot.handle.buffer(), 0, { data, bytes }, slot.downloadDone, options);
             if (!status) {
                 return failGpu(producerTask, "download failed", status);
             }
+            notePath(path, false);
             if (_stats) {
                 _stats->noteDownload(slot.layout.pixelBytes());
             }
@@ -1482,6 +1543,8 @@ private:
                 options.timestampPool = _queries;
                 options.timestampQuery = queryOf(flight->index, _uploadQuery[s]);
             }
+            gpu::TransferPath path = gpu::TransferPath::Staging;
+            options.path = &path;
             gpu::TimelineValue done;
             // upload() only reads the host range.
             const gpu::GpuStatus status = _runtime.upload({ const_cast<unsigned char*>(data), bytes }, slot.handle.buffer(), 0, done, options);
@@ -1490,6 +1553,7 @@ private:
 
                 return failGpu(slot.externalTask, "upload failed", status);
             }
+            notePath(path, true);
             if (flight) {
                 flight->transfers.push_back(done);
                 pending->push_back(done);
@@ -1653,10 +1717,10 @@ private:
     bool downloadStrip(const GpuStrip& strip,
                        StripInFlight* flight = nullptr)
     {
+        awaitPreparedDownloads();
         const Clock::time_point begin = Clock::now();
         std::vector<gpu::TimelineValue> downloads;
 
-        awaitPreparedDownloads();
         for (std::size_t s = 0; s < _slots.size(); ++s) {
             Slot& slot = _slots[s];
             const std::pair<VkDeviceSize, std::size_t> range = interiorRange(strip, s);
@@ -1685,6 +1749,8 @@ private:
                     options.timestampQuery = queryOf(flight->index, _downloadQuery[s]);
                 }
             }
+            gpu::TransferPath path = gpu::TransferPath::Staging;
+            options.path = &path;
             gpu::TimelineValue done;
             const gpu::GpuStatus status = _runtime.download(handle.buffer(), range.first, { data, range.second }, done, options);
             if (!status) {
@@ -1692,6 +1758,7 @@ private:
 
                 return failGpu(producerTask, "download failed", status);
             }
+            notePath(path, false);
             if (flight) {
                 flight->transfers.push_back(done);
             } else {

@@ -716,13 +716,55 @@ struct GpuTransfer::Impl {
         return false;
     }
 
+    // The caller holds importMutex. Fills segs and returns true when cached imports cover all of [base, base + bytes);
+    // leaves segs empty otherwise.
+    bool coverFromCache(uintptr_t base, VkDeviceSize bytes, std::vector<ImportSeg>& segs) const
+    {
+        for (VkDeviceSize pos = 0; pos < bytes;) {
+            const uintptr_t addr = base + pos;
+            auto next = importCache.upper_bound(addr);
+            if (next == importCache.begin()) {
+                segs.clear();
+                return false;
+            }
+            auto prev = std::prev(next);
+            const uintptr_t end = prev->first + prev->second.bytes;
+            if (end <= addr) {
+                segs.clear();
+                return false;
+            }
+            const VkDeviceSize len = std::min<VkDeviceSize>(end - addr, bytes - pos);
+            segs.push_back({ prev->second.buffer.buffer(), addr - prev->first, pos, len, prev->first });
+            pos += len;
+        }
+        return true;
+    }
+
     // Covers [p, p + bytes) with imported buffers, or returns false for the staging path. Uncached
-    // imports land in `owned` and must outlive the transfer that uses them.
+    // imports land in `owned` and must outlive the transfer that uses them. A range that cached imports
+    // already cover needs no alignment: copies out of an import may start and end anywhere in it.
     bool resolveImports(const void* p, VkDeviceSize bytes, std::vector<ImportSeg>& segs, std::vector<GpuBuffer>& owned,
                         ImportOrigin origin)
     {
         const uintptr_t base = reinterpret_cast<uintptr_t>(p);
-        if (importAlignment == 0 || p == nullptr || base % importAlignment != 0 || bytes % importAlignment != 0) {
+        if (importAlignment == 0 || p == nullptr) {
+            return false;
+        }
+        const bool aligned = base % importAlignment == 0 && bytes % importAlignment == 0;
+        if (opt.cacheHostImports && (cachedImports.load() != 0 || pendingCount.load() != 0)) {
+            std::unique_lock<std::mutex> lock(importMutex);
+            for (;;) {
+                if (coverFromCache(base, bytes, segs)) {
+                    return true;
+                }
+                // An aligned range imports what is missing itself, and waits for overlapping imports there.
+                if (aligned || !pendingOverlaps(base, base + bytes)) {
+                    break;
+                }
+                importCv.wait(lock);
+            }
+        }
+        if (!aligned) {
             return false;
         }
         char* host = static_cast<char*>(const_cast<void*>(p));

@@ -267,6 +267,14 @@ struct GpuRegionTimes {
     // Written as null when infinite.
     double predictedTransferMs = 0.;
 
+    double prepareWaitMs = 0.;
+    unsigned long long uploadsImported = 0;
+    unsigned long long uploadsStaged = 0;
+    unsigned long long downloadsImported = 0;
+    unsigned long long downloadsStaged = 0;
+    unsigned long long importsAtUpload = 0;
+    unsigned long long importsAtDownload = 0;
+
     // The region fit the device whole and ran as strips anyway, to overlap its transfers with its compute.
     bool overlapStrips = false;
 

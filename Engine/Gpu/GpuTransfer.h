@@ -170,8 +170,9 @@ struct TransferTimeline {
 };
 
 // Host<->device copies on the transfer queue. Every copy is split at GpuDeviceInfo::copyChunkSize.
-// A host range that is aligned to minImportedHostPointerAlignment is imported and copied without a
-// host memcpy; anything else goes through a pinned staging ring. Thread-safe.
+// A host range that cached imports cover, at any alignment, or that is aligned to
+// minImportedHostPointerAlignment and can be imported, is copied without a host memcpy; anything else goes
+// through a pinned staging ring. Thread-safe.
 class GpuTransfer {
 public:
     static GpuStatus create(GpuDevice& device, const GpuTransferOptions& options,
@@ -221,7 +222,7 @@ public:
                       TransferTimeline* timeline = nullptr);
 
     // Imports [range.data, range.data + range.bytes) into the cache, so that a later upload() or download() of
-    // it or of a part of it creates no import. Returns whether the range is cached now: false when imports are
+    // it or of any part of it, aligned or not, creates no import and needs no staging. Returns whether the range is cached now: false when imports are
     // not cached, the range is not aligned for import, the import failed or the range was forgotten meanwhile.
     // The memory must stay allocated until it returns.
     bool prepareImport(HostRange range);

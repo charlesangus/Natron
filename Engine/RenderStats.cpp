@@ -817,6 +817,12 @@ formatRegionRecord(unsigned long long frameSequence,
         line.append("null");
     }
     line.append(times.overlapStrips ? ",\"overlapStrips\":1" : ",\"overlapStrips\":0");
+    std::snprintf(num, sizeof(num),
+                  ",\"prepareWaitMs\":%.6f,\"uploadsImported\":%llu,\"uploadsStaged\":%llu,\"downloadsImported\":%llu,"
+                  "\"downloadsStaged\":%llu,\"importsAtUpload\":%llu,\"importsAtDownload\":%llu",
+                  times.prepareWaitMs, times.uploadsImported, times.uploadsStaged, times.downloadsImported,
+                  times.downloadsStaged, times.importsAtUpload, times.importsAtDownload);
+    line.append(num);
     line.append(",\"fallback\":\"");
     for (std::size_t i = 0; i < times.fallback.size(); ++i) {
         const char c = times.fallback[i];

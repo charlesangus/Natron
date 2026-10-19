@@ -1284,6 +1284,13 @@ RenderScheduler::executeRegion(const FramePtr& frame,
             times.importCount = report.importCount;
             times.newImportBytes = report.newImportBytes;
             times.predictedTransferMs = report.predictedTransferMs;
+            times.prepareWaitMs = report.prepareWaitMs;
+            times.uploadsImported = report.uploadsImported;
+            times.uploadsStaged = report.uploadsStaged;
+            times.downloadsImported = report.downloadsImported;
+            times.downloadsStaged = report.downloadsStaged;
+            times.importsAtUpload = report.importsAtUpload;
+            times.importsAtDownload = report.importsAtDownload;
             times.fallback = report.cpuFallback;
             times.retries = report.retries;
             lines += formatRegionRecord(frame->sequence, region, members, times);

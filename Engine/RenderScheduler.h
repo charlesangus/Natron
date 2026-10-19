@@ -277,6 +277,22 @@ public:
         // measured uploadMs and downloadMs; infinite when the model knows no bandwidth.
         double predictedTransferMs = 0.;
 
+        // Host time importing the region's RAM inputs at its start and waiting for the helper thread to fault in and
+        // import its download destinations; first-touch page faults land here rather than in uploadMs or downloadMs.
+        double prepareWaitMs = 0.;
+
+        // The region's uploads and downloads by the path they took: copied straight from or into imported host memory,
+        // or through the staging ring.
+        unsigned long long uploadsImported = 0;
+        unsigned long long uploadsStaged = 0;
+        unsigned long long downloadsImported = 0;
+        unsigned long long downloadsStaged = 0;
+
+        // Host imports that uploads and downloads created themselves, rather than finding them prepared or cached,
+        // while the region ran. Shared counters, like importCount.
+        unsigned long long importsAtUpload = 0;
+        unsigned long long importsAtDownload = 0;
+
         // The device was lost: the scheduler renders the whole frame again on the CPU, whatever the body returned.
         bool deviceLost = false;
 

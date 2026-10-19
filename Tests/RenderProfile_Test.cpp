@@ -318,6 +318,7 @@ TEST(RenderStatsGpuCounters, RegionRecordFormat)
     times.importCount = 5;
     times.newImportBytes = 4096;
     times.predictedTransferMs = 1.25;
+    times.overlapStrips = true;
 
     EXPECT_EQ(formatRegionRecord(7, 3, tasks, times),
               "{\"kind\":\"region\",\"frame\":7,\"regionId\":3,\"tasks\":[1,2],"
@@ -326,11 +327,11 @@ TEST(RenderStatsGpuCounters, RegionRecordFormat)
               "\"stripsInFlight\":3,\"transferHiddenMs\":1.750000,\"transferExposedMs\":0.250000,"
               "\"planMs\":0.125000,\"recordMs\":0.375000,\"acquireMs\":0.062500,\"submitWaitMs\":0.875000,"
               "\"poolMisses\":2,\"importCount\":5,\"newImportBytes\":4096,\"predictedTransferMs\":1.250000,"
-              "\"fallback\":\"\",\"retries\":0}\n");
+              "\"overlapStrips\":1,\"fallback\":\"\",\"retries\":0}\n");
 
     times.predictedTransferMs = std::numeric_limits<double>::infinity();
     const std::string unpriced = formatRegionRecord(7, 3, tasks, times);
-    EXPECT_NE(unpriced.find("\"newImportBytes\":4096,\"predictedTransferMs\":null,\"fallback\":\"\""), std::string::npos) << unpriced;
+    EXPECT_NE(unpriced.find("\"newImportBytes\":4096,\"predictedTransferMs\":null,\"overlapStrips\":1,\"fallback\":\"\""), std::string::npos) << unpriced;
 }
 
 TEST(RenderStatsGpuCounters, RegionRecordFormatCarriesTheFallbackAndRetries)

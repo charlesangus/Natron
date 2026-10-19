@@ -222,6 +222,85 @@ stripsOfRows(const GpuStripGraph& graph,
     return StripsFit::Fits;
 }
 
+// The bytes the region moves between host and device when it runs as strips: every external input uploaded and every
+// interior slot downloaded.
+std::uint64_t
+hostTransferBytes(const GpuStripGraph& graph)
+{
+    std::uint64_t total = 0;
+
+    for (const GpuStripSlot& slot : graph.images) {
+        if (!slot.resident && (slot.external || slot.interior)) {
+            total += bufferBytes(slot.bounds, slot.nComps);
+        }
+    }
+
+    return total;
+}
+
+// The most rows a strip in the middle of bands reads beyond its own rows, or -1 when it cannot be cut.
+int
+stripHalo(const GpuStripGraph& graph,
+          const RectI& bands)
+{
+    const int lo = bands.y1 + bands.height() / 2 / kGpuStripRowQuantum * kGpuStripRowQuantum;
+    const int hi = std::min(bands.y2, lo + kGpuStripRowQuantum);
+    GpuStrip strip;
+    if (!stripOf(graph, lo, hi, &strip)) {
+        return -1;
+    }
+    int halo = 0;
+    for (const RectI& rect : strip.rects) {
+        if (!rect.isNull()) {
+            halo = std::max(halo, std::max(lo - rect.y1, rect.y2 - hi));
+        }
+    }
+
+    return halo;
+}
+
+// Whether graph, which fits whole, runs better as kGpuStripMaxInFlight or more strips in flight together, filling
+// strips and rows if so.
+bool
+planOverlap(const GpuStripGraph& graph,
+            const GpuStripLimits& limits,
+            std::vector<GpuStrip>* strips,
+            int* rows)
+{
+    if ((limits.maxInFlight < kGpuStripMaxInFlight) || (hostTransferBytes(graph) < limits.overlapMinBytes)) {
+        return false;
+    }
+    for (const GpuStripSlot& slot : graph.images) {
+        if (slot.keptOnDevice) {
+            return false;
+        }
+    }
+    const RectI bands = gpuStripBands(graph);
+    if (bands.isNull()) {
+        return false;
+    }
+    const int halo = stripHalo(graph, bands);
+    if (halo < 0) {
+        return false;
+    }
+    const int haloRows = (halo * kGpuStripOverlapHaloMultiple + kGpuStripRowQuantum - 1) / kGpuStripRowQuantum * kGpuStripRowQuantum;
+    const int minRows = std::max(kGpuStripMinPipelinedRows, haloRows);
+    const int perStrip = (bands.height() + kGpuStripMaxInFlight - 1) / kGpuStripMaxInFlight;
+    const int stripRows = std::min(perStrip, limits.maxRows) / kGpuStripRowQuantum * kGpuStripRowQuantum;
+    if (stripRows < minRows) {
+        return false;
+    }
+    std::vector<GpuStrip> found;
+    if ((stripsOfRows(graph, limits, bands.y1, bands.y2, stripRows, kGpuStripMaxInFlight, &found) != StripsFit::Fits) ||
+        ((int)found.size() < kGpuStripMaxInFlight)) {
+        return false;
+    }
+    strips->swap(found);
+    *rows = stripRows;
+
+    return true;
+}
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 GpuStripCost
@@ -322,12 +401,16 @@ planGpuStrips(const GpuStripGraph& graph,
               const GpuStripLimits& limits,
               std::vector<GpuStrip>* strips,
               int* rows,
-              int* inFlight)
+              int* inFlight,
+              bool* overlapped)
 {
     strips->clear();
     *rows = 0;
     if (inFlight) {
         *inFlight = 1;
+    }
+    if (overlapped) {
+        *overlapped = false;
     }
 
     std::vector<RectI> whole;
@@ -336,7 +419,17 @@ planGpuStrips(const GpuStripGraph& graph,
     }
     const GpuStripCost wholeCost = gpuStripCost(graph, whole, limits);
     if ((limits.forcedRows <= 0) && fits(wholeCost, limits)) {
-        return GpuStripResult::Whole;
+        if (!planOverlap(graph, limits, strips, rows)) {
+            return GpuStripResult::Whole;
+        }
+        if (inFlight) {
+            *inFlight = kGpuStripMaxInFlight;
+        }
+        if (overlapped) {
+            *overlapped = true;
+        }
+
+        return GpuStripResult::Strips;
     }
 
     const RectI bands = gpuStripBands(graph);

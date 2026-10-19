@@ -267,6 +267,9 @@ struct GpuRegionTimes {
     // Written as null when infinite.
     double predictedTransferMs = 0.;
 
+    // The region fit the device whole and ran as strips anyway, to overlap its transfers with its compute.
+    bool overlapStrips = false;
+
     // Why the members rendered on the CPU instead; empty for a region that rendered on the GPU.
     std::string fallback;
     int retries = 0;

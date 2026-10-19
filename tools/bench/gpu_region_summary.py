@@ -106,6 +106,7 @@ def summarise(rows):
         entry["importMB"] = mean([g.get("newImportBytes", 0) for g in regs]) / 1e6
         entry["poolMisses"] = mean([g.get("poolMisses", 0) for g in regs])
         entry["fallbacks"] = collections.Counter(g["fallback"] for g in regs if g.get("fallback"))
+        entry["overlapped"] = sum(g.get("overlapStrips", 0) for g in regs)
         entry["retries"] = sum(g.get("retries", 0) for g in regs)
         nodes = collections.OrderedDict()
         for r in rs:
@@ -120,7 +121,7 @@ def format_summary(entries):
     lines = []
     lines.append("Per region (ms per region run, mean over runs; planMs is outside wallMs)")
     head = ("region", "runs", "plan", "wall", "kernel", "xfer exp", "xfer hid", "upload", "download", "record", "acquire",
-            "submit/wait", "other", "pred xfer", "imports (MB)", "pool miss", "fallback/retries")
+            "submit/wait", "other", "pred xfer", "imports (MB)", "pool miss", "overlap strips", "fallback/retries")
     lines.append(" | ".join(head))
     for e in entries:
         pred = "n/a" if e["predicted"] is None else "%.2f" % e["predicted"]
@@ -130,6 +131,7 @@ def format_summary(entries):
                                  "%.2f" % e["downloadMs"], "%.2f" % e["recordMs"], "%.2f" % e["acquireMs"],
                                  "%.2f" % e["submitWaitMs"], "%.2f" % e["other"], pred,
                                  "%.1f (%.1f)" % (e["imports"], e["importMB"]), "%.1f" % e["poolMisses"],
+                                 str(e["overlapped"]),
                                  "%s / %d" % (fb, e["retries"]))))
     lines.append("")
     lines.append("Per node (member kernel ms, mean over runs; share of the region's wallMs)")
@@ -166,6 +168,7 @@ def self_test():
 
     fallback = by_sig["Blur2"]
     assert fallback["nodes"] == [("Blur2", 0.0)], fallback["nodes"]
+    assert fallback["overlapped"] == 0 and by_sig["Erode1"]["overlapped"] == 1
     assert dict(fallback["fallbacks"]) == {"no timestamps": 1} and fallback["retries"] == 1
 
     steady_rows, steady_kept = build(records, 1)

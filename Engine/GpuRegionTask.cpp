@@ -348,6 +348,7 @@ public:
             _report->planMs = msBetween(planBegin, begin);
             _report->strips = (int)strips.size();
             _report->stripsInFlight = strips.empty() ? 0 : _inFlight;
+            _report->overlapStrips = _overlapped;
         }
         if (strips.empty()) {
             if (!upload()) {
@@ -1240,6 +1241,7 @@ private:
             stripSlot.external = (slot.externalTask >= 0);
             stripSlot.resident = bool(slot.pinned);
             stripSlot.interior = slot.keep || slot.download;
+            stripSlot.keptOnDevice = slot.keep && !slot.download;
             graph.images.push_back(stripSlot);
         }
         for (const Member& member : _members) {
@@ -1261,8 +1263,9 @@ private:
     }
 
     /**
-     * @brief Leaves strips empty when the region fits the device whole and no strip height is forced, and otherwise
-     * fills it with the strips it runs as. A stripped output never exists whole on the device, so every output read
+     * @brief Leaves strips empty when the region fits the device whole and no strip height is forced, unless
+     * pipelined strips would hide enough of its transfer to be worth it, and otherwise fills it with the strips it runs
+     * as. A stripped output never exists whole on the device, so every output read
      * after the region is downloaded and stored in RAM, including those another region would have read on the device.
      **/
     bool planStrips(std::vector<GpuStrip>* strips)
@@ -1281,13 +1284,14 @@ private:
         limits.maxRows = (gpuStripRowsOverride() > 0) ? gpuStripRowsOverride() : kGpuStripDefaultRows;
         limits.forcedRows = _forcedRows;
         limits.maxInFlight = pipelineAllowed() ? kGpuStripMaxInFlight : 1;
+        limits.overlapMinBytes = kGpuStripOverlapMinBytes;
         limits.allocationBytes = [](std::uint64_t bytes) {
             return (std::uint64_t)gpu::GpuBufferPool::sizeClass(bytes);
         };
 
         const GpuStripGraph graph = stripGraph();
         int rows = 0;
-        switch (planGpuStrips(graph, limits, strips, &rows, &_inFlight)) {
+        switch (planGpuStrips(graph, limits, strips, &rows, &_inFlight, &_overlapped)) {
         case GpuStripResult::Whole:
             _stripRows = std::max(0, gpuStripBands(graph).height());
             break;
@@ -2211,6 +2215,7 @@ private:
     const bool _allowPipeline;
     int _stripRows = 0;
     int _inFlight = 1;
+    bool _overlapped = false;
 
     // Index in _members of each member task, -1 for every other task.
     std::vector<int> _position;

@@ -245,6 +245,9 @@ public:
         int strips = 0;
         int stripsInFlight = 0;
 
+        // The region fits the device whole and was stripped anyway, to overlap its transfers with its compute.
+        bool overlapStrips = false;
+
         // Transfer time on the device spent while compute ran, so hidden by it, and the rest, which the region waited
         // for. Only a pipelined region hides any.
         double transferHiddenMs = 0.;

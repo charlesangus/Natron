@@ -816,6 +816,7 @@ formatRegionRecord(unsigned long long frameSequence,
     } else {
         line.append("null");
     }
+    line.append(times.overlapStrips ? ",\"overlapStrips\":1" : ",\"overlapStrips\":0");
     line.append(",\"fallback\":\"");
     for (std::size_t i = 0; i < times.fallback.size(); ++i) {
         const char c = times.fallback[i];

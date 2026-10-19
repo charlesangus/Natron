@@ -51,6 +51,11 @@ const int kGpuStripMaxInFlight = 3;
 // overlap saves, so the region runs them one at a time instead.
 const int kGpuStripMinPipelinedRows = 64;
 
+// A region that fits whole is stripped to hide its transfer only when it moves at least this many bytes between host and
+// device, and only into strips at least this many times as tall as the halo the region reads beyond a strip's rows.
+const std::uint64_t kGpuStripOverlapMinBytes = std::uint64_t(32) << 20;
+const int kGpuStripOverlapHaloMultiple = 4;
+
 // The device memory strips leave to what allocates outside the pool: the viewer's textures, the driver, other
 // processes and OFX plugins rendering on the GPU themselves. The pool already holds a fifth of the heap back, which is
 // too little on a small card; on a large one the pool's budget is the tighter bound.
@@ -71,6 +76,9 @@ struct GpuStripSlot {
 
     // Read after the region: the rows of each strip's band are kept to the end of the strip and downloaded.
     bool interior = false;
+
+    // Read after the region by another region on the device: stripping would download it and lose that.
+    bool keptOnDevice = false;
 };
 
 /**
@@ -102,6 +110,11 @@ struct GpuStripLimits {
 
     // When positive, the region runs as strips of at most this many rows even when it fits whole.
     int forcedRows = 0;
+
+    // A region that fits whole, with pipelining allowed, no output kept on the device and at least this many bytes
+    // uploaded and downloaded, runs as kGpuStripMaxInFlight or more pipelined strips when they stay tall enough, so
+    // that its transfers overlap its compute. The default leaves every region whole.
+    std::uint64_t overlapMinBytes = std::numeric_limits<std::uint64_t>::max();
 
     // The most strips that may hold their buffers at once; budgetBytes must hold that many strips' buffers, beside
     // the resident images they share.
@@ -176,12 +189,16 @@ RectI gpuStripBands(const GpuStripGraph& graph);
  * up to limits.maxInFlight, that fit the budget together at the height found for one, or else 2 with the tallest
  * strips two of which fit, when those are at least kGpuStripMinPipelinedRows tall; and 1 otherwise, or when there is a
  * single strip.
+ *
+ * A region that fits whole may still come back as Strips, with overlapped set, when limits.overlapMinBytes asks for it
+ * and the strips stay at least kGpuStripMinPipelinedRows tall and kGpuStripOverlapHaloMultiple times the halo.
  **/
 GpuStripResult planGpuStrips(const GpuStripGraph& graph,
                              const GpuStripLimits& limits,
                              std::vector<GpuStrip>* strips,
                              int* rows,
-                             int* inFlight = nullptr);
+                             int* inFlight = nullptr,
+                             bool* overlapped = nullptr);
 
 /**
  * @brief Caps maxStorageBufferRange and the strip height the region body plans with, so that a software device with

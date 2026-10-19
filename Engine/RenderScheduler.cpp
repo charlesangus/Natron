@@ -1273,6 +1273,7 @@ RenderScheduler::executeRegion(const FramePtr& frame,
             times.wallMs = report.wallMs;
             times.strips = report.strips;
             times.stripsInFlight = report.stripsInFlight;
+            times.overlapStrips = report.overlapStrips;
             times.transferHiddenMs = report.transferHiddenMs;
             times.transferExposedMs = report.transferExposedMs;
             times.planMs = report.planMs;

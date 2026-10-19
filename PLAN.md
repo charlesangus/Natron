@@ -156,7 +156,7 @@ future core work has solid ground to build on.
 | M51 | Deep Filtering OpenDCX | todo |  |  | E8 | [M51-deep-filtering-opendcx.md](PLAN/MILESTONES/M51-deep-filtering-opendcx.md) |
 | M32 | Deep Sample Node | todo |  |  | E8 | [M32-deep-sample-node.md](PLAN/MILESTONES/M32-deep-sample-node.md) |
 | M93 | Serialization Boundary | done | - | slate-ferret | E7 | [M93-serialization-boundary.md](PLAN/MILESTONES/M93-serialization-boundary.md) |
-| M100 | Content Node Hashing | doing | M93 | bosley-native-nodes | E7 | [M100-content-node-hashing.md](PLAN/MILESTONES/M100-content-node-hashing.md) |
+| M100 | Content Node Hashing | done | M93 | bosley-native-nodes | E7 | [M100-content-node-hashing.md](PLAN/MILESTONES/M100-content-node-hashing.md) |
 | M16 | Project Format Redesign | todo | M93 |  | E7 | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
 | M114 | Global Undo Correctness | todo | M93 |  | E7 | [M114-global-undo-correctness.md](PLAN/MILESTONES/M114-global-undo-correctness.md) |
 | M102 | Graph Edit Operations | todo | M16 |  | E7 | [M102-graph-edit-operations.md](PLAN/MILESTONES/M102-graph-edit-operations.md) |

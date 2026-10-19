@@ -49,3 +49,10 @@
 ### 2026-10-18T23:30:00Z — change-request
 - refs: M127
 - From the gpu PM's elaboration of M107 - GPU Viewer Hand-off. M107.P3.T1 creates the shared OCIO→Vulkan helper `Engine/OcioVulkanShader.{h,cpp}`. It builds OCIO's `GPU_LANGUAGE_GLSL_VK_4_6` shader with LUTs as `GpuTexture` and dynamic properties in a UBO, and keeps a per-processor LUT texture cache keyed on `cacheID`. M127.P3.T1 should reuse that helper instead of creating `Engine/Nodes/OCIO/OcioGpuShader.*`, and M127 should add M107 to its Deps, or depend on M107.P3.T1 landing. Also stale once M107.P5.T1 lands: M116 - GPU Region Overlay's note that a region feeding the viewer is still a download.
+
+### 2026-10-19T08:00:00Z — change-request
+- refs: none
+- Follow-ups from M100 - Content Node Hashing (merged d521f111a), found by PM:
+  1. **A Write edited mid-render can cache a stale frame.** Off-main viewer renders that find stale input-related data abort and re-render (Engine/ParallelRenderArgs.cpp, ViewerInstance.cpp). File renders and non-abortable renders (tracker, colour sampler) are left as they were, because aborting fails the job, and a blocking main-thread wait risks deadlock. Needs a design for refreshing input-related data safely from a render thread, or keying Natron's own metadata by node hash.
+  2. **A known-bug plug-in child hangs under the taskgraph scheduler.** `CacheEquivalenceKnownPluginBugTest.KnownPluginBugsStillCrash` passes only because its 60 s child watchdog fires (62.9 s in taskgraph vs 3.3 s legacy, release run on 5d5bf9e50). The segfault-handler exit deadlock is already fixed, so this is a different hang: either CImg EdgeExtend or the CImg expression plug-in hangs rather than crashing when rendered on the pool. Get a stack (eu-stack) of the child to tell plug-in UB from an engine deadlock reached after a plug-in fault. It may fold into the requested Bundled Plugin Bug Fixes milestone.
+  Suggested: E14 (Architecture) or E7.

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cstdio>
 #include <memory>
 #include <vector>
 
@@ -17,7 +18,7 @@ protected:
         GpuStatus s = gputest::createDevice(dev);
         GPUTEST_DEVICE_OR_SKIP_TEST(s.ok(), s.message);
         std::cout << "device: " << dev->info().name
-                  << " transferFallback=" << dev->info().transferUsesComputeQueue
+                  << " transferSharesCompute=" << dev->info().transferSharesComputeQueue
                   << " validation=" << dev->info().validationEnabled
                   << " fp16=" << dev->info().shaderFloat16
                   << " memBudgetExt=" << dev->info().memoryBudget
@@ -39,13 +40,19 @@ protected:
 
 } // namespace
 
-GPU_TEST_F(GpuDeviceTest, TransferQueueOrFallbackFlag)
+GPU_TEST_F(GpuDeviceTest, QueueLayoutIsConsistent)
 {
     const GpuDeviceInfo& i = dev->info();
-    if (i.transferUsesComputeQueue) {
+    std::printf("queues: compute %u/%u upload %u/%u download %u/%u\n", i.computeFamily, i.computeQueueIndex,
+                i.transferFamily, i.uploadQueueIndex, i.transferFamily, i.downloadQueueIndex);
+    EXPECT_EQ(i.computeQueueIndex, 0u);
+    EXPECT_LE(i.uploadQueueIndex, i.downloadQueueIndex);
+    if (i.transferSharesComputeQueue) {
         EXPECT_EQ(i.transferFamily, i.computeFamily);
-    } else {
-        EXPECT_NE(i.transferFamily, i.computeFamily);
+        EXPECT_EQ(i.uploadQueueIndex, 0u);
+        EXPECT_EQ(i.downloadQueueIndex, 0u);
+    } else if (i.transferFamily == i.computeFamily) {
+        EXPECT_EQ(i.uploadQueueIndex, 1u);
     }
 }
 
@@ -117,8 +124,12 @@ GPU_TEST_F(GpuDeviceTest, EmptySubmitSignalsTimelineSemaphore)
     signal.semaphore = sem;
     submit.signalSemaphoreInfoCount = 1;
     signal.value = 2;
-    ASSERT_TRUE(dev->submit(QueueKind::Transfer, std::span<const VkSubmitInfo2>(&submit, 1), VK_NULL_HANDLE).ok());
+    ASSERT_TRUE(dev->submit(QueueKind::Upload, std::span<const VkSubmitInfo2>(&submit, 1), VK_NULL_HANDLE).ok());
     EXPECT_TRUE(dev->waitSemaphore(sem, 2, 5'000'000'000ull).ok());
+
+    signal.value = 3;
+    ASSERT_TRUE(dev->submit(QueueKind::Download, std::span<const VkSubmitInfo2>(&submit, 1), VK_NULL_HANDLE).ok());
+    EXPECT_TRUE(dev->waitSemaphore(sem, 3, 5'000'000'000ull).ok());
 
     vkDestroySemaphore(dev->device(), sem, nullptr);
     EXPECT_FALSE(dev->isLost());

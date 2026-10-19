@@ -1059,8 +1059,8 @@ main(int argc, char** argv)
                      dev->info().name.c_str());
         return 1;
     }
-    std::printf("device: %s | transferUsesComputeQueue=%d hostImport=%d | iters=%d | hw threads %u\n",
-                dev->info().name.c_str(), dev->info().transferUsesComputeQueue, dev->info().externalMemoryHost,
+    std::printf("device: %s | transferSharesComputeQueue=%d hostImport=%d | iters=%d | hw threads %u\n",
+                dev->info().name.c_str(), dev->info().transferSharesComputeQueue, dev->info().externalMemoryHost,
                 cfg.iters, std::thread::hardware_concurrency());
 
     Kernels k;

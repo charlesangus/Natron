@@ -535,7 +535,7 @@ gpuStripPipelining()
 
 bool
 gpuStripPipeliningAllowed(bool pushDescriptor,
-                          bool transferUsesComputeQueue)
+                          bool transferSharesComputeQueue)
 {
     if (!pushDescriptor) {
         return false;
@@ -549,7 +549,7 @@ gpuStripPipeliningAllowed(bool pushDescriptor,
         break;
     }
 
-    return !transferUsesComputeQueue;
+    return !transferSharesComputeQueue;
 }
 
 void

@@ -1795,7 +1795,7 @@ private:
     {
         const gpu::GpuDeviceInfo& info = _runtime.device().info();
 
-        return _allowPipeline && gpuStripPipeliningAllowed(info.pushDescriptor, info.transferUsesComputeQueue);
+        return _allowPipeline && gpuStripPipeliningAllowed(info.pushDescriptor, info.transferSharesComputeQueue);
     }
 
     std::uint32_t queryOf(std::size_t strip,

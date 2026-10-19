@@ -199,7 +199,9 @@ namespace {
     struct CachedImport {
         GpuBuffer buffer;
         VkDeviceSize bytes = 0;
-        uint64_t lastUse = 0;
+        // The last upload and download that copy through it, each on its own timeline.
+        uint64_t lastUpload = 0;
+        uint64_t lastDownload = 0;
     };
 
     // An import being created outside the cache lock. forget() marks the ones it overlaps, which are then
@@ -218,7 +220,7 @@ namespace {
 
     struct Retired {
         GpuBuffer buffer;
-        uint64_t value = 0;
+        TimelineValue lastUse;
     };
 
     struct DrainItem {
@@ -305,9 +307,12 @@ struct GpuTransfer::Impl {
 
     CopyPool copies;
 
-    VkSemaphore transferTL = VK_NULL_HANDLE;
-    std::mutex transferSubmitMutex;
-    uint64_t transferValue = 0;
+    // Uploads and downloads each signal a timeline of their own, since they may run on different queues.
+    // upValue is guarded by upMutex and downValue by downMutex.
+    VkSemaphore upTL = VK_NULL_HANDLE;
+    uint64_t upValue = 0;
+    VkSemaphore downTL = VK_NULL_HANDLE;
+    uint64_t downValue = 0;
 
     // Compute-queue halves of ownership transfers get their own timeline: values signalled from two
     // queues on one semaphore could reach the device out of order.
@@ -405,7 +410,7 @@ struct GpuTransfer::Impl {
             if (p)
                 vkDestroyCommandPool(vk, p, nullptr);
         }
-        for (VkSemaphore s : { transferTL, ownerTL, compTL }) {
+        for (VkSemaphore s : { upTL, downTL, ownerTL, compTL }) {
             if (s)
                 vkDestroySemaphore(vk, s, nullptr);
         }
@@ -522,7 +527,7 @@ struct GpuTransfer::Impl {
         miscCb = compCbs.back();
         compCbs.pop_back();
 
-        for (VkSemaphore* sem : { &transferTL, &ownerTL, &compTL }) {
+        for (VkSemaphore* sem : { &upTL, &downTL, &ownerTL, &compTL }) {
             if (GpuStatus s = dev.createTimelineSemaphore(0, *sem); !s)
                 return s;
         }
@@ -590,21 +595,25 @@ struct GpuTransfer::Impl {
         return dev.submit(kind, std::span<const VkSubmitInfo2>(&si, 1), VK_NULL_HANDLE);
     }
 
-    // Ends `cb`, submits it on the transfer queue and tags the pool entry with the new value. The
-    // value is taken and submitted under one lock so the semaphore is signalled in increasing order.
-    GpuStatus submitTransfer(CbPool& pool, size_t index, std::span<const VkSemaphoreSubmitInfo> waits, uint64_t& value)
+    // Ends `cb`, submits it on the upload or download queue and tags the pool entry with the new value on that
+    // direction's timeline. The caller holds upMutex or downMutex, so the value is taken and submitted under one
+    // lock and the timeline is signalled in increasing order.
+    GpuStatus submitTransfer(QueueKind kind, CbPool& pool, size_t index, std::span<const VkSemaphoreSubmitInfo> waits,
+                             uint64_t& value)
     {
         VkCommandBuffer cb = pool.entries[index].cb;
         if (GpuStatus s = dev.check(vkEndCommandBuffer(cb), "vkEndCommandBuffer"); !s) {
             return s;
         }
-        std::lock_guard<std::mutex> lock(transferSubmitMutex);
-        const uint64_t v = transferValue + 1;
-        if (GpuStatus s = submit(QueueKind::Transfer, cb, waits, transferTL, v); !s) {
+        const bool up = kind == QueueKind::Upload;
+        VkSemaphore timeline = up ? upTL : downTL;
+        uint64_t& last = up ? upValue : downValue;
+        const uint64_t v = last + 1;
+        if (GpuStatus s = submit(kind, cb, waits, timeline, v); !s) {
             return s;
         }
-        transferValue = v;
-        pool.entries[index] = { cb, transferTL, v };
+        last = v;
+        pool.entries[index] = { cb, timeline, v };
         value = v;
         return {};
     }
@@ -874,20 +883,21 @@ struct GpuTransfer::Impl {
         return resolveImports(range.data, range.bytes, segs, owned, ImportOrigin::Prepare);
     }
 
-    void markUsed(const std::vector<ImportSeg>& segs, std::vector<GpuBuffer>& owned, uint64_t value)
+    void markUsed(const std::vector<ImportSeg>& segs, std::vector<GpuBuffer>& owned, TimelineValue use)
     {
         if (opt.cacheHostImports) {
             std::lock_guard<std::mutex> lock(importMutex);
             for (const ImportSeg& s : segs) {
                 if (auto it = importCache.find(s.cacheKey); it != importCache.end()) {
-                    it->second.lastUse = std::max(it->second.lastUse, value);
+                    uint64_t& last = use.semaphore == upTL ? it->second.lastUpload : it->second.lastDownload;
+                    last = std::max(last, use.value);
                 }
             }
         }
         if (!owned.empty()) {
             std::lock_guard<std::mutex> lock(retireMutex);
             for (GpuBuffer& b : owned) {
-                retired.push_back({ std::move(b), value });
+                retired.push_back({ std::move(b), use });
             }
             owned.clear();
         }
@@ -901,9 +911,11 @@ struct GpuTransfer::Impl {
             if (retired.empty()) {
                 return;
             }
-            const uint64_t r = reached(transferTL);
-            auto split = std::stable_partition(retired.begin(), retired.end(),
-                                               [&](const Retired& x) { return x.value > r; });
+            const uint64_t up = reached(upTL);
+            const uint64_t down = reached(downTL);
+            auto split = std::stable_partition(retired.begin(), retired.end(), [&](const Retired& x) {
+                return x.lastUse.value > (x.lastUse.semaphore == upTL ? up : down);
+            });
             std::move(split, retired.end(), std::back_inserter(done));
             retired.erase(split, retired.end());
         }
@@ -939,8 +951,11 @@ struct GpuTransfer::Impl {
             cachedImports.store(importCache.size(), std::memory_order_relaxed);
         }
         for (CachedImport& c : dropped) {
-            if (c.lastUse > reached(transferTL)) {
-                dev.waitSemaphore(transferTL, c.lastUse, kWaitTimeoutNs);
+            if (c.lastUpload > reached(upTL)) {
+                dev.waitSemaphore(upTL, c.lastUpload, kWaitTimeoutNs);
+            }
+            if (c.lastDownload > reached(downTL)) {
+                dev.waitSemaphore(downTL, c.lastDownload, kWaitTimeoutNs);
             }
         }
     }
@@ -1011,16 +1026,16 @@ struct GpuTransfer::Impl {
                     transferRelease(cb, dst.buffer(), offset, bytes);
                 }
                 stamp(cb, o, 1);
-                if (GpuStatus s = submitTransfer(upCbs, ci, waits, v); !s) {
+                if (GpuStatus s = submitTransfer(QueueKind::Upload, upCbs, ci, waits, v); !s) {
                     return s;
                 }
-                markUsed(segs, owned, v);
+                markUsed(segs, owned, { upTL, v });
             } else {
                 const uint32_t n = static_cast<uint32_t>(upSlots.size());
                 const VkDeviceSize pieces = (bytes + stagingPiece - 1) / stagingPiece;
                 for (VkDeviceSize i = 0; i < pieces; ++i) {
                     const uint32_t r = upNext++ % n;
-                    if (GpuStatus s = dev.waitSemaphore(transferTL, upSlotValue[r], kWaitTimeoutNs); !s) {
+                    if (GpuStatus s = dev.waitSemaphore(upTL, upSlotValue[r], kWaitTimeoutNs); !s) {
                         return s;
                     }
                     const VkDeviceSize off = i * stagingPiece;
@@ -1055,7 +1070,7 @@ struct GpuTransfer::Impl {
                     }
                     const std::span<const VkSemaphoreSubmitInfo> w
                         = i == 0 ? std::span<const VkSemaphoreSubmitInfo>(waits) : std::span<const VkSemaphoreSubmitInfo>();
-                    if (GpuStatus s = submitTransfer(upCbs, ci, w, v); !s) {
+                    if (GpuStatus s = submitTransfer(QueueKind::Upload, upCbs, ci, w, v); !s) {
                         return s;
                     }
                     upSlotValue[r] = v;
@@ -1063,11 +1078,11 @@ struct GpuTransfer::Impl {
             }
         }
         if (handoff && o.handoff == ComputeHandoff::Submit) {
-            const VkSemaphoreSubmitInfo w = TimelineValue { transferTL, v }.waitInfo();
+            const VkSemaphoreSubmitInfo w = TimelineValue { upTL, v }.waitInfo();
             return submitOwner([&](VkCommandBuffer cb) { computeAcquire(cb, dst.buffer(), offset, bytes); },
                                std::span<const VkSemaphoreSubmitInfo>(&w, 1), done);
         }
-        done = { transferTL, v };
+        done = { upTL, v };
         return {};
     }
 
@@ -1119,11 +1134,11 @@ struct GpuTransfer::Impl {
             }
             copyToHostBarrier(cb);
             stamp(cb, o, 1);
-            if (GpuStatus s = submitTransfer(downCbs, ci, waits, v); !s) {
+            if (GpuStatus s = submitTransfer(QueueKind::Download, downCbs, ci, waits, v); !s) {
                 return s;
             }
-            markUsed(segs, owned, v);
-            done = { transferTL, v };
+            markUsed(segs, owned, { downTL, v });
+            done = { downTL, v };
             return {};
         }
 
@@ -1157,7 +1172,7 @@ struct GpuTransfer::Impl {
             }
             const std::span<const VkSemaphoreSubmitInfo> w
                 = i == 0 ? std::span<const VkSemaphoreSubmitInfo>(waits) : std::span<const VkSemaphoreSubmitInfo>();
-            if (GpuStatus s = submitTransfer(downCbs, ci, w, v); !s) {
+            if (GpuStatus s = submitTransfer(QueueKind::Download, downCbs, ci, w, v); !s) {
                 return s;
             }
             {
@@ -1167,7 +1182,7 @@ struct GpuTransfer::Impl {
             }
             drainCv.notify_all();
         }
-        done = { transferTL, v };
+        done = { downTL, v };
         return {};
     }
 
@@ -1183,7 +1198,7 @@ struct GpuTransfer::Impl {
                 }
                 item = drain.front();
             }
-            GpuStatus s = dev.waitSemaphore(transferTL, item.value, kWaitTimeoutNs);
+            GpuStatus s = dev.waitSemaphore(downTL, item.value, kWaitTimeoutNs);
             if (s) {
                 const VmaBuffer& slot = downSlots[item.slot];
                 vmaInvalidateAllocation(dev.allocator(), slot.allocation, 0, item.bytes);
@@ -1223,7 +1238,7 @@ struct GpuTransfer::Impl {
         if (GpuStatus s = dev.waitSemaphore(t.semaphore, t.value, kWaitTimeoutNs); !s) {
             return s;
         }
-        if (t.semaphore == transferTL) {
+        if (t.semaphore == downTL) {
             if (GpuStatus s = waitDrained(t.value); !s) {
                 return s;
             }

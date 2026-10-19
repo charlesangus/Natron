@@ -87,8 +87,8 @@ protected:
             setupError_ = s.message;
             return;
         }
-        std::printf("device: %s transferUsesComputeQueue=%d extMemHost=%d validation=%d\n", dev_->info().name.c_str(),
-                    dev_->info().transferUsesComputeQueue, dev_->info().externalMemoryHost,
+        std::printf("device: %s transferSharesComputeQueue=%d extMemHost=%d validation=%d\n", dev_->info().name.c_str(),
+                    dev_->info().transferSharesComputeQueue, dev_->info().externalMemoryHost,
                     dev_->info().validationEnabled);
         for (uint32_t k = 0; k < kPipelinedFrames; ++k) {
             srcs_.push_back(alignedBuf(kUhdBytes));
@@ -502,6 +502,95 @@ GPU_TEST_F(GpuTransferTest, ChunkedRoundTripBothPaths)
         EXPECT_EQ(misalignedPath, TransferPath::Staging);
         expectSame(src + offset, aligned, bytes, 1);
         expectSame(src + offset, misaligned, bytes, 2);
+    }
+}
+
+// Uploads into one buffer from one thread while another thread downloads a second buffer, so that on a device with
+// queues of their own the two directions run side by side. Each direction signals its own timeline, in increasing
+// order, and every byte lands where it should.
+GPU_TEST_F(GpuTransferTest, ConcurrentUploadsAndDownloadsOnSeparateQueues)
+{
+    const GpuDeviceInfo& info = dev_->info();
+    if (info.transferSharesComputeQueue) {
+        GPUTEST_SKIP() << "the device has one queue, so uploads and downloads never run concurrently";
+    }
+    std::printf("queues: compute %u/%u upload %u/%u download %u/%u\n", info.computeFamily, info.computeQueueIndex,
+                info.transferFamily, info.uploadQueueIndex, info.transferFamily, info.downloadQueueIndex);
+
+    GpuTransferOptions o;
+    o.copyThreads = 2;
+    auto t = make(o);
+    ASSERT_TRUE(t != nullptr);
+
+    constexpr VkDeviceSize kPiece = VkDeviceSize(16) << 20;
+    constexpr uint32_t kRounds = 6;
+    GpuBuffer upBuf;
+    GpuBuffer downBuf;
+    ASSERT_TRUE(GpuBuffer::createDeviceLocal(*dev_, kPiece * kRounds, kGpuBufferDefaultUsage, upBuf).ok());
+    ASSERT_TRUE(GpuBuffer::createDeviceLocal(*dev_, kPiece, kGpuBufferDefaultUsage, downBuf).ok());
+
+    StreamOptions none;
+    none.handoff = ComputeHandoff::None;
+    TimelineValue seeded;
+    ASSERT_TRUE(t->upload({ srcs_[5].get(), kPiece }, downBuf, 0, seeded, none).ok());
+    ASSERT_TRUE(t->wait(seeded).ok());
+
+    std::vector<TimelineValue> ups(kRounds);
+    std::vector<TimelineValue> downs(kRounds);
+    std::atomic<bool> go { false };
+    std::thread uploader([&] {
+        while (!go.load()) {
+            std::this_thread::yield();
+        }
+        for (uint32_t k = 0; k < kRounds; ++k) {
+            const GpuStatus s = t->upload({ srcs_[k % 5].get() + k * kPiece, kPiece }, upBuf, k * kPiece, ups[k], none);
+            EXPECT_TRUE(s.ok()) << s.message;
+        }
+    });
+    std::thread downloader([&] {
+        StreamOptions after = none;
+        after.waits = { &seeded, 1 };
+        while (!go.load()) {
+            std::this_thread::yield();
+        }
+        for (uint32_t k = 0; k < kRounds; ++k) {
+            std::memset(dsts_[k].get(), 0, kPiece);
+            const GpuStatus s = t->download(downBuf, 0, { dsts_[k].get(), kPiece }, downs[k], after);
+            EXPECT_TRUE(s.ok()) << s.message;
+        }
+    });
+    go.store(true);
+    uploader.join();
+    downloader.join();
+
+    ASSERT_TRUE(ups[0] && downs[0]);
+    EXPECT_NE(ups[0].semaphore, downs[0].semaphore) << "uploads and downloads share a timeline";
+    for (uint32_t k = 1; k < kRounds; ++k) {
+        EXPECT_EQ(ups[k].semaphore, ups[0].semaphore);
+        EXPECT_EQ(downs[k].semaphore, downs[0].semaphore);
+        EXPECT_GT(ups[k].value, ups[k - 1].value);
+        EXPECT_GT(downs[k].value, downs[k - 1].value);
+    }
+    ASSERT_TRUE(t->wait(ups.back()).ok());
+    ASSERT_TRUE(t->wait(downs.back()).ok());
+    for (const TimelineValue& v : { ups.back(), downs.back() }) {
+        uint64_t reached = 0;
+        ASSERT_EQ(vkGetSemaphoreCounterValue(dev_->device(), v.semaphore, &reached), VK_SUCCESS);
+        EXPECT_GE(reached, v.value);
+    }
+    for (uint32_t k = 0; k < kRounds; ++k) {
+        ASSERT_TRUE(t->wait(downs[k]).ok());
+        expectSame(srcs_[5].get(), dsts_[k].get(), kPiece, k);
+    }
+
+    StreamOptions back = none;
+    back.waits = ups;
+    for (uint32_t k = 0; k < kRounds; ++k) {
+        std::memset(dsts_[k].get(), 0, kPiece);
+        TimelineValue done;
+        ASSERT_TRUE(t->download(upBuf, k * kPiece, { dsts_[k].get(), kPiece }, done, back).ok());
+        ASSERT_TRUE(t->wait(done).ok());
+        expectSame(srcs_[k % 5].get() + k * kPiece, dsts_[k].get(), kPiece, k);
     }
 }
 

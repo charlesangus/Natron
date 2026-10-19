@@ -1940,7 +1940,8 @@ TEST_F(GpuResidencyTest, RegionMembersAreTimedOnTheDevice)
 }
 
 // A lone Grade over a UHD frame fits the device whole, but moves enough bytes that pipelined strips hide most of its
-// transfer: with pipelining on it runs as at least three strips, with the pixels of the whole run.
+// transfer: with pipelining on it runs as at least three strips, with the pixels of the whole run. Left to decide, it
+// pipelines exactly when uploads and downloads have a queue other than the compute queue.
 TEST_F(GpuResidencyTest, WholeRegionWithLargeTransferRunsAsOverlappedStrips)
 {
     if (!gpuOrSkip()) {
@@ -1978,10 +1979,11 @@ TEST_F(GpuResidencyTest, WholeRegionWithLargeTransferRunsAsOverlappedStrips)
     });
 
     std::vector<float> reference;
-    const GpuStripPipelining modes[] = { GpuStripPipelining::Off, GpuStripPipelining::On };
+    const bool autoPipelines = !appPTR->getGpuContext()->runtime()->device().info().transferSharesComputeQueue;
+    const GpuStripPipelining modes[] = { GpuStripPipelining::Off, GpuStripPipelining::On, GpuStripPipelining::Auto };
     for (GpuStripPipelining mode : modes) {
-        const bool on = (mode == GpuStripPipelining::On);
-        SCOPED_TRACE(on ? "pipelining on" : "pipelining off");
+        const bool on = (mode == GpuStripPipelining::On) || ((mode == GpuStripPipelining::Auto) && autoPipelines);
+        SCOPED_TRACE((mode == GpuStripPipelining::Auto) ? "pipelining auto" : (on ? "pipelining on" : "pipelining off"));
         setGpuStripPipeliningForTests(mode);
         *last = RenderScheduler::RegionReport();
         FrameRun run;

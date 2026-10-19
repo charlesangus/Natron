@@ -169,7 +169,7 @@ struct TransferTimeline {
     double sumOfStagesMs() const;
 };
 
-// Host<->device copies on the transfer queue. Every copy is split at GpuDeviceInfo::copyChunkSize.
+// Host<->device copies, uploads on the upload queue and downloads on the download queue. Every copy is split at GpuDeviceInfo::copyChunkSize.
 // A host range that cached imports cover, at any alignment, or that is aligned to
 // minImportedHostPointerAlignment and can be imported, is copied without a host memcpy; anything else goes
 // through a pinned staging ring. Thread-safe.

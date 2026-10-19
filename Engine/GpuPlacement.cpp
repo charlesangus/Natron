@@ -578,7 +578,7 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
 #ifdef NATRON_HAVE_GPU
         if (gpu::GpuRuntime* runtime = gpu->runtime()) {
             const gpu::GpuDeviceInfo& info = runtime->device().info();
-            rates.pipelinedStrips = gpuStripPipeliningAllowed(info.pushDescriptor, info.transferUsesComputeQueue);
+            rates.pipelinedStrips = gpuStripPipeliningAllowed(info.pushDescriptor, info.transferSharesComputeQueue);
         }
 #endif
         model->setTransferRates(rates);

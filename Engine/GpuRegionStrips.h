@@ -212,7 +212,7 @@ std::uint64_t gpuStripMaxBufferOverride();
 int gpuStripRowsOverride();
 
 enum class GpuStripPipelining {
-    // Pipelined when the device has a transfer queue family of its own.
+    // Pipelined when the device's uploads and downloads have a queue other than the compute queue.
     Auto,
 
     // Pipelined on any device, a single queue family included, where the queue's own order keeps it correct.
@@ -230,7 +230,7 @@ GpuStripPipelining gpuStripPipelining();
  * context is open, which a pipeline would never let happen.
  **/
 bool gpuStripPipeliningAllowed(bool pushDescriptor,
-                               bool transferUsesComputeQueue);
+                               bool transferSharesComputeQueue);
 
 /**
  * @brief Calls hook with a strip's index once a pipelined region has submitted its compute, on the region's thread;

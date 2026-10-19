@@ -29,22 +29,19 @@
 #include "Global/Macros.h"
 
 #include <list>
-#include <mutex>
 #include <optional>
-#include <set>
-#include <string>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
+#include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 namespace gpu {
 struct GpuBlurImage;
 struct GpuBlurRect;
-struct GpuWrap;
 }
 
 NATRON_NAMESPACE_ENTER
@@ -348,25 +345,15 @@ protected:
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE WARN_UNUSED_RETURN;
 
 private:
-    // The wrap of args' source, mask, mix, processed channels and divisor, for the caller to
-    // give an output and a destination.
-    bool makeGpuWrap(const GpuRenderArgs& args, gpu::GpuWrap* wrap) WARN_UNUSED_RETURN;
-
-    // Whether the GPU context's device runs shader; reports a shader it cannot run.
-    bool acceptGpuRuntimeShader(const GpuRuntimeShader& shader) const WARN_UNUSED_RETURN;
-
-    StatusEnum renderGpuRuntimeShader(const GpuRenderArgs& args,
-                                      const GpuRuntimeShader& shader) WARN_UNUSED_RETURN;
+    StageSet stageSet() const WARN_UNUSED_RETURN;
+    StageKnobs stageKnobs() const WARN_UNUSED_RETURN;
+    StagePlan resolveGpuPlan(const GpuQuery& query) const WARN_UNUSED_RETURN;
 
     NativeImageTraits _traits;
     KnobDoubleWPtr _mix;
     KnobBoolWPtr _maskInvert;
 
-    mutable std::mutex _gpuShaderMutex;
-    // Entry point and source of every runtime shader that failed, so it is reported and built once.
-    mutable std::set<std::string> _rejectedGpuShaders;
-    // The persistent message last posted for a rejected shader, cleared once a shader is accepted.
-    mutable std::string _gpuShaderMessage;
+    mutable StageGpuShaderGate _gpuShaderGate;
 };
 
 NATRON_NAMESPACE_EXIT

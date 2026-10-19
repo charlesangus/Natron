@@ -29,12 +29,17 @@
 #include "Global/Macros.h"
 
 #include <bitset>
+#include <mutex>
+#include <set>
+#include <string>
 #include <vector>
 
 #include "Engine/EffectInstance.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/ImagePipelineSpec.h"
+#include "Engine/Nodes/Image/Op.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
@@ -66,7 +71,7 @@ struct StagePlan {
     std::bitset<4> processChannels;
     StageSet stages;
     int sourceInput = -1;
-    float mix = 1.f;
+    double mix = 1.;
     bool maskInvert = false;
     bool applyMask = false;
     int maskInput = -1;
@@ -159,6 +164,111 @@ StatusEnum runStagesCpu(EffectInstance& effect,
 void makeStageRowBands(const RectI& roi,
                        int nThreads,
                        std::vector<RectI>* bands);
+
+/**
+ * @brief resolveStagePlan() for a GPU render of query: the processed channels are the query's,
+ * and the MaskMix stage applies a mask exactly when query.hasMask says so. Placement sets
+ * hasMask from this same plan, so the two only differ for a caller that hands over a query of
+ * its own, which then gets the mask it asked for.
+ **/
+StagePlan resolveGpuStagePlan(EffectInstance& effect,
+                              const StageSet& stages,
+                              const StageKnobs& knobs,
+                              int sourceInput,
+                              const GpuQuery& query) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The component of the query's plane that plan's divisor is, -1 when there is none.
+ * False when the divisor lies outside that plane, which the GPU executor cannot read.
+ **/
+bool stageGpuDivisorComponent(const StagePlan& plan,
+                              const GpuQuery& query,
+                              int* component) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Whether the GPU executor can run plan for query, whatever the op: a float plane of 1
+ * to 4 channels whose "(Un)premult by" divisor, if any, lies in the plane.
+ **/
+bool canRunStagesGpu(const StagePlan& plan,
+                     const GpuQuery& query) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The component of a mask view of viewNComps components that holds maskChannel of
+ * maskLayer, or -1 when the view does not hold it. The region engine hands a mask over in
+ * maskLayer, but a caller may hand a colour mask over in another colour layout.
+ **/
+int stageGpuMaskViewComponent(const ImageLayerDesc& maskLayer,
+                              int maskChannel,
+                              int viewNComps) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The layer the GPU executor reads input inputNb of effect in when it renders plane at
+ * time and view: plane, except for a mask input, which is read in the layer its mask channel
+ * resolves in, so that the channel indexes the mask view's own layout.
+ **/
+void stageGpuInputLayer(const EffectInstance& effect,
+                        int inputNb,
+                        const ImageLayerDesc& plane,
+                        double time,
+                        ViewIdx view,
+                        ImageLayerDesc* layer);
+
+/**
+ * @brief The runtime shaders one node's device cannot run. Each is reported once in the node's
+ * persistent message and never built again for that node; the message is withdrawn once a shader
+ * is accepted. Safe to call from several threads.
+ **/
+class StageGpuShaderGate {
+public:
+    /**
+     * @brief Whether the GPU context's device runs shader, building it the first time.
+     **/
+    bool accept(const GpuRuntimeShader& shader,
+                const NodePtr& node) WARN_UNUSED_RETURN;
+
+private:
+    std::mutex _mutex;
+    std::set<std::string> _rejected;
+    std::string _message;
+};
+
+/**
+ * @brief Whether op names GPU work the device can run: a registry kernel, or a runtime shader
+ * gate accepts for node.
+ **/
+bool canRecordGpuOp(const GpuOpRef& op,
+                    StageGpuShaderGate& gate,
+                    const NodePtr& node) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Records a Point op over args.outputRect of args.output through plan, as runStagesCpu()
+ * renders it on the CPU. A Kernel op is one dispatch of its pixelwrap entry. A RuntimeShader op
+ * runs between the divide and finish passes of recordStagesGpuDivide() and
+ * recordStagesGpuFinish(), with its uniforms and textures, as GpuRuntimeShader describes.
+ * An input that is not connected reads zero, and a mask that is not handed over reads zero.
+ **/
+StatusEnum recordStagesGpu(const StagePlan& plan,
+                           const GpuRenderArgs& args,
+                           const GpuOpRef& op) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Records plan's source over scratch.bounds into scratch, divided by the divisor where it is
+ * usable, as a spatial filter's input. Every channel is written; the source reads zero outside its
+ * view. scratch has the plane's channel count.
+ **/
+StatusEnum recordStagesGpuDivide(const StagePlan& plan,
+                                 const GpuRenderArgs& args,
+                                 const GpuImageView& scratch) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Writes args.output over args.outputRect from filtered, a result over a rect containing
+ * outputRect: processed channels multiplied back by the divisor and blended with the undivided
+ * source by mask x mix, unprocessed channels passed through. Recorded work that wrote filtered
+ * must be ordered before it with a compute barrier.
+ **/
+StatusEnum recordStagesGpuFinish(const StagePlan& plan,
+                                 const GpuRenderArgs& args,
+                                 const GpuImageView& filtered) WARN_UNUSED_RETURN;
 
 NATRON_NAMESPACE_EXIT
 

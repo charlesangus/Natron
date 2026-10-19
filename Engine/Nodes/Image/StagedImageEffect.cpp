@@ -120,6 +120,57 @@ StagedImageEffect::opKind() const
     return imagePipelineSpec().op;
 }
 
+StagePlan
+StagedImageEffect::resolveGpuPlan(const GpuQuery& query) const
+{
+    // Resolving only reads knobs, the node's selectors and its inputs' layers.
+    StagedImageEffect* self = const_cast<StagedImageEffect*>(this);
+
+    return resolveGpuStagePlan(*self, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), query);
+}
+
+bool
+StagedImageEffect::canRenderOnGpu(const GpuQuery& query) const
+{
+    if ((imagePipelineSpec().op != OpKind::Point) || !canRunStagesGpu(resolveGpuPlan(query), query)) {
+        return false;
+    }
+
+    return canRecordGpuOp(gpuOp(query.time, query.view), _gpuShaderGate, getNode());
+}
+
+bool
+StagedImageEffect::getGpuInputLayer(int inputNb,
+                                    const ImageLayerDesc& plane,
+                                    double time,
+                                    ViewIdx view,
+                                    ImageLayerDesc* layer) const
+{
+    if (imagePipelineSpec().op != OpKind::Point) {
+        return false;
+    }
+    stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
+
+    return true;
+}
+
+StatusEnum
+StagedImageEffect::renderGpu(const GpuRenderArgs& args)
+{
+    const GpuQuery& query = args.query;
+
+    if (imagePipelineSpec().op != OpKind::Point) {
+        return eStatusFailed;
+    }
+    const StagePlan plan = resolveGpuPlan(query);
+    const GpuOpRef op = gpuOp(query.time, query.view);
+    if (!canRunStagesGpu(plan, query) || !canRecordGpuOp(op, _gpuShaderGate, getNode())) {
+        return eStatusFailed;
+    }
+
+    return recordStagesGpu(plan, args, op);
+}
+
 GpuStageSummary
 StagedImageEffect::getGpuStageSummary(double time,
                                       ViewIdx view)

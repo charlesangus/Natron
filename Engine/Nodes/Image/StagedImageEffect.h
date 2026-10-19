@@ -101,6 +101,30 @@ public:
     virtual std::optional<OpKind> opKind() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
+     * @brief For a Point op, whether the GPU executor can run the StagePlan of query
+     * (canRunStagesGpu()) and the op's gpu() description at the query's time and view names work
+     * the device runs. A runtime shader that does not build is reported once and never built
+     * again for this node. Every other op kind stays on the CPU.
+     **/
+    virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For a Point op, the layer its plane is read in, except for the mask input, which is
+     * read in the layer its mask channel resolves in. False for every other op kind.
+     **/
+    virtual bool getGpuInputLayer(int inputNb,
+                                  const ImageLayerDesc& plane,
+                                  double time,
+                                  ViewIdx view,
+                                  ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Records the op's gpu() description through the StagePlan of args.query with
+     * recordStagesGpu(). Only called when canRenderOnGpu() accepted args.query.
+     **/
+    virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
      * @brief The mask, mix and divisor of the StagePlan a render at time and view resolves.
      **/
     virtual GpuStageSummary getGpuStageSummary(double time,
@@ -172,8 +196,20 @@ protected:
                                 const StagePlan& plan)
         = 0;
 
+    /**
+     * @brief How the op runs on the GPU at time and view; none, the default, keeps it on the CPU.
+     **/
+    virtual GpuOpRef gpuOp(double /*time*/,
+                           ViewIdx /*view*/) const WARN_UNUSED_RETURN
+    {
+        return GpuOpRef::none();
+    }
+
 private:
+    StagePlan resolveGpuPlan(const GpuQuery& query) const WARN_UNUSED_RETURN;
+
     StageKnobs _stageKnobs;
+    mutable StageGpuShaderGate _gpuShaderGate;
 };
 
 /**
@@ -253,6 +289,12 @@ private:
         };
 
         return runStagesCpu(*this, plan, args, StageRowFn(row));
+    }
+
+    virtual GpuOpRef gpuOp(double time,
+                           ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return _op.gpu(bakeParams(_op, time, view));
     }
 
     OP _op;

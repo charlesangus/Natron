@@ -29,11 +29,16 @@
 #include <cstddef>
 #include <functional>
 #include <list>
+#include <map>
 #include <memory>
 #include <utility>
 #include <vector>
 
+#include <QCoreApplication>
+#include <QString>
+
 #include "Engine/AppManager.h"
+#include "Engine/GpuContext.h"
 #include "Engine/Image.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
@@ -41,6 +46,18 @@
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/RectD.h"
+
+#ifdef NATRON_HAVE_GPU
+#include <span>
+
+#include "Engine/Gpu/GpuBuffer.h"
+#include "Engine/Gpu/GpuKernel.h"
+#include "Engine/Gpu/GpuPipelineCache.h"
+#include "Engine/Gpu/GpuRecord.h"
+#include "Engine/Gpu/GpuRuntime.h"
+#include "Engine/Gpu/GpuTexture.h"
+#include "Engine/Gpu/GpuWrap.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -210,6 +227,263 @@ readChannelRow(const Image* image,
         row[x - x0] = pix[channel];
     }
 }
+
+void
+resolvePlanMask(EffectInstance& effect,
+                bool applyMask,
+                StagePlan* plan)
+{
+    plan->applyMask = false;
+    plan->maskInput = -1;
+    plan->maskLayer = ImageLayerDesc();
+    plan->maskChannel = -1;
+    const int maskInput = stageMaskInput(effect);
+    if (!applyMask || (maskInput < 0)) {
+        return;
+    }
+    plan->applyMask = true;
+    plan->maskInput = maskInput;
+    ImageLayerDesc maskLayer;
+    int maskChannel = -1;
+    if (effect.resolveInputPlaneForRender(maskInput, plan->time, plan->view, &maskLayer, &maskChannel) && (maskChannel >= 0)) {
+        plan->maskLayer = maskLayer;
+        plan->maskChannel = maskChannel;
+    }
+}
+
+#ifdef NATRON_HAVE_GPU
+// GpuRecordContext::updateBuffer() writes at most this much.
+const std::size_t kMaxGpuParamBytes = 65536;
+
+bool
+toWrapView(const GpuImageView& view,
+           gpu::GpuWrapView* out)
+{
+    if ((view.byteOffset % sizeof(float)) != 0) {
+        return false;
+    }
+    out->buffer = view.buffer;
+    out->offsetFloats = view.byteOffset / sizeof(float);
+    out->bounds = gpu::GpuWrapRect { view.bounds.x1, view.bounds.y1, view.bounds.x2, view.bounds.y2 };
+    out->strideFloats = (uint32_t)view.rowStrideFloats;
+    out->nComps = (uint32_t)view.nComps;
+
+    return true;
+}
+
+// Binding 0 and 1 are the source and destination buffers, and the push constants, if any, a prefix
+// of GpuShaderRegion.
+bool
+followsRuntimeShaderLayout(const gpu::GpuKernel& kernel)
+{
+    if (kernel.desc().pushConstantBytes > sizeof(GpuShaderRegion)) {
+        return false;
+    }
+    int buffers = 0;
+    for (const gpu::GpuKernelBinding& b : kernel.bindings()) {
+        if ((b.binding <= 1) && (b.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)) {
+            ++buffers;
+        }
+    }
+
+    return buffers == 2;
+}
+
+// Failures another request may not meet.
+bool
+isTransientGpuFailure(const gpu::GpuStatus& status)
+{
+    return (status.result == VK_ERROR_DEVICE_LOST) || (status.result == VK_ERROR_OUT_OF_DEVICE_MEMORY) || (status.result == VK_ERROR_OUT_OF_HOST_MEMORY);
+}
+
+// The wrap of args' source, mask, mix, processed channels and divisor as plan resolves them, for
+// the caller to give an output and a destination.
+bool
+makeStageGpuWrap(const StagePlan& plan,
+                 const GpuRenderArgs& args,
+                 gpu::GpuWrap* wrap)
+{
+    const GpuQuery& query = args.query;
+    const int nComps = query.nComps;
+
+    wrap->nComps = (uint32_t)nComps;
+    wrap->channelMask = (uint32_t)plan.processChannels.to_ulong();
+    wrap->mix = (float)plan.mix;
+
+    // An input that is not connected reads zero, as runStagesCpu() reads it.
+    const int sourceInput = plan.sourceInput;
+    const bool hasSource = (sourceInput >= 0) && (sourceInput < (int)args.inputs.size()) && args.inputs[sourceInput].buffer;
+    wrap->src.nComps = (uint32_t)nComps;
+    if (hasSource && !toWrapView(args.inputs[sourceInput], &wrap->src)) {
+        return false;
+    }
+
+    if (hasSource) {
+        int component = -1;
+        if (!stageGpuDivisorComponent(plan, query, &component)) {
+            return false;
+        }
+        wrap->divisorChannel = component;
+        wrap->skipChannel = component;
+    }
+
+    if (plan.applyMask) {
+        wrap->applyMask = true;
+        wrap->maskInvert = plan.maskInvert;
+        // A mask that is not handed over reads zero everywhere.
+        wrap->mask.nComps = 1;
+        const int maskInput = plan.maskInput;
+        const bool hasMask = (maskInput >= 0) && (maskInput < (int)args.inputs.size()) && args.inputs[maskInput].buffer;
+        if (hasMask && (plan.maskChannel >= 0) && (plan.maskChannel < plan.maskLayer.getNumComponents())) {
+            const GpuImageView& maskView = args.inputs[maskInput];
+            const int component = stageGpuMaskViewComponent(plan.maskLayer, plan.maskChannel, maskView.nComps);
+            if ((component < 0) || (component >= maskView.nComps) || !toWrapView(maskView, &wrap->mask)) {
+                return false;
+            }
+            wrap->maskChannel = (uint32_t)component;
+        }
+    }
+
+    return true;
+} // makeStageGpuWrap
+
+StatusEnum
+recordKernelOp(const StagePlan& plan,
+               const GpuRenderArgs& args,
+               const PixelKernelGpu& kernel)
+{
+    if ((kernel.kernel < 0) || (kernel.params.size() > kMaxGpuParamBytes)) {
+        return eStatusFailed;
+    }
+
+    gpu::GpuWrap wrap;
+    if (!makeStageGpuWrap(plan, args, &wrap)) {
+        return eStatusFailed;
+    }
+    wrap.output = gpu::GpuWrapRect { args.outputRect.x1, args.outputRect.y1, args.outputRect.x2, args.outputRect.y2 };
+    if (!toWrapView(args.output, &wrap.dst)) {
+        return eStatusFailed;
+    }
+
+    gpu::GpuRecordContext& ctx = args.context;
+    gpu::GpuBuffer* params = nullptr;
+    if (!kernel.params.empty()) {
+        std::vector<std::byte> block(kernel.params);
+        block.resize((block.size() + 3) & ~std::size_t(3), std::byte(0));
+        if (!ctx.scratch(block.size(), params) || !params || !ctx.updateBuffer(*params, 0, std::span<const std::byte>(block.data(), block.size()))) {
+            return eStatusFailed;
+        }
+    }
+
+    return gpu::recordWrapped(ctx, (gpu::GpuKernelId)kernel.kernel, wrap, params) ? eStatusOK : eStatusFailed;
+} // recordKernelOp
+
+StatusEnum
+recordRuntimeShaderOp(const StagePlan& plan,
+                      const GpuRenderArgs& args,
+                      const GpuRuntimeShader& shader,
+                      const GpuShaderInputs& inputs)
+{
+    const RectI& rect = args.outputRect;
+    const int nComps = args.query.nComps;
+    gpu::GpuRecordContext& ctx = args.context;
+
+    std::shared_ptr<gpu::GpuKernel> kernel;
+    if (!ctx.runtimeKernel(shader.source, gpu::ShaderStage::Compute, shader.entry, kernel) || !kernel || !followsRuntimeShaderLayout(*kernel)) {
+        return eStatusFailed;
+    }
+
+    const std::size_t bytes = (std::size_t)rect.width() * rect.height() * nComps * sizeof(float);
+    gpu::GpuBuffer* divided = nullptr;
+    gpu::GpuBuffer* filtered = nullptr;
+    if (!ctx.scratch(bytes, divided) || !divided || !ctx.scratch(bytes, filtered) || !filtered) {
+        return eStatusFailed;
+    }
+    GpuImageView dividedView;
+    dividedView.buffer = divided;
+    dividedView.bounds = rect;
+    dividedView.rowStrideFloats = rect.width() * nComps;
+    dividedView.nComps = nComps;
+    GpuImageView filteredView = dividedView;
+    filteredView.buffer = filtered;
+
+    if (recordStagesGpuDivide(plan, args, dividedView) != eStatusOK) {
+        return eStatusFailed;
+    }
+    ctx.computeBarrier();
+
+    std::map<std::string, const gpu::GpuTexture*> textures;
+    std::vector<gpu::GpuBinding> bindings;
+    for (const gpu::GpuKernelBinding& b : kernel->bindings()) {
+        if (b.binding <= 1) {
+            bindings.push_back(gpu::GpuBinding::storage(b.binding, (b.binding == 0) ? *divided : *filtered));
+            continue;
+        }
+        if (b.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
+            const GpuShaderUniform* uniform = nullptr;
+            for (const GpuShaderUniform& u : inputs.uniforms) {
+                if (u.binding == b.name) {
+                    uniform = &u;
+                }
+            }
+            if (!uniform) {
+                return eStatusFailed;
+            }
+            std::vector<std::byte> block(uniform->data);
+            block.resize(std::max<std::size_t>({ block.size(), (std::size_t)b.blockBytes, 1 }), std::byte(0));
+            const gpu::GpuUniformBuffer* buffer = nullptr;
+            if (!ctx.uniform(std::span<const std::byte>(block.data(), block.size()), buffer) || !buffer) {
+                return eStatusFailed;
+            }
+            bindings.push_back(gpu::GpuBinding::uniform(b.binding, *buffer));
+            continue;
+        }
+        if ((b.type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) && (b.type != VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE) && (b.type != VK_DESCRIPTOR_TYPE_SAMPLER)) {
+            return eStatusFailed;
+        }
+        std::map<std::string, const gpu::GpuTexture*>::const_iterator found = textures.find(b.name);
+        if (found == textures.end()) {
+            const GpuShaderTexture* texture = nullptr;
+            for (const GpuShaderTexture& t : inputs.textures) {
+                if (t.binding == b.name) {
+                    texture = &t;
+                }
+            }
+            if (!texture || (texture->dimensions < 1) || (texture->width < 1) || (texture->height < 1) || (texture->depth < 1) || (texture->channels < 1)) {
+                return eStatusFailed;
+            }
+            gpu::GpuTextureDesc desc;
+            desc.dimensions = (uint32_t)texture->dimensions;
+            desc.width = (uint32_t)texture->width;
+            desc.height = (uint32_t)texture->height;
+            desc.depth = (uint32_t)texture->depth;
+            desc.channels = (uint32_t)texture->channels;
+            desc.filter = texture->linear ? gpu::GpuTextureFilter::Linear : gpu::GpuTextureFilter::Nearest;
+            const gpu::GpuTexture* created = nullptr;
+            if (!ctx.texture(desc, std::span<const float>(texture->texels.data(), texture->texels.size()), created) || !created) {
+                return eStatusFailed;
+            }
+            found = textures.insert(std::make_pair(b.name, created)).first;
+        }
+        bindings.push_back(gpu::GpuBinding::texture(b.binding, *found->second));
+    }
+
+    GpuShaderRegion region;
+    region.x1 = rect.x1;
+    region.y1 = rect.y1;
+    region.width = (uint32_t)rect.width();
+    region.height = (uint32_t)rect.height();
+    region.nComps = (uint32_t)nComps;
+    region.channelMask = (uint32_t)plan.processChannels.to_ulong();
+    const std::span<const std::byte> push = std::as_bytes(std::span<const GpuShaderRegion>(&region, 1)).first(kernel->desc().pushConstantBytes);
+    if (!ctx.dispatchBindings(kernel, bindings, push, { region.width, region.height, 1u })) {
+        return eStatusFailed;
+    }
+    ctx.computeBarrier();
+
+    return recordStagesGpuFinish(plan, args, filteredView);
+} // recordRuntimeShaderOp
+#endif // NATRON_HAVE_GPU
 } // anonymous namespace
 
 int
@@ -277,18 +551,9 @@ resolveStagePlan(EffectInstance& effect,
 
     if (stages.has(Stage::MaskMix)) {
         const KnobReader reader(time, view);
-        plan.mix = (float)reader.valueOr(knobs.mix, 1.);
+        plan.mix = reader.valueOr(knobs.mix, 1.);
         plan.maskInvert = reader.valueOr(knobs.maskInvert, false);
-        plan.applyMask = isStageMaskApplied(effect);
-        if (plan.applyMask) {
-            plan.maskInput = stageMaskInput(effect);
-            ImageLayerDesc maskLayer;
-            int maskChannel = -1;
-            if (effect.resolveInputPlaneForRender(plan.maskInput, time, view, &maskLayer, &maskChannel) && (maskChannel >= 0)) {
-                plan.maskLayer = maskLayer;
-                plan.maskChannel = maskChannel;
-            }
-        }
+        resolvePlanMask(effect, isStageMaskApplied(effect), &plan);
     }
 
     NodePtr node = effect.getNode();
@@ -333,7 +598,7 @@ runStagesCpu(EffectInstance& effect,
              const EffectInstance::RenderActionArgs& args,
              const StageRowFn& row)
 {
-    const float mix = plan.mix;
+    const float mix = (float)plan.mix;
     const bool maskInvert = plan.maskInvert;
     const bool passThrough = plan.stages.has(Stage::PassThroughUnprocessed);
     const int sourceInput = plan.sourceInput;
@@ -522,5 +787,262 @@ runStagesCpu(EffectInstance& effect,
 
     return eStatusOK;
 } // runStagesCpu
+
+StagePlan
+resolveGpuStagePlan(EffectInstance& effect,
+                    const StageSet& stages,
+                    const StageKnobs& knobs,
+                    int sourceInput,
+                    const GpuQuery& query)
+{
+    std::bitset<4> channels;
+    for (int i = 0; i < 4; ++i) {
+        channels[i] = query.processChannels[i];
+    }
+    StagePlan plan = resolveStagePlan(effect, stages, knobs, sourceInput, query.time, query.view, channels);
+    if (stages.has(Stage::MaskMix) && (plan.applyMask != query.hasMask)) {
+        resolvePlanMask(effect, query.hasMask, &plan);
+    }
+
+    return plan;
+}
+
+bool
+stageGpuDivisorComponent(const StagePlan& plan,
+                         const GpuQuery& query,
+                         int* component)
+{
+    *component = -1;
+    if (plan.divisorChannel < 0) {
+        return true;
+    }
+    if (!query.unPremultInPlane) {
+        return false;
+    }
+    // A colour divisor lies in a colour plane of nComps channels; any other lies in its own layer.
+    const ImageLayerDesc plane = plan.divisorLayer.isColorLayer() ? ImageLayerDesc::mapNCompsToColorLayer(query.nComps) : plan.divisorLayer;
+    const int c = Node::getUnPremultSkipChannel(plane, plan.divisorLayer, plan.divisorChannel);
+    if ((c < 0) || (c >= query.nComps)) {
+        return false;
+    }
+    *component = c;
+
+    return true;
+}
+
+bool
+canRunStagesGpu(const StagePlan& plan,
+                const GpuQuery& query)
+{
+    if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps < 1) || (query.nComps > 4)) {
+        return false;
+    }
+    if ((query.unPremultChannel >= 0) && !query.unPremultInPlane) {
+        return false;
+    }
+    int component = -1;
+
+    return stageGpuDivisorComponent(plan, query, &component);
+}
+
+int
+stageGpuMaskViewComponent(const ImageLayerDesc& maskLayer,
+                          int maskChannel,
+                          int viewNComps)
+{
+    const int layerNComps = maskLayer.getNumComponents();
+
+    if (viewNComps == layerNComps) {
+        return maskChannel;
+    }
+    if (!maskLayer.isColorLayer()) {
+        return -1;
+    }
+    const int bit = ImageLayerDesc::colorViewChannelBit(ImageLayerDesc::colorViewForNComps(layerNComps).getLayerID(), maskChannel);
+
+    return ImageLayerDesc::colorViewChannelIndex(ImageLayerDesc::colorViewForNComps(viewNComps).getLayerID(), bit);
+}
+
+void
+stageGpuInputLayer(const EffectInstance& effect,
+                   int inputNb,
+                   const ImageLayerDesc& plane,
+                   double time,
+                   ViewIdx view,
+                   ImageLayerDesc* layer)
+{
+    *layer = plane;
+    if (!effect.isInputMask(inputNb)) {
+        return;
+    }
+    ImageLayerDesc maskLayer;
+    int maskChannel = -1;
+    // Resolving only reads the node's selectors and its inputs' layers.
+    EffectInstance& self = const_cast<EffectInstance&>(effect);
+    if (self.resolveInputPlaneForRender(inputNb, time, view, &maskLayer, &maskChannel)) {
+        *layer = maskLayer;
+    }
+}
+
+bool
+StageGpuShaderGate::accept(const GpuRuntimeShader& shader,
+                           const NodePtr& node)
+{
+#ifdef NATRON_HAVE_GPU
+    std::string key = shader.entry;
+    key += '\0';
+    key += shader.source;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (_rejected.count(key)) {
+            return false;
+        }
+    }
+    GpuContext* context = appPTR ? appPTR->getGpuContext() : nullptr;
+    gpu::GpuRuntime* runtime = (context && context->isAvailable()) ? context->runtime() : nullptr;
+    if (!runtime || runtime->isLost()) {
+        return false;
+    }
+    std::shared_ptr<gpu::GpuKernel> kernel;
+    gpu::GpuStatus status = runtime->pipelines().get(shader.source, gpu::ShaderStage::Compute, shader.entry, kernel);
+    if (status && (!kernel || !followsRuntimeShaderLayout(*kernel))) {
+        status = gpu::GpuStatus { VK_ERROR_INITIALIZATION_FAILED, "bindings 0 and 1 must be storage buffers and the push constants at most a GpuShaderRegion" };
+    }
+    if (status) {
+        std::string posted;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            posted.swap(_message);
+        }
+        if (!posted.empty() && node) {
+            QString current;
+            int type = 0;
+            node->getPersistentMessage(&current, &type, false);
+            if (current == QString::fromUtf8(posted.c_str())) {
+                node->clearPersistentMessage(false);
+            }
+        }
+
+        return true;
+    }
+    if (isTransientGpuFailure(status) || runtime->isLost()) {
+        return false;
+    }
+    const std::string message = QCoreApplication::translate("StageGpuShaderGate", "The GPU shader cannot be used, so this node renders on the CPU.\n%1").arg(QString::fromUtf8(status.message.c_str())).toStdString();
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (!_rejected.insert(key).second) {
+            return false;
+        }
+        _message = message;
+    }
+    if (node) {
+        node->setPersistentMessage(eMessageTypeWarning, message);
+    }
+
+    return false;
+#else
+    Q_UNUSED(shader);
+    Q_UNUSED(node);
+
+    return false;
+#endif
+} // StageGpuShaderGate::accept
+
+bool
+canRecordGpuOp(const GpuOpRef& op,
+               StageGpuShaderGate& gate,
+               const NodePtr& node)
+{
+    switch (op.kind) {
+    case GpuOpRef::Kind::Kernel:
+
+        return op.kernel.kernel >= 0;
+    case GpuOpRef::Kind::RuntimeShader:
+
+        return gate.accept(op.shader, node);
+    case GpuOpRef::Kind::None:
+        break;
+    }
+
+    return false;
+}
+
+StatusEnum
+recordStagesGpu(const StagePlan& plan,
+                const GpuRenderArgs& args,
+                const GpuOpRef& op)
+{
+#ifdef NATRON_HAVE_GPU
+    if (args.outputRect.isNull()) {
+        return eStatusFailed;
+    }
+    switch (op.kind) {
+    case GpuOpRef::Kind::Kernel:
+
+        return recordKernelOp(plan, args, op.kernel);
+    case GpuOpRef::Kind::RuntimeShader:
+
+        return recordRuntimeShaderOp(plan, args, op.shader, op.shaderInputs);
+    case GpuOpRef::Kind::None:
+        break;
+    }
+
+    return eStatusFailed;
+#else
+    Q_UNUSED(plan);
+    Q_UNUSED(args);
+    Q_UNUSED(op);
+
+    return eStatusFailed;
+#endif
+}
+
+StatusEnum
+recordStagesGpuDivide(const StagePlan& plan,
+                      const GpuRenderArgs& args,
+                      const GpuImageView& scratch)
+{
+#ifdef NATRON_HAVE_GPU
+    gpu::GpuWrap wrap;
+    if (!makeStageGpuWrap(plan, args, &wrap) || !toWrapView(scratch, &wrap.dst)) {
+        return eStatusFailed;
+    }
+    wrap.output = wrap.dst.bounds;
+    wrap.applyMask = false;
+    wrap.mix = 1.f;
+
+    return gpu::recordWrapDivide(args.context, wrap) ? eStatusOK : eStatusFailed;
+#else
+    Q_UNUSED(plan);
+    Q_UNUSED(args);
+    Q_UNUSED(scratch);
+
+    return eStatusFailed;
+#endif
+}
+
+StatusEnum
+recordStagesGpuFinish(const StagePlan& plan,
+                      const GpuRenderArgs& args,
+                      const GpuImageView& filtered)
+{
+#ifdef NATRON_HAVE_GPU
+    gpu::GpuWrap wrap;
+    gpu::GpuWrapView filteredView;
+    if (args.outputRect.isNull() || !makeStageGpuWrap(plan, args, &wrap) || !toWrapView(args.output, &wrap.dst) || !toWrapView(filtered, &filteredView)) {
+        return eStatusFailed;
+    }
+    wrap.output = gpu::GpuWrapRect { args.outputRect.x1, args.outputRect.y1, args.outputRect.x2, args.outputRect.y2 };
+
+    return gpu::recordWrapFinish(args.context, wrap, filteredView) ? eStatusOK : eStatusFailed;
+#else
+    Q_UNUSED(plan);
+    Q_UNUSED(args);
+    Q_UNUSED(filtered);
+
+    return eStatusFailed;
+#endif
+}
 
 NATRON_NAMESPACE_EXIT

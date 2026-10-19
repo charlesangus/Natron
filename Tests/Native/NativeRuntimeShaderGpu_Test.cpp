@@ -52,8 +52,13 @@
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/GpuRender.h"
+#include "Engine/Nodes/Image/ImagePipelineSpec.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/Op.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
+#include "Engine/Nodes/KnobReader.h"
+#include "Engine/Nodes/NodeSpec.h"
 #include "Engine/Plugin.h"
 #include "Engine/ViewIdx.h"
 
@@ -65,6 +70,7 @@
 #endif
 
 #define kGpuShaderTestOpPluginID "test.natron.built-in.GpuShaderTestOp"
+#define kStagedGpuShaderTestOpPluginID "test.natron.built-in.StagedGpuShaderTestOp"
 
 NATRON_NAMESPACE_ENTER
 
@@ -206,31 +212,116 @@ private:
     }
 };
 
+constexpr InputSpec kStagedInputs[] = {
+    InputSpec { .label = "Source" },
+};
+
+/**
+ * @brief The same gain and offset as a Point op of a StagedImageEffect, rendered on the GPU by the
+ * runtime shader in gShaderSource.
+ **/
+struct GainOffsetPointOp {
+    struct Params {
+        float gain;
+        float offset;
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kStagedGpuShaderTestOpPluginID,
+        .label = "Test Staged GPU Shader Op",
+        .grouping = "Other/Test",
+        .inputs = kStagedInputs,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .layers = LayerPolicy::color(true, true, true, true),
+        .op = OpKind::Point,
+    };
+
+    Params bake(const KnobReader& /*reader*/) const
+    {
+        return Params { kGain, kOffset };
+    }
+
+    bool isIdentity(const Params& /*params*/) const
+    {
+        return false;
+    }
+
+    void row(const Params& params,
+             const RowIO& io) const
+    {
+        const int nComps = io.nComps;
+        const float* src = io.src[0];
+        float* dst = io.dst;
+
+        for (int x = 0; x < io.width; ++x, src += nComps, dst += nComps) {
+            for (int c = 0; (c < nComps) && (c < 4); ++c) {
+                if (io.channels[pixelKernelChannelBit(nComps, c)]) {
+                    dst[c] = src[c] * params.gain + params.offset;
+                }
+            }
+        }
+    }
+
+    GpuOpRef gpu(const Params& params) const
+    {
+        GpuRuntimeShader shader;
+        {
+            std::lock_guard<std::mutex> lock(gShaderMutex);
+            if (gShaderSource.empty()) {
+                return GpuOpRef::none();
+            }
+            shader.source = gShaderSource;
+        }
+        ShaderParams block;
+        block.gain = params.gain;
+        block.offset = params.offset;
+        GpuShaderInputs inputs;
+        inputs.addUniform("Params", block);
+
+        return GpuOpRef::runtime(shader, inputs);
+    }
+};
+
+static_assert(PointOp<GainOffsetPointOp>);
+
+typedef ImageNode<GainOffsetPointOp> StagedGpuShaderTestOp;
+
+template <typename PLUGIN>
 void
-registerGpuShaderTestOpOnce()
+registerTestPlugin()
+{
+    EffectInstancePtr node(PLUGIN::BuildEffect(NodePtr()));
+    std::map<std::string, void (*)()> functions;
+
+    functions.insert(std::make_pair("BuildEffect", (void (*)())&PLUGIN::BuildEffect));
+    LibraryBinary* binary = new LibraryBinary(functions);
+
+    std::list<std::string> grouping;
+    node->getPluginGrouping(&grouping);
+    QStringList qgrouping;
+    for (std::list<std::string>::iterator it = grouping.begin(); it != grouping.end(); ++it) {
+        qgrouping.push_back(QString::fromUtf8(it->c_str()));
+    }
+
+    Plugin* p = appPTR->registerPlugin(QString(), qgrouping, QString::fromUtf8(node->getPluginID().c_str()), QString::fromUtf8(node->getPluginLabel().c_str()),
+                                       QString::fromUtf8(""), QStringList(), node->isReader(), node->isWriter(), binary, node->renderThreadSafety() == eRenderSafetyUnsafe, node->getMajorVersion(), node->getMinorVersion(), false);
+    // Registered after AppManager::load(), so the label-without-suffix the script name is
+    // made from was never assigned.
+    p->setLabelWithoutSuffix(Plugin::makeLabelWithoutSuffix(p->getPluginLabel()));
+    p->setOpenGLRenderSupport(node->supportsOpenGLRender());
+}
+
+void
+registerGpuShaderTestOpsOnce()
 {
     static std::once_flag once;
 
     std::call_once(once, []() {
-        EffectInstancePtr node(GpuShaderTestOp::BuildEffect(NodePtr()));
-        std::map<std::string, void (*)()> functions;
-
-        functions.insert(std::make_pair("BuildEffect", (void (*)())&GpuShaderTestOp::BuildEffect));
-        LibraryBinary* binary = new LibraryBinary(functions);
-
-        std::list<std::string> grouping;
-        node->getPluginGrouping(&grouping);
-        QStringList qgrouping;
-        for (std::list<std::string>::iterator it = grouping.begin(); it != grouping.end(); ++it) {
-            qgrouping.push_back(QString::fromUtf8(it->c_str()));
-        }
-
-        Plugin* p = appPTR->registerPlugin(QString(), qgrouping, QString::fromUtf8(node->getPluginID().c_str()), QString::fromUtf8(node->getPluginLabel().c_str()),
-                                           QString::fromUtf8(""), QStringList(), node->isReader(), node->isWriter(), binary, node->renderThreadSafety() == eRenderSafetyUnsafe, node->getMajorVersion(), node->getMinorVersion(), false);
-        // Registered after AppManager::load(), so the label-without-suffix the script name is
-        // made from was never assigned.
-        p->setLabelWithoutSuffix(Plugin::makeLabelWithoutSuffix(p->getPluginLabel()));
-        p->setOpenGLRenderSupport(node->supportsOpenGLRender());
+        registerTestPlugin<GpuShaderTestOp>();
+        registerTestPlugin<StagedGpuShaderTestOp>();
     });
 }
 
@@ -266,7 +357,7 @@ class NativeRuntimeShaderGpuTest
 protected:
     virtual void SetUp() OVERRIDE
     {
-        registerGpuShaderTestOpOnce();
+        registerGpuShaderTestOpsOnce();
         BaseTest::SetUp();
     }
 
@@ -280,11 +371,12 @@ protected:
     bool createGraph(NodePtr* source,
                      NodePtr* op,
                      RectI* window,
-                     std::vector<float>* sourcePixels)
+                     std::vector<float>* sourcePixels,
+                     const char* opPluginID = kGpuShaderTestOpPluginID)
     {
         *source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
         EXPECT_TRUE(bool(*source));
-        *op = createNode(QString::fromUtf8(kGpuShaderTestOpPluginID));
+        *op = createNode(QString::fromUtf8(opPluginID));
         EXPECT_TRUE(bool(*op));
         if (!*source || !*op) {
             return false;
@@ -474,6 +566,71 @@ TEST_F(NativeRuntimeShaderGpuTest, ValidShaderRendersOnTheGpuAndMatchesTheCpu)
 
     int type = -1;
     EXPECT_TRUE(persistentMessageOf(op, &type).isEmpty()) << persistentMessageOf(op, &type).toStdString();
+}
+
+// The Point op of a StagedImageEffect reaches the GPU through the same executor: a shader that
+// compiles renders on the device and matches the CPU frame.
+TEST_F(NativeRuntimeShaderGpuTest, StagedPointOpRendersTheShaderOnTheGpuAndMatchesTheCpu)
+{
+    NodePtr source;
+    NodePtr op;
+    RectI window;
+    std::vector<float> sourcePixels;
+    ASSERT_TRUE(createGraph(&source, &op, &window, &sourcePixels, kStagedGpuShaderTestOpPluginID));
+    ASSERT_TRUE(dynamic_cast<StagedImageEffect*>(op->getEffectInstance().get()) != NULL);
+    const std::vector<float> expected = expectedFrom(sourcePixels);
+
+    setShaderSource(shaderSource(uniqueTag("staged valid"), false));
+
+    const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>(1, op), op, window, kTime);
+    if (result.skipped) {
+        return;
+    }
+    ASSERT_TRUE(result.ok) << result.error;
+    EXPECT_TRUE(result.ranInRegion(op));
+    EXPECT_GT(gpuTasksOf(result, op), 0);
+    expectSame(expected, result.cpu, "CPU frame");
+    expectSame(result.cpu, result.gpu, "GPU frame");
+
+    int type = -1;
+    EXPECT_TRUE(persistentMessageOf(op, &type).isEmpty()) << persistentMessageOf(op, &type).toStdString();
+}
+
+// A staged node's broken shader stays on the CPU and is reported, and built, only once.
+TEST_F(NativeRuntimeShaderGpuTest, StagedPointOpWithABrokenShaderRendersOnTheCpuAndIsReportedOnce)
+{
+    NodePtr source;
+    NodePtr op;
+    RectI window;
+    std::vector<float> sourcePixels;
+    ASSERT_TRUE(createGraph(&source, &op, &window, &sourcePixels, kStagedGpuShaderTestOpPluginID));
+    const std::vector<float> expected = expectedFrom(sourcePixels);
+
+    setShaderSource(shaderSource(uniqueTag("staged broken"), true));
+    const std::size_t compilesBefore = gpu::glslCompileCountForTesting();
+
+    const EndToEndResult first = renderEndToEnd(std::vector<NodePtr>(1, op), op, window, kTime);
+    if (first.skipped) {
+        return;
+    }
+    ASSERT_TRUE(first.ok) << first.error;
+    EXPECT_FALSE(first.ranInRegion(op));
+    EXPECT_EQ(0, gpuTasksOf(first, op));
+    expectSame(expected, first.gpu, "frame with GPU placement");
+    EXPECT_EQ(1u, gpu::glslCompileCountForTesting() - compilesBefore);
+
+    int type = -1;
+    const QString message = persistentMessageOf(op, &type);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("CPU"))) << message.toStdString();
+    op->clearPersistentMessage(false);
+
+    const EndToEndResult second = renderEndToEnd(std::vector<NodePtr>(1, op), op, window, kTime);
+    ASSERT_TRUE(second.ok) << second.error;
+    EXPECT_EQ(0, gpuTasksOf(second, op));
+    expectSame(expected, second.gpu, "second frame with GPU placement");
+    EXPECT_EQ(1u, gpu::glslCompileCountForTesting() - compilesBefore);
+    EXPECT_TRUE(persistentMessageOf(op, &type).isEmpty()) << "reported again: " << persistentMessageOf(op, &type).toStdString();
 }
 
 #endif // NATRON_HAVE_GPU

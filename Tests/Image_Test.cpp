@@ -41,6 +41,8 @@
 #include <utility>
 #include <vector>
 
+#include "Engine/AppManager.h"
+#include "Engine/GpuContext.h"
 #include "Engine/HostImageMemory.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -696,6 +698,11 @@ struct HostImageMemoryGuard {
         : savedMax(HostImageMemory::maxPoolBytes())
         , savedAlignment(HostImageMemory::importAlignment())
     {
+        // Calibration on the GPU init thread trims the pool, which would empty it under the test.
+        GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
+        if (gpu) {
+            gpu->waitForInit(std::chrono::seconds(60));
+        }
         HostImageMemory::trim();
     }
 

@@ -355,8 +355,8 @@ protected:
         placeGraph(run->graph, inputs);
     }
 
-    // False when the frame does not finish within kFrameTimeoutMs. The abort and the wait that follow release a frame
-    // that is merely slow; a frame that never completes is left for the ctest timeout to end.
+    // False when the frame does not finish within kFrameTimeoutMs, or does not end within kFrameTimeoutMs of being
+    // aborted; a frame that never ends is leaked rather than waited on, so that it fails the test instead of wedging it.
     bool render(FrameRun* run)
     {
         run->future = _scheduler->submit(run->context, std::move(run->graph), RenderScheduler::Priority::Interactive);
@@ -365,6 +365,16 @@ protected:
         while (!run->future->isFinished()) {
             if (timer.elapsed() > kFrameTimeoutMs) {
                 _scheduler->abort(run->context);
+                QElapsedTimer abortTimer;
+                abortTimer.start();
+                while (!run->future->isFinished()) {
+                    if (abortTimer.elapsed() > kFrameTimeoutMs) {
+                        new FrameFuturePtr(run->future);
+
+                        return false;
+                    }
+                    QThread::msleep(1);
+                }
                 run->future->wait();
 
                 return false;
@@ -471,7 +481,7 @@ TEST_F(GpuRegionFallbackTest, GradeWithConnectedDisabledMaskMatchesCpu)
 }
 
 // An unconnected input of a region member stays an empty view in the whole-region path, while the strip path skips it.
-TEST_F(GpuRegionFallbackTest, DISABLED_KeyerWithEmptyInsideMaskMatchesCpu)
+TEST_F(GpuRegionFallbackTest, KeyerWithEmptyInsideMaskMatchesCpu)
 {
     if (!gpuOrSkip()) {
         return;
@@ -486,7 +496,7 @@ TEST_F(GpuRegionFallbackTest, DISABLED_KeyerWithEmptyInsideMaskMatchesCpu)
     expectRegionMatchesCpu(keyer, { grade, keyer });
 }
 
-TEST_F(GpuRegionFallbackTest, DISABLED_ChromaKeyerWithEmptyInsideMaskMatchesCpu)
+TEST_F(GpuRegionFallbackTest, ChromaKeyerWithEmptyInsideMaskMatchesCpu)
 {
     if (!gpuOrSkip()) {
         return;
@@ -501,24 +511,8 @@ TEST_F(GpuRegionFallbackTest, DISABLED_ChromaKeyerWithEmptyInsideMaskMatchesCpu)
     expectRegionMatchesCpu(keyer, { grade, keyer });
 }
 
-// The mask producer is connected but is asked for an empty window, so the region plans a slot for an input whose
-// image has no pixels to upload.
-TEST_F(GpuRegionFallbackTest, DISABLED_GradeWithMaskOfEmptyRoIMatchesCpu)
-{
-    if (!gpuOrSkip()) {
-        return;
-    }
-    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
-    NodePtr mask = makeOffWindowConstant();
-    NodePtr grade = makeGrade(1.5, 0.1);
-    ASSERT_TRUE(source && mask && grade);
-    connectNodes(source, grade, 0, true);
-    ASSERT_TRUE(connectGradeMask(mask, grade, "rgba.A", true));
-
-    expectRegionMatchesCpu(grade, { grade });
-}
-
-TEST_F(GpuRegionFallbackTest, DISABLED_KeyerWithInsideMaskOfEmptyRoIMatchesCpu)
+// The inside mask producer is connected but is asked for an empty window, so the region has no image to read for it.
+TEST_F(GpuRegionFallbackTest, KeyerWithInsideMaskOfEmptyRoIMatchesCpu)
 {
     if (!gpuOrSkip()) {
         return;

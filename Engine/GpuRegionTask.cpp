@@ -252,6 +252,7 @@ struct Slot {
     bool downloadIssued = false;
     std::shared_ptr<Image::WriteAccess> downloadAccess;
     ImagePtr downloadImage;
+    std::size_t downloadBytes = 0;
     gpu::TimelineValue downloadDone;
     ImagePtr downloaded;
 
@@ -644,6 +645,9 @@ private:
                 if (!member.effect->getGpuInputLayer(inputNb, plane, task.key.time, task.key.view, &layer)) {
                     return fail(taskIndex, "the node cannot read an input on the GPU");
                 }
+                if (_graph.tasks[edges[e].second].renderedRoI.isNull()) {
+                    return fail(taskIndex, "an input renders an empty window");
+                }
                 const int producer = _position[edges[e].second];
                 if ((producer >= 0) && !sameLayer(_slots[_members[producer].outSlot].layout.layer, layer)) {
                     return fail(taskIndex, "an input produced in the region is not in the layer the node reads");
@@ -651,6 +655,12 @@ private:
                 const RectI needed = member.effect->getGpuInputRoI(inputNb, task.renderedRoI, member.query.mappedScale);
                 const int slot = slotOfTask(edges[e].second, layer, needed);
                 member.inputSlots[inputNb] = slot;
+            }
+
+            for (int inputNb = 0; inputNb < (int)member.inputSlots.size(); ++inputNb) {
+                if ((member.inputSlots[inputNb] < 0) && member.effect->getInput(inputNb) && !member.effect->isInputMask(inputNb)) {
+                    return fail(taskIndex, "a connected input has no task to read");
+                }
             }
 
             Slot out;
@@ -1071,10 +1081,13 @@ private:
             if (!slot.downloadImage) {
                 return fail(producerTask, "cannot allocate the downloaded image");
             }
+            // Sized before the write lock is taken: querying an image's bounds read-locks it, which waits forever on
+            // the thread that holds its write lock.
+            slot.downloadBytes = gpuHostTransferBytes(*slot.downloadImage);
             slot.downloadAccess = std::make_shared<Image::WriteAccess>(slot.downloadImage.get());
             unsigned char* data = slot.downloadAccess->pixelAt(slot.layout.bounds.x1, slot.layout.bounds.y1);
             if (data) {
-                ranges.push_back({ data, (VkDeviceSize)gpuHostTransferBytes(*slot.downloadImage) });
+                ranges.push_back({ data, (VkDeviceSize)slot.downloadBytes });
             }
         }
         _prepared = _runtime.prepareImports(std::move(ranges));
@@ -1111,7 +1124,7 @@ private:
             if (!slot.downloadImage || !slot.downloadAccess) {
                 return fail(producerTask, "cannot allocate the downloaded image");
             }
-            const std::size_t bytes = gpuHostTransferBytes(*slot.downloadImage);
+            const std::size_t bytes = slot.downloadBytes;
             if (!slot.handle || (bytes > (std::size_t)slot.handle.size())) {
                 return fail(producerTask, "the device buffer is smaller than its image");
             }
@@ -1194,8 +1207,14 @@ private:
                 args.outputRect = task.renderedRoI;
                 args.inputs.resize(member.inputSlots.size());
                 for (std::size_t k = 0; k < member.inputSlots.size(); ++k) {
-                    if (member.inputSlots[k] >= 0) {
-                        args.inputs[k] = _slots[member.inputSlots[k]].view;
+                    if (member.inputSlots[k] < 0) {
+                        continue;
+                    }
+                    args.inputs[k] = _slots[member.inputSlots[k]].view;
+                    if (!args.inputs[k].buffer) {
+                        fail(member.task, "an input is not on the device");
+
+                        return EffectInstance::eRenderRoIRetCodeFailed;
                     }
                 }
                 args.output = out.view;

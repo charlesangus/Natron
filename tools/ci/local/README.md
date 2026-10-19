@@ -536,6 +536,30 @@ NATRON_SKIP_SUBMODULE_UPDATE=1 tools/ci/local/build.sh fast
 `Tests/google-test`, `libs/OpenFX` and `libs/SequenceParsing` are checked
 out, failing and naming the first one that is not.
 
+## RADV GL display for GUI checks
+
+`xvfb-run` only provides llvmpipe for GL. Its device and driver UUIDs never
+match the RADV Vulkan device, so the GL/Vulkan hand-off can only reach the
+Readback rung there; the zero-copy rungs need a display whose GL is also
+served by RADV. `GlInteropQt` (in `tools/gpu-spike`) prints which rung a given
+display reaches: `best`, the `missing` extensions, and a checksum line
+(`RESULT best=... checksum=... PASS`). Candidate recipes, in the order to try
+them:
+
+1. An existing desktop session on the AMD GPU (`DISPLAY` or
+   `WAYLAND_DISPLAY` already set, `QT_QPA_PLATFORM` unset or `xcb`).
+2. A headless compositor with a GL renderer:
+   `weston --backend=headless --renderer=gl --socket=natron-gl &`, then
+   `QT_QPA_PLATFORM=wayland WAYLAND_DISPLAY=natron-gl <binary>`.
+3. Xorg with a dummy or modesetting config bound to the AMD card, then
+   `DISPLAY=:N <binary>`.
+
+On hosts whose `LD_LIBRARY_PATH` carries another application's Qt, run
+AppImages and binaries as `env -u LD_LIBRARY_PATH <binary>`, otherwise that Qt
+shadows Natron's.
+
+Confirmed recipe: not yet recorded.
+
 ## Where things live, and how to reset them
 
 | What | Where | Reset |

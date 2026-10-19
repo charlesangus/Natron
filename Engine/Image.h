@@ -823,14 +823,17 @@ public:
 
     /**
      * @brief Mask the image by the given mask and also disolves it to the originalImg with the given mix.
+     * A RAM mask must have one channel. A GL mask may keep several, since GL textures are not converted: maskChannel
+     * then selects the one to read, and -1 reads the one channel of a one-channel mask.
      **/
-    void applyMaskMix( const RectI& roi,
-                       const Image* maskImg,
-                       const Image* originalImg,
-                       bool masked,
-                       bool maskInvert,
-                       float mix,
-                       const OSGLContextPtr& glContext = OSGLContextPtr() );
+    void applyMaskMix(const RectI& roi,
+                      const Image* maskImg,
+                      const Image* originalImg,
+                      bool masked,
+                      bool maskInvert,
+                      float mix,
+                      const OSGLContextPtr& glContext = OSGLContextPtr(),
+                      int maskChannel = -1);
 
     void copyBitmapRowPortion(int x1, int x2, int y, const Image& other);
 

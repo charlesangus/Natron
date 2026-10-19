@@ -2589,6 +2589,7 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
                                                 lastFrame,
                                                 layers->useOpenGL);
     ImagePtr maskImage;
+    int glMaskChannel = -1;
     EffectInstance::InputImagesMap::const_iterator foundMaskInput = rectToRender.imgs.end();
 
     if ( _publicInterface->isHostMaskingEnabled() ) {
@@ -2606,7 +2607,12 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
             ImageLayerDesc maskLayer;
             const int maskChannel = _publicInterface->getMaskChannel(maskInputNb, availableLayers, &maskLayer);
             if (maskChannel >= 0) {
-                maskImage = EffectInstance::convertLayersFormatsIfNeeded(maskImage, maskImage->getBounds(), ImageLayerDesc::getAlphaComponents(), maskImage->getBitDepth(), maskChannel);
+                // GL textures are never converted, so the GL mix reads the channel from the whole layer.
+                if (maskImage->getStorageMode() == eStorageModeGLTex) {
+                    glMaskChannel = maskChannel;
+                } else {
+                    maskImage = EffectInstance::convertLayersFormatsIfNeeded(maskImage, maskImage->getBounds(), ImageLayerDesc::getAlphaComponents(), maskImage->getBitDepth(), maskChannel);
+                }
             }
         }
     }
@@ -2691,6 +2697,7 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
                                                        processChannels,
                                                        preferredInput,
                                                        maskImage,
+                                                       glMaskChannel,
                                                        *layers);
     if (handlerRet == eRenderingFunctorRetOK) {
         return eRenderingFunctorRetOK;
@@ -2774,6 +2781,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                                               const std::bitset<4>& processChannels,
                                               const int preferredInput,
                                               const ImagePtr& maskImage,
+                                              const int glMaskChannel,
                                               ImageLayersToRender& layers)
 {
     TimeLapsePtr timeRecorder;
@@ -3277,7 +3285,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                     it->second.downscaleImage->copyUnProcessedChannels(actionArgs.roi, planeProcessChannels, originalInputImage, glContext);
                 }
                 if (useMaskMix) {
-                    it->second.downscaleImage->applyMaskMix(actionArgs.roi, maskImage.get(), originalInputImage.get(), doMask, false, mix, glContext);
+                    it->second.downscaleImage->applyMaskMix(actionArgs.roi, maskImage.get(), originalInputImage.get(), doMask, false, mix, glContext, glMaskChannel);
                 }
             } // if (renderFullScaleThenDownscale) {
         } // if (it->second.isAllocatedOnTheFly) {

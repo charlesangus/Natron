@@ -3348,3 +3348,22 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
 ### 2026-10-16T09:00:00Z — change-request
 - refs: none
 - New milestone requested (user accepted the miss in M90 - Render Path Serial Overhead): **Blur In-Graph Overhead** (E6). In-graph native Blur at UHD on 16 threads is 3.1× its bare kernel at FIR σ3 (4.70 vs 1.51 ms/Mpx) and 2.0× for IIR (6.83 vs 3.37). Profile on the 16-thread host (symbolised build) and cut the fixed per-task overhead (fill, `writeWindow` finish, planar buffer allocation) and the padded-region cost at large σ. Data: `M90-render-path-serial-overhead.md` Decisions 2026-10-16. Deps: M90.
+
+### 2026-10-16T13:40:00Z — change-request
+- refs: none
+- New milestone requested (user): **Complete Local Build Environment** (E2). Make the local dev workflow self-sufficient and current, so a PM or implementer can verify GPU code, run the debug ctest PR CI runs, and package without relying on remote builds. Findings from 2026-10-16:
+  - The natron-dev image has no `slangc`. `cmake/FetchSlang.cmake` downloads Slang into `<checkout>/.natron-deps` at configure time, which needs network the container may lack. On the bosley host it was seeded by hand from `/opt/slang`, and each worktree needs a symlink.
+  - With the host in remote build mode, no local tree postdated M85, so `build/syntax-check.py` silently skipped every GPU translation unit. Implementers then wrote stub kernel headers by hand.
+  - `build/syntax-check.py` has no `-I Tests`/`-I libs/xxhash` for test TUs (every agent adds them by hand). It takes a checkout root and base ref, not file paths, which agents keep getting wrong.
+  - Remote builds (`tools/ci/remote/build.sh`) offer only `fast`/`release` (both NDEBUG), while PR CI runs debug with live asserts and a parallel ctest that hides assert text (`natron-pr-ci-debug-asserts` memory).
+  - `build.sh` resets submodules, and worktree lanes need their own `fetch-assets` and `.natron-deps`.
+
+  Scope ideas:
+  - Add Slang (and anything else the build fetches at configure time) as an image layer.
+  - Keep a maintained local GPU-era tree, or have syntax-check configure one on demand.
+  - Fix syntax-check's include paths and CLI.
+  - Add a `debug` preset to the remote build and `-V` output for failing cases.
+  - A worktree bootstrap script (submodules, fetch-assets, `.natron-deps`, appimagetool wrapper).
+  - Document it in `tools/ci/local/README.md`.
+
+  Deps: none.

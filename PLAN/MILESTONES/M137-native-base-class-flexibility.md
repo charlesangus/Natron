@@ -131,7 +131,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, the recorded fixtures are committed, and `NativeGolden_Test` replays them green on the unchanged nodes.
   - size: L
 
-- [ ] M137.P1.T2 — Bench coverage and before-timings
+- [x] M137.P1.T2 — Bench coverage and before-timings
   - files: `tools/bench/node_profile.py`, `tools/bench/BASELINE.md`
   - approach:
     - Add `blur`, `dissolve`, `crop`, `reformat` and `position` entries to the `NODES` table (`node_profile.py:48-76`), following the existing entries.
@@ -493,6 +493,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
 - 2026-10-19 — Point and composite GPU bodies are converted to `IPixelOp`/`IBinaryPixelOp` here (user): a standalone kernel would be a second GPU path, and it is also the precondition for M87 - Point-Op Kernel Fusion.
 - 2026-10-19 — P2.T1 shapes (code a5f0efc72): `nodeSpec()` is a virtual returning a pointer (not CRTP), so runtime specs (MissingPluginNode, presets) work; nodes return `staticNodeSpec<kSpec>()`, which carries the `static_assert`s. `Variadic` is a role plus `count`, last only, labels `label + (firstNumber + k)`. `Route::black()` maps to identity with input -1, which the render paths already treat as empty. **Open for P2.T8 (Switch with no inputs):** `EffectInstance::isIdentity_public`'s cache (`EffectInstance.cpp:~4176-4180`) reads a cached -1 back as "not identity", so a cached Black would render; fix the cache encoding there. `route()` has no scale/RoI, so window-dependent identity (mask missing the window) composes in `StagedImageEffect::isIdentity`. Spec text is untranslated `string_view`.
 - 2026-10-19 — P2.T2 shapes (code 1523db758): `NativeImageEffect::render` and `StagedImageEffect` share one `runStagesCpu` (the loop moved verbatim; mask layer/channel now resolve before the divisor's layers are read, arithmetic unchanged). `StagedImageEffect::isIdentity`/`render` are FINAL; nodes implement `isOpIdentity`/`renderOp`. **For P2.T5:** Grade needs `Stage::PassThroughUnprocessed` in its `StageSet`, or the host copies the unprocessed channels instead (bit-exactness risk). **For P8.T5:** Merge as a Custom node goes through `renderOp`/`isOpIdentity`, since `render`/`isIdentity` are FINAL.
+- 2026-10-19 — P1.T2 before-timings are recorded in `tools/bench/BASELINE.md` but are noisy: per-node spread is 19–50%, from a loaded 4-core host, while graph chains were within 5% apart from xfchain. The rig for repeating them is the release AppImage extracted under `build/m137-before/`. **For P10.T1:** re-measure the before build (`e349888f0` AppImage) and the after build back-to-back, interleaved, on a quiet host with no agents running, and judge the gate on that pair. P2.T4 makes `NativeImageEffect::canRenderOnGpu` resolve a stage plan per call, so watch placement cost.
 - 2026-10-19 — Elaborated with a spike and a baseline phase ahead of the approval stop (planner): golden renders and timings must be captured on unchanged code, so they come before any framework commit. During migration the engine reaches GPU virtuals through `NativeEffectBase`, so both bases coexist until Phase 137.9.
 
 **Verification gate:**

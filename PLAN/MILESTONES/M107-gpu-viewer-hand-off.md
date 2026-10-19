@@ -17,3 +17,8 @@ Acceptance sketch:
 - On RADV, a resident comp displays with no device-to-host download of the root; the profile shows 0 root downloads.
 - The viewer's GPU output matches the CPU display path within a stated tolerance (8-bit: ±1 code value) for every display mode.
 - Without interop (lavapipe, CI) the viewer falls back silently and displays correctly.
+
+## Decisions
+
+- 2026-10-18 — **The viewer's OCIO display transform on Vulkan compiles OCIO's own generated GLSL at runtime** (user, at promotion), through M126 - Runtime GPU Shaders' pipeline cache. This matches the M127 - Native OCIO Nodes decision and supersedes the stub's "without runtime shader compilation" options, a baked 3D LUT plus shaper or ported OCIO ops. If the compile fails, the viewer falls back to the CPU display path.
+- 2026-10-18 — **Claimed by the gpu PM as the second lane** beside M109 - GPU Region Engine Hardening (user). M108 - Retire Engine GL Host Path would collide with M100 - Content Node Hashing on `Engine/EffectInstance.cpp`. M87 - Point-Op Kernel Fusion would make M109 wait and has little measured gain. M91 - NVIDIA GPU Validation has no host.

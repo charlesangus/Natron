@@ -32,4 +32,9 @@ Lets a knob expression read the metadata of any node's output: `thisNode.metadat
   - verify: fixture loads and the evaluated label matches the file metadata.
   - size: M
 
+## Decisions
+
+- 2026-10-19 — `_exprRes` stays keyed by time only (M78.P2.T2): a read of another frame's metadata is still a deterministic function of the evaluation time, and any source hash change clears the whole cache through the P2.T1 edge. View stays out of the key: `Knob::getValueAtTime` hardcodes `ViewIdx(0)`, so keying on view needs a wider fix first.
+- 2026-10-19 — Metadata dependencies are a node-level edge (M78.P2.T1), refreshed when the source's hash is recomputed (pull-driven). Changes that don't move the source hash (project format, frame rate) don't refresh readers. `Engine/Knob*` is touched, so the gate runs the GUI bench.
+
 **Verification gate:** API and invalidation gtests pass; headless project load evaluates a metadata expression correctly; CI green.

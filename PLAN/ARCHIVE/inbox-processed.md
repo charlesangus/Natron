@@ -3380,3 +3380,10 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
   - fxarena Sketch uses unseeded noise, so its renders are non-deterministic; give it a fixed seed.
   
   Deps: M100.
+
+### 2026-10-19T08:00:00Z — change-request
+- refs: none
+- Follow-ups from M100 - Content Node Hashing (merged d521f111a), found by PM:
+  1. **A Write edited mid-render can cache a stale frame.** Off-main viewer renders that find stale input-related data abort and re-render (Engine/ParallelRenderArgs.cpp, ViewerInstance.cpp). File renders and non-abortable renders (tracker, colour sampler) are left as they were, because aborting fails the job, and a blocking main-thread wait risks deadlock. Needs a design for refreshing input-related data safely from a render thread, or keying Natron's own metadata by node hash.
+  2. **A known-bug plug-in child hangs under the taskgraph scheduler.** `CacheEquivalenceKnownPluginBugTest.KnownPluginBugsStillCrash` passes only because its 60 s child watchdog fires (62.9 s in taskgraph vs 3.3 s legacy, release run on 5d5bf9e50). The segfault-handler exit deadlock is already fixed, so this is a different hang: either CImg EdgeExtend or the CImg expression plug-in hangs rather than crashing when rendered on the pool. Get a stack (eu-stack) of the child to tell plug-in UB from an engine deadlock reached after a plug-in fault. It may fold into the requested Bundled Plugin Bug Fixes milestone.
+  Suggested: E14 (Architecture) or E7.

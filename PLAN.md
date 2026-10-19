@@ -200,6 +200,7 @@ future core work has solid ground to build on.
 | M141 | Complete Local Build Environment | todo | - |  | E2 | [M141-complete-local-build-environment.md](PLAN/MILESTONES/M141-complete-local-build-environment.md) |
 | M142 | Atomic Project Save | todo | - |  | E7 | [M142-atomic-project-save.md](PLAN/MILESTONES/M142-atomic-project-save.md) |
 | M143 | Bundled Plugin Bug Fixes | todo | M100 |  | E3 | [M143-bundled-plugin-bug-fixes.md](PLAN/MILESTONES/M143-bundled-plugin-bug-fixes.md) |
+| M144 | Render-Thread Metadata Refresh | todo | M100 |  | E14 | [M144-render-thread-metadata-refresh.md](PLAN/MILESTONES/M144-render-thread-metadata-refresh.md) |
 
 # Epics
 

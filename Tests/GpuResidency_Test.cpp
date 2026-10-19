@@ -1432,6 +1432,40 @@ TEST_F(GpuResidencyTest, OutOfMemoryHalvesTheStripsInsteadOfFallingBack)
     expectMatchesCpu(chain.sink, run, stripWindow());
 }
 
+// The strip height the first frame found by halving is remembered, so the next frame of the same region starts from it
+// and retries nothing.
+TEST_F(GpuResidencyTest, HalvedStripHeightIsRememberedForTheNextFrame)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(useOwnContext());
+    StripChain chain;
+    ASSERT_TRUE(makeStripChain(&chain));
+    FrameRun first;
+    std::string error;
+    ASSERT_TRUE(prepareStripFrame(chain, &first, &error)) << error;
+    const std::uint64_t image = (std::uint64_t)kStripWidth * kStripHeight * 4 * sizeof(float);
+    runtime()->pool().trim();
+    runtime()->pool().setUserBudget(2 * image);
+
+    ASSERT_TRUE(render(&first));
+    EXPECT_EQ(0, fallbacksOf(first));
+    EXPECT_GE(first.stats->getGpuStripHalvings(), 1);
+    EXPECT_GE(first.stats->getGpuRegionRetries(), 1);
+
+    FrameRun second;
+    ASSERT_TRUE(prepareStripFrame(chain, &second, &error)) << error;
+    ASSERT_TRUE(render(&second));
+    EXPECT_EQ(0, fallbacksOf(second));
+    EXPECT_EQ(1, second.stats->getGpuRegionsRun());
+    EXPECT_EQ(0, second.stats->getGpuRegionRetries());
+    EXPECT_EQ(0, second.stats->getGpuStripHalvings());
+    EXPECT_GT(second.stats->getUploadCount(), 1) << "the region did not run as strips";
+    expectReleased(second);
+    expectMatchesCpu(chain.sink, second, stripWindow());
+}
+
 // Not even a strip of four rows fits a storage buffer range smaller than one row: the region renders on the CPU, and
 // the fallback is counted under its own reason, without a retry.
 TEST_F(GpuResidencyTest, RegionNoStripFitsRendersOnTheCpu)

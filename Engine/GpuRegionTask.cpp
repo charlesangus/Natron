@@ -33,7 +33,9 @@
 #include <exception>
 #include <limits>
 #include <list>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <utility>
@@ -2286,6 +2288,96 @@ private:
     FailureKind _failureKind;
 };
 
+// The strip setting the out-of-memory ladder ended on for a region shape. A device other than the one that taught it
+// has other limits, so a different generation starts over. The key holds the member plugins and node hashes, which
+// change with a parameter edit, the rendered bounds and the channel counts; a parameter animated per frame hashes
+// differently each frame and is learned afresh.
+class StripMemory {
+public:
+    struct Setting {
+        int forcedRows = 0;
+        bool serial = false;
+    };
+
+    bool find(std::uint64_t generation, const std::string& key, Setting* out)
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (generation != _generation) {
+            return false;
+        }
+        const auto it = _entries.find(key);
+        if (it == _entries.end()) {
+            return false;
+        }
+        *out = it->second;
+
+        return true;
+    }
+
+    void remember(std::uint64_t generation, const std::string& key, const Setting& setting)
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if ((generation != _generation) || (_entries.size() >= kMaxEntries)) {
+            _entries.clear();
+            _generation = generation;
+        }
+        _entries[key] = setting;
+    }
+
+    void forget()
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _entries.clear();
+        _generation = 0;
+    }
+
+private:
+    static constexpr std::size_t kMaxEntries = 256;
+
+    std::mutex _mutex;
+    std::uint64_t _generation = 0;
+    std::map<std::string, Setting> _entries;
+};
+
+StripMemory&
+stripMemory()
+{
+    static StripMemory memory;
+
+    return memory;
+}
+
+template <typename T>
+void
+appendBytes(std::string* key, const T& value)
+{
+    key->append(reinterpret_cast<const char*>(&value), sizeof(value));
+}
+
+std::string
+regionShapeKey(const FrameGraph& graph, int region)
+{
+    std::string key;
+    for (const int member : graph.regions[region].members) {
+        const FrameGraph::Task& task = graph.tasks[member];
+        const std::string plugin = task.key.node->getPluginID();
+        appendBytes(&key, plugin.size());
+        key += plugin;
+        appendBytes(&key, task.nodeHash);
+        appendBytes(&key, task.renderedRoI.x1);
+        appendBytes(&key, task.renderedRoI.y1);
+        appendBytes(&key, task.renderedRoI.x2);
+        appendBytes(&key, task.renderedRoI.y2);
+        int comps = 0;
+        for (const ImageLayerDesc& layer : task.components) {
+            comps += layer.getNumComponents();
+        }
+        appendBytes(&key, comps);
+    }
+
+    return key;
+}
+
 #endif // NATRON_HAVE_GPU
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
@@ -2319,6 +2411,7 @@ runGpuRegion(const FrameRenderContextPtr& context,
     runtime = gpu ? gpu->runtime() : nullptr;
     const auto lost = [&]() {
         report->deviceLost = true;
+        stripMemory().forget();
         logRegion(NodePtr(), QString::fromUtf8("GPU device lost; the frame is rendered again on the CPU"));
 
         return EffectInstance::eRenderRoIRetCodeFailed;
@@ -2330,6 +2423,15 @@ runGpuRegion(const FrameRenderContextPtr& context,
         bool evicted = false;
         bool serial = false;
         int forcedRows = 0;
+        const std::uint64_t generation = runtime->generation();
+        const std::string shapeKey = regionShapeKey(graph, region);
+        {
+            StripMemory::Setting remembered;
+            if (stripMemory().find(generation, shapeKey, &remembered)) {
+                forcedRows = remembered.forcedRows;
+                serial = remembered.serial;
+            }
+        }
         for (;;) {
             *report = RenderScheduler::RegionReport();
             RegionRun::FailureKind kind;
@@ -2340,6 +2442,9 @@ runGpuRegion(const FrameRenderContextPtr& context,
                 const EffectInstance::RenderRoIRetCode code = run.run(rootPlanes);
                 if (code != EffectInstance::eRenderRoIRetCodeFailed) {
                     report->retries = retries;
+                    if (serial || (forcedRows > 0)) {
+                        stripMemory().remember(generation, shapeKey, { forcedRows, serial });
+                    }
 
                     return code;
                 }

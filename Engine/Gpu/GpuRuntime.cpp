@@ -168,6 +168,8 @@ GpuRuntime::~GpuRuntime()
 GpuStatus
 GpuRuntime::build()
 {
+    static std::atomic<uint64_t> nextGeneration { 0 };
+    generation_.store(++nextGeneration, std::memory_order_release);
     if (GpuStatus s = GpuDevice::create(options_.device, device_); !s) {
         return s;
     }

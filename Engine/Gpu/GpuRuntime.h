@@ -83,6 +83,10 @@ public:
     GpuRuntimeState state() const { return state_.load(std::memory_order_acquire); }
     bool isLost() const { return state() == GpuRuntimeState::Lost; }
 
+    // Differs for every device built by any runtime of the process, so that what was learned about one device is
+    // never applied to another.
+    uint64_t generation() const { return generation_.load(std::memory_order_acquire); }
+
     GpuDevice& device() const { return *device_; }
     GpuTransfer& transfer() const { return *transfer_; }
     GpuKernelRegistry& registry() const { return *registry_; }
@@ -141,6 +145,7 @@ private:
     GpuStatus lostStatus() const;
 
     uint64_t leaked_ = 0;
+    std::atomic<uint64_t> generation_ { 0 };
     GpuRuntimeOptions options_;
     std::vector<GpuKernelDesc> registered_;
     struct RuntimeModule {

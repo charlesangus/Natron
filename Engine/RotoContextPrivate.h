@@ -28,13 +28,14 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
+#include <limits>
 #include <list>
 #include <map>
-#include <string>
-#include <vector>
-#include <limits>
 #include <sstream> // stringstream
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -553,8 +554,16 @@ struct RotoItemPrivate
     ////A locked item should not be modifiable by the GUI
     bool locked;
 
+    // Bumped by every invalidation. A memo is only valid for the generation read before its
+    // computation started, so a change racing with a computation is never hidden by it.
+    std::atomic<U64> contentGeneration;
+    mutable QMutex contentHashMutex; // protects the 3 members below
+    mutable U64 geometryHash;
+    mutable U64 geometryHashGeneration;
+    mutable bool geometryHashValid;
+
     RotoItemPrivate(const RotoContextPtr context,
-                    const std::string & n,
+                    const std::string& n,
                     const RotoLayerPtr& parent)
         : context(context)
         , scriptName(n)
@@ -562,6 +571,11 @@ struct RotoItemPrivate
         , parentLayer(parent)
         , globallyActivated(true)
         , locked(false)
+        , contentGeneration(0)
+        , contentHashMutex()
+        , geometryHash(0)
+        , geometryHashGeneration(0)
+        , geometryHashValid(false)
     {
     }
 };
@@ -780,6 +794,30 @@ public:
 
     //Used to prevent 2 threads from writing the same image in the rotocontext
     mutable QReadWriteLock cacheAccessMutex;
+
+    // The knob part of the item's content hash, one entry per knob in list order, memoized against
+    // knobsGeneration, which every content change of the knobs moves. A knob reading another knob
+    // through a master link or an expression changes with it, so it is kept live and rehashed on
+    // every use.
+    struct KnobHashEntry {
+        bool hashed;
+        U64 hash;
+        KnobIPtr liveKnob;
+    };
+    std::shared_ptr<std::atomic<U64>> knobsGeneration { std::make_shared<std::atomic<U64>>(0) };
+    mutable QMutex knobsHashMutex;
+    mutable std::vector<KnobHashEntry> knobsHashEntries;
+    mutable U64 knobsHashGeneration = 0;
+    mutable bool knobsHashValid = false;
+
+    void observeKnob(const KnobIPtr& knob)
+    {
+        KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
+        if (helper) {
+            helper->setContentGenerationObserver(knobsGeneration);
+        }
+        knobsGeneration->fetch_add(1, std::memory_order_acq_rel);
+    }
 
     RotoDrawableItemPrivate(bool isPaintingNode)
         : effectNode()
@@ -1256,6 +1294,10 @@ public:
         overlayColor[1] = 0.196936;
         overlayColor[2] = 0.196936;
         overlayColor[3] = 1.;
+
+        for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            observeKnob(*it);
+        }
     }
 
     ~RotoDrawableItemPrivate()

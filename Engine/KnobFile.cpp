@@ -34,14 +34,17 @@
 #include <QMutexLocker>
 #include <QDebug>
 
-#include "Engine/EffectInstance.h"
-#include "Engine/Transform.h"
-#include "Engine/StringAnimationManager.h"
-#include "Engine/KnobTypes.h"
-#include "Engine/Project.h"
-#include "Engine/ViewIdx.h"
-#include "Engine/EngineFwd.h"
 #include "Engine/AppInstance.h"
+#include "Engine/ContentHasher.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/EngineFwd.h"
+#include "Engine/FileStampRegistry.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
+#include "Engine/Project.h"
+#include "Engine/StringAnimationManager.h"
+#include "Engine/Transform.h"
+#include "Engine/ViewIdx.h"
 
 #include <SequenceParsing.h>
 #include "Global/QtCompat.h"
@@ -69,19 +72,120 @@ KnobFile::~KnobFile()
 void
 KnobFile::reloadFile()
 {
+    invalidateFileStamp();
     assert( getHolder() );
-    EffectInstance* effect = dynamic_cast<EffectInstance*>( getHolder() );
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(getHolder());
     if (effect) {
         effect->purgeCaches();
+        // The file may have changed in a way its stamp misses, which leaves the hash as it was.
+        effect->clearActionsCache();
         effect->clearPersistentMessage(false);
     }
+    reloadOtherNodesReadingTheseFiles();
     evaluateValueChange(0, getCurrentTime(), ViewIdx(0), eValueChangedReasonNatronInternalEdited);
+}
+
+void
+KnobFile::reloadOtherNodesReadingTheseFiles()
+{
+    const std::string path = getResolvedPath();
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(getHolder());
+
+    if (path.empty() || !effect || !effect->getApp()) {
+        return;
+    }
+    // The stamp is shared per path, so every other node reading these files must re-key too, and
+    // drop the frame listing, headers and metadata it read from them.
+    NodesList nodes;
+    effect->getApp()->getProject()->getNodes_recursive(nodes, false);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        EffectInstancePtr other = (*it)->getEffectInstance();
+        if (!other || other.get() == effect) {
+            continue;
+        }
+        const KnobsVec& knobs = other->getKnobs();
+        bool affected = false;
+        for (KnobsVec::const_iterator k = knobs.begin(); k != knobs.end(); ++k) {
+            KnobFile* otherFile = dynamic_cast<KnobFile*>(k->get());
+            if (otherFile && FileStampRegistry::coversSameFiles(path, otherFile->getResolvedPath())) {
+                otherFile->invalidateFileStamp();
+                affected = true;
+            }
+        }
+        if (affected) {
+            other->purgeCaches();
+            other->clearActionsCache();
+            other->clearPersistentMessage(false);
+            // The file stamps were just dropped, so the stored hashes predate them.
+            (*it)->markHashDirty();
+            // The format and the rest of the metadata still describe the file as it was read
+            // before, and nodes below clip to that format.
+            other->refreshMetadata_public(true);
+        }
+    }
 }
 
 bool
 KnobFile::canAnimate() const
 {
     return true;
+}
+
+std::string
+KnobFile::getResolvedPath()
+{
+    std::string path = getValue();
+
+    if (path.empty()) {
+        return path;
+    }
+    KnobHolder* holder = getHolder();
+    if (holder && holder->getApp()) {
+        holder->getApp()->getProject()->canonicalizePath(path);
+    }
+
+    return path;
+}
+
+std::string
+KnobFile::getSingleFilePath()
+{
+    const std::string path = getResolvedPath();
+
+    if (FileStampRegistry::hasFramePattern(path)) {
+        return std::string();
+    }
+
+    return path;
+}
+
+void
+KnobFile::invalidateFileStamp()
+{
+    const std::string path = getResolvedPath();
+
+    if (!path.empty()) {
+        FileStampRegistry::instance().invalidate(path);
+    }
+    invalidateContentHash();
+}
+
+void
+KnobFile::appendUnmemoizedContentHash(ContentHasher& h) const
+{
+    // getValue() is not const; it only reads the stored value.
+    const std::string path = const_cast<KnobFile*>(this)->getResolvedPath();
+    FileStampRegistry& registry = FileStampRegistry::instance();
+
+    if (path.empty()) {
+        h.appendI64(0);
+    } else if (FileStampRegistry::hasFramePattern(path)) {
+        h.appendI64(2);
+        h.appendU64(registry.sequenceStamp(path));
+    } else {
+        h.appendI64(1);
+        h.appendU64(registry.stamp(path));
+    }
 }
 
 const std::string KnobFile::_typeNameStr("InputFile");
@@ -134,7 +238,7 @@ void
 KnobOutputFile::rewriteFile()
 {
     assert( getHolder() );
-    EffectInstance* effect = dynamic_cast<EffectInstance*>( getHolder() );
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(getHolder());
     if (effect) {
         effect->purgeCaches();
         effect->clearPersistentMessage(false);

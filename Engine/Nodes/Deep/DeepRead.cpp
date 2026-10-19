@@ -33,8 +33,6 @@
 #include <OpenImageIO/deepdata.h>
 #include <OpenImageIO/imageio.h>
 
-#include <QDateTime>
-#include <QFileInfo>
 #include <QString>
 
 #include "Engine/DeepImage.h"
@@ -213,14 +211,9 @@ DeepRead::getDeepLayers(double time,
         return;
     }
 
-    const QFileInfo info(QString::fromUtf8(filename.c_str()));
-    const bool exists = info.exists();
-    const long long sizeStamp = exists ? (long long)info.size() : -1;
-    const long long modifiedStamp = exists ? (long long)info.lastModified().toMSecsSinceEpoch() : 0;
-
     {
         std::lock_guard<std::mutex> locker(_layersMemoMutex);
-        if ((filename == _layersMemoFilename) && (modifiedStamp == _layersMemoModified) && (sizeStamp == _layersMemoSize)) {
+        if (_layersMemoValid && (filename == _layersMemoFilename)) {
             *layers = _layersMemo;
 
             return;
@@ -236,9 +229,16 @@ DeepRead::getDeepLayers(double time,
 
     std::lock_guard<std::mutex> locker(_layersMemoMutex);
     _layersMemoFilename = filename;
-    _layersMemoModified = modifiedStamp;
-    _layersMemoSize = sizeStamp;
+    _layersMemoValid = true;
     _layersMemo = *layers;
+}
+
+void
+DeepRead::purgeCaches()
+{
+    std::lock_guard<std::mutex> locker(_layersMemoMutex);
+    _layersMemoValid = false;
+    _layersMemo.clear();
 }
 
 StatusEnum

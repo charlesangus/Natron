@@ -100,6 +100,9 @@ public:
         return false;
     }
 
+    // Project digests fold in application settings such as transform concatenation and GPU use.
+    virtual void onKnobContentChanged(const KnobI* knob) OVERRIDE FINAL;
+
     virtual bool onKnobValueChanged(KnobI* k,
                                     ValueChangedReasonEnum reason,
                                     double time,
@@ -292,8 +295,6 @@ public:
      * @brief Returns true if the QSettings existed prior to loading the settings
      **/
     bool didSettingsExistOnStartup() const;
-
-    bool notifyOnFileChange() const;
 
     bool isAggressiveCachingEnabled() const;
 
@@ -497,7 +498,6 @@ private:
 
     // General/User Interface
     KnobPagePtr _uiPage;
-    KnobBoolPtr _notifyOnFileChange;
 
     KnobBoolPtr _filedialogForWriters;
     KnobBoolPtr _renderOnEditingFinished;

@@ -80,8 +80,6 @@ public:
 
     void setNodesThreadSafetyForRotopainting();
 
-    void incrementNodesAge();
-
     void refreshNodesConnections();
 
     virtual void clone(const RotoItem*  other) OVERRIDE;
@@ -230,6 +228,8 @@ protected:
     virtual void onTransformSet(double /*time*/) {}
 
     void addKnob(const KnobIPtr& knob);
+
+    virtual void appendLiveContentHash(ContentHasher& h) const OVERRIDE;
 
 private:
 

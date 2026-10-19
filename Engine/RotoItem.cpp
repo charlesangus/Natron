@@ -26,10 +26,11 @@
 #include "RotoItem.h"
 
 #include <algorithm> // min, max
-#include <sstream>
-#include <locale>
-#include <limits>
 #include <cassert>
+#include <limits>
+#include <locale>
+#include <mutex>
+#include <sstream>
 #include <stdexcept>
 
 #include <QLineF>
@@ -37,6 +38,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/BezierCP.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/CoonsRegularization.h"
 #include "Engine/FeatherPoint.h"
 #include "Engine/Format.h"
@@ -44,6 +46,7 @@
 #include "Engine/Image.h"
 #include "Engine/ImageParams.h"
 #include "Engine/Interpolation.h"
+#include "Engine/Node.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContextPrivate.h"
 #include "Engine/RotoLayer.h"
@@ -186,7 +189,7 @@ RotoItem::setGloballyActivated(bool a,
     if (c) {
         RotoDrawableItem* isDrawable = dynamic_cast<RotoDrawableItem*>(this);
         if (isDrawable) {
-            isDrawable->incrementNodesAge();
+            isDrawable->invalidateContentHash();
         }
         c->evaluateChange();
         c->onItemGloballyActivatedChanged(shared_from_this());
@@ -558,6 +561,89 @@ RotoItem::getPreviousItemInLayer() const
     }
 
     return getPreviousInLayer( layer, shared_from_this() );
+}
+
+void
+RotoItem::invalidateContentHash()
+{
+    _imp->contentGeneration.fetch_add(1, std::memory_order_acq_rel);
+
+    // The context's node hashes the items, and marking it marks the paint tree's nodes too.
+    RotoContextPtr context = getContext();
+    NodePtr node = context ? context->getNode() : NodePtr();
+    if (node) {
+        node->markHashDirty();
+    }
+}
+
+namespace {
+std::mutex g_contentRehashedHookMutex;
+std::function<void(const RotoItem*)> g_contentRehashedHook;
+} // anonymous namespace
+
+void
+RotoItem::setContentRehashedHookForTests(const std::function<void(const RotoItem*)>& hook)
+{
+    std::lock_guard<std::mutex> lock(g_contentRehashedHookMutex);
+    g_contentRehashedHook = hook;
+}
+
+void
+RotoItem::notifyContentRehashedForTests() const
+{
+    std::function<void(const RotoItem*)> hook;
+    {
+        std::lock_guard<std::mutex> lock(g_contentRehashedHookMutex);
+        hook = g_contentRehashedHook;
+    }
+    if (hook) {
+        hook(this);
+    }
+}
+
+U64
+RotoItem::getContentHash() const
+{
+    const U64 generation = _imp->contentGeneration.load(std::memory_order_acquire);
+    U64 geometry = 0;
+    {
+        QMutexLocker k(&_imp->contentHashMutex);
+        if (_imp->geometryHashValid && (_imp->geometryHashGeneration == generation)) {
+            geometry = _imp->geometryHash;
+        }
+    }
+    if (geometry == 0) {
+        ContentHasher g;
+        appendGeometryContentHash(g);
+        geometry = g.finalize();
+        notifyContentRehashedForTests();
+
+        QMutexLocker k(&_imp->contentHashMutex);
+        if (!_imp->geometryHashValid || (_imp->geometryHashGeneration <= generation)) {
+            _imp->geometryHash = geometry;
+            _imp->geometryHashGeneration = generation;
+            _imp->geometryHashValid = true;
+        }
+    }
+
+    ContentHasher h;
+    h.appendU64(geometry);
+    appendLiveContentHash(h);
+
+    return h.finalize();
+}
+
+void
+RotoItem::appendGeometryContentHash(ContentHasher& /*h*/) const
+{
+}
+
+void
+RotoItem::appendLiveContentHash(ContentHasher& h) const
+{
+    // Recursive so that the hash of a lone item, as folded by its internal nodes, still sees
+    // a deactivated ancestor layer.
+    h.appendBool(isDeactivatedRecursive());
 }
 
 NATRON_NAMESPACE_EXIT

@@ -91,19 +91,23 @@ private:
     int _saved;
 };
 
-// Restores the mode the app was in, with empty caches, however the comparison exits, so a failing
-// or throwing comparison cannot leak a mode or the cache entries of either pass into later tests.
+// Restores the mode the app was in, with empty caches unless told to keep them, however the
+// comparison exits, so a failing or throwing comparison cannot leak a mode or the cache entries of
+// either pass into later tests.
 class SchedulerModeGuard {
 public:
-    SchedulerModeGuard()
+    explicit SchedulerModeGuard(bool clearCaches = true)
         : _saved(appPTR->getRenderSchedulerMode())
+        , _clearCaches(clearCaches)
     {
     }
 
     ~SchedulerModeGuard()
     {
         appPTR->setRenderSchedulerMode(_saved);
-        appPTR->clearAllCaches();
+        if (_clearCaches) {
+            appPTR->clearAllCaches();
+        }
     }
 
     SchedulerModeGuard(const SchedulerModeGuard&) = delete;
@@ -111,17 +115,21 @@ public:
 
 private:
     RenderSchedulerModeEnum _saved;
+    bool _clearCaches;
 };
 
 void
 enterMode(RenderSchedulerModeEnum mode,
-          int poolSize)
+          int poolSize,
+          bool clearCaches = true)
 {
     if (poolSize > 0) {
         QThreadPool::globalInstance()->setMaxThreadCount(poolSize);
     }
     appPTR->setRenderSchedulerMode(mode);
-    appPTR->clearAllCaches();
+    if (clearCaches) {
+        appPTR->clearAllCaches();
+    }
 }
 
 RenderMismatch
@@ -346,15 +354,19 @@ renderDirect(const NodePtr& node,
              unsigned mipmapLevel,
              const RectI& roi,
              bool throughScheduler,
-             const std::list<ImageLayerDesc>& requestedComponents = std::list<ImageLayerDesc>())
+             const std::list<ImageLayerDesc>& requestedComponents = std::list<ImageLayerDesc>(),
+             bool byPassCache = true)
 {
     DirectPass pass;
     const int frame = static_cast<int>(time);
     AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
     RenderStatsPtr stats = throughScheduler ? std::make_shared<RenderStats>(false) : RenderStatsPtr();
+    // Only an output node starts a file render: the abort check of a non-interactive render reads
+    // the sequential-render state of its root, which other nodes do not have.
+    const bool isRenderUserInteraction = !dynamic_cast<OutputEffectInstance*>(node->getEffectInstance().get());
     ParallelRenderArgsSetter frameRenderArgs(time,
                                              view,
-                                             false /*isRenderUserInteraction*/,
+                                             isRenderUserInteraction,
                                              false /*isSequential*/,
                                              abortInfo,
                                              node,
@@ -405,7 +417,7 @@ renderDirect(const NodePtr& node,
                                            RenderScale::fromMipmapLevel(mipmapLevel),
                                            mipmapLevel,
                                            view,
-                                           true /*byPassCache*/,
+                                           byPassCache,
                                            roi,
                                            RectD(),
                                            components,
@@ -488,6 +500,104 @@ readWindowZeroOutside(const ImagePtr& image,
     return pixels;
 }
 
+bool
+readPlane(const ImageLayerDesc& layer,
+          const ImagePtr& image,
+          const RectI& roi,
+          std::vector<RenderedPlane>* out,
+          std::string* error)
+{
+    if (!image) {
+        if (error) {
+            *error = "the render produced no " + layer.getLayerID() + " plane";
+        }
+
+        return false;
+    }
+    if (image->getBitDepth() != eImageBitDepthFloat) {
+        if (error) {
+            *error = "the " + layer.getLayerID() + " plane is not float";
+        }
+
+        return false;
+    }
+    RenderedPlane plane;
+    plane.layer = layer;
+    plane.window = roi;
+    plane.channels = image->getComponents().getChannels();
+    plane.pixels = readWindowZeroOutside(image, roi);
+    out->push_back(plane);
+
+    return true;
+}
+
+// `layers` empty reads back every plane of the render, in layer order.
+bool
+renderPlanes(const NodePtr& node,
+             double time,
+             ViewIdx view,
+             unsigned mipmapLevel,
+             const RectI& roi,
+             const std::list<ImageLayerDesc>& layers,
+             RenderSchedulerModeEnum mode,
+             bool byPassCache,
+             std::vector<RenderedPlane>* out,
+             std::string* error)
+{
+    out->clear();
+    if (!node) {
+        if (error) {
+            *error = "no node";
+        }
+
+        return false;
+    }
+    if (roi.isNull()) {
+        if (error) {
+            *error = "an empty window was requested";
+        }
+
+        return false;
+    }
+
+    // A render through the cache is there to see what it reuses, from earlier calls too.
+    DisableUnreachableRAMPurging noPurge;
+    SchedulerModeGuard modeGuard(byPassCache /*clearCaches*/);
+    enterMode(mode, 0, byPassCache /*clearCaches*/);
+
+    const bool throughScheduler = mode == eRenderSchedulerModeTaskGraph;
+    const DirectPass pass = renderDirect(node, time, view, mipmapLevel, roi, throughScheduler, layers, byPassCache);
+    if (pass.error.any) {
+        if (error) {
+            *error = pass.error.error;
+        }
+
+        return false;
+    }
+
+    if (layers.empty()) {
+        for (std::map<ImageLayerDesc, ImagePtr>::const_iterator it = pass.planes.begin(); it != pass.planes.end(); ++it) {
+            if (!readPlane(it->first, it->second, roi, out, error)) {
+                out->clear();
+
+                return false;
+            }
+        }
+
+        return true;
+    }
+    for (std::list<ImageLayerDesc>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+        std::map<ImageLayerDesc, ImagePtr>::const_iterator found = pass.planes.find(*it);
+        if (!readPlane(*it, (found == pass.planes.end()) ? ImagePtr() : found->second, roi, out, error)) {
+            out->clear();
+
+            return false;
+        }
+    }
+
+    return true;
+} // renderPlanes
+
 } // namespace
 
 bool
@@ -498,66 +608,40 @@ renderNodePlanesDirect(const NodePtr& node,
                        const RectI& roi,
                        const std::list<ImageLayerDesc>& layers,
                        std::vector<RenderedPlane>* out,
+                       std::string* error,
+                       bool byPassCache)
+{
+    if (layers.empty()) {
+        out->clear();
+        if (error) {
+            *error = "no plane was requested";
+        }
+
+        return false;
+    }
+
+    return renderPlanes(node, time, view, mipmapLevel, roi, layers, eRenderSchedulerModeLegacy, byPassCache, out, error);
+}
+
+bool
+renderNodePlanesInMode(const NodePtr& node,
+                       double time,
+                       ViewIdx view,
+                       unsigned mipmapLevel,
+                       const RectI& roi,
+                       const std::list<ImageLayerDesc>& layers,
+                       RenderSchedulerModeEnum mode,
+                       bool byPassCache,
+                       std::vector<RenderedPlane>* out,
                        std::string* error)
 {
-    out->clear();
-    if (!node) {
-        if (error) {
-            *error = "no node";
-        }
-
-        return false;
+    if (mode == eRenderSchedulerModeTaskGraph) {
+        return renderPlanes(node, time, view, mipmapLevel, roi, std::list<ImageLayerDesc>(), mode, byPassCache, out, error);
     }
-    if (layers.empty() || roi.isNull()) {
-        if (error) {
-            *error = "no plane or an empty window was requested";
-        }
+    const std::list<ImageLayerDesc> legacyLayers = layers.empty() ? std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()) : layers;
 
-        return false;
-    }
-
-    DisableUnreachableRAMPurging noPurge;
-    SchedulerModeGuard modeGuard;
-    enterMode(eRenderSchedulerModeLegacy, 0);
-
-    const DirectPass pass = renderDirect(node, time, view, mipmapLevel, roi, false /*throughScheduler*/, layers);
-    if (pass.error.any) {
-        if (error) {
-            *error = pass.error.error;
-        }
-
-        return false;
-    }
-
-    for (std::list<ImageLayerDesc>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
-        std::map<ImageLayerDesc, ImagePtr>::const_iterator found = pass.planes.find(*it);
-        if ((found == pass.planes.end()) || !found->second) {
-            if (error) {
-                *error = "the render produced no " + it->getLayerID() + " plane";
-            }
-            out->clear();
-
-            return false;
-        }
-        const ImagePtr& image = found->second;
-        if (image->getBitDepth() != eImageBitDepthFloat) {
-            if (error) {
-                *error = "the " + it->getLayerID() + " plane is not float";
-            }
-            out->clear();
-
-            return false;
-        }
-        RenderedPlane plane;
-        plane.layer = *it;
-        plane.window = roi;
-        plane.channels = image->getComponents().getChannels();
-        plane.pixels = readWindowZeroOutside(image, roi);
-        out->push_back(plane);
-    }
-
-    return true;
-} // renderNodePlanesDirect
+    return renderPlanes(node, time, view, mipmapLevel, roi, legacyLayers, mode, byPassCache, out, error);
+}
 
 GpuPlacementOffGuard::GpuPlacementOffGuard()
 {

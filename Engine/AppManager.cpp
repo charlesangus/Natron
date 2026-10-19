@@ -270,10 +270,17 @@ backTraceSigSegvHandler(int sig,
     messages = backtrace_symbols(trace, trace_size);
     /* skip first stack frame (points here) */
     std::cerr << "Backtrace:" << std::endl;
-    for (i = 1; i < trace_size; ++i) {
+    for (i = 1; messages && i < trace_size; ++i) {
         std::cerr << "[Frame " << i << "]: " << messages[i] << std::endl;
     }
-    exit(1);
+    // exit() would run the static destructors, and the global thread pool's destructor waits for every running task, so a
+    // fault on a pool thread would wait on itself forever. Dying of the signal also keeps the core dump.
+    struct sigaction dfl;
+    sigemptyset(&dfl.sa_mask);
+    dfl.sa_flags = 0;
+    dfl.sa_handler = SIG_DFL;
+    sigaction(sig, &dfl, NULL);
+    raise(sig);
 }
 
 static void
@@ -2473,28 +2480,6 @@ AppManager::getMemoryStatsForCacheEntryHolder(const CacheEntryHolder* holder,
 
     *ramOccupied = diskCacheMem + viewerCacheMem + nodeCacheMem + deepCacheMem;
     *diskOccupied = diskCacheDisk + viewerCacheDisk + nodeCacheDisk;
-}
-
-void
-AppManager::removeAllImagesFromCacheWithMatchingIDAndDifferentKey(const CacheEntryHolder* holder,
-                                                                  U64 treeVersion)
-{
-    _imp->_nodeCache->removeAllEntriesWithDifferentNodeHashForHolderPublic(holder, treeVersion);
-    _imp->_deepImageCache->removeAllEntriesWithDifferentNodeHashForHolderPublic(holder, treeVersion);
-}
-
-void
-AppManager::removeAllImagesFromDiskCacheWithMatchingIDAndDifferentKey(const CacheEntryHolder* holder,
-                                                                      U64 treeVersion)
-{
-    _imp->_diskCache->removeAllEntriesWithDifferentNodeHashForHolderPublic(holder, treeVersion);
-}
-
-void
-AppManager::removeAllTexturesFromCacheWithMatchingIDAndDifferentKey(const CacheEntryHolder* holder,
-                                                                    U64 treeVersion)
-{
-    _imp->_viewerCache->removeAllEntriesWithDifferentNodeHashForHolderPublic(holder, treeVersion);
 }
 
 void

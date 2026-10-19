@@ -33,6 +33,8 @@
 
 #include "Engine/EffectInstance.h"
 
+#include <atomic>
+
 #include <QWaitCondition>
 #include <QReadWriteLock>
 #include <QMutex>
@@ -188,8 +190,8 @@ public:
         , mustQuitPreviewMutex()
         , mustQuitPreviewCond()
         , renderInstancesSharedMutex()
-        , knobsAge(0)
-        , knobsAgeMutex()
+        , contentHashMutex()
+        , contentHash(0)
         , masterNodeMutex()
         , masterNode()
         , nodeLinks()
@@ -301,8 +303,6 @@ public:
                                    const std::map<std::string, std::string>& oldNewScriptNamesMapping,
                                    bool throwOnFailure);
 
-    void ifGroupForceHashChangeOfInputs();
-
     void runOnNodeCreatedCB(bool userEdited);
 
     void runOnNodeDeleteCB();
@@ -372,9 +372,42 @@ public:
     QWaitCondition mustQuitPreviewCond;
     QMutex renderInstancesSharedMutex; //< see eRenderSafetyInstanceSafe in EffectInstance::renderRoI
     //only 1 clone can render at any time
-    U64 knobsAge; //< the age of the knobs in this effect. It gets incremented every times the effect has its evaluate() function called.
-    mutable QReadWriteLock knobsAgeMutex; //< protects knobsAge and hash
-    Hash64 hash; //< recomputed every time knobsAge is changed.
+    mutable QReadWriteLock contentHashMutex; //< protects contentHash
+    U64 contentHash; //< 0 until first computed
+
+    // The hashes are recomputed lazily. Any thread marks the node by moving hashDirtyGeneration; a
+    // recompute records the generation and the global hash epoch it started from, so an edit
+    // landing during it leaves the node dirty. The node is dirty while either differs.
+    std::atomic<U64> hashDirtyGeneration { 1 };
+    std::atomic<U64> hashCleanGeneration { 0 };
+    std::atomic<U64> hashCleanEpoch { 0 };
+    // Set while a mark of this node waits for its dependents to be marked too.
+    std::atomic<bool> hashDirtyQueued { false };
+    U64 hashFlushVisit = 0; //< the flush pass that last reached the node; only read and written under the flush mutex
+    QMutex hashRecomputeMutex; //< serializes recomputes of this node; no other node's is taken under it
+
+    // Set on the nodes downstream of an edit instead of refreshing their input-related data, which
+    // their readers then refresh. Written on the main thread, read on any by the render setups.
+    std::atomic<bool> inputRelatedDataStale { false };
+    // Set while a refresh requested off the main thread waits in the main thread's event queue.
+    std::atomic<bool> inputRelatedDataRefreshRequested { false };
+
+    // The knob part of the content hash, memoized against the effect's knobs content generation.
+    // Knobs that read another knob or a file are kept as live entries and hashed on every use.
+    struct KnobsDigestEntry {
+        std::string name;
+        // Weak: the node outlives its effect, and a knob kept alive past its holder would still be
+        // reached through expression rechecks with no effect to resolve against.
+        KnobIWPtr liveKnob; //< null when hash below is memoized
+        U64 hash;
+    };
+    mutable QMutex knobsDigestMutex; //< protects the knobsDigest* fields
+    mutable bool knobsDigestValid = false;
+    mutable U64 knobsDigestGeneration = 0;
+    mutable std::vector<KnobsDigestEntry> knobsDigestEntries; //< sorted by name
+    mutable bool knobsDigestHasLiveEntries = false;
+    mutable U64 knobsDigest = 0; //< valid when there are no live entries
+    mutable bool knobsDigestHasExpression = false;
     mutable QMutex masterNodeMutex; //< protects masterNode and nodeLinks
     NodeWPtr masterNode; //< this points to the master when the node is a clone
     KnobLinkList nodeLinks; //< these point to the parents of the params links

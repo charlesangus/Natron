@@ -221,13 +221,23 @@ script-name prefix so the Write can share it.
   `key1`..`key4` and `value1`..`value4`, and the hidden `ocioConfigFile`,
   `ocioWorkingSpace` and `availableViews`. `reload` (`kNatronReadParamReload`)
   is a Reload button on the `filename` row.
-- **Reload.** The Reload button runs `purgeCaches()`: the frame listings, the
-  cached headers of the files and proxy files, the output metadata and the
-  action results are dropped, and the frame range is read from disk again. The
-  button triggers a render, so the node hash moves and the images and action
-  results cached under the old hash are retired. Until then a file changed on
-  disk is not seen: the produced layers, the region of definition and the
-  cached images stay those of the file read before.
+- **Reload.** The node hash folds in a stamp of the file or sequence
+  (`FileStampRegistry`: path, modification time, size and inode of every
+  file). A file is stamped once, the first time the node is hashed in a
+  session, and nothing watches or stats it again until Reload. The Reload
+  button runs `purgeCaches()`: the file and proxy stamps are taken again, the
+  frame listings, the cached headers of the files and proxy files, the output
+  metadata and the action results are dropped, and the frame range is read
+  from disk again. A file that changed gets a new stamp, so the node hash moves
+  and the images and action results cached under the old hash are retired.
+  Until then a file changed on disk is not seen: the hash, the produced
+  layers, the region of definition and the cached images stay those of the
+  file read before. An image that is not in the cache is decoded from the file
+  as it is on disk now, though, so a Read whose output is not cached can show
+  new pixels under the old hash. Every other node whose file knob covers the
+  same files is reloaded with it
+  (`KnobFile::reloadOtherNodesReadingTheseFiles()`). The file knob's own reload
+  (`KnobFile::reloadFile()`) does the same.
 - **Colour.** Pixels are converted to the project's working space through the
   project's OCIO config (`IoColorSpace::toWorkingProcessor()`). The default
   input space (`IoColorSpace::defaultInputSpace()`) is, in order: the config's
@@ -294,8 +304,7 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   `ocioOutputSpace`, `ocioOutputSpaceIndex`, `ocioOutputSpaceSet`, the `Context`
   group of `key1`..`key4` and `value1`..`value4`, the hidden `ocioConfigFile`
   and `ocioWorkingSpace`, `startRender`, `writeMetadata`, `readBack`,
-  `reload` (a Reload button on the `readBack` row) and the hidden
-  `readBackStamp`. The compression, bit-depth and per-format knobs follow the
+  and `reload` (a Reload button on the `readBack` row). The compression, bit-depth and per-format knobs follow the
   file name through `OiioWriteSupport::paramVisibility()`.
 - **Encoder.** `OiioWriteSupport::writeFile()` pulls rows from a `RowSource` one
   band (about `kDefaultBandBytes`) at a time and is the only pixel memory held:
@@ -339,24 +348,39 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   `isPassThroughForNonRenderedLayers()` blocks the rest). Without a writable
   format, only the channel set restricts the output. A colour row selecting
   alpha alone keeps an RGBA plane whose RGB is zero.
-- **Read back.** With `readBack` on, the node outputs the written file instead
-  of its input, decoded by `OiioReadSupport::decode()` inside the Write
-  (`renderReadBack()`), with the file read in the output space it was written in.
-  The produced planes then come from the file's header too
-  (`readBackLayers()`: its colour part and the layers
-  `OiioReadSupport::fileLayers()` groups for the view), so the channel set and
-  the input, even a disconnected one, no longer decide what downstream sees.
-  The input is optional while reading back (`isInputOptional()`), so a Viewer
-  renders the Write without it, and `outputFollowsLayerKnob()` is false, so a
-  channel set that selects nothing does not make the Write an identity of its
-  input.
-- **Reload.** The Reload button on the `readBack` row is enabled only while
-  `readBack` is on. It runs `purgeCaches()`: the cached headers of the files of
-  the frame range, the output metadata and the action results are dropped, and
-  the button triggers a render, so the node hash moves and the images and
-  action results cached under the old hash are retired. Until then a file
-  changed on disk is not seen: the produced layers and the cached images stay
-  those of the file read before.
+- **Read back.** `readBack` is offered only while the file name is an EXR (the
+  one format whose header can hold the gate below). A frame written to an EXR
+  carries the header attribute `natron:outputHash`, the Write's output content
+  hash (`getOutputContentHash()`: the node hash's content without `readBack`,
+  taken when the frame's render action starts) as 16 hex digits, on every part
+  of the file. With `readBack` on, a frame shows its file only when
+  `readBackFrame()` finds the file, reads its header and finds the stored hash
+  equal to the current output content hash; any other frame (no file, no
+  attribute, another hash) passes the input through with no error. The output
+  content hash covers the Write's own knobs, the upstream graph and the project
+  render settings, so an edit anywhere upstream turns the file away and setting
+  the edit back (or undoing it) brings the file back. Leaving `readBack` out of
+  it lets a file written with read back off match once it is on. The node hash
+  does include `readBack`, because the decoded file and the input differ in
+  pixels and metadata and identical nodes share cache entries; turning it on
+  or off therefore switches cache entries rather than purging them. The Render
+  button is disabled and Reload enabled while it is on. A file shown is decoded by
+  `OiioReadSupport::decode()` inside the Write (`renderReadBack()`), read in the
+  output space it was written in, and the produced planes, format and RoD come
+  from its header (`readBackLayers()`), so the channel set and a disconnected
+  input no longer decide what downstream sees. The input is optional while
+  `readBack` is on (`isInputOptional()`), and `outputFollowsLayerKnob()` is false
+  for a frame shown from its file. A finished sequence calls `purgeCaches()`
+  whether `readBack` is on or not, since what was cached while it was on no
+  longer matches the files.
+- **Reload.** `readBackFrame()` looks at each file once, keeping its header
+  and stored hash, and does not stat it again while frames render. The Reload
+  button on the `readBack` row is enabled only while `readBack` is on. It runs
+  `purgeCaches()`, as does a finished sequence:
+  the kept files, the cached headers of the files of the frame range, the
+  output metadata, the action results and the cached images of this node and
+  of every node downstream are dropped, so a file changed on disk is read
+  again.
 
 ## Writing a node, start to finish
 

@@ -187,6 +187,28 @@ Node::getOutputsWithGroupRedirection(NodesList& outputs) const
     }
 }
 
+void
+Node::appendOutputsWithGroupRedirection(std::vector<NodePtr>* outputs) const
+{
+    // The redirections only start at a group, a GroupOutput or a precomp's output node; any
+    // other node's outputs are its own, and the downstream walks of every edit read them.
+    const EffectInstance* effect = _imp->effect.get();
+    const bool mayRedirect = isEffectGroup() || dynamic_cast<const GroupOutput*>(effect) || _imp->precomp.lock();
+    if (!mayRedirect) {
+        QMutexLocker l(&_imp->outputsMutex);
+        for (NodesWList::const_iterator it = _imp->outputs.begin(); it != _imp->outputs.end(); ++it) {
+            NodePtr output = it->lock();
+            if (output) {
+                outputs->push_back(std::move(output));
+            }
+        }
+
+        return;
+    }
+    NodesList redirected;
+    getOutputsWithGroupRedirection(redirected);
+    outputs->insert(outputs->end(), redirected.begin(), redirected.end());
+}
 
 NodePtr
 Node::getInput(int index) const
@@ -826,13 +848,7 @@ Node::connectInput(const NodePtr & input,
         onInputChanged(inputNumber);
     }
 
-    bool creatingNodeTree = getApp()->isCreatingNodeTree();
-    if (!creatingNodeTree) {
-        ///Recompute the hash
-        computeHash();
-    }
-
-    _imp->ifGroupForceHashChangeOfInputs();
+    computeHash();
 
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
@@ -845,24 +861,6 @@ Node::connectInput(const NodePtr & input,
 
     return true;
 } // Node::connectInput
-
-
-
-void
-Node::Implementation::ifGroupForceHashChangeOfInputs()
-{
-    ///If the node is a group, force a change of the outputs of the GroupInput nodes so the hash of the tree changes downstream
-    NodeGroup* isGrp = dynamic_cast<NodeGroup*>( effect.get() );
-
-    if ( isGrp && !isGrp->getApp()->isCreatingNodeTree() ) {
-        NodesList inputsOutputs;
-        isGrp->getInputsOutputs(&inputsOutputs, false);
-        for (NodesList::iterator it = inputsOutputs.begin(); it != inputsOutputs.end(); ++it) {
-            (*it)->incrementKnobsAge_internal();
-            (*it)->computeHash();
-        }
-    }
-}
 
 bool
 Node::replaceInputInternal(const NodePtr& input, int inputNumber, bool useGuiInputs)
@@ -932,13 +930,7 @@ Node::replaceInputInternal(const NodePtr& input, int inputNumber, bool useGuiInp
         onInputChanged(inputNumber);
     }
 
-    bool creatingNodeTree = getApp()->isCreatingNodeTree();
-    if (!creatingNodeTree) {
-        ///Recompute the hash
-        computeHash();
-    }
-
-    _imp->ifGroupForceHashChangeOfInputs();
+    computeHash();
 
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
@@ -1035,20 +1027,13 @@ Node::switchInput0And1()
         onInputChanged(inputAIndex);
         onInputChanged(inputBIndex);
     }
-    bool creatingNodeTree = getApp()->isCreatingNodeTree();
-    if (!creatingNodeTree) {
-        ///Recompute the hash
-        computeHash();
-    }
+    computeHash();
 
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
         _imp->runInputChangedCallback(inputAIndex, inputChangedCB);
         _imp->runInputChangedCallback(inputBIndex, inputChangedCB);
     }
-
-
-    _imp->ifGroupForceHashChangeOfInputs();
 
     if (mustCallEnd) {
         endInputEdition(true);
@@ -1156,13 +1141,7 @@ Node::disconnectInput(int inputNumber)
         mustCallEnd = true;
         onInputChanged(inputNumber);
     }
-    bool creatingNodeTree = getApp()->isCreatingNodeTree();
-    if (!creatingNodeTree) {
-        ///Recompute the hash
-        computeHash();
-    }
-
-    _imp->ifGroupForceHashChangeOfInputs();
+    computeHash();
 
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
@@ -1225,16 +1204,7 @@ Node::disconnectInputInternal(Node* input, bool useGuiValues)
             mustCallEnd = true;
             onInputChanged(found);
         }
-        bool creatingNodeTree = getApp()->isCreatingNodeTree();
-        if (!creatingNodeTree) {
-            ///Recompute the hash
-            if ( !getApp()->getProject()->isProjectClosing() ) {
-                computeHash();
-            }
-        }
-
-
-        _imp->ifGroupForceHashChangeOfInputs();
+        computeHash();
 
         std::string inputChangedCB = getInputChangedCallback();
         if ( !inputChangedCB.empty() ) {
@@ -1537,8 +1507,8 @@ Node::getPreferredInputNode() const
     PrecompNode* isPrecomp = dynamic_cast<PrecompNode*>( _imp->effect.get() );
 
     if (isInput) {
-        NodeGroup* isGroup = dynamic_cast<NodeGroup*>( getGroup().get() );
-        assert(isGroup);
+        // An Input node can be created at the top level of the project, where no group feeds it.
+        NodeGroup* isGroup = dynamic_cast<NodeGroup*>(getGroup().get());
         if (!isGroup) {
             return NodePtr();
         }
@@ -1590,7 +1560,7 @@ Node::endInputEdition(bool triggerRender)
 
         if (hasChanged) {
             if ( !getApp()->isCreatingNodeTree() ) {
-                forceRefreshAllInputRelatedData();
+                refreshInputRelatedDataAfterInputChange();
             }
             refreshDynamicProperties();
         }
@@ -1611,7 +1581,9 @@ void
 Node::onInputChanged(int inputNb,
                      bool isInputA)
 {
-    if ( getApp()->getProject()->isProjectClosing() ) {
+    // A destroy deferred until the node's renders quit can finish after its app is gone.
+    AppInstancePtr app = getApp();
+    if (!app || app->getProject()->isProjectClosing()) {
         return;
     }
     assert( QThread::currentThread() == qApp->thread() );
@@ -1821,11 +1793,7 @@ InspectorNode::connectInput(const NodePtr& input,
     }
 
     if ( !Node::connectInput(input, inputNumber) ) {
-        bool creatingNodeTree = getApp()->isCreatingNodeTree();
-        if (!creatingNodeTree) {
-            ///Recompute the hash
-            computeHash();
-        }
+        computeHash();
     }
 
     return true;
@@ -1842,11 +1810,7 @@ InspectorNode::setActiveInputAndRefresh(int inputNb,
         return;
     }
 
-    bool creatingNodeTree = getApp()->isCreatingNodeTree();
-    if (!creatingNodeTree) {
-        ///Recompute the hash
-        computeHash();
-    }
+    computeHash();
 
     Q_EMIT inputChanged(inputNb);
     onInputChanged(inputNb, isASide);

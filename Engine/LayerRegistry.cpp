@@ -287,6 +287,11 @@ LayerRegistry::add(const ImageLayerDesc& descIn, LayerRegistryEntry::OriginEnum 
                 unioned.push_back(newChannels[c]);
             }
         }
+        // A reordered or partial set adds nothing. Reporting it as grown would bump every node
+        // that uses the layer, and storing it would reorder the channels those nodes rely on.
+        if (unioned.size() == existingChannels.size()) {
+            return eAddResultUnchanged;
+        }
         if ((int)unioned.size() > kLayerMaxChannels) {
             if (error) {
                 *error = "A layer named \"" + id + "\" cannot grow past " + std::to_string(kLayerMaxChannels) + " channels.";

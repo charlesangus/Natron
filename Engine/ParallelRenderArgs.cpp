@@ -34,17 +34,21 @@
 #include <tuple>
 #include <vector>
 
+#include <QCoreApplication>
+#include <QThread>
+
 #include "Engine/AbortableRenderInfo.h"
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
-#include "Engine/Settings.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/GPUContextPool.h"
 #include "Engine/Image.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/GPUContextPool.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
+#include "Engine/Settings.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
@@ -1035,6 +1039,7 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
                                                    const RenderStatsPtr& stats,
                                                    bool setUpstreamArgs)
     : argsMap()
+    , _abortedForStaleInputData(false)
 {
     assert(treeRoot);
 
@@ -1049,14 +1054,14 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
     _openGLContext = glContext;
 
     ArgsInstallSequence installSequence;
-    buildArgsMap(time, view, isRenderUserInteraction, isSequential, abortInfo, treeRoot, textureIndex, timeline,
-                 activeRotoPaintNode, isAnalysis, draftMode, stats, setUpstreamArgs, glContext, &_installedArgs, &installSequence, &nodes);
+    _abortedForStaleInputData = buildArgsMap(time, view, isRenderUserInteraction, isSequential, abortInfo, treeRoot, textureIndex, timeline,
+                                             activeRotoPaintNode, isAnalysis, draftMode, stats, setUpstreamArgs, glContext, &_installedArgs, &installSequence, &nodes);
     for (ArgsInstallSequence::const_iterator it = installSequence.begin(); it != installSequence.end(); ++it) {
         it->first->getEffectInstance()->setParallelRenderArgsTLS(it->second);
     }
 }
 
-void
+bool
 ParallelRenderArgsSetter::buildArgsMap(double time,
                                        ViewIdx view,
                                        bool isRenderUserInteraction,
@@ -1078,6 +1083,7 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
     assert(treeRoot);
     assert(out);
 
+    bool abortedForStaleInputData = false;
     FindDependenciesMap dependenciesMap;
     if (setUpstreamArgs) {
         getAllUpstreamNodesRecursiveWithDependencies_internal(treeRoot, dependenciesMap);
@@ -1086,6 +1092,51 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
         n.recursed = true;
         n.visitCounter = 1;
         dependenciesMap.insert(std::make_pair(treeRoot, n));
+    }
+
+    // Before any hash is read below: a refresh can change knobs, and with them hashes. Off the
+    // main thread the refresh can only be posted, and the hashes read below are already the new
+    // ones, so a render using the stale metadata would store results under keys a fresh render
+    // looks up.
+    if (setUpstreamArgs) {
+        const bool isMainThread = (QThread::currentThread() == qApp->thread());
+        std::vector<NodeWPtr> stale;
+        for (FindDependenciesMap::iterator it = dependenciesMap.begin(); it != dependenciesMap.end(); ++it) {
+            NodesList pulled(1, it->first);
+            RotoContextPtr roto = it->first->getRotoContext();
+            if (roto) {
+                roto->getRotoPaintTreeNodes(&pulled);
+            }
+            for (NodesList::const_iterator node = pulled.begin(); node != pulled.end(); ++node) {
+                if (isMainThread) {
+                    (*node)->refreshInputRelatedDataIfStale();
+                } else if ((*node)->isInputRelatedDataStale()) {
+                    (*node)->requestInputRelatedDataRefresh();
+                    stale.push_back(*node);
+                }
+            }
+        }
+        // Only a viewer render is dropped and redrawn: aborting a frame of a file render or an
+        // analysis would fail the whole job. Queued after the refreshes, so it runs once they are
+        // done, and only redraws once every node is fresh, so a refresh that cannot run yet never
+        // loops back into another aborted render.
+        if (!stale.empty() && abortInfo && abortInfo->canAbort() && treeRoot->isEffectViewer()) {
+            abortInfo->setAborted();
+            abortedForStaleInputData = true;
+            AppInstanceWPtr weakApp = treeRoot->getApp();
+            QMetaObject::invokeMethod(qApp, [weakApp, stale]() {
+                AppInstancePtr app = weakApp.lock();
+                if (!app) {
+                    return;
+                }
+                for (std::size_t i = 0; i < stale.size(); ++i) {
+                    NodePtr node = stale[i].lock();
+                    if (node && node->isInputRelatedDataStale()) {
+                        return;
+                    }
+                }
+                app->renderAllViewers(true); }, Qt::QueuedConnection);
+        }
     }
 
     auto add = [out, installSequence](const NodePtr& node, const ParallelRenderArgsPtr& args) {
@@ -1155,6 +1206,8 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
             }
         }
     }
+
+    return abortedForStaleInputData;
 } // ParallelRenderArgsSetter::buildArgsMap
 
 void
@@ -1196,8 +1249,9 @@ ParallelRenderArgsSetter::updateNodesRequest(const FrameRequestMap& request)
     }
 }
 
-ParallelRenderArgsSetter::ParallelRenderArgsSetter(const std::shared_ptr<std::map<NodePtr, ParallelRenderArgsPtr> >& args)
+ParallelRenderArgsSetter::ParallelRenderArgsSetter(const std::shared_ptr<std::map<NodePtr, ParallelRenderArgsPtr>>& args)
     : argsMap(args)
+    , _abortedForStaleInputData(false)
 {
     // Ensure this thread gets an OpenGL context for the render of the frame
     OSGLContextPtr glContext;

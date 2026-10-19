@@ -26,6 +26,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
+#include "Global/Enums.h"
 #include "Global/Macros.h"
 
 #include <functional>
@@ -119,16 +120,38 @@ struct RenderedPlane {
 };
 
 // Renders the planes in `layers` of `node` over `roi` (pixel coordinates at `mipmapLevel`) in one
-// Legacy-mode renderRoI call that bypasses the cache, and reads each back as float over the whole
-// of `roi`, zero where the render was clipped to the node's region of definition. `out` gets one
-// plane for each entry of `layers`, in the same order. The scheduler mode and the caches are
-// restored before returning. On failure `out` is empty and `error`, when given, says why.
+// Legacy-mode renderRoI call, and reads each back as float over the whole of `roi`, zero where the
+// render was clipped to the node's region of definition. `out` gets one plane for each entry of
+// `layers`, in the same order. The scheduler mode is restored before returning.
+// On failure `out` is empty and `error`, when given, says why. With `byPassCache`, the render
+// bypasses the cache for the whole tree, not just for `node`: every node upstream drops the entry
+// it finds and renders again, and the caches are emptied before and after. A test of cache reuse
+// passes false, which also leaves the caches as they are.
 bool renderNodePlanesDirect(const NodePtr& node,
                             double time,
                             ViewIdx view,
                             unsigned mipmapLevel,
                             const RectI& roi,
                             const std::list<ImageLayerDesc>& layers,
+                            std::vector<RenderedPlane>* out,
+                            std::string* error = 0,
+                            bool byPassCache = true);
+
+// Renders `node` over `roi` the way `mode` renders a frame, and reads every plane back as
+// renderNodePlanesDirect() does. Legacy renders the planes in `layers` (RGBA when it is empty) in
+// one renderRoI call on this thread; Task graph runs a frame built by the RenderScheduler, which
+// renders the planes its request pass plans for the node and ignores `layers`. `out` gets every
+// plane rendered: in `layers` order for Legacy, in layer order for Task graph. The scheduler always
+// renders through the cache, so there `byPassCache` only empties the caches before and after the
+// render. The scheduler mode is restored before returning.
+bool renderNodePlanesInMode(const NodePtr& node,
+                            double time,
+                            ViewIdx view,
+                            unsigned mipmapLevel,
+                            const RectI& roi,
+                            const std::list<ImageLayerDesc>& layers,
+                            RenderSchedulerModeEnum mode,
+                            bool byPassCache,
                             std::vector<RenderedPlane>* out,
                             std::string* error = 0);
 

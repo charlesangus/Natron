@@ -26,11 +26,13 @@
 #include "OfxEffectInstance.h"
 
 #include <algorithm>
+#include <atomic>
 #include <bitset>
 #include <cassert>
 #include <cctype>
 #include <limits>
 #include <locale>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 
@@ -298,6 +300,13 @@ struct OfxEffectInstancePrivate
 
     std::vector<MultiplaneTwin> multiplaneTwins;
     bool pushingMultiplaneTwin;
+
+    // The node hash the clips' metadata caches were last checked against. It is stored only
+    // after the caches were dropped, so a reader seeing it current never reads a stale cache.
+    std::atomic<U64> clipMetadataHash { 0 };
+    // A leaf: held only around the compare and ClipInstance::invalidateMetadata(), which takes
+    // nothing but the clips' own leaf locks.
+    std::mutex clipMetadataHashMutex;
 
     OfxEffectInstancePrivate()
         : effect()
@@ -1240,7 +1249,7 @@ OfxEffectInstance::tryInitializeOverlayInteracts()
         interactDesc.setEntryPoint(interactEntryPoint);
 //#pragma message WARN("FIXME: bitdepth and hasalpha are probably wrong")
         interactDesc.describe(/*bitdepthPerComponent=*/ 8, /*hasAlpha=*/ false);
-        OfxParamOverlayInteractPtr overlayInteract( new OfxParamOverlayInteract( knob.get(), interactDesc, effectInstance()->getHandle()) );
+        OfxParamOverlayInteractPtr overlayInteract(new OfxParamOverlayInteract(knob.get(), interactDesc, effectInstance()->getHandle(), effectInstance()->getOfxEffectInstance()));
         knob->setCustomInteract(overlayInteract);
         overlayInteract->createInstanceAction();
     }
@@ -1887,19 +1896,53 @@ OfxEffectInstance::onNodeHashChanged(U64 hash)
     EffectInstance::onNodeHashChanged(hash);
 
 #ifdef OFX_SUPPORTS_METADATA
-    // No walk of its own: Node::computeHashRecursive already visits every node downstream of
-    // the one that changed, and a node's hash folds in its inputs', so every effect whose
-    // metadata could have gone stale gets here on its own.
+    // dropStaleClipMetadata() already turns away caches filled under another hash; this
+    // releases them early, for a hash recomputed by a reader that is not a metadata reader.
     //
     // Never take Instance::_metadataMutex on this path. getOutputMetadata() holds it across
     // the getMetadata() calls it makes on its input clips, so that mutex is only ever taken
-    // downstream to upstream, while this runs upstream to downstream; taking it here would
-    // be an ABBA deadlock against a render thread. invalidateMetadata() is safe as it stands
-    // because it takes no lock on the instance and ClipInstance::_metadataCacheMutex, which
-    // it does take, is a leaf that is released before anything else is touched.
+    // downstream to upstream, while recomputes run upstream to downstream; taking it here would
+    // be an ABBA deadlock against a render thread.
+    dropClipMetadataNotCachedUnder(hash);
+#else
+    (void)hash;
+#endif
+}
+
+void
+OfxEffectInstance::dropClipMetadataNotCachedUnder(U64 hash)
+{
+#ifdef OFX_SUPPORTS_METADATA
+    if (_imp->clipMetadataHash.load() == hash) {
+        return;
+    }
+    std::lock_guard<std::mutex> locker(_imp->clipMetadataHashMutex);
+    if (_imp->clipMetadataHash.load() == hash) {
+        return;
+    }
     if (_imp->effect) {
         _imp->effect->invalidateMetadata();
     }
+    _imp->clipMetadataHash.store(hash);
+#else
+    (void)hash;
+#endif
+}
+
+void
+OfxEffectInstance::dropStaleClipMetadata()
+{
+#ifdef OFX_SUPPORTS_METADATA
+    NodePtr node = getNode();
+    if (!node || !node->isNodeCreated()) {
+        return;
+    }
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    if (project && project->isLoadingProject()) {
+        return;
+    }
+    dropClipMetadataNotCachedUnder(node->getHashValue());
 #endif
 }
 

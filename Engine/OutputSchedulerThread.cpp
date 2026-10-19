@@ -527,20 +527,36 @@ struct OutputSchedulerThreadPrivate
     void waitForRenderThreadsToQuit()
     {
 #ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-        RenderThreads threads;
-        {
-            QMutexLocker l(&renderThreadsMutex);
-            threads = renderThreads;
-        }
+        // A render thread that finished a frame just before the last one may still be in
+        // adjustNumberOfThreads() and append a new thread after the caller's stopRenderThreads(0),
+        // so every pass flags whatever is listed now and the wait repeats until the list stays empty.
+        for (;;) {
+            RenderThreads threads;
+            {
+                QMutexLocker l(&renderThreadsMutex);
+                for (RenderThreads::iterator it = renderThreads.begin(); it != renderThreads.end(); ++it) {
+                    if (!it->thread->mustQuit()) {
+                        it->thread->scheduleForRemoval();
+                    }
+                }
+                threads = renderThreads;
+            }
+            if (threads.empty()) {
+                break;
+            }
+            {
+                QMutexLocker framesLocker(&framesToRenderMutex);
+                framesToRenderNotEmptyCond.wakeAll();
+            }
 
-        for (RenderThreads::iterator it = threads.begin(); it != threads.end(); ++it) {
-            it->thread->wait();
-        }
-        {
-            QMutexLocker l(&renderThreadsMutex);
+            for (RenderThreads::iterator it = threads.begin(); it != threads.end(); ++it) {
+                it->thread->wait();
+            }
+            {
+                QMutexLocker l(&renderThreadsMutex);
 
-            removeQuitRenderThreadsInternal();
-            assert( renderThreads.empty() );
+                removeQuitRenderThreadsInternal();
+            }
         }
 #else
         /*
@@ -3179,6 +3195,17 @@ RenderEngine::getOutput() const
 }
 
 void
+RenderEngine::refreshInputRelatedDataForRender()
+{
+    OutputEffectInstancePtr output = _imp->output.lock();
+    NodePtr node = output ? output->getNode() : NodePtr();
+
+    if (node) {
+        node->refreshInputRelatedDataForRender();
+    }
+}
+
+void
 RenderEngine::renderFrameRange(bool isBlocking,
                                bool enableRenderStats,
                                int firstFrame,
@@ -3188,6 +3215,7 @@ RenderEngine::renderFrameRange(bool isBlocking,
                                RenderDirectionEnum forward)
 {
     setPlaybackAutoRestartEnabled(true);
+    refreshInputRelatedDataForRender();
 
     {
         QMutexLocker k(&_imp->schedulerCreationLock);
@@ -3205,6 +3233,7 @@ RenderEngine::renderFromCurrentFrame(bool enableRenderStats,
                                      RenderDirectionEnum forward)
 {
     setPlaybackAutoRestartEnabled(true);
+    refreshInputRelatedDataForRender();
 
     {
         QMutexLocker k(&_imp->schedulerCreationLock);
@@ -3252,7 +3281,7 @@ RenderEngine::renderCurrentFrameInternal(bool enableRenderStats,
 
         return;
     }
-
+    refreshInputRelatedDataForRender();
 
     ///If the scheduler is already doing playback, continue it
     if (_imp->scheduler) {

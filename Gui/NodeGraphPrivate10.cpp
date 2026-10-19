@@ -255,8 +255,6 @@ NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr& internalS
     NodesList allNodes;
     _publicInterface->getGui()->getApp()->getProject()->getActiveNodesExpandGroups(&allNodes);
 
-    //We don't want the clone to have the same hash as the original
-    n->incrementKnobsAge();
     if (guiSerialization) {
         gui->fromSerialization(*guiSerialization);
         if (isPlaceholder) {

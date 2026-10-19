@@ -28,17 +28,19 @@
 
 #include "Global/Macros.h"
 
-#include <vector>
-#include <set>
-#include <map>
-#include <list>
+#include <QRecursiveMutex>
 #include <QString>
 #include <QStringList>
-#include <QRecursiveMutex>
+#include <atomic>
+#include <list>
+#include <map>
+#include <set>
+#include <vector>
 
-#include "Global/Enums.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/PluginActionShortcut.h"
+#include "Global/Enums.h"
+#include "Global/GlobalDefines.h"
 
 #ifdef SBK_RUN
 NATRON_NAMESPACE_USING
@@ -196,6 +198,8 @@ class Plugin
     bool _openglActivated;
 
     Natron::PluginOpenGLRenderSupport _openglRenderSupport;
+
+    mutable std::atomic<U64> _binaryContentStamp { 0 };
 
 public:
 
@@ -357,6 +361,16 @@ public:
     void setOfxPlugin(OFX::Host::ImageEffect::ImageEffectPlugin* p);
 
     OFX::Host::ImageEffect::ImageEffectPlugin* getOfxPlugin() const;
+
+    /**
+     * @brief Identifies the code that renders this plug-in: for OpenFX the binary's path,
+     * modification time and size, otherwise the Natron version and commit and the running
+     * executable's modification time and size. A plug-in whose output depends on state outside
+     * the project (system fonts, files in the home directory) also gets the session salt.
+     * Computed once, on first call, so a binary replaced while Natron runs keeps its first
+     * stamp, matching the already loaded code. Never 0.
+     **/
+    U64 getBinaryContentStamp() const;
     OFX::Host::ImageEffect::Descriptor* getOfxDesc(Natron::ContextEnum* ctx) const;
 
     void setOfxDesc(OFX::Host::ImageEffect::Descriptor* desc, Natron::ContextEnum ctx);

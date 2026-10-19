@@ -72,6 +72,11 @@ public:
                                              ViewIdx view,
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Forgets the layers read from the file, so that Reload reads them again.
+     **/
+    virtual void purgeCaches() OVERRIDE FINAL;
+
 private:
     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -88,12 +93,11 @@ private:
     KnobFileWPtr _filename;
 
     // The header of the last file asked about, so scrubbing between uncached queries of one
-    // frame does not reopen it each time. The file's modification time and size are part of the
-    // key because a file rewritten in place keeps its name but can change its channels.
+    // frame does not reopen it each time. Kept until Reload, like the file's stamp, so a file
+    // rewritten in place shows its new channels only once the node re-keys on it.
     std::mutex _layersMemoMutex;
+    bool _layersMemoValid = false;
     std::string _layersMemoFilename;
-    long long _layersMemoModified = 0;
-    long long _layersMemoSize = -1;
     std::list<ImageLayerDesc> _layersMemo;
 };
 

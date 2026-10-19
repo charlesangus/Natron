@@ -192,7 +192,8 @@ Image::applyMaskMix(const RectI& roi,
                     bool masked,
                     bool maskInvert,
                     float mix,
-                    const OSGLContextPtr& glContext)
+                    const OSGLContextPtr& glContext,
+                    int maskChannel)
 {
     ///!masked && mix == 1 has nothing to do
     if ( !masked && (mix == 1) ) {
@@ -211,10 +212,13 @@ Image::applyMaskMix(const RectI& roi,
     const RectI realRoI = roi.intersect(_bounds);
 
     assert( !originalImg || getBitDepth() == originalImg->getBitDepth() );
-    assert(!masked || !maskImg || maskImg->getComponents() == ImageLayerDesc::getAlphaComponents());
+    // The mask is read as one channel per pixel; a single-channel layer other than alpha may be
+    // the selected mask channel.
+    assert(!masked || !maskImg || (maskImg->getStorageMode() == eStorageModeGLTex) || maskImg->getComponentsCount() == 1);
 
     if (getStorageMode() == eStorageModeGLTex) {
         assert(glContext);
+        assert(!masked || !maskImg || maskImg->getComponentsCount() == 1 || (0 <= maskChannel && maskChannel < (int)maskImg->getComponentsCount()));
         assert(!originalImg || originalImg->getStorageMode() == eStorageModeGLTex);
         GLShaderPtr shader = glContext->getOrCreateMaskMixShader(maskImg != 0);
         assert(shader);
@@ -260,6 +264,8 @@ Image::applyMaskMix(const RectI& roi,
         shader->setUniform("outputImageTex", 0);
         shader->setUniform("mixValue", mix);
         shader->setUniform("maskEnabled", maskImg ? 1 : 0);
+        // A one-channel mask holds its value in alpha on GL: an upload replicates it into all four channels.
+        shader->setUniform("maskChannel", (maskImg && maskImg->getComponentsCount() != 1 && maskChannel >= 0) ? maskChannel : 3);
         applyTextureMapping(_bounds, realRoI);
         shader->unbind();
 

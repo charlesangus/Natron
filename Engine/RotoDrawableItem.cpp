@@ -42,6 +42,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/BezierCP.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/CoonsRegularization.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/FeatherPoint.h"
@@ -121,6 +122,7 @@ RotoDrawableItem::~RotoDrawableItem()
 void
 RotoDrawableItem::addKnob(const KnobIPtr& knob)
 {
+    _imp->observeKnob(knob);
     _imp->knobs.push_back(knob);
 }
 
@@ -268,6 +270,22 @@ RotoDrawableItem::createNodes(bool connectNodes)
     }
     assert(_imp->mergeNode);
 
+    // Attached before any value or input is set on the nodes: each of those recomputes their
+    // hashes, and a hash computed before the attach leaves out the item and follows the
+    // RotoPaint input.
+    if (_imp->effectNode) {
+        _imp->effectNode->attachRotoItem(thisShared);
+    }
+    if (_imp->mergeNode) {
+        _imp->mergeNode->attachRotoItem(thisShared);
+    }
+    if (_imp->timeOffsetNode) {
+        _imp->timeOffsetNode->attachRotoItem(thisShared);
+    }
+    if (_imp->frameHoldNode) {
+        _imp->frameHoldNode->attachRotoItem(thisShared);
+    }
+
     if ( (type != eRotoStrokeTypeSolid) && (type != eRotoStrokeTypeSmear) ) {
         int maxInp = _imp->mergeNode->getNInputs();
         for (int i = 0; i < maxInp; ++i) {
@@ -318,21 +336,6 @@ RotoDrawableItem::createNodes(bool connectNodes)
 
         setNodesThreadSafetyForRotopainting();
     }
-
-    ///Attach this stroke to the underlying nodes used
-    if (_imp->effectNode) {
-        _imp->effectNode->attachRotoItem(thisShared);
-    }
-    if (_imp->mergeNode) {
-        _imp->mergeNode->attachRotoItem(thisShared);
-    }
-    if (_imp->timeOffsetNode) {
-        _imp->timeOffsetNode->attachRotoItem(thisShared);
-    }
-    if (_imp->frameHoldNode) {
-        _imp->frameHoldNode->attachRotoItem(thisShared);
-    }
-
 
     if (connectNodes) {
         refreshNodesConnections();
@@ -643,27 +646,49 @@ RotoDrawableItem::rotoKnobChanged(const KnobIPtr& knob,
         }
     }
 
-
-    incrementNodesAge();
+    invalidateContentHash();
 } // RotoDrawableItem::rotoKnobChanged
 
 void
-RotoDrawableItem::incrementNodesAge()
+RotoDrawableItem::appendLiveContentHash(ContentHasher& h) const
 {
-    if ( getContext()->getNode()->getApp()->getProject()->isLoadingProject() ) {
-        return;
+    RotoItem::appendLiveContentHash(h);
+
+    // Read before any knob: a change made meanwhile moves it past the one stored, so the next call
+    // rebuilds.
+    const U64 generation = _imp->knobsGeneration->load(std::memory_order_acquire);
+    QMutexLocker l(&_imp->knobsHashMutex);
+    std::vector<RotoDrawableItemPrivate::KnobHashEntry>& entries = _imp->knobsHashEntries;
+    if (!_imp->knobsHashValid || (_imp->knobsHashGeneration != generation)) {
+        entries.clear();
+        const std::list<KnobIPtr>& knobs = getKnobs();
+        for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            RotoDrawableItemPrivate::KnobHashEntry entry;
+            entry.hashed = (*it)->isRenderHashed();
+            entry.hash = 0;
+            if (entry.hashed) {
+                bool hasExpression = false;
+                bool readsOutsideKnob = false;
+                (*it)->getContentHashDependencies(&hasExpression, &readsOutsideKnob);
+                if (readsOutsideKnob) {
+                    entry.liveKnob = *it;
+                } else {
+                    entry.hash = (*it)->getContentHash();
+                }
+            }
+            entries.push_back(entry);
+        }
+        _imp->knobsHashGeneration = generation;
+        _imp->knobsHashValid = true;
+        notifyContentRehashedForTests();
     }
-    if (_imp->effectNode) {
-        _imp->effectNode->incrementKnobsAge();
-    }
-    if (_imp->mergeNode) {
-        _imp->mergeNode->incrementKnobsAge();
-    }
-    if (_imp->timeOffsetNode) {
-        _imp->timeOffsetNode->incrementKnobsAge();
-    }
-    if (_imp->frameHoldNode) {
-        _imp->frameHoldNode->incrementKnobsAge();
+
+    // The knob list is fixed at construction, so positions identify knobs without their names.
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        h.appendBool(entries[i].hashed);
+        if (entries[i].hashed) {
+            h.appendU64(entries[i].liveKnob ? entries[i].liveKnob->getContentHash() : entries[i].hash);
+        }
     }
 }
 

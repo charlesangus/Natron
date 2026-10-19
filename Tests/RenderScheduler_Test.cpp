@@ -1025,6 +1025,19 @@ TEST_F(RenderSchedulerTest, CachedOutputsOfTwoFramesAtOnce)
     for (std::size_t p = 0; p < sizeof(poolSizes) / sizeof(poolSizes[0]); ++p) {
         SCOPED_TRACE("pool size " + std::to_string(poolSizes[p]));
         PoolSizeGuard pool(poolSizes[p]);
+        // Identical leaves would share one cached image, and so would the merges above them: each leaf gets its own
+        // value so that every node's cached output is its own and only the two frames share it. The values also
+        // differ from one pool size to the next: clearAllCaches() keeps the images still referenced, and pool threads
+        // can hold images of the previous pool size's frames for a moment after their futures are done (the one that
+        // finished a frame holds it, root plane included), which the same values would find under the same hashes.
+        float expected = 0.f;
+        for (int i = 0; i < leaves; ++i) {
+            KnobDouble* value = dynamic_cast<KnobDouble*>(nodes[i]->getKnobByName("value").get());
+            ASSERT_TRUE(value != NULL);
+            const double leafValue = 1. + i + (double)(leaves * p);
+            value->setValue(leafValue);
+            expected += (float)leafValue;
+        }
         appPTR->clearAllCaches();
         CountingTestRegistry::reset();
 
@@ -1060,7 +1073,7 @@ TEST_F(RenderSchedulerTest, CachedOutputsOfTwoFramesAtOnce)
             Image::ReadAccess access = image->getReadRights();
             const float* pixel = (const float*)access.pixelAt(0, 0);
             ASSERT_TRUE(pixel != NULL);
-            EXPECT_FLOAT_EQ((float)leaves, pixel[0]);
+            EXPECT_FLOAT_EQ(expected, pixel[0]);
         }
         // A leaf's second task waits for the first one and then finds its image in the cache.
         for (int i = 0; i < leaves; ++i) {

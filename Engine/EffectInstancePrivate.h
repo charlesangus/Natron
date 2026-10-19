@@ -33,6 +33,7 @@
 #include <list>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <QCoreApplication>
@@ -108,12 +109,14 @@ typedef std::map<ActionKey, ComponentsNeededResults, CompareActionsCacheKeys> Co
 
 /**
  * @brief This class stores all results of the following actions:
-   - getRegionOfDefinition (invalidated on hash change, mapped across time + scale)
-   - getTimeDomain (invalidated on hash change, only 1 value possible
-   - isIdentity (invalidated on hash change,mapped across time + scale)
+   - getRegionOfDefinition (stored per node hash, mapped across time + scale)
+   - getTimeDomain (stored per node hash, only 1 value possible
+   - isIdentity (stored per node hash,mapped across time + scale)
  * The reason we store them is that the OFX Clip API can potentially call these actions recursively
  * but this is forbidden by the spec:
  * http://openfx.sourceforge.net/Documentation/1.3/ofxProgrammingReference.html#id475585
+ * A hash names one state of the node, so the results of the states it held recently are kept, up
+ * to a fixed count, and served again when it returns to one of them.
  **/
 class ActionsCache
 {
@@ -122,7 +125,17 @@ public:
 
     void clearAll();
 
-    void invalidateAll(U64 newHash);
+    /**
+     * @brief Makes the results stored under hash the last to be evicted. The results already
+     * stored are kept. A hash with no results gets its set on its first stored result, so a
+     * node that is only re-keyed costs no allocation and evicts nothing.
+     **/
+    void useHash(U64 hash);
+
+    /**
+     * @brief Drops the results stored under hash, leaving those of other hashes.
+     **/
+    void clearResults(U64 hash);
 
     bool getIdentityResult(U64 hash, double time, ViewIdx view, int* inputNbIdentity, ViewIdx *inputView, double* identityTime);
 
@@ -165,10 +178,13 @@ private:
         ActionsCacheInstance();
     };
 
-    //In  a list to track the LRU
-    std::list<ActionsCacheInstance> _instances;
+    typedef std::list<ActionsCacheInstance> InstancesList;
+
+    // Least recently used first, with an index by hash so no lookup scans the list.
+    InstancesList _instances;
+    std::unordered_map<U64, InstancesList::iterator> _instancesByHash;
     std::size_t _maxInstances;
-    std::list<ActionsCacheInstance>::iterator createActionCacheInternal(U64 newHash);
+    ActionsCacheInstance* findActionCache(U64 hash);
     ActionsCacheInstance & getOrCreateActionCache(U64 newHash);
 };
 
@@ -216,16 +232,14 @@ public:
         }
     };
 
-    // Held across the whole of markImagesAsBeingRendered() so that one render reserves its rectangles on all its layer
-    // images before another render can query any of them. Taken before imagesBeingRenderedMutex and never held while
-    // waiting on another render.
-    QMutex imagesReservationMutex;
-    QMutex imagesBeingRenderedMutex;
     typedef std::shared_ptr<ImageBeingRendered> ImageBeingRenderedPtr;
     typedef std::map<ImagePtr, ImageBeingRenderedPtr> ImageBeingRenderedMap;
-    ImageBeingRenderedMap imagesBeingRendered;
 
-    ImageBeingRenderedPtr acquireImageBeingRendered(const ImagePtr& img);
+    // The images being rendered are tracked process-wide rather than per effect (see EffectInstancePrivate.cpp): a
+    // cached image is shared by every node whose content hash matches, not only by the clones of one node.
+    struct ImagesBeingRenderedRegistry;
+    static ImagesBeingRenderedRegistry& imagesBeingRenderedRegistry();
+    static ImageBeingRenderedPtr acquireImageBeingRendered(const ImagePtr& img);
 #endif
 
     ///A cache for components available
@@ -412,6 +426,7 @@ public:
                                           const std::bitset<4>& processChannels,
                                           const int preferredInput,
                                           const ImagePtr& maskImage,
+                                          const int glMaskChannel,
                                           ImageLayersToRender& layers);
 
     static bool aborted(bool isRenderResponseToUserInteraction,

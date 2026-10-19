@@ -43,6 +43,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+class ContentHasher;
+
 /**
  * @class A Bezier is an animated control point of a Bezier. It is the starting point
  * and/or the ending point of a bezier segment. (It would correspond to P0/P3).
@@ -162,6 +164,13 @@ public:
     void cloneInternalCurvesToGuiCurves();
 
     void cloneGuiCurvesToInternalCurves();
+
+    /**
+     * @brief Appends the state renders read: the internal curves and static positions of the
+     * point and its tangents, and whether the tangents are broken. The GUI copies are left out
+     * since they only reach renders once copied to the internal ones.
+     **/
+    void appendContentHash(ContentHasher& h) const;
 
     void toSerialization(Serialization::BezierCPSerialization* serialization) const;
 

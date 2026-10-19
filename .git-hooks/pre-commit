@@ -8,7 +8,8 @@ export LANG=C
 # so a formatting slip never has to round-trip through a failed CI run.
 
 EXTENSIONS="c,cc,cpp,h,hpp,mm"
-PATHSPEC=(-- . ':(exclude)Documentation/templates/')
+# Vendored upstream code must stay byte-identical to the pinned release.
+PATHSPEC=(-- . ':(exclude)Documentation/templates/' ':(exclude)libs/VulkanMemoryAllocator/' ':(exclude)libs/xxhash/')
 PIN_VERSION="21.1.8"
 PIN_INSTALL_CMD="pip install --user --break-system-packages clang-format==$PIN_VERSION"
 

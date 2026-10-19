@@ -28,9 +28,12 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <list>
 #include <map>
 #include <memory>
+#include <string>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -68,9 +71,12 @@ public:
     bool hasProjectBeenSavedByUser; //< has this project ever been saved by the user?
     QDateTime ageSinceLastSave; //< the last time the user saved
     QDateTime lastAutoSave; //< the last time since autosave
-    QDateTime projectCreationTime; //< the project creation time
+    // Milliseconds since the epoch. Kept as a number because converting a local QDateTime reads
+    // the time zone database on every call, and every node hash recompute reads this.
+    std::atomic<qint64> projectCreationTime;
     std::list<Format> builtinFormats;
     std::list<Format> additionalFormats; //< added by the user
+    std::atomic<U64> formatsGeneration { 0 }; //< moves whenever builtinFormats or additionalFormats change
     mutable QRecursiveMutex formatMutex;
 
     // The project-level source of truth for layers; a unique_ptr (not a value member)
@@ -99,6 +105,7 @@ public:
     KnobChoicePtr viewerView;
     ProjectColorManagementPtr colorManagement;
     bool suppressColorManagementRefresh; // main thread only
+    U64 loadedOCIOConfigStamp = 0; //< stamp of the config file last loaded, 0 for a built-in one; main thread only
     mutable QMutex ocioConfigErrorMutex;
     std::string ocioConfigError; // non-empty while the OCIO override cannot be loaded
     KnobDoublePtr frameRate;
@@ -126,6 +133,16 @@ public:
     mutable QMutex projectClosingMutex;
     bool projectClosing;
     std::shared_ptr<TLSHolder<Project::ProjectTLSData> > tlsData;
+
+    // Project::getContentDigest() without the OCIO file stamp, and the state it was computed from.
+    mutable QMutex contentDigestMutex; //< protects the contentDigest* fields
+    mutable bool contentDigestValid = false;
+    mutable U64 contentDigestKnobsGeneration = 0;
+    mutable U64 contentDigestFormatsGeneration = 0;
+    mutable std::shared_ptr<const std::vector<LayerRegistryEntry>> contentDigestLayers;
+    mutable std::string contentDigestOCIOSource;
+    mutable bool contentDigestConcatenation = false;
+    mutable U64 contentDigest = 0;
 
     // only used on the main-thread
     struct RenderWatcher

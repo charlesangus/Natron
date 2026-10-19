@@ -118,6 +118,18 @@ public:
      **/
     void syncPrivateData_other_thread();
 
+    /**
+     * @brief Drops the metadata cached in this effect's OpenFX clips if it was cached under
+     * another node hash than the current one. Edits only mark hashes dirty, and the OpenFX
+     * clips serve their caches without asking the host, so every host path that reads a clip's
+     * metadata, or hands control to the plug-in, which may read it, calls this first. Reads the
+     * node's hash, which recomputes it and its dirty inputs. Does nothing before the node is
+     * created or while its project loads: the hash is left to settle, and the first call after
+     * the load compares against it. Callable from any thread, holding no lock a hash recompute
+     * or a clip cache takes.
+     **/
+    void dropStaleClipMetadata();
+
 public:
     /********OVERRIDDEN FROM EFFECT INSTANCE*************/
     virtual int getMajorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -161,6 +173,15 @@ public:
                                       RoIMap* ret) OVERRIDE FINAL;
     virtual FramesNeededMap getFramesNeeded(double time, ViewIdx view) OVERRIDE WARN_UNUSED_RETURN;
     virtual void getFrameRange(double *first, double *last) OVERRIDE;
+
+    // The host answers an unconnected clip's frame range, the effect duration of a node without a
+    // lifetime and the timeline bounds with the project range, and a plug-in may read any of them
+    // from any action.
+    virtual bool dependsOnProjectFrameRange() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
     virtual void initializeOverlayInteract() OVERRIDE FINAL;
     virtual bool hasOverlay() const OVERRIDE FINAL;
     virtual void redrawOverlayInteract() OVERRIDE FINAL;
@@ -326,6 +347,8 @@ private:
     void hideDeprecatedPremultKnobs();
 
     void pushMultiplaneTwin(std::size_t index, bool pushChannelQuad);
+
+    void dropClipMetadataNotCachedUnder(U64 hash);
 
 private:
 

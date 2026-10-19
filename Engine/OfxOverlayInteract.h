@@ -132,6 +132,9 @@ public:
 
     virtual bool isColorPickerRequired() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual OfxStatus callEntry(const char* action,
+                                OFX::Host::Property::Set* inArgs) OVERRIDE FINAL;
+
     /*Swaps the buffer of the attached viewer*/
     virtual OfxStatus swapBuffers() OVERRIDE FINAL WARN_UNUSED_RETURN
     {
@@ -314,20 +317,20 @@ class OfxParamOverlayInteract
     : public OFX::Host::Interact::Instance, public NatronOverlayInteractSupport
 {
 
-
-
 public:
-
     OfxParamOverlayInteract(KnobI* knob,
-                            OFX::Host::Interact::Descriptor &desc,
-                            void *effectInstance);
-
+                            OFX::Host::Interact::Descriptor& desc,
+                            void* effectInstance,
+                            const OfxEffectInstanceWPtr& effect);
 
     virtual ~OfxParamOverlayInteract()
     {
     }
 
     virtual bool isColorPickerRequired() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual OfxStatus callEntry(const char* action,
+                                OFX::Host::Property::Set* inArgs) OVERRIDE FINAL;
 
     /*Swaps the buffer of the attached viewer*/
     virtual OfxStatus swapBuffers() OVERRIDE FINAL
@@ -387,6 +390,9 @@ public:
     void setSize(int w, int h);
 
     void getPixelAspectRatio(double & par) const;
+
+private:
+    OfxEffectInstanceWPtr _effect;
 };
 
 

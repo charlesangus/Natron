@@ -29,6 +29,7 @@ set(Tests_SOURCES
     ColorViews_Test.cpp
     ColorViewsRender_Test.cpp
     ColorWheelMath_Test.cpp
+    ContentHasher_Test.cpp
     Curve_Test.cpp
     DataKind_Test.cpp
     DataKindProjectLoad_Test.cpp
@@ -58,11 +59,18 @@ set(Tests_SOURCES
     GraphScalingNaming_Test.cpp
     GraphScalingTLS_Test.cpp
     Hash64_Test.cpp
+    HashInvariants_Test.cpp
+    HashPluginSweep_Test.cpp
     Image_Test.cpp
     KnobChannelSet_Test.cpp
     KnobFile_Test.cpp
     KnobLayerSelect_Test.cpp
     KnobShuffleMap_Test.cpp
+    KnobContentHash_Test.cpp
+    LazyHash_Test.cpp
+    NodeContentHash_Test.cpp
+    FileStamp_Test.cpp
+    RotoContentHash_Test.cpp
     Knob_Test.cpp
     LayerKnobsRender_Test.cpp
     LayerKnobs_Test.cpp
@@ -154,6 +162,7 @@ target_include_directories(Tests
         .
         ..
         ../libs/SequenceParsing
+        ../libs/xxhash
         google-test/include
         google-test
         google-mock/include
@@ -176,6 +185,7 @@ set(GuiTests_SOURCES
     CurveTangentJoin_Test.cpp
     EdgeNearbyGrab_Test.cpp
     KnobGuiString_Test.cpp
+    KnobUndoHash_Test.cpp
     LayerChannelRow_Test.cpp
     NodeGraphConnect_Test.cpp
     NodeGraphPickUp_Test.cpp
@@ -228,7 +238,8 @@ include(GoogleTest)
 # and wmain.cpp passes --clear-openfx-cache, so every discovery pays a cold rescan
 # of all four OFX bundles plus Python and OCIO init before gtest prints the list.
 # Blowing the 5s budget is a FATAL_ERROR that fails ctest before a single test runs.
-gtest_discover_tests(Tests DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 120 PROPERTIES TIMEOUT 300)
+gtest_discover_tests(Tests DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 120
+    PROPERTIES TIMEOUT 300)
 gtest_discover_tests(GuiTests DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 120 PROPERTIES TIMEOUT 300)
 # PRE_TEST discovery only learns the case names at ctest time, so per-case properties are applied
 # from an include that ctest runs after the discovery includes registered above.

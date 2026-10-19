@@ -557,10 +557,16 @@ expectGpuMatchesCpu(GpuParityRuntime& runtime,
 
 } // namespace
 
-// Every filter, with clamp off and (for the filters that honour it) on and black outside on and
-// off, under each geometry, against the CPU render fed with the source over getGpuInputRoI(), on
-// the parity source moved off the format's origin.
-TEST_F(NativeTransformGpuTest, ResamplingMatchesTheCpuRender)
+// The filter of the parameter, with clamp off and (if the filter honours it) on and black outside
+// on and off, under each geometry, against the CPU render fed with the source over
+// getGpuInputRoI(), on the parity source moved off the format's origin. One test per filter: the
+// sweep of every filter took most of the per-test timeout in a debug build on a loaded CI runner.
+class NativeTransformGpuFilterTest
+    : public NativeTransformGpuTest,
+      public ::testing::WithParamInterface<int> {
+};
+
+TEST_P(NativeTransformGpuFilterTest, ResamplingMatchesTheCpuRender)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
     if (!createRuntime(runtime)) {
@@ -572,36 +578,38 @@ TEST_F(NativeTransformGpuTest, ResamplingMatchesTheCpuRender)
     setParitySourceOrigin(source, 3, 5);
 
     const std::vector<Resampler::ChoiceOption>& filters = Resampler::filterOptions();
+    ASSERT_EQ((std::size_t)Resampler::eFilterNotch + 1, filters.size());
+    const std::size_t f = (std::size_t)GetParam();
+    const bool honoursClamp = Resampler::filterHonoursClamp((Resampler::FilterEnum)f);
     int nCompared = 0;
-    for (std::size_t f = 0; f < filters.size(); ++f) {
-        const bool honoursClamp = Resampler::filterHonoursClamp((Resampler::FilterEnum)f);
-        for (const GeometryCase& g : kGeometries) {
-            for (bool clamp : { false, true }) {
-                if (clamp && !honoursClamp) {
-                    continue;
-                }
-                for (bool blackOutside : { false, true }) {
-                    // A fresh node per setting, so no region of definition cached under an earlier
-                    // setting is reused.
-                    NodePtr node = makeNode(false);
-                    ASSERT_TRUE(bool(node));
-                    connectNodes(source, node, 0, true);
-                    ASSERT_TRUE(setGeometry(node, g));
-                    ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filters[f].id)));
-                    ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { clamp ? 1. : 0. }));
-                    ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
-                    std::ostringstream base;
-                    base << filters[f].id << " " << g.name << (clamp ? " clamp" : "") << (blackOutside ? " black-outside" : "");
-                    expectGpuMatchesCpu(*runtime, source, NodePtr(), node, base.str(), &nCompared);
-                    if (HasFatalFailure()) {
-                        return;
-                    }
+    for (const GeometryCase& g : kGeometries) {
+        for (bool clamp : { false, true }) {
+            if (clamp && !honoursClamp) {
+                continue;
+            }
+            for (bool blackOutside : { false, true }) {
+                // A fresh node per setting, so no region of definition cached under an earlier
+                // setting is reused.
+                NodePtr node = makeNode(false);
+                ASSERT_TRUE(bool(node));
+                connectNodes(source, node, 0, true);
+                ASSERT_TRUE(setGeometry(node, g));
+                ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filters[f].id)));
+                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { clamp ? 1. : 0. }));
+                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+                std::ostringstream base;
+                base << filters[f].id << " " << g.name << (clamp ? " clamp" : "") << (blackOutside ? " black-outside" : "");
+                expectGpuMatchesCpu(*runtime, source, NodePtr(), node, base.str(), &nCompared);
+                if (HasFatalFailure()) {
+                    return;
                 }
             }
         }
     }
     EXPECT_GT(nCompared, 0);
 }
+
+INSTANTIATE_TEST_CASE_P(Filters, NativeTransformGpuFilterTest, ::testing::Range(0, (int)Resampler::eFilterNotch + 1));
 
 namespace {
 

@@ -354,15 +354,14 @@ public:
      **/
     U64 getRenderHash() const WARN_UNUSED_RETURN;
 
-    U64 getKnobsAge() const WARN_UNUSED_RETURN;
-
     /**
-     * @brief Set the knobs age of this node to be 'age'. Note that this can be called
-     * for 2 reasons:
-     * - loading a project
-     * - If this node is a clone and the master node changed its hash.
+     * @brief Appends render-affecting state the effect keeps outside its knobs. Called under no
+     * node lock, from any thread; whoever changes that state must follow it with
+     * Node::markHashDirty().
      **/
-    void setKnobsAge(U64 age);
+    virtual void appendNodeContentHash(ContentHasher& /*h*/) const
+    {
+    }
 
     /**
      * @brief Forwarded to the node's name
@@ -785,7 +784,7 @@ public:
      * @brief As above, flattening each of layers into its own float Image: outputImages receives
      * one image per entry of layers, in the same order. A colour view is flattened as the colour
      * storage of its component count. Each layer is cached separately under this node's hash, so
-     * the hash purge still removes them all, and the layers that miss the cache are flattened
+     * a purge of the node removes them all, and the layers that miss the cache are flattened
      * together from a single deep render. A channel the deep stream lacks reads zero, and every
      * layer is composited with the deep "A". An entry of layers with no components gets a NULL
      * image.
@@ -1051,9 +1050,17 @@ public:
     EffectInstancePtr getNearestNonIdentity(double time);
 
     /**
-     * @brief This is purely for the OfxEffectInstance derived class, but passed here for the sake of abstraction
+     * @brief Refreshes this effect's metadata, and with recurse its identity state and channel
+     * selectors too, while the input-related data of the nodes downstream is only marked stale
+     * (see Node::markDownstreamInputRelatedDataStale()). Main thread only.
      **/
     bool refreshMetadata_public(bool recurse);
+
+    /**
+     * @brief Node::refreshInputRelatedDataIfStale() on this effect's node: what a reader of the
+     * metadata or layers outside a render calls first. Callable from any thread.
+     **/
+    void refreshInputRelatedDataIfStale() const;
 
     virtual void onChannelsSelectorRefreshed() {}
 
@@ -1081,8 +1088,6 @@ protected:
     bool setMetadataInternal(const NodeMetadata& metadata);
 
     virtual void onMetadataRefreshed(const NodeMetadata& /*metadata*/) {}
-
-    bool refreshMetadata_recursive(std::list<Node*> & markedNodes);
 
     friend class ClipPreferencesRunning_RAII;
     void setClipPreferencesRunning(bool running);
@@ -1593,6 +1598,15 @@ public:
     void getFrameRange_public(U64 hash, double *first, double *last, bool bypasscache = false);
 
     /**
+     * @brief True when the project frame range can reach what this effect renders or reports from
+     * its actions. Those results are cached under the node hash, which then has to include the range.
+     **/
+    virtual bool dependsOnProjectFrameRange() const
+    {
+        return false;
+    }
+
+    /**
      * @brief Override to initialize the overlay interact. It is called only on the
      * live instance.
      **/
@@ -1898,8 +1912,8 @@ public:
     bool getThreadLocalUnPremultDivisor(ImagePtr* image, ImageLayerDesc* layer, int* channelIndex) const;
 
     /**
-     * @brief Called when the associated node's hash has changed.
-     * This is always called on the main-thread.
+     * @brief Called when the associated node's hash has changed, on the thread that recomputed
+     * it, after the hashes of its inputs and with no node lock held.
      **/
     virtual void onNodeHashChanged(U64 hash);
 
@@ -2743,6 +2757,11 @@ private:
                             ImagePtr* downscaleImage);
 
     virtual void onSignificantEvaluateAboutToBeCalled(KnobI* knob) OVERRIDE FINAL;
+
+public:
+    virtual void onKnobContentChanged(const KnobI* knob) OVERRIDE FINAL;
+
+private:
     virtual void onAllKnobsSlaved(bool isSlave, KnobHolder* master) OVERRIDE FINAL;
     enum RenderingFunctorRetEnum
     {

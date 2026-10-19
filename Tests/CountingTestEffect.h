@@ -58,12 +58,14 @@ NATRON_NAMESPACE_ENTER
 const int kCountingTestSize = 32;
 
 /**
- * @brief The render calls of every counting effect, keyed by node so that render clones count for their node.
+ * @brief The render and region of definition calls of every counting effect, keyed by node so that render clones
+ * count for their node.
  **/
 class CountingTestRegistry {
 public:
     struct Record {
         int renders = 0;
+        int regionsOfDefinition = 0;
         std::set<Qt::HANDLE> threads;
     };
 
@@ -135,6 +137,24 @@ public:
         if (renderHook) {
             renderHook(node);
         }
+    }
+
+    static void noteRegionOfDefinition(const Node* node)
+    {
+        std::lock_guard<std::mutex> k(mutex());
+
+        ++records()[node].regionsOfDefinition;
+    }
+
+    /**
+     * @brief How many times the node's getRegionOfDefinition() ran, which the actions cache answers for it otherwise.
+     **/
+    static int regionOfDefinitionCalls(const NodePtr& node)
+    {
+        std::lock_guard<std::mutex> k(mutex());
+        std::map<const Node*, Record>::const_iterator found = records().find(node.get());
+
+        return found == records().end() ? 0 : found->second.regionsOfDefinition;
     }
 
     static int renders(const NodePtr& node)
@@ -258,6 +278,7 @@ public:
                                              ViewIdx /*view*/,
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
+        CountingTestRegistry::noteRegionOfDefinition(getNode().get());
         rod->x1 = 0.;
         rod->y1 = 0.;
         rod->x2 = kCountingTestSize;

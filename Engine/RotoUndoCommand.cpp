@@ -134,7 +134,7 @@ MoveControlPointsUndoCommand::undo()
     }
 
     for (std::set<Bezier*>::iterator it = beziers.begin(); it != beziers.end(); ++it) {
-        (*it)->incrementNodesAge();
+        (*it)->invalidateContentHash();
     }
 
     RotoPaintInteractPtr roto = _roto.lock();
@@ -274,16 +274,15 @@ TransformUndoCommand::undo()
         beziers.insert( it->first->getBezier().get() );
     }
 
-    for (std::set<Bezier*>::iterator it = beziers.begin(); it != beziers.end(); ++it) {
-        (*it)->incrementNodesAge();
-    }
-
-
     for (SelectedCpList::iterator it = _selectedPoints.begin(); it != _selectedPoints.end(); ++it, ++cpIt) {
         it->first->clone(*cpIt->first);
         if (it->second) {
             it->second->clone(*cpIt->second);
         }
+    }
+
+    for (std::set<Bezier*>::iterator it = beziers.begin(); it != beziers.end(); ++it) {
+        (*it)->invalidateContentHash();
     }
 
     RotoPaintInteractPtr roto = _roto.lock();
@@ -894,7 +893,7 @@ MoveTangentUndoCommand::undo()
         }
         _tangentBeingDragged->clone(*_oldCp);
     }
-    _tangentBeingDragged->getBezier()->incrementNodesAge();
+    _tangentBeingDragged->getBezier()->invalidateContentHash();
     if (_firstRedoCalled) {
         roto->setSelection(_selectedCurves, _selectedPoints);
     }
@@ -927,7 +926,7 @@ MoveTangentUndoCommand::redo()
         _oldCp->clone(*cp);
     }
 
-    _tangentBeingDragged->getBezier()->incrementNodesAge();
+    _tangentBeingDragged->getBezier()->invalidateContentHash();
 
     Transform::Matrix3x3 transform;
     _tangentBeingDragged->getBezier()->getTransformAtTime(_time, &transform);
@@ -1061,7 +1060,7 @@ MoveFeatherBarUndoCommand::undo()
         }
     }
     for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
-        (*it)->incrementNodesAge();
+        (*it)->invalidateContentHash();
     }
     roto->evaluate(true);
     roto->setSelection(_selectedCurves, _selectedPoints);
@@ -1233,7 +1232,7 @@ RemoveFeatherUndoCommand::undo()
              itNew != it->newPoints.end(); ++itNew, ++itOld) {
             (*itNew)->clone(**itOld);
         }
-        it->curve->incrementNodesAge();
+        it->curve->invalidateContentHash();
     }
     RotoPaintInteractPtr roto = _roto.lock();
     if (!roto) {
@@ -1371,7 +1370,7 @@ SmoothCuspUndoCommand::undo()
              itNew != it->newPoints.end(); ++itNew, ++itOld) {
             itNew->first->clone(*itOld->first);
             itNew->second->clone(*itOld->second);
-            it->curve->incrementNodesAge();
+            it->curve->invalidateContentHash();
         }
     }
 

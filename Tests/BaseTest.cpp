@@ -30,6 +30,7 @@
 #include "BaseTest.h"
 
 #include <QFile>
+#include <QThread>
 #include <QThreadPool>
 
 // ofxhPropertySuite.h:565:37: warning: 'this' pointer cannot be null in well-defined C++ code; comparison may be assumed to always evaluate to true [-Wtautological-undefined-compare]
@@ -58,6 +59,10 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
+
+#include "CacheMemoryPressureGuard.h"
+#include "CountingTestEffect.h"
+#include "RenderBothWays.h"
 
 NATRON_NAMESPACE_USING
 
@@ -183,9 +188,14 @@ void
 BaseTest::readInWorkingSpace(const NodePtr& reader)
 {
     KnobStringBase* inputSpace = dynamic_cast<KnobStringBase*>(reader->getKnobByName("ocioInputSpace").get());
+    KnobBool* inputSpaceSet = dynamic_cast<KnobBool*>(reader->getKnobByName("ocioInputSpaceSet").get());
 
     ASSERT_TRUE(inputSpace != NULL) << reader->getScriptName_mt_safe();
+    ASSERT_TRUE(inputSpaceSet != NULL) << reader->getScriptName_mt_safe();
     inputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
+    // Marked as chosen by hand: otherwise a reload or a new file re-guesses the space from the
+    // file and the pixels the tests compare get converted after all.
+    inputSpaceSet->setValue(true);
     reader->getEffectInstance()->refreshMetadata_public(false);
 }
 
@@ -365,11 +375,6 @@ TEST_F(BaseTest, SetValues)
 /// is documented to return 0 when the hash has never been computed, so if node
 /// creation stopped computing it, their EXPECT_NE(before, after) would still pass
 /// with `before` merely being 0.
-///
-/// Note what is deliberately *not* asserted here: that a no-op round-trip through
-/// a knob lands back on the same hash. computeHashInternal() appends _imp->knobsAge,
-/// a counter that only ever increments, so the hash is path-dependent by design --
-/// setting a knob back to its old value yields a new hash, not the original one.
 TEST_F(BaseTest, HashComputedAtCreationAndStableAcrossReads)
 {
     NodePtr generator = createNode(_generatorPluginID);
@@ -380,6 +385,72 @@ TEST_F(BaseTest, HashComputedAtCreationAndStableAcrossReads)
 
     U64 hash2 = generator->getHashValue();
     EXPECT_EQ(hash1, hash2) << "getHashValue() must be side-effect-free";
+}
+
+/// The hash keys the cache by what the node renders, so returning a knob to an
+/// earlier value must give the earlier hash back and reuse what was cached then.
+TEST_F(BaseTest, HashReturnsWithTheState)
+{
+    NodePtr generator = createNode(_generatorPluginID);
+    ASSERT_TRUE(bool(generator));
+
+    KnobDouble* slope = dynamic_cast<KnobDouble*>(generator->getKnobByName("noiseZSlope").get());
+    ASSERT_TRUE(slope != 0);
+
+    const double original = slope->getValue();
+    const U64 hashBefore = generator->getHashValue();
+    slope->setValue(original + 1.);
+    EXPECT_NE(hashBefore, generator->getHashValue());
+    slope->setValue(original);
+    EXPECT_EQ(hashBefore, generator->getHashValue());
+}
+
+/// The same state reached by another edit path, in another project, or under
+/// another name hashes the same: none of them changes what the node renders.
+TEST_F(BaseTest, HashIgnoresTheEditPathTheProjectAndTheName)
+{
+    ProjectPtr project = getApp()->getProject();
+    project->reset(false, true);
+
+    U64 firstProjectHash = 0;
+    qint64 firstCreationTime = 0;
+    {
+        NodePtr direct = createNode(QString::fromUtf8(kTestPluginIDCounting));
+        NodePtr detour = createNode(QString::fromUtf8(kTestPluginIDCounting));
+        ASSERT_TRUE(direct && detour);
+        KnobDouble* directValue = dynamic_cast<KnobDouble*>(direct->getKnobByName("value").get());
+        KnobDouble* detourValue = dynamic_cast<KnobDouble*>(detour->getKnobByName("value").get());
+        ASSERT_TRUE(directValue && detourValue);
+
+        directValue->setValue(0.5);
+        detourValue->setValue(2.);
+        detourValue->setValue(0.75);
+        detourValue->setValue(0.5);
+        EXPECT_NE(direct->getScriptName(), detour->getScriptName());
+        EXPECT_EQ(direct->getHashValue(), detour->getHashValue()) << "the edit path changed the hash";
+
+        firstProjectHash = direct->getHashValue();
+        direct->setScriptName("renamedCounting");
+        direct->refreshHashNow();
+        EXPECT_EQ(std::string("renamedCounting"), direct->getScriptName());
+        EXPECT_EQ(firstProjectHash, direct->getHashValue()) << "renaming a node without expressions changed its hash";
+
+        firstCreationTime = project->getProjectCreationTime();
+    }
+
+    // The creation time has millisecond resolution; the wait makes the second project's differ.
+    QThread::msleep(5);
+    project->reset(false, true);
+    ASSERT_NE(firstCreationTime, project->getProjectCreationTime());
+
+    NodePtr rebuilt = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(bool(rebuilt));
+    KnobDouble* rebuiltValue = dynamic_cast<KnobDouble*>(rebuilt->getKnobByName("value").get());
+    ASSERT_TRUE(rebuiltValue != 0);
+    rebuiltValue->setValue(0.5);
+    EXPECT_EQ(firstProjectHash, rebuilt->getHashValue()) << "the same graph hashes differently in another project";
+
+    project->reset(false, true);
 }
 
 /// Changing a knob's value must change the node's hash, otherwise a cached
@@ -413,6 +484,123 @@ TEST_F(BaseTest, HashChangesOnInputConnected)
     U64 hashAfter = writer->getHashValue();
 
     EXPECT_NE(hashBefore, hashAfter);
+}
+
+/// Two nodes in the same state are keyed alike, so the second one is served the
+/// image the first one cached and never renders itself.
+TEST_F(BaseTest, IdenticalNodesShareOneCacheEntry)
+{
+    getApp()->getProject()->reset(false, true);
+    appPTR->clearAllCaches();
+    CountingTestRegistry::reset();
+
+    NodePtr first = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    NodePtr second = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    NodePtr merge = createNode(QString::fromUtf8(kTestPluginIDCountingMerge));
+    ASSERT_TRUE(first && second && merge);
+    const NodePtr leaves[2] = { first, second };
+    for (int i = 0; i < 2; ++i) {
+        KnobDouble* value = dynamic_cast<KnobDouble*>(leaves[i]->getKnobByName("value").get());
+        KnobBool* cacheOutput = dynamic_cast<KnobBool*>(leaves[i]->getKnobByName("cacheOutput").get());
+        ASSERT_TRUE(value && cacheOutput);
+        value->setValue(0.25);
+        cacheOutput->setValue(true);
+    }
+    KnobDouble* mergeValue = dynamic_cast<KnobDouble*>(merge->getKnobByName("value").get());
+    ASSERT_TRUE(mergeValue != 0);
+    mergeValue->setValue(0.);
+    connectNodes(first, merge, 0, true);
+    connectNodes(second, merge, 1, true);
+
+    EXPECT_NE(first->getScriptName(), second->getScriptName());
+    ASSERT_EQ(first->getHashValue(), second->getHashValue());
+
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    // Through the cache: bypassing it would make each leaf drop the entry it finds and render again.
+    ASSERT_TRUE(renderNodePlanesDirect(merge, 1., ViewIdx(0), 0, RectI(0, 0, kCountingTestSize, kCountingTestSize),
+                                       std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error,
+                                       false /*byPassCache*/))
+        << error;
+    ASSERT_EQ(1u, planes.size());
+    ASSERT_FALSE(planes[0].pixels.empty());
+    // Each input holds 0.25, so anything but 0.5 means one of them was not rendered.
+    EXPECT_FLOAT_EQ(0.5f, planes[0].pixels[0]);
+    EXPECT_EQ(1, CountingTestRegistry::renders(first) + CountingTestRegistry::renders(second))
+        << "first rendered " << CountingTestRegistry::renders(first) << " times, second " << CountingTestRegistry::renders(second);
+    EXPECT_EQ(1, CountingTestRegistry::renders(merge));
+
+    CountingTestRegistry::reset();
+    appPTR->clearAllCaches();
+    getApp()->getProject()->reset(false, true);
+}
+
+/// A node's results are keyed by its state, so leaving a state does not drop them:
+/// going back to it is served from the image cache and the actions cache, with
+/// neither a render nor a region of definition call on the node.
+TEST_F(BaseTest, ReturningToAnEarlierStateReusesItsCachedResults)
+{
+    DisableUnreachableRAMPurging noPurging;
+    getApp()->getProject()->reset(false, true);
+    appPTR->clearAllCaches();
+    CountingTestRegistry::reset();
+
+    NodePtr leaf = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    NodePtr root = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(leaf && root);
+    KnobDouble* leafValue = dynamic_cast<KnobDouble*>(leaf->getKnobByName("value").get());
+    KnobBool* leafCacheOutput = dynamic_cast<KnobBool*>(leaf->getKnobByName("cacheOutput").get());
+    KnobDouble* rootValue = dynamic_cast<KnobDouble*>(root->getKnobByName("value").get());
+    ASSERT_TRUE(leafValue && leafCacheOutput && rootValue);
+    leafCacheOutput->setValue(true);
+    leafValue->setValue(1.);
+    rootValue->setValue(0.);
+    connectNodes(leaf, root, 0, true);
+
+    // The root passes the leaf's value through and does not cache its own output. The renders go
+    // through the cache, which they leave as it is between calls.
+    const RectI window(0, 0, kCountingTestSize, kCountingTestSize);
+    const auto renderRoot = [&](float* out) {
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        ASSERT_TRUE(renderNodePlanesDirect(root, 1., ViewIdx(0), 0, window,
+                                           std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error,
+                                           false /*byPassCache*/))
+            << error;
+        ASSERT_EQ(1u, planes.size());
+        ASSERT_FALSE(planes[0].pixels.empty());
+        *out = planes[0].pixels[0];
+    };
+
+    const U64 firstHash = leaf->getHashValue();
+    float corner = 0.f;
+    CountingTestRegistry::reset();
+    renderRoot(&corner);
+    EXPECT_FLOAT_EQ(1.f, corner);
+    EXPECT_EQ(1, CountingTestRegistry::renders(leaf));
+
+    // Counted from before the edit, so that a region of definition worked out while the edit is
+    // handled counts too.
+    CountingTestRegistry::reset();
+    leafValue->setValue(2.);
+    ASSERT_NE(firstHash, leaf->getHashValue());
+    renderRoot(&corner);
+    EXPECT_FLOAT_EQ(2.f, corner);
+    EXPECT_EQ(1, CountingTestRegistry::renders(leaf)) << "a new state was served another state's image";
+    EXPECT_GT(CountingTestRegistry::regionOfDefinitionCalls(leaf), 0) << "a new state was served another state's region of definition";
+
+    CountingTestRegistry::reset();
+    leafValue->setValue(1.);
+    ASSERT_EQ(firstHash, leaf->getHashValue());
+    renderRoot(&corner);
+    EXPECT_FLOAT_EQ(1.f, corner);
+    EXPECT_EQ(0, CountingTestRegistry::renders(leaf)) << "the image of the earlier state was not reused";
+    EXPECT_EQ(0, CountingTestRegistry::regionOfDefinitionCalls(leaf)) << "the actions of the earlier state were not reused";
+    EXPECT_EQ(1, CountingTestRegistry::renders(root));
+
+    CountingTestRegistry::reset();
+    appPTR->clearAllCaches();
+    getApp()->getProject()->reset(false, true);
 }
 
 ///High level test: simple node connections test

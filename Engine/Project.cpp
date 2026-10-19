@@ -78,8 +78,10 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/FileStampRegistry.h"
 #include "Engine/FormatSerialization.h"
 #include "Engine/Hash64.h"
 #include "Engine/KnobFile.h"
@@ -327,6 +329,13 @@ NATRON_NAMESPACE_ANONYMOUS_ENTER
 const char* const ocioConfigFileKnobName = "ocioConfigFile";
 const char* const ocioWorkingSpaceKnobName = "ocioWorkingSpace";
 const char* const ocioColorSpaceKnobNames[] = { "ocioInputSpace", "ocioOutputSpace" };
+
+// A "scheme://" source is a built-in config, not a file on disk.
+bool
+isOCIOConfigFile(const std::string& source)
+{
+    return !source.empty() && (source.find("://") == std::string::npos);
+}
 
 std::string
 getStringKnobValue(const NodePtr& node,
@@ -1313,6 +1322,8 @@ Project::initializeKnobs()
         }
 
         _imp->builtinFormats.push_back(f);
+        ++_imp->formatsGeneration;
+        Node::invalidateAllHashes();
     }
     _imp->formatKnob->setAddNewLine(false);
 
@@ -1680,11 +1691,17 @@ Project::refreshColorManagement(bool warnOnFallback)
     const std::string envOverride = appPTR->getCurrentSettings()->getOCIOEnvOverride();
     std::string envOverrideError;
 
+    // The config in use must be the file the digest's stamp describes: once Reload re-stamps a
+    // file that changed on disk, the same source is loaded again.
+    const U64 sourceStamp = isOCIOConfigFile(source) ? FileStampRegistry::instance().stamp(source) : 0;
+
     // Choosing Custom before picking a file is an intermediate state, not an error.
-    if (!source.empty() && (!cm.getConfig() || (source != cm.getConfigSource()))) {
+    if (!source.empty() && (!cm.getConfig() || (source != cm.getConfigSource()) || (sourceStamp != _imp->loadedOCIOConfigStamp))) {
         std::string error;
         // The Color page is built before the project path knob exists.
-        if (cm.load(source, _imp->projectPath ? _imp->getProjectPath() : std::string(), &error) != ProjectColorManagement::eLoadErrorNone) {
+        if (cm.load(source, _imp->projectPath ? _imp->getProjectPath() : std::string(), &error) == ProjectColorManagement::eLoadErrorNone) {
+            _imp->loadedOCIOConfigStamp = sourceStamp;
+        } else {
             const QString consequence = envOverride.empty()
                 ? tr("The previous config stays in use.")
                 : tr("Nothing renders until the OCIO environment variable names a config that loads.");
@@ -1742,6 +1759,9 @@ Project::refreshColorManagement(bool warnOnFallback)
     onOCIOConfigPathChanged(cm.getConfigDirectory(), false);
 
     cm.setWorkingSpace(getWorkingColorSpace());
+    // The digest folds in the loaded config's source, which no project knob holds when the
+    // environment overrides it.
+    Node::invalidateAllHashes();
     pushOCIOConfigToNodes();
     cm.notifyConfigChanged();
 
@@ -1939,6 +1959,8 @@ Project::tryAddProjectFormat(const Format & f, bool* existed)
     }
     QString formatStr = ProjectPrivate::generateStringFromFormat(f);
     _imp->additionalFormats.push_back(f);
+    ++_imp->formatsGeneration;
+    Node::invalidateAllHashes();
     if ( !f.getName().empty() ) {
         _imp->formatKnob->appendChoice( ChoiceOption(f.getName(), formatStr.toStdString(), "") );
     } else {
@@ -2035,8 +2057,11 @@ LayerRegistry::AddResultEnum
 Project::addLayer(const ImageLayerDesc& desc, LayerRegistryEntry::OriginEnum origin, std::string* error)
 {
     LayerRegistry::AddResultEnum ret = _imp->layers->add(desc, origin, error);
-    if ((ret == LayerRegistry::eAddResultAdded || ret == LayerRegistry::eAddResultGrown) && !isLoadingProject()) {
-        notifyLayersChanged();
+    if (ret == LayerRegistry::eAddResultAdded || ret == LayerRegistry::eAddResultGrown) {
+        Node::invalidateAllHashes();
+        if (!isLoadingProject()) {
+            notifyLayersChanged();
+        }
     }
     return ret;
 }
@@ -2065,8 +2090,11 @@ Project::removeLayer(const std::string& id, std::string* error)
     }
 
     bool ok = _imp->layers->remove(id, error);
-    if (ok && !isLoadingProject()) {
-        notifyLayersChanged();
+    if (ok) {
+        Node::invalidateAllHashes();
+        if (!isLoadingProject()) {
+            notifyLayersChanged();
+        }
     }
     return ok;
 }
@@ -2354,14 +2382,6 @@ Project::onKnobValueChanged(KnobI* knob,
             (*it)->refreshFormatParamChoice(entries, index, false);
         }
         if (found) {
-            if (reason == eValueChangedReasonUserEdited) {
-                ///Increase all nodes age in the project so all cache is invalidated: some effects images might rely on the project format
-                for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
-                    (*it)->incrementKnobsAge();
-                }
-
-
-            }
             ///Format change, hence probably the PAR so run getClipPreferences again
             forceComputeInputDependentDataOnAllTrees();
             Q_EMIT formatChanged(frmt);
@@ -2378,6 +2398,7 @@ Project::onKnobValueChanged(KnobI* knob,
     } else if ( knob == _imp->frameRange.get() ) {
         int first = _imp->frameRange->getValue(0);
         int last = _imp->frameRange->getValue(1);
+        rehashNodesUsingFrameRange();
         Q_EMIT frameRangeChanged(first, last);
         shouldAutoSave = true;
     } else if ( knob == _imp->gpuSupport.get() ) {
@@ -2430,6 +2451,12 @@ Project::refreshOpenGLRenderingFlagOnNodes()
     for (NodesList::iterator it = allNodes.begin(); it!=allNodes.end(); ++it) {
         (*it)->onOpenGLEnabledKnobChangedOnProject(activated);
     }
+}
+
+void
+Project::onKnobContentChanged(const KnobI* /*knob*/)
+{
+    Node::invalidateAllHashes();
 }
 
 bool
@@ -2730,11 +2757,13 @@ Project::doResetEnd(bool aboutToQuit)
             QMutexLocker l(&_imp->projectLock);
             _imp->autoSetProjectFormat = appPTR->getCurrentSettings()->isAutoProjectFormatEnabled();
             _imp->hasProjectBeenSavedByUser = false;
-            _imp->projectCreationTime = QDateTime::currentDateTime();
+            _imp->projectCreationTime = QDateTime::currentDateTime().toMSecsSinceEpoch();
             _imp->setProjectFilename(NATRON_PROJECT_UNTITLED);
             _imp->setProjectPath("");
             _imp->autoSaveTimer->stop();
             _imp->additionalFormats.clear();
+            ++_imp->formatsGeneration;
+            Node::invalidateAllHashes();
             _imp->layers.reset(new LayerRegistry());
         }
         {
@@ -2922,9 +2951,99 @@ Project::unlock() const
 qint64
 Project::getProjectCreationTime() const
 {
-    QMutexLocker l(&_imp->projectLock);
+    return _imp->projectCreationTime.load();
+}
 
-    return _imp->projectCreationTime.toMSecsSinceEpoch();
+U64
+Project::getContentDigest() const
+{
+    // The memo key: every input that is not a project knob is read here, and the project knobs
+    // (format, frame rate, views, working space) are covered by the project's knobs
+    // generation. The format menu also maps onto the format lists, which have their own counter.
+    // The generations are read before anything they cover.
+    const U64 knobsGeneration = getKnobsContentGeneration();
+    const U64 formatsGeneration = _imp->formatsGeneration.load();
+    std::shared_ptr<const std::vector<LayerRegistryEntry>> layers = getLayerRegistrySnapshot();
+    const std::string ocioSource = getOCIOConfigSource();
+    SettingsPtr settings = appPTR->getCurrentSettings();
+    const bool concatenation = settings->isTransformConcatenationEnabled();
+
+    U64 digest;
+    {
+        QMutexLocker l(&_imp->contentDigestMutex);
+        if (_imp->contentDigestValid && (_imp->contentDigestKnobsGeneration == knobsGeneration) && (_imp->contentDigestFormatsGeneration == formatsGeneration) && (_imp->contentDigestLayers == layers) && (_imp->contentDigestOCIOSource == ocioSource) && (_imp->contentDigestConcatenation == concatenation)) {
+            digest = _imp->contentDigest;
+        } else {
+            digest = computeContentDigestWithoutFileStamps(layers, ocioSource, concatenation);
+            _imp->contentDigestValid = true;
+            _imp->contentDigestKnobsGeneration = knobsGeneration;
+            _imp->contentDigestFormatsGeneration = formatsGeneration;
+            // Holding the snapshot keeps its address from being reused by a later one.
+            _imp->contentDigestLayers = layers;
+            _imp->contentDigestOCIOSource = ocioSource;
+            _imp->contentDigestConcatenation = concatenation;
+            _imp->contentDigest = digest;
+        }
+    }
+
+    // Reloading the config file re-stamps it with no project edit, so its stamp stays out of the memo.
+    ContentHasher h;
+    h.appendU64(digest);
+    const bool ocioIsFile = isOCIOConfigFile(ocioSource);
+    h.appendBool(ocioIsFile);
+    if (ocioIsFile) {
+        h.appendU64(FileStampRegistry::instance().stamp(ocioSource));
+    }
+
+    return h.finalize();
+}
+
+U64
+Project::computeContentDigestWithoutFileStamps(const std::shared_ptr<const std::vector<LayerRegistryEntry>>& layers,
+                                               const std::string& ocioSource,
+                                               bool concatenation) const
+{
+    ContentHasher h;
+
+    Format format;
+    getProjectDefaultFormat(&format);
+    h.appendI64(format.x1);
+    h.appendI64(format.y1);
+    h.appendI64(format.x2);
+    h.appendI64(format.y2);
+    h.appendDouble(format.getPixelAspectRatio());
+
+    // The frame range is left out: adding a sequence Read grows it, which would re-key every node.
+    // The nodes that depend on it hash it themselves (Node::dependsOnProjectFrameRange()).
+    h.appendDouble(getProjectFrameRate());
+
+    const std::vector<std::string>& views = getProjectViewNames();
+    h.appendU64(views.size());
+    for (std::size_t i = 0; i < views.size(); ++i) {
+        h.appendString(views[i]);
+    }
+
+    h.appendString(ocioSource);
+    h.appendString(getWorkingColorSpace());
+
+    h.appendU64(layers ? layers->size() : 0);
+    if (layers) {
+        for (std::vector<LayerRegistryEntry>::const_iterator it = layers->begin(); it != layers->end(); ++it) {
+            h.appendString(it->desc.getLayerID());
+            h.appendString(it->desc.getLayerLabel());
+            const std::vector<std::string>& channels = it->desc.getChannels();
+            h.appendU64(channels.size());
+            for (std::size_t c = 0; c < channels.size(); ++c) {
+                h.appendString(channels[c]);
+            }
+        }
+    }
+
+    // GPU rendering is left out: GPU and CPU outputs differ by about a rounding step, so either
+    // may serve the other.
+    h.appendBool(concatenation);
+
+    return h.finalize();
 }
 
 // Functions to escape / unescape characters from UTF-8 XML strings.
@@ -3396,12 +3515,20 @@ Project::unionFrameRangeWith(int first,
 
     curFirst = _imp->frameRange->getValue(0);
     curLast = _imp->frameRange->getValue(1);
+    const int oldFirst = curFirst;
+    const int oldLast = curLast;
     curFirst = !mustSet ? std::min(first, curFirst) : first;
     curLast = !mustSet ? std::max(last, curLast) : last;
+    const bool changed = (curFirst != oldFirst) || (curLast != oldLast);
     beginChanges();
     _imp->frameRange->setValue(curFirst, ViewSpec::all(), 0);
     _imp->frameRange->setValue(curLast, ViewSpec::all(), 1);
     endChanges();
+    // No value-changed handler runs while a project loads, and nodes hashed earlier in the load
+    // saw the saved range.
+    if (changed && isLoadingProject()) {
+        rehashNodesUsingFrameRange();
+    }
 }
 
 void
@@ -3411,10 +3538,30 @@ Project::recomputeFrameRangeFromReaders()
 
     recomputeFrameRangeForAllReaders(&first, &last);
 
+    const bool changed = (first != _imp->frameRange->getValue(0)) || (last != _imp->frameRange->getValue(1));
     beginChanges();
     _imp->frameRange->setValue(first, ViewSpec::all(), 0);
     _imp->frameRange->setValue(last,  ViewSpec::all(), 1);
     endChanges();
+    // No value-changed handler runs while a project loads, and nodes hashed earlier in the load
+    // saw the saved range.
+    if (changed && isLoadingProject()) {
+        rehashNodesUsingFrameRange();
+    }
+}
+
+void
+Project::rehashNodesUsingFrameRange()
+{
+    NodesList nodes;
+    getNodes_recursive(nodes, false);
+
+    for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        if (!(*it)->isNodeCreated() || !(*it)->dependsOnProjectFrameRange()) {
+            continue;
+        }
+        (*it)->markHashDirty();
+    }
 }
 
 void

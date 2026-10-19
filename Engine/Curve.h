@@ -42,6 +42,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+class ContentHasher;
+
 /**
  * @brief A KeyFrame is a lightweight pair <time,value>. These are the values that are used
  * to interpolate a Curve. The _leftDerivative and _rightDerivative can be
@@ -358,6 +360,12 @@ public:
      **/
     void fromSerialization(const Serialization::CurveSerialization& serialization);
 
+    /**
+     * @brief Appends everything that decides this curve's values to h: periodicity, X and Y
+     * ranges and every keyframe's time, value, interpolation and tangents. MT-safe.
+     **/
+    void appendContentHash(ContentHasher& h) const;
+
 private:
     ///////The following functions are not thread-safe
     KeyFrameSet::const_iterator find(double time) const WARN_UNUSED_RETURN;
@@ -395,6 +403,11 @@ private:
      * @brief Called when the curve has changed to invalidate any cache relying on the curve values.
      **/
     void onCurveChanged();
+
+    /**
+     * @brief Must follow every change appendContentHash() can see. Takes no lock.
+     **/
+    void invalidateOwnerContentHash();
 
 private:
     std::unique_ptr<CurvePrivate> _imp;

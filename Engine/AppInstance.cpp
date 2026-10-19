@@ -1804,6 +1804,9 @@ AppInstance::startWritersRendering(bool doBlockingRender,
         if (it->writer->getNode()->isNodeDisabledAtAllTimes() || !it->writer->getNode()->isActivated()) {
             continue;
         }
+        // Here, while this may still be the main thread: the render itself starts on a pool thread,
+        // which cannot refresh what an edit left stale.
+        it->writer->getNode()->refreshInputRelatedDataForRender();
         RenderQueueItem item;
         item.work = *it;
         if ( !_imp->validateRenderOptions(item.work, &item.work.firstFrame, &item.work.lastFrame, &item.work.frameStep) ) {
@@ -2049,7 +2052,8 @@ AppInstance::clearOpenFXPluginsCaches()
 {
     NodesList activeNodes;
 
-    _imp->_currentProject->getActiveNodes(&activeNodes);
+    // Inactive nodes keep their caches too: reactivating one must not replay stale results.
+    _imp->_currentProject->getNodes_recursive(activeNodes, false);
 
     for (NodesList::iterator it = activeNodes.begin(); it != activeNodes.end(); ++it) {
         (*it)->purgeAllInstancesCaches();

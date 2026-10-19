@@ -950,7 +950,7 @@ TEST_F(DeepReadWriteTest, EachFrameOfASequenceRendersItsOwnFileThroughTheCache)
     EXPECT_EQ(channelNamesOf(*fresh), channelNamesOf(*second));
 }
 
-TEST_F(DeepReadWriteTest, LayersFollowAFileRewrittenInPlace)
+TEST_F(DeepReadWriteTest, LayersFollowAFileRewrittenInPlaceOnReload)
 {
     QTemporaryDir tmp;
 
@@ -970,8 +970,14 @@ TEST_F(DeepReadWriteTest, LayersFollowAFileRewrittenInPlace)
     ASSERT_EQ((qint64)bytes.size(), target.write(bytes));
     target.close();
 
-    // A reload bumps the node's hash, which only clears the actions cached under the old one.
-    read->incrementKnobsAge();
+    // The file is only looked at again on Reload, which re-keys the node on the new file.
+    const U64 hashBefore = read->getHashValue();
+    EXPECT_EQ(strings({ "Color(4)", "diffuse", "specular" }), presentLayersAt(read, 1.));
+    EXPECT_EQ(hashBefore, read->getHashValue());
+    KnobFile* knob = dynamic_cast<KnobFile*>(read->getKnobByName("filename").get());
+    ASSERT_TRUE(knob != NULL);
+    knob->reloadFile();
+    ASSERT_NE(hashBefore, read->getHashValue());
     EXPECT_EQ(strings({ "Color(1)", "AOV" }), presentLayersAt(read, 1.));
 }
 

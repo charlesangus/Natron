@@ -40,6 +40,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/BezierCP.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/CoonsRegularization.h"
 #include "Engine/FeatherPoint.h"
 #include "Engine/Format.h"
@@ -996,7 +997,7 @@ Bezier::dequeueGuiActions()
 
         _imp->isClockwiseOriented = _imp->guiIsClockwiseOriented;
         _imp->isClockwiseOrientedStatic = _imp->guiIsClockwiseOrientedStatic;
-        incrementNodesAge();
+        invalidateContentHash();
     }
 
     return mustCopy;
@@ -1032,6 +1033,31 @@ Bezier::clearAllPoints()
     _imp->featherPoints.clear();
     _imp->isClockwiseOriented.clear();
     _imp->finished = false;
+    invalidateContentHash();
+}
+
+void
+Bezier::appendGeometryContentHash(ContentHasher& h) const
+{
+    // Distinguishes a Bezier from a stroke whose own fields happen to hash alike.
+    h.appendI64(1);
+
+    const bool useFeather = useFeatherPoints();
+    QMutexLocker l(&itemMutex);
+
+    h.appendBool(_imp->isOpenBezier);
+    h.appendBool(_imp->finished);
+    h.appendBool(useFeather);
+    h.appendU64(_imp->points.size());
+    for (BezierCPs::const_iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
+        (*it)->appendContentHash(h);
+    }
+    if (useFeather) {
+        h.appendU64(_imp->featherPoints.size());
+        for (BezierCPs::const_iterator it = _imp->featherPoints.begin(); it != _imp->featherPoints.end(); ++it) {
+            (*it)->appendContentHash(h);
+        }
+    }
 }
 
 void
@@ -1079,7 +1105,7 @@ Bezier::clone(const RotoItem* other)
         _imp->isOpenBezier = otherBezier->_imp->isOpenBezier;
         _imp->finished = otherBezier->_imp->finished && !_imp->isOpenBezier;
     }
-    incrementNodesAge();
+    invalidateContentHash();
     RotoDrawableItem::clone(other);
     Q_EMIT cloned();
 }
@@ -1156,7 +1182,7 @@ Bezier::addControlPoint(double x,
         }
     }
 
-    incrementNodesAge();
+    invalidateContentHash();
 
     return p;
 } // Bezier::addControlPoint
@@ -1362,7 +1388,7 @@ Bezier::addControlPointAfterIndex(int index,
         }
     }
 
-    incrementNodesAge();
+    invalidateContentHash();
 
     return p;
 } // addControlPointAfterIndex
@@ -1474,7 +1500,7 @@ Bezier::setCurveFinished(bool finished)
 
     resetTransformCenter();
 
-    incrementNodesAge();
+    invalidateContentHash();
     refreshPolygonOrientation(false);
 }
 
@@ -1512,7 +1538,7 @@ Bezier::removeControlPointByIndex(int index)
         }
     }
 
-    incrementNodesAge();
+    invalidateContentHash();
     refreshPolygonOrientation(false);
 
     Q_EMIT controlPointRemoved();
@@ -1687,7 +1713,7 @@ Bezier::movePointByIndexInternal(bool useGuiCurve,
         }
     }
 
-    incrementNodesAge();
+    invalidateContentHash();
     refreshPolygonOrientation(useGuiCurve, time);
     if (autoKeying) {
         setKeyframe(time);
@@ -1999,7 +2025,7 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
         }
     }
 
-    incrementNodesAge();
+    invalidateContentHash();
     refreshPolygonOrientation(useGuiCurve, time);
     if (!useGuiCurve) {
         QMutexLocker k(&itemMutex);
@@ -2142,7 +2168,7 @@ Bezier::setPointAtIndexInternal(bool setLeft,
         }
     }
 
-    incrementNodesAge();
+    invalidateContentHash();
     refreshPolygonOrientation(useGuiCurve, time);
     if (!useGuiCurve) {
         QMutexLocker k(&itemMutex);
@@ -2237,7 +2263,7 @@ Bezier::transformPoint(const BezierCPPtr & point,
         }
     }
 
-    incrementNodesAge();
+    invalidateContentHash();
     refreshPolygonOrientation(useGuiCurve, time);
     if (!useGuiCurve) {
         QMutexLocker k(&itemMutex);
@@ -2271,7 +2297,7 @@ Bezier::removeFeatherAtIndex(int index)
 
     (*fp)->clone(**cp);
 
-    incrementNodesAge();
+    invalidateContentHash();
 }
 
 void
@@ -2319,7 +2345,7 @@ Bezier::smoothOrCuspPointAtIndex(bool isSmooth,
         }
     }
 
-    incrementNodesAge();
+    invalidateContentHash();
     refreshPolygonOrientation(useGuiCurve, time);
     if (autoKeying) {
         setKeyframe(time);
@@ -2393,6 +2419,7 @@ Bezier::setKeyframe(double time)
             }
         }
     }
+    invalidateContentHash();
     // _imp->setMustCopyGuiBezier(true);
     Q_EMIT keyframeSet(time);
 }
@@ -2428,7 +2455,7 @@ Bezier::removeKeyframe(double time)
         copyInternalPointsToGuiPoints();
     }
 
-    incrementNodesAge();
+    invalidateContentHash();
     getContext()->evaluateChange();
     Q_EMIT keyframeRemoved(time);
 }
@@ -2460,7 +2487,7 @@ Bezier::removeAnimation()
         copyInternalPointsToGuiPoints();
     }
 
-    incrementNodesAge();
+    invalidateContentHash();
     Q_EMIT animationRemoved();
 }
 
@@ -2516,7 +2543,7 @@ Bezier::moveKeyframe(double oldTime,
         copyInternalPointsToGuiPoints();
     }
 
-    incrementNodesAge();
+    invalidateContentHash();
     Q_EMIT keyframeRemoved(oldTime);
     Q_EMIT keyframeSet(newTime);
 } // Bezier::moveKeyframe
@@ -3374,6 +3401,7 @@ Bezier::setKeyFrameInterpolation(KeyframeTypeEnum interp,
             ++fp;
         }
     }
+    invalidateContentHash();
 }
 
 void

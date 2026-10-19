@@ -87,6 +87,11 @@ public:
         Q_EMIT openFile();
     }
 
+    /**
+     * @brief What a Reload does: stamps the file or sequence again, so the node re-keys when the
+     * file on disk differs from its last stamp, and drops what the holder cached of it. A file is
+     * otherwise only looked at the first time it is hashed in a session.
+     **/
     void reloadFile();
 
     /**
@@ -95,11 +100,41 @@ public:
      */
     std::string getFileName(int time, ViewSpec view);
 
+    /**
+     * @brief Resolved path of the single file the knob currently names, or an empty string
+     * when the value is empty or names a frame sequence.
+     **/
+    std::string getSingleFilePath();
+
+    /**
+     * @brief The knob's current value with project variables expanded: a single file or a
+     * frame sequence pattern.
+     **/
+    std::string getResolvedPath();
+
+    /**
+     * @brief Forces the file or sequence the knob names to be stamped again on the next
+     * content hash, and marks the holder's hash dirty.
+     **/
+    void invalidateFileStamp();
+
+    /**
+     * @brief The part of a Reload that reaches the other nodes: every other node with a file knob
+     * covering the same files has its stamps dropped and its caches purged, and is re-keyed. Both
+     * the knob's own reload and a node's Reload button call it, after reloading their own node.
+     **/
+    void reloadOtherNodesReadingTheseFiles();
+
 Q_SIGNALS:
 
     void openFile();
 
 private:
+    virtual void appendUnmemoizedContentHash(ContentHasher& h) const OVERRIDE FINAL;
+    virtual bool hasUnmemoizedContentHash() const OVERRIDE FINAL
+    {
+        return true;
+    }
 
     /**
      * @brief a KnobFile is never animated but it's value may change, indicate this to the plug-in

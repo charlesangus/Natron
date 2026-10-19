@@ -265,8 +265,19 @@ protected:
         return true;
     }
 
+    NativeWrite* writeEffect() const
+    {
+        return dynamic_cast<NativeWrite*>(_writer->getEffectInstance().get());
+    }
+
+    // The hash the Write's files must hold to be read back now.
+    std::string currentHashText() const
+    {
+        return NativeWrite::outputHashText(writeEffect()->getOutputContentHash());
+    }
+
     // Replaces the file with a flat float image of `value` in every colour channel and in each of
-    // `extra`, 1 in alpha.
+    // `extra`, 1 in alpha, stamped with the Write's current output content hash.
     void overwriteWithGray(const std::string& path,
                            float value,
                            const std::vector<std::string>& extra = std::vector<std::string>())
@@ -277,6 +288,7 @@ protected:
         OIIO::ImageSpec spec(kWidth, kHeight, n, OIIO::TypeDesc::FLOAT);
         spec.channelnames = names;
         spec.alpha_channel = 3;
+        spec.attribute(kNatronWriteOutputHashAttribute, currentHashText());
         std::vector<float> pixels((std::size_t)kWidth * kHeight * n, value);
         for (std::size_t i = 3; i < pixels.size(); i += (std::size_t)n) {
             pixels[i] = 1.f;
@@ -287,6 +299,13 @@ protected:
         ASSERT_TRUE(out->open(path, spec));
         ASSERT_TRUE(out->write_image(OIIO::TypeDesc::FLOAT, pixels.data()));
         ASSERT_TRUE(out->close());
+    }
+
+    void setCheckerGray(float value)
+    {
+        for (const char* name : { kCheckerBoardParamColor0, kCheckerBoardParamColor1, kCheckerBoardParamColor2, kCheckerBoardParamColor3 }) {
+            ASSERT_TRUE(setKnobValues(_checker, name, { (double)value, (double)value, (double)value, 1. }));
+        }
     }
 
     void pressReload()
@@ -346,16 +365,116 @@ TEST_F(NativeWriteReadBackTest, AnExrReadBackIsTheFilesPixelsInTheWorkingSpace)
     EXPECT_TRUE(outputIsGray(kOther, 1e-6f)) << message();
 }
 
-TEST_F(NativeWriteReadBackTest, AnEncodedPngReadBackReturnsToTheWorkingSpace)
+TEST_F(NativeWriteReadBackTest, ReadBackIsOfferedOnlyForAnExr)
+{
+    KnobIPtr readBack = _writer->getKnobByName(kNatronWriteParamReadBack);
+    KnobIPtr reload = _writer->getKnobByName(kNatronWriteParamReload);
+
+    ASSERT_TRUE(bool(readBack));
+    ASSERT_TRUE(bool(reload));
+    setFile(pathOf("offer.png"));
+    EXPECT_TRUE(readBack->getIsSecret());
+    EXPECT_TRUE(reload->getIsSecret());
+
+    setFile(pathOf("offer.exr"));
+    EXPECT_FALSE(readBack->getIsSecret());
+    EXPECT_FALSE(reload->getIsSecret());
+}
+
+TEST_F(NativeWriteReadBackTest, AnEncodedPngIsNeverReadBack)
 {
     const std::string path = pathOf("back.png");
     setFile(path);
     pickOutputSpace(kSRGBSpace);
     writeSequence();
-
     setReadBack(true);
 
-    EXPECT_TRUE(outputIsGray(kGray, 0.005f)) << message();
+    EXPECT_TRUE(outputIsGray(kGray, 1e-6f)) << message();
+}
+
+TEST_F(NativeWriteReadBackTest, AWrittenExrHoldsTheHashOfTheNode)
+{
+    const std::string path = pathOf("stored.exr");
+    setFile(path);
+    setBitDepth("32f");
+    pickOutputSpace(project()->getWorkingColorSpace());
+    writeSequence();
+
+    OIIO::ImageInput::unique_ptr in = OIIO::ImageInput::open(path);
+    ASSERT_TRUE(bool(in));
+    EXPECT_EQ(currentHashText(), in->spec().get_string_attribute(kNatronWriteOutputHashAttribute));
+}
+
+TEST_F(NativeWriteReadBackTest, ReadBackShowsTheFileWhileItsHashMatchesAndTheInputWhenItDoesNot)
+{
+    const std::string path = pathOf("gate.exr");
+    setFile(path);
+    setBitDepth("32f");
+    pickOutputSpace(project()->getWorkingColorSpace());
+    writeSequence();
+    overwriteWithGray(path, kOther);
+    setReadBack(true);
+    ASSERT_TRUE(outputIsGray(kOther, 1e-6f)) << message();
+
+    setCheckerGray(0.3f);
+    EXPECT_TRUE(outputIsGray(0.3f, 1e-6f)) << message();
+    EXPECT_FALSE(_writer->hasPersistentMessage());
+
+    setCheckerGray(kGray);
+    EXPECT_TRUE(outputIsGray(kOther, 1e-6f)) << message();
+}
+
+TEST_F(NativeWriteReadBackTest, AFileWithoutAHashIsNotShown)
+{
+    const std::string path = pathOf("unstamped.exr");
+    setFile(path);
+    setBitDepth("32f");
+    pickOutputSpace(project()->getWorkingColorSpace());
+    writeSequence();
+    {
+        OIIO::ImageSpec spec(kWidth, kHeight, 4, OIIO::TypeDesc::FLOAT);
+        spec.channelnames = { "R", "G", "B", "A" };
+        spec.alpha_channel = 3;
+        std::vector<float> pixels((std::size_t)kWidth * kHeight * 4, kOther);
+        OIIO::ImageOutput::unique_ptr out = OIIO::ImageOutput::create(path);
+        ASSERT_TRUE(bool(out));
+        ASSERT_TRUE(out->open(path, spec));
+        ASSERT_TRUE(out->write_image(OIIO::TypeDesc::FLOAT, pixels.data()));
+        ASSERT_TRUE(out->close());
+    }
+    setReadBack(true);
+
+    EXPECT_TRUE(outputIsGray(kGray, 1e-6f)) << message();
+}
+
+TEST_F(NativeWriteReadBackTest, TheReadBackKnobMovesTheNodeHashButNotTheOutputContentHash)
+{
+    setFile(pathOf("same.exr"));
+    const U64 before = _writer->getHashValue();
+    const U64 outputBefore = writeEffect()->getOutputContentHash();
+
+    setReadBack(true);
+    EXPECT_NE(before, _writer->getHashValue());
+    EXPECT_EQ(outputBefore, writeEffect()->getOutputContentHash());
+
+    setReadBack(false);
+    EXPECT_EQ(before, _writer->getHashValue());
+    EXPECT_EQ(outputBefore, writeEffect()->getOutputContentHash());
+}
+
+TEST_F(NativeWriteReadBackTest, AFileWrittenWithReadBackOnHoldsTheOutputContentHash)
+{
+    const std::string path = pathOf("written-on.exr");
+    setFile(path);
+    setBitDepth("32f");
+    pickOutputSpace(project()->getWorkingColorSpace());
+    setReadBack(true);
+    writeSequence();
+    finishSequence();
+
+    OIIO::ImageInput::unique_ptr in = OIIO::ImageInput::open(path);
+    ASSERT_TRUE(bool(in));
+    EXPECT_EQ(currentHashText(), in->spec().get_string_attribute(kNatronWriteOutputHashAttribute));
 }
 
 TEST_F(NativeWriteReadBackTest, TurningItOffPassesTheInputThrough)
@@ -374,7 +493,7 @@ TEST_F(NativeWriteReadBackTest, TurningItOffPassesTheInputThrough)
     EXPECT_TRUE(outputIsGray(kGray, 1e-6f)) << message();
 }
 
-TEST_F(NativeWriteReadBackTest, AFinishedSequenceChangesTheHashSoTheViewerReadsAgain)
+TEST_F(NativeWriteReadBackTest, AFinishedSequenceDoesNotMoveTheHash)
 {
     const std::string path = pathOf("hash.exr");
     setFile(path);
@@ -386,23 +505,10 @@ TEST_F(NativeWriteReadBackTest, AFinishedSequenceChangesTheHashSoTheViewerReadsA
 
     finishSequence();
 
-    EXPECT_NE(before, _writer->getHashValue());
-}
-
-TEST_F(NativeWriteReadBackTest, AFinishedSequenceLeavesTheHashAloneWhileReadBackIsOff)
-{
-    const std::string path = pathOf("idle.exr");
-    setFile(path);
-    setBitDepth("32f");
-    writeSequence();
-    const U64 before = _writer->getHashValue();
-
-    finishSequence();
-
     EXPECT_EQ(before, _writer->getHashValue());
 }
 
-TEST_F(NativeWriteReadBackTest, AMissingFrameIsAPersistentErrorAGoodFrameClears)
+TEST_F(NativeWriteReadBackTest, AMissingFrameShowsTheInputWithoutAnError)
 {
     setFile(pathOf("seq.####.exr"));
     setBitDepth("32f");
@@ -411,8 +517,8 @@ TEST_F(NativeWriteReadBackTest, AMissingFrameIsAPersistentErrorAGoodFrameClears)
     setReadBack(true);
 
     std::vector<float> pixels;
-    EXPECT_FALSE(outputAt(2., &pixels));
-    EXPECT_TRUE(_writer->hasPersistentMessage());
+    EXPECT_TRUE(outputAt(2., &pixels));
+    EXPECT_FALSE(_writer->hasPersistentMessage()) << message();
 
     EXPECT_TRUE(outputAt(1., &pixels));
     EXPECT_FALSE(_writer->hasPersistentMessage()) << message();
@@ -423,6 +529,7 @@ TEST_F(NativeWriteReadBackTest, TheRenderButtonIsDisabledWhileReadBackIsOn)
     KnobIPtr button = _writer->getKnobByName(kNatronWriteParamStartRender);
 
     ASSERT_TRUE(bool(button));
+    setFile(pathOf("button.exr"));
     EXPECT_TRUE(button->isEnabled(0));
 
     setReadBack(true);
@@ -437,6 +544,7 @@ TEST_F(NativeWriteReadBackTest, TheReloadButtonIsEnabledOnlyWhileReadingBack)
     KnobIPtr reload = _writer->getKnobByName(kNatronWriteParamReload);
 
     ASSERT_TRUE(bool(reload));
+    setFile(pathOf("reload.exr"));
     EXPECT_FALSE(reload->getIsSecret());
     EXPECT_FALSE(reload->isEnabled(0));
 

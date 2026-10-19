@@ -238,9 +238,65 @@ public:
     void getChildrenMultiInstance(NodesList* children) const;
 
     /**
-     * @brief Returns the hash value of the node, or 0 if it has never been computed.
+     * @brief The key the node's cached results are stored under: its content hash, so nodes in
+     * the same state share their cache entries whatever their name, age or project. A hash
+     * marked dirty is recomputed first, after the dirty hashes it folds in. MT-safe.
      **/
     U64 getHashValue() const;
+
+    /**
+     * @brief Hash of what the node renders: plug-in identity, render-affecting knob values,
+     * inputs' content hashes and the project's render settings. Equal state gives an equal
+     * hash whatever the node's name or age. Recomputed first if it is dirty. MT-safe.
+     **/
+    U64 getContentHash() const;
+
+    /**
+     * @brief The content hash as last computed, dirty or not: reading it recomputes nothing.
+     **/
+    U64 getStoredContentHash() const;
+
+    /**
+     * @brief Sets hash to the content hash and returns true if it is up to date, and returns false
+     * if it is dirty: unlike getHashValue(), it never recomputes, so a caller that only looks at a
+     * node does not make an edit rehash it.
+     **/
+    bool getHashValueIfUpToDate(U64* hash) const;
+
+    /**
+     * @brief Marks the hash for a recompute on its next read, and with it the hashes of every
+     * node that folds this one in. Callable from any thread, under any lock: the nodes downstream
+     * are marked before the next hash read on any thread.
+     **/
+    void markHashDirty();
+
+    /**
+     * @brief Marks every node's hash dirty, for changes to state all of them fold in, such as
+     * the project's render settings. Lock-free.
+     **/
+    static void invalidateAllHashes();
+
+    /**
+     * @brief Marks the hash dirty and recomputes it now. Returns true if it changed.
+     **/
+    bool refreshHashNow();
+
+    /**
+     * @brief Called by the effect when the content of knob may have changed; see
+     * KnobHolder::onKnobContentChanged().
+     **/
+    void onKnobContentChanged(const KnobI* knob);
+
+    /**
+     * @brief True unless the knobs were last seen without any expression. Cheap.
+     **/
+    bool mayHaveKnobExpressions() const;
+
+    /**
+     * @brief True when the project frame range is part of this node's content hash: the effect
+     * reads it, or an expression on one of its knobs can.
+     **/
+    bool dependsOnProjectFrameRange() const;
 
     virtual std::string getCacheID() const OVERRIDE FINAL;
 
@@ -265,16 +321,6 @@ public:
     void hasViewersConnected(std::list<ViewerInstance* >* viewers) const;
 
     void hasOutputNodesConnected(std::list<OutputEffectInstance* >* writers) const;
-
-private:
-
-    void hasViewersConnectedInternal(std::list<ViewerInstance* >* viewers,
-                                     std::list<const Node*>* markedNodes) const;
-
-    void hasOutputNodesConnectedInternal(std::list<OutputEffectInstance* >* writers,
-                                         std::list<const Node*>* markedNodes) const;
-
-public:
 
     /**
      * @brief Forwarded to the live effect instance
@@ -620,6 +666,11 @@ public:
      * @brief Same as above but enters into subgroups
      **/
     void getOutputsWithGroupRedirection(NodesList& outputs) const;
+
+    /**
+     * @brief Same as getOutputsWithGroupRedirection(), appended to outputs.
+     **/
+    void appendOutputsWithGroupRedirection(std::vector<NodePtr>* outputs) const;
 
     /**
      * @brief Each input name is appended to the vector, in the same order
@@ -1071,15 +1122,7 @@ public:
 
     void refreshPreviewsRecursivelyUpstream(double time);
 
-    void incrementKnobsAge();
-
-    void incrementKnobsAge_internal();
-
 public:
-
-
-    U64 getKnobsAge() const;
-
     void onAllKnobsSlaved(bool isSlave, KnobHolder* master);
 
     void onKnobSlaved(const KnobIPtr& slave, const KnobIPtr& master, int dimension, bool isSlave);
@@ -1276,6 +1319,11 @@ public:
 
     bool hasAnyPersistentMessage() const;
 
+    /**
+     * @brief The persistent message. A missing-channel message is first rechecked by
+     * refreshInputRelatedDataIfStale(), which may recompute dirty hashes, so the caller must not
+     * hold a lock it takes.
+     **/
     void getPersistentMessage(QString* message, int* type, bool prefixLabelAndType = true) const;
 
     /**
@@ -1506,13 +1554,60 @@ public:
 
     double getHostMixingValue(double time, ViewIdx view) const;
 
-    void removeAllImagesFromCacheWithMatchingIDAndDifferentKey(U64 nodeHashKey);
     void removeAllImagesFromCache(bool blocking);
 
     bool isDraftModeUsed() const;
     bool isInputRelatedDataDirty() const;
 
+    /**
+     * @brief Refreshes the input-related data of this node and of every node downstream of it
+     * now, which reads all their hashes. For explicit refreshes of whole trees; an edit calls
+     * refreshInputRelatedDataAfterInputChange() instead.
+     **/
     void forceRefreshAllInputRelatedData();
+
+    /**
+     * @brief What an edit of this node's inputs refreshes: this node's input-related data now,
+     * after that of its dirty inputs, while the nodes downstream are only marked stale (see
+     * markDownstreamInputRelatedDataStale()). Main thread only.
+     **/
+    void refreshInputRelatedDataAfterInputChange();
+
+    /**
+     * @brief Marks the input-related data (metadata, produced layers, channel selectors) of every
+     * node downstream of this one stale, reading no hash, so that a branch nothing reads is never
+     * rehashed for it. Each node is refreshed by refreshInputRelatedDataIfStale() once it is read;
+     * the nodes whose settings panel is visible are shown, and are refreshed now. Main thread only.
+     **/
+    void markDownstreamInputRelatedDataStale();
+
+    /**
+     * @brief Refreshes this node's input-related data, after that of its dirty inputs, if an edit
+     * upstream left it stale. A viewer refreshes only the inputs it shows. Reads the hashes of the
+     * nodes it refreshes. Callable from any thread, but does nothing off the main thread, inside a
+     * hash recompute or another refresh, while the project loads or closes, or while a node tree
+     * is being created: those read the data as it stands, and the refresh that follows them
+     * covers it.
+     **/
+    void refreshInputRelatedDataIfStale();
+
+    /**
+     * @brief What a render of this node refreshes before it reads metadata and layers:
+     * refreshInputRelatedDataIfStale() on every node upstream of it, the paint trees of RotoPaint
+     * nodes and the nodes inside groups included, and through a viewer only the inputs it shows. Each node is looked at, not
+     * only the stale ones' inputs: a viewer refreshed while it showed other inputs, and a RotoPaint
+     * node whose paint tree was edited, are clean above stale nodes. Does nothing off the main
+     * thread.
+     **/
+    void refreshInputRelatedDataForRender();
+
+    bool isInputRelatedDataStale() const;
+
+    /**
+     * @brief Has the main thread run refreshInputRelatedDataIfStale() on this node soon, for a
+     * reader off the main thread that found it stale. Callable from any thread.
+     **/
+    void requestInputRelatedDataRefresh();
 
     void markAllInputRelatedDataDirty();
 
@@ -1690,13 +1785,74 @@ private:
 
     bool findDataKindConflictDownstream(const DataKindConstraint& constraint, NodePtr* conflictingNode) const;
 
-    void computeHashRecursive(std::list<Node*>& marked);
+    /**
+     * @brief The nodes whose hash folds in this one's: outputs through group redirections, and
+     * the internal nodes of a roto paint tree.
+     **/
+    void getHashDependents(std::vector<NodePtr>* dependents) const;
+
+    struct HashInputs {
+        bool isViewer = false;
+        // By input slot: a viewer's two shown inputs, null when unconnected; for any other node
+        // the connected inputs it folds in.
+        std::vector<std::pair<int, NodePtr>> bySlot;
+    };
 
     /**
-     * @brief Refreshes the node hash depending on its context (knobs age, inputs etc...)
-     * @return True if the hash has changed, false otherwise
+     * @brief The nodes whose stored hashes this node's hashes fold in.
      **/
-    bool computeHashInternal() WARN_UNUSED_RETURN;
+    void getHashInputs(HashInputs* inputs) const;
+
+    U32 getInputSlotCount() const;
+
+    /**
+     * @brief Marks this node, and if includeGroupContents every node inside it when it is a
+     * group. Its dependents are marked by the next flushHashDirtyMarks().
+     **/
+    void markHashDirtyInternal(bool includeGroupContents);
+
+    /**
+     * @brief Marks the dependents of every node marked since the last flush. Any hash read
+     * calls it first.
+     **/
+    static void flushHashDirtyMarks();
+
+    /**
+     * @brief flushHashDirtyMarks(), except when only reader is marked: none of the marks then
+     * reaches a hash reader folds in.
+     **/
+    static void flushHashDirtyMarksBeforeRead(const Node* reader);
+
+    bool isHashDirty() const;
+
+    /**
+     * @brief Recomputes this node's dirty hash and, inputs first, every dirty hash it folds in.
+     **/
+    void refreshDirtyHashes();
+
+    struct HashWalk;
+
+    /**
+     * @brief Recomputes the hashes if they are dirty. With requireCleanInputs, gives up and
+     * returns false if a hash it folds in is dirty, which only a concurrent mark or a cycle causes.
+     **/
+    bool recomputeHashIfDirty(bool requireCleanInputs, HashWalk* walk);
+
+    /**
+     * @brief Refreshes the node's content hash from its knobs, state and inputs,
+     * reading the inputs' stored hashes. Leaves the dirty state and the change hooks to the caller.
+     * @param projectDigest The project's content digest; 0 takes a fresh one.
+     * @return True if the content hash has changed, false otherwise
+     **/
+    bool computeHashInternal(U64 projectDigest, const HashInputs& inputs, U64* contentHash) WARN_UNUSED_RETURN;
+
+    U64 computeContentHash(U64 projectDigest, const HashInputs& inputs) const;
+
+    /**
+     * @brief Digest of the render-hashed knobs by name, memoized until the effect's knobs content
+     * generation moves. hasExpression is set if any knob, hashed or not, has an expression.
+     **/
+    U64 getKnobsContentDigest(bool* hasExpression) const;
 
     void refreshCreatedViews(KnobI* knob, bool silent);
 
@@ -1716,6 +1872,10 @@ private:
 
     bool refreshInputRelatedDataInternal(bool domarking, std::set<Node*>& markedNodes);
 
+    // Like refreshInputRelatedDataInternal(), except that a viewer only refreshes the inputs it
+    // shows: its hash folds in only those, so the others are not read through it.
+    bool refreshShownInputRelatedData(std::set<Node*>& visited);
+
     bool refreshDraftFlagInternal(const std::vector<NodeWPtr>& inputs);
 
     void setNameInternal(const std::string& name, bool throwErrors);
@@ -1730,9 +1890,6 @@ public Q_SLOTS:
     void onProcessingQuitInDestroyNodeInternal(int taskID, const GenericWatcherCallerArgsPtr& args);
 
     void onRefreshIdentityStateRequestReceived();
-
-    void setKnobsAge(U64 newAge);
-
 
     void doRefreshEdgesGUI()
     {
@@ -1764,8 +1921,6 @@ public Q_SLOTS:
 
     void onParentMultiInstanceInputChanged(int input);
 
-    void doComputeHashOnMainThread();
-
 Q_SIGNALS:
 
     void rightClickMenuKnobPopulated();
@@ -1787,11 +1942,7 @@ Q_SIGNALS:
      **/
     void layerListRefreshed();
 
-    void mustComputeHashOnMainThread();
-
     void settingsPanelClosed(bool);
-
-    void knobsAgeChanged(U64 age);
 
     void persistentMessageChanged();
 
@@ -1866,10 +2017,9 @@ Q_SIGNALS:
     void mustDequeueActions();
 
 protected:
-
     /**
-     * @brief Recompute the hash value of this node and notify all the clone effects that the values they store in their
-     * knobs is dirty and that they should refresh it by cloning the live instance.
+     * @brief Marks the hash of this node, and of every node downstream of it, for a recompute
+     * when each is next read. Callable from any thread.
      **/
     void computeHash();
 

@@ -193,6 +193,38 @@ TEST(LayerRegistry, FileUnionGrowsChannels)
     EXPECT_EQ("A", found.getChannels()[3]);
 }
 
+TEST(LayerRegistry, FileReorderedIdenticalSetIsUnchanged)
+{
+    LayerRegistry registry;
+    std::string error;
+    std::vector<std::string> rgb;
+    rgb.push_back("R");
+    rgb.push_back("G");
+    rgb.push_back("B");
+    ImageLayerDesc diffuseRgb("diffuse", "diffuse", "", rgb);
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, registry.add(diffuseRgb, LayerRegistryEntry::eOriginFile, &error));
+
+    std::vector<std::string> bgr;
+    bgr.push_back("B");
+    bgr.push_back("G");
+    bgr.push_back("R");
+    ImageLayerDesc diffuseBgr("diffuse", "diffuse", "", bgr);
+    EXPECT_EQ(LayerRegistry::eAddResultUnchanged, registry.add(diffuseBgr, LayerRegistryEntry::eOriginFile, &error));
+
+    std::vector<std::string> gr;
+    gr.push_back("G");
+    gr.push_back("R");
+    ImageLayerDesc diffuseGr("diffuse", "diffuse", "", gr);
+    EXPECT_EQ(LayerRegistry::eAddResultUnchanged, registry.add(diffuseGr, LayerRegistryEntry::eOriginFile, &error));
+
+    ImageLayerDesc found;
+    ASSERT_TRUE(registry.find("diffuse", &found));
+    ASSERT_EQ(3, found.getNumComponents());
+    EXPECT_EQ("R", found.getChannels()[0]);
+    EXPECT_EQ("G", found.getChannels()[1]);
+    EXPECT_EQ("B", found.getChannels()[2]);
+}
+
 TEST(LayerRegistry, UserConflictRefused)
 {
     LayerRegistry registry;
@@ -390,9 +422,10 @@ TEST_F(BaseTest, LoadWithUnchangedFilesDoesNotChangeRegistry)
     project->reset(false, true);
 
     int layersChangedCount = 0;
-    QObject::connect(project.get(), &Project::projectLayersChanged, [&layersChangedCount]() {
-        ++layersChangedCount;
-    });
+    // The project outlives this test in a single-process run; the scoped receiver drops the
+    // connection before layersChangedCount goes out of scope.
+    QObject connectionScope;
+    QObject::connect(project.get(), &Project::projectLayersChanged, &connectionScope, [&layersChangedCount]() { ++layersChangedCount; }, Qt::DirectConnection);
 
     ASSERT_TRUE(project->loadProject(dirPath, fileName));
     EXPECT_EQ(1, layersChangedCount);

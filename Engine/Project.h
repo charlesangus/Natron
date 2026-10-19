@@ -213,6 +213,14 @@ public:
     qint64 getProjectCreationTime() const;
 
     /**
+     * @brief Hash of the project settings that change what nodes render: output format,
+     * frame rate, views, OpenColorIO config and working space, layer registry and
+     * render-affecting preferences. Never 0. Memoized until one of those changes; the OCIO
+     * config file's stamp is looked up on every call, since Reload changes it with no edit.
+     **/
+    U64 getContentDigest() const;
+
+    /**
      * @brief The OpenColorIO config the project actually uses: an "ocio://" URI or an absolute
      * path. After a failed load this is the config still in use, not the requested one.
      **/
@@ -261,6 +269,9 @@ public:
     {
         return true;
     }
+
+    // Every node's hash folds in the project's render settings.
+    virtual void onKnobContentChanged(const KnobI* knob) OVERRIDE FINAL;
 
     /**
      * @brief Returns the user environment variables for the project
@@ -468,10 +479,17 @@ Q_SIGNALS:
     void projectLayersChanged();
 
 private:
+    U64 computeContentDigestWithoutFileStamps(const std::shared_ptr<const std::vector<LayerRegistryEntry>>& layers,
+                                              const std::string& ocioSource,
+                                              bool concatenation) const;
+
     // Emits projectLayersChanged() and refreshes every node's channel selector menus;
     // called after a registry mutation outside of project load (load batches its own
     // single emission after all nodes are restored, see ProjectPrivate::restoreFromSerialization).
     void notifyLayersChanged();
+
+    // Re-keys the nodes whose hash includes the project frame range.
+    void rehashNodesUsingFrameRange();
 
     std::string encodeLayersKnobTable() const;
 

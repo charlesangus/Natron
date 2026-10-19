@@ -587,18 +587,6 @@ EffectInstance::shouldCacheOutput(bool isFrameVaryingOrAnimated,
     return n->shouldCacheOutput(isFrameVaryingOrAnimated, time, view, visitsCount);
 }
 
-U64
-EffectInstance::getKnobsAge() const
-{
-    return getNode()->getKnobsAge();
-}
-
-void
-EffectInstance::setKnobsAge(U64 age)
-{
-    getNode()->setKnobsAge(age);
-}
-
 const std::string &
 EffectInstance::getScriptName() const
 {
@@ -2601,6 +2589,7 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
                                                 lastFrame,
                                                 layers->useOpenGL);
     ImagePtr maskImage;
+    int glMaskChannel = -1;
     EffectInstance::InputImagesMap::const_iterator foundMaskInput = rectToRender.imgs.end();
 
     if ( _publicInterface->isHostMaskingEnabled() ) {
@@ -2609,6 +2598,23 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
 
     if ( ( foundMaskInput != rectToRender.imgs.end() ) && !foundMaskInput->second.empty() ) {
         maskImage = foundMaskInput->second.front();
+        // The mask input is pre-rendered in the whole layer of the selected mask channel, while
+        // the host mix reads one channel per pixel: extract the selected one.
+        if (maskImage && (maskImage->getComponentsCount() != 1)) {
+            const int maskInputNb = foundMaskInput->first;
+            std::list<ImageLayerDesc> availableLayers;
+            _publicInterface->getAvailableLayers(time, view, maskInputNb, &availableLayers);
+            ImageLayerDesc maskLayer;
+            const int maskChannel = _publicInterface->getMaskChannel(maskInputNb, availableLayers, &maskLayer);
+            if (maskChannel >= 0) {
+                // GL textures are never converted, so the GL mix reads the channel from the whole layer.
+                if (maskImage->getStorageMode() == eStorageModeGLTex) {
+                    glMaskChannel = maskChannel;
+                } else {
+                    maskImage = EffectInstance::convertLayersFormatsIfNeeded(maskImage, maskImage->getBounds(), ImageLayerDesc::getAlphaComponents(), maskImage->getBitDepth(), maskChannel);
+                }
+            }
+        }
     }
 
 #ifndef NDEBUG
@@ -2691,6 +2697,7 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
                                                        processChannels,
                                                        preferredInput,
                                                        maskImage,
+                                                       glMaskChannel,
                                                        *layers);
     if (handlerRet == eRenderingFunctorRetOK) {
         return eRenderingFunctorRetOK;
@@ -2774,6 +2781,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                                               const std::bitset<4>& processChannels,
                                               const int preferredInput,
                                               const ImagePtr& maskImage,
+                                              const int glMaskChannel,
                                               ImageLayersToRender& layers)
 {
     TimeLapsePtr timeRecorder;
@@ -3277,7 +3285,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                     it->second.downscaleImage->copyUnProcessedChannels(actionArgs.roi, planeProcessChannels, originalInputImage, glContext);
                 }
                 if (useMaskMix) {
-                    it->second.downscaleImage->applyMaskMix(actionArgs.roi, maskImage.get(), originalInputImage.get(), doMask, false, mix, glContext);
+                    it->second.downscaleImage->applyMaskMix(actionArgs.roi, maskImage.get(), originalInputImage.get(), doMask, false, mix, glContext, glMaskChannel);
                 }
             } // if (renderFullScaleThenDownscale) {
         } // if (it->second.isAllocatedOnTheFly) {
@@ -3410,7 +3418,7 @@ void
 EffectInstance::onSignificantEvaluateAboutToBeCalled(KnobI* knob)
 {
     //We changed, abort any ongoing current render to refresh them with a newer version
-    abortAnyEvaluation();
+    abortAnyEvaluationForChange();
 
     NodePtr node = getNode();
     if ( !node->isNodeCreated() ) {
@@ -3426,9 +3434,20 @@ EffectInstance::onSignificantEvaluateAboutToBeCalled(KnobI* knob)
 
     if (isMT) {
         node->refreshIdentityState();
+    }
+    // Each reader recomputes what it reads, so only the nodes between this one and what is
+    // looked at are rehashed. The viewers re-render through the evaluate() that follows, on the
+    // main thread for an edit made on another one, and so read the hashes they need.
+    node->markHashDirty();
+}
 
-        //Increments the knobs age following a change
-        node->incrementKnobsAge();
+void
+EffectInstance::onKnobContentChanged(const KnobI* knob)
+{
+    NodePtr node = _node.lock();
+
+    if (node) {
+        node->onKnobContentChanged(knob);
     }
 }
 
@@ -4291,7 +4310,7 @@ EffectInstance::getRegionOfDefinition_public(U64 hash,
                     *isProjectFormat = false;
                 }
 
-                return eStatusOK;
+                return rod->isNull() ? eStatusFailed : eStatusOK;
             }
         }
 
@@ -4312,12 +4331,11 @@ EffectInstance::getRegionOfDefinition_public(U64 hash,
             ret = getRegionOfDefinition(hash, time, supportsRenderScaleMaybe() == eSupportsNo ? RenderScale::identity : scale, view, rod);
 
             if ( (ret != eStatusOK) && (ret != eStatusReplyDefault) ) {
-                // rod is not valid
-                //if (!isDuringStrokeCreation) {
-                _imp->actionsCache->invalidateAll(hash);
-                _imp->actionsCache->setRoDResult( hash, time, view, mipmapLevel, RectD() );
+                // Not cached: a failure can be transient (inputs not ready yet during a load), and
+                // a content hash is reached again whenever its state is, so a cached failure would
+                // replay there. Only a successfully computed empty RoD is cached.
+                _imp->actionsCache->clearResults(hash);
 
-                // }
                 return ret;
             }
 
@@ -4325,7 +4343,9 @@ EffectInstance::getRegionOfDefinition_public(U64 hash,
                 // RoD is empty, which means output is black and transparent
                 _imp->actionsCache->setRoDResult( hash, time, view, mipmapLevel, RectD() );
 
-                return ret;
+                // What the cached result reports, so that whether the RoD came from the cache
+                // never shows in the status.
+                return eStatusFailed;
             }
 
             assert( (ret == eStatusOK || ret == eStatusReplyDefault) && (rod->x1 <= rod->x2 && rod->y1 <= rod->y2) );
@@ -4340,7 +4360,8 @@ EffectInstance::getRegionOfDefinition_public(U64 hash,
         _imp->actionsCache->setRoDResult(hash, time, view,  mipmapLevel, *rod);
 
         //}
-        return ret;
+        // The cached result cannot tell a default reply from an explicit one, so neither can this.
+        return eStatusOK;
     }
 } // EffectInstance::getRegionOfDefinition_public
 
@@ -4911,6 +4932,9 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
                                                       int* passThroughInputNb)
 
 {
+    // The layers follow the metadata, and a refresh that changes it drops the results cached here.
+    refreshInputRelatedDataIfStale();
+
     RECURSIVE_ACTION();
 
     // Computed while this effect's own isIdentity() is choosing its pass-through input, the
@@ -5652,10 +5676,7 @@ EffectInstance::clearLastRenderedImage()
 void
 EffectInstance::aboutToRestoreDefaultValues()
 {
-    ///Invalidate the cache by incrementing the age
     NodePtr node = getNode();
-
-    node->incrementKnobsAge();
 
     if ( node->areKeyframesVisibleOnTimeline() ) {
         node->hideKeyframesFromTimeline(true);
@@ -5884,10 +5905,19 @@ EffectInstance::getNearestNonIdentity(double time)
 void
 EffectInstance::onNodeHashChanged(U64 hash)
 {
-    ///Invalidate actions cache
-    _imp->actionsCache->invalidateAll(hash);
+    // A hash stands for one state, so the results stored under it stay valid and a node returning
+    // to an earlier state is served the ones it had then. Reloading a file changed on disk re-keys
+    // the node through its stamp; Reload also drops the node's results, for changes the stamp misses.
+    _imp->actionsCache->useHash(hash);
 
-    const KnobsVec & knobs = getKnobs();
+    // Only expressions cache results, and walking every knob of every node a change reaches is
+    // what an edit would otherwise pay for.
+    NodePtr node = _node.lock();
+    if (node && !node->mayHaveKnobExpressions()) {
+        return;
+    }
+    // Called from the hash recompute, which runs on whichever thread reads a dirty hash.
+    const KnobsVec knobs = getKnobs_mt_safe();
     for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
         for (int i = 0; i < (*it)->getDimension(); ++i) {
             (*it)->clearExpressionsResults(i);
@@ -6342,6 +6372,7 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
 RectI
 EffectInstance::getOutputFormat() const
 {
+    refreshInputRelatedDataIfStale();
     QMutexLocker k(&_imp->metadataMutex);
     return _imp->metadata.getOutputFormat();
 }
@@ -6379,6 +6410,7 @@ metadataNComps(const NodeMetadata& metadata,
 void
 EffectInstance::getMetadataComponents(int inputNb, ImageLayerDesc* layer, ImageLayerDesc* pairedLayer) const
 {
+    refreshInputRelatedDataIfStale();
     int nComps;
     std::string componentsType;
     {
@@ -6392,6 +6424,7 @@ EffectInstance::getMetadataComponents(int inputNb, ImageLayerDesc* layer, ImageL
 void
 EffectInstance::getMetadataOutputClipComponents(ImageLayerDesc* layer, ImageLayerDesc* pairedLayer) const
 {
+    refreshInputRelatedDataIfStale();
     int nComps;
     std::string componentsType;
     {
@@ -6405,6 +6438,7 @@ EffectInstance::getMetadataOutputClipComponents(ImageLayerDesc* layer, ImageLaye
 int
 EffectInstance::getMetadataNComps(int inputNb) const
 {
+    refreshInputRelatedDataIfStale();
     QMutexLocker k(&_imp->metadataMutex);
     return metadataNComps(_imp->metadata, inputNb);
 }
@@ -6412,6 +6446,7 @@ EffectInstance::getMetadataNComps(int inputNb) const
 ImageBitDepthEnum
 EffectInstance::getBitDepth(int inputNb) const
 {
+    refreshInputRelatedDataIfStale();
     QMutexLocker k(&_imp->metadataMutex);
 
     return _imp->metadata.getBitDepth(inputNb);
@@ -6420,6 +6455,7 @@ EffectInstance::getBitDepth(int inputNb) const
 double
 EffectInstance::getFrameRate() const
 {
+    refreshInputRelatedDataIfStale();
     QMutexLocker k(&_imp->metadataMutex);
 
     return _imp->metadata.getOutputFrameRate();
@@ -6428,6 +6464,7 @@ EffectInstance::getFrameRate() const
 double
 EffectInstance::getAspectRatio(int inputNb) const
 {
+    refreshInputRelatedDataIfStale();
     QMutexLocker k(&_imp->metadataMutex);
 
     return _imp->metadata.getPixelAspectRatio(inputNb);
@@ -6436,6 +6473,7 @@ EffectInstance::getAspectRatio(int inputNb) const
 bool
 EffectInstance::isFrameVarying() const
 {
+    refreshInputRelatedDataIfStale();
     QMutexLocker k(&_imp->metadataMutex);
 
     return _imp->metadata.getIsFrameVarying();
@@ -6444,6 +6482,7 @@ EffectInstance::isFrameVarying() const
 bool
 EffectInstance::canRenderContinuously() const
 {
+    refreshInputRelatedDataIfStale();
     QMutexLocker k(&_imp->metadataMutex);
 
     return _imp->metadata.getIsContinuous();
@@ -6455,43 +6494,25 @@ EffectInstance::canRenderContinuously() const
 ImageFieldingOrderEnum
 EffectInstance::getFieldingOrder() const
 {
+    refreshInputRelatedDataIfStale();
     QMutexLocker k(&_imp->metadataMutex);
 
     return _imp->metadata.getOutputFielding();
 }
 
-bool
-EffectInstance::refreshMetadata_recursive(std::list<Node*> & markedNodes)
+void
+EffectInstance::refreshInputRelatedDataIfStale() const
 {
-    NodePtr node = getNode();
-    std::list<Node*>::iterator found = std::find( markedNodes.begin(), markedNodes.end(), node.get() );
-
-    if ( found != markedNodes.end() ) {
-        return false;
+    // Checked before the node is locked: the getters calling this are hot on render threads, which
+    // never refresh.
+    if (QThread::currentThread() != qApp->thread()) {
+        return;
     }
+    NodePtr node = _node.lock();
 
-    if (_imp->runningClipPreferences) {
-        return false;
+    if (node) {
+        node->refreshInputRelatedDataIfStale();
     }
-
-    ClipPreferencesRunning_RAII runningflag_(this);
-    bool ret = refreshMetadata_public(false);
-    node->refreshIdentityState();
-
-    if ( !node->duringInputChangedAction() ) {
-        ///The channels selector refreshing is already taken care of in the inputChanged action
-        node->refreshChannelSelectors();
-    }
-
-    markedNodes.push_back( node.get() );
-
-    NodesList outputs;
-    node->getOutputsWithGroupRedirection(outputs);
-    for (NodesList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
-        (*it)->getEffectInstance()->refreshMetadata_recursive(markedNodes);
-    }
-
-    return ret;
 }
 
 void
@@ -6529,6 +6550,11 @@ EffectInstance::refreshMetadata_internal()
 {
     NodeMetadata metadata;
 
+    // Recomputing a dirty hash drops the metadata the plug-in cached for the state it replaced.
+    NodePtr node = _node.lock();
+    if (node) {
+        node->getHashValue();
+    }
     getPreferredMetadata_public(metadata);
     _imp->checkMetadata(metadata);
 
@@ -6550,12 +6576,24 @@ EffectInstance::refreshMetadata_public(bool recurse)
     assert( QThread::currentThread() == qApp->thread() );
 
     if (recurse) {
-
-        {
-            std::list<Node*> markedNodes;
-
-            return refreshMetadata_recursive(markedNodes);
+        if (_imp->runningClipPreferences) {
+            return false;
         }
+        NodePtr node = getNode();
+        bool ret;
+        {
+            ClipPreferencesRunning_RAII runningflag_(this);
+            ret = refreshMetadata_public(false);
+            node->refreshIdentityState();
+
+            if (!node->duringInputChangedAction()) {
+                /// The channels selector refreshing is already taken care of in the inputChanged action
+                node->refreshChannelSelectors();
+            }
+        }
+        node->markDownstreamInputRelatedDataStale();
+
+        return ret;
     } else {
         bool ret = refreshMetadata_internal();
         if (ret) {

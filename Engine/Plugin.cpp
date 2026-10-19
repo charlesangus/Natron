@@ -27,16 +27,92 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
 #include <locale>
 #include <stdexcept>
 
+#include <fcntl.h>
+#include <sys/stat.h>
+
+#include <QDateTime>
+#include <QFileInfo>
 #include <QMutex>
 
+// clang-format off
+CLANG_DIAG_OFF(unknown-pragmas)
+CLANG_DIAG_OFF(tautological-undefined-compare) // appeared in clang 3.5
+#include <ofxhPluginCache.h>
+#include <ofxhPluginAPICache.h>
+#include <ofxhImageEffect.h>
+#include <ofxhImageEffectAPI.h>
+CLANG_DIAG_ON(tautological-undefined-compare)
+CLANG_DIAG_ON(unknown-pragmas)
+// clang-format on
+
+#include "Global/GitVersion.h"
+
 #include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/LibraryBinary.h"
 #include "Engine/Settings.h"
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+// Native plug-ins are compiled into the running executable, and GIT_COMMIT is a committed
+// constant that a rebuild of changed code keeps, so the executable itself is stamped. Not its
+// path: an AppImage is mounted at a new one every launch. An executable that cannot be stamped
+// gets the session salt, since nothing then tells its code apart from another build's.
+U64
+runningExecutableStamp()
+{
+    static const U64 stamp = []() {
+        ContentHasher h;
+        struct statx st;
+        if (statx(AT_FDCWD, "/proc/self/exe", 0, STATX_MTIME | STATX_SIZE, &st) != 0) {
+            h.appendBool(false);
+            h.appendU64(ContentHasher::sessionSalt());
+        } else {
+            h.appendBool(true);
+            h.appendI64((std::int64_t)st.stx_mtime.tv_sec);
+            h.appendI64((std::int64_t)st.stx_mtime.tv_nsec);
+            h.appendU64(st.stx_size);
+        }
+
+        return h.finalize();
+    }();
+
+    return stamp;
+}
+
+// Plug-ins whose output depends on state that no hash covers. Their results are reused within a
+// session but never served from the disk cache in a later one, where that state may differ.
+struct VolatilePlugin {
+    const char* id;
+    const char* reason;
+};
+
+const VolatilePlugin kVolatilePlugins[] = {
+    { "net.fxarena.openfx.Text", "renders with the system fonts found through fontconfig" },
+    { "net.fxarena.openfx.RichText", "renders with the system fonts found through fontconfig" },
+    { "net.fxarena.openfx.MagickText", "renders with the fonts ImageMagick finds on the system" },
+    { "net.fxarena.openfx.Polaroid", "draws its caption with a system font" },
+    { "fr.inria.openfx.OIIOText", "renders with the fonts OpenImageIO finds on the system" },
+    { "net.fxarena.openfx.HaldCLUT", "reads, and can download, preset LUTs under ~/.clut" },
+};
+
+bool
+isVolatilePlugin(const std::string& id)
+{
+    for (const VolatilePlugin& plugin : kVolatilePlugins) {
+        if (id == plugin.id) {
+            return true;
+        }
+    }
+
+    return false;
+}
+} // anonymous namespace
 
 Plugin::~Plugin()
 {
@@ -250,6 +326,41 @@ OFX::Host::ImageEffect::ImageEffectPlugin*
 Plugin::getOfxPlugin() const
 {
     return _ofxPlugin;
+}
+
+U64
+Plugin::getBinaryContentStamp() const
+{
+    U64 stamp = _binaryContentStamp.load(std::memory_order_acquire);
+    if (stamp != 0) {
+        return stamp;
+    }
+
+    ContentHasher h;
+    OFX::Host::PluginBinary* binary = _ofxPlugin ? _ofxPlugin->getBinary() : 0;
+    if (binary) {
+        h.appendString("ofx");
+        const std::string& path = binary->getFilePath();
+        h.appendString(path);
+        QFileInfo info(QString::fromUtf8(path.c_str()));
+        h.appendBool(info.exists());
+        h.appendI64(info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0);
+        h.appendI64(info.exists() ? info.size() : 0);
+    } else {
+        h.appendString("native");
+        h.appendString(NATRON_VERSION_STRING);
+        h.appendString(GIT_COMMIT);
+        h.appendU64(runningExecutableStamp());
+    }
+    const bool isVolatile = isVolatilePlugin(_id.toStdString());
+    h.appendBool(isVolatile);
+    if (isVolatile) {
+        h.appendU64(ContentHasher::sessionSalt());
+    }
+    stamp = h.finalize();
+    _binaryContentStamp.store(stamp, std::memory_order_release);
+
+    return stamp;
 }
 
 OFX::Host::ImageEffect::Descriptor*

@@ -28,8 +28,10 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <functional>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -39,6 +41,8 @@
 #include <QString>
 #include <QCoreApplication>
 #include <QRecursiveMutex>
+
+#include "Global/GlobalDefines.h"
 
 #include "Engine/Variant.h"
 #include "Engine/AppManager.h" // for AppManager::createKnob
@@ -52,6 +56,8 @@
 #define NATRON_USER_MANAGED_KNOBS_PAGE "userNatron"
 
 NATRON_NAMESPACE_ENTER
+
+class ContentHasher;
 
 /**
  * @brief KnobI is deliberately not a QObject: knobs are created in large
@@ -1380,6 +1386,59 @@ public:
      **/
     virtual bool isTypeCompatible(const KnobIPtr & other) const = 0;
     std::shared_ptr<KnobPage> getTopLevelPage() const;
+
+    /**
+     * @brief A hash of what this knob feeds a render: for each dimension its static value and
+     * clamping range, its whole animation curve, its expression and any data the knob type keeps
+     * beside them (the selected choice entry ID, parametric curves, string keyframes). A slaved
+     * dimension hashes as the master dimension it follows. Two knobs in the same state hash
+     * equal whatever edits led there; labels, visibility and other GUI state do not count.
+     * The hash of every knob an expression reads is folded in, and an expression calling something
+     * volatile (random, time, files) hashes differently in each session.
+     * Cheap to call repeatedly: each dimension's own hash is memoized until the knob changes;
+     * the dependency part of an expression is recomputed on every call.
+     * MT-safe.
+     **/
+    virtual U64 getContentHash() const = 0;
+
+    /**
+     * @brief Appends getContentHash() to h.
+     **/
+    void appendContentHash(ContentHasher& h) const;
+
+    /**
+     * @brief The memoized hash of one dimension, through its master if it is slaved. MT-safe.
+     **/
+    virtual U64 getDimensionContentHash(int dimension) const = 0;
+
+    /**
+     * @brief Discards the memoized content hash. Must be called after, never before, any change
+     * to what getContentHash() covers. MT-safe.
+     **/
+    virtual void invalidateContentHash() = 0;
+
+    /**
+     * @brief Marks a node-level GUI knob whose value never feeds a render, even though it is
+     * persistent or evaluates on change. Set once at creation.
+     **/
+    virtual void setHashExempt(bool exempt) = 0;
+    virtual bool isHashExempt() const = 0;
+
+    /**
+     * @brief True if this knob's content belongs in the node hash: it holds data (not a page,
+     * group, separator or plain button), is not hash-exempt, and is saved or evaluates on change.
+     * Persistence alone qualifies so that secret OFX state params stay hashed.
+     **/
+    virtual bool isRenderHashed() const = 0;
+
+    /**
+     * @brief Reports whether any dimension has an expression, and whether getContentHash() can
+     * change without this knob's invalidateContentHash() being called: a master link or an
+     * expression reads another knob, and some knobs hash state outside the memo (a file on disk).
+     * Only the expression set, the master links and the knob type decide this, and all of them
+     * invalidate the knob's hash when they change.
+     **/
+    virtual void getContentHashDependencies(bool* hasExpression, bool* readsOutsideKnob) const = 0;
 };
 
 
@@ -1699,9 +1758,67 @@ public:
                                             bool isUserKnob) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual KnobIPtr getAliasMaster() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool setKnobAsAliasOfThis(const KnobIPtr& master, bool doAlias) OVERRIDE FINAL;
+    virtual U64 getContentHash() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual U64 getDimensionContentHash(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void invalidateContentHash() OVERRIDE FINAL;
+    virtual void setHashExempt(bool exempt) OVERRIDE FINAL;
+    virtual bool isHashExempt() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool isRenderHashed() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void getContentHashDependencies(bool* hasExpression, bool* readsOutsideKnob) const OVERRIDE FINAL;
+
+    /**
+     * @brief Has every invalidateContentHash() of this knob also move generation, for an owner
+     * that is not its holder (a roto item) and memoizes over the knob's content hash. Set before
+     * the knob is shared.
+     **/
+    void setContentGenerationObserver(const std::shared_ptr<std::atomic<U64>>& generation);
+
+protected:
+    /**
+     * @brief False for knobs that feed no render (pages, groups, separators, plain buttons):
+     * their content hash then covers nothing, whatever GUI state their value carries.
+     **/
+    virtual bool isContentHashed() const
+    {
+        return true;
+    }
+
+    /**
+     * @brief Appends the static value of the dimension and anything else the value type keeps
+     * per dimension, as stored by this knob (never through a master).
+     **/
+    virtual void appendValueContentHash(ContentHasher& h, int dimension) const = 0;
+
+    /**
+     * @brief Appends the data a derived knob keeps for the dimension beside its value, curve
+     * and expression. Implementations must call invalidateContentHash() after changing it.
+     **/
+    virtual void appendExtraContentHash(ContentHasher& /*h*/,
+                                        int /*dimension*/) const
+    {
+    }
+
+    /**
+     * @brief Appends state that can change without any knob edit (such as a file on disk).
+     * It is read on every getContentHash() call, outside the per-dimension memo.
+     **/
+    virtual void appendUnmemoizedContentHash(ContentHasher& /*h*/) const
+    {
+    }
+
+    /**
+     * @brief True if appendUnmemoizedContentHash() appends anything. Constant for a knob type.
+     **/
+    virtual bool hasUnmemoizedContentHash() const
+    {
+        return false;
+    }
 
 private:
+    typedef std::set<std::pair<const KnobHelper*, int>> ContentHashPath;
 
+    U64 getOwnDimensionContentHash(int dimension) const;
+    U64 getDimensionContentHashRecursive(int dimension, ContentHashPath& path) const;
 
     virtual bool slaveToInternal(int dimension, const KnobIPtr &  other, int otherDimension, Natron::ValueChangedReasonEnum reason
                                  , bool ignoreMasterPersistence) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -2196,6 +2313,8 @@ protected:
 
     virtual void resetExtraToDefaultValue(int /*dimension*/) {}
 
+    virtual void appendValueContentHash(ContentHasher& h, int dimension) const OVERRIDE FINAL;
+
 private:
 
     virtual void copyValuesFromCurve(int dim) OVERRIDE FINAL;
@@ -2409,6 +2528,7 @@ protected:
     virtual void cloneExtraData(KnobI* other, double offset, const RangeD* range, int dimension = -1, int otherDimension = -1) OVERRIDE;
     virtual void keyframeRemoved_virtual(int dimension, double time) OVERRIDE;
     virtual void animationRemoved_virtual(int dimension) OVERRIDE;
+    virtual void appendExtraContentHash(ContentHasher& h, int dimension) const OVERRIDE;
 
 private:
     std::unique_ptr<StringAnimationManager> _animation;
@@ -2573,6 +2693,12 @@ public:
      * final image.
      **/
     virtual void abortAnyEvaluation(bool keepOldestRender = true) { Q_UNUSED(keepOldestRender); }
+
+    /**
+     * @brief abortAnyEvaluation() for a change being made, deferred to the end of the outermost
+     * begin/endChanges bracket when the change is made inside a nested one.
+     **/
+    void abortAnyEvaluationForChange();
 
     /**
      * @brief Dequeues all values set in the queues for all knobs
@@ -2751,6 +2877,25 @@ public:
     void insertKnob(int idx, const KnobIPtr& k);
     void removeKnobFromList(const KnobI* knob);
 
+    /**
+     * @brief Moves whenever the content hash of a knob owned by this holder may have changed, or
+     * the knob list changed. Lets a holder-wide digest of its knobs be memoized. MT-safe.
+     **/
+    U64 getKnobsContentGeneration() const;
+
+    /**
+     * @brief Moves the generation and calls onKnobContentChanged() with the knob that changed,
+     * was added or was removed.
+     **/
+    void bumpKnobsContentGeneration(const KnobI* knob);
+
+    /**
+     * @brief Called after the content hash of knob may have moved: knob is owned by this holder
+     * and changed, was added or was removed, or it reads (through an expression or a master link)
+     * a knob that changed. Called on any thread, possibly while the knob's own locks are held, so
+     * an implementation may only mark state.
+     **/
+    virtual void onKnobContentChanged(const KnobI* /*knob*/) { }
 
     void initializeKnobsPublic();
 

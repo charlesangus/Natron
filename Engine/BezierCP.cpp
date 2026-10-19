@@ -39,6 +39,7 @@
 #include <QDebug>
 
 #include "Engine/Bezier.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Transform.h" // Point3D
 #include "Engine/ViewIdx.h"
@@ -931,6 +932,26 @@ BezierCP::clone(const BezierCP & other)
         _imp->guiRightY = other._imp->rightY;
         _imp->broken = other._imp->broken;
     }
+}
+
+void
+BezierCP::appendContentHash(ContentHasher& h) const
+{
+    _imp->curveX->appendContentHash(h);
+    _imp->curveY->appendContentHash(h);
+    _imp->curveLeftBezierX->appendContentHash(h);
+    _imp->curveLeftBezierY->appendContentHash(h);
+    _imp->curveRightBezierX->appendContentHash(h);
+    _imp->curveRightBezierY->appendContentHash(h);
+
+    QMutexLocker l(&_imp->staticPositionMutex);
+    h.appendDouble(_imp->x);
+    h.appendDouble(_imp->y);
+    h.appendDouble(_imp->leftX);
+    h.appendDouble(_imp->leftY);
+    h.appendDouble(_imp->rightX);
+    h.appendDouble(_imp->rightY);
+    h.appendBool(_imp->broken);
 }
 
 bool

@@ -159,7 +159,8 @@ regionOfDefinition(const NodePtr& node)
     bool isProjectFormat = false;
     const StatusEnum st = effect->getRegionOfDefinition_public(effect->getRenderHash(), 1., RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat);
 
-    EXPECT_NE(eStatusFailed, st) << node->getScriptName();
+    // An empty region of definition is reported as eStatusFailed.
+    EXPECT_TRUE((st != eStatusFailed) || rod.isNull()) << node->getScriptName();
 
     return rod;
 }

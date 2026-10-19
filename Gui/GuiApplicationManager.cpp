@@ -1025,7 +1025,6 @@ GuiApplicationManager::initGui(const CLArgs& args)
     ///Copy the args that will be used when fontconfig cache is updated
     _imp->startupArgs = args;
 
-
     _imp->fontconfigUpdateWatcher.reset(new QFutureWatcher<void>);
     QObject::connect( _imp->fontconfigUpdateWatcher.get(), SIGNAL(finished()), this, SLOT(onFontconfigCacheUpdateFinished()) );
     setLoadingStatus( tr("Updating fontconfig cache...") );

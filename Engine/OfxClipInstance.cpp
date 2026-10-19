@@ -495,7 +495,11 @@ OfxClipInstance::getConnected() const
         return true;
     } else {
         if (_isOutput) {
-            return effect->hasOutputConnected();
+            // Whatever asks for a render consumes the output, whether or not a node is wired
+            // below. Reporting the downstream wiring instead would let plug-ins that skip writing
+            // an unconnected output (the Magick ones do) render from state the node hash does
+            // not see, leaving the output buffer unwritten.
+            return true;
         } else {
             int inputNb = getInputNb();
             EffectInstancePtr input;
@@ -1816,6 +1820,25 @@ private:
 };
 } // namespace
 
+OFX::Host::ImageEffect::MetadataSet*
+OfxClipInstance::getCurrentMetadata(OFX::Host::ImageEffect::ClipInstance* clip,
+                                    OfxTime time)
+{
+    if (!clip) {
+        return NULL;
+    }
+    OfxClipInstance* natronClip = dynamic_cast<OfxClipInstance*>(clip);
+    OfxEffectInstancePtr effect = natronClip ? natronClip->_imp->nodeInstance.lock() : OfxEffectInstancePtr();
+    if (effect) {
+        // A refresh invalidates the clip caches: run from inside the fetch below, it would leave
+        // the fetched set uncached and drop the caches of the effect's other clips.
+        effect->refreshInputRelatedDataIfStale();
+        effect->dropStaleClipMetadata();
+    }
+
+    return clip->getMetadata(time);
+}
+
 void
 OfxClipInstance::fetchMetadata(OfxTime time,
                                OFX::Host::Property::Set& metadata)
@@ -1834,7 +1857,7 @@ OfxClipInstance::fetchMetadata(OfxTime time,
     }
 
     if (upstreamOutput) {
-        OFX::Host::ImageEffect::MetadataSet* upstream = upstreamOutput->getMetadata(time);
+        OFX::Host::ImageEffect::MetadataSet* upstream = getCurrentMetadata(upstreamOutput, time);
         if (upstream) {
             // the copies stand on their own, so the reference getMetadata() handed out is
             // dropped as soon as they are made: holding it for the lifetime of this clip

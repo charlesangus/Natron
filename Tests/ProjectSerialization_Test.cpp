@@ -147,6 +147,54 @@ TEST_F(BaseTest, RoundTripsNodesConnectionsAndKnobValues)
     EXPECT_EQ(key1Value, key1_2->getValue());
 }
 
+// The node hash is derived from content, so a node saved and reloaded must hash identically, and
+// the saved file must not carry a knobs age.
+TEST_F(BaseTest, RoundTripKeepsNodeHashAndWritesNoKnobsAge)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    NodePtr generator = createNode(_generatorPluginID);
+    NodePtr writer = createNativeWriter();
+    ASSERT_TRUE(bool(generator) && bool(writer));
+    connectNodes(generator, writer, 0, true);
+
+    KnobInt* octaves = dynamic_cast<KnobInt*>(generator->getKnobByName("fbmOctaves").get());
+    ASSERT_TRUE(octaves != NULL);
+    octaves->setValue(7);
+    octaves->setValue(9);
+
+    const std::string generatorName = generator->getScriptName();
+    const std::string writerName = writer->getScriptName();
+    const U64 generatorHash = generator->getHashValue();
+    const U64 writerHash = writer->getHashValue();
+    ASSERT_NE(U64(0), generatorHash);
+    ASSERT_NE(U64(0), writerHash);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("hash-roundtrip.ntp");
+
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    QFile saved(savedFilePath);
+    ASSERT_TRUE(saved.open(QIODevice::ReadOnly));
+    const QByteArray contents = saved.readAll();
+    saved.close();
+    EXPECT_TRUE(contents.contains("<KnobsAge>0</KnobsAge>"));
+    EXPECT_FALSE(contents.contains("<KnobsAge>1</KnobsAge>"));
+
+    project->reset(false, true);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr generator2 = project->getNodeByName(generatorName);
+    NodePtr writer2 = project->getNodeByName(writerName);
+    ASSERT_TRUE(bool(generator2) && bool(writer2));
+    EXPECT_EQ(generatorHash, generator2->getHashValue());
+    EXPECT_EQ(writerHash, writer2->getHashValue());
+}
+
 static ImageLayerDesc
 makeThreeChannelLayer(const std::string& id)
 {
@@ -207,9 +255,10 @@ TEST_F(BaseTest, RoundTripsLayerRegistry)
     }
 
     int layersChangedCount = 0;
-    QObject::connect(project.get(), &Project::projectLayersChanged, [&layersChangedCount]() {
-        ++layersChangedCount;
-    });
+    // The project outlives this test in a single-process run; the scoped receiver drops the
+    // connection before layersChangedCount goes out of scope.
+    QObject connectionScope;
+    QObject::connect(project.get(), &Project::projectLayersChanged, &connectionScope, [&layersChangedCount]() { ++layersChangedCount; }, Qt::DirectConnection);
     ASSERT_TRUE(project->loadProject(dirPath, fileName));
     EXPECT_EQ(1, layersChangedCount);
 

@@ -25,9 +25,10 @@
 
 #include "EffectInstancePrivate.h"
 
+#include <algorithm>
 #include <cassert>
-#include <stdexcept>
 #include <sstream> // stringstream
+#include <stdexcept>
 
 #include "Engine/AppInstance.h"
 #include "Engine/Node.h"
@@ -36,6 +37,10 @@
 
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+const int kActionsCacheMinStates = 64;
+} // anonymous namespace
 
 ActionsCache::ActionsCacheInstance::ActionsCacheInstance()
     : _hash(0)
@@ -47,41 +52,40 @@ ActionsCache::ActionsCacheInstance::ActionsCacheInstance()
 {
 }
 
-std::list<ActionsCache::ActionsCacheInstance>::iterator
-ActionsCache::createActionCacheInternal(U64 newHash)
+ActionsCache::ActionsCacheInstance*
+ActionsCache::findActionCache(U64 hash)
 {
-    if (_instances.size() >= _maxInstances) {
-        _instances.pop_front();
-    }
-    ActionsCacheInstance cache;
-    cache._hash = newHash;
+    std::unordered_map<U64, InstancesList::iterator>::iterator found = _instancesByHash.find(hash);
 
-    return _instances.insert(_instances.end(), cache);
+    return found == _instancesByHash.end() ? 0 : &*found->second;
 }
 
 ActionsCache::ActionsCacheInstance &
 ActionsCache::getOrCreateActionCache(U64 newHash)
 {
-    std::list<ActionsCacheInstance>::iterator found = _instances.end();
+    std::unordered_map<U64, InstancesList::iterator>::iterator found = _instancesByHash.find(newHash);
 
-    for (std::list<ActionsCacheInstance>::iterator it = _instances.begin(); it != _instances.end(); ++it) {
-        if (it->_hash == newHash) {
-            found = it;
-            break;
-        }
-    }
-    if ( found == _instances.end() ) {
-        found = createActionCacheInternal(newHash);
-    }
-    assert( found != _instances.end() );
+    if (found != _instancesByHash.end()) {
+        _instances.splice(_instances.end(), _instances, found->second);
 
-    return *found;
+        return *found->second;
+    }
+    if (!_instances.empty() && (_instances.size() >= _maxInstances)) {
+        _instancesByHash.erase(_instances.front()._hash);
+        _instances.pop_front();
+    }
+    InstancesList::iterator created = _instances.insert(_instances.end(), ActionsCacheInstance());
+    created->_hash = newHash;
+    _instancesByHash[newHash] = created;
+
+    return *created;
 }
 
 ActionsCache::ActionsCache(int maxAvailableHashes)
     : _cacheMutex()
     , _instances()
-    , _maxInstances( (std::size_t)maxAvailableHashes )
+    , _instancesByHash()
+    , _maxInstances((std::size_t)maxAvailableHashes)
 {
 }
 
@@ -91,14 +95,30 @@ ActionsCache::clearAll()
     QMutexLocker l(&_cacheMutex);
 
     _instances.clear();
+    _instancesByHash.clear();
 }
 
 void
-ActionsCache::invalidateAll(U64 newHash)
+ActionsCache::useHash(U64 hash)
 {
     QMutexLocker l(&_cacheMutex);
+    std::unordered_map<U64, InstancesList::iterator>::iterator found = _instancesByHash.find(hash);
 
-    createActionCacheInternal(newHash);
+    if (found != _instancesByHash.end()) {
+        _instances.splice(_instances.end(), _instances, found->second);
+    }
+}
+
+void
+ActionsCache::clearResults(U64 hash)
+{
+    QMutexLocker l(&_cacheMutex);
+    std::unordered_map<U64, InstancesList::iterator>::iterator found = _instancesByHash.find(hash);
+
+    if (found != _instancesByHash.end()) {
+        _instances.erase(found->second);
+        _instancesByHash.erase(found);
+    }
 }
 
 bool
@@ -110,28 +130,25 @@ ActionsCache::getIdentityResult(U64 hash,
                                 double* identityTime)
 {
     QMutexLocker l(&_cacheMutex);
+    const ActionsCacheInstance* cache = findActionCache(hash);
 
-    for (std::list<ActionsCacheInstance>::iterator it = _instances.begin(); it != _instances.end(); ++it) {
-        if (it->_hash == hash) {
-            ActionKey key;
-            key.time = time;
-            key.view = view;
-            key.mipmapLevel = 0;
-
-            IdentityCacheMap::const_iterator found = it->_identityCache.find(key);
-            if ( found != it->_identityCache.end() ) {
-                *inputNbIdentity = found->second.inputIdentityNb;
-                *identityTime = found->second.inputIdentityTime;
-                *inputView = found->second.inputView;
-
-                return true;
-            }
-
-            return false;
-        }
+    if (!cache) {
+        return false;
     }
+    ActionKey key;
+    key.time = time;
+    key.view = view;
+    key.mipmapLevel = 0;
 
-    return false;
+    IdentityCacheMap::const_iterator found = cache->_identityCache.find(key);
+    if (found == cache->_identityCache.end()) {
+        return false;
+    }
+    *inputNbIdentity = found->second.inputIdentityNb;
+    *identityTime = found->second.inputIdentityTime;
+    *inputView = found->second.inputView;
+
+    return true;
 }
 
 void
@@ -162,31 +179,29 @@ ActionsCache::getComponentsNeededResults(U64 hash, double time, ViewIdx view, Ef
                                          std::list<ImageLayerDesc>* passThroughLayers, int* passThroughInputNb, ViewIdx* passThroughView, double* passThroughTime)
 {
     QMutexLocker l(&_cacheMutex);
+    const ActionsCacheInstance* cache = findActionCache(hash);
 
-    for (std::list<ActionsCacheInstance>::iterator it = _instances.begin(); it != _instances.end(); ++it) {
-        if (it->_hash == hash) {
-            ActionKey key;
-            key.time = time;
-            key.view = view;
-            key.mipmapLevel = 0;
-
-            ComponentsNeededCacheMap::const_iterator found = it->_componentsNeededCache.find(key);
-            if ( found != it->_componentsNeededCache.end() ) {
-                *passThroughInputNb = found->second.passThroughInputNb;
-                *passThroughTime = found->second.passThroughTime;
-                *passThroughView = found->second.passThroughView;
-                *neededComps = found->second.neededComps;
-                *processChannels = found->second.processChannels;
-                *processChannelsPerPlane = found->second.processChannelsPerPlane;
-                *passThroughLayers = found->second.passThroughLayers;
-                return true;
-            }
-
-            return false;
-        }
+    if (!cache) {
+        return false;
     }
-    
-    return false;
+    ActionKey key;
+    key.time = time;
+    key.view = view;
+    key.mipmapLevel = 0;
+
+    ComponentsNeededCacheMap::const_iterator found = cache->_componentsNeededCache.find(key);
+    if (found == cache->_componentsNeededCache.end()) {
+        return false;
+    }
+    *passThroughInputNb = found->second.passThroughInputNb;
+    *passThroughTime = found->second.passThroughTime;
+    *passThroughView = found->second.passThroughView;
+    *neededComps = found->second.neededComps;
+    *processChannels = found->second.processChannels;
+    *processChannelsPerPlane = found->second.processChannelsPerPlane;
+    *passThroughLayers = found->second.passThroughLayers;
+
+    return true;
 }
 
 void
@@ -231,26 +246,23 @@ ActionsCache::getRoDResult(U64 hash,
                            RectD* rod)
 {
     QMutexLocker l(&_cacheMutex);
+    const ActionsCacheInstance* cache = findActionCache(hash);
 
-    for (std::list<ActionsCacheInstance>::iterator it = _instances.begin(); it != _instances.end(); ++it) {
-        if (it->_hash == hash) {
-            ActionKey key;
-            key.time = time;
-            key.view = view;
-            key.mipmapLevel = mipmapLevel;
-
-            RoDCacheMap::const_iterator found = it->_rodCache.find(key);
-            if ( found != it->_rodCache.end() ) {
-                *rod = found->second;
-
-                return true;
-            }
-
-            return false;
-        }
+    if (!cache) {
+        return false;
     }
+    ActionKey key;
+    key.time = time;
+    key.view = view;
+    key.mipmapLevel = mipmapLevel;
 
-    return false;
+    RoDCacheMap::const_iterator found = cache->_rodCache.find(key);
+    if (found == cache->_rodCache.end()) {
+        return false;
+    }
+    *rod = found->second;
+
+    return true;
 }
 
 void
@@ -279,26 +291,23 @@ ActionsCache::getFramesNeededResult(U64 hash,
                                     FramesNeededMap* framesNeeded)
 {
     QMutexLocker l(&_cacheMutex);
+    const ActionsCacheInstance* cache = findActionCache(hash);
 
-    for (std::list<ActionsCacheInstance>::iterator it = _instances.begin(); it != _instances.end(); ++it) {
-        if (it->_hash == hash) {
-            ActionKey key;
-            key.time = time;
-            key.view = view;
-            key.mipmapLevel = mipmapLevel;
-
-            FramesNeededCacheMap::const_iterator found = it->_framesNeededCache.find(key);
-            if ( found != it->_framesNeededCache.end() ) {
-                *framesNeeded = found->second;
-
-                return true;
-            }
-
-            return false;
-        }
+    if (!cache) {
+        return false;
     }
+    ActionKey key;
+    key.time = time;
+    key.view = view;
+    key.mipmapLevel = mipmapLevel;
 
-    return false;
+    FramesNeededCacheMap::const_iterator found = cache->_framesNeededCache.find(key);
+    if (found == cache->_framesNeededCache.end()) {
+        return false;
+    }
+    *framesNeeded = found->second;
+
+    return true;
 }
 
 void
@@ -325,17 +334,15 @@ ActionsCache::getTimeDomainResult(U64 hash,
                                   double* last)
 {
     QMutexLocker l(&_cacheMutex);
+    const ActionsCacheInstance* cache = findActionCache(hash);
 
-    for (std::list<ActionsCacheInstance>::iterator it = _instances.begin(); it != _instances.end(); ++it) {
-        if ( (it->_hash == hash) && it->_timeDomainSet ) {
-            *first = it->_timeDomain.min;
-            *last = it->_timeDomain.max;
-
-            return true;
-        }
+    if (!cache || !cache->_timeDomainSet) {
+        return false;
     }
+    *first = cache->_timeDomain.min;
+    *last = cache->_timeDomain.max;
 
-    return false;
+    return true;
 }
 
 void
@@ -433,11 +440,6 @@ EffectInstance::Implementation::Implementation(EffectInstance* publicInterface)
     , pluginMemoryChunks()
     , supportsRenderScale(eSupportsMaybe)
     , actionsCache()
-#if NATRON_ENABLE_TRIMAP
-    , imagesReservationMutex()
-    , imagesBeingRenderedMutex()
-    , imagesBeingRendered()
-#endif
     , overlaySlaves()
     , metadataMutex()
     , metadata()
@@ -452,7 +454,10 @@ EffectInstance::Implementation::Implementation(EffectInstance* publicInterface)
     , mustSyncPrivateData(false)
 {
     tlsData = std::make_shared<TLSHolder<EffectTLSData> >();
-    actionsCache = std::make_shared<ActionsCache>(appPTR->getHardwareIdealThreadCount() * 2);
+    // Enough states for a node to go back to the one it held before a slider drag or a run of
+    // undos without its action results being recomputed. The thread term keeps the room the
+    // states of concurrent renders need on many-core machines.
+    actionsCache = std::make_shared<ActionsCache>(std::max(kActionsCacheMinStates, appPTR->getHardwareIdealThreadCount() * 2));
 }
 
 EffectInstance::Implementation::Implementation(const Implementation& other)
@@ -464,11 +469,6 @@ EffectInstance::Implementation::Implementation(const Implementation& other)
     , pluginMemoryChunks()
     , supportsRenderScale(other.supportsRenderScale)
     , actionsCache(other.actionsCache)
-#if NATRON_ENABLE_TRIMAP
-    , imagesReservationMutex()
-    , imagesBeingRenderedMutex()
-    , imagesBeingRendered()
-#endif
     , overlaySlaves(other.overlaySlaves)
     , metadataMutex()
     , metadata(other.metadata)
@@ -591,11 +591,43 @@ EffectInstance::Implementation::setDuringInteractAction(bool b)
 }
 
 #if NATRON_ENABLE_TRIMAP
+// A cached image is shared by every node whose content hash matches, so which of its regions are being rendered is
+// recorded per image for the whole process: with a record per effect, a node would take the regions another node is
+// still rendering for finished ones.
+struct EffectInstance::Implementation::ImagesBeingRenderedRegistry {
+    // Held across the whole of markImagesAsBeingRendered() so that one render reserves its rectangles on all its layer
+    // images before another render can query any of them. Renders that can share an image share its key's node hash,
+    // so they always take the same stripe; unrelated renders mostly do not contend. Taken before `mutex` and never
+    // held while waiting on another render.
+    static const std::size_t kReservationStripes = 64;
+    QMutex reservation[kReservationStripes];
+    // Protects `images`. Taken before an image's ImageBeingRendered::lock.
+    QMutex mutex;
+    ImageBeingRenderedMap images;
+
+    QMutex& reservationFor(const std::vector<ImagePtr>& imgs)
+    {
+        const U64 nodeHash = imgs.empty() ? 0 : imgs.front()->getKey().getTreeVersion();
+
+        return reservation[nodeHash % kReservationStripes];
+    }
+};
+
+// Deliberately leaked: a render may still unmark its images during static destruction.
+EffectInstance::Implementation::ImagesBeingRenderedRegistry&
+EffectInstance::Implementation::imagesBeingRenderedRegistry()
+{
+    static ImagesBeingRenderedRegistry* registry = new ImagesBeingRenderedRegistry;
+
+    return *registry;
+}
+
 EffectInstance::Implementation::ImageBeingRenderedPtr
 EffectInstance::Implementation::acquireImageBeingRendered(const ImagePtr& img)
 {
-    QMutexLocker k(&imagesBeingRenderedMutex);
-    ImageBeingRenderedPtr& ibr = imagesBeingRendered[img];
+    ImagesBeingRenderedRegistry& registry = imagesBeingRenderedRegistry();
+    QMutexLocker k(&registry.mutex);
+    ImageBeingRenderedPtr& ibr = registry.images[img];
     if (!ibr) {
         ibr = std::make_shared<Implementation::ImageBeingRendered>();
     }
@@ -611,7 +643,7 @@ EffectInstance::Implementation::markImagesAsBeingRendered(const std::vector<Imag
                                                           std::list<RectI>* restToRender,
                                                           bool* renderedElsewhere)
 {
-    QMutexLocker reservation(&imagesReservationMutex);
+    QMutexLocker reservation(&imagesBeingRenderedRegistry().reservationFor(imgs));
     std::vector<std::pair<ImagePtr, ImageBeingRenderedPtr>> marked;
     std::list<RectI> allRests;
     for (const ImagePtr& img : imgs) {
@@ -654,16 +686,17 @@ EffectInstance::Implementation::waitForImageBeingRenderedElsewhere(const RectI &
     if ( !img->usesBitMap() ) {
         return true;
     }
+    ImagesBeingRenderedRegistry& registry = imagesBeingRenderedRegistry();
     ImageBeingRenderedPtr ibr;
-    QMutexLocker k(&imagesBeingRenderedMutex);
-    ImageBeingRenderedMap::iterator found = imagesBeingRendered.find(img);
-    if( found != imagesBeingRendered.end() ) {
+    QMutexLocker k(&registry.mutex);
+    ImageBeingRenderedMap::iterator found = registry.images.find(img);
+    if (found != registry.images.end()) {
         ibr = found->second;
     }
     if (!ibr) {
         return true;
     }
-    k.unlock(); // imagesBeingRenderedMutex
+    k.unlock(); // registry.mutex
     std::list<RectI> restToRender;
     bool isBeingRenderedElseWhere = false;
 
@@ -691,16 +724,17 @@ EffectInstance::Implementation::unmarkImageAsBeingRendered(const ImagePtr & img,
     if ( !img->usesBitMap() ) {
         return;
     }
+    ImagesBeingRenderedRegistry& registry = imagesBeingRenderedRegistry();
     ImageBeingRenderedPtr ibr;
-    QMutexLocker k(&imagesBeingRenderedMutex);
-    ImageBeingRenderedMap::iterator found = imagesBeingRendered.find(img);
-    if( found != imagesBeingRendered.end() ) {
+    QMutexLocker k(&registry.mutex);
+    ImageBeingRenderedMap::iterator found = registry.images.find(img);
+    if (found != registry.images.end()) {
         ibr = found->second;
     }
     if (!ibr) {
         return;
     }
-    k.unlock(); // imagesBeingRenderedMutex
+    k.unlock(); // registry.mutex
     QMutexLocker kk(&ibr->lock);
     if (renderFailed) {
         ibr->failed = true;
@@ -716,14 +750,14 @@ EffectInstance::Implementation::unmarkImageAsBeingRendered(const ImagePtr & img,
     --ibr->refCount;
     ibr->cond.wakeAll();
     if (!ibr->refCount) {
-        kk.unlock(); // imagesBeingRenderedMutex must be taken before an image's lock, as acquireImageBeingRendered() does
-        k.relock(); // imagesBeingRenderedMutex
-        ImageBeingRenderedMap::iterator found = imagesBeingRendered.find(img);
-        if ((found != imagesBeingRendered.end()) && (found->second == ibr)) {
+        kk.unlock(); // registry.mutex must be taken before an image's lock, as acquireImageBeingRendered() does
+        k.relock(); // registry.mutex
+        ImageBeingRenderedMap::iterator found = registry.images.find(img);
+        if ((found != registry.images.end()) && (found->second == ibr)) {
             // acquireImageBeingRendered() may have taken this entry again after refCount dropped to zero above.
             QMutexLocker kk2(&ibr->lock);
             if (!ibr->refCount) {
-                imagesBeingRendered.erase(found);
+                registry.images.erase(found);
             }
         }
     }

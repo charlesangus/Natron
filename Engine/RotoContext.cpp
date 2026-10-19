@@ -46,6 +46,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/CoonsRegularization.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/FeatherPoint.h"
@@ -1917,6 +1918,28 @@ RotoContext::getAge()
     QMutexLocker l(&_imp->rotoContextMutex);
 
     return _imp->age;
+}
+
+U64
+RotoContext::getContentHash() const
+{
+    // Renders walk the base layer only (getCurvesByRenderOrder()); the other entries of
+    // _imp->layers are nested in it.
+    RotoLayerPtr base;
+    {
+        QMutexLocker l(&_imp->rotoContextMutex);
+        if (!_imp->layers.empty()) {
+            base = _imp->layers.front();
+        }
+    }
+
+    ContentHasher h;
+    h.appendBool(bool(base));
+    if (base) {
+        h.appendU64(base->getContentHash());
+    }
+
+    return h.finalize();
 }
 
 void

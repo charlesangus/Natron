@@ -28,10 +28,13 @@
 #include "KnobImpl.h"
 
 #include <algorithm> // min, max
+#include <atomic>
 #include <cassert>
-#include <stdexcept>
-#include <sstream> // stringstream
 #include <cctype> // isspace
+#include <random>
+#include <set>
+#include <sstream> // stringstream
+#include <stdexcept>
 
 #include <QDataStream>
 #include <QDateTime>
@@ -40,10 +43,13 @@
 #include <QThread>
 #include <QDebug>
 
+#include <ofxNatron.h>
+
 #include "Global/GlobalDefines.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/Curve.h"
 #include "Engine/DockablePanelI.h"
 #include "Engine/Hash64.h"
@@ -69,6 +75,32 @@
 #include "Engine/EngineFwd.h"
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+// An expression's result is cached under the time it was evaluated for, so the knobs it reads
+// without a time (getValue()) must read at that time, not at the timeline's frame or at the time
+// of an enclosing render, or the cached result belongs to another frame.
+thread_local double tExpressionTime = 0.;
+thread_local int tExpressionTimeDepth = 0;
+
+class ExpressionTimeScope {
+    const double _previous;
+
+public:
+    explicit ExpressionTimeScope(double time)
+        : _previous(tExpressionTime)
+    {
+        tExpressionTime = time;
+        ++tExpressionTimeDepth;
+    }
+
+    ~ExpressionTimeScope()
+    {
+        tExpressionTime = _previous;
+        --tExpressionTimeDepth;
+    }
+};
+} // anon namespace
 
 using std::make_pair; using std::pair;
 
@@ -477,6 +509,16 @@ struct KnobHelperPrivate
     int listenersNotificationBlocked; // protected by valueChangedBlockedMutex
     bool isClipPreferenceSlave;
 
+    // Bumped by every invalidation. A memo is only valid for the generation read before its
+    // computation started, so a change racing with a computation is never hidden by it.
+    std::atomic<U64> contentGeneration;
+    std::shared_ptr<std::atomic<U64>> contentGenerationObserver;
+    std::atomic<bool> hashExempt;
+    mutable QMutex contentHashMutex; // protects the 3 members below
+    mutable std::vector<U64> contentDimensionHashes;
+    mutable U64 contentHashesGeneration;
+    mutable bool contentHashesValid;
+
     KnobHelperPrivate(KnobHelper* publicInterface_,
                       KnobHolder* holder_,
                       int dimension_,
@@ -545,6 +587,12 @@ struct KnobHelperPrivate
         , valueChangedBlocked(0)
         , listenersNotificationBlocked(0)
         , isClipPreferenceSlave(false)
+        , contentGeneration(0)
+        , hashExempt(false)
+        , contentHashMutex()
+        , contentDimensionHashes()
+        , contentHashesGeneration(0)
+        , contentHashesValid(false)
     {
         tlsData = std::make_shared<TLSHolder<KnobHelper::KnobTLSData> >();
         if ( holder && !holder->canKnobsAnimate() ) {
@@ -595,7 +643,16 @@ KnobHelper::~KnobHelper()
 void
 KnobHelper::setHolder(KnobHolder* holder)
 {
+    KnobHolder* previous = _imp->holder;
+
     _imp->holder = holder;
+    // A holder-wide memo trusts only its own knobs' invalidations, so both holders re-check.
+    if (previous) {
+        previous->bumpKnobsContentGeneration(this);
+    }
+    if (holder) {
+        holder->bumpKnobsContentGeneration(this);
+    }
 }
 
 void
@@ -2831,6 +2888,7 @@ KnobHelper::setExpressionInvalid(int dimension,
         wasValid = _imp->expressions[dimension].exprInvalid.empty();
         _imp->expressions[dimension].exprInvalid = error;
     }
+    invalidateContentHash();
     if ( getHolder() && getHolder()->getApp() ) {
         if (wasValid && !valid) {
             getHolder()->getApp()->addInvalidExpressionKnob( std::const_pointer_cast<KnobI>( shared_from_this() ) );
@@ -3070,6 +3128,7 @@ KnobHelper::clearExpression(int dimension,
 void
 KnobHelper::expressionChanged(int dimension)
 {
+    invalidateContentHash();
     if (_imp->holder) {
         _imp->holder->updateHasAnimation();
     }
@@ -3126,6 +3185,8 @@ KnobHelper::executeExpression(double time,
     std::stringstream ss;
 
     ss << expr << '(' << time << ", " <<  view << ")\n";
+
+    const ExpressionTimeScope timeScope(time);
 
     return executeExpression(ss.str(), ret, error);
 }
@@ -3214,8 +3275,19 @@ void
 KnobHelper::setName(const std::string & name,
                     bool throwExceptions)
 {
+    // Node hashes cover knob names, so every way out of a rename must move the holder's generation.
+    struct InvalidateOnExit {
+        KnobHelper* knob;
+        ~InvalidateOnExit() { knob->invalidateContentHash(); }
+    } invalidateOnExit = { this };
+
     _imp->originalName = name;
     _imp->name = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(name);
+    // A sublabel only echoes values the node already hashes, and plugins rewrite it from their
+    // actions: in the hash it would only re-key the node under a render.
+    if (_imp->name == kNatronOfxParamStringSublabelName) {
+        _imp->hashExempt = true;
+    }
 
     if ( !getHolder() ) {
         return;
@@ -3406,6 +3478,8 @@ KnobHelper::setEvaluateOnChange(bool b)
         QMutexLocker k(&_imp->evaluateOnChangeMutex);
         _imp->evaluateOnChange = b;
     }
+    // isRenderHashed() reads this flag.
+    invalidateContentHash();
     if (_signalSlotHandler) {
         _signalSlotHandler->s_evaluateOnChangeChanged(b);
     }
@@ -3421,6 +3495,8 @@ void
 KnobHelper::setIsPersistent(bool b)
 {
     _imp->IsPersistent = b;
+    // isRenderHashed() reads this flag.
+    invalidateContentHash();
 }
 
 void
@@ -3445,6 +3521,30 @@ bool
 KnobHelper::getIsMetadataSlave() const
 {
     return _imp->isClipPreferenceSlave;
+}
+
+void
+KnobHelper::setHashExempt(bool exempt)
+{
+    _imp->hashExempt = exempt;
+    // isRenderHashed() moved, which changes the knob set a holder-wide digest covers.
+    invalidateContentHash();
+}
+
+bool
+KnobHelper::isHashExempt() const
+{
+    return _imp->hashExempt;
+}
+
+bool
+KnobHelper::isRenderHashed() const
+{
+    if (!isContentHashed() || isHashExempt()) {
+        return false;
+    }
+
+    return getIsPersistent() || getEvaluateOnChange();
 }
 
 bool
@@ -3746,6 +3846,7 @@ KnobHelper::slaveToInternal(int dimension,
         _imp->masters[dimension].second = other;
         _imp->masters[dimension].first = otherDimension;
     }
+    invalidateContentHash();
 
     KnobHelper* masterKnob = dynamic_cast<KnobHelper*>( other.get() );
     assert(masterKnob);
@@ -3810,9 +3911,13 @@ void
 KnobHelper::resetMaster(int dimension)
 {
     assert(dimension >= 0);
-    _imp->masters[dimension].second.reset();
-    _imp->masters[dimension].first = -1;
-    _imp->ignoreMasterPersistence = false;
+    {
+        QWriteLocker l(&_imp->mastersMutex);
+        _imp->masters[dimension].second.reset();
+        _imp->masters[dimension].first = -1;
+        _imp->ignoreMasterPersistence = false;
+    }
+    invalidateContentHash();
 }
 
 bool
@@ -4411,6 +4516,10 @@ KnobHelper::getListeners(KnobI::ListenerDimsMap & listeners) const
 double
 KnobHelper::getCurrentTime() const
 {
+    if (tExpressionTimeDepth > 0) {
+        return tExpressionTime;
+    }
+
     KnobHolder* holder = getHolder();
 
     return holder && holder->getApp() ? holder->getCurrentTime() : 0;
@@ -4895,6 +5004,253 @@ KnobHelper::getAliasMaster()  const
 }
 
 void
+KnobI::appendContentHash(ContentHasher& h) const
+{
+    h.appendU64(getContentHash());
+}
+
+U64
+KnobHelper::getContentHash() const
+{
+    ContentHasher h;
+    const int nDims = getDimension();
+
+    h.appendI64(nDims);
+    for (int i = 0; i < nDims; ++i) {
+        h.appendU64(getDimensionContentHash(i));
+    }
+    appendUnmemoizedContentHash(h);
+
+    return h.finalize();
+}
+
+namespace {
+// Calls whose result changes between runs or machines without any knob changing. "frame" and the
+// time argument are deliberately absent: a content hash is time-independent.
+const char* const kVolatileExpressionTokens[] = {
+    "random", "time.", "datetime", "os.", "sys.", "open(", "uuid", "getpass", "subprocess", "socket"
+};
+
+bool
+expressionIsVolatile(const std::string& expr)
+{
+    for (const char* token : kVolatileExpressionTokens) {
+        if (expr.find(token) != std::string::npos) {
+            return true;
+        }
+    }
+
+    return false;
+}
+} // namespace
+
+U64
+KnobHelper::getDimensionContentHash(int dimension) const
+{
+    ContentHashPath path;
+
+    return getDimensionContentHashRecursive(dimension, path);
+}
+
+U64
+KnobHelper::getDimensionContentHashRecursive(int dimension,
+                                             ContentHashPath& path) const
+{
+    if ((dimension < 0) || (dimension >= getDimension())) {
+        return 0;
+    }
+    std::pair<int, KnobIPtr> master = getMaster(dimension);
+    if (master.second && (master.first >= 0) && (master.first < master.second->getDimension())) {
+        const KnobHelper* masterHelper = dynamic_cast<const KnobHelper*>(master.second.get());
+        if (masterHelper) {
+            return masterHelper->getDimensionContentHashRecursive(master.first, path);
+        }
+
+        return master.second->getDimensionContentHash(master.first);
+    }
+
+    const U64 own = getOwnDimensionContentHash(dimension);
+
+    std::list<std::pair<KnobIWPtr, int>> dependencies;
+    bool isVolatile;
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        const Expr& expr = _imp->expressions[dimension];
+        if (expr.originalExpression.empty()) {
+            return own;
+        }
+        dependencies = expr.dependencies;
+        isVolatile = expressionIsVolatile(expr.originalExpression);
+    }
+    if (dependencies.empty() && !isVolatile) {
+        return own;
+    }
+
+    // A knob reached again while its own hash is being built closes a cycle; a fixed marker keeps
+    // the result deterministic. Removing the entry on the way out keeps shared dependencies exact.
+    const std::pair<const KnobHelper*, int> key(this, dimension);
+    if (!path.insert(key).second) {
+        return 1;
+    }
+
+    ContentHasher h;
+    h.appendU64(own);
+    h.appendBool(isVolatile);
+    if (isVolatile) {
+        h.appendU64(ContentHasher::sessionSalt());
+    }
+    for (std::list<std::pair<KnobIWPtr, int>>::const_iterator it = dependencies.begin(); it != dependencies.end(); ++it) {
+        KnobIPtr dep = it->first.lock();
+        if (!dep) {
+            h.appendBool(false);
+            continue;
+        }
+        h.appendBool(true);
+        h.appendI64(it->second);
+        const KnobHelper* depHelper = dynamic_cast<const KnobHelper*>(dep.get());
+        h.appendU64(depHelper ? depHelper->getDimensionContentHashRecursive(it->second, path)
+                              : dep->getDimensionContentHash(it->second));
+    }
+    path.erase(key);
+
+    return h.finalize();
+}
+
+void
+KnobHelper::invalidateContentHash()
+{
+    _imp->contentGeneration.fetch_add(1, std::memory_order_acq_rel);
+    if (_imp->contentGenerationObserver) {
+        _imp->contentGenerationObserver->fetch_add(1, std::memory_order_acq_rel);
+    }
+    KnobHolder* holder = _imp->holder;
+    if (holder) {
+        holder->bumpKnobsContentGeneration(this);
+    }
+
+    // A knob reading this one through an expression or a master link hashes it live, so its
+    // holder's generation stays put; the holder is told directly, and so on down the chain.
+    KnobI::ListenerDimsMap listeners;
+    getListeners(listeners);
+    if (listeners.empty()) {
+        return;
+    }
+    std::set<const KnobI*> visited;
+    visited.insert(this);
+    std::vector<KnobIPtr> toVisit;
+    for (;;) {
+        for (KnobI::ListenerDimsMap::const_iterator it = listeners.begin(); it != listeners.end(); ++it) {
+            KnobIPtr listener = it->first.lock();
+            if (listener && visited.insert(listener.get()).second) {
+                toVisit.push_back(listener);
+            }
+        }
+        if (toVisit.empty()) {
+            break;
+        }
+        KnobIPtr listener = toVisit.back();
+        toVisit.pop_back();
+        KnobHolder* listenerHolder = listener->getHolder();
+        if (listenerHolder) {
+            listenerHolder->onKnobContentChanged(listener.get());
+        }
+        listeners.clear();
+        listener->getListeners(listeners);
+    }
+}
+
+void
+KnobHelper::setContentGenerationObserver(const std::shared_ptr<std::atomic<U64>>& generation)
+{
+    _imp->contentGenerationObserver = generation;
+}
+
+void
+KnobHelper::getContentHashDependencies(bool* hasExpression,
+                                       bool* readsOutsideKnob) const
+{
+    const int nDims = getDimension();
+
+    *hasExpression = false;
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        for (int i = 0; i < nDims; ++i) {
+            if (!_imp->expressions[i].originalExpression.empty()) {
+                *hasExpression = true;
+                break;
+            }
+        }
+    }
+    bool hasMaster = false;
+    {
+        QReadLocker k(&_imp->mastersMutex);
+        for (int i = 0; i < nDims; ++i) {
+            if (_imp->masters[i].second.lock()) {
+                hasMaster = true;
+                break;
+            }
+        }
+    }
+    *readsOutsideKnob = *hasExpression || hasMaster || hasUnmemoizedContentHash();
+}
+
+U64
+KnobHelper::getOwnDimensionContentHash(int dimension) const
+{
+    const U64 generation = _imp->contentGeneration.load(std::memory_order_acquire);
+    {
+        QMutexLocker k(&_imp->contentHashMutex);
+        if (_imp->contentHashesValid && (_imp->contentHashesGeneration == generation)) {
+            return _imp->contentDimensionHashes[dimension];
+        }
+    }
+
+    const int nDims = getDimension();
+    const bool hashed = isContentHashed();
+    std::vector<U64> hashes(nDims);
+    ContentHasher h;
+    for (int i = 0; i < nDims; ++i) {
+        h.reset();
+        if (!hashed) {
+            hashes[i] = h.finalize();
+            continue;
+        }
+        appendValueContentHash(h, i);
+
+        CurvePtr curve = _imp->curves[i];
+        h.appendBool(bool(curve));
+        if (curve) {
+            curve->appendContentHash(h);
+        }
+
+        {
+            QMutexLocker k(&_imp->expressionMutex);
+            const Expr& expr = _imp->expressions[i];
+            h.appendString(expr.originalExpression);
+            // clearExpression() leaves hasRet behind, so it only counts while there is an expression.
+            if (!expr.originalExpression.empty()) {
+                h.appendBool(expr.hasRet);
+                h.appendBool(expr.exprInvalid.empty());
+            }
+        }
+
+        appendExtraContentHash(h, i);
+        hashes[i] = h.finalize();
+    }
+
+    {
+        QMutexLocker k(&_imp->contentHashMutex);
+        if (!_imp->contentHashesValid || (_imp->contentHashesGeneration <= generation)) {
+            _imp->contentDimensionHashes = hashes;
+            _imp->contentHashesGeneration = generation;
+            _imp->contentHashesValid = true;
+        }
+    }
+
+    return hashes[dimension];
+}
+
+void
 KnobHelper::getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) const
 {
     std::set<KnobIPtr> deps;
@@ -4968,11 +5324,14 @@ struct KnobHolder::KnobHolderPrivate
     int nbSignificantChangesDuringEvaluationBlock;
     int nbChangesDuringEvaluationBlock;
     int nbChangesRequiringMetadataRefresh;
+    // An abort asked for inside a nested bracket, run when the outermost one ends.
+    bool abortAtEndOfChanges = false;
     QMutex knobsFrozenMutex;
     bool knobsFrozen;
     mutable QMutex hasAnimationMutex;
     bool hasAnimation;
     DockablePanelI* settingsPanel;
+    std::atomic<U64> knobsContentGeneration { 0 };
 
     KnobHolderPrivate(const AppInstancePtr& appInstance_)
         : app(appInstance_)
@@ -5125,6 +5484,7 @@ KnobHolder::addKnob(const KnobIPtr& k)
         }
     }
     _imp->knobs.push_back(k);
+    bumpKnobsContentGeneration(k.get());
 }
 
 void
@@ -5147,6 +5507,7 @@ KnobHolder::insertKnob(int index,
         std::advance(it, index);
         _imp->knobs.insert(it, k);
     }
+    bumpKnobsContentGeneration(k.get());
 }
 
 void
@@ -5157,10 +5518,24 @@ KnobHolder::removeKnobFromList(const KnobI* knob)
     for (KnobsVec::iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
         if (it->get() == knob) {
             _imp->knobs.erase(it);
+            bumpKnobsContentGeneration(knob);
 
             return;
         }
     }
+}
+
+U64
+KnobHolder::getKnobsContentGeneration() const
+{
+    return _imp->knobsContentGeneration.load(std::memory_order_acquire);
+}
+
+void
+KnobHolder::bumpKnobsContentGeneration(const KnobI* knob)
+{
+    _imp->knobsContentGeneration.fetch_add(1, std::memory_order_acq_rel);
+    onKnobContentChanged(knob);
 }
 
 void
@@ -5232,6 +5607,7 @@ KnobHolder::deleteKnob(KnobI* knob,
             }
         }
     }
+    bumpKnobsContentGeneration(knob);
 
     if (alsoDeleteGui && _imp->settingsPanel) {
         _imp->settingsPanel->deleteKnobGui(sharedKnob);
@@ -5823,6 +6199,23 @@ KnobHolder::onDoEvaluateOnMainThread(bool significant,
 }
 
 void
+KnobHolder::abortAnyEvaluationForChange()
+{
+    {
+        QMutexLocker l(&_imp->evaluationBlockedMutex);
+        // The bracket of the change being made counts once: more means it is nested in another,
+        // whose end aborts once for every change made inside it, instead of a walk to the
+        // outputs below this holder per change.
+        if (_imp->evaluationBlocked > 1) {
+            _imp->abortAtEndOfChanges = true;
+
+            return;
+        }
+    }
+    abortAnyEvaluation();
+}
+
+void
 KnobHolder::incrHashAndEvaluate(bool isSignificant,
                                 bool refreshMetadata)
 {
@@ -5942,6 +6335,7 @@ KnobHolder::endChanges(bool discardRendering)
     bool hasHadAnyChange = false;
     bool mustRefreshMetadata = false;
 
+    bool mustAbort = false;
     {
         QMutexLocker l(&_imp->evaluationBlockedMutex);
         if (_imp->evaluationBlocked > 0) {
@@ -5949,6 +6343,8 @@ KnobHolder::endChanges(bool discardRendering)
         }
         evaluationBlocked = _imp->evaluationBlocked;
         if (evaluationBlocked == 0) {
+            mustAbort = _imp->abortAtEndOfChanges;
+            _imp->abortAtEndOfChanges = false;
             if (_imp->nbSignificantChangesDuringEvaluationBlock) {
                 hasHadSignificantChange = true;
             }
@@ -5964,6 +6360,9 @@ KnobHolder::endChanges(bool discardRendering)
         }
     }
 
+    if (mustAbort) {
+        abortAnyEvaluation();
+    }
 
     // Call getClipPreferences & render
     if ( hasHadAnyChange && !discardRendering && !isLoadingProject && !duringInputChangeAction && !isChangeDueToTimeChange && (evaluationBlocked == 0) ) {
@@ -6528,6 +6927,7 @@ AnimatingKnobStringHelper::cloneExtraData(KnobI* other,
 
     if (isAnimatedString) {
         _animation->clone( isAnimatedString->getAnimation() );
+        invalidateContentHash();
     }
 }
 
@@ -6539,7 +6939,12 @@ AnimatingKnobStringHelper::cloneExtraDataAndCheckIfChanged(KnobI* other,
     AnimatingKnobStringHelper* isAnimatedString = dynamic_cast<AnimatingKnobStringHelper*>(other);
 
     if (isAnimatedString) {
-        return _animation->cloneAndCheckIfChanged( isAnimatedString->getAnimation() );
+        bool changed = _animation->cloneAndCheckIfChanged(isAnimatedString->getAnimation());
+        if (changed) {
+            invalidateContentHash();
+        }
+
+        return changed;
     }
 
     return false;
@@ -6556,6 +6961,7 @@ AnimatingKnobStringHelper::cloneExtraData(KnobI* other,
 
     if (isAnimatedString) {
         _animation->clone(isAnimatedString->getAnimation(), offset, range);
+        invalidateContentHash();
     }
 }
 
@@ -6579,6 +6985,7 @@ AnimatingKnobStringHelper::stringToKeyFrameValue(double time,
                                                  double* returnValue)
 {
     _animation->insertKeyFrame(time, v, returnValue);
+    invalidateContentHash();
 }
 
 void
@@ -6595,6 +7002,7 @@ void
 AnimatingKnobStringHelper::animationRemoved_virtual(int /*dimension*/)
 {
     _animation->clearKeyFrames();
+    invalidateContentHash();
 }
 
 void
@@ -6602,6 +7010,7 @@ AnimatingKnobStringHelper::keyframeRemoved_virtual(int /*dimension*/,
                                                    double time)
 {
     _animation->removeKeyFrame(time);
+    invalidateContentHash();
 }
 
 std::string
@@ -6641,6 +7050,20 @@ void
 AnimatingKnobStringHelper::loadAnimation(const std::map<int, std::string> & keyframes)
 {
     _animation->load(keyframes);
+    invalidateContentHash();
+}
+
+void
+AnimatingKnobStringHelper::appendExtraContentHash(ContentHasher& h,
+                                                  int /*dimension*/) const
+{
+    std::map<int, std::string> keyframes;
+    _animation->save(&keyframes);
+    h.appendU64(keyframes.size());
+    for (std::map<int, std::string>::const_iterator it = keyframes.begin(); it != keyframes.end(); ++it) {
+        h.appendI64(it->first);
+        h.appendString(it->second);
+    }
 }
 
 void

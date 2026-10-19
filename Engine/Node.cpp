@@ -26,15 +26,22 @@
 #include "NodePrivate.h"
 
 #include <algorithm> // min, max
+#include <atomic>
 #include <bitset>
 #include <cassert>
 #include <cctype>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <locale>
 #include <map>
+#include <mutex>
 #include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "Global/Macros.h"
@@ -59,6 +66,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Backdrop.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/Curve.h"
 #include "Engine/DiskCacheNode.h"
@@ -173,6 +181,39 @@ toBGRA(unsigned char r,
     return (a << 24) | (r << 16) | (g << 8) | b;
 }
 
+namespace {
+// Set while this thread computes a hash. A hash read from inside it, such as an expression's
+// random seed, gets the stored hash: recomputing there would nest node locks in no fixed order.
+thread_local int hashComputeDepth = 0;
+
+class HashComputeScope {
+public:
+    HashComputeScope() { ++hashComputeDepth; }
+
+    ~HashComputeScope() { --hashComputeDepth; }
+};
+
+// Set while the main thread refreshes a node's input-related data. The refresh orders the nodes
+// it reaches itself, inputs first, so a reader inside it takes the data as it stands instead of
+// starting another refresh from the middle of this one.
+int inputRelatedDataRefreshDepth = 0;
+
+class InputRelatedDataRefreshScope {
+public:
+    InputRelatedDataRefreshScope() { ++inputRelatedDataRefreshDepth; }
+
+    ~InputRelatedDataRefreshScope() { --inputRelatedDataRefreshDepth; }
+};
+
+bool
+isSkippedByHashInputs(const Node& node)
+{
+    const EffectInstancePtr effect = node.getEffectInstance();
+
+    return node.isEffectGroup() || dynamic_cast<GroupInput*>(effect.get()) || dynamic_cast<GroupOutput*>(effect.get()) || dynamic_cast<PrecompNode*>(effect.get());
+}
+} // anonymous namespace
+
 Node::Node(const AppInstancePtr& app,
            const NodeCollectionPtr& group,
            Plugin* plugin)
@@ -180,8 +221,7 @@ Node::Node(const AppInstancePtr& app,
     , _imp( new Implementation(this, app, group, plugin) )
 {
     QObject::connect( this, SIGNAL(pluginMemoryUsageChanged(qint64)), appPTR, SLOT(onNodeMemoryRegistered(qint64)) );
-    QObject::connect( this, SIGNAL(mustDequeueActions()), this, SLOT(dequeueActions()) );
-    QObject::connect( this, SIGNAL(mustComputeHashOnMainThread()), this, SLOT(doComputeHashOnMainThread()) );
+    QObject::connect(this, SIGNAL(mustDequeueActions()), this, SLOT(dequeueActions()));
     QObject::connect(this, SIGNAL(refreshIdentityStateRequested()), this, SLOT(onRefreshIdentityStateRequestReceived()), Qt::QueuedConnection);
 
     if (plugin && plugin->getPluginID().startsWith(QLatin1String("com.FXHOME.HitFilm"))) {
@@ -748,9 +788,42 @@ Node::getChildrenMultiInstance(NodesList* children) const
 U64
 Node::getHashValue() const
 {
-    QReadLocker l(&_imp->knobsAgeMutex);
+    return getContentHash();
+}
 
-    return _imp->hash.value();
+U64
+Node::getContentHash() const
+{
+    if (hashComputeDepth == 0) {
+        flushHashDirtyMarksBeforeRead(this);
+        if (isHashDirty()) {
+            const_cast<Node*>(this)->refreshDirtyHashes();
+        }
+    }
+
+    return getStoredContentHash();
+}
+
+U64
+Node::getStoredContentHash() const
+{
+    QReadLocker l(&_imp->contentHashMutex);
+
+    return _imp->contentHash;
+}
+
+bool
+Node::getHashValueIfUpToDate(U64* hash) const
+{
+    if (hashComputeDepth == 0) {
+        flushHashDirtyMarksBeforeRead(this);
+    }
+    if (isHashDirty()) {
+        return false;
+    }
+    *hash = getStoredContentHash();
+
+    return true;
 }
 
 std::string
@@ -762,164 +835,709 @@ Node::getCacheID() const
 }
 
 bool
-Node::computeHashInternal()
+Node::computeHashInternal(U64 projectDigest,
+                          const HashInputs& inputs,
+                          U64* newContentHash)
 {
+    *newContentHash = 0;
     if (!_imp->effect) {
         return false;
     }
-    ///Always called in the main thread
-    assert( QThread::currentThread() == qApp->thread() );
     if (!_imp->inputsInitialized) {
         qDebug() << "Node::computeHash(): inputs not initialized";
     }
 
-    U64 oldHash, newHash;
+    // Computed before taking contentHashMutex: knob content hashing and input reads must not run
+    // under this node's write lock.
+    const U64 contentHash = computeContentHash(projectDigest, inputs);
+
+    U64 oldContentHash;
     {
-        QWriteLocker l(&_imp->knobsAgeMutex);
+        QWriteLocker l(&_imp->contentHashMutex);
 
-        oldHash = _imp->hash.value();
+        oldContentHash = _imp->contentHash;
+        _imp->contentHash = contentHash;
+    }
+    *newContentHash = contentHash;
 
-        ///reset the hash value
-        _imp->hash.reset();
+    return oldContentHash != contentHash;
+} // Node::computeHashInternal
 
-        ///append the effect's own age
-        _imp->hash.append(_imp->knobsAge);
+U64
+Node::getKnobsContentDigest(bool* hasExpression) const
+{
+    // Read before any knob: an edit made meanwhile invalidates after it lands, so it moves the
+    // generation past the one stored here and the next call rebuilds.
+    const U64 generation = _imp->effect->getKnobsContentGeneration();
+    const KnobHolder* holder = _imp->effect.get();
 
-        ///append all inputs hash
-        RotoDrawableItemPtr attachedStroke = _imp->paintStroke.lock();
-        NodePtr attachedStrokeContextNode;
-        if (attachedStroke) {
-            attachedStrokeContextNode = attachedStroke->getContext()->getNode();
+    QMutexLocker l(&_imp->knobsDigestMutex);
+    if (!_imp->knobsDigestValid || (_imp->knobsDigestGeneration != generation)) {
+        std::vector<Implementation::KnobsDigestEntry>& entries = _imp->knobsDigestEntries;
+        entries.clear();
+        bool anyExpression = false;
+        bool anyLive = false;
+        // Hashes are recomputed on render threads too, while the main thread may add or remove knobs.
+        const KnobsVec knobs = _imp->effect->getKnobs_mt_safe();
+        for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            const KnobIPtr& knob = *it;
+            if (!knob || !knob->isRenderHashed()) {
+                continue;
+            }
+            bool knobHasExpression = false;
+            bool readsOutsideKnob = false;
+            knob->getContentHashDependencies(&knobHasExpression, &readsOutsideKnob);
+            anyExpression = anyExpression || knobHasExpression;
+            Implementation::KnobsDigestEntry entry;
+            entry.name = knob->getName();
+            entry.hash = 0;
+            // A knob owned by another holder invalidates that holder's generation, not this one,
+            // so it is hashed live like a knob that reads another knob or a file.
+            if (readsOutsideKnob || (knob->getHolder() != holder)) {
+                entry.liveKnob = knob;
+                anyLive = true;
+            } else {
+                entry.hash = knob->getContentHash();
+            }
+            entries.push_back(entry);
         }
+        std::sort(entries.begin(), entries.end(),
+                  [](const Implementation::KnobsDigestEntry& a, const Implementation::KnobsDigestEntry& b) {
+                      return a.name < b.name;
+                  });
+        _imp->knobsDigestHasExpression = anyExpression;
+        _imp->knobsDigestHasLiveEntries = anyLive;
+        _imp->knobsDigestGeneration = generation;
+        _imp->knobsDigestValid = true;
+        if (!anyLive) {
+            ContentHasher h;
+            h.appendU64(entries.size());
+            for (std::size_t i = 0; i < entries.size(); ++i) {
+                h.appendString(entries[i].name);
+                h.appendU64(entries[i].hash);
+            }
+            _imp->knobsDigest = h.finalize();
+        }
+    }
+
+    *hasExpression = _imp->knobsDigestHasExpression;
+    if (!_imp->knobsDigestHasLiveEntries) {
+        return _imp->knobsDigest;
+    }
+
+    const std::vector<Implementation::KnobsDigestEntry>& entries = _imp->knobsDigestEntries;
+    ContentHasher h;
+    h.appendU64(entries.size());
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        h.appendString(entries[i].name);
+        const KnobIPtr liveKnob = entries[i].liveKnob.lock();
+        h.appendU64(liveKnob ? liveKnob->getContentHash() : entries[i].hash);
+    }
+
+    return h.finalize();
+} // Node::getKnobsContentDigest
+
+U64
+Node::computeContentHash(U64 projectDigest,
+                         const HashInputs& inputs) const
+{
+    ContentHasher h;
+
+    h.appendString(getPluginID());
+    if (_imp->plugin) {
+        h.appendI64(_imp->plugin->getMajorVersion());
+        h.appendI64(_imp->plugin->getMinorVersion());
+        h.appendU64(_imp->plugin->getBinaryContentStamp());
+    } else {
+        h.appendBool(false);
+    }
+
+    bool hasExpression = false;
+    h.appendU64(getKnobsContentDigest(&hasExpression));
+    _imp->effect->appendNodeContentHash(h);
+
+    // Expressions resolve thisNode/thisGroup and other nodes by name, so the same expression
+    // under another name can evaluate differently.
+    h.appendBool(hasExpression);
+    if (hasExpression) {
+        h.appendString(getFullyQualifiedName());
+    }
+
+    // Content hashes are never 0, so 0 marks an unconnected viewer input unambiguously.
+    if (inputs.isViewer) {
+        for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
+            h.appendI64(inputs.bySlot[i].first);
+            const NodePtr& input = inputs.bySlot[i].second;
+            h.appendU64(input ? input->getStoredContentHash() : 0);
+        }
+    } else {
+        for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
+            h.appendI64(inputs.bySlot[i].first);
+            h.appendU64(inputs.bySlot[i].second->getStoredContentHash());
+        }
+        h.appendU64(inputs.bySlot.size());
+    }
+
+    // Roto geometry lives in the context and the items, not in knobs, so it is hashed here. The
+    // tags keep absent and present contributions from colliding.
+    if (_imp->rotoContext) {
+        h.appendString("rotoContext");
+        h.appendU64(_imp->rotoContext->getContentHash());
+    }
+    RotoDrawableItemPtr strokeItem = _imp->paintStroke.lock();
+    if (strokeItem) {
+        h.appendString("rotoItem");
+        h.appendU64(strokeItem->getContentHash());
+    }
+
+    // isNodeDisabled() inherits the disabled state and the lifetime of the enclosing groups, and
+    // identity results are cached under this hash, so editing either on a group must move the
+    // hashes of the nodes inside it.
+    U64 enclosingGroups = 0;
+    NodeCollectionPtr collection = getGroup();
+    while (NodeGroup* enclosingGroup = dynamic_cast<NodeGroup*>(collection.get())) {
+        NodePtr groupNode = enclosingGroup->getNode();
+        if (!groupNode) {
+            break;
+        }
+        KnobBoolPtr groupDisabled = groupNode->getDisabledKnob();
+        h.appendBool(bool(groupDisabled));
+        if (groupDisabled) {
+            groupDisabled->appendContentHash(h);
+        }
+        KnobBoolPtr groupLifetimeEnabled = groupNode->_imp->enableLifeTimeKnob.lock();
+        h.appendBool(bool(groupLifetimeEnabled));
+        if (groupLifetimeEnabled) {
+            groupLifetimeEnabled->appendContentHash(h);
+        }
+        KnobIntPtr groupLifetime = groupNode->_imp->lifeTimeKnob.lock();
+        h.appendBool(bool(groupLifetime));
+        if (groupLifetime) {
+            groupLifetime->appendContentHash(h);
+        }
+        ++enclosingGroups;
+        collection = groupNode->getGroup();
+    }
+    h.appendU64(enclosingGroups);
+
+    ProjectPtr project = getApp()->getProject();
+    // The project digest leaves the frame range out, so only the nodes that can read it re-key
+    // when it changes. An expression may read it through the project's parameters.
+    const bool usesProjectFrameRange = hasExpression || _imp->effect->dependsOnProjectFrameRange();
+    h.appendBool(usesProjectFrameRange);
+    if (usesProjectFrameRange) {
+        double first = 0., last = 0.;
+        project->getFrameRange(&first, &last);
+        h.appendDouble(first);
+        h.appendDouble(last);
+    }
+
+    h.appendU64(projectDigest ? projectDigest : project->getContentDigest());
+
+    return h.finalize();
+} // Node::computeContentHash
+
+bool
+Node::dependsOnProjectFrameRange() const
+{
+    if (!_imp->effect) {
+        return false;
+    }
+    if (_imp->effect->dependsOnProjectFrameRange()) {
+        return true;
+    }
+    const KnobsVec knobs = _imp->effect->getKnobs_mt_safe();
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        if (!*it) {
+            continue;
+        }
+        for (int d = 0; d < (*it)->getDimension(); ++d) {
+            if (!(*it)->getExpression(d).empty()) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+void
+Node::getHashDependents(std::vector<NodePtr>* dependents) const
+{
+    if (!_imp->effect) {
+        return;
+    }
+    const bool isRotoPaint = _imp->effect->isRotoPaintNode();
+    // The appended range doubles as the queue of outputs still to look at; entries it drops are
+    // compacted away behind the read position.
+    std::size_t write = dependents->size();
+    appendOutputsWithGroupRedirection(dependents);
+    std::vector<const Node*> passedThrough;
+    for (std::size_t read = write; read < dependents->size(); ++read) {
+        NodePtr output = (*dependents)[read];
+        assert(output);
+        // The paint tree's own nodes are added from the context below.
+        if (isRotoPaint) {
+            RotoDrawableItemPtr attachedStroke = output->getAttachedRotoItem();
+            if (attachedStroke && (attachedStroke->getContext()->getNode().get() == this)) {
+                continue;
+            }
+        }
+        // Inputs read through a group, its GroupInput and GroupOutput nodes and a precomp, so no
+        // hash folds these in and they can stay dirty while the nodes below them are recomputed.
+        // A dirty mark walk stops at a dirty node, so the nodes past them are listed here too.
+        if (isSkippedByHashInputs(*output) && (std::find(passedThrough.begin(), passedThrough.end(), output.get()) == passedThrough.end())) {
+            passedThrough.push_back(output.get());
+            output->appendOutputsWithGroupRedirection(dependents);
+        }
+        (*dependents)[write++] = std::move(output);
+    }
+    dependents->resize(write);
+
+    if (_imp->rotoContext) {
+        NodesList paintTree;
+        _imp->rotoContext->getRotoPaintTreeNodes(&paintTree);
+        dependents->insert(dependents->end(), paintTree.begin(), paintTree.end());
+    }
+}
+
+U32
+Node::getInputSlotCount() const
+{
+    // Hashes are recomputed on render threads while the main thread may grow the inputs.
+    QMutexLocker l(&_imp->inputsMutex);
+
+    return (U32)_imp->inputs.size();
+}
+
+void
+Node::getHashInputs(HashInputs* inputs) const
+{
+    inputs->isViewer = false;
+    inputs->bySlot.clear();
+    if (!_imp->effect) {
+        return;
+    }
+    ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>(_imp->effect.get());
+    if (isViewer) {
+        inputs->isViewer = true;
+        int activeInput[2];
+        isViewer->getActiveInputs(activeInput[0], activeInput[1]);
+        for (int i = 0; i < 2; ++i) {
+            inputs->bySlot.push_back(std::make_pair(activeInput[i], getInput(activeInput[i])));
+        }
+
+        return;
+    }
+    RotoDrawableItemPtr attachedStroke = _imp->paintStroke.lock();
+    NodePtr attachedStrokeContextNode;
+    if (attachedStroke) {
+        attachedStrokeContextNode = attachedStroke->getContext()->getNode();
+    }
+    // Unconnected inputs are left out rather than marked: nodes such as Merge grow and keep empty
+    // input slots, which must not make an otherwise identical graph hash differently. The RotoPaint
+    // node is connected to the internal nodes of its paint tree; hashing it would make every stroke
+    // node change with it.
+    for (U32 i = 0, n = getInputSlotCount(); i < n; ++i) {
+        NodePtr input = getInput(i);
+        if (!input || (attachedStroke && (input == attachedStrokeContextNode))) {
+            continue;
+        }
+        inputs->bySlot.push_back(std::make_pair((int)i, std::move(input)));
+    }
+}
+
+namespace {
+std::atomic<U64>&
+hashEpoch()
+{
+    static std::atomic<U64> epoch(1);
+
+    return epoch;
+}
+
+// Nodes marked since the last flush, whose dependents are still to be marked. A mark is queued
+// rather than walked at once because knob setters mark while holding knob, curve or roto locks,
+// under which the walk through outputs and paint trees must not run.
+struct HashDirtyEntry {
+    NodeWPtr node;
+    const Node* address; //< compared, never dereferenced
+    bool includeGroupContents; //< whether the nodes inside a group are marked too
+};
+
+struct HashDirtyQueue {
+    std::mutex entriesMutex; //< a leaf: nothing is taken under it
+    std::vector<HashDirtyEntry> entries;
+    std::atomic<std::size_t> pending { 0 }; //< entries not yet fully walked
+    std::mutex flushMutex; //< held through a flush, so that a reader waits for the marks it must see
+
+    // Reused by every flush, under flushMutex, so that a walk allocates nothing per node.
+    U64 pass = 0;
+    std::vector<HashDirtyEntry> batch;
+    std::vector<NodePtr> toExpand;
+    std::vector<NodePtr> dependents;
+};
+
+// Deliberately leaked, like the audit: nodes can still be marked during static destruction.
+HashDirtyQueue&
+hashDirtyQueue()
+{
+    static HashDirtyQueue* queue = new HashDirtyQueue;
+
+    return *queue;
+}
+
+thread_local bool flushingHashDirtyMarks = false;
+
+class FlushingHashDirtyMarksFlag {
+public:
+    FlushingHashDirtyMarksFlag() { flushingHashDirtyMarks = true; }
+
+    ~FlushingHashDirtyMarksFlag() { flushingHashDirtyMarks = false; }
+};
+} // anonymous namespace
+
+// One project digest per project and hash epoch for a whole refresh: every node in it then hashes
+// the same project state, and a file stamp the digest folds in is taken once. A refresh can cross
+// into a precomp's project, hence one entry per project.
+struct Node::HashWalk {
+    struct Digest {
+        ProjectPtr project;
+        U64 epoch;
+        U64 digest;
+    };
+
+    U64 projectDigest(const Node& node,
+                      U64 epoch)
+    {
+        AppInstancePtr app = node.getApp();
+        if (!app) {
+            return 0;
+        }
+        ProjectPtr project = app->getProject();
+        if (!project) {
+            return 0;
+        }
+        for (std::size_t i = 0; i < digests.size(); ++i) {
+            if (digests[i].project == project) {
+                // A digest taken before the epoch moved may predate the change that moved it.
+                if (digests[i].epoch != epoch) {
+                    digests[i].epoch = epoch;
+                    digests[i].digest = project->getContentDigest();
+                }
+
+                return digests[i].digest;
+            }
+        }
+        Digest entry;
+        entry.project = project;
+        entry.epoch = epoch;
+        entry.digest = project->getContentDigest();
+        digests.push_back(entry);
+
+        return entry.digest;
+    }
+
+    std::vector<Digest> digests;
+};
+
+void
+Node::markHashDirty()
+{
+    markHashDirtyInternal(false);
+}
+
+void
+Node::markHashDirtyInternal(bool includeGroupContents)
+{
+    // Raised before the generation moves: a walk that finds the node dirty must also see that its
+    // mark is pending, or it would stop at the node and leave the dependents clean.
+    const bool alreadyQueued = _imp->hashDirtyQueued.exchange(true);
+    _imp->hashDirtyGeneration.fetch_add(1);
+    if (alreadyQueued && !includeGroupContents) {
+        return;
+    }
+    NodePtr self = weak_from_this().lock();
+    if (!self) {
+        // Not owned yet, or being destroyed: in no graph, so there is nothing downstream to mark.
+        _imp->hashDirtyQueued.store(false);
+
+        return;
+    }
+    HashDirtyQueue& queue = hashDirtyQueue();
+    std::lock_guard<std::mutex> l(queue.entriesMutex);
+    HashDirtyEntry entry;
+    entry.node = self;
+    entry.address = this;
+    entry.includeGroupContents = includeGroupContents;
+    queue.entries.push_back(entry);
+    ++queue.pending;
+}
+
+void
+Node::invalidateAllHashes()
+{
+    hashEpoch().fetch_add(1);
+}
+
+void
+Node::flushHashDirtyMarksBeforeRead(const Node* reader)
+{
+    HashDirtyQueue& queue = hashDirtyQueue();
+
+    if ((queue.pending.load() == 0) || flushingHashDirtyMarks) {
+        return;
+    }
+    {
+        // A node's mark only reaches its dependents, and in an acyclic graph none of them is folded
+        // into its own hash, so a read of the only node marked leaves the walk to the next read of
+        // another one. This is what keeps an edit's own reads (the instance-changed action, the
+        // metadata refresh) from walking everything downstream of it. Not while a batch is being
+        // walked: its marks may be ones the reader must see.
+        std::lock_guard<std::mutex> l(queue.entriesMutex);
+        if (!queue.entries.empty() && (queue.pending.load() == queue.entries.size())) {
+            bool onlyReader = true;
+            for (std::size_t i = 0; i < queue.entries.size(); ++i) {
+                if (queue.entries[i].address != reader) {
+                    onlyReader = false;
+                    break;
+                }
+            }
+            if (onlyReader) {
+                return;
+            }
+        }
+    }
+    flushHashDirtyMarks();
+}
+
+void
+Node::flushHashDirtyMarks()
+{
+    HashDirtyQueue& queue = hashDirtyQueue();
+
+    if ((queue.pending.load() == 0) || flushingHashDirtyMarks) {
+        return;
+    }
+    std::lock_guard<std::mutex> flushLock(queue.flushMutex);
+    FlushingHashDirtyMarksFlag flushing;
+    std::vector<HashDirtyEntry>& batch = queue.batch;
+    std::vector<NodePtr>& toExpand = queue.toExpand;
+    std::vector<NodePtr>& dependents = queue.dependents;
+    for (;;) {
+        batch.clear();
         {
-            ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>( _imp->effect.get() );
+            std::lock_guard<std::mutex> l(queue.entriesMutex);
+            batch.swap(queue.entries);
+        }
+        if (batch.empty()) {
+            break;
+        }
+        // Per batch: a node marked again after a walk went past it must be walked again.
+        const U64 pass = ++queue.pass;
+        auto visit = [pass](const NodePtr& node) {
+            if (node->_imp->hashFlushVisit == pass) {
+                return false;
+            }
+            node->_imp->hashFlushVisit = pass;
 
-            if (isViewer) {
-                int activeInput[2];
-                isViewer->getActiveInputs(activeInput[0], activeInput[1]);
-
-                for (int i = 0; i < 2; ++i) {
-                    NodePtr input = getInput(activeInput[i]);
-                    if (input) {
-                        _imp->hash.append( input->getHashValue() );
+            return true;
+        };
+        auto reach = [&visit, &toExpand](const NodePtr& node) {
+            if (!node || !visit(node)) {
+                return;
+            }
+            const U64 previous = node->_imp->hashDirtyGeneration.fetch_add(1);
+            const bool wasDirty = (previous != node->_imp->hashCleanGeneration.load()) || (hashEpoch().load() != node->_imp->hashCleanEpoch.load());
+            // Whatever folds in a dirty node is dirty too, except below a node whose own mark is
+            // still pending, so the walk stops at dirty nodes that are not pending.
+            if (!wasDirty || node->_imp->hashDirtyQueued.load()) {
+                toExpand.push_back(node);
+            }
+        };
+        for (std::size_t i = 0; i < batch.size(); ++i) {
+            NodePtr root = batch[i].node.lock();
+            if (!root) {
+                continue;
+            }
+            root->_imp->hashDirtyQueued.store(false);
+            if (visit(root)) {
+                toExpand.push_back(root);
+            }
+            if (batch[i].includeGroupContents) {
+                NodeGroup* isGroup = dynamic_cast<NodeGroup*>(root->_imp->effect.get());
+                if (isGroup) {
+                    NodesList inner;
+                    isGroup->getNodes_recursive(inner, false);
+                    for (NodesList::const_iterator it = inner.begin(); it != inner.end(); ++it) {
+                        reach(*it);
                     }
                 }
-            } else {
-                for (U32 i = 0; i < _imp->inputs.size(); ++i) {
-                    NodePtr input = getInput(i);
-                    if (input) {
-                        //Since the rotopaint node is connected to the internal nodes of the tree, don't change their hash
-                        if ( attachedStroke && (input == attachedStrokeContextNode) ) {
-                            continue;
-                        }
-                        ///Add the index of the input to its hash.
-                        ///Explanation: if we didn't add this, just switching inputs would produce a similar
-                        ///hash.
-                        _imp->hash.append(input->getHashValue() + i);
-                    }
+            }
+            while (!toExpand.empty()) {
+                NodePtr node = std::move(toExpand.back());
+                toExpand.pop_back();
+                dependents.clear();
+                node->getHashDependents(&dependents);
+                for (std::size_t d = 0; d < dependents.size(); ++d) {
+                    reach(dependents[d]);
+                }
+            }
+        }
+        const std::size_t walked = batch.size();
+        // Nodes are not kept alive past the flush by the reused containers.
+        batch.clear();
+        dependents.clear();
+        queue.pending.fetch_sub(walked);
+    }
+} // Node::flushHashDirtyMarks
+
+bool
+Node::isHashDirty() const
+{
+    return (_imp->hashDirtyGeneration.load() != _imp->hashCleanGeneration.load()) || (hashEpoch().load() != _imp->hashCleanEpoch.load());
+}
+
+bool
+Node::recomputeHashIfDirty(bool requireCleanInputs,
+                           HashWalk* walk)
+{
+    if (!_imp->effect) {
+        return true;
+    }
+    bool changed = false;
+    U64 contentHash = 0;
+    {
+        QMutexLocker k(&_imp->hashRecomputeMutex);
+        // Both are read before anything the hashes cover, so an edit landing from here on leaves
+        // the node dirty.
+        const U64 generation = _imp->hashDirtyGeneration.load();
+        const U64 epoch = hashEpoch().load();
+        if ((generation == _imp->hashCleanGeneration.load()) && (epoch == _imp->hashCleanEpoch.load())) {
+            return true;
+        }
+        // Gathered and checked after the generation is read: an input marked or reconnected after
+        // this marks this node again, while one dirty now would be folded in with its stale hash.
+        // The inputs checked are the ones hashed.
+        HashInputs inputs;
+        getHashInputs(&inputs);
+        if (requireCleanInputs) {
+            for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
+                const NodePtr& input = inputs.bySlot[i].second;
+                if (input && input->isHashDirty()) {
+                    return false;
+                }
+            }
+        }
+        {
+            HashComputeScope computing;
+            changed = computeHashInternal(walk->projectDigest(*this, epoch), inputs, &contentHash);
+        }
+        _imp->hashCleanEpoch.store(epoch);
+        _imp->hashCleanGeneration.store(generation);
+    }
+
+    // Run outside the recompute lock, since they take the effect's and knobs' locks. The cache entries
+    // made under the node's other keys are left to the caches' LRU: a content key names one state only, so they stay valid for a return to it.
+    if (changed) {
+        _imp->effect->onNodeHashChanged(contentHash);
+    }
+
+    return true;
+} // Node::recomputeHashIfDirty
+
+void
+Node::refreshDirtyHashes()
+{
+    // Another attempt is only needed when a concurrent mark lands mid-refresh. The last one
+    // accepts dirty inputs, so that a cycle still settles.
+    const int attempts = 4;
+    NodePtr self = weak_from_this().lock();
+
+    for (int attempt = 0; attempt < attempts; ++attempt) {
+        if (!isHashDirty()) {
+            return;
+        }
+        const bool lastAttempt = (attempt + 1 == attempts);
+        HashWalk walk;
+        if (!self) {
+            recomputeHashIfDirty(false, &walk);
+
+            return;
+        }
+
+        // Depth-first post-order over the dirty inputs, so every node comes after the inputs it
+        // folds in. Clean inputs are not entered: marking a node marks everything that folds it
+        // in, so nothing above a clean node is dirty.
+        std::vector<NodePtr> order;
+        std::unordered_map<const Node*, char> state; // 1: entered, 2: ordered
+        std::vector<std::pair<NodePtr, bool>> stack(1, std::make_pair(self, false));
+        HashInputs inputs;
+        while (!stack.empty()) {
+            NodePtr node = stack.back().first;
+            if (stack.back().second) {
+                stack.pop_back();
+                state[node.get()] = 2;
+                order.push_back(node);
+                continue;
+            }
+            char& nodeState = state[node.get()];
+            if (nodeState != 0) {
+                // Reached again through another path, or through a cycle.
+                stack.pop_back();
+                continue;
+            }
+            nodeState = 1;
+            stack.back().second = true;
+            node->getHashInputs(&inputs);
+            for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
+                const NodePtr& input = inputs.bySlot[i].second;
+                if (input && input->isHashDirty() && (state.find(input.get()) == state.end())) {
+                    stack.push_back(std::make_pair(input, false));
                 }
             }
         }
 
-        // We do not append the roto age any longer since now every tool in the RotoContext is backed-up by nodes which
-        // have their own age. Instead each action in the Rotocontext is followed by a incrementNodesAge() call so that each
-        // node respecitively have their hash correctly set.
-
-        //        RotoContextPtr roto = attachedStroke ? attachedStroke->getContext() : getRotoContext();
-        //        if (roto) {
-        //            U64 rotoAge = roto->getAge();
-        //            _imp->hash.append(rotoAge);
-        //        }
-
-        ///Also append the effect's label to distinguish 2 instances with the same parameters
-        Hash64_appendQString( &_imp->hash, QString::fromUtf8( getScriptName().c_str() ) );
-
-        ///Also append the project's creation time in the hash because 2 projects opened concurrently
-        ///could reproduce the same (especially simple graphs like Viewer-Reader)
-        qint64 creationTime =  getApp()->getProject()->getProjectCreationTime();
-        _imp->hash.append(creationTime);
-
-        _imp->hash.computeHash();
-
-        newHash = _imp->hash.value();
-    } // QWriteLocker l(&_imp->knobsAgeMutex);
-    bool hashChanged = oldHash != newHash;
-
-    if (hashChanged) {
-        _imp->effect->onNodeHashChanged(newHash);
-        if ( _imp->nodeCreated && !getApp()->getProject()->isProjectClosing() ) {
-            /*
-             * We changed the node hash. That means all cache entries for this node with a different hash
-             * are impossible to re-create again. Just discard them all. This is done in a separate thread.
-             */
-            removeAllImagesFromCacheWithMatchingIDAndDifferentKey(newHash);
+        bool complete = true;
+        for (std::size_t i = 0; i < order.size(); ++i) {
+            if (!order[i]->recomputeHashIfDirty(!lastAttempt, &walk)) {
+                complete = false;
+                break;
+            }
+        }
+        if (complete) {
+            return;
         }
     }
+} // Node::refreshDirtyHashes
 
-    return hashChanged;
-} // Node::computeHashInternal
-
-void
-Node::computeHashRecursive(std::list<Node*>& marked)
+bool
+Node::refreshHashNow()
 {
-    if ( std::find(marked.begin(), marked.end(), this) != marked.end() ) {
-        return;
-    }
+    const U64 before = getStoredContentHash();
 
-    bool hasChanged = computeHashInternal();
-    marked.push_back(this);
-    if (!hasChanged) {
-        //Nothing changed, no need to recurse on outputs
-        return;
-    }
+    markHashDirty();
 
-
-    bool isRotoPaint = _imp->effect->isRotoPaintNode();
-
-    ///call it on all the outputs
-    NodesList outputs;
-    getOutputsWithGroupRedirection(outputs);
-    for (NodesList::iterator it = outputs.begin(); it != outputs.end(); ++it) {
-        assert(*it);
-
-        //Since the rotopaint node is connected to the internal nodes of the tree, don't change their hash
-        RotoDrawableItemPtr attachedStroke = (*it)->getAttachedRotoItem();
-        if ( isRotoPaint && attachedStroke && (attachedStroke->getContext()->getNode().get() == this) ) {
-            continue;
-        }
-        (*it)->computeHashRecursive(marked);
-    }
-
-    ///If the node has a rotopaint tree, compute the hash of the nodes in the tree
-    if (_imp->rotoContext) {
-        NodesList allItems;
-        _imp->rotoContext->getRotoPaintTreeNodes(&allItems);
-        for (NodesList::iterator it = allItems.begin(); it != allItems.end(); ++it) {
-            (*it)->computeHashRecursive(marked);
-        }
-    }
+    return getHashValue() != before;
 }
 
 void
-Node::removeAllImagesFromCacheWithMatchingIDAndDifferentKey(U64 nodeHashKey)
+Node::onKnobContentChanged(const KnobI* knob)
 {
-    AppInstancePtr app = getApp();
+    // isNodeDisabled() of the nodes inside a group reads the group's disabled and lifetime knobs.
+    bool groupState = false;
+    if (knob && dynamic_cast<NodeGroup*>(_imp->effect.get())) {
+        groupState = (knob == _imp->disableNodeKnob.lock().get()) || (knob == _imp->lifeTimeKnob.lock().get()) || (knob == _imp->enableLifeTimeKnob.lock().get());
+    }
+    markHashDirtyInternal(groupState);
+}
 
-    if (!app) {
-        return;
-    }
-    ProjectPtr proj = app->getProject();
+bool
+Node::mayHaveKnobExpressions() const
+{
+    QMutexLocker l(&_imp->knobsDigestMutex);
 
-    if ( proj->isProjectClosing() || proj->isLoadingProject() ) {
-        return;
-    }
-    appPTR->removeAllImagesFromCacheWithMatchingIDAndDifferentKey(this, nodeHashKey);
-    appPTR->removeAllImagesFromDiskCacheWithMatchingIDAndDifferentKey(this, nodeHashKey);
-    ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>( _imp->effect.get() );
-    if (isViewer) {
-        //Also remove from viewer cache
-        appPTR->removeAllTexturesFromCacheWithMatchingIDAndDifferentKey(this, nodeHashKey);
-    }
+    return !_imp->knobsDigestValid || _imp->knobsDigestHasExpression;
 }
 
 void
@@ -939,23 +1557,10 @@ Node::removeAllImagesFromCache(bool blocking)
 }
 
 void
-Node::doComputeHashOnMainThread()
-{
-    assert( QThread::currentThread() == qApp->thread() );
-    computeHash();
-}
-
-void
 Node::computeHash()
 {
-    if ( QThread::currentThread() != qApp->thread() ) {
-        Q_EMIT mustComputeHashOnMainThread();
-
-        return;
-    }
-    std::list<Node*> marked;
-    computeHashRecursive(marked);
-} // computeHash
+    markHashDirty();
+}
 
 namespace {
 // One node whose data-kind resolution is in progress on this thread. A resolution recurses into
@@ -1454,7 +2059,9 @@ Node::fromSerialization(const Serialization::NodeSerialization& serialization,
         isOfxEffect->syncMultiplaneTwinsAfterLoad();
     }
 
-    setKnobsAge(serialization.knobsAge);
+    // The serialized age is not read: the node cache key is a content hash, so a saved age carries
+    // no information and the hash must be recomputed from the freshly restored knobs and inputs.
+    computeHash();
 
     _imp->effect->onKnobsLoaded();
 }
@@ -1563,72 +2170,6 @@ Node::getPagesOrder() const
     }
 
     return ret;
-}
-
-
-void
-Node::setKnobsAge(U64 newAge)
-{
-    ////Only called by the main-thread
-    assert( QThread::currentThread() == qApp->thread() );
-
-    bool changed;
-    {
-        QWriteLocker l(&_imp->knobsAgeMutex);
-        changed = _imp->knobsAge != newAge || !_imp->hash.value();
-        if (changed) {
-            _imp->knobsAge = newAge;
-        }
-    }
-    if (changed) {
-        Q_EMIT knobsAgeChanged(newAge);
-        computeHash();
-    }
-}
-
-void
-Node::incrementKnobsAge_internal()
-{
-    {
-        QWriteLocker l(&_imp->knobsAgeMutex);
-        ++_imp->knobsAge;
-
-        ///if the age of an effect somehow reaches the maximum age (will never happen)
-        ///handle it by clearing the cache and resetting the age to 0.
-        if ( _imp->knobsAge == std::numeric_limits<U64>::max() ) {
-            appPTR->clearAllCaches();
-            _imp->knobsAge = 0;
-        }
-    }
-}
-
-void
-Node::incrementKnobsAge()
-{
-    U32 newAge;
-    {
-        QWriteLocker l(&_imp->knobsAgeMutex);
-        ++_imp->knobsAge;
-
-        ///if the age of an effect somehow reaches the maximum age (will never happen)
-        ///handle it by clearing the cache and resetting the age to 0.
-        if ( _imp->knobsAge == std::numeric_limits<U64>::max() ) {
-            appPTR->clearAllCaches();
-            _imp->knobsAge = 0;
-        }
-        newAge = _imp->knobsAge;
-    }
-    Q_EMIT knobsAgeChanged(newAge);
-
-    computeHash();
-}
-
-U64
-Node::getKnobsAge() const
-{
-    QReadLocker l(&_imp->knobsAgeMutex);
-
-    return _imp->knobsAge;
 }
 
 bool
@@ -2051,6 +2592,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
     KnobBoolPtr hideInputs = AppManager::createKnob<KnobBool>(_imp->effect.get(), tr("Hide inputs"), 1, false);
 
     hideInputs->setName("hideInputs");
+    hideInputs->setHashExempt(true);
     hideInputs->setDefaultValue(false);
     hideInputs->setAnimationEnabled(false);
     hideInputs->setAddNewLine(false);
@@ -2063,6 +2605,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
 
     KnobBoolPtr fCaching = AppManager::createKnob<KnobBool>(_imp->effect.get(), tr("Force caching"), 1, false);
     fCaching->setName("forceCaching");
+    fCaching->setHashExempt(true);
     fCaching->setDefaultValue(false);
     fCaching->setAnimationEnabled(false);
     fCaching->setAddNewLine(false);
@@ -2077,6 +2620,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
     assert(previewEnabled);
     previewEnabled->setDefaultValue( makePreviewByDefault() );
     previewEnabled->setName(kEnablePreviewKnobName);
+    previewEnabled->setHashExempt(true);
     previewEnabled->setAnimationEnabled(false);
     previewEnabled->setAddNewLine(false);
     previewEnabled->setIsPersistent(false);
@@ -2173,6 +2717,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
                                             "- thisGroup: The group holding thisNode (only if thisNode belongs to a group)") );
     knobChangedCallback->setAnimationEnabled(false);
     knobChangedCallback->setName("onParamChanged");
+    knobChangedCallback->setHashExempt(true);
     settingsPage->addKnob(knobChangedCallback);
     _imp->knobChangedCallback = knobChangedCallback;
 
@@ -2190,6 +2735,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
 
     inputChangedCallback->setAnimationEnabled(false);
     inputChangedCallback->setName("onInputChanged");
+    inputChangedCallback->setHashExempt(true);
     settingsPage->addKnob(inputChangedCallback);
     _imp->inputChangedCallback = inputChangedCallback;
 
@@ -2197,6 +2743,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
     if (isGroup) {
         KnobStringPtr onNodeCreated = AppManager::createKnob<KnobString>(_imp->effect.get(), tr("After Node Created"), 1, false);
         onNodeCreated->setName("afterNodeCreated");
+        onNodeCreated->setHashExempt(true);
         onNodeCreated->setHintToolTip( tr("Name of a Python function to be called each time a node "
                                           "is created in the group. This is called in addition to the After Node Created "
                                           " callback of the project for the group node and all nodes within it (not recursively).\n"
@@ -2213,6 +2760,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
 
         KnobStringPtr onNodeDeleted = AppManager::createKnob<KnobString>(_imp->effect.get(), tr("Before Node Removal"), 1, false);
         onNodeDeleted->setName("beforeNodeRemoval");
+        onNodeDeleted->setHashExempt(true);
         onNodeDeleted->setHintToolTip( tr("Add here the name of a Python-defined function that will be called each time a node "
                                           "is about to be deleted. This will be called in addition to the Before Node Removal "
                                           " callback of the project for the group node and all nodes within it (not recursively).\n"
@@ -2228,6 +2776,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
         KnobStringPtr beforeFrameRender =  AppManager::createKnob<KnobString>(_imp->effect.get(), tr("Before frame render"), 1, false);
 
         beforeFrameRender->setName("beforeFrameRender");
+        beforeFrameRender->setHashExempt(true);
         beforeFrameRender->setAnimationEnabled(false);
         beforeFrameRender->setHintToolTip( tr("Add here the name of a Python defined function that will be called before rendering "
                                               "any frame.\n "
@@ -2240,6 +2789,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
 
         KnobStringPtr beforeRender =  AppManager::createKnob<KnobString>(_imp->effect.get(), tr("Before render"), 1, false);
         beforeRender->setName("beforeRender");
+        beforeRender->setHashExempt(true);
         beforeRender->setAnimationEnabled(false);
         beforeRender->setHintToolTip( tr("Add here the name of a Python defined function that will be called once when "
                                          "starting rendering.\n "
@@ -2251,6 +2801,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
 
         KnobStringPtr afterFrameRender =  AppManager::createKnob<KnobString>(_imp->effect.get(), tr("After frame render"), 1, false);
         afterFrameRender->setName("afterFrameRender");
+        afterFrameRender->setHashExempt(true);
         afterFrameRender->setAnimationEnabled(false);
         afterFrameRender->setHintToolTip( tr("Add here the name of a Python defined function that will be called after rendering "
                                              "any frame.\n "
@@ -2263,6 +2814,7 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
 
         KnobStringPtr afterRender =  AppManager::createKnob<KnobString>(_imp->effect.get(), tr("After render"), 1, false);
         afterRender->setName("afterRender");
+        afterRender->setHashExempt(true);
         afterRender->setAnimationEnabled(false);
         afterRender->setHintToolTip( tr("Add here the name of a Python defined function that will be called once when the rendering "
                                         "is finished.\n "
@@ -2285,6 +2837,7 @@ Node::createInfoPage()
 
     KnobStringPtr nodeInfos = AppManager::createKnob<KnobString>(_imp->effect.get(), std::string(), 1, false);
     nodeInfos->setName("nodeInfos");
+    nodeInfos->setHashExempt(true);
     nodeInfos->setAnimationEnabled(false);
     nodeInfos->setIsPersistent(false);
     nodeInfos->setAsMultiLine();
@@ -2504,6 +3057,7 @@ Node::createLabelKnob(const KnobPagePtr& settingsPage,
 
     assert(nodeLabel);
     nodeLabel->setName(kUserLabelKnobName);
+    nodeLabel->setHashExempt(true);
     nodeLabel->setAnimationEnabled(false);
     nodeLabel->setEvaluateOnChange(false);
     nodeLabel->setAsMultiLine();
@@ -3024,74 +3578,68 @@ Node::getEffectInstance() const
     return _imp->effect;
 }
 
+namespace {
+// Depth first through the outputs, visiting each node once; stop decides at a node whether to
+// collect it and go no further below it. Every edit runs it over everything downstream of it, so
+// the visited test is a hash lookup and the outputs are gathered into reused vectors.
+template <typename Stop>
 void
-Node::hasViewersConnectedInternal(std::list<ViewerInstance* >* viewers,
-                                 std::list<const Node*>* markedNodes) const
+walkDownstreamUntil(const Node* start,
+                    Stop stop)
 {
+    std::unordered_set<const Node*> visited;
+    std::vector<NodePtr> outputs;
+    std::vector<NodePtr> stack;
 
-    if (std::find(markedNodes->begin(), markedNodes->end(), this) != markedNodes->end()) {
+    visited.insert(start);
+    if (stop(start)) {
         return;
     }
-
-    markedNodes->push_back(this);
-    ViewerInstance* thisViewer = dynamic_cast<ViewerInstance*>( _imp->effect.get() );
-
-    if (thisViewer) {
-        viewers->push_back(thisViewer);
-    } else {
-        NodesList outputs;
-        getOutputsWithGroupRedirection(outputs);
-
-        for (NodesList::iterator it = outputs.begin(); it != outputs.end(); ++it) {
-            assert(*it);
-            (*it)->hasViewersConnectedInternal(viewers, markedNodes);
+    start->appendOutputsWithGroupRedirection(&outputs);
+    stack.insert(stack.end(), outputs.rbegin(), outputs.rend());
+    while (!stack.empty()) {
+        NodePtr node = std::move(stack.back());
+        stack.pop_back();
+        assert(node);
+        if (!visited.insert(node.get()).second || stop(node.get())) {
+            continue;
         }
+        outputs.clear();
+        node->appendOutputsWithGroupRedirection(&outputs);
+        stack.insert(stack.end(), outputs.rbegin(), outputs.rend());
     }
 }
+} // anonymous namespace
 
 void
-Node::hasOutputNodesConnectedInternal(std::list<OutputEffectInstance* >* writers,
-                                     std::list<const Node*>* markedNodes) const
+Node::hasOutputNodesConnected(std::list<OutputEffectInstance*>* writers) const
 {
-    if (std::find(markedNodes->begin(), markedNodes->end(), this) != markedNodes->end()) {
-        return;
-    }
+    walkDownstreamUntil(this, [writers](const Node* node) {
+        OutputEffectInstance* writer = dynamic_cast<OutputEffectInstance*>(node->getEffectInstance().get());
+        if (writer && writer->isOutput() && !dynamic_cast<GroupOutput*>(writer)) {
+            writers->push_back(writer);
 
-    markedNodes->push_back(this);
-
-    OutputEffectInstance* thisWriter = dynamic_cast<OutputEffectInstance*>( _imp->effect.get() );
-
-    if ( thisWriter && thisWriter->isOutput() && !dynamic_cast<GroupOutput*>(thisWriter) ) {
-        writers->push_back(thisWriter);
-    } else {
-        NodesList outputs;
-        getOutputsWithGroupRedirection(outputs);
-
-        for (NodesList::iterator it = outputs.begin(); it != outputs.end(); ++it) {
-            assert(*it);
-            (*it)->hasOutputNodesConnectedInternal(writers, markedNodes);
+            return true;
         }
-    }
-}
 
-void
-Node::hasOutputNodesConnected(std::list<OutputEffectInstance* >* writers) const
-{
-    std::list<const Node*> m;
-    hasOutputNodesConnectedInternal(writers, &m);
+        return false;
+    });
 }
 
 void
 Node::hasViewersConnected(std::list<ViewerInstance* >* viewers) const
 {
+    walkDownstreamUntil(this, [viewers](const Node* node) {
+        ViewerInstance* viewer = dynamic_cast<ViewerInstance*>(node->getEffectInstance().get());
+        if (viewer) {
+            viewers->push_back(viewer);
 
-    std::list<const Node*> m;
-    hasViewersConnectedInternal(viewers, &m);
+            return true;
+        }
 
+        return false;
+    });
 }
-
-
-
 
 int
 Node::getMajorVersion() const
@@ -3649,7 +4197,6 @@ Node::makePreviewImage(SequenceTime time,
     ComputingPreviewSetter_RAII computingPreviewRAII( _imp.get() );
     RectD rod;
     bool isProjectFormat;
-    U64 nodeHash = getHashValue();
     EffectInstance* effect = 0;
     NodeGroup* isGroup = dynamic_cast<NodeGroup*>( _imp->effect.get() );
     if (isGroup) {
@@ -3661,6 +4208,9 @@ Node::makePreviewImage(SequenceTime time,
     if (!_imp->effect) {
         return false;
     }
+    // A group's hash does not cover its inner graph, so the output node's own hash must key its
+    // actions cache here.
+    U64 nodeHash = effect->getHash();
 
     effect->getNode()->clearPersistentMessageForPreview();
 
@@ -4423,6 +4973,16 @@ Node::getPersistentMessage(QString* message,
                            int* type,
                            bool prefixLabelAndType) const
 {
+    bool hasChannelSelectorMessage;
+    {
+        QMutexLocker k(&_imp->persistentMessageMutex);
+        hasChannelSelectorMessage = _imp->persistentMessageFromChannelSelector;
+    }
+    // The refresh is what clears a missing-channel message an upstream edit resolved.
+    if (hasChannelSelectorMessage) {
+        const_cast<Node*>(this)->refreshInputRelatedDataIfStale();
+    }
+
     QMutexLocker k(&_imp->persistentMessageMutex);
 
     *type = _imp->persistentMessageType;
@@ -4647,6 +5207,22 @@ Node::purgeAllInstancesCaches()
     assert( QThread::currentThread() == qApp->thread() );
     assert(_imp->effect);
     _imp->effect->purgeCaches();
+    // Native effects leave purgeCaches() empty, and their ActionsCache is keyed by content hash
+    // and never dropped on a hash change, so the only thing that empties it is this.
+    _imp->effect->clearActionsCache();
+    // The paint tree's nodes are not in any node collection.
+    RotoContextPtr roto = getRotoContext();
+    if (roto) {
+        NodesList tree;
+        roto->getRotoPaintTreeNodes(&tree);
+        for (NodesList::const_iterator it = tree.begin(); it != tree.end(); ++it) {
+            const EffectInstancePtr treeEffect = (*it)->getEffectInstance();
+            if (treeEffect) {
+                treeEffect->purgeCaches();
+                treeEffect->clearActionsCache();
+            }
+        }
+    }
 }
 
 bool
@@ -4787,9 +5363,9 @@ Node::getRenderInstancesSharedMutex()
 static void
 refreshPreviewsRecursivelyUpstreamInternal(double time,
                                            Node* node,
-                                           std::list<Node*>& marked)
+                                           std::unordered_set<Node*>& marked)
 {
-    if ( std::find(marked.begin(), marked.end(), node) != marked.end() ) {
+    if (!marked.insert(node).second) {
         return;
     }
 
@@ -4797,14 +5373,12 @@ refreshPreviewsRecursivelyUpstreamInternal(double time,
         node->refreshPreviewImage( time );
     }
 
-    marked.push_back(node);
-
     std::vector<NodeWPtr> inputs = node->getInputs_copy();
 
     for (std::size_t i = 0; i < inputs.size(); ++i) {
         NodePtr input = inputs[i].lock();
         if (input) {
-            input->refreshPreviewsRecursivelyUpstream(time);
+            refreshPreviewsRecursivelyUpstreamInternal(time, input.get(), marked);
         }
     }
 }
@@ -4812,17 +5386,19 @@ refreshPreviewsRecursivelyUpstreamInternal(double time,
 void
 Node::refreshPreviewsRecursivelyUpstream(double time)
 {
-    std::list<Node*> marked;
+    std::unordered_set<Node*> marked;
 
     refreshPreviewsRecursivelyUpstreamInternal(time, this, marked);
 }
 
+// The set is shared by the whole walk: a node below several paths is visited once, where a set per
+// call made the walk exponential in the number of merges below an edit.
 static void
 refreshPreviewsRecursivelyDownstreamInternal(double time,
                                              Node* node,
-                                             std::list<Node*>& marked)
+                                             std::unordered_set<Node*>& marked)
 {
-    if ( std::find(marked.begin(), marked.end(), node) != marked.end() ) {
+    if (!node->getNodeGui() || !marked.insert(node).second) {
         return;
     }
 
@@ -4830,14 +5406,12 @@ refreshPreviewsRecursivelyDownstreamInternal(double time,
         node->refreshPreviewImage( time );
     }
 
-    marked.push_back(node);
-
     NodesWList outputs;
     node->getOutputs_mt_safe(outputs);
     for (NodesWList::iterator it = outputs.begin(); it != outputs.end(); ++it) {
         NodePtr output = it->lock();
         if (output) {
-            output->refreshPreviewsRecursivelyDownstream(time);
+            refreshPreviewsRecursivelyDownstreamInternal(time, output.get(), marked);
         }
     }
 }
@@ -4845,10 +5419,7 @@ refreshPreviewsRecursivelyDownstreamInternal(double time,
 void
 Node::refreshPreviewsRecursivelyDownstream(double time)
 {
-    if ( !getNodeGui() ) {
-        return;
-    }
-    std::list<Node*> marked;
+    std::unordered_set<Node*> marked;
     refreshPreviewsRecursivelyDownstreamInternal(time, this, marked);
 }
 
@@ -4868,14 +5439,12 @@ Node::onAllKnobsSlaved(bool isSlave,
                 QMutexLocker l(&_imp->masterNodeMutex);
                 _imp->masterNode = masterNode;
             }
-            QObject::connect( masterNode.get(), SIGNAL(deactivated(bool)), this, SLOT(onMasterNodeDeactivated()) );
-            QObject::connect( masterNode.get(), SIGNAL(knobsAgeChanged(U64)), this, SLOT(setKnobsAge(U64)) );
+            QObject::connect(masterNode.get(), SIGNAL(deactivated(bool)), this, SLOT(onMasterNodeDeactivated()));
             QObject::connect( masterNode.get(), SIGNAL(previewImageChanged(double)), this, SLOT(refreshPreviewImage(double)) );
         }
     } else {
         NodePtr master = getMasterNode();
-        QObject::disconnect( master.get(), SIGNAL(deactivated(bool)), this, SLOT(onMasterNodeDeactivated()) );
-        QObject::disconnect( master.get(), SIGNAL(knobsAgeChanged(U64)), this, SLOT(setKnobsAge(U64)) );
+        QObject::disconnect(master.get(), SIGNAL(deactivated(bool)), this, SLOT(onMasterNodeDeactivated()));
         QObject::disconnect( master.get(), SIGNAL(previewImageChanged(double)), this, SLOT(refreshPreviewImage(double)) );
         {
             QMutexLocker l(&_imp->masterNodeMutex);
@@ -5227,11 +5796,7 @@ Node::onParentMultiInstanceInputChanged(int input)
 void
 Node::onFileNameParameterChanged(KnobI* fileKnob)
 {
-    if ( _imp->effect->isReader() ) {
-        ///Refresh the preview automatically if the filename changed
-        incrementKnobsAge(); //< since evaluate() is called after knobChanged we have to do this  by hand
-        //computePreviewImage( getApp()->getTimeLine()->currentFrame() );
-
+    if (_imp->effect->isReader()) {
         ///union the project frame range if not locked with the reader frame range
         bool isLocked = getApp()->getProject()->isFrameRangeLocked();
         if (!isLocked) {
@@ -5244,7 +5809,7 @@ Node::onFileNameParameterChanged(KnobI* fileKnob)
                 }
             }
         }
-    } else if ( _imp->effect->isWriter() ) {
+    } else if (_imp->effect->isWriter()) {
         KnobIPtr sublabelKnob = getKnobByName(kNatronOfxParamStringSublabelName);
         KnobOutputFile* isFile = dynamic_cast<KnobOutputFile*>(fileKnob);
         if (isFile && sublabelKnob) {
@@ -5643,18 +6208,6 @@ Node::onEffectKnobValueChanged(KnobI* what,
         if ( QThread::currentThread() == qApp->thread() ) {
             getApp()->redrawAllViewers();
         }
-        NodeGroup* isGroup = dynamic_cast<NodeGroup*>( _imp->effect.get() );
-        if (isGroup) {
-            ///When a group is disabled we have to force a hash change of all nodes inside otherwise the image will stay cached
-
-            NodesList nodes = isGroup->getNodes();
-            std::list<Node*> markedNodes;
-            for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
-                //This will not trigger a hash recomputation
-                (*it)->incrementKnobsAge_internal();
-                (*it)->computeHashRecursive(markedNodes);
-            }
-        }
     } else if ( what == _imp->nodeLabelKnob.lock().get() ) {
         Q_EMIT nodeExtraLabelChanged( QString::fromUtf8( _imp->nodeLabelKnob.lock()->getValue().c_str() ) );
     } else if (what->getName() == kNatronOfxParamStringSublabelName) {
@@ -5787,8 +6340,9 @@ Node::onEffectKnobValueChanged(KnobI* what,
                  || ( what->getName() == kNatronGroupInputIsMaskParamName) ) {
                 NodeCollectionPtr col = isInput->getNode()->getGroup();
                 assert(col);
-                NodeGroup* isGrp = dynamic_cast<NodeGroup*>( col.get() );
-                assert(isGrp);
+                // An Input node can be created at the top level of the project, where there is no
+                // group whose inputs it drives.
+                NodeGroup* isGrp = dynamic_cast<NodeGroup*>(col.get());
                 if (isGrp) {
                     ///Refresh input arrows of the node to reflect the state
                     isGrp->getNode()->initializeInputs();
@@ -6163,22 +6717,13 @@ Node::registerProducedLayers()
         return;
     }
 
-    // The union of a file's channels can grow an already-registered layer's channel count;
-    // nodes that reference it may have cached actions keyed on the old count.
     LayerRegistryEntry::OriginEnum origin = _imp->effect->isReader() ? LayerRegistryEntry::eOriginFile : LayerRegistryEntry::eOriginPlugin;
     for (std::list<ImageLayerDesc>::const_iterator it = foundOutput->second.begin(); it != foundOutput->second.end(); ++it) {
         if (it->isColorLayer()) {
             continue;
         }
         std::string error;
-        LayerRegistry::AddResultEnum ret = project->addLayer(*it, origin, &error);
-        if (ret == LayerRegistry::eAddResultGrown) {
-            std::list<NodePtr> users;
-            project->getLayerUsers(it->getLayerID(), &users);
-            for (std::list<NodePtr>::const_iterator uit = users.begin(); uit != users.end(); ++uit) {
-                (*uit)->incrementKnobsAge();
-            }
-        }
+        project->addLayer(*it, origin, &error);
     }
 } // Node::registerProducedLayers
 
@@ -6705,22 +7250,27 @@ addIdentityNodesRecursively(const Node* caller,
         }
 
         if (!request) {
-            /*
-               Very unlikely that there's no request pass. But we still check
-             */
-            double inputTimeId;
-            ViewIdx identityView;
-            int inputNbId;
-            U64 renderHash;
+            // An output this render does not reach. Its identity is asked under its own hash, and
+            // recomputing a dirty one here would rehash every branch below the rendered nodes that
+            // no viewer reads. Taken as not identity, it counts as one consumer of the image.
+            U64 renderHash = 0;
+            bool hashKnown = true;
+            if (inputFrameArgs) {
+                renderHash = node->getEffectInstance()->getRenderHash();
+            } else {
+                hashKnown = node->getHashValueIfUpToDate(&renderHash);
+            }
+            if (hashKnown) {
+                double inputTimeId;
+                ViewIdx identityView;
+                int inputNbId;
+                RectI format = node->getEffectInstance()->getOutputFormat();
 
-            renderHash = node->getEffectInstance()->getRenderHash();
-
-            RectI format = node->getEffectInstance()->getOutputFormat();
-
-            // Uncached: the output format is not the node's image, and the identity cache keeps
-            // whole-image answers keyed on the hash alone, which the node's own render would then
-            // take for its region of definition.
-            isIdentity = node->getEffectInstance()->isIdentity_public(false, renderHash, time, RenderScale::identity, format, view, &inputTimeId, &identityView, &inputNbId);
+                // Uncached: the output format is not the node's image, and the identity cache keeps
+                // whole-image answers keyed on the hash alone, which the node's own render would then
+                // take for its region of definition.
+                isIdentity = node->getEffectInstance()->isIdentity_public(false, renderHash, time, RenderScale::identity, format, view, &inputTimeId, &identityView, &inputNbId);
+            }
         }
 
 
@@ -6954,6 +7504,14 @@ Node::refreshAllInputRelatedData(bool /*canChangeValues*/,
 {
     assert( QThread::currentThread() == qApp->thread() );
     RefreshingInputData_RAII _refreshingflag( _imp.get() );
+    InputRelatedDataRefreshScope refreshing;
+    // Cleared before the refresh reads anything, so that an edit landing during it leaves the
+    // node to be refreshed again.
+    _imp->inputRelatedDataStale.store(false);
+    {
+        QMutexLocker k(&_imp->pluginsPropMutex);
+        _imp->mustComputeInputRelatedData = false;
+    }
     bool hasChanged = false;
     hasChanged |= refreshDraftFlagInternal(inputs);
 
@@ -6995,14 +7553,7 @@ Node::refreshAllInputRelatedData(bool /*canChangeValues*/,
     refreshIdentityState();
 
     if (loadingProject) {
-        //When loading the project, refresh the hash of the nodes in a recursive manner in the proper order
-        //for the disk cache to work
-        hasChanged |= computeHashInternal();
-    }
-
-    {
-        QMutexLocker k(&_imp->pluginsPropMutex);
-        _imp->mustComputeInputRelatedData = false;
+        hasChanged |= refreshHashNow();
     }
 
     return hasChanged;
@@ -7165,6 +7716,207 @@ Node::refreshInputRelatedDataRecursive()
     std::set<Node*> markedNodes;
 
     refreshInputRelatedDataRecursiveInternal(markedNodes);
+}
+
+bool
+Node::refreshShownInputRelatedData(std::set<Node*>& visited)
+{
+    if (!visited.insert(this).second) {
+        return false;
+    }
+    if (!isInputRelatedDataDirty()) {
+        _imp->inputRelatedDataStale.store(false);
+
+        return false;
+    }
+
+    int shown[2] = { -1, -1 };
+    ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>(_imp->effect.get());
+    if (isViewer) {
+        isViewer->getActiveInputs(shown[0], shown[1]);
+    }
+    const int maxInputs = getNInputs();
+    std::vector<NodeWPtr> inputsCopy(maxInputs);
+    for (int i = 0; i < maxInputs; ++i) {
+        NodePtr input = getInput(i);
+        inputsCopy[i] = input;
+        if (!input || (isViewer && (i != shown[0]) && (i != shown[1]))) {
+            continue;
+        }
+        input->refreshShownInputRelatedData(visited);
+    }
+
+    bool hasChanged = refreshAllInputRelatedData(false, inputsCopy);
+
+    if (isRotoPaintingNode()) {
+        RotoContextPtr roto = getRotoContext();
+        assert(roto);
+        NodePtr bottomMerge = roto->getRotoPaintBottomMergeNode();
+        if (bottomMerge) {
+            bottomMerge->refreshInputRelatedDataRecursiveInternal(visited);
+        }
+    }
+
+    return hasChanged;
+} // Node::refreshShownInputRelatedData
+
+void
+Node::refreshInputRelatedDataAfterInputChange()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    markAllInputRelatedDataDirty();
+    markDownstreamInputRelatedDataStale();
+
+    NodeGroup* isGroup = dynamic_cast<NodeGroup*>(_imp->effect.get());
+    if (isGroup) {
+        // A container's inputs feed the nodes inside it, which are refreshed as nodes downstream
+        // of the edit. A container with a host layer knob (Write) lists its own inputs' layers on
+        // it, so its selectors are refreshed here like those of the node the edit is on.
+        _imp->inputRelatedDataStale.store(true);
+        if (_imp->layerKnob.lock()) {
+            refreshChannelSelectors();
+        }
+
+        return;
+    }
+
+    std::set<Node*> visited;
+    refreshShownInputRelatedData(visited);
+}
+
+void
+Node::markDownstreamInputRelatedDataStale()
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    std::unordered_set<const Node*> visited;
+    visited.insert(this);
+    // Breadth first: the vector is the queue, read from the front without erasing.
+    std::vector<NodePtr> toVisit;
+    appendOutputsWithGroupRedirection(&toVisit);
+    std::vector<NodePtr> shown;
+    for (std::size_t next = 0; next < toVisit.size(); ++next) {
+        NodePtr node = toVisit[next];
+        if (!node || !visited.insert(node.get()).second) {
+            continue;
+        }
+        node->markAllInputRelatedDataDirty();
+        node->_imp->inputRelatedDataStale.store(true);
+        if (node->isSettingsPanelVisible()) {
+            shown.push_back(node);
+        }
+        node->appendOutputsWithGroupRedirection(&toVisit);
+    }
+
+    for (std::size_t i = 0; i < shown.size(); ++i) {
+        shown[i]->refreshInputRelatedDataIfStale();
+    }
+}
+
+bool
+Node::isInputRelatedDataStale() const
+{
+    return _imp->inputRelatedDataStale.load();
+}
+
+void
+Node::refreshInputRelatedDataIfStale()
+{
+    if (!_imp->inputRelatedDataStale.load() || (QThread::currentThread() != qApp->thread())) {
+        return;
+    }
+    if ((hashComputeDepth > 0) || (inputRelatedDataRefreshDepth > 0)) {
+        return;
+    }
+    if (!_imp->effect || !isNodeCreated() || !isActivated()) {
+        return;
+    }
+    {
+        QMutexLocker k(&_imp->isBeingDestroyedMutex);
+        if (_imp->isBeingDestroyed) {
+            return;
+        }
+    }
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    if (!project || app->isCreatingNodeTree() || project->isLoadingProject() || project->isProjectClosing()) {
+        return;
+    }
+
+    std::set<Node*> visited;
+    refreshShownInputRelatedData(visited);
+}
+
+void
+Node::refreshInputRelatedDataForRender()
+{
+    if (QThread::currentThread() != qApp->thread()) {
+        return;
+    }
+    NodePtr self = weak_from_this().lock();
+    if (!self) {
+        return;
+    }
+    std::unordered_set<const Node*> visited;
+    std::vector<NodePtr> toVisit(1, self);
+    std::vector<NodePtr> reached;
+    visited.insert(self.get());
+    auto reach = [&visited, &toVisit](const NodePtr& node) {
+        if (node && visited.insert(node.get()).second) {
+            toVisit.push_back(node);
+        }
+    };
+    while (!toVisit.empty()) {
+        NodePtr node = toVisit.back();
+        toVisit.pop_back();
+        reached.push_back(node);
+
+        int shown[2] = { -1, -1 };
+        ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>(node->_imp->effect.get());
+        if (isViewer) {
+            isViewer->getActiveInputs(shown[0], shown[1]);
+        }
+        const int maxInputs = node->getNInputs();
+        for (int i = 0; i < maxInputs; ++i) {
+            if (!isViewer || (i == shown[0]) || (i == shown[1])) {
+                reach(node->getInput(i));
+            }
+        }
+        // The inputs of a group lead around the nodes inside it, which render it.
+        NodeGroup* isGroup = node->isEffectGroup();
+        if (isGroup) {
+            reach(isGroup->getOutputNode(false));
+        }
+        // The paint tree is rendered through the RotoPaint node without being upstream of it, so
+        // its edits leave the RotoPaint node itself clean.
+        RotoContextPtr roto = node->getRotoContext();
+        if (roto) {
+            NodesList paintTree;
+            roto->getRotoPaintTreeNodes(&paintTree);
+            for (NodesList::const_iterator it = paintTree.begin(); it != paintTree.end(); ++it) {
+                reach(*it);
+            }
+        }
+    }
+
+    for (std::size_t i = 0; i < reached.size(); ++i) {
+        reached[i]->refreshInputRelatedDataIfStale();
+    }
+} // Node::refreshInputRelatedDataForRender
+
+void
+Node::requestInputRelatedDataRefresh()
+{
+    if (_imp->inputRelatedDataRefreshRequested.exchange(true)) {
+        return;
+    }
+    NodeWPtr weakSelf = weak_from_this();
+    QMetaObject::invokeMethod(qApp, [weakSelf]() {
+        NodePtr node = weakSelf.lock();
+        if (node) {
+            node->_imp->inputRelatedDataRefreshRequested.store(false);
+            node->refreshInputRelatedDataIfStale();
+        } }, Qt::QueuedConnection);
 }
 
 bool
@@ -7372,6 +8124,8 @@ Node::attachRotoItem(const RotoDrawableItemPtr& stroke)
 {
     assert( QThread::currentThread() == qApp->thread() );
     _imp->paintStroke = stroke;
+    // The hash reads the attached item, so the stored one must not predate it.
+    computeHash();
 }
 
 RotoDrawableItemPtr

@@ -135,12 +135,23 @@ ViewerGL::ViewerGL(ViewerTab* parent,
     populateMenu();
 
     QObject::connect( appPTR, SIGNAL(checkerboardSettingsChanged()), this, SLOT(onCheckerboardSettingsChanged()) );
+
+#ifdef NATRON_HAVE_GPU
+    _imp->handoff.reset( new ViewerHandoff( appPTR->getGpuContext() ) );
+#endif
 }
 
 ViewerGL::~ViewerGL()
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
+#ifdef NATRON_HAVE_GPU
+    QObject::disconnect(_imp->handoffContextConnection);
+    if ( _imp->handoff && context() ) {
+        makeCurrent();
+    }
+    _imp->handoff.reset();
+#endif
 }
 
 QSize
@@ -259,6 +270,11 @@ ViewerGL::paintGL()
     }
     glCheckError();
 
+#ifdef NATRON_HAVE_GPU
+    if (_imp->handoff) {
+        _imp->handoff->maintain();
+    }
+#endif
 
     {
         double screenPixelRatio = getScreenPixelRatio();
@@ -1212,6 +1228,23 @@ ViewerGL::initializeGL()
         throw std::runtime_error("OpenGL was not loaded");
     }
     _imp->initializeGL();
+
+#ifdef NATRON_HAVE_GPU
+    QOpenGLContext* glContext = QOpenGLContext::currentContext();
+    if (_imp->handoff && glContext) {
+        _imp->handoff->create([glContext](const char* name) -> void* {
+            return reinterpret_cast<void*>( glContext->getProcAddress(name) );
+        });
+        QObject::disconnect(_imp->handoffContextConnection);
+        _imp->handoffContextConnection = QObject::connect(glContext, &QOpenGLContext::aboutToBeDestroyed, this, [this]() {
+            if (_imp->handoff) {
+                makeCurrent();
+                _imp->handoff->release();
+                doneCurrent();
+            }
+        });
+    }
+#endif
 }
 
 GLuint
@@ -1500,6 +1533,16 @@ ViewerGL::endTransferBufferFromRAMToGPU(int textureIndex,
             _imp->displayTextures[textureIndex].memoryHeldByLastRenderedImages = 0;
         }
 
+#ifdef NATRON_HAVE_GPU
+        GpuDeviceImagePtr deviceRoot;
+        {
+            QMutexLocker k(&_imp->lastRenderedImageMutex);
+            deviceRoot.swap(_imp->displayTextures[textureIndex].pendingDeviceRoot);
+            if (image || deviceRoot) {
+                _imp->displayTextures[textureIndex].lastRenderedDeviceTiles[mipmapLevel] = deviceRoot;
+            }
+        }
+#endif
 
         if (image) {
             _imp->viewerTab->setImageFormat(textureIndex, image->getComponents(), depth);
@@ -1512,6 +1555,15 @@ ViewerGL::endTransferBufferFromRAMToGPU(int textureIndex,
 
             internalNode->registerPluginMemory(_imp->displayTextures[textureIndex].memoryHeldByLastRenderedImages);
             Q_EMIT imageChanged(textureIndex, true);
+#ifdef NATRON_HAVE_GPU
+        } else if (deviceRoot) {
+            _imp->viewerTab->setImageFormat(textureIndex, deviceRoot->layout().layer, depth);
+            {
+                QMutexLocker k(&_imp->lastRenderedImageMutex);
+                _imp->displayTextures[textureIndex].lastRenderedTiles[mipmapLevel].reset();
+            }
+            Q_EMIT imageChanged(textureIndex, true);
+#endif
         } else {
             if ( !_imp->displayTextures[textureIndex].lastRenderedTiles[mipmapLevel] ) {
                 Q_EMIT imageChanged(textureIndex, false);
@@ -1555,6 +1607,27 @@ ViewerGL::setLastRenderedDeepImage(int textureIndex,
         }
     }
 }
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+GLTexturePtr
+displayTextureOfType(GLTexturePtr* texture,
+                     Texture::DataTypeEnum dataType)
+{
+    if ( (*texture)->type() != dataType ) {
+        int format, internalFormat, glType;
+        if (dataType == Texture::eDataTypeFloat) {
+            Texture::getRecommendedTexParametersForRGBAFloatTexture(&format, &internalFormat, &glType);
+        } else {
+            Texture::getRecommendedTexParametersForRGBAByteTexture(&format, &internalFormat, &glType);
+        }
+        texture->reset( new Texture(GL_TEXTURE_2D, GL_LINEAR, GL_NEAREST, GL_CLAMP_TO_EDGE, dataType, format, internalFormat, glType) );
+    }
+
+    return *texture;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 void
 ViewerGL::transferBufferFromRAMtoGPU(const unsigned char* ramBuffer,
@@ -1608,17 +1681,7 @@ ViewerGL::transferBufferFromRAMtoGPU(const unsigned char* ramBuffer,
         textureRectangle = tileRect;
     } else {
         // re-use the existing texture if possible
-        tex = _imp->displayTextures[textureIndex].texture;
-        if (tex->type() != dataType) {
-            int format, internalFormat, glType;
-            if (dataType == Texture::eDataTypeFloat) {
-                Texture::getRecommendedTexParametersForRGBAFloatTexture(&format, &internalFormat, &glType);
-            } else {
-                Texture::getRecommendedTexParametersForRGBAByteTexture(&format, &internalFormat, &glType);
-            }
-            _imp->displayTextures[textureIndex].texture.reset( new Texture(GL_TEXTURE_2D, GL_LINEAR, GL_NEAREST, GL_CLAMP_TO_EDGE, dataType, format, internalFormat, glType) );
-            tex = _imp->displayTextures[textureIndex].texture;
-        }
+        tex = displayTextureOfType(&_imp->displayTextures[textureIndex].texture, dataType);
         textureRectangle.set(roiRoundedToTileSize);
         _imp->displayTextures[textureIndex].roiNotRoundedToTileSize.set(roi);
         _imp->displayTextures[textureIndex].roiNotRoundedToTileSize.closestPo2 = tileRect.closestPo2;
@@ -1671,6 +1734,84 @@ ViewerGL::transferBufferFromRAMtoGPU(const unsigned char* ramBuffer,
     _imp->updateViewerPboIndex = (_imp->updateViewerPboIndex + 1) % 2;
 } // ViewerGL::transferBufferFromRAMtoGPU
 
+#ifdef NATRON_HAVE_GPU
+ViewerHandoffRung
+ViewerGL::handoffRung() const
+{
+    return _imp->handoff ? _imp->handoff->rung() : ViewerHandoffRung::Cpu;
+}
+
+ViewerHandoffResult
+ViewerGL::prepareHandoff(const ProjectColorManagement::DisplayProcessorPtr& processor,
+                         ViewerHandoffFormat format)
+{
+    if (!_imp->handoff) {
+        ViewerHandoffResult refused;
+        refused.reason = "rung cpu";
+
+        return refused;
+    }
+
+    return _imp->handoff->prepare(processor, format);
+}
+
+ViewerHandoffResult
+ViewerGL::transferDeviceImageToGPU(const GpuDeviceImagePtr& root,
+                                   const TextureRect& roiRounded,
+                                   const RectI& roi,
+                                   int textureIndex,
+                                   const ViewerHandoffParams& params,
+                                   TexturePtr* texture)
+{
+    // always running in the main thread
+    assert( qApp && qApp->thread() == QThread::currentThread() );
+    assert( QOpenGLContext::currentContext() == context() );
+    assert(textureIndex == 0 || textureIndex == 1);
+
+    ViewerHandoffResult result;
+    if (!_imp->handoff) {
+        result.reason = "rung cpu";
+
+        return result;
+    }
+
+    const Texture::DataTypeEnum dataType = (getBitDepth() == eImageBitDepthByte) ? Texture::eDataTypeByte : Texture::eDataTypeFloat;
+    TextureInfo& info = _imp->displayTextures[textureIndex];
+    GLTexturePtr tex = displayTextureOfType(&info.texture, dataType);
+    info.roiNotRoundedToTileSize.set(roi);
+    info.roiNotRoundedToTileSize.closestPo2 = roiRounded.closestPo2;
+    info.roiNotRoundedToTileSize.par = roiRounded.par;
+    tex->ensureTextureHasSize(roiRounded, 0);
+
+    ViewerHandoffFrame frame;
+    frame.width = (unsigned)roiRounded.width();
+    frame.height = (unsigned)roiRounded.height();
+    frame.format = (dataType == Texture::eDataTypeFloat) ? ViewerHandoffFormat::Rgba32F : ViewerHandoffFormat::Bgra8;
+    frame.x = 0;
+    frame.y = 0;
+
+    // present() refuses a frame larger than the slots it already has, so they grow first rather than costing this
+    // frame a fallback.
+    const std::size_t capacity = _imp->handoff->capacity(textureIndex);
+    if ( (capacity > 0) && (capacity < frame.bytes()) ) {
+        result = _imp->handoff->ensureCapacity( frame.bytes() );
+        if (!result) {
+            return result;
+        }
+    }
+
+    result = _imp->handoff->present(textureIndex, root, params, tex->getTexID(), frame);
+    glCheckError();
+    if (result) {
+        *texture = tex;
+        QMutexLocker k(&_imp->lastRenderedImageMutex);
+        info.pendingDeviceRoot = root;
+    }
+
+    return result;
+} // ViewerGL::transferDeviceImageToGPU
+#endif // NATRON_HAVE_GPU
+
 void
 ViewerGL::clearLastRenderedImage()
 {
@@ -1685,6 +1826,14 @@ ViewerGL::clearLastRenderedImage()
         for (U32 j = 0; j < _imp->displayTextures[i].lastRenderedDeepTiles.size(); ++j) {
             _imp->displayTextures[i].lastRenderedDeepTiles[j].reset();
         }
+#ifdef NATRON_HAVE_GPU
+        {
+            QMutexLocker k(&_imp->lastRenderedImageMutex);
+            for (U32 j = 0; j < _imp->displayTextures[i].lastRenderedDeviceTiles.size(); ++j) {
+                _imp->displayTextures[i].lastRenderedDeviceTiles[j].reset();
+            }
+        }
+#endif
         if (_imp->displayTextures[i].memoryHeldByLastRenderedImages > 0) {
             internalNode->unregisterPluginMemory(_imp->displayTextures[i].memoryHeldByLastRenderedImages);
             _imp->displayTextures[i].memoryHeldByLastRenderedImages = 0;
@@ -4138,6 +4287,11 @@ ViewerGL::clearLastRenderedTexture()
             for (U32 j = 0; j < _imp->displayTextures[i].lastRenderedDeepTiles.size(); ++j) {
                 _imp->displayTextures[i].lastRenderedDeepTiles[j].reset();
             }
+#ifdef NATRON_HAVE_GPU
+            for (U32 j = 0; j < _imp->displayTextures[i].lastRenderedDeviceTiles.size(); ++j) {
+                _imp->displayTextures[i].lastRenderedDeviceTiles[j].reset();
+            }
+#endif
             toUnRegister += _imp->displayTextures[i].memoryHeldByLastRenderedImages;
             toUnRegister += _imp->displayTextures[i].memoryHeldByLastRenderedDeepImages;
         }
@@ -4146,6 +4300,40 @@ ViewerGL::clearLastRenderedTexture()
         }
     }
 }
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+// The RAM image of a level, downloading the device root it was drawn from the first time it is asked for. A level
+// whose download fails reads as empty until the next frame. lastRenderedImageMutex must be held.
+ImagePtr
+lastRenderedTileAt(TextureInfo& info,
+                   unsigned int level,
+                   ViewerInstance* internalNode,
+                   bool* failedDownload)
+{
+    ImagePtr image = info.lastRenderedTiles[level];
+#ifdef NATRON_HAVE_GPU
+    if (!image && info.lastRenderedDeviceTiles[level]) {
+        GpuDeviceImagePtr root;
+        root.swap(info.lastRenderedDeviceTiles[level]);
+        image = root->downloadToRam();
+        if (image) {
+            info.lastRenderedTiles[level] = image;
+            info.memoryHeldByLastRenderedImages += image->size();
+            internalNode->registerPluginMemory( image->size() );
+        } else if (failedDownload) {
+            *failedDownload = true;
+        }
+    }
+#else
+    Q_UNUSED(internalNode);
+    Q_UNUSED(failedDownload);
+#endif
+
+    return image;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 ImagePtr
 ViewerGL::getLastRenderedImage(int textureIndex) const
@@ -4157,8 +4345,9 @@ ViewerGL::getLastRenderedImage(int textureIndex) const
         return ImagePtr();
     }
     QMutexLocker l(&_imp->lastRenderedImageMutex);
-    for (U32 i = 0; i < _imp->displayTextures[textureIndex].lastRenderedTiles.size(); ++i) {
-        ImagePtr mipmap = _imp->displayTextures[textureIndex].lastRenderedTiles[i];
+    TextureInfo& info = _imp->displayTextures[textureIndex];
+    for (U32 i = 0; i < info.lastRenderedTiles.size(); ++i) {
+        ImagePtr mipmap = lastRenderedTileAt(info, i, getInternalNode(), NULL);
         if (mipmap) {
             return mipmap;
         }
@@ -4179,17 +4368,24 @@ ViewerGL::getLastRenderedImageByMipmapLevel(int textureIndex,
     }
 
     QMutexLocker l(&_imp->lastRenderedImageMutex);
-    assert(_imp->displayTextures[textureIndex].lastRenderedTiles.size() > mipmapLevel);
+    TextureInfo& info = _imp->displayTextures[textureIndex];
+    assert(info.lastRenderedTiles.size() > mipmapLevel);
 
-    ImagePtr mipmap = _imp->displayTextures[textureIndex].lastRenderedTiles[mipmapLevel];
+    ViewerInstance* internalNode = getInternalNode();
+    bool failedDownload = false;
+    ImagePtr mipmap = lastRenderedTileAt(info, mipmapLevel, internalNode, &failedDownload);
     if (mipmap) {
         return mipmap;
+    }
+    // Another level would hold an earlier frame than the one on screen.
+    if (failedDownload) {
+        return ImagePtr();
     }
 
     //Find an image at higher scale
     if (mipmapLevel > 0) {
         for (int i = (int)mipmapLevel - 1; i >= 0; --i) {
-            mipmap = _imp->displayTextures[textureIndex].lastRenderedTiles[i];
+            mipmap = lastRenderedTileAt(info, i, internalNode, NULL);
             if (mipmap) {
                 return mipmap;
             }
@@ -4197,8 +4393,8 @@ ViewerGL::getLastRenderedImageByMipmapLevel(int textureIndex,
     }
 
     //Find an image at lower scale
-    for (U32 i = mipmapLevel + 1; i < _imp->displayTextures[textureIndex].lastRenderedTiles.size(); ++i) {
-        mipmap = _imp->displayTextures[textureIndex].lastRenderedTiles[i];
+    for (U32 i = mipmapLevel + 1; i < info.lastRenderedTiles.size(); ++i) {
+        mipmap = lastRenderedTileAt(info, i, internalNode, NULL);
         if (mipmap) {
             return mipmap;
         }

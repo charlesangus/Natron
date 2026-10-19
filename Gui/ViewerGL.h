@@ -188,6 +188,17 @@ public:
                                                const Point& viewportCenter,
                                                bool isPartialRect) OVERRIDE FINAL;
     virtual void setLastRenderedDeepImage(int textureIndex, unsigned int mipmapLevel, const DeepImagePtr& deepImage) OVERRIDE FINAL;
+#ifdef NATRON_HAVE_GPU
+    virtual ViewerHandoffRung handoffRung() const OVERRIDE FINAL;
+    virtual ViewerHandoffResult prepareHandoff(const ProjectColorManagement::DisplayProcessorPtr& processor,
+                                               ViewerHandoffFormat format) OVERRIDE FINAL;
+    virtual ViewerHandoffResult transferDeviceImageToGPU(const GpuDeviceImagePtr& root,
+                                                         const TextureRect& roiRounded,
+                                                         const RectI& roi,
+                                                         int textureIndex,
+                                                         const ViewerHandoffParams& params,
+                                                         TexturePtr* texture) OVERRIDE FINAL;
+#endif
     virtual void clearLastRenderedImage() OVERRIDE FINAL;
     virtual void disconnectInputTexture(int textureIndex, bool clearRoD) OVERRIDE FINAL;
 

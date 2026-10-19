@@ -37,6 +37,7 @@
 #include "Engine/BufferableObject.h"
 #ifdef NATRON_HAVE_GPU
 #include "Engine/GpuContext.h"
+#include "Engine/ViewerHandoff.h"
 #endif
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/RectD.h"
@@ -89,6 +90,8 @@ public:
         , deepImage()
 #ifdef NATRON_HAVE_GPU
         , deviceColor()
+        , deviceProcess()
+        , deviceStats()
 #endif
         , rod()
         , pixelAspectRatio(1.)
@@ -147,6 +150,12 @@ public:
     // The colour plane in device memory, for the viewer process to run on the GPU; the tiles then hold no RAM buffer
     // and colorImage is null.
     GpuDeviceImagePtr deviceColor;
+
+    // The viewer process deviceColor goes through, with rect in the pixel coordinates of roi.
+    ViewerHandoffParams deviceProcess;
+
+    // Counts the frames whose hand-off is refused on the main thread.
+    RenderStatsPtr deviceStats;
 #endif
 
     // The RoD of the src image

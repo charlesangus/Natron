@@ -1846,9 +1846,22 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                  ( (alphaChannelIndex < 0) || ( alphaChannelIndex >= deviceColor->nComps() ) ) ) {
                 return eViewerRenderRetCodeBlack;
             }
+            // The CPU path finds no matte image when the only plane rendered is not the colour layer, and shows black.
+            if ( (inArgs.channels == eDisplayChannelsMatte) && (inArgs.params->alphaLayer != inArgs.params->layer) ) {
+                return eViewerRenderRetCodeBlack;
+            }
             // The tiles keep describing the texture the root is drawn into, without any RAM buffer.
             const UpdateViewerParamsPtr& updateParams = inArgs.params;
             updateParams->deviceColor = deviceColor;
+            updateParams->deviceProcess.rect = updateParams->roi;
+            updateParams->deviceProcess.channels = inArgs.channels;
+            updateParams->deviceProcess.alphaChannelIndex = alphaChannelIndex;
+            updateParams->deviceProcess.matteOverlay = (inArgs.channels == eDisplayChannelsMatte);
+            updateParams->deviceProcess.gain = updateParams->gain;
+            updateParams->deviceProcess.offset = updateParams->offset;
+            updateParams->deviceProcess.gamma = updateParams->gamma;
+            updateParams->deviceProcess.displayProcessor = updateParams->displayProcessor;
+            updateParams->deviceStats = stats;
             updateParams->colorImage.reset();
             updateParams->mustFreeRamBuffer = false;
             for (std::list<UpdateViewerParams::CachedTile>::iterator it = updateParams->tiles.begin(); it != updateParams->tiles.end(); ++it) {
@@ -3030,6 +3043,55 @@ scaleToTexture32bits(const RectI& roi,
     }
 } // scaleToTexture32bits
 
+#ifdef NATRON_HAVE_GPU
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+// Runs the CPU viewer process of the device root of params into the display texture, for a frame whose hand-off was
+// refused, and returns the RAM copy of the root.
+ImagePtr
+drawDeviceRootOnCpu(OpenGLViewerI* uiContext,
+                    const UpdateViewerParams& params,
+                    const TextureRect& texRect,
+                    TexturePtr* texture)
+{
+    ImagePtr downloaded = params.deviceColor->downloadToRam();
+    if (!downloaded) {
+        return ImagePtr();
+    }
+    const RectI& rect = params.roi;
+    const std::size_t pixelBytes = (params.depth == eImageBitDepthFloat) ? 4 * sizeof(float) : sizeof(U32);
+    const std::size_t rowBytes = rect.width() * pixelBytes;
+    std::vector<unsigned char> buffer(rowBytes * rect.height(), 0);
+    const ViewerHandoffParams& process = params.deviceProcess;
+    const ImageConstPtr matte = process.matteOverlay ? ImageConstPtr(downloaded) : ImageConstPtr();
+    // viewerProcessRectOnCpu() reads a rect whose bottom-left corner is off the image as all empty, so only the part
+    // the root covers is processed.
+    const RectI drawn = rect.intersect( downloaded->getBounds() );
+    if ( !drawn.isNull() ) {
+        if (drawn == rect) {
+            viewerProcessRectOnCpu(downloaded, matte, process.channels, params.depth, process.gain, process.gamma, process.offset,
+                                   process.displayProcessor, process.alphaChannelIndex, rect, &buffer[0]);
+        } else {
+            const std::size_t drawnRowBytes = drawn.width() * pixelBytes;
+            std::vector<unsigned char> part(drawnRowBytes * drawn.height());
+            viewerProcessRectOnCpu(downloaded, matte, process.channels, params.depth, process.gain, process.gamma, process.offset,
+                                   process.displayProcessor, process.alphaChannelIndex, drawn, &part[0]);
+            for (int y = drawn.y1; y < drawn.y2; ++y) {
+                std::memcpy(&buffer[(y - rect.y1) * rowBytes + (drawn.x1 - rect.x1) * pixelBytes],
+                            &part[(y - drawn.y1) * drawnRowBytes],
+                            drawnRowBytes);
+            }
+        }
+    }
+    uiContext->transferBufferFromRAMtoGPU(&buffer[0], buffer.size(), params.roi, params.roiNotRoundedToTileSize, texRect,
+                                          params.textureIndex, false, true, texture);
+
+    return downloaded;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+#endif // NATRON_HAVE_GPU
+
 void
 ViewerInstance::ViewerInstancePrivate::updateViewer(UpdateViewerParamsPtr params)
 {
@@ -3056,6 +3118,27 @@ ViewerInstance::ViewerInstancePrivate::updateViewer(UpdateViewerParamsPtr params
         assert( (params->isPartialRect && params->tiles.size() == 1) || !params->isPartialRect );
 
         TexturePtr texture;
+        ImagePtr deviceDownload;
+        bool deviceFrame = false;
+#ifdef NATRON_HAVE_GPU
+        if (params->deviceColor) {
+            assert(!params->isPartialRect);
+            deviceFrame = true;
+            const UpdateViewerParams::CachedTile& firstTile = params->tiles.front();
+            TextureRect texRect;
+            texRect.par = firstTile.rect.par;
+            texRect.closestPo2 = firstTile.rect.closestPo2;
+            texRect.set(params->roi);
+            const ViewerHandoffResult presented = uiContext->transferDeviceImageToGPU(params->deviceColor, texRect, params->roiNotRoundedToTileSize,
+                                                                                      params->textureIndex, params->deviceProcess, &texture);
+            if (!presented) {
+                if (params->deviceStats) {
+                    params->deviceStats->incLegacyFallbacks("viewer handoff: " + presented.reason);
+                }
+                deviceDownload = drawDeviceRootOnCpu(uiContext, *params, texRect, &texture);
+            }
+        }
+#endif
         bool isFirstTile = true;
         for (std::list<UpdateViewerParams::CachedTile>::iterator it = params->tiles.begin(); it != params->tiles.end(); ++it) {
             if (!it->ramBuffer) {
@@ -3089,9 +3172,14 @@ ViewerInstance::ViewerInstancePrivate::updateViewer(UpdateViewerParamsPtr params
             originalImage = firstTile.cachedData->getInternalImage();
             deepImage = firstTile.cachedData->getInternalDeepImage();
         }
+        if (!originalImage) {
+            originalImage = deviceDownload;
+        }
         ImageBitDepthEnum depth;
         if (originalImage) {
             depth = originalImage->getBitDepth();
+        } else if (deviceFrame) {
+            depth = eImageBitDepthFloat;
         } else {
             assert(firstTile.cachedData);
             if (firstTile.cachedData) {
@@ -3102,7 +3190,7 @@ ViewerInstance::ViewerInstancePrivate::updateViewer(UpdateViewerParamsPtr params
         }
 
         uiContext->endTransferBufferFromRAMToGPU(params->textureIndex, texture, originalImage, params->time, params->rod, params->pixelAspectRatio, depth, params->mipmapLevel, params->gain, params->gamma, params->offset, params->recenterViewport, params->viewportCenter, params->isPartialRect);
-        if (!params->isPartialRect && originalImage) {
+        if ( !params->isPartialRect && (originalImage || deviceFrame) ) {
             uiContext->setLastRenderedDeepImage(params->textureIndex, params->mipmapLevel, deepImage);
         }
 

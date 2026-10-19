@@ -1,8 +1,8 @@
 # M95 - Knob Cleanup And Keyer Redesign
 
-Split from M69 - Minor Cleanup on 2026-10-11. It removes the per-node `hidpi` and `interactive` knobs in favour of app-level DPI (already automatic) and one global interactive toggle with a shortcut. It moves "(Un)premult by" and clamp black/white below the line with mask and mix. It redoes the native Keyer (M67.P5.T1) as a four-value trapezoid matte that outputs alpha only.
+Split from M69 - Minor Cleanup on 2026-10-11. It removes the per-node `hidpi` and `interactive` knobs in favour of app-level DPI (already automatic) and one global interactive toggle with a shortcut. It moves clamp black/white below the line, above "(Un)premult by", and gives OFX nodes the same footer. M137 - Native Base Class Flexibility places the native stage knobs: separator, (Un)premult by, mask, Invert mask and Mix. It redoes the native Keyer (M67.P5.T1) as a four-value trapezoid matte that outputs alpha only.
 
-Proposed Deps: M69 (both edit `ActionShortcuts.h`, `GuiApplicationManager10.cpp`, `ViewerTab.cpp`), M76 (both edit `ExtentKnobs.*`).
+Proposed Deps: M69 (both edit `ActionShortcuts.h`, `GuiApplicationManager10.cpp`, `ViewerTab.cpp`), M76 (both edit `ExtentKnobs.*`), M137 - Native Base Class Flexibility (the stage-knob footer and the framework Keyer is rewritten on).
 
 Scouting (2026-10-11, `10e0accd5`):
 - Native `interactive` knobs: `ExtentKnobs.cpp:242-258` (Constant, CheckerBoard, Crop), `Transform.cpp:393-409`, `Position.cpp:229-234`, Roto `kRotoTransformInteractive` (`RotoContextPrivate.h:332-334,1994-2001`).
@@ -56,7 +56,8 @@ Scouting (2026-10-11, `10e0accd5`):
 
 ## Phase 95.3: Footer below the line
 
-- [ ] M95.P3.T1 — Move "(Un)premult by" and clamp black/white below the line with mask and mix
+- [ ] M95.P3.T1 — Move clamp black/white below the line, and give OFX nodes the same footer
+  - note (2026-10-19): M137 - Native Base Class Flexibility now builds the native stage-knob footer (separator → (Un)premult by → mask → Invert mask → Mix). This task adds the clamp row above "(Un)premult by" and applies the footer order to OFX nodes through `Node.cpp`. Re-scout the lines below against what M137 merged.
   - files: `Engine/Node.cpp`, `Tests/KnobFooterOrder_Test.cpp` (new), `Tests/CMakeLists.txt` (**OVERLAP: Tests/CMakeLists.txt**)
   - approach:
     - Today `createUnPremultSelector` adds `hostUnPremultBy` at the end of the plug-in knobs (`Node.cpp:2696`), above `advancedSep`. The separator is only inserted when a mask selector exists (`:3187-3209`).
@@ -126,6 +127,8 @@ Acceptance sketch:
 - "(Un)premult by" and clamp black/white sit below the line with mask and mix.
 
 ## Decisions
+
+- 2026-10-19 — **Native stage-knob placement moved to M137 - Native Base Class Flexibility; Keyer is redesigned on its framework** (user, M137 grill): the framework creates the premult, mask and mix knobs, so it places them. M137 migrates Keyer and ChromaKeyer unchanged first. This milestone gains a dep on M137.
 - 2026-10-11 — **Split from M69 - Minor Cleanup (user-approved).** Deps `M69, M76`.
 - 2026-10-11 — **User answers** (`PLAN/DESIGN/2026-10-11-m69-questions.md`):
   - **Interactive toggle: shortcut + the existing preference only, no viewer button.** P1.T1 drops the viewer-toolbar button (`ViewerTab.cpp`, `ViewerTabPrivate.h` leave its files list); the Alt+U shortcut and the Preferences checkbox stay in sync.

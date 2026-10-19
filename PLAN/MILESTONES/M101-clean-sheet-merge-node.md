@@ -9,6 +9,8 @@ The current `MergeNode` is deleted with **no compatibility**. It was a faithful 
 openfx-misc Merge 2.0, built in M67 - Native Core Nodes. Old projects that use it load the
 missing-plugin node (user, 2026-10-12).
 
+**Framework (2026-10-19):** this milestone builds on M137 - Native Base Class Flexibility. Merge is a Composite op with `Stages{MaskMix}` declared through `NodeSpec`/`ImagePipelineSpec`. The `StagePlan` feeds every A input and B to the op, and the CPU and GPU executors apply mask and mix. M137 deletes `NativeImageEffect` and leaves today's `MergeNode` as a Custom-kind node with its own `render()`, which P5.T6 then deletes. Facts below that cite `NativeImageEffect` describe the code before M137; re-scout them at promotion.
+
 Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-gpu-placement-and-residency` `8bf4a189a`):
 - **Today's Merge** is `Engine/Nodes/Merge/Merge.{h,cpp}` (`MergeNode`) plus `MergeOperators.{h,cpp}`.
   - It keeps the OFX IDs `net.sf.openfx.MergePlugin` and the nine `net.sf.openfx.Merge<Preset>` presets, each registered as a separate plug-in.
@@ -97,7 +99,7 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
 
 ## Phase 101.2: Node on the CPU
 
-- [ ] M101.P2.T1 — Feed multiple inputs to point-op kernels in NativeImageEffect
+- [ ] ~~M101.P2.T1 — Feed multiple inputs to point-op kernels in NativeImageEffect~~ (cancelled 2026-10-19: M137 - Native Base Class Flexibility's Composite kind feeds every declared input to the op)
   - files: `Engine/Nodes/Image/NativeImageEffect.{h,cpp}`, `Engine/Nodes/Image/PixelKernel.h`, `Tests/Native/NativeImageEffect_Test.cpp`
   - approach:
     - Add a trait or virtual that lists the point-op source inputs (default `{0}`). `render()` then fetches each listed input's plane for the row, fills `src[i]`/`nSrc`, and passes a per-source "pixel present" span for rows outside an input's RoD, as `MergeOperators::RowSide::present` does today.
@@ -108,12 +110,12 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
   - size: M
 
 - [ ] M101.P2.T2 — Add the new Merge node with a single layer and universal alpha
-  - files: `Engine/Nodes/Merge/NativeMerge.{h,cpp}` (new), `Engine/AppManager.cpp` (registration), `Tests/Native/NativeMergeNode_Test.cpp` (new)
+  - files: `Engine/Nodes/Merge/NativeMerge.{h,cpp}` (new), its registration (a `.reg.inc` fragment once M120 - Native Node Port Kit has merged, else `Engine/AppManager.cpp`), `Tests/Native/NativeMergeNode_Test.cpp` (new)
   - approach:
     - `Merge` v1 with the Design's inputs, operation, bbox, metadata from, frame range from, and the base class's mask and mix.
     - Use `layers = Single` only for now, with A/B/output layer knobs declared through `declareLayerKnob` (A and B input-bound, output a Target) and universal alpha channel selects per side.
-    - The kernel calls `MergeMath.h` through P2.T1's multi-input `RowIO`, folding A2..An in order.
-    - Override `getRegionOfDefinition`, `isIdentity` and `deriveOutputMetadata` per the Design.
+    - A Composite op on M137's framework. Its row calls `MergeMath.h` over the `StagePlan`'s sources, folding A2..An in order inside the op past the source cap.
+    - Override `getRegionOfDefinition` and `deriveOutputMetadata` per the Design. Identity comes through `Op::isIdentity` (B when no A is connected and the operator is identity for a transparent A). The framework composes it with mix and mask.
     - Rows outside every A's RoD copy B.
     - Name the class so it does not clash with `MergeNode` (deleted in P5) or the `Merge` namespace in `MergingEnum.h`.
   - verify: `NativeMergeNode_Test` covers over with an offset A, three A inputs, each bbox mode, mask and mix, identity with no A, a non-separable operator, and output-layer creation. It runs at the gate.
@@ -157,7 +159,7 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
 - [ ] M101.P4.T1 — Write the Merge Slang kernel and register it
   - files: `Engine/Gpu/Kernels/merge.slang` (new, includes `MergeMath.h`), `Engine/Gpu/GpuKernelRegistry.cpp`, `Engine/Gpu/CMakeLists.txt`, `Engine/Nodes/Merge/NativeMerge.{h,cpp}`
   - approach:
-    - Add `IBinaryPixelOp` and one kernel parameterised by operator: a specialisation constant, or one entry point per operator if that is how the registry works.
+    - Add `IBinaryPixelOp` as an op body that M137's `recordStagesGpu` wraps; no standalone kernel with its own mask/mix. Use one body parameterised by operator: a specialisation constant, or one entry point per operator if that is how the registry works.
     - The kernel takes a layer list, per-channel alpha bindings, mask, mix, and up to N A inputs folded in one dispatch. Past N, chain dispatches and keep the result resident.
     - `canRenderOnGpu` per the Design. `getGpuInputRoI` returns the output rect, as for a point op.
     - Strips outside every A's RoD copy B, with no operator dispatch.
@@ -251,6 +253,7 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
 
 ## Decisions
 
+- 2026-10-19 — **Built on M137 - Native Base Class Flexibility's framework** (user, M137 grill): M137 does not migrate today's Merge, since this milestone rewrites it, and leaves it as a Custom node. P2.T1 is cancelled because the Composite kind supersedes it. This milestone gains a dep on M137.
 - 2026-10-12 — **No compatibility with the old Merge** (user): old Merge IDs are deleted outright. Old projects show the missing-plugin node (M22 - Missing Plugin Placeholder).
 - 2026-10-12 — **Maths are Nuke's formulas, made HDR-safe, with no legacy toggle** (user).
 - 2026-10-12 — **Dropped** (user): Nuke's mask fringe and inject, video colorspace, and alpha masking (`screenAlpha`). Masking is just the base class's mask channel, invert and mix.

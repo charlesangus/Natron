@@ -1,15 +1,16 @@
 # M121 - Native Routing And Mix
 
-Native, redesigned replacements for the openfx-misc routing and mix nodes: `Switch`, `KeyMix`, `Difference` and `AdjustBBox` (AdjustRoD). Each has a CPU path, a GPU path and tests, and their OFX plug-ins are retired. Switch is the most-used OFX node left: 11 instances across 7 bundled PyPlugs. Moving it native lets those PyPlugs run without OFX hops, and lets GPU regions run through them.
+Native, redesigned replacements for the openfx-misc routing and mix nodes: `KeyMix`, `Difference` and `AdjustBBox` (AdjustRoD), plus moving the users of `Switch` over and retiring all four OFX IDs. The native `Switch` node itself is built by M137 - Native Base Class Flexibility, as its Route-kind proof. Each node here has a CPU path, a GPU path and tests. Switch is the most-used OFX node left: 11 instances across 7 bundled PyPlugs. Moving it native lets those PyPlugs run without OFX hops, and lets GPU regions run through them.
 
 Shared conventions:
 - Plain IDs at major 1, Nuke-like knob sets and scene-linear maths. The nodes don't copy OFX behaviour (`DECISIONS/2026-10-12-native-nodes-drop-ofx-legacy.md`), and there is no project compatibility (`DECISIONS/2026-09-18-clean-break-no-project-compat.md`).
-- Mask, mix and "(Un)premult by" come from the `NativeImageEffect` base.
+- Nodes are declared on M137 - Native Base Class Flexibility's framework: a `NodeSpec`, an `ImagePipelineSpec` with its stages (Premult, MaskMix) and an `Op`. Mask, mix and "(Un)premult by" are stages, not base-class code. `NativeImageEffect` no longer exists.
 - Registration, kernels, cost seeds, icons, docs and retirement go through the per-node fragment files from M120 - Native Node Port Kit (`<Node>.reg.inc`, `<Node>.costseed.inc`, `docs/<Node>.md`, `<kernel>.cmake`; one `Engine/OfxRetired/<ofx-plugin-id>` marker per retired ID). Don't edit the shared manifests.
 
 Deps:
+- M137 - Native Base Class Flexibility. It provides the framework and the native Switch.
 - M120 - Native Node Port Kit.
-- M101 - Clean-Sheet Merge Node. It builds the multi-source point-op base support (M101.P2.T1) and the multi-input GPU kernel shape (M101.P4.T1) that KeyMix and Difference use.
+- M101 - Clean-Sheet Merge Node. It builds the `IBinaryPixelOp` GPU kernel shape (M101.P4.T1) that KeyMix and Difference use. Multi-source point ops come from M137's Composite kind.
 
 Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels facts from `origin/milestone/m85-native-gpu-kernels`; re-check at promotion):
 - **OFX Switch** (`openfx-misc/Switch/Switch.cpp`):
@@ -22,7 +23,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - Identity cases at `:498-566`.
 - **OFX Difference** (`Difference/Difference.cpp`): A = clean plate, B = subject. RGB = B, alpha = `clamp(gain·Σ(B−A)² − offset, 0, max)` (`:128-140`). `offset` 0, `gain` 1 (`:395-422`).
 - **OFX AdjustRoD** (`AdjustRoD/AdjustRoD.cpp`): `addPixels` (w,h) pads every side (`:212-230`). `boundary` is Black or Nearest, default Nearest (`:395-418`). Identity at 0,0.
-- **Native multi-input today:**
+- **Native multi-input before M137 (superseded by its Composite and Route kinds; re-scout at promotion):**
   - `NativeImageEffect::render` fills only `src[0]` (`NativeImageEffect.cpp:462-469, 543-544`), with `kPixelKernelMaxInputs 4` (`PixelKernel.h:37,89`). M101.P2.T1 lifts this.
   - Dissolve (`Engine/Nodes/Merge/Dissolve.{h,cpp}`) is the 64-input template: inputs at `Dissolve.cpp:228-246`, `onInputChanged` range rescale at `:277-280`, `isIdentity` override at `:371-418`.
   - The base `isIdentity` (`NativeImageEffect.cpp:344-380`) always answers input 0, so Switch overrides it.
@@ -42,28 +43,26 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Scope
 
-**In:** native `Switch`, `KeyMix`, `Difference` and `AdjustBBox` with CPU and GPU paths and tests; the PyPlug and engine reference updates; retiring the four OFX IDs.
+**In:** native `KeyMix`, `Difference` and `AdjustBBox` with CPU and GPU paths and tests; identity nodes such as Switch keeping GPU regions resident; moving the PyPlugs to native Switch and the other engine reference updates; retiring the four OFX IDs, `switchPlugin` included.
 
 **Out:**
 - `CopyRectangle` and `NoOp` stay on OFX (user, 2026-10-13); none.
 - Merge's `difference` operator (per-channel |A−B|) belongs to M101 - Clean-Sheet Merge Node.
 - Renaming the PyPlugs' other OFX nodes: M111 - Native Node Identity Cleanup.
+- The native `Switch` node, its routing and its tests: M137 - Native Base Class Flexibility.
 
 **Edge cases:**
-- Switch with `which` beyond the last connected input clamps to the highest connected input. With no inputs connected it outputs black and an empty RoD.
-- Switch with an animated `which` re-routes per frame with no cache poisoning: the identity input is part of the frame's hash.
 - KeyMix with A unconnected is identity on B. With the mask unconnected, A covers everywhere (mask = 1), the same as Nuke.
 - Difference with A missing passes B through with alpha 0. With B missing it outputs black.
 - AdjustBBox with negative padding crops. Nearest boundary repeats the source edge; Black fills 0.
 
 **Assumptions:**
 - Unconfirmed: the plain ID is `AdjustBBox` (Nuke's name), not `AdjustRoD`.
-- Unconfirmed: Switch keeps 64 fixed optional inputs like Dissolve, rather than growing inputs dynamically.
 - Unconfirmed: Difference stays in the Keyer category, and KeyMix and Switch are in Merge.
 
 ## Phase 120.1: Switch
 
-- [ ] M121.P1.T1 — Native Switch as pure identity routing
+- [ ] ~~M121.P1.T1 — Native Switch as pure identity routing~~ (cancelled 2026-10-19: moved to M137 - Native Base Class Flexibility as its Route proof; its brief and the Switch edge cases travel with it)
   - files: `Engine/Nodes/Merge/Switch.h`, `Engine/Nodes/Merge/Switch.cpp`, `Engine/Nodes/Merge/Switch.reg.inc`, `Tests/Native/NativeSwitch_Test.cpp`
   - approach:
     - Derive from `NativeEffectBase`, or `NativeImageEffect` with a FINAL `isIdentity`, modelled on Dissolve.
@@ -77,7 +76,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - [ ] M121.P1.T2 — Identity nodes don't break resident GPU regions
   - files: `Engine/GpuPlacement.cpp`, `Engine/GpuRegionTask.cpp`, `Tests/GpuPlacement_Test.cpp`
   - approach:
-    - Check how placement treats a node whose `isIdentity` routes to an input. If it splits a region, make identity-at-input a pass-through edge: its consumer reads the routed input's resident view.
+    - Check how placement treats a node whose route/identity hook (M137 - Native Base Class Flexibility) routes to an input. If it splits a region, make identity-at-input a pass-through edge: its consumer reads the routed input's resident view.
     - Cover Switch, and any native node at an identity setting, such as a default Grade.
   - verify: at the phase build, a new `GpuPlacement_Test` case shows Grade → Switch → Blur placed as one region with no download/upload between Grade and Blur.
   - size: L
@@ -87,18 +86,18 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - [ ] M121.P2.T1 — Native KeyMix
   - files: `Engine/Nodes/Merge/KeyMix.h`, `Engine/Nodes/Merge/KeyMix.cpp`, `Engine/Nodes/Merge/KeyMix.reg.inc`, `Tests/Native/NativeKeyMix_Test.cpp`
   - approach:
-    - Inputs B=0, A=1, Mask=2, with A and B as point-op sources through M101.P2.T1's multi-source support.
+    - A Composite op on M137's framework with `Stages{MaskMix}`: inputs B=0, A=1, Mask=2, with A and B as sources of the `StagePlan`.
     - Per-channel A select uses the standard layer/channel knobs.
     - Out = lerp(B, A, mask·mix) on selected channels, and B elsewhere. The host mask/mix supplies the blend. Don't add a second mask.
     - RoD is the union of A and B, and the output format is B's.
-    - Identity on B when mix is 0, no channel is selected, A is unconnected, or the window misses A's RoD or a non-inverted mask's RoD.
+    - Identity on B when no channel is selected, A is unconnected, or the window misses A's RoD, through `Op::isIdentity`. The framework's composed identity already covers mix 0 and a non-inverted mask missing the window.
   - verify: at the phase build, the test covers a soft mask blend, channel subsets, the identity cases, and HDR values (>1 and negative) passing through.
   - size: M
 
 - [ ] M121.P2.T2 — Native Difference
   - files: `Engine/Nodes/Keyer/Difference.h`, `Engine/Nodes/Keyer/Difference.cpp`, `Engine/Nodes/Keyer/Difference.reg.inc`, `Tests/Native/NativeDifference_Test.cpp`
   - approach:
-    - Inputs A = clean plate (1) and B = subject (0, the main input).
+    - A Composite op on M137's framework. Inputs A = clean plate (1) and B = subject (0, the main input).
     - RGB = B. Alpha = `max(0, gain·Σ_rgb(B−A)² − offset)` with no upper clamp, so scene-linear differences above 1 stay meaningful.
     - Knobs `offset` 0 and `gain` 1, plus host mask/mix on the alpha.
     - Missing-input cases as in the edge cases.
@@ -120,7 +119,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - approach:
     - A `numpixels` (w,h) pad in canonical units, with negative values cropping, and `boundary` Black/Nearest (default Black, like Nuke).
     - RoD = source RoD ± pad, and RoI = the requested window clamped to the source RoD.
-    - Render is a copy with a boundary fill. Identity at 0,0.
+    - A Point op on M137's framework whose source input declares `boundary = Zero | Nearest`, following the `boundary` knob. Identity at 0,0.
   - verify: at the phase build, the test covers pad, crop, both boundaries, and identity at 0.
   - size: M
 
@@ -163,12 +162,13 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 - 2026-10-13 — Switch drops `automatic` (user): only `which` is kept, since no bundled PyPlug uses automatic.
 - 2026-10-13 — CopyRectangle and NoOp stay on OFX (user): low use, and CopyRectangle is a useful OFX test fixture for M120 - Native Node Port Kit.
+- 2026-10-19 — Native Switch moves to M137 - Native Base Class Flexibility (user, M137 grill): no native Route node existed to prove the framework's route hook. This milestone keeps the PyPlug moves, the `switchPlugin` retirement and the identity-node placement task.
 - 2026-10-13 — AdjustRoD becomes `AdjustBBox` (planner, Nuke's name): it follows the Nuke-like naming rule. Unconfirmed until promotion.
 
 **Verification gate:**
-- Full build and ctest pass, including the four nodes' CPU tests and the GPU parity tests on RADV.
+- Full build and ctest pass, including the three nodes' CPU tests and the GPU parity tests on RADV.
 - The new `GpuPlacement_Test` case shows a Switch inside one resident region.
 - The 7 PyPlugs instantiate and render: an Xvfb check opens Glow and LightWrap and toggles their Switch-driven knobs.
-- Xvfb screenshots of the four nodes' panels are shared before sign-off.
+- Xvfb screenshots of the three nodes' panels are shared before sign-off.
 - The AppImage is built with `package.sh` for UAT.
 - The four retired OFX IDs no longer load.

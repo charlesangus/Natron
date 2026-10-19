@@ -118,7 +118,7 @@ future core work has solid ground to build on.
 | M82 | Render Cost Profiling | done |  |  | E6 | [M82-render-cost-profiling.md](PLAN/MILESTONES/M82-render-cost-profiling.md) |
 | M83 | GPU Compute Backend Spike | done |  |  | E5 | [M83-gpu-compute-backend-spike.md](PLAN/MILESTONES/M83-gpu-compute-backend-spike.md) |
 | M84 | GPU Placement And Residency | done |  |  | E5 | [M84-gpu-placement-and-residency.md](PLAN/MILESTONES/M84-gpu-placement-and-residency.md) |
-| M101 | Clean-Sheet Merge Node | todo | M84 |  | E3 | [M101-clean-sheet-merge-node.md](PLAN/MILESTONES/M101-clean-sheet-merge-node.md) |
+| M101 | Clean-Sheet Merge Node | todo | M84, M137 |  | E3 | [M101-clean-sheet-merge-node.md](PLAN/MILESTONES/M101-clean-sheet-merge-node.md) |
 | M111 | Native Node Identity Cleanup | todo | M76, M101, M120 |  | E3 | [M111-native-node-identity-cleanup.md](PLAN/MILESTONES/M111-native-node-identity-cleanup.md) |
 | M112 | Native Node Behaviour Fixes | done | - | bosley-native-nodes | E3 | [M112-native-node-behaviour-fixes.md](PLAN/MILESTONES/M112-native-node-behaviour-fixes.md) |
 | M81 | Raw GPU Kernels | todo | M80, M85 |  | E5 | [M81-raw-gpu-kernels.md](PLAN/MILESTONES/M81-raw-gpu-kernels.md) |
@@ -128,7 +128,7 @@ future core work has solid ground to build on.
 | M86 | OFX 1.5 GPU Suites | todo | M85, M108 |  | E5 | [M86-ofx-gpu-suites.md](PLAN/MILESTONES/M86-ofx-gpu-suites.md) |
 | M87 | Point-Op Kernel Fusion | todo | M85, M126 |  | E5 | [M87-point-op-kernel-fusion.md](PLAN/MILESTONES/M87-point-op-kernel-fusion.md) |
 | M109 | GPU Region Engine Hardening | doing | M85 | gpu | E5 | [M109-gpu-region-engine-hardening.md](PLAN/MILESTONES/M109-gpu-region-engine-hardening.md) |
-| M110 | Remaining Native GPU Ports | todo | M85, M109, M126 |  | E5 | [M110-remaining-native-gpu-ports.md](PLAN/MILESTONES/M110-remaining-native-gpu-ports.md) |
+| M110 | Remaining Native GPU Ports | todo | M85, M109, M126, M137 |  | E5 | [M110-remaining-native-gpu-ports.md](PLAN/MILESTONES/M110-remaining-native-gpu-ports.md) |
 | M88 | FIR Gaussian Blur | done |  |  | E6 | [M88-fir-gaussian-blur.md](PLAN/MILESTONES/M88-fir-gaussian-blur.md) |
 | M89 | Shared Worktree Ccache | done | - |  | E2 | [M89-shared-worktree-ccache.md](PLAN/MILESTONES/M89-shared-worktree-ccache.md) |
 | M90 | Render Path Serial Overhead | done | M84 | bosley-native-nodes | E6 | [M90-render-path-serial-overhead.md](PLAN/MILESTONES/M90-render-path-serial-overhead.md) |
@@ -168,13 +168,13 @@ future core work has solid ground to build on.
 | M71 | RFV Render Context | todo |  |  | E13 | [M71-rfv-render-context.md](PLAN/MILESTONES/M71-rfv-render-context.md) |
 | M72 | RFV Integration And UAT | todo |  |  | E13 | [M72-rfv-integration-and-uat.md](PLAN/MILESTONES/M72-rfv-integration-and-uat.md) |
 | M92 | Linked Nodes | todo | M24 |  | E10 | [M92-linked-nodes.md](PLAN/MILESTONES/M92-linked-nodes.md) |
-| M95 | Knob Cleanup And Keyer Redesign | todo | M69, M76 |  | E3 | [M95-knob-cleanup-and-keyer-redesign.md](PLAN/MILESTONES/M95-knob-cleanup-and-keyer-redesign.md) |
+| M95 | Knob Cleanup And Keyer Redesign | todo | M69, M76, M137 |  | E3 | [M95-knob-cleanup-and-keyer-redesign.md](PLAN/MILESTONES/M95-knob-cleanup-and-keyer-redesign.md) |
 | M96 | Weighted Curve Tangents | todo | M93 |  | E7 | [M96-weighted-curve-tangents.md](PLAN/MILESTONES/M96-weighted-curve-tangents.md) |
 | M97 | ~~Value-Based Node Hashing~~ | cancelled |  |  | E7 | [M97-value-based-node-hashing.md](PLAN/MILESTONES/M97-value-based-node-hashing.md) |
 | M94 | Delete Unused Maintainer Skill | todo | - |  | E2 | [M94-delete-unused-maintainer-skill.md](PLAN/MILESTONES/M94-delete-unused-maintainer-skill.md) |
 | M115 | Build Speed And Artifact Size | done | - | bosley-native-nodes | E2 | [M115-build-speed-and-artifact-size.md](PLAN/MILESTONES/M115-build-speed-and-artifact-size.md) |
 | M113 | Native Warp Nodes | todo | M120, M56 |  | E3 | [M113-native-node-rewrites-continued.md](PLAN/MILESTONES/M113-native-node-rewrites-continued.md) |
-| M120 | Native Node Port Kit | todo | M85 |  | E3 | [M120-native-node-port-kit.md](PLAN/MILESTONES/M120-native-node-port-kit.md) |
+| M120 | Native Node Port Kit | todo | M85, M137 |  | E3 | [M120-native-node-port-kit.md](PLAN/MILESTONES/M120-native-node-port-kit.md) |
 | M121 | Native Routing And Mix | todo | M120, M101, M137 |  | E3 | [M121-native-routing-and-mix.md](PLAN/MILESTONES/M121-native-routing-and-mix.md) |
 | M122 | Native Colour Utilities | todo | M120, M137 |  | E3 | [M122-native-colour-utilities.md](PLAN/MILESTONES/M122-native-colour-utilities.md) |
 | M123 | Native Sharpen And Glow | todo | M120 |  | E3 | [M123-native-sharpen-and-glow.md](PLAN/MILESTONES/M123-native-sharpen-and-glow.md) |
@@ -196,7 +196,7 @@ future core work has solid ground to build on.
 | M136 | Edge Policy Investigation | todo | - |  | E3 | [M136-edge-policy-investigation.md](PLAN/MILESTONES/M136-edge-policy-investigation.md) |
 | M137 | Native Base Class Flexibility | todo | - |  | E3 | [M137-native-base-class-flexibility.md](PLAN/MILESTONES/M137-native-base-class-flexibility.md) |
 | M138 | GUI Papercuts | todo | - |  | E10 | [M138-gui-papercuts.md](PLAN/MILESTONES/M138-gui-papercuts.md) |
-| M139 | Blur In-Graph Overhead | todo | M90 |  | E6 | [M139-blur-in-graph-overhead.md](PLAN/MILESTONES/M139-blur-in-graph-overhead.md) |
+| M139 | Blur In-Graph Overhead | todo | M90, M137 |  | E6 | [M139-blur-in-graph-overhead.md](PLAN/MILESTONES/M139-blur-in-graph-overhead.md) |
 | M140 | Native Metadata Utilities | todo | M77, M120 |  | E3 | [M140-native-metadata-utilities.md](PLAN/MILESTONES/M140-native-metadata-utilities.md) |
 | M141 | Complete Local Build Environment | todo | - |  | E2 | [M141-complete-local-build-environment.md](PLAN/MILESTONES/M141-complete-local-build-environment.md) |
 | M142 | Atomic Project Save | todo | - |  | E7 | [M142-atomic-project-save.md](PLAN/MILESTONES/M142-atomic-project-save.md) |

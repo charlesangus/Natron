@@ -71,7 +71,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 **In:**
 - Per-node fragment files for registration, GPU kernels, cost seeds, docs and plug-in-list expectations, plus a globbed icon resource, with every existing native node migrated onto them. The scheme every port milestone uses:
-  - registration: `Engine/Nodes/<Family>/<Node>.reg.inc` (one X-macro line: class, icon, flags);
+  - registration: `Engine/Nodes/<Family>/<Node>.reg.inc` (one X-macro line naming the class and its header; identity, icon and flags come from the class's `NodeSpec`, from M137 - Native Base Class Flexibility);
   - GPU kernels: `Engine/Gpu/Kernels/<kernel>.cmake` beside each `<kernel>.slang`, holding its `slang_add_kernel` lines;
   - GPU cost seeds: `Engine/Nodes/<Family>/<Node>.costseed.inc`;
   - docs: `Engine/Nodes/<Family>/docs/<Node>.md`, including that node's tolerance line;
@@ -112,7 +112,8 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - [ ] M120.P1.T1 — Per-node native-node registration fragments
   - files: `Engine/Nodes/<Family>/<Node>.reg.inc` (new, one per existing native node), `Engine/AppManager.cpp`, `Engine/CMakeLists.txt`, `Engine/Nodes/NativeRegistry.h` (new)
   - approach:
-    - Each node gets a one-line fragment `NATRON_NATIVE_NODE(Class, "header.h", "icon-file", deprecated, internal)` beside its class. Icon files keep their current names.
+    - Each node gets a one-line fragment `NATRON_NATIVE_NODE(Class, "header.h")` beside its class. The registry reads ID, version, label, grouping, icon and the deprecated/internal flags from `Class`'s `NodeSpec` (M137 - Native Base Class Flexibility), so the fragment never repeats them. Icon files keep their current names.
+    - Check the `NodeSpec` M137 actually merged first; if it already generates a registration line, the fragment is just that line.
     - CMake `file(GLOB_RECURSE ... CONFIGURE_DEPENDS Engine/Nodes/*.reg.inc)`, sorts the list, and generates `NativeRegistryAll.inc` (the `#include`s plus the macro lines), which `loadBuiltinNodePlugins()` includes in place of the hand lines at `AppManager.cpp:1631-1674`.
     - Migrate every native registration. Non-node built-ins (Roto, Tracker, Viewer, Precomp, DiskCache, JoinViews/OneView, Dot, Backdrop, Group) stay hand-registered.
     - Do **not** use static-initialiser self-registration: object files in the static engine library that nothing references get dropped by the linker, and their nodes would silently vanish.
@@ -249,6 +250,8 @@ T6 and T7 come first: they build the test-only OFX bundle. The other tasks then 
   - size: M
 
 ## Decisions
+
+- 2026-10-19 — **Runs after M137 - Native Base Class Flexibility; fragments derive from `NodeSpec`** (user, M137 grill): registration is designed once. The fragment names only the class and header. This milestone gains a dep on M137.
 
 - 2026-10-13 — Created during the native-port planning grill: the user chose to run the new port milestones in parallel with no board order, which only works if they share no manifest files.
 - 2026-10-13 — Retirement is a host-side skip list, not a fork rebuild: one `.so` holds many plug-ins, and per-milestone data files keep lanes from contending on `OPENFX_MISC_REF`.

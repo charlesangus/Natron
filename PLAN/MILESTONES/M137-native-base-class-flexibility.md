@@ -27,9 +27,13 @@ Acceptance sketch:
   - GPU feasibility is a property of the plan, which placement reads instead of re-reading knobs by name (`GpuPlacement.cpp:518,539`).
 - Every native node moves onto `NodeSpec`, including Shuffle, AddLayers, RemoveLayers, the metadata nodes, NativeRead/Write, DeepToImage and MissingPluginNode.
 - Every image node moves onto the image framework: the 7 colour point-ops, the generators, Blur, EdgeDetect, ErodeDilate, the Transform family (as Resample), Crop, Reformat, Position, Dissolve, Keyer and ChromaKeyer.
-- Switch, a new native Route node, built here as the Route proof.
+- Switch, a new native Route node, built here as the Route proof. Its brief moved from M121 - Native Routing And Mix (M121.P1.T1, cancelled):
+  - 64 optional image inputs named "0".."63", modelled on Dissolve. `which` is an animatable int, and its display range follows the highest connected input (`Dissolve.cpp:277-280`). There is no `automatic` knob (user, 2026-10-13).
+  - The route hook returns the clamped `which` input at the same time and view. RoD is the chosen input's. It never renders.
+  - It forwards `getTransform` from the chosen input if the framework supports concatenation; otherwise concatenation is left out.
+  - It registers through today's manifest; M120 - Native Node Port Kit moves it onto a fragment with every other node. Moving the PyPlugs to it and retiring `switchPlugin` stay with M121.
 - Blur, EdgeDetect and ErodeDilate lose "(Un)premult by" and filter premultiplied data as stored.
-- The framework creates the premult, mask and mix stage knobs and places them together below the line.
+- The framework creates the premult, mask and mix stage knobs and places them together below the line: [separator] → (Un)premult by → mask channel and Invert mask → Mix. That is M95 - Knob Cleanup And Keyer Redesign's agreed footer order without the clamp row, which M95 adds above "(Un)premult by" and extends to OFX nodes.
 - Every point and composite GPU body becomes an `IPixelOp`/`IBinaryPixelOp` entry in the `pixelwrap.slang` style. There are no standalone kernels such as grade.slang's `grade_main`.
 - Shared C++/Slang maths headers become the parity convention, and the Op names its header.
 - `NativeImageEffect`, `NativeImageTraits` and `SpatialFilterSupport` are deleted. Merge is re-based as a Custom node that keeps its own `render()`.
@@ -55,6 +59,8 @@ Acceptance sketch:
 - A single-source CPU/GPU kernel JIT. No owner.
 
 **Edge cases:**
+- Switch with `which` beyond the last connected input clamps to the highest connected input. With no inputs connected it outputs black and an empty RoD.
+- Switch with an animated `which` re-routes per frame with no cache poisoning, because the routed input is part of the frame's hash.
 - A filter at default settings stays bit-exact when "(Un)premult by" goes away, because the selector defaults to None (`Node.cpp:2909`). Only renders that set it change, and their GPU parity cases are removed with the knob.
 - Merge stays on its own `render()` as a Custom node until M101 - Clean-Sheet Merge Node, so no second framework survives this milestone.
 - The scene-to-image bridges (HydraRender, ProjectTexture) remain Custom image nodes with a scene input.
@@ -63,6 +69,7 @@ Acceptance sketch:
 - Knob script names (`mix`, `maskInvert`, per-node knobs) are unchanged, so content hashes and the reordering at `Node.cpp:3303` keep working.
 
 **Assumptions:**
+- Unconfirmed: Switch keeps 64 fixed optional inputs like Dissolve, rather than growing inputs dynamically.
 - Nothing in the content hasher (M100 - Content Node Hashing) hashes class-level traits, so replacing `NativeImageTraits` with a spec leaves hashes unchanged. The Fable design pass did not verify this.
 - `canRenderOnGpu` and the plan stay deterministic between placement and record time (`GpuRegionTask.cpp:587`).
 - Unconfirmed: GPU-side changes compile and run only on the remote build until a local slangc tree exists. The spike's GPU half is verified there.

@@ -1,0 +1,165 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+#ifndef Engine_Nodes_Image_StagePlan_h
+#define Engine_Nodes_Image_StagePlan_h
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "Global/Macros.h"
+
+#include <bitset>
+#include <vector>
+
+#include "Engine/EffectInstance.h"
+#include "Engine/EngineFwd.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/Nodes/Image/ImagePipelineSpec.h"
+#include "Engine/Nodes/Image/PixelKernel.h"
+#include "Engine/RectI.h"
+#include "Engine/RenderScale.h"
+#include "Engine/ViewIdx.h"
+
+NATRON_NAMESPACE_ENTER
+
+/**
+ * @brief The knobs the stages read: mix and maskInvert. A knob the node does not have reads as
+ * its default, mix 1 and no inversion.
+ **/
+struct StageKnobs {
+    KnobDoubleWPtr mix;
+    KnobBoolWPtr maskInvert;
+};
+
+/**
+ * @brief Everything the stages around an op decide for one render, resolved once on the
+ * rendering thread before any pixel is touched.
+ *
+ * sourceInput is the input the op reads and the stages blend against, -1 for none. applyMask
+ * is whether the mask input is connected and enabled; maskChannel is the channel of maskLayer
+ * it reads, -1 when it resolves to none, in which case the mask reads zero everywhere.
+ * divisorChannel is the channel of divisorLayer "(Un)premult by" divides by, -1 for none.
+ **/
+struct StagePlan {
+    double time = 0.;
+    ViewIdx view = ViewIdx(0);
+    std::bitset<4> processChannels;
+    StageSet stages;
+    int sourceInput = -1;
+    float mix = 1.f;
+    bool maskInvert = false;
+    bool applyMask = false;
+    int maskInput = -1;
+    ImageLayerDesc maskLayer;
+    int maskChannel = -1;
+    ImageLayerDesc divisorLayer;
+    int divisorChannel = -1;
+};
+
+/**
+ * @brief A non-owning reference to the per-row function an executor calls, cheaper than a
+ * std::function and never allocating. The callable must outlive every call made through it.
+ **/
+class StageRowFn {
+public:
+    template <typename F>
+    explicit StageRowFn(const F& f)
+        : _context(&f)
+        , _call([](const void* context, const RowIO& io) {
+            (*static_cast<const F*>(context))(io);
+        })
+    {
+    }
+
+    void operator()(const RowIO& io) const
+    {
+        _call(_context, io);
+    }
+
+private:
+    const void* _context;
+    void (*_call)(const void*, const RowIO&);
+};
+
+/**
+ * @brief The input effect reads as its mask: the first input described as a mask, or -1.
+ **/
+int stageMaskInput(const EffectInstance& effect) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Whether effect's mask input is connected and enabled.
+ **/
+bool isStageMaskApplied(const EffectInstance& effect) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Whether the region of definition of the effect connected to maskInput misses roi at
+ * time, scale and view, so that a non-inverted mask leaves the source unchanged over roi.
+ * False when the region cannot be computed.
+ **/
+bool stageMaskMissesWindow(const EffectInstance& effect,
+                           int maskInput,
+                           double time,
+                           const RenderScale& scale,
+                           const RectI& roi,
+                           ViewIdx view) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Resolves the stages of effect for a render at time and view: mix and mask inversion
+ * from knobs, the mask input and its channel, and the "(Un)premult by" divisor of sourceInput.
+ * Stages left out of stages resolve to their neutral values.
+ **/
+StagePlan resolveStagePlan(EffectInstance& effect,
+                           const StageSet& stages,
+                           const StageKnobs& knobs,
+                           int sourceInput,
+                           double time,
+                           ViewIdx view,
+                           const std::bitset<4>& processChannels) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Renders args through plan with row, the op's per-row function, on the CPU.
+ *
+ * Every image is fetched first, then locked on this thread for the whole render; the window
+ * is split into row bands run over the global pool within the thread budget the host grants,
+ * and row must therefore be safe to call concurrently. Each row of the source is read (zero
+ * outside the input), divided by the divisor where the Premult stage has one, and handed to
+ * row; the processed channels it wrote are multiplied back by the divisor and blended with the
+ * undivided source by mask x mix, and with PassThroughUnprocessed the other channels are
+ * copied from the source.
+ **/
+StatusEnum runStagesCpu(EffectInstance& effect,
+                        const StagePlan& plan,
+                        const EffectInstance::RenderActionArgs& args,
+                        const StageRowFn& row) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Splits roi into the horizontal row bands runStagesCpu() runs in parallel for nThreads
+ * threads: one band when nThreads is 1 or the window is too small to be worth sharing.
+ **/
+void makeStageRowBands(const RectI& roi,
+                       int nThreads,
+                       std::vector<RectI>* bands);
+
+NATRON_NAMESPACE_EXIT
+
+#endif // Engine_Nodes_Image_StagePlan_h

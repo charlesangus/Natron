@@ -1,0 +1,116 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+#ifndef Engine_Nodes_Image_Op_h
+#define Engine_Nodes_Image_Op_h
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "Global/Macros.h"
+
+#include <concepts>
+#include <type_traits>
+
+#include "Engine/Nodes/Image/GpuRender.h"
+#include "Engine/Nodes/Image/ImagePipelineSpec.h"
+#include "Engine/Nodes/Image/PixelKernel.h"
+#include "Engine/Nodes/KnobReader.h"
+
+NATRON_NAMESPACE_ENTER
+
+/**
+ * @brief How an op runs on the GPU for one set of Params: not at all (None), as a kernel of
+ * the GPU registry with its parameter block (Kernel, held in kernel as for
+ * PixelKernelGpu), or as a runtime shader with the uniforms and textures it is dispatched with
+ * (RuntimeShader).
+ **/
+struct GpuOpRef {
+    enum class Kind : unsigned char {
+        None,
+        Kernel,
+        RuntimeShader
+    };
+
+    Kind kind = Kind::None;
+    PixelKernelGpu kernel;
+    GpuRuntimeShader shader;
+    GpuShaderInputs shaderInputs;
+
+    static GpuOpRef none()
+    {
+        return GpuOpRef();
+    }
+
+    template <typename P>
+    static GpuOpRef compiled(int kernelId,
+                             const P& params)
+    {
+        GpuOpRef ref;
+
+        ref.kind = Kind::Kernel;
+        ref.kernel.kernel = kernelId;
+        ref.kernel.setParams(params);
+
+        return ref;
+    }
+
+    static GpuOpRef runtime(const GpuRuntimeShader& shader,
+                            const GpuShaderInputs& inputs)
+    {
+        GpuOpRef ref;
+
+        ref.kind = Kind::RuntimeShader;
+        ref.shader = shader;
+        ref.shaderInputs = inputs;
+
+        return ref;
+    }
+};
+
+/**
+ * @brief A Point op: the per-pixel maths of a node whose output pixel depends only on the same
+ * pixel of its source.
+ *
+ * bake() reads the op's knobs once per evaluation into Params, which is trivially copyable so
+ * that band threads and GPU parameter blocks take it by value. isIdentity() says whether
+ * those Params leave the source unchanged, whatever the stages do. row() is pure on its RowIO,
+ * as PixelKernel::processRow() is: no knob access, no allocation and no I/O, called
+ * concurrently for different rows. gpu() says how the same Params run on the GPU.
+ **/
+template <typename OP>
+concept PointOp = BakesParams<OP> && std::is_trivially_copyable_v<typename OP::Params> && requires(const OP& op, const typename OP::Params& params, const RowIO& io) {
+    { op.isIdentity(params) } -> std::convertible_to<bool>;
+    { op.row(params, io) } -> std::same_as<void>;
+    { op.gpu(params) } -> std::same_as<GpuOpRef>;
+};
+
+/**
+ * @brief Whether OP satisfies the concept of op kind KIND. Only Point ops are runnable by the
+ * host's executors so far; every other kind is refused here.
+ **/
+template <typename OP, OpKind KIND>
+concept OpOfKind = (KIND == OpKind::Point) && PointOp<OP>;
+
+NATRON_NAMESPACE_EXIT
+
+#endif // Engine_Nodes_Image_Op_h

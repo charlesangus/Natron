@@ -470,6 +470,8 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
 
 ## Decisions
 
+- 2026-10-19 — Claimed despite the file-overlap test (user override): M137 shares `Engine/GpuRegionTask.cpp`, `GpuCostModel.cpp`, `RenderScheduler.cpp` and `Tests/GpuResidency_Test.cpp` with M109 - GPU Region Engine Hardening, `GpuCostModel.cpp` with M107 - GPU Viewer Hand-off, `AppManager.cpp`/`Tests/CMakeLists.txt` with the parked M64 - Tiled Rendering, and `Engine/Nodes/README.md` with M78 - Metadata In Expressions. The user accepted rebasing over M109/M107 and resolving the conflicts in the scheduler and cost-model files.
+
 - 2026-10-19 — Scope is a blue-sky redesign, not a trait fix. The Fable design has a declarative spec, an `Op` concept, and one `StagePlan` with CPU and GPU executors (user): mixins and per-feature flags leave `render()` overridable, which is where the triplicated blend and identity rules came from.
 - 2026-10-19 — The milestone covers every image op kind (Point, Composite, Route, Passes, Resample, Custom) and migrates every image node (user): one milestone rather than a split, accepting that it serialises the E3 ports while it runs.
 - 2026-10-19 — Build the kind-agnostic shared layer (`NodeSpec`, the route hook, `KnobReader`/`bake`) now (user): the image framework proves it, so deep, scene and geometry adopt it rather than fork it.

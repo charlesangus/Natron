@@ -181,20 +181,50 @@ if [[ "${RUN_SHA}" != "${HEAD_SHA}" ]]; then
     exit 1
 fi
 
+# gh run watch also exits on a transient API error (GitHub answers 502 at times), which would
+# leave the run going while the artifacts below are fetched too early. So its exit status is
+# ignored: the run's own status is polled until it completes, and its conclusion decides.
+gh run watch "${RUN_ID}" --interval "${WATCH_INTERVAL_SECS}" || true
+
+RUN_CONCLUSION=""
+while true; do
+    RUN_STATE="$(gh run view "${RUN_ID}" --json status,conclusion --jq '.status + " " + .conclusion' 2>/dev/null || true)"
+    if [[ "${RUN_STATE%% *}" == "completed" ]]; then
+        RUN_CONCLUSION="${RUN_STATE#* }"
+        break
+    fi
+    sleep "${WATCH_INTERVAL_SECS}"
+done
+
 RUN_STATUS=0
-gh run watch "${RUN_ID}" --exit-status --interval "${WATCH_INTERVAL_SECS}" || RUN_STATUS=$?
+if [[ "${RUN_CONCLUSION}" != "success" ]]; then
+    echo "build.sh: run ${RUN_ID} concluded '${RUN_CONCLUSION}'" >&2
+    RUN_STATUS=1
+fi
 
 OUT_DIR="${REPO_ROOT}/build/remote/${PRESET}"
 rm -rf "${OUT_DIR}"
 mkdir -p "${OUT_DIR}"
 
 # A missing artifact (step skipped, run cancelled early) must not replace the
-# run's own status, so a failed download only reports.
+# run's own status, so a failed download only reports. A few attempts ride out
+# transient API errors.
 download_artifact() {
     local name="$1"
-    if gh run download "${RUN_ID}" -n "${name}" -D "${OUT_DIR}" >/dev/null 2>&1; then
-        return 0
-    fi
+    local dir="${2:-${OUT_DIR}}"
+    local staging="${OUT_DIR:?}/.download-${name}"
+    local attempt
+    for attempt in 1 2 3; do
+        rm -rf "${staging:?}"
+        if gh run download "${RUN_ID}" -n "${name}" -D "${staging}" >/dev/null 2>&1; then
+            mkdir -p "${dir}"
+            cp -R "${staging}/." "${dir}/"
+            rm -rf "${staging:?}"
+            return 0
+        fi
+        sleep "${FIND_INTERVAL_SECS}"
+    done
+    rm -rf "${staging:?}"
     echo "build.sh: artifact ${name} was not available for download" >&2
     return 1
 }
@@ -222,11 +252,10 @@ if [[ "${RECORD_GOLDENS}" == "true" ]]; then
     GOLDEN_DIR="${REPO_ROOT}/Tests/fixtures/native-golden"
     GOLDEN_TMP="${OUT_DIR}/native-goldens"
     mkdir -p "${GOLDEN_TMP}"
-    if gh run download "${RUN_ID}" -n "native-goldens-${PRESET}-${HEAD_SHA}" -D "${GOLDEN_TMP}" >/dev/null 2>&1; then
+    if download_artifact "native-goldens-${PRESET}-${HEAD_SHA}" "${GOLDEN_TMP}"; then
         mkdir -p "${GOLDEN_DIR}"
         cp -R "${GOLDEN_TMP}/." "${GOLDEN_DIR}/"
     else
-        echo "build.sh: artifact native-goldens-${PRESET}-${HEAD_SHA} was not available for download" >&2
         GOLDEN_DIR=""
         RUN_STATUS=1
     fi

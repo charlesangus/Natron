@@ -285,7 +285,7 @@ TEST_F(NativeGoldenTest, Multiply)
     std::vector<GoldenVariant> v;
     v.push_back(variant("default"));
     v.push_back(variant("perchannel", perChannel));
-    v.push_back(variant("invert", [perChannel](const GoldenGraph& g) { return perChannel(g) && num(g, kColorMathParamInvert, { 1. }); }));
+    v.push_back(variant("negative", [](const GoldenGraph& g) { return num(g, kColorMathParamValue, { -0.75 }); }));
     addPremultAndMaskMix(&v, perChannel);
     run(filterSpec("Multiply", PLUGINID_NATRON_MULTIPLY, PLUGIN_MAJOR_NATRON_COLORMATH), v);
 }

@@ -23,6 +23,11 @@ on:
         required: true
         type: boolean
         default: false
+      record_goldens:
+        description: 'Record the native golden renders (needs tests) and upload them'
+        required: false
+        type: boolean
+        default: false
       appimage:
         description: 'Package and upload an AppImage'
         required: true
@@ -99,6 +104,21 @@ jobs:
           WITH_TESTS: ${{ inputs.tests && '1' || '' }}
         run: tools/ci/local/build.sh "$PRESET" ${WITH_TESTS:+--tests} --no-ccache-stats
 
+      # Runs before the ctest legs so they replay the references just recorded.
+      - name: Record native goldens
+        if: inputs.tests && inputs.record_goldens && steps.build.outcome == 'success'
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          NATRON_RENDER_SCHEDULER: legacy
+          NATRON_GOLDEN_RECORD_DIR: ${{ github.workspace }}/Tests/fixtures/native-golden
+          OFX_PLUGIN_PATH: ${{ github.workspace }}/build/assets/Plugins:${{ github.workspace }}/build/assets/TestPlugins
+        working-directory: build/${{ env.PRESET }}
+        run: |
+          set -o pipefail
+          mkdir -p "$NATRON_GOLDEN_RECORD_DIR"
+          xvfb-run --auto-servernum ctest -R '^NativeGoldenTest\.' --output-on-failure
+          test -f "$NATRON_GOLDEN_RECORD_DIR/STAMP"
+
       - name: Run ctest suite (legacy scheduler)
         if: inputs.tests
         env:
@@ -134,6 +154,15 @@ jobs:
           NATRON_RENDER_SCHEDULER: taskgraph
           NATRON_SMOKE_REFERENCE_DIR: ${{ github.workspace }}/build/smoke-reference
         run: tools/ci/local/test.sh smoke "$PRESET"
+
+      - name: Upload native goldens
+        if: inputs.tests && inputs.record_goldens && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: native-goldens-${{ env.PRESET }}-${{ github.sha }}
+          path: Tests/fixtures/native-golden
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Upload ctest logs
         if: always() && inputs.tests

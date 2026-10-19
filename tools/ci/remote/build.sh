@@ -5,12 +5,17 @@
 # build/remote/<preset>/. The remote twin of tools/ci/local/build.sh.
 #
 # Usage:
-#   tools/ci/remote/build.sh <fast|release> [--tests] [--no-appimage]
+#   tools/ci/remote/build.sh <fast|release> [--tests] [--record-goldens] [--no-appimage]
 #   tools/ci/remote/build.sh --mode
 #
 #   fast | release   -> the build preset, same meaning as in local/build.sh.
 #   --tests           -> also run the ctest suite and smoke tests remotely; the
 #                        ctest logs are downloaded even when the run fails.
+#   --record-goldens  -> implies --tests; also records the native golden renders
+#                        remotely and downloads them, STAMP included, into
+#                        Tests/fixtures/native-golden/ of this checkout. The
+#                        references bind bit for bit only under the preset that
+#                        recorded them (see STAMP).
 #   --no-appimage     -> skip packaging and downloading the AppImage.
 #   --mode            -> print the build mode (local or remote) and exit. Takes
 #                        no other arguments. The mode is the first non-blank,
@@ -28,7 +33,7 @@ FIND_INTERVAL_SECS=5
 WATCH_INTERVAL_SECS=30
 
 usage() {
-    echo "usage: build.sh <fast|release> [--tests] [--no-appimage]" >&2
+    echo "usage: build.sh <fast|release> [--tests] [--record-goldens] [--no-appimage]" >&2
     echo "       build.sh --mode" >&2
 }
 
@@ -61,6 +66,7 @@ print_mode() {
 
 PRESET=""
 RUN_TESTS=false
+RECORD_GOLDENS=false
 WANT_APPIMAGE=true
 
 if [[ " $* " == *" --mode "* ]]; then
@@ -84,6 +90,10 @@ for arg in "$@"; do
             PRESET="${arg}"
             ;;
         --tests)
+            RUN_TESTS=true
+            ;;
+        --record-goldens)
+            RECORD_GOLDENS=true
             RUN_TESTS=true
             ;;
         --no-appimage)
@@ -138,6 +148,7 @@ echo "== build.sh: dispatching ${WORKFLOW} on ${BRANCH} (${HEAD_SHA:0:10}) token
 gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
     -f "preset=${PRESET}" \
     -f "tests=${RUN_TESTS}" \
+    -f "record_goldens=${RECORD_GOLDENS}" \
     -f "appimage=${WANT_APPIMAGE}" \
     -f "token=${TOKEN}"
 
@@ -206,6 +217,21 @@ if [[ "${RUN_TESTS}" == "true" ]]; then
     fi
 fi
 
+GOLDEN_DIR=""
+if [[ "${RECORD_GOLDENS}" == "true" ]]; then
+    GOLDEN_DIR="${REPO_ROOT}/Tests/fixtures/native-golden"
+    GOLDEN_TMP="${OUT_DIR}/native-goldens"
+    mkdir -p "${GOLDEN_TMP}"
+    if gh run download "${RUN_ID}" -n "native-goldens-${PRESET}-${HEAD_SHA}" -D "${GOLDEN_TMP}" >/dev/null 2>&1; then
+        mkdir -p "${GOLDEN_DIR}"
+        cp -R "${GOLDEN_TMP}/." "${GOLDEN_DIR}/"
+    else
+        echo "build.sh: artifact native-goldens-${PRESET}-${HEAD_SHA} was not available for download" >&2
+        GOLDEN_DIR=""
+        RUN_STATUS=1
+    fi
+fi
+
 if [[ "${RUN_STATUS}" -eq 0 ]]; then
     echo "== build.sh: remote build succeeded: ${RUN_URL} =="
     if [[ -n "${APPIMAGE}" ]]; then
@@ -216,6 +242,9 @@ if [[ "${RUN_STATUS}" -eq 0 ]]; then
     fi
 else
     echo "== build.sh: remote build FAILED (exit ${RUN_STATUS}): ${RUN_URL} ==" >&2
+fi
+if [[ -n "${GOLDEN_DIR}" ]]; then
+    echo "native goldens: ${GOLDEN_DIR}"
 fi
 if [[ -n "${CTEST_LOG_DIR}" ]]; then
     echo "ctest logs: ${CTEST_LOG_DIR}"

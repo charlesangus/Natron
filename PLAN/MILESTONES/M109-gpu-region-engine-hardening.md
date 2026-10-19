@@ -102,7 +102,7 @@ M85's benches show where the region engine loses time on real comps. Three items
 
 ## Phase 109.2: Diagnosis (no code)
 
-- [ ] M109.P2.T1 — Quick directional profile pass (~1 h) to explain Transform "other", the 24k transfer rise and the kernelMs gap
+- [x] M109.P2.T1 — Quick directional profile pass (~1 h) to explain Transform "other", the 24k transfer rise and the kernelMs gap
   - files: none (results go in `## Decisions`; raw data in `.local/m109/`)
   - approach:
     - Use the release AppImage from the P1 build, on the target host, with RADV.
@@ -192,7 +192,7 @@ M85's benches show where the region engine loses time on real comps. Three items
   - approach: Fix the named cause without touching M126 - Runtime GPU Shaders' files. If the fix needs `GpuKernel.cpp` (for example, pipeline creation per dispatch), move it to Phase 109.7 and flag it.
   - verify: At the phase build, a test asserts the specific invariant, for example no pool miss on the second frame of an animated Transform. A directional bench shows Transform "other" below 20% of region time at UHD and 16k.
   - size: M
-- [ ] M109.P5.T2 — Stop exposed transfer rising at 24k (if P2.T1 traces it to fresh host buffers)
+- [ ] ~~M109.P5.T2~~ (dropped, see Decisions 2026-10-19) — Stop exposed transfer rising at 24k (if P2.T1 traces it to fresh host buffers)
   - files: `Engine/HostImageMemory.{h,cpp}`, `Tests/Image_Test.cpp`
   - approach:
     - Let the pool hold at least one frame's working set of same-size buffers, even when that is above RAM/4. Bound it by `MemAvailable`, probed at each grow, so it never assumes a machine.
@@ -218,7 +218,7 @@ M85's benches show where the region engine loses time on real comps. Three items
     - `runGpuRegion` starts from the remembered entry. The map is cleared on device loss or a runtime rebuild.
   - verify: At the phase build, with the pool budget capped so a heavy-scratch region halves on frame 1, frame 2 has `retries == 0`. This holds on lavapipe and RADV.
   - size: M
-- [ ] M109.P6.T2 — Wait briefly for a contending region before halving strips (only if P2.T1 saw contention halvings)
+- [ ] ~~M109.P6.T2~~ (dropped, see Decisions 2026-10-19) — Wait briefly for a contending region before halving strips (only if P2.T1 saw contention halvings)
   - files: `Engine/Gpu/GpuBufferPool.{h,cpp}` (release notification), `Engine/GpuRegionTask.cpp`, `Tests/GpuResidency_Test.cpp`
   - approach: On out-of-memory, when another region holds pool bytes, wait on a pool release condition (bounded at ~50 ms) and rerun at the same height before halving.
   - verify: At the phase build, two concurrent regions over a capped budget complete without a halving.
@@ -300,3 +300,12 @@ M85's benches show where the region engine loses time on real comps. Three items
     - **P5.T2 dropped.**
     - **P6.T2 stays conditional on BENCH_RANGE.** No region retried in any single-frame run. The halving counters never reach the profile, so counts come from `retries`, `strips` and `stripsInFlight` in the region records.
 - 2026-10-19 — **M109.P4.T3 (`633842a63`):** unified memory now follows the device type: integrated or CPU-type is unified, and discrete, ReBAR included, is not. No upload or download path read the old flag. `pipelinesTransfers` is the cost model's "would the planner pipeline this?" test. It shares `gpuStripPipeliningAllowed` with `RegionRun::pipelineAllowed`, and it ignores halos and regions that are forced into strips. `observeTransfer(up, down, hidden+exposed ms)` scales the calibrated rate by an EMA of measured over predicted time. It is fed hidden plus exposed time, because exposed time alone would count the overlap twice. Unpipelined samples are host wall time, while pipelined samples are device timestamps. The tests take 50 GB/s as "this bus", because at 25 GB/s a lone UHD Grade is refused even when pipelined. `VIRTUAL_GPU` counts as not unified. Checked with `-fsyntax-only` only; the tests run at the phase build.
+- 2026-10-19 — **M109.P2.T1 done. Boot-2 runs on a free GPU** (`.local/m109/p2t1/boot2/`) agree with the pre-reboot data within 1–2%.
+  - **Q1, Transform: cause confirmed.** The animated rotate grows the RoD every frame, so `HostImageMemory::allocate`'s exact-size match never reuses a buffer, and the device pool misses too. With fixed parameters at 16k, the same 4440 MB moves with 37% less exposed transfer, and imports and pool misses drop to 0. "Other" is under 1% everywhere. The real ratio against ChromaKeyer is 1.5–1.75×, not 4×. Transform's `planMs` is 14–21 ms at 16k/24k, against about 2 ms for other nodes; it sits outside `wallMs`, and it is noted, not fixed.
+  - **Q2, 24k rise:** not reproduced. The rate is 1.19 at 16k against 1.23 ms/Mpx at 24k, and imports are 100% at both sizes.
+  - **Q3, kernelMs gap:** only at UHD unstripped. Blur members run 1.9–2.1× GpuBench at σ3/σ25 and 1.5× at σ100; in 16k strips they run 0.86–1.04×. Wrap passes and cold input are both rejected. The cause is not identified: timing H and V separately inside the member would locate it. The first GPU frame runs 1.4–3.7× slower.
+  - **Q4, transfer prediction:** the prediction was always 0. With the detection fixed, a bandwidth-based prediction would still be 2–4× too low: regions achieve about 6 GB/s up plus down, and 9–13 GB/s down alone, against GpuBench's 28 GB/s. P4.T3's `observeTransfer` EMA is what corrects this.
+  - **BENCH_RANGE=4 at 16k:** Erode 40 and Blur σ100, with and without the 4160 MB cap, show 0 halvings, 0 serializations and 0 retries.
+  - **Verdicts:** P4.T3 confirmed (done). P5.T1 confirmed, re-scoped to buffer reuse within a size class in `HostImageMemory` and `GpuBufferPool`. P5.T2 dropped. P6.T2 dropped.
+  - **The finding that changes the plan:** strip pipelining never engages on RADV. `gpuStripPipeliningAllowed` needs a dedicated transfer queue, and RADV exposes one only under `RADV_PERFTEST=transfer_queue`. Every 16k/24k region therefore ran serial strips with 0 hidden transfer, and P4.T1's overlap strips never ran on this host. M85's hidden-transfer figures assumed the transfer queue. This puts the gate's "exposed transfer < 30%" out of reach as things stand. It has gone to a consultant.
+  - **Bench tooling defects:** the committed `gpu_region_bench.sh` writes comp output to `build/bench/m82-profile/out`, which doesn't exist; `extra.sh` needs an absolute output dir; and the halving and serialization counters never reach the profile.

@@ -464,6 +464,26 @@ TEST_F(GpuRegionFallbackTest, GradeWithEnabledButDisconnectedMaskMatchesCpu)
     expectRegionMatchesCpu(grade, { grade });
 }
 
+// One node feeds both the source and the enabled mask of a member, so the member has two edges to the same task.
+TEST_F(GpuRegionFallbackTest, NodeFeedingSourceAndMaskMatchesCpu)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr grade = makeGrade(1.5, 0.1);
+    ASSERT_TRUE(source && grade);
+    // The default colors are all opaque, which would leave the mask a no-op.
+    ASSERT_TRUE(setKnobValues(source, kCheckerBoardParamColor0, { 0.1, 0.1, 0.1, 0.25 }));
+    ASSERT_TRUE(setKnobValues(source, kCheckerBoardParamColor1, { 0.5, 0.5, 0.5, 0.75 }));
+    ASSERT_TRUE(setKnobValues(source, kCheckerBoardParamColor2, { 0.1, 0.1, 0.1, 0.25 }));
+    ASSERT_TRUE(setKnobValues(source, kCheckerBoardParamColor3, { 0.5, 0.5, 0.5, 0.75 }));
+    connectNodes(source, grade, 0, true);
+    ASSERT_TRUE(connectGradeMask(source, grade, "rgba.A", true));
+
+    expectRegionMatchesCpu(grade, { grade });
+}
+
 // A connected mask that the member does not read.
 TEST_F(GpuRegionFallbackTest, GradeWithConnectedDisabledMaskMatchesCpu)
 {

@@ -221,3 +221,27 @@ TEST_F(MetadataExpressionDependencyTest, ReplacingTheExpressionRemovesTheEdge)
     EXPECT_FALSE(hasMetadataReader(source, readerTag));
     EXPECT_EQ(4, readerTag->getValue());
 }
+
+TEST_F(MetadataExpressionDependencyTest, NextFrameReadFollowsTheEvaluationFrame)
+{
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression(source->getScriptName() + ".metadata('ofx/frame', frame + 1)"));
+
+    EXPECT_EQ(4, readerTag->getValueAtTime(3, 0));
+    EXPECT_EQ(9, readerTag->getValueAtTime(8, 0));
+    EXPECT_EQ(4, readerTag->getValueAtTime(3, 0));
+    EXPECT_EQ(6, readerTag->getValueAtTime(5, 0));
+}
+
+TEST_F(MetadataExpressionDependencyTest, NextFrameReadStaysCorrectAfterTheSourceChanges)
+{
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression(source->getScriptName() + ".metadata('ofx/frame', frame + 1) + " + source->getScriptName() + ".metadata('exr/tag', frame)"));
+
+    EXPECT_EQ(5, readerTag->getValueAtTime(3, 0));
+    EXPECT_EQ(7, readerTag->getValueAtTime(5, 0));
+
+    sourceTag->setValue(4, ViewSpec::all(), 0);
+    source->getHashValue();
+
+    EXPECT_EQ(8, readerTag->getValueAtTime(3, 0));
+    EXPECT_EQ(10, readerTag->getValueAtTime(5, 0));
+}

@@ -355,8 +355,8 @@ protected:
     virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) WARN_UNUSED_RETURN;
 
     /**
-     * @brief Drops every cached getOutputMetadata() result of this node alone; nodes downstream
-     * keep theirs.
+     * @brief Drops every cached getOutputMetadata() result of this node alone, and refreshes the
+     * expressions reading this node's metadata; nodes downstream keep theirs.
      **/
     void invalidateOutputMetadata();
 
@@ -512,6 +512,8 @@ private:
     static ImageMetadata getInputEffectMetadata(const EffectInstancePtr& connected,
                                                 double time,
                                                 ViewIdx view) WARN_UNUSED_RETURN;
+
+    void dropOutputMetadataCache();
 
     typedef std::pair<double, int> MetadataKey;
 

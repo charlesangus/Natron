@@ -79,8 +79,8 @@ public:
         return m;
     }
 
-    // Read without a lock and invisible to the node hash, so it must be set before the node is
-    // connected or asked for metadata.
+    // Read without a lock and invisible to the node hash, so it must be set from the thread that
+    // asks for metadata, and a change after the first ask needs dropOwnMetadataCache() too.
     void setExtraMetadata(const ImageMetadata& extra)
     {
         _extra = extra;

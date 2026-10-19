@@ -1136,7 +1136,7 @@
                 return %PYARG_0;
             </inject-code>
             <inject-documentation format="target">
-                Returns the value of the metadata key this node puts out at the current frame in the main view, as an int, a float, a str or a list, or None if the node has no such key.
+                Returns the value of the metadata key this node puts out in the main view at the frame the calling expression is evaluated at, or outside an expression at the current frame, as an int, a float, a str or a list, or None if the node has no such key.
             </inject-documentation>
         </modify-function>
         <modify-function signature="metadata(QString,double,int)const">
@@ -1156,7 +1156,7 @@
         </modify-function>
         <modify-function signature="metadataKeys()const">
             <inject-documentation format="target">
-                Returns the sorted keys of the metadata this node puts out at the current frame in the main view.
+                Returns the sorted keys of the metadata this node puts out in the main view at the frame the calling expression is evaluated at, or outside an expression at the current frame.
             </inject-documentation>
         </modify-function>
         <modify-function signature="metadataKeys(double,int)const">

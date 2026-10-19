@@ -1137,6 +1137,7 @@ Node::getHashInputs(HashInputs* inputs) const
         for (int i = 0; i < 2; ++i) {
             inputs->bySlot.push_back(std::make_pair(activeInput[i], getInput(activeInput[i])));
         }
+        appendMetadataSources(&inputs->metadataSources, false);
 
         return;
     }
@@ -1156,22 +1157,40 @@ Node::getHashInputs(HashInputs* inputs) const
         }
         inputs->bySlot.push_back(std::make_pair((int)i, std::move(input)));
     }
+    appendMetadataSources(&inputs->metadataSources, false);
+}
 
-    if (!mayHaveKnobExpressions()) {
+void
+Node::appendMetadataSources(std::vector<NodePtr>* sources,
+                            bool renderHashedOnly) const
+{
+    if (!_imp->effect || (_imp->knobMetadataDependencies.load() <= 0) || !mayHaveKnobExpressions()) {
         return;
     }
-    std::list<NodePtr> sources;
+    std::list<NodePtr> read;
     const KnobsVec knobs = _imp->effect->getKnobs_mt_safe();
     for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-        if (*it) {
-            (*it)->getMetadataDependencies(-1, &sources);
+        if (*it && (!renderHashedOnly || (*it)->isRenderHashed())) {
+            (*it)->getMetadataDependencies(-1, &read);
         }
     }
-    for (std::list<NodePtr>::iterator it = sources.begin(); it != sources.end(); ++it) {
-        if ((it->get() != this) && (std::find(inputs->metadataSources.begin(), inputs->metadataSources.end(), *it) == inputs->metadataSources.end())) {
-            inputs->metadataSources.push_back(std::move(*it));
+    for (std::list<NodePtr>::iterator it = read.begin(); it != read.end(); ++it) {
+        if ((it->get() != this) && (std::find(sources->begin(), sources->end(), *it) == sources->end())) {
+            sources->push_back(std::move(*it));
         }
     }
+}
+
+void
+Node::getHashedMetadataSources(std::vector<NodePtr>* sources) const
+{
+    appendMetadataSources(sources, true);
+}
+
+void
+Node::addKnobMetadataDependencies(int delta)
+{
+    _imp->knobMetadataDependencies.fetch_add(delta);
 }
 
 namespace {
@@ -1643,7 +1662,10 @@ Node::onMetadataMayHaveChanged()
     // refresh runs must not be served the old result, nor reuse renders keyed on the old hash.
     for (std::list<std::pair<KnobIPtr, int>>::const_iterator it = readers.begin(); it != readers.end(); ++it) {
         it->first->clearExpressionsResults(it->second);
-        it->first->invalidateContentHash();
+        // A knob's content hash leaves out its own node's hash, so only another node's reader moves.
+        if (it->first->getHolder() != _imp->effect.get()) {
+            it->first->invalidateContentHash();
+        }
     }
 
     // Evaluating a knob change runs actions and requests renders, which a hash recompute on a
@@ -3849,6 +3871,34 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
     if (unslaveKnobs) {
         ///For all knobs that have listeners, invalidate expressions
         NodeGroup* isParentGroup = dynamic_cast<NodeGroup*>( parentCol.get() );
+        // The effect holding a knob that reads this node from outside it and its enclosing group,
+        // or null.
+        const auto outsideReader = [this, isParentGroup](const KnobIPtr& listener) -> EffectInstance* {
+            KnobHolder* holder = listener->getHolder();
+            if (!holder || (holder == _imp->effect.get()) || (holder == isParentGroup)) {
+                return 0;
+            }
+            EffectInstance* isEffect = dynamic_cast<EffectInstance*>(holder);
+            if (!isEffect) {
+                return 0;
+            }
+            NodeCollectionPtr effectParent = isEffect->getNode()->getGroup();
+            if (!effectParent) {
+                return 0;
+            }
+            NodeGroup* isEffectParentGroup = dynamic_cast<NodeGroup*>(effectParent.get());
+            if (isEffectParentGroup && (isEffectParentGroup == _imp->effect.get())) {
+                return 0;
+            }
+
+            return isEffect;
+        };
+        std::stringstream missingNode;
+        missingNode << tr("Missing node ").toStdString();
+        missingNode << getFullyQualifiedName();
+        missingNode << ' ';
+        missingNode << tr("in expression.").toStdString();
+
         KnobsVec  knobs = _imp->effect->getKnobs_mt_safe();
         for (U32 i = 0; i < knobs.size(); ++i) {
             KnobI::ListenerDimsMap listeners;
@@ -3858,25 +3908,8 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
                 if (!listener) {
                     continue;
                 }
-                KnobHolder* holder = listener->getHolder();
-                if (!holder) {
-                    continue;
-                }
-                if ( ( holder == _imp->effect.get() ) || (holder == isParentGroup) ) {
-                    continue;
-                }
-
-                EffectInstance* isEffect = dynamic_cast<EffectInstance*>(holder);
+                EffectInstance* isEffect = outsideReader(listener);
                 if (!isEffect) {
-                    continue;
-                }
-
-                NodeCollectionPtr effectParent = isEffect->getNode()->getGroup();
-                if (!effectParent) {
-                    continue;
-                }
-                NodeGroup* isEffectParentGroup = dynamic_cast<NodeGroup*>( effectParent.get() );
-                if ( isEffectParentGroup && ( isEffectParentGroup == _imp->effect.get() ) ) {
                     continue;
                 }
 
@@ -3889,16 +3922,25 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
 
                     std::string hasExpr = listener->getExpression(dim);
                     if ( !hasExpr.empty() ) {
-                        std::stringstream ss;
-                        ss << tr("Missing node ").toStdString();
-                        ss << getFullyQualifiedName();
-                        ss << ' ';
-                        ss << tr("in expression.").toStdString();
-                        listener->setExpressionInvalid( dim, false, ss.str() );
+                        listener->setExpressionInvalid(dim, false, missingNode.str());
                     }
                 }
                 isEffect->endChanges(true);
             }
+        }
+
+        // Their cached results were derived from this node's metadata.
+        std::list<std::pair<KnobIPtr, int>> metadataReaders;
+        getMetadataReaders(&metadataReaders);
+        for (std::list<std::pair<KnobIPtr, int>>::const_iterator it = metadataReaders.begin(); it != metadataReaders.end(); ++it) {
+            EffectInstance* isEffect = outsideReader(it->first);
+            if (!isEffect || it->first->getExpression(it->second).empty()) {
+                continue;
+            }
+            isEffect->beginChanges();
+            it->first->clearExpressionsResults(it->second);
+            it->first->setExpressionInvalid(it->second, false, missingNode.str());
+            isEffect->endChanges(true);
         }
     }
 

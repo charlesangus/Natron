@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <list>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -38,10 +39,12 @@
 #include "NativeMetadataTestEffect.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Metadata/ModifyMetadata.h"
 #include "Engine/ViewIdx.h"
 
@@ -102,6 +105,18 @@ protected:
     void setReaderExpression(const std::string& expression)
     {
         ASSERT_NO_THROW(readerTag->setExpression(0, expression, false, true));
+    }
+
+    void runPython(const std::string& script)
+    {
+        std::string error, output;
+
+        ASSERT_TRUE(NATRON_NAMESPACE::NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, &output)) << error;
+    }
+
+    KnobStringPtr labelOf(const NodePtr& node)
+    {
+        return std::dynamic_pointer_cast<KnobString>(node->getKnobByName(kUserLabelKnobName));
     }
 
     NodePtr source;
@@ -244,4 +259,217 @@ TEST_F(MetadataExpressionDependencyTest, NextFrameReadStaysCorrectAfterTheSource
 
     EXPECT_EQ(8, readerTag->getValueAtTime(3, 0));
     EXPECT_EQ(10, readerTag->getValueAtTime(5, 0));
+}
+
+TEST_F(MetadataExpressionDependencyTest, DefaultFrameIsTheEvaluationFrame)
+{
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression(source->getScriptName() + ".metadata('ofx/frame')"));
+
+    const int current = (int)reader->getEffectInstance()->getCurrentTime();
+
+    EXPECT_EQ(current + 6, readerTag->getValueAtTime(current + 6, 0));
+    EXPECT_EQ(current + 11, readerTag->getValueAtTime(current + 11, 0));
+    EXPECT_EQ(current, readerTag->getValue());
+}
+
+TEST_F(MetadataExpressionDependencyTest, MetadataInvalidatedUnderTheSameHashReachesTheReader)
+{
+    MetadataSourceTestEffect* sourceEffect = dynamic_cast<MetadataSourceTestEffect*>(source->getEffectInstance().get());
+    ASSERT_TRUE(sourceEffect != NULL);
+
+    ImageMetadata extra;
+    extra.setInt("exr/extra", 2);
+    sourceEffect->setExtraMetadata(extra);
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression(source->getScriptName() + ".metadata('exr/extra', 1)"));
+    ASSERT_EQ(2, readerTag->getValue());
+
+    const U64 hash = source->getHashValue();
+    extra.setInt("exr/extra", 5);
+    sourceEffect->setExtraMetadata(extra);
+    sourceEffect->dropOwnMetadataCache();
+
+    EXPECT_EQ(hash, source->getHashValue());
+    EXPECT_EQ(5, readerTag->getValue());
+}
+
+TEST_F(MetadataExpressionDependencyTest, ResultComputedAcrossAnInvalidationIsNotKept)
+{
+    // Edits the source between the expression's metadata read and the end of its evaluation, as
+    // a concurrent edit would, and reads the source again so that its hash moves right then.
+    ASSERT_NO_FATAL_FAILURE(runPython("pendingSourceTags = []\n"
+                                      "def editSourceDuringEvaluation(node):\n"
+                                      "    while pendingSourceTags:\n"
+                                      "        node.getParam('tag').setValue(pendingSourceTags.pop())\n"
+                                      "        node.metadata('exr/tag', 1)\n"
+                                      "    return 0\n"));
+    const std::string src = source->getScriptName();
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression(src + ".metadata('exr/tag', 1) + editSourceDuringEvaluation(" + src + ")"));
+
+    const int time = (int)reader->getEffectInstance()->getCurrentTime() + 3;
+    ASSERT_NO_FATAL_FAILURE(runPython("pendingSourceTags.append(2)\n"));
+
+    EXPECT_EQ(1, readerTag->getValueAtTime(time, 0));
+    EXPECT_EQ(2, readerTag->getValueAtTime(time, 0));
+}
+
+TEST_F(MetadataExpressionDependencyTest, HashExemptOwnNodeReadFollowsTheNode)
+{
+    KnobStringPtr label = labelOf(source);
+    ASSERT_TRUE(bool(label));
+    ASSERT_FALSE(label->isRenderHashed());
+    ASSERT_NO_THROW(label->setExpression(0, "str(thisNode.metadata('exr/tag', 1))", false, true));
+
+    EXPECT_TRUE(hasMetadataReader(source, label));
+    EXPECT_EQ("1", label->getValue());
+
+    sourceTag->setValue(4, ViewSpec::all(), 0);
+    source->getHashValue();
+
+    EXPECT_EQ("4", label->getValue());
+}
+
+TEST_F(MetadataExpressionDependencyTest, MetadataCycleIsRefused)
+{
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression(source->getScriptName() + ".metadata('exr/tag', 1) * 10"));
+
+    EXPECT_THROW(sourceTag->setExpression(0, reader->getScriptName() + ".metadata('exr/tag', 1)", false, true), std::exception);
+    EXPECT_TRUE(sourceTag->getExpression(0).empty());
+    EXPECT_FALSE(hasMetadataReader(reader, sourceTag));
+
+    const U64 sourceHash = source->getHashValue();
+    const U64 readerHash = reader->getHashValue();
+    EXPECT_EQ(sourceHash, source->getHashValue());
+    EXPECT_EQ(readerHash, reader->getHashValue());
+    EXPECT_EQ(10, readerTag->getValue());
+}
+
+TEST_F(MetadataExpressionDependencyTest, MetadataCycleLoadedLeniently)
+{
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression(source->getScriptName() + ".metadata('exr/tag', 1) * 10"));
+
+    ASSERT_NO_THROW(sourceTag->setExpression(0, reader->getScriptName() + ".metadata('exr/tag', 1)", false, false));
+    EXPECT_FALSE(sourceTag->isExpressionValid(0, NULL));
+    EXPECT_FALSE(readsMetadataOf(sourceTag, 0, reader));
+    EXPECT_FALSE(hasMetadataReader(reader, sourceTag));
+
+    // The refused expression is not evaluated, so the knob keeps its own value.
+    EXPECT_EQ(1, sourceTag->getValue());
+    EXPECT_FALSE(sourceTag->isExpressionValid(0, NULL));
+
+    for (int i = 0; i < 3; ++i) {
+        const U64 sourceHash = source->getHashValue();
+        const U64 readerHash = reader->getHashValue();
+        EXPECT_EQ(sourceHash, source->getHashValue());
+        EXPECT_EQ(readerHash, reader->getHashValue());
+    }
+}
+
+TEST_F(MetadataExpressionDependencyTest, MetadataReadOfADownstreamNodeIsRefused)
+{
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    ASSERT_TRUE(bool(modify));
+    connectNodes(source, modify, 0, true);
+
+    EXPECT_THROW(sourceTag->setExpression(0, modify->getScriptName() + ".metadata('exr/tag', 1)", false, true), std::exception);
+    EXPECT_TRUE(sourceTag->getExpression(0).empty());
+}
+
+TEST_F(MetadataExpressionDependencyTest, ConnectionClosingAMetadataCycleIsRefused)
+{
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    ASSERT_TRUE(bool(modify));
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression(modify->getScriptName() + ".metadata('exr/tag', 1)"));
+
+    EXPECT_FALSE(modify->checkIfConnectingInputIsOk(reader.get()));
+    EXPECT_TRUE(modify->checkIfConnectingInputIsOk(source.get()));
+}
+
+TEST_F(MetadataExpressionDependencyTest, HashExemptReadOfADownstreamNodeIsAllowed)
+{
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    ASSERT_TRUE(bool(modify));
+    connectNodes(source, modify, 0, true);
+
+    KnobStringPtr label = labelOf(source);
+    ASSERT_TRUE(bool(label));
+    ASSERT_NO_THROW(label->setExpression(0, "str(" + modify->getScriptName() + ".metadata('exr/tag', 1))", false, true));
+
+    EXPECT_TRUE(readsMetadataOf(label, 0, modify));
+    EXPECT_EQ("1", label->getValue());
+}
+
+TEST_F(MetadataExpressionDependencyTest, ScanAllowsBlanksAroundTheDot)
+{
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression(source->getScriptName() + " . metadata ('exr/tag', 1) * 10"));
+
+    EXPECT_TRUE(readsMetadataOf(readerTag, 0, source));
+    EXPECT_TRUE(hasMetadataReader(source, readerTag));
+    EXPECT_EQ(10, readerTag->getValue());
+}
+
+TEST_F(MetadataExpressionDependencyTest, ScanSkipsStringLiterals)
+{
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression("len('Bogus1.metadata(1)') + len(\"" + source->getScriptName() + ".metadataKeys()\") * 0"));
+
+    std::list<NodePtr> sources;
+    readerTag->getMetadataDependencies(0, &sources);
+    EXPECT_TRUE(sources.empty());
+    EXPECT_EQ(18, readerTag->getValue());
+}
+
+TEST_F(MetadataExpressionDependencyTest, ScanSkipsComments)
+{
+    ASSERT_NO_THROW(readerTag->setExpression(0, "# Bogus1.metadata(1) and " + source->getScriptName() + ".metadata('exr/tag')\nret = 3", true, true));
+
+    std::list<NodePtr> sources;
+    readerTag->getMetadataDependencies(0, &sources);
+    EXPECT_TRUE(sources.empty());
+    EXPECT_EQ(3, readerTag->getValue());
+}
+
+TEST_F(MetadataExpressionDependencyTest, ScanReadsFStringFields)
+{
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression("int(f\"{" + source->getScriptName() + ".metadata('exr/tag', 1)}\") * 10"));
+
+    EXPECT_TRUE(readsMetadataOf(readerTag, 0, source));
+    EXPECT_EQ(10, readerTag->getValue());
+}
+
+TEST_F(MetadataExpressionDependencyTest, ScanResolvesACallReceiverInsideAnArgumentList)
+{
+    const std::string lookup = getApp()->getAppIDString() + ".getNode('" + source->getScriptName() + "')";
+
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression("max(0," + lookup + ".metadata('exr/tag', 1))*10"));
+
+    EXPECT_TRUE(readsMetadataOf(readerTag, 0, source));
+    EXPECT_EQ(10, readerTag->getValue());
+}
+
+TEST_F(MetadataExpressionDependencyTest, RenamingTheSourceRewritesTheExpression)
+{
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression(source->getScriptName() + ".metadata('exr/tag', 1) * 10"));
+
+    ASSERT_NO_THROW(source->setScriptName("RenamedMetadataSource"));
+
+    EXPECT_NE(std::string::npos, readerTag->getExpression(0).find("RenamedMetadataSource.metadata"));
+    EXPECT_TRUE(readerTag->isExpressionValid(0, NULL));
+    EXPECT_TRUE(hasMetadataReader(source, readerTag));
+
+    sourceTag->setValue(2, ViewSpec::all(), 0);
+    source->getHashValue();
+    EXPECT_EQ(20, readerTag->getValue());
+}
+
+TEST_F(MetadataExpressionDependencyTest, DeactivatingTheSourceInvalidatesTheReader)
+{
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression(source->getScriptName() + ".metadata('exr/tag', 1) * 10"));
+    ASSERT_EQ(10, readerTag->getValue());
+
+    source->deactivate();
+    EXPECT_FALSE(readerTag->isExpressionValid(0, NULL));
+
+    source->activate();
+    EXPECT_TRUE(readerTag->isExpressionValid(0, NULL));
+    EXPECT_TRUE(hasMetadataReader(source, readerTag));
+    EXPECT_EQ(10, readerTag->getValue());
 }

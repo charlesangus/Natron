@@ -31,10 +31,12 @@
 #include <atomic>
 #include <cassert>
 #include <cctype> // isspace
+#include <cstddef>
 #include <random>
 #include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
+#include <vector>
 
 #include <QDataStream>
 #include <QDateTime>
@@ -409,6 +411,10 @@ struct Expr
     // Nodes whose output metadata the expression reads. Metadata is not a knob, so these are
     // node-level edges: each node lists this knob among its metadata readers.
     std::list<NodeWPtr> metadataDependencies;
+
+    // Set when the expression reads the metadata of a node whose hash already folds this knob's
+    // node's: the expression is then refused rather than evaluated.
+    std::string metadataCycle;
 
     //PyObject* code;
 
@@ -2473,36 +2479,142 @@ parseTokenFrom(int fromDim,
 
     output->append(callReceiver(str, *tokenStart) + toInsert);
 
-    //assert(*tokenSize > 0);
+    // assert(*tokenSize > 0);
     return true;
 } // parseTokenFrom
 
-// Appends to output, for every "<receiver>.<token>(" call in str, a line registering the
-// receiver's output metadata as read by the expression at fromDim of thisParam. The receiver
-// is only known once the line runs, so anything without the registering method is skipped.
+// For each character of the Python source str, whether it is code rather than part of a string
+// literal or a comment. An f-string stays code, since its replacement fields are.
+static std::vector<bool>
+pythonCodeMask(const std::string& str)
+{
+    std::vector<bool> code(str.size(), true);
+    std::size_t i = 0;
+
+    while (i < str.size()) {
+        const char c = str[i];
+        if (c == '#') {
+            for (; (i < str.size()) && (str[i] != '\n'); ++i) {
+                code[i] = false;
+            }
+            continue;
+        }
+        if ((c != '\'') && (c != '"')) {
+            ++i;
+            continue;
+        }
+        std::size_t prefixStart = i;
+        while ((prefixStart > 0) && (i - prefixStart < 3) && (std::isalnum((unsigned char)str[prefixStart - 1]) || (str[prefixStart - 1] == '_'))) {
+            --prefixStart;
+        }
+        const std::string prefix = str.substr(prefixStart, i - prefixStart);
+        const bool isFString = (prefix.size() <= 2) && (prefix.find_first_not_of("rRbBfFuU") == std::string::npos) && (prefix.find_first_of("fF") != std::string::npos);
+        const bool triple = (i + 2 < str.size()) && (str[i + 1] == c) && (str[i + 2] == c);
+        const std::size_t quoteSize = triple ? 3 : 1;
+        std::size_t j = i + quoteSize;
+        while (j < str.size()) {
+            if (str[j] == '\\') {
+                j += 2;
+                continue;
+            }
+            if ((str[j] == c) && (!triple || ((j + 2 < str.size()) && (str[j + 1] == c) && (str[j + 2] == c)))) {
+                j += quoteSize;
+                break;
+            }
+            if (!triple && (str[j] == '\n')) {
+                break;
+            }
+            ++j;
+        }
+        j = std::min(j, str.size());
+        if (!isFString) {
+            std::fill(code.begin() + i, code.begin() + j, false);
+        }
+        i = j;
+    }
+
+    return code;
+}
+
+// The receiver of the method call whose name starts at nameStart in str, or an empty string if
+// it is not a method call: the dotted names, calls and subscripts ending at the dot before the
+// name, blanks allowed on either side of that dot.
+static std::string
+methodCallReceiver(const std::string& str,
+                   const std::vector<bool>& code,
+                   std::size_t nameStart)
+{
+    std::ptrdiff_t i = (std::ptrdiff_t)nameStart - 1;
+
+    while ((i >= 0) && ((str[i] == ' ') || (str[i] == '\t'))) {
+        --i;
+    }
+    if ((i < 0) || (str[i] != '.') || !code[i]) {
+        return std::string();
+    }
+    --i;
+    while ((i >= 0) && ((str[i] == ' ') || (str[i] == '\t'))) {
+        --i;
+    }
+    const std::ptrdiff_t end = i + 1;
+    int depth = 0;
+    for (; i >= 0; --i) {
+        const char c = str[i];
+        if (!code[i]) {
+            if (depth == 0) {
+                break;
+            }
+            continue;
+        }
+        if ((c == ')') || (c == ']')) {
+            ++depth;
+        } else if ((c == '(') || (c == '[')) {
+            if (depth == 0) {
+                break;
+            }
+            --depth;
+        } else if ((depth == 0) && !std::isalnum((unsigned char)c) && (c != '_') && (c != '.')) {
+            break;
+        }
+    }
+    if (depth != 0) {
+        return std::string();
+    }
+
+    return str.substr(i + 1, end - (i + 1));
+}
+
+// Appends to output, for every "<receiver>.<token>(" call in the code of str, lines registering
+// the receiver's output metadata as read by the expression at fromDim of thisParam. The receiver
+// is only known once the lines run, so anything without the registering method, or failing to
+// evaluate on its own, is skipped.
 static void
 extractMetadataReads(const std::string& str,
+                     const std::vector<bool>& code,
                      const std::string& token,
                      int fromDim,
                      std::string* output)
 {
     for (std::size_t pos = str.find(token); pos != std::string::npos; pos = str.find(token, pos + 1)) {
-        if ((pos < 2) || (str[pos - 1] != '.')) {
+        if (!code[pos] || ((pos > 0) && (std::isalnum((unsigned char)str[pos - 1]) || (str[pos - 1] == '_')))) {
             continue;
         }
         std::size_t next = pos + token.size();
-        while ((next < str.size()) && (str[next] == ' ')) {
+        while ((next < str.size()) && ((str[next] == ' ') || (str[next] == '\t'))) {
             ++next;
         }
         if ((next >= str.size()) || (str[next] != '(')) {
             continue;
         }
-        const std::string receiver = callReceiver(str, pos);
+        const std::string receiver = methodCallReceiver(str, code, pos);
         if (receiver.empty()) {
             continue;
         }
         std::stringstream ss;
-        ss << "getattr(" << receiver << ",'addMetadataAsDependencyOf',lambda *args: None)(" << fromDim << ",thisParam)\n";
+        ss << "try:\n"
+           << "    getattr(" << receiver << ",'addMetadataAsDependencyOf',lambda *args: None)(" << fromDim << ",thisParam)\n"
+           << "except Exception:\n"
+           << "    pass\n";
         output->append(ss.str());
     }
 }
@@ -2681,8 +2793,9 @@ KnobHelperPrivate::parseListenersFromExpression(int dimension)
         return;
     }
 
-    extractMetadataReads(expressionCopy, "metadata", dimension, &script);
-    extractMetadataReads(expressionCopy, "metadataKeys", dimension, &script);
+    const std::vector<bool> code = pythonCodeMask(expressionCopy);
+    extractMetadataReads(expressionCopy, code, "metadata", dimension, &script);
+    extractMetadataReads(expressionCopy, code, "metadataKeys", dimension, &script);
 
     std::string declarations = declarePythonVariables(false, dimension);
     std::stringstream ss;
@@ -3011,8 +3124,22 @@ KnobHelper::setExpressionInternal(int dimension,
         //Parse listeners of the expression, to keep track of dependencies to indicate them to the user.
 
         if ( exprInvalid.empty() ) {
-            EXPR_RECURSION_LEVEL();
-            _imp->parseListenersFromExpression(dimension);
+            {
+                EXPR_RECURSION_LEVEL();
+                _imp->parseListenersFromExpression(dimension);
+            }
+            std::string metadataCycle;
+            {
+                QMutexLocker k(&_imp->expressionMutex);
+                metadataCycle = _imp->expressions[dimension].metadataCycle;
+            }
+            if (!metadataCycle.empty()) {
+                if (failIfInvalid) {
+                    clearExpression(dimension, clearResults);
+                    throw std::invalid_argument(metadataCycle);
+                }
+                setExpressionInvalid(dimension, false, metadataCycle);
+            }
         } else {
             AppInstancePtr app = getHolder()->getApp();
             if (app) {
@@ -3089,6 +3216,18 @@ KnobHelper::addMetadataDependency(int dimension,
     if (!node || (dimension < 0) || (dimension >= _imp->dimension)) {
         return;
     }
+    const EffectInstance* holderEffect = dynamic_cast<const EffectInstance*>(_imp->holder);
+    const NodePtr holderNode = holderEffect ? holderEffect->getNode() : NodePtr();
+    const bool ownNode = holderNode == node;
+    const bool renderHashed = isRenderHashed();
+
+    // Each hash would fold the other's last value, so every recompute would move both again.
+    if (holderNode && !ownNode && renderHashed && !holderNode->checkIfConnectingInputIsOk(node.get())) {
+        QMutexLocker k(&_imp->expressionMutex);
+        _imp->expressions[dimension].metadataCycle = "reading the metadata of " + node->getFullyQualifiedName() + " forms a cycle: its hash depends on " + holderNode->getFullyQualifiedName();
+
+        return;
+    }
     {
         QMutexLocker k(&_imp->expressionMutex);
         std::list<NodeWPtr>& dependencies = _imp->expressions[dimension].metadataDependencies;
@@ -3099,10 +3238,12 @@ KnobHelper::addMetadataDependency(int dimension,
         }
         dependencies.push_back(node);
     }
-    // The holder's own node rehashes, and so drops its expression results, whenever its metadata
-    // can change; registering there would only refresh the expression twice.
-    const EffectInstance* holderEffect = dynamic_cast<const EffectInstance*>(_imp->holder);
-    if (!holderEffect || (holderEffect->getNode() != node)) {
+    if (holderNode) {
+        holderNode->addKnobMetadataDependencies(1);
+    }
+    // A render-hashed knob's own node drops its expression results on every hash change, which is
+    // whenever its metadata can change; a knob outside the hash is cleared by nothing else.
+    if (!ownNode || !renderHashed) {
         node->addMetadataReader(shared_from_this(), dimension);
     }
 }
@@ -3139,6 +3280,7 @@ KnobHelper::clearExpression(int dimension,
         _imp->expressions[dimension].expression.clear();
         _imp->expressions[dimension].originalExpression.clear();
         _imp->expressions[dimension].exprInvalid.clear();
+        _imp->expressions[dimension].metadataCycle.clear();
         //Py_XDECREF(_imp->expressions[dimension].code); //< new ref
         //_imp->expressions[dimension].code = 0;
     }
@@ -3210,6 +3352,11 @@ KnobHelper::clearExpression(int dimension,
                 node->removeMetadataReader(this, dimension);
             }
         }
+        const EffectInstance* holderEffect = dynamic_cast<const EffectInstance*>(_imp->holder);
+        const NodePtr holderNode = holderEffect ? holderEffect->getNode() : NodePtr();
+        if (holderNode && !metadataDependencies.empty()) {
+            holderNode->addKnobMetadataDependencies(-(int)metadataDependencies.size());
+        }
     }
 
     if (clearResults) {
@@ -3276,6 +3423,12 @@ KnobHelper::executeExpression(double time,
     std::string expr;
     {
         QMutexLocker k(&_imp->expressionMutex);
+        if (!_imp->expressions[dimension].metadataCycle.empty()) {
+            *ret = 0;
+            *error = _imp->expressions[dimension].metadataCycle;
+
+            return false;
+        }
         expr = _imp->expressions[dimension].expression;
     }
     std::stringstream ss;
@@ -4619,6 +4772,17 @@ KnobHelper::getCurrentTime() const
     KnobHolder* holder = getHolder();
 
     return holder && holder->getApp() ? holder->getCurrentTime() : 0;
+}
+
+bool
+KnobHelper::getExpressionEvaluationTime(double* time)
+{
+    if (tExpressionTimeDepth <= 0) {
+        return false;
+    }
+    *time = tExpressionTime;
+
+    return true;
 }
 
 ViewIdx

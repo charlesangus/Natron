@@ -352,6 +352,19 @@ NativeEffectBase::deriveOutputMetadata(double time,
 void
 NativeEffectBase::invalidateOutputMetadata()
 {
+    dropOutputMetadataCache();
+
+    // The metadata can change here under an unchanged hash, which is all the readers otherwise
+    // follow.
+    NodePtr node = getNode();
+    if (node) {
+        node->onMetadataMayHaveChanged();
+    }
+}
+
+void
+NativeEffectBase::dropOutputMetadataCache()
+{
     std::map<MetadataKey, ImageMetadata> dropped;
 
     {
@@ -368,8 +381,8 @@ NativeEffectBase::onNodeHashChanged(U64 hash)
 
     // getOutputMetadata() already turns away a cache filled under another hash; this releases it
     // early. Taking no lock but the cache's keeps this safe against a render thread deriving
-    // metadata downstream to upstream.
-    invalidateOutputMetadata();
+    // metadata downstream to upstream. The readers were told by the call above.
+    dropOutputMetadataCache();
 }
 
 void

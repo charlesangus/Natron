@@ -412,8 +412,8 @@ public:
 
     /**
      * @brief The value of the metadata key this node puts out at the given frame and view, as an
-     * int, float, str or list, or None if the node has no such key. The frame defaults to the
-     * current one.
+     * int, float, str or list, or None if the node has no such key. The frame defaults to the one
+     * the calling expression is evaluated at, or outside an expression to the current one.
      **/
     PyObject* metadata(const QString& key) const;
     PyObject* metadata(const QString& key, double frame, int view = 0) const;

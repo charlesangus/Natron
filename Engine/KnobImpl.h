@@ -88,16 +88,17 @@ KnobIntBase::initMinMax()
 }
 
 template <typename T>
-Knob<T>::Knob(KnobHolder*  holder,
-              const std::string & description,
+Knob<T>::Knob(KnobHolder* holder,
+              const std::string& description,
               int dimension,
-              bool declaredByPlugin )
+              bool declaredByPlugin)
     : KnobHelper(holder, description, dimension, declaredByPlugin)
     , _valueMutex()
     , _values(dimension)
     , _guiValues(dimension)
     , _defaultValues(dimension)
     , _exprRes(dimension)
+    , _exprResGenerations(dimension, 0)
     , _minMaxMutex()
     , _minimums(dimension)
     , _maximums(dimension)
@@ -481,6 +482,7 @@ Knob<T>::getValueFromExpression(double time,
 
     ///Check first if a value was already computed:
 
+    U64 generation;
     {
         QMutexLocker k(&_valueMutex);
         typename FrameValueMap::iterator found = _exprRes[dimension].find(time);
@@ -489,6 +491,7 @@ Knob<T>::getValueFromExpression(double time,
 
             return true;
         }
+        generation = _exprResGenerations[dimension];
     }
 
     bool exprWasValid = isExpressionValid(dimension, 0);
@@ -512,7 +515,9 @@ Knob<T>::getValueFromExpression(double time,
     }
 
     QMutexLocker k(&_valueMutex);
-    _exprRes[dimension].insert( std::make_pair(time, *ret) );
+    if (_exprResGenerations[dimension] == generation) {
+        _exprRes[dimension].insert(std::make_pair(time, *ret));
+    }
 
     return true;
 }
@@ -577,7 +582,7 @@ Knob<T>::getValueFromExpression_pod(double time,
 
         return true;
     }
-
+    const U64 generation = _exprResGenerations[dimension];
 
     bool exprWasValid = isExpressionValid(dimension, 0);
     {
@@ -599,8 +604,9 @@ Knob<T>::getValueFromExpression_pod(double time,
         *ret =  clampToMinMax(*ret, dimension);
     }
 
-    //QWriteLocker k(&_valueMutex);
-    _exprRes[dimension].insert( std::make_pair(time, *ret) );
+    if (_exprResGenerations[dimension] == generation) {
+        _exprRes[dimension].insert(std::make_pair(time, *ret));
+    }
 
     return true;
 }

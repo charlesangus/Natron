@@ -294,8 +294,8 @@ public:
 
     /**
      * @brief Registers knob's expression at dimension as reading this node's output metadata:
-     * this node's hash dependents then include the knob's node, and a change of this node's hash
-     * refreshes the expression. Registered by KnobI::addMetadataDependency().
+     * this node's hash dependents then include the knob's node, and a change of this node's
+     * metadata refreshes the expression. Registered by KnobI::addMetadataDependency().
      **/
     void addMetadataReader(const KnobIPtr& knob, int dimension);
     void removeMetadataReader(const KnobI* knob, int dimension);
@@ -306,9 +306,23 @@ public:
     void getMetadataReaders(std::list<std::pair<KnobIPtr, int>>* readers) const;
 
     /**
-     * @brief Called when this node's hash, and so possibly its output metadata, changed: drops
-     * the readers' cached expression results and moves their content hashes now, and has the
-     * main thread evaluate them as changed. Callable from any thread.
+     * @brief The other nodes whose output metadata is read by the expressions of this node's
+     * render-hashed knobs, each once: the nodes whose hashes this node's hash folds besides its
+     * inputs'.
+     **/
+    void getHashedMetadataSources(std::vector<NodePtr>* sources) const;
+
+    /**
+     * @brief Counts metadata dependencies added to (positive delta) or removed from the knob
+     * expressions of this node, so that a node with none skips scanning its knobs for them.
+     **/
+    void addKnobMetadataDependencies(int delta);
+
+    /**
+     * @brief Called when this node's output metadata may have changed: its hash moved, or its
+     * metadata was invalidated or refreshed under the same hash. Drops the readers' cached
+     * expression results and moves their content hashes now, and has the main thread evaluate
+     * them as changed. Callable from any thread.
      **/
     void onMetadataMayHaveChanged();
 
@@ -1825,6 +1839,12 @@ private:
      * @brief The nodes whose stored hashes this node's hashes fold in.
      **/
     void getHashInputs(HashInputs* inputs) const;
+
+    /**
+     * @brief Appends the other nodes whose metadata this node's knob expressions read, those of
+     * render-hashed knobs only if renderHashedOnly, skipping any already in sources.
+     **/
+    void appendMetadataSources(std::vector<NodePtr>* sources, bool renderHashedOnly) const;
 
     U32 getInputSlotCount() const;
 

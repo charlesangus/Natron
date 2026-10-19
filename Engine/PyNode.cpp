@@ -35,6 +35,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Hash64.h"
+#include "Engine/Knob.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
@@ -1261,12 +1262,22 @@ metadataOf(const NodePtr& node,
 
     return getEffectOutputMetadata(node->getEffectInstance(), frame, ViewIdx(view));
 }
+
+// An expression evaluated at another frame than the timeline's (getValueAtTime(), a render) must
+// read the metadata of that frame, as frame does.
+double
+defaultMetadataFrame(const Effect& effect)
+{
+    double time;
+
+    return KnobHelper::getExpressionEvaluationTime(&time) ? time : effect.getCurrentTime();
+}
 } // namespace
 
 PyObject*
 Effect::metadata(const QString& key) const
 {
-    return metadata(key, getCurrentTime());
+    return metadata(key, defaultMetadataFrame(*this));
 }
 
 PyObject*
@@ -1287,7 +1298,7 @@ Effect::metadata(const QString& key,
 QStringList
 Effect::metadataKeys() const
 {
-    return metadataKeys(getCurrentTime());
+    return metadataKeys(defaultMetadataFrame(*this));
 }
 
 QStringList

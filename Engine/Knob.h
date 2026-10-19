@@ -1750,6 +1750,13 @@ public:
     virtual bool isMastersPersistenceIgnored() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void copyAnimationToClipboard() const OVERRIDE FINAL;
     virtual double getCurrentTime() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The time the innermost expression running on this thread is evaluated at. False, with
+     * time left alone, when no expression is running.
+     **/
+    static bool getExpressionEvaluationTime(double* time);
+
     virtual ViewIdx getCurrentView() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual std::string getDimensionName(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setDimensionName(int dim, const std::string & name) OVERRIDE FINAL;
@@ -2369,6 +2376,7 @@ private:
         QMutexLocker k(&_valueMutex);
 
         _exprRes[dimension].clear();
+        ++_exprResGenerations[dimension];
     }
 
 
@@ -2469,6 +2477,9 @@ private:
     };
     std::vector<DefaultValue> _defaultValues;
     mutable ExprResults _exprRes;
+    // By dimension, moved by every clear of _exprRes: a result computed while a clear landed may
+    // predate what the clear was for, and is then not stored.
+    mutable std::vector<U64> _exprResGenerations;
 
     //Only for double and int
     mutable QReadWriteLock _minMaxMutex;

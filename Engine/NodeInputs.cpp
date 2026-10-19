@@ -643,6 +643,20 @@ Node::isNodeUpstream(const Node* input,
                 stack.push_back(in.get());
             }
         }
+        // A node's hash folds those of the nodes whose metadata its hashed knobs read, as it
+        // does its inputs', so a cycle through them would never let the hashes settle.
+        std::vector<NodePtr> metadataSources;
+        node->getHashedMetadataSources(&metadataSources);
+        for (std::size_t i = 0; i < metadataSources.size(); ++i) {
+            if (metadataSources[i].get() == input) {
+                *ok = true;
+
+                return;
+            }
+            if (visited.insert(metadataSources[i].get()).second) {
+                stack.push_back(metadataSources[i].get());
+            }
+        }
     }
 }
 

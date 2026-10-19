@@ -269,6 +269,22 @@ insertDependenciesRecursive(Node* node,
         }
     }
 
+    // Metadata reads name the node in the expression as knob reads do, without a knob listening.
+    std::list<std::pair<KnobIPtr, int>> metadataReaders;
+    node->getMetadataReaders(&metadataReaders);
+    for (std::list<std::pair<KnobIPtr, int>>::const_iterator it = metadataReaders.begin(); it != metadataReaders.end(); ++it) {
+        const int dimension = it->second;
+        if ((dimension < 0) || (dimension >= it->first->getDimension())) {
+            continue;
+        }
+        KnobI::ListenerDimsMap::iterator found = dependencies->find(KnobIWPtr(it->first));
+        if (found == dependencies->end()) {
+            found = dependencies->insert(std::make_pair(KnobIWPtr(it->first), std::vector<KnobI::ListenerDim>(it->first->getDimension()))).first;
+        }
+        found->second[dimension].isExpr = true;
+        found->second[dimension].isListening = true;
+    }
+
     NodeGroup* isGroup = node->isEffectGroup();
     if (isGroup) {
         NodesList nodes = isGroup->getNodes();

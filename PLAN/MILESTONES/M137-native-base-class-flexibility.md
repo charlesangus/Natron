@@ -142,7 +142,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
 
 ## Phase 137.2: Spike — framework, Grade, Blur, Switch
 
-- [ ] M137.P2.T1 — `NodeSpec`, the route hook and `KnobReader`/`bake` in `NativeEffectBase`
+- [x] M137.P2.T1 — `NodeSpec`, the route hook and `KnobReader`/`bake` in `NativeEffectBase`
   - files: `Engine/Nodes/NodeSpec.h` (new), `Engine/Nodes/KnobReader.{h,cpp}` (new), `Engine/Nodes/NativeEffectBase.{h,cpp}`, `Tests/Native/NodeSpec_Test.cpp` (new)
   - approach:
     - `NodeSpec` is a constexpr struct holding identity (ID, label, description, grouping, versions, isWriter), output kind, RFV reads, and a span of `InputSpec`. Each `InputSpec` has label, kind, role (Source, Aux, Mask, Variadic(n)), optional, a time policy, a boundary (Zero, Nearest) and a layer policy (Plane, Select(knob), PairWith(i)).
@@ -153,7 +153,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, `NodeSpec_Test` checks description equivalence for a spec'd test effect against the same `NativePluginDescription`, all three route answers, and that `bake` reads each knob once. A `static_assert` negative case sits in a commented compile-fail block, documented in the test.
   - size: L
 
-- [ ] M137.P2.T2 — Image pipeline spec, `Op` concept, `StagePlan` and the CPU executor
+- [x] M137.P2.T2 — Image pipeline spec, `Op` concept, `StagePlan` and the CPU executor
   - files: `Engine/Nodes/Image/ImagePipelineSpec.h` (new), `Engine/Nodes/Image/Op.h` (new), `Engine/Nodes/Image/StagePlan.{h,cpp}` (new), `Engine/Nodes/Image/StagedImageEffect.{h,cpp}` (new)
   - approach:
     - `ImagePipelineSpec` holds a `StageSet` (Premult, MaskMix, PassThroughUnprocessed), a layer policy (Color{defaults}, All, TargetSelect, None) and an `OpKind`.
@@ -164,7 +164,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: covered by P2.T5's Grade goldens; at the phase build, it compiles and the existing native tests stay green.
   - size: L
 
-- [ ] M137.P2.T3 — GPU virtuals on `NativeEffectBase`, and placement reads the plan
+- [x] M137.P2.T3 — GPU virtuals on `NativeEffectBase`, and placement reads the plan
   - files: `Engine/Nodes/NativeEffectBase.h`, `Engine/GpuPlacement.cpp`, `Engine/GpuRegionTask.cpp`, `Engine/GpuCostModel.cpp`, `Engine/RenderScheduler.cpp`
   - approach:
     - Move `canRenderOnGpu`, `getGpuInputRoI`, `getGpuInputLayer`, `renderGpu` and an `opKind()` query (replacing `isPointOp`) up to `NativeEffectBase`, with refusing defaults. `NativeImageEffect` and `StagedImageEffect` both override them.
@@ -174,7 +174,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, `GpuResidency_Test`, `GpuPlacement_Test` and every `Native*Gpu_Test` pass unchanged.
   - size: L
 
-- [ ] M137.P2.T4 — GPU executor for Point ops
+- [x] M137.P2.T4 — GPU executor for Point ops
   - files: `Engine/Nodes/Image/StagePlan.cpp`, `Engine/Nodes/Image/StagedImageEffect.cpp`, `Engine/Gpu/GpuWrap.{h,cpp}`
   - approach:
     - `recordStagesGpu` records a Point op as one wrapped dispatch, through the existing `GpuWrap` and `pixelwrap.slang` `runWrapped<Op>` path. Move it from `NativeImageEffect::makeGpuWrap`/`renderGpu` (`.cpp:697-806`), and fold the runtime-shader path (`.cpp:390-575`) in as a second `GpuOpRef` form.
@@ -183,7 +183,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: covered by P2.T5's GPU parity test; at the phase build, `NativeRuntimeShaderGpu_Test` passes against a staged test effect.
   - size: L
 
-- [ ] M137.P2.T5 — Grade on the framework, and `grade_main` retired
+- [x] M137.P2.T5 — Grade on the framework, and `grade_main` retired
   - files: `Engine/Nodes/Color/Grade.{h,cpp}`, `Engine/Gpu/Kernels/grade.slang`, `Engine/Gpu/Kernels/pixelwrap.slang`, `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeGradeGpu_Test.cpp`
   - approach:
     - Grade becomes `ImageNode<GradeOp>` with `Stages{Premult, MaskMix}`, `Layers::Color{1,1,1,0}` and `OpKind::Point`. `GradeOp::Params` is today's `GradeGpuParams` (`Grade.cpp:394-404`).
@@ -192,7 +192,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, Grade's `NativeGolden_Test` cases are bit-exact, `NativeGradeGpu_Test` stays within the README Grade bound, and `NativeGrade_Test` passes.
   - size: M
 
-- [ ] M137.P2.T6 — Passes kind: pass list over scratch, on CPU and GPU
+- [x] M137.P2.T6 — Passes kind: pass list over scratch, on CPU and GPU
   - files: `Engine/Nodes/Image/Op.h`, `Engine/Nodes/Image/PassExecutor.{h,cpp}` (new), `Engine/Nodes/Image/StagePlan.cpp`, `Engine/GpuCostModel.cpp`
   - approach:
     - A Passes op returns a pass list (line X, line Y, gather with apron, point, resample, downsample) over scratch buffers.
@@ -203,7 +203,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: covered by P2.T7; at the phase build, it compiles and the existing filter tests stay green.
   - size: L
 
-- [ ] M137.P2.T7 — Blur on the Passes kind, without "(Un)premult by"
+- [x] M137.P2.T7 — Blur on the Passes kind, without "(Un)premult by"
   - files: `Engine/Nodes/Filter/Blur.{h,cpp}`, `Engine/Nodes/Filter/BlurKernels.{h,cpp}`, `Tests/Native/NativeBlurGpu_Test.cpp`
   - approach:
     - Blur becomes `ImageNode<BlurOp>` with `Stages{MaskMix}`, `Layers::All` and `OpKind::Passes`. The FIR/IIR lines in `BlurKernels` become its passes.
@@ -212,7 +212,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, Blur's golden cases at the default (None) selector are bit-exact, the cases that set it are deleted from the goldens, `NativeBlurGpu_Test` stays within its bound, and `NativeBlur_Test` passes.
   - size: L
 
-- [ ] M137.P2.T8 — Native Switch as the Route proof
+- [x] M137.P2.T8 — Native Switch as the Route proof
   - files: `Engine/Nodes/Merge/Switch.{h,cpp}` (new), `Engine/AppManager.cpp`, `Tests/Native/NativeSwitch_Test.cpp` (new), `Gui/Resources/Images/NativeNodes/Switch.png` (new, or reuse the OFX icon)
   - approach:
     - Follow the Switch brief under `## Scope`: a spec'd node with `Inputs{Variadic(64)}`, `OpKind::Route` and no stages.
@@ -222,7 +222,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, `NativeSwitch_Test` covers `which` 0/1/beyond-range, an animated `which` changing output per frame, the no-input case, and exactly one upstream render per frame (`CountingTestEffect`).
   - size: M
 
-- [ ] M137.P2.T9 — Stage-knob footer for spec'd nodes
+- [x] M137.P2.T9 — Stage-knob footer for spec'd nodes
   - files: `Engine/Node.cpp`, `Engine/Nodes/Image/StagedImageEffect.cpp`, `Tests/Native/StageKnobFooter_Test.cpp` (new)
   - approach:
     - The framework creates `maskInvert` and `mix` when the spec has MaskMix, keeping the same script names. `createUnPremultSelector` (`Node.cpp:2875`) runs when the spec has Premult.

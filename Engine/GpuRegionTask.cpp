@@ -53,8 +53,10 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/OpenMPThreads.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RenderStats.h"
+#include "Engine/TLSHolder.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRuntime.h"
@@ -122,6 +124,7 @@ EffectInstance::RenderRoIRetCode
 renderMembersOnCpu(const FrameRenderContextPtr& context,
                    const FrameGraph& graph,
                    int regionIndex,
+                   const RenderScheduler::CpuFallbackLease& leaseCpu,
                    gpu::GpuRuntime* runtime,
                    std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
                    RenderScheduler::RegionReport* report)
@@ -151,6 +154,12 @@ renderMembersOnCpu(const FrameRenderContextPtr& context,
         Q_UNUSED(report);
 #endif
     }
+
+    // Held while the members render, so that the CPU tasks sharing the pool count this region among them.
+    int budget = 1;
+    const std::shared_ptr<void> lease = leaseCpu ? leaseCpu(&budget) : std::shared_ptr<void>();
+    AppTLS::ThreadBudgetScope budgetScope(budget);
+    OpenMPThreadsScope openMPThreads(budget);
 
     for (int m : region.members) {
         if (isContextAborted(context)) {
@@ -2246,7 +2255,7 @@ EffectInstance::RenderRoIRetCode
 runGpuRegion(const FrameRenderContextPtr& context,
              const FrameGraph& graph,
              int region,
-             int /*budget*/,
+             const RenderScheduler::CpuFallbackLease& leaseCpu,
              std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
              RenderScheduler::RegionReport* report)
 {
@@ -2361,7 +2370,7 @@ runGpuRegion(const FrameRenderContextPtr& context,
     }
     logRegion(node, QString::fromUtf8("GPU region rendered on the CPU (%1): %2").arg(QString::fromUtf8(reason), QString::fromUtf8(detail.c_str())));
 
-    return renderMembersOnCpu(context, graph, region, runtime, rootPlanes, report);
+    return renderMembersOnCpu(context, graph, region, leaseCpu, runtime, rootPlanes, report);
 }
 
 std::shared_ptr<void>

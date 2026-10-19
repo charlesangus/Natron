@@ -292,11 +292,16 @@ public:
      * root output to rootPlanes. graph.tasks may hold entries past those the frame was submitted with, which the body
      * ignores. It may leave report untouched. It returns eRenderRoIRetCodeOk, or the code the frame fails or aborts
      * with, unless it sets report->deviceLost.
+     *
+     * leaseCpu is for rendering members on the CPU: it counts the region as a running CPU task until the token it
+     * returns is released, and sets *budget to the threads such a task would get at that moment.
      **/
+    typedef std::function<std::shared_ptr<void>(int* budget)> CpuFallbackLease;
+
     typedef std::function<EffectInstance::RenderRoIRetCode(const FrameRenderContextPtr& context,
                                                            const FrameGraph& graph,
                                                            int region,
-                                                           int budget,
+                                                           const CpuFallbackLease& leaseCpu,
                                                            std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
                                                            RegionReport* report)>
         RegionBody;
@@ -447,6 +452,10 @@ private:
 
     void executeTask(const FramePtr& frame, int task, int budget, std::vector<FramePtr>* finished);
 
+    std::shared_ptr<void> leaseCpuFallback(int* budget);
+
+    int cpuTaskBudgetLocked() const;
+
     void executeRegion(const FramePtr& frame, int task, int budget, std::vector<FramePtr>* finished);
 
     void completeTask(const FramePtr& frame,
@@ -526,6 +535,7 @@ private:
     std::size_t _reservedBytes;
     std::size_t _bytesBudget;
     int _runningGpuTasks;
+    int _fallbackCpuTasks;
     int _gpuMaxConcurrentTasks;
     std::size_t _peakBytesInFlight;
     RegionBody _regionBody;

@@ -4,7 +4,7 @@ Native versions of Nuke's OCIO node set replace openfx-io's OCIO plug-ins: `OCIO
 
 Each node runs on the CPU through `CPUProcessor::apply` per row. On the GPU, each node takes OCIO's generated `GPU_LANGUAGE_GLSL_VK_4_6` shader and compiles it at runtime on M126 - Runtime GPU Shaders. LUT textures and uniforms are bound through that milestone's descriptors, and dynamic properties such as exposure are uniforms.
 
-Deps: M120 - Native Node Port Kit and M126 - Runtime GPU Shaders.
+Deps: M120 - Native Node Port Kit, M126 - Runtime GPU Shaders and M107 - GPU Viewer Hand-off (its shared OCIO→Vulkan helper).
 
 Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels facts from `origin/milestone/m85-native-gpu-kernels`; re-check at promotion):
 - **OFX sources:** `build/assets/plugin-src/openfx-io/OCIO/`, with the shared helper `IOSupport/GenericOCIO.{h,cpp}` (1740 lines) and `GenericOCIOOpenGL.cpp`.
@@ -114,11 +114,10 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 ## Phase 126.3: GPU
 
 - [ ] M127.P3.T1 — Generate and bind OCIO's Vulkan shader in the base
-  - files: `Engine/Nodes/OCIO/OcioNodeBase.{h,cpp}`, `Engine/Nodes/OCIO/OcioGpuShader.{h,cpp}` (new), `Tests/Native/NativeOcioGpu_Test.cpp` (new)
+  - files: `Engine/Nodes/OCIO/OcioNodeBase.{h,cpp}`, `Engine/OcioVulkanShader.{h,cpp}` (from M107 - GPU Viewer Hand-off, extended only if the node path needs it), `Tests/Native/NativeOcioGpu_Test.cpp` (new)
   - approach:
-    - Build a `GpuShaderDesc` with `GPU_LANGUAGE_GLSL_VK_4_6`.
-    - Wrap OCIO's function in a compute entry that reads and writes the storage-buffer images.
-    - Upload its 1D/2D/3D LUTs as M126 - Runtime GPU Shaders `GpuTexture`s and its uniforms, including dynamic properties, as a UBO.
+    - Reuse M107 - GPU Viewer Hand-off's shared helper `Engine/OcioVulkanShader.{h,cpp}` (created by M107.P3.T1). It builds OCIO's `GPU_LANGUAGE_GLSL_VK_4_6` shader, holds LUTs as `GpuTexture`s and dynamic properties in a UBO, and caches LUT textures per processor on `cacheID`. Do not write a second OCIO shader generator.
+    - Wrap the helper's OCIO function in a compute entry that reads and writes the storage-buffer images.
     - Supply the result through M126 - Runtime GPU Shaders's runtime-shader `GpuQuery` hook. The shader hash excludes dynamic values.
   - verify: the GPU parity harness matches the CPU within 1e-4 for ColorSpace (an ACES config), Display, CDL, a `.cube` FileTransform and a Look, on RADV. Changing exposure doesn't trigger a recompile. Runs at the phase build.
   - size: L
@@ -160,3 +159,4 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 - 2026-10-13 — **Nuke's node set, with LogConvert folded into OCIOColorSpace as a role preset** (user).
 - 2026-10-13 — **GPU through runtime compilation of OCIO's own shader** (user). This was chosen over translating ops into precompiled kernels or baking a shaped 3D LUT. The compiler and descriptor work is M126 - Runtime GPU Shaders.
+- 2026-10-19 — **Reuse M107 - GPU Viewer Hand-off's `Engine/OcioVulkanShader` helper** (gpu PM, via inbox): the viewer and the nodes then share one OCIO shader generator and LUT cache. M107 joins Deps.

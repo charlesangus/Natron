@@ -3340,3 +3340,7 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
 ### 2026-10-16T02:40:00-04:00 — change-request
 - refs: M110
 - When M109 - GPU Region Engine Hardening was elaborated, it moved multi-plane placement candidates, which Shuffle-family nodes need to join regions, out of its scope and into M110 - Remaining Native GPU Ports. The work needs a multi-plane `GpuQuery`/`GpuRenderArgs` in `Engine/Nodes/Image/GpuRender.h`, which M126 - Runtime GPU Shaders edits. M110's stub says it is blocked on "M109's multi-plane placement". Make that a task of M110's own instead, starting after M126 merges, and add M126 to M110's Deps.
+
+### 2026-10-18T23:30:00Z — change-request
+- refs: M127
+- From the gpu PM's elaboration of M107 - GPU Viewer Hand-off. M107.P3.T1 creates the shared OCIO→Vulkan helper `Engine/OcioVulkanShader.{h,cpp}`. It builds OCIO's `GPU_LANGUAGE_GLSL_VK_4_6` shader with LUTs as `GpuTexture` and dynamic properties in a UBO, and keeps a per-processor LUT texture cache keyed on `cacheID`. M127.P3.T1 should reuse that helper instead of creating `Engine/Nodes/OCIO/OcioGpuShader.*`, and M127 should add M107 to its Deps, or depend on M107.P3.T1 landing. Also stale once M107.P5.T1 lands: M116 - GPU Region Overlay's note that a region feeding the viewer is still a download.

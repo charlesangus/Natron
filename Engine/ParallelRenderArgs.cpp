@@ -1039,6 +1039,7 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
                                                    const RenderStatsPtr& stats,
                                                    bool setUpstreamArgs)
     : argsMap()
+    , _abortedForStaleInputData(false)
 {
     assert(treeRoot);
 
@@ -1053,14 +1054,14 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
     _openGLContext = glContext;
 
     ArgsInstallSequence installSequence;
-    buildArgsMap(time, view, isRenderUserInteraction, isSequential, abortInfo, treeRoot, textureIndex, timeline,
-                 activeRotoPaintNode, isAnalysis, draftMode, stats, setUpstreamArgs, glContext, &_installedArgs, &installSequence, &nodes);
+    _abortedForStaleInputData = buildArgsMap(time, view, isRenderUserInteraction, isSequential, abortInfo, treeRoot, textureIndex, timeline,
+                                             activeRotoPaintNode, isAnalysis, draftMode, stats, setUpstreamArgs, glContext, &_installedArgs, &installSequence, &nodes);
     for (ArgsInstallSequence::const_iterator it = installSequence.begin(); it != installSequence.end(); ++it) {
         it->first->getEffectInstance()->setParallelRenderArgsTLS(it->second);
     }
 }
 
-void
+bool
 ParallelRenderArgsSetter::buildArgsMap(double time,
                                        ViewIdx view,
                                        bool isRenderUserInteraction,
@@ -1082,6 +1083,7 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
     assert(treeRoot);
     assert(out);
 
+    bool abortedForStaleInputData = false;
     FindDependenciesMap dependenciesMap;
     if (setUpstreamArgs) {
         getAllUpstreamNodesRecursiveWithDependencies_internal(treeRoot, dependenciesMap);
@@ -1120,6 +1122,7 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
         // loops back into another aborted render.
         if (!stale.empty() && abortInfo && abortInfo->canAbort() && treeRoot->isEffectViewer()) {
             abortInfo->setAborted();
+            abortedForStaleInputData = true;
             AppInstanceWPtr weakApp = treeRoot->getApp();
             QMetaObject::invokeMethod(qApp, [weakApp, stale]() {
                 AppInstancePtr app = weakApp.lock();
@@ -1203,6 +1206,8 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
             }
         }
     }
+
+    return abortedForStaleInputData;
 } // ParallelRenderArgsSetter::buildArgsMap
 
 void
@@ -1244,8 +1249,9 @@ ParallelRenderArgsSetter::updateNodesRequest(const FrameRequestMap& request)
     }
 }
 
-ParallelRenderArgsSetter::ParallelRenderArgsSetter(const std::shared_ptr<std::map<NodePtr, ParallelRenderArgsPtr> >& args)
+ParallelRenderArgsSetter::ParallelRenderArgsSetter(const std::shared_ptr<std::map<NodePtr, ParallelRenderArgsPtr>>& args)
     : argsMap(args)
+    , _abortedForStaleInputData(false)
 {
     // Ensure this thread gets an OpenGL context for the render of the frame
     OSGLContextPtr glContext;

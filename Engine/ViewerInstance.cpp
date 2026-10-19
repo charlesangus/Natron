@@ -583,6 +583,9 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                                            NodePtr(),
                                            false,
                                            stats);
+        if (tls.isAbortedForStaleInputData()) {
+            return eViewerRenderRetCodeRedraw;
+        }
         NodesList rotoPaintNodes;
         if (rotoPaintNode) {
             if (activeStroke) {
@@ -1426,6 +1429,9 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                                                        inArgs.activeInputToRender->getNode(),
                                                                        inArgs.draftModeEnabled,
                                                                        stats);
+        if (frameArgs->isAbortedForStaleInputData()) {
+            return eViewerRenderRetCodeRedraw;
+        }
     }
 
 

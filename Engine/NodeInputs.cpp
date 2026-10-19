@@ -1507,8 +1507,8 @@ Node::getPreferredInputNode() const
     PrecompNode* isPrecomp = dynamic_cast<PrecompNode*>( _imp->effect.get() );
 
     if (isInput) {
-        NodeGroup* isGroup = dynamic_cast<NodeGroup*>( getGroup().get() );
-        assert(isGroup);
+        // An Input node can be created at the top level of the project, where no group feeds it.
+        NodeGroup* isGroup = dynamic_cast<NodeGroup*>(getGroup().get());
         if (!isGroup) {
             return NodePtr();
         }

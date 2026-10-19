@@ -1,0 +1,201 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+#ifndef NATRON_ENGINE_VIEWERHANDOFF_H
+#define NATRON_ENGINE_VIEWERHANDOFF_H
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "Global/Macros.h"
+
+#ifdef NATRON_HAVE_GPU
+
+#include <cstddef>
+#include <functional>
+#include <memory>
+#include <string>
+
+#include "Global/Enums.h"
+
+#include "Engine/GpuContext.h"
+#include "Engine/ProjectColorManagement.h"
+#include "Engine/RectI.h"
+
+NATRON_NAMESPACE_ENTER
+
+/**
+ * @brief How a device root reaches the viewer's GL texture, best first. Cpu means the root must be
+ * downloaded and run through the CPU viewer process.
+ **/
+enum class ViewerHandoffRung {
+    ZeroCopy,
+    HostSync,
+    Readback,
+    Cpu,
+};
+
+// "zerocopy", "hostsync", "readback" or "cpu", the values NATRON_VIEWER_HANDOFF accepts.
+const char* toString(ViewerHandoffRung rung);
+
+enum class ViewerHandoffFormat {
+    // GL_RGBA / GL_FLOAT into an RGBA32F texture.
+    Rgba32F,
+    // GL_BGRA / GL_UNSIGNED_INT_8_8_8_8_REV into an RGBA8 texture.
+    Bgra8,
+};
+
+/**
+ * @brief The texture rectangle a present() writes: width x height texels at (x, y) of level 0.
+ **/
+struct ViewerHandoffFrame {
+    unsigned width = 0;
+    unsigned height = 0;
+    ViewerHandoffFormat format = ViewerHandoffFormat::Bgra8;
+    int x = 0;
+    int y = 0;
+
+    std::size_t bytes() const;
+};
+
+/**
+ * @brief The viewer process of one frame, as ViewerGpuProcessParams has it. rect must be the
+ * frame's size; gain, offset, gamma and the display processor apply to Bgra8 frames only.
+ **/
+struct ViewerHandoffParams {
+    RectI rect;
+    DisplayChannelsEnum channels = eDisplayChannelsRGB;
+    int alphaChannelIndex = -1;
+    bool matteOverlay = false;
+    double gain = 1.;
+    double offset = 0.;
+    double gamma = 1.;
+    ProjectColorManagement::DisplayProcessorPtr displayProcessor;
+};
+
+/**
+ * @brief Success, or a refusal whose reason completes "viewer handoff: " for
+ * RenderStats::incLegacyFallbacks(). A refused frame must take the CPU path.
+ **/
+struct ViewerHandoffResult {
+    bool ok = false;
+    std::string reason;
+
+    explicit operator bool() const { return ok; }
+};
+
+/**
+ * @brief Hands GPU-rendered viewer roots to the viewer's GL textures: runs the viewer process on
+ * the device and uploads its output through GlInterop, one ring of slots per texture index (the
+ * A and B inputs of a wipe).
+ *
+ * The rung is the best that both the GL context and the device reach, ZeroCopy, then HostSync,
+ * then Readback; NATRON_VIEWER_HANDOFF names a rung to start the descent from, and "cpu" turns the
+ * hand-off off. A GpuContext::holdRuntime() token is held exactly while device resources exist.
+ * Once the runtime is lost they are all released and the rung reads Cpu; maintain() builds them
+ * again once the context has recovered.
+ *
+ * Threads: rung() and prepare() are safe from any thread. Every other call, destruction included,
+ * runs on the thread of the GL context, with that context current.
+ **/
+class ViewerHandoff
+{
+public:
+    using GlProcLoader = std::function<void*(const char*)>;
+
+    static constexpr int kTextureCount = 2;
+
+    // Null or unavailable leaves the rung at Cpu.
+    explicit ViewerHandoff(GpuContext* context);
+
+    ~ViewerHandoff();
+
+    ViewerHandoff(const ViewerHandoff&) = delete;
+    ViewerHandoff& operator=(const ViewerHandoff&) = delete;
+
+    /**
+     * @brief Probes the current GL context with \p loader, which must resolve its entry points for
+     * as long as this object uses them, and picks the rung. Replaces anything an earlier create()
+     * built.
+     **/
+    ViewerHandoffRung create(const GlProcLoader& loader);
+
+    /**
+     * @brief Cpu also while the GPU context is unavailable, even before maintain() noticed.
+     **/
+    ViewerHandoffRung rung() const;
+
+    /**
+     * @brief Why the rung is below ZeroCopy; empty at ZeroCopy.
+     **/
+    std::string rungReason() const;
+
+    /**
+     * @brief Releases the device resources once the runtime is lost and builds them again once the
+     * context is available, for a viewer to call every time it draws. Returns whether the rung is
+     * above Cpu.
+     **/
+    bool maintain();
+
+    /**
+     * @brief Compiles the viewer process of \p processor for \p format ahead of present(), so the GL
+     * thread need not.
+     **/
+    ViewerHandoffResult prepare(const ProjectColorManagement::DisplayProcessorPtr& processor,
+                                ViewerHandoffFormat format);
+
+    /**
+     * @brief Runs the viewer process of \p root into a slot of the ring of \p textureIndex and
+     * uploads it into \p frame's rectangle of \p glTexture, which must already be large enough.
+     * The root stays pinned until the device has read it. A frame over the slot capacity is
+     * refused, and the slots grow before the next present().
+     **/
+    ViewerHandoffResult present(int textureIndex,
+                                const GpuDeviceImagePtr& root,
+                                const ViewerHandoffParams& params,
+                                unsigned int glTexture,
+                                const ViewerHandoffFrame& frame);
+
+    /**
+     * @brief Grows every slot to hold \p bytes, waiting for the frames they hold.
+     **/
+    ViewerHandoffResult ensureCapacity(std::size_t bytes);
+
+    // The slot capacity of the ring of textureIndex; 0 before its first present().
+    std::size_t capacity(int textureIndex) const;
+
+    /**
+     * @brief Releases every GL object, device resource and pinned root. The rung is Cpu until the
+     * next create().
+     **/
+    void release();
+
+private:
+    struct Imp;
+    std::unique_ptr<Imp> _imp;
+};
+
+NATRON_NAMESPACE_EXIT
+
+#endif // NATRON_HAVE_GPU
+
+#endif // NATRON_ENGINE_VIEWERHANDOFF_H

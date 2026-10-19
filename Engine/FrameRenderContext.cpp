@@ -413,12 +413,51 @@ FrameRenderContext::FrameRenderContext()
     , _time(0.)
     , _view(0)
     , _store()
+#ifdef NATRON_HAVE_GPU
+    , _wantsRootOnDevice(false)
+    , _rootDeviceMutex()
+    , _rootDevicePlanes()
+#endif
 {
 }
 
 FrameRenderContext::~FrameRenderContext()
 {
 }
+
+#ifdef NATRON_HAVE_GPU
+void
+FrameRenderContext::setWantsRootOnDevice(bool wants)
+{
+    _wantsRootOnDevice.store(wants);
+}
+
+bool
+FrameRenderContext::wantsRootOnDevice() const
+{
+    return _wantsRootOnDevice.load();
+}
+
+void
+FrameRenderContext::setRootDevicePlanes(std::map<ImageLayerDesc, GpuDeviceImagePtr> planes)
+{
+    std::lock_guard<std::mutex> k(_rootDeviceMutex);
+
+    _rootDevicePlanes = std::move(planes);
+}
+
+std::map<ImageLayerDesc, GpuDeviceImagePtr>
+FrameRenderContext::takeRootDevicePlanes()
+{
+    std::map<ImageLayerDesc, GpuDeviceImagePtr> planes;
+    {
+        std::lock_guard<std::mutex> k(_rootDeviceMutex);
+        planes.swap(_rootDevicePlanes);
+    }
+
+    return planes;
+}
+#endif
 
 FrameRenderContextPtr
 FrameRenderContext::create(double time,

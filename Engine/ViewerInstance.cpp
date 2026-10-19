@@ -31,6 +31,7 @@
 #include <cmath>
 #include <cstring> // for std::memcpy
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <vector>
 
@@ -471,6 +472,39 @@ ViewerInstance::isFrameEligibleForScheduler(const SchedulerEligibility& eligibil
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
+std::mutex gSchedulerResultHookMutex;
+ViewerInstance::SchedulerResultHook gSchedulerResultHook;
+
+ViewerInstance::SchedulerResultHook
+schedulerResultHook()
+{
+    std::lock_guard<std::mutex> k(gSchedulerResultHookMutex);
+
+    return gSchedulerResultHook;
+}
+
+#ifdef NATRON_HAVE_GPU
+// The GPU viewer process neither measures the frame for auto-contrast nor reads a matte from a second plane, and a
+// root rendered for only part of the texture would drop the tiles found in the cache.
+bool
+viewerFrameCanTakeDeviceRoot(const ViewerArgs& inArgs,
+                             const std::list<ImageLayerDesc>& components,
+                             OpenGLViewerI* uiContext)
+{
+    if ( !uiContext || (uiContext->handoffRung() == ViewerHandoffRung::Cpu) ) {
+        return false;
+    }
+    if (inArgs.autoContrast) {
+        return false;
+    }
+    if ( (inArgs.channels == eDisplayChannelsMatte) && (components.size() > 1) ) {
+        return false;
+    }
+
+    return !inArgs.isDoingPartialUpdates && (inArgs.params->nbCachedTile == 0);
+}
+#endif
+
 // Submits the viewer input's render of one frame to the RenderScheduler, or returns null and counts why it falls
 // back to renderRoI. The root task renders exactly what renderRoI would: the viewer's RoI and displayed layers.
 FrameFuturePtr
@@ -482,7 +516,9 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
                                    const RectI& roi,
                                    const std::list<ImageLayerDesc>& components,
                                    ImageBitDepthEnum bitdepth,
-                                   const RenderStatsPtr& stats)
+                                   const RenderStatsPtr& stats,
+                                   OpenGLViewerI* uiContext,
+                                   FrameRenderContextPtr* contextOut)
 {
     const NodePtr inputNode = inArgs.activeInputToRender->getNode();
     ViewerInstance::SchedulerEligibility eligibility;
@@ -504,6 +540,11 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
     if (ViewerInstance::isFrameEligibleForScheduler(eligibility, &reason)) {
         FrameRenderContextPtr context = FrameRenderContext::createFromSetter(*setter, inArgs.params->abortInfo, stats, inArgs.params->time, view);
         context->setRequest(request);
+#ifdef NATRON_HAVE_GPU
+        context->setWantsRootOnDevice( viewerFrameCanTakeDeviceRoot(inArgs, components, uiContext) );
+#else
+        Q_UNUSED(uiContext);
+#endif
         FrameGraph graph = RenderScheduler::buildGraph(context, inputNode, inArgs.params->time, view, inArgs.params->mipmapLevel);
         if (graph.tasks.empty()) {
             reason = "request does not reach the viewer input";
@@ -513,6 +554,9 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
             root.components = components;
             root.bitdepth = bitdepth;
             placeRenderGraph(graph, context);
+            if (contextOut) {
+                *contextOut = context;
+            }
 
             return appPTR->getRenderScheduler()->submit(context, std::move(graph), RenderScheduler::Priority::Interactive);
         }
@@ -525,6 +569,14 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
 }
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+void
+ViewerInstance::setSchedulerResultHookForTests(const SchedulerResultHook& hook)
+{
+    std::lock_guard<std::mutex> k(gSchedulerResultHookMutex);
+
+    gSchedulerResultHook = hook;
+}
 
 ViewerInstance::ViewerRenderRetCode
 ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
@@ -1618,6 +1670,10 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
     for (std::size_t rectIndex = 0; rectIndex < splitRoi.size(); ++rectIndex) {
         //AlphaImage will only be set when displaying the Matte overlay
         ImagePtr alphaImage, colorImage;
+#ifdef NATRON_HAVE_GPU
+        GpuDeviceImagePtr deviceColor;
+#endif
+        bool hasDeviceColor = false;
 
         // If an exception occurs here it is probably fatal, since
         // it comes from Natron itself. All exceptions from plugins are already caught
@@ -1665,12 +1721,47 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                 }
             } else {
                 FrameFuturePtr future;
+                FrameRenderContextPtr frameContext;
                 if (taskGraphMode) {
-                    future = submitViewerFrameToRenderScheduler(frameArgs.get(), requestPassData, inArgs, bool(rotoPaintNode), view, splitRoi[rectIndex], requestedComponents, imageDepth, stats);
+                    future = submitViewerFrameToRenderScheduler(frameArgs.get(), requestPassData, inArgs, bool(rotoPaintNode), view, splitRoi[rectIndex], requestedComponents, imageDepth, stats, _imp->uiContext, &frameContext);
                 }
                 if (future) {
                     retCode = future->wait();
                     layers = future->getRootPlanes();
+                    if (const SchedulerResultHook hook = schedulerResultHook()) {
+                        hook(frameContext, &layers);
+                    }
+#ifdef NATRON_HAVE_GPU
+                    if (frameContext) {
+                        std::map<ImageLayerDesc, GpuDeviceImagePtr> devicePlanes = frameContext->takeRootDevicePlanes();
+                        if ( frameContext->wantsRootOnDevice() && (retCode == EffectInstance::eRenderRoIRetCodeOk) && !devicePlanes.empty() ) {
+                            std::map<ImageLayerDesc, GpuDeviceImagePtr>::const_iterator found = devicePlanes.find( requestedComponents.front() );
+                            if ( (found == devicePlanes.end()) && (devicePlanes.size() == 1) ) {
+                                found = devicePlanes.begin();
+                            }
+                            if ( (found != devicePlanes.end()) && found->second ) {
+                                const ViewerHandoffFormat format = (inArgs.params->depth == eImageBitDepthFloat) ? ViewerHandoffFormat::Rgba32F : ViewerHandoffFormat::Bgra8;
+                                // Compiled here so that the main thread drawing the root never has to.
+                                const ViewerHandoffResult prepared = _imp->uiContext->prepareHandoff(inArgs.params->displayProcessor, format);
+                                if (prepared) {
+                                    deviceColor = found->second;
+                                    hasDeviceColor = true;
+                                    layers.clear();
+                                } else {
+                                    if (stats) {
+                                        stats->incLegacyFallbacks("viewer handoff: " + prepared.reason);
+                                    }
+                                    if ( layers.empty() ) {
+                                        ImagePtr downloaded = found->second->downloadToRam();
+                                        if (downloaded) {
+                                            layers[found->first] = downloaded;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+#endif
                 } else {
                     std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs;
                     renderArgs.reset(new EffectInstance::RenderRoIArgs(inArgs.params->time,
@@ -1716,7 +1807,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                 assert(colorImage);
                 inArgs.params->colorImage = colorImage;
             }
-            if (!colorImage) {
+            if (!colorImage && !hasDeviceColor) {
                 if (retCode == EffectInstance::eRenderRoIRetCodeFailed) {
                     return eViewerRenderRetCodeFail;
                 } else if (retCode == EffectInstance::eRenderRoIRetCodeOk) {
@@ -1748,6 +1839,30 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         if ( inArgs.activeInputToRender->aborted() ) {
             return eViewerRenderRetCodeRedraw;
         }*/
+
+#ifdef NATRON_HAVE_GPU
+        if (deviceColor) {
+            if ( ( (inArgs.channels == eDisplayChannelsA) || (inArgs.channels == eDisplayChannelsMatte) ) &&
+                 ( (alphaChannelIndex < 0) || ( alphaChannelIndex >= deviceColor->nComps() ) ) ) {
+                return eViewerRenderRetCodeBlack;
+            }
+            // The tiles keep describing the texture the root is drawn into, without any RAM buffer.
+            const UpdateViewerParamsPtr& updateParams = inArgs.params;
+            updateParams->deviceColor = deviceColor;
+            updateParams->colorImage.reset();
+            updateParams->mustFreeRamBuffer = false;
+            for (std::list<UpdateViewerParams::CachedTile>::iterator it = updateParams->tiles.begin(); it != updateParams->tiles.end(); ++it) {
+                assert(!it->ramBuffer && !it->cachedData);
+                it->ramBuffer = 0;
+                it->bytesCount = 0;
+            }
+            {
+                QMutexLocker k(&_imp->lastRenderParamsMutex);
+                _imp->lastRenderParams[updateParams->textureIndex].reset();
+            }
+            continue;
+        }
+#endif
 
         const bool viewerRenderRoiOnly = !useTextureCache;
 

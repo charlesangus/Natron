@@ -35,6 +35,9 @@
 #include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/Texture.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/ViewerHandoff.h"
+#endif
 
 
 NATRON_NAMESPACE_ENTER
@@ -237,6 +240,29 @@ public:
      * @brief Returns for a string the estimated pixel size it would take on the widget
      **/
     virtual int getStringWidthForCurrentFont(const std::string& string) const OVERRIDE = 0;
+
+#ifdef NATRON_HAVE_GPU
+    /**
+     * @brief How a device root would reach this viewer's textures; Cpu when it cannot. Safe from any thread.
+     **/
+    virtual ViewerHandoffRung handoffRung() const
+    {
+        return ViewerHandoffRung::Cpu;
+    }
+
+    /**
+     * @brief Compiles the GPU viewer process of processor for format, so that drawing a device root on the main
+     * thread does not have to. Safe from any thread. A refusal means the frame must take the CPU path.
+     **/
+    virtual ViewerHandoffResult prepareHandoff(const ProjectColorManagement::DisplayProcessorPtr& /*processor*/,
+                                               ViewerHandoffFormat /*format*/)
+    {
+        ViewerHandoffResult refused;
+        refused.reason = "rung cpu";
+
+        return refused;
+    }
+#endif
 };
 
 NATRON_NAMESPACE_EXIT

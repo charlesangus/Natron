@@ -184,6 +184,42 @@ NativeImageEffect::getMaskInput() const
     return stageMaskInput(*this);
 }
 
+GpuStageSummary
+NativeImageEffect::getGpuStageSummary(double time,
+                                      ViewIdx view)
+{
+    GpuStageSummary summary;
+
+    const int maskInput = getMaskInput();
+    summary.applyMask = (maskInput >= 0) && getInput(maskInput) && isMaskEnabled(maskInput);
+    if (summary.applyMask) {
+        ImageLayerDesc maskLayer;
+        int maskChannel = -1;
+        if (resolveInputPlaneForRender(maskInput, time, view, &maskLayer, &maskChannel) && (maskChannel >= 0)) {
+            summary.maskLayer = maskLayer;
+            summary.maskChannel = maskChannel;
+        }
+    }
+
+    KnobDoublePtr mix = std::dynamic_pointer_cast<KnobDouble>(getKnobByName(kOfxMixParamName));
+    summary.mix = mix ? mix->getValueAtTime(time, 0, view) : 1.;
+
+    NodePtr node = getNode();
+    KnobChannelSelectPtr unPremultBy = (wantsHostUnPremultSelector() && node) ? node->getUnPremultBySelector() : KnobChannelSelectPtr();
+    if (unPremultBy && !unPremultBy->isNone() && getInput(0)) {
+        std::list<ImageLayerDesc> availableLayers;
+        getAvailableLayers(time, view, 0, &availableLayers);
+        ImageLayerDesc divisorLayer;
+        const int divisorChannel = node->getUnPremultChannel(availableLayers, &divisorLayer);
+        if (divisorLayer.getNumComponents() > 0) {
+            summary.divisorLayer = divisorLayer;
+            summary.divisorChannel = divisorChannel;
+        }
+    }
+
+    return summary;
+} // NativeImageEffect::getGpuStageSummary
+
 PixelKernelPtr
 NativeImageEffect::makeKernel(const KernelContext& /*context*/)
 {

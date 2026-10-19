@@ -25,6 +25,8 @@
 
 #include "StagedImageEffect.h"
 
+#include <bitset>
+#include <optional>
 #include <string>
 
 #include "Engine/KnobTypes.h"
@@ -110,6 +112,29 @@ StagedImageEffect::isHostChannelSelectorSupported(bool* defaultR,
     *defaultA = layers.defaults[3];
 
     return layers.kind != LayerPolicy::Kind::None;
+}
+
+std::optional<OpKind>
+StagedImageEffect::opKind() const
+{
+    return imagePipelineSpec().op;
+}
+
+GpuStageSummary
+StagedImageEffect::getGpuStageSummary(double time,
+                                      ViewIdx view)
+{
+    const StagePlan plan = resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), time, view, std::bitset<4>());
+    GpuStageSummary summary;
+
+    summary.applyMask = plan.applyMask;
+    summary.maskLayer = plan.maskLayer;
+    summary.maskChannel = plan.maskChannel;
+    summary.mix = plan.mix;
+    summary.divisorLayer = plan.divisorLayer;
+    summary.divisorChannel = plan.divisorChannel;
+
+    return summary;
 }
 
 int

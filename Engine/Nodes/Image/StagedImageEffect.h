@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <optional>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
@@ -93,6 +94,17 @@ public:
                                                 bool* defaultG,
                                                 bool* defaultB,
                                                 bool* defaultA) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The op kind of imagePipelineSpec().
+     **/
+    virtual std::optional<OpKind> opKind() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The mask, mix and divisor of the StagePlan a render at time and view resolves.
+     **/
+    virtual GpuStageSummary getGpuStageSummary(double time,
+                                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
      * @brief The input the op reads and the stages blend against: the first Source input of

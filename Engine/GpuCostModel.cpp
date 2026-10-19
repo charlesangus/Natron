@@ -37,7 +37,7 @@
 #include "Engine/GpuContext.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/Blur.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/Transform.h"
 
 NATRON_NAMESPACE_ENTER
@@ -244,8 +244,9 @@ GpuCostModel::traitsOf(const FrameGraph::Task& task) const
     GpuTaskTraits traits(node->getPluginID());
     traits.inputCount = node->getNInputs();
     EffectInstancePtr effect = node->getEffectInstance();
-    if (const NativeImageEffect* native = dynamic_cast<const NativeImageEffect*>(effect.get())) {
-        traits.costClass = native->isPointOp() ? GpuCostClass::ePointOp : GpuCostClass::eSpatial;
+    const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(effect.get());
+    if (const std::optional<OpKind> kind = native ? native->opKind() : std::nullopt) {
+        traits.costClass = (*kind == OpKind::Point) ? GpuCostClass::ePointOp : GpuCostClass::eSpatial;
     }
     if (const Blur* blur = dynamic_cast<const Blur*>(effect.get())) {
         BlurParams params;

@@ -30,6 +30,7 @@
 
 #include <list>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -141,12 +142,20 @@ public:
     }
 
     /**
+     * @brief Point for a point operator, Custom otherwise.
+     **/
+    virtual std::optional<OpKind> opKind() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return isPointOp() ? OpKind::Point : OpKind::Custom;
+    }
+
+    /**
      * @brief Whether renderGpu() can produce this query. Nodes that cannot are rendered on the
      * CPU. The base accepts a point operator's float query of 1 to 4 channels when any
      * "(Un)premult by" channel lies in the rendered plane and either gpuRuntimeShader() hands over a
      * shader the device runs, or gpuKernelId() names a kernel.
      **/
-    virtual bool canRenderOnGpu(const GpuQuery& query) const WARN_UNUSED_RETURN;
+    virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE WARN_UNUSED_RETURN;
 
     /**
      * @brief The region of input inputNb that renderGpu() reads to produce outputRect; wider
@@ -154,7 +163,7 @@ public:
      **/
     virtual RectI getGpuInputRoI(int /*inputNb*/,
                                  const RectI& outputRect,
-                                 const RenderScale& /*scale*/) const WARN_UNUSED_RETURN
+                                 const RenderScale& /*scale*/) const OVERRIDE WARN_UNUSED_RETURN
     {
         return outputRect;
     }
@@ -170,7 +179,7 @@ public:
                                   const ImageLayerDesc& plane,
                                   double time,
                                   ViewIdx view,
-                                  ImageLayerDesc* layer) const WARN_UNUSED_RETURN;
+                                  ImageLayerDesc* layer) const OVERRIDE WARN_UNUSED_RETURN;
 
     /**
      * @brief Records the dispatches that fill args.output over args.outputRect. Only called
@@ -178,7 +187,14 @@ public:
      * makeGpuKernel() description wrapped as render() wraps makeKernel()'s, with the mask,
      * mix, mask inversion and "(Un)premult by" read at the query's time and view.
      **/
-    virtual StatusEnum renderGpu(const GpuRenderArgs& args) WARN_UNUSED_RETURN;
+    virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The mask input when it is connected and enabled, the "mix" knob and the
+     * "(Un)premult by" divisor of input 0 when the node asks for that selector.
+     **/
+    virtual GpuStageSummary getGpuStageSummary(double time,
+                                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
      * @brief The input render() reads as its mask: the first input described as a mask, or -1.

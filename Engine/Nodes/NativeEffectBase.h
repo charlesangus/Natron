@@ -33,6 +33,7 @@
 #include <list>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -41,12 +42,32 @@
 #include "Engine/DeepPixelOps.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/Nodes/Image/ImagePipelineSpec.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NodeSpec.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
+
+struct GpuQuery;
+struct GpuRenderArgs;
+
+/**
+ * @brief What the stages around a node's op resolve to at one time and view, as GPU placement
+ * reads them. applyMask is whether the mask input is connected and enabled; maskChannel is the
+ * channel of maskLayer it reads, -1 when it resolves to none. divisorChannel is the channel of
+ * divisorLayer "(Un)premult by" divides the source by, -1 for none.
+ **/
+struct GpuStageSummary {
+    bool applyMask = false;
+    ImageLayerDesc maskLayer;
+    int maskChannel = -1;
+    double mix = 1.;
+    ImageLayerDesc divisorLayer;
+    int divisorChannel = -1;
+};
 
 /**
  * @brief Statically describes one input of a NativeEffectBase subclass: its label,
@@ -298,6 +319,71 @@ public:
     virtual bool inputParticipatesInDataKindPropagation(int /*inputNb*/) const WARN_UNUSED_RETURN
     {
         return true;
+    }
+
+    /**
+     * @brief What the node's image op computes, which the scheduler's cost model and task records
+     * read; empty for a node that is not an image op, which GPU placement never considers.
+     **/
+    virtual std::optional<OpKind> opKind() const WARN_UNUSED_RETURN
+    {
+        return std::nullopt;
+    }
+
+    /**
+     * @brief Whether renderGpu() can produce this query. Nodes that cannot are rendered on the
+     * CPU, as every node is by default. The answer must depend only on the query and the node's
+     * settings: placement asks before the region is recorded, and the region engine asks again
+     * when it records it.
+     **/
+    virtual bool canRenderOnGpu(const GpuQuery& /*query*/) const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief The region of input inputNb that renderGpu() reads to produce outputRect; wider
+     * than outputRect for a node with a halo.
+     **/
+    virtual RectI getGpuInputRoI(int /*inputNb*/,
+                                 const RectI& outputRect,
+                                 const RenderScale& /*scale*/) const WARN_UNUSED_RETURN
+    {
+        return outputRect;
+    }
+
+    /**
+     * @brief The layer renderGpu() reads input inputNb in when this node renders plane at time and
+     * view; the region engine hands that input over in it. False when the GPU path cannot read
+     * the input at all, which keeps the node on the CPU, as the default does.
+     **/
+    virtual bool getGpuInputLayer(int /*inputNb*/,
+                                  const ImageLayerDesc& /*plane*/,
+                                  double /*time*/,
+                                  ViewIdx /*view*/,
+                                  ImageLayerDesc* /*layer*/) const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief Records the dispatches that fill args.output over args.outputRect. Only called
+     * when canRenderOnGpu() accepted args.query; the default fails.
+     **/
+    virtual StatusEnum renderGpu(const GpuRenderArgs& /*args*/) WARN_UNUSED_RETURN
+    {
+        return eStatusFailed;
+    }
+
+    /**
+     * @brief The mask, mix and "(Un)premult by" divisor the stages around the op resolve to at
+     * time and view, which GPU placement folds into the query. The default is neutral: no mask,
+     * a mix of 1 and no divisor.
+     **/
+    virtual GpuStageSummary getGpuStageSummary(double /*time*/,
+                                               ViewIdx /*view*/) WARN_UNUSED_RETURN
+    {
+        return GpuStageSummary();
     }
 
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE;

@@ -95,6 +95,21 @@ public:
     static void trimTo(std::size_t maxBytes);
 
     /**
+     * @brief Pooled memory is trimmed down to a floor once no pooled-size buffer has been
+     * allocated or released for an idle period, by a thread started on the first release.
+     * These override the floor and the timings (tests use short ones); the wake interval
+     * is how often idleness is checked.
+     **/
+    static void setIdleTrim(std::size_t floorBytes, int idleMilliseconds, int pollMilliseconds);
+    static void resetIdleTrim();
+
+    /**
+     * @brief Stops and joins the idle-trim thread; a later release starts it again. It is
+     * also stopped automatically at process exit.
+     **/
+    static void stopIdleTrim();
+
+    /**
      * @brief Registers a callback invoked, without internal locks held, just before a
      * pooled-size buffer is really returned to the OS. It is not invoked when a buffer is
      * recycled into the pool. Returns an id for removeFreeHook().

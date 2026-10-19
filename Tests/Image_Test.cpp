@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <bitset>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -35,6 +36,7 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -699,6 +701,8 @@ struct HostImageMemoryGuard {
 
     ~HostImageMemoryGuard()
     {
+        HostImageMemory::stopIdleTrim();
+        HostImageMemory::resetIdleTrim();
         HostImageMemory::setImportAlignment(savedAlignment);
         HostImageMemory::setMaxPoolBytes(savedMax);
         HostImageMemory::trim();
@@ -904,4 +908,87 @@ TEST(BitmapTest,
 {
     checkBitmapMarking(RectI(-7, 4, 50, 40));
     checkBitmapMarking(RectI(-100, -50, 700, 450));
+}
+
+namespace {
+const std::size_t kIdleTestBufferBytes = 4 * 1024 * 1024;
+const int kIdleTestBuffers = 4;
+
+void
+fillIdleTestPool()
+{
+    std::vector<void*> bufs;
+    for (int i = 0; i < kIdleTestBuffers; ++i) {
+        bufs.push_back(HostImageMemory::allocate(kIdleTestBufferBytes));
+        ASSERT_NE(bufs.back(), nullptr);
+    }
+    for (std::size_t i = 0; i < bufs.size(); ++i) {
+        HostImageMemory::release(bufs[i], kIdleTestBufferBytes);
+    }
+}
+
+bool
+waitForPooledAtMost(std::size_t bytes,
+                    std::chrono::milliseconds timeout)
+{
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + timeout;
+    while (HostImageMemory::pooledBytes() > bytes) {
+        if (std::chrono::steady_clock::now() > deadline) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    return true;
+}
+}
+
+TEST(HostImageMemoryTest, IdlePoolIsTrimmedToTheFloor)
+{
+    HostImageMemoryGuard guard;
+    HostImageMemory::setMaxPoolBytes(256 * 1024 * 1024);
+    const std::size_t floorBytes = HostImageMemory::paddedSize(kIdleTestBufferBytes);
+    HostImageMemory::setIdleTrim(floorBytes, 200, 20);
+    fillIdleTestPool();
+    EXPECT_EQ(HostImageMemory::pooledBytes(), floorBytes * kIdleTestBuffers);
+    EXPECT_TRUE(waitForPooledAtMost(floorBytes, std::chrono::milliseconds(10000)));
+    EXPECT_EQ(HostImageMemory::pooledBytes(), floorBytes);
+    EXPECT_EQ(HostImageMemory::pooledBufferCount(), 1u);
+}
+
+TEST(HostImageMemoryTest, ReleaseDuringTheWaitRestartsTheIdlePeriod)
+{
+    HostImageMemoryGuard guard;
+    HostImageMemory::setMaxPoolBytes(256 * 1024 * 1024);
+    const std::size_t floorBytes = HostImageMemory::paddedSize(kIdleTestBufferBytes);
+    const std::size_t full = floorBytes * kIdleTestBuffers;
+    HostImageMemory::setIdleTrim(floorBytes, 2000, 20);
+    fillIdleTestPool();
+
+    // Each cycle is activity; the pool must stay full for twice the idle period.
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::milliseconds(4000);
+    while (std::chrono::steady_clock::now() < end) {
+        void* p = HostImageMemory::allocate(kIdleTestBufferBytes);
+        ASSERT_NE(p, nullptr);
+        HostImageMemory::release(p, kIdleTestBufferBytes);
+        ASSERT_EQ(HostImageMemory::pooledBytes(), full);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    EXPECT_TRUE(waitForPooledAtMost(floorBytes, std::chrono::milliseconds(15000)));
+}
+
+TEST(HostImageMemoryTest, IdleTrimKeepsLiveBuffers)
+{
+    HostImageMemoryGuard guard;
+    HostImageMemory::setMaxPoolBytes(256 * 1024 * 1024);
+    HostImageMemory::setIdleTrim(0, 100, 20);
+    void* live = HostImageMemory::allocate(kIdleTestBufferBytes);
+    ASSERT_NE(live, nullptr);
+    std::memset(live, 0x5a, kIdleTestBufferBytes);
+    fillIdleTestPool();
+    EXPECT_TRUE(waitForPooledAtMost(0, std::chrono::milliseconds(10000)));
+    const unsigned char* c = static_cast<const unsigned char*>(live);
+    EXPECT_EQ(c[0], 0x5a);
+    EXPECT_EQ(c[kIdleTestBufferBytes - 1], 0x5a);
+    HostImageMemory::release(live, kIdleTestBufferBytes);
 }

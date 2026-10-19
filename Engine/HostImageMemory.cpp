@@ -28,12 +28,17 @@
 #include "Engine/MemoryInfo.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
 #include <cstdlib>
 #include <deque>
 #include <map>
 #include <mutex>
 #include <new>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -63,6 +68,12 @@ const std::size_t kDefaultMaxPoolRamFraction = 4;
 const std::size_t kHugePageBytes = 2 * 1024 * 1024;
 const std::size_t kMinHugePageBufferBytes = 32 * 1024 * 1024;
 
+// Pooled memory that nothing has asked for in a while is returned down to this floor, so an idle application does not
+// hold (and keep pinned) up to a quarter of the RAM.
+const std::size_t kDefaultIdleFloorBytes = 256 * 1024 * 1024;
+const std::chrono::milliseconds kDefaultIdlePeriod(30000);
+const std::chrono::milliseconds kDefaultIdlePollInterval(5000);
+
 std::size_t
 defaultMaxPoolBytes()
 {
@@ -86,6 +97,7 @@ struct State {
     std::unordered_map<void*, std::size_t> live; // padded size of every outstanding large buffer
     std::map<int, HostImageMemory::FreeHook> hooks;
     int nextHookId;
+    std::atomic<std::int64_t> lastActivityTicks; // steady_clock ticks of the last pooled allocate or release
 
     State()
         : pageSize(0)
@@ -93,6 +105,7 @@ struct State {
         , maxPoolBytes(defaultMaxPoolBytes())
         , pooledBytes(0)
         , nextHookId(1)
+        , lastActivityTicks(0)
     {
 #ifdef __NATRON_WIN32__
         SYSTEM_INFO info;
@@ -113,6 +126,98 @@ state()
     static State* s = new State;
 
     return *s;
+}
+
+std::int64_t
+nowTicks()
+{
+    return std::chrono::steady_clock::now().time_since_epoch().count();
+}
+
+void
+touch(State& s)
+{
+    s.lastActivityTicks.store(nowTicks(), std::memory_order_relaxed);
+}
+
+struct Reaper {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::thread thread;
+    bool stop = false;
+    std::size_t floorBytes = kDefaultIdleFloorBytes;
+    std::chrono::milliseconds idle = kDefaultIdlePeriod;
+    std::chrono::milliseconds interval = kDefaultIdlePollInterval;
+};
+
+// Never destroyed, like State; the joiner below stops the thread at exit.
+Reaper&
+reaper()
+{
+    static Reaper* r = new Reaper;
+
+    return *r;
+}
+
+void
+reaperLoop()
+{
+    Reaper& r = reaper();
+    State& s = state();
+    std::unique_lock<std::mutex> lk(r.mutex);
+    while (!r.stop) {
+        r.cv.wait_for(lk, r.interval);
+        if (r.stop) {
+            break;
+        }
+        const std::size_t floorBytes = r.floorBytes;
+        const std::chrono::steady_clock::duration idle = r.idle;
+        lk.unlock();
+        const std::chrono::steady_clock::time_point last{std::chrono::steady_clock::duration(s.lastActivityTicks.load(std::memory_order_relaxed))};
+        if (std::chrono::steady_clock::now() - last >= idle) {
+            // Same path as every other trim, so the free hooks drop GPU imports before the memory is returned.
+            HostImageMemory::trimTo(floorBytes);
+        }
+        lk.lock();
+    }
+}
+
+void
+stopReaperThread()
+{
+    Reaper& r = reaper();
+    std::thread t;
+    {
+        std::lock_guard<std::mutex> k(r.mutex);
+        r.stop = true;
+        t = std::move(r.thread);
+    }
+    r.cv.notify_all();
+    if (t.joinable()) {
+        if (t.get_id() == std::this_thread::get_id()) {
+            t.detach();
+        } else {
+            t.join();
+        }
+    }
+}
+
+struct ReaperJoiner {
+    ~ReaperJoiner() { stopReaperThread(); }
+};
+
+void
+ensureReaperStarted()
+{
+    Reaper& r = reaper();
+    std::lock_guard<std::mutex> k(r.mutex);
+    if (r.thread.joinable()) {
+        return;
+    }
+    r.stop = false;
+    r.thread = std::thread(reaperLoop);
+    static ReaperJoiner joiner;
+    (void)joiner;
 }
 
 std::size_t
@@ -305,6 +410,33 @@ HostImageMemory::trimTo(std::size_t maxBytes)
     reallyFree(toFree);
 }
 
+void
+HostImageMemory::setIdleTrim(std::size_t floorBytes,
+                             int idleMilliseconds,
+                             int pollMilliseconds)
+{
+    Reaper& r = reaper();
+    {
+        std::lock_guard<std::mutex> k(r.mutex);
+        r.floorBytes = floorBytes;
+        r.idle = std::chrono::milliseconds(idleMilliseconds);
+        r.interval = std::chrono::milliseconds(std::max(1, pollMilliseconds));
+    }
+    r.cv.notify_all();
+}
+
+void
+HostImageMemory::resetIdleTrim()
+{
+    setIdleTrim(kDefaultIdleFloorBytes, (int)kDefaultIdlePeriod.count(), (int)kDefaultIdlePollInterval.count());
+}
+
+void
+HostImageMemory::stopIdleTrim()
+{
+    stopReaperThread();
+}
+
 int
 HostImageMemory::addFreeHook(const FreeHook& hook)
 {
@@ -346,6 +478,7 @@ HostImageMemory::allocate(std::size_t bytes)
                 s.pool.erase((++it).base());
                 s.pooledBytes -= padded;
                 s.live[ptr] = padded;
+                touch(s);
 
                 return ptr;
             }
@@ -365,6 +498,7 @@ HostImageMemory::allocate(std::size_t bytes)
         std::lock_guard<std::mutex> k(s.mutex);
         s.live[ptr] = padded;
     }
+    touch(s);
 
     return ptr;
 }
@@ -384,6 +518,8 @@ HostImageMemory::release(void* ptr,
 
     State& s = state();
     std::vector<PooledBuffer> toFree;
+    touch(s);
+    ensureReaperStarted();
     {
         std::lock_guard<std::mutex> k(s.mutex);
         std::unordered_map<void*, std::size_t>::iterator lit = s.live.find(ptr);

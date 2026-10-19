@@ -558,6 +558,13 @@ On hosts whose `LD_LIBRARY_PATH` carries another application's Qt, run
 AppImages and binaries as `env -u LD_LIBRARY_PATH <binary>`, otherwise that Qt
 shadows Natron's.
 
+To check a real desktop session in one step, run
+`tools/gpu-spike/desktop-handoff-check.sh --glinterop <GlInteropQt or build dir>`
+on the host from a terminal in that session. It runs the probe under xcb and/or
+wayland, records the GL renderer and Vulkan device, and writes
+`handoff-report.txt` (first line `VERDICT ...`) plus raw logs into `--out`
+(default: a new temp directory). It warns when the GL renderer is not radeonsi.
+
 Confirmed recipe: not yet recorded.
 
 ## Where things live, and how to reset them

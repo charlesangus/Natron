@@ -1016,15 +1016,6 @@ TEST_F(RenderSchedulerTest, CachedOutputsOfTwoFramesAtOnce)
     for (std::size_t i = 0; i < nodes.size(); ++i) {
         ASSERT_NO_FATAL_FAILURE(setBool(nodes[i], "cacheOutput", true));
     }
-    // Identical leaves would share one cached image, and so would the merges above them: each leaf gets its own
-    // value so that every node's cached output is its own and only the two frames share it.
-    float expected = 0.f;
-    for (int i = 0; i < leaves; ++i) {
-        KnobDouble* value = dynamic_cast<KnobDouble*>(nodes[i]->getKnobByName("value").get());
-        ASSERT_TRUE(value != NULL);
-        value->setValue(1. + i);
-        expected += 1.f + i;
-    }
     // Long enough that the second frame's leaves are ready while the first frame's still render.
     for (int i = 0; i < leaves; ++i) {
         ASSERT_NO_FATAL_FAILURE(setDelay(nodes[i], kOverlapDelayMs));
@@ -1034,6 +1025,19 @@ TEST_F(RenderSchedulerTest, CachedOutputsOfTwoFramesAtOnce)
     for (std::size_t p = 0; p < sizeof(poolSizes) / sizeof(poolSizes[0]); ++p) {
         SCOPED_TRACE("pool size " + std::to_string(poolSizes[p]));
         PoolSizeGuard pool(poolSizes[p]);
+        // Identical leaves would share one cached image, and so would the merges above them: each leaf gets its own
+        // value so that every node's cached output is its own and only the two frames share it. The values also
+        // differ from one pool size to the next: clearAllCaches() keeps the images still referenced, and pool threads
+        // can hold images of the previous pool size's frames for a moment after their futures are done (the one that
+        // finished a frame holds it, root plane included), which the same values would find under the same hashes.
+        float expected = 0.f;
+        for (int i = 0; i < leaves; ++i) {
+            KnobDouble* value = dynamic_cast<KnobDouble*>(nodes[i]->getKnobByName("value").get());
+            ASSERT_TRUE(value != NULL);
+            const double leafValue = 1. + i + (double)(leaves * p);
+            value->setValue(leafValue);
+            expected += (float)leafValue;
+        }
         appPTR->clearAllCaches();
         CountingTestRegistry::reset();
 

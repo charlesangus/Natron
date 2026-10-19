@@ -7,11 +7,12 @@ Port the native nodes M85 left on the CPU, using M85's description, wrap helpers
 - Reformat, on M85's `resample.slang`;
 - Crop with softness, and Position;
 - Dissolve, as a multi-input point op;
-- Shuffle, ShuffleCopy, AddLayers and RemoveLayers, once regions accept multi-plane tasks (M109).
+- Multi-plane placement candidates: a multi-plane `GpuQuery`/`GpuRenderArgs` in `Engine/Nodes/Image/GpuRender.h`, so Shuffle-family nodes can join regions. M109 - GPU Region Engine Hardening moved this out of its scope. It edits the header M126 - Runtime GPU Shaders changed, so it starts from M126's merged version;
+- Shuffle, ShuffleCopy, AddLayers and RemoveLayers, on that multi-plane placement.
 
 Each gets a CPU/GPU parity test with its README tolerance.
 
-Blocked on: M85 merged (the description, `pixelwrap.slang` and `resample.slang`), and for the channel nodes, M109's multi-plane placement.
+Blocked on: M109 - GPU Region Engine Hardening merging, since this milestone's region and placement work builds on its hardened engine. M85 - Native GPU Kernels and M126 - Runtime GPU Shaders have merged.
 
 Acceptance sketch:
 - Each ported node matches its CPU output within its stated tolerance.

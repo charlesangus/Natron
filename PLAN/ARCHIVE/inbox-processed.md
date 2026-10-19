@@ -3336,3 +3336,7 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
 ### 2026-10-13T00:00:00Z — change-request
 - refs: none
 - Pre-existing bug found during the M56 end build: at `QT_SCALE_FACTOR=2`, clicking directly on a curve in the curve editor doesn't select it (a click aimed at y=150 only picked `gamma.r` at y=14), so the curve hit-test likely ignores the device pixel ratio. At 1× it works. Needs a home: a task in a curve-editor milestone (M96?) or a new small fix milestone.
+
+### 2026-10-16T02:40:00-04:00 — change-request
+- refs: M110
+- When M109 - GPU Region Engine Hardening was elaborated, it moved multi-plane placement candidates, which Shuffle-family nodes need to join regions, out of its scope and into M110 - Remaining Native GPU Ports. The work needs a multi-plane `GpuQuery`/`GpuRenderArgs` in `Engine/Nodes/Image/GpuRender.h`, which M126 - Runtime GPU Shaders edits. M110's stub says it is blocked on "M109's multi-plane placement". Make that a task of M110's own instead, starting after M126 merges, and add M126 to M110's Deps.

@@ -120,7 +120,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
 
 ## Phase 137.1: Baselines before any change
 
-- [ ] M137.P1.T1 — Golden-render harness and pre-migration CPU goldens
+- [x] M137.P1.T1 — Golden-render harness and pre-migration CPU goldens
   - files: `Tests/Native/NativeGolden.{h,cpp}` (new), `Tests/Native/NativeGolden_Test.cpp` (new), `Tests/fixtures/native-golden/` (new), `Tests/CMakeLists.txt`
   - approach:
     - Add a harness that renders a native node on fixed inputs and compares the result bit-exactly with a stored reference. Reuse `NativeParity`'s "NPAR" `.f32` writer and reader (`NativeParity.h:236-310`) rather than a new format.

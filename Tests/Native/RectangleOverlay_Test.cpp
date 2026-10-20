@@ -58,6 +58,10 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kRectangleOverlayInputs[] = {
+    InputSpec { .label = "Source", .optional = true },
+};
+
 template <bool WITH_OPTIONAL_KNOBS>
 class RectangleOverlayTestEffect
     : public NativeEffectBase {
@@ -73,17 +77,15 @@ public:
     }
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    static constexpr NodeSpec kNodeSpec = {
+        .id = WITH_OPTIONAL_KNOBS ? kRectangleOverlayPluginID : kRectangleOverlayMinimalPluginID,
+        .label = WITH_OPTIONAL_KNOBS ? "Test Rectangle Overlay" : "Test Rectangle Overlay Minimal",
+        .inputs = kRectangleOverlayInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        NativePluginDescription desc;
-
-        desc.id = WITH_OPTIONAL_KNOBS ? kRectangleOverlayPluginID : kRectangleOverlayMinimalPluginID;
-        desc.label = WITH_OPTIONAL_KNOBS ? "Test Rectangle Overlay" : "Test Rectangle Overlay Minimal";
-        desc.description = "";
-        desc.inputs.push_back(NativeInputDescription("Source", true, eDataKindImage));
-        desc.outputKind = eDataKindImage;
-
-        return desc;
+        return staticNodeSpec<kNodeSpec>();
     }
 
     virtual void initializeKnobs() OVERRIDE FINAL

@@ -55,7 +55,6 @@
 #include "Engine/RenderScale.h"
 
 #define kNodeSpecTestPluginID "test.natron.built-in.NodeSpec"
-#define kNodeSpecLegacyTestPluginID "test.natron.built-in.NodeSpecLegacy"
 #define kNodeSpecBakeTestPluginID "test.natron.built-in.NodeSpecBake"
 
 NATRON_NAMESPACE_ENTER
@@ -156,57 +155,6 @@ public:
     Route nextRoute;
 
 private:
-    virtual void initializeKnobs() OVERRIDE FINAL
-    {
-    }
-};
-
-// Describes, through the description it replaces, exactly what SpecTestEffect's spec does.
-class LegacyTestEffect
-    : public NativeEffectBase {
-public:
-    static EffectInstance* BuildEffect(NodePtr n)
-    {
-        return new LegacyTestEffect(n);
-    }
-
-    explicit LegacyTestEffect(NodePtr n)
-        : NativeEffectBase(n)
-    {
-    }
-
-    bool callIsIdentity(double time,
-                        ViewIdx view,
-                        double* inputTime,
-                        ViewIdx* inputView,
-                        int* inputNb)
-    {
-        return isIdentity(time, RenderScale::identity, RectI(0, 0, 16, 16), view, inputTime, inputView, inputNb);
-    }
-
-private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        NativePluginDescription desc;
-
-        desc.id = kNodeSpecTestPluginID;
-        desc.label = "Node Spec Test";
-        desc.description = "A node described by a NodeSpec.";
-        desc.grouping = "Test/Spec Nested";
-        desc.majorVersion = 3;
-        desc.minorVersion = 2;
-        desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindImage));
-        desc.inputs.push_back(NativeInputDescription("Depth", true, eDataKindDeep));
-        desc.inputs.push_back(NativeInputDescription("Mask", true, eDataKindImage, true));
-        desc.inputs.push_back(NativeInputDescription("In2", true, eDataKindImage));
-        desc.inputs.push_back(NativeInputDescription("In3", true, eDataKindImage));
-        desc.inputs.push_back(NativeInputDescription("In4", true, eDataKindImage));
-        desc.outputKind = eDataKindPolymorphic;
-        desc.isWriter = true;
-
-        return desc;
-    }
-
     virtual void initializeKnobs() OVERRIDE FINAL
     {
     }
@@ -374,40 +322,40 @@ protected:
     }
 };
 
-TEST_F(NodeSpecTest, SpecAnswersEveryDescriptionQueryAsTheEquivalentDescription)
+TEST_F(NodeSpecTest, SpecAnswersEveryDescriptionQuery)
 {
     std::shared_ptr<SpecTestEffect> spec(new SpecTestEffect(NodePtr()));
-    std::shared_ptr<LegacyTestEffect> legacy(new LegacyTestEffect(NodePtr()));
 
     ASSERT_NE(nullptr, spec->nodeSpec());
-    ASSERT_EQ(nullptr, legacy->nodeSpec());
 
-    EXPECT_EQ(legacy->getPluginID(), spec->getPluginID());
-    EXPECT_EQ(legacy->getPluginLabel(), spec->getPluginLabel());
-    EXPECT_EQ(legacy->getPluginDescription(), spec->getPluginDescription());
-    EXPECT_EQ(legacy->getMajorVersion(), spec->getMajorVersion());
-    EXPECT_EQ(legacy->getMinorVersion(), spec->getMinorVersion());
-    EXPECT_EQ(legacy->isWriter(), spec->isWriter());
-    EXPECT_EQ(legacy->isOutput(), spec->isOutput());
-    EXPECT_EQ(legacy->getOutputDataKind(), spec->getOutputDataKind());
+    EXPECT_EQ(std::string(kNodeSpecTestPluginID), spec->getPluginID());
+    EXPECT_EQ(std::string("Node Spec Test"), spec->getPluginLabel());
+    EXPECT_EQ(std::string("A node described by a NodeSpec."), spec->getPluginDescription());
+    EXPECT_EQ(3, spec->getMajorVersion());
+    EXPECT_EQ(2, spec->getMinorVersion());
+    EXPECT_TRUE(spec->isWriter());
+    EXPECT_TRUE(spec->isOutput());
+    EXPECT_EQ(eDataKindPolymorphic, spec->getOutputDataKind());
 
-    std::list<std::string> legacyGrouping;
-    std::list<std::string> specGrouping;
-    legacy->getPluginGrouping(&legacyGrouping);
-    spec->getPluginGrouping(&specGrouping);
-    EXPECT_EQ(legacyGrouping, specGrouping);
-    EXPECT_EQ(2u, specGrouping.size());
+    std::list<std::string> grouping;
+    spec->getPluginGrouping(&grouping);
+    ASSERT_EQ(2u, grouping.size());
+    EXPECT_EQ(std::string("Test"), grouping.front());
+    EXPECT_EQ(std::string("Spec Nested"), grouping.back());
 
-    ASSERT_EQ(6, legacy->getNInputs());
-    ASSERT_EQ(legacy->getNInputs(), spec->getNInputs());
-    for (int i = -1; i <= spec->getNInputs(); ++i) {
+    ASSERT_EQ(6, spec->getNInputs());
+
+    const char* const labels[] = { "Source", "Depth", "Mask", "In2", "In3", "In4" };
+    const bool optional[] = { false, true, true, true, true, true };
+    const bool mask[] = { false, false, true, false, false, false };
+    const DataKindEnum kinds[] = { eDataKindImage, eDataKindDeep, eDataKindImage, eDataKindImage, eDataKindImage, eDataKindImage };
+    for (int i = 0; i < 6; ++i) {
         SCOPED_TRACE(i);
-        EXPECT_EQ(legacy->getInputLabel(i), spec->getInputLabel(i));
-        EXPECT_EQ(legacy->isInputOptional(i), spec->isInputOptional(i));
-        EXPECT_EQ(legacy->isInputMask(i), spec->isInputMask(i));
-        EXPECT_EQ(legacy->getInputDataKind(i), spec->getInputDataKind(i));
+        EXPECT_EQ(std::string(labels[i]), spec->getInputLabel(i));
+        EXPECT_EQ(optional[i], spec->isInputOptional(i));
+        EXPECT_EQ(mask[i], spec->isInputMask(i));
+        EXPECT_EQ(kinds[i], spec->getInputDataKind(i));
     }
-    EXPECT_EQ(std::string("In3"), spec->getInputLabel(4));
 }
 
 TEST_F(NodeSpecTest, IsIdentityAnswersFromTheRoute)
@@ -433,16 +381,6 @@ TEST_F(NodeSpecTest, IsIdentityAnswersFromTheRoute)
     EXPECT_EQ(-1, inputNb);
     EXPECT_EQ(5., inputTime);
     EXPECT_EQ(1, inputView.value());
-}
-
-TEST_F(NodeSpecTest, NodeWithoutSpecKeepsItsIdentity)
-{
-    std::shared_ptr<LegacyTestEffect> effect(new LegacyTestEffect(NodePtr()));
-    double inputTime = 0.;
-    ViewIdx inputView(0);
-    int inputNb = -1;
-
-    EXPECT_FALSE(effect->callIsIdentity(5., ViewIdx(0), &inputTime, &inputView, &inputNb));
 }
 
 TEST_F(NodeSpecTest, BakeReadsEachKnobOnce)

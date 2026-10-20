@@ -67,6 +67,10 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kEngineHooksInputs[] = {
+    InputSpec { .label = "Source", .optional = true },
+};
+
 class EngineHooksUnPremultTestEffect
     : public NativeEffectBase {
 public:
@@ -86,17 +90,15 @@ public:
     }
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kEngineHooksUnPremultPluginID,
+        .label = "Test Engine Hooks UnPremult",
+        .inputs = kEngineHooksInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        NativePluginDescription desc;
-
-        desc.id = kEngineHooksUnPremultPluginID;
-        desc.label = "Test Engine Hooks UnPremult";
-        desc.description = "";
-        desc.inputs.push_back(NativeInputDescription("Source", true, eDataKindImage));
-        desc.outputKind = eDataKindImage;
-
-        return desc;
+        return staticNodeSpec<kNodeSpec>();
     }
 };
 
@@ -168,17 +170,15 @@ public:
     }
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kEngineHooksPlaneRecorderPluginID,
+        .label = "Test Engine Hooks Plane Recorder",
+        .inputs = kEngineHooksInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        NativePluginDescription desc;
-
-        desc.id = kEngineHooksPlaneRecorderPluginID;
-        desc.label = "Test Engine Hooks Plane Recorder";
-        desc.description = "";
-        desc.inputs.push_back(NativeInputDescription("Source", true, eDataKindImage));
-        desc.outputKind = eDataKindImage;
-
-        return desc;
+        return staticNodeSpec<kNodeSpec>();
     }
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN

@@ -435,19 +435,6 @@ ParitySourceTestEffect::addSupportedBitDepth(std::list<ImageBitDepthEnum>* depth
     depths->push_back(eImageBitDepthFloat);
 }
 
-NativePluginDescription
-ParitySourceTestEffect::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = kTestPluginIDParitySource;
-    desc.label = "Test Parity Source";
-    desc.description = "";
-    desc.outputKind = eDataKindImage;
-
-    return desc;
-}
-
 void
 ParitySourceTestEffect::initializeKnobs()
 {

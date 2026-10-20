@@ -59,22 +59,14 @@ struct StageKnobs {
 };
 
 /**
- * @brief One input of a Composite op as a render reads it: inputNb at time.
- *
- * A Mask-role input (mask) reads the one channel maskChannel of maskLayer its mask selector
- * names, and reads zero when maskApplied is false (disconnected or disabled) or maskChannel is -1.
- * Any other input is read in the layer of layerInput, which is inputNb itself unless its
- * InputLayer pairs it with another input: the plane being rendered as that input resolves it
- * when layerKnob is empty, else the layer the KnobLayerSelect named layerKnob selects among the
- * layers layerInput carries.
+ * @brief One input of a Composite op as a render reads it: inputNb at time, in the layer of
+ * layerInput, which is inputNb itself unless its InputLayer pairs it with another input: the plane
+ * being rendered as that input resolves it when layerKnob is empty, else the layer the
+ * KnobLayerSelect named layerKnob selects among the layers layerInput carries.
  **/
 struct StageSource {
     int inputNb = -1;
     double time = 0.;
-    bool mask = false;
-    bool maskApplied = false;
-    ImageLayerDesc maskLayer;
-    int maskChannel = -1;
     int layerInput = -1;
     std::string_view layerKnob = {};
 };
@@ -87,8 +79,8 @@ struct StageSource {
  * one a Point, Passes or Resample op reads; -1 for none. applyMask is whether the mask input is
  * connected and enabled; maskChannel is the channel of maskLayer it reads, -1 when it resolves to
  * none, in which case the mask reads zero everywhere. divisorChannel is the channel of
- * divisorLayer "(Un)premult by" divides by, -1 for none. sources holds the nSources inputs a
- * Composite op reads, none for any other op.
+ * divisorLayer "(Un)premult by" divides by, -1 for none. composite holds a Composite op's base
+ * input followed by its further inputs in fold order, and is empty for any other op.
  **/
 struct StagePlan {
     double time = 0.;
@@ -104,8 +96,7 @@ struct StagePlan {
     int maskChannel = -1;
     ImageLayerDesc divisorLayer;
     int divisorChannel = -1;
-    StageSource sources[kPixelKernelMaxInputs];
-    int nSources = 0;
+    std::vector<StageSource> composite;
 };
 
 /**
@@ -169,26 +160,13 @@ StagePlan resolveStagePlan(EffectInstance& effect,
                            const std::bitset<4>& processChannels) WARN_UNUSED_RETURN;
 
 /**
- * @brief Fills plan's sources from a Composite op's sources, at most kPixelKernelMaxInputs:
- * whether each is a Mask-role input of spec, its mask selector's layer and channel if so, and
- * otherwise the input and knob its InputLayer resolves to. A pairing that never ends in a plane or
- * a selection reads the input's own plane. With a null spec, every input reads its own plane.
+ * @brief Fills plan's composite list from a Composite op's inputs, base first: the input and knob
+ * each one's InputLayer resolves to. A pairing that never ends in a plane or a selection reads the
+ * input's own plane. With a null spec, every input reads its own plane.
  **/
-void resolveStageSources(EffectInstance& effect,
-                         const NodeSpec* spec,
-                         const CompositeSources& sources,
+void resolveStageSources(const NodeSpec* spec,
+                         const CompositeInputs& inputs,
                          StagePlan* plan);
-
-/**
- * @brief The layer a source whose InputLayer selects one (a non-empty layerKnob) is read in at
- * view: the layer its KnobLayerSelect resolves to among those layerInput carries at the source's
- * time, read as stored. False when the knob is missing or resolves to no layer, in which case the
- * source reads zero.
- **/
-bool resolveStageSourceLayer(EffectInstance& effect,
-                             const StageSource& source,
-                             ViewIdx view,
-                             ImageLayerDesc* layer) WARN_UNUSED_RETURN;
 
 /**
  * @brief Renders args through plan with row, the op's per-row function, on the CPU.
@@ -201,8 +179,10 @@ bool resolveStageSourceLayer(EffectInstance& effect,
  * undivided source by mask x mix, and with PassThroughUnprocessed the other channels are
  * copied from the source.
  *
- * With plan.nSources > 0, row gets those inputs' rows in io.src instead, as StageSource
- * describes them, and the source rows only serve the blend and the pass-through.
+ * With a non-empty plan.composite, row is a Composite op's step: the result starts as the base
+ * input's row and row folds each further input's row into it, as CompositeOp describes, and that
+ * result takes the place of row's output; the source rows only serve the blend and the
+ * pass-through.
  **/
 StatusEnum runStagesCpu(EffectInstance& effect,
                         const StagePlan& plan,
@@ -245,11 +225,10 @@ bool canRunStagesGpu(const StagePlan& plan,
                      const GpuQuery& query) WARN_UNUSED_RETURN;
 
 /**
- * @brief Whether the GPU executor can read plan's Composite sources for query: one to
- * kPixelKernelMaxInputs of them, none divided, every one read at the query's time, and every input
- * read in one layer. The region engine hands an input over once, so a Mask-role source or a
- * source with a selected layer cannot also be the blend input, and no source other than a
- * Mask-role one can be the input the MaskMix stage reads its mask from.
+ * @brief Whether the GPU executor can fold plan's Composite inputs for query: a base input, no
+ * divisor, and every input read at the query's time in the query's plane. The region engine hands
+ * an input over once, in one layer, so no folded input can be the input the MaskMix stage reads
+ * its mask from.
  **/
 bool canRunStageSourcesGpu(const StagePlan& plan,
                            const GpuQuery& query) WARN_UNUSED_RETURN;
@@ -309,9 +288,10 @@ bool canRecordGpuOp(const GpuOpRef& op,
  * recordStagesGpuFinish(), with its uniforms and textures, as GpuRuntimeShader describes.
  * An input that is not connected reads zero, and a mask that is not handed over reads zero.
  *
- * With plan.nSources > 0 the op is a Composite op, and must be a Kernel whose entry is built with
- * runWrappedSources: it reads plan's sources as runStagesCpu() reads them, and is blended against
- * plan.sourceInput.
+ * With a non-empty plan.composite the op is a Composite op, and must be a Kernel whose entry is
+ * built with runCompositeStep: it is dispatched once per further input, each dispatch folding one
+ * input into the result so far, alternating between two scratch buffers, and recordStagesGpuFinish()
+ * then blends the result against plan.sourceInput. With no further input the result is the base.
  **/
 StatusEnum recordStagesGpu(const StagePlan& plan,
                            const GpuRenderArgs& args,

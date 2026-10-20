@@ -1,12 +1,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include <array>
 #include <cfloat>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <limits>
 #include <memory>
 #include <random>
@@ -19,8 +17,7 @@
 #include "GpuRuntime.h"
 #include "GpuTestDevice.h"
 #include "GpuWrap.h"
-#include "compositewrap_four_spirv.h"
-#include "compositewrap_two_spirv.h"
+#include "compositestep_halveadd_spirv.h"
 #include "pixelwrap_identity_spirv.h"
 #include "pixelwrap_scale_spirv.h"
 
@@ -49,9 +46,8 @@ struct TwinGlobals {
 };
 
 // The C++ target lays out an importing module's globals before those it imports.
-struct TwinSourcesGlobals {
-    TwinBuffer source[kGpuWrapMaxSources];
-    TwinBuffer views;
+struct TwinStepGlobals {
+    TwinBuffer input;
     TwinBuffer src;
     TwinBuffer dst;
     TwinBuffer mask;
@@ -67,8 +63,7 @@ extern "C" void pixelwrap_identity(TwinVarying*, void*, void*);
 extern "C" void pixelwrap_scale(TwinVarying*, void*, void*);
 extern "C" void wrap_divide(TwinVarying*, void*, void*);
 extern "C" void wrap_finish(TwinVarying*, void*, void*);
-extern "C" void compositewrap_two(TwinVarying*, void*, void*);
-extern "C" void compositewrap_four(TwinVarying*, void*, void*);
+extern "C" void compositestep_halveadd(TwinVarying*, void*, void*);
 
 namespace {
 
@@ -498,66 +493,34 @@ checkTwin(Kernel kernel)
     }
 }
 
-enum class SourcesKernel {
-    // pixel[0] + pixel[1] * 0.5, over two colour inputs.
-    Two,
-    // pixel[0] * pixel[1].a + pixel[3] * pixel[2].a, with inputs 1 and 2 Mask-role.
-    Four
-};
+// A Composite op's fold under the halve-and-add step, and its finish: base is the result the fold
+// starts from, inputs are folded into it in order, and the Case's src is the blend input.
+struct FoldCase {
+    Case finish;
+    HostView base;
+    std::vector<HostView> inputs;
 
-const char*
-sourcesKernelName(SourcesKernel k)
-{
-    return k == SourcesKernel::Two ? "compositewrap_two" : "compositewrap_four";
-}
-
-TwinEntry
-sourcesTwinEntry(SourcesKernel k)
-{
-    return k == SourcesKernel::Two ? compositewrap_two : compositewrap_four;
-}
-
-uint32_t
-sourcesCount(SourcesKernel k)
-{
-    return k == SourcesKernel::Two ? 2u : 4u;
-}
-
-bool
-isMaskSource(SourcesKernel k, uint32_t s)
-{
-    return k == SourcesKernel::Four && (s == 1 || s == 2);
-}
-
-// A Case whose src is the blend source, plus the inputs the op reads.
-struct SourcesCase {
-    Case base;
-    uint32_t count = 0;
-    HostView sources[kGpuWrapMaxSources];
-    int32_t channels[kGpuWrapMaxSources] = { -1, -1, -1, -1 };
-
-    GpuWrapSources wrapSources() const
+    std::vector<GpuWrapView> inputViews() const
     {
-        GpuWrapSources w;
-        w.count = count;
-        for (uint32_t s = 0; s < count; ++s) {
-            w.list[s].view = sources[s].view(nullptr);
-            w.list[s].channel = channels[s];
+        std::vector<GpuWrapView> views;
+        for (const HostView& v : inputs) {
+            views.push_back(v.view(nullptr));
         }
-        return w;
+        return views;
     }
 };
 
-// Channel counts and subsets, no / partial / inverted mask and mix 0, 0.5 and 1, as makeCases(),
-// over colour inputs of the output's channel count and of others, Mask-role inputs of one and two
-// channels, and inputs that are smaller than the output, cover it, or are missing.
-std::vector<SourcesCase>
-makeSourcesCases(SourcesKernel kernel)
+// Folds of `count` inputs, the base included, over channel counts and subsets, no / partial /
+// inverted mask and mix 0, 0.5 and 1, as makeCases(), with a blend input other than the base, and
+// a base and inputs that are smaller than the output, cover it, or are missing, the inputs in the
+// output's channel count and in others.
+std::vector<FoldCase>
+makeFoldCases(uint32_t count)
 {
     const GpuWrapRect output { -5, 3, 32, 22 };
-    const GpuWrapRect sourceBounds[3] = { { 0, 6, 20, 17 }, { -9, 0, 40, 30 }, { 4, -2, 27, 12 } };
-    std::vector<SourcesCase> cases;
-    std::mt19937 rng(4321 + int(kernel));
+    const GpuWrapRect inputBounds[3] = { { 0, 6, 20, 17 }, { -9, 0, 40, 30 }, { 4, -2, 27, 12 } };
+    std::vector<FoldCase> cases;
+    std::mt19937 rng(4321 + int(count));
     for (uint32_t n : { 1u, 3u, 4u }) {
         std::vector<uint32_t> subsets;
         if (n == 1) {
@@ -571,49 +534,48 @@ makeSourcesCases(SourcesKernel kernel)
             for (int maskMode = 0; maskMode < 3; ++maskMode) {
                 for (float mix : { 0.0f, 0.5f, 1.0f }) {
                     const size_t index = cases.size();
-                    SourcesCase c;
-                    c.base.nComps = n;
-                    c.base.channelMask = subset;
-                    c.base.output = output;
-                    c.base.mix = mix;
+                    FoldCase c;
+                    Case& f = c.finish;
+                    f.nComps = n;
+                    f.channelMask = subset;
+                    f.output = output;
+                    f.mix = mix;
                     if (index % 5 == 4) {
-                        c.base.src = makeView({}, n, 0, 0, 0.0f);
+                        f.src = makeView({}, n, 0, 0, 0.0f);
                     } else {
-                        c.base.src = makeView(index % 2 ? GpuWrapRect { -9, 0, 40, 30 } : GpuWrapRect { 1, 5, 21, 18 }, n,
-                                              index % 2 ? 0 : 7, index % 2 ? 0 : 3, 0.0f);
+                        f.src = makeView(index % 2 ? GpuWrapRect { -9, 0, 40, 30 } : GpuWrapRect { 1, 5, 21, 18 }, n,
+                                         index % 2 ? 0 : 7, index % 2 ? 0 : 3, 0.0f);
                     }
-                    fillSource(c.base.src, -1, rng);
-                    c.base.dst = makeView({ -7, 1, 35, 25 }, n, 5, 2, kSentinel);
+                    fillSource(f.src, -1, rng);
+                    f.dst = makeView({ -7, 1, 35, 25 }, n, 5, 2, kSentinel);
                     if (maskMode > 0) {
-                        c.base.applyMask = true;
-                        c.base.maskInvert = maskMode == 2;
-                        c.base.mask = makeView({ 2, -1, 25, 15 }, 2, 3, 2, 0.0f);
-                        c.base.maskChannel = 1;
-                        fillMask(c.base.mask, rng);
+                        f.applyMask = true;
+                        f.maskInvert = maskMode == 2;
+                        f.mask = makeView({ 2, -1, 25, 15 }, 2, 3, 2, 0.0f);
+                        f.maskChannel = 1;
+                        fillMask(f.mask, rng);
                     }
-                    c.count = sourcesCount(kernel);
-                    for (uint32_t s = 0; s < c.count; ++s) {
+                    if (index % 7 == 3) {
+                        c.base = makeView({}, n, 0, 0, 0.0f);
+                    } else {
+                        c.base = makeView(inputBounds[index % 3], n, index % 4, uint32_t(index % 3), 0.0f);
+                        fillSource(c.base, -1, rng);
+                    }
+                    for (uint32_t s = 1; s < count; ++s) {
                         const size_t k = index + s;
                         if (k % 7 == 3) {
-                            c.sources[s] = makeView({}, 1, 0, 0, 0.0f);
-                            continue;
-                        }
-                        const GpuWrapRect bounds = sourceBounds[k % 3];
-                        if (isMaskSource(kernel, s)) {
-                            const uint32_t comps = k % 2 ? 2u : 1u;
-                            c.sources[s] = makeView(bounds, comps, k % 4, uint32_t(k % 3), 0.0f);
-                            c.channels[s] = int32_t(comps - 1);
-                            fillMask(c.sources[s], rng);
+                            c.inputs.push_back(makeView({}, n, 0, 0, 0.0f));
                             continue;
                         }
                         const uint32_t comps[4] = { n, 4u, 1u, 3u };
-                        c.sources[s] = makeView(bounds, comps[k % 4], 2 * s, uint32_t(s), 0.0f);
-                        fillSource(c.sources[s], -1, rng);
+                        HostView v = makeView(inputBounds[k % 3], comps[k % 4], 2 * s, s, 0.0f);
+                        fillSource(v, -1, rng);
+                        c.inputs.push_back(std::move(v));
                     }
                     char label[160];
-                    std::snprintf(label, sizeof label, "%s n=%u channels=0x%x mask=%d mix=%g case=%zu",
-                                  sourcesKernelName(kernel), n, subset, maskMode, double(mix), index);
-                    c.base.label = label;
+                    std::snprintf(label, sizeof label, "fold of %u n=%u channels=0x%x mask=%d mix=%g case=%zu", count, n,
+                                  subset, maskMode, double(mix), index);
+                    f.label = label;
                     cases.push_back(std::move(c));
                 }
             }
@@ -632,12 +594,30 @@ channelIndexForBit(int nComps, int bit)
     return bit < nComps ? bit : -1;
 }
 
-// A transcription of runStagesCpu() over a Composite op's inputs, with readSourceRow's and
-// readChannelRow's fills outside the images.
-Expected
-sourcesReference(SourcesKernel kernel, const SourcesCase& sc)
+// A view's pixel in the output's channels by channel bit, zero outside the view, as readSourceRow
+// reads it.
+void
+readFoldPixel(const HostView& v, int x, int y, int n, float* out)
 {
-    const Case& c = sc.base;
+    for (int ch = 0; ch < 4; ++ch) {
+        out[ch] = 0.f;
+    }
+    if (v.bounds.empty() || !v.inside(x, y)) {
+        return;
+    }
+    for (int ch = 0; ch < n; ++ch) {
+        const int i = channelIndexForBit(int(v.nComps), channelBit(n, ch));
+        if (i >= 0) {
+            out[ch] = v.data[v.index(x, y, i)];
+        }
+    }
+}
+
+// A transcription of runStagesCpu() over a Composite op's fold under the halve-and-add step.
+Expected
+foldReference(const FoldCase& fc)
+{
+    const Case& c = fc.finish;
     Expected e;
     e.value = c.dst.data;
     e.divided.assign(e.value.size(), 0);
@@ -645,41 +625,15 @@ sourcesReference(SourcesKernel kernel, const SourcesCase& sc)
     const int n = int(c.nComps);
     for (int y = c.output.y1; y < c.output.y2; ++y) {
         for (int x = c.output.x1; x < c.output.x2; ++x) {
-            float sourcePix[4] = { 0, 0, 0, 0 };
-            if (c.src.inside(x, y)) {
+            float sourcePix[4];
+            readFoldPixel(c.src, x, y, n, sourcePix);
+            float result[4];
+            readFoldPixel(fc.base, x, y, n, result);
+            for (const HostView& input : fc.inputs) {
+                float inputPix[4];
+                readFoldPixel(input, x, y, n, inputPix);
                 for (int ch = 0; ch < n; ++ch) {
-                    sourcePix[ch] = c.src.data[c.src.index(x, y, ch)];
-                }
-            }
-            float inputs[kGpuWrapMaxSources][4] = {};
-            for (uint32_t s = 0; s < sc.count; ++s) {
-                const HostView& v = sc.sources[s];
-                if (v.bounds.empty() || !v.inside(x, y)) {
-                    continue;
-                }
-                if (sc.channels[s] >= 0) {
-                    inputs[s][0] = v.data[v.index(x, y, sc.channels[s])];
-                    continue;
-                }
-                for (int ch = 0; ch < n; ++ch) {
-                    const int i = channelIndexForBit(int(v.nComps), channelBit(n, ch));
-                    if (i >= 0) {
-                        inputs[s][ch] = v.data[v.index(x, y, i)];
-                    }
-                }
-            }
-
-            float kernelPix[4] = { 0, 0, 0, 0 };
-            for (int ch = 0; ch < n; ++ch) {
-                if (!(c.channelMask & (1u << channelBit(n, ch)))) {
-                    continue;
-                }
-                if (kernel == SourcesKernel::Two) {
-                    kernelPix[ch] = inputs[0][ch] + inputs[1][ch] * 0.5f;
-                } else {
-                    const float kept = inputs[0][ch] * inputs[1][0];
-                    const float added = inputs[3][ch] * inputs[2][0];
-                    kernelPix[ch] = kept + added;
+                    result[ch] = result[ch] * 0.5f + inputPix[ch];
                 }
             }
 
@@ -696,7 +650,7 @@ sourcesReference(SourcesKernel kernel, const SourcesCase& sc)
                     e.value[i] = srcV;
                     continue;
                 }
-                float v = kernelPix[ch];
+                float v = result[ch];
                 if (alpha == 0.f) {
                     v = srcV;
                 } else if (alpha != 1.f) {
@@ -709,49 +663,61 @@ sourcesReference(SourcesKernel kernel, const SourcesCase& sc)
     return e;
 }
 
+// recordWrapFold()'s dispatches run through the C++ twins: one step per input, alternating between
+// two scratch buffers, then wrap_finish.
 std::vector<float>
-runSourcesTwin(SourcesKernel kernel, const SourcesCase& sc)
+runFoldTwin(const FoldCase& fc)
 {
-    const Case& c = sc.base;
+    const Case& c = fc.finish;
+    std::vector<float> unused(16, 0.0f);
+    const uint32_t n = c.nComps;
+    const uint32_t width = uint32_t(c.output.x2 - c.output.x1);
+    const uint32_t height = uint32_t(c.output.y2 - c.output.y1);
+    HostView scratch[2];
+    for (HostView& v : scratch) {
+        v = makeView(c.output, n, 0, 0, 0.0f);
+    }
+    std::vector<float> base = fc.base.data.empty() ? unused : fc.base.data;
+    TwinVarying vi { { 0, 0, 0 }, { (width + 7) / 8, (height + 7) / 8, 1 } };
+    for (size_t k = 0; k < fc.inputs.size(); ++k) {
+        const HostView& resultView = k == 0 ? fc.base : scratch[(k - 1) & 1];
+        HostView& dstView = scratch[k & 1];
+        GpuWrapStep step;
+        step.result = resultView.view(nullptr);
+        step.input = fc.inputs[k].view(nullptr);
+        step.dst = dstView.view(nullptr);
+        step.output = c.output;
+        step.nComps = n;
+        step.channelMask = c.channelMask;
+        GpuWrapParams p;
+        const GpuStatus s = wrapStepParams(step, p);
+        EXPECT_TRUE(s.ok()) << c.label << ": " << s.message;
+        std::vector<float> result = k == 0 ? base : resultView.data;
+        std::vector<float> input = fc.inputs[k].data.empty() ? unused : fc.inputs[k].data;
+        TwinStepGlobals g { { input.data(), input.size() }, { result.data(), result.size() }, { dstView.data.data(), dstView.data.size() }, { unused.data(), unused.size() }, { unused.data(), unused.size() }, &p };
+        compositestep_halveadd(&vi, nullptr, &g);
+    }
+    HostView& filtered = scratch[(fc.inputs.size() - 1) & 1];
     GpuWrapParams p;
-    GpuStatus s = wrapParams(c.wrap(), p);
-    EXPECT_TRUE(s.ok()) << c.label << ": " << s.message;
-    GpuWrapSourceBlock block;
-    s = wrapSourceBlock(c.wrap(), sc.wrapSources(), block);
+    const GpuWrapView filteredView = filtered.view(nullptr);
+    const GpuStatus s = wrapParams(c.wrap(), p, &filteredView);
     EXPECT_TRUE(s.ok()) << c.label << ": " << s.message;
     std::vector<float> dst = c.dst.data;
-    std::vector<float> unused(16, 0.0f);
     std::vector<float> src = c.src.data.empty() ? unused : c.src.data;
     std::vector<float> mask = c.mask.data.empty() ? unused : c.mask.data;
-    std::vector<float> sources[kGpuWrapMaxSources];
-    for (uint32_t k = 0; k < kGpuWrapMaxSources; ++k) {
-        sources[k] = k < sc.count && !sc.sources[k].data.empty() ? sc.sources[k].data : unused;
-    }
-    std::vector<uint32_t> views(sizeof block / sizeof(uint32_t));
-    std::memcpy(views.data(), &block, sizeof block);
-    TwinSourcesGlobals g {};
-    for (uint32_t k = 0; k < kGpuWrapMaxSources; ++k) {
-        g.source[k] = { sources[k].data(), sources[k].size() };
-    }
-    g.views = { views.data(), views.size() };
-    g.src = { src.data(), src.size() };
-    g.dst = { dst.data(), dst.size() };
-    g.mask = { mask.data(), mask.size() };
-    g.aux = { unused.data(), unused.size() };
-    g.params = &p;
-    TwinVarying vi { { 0, 0, 0 }, { (p.width + 7) / 8, (p.height + 7) / 8, 1 } };
-    sourcesTwinEntry(kernel)(&vi, nullptr, &g);
+    TwinGlobals g { { src.data(), src.size() }, { dst.data(), dst.size() }, { mask.data(), mask.size() }, { filtered.data.data(), filtered.data.size() }, &p };
+    wrap_finish(&vi, nullptr, &g);
     return dst;
 }
 
 void
-checkSourcesTwin(SourcesKernel kernel)
+checkFoldTwin(uint32_t count)
 {
     Comparison cmp;
-    for (const SourcesCase& c : makeSourcesCases(kernel)) {
-        cmp.check(c.base, sourcesReference(kernel, c), runSourcesTwin(kernel, c));
+    for (const FoldCase& c : makeFoldCases(count)) {
+        cmp.check(c.finish, foldReference(c), runFoldTwin(c));
     }
-    cmp.print((std::string(sourcesKernelName(kernel)) + " cpu twin vs reference").c_str());
+    cmp.print(("fold of " + std::to_string(count) + " cpu twin vs reference").c_str());
     EXPECT_EQ(cmp.failures, 0u);
     EXPECT_GT(cmp.exactCompared, 0u);
 }
@@ -764,56 +730,47 @@ TEST(PixelWrapLayout, ParamsMatchTheShader)
     EXPECT_EQ(pixelwrap_scale_push_bytes, sizeof(GpuWrapParams));
     EXPECT_EQ(pixelwrap_identity_storage_buffers, kGpuWrapBindings);
     EXPECT_EQ(pixelwrap_scale_storage_buffers, kGpuWrapBindings);
-    EXPECT_EQ(compositewrap_two_push_bytes, sizeof(GpuWrapParams));
-    EXPECT_EQ(compositewrap_four_push_bytes, sizeof(GpuWrapParams));
-    EXPECT_EQ(compositewrap_two_storage_buffers, kGpuWrapSourcesBindings);
-    EXPECT_EQ(compositewrap_four_storage_buffers, kGpuWrapSourcesBindings);
+    EXPECT_EQ(compositestep_halveadd_push_bytes, sizeof(GpuWrapParams));
+    EXPECT_EQ(compositestep_halveadd_storage_buffers, kGpuWrapStepBindings);
 }
 
-TEST(PixelWrapLayout, RejectsBadSources)
+TEST(PixelWrapLayout, PacksAStep)
 {
+    HostView result = makeView({ -2, 0, 9, 9 }, 4, 6, 1, 0.0f);
     HostView dst = makeView({ 0, 0, 8, 8 }, 4, 0, 0, 0.0f);
-    GpuWrap w;
-    w.dst = dst.view(nullptr);
-    w.output = { 0, 0, 8, 8 };
-    w.nComps = 4;
-    GpuWrapSources sources;
-    sources.count = 2;
-    sources.list[0].view = makeView({ 1, 2, 5, 6 }, 3, 4, 1, 0.0f).view(nullptr);
-    sources.list[1].view = makeView({ 0, 0, 4, 4 }, 2, 0, 0, 0.0f).view(nullptr);
-    sources.list[1].channel = 1;
-    GpuWrapSourceBlock block;
-    ASSERT_TRUE(wrapSourceBlock(w, sources, block).ok());
-    EXPECT_EQ(block.count, 2u);
-    EXPECT_EQ(block.views[0].offset, 4u);
-    EXPECT_EQ(block.views[0].stride, 15u);
-    EXPECT_EQ(block.views[0].x1, 1);
-    EXPECT_EQ(block.views[0].y2, 6);
-    EXPECT_EQ(block.views[0].comps, 3u);
-    EXPECT_EQ(block.views[0].channel, -1);
-    EXPECT_EQ(block.views[1].channel, 1);
-    EXPECT_EQ(block.views[2].comps, 0u);
+    GpuWrapStep step;
+    step.result = result.view(nullptr);
+    step.input = makeView({ 1, 2, 5, 6 }, 3, 4, 1, 0.0f).view(nullptr);
+    step.dst = dst.view(nullptr);
+    step.output = { 0, 0, 8, 8 };
+    step.nComps = 4;
+    GpuWrapParams p;
+    ASSERT_TRUE(wrapStepParams(step, p).ok());
+    EXPECT_EQ(p.srcOffset, 6u);
+    EXPECT_EQ(p.srcX1, -2);
+    EXPECT_EQ(p.maskOffset, 4u);
+    EXPECT_EQ(p.maskStride, 15u);
+    EXPECT_EQ(p.maskX1, 1);
+    EXPECT_EQ(p.maskY2, 6);
+    EXPECT_EQ(p.maskComps, 3u);
+    EXPECT_EQ(p.flags, 0u);
 
-    GpuWrapSources missing = sources;
-    missing.list[0].view = makeView({}, 3, 0, 0, 0.0f).view(nullptr);
-    ASSERT_TRUE(wrapSourceBlock(w, missing, block).ok());
-    EXPECT_EQ(block.views[0].comps, 0u);
+    GpuWrapStep missing = step;
+    missing.input = makeView({}, 3, 0, 0, 0.0f).view(nullptr);
+    ASSERT_TRUE(wrapStepParams(missing, p).ok());
+    EXPECT_EQ(p.maskComps, 0u);
 
-    GpuWrapSources tooMany = sources;
-    tooMany.count = kGpuWrapMaxSources + 1;
-    EXPECT_FALSE(wrapSourceBlock(w, tooMany, block).ok());
+    GpuWrapStep fiveChannels = step;
+    fiveChannels.input.nComps = 5;
+    EXPECT_FALSE(wrapStepParams(fiveChannels, p).ok());
 
-    GpuWrapSources badChannel = sources;
-    badChannel.list[1].channel = 2;
-    EXPECT_FALSE(wrapSourceBlock(w, badChannel, block).ok());
+    GpuWrapStep otherResult = step;
+    otherResult.result.nComps = 3;
+    EXPECT_FALSE(wrapStepParams(otherResult, p).ok());
 
-    GpuWrapSources fiveChannels = sources;
-    fiveChannels.list[0].view.nComps = 5;
-    EXPECT_FALSE(wrapSourceBlock(w, fiveChannels, block).ok());
-
-    GpuWrap divided = w;
-    divided.divisorChannel = 3;
-    EXPECT_FALSE(wrapSourceBlock(divided, sources, block).ok());
+    GpuWrapStep outside = step;
+    outside.output = { 0, 0, 9, 8 };
+    EXPECT_FALSE(wrapStepParams(outside, p).ok());
 }
 
 TEST(PixelWrapLayout, RejectsBadGeometry)
@@ -872,14 +829,14 @@ TEST(PixelWrapCpu, FinishMatchesReference)
     checkTwin(Kernel::Finish);
 }
 
-TEST(PixelWrapCpu, TwoSourcesMatchReference)
+TEST(PixelWrapCpu, FoldOfTwoMatchesReference)
 {
-    checkSourcesTwin(SourcesKernel::Two);
+    checkFoldTwin(2);
 }
 
-TEST(PixelWrapCpu, FourSourcesMatchReference)
+TEST(PixelWrapCpu, FoldOfFiveMatchesReference)
 {
-    checkSourcesTwin(SourcesKernel::Four);
+    checkFoldTwin(5);
 }
 
 namespace {
@@ -902,12 +859,9 @@ protected:
         scale_ = rt_->registerKernel(desc(pixelwrap_scale_spirv, pixelwrap_scale_spirv_words, pixelwrap_scale_entry,
                                           pixelwrap_scale_storage_buffers, pixelwrap_scale_push_bytes,
                                           pixelwrap_scale_group_size));
-        two_ = rt_->registerKernel(desc(compositewrap_two_spirv, compositewrap_two_spirv_words, compositewrap_two_entry,
-                                        compositewrap_two_storage_buffers, compositewrap_two_push_bytes,
-                                        compositewrap_two_group_size));
-        four_ = rt_->registerKernel(desc(compositewrap_four_spirv, compositewrap_four_spirv_words,
-                                         compositewrap_four_entry, compositewrap_four_storage_buffers,
-                                         compositewrap_four_push_bytes, compositewrap_four_group_size));
+        step_ = rt_->registerKernel(desc(compositestep_halveadd_spirv, compositestep_halveadd_spirv_words,
+                                         compositestep_halveadd_entry, compositestep_halveadd_storage_buffers,
+                                         compositestep_halveadd_push_bytes, compositestep_halveadd_group_size));
     }
 
     static void TearDownTestCase() { rt_.reset(); }
@@ -1049,14 +1003,15 @@ protected:
         return s.ok();
     }
 
-    std::vector<std::vector<float>> runSourcesGpu(SourcesKernel kernel, const std::vector<SourcesCase>& cases)
+    // Batched so one record context holds a bounded number of dispatches.
+    std::vector<std::vector<float>> runFoldGpu(const std::vector<FoldCase>& cases)
     {
-        constexpr size_t kBatch = 32;
+        constexpr size_t kBatch = 16;
         std::vector<std::vector<float>> out(cases.size());
         for (size_t first = 0; first < cases.size(); first += kBatch) {
             const size_t count = std::min(kBatch, cases.size() - first);
-            std::vector<GpuBufferHandle> src(count), dst(count), mask(count);
-            std::vector<std::array<GpuBufferHandle, kGpuWrapMaxSources>> sources(count);
+            std::vector<GpuBufferHandle> src(count), dst(count), mask(count), base(count);
+            std::vector<std::vector<GpuBufferHandle>> inputs(count);
             std::unique_ptr<GpuRecordContext> ctx;
             GpuStatus s = rt_->newRecordContext(ctx);
             if (!s.ok()) {
@@ -1064,10 +1019,10 @@ protected:
                 return out;
             }
             for (size_t k = 0; k < count; ++k) {
-                const SourcesCase& sc = cases[first + k];
-                const Case& c = sc.base;
+                const FoldCase& fc = cases[first + k];
+                const Case& c = fc.finish;
                 if (!upload(c.dst, dst[k]) || (!c.src.bounds.empty() && !upload(c.src, src[k]))
-                    || (c.applyMask && !upload(c.mask, mask[k]))) {
+                    || (c.applyMask && !upload(c.mask, mask[k])) || (!fc.base.bounds.empty() && !upload(fc.base, base[k]))) {
                     return out;
                 }
                 GpuWrap w = c.wrap();
@@ -1078,17 +1033,19 @@ protected:
                 if (mask[k]) {
                     w.mask.buffer = &mask[k].buffer();
                 }
-                GpuWrapSources ws = sc.wrapSources();
-                for (uint32_t i = 0; i < sc.count; ++i) {
-                    if (sc.sources[i].bounds.empty()) {
+                GpuWrapView baseView = fc.base.view(base[k] ? &base[k].buffer() : nullptr);
+                std::vector<GpuWrapView> views = fc.inputViews();
+                inputs[k].resize(fc.inputs.size());
+                for (size_t i = 0; i < fc.inputs.size(); ++i) {
+                    if (fc.inputs[i].bounds.empty()) {
                         continue;
                     }
-                    if (!upload(sc.sources[i], sources[k][i])) {
+                    if (!upload(fc.inputs[i], inputs[k][i])) {
                         return out;
                     }
-                    ws.list[i].view.buffer = &sources[k][i].buffer();
+                    views[i].buffer = &inputs[k][i].buffer();
                 }
-                s = recordWrappedSources(*ctx, kernel == SourcesKernel::Two ? two_ : four_, w, ws);
+                s = recordWrapFold(*ctx, step_, w, baseView, views);
                 if (!s.ok()) {
                     ADD_FAILURE() << c.label << ": " << s.message;
                     return out;
@@ -1102,7 +1059,7 @@ protected:
             }
             for (size_t k = 0; k < count; ++k) {
                 std::vector<float>& o = out[first + k];
-                o.assign(cases[first + k].base.dst.data.size(), 0.0f);
+                o.assign(cases[first + k].finish.dst.data.size(), 0.0f);
                 if (!download(dst[k], o)) {
                     return out;
                 }
@@ -1111,15 +1068,15 @@ protected:
         return out;
     }
 
-    void checkSourcesGpu(SourcesKernel kernel)
+    void checkFoldGpu(uint32_t count)
     {
-        const std::vector<SourcesCase> cases = makeSourcesCases(kernel);
-        const std::vector<std::vector<float>> got = runSourcesGpu(kernel, cases);
+        const std::vector<FoldCase> cases = makeFoldCases(count);
+        const std::vector<std::vector<float>> got = runFoldGpu(cases);
         Comparison cmp;
         for (size_t k = 0; k < cases.size(); ++k) {
-            cmp.check(cases[k].base, sourcesReference(kernel, cases[k]), got[k]);
+            cmp.check(cases[k].finish, foldReference(cases[k]), got[k]);
         }
-        cmp.print((std::string(sourcesKernelName(kernel)) + " gpu vs reference").c_str());
+        cmp.print(("fold of " + std::to_string(count) + " gpu vs reference").c_str());
         EXPECT_EQ(cmp.failures, 0u);
         EXPECT_GT(cmp.exactCompared, 0u);
     }
@@ -1130,16 +1087,14 @@ protected:
     static std::string error_;
     static GpuKernelId identity_;
     static GpuKernelId scale_;
-    static GpuKernelId two_;
-    static GpuKernelId four_;
+    static GpuKernelId step_;
 };
 
 std::unique_ptr<GpuRuntime> PixelWrapGpuTest::rt_;
 std::string PixelWrapGpuTest::error_;
 GpuKernelId PixelWrapGpuTest::identity_ {};
 GpuKernelId PixelWrapGpuTest::scale_ {};
-GpuKernelId PixelWrapGpuTest::two_ {};
-GpuKernelId PixelWrapGpuTest::four_ {};
+GpuKernelId PixelWrapGpuTest::step_ {};
 
 } // namespace
 
@@ -1163,14 +1118,14 @@ GPU_TEST_F(PixelWrapGpuTest, FinishMatchesReference)
     checkGpu(Kernel::Finish);
 }
 
-GPU_TEST_F(PixelWrapGpuTest, TwoSourcesMatchReference)
+GPU_TEST_F(PixelWrapGpuTest, FoldOfTwoMatchesReference)
 {
-    checkSourcesGpu(SourcesKernel::Two);
+    checkFoldGpu(2);
 }
 
-GPU_TEST_F(PixelWrapGpuTest, FourSourcesMatchReference)
+GPU_TEST_F(PixelWrapGpuTest, FoldOfFiveMatchesReference)
 {
-    checkSourcesGpu(SourcesKernel::Four);
+    checkFoldGpu(5);
 }
 
 GPU_TEST_F(PixelWrapGpuTest, RegistryKernelsUseTheWrapLayout)

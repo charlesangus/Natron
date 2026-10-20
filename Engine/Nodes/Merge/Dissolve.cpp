@@ -91,24 +91,23 @@ DissolveOp::route(const Params& params,
     return Route::none();
 }
 
-CompositeSources
-DissolveOp::sources(const Params& params,
-                    const RouteContext& context) const
+CompositeInputs
+DissolveOp::inputs(const Params& params,
+                   const RouteContext& context) const
 {
-    CompositeSources sources;
+    CompositeInputs inputs;
 
-    sources.blendInput = dissolveSourceInput(params.prev);
-    sources.add(sources.blendInput, context.time());
+    inputs.base = CompositeInput { dissolveSourceInput(params.prev), context.time() };
     if (params.next != params.prev) {
-        sources.add(dissolveSourceInput(params.next), context.time());
+        inputs.add(dissolveSourceInput(params.next), context.time());
     }
 
-    return sources;
+    return inputs;
 }
 
 void
-DissolveOp::row(const Params& params,
-                const RowIO& io) const
+DissolveOp::step(const Params& params,
+                 const RowIO& io) const
 {
     const int nComps = io.nComps;
     bool processed[4] = { false, false, false, false };
@@ -118,7 +117,7 @@ DissolveOp::row(const Params& params,
     }
     const float blend = params.blend;
     const float* from = io.src[0];
-    const float* to = (io.nSrc > 1) ? io.src[1] : io.src[0];
+    const float* to = io.src[1];
     float* dst = io.dst;
     for (int x = 0; x < io.width; ++x, from += nComps, to += nComps, dst += nComps) {
         for (int c = 0; (c < nComps) && (c < 4); ++c) {

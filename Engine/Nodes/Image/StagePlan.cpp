@@ -123,6 +123,27 @@ struct SourceImage {
     }
 };
 
+// The layer a source whose InputLayer selects one is read in: the layer its KnobLayerSelect
+// resolves to among those layerInput carries at the source's time. False when the knob is missing
+// or resolves to no layer, in which case the source reads zero.
+bool
+resolveStageSourceLayer(EffectInstance& effect,
+                        const StageSource& source,
+                        ViewIdx view,
+                        ImageLayerDesc* layer)
+{
+    KnobLayerSelectPtr knob = effect.getKnobByNameAndType<KnobLayerSelect>(std::string(source.layerKnob));
+    std::list<ImageLayerDesc> present;
+    effect.getAvailableLayers(source.time, view, source.layerInput, &present);
+    ResolvedLayer resolved;
+    if (!knob || !knob->resolve(present, &resolved) || (resolved.desc.getNumComponents() == 0)) {
+        return false;
+    }
+    *layer = resolved.desc;
+
+    return true;
+}
+
 ImagePtr
 fetchStageSource(EffectInstance& effect,
                  const StageSource& source,
@@ -132,18 +153,6 @@ fetchStageSource(EffectInstance& effect,
         return ImagePtr();
     }
     RectI roi;
-    if (source.mask) {
-        if (!source.maskApplied || (source.maskChannel < 0)) {
-            return ImagePtr();
-        }
-        ImagePtr image = effect.getImage(source.inputNb, source.time, args.mappedScale, args.view, NULL, &source.maskLayer, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &roi);
-        if (image && (source.maskChannel >= (int)image->getComponentsCount())) {
-            image.reset();
-        }
-
-        return image;
-    }
-
     ImageLayerDesc layer;
     bool mapToClipPrefs = true;
     if (!source.layerKnob.empty()) {
@@ -255,43 +264,22 @@ makeStageGpuWrap(const StagePlan& plan,
     return true;
 } // makeStageGpuWrap
 
-// plan's Composite sources as args hands them over, read as runStagesCpu() reads them: an input
-// not handed over, and a Mask-role input that is not applied or resolves to no channel, reads
-// zero.
+// A Composite input as args hands it over; one not handed over reads zero, as runStagesCpu()
+// reads it.
 bool
-makeStageGpuSources(const StagePlan& plan,
-                    const GpuRenderArgs& args,
-                    gpu::GpuWrapSources* sources)
+makeStageGpuInput(const StageSource& source,
+                  const GpuRenderArgs& args,
+                  gpu::GpuWrapView* view)
 {
-    if ((plan.nSources < 0) || (plan.nSources > (int)gpu::kGpuWrapMaxSources)) {
-        return false;
-    }
-    sources->count = (uint32_t)plan.nSources;
-    for (int s = 0; s < plan.nSources; ++s) {
-        const StageSource& source = plan.sources[s];
-        gpu::GpuWrapSource& out = sources->list[s];
-        const int inputNb = source.inputNb;
-        if ((inputNb < 0) || (inputNb >= (int)args.inputs.size()) || !args.inputs[inputNb].buffer) {
-            continue;
-        }
-        const GpuImageView& view = args.inputs[inputNb];
-        if (source.mask) {
-            if (!source.maskApplied || (source.maskChannel < 0) || (source.maskChannel >= source.maskLayer.getNumComponents())) {
-                continue;
-            }
-            const int component = stageGpuMaskViewComponent(source.maskLayer, source.maskChannel, view.nComps);
-            if ((component < 0) || (component >= view.nComps)) {
-                return false;
-            }
-            out.channel = component;
-        }
-        if (!toWrapView(view, &out.view)) {
-            return false;
-        }
+    *view = gpu::GpuWrapView();
+    view->nComps = (uint32_t)args.query.nComps;
+    const int inputNb = source.inputNb;
+    if ((inputNb < 0) || (inputNb >= (int)args.inputs.size()) || !args.inputs[inputNb].buffer) {
+        return true;
     }
 
-    return true;
-} // makeStageGpuSources
+    return toWrapView(args.inputs[inputNb], view);
+}
 
 StatusEnum
 recordKernelOp(const StagePlan& plan,
@@ -311,9 +299,18 @@ recordKernelOp(const StagePlan& plan,
         return eStatusFailed;
     }
 
-    gpu::GpuWrapSources sources;
-    if ((plan.nSources > 0) && !makeStageGpuSources(plan, args, &sources)) {
-        return eStatusFailed;
+    gpu::GpuWrapView base;
+    std::vector<gpu::GpuWrapView> further;
+    if (!plan.composite.empty()) {
+        if (!makeStageGpuInput(plan.composite[0], args, &base)) {
+            return eStatusFailed;
+        }
+        further.resize(plan.composite.size() - 1);
+        for (std::size_t k = 1; k < plan.composite.size(); ++k) {
+            if (!makeStageGpuInput(plan.composite[k], args, &further[k - 1])) {
+                return eStatusFailed;
+            }
+        }
     }
 
     gpu::GpuRecordContext& ctx = args.context;
@@ -326,8 +323,8 @@ recordKernelOp(const StagePlan& plan,
         }
     }
 
-    if (plan.nSources > 0) {
-        return gpu::recordWrappedSources(ctx, (gpu::GpuKernelId)kernel.kernel, wrap, sources, params) ? eStatusOK : eStatusFailed;
+    if (!plan.composite.empty()) {
+        return gpu::recordWrapFold(ctx, (gpu::GpuKernelId)kernel.kernel, wrap, base, std::span<const gpu::GpuWrapView>(further.data(), further.size()), params) ? eStatusOK : eStatusFailed;
     }
 
     return gpu::recordWrapped(ctx, (gpu::GpuKernelId)kernel.kernel, wrap, params) ? eStatusOK : eStatusFailed;
@@ -526,36 +523,19 @@ resolveStagePlan(EffectInstance& effect,
 } // resolveStagePlan
 
 void
-resolveStageSources(EffectInstance& effect,
-                    const NodeSpec* spec,
-                    const CompositeSources& sources,
+resolveStageSources(const NodeSpec* spec,
+                    const CompositeInputs& inputs,
                     StagePlan* plan)
 {
-    plan->nSources = 0;
-    const int count = std::min(sources.count, (int)kPixelKernelMaxInputs);
     const int nSpecInputs = spec ? spec->inputCount() : 0;
-    for (int i = 0; i < count; ++i) {
-        StageSource& source = plan->sources[i];
-        source = StageSource();
-        source.inputNb = sources.list[i].inputNb;
-        source.time = sources.list[i].time;
-        source.layerInput = source.inputNb;
-
-        const NodeSpec::ResolvedInput resolved = spec ? spec->resolveInput(source.inputNb) : NodeSpec::ResolvedInput { nullptr, 0 };
-        if (resolved.spec && (resolved.spec->role == InputRole::Mask)) {
-            source.mask = true;
-            source.maskApplied = effect.getInput(source.inputNb) && effect.isMaskEnabled(source.inputNb);
-            ImageLayerDesc maskLayer;
-            int maskChannel = -1;
-            if (source.maskApplied && effect.resolveInputPlaneForRender(source.inputNb, source.time, plan->view, &maskLayer, &maskChannel) && (maskChannel >= 0)) {
-                source.maskLayer = maskLayer;
-                source.maskChannel = maskChannel;
-            }
-            continue;
-        }
+    const auto resolve = [spec, nSpecInputs](const CompositeInput& input) {
+        StageSource source;
+        source.inputNb = input.inputNb;
+        source.time = input.time;
+        source.layerInput = input.inputNb;
 
         // Every step of a pairing names a distinct input, so a chain longer than the inputs loops.
-        const InputSpec* layerSpec = resolved.spec;
+        const InputSpec* layerSpec = spec ? spec->resolveInput(source.inputNb).spec : nullptr;
         int layerInput = source.inputNb;
         for (int step = 0; layerSpec && (layerSpec->layer.kind == InputLayer::Kind::PairWith); ++step) {
             if (step >= nSpecInputs) {
@@ -570,27 +550,17 @@ resolveStageSources(EffectInstance& effect,
         if (layerSpec && (layerSpec->layer.kind == InputLayer::Kind::Select)) {
             source.layerKnob = layerSpec->layer.knob;
         }
+
+        return source;
+    };
+
+    plan->composite.clear();
+    plan->composite.reserve(inputs.further.size() + 1);
+    plan->composite.push_back(resolve(inputs.base));
+    for (const CompositeInput& input : inputs.further) {
+        plan->composite.push_back(resolve(input));
     }
-    plan->nSources = count;
 } // resolveStageSources
-
-bool
-resolveStageSourceLayer(EffectInstance& effect,
-                        const StageSource& source,
-                        ViewIdx view,
-                        ImageLayerDesc* layer)
-{
-    KnobLayerSelectPtr knob = effect.getKnobByNameAndType<KnobLayerSelect>(std::string(source.layerKnob));
-    std::list<ImageLayerDesc> present;
-    effect.getAvailableLayers(source.time, view, source.layerInput, &present);
-    ResolvedLayer resolved;
-    if (!knob || !knob->resolve(present, &resolved) || (resolved.desc.getNumComponents() == 0)) {
-        return false;
-    }
-    *layer = resolved.desc;
-
-    return true;
-}
 
 void
 makeStageRowBands(const RectI& roi,
@@ -673,20 +643,15 @@ runStagesCpu(EffectInstance& effect,
         return eStatusFailed;
     }
 
-    // A Composite op's inputs, per output plane; a Mask-role input is the same for every plane.
-    const int nSources = plan.nSources;
-    std::vector<std::vector<SourceImage>> jobSources(nSources > 0 ? jobs.size() : 0, std::vector<SourceImage>(nSources));
-    for (int s = 0; s < nSources; ++s) {
-        const StageSource& source = plan.sources[s];
-        ImagePtr maskImage = source.mask ? fetchStageSource(effect, source, args) : ImagePtr();
-        if (!PassExec::isFloatImage(maskImage)) {
-            return eStatusFailed;
+    // A Composite op's inputs, per output plane, base first.
+    const std::size_t nFolded = plan.composite.size();
+    std::vector<std::vector<SourceImage>> jobSources(nFolded > 0 ? jobs.size() : 0, std::vector<SourceImage>(nFolded));
+    for (std::size_t j = 0; j < jobSources.size(); ++j) {
+        if (!jobs[j].dst) {
+            continue;
         }
-        for (std::size_t j = 0; j < jobSources.size(); ++j) {
-            if (!jobs[j].dst) {
-                continue;
-            }
-            jobSources[j][s].image = source.mask ? maskImage : fetchStageSource(effect, source, args);
+        for (std::size_t s = 0; s < nFolded; ++s) {
+            jobSources[j][s].image = fetchStageSource(effect, plan.composite[s], args);
             if (!PassExec::isFloatImage(jobSources[j][s].image)) {
                 return eStatusFailed;
             }
@@ -713,7 +678,7 @@ runStagesCpu(EffectInstance& effect,
             continue;
         }
         jobs[j].lock();
-        if (nSources > 0) {
+        if (nFolded > 0) {
             for (SourceImage& source : jobSources[j]) {
                 source.lock();
             }
@@ -735,18 +700,19 @@ runStagesCpu(EffectInstance& effect,
         std::vector<float> kernelRow(rowSize);
         std::vector<float> maskRow(doMask ? width : 0);
         std::vector<float> divisorRow(job.divisor ? width : 0);
-        std::vector<float> sourceRows[kPixelKernelMaxInputs];
+        // A fold keeps its result in two rows it alternates between, and reads one input row.
+        std::vector<float> foldRows[2];
+        std::vector<float> inputRow;
+        if (nFolded > 0) {
+            foldRows[0].resize(rowSize);
+            foldRows[1].resize(nFolded > 1 ? rowSize : 0);
+            inputRow.resize(nFolded > 1 ? rowSize : 0);
+        }
+        const float* resultRow = &kernelRow[0];
 
         RowIO io;
         io.src[0] = &dividedRow[0];
         io.nSrc = 1;
-        if (nSources > 0) {
-            for (int s = 0; s < nSources; ++s) {
-                sourceRows[s].resize(plan.sources[s].mask ? (std::size_t)width : rowSize);
-                io.src[s] = &sourceRows[s][0];
-            }
-            io.nSrc = nSources;
-        }
         io.mask = doMask ? &maskRow[0] : 0;
         io.divisor = job.divisor ? &divisorRow[0] : 0;
         io.divisorSkipChannel = job.divisor ? job.skipChannel : -1;
@@ -781,17 +747,26 @@ runStagesCpu(EffectInstance& effect,
             if (doMask) {
                 PassExec::readChannelRow(mask.get(), maskSource.access.get(), maskSource.bounds, maskSource.nComps, maskChannel, roi.x1, y, width, 0.f, &maskRow[0]);
             }
-            for (int s = 0; s < nSources; ++s) {
-                const SourceImage& source = jobSources[band.job][s];
-                if (plan.sources[s].mask) {
-                    PassExec::readChannelRow(source.image.get(), source.access.get(), source.bounds, source.nComps, plan.sources[s].maskChannel, roi.x1, y, width, 0.f, &sourceRows[s][0]);
-                } else {
-                    PassExec::readSourceRow(source.image.get(), source.access.get(), source.bounds, source.nComps, roi.x1, y, width, nComps, &sourceRows[s][0]);
-                }
-            }
-
             io.y = y;
-            row(io);
+            if (nFolded > 0) {
+                const std::vector<SourceImage>& folded = jobSources[band.job];
+                const SourceImage& base = folded[0];
+                PassExec::readSourceRow(base.image.get(), base.access.get(), base.bounds, base.nComps, roi.x1, y, width, nComps, &foldRows[0][0]);
+                int current = 0;
+                for (std::size_t s = 1; s < nFolded; ++s) {
+                    const SourceImage& input = folded[s];
+                    PassExec::readSourceRow(input.image.get(), input.access.get(), input.bounds, input.nComps, roi.x1, y, width, nComps, &inputRow[0]);
+                    io.src[0] = &foldRows[current][0];
+                    io.src[1] = &inputRow[0];
+                    io.nSrc = 2;
+                    io.dst = &foldRows[1 - current][0];
+                    row(io);
+                    current = 1 - current;
+                }
+                resultRow = &foldRows[current][0];
+            } else {
+                row(io);
+            }
 
             float* dstPix = (float*)job.dstAccess->pixelAt(roi.x1, y);
             if (!dstPix) {
@@ -799,7 +774,7 @@ runStagesCpu(EffectInstance& effect,
             }
             for (int i = 0; i < width; ++i, dstPix += nComps) {
                 const float* srcPix = &sourceRow[(std::size_t)i * nComps];
-                const float* outPix = &kernelRow[(std::size_t)i * nComps];
+                const float* outPix = &resultRow[(std::size_t)i * nComps];
                 float alpha = mix;
                 if (doMask) {
                     const float maskScale = maskInvert ? (1.f - maskRow[i]) : maskRow[i];
@@ -892,19 +867,14 @@ bool
 canRunStageSourcesGpu(const StagePlan& plan,
                       const GpuQuery& query)
 {
-    if ((plan.nSources < 1) || (plan.nSources > kPixelKernelMaxInputs) || (plan.divisorChannel >= 0)) {
+    if (plan.composite.empty() || (plan.divisorChannel >= 0)) {
         return false;
     }
-    for (int s = 0; s < plan.nSources; ++s) {
-        const StageSource& source = plan.sources[s];
-        if (source.time != query.time) {
+    for (const StageSource& source : plan.composite) {
+        if ((source.time != query.time) || !source.layerKnob.empty()) {
             return false;
         }
-        const bool inPlane = !source.mask && source.layerKnob.empty();
-        if (!inPlane && (source.inputNb == plan.sourceInput)) {
-            return false;
-        }
-        if (!source.mask && plan.applyMask && (source.inputNb == plan.maskInput)) {
+        if (plan.applyMask && (source.inputNb == plan.maskInput)) {
             return false;
         }
     }
@@ -1049,7 +1019,7 @@ recordStagesGpu(const StagePlan& plan,
 
         return recordKernelOp(plan, args, op.kernel);
     case GpuOpRef::Kind::RuntimeShader:
-        if (plan.nSources > 0) {
+        if (!plan.composite.empty()) {
             return eStatusFailed;
         }
 

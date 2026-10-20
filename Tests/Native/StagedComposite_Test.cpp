@@ -58,10 +58,10 @@
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
 
-#define kStagedTwoSourceOpPluginID "test.natron.built-in.StagedTwoSourceOp"
-#define kStagedFourSourceOpPluginID "test.natron.built-in.StagedFourSourceOp"
+#define kStagedFoldOpPluginID "test.natron.built-in.StagedFoldOp"
 #define kStagedRoutedPointOpPluginID "test.natron.built-in.StagedRoutedPointOp"
-#define kStagedParamBlendFromB "blendFromB"
+#define kStagedParamFoldCount "foldCount"
+#define kStagedParamBlendInput "blendInput"
 #define kStagedParamBypass "bypass"
 
 NATRON_NAMESPACE_ENTER
@@ -70,27 +70,38 @@ namespace {
 
 const double kTime = 1.;
 const double kMix = 0.5;
+const int kFoldMaskInput = 1;
+const int kFoldMaxInputs = 5;
 
-constexpr InputSpec kTwoSourceInputs[] = {
+// The input number of the k-th folded input: A, then the Variadic run after the mask.
+constexpr int
+foldInput(int k)
+{
+    return (k == 0) ? 0 : k + 1;
+}
+
+constexpr InputSpec kFoldInputs[] = {
     InputSpec { .label = "A" },
-    InputSpec { .label = "B", .optional = true },
     InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
+    InputSpec { .label = "In", .role = InputRole::Variadic, .optional = true, .count = kFoldMaxInputs - 1, .firstNumber = 1 },
 };
 
 /**
- * @brief A Composite op reading A and B, writing A - B, whose stages blend against A, or against B
- * with blendFromB.
+ * @brief A Composite op folding A and the first foldCount - 1 inputs of its Variadic run, each step
+ * halving the result and adding the next input, so that the count and the order of the fold both
+ * show in the result. The stages blend against blendInput, or A when it is -1.
  **/
-struct TestTwoSourceOp {
+struct TestFoldOp {
     struct Params {
-        bool blendFromB;
+        int foldCount;
+        int blendInput;
     };
 
     static constexpr NodeSpec kNodeSpec = {
-        .id = kStagedTwoSourceOpPluginID,
-        .label = "Test Staged Two Source Op",
+        .id = kStagedFoldOpPluginID,
+        .label = "Test Staged Fold Op",
         .grouping = "Other/Test",
-        .inputs = kTwoSourceInputs,
+        .inputs = kFoldInputs,
     };
 
     static constexpr ImagePipelineSpec kPipeline = {
@@ -99,21 +110,28 @@ struct TestTwoSourceOp {
         .op = OpKind::Composite,
     };
 
-    KnobBoolWPtr blendFromB;
+    KnobIntWPtr foldCount;
+    KnobIntWPtr blendInput;
 
     void createKnobs(KnobHolder* holder,
                      const KnobPagePtr& page)
     {
-        KnobBoolPtr knob = AppManager::createKnob<KnobBool>(holder, std::string("Blend From B"));
-        knob->setName(kStagedParamBlendFromB);
-        knob->setDefaultValue(false);
-        page->addKnob(knob);
-        blendFromB = knob;
+        KnobIntPtr count = AppManager::createKnob<KnobInt>(holder, std::string("Fold Count"));
+        count->setName(kStagedParamFoldCount);
+        count->setDefaultValue(2);
+        page->addKnob(count);
+        foldCount = count;
+
+        KnobIntPtr blend = AppManager::createKnob<KnobInt>(holder, std::string("Blend Input"));
+        blend->setName(kStagedParamBlendInput);
+        blend->setDefaultValue(-1);
+        page->addKnob(blend);
+        blendInput = blend;
     }
 
     Params bake(const KnobReader& reader) const
     {
-        return Params { reader.valueOr(blendFromB, false) };
+        return Params { reader.valueOr(foldCount, 2), reader.valueOr(blendInput, -1) };
     }
 
     bool isIdentity(const Params& /*params*/) const
@@ -121,126 +139,42 @@ struct TestTwoSourceOp {
         return false;
     }
 
-    CompositeSources sources(const Params& params,
-                             const RouteContext& context) const
+    CompositeInputs inputs(const Params& params,
+                           const RouteContext& context) const
     {
-        CompositeSources s;
+        CompositeInputs folded;
 
-        s.add(0, context.time());
-        s.add(1, context.time());
-        s.blendInput = params.blendFromB ? 1 : -1;
+        folded.base = CompositeInput { foldInput(0), context.time() };
+        for (int k = 1; k < params.foldCount; ++k) {
+            folded.add(foldInput(k), context.time());
+        }
+        folded.blendInput = params.blendInput;
 
-        return s;
+        return folded;
     }
 
-    void row(const Params& /*params*/,
-             const RowIO& io) const
+    void step(const Params& /*params*/,
+              const RowIO& io) const
     {
         const int nComps = io.nComps;
-        const float* a = io.src[0];
-        const float* b = io.src[1];
+        const float* result = io.src[0];
+        const float* input = io.src[1];
         float* dst = io.dst;
 
-        for (int x = 0; x < io.width; ++x, a += nComps, b += nComps, dst += nComps) {
+        for (int x = 0; x < io.width; ++x, result += nComps, input += nComps, dst += nComps) {
             for (int c = 0; (c < nComps) && (c < 4); ++c) {
                 if (io.channels[pixelKernelChannelBit(nComps, c)]) {
-                    dst[c] = a[c] - b[c];
+                    dst[c] = result[c] * 0.5f + input[c];
                 }
             }
         }
     }
 };
 
-static_assert(CompositeOp<TestTwoSourceOp>);
-static_assert(OpOfKind<TestTwoSourceOp, OpKind::Composite>);
-static_assert(!PointOp<TestTwoSourceOp>);
-static_assert(!RoutesOp<TestTwoSourceOp>);
-
-constexpr InputSpec kFourSourceInputs[] = {
-    InputSpec { .label = "A" },
-    InputSpec { .label = "Matte", .role = InputRole::Mask, .optional = true },
-    InputSpec { .label = "B", .optional = true },
-    InputSpec { .label = "C", .optional = true },
-};
-
-/**
- * @brief A Composite op reading A, the one channel of the Mask-role input Matte, B and C, writing
- * A + Matte x B - C.
- **/
-struct TestFourSourceOp {
-    struct Params {
-        int unused;
-    };
-
-    static constexpr NodeSpec kNodeSpec = {
-        .id = kStagedFourSourceOpPluginID,
-        .label = "Test Staged Four Source Op",
-        .grouping = "Other/Test",
-        .inputs = kFourSourceInputs,
-    };
-
-    static constexpr ImagePipelineSpec kPipeline = {
-        .stages = { Stage::PassThroughUnprocessed },
-        .layers = LayerPolicy::color(true, true, true, true),
-        .op = OpKind::Composite,
-    };
-
-    Params bake(const KnobReader& /*reader*/) const
-    {
-        return Params { 0 };
-    }
-
-    bool isIdentity(const Params& /*params*/) const
-    {
-        return false;
-    }
-
-    CompositeSources sources(const Params& /*params*/,
-                             const RouteContext& context) const
-    {
-        CompositeSources s;
-
-        for (int i = 0; i < 4; ++i) {
-            s.add(i, context.time());
-        }
-
-        return s;
-    }
-
-    void row(const Params& /*params*/,
-             const RowIO& io) const
-    {
-        const int nComps = io.nComps;
-        const float* a = io.src[0];
-        const float* matte = io.src[1];
-        const float* b = io.src[2];
-        const float* cc = io.src[3];
-        float* dst = io.dst;
-
-        for (int x = 0; x < io.width; ++x, a += nComps, ++matte, b += nComps, cc += nComps, dst += nComps) {
-            for (int c = 0; (c < nComps) && (c < 4); ++c) {
-                if (io.channels[pixelKernelChannelBit(nComps, c)]) {
-                    const float scaled = matte[0] * b[c];
-                    dst[c] = (a[c] + scaled) - cc[c];
-                }
-            }
-        }
-    }
-};
-
-static_assert(CompositeOp<TestFourSourceOp>);
-
-// Five inputs are one more than a Composite op reads.
-static_assert([] {
-    CompositeSources s;
-    for (int i = 0; i < kPixelKernelMaxInputs; ++i) {
-        if (!s.add(i, 0.)) {
-            return false;
-        }
-    }
-
-    return !s.add(kPixelKernelMaxInputs, 0.) && (s.count == kPixelKernelMaxInputs);
-}());
+static_assert(CompositeOp<TestFoldOp>);
+static_assert(OpOfKind<TestFoldOp, OpKind::Composite>);
+static_assert(!PointOp<TestFoldOp>);
+static_assert(!RoutesOp<TestFoldOp>);
 
 constexpr InputSpec kRoutedInputs[] = {
     InputSpec { .label = "Source" },
@@ -322,8 +256,7 @@ static_assert(PointOp<TestRoutedPointOp>);
 static_assert(RoutesOp<TestRoutedPointOp>);
 static_assert(!CompositeOp<TestRoutedPointOp>);
 
-typedef ImageNode<TestTwoSourceOp> StagedTwoSourceOp;
-typedef ImageNode<TestFourSourceOp> StagedFourSourceOp;
+typedef ImageNode<TestFoldOp> StagedFoldOp;
 typedef ImageNode<TestRoutedPointOp> StagedRoutedPointOp;
 
 template <typename NODE>
@@ -357,8 +290,7 @@ registerCompositeOpsOnce()
     static std::once_flag once;
 
     std::call_once(once, []() {
-        registerNode<StagedTwoSourceOp>();
-        registerNode<StagedFourSourceOp>();
+        registerNode<StagedFoldOp>();
         registerNode<StagedRoutedPointOp>();
     });
 }
@@ -434,119 +366,115 @@ protected:
         return inputNb;
     }
 
-    // A over the window, B offset from it, and a mask offset elsewhere with a mix of 0.5: the op's
-    // A - B, blended by mask alpha x mix with A, or with B under blendFromB.
-    void expectTwoSourceBlend(bool blendFromB)
+    // The first count of the fold's inputs, each at its own origin so that no two read alike, the
+    // second far enough off to read zero over part of the window, and a mask offset elsewhere with
+    // a mix of 0.5: the halve-and-add fold, blended by mask alpha x mix with blendInput (the base
+    // for -1). At a mix of 0 the node is an identity of its blend input.
+    void expectFold(int count,
+                    int blendInput)
     {
-        const std::string what = blendFromB ? "blend from B" : "blend from A";
-        NodePtr a = createSource(0, 0);
-        NodePtr b = createSource(10, 6);
+        const std::string what = "fold of " + std::to_string(count) + " blending with input " + std::to_string(blendInput);
+        const int origins[kFoldMaxInputs][2] = { { 0, 0 }, { 10, 6 }, { 1, 2 }, { 3, 1 }, { 2, 3 } };
+        NodePtr op = createNode(QString::fromUtf8(kStagedFoldOpPluginID));
+        ASSERT_TRUE(bool(op)) << what;
+        std::vector<NodePtr> inputs;
+        for (int k = 0; k < kFoldMaxInputs; ++k) {
+            NodePtr input = createSource(origins[k][0], origins[k][1]);
+            ASSERT_TRUE(bool(input)) << what;
+            connectNodes(input, op, foldInput(k), true);
+            inputs.push_back(input);
+        }
         NodePtr mask = createSource(5, 20);
-        NodePtr op = createNode(QString::fromUtf8(kStagedTwoSourceOpPluginID));
-        ASSERT_TRUE(a && b && mask && op) << what;
-        connectNodes(a, op, 0, true);
-        connectNodes(b, op, 1, true);
-        connectNodes(mask, op, 2, true);
+        ASSERT_TRUE(bool(mask)) << what;
+        connectNodes(mask, op, kFoldMaskInput, true);
         ASSERT_TRUE(setKnobValues(op, "enableMask_Mask", { 1. })) << what;
         ASSERT_TRUE(setKnobValues(op, kOfxMixParamName, { kMix })) << what;
-        ASSERT_TRUE(setKnobValues(op, kStagedParamBlendFromB, { blendFromB ? 1. : 0. })) << what;
+        ASSERT_TRUE(setKnobValues(op, kStagedParamFoldCount, { (double)count })) << what;
+        ASSERT_TRUE(setKnobValues(op, kStagedParamBlendInput, { (double)blendInput })) << what;
 
-        const RectI window = paritySourceWindow(a, kTime, 0);
+        const RectI window = paritySourceWindow(inputs[0], kTime, 0);
         ASSERT_FALSE(window.isNull()) << what;
-        std::vector<float> aPixels;
-        std::vector<float> bPixels;
+        std::vector<std::vector<float>> pixels(kFoldMaxInputs);
+        for (int k = 0; k < kFoldMaxInputs; ++k) {
+            ASSERT_TRUE(renderRGBA(inputs[k], window, &pixels[k])) << what;
+        }
         std::vector<float> maskPixels;
         std::vector<float> got;
-        ASSERT_TRUE(renderRGBA(a, window, &aPixels)) << what;
-        ASSERT_TRUE(renderRGBA(b, window, &bPixels)) << what;
         ASSERT_TRUE(renderRGBA(mask, window, &maskPixels)) << what;
         ASSERT_TRUE(renderRGBA(op, window, &got)) << what;
 
-        // B covers only part of the window, so some of A - B reads B as zero.
-        bool bMissesSomewhere = false;
-        std::vector<float> want(aPixels.size());
+        int blendK = 0;
+        for (int k = 0; k < kFoldMaxInputs; ++k) {
+            if (foldInput(k) == blendInput) {
+                blendK = k;
+            }
+        }
+        const std::vector<float>& under = pixels[blendK];
+
+        bool offsetMissesSomewhere = false;
+        std::vector<float> want(pixels[0].size());
         const float mix = (float)kMix;
         for (std::size_t p = 0; p + 3 < want.size(); p += 4) {
             const float alpha = maskPixels[p + 3] * mix;
-            bMissesSomewhere = bMissesSomewhere || ((bPixels[p] == 0.f) && (bPixels[p + 3] == 0.f) && (aPixels[p] != 0.f));
+            offsetMissesSomewhere = offsetMissesSomewhere || ((pixels[1][p] == 0.f) && (pixels[1][p + 3] == 0.f) && (pixels[0][p] != 0.f));
             for (int c = 0; c < 4; ++c) {
-                const float under = blendFromB ? bPixels[p + c] : aPixels[p + c];
-                float v = aPixels[p + c] - bPixels[p + c];
+                float v = pixels[0][p + c];
+                for (int k = 1; k < count; ++k) {
+                    v = v * 0.5f + pixels[k][p + c];
+                }
                 if (alpha == 0.f) {
-                    v = under;
+                    v = under[p + c];
                 } else if (alpha != 1.f) {
-                    v = v * alpha + (1.f - alpha) * under;
+                    v = v * alpha + (1.f - alpha) * under[p + c];
                 }
                 want[p + c] = v;
             }
         }
-        EXPECT_TRUE(bMissesSomewhere) << what;
+        EXPECT_TRUE(offsetMissesSomewhere) << what;
         expectSame(want, got, what);
 
-        // At a mix of 0 the node is an identity of its blend input.
         ASSERT_TRUE(setKnobValues(op, kOfxMixParamName, { 0. })) << what;
         bool identity = false;
         const int inputNb = identityInput(op, window, &identity);
         EXPECT_TRUE(identity) << what;
-        EXPECT_EQ(blendFromB ? 1 : 0, inputNb) << what;
+        EXPECT_EQ((blendInput >= 0) ? blendInput : foldInput(0), inputNb) << what;
     }
 };
 
-// Two inputs, the second offset so that it reads zero where it has no pixel, under a mask and a
-// mix of 0.5, blended with the first input.
-TEST_F(StagedCompositeTest, TwoSourcesWithAnOffsetInputUnderMaskAndMix)
+// The base alone: the result is the base row, blended with itself.
+TEST_F(StagedCompositeTest, FoldOfTheBaseAlone)
 {
-    expectTwoSourceBlend(false);
+    expectFold(1, -1);
 }
 
-// The op names its second input as the one the stages blend against and the identity answers.
-TEST_F(StagedCompositeTest, BlendInputOtherThanTheFirst)
+// Two inputs, the second offset, in one step, blended with the base.
+TEST_F(StagedCompositeTest, FoldOfTwoInputsUnderMaskAndMix)
 {
-    expectTwoSourceBlend(true);
+    expectFold(2, -1);
 }
 
-// Four inputs, one of them a Mask-role input read as the channel its selector names, and zero
-// once that mask is disabled.
-TEST_F(StagedCompositeTest, FourSourcesWithAMaskRoleInput)
+// Two inputs blended with an input the fold does not read.
+TEST_F(StagedCompositeTest, FoldOfTwoInputsBlendingWithAnUnfoldedInput)
 {
-    NodePtr a = createSource(0, 0);
-    NodePtr matte = createSource(5, 20);
-    NodePtr b = createSource(10, 6);
-    NodePtr cc = createSource(24, 30);
-    NodePtr op = createNode(QString::fromUtf8(kStagedFourSourceOpPluginID));
-    ASSERT_TRUE(a && matte && b && cc && op);
-    connectNodes(a, op, 0, true);
-    connectNodes(matte, op, 1, true);
-    connectNodes(b, op, 2, true);
-    connectNodes(cc, op, 3, true);
+    expectFold(2, foldInput(4));
+}
 
-    const RectI window = paritySourceWindow(a, kTime, 0);
-    ASSERT_FALSE(window.isNull());
-    std::vector<float> aPixels;
-    std::vector<float> mattePixels;
-    std::vector<float> bPixels;
-    std::vector<float> cPixels;
-    ASSERT_TRUE(renderRGBA(a, window, &aPixels));
-    ASSERT_TRUE(renderRGBA(matte, window, &mattePixels));
-    ASSERT_TRUE(renderRGBA(b, window, &bPixels));
-    ASSERT_TRUE(renderRGBA(cc, window, &cPixels));
+// Three inputs blended with the third.
+TEST_F(StagedCompositeTest, FoldOfThreeInputsBlendingWithAFoldedInput)
+{
+    expectFold(3, foldInput(2));
+}
 
-    for (int enabled = 1; enabled >= 0; --enabled) {
-        const std::string what = enabled ? "matte enabled" : "matte disabled";
-        ASSERT_TRUE(setKnobValues(op, "enableMask_Matte", { enabled ? 1. : 0. })) << what;
-        std::vector<float> got;
-        ASSERT_TRUE(renderRGBA(op, window, &got)) << what;
+// Five inputs, more than a fixed list of four would hold, under mask and mix.
+TEST_F(StagedCompositeTest, FoldOfFiveInputsUnderMaskAndMix)
+{
+    expectFold(5, -1);
+}
 
-        std::vector<float> want(aPixels.size());
-        for (std::size_t p = 0; p + 3 < want.size(); p += 4) {
-            const float m = enabled ? mattePixels[p + 3] : 0.f;
-            for (int c = 0; c < 4; ++c) {
-                const float scaled = m * bPixels[p + c];
-                want[p + c] = (aPixels[p + c] + scaled) - cPixels[p + c];
-            }
-        }
-        expectSame(want, got, what);
-    }
+// Five inputs blended with the offset one.
+TEST_F(StagedCompositeTest, FoldOfFiveInputsBlendingWithTheOffsetInput)
+{
+    expectFold(5, foldInput(1));
 }
 
 // A Point op's route() makes the node an identity of the input it names, which the op's own

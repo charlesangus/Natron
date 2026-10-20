@@ -62,8 +62,8 @@ NATRON_NAMESPACE_ENTER
  * misses the window. Every stage identity is one of the blend input (getBlendInput()) at the same
  * time.
  *
- * A Composite op reads the inputs its sources() lists for each evaluation, and names the input
- * the stages blend against, the node's first Source input unless it says otherwise.
+ * A Composite op folds the inputs its inputs() names for each evaluation, and names the input
+ * the stages blend against, its base input unless it says otherwise.
  *
  * A Passes op also gives the node its regions: the source's region of interest is the window
  * grown by the halo of the op's passes, and the region of definition the source's grown by their
@@ -127,7 +127,7 @@ public:
      * (canRunStagesGpu()) and the op's gpu() description at the query's time, view and scale names work
      * the device runs for pixels of the query's component count. A runtime shader that does not build is reported once and never built
      * again for this node. For a Composite op with gpu() (GpuCompositeOp), the same with its
-     * sources (canRunStageSourcesGpu()) and a registry kernel. For a Passes op, canRecordPassesGpu() with the op's passes at the
+     * inputs (canRunStageSourcesGpu()) and a registry kernel. For a Passes op, canRecordPassesGpu() with the op's passes at the
      * query's time, view and scale. For a Resample op that opts into the GPU, canRecordResampleGpu()
      * with the op's request at the query's time, view and scale. Every other op stays on the CPU.
      **/
@@ -161,8 +161,7 @@ public:
     /**
      * @brief For a Point, Composite or Passes op, or a Resample op that opts into the GPU, the layer
      * its plane is read in, except for the mask input, which is read in the layer its mask channel
-     * resolves in, and a Composite source whose InputLayer selects a layer, which is read in that
-     * layer (false when it resolves to none). False for every other op.
+     * resolves in. False for every other op.
      **/
     virtual bool getGpuInputLayer(int inputNb,
                                   const ImageLayerDesc& plane,
@@ -215,7 +214,7 @@ public:
 
     /**
      * @brief The input the stages blend against and every composed identity answers at time and
-     * view: the blend input a Composite op's sources() names, else getSourceInput().
+     * view: the blend input a Composite op's inputs() name, else getSourceInput().
      **/
     int getBlendInput(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
@@ -292,7 +291,7 @@ protected:
                             int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
-     * @brief Resolves the StagePlan once, with a Composite op's sources, and hands it to
+     * @brief Resolves the StagePlan once, with a Composite op's inputs, and hands it to
      * renderOp().
      **/
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -345,13 +344,13 @@ protected:
     }
 
     /**
-     * @brief The inputs a Composite op reads at time and view, and its blend input; the default
-     * lists none and leaves the blend input to getSourceInput().
+     * @brief The inputs a Composite op folds at time and view, and its blend input; the default
+     * names none.
      **/
-    virtual CompositeSources opSources(double /*time*/,
-                                       ViewIdx /*view*/) const WARN_UNUSED_RETURN
+    virtual CompositeInputs opInputs(double /*time*/,
+                                     ViewIdx /*view*/) const WARN_UNUSED_RETURN
     {
-        return CompositeSources();
+        return CompositeInputs();
     }
 
     /**
@@ -546,12 +545,12 @@ private:
             return runResampleCpu(*this, plan, args, opResample(args.time, args.view, args.mappedScale));
         } else if constexpr (PIPELINE.op == OpKind::Composite) {
             const typename OP::Params params = bakeParams(_op, args.time, args.view);
-            const OP& rowOp = _op;
-            const auto row = [&rowOp, &params](const RowIO& io) {
-                rowOp.row(params, io);
+            const OP& stepOp = _op;
+            const auto step = [&stepOp, &params](const RowIO& io) {
+                stepOp.step(params, io);
             };
 
-            return runStagesCpu(*this, plan, args, StageRowFn(row));
+            return runStagesCpu(*this, plan, args, StageRowFn(step));
         } else if constexpr (ScaledPointOp<OP>) {
             const typename OP::Params params = bakeParams(_op, args.time, args.view);
             const PassContext context = getPassContext(args.mappedScale);
@@ -641,16 +640,16 @@ private:
         }
     }
 
-    virtual CompositeSources opSources(double time,
-                                       ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    virtual CompositeInputs opInputs(double time,
+                                     ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         if constexpr (PIPELINE.op == OpKind::Composite) {
-            return _op.sources(bakeParams(_op, time, view), RouteContext(*this, time, view));
+            return _op.inputs(bakeParams(_op, time, view), RouteContext(*this, time, view));
         } else {
             Q_UNUSED(time);
             Q_UNUSED(view);
 
-            return CompositeSources();
+            return CompositeInputs();
         }
     }
 

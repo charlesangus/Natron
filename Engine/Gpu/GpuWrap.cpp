@@ -231,39 +231,30 @@ wrapParams(const GpuWrap& wrap, GpuWrapParams& out, const GpuWrapView* filtered)
 }
 
 GpuStatus
-wrapSourceBlock(const GpuWrap& wrap, const GpuWrapSources& sources, GpuWrapSourceBlock& out)
+wrapStepParams(const GpuWrapStep& step, GpuWrapParams& out)
 {
-    out = {};
-    if (sources.count > kGpuWrapMaxSources) {
-        return invalid("at most " + std::to_string(kGpuWrapMaxSources) + " sources are supported, got "
-                       + std::to_string(sources.count));
+    GpuWrap wrap;
+    wrap.src = step.result;
+    wrap.dst = step.dst;
+    wrap.output = step.output;
+    wrap.nComps = step.nComps;
+    wrap.channelMask = step.channelMask;
+    if (GpuStatus s = wrapParams(wrap, out); !s) {
+        return s;
     }
-    if (wrap.divisorChannel >= 0) {
-        return invalid("an op reading several sources divides none of them");
+    if (step.output.empty() || step.input.bounds.empty()) {
+        return {};
     }
-    out.count = sources.count;
-    for (uint32_t i = 0; i < sources.count; ++i) {
-        const GpuWrapSource& source = sources.list[i];
-        GpuWrapSourceView& v = out.views[i];
-        v.channel = source.channel < 0 ? -1 : source.channel;
-        if (source.view.bounds.empty()) {
-            continue;
-        }
-        const std::string name = "source " + std::to_string(i);
-        if (GpuStatus s = checkGeometry(source.view, name.c_str()); !s) {
-            return s;
-        }
-        if (source.channel >= int32_t(source.view.nComps)) {
-            return invalid(name + " channel out of range");
-        }
-        v.offset = static_cast<uint32_t>(source.view.offsetFloats);
-        v.stride = source.view.strideFloats;
-        v.x1 = source.view.bounds.x1;
-        v.y1 = source.view.bounds.y1;
-        v.x2 = source.view.bounds.x2;
-        v.y2 = source.view.bounds.y2;
-        v.comps = source.view.nComps;
+    if (GpuStatus s = checkGeometry(step.input, "step input"); !s) {
+        return s;
     }
+    out.maskOffset = static_cast<uint32_t>(step.input.offsetFloats);
+    out.maskStride = step.input.strideFloats;
+    out.maskX1 = step.input.bounds.x1;
+    out.maskY1 = step.input.bounds.y1;
+    out.maskX2 = step.input.bounds.x2;
+    out.maskY2 = step.input.bounds.y2;
+    out.maskComps = step.input.nComps;
     return {};
 }
 
@@ -274,54 +265,100 @@ recordWrapped(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, co
 }
 
 GpuStatus
-recordWrappedSources(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, const GpuWrapSources& sources,
-                     const GpuBuffer* opParams)
+recordWrapStep(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrapStep& step, const GpuBuffer* opParams)
 {
     GpuWrapParams p;
-    if (GpuStatus s = wrapParams(wrap, p); !s) {
-        return s;
-    }
-    GpuWrapSourceBlock block;
-    if (GpuStatus s = wrapSourceBlock(wrap, sources, block); !s) {
+    if (GpuStatus s = wrapStepParams(step, p); !s) {
         return s;
     }
     if (p.width == 0 || p.height == 0) {
         return {};
     }
+    GpuWrap wrap;
+    wrap.src = step.result;
+    wrap.dst = step.dst;
     const GpuBuffer* unused = nullptr;
     const GpuBuffer* b[kGpuWrapBindings];
     if (GpuStatus s = wrapBuffers(ctx, wrap, opParams, nullptr, unused, b); !s) {
         return s;
     }
-    const GpuBuffer* src[kGpuWrapMaxSources] = {};
-    for (uint32_t i = 0; i < sources.count; ++i) {
-        const GpuWrapView& view = sources.list[i].view;
-        if (view.bounds.empty()) {
-            continue;
-        }
-        const std::string name = "source " + std::to_string(i);
-        if (GpuStatus s = checkBuffer(view, name.c_str()); !s) {
+    const GpuBuffer* input = nullptr;
+    if (!step.input.bounds.empty()) {
+        if (GpuStatus s = checkBuffer(step.input, "step input"); !s) {
             return s;
         }
-        src[i] = view.buffer;
+        input = step.input.buffer;
+    } else {
+        if (GpuStatus s = standIn(ctx, unused); !s) {
+            return s;
+        }
+        input = unused;
     }
-    for (const GpuBuffer*& buffer : src) {
-        if (!buffer) {
-            if (GpuStatus s = standIn(ctx, unused); !s) {
-                return s;
-            }
-            buffer = unused;
+    return ctx.dispatch(kernel, { b[0], b[1], b[2], b[3], input }, p, { p.width, p.height, 1 });
+}
+
+GpuStatus
+recordWrapFold(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, const GpuWrapView& base,
+               std::span<const GpuWrapView> inputs, const GpuBuffer* opParams)
+{
+    if (wrap.divisorChannel >= 0) {
+        return invalid("a fold divides none of its inputs");
+    }
+    GpuWrapParams p;
+    if (GpuStatus s = wrapParams(wrap, p); !s) {
+        return s;
+    }
+    if (p.width == 0 || p.height == 0) {
+        return {};
+    }
+    const uint32_t n = wrap.nComps;
+    if (!base.bounds.empty()) {
+        if (GpuStatus s = checkGeometry(base, "base"); !s) {
+            return s;
+        }
+        if (base.nComps != n) {
+            return invalid("base channel count differs from the output's");
         }
     }
-    GpuBuffer* views = nullptr;
-    if (GpuStatus s = ctx.scratch(sizeof(block), views); !s) {
-        return s;
+
+    const VkDeviceSize bytes = VkDeviceSize(p.width) * p.height * n * sizeof(float);
+    GpuWrapView scratch[2];
+    const int nScratch = inputs.size() > 1 ? 2 : 1;
+    for (int i = 0; i < nScratch; ++i) {
+        GpuBuffer* buffer = nullptr;
+        if (GpuStatus s = ctx.scratch(bytes, buffer); !s) {
+            return s;
+        }
+        scratch[i] = GpuWrapView { buffer, 0, wrap.output, p.width * n, n };
     }
-    if (GpuStatus s = ctx.updateBuffer(*views, 0, std::as_bytes(std::span(&block, 1))); !s) {
-        return s;
+
+    if (inputs.empty()) {
+        GpuWrap copy;
+        copy.src = base;
+        copy.dst = scratch[0];
+        copy.output = wrap.output;
+        copy.nComps = n;
+        if (GpuStatus s = record(ctx, GpuKernelId::wrap_divide, copy, nullptr, nullptr); !s) {
+            return s;
+        }
+        ctx.computeBarrier();
+        return recordWrapFinish(ctx, wrap, scratch[0]);
     }
-    return ctx.dispatch(kernel, { b[0], b[1], b[2], b[3], src[0], src[1], src[2], src[3], views }, p,
-                        { p.width, p.height, 1 });
+
+    GpuWrapStep step;
+    step.output = wrap.output;
+    step.nComps = n;
+    step.channelMask = wrap.channelMask;
+    for (std::size_t k = 0; k < inputs.size(); ++k) {
+        step.result = (k == 0) ? base : scratch[(k - 1) & 1];
+        step.input = inputs[k];
+        step.dst = scratch[k & 1];
+        if (GpuStatus s = recordWrapStep(ctx, kernel, step, opParams); !s) {
+            return s;
+        }
+        ctx.computeBarrier();
+    }
+    return recordWrapFinish(ctx, wrap, scratch[(inputs.size() - 1) & 1]);
 }
 
 GpuStatus

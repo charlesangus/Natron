@@ -243,63 +243,64 @@ concept RoutesOp = requires(const OP& op, const typename OP::Params& params, con
 /**
  * @brief One input a Composite op reads in an evaluation, at the time it reads it.
  **/
-struct CompositeSource {
+struct CompositeInput {
     int inputNb = -1;
     double time = 0.;
 };
 
 /**
- * @brief The inputs a Composite op reads in one evaluation, in the order RowIO::src holds their
- * rows, and the input the stages blend against.
+ * @brief What a Composite op folds in one evaluation: the base input the result starts from, the
+ * further inputs its step() combines into that result one after the other, any number of them,
+ * and the input the stages blend against.
  *
- * At most kPixelKernelMaxInputs inputs; add() refuses more. blendInput is the input the MaskMix
- * and PassThroughUnprocessed stages blend with and copy from, read at the evaluation's time, and
- * the input every composed identity answers; -1 stands for the node's first Source input. It need
- * not be one of the listed inputs.
+ * blendInput is the input the MaskMix and PassThroughUnprocessed stages blend with and copy from,
+ * read at the evaluation's time, and the input every composed identity answers; -1 stands for the
+ * base input. It need not be one of the folded inputs.
  **/
-struct CompositeSources {
-    CompositeSource list[kPixelKernelMaxInputs];
-    int count = 0;
+struct CompositeInputs {
+    CompositeInput base;
+    std::vector<CompositeInput> further;
     int blendInput = -1;
 
-    constexpr bool add(int inputNb,
-                       double time)
+    void add(int inputNb,
+             double time)
     {
-        if (count >= kPixelKernelMaxInputs) {
-            return false;
-        }
-        list[count].inputNb = inputNb;
-        list[count].time = time;
-        ++count;
+        further.push_back(CompositeInput { inputNb, time });
+    }
 
-        return true;
+    int blend() const
+    {
+        return (blendInput >= 0) ? blendInput : base.inputNb;
     }
 };
 
 /**
- * @brief A Composite op: a node whose output pixel depends only on the same pixel of up to
- * kPixelKernelMaxInputs inputs.
+ * @brief A Composite op: a node whose output pixel is a fold over the same pixel of any number of
+ * inputs.
  *
  * bake() and Params are as for a Point op. isIdentity() says whether those Params leave the blend
- * input unchanged. sources() chooses from the Params and the context the inputs this evaluation
- * reads. row() is pure on its RowIO, as a Point op's is, and reads io.src[i] for the i-th of those
- * inputs, io.nSrc of them: a row of io.nComps floats per pixel, read in the layer the input's
- * InputSpec::layer names; for an input of role Mask, one float per pixel, the channel its mask
- * selector names, zero when that mask is disconnected or disabled. Wherever an input has no
- * pixel, its row reads zero. No row is divided: a Composite op has no Premult stage, since no one
- * input's divisor applies to the others.
+ * input unchanged. inputs() chooses from the Params and the context the inputs this evaluation
+ * folds. The result starts as the base input's row, and step() combines it with each further
+ * input's row in turn; with no further input the result is the base row.
+ *
+ * step() is pure on its RowIO, as a Point op's row() is. io.src[0] is the result so far and
+ * io.src[1] the next input's row, io.nComps floats per pixel each, and step() writes the processed
+ * channels (io.channels) of the new result to io.dst; the other channels of a result are never
+ * read back as output. An input is read in the layer its InputSpec::layer names, and reads zero
+ * wherever it has no pixel. No row is divided: a Composite op has no Premult stage, since no one
+ * input's divisor applies to the others. Mask and mix apply once, to the final result.
  **/
 template <typename OP>
 concept CompositeOp = BakesParams<OP> && std::copyable<typename OP::Params> && requires(const OP& op, const typename OP::Params& params, const RouteContext& context, const RowIO& io) {
     { op.isIdentity(params) } -> std::convertible_to<bool>;
-    { op.sources(params, context) } -> std::same_as<CompositeSources>;
-    { op.row(params, io) } -> std::same_as<void>;
+    { op.inputs(params, context) } -> std::same_as<CompositeInputs>;
+    { op.step(params, io) } -> std::same_as<void>;
 };
 
 /**
  * @brief A Composite op that runs on the GPU: gpu(params) names a registry kernel whose entry is
- * built with runWrappedSources (Kernels/compositewrap.slang), and its parameter block. A
- * Composite op without it stays on the CPU.
+ * built with runCompositeStep (Kernels/compositestep.slang), and its parameter block. The kernel
+ * is dispatched once per further input. A Composite op without it stays on the CPU.
  **/
 template <typename OP>
 concept GpuCompositeOp = CompositeOp<OP> && requires(const OP& op, const typename OP::Params& params) {

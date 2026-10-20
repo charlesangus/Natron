@@ -132,10 +132,9 @@ StagedImageEffect::resolveGpuPlan(const GpuQuery& query) const
     if (imagePipelineSpec().op != OpKind::Composite) {
         return resolveGpuStagePlan(*self, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), query);
     }
-    const CompositeSources sources = opSources(query.time, query.view);
-    const int blendInput = (sources.blendInput >= 0) ? sources.blendInput : getSourceInput();
-    StagePlan plan = resolveGpuStagePlan(*self, imagePipelineSpec().stages, _stageKnobs, blendInput, query);
-    resolveStageSources(*self, nodeSpec(), sources, &plan);
+    const CompositeInputs inputs = opInputs(query.time, query.view);
+    StagePlan plan = resolveGpuStagePlan(*self, imagePipelineSpec().stages, _stageKnobs, inputs.blend(), query);
+    resolveStageSources(nodeSpec(), inputs, &plan);
 
     return plan;
 }
@@ -199,20 +198,6 @@ StagedImageEffect::getGpuInputLayer(int inputNb,
 
     if ((kind != OpKind::Point) && (kind != OpKind::Composite) && (kind != OpKind::Passes) && ((kind != OpKind::Resample) || !opResamplesOnGpu())) {
         return false;
-    }
-    if (kind == OpKind::Composite) {
-        // Resolving only reads the node's selectors and its inputs' layers.
-        StagedImageEffect* self = const_cast<StagedImageEffect*>(this);
-        StagePlan plan;
-        plan.time = time;
-        plan.view = view;
-        resolveStageSources(*self, nodeSpec(), opSources(time, view), &plan);
-        for (int s = 0; s < plan.nSources; ++s) {
-            const StageSource& source = plan.sources[s];
-            if ((source.inputNb == inputNb) && !source.mask && !source.layerKnob.empty()) {
-                return resolveStageSourceLayer(*self, source, view, layer);
-            }
-        }
     }
     stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
 
@@ -279,9 +264,11 @@ int
 StagedImageEffect::getBlendInput(double time,
                                  ViewIdx view) const
 {
-    const CompositeSources sources = opSources(time, view);
+    if (imagePipelineSpec().op != OpKind::Composite) {
+        return getSourceInput();
+    }
 
-    return (sources.blendInput >= 0) ? sources.blendInput : getSourceInput();
+    return opInputs(time, view).blend();
 }
 
 int
@@ -621,13 +608,12 @@ StagedImageEffect::isIdentity(double time,
 StatusEnum
 StagedImageEffect::render(const RenderActionArgs& args)
 {
-    const CompositeSources sources = opSources(args.time, args.view);
-    const int blendInput = (sources.blendInput >= 0) ? sources.blendInput : getSourceInput();
-    StagePlan plan = resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, blendInput, args.time, args.view, args.processChannels);
-
-    if (imagePipelineSpec().op == OpKind::Composite) {
-        resolveStageSources(*this, nodeSpec(), sources, &plan);
+    if (imagePipelineSpec().op != OpKind::Composite) {
+        return renderOp(args, resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), args.time, args.view, args.processChannels));
     }
+    const CompositeInputs inputs = opInputs(args.time, args.view);
+    StagePlan plan = resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, inputs.blend(), args.time, args.view, args.processChannels);
+    resolveStageSources(nodeSpec(), inputs, &plan);
 
     return renderOp(args, plan);
 }

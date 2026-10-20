@@ -98,11 +98,11 @@ struct DissolveOp {
     Route route(const Params& params,
                 const RouteContext& context) const;
 
-    CompositeSources sources(const Params& params,
-                             const RouteContext& context) const;
+    CompositeInputs inputs(const Params& params,
+                           const RouteContext& context) const;
 
-    void row(const Params& params,
-             const RowIO& io) const;
+    void step(const Params& params,
+              const RowIO& io) const;
 
     KnobDoubleWPtr which;
 };

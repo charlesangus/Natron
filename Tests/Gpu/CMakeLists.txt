@@ -15,9 +15,7 @@ endforeach()
 foreach(_e wrap_divide wrap_finish)
     slang_add_kernel(test_${_e} ${NATRON_GPU_KERNEL_DIR}/pixelwrap.slang ENTRY ${_e} CPP)
 endforeach()
-foreach(_e compositewrap_two compositewrap_four)
-    slang_add_kernel(${_e} ${NATRON_GPU_KERNEL_DIR}/compositewrap.slang ENTRY ${_e} CPP)
-endforeach()
+slang_add_kernel(compositestep_halveadd ${NATRON_GPU_KERNEL_DIR}/compositestep.slang ENTRY compositestep_halveadd CPP)
 slang_add_kernel(fill kernels/fill.slang ENTRY fill_main)
 slang_add_kernel(smoke kernels/smoke.slang ENTRY smoke)
 slang_add_kernel(test_smoke kernels/smoke.slang ENTRY smoke CPP)
@@ -65,8 +63,7 @@ target_link_libraries(GpuTests
         pixelwrap_chain
         test_wrap_divide
         test_wrap_finish
-        compositewrap_two
-        compositewrap_four
+        compositestep_halveadd
         test_smoke
         -static-libstdc++
         -static-libgcc

@@ -321,7 +321,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
 
 ## Phase 137.5: Point ops and generators
 
-- [ ] M137.P5.T1 — Invert, Clamp and Saturation
+- [x] M137.P5.T1 — Invert, Clamp and Saturation
   - files: `Engine/Nodes/Color/{Invert,Clamp,Saturation}.{h,cpp}`, `Tests/Native/{NativeInvertGpu,NativeClampGpu,NativeSaturationGpu}_Test.cpp`
   - approach:
     - Each becomes a `…Op` with `kNodeSpec`/`kPipeline`, under a node class of its current name deriving from `ImageNode<…Op>`, as Grade does. Pipeline: `{Premult, MaskMix, PassThroughUnprocessed}` (the old base's set with `hostUnPremult`), current layer defaults, Point.
@@ -330,7 +330,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, the three nodes' goldens are bit-exact, their `Native*Gpu_Test` stay within their bounds, and their `Native*_Test` pass.
   - size: M
 
-- [ ] M137.P5.T2 — ColorCorrect, and curve tables in `Params`
+- [x] M137.P5.T2 — ColorCorrect, and curve tables in `Params`
   - files: `Engine/Nodes/Color/ColorCorrect.{h,cpp}`, `Engine/Nodes/Image/CurveSnapshot.h`, `Engine/Nodes/Image/Op.h`, `Engine/Nodes/KnobReader.h`, `Tests/Native/NativeColorCorrectGpu_Test.cpp`
   - approach:
     - As P5.T1, kernel `colorcorrect_wrapped`.
@@ -339,7 +339,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, ColorCorrect's goldens are bit-exact, `NativeColorCorrectGpu_Test` stays within its bound, and `NativeColorCorrect_Test` passes.
   - size: L
 
-- [ ] M137.P5.T5 — ColorLookup
+- [x] M137.P5.T5 — ColorLookup
   - files: `Engine/Nodes/Color/ColorLookup.{h,cpp}`, `Engine/Nodes/Image/Op.h`, `Engine/Nodes/Image/StagedImageEffect.cpp`, `Tests/Native/NativeColorLookupGpu_Test.cpp`
   - approach:
     - As P5.T2, with its shared-table Params: the tables hold the four 1024-entry LUTs and the `CurveSnapshot`s, because the CPU evaluates the curves directly outside [0,1] (`ColorLookup.cpp:~262`). `gpu()` returns `GpuOpRef::packed` with the words `packGpu` builds today, or none when a curve has more keys than the block holds.
@@ -348,7 +348,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: as P5.T1, plus `ParametricBackground_Test`.
   - size: L
 
-- [ ] M137.P5.T3 — ColorMath (Add, Multiply, Gamma)
+- [x] M137.P5.T3 — ColorMath (Add, Multiply, Gamma)
   - files: `Engine/Nodes/Color/ColorMathNode.{h,cpp}`, `Engine/AppManager.cpp`, `Tests/Native/NativeColorMathGpu_Test.cpp`
   - approach:
     - One op templated on the operation, `ColorMathOp<Kind>`, each instantiation with its own `kNodeSpec` (IDs unchanged) and the shared pipeline `{Premult, MaskMix, PassThroughUnprocessed}`, Point. `ImageNode` default-constructs its op and passes it nothing from the spec, so the kind is a template argument.
@@ -357,7 +357,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: as P5.T1 for all three IDs, and `NativePluginList_Test` passes.
   - size: M
 
-- [ ] M137.P5.T6 — Point ops that need the render scale
+- [x] M137.P5.T6 — Point ops that need the render scale
   - files: `Engine/Nodes/Image/Op.h`, `Engine/Nodes/Image/StagedImageEffect.{h,cpp}`, `Tests/Native/StagedPointContext_Test.cpp` (new)
   - approach:
     - A Point op's `row(params, io)` and `gpu(params)`, and `StagedImageEffect::gpuOp(time, view)`, see no render scale. CheckerBoard (`CheckerBoard.cpp:412,476`) and Crop (P7.T4: whole-pixel box, softness matte) need it.
@@ -366,7 +366,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, `StagedPointContext_Test` renders a test op that writes its scale at scale 1 and 0.5 on the CPU (and the GPU where available), and Grade's goldens stay bit-exact.
   - size: M
 
-- [ ] M137.P5.T4 — Generators: Constant, Solid, CheckerBoard, without inputs
+- [x] M137.P5.T4 — Generators: Constant, Solid, CheckerBoard, without inputs
   - files: `Engine/Nodes/Generator/{Constant,CheckerBoard}.{h,cpp}`, `Engine/Nodes/Image/NativeGenerator.{h,cpp}`, `Tests/Native/{NativeConstant,NativeConstantGpu,NativeCheckerBoardGpu}_Test.cpp`, `Tests/fixtures/native-golden/` (generator fixtures only)
   - approach:
     - Deliberate behaviour change (user): the generators lose their optional input entirely, with no Source input, no stages and `sourceInput` -1, and no longer pass channels through. Delete `describeSourceInput` (`NativeGenerator.cpp:227`); unwritten channels of the target layer are zero.
@@ -377,7 +377,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, the re-recorded generator fixtures replay green and git shows no change to any other fixture; `NativeConstantGpu_Test`/`NativeCheckerBoardGpu_Test` are within their bounds; `NativeConstant_Test`, `NativeCheckerBoard_Test` and `NativeCrop_Test` (which includes `NativeGenerator.h`) pass.
   - size: L
 
-- [ ] M137.P5.T7 — Tests that wire an input into a generator
+- [x] M137.P5.T7 — Tests that wire an input into a generator
   - files: `Tests/GeneratorLayer_Test.cpp`, `Tests/NativeMetadataPolicy_Test.cpp`
   - approach: P5.T4 removes the generators' input. Rewrite or delete the cases that connect a node into a generator (`GeneratorLayer_Test.cpp:285,367`, `NativeMetadataPolicy_Test.cpp:~215`), keeping each case's intent where it still applies, such as metadata with no upstream. Grep `Tests/` for any other `connectNodes(x, <generator>, …)` and fix those here too, naming them in the report.
   - verify: at the phase build, these suites pass, and a grep finds no test connecting an input to a Constant, Solid or CheckerBoard node.
@@ -385,7 +385,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
 
 ## Phase 137.6: Remaining filters on the Passes kind
 
-- [ ] M137.P6.T1 — ErodeDilate and Dilate
+- [x] M137.P6.T1 — ErodeDilate and Dilate
   - files: `Engine/Nodes/Filter/ErodeDilate.{h,cpp}`, `Tests/Native/NativeErodeDilateGpu_Test.cpp`, `Tests/Native/NativeErodeDilate_Test.cpp`
   - approach:
     - `ImageNode<ErodeDilateOp>`, Passes, `{MaskMix, PassThroughUnprocessed}`, `LayerPolicy::all()`, no Premult (as `Blur.h:123`), so it loses "(Un)premult by".
@@ -395,7 +395,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, the ErodeDilate/Dilate goldens are bit-exact, `NativeErodeDilateGpu_Test` is within its bound, and `NativeErodeDilate_Test` and `ErodeDilateKernels_Test` pass.
   - size: L
 
-- [ ] M137.P6.T2 — EdgeDetect
+- [x] M137.P6.T2 — EdgeDetect
   - files: `Engine/Nodes/Filter/EdgeDetect.{h,cpp}`, `Tests/Native/NativeEdgeDetect_Test.cpp`
   - approach:
     - Passes op on the CPU only (GPU port: M110 - Remaining Native GPU Ports): leave `PassList::gpu` empty.
@@ -404,7 +404,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, EdgeDetect's goldens are bit-exact and `NativeEdgeDetect_Test` passes.
   - size: M
 
-- [ ] M137.P6.T3 — Delete `SpatialFilterSupport.h`
+- [x] M137.P6.T3 — Delete `SpatialFilterSupport.h`
   - files: `Engine/Nodes/Filter/SpatialFilterSupport.h`
   - approach: the helpers already live in `PassExec` and the `.cpp` is gone. The header is a `using` shim whose last callers P6.T1/P6.T2 remove. Delete it; no CMake file lists it.
   - verify: at the phase build, greps for `SpatialFilterSupport` and `SpatialFilter::` in `Engine/` and `Tests/` find nothing, and the filter tests pass.
@@ -596,6 +596,12 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
 - 2026-10-19 — P2.T2 shapes (code 1523db758): `NativeImageEffect::render` and `StagedImageEffect` share one `runStagesCpu` (the loop moved verbatim; mask layer/channel now resolve before the divisor's layers are read, arithmetic unchanged). `StagedImageEffect::isIdentity`/`render` are FINAL; nodes implement `isOpIdentity`/`renderOp`. **For P2.T5:** Grade needs `Stage::PassThroughUnprocessed` in its `StageSet`, or the host copies the unprocessed channels instead (bit-exactness risk). **For P8.T5:** Merge as a Custom node goes through `renderOp`/`isOpIdentity`, since `render`/`isIdentity` are FINAL.
 - 2026-10-19 — P1.T2 before-timings are recorded in `tools/bench/BASELINE.md` but are noisy: per-node spread is 19–50%, from a loaded 4-core host, while graph chains were within 5% apart from xfchain. The rig for repeating them is the release AppImage extracted under `build/m137-before/`. **For P10.T1:** re-measure the before build (`e349888f0` AppImage) and the after build back-to-back, interleaved, on a quiet host with no agents running, and judge the gate on that pair. P2.T4 makes `NativeImageEffect::canRenderOnGpu` resolve a stage plan per call, so watch placement cost.
 - 2026-10-19 — Design note and spike approved by the user at the P3.T2 stop, departures included (`DECISIONS/2026-10-19-native-node-framework.md`); migration continues on the same branch after a §5a spot-check of Phases 137.4–137.9.
+- 2026-10-20 — Crop's `reformat` only relabels the framing (user): the output format becomes the rounded box at its own position and pixels do not move, so Crop stays a pure point op with no source offset. Only the `Crop_reformat_*` goldens are re-recorded.
+- 2026-10-20 — The Fill PyPlug is deleted (user: not useful). Its inner Solid relied on a source input that native generators no longer have.
+- 2026-10-20 — PIKColor's two Dilate nodes stop setting "(Un)premult by"; their input has R/G/B at 0, so the output is unchanged. The channel-set unpremult test uses an OFX Ramp as its pass-through generator.
+- 2026-10-20 — The Resample kind runs its own loop (`runResampleCpu`), not a row function under `runStagesCpu`: it must fetch through the concatenated input transform and sample the whole source per plane. Its mask/mix blend is a copy of `runStagesCpu`'s, and Premult is refused for Resample ops. `transform()` takes `amount`/`invert` for motion and directional blur; `ResampleSettings::transformIsIdentity` is the region identity, separate from the node identity.
+- 2026-10-20 — Position keeps `Stage::PassThroughUnprocessed`, since its old render copied unprocessed channels. TransformMasked is no longer a `TransformNode` (`TransformImageNode<MASKED>`); P7.T5 must also cover it where `GpuCostModel` and `NativeTransformGpu_Test` cast to `TransformNode`.
+- 2026-10-20 — Phase 4 and Phases 5–6 builds re-recorded every golden bit-identically (generators included); Merge goldens recorded at the Phase 4 build.
 - 2026-10-19 — Elaborated with a spike and a baseline phase ahead of the approval stop (planner): golden renders and timings must be captured on unchanged code, so they come before any framework commit. During migration the engine reaches GPU virtuals through `NativeEffectBase`, so both bases coexist until Phase 137.9.
 - 2026-10-19 — §5a spot-check after approval: 22 of the 27 unchecked tasks in Phases 137.4–137.10 were rewritten, 5 passed, and 8 were added (P4.T6–T8, P5.T5–T7, P7.T5, P8.T6). Every `files` path existed, but the briefs predated the spike's final shapes. Fixes:
   - the FINAL `render`/`isIdentity`/`rendersUnprocessedChannels`, with `renderOp`/`isOpIdentity` instead;

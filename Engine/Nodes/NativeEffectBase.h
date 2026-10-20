@@ -383,8 +383,12 @@ protected:
     virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) WARN_UNUSED_RETURN;
 
     /**
-     * @brief Drops every cached getOutputMetadata() result of this node alone; nodes downstream
-     * keep theirs.
+     * @brief For a change of this node's metadata that leaves its hash alone, such as a file
+     * reload: drops the cached metadata of this node and of every node downstream, and moves the
+     * content hashes of the expressions reading any of their metadata (see
+     * Node::onMetadataChangedUnderSameHash()). A change that moves the hash needs only
+     * dropCachedOutputMetadata(): a revision move would keep the readers from finding the renders
+     * of an earlier state again.
      **/
     void invalidateOutputMetadata();
 
@@ -413,6 +417,12 @@ protected:
                             double* inputTime,
                             ViewIdx* inputView,
                             int* inputNb) OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Drops every cached getOutputMetadata() result of this node alone, for a change that
+     * moves its hash anyway, which is what the readers of its metadata follow.
+     **/
+    virtual void dropCachedOutputMetadata() OVERRIDE;
 
     /**
      * @brief Pass 1 of a two-pass deep render: returns how many samples the pixel at (x, y) --

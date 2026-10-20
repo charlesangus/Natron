@@ -246,8 +246,27 @@ Node::setScriptName_no_error_check(const std::string & name)
 }
 
 static void
+addListeningDimension(const KnobIPtr& knob,
+                      int dimension,
+                      KnobI::ListenerDimsMap* dependencies)
+{
+    if ((dimension < 0) || (dimension >= knob->getDimension())) {
+        return;
+    }
+    KnobI::ListenerDimsMap::iterator found = dependencies->find(KnobIWPtr(knob));
+    if (found == dependencies->end()) {
+        found = dependencies->insert(std::make_pair(KnobIWPtr(knob), std::vector<KnobI::ListenerDim>(knob->getDimension()))).first;
+    }
+    found->second[dimension].isExpr = true;
+    found->second[dimension].isListening = true;
+}
+
+// Fills dependencies with the expressions reading knobs of node or of the nodes inside it, and
+// metadataDependencies with those reading their metadata.
+static void
 insertDependenciesRecursive(Node* node,
-                            KnobI::ListenerDimsMap* dependencies)
+                            KnobI::ListenerDimsMap* dependencies,
+                            KnobI::ListenerDimsMap* metadataDependencies)
 {
     const KnobsVec & knobs = node->getKnobs();
 
@@ -267,13 +286,31 @@ insertDependenciesRecursive(Node* node,
                 dependencies->insert(*it);
             }
         }
+
+        // A render-hashed knob reading its own node's metadata is not one of the node's readers.
+        for (int d = 0; d < knobs[i]->getDimension(); ++d) {
+            std::list<NodePtr> sources;
+            knobs[i]->getMetadataDependencies(d, &sources);
+            for (std::list<NodePtr>::const_iterator it = sources.begin(); it != sources.end(); ++it) {
+                if (it->get() == node) {
+                    addListeningDimension(knobs[i], d, metadataDependencies);
+                    break;
+                }
+            }
+        }
+    }
+
+    std::list<std::pair<KnobIPtr, int>> metadataReaders;
+    node->getMetadataReaders(&metadataReaders);
+    for (std::list<std::pair<KnobIPtr, int>>::const_iterator it = metadataReaders.begin(); it != metadataReaders.end(); ++it) {
+        addListeningDimension(it->first, it->second, metadataDependencies);
     }
 
     NodeGroup* isGroup = node->isEffectGroup();
     if (isGroup) {
         NodesList nodes = isGroup->getNodes();
         for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
-            insertDependenciesRecursive(it->get(), dependencies);
+            insertDependenciesRecursive(it->get(), dependencies, metadataDependencies);
         }
     }
 }
@@ -405,16 +442,36 @@ Node::setNameInternal(const std::string& name,
         if (_imp->nodeCreated) {
             ///For all knobs that have listeners, change in the expressions of listeners this knob script-name
             KnobI::ListenerDimsMap dependencies;
-            insertDependenciesRecursive(this, &dependencies);
+            KnobI::ListenerDimsMap metadataDependencies;
+            insertDependenciesRecursive(this, &dependencies, &metadataDependencies);
+            // A metadata read's keys and other strings may hold the name as text that must stay, so
+            // an expression reading metadata only has the name replaced where it names a node:
+            // which covers its knob reads, made through the same identifiers and getNode() paths.
+            for (KnobI::ListenerDimsMap::iterator it = metadataDependencies.begin(); it != metadataDependencies.end(); ++it) {
+                KnobIPtr reader = it->first.lock();
+                if (!reader) {
+                    continue;
+                }
+                for (std::size_t d = 0; d < it->second.size(); ++d) {
+                    if (it->second[d].isListening) {
+                        reader->replaceNodeNameInExpressionCode((int)d, oldName, newName);
+                    }
+                }
+            }
             for (KnobI::ListenerDimsMap::iterator it = dependencies.begin(); it != dependencies.end(); ++it) {
                 KnobIPtr listener = it->first.lock();
                 if (!listener) {
                     continue;
                 }
+                KnobI::ListenerDimsMap::const_iterator readsMetadata = metadataDependencies.find(it->first);
                 for (std::size_t d = 0; d < it->second.size(); ++d) {
-                    if (it->second[d].isListening && it->second[d].isExpr) {
-                        listener->replaceNodeNameInExpression(d, oldName, newName);
+                    if (!it->second[d].isListening || !it->second[d].isExpr) {
+                        continue;
                     }
+                    if ((readsMetadata != metadataDependencies.end()) && (d < readsMetadata->second.size()) && readsMetadata->second[d].isListening) {
+                        continue;
+                    }
+                    listener->replaceNodeNameInExpression(d, oldName, newName);
                 }
             }
         }

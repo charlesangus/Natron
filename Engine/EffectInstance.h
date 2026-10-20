@@ -1917,6 +1917,15 @@ public:
      **/
     virtual void onNodeHashChanged(U64 hash);
 
+    /**
+     * @brief Drops every output metadata result this effect cached, its inputs' included, with no
+     * other effect touched. Called when metadata upstream changed under an unchanged hash, which
+     * the caches are otherwise keyed on. Takes no lock but the caches' own; callable from any thread.
+     **/
+    virtual void dropCachedOutputMetadata()
+    {
+    }
+
     virtual void initializeData()
     {
     }

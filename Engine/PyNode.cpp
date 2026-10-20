@@ -27,10 +27,15 @@
 
 #include <cassert>
 #include <stdexcept>
+#include <string>
+#include <type_traits>
+#include <variant>
+#include <vector>
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Hash64.h"
+#include "Engine/Knob.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
@@ -39,11 +44,13 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Metadata/EffectMetadata.h"
 #include "Engine/Project.h"
 #include "Engine/PyParameter.h" // checkHolderIsEditable
 #include "Engine/PyRoto.h"
 #include "Engine/PyTracker.h"
 #include "Engine/TimeLine.h"
+#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
 NATRON_PYTHON_NAMESPACE_ENTER
@@ -1205,6 +1212,120 @@ Effect::getFrameRate() const
     }
 
     return node->getEffectInstance()->getFrameRate();
+}
+
+namespace {
+PyObject*
+metadataValueToPython(const ImageMetadata::Value& value)
+{
+    return std::visit([](const auto& v) -> PyObject* {
+        using T = std::decay_t<decltype(v)>;
+
+        if constexpr (std::is_same_v<T, int>) {
+            return PyLong_FromLong(v);
+        } else if constexpr (std::is_same_v<T, double>) {
+            return PyFloat_FromDouble(v);
+        } else if constexpr (std::is_same_v<T, std::string>) {
+            return PyUnicode_FromStringAndSize(v.data(), (Py_ssize_t)v.size());
+        } else {
+            PyObject* list = PyList_New((Py_ssize_t)v.size());
+
+            if (!list) {
+                return NULL;
+            }
+            Py_ssize_t i = 0;
+            for (const auto& element : v) {
+                PyObject* item = std::is_same_v<T, std::vector<int>> ? PyLong_FromLong((long)element) : PyFloat_FromDouble((double)element);
+
+                if (!item) {
+                    Py_DECREF(list);
+
+                    return NULL;
+                }
+                PyList_SetItem(list, i++, item);
+            }
+
+            return list;
+        }
+    },
+                      value);
+}
+
+ImageMetadata
+metadataOf(const NodePtr& node,
+           double frame,
+           int view)
+{
+    if (!node) {
+        return ImageMetadata();
+    }
+
+    return getEffectOutputMetadata(node->getEffectInstance(), frame, ViewIdx(view));
+}
+
+// An expression evaluated at another frame than the timeline's (getValueAtTime(), a render) must
+// read the metadata of that frame, as frame does.
+double
+defaultMetadataFrame(const Effect& effect)
+{
+    double time;
+
+    return KnobHelper::getExpressionEvaluationTime(&time) ? time : effect.getCurrentTime();
+}
+} // namespace
+
+PyObject*
+Effect::metadata(const QString& key) const
+{
+    return metadata(key, defaultMetadataFrame(*this));
+}
+
+PyObject*
+Effect::metadata(const QString& key,
+                 double frame,
+                 int view) const
+{
+    const ImageMetadata metadata = metadataOf(getInternalNode(), frame, view);
+    const ImageMetadata::Value* value = metadata.find(key.toStdString());
+
+    if (!value) {
+        Py_RETURN_NONE;
+    }
+
+    return metadataValueToPython(*value);
+}
+
+QStringList
+Effect::metadataKeys() const
+{
+    return metadataKeys(defaultMetadataFrame(*this));
+}
+
+QStringList
+Effect::metadataKeys(double frame,
+                     int view) const
+{
+    const ImageMetadata metadata = metadataOf(getInternalNode(), frame, view);
+    QStringList keys;
+
+    for (ImageMetadata::const_iterator it = metadata.begin(); it != metadata.end(); ++it) {
+        keys.push_back(QString::fromStdString(it->first));
+    }
+
+    return keys;
+}
+
+void
+Effect::addMetadataAsDependencyOf(int fromExprDimension,
+                                  Param* param)
+{
+    NodePtr node = getInternalNode();
+    KnobIPtr expressionKnob = param ? param->getInternalKnob() : KnobIPtr();
+
+    if (!node || !expressionKnob) {
+        return;
+    }
+    expressionKnob->addMetadataDependency(fromExprDimension, node);
 }
 
 double

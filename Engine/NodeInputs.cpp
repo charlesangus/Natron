@@ -618,32 +618,9 @@ Node::isNodeUpstream(const Node* input,
         return;
     }
 
-    // A diamond-shaped graph has exponentially many paths but linearly many nodes.
-    *ok = false;
-
-    std::unordered_set<const Node*> visited;
-    std::vector<const Node*> stack;
-    visited.insert(this);
-    stack.push_back(this);
-    while (!stack.empty()) {
-        const Node* node = stack.back();
-        stack.pop_back();
-        /// No need to lock guiInputs is only written to by the main-thread
-        for (U32 i = 0; i < node->_imp->inputs.size(); ++i) {
-            NodePtr in = node->_imp->inputs[i].lock();
-            if (!in) {
-                continue;
-            }
-            if (in.get() == input) {
-                *ok = true;
-
-                return;
-            }
-            if (visited.insert(in.get()).second) {
-                stack.push_back(in.get());
-            }
-        }
-    }
+    // A node's hash folds those of the nodes whose metadata its hashed knobs read, as it does its
+    // inputs', so a cycle through them would never let the hashes settle.
+    *ok = hashDependsOn(input, NULL, -1);
 }
 
 static Node::CanConnectInputReturnValue

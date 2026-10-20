@@ -410,6 +410,26 @@ public:
 
     double getFrameRate() const;
 
+    /**
+     * @brief The value of the metadata key this node puts out at the given frame and view, as an
+     * int, float, str or list, or None if the node has no such key. The frame defaults to the one
+     * the calling expression is evaluated at, or outside an expression to the current one.
+     **/
+    PyObject* metadata(const QString& key) const;
+    PyObject* metadata(const QString& key, double frame, int view = 0) const;
+
+    /**
+     * @brief The sorted keys of the metadata this node puts out at the given frame and view.
+     **/
+    QStringList metadataKeys() const;
+    QStringList metadataKeys(double frame, int view = 0) const;
+
+    /**
+     * @brief Records that the expression at fromExprDimension of param reads this node's metadata,
+     * so that it is refreshed when the metadata changes. Called by the expression dependency scan.
+     **/
+    void addMetadataAsDependencyOf(int fromExprDimension, Param* param);
+
     double getPixelAspectRatio() const;
 
     Natron::ImageBitDepthEnum getBitDepth() const;

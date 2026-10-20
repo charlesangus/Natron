@@ -5919,9 +5919,13 @@ EffectInstance::onNodeHashChanged(U64 hash)
     // the node through its stamp; Reload also drops the node's results, for changes the stamp misses.
     _imp->actionsCache->useHash(hash);
 
+    NodePtr node = _node.lock();
+    if (node) {
+        node->onMetadataMayHaveChanged();
+    }
+
     // Only expressions cache results, and walking every knob of every node a change reaches is
     // what an edit would otherwise pay for.
-    NodePtr node = _node.lock();
     if (node && !node->mayHaveKnobExpressions()) {
         return;
     }

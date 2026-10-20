@@ -43,7 +43,7 @@
 #include "Engine/DeepImage.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
-#include "Engine/Nodes/Metadata/OfxMetadataBridge.h"
+#include "Engine/Nodes/Metadata/EffectMetadata.h"
 #include "Engine/PoolParallelFor.h"
 #include "Engine/TLSHolder.h"
 
@@ -356,16 +356,7 @@ NativeEffectBase::getInputEffectMetadata(const EffectInstancePtr& connected,
                                          double time,
                                          ViewIdx view)
 {
-    const EffectInstancePtr input = OfxMetadataBridge::skipPassThroughNodes(connected);
-    NativeEffectBase* native = dynamic_cast<NativeEffectBase*>(input.get());
-
-    if (native) {
-        return native->getOutputMetadata(time, view);
-    }
-
-    // The OpenFX clip cache is keyed by time alone, so an OpenFX input has one answer for
-    // every view.
-    return OfxMetadataBridge::getOfxEffectOutputMetadata(input, time);
+    return getEffectOutputMetadata(connected, time, view);
 }
 
 ImageMetadata
@@ -444,6 +435,19 @@ NativeEffectBase::deriveOutputMetadata(double time,
 void
 NativeEffectBase::invalidateOutputMetadata()
 {
+    dropCachedOutputMetadata();
+
+    // The metadata can change here under an unchanged hash, which is all the readers and the
+    // caches downstream otherwise follow.
+    NodePtr node = getNode();
+    if (node) {
+        node->onMetadataChangedUnderSameHash();
+    }
+}
+
+void
+NativeEffectBase::dropCachedOutputMetadata()
+{
     std::map<MetadataKey, ImageMetadata> dropped;
 
     {
@@ -460,8 +464,8 @@ NativeEffectBase::onNodeHashChanged(U64 hash)
 
     // getOutputMetadata() already turns away a cache filled under another hash; this releases it
     // early. Taking no lock but the cache's keeps this safe against a render thread deriving
-    // metadata downstream to upstream.
-    invalidateOutputMetadata();
+    // metadata downstream to upstream. The readers were told by the call above.
+    dropCachedOutputMetadata();
 }
 
 void
@@ -469,8 +473,14 @@ NativeEffectBase::onMetadataRefreshed(const NodeMetadata& metadata)
 {
     OutputEffectInstance::onMetadataRefreshed(metadata);
 
-    // Project-level changes (format, frame rate) reach a node here with no hash change.
-    invalidateOutputMetadata();
+    // Project-level changes (format, frame rate) reach a node here. They move the node's hash too,
+    // through the project digest, so a revision move would only keep a restored state from
+    // finding its renders again.
+    dropCachedOutputMetadata();
+    NodePtr node = getNode();
+    if (node) {
+        node->onMetadataMayHaveChanged();
+    }
 }
 
 DataKindEnum

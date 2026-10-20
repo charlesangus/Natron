@@ -112,7 +112,7 @@ future core work has solid ground to build on.
 | M75 | Native Read | done |  |  | E3 | [M75-native-read.md](PLAN/MILESTONES/M75-native-read.md) |
 | M76 | Native Write | done | M75 |  | E3 | [M76-native-write.md](PLAN/MILESTONES/M76-native-write.md) |
 | M77 | Native Metadata Nodes | done | M75 | bosley-native-nodes | E3 | [M77-native-metadata-nodes.md](PLAN/MILESTONES/M77-native-metadata-nodes.md) |
-| M78 | Metadata In Expressions | doing | M75, M77 | bosley-native-nodes | E3 | [M78-metadata-in-expressions.md](PLAN/MILESTONES/M78-metadata-in-expressions.md) |
+| M78 | Metadata In Expressions | done | M75, M77 | bosley-native-nodes | E3 | [M78-metadata-in-expressions.md](PLAN/MILESTONES/M78-metadata-in-expressions.md) |
 | M79 | Layered Document Readers | todo | M75 |  | E3 | [M79-layered-document-readers.md](PLAN/MILESTONES/M79-layered-document-readers.md) |
 | M80 | Native RAW Support | todo | M75 |  | E3 | [M80-native-raw-support.md](PLAN/MILESTONES/M80-native-raw-support.md) |
 | M82 | Render Cost Profiling | done |  |  | E6 | [M82-render-cost-profiling.md](PLAN/MILESTONES/M82-render-cost-profiling.md) |

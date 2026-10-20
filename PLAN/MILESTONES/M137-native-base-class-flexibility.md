@@ -261,7 +261,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
 
 ## Phase 137.4: Every non-image native node onto `NodeSpec`
 
-- [ ] M137.P4.T1 — Metadata nodes and `TypedPassthrough`
+- [x] M137.P4.T1 — Metadata nodes and `TypedPassthrough`
   - files: `Engine/Nodes/Metadata/{ModifyMetadata,CopyMetadata,RemoveMetadata,ViewMetadata}.{h,cpp}`, `Engine/Nodes/TypedPassthrough.{h,cpp}`
   - approach:
     - Replace each `getNativePluginDescription()` with a `static constexpr NodeSpec kNodeSpec` over an `inline constexpr InputSpec[]`, field for field, and a `nodeSpec()` returning `staticNodeSpec<kNodeSpec>()`, as `Switch.h` does. Descriptions become plain `string_view`s (approved). Keep the class names; tests cast to them.
@@ -269,25 +269,25 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, `NativeCopyMetadata_Test`, `NativeModifyMetadata_Test`, `NativeRemoveMetadata_Test`, `NativeViewMetadata_Test` and `NativePluginList_Test` pass, and the `getPluginIDs()` dump is unchanged.
   - size: M
 
-- [ ] M137.P4.T2 — Channel nodes: Shuffle, ShuffleCopy, AddLayers, RemoveLayers
+- [x] M137.P4.T2 — Channel nodes: Shuffle, ShuffleCopy, AddLayers, RemoveLayers
   - files: `Engine/Nodes/Channel/{Shuffle,AddLayers,RemoveLayers}.{h,cpp}`, `Tests/Native/NativeChannelNodesSpec_Test.cpp` (new)
   - approach: as P4.T1. These stay multi-planar `NativeEffectBase` nodes and do not use the image pipeline. Because they have no native tests today, add a test of each one's ID, inputs and data kinds.
   - verify: at the phase build, the new test, the channel-set render tests and `NativePluginList_Test` pass.
   - size: M
 
-- [ ] M137.P4.T3 — Deep I/O and bridges: DeepRead, DeepWrite, DeepMerge, DeepToImage, DeepFromImage
+- [x] M137.P4.T3 — Deep I/O and bridges: DeepRead, DeepWrite, DeepMerge, DeepToImage, DeepFromImage
   - files: `Engine/Nodes/Deep/{DeepRead,DeepWrite,DeepMerge,DeepToImage,DeepFromImage}.{h,cpp}`
   - approach: as P4.T1, with input kinds from the spec. Do not touch the deep render paths.
   - verify: at the phase build, the deep tests pass.
   - size: M
 
-- [ ] M137.P4.T4 — Remaining deep nodes: DeepRecolor, DeepCrop, DeepExpression, DeepReformat, DeepRemoveLayers, DeepAddLayers
+- [x] M137.P4.T4 — Remaining deep nodes: DeepRecolor, DeepCrop, DeepExpression, DeepReformat, DeepRemoveLayers, DeepAddLayers
   - files: `Engine/Nodes/Deep/{DeepRecolor,DeepCrop,DeepExpression,DeepReformat,DeepRemoveLayers,DeepAddLayers}.{h,cpp}`
   - approach: as P4.T3. DeepAddLayers keeps its `appendNodeContentHash` override.
   - verify: at the phase build, the deep tests pass.
   - size: M
 
-- [ ] M137.P4.T5 — NativeRead, NativeWrite and MissingPluginNode
+- [x] M137.P4.T5 — NativeRead, NativeWrite and MissingPluginNode
   - files: `Engine/Nodes/IO/NativeRead.{h,cpp}`, `Engine/Nodes/IO/NativeWrite.{h,cpp}`, `Engine/Nodes/MissingPluginNode.{h,cpp}`
   - approach:
     - NativeRead/NativeWrite as P4.T1; `isWriter` comes from the spec.
@@ -296,7 +296,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, the `NativeRead*_Test`/`NativeWrite*_Test` suites and `Tests/Serialization/MissingPlugin*_Test` pass, and the `getPluginIDs()` dump is unchanged.
   - size: M
 
-- [ ] M137.P4.T6 — Merge golden cases, recorded before Merge is re-based
+- [x] M137.P4.T6 — Merge golden cases, recorded before Merge is re-based
   - files: `Tests/Native/NativeGolden_Test.cpp`, `Tests/fixtures/native-golden/` (new Merge fixtures only)
   - approach:
     - P1.T1 recorded no Merge cases, yet P8.T5 moves Merge's mask/mix onto the `StagePlan`. Add Merge cases in P1.T1's style: over and plus, one preset ID, A2 connected, mask with mix 0.5 and inverted, an A input outside the window, scale 1 and 0.5.
@@ -304,13 +304,13 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, the Merge fixtures carry the recording STAMP, `NativeGolden_Test` replays green, and git shows no change to the other fixtures.
   - size: M
 
-- [ ] M137.P4.T7 — Shared test effects onto `NodeSpec`
+- [x] M137.P4.T7 — Shared test effects onto `NodeSpec`
   - files: `Tests/CountingTestEffect.h`, `Tests/DataKindTestEffect.h`, `Tests/DeepRenderTestEffect.h`, `Tests/{InputChangedFetch,Multiplanar,NativeMetadata,PassThroughRoD}TestEffect.h`
   - approach: P9.T1 deletes `getNativePluginDescription()`, which the test effects in these headers override. Replace each with a constexpr `NodeSpec` and `nodeSpec()`, field for field, as P4.T1. Keep their own `isIdentity` overrides, and make no assertion changes.
   - verify: at the phase build, the full ctest passes on both scheduler modes.
   - size: M
 
-- [ ] M137.P4.T8 — Remaining test-file effects onto `NodeSpec`
+- [x] M137.P4.T8 — Remaining test-file effects onto `NodeSpec`
   - files: `Tests/NativeParity.{h,cpp}`, `Tests/Native/EngineHooks_Test.cpp`, `Tests/Native/NativeDirectOutput_Test.cpp`, `Tests/Native/RectangleOverlay_Test.cpp`, `Tests/Native/NodeSpec_Test.cpp`
   - approach:
     - As P4.T7, for `ParitySourceTestEffect` and the effects in the three test files.

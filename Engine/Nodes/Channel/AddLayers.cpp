@@ -58,27 +58,6 @@ AddLayers::~AddLayers()
 {
 }
 
-NativePluginDescription
-AddLayers::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_ADDLAYERS;
-    desc.label = "AddLayers";
-    desc.description = tr("Add the chosen project layers to the stream, filled with zeros, wherever the input does not "
-                          "have them. A layer the input already has passes through unchanged. The colour views rgba, "
-                          "rgb, alpha and xy share one colour plane: adding alpha to an rgb input gives rgba with alpha "
-                          "at zero, and the input's own colour channels are kept.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_CHANNEL;
-    desc.majorVersion = 1;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", true, eDataKindImage));
-    desc.outputKind = eDataKindImage;
-
-    return desc;
-}
-
 void
 AddLayers::addAcceptedComponents(int inputNb,
                                  std::list<ImageLayerDesc>* comps)
@@ -262,24 +241,15 @@ AddLayers::getRegionOfDefinition(U64 hash,
     return EffectInstance::getRegionOfDefinition(hash, time, scale, view, rod);
 }
 
-bool
-AddLayers::isIdentity(double time,
-                      const RenderScale& /*scale*/,
-                      const RectI& /*roi*/,
-                      ViewIdx view,
-                      double* inputTime,
-                      ViewIdx* inputView,
-                      int* inputNb)
+Route
+AddLayers::route(double time,
+                 ViewIdx view)
 {
     if (!computeOutcome(time, view).producesNothing()) {
-        return false;
+        return Route::none();
     }
 
-    *inputNb = 0;
-    *inputTime = time;
-    *inputView = view;
-
-    return true;
+    return Route::input(0, time);
 }
 
 StatusEnum

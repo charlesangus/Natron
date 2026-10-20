@@ -46,6 +46,10 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kRemoveLayersInputs[] = {
+    InputSpec { .label = "Source", .optional = true },
+};
+
 /**
  * @brief Takes layers out of the stream (remove), or keeps only the chosen ones (keep).
  *
@@ -131,8 +135,23 @@ public:
      **/
     ColorOutcome computeColorOutcome(double time, ViewIdx view) WARN_UNUSED_RETURN;
 
-protected:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_REMOVELAYERS,
+        .label = "RemoveLayers",
+        .description = "Remove the chosen layers from the stream, or keep only them. Every other layer passes "
+                       "through unchanged. The colour views rgba, rgb, alpha and xy share one colour plane: "
+                       "removing alpha leaves rgb, removing rgb leaves alpha, and removing rgba drops the colour "
+                       "plane. A layer the input does not have is ignored.",
+        .grouping = PLUGIN_GROUP_CHANNEL,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .inputs = kRemoveLayersInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
 
 private:
     virtual void initializeKnobs() OVERRIDE FINAL;
@@ -160,13 +179,8 @@ private:
                                          ViewIdx view,
                                          std::list<ImageLayerDesc>* layers) OVERRIDE FINAL;
 
-    virtual bool isIdentity(double time,
-                            const RenderScale& scale,
-                            const RectI& roi,
-                            ViewIdx view,
-                            double* inputTime,
-                            ViewIdx* inputView,
-                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual Route route(double time,
+                        ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 

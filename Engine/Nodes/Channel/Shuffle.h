@@ -51,6 +51,15 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kShuffleInputs[] = {
+    InputSpec { .label = "Source", .optional = true },
+};
+
+inline constexpr InputSpec kShuffleCopyInputs[] = {
+    InputSpec { .label = "2", .optional = true },
+    InputSpec { .label = "1", .optional = true },
+};
+
 /**
  * @brief Moves channels between layers: the only node allowed to produce a plane whose
  * channels differ from its source's.
@@ -172,10 +181,26 @@ public:
      **/
     ShuffleSource getEffectiveSource(int outSlot, int outIndex, double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_SHUFFLE,
+        .label = "Shuffle",
+        .description = "Rearrange channels between layers. Two input slots, each a layer of the Source input, "
+                       "feed two output layers; every output channel takes a slot channel, 0 or 1, and by "
+                       "default the same channel of its own slot. Every layer that is not an output passes "
+                       "through unchanged.",
+        .grouping = PLUGIN_GROUP_CHANNEL,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .inputs = kShuffleInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
 protected:
     virtual void getFrameRange(double* first, double* last) OVERRIDE FINAL;
-
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE WARN_UNUSED_RETURN;
 
 private:
     virtual void initializeKnobs() OVERRIDE FINAL;
@@ -195,13 +220,8 @@ private:
                                                 int* passThroughView,
                                                 int* passThroughInputNb) OVERRIDE FINAL;
 
-    virtual bool isIdentity(double time,
-                            const RenderScale& scale,
-                            const RectI& roi,
-                            ViewIdx view,
-                            double* inputTime,
-                            ViewIdx* inputView,
-                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual Route route(double time,
+                        ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -321,8 +341,24 @@ public:
         return true;
     }
 
-protected:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_SHUFFLECOPY,
+        .label = "ShuffleCopy",
+        .description = "Rearrange channels between layers of two inputs. The second slot reads input 2, the "
+                       "main input, and the first slot reads input 1; each feeds an output layer, and every "
+                       "output channel takes a slot channel, 0 or 1. By default the color comes from input 2 "
+                       "and the alpha from input 1. Every layer that is not an output passes through from "
+                       "input 2 unchanged.",
+        .grouping = PLUGIN_GROUP_CHANNEL,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .inputs = kShuffleCopyInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
 };
 
 NATRON_NAMESPACE_EXIT

@@ -205,16 +205,15 @@ public:
     }
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDDeepRenderSource,
+        .label = "Test Deep Render Source",
+        .outputKind = eDataKindDeep,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        NativePluginDescription desc;
-
-        desc.id = kTestPluginIDDeepRenderSource;
-        desc.label = "Test Deep Render Source";
-        desc.description = "";
-        desc.outputKind = eDataKindDeep;
-
-        return desc;
+        return staticNodeSpec<kNodeSpec>();
     }
 
     virtual StatusEnum renderDeep(const DeepRenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -266,17 +265,20 @@ public:
     }
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source", .kind = eDataKindDeep, .optional = false },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDDeepRenderGain,
+        .label = "Test Deep Render Gain",
+        .outputKind = eDataKindDeep,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        NativePluginDescription desc;
-
-        desc.id = kTestPluginIDDeepRenderGain;
-        desc.label = "Test Deep Render Gain";
-        desc.description = "";
-        desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindDeep));
-        desc.outputKind = eDataKindDeep;
-
-        return desc;
+        return staticNodeSpec<kNodeSpec>();
     }
 
     virtual StatusEnum renderDeep(const DeepRenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -371,17 +373,20 @@ public:
     }
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source", .kind = eDataKindDeep, .optional = false },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDDeepReshape,
+        .label = "Test Deep Reshape",
+        .outputKind = eDataKindDeep,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        NativePluginDescription desc;
-
-        desc.id = kTestPluginIDDeepReshape;
-        desc.label = "Test Deep Reshape";
-        desc.description = "";
-        desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindDeep));
-        desc.outputKind = eDataKindDeep;
-
-        return desc;
+        return staticNodeSpec<kNodeSpec>();
     }
 
     virtual StatusEnum renderDeep(const DeepRenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -482,16 +487,15 @@ public:
     }
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDDeepSyntheticSource,
+        .label = "Test Deep Synthetic Source",
+        .outputKind = eDataKindDeep,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        NativePluginDescription desc;
-
-        desc.id = kTestPluginIDDeepSyntheticSource;
-        desc.label = "Test Deep Synthetic Source";
-        desc.description = "";
-        desc.outputKind = eDataKindDeep;
-
-        return desc;
+        return staticNodeSpec<kNodeSpec>();
     }
 
     virtual void initializeKnobs() OVERRIDE FINAL
@@ -610,17 +614,20 @@ public:
     }
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source", .kind = eDataKindDeep, .optional = false },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDDeepLayersStub,
+        .label = "Test Deep Layers Stub",
+        .outputKind = eDataKindDeep,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        NativePluginDescription desc;
-
-        desc.id = kTestPluginIDDeepLayersStub;
-        desc.label = "Test Deep Layers Stub";
-        desc.description = "";
-        desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindDeep));
-        desc.outputKind = eDataKindDeep;
-
-        return desc;
+        return staticNodeSpec<kNodeSpec>();
     }
 
     virtual void initializeKnobs() OVERRIDE FINAL
@@ -714,16 +721,15 @@ public:
     }
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDImageRenderSource,
+        .label = "Test Image Render Source",
+        .outputKind = eDataKindImage,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        NativePluginDescription desc;
-
-        desc.id = kTestPluginIDImageRenderSource;
-        desc.label = "Test Image Render Source";
-        desc.description = "";
-        desc.outputKind = eDataKindImage;
-
-        return desc;
+        return staticNodeSpec<kNodeSpec>();
     }
 
     virtual void initializeKnobs() OVERRIDE FINAL

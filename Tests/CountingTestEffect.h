@@ -423,17 +423,20 @@ public:
     }
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source", .kind = eDataKindImage, .optional = true },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDCounting,
+        .label = "Test Counting",
+        .outputKind = eDataKindImage,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        NativePluginDescription desc;
-
-        desc.id = kTestPluginIDCounting;
-        desc.label = "Test Counting";
-        desc.description = "";
-        desc.inputs.push_back(NativeInputDescription("Source", true, eDataKindImage));
-        desc.outputKind = eDataKindImage;
-
-        return desc;
+        return staticNodeSpec<kNodeSpec>();
     }
 };
 
@@ -451,18 +454,21 @@ public:
     }
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "A", .kind = eDataKindImage, .optional = true },
+        InputSpec { .label = "B", .kind = eDataKindImage, .optional = true },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDCountingMerge,
+        .label = "Test Counting Merge",
+        .outputKind = eDataKindImage,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        NativePluginDescription desc;
-
-        desc.id = kTestPluginIDCountingMerge;
-        desc.label = "Test Counting Merge";
-        desc.description = "";
-        desc.inputs.push_back(NativeInputDescription("A", true, eDataKindImage));
-        desc.inputs.push_back(NativeInputDescription("B", true, eDataKindImage));
-        desc.outputKind = eDataKindImage;
-
-        return desc;
+        return staticNodeSpec<kNodeSpec>();
     }
 };
 

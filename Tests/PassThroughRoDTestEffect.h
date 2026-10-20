@@ -87,17 +87,20 @@ public:
     }
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source", .kind = eDataKindImage, .optional = true },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDPassThroughRoD,
+        .label = "Test Pass Through RoD",
+        .outputKind = eDataKindImage,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        NativePluginDescription desc;
-
-        desc.id = kTestPluginIDPassThroughRoD;
-        desc.label = "Test Pass Through RoD";
-        desc.description = "";
-        desc.inputs.push_back(NativeInputDescription("Source", true, eDataKindImage));
-        desc.outputKind = eDataKindImage;
-
-        return desc;
+        return staticNodeSpec<kNodeSpec>();
     }
 };
 

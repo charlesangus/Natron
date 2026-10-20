@@ -289,7 +289,10 @@ GpuContext::finish(bool available)
 #ifdef NATRON_HAVE_GPU
 
 namespace {
-constexpr std::size_t kCalibrationBytes = std::size_t(64) << 20;
+// A zero-copy import is limited by the bus alone and a few MB reach its rate, while staging is paced by its
+// copy threads and pieces, which only a transfer of several pieces exercises.
+constexpr std::size_t kImportCalibrationBytes = std::size_t(16) << 20;
+constexpr std::size_t kStagingCalibrationBytes = std::size_t(64) << 20;
 // Shifts the pointer off the import alignment so the transfer must take the staging path.
 constexpr std::size_t kStagingMisalignment = 64;
 
@@ -310,10 +313,23 @@ bytesPerSecond(std::size_t bytes,
     return (double)bytes / seconds;
 }
 
+struct CalibrationTimings {
+    double importMs = 0.;
+    double stagingMs = 0.;
+};
+
+double
+elapsedMs(std::chrono::steady_clock::time_point begin,
+          std::chrono::steady_clock::time_point end)
+{
+    return std::chrono::duration<double, std::milli>(end - begin).count();
+}
+
 gpu::GpuStatus
 roundTrip(gpu::GpuRuntime& runtime,
           gpu::GpuBuffer& buffer,
           void* host,
+          std::size_t bytes,
           RoundTrip& out)
 {
     using Clock = std::chrono::steady_clock;
@@ -322,7 +338,7 @@ roundTrip(gpu::GpuRuntime& runtime,
     up.path = &out.uploadPath;
     gpu::TimelineValue uploaded;
     const Clock::time_point t0 = Clock::now();
-    if (gpu::GpuStatus s = runtime.upload({ host, kCalibrationBytes }, buffer, 0, uploaded, up); !s) {
+    if (gpu::GpuStatus s = runtime.upload({ host, bytes }, buffer, 0, uploaded, up); !s) {
         return s;
     }
     if (gpu::GpuStatus s = runtime.wait(uploaded); !s) {
@@ -334,15 +350,15 @@ roundTrip(gpu::GpuRuntime& runtime,
     down.handoff = gpu::ComputeHandoff::None;
     down.path = &out.downloadPath;
     gpu::TimelineValue downloaded;
-    if (gpu::GpuStatus s = runtime.download(buffer, 0, { host, kCalibrationBytes }, downloaded, down); !s) {
+    if (gpu::GpuStatus s = runtime.download(buffer, 0, { host, bytes }, downloaded, down); !s) {
         return s;
     }
     if (gpu::GpuStatus s = runtime.wait(downloaded); !s) {
         return s;
     }
     const Clock::time_point t2 = Clock::now();
-    out.uploadBytesPerSecond = bytesPerSecond(kCalibrationBytes, t0, t1);
-    out.downloadBytesPerSecond = bytesPerSecond(kCalibrationBytes, t1, t2);
+    out.uploadBytesPerSecond = bytesPerSecond(bytes, t0, t1);
+    out.downloadBytesPerSecond = bytesPerSecond(bytes, t1, t2);
 
     return {};
 }
@@ -353,54 +369,57 @@ gpu::GpuStatus
 steadyRoundTrip(gpu::GpuRuntime& runtime,
                 gpu::GpuBuffer& buffer,
                 void* host,
+                std::size_t bytes,
                 RoundTrip& out)
 {
     RoundTrip warmup;
-    if (gpu::GpuStatus s = roundTrip(runtime, buffer, host, warmup); !s) {
+    if (gpu::GpuStatus s = roundTrip(runtime, buffer, host, bytes, warmup); !s) {
         return s;
     }
 
-    return roundTrip(runtime, buffer, host, out);
+    return roundTrip(runtime, buffer, host, bytes, out);
 }
 
+// Regions never stage when the device imports host pointers, so only the path they take is measured.
 gpu::GpuStatus
 calibrate(gpu::GpuRuntime& runtime,
-          GpuCalibration& out)
+          GpuCalibration& out,
+          CalibrationTimings& timings)
 {
+    using Clock = std::chrono::steady_clock;
+    const bool importing = runtime.transfer().hostImportSupported();
+    const std::size_t bytes = importing ? kImportCalibrationBytes : kStagingCalibrationBytes;
     gpu::GpuBufferHandle device;
-    if (gpu::GpuStatus s = runtime.acquire(kCalibrationBytes, device); !s) {
+    if (gpu::GpuStatus s = runtime.acquire(bytes, device); !s) {
         return s;
     }
-    const std::size_t hostBytes = kCalibrationBytes + kStagingMisalignment;
+    const std::size_t hostBytes = bytes + kStagingMisalignment;
     void* host = HostImageMemory::allocate(hostBytes);
     if (!host) {
         return { VK_ERROR_OUT_OF_HOST_MEMORY, "calibration buffer allocation failed" };
     }
     std::memset(host, 0x5a, hostBytes);
 
-    gpu::GpuStatus status;
-    RoundTrip staging;
-    status = steadyRoundTrip(runtime, device.buffer(), static_cast<char*>(host) + kStagingMisalignment, staging);
-    RoundTrip imported;
-    const bool tryImport = status && runtime.transfer().hostImportSupported();
-    if (tryImport) {
-        status = steadyRoundTrip(runtime, device.buffer(), host, imported);
-    }
+    RoundTrip trip;
+    const Clock::time_point begin = Clock::now();
+    gpu::GpuStatus status = steadyRoundTrip(runtime, device.buffer(), importing ? host : static_cast<char*>(host) + kStagingMisalignment, bytes, trip);
+    (importing ? timings.importMs : timings.stagingMs) = elapsedMs(begin, Clock::now());
     HostImageMemory::release(host, hostBytes);
     HostImageMemory::trim();
     if (!status) {
         return status;
     }
 
-    out.stagingUploadBytesPerSecond = staging.uploadBytesPerSecond;
-    out.stagingDownloadBytesPerSecond = staging.downloadBytesPerSecond;
-    out.hostImport = tryImport && imported.uploadPath == gpu::TransferPath::HostImport && imported.downloadPath == gpu::TransferPath::HostImport;
+    out.hostImport = importing && trip.uploadPath == gpu::TransferPath::HostImport && trip.downloadPath == gpu::TransferPath::HostImport;
     if (out.hostImport) {
-        out.hostImportUploadBytesPerSecond = imported.uploadBytesPerSecond;
-        out.hostImportDownloadBytesPerSecond = imported.downloadBytesPerSecond;
+        out.hostImportUploadBytesPerSecond = trip.uploadBytesPerSecond;
+        out.hostImportDownloadBytesPerSecond = trip.downloadBytesPerSecond;
+    } else {
+        out.stagingUploadBytesPerSecond = trip.uploadBytesPerSecond;
+        out.stagingDownloadBytesPerSecond = trip.downloadBytesPerSecond;
     }
-    out.uploadBytesPerSecond = out.hostImport ? out.hostImportUploadBytesPerSecond : out.stagingUploadBytesPerSecond;
-    out.downloadBytesPerSecond = out.hostImport ? out.hostImportDownloadBytesPerSecond : out.stagingDownloadBytesPerSecond;
+    out.uploadBytesPerSecond = trip.uploadBytesPerSecond;
+    out.downloadBytesPerSecond = trip.downloadBytesPerSecond;
     out.unifiedMemory = runtime.device().info().unifiedMemory;
 
     return {};
@@ -440,6 +459,7 @@ GpuContext::initialize()
         rtOptions.transfer.copyThreads = 4;
         rtOptions.transfer.stripBytes = VkDeviceSize(32) << 20;
         gpu::GpuStatus status = gpu::GpuRuntime::create(rtOptions, runtime);
+        const std::chrono::steady_clock::time_point created = std::chrono::steady_clock::now();
         if (!status) {
             failure = status.message.empty() ? "no usable Vulkan device" : status.message;
         } else if (!isDeviceAllowed(_mode, runtime->device().info().type == VK_PHYSICAL_DEVICE_TYPE_CPU)) {
@@ -456,7 +476,8 @@ GpuContext::initialize()
                 target->runtime = runtime.get();
             }
             GpuCalibration calibration;
-            status = calibrate(*runtime, calibration);
+            CalibrationTimings timings;
+            status = calibrate(*runtime, calibration, timings);
             if (!status) {
                 failure = status.message;
             } else {
@@ -470,6 +491,13 @@ GpuContext::initialize()
                 }
                 shared.runtime = std::move(runtime);
                 finish(true);
+                const std::chrono::steady_clock::time_point ready = std::chrono::steady_clock::now();
+                qInfo().noquote() << QString::fromLatin1("GPU compute ready after %1 ms (loader, instance, device and runtime %2 ms, "
+                                                         "host import calibration %3 ms, staging calibration %4 ms)")
+                                         .arg(elapsedMs(_createdAt, ready), 0, 'f', 1)
+                                         .arg(elapsedMs(_createdAt, created), 0, 'f', 1)
+                                         .arg(timings.importMs, 0, 'f', 1)
+                                         .arg(timings.stagingMs, 0, 'f', 1);
 
                 return;
             }

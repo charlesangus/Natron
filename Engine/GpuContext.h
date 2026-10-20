@@ -64,7 +64,8 @@ enum class GpuResolvedMode {
 };
 
 /**
- * @brief Measured at startup with one 64 MB round trip per transfer path.
+ * @brief Measured at startup with a round trip over the one path regions take: host import where the device has it,
+ * staging otherwise. The rates of the other path stay zero.
  **/
 struct GpuCalibration {
     double uploadBytesPerSecond = 0.;

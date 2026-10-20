@@ -213,8 +213,7 @@ download_artifact() {
     local name="$1"
     local dir="${2:-${OUT_DIR}}"
     local staging="${OUT_DIR:?}/.download-${name}"
-    local attempt
-    for attempt in 1 2 3; do
+    for _ in 1 2 3; do
         rm -rf "${staging:?}"
         if gh run download "${RUN_ID}" -n "${name}" -D "${staging}" >/dev/null 2>&1; then
             mkdir -p "${dir}"

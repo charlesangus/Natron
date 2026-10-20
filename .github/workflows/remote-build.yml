@@ -135,7 +135,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # Each leg normally takes about 35 minutes. Without the step bound, a case that outlives
+      # Each leg took about 35 minutes when ctest ran serially. Without the step bound, a case that outlives
       # ctest's own per-case timeout holds the job until GitHub's six-hour limit.
       - name: Run ctest suite (legacy scheduler)
         if: inputs.tests && !cancelled() && steps.build.outcome == 'success'
@@ -144,6 +144,8 @@ jobs:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           NATRON_TEST_REQUIRE_GPU: 1
           NATRON_RENDER_SCHEDULER: legacy
+          # One case per vCPU of the hosted runner; 1 restores the serial `ctest -V` run.
+          NATRON_CTEST_JOBS: 4
         run: |
           set -o pipefail
           mkdir -p ctest-logs
@@ -156,6 +158,8 @@ jobs:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           NATRON_TEST_REQUIRE_GPU: 1
           NATRON_RENDER_SCHEDULER: taskgraph
+          # One case per vCPU of the hosted runner; 1 restores the serial `ctest -V` run.
+          NATRON_CTEST_JOBS: 4
         run: |
           set -o pipefail
           mkdir -p ctest-logs

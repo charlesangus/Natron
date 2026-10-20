@@ -27,7 +27,6 @@
 
 #include <fcntl.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 
 #include <algorithm>
 #include <chrono>
@@ -41,7 +40,6 @@
 #include <memory>
 #include <sstream>
 #include <string>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -1664,86 +1662,9 @@ protected:
     }
 };
 
-// Bundled plugins whose own bugs the sweep cannot be asked to look past. The entry for a plugin
-// that no longer has its bug fails the suite, so the list cannot go stale.
-enum KnownBugKind {
-    // The sweep kills the process, so it runs in a death test and the shards skip the plugin.
-    eKnownBugCrashes,
-    // Two cold renders of the same state differ, so the sweep reports it and must keep doing so.
-    eKnownBugNonDeterministic
-};
-
-struct KnownPluginBug {
-    const char* pluginID;
-    KnownBugKind kind;
-    const char* reason;
-};
-
-const KnownPluginBug kKnownPluginBugs[] = {
-    { "eu.cimg.EdgeExtend", eKnownBugCrashes,
-      "mergeOver assumes 4 channels and reads out of bounds when processA is off" },
-    { "net.sf.cimg.CImgExpression", eKnownBugCrashes,
-      "the expression parser reads an uninitialised variable in CImg.h" },
-    { "net.fxarena.openfx.Sketch", eKnownBugNonDeterministic,
-      "its ImageMagick noise is unseeded, so two renders of the same state differ" }
-};
-
-const KnownPluginBug*
-findKnownPluginBug(const std::string& pluginID)
-{
-    for (std::size_t i = 0; i < sizeof(kKnownPluginBugs) / sizeof(kKnownPluginBugs[0]); ++i) {
-        if (pluginID == kKnownPluginBugs[i].pluginID) {
-            return &kKnownPluginBugs[i];
-        }
-    }
-
-    return 0;
-}
-
-// A child still running after this long has hung in the plug-in's broken code, which is how its bug shows on
-// some runs instead of a crash; the bound keeps every child well inside ctest's timeout for the whole test.
-const int kKnownBugChildSeconds = 60;
-const int kKnownBugChildHungExitCode = 124;
-
-void
-exitIfStillRunningAfter(int seconds)
-{
-    std::thread([seconds]() {
-        std::this_thread::sleep_for(std::chrono::seconds(seconds));
-        std::_Exit(kKnownBugChildHungExitCode);
-    }).detach();
-}
-
-bool
-diedAbnormally(int status)
-{
-    if (WIFEXITED(status) && (WEXITSTATUS(status) == kKnownBugChildHungExitCode)) {
-        std::cout << "[cache equivalence sweep] the child hung for " << kKnownBugChildSeconds
-                  << " s and was stopped, which counts as its known crash" << std::endl;
-    }
-
-    return !(WIFEXITED(status) && (WEXITSTATUS(status) == 0));
-}
-
 class CacheEquivalenceSweepTest
     : public CacheEquivalenceSweepBase,
       public ::testing::WithParamInterface<int> {
-};
-
-class CacheEquivalenceKnownPluginBugTest
-    : public CacheEquivalenceSweepBase {
-protected:
-    void sweepAlone(const PluginVersion& plugin,
-                    const Allowlist& allowlist,
-                    const NodePtr& source,
-                    const QTemporaryDir& tmp)
-    {
-        Findings findings;
-        int editsMade = 0;
-
-        exitIfStillRunningAfter(kKnownBugChildSeconds);
-        sweepPlugin(plugin, allowlist, source, tmp, &findings, &editsMade);
-    }
 };
 
 TEST_P(CacheEquivalenceSweepTest, CachedRenderAfterAPerturbedAndRevertedKnobEqualsAColdRender)
@@ -1766,24 +1687,8 @@ TEST_P(CacheEquivalenceSweepTest, CachedRenderAfterAPerturbedAndRevertedKnobEqua
         const std::size_t gapsBefore = findings.hashGaps.size();
         const std::size_t nondeterministicBefore = findings.nondeterministic.size();
         const int editsBefore = editsMade;
-        const KnownPluginBug* knownBug = findKnownPluginBug(plugins[i].id);
-        if (knownBug && (knownBug->kind == eKnownBugCrashes)) {
-            std::cout << "[cache equivalence sweep] " << plugins[i].describe() << ": skipped, known plugin bug: " << knownBug->reason
-                      << " (KnownPluginBugsStillCrash covers it)" << std::endl;
-            continue;
-        }
         sweepPlugin(plugins[i], allowlist, source, tmp, &findings, &editsMade);
         ++pluginsSwept;
-        if (knownBug) {
-            if (findings.nondeterministic.size() == nondeterministicBefore) {
-                ADD_FAILURE() << plugins[i].describe() << " no longer renders non-deterministically in this sweep: remove "
-                              << plugins[i].id << " from the known plugin bug list";
-            } else {
-                std::cout << "[cache equivalence sweep] " << plugins[i].describe() << ": non-deterministic as in the known plugin bug list: "
-                          << knownBug->reason << std::endl;
-                findings.nondeterministic.resize(nondeterministicBefore);
-            }
-        }
         const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
         std::cout << "[cache equivalence sweep] " << plugins[i].describe() << ": " << (editsMade - editsBefore) << " edits, "
                   << (findings.hashGaps.size() - gapsBefore) << " mismatches, "
@@ -1808,40 +1713,3 @@ TEST_P(CacheEquivalenceSweepTest, CachedRenderAfterAPerturbedAndRevertedKnobEqua
 }
 
 INSTANTIATE_TEST_CASE_P(Shards, CacheEquivalenceSweepTest, ::testing::Range(0, kSweepShardCount));
-
-TEST_F(CacheEquivalenceKnownPluginBugTest, KnownPluginBugsStillCrash)
-{
-    const Allowlist allowlist = loadAllowlist();
-    ASSERT_TRUE(allowlist.errors.empty()) << allowlist.errors.front();
-    const std::vector<PluginVersion> plugins = sweptPlugins();
-
-    for (std::size_t b = 0; b < sizeof(kKnownPluginBugs) / sizeof(kKnownPluginBugs[0]); ++b) {
-        const KnownPluginBug& bug = kKnownPluginBugs[b];
-        const PluginVersion* plugin = 0;
-        for (std::size_t i = 0; i < plugins.size(); ++i) {
-            if (plugins[i].id == bug.pluginID) {
-                plugin = &plugins[i];
-                break;
-            }
-        }
-        if (!plugin) {
-            ADD_FAILURE() << bug.pluginID << " is on the known plugin bug list but is not a bundled plugin: remove it from the list";
-            continue;
-        }
-        if (bug.kind != eKnownBugCrashes) {
-            continue;
-        }
-
-        QTemporaryDir tmp;
-        ASSERT_TRUE(tmp.isValid());
-        NodePtr source = createChecker();
-        ASSERT_TRUE(bool(source));
-
-        // A forked child of this multi-threaded process could deadlock, so the child is a fresh
-        // run of the binary that stops at this statement.
-        ::testing::FLAGS_gtest_death_test_style = "threadsafe";
-        const std::string stillWorks = plugin->describe() + " no longer crashes in the sweep: remove " + bug.pluginID
-            + " from the known plugin bug list (it was: " + bug.reason + ")";
-        EXPECT_EXIT(sweepAlone(*plugin, allowlist, source, tmp), diedAbnormally, "") << stillWorks;
-    }
-}

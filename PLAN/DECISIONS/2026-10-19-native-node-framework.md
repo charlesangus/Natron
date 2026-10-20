@@ -202,7 +202,11 @@ Each item is a place where the framework differs from M137's `## Scope` or its t
 - **Goldens:** all 24 `NativeGoldenTest` nodes are bit-exact against the e349888f0 goldens, in the configuration that recorded them. That covers Grade and Blur on the framework, and every other image node on the moved executors.
 - **GPU parity:** `NativeGradeGpuTest`, `NativeBlurGpuTest` and `NativeRuntimeShaderGpuTest` pass on the CI runner's software Vulkan, including the latter's two new staged-op cases. Blur's "(Un)premult by" parity cases were removed together with the knob.
 - **New suites:** `NodeSpecTest` (5), `NativeSwitchTest` (6) and `StageKnobFooterTest` (3) pass.
-- **Bench:** before-timings are in `tools/bench/BASELINE.md` ("M137 before", e349888f0). They are noisy: per-node spread is 19–50% on a loaded 4-core host. **No after-timings exist yet.** P10.T1 measures before (the e349888f0 AppImage) and after back-to-back, interleaved, on a quiet host. The performance gate is unproven.
+- **Bench:** before-timings are in `tools/bench/BASELINE.md` ("M137 before", e349888f0). They are noisy: per-node spread is 19–50% on a loaded 4-core host.
+
+## Performance against e349888f0
+
+Measured on one render thread, six alternating rounds, minimum ms/Mpx (tables in `tools/bench/BASELINE.md`). The first cut regressed: dissolve +34%, transform +12%, colorcorrect +5%. Two causes were in the framework: the generic finish pass ran even when it was a plain copy (no mask, mix 1, no divisor, every channel), and a Composite copied an unused row and read its base input twice. The third was ColorCorrect's `toneWeight` no longer being inlined. The executors now write straight into the output row when the finish pass would only copy it, and every native golden is unchanged. After the fix: dissolve −45.5%, transform −2.3%, colorcorrect −8.1%, grade −12.1%, blur −0.7%; graph chains blurchain −1.0%, xfchain −4.1%, ccchain −6.3%.
 
 ## Risks and limits
 
@@ -213,12 +217,12 @@ Each item is a place where the framework differs from M137's `## Scope` or its t
 - **Keyers:** Keyer and ChromaKeyer keep their own render and GPU kernels as Custom nodes, so M95 - Knob Cleanup And Keyer Redesign lands on the framework rather than on a conversion. ChromaKeyer's input layers come from `getOpGpuInputLayer`; the executors do not read `InputSpec::layer` for a Custom node.
 - **Merge as Custom:** see How each node maps for the one identity answer the composed rules change.
 - **Composite:** the GPU fold needs every input at the query's time and in the query's plane, and no folded input may be the input the `MaskMix` stage reads as its mask, since the region engine hands an input over once, in one layer.
-- **Rebase onto M109/M107:** conflicts are expected in `GpuRegionTask.cpp`, `GpuCostModel.cpp`, `RenderScheduler.cpp`, `GpuPlacement.cpp` and `GpuResidency_Test.cpp`. The user accepted these at claim.
 - **Translation of spec text:** see Departures.
 - **Performance:**
   - A plan is resolved per `canRenderOnGpu` call.
   - `bakeParams` runs on every query (identity, RoD, RoI, cost hint, render). Blur bakes its knobs several times per frame.
-  - M139 owns the Passes overhead, but a regression in P10.T1 blocks the gate.
+  - M139 owns the Passes overhead.
+  - A masked or partial-channel render still runs the generic per-pixel finish loop.
 
 ## Deep, scene and geometry boundary
 

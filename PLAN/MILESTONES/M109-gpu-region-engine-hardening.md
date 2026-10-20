@@ -407,3 +407,16 @@ M85's benches show where the region engine loses time on real comps. Three items
   - **Size-class headroom is no longer imported (hard cut, reversing part of P5.T1):** `GpuTransferOptions::hostAllocationBytes` and the stretch-to-end-of-buffer in `resolveImports` are gone. A growing image (animated Transform) now imports only its growth each frame. `GrowingImageReusesTheBuffersAndImportsOfTheFrameBefore` now bounds the bytes imported instead of requiring 0 imports on frame 3.
   - **New test:** `GpuTransferTest.StripDownloadProceedsOnceItsChunkIsPrepared`, synchronised with condition variables only. It would hang rather than fail if strip downloads went back to waiting on the whole job.
   - **Bench to check (Erode 40 16k):** `prepareWaitMs` ≤ 20 ms, `newImportBytes` ~4 GiB rather than 5, and `downloadsStaged`/`importsAtDownload` 0.
+- 2026-10-20 — **Local phase build of `4581d52f3` (`.local/m109/phase-4581d52/`; release, `NATRON_DEV_GPU=1`, no `RADV_PERFTEST`; AppImage `.local/m109/Natron-m109-4581d52f3-release.AppImage`).**
+  - **Build:** the release build passes. The `-DNATRON_GPU=OFF` build fails: `VkDeviceSize` is unguarded at `GpuRegionTask.cpp:100` (P4.T8).
+  - **Full ctest:** 2589/2589 on RADV and lavapipe in both modes. With no ICD, taskgraph is 2589/2589 and legacy 2587/2589. The two failures (`PyPlugExportTest.UserLayerSelectWithChannelButtonsSurvivesProjectRoundTrip`, `DimensionsFoldStateProjectTest.AnimatedFoldedKnobSavesOneCurveForEveryDimension`, both /tmp project I/O) pass alone, so they look like parallel-run flakes.
+  - **Order coupling:** `GpuResidencyTest.FirstFrameWaitsForTheGpuWhenItWouldWin` fails when it runs after `GpuPlacement*` in one process. It passes under ctest and alone. Leaked cost-model state is suspected.
+  - **Fresh-process single frame, Auto against Off, same boot, idle GPU:** every first frame formed a GPU region (P4.T10 confirmed).
+
+    | Case | Off | Auto | Speed-up |
+    |---|---|---|---|
+    | Erode 40 16k | 8.27 s | 3.75–3.86 s | 2.2× |
+    | Erode 40 UHD | 0.287 s | 0.203–0.207 s | 1.4× |
+    | Blur σ100 16k | 13.24 s | 4.02–4.11 s | 3.2× |
+
+    GPU startup is 43–45 ms (runtime 19–22 ms, import calibration 16–17 ms, staging 0), down from ~170–190 ms (P4.T11 confirmed). Erode 40 16k `newImportBytes` is exactly 4 GiB, with no headroom import, and 0 staged or at-download imports. **But `prepareWaitMs` is still ~100–106 ms against P4.T8's ≤ 20 ms target** (Blur σ100 16k: 46–55 ms). `overlapStrips` reads 0 on the pipelined 16k Erode. A fixer is on the GPU-off build, the test isolation and the prepare wait.

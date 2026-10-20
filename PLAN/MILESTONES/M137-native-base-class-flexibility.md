@@ -436,7 +436,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, the Reformat goldens are bit-exact and `NativeReformat_Test` passes.
   - size: M
 
-- [ ] M137.P7.T4 — Position, and Crop on the Resample offset form
+- [x] M137.P7.T4 — Position, and Crop on the Resample offset form
   - files: `Engine/Nodes/Transform/{Position,Crop}.{h,cpp}`
   - approach:
     - Position: Resample op with an integer offset, CPU only, `LayerPolicy::all()`. `isIdentity` (296) becomes the op's. Delete `render` and the RoD/RoI overrides the Resample branch now answers.
@@ -599,6 +599,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
 - 2026-10-19 — Constant, Solid and CheckerBoard lose their optional input: no Source input, no stages, `sourceInput` -1, no pass-through (user). This is a deliberate behaviour change; P5.T4 re-records only the generator goldens.
 - 2026-10-19 — Crop is a pure Point op whose box rounds to whole pixels internally, with softness a matte the row multiplies by; `reformat` is expressed as an output RoD/format move and an integer translation, never a shifted source read, and P7.T4 stops and reports if that fails (user): a crop to a fractional pixel makes no sense. Golden diffs are allowed only at the edge pixels of fractional-box cases, and are reported.
 - 2026-10-19 — Dissolve gains a `mix` knob through the MaskMix stage, replacing its own mask handling (user).
+- 2026-10-20 — Build at cd00f94a0 (Crop 80eb2b525, Merge 6b81168b2, first-cut Dissolve): 2599/2599 pass in both legs (the residency test passed this time). Every golden bit-identical except 8 Dissolve fixtures, max abs diff 2.4e-7 (rounding, accepted). Crop, `Crop_reformat_*` and Merge are bit-exact.
 - 2026-10-20 — Phases 8–9 code complete (9add99d47 fold, 457eff5af keyers, ceb0db01b/081ecd21b/ed0e78fd9 old base and tests, 862c37f11 README), verified at the next phase build. The README links `docs/decisions/2026-10-19-native-node-framework.md`: publish the design note there with the PR. No shared C++/Slang maths header exists; the README describes the paired-module convention instead.
 - 2026-10-20 — Phase 7 build (code dae7d89ed, Crop not yet in): every golden re-recorded bit-identically (Position, Reformat, Transform included); 2585 tests, one failure in the taskgraph leg only, `GpuResidencyTest.LargeCompStaysWithinTheDeviceBudget` expecting an eviction that timing didn't produce (passed in the legacy leg). Rechecked at the next build.
 - 2026-10-20 — Composite is a fold, not a fixed source list (user): an op names a base input and any number of further inputs and defines one step combining the running result with one more input; the GPU dispatches a two-input step kernel per further input. The four-source cap existed only for the keyers, which are losing those inputs, and gave many-input nodes nothing. An op reading several inputs at once is left until a concrete node needs it. Keyer and ChromaKeyer become Custom nodes keeping their own render and GPU kernels until M95 - Knob Cleanup And Keyer Redesign: fitting them to Composite needed per-pixel source coverage, as-stored layer reads and RGB blend sources on the GPU, all keyer-only.

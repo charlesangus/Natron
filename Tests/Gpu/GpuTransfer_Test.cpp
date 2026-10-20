@@ -1,11 +1,15 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -16,6 +20,7 @@
 #include "GpuBuffer.h"
 #include "GpuDevice.h"
 #include "GpuKernel.h"
+#include "GpuRuntime.h"
 #include "GpuTestDevice.h"
 #include "GpuTransfer.h"
 #include "fill_spirv.h"
@@ -83,8 +88,8 @@ protected:
             setupError_ = s.message;
             return;
         }
-        std::printf("device: %s transferUsesComputeQueue=%d extMemHost=%d validation=%d\n", dev_->info().name.c_str(),
-                    dev_->info().transferUsesComputeQueue, dev_->info().externalMemoryHost,
+        std::printf("device: %s transferSharesComputeQueue=%d extMemHost=%d validation=%d\n", dev_->info().name.c_str(),
+                    dev_->info().transferSharesComputeQueue, dev_->info().externalMemoryHost,
                     dev_->info().validationEnabled);
         for (uint32_t k = 0; k < kPipelinedFrames; ++k) {
             srcs_.push_back(alignedBuf(kUhdBytes));
@@ -501,6 +506,95 @@ GPU_TEST_F(GpuTransferTest, ChunkedRoundTripBothPaths)
     }
 }
 
+// Uploads into one buffer from one thread while another thread downloads a second buffer, so that on a device with
+// queues of their own the two directions run side by side. Each direction signals its own timeline, in increasing
+// order, and every byte lands where it should.
+GPU_TEST_F(GpuTransferTest, ConcurrentUploadsAndDownloadsOnSeparateQueues)
+{
+    const GpuDeviceInfo& info = dev_->info();
+    if (info.transferSharesComputeQueue) {
+        GPUTEST_SKIP() << "the device has one queue, so uploads and downloads never run concurrently";
+    }
+    std::printf("queues: compute %u/%u upload %u/%u download %u/%u\n", info.computeFamily, info.computeQueueIndex,
+                info.transferFamily, info.uploadQueueIndex, info.transferFamily, info.downloadQueueIndex);
+
+    GpuTransferOptions o;
+    o.copyThreads = 2;
+    auto t = make(o);
+    ASSERT_TRUE(t != nullptr);
+
+    constexpr VkDeviceSize kPiece = VkDeviceSize(16) << 20;
+    constexpr uint32_t kRounds = 6;
+    GpuBuffer upBuf;
+    GpuBuffer downBuf;
+    ASSERT_TRUE(GpuBuffer::createDeviceLocal(*dev_, kPiece * kRounds, kGpuBufferDefaultUsage, upBuf).ok());
+    ASSERT_TRUE(GpuBuffer::createDeviceLocal(*dev_, kPiece, kGpuBufferDefaultUsage, downBuf).ok());
+
+    StreamOptions none;
+    none.handoff = ComputeHandoff::None;
+    TimelineValue seeded;
+    ASSERT_TRUE(t->upload({ srcs_[5].get(), kPiece }, downBuf, 0, seeded, none).ok());
+    ASSERT_TRUE(t->wait(seeded).ok());
+
+    std::vector<TimelineValue> ups(kRounds);
+    std::vector<TimelineValue> downs(kRounds);
+    std::atomic<bool> go { false };
+    std::thread uploader([&] {
+        while (!go.load()) {
+            std::this_thread::yield();
+        }
+        for (uint32_t k = 0; k < kRounds; ++k) {
+            const GpuStatus s = t->upload({ srcs_[k % 5].get() + k * kPiece, kPiece }, upBuf, k * kPiece, ups[k], none);
+            EXPECT_TRUE(s.ok()) << s.message;
+        }
+    });
+    std::thread downloader([&] {
+        StreamOptions after = none;
+        after.waits = { &seeded, 1 };
+        while (!go.load()) {
+            std::this_thread::yield();
+        }
+        for (uint32_t k = 0; k < kRounds; ++k) {
+            std::memset(dsts_[k].get(), 0, kPiece);
+            const GpuStatus s = t->download(downBuf, 0, { dsts_[k].get(), kPiece }, downs[k], after);
+            EXPECT_TRUE(s.ok()) << s.message;
+        }
+    });
+    go.store(true);
+    uploader.join();
+    downloader.join();
+
+    ASSERT_TRUE(ups[0] && downs[0]);
+    EXPECT_NE(ups[0].semaphore, downs[0].semaphore) << "uploads and downloads share a timeline";
+    for (uint32_t k = 1; k < kRounds; ++k) {
+        EXPECT_EQ(ups[k].semaphore, ups[0].semaphore);
+        EXPECT_EQ(downs[k].semaphore, downs[0].semaphore);
+        EXPECT_GT(ups[k].value, ups[k - 1].value);
+        EXPECT_GT(downs[k].value, downs[k - 1].value);
+    }
+    ASSERT_TRUE(t->wait(ups.back()).ok());
+    ASSERT_TRUE(t->wait(downs.back()).ok());
+    for (const TimelineValue& v : { ups.back(), downs.back() }) {
+        uint64_t reached = 0;
+        ASSERT_EQ(vkGetSemaphoreCounterValue(dev_->device(), v.semaphore, &reached), VK_SUCCESS);
+        EXPECT_GE(reached, v.value);
+    }
+    for (uint32_t k = 0; k < kRounds; ++k) {
+        ASSERT_TRUE(t->wait(downs[k]).ok());
+        expectSame(srcs_[5].get(), dsts_[k].get(), kPiece, k);
+    }
+
+    StreamOptions back = none;
+    back.waits = ups;
+    for (uint32_t k = 0; k < kRounds; ++k) {
+        std::memset(dsts_[k].get(), 0, kPiece);
+        TimelineValue done;
+        ASSERT_TRUE(t->download(upBuf, k * kPiece, { dsts_[k].get(), kPiece }, done, back).ok());
+        ASSERT_TRUE(t->wait(done).ok());
+        expectSame(srcs_[k % 5].get() + k * kPiece, dsts_[k].get(), kPiece, k);
+    }
+}
+
 // The fill kernel overwrites a prefix of the uploaded buffer, so the downloaded prefix shows the
 // upload landed before compute and the download ran after it; the tail shows the upload itself.
 GPU_TEST_F(GpuTransferTest, UploadComputeDownloadWithoutHostWait)
@@ -666,4 +760,301 @@ GPU_TEST_F(GpuTransferTest, ForgottenHostAllocationIsReimported)
 
     t->forgetHostAllocation(p, kBytes);
     munmap(p, kBytes);
+}
+
+namespace {
+
+// Anonymous pages at an address aligned for import, or null when the import alignment exceeds the page size.
+void*
+mapImportable(size_t bytes, VkDeviceSize alignment)
+{
+    void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) {
+        return nullptr;
+    }
+    if (reinterpret_cast<uintptr_t>(p) % alignment != 0 || bytes % alignment != 0) {
+        munmap(p, bytes);
+        return nullptr;
+    }
+    return p;
+}
+
+} // namespace
+
+GPU_TEST_F(GpuTransferTest, ConcurrentImportsOfOneRangeCacheOne)
+{
+    GpuTransferOptions o;
+    o.cacheHostImports = true;
+    auto t = make(o);
+    ASSERT_TRUE(t != nullptr);
+    if (!t->hostImportSupported()) {
+        GPUTEST_SKIP() << "VK_EXT_external_memory_host unavailable";
+    }
+    constexpr size_t kBytes = size_t(8) << 20;
+    void* p = mapImportable(kBytes, t->hostImportAlignment());
+    if (!p) {
+        GPUTEST_SKIP() << "import alignment exceeds the page size";
+    }
+
+    constexpr int kThreads = 8;
+    const HostImportStats before = t->hostImportStats();
+    std::atomic<int> ready { 0 };
+    std::atomic<int> cached { 0 };
+    std::vector<std::thread> threads;
+    for (int i = 0; i < kThreads; ++i) {
+        threads.emplace_back([&] {
+            ++ready;
+            while (ready.load() < kThreads) {
+                std::this_thread::yield();
+            }
+            if (t->prepareImport({ p, kBytes })) {
+                ++cached;
+            }
+        });
+    }
+    for (std::thread& th : threads) {
+        th.join();
+    }
+    const HostImportStats after = t->hostImportStats();
+    EXPECT_EQ(cached.load(), kThreads);
+    EXPECT_EQ(after.cached - before.cached, 1u);
+    EXPECT_GE(after.created - before.created, 1u);
+    EXPECT_EQ((after.created - before.created) - (after.dropped - before.dropped), 1u)
+        << "every import but the cached one must have been dropped";
+    EXPECT_EQ(after.prepared - before.prepared, after.created - before.created);
+
+    GpuBuffer buf;
+    ASSERT_TRUE(GpuBuffer::createDeviceLocal(*dev_, kBytes, kGpuBufferDefaultUsage, buf).ok());
+    StreamOptions up;
+    up.handoff = ComputeHandoff::None;
+    TimelineValue uploaded;
+    ASSERT_TRUE(t->upload({ srcs_[0].get(), kBytes }, buf, 0, uploaded, up).ok());
+    TransferPath path = TransferPath::Staging;
+    StreamOptions down;
+    down.handoff = ComputeHandoff::None;
+    down.waits = { &uploaded, 1 };
+    down.path = &path;
+    TimelineValue downloaded;
+    const HostImportStats beforeDownload = t->hostImportStats();
+    ASSERT_TRUE(t->download(buf, 0, { p, kBytes }, downloaded, down).ok());
+    ASSERT_TRUE(t->wait(downloaded).ok());
+    EXPECT_EQ(path, TransferPath::HostImport);
+    EXPECT_EQ(t->hostImportStats().atDownload, beforeDownload.atDownload) << "the prepared range was imported again";
+    expectSame(srcs_[0].get(), p, kBytes, 1);
+
+    t->forgetHostAllocation(p, kBytes);
+    munmap(p, kBytes);
+}
+
+GPU_TEST_F(GpuTransferTest, ForgetDuringPrepareDropsTheImport)
+{
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool created = false;
+    bool release = false;
+    GpuTransferOptions o;
+    o.cacheHostImports = true;
+    o.onImportCreated = [&](const void*, VkDeviceSize) {
+        std::unique_lock<std::mutex> lock(mutex);
+        created = true;
+        cv.notify_all();
+        cv.wait(lock, [&] { return release; });
+    };
+    auto t = make(o);
+    ASSERT_TRUE(t != nullptr);
+    if (!t->hostImportSupported()) {
+        GPUTEST_SKIP() << "VK_EXT_external_memory_host unavailable";
+    }
+    constexpr size_t kBytes = size_t(2) << 20;
+    void* p = mapImportable(kBytes, t->hostImportAlignment());
+    if (!p) {
+        GPUTEST_SKIP() << "import alignment exceeds the page size";
+    }
+
+    const HostImportStats before = t->hostImportStats();
+    bool prepared = true;
+    std::thread preparer([&] { prepared = t->prepareImport({ p, kBytes }); });
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        cv.wait(lock, [&] { return created; });
+    }
+    // forget() blocks until the import it marks is destroyed, so the import is held open from another thread, for
+    // far longer than forget() takes to mark it.
+    std::thread releaser([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::lock_guard<std::mutex> lock(mutex);
+        release = true;
+        cv.notify_all();
+    });
+    t->forgetHostAllocation(p, kBytes);
+    const HostImportStats forgotten = t->hostImportStats();
+    preparer.join();
+    releaser.join();
+
+    EXPECT_FALSE(prepared) << "an import of a forgotten range was cached";
+    EXPECT_EQ(forgotten.cached, before.cached);
+    EXPECT_EQ(forgotten.dropped - before.dropped, 1u) << "forget() returned before the import was destroyed";
+    EXPECT_EQ(t->hostImportStats().cached, before.cached);
+
+    EXPECT_TRUE(t->prepareImport({ p, kBytes })) << "the range could not be imported again";
+    EXPECT_EQ(t->hostImportStats().cached, before.cached + 1);
+
+    t->forgetHostAllocation(p, kBytes);
+    EXPECT_EQ(t->hostImportStats().cached, before.cached);
+    munmap(p, kBytes);
+}
+
+GPU_TEST_F(GpuTransferTest, UnalignedPartOfACachedImportCreatesNoImport)
+{
+    GpuTransferOptions o;
+    o.cacheHostImports = true;
+    auto t = make(o);
+    ASSERT_TRUE(t != nullptr);
+    if (!t->hostImportSupported()) {
+        GPUTEST_SKIP() << "VK_EXT_external_memory_host unavailable";
+    }
+    constexpr size_t kBytes = size_t(4) << 20;
+    void* p = mapImportable(kBytes, t->hostImportAlignment());
+    if (!p) {
+        GPUTEST_SKIP() << "import alignment exceeds the page size";
+    }
+    uint8_t* host = static_cast<uint8_t*>(p);
+    fillFrame(host, kBytes, 21);
+    ASSERT_TRUE(t->prepareImport({ p, kBytes }));
+
+    // A strip of rows whose width is no multiple of the alignment: neither its start nor its size is aligned.
+    constexpr VkDeviceSize kOffset = (VkDeviceSize(1) << 20) + 48;
+    constexpr VkDeviceSize kPart = (VkDeviceSize(2) << 20) + 1000;
+    GpuBuffer buf;
+    ASSERT_TRUE(GpuBuffer::createDeviceLocal(*dev_, kPart, kGpuBufferDefaultUsage, buf).ok());
+    const HostImportStats before = t->hostImportStats();
+
+    TransferPath upPath = TransferPath::Staging;
+    StreamOptions up;
+    up.handoff = ComputeHandoff::None;
+    up.path = &upPath;
+    TimelineValue uploaded;
+    ASSERT_TRUE(t->upload({ host + kOffset, kPart }, buf, 0, uploaded, up).ok());
+    EXPECT_EQ(upPath, TransferPath::HostImport);
+
+    // Downloaded back into another unaligned part of the same import.
+    constexpr VkDeviceSize kBack = 16;
+    std::vector<uint8_t> expected(host + kOffset, host + kOffset + kPart);
+    TransferPath downPath = TransferPath::Staging;
+    StreamOptions down;
+    down.handoff = ComputeHandoff::None;
+    down.waits = { &uploaded, 1 };
+    down.path = &downPath;
+    TimelineValue downloaded;
+    ASSERT_TRUE(t->download(buf, 0, { host + kBack, kPart }, downloaded, down).ok());
+    ASSERT_TRUE(t->wait(downloaded).ok());
+    EXPECT_EQ(downPath, TransferPath::HostImport);
+    expectSame(expected.data(), host + kBack, kPart, 1);
+
+    const HostImportStats after = t->hostImportStats();
+    EXPECT_EQ(after.created, before.created) << "a part of a cached import was imported again";
+    EXPECT_EQ(after.atUpload, before.atUpload);
+    EXPECT_EQ(after.atDownload, before.atDownload);
+    EXPECT_EQ(after.cached, before.cached);
+
+    // Forgotten, the same unaligned range goes through staging again.
+    t->forgetHostAllocation(p, kBytes);
+    TimelineValue staged;
+    ASSERT_TRUE(t->upload({ host + kOffset, kPart }, buf, 0, staged, up).ok());
+    ASSERT_TRUE(t->wait(staged).ok());
+    EXPECT_EQ(upPath, TransferPath::Staging);
+    munmap(p, kBytes);
+}
+
+GPU_TEST_F(GpuTransferTest, StripDownloadProceedsOnceItsChunkIsPrepared)
+{
+    constexpr size_t kChunk = size_t(2) << 20;
+    std::mutex mutex;
+    std::condition_variable cv;
+    const void* held = nullptr;
+    bool reached = false;
+    bool release = false;
+    GpuRuntimeOptions o;
+    o.device = gputest::deviceOptions();
+    o.transfer.cacheHostImports = true;
+    o.transfer.onImportCreated = [&](const void* host, VkDeviceSize) {
+        std::unique_lock<std::mutex> lock(mutex);
+        if (host != held) {
+            return;
+        }
+        reached = true;
+        cv.notify_all();
+        cv.wait(lock, [&] { return release; });
+    };
+    std::unique_ptr<GpuRuntime> rt;
+    const GpuStatus created = GpuRuntime::create(o, rt);
+    ASSERT_TRUE(created.ok()) << created.message;
+    // Declared after the runtime, so that a failed assertion lets the helper thread go before the runtime joins it.
+    struct Releaser {
+        std::mutex& mutex;
+        std::condition_variable& cv;
+        bool& release;
+        ~Releaser()
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            release = true;
+            cv.notify_all();
+        }
+    } releaser { mutex, cv, release };
+    GpuTransfer& t = rt->transfer();
+    if (!t.hostImportSupported()) {
+        GPUTEST_SKIP() << "VK_EXT_external_memory_host unavailable";
+    }
+    void* p = mapImportable(3 * kChunk, t.hostImportAlignment());
+    if (!p) {
+        GPUTEST_SKIP() << "import alignment exceeds the page size";
+    }
+    uint8_t* host = static_cast<uint8_t*>(p);
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        held = host + kChunk;
+    }
+
+    const HostImportStats before = t.hostImportStats();
+    std::shared_ptr<GpuImportJob> job = rt->prepareImports({ { host, kChunk }, { host + kChunk, kChunk }, { host + 2 * kChunk, kChunk } });
+    ASSERT_TRUE(job != nullptr);
+    job->waitFor(1);
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        cv.wait(lock, [&] { return reached; });
+    }
+    EXPECT_FALSE(job->finished());
+
+    // A strip's rows inside the first chunk, at no aligned offset or size.
+    constexpr VkDeviceSize kOffset = 48;
+    constexpr VkDeviceSize kPart = (VkDeviceSize(1) << 20) + 1000;
+    GpuBuffer buf;
+    ASSERT_TRUE(GpuBuffer::createDeviceLocal(rt->device(), kPart, kGpuBufferDefaultUsage, buf).ok());
+    StreamOptions up;
+    up.handoff = ComputeHandoff::None;
+    TimelineValue uploaded;
+    ASSERT_TRUE(rt->upload({ srcs_[0].get(), kPart }, buf, 0, uploaded, up).ok());
+    TransferPath path = TransferPath::Staging;
+    StreamOptions down;
+    down.handoff = ComputeHandoff::None;
+    down.waits = { &uploaded, 1 };
+    down.path = &path;
+    TimelineValue downloaded;
+    ASSERT_TRUE(rt->download(buf, 0, { host + kOffset, kPart }, downloaded, down).ok());
+    ASSERT_TRUE(rt->wait(downloaded).ok());
+    EXPECT_EQ(path, TransferPath::HostImport) << "the strip did not copy into its prepared chunk";
+    EXPECT_EQ(t.hostImportStats().atDownload, before.atDownload) << "the strip imported its rows itself";
+    EXPECT_FALSE(job->finished()) << "the later chunks were prepared before the strip landed";
+    expectSame(srcs_[0].get(), host + kOffset, kPart, 1);
+
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        release = true;
+        cv.notify_all();
+    }
+    job->wait();
+    EXPECT_EQ(t.hostImportStats().cached - before.cached, 3u) << "each chunk is its own import";
+
+    t.forgetHostAllocation(p, 3 * kChunk);
+    munmap(p, 3 * kChunk);
 }

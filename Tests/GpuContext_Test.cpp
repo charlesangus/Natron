@@ -181,8 +181,17 @@ TEST(GpuContextTest, ForceCalibratesAnyDevice)
     const GpuCalibration c = ctx.calibration();
     EXPECT_GT(c.uploadBytesPerSecond, 0.);
     EXPECT_GT(c.downloadBytesPerSecond, 0.);
-    EXPECT_GT(c.stagingUploadBytesPerSecond, 0.);
-    EXPECT_GT(c.stagingDownloadBytesPerSecond, 0.);
+    if (c.hostImport) {
+        EXPECT_GT(c.hostImportUploadBytesPerSecond, 0.);
+        EXPECT_GT(c.hostImportDownloadBytesPerSecond, 0.);
+        EXPECT_EQ(c.stagingUploadBytesPerSecond, 0.);
+        EXPECT_EQ(c.stagingDownloadBytesPerSecond, 0.);
+        EXPECT_EQ(c.uploadBytesPerSecond, c.hostImportUploadBytesPerSecond);
+    } else {
+        EXPECT_GT(c.stagingUploadBytesPerSecond, 0.);
+        EXPECT_GT(c.stagingDownloadBytesPerSecond, 0.);
+        EXPECT_EQ(c.uploadBytesPerSecond, c.stagingUploadBytesPerSecond);
+    }
     EXPECT_FALSE(ctx.deviceName().empty());
     EXPECT_TRUE(log.lines.empty());
 }

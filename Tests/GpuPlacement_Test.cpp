@@ -39,6 +39,10 @@
 #include "Engine/GpuPlacement.h"
 #include "Engine/RenderScheduler.h"
 
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuDevice.h"
+#endif
+
 NATRON_NAMESPACE_USING
 
 namespace {
@@ -395,6 +399,12 @@ TEST(GpuPlacement, NoAvailabilityLeavesGraphUnchanged)
 {
     const FrameGraph original = makeGraph(3, { { 0, 1 }, { 1, 2 } });
 
+    // The application's render scheduler installed its own, which later tests place with.
+    struct RestoreAvailableFunc {
+        GpuPlacementAvailableFunc installed = setGpuPlacementAvailableFunc(nullptr);
+        ~RestoreAvailableFunc() { setGpuPlacementAvailableFunc(installed); }
+    } restore;
+
     for (GpuPlacementAvailableFunc func : { GpuPlacementAvailableFunc(nullptr), &gpuUnavailable }) {
         setGpuPlacementAvailableFunc(func);
         EXPECT_FALSE(isGpuPlacementAvailable());
@@ -651,6 +661,158 @@ TEST(GpuCostModel, ShrinkingNeverBreaksConvexity)
 
 namespace {
 
+GpuTransferRates
+pipelinedRates(double bytesPerSecond)
+{
+    GpuTransferRates r = rates(bytesPerSecond);
+
+    r.pipelinedStrips = true;
+
+    return r;
+}
+
+// The Grade's kernel seeded at 0.5 ms/Mpx, as heavy as a spatial node's, so that pipelined strips can hide its transfer.
+const double kHeavyGradeMsPerMpx = 0.5;
+
+} // namespace
+
+// sink 0 (CPU) <- Grade 1 <- reader 2 (CPU): the Grade saves 8.3 ms of CPU time for 4.1 ms of GPU time, and moves
+// 265 MB in 7.6 ms at 35 GB/s. Pipelined strips hide the 4.1 ms of transfer that overlaps the kernel, so the Grade
+// gains 0.2 ms beyond the margin; run whole it exposes all 7.6 ms and falls 3.9 ms short.
+TEST(GpuCostModel, PipelinedLoneGradeIsAcceptedWhereItsTransferHides)
+{
+    CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
+
+    fixture.traits[1] = GpuTaskTraits(kGradeId);
+    fixture.model.setGpuSeed(kGradeId, kHeavyGradeMsPerMpx);
+    fixture.model.setTransferRates(pipelinedRates(35e9));
+    fixture.place();
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({ 1 }));
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Gpu);
+
+    fixture.model.setTransferRates(rates(35e9));
+    fixture.place();
+    EXPECT_TRUE(fixture.graph.regions.empty());
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
+}
+
+// The same Grade at 25 GB/s: its 10.6 ms of transfer leave 6.5 ms exposed even pipelined.
+TEST(GpuCostModel, PipelinedLoneGradeIsRefusedOnHalfTheBandwidth)
+{
+    CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
+
+    fixture.traits[1] = GpuTaskTraits(kGradeId);
+    fixture.model.setGpuSeed(kGradeId, kHeavyGradeMsPerMpx);
+    fixture.model.setTransferRates(pipelinedRates(25e9));
+    fixture.place();
+    EXPECT_TRUE(fixture.graph.regions.empty());
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
+}
+
+// At its own 0.5 ms the Grade's kernel is under a quarter of its 7.6 ms of transfer, so the planner would run it whole:
+// placement charges it all 7.6 ms, and it falls 0.3 ms short.
+TEST(GpuCostModel, PipelinedLoneCheapGradeIsChargedItsWholeTransfer)
+{
+    CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
+
+    fixture.traits[1] = GpuTaskTraits(kGradeId);
+    fixture.model.setTransferRates(pipelinedRates(35e9));
+    fixture.place();
+    EXPECT_TRUE(fixture.graph.regions.empty());
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
+}
+
+TEST(GpuCostModel, PipeliningNeedsDeviceSupportBytesKernelHeightAndNoOutputKeptOnDevice)
+{
+    CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
+    FrameGraph::Region region;
+    region.members = { 1 };
+    region.externalInputs = { 2 };
+    FrameGraph::Region::Output output;
+    output.task = 1;
+    output.externalConsumers = 1;
+    region.outputs.push_back(output);
+    const double bytes = (double)kUhdBytes;
+    // At 25 GB/s the bytes take 10.6 ms, of which a kernel must run a quarter.
+    const double kernelMs = 5.;
+
+    fixture.model.setTransferRates(rates(25e9));
+    EXPECT_FALSE(fixture.model.pipelinesTransfers(fixture.graph, region, bytes, bytes, kernelMs));
+
+    fixture.model.setTransferRates(pipelinedRates(25e9));
+    EXPECT_TRUE(fixture.model.pipelinesTransfers(fixture.graph, region, bytes, bytes, kernelMs));
+    EXPECT_FALSE(fixture.model.pipelinesTransfers(fixture.graph, region, 1 << 20, 1 << 20, kernelMs));
+    EXPECT_FALSE(fixture.model.pipelinesTransfers(fixture.graph, region, bytes, bytes, 2.5));
+
+    fixture.graph.tasks[0].device = FrameGraph::Device::Gpu;
+    EXPECT_FALSE(fixture.model.pipelinesTransfers(fixture.graph, region, bytes, bytes, kernelMs));
+    fixture.graph.tasks[0].device = FrameGraph::Device::Cpu;
+
+    fixture.graph.tasks[1].renderedRoI = RectI(0, 0, 3840, 128);
+    EXPECT_FALSE(fixture.model.pipelinesTransfers(fixture.graph, region, bytes, bytes, kernelMs));
+}
+
+TEST(GpuCostModel, ObservedTransfersMoveRatesByMovingAverage)
+{
+    GpuCostModel model;
+
+    model.setTransferRates(rates(25e9));
+    EXPECT_NEAR(model.transferMs(1e9, 0.), 40., 1e-9);
+
+    // 80 ms where the rates give 40.
+    model.observeTransfer(1e9, 0., 80.);
+    const double scale = 1. + GpuCostModel::kEmaWeight;
+    EXPECT_NEAR(model.transferMs(1e9, 0.), 40. * scale, 1e-9);
+    EXPECT_NEAR(model.transferMs(0., 1e9), 40. * scale, 1e-9);
+
+    // Placement sets the calibrated rates again for every render.
+    model.setTransferRates(rates(25e9));
+    EXPECT_NEAR(model.transferMs(1e9, 1e9), 80. * scale, 1e-9);
+
+    GpuTransferRates unified;
+    unified.unifiedMemory = true;
+    model.setTransferRates(unified);
+    model.observeTransfer(1e9, 0., 1000.);
+    EXPECT_EQ(model.transferMs(1e9, 0.), 0.);
+    model.setTransferRates(rates(25e9));
+    EXPECT_NEAR(model.transferMs(1e9, 0.), 40. * scale, 1e-9);
+
+    model.observeTransfer(1e9, 0., 0.);
+    EXPECT_NEAR(model.transferMs(1e9, 0.), 40. * scale, 1e-9);
+}
+
+// The Grade the 50 GB/s calibration accepts is refused once its regions measure the bus at half that.
+TEST(GpuCostModel, SlowObservedTransfersRefuseLoneGrade)
+{
+    CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
+
+    fixture.traits[1] = GpuTaskTraits(kGradeId);
+    fixture.model.setTransferRates(pipelinedRates(50e9));
+    fixture.place();
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+
+    const double bytes = (double)kUhdBytes;
+    const double calibratedMs = fixture.model.transferMs(bytes, bytes);
+    for (int i = 0; i < 4; ++i) {
+        fixture.model.observeTransfer(bytes, bytes, 2. * calibratedMs);
+    }
+    fixture.place();
+    EXPECT_TRUE(fixture.graph.regions.empty());
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
+}
+
+#ifdef NATRON_HAVE_GPU
+TEST(GpuDevice, DiscreteDeviceWithResizableBarIsNotUnifiedMemory)
+{
+    EXPECT_FALSE(gpu::isUnifiedMemory(VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU));
+    EXPECT_TRUE(gpu::isUnifiedMemory(VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU));
+    EXPECT_TRUE(gpu::isUnifiedMemory(VK_PHYSICAL_DEVICE_TYPE_CPU));
+}
+#endif
+
+namespace {
+
 GpuTaskTraits
 unseededTraits(GpuCostClass costClass,
                int inputCount = 1)
@@ -735,6 +897,98 @@ TEST(GpuCostModel, RecursiveBlurFiltersHaveTheirOwnGpuRow)
     model.observeGpu(iir, 4000000, 1.);
     EXPECT_NEAR(model.gpuMs(iir, 1.), iirGpu + GpuCostModel::kEmaWeight * (4. - iirGpu), 1e-9);
     EXPECT_NEAR(model.gpuMs(fir, 1.), firGpu, 1e-12);
+}
+
+TEST(GpuCostModel, ErodeSizeSelectsItsSeedRow)
+{
+    GpuCostModel model;
+    const std::string erode = "net.sf.cimg.CImgErode";
+
+    GpuTaskTraits small(erode);
+    small.size = 6;
+    GpuTaskTraits large(erode);
+    large.size = 40;
+    GpuTaskTraits unsized(erode);
+
+    EXPECT_NEAR(model.gpuMs(small, kUhdMpx), 6.827, 1e-3);
+    EXPECT_NEAR(model.gpuMs(large, kUhdMpx), 4.170, 1e-3);
+    EXPECT_NE(model.gpuMs(small, 1.), model.gpuMs(large, 1.));
+
+    GpuTaskTraits tiny = small;
+    tiny.size = 1;
+    GpuTaskTraits huge = large;
+    huge.size = 500;
+    EXPECT_NEAR(model.gpuMs(tiny, 1.), model.gpuMs(small, 1.), 1e-12);
+    EXPECT_NEAR(model.gpuMs(huge, 1.), model.gpuMs(large, 1.), 1e-12);
+    EXPECT_NEAR(model.gpuMs(unsized, 1.), model.gpuMs(small, 1.), 1e-12);
+
+    const double largeGpu = model.gpuMs(large, 1.);
+    model.observeGpu(large, 2000000, 1.);
+    EXPECT_NEAR(model.gpuMs(large, 1.), largeGpu + GpuCostModel::kEmaWeight * (2. - largeGpu), 1e-9);
+    EXPECT_NEAR(model.gpuMs(small, kUhdMpx), 6.827, 1e-3);
+}
+
+// Dilate has one seed row for every size, and the FIR Gaussian, the one Blur filter with no row of its own, prices like
+// the rows for any filter.
+TEST(GpuCostModel, RowsWithoutSizeOrFilterHoldForAny)
+{
+    GpuCostModel model;
+
+    GpuTaskTraits dilate("net.sf.cimg.CImgDilate");
+    const double any = model.gpuMs(dilate, 1.);
+    dilate.size = 40;
+    EXPECT_NEAR(model.gpuMs(dilate, 1.), any, 1e-12);
+
+    for (double sigma : { 2., 25., 100. }) {
+        const GpuTaskTraits fir(kBlurId, sigma, false, GpuBlurFilter::eFirGaussian);
+        EXPECT_NEAR(model.gpuMs(fir, 1.), model.gpuMs(GpuTaskTraits(kBlurId, sigma), 1.), 1e-12) << sigma;
+    }
+}
+
+// Each Blur filter is seeded apart, at one cost for every sigma, and what one filter measures leaves the others' costs
+// as they were.
+TEST(GpuCostModel, BlurFiltersAreSeededAndLearnedApart)
+{
+    GpuCostModel model;
+
+    const GpuTaskTraits fir(kBlurId, 25., false, GpuBlurFilter::eFirGaussian);
+    const GpuTaskTraits box(kBlurId, 25., false, GpuBlurFilter::eBox);
+    const GpuTaskTraits triangle(kBlurId, 25., false, GpuBlurFilter::eTriangle);
+    const GpuTaskTraits quadratic(kBlurId, 25., false, GpuBlurFilter::eQuadratic);
+    const GpuTaskTraits gaussian(kBlurId, 25., true, GpuBlurFilter::eGaussian);
+    const GpuTaskTraits quasiGaussian(kBlurId, 25., true, GpuBlurFilter::eQuasiGaussian);
+    const std::vector<GpuTaskTraits> filters = { fir, box, triangle, quadratic, gaussian, quasiGaussian };
+
+    EXPECT_NEAR(model.gpuMs(box, kUhdMpx), 22.30, 1e-3);
+    EXPECT_NEAR(model.gpuMs(triangle, kUhdMpx), 32.24, 1e-3);
+    EXPECT_NEAR(model.gpuMs(quadratic, kUhdMpx), 39.65, 1e-3);
+    EXPECT_NEAR(model.gpuMs(gaussian, kUhdMpx), 28.91, 1e-3);
+    EXPECT_NEAR(model.gpuMs(quasiGaussian, kUhdMpx), 34.87, 1e-3);
+    for (const GpuTaskTraits& traits : filters) {
+        if (traits.filter == GpuBlurFilter::eFirGaussian) {
+            continue;
+        }
+        for (double sigma : { 2., 100. }) {
+            GpuTaskTraits other = traits;
+            other.sigma = sigma;
+            EXPECT_NEAR(model.gpuMs(other, 1.), model.gpuMs(traits, 1.), 1e-12) << (int)traits.filter << " at " << sigma;
+        }
+    }
+
+    for (std::size_t observed = 0; observed < filters.size(); ++observed) {
+        std::vector<double> before;
+        for (const GpuTaskTraits& traits : filters) {
+            before.push_back(model.gpuMs(traits, 1.));
+        }
+        model.observeGpu(filters[observed], 100000000, 1.);
+        for (std::size_t i = 0; i < filters.size(); ++i) {
+            if (i == observed) {
+                EXPECT_NEAR(model.gpuMs(filters[i], 1.), before[i] + GpuCostModel::kEmaWeight * (100. - before[i]), 1e-9) << i;
+            } else {
+                EXPECT_NEAR(model.gpuMs(filters[i], 1.), before[i], 1e-12) << i << " after " << observed;
+            }
+        }
+    }
 }
 
 // Every node with a GPU kernel has seed rows of its own, so none of them falls back on a class default.

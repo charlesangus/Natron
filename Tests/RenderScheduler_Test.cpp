@@ -65,6 +65,7 @@
 #include "Engine/RenderScale.h"
 #include "Engine/RenderScheduler.h"
 #include "Engine/RenderStats.h"
+#include "Engine/TLSHolder.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -635,7 +636,7 @@ protected:
         _scheduler->setRegionBody([state](const FrameRenderContextPtr& context,
                                           const FrameGraph& graph,
                                           int region,
-                                          int /*budget*/,
+                                          const RenderScheduler::CpuFallbackLease& /*leaseCpu*/,
                                           std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
                                           RenderScheduler::RegionReport* /*report*/) {
             return renderRegionOnCpu(*state, context, graph, region, rootPlanes);
@@ -1352,13 +1353,14 @@ TEST_F(RenderSchedulerTest, GpuRegionsGetBudgetOneAndRespectTheConcurrencyCap)
         _scheduler->setRegionBody([state, probe](const FrameRenderContextPtr& context,
                                                  const FrameGraph& graph,
                                                  int region,
-                                                 int budget,
+                                                 const RenderScheduler::CpuFallbackLease& /*leaseCpu*/,
                                                  std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
                                                  RenderScheduler::RegionReport* /*report*/) {
             const int now = ++probe->active;
             int seen = probe->maxActive.load();
             while ((now > seen) && !probe->maxActive.compare_exchange_weak(seen, now)) {
             }
+            const int budget = AppTLS::currentThreadBudget();
             int low = probe->minBudget.load();
             while ((budget < low) && !probe->minBudget.compare_exchange_weak(low, budget)) {
             }
@@ -1392,6 +1394,60 @@ TEST_F(RenderSchedulerTest, GpuRegionsGetBudgetOneAndRespectTheConcurrencyCap)
     }
 }
 
+// The CPU fallback of a region leases the budget a CPU task would get, and counts as a running CPU task while the lease
+// is held.
+TEST_F(RenderSchedulerTest, RegionCpuFallbackLeasesACpuTaskBudget)
+{
+    std::vector<NodePtr> chain;
+    ASSERT_TRUE(buildChain(4, &chain));
+
+    PoolSizeGuard pool(4);
+    CountingTestRegistry::reset();
+    struct Seen {
+        std::atomic<int> alone { 0 };
+        std::atomic<int> second { 0 };
+        std::atomic<int> afterRelease { 0 };
+        std::atomic<int> regionScope { 0 };
+    };
+    std::shared_ptr<Seen> seen = std::make_shared<Seen>();
+    std::shared_ptr<RegionBodyState> state = std::make_shared<RegionBodyState>();
+    _scheduler->setRegionBody([seen, state](const FrameRenderContextPtr& context,
+                                            const FrameGraph& graph,
+                                            int region,
+                                            const RenderScheduler::CpuFallbackLease& leaseCpu,
+                                            std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
+                                            RenderScheduler::RegionReport* /*report*/) {
+        seen->regionScope = AppTLS::currentThreadBudget();
+        int first = 0;
+        int second = 0;
+        {
+            const std::shared_ptr<void> a = leaseCpu(&first);
+            const std::shared_ptr<void> b = leaseCpu(&second);
+        }
+        int again = 0;
+        const std::shared_ptr<void> c = leaseCpu(&again);
+        seen->alone = first;
+        seen->second = second;
+        seen->afterRelease = again;
+
+        return renderRegionOnCpu(*state, context, graph, region, rootPlanes);
+    });
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(chain.back(), 1., true, &run, &error)) << error;
+    placeOnGpu(&run.graph, chain);
+    ASSERT_EQ(1u, run.graph.regions.size());
+    submit(&run);
+    ASSERT_TRUE(waitOrAbort(&run));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+    EXPECT_EQ(1, seen->regionScope.load());
+    EXPECT_GT(seen->alone.load(), 1);
+    EXPECT_LT(seen->second.load(), seen->alone.load());
+    EXPECT_EQ(seen->alone.load(), seen->afterRelease.load());
+    expectSchedulerIdle();
+}
+
 // Regions are admitted on the host memory of their downloaded outputs only. The reservations and the store's host and
 // device bytes return to 0 after frames that wait on a tight host budget, and after an abort.
 TEST_F(RenderSchedulerTest, HostReservationsAndDeviceBytesAreReleased)
@@ -1415,7 +1471,7 @@ TEST_F(RenderSchedulerTest, HostReservationsAndDeviceBytesAreReleased)
         _scheduler->setRegionBody([state, inBody, mode](const FrameRenderContextPtr& context,
                                                         const FrameGraph& graph,
                                                         int region,
-                                                        int /*budget*/,
+                                                        const RenderScheduler::CpuFallbackLease& /*leaseCpu*/,
                                                         std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
                                                         RenderScheduler::RegionReport* /*report*/) {
             if (mode == 1) {

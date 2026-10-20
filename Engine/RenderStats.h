@@ -256,6 +256,27 @@ struct GpuRegionTimes {
     int stripsInFlight = 0;
     double transferHiddenMs = 0.;
     double transferExposedMs = 0.;
+    double planMs = 0.;
+    double recordMs = 0.;
+    double acquireMs = 0.;
+    double submitWaitMs = 0.;
+    unsigned long long poolMisses = 0;
+    unsigned long long importCount = 0;
+    unsigned long long newImportBytes = 0;
+
+    // Written as null when infinite.
+    double predictedTransferMs = 0.;
+
+    double prepareWaitMs = 0.;
+    unsigned long long uploadsImported = 0;
+    unsigned long long uploadsStaged = 0;
+    unsigned long long downloadsImported = 0;
+    unsigned long long downloadsStaged = 0;
+    unsigned long long importsAtUpload = 0;
+    unsigned long long importsAtDownload = 0;
+
+    // The region fit the device whole and ran as strips anyway, to overlap its transfers with its compute.
+    bool overlapStrips = false;
 
     // Why the members rendered on the CPU instead; empty for a region that rendered on the GPU.
     std::string fallback;

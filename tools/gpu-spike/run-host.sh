@@ -55,7 +55,4 @@ if [[ ${render_ok} -eq 0 ]]; then
     echo "run-host.sh: WARNING: continuing on llvmpipe/lavapipe" >&2
 fi
 
-# RADV only exposes the dedicated SDMA transfer-only queue family when asked.
-export RADV_PERFTEST="${RADV_PERFTEST:+${RADV_PERFTEST},}transfer_queue"
-
 exec "${bin}" "$@"

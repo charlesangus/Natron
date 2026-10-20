@@ -18,8 +18,7 @@
 # reach it, since they re-exec through this script without flags) selects a
 # separate container, "natron-dev-gpu" by default, for work that needs the
 # host GPU through Vulkan: it refuses to start unless a /dev/dri render node
-# is readable and writable, and sets RADV_PERFTEST=transfer_queue, without
-# which this Mesa's RADV exposes no transfer-only queue family. It is a
+# is readable and writable. It is a
 # separate container so the normal one keeps its environment unchanged.
 #
 #   NATRON_DEV_GPU=1 tools/ci/local/test.sh ctest release
@@ -143,7 +142,7 @@ if [[ "${GPU}" == "1" ]]; then
         echo "    see 'GPU container' in tools/ci/local/README.md for the host udev rule." >&2
         exit 1
     fi
-    GPU_DOCKER_ARGS+=(-e NATRON_DEV_GPU=1 -e RADV_PERFTEST=transfer_queue)
+    GPU_DOCKER_ARGS+=(-e NATRON_DEV_GPU=1)
 fi
 
 # --- optional forced recreate -----------------------------------------------

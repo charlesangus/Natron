@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -75,8 +76,9 @@ private:
 
 // Pool of device-local buffers under a VRAM budget, usage being live plus pooled bytes.
 //
-// Size classes are geometric with four steps per power of two, so a request wastes at most 25% and
-// the number of distinct free lists stays small, while a power-of-two scheme would waste up to 50%.
+// Buffers are allocated in the size classes of sizeClassOf() (GpuSizeClass.h). A request takes the smallest
+// pooled buffer of its class or the class above, so a size that drifts by a few percent between frames, as
+// strip sizes do, still finds the buffers the previous frame released.
 //
 // Locking: a single mutex guards the bookkeeping. Vulkan allocation, buffer destruction and eviction
 // callbacks all run with it released, so a callback may drop handles or acquire from the pool. Bytes are
@@ -88,7 +90,7 @@ public:
     GpuBufferPool(const GpuBufferPool&) = delete;
     GpuBufferPool& operator=(const GpuBufferPool&) = delete;
 
-    // Free list, then VMA within budget, then trim the free lists, then evict least-recently-used
+    // Free lists, then VMA within budget, then trim the free lists, then evict least-recently-used
     // buffers. Out-of-memory is VK_ERROR_OUT_OF_DEVICE_MEMORY, returned without evicting when the
     // request alone exceeds the budget.
     GpuStatus acquire(VkDeviceSize size, GpuBufferHandle& out);
@@ -96,6 +98,8 @@ public:
     void setUserBudget(uint64_t bytes);
     uint64_t budget();
     GpuBufferPoolStats stats() const;
+    // Device allocations the pool has made so far, each a request no pooled buffer could serve.
+    uint64_t allocationCount() const { return allocations_.load(std::memory_order_relaxed); }
 
     // Destroys every pooled buffer.
     void trim();
@@ -123,6 +127,7 @@ private:
     mutable std::mutex mutex_;
     GpuBufferPoolStats stats_;
     uint64_t clock_ = 0;
+    std::atomic<uint64_t> allocations_ { 0 };
     std::map<VkDeviceSize, std::vector<GpuBuffer>> free_;
     // Evictable live buffers ordered by last use, oldest first.
     std::map<uint64_t, detail::BufferLease*> lru_;

@@ -70,7 +70,7 @@ NATRON_NAMESPACE_ENTER
 EffectInstance::RenderRoIRetCode runGpuRegion(const FrameRenderContextPtr& context,
                                               const FrameGraph& graph,
                                               int region,
-                                              int budget,
+                                              const RenderScheduler::CpuFallbackLease& leaseCpu,
                                               std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
                                               RenderScheduler::RegionReport* report);
 

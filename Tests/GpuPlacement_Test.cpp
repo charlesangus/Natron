@@ -399,6 +399,12 @@ TEST(GpuPlacement, NoAvailabilityLeavesGraphUnchanged)
 {
     const FrameGraph original = makeGraph(3, { { 0, 1 }, { 1, 2 } });
 
+    // The application's render scheduler installed its own, which later tests place with.
+    struct RestoreAvailableFunc {
+        GpuPlacementAvailableFunc installed = setGpuPlacementAvailableFunc(nullptr);
+        ~RestoreAvailableFunc() { setGpuPlacementAvailableFunc(installed); }
+    } restore;
+
     for (GpuPlacementAvailableFunc func : { GpuPlacementAvailableFunc(nullptr), &gpuUnavailable }) {
         setGpuPlacementAvailableFunc(func);
         EXPECT_FALSE(isGpuPlacementAvailable());

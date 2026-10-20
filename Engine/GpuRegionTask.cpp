@@ -96,9 +96,6 @@ availableRuntime()
     return (gpu && gpu->isAvailable()) ? gpu->runtime() : nullptr;
 }
 
-// A transparent huge page on x86-64 and on the common arm64 configuration.
-constexpr VkDeviceSize kPrepareChunkAlignment = VkDeviceSize(2) << 20;
-
 // The categories the CPU fallbacks are counted under; the detail goes to the error log.
 const char* const kFallbackOutOfMemory = "out of device memory";
 const char* const kFallbackRefused = "GPU refused";
@@ -196,6 +193,9 @@ renderMembersOnCpu(const FrameRenderContextPtr& context,
 }
 
 #ifdef NATRON_HAVE_GPU
+
+// A transparent huge page on x86-64 and on the common arm64 configuration.
+constexpr VkDeviceSize kPrepareChunkAlignment = VkDeviceSize(2) << 20;
 
 typedef std::chrono::steady_clock Clock;
 

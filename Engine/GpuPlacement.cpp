@@ -469,10 +469,10 @@ placeGraph(FrameGraph& graph,
     }
 } // placeGraph
 
-void
+GpuPlacementAvailableFunc
 setGpuPlacementAvailableFunc(GpuPlacementAvailableFunc func)
 {
-    gAvailableFunc.store(func);
+    return gAvailableFunc.exchange(func);
 }
 
 bool

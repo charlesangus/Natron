@@ -83,7 +83,10 @@ void placeGraph(FrameGraph& graph, const PlacementInputs& inputs);
  **/
 typedef bool (*GpuPlacementAvailableFunc)();
 
-void setGpuPlacementAvailableFunc(GpuPlacementAvailableFunc func);
+/**
+ * @brief Installs func and returns the one it replaces.
+ **/
+GpuPlacementAvailableFunc setGpuPlacementAvailableFunc(GpuPlacementAvailableFunc func);
 
 bool isGpuPlacementAvailable();
 

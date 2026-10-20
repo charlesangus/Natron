@@ -38,7 +38,7 @@ Deps: M100 - Content Node Hashing (owns the sweep and the known-bug list).
 
 ## Phase 143.1: The taskgraph hang
 
-- [ ] M143.P1.T1 — Capture a stack of the hanging known-bug child and name the cause
+- [x] M143.P1.T1 — Capture a stack of the hanging known-bug child and name the cause
   - files: none modified; findings recorded in this file's `## Decisions` (a dated bullet) and in the PR body
   - approach:
     - Build or reuse a release taskgraph build of `d521f111a` or later, then run `KnownPluginBugsStillCrash` in taskgraph mode. Run the child directly: `--gtest_filter=*KnownPluginBugsStillCrash* --gtest_death_test_style=threadsafe`, or the threadsafe child's own command line.
@@ -48,7 +48,7 @@ Deps: M100 - Content Node Hashing (owns the sweep and the known-bug list).
   - verify: the Decisions entry names the plug-in, the blocked threads and the classification, with the stack excerpts the claim rests on. A second run reproduces the same stack shape.
   - size: M
 
-- [ ] M143.P1.T2 — Fix the engine deadlock (only if T1 classifies it as one)
+- [x] M143.P1.T2 — Fix the engine deadlock (only if T1 classifies it as one)
   - files: determined by T1 (likely `Engine/RenderScheduler.cpp`, `Engine/AppManager.cpp`, or the crash/signal handler files); `Tests/` for the new test
   - approach: remove the wait chain T1 found, without a bounded timeout as the "fix". Add a deterministic test that reproduces the chain without a crashing plug-in, for example a task that raises a controlled fault or throw on the pool while another thread waits on it. If T1 says the hang is plug-in UB only, mark this task `n/a - plug-in UB` in the Decisions entry and tick it without code.
   - verify: the new test fails before and passes after; the `KnownPluginBugsStillCrash` child on the unfixed plug-ins now dies in ~3 s in taskgraph mode, as in legacy.
@@ -102,6 +102,7 @@ Deps: M100 - Content Node Hashing (owns the sweep and the known-bug list).
 
 ## Decisions
 
+- 2026-10-20 — P1.T1: the taskgraph hang is **plug-in UB in EdgeExtend**, not an engine deadlock; P1.T2 is `n/a - plug-in UB`. `mergeOver` (openfx-misc `CImg/Blur/CImgBlur.cpp:1083-1104`) writes channel 3 of a 3-channel image when `processA` is off, 16 KB past the buffer. In the hung child (3 of ~190 local taskgraph runs; the CI hangs are the first child, EdgeExtend) all 4 threads sleep on futex: main in `FrameFuture::wait()` (`Engine/RenderScheduler.cpp:89-95`) waiting on the render task; one pool thread in `gomp_team_barrier_wait_end <- gomp_team_end <- CImgBlurPlugin::render` (return address of the `GOMP_parallel` for `mergeOver._omp_fn.0`, a one-thread team at 64×64), whose barrier state the overflow corrupted; the other pool thread idle; the watchdog. No engine mutex is held. Same stack shape in two captures. CImgExpression always segfaults in `_cimg_math_parser::compile` and never hangs. Repro scripts and captures live under the m143 worktree's `build/m143t1-*`.
 - 2026-10-20 — P2.T1: EdgeExtend passes the image through unchanged when the working image is not RGBA with alpha at channel 3 (fork commit `94487064`), replacing a debug `assert` that would abort in PR CI. Four-channel arithmetic is untouched. Partial-matte cases such as RG+A get no edge extension rather than a partial one.
 - 2026-10-20 — P2.T2: `CImg.h` is not tracked in the openfx-misc fork; `fetch-assets.sh` downloads it at the fork's `CIMGVERSION`. The fix ships as a `CImg/CImg.h.patch` in the fork, applied by `fetch-assets.sh` beside the existing `inpaint.h.patch`.
 - 2026-10-20 — P2.T3: ImageMagick 7.1.1-6 has only a process-global seed, so Sketch seeds and sketches under one static mutex (fork commit `ed63abf`). Open: `Texture.cpp` also sets the global seed without that lock, so a concurrent Texture render could still perturb a Sketch; the P2 verification checks whether the sweep sees it.

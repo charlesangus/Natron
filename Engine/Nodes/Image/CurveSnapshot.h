@@ -33,6 +33,9 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
+#include <mutex>
+#include <utility>
 #include <vector>
 
 #include "Engine/Curve.h"
@@ -361,6 +364,49 @@ private:
     std::vector<KeyFrame> _keys;
     double _yMin;
     double _yMax;
+};
+
+/**
+ * @brief The immutable tables an op builds from the curves of one knob, kept for as long as the
+ * knob's content hash stays the same. An op's bake() runs for every identity, region, cost and
+ * render query, and tables sampled from curves are too costly to rebuild each time; Params hold
+ * the shared_ptr get() returns, so a render keeps its tables whatever the knob does meanwhile.
+ * MT-safe: concurrent bakes may each build on a miss, and the last one to finish is kept.
+ **/
+template <typename TABLES>
+class CurveTablesCache {
+public:
+    /**
+     * @brief The tables build() returns for knob's current content: a TABLES built from the
+     * curves build() reads from knob, or the ones an earlier call built for the same content.
+     **/
+    template <typename KNOB, typename BUILD>
+    std::shared_ptr<const TABLES> get(const KNOB& knob,
+                                      BUILD&& build) const
+    {
+        const auto before = knob.getContentHash();
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            if (_tables && (_hash == before)) {
+                return _tables;
+            }
+        }
+        std::shared_ptr<const TABLES> tables = std::make_shared<const TABLES>(std::forward<BUILD>(build)());
+        // Tables built while the knob was edited may hold its later content, which must not be
+        // kept under the earlier hash: undoing the edit would bring that hash back.
+        if (knob.getContentHash() == before) {
+            std::lock_guard<std::mutex> lock(_mutex);
+            _hash = before;
+            _tables = tables;
+        }
+
+        return tables;
+    }
+
+private:
+    mutable std::mutex _mutex;
+    mutable std::uint64_t _hash = 0;
+    mutable std::shared_ptr<const TABLES> _tables;
 };
 
 NATRON_NAMESPACE_EXIT

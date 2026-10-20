@@ -117,15 +117,16 @@ concept BakesParams = requires(const T& baker, const KnobReader& reader) {
 };
 
 /**
- * @brief Bakes baker's knobs through reader. Params must be trivially copyable, so it can be
- * handed to worker threads and GPU uniform blocks by value with nothing left pointing at knobs.
+ * @brief Bakes baker's knobs through reader. Params must be copyable, so it can be handed to
+ * worker threads by value with nothing left pointing at knobs: plain values, or immutable data
+ * held through std::shared_ptr<const ...> when it is too large or unbounded to copy per bake.
  **/
 template <BakesParams T>
 typename T::Params
 bakeParams(const T& baker,
            const KnobReader& reader)
 {
-    static_assert(std::is_trivially_copyable_v<typename T::Params>, "Params must be trivially copyable");
+    static_assert(std::copyable<typename T::Params>, "Params must be copyable");
 
     return baker.bake(reader);
 }

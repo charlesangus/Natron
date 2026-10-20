@@ -29,7 +29,10 @@
 #include "Global/Macros.h"
 
 #include <concepts>
+#include <cstdint>
+#include <cstring>
 #include <type_traits>
+#include <vector>
 
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/ImagePipelineSpec.h"
@@ -43,7 +46,8 @@ NATRON_NAMESPACE_ENTER
  * @brief How an op runs on the GPU for one set of Params: not at all (None), as a kernel of
  * the GPU registry with its parameter block (Kernel, held in kernel as for
  * PixelKernelGpu), or as a runtime shader with the uniforms and textures it is dispatched with
- * (RuntimeShader).
+ * (RuntimeShader). A Kernel's block is either a trivially copyable struct (compiled()) or words
+ * the op lays out itself (packed()); a block over the recorder's 64 KB limit stays on the CPU.
  **/
 struct GpuOpRef {
     enum class Kind : unsigned char {
@@ -75,6 +79,21 @@ struct GpuOpRef {
         return ref;
     }
 
+    static GpuOpRef packed(int kernelId,
+                           std::vector<std::uint32_t> words)
+    {
+        GpuOpRef ref;
+
+        ref.kind = Kind::Kernel;
+        ref.kernel.kernel = kernelId;
+        ref.kernel.params.resize(words.size() * sizeof(std::uint32_t));
+        if (!words.empty()) {
+            std::memcpy(ref.kernel.params.data(), words.data(), ref.kernel.params.size());
+        }
+
+        return ref;
+    }
+
     static GpuOpRef runtime(const GpuRuntimeShader& shader,
                             const GpuShaderInputs& inputs)
     {
@@ -92,8 +111,8 @@ struct GpuOpRef {
  * @brief A Point op: the per-pixel maths of a node whose output pixel depends only on the same
  * pixel of its source.
  *
- * bake() reads the op's knobs once per evaluation into Params, which is trivially copyable so
- * that band threads and GPU parameter blocks take it by value. isIdentity() says whether
+ * bake() reads the op's knobs once per evaluation into Params, which is copyable so that band
+ * threads take it by value (see bakeParams()). isIdentity() says whether
  * those Params leave the source unchanged, whatever the stages do. row() is pure on its RowIO,
  * as PixelKernel::processRow() is: no knob access, no allocation and no I/O, called
  * concurrently for different rows. gpu() says how the same Params run on the GPU.
@@ -123,7 +142,7 @@ template <typename OP>
 concept AnyScaledPointMember = requires(const OP& op, const typename OP::Params& params, const PassContext& context) { op.isIdentity(params, context); } || requires(const OP& op, const typename OP::Params& params, const PassContext& context, const RowIO& io) { op.row(params, context, io); } || requires(const OP& op, const typename OP::Params& params, const PassContext& context) { op.gpu(params, context); };
 
 template <typename OP>
-concept PointOp = BakesParams<OP> && std::is_trivially_copyable_v<typename OP::Params> && ((ScaleFreePointMembers<OP> && !AnyScaledPointMember<OP>) || (ScaledPointMembers<OP> && !AnyScaleFreePointMember<OP>));
+concept PointOp = BakesParams<OP> && std::copyable<typename OP::Params> && ((ScaleFreePointMembers<OP> && !AnyScaledPointMember<OP>) || (ScaledPointMembers<OP> && !AnyScaleFreePointMember<OP>));
 
 /**
  * @brief A Point op of the form that takes the render's PassContext.
@@ -141,7 +160,7 @@ concept ScaledPointOp = PointOp<OP> && ScaledPointMembers<OP>;
  * from the list (halo, region of definition) all see the same list for the same Params.
  **/
 template <typename OP>
-concept PassesOp = BakesParams<OP> && std::is_trivially_copyable_v<typename OP::Params> && requires(const OP& op, const typename OP::Params& params, const PassContext& context) {
+concept PassesOp = BakesParams<OP> && std::copyable<typename OP::Params> && requires(const OP& op, const typename OP::Params& params, const PassContext& context) {
     { op.isIdentity(params, context) } -> std::convertible_to<bool>;
     { op.passes(params, context) } -> std::same_as<PassList>;
 };
@@ -191,7 +210,7 @@ private:
  * metadata from that choice alone.
  **/
 template <typename OP>
-concept RouteOp = BakesParams<OP> && std::is_trivially_copyable_v<typename OP::Params> && requires(const OP& op, const typename OP::Params& params, const RouteContext& context) {
+concept RouteOp = BakesParams<OP> && std::copyable<typename OP::Params> && requires(const OP& op, const typename OP::Params& params, const RouteContext& context) {
     { op.route(params, context) } -> std::same_as<Route>;
 };
 

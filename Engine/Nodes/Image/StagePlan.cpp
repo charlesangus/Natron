@@ -104,10 +104,10 @@ resolvePlanMask(EffectInstance& effect,
     }
 }
 
-#ifdef NATRON_HAVE_GPU
 // GpuRecordContext::updateBuffer() writes at most this much.
 const std::size_t kMaxGpuParamBytes = 65536;
 
+#ifdef NATRON_HAVE_GPU
 bool
 toWrapView(const GpuImageView& view,
            gpu::GpuWrapView* out)
@@ -790,7 +790,7 @@ canRecordGpuOp(const GpuOpRef& op,
     switch (op.kind) {
     case GpuOpRef::Kind::Kernel:
 
-        return op.kernel.kernel >= 0;
+        return (op.kernel.kernel >= 0) && (op.kernel.params.size() <= kMaxGpuParamBytes);
     case GpuOpRef::Kind::RuntimeShader:
 
         return gate.accept(op.shader, node);

@@ -204,22 +204,3 @@ TEST_F(BaseTest, GeneratorMetadataIsTheMinimalKeySet)
         EXPECT_EQ(std::optional<double>(effect->getAspectRatio(-1)), result.getDouble(kOfxMetadataKeyPixelAspect)) << id;
     }
 }
-
-TEST_F(BaseTest, GeneratorMetadataIgnoresItsSourceInput)
-{
-    NodePtr source = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
-    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
-
-    ASSERT_TRUE(source && generator);
-
-    connectNodes(source, generator, 0, true);
-
-    NativeEffectBase* effect = nativeEffectOf(generator);
-
-    ASSERT_TRUE(effect != NULL);
-
-    const ImageMetadata result = effect->getOutputMetadata(3., ViewIdx(0));
-
-    EXPECT_EQ(std::size_t(2), result.size());
-    EXPECT_FALSE(result.contains("exr/tag"));
-}

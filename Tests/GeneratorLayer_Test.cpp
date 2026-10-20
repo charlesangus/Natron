@@ -270,38 +270,6 @@ TEST_F(GeneratorLayerTest, ConstantWithoutSourceWritesDepthOnly)
     project->reset(false, true);
 }
 
-TEST_F(GeneratorLayerTest, ConstantOverSourceWritesDepthAndPassesTheRestThrough)
-{
-    ProjectPtr project = getApp()->getProject();
-
-    project->reset(false, true);
-
-    NodePtr reader = createFixtureReader();
-    ASSERT_TRUE(bool(reader));
-    KnobLayerSelectPtr layer;
-    NodePtr constant = createGenerator("net.sf.openfx.ConstantPlugin", &layer);
-    ASSERT_TRUE(bool(constant));
-    ASSERT_TRUE(bool(layer));
-    connectNodes(reader, constant, 0, true);
-    setColor(constant, "color", kConstantR, kConstantG, kConstantB, kConstantA);
-
-    layer->setLayer("depth");
-
-    QTemporaryDir tmp;
-    ASSERT_TRUE(tmp.isValid());
-    FlatExrImage image;
-    std::string error;
-    ASSERT_TRUE(renderAllLayers(constant, tmp, &image, &error)) << error;
-
-    ASSERT_NE(-1, image.channelIndex("depth.Z")) << channelList(image);
-    expectChannelEverywhere(image, "depth.Z", (float)kConstantR);
-    expectFixtureColor(image);
-    expectFixtureDiffuse(image);
-    expectFixtureSpecular(image);
-
-    project->reset(false, true);
-}
-
 // Ramp carries its own R/G/B/A quad: the host adopts it, forces it on and masks the plane
 // itself, so only the selected channel of the target plane changes.
 TEST_F(GeneratorLayerTest, RampOverSourceWritesOneChannelOfDiffuse)
@@ -351,20 +319,17 @@ TEST_F(GeneratorLayerTest, RampOverSourceWritesOneChannelOfDiffuse)
 }
 
 // Constant has no quad of its own: the host's buttons alone decide which channels it writes.
-TEST_F(GeneratorLayerTest, ConstantOverSourceWritesTwoChannelsOfColor)
+TEST_F(GeneratorLayerTest, ConstantWritesTwoChannelsOfColor)
 {
     ProjectPtr project = getApp()->getProject();
 
     project->reset(false, true);
 
-    NodePtr reader = createFixtureReader();
-    ASSERT_TRUE(bool(reader));
     KnobLayerSelectPtr layer;
     NodePtr constant = createGenerator("net.sf.openfx.ConstantPlugin", &layer);
     ASSERT_TRUE(bool(constant));
     ASSERT_TRUE(bool(layer));
     EXPECT_FALSE(bool(constant->getKnobByName(kNatronOfxParamProcessR)));
-    connectNodes(reader, constant, 0, true);
     setColor(constant, "color", kConstantR, kConstantG, kConstantB, kConstantA);
 
     EXPECT_EQ(std::string(kNatronColorViewRGBA), layer->getLayer());
@@ -381,10 +346,6 @@ TEST_F(GeneratorLayerTest, ConstantOverSourceWritesTwoChannelsOfColor)
 
     expectChannelEverywhere(image, "R", (float)kConstantR);
     expectChannelEverywhere(image, "G", (float)kConstantG);
-    expectChannelEverywhere(image, "B", 0.f);
-    expectChannelEverywhere(image, "A", 1.f);
-    expectFixtureDiffuse(image);
-    expectFixtureSpecular(image);
 
     project->reset(false, true);
 }

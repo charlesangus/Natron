@@ -306,25 +306,36 @@ public:
     void getMetadataReaders(std::list<std::pair<KnobIPtr, int>>* readers) const;
 
     /**
-     * @brief The other nodes whose output metadata is read by the expressions of this node's
-     * render-hashed knobs, each once: the nodes whose hashes this node's hash folds besides its
-     * inputs'.
+     * @brief True if knob's metadata reads fold into this node's hash: a viewer's knobs all, any
+     * other node's render-hashed ones.
      **/
-    void getHashedMetadataSources(std::vector<NodePtr>* sources) const;
+    bool knobMetadataReadsFoldIntoHash(const KnobI& knob) const;
 
     /**
-     * @brief Counts metadata dependencies added to (positive delta) or removed from the knob
-     * expressions of this node, so that a node with none skips scanning its knobs for them.
+     * @brief True if this node's hash folds, directly or through other nodes' hashes, node's hash
+     * or the content hash of knob's dimension. Either target may be null.
      **/
-    void addKnobMetadataDependencies(int delta);
+    bool hashDependsOn(const Node* node, const KnobI* knob, int dimension) const;
 
     /**
-     * @brief Called when this node's output metadata may have changed: its hash moved, or its
-     * metadata was invalidated or refreshed under the same hash. Drops the readers' cached
-     * expression results and moves their content hashes now, and has the main thread evaluate
-     * them as changed. Callable from any thread.
+     * @brief Called when this node's hash moved, which its output metadata may follow. Drops the
+     * readers' cached expression results and moves the content hashes of those on other nodes
+     * now, and has the main thread evaluate them as changed. Callable from any thread.
      **/
     void onMetadataMayHaveChanged();
+
+    /**
+     * @brief Called when this node's output metadata was invalidated or refreshed under the same
+     * hash. As onMetadataMayHaveChanged(), but moves the metadata revision first, so that the
+     * content hashes of all the readers, this node's knobs included, move with it.
+     **/
+    void onMetadataChangedUnderSameHash();
+
+    /**
+     * @brief Moved by onMetadataChangedUnderSameHash(); the content hash of an expression reading
+     * this node's metadata folds it. Zero until then.
+     **/
+    U64 getMetadataRevision() const;
 
     /**
      * @brief True when the project frame range is part of this node's content hash: the effect
@@ -1830,8 +1841,8 @@ private:
         // By input slot: a viewer's two shown inputs, null when unconnected; for any other node
         // the connected inputs it folds in.
         std::vector<std::pair<int, NodePtr>> bySlot;
-        // Other nodes whose output metadata the render-hashed knob expressions read, any knob's
-        // for a viewer; their hashes are folded in through those knobs' content hashes.
+        // Other nodes whose hashes the knobs' content hashes fold: those whose metadata the
+        // knobs' expressions read, directly or through the knobs they read.
         std::vector<NodePtr> metadataSources;
     };
 
@@ -1841,10 +1852,13 @@ private:
     void getHashInputs(HashInputs* inputs) const;
 
     /**
-     * @brief Appends the other nodes whose metadata this node's knob expressions read, those of
-     * render-hashed knobs only if renderHashedOnly, skipping any already in sources.
+     * @brief Appends the other nodes whose hashes this node's hash folds through the metadata
+     * read by the expressions of its knobs, skipping any already in sources. The (knob, dimension)
+     * pairs walked are added to reached, if not null, and not walked again.
      **/
-    void appendMetadataSources(std::vector<NodePtr>* sources, bool renderHashedOnly) const;
+    void appendMetadataSources(std::vector<NodePtr>* sources, std::set<std::pair<const KnobI*, int>>* reached) const;
+
+    void refreshMetadataReaders(bool sameHash);
 
     U32 getInputSlotCount() const;
 

@@ -102,6 +102,10 @@ public:
         --tExpressionTimeDepth;
     }
 };
+
+// Metadata reads registered by all expressions; while there are none, no hash folds another
+// node's through a knob, and the walks looking for such folds are skipped.
+std::atomic<int> gExpressionMetadataDependencies { 0 };
 } // anon namespace
 
 using std::make_pair; using std::pair;
@@ -648,6 +652,11 @@ KnobHelper::KnobHelper(KnobHolder* holder,
 
 KnobHelper::~KnobHelper()
 {
+    std::size_t metadataDependencies = 0;
+    for (std::size_t i = 0; i < _imp->expressions.size(); ++i) {
+        metadataDependencies += _imp->expressions[i].metadataDependencies.size();
+    }
+    gExpressionMetadataDependencies.fetch_sub((int)metadataDependencies);
 }
 
 void
@@ -2479,23 +2488,26 @@ parseTokenFrom(int fromDim,
 
     output->append(callReceiver(str, *tokenStart) + toInsert);
 
-    // assert(*tokenSize > 0);
     return true;
 } // parseTokenFrom
 
-// For each character of the Python source str, whether it is code rather than part of a string
-// literal or a comment. An f-string stays code, since its replacement fields are.
-static std::vector<bool>
-pythonCodeMask(const std::string& str)
-{
-    std::vector<bool> code(str.size(), true);
-    std::size_t i = 0;
+static void maskFStringFields(const std::string& str, std::size_t begin, std::size_t end, std::vector<bool>* code);
 
-    while (i < str.size()) {
+// Clears in code the characters of str in [begin, end) that are part of a string literal or a
+// comment rather than code.
+static void
+maskPythonCode(const std::string& str,
+               std::size_t begin,
+               std::size_t end,
+               std::vector<bool>* code)
+{
+    std::size_t i = begin;
+
+    while (i < end) {
         const char c = str[i];
         if (c == '#') {
-            for (; (i < str.size()) && (str[i] != '\n'); ++i) {
-                code[i] = false;
+            for (; (i < end) && (str[i] != '\n'); ++i) {
+                (*code)[i] = false;
             }
             continue;
         }
@@ -2504,21 +2516,23 @@ pythonCodeMask(const std::string& str)
             continue;
         }
         std::size_t prefixStart = i;
-        while ((prefixStart > 0) && (i - prefixStart < 3) && (std::isalnum((unsigned char)str[prefixStart - 1]) || (str[prefixStart - 1] == '_'))) {
+        while ((prefixStart > begin) && (i - prefixStart < 3) && (std::isalnum((unsigned char)str[prefixStart - 1]) || (str[prefixStart - 1] == '_'))) {
             --prefixStart;
         }
         const std::string prefix = str.substr(prefixStart, i - prefixStart);
         const bool isFString = (prefix.size() <= 2) && (prefix.find_first_not_of("rRbBfFuU") == std::string::npos) && (prefix.find_first_of("fF") != std::string::npos);
-        const bool triple = (i + 2 < str.size()) && (str[i + 1] == c) && (str[i + 2] == c);
+        const bool triple = (i + 2 < end) && (str[i + 1] == c) && (str[i + 2] == c);
         const std::size_t quoteSize = triple ? 3 : 1;
         std::size_t j = i + quoteSize;
-        while (j < str.size()) {
+        bool closed = false;
+        while (j < end) {
             if (str[j] == '\\') {
                 j += 2;
                 continue;
             }
-            if ((str[j] == c) && (!triple || ((j + 2 < str.size()) && (str[j + 1] == c) && (str[j + 2] == c)))) {
+            if ((str[j] == c) && (!triple || ((j + 2 < end) && (str[j + 1] == c) && (str[j + 2] == c)))) {
                 j += quoteSize;
+                closed = true;
                 break;
             }
             if (!triple && (str[j] == '\n')) {
@@ -2526,14 +2540,85 @@ pythonCodeMask(const std::string& str)
             }
             ++j;
         }
-        j = std::min(j, str.size());
-        if (!isFString) {
-            std::fill(code.begin() + i, code.begin() + j, false);
+        j = std::min(j, end);
+        std::fill(code->begin() + i, code->begin() + j, false);
+        if (isFString) {
+            maskFStringFields(str, std::min(i + quoteSize, j), closed ? j - quoteSize : j, code);
         }
         i = j;
     }
+}
+
+// Sets back as code the replacement fields of the f-string text in [begin, end): what lies between
+// a single brace and its matching closing one, itself masked. Doubled braces are literal text.
+static void
+maskFStringFields(const std::string& str,
+                  std::size_t begin,
+                  std::size_t end,
+                  std::vector<bool>* code)
+{
+    std::size_t i = begin;
+
+    while (i < end) {
+        const char c = str[i];
+        if ((c != '{') && (c != '}')) {
+            ++i;
+            continue;
+        }
+        if ((i + 1 < end) && (str[i + 1] == c)) {
+            i += 2;
+            continue;
+        }
+        if (c == '}') {
+            ++i;
+            continue;
+        }
+        std::size_t fieldEnd = i + 1;
+        int depth = 0;
+        while (fieldEnd < end) {
+            const char f = str[fieldEnd];
+            if ((f == '\'') || (f == '"')) {
+                std::size_t k = fieldEnd + 1;
+                while ((k < end) && (str[k] != f)) {
+                    ++k;
+                }
+                fieldEnd = std::min(k + 1, end);
+                continue;
+            }
+            if ((f == '{') || (f == '(') || (f == '[')) {
+                ++depth;
+            } else if ((f == ')') || (f == ']')) {
+                --depth;
+            } else if (f == '}') {
+                if (depth == 0) {
+                    break;
+                }
+                --depth;
+            }
+            ++fieldEnd;
+        }
+        std::fill(code->begin() + i + 1, code->begin() + fieldEnd, true);
+        maskPythonCode(str, i + 1, fieldEnd, code);
+        i = fieldEnd + 1;
+    }
+}
+
+// For each character of the Python source str, whether it is code rather than part of a string
+// literal or a comment. The replacement fields of an f-string are code.
+static std::vector<bool>
+pythonCodeMask(const std::string& str)
+{
+    std::vector<bool> code(str.size(), true);
+
+    maskPythonCode(str, 0, str.size(), &code);
 
     return code;
+}
+
+static bool
+isIdentifierCharacter(char c)
+{
+    return std::isalnum((unsigned char)c) || (c == '_');
 }
 
 // The receiver of the method call whose name starts at nameStart in str, or an empty string if
@@ -3186,6 +3271,52 @@ KnobHelper::replaceNodeNameInExpression(int dimension,
     isEffect->endChanges(true);
 }
 
+void
+KnobHelper::replaceNodeNameInExpressionCode(int dimension,
+                                            const std::string& oldName,
+                                            const std::string& newName)
+{
+    if ((dimension < 0) || (dimension >= _imp->dimension) || oldName.empty()) {
+        return;
+    }
+    EffectInstance* isEffect = dynamic_cast<EffectInstance*>(getHolder());
+    if (!isEffect) {
+        return;
+    }
+    const std::string expression = getExpression(dimension);
+    if (expression.empty()) {
+        return;
+    }
+
+    const std::vector<bool> code = pythonCodeMask(expression);
+    std::string renamed;
+    std::size_t copiedUpTo = 0;
+    std::size_t pos = expression.find(oldName);
+    while (pos != std::string::npos) {
+        const std::size_t after = pos + oldName.size();
+        if (!code[pos] || ((pos > 0) && isIdentifierCharacter(expression[pos - 1])) || ((after < expression.size()) && isIdentifierCharacter(expression[after]))) {
+            pos = expression.find(oldName, pos + 1);
+            continue;
+        }
+        renamed.append(expression, copiedUpTo, pos - copiedUpTo);
+        renamed.append(newName);
+        copiedUpTo = after;
+        pos = expression.find(oldName, after);
+    }
+    if (copiedUpTo == 0) {
+        return;
+    }
+    renamed.append(expression, copiedUpTo, std::string::npos);
+
+    const bool hasRetVar = isExpressionUsingRetVariable(dimension);
+    isEffect->beginChanges();
+    try {
+        setExpression(dimension, renamed, hasRetVar, false);
+    } catch (...) {
+    }
+    isEffect->endChanges(true);
+}
+
 bool
 KnobHelper::isExpressionUsingRetVariable(int dimension) const
 {
@@ -3219,12 +3350,13 @@ KnobHelper::addMetadataDependency(int dimension,
     const EffectInstance* holderEffect = dynamic_cast<const EffectInstance*>(_imp->holder);
     const NodePtr holderNode = holderEffect ? holderEffect->getNode() : NodePtr();
     const bool ownNode = holderNode == node;
-    const bool renderHashed = isRenderHashed();
 
     // Each hash would fold the other's last value, so every recompute would move both again.
-    if (holderNode && !ownNode && renderHashed && !holderNode->checkIfConnectingInputIsOk(node.get())) {
+    // A knob outside its node's hash can still be folded into another node's through an expression.
+    const Node* foldingNode = (holderNode && holderNode->knobMetadataReadsFoldIntoHash(*this)) ? holderNode.get() : 0;
+    if (!ownNode && node->hashDependsOn(foldingNode, this, dimension)) {
         QMutexLocker k(&_imp->expressionMutex);
-        _imp->expressions[dimension].metadataCycle = "reading the metadata of " + node->getFullyQualifiedName() + " forms a cycle: its hash depends on " + holderNode->getFullyQualifiedName();
+        _imp->expressions[dimension].metadataCycle = "reading the metadata of " + node->getFullyQualifiedName() + " forms a cycle: its hash depends on " + (holderNode ? holderNode->getFullyQualifiedName() + "." : std::string()) + getName();
 
         return;
     }
@@ -3238,14 +3370,95 @@ KnobHelper::addMetadataDependency(int dimension,
         }
         dependencies.push_back(node);
     }
-    if (holderNode) {
-        holderNode->addKnobMetadataDependencies(1);
-    }
+    gExpressionMetadataDependencies.fetch_add(1);
     // A render-hashed knob's own node drops its expression results on every hash change, which is
-    // whenever its metadata can change; a knob outside the hash is cleared by nothing else.
-    if (!ownNode || !renderHashed) {
+    // whenever its metadata can change but for Node::onMetadataChangedUnderSameHash(), which looks
+    // at the node's own knobs; a knob outside the hash is cleared by nothing else.
+    if (!ownNode || !isRenderHashed()) {
         node->addMetadataReader(shared_from_this(), dimension);
     }
+}
+
+bool
+KnobHelper::anyExpressionReadsMetadata()
+{
+    return gExpressionMetadataDependencies.load() > 0;
+}
+
+void
+KnobHelper::appendHashedMetadataSources(int dimension,
+                                        std::vector<NodePtr>* sources,
+                                        std::set<std::pair<const KnobI*, int>>* visited) const
+{
+    if ((dimension < 0) || (dimension >= getDimension()) || !visited->insert(std::make_pair(static_cast<const KnobI*>(this), dimension)).second) {
+        return;
+    }
+    // Follows getDimensionContentHashRecursive(): the sources are the nodes whose hashes it folds.
+    std::pair<int, KnobIPtr> master = getMaster(dimension);
+    if (master.second && (master.first >= 0) && (master.first < master.second->getDimension())) {
+        const KnobHelper* masterHelper = dynamic_cast<const KnobHelper*>(master.second.get());
+        if (masterHelper) {
+            masterHelper->appendHashedMetadataSources(master.first, sources, visited);
+        }
+
+        return;
+    }
+
+    std::list<std::pair<KnobIWPtr, int>> dependencies;
+    std::list<NodeWPtr> metadataDependencies;
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        const Expr& expr = _imp->expressions[dimension];
+        if (expr.originalExpression.empty()) {
+            return;
+        }
+        dependencies = expr.dependencies;
+        metadataDependencies = expr.metadataDependencies;
+    }
+    const EffectInstance* holderEffect = dynamic_cast<const EffectInstance*>(_imp->holder);
+    const NodePtr holderNode = holderEffect ? holderEffect->getNode() : NodePtr();
+    for (std::list<NodeWPtr>::const_iterator it = metadataDependencies.begin(); it != metadataDependencies.end(); ++it) {
+        NodePtr source = it->lock();
+        if (source && (source != holderNode) && (std::find(sources->begin(), sources->end(), source) == sources->end())) {
+            sources->push_back(source);
+        }
+    }
+    for (std::list<std::pair<KnobIWPtr, int>>::const_iterator it = dependencies.begin(); it != dependencies.end(); ++it) {
+        KnobIPtr dep = it->first.lock();
+        const KnobHelper* depHelper = dynamic_cast<const KnobHelper*>(dep.get());
+        if (depHelper) {
+            depHelper->appendHashedMetadataSources(it->second, sources, visited);
+        }
+    }
+}
+
+bool
+KnobHelper::expressionReadClosesMetadataCycle(int dimension,
+                                              int readDimension,
+                                              const KnobHelper* read,
+                                              std::string* message) const
+{
+    if (!read || !anyExpressionReadsMetadata()) {
+        return false;
+    }
+    std::vector<NodePtr> sources;
+    std::set<std::pair<const KnobI*, int>> visited;
+    read->appendHashedMetadataSources(readDimension, &sources, &visited);
+    if (sources.empty()) {
+        return false;
+    }
+    const EffectInstance* holderEffect = dynamic_cast<const EffectInstance*>(_imp->holder);
+    const NodePtr holderNode = holderEffect ? holderEffect->getNode() : NodePtr();
+    const Node* foldingNode = (holderNode && holderNode->knobMetadataReadsFoldIntoHash(*this)) ? holderNode.get() : 0;
+    for (std::vector<NodePtr>::const_iterator it = sources.begin(); it != sources.end(); ++it) {
+        if ((it->get() == foldingNode) || (*it)->hashDependsOn(foldingNode, this, dimension)) {
+            *message = "reading " + read->getName() + " forms a cycle: it reads the metadata of " + (*it)->getFullyQualifiedName() + ", whose hash depends on " + (holderNode ? holderNode->getFullyQualifiedName() + "." : std::string()) + getName();
+
+            return true;
+        }
+    }
+
+    return false;
 }
 
 void
@@ -3352,11 +3565,7 @@ KnobHelper::clearExpression(int dimension,
                 node->removeMetadataReader(this, dimension);
             }
         }
-        const EffectInstance* holderEffect = dynamic_cast<const EffectInstance*>(_imp->holder);
-        const NodePtr holderNode = holderEffect ? holderEffect->getNode() : NodePtr();
-        if (holderNode && !metadataDependencies.empty()) {
-            holderNode->addKnobMetadataDependencies(-(int)metadataDependencies.size());
-        }
+        gExpressionMetadataDependencies.fetch_sub((int)metadataDependencies.size());
     }
 
     if (clearResults) {
@@ -4693,6 +4902,15 @@ KnobHelper::addListener(const bool isExpression,
     if (!listenerIsHelper) {
         return;
     }
+    if (isExpression) {
+        std::string cycle;
+        if (listenerIsHelper->expressionReadClosesMetadataCycle(listenerDimension, listenedToDimension, this, &cycle)) {
+            QMutexLocker k(&listenerIsHelper->_imp->expressionMutex);
+            listenerIsHelper->_imp->expressions[listenerDimension].metadataCycle = cycle;
+
+            return;
+        }
+    }
     KnobIPtr thisShared = shared_from_this();
     if (listenerIsHelper->_signalSlotHandler && _signalSlotHandler) {
         //Notify the holder one of its knob is now slaved
@@ -5373,14 +5591,23 @@ KnobHelper::getDimensionContentHashRecursive(int dimension,
         h.appendU64(depHelper ? depHelper->getDimensionContentHashRecursive(it->second, path)
                               : dep->getDimensionContentHash(it->second));
     }
-    // A node's metadata is a function of its hash. The holder's own node is left out: its hash
-    // folds this one in, and its metadata already follows the rest of its hash.
+    // A node's metadata is a function of its hash, and of its revision when it changes under the
+    // same hash. The holder's own node hash is left out: it folds this one in, and its metadata
+    // already follows the rest of its hash. A revision only counts within this session.
     const EffectInstance* holderEffect = dynamic_cast<const EffectInstance*>(_imp->holder);
     const NodePtr holderNode = holderEffect ? holderEffect->getNode() : NodePtr();
     for (std::list<NodeWPtr>::const_iterator it = metadataDependencies.begin(); it != metadataDependencies.end(); ++it) {
         NodePtr source = it->lock();
         h.appendBool(bool(source));
-        if (source && (source != holderNode)) {
+        if (!source) {
+            continue;
+        }
+        const U64 revision = source->getMetadataRevision();
+        h.appendU64(revision);
+        if (revision != 0) {
+            h.appendU64(ContentHasher::sessionSalt());
+        }
+        if (source != holderNode) {
             h.appendU64(source->getHashValue());
         }
     }

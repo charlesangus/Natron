@@ -355,8 +355,10 @@ protected:
     virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) WARN_UNUSED_RETURN;
 
     /**
-     * @brief Drops every cached getOutputMetadata() result of this node alone, and refreshes the
-     * expressions reading this node's metadata; nodes downstream keep theirs.
+     * @brief For a change of this node's metadata that leaves its hash alone, such as a file
+     * reload: drops every cached getOutputMetadata() result of this node alone, and moves the
+     * content hashes of the expressions reading this node's metadata (see
+     * Node::onMetadataChangedUnderSameHash()); nodes downstream keep their caches.
      **/
     void invalidateOutputMetadata();
 

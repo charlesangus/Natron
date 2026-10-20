@@ -1137,7 +1137,7 @@ Node::getHashInputs(HashInputs* inputs) const
         for (int i = 0; i < 2; ++i) {
             inputs->bySlot.push_back(std::make_pair(activeInput[i], getInput(activeInput[i])));
         }
-        appendMetadataSources(&inputs->metadataSources, false);
+        appendMetadataSources(&inputs->metadataSources, NULL);
 
         return;
     }
@@ -1157,44 +1157,87 @@ Node::getHashInputs(HashInputs* inputs) const
         }
         inputs->bySlot.push_back(std::make_pair((int)i, std::move(input)));
     }
+    appendMetadataSources(&inputs->metadataSources, NULL);
+}
+
+bool
+Node::knobMetadataReadsFoldIntoHash(const KnobI& knob) const
+{
     // A hash-exempt knob is refreshed through its metadata reader registration instead, and may
     // read a node downstream, which as a hash input would make the hash order cyclic.
-    appendMetadataSources(&inputs->metadataSources, true);
+    return knob.isRenderHashed() || dynamic_cast<const ViewerInstance*>(_imp->effect.get());
 }
 
 void
 Node::appendMetadataSources(std::vector<NodePtr>* sources,
-                            bool renderHashedOnly) const
+                            std::set<std::pair<const KnobI*, int>>* reached) const
 {
-    // mayHaveKnobExpressions() cannot gate this: it reads the knobs digest, which an expression set
-    // since the last hash recompute is missing from, and which covers render-hashed knobs only.
-    if (!_imp->effect || (_imp->knobMetadataDependencies.load() <= 0)) {
+    // A walk looking for a knob must pass through every expression, metadata reads or not.
+    if (!_imp->effect || (!reached && !KnobHelper::anyExpressionReadsMetadata())) {
         return;
     }
-    std::list<NodePtr> read;
+    std::set<std::pair<const KnobI*, int>> visited;
+    if (!reached) {
+        reached = &visited;
+    }
+    std::vector<NodePtr> read;
     const KnobsVec knobs = _imp->effect->getKnobs_mt_safe();
     for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-        if (*it && (!renderHashedOnly || (*it)->isRenderHashed())) {
-            (*it)->getMetadataDependencies(-1, &read);
+        const KnobHelper* knob = dynamic_cast<const KnobHelper*>(it->get());
+        if (!knob || !knobMetadataReadsFoldIntoHash(*knob)) {
+            continue;
+        }
+        for (int i = 0; i < knob->getDimension(); ++i) {
+            knob->appendHashedMetadataSources(i, &read, reached);
         }
     }
-    for (std::list<NodePtr>::iterator it = read.begin(); it != read.end(); ++it) {
+    for (std::vector<NodePtr>::iterator it = read.begin(); it != read.end(); ++it) {
         if ((it->get() != this) && (std::find(sources->begin(), sources->end(), *it) == sources->end())) {
             sources->push_back(std::move(*it));
         }
     }
 }
 
-void
-Node::getHashedMetadataSources(std::vector<NodePtr>* sources) const
+bool
+Node::hashDependsOn(const Node* node,
+                    const KnobI* knob,
+                    int dimension) const
 {
-    appendMetadataSources(sources, true);
-}
+    // A diamond-shaped graph has exponentially many paths but linearly many nodes.
+    std::unordered_set<const Node*> visited;
+    std::vector<const Node*> stack;
+    std::set<std::pair<const KnobI*, int>> reachedKnobs;
+    visited.insert(this);
+    stack.push_back(this);
+    while (!stack.empty()) {
+        const Node* current = stack.back();
+        stack.pop_back();
+        std::vector<NodePtr> dependencies;
+        {
+            QMutexLocker l(&current->_imp->inputsMutex);
+            for (std::size_t i = 0; i < current->_imp->inputs.size(); ++i) {
+                NodePtr in = current->_imp->inputs[i].lock();
+                if (in) {
+                    dependencies.push_back(in);
+                }
+            }
+        }
+        current->appendMetadataSources(&dependencies, knob ? &reachedKnobs : NULL);
+        if (knob && (reachedKnobs.find(std::make_pair(knob, dimension)) != reachedKnobs.end())) {
+            return true;
+        }
+        for (std::size_t i = 0; i < dependencies.size(); ++i) {
+            const Node* dependency = dependencies[i].get();
+            if (dependency == node) {
+                return true;
+            }
+            if (visited.insert(dependency).second) {
+                stack.push_back(dependency);
+            }
+        }
+    }
 
-void
-Node::addKnobMetadataDependencies(int delta)
-{
-    _imp->knobMetadataDependencies.fetch_add(delta);
+    return false;
 }
 
 namespace {
@@ -1657,8 +1700,45 @@ Node::getMetadataReaders(std::list<std::pair<KnobIPtr, int>>* readers) const
 void
 Node::onMetadataMayHaveChanged()
 {
+    refreshMetadataReaders(false);
+}
+
+void
+Node::onMetadataChangedUnderSameHash()
+{
+    _imp->metadataRevision.fetch_add(1);
+    refreshMetadataReaders(true);
+}
+
+U64
+Node::getMetadataRevision() const
+{
+    return _imp->metadataRevision.load();
+}
+
+void
+Node::refreshMetadataReaders(bool sameHash)
+{
     std::list<std::pair<KnobIPtr, int>> readers;
     getMetadataReaders(&readers);
+    // This node's render-hashed knobs reading its metadata are not registered as readers: a hash
+    // change already drops their results. A change under the same hash is not one.
+    if (sameHash && _imp->effect && KnobHelper::anyExpressionReadsMetadata()) {
+        const KnobsVec knobs = _imp->effect->getKnobs_mt_safe();
+        for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            if (!*it || !(*it)->isRenderHashed()) {
+                continue;
+            }
+            for (int i = 0; i < (*it)->getDimension(); ++i) {
+                std::list<NodePtr> sources;
+                (*it)->getMetadataDependencies(i, &sources);
+                if (std::find_if(sources.begin(), sources.end(), [this](const NodePtr& source) { return source.get() == this; }) != sources.end()) {
+                    (*it)->clearExpressionsResults(i);
+                    (*it)->invalidateContentHash();
+                }
+            }
+        }
+    }
     if (readers.empty()) {
         return;
     }
@@ -1666,8 +1746,8 @@ Node::onMetadataMayHaveChanged()
     // refresh runs must not be served the old result, nor reuse renders keyed on the old hash.
     for (std::list<std::pair<KnobIPtr, int>>::const_iterator it = readers.begin(); it != readers.end(); ++it) {
         it->first->clearExpressionsResults(it->second);
-        // A knob's content hash leaves out its own node's hash, so only another node's reader moves.
-        if (it->first->getHolder() != _imp->effect.get()) {
+        // A knob's content hash leaves out its own node's hash, but not the metadata revision.
+        if (sameHash || (it->first->getHolder() != _imp->effect.get())) {
             it->first->invalidateContentHash();
         }
     }

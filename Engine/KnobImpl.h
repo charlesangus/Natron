@@ -571,18 +571,19 @@ Knob<T>::getValueFromExpression_pod(double time,
         return false;
     }
 
+    // Not held while the expression runs: the clear that moves the generation must be able to land
+    // meanwhile, and another thread holding the Python lock may be waiting for this one.
+    U64 generation;
+    {
+        QMutexLocker k(&_valueMutex);
+        typename FrameValueMap::iterator found = _exprRes[dimension].find(time);
+        if (found != _exprRes[dimension].end()) {
+            *ret = found->second;
 
-    ///Check first if a value was already computed:
-
-
-    QMutexLocker k(&_valueMutex);
-    typename FrameValueMap::iterator found = _exprRes[dimension].find(time);
-    if ( found != _exprRes[dimension].end() ) {
-        *ret = found->second;
-
-        return true;
+            return true;
+        }
+        generation = _exprResGenerations[dimension];
     }
-    const U64 generation = _exprResGenerations[dimension];
 
     bool exprWasValid = isExpressionValid(dimension, 0);
     {
@@ -604,6 +605,7 @@ Knob<T>::getValueFromExpression_pod(double time,
         *ret =  clampToMinMax(*ret, dimension);
     }
 
+    QMutexLocker k(&_valueMutex);
     if (_exprResGenerations[dimension] == generation) {
         _exprRes[dimension].insert(std::make_pair(time, *ret));
     }

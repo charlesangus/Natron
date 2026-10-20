@@ -739,6 +739,15 @@ public:
     virtual void replaceNodeNameInExpression(int dimension,
                                              const std::string& oldName,
                                              const std::string& newName) = 0;
+
+    /**
+     * @brief Like replaceNodeNameInExpression(), but only replaces "oldName" where the expression
+     * names it in code: whole identifiers, outside string literals and comments.
+     **/
+    virtual void replaceNodeNameInExpressionCode(int dimension,
+                                                 const std::string& oldName,
+                                                 const std::string& newName)
+        = 0;
     virtual void clearExpressionsResults(int dimension) = 0;
     virtual void clearExpression(int dimension, bool clearResults) = 0;
     virtual std::string getExpression(int dimension) const = 0;
@@ -1642,6 +1651,9 @@ public:
     virtual void replaceNodeNameInExpression(int dimension,
                                              const std::string& oldName,
                                              const std::string& newName) OVERRIDE FINAL;
+    virtual void replaceNodeNameInExpressionCode(int dimension,
+                                                 const std::string& oldName,
+                                                 const std::string& newName) OVERRIDE FINAL;
     virtual void clearExpression(int dimension, bool clearResults) OVERRIDE FINAL;
     virtual std::string validateExpression(const std::string& expression, int dimension, bool hasRetVariable,
                                            std::string* resultAsString) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -1659,6 +1671,19 @@ public:
     virtual bool getExpressionDependencies(int dimension, std::list<std::pair<KnobIWPtr, int> >& dependencies) const OVERRIDE FINAL;
     virtual void addMetadataDependency(int dimension, const NodePtr& node) OVERRIDE FINAL;
     virtual void getMetadataDependencies(int dimension, std::list<NodePtr>* nodes) const OVERRIDE FINAL;
+
+    /**
+     * @brief Appends to sources, each once, the other nodes whose hashes the content hash of
+     * dimension folds: those whose metadata this knob's expression reads, and so on through the
+     * knobs its expression or master link reads. Each (knob, dimension) passed through is added to
+     * visited, and not walked again.
+     **/
+    void appendHashedMetadataSources(int dimension, std::vector<NodePtr>* sources, std::set<std::pair<const KnobI*, int>>* visited) const;
+
+    /**
+     * @brief True if some expression reads node metadata.
+     **/
+    static bool anyExpressionReadsMetadata();
     virtual std::string getExpression(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual const std::vector<std::shared_ptr<Curve>  > & getCurves() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setAnimationEnabled(bool val) OVERRIDE FINAL;
@@ -1836,6 +1861,12 @@ protected:
 
 private:
     typedef std::set<std::pair<const KnobHelper*, int>> ContentHashPath;
+
+    /**
+     * @brief True, with message set, if the expression at dimension reading read's readDimension
+     * would make a node's hash fold itself through a metadata read.
+     **/
+    bool expressionReadClosesMetadataCycle(int dimension, int readDimension, const KnobHelper* read, std::string* message) const;
 
     U64 getOwnDimensionContentHash(int dimension) const;
     U64 getDimensionContentHashRecursive(int dimension, ContentHashPath& path) const;

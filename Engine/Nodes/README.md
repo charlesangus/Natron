@@ -170,14 +170,16 @@ expression; a frame argument reads another frame, as in
   includes an edit anywhere upstream of X. The reading node's own hash follows
   X's.
 - A native X also refreshes its readers when its metadata changes under the
-  same hash: a Read reloading its file, a project format or frame-rate change.
+  same hash, such as a Read reloading its file: their nodes' hashes move too.
   An OpenFX X refreshes them on hash changes only.
-- Renaming X rewrites the expression; deactivating or deleting X marks it
-  invalid, as for an expression reading one of X's knobs.
+- Renaming X rewrites the references to X in the expression's code, leaving
+  metadata keys, other strings and comments alone; deactivating or deleting X
+  marks it invalid, as for an expression reading one of X's knobs.
 - A knob that is part of its node's hash cannot read the metadata of a node
-  whose hash depends on its own node's, such as a node downstream of it: the
-  expression is refused, and so is a connection that would close such a loop.
-  Knobs outside the hash, like the label, can.
+  whose hash depends on its own node's, such as a node downstream of it, nor
+  can an expression read a knob that leads to such a read: the expression is
+  refused, and so is a connection that would close such a loop. Knobs outside
+  the hash, like the label, can, unless a hashed expression reads them.
 - An OpenFX node ignores `view`.
 - Results are cached per evaluation time, so each frame an expression asks for
   is derived once per hash.

@@ -749,10 +749,18 @@ TEST(ViewerHandoff, ReadbackMatchesTheTextureOnEveryRung)
         for (ViewerHandoffFormat format : { ViewerHandoffFormat::Bgra8, ViewerHandoffFormat::Rgba32F }) {
             const ViewerHandoffFrame frame = frameFor(kRect, format);
             const unsigned texture = h.makeTexture(frame);
-            // The rings keep the size of the first format's frames, so a larger format is refused once
-            // while their slots grow.
-            if (handoff.capacity(0) < frame.bytes()) {
-                EXPECT_FALSE(bool(handoff.present(0, root, paramsFor(c, kRect), texture, frame))) << toString(wanted);
+            if (format == ViewerHandoffFormat::Bgra8) {
+                EXPECT_EQ(0u, handoff.capacity(0)) << toString(wanted);
+            } else {
+                // Ring 0 was built at the 8-bit frame's size, so the first float frame is refused and
+                // the slots grow at the next present().
+                const std::size_t eightBit = frameFor(kRect, ViewerHandoffFormat::Bgra8).bytes();
+                ASSERT_EQ(eightBit, handoff.capacity(0)) << toString(wanted);
+                ASSERT_LT(eightBit, frame.bytes());
+                const ViewerHandoffResult refused = handoff.present(0, root, paramsFor(c, kRect), texture, frame);
+                EXPECT_FALSE(bool(refused)) << toString(wanted);
+                EXPECT_NE(std::string::npos, refused.reason.find("over")) << toString(wanted) << ": " << refused.reason;
+                EXPECT_EQ(eightBit, handoff.capacity(0)) << toString(wanted);
             }
             // More requests than the ring has slots, so that an uncollected copy has to be harvested before
             // its slot is produced into again.
@@ -773,6 +781,7 @@ TEST(ViewerHandoff, ReadbackMatchesTheTextureOnEveryRung)
                 }
                 expected[token] = bytes;
             }
+            EXPECT_EQ(frame.bytes(), handoff.capacity(0)) << toString(wanted);
             ViewerHandoffParams plain = paramsFor(c, kRect);
             ASSERT_TRUE(bool(handoff.present(1, root, plain, texture, frame)));
 

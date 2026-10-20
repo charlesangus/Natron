@@ -585,7 +585,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
 - 2026-10-19 — This milestone owns stage-knob placement below the line, taken from M95 - Knob Cleanup And Keyer Redesign (user): the framework creates those knobs, so it places them.
 - 2026-10-19 — Order of work is spike, then design note, then one approval stop (user). The spike covers Grade, Blur and Switch on CPU and GPU, and its code is kept if approved.
 - 2026-10-19 — Switch moves from M121 - Native Routing And Mix into this milestone as the Route proof (user). No native Route node exists yet.
-- 2026-10-19 — Gate: bit-exact on the CPU, README tolerance on the GPU (user): the CPU maths is unchanged, so any ulp change is a bug.
+- 2026-10-19 — Gate: bit-exact on the CPU, README tolerance on the GPU (user): the CPU maths is unchanged, so any ulp change is a bug. Refined 2026-10-20 (user): an ulp change that a framework split explains (an op step and a stage step that used to be fused) is accepted and re-recorded; an unexplained one is still a bug.
 - 2026-10-19 — Gate: no performance regression beyond noise (user): the framework must not tax every node.
 - 2026-10-19 — M139 - Blur In-Graph Overhead runs after this milestone (user): it then optimises the shared Passes executor for every node that uses it. M139 gains a dep on M137.
 - 2026-10-19 — IDs carry over unchanged; renames stay with M111 - Native Node Identity Cleanup (user): this milestone is behaviour-preserving.

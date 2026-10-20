@@ -33,7 +33,10 @@
 #include <exception>
 #include <limits>
 #include <list>
+#include <map>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -49,12 +52,15 @@
 #include "Engine/GpuCostModel.h"
 #include "Engine/GpuPlacement.h"
 #include "Engine/GpuRegionStrips.h"
+#include "Engine/HostImageMemory.h"
 #include "Engine/Image.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/OpenMPThreads.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RenderStats.h"
+#include "Engine/TLSHolder.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRuntime.h"
@@ -122,6 +128,7 @@ EffectInstance::RenderRoIRetCode
 renderMembersOnCpu(const FrameRenderContextPtr& context,
                    const FrameGraph& graph,
                    int regionIndex,
+                   const RenderScheduler::CpuFallbackLease& leaseCpu,
                    gpu::GpuRuntime* runtime,
                    std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
                    RenderScheduler::RegionReport* report)
@@ -152,6 +159,12 @@ renderMembersOnCpu(const FrameRenderContextPtr& context,
 #endif
     }
 
+    // Held while the members render, so that the CPU tasks sharing the pool count this region among them.
+    int budget = 1;
+    const std::shared_ptr<void> lease = leaseCpu ? leaseCpu(&budget) : std::shared_ptr<void>();
+    AppTLS::ThreadBudgetScope budgetScope(budget);
+    OpenMPThreadsScope openMPThreads(budget);
+
     for (int m : region.members) {
         if (isContextAborted(context)) {
             return EffectInstance::eRenderRoIRetCodeAborted;
@@ -180,6 +193,9 @@ renderMembersOnCpu(const FrameRenderContextPtr& context,
 }
 
 #ifdef NATRON_HAVE_GPU
+
+// A transparent huge page on x86-64 and on the common arm64 configuration.
+constexpr VkDeviceSize kPrepareChunkAlignment = VkDeviceSize(2) << 20;
 
 typedef std::chrono::steady_clock Clock;
 
@@ -241,6 +257,7 @@ struct Slot {
     bool downloadIssued = false;
     std::shared_ptr<Image::WriteAccess> downloadAccess;
     ImagePtr downloadImage;
+    std::size_t downloadBytes = 0;
     gpu::TimelineValue downloadDone;
     ImagePtr downloaded;
 
@@ -263,6 +280,9 @@ struct Member {
 
     // Its share of the device time of the submission it is recorded in.
     double weight = 1.;
+
+    // The cost model's kernel time for the task, 0 when it has none.
+    double predictedKernelMs = 0.;
 };
 
 /**
@@ -326,15 +346,23 @@ public:
 
     EffectInstance::RenderRoIRetCode run(std::map<ImageLayerDesc, ImagePtr>* rootPlanes)
     {
+        const Clock::time_point planBegin = Clock::now();
+        const std::uint64_t allocationsBefore = _runtime.pool().allocationCount();
+        const std::uint64_t importsBefore = _runtime.transfer().hostImportCount();
+        const std::uint64_t importBytesBefore = _runtime.transfer().hostImportBytes();
+        const gpu::HostImportStats importStatsBefore = _runtime.transfer().hostImportStats();
         std::vector<GpuStrip> strips;
-        if (!plan() || !resolveInputs() || !planStrips(&strips)) {
+        if (!plan() || !resolveInputs() || !planStrips(&strips) || !allocateDownloadImages(strips)) {
             return failed();
         }
         const Clock::time_point begin = Clock::now();
         if (_report) {
+            _report->planMs = msBetween(planBegin, begin);
             _report->strips = (int)strips.size();
             _report->stripsInFlight = strips.empty() ? 0 : _inFlight;
+            _report->overlapStrips = _overlapped;
         }
+        importSources();
         if (strips.empty()) {
             if (!upload()) {
                 return failed();
@@ -360,6 +388,13 @@ public:
             if (_inFlight <= 1) {
                 _report->transferExposedMs = _report->uploadMs + _report->downloadMs;
             }
+            _report->poolMisses = _runtime.pool().allocationCount() - allocationsBefore;
+            _report->importCount = _runtime.transfer().hostImportCount() - importsBefore;
+            _report->newImportBytes = _runtime.transfer().hostImportBytes() - importBytesBefore;
+            const gpu::HostImportStats importStats = _runtime.transfer().hostImportStats();
+            _report->importsAtUpload = importStats.atUpload - importStatsBefore.atUpload;
+            _report->importsAtDownload = importStats.atDownload - importStatsBefore.atDownload;
+            _report->predictedTransferMs = GpuCostModel::session().transferMs((double)_report->uploadBytes, (double)_report->downloadBytes);
         }
         if (isAborted()) {
             return EffectInstance::eRenderRoIRetCodeAborted;
@@ -595,25 +630,6 @@ private:
             }
 
             member.inputSlots.assign(std::max(0, member.effect->getNInputs()), -1);
-            // The request pass records one edge per input node, so a node wired to two inputs of the member, such as
-            // its source and its mask, is an edge of only one of them.
-            const std::size_t nRecordedEdges = edges.size();
-            for (int inputNb = 0; inputNb < (int)member.inputSlots.size(); ++inputNb) {
-                bool recorded = false;
-                for (std::size_t e = 0; e < nRecordedEdges; ++e) {
-                    recorded = recorded || (edges[e].first == inputNb);
-                }
-                EffectInstancePtr input = member.effect->getInput(inputNb);
-                if (recorded || !input || (member.effect->isInputMask(inputNb) && !member.effect->isMaskEnabled(inputNb))) {
-                    continue;
-                }
-                for (std::size_t e = 0; e < nRecordedEdges; ++e) {
-                    if (_graph.tasks[edges[e].second].key.node == input->getNode()) {
-                        edges.push_back(std::make_pair(inputNb, edges[e].second));
-                        break;
-                    }
-                }
-            }
             for (std::size_t e = 0; e < edges.size(); ++e) {
                 const int inputNb = edges[e].first;
                 if ((inputNb < 0) || (inputNb >= (int)member.inputSlots.size())) {
@@ -622,6 +638,9 @@ private:
                 ImageLayerDesc layer;
                 if (!member.effect->getGpuInputLayer(inputNb, plane, task.key.time, task.key.view, &layer)) {
                     return fail(taskIndex, "the node cannot read an input on the GPU");
+                }
+                if (_graph.tasks[edges[e].second].renderedRoI.isNull()) {
+                    return fail(taskIndex, "an input renders an empty window");
                 }
                 const int producer = _position[edges[e].second];
                 if ((producer >= 0) && !sameLayer(_slots[_members[producer].outSlot].layout.layer, layer)) {
@@ -632,6 +651,12 @@ private:
                 member.inputSlots[inputNb] = slot;
             }
 
+            for (int inputNb = 0; inputNb < (int)member.inputSlots.size(); ++inputNb) {
+                if ((member.inputSlots[inputNb] < 0) && member.effect->getInput(inputNb) && !member.effect->isInputMask(inputNb)) {
+                    return fail(taskIndex, "a connected input has no task to read");
+                }
+            }
+
             Slot out;
             out.layout = layoutOf(task, plane, task.renderedRoI);
             out.producer = (int)i;
@@ -639,7 +664,8 @@ private:
             member.outSlot = (int)_slots.size() - 1;
 
             const double kernelMs = model.gpuMs(model.traitsOf(task), GpuCostModel::megapixelsOf(task));
-            member.weight = (std::isfinite(kernelMs) && (kernelMs > 0.)) ? kernelMs : 1.;
+            member.predictedKernelMs = (std::isfinite(kernelMs) && (kernelMs > 0.)) ? kernelMs : 0.;
+            member.weight = (member.predictedKernelMs > 0.) ? member.predictedKernelMs : 1.;
             _members.push_back(member);
         }
 
@@ -689,6 +715,19 @@ private:
     bool acquireBuffer(VkDeviceSize size,
                        int memberTask,
                        gpu::GpuBufferHandle* out)
+    {
+        const Clock::time_point begin = Clock::now();
+        const bool acquired = acquireBufferUntimed(size, memberTask, out);
+        if (_report) {
+            _report->acquireMs += msBetween(begin, Clock::now());
+        }
+
+        return acquired;
+    }
+
+    bool acquireBufferUntimed(VkDeviceSize size,
+                              int memberTask,
+                              gpu::GpuBufferHandle* out)
     {
         std::size_t best = _spare.size();
         for (std::size_t i = 0; i < _spare.size(); ++i) {
@@ -834,6 +873,8 @@ private:
             }
             gpu::StreamOptions options;
             options.handoff = gpu::ComputeHandoff::Submit;
+            gpu::TransferPath path = gpu::TransferPath::Staging;
+            options.path = &path;
             gpu::TimelineValue done;
             // upload() only reads the host range.
             const gpu::GpuStatus status = _runtime.upload({ const_cast<unsigned char*>(data), bytes }, slot.handle.buffer(), 0, done, options);
@@ -842,6 +883,7 @@ private:
 
                 return failGpu(slot.externalTask, "upload failed", status);
             }
+            notePath(path, true);
             uploads.push_back(done);
             accesses.push_back(access);
             slot.view = viewOf(&slot.handle.buffer(), slot.layout);
@@ -899,40 +941,73 @@ private:
         }
     }
 
-    // Brackets a segment's device work with a timestamp pair so submit() can report device time. A device without
-    // timestamps, or a pool that cannot be made, leaves the segment on its host interval.
+    // Times a segment's device work so submit() can report device time: query 0 is written as it begins, query k + 1
+    // once its k-th member is done, and the query after its last member as it ends. A member's time runs from the
+    // timestamp before it, so it carries the barrier it waits on. A device without timestamps, or a pool that cannot
+    // be made, leaves the segment on its host interval.
     void beginTimedSegment(gpu::GpuRecordContext& recorder)
     {
         _segmentTimed = false;
+        const std::uint32_t count = (std::uint32_t)_members.size() + 2;
         if (!_segmentQueries) {
             if (!_runtime.transfer().timestampsSupported()) {
                 return;
             }
             VkQueryPoolCreateInfo info { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
             info.queryType = VK_QUERY_TYPE_TIMESTAMP;
-            info.queryCount = 2;
+            info.queryCount = count;
             if (vkCreateQueryPool(_runtime.device().device(), &info, nullptr, &_segmentQueries) != VK_SUCCESS) {
                 _segmentQueries = VK_NULL_HANDLE;
 
                 return;
             }
         }
-        recorder.resetQueries(_segmentQueries, 0, 2);
+        recorder.resetQueries(_segmentQueries, 0, count);
         recorder.writeTimestamp(_segmentQueries, 0);
         _segmentTimed = true;
     }
 
-    // The device time between the segment's timestamps, or a negative value when they cannot be read.
-    long long segmentDeviceNs() const
+    /**
+     * @brief Reads the timestamps of a submitted segment of nMembers members into the device time of each member and
+     * of the whole segment. Returns false, leaving both alone, when one of them cannot be read.
+     **/
+    bool segmentDeviceNs(std::size_t nMembers,
+                         std::vector<long long>* memberNs,
+                         long long* totalNs) const
     {
-        std::uint64_t results[4] = { 0, 0, 0, 0 };
-        const VkResult read = vkGetQueryPoolResults(_runtime.device().device(), _segmentQueries, 0, 2, sizeof(results), results, 2 * sizeof(std::uint64_t),
-                                                    VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
-        if ((read != VK_SUCCESS) || (results[1] == 0) || (results[3] == 0) || (results[2] < results[0])) {
-            return -1;
+        const std::uint32_t count = (std::uint32_t)nMembers + 2;
+        std::vector<std::uint64_t> results((std::size_t)count * 2, 0);
+        const VkResult read = vkGetQueryPoolResults(_runtime.device().device(), _segmentQueries, 0, count, results.size() * sizeof(std::uint64_t), results.data(),
+                                                    2 * sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+        if (read != VK_SUCCESS) {
+            return false;
         }
+        for (std::uint32_t q = 0; q < count; ++q) {
+            if ((results[q * 2 + 1] == 0) || ((q > 0) && (results[q * 2] < results[q * 2 - 2]))) {
+                return false;
+            }
+        }
+        const double nsPerTick = _runtime.transfer().timestampPeriodNs();
+        memberNs->assign(nMembers, 0);
+        for (std::size_t k = 0; k < nMembers; ++k) {
+            (*memberNs)[k] = (long long)((double)(results[k * 2 + 2] - results[k * 2]) * nsPerTick);
+        }
+        *totalNs = (long long)((double)(results[(std::size_t)(count - 1) * 2] - results[0]) * nsPerTick);
 
-        return (long long)((double)(results[2] - results[0]) * _runtime.transfer().timestampPeriodNs());
+        return true;
+    }
+
+    // Splits ns among the members of segment by their estimated costs, for device time no timestamp divides.
+    void chargeByWeight(const std::vector<int>& segment,
+                        long long ns)
+    {
+        double weights = 0.;
+        for (int position : segment) {
+            weights += _members[position].weight;
+        }
+        for (int position : segment) {
+            _report->memberNs[position] += (weights > 0.) ? (long long)((double)ns * _members[position].weight / weights) : 0;
+        }
     }
 
     bool submit(std::unique_ptr<gpu::GpuRecordContext>* recorder,
@@ -941,33 +1016,40 @@ private:
     {
         // A segment with no recorder was already submitted, and its time already counted.
         const bool submitted = (bool)*recorder;
-        long long deviceNs = -1;
+        bool measured = false;
+        long long deviceNs = 0;
+        std::vector<long long> memberNs;
+        long long waitNs = 0;
         if (submitted) {
             const bool timed = _segmentTimed;
             if (timed) {
-                (*recorder)->writeTimestamp(_segmentQueries, 1);
+                (*recorder)->writeTimestamp(_segmentQueries, (std::uint32_t)segment.size() + 1);
             }
             _segmentTimed = false;
+            const Clock::time_point waitBegin = Clock::now();
             // The runtime's own entry points report to its state machine; a record context's submission does not.
             const gpu::GpuStatus status = _runtime.note((*recorder)->submitAndWait());
+            waitNs = nsBetween(waitBegin, Clock::now());
             recorder->reset();
             if (!status) {
                 return failGpu(segment.empty() ? -1 : _members[segment.front()].task, "the device work failed", status);
             }
             if (timed) {
-                deviceNs = segmentDeviceNs();
+                measured = segmentDeviceNs(segment.size(), &memberNs, &deviceNs);
             }
         }
         if (submitted && _report) {
-            const Clock::time_point end = Clock::now();
-            const long long ns = (deviceNs >= 0) ? deviceNs : nsBetween(segmentBegin, end);
-            double weights = 0.;
-            for (int position : segment) {
-                weights += _members[position].weight;
-            }
-            _report->kernelMs += (double)ns * 1e-6;
-            for (int position : segment) {
-                _report->memberNs[position] += (weights > 0.) ? (long long)((double)ns * _members[position].weight / weights) : 0;
+            if (measured) {
+                _report->kernelMs += (double)deviceNs * 1e-6;
+                _report->submitWaitMs += (double)std::max(0LL, waitNs - deviceNs) * 1e-6;
+                for (std::size_t k = 0; k < segment.size(); ++k) {
+                    _report->memberNs[segment[k]] += memberNs[k];
+                }
+            } else {
+                const long long ns = nsBetween(segmentBegin, Clock::now());
+                _report->kernelMs += (double)ns * 1e-6;
+                _report->submitWaitMs += (double)waitNs * 1e-6;
+                chargeByWeight(segment, ns);
             }
         }
         // Submitted and finished, so no other thread acquiring them from the pool can race the work that used them.
@@ -978,6 +1060,142 @@ private:
         _unpinAfterSubmit.clear();
 
         return true;
+    }
+
+    /**
+     * @brief Imports each RAM input whole into the transfer's cache, so that every upload from it, a strip's rows at
+     * any alignment included, copies out of that import rather than pinning or staging its part. Only a buffer of
+     * HostImageMemory is imported: the cache must forget an import before its memory goes back to the OS, and only
+     * those buffers call the free hook that does.
+     **/
+    void importSources()
+    {
+        const Clock::time_point begin = Clock::now();
+        bool imported = false;
+
+        for (Slot& slot : _slots) {
+            if (!slot.source) {
+                continue;
+            }
+            const std::size_t bytes = gpuHostTransferBytes(*slot.source);
+            const RectI bounds = slot.source->getBounds();
+            Image::ReadAccess access(slot.source.get());
+            const unsigned char* data = access.pixelAt(bounds.x1, bounds.y1);
+            if (!data || (bytes == 0) || (HostImageMemory::bytesFrom(data) < bytes)) {
+                continue;
+            }
+            // prepareImport() only pins the range.
+            _runtime.transfer().prepareImport({ const_cast<unsigned char*>(data), (VkDeviceSize)bytes });
+            imported = true;
+        }
+        if (imported && _report) {
+            _report->prepareWaitMs += msBetween(begin, Clock::now());
+        }
+    }
+
+    void notePath(gpu::TransferPath path,
+                  bool upload)
+    {
+        if (!_report) {
+            return;
+        }
+        const bool direct = (path == gpu::TransferPath::HostImport);
+        if (upload) {
+            ++(direct ? _report->uploadsImported : _report->uploadsStaged);
+        } else {
+            ++(direct ? _report->downloadsImported : _report->downloadsStaged);
+        }
+    }
+
+    /**
+     * @brief Allocates the RAM images every download lands in, and has the runtime's helper thread fault them in and
+     * import them while the uploads and the compute run, so that the downloads pay neither. Stripped, each image is
+     * prepared in chunks, in strip order, and a strip's download waits only for the chunks its rows lie in.
+     **/
+    bool allocateDownloadImages(const std::vector<GpuStrip>& strips)
+    {
+        struct Destination {
+            std::size_t slot = 0;
+            unsigned char* data = nullptr;
+            VkDeviceSize bytes = 0;
+            VkDeviceSize queued = 0;
+        };
+        std::vector<Destination> destinations;
+
+        for (std::size_t s = 0; s < _slots.size(); ++s) {
+            Slot& slot = _slots[s];
+            if (!slot.download || slot.pinned) {
+                continue;
+            }
+            const int producerTask = (slot.producer >= 0) ? _members[slot.producer].task : slot.externalTask;
+            slot.downloadImage = slot.layout.newRamImage();
+            if (!slot.downloadImage) {
+                return fail(producerTask, "cannot allocate the downloaded image");
+            }
+            // Sized before the write lock is taken: querying an image's bounds read-locks it, which waits forever on
+            // the thread that holds its write lock.
+            slot.downloadBytes = gpuHostTransferBytes(*slot.downloadImage);
+            slot.downloadAccess = std::make_shared<Image::WriteAccess>(slot.downloadImage.get());
+            unsigned char* data = slot.downloadAccess->pixelAt(slot.layout.bounds.x1, slot.layout.bounds.y1);
+            if (data) {
+                destinations.push_back({ s, data, (VkDeviceSize)slot.downloadBytes, 0 });
+            }
+        }
+
+        // A chunk ends past its strip's last row, on a huge-page boundary: the next chunk's faulting then never writes
+        // a page the strip's download is writing, and never splits a transparent huge page with it.
+        const VkDeviceSize chunkAlignment = std::max<VkDeviceSize>(kPrepareChunkAlignment, _runtime.transfer().hostImportAlignment());
+        std::vector<gpu::HostRange> ranges;
+        _stripPrepared.assign(strips.size(), 0);
+        for (std::size_t k = 0; k < strips.size(); ++k) {
+            for (Destination& d : destinations) {
+                const Slot& slot = _slots[d.slot];
+                const RectI& interior = strips[k].interiors[d.slot];
+                if (interior.isNull()) {
+                    continue;
+                }
+                const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(d.data);
+                const std::uintptr_t rowsEnd = base + (std::uintptr_t)rowBytes(slot) * (std::uintptr_t)(interior.y2 - slot.layout.bounds.y1);
+                const std::uintptr_t chunkEnd = (rowsEnd + chunkAlignment - 1) / chunkAlignment * chunkAlignment;
+                const VkDeviceSize end = std::min<VkDeviceSize>(d.bytes, chunkEnd - base);
+                if (end > d.queued) {
+                    ranges.push_back({ d.data + d.queued, end - d.queued });
+                    d.queued = end;
+                }
+            }
+            _stripPrepared[k] = ranges.size();
+        }
+        for (Destination& d : destinations) {
+            if (d.queued < d.bytes) {
+                ranges.push_back({ d.data + d.queued, d.bytes - d.queued });
+            }
+        }
+        // The rest is prepared before the last strip lands, so that no page of an output is written once it is stored.
+        if (!_stripPrepared.empty()) {
+            _stripPrepared.back() = ranges.size();
+        }
+        _prepared = _runtime.prepareImports(std::move(ranges));
+
+        return true;
+    }
+
+    // The helper thread writes the pages it faults in, so it must be done with the ones a download lands in before the
+    // device writes them: all of them for a whole region, the strip's chunks and those before them for a strip.
+    void awaitPreparedDownloads(std::optional<std::size_t> strip = std::nullopt)
+    {
+        if (!_prepared) {
+            return;
+        }
+        const Clock::time_point begin = Clock::now();
+        if (strip) {
+            _prepared->waitFor(_stripPrepared[*strip]);
+        } else {
+            _prepared->wait();
+            _prepared.reset();
+        }
+        if (_report) {
+            _report->prepareWaitMs += msBetween(begin, Clock::now());
+        }
     }
 
     bool issueDownloads(int position)
@@ -994,29 +1212,29 @@ private:
                 }
                 continue;
             }
+            awaitPreparedDownloads();
             const Clock::time_point begin = Clock::now();
             const int producerTask = (slot.producer >= 0) ? _members[slot.producer].task : slot.externalTask;
-            ImagePtr image = slot.layout.newRamImage();
-            if (!image) {
+            if (!slot.downloadImage || !slot.downloadAccess) {
                 return fail(producerTask, "cannot allocate the downloaded image");
             }
-            const std::size_t bytes = gpuHostTransferBytes(*image);
+            const std::size_t bytes = slot.downloadBytes;
             if (!slot.handle || (bytes > (std::size_t)slot.handle.size())) {
                 return fail(producerTask, "the device buffer is smaller than its image");
             }
-            std::shared_ptr<Image::WriteAccess> access = std::make_shared<Image::WriteAccess>(image.get());
-            unsigned char* data = access->pixelAt(slot.layout.bounds.x1, slot.layout.bounds.y1);
+            unsigned char* data = slot.downloadAccess->pixelAt(slot.layout.bounds.x1, slot.layout.bounds.y1);
             if (!data) {
                 return fail(producerTask, "the downloaded image has no pixels");
             }
             gpu::StreamOptions options;
             options.handoff = gpu::ComputeHandoff::Submit;
+            gpu::TransferPath path = gpu::TransferPath::Staging;
+            options.path = &path;
             const gpu::GpuStatus status = _runtime.download(slot.handle.buffer(), 0, { data, bytes }, slot.downloadDone, options);
             if (!status) {
                 return failGpu(producerTask, "download failed", status);
             }
-            slot.downloadAccess = access;
-            slot.downloadImage = image;
+            notePath(path, false);
             if (_stats) {
                 _stats->noteDownload(slot.layout.pixelBytes());
             }
@@ -1073,6 +1291,7 @@ private:
                 } else if (!segment.empty()) {
                     recorder->computeBarrier();
                 }
+                const Clock::time_point recordBegin = Clock::now();
                 Slot& out = _slots[member.outSlot];
                 if (!acquireBuffer(out.layout.deviceBytes(), member.task, &out.handle)) {
                     return EffectInstance::eRenderRoIRetCodeFailed;
@@ -1085,8 +1304,14 @@ private:
                 args.outputRect = task.renderedRoI;
                 args.inputs.resize(member.inputSlots.size());
                 for (std::size_t k = 0; k < member.inputSlots.size(); ++k) {
-                    if (member.inputSlots[k] >= 0) {
-                        args.inputs[k] = _slots[member.inputSlots[k]].view;
+                    if (member.inputSlots[k] < 0) {
+                        continue;
+                    }
+                    args.inputs[k] = _slots[member.inputSlots[k]].view;
+                    if (!args.inputs[k].buffer) {
+                        fail(member.task, "an input is not on the device");
+
+                        return EffectInstance::eRenderRoIRetCodeFailed;
                     }
                 }
                 args.output = out.view;
@@ -1098,10 +1323,16 @@ private:
                 } catch (...) {
                     fail(member.task, "recording threw");
                 }
+                if (_report) {
+                    _report->recordMs += msBetween(recordBegin, Clock::now());
+                }
                 if (status != eStatusOK) {
                     failRecording(member.task, *recorder);
 
                     return EffectInstance::eRenderRoIRetCodeFailed;
+                }
+                if (_segmentTimed) {
+                    recorder->writeTimestamp(_segmentQueries, (std::uint32_t)segment.size() + 1);
                 }
                 segment.push_back((int)i);
             }
@@ -1162,6 +1393,7 @@ private:
             stripSlot.external = (slot.externalTask >= 0);
             stripSlot.resident = bool(slot.pinned);
             stripSlot.interior = slot.keep || slot.download;
+            stripSlot.keptOnDevice = slot.keep && !slot.download;
             graph.images.push_back(stripSlot);
         }
         for (const Member& member : _members) {
@@ -1176,6 +1408,7 @@ private:
             stripMember.inputRoI = [effect, scale](int inputNb, const RectI& rect) {
                 return effect->getGpuInputRoI(inputNb, rect, scale);
             };
+            stripMember.kernelMs = member.predictedKernelMs;
             graph.members.push_back(stripMember);
         }
 
@@ -1183,9 +1416,11 @@ private:
     }
 
     /**
-     * @brief Leaves strips empty when the region fits the device whole and no strip height is forced, and otherwise
-     * fills it with the strips it runs as. A stripped output never exists whole on the device, so every output read
-     * after the region is downloaded and stored in RAM, including those another region would have read on the device.
+     * @brief Leaves strips empty when the region fits the device whole and no strip height is forced, unless
+     * the session's cost model predicts that pipelined strips, hiding its transfer behind its kernels, finish sooner,
+     * and otherwise fills it with the strips it runs as. A stripped output never exists whole on the device, so every
+     * output read after the region is downloaded and stored in RAM, including those another region would have read on
+     * the device.
      **/
     bool planStrips(std::vector<GpuStrip>* strips)
     {
@@ -1203,13 +1438,17 @@ private:
         limits.maxRows = (gpuStripRowsOverride() > 0) ? gpuStripRowsOverride() : kGpuStripDefaultRows;
         limits.forcedRows = _forcedRows;
         limits.maxInFlight = pipelineAllowed() ? kGpuStripMaxInFlight : 1;
+        limits.overlapMinBytes = kGpuStripOverlapMinBytes;
+        limits.transferMs = [](std::uint64_t uploadBytes, std::uint64_t downloadBytes) {
+            return GpuCostModel::session().transferMs((double)uploadBytes, (double)downloadBytes);
+        };
         limits.allocationBytes = [](std::uint64_t bytes) {
             return (std::uint64_t)gpu::GpuBufferPool::sizeClass(bytes);
         };
 
         const GpuStripGraph graph = stripGraph();
         int rows = 0;
-        switch (planGpuStrips(graph, limits, strips, &rows, &_inFlight)) {
+        switch (planGpuStrips(graph, limits, strips, &rows, &_inFlight, &_overlapped)) {
         case GpuStripResult::Whole:
             _stripRows = std::max(0, gpuStripBands(graph).height());
             break;
@@ -1268,14 +1507,6 @@ private:
             if (slot.source) {
                 (*sources)[s] = std::make_shared<Image::ReadAccess>(slot.source.get());
             }
-            if (slot.download && !slot.pinned) {
-                const int producerTask = (slot.producer >= 0) ? _members[slot.producer].task : slot.externalTask;
-                slot.downloadImage = slot.layout.newRamImage();
-                if (!slot.downloadImage) {
-                    return fail(producerTask, "cannot allocate the downloaded image");
-                }
-                slot.downloadAccess = std::make_shared<Image::WriteAccess>(slot.downloadImage.get());
-            }
         }
         if (_report) {
             _report->memberNs.assign(_members.size(), 0);
@@ -1312,7 +1543,8 @@ private:
         if (!prepareStripImages(&sources)) {
             return EffectInstance::eRenderRoIRetCodeFailed;
         }
-        for (const GpuStrip& strip : strips) {
+        for (std::size_t index = 0; index < strips.size(); ++index) {
+            const GpuStrip& strip = strips[index];
             if (isAborted()) {
                 return EffectInstance::eRenderRoIRetCodeAborted;
             }
@@ -1323,7 +1555,7 @@ private:
             if (recorded != EffectInstance::eRenderRoIRetCodeOk) {
                 return recorded;
             }
-            if (!downloadStrip(strip)) {
+            if (!downloadStrip(strips, index)) {
                 return EffectInstance::eRenderRoIRetCodeFailed;
             }
             for (Slot& slot : _slots) {
@@ -1372,6 +1604,8 @@ private:
                 options.timestampPool = _queries;
                 options.timestampQuery = queryOf(flight->index, _uploadQuery[s]);
             }
+            gpu::TransferPath path = gpu::TransferPath::Staging;
+            options.path = &path;
             gpu::TimelineValue done;
             // upload() only reads the host range.
             const gpu::GpuStatus status = _runtime.upload({ const_cast<unsigned char*>(data), bytes }, slot.handle.buffer(), 0, done, options);
@@ -1380,6 +1614,7 @@ private:
 
                 return failGpu(slot.externalTask, "upload failed", status);
             }
+            notePath(path, true);
             if (flight) {
                 flight->transfers.push_back(done);
                 pending->push_back(done);
@@ -1412,9 +1647,12 @@ private:
         return true;
     } // uploadStrip
 
+    // With a stamp pool, the k-th member recorded writes query firstStamp + k once it is done.
     EffectInstance::RenderRoIRetCode recordStripMembers(const GpuStrip& strip,
                                                         gpu::GpuRecordContext& recorder,
-                                                        std::vector<int>* segment)
+                                                        std::vector<int>* segment,
+                                                        VkQueryPool stampPool,
+                                                        std::uint32_t firstStamp)
     {
         for (std::size_t i = 0; i < _members.size(); ++i) {
             if (isAborted()) {
@@ -1428,6 +1666,7 @@ private:
             if (!segment->empty()) {
                 recorder.computeBarrier();
             }
+            const Clock::time_point recordBegin = Clock::now();
             Slot& out = _slots[member.outSlot];
             if (!acquireBuffer(rowBytes(out) * (std::size_t)rect.height(), member.task, &out.handle)) {
                 return EffectInstance::eRenderRoIRetCodeFailed;
@@ -1458,10 +1697,16 @@ private:
             } catch (...) {
                 fail(member.task, "recording threw");
             }
+            if (_report) {
+                _report->recordMs += msBetween(recordBegin, Clock::now());
+            }
             if (status != eStatusOK) {
                 failRecording(member.task, recorder);
 
                 return EffectInstance::eRenderRoIRetCodeFailed;
+            }
+            if (stampPool) {
+                recorder.writeTimestamp(stampPool, firstStamp + (std::uint32_t)segment->size());
             }
             segment->push_back((int)i);
             releaseStripSlotsReadLastBy((int)i);
@@ -1488,7 +1733,7 @@ private:
         }
         const Clock::time_point segmentBegin = Clock::now();
         beginTimedSegment(*recorder);
-        const EffectInstance::RenderRoIRetCode recorded = recordStripMembers(strip, *recorder, &segment);
+        const EffectInstance::RenderRoIRetCode recorded = recordStripMembers(strip, *recorder, &segment, _segmentTimed ? _segmentQueries : VK_NULL_HANDLE, 1);
         if (recorded != EffectInstance::eRenderRoIRetCodeOk) {
             return recorded;
         }
@@ -1530,9 +1775,12 @@ private:
     }
 
     // Pipelined, each range must match the one submitStrip released to the transfer family exactly.
-    bool downloadStrip(const GpuStrip& strip,
+    bool downloadStrip(const std::vector<GpuStrip>& strips,
+                       std::size_t index,
                        StripInFlight* flight = nullptr)
     {
+        const GpuStrip& strip = strips[index];
+        awaitPreparedDownloads(index);
         const Clock::time_point begin = Clock::now();
         std::vector<gpu::TimelineValue> downloads;
 
@@ -1564,6 +1812,8 @@ private:
                     options.timestampQuery = queryOf(flight->index, _downloadQuery[s]);
                 }
             }
+            gpu::TransferPath path = gpu::TransferPath::Staging;
+            options.path = &path;
             gpu::TimelineValue done;
             const gpu::GpuStatus status = _runtime.download(handle.buffer(), range.first, { data, range.second }, done, options);
             if (!status) {
@@ -1571,6 +1821,7 @@ private:
 
                 return failGpu(producerTask, "download failed", status);
             }
+            notePath(path, false);
             if (flight) {
                 flight->transfers.push_back(done);
             } else {
@@ -1603,28 +1854,11 @@ private:
         return true;
     } // downloadStrip
 
-    /**
-     * @brief Whether the strips may run pipelined on this device. Every strip in flight holds an open record context,
-     * and without push descriptors the kernels' descriptor pools are reset only once no context is open, which a
-     * pipeline would never let happen.
-     **/
     bool pipelineAllowed() const
     {
         const gpu::GpuDeviceInfo& info = _runtime.device().info();
 
-        if (!_allowPipeline || !info.pushDescriptor) {
-            return false;
-        }
-        switch (gpuStripPipelining()) {
-        case GpuStripPipelining::On:
-            return true;
-        case GpuStripPipelining::Off:
-            return false;
-        case GpuStripPipelining::Auto:
-            break;
-        }
-
-        return !info.transferUsesComputeQueue;
+        return _allowPipeline && gpuStripPipeliningAllowed(info.pushDescriptor, info.transferSharesComputeQueue);
     }
 
     std::uint32_t queryOf(std::size_t strip,
@@ -1658,7 +1892,12 @@ private:
                 _downloadQuery[s] = pairs++;
             }
         }
-        _queriesPerStrip = (std::uint32_t)pairs * 2;
+        std::uint32_t recorded = 0;
+        for (const Member& member : _members) {
+            recorded += member.identity ? 0 : 1;
+        }
+        _memberStamp0 = (std::uint32_t)pairs * 2;
+        _queriesPerStrip = _memberStamp0 + recorded;
         VkQueryPoolCreateInfo info { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
         info.queryType = VK_QUERY_TYPE_TIMESTAMP;
         info.queryCount = (std::uint32_t)nStrips * _queriesPerStrip;
@@ -1709,7 +1948,8 @@ private:
                 recorder.acquireFromTransfer(transfer, slot.handle.buffer(), 0, rowBytes(slot) * (std::size_t)strip.rects[s].height());
             }
         }
-        const EffectInstance::RenderRoIRetCode recorded = recordStripMembers(strip, recorder, &_stripSegments[flight->index]);
+        const EffectInstance::RenderRoIRetCode recorded = recordStripMembers(strip, recorder, &_stripSegments[flight->index], _queries,
+                                                                             (std::uint32_t)(flight->index * _queriesPerStrip) + _memberStamp0);
         if (recorded != EffectInstance::eRenderRoIRetCodeOk) {
             return recorded;
         }
@@ -1723,7 +1963,11 @@ private:
             recorder.writeTimestamp(_queries, queryOf(flight->index, 0) + 1);
         }
         const gpu::TimelineValue done { _computeTimeline, ++_computeValue };
+        const Clock::time_point submitBegin = Clock::now();
         const gpu::GpuStatus status = _runtime.note(recorder.submit(uploads, done));
+        if (_report) {
+            _report->submitWaitMs += msBetween(submitBegin, Clock::now());
+        }
         if (!status) {
             failGpu(firstMemberTask(), "the device work failed", status);
 
@@ -1751,10 +1995,14 @@ private:
     {
         StripInFlight& flight = _inFlightStrips.front();
 
-        if (!flight.downloadsIssued && !downloadStrip(strips[flight.index], &flight)) {
+        if (!flight.downloadsIssued && !downloadStrip(strips, flight.index, &flight)) {
             return false;
         }
+        const Clock::time_point waitBegin = Clock::now();
         gpu::GpuStatus status = _runtime.wait(flight.computeDone);
+        if (_report) {
+            _report->submitWaitMs += msBetween(waitBegin, Clock::now());
+        }
         for (std::size_t t = 0; status && (t < flight.transfers.size()); ++t) {
             status = _runtime.wait(flight.transfers[t]);
         }
@@ -1813,7 +2061,7 @@ private:
             gpuStripSubmitted(k);
             if (_inFlightStrips.size() >= 2) {
                 StripInFlight& previous = _inFlightStrips[_inFlightStrips.size() - 2];
-                if (!previous.downloadsIssued && !downloadStrip(strips[previous.index], &previous)) {
+                if (!previous.downloadsIssued && !downloadStrip(strips, previous.index, &previous)) {
                     return EffectInstance::eRenderRoIRetCodeFailed;
                 }
             }
@@ -1889,6 +2137,7 @@ private:
             return;
         }
         std::vector<long long> stripNs(nStrips, 0);
+        std::vector<bool> stripMeasured(nStrips, false);
         if (_queries) {
             const std::uint32_t count = (std::uint32_t)nStrips * _queriesPerStrip;
             std::vector<std::uint64_t> results((std::size_t)count * 2, 0);
@@ -1916,6 +2165,7 @@ private:
                 if (pairOf(k, 0, &interval)) {
                     compute.push_back(interval);
                     stripNs[k] = (long long)((double)(interval.second - interval.first) * nsPerTick);
+                    stripMeasured[k] = measureStripMembers(k, results, interval.first, nsPerTick);
                 }
                 for (std::size_t s = 0; s < _slots.size(); ++s) {
                     if ((_uploadQuery[s] >= 0) && pairOf(k, _uploadQuery[s], &interval)) {
@@ -1944,16 +2194,41 @@ private:
             }
         }
         for (std::size_t k = 0; k < nStrips; ++k) {
-            const std::vector<int>& segment = _stripSegments[k];
-            double weights = 0.;
-            for (int position : segment) {
-                weights += _members[position].weight;
-            }
-            for (int position : segment) {
-                _report->memberNs[position] += (weights > 0.) ? (long long)((double)stripNs[k] * _members[position].weight / weights) : 0;
+            if (!stripMeasured[k]) {
+                chargeByWeight(_stripSegments[k], stripNs[k]);
             }
         }
     } // notePipelineTimes
+
+    /**
+     * @brief Charges each member of strip k the device time from the timestamp before it, the strip's first one at
+     * begin, to its own, as results holds them with their availability. Returns false, charging nothing, when one of
+     * them cannot be read.
+     **/
+    bool measureStripMembers(std::size_t k,
+                             const std::vector<std::uint64_t>& results,
+                             std::uint64_t begin,
+                             double nsPerTick)
+    {
+        const std::vector<int>& segment = _stripSegments[k];
+        const std::size_t first = k * _queriesPerStrip + _memberStamp0;
+        std::uint64_t previous = begin;
+        for (std::size_t j = 0; j < segment.size(); ++j) {
+            const std::size_t q = first + j;
+            if ((results[q * 2 + 1] == 0) || (results[q * 2] < previous)) {
+                return false;
+            }
+            previous = results[q * 2];
+        }
+        previous = begin;
+        for (std::size_t j = 0; j < segment.size(); ++j) {
+            const std::uint64_t stamp = results[(first + j) * 2];
+            _report->memberNs[segment[j]] += (long long)((double)(stamp - previous) * nsPerTick);
+            previous = stamp;
+        }
+
+        return true;
+    }
 
     bool storeOutputs(std::map<ImageLayerDesc, ImagePtr>* rootPlanes)
     {
@@ -2028,6 +2303,9 @@ private:
                 _stats->noteGpuTaskRun(task.key.node->getScriptName_mt_safe());
             }
         }
+        if (_report) {
+            model.observeTransfer((double)_report->uploadBytes, (double)_report->downloadBytes, _report->uploadMs + _report->downloadMs);
+        }
         if (_stats) {
             _stats->noteGpuRegionRun();
             _stats->notePeakDeviceBytes(_peakDeviceBytes);
@@ -2040,6 +2318,10 @@ private:
     // Every transfer issued must land before the host memory it reads or writes goes away.
     void drain()
     {
+        if (_prepared) {
+            _prepared->cancel();
+            _prepared.reset();
+        }
         // Waiting for a transfer fails at once after a loss, while an injected one leaves the device running it.
         if (_runtime.isLost()) {
             _runtime.device().drainQueues();
@@ -2082,6 +2364,7 @@ private:
     const bool _allowPipeline;
     int _stripRows = 0;
     int _inFlight = 1;
+    bool _overlapped = false;
 
     // Index in _members of each member task, -1 for every other task.
     std::vector<int> _position;
@@ -2092,6 +2375,11 @@ private:
     std::vector<gpu::GpuBufferHandle> _spare;
     std::vector<GpuDeviceImagePtr> _unpinAfterSubmit;
 
+    // The helper thread's job faulting in and importing the download images, until a download or drain() waits for it.
+    std::shared_ptr<gpu::GpuImportJob> _prepared;
+    // By strip: how many of _prepared's ranges its download waits for.
+    std::vector<std::size_t> _stripPrepared;
+
     // Pipelined strips: those whose device work may still run, oldest first, and the buffers of those that landed.
     std::deque<StripInFlight> _inFlightStrips;
     std::vector<gpu::GpuBufferHandle> _recycled;
@@ -2101,11 +2389,15 @@ private:
     std::vector<std::vector<int>> _stripSegments;
 
     // Timestamps of the pipelined strips, when the device writes them on both queues. A strip's pairs are its compute,
-    // then those of the slots _uploadQuery and _downloadQuery number, -1 for a slot without one.
+    // then those of the slots _uploadQuery and _downloadQuery number, -1 for a slot without one, then come the single
+    // queries of its members. _segmentQueries times the submissions of a region run whole or of serial strips.
     VkQueryPool _queries = VK_NULL_HANDLE;
     VkQueryPool _segmentQueries = VK_NULL_HANDLE;
     bool _segmentTimed = false;
     std::uint32_t _queriesPerStrip = 0;
+
+    // The first of a strip's queries its members write, one each in the order they are recorded.
+    std::uint32_t _memberStamp0 = 0;
     std::vector<int> _uploadQuery;
     std::vector<int> _downloadQuery;
     std::size_t _peakDeviceBytes = 0;
@@ -2113,6 +2405,96 @@ private:
     std::string _failure;
     FailureKind _failureKind;
 };
+
+// The strip setting the out-of-memory ladder ended on for a region shape. A device other than the one that taught it
+// has other limits, so a different generation starts over. The key holds the member plugins and node hashes, which
+// change with a parameter edit, the rendered bounds and the channel counts; a parameter animated per frame hashes
+// differently each frame and is learned afresh.
+class StripMemory {
+public:
+    struct Setting {
+        int forcedRows = 0;
+        bool serial = false;
+    };
+
+    bool find(std::uint64_t generation, const std::string& key, Setting* out)
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (generation != _generation) {
+            return false;
+        }
+        const auto it = _entries.find(key);
+        if (it == _entries.end()) {
+            return false;
+        }
+        *out = it->second;
+
+        return true;
+    }
+
+    void remember(std::uint64_t generation, const std::string& key, const Setting& setting)
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if ((generation != _generation) || (_entries.size() >= kMaxEntries)) {
+            _entries.clear();
+            _generation = generation;
+        }
+        _entries[key] = setting;
+    }
+
+    void forget()
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _entries.clear();
+        _generation = 0;
+    }
+
+private:
+    static constexpr std::size_t kMaxEntries = 256;
+
+    std::mutex _mutex;
+    std::uint64_t _generation = 0;
+    std::map<std::string, Setting> _entries;
+};
+
+StripMemory&
+stripMemory()
+{
+    static StripMemory memory;
+
+    return memory;
+}
+
+template <typename T>
+void
+appendBytes(std::string* key, const T& value)
+{
+    key->append(reinterpret_cast<const char*>(&value), sizeof(value));
+}
+
+std::string
+regionShapeKey(const FrameGraph& graph, int region)
+{
+    std::string key;
+    for (const int member : graph.regions[region].members) {
+        const FrameGraph::Task& task = graph.tasks[member];
+        const std::string plugin = task.key.node->getPluginID();
+        appendBytes(&key, plugin.size());
+        key += plugin;
+        appendBytes(&key, task.nodeHash);
+        appendBytes(&key, task.renderedRoI.x1);
+        appendBytes(&key, task.renderedRoI.y1);
+        appendBytes(&key, task.renderedRoI.x2);
+        appendBytes(&key, task.renderedRoI.y2);
+        int comps = 0;
+        for (const ImageLayerDesc& layer : task.components) {
+            comps += layer.getNumComponents();
+        }
+        appendBytes(&key, comps);
+    }
+
+    return key;
+}
 
 #endif // NATRON_HAVE_GPU
 
@@ -2122,7 +2504,7 @@ EffectInstance::RenderRoIRetCode
 runGpuRegion(const FrameRenderContextPtr& context,
              const FrameGraph& graph,
              int region,
-             int /*budget*/,
+             const RenderScheduler::CpuFallbackLease& leaseCpu,
              std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
              RenderScheduler::RegionReport* report)
 {
@@ -2147,6 +2529,7 @@ runGpuRegion(const FrameRenderContextPtr& context,
     runtime = gpu ? gpu->runtime() : nullptr;
     const auto lost = [&]() {
         report->deviceLost = true;
+        stripMemory().forget();
         logRegion(NodePtr(), QString::fromUtf8("GPU device lost; the frame is rendered again on the CPU"));
 
         return EffectInstance::eRenderRoIRetCodeFailed;
@@ -2158,6 +2541,15 @@ runGpuRegion(const FrameRenderContextPtr& context,
         bool evicted = false;
         bool serial = false;
         int forcedRows = 0;
+        const std::uint64_t generation = runtime->generation();
+        const std::string shapeKey = regionShapeKey(graph, region);
+        {
+            StripMemory::Setting remembered;
+            if (stripMemory().find(generation, shapeKey, &remembered)) {
+                forcedRows = remembered.forcedRows;
+                serial = remembered.serial;
+            }
+        }
         for (;;) {
             *report = RenderScheduler::RegionReport();
             RegionRun::FailureKind kind;
@@ -2168,6 +2560,9 @@ runGpuRegion(const FrameRenderContextPtr& context,
                 const EffectInstance::RenderRoIRetCode code = run.run(rootPlanes);
                 if (code != EffectInstance::eRenderRoIRetCodeFailed) {
                     report->retries = retries;
+                    if (serial || (forcedRows > 0)) {
+                        stripMemory().remember(generation, shapeKey, { forcedRows, serial });
+                    }
 
                     return code;
                 }
@@ -2237,7 +2632,7 @@ runGpuRegion(const FrameRenderContextPtr& context,
     }
     logRegion(node, QString::fromUtf8("GPU region rendered on the CPU (%1): %2").arg(QString::fromUtf8(reason), QString::fromUtf8(detail.c_str())));
 
-    return renderMembersOnCpu(context, graph, region, runtime, rootPlanes, report);
+    return renderMembersOnCpu(context, graph, region, leaseCpu, runtime, rootPlanes, report);
 }
 
 std::shared_ptr<void>

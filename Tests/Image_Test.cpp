@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <bitset>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -35,10 +36,13 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
+#include "Engine/AppManager.h"
+#include "Engine/GpuContext.h"
 #include "Engine/HostImageMemory.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -694,11 +698,18 @@ struct HostImageMemoryGuard {
         : savedMax(HostImageMemory::maxPoolBytes())
         , savedAlignment(HostImageMemory::importAlignment())
     {
+        // Calibration on the GPU init thread trims the pool, which would empty it under the test.
+        GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
+        if (gpu) {
+            gpu->waitForInit(std::chrono::seconds(60));
+        }
         HostImageMemory::trim();
     }
 
     ~HostImageMemoryGuard()
     {
+        HostImageMemory::stopIdleTrim();
+        HostImageMemory::resetIdleTrim();
         HostImageMemory::setImportAlignment(savedAlignment);
         HostImageMemory::setMaxPoolBytes(savedMax);
         HostImageMemory::trim();
@@ -738,15 +749,91 @@ TEST(HostImageMemoryTest, SameSizeBufferIsReusedAfterRelease)
     HostImageMemoryGuard guard;
     const std::size_t bytes = 2 * 1024 * 1024 + 7;
     void* a = HostImageMemory::allocate(bytes);
+    EXPECT_EQ(HostImageMemory::capacity(a), HostImageMemory::capacityFor(bytes));
+    EXPECT_GE(HostImageMemory::capacity(a), HostImageMemory::paddedSize(bytes));
     HostImageMemory::release(a, bytes);
     EXPECT_EQ(HostImageMemory::pooledBufferCount(), 1u);
-    EXPECT_EQ(HostImageMemory::pooledBytes(), HostImageMemory::paddedSize(bytes));
+    EXPECT_EQ(HostImageMemory::pooledBytes(), HostImageMemory::capacityFor(bytes));
 
-    // A different size that pads to the same size class is served by the same buffer.
     void* b = HostImageMemory::allocate(bytes - 5);
     EXPECT_EQ(a, b);
     EXPECT_EQ(HostImageMemory::pooledBufferCount(), 0u);
+    EXPECT_EQ(HostImageMemory::pooledBytes(), 0u);
     HostImageMemory::release(b, bytes - 5);
+}
+
+// An image whose bounds grow a few percent per frame, as under an animated rotation, keeps the buffer of the frame
+// before, wherever its size falls among the classes.
+TEST(HostImageMemoryTest, SlightlyLargerRequestReusesTheReleasedBuffer)
+{
+    HostImageMemoryGuard guard;
+    for (std::size_t bytes : { std::size_t(3) * 1024 * 1024 + 1, std::size_t(8) * 1024 * 1024 - 4096, std::size_t(9) * 1024 * 1024 + 123, std::size_t(139) * 1000 * 1000 }) {
+        void* a = HostImageMemory::allocate(bytes);
+        ASSERT_NE(a, nullptr);
+        const std::size_t held = HostImageMemory::capacity(a);
+        HostImageMemory::release(a, bytes);
+        ASSERT_EQ(HostImageMemory::pooledBytes(), held);
+
+        const std::size_t grown = bytes + bytes / 20;
+        void* b = HostImageMemory::allocate(grown);
+        EXPECT_EQ(a, b) << bytes;
+        EXPECT_EQ(HostImageMemory::capacity(b), held);
+        EXPECT_EQ(HostImageMemory::pooledBytes(), 0u);
+        EXPECT_EQ(HostImageMemory::bytesFrom(b), held);
+        EXPECT_EQ(HostImageMemory::bytesFrom(static_cast<char*>(b) + 4096), held - 4096);
+        HostImageMemory::release(b, grown);
+        EXPECT_EQ(HostImageMemory::pooledBytes(), held);
+        EXPECT_EQ(HostImageMemory::pooledBufferCount(), 1u);
+        HostImageMemory::trim();
+        EXPECT_EQ(HostImageMemory::pooledBytes(), 0u);
+    }
+}
+
+TEST(HostImageMemoryTest, MuchSmallerRequestLeavesALargeBufferPooled)
+{
+    HostImageMemoryGuard guard;
+    const std::size_t large = 16 * 1024 * 1024;
+    const std::size_t small = 6 * 1024 * 1024;
+    void* a = HostImageMemory::allocate(large);
+    ASSERT_NE(a, nullptr);
+    const std::size_t held = HostImageMemory::capacity(a);
+    HostImageMemory::release(a, large);
+
+    void* b = HostImageMemory::allocate(small);
+    ASSERT_NE(b, nullptr);
+    EXPECT_NE(a, b);
+    EXPECT_EQ(HostImageMemory::capacity(b), HostImageMemory::capacityFor(small));
+    EXPECT_LT(HostImageMemory::capacity(b), held);
+    EXPECT_EQ(HostImageMemory::pooledBytes(), held);
+    EXPECT_EQ(HostImageMemory::pooledBufferCount(), 1u);
+    HostImageMemory::release(b, small);
+    EXPECT_EQ(HostImageMemory::pooledBytes(), held + HostImageMemory::capacityFor(small));
+}
+
+TEST(HostImageMemoryTest, SmallestFittingPooledBufferIsTaken)
+{
+    HostImageMemoryGuard guard;
+    const std::size_t bytes = 8 * 1024 * 1024;
+    // Two buffers that both hold the request, the larger released last so that it is the newest.
+    void* fit = HostImageMemory::allocate(bytes);
+    void* roomier = HostImageMemory::allocate(bytes + bytes / 4);
+    ASSERT_NE(fit, nullptr);
+    ASSERT_NE(roomier, nullptr);
+    const std::size_t fitHeld = HostImageMemory::capacity(fit);
+    const std::size_t roomierHeld = HostImageMemory::capacity(roomier);
+    ASSERT_LT(fitHeld, roomierHeld);
+    HostImageMemory::release(fit, bytes);
+    HostImageMemory::release(roomier, bytes + bytes / 4);
+
+    void* b = HostImageMemory::allocate(bytes - bytes / 20);
+    EXPECT_EQ(b, fit);
+    EXPECT_EQ(HostImageMemory::pooledBytes(), roomierHeld);
+    void* c = HostImageMemory::allocate(bytes - bytes / 20);
+    EXPECT_EQ(c, roomier);
+    EXPECT_EQ(HostImageMemory::pooledBytes(), 0u);
+    HostImageMemory::release(b, bytes - bytes / 20);
+    HostImageMemory::release(c, bytes - bytes / 20);
+    EXPECT_EQ(HostImageMemory::pooledBytes(), fitHeld + roomierHeld);
 }
 
 TEST(HostImageMemoryTest, FrameSizedBuffersRecycleByDefault)
@@ -764,7 +851,7 @@ TEST(HostImageMemoryTest, FrameSizedBuffersRecycleByDefault)
     void* a = HostImageMemory::allocate(bytes);
     ASSERT_NE(a, nullptr);
     HostImageMemory::release(a, bytes);
-    EXPECT_EQ(HostImageMemory::pooledBytes(), HostImageMemory::paddedSize(bytes));
+    EXPECT_EQ(HostImageMemory::pooledBytes(), HostImageMemory::capacityFor(bytes));
     void* b = HostImageMemory::allocate(bytes);
     EXPECT_EQ(a, b);
     HostImageMemory::release(b, bytes);
@@ -774,7 +861,7 @@ TEST(HostImageMemoryTest, TrimToKeepsPooledBytesWithinHeadroom)
 {
     HostImageMemoryGuard guard;
     const std::size_t bytes = 1024 * 1024;
-    const std::size_t padded = HostImageMemory::paddedSize(bytes);
+    const std::size_t padded = HostImageMemory::capacityFor(bytes);
     std::vector<void*> bufs;
     for (int i = 0; i < 4; ++i) {
         bufs.push_back(HostImageMemory::allocate(bytes));
@@ -817,7 +904,7 @@ TEST(HostImageMemoryTest, FreeHookFiresOnlyOnRealFrees)
     HostImageMemory::trim();
     ASSERT_EQ(freed.size(), 1u);
     EXPECT_EQ(freed[0].first, a);
-    EXPECT_EQ(freed[0].second, HostImageMemory::paddedSize(bytes));
+    EXPECT_EQ(freed[0].second, HostImageMemory::capacityFor(bytes));
 
     HostImageMemory::removeFreeHook(id);
     void* c = HostImageMemory::allocate(bytes);
@@ -830,7 +917,7 @@ TEST(HostImageMemoryTest, PoolStaysBounded)
 {
     HostImageMemoryGuard guard;
     const std::size_t bytes = 1024 * 1024;
-    const std::size_t padded = HostImageMemory::paddedSize(bytes);
+    const std::size_t padded = HostImageMemory::capacityFor(bytes);
     HostImageMemory::setMaxPoolBytes(3 * padded);
 
     std::size_t freedCount = 0;
@@ -904,4 +991,87 @@ TEST(BitmapTest,
 {
     checkBitmapMarking(RectI(-7, 4, 50, 40));
     checkBitmapMarking(RectI(-100, -50, 700, 450));
+}
+
+namespace {
+const std::size_t kIdleTestBufferBytes = 4 * 1024 * 1024;
+const int kIdleTestBuffers = 4;
+
+void
+fillIdleTestPool()
+{
+    std::vector<void*> bufs;
+    for (int i = 0; i < kIdleTestBuffers; ++i) {
+        bufs.push_back(HostImageMemory::allocate(kIdleTestBufferBytes));
+        ASSERT_NE(bufs.back(), nullptr);
+    }
+    for (std::size_t i = 0; i < bufs.size(); ++i) {
+        HostImageMemory::release(bufs[i], kIdleTestBufferBytes);
+    }
+}
+
+bool
+waitForPooledAtMost(std::size_t bytes,
+                    std::chrono::milliseconds timeout)
+{
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + timeout;
+    while (HostImageMemory::pooledBytes() > bytes) {
+        if (std::chrono::steady_clock::now() > deadline) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    return true;
+}
+}
+
+TEST(HostImageMemoryTest, IdlePoolIsTrimmedToTheFloor)
+{
+    HostImageMemoryGuard guard;
+    HostImageMemory::setMaxPoolBytes(256 * 1024 * 1024);
+    const std::size_t floorBytes = HostImageMemory::capacityFor(kIdleTestBufferBytes);
+    HostImageMemory::setIdleTrim(floorBytes, 200, 20);
+    fillIdleTestPool();
+    EXPECT_EQ(HostImageMemory::pooledBytes(), floorBytes * kIdleTestBuffers);
+    EXPECT_TRUE(waitForPooledAtMost(floorBytes, std::chrono::milliseconds(10000)));
+    EXPECT_EQ(HostImageMemory::pooledBytes(), floorBytes);
+    EXPECT_EQ(HostImageMemory::pooledBufferCount(), 1u);
+}
+
+TEST(HostImageMemoryTest, ReleaseDuringTheWaitRestartsTheIdlePeriod)
+{
+    HostImageMemoryGuard guard;
+    HostImageMemory::setMaxPoolBytes(256 * 1024 * 1024);
+    const std::size_t floorBytes = HostImageMemory::capacityFor(kIdleTestBufferBytes);
+    const std::size_t full = floorBytes * kIdleTestBuffers;
+    HostImageMemory::setIdleTrim(floorBytes, 2000, 20);
+    fillIdleTestPool();
+
+    // Each cycle is activity; the pool must stay full for twice the idle period.
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::milliseconds(4000);
+    while (std::chrono::steady_clock::now() < end) {
+        void* p = HostImageMemory::allocate(kIdleTestBufferBytes);
+        ASSERT_NE(p, nullptr);
+        HostImageMemory::release(p, kIdleTestBufferBytes);
+        ASSERT_EQ(HostImageMemory::pooledBytes(), full);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    EXPECT_TRUE(waitForPooledAtMost(floorBytes, std::chrono::milliseconds(15000)));
+}
+
+TEST(HostImageMemoryTest, IdleTrimKeepsLiveBuffers)
+{
+    HostImageMemoryGuard guard;
+    HostImageMemory::setMaxPoolBytes(256 * 1024 * 1024);
+    HostImageMemory::setIdleTrim(0, 100, 20);
+    void* live = HostImageMemory::allocate(kIdleTestBufferBytes);
+    ASSERT_NE(live, nullptr);
+    std::memset(live, 0x5a, kIdleTestBufferBytes);
+    fillIdleTestPool();
+    EXPECT_TRUE(waitForPooledAtMost(0, std::chrono::milliseconds(10000)));
+    const unsigned char* c = static_cast<const unsigned char*>(live);
+    EXPECT_EQ(c[0], 0x5a);
+    EXPECT_EQ(c[kIdleTestBufferBytes - 1], 0x5a);
+    HostImageMemory::release(live, kIdleTestBufferBytes);
 }

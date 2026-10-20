@@ -28,9 +28,11 @@ struct BlurParams
 };
 [[vk::push_constant]] ConstantBuffer<BlurParams> params;
 
-// kGroup, kColumns and kDirectMaxRadius are mirrored in Engine/Gpu/GpuBlur.cpp.
+// kGroup, kNarrowColumns, kNarrowRows and kDirectMaxRadius are mirrored in Engine/Gpu/GpuBlur.cpp.
 static const uint kGroup = 128;
-static const uint kColumns = 32;
+static const uint kNarrowColumns = 8;
+static const uint kNarrowRows = 64;
+static const uint kNarrowThreadRows = kGroup / kNarrowColumns;
 static const uint kDirectMaxRadius = 32;
 static const uint kMaxRadius = 512;
 static const uint kMaxTile = kGroup + 2 * kMaxRadius;
@@ -98,7 +100,7 @@ float firAt(int a, int line, uint c)
 // Dispatch shape comes from blurGroupCount in Engine/Gpu/GpuBlur.cpp, which also refuses
 // radius > kMaxRadius and more than 4 channels, the limits of `tile`. group.x is the tile along
 // the blur axis and group.y the line it filters, except on the vertical paths: the direct path
-// takes a block of kColumns columns as group.y, and the shared-tile path swaps the two so that
+// takes kNarrowColumns columns as group.y and kNarrowRows rows as group.x, and the shared-tile path swaps the two so that
 // groups dispatched together filter neighbouring columns and share the cache lines of each row.
 // weights holds radius + 1 floats, for offsets 0 to radius.
 [shader("compute")]
@@ -136,21 +138,49 @@ void blurPass(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
     default:
         if (params.vertical != 0 && R <= int(kDirectMaxRadius))
         {
-            // Small radii: threads of a wave take adjacent columns so every load is a contiguous
-            // row segment. group.y selects a block of kColumns columns. Wider kernels reuse each
-            // sample often enough to want the shared tile, which a column fills with one strided
-            // load per row.
-            const uint col = gid.y * kColumns + (tid.x % kColumns);
+            // Small radii: a group filters kNarrowColumns neighbouring columns over kNarrowRows rows.
+            // A tile row is then one contiguous run of kNarrowColumns pixels (a whole 128-byte line),
+            // each loaded once and reused by every tap, instead of every tap re-reading global memory
+            // with a stride of one image row.
+            const uint cx = tid.x % kNarrowColumns;
+            const uint ty = tid.x / kNarrowColumns;
+            const uint col = gid.y * kNarrowColumns + cx;
+            const int rowBase = int(gid.x * kNarrowRows);
+            const int tileRows = int(kNarrowRows) + 2 * R;
+            for (int t = int(ty); t < tileRows; t += int(kNarrowThreadRows))
+            {
+                uint idx = 0;
+                float4 v = float4(0.0);
+                if (col < params.width && sourceIndex(a0 + rowBase - R + t, l0 + int(col), idx))
+                {
+                    [ForceUnroll]
+                    for (uint c = 0; c < 4; ++c)
+                    {
+                        if (c < nc)
+                            v[c] = srcBuf[idx + c];
+                    }
+                }
+                tile[uint(t) * kNarrowColumns + cx] = v;
+            }
+            GroupMemoryBarrierWithGroupSync();
             if (col < params.width)
             {
-                for (uint r = tid.x / kColumns; r < kGroup; r += kGroup / kColumns)
+                for (uint r = ty; r < kNarrowRows; r += kNarrowThreadRows)
                 {
-                    const int rowPos = base + int(r);
-                    if (rowPos < len)
+                    const int rowPos = rowBase + int(r);
+                    if (rowPos >= len)
+                        break;
+                    const bool inside = insideLine(a0 + rowPos);
+                    const uint centre = (r + uint(R)) * kNarrowColumns + cx;
+                    float4 acc = weights[0] * tile[centre];
+                    for (uint k = 1; k <= uint(R); ++k)
+                        acc += weights[k] * (tile[centre - k * kNarrowColumns] + tile[centre + k * kNarrowColumns]);
+                    const uint o = outputIndex(col, uint(rowPos));
+                    [ForceUnroll]
+                    for (uint c = 0; c < 4; ++c)
                     {
-                        const bool inside = insideLine(a0 + rowPos);
-                        for (uint c = 0; c < nc; ++c)
-                            dstBuf[outputIndex(col, uint(rowPos)) + c] = inside ? firAt(a0 + rowPos, l0 + int(col), c) : 0.0;
+                        if (c < nc)
+                            dstBuf[o + c] = inside ? acc[c] : 0.0;
                     }
                 }
             }

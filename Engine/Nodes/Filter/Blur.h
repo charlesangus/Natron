@@ -149,8 +149,8 @@ struct BlurOp {
                     const PassContext& context) const;
 
     /**
-     * @brief sigma = size / 2.4 of the larger axis at the context's scale, and whether the filter
-     * is one of the IIR Gaussians, whatever the filter and even when the blur is an identity.
+     * @brief sigma = size / 2.4 of the larger axis at the context's scale, the filter and whether
+     * it is one of the IIR Gaussians, even when the blur is an identity.
      **/
     std::optional<GpuCostHint> costHint(const Params& params,
                                         const PassContext& context) const;

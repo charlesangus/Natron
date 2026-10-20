@@ -28,6 +28,9 @@
 #include <algorithm>
 #include <atomic>
 #include <bitset>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <list>
 #include <queue>
 #include <tuple>
@@ -38,6 +41,7 @@
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GpuContext.h"
 #include "Engine/GpuCostModel.h"
+#include "Engine/GpuRegionStrips.h"
 #include "Engine/Image.h"
 #include "Engine/ImageKey.h"
 #include "Engine/KnobChannelSelect.h"
@@ -47,6 +51,10 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RenderScale.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRuntime.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -461,10 +469,10 @@ placeGraph(FrameGraph& graph,
     }
 } // placeGraph
 
-void
+GpuPlacementAvailableFunc
 setGpuPlacementAvailableFunc(GpuPlacementAvailableFunc func)
 {
-    gAvailableFunc.store(func);
+    return gAvailableFunc.exchange(func);
 }
 
 bool
@@ -529,6 +537,61 @@ makeGpuQueryForTask(const FrameGraph::Task& task,
     return true;
 } // makeGpuQueryForTask
 
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+// Only a task the model has a GPU cost for is a candidate.
+void
+judgeWithCostModel(PlacementInputs* inputs,
+                   GpuCostModel* model)
+{
+    const std::function<bool(const FrameGraph::Task&)> effectCanRender = inputs->canRenderOnGpu;
+    inputs->canRenderOnGpu = [model, effectCanRender](const FrameGraph::Task& task) -> bool {
+        return model->hasGpuCost(model->traitsOf(task)) && effectCanRender(task);
+    };
+}
+
+// Long enough for any driver to come up; past it, a context still initializing is presumed stuck.
+const std::chrono::seconds kGpuInitWaitLimit(10);
+
+/**
+ * Before the context is up the transfer rates are unknown, so the graph is placed with free transfers: what its regions
+ * gain then bounds what the GPU can save on this frame. The frame waits for the context up to that bound, since
+ * waiting longer could only lose to the CPU.
+ **/
+void
+waitForGpuInitIfWorthIt(const GpuContext& gpu,
+                        const FrameGraph& graph,
+                        const FrameRenderContextPtr& context)
+{
+    if (!gpu.isInitializing() || graph.tasks.empty() || !context) {
+        return;
+    }
+    const std::chrono::steady_clock::duration left = gpu.createdAt() + kGpuInitWaitLimit - std::chrono::steady_clock::now();
+    if (left <= std::chrono::steady_clock::duration::zero()) {
+        return;
+    }
+
+    GpuCostModel* model = &GpuCostModel::session();
+    PlacementInputs inputs = makeRenderPlacementInputs(context);
+    judgeWithCostModel(&inputs, model);
+    inputs.regionGain = [model](const FrameGraph& trial, const FrameGraph::Region& region) {
+        return model->regionGainBoundMs(trial, region);
+    };
+    FrameGraph trial = graph;
+    placeGraph(trial, inputs);
+    double gainMs = 0.;
+    for (const FrameGraph::Region& region : trial.regions) {
+        gainMs += std::max(0., model->regionGainBoundMs(trial, region));
+    }
+    if (!(gainMs > 0.)) {
+        return;
+    }
+    const double leftMs = std::chrono::duration<double, std::milli>(left).count();
+    gpu.waitForInit(std::chrono::milliseconds((std::int64_t)std::ceil(std::min(gainMs, leftMs))));
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
 PlacementInputs
 makeRenderPlacementInputs(const FrameRenderContextPtr& context)
 {
@@ -547,11 +610,15 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
     GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
     if (gpu && gpu->isAvailable()) {
         GpuCostModel* model = &GpuCostModel::session();
-        model->setTransferRates(GpuTransferRates::fromCalibration(gpu->calibration()));
-        const std::function<bool(const FrameGraph::Task&)> effectCanRender = inputs.canRenderOnGpu;
-        inputs.canRenderOnGpu = [model, effectCanRender](const FrameGraph::Task& task) -> bool {
-            return model->hasGpuCost(model->traitsOf(task)) && effectCanRender(task);
-        };
+        GpuTransferRates rates = GpuTransferRates::fromCalibration(gpu->calibration());
+#ifdef NATRON_HAVE_GPU
+        if (gpu::GpuRuntime* runtime = gpu->runtime()) {
+            const gpu::GpuDeviceInfo& info = runtime->device().info();
+            rates.pipelinedStrips = gpuStripPipeliningAllowed(info.pushDescriptor, info.transferSharesComputeQueue);
+        }
+#endif
+        model->setTransferRates(rates);
+        judgeWithCostModel(&inputs, model);
         inputs.regionGain = [model](const FrameGraph& graph, const FrameGraph::Region& region) {
             return model->regionGainMs(graph, region);
         };
@@ -610,6 +677,7 @@ placeRenderGraph(FrameGraph& graph,
 {
     GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
     if (gpu) {
+        waitForGpuInitIfWorthIt(*gpu, graph, context);
         gpu->recoverIfLost();
     }
     if (!isGpuPlacementAvailable() || graph.tasks.empty() || !context) {

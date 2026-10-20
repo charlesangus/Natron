@@ -35,6 +35,7 @@
 
 #include "Engine/EffectInstance.h"
 #include "Engine/GpuContext.h"
+#include "Engine/GpuRegionStrips.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
@@ -61,6 +62,10 @@ struct SeedGpuRow {
     const char* kind;
     double sigmaMax;
     double kernelMsPerMpx;
+    // Absent: any filter. Else a GpuBlurFilter name.
+    const char* filter = nullptr;
+    // Absent or 0: any size.
+    int sizeMax = 0;
 };
 
 #include "Engine/GpuCostSeed.inc"
@@ -70,6 +75,31 @@ const SeedCpuRow kSeedCpuRows[] = { NATRON_GPU_COST_SEED_CPU_ROWS };
 const std::vector<SeedCpuRow> kSeedCpuMotionBlurRows = { NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROWS };
 const SeedCpuSigmaRow kSeedCpuSigmaRows[] = { NATRON_GPU_COST_SEED_CPU_SIGMA_ROWS };
 const SeedGpuRow kSeedGpuRows[] = { NATRON_GPU_COST_SEED_GPU_ROWS };
+
+GpuBlurFilter
+blurFilterByName(const char* name)
+{
+    static const struct {
+        const char* name;
+        GpuBlurFilter filter;
+    } kNames[] = {
+        { "quasi_gaussian", GpuBlurFilter::eQuasiGaussian },
+        { "gaussian", GpuBlurFilter::eGaussian },
+        { "box", GpuBlurFilter::eBox },
+        { "triangle", GpuBlurFilter::eTriangle },
+        { "quadratic", GpuBlurFilter::eQuadratic },
+        { "fir_gaussian", GpuBlurFilter::eFirGaussian },
+    };
+    if (name) {
+        for (const auto& entry : kNames) {
+            if (std::strcmp(entry.name, name) == 0) {
+                return entry.filter;
+            }
+        }
+    }
+
+    return GpuBlurFilter::eAny;
+}
 
 // The thread count the seed's threaded profiles ran with.
 const int kSeedThreads = 16;
@@ -147,12 +177,20 @@ GpuCostModel::GpuCostModel()
         row.iir = (std::strcmp(seed.kind, "iir") == 0);
         row.motionBlur = (std::strcmp(seed.kind, "motion_blur") == 0);
         row.sigmaMax = seed.sigmaMax;
+        row.sizeMax = seed.sizeMax;
+        row.filter = blurFilterByName(seed.filter);
         row.kernelMsPerMpx = seed.kernelMsPerMpx;
         _gpu[seed.pluginId].push_back(row);
     }
     for (std::pair<const std::string, std::vector<GpuRow>>& rows : _gpu) {
         std::stable_sort(rows.second.begin(), rows.second.end(), [](const GpuRow& a, const GpuRow& b) {
-            return a.sigmaMax < b.sigmaMax;
+            if (a.sigmaMax != b.sigmaMax) {
+                return a.sigmaMax < b.sigmaMax;
+            }
+            const double aSize = (a.sizeMax > 0) ? a.sizeMax : kInfinity;
+            const double bSize = (b.sizeMax > 0) ? b.sizeMax : kInfinity;
+
+            return aSize < bSize;
         });
     }
 }
@@ -229,6 +267,23 @@ GpuCostModel::setCpuSeed(const std::string& pluginId,
     }
 }
 
+void
+GpuCostModel::setGpuSeed(const std::string& pluginId,
+                         double kernelMsPerMpx)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    std::vector<GpuRow>& rows = _gpu[pluginId];
+
+    if (rows.empty()) {
+        GpuRow row;
+        row.sigmaMax = kInfinity;
+        rows.push_back(row);
+    }
+    for (GpuRow& row : rows) {
+        row.kernelMsPerMpx = kernelMsPerMpx;
+    }
+}
+
 GpuTaskTraits
 GpuCostModel::traitsOf(const FrameGraph::Task& task) const
 {
@@ -249,6 +304,8 @@ GpuCostModel::traitsOf(const FrameGraph::Task& task) const
     if (const std::optional<GpuCostHint> hint = native ? native->gpuCostHint(task.key.time, task.key.view, task.cacheMipmapLevel) : std::nullopt) {
         traits.sigma = hint->sigma;
         traits.iir = hint->iir;
+        traits.filter = hint->filter;
+        traits.size = hint->size;
         traits.motionBlur = hint->motionBlur;
     }
 
@@ -298,18 +355,32 @@ GpuCostModel::findGpuRowLocked(const GpuTaskTraits& traits) const
     if (found == _gpu.end()) {
         return nullptr;
     }
-    const GpuRow* last = nullptr;
+    // A row that names a filter or a size beats one that holds for any, among the rows that cover the traits. A row
+    // that does not cover them is kept as the fallback, the last of the most specific.
+    const GpuRow* best = nullptr;
+    int bestScore = -1;
+    const GpuRow* fallback = nullptr;
+    int fallbackScore = -1;
     for (const GpuRow& row : found->second) {
         if ((row.motionBlur != traits.motionBlur) || (row.iir != traits.iir)) {
             continue;
         }
-        if (row.sigmaMax >= traits.sigma) {
-            return &row;
+        if ((row.filter != GpuBlurFilter::eAny) && (row.filter != traits.filter)) {
+            continue;
         }
-        last = &row;
+        const int score = ((row.filter != GpuBlurFilter::eAny) ? 2 : 0) + ((row.sizeMax > 0) ? 1 : 0);
+        if ((row.sigmaMax < traits.sigma) || ((row.sizeMax > 0) && (row.sizeMax < traits.size))) {
+            if (score >= fallbackScore) {
+                fallback = &row;
+                fallbackScore = score;
+            }
+        } else if (score > bestScore) {
+            best = &row;
+            bestScore = score;
+        }
     }
 
-    return last;
+    return best ? best : fallback;
 }
 
 GpuCostModel::GpuRow*
@@ -407,25 +478,92 @@ double
 GpuCostModel::transferMs(double uploadBytes,
                          double downloadBytes) const
 {
-    const GpuTransferRates rates = transferRates();
+    std::lock_guard<std::mutex> lock(_mutex);
 
-    if (rates.unifiedMemory) {
+    return transferMsLocked(uploadBytes, downloadBytes);
+}
+
+double
+GpuCostModel::transferMsLocked(double uploadBytes,
+                               double downloadBytes) const
+{
+    if (_rates.unifiedMemory) {
         return 0.;
     }
     double ms = 0.;
     if (uploadBytes > 0.) {
-        ms += (rates.uploadBytesPerSecond > 0.) ? uploadBytes / rates.uploadBytesPerSecond * 1e3 : kInfinity;
+        ms += (_rates.uploadBytesPerSecond > 0.) ? uploadBytes / _rates.uploadBytesPerSecond * 1e3 : kInfinity;
     }
     if (downloadBytes > 0.) {
-        ms += (rates.downloadBytesPerSecond > 0.) ? downloadBytes / rates.downloadBytesPerSecond * 1e3 : kInfinity;
+        ms += (_rates.downloadBytesPerSecond > 0.) ? downloadBytes / _rates.downloadBytesPerSecond * 1e3 : kInfinity;
     }
 
-    return ms;
+    return ms * _transferScale;
+}
+
+bool
+GpuCostModel::pipelinesTransfers(const FrameGraph& graph,
+                                 const FrameGraph::Region& region,
+                                 double uploadBytes,
+                                 double downloadBytes,
+                                 double kernelMs) const
+{
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (!_rates.pipelinedStrips) {
+            return false;
+        }
+    }
+    if (uploadBytes + downloadBytes < (double)kGpuStripOverlapMinBytes) {
+        return false;
+    }
+    if (!(kernelMs >= kGpuStripOverlapMinKernelRatio * transferMs(uploadBytes, downloadBytes))) {
+        return false;
+    }
+    std::vector<bool> inRegion(graph.tasks.size(), false);
+    for (int m : region.members) {
+        inRegion[m] = true;
+    }
+    int y1 = 0;
+    int y2 = 0;
+    bool any = false;
+    for (const FrameGraph::Region::Output& output : region.outputs) {
+        const FrameGraph::Task& task = graph.tasks[output.task];
+        for (int c : task.consumerTasks) {
+            if (!inRegion[c] && (graph.tasks[c].device == FrameGraph::Device::Gpu)) {
+                return false;
+            }
+        }
+        const RectI& rect = task.renderedRoI.isNull() ? task.roi : task.renderedRoI;
+        if (rect.isNull()) {
+            continue;
+        }
+        y1 = any ? std::min(y1, rect.y1) : rect.y1;
+        y2 = any ? std::max(y2, rect.y2) : rect.y2;
+        any = true;
+    }
+
+    return any && (y2 - y1 >= kGpuStripMaxInFlight * kGpuStripMinPipelinedRows);
 }
 
 double
 GpuCostModel::regionGainMs(const FrameGraph& graph,
                            const FrameGraph::Region& region) const
+{
+    return estimateRegionGainMs(graph, region, false);
+}
+
+double
+GpuCostModel::regionGainBoundMs(const FrameGraph& graph,
+                                const FrameGraph::Region& region) const
+{
+    return estimateRegionGainMs(graph, region, true);
+}
+
+double
+GpuCostModel::estimateRegionGainMs(const FrameGraph& graph,
+                                   const FrameGraph::Region& region,
+                                   bool freeTransfers) const
 {
     std::vector<bool> inRegion(graph.tasks.size(), false);
     for (int m : region.members) {
@@ -443,6 +581,9 @@ GpuCostModel::regionGainMs(const FrameGraph& graph,
         const double megapixels = megapixelsOf(task);
         gpuTotalMs += gpuMs(traits, megapixels);
         savedMs += cpuMs(traits, megapixels);
+    }
+    if (freeTransfers) {
+        return savedMs - gpuTotalMs - kAcceptMarginMs;
     }
 
     double uploadBytes = 0.;
@@ -464,7 +605,12 @@ GpuCostModel::regionGainMs(const FrameGraph& graph,
         }
     }
 
-    return savedMs - gpuTotalMs - transferMs(uploadBytes, downloadBytes) - kAcceptMarginMs;
+    const double fullTransferMs = transferMs(uploadBytes, downloadBytes);
+    // std::max turns the NaN of an infinite transfer less an unseeded member's infinite GPU time into 0, which leaves
+    // the gain at minus infinity.
+    const double exposedMs = pipelinesTransfers(graph, region, uploadBytes, downloadBytes, gpuTotalMs) ? std::max(0., fullTransferMs - gpuTotalMs) : fullTransferMs;
+
+    return savedMs - gpuTotalMs - exposedMs - kAcceptMarginMs;
 }
 
 void
@@ -532,6 +678,22 @@ GpuCostModel::observeGpu(const FrameGraph::Task& task,
                          std::int64_t kernelNs)
 {
     observeGpu(traitsOf(task), kernelNs, megapixelsOf(task));
+}
+
+void
+GpuCostModel::observeTransfer(double uploadBytes,
+                              double downloadBytes,
+                              double ms)
+{
+    if (!(ms > 0.) || !std::isfinite(ms)) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(_mutex);
+    const double calibratedMs = transferMsLocked(uploadBytes, downloadBytes) / _transferScale;
+    if (!(calibratedMs > 0.) || !std::isfinite(calibratedMs)) {
+        return;
+    }
+    _transferScale = ema(_transferScale, ms / calibratedMs);
 }
 
 NATRON_NAMESPACE_EXIT

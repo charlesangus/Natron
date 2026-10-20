@@ -33,6 +33,7 @@
 
 #include <cstddef>
 #include <list>
+#include <optional>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
@@ -163,6 +164,13 @@ struct ErodeDilateOp {
      **/
     PassList passes(const Params& params,
                     const PassContext& context) const;
+
+    /**
+     * @brief The larger axis's size in pixels at the context's scale, rounded down, even when the
+     * op is an identity.
+     **/
+    std::optional<GpuCostHint> costHint(const Params& params,
+                                        const PassContext& context) const;
 
     KnobIntWPtr size;
     KnobBoolWPtr expandRoD;

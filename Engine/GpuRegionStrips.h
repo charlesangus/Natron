@@ -51,6 +51,15 @@ const int kGpuStripMaxInFlight = 3;
 // overlap saves, so the region runs them one at a time instead.
 const int kGpuStripMinPipelinedRows = 64;
 
+// A region that fits whole is stripped to hide its transfer only when it moves at least this many bytes between host and
+// device.
+const std::uint64_t kGpuStripOverlapMinBytes = std::uint64_t(32) << 20;
+
+// It also needs a predicted kernel time of at least this fraction of its predicted transfer time. Pipelined strips
+// hide no more transfer than the kernel runs, while each strip pays a fixed cost in submits, waits and smaller copies
+// that no prediction carries: a lone point op at UHD moved its 127 MB in 15-18 ms as strips against ~10 ms whole.
+const double kGpuStripOverlapMinKernelRatio = 0.25;
+
 // The device memory strips leave to what allocates outside the pool: the viewer's textures, the driver, other
 // processes and OFX plugins rendering on the GPU themselves. The pool already holds a fifth of the heap back, which is
 // too little on a small card; on a large one the pool's budget is the tighter bound.
@@ -71,6 +80,9 @@ struct GpuStripSlot {
 
     // Read after the region: the rows of each strip's band are kept to the end of the strip and downloaded.
     bool interior = false;
+
+    // Read after the region by another region on the device: stripping would download it and lose that.
+    bool keptOnDevice = false;
 };
 
 /**
@@ -85,6 +97,9 @@ struct GpuStripMember {
 
     // The window of input inputNb the member reads to render outputRect.
     std::function<RectI(int inputNb, const RectI& outputRect)> inputRoI;
+
+    // The predicted kernel time of the member over its whole output slot, in milliseconds; 0 when unknown.
+    double kernelMs = 0.;
 };
 
 struct GpuStripGraph {
@@ -102,6 +117,15 @@ struct GpuStripLimits {
 
     // When positive, the region runs as strips of at most this many rows even when it fits whole.
     int forcedRows = 0;
+
+    // A region that fits whole, with pipelining allowed, no output kept on the device and at least this many bytes
+    // uploaded and downloaded, may run as kGpuStripMaxInFlight or more pipelined strips, so that its transfers overlap
+    // its compute: see planGpuStrips(). The default leaves every region whole.
+    std::uint64_t overlapMinBytes = std::numeric_limits<std::uint64_t>::max();
+
+    // The predicted time of moving the given bytes to and from the device, in milliseconds. Unset, transfers cost
+    // nothing, so no region strips to hide them.
+    std::function<double(std::uint64_t uploadBytes, std::uint64_t downloadBytes)> transferMs;
 
     // The most strips that may hold their buffers at once; budgetBytes must hold that many strips' buffers, beside
     // the resident images they share.
@@ -176,12 +200,19 @@ RectI gpuStripBands(const GpuStripGraph& graph);
  * up to limits.maxInFlight, that fit the budget together at the height found for one, or else 2 with the tallest
  * strips two of which fit, when those are at least kGpuStripMinPipelinedRows tall; and 1 otherwise, or when there is a
  * single strip.
+ *
+ * A region that fits whole may still come back as Strips, with overlapped set, when limits.overlapMinBytes asks for it,
+ * its members' kernelMs add up to at least kGpuStripOverlapMinKernelRatio of its limits.transferMs, and
+ * kGpuStripMaxInFlight or more strips at least kGpuStripMinPipelinedRows tall are predicted to finish sooner than the
+ * whole region. Strips of n take K' + max(0, T' - K' (n - 1) / n), with K' and T' the kernel and transfer time of
+ * all of them together, halos included; the whole region takes K + T.
  **/
 GpuStripResult planGpuStrips(const GpuStripGraph& graph,
                              const GpuStripLimits& limits,
                              std::vector<GpuStrip>* strips,
                              int* rows,
-                             int* inFlight = nullptr);
+                             int* inFlight = nullptr,
+                             bool* overlapped = nullptr);
 
 /**
  * @brief Caps maxStorageBufferRange and the strip height the region body plans with, so that a software device with
@@ -195,7 +226,7 @@ std::uint64_t gpuStripMaxBufferOverride();
 int gpuStripRowsOverride();
 
 enum class GpuStripPipelining {
-    // Pipelined when the device has a transfer queue family of its own.
+    // Pipelined when the device's uploads and downloads have a queue other than the compute queue.
     Auto,
 
     // Pipelined on any device, a single queue family included, where the queue's own order keeps it correct.
@@ -206,6 +237,14 @@ enum class GpuStripPipelining {
 void setGpuStripPipeliningForTests(GpuStripPipelining mode);
 
 GpuStripPipelining gpuStripPipelining();
+
+/**
+ * @brief Whether a device may run a region's strips pipelined, under gpuStripPipelining(). Every strip in flight
+ * holds an open record context, and without push descriptors the kernels' descriptor pools are reset only once no
+ * context is open, which a pipeline would never let happen.
+ **/
+bool gpuStripPipeliningAllowed(bool pushDescriptor,
+                               bool transferSharesComputeQueue);
 
 /**
  * @brief Calls hook with a strip's index once a pipelined region has submitted its compute, on the region's thread;

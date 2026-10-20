@@ -229,7 +229,8 @@ public:
      * @brief What a region body measured, for the render profile. Times are in milliseconds, sizes in bytes.
      **/
     struct RegionReport {
-        // Per member, in Region::members order: the device time charged to it, 0 for an identity member.
+        // Per member, in Region::members order: its device time, 0 for an identity member. It is measured with
+        // timestamps, or on a device without them the submission's time split by the members' estimated costs.
         std::vector<long long> memberNs;
         double uploadMs = 0.;
         unsigned long long uploadBytes = 0;
@@ -244,10 +245,53 @@ public:
         int strips = 0;
         int stripsInFlight = 0;
 
+        // The region fits the device whole and was stripped anyway, to overlap its transfers with its compute.
+        bool overlapStrips = false;
+
         // Transfer time on the device spent while compute ran, so hidden by it, and the rest, which the region waited
         // for. Only a pipelined region hides any.
         double transferHiddenMs = 0.;
         double transferExposedMs = 0.;
+
+        // Host time before wallMs starts, planning the region and its strips and finding its inputs.
+        double planMs = 0.;
+
+        // Host time recording the members: their renderGpu calls and the buffers acquired for their outputs.
+        double recordMs = 0.;
+
+        // Host time acquiring device buffers, for the members and for the uploads.
+        double acquireMs = 0.;
+
+        // Host time blocked on the device work's submission and completion beyond its device time. A pipelined
+        // region overlaps that time with its device work, so it counts the submissions and the waits whole; a
+        // device without timestamps counts them whole as well.
+        double submitWaitMs = 0.;
+
+        // Device allocations the buffer pool made, and host imports the transfers made and the bytes they imported,
+        // while the region ran. Both counters are shared, so concurrent regions are counted in each other's figures.
+        unsigned long long poolMisses = 0;
+        unsigned long long importCount = 0;
+        unsigned long long newImportBytes = 0;
+
+        // The transfer time placement's cost model predicts for uploadBytes and downloadBytes, to compare with the
+        // measured uploadMs and downloadMs; infinite when the model knows no bandwidth.
+        double predictedTransferMs = 0.;
+
+        // Host time importing the region's RAM inputs at its start and waiting for the helper thread to fault in and
+        // import its download destinations; first-touch page faults land here rather than in uploadMs or downloadMs.
+        double prepareWaitMs = 0.;
+
+        // The region's uploads and downloads by the path they took: copied straight from or into imported host memory,
+        // or through the staging ring.
+        unsigned long long uploadsImported = 0;
+        unsigned long long uploadsStaged = 0;
+        unsigned long long downloadsImported = 0;
+        unsigned long long downloadsStaged = 0;
+
+        // Host imports that uploads and downloads created themselves, rather than finding them prepared or cached,
+        // while the region ran. Shared counters, like importCount.
+        unsigned long long importsAtUpload = 0;
+        unsigned long long importsAtDownload = 0;
 
         // The device was lost: the scheduler renders the whole frame again on the CPU, whatever the body returned.
         bool deviceLost = false;
@@ -267,11 +311,16 @@ public:
      * root output to rootPlanes. graph.tasks may hold entries past those the frame was submitted with, which the body
      * ignores. It may leave report untouched. It returns eRenderRoIRetCodeOk, or the code the frame fails or aborts
      * with, unless it sets report->deviceLost.
+     *
+     * leaseCpu is for rendering members on the CPU: it counts the region as a running CPU task until the token it
+     * returns is released, and sets *budget to the threads such a task would get at that moment.
      **/
+    typedef std::function<std::shared_ptr<void>(int* budget)> CpuFallbackLease;
+
     typedef std::function<EffectInstance::RenderRoIRetCode(const FrameRenderContextPtr& context,
                                                            const FrameGraph& graph,
                                                            int region,
-                                                           int budget,
+                                                           const CpuFallbackLease& leaseCpu,
                                                            std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
                                                            RegionReport* report)>
         RegionBody;
@@ -422,6 +471,10 @@ private:
 
     void executeTask(const FramePtr& frame, int task, int budget, std::vector<FramePtr>* finished);
 
+    std::shared_ptr<void> leaseCpuFallback(int* budget);
+
+    int cpuTaskBudgetLocked() const;
+
     void executeRegion(const FramePtr& frame, int task, int budget, std::vector<FramePtr>* finished);
 
     void completeTask(const FramePtr& frame,
@@ -501,6 +554,7 @@ private:
     std::size_t _reservedBytes;
     std::size_t _bytesBudget;
     int _runningGpuTasks;
+    int _fallbackCpuTasks;
     int _gpuMaxConcurrentTasks;
     std::size_t _peakBytesInFlight;
     RegionBody _regionBody;

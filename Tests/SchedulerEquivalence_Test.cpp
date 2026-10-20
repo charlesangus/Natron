@@ -52,11 +52,13 @@
 #include "FlatExrReader.h"
 #include "RenderBothWays.h"
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/FrameRenderContext.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
@@ -65,8 +67,11 @@
 #include "Engine/Nodes/Deep/DeepToImage.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
+#include "Engine/ParallelRenderArgs.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
+#include "Engine/RectD.h"
+#include "Engine/RenderScheduler.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
 #include "Engine/Settings.h"
@@ -635,6 +640,58 @@ TEST_F(SchedulerEquivalence, MergeMaskedByRoto)
     // The Roto task renders its internal tree itself, which no task of the frame stores, so pulling
     // that tree is not counted as unplanned.
     renderAndCheck(createWriter(merge), 0);
+}
+
+// One Checker feeds both the Grade's source and its mask, so the Grade has two edges to the same task.
+TEST_F(SchedulerEquivalence, NodeFeedingSourceAndMaskIsTwoEdges)
+{
+    NodePtr checker = createChecker();
+    NodePtr grade = createGrade(checker, 0.8);
+    ASSERT_TRUE(checker && grade);
+
+    EffectInstancePtr gradeEffect = grade->getEffectInstance();
+    int maskInput = -1;
+    for (int i = 0; i < grade->getNInputs(); ++i) {
+        if (gradeEffect->isInputMask(i)) {
+            maskInput = i;
+            break;
+        }
+    }
+    ASSERT_GE(maskInput, 0);
+    connectNodes(checker, grade, maskInput, true);
+    KnobBool* maskEnabled = dynamic_cast<KnobBool*>(grade->getKnobByName("enableMask_" + grade->getInputLabel(maskInput)).get());
+    ASSERT_TRUE(maskEnabled != NULL);
+    maskEnabled->setValue(true);
+
+    {
+        const double time = kFirstFrame;
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+        RenderStatsPtr stats = std::make_shared<RenderStats>(false);
+        ParallelRenderArgsSetter frameArgs(time, ViewIdx(0), false, false, abortInfo, grade, 0, getApp()->getTimeLine().get(), NodePtr(), false, false, stats);
+        std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
+        const RectD window(0, 0, kFormatSize, kFormatSize);
+        ASSERT_NE(eStatusFailed, EffectInstance::computeRequestPass(time, ViewIdx(0), 0, window, grade, *request));
+        frameArgs.updateNodesRequest(*request);
+        FrameRenderContextPtr context = FrameRenderContext::create(time, ViewIdx(0), false, false, abortInfo, grade, 0, getApp()->getTimeLine().get(), NodePtr(), false, false, stats);
+        context->setRequest(request);
+        const FrameGraph graph = RenderScheduler::buildGraph(context, grade, time, ViewIdx(0), 0);
+
+        int gradeTask = -1;
+        int checkerTask = -1;
+        for (std::size_t i = 0; i < graph.tasks.size(); ++i) {
+            if (graph.tasks[i].key.node == grade) {
+                gradeTask = (int)i;
+            } else if (graph.tasks[i].key.node == checker) {
+                checkerTask = (int)i;
+            }
+        }
+        ASSERT_GE(gradeTask, 0);
+        ASSERT_GE(checkerTask, 0);
+        EXPECT_EQ(std::vector<int>(2, checkerTask), graph.tasks[gradeTask].dependencies);
+        EXPECT_EQ(2, graph.tasks[checkerTask].consumers);
+    }
+
+    renderAndCheck(createWriter(grade));
 }
 
 TEST_F(SchedulerEquivalence, DisabledNodeInAChain)

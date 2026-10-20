@@ -42,6 +42,7 @@
 #include "Engine/DeepPixelOps.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/GpuCostModel.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/Image/ImagePipelineSpec.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
@@ -73,11 +74,14 @@ struct GpuStageSummary {
  * @brief What the GPU cost model reads from an op beyond its kind to pick a row of its tables:
  * sigma, the Gaussian-equivalent spread in pixels at the rendered scale (size / 2.4 for a
  * blur of diameter size), whether the filter is recursive (IIR), whose cost does not grow
- * with sigma, and whether the render averages several matrices per pixel (motion blur).
+ * with sigma, the Blur filter, for an erode or dilate its size in pixels at the rendered
+ * scale, and whether the render averages several matrices per pixel (motion blur).
  **/
 struct GpuCostHint {
     double sigma = 0.;
     bool iir = false;
+    GpuBlurFilter filter = GpuBlurFilter::eAny;
+    int size = 0;
     bool motionBlur = false;
 };
 

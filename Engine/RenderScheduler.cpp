@@ -466,6 +466,7 @@ RenderScheduler::RenderScheduler()
     , _reservedBytes(0)
     , _bytesBudget(std::numeric_limits<std::size_t>::max())
     , _runningGpuTasks(0)
+    , _fallbackCpuTasks(0)
     , _gpuMaxConcurrentTasks(2)
     , _peakBytesInFlight(0)
     , _regionBody(&runGpuRegion)
@@ -824,6 +825,42 @@ RenderScheduler::computeTaskBudget(int poolMax,
     return std::min(idle, share);
 }
 
+int
+RenderScheduler::cpuTaskBudgetLocked() const
+{
+    const int poolMax = std::max(1, QThreadPool::globalInstance()->maxThreadCount());
+    int nThreadsToRender = 0;
+    int nThreadsPerEffect = 0;
+    int cores = poolMax;
+    if (appPTR) {
+        appPTR->getNThreadsSettings(&nThreadsToRender, &nThreadsPerEffect);
+        cores = appPTR->getHardwareIdealThreadCount();
+    }
+    // The gated and deferred tasks are left out: they cannot start before a running task finished, so they do not
+    // compete for threads now.
+    const auto regionsIn = [](const ReadyHeap& heap) {
+        return (int)std::count_if(heap.begin(), heap.end(), [](const ReadyRef& r) { return isRegionTask(r); });
+    };
+    const int ready = (int)(_freeReady.size() + _admittedReady.size()) - regionsIn(_freeReady) - regionsIn(_admittedReady);
+
+    return computeTaskBudget(poolMax, _runningTasks - _runningGpuTasks + _fallbackCpuTasks, ready, cores, nThreadsPerEffect);
+}
+
+std::shared_ptr<void>
+RenderScheduler::leaseCpuFallback(int* budget)
+{
+    {
+        QMutexLocker k(&_mutex);
+        ++_fallbackCpuTasks;
+        *budget = cpuTaskBudgetLocked();
+    }
+
+    return std::shared_ptr<void>(this, [](RenderScheduler* self) {
+        QMutexLocker k(&self->_mutex);
+        --self->_fallbackCpuTasks;
+    });
+}
+
 std::size_t
 RenderScheduler::getBytesBudget() const
 {
@@ -1031,27 +1068,13 @@ RenderScheduler::popLocked(FramePtr* frame,
         reserveLocked(ref.frame->graph.tasks[ref.task]);
     }
 
-    const int poolMax = std::max(1, QThreadPool::globalInstance()->maxThreadCount());
-    int nThreadsToRender = 0;
-    int nThreadsPerEffect = 0;
-    int cores = poolMax;
-    if (appPTR) {
-        appPTR->getNThreadsSettings(&nThreadsToRender, &nThreadsPerEffect);
-        cores = appPTR->getHardwareIdealThreadCount();
-    }
-    // The gated and deferred tasks are left out: they cannot start before a running task finished, so they do not
-    // compete for threads now.
     if (region) {
         // The region drives the device from this thread; the threads of a CPU task would only idle.
         *budget = 1;
 
         return true;
     }
-    const auto regionsIn = [](const ReadyHeap& heap) {
-        return (int)std::count_if(heap.begin(), heap.end(), [](const ReadyRef& r) { return isRegionTask(r); });
-    };
-    const int ready = (int)(_freeReady.size() + _admittedReady.size()) - regionsIn(_freeReady) - regionsIn(_admittedReady);
-    *budget = computeTaskBudget(poolMax, _runningTasks - _runningGpuTasks, ready, cores, nThreadsPerEffect);
+    *budget = cpuTaskBudgetLocked();
 
     return true;
 }
@@ -1222,7 +1245,7 @@ RenderScheduler::executeRegion(const FramePtr& frame,
         }
         RegionReport report;
         try {
-            retCode = body(frame->context, frame->graph, region, budget, &planes, &report);
+            retCode = body(frame->context, frame->graph, region, [this](int* cpuBudget) { return leaseCpuFallback(cpuBudget); }, &planes, &report);
         } catch (const std::exception&) {
             retCode = EffectInstance::eRenderRoIRetCodeFailed;
         } catch (...) {
@@ -1249,8 +1272,24 @@ RenderScheduler::executeRegion(const FramePtr& frame,
             times.wallMs = report.wallMs;
             times.strips = report.strips;
             times.stripsInFlight = report.stripsInFlight;
+            times.overlapStrips = report.overlapStrips;
             times.transferHiddenMs = report.transferHiddenMs;
             times.transferExposedMs = report.transferExposedMs;
+            times.planMs = report.planMs;
+            times.recordMs = report.recordMs;
+            times.acquireMs = report.acquireMs;
+            times.submitWaitMs = report.submitWaitMs;
+            times.poolMisses = report.poolMisses;
+            times.importCount = report.importCount;
+            times.newImportBytes = report.newImportBytes;
+            times.predictedTransferMs = report.predictedTransferMs;
+            times.prepareWaitMs = report.prepareWaitMs;
+            times.uploadsImported = report.uploadsImported;
+            times.uploadsStaged = report.uploadsStaged;
+            times.downloadsImported = report.downloadsImported;
+            times.downloadsStaged = report.downloadsStaged;
+            times.importsAtUpload = report.importsAtUpload;
+            times.importsAtDownload = report.importsAtDownload;
             times.fallback = report.cpuFallback;
             times.retries = report.retries;
             lines += formatRegionRecord(frame->sequence, region, members, times);

@@ -16,6 +16,9 @@ for finding where the time goes. Everything runs in the `natron-dev` container a
 | `compare.py` | Compares two result files per (topology, n, resolution, named); exits non-zero on a regression past `--threshold`. |
 | `stream_bench.c` | Node-at-a-time vs tiled vs fused cost of a chain of point ops on this machine. |
 | `make_plates.py` | Writes the synthetic EXR plates and the deep sequence the plate-fed families read. |
+| `gpu_region_bench.sh` | GPU Off/Auto comparison of spatial nodes (alone and between Grades) and the M82 comps from a Natron AppImage, as first-frame, re-render, jump and playback sessions; keeps each run's render profile. |
+| `gpu_region_summary.py` | Splits the GPU region records of those profiles into per-phase times per region and per node. |
+| `gpu-region-profile-sample.jsonl` | Region records in the current format, used by `gpu_region_summary.py --self-test`. |
 | `classify.py` | Prints a boundedness verdict (CPU, bandwidth, IO, RAM, host overhead) per result record. |
 
 Topologies: `chain` (N Grades in series), `mixed` (Grade/Blur/Transform/ColorCorrect in series),
@@ -165,3 +168,68 @@ while 20-frame runs throttle. Compare only runs of equal length that started fro
   and render frame 2 once more with `NatronRenderer --render-stats -w` (`app.render` cannot enable
   stats), recording `tasks_run` and `max_concurrent_tasks` from the `-stats.txt` file. It is a separate
   cold render; Legacy reports 0.
+
+## GPU region bench
+
+`tools/bench/gpu_region_bench.sh <Natron.AppImage> [out-dir]` (default `build/bench/gpu-region`) runs each
+case with `NATRON_GPU=off` and `NATRON_GPU=auto` under `NATRON_RENDER_SCHEDULER=taskgraph` and
+`NATRON_RENDER_PROFILE`, interleaved, the order flipping each round (`BENCH_ROUNDS`, default 3). Nothing is
+warmed up: pipeline compile, host import and pinning, pool warm-up and first-frame placement are part of
+every number. Kinds (`BENCH_KINDS`, run in this order):
+
+| kind | what runs |
+| --- | --- |
+| `a-cold` | one frame in a fresh process, with `XDG_CACHE_HOME` pointing at an empty temp dir (the pipeline disk cache lives in `$XDG_CACHE_HOME/Natron/gpu-pipelines`) |
+| `a-warm` | the same, with the case's cache dir primed by an untimed run the first time it is needed |
+| `bc` | one session on the primed cache: the frame (`first`), `BENCH_RERENDERS` (default 4) re-renders of it after a small knob change (`b`), then a jump to `BENCH_JUMP_FRAME` (`c`) |
+| `playback` | `BENCH_PLAYBACK_FRAMES` (default 4) frames as one range in a fresh process; secondary |
+
+Cases: each of `BENCH_NODES` (default `erode40 blur100 ck xf`; `xfmb blur25 iir25 iir100 erode6` also
+exist) alone (`node`) and between two Grades (`gxg`) at every size in `BENCH_SIZES` (default `uhd 7680x4320
+16384x16384 24576x24576`), then the comps in `BENCH_COMPS` (default the three in `comps/`) at
+`BENCH_COMP_SIZES` (default `uhd 7680x4320`). The 8K comps add a project format in-process; the comps'
+own coordinates (ramp points, box sizes) stay UHD-sized. The knob that changes between re-renders is the
+node's own (Transform scale, Blur size, Erode size, ChromaKeyer acceptanceAngle), or the first Grade's
+multiply if the node lacks it; for comps it is `fg_grade1`, `glow_thresh` or `plate_grade`.
+
+- The AppImage runs under `env -u LD_LIBRARY_PATH` with `--appimage-extract-and-run`
+  (`BENCH_APPIMAGE_ARGS`), because a host Qt on that path shadows the image's and the host has no FUSE.
+  `BENCH_APP_ARGS` (default `-b`) goes before the script.
+- Before every run the script reads `MemAvailable` and skips the case, logging the reason to
+  `<out-dir>/skips.log`, when its estimate exceeds it: `BENCH_NEED_NODE` / `BENCH_NEED_GXG` (default 6 / 9)
+  float RGBA frames, doubled for playback; `BENCH_COMP_NEED_GB` (default 4) per UHD comp, scaled by pixel
+  count. Before each run it waits for CPUs under 5% busy and `Dirty` + `Writeback` under 256 MB after a `sync`.
+- Each run writes into its own directory under `BENCH_RENDER_BASE` (default `<out-dir>/render`, absolute),
+  created by the driver and removed after the run; `graph_bench.py` deletes each render's files and syncs
+  outside the timed interval. Render times are taken in-process around the render call; point
+  `BENCH_RENDER_BASE` at tmpfs to keep write-back off disk altogether.
+- Per run: `<tag>.log`, `<tag>.prof.*`, `<tag>.marks.jsonl` (each render's label, frame and time),
+  `results.jsonl` and `driver.jsonl` (process wall and exit status). The tag is
+  `<case>-<size>-<gpu mode>-<kind>-r<round>`. A run whose log already holds its result is not repeated.
+- `BENCH_DRY_RUN=1` prints the planned and skipped cases with the memory probe and renders nothing.
+
+`graph_bench.py` runs one session itself with `BENCH_SESSION=a|bc|playback` (and `BENCH_TOPO=ntp
+BENCH_COMP=<.ntp>` for a comp); see its header for the variables.
+
+`python3 -I tools/bench/gpu_region_summary.py [--skip-frames N] [--import-rate GBPS] <out-dir>/<tag>.prof...`
+reads each run (a file, or a prefix: the profile appends a suffix) and prints its case, GPU mode and kind;
+with a `.marks.jsonl` beside it, a per-render table (render time, Write task time, difference) and the
+regions grouped by render label (`first`, `b`, `c`, ...). Per region (members joined by `+`) it prints the
+mean per run of: plan, wall, kernel, exposed and hidden transfer, upload, download, record, acquire,
+submit/wait, prepare wait, other, pipelined floor, imports and pool misses, fallbacks and retries; then per
+member node its kernel time and share of the region's wall. With marks the first frame is kept, since it
+carries the one-time costs; without them it is skipped as before. `--skip-frames` overrides either.
+
+The pipelined floor is `max(0, T - K*(n-1)/n)` with T the exposed plus hidden transfer ms, K the kernel ms
+and n the strips (1 when unstripped). `--import-rate` takes a measured GpuBench host-import rate in GB/s and
+computes T as `(uploadBytes + downloadBytes) / rate` instead.
+
+Which fields lie in `wallMs`: `kernelMs`, `transferExposedMs`, `recordMs`, `acquireMs` and
+`submitWaitMs` are inside it; `planMs` is outside (a region costs `planMs + wallMs`);
+`transferHiddenMs` overlaps kernels, and `uploadMs`/`downloadMs` are transfer totals of which only the
+exposed part is in the wall. `other` = `wallMs` minus the five inside parts. Pipelined regions
+overlap recording and waiting with kernels, so `other` can go negative there. A node's kernel time is
+its task record's `wallNs` (device timestamps). `pred xfer` is the record's `predictedTransferMs`, the
+transfer time placement's cost model predicts for the region's `uploadBytes` and `downloadBytes`, to
+compare with `uploadMs + downloadMs`; it reads `n/a` when the model knows no bandwidth (`null`).
+`--self-test` checks the breakdown, the floor and the labelling on `gpu-region-profile-sample.jsonl`.

@@ -294,6 +294,7 @@ CHECKER_BOARD_PLUGIN_ID = "net.sf.openfx.CheckerBoardPlugin"
 MOTION_BLUR_PLUGIN_IDS = frozenset([TRANSFORM_PLUGIN_ID])
 UHD_MPX = 3840 * 2160 / 1e6
 OPEN_SIGMA = 1e9
+OPEN_SIZE = 1000000
 
 # Profile records carry no sigma, so these come from in-situ Blur measurements (UHD float,
 # native node, GPU off, taskgraph per-task ms/Mpx, 16 threads vs noRenderThreads=1) of the
@@ -330,6 +331,15 @@ TRANSFORM_PLAIN_MEASURED = (26.126, 6.096)
 # is "plain", "iir" for the recursive Blur filters or "motion_blur" for a Transform that renders
 # with motion blur (quality 1, as the CPU row). The Blur rows after the first are FIR Gaussians
 # (size 7.2, 60 and 240); the IIR row is the slower of Quasi-Gaussian and Gaussian at size 240.
+# A row may end with two more fields, the Blur filter it was measured with (quasi_gaussian,
+# gaussian, box, triangle, quadratic or fir_gaussian) and the largest Erode or Dilate size it
+# covers; a row without them holds for any filter and any size. The first Erode row is size 6 and
+# the second is size 40: the median kernelMs, 4.720 ms, of the steady-state region records of
+# main/node-erode40-uhd-auto-r1 and r2 under .local/m109/p2t1, less the 0.550 ms of the
+# CheckerBoard that shares the region. The Blur rows that name a filter are the median steady-state
+# kernelMs at size 60 under .local/m109/p4t4, less the same 0.550 ms: box 22.85, triangle 32.79,
+# quadratic 40.20, Gaussian 29.46 and Quasi-Gaussian 35.42 ms. Each runs as running sums or a
+# recursion, which cost the same at any size, so it covers every sigma.
 GPU_KERNEL_UHD_MS = (
     (GRADE_PLUGIN_ID, "plain", 0.0, 0.497),
     (COLOR_CORRECT_PLUGIN_ID, "plain", 0.0, 0.514),
@@ -342,7 +352,8 @@ GPU_KERNEL_UHD_MS = (
     (COLOR_LOOKUP_PLUGIN_ID, "plain", 0.0, 0.504),
     (KEYER_PLUGIN_ID, "plain", 0.0, 0.441),
     (CHROMA_KEYER_PLUGIN_ID, "plain", 0.0, 0.514),
-    (ERODE_PLUGIN_ID, "plain", 0.0, 6.827),
+    (ERODE_PLUGIN_ID, "plain", 0.0, 6.827, None, 6),
+    (ERODE_PLUGIN_ID, "plain", 0.0, 4.170, None, OPEN_SIZE),
     (DILATE_PLUGIN_ID, "plain", 0.0, 6.915),
     (CONSTANT_PLUGIN_ID, "plain", 0.0, 0.520),
     (SOLID_PLUGIN_ID, "plain", 0.0, 0.510),
@@ -353,6 +364,11 @@ GPU_KERNEL_UHD_MS = (
     (BLUR_PLUGIN_ID, "plain", 25.0, 7.073),
     (BLUR_PLUGIN_ID, "plain", OPEN_SIGMA, 18.745),
     (BLUR_PLUGIN_ID, "iir", OPEN_SIGMA, 20.014),
+    (BLUR_PLUGIN_ID, "plain", OPEN_SIGMA, 22.300, "box", 0),
+    (BLUR_PLUGIN_ID, "plain", OPEN_SIGMA, 32.240, "triangle", 0),
+    (BLUR_PLUGIN_ID, "plain", OPEN_SIGMA, 39.650, "quadratic", 0),
+    (BLUR_PLUGIN_ID, "iir", OPEN_SIGMA, 28.910, "gaussian", 0),
+    (BLUR_PLUGIN_ID, "iir", OPEN_SIGMA, 34.870, "quasi_gaussian", 0),
 )
 
 
@@ -397,7 +413,7 @@ def cost_table_rows(threaded_paths, serial_paths):
     cpu.append((TRANSFORM_PLUGIN_ID, TRANSFORM_PLAIN_MEASURED[0], TRANSFORM_PLAIN_MEASURED[0] / TRANSFORM_PLAIN_MEASURED[1]))
     cpu.sort()
     sigma = [(BLUR_PLUGIN_ID, algo, top, ser, ser / par) for algo, top, ser, par in BLUR_SIGMA_MEASURED]
-    gpu = [(plugin, kind, top, ms / UHD_MPX) for plugin, kind, top, ms in GPU_KERNEL_UHD_MS]
+    gpu = [(row[0], row[1], row[2], row[3] / UHD_MPX) + (tuple(row[4:]) or (None, 0)) for row in GPU_KERNEL_UHD_MS]
     return cpu, motion_blur, sigma, gpu
 
 
@@ -405,14 +421,25 @@ def file_date(path):
     return time.strftime("%Y-%m-%d", time.localtime(os.path.getmtime(path)))
 
 
+def sigma_text(top):
+    return "1e9" if top >= OPEN_SIGMA else repr(float(top))
+
+
+def gpu_row_text(row):
+    """One GPU seed row; the filter and size columns are written only for a row that names either."""
+    plugin, kind, top, ms = row[:4]
+    blur_filter, size = (tuple(row[4:]) + (None, 0))[:2]
+    text = '"%s", "%s", %s, %.4f' % (plugin, kind, sigma_text(top), ms)
+    if blur_filter or size:
+        text += ", %s, %d" % ('"%s"' % blur_filter if blur_filter else "nullptr", size)
+    return "{ %s }" % text
+
+
 def emit_cost_table(pairs, command):
     """Returns the text of Engine/GpuCostSeed.inc; pairs maps each threaded profile to its serial one."""
     threaded = list(pairs)
     serial = [pairs[path] for path in threaded]
     cpu, motion_blur, sigma, gpu = cost_table_rows(threaded, serial)
-
-    def sigma_text(top):
-        return "1e9" if top >= OPEN_SIGMA else repr(float(top))
 
     def block(name, rows):
         if not rows:
@@ -442,7 +469,8 @@ def emit_cost_table(pairs, command):
             "//   Measured in situ on UHD float at 16 threads, so they are hard-coded here.",
             "// GPU rows: { plugin id, kind (plain, iir or motion_blur), largest sigma covered (0 when the",
             "//   kernel has no sigma), kernel-only ms per Mpx on an RX 7900 XTX, from the kernelMs of lone-node",
-            "//   regions at UHD }.",
+            "//   regions at UHD, then optionally the Blur filter (nullptr for any) and the largest Erode or",
+            "//   Dilate size covered (0 for any) }. A row that names a filter or a size beats one that does not.",
             ""]
     out.append(block("NATRON_GPU_COST_SEED_CPU_ROWS",
                      ['{ "%s", %.4f, %.4f }' % row for row in cpu]))
@@ -451,8 +479,7 @@ def emit_cost_table(pairs, command):
     out.append(block("NATRON_GPU_COST_SEED_CPU_SIGMA_ROWS",
                      ['{ "%s", "%s", %s, %.4f, %.4f }' % (p, a, sigma_text(t), s, k)
                       for p, a, t, s, k in sigma]))
-    out.append(block("NATRON_GPU_COST_SEED_GPU_ROWS",
-                     ['{ "%s", "%s", %s, %.4f }' % (p, k, sigma_text(t), ms) for p, k, t, ms in gpu]))
+    out.append(block("NATRON_GPU_COST_SEED_GPU_ROWS", [gpu_row_text(row) for row in gpu]))
     return "\n".join(out)
 
 
@@ -543,12 +570,13 @@ def self_test(args):
         assert close(rows["Defocus"][0], 200.0)
         assert [r[1:3] for r in sigma] == [("fir", 3.0), ("fir", 25.0), ("fir", 1e9), ("iir", 1e9)]
         assert close(sigma[0][4], 30.13 / 4.70) and close(sigma[3][4], 52.84 / 6.83), sigma
-        assert [r[:3] for r in gpu] == [(p, k, t) for p, k, t, _ in GPU_KERNEL_UHD_MS], gpu
+        assert [r[:3] for r in gpu] == [(row[0], row[1], row[2]) for row in GPU_KERNEL_UHD_MS], gpu
         grade_gpu = [r for r in gpu if r[0] == GRADE_PLUGIN_ID]
         assert len(grade_gpu) == 1 and close(grade_gpu[0][3], 0.497 / UHD_MPX), grade_gpu
         for plugin in PORTED_PLUGIN_IDS:
             assert any(r[0] == plugin for r in gpu), plugin
-        assert [r[1] for r in gpu if r[0] == BLUR_PLUGIN_ID] == ["plain", "plain", "plain", "iir"], gpu
+        assert [r[1] for r in gpu if r[0] == BLUR_PLUGIN_ID] == ["plain", "plain", "plain", "iir", "plain", "plain", "plain", "iir", "iir"], gpu
+        assert [r[4] for r in gpu if r[0] == BLUR_PLUGIN_ID] == [None] * 4 + ["box", "triangle", "quadratic", "gaussian", "quasi_gaussian"], gpu
         assert [r[1] for r in gpu if r[0] == TRANSFORM_PLUGIN_ID] == ["plain", "motion_blur"], gpu
         text = emit_cost_table({fast: sample}, "cmd")
         assert text == emit_cost_table({fast: sample}, "cmd"), "output must be deterministic"
@@ -574,6 +602,9 @@ def self_test(args):
         text = emit_cost_table({moving: moving}, "cmd")
         assert ('#define NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROWS \\\n    { "%s", 300.0000, 1.0000 }\n'
                 % TRANSFORM_PLUGIN_ID) in text, text
+    assert gpu_row_text(("p", "plain", 0.0, 1.0)) == '{ "p", "plain", 0.0, 1.0000 }'
+    assert gpu_row_text(("p", "plain", 0.0, 1.0, None, 6)) == '{ "p", "plain", 0.0, 1.0000, nullptr, 6 }'
+    assert gpu_row_text(("p", "plain", OPEN_SIGMA, 1.0, "box", 0)) == '{ "p", "plain", 1e9, 1.0000, "box", 0 }'
     seed_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "Engine", "GpuCostSeed.inc")
     if os.path.exists(seed_path):
         with open(seed_path, encoding="utf-8") as handle:

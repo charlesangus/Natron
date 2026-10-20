@@ -352,10 +352,10 @@ NativeEffectBase::deriveOutputMetadata(double time,
 void
 NativeEffectBase::invalidateOutputMetadata()
 {
-    dropOutputMetadataCache();
+    dropCachedOutputMetadata();
 
-    // The metadata can change here under an unchanged hash, which is all the readers otherwise
-    // follow.
+    // The metadata can change here under an unchanged hash, which is all the readers and the
+    // caches downstream otherwise follow.
     NodePtr node = getNode();
     if (node) {
         node->onMetadataChangedUnderSameHash();
@@ -363,7 +363,7 @@ NativeEffectBase::invalidateOutputMetadata()
 }
 
 void
-NativeEffectBase::dropOutputMetadataCache()
+NativeEffectBase::dropCachedOutputMetadata()
 {
     std::map<MetadataKey, ImageMetadata> dropped;
 
@@ -382,7 +382,7 @@ NativeEffectBase::onNodeHashChanged(U64 hash)
     // getOutputMetadata() already turns away a cache filled under another hash; this releases it
     // early. Taking no lock but the cache's keeps this safe against a render thread deriving
     // metadata downstream to upstream. The readers were told by the call above.
-    dropOutputMetadataCache();
+    dropCachedOutputMetadata();
 }
 
 void
@@ -393,7 +393,7 @@ NativeEffectBase::onMetadataRefreshed(const NodeMetadata& metadata)
     // Project-level changes (format, frame rate) reach a node here. They move the node's hash too,
     // through the project digest, so a revision move would only keep a restored state from
     // finding its renders again.
-    dropOutputMetadataCache();
+    dropCachedOutputMetadata();
     NodePtr node = getNode();
     if (node) {
         node->onMetadataMayHaveChanged();

@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <list>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -46,6 +47,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Metadata/ModifyMetadata.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -286,7 +288,7 @@ TEST_F(MetadataExpressionDependencyTest, MetadataInvalidatedUnderTheSameHashReac
     const U64 hash = source->getHashValue();
     extra.setInt("exr/extra", 5);
     sourceEffect->setExtraMetadata(extra);
-    sourceEffect->dropOwnMetadataCache();
+    sourceEffect->changeMetadataUnderSameHash();
 
     EXPECT_EQ(hash, source->getHashValue());
     EXPECT_EQ(5, readerTag->getValue());
@@ -307,7 +309,7 @@ TEST_F(MetadataExpressionDependencyTest, ReaderNodeHashMovesWhenTheMetadataChang
     const U64 readerHash = reader->getHashValue();
     extra.setInt("exr/extra", 5);
     sourceEffect->setExtraMetadata(extra);
-    sourceEffect->dropOwnMetadataCache();
+    sourceEffect->changeMetadataUnderSameHash();
 
     EXPECT_EQ(sourceHash, source->getHashValue());
     EXPECT_NE(readerHash, reader->getHashValue());
@@ -333,11 +335,41 @@ TEST_F(MetadataExpressionDependencyTest, OwnNodeReadMovesItsNodeHashWhenTheMetad
     const U64 modifyHash = modify->getHashValue();
     extra.setInt("exr/extra", 5);
     sourceEffect->setExtraMetadata(extra);
-    sourceEffect->dropOwnMetadataCache();
-    modify->onMetadataChangedUnderSameHash();
+    sourceEffect->changeMetadataUnderSameHash();
 
     EXPECT_NE(modifyHash, modify->getHashValue());
     EXPECT_EQ(5, value->getValue());
+}
+
+TEST_F(MetadataExpressionDependencyTest, MetadataChangedUnderTheSameHashReachesTheReadersOfNodesDownstream)
+{
+    MetadataSourceTestEffect* sourceEffect = dynamic_cast<MetadataSourceTestEffect*>(source->getEffectInstance().get());
+    ASSERT_TRUE(sourceEffect != NULL);
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    NodePtr downstream = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    ASSERT_TRUE(modify && downstream);
+    connectNodes(source, modify, 0, true);
+    connectNodes(modify, downstream, 0, true);
+    NativeEffectBase* downstreamEffect = dynamic_cast<NativeEffectBase*>(downstream->getEffectInstance().get());
+    ASSERT_TRUE(downstreamEffect != NULL);
+
+    ImageMetadata extra;
+    extra.setInt("exr/extra", 2);
+    sourceEffect->setExtraMetadata(extra);
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression(downstream->getScriptName() + ".metadata('exr/extra', 1)"));
+    ASSERT_EQ(2, readerTag->getValue());
+    ASSERT_EQ(std::optional<int>(2), downstreamEffect->getOutputMetadata(1., ViewIdx(0)).getInt("exr/extra"));
+
+    const U64 downstreamHash = downstream->getHashValue();
+    const U64 readerHash = reader->getHashValue();
+    extra.setInt("exr/extra", 5);
+    sourceEffect->setExtraMetadata(extra);
+    sourceEffect->changeMetadataUnderSameHash();
+
+    EXPECT_EQ(downstreamHash, downstream->getHashValue());
+    EXPECT_EQ(std::optional<int>(5), downstreamEffect->getOutputMetadata(1., ViewIdx(0)).getInt("exr/extra"));
+    EXPECT_NE(readerHash, reader->getHashValue());
+    EXPECT_EQ(5, readerTag->getValue());
 }
 
 TEST_F(MetadataExpressionDependencyTest, ResultComputedAcrossAnInvalidationIsNotKept)
@@ -488,6 +520,51 @@ TEST_F(MetadataExpressionDependencyTest, ConnectionClosingACycleThroughAnExpress
     EXPECT_FALSE(modify->checkIfConnectingInputIsOk(source.get()));
 }
 
+TEST_F(MetadataExpressionDependencyTest, LinkClosingAMetadataCycleIsRefused)
+{
+    NodePtr other = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
+    ASSERT_TRUE(bool(other));
+    KnobIntPtr otherTag = tagKnobOf(other);
+    ASSERT_TRUE(bool(otherTag));
+    ASSERT_NO_THROW(sourceTag->setExpression(0, reader->getScriptName() + ".metadata('exr/tag', 1) * 10", false, true));
+    ASSERT_TRUE(readsMetadataOf(sourceTag, 0, reader));
+
+    // The reader's hash would fold the source's tag, which folds the reader's hash.
+    EXPECT_FALSE(readerTag->slaveTo(0, sourceTag, 0));
+    EXPECT_FALSE(bool(readerTag->getMaster(0).second));
+    EXPECT_TRUE(otherTag->slaveTo(0, sourceTag, 0));
+
+    for (int i = 0; i < 2; ++i) {
+        const U64 sourceHash = source->getHashValue();
+        const U64 readerHash = reader->getHashValue();
+        EXPECT_EQ(sourceHash, source->getHashValue());
+        EXPECT_EQ(readerHash, reader->getHashValue());
+    }
+    EXPECT_EQ(1, readerTag->getValue());
+    EXPECT_EQ(10, otherTag->getValue());
+}
+
+TEST_F(MetadataExpressionDependencyTest, ConnectionCheckFollowsExpressionAndLinkEdits)
+{
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    ASSERT_TRUE(bool(modify));
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression(modify->getScriptName() + ".metadata('exr/tag', 1)"));
+    EXPECT_TRUE(modify->checkIfConnectingInputIsOk(source.get()));
+
+    // Each edit below changes which nodes the source's hash folds after a check has gathered them.
+    ASSERT_NO_THROW(sourceTag->setExpression(0, reader->getScriptName() + ".tag.getValue(0)", false, true));
+    EXPECT_FALSE(modify->checkIfConnectingInputIsOk(source.get()));
+
+    sourceTag->clearExpression(0, true);
+    EXPECT_TRUE(modify->checkIfConnectingInputIsOk(source.get()));
+
+    ASSERT_TRUE(sourceTag->slaveTo(0, readerTag, 0));
+    EXPECT_FALSE(modify->checkIfConnectingInputIsOk(source.get()));
+
+    sourceTag->unSlave(0, false);
+    EXPECT_TRUE(modify->checkIfConnectingInputIsOk(source.get()));
+}
+
 TEST_F(MetadataExpressionDependencyTest, HashExemptReadOfADownstreamNodeIsAllowed)
 {
     NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
@@ -560,6 +637,26 @@ TEST_F(MetadataExpressionDependencyTest, ScanSkipsFStringLiteralText)
     EXPECT_EQ(3, readerTag->getValue());
 }
 
+TEST_F(MetadataExpressionDependencyTest, ScanSkipsFStringFormatSpecText)
+{
+    const std::string date = "__import__('datetime').date(2020, 1, 1)";
+
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression("len(f\"{" + date + ":%Y " + source->getScriptName() + ".metadata('exr/tag')}\") * 0 + 3"));
+
+    std::list<NodePtr> sources;
+    readerTag->getMetadataDependencies(0, &sources);
+    EXPECT_TRUE(sources.empty());
+    EXPECT_EQ(3, readerTag->getValue());
+}
+
+TEST_F(MetadataExpressionDependencyTest, ScanReadsFieldsNestedInAFormatSpec)
+{
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression("int(f\"{3:>{" + source->getScriptName() + ".metadata('exr/tag', 1)}}\")"));
+
+    EXPECT_TRUE(readsMetadataOf(readerTag, 0, source));
+    EXPECT_EQ(3, readerTag->getValue());
+}
+
 TEST_F(MetadataExpressionDependencyTest, ScanResolvesACallReceiverInsideAnArgumentList)
 {
     const std::string lookup = getApp()->getAppIDString() + ".getNode('" + source->getScriptName() + "')";
@@ -602,6 +699,48 @@ TEST_F(MetadataExpressionDependencyTest, RenamingTheSourceLeavesKeysAndStringsAl
     EXPECT_NE(std::string::npos, renamed.find("len(" + text + ")"));
     EXPECT_TRUE(readerTag->isExpressionValid(0, NULL));
     EXPECT_EQ(10, readerTag->getValue());
+}
+
+TEST_F(MetadataExpressionDependencyTest, RenamingASourceReadForKnobsAndMetadataLeavesKeysAlone)
+{
+    const std::string oldName = source->getScriptName();
+    const std::string key = "'exr/" + oldName + "/owner'";
+
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression(oldName + ".tag.getValue(0) * 10 + (" + oldName + ".metadata(" + key + ", 1) or 0)"));
+    ASSERT_EQ(10, readerTag->getValue());
+
+    ASSERT_NO_THROW(source->setScriptName("RenamedMetadataSource"));
+
+    const std::string renamed = readerTag->getExpression(0);
+    EXPECT_NE(std::string::npos, renamed.find("RenamedMetadataSource.tag.getValue(0)"));
+    EXPECT_NE(std::string::npos, renamed.find("RenamedMetadataSource.metadata(" + key));
+    EXPECT_TRUE(readerTag->isExpressionValid(0, NULL));
+
+    sourceTag->setValue(2, ViewSpec::all(), 0);
+    source->getHashValue();
+    EXPECT_EQ(20, readerTag->getValue());
+}
+
+TEST_F(MetadataExpressionDependencyTest, RenamingASourceLookedUpByPathRewritesThePath)
+{
+    const std::string oldName = source->getScriptName();
+    const std::string key = "'exr/" + oldName + "/owner'";
+    const std::string lookup = getApp()->getAppIDString() + ".getNode('" + oldName + "')";
+
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression(lookup + ".getParam('tag').getValue(0) * 10 + (" + lookup + ".metadata(" + key + ", 1) or 0)"));
+    ASSERT_EQ(10, readerTag->getValue());
+
+    ASSERT_NO_THROW(source->setScriptName("RenamedMetadataSource"));
+
+    const std::string renamed = readerTag->getExpression(0);
+    EXPECT_NE(std::string::npos, renamed.find(".getNode('RenamedMetadataSource').getParam('tag')"));
+    EXPECT_NE(std::string::npos, renamed.find(".getNode('RenamedMetadataSource').metadata(" + key));
+    EXPECT_TRUE(readerTag->isExpressionValid(0, NULL));
+    EXPECT_TRUE(readsMetadataOf(readerTag, 0, source));
+
+    sourceTag->setValue(2, ViewSpec::all(), 0);
+    source->getHashValue();
+    EXPECT_EQ(20, readerTag->getValue());
 }
 
 TEST_F(MetadataExpressionDependencyTest, RenamingANodeRewritesItsOwnKnobReadingItByName)

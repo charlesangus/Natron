@@ -415,6 +415,9 @@ public:
     // render thread posts a single event.
     std::atomic<bool> metadataReadersRefreshRequested { false };
     std::atomic<U64> metadataRevision { 0 };
+    mutable QMutex hashedMetadataSourcesMutex; //< protects the two fields below
+    mutable U64 hashedMetadataSourcesGeneration = 0; //< 0 until filled, see KnobHelper::getHashedMetadataSourcesGeneration()
+    mutable std::vector<NodeWPtr> hashedMetadataSources;
     mutable QMutex masterNodeMutex; //< protects masterNode and nodeLinks
     NodeWPtr masterNode; //< this points to the master when the node is a clone
     KnobLinkList nodeLinks; //< these point to the parents of the params links

@@ -1684,6 +1684,15 @@ public:
      * @brief True if some expression reads node metadata.
      **/
     static bool anyExpressionReadsMetadata();
+
+    /**
+     * @brief A counter that every edit able to alter what appendHashedMetadataSources() finds for
+     * some knob moves: an expression's knob or metadata reads, a master link, the knobs a holder
+     * has or which of them are render-hashed. Read it before walking the knobs, so that an edit
+     * landing meanwhile leaves the result stale.
+     **/
+    static U64 getHashedMetadataSourcesGeneration();
+    static void moveHashedMetadataSourcesGeneration();
     virtual std::string getExpression(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual const std::vector<std::shared_ptr<Curve>  > & getCurves() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setAnimationEnabled(bool val) OVERRIDE FINAL;

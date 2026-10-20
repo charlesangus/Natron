@@ -80,7 +80,7 @@ public:
     }
 
     // Read without a lock and invisible to the node hash, so it must be set from the thread that
-    // asks for metadata, and a change after the first ask needs dropOwnMetadataCache() too.
+    // asks for metadata, and a change after the first ask needs changeMetadataUnderSameHash() too.
     void setExtraMetadata(const ImageMetadata& extra)
     {
         _extra = extra;
@@ -94,6 +94,12 @@ public:
     // Unlike a knob change, leaves the caches of the nodes downstream in place, so a test can
     // tell whether one of them answered from its own cache.
     void dropOwnMetadataCache()
+    {
+        dropCachedOutputMetadata();
+    }
+
+    // As a file reloaded under an unchanged hash.
+    void changeMetadataUnderSameHash()
     {
         invalidateOutputMetadata();
     }

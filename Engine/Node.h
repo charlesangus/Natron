@@ -327,12 +327,15 @@ public:
     /**
      * @brief Called when this node's output metadata was invalidated or refreshed under the same
      * hash. As onMetadataMayHaveChanged(), but moves the metadata revision first, so that the
-     * content hashes of all the readers, this node's knobs included, move with it.
+     * content hashes of all the readers, this node's knobs included, move with it. Every node
+     * downstream, whose hash does not move either, has its cached metadata dropped and its
+     * revision and readers moved the same way.
      **/
     void onMetadataChangedUnderSameHash();
 
     /**
-     * @brief Moved by onMetadataChangedUnderSameHash(); the content hash of an expression reading
+     * @brief Moved by onMetadataChangedUnderSameHash() on this node or on one upstream of it; the
+     * content hash of an expression reading
      * this node's metadata folds it. Zero until then.
      **/
     U64 getMetadataRevision() const;

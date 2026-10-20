@@ -924,7 +924,8 @@ NativeRead::knobChanged(KnobI* k,
     if (k == filename.get()) {
         if (reason != eValueChangedReasonTimeChanged) {
             invalidateFrameListing();
-            invalidateOutputMetadata();
+            // The filename is part of the hash, which the readers and the caches downstream follow.
+            dropCachedOutputMetadata();
             refreshAvailableViews(false);
             refreshProxyScale();
         }

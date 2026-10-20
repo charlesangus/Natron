@@ -106,6 +106,10 @@ public:
 // Metadata reads registered by all expressions; while there are none, no hash folds another
 // node's through a knob, and the walks looking for such folds are skipped.
 std::atomic<int> gExpressionMetadataDependencies { 0 };
+
+// Lets a node keep what it gathered from KnobHelper::appendHashedMetadataSources() until an edit
+// able to alter it moves this. Starts past the 0 of a node not yet filled.
+std::atomic<U64> gHashedMetadataSourcesGeneration { 1 };
 } // anon namespace
 
 using std::make_pair; using std::pair;
@@ -657,6 +661,7 @@ KnobHelper::~KnobHelper()
         metadataDependencies += _imp->expressions[i].metadataDependencies.size();
     }
     gExpressionMetadataDependencies.fetch_sub((int)metadataDependencies);
+    KnobHelper::moveHashedMetadataSourcesGeneration();
 }
 
 void
@@ -2549,8 +2554,10 @@ maskPythonCode(const std::string& str,
     }
 }
 
-// Sets back as code the replacement fields of the f-string text in [begin, end): what lies between
-// a single brace and its matching closing one, itself masked. Doubled braces are literal text.
+// Sets back as code the expressions of the replacement fields of the f-string text in [begin, end):
+// what lies between a single brace and its matching closing one, or the conversion or format spec
+// starting at its first top-level '!' or ':', itself masked. A format spec is literal text but for
+// the replacement fields nested in it. Doubled braces are literal text.
 static void
 maskFStringFields(const std::string& str,
                   std::size_t begin,
@@ -2574,9 +2581,28 @@ maskFStringFields(const std::string& str,
             continue;
         }
         std::size_t fieldEnd = i + 1;
+        std::size_t expressionEnd = std::string::npos;
         int depth = 0;
         while (fieldEnd < end) {
             const char f = str[fieldEnd];
+            if (expressionEnd != std::string::npos) {
+                // A spec may hold quotes and brackets as fill or literal characters.
+                if (f == '{') {
+                    ++depth;
+                } else if (f == '}') {
+                    if (depth == 0) {
+                        break;
+                    }
+                    --depth;
+                }
+                ++fieldEnd;
+                continue;
+            }
+            if ((depth == 0) && ((f == ':') || ((f == '!') && ((fieldEnd + 1 >= end) || (str[fieldEnd + 1] != '='))))) {
+                expressionEnd = fieldEnd;
+                ++fieldEnd;
+                continue;
+            }
             if ((f == '\'') || (f == '"')) {
                 std::size_t k = fieldEnd + 1;
                 while ((k < end) && (str[k] != f)) {
@@ -2597,8 +2623,14 @@ maskFStringFields(const std::string& str,
             }
             ++fieldEnd;
         }
-        std::fill(code->begin() + i + 1, code->begin() + fieldEnd, true);
-        maskPythonCode(str, i + 1, fieldEnd, code);
+        if (expressionEnd == std::string::npos) {
+            expressionEnd = fieldEnd;
+        }
+        std::fill(code->begin() + i + 1, code->begin() + expressionEnd, true);
+        maskPythonCode(str, i + 1, expressionEnd, code);
+        if (expressionEnd < fieldEnd) {
+            maskFStringFields(str, expressionEnd + 1, fieldEnd, code);
+        }
         i = fieldEnd + 1;
     }
 }
@@ -2619,6 +2651,50 @@ static bool
 isIdentifierCharacter(char c)
 {
     return std::isalnum((unsigned char)c) || (c == '_');
+}
+
+// The [begin, end) ranges of str, code masked by code, holding the text of a string literal passed
+// first to a getNode() call: a node path, whose dot-separated names refer to nodes as identifiers
+// in code do, while any other string is left to mean what it says.
+static std::vector<std::pair<std::size_t, std::size_t>>
+getNodePathLiterals(const std::string& str,
+                    const std::vector<bool>& code)
+{
+    static const std::string kGetNode("getNode");
+    std::vector<std::pair<std::size_t, std::size_t>> ranges;
+    std::size_t pos = str.find(kGetNode);
+
+    while (pos != std::string::npos) {
+        std::size_t i = pos + kGetNode.size();
+        pos = str.find(kGetNode, i);
+        if (!code[i - kGetNode.size()] || ((i - kGetNode.size() > 0) && isIdentifierCharacter(str[i - kGetNode.size() - 1]))) {
+            continue;
+        }
+        while ((i < str.size()) && std::isblank((unsigned char)str[i])) {
+            ++i;
+        }
+        if ((i >= str.size()) || (str[i] != '(')) {
+            continue;
+        }
+        ++i;
+        while ((i < str.size()) && std::isblank((unsigned char)str[i])) {
+            ++i;
+        }
+        if ((i >= str.size()) || ((str[i] != '\'') && (str[i] != '"'))) {
+            continue;
+        }
+        const char quote = str[i];
+        const std::size_t begin = i + 1;
+        std::size_t end = begin;
+        while ((end < str.size()) && (str[end] != quote) && (str[end] != '\\') && (str[end] != '\n')) {
+            ++end;
+        }
+        if ((end < str.size()) && (str[end] == quote)) {
+            ranges.push_back(std::make_pair(begin, end));
+        }
+    }
+
+    return ranges;
 }
 
 // The receiver of the method call whose name starts at nameStart in str, or an empty string if
@@ -3289,12 +3365,23 @@ KnobHelper::replaceNodeNameInExpressionCode(int dimension,
     }
 
     const std::vector<bool> code = pythonCodeMask(expression);
+    const std::vector<std::pair<std::size_t, std::size_t>> paths = getNodePathLiterals(expression, code);
+    const auto inPath = [&](std::size_t pos, std::size_t after) {
+        for (std::size_t i = 0; i < paths.size(); ++i) {
+            if ((pos >= paths[i].first) && (after <= paths[i].second)) {
+                return ((pos == paths[i].first) || (expression[pos - 1] == '.')) && ((after == paths[i].second) || (expression[after] == '.'));
+            }
+        }
+
+        return false;
+    };
     std::string renamed;
     std::size_t copiedUpTo = 0;
     std::size_t pos = expression.find(oldName);
     while (pos != std::string::npos) {
         const std::size_t after = pos + oldName.size();
-        if (!code[pos] || ((pos > 0) && isIdentifierCharacter(expression[pos - 1])) || ((after < expression.size()) && isIdentifierCharacter(expression[after]))) {
+        const bool identifier = code[pos] && !((pos > 0) && isIdentifierCharacter(expression[pos - 1])) && !((after < expression.size()) && isIdentifierCharacter(expression[after]));
+        if (!identifier && !inPath(pos, after)) {
             pos = expression.find(oldName, pos + 1);
             continue;
         }
@@ -3371,6 +3458,7 @@ KnobHelper::addMetadataDependency(int dimension,
         dependencies.push_back(node);
     }
     gExpressionMetadataDependencies.fetch_add(1);
+    moveHashedMetadataSourcesGeneration();
     // A render-hashed knob's own node drops its expression results on every hash change, which is
     // whenever its metadata can change but for Node::onMetadataChangedUnderSameHash(), which looks
     // at the node's own knobs; a knob outside the hash is cleared by nothing else.
@@ -3383,6 +3471,18 @@ bool
 KnobHelper::anyExpressionReadsMetadata()
 {
     return gExpressionMetadataDependencies.load() > 0;
+}
+
+U64
+KnobHelper::getHashedMetadataSourcesGeneration()
+{
+    return gHashedMetadataSourcesGeneration.load();
+}
+
+void
+KnobHelper::moveHashedMetadataSourcesGeneration()
+{
+    gHashedMetadataSourcesGeneration.fetch_add(1);
 }
 
 void
@@ -3566,6 +3666,9 @@ KnobHelper::clearExpression(int dimension,
             }
         }
         gExpressionMetadataDependencies.fetch_sub((int)metadataDependencies.size());
+    }
+    if (hadExpression) {
+        moveHashedMetadataSourcesGeneration();
     }
 
     if (clearResults) {
@@ -3937,6 +4040,7 @@ KnobHelper::setEvaluateOnChange(bool b)
         _imp->evaluateOnChange = b;
     }
     // isRenderHashed() reads this flag.
+    moveHashedMetadataSourcesGeneration();
     invalidateContentHash();
     if (_signalSlotHandler) {
         _signalSlotHandler->s_evaluateOnChangeChanged(b);
@@ -3954,6 +4058,7 @@ KnobHelper::setIsPersistent(bool b)
 {
     _imp->IsPersistent = b;
     // isRenderHashed() reads this flag.
+    moveHashedMetadataSourcesGeneration();
     invalidateContentHash();
 }
 
@@ -3986,6 +4091,7 @@ KnobHelper::setHashExempt(bool exempt)
 {
     _imp->hashExempt = exempt;
     // isRenderHashed() moved, which changes the knob set a holder-wide digest covers.
+    moveHashedMetadataSourcesGeneration();
     invalidateContentHash();
 }
 
@@ -4295,6 +4401,14 @@ KnobHelper::slaveToInternal(int dimension,
         //avoid recursion
         return false;
     }
+    // This dimension's content hash follows the master's, so the master's metadata reads land in
+    // the hash of this knob's node as an expression read of the master would.
+    std::string cycle;
+    if (expressionReadClosesMetadataCycle(dimension, otherDimension, dynamic_cast<const KnobHelper*>(other.get()), &cycle)) {
+        qDebug() << cycle.c_str();
+
+        return false;
+    }
     {
         QWriteLocker l(&_imp->mastersMutex);
         if ( _imp->masters[dimension].second.lock() ) {
@@ -4304,6 +4418,7 @@ KnobHelper::slaveToInternal(int dimension,
         _imp->masters[dimension].second = other;
         _imp->masters[dimension].first = otherDimension;
     }
+    moveHashedMetadataSourcesGeneration();
     invalidateContentHash();
 
     KnobHelper* masterKnob = dynamic_cast<KnobHelper*>( other.get() );
@@ -4375,6 +4490,7 @@ KnobHelper::resetMaster(int dimension)
         _imp->masters[dimension].first = -1;
         _imp->ignoreMasterPersistence = false;
     }
+    moveHashedMetadataSourcesGeneration();
     invalidateContentHash();
 }
 
@@ -4940,6 +5056,9 @@ KnobHelper::addListener(const bool isExpression,
         QMutexLocker k(&listenerIsHelper->_imp->expressionMutex);
         assert(listenerDimension >= 0 && listenerDimension < listenerIsHelper->_imp->dimension);
         listenerIsHelper->_imp->expressions[listenerDimension].dependencies.push_back( std::make_pair(thisShared, listenedToDimension) );
+    }
+    if (isExpression) {
+        moveHashedMetadataSourcesGeneration();
     }
 }
 
@@ -5988,6 +6107,7 @@ KnobHolder::addKnob(const KnobIPtr& k)
     }
     _imp->knobs.push_back(k);
     bumpKnobsContentGeneration(k.get());
+    KnobHelper::moveHashedMetadataSourcesGeneration();
 }
 
 void
@@ -6011,6 +6131,7 @@ KnobHolder::insertKnob(int index,
         _imp->knobs.insert(it, k);
     }
     bumpKnobsContentGeneration(k.get());
+    KnobHelper::moveHashedMetadataSourcesGeneration();
 }
 
 void
@@ -6022,6 +6143,7 @@ KnobHolder::removeKnobFromList(const KnobI* knob)
         if (it->get() == knob) {
             _imp->knobs.erase(it);
             bumpKnobsContentGeneration(knob);
+            KnobHelper::moveHashedMetadataSourcesGeneration();
 
             return;
         }
@@ -6111,6 +6233,7 @@ KnobHolder::deleteKnob(KnobI* knob,
         }
     }
     bumpKnobsContentGeneration(knob);
+    KnobHelper::moveHashedMetadataSourcesGeneration();
 
     if (alsoDeleteGui && _imp->settingsPanel) {
         _imp->settingsPanel->deleteKnobGui(sharedKnob);

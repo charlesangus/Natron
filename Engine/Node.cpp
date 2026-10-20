@@ -1176,19 +1176,41 @@ Node::appendMetadataSources(std::vector<NodePtr>* sources,
     if (!_imp->effect || (!reached && !KnobHelper::anyExpressionReadsMetadata())) {
         return;
     }
-    std::set<std::pair<const KnobI*, int>> visited;
-    if (!reached) {
-        reached = &visited;
-    }
     std::vector<NodePtr> read;
-    const KnobsVec knobs = _imp->effect->getKnobs_mt_safe();
-    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-        const KnobHelper* knob = dynamic_cast<const KnobHelper*>(it->get());
-        if (!knob || !knobMetadataReadsFoldIntoHash(*knob)) {
-            continue;
+    // Read before the knobs, so that a change landing during the walk leaves the result stale.
+    const U64 generation = KnobHelper::getHashedMetadataSourcesGeneration();
+    bool cached = false;
+    if (!reached) {
+        QMutexLocker l(&_imp->hashedMetadataSourcesMutex);
+        if (_imp->hashedMetadataSourcesGeneration == generation) {
+            cached = true;
+            for (std::size_t i = 0; i < _imp->hashedMetadataSources.size(); ++i) {
+                NodePtr source = _imp->hashedMetadataSources[i].lock();
+                if (source) {
+                    read.push_back(std::move(source));
+                }
+            }
         }
-        for (int i = 0; i < knob->getDimension(); ++i) {
-            knob->appendHashedMetadataSources(i, &read, reached);
+    }
+    if (!cached) {
+        std::set<std::pair<const KnobI*, int>> visited;
+        std::set<std::pair<const KnobI*, int>>* walked = reached ? reached : &visited;
+        const KnobsVec knobs = _imp->effect->getKnobs_mt_safe();
+        for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            const KnobHelper* knob = dynamic_cast<const KnobHelper*>(it->get());
+            if (!knob || !knobMetadataReadsFoldIntoHash(*knob)) {
+                continue;
+            }
+            for (int i = 0; i < knob->getDimension(); ++i) {
+                knob->appendHashedMetadataSources(i, &read, walked);
+            }
+        }
+        // A walk sharing reached with other nodes skips the knobs they walked, so its result is
+        // partial.
+        if (!reached) {
+            QMutexLocker l(&_imp->hashedMetadataSourcesMutex);
+            _imp->hashedMetadataSourcesGeneration = generation;
+            _imp->hashedMetadataSources.assign(read.begin(), read.end());
         }
     }
     for (std::vector<NodePtr>::iterator it = read.begin(); it != read.end(); ++it) {
@@ -1710,6 +1732,26 @@ Node::onMetadataMayHaveChanged()
 void
 Node::onMetadataChangedUnderSameHash()
 {
+    // The nodes downstream derive their metadata from this one's under hashes that do not move
+    // either, so their caches and the expressions reading them are as stale as this node's.
+    std::unordered_set<const Node*> visited;
+    std::vector<NodePtr> toVisit;
+    visited.insert(this);
+    appendOutputsWithGroupRedirection(&toVisit);
+    while (!toVisit.empty()) {
+        NodePtr output = std::move(toVisit.back());
+        toVisit.pop_back();
+        if (!output || !visited.insert(output.get()).second) {
+            continue;
+        }
+        EffectInstancePtr effect = output->getEffectInstance();
+        if (effect) {
+            effect->dropCachedOutputMetadata();
+        }
+        output->_imp->metadataRevision.fetch_add(1);
+        output->refreshMetadataReaders(true);
+        output->appendOutputsWithGroupRedirection(&toVisit);
+    }
     _imp->metadataRevision.fetch_add(1);
     refreshMetadataReaders(true);
 }

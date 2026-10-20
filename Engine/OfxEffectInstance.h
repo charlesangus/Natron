@@ -267,6 +267,7 @@ public:
     virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL;
     virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE FINAL;
     virtual void onNodeHashChanged(U64 hash) OVERRIDE FINAL;
+    virtual void dropCachedOutputMetadata() OVERRIDE FINAL;
     virtual void getComponentsNeededAndProduced(double time, ViewIdx view,
                                                 EffectInstance::ComponentsNeededMap* comps,
                                                 double* passThroughTime,

@@ -675,11 +675,11 @@ public:
      * For example if the image comps is eImageComponentAlpha, then only the alpha value 'a' will
      * be used.
      **/
-    void fill( const RectI & roi, float r, float g, float b, float a, const OSGLContextPtr& glContext = OSGLContextPtr() );
+    void fill( const RectI & roi, float r, float g, float b, float a );
 
-    void fillZero( const RectI& roi, const OSGLContextPtr& glContext = OSGLContextPtr() );
+    void fillZero( const RectI& roi );
 
-    void fillBoundsZero( const OSGLContextPtr& glContext = OSGLContextPtr() );
+    void fillBoundsZero();
 
     /**
      * @brief Same as fill(const RectI&,float,float,float,float) but fills the R,G and B
@@ -687,10 +687,9 @@ public:
      **/
     void fill( const RectI & rect,
                float colorValue = 0.f,
-               float alphaValue = 1.f,
-               const OSGLContextPtr& glContext = OSGLContextPtr() )
+               float alphaValue = 1.f )
     {
-        fill(rect, colorValue, colorValue, colorValue, alphaValue, glContext);
+        fill(rect, colorValue, colorValue, colorValue, alphaValue);
     }
 
     /**
@@ -762,8 +761,7 @@ public:
      **/
     void copyUnProcessedChannels(const RectI& roi,
                                  std::bitset<4> processChannels,
-                                 const ImagePtr& originalImage,
-                                 const OSGLContextPtr& glContext = OSGLContextPtr());
+                                 const ImagePtr& originalImage);
 
     /**
      * @brief Returns a new local image holding, over the whole bounds, the channels of this image
@@ -823,17 +821,14 @@ public:
 
     /**
      * @brief Mask the image by the given mask and also disolves it to the originalImg with the given mix.
-     * A RAM mask must have one channel. A GL mask may keep several, since GL textures are not converted: maskChannel
-     * then selects the one to read, and -1 reads the one channel of a one-channel mask.
+     * The mask must have one channel.
      **/
     void applyMaskMix(const RectI& roi,
                       const Image* maskImg,
                       const Image* originalImg,
                       bool masked,
                       bool maskInvert,
-                      float mix,
-                      const OSGLContextPtr& glContext = OSGLContextPtr(),
-                      int maskChannel = -1);
+                      float mix);
 
     void copyBitmapRowPortion(int x1, int x2, int y, const Image& other);
 

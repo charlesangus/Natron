@@ -38,8 +38,6 @@
 #include "Engine/AppManager.h"
 #include "Engine/PoolParallelFor.h"
 
-#include "Engine/OSGLContext.h"
-#include "Engine/GLShader.h"
 
 
 // disable some warnings due to unused parameters
@@ -417,8 +415,7 @@ Image::canCallCopyUnProcessedChannels(const std::bitset<4> processChannels) cons
 void
 Image::copyUnProcessedChannels(const RectI& roi,
                                const std::bitset<4> processChannels,
-                               const ImagePtr& originalImage,
-                               const OSGLContextPtr& glContext)
+                               const ImagePtr& originalImage)
 {
     int numComp = getComponents().getNumComponents();
 
@@ -447,60 +444,6 @@ Image::copyUnProcessedChannels(const RectI& roi,
 
 
     const RectI srcRoi = roi.intersect(_bounds);
-
-    if (getStorageMode() == eStorageModeGLTex) {
-        assert(glContext);
-        assert(originalImage->getStorageMode() == eStorageModeGLTex);
-        GLShaderPtr shader = glContext->getOrCreateCopyUnprocessedChannelsShader(processChannels[0], processChannels[1], processChannels[2], processChannels[3]);
-        assert(shader);
-        GLuint fboID = glContext->getFBOId();
-
-        glBindFramebuffer(GL_FRAMEBUFFER, fboID);
-        int target = getGLTextureTarget();
-        glEnable(target);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture( target, getGLTextureID() );
-
-        glTexParameteri (target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri (target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-        glTexParameteri (target, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri (target, GL_TEXTURE_WRAP_T, GL_REPEAT);
-
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, getGLTextureID(), 0 /*LoD*/);
-        glCheckFramebufferError();
-        glCheckError();
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture( target, originalImage->getGLTextureID() );
-
-        glTexParameteri (target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri (target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-        glTexParameteri (target, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri (target, GL_TEXTURE_WRAP_T, GL_REPEAT);
-
-
-        shader->bind();
-        shader->setUniform("originalImageTex", 1);
-        shader->setUniform("outputImageTex", 0);
-        OfxRGBAColourF procChannelsV = {
-            processChannels[0] ? 1.f : 0.f,
-            processChannels[1] ? 1.f : 0.f,
-            processChannels[2] ? 1.f : 0.f,
-            processChannels[3] ? 1.f : 0.f
-        };
-        shader->setUniform("processChannels", procChannelsV);
-        applyTextureMapping(_bounds, srcRoi);
-        shader->unbind();
-
-        glCheckError();
-        glBindTexture(target, 0);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(target, 0);
-        glCheckError();
-
-        return;
-    }
 
     switch ( getBitDepth() ) {
     case eImageBitDepthByte:
@@ -541,10 +484,6 @@ Image::extractChannelsForDepth(const std::vector<int>& channelIndices,
 ImagePtr
 Image::extractChannels(const std::vector<int>& channelIndices) const
 {
-    if (getStorageMode() == eStorageModeGLTex) {
-        return ImagePtr();
-    }
-
     const ImageLayerDesc& layer = getComponents();
     std::vector<std::string> channels;
     for (std::size_t i = 0; i < channelIndices.size(); ++i) {

@@ -258,6 +258,11 @@ public:
     virtual std::size_t bytes() const OVERRIDE FINAL;
     virtual RectI bounds() const OVERRIDE FINAL;
     virtual int nComps() const OVERRIDE FINAL;
+
+    /**
+     * @brief Once the image was evicted, the RAM copy evictToRam() made, so that a holder outside the frame store, as
+     * the viewer holding the root, still reads its pixels.
+     **/
     virtual ImagePtr downloadToRam() OVERRIDE FINAL;
 
     /**

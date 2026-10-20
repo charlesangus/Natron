@@ -619,8 +619,14 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
 #endif
         model->setTransferRates(rates);
         judgeWithCostModel(&inputs, model);
-        inputs.regionGain = [model](const FrameGraph& graph, const FrameGraph::Region& region) {
-            return model->regionGainMs(graph, region);
+        inputs.regionGain = [model, context](const FrameGraph& graph, const FrameGraph::Region& region) {
+#ifdef NATRON_HAVE_GPU
+            const bool rootOnDevice = context && context->wantsRootOnDevice();
+#else
+            const bool rootOnDevice = false;
+#endif
+
+            return model->regionGainMs(graph, region, rootOnDevice);
         };
     }
 

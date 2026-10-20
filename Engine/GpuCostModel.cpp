@@ -665,22 +665,24 @@ GpuCostModel::pipelinesTransfers(const FrameGraph& graph,
 
 double
 GpuCostModel::regionGainMs(const FrameGraph& graph,
-                           const FrameGraph::Region& region) const
+                           const FrameGraph::Region& region,
+                           bool rootOnDevice) const
 {
-    return estimateRegionGainMs(graph, region, false);
+    return estimateRegionGainMs(graph, region, false, rootOnDevice);
 }
 
 double
 GpuCostModel::regionGainBoundMs(const FrameGraph& graph,
                                 const FrameGraph::Region& region) const
 {
-    return estimateRegionGainMs(graph, region, true);
+    return estimateRegionGainMs(graph, region, true, false);
 }
 
 double
 GpuCostModel::estimateRegionGainMs(const FrameGraph& graph,
                                    const FrameGraph::Region& region,
-                                   bool freeTransfers) const
+                                   bool freeTransfers,
+                                   bool rootOnDevice) const
 {
     std::vector<bool> inRegion(graph.tasks.size(), false);
     for (int m : region.members) {
@@ -710,8 +712,10 @@ GpuCostModel::estimateRegionGainMs(const FrameGraph& graph,
         }
     }
     double downloadBytes = 0.;
+    bool keepsRoot = false;
     for (const FrameGraph::Region::Output& output : region.outputs) {
-        bool cpuConsumed = output.isRoot;
+        keepsRoot = keepsRoot || (output.isRoot && rootOnDevice);
+        bool cpuConsumed = output.isRoot && !rootOnDevice;
         for (int c : graph.tasks[output.task].consumerTasks) {
             if (!inRegion[c] && (graph.tasks[c].device == FrameGraph::Device::Cpu)) {
                 cpuConsumed = true;
@@ -725,7 +729,7 @@ GpuCostModel::estimateRegionGainMs(const FrameGraph& graph,
     const double fullTransferMs = transferMs(uploadBytes, downloadBytes);
     // std::max turns the NaN of an infinite transfer less an unseeded member's infinite GPU time into 0, which leaves
     // the gain at minus infinity.
-    const double exposedMs = pipelinesTransfers(graph, region, uploadBytes, downloadBytes, gpuTotalMs) ? std::max(0., fullTransferMs - gpuTotalMs) : fullTransferMs;
+    const double exposedMs = (!keepsRoot && pipelinesTransfers(graph, region, uploadBytes, downloadBytes, gpuTotalMs)) ? std::max(0., fullTransferMs - gpuTotalMs) : fullTransferMs;
 
     return savedMs - gpuTotalMs - exposedMs - kAcceptMarginMs;
 }

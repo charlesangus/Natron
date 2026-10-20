@@ -265,6 +265,9 @@ struct Slot {
     bool keep = false;
     int deviceOutputs = 0;
 
+    // The root, handed to the viewer on the device, unless the region runs as strips, which download it.
+    bool deviceRoot = false;
+
     bool released = false;
 };
 
@@ -678,10 +681,14 @@ private:
             }
         }
 
+        const bool wantsRootOnDevice = _context->wantsRootOnDevice();
         for (const FrameGraph::Region::Output& output : _region.outputs) {
             const FrameGraph::Task& task = _graph.tasks[output.task];
             Slot& slot = _slots[_members[_position[output.task]].outSlot];
-            bool cpuConsumer = output.isRoot;
+            // An identity root sharing an input's slot has no buffer of the region's own to hand over.
+            const bool deviceRoot = output.isRoot && wantsRootOnDevice && (slot.producer >= 0);
+            slot.deviceRoot = slot.deviceRoot || deviceRoot;
+            bool cpuConsumer = output.isRoot && !deviceRoot;
             for (int consumer : task.consumerTasks) {
                 if (_graph.tasks[consumer].regionId < 0) {
                     cpuConsumer = true;
@@ -2233,6 +2240,7 @@ private:
     bool storeOutputs(std::map<ImageLayerDesc, ImagePtr>* rootPlanes)
     {
         std::vector<GpuDeviceImagePtr> deviceImages(_slots.size());
+        std::vector<std::pair<ImageLayerDesc, int>> deviceRoots;
 
         for (const FrameGraph::Region::Output& output : _region.outputs) {
             const FrameGraph::Task& task = _graph.tasks[output.task];
@@ -2240,11 +2248,17 @@ private:
             Slot& slot = _slots[s];
             const ImageLayerDesc& layer = task.components.front();
             if (output.isRoot) {
-                if (!slot.downloaded) {
+                if (slot.downloaded) {
+                    if (slot.deviceRoot && _stats) {
+                        _stats->incLegacyFallbacks("viewer handoff: strips");
+                    }
+                    if (rootPlanes) {
+                        (*rootPlanes)[layer] = slot.downloaded;
+                    }
+                } else if (slot.deviceRoot) {
+                    deviceRoots.push_back(std::make_pair(layer, s));
+                } else {
                     return fail(output.task, "the root was not downloaded");
-                }
-                if (rootPlanes) {
-                    (*rootPlanes)[layer] = slot.downloaded;
                 }
                 continue;
             }
@@ -2282,6 +2296,35 @@ private:
                 });
             }
         }
+
+        if (deviceRoots.empty()) {
+            return true;
+        }
+        std::map<ImageLayerDesc, GpuDeviceImagePtr> rootDevicePlanes;
+        for (const std::pair<ImageLayerDesc, int>& root : deviceRoots) {
+            const int s = root.second;
+            // A slot the store already holds is evicted through the store, which leaves the image its RAM copy too.
+            GpuDeviceImagePtr image = deviceImages[s];
+            if (!image) {
+                image = GpuDeviceImage::create(_runtime, _slots[s].handle, _slots[s].layout, _stats);
+                if (!image) {
+                    return fail(_members[_slots[s].producer].task, "cannot wrap the root's device image");
+                }
+                deviceImages[s] = image;
+                const std::weak_ptr<GpuDeviceImage> weakImage = image;
+                const std::weak_ptr<RenderStats> weakStats = _stats;
+                image->setEvictable([weakImage, weakStats]() {
+                    const GpuDeviceImagePtr held = weakImage.lock();
+                    if (held && held->evictToRam()) {
+                        if (const RenderStatsPtr stats = weakStats.lock()) {
+                            stats->noteEviction();
+                        }
+                    }
+                });
+            }
+            rootDevicePlanes[root.first] = image;
+        }
+        _context->setRootDevicePlanes(std::move(rootDevicePlanes));
 
         return true;
     } // storeOutputs

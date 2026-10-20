@@ -594,6 +594,7 @@ struct GpuDeviceImage::Imp {
     int pins = 0;
     bool evicted = false;
     bool downloaded = false;
+    ImagePtr evictedCopy;
     std::function<void()> onEvict;
 #ifdef NATRON_HAVE_GPU
     gpu::GpuBufferHandle buffer;
@@ -706,6 +707,9 @@ GpuDeviceImage::downloadToRam()
 {
 #ifdef NATRON_HAVE_GPU
     std::lock_guard<std::mutex> k(_imp->mutex);
+    if (_imp->evicted) {
+        return _imp->evictedCopy;
+    }
     if (_imp->pins > 0) {
         return ImagePtr();
     }
@@ -732,6 +736,7 @@ GpuDeviceImage::evictToRam()
             return ImagePtr();
         }
         _imp->evicted = true;
+        _imp->evictedCopy = image;
         _imp->onEvict = nullptr;
         std::swap(freed, _imp->buffer);
     }

@@ -4591,11 +4591,17 @@ EffectInstance::attachOpenGLContext_public(const OSGLContextPtr& glContext,
     StatusEnum ret = attachOpenGLContext(data);
 
     if ( (ret == eStatusOK) || (ret == eStatusReplyDefault) ) {
+        // An effect that keeps no per-context state leaves the data unset, but the render and the detach still
+        // track the context lock and the attachment through it.
+        if (!*data) {
+            *data = std::make_shared<OpenGLContextEffectData>();
+        }
         if (!concurrentGLRender) {
             (*data)->setHasTakenLock(true);
         }
         _imp->attachedContexts.insert( std::make_pair(glContext, *data) );
-    } else {
+    } else if (!concurrentGLRender) {
+        // The concurrent case holds the mutex through the scoped locker, which releases it.
         _imp->attachedContextsMutex.unlock();
     }
 

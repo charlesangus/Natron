@@ -214,13 +214,12 @@ M85's benches show where the region engine loses time on real comps. Three items
   - verify: Exposed transfer is below 30% of region time on the expensive spatial cases (Erode 40, Blur σ100 at 16k/24k) and on fused comp regions. No Auto case is slower than Off in any round, and no comp regresses against M85's ratios.
   - size: M
 
-- [x] M109.P4.T8 — Prepare download destinations chunk by chunk, ahead of the downloads
+- [ ] M109.P4.T8 — Prepare download destinations chunk by chunk, ahead of the downloads (after P4.T9; both edit `GpuRegionTask.cpp`)
   - files: `Engine/Gpu/GpuRuntime.{h,cpp}`, `Engine/GpuRegionTask.cpp` (`allocateDownloadImages`, `downloadStrip`), `Tests/Gpu/GpuTransfer_Test.cpp`, `Tests/GpuResidency_Test.cpp`
   - approach:
-    - First, run Erode 40 at 16k for 6 frames. If `newImportBytes` is 0 from frame 3 on, record that and stop.
-    - Otherwise, the import job takes ranges aligned to strip interiors and rounded out to 2 MiB, and marks each one ready as it finishes. `downloadStrip` waits only on its own chunk, and the cache-first lookup resolves each strip within one chunk.
+    - The import job takes ranges aligned to strip interiors and rounded out to 2 MiB, and marks each one ready as it finishes. `downloadStrip` waits only on its own chunk, and the cache-first lookup resolves each strip within one chunk.
     - Touch the size-class headroom too, or stop importing into it.
-  - verify: Erode 40 at 16k: `prepareWaitMs` ≤ 20 ms and wall ≤ 310 ms. Residency tests pass on lavapipe and RADV.
+  - verify: Erode 40 at 16k, a single-frame render in a fresh process and the first GPU render after a jump to a new frame: `prepareWaitMs` ≤ 20 ms. Residency tests pass on lavapipe and RADV.
   - size: M
 - [ ] M109.P4.T9 — Strip for overlap only when the kernel can hide transfer
   - files: `Engine/GpuRegionStrips.{h,cpp}` (`planOverlap`), `Engine/GpuRegionTask.cpp` (`planStrips` passes the predicted kernel and transfer ms), `Engine/GpuCostModel.cpp` (`pipelinesTransfers`), `Tests/GpuResidency_Test.cpp`
@@ -228,6 +227,14 @@ M85's benches show where the region engine loses time on real comps. Three items
     - Require predicted K ≥ 0.25·T before stripping a region that fits whole. Tune the threshold on the UHD and 8K lone and comp cases.
     - Log which `planOverlap` gate refuses the defocus_retime 8K regions, and loosen the ×4 halo rule if it's the culprit.
   - verify: directional bench: lone cheap UHD regions run whole with exposed transfer ≤ 11 ms; the defocus 8K regions run as overlapped strips; no comp regresses.
+  - size: M
+
+- [ ] M109.P4.T10 — Find and fix why a fresh process renders its first frame on the CPU
+  - files: `Engine/GpuPlacement.cpp`, `Engine/GpuCostModel.{h,cpp}`, `Engine/GpuContext.cpp`, `Tests/GpuResidency_Test.cpp` (exact files depend on the cause)
+  - approach:
+    - In the P4.T8 check (`.local/m109/p4t8/`), comp frame 1 of a 6-frame Erode 40 16k run rendered on the CPU, and the region ran on the GPU only from frame 2. Find the cause from the profile and code: GPU init not finished when the first frame is placed, a cold cost model refusing, or something else.
+    - Fix it so a fresh process's first frame goes to the GPU whenever placement would accept the same frame once warm. If GPU init is asynchronous, the first frame waits for it when the GPU is going to win, rather than falling to the CPU.
+  - verify: a single-frame render in a fresh process (`NATRON_RENDER_PROFILE` on) of Erode 40 16k, Blur σ100 16k and one M82 comp at UHD: the region record shows it ran on the GPU, and wall time beats Off. A test pins the first-frame placement.
   - size: M
 
 ## Phase 109.5: Root-cause fixes and host memory
@@ -298,7 +305,8 @@ M85's benches show where the region engine loses time on real comps. Three items
     - Run the M82 comps at UHD and 8K, and the node/gxg cases at UHD, 8K, 16k and 24k.
     - Probe RAM on every case, and keep the write-back out of the timed part.
     - Report medians of ratios from pairs measured on the same boot, set against M85's table.
-    - Bench fixes first: run 16k/24k for ≥ 4 frames, make the warm frame go through the GPU path, and add the pipelined-floor and steady-state `prepareWaitMs` columns to `tools/bench/gpu_region_summary.py`.
+    - Measure the real workload first, each case Auto against Off, same boot: (a) a single-frame render in a fresh process, with the on-disk pipeline cache warm and, reported separately, cold; (b) re-renders of the same frame after a knob change, in one session; (c) a jump to an arbitrary frame after (b). Multi-frame playback is secondary and reported last.
+    - Bench fixes: the driver can run (a)–(c), and `tools/bench/gpu_region_summary.py` gets the pipelined-floor and `prepareWaitMs` columns and labels each record with its case.
   - verify: The gate below holds. The idle Natron's pooled host bytes, read after 2× the idle period, are at the floor.
   - size: M
 
@@ -309,9 +317,10 @@ M85's benches show where the region engine loses time on real comps. Three items
   - no region halves its strips after its first frame;
   - contention halvings are 0, or explained in Decisions;
   - region exposed transfer, with `prepareWaitMs` excluded from numerator and denominator, is ≤ 1.25× its pipelined floor max(0, T − K·(n−1)/n), where T uses the same-boot GpuBench host-import rate; where K ≥ T it is under 30%. Cheap lone nodes are left to placement;
-  - on steady-state frames (frame ≥ 3), `prepareWaitMs` is ≤ 10% of region wall;
+  - `prepareWaitMs` is ≤ 10% of region wall on the first GPU render of a frame, not just in steady state;
   - plain Transform "other" is under 20%.
-- Every speed-up is ≥ M85's, and no Auto case is slower than Off on frames after the first GPU use. A first-frame pipeline build is reported, not gated.
+- Every speed-up is ≥ M85's. No Auto case is slower than Off on a single-frame render in a fresh process (warm on-disk pipeline cache), on a same-frame re-render after a knob change, or after a frame jump. The cold-pipeline-cache single frame is reported with its compile time.
+- A fresh process's first frame runs on the GPU wherever placement accepts the warm frame.
 - CPU-only renders are within ±2% of `main`.
 - A forced CPU fallback of a big Blur runs within 15% of Off.
 - Per-member times in profiles come from timestamps.
@@ -381,3 +390,4 @@ M85's benches show where the region engine loses time on real comps. Three items
   - **Tooling:** the committed comps hard-code `build/bench/m82-profile/out`; there is no 8K comp variant (`app.addFormat` in-process works).
 - 2026-10-20 — **P4.T4's misses are mostly a bus limit; the gate was amended (user, on the consultant's analysis).** On compute-queue copies RADV moves ~17 GB/s down and 10–11 up (`.local/m109/p4t4/gb/gpubench.csv`); regions reach ~90% of that. The pipelined floor max(0, T − K·(n−1)/n) puts Erode 40 at 16k/24k at 66–68% exposed, and the measured 209 ms is within 8% of the 194 ms floor; 30% would need ~33.5 GB/s, beyond PCIe 4 x16. The real defect is `prepareWaitMs` (~110 of 406 ms at 16k): one helper thread faults and pins the whole 4 GiB destination (plus 1 GiB size-class headroom) before the first download → new P4.T8. Lone cheap UHD regions lose throughput when stripped with nothing to hide (127 MB in 15–18 ms vs ~10 ms whole), and the kernel-heavy defocus_retime 8K regions run whole with 0 hidden, probably refused by the ×4 halo rule → new P4.T9. The Blur V/H 2.29× at UHD (0.47 ms absolute; 16k passes at 1.79×) is accepted. The lone-Transform round-1 slowdown was a 264 ms cold pipeline build, so first-frame builds are reported, not gated; P8.T1's bench warms the GPU path. P4.T5's "≥ 20 GB/s" check becomes ≥ 85% of the same-boot GpuBench rate.
 - 2026-10-20 — **M109.P4.T8 stopped at its first step; no code change.** Erode 40 at 16k for 6 frames (`.local/m109/p4t8/`, b42415fae release AppImage, MemAvailable ~122 GiB, idle GPU): the region's first two GPU frames each import 5 GiB new (the 4 GiB destination plus ~1 GiB of size-class headroom), with `prepareWaitMs` 0 and 110 ms. From the third GPU frame on, `newImportBytes` is 0, `prepareWaitMs` is 14–15 ms and wall is 297–299 ms, inside the task's own ≤ 20 ms / ≤ 310 ms targets. Chunking would only shorten one warm-up frame. P2.T1/P4.T4's 2-frame 16k/24k runs never reached steady state, which is why they showed the 110 ms wait; P8.T1 runs ≥ 4 frames. The re-import on the first two GPU frames is probably the host pool settling on reusable buffers (inferred from code, not traced).
+- 2026-10-20 — **The first frame is the workload (user); P4.T8 reopened, P4.T10 added, gate and P8.T1 reworked.** Artists park on one frame and re-render it after knob and topology changes, then jump to an arbitrary frame; farm machines render one frame, sometimes 2–5. One-time costs are therefore part of the measurement, not warm-up: first-frame placement, pipeline compile, host import and pinning, and pool warm-up. This reverses today's earlier P4.T8 stop, which judged it by steady-state frames: comp frames 2 and 3 import 5 GiB each, and frame 3 waits 110 ms. It also reverses the "first-frame pipeline build is reported, not gated" amendment. The same check showed comp frame 1 of a fresh process rendering on the CPU; P4.T10 finds why. P8.T1 now measures a fresh-process single frame, same-frame re-renders, and a frame jump, with playback secondary.

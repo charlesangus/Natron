@@ -31,11 +31,13 @@
 #include <list>
 
 #include "Engine/EngineFwd.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/ResampleExecutor.h"
+#include "Engine/Nodes/Image/Resampler.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Image/TransformMath.h"
-#include "Engine/ParallelRenderArgs.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
+#include "Engine/ViewIdx.h"
 
 #define PLUGINID_NATRON_REFORMAT "net.sf.openfx.Reformat"
 #define PLUGIN_MAJOR_NATRON_REFORMAT 3
@@ -66,6 +68,96 @@
 
 NATRON_NAMESPACE_ENTER
 
+class Reformat;
+
+/**
+ * @brief The knob values one Reformat evaluation reads, and the time and view they were read at,
+ * at which the op asks the node for its matrix. identity is the openfx-misc
+ * ReformatPlugin::isIdentity(time): no centring, flip, flop or turn, and resize None.
+ **/
+struct ReformatParams {
+    double time = 0.;
+    ViewIdx view;
+    bool identity = false;
+    Resampler::FilterEnum filter = Resampler::eFilterCubic;
+    bool clamp = false;
+    bool blackOutside = false;
+};
+
+inline constexpr InputSpec kReformatInputs[] = {
+    InputSpec { .label = "Source" },
+};
+
+/**
+ * @brief The Resample op of Reformat, in the matrix form. The matrix depends on the input format,
+ * the project format and the source's region as well as on the knobs, so transform() asks the
+ * node, which the node points reformat at.
+ **/
+struct ReformatOp {
+    using Params = ReformatParams;
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_REFORMAT,
+        .label = "Reformat",
+        .description = "Convert the image to another format or size.\n"
+                       "An image transform is computed that goes from the input format, regardless of the region of definition (RoD), to the selected format. The Resize Type parameter adjust the way the transform is computed.\n"
+                       "The output format is set by this effect.\n"
+                       "In order to set the output format without transforming the image content, use the NoOp effect.\n"
+                       "This plugin concatenates transforms.\n"
+                       "See also: https://web.archive.org/web/20220627014216/http://www.opticalenquiry.com/nuke/index.php?title=Reformat",
+        .grouping = PLUGIN_GROUP_TRANSFORM,
+        .majorVersion = PLUGIN_MAJOR_NATRON_REFORMAT,
+        .minorVersion = 0,
+        .inputs = kReformatInputs,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = {},
+        .layers = LayerPolicy::all(),
+        .op = OpKind::Resample,
+    };
+
+    Params bake(const KnobReader& reader) const;
+
+    bool isIdentity(const Params& params,
+                    const PassContext& context) const;
+
+    /**
+     * @brief The filter, clamp and black-outside knobs, no invert and no blur.
+     **/
+    ResampleSettings settings(const Params& params,
+                              const PassContext& context) const;
+
+    /**
+     * @brief Reformat::getInverseTransformCanonical() at the Params' time and view, with the
+     * source's pixel aspect ratio. Called on the action's thread only, as it reads the node.
+     **/
+    bool transform(const Params& params,
+                   const PassContext& context,
+                   double amount,
+                   bool invert,
+                   TransformMath::Mat3* matrix) const;
+
+    /**
+     * @brief Whether preserveBB is checked: otherwise the output is clipped to the output format,
+     * which no matrix carries.
+     **/
+    bool canConcatenate() const;
+
+    const Reformat* reformat = nullptr;
+    KnobBoolWPtr center;
+    KnobBoolWPtr flip;
+    KnobBoolWPtr flop;
+    KnobBoolWPtr turn;
+    KnobChoiceWPtr resize;
+    KnobBoolWPtr preserveBB;
+    KnobChoiceWPtr filter;
+    KnobBoolWPtr clamp;
+    KnobBoolWPtr blackOutside;
+};
+
+static_assert(MatrixResampleOp<ReformatOp>);
+
 /**
  * @brief Reformat: resamples the source so that its format (or its region of definition, with
  * useRoD) maps onto an output format chosen from a format list, a box, a scale of the source or
@@ -79,12 +171,9 @@ NATRON_NAMESPACE_ENTER
  * Upstream transforms are always concatenated into this node; it concatenates downstream (it
  * reports a transform the host may fold into the next node) only while preserveBB is checked,
  * since otherwise its output is clipped to the output format.
- *
- * Every channel of every requested plane is resampled; the unprocessed-channel copy stays with
- * the host.
  **/
 class Reformat
-    : public NativeImageEffect {
+    : public ImageNode<ReformatOp> {
 public:
     enum ReformatTypeEnum {
         eReformatTypeToFormat = 0,
@@ -113,11 +202,6 @@ public:
 
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
 
-    virtual bool rendersUnprocessedChannels() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return false;
-    }
-
     virtual bool supportsMultipleClipPARs() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return true;
@@ -128,10 +212,9 @@ public:
         return true;
     }
 
-    virtual bool getCanTransform() const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual bool getInputsHoldingTransform(std::list<int>* inputs) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
+    /**
+     * @brief The framework's region, clipped to the output format unless preserveBB is checked.
+     **/
     virtual StatusEnum getRegionOfDefinition(U64 hash,
                                              double time,
                                              const RenderScale& scale,
@@ -164,27 +247,6 @@ public:
                                       TransformMath::Mat3* matrix) const WARN_UNUSED_RETURN;
 
 protected:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual bool isIdentityOp(double time,
-                              const RenderScale& scale,
-                              const RectI& roi,
-                              ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual void getRegionsOfInterest(double time,
-                                      const RenderScale& scale,
-                                      const RectD& outputRoD,
-                                      const RectD& renderWindow,
-                                      ViewIdx view,
-                                      RoIMap* ret) OVERRIDE FINAL;
-
-    virtual StatusEnum getTransform(double time,
-                                    const RenderScale& renderScale,
-                                    bool draftRender,
-                                    ViewIdx view,
-                                    EffectInstancePtr* inputToTransform,
-                                    Transform::Matrix3x3* transform) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
     virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual bool knobChanged(KnobI* k,
@@ -195,16 +257,8 @@ protected:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
-    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
 private:
     virtual void initializeKnobs() OVERRIDE FINAL;
-
-    /**
-     * @brief The openfx-misc ReformatPlugin::isIdentity(time): no centring, flip, flop or turn,
-     * and resize None.
-     **/
-    bool isIdentityParams(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     /**
      * @brief The box the output format is computed from: its size in pixels, its pixel aspect
@@ -259,15 +313,6 @@ private:
     KnobDoubleWPtr _boxPar;
     KnobDoubleWPtr _scale;
     KnobBoolWPtr _scaleUniform;
-    KnobChoiceWPtr _resize;
-    KnobBoolWPtr _center;
-    KnobBoolWPtr _flip;
-    KnobBoolWPtr _flop;
-    KnobBoolWPtr _turn;
-    KnobBoolWPtr _preserveBB;
-    KnobChoiceWPtr _filter;
-    KnobBoolWPtr _clamp;
-    KnobBoolWPtr _blackOutside;
 };
 
 NATRON_NAMESPACE_EXIT

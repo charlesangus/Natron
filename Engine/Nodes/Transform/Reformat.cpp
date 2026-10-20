@@ -26,11 +26,9 @@
 #include "Reformat.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cfloat>
 #include <cmath>
 #include <cstddef>
-#include <functional>
 #include <list>
 #include <memory>
 #include <string>
@@ -40,15 +38,12 @@
 #include <ofxNatron.h>
 
 #include "Engine/AppInstance.h"
-#include "Engine/AppManager.h"
 #include "Engine/Format.h"
-#include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
-#include "Engine/Nodes/Image/Resampler.h"
-#include "Engine/PoolParallelFor.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/Project.h"
 #include "Engine/RenderScale.h"
 #include "Engine/TimeLine.h"
@@ -57,9 +52,6 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
-// How many rows render() runs between two abort checks.
-const int kAbortCheckRows = 16;
-
 // The rectangle helpers below repeat the OpenFX support library's Coords functions, which the
 // output format and the transform are computed with, so the results are the same to the bit.
 
@@ -141,18 +133,6 @@ toPixelNearest(const RectD& r,
                  (int)std::ceil(r.y2 * 1. - 0.5));
 }
 
-// The index in an nComps-channel pixel of the channel on colour bit `bit`, or -1.
-int
-channelIndexForBit(int nComps,
-                   int bit)
-{
-    if (nComps == 1) {
-        return (bit == 3) ? 0 : -1;
-    }
-
-    return (bit < nComps) ? bit : -1;
-}
-
 void
 setSecretAndDisabled(const KnobIPtr& knob,
                      bool secret)
@@ -163,60 +143,68 @@ setSecretAndDisabled(const KnobIPtr& knob,
     knob->setSecret(secret);
     knob->setAllDimensionsEnabled(!secret);
 }
-
-NativeImageTraits
-reformatTraits()
-{
-    NativeImageTraits traits;
-
-    traits.processesAllLayers = true;
-
-    return traits;
-}
-
-struct ReformatPlaneJob {
-    ImagePtr dst;
-    ImagePtr src;
-    Transform::Matrix3x3Ptr inputTransform;
-    std::shared_ptr<Image::ReadAccess> srcAccess;
-    std::shared_ptr<Image::WriteAccess> dstAccess;
-    // Filled on the calling thread: Image::getBounds() takes the image's lock, which a band thread
-    // must never ask for, since behind a writer waiting on an image this render holds for reading
-    // it blocks forever.
-    Resampler::SourceImage source;
-    Resampler::SamplingTransforms transforms;
-    Resampler::ResampleParams params;
-    int dstNComps;
-    int srcIndex[4];
-
-    ReformatPlaneJob()
-        : dstNComps(0)
-    {
-        for (int c = 0; c < 4; ++c) {
-            srcIndex[c] = -1;
-        }
-    }
-};
-
-struct ReformatBand {
-    std::size_t job;
-    int y1;
-    int y2;
-
-    ReformatBand(std::size_t jobIndex,
-                 int firstRow,
-                 int endRow)
-        : job(jobIndex)
-        , y1(firstRow)
-        , y2(endRow)
-    {
-    }
-};
 } // anonymous namespace
 
-Reformat::Reformat(NodePtr node)
-    : NativeImageEffect(node, reformatTraits())
+ReformatOp::Params
+ReformatOp::bake(const KnobReader& reader) const
 {
+    Params p;
+
+    p.time = reader.time();
+    p.view = reader.view();
+    const bool moved = reader.value(center) || reader.value(flip) || reader.value(flop) || reader.value(turn);
+    p.identity = !moved && ((Reformat::ResizeEnum)reader.value(resize) == Reformat::eResizeNone);
+    p.filter = (Resampler::FilterEnum)reader.value(filter);
+    p.clamp = reader.value(clamp);
+    p.blackOutside = reader.value(blackOutside);
+
+    return p;
+}
+
+bool
+ReformatOp::isIdentity(const Params& params,
+                       const PassContext& /*context*/) const
+{
+    return params.identity;
+}
+
+ResampleSettings
+ReformatOp::settings(const Params& params,
+                     const PassContext& /*context*/) const
+{
+    ResampleSettings s;
+
+    s.filter = params.filter;
+    s.clamp = params.clamp;
+    s.blackOutside = params.blackOutside;
+    s.invert = false;
+    s.transformIsIdentity = params.identity;
+
+    return s;
+}
+
+bool
+ReformatOp::transform(const Params& params,
+                      const PassContext& context,
+                      double /*amount*/,
+                      bool invert,
+                      TransformMath::Mat3* matrix) const
+{
+    return reformat && reformat->getInverseTransformCanonical(params.time, params.view, invert, context.pixelAspectRatio, matrix);
+}
+
+bool
+ReformatOp::canConcatenate() const
+{
+    KnobBoolPtr knob = preserveBB.lock();
+
+    return knob && knob->getValue();
+}
+
+Reformat::Reformat(NodePtr node)
+    : ImageNode<ReformatOp>(node)
+{
+    op().reformat = this;
 }
 
 Reformat::~Reformat()
@@ -227,37 +215,14 @@ void
 Reformat::addAcceptedComponents(int inputNb,
                                 std::list<ImageLayerDesc>* comps)
 {
-    NativeImageEffect::addAcceptedComponents(inputNb, comps);
+    ImageNode<ReformatOp>::addAcceptedComponents(inputNb, comps);
     comps->push_back(ImageLayerDesc::getXYComponents());
-}
-
-NativePluginDescription
-Reformat::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_REFORMAT;
-    desc.label = "Reformat";
-    desc.description = tr("Convert the image to another format or size.\n"
-                          "An image transform is computed that goes from the input format, regardless of the region of definition (RoD), to the selected format. The Resize Type parameter adjust the way the transform is computed.\n"
-                          "The output format is set by this effect.\n"
-                          "In order to set the output format without transforming the image content, use the NoOp effect.\n"
-                          "This plugin concatenates transforms.\n"
-                          "See also: https://web.archive.org/web/20220627014216/http://www.opticalenquiry.com/nuke/index.php?title=Reformat")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_TRANSFORM;
-    desc.majorVersion = PLUGIN_MAJOR_NATRON_REFORMAT;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindImage));
-    desc.outputKind = eDataKindImage;
-
-    return desc;
 }
 
 void
 Reformat::initializeKnobs()
 {
-    KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
+    const KnobPagePtr page = createControlsPage();
 
     KnobBoolPtr useRoD = createKnob<KnobBool>(tr("Use Source RoD"));
     useRoD->setName(kReformatParamUseRoD);
@@ -418,7 +383,7 @@ Reformat::initializeKnobs()
     resize->setAnimationEnabled(false);
     resize->setIsMetadataSlave(true);
     page->addKnob(resize);
-    _resize = resize;
+    op().resize = resize;
 
     KnobBoolPtr center = createKnob<KnobBool>(tr("Center"));
     center->setName(kReformatParamCenter);
@@ -429,7 +394,7 @@ Reformat::initializeKnobs()
     center->setSpacingBetweenItems(1);
     center->setIsMetadataSlave(true);
     page->addKnob(center);
-    _center = center;
+    op().center = center;
 
     KnobBoolPtr flip = createKnob<KnobBool>(tr("Flip"));
     flip->setName(kReformatParamFlip);
@@ -439,7 +404,7 @@ Reformat::initializeKnobs()
     flip->setAddNewLine(false);
     flip->setSpacingBetweenItems(1);
     page->addKnob(flip);
-    _flip = flip;
+    op().flip = flip;
 
     KnobBoolPtr flop = createKnob<KnobBool>(tr("Flop"));
     flop->setName(kReformatParamFlop);
@@ -449,7 +414,7 @@ Reformat::initializeKnobs()
     flop->setAddNewLine(false);
     flop->setSpacingBetweenItems(1);
     page->addKnob(flop);
-    _flop = flop;
+    op().flop = flop;
 
     KnobBoolPtr turn = createKnob<KnobBool>(tr("Turn"));
     turn->setName(kReformatParamTurn);
@@ -458,7 +423,7 @@ Reformat::initializeKnobs()
     turn->setAnimationEnabled(false);
     turn->setIsMetadataSlave(true);
     page->addKnob(turn);
-    _turn = turn;
+    op().turn = turn;
 
     KnobBoolPtr preserveBB = createKnob<KnobBool>(tr("Preserve BBox"));
     preserveBB->setName(kReformatParamPreserveBoundingBox);
@@ -469,7 +434,7 @@ Reformat::initializeKnobs()
     preserveBB->setAnimationEnabled(false);
     preserveBB->setIsMetadataSlave(true);
     page->addKnob(preserveBB);
-    _preserveBB = preserveBB;
+    op().preserveBB = preserveBB;
 
     KnobChoicePtr filter = createKnob<KnobChoice>(tr(kResamplerParamFilterTypeLabel));
     filter->setName(kResamplerParamFilterType);
@@ -486,7 +451,7 @@ Reformat::initializeKnobs()
     filter->setAddNewLine(false);
     filter->setSpacingBetweenItems(1);
     page->addKnob(filter);
-    _filter = filter;
+    op().filter = filter;
 
     KnobBoolPtr clamp = createKnob<KnobBool>(tr(kResamplerParamFilterClampLabel));
     clamp->setName(kResamplerParamFilterClamp);
@@ -495,14 +460,16 @@ Reformat::initializeKnobs()
     clamp->setAddNewLine(false);
     clamp->setSpacingBetweenItems(1);
     page->addKnob(clamp);
-    _clamp = clamp;
+    op().clamp = clamp;
 
     KnobBoolPtr blackOutside = createKnob<KnobBool>(tr(kResamplerParamFilterBlackOutsideLabel));
     blackOutside->setName(kResamplerParamFilterBlackOutside);
     blackOutside->setHintToolTip(tr(kResamplerParamFilterBlackOutsideHint));
     blackOutside->setDefaultValue(false);
     page->addKnob(blackOutside);
-    _blackOutside = blackOutside;
+    op().blackOutside = blackOutside;
+
+    addStageKnobs(page);
 
     refreshVisibility();
     updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
@@ -537,8 +504,8 @@ Reformat::refreshVisibility()
 void
 Reformat::updateClampEnabled(double time, ViewSpec view)
 {
-    KnobChoicePtr filter = _filter.lock();
-    KnobBoolPtr clamp = _clamp.lock();
+    KnobChoicePtr filter = op().filter.lock();
+    KnobBoolPtr clamp = op().clamp.lock();
 
     if (!filter || !clamp) {
         return;
@@ -560,7 +527,7 @@ Reformat::knobChanged(KnobI* k,
                       double time,
                       bool /*originatedFromMainThread*/)
 {
-    KnobChoicePtr filterKnob = _filter.lock();
+    KnobChoicePtr filterKnob = op().filter.lock();
     if (filterKnob && (k == filterKnob.get())) {
         updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
@@ -604,51 +571,6 @@ Reformat::knobChanged(KnobI* k,
     }
 
     return false;
-}
-
-bool
-Reformat::getCanTransform() const
-{
-    KnobBoolPtr preserveBB = _preserveBB.lock();
-
-    return preserveBB && preserveBB->getValue();
-}
-
-bool
-Reformat::getInputsHoldingTransform(std::list<int>* inputs) const
-{
-    inputs->push_back(0);
-
-    return true;
-}
-
-bool
-Reformat::isIdentityParams(double time,
-                           ViewIdx view) const
-{
-    KnobBoolPtr center = _center.lock();
-    KnobBoolPtr flip = _flip.lock();
-    KnobBoolPtr flop = _flop.lock();
-    KnobBoolPtr turn = _turn.lock();
-    KnobChoicePtr resize = _resize.lock();
-
-    if (!center || !flip || !flop || !turn || !resize) {
-        return false;
-    }
-    if (center->getValueAtTime(time, 0, view) || flip->getValueAtTime(time, 0, view) || flop->getValueAtTime(time, 0, view) || turn->getValueAtTime(time, 0, view)) {
-        return false;
-    }
-
-    return (ResizeEnum)resize->getValueAtTime(time, 0, view) == eResizeNone;
-}
-
-bool
-Reformat::isIdentityOp(double time,
-                       const RenderScale& /*scale*/,
-                       const RectI& /*roi*/,
-                       ViewIdx view)
-{
-    return isIdentityParams(time, view);
 }
 
 RectD
@@ -768,7 +690,7 @@ Reformat::getBoxValues(double time,
         } else {
             srcRod = getProjectRect(par);
         }
-        KnobBoolPtr turn = _turn.lock();
+        KnobBoolPtr turn = op().turn.lock();
         if (turn && turn->getValueAtTime(time, 0, view)) {
             std::swap(srcRod.x1, srcRod.y1);
             std::swap(srcRod.x2, srcRod.y2);
@@ -811,9 +733,9 @@ Reformat::computeOutputFormat(double time,
     bool boxFixed = false;
     getBoxValues(time, view, srcPar, &boxW, &boxH, &boxPAR, &boxFixed);
 
-    KnobChoicePtr resizeKnob = _resize.lock();
-    KnobBoolPtr centerKnob = _center.lock();
-    KnobBoolPtr turnKnob = _turn.lock();
+    KnobChoicePtr resizeKnob = op().resize.lock();
+    KnobBoolPtr centerKnob = op().center.lock();
+    KnobBoolPtr turnKnob = op().turn.lock();
     ResizeEnum resize = resizeKnob ? (ResizeEnum)resizeKnob->getValueAtTime(time, 0, view) : eResizeWidth;
     const bool center = centerKnob && centerKnob->getValueAtTime(time, 0, view);
     const bool turn = turnKnob && turnKnob->getValueAtTime(time, 0, view);
@@ -920,9 +842,9 @@ Reformat::getInverseTransformCanonical(double time,
         computeOutputFormat(time, view, srcPar, &par, &format, NULL);
         dstRod = toCanonical(format, par);
     }
-    KnobBoolPtr flipKnob = _flip.lock();
-    KnobBoolPtr flopKnob = _flop.lock();
-    KnobBoolPtr turnKnob = _turn.lock();
+    KnobBoolPtr flipKnob = op().flip.lock();
+    KnobBoolPtr flopKnob = op().flop.lock();
+    KnobBoolPtr turnKnob = op().turn.lock();
     const bool flip = flipKnob && flipKnob->getValueAtTime(time, 0, view);
     const bool flop = flopKnob && flopKnob->getValueAtTime(time, 0, view);
     const bool turn = turnKnob && turnKnob->getValueAtTime(time, 0, view);
@@ -997,97 +919,16 @@ Reformat::getRegionOfDefinition(U64 hash,
                                 ViewIdx view,
                                 RectD* rod)
 {
-    if (!getInput(0)) {
-        return NativeImageEffect::getRegionOfDefinition(hash, time, scale, view, rod);
+    const StatusEnum status = ImageNode<ReformatOp>::getRegionOfDefinition(hash, time, scale, view, rod);
+
+    if ((status != eStatusOK) || !getInput(0) || op().canConcatenate()) {
+        return status;
     }
-    RectD srcRoD;
-    getSourceRegionOfDefinition(time, view, scale, &srcRoD);
-
-    const double srcPar = getAspectRatio(0);
-    const OfxPointD s = scale.toOfxPointD();
-    KnobBoolPtr blackOutside = _blackOutside.lock();
-    Resampler::RegionParams params;
-    params.invert = false;
-    params.blackOutside = blackOutside && blackOutside->getValueAtTime(time, 0, view);
-    params.isIdentity = isIdentityParams(time, view);
-    const Resampler::CanonicalTransformFn fn = [this, view, srcPar](double t, double /*amount*/, bool invert, TransformMath::Mat3* matrix) {
-        return getInverseTransformCanonical(t, view, invert, srcPar, matrix);
-    };
-    Resampler::getRegionOfDefinition(fn, srcRoD, time, getAspectRatio(-1), s.x, s.y, params, rod);
-
-    KnobBoolPtr preserveBB = _preserveBB.lock();
-    if (!preserveBB || !preserveBB->getValue()) {
-        double par = 1.;
-        RectD rect;
-        RectI format;
-        computeOutputFormat(time, view, srcPar, &par, &rect, &format);
-        *rod = rectIntersection(*rod, toCanonical(format, par));
-    }
-
-    return eStatusOK;
-}
-
-void
-Reformat::getRegionsOfInterest(double time,
-                               const RenderScale& scale,
-                               const RectD& /*outputRoD*/,
-                               const RectD& renderWindow,
-                               ViewIdx view,
-                               RoIMap* ret)
-{
-    EffectInstancePtr input = getInput(0);
-
-    if (!input) {
-        return;
-    }
-    RectD srcRoD;
-    getSourceRegionOfDefinition(time, view, scale, &srcRoD);
-
-    const double srcPar = getAspectRatio(0);
-    const OfxPointD s = scale.toOfxPointD();
-    KnobChoicePtr filter = _filter.lock();
-    KnobBoolPtr blackOutside = _blackOutside.lock();
-    Resampler::RegionParams params;
-    params.invert = false;
-    params.filter = filter ? (Resampler::FilterEnum)filter->getValueAtTime(time, 0, view) : Resampler::eFilterCubic;
-    params.blackOutside = blackOutside && blackOutside->getValueAtTime(time, 0, view);
-    params.isIdentity = isIdentityParams(time, view);
-    const Resampler::CanonicalTransformFn fn = [this, view, srcPar](double t, double /*amount*/, bool invert, TransformMath::Mat3* matrix) {
-        return getInverseTransformCanonical(t, view, invert, srcPar, matrix);
-    };
-    RectD srcRoI;
-    Resampler::getRegionOfInterest(fn, renderWindow, srcRoD, getProjectRect(NULL), time, srcPar, s.x, s.y, params, &srcRoI);
-
-    ret->insert(std::make_pair(input, srcRoI));
-}
-
-StatusEnum
-Reformat::getTransform(double time,
-                       const RenderScale& renderScale,
-                       bool /*draftRender*/,
-                       ViewIdx view,
-                       EffectInstancePtr* inputToTransform,
-                       Transform::Matrix3x3* transform)
-{
-    EffectInstancePtr input = getInput(0);
-
-    if (!input) {
-        return eStatusReplyDefault;
-    }
-    const double srcPar = getAspectRatio(0);
-    TransformMath::Mat3 invCanonical;
-    if (!getInverseTransformCanonical(time, view, false, srcPar, &invCanonical)) {
-        return eStatusReplyDefault;
-    }
-    TransformMath::Mat3 canonical;
-    if (!invCanonical.inverse(&canonical)) {
-        return eStatusReplyDefault;
-    }
-    const OfxPointD s = renderScale.toOfxPointD();
-    const TransformMath::Mat3 pixel = TransformMath::forwardToPixel(canonical, srcPar, getAspectRatio(-1), s.x, s.y);
-
-    *inputToTransform = input;
-    *transform = TransformMath::toEngineMatrix(pixel);
+    double par = 1.;
+    RectD rect;
+    RectI format;
+    computeOutputFormat(time, view, getAspectRatio(0), &par, &rect, &format);
+    *rod = rectIntersection(*rod, toCanonical(format, par));
 
     return eStatusOK;
 }
@@ -1116,134 +957,5 @@ Reformat::getPreferredMetadata(NodeMetadata& metadata)
 
     return eStatusOK;
 }
-
-StatusEnum
-Reformat::render(const RenderActionArgs& args)
-{
-    KnobChoicePtr filterKnob = _filter.lock();
-    KnobBoolPtr clampKnob = _clamp.lock();
-    KnobBoolPtr blackOutsideKnob = _blackOutside.lock();
-    if (!filterKnob || !clampKnob || !blackOutsideKnob) {
-        return eStatusFailed;
-    }
-    const Resampler::FilterEnum filter = args.draftMode ? Resampler::eFilterImpulse : (Resampler::FilterEnum)filterKnob->getValueAtTime(args.time, 0, args.view);
-    const bool clamp = clampKnob->getValueAtTime(args.time, 0, args.view);
-    const bool blackOutside = blackOutsideKnob->getValueAtTime(args.time, 0, args.view);
-    const double srcPar = getAspectRatio(0);
-    const double dstPar = getAspectRatio(-1);
-    const OfxPointD s = args.mappedScale.toOfxPointD();
-    const ViewIdx view = args.view;
-    const Resampler::CanonicalTransformFn fn = [this, view, srcPar](double t, double /*amount*/, bool invert, TransformMath::Mat3* matrix) {
-        return getInverseTransformCanonical(t, view, invert, srcPar, matrix);
-    };
-
-    // Every source image is fetched before any is locked: fetching renders upstream, which may
-    // write into a cached image this render would otherwise already hold a read lock on.
-    std::vector<ReformatPlaneJob> jobs;
-    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
-        ReformatPlaneJob job;
-        job.dst = it->second;
-        if (job.dst) {
-            if (job.dst->getBitDepth() != eImageBitDepthFloat) {
-                return eStatusFailed;
-            }
-            ImageLayerDesc sourceLayer;
-            if (getInput(0) && resolveInputPlaneForRender(0, args.time, args.view, &sourceLayer, NULL)) {
-                // Mapped to the clip's components, which is the layout the output plane is rendered in.
-                job.src = getImage(0, args.time, args.mappedScale, args.view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, NULL, &job.inputTransform);
-                if (job.src && (job.src->getBitDepth() != eImageBitDepthFloat)) {
-                    return eStatusFailed;
-                }
-            }
-        }
-        jobs.push_back(job);
-    }
-
-    const RectI& roi = args.roi;
-    const int width = roi.width();
-    if ((width <= 0) || (roi.height() <= 0)) {
-        return eStatusOK;
-    }
-
-    // Images are locked here, on the calling thread, for the whole render; the band threads only
-    // read through the pointers and bounds captured below.
-    const int nThreads = appPTR->getNCPUsAvailableForEffect();
-    std::vector<RectI> bandRects;
-    makeRowBands(roi, nThreads, &bandRects);
-    std::vector<ReformatBand> bands;
-    for (std::size_t j = 0; j < jobs.size(); ++j) {
-        ReformatPlaneJob& job = jobs[j];
-        if (!job.dst) {
-            continue;
-        }
-        job.dstNComps = (int)job.dst->getComponentsCount();
-        job.dstAccess = std::make_shared<Image::WriteAccess>(job.dst.get());
-        if (job.src) {
-            const RectI srcBounds = job.src->getBounds();
-            const int srcNComps = (int)job.src->getComponentsCount();
-            job.srcAccess = std::make_shared<Image::ReadAccess>(job.src.get());
-            // The filters clamp (black_outside off) at the source image's own edge, so a pixel
-            // does not depend on which window was requested.
-            if (!srcBounds.isNull() && (srcNComps >= 1) && (srcNComps <= 4)) {
-                job.source.data = (const float*)job.srcAccess->pixelAt(srcBounds.x1, srcBounds.y1);
-                job.source.bounds = srcBounds;
-                job.source.nComps = srcNComps;
-                job.source.rowStride = (std::size_t)srcBounds.width() * (std::size_t)srcNComps;
-            }
-            for (int c = 0; (c < job.dstNComps) && (c < 4); ++c) {
-                job.srcIndex[c] = channelIndexForBit(srcNComps, pixelKernelChannelBit(job.dstNComps, c));
-            }
-            Resampler::buildSamplingTransforms(fn, args.time, false, Resampler::BlurSettings(), s.x, s.y, false, srcPar, dstPar, &job.transforms);
-            if (job.inputTransform) {
-                Resampler::concatenateInputTransform(TransformMath::fromEngineMatrix(*job.inputTransform), &job.transforms);
-            }
-            job.params = Resampler::makeResampleParams(job.transforms, filter, clamp, blackOutside);
-        }
-        for (std::size_t b = 0; b < bandRects.size(); ++b) {
-            bands.push_back(ReformatBand(j, bandRects[b].y1, bandRects[b].y2));
-        }
-    }
-
-    RenderCancellation cancel(this);
-
-    const std::function<void(int)> renderBand = [&](int bandIndex) {
-        const ReformatBand& band = bands[bandIndex];
-        const ReformatPlaneJob& job = jobs[band.job];
-        const int dstNComps = job.dstNComps;
-        const bool hasSource = job.source.isValid();
-        const int srcNComps = hasSource ? job.source.nComps : 0;
-        std::vector<float> row(hasSource ? (std::size_t)width * srcNComps : 0);
-
-        for (int y = band.y1; y < band.y2; ++y) {
-            if ((((y - band.y1) % kAbortCheckRows) == 0) && cancel.check()) {
-                return;
-            }
-
-            float* dstPix = (float*)job.dstAccess->pixelAt(roi.x1, y);
-            if (!dstPix) {
-                continue;
-            }
-            if (!hasSource) {
-                std::fill(dstPix, dstPix + (std::size_t)width * dstNComps, 0.f);
-                continue;
-            }
-            Resampler::resampleRow(job.params, job.source, y, roi.x1, roi.x2, &row[0]);
-            if (srcNComps == dstNComps) {
-                std::copy(row.begin(), row.end(), dstPix);
-                continue;
-            }
-            const float* srcPix = &row[0];
-            for (int i = 0; i < width; ++i, srcPix += srcNComps, dstPix += dstNComps) {
-                for (int c = 0; c < dstNComps; ++c) {
-                    const int index = (c < 4) ? job.srcIndex[c] : -1;
-                    dstPix[c] = (index >= 0) ? srcPix[index] : 0.f;
-                }
-            }
-        }
-    };
-    parallelForCancellable((int)bands.size(), nThreads, cancel, renderBand);
-
-    return eStatusOK;
-} // Reformat::render
 
 NATRON_NAMESPACE_EXIT

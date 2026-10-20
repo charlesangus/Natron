@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <optional>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/Resampler.h"
@@ -130,6 +131,8 @@ inline constexpr ImagePipelineSpec kTransformMaskedPipeline = {
 struct TransformOp {
     using Params = TransformNodeParams;
 
+    static constexpr bool kResamplesOnGpu = true;
+
     void createKnobs(KnobHolder* holder,
                      const KnobPagePtr& page);
 
@@ -153,6 +156,18 @@ struct TransformOp {
                    double amount,
                    bool invert,
                    TransformMath::Mat3* matrix) const;
+
+    /**
+     * @brief Whether params ask a render to average several matrices per pixel: motion blur on,
+     * with an open shutter or a directional blur.
+     **/
+    static bool rendersWithMotionBlur(const Params& params);
+
+    /**
+     * @brief The cost model's hint: no spread, and motion blur as rendersWithMotionBlur() says.
+     **/
+    std::optional<GpuCostHint> costHint(const Params& params,
+                                        const PassContext& context) const;
 
     KnobDoubleWPtr translate;
     KnobDoubleWPtr rotate;
@@ -179,7 +194,7 @@ struct TransformOp {
     KnobDoubleWPtr shutterCustomOffset;
 };
 
-static_assert(MatrixResampleOp<TransformOp>);
+static_assert(GpuResampleOp<TransformOp>);
 
 /**
  * @brief Transform: translates, rotates, scales and skews the image about a centre. It registers

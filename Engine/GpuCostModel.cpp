@@ -37,7 +37,6 @@
 #include "Engine/GpuContext.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/NativeEffectBase.h"
-#include "Engine/Nodes/Transform/Transform.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -250,9 +249,7 @@ GpuCostModel::traitsOf(const FrameGraph::Task& task) const
     if (const std::optional<GpuCostHint> hint = native ? native->gpuCostHint(task.key.time, task.key.view, task.cacheMipmapLevel) : std::nullopt) {
         traits.sigma = hint->sigma;
         traits.iir = hint->iir;
-    }
-    if (const TransformNode* transform = dynamic_cast<const TransformNode*>(effect.get())) {
-        traits.motionBlur = transform->rendersWithMotionBlur(task.key.time, task.key.view);
+        traits.motionBlur = hint->motionBlur;
     }
 
     return traits;

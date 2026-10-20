@@ -30,10 +30,12 @@
 
 #include "Engine/EffectInstance.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/TransformMath.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RectD.h"
+#include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
@@ -170,6 +172,47 @@ StatusEnum resampleTransform(EffectInstance& effect,
                              bool draftRender,
                              EffectInstancePtr* inputToTransform,
                              Transform::Matrix3x3* transform) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Whether recordResampleGpu() can render request through plan for query: a matrix-form
+ * request, a plan the GPU stages run (canRunStagesGpu()), no transform concatenated into the
+ * source, and sampling matrices at the query's time, view and scale that are all affine and no
+ * more than the kernel takes. Motion and directional blur are accepted. Depends only on the
+ * query and the node's settings, so placement and recording agree.
+ **/
+bool canRecordResampleGpu(const EffectInstance& effect,
+                          const StagePlan& plan,
+                          const GpuQuery& query,
+                          const ResampleRequest& request) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The pixels of the source, input sourceInput, that recordResampleGpu() reads to produce
+ * outputRect at time, view and scale: the source's entry of resampleRegionsOfInterest() over
+ * outputRect, enclosed in pixels. outputRect itself without a connected source or for an empty
+ * outputRect.
+ **/
+RectI resampleGpuSourceRoI(const EffectInstance& effect,
+                           int sourceInput,
+                           const ResampleRequest& request,
+                           const ResampleRegionStages& stages,
+                           double time,
+                           ViewIdx view,
+                           const RectI& outputRect,
+                           const RenderScale& scale) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Records request over args.outputRect of args.output through plan, as runResampleCpu()
+ * renders it: the source, clipped to its region of definition and to resampleGpuSourceRoI(), is
+ * resampled through the request's matrices (averaged for a blur) with the impulse filter for a
+ * draft render. With a mask, a mix other than 1 or unprocessed channels, the result goes through
+ * recordStagesGpuFinish() against that same clipped source. stages are the node's region stages,
+ * as for resampleGpuSourceRoI(). Fails for a request canRecordResampleGpu() refuses.
+ **/
+StatusEnum recordResampleGpu(EffectInstance& effect,
+                             const StagePlan& plan,
+                             const GpuRenderArgs& args,
+                             const ResampleRequest& request,
+                             const ResampleRegionStages& stages) WARN_UNUSED_RETURN;
 
 NATRON_NAMESPACE_EXIT
 

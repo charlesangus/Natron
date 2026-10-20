@@ -140,6 +140,9 @@ StagedImageEffect::canRenderOnGpu(const GpuQuery& query) const
     if (kind == OpKind::Passes) {
         return canRecordPassesGpu(resolveGpuPlan(query), query, opPasses(query.time, query.view, query.mappedScale));
     }
+    if (kind == OpKind::Resample) {
+        return opResamplesOnGpu() && canRecordResampleGpu(*this, resolveGpuPlan(query), query, opResample(query.time, query.view, query.mappedScale));
+    }
     if ((kind != OpKind::Point) || !canRunStagesGpu(resolveGpuPlan(query), query)) {
         return false;
     }
@@ -154,11 +157,20 @@ StagedImageEffect::getGpuInputRoI(int inputNb,
                                   const RectI& outputRect,
                                   const RenderScale& scale) const
 {
-    if ((imagePipelineSpec().op != OpKind::Passes) || (inputNb != getSourceInput())) {
-        return NativeEffectBase::getGpuInputRoI(inputNb, outputRect, scale);
+    const OpKind kind = imagePipelineSpec().op;
+    const int source = getSourceInput();
+
+    if ((inputNb == source) && (kind == OpKind::Passes)) {
+        return passListSourceRoI(outputRect, opPasses(getCurrentTime(), getCurrentView(), scale));
+    }
+    if ((inputNb == source) && (kind == OpKind::Resample) && opResamplesOnGpu()) {
+        const double time = getCurrentTime();
+        const ViewIdx view = getCurrentView();
+
+        return resampleGpuSourceRoI(*this, source, opResample(time, view, scale), getResampleRegionStages(time, view), time, view, outputRect, scale);
     }
 
-    return passListSourceRoI(outputRect, opPasses(getCurrentTime(), getCurrentView(), scale));
+    return NativeEffectBase::getGpuInputRoI(inputNb, outputRect, scale);
 }
 
 bool
@@ -170,7 +182,7 @@ StagedImageEffect::getGpuInputLayer(int inputNb,
 {
     const OpKind kind = imagePipelineSpec().op;
 
-    if ((kind != OpKind::Point) && (kind != OpKind::Passes)) {
+    if ((kind != OpKind::Point) && (kind != OpKind::Passes) && ((kind != OpKind::Resample) || !opResamplesOnGpu())) {
         return false;
     }
     stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
@@ -186,6 +198,13 @@ StagedImageEffect::renderGpu(const GpuRenderArgs& args)
 
     if (kind == OpKind::Passes) {
         return recordPassesGpu(*this, resolveGpuPlan(query), args, opPasses(query.time, query.view, query.mappedScale));
+    }
+    if (kind == OpKind::Resample) {
+        if (!opResamplesOnGpu()) {
+            return eStatusFailed;
+        }
+
+        return recordResampleGpu(*this, resolveGpuPlan(query), args, opResample(query.time, query.view, query.mappedScale), getResampleRegionStages(query.time, query.view));
     }
     if (kind != OpKind::Point) {
         return eStatusFailed;

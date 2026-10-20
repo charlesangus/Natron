@@ -72,12 +72,13 @@ struct GpuStageSummary {
 /**
  * @brief What the GPU cost model reads from an op beyond its kind to pick a row of its tables:
  * sigma, the Gaussian-equivalent spread in pixels at the rendered scale (size / 2.4 for a
- * blur of diameter size), and whether the filter is recursive (IIR), whose cost does not grow
- * with sigma.
+ * blur of diameter size), whether the filter is recursive (IIR), whose cost does not grow
+ * with sigma, and whether the render averages several matrices per pixel (motion blur).
  **/
 struct GpuCostHint {
     double sigma = 0.;
     bool iir = false;
+    bool motionBlur = false;
 };
 
 /**

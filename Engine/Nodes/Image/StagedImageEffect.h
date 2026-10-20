@@ -72,8 +72,8 @@ NATRON_NAMESPACE_ENTER
  *
  * A Resample op gives the node its regions through ResampleExecutor, and, for the matrix form,
  * the transform concatenation answers: the node applies the transforms the host concatenates into
- * its source, and offers its own matrix unless it has the MaskMix stage. It renders on the CPU
- * only.
+ * its source, and offers its own matrix unless it has the MaskMix stage. It renders on the CPU,
+ * and on the GPU too when the op opts in (GpuResampleOp).
  **/
 class StagedImageEffect
     : public NativeEffectBase {
@@ -124,13 +124,15 @@ public:
      * (canRunStagesGpu()) and the op's gpu() description at the query's time, view and scale names work
      * the device runs for pixels of the query's component count. A runtime shader that does not build is reported once and never built
      * again for this node. For a Passes op, canRecordPassesGpu() with the op's passes at the
-     * query's time, view and scale. Every other op kind stays on the CPU.
+     * query's time, view and scale. For a Resample op that opts into the GPU, canRecordResampleGpu()
+     * with the op's request at the query's time, view and scale. Every other op stays on the CPU.
      **/
     virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
-     * @brief For a Passes op, outputRect grown by the halo of the op's passes at the current time
-     * and view when inputNb is the source; outputRect otherwise.
+     * @brief When inputNb is the source, at the current time and view: for a Passes op, outputRect
+     * grown by the halo of the op's passes; for a Resample op that opts into the GPU,
+     * resampleGpuSourceRoI(). outputRect otherwise.
      **/
     virtual RectI getGpuInputRoI(int inputNb,
                                  const RectI& outputRect,
@@ -153,8 +155,9 @@ public:
                                              RectD* rod) OVERRIDE WARN_UNUSED_RETURN;
 
     /**
-     * @brief For a Point or Passes op, the layer its plane is read in, except for the mask input,
-     * which is read in the layer its mask channel resolves in. False for every other op kind.
+     * @brief For a Point or Passes op, or a Resample op that opts into the GPU, the layer its plane
+     * is read in, except for the mask input, which is read in the layer its mask channel resolves
+     * in. False for every other op.
      **/
     virtual bool getGpuInputLayer(int inputNb,
                                   const ImageLayerDesc& plane,
@@ -164,8 +167,8 @@ public:
 
     /**
      * @brief Records the op's gpu() description through the StagePlan of args.query with
-     * recordStagesGpu(), or a Passes op's passes with recordPassesGpu(). Only called when
-     * canRenderOnGpu() accepted args.query.
+     * recordStagesGpu(), a Passes op's passes with recordPassesGpu(), or a Resample op's request
+     * with recordResampleGpu(). Only called when canRenderOnGpu() accepted args.query.
      **/
     virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -337,6 +340,15 @@ protected:
     }
 
     /**
+     * @brief Whether the op is a Resample op that runs on the GPU (GpuResampleOp); the default is
+     * false.
+     **/
+    virtual bool opResamplesOnGpu() const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
      * @brief Whether a matrix-form Resample op lets the node offer its matrix to the host; the
      * default is false.
      **/
@@ -424,7 +436,8 @@ public:
 
     /**
      * @brief For a Passes op, the op's costHint(params, context) when it has one, else
-     * passListCostHint() of its passes, at time, view and mipmapLevel; empty for a Point op.
+     * passListCostHint() of its passes, at time, view and mipmapLevel. For a Resample op, its
+     * costHint(params, context) when it has one. Empty otherwise.
      **/
     virtual std::optional<GpuCostHint> gpuCostHint(double time,
                                                    ViewIdx view,
@@ -440,6 +453,14 @@ public:
                 return _op.costHint(params, context);
             } else {
                 return passListCostHint(_op.passes(params, context));
+            }
+        } else if constexpr (PIPELINE.op == OpKind::Resample) {
+            if constexpr (requires(const OP& o, const typename OP::Params& p, const PassContext& c) {
+                              { o.costHint(p, c) } -> std::same_as<std::optional<GpuCostHint>>;
+                          }) {
+                return _op.costHint(bakeParams(_op, time, view), getPassContext(RenderScale::fromMipmapLevel(mipmapLevel)));
+            } else {
+                return std::nullopt;
             }
         } else {
             return std::nullopt;
@@ -581,6 +602,15 @@ private:
     {
         if constexpr (PIPELINE.op == OpKind::Resample) {
             return MatrixResampleOp<OP>;
+        } else {
+            return false;
+        }
+    }
+
+    virtual bool opResamplesOnGpu() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        if constexpr (PIPELINE.op == OpKind::Resample) {
+            return GpuResampleOp<OP>;
         } else {
             return false;
         }

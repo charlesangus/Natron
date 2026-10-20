@@ -394,6 +394,25 @@ TransformOp::transform(const Params& params,
     return true;
 }
 
+bool
+TransformOp::rendersWithMotionBlur(const Params& params)
+{
+    const Resampler::BlurSettings& blur = params.blur;
+
+    return (blur.motionBlur != 0.) && ((blur.shutter != 0.) || blur.directionalBlur);
+}
+
+std::optional<GpuCostHint>
+TransformOp::costHint(const Params& params,
+                      const PassContext& /*context*/) const
+{
+    GpuCostHint hint;
+
+    hint.motionBlur = rendersWithMotionBlur(params);
+
+    return hint;
+}
+
 template <bool MASKED>
 TransformImageNode<MASKED>::TransformImageNode(NodePtr node)
     : Base(node)
@@ -589,9 +608,7 @@ bool
 TransformImageNode<MASKED>::rendersWithMotionBlur(double time,
                                                   ViewIdx view) const
 {
-    const Resampler::BlurSettings blur = bakeParams(this->op(), time, view).blur;
-
-    return (blur.motionBlur != 0.) && ((blur.shutter != 0.) || blur.directionalBlur);
+    return TransformOp::rendersWithMotionBlur(bakeParams(this->op(), time, view));
 }
 
 template <bool MASKED>

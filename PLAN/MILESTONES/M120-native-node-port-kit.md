@@ -251,6 +251,7 @@ T6 and T7 come first: they build the test-only OFX bundle. The other tasks then 
 
 ## Decisions
 
+- 2026-10-20 — Claimed despite the file-overlap test (user override): M120 shares `Engine/AppManager.cpp` with M108 - (GPU host), `Engine/GpuCostModel.cpp` with M107 - GPU Viewer Hand-off, and `Tests/CMakeLists.txt` with the parked M64 - Tiled Rendering. The user accepted resolving those conflicts at merge, as for M137.
 - 2026-10-19 — **Runs after M137 - Native Base Class Flexibility; fragments derive from `NodeSpec`** (user, M137 grill): registration is designed once. The fragment names only the class and header. This milestone gains a dep on M137.
 
 - 2026-10-13 — Created during the native-port planning grill: the user chose to run the new port milestones in parallel with no board order, which only works if they share no manifest files.

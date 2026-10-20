@@ -462,7 +462,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
 - [x] M137.P8.T6 — Composite kind on the GPU (first cut, code cd00f94a0: four fixed bindings in `compositewrap.slang`; reworked by P8.T7)
 - [x] M137.P8.T2 — Dissolve (code 1193cf0c8; moves to the fold in P8.T7)
 
-- [ ] M137.P8.T7 — Composite as a fold over any number of inputs
+- [x] M137.P8.T7 — Composite as a fold over any number of inputs
   - files: `Engine/Nodes/Image/Op.h`, `Engine/Nodes/Image/StagePlan.{h,cpp}`, `Engine/Nodes/Image/StagedImageEffect.{h,cpp}`, `Engine/Gpu/Kernels/pixelwrap.slang`, `Engine/Gpu/Kernels/compositewrap.slang` (delete), `Engine/Gpu/GpuWrap.{h,cpp}`, `Engine/Nodes/Merge/Dissolve.{h,cpp}`, `Tests/Native/StagedComposite_Test.cpp`, `Tests/Gpu/PixelWrap_Test.cpp`, `Tests/Gpu/CMakeLists.txt`
   - approach:
     - A Composite op names a base input and an ordered list of further inputs, any count (Variadic included), and defines one step that combines the running result with one more input. The executor starts from the base row and folds the step over the list. With an empty list the result is the base row.
@@ -473,7 +473,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, `StagedComposite_Test` folds 2, 3 and 5 inputs (one offset) under mask and mix, with a blend input other than the base, plus the Point-op `route()` identity; `PixelWrap_Test` checks the step kernel over 2 and 5 inputs against a CPU transcription; Dissolve goldens re-recorded (rounding only) and `NativeDissolve_Test` passes.
   - size: L
 
-- [ ] M137.P8.T3 — Keyer as a Custom node
+- [x] M137.P8.T3 — Keyer as a Custom node
   - files: `Engine/Nodes/Keyer/Keyer.{h,cpp}`, `Engine/Nodes/Image/StagedImageEffect.{h,cpp}` (only a Custom GPU opt-in, if needed), `Tests/Native/NativeKeyerGpu_Test.cpp`
   - approach:
     - Re-base onto `StagedImageEffect`, `OpKind::Custom`, with a `NodeSpec`, as Merge. Its render becomes `renderOp`; `isIdentity` stays false. Its GPU path and `keyer_main` stay as they are, through a Custom-node GPU opt-in if the framework lacks one.
@@ -481,7 +481,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, the Keyer goldens are bit-exact, `NativeKeyerGpu_Test` is within its bound, and `NativeKeyer_Test` passes.
   - size: M
 
-- [ ] M137.P8.T4 — ChromaKeyer as a Custom node
+- [x] M137.P8.T4 — ChromaKeyer as a Custom node
   - files: `Engine/Nodes/Keyer/ChromaKeyer.{h,cpp}`, `Tests/Native/NativeChromaKeyerGpu_Test.cpp`
   - approach: as P8.T3, keeping `chromakeyer_main`, its `getGpuInputLayer` and `getGpuReadableInput`.
   - verify: as P8.T3, with `NativeChromaKeyer_Test`.
@@ -498,7 +498,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
 
 ## Phase 137.9: Delete the old base and document
 
-- [ ] M137.P9.T1 — Delete `NativeImageEffect`, `NativeImageTraits` and the description virtual
+- [x] M137.P9.T1 — Delete `NativeImageEffect`, `NativeImageTraits` and the description virtual
   - files: `Engine/Nodes/Image/NativeImageEffect.{h,cpp}`, `Engine/Nodes/NativeEffectBase.{h,cpp}`, `Engine/Nodes/Image/PixelKernel.h`, `Engine/Gpu/GpuWrap.h`, `Engine/Nodes/Image/Resampler.h`
   - approach:
     - Delete the files; no CMake file lists them. The old base's `getGpuStageSummary` goes with them.
@@ -507,7 +507,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, a grep for `NativeImageEffect`, `NativeImageTraits`, `NativePluginDescription` and `getNativePluginDescription` in `Engine/` (README aside, P9.T4) finds nothing, and the full ctest passes.
   - size: M
 
-- [ ] M137.P9.T2 — Move the framework tests off the old base
+- [x] M137.P9.T2 — Move the framework tests off the old base
   - files: `Tests/Native/NativeImageEffect_Test.cpp`, `Tests/Native/NativeImageEffectGpu_Test.cpp`, `Tests/Native/NativeRuntimeShaderGpu_Test.cpp`, `Tests/SerialTests.cmake`, `Tests/CMakeLists.txt`
   - approach:
     - Rewrite the test effects as spec'd `ImageNode<Op>`s. Rename the first two files and their suites to `StagedImageEffect*`, and update `SerialTests.cmake:13` and the kernel registration at `Tests/CMakeLists.txt:150` to match.
@@ -516,13 +516,13 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, these suites pass, including the serial one.
   - size: M
 
-- [ ] M137.P9.T3 — Remove the remaining old-base references in tests
+- [x] M137.P9.T3 — Remove the remaining old-base references in tests
   - files: `Tests/Native/NativeGpuParity.{h,cpp}`, `Tests/Gpu/PixelWrap_Test.cpp`
   - approach: drop `NativeGpuParity`'s `NativeImageEffect&` overload (P5–P8 retargeted every per-node GPU test) and reword `PixelWrap_Test.cpp:315`'s comment. Make no assertion changes.
   - verify: at the phase build, a grep for `NativeImageEffect`, `NativeImageTraits` and `getNativePluginDescription` in `Tests/` finds nothing, and the full ctest passes.
   - size: S
 
-- [ ] M137.P9.T4 — Rewrite the node-authoring README sections
+- [x] M137.P9.T4 — Rewrite the node-authoring README sections
   - files: `Engine/Nodes/README.md`
   - approach:
     - Rewrite "Writing a node, start to finish" (`:385-458`) and "Flat image nodes" (`:658-797`) for `NodeSpec`, `ImagePipelineSpec`, the `Op` kinds, stages and footer, and shared C++/Slang maths headers.
@@ -599,6 +599,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
 - 2026-10-19 — Constant, Solid and CheckerBoard lose their optional input: no Source input, no stages, `sourceInput` -1, no pass-through (user). This is a deliberate behaviour change; P5.T4 re-records only the generator goldens.
 - 2026-10-19 — Crop is a pure Point op whose box rounds to whole pixels internally, with softness a matte the row multiplies by; `reformat` is expressed as an output RoD/format move and an integer translation, never a shifted source read, and P7.T4 stops and reports if that fails (user): a crop to a fractional pixel makes no sense. Golden diffs are allowed only at the edge pixels of fractional-box cases, and are reported.
 - 2026-10-19 — Dissolve gains a `mix` knob through the MaskMix stage, replacing its own mask handling (user).
+- 2026-10-20 — Phases 8–9 code complete (9add99d47 fold, 457eff5af keyers, ceb0db01b/081ecd21b/ed0e78fd9 old base and tests, 862c37f11 README), verified at the next phase build. The README links `docs/decisions/2026-10-19-native-node-framework.md`: publish the design note there with the PR. No shared C++/Slang maths header exists; the README describes the paired-module convention instead.
 - 2026-10-20 — Phase 7 build (code dae7d89ed, Crop not yet in): every golden re-recorded bit-identically (Position, Reformat, Transform included); 2585 tests, one failure in the taskgraph leg only, `GpuResidencyTest.LargeCompStaysWithinTheDeviceBudget` expecting an eviction that timing didn't produce (passed in the legacy leg). Rechecked at the next build.
 - 2026-10-20 — Composite is a fold, not a fixed source list (user): an op names a base input and any number of further inputs and defines one step combining the running result with one more input; the GPU dispatches a two-input step kernel per further input. The four-source cap existed only for the keyers, which are losing those inputs, and gave many-input nodes nothing. An op reading several inputs at once is left until a concrete node needs it. Keyer and ChromaKeyer become Custom nodes keeping their own render and GPU kernels until M95 - Knob Cleanup And Keyer Redesign: fitting them to Composite needed per-pixel source coverage, as-stored layer reads and RGB blend sources on the GPU, all keyer-only.
 - 2026-10-20 — Dissolve (code 1193cf0c8): rounding-only diffs from the op/stage split are accepted and its goldens re-recorded (user: don't revisit architectural decisions to fix rounding errors). Masked and one-input pixels can move by a few ulps, and unprocessed channels now always come from the lower input. The same rule applies to any later node whose conversion moves results only by rounding.

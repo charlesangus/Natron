@@ -324,8 +324,8 @@ struct Expected {
     std::vector<double> magnitude;
 };
 
-// A transcription of NativeImageEffect::render()'s per-pixel wrapping, with readSourceRow's and
-// readChannelRow's fills outside the images.
+// A transcription of the CPU point-op per-pixel wrapping, with the fills outside the images that
+// the row readers apply.
 Expected
 reference(Kernel kernel, const Case& c)
 {

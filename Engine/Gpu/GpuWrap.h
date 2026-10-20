@@ -71,7 +71,7 @@ struct GpuWrapView {
     uint32_t nComps = 0;
 };
 
-// What NativeImageEffect::render() does around a point op, over `output`. The source reads zero
+// What the CPU point-op wrapping does around a point op, over `output`. The source reads zero
 // outside its bounds, which may be empty; it has the destination's nComps.
 struct GpuWrap {
     GpuWrapView src;

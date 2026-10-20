@@ -348,18 +348,6 @@ runRenderGpuOn(GpuParityRuntime& runtime,
 
 GpuRunResult
 runRenderGpu(GpuParityRuntime& runtime,
-             NativeImageEffect& effect,
-             const GpuQuery& query,
-             const std::vector<GpuParityImage>& inputs,
-             const GpuParityImage* mask,
-             const RectI& outputRect,
-             const GpuViewLayout& layout)
-{
-    return runRenderGpuOn(runtime, effect, mask ? effect.getMaskInput() : -1, query, inputs, mask, outputRect, layout);
-}
-
-GpuRunResult
-runRenderGpu(GpuParityRuntime& runtime,
              StagedImageEffect& effect,
              const GpuQuery& query,
              const std::vector<GpuParityImage>& inputs,

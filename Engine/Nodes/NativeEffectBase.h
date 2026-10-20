@@ -82,60 +82,6 @@ struct GpuCostHint {
 };
 
 /**
- * @brief Statically describes one input of a NativeEffectBase subclass: its label,
- * whether it may be left unconnected, the DataKindEnum it accepts, and whether it is a mask.
- * The host gives a mask input the enableMask_<label>/maskChannel_<label> selectors.
- **/
-struct NativeInputDescription {
-    std::string label;
-    bool optional;
-    DataKindEnum kind;
-    bool isMask;
-
-    explicit NativeInputDescription(const std::string& label_,
-                                    bool optional_ = false,
-                                    DataKindEnum kind_ = eDataKindImage,
-                                    bool isMask_ = false)
-        : label(label_)
-        , optional(optional_)
-        , kind(kind_)
-        , isMask(isMask_)
-    {
-    }
-};
-
-/**
- * @brief Statically describes a NativeEffectBase subclass: plugin id/label/description,
- * grouping (a menu path whose levels are separated by '/', e.g. "Color/Math"), version, its inputs, the DataKindEnum it outputs, and whether it is a writer. One
- * instance of this, returned by NativeEffectBase::getNativePluginDescription(), replaces the
- * half-dozen one-line EffectInstance accessor overrides a hand-written node otherwise repeats.
- **/
-struct NativePluginDescription {
-    std::string id;
-    std::string label;
-    std::string description;
-    std::string grouping;
-    int majorVersion;
-    int minorVersion;
-    std::vector<NativeInputDescription> inputs;
-    DataKindEnum outputKind;
-    bool isWriter;
-
-    NativePluginDescription()
-        : id()
-        , label()
-        , description()
-        , grouping(PLUGIN_GROUP_OTHER)
-        , majorVersion(1)
-        , minorVersion(0)
-        , inputs()
-        , outputKind(eDataKindImage)
-        , isWriter(false)
-    {
-    }
-};
-
-/**
  * @brief The abort state of one render, shared with the pool threads running its bands.
  * EffectInstance::aborted() finds the render through the AbortableThread info or the effect's
  * TLS frame args of the asking thread, which only the thread running render() carries: a pool
@@ -182,7 +128,7 @@ void parallelForCancellable(int count,
  * one-line overrides (getPluginID(), getPluginLabel(), getPluginGrouping(),
  * getMajorVersion(), getMinorVersion(), getNInputs(), getInputDataKind(), isWriter(),
  * isOutput(), ...) for every new node. NativeEffectBase asks for that metadata once, via a
- * single getNativePluginDescription() override, and implements those EffectInstance and
+ * single nodeSpec() override, and implements those EffectInstance and
  * OutputEffectInstance virtuals from it.
  *
  * Everything else about OutputEffectInstance -- knobs, rendering, undo, serialization,
@@ -216,21 +162,9 @@ void parallelForCancellable(int count,
  *     }
  *
  * private:
- *     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+ *     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
  *     {
- *         NativePluginDescription desc;
- *
- *         desc.id = "fr.natron.ExampleNode";
- *         desc.label = "Example";
- *         desc.description = "A minimal native node built on NativeEffectBase.";
- *         desc.grouping = PLUGIN_GROUP_OTHER;
- *         desc.majorVersion = 1;
- *         desc.minorVersion = 0;
- *         desc.inputs.push_back( NativeInputDescription("Source", false, eDataKindImage) );
- *         desc.outputKind = eDataKindImage;
- *         desc.isWriter = false;
- *
- *         return desc;
+ *         return staticNodeSpec<kExampleSpec>();
  *     }
  *
  *     virtual void initializeKnobs() OVERRIDE FINAL
@@ -276,15 +210,11 @@ public:
     virtual DataKindEnum getInputDataKind(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
 
     /**
-     * @brief The node's static description, which every query above answers from; null for a
-     * node that describes itself through getNativePluginDescription() instead. A node with a
-     * constexpr spec returns staticNodeSpec<kSpec>(), which rejects an invalid spec at compile
-     * time. The spec must outlive the node and never change.
+     * @brief The node's static description, which every query above answers from. A node
+     * returns staticNodeSpec<kSpec>() of a constexpr spec, which rejects an invalid spec at
+     * compile time. The spec must outlive the node and never change.
      **/
-    virtual const NodeSpec* nodeSpec() const WARN_UNUSED_RETURN
-    {
-        return nullptr;
-    }
+    virtual const NodeSpec* nodeSpec() const WARN_UNUSED_RETURN = 0;
 
     /**
      * @brief How the output at time and view relates to the inputs. For a node with a
@@ -592,17 +522,6 @@ protected:
      **/
     static void makeDeepScanlineChunks(const RectI& bounds,
                                        std::vector<RectI>* chunks);
-
-    /**
-     * @brief Subclasses without a nodeSpec() declare their static plugin metadata by overriding
-     * this. It is queried on demand rather than cached: every call site above is off the
-     * render path (registration, UI display, project load), so re-building the
-     * small description each time keeps this class free of per-instance state.
-     **/
-    virtual NativePluginDescription getNativePluginDescription() const WARN_UNUSED_RETURN
-    {
-        return NativePluginDescription();
-    }
 
     /**
      * @brief Wraps the AppManager::createKnob() idiom every initializeKnobs() repeats.

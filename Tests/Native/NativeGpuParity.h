@@ -39,7 +39,6 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/GpuRender.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScheduler.h"
@@ -136,14 +135,6 @@ private:
 // `layout` says, submits, waits and downloads. `query.nComps` is the output's component count. The
 // mask, when given, goes to the effect's mask input. The test fails when the effect does not accept
 // the query or does not render.
-GpuRunResult runRenderGpu(GpuParityRuntime& runtime,
-                          NativeImageEffect& effect,
-                          const GpuQuery& query,
-                          const std::vector<GpuParityImage>& inputs,
-                          const GpuParityImage* mask,
-                          const RectI& outputRect,
-                          const GpuViewLayout& layout = GpuViewLayout());
-
 GpuRunResult runRenderGpu(GpuParityRuntime& runtime,
                           StagedImageEffect& effect,
                           const GpuQuery& query,

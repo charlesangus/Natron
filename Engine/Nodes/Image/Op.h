@@ -130,9 +130,8 @@ struct GpuOpRef {
  *
  * bake() reads the op's knobs once per evaluation into Params, which is copyable so that band
  * threads take it by value (see bakeParams()). isIdentity() says whether
- * those Params leave the source unchanged, whatever the stages do. row() is pure on its RowIO,
- * as PixelKernel::processRow() is: no knob access, no allocation and no I/O, called
- * concurrently for different rows. gpu() says how the same Params run on the GPU.
+ * those Params leave the source unchanged, whatever the stages do. row() is pure on its RowIO:
+ * no knob access, no allocation and no I/O, called concurrently for different rows. gpu() says how the same Params run on the GPU.
  *
  * An op whose maths depends on the render scale takes the render's PassContext as well, in all
  * three members: isIdentity(params, context), row(params, context, io) and gpu(params, context).

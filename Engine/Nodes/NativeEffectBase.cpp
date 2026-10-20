@@ -220,73 +220,43 @@ splitGrouping(std::string_view path,
 std::string
 NativeEffectBase::getPluginID() const
 {
-    if (const NodeSpec* spec = nodeSpec()) {
-        return std::string(spec->id);
-    }
-
-    return getNativePluginDescription().id;
+    return std::string(nodeSpec()->id);
 }
 
 std::string
 NativeEffectBase::getPluginLabel() const
 {
-    if (const NodeSpec* spec = nodeSpec()) {
-        return std::string(spec->label);
-    }
-
-    return getNativePluginDescription().label;
+    return std::string(nodeSpec()->label);
 }
 
 std::string
 NativeEffectBase::getPluginDescription() const
 {
-    if (const NodeSpec* spec = nodeSpec()) {
-        return std::string(spec->description);
-    }
-
-    return getNativePluginDescription().description;
+    return std::string(nodeSpec()->description);
 }
 
 void
 NativeEffectBase::getPluginGrouping(std::list<std::string>* grouping) const
 {
-    if (const NodeSpec* spec = nodeSpec()) {
-        splitGrouping(spec->grouping, grouping);
-
-        return;
-    }
-    const std::string path = getNativePluginDescription().grouping;
-    splitGrouping(path, grouping);
+    splitGrouping(nodeSpec()->grouping, grouping);
 }
 
 int
 NativeEffectBase::getMajorVersion() const
 {
-    if (const NodeSpec* spec = nodeSpec()) {
-        return spec->majorVersion;
-    }
-
-    return getNativePluginDescription().majorVersion;
+    return nodeSpec()->majorVersion;
 }
 
 int
 NativeEffectBase::getMinorVersion() const
 {
-    if (const NodeSpec* spec = nodeSpec()) {
-        return spec->minorVersion;
-    }
-
-    return getNativePluginDescription().minorVersion;
+    return nodeSpec()->minorVersion;
 }
 
 bool
 NativeEffectBase::isWriter() const
 {
-    if (const NodeSpec* spec = nodeSpec()) {
-        return spec->isWriter;
-    }
-
-    return getNativePluginDescription().isWriter;
+    return nodeSpec()->isWriter;
 }
 
 bool
@@ -298,99 +268,51 @@ NativeEffectBase::isOutput() const
 int
 NativeEffectBase::getNInputs() const
 {
-    if (const NodeSpec* spec = nodeSpec()) {
-        return spec->inputCount();
-    }
-
-    return (int)getNativePluginDescription().inputs.size();
+    return nodeSpec()->inputCount();
 }
 
 std::string
 NativeEffectBase::getInputLabel(int inputNb) const
 {
-    if (const NodeSpec* spec = nodeSpec()) {
-        const NodeSpec::ResolvedInput input = spec->resolveInput(inputNb);
-        if (!input.spec) {
-            return EffectInstance::getInputLabel(inputNb);
-        }
-        if (input.spec->role == InputRole::Variadic) {
-            return std::string(input.spec->label) + std::to_string(input.spec->firstNumber + input.indexInRun);
-        }
-
-        return std::string(input.spec->label);
-    }
-
-    const NativePluginDescription desc = getNativePluginDescription();
-
-    if ((inputNb < 0) || ((std::size_t)inputNb >= desc.inputs.size())) {
+    const NodeSpec::ResolvedInput input = nodeSpec()->resolveInput(inputNb);
+    if (!input.spec) {
         return EffectInstance::getInputLabel(inputNb);
     }
+    if (input.spec->role == InputRole::Variadic) {
+        return std::string(input.spec->label) + std::to_string(input.spec->firstNumber + input.indexInRun);
+    }
 
-    return desc.inputs[inputNb].label;
+    return std::string(input.spec->label);
 }
 
 bool
 NativeEffectBase::isInputOptional(int inputNb) const
 {
-    if (const NodeSpec* spec = nodeSpec()) {
-        const NodeSpec::ResolvedInput input = spec->resolveInput(inputNb);
+    const NodeSpec::ResolvedInput input = nodeSpec()->resolveInput(inputNb);
 
-        return input.spec && input.spec->optional;
-    }
-
-    const NativePluginDescription desc = getNativePluginDescription();
-
-    if ((inputNb < 0) || ((std::size_t)inputNb >= desc.inputs.size())) {
-        return false;
-    }
-
-    return desc.inputs[inputNb].optional;
+    return input.spec && input.spec->optional;
 }
 
 bool
 NativeEffectBase::isInputMask(int inputNb) const
 {
-    if (const NodeSpec* spec = nodeSpec()) {
-        const NodeSpec::ResolvedInput input = spec->resolveInput(inputNb);
+    const NodeSpec::ResolvedInput input = nodeSpec()->resolveInput(inputNb);
 
-        return input.spec && (input.spec->role == InputRole::Mask);
-    }
-
-    const NativePluginDescription desc = getNativePluginDescription();
-
-    if ((inputNb < 0) || ((std::size_t)inputNb >= desc.inputs.size())) {
-        return false;
-    }
-
-    return desc.inputs[inputNb].isMask;
+    return input.spec && (input.spec->role == InputRole::Mask);
 }
 
 DataKindEnum
 NativeEffectBase::getOutputDataKind() const
 {
-    if (const NodeSpec* spec = nodeSpec()) {
-        return spec->outputKind;
-    }
-
-    return getNativePluginDescription().outputKind;
+    return nodeSpec()->outputKind;
 }
 
 DataKindEnum
 NativeEffectBase::getInputDataKind(int inputNb) const
 {
-    if (const NodeSpec* spec = nodeSpec()) {
-        const NodeSpec::ResolvedInput input = spec->resolveInput(inputNb);
+    const NodeSpec::ResolvedInput input = nodeSpec()->resolveInput(inputNb);
 
-        return input.spec ? input.spec->kind : eDataKindImage;
-    }
-
-    const NativePluginDescription desc = getNativePluginDescription();
-
-    if ((inputNb < 0) || ((std::size_t)inputNb >= desc.inputs.size())) {
-        return eDataKindImage;
-    }
-
-    return desc.inputs[inputNb].kind;
+    return input.spec ? input.spec->kind : eDataKindImage;
 }
 
 bool
@@ -402,10 +324,6 @@ NativeEffectBase::isIdentity(double time,
                              ViewIdx* inputView,
                              int* inputNb)
 {
-    if (!nodeSpec()) {
-        return OutputEffectInstance::isIdentity(time, scale, roi, view, inputTime, inputView, inputNb);
-    }
-
     const Route answer = route(time, view);
 
     *inputView = view;

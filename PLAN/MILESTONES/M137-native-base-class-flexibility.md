@@ -412,7 +412,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
 
 ## Phase 137.7: Resample kind and the Transform family
 
-- [ ] M137.P7.T1 — Resample kind on the CPU
+- [x] M137.P7.T1 — Resample kind on the CPU
   - files: `Engine/Nodes/Image/Op.h`, `Engine/Nodes/Image/ResampleExecutor.{h,cpp}` (new), `Engine/Nodes/Image/StagedImageEffect.{h,cpp}`, `Tests/Native/StagedResample_Test.cpp` (new)
   - approach:
     - Add a `ResampleOp` concept and admit it in `OpOfKind`: `bake`, `isIdentity(params, ctx)`, and either a 3×3 (`transform(params, ctx)`) or an integer offset (Position), plus the filter, clamp and black-outside settings `Resampler` takes. `ctx` is `PassContext`.
@@ -422,7 +422,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, `StagedResample_Test` renders a translate+scale test op bit-exact against `Resampler` called directly, at scale 1 and 0.5, with mask and mix 0.5, and checks its RoD, RoI and `getTransform`.
   - size: L
 
-- [ ] M137.P7.T2 — Transform and TransformMasked on the CPU
+- [x] M137.P7.T2 — Transform and TransformMasked on the CPU
   - files: `Engine/Nodes/Transform/Transform.{h,cpp}`
   - approach:
     - `TransformNode` derives from `ImageNode<TransformOp>`; class names stay (tests cast to `TransformNode*`). Transform has no stages (`rendersUnprocessedChannels()` is false today and it has no mix). TransformMasked has `{MaskMix}`, replacing its `addMaskMixKnobs` call (`:563`). Both use `LayerPolicy::all()` and Resample.
@@ -430,13 +430,13 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, the Transform and TransformMasked goldens are bit-exact and `NativeTransform_Test` passes, including its concatenation cases.
   - size: L
 
-- [ ] M137.P7.T3 — Reformat
+- [x] M137.P7.T3 — Reformat
   - files: `Engine/Nodes/Transform/Reformat.{h,cpp}`
   - approach: `Reformat` (class name kept; `NativeReformat_Test:411` casts to it) derives from `ImageNode<ReformatOp>`: Resample, CPU only (M110), no stages, `LayerPolicy::all()`. Its `rendersUnprocessedChannels` override goes because it is FINAL in the base. `isIdentityOp` (646) becomes `isIdentity(params, ctx)` and `render` (1121) goes. The output-format and metadata overrides stay.
   - verify: at the phase build, the Reformat goldens are bit-exact and `NativeReformat_Test` passes.
   - size: M
 
-- [ ] M137.P7.T4 — Position, and Crop as a rounding point op
+- [ ] M137.P7.T4 — Position, and Crop on the Resample offset form
   - files: `Engine/Nodes/Transform/{Position,Crop}.{h,cpp}`
   - approach:
     - Position: Resample op with an integer offset, CPU only, `LayerPolicy::all()`. `isIdentity` (296) becomes the op's. Delete `render` and the RoD/RoI overrides the Resample branch now answers.
@@ -447,7 +447,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: at the phase build, the Position goldens are bit-exact; the Crop goldens are bit-exact except reported edge-pixel diffs in fractional-box cases; and `NativePosition_Test` and `NativeCrop_Test` pass.
   - size: L
 
-- [ ] M137.P7.T5 — Resample on the GPU, Transform's GPU path, and the motion-blur cost hint
+- [x] M137.P7.T5 — Resample on the GPU, Transform's GPU path, and the motion-blur cost hint
   - files: `Engine/Nodes/Image/StagedImageEffect.{h,cpp}`, `Engine/Gpu/GpuResample.cpp`, `Engine/Nodes/NativeEffectBase.h`, `Engine/GpuCostModel.cpp`, `Tests/Native/NativeTransformGpu_Test.cpp`
   - approach:
     - `canRenderOnGpu`/`renderGpu` gain a Resample branch over `resample.slang` through `GpuResample.cpp`. It is ported from P7.T2's deleted `TransformNode` overrides, with mask and mix from the `StagePlan`. Ops without a GPU form (Reformat, Position) stay refused.
@@ -599,6 +599,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
 - 2026-10-19 — Constant, Solid and CheckerBoard lose their optional input: no Source input, no stages, `sourceInput` -1, no pass-through (user). This is a deliberate behaviour change; P5.T4 re-records only the generator goldens.
 - 2026-10-19 — Crop is a pure Point op whose box rounds to whole pixels internally, with softness a matte the row multiplies by; `reformat` is expressed as an output RoD/format move and an integer translation, never a shifted source read, and P7.T4 stops and reports if that fails (user): a crop to a fractional pixel makes no sense. Golden diffs are allowed only at the edge pixels of fractional-box cases, and are reported.
 - 2026-10-19 — Dissolve gains a `mix` knob through the MaskMix stage, replacing its own mask handling (user).
+- 2026-10-20 — Phase 7 build (code dae7d89ed, Crop not yet in): every golden re-recorded bit-identically (Position, Reformat, Transform included); 2585 tests, one failure in the taskgraph leg only, `GpuResidencyTest.LargeCompStaysWithinTheDeviceBudget` expecting an eviction that timing didn't produce (passed in the legacy leg). Rechecked at the next build.
 - 2026-10-20 — Composite is a fold, not a fixed source list (user): an op names a base input and any number of further inputs and defines one step combining the running result with one more input; the GPU dispatches a two-input step kernel per further input. The four-source cap existed only for the keyers, which are losing those inputs, and gave many-input nodes nothing. An op reading several inputs at once is left until a concrete node needs it. Keyer and ChromaKeyer become Custom nodes keeping their own render and GPU kernels until M95 - Knob Cleanup And Keyer Redesign: fitting them to Composite needed per-pixel source coverage, as-stored layer reads and RGB blend sources on the GPU, all keyer-only.
 - 2026-10-20 — Dissolve (code 1193cf0c8): rounding-only diffs from the op/stage split are accepted and its goldens re-recorded (user: don't revisit architectural decisions to fix rounding errors). Masked and one-input pixels can move by a few ulps, and unprocessed channels now always come from the lower input. The same rule applies to any later node whose conversion moves results only by rounding.
 - 2026-10-20 — Composite (code 74836e031) refuses the Premult stage at compile time: no single divisor applies to several inputs.

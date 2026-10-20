@@ -11,7 +11,8 @@ Each item is a place where the framework differs from M137's `## Scope` or its t
 - **Spec text is not translated.** `NodeSpec` labels and descriptions are constexpr `std::string_view`s. Before, descriptions went through `tr()`, as Grade's did. Help text in other locales regresses until a lookup is added at the query sites (`NativeEffectBase::getPluginDescription`).
 - **Some spec fields are declared but unused.** Scope asks for RFV reads and per-input time, boundary and layer policy.
   - `NodeSpec::rfvReads` holds names only.
-  - `InputSpec::time`, `boundary` and `layer` exist, but no executor reads them.
+  - `InputSpec::time` and `boundary` exist, but no executor reads them. `layer` is read only for Composite ops: `resolveStageSources` follows each folded input's `PairWith` chain to the input whose policy decides the layer. A `Plane` policy reads the input in the plane being rendered, as resolved on that input; a `Select` policy reads it in the layer the named `KnobLayerSelect` picks from that input's layers. The GPU fold accepts only inputs that resolve to the plane being rendered, so a `Select` sends the render to the CPU. Point, Passes and Resample ops ignore `layer` and read their source in the plane being rendered.
+  - Every Composite input is read at the evaluation's time; `CompositeInput` carries no per-input time.
   - `KnobReader` takes no RFV context from thread-local storage. It is the place that context would be captured once knobs have one.
 - **The compile-time spec check covers constexpr specs only.** `nodeSpec()` is a virtual returning a pointer, so a runtime spec (MissingPluginNode, P4.T5) goes through no `static_assert`. Scope says an invalid spec has no runtime path.
 - **One change in the engine core, outside the milestone's file list.** `EffectInstance::isIdentity_public`'s identity cache now stores "not identity" as `INT_MIN`. Before, it stored -1, so a cached `Route::black()` (identity, input -1) read back as "render".

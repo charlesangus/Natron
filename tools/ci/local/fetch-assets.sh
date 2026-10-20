@@ -156,11 +156,15 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # It also excludes Keyer, ChromaKeyer, ColorLookup, CImgErode, CImgDilate and
 # EdgeDetect, which the native nodes in Engine/Nodes/Keyer, Engine/Nodes/Color and Engine/Nodes/Filter take over.
 #
+# EdgeExtend passes non-RGBA input through unchanged rather than premultiplying
+# a channel the buffer lacks, and CImg/CImg.h.patch initialises the expression
+# parser's variable name even when cimg_mp_operator_dollar is undefined.
+#
 # Unlike openfx-io, its CMakeLists.txt has no variable-name bug and nothing in
 # it depends on OIIO/OCIO/SeExpr, so it configures and links clean against
 # this container with no other source changes needed.
 OPENFX_MISC_REPO="https://github.com/charlesangus/openfx-misc.git"
-OPENFX_MISC_REF="9fb0d09046b3980951bdd72962fdf9ee3c95a8c8"
+OPENFX_MISC_REF="6ed7a9599b35779fdc1cfbceafa4a63d1fb1283f"
 
 # LCMS2_REF: mm2/Little-CMS at the lcms2.16 tag. Built from source even
 # though the image already ships /usr/local/lib/liblcms2.so.2.0.19 with a
@@ -204,8 +208,13 @@ IMAGEMAGICK_REF="b2dd67b1681e23d0e0b9769d81bed23f05129e2a"
 # so the librsvg, poppler-glib and libcdr/librevenge dependencies are not
 # needed. Its OpenFX-IO submodule is an openfx-io revision whose reader and
 # writer targets are disabled too.
+#
+# Sketch seeds ImageMagick's random generator with a fixed value under a lock,
+# so its noise is identical across renders and threads. Texture also seeds and
+# draws under the same lock as Sketch, so both are deterministic under
+# concurrent renders.
 OPENFX_ARENA_REPO="https://github.com/charlesangus/openfx-arena.git"
-OPENFX_ARENA_REF="32d8a2a00cffe9dc34071d4d38282827ae2fd57a"
+OPENFX_ARENA_REF="e9d1565c052e4e8261605f0cf9344e33204cbb93"
 
 # OPENFX_METADATA_REF: charlesangus/openfx -- our ASWF-lineage OpenFX fork,
 # whose Support/Plugins/Metadata* examples exercise the clip and image
@@ -432,7 +441,8 @@ else
     # has no equivalent, so a plain `cmake --build` links Misc.ofx (it doesn't
     # need CImg.h) and then fails partway through CImg.ofx with a "no such
     # file" on Inpaint/inpaint.h. We replicate upstream's two curl calls and
-    # the patch, sourcing the CImg commit from openfx-misc's own
+    # the patches (inpaint.h abort support, a CImg.h uninitialised-variable
+    # fix), sourcing the CImg commit from openfx-misc's own
     # CImg/Makefile rather than pinning it separately here -- that keeps it
     # locked to whatever openfx-misc's own recipe expects at OPENFX_MISC_REF,
     # so it can never drift out of sync when that ref is bumped.
@@ -454,6 +464,7 @@ else
     curl -fsS -o "${MISC_SRC}/CImg/Inpaint/inpaint.h" \
         "https://raw.githubusercontent.com/dtschump/CImg/${CIMG_VERSION}/plugins/inpaint.h"
     patch -p0 -d "${MISC_SRC}/CImg" < "${MISC_SRC}/CImg/Inpaint/inpaint.h.patch" > /dev/null
+    patch -p0 -d "${MISC_SRC}/CImg" < "${MISC_SRC}/CImg/CImg.h.patch" > /dev/null
     mkdir -p "${ASSETS_DIR}/CImg"
     cp "${MISC_SRC}/CImg/CImg.h" "${CIMG_HEADER_KEPT}"
 

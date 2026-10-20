@@ -32,6 +32,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -61,7 +62,10 @@
 #include "Engine/ViewIdx.h"
 
 #ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuPipelineCache.h"
+#include "Engine/Gpu/GpuRuntime.h"
 #include "Engine/Gpu/GpuShaderCompiler.h"
+#include "Engine/GpuContext.h"
 #endif
 
 #define kStagedGpuShaderTestOpPluginID "test.natron.built-in.StagedGpuShaderTestOp"
@@ -225,6 +229,19 @@ registerGpuShaderTestOpsOnce()
     });
 }
 
+GpuQuery
+rgbaQuery()
+{
+    GpuQuery q;
+
+    q.time = kTime;
+    q.view = ViewIdx(0);
+    q.nComps = 4;
+    q.bitDepth = eImageBitDepthFloat;
+
+    return q;
+}
+
 std::string
 uniqueTag(const char* what)
 {
@@ -326,7 +343,7 @@ protected:
 #ifdef NATRON_HAVE_GPU
 
 // The Point op of a StagedImageEffect reaches the GPU through the same executor: a shader that
-// compiles renders on the device and matches the CPU frame.
+// compiles renders on the device, built once for every thread that asks, and matches the CPU frame.
 TEST_F(NativeRuntimeShaderGpuTest, StagedPointOpRendersTheShaderOnTheGpuAndMatchesTheCpu)
 {
     NodePtr source;
@@ -339,11 +356,40 @@ TEST_F(NativeRuntimeShaderGpuTest, StagedPointOpRendersTheShaderOnTheGpuAndMatch
 
     setShaderSource(shaderSource(uniqueTag("staged valid"), false));
 
-    const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>(1, op), op, window, kTime);
+    std::size_t cacheBuilds = 0;
+    const GpuContextReady askFromThreads = [op, &cacheBuilds](std::string* error) {
+        GpuContext* context = appPTR->getGpuContext();
+        gpu::GpuRuntime* runtime = context ? context->runtime() : nullptr;
+        StagedImageEffect* effect = dynamic_cast<StagedImageEffect*>(op->getEffectInstance().get());
+        if (!runtime || !effect) {
+            *error = "no runtime or no effect";
+
+            return false;
+        }
+        std::atomic<int> refused(0);
+        std::vector<std::thread> threads;
+        for (int t = 0; t < 8; ++t) {
+            threads.emplace_back([effect, &refused]() {
+                if (!effect->canRenderOnGpu(rgbaQuery())) {
+                    ++refused;
+                }
+            });
+        }
+        for (std::thread& thread : threads) {
+            thread.join();
+        }
+        EXPECT_EQ(0, refused.load());
+        const gpu::GpuPipelineCache::Stats stats = runtime->pipelines().stats();
+        cacheBuilds = stats.compiles + stats.diskHits;
+
+        return true;
+    };
+    const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>(1, op), op, window, kTime, askFromThreads);
     if (result.skipped) {
         return;
     }
     ASSERT_TRUE(result.ok) << result.error;
+    EXPECT_EQ(1u, cacheBuilds);
     EXPECT_TRUE(result.ranInRegion(op));
     EXPECT_GT(gpuTasksOf(result, op), 0);
     expectSame(expected, result.cpu, "CPU frame");
@@ -382,8 +428,39 @@ TEST_F(NativeRuntimeShaderGpuTest, StagedPointOpWithABrokenShaderRendersOnTheCpu
     EXPECT_TRUE(message.contains(QString::fromUtf8("CPU"))) << message.toStdString();
     op->clearPersistentMessage(false);
 
-    const EndToEndResult second = renderEndToEnd(std::vector<NodePtr>(1, op), op, window, kTime);
+    std::size_t cacheBuilds = 1;
+    const GpuContextReady askFromThreads = [op, &cacheBuilds](std::string* error) {
+        GpuContext* context = appPTR->getGpuContext();
+        gpu::GpuRuntime* runtime = context ? context->runtime() : nullptr;
+        StagedImageEffect* effect = dynamic_cast<StagedImageEffect*>(op->getEffectInstance().get());
+        if (!runtime || !effect) {
+            *error = "no runtime or no effect";
+
+            return false;
+        }
+        std::atomic<int> accepted(0);
+        std::vector<std::thread> threads;
+        for (int t = 0; t < 8; ++t) {
+            threads.emplace_back([effect, &accepted]() {
+                for (int i = 0; i < 16; ++i) {
+                    if (effect->canRenderOnGpu(rgbaQuery())) {
+                        ++accepted;
+                    }
+                }
+            });
+        }
+        for (std::thread& thread : threads) {
+            thread.join();
+        }
+        EXPECT_EQ(0, accepted.load());
+        const gpu::GpuPipelineCache::Stats stats = runtime->pipelines().stats();
+        cacheBuilds = stats.compiles + stats.diskHits;
+
+        return true;
+    };
+    const EndToEndResult second = renderEndToEnd(std::vector<NodePtr>(1, op), op, window, kTime, askFromThreads);
     ASSERT_TRUE(second.ok) << second.error;
+    EXPECT_EQ(0u, cacheBuilds);
     EXPECT_EQ(0, gpuTasksOf(second, op));
     expectSame(expected, second.gpu, "second frame with GPU placement");
     EXPECT_EQ(1u, gpu::glslCompileCountForTesting() - compilesBefore);

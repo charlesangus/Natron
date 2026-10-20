@@ -3846,8 +3846,8 @@ KnobHelper::setName(const std::string & name,
     _imp->name = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(name);
     // A sublabel only echoes values the node already hashes, and plugins rewrite it from their
     // actions: in the hash it would only re-key the node under a render.
-    if (_imp->name == kNatronOfxParamStringSublabelName) {
-        _imp->hashExempt = true;
+    if ((_imp->name == kNatronOfxParamStringSublabelName) && !_imp->hashExempt.exchange(true)) {
+        moveHashedMetadataSourcesGeneration();
     }
 
     if ( !getHolder() ) {

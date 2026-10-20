@@ -561,6 +561,13 @@ TEST_F(MetadataExpressionDependencyTest, ConnectionCheckFollowsExpressionAndLink
     ASSERT_TRUE(sourceTag->slaveTo(0, readerTag, 0));
     EXPECT_FALSE(modify->checkIfConnectingInputIsOk(source.get()));
 
+    // Linking copies the master's expression, which outlives the link and would close the cycle
+    // on its own; without it only the link leads to the reader.
+    EXPECT_EQ(readerTag->getExpression(0), sourceTag->getExpression(0));
+    sourceTag->clearExpression(0, true);
+    ASSERT_TRUE(bool(sourceTag->getMaster(0).second));
+    EXPECT_FALSE(modify->checkIfConnectingInputIsOk(source.get()));
+
     sourceTag->unSlave(0, false);
     EXPECT_TRUE(modify->checkIfConnectingInputIsOk(source.get()));
 }

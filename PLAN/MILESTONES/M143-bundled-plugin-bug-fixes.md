@@ -102,6 +102,9 @@ Deps: M100 - Content Node Hashing (owns the sweep and the known-bug list).
 
 ## Decisions
 
+- 2026-10-20 — P2.T1: EdgeExtend passes the image through unchanged when the working image is not RGBA with alpha at channel 3 (fork commit `94487064`), replacing a debug `assert` that would abort in PR CI. Four-channel arithmetic is untouched. Partial-matte cases such as RG+A get no edge extension rather than a partial one.
+- 2026-10-20 — P2.T2: `CImg.h` is not tracked in the openfx-misc fork; `fetch-assets.sh` downloads it at the fork's `CIMGVERSION`. The fix ships as a `CImg/CImg.h.patch` in the fork, applied by `fetch-assets.sh` beside the existing `inpaint.h.patch`.
+- 2026-10-20 — P2.T3: ImageMagick 7.1.1-6 has only a process-global seed, so Sketch seeds and sketches under one static mutex (fork commit `ed63abf`). Open: `Texture.cpp` also sets the global seed without that lock, so a concurrent Texture render could still perturb a Sketch; the P2 verification checks whether the sweep sees it.
 - 2026-10-19 — Remove the known-bug mechanism, do not leave it empty: M100 designed the list to fail once a plug-in stops showing its bug, so an empty list is dead code (and a zero-length array does not compile). A new plug-in bug can add the mechanism back from git history. The user may veto this and keep the skeleton.
 
 **Verification gate:** remote release build with the bumped asset refs: all 16 `CacheEquivalenceSweep` shards plus the scenario tests pass in legacy and taskgraph with no plug-in skipped; `KnownPluginBugsStillCrash` no longer exists; the full ctest passes in both schedulers, and no test run takes a 60 s watchdog path. PR CI (debug asserts) is green. T1's classification is recorded in `## Decisions`.

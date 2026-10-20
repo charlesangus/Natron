@@ -60,6 +60,50 @@ NATRON_NAMESPACE_ENTER
 namespace {
 const int kAbortCheckRows = 16;
 
+constexpr InputSpec kKeyerInputs[] = {
+    InputSpec { .label = "Source" },
+    InputSpec { .label = "InM", .role = InputRole::Mask, .optional = true },
+    InputSpec { .label = "OutM", .role = InputRole::Mask, .optional = true },
+    InputSpec { .label = "Bg", .role = InputRole::Aux, .optional = true },
+};
+
+constexpr NodeSpec kKeyerNodeSpec = {
+    .id = PLUGINID_NATRON_KEYER,
+    .label = "Keyer",
+    .description = "A collection of simple keyers. These work by computing a foreground key from the RGB values of the input image (see the keyerMode parameter).\n"
+                   "This foreground key is is a scalar from 0 to 1. From the foreground key, a background key (or transparency) is computed.\n"
+                   "The function that maps the foreground key to the background key is piecewise linear:\n"
+                   "- it is 0 below A = (center+toleranceLower+softnessLower)\n"
+                   "- it is linear between A = (center+toleranceLower+softnessLower) and B = (center+toleranceLower)\n"
+                   " -it is 1 between B = (center+toleranceLower) and C = (center+toleranceUpper)\n"
+                   "- it is linear between C = (center+toleranceUpper) and D = (center+toleranceUpper+softnessUpper)\n"
+                   "- it is 0 above D = (center+toleranceUpper+softnessUpper)\n"
+                   "\n"
+                   "Keyer can pull mattes that correspond to the RGB channels, the luminance and the red, green and blue colors. "
+                   "One very useful application for a luminance mask is to mask out a sky (almost always it is the brightest thing in a landscape).\n"
+                   "Conversion from A, B, C, D to Keyer parameters is:\n"
+                   "softnessLower = (A-B)\n"
+                   "toleranceLower = (B-C)/2\n"
+                   "center = (B+C)/2\n"
+                   "toleranceUpper = (C-B)/2\n"
+                   "softnessUpper = (D-C)\n"
+                   "\n"
+                   "See also:\n"
+                   "- https://web.archive.org/web/20220524000628/http://www.opticalenquiry.com/nuke/index.php?title=The_Keyer_Nodes#Keyer\n"
+                   "- http://opticalenquiry.com/nuke/index.php?title=Green_Screen\n"
+                   "- https://web.archive.org/web/20211023071843/http://opticalenquiry.com/nuke/index.php?title=Keying_Tips",
+    .grouping = PLUGIN_GROUP_KEYER,
+    .majorVersion = PLUGIN_MAJOR_NATRON_KEYER,
+    .minorVersion = 0,
+    .inputs = kKeyerInputs,
+};
+
+constexpr ImagePipelineSpec kKeyerPipeline = {
+    .stages = { Stage::PassThroughUnprocessed },
+    .layers = LayerPolicy::color(true, true, true, true),
+    .op = OpKind::Custom,
+};
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846264338327950288
 #endif
@@ -774,7 +818,7 @@ toKeyerGpuView(const GpuImageView& view,
 } // anonymous namespace
 
 Keyer::Keyer(NodePtr node)
-    : NativeImageEffect(node)
+    : StagedImageEffect(node)
     , _subLabel()
     , _keyColor()
     , _mode()
@@ -793,6 +837,18 @@ Keyer::Keyer(NodePtr node)
 
 Keyer::~Keyer()
 {
+}
+
+const NodeSpec*
+Keyer::nodeSpec() const
+{
+    return staticNodeSpec<kKeyerNodeSpec>();
+}
+
+const ImagePipelineSpec&
+Keyer::imagePipelineSpec() const
+{
+    return staticImagePipelineSpec<kKeyerPipeline, kKeyerNodeSpec>();
 }
 
 std::string
@@ -819,7 +875,7 @@ Keyer::addAcceptedComponents(int inputNb,
                              std::list<ImageLayerDesc>* comps)
 {
     if (isInputMask(inputNb)) {
-        NativeImageEffect::addAcceptedComponents(inputNb, comps);
+        StagedImageEffect::addAcceptedComponents(inputNb, comps);
 
         return;
     }
@@ -827,52 +883,10 @@ Keyer::addAcceptedComponents(int inputNb,
     comps->push_back(ImageLayerDesc::getRGBComponents());
 }
 
-NativePluginDescription
-Keyer::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_KEYER;
-    desc.label = "Keyer";
-    desc.description = tr("A collection of simple keyers. These work by computing a foreground key from the RGB values of the input image (see the keyerMode parameter).\n"
-                          "This foreground key is is a scalar from 0 to 1. From the foreground key, a background key (or transparency) is computed.\n"
-                          "The function that maps the foreground key to the background key is piecewise linear:\n"
-                          "- it is 0 below A = (center+toleranceLower+softnessLower)\n"
-                          "- it is linear between A = (center+toleranceLower+softnessLower) and B = (center+toleranceLower)\n"
-                          " -it is 1 between B = (center+toleranceLower) and C = (center+toleranceUpper)\n"
-                          "- it is linear between C = (center+toleranceUpper) and D = (center+toleranceUpper+softnessUpper)\n"
-                          "- it is 0 above D = (center+toleranceUpper+softnessUpper)\n"
-                          "\n"
-                          "Keyer can pull mattes that correspond to the RGB channels, the luminance and the red, green and blue colors. "
-                          "One very useful application for a luminance mask is to mask out a sky (almost always it is the brightest thing in a landscape).\n"
-                          "Conversion from A, B, C, D to Keyer parameters is:\n"
-                          "softnessLower = (A-B)\n"
-                          "toleranceLower = (B-C)/2\n"
-                          "center = (B+C)/2\n"
-                          "toleranceUpper = (C-B)/2\n"
-                          "softnessUpper = (D-C)\n"
-                          "\n"
-                          "See also:\n"
-                          "- https://web.archive.org/web/20220524000628/http://www.opticalenquiry.com/nuke/index.php?title=The_Keyer_Nodes#Keyer\n"
-                          "- http://opticalenquiry.com/nuke/index.php?title=Green_Screen\n"
-                          "- https://web.archive.org/web/20211023071843/http://opticalenquiry.com/nuke/index.php?title=Keying_Tips")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_KEYER;
-    desc.majorVersion = PLUGIN_MAJOR_NATRON_KEYER;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindImage));
-    desc.inputs.push_back(NativeInputDescription("InM", true, eDataKindImage, true));
-    desc.inputs.push_back(NativeInputDescription("OutM", true, eDataKindImage, true));
-    desc.inputs.push_back(NativeInputDescription("Bg", true, eDataKindImage));
-    desc.outputKind = eDataKindImage;
-
-    return desc;
-}
-
 void
 Keyer::initializeKnobs()
 {
-    KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
+    KnobPagePtr page = createControlsPage();
 
     // Node.cpp shows this knob's value in parentheses next to the node's label.
     KnobStringPtr subLabel = createKnob<KnobString>(std::string(kNatronOfxParamStringSublabelName));
@@ -1067,13 +1081,10 @@ Keyer::getRegionOfDefinition(U64 /*hash*/,
 }
 
 bool
-Keyer::isIdentity(double /*time*/,
-                  const RenderScale& /*scale*/,
-                  const RectI& /*roi*/,
-                  ViewIdx /*view*/,
-                  double* /*inputTime*/,
-                  ViewIdx* /*inputView*/,
-                  int* /*inputNb*/)
+Keyer::isOpIdentity(double /*time*/,
+                    const RenderScale& /*scale*/,
+                    const RectI& /*roi*/,
+                    ViewIdx /*view*/)
 {
     return false;
 }
@@ -1113,7 +1124,8 @@ Keyer::readSettings(double time,
 }
 
 StatusEnum
-Keyer::render(const RenderActionArgs& args)
+Keyer::renderOp(const RenderActionArgs& args,
+                const StagePlan& /*plan*/)
 {
     Settings settings;
     readSettings(args.time, args.view, &settings);
@@ -1198,7 +1210,7 @@ Keyer::render(const RenderActionArgs& args)
 
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
     std::vector<RectI> bandRects;
-    NativeImageEffect::makeRowBands(roi, nThreads, &bandRects);
+    makeStageRowBands(roi, nThreads, &bandRects);
     std::vector<KeyBand> bands;
     for (std::size_t j = 0; j < jobs.size(); ++j) {
         KeyJob& job = jobs[j];
@@ -1263,7 +1275,7 @@ Keyer::render(const RenderActionArgs& args)
     parallelForCancellable((int)bands.size(), nThreads, cancel, renderBand);
 
     return eStatusOK;
-} // Keyer::render
+} // Keyer::renderOp
 
 int
 Keyer::getResolvedInputNComps(int inputNb,
@@ -1284,13 +1296,13 @@ Keyer::getResolvedInputNComps(int inputNb,
 }
 
 bool
-Keyer::canRenderOnGpu(const GpuQuery& query) const
+Keyer::canRenderOpOnGpu(const GpuQuery& query) const
 {
 #ifdef NATRON_HAVE_GPU
     if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps != 4)) {
         return false;
     }
-    // render() reads a one- or two-channel image in its own layout, which the region would hand
+    // renderOp() reads a one- or two-channel image in its own layout, which the region would hand
     // over converted to RGBA.
     const int inputs[2] = { kKeyerInputSource, kKeyerInputBg };
     for (int i = 0; i < 2; ++i) {
@@ -1303,7 +1315,7 @@ Keyer::canRenderOnGpu(const GpuQuery& query) const
     readSettings(query.time, query.view, &settings);
     const KeyColorTerms terms(settings.keyColor);
 
-    // An infinite float norm makes render() despill by the distance to the axis alone.
+    // An infinite float norm makes renderOp() despill by the distance to the axis alone.
     return !despills(settings, terms) || std::isfinite(terms.norm2);
 #else
     Q_UNUSED(query);
@@ -1312,14 +1324,26 @@ Keyer::canRenderOnGpu(const GpuQuery& query) const
 #endif
 }
 
+bool
+Keyer::getOpGpuInputLayer(int inputNb,
+                          const ImageLayerDesc& plane,
+                          double time,
+                          ViewIdx view,
+                          ImageLayerDesc* layer) const
+{
+    stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
+
+    return true;
+}
+
 StatusEnum
-Keyer::renderGpu(const GpuRenderArgs& args)
+Keyer::renderOpGpu(const GpuRenderArgs& args)
 {
 #ifdef NATRON_HAVE_GPU
     const GpuQuery& query = args.query;
     const RectI& rect = args.outputRect;
     const GpuImageView& dst = args.output;
-    if (!canRenderOnGpu(query) || rect.isNull() || !isUsableGpuView(dst, 4) || !dst.bounds.contains(rect)) {
+    if (!canRenderOpOnGpu(query) || rect.isNull() || !PassExec::isUsableGpuView(dst, 4) || !dst.bounds.contains(rect)) {
         return eStatusFailed;
     }
     const double time = query.time;
@@ -1336,7 +1360,7 @@ Keyer::renderGpu(const GpuRenderArgs& args)
     }
     params.channelMask = (uint32_t)channels.to_ulong();
 
-    // render() reads each input over the image it fetched, which ends at the input's region of
+    // renderOp() reads each input over the image it fetched, which ends at the input's region of
     // definition; a view may reach past it.
     const std::function<GpuImageView(int)> validView = [&](int inputNb) {
         GpuImageView none;
@@ -1352,7 +1376,7 @@ Keyer::renderGpu(const GpuRenderArgs& args)
             return none;
         }
 
-        return cropGpuView(v, v.bounds.intersect(rod.toPixelEnclosing(scale, getAspectRatio(inputNb))));
+        return PassExec::cropGpuView(v, v.bounds.intersect(rod.toPixelEnclosing(scale, getAspectRatio(inputNb))));
     };
 
     const int srcNComps = getResolvedInputNComps(kKeyerInputSource, time, view);
@@ -1378,7 +1402,7 @@ Keyer::renderGpu(const GpuRenderArgs& args)
         }
         ImageLayerDesc maskLayer;
         int maskChannel = -1;
-        // render() reads zero for a mask it cannot fetch, or whose channel its image lacks.
+        // renderOp() reads zero for a mask it cannot fetch, or whose channel its image lacks.
         if (!resolveInputPlaneForRender(maskInputs[k], time, view, &maskLayer, &maskChannel) || (maskChannel < 0) || (maskChannel >= maskLayer.getNumComponents())) {
             continue;
         }
@@ -1386,7 +1410,7 @@ Keyer::renderGpu(const GpuRenderArgs& args)
         if (!maskView.buffer) {
             continue;
         }
-        const int component = getGpuMaskViewComponent(maskLayer, maskChannel, maskView.nComps);
+        const int component = stageGpuMaskViewComponent(maskLayer, maskChannel, maskView.nComps);
         if ((component < 0) || (component >= maskView.nComps) || !toKeyerGpuView(maskView, 1, (uint32_t)component, maskViews[k])) {
             return eStatusFailed;
         }
@@ -1425,6 +1449,6 @@ Keyer::renderGpu(const GpuRenderArgs& args)
 
     return eStatusFailed;
 #endif
-} // Keyer::renderGpu
+} // Keyer::renderOpGpu
 
 NATRON_NAMESPACE_EXIT

@@ -50,6 +50,7 @@
 #define kParitySourceParamComponents "components"
 #define kParitySourceParamExtraLayer "extraLayer"
 #define kParitySourceParamOrigin "origin"
+#define kParitySourceParamNoise "noise"
 #define kParitySourceWidth 64
 #define kParitySourceHeight 48
 #define kParitySourceExtraLayerID "spec"
@@ -68,6 +69,13 @@ NATRON_NAMESPACE_ENTER
  **/
 float paritySourceColorValue(int channel, int cx, int cy, double time);
 float paritySourceExtraValue(int channel, int cx, int cy, double time);
+
+/**
+ * @brief Fixed-seed noise in [-0.5, 0.5) for `channel` (0..3 colour, 4..6 spec) at canonical pixel
+ * (cx, cy). With the `noise` knob on, the source adds 0.1 times it to R, G, B, the spec plane and
+ * the alpha ramp band (clamped to [0, 1]); the exact 0 and 1 alpha bands stay exact.
+ **/
+float paritySourceNoise(int channel, int cx, int cy);
 
 /**
  * @brief A deterministic multiplanar generator for parity tests: a 64x48 region of definition at
@@ -109,7 +117,15 @@ public:
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDParitySource,
+        .label = "Test Parity Source",
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 
@@ -126,11 +142,13 @@ private:
 
     int colorNComps() const;
     bool hasExtraLayer() const;
+    bool hasNoise() const;
     void getOrigin(int* x, int* y) const;
 
     KnobChoiceWPtr _components;
     KnobBoolWPtr _extraLayer;
     KnobIntWPtr _origin;
+    KnobBoolWPtr _noise;
 };
 
 ImageLayerDesc paritySourceExtraLayer();
@@ -228,6 +246,7 @@ bool setKnobValue(const NodePtr& node, const std::string& name, const std::strin
 void setParitySourceComponents(const NodePtr& source, const std::string& componentsID);
 void setParitySourceExtraLayer(const NodePtr& source, bool extraLayer);
 void setParitySourceOrigin(const NodePtr& source, int x, int y);
+void setParitySourceNoise(const NodePtr& source, bool noise);
 
 /**
  * @brief The source's region of definition in pixel coordinates at `mipmapLevel`.

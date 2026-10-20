@@ -17,7 +17,7 @@
 # along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
 # ***** END LICENSE BLOCK *****
 
-set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h CountingTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h NativeMetadataTestEffect.h NativeParity.h Native/NativeGpuParity.h PerProcessUserDirs.h RenderBothWays.h)
+set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h CountingTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h NativeMetadataTestEffect.h NativeParity.h Native/NativeGolden.h Native/NativeGpuParity.h PerProcessUserDirs.h RenderBothWays.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -80,6 +80,7 @@ set(Tests_SOURCES
     MemoryInfo_Test.cpp
     Metadata_Test.cpp
     NativeParity.cpp
+    Native/NativeGolden.cpp
     Native/NativeGpuParity.cpp
     NodeCategory_Test.cpp
     TabMenuSettings_Test.cpp
@@ -147,13 +148,20 @@ target_link_libraries(Tests
 if(NATRON_GPU)
     include(${CMAKE_SOURCE_DIR}/cmake/FetchSlang.cmake)
     include(${CMAKE_SOURCE_DIR}/cmake/SlangKernels.cmake)
-    # NativeImageEffectGpu_Test registers this at run time as its test node's GPU kernel. GpuTests
+    # StagedImageEffectGpu_Test registers this at run time as its test node's GPU kernel. GpuTests
     # already owns a target named pixelwrap_scale.
-    slang_add_kernel(native_test_pixelwrap_scale ${CMAKE_SOURCE_DIR}/Engine/Gpu/Kernels/pixelwrap.slang ENTRY pixelwrap_scale)
-    target_link_libraries(Tests PRIVATE native_test_pixelwrap_scale)
+    slang_add_kernel(staged_test_pixelwrap_scale ${CMAKE_SOURCE_DIR}/Engine/Gpu/Kernels/pixelwrap.slang ENTRY pixelwrap_scale)
+    target_link_libraries(Tests PRIVATE staged_test_pixelwrap_scale)
 endif()
+# Compiler, build type and the flags that set optimisation and FMA contraction, so fast
+# (Release at -O1), release (RelWithDebInfo) and debug builds stamp distinct goldens.
+string(TOUPPER "${CMAKE_BUILD_TYPE}" NATRON_GOLDEN_BUILD_TYPE_UPPER)
+string(STRIP "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${NATRON_GOLDEN_BUILD_TYPE_UPPER}}" NATRON_GOLDEN_FLAGS)
+string(REGEX REPLACE "[^A-Za-z0-9.+=-]+" "_" NATRON_GOLDEN_FLAGS "${NATRON_GOLDEN_FLAGS}")
+set(NATRON_GOLDEN_CONFIG "${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}-${CMAKE_BUILD_TYPE}-${NATRON_GOLDEN_FLAGS}")
 target_compile_definitions(Tests
     PRIVATE
+        NATRON_GOLDEN_CONFIG="${NATRON_GOLDEN_CONFIG}"
         NATRON_TESTS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
         NATRON_TESTS_PYPLUGS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../Gui/Resources/PyPlugs"
         NATRON_TESTS_CIMG_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/../build/assets/CImg/CImg.h"

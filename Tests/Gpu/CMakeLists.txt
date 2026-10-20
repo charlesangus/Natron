@@ -8,7 +8,6 @@ set(NATRON_GPU_KERNEL_DIR ${CMAKE_SOURCE_DIR}/Engine/Gpu/Kernels)
 
 # The CPU twins and the extra test kernels get their own names; NatronGpu already owns the
 # SPIR-V targets named after its registry kernels.
-slang_add_kernel(test_grade ${NATRON_GPU_KERNEL_DIR}/grade.slang ENTRY grade_main CPP)
 slang_add_kernel(test_blur ${NATRON_GPU_KERNEL_DIR}/blur.slang ENTRY blurPass CPP)
 foreach(_e pixelwrap_identity pixelwrap_scale pixelwrap_grade pixelwrap_invert pixelwrap_chain)
     slang_add_kernel(${_e} ${NATRON_GPU_KERNEL_DIR}/pixelwrap.slang ENTRY ${_e} CPP)
@@ -16,6 +15,7 @@ endforeach()
 foreach(_e wrap_divide wrap_finish)
     slang_add_kernel(test_${_e} ${NATRON_GPU_KERNEL_DIR}/pixelwrap.slang ENTRY ${_e} CPP)
 endforeach()
+slang_add_kernel(compositestep_halveadd ${NATRON_GPU_KERNEL_DIR}/compositestep.slang ENTRY compositestep_halveadd CPP)
 slang_add_kernel(fill kernels/fill.slang ENTRY fill_main)
 slang_add_kernel(smoke kernels/smoke.slang ENTRY smoke)
 slang_add_kernel(test_smoke kernels/smoke.slang ENTRY smoke CPP)
@@ -35,8 +35,6 @@ set(GpuTests_SOURCES
     GpuRuntimeShader_Test.cpp
     GpuShaderCompiler_Test.cpp
     GpuTransfer_Test.cpp
-    GradeCpu_Test.cpp
-    GradeGpu_Test.cpp
     PixelWrapCompose_Test.cpp
     PixelWrap_Test.cpp
     Smoke_Test.cpp
@@ -57,7 +55,6 @@ target_link_libraries(GpuTests
         NatronGpu
         fill
         smoke
-        test_grade
         test_blur
         pixelwrap_identity
         pixelwrap_scale
@@ -66,6 +63,7 @@ target_link_libraries(GpuTests
         pixelwrap_chain
         test_wrap_divide
         test_wrap_finish
+        compositestep_halveadd
         test_smoke
         -static-libstdc++
         -static-libgcc

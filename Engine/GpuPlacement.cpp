@@ -48,7 +48,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/GpuRender.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RenderScale.h"
 
@@ -493,8 +493,8 @@ makeGpuQueryForTask(const FrameGraph::Task& task,
         return false;
     }
     EffectInstancePtr effect = node->getEffectInstance();
-    NativeImageEffect* native = dynamic_cast<NativeImageEffect*>(effect.get());
-    if (!native) {
+    NativeEffectBase* native = dynamic_cast<NativeEffectBase*>(effect.get());
+    if (!native || !native->opKind()) {
         return false;
     }
     FrameRequestMap::const_iterator nodeRequest = context.getRequest()->find(node);
@@ -510,21 +510,10 @@ makeGpuQueryForTask(const FrameGraph::Task& task,
     query->nComps = plane.getNumComponents();
     query->bitDepth = task.bitdepth;
 
-    const int maskInput = native->getMaskInput();
-    query->hasMask = (maskInput >= 0) && native->getInput(maskInput) && native->isMaskEnabled(maskInput);
-    query->maskInPlane = false;
-    if (query->hasMask) {
-        ImageLayerDesc maskLayer;
-        int maskChannel = -1;
-        if (!native->resolveInputPlaneForRender(maskInput, task.key.time, task.key.view, &maskLayer, &maskChannel) || (maskChannel < 0)) {
-            query->maskInPlane = true;
-        } else {
-            query->maskInPlane = Node::getUnPremultSkipChannel(plane, maskLayer, maskChannel) >= 0;
-        }
-    }
-
-    KnobDoublePtr mix = std::dynamic_pointer_cast<KnobDouble>(native->getKnobByName(kOfxMixParamName));
-    query->mix = mix ? mix->getValueAtTime(task.key.time, 0, task.key.view) : 1.;
+    const GpuStageSummary stages = native->getGpuStageSummary(task.key.time, task.key.view);
+    query->hasMask = stages.applyMask;
+    query->maskInPlane = stages.applyMask && ((stages.maskChannel < 0) || (Node::getUnPremultSkipChannel(plane, stages.maskLayer, stages.maskChannel) >= 0));
+    query->mix = stages.mix;
 
     const std::bitset<4> channels = native->getProcessChannelsForPlane(nodeRequest->second->nodeHash, task.key.time, task.key.view, plane);
     for (int i = 0; i < 4; ++i) {
@@ -542,19 +531,8 @@ makeGpuQueryForTask(const FrameGraph::Task& task,
     const ParallelRenderArgsPtr frameArgs = context.getArgs(node);
     query->draftMode = frameArgs && frameArgs->draftMode;
 
-    query->unPremultChannel = -1;
-    query->unPremultInPlane = false;
-    KnobChannelSelectPtr unPremultBy = native->wantsHostUnPremultSelector() ? node->getUnPremultBySelector() : KnobChannelSelectPtr();
-    if (unPremultBy && !unPremultBy->isNone() && native->getInput(0)) {
-        std::list<ImageLayerDesc> availableLayers;
-        native->getAvailableLayers(task.key.time, task.key.view, 0, &availableLayers);
-        ImageLayerDesc divisorLayer;
-        const int divisorChannel = node->getUnPremultChannel(availableLayers, &divisorLayer);
-        if (divisorLayer.getNumComponents() > 0) {
-            query->unPremultChannel = divisorChannel;
-            query->unPremultInPlane = (divisorChannel >= 0) && (Node::getUnPremultSkipChannel(plane, divisorLayer, divisorChannel) >= 0);
-        }
-    }
+    query->unPremultChannel = stages.divisorChannel;
+    query->unPremultInPlane = (stages.divisorChannel >= 0) && (Node::getUnPremultSkipChannel(plane, stages.divisorLayer, stages.divisorChannel) >= 0);
 
     return true;
 } // makeGpuQueryForTask
@@ -624,7 +602,7 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
         if (!context || !makeGpuQueryForTask(task, *context, &query)) {
             return false;
         }
-        const NativeImageEffect* native = dynamic_cast<const NativeImageEffect*>(task.key.node->getEffectInstance().get());
+        const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(task.key.node->getEffectInstance().get());
 
         return native && native->canRenderOnGpu(query);
     };

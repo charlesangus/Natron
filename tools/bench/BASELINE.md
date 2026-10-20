@@ -958,3 +958,89 @@ M64's kill-gate premise is that plugin compute dwarfs the memory pass, so strip 
 The native point ops are fusion-ready (`PixelKernel`), so M64 can fuse the kernels as well as tile. That removes the per-node fork-join and the intermediate images, which strip pulling alone cannot do. M64's estimate should be redone with fusion of native kernels as the mechanism, not OFX strip pulls.
 
 This is one data point from a 4-core N100. On a many-core workstation the per-node compute divides across more cores while memory bandwidth grows far less, so the bandwidth share of a native node, and with it M64's possible gain, is larger there than measured here.
+
+## M137 before (2026-10-19, e349888f0)
+
+Machine: 4-core Intel N100, 15 GB RAM. Build: remote stripped release AppImage of `e349888f0` (engine identical to `main` d521f111a), extracted to `build/m137-before/squashfs-root`; `build/release/Renderer/NatronRenderer` and `build/assets/Plugins` are symlinks to its `bin/NatronRenderer` and `Plugins/OFX/Natron`. Run in the `natron-dev` container, nothing else running; three rounds, each a fresh process. Host load average at the start of the graph runs was 2.8 to 5.6, so absolute values are noisy; compare ratios.
+
+Commands (repo root, per round; `node_profile.sh` arg `8` is the chain length, threads are all 4 cores):
+
+```
+tools/bench/node_profile.sh cpu 8 grade blur transform dissolve
+tools/ci/local/devshell.sh bash -lc "cd $PWD && BENCH_TOPO=<topo> BENCH_N=50 BENCH_RES=uhd BENCH_OUT=build/bench/m137-before.jsonl xvfb-run -a build/release/Renderer/NatronRenderer -b tools/bench/graph_bench.py"
+```
+
+`<topo>` is blurchain, xfchain or ccchain. Per-node figure: the `cpuN/Mpx` statistic of `node_profile_summary.py` (pixel-weighted median task wall time, ms per megapixel, UHD, chain of 8, steady frames) via `cpu_ms_per_mpx`. Raw records are in `build/bench/m137-before-r<round>/` and `build/bench/m137-before.jsonl`.
+
+| node | r1 | r2 | r3 | median | spread (max-min)/median |
+|---|---|---|---|---|---|
+| grade (ms/Mpx) | 9.68 | 13.99 | 14.32 | 13.99 | 33% |
+| blur (ms/Mpx) | 36.80 | 40.23 | 57.05 | 40.23 | 50% |
+| transform (ms/Mpx) | 13.93 | 14.45 | 17.72 | 14.45 | 26% |
+| dissolve (ms/Mpx) | 11.01 | 10.44 | 12.49 | 11.01 | 19% |
+
+Graph benchmarks, N=50, uhd, 3 timed frames after a warm-up; round value is the median frame wall time (s):
+
+| topo | r1 | r2 | r3 | median | spread | parallelism | peak RSS (MB) |
+|---|---|---|---|---|---|---|---|
+| blurchain | 12.30 | 12.36 | 12.84 | 12.36 | 4% | 3.2 | 642 |
+| xfchain | 34.14 | 19.89 | 20.31 | 20.31 | 71% (r1 outlier; r2/r3 within 2%) | 3.4 | 4480 |
+| ccchain | 14.79 | 14.02 | 14.69 | 14.69 | 5% | 3.4 | 550 |
+
+xfchain r1's frames were 40.9, 34.1 and 20.2 s, so it was still settling; r2 and r3 are the steady figure.
+
+### M137 after (2026-10-20, 862c37f11 + golden commit 6f3cb3e27) against before (e349888f0)
+
+Machine: 4-core Intel N100 (`model name: Intel(R) N100`, 4 cores), 15 GB RAM, `natron-dev` container. Host load average at the start (first before run, 06:23): 22.9 20.5 16.4. The host was not quiet: nothing in the container was running, but `vmstat` showed 15 to 46 blocked processes and 68% iowait from outside the container (swap in use, about 200 MB free), and load at the start of each side ranged 4.6 to 27.3 (see `build/bench/m137-p10/binaries.log`). Only round 3 ran on a mostly settled host (graph parallelism 3.4 to 3.6 against 1.9 to 2.4 in rounds 1 and 2). Compare ratios, and weigh the round 3 row.
+
+Builds: before is the remote release AppImage of `e349888f0`, after is the remote release AppImage of this branch (`build/remote/release/Natron-2.6.0-x86_64.AppImage`, built from `862c37f11` plus the golden commit `6f3cb3e27`), extracted to `build/m137-before/squashfs-root` and `build/m137-after/squashfs-root`. Each side was selected by repointing the `build/release/Renderer/NatronRenderer` and `build/assets/Plugins` symlinks before its runs; the path and the sha256 of `bin/NatronRenderer.bin` (before `dc76ecbb...`, after `be9ffc26...`) are logged per round in `binaries.log`. Three rounds, each round the before build then the after build, same commands as above (`node_profile.sh cpu 8 grade blur transform dissolve`, then `BENCH_TOPO=blurchain|xfchain|ccchain BENCH_N=50 BENCH_RES=uhd` with `BENCH_OUT=build/bench/m137-p10/graph-<side>.jsonl`). Raw outputs are in `build/bench/m137-p10/` (`before-r<round>/`, `after-r<round>/`, `graph-before.jsonl`, `graph-after.jsonl`, logs).
+
+Gate: after-median within the pair's spread (the larger of the two sides' spreads) or within 3%, whichever is larger. Every case passes that gate, but only because the spreads are 23% to 58%, so the gate cannot see a regression smaller than the host noise. The per-round deltas below are the more informative reading.
+
+| case | before r1 / r2 / r3 | after r1 / r2 / r3 | before median | after median | delta | before spread | after spread | gate |
+|---|---|---|---|---|---|---|---|---|
+| grade (ms/Mpx) | 12.20 / 23.84 / 23.02 | 24.40 / 24.31 / 13.08 | 23.02 | 24.31 | +5.6% | 51% | 47% | pass |
+| blur (ms/Mpx) | 58.07 / 50.86 / 66.83 | 50.33 / 58.91 / 34.35 | 58.07 | 50.33 | -13.3% | 28% | 49% | pass |
+| transform (ms/Mpx) | 29.96 / 28.16 / 23.42 | 43.04 / 42.59 / 19.32 | 28.16 | 42.59 | +51.2% | 23% | 56% | pass |
+| dissolve (ms/Mpx) | 18.05 / 19.83 / 10.21 | 21.98 / 23.87 / 13.40 | 18.05 | 21.98 | +21.8% | 53% | 48% | pass |
+| blurchain (s/frame) | 19.20 / 19.58 / 11.90 | 19.34 / 20.86 / 11.93 | 19.20 | 19.34 | +0.7% | 40% | 46% | pass |
+| xfchain (s/frame) | 37.57 / 37.48 / 19.36 | 42.72 / 46.02 / 21.16 | 37.48 | 42.72 | +14.0% | 49% | 58% | pass |
+| ccchain (s/frame) | 22.11 / 22.52 / 13.84 | 23.44 / 22.61 / 14.65 | 22.11 | 22.61 | +2.2% | 39% | 39% | pass |
+
+Per-case deltas by round (after against the before run of the same round):
+
+| case | r1 | r2 | r3 |
+|---|---|---|---|
+| grade | +100% | +2% | -43% |
+| blur | -13% | +16% | -49% |
+| transform | +44% | +51% | -18% |
+| dissolve | +22% | +20% | +31% |
+| blurchain | +1% | +7% | +0.3% |
+| xfchain | +14% | +23% | +9% |
+| ccchain | +6% | +0.4% | +6% |
+
+Graph rows are the median of 3 timed frames per round. In round 3 the three frames of a run agree within 2% on both sides (blurchain 11.85 to 11.93 s before, 11.83 to 12.00 s after; xfchain 19.13 to 19.46 s before, 21.16 to 21.26 s after; ccchain 13.75 to 13.85 s before, 14.64 to 14.79 s after), so the round 3 graph deltas (+0.3%, +9.3%, +5.8%) are not frame noise. Peak RSS and parallelism are unchanged between the sides (xfchain 4.4 to 4.5 GB, blurchain about 600 MB, ccchain about 550 MB).
+
+### M137 after, single render thread (2026-10-20), against before (e349888f0)
+
+The run above could not resolve regressions under the host noise, so the per-node cases were re-measured on a quiet host (load 0.2 to 1.2) with one render thread (`--setting noRenderThreads=1`; `-1` segfaults on both builds), each side's own `squashfs-root` binary and `Plugins`, `NATRON_GPU=off`, `node_profile.py` with a chain of 4, UHD float, 8 frames plus the re-render. Six rounds, before/after order alternating each round (ABBA). The statistic is the minimum ms/Mpx per side, since later frames in a process drift slower; per-round minima agree within about 1%. Raw data in `build/bench/m137-perf/serial/` (862c37f11) and `build/bench/m137-perf/fix1/` (8c5a37d90).
+
+| node | before min | after min, 862c37f11 | delta | after min, 8c5a37d90 | delta |
+|---|---|---|---|---|---|
+| dissolve | 14.44 | 19.39 | +34.3% | 7.87 | -45.5% |
+| transform | 61.30 | 68.85 | +12.3% | 59.96 | -2.3% |
+| colorcorrect | 54.85 | 57.79 | +5.4% | 50.35 | -8.1% |
+| grade | 24.07 | 21.78 | -9.5% | 21.14 | -12.1% |
+| blur | 48.78 | 48.07 | -1.5% | 47.83 | -0.7% |
+
+The 862c37f11 regressions came from the generic finish pass running when it was a plain copy (no mask, mix 1, no divisor, all channels), an unused row copy and a second read of the base input in Composites, and ColorCorrect's `toneWeight` no longer being inlined. 8c5a37d90 (with 7e4f4858a) removes all three; every native golden is unchanged.
+
+Graph benchmarks at 8c5a37d90, four ABBA rounds (`BENCH_N=50 BENCH_RES=uhd`, default render threads), raw data in `build/bench/m137-g2/`. Host load rose from 1.0 to about 4 after round 1. Values are the median of 3 timed frames per run, in s/frame; the delta column is the median over rounds.
+
+| case | before r1 / r2 / r3 / r4 | after r1 / r2 / r3 / r4 | delta |
+|---|---|---|---|
+| blurchain | 13.03 / 11.72 / 11.76 / 11.67 | 11.61 / 13.93 / 11.63 / 11.58 | -1.0% |
+| xfchain | 23.93 / 18.88 / 18.81 / 18.87 | 18.09 / 22.48 / 18.13 / 17.95 | -4.1% |
+| ccchain | 13.53 / 13.55 / 13.59 / 13.41 | 14.45 / 12.69 / 12.67 / 12.63 | -6.3% |
+
+Rounds 3 and 4 are steady within a run (frames within 1%) and agree: blurchain -1% to +0.2%, xfchain -4.7%, ccchain -6.5%. Rounds 1 and 2 each have one side with a 15 to 25% outlier, in both directions.

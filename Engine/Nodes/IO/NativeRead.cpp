@@ -149,22 +149,6 @@ NativeRead::NativeRead(NodePtr node)
 {
 }
 
-NativePluginDescription
-NativeRead::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_READ;
-    desc.label = "Read";
-    desc.description = tr("Read an image or image sequence.").toStdString();
-    desc.grouping = PLUGIN_GROUP_IMAGE;
-    desc.majorVersion = PLUGIN_MAJOR_NATRON_READ;
-    desc.minorVersion = 0;
-    desc.outputKind = eDataKindImage;
-
-    return desc;
-}
-
 void
 NativeRead::initializeKnobs()
 {

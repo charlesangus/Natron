@@ -68,27 +68,10 @@ colorChannelNames(const ImageLayerDesc& plane,
 
 } // namespace
 
-NativePluginDescription
-DeepToImage::getNativePluginDescription() const
+const NodeSpec*
+DeepToImage::nodeSpec() const
 {
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_DEEPTOIMAGE;
-    desc.label = "DeepToImage";
-    desc.description = tr("Flatten the deep layers Channels selects into images: every pixel's samples are "
-                          "composited front-to-back, tidied first when the input does not guarantee they "
-                          "are. Every layer is composited with the deep alpha A, even when alpha is not "
-                          "selected, and a selected channel the deep data lacks reads as 0. The colour "
-                          "plane holds only the colour channels selected: rgb gives an image without "
-                          "alpha. This is where a deep stream's depth information is discarded.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_DEEP;
-    desc.majorVersion = 1;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindDeep));
-    desc.outputKind = eDataKindImage;
-
-    return desc;
+    return staticNodeSpec<kNodeSpec>();
 }
 
 void

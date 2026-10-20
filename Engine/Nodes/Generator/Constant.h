@@ -28,7 +28,10 @@
 
 #include "Global/Macros.h"
 
+#include <list>
+
 #include "Engine/EngineFwd.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/Image/NativeGenerator.h"
 
 #define PLUGINID_NATRON_CONSTANT "net.sf.openfx.ConstantPlugin"
@@ -40,69 +43,89 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief Constant: fills the selected channels of its target layer with `color` (RGBA), unclamped.
- * Knob names, defaults and output are the openfx-misc ConstantPlugin's; it registers under that
+ * @brief Constant and Solid: fill the selected channels of the target layer with `color`,
+ * unclamped. Constant's colour is RGBA; Solid's is RGB with an alpha of 1. Knob names, defaults
+ * and output are the openfx-misc ConstantPlugin's and Solid's; each registers under that
  * plugin's ID one major above.
  **/
-class Constant
-    : public NativeGenerator {
+struct ConstantOp {
+    struct Params {
+        float rgba[4];
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_CONSTANT,
+        .label = "Constant",
+        .description = "Generate an image with a constant color.\n"
+                       "See also: https://web.archive.org/web/20220807183203/http://www.opticalenquiry.com/nuke/index.php?title=Constant,_CheckerBoard,_ColorBars,_ColorWheel",
+        .grouping = PLUGIN_GROUP_IMAGE,
+        .majorVersion = PLUGIN_MAJOR_NATRON_CONSTANT,
+        .minorVersion = 0,
+    };
+
+    static constexpr NodeSpec kSolidNodeSpec = {
+        .id = PLUGINID_NATRON_SOLID,
+        .label = "Solid",
+        .description = "Generate an image with a constant opaque color.",
+        .grouping = PLUGIN_GROUP_IMAGE,
+        .majorVersion = PLUGIN_MAJOR_NATRON_CONSTANT,
+        .minorVersion = 0,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = {},
+        .layers = LayerPolicy::targetSelect(),
+        .op = OpKind::Point,
+    };
+
+    void createKnobs(KnobHolder* holder,
+                     const KnobPagePtr& page);
+
+    Params bake(const KnobReader& reader) const;
+
+    bool isIdentity(const Params& params) const;
+
+    void row(const Params& params,
+             const RowIO& io) const;
+
+    GpuOpRef gpu(const Params& params) const;
+
+    // Solid: an RGB colour knob, and an alpha of 1.
+    bool opaque = false;
+    KnobColorWPtr color;
+};
+
+static_assert(PointOp<ConstantOp>);
+
+template <const NodeSpec& SPEC, bool OPAQUE>
+class ConstantNode
+    : public GeneratorNode<ConstantOp, SPEC> {
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
-        return new Constant(node, false);
+        return new ConstantNode(node);
     }
 
-    virtual ~Constant();
-
-    virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
-
-protected:
-    Constant(NodePtr node,
-             bool solid);
-
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE WARN_UNUSED_RETURN;
-
-private:
-    virtual void initializeKnobs() OVERRIDE FINAL;
-
-    virtual bool isPointOp() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    explicit ConstantNode(NodePtr node)
+        : GeneratorNode<ConstantOp, SPEC>(node)
     {
-        return true;
+        this->op().opaque = OPAQUE;
     }
 
-    virtual PixelKernelPtr makeKernel(const KernelContext& context) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual ~ConstantNode()
+    {
+    }
 
-    virtual int gpuKernelId(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual bool makeGpuKernel(const KernelContext& context,
-                               PixelKernelGpu* gpu) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    // The colour at context's time and view; the alpha of a Solid is 1.
-    void readColor(const KernelContext& context,
-                   float rgba[4]) const;
-
-    bool _solid;
-    KnobColorWPtr _color;
+    virtual void addAcceptedComponents(int inputNb,
+                                       std::list<ImageLayerDesc>* comps) OVERRIDE FINAL
+    {
+        GeneratorNode<ConstantOp, SPEC>::addAcceptedComponents(inputNb, comps);
+        comps->push_back(ImageLayerDesc::getXYComponents());
+    }
 };
 
-/**
- * @brief Solid: Constant with an RGB `color` and an alpha of 1, under the openfx-misc Solid ID.
- **/
-class Solid
-    : public Constant {
-public:
-    static EffectInstance* BuildEffect(NodePtr node)
-    {
-        return new Solid(node);
-    }
-
-    explicit Solid(NodePtr node);
-
-    virtual ~Solid();
-
-protected:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
-};
+using Constant = ConstantNode<ConstantOp::kNodeSpec, false>;
+using Solid = ConstantNode<ConstantOp::kSolidNodeSpec, true>;
 
 NATRON_NAMESPACE_EXIT
 

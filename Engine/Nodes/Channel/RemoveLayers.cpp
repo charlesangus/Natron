@@ -59,27 +59,6 @@ RemoveLayers::~RemoveLayers()
 {
 }
 
-NativePluginDescription
-RemoveLayers::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_REMOVELAYERS;
-    desc.label = "RemoveLayers";
-    desc.description = tr("Remove the chosen layers from the stream, or keep only them. Every other layer passes "
-                          "through unchanged. The colour views rgba, rgb, alpha and xy share one colour plane: "
-                          "removing alpha leaves rgb, removing rgb leaves alpha, and removing rgba drops the colour "
-                          "plane. A layer the input does not have is ignored.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_CHANNEL;
-    desc.majorVersion = 1;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", true, eDataKindImage));
-    desc.outputKind = eDataKindImage;
-
-    return desc;
-}
-
 void
 RemoveLayers::addAcceptedComponents(int inputNb,
                                     std::list<ImageLayerDesc>* comps)
@@ -309,31 +288,22 @@ RemoveLayers::getPreferredMetadata(NodeMetadata& metadata)
     return eStatusOK;
 }
 
-bool
-RemoveLayers::isIdentity(double time,
-                         const RenderScale& /*scale*/,
-                         const RectI& /*roi*/,
-                         ViewIdx view,
-                         double* inputTime,
-                         ViewIdx* inputView,
-                         int* inputNb)
+Route
+RemoveLayers::route(double time,
+                    ViewIdx view)
 {
     std::list<ImageLayerDesc> present;
     std::vector<ResolvedLayer> resolved;
 
     resolveSelection(time, view, &present, &resolved);
     if (colorOutcomeFor(present, resolved).kind != ColorOutcome::eKindUnchanged) {
-        return false;
+        return Route::none();
     }
     if (!droppedLayerIDs(present, resolved).empty()) {
-        return false;
+        return Route::none();
     }
 
-    *inputNb = 0;
-    *inputTime = time;
-    *inputView = view;
-
-    return true;
+    return Route::input(0, time);
 }
 
 StatusEnum

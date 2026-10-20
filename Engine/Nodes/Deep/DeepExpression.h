@@ -46,6 +46,10 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kDeepExpressionInputs[] = {
+    InputSpec { .label = "Source", .kind = eDataKindDeep },
+};
+
 /**
  * @brief Rewrites the channels of one layer of the deep input, chosen by the layer knob, and the
  * Z and ZBack depths, each from its own per-sample expression (see DeepExpressionEvaluator for
@@ -85,18 +89,37 @@ public:
                                              ViewIdx view,
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    virtual bool isIdentity(double time,
-                            const RenderScale& scale,
-                            const RectI& roi,
-                            ViewIdx view,
-                            double* inputTime,
-                            ViewIdx* inputView,
-                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual Route route(double time,
+                        ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void getDeepLayers(double time, ViewIdx view, std::list<ImageLayerDesc>* layers) OVERRIDE FINAL;
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_DEEPEXPRESSION,
+        .label = "DeepExpression",
+        .description = "Rewrite the channels of one layer of the deep input, and the Z and ZBack "
+                       "depths, each from its own expression evaluated once per sample. Layer "
+                       "picks the layer, and the expression fields below it take that layer's "
+                       "channel names. An expression reads the input's channels by name (R, G, B, "
+                       "A, Z, ZBack and any AOV, such as diffuse.R), the pixel's x and y, the "
+                       "sample's sampleIndex and its pixel's sampleCount, frame and pi, with the "
+                       "usual arithmetic, comparison, logical and conditional operators and the "
+                       "functions abs, floor, ceil, round, sqrt, exp, log, pow, min, max, clamp, "
+                       "lerp, step, smoothstep, sin, cos, tan and atan2. A channel whose "
+                       "expression is empty is passed through. Writing a colour channel the input "
+                       "lacks creates it; a layer the input lacks at a frame is an error there.",
+        .grouping = PLUGIN_GROUP_DEEP,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .outputKind = eDataKindDeep,
+        .inputs = kDeepExpressionInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 

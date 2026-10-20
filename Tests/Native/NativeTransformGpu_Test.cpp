@@ -62,8 +62,8 @@
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/GpuRender.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
 #include "Engine/Nodes/Image/Resampler.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
@@ -147,9 +147,9 @@ protected:
         return node;
     }
 
-    static TransformNode* effectOf(const NodePtr& node)
+    static StagedImageEffect* effectOf(const NodePtr& node)
     {
-        return node ? dynamic_cast<TransformNode*>(node->getEffectInstance().get()) : NULL;
+        return node ? dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get()) : NULL;
     }
 
     // Keys translate, rotate and scale at times 0 and 2 about the centre (32, 24), so the matrices
@@ -202,7 +202,7 @@ TEST_F(NativeTransformGpuTest, EligibilityFollowsTheSupportedSettings)
     ASSERT_TRUE(bool(source));
     for (bool masked : { false, true }) {
         NodePtr node = makeNode(masked);
-        TransformNode* effect = effectOf(node);
+        StagedImageEffect* effect = effectOf(node);
         ASSERT_TRUE(effect != NULL);
         connectNodes(source, node, 0, true);
         ASSERT_TRUE(setGeometry(node, kGeometries[5]));
@@ -252,31 +252,37 @@ TEST_F(NativeTransformGpuTest, EligibilityFollowsTheSupportedSettings)
     }
 }
 
-// The cost model prices a Transform with its motion blur rows only while the knobs ask for motion blur.
+// The cost model prices Transform and TransformMasked with their motion blur rows only while the
+// knobs ask for motion blur.
 TEST_F(NativeTransformGpuTest, CostTraitsFollowMotionBlur)
 {
     resetProject();
     NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
     ASSERT_TRUE(bool(source));
-    NodePtr node = makeNode(false);
-    ASSERT_TRUE(bool(node));
-    connectNodes(source, node, 0, true);
-    ASSERT_TRUE(animate(node));
+    for (bool masked : { false, true }) {
+        const std::string name = masked ? "TransformMasked" : "Transform";
+        NodePtr node = makeNode(masked);
+        ASSERT_TRUE(bool(node));
+        connectNodes(source, node, 0, true);
+        ASSERT_TRUE(animate(node));
 
-    GpuCostModel model;
-    FrameGraph::Task task;
-    task.key.node = node;
-    task.key.time = kTime;
-    task.key.view = ViewIdx(0);
-    task.key.mipmapLevel = 0;
-    EXPECT_FALSE(model.traitsOf(task).motionBlur) << "motion blur 0";
-    EXPECT_EQ(GpuCostClass::eSpatial, model.traitsOf(task).costClass);
-    ASSERT_TRUE(setKnobValues(node, kTransformNodeParamMotionBlur, { 1. }));
-    EXPECT_TRUE(model.traitsOf(task).motionBlur) << "motion blur 1";
-    ASSERT_TRUE(setKnobValues(node, kTransformNodeParamShutter, { 0. }));
-    EXPECT_FALSE(model.traitsOf(task).motionBlur) << "closed shutter";
-    ASSERT_TRUE(setKnobValues(node, kTransformNodeParamDirectionalBlur, { 1. }));
-    EXPECT_TRUE(model.traitsOf(task).motionBlur) << "directional blur";
+        GpuCostModel model;
+        FrameGraph::Task task;
+        task.key.node = node;
+        task.key.time = kTime;
+        task.key.view = ViewIdx(0);
+        task.key.mipmapLevel = 0;
+        EXPECT_FALSE(model.traitsOf(task).motionBlur) << name << " motion blur 0";
+        EXPECT_EQ(GpuCostClass::eSpatial, model.traitsOf(task).costClass) << name;
+        EXPECT_EQ(0., model.traitsOf(task).sigma) << name;
+        EXPECT_FALSE(model.traitsOf(task).iir) << name;
+        ASSERT_TRUE(setKnobValues(node, kTransformNodeParamMotionBlur, { 1. }));
+        EXPECT_TRUE(model.traitsOf(task).motionBlur) << name << " motion blur 1";
+        ASSERT_TRUE(setKnobValues(node, kTransformNodeParamShutter, { 0. }));
+        EXPECT_FALSE(model.traitsOf(task).motionBlur) << name << " closed shutter";
+        ASSERT_TRUE(setKnobValues(node, kTransformNodeParamDirectionalBlur, { 1. }));
+        EXPECT_TRUE(model.traitsOf(task).motionBlur) << name << " directional blur";
+    }
 }
 
 TEST_F(NativeTransformGpuTest, InputRegionIsTheCpuRegionOfInterest)
@@ -287,7 +293,7 @@ TEST_F(NativeTransformGpuTest, InputRegionIsTheCpuRegionOfInterest)
     setParitySourceOrigin(source, 3, 5);
     for (bool masked : { false, true }) {
         NodePtr node = makeNode(masked);
-        TransformNode* effect = effectOf(node);
+        StagedImageEffect* effect = effectOf(node);
         ASSERT_TRUE(effect != NULL);
         connectNodes(source, node, 0, true);
         ASSERT_TRUE(setGeometry(node, kGeometries[5]));
@@ -364,7 +370,7 @@ GpuQuery
 queryFor(const NodePtr& node,
          unsigned mipmapLevel)
 {
-    NativeImageEffect* effect = dynamic_cast<NativeImageEffect*>(node->getEffectInstance().get());
+    StagedImageEffect* effect = dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get());
     const ImageLayerDesc plane = colorLayer(node);
     GpuQuery q = eligibleQuery();
 
@@ -405,7 +411,7 @@ outputLayout()
 // The source over getGpuInputRoI(roi), inside a larger buffer at an offset and with padded rows.
 bool
 sourceImage(const NodePtr& source,
-            TransformNode& effect,
+            StagedImageEffect& effect,
             unsigned mipmapLevel,
             const RectI& roi,
             GpuParityImage* image)
@@ -506,7 +512,7 @@ expectGpuMatchesCpu(GpuParityRuntime& runtime,
                     const ParityTolerance& tolerance = ParityTolerance::resampling(),
                     const ToleranceExceptions* exceptions = nullptr)
 {
-    TransformNode* effect = dynamic_cast<TransformNode*>(node->getEffectInstance().get());
+    StagedImageEffect* effect = dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get());
     ASSERT_TRUE(effect != NULL);
     for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
         const std::string level = base + " mipmap " + std::to_string(mipmapLevel);
@@ -652,7 +658,7 @@ TEST_F(NativeTransformGpuTest, MaskedMatchesTheCpuRender)
         ASSERT_TRUE(bool(maskSource));
         setParitySourceOrigin(maskSource, 8, 4);
         NodePtr node = makeNode(true);
-        TransformNode* effect = effectOf(node);
+        StagedImageEffect* effect = effectOf(node);
         ASSERT_TRUE(effect != NULL);
         connectNodes(source, node, 0, true);
         const int maskInput = effect->getMaskInput();
@@ -723,7 +729,7 @@ TEST_F(NativeTransformGpuTest, MotionBlurMatchesTheCpuRender)
     int nCompared = 0;
     for (const MotionBlurCase& c : cases) {
         NodePtr node = makeNode(false);
-        TransformNode* effect = effectOf(node);
+        StagedImageEffect* effect = effectOf(node);
         ASSERT_TRUE(effect != NULL);
         connectNodes(source, node, 0, true);
         ASSERT_TRUE(animate(node));
@@ -735,7 +741,9 @@ TEST_F(NativeTransformGpuTest, MotionBlurMatchesTheCpuRender)
         ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(c.filter)));
         ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { c.blackOutside ? 1. : 0. }));
         const bool blurred = c.motionBlur != 0.;
-        EXPECT_EQ(blurred, effect->rendersWithMotionBlur(kTime, ViewIdx(0))) << c.name;
+        const TransformNode* transform = dynamic_cast<const TransformNode*>(effect);
+        ASSERT_TRUE(transform != NULL);
+        EXPECT_EQ(blurred, transform->rendersWithMotionBlur(kTime, ViewIdx(0))) << c.name;
 
         ToleranceExceptions exceptions;
         exceptions.absolute = Resampler::motionBlurMaxError(c.motionBlur);
@@ -794,7 +802,7 @@ TEST_F(NativeTransformGpuTest, MotionBlur8kKernelTime)
 
     NodePtr source = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
     NodePtr node = makeNode(false);
-    TransformNode* effect = effectOf(node);
+    StagedImageEffect* effect = effectOf(node);
     ASSERT_TRUE(bool(source) && (effect != NULL));
     connectNodes(source, node, 0, true);
     ASSERT_TRUE(setKnobValues(node, kTransformNodeParamCenter, { width / 2., height / 2. }));

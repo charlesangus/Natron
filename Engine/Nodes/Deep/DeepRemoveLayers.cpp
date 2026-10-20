@@ -88,28 +88,6 @@ DeepRemoveLayers::~DeepRemoveLayers()
 {
 }
 
-NativePluginDescription
-DeepRemoveLayers::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_DEEPREMOVELAYERS;
-    desc.label = "DeepRemoveLayers";
-    desc.description = tr("Remove the chosen layers from the deep stream, or keep only them. Every other layer passes "
-                          "through unchanged. The colour views rgba, rgb and alpha share one colour plane, and deep "
-                          "alpha is part of every sample: removing rgba or rgb drops R, G and B, removing alpha "
-                          "changes nothing, and A is always kept. Z and ZBack are always kept. A layer the input "
-                          "does not have is ignored.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_DEEP;
-    desc.majorVersion = 1;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindDeep));
-    desc.outputKind = eDataKindDeep;
-
-    return desc;
-}
-
 void
 DeepRemoveLayers::initializeKnobs()
 {
@@ -256,27 +234,18 @@ DeepRemoveLayers::getRegionOfDefinition(U64 hash,
     return input->getRegionOfDefinition_public(hash, time, scale, view, rod, &isProjectFormat);
 }
 
-bool
-DeepRemoveLayers::isIdentity(double time,
-                             const RenderScale& /*scale*/,
-                             const RectI& /*roi*/,
-                             ViewIdx view,
-                             double* inputTime,
-                             ViewIdx* inputView,
-                             int* inputNb)
+Route
+DeepRemoveLayers::route(double time,
+                        ViewIdx view)
 {
     if (!getInput(0)) {
-        return false;
+        return Route::none();
     }
     if (!computeSelection(time, view).dropsNothing()) {
-        return false;
+        return Route::none();
     }
 
-    *inputNb = 0;
-    *inputTime = time;
-    *inputView = view;
-
-    return true;
+    return Route::input(0, time);
 }
 
 StatusEnum

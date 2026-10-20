@@ -20,7 +20,7 @@ namespace gradefix {
 
 using tol::classify;
 
-// Mirrors GradeParams in grade.slang, which has no padding between members.
+// The fixture's own parameter set; the reference reads it, and the device reads GradeOp's block.
 struct GradeParams {
     float a[4];
     float b[4];

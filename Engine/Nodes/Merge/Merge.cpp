@@ -31,7 +31,6 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
-#include <sstream>
 #include <vector>
 
 #include <ofxNatron.h>
@@ -374,7 +373,7 @@ addRowLabel(KnobHolder* holder,
     return knob;
 }
 
-// Built once: the description is asked for on every plug-in ID or label query.
+// Static: the preset specs view it for as long as the program runs.
 const std::string&
 mergeDescription()
 {
@@ -395,11 +394,22 @@ mergeDescription()
 
     return description;
 }
+
+template <MergePresetEnum PRESET>
+NodeSpec
+describedNodeSpec()
+{
+    NodeSpec spec = *staticNodeSpec<MergePreset<PRESET>::kNodeSpec>();
+
+    spec.description = mergeDescription();
+
+    return spec;
+}
 } // anonymous namespace
 
 MergeNode::MergeNode(NodePtr node,
                      MergePresetEnum preset)
-    : NativeImageEffect(node)
+    : StagedImageEffect(node)
     , _preset(preset)
 {
 }
@@ -408,33 +418,36 @@ MergeNode::~MergeNode()
 {
 }
 
+const NodeSpec*
+MergeNode::nodeSpec() const
+{
+    static const NodeSpec specs[] = {
+        describedNodeSpec<eMergePresetMerge>(),
+        describedNodeSpec<eMergePresetPlus>(),
+        describedNodeSpec<eMergePresetMatte>(),
+        describedNodeSpec<eMergePresetMultiply>(),
+        describedNodeSpec<eMergePresetIn>(),
+        describedNodeSpec<eMergePresetOut>(),
+        describedNodeSpec<eMergePresetScreen>(),
+        describedNodeSpec<eMergePresetMax>(),
+        describedNodeSpec<eMergePresetMin>(),
+        describedNodeSpec<eMergePresetDifference>(),
+    };
+    static_assert(sizeof(specs) / sizeof(specs[0]) == eMergePresetDifference + 1, "specs is indexed by MergePresetEnum");
+
+    return &specs[_preset];
+}
+
+const ImagePipelineSpec&
+MergeNode::imagePipelineSpec() const
+{
+    return staticImagePipelineSpec<kMergePipeline, MergePreset<eMergePresetMerge>::kNodeSpec>();
+}
+
 std::string
 MergeNode::presetPluginID(MergePresetEnum preset)
 {
-    switch (preset) {
-    case eMergePresetMerge:
-        return PLUGINID_NATRON_MERGE;
-    case eMergePresetPlus:
-        return PLUGINID_NATRON_MERGE_PREFIX "Plus";
-    case eMergePresetMatte:
-        return PLUGINID_NATRON_MERGE_PREFIX "Matte";
-    case eMergePresetMultiply:
-        return PLUGINID_NATRON_MERGE_PREFIX "Multiply";
-    case eMergePresetIn:
-        return PLUGINID_NATRON_MERGE_PREFIX "In";
-    case eMergePresetOut:
-        return PLUGINID_NATRON_MERGE_PREFIX "Out";
-    case eMergePresetScreen:
-        return PLUGINID_NATRON_MERGE_PREFIX "Screen";
-    case eMergePresetMax:
-        return PLUGINID_NATRON_MERGE_PREFIX "Max";
-    case eMergePresetMin:
-        return PLUGINID_NATRON_MERGE_PREFIX "Min";
-    case eMergePresetDifference:
-        return PLUGINID_NATRON_MERGE_PREFIX "Difference";
-    }
-
-    return PLUGINID_NATRON_MERGE;
+    return std::string(mergeNodeSpec(preset).id);
 }
 
 MergeOperators::Operation
@@ -495,25 +508,6 @@ MergeNode::sourceDetachedFromOutputs(const ImagePtr& source,
 }
 
 std::string
-MergeNode::getInputLabel(int inputNb) const
-{
-    if (inputNb == kMergeInputB) {
-        return "B";
-    } else if (inputNb == kMergeInputA) {
-        return "A";
-    } else if (inputNb == kMergeInputMask) {
-        return "Mask";
-    } else if ((inputNb > kMergeInputMask) && (inputNb < getNInputs())) {
-        std::ostringstream label;
-        label << "A" << (inputNb - kMergeInputMask + 1);
-
-        return label.str();
-    }
-
-    return EffectInstance::getInputLabel(inputNb);
-}
-
-std::string
 MergeNode::getInputHint(int inputNb) const
 {
     if (inputNb == kMergeInputB) {
@@ -523,24 +517,6 @@ MergeNode::getInputHint(int inputNb) const
     }
 
     return EffectInstance::getInputHint(inputNb);
-}
-
-bool
-MergeNode::isInputOptional(int inputNb) const
-{
-    return (inputNb >= 0) && (inputNb < getNInputs());
-}
-
-bool
-MergeNode::isInputMask(int inputNb) const
-{
-    return inputNb == kMergeInputMask;
-}
-
-DataKindEnum
-MergeNode::getInputDataKind(int /*inputNb*/) const
-{
-    return eDataKindImage;
 }
 
 void
@@ -558,60 +534,10 @@ MergeNode::addAcceptedComponents(int inputNb,
     comps->push_back(ImageLayerDesc::getAlphaComponents());
 }
 
-NativePluginDescription
-MergeNode::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = presetPluginID(_preset);
-    switch (_preset) {
-    case eMergePresetMerge:
-        desc.label = "Merge";
-        break;
-    case eMergePresetPlus:
-        desc.label = "Plus";
-        break;
-    case eMergePresetMatte:
-        desc.label = "Matte";
-        break;
-    case eMergePresetMultiply:
-        desc.label = "Multiply";
-        break;
-    case eMergePresetIn:
-        desc.label = "In";
-        break;
-    case eMergePresetOut:
-        desc.label = "Out";
-        break;
-    case eMergePresetScreen:
-        desc.label = "Screen";
-        break;
-    case eMergePresetMax:
-        desc.label = "Max";
-        break;
-    case eMergePresetMin:
-        desc.label = "Min";
-        break;
-    case eMergePresetDifference:
-        desc.label = "Absminus";
-        break;
-    }
-
-    desc.description = mergeDescription();
-    desc.grouping = (_preset == eMergePresetMerge) ? std::string(PLUGIN_GROUP_MERGE) : std::string(PLUGIN_GROUP_MERGE "/Merges");
-    desc.majorVersion = PLUGIN_MAJOR_NATRON_MERGE;
-    desc.minorVersion = 0;
-    // No inputs are listed: the input accessors are overridden, because this description is
-    // rebuilt on every query and listing 66 inputs each time would make those queries quadratic.
-    desc.outputKind = eDataKindImage;
-
-    return desc;
-} // MergeNode::getNativePluginDescription
-
 void
 MergeNode::initializeKnobs()
 {
-    KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
+    KnobPagePtr page = createControlsPage();
     const MergeOperators::Operation defaultOperation = presetOperation(_preset);
 
     // Node.cpp shows this knob's value in parentheses next to the node's label, and NodeGui
@@ -689,7 +615,7 @@ MergeNode::initializeKnobs()
     }
     addSeparatorAfter(this, page, std::string(kMergeParamOutputChannels) + kChannelSuffixes[3]);
 
-    addMaskMixKnobs(page);
+    addStageKnobs(page);
 
     refreshOperationDependents(0.);
 } // MergeNode::initializeKnobs
@@ -858,22 +784,11 @@ MergeNode::getRegionOfDefinition(U64 /*hash*/,
 } // MergeNode::getRegionOfDefinition
 
 bool
-MergeNode::isIdentity(double time,
-                      const RenderScale& scale,
-                      const RectI& roi,
-                      ViewIdx view,
-                      double* inputTime,
-                      ViewIdx* inputView,
-                      int* inputNb)
+MergeNode::isOpIdentity(double time,
+                        const RenderScale& scale,
+                        const RectI& roi,
+                        ViewIdx view)
 {
-    *inputTime = time;
-    *inputView = view;
-    *inputNb = kMergeInputB;
-
-    if (getMixValue(time, view) == 0.) {
-        return true;
-    }
-
     bool outputChannels[4];
     bool bChannels[4];
     for (int c = 0; c < 4; ++c) {
@@ -889,6 +804,8 @@ MergeNode::isIdentity(double time,
         }
     }
 
+    // The mask's region clips the A inputs below. A mask that misses the window is answered here
+    // as well as by the stages, which ask only after this and count a touching edge as a miss.
     RectI maskPixels;
     bool maskPixelsValid = false;
     if (isMaskApplied() && !getMaskInvertValue(time, view)) {
@@ -925,18 +842,19 @@ MergeNode::isIdentity(double time,
     }
 
     return true;
-} // MergeNode::isIdentity
+} // MergeNode::isOpIdentity
 
 StatusEnum
-MergeNode::render(const RenderActionArgs& args)
+MergeNode::renderOp(const RenderActionArgs& args,
+                    const StagePlan& plan)
 {
     const double time = args.time;
     const ViewIdx view = args.view;
     const MergeOperators::Operation op = getOperation(time, view);
     KnobBoolPtr alphaMaskingKnob = _alphaMasking.lock();
     const bool alphaMasking = alphaMaskingKnob ? alphaMaskingKnob->getValueAtTime(time, 0, view) : false;
-    const float mix = (float)getMixValue(time, view);
-    const bool maskInvert = getMaskInvertValue(time, view);
+    const float mix = (float)plan.mix;
+    const bool maskInvert = plan.maskInvert;
     std::bitset<4> aChannels;
     std::bitset<4> bChannels;
     std::bitset<4> outputChannels;
@@ -951,14 +869,14 @@ MergeNode::render(const RenderActionArgs& args)
 
     // Every image is fetched before any is locked: fetching renders upstream, which may write
     // into a cached image this render would otherwise already hold a read lock on.
-    const bool doMask = isMaskApplied();
+    const bool doMask = plan.applyMask;
     ImagePtr mask;
-    int maskChannel = -1;
+    const int maskChannel = plan.maskChannel;
     if (doMask) {
-        ImageLayerDesc maskLayer;
-        if (resolveInputPlaneForRender(kMergeInputMask, time, view, &maskLayer, &maskChannel) && (maskChannel >= 0)) {
+        if (maskChannel >= 0) {
+            ImageLayerDesc maskLayer = plan.maskLayer;
             RectI maskRoI;
-            mask = getImage(kMergeInputMask, time, args.mappedScale, view, NULL, &maskLayer, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &maskRoI);
+            mask = getImage(plan.maskInput, time, args.mappedScale, view, NULL, &maskLayer, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &maskRoI);
         }
         if (mask && (maskChannel >= (int)mask->getComponentsCount())) {
             mask.reset();
@@ -1047,7 +965,7 @@ MergeNode::render(const RenderActionArgs& args)
     // compute pixel addresses through these accesses.
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
     std::vector<RectI> bandRects;
-    makeRowBands(roi, nThreads, &bandRects);
+    makeStageRowBands(roi, nThreads, &bandRects);
     std::vector<MergeRowBand> bands;
     for (std::size_t j = 0; j < jobs.size(); ++j) {
         MergePlaneJob& job = jobs[j];
@@ -1215,6 +1133,6 @@ MergeNode::render(const RenderActionArgs& args)
     parallelForCancellable((int)bands.size(), nThreads, cancel, renderBand);
 
     return eStatusOK;
-} // MergeNode::render
+} // MergeNode::renderOp
 
 NATRON_NAMESPACE_EXIT

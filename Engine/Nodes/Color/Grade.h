@@ -29,7 +29,7 @@
 #include "Global/Macros.h"
 
 #include "Engine/EngineFwd.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 
 #define PLUGINID_NATRON_GRADE "net.sf.openfx.GradePlugin"
 #define PLUGIN_MAJOR_NATRON_GRADE 3
@@ -48,8 +48,10 @@
 
 NATRON_NAMESPACE_ENTER
 
-struct GradeValues;
-struct GradeSettings;
+inline constexpr InputSpec kGradeInputs[] = {
+    InputSpec { .label = "Source" },
+    InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
+};
 
 /**
  * @brief Grade: maps blackPoint/whitePoint to black (Lift)/white (Gain), then applies multiply,
@@ -62,8 +64,82 @@ struct GradeSettings;
  * off, so a default Grade is an identity. Knob names are the openfx-misc GradePlugin's; it
  * registers under that plugin's ID one major above.
  **/
+struct GradeOp {
+    struct Channel {
+        double a;
+        double b;
+        double gamma;
+    };
+
+    // Doubles, as the CPU row computes in double; the GPU block takes floats from them.
+    struct Params {
+        Channel channels[4];
+        bool reverse;
+        bool clampBlack;
+        bool clampWhite;
+        // Every knob at its default. Not derived from channels: other settings can reduce to
+        // a = 1, b = 0, but only the defaults leave -0 and NaN payloads untouched.
+        bool isDefault;
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_GRADE,
+        .label = "Grade",
+        .description = "Modify the tonal spread of an image from the white and black points.\n"
+                       "This node can also be used to match colors of 2 images: The darkest and lightest points of "
+                       "the target image are converted to black and white using the blackpoint and whitepoint values. "
+                       "These 2 values are then moved to new values using the black(for dark point) and white(for white point). "
+                       "You can also apply multiply/offset/gamma for other color fixing you may need.\n"
+                       "Here is the formula used:\n"
+                       "A = multiply * (white - black) / (whitepoint - blackpoint)\n"
+                       "B = offset + black - A * blackpoint\n"
+                       "output = pow(A * input + B, 1 / gamma).\n"
+                       "\n"
+                       "A special use for Grade is to generate a mask image with soft edges by thresholding an input image. "
+                       "Set the \"Black Point\" and \"White Point\" to values just below and just above the threshold, and "
+                       "check the \"Clamp Black\" and \"Clamp White\" options. If a binary mask containing only 0 and 1 is "
+                       "preferred, the Clamp node can be used instead.",
+        .grouping = PLUGIN_GROUP_COLOR,
+        .majorVersion = PLUGIN_MAJOR_NATRON_GRADE,
+        .minorVersion = 0,
+        .inputs = kGradeInputs,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = { Stage::Premult, Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .layers = LayerPolicy::color(true, true, true, false),
+        .op = OpKind::Point,
+    };
+
+    void createKnobs(KnobHolder* holder,
+                     const KnobPagePtr& page);
+
+    Params bake(const KnobReader& reader) const;
+
+    bool isIdentity(const Params& params) const;
+
+    void row(const Params& params,
+             const RowIO& io) const;
+
+    GpuOpRef gpu(const Params& params) const;
+
+    KnobColorWPtr blackPoint;
+    KnobColorWPtr whitePoint;
+    KnobColorWPtr black;
+    KnobColorWPtr white;
+    KnobColorWPtr multiply;
+    KnobColorWPtr offset;
+    KnobColorWPtr gamma;
+    KnobButtonWPtr normalize;
+    KnobBoolWPtr reverse;
+    KnobBoolWPtr clampBlack;
+    KnobBoolWPtr clampWhite;
+};
+
+static_assert(PointOp<GradeOp>);
+
 class Grade
-    : public NativeImageEffect {
+    : public ImageNode<GradeOp> {
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
@@ -74,56 +150,30 @@ public:
 
     virtual ~Grade();
 
-    virtual bool isPointOp() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return true;
-    }
+    /**
+     * @brief The Params the op renders with at (time, view).
+     **/
+    GradeOp::Params bakeGrade(double time,
+                              ViewIdx view) const WARN_UNUSED_RETURN;
 
-protected:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    /**
+     * @brief The op's CPU kernel over one row.
+     **/
+    void gradeRow(const GradeOp::Params& params,
+                  const RowIO& io) const;
 
 private:
-    virtual void initializeKnobs() OVERRIDE FINAL;
-
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
                              ViewSpec view,
                              double time,
-                             bool originatedFromMainThread) OVERRIDE FINAL;
-
-    virtual PixelKernelPtr makeKernel(const KernelContext& context) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual bool isIdentityOp(double time,
-                              const RenderScale& scale,
-                              const RectI& roi,
-                              ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual int gpuKernelId(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual bool makeGpuKernel(const KernelContext& context,
-                               PixelKernelGpu* gpu) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    GradeValues readValues(double time, ViewIdx view) const;
-
-    GradeSettings readSettings(double time, ViewIdx view) const;
+                             bool originatedFromMainThread) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
      * @brief Sets blackPoint and whitePoint to the per-channel minimum and maximum of the source
      * at (time, view), as one undoable edit.
      **/
     void normalize(double time, ViewIdx view);
-
-    KnobColorWPtr _blackPoint;
-    KnobColorWPtr _whitePoint;
-    KnobColorWPtr _black;
-    KnobColorWPtr _white;
-    KnobColorWPtr _multiply;
-    KnobColorWPtr _offset;
-    KnobColorWPtr _gamma;
-    KnobButtonWPtr _normalize;
-    KnobBoolWPtr _reverse;
-    KnobBoolWPtr _clampBlack;
-    KnobBoolWPtr _clampWhite;
 };
 
 NATRON_NAMESPACE_EXIT

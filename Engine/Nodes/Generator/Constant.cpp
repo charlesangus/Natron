@@ -26,9 +26,9 @@
 #include "Constant.h"
 
 #include <cfloat>
-#include <memory>
-#include <string>
 
+#include "Engine/AppManager.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 
@@ -38,168 +38,69 @@
 
 NATRON_NAMESPACE_ENTER
 
-namespace {
-class ConstantKernel
-    : public PixelKernel {
-public:
-    explicit ConstantKernel(const float rgba[4])
-    {
-        for (int i = 0; i < 4; ++i) {
-            _rgba[i] = rgba[i];
-        }
-    }
-
-    virtual void processRow(const RowIO& io) const OVERRIDE FINAL
-    {
-        const GeneratorRowChannels channels(io);
-        float* dst = io.dst;
-
-        for (int x = 0; x < io.width; ++x, dst += io.nComps) {
-            channels.write(_rgba, dst);
-        }
-    }
-
-private:
-    float _rgba[4];
-};
-} // anonymous namespace
-
-Constant::Constant(NodePtr node,
-                   bool solid)
-    : NativeGenerator(node)
-    , _solid(solid)
-    , _color()
-{
-}
-
-Constant::~Constant()
-{
-}
-
 void
-Constant::addAcceptedComponents(int inputNb,
-                                std::list<ImageLayerDesc>* comps)
+ConstantOp::createKnobs(KnobHolder* holder,
+                        const KnobPagePtr& page)
 {
-    NativeGenerator::addAcceptedComponents(inputNb, comps);
-    comps->push_back(ImageLayerDesc::getXYComponents());
-}
+    const int dims = opaque ? 3 : 4;
+    KnobColorPtr knob = AppManager::createKnob<KnobColor>(holder, EffectInstance::tr("Color").toStdString(), dims);
 
-NativePluginDescription
-Constant::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_CONSTANT;
-    desc.label = "Constant";
-    desc.description = tr("Generate an image with a constant color.\n"
-                          "See also: https://web.archive.org/web/20220807183203/http://www.opticalenquiry.com/nuke/index.php?title=Constant,_CheckerBoard,_ColorBars,_ColorWheel")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_IMAGE;
-    desc.majorVersion = PLUGIN_MAJOR_NATRON_CONSTANT;
-    desc.minorVersion = 0;
-    describeSourceInput(&desc);
-    desc.outputKind = eDataKindImage;
-
-    return desc;
-}
-
-void
-Constant::initializeKnobs()
-{
-    KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
-
-    initializeGeneratorKnobs(page);
-
-    const int dims = _solid ? 3 : 4;
-    KnobColorPtr color = createKnob<KnobColor>(tr("Color"), dims);
-    color->setName(kConstantParamColor);
-    color->setHintToolTip(tr("Color to fill the image with."));
+    knob->setName(kConstantParamColor);
+    knob->setHintToolTip(EffectInstance::tr("Color to fill the image with.").toStdString());
     for (int i = 0; i < dims; ++i) {
-        color->setDefaultValue(0., i);
-        color->setMinimum(-DBL_MAX, i);
-        color->setMaximum(DBL_MAX, i);
-        color->setDisplayMinimum(0., i);
-        color->setDisplayMaximum(1., i);
+        knob->setDefaultValue(0., i);
+        knob->setMinimum(-DBL_MAX, i);
+        knob->setMaximum(DBL_MAX, i);
+        knob->setDisplayMinimum(0., i);
+        knob->setDisplayMaximum(1., i);
     }
-    page->addKnob(color);
-    _color = color;
+    page->addKnob(knob);
+    color = knob;
 }
 
-void
-Constant::readColor(const KernelContext& context,
-                    float rgba[4]) const
+ConstantOp::Params
+ConstantOp::bake(const KnobReader& reader) const
 {
-    KnobColorPtr color = _color.lock();
+    Params params;
+    const int dims = opaque ? 3 : 4;
 
-    rgba[0] = rgba[1] = rgba[2] = 0.f;
-    rgba[3] = _solid ? 1.f : 0.f;
-    if (color) {
-        const int dims = _solid ? 3 : 4;
-        for (int i = 0; i < dims; ++i) {
-            rgba[i] = (float)color->getValueAtTime(context.time, i, context.view);
-        }
+    params.rgba[0] = params.rgba[1] = params.rgba[2] = 0.f;
+    params.rgba[3] = opaque ? 1.f : 0.f;
+    for (int i = 0; i < dims; ++i) {
+        params.rgba[i] = (float)reader.valueOr(color, 0., i);
     }
-}
 
-PixelKernelPtr
-Constant::makeKernel(const KernelContext& context)
-{
-    float rgba[4];
-
-    readColor(context, rgba);
-
-    return std::make_shared<ConstantKernel>(rgba);
-}
-
-int
-Constant::gpuKernelId(const GpuQuery& /*query*/) const
-{
-#ifdef NATRON_HAVE_GPU
-    return (int)gpu::GpuKernelId::constant;
-#else
-    return -1;
-#endif
+    return params;
 }
 
 bool
-Constant::makeGpuKernel(const KernelContext& context,
-                        PixelKernelGpu* gpu)
+ConstantOp::isIdentity(const Params& /*params*/) const
+{
+    return false;
+}
+
+void
+ConstantOp::row(const Params& params,
+                const RowIO& io) const
+{
+    const GeneratorRowChannels channels(io);
+    float* dst = io.dst;
+
+    for (int x = 0; x < io.width; ++x, dst += io.nComps) {
+        channels.write(params.rgba, dst);
+    }
+}
+
+GpuOpRef
+ConstantOp::gpu(const Params& params) const
 {
 #ifdef NATRON_HAVE_GPU
-    float rgba[4];
-
-    readColor(context, rgba);
-    gpu->kernel = (int)gpu::GpuKernelId::constant;
-    gpu->setParams(rgba);
-
-    return true;
+    return GpuOpRef::compiled((int)gpu::GpuKernelId::constant, params.rgba);
 #else
-    Q_UNUSED(context);
-    Q_UNUSED(gpu);
+    Q_UNUSED(params);
 
-    return false;
+    return GpuOpRef::none();
 #endif
-}
-
-Solid::Solid(NodePtr node)
-    : Constant(node, true)
-{
-}
-
-Solid::~Solid()
-{
-}
-
-NativePluginDescription
-Solid::getNativePluginDescription() const
-{
-    NativePluginDescription desc = Constant::getNativePluginDescription();
-
-    desc.id = PLUGINID_NATRON_SOLID;
-    desc.label = "Solid";
-    desc.description = tr("Generate an image with a constant opaque color.").toStdString();
-
-    return desc;
 }
 
 NATRON_NAMESPACE_EXIT

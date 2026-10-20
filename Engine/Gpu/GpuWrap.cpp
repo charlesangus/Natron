@@ -3,6 +3,7 @@
 #include "GpuBuffer.h"
 #include "GpuRecord.h"
 
+#include <span>
 #include <string>
 
 namespace gpu {
@@ -80,16 +81,25 @@ namespace {
         return {};
     }
 
-    GpuStatus record(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, const GpuBuffer* aux,
-                     const GpuWrapView* filtered)
+    // A buffer for a binding the kernel reads nothing from, requested once per dispatch.
+    GpuStatus standIn(GpuRecordContext& ctx, const GpuBuffer*& unused)
     {
-        GpuWrapParams p;
-        if (GpuStatus s = wrapParams(wrap, p, filtered); !s) {
-            return s;
-        }
-        if (p.width == 0 || p.height == 0) {
+        if (unused) {
             return {};
         }
+        GpuBuffer* scratch = nullptr;
+        if (GpuStatus s = ctx.scratch(16, scratch); !s) {
+            return s;
+        }
+        unused = scratch;
+        return {};
+    }
+
+    // The source, destination, mask and parameter buffers of a dispatch of `wrap`.
+    GpuStatus wrapBuffers(GpuRecordContext& ctx, const GpuWrap& wrap, const GpuBuffer* aux,
+                          const GpuWrapView* filtered, const GpuBuffer*& unused,
+                          const GpuBuffer* (&out)[kGpuWrapBindings])
+    {
         if (GpuStatus s = checkBuffer(wrap.dst, "destination"); !s) {
             return s;
         }
@@ -116,15 +126,33 @@ namespace {
             return invalid("empty parameter buffer");
         }
         if (!src || !mask || !aux) {
-            GpuBuffer* unused = nullptr;
-            if (GpuStatus s = ctx.scratch(16, unused); !s) {
+            if (GpuStatus s = standIn(ctx, unused); !s) {
                 return s;
             }
-            src = src ? src : unused;
-            mask = mask ? mask : unused;
-            aux = aux ? aux : unused;
         }
-        return ctx.dispatch(kernel, { src, wrap.dst.buffer, mask, aux }, p, { p.width, p.height, 1 });
+        out[0] = src ? src : unused;
+        out[1] = wrap.dst.buffer;
+        out[2] = mask ? mask : unused;
+        out[3] = aux ? aux : unused;
+        return {};
+    }
+
+    GpuStatus record(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, const GpuBuffer* aux,
+                     const GpuWrapView* filtered)
+    {
+        GpuWrapParams p;
+        if (GpuStatus s = wrapParams(wrap, p, filtered); !s) {
+            return s;
+        }
+        if (p.width == 0 || p.height == 0) {
+            return {};
+        }
+        const GpuBuffer* unused = nullptr;
+        const GpuBuffer* b[kGpuWrapBindings];
+        if (GpuStatus s = wrapBuffers(ctx, wrap, aux, filtered, unused, b); !s) {
+            return s;
+        }
+        return ctx.dispatch(kernel, { b[0], b[1], b[2], b[3] }, p, { p.width, p.height, 1 });
     }
 
 } // namespace
@@ -203,9 +231,134 @@ wrapParams(const GpuWrap& wrap, GpuWrapParams& out, const GpuWrapView* filtered)
 }
 
 GpuStatus
+wrapStepParams(const GpuWrapStep& step, GpuWrapParams& out)
+{
+    GpuWrap wrap;
+    wrap.src = step.result;
+    wrap.dst = step.dst;
+    wrap.output = step.output;
+    wrap.nComps = step.nComps;
+    wrap.channelMask = step.channelMask;
+    if (GpuStatus s = wrapParams(wrap, out); !s) {
+        return s;
+    }
+    if (step.output.empty() || step.input.bounds.empty()) {
+        return {};
+    }
+    if (GpuStatus s = checkGeometry(step.input, "step input"); !s) {
+        return s;
+    }
+    out.maskOffset = static_cast<uint32_t>(step.input.offsetFloats);
+    out.maskStride = step.input.strideFloats;
+    out.maskX1 = step.input.bounds.x1;
+    out.maskY1 = step.input.bounds.y1;
+    out.maskX2 = step.input.bounds.x2;
+    out.maskY2 = step.input.bounds.y2;
+    out.maskComps = step.input.nComps;
+    return {};
+}
+
+GpuStatus
 recordWrapped(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, const GpuBuffer* opParams)
 {
     return record(ctx, kernel, wrap, opParams, nullptr);
+}
+
+GpuStatus
+recordWrapStep(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrapStep& step, const GpuBuffer* opParams)
+{
+    GpuWrapParams p;
+    if (GpuStatus s = wrapStepParams(step, p); !s) {
+        return s;
+    }
+    if (p.width == 0 || p.height == 0) {
+        return {};
+    }
+    GpuWrap wrap;
+    wrap.src = step.result;
+    wrap.dst = step.dst;
+    const GpuBuffer* unused = nullptr;
+    const GpuBuffer* b[kGpuWrapBindings];
+    if (GpuStatus s = wrapBuffers(ctx, wrap, opParams, nullptr, unused, b); !s) {
+        return s;
+    }
+    const GpuBuffer* input = nullptr;
+    if (!step.input.bounds.empty()) {
+        if (GpuStatus s = checkBuffer(step.input, "step input"); !s) {
+            return s;
+        }
+        input = step.input.buffer;
+    } else {
+        if (GpuStatus s = standIn(ctx, unused); !s) {
+            return s;
+        }
+        input = unused;
+    }
+    return ctx.dispatch(kernel, { b[0], b[1], b[2], b[3], input }, p, { p.width, p.height, 1 });
+}
+
+GpuStatus
+recordWrapFold(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, const GpuWrapView& base,
+               std::span<const GpuWrapView> inputs, const GpuBuffer* opParams)
+{
+    if (wrap.divisorChannel >= 0) {
+        return invalid("a fold divides none of its inputs");
+    }
+    GpuWrapParams p;
+    if (GpuStatus s = wrapParams(wrap, p); !s) {
+        return s;
+    }
+    if (p.width == 0 || p.height == 0) {
+        return {};
+    }
+    const uint32_t n = wrap.nComps;
+    if (!base.bounds.empty()) {
+        if (GpuStatus s = checkGeometry(base, "base"); !s) {
+            return s;
+        }
+        if (base.nComps != n) {
+            return invalid("base channel count differs from the output's");
+        }
+    }
+
+    const VkDeviceSize bytes = VkDeviceSize(p.width) * p.height * n * sizeof(float);
+    GpuWrapView scratch[2];
+    const int nScratch = inputs.size() > 1 ? 2 : 1;
+    for (int i = 0; i < nScratch; ++i) {
+        GpuBuffer* buffer = nullptr;
+        if (GpuStatus s = ctx.scratch(bytes, buffer); !s) {
+            return s;
+        }
+        scratch[i] = GpuWrapView { buffer, 0, wrap.output, p.width * n, n };
+    }
+
+    if (inputs.empty()) {
+        GpuWrap copy;
+        copy.src = base;
+        copy.dst = scratch[0];
+        copy.output = wrap.output;
+        copy.nComps = n;
+        if (GpuStatus s = record(ctx, GpuKernelId::wrap_divide, copy, nullptr, nullptr); !s) {
+            return s;
+        }
+        ctx.computeBarrier();
+        return recordWrapFinish(ctx, wrap, scratch[0]);
+    }
+
+    GpuWrapStep step;
+    step.output = wrap.output;
+    step.nComps = n;
+    step.channelMask = wrap.channelMask;
+    for (std::size_t k = 0; k < inputs.size(); ++k) {
+        step.result = (k == 0) ? base : scratch[(k - 1) & 1];
+        step.input = inputs[k];
+        step.dst = scratch[k & 1];
+        if (GpuStatus s = recordWrapStep(ctx, kernel, step, opParams); !s) {
+            return s;
+        }
+        ctx.computeBarrier();
+    }
+    return recordWrapFinish(ctx, wrap, scratch[(inputs.size() - 1) & 1]);
 }
 
 GpuStatus

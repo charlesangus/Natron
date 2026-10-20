@@ -39,8 +39,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Filter/BlurKernels.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
-#include "Engine/ParallelRenderArgs.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/RectI.h"
 
 #define PLUGINID_NATRON_EDGEDETECT "eu.cimg.EdgeDetect"
@@ -89,10 +88,11 @@ enum EdgeDetectMultiChannelEnum {
 };
 
 /**
- * @brief The knob values one EdgeDetect render, region of definition or region of interest
- * reads, at render scale 1, as the openfx-misc CImgBlurPlugin::getValuesAtTime() computes them
- * for EdgeDetect: sizeX is blurSize divided by the source's pixel aspect ratio (par, 0 when the
- * source is disconnected), sizeY is blurSize.
+ * @brief The knob values one EdgeDetect evaluation reads, at render scale 1. sizeX and sizeY
+ * are blurSize; the op divides sizeX by the source's pixel aspect ratio, as the openfx-misc
+ * CImgBlurPlugin::getValuesAtTime() does for EdgeDetect, so params handed to getSourceRoI()
+ * already carry sizeX divided by par. par is the source's pixel aspect ratio, which also scales
+ * the erosion radius along x.
  **/
 struct EdgeDetectParams {
     double sizeX;
@@ -119,6 +119,11 @@ struct EdgeDetectParams {
     }
 };
 
+inline constexpr InputSpec kEdgeDetectInputs[] = {
+    InputSpec { .label = "Source" },
+    InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
+};
+
 /**
  * @brief EdgeDetect: the image gradient magnitude, from first-order derivative blurs
  * (quasi-Gaussian, Gaussian, box, triangle, quadratic) or from simple, Sobel or
@@ -130,13 +135,73 @@ struct EdgeDetectParams {
  *
  * The source region of interest adds the erosion radius and the non-maxima suppression's one
  * pixel to the gradient filter's halo, which the OpenFX plug-in omits, so a tile renders what a
- * full-frame render shows there. As in Blur, the filters run over one buffer covering the
- * window plus that halo, clipped to the output's region of definition; the node is FullySafe and
- * parallelises internally over whole rows and whole columns, giving the same pixels at any
- * thread count.
+ * full-frame render shows there. As in Blur, the passes run over one buffer covering the window
+ * plus that halo, clipped to the output's region of definition, each over whole rows or whole
+ * columns, giving the same pixels at any thread count. It runs on the CPU only.
  **/
+struct EdgeDetectOp {
+    using Params = EdgeDetectParams;
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_EDGEDETECT,
+        .label = "EdgeDetect",
+        .description = "Perform edge detection by computing the image gradient magnitude. Optionally, edge detection can be preceded by blurring, and followed by erosion and thresholding. In most cases, EdgeDetect is followed a Grade node to extract the proper edges and generate a mask from these.\n"
+                       "\n"
+                       "For color or multi-channel images, several edge detection algorithms are proposed to combine the gradients computed in each channel:\n"
+                       "- Separate: the gradient magnitude is computed in each channel separately, and the output is a color edge image.\n"
+                       "- RMS: the RMS of per-channel gradients magnitudes is computed.\n"
+                       "- Max: the maximum per-channel gradient magnitude is computed.\n"
+                       "- Tensor: the tensor gradient norm [1].\n"
+                       "\n"
+                       "References:\n"
+                       "- [1] Silvano Di Zenzo, A note on the gradient of a multi-image, CVGIP 33, 116-125 (1986). http://people.csail.mit.edu/tieu/notebook/imageproc/dizenzo86.pdf\n"
+                       "\n"
+                       "The filters are ports of functions of the CImg library (http://cimg.eu), "
+                       "distributed under the CeCILL-C licence.",
+        .grouping = PLUGIN_GROUP_FILTER,
+        .majorVersion = PLUGIN_MAJOR_NATRON_EDGEDETECT,
+        .minorVersion = 0,
+        .inputs = kEdgeDetectInputs,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .layers = LayerPolicy::color(true, true, true, false),
+        .op = OpKind::Passes,
+    };
+
+    void createKnobs(KnobHolder* holder,
+                     const KnobPagePtr& page);
+
+    Params bake(const KnobReader& reader) const;
+
+    /**
+     * @brief Never: the gradient of any image is a new image.
+     **/
+    bool isIdentity(const Params& params,
+                    const PassContext& context) const;
+
+    /**
+     * @brief The passes of one render: the gradient components, their normalisation and channel
+     * combination, then the erosion and the non-maxima suppression when asked for. The CPU runs
+     * them; no GPU recorder is given.
+     **/
+    PassList passes(const Params& params,
+                    const PassContext& context) const;
+
+    KnobChoiceWPtr filter;
+    KnobChoiceWPtr multiChannel;
+    KnobDoubleWPtr blurSize;
+    KnobDoubleWPtr erodeSize;
+    KnobBoolWPtr nms;
+    KnobBoolWPtr expandRoD;
+    KnobBoolWPtr cropToFormat;
+};
+
+static_assert(PassesOp<EdgeDetectOp>);
+
 class EdgeDetect
-    : public NativeImageEffect {
+    : public ImageNode<EdgeDetectOp> {
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
@@ -148,14 +213,6 @@ public:
     virtual ~EdgeDetect();
 
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
-
-    virtual StatusEnum getRegionOfDefinition(U64 hash,
-                                             double time,
-                                             const RenderScale& scale,
-                                             ViewIdx view,
-                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    void getParams(double time, ViewIdx view, EdgeDetectParams* params) const;
 
     /// The CImgBlur filter that `filter` blurs with: Gaussian for the finite-difference schemes.
     static BlurKernels::Filter blurFilter(EdgeDetectFilterEnum filter) WARN_UNUSED_RETURN;
@@ -172,27 +229,16 @@ public:
     static RectI getSourceRoI(const RectI& rect, const RenderScale& scale, const EdgeDetectParams& params) WARN_UNUSED_RETURN;
 
 protected:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual void getRegionsOfInterest(double time,
-                                      const RenderScale& scale,
-                                      const RectD& outputRoD,
-                                      const RectD& renderWindow,
-                                      ViewIdx view,
-                                      RoIMap* ret) OVERRIDE FINAL;
-
-    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-private:
-    virtual void initializeKnobs() OVERRIDE FINAL;
-
-    KnobChoiceWPtr _filter;
-    KnobChoiceWPtr _multiChannel;
-    KnobDoubleWPtr _blurSize;
-    KnobDoubleWPtr _erodeSize;
-    KnobBoolWPtr _nms;
-    KnobBoolWPtr _expandRoD;
-    KnobBoolWPtr _cropToFormat;
+    /**
+     * @brief With cropToFormat, clamps back to the format each border of rod the source had
+     * inside it: CImgBlurPlugin::getRegionOfDefinition().
+     **/
+    virtual bool clipRegionOfDefinition(double time,
+                                        const RenderScale& scale,
+                                        ViewIdx view,
+                                        const EffectInstancePtr& source,
+                                        const RectI& srcRoD,
+                                        RectI* rod) OVERRIDE FINAL;
 };
 
 NATRON_NAMESPACE_EXIT

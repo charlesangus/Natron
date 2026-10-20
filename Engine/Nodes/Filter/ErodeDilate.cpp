@@ -26,8 +26,6 @@
 #include "ErodeDilate.h"
 
 #include <algorithm>
-#include <atomic>
-#include <bitset>
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
@@ -35,52 +33,19 @@
 #include <limits>
 #include <list>
 #include <memory>
-#include <string>
 #include <vector>
 
-#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
-#include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
-#include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
-#include "Engine/Node.h"
-#include "Engine/Nodes/Filter/SpatialFilterSupport.h"
-#include "Engine/RectD.h"
 
 #ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuBlur.h"
 #include "Engine/Gpu/GpuMorphology.h"
 #include "Engine/Gpu/GpuRecord.h"
 #endif
 
 NATRON_NAMESPACE_ENTER
-
-using namespace SpatialFilter;
-
-namespace {
-struct Phase {
-    int halfX;
-    int halfY;
-    bool takeMax;
-};
-
-// The operation of the positive axes first, then the opposite one on the negative axes.
-void
-getPhases(const RenderScale& scale,
-          const ErodeDilateParams& params,
-          bool dilate,
-          Phase phases[2])
-{
-    const OfxPointD rs = scale.toOfxPointD();
-
-    phases[0].halfX = (int)std::floor(std::max(0, params.sizeX) * rs.x);
-    phases[0].halfY = (int)std::floor(std::max(0, params.sizeY) * rs.y);
-    phases[0].takeMax = dilate;
-    phases[1].halfX = (int)std::floor(std::max(0, -params.sizeX) * rs.x);
-    phases[1].halfY = (int)std::floor(std::max(0, -params.sizeY) * rs.y);
-    phases[1].takeMax = !dilate;
-}
-} // anonymous namespace
 
 namespace ErodeDilateKernels {
 namespace {
@@ -146,620 +111,322 @@ filterLine(float* data,
 }
 } // namespace ErodeDilateKernels
 
-ErodeDilate::ErodeDilate(NodePtr node)
-    : ErodeDilate(node, false)
+namespace {
+/// Runs filterLine() over each line the executor hands over, through a scratch owned by the chunk.
+std::function<PassLineFn()>
+lineWorker(int halfWidth,
+           bool takeMax)
 {
-}
-
-ErodeDilate::ErodeDilate(NodePtr node,
-                         bool dilate)
-    : NativeImageEffect(node, []() {
-        NativeImageTraits traits;
-
-        traits.hostUnPremult = true;
-        traits.processesAllLayers = true;
-
-        return traits;
-    }())
-    , _dilate(dilate)
-    , _size()
-    , _expandRoD()
-{
-}
-
-ErodeDilate::~ErodeDilate()
-{
-}
-
-void
-ErodeDilate::addAcceptedComponents(int inputNb,
-                                   std::list<ImageLayerDesc>* comps)
-{
-    NativeImageEffect::addAcceptedComponents(inputNb, comps);
-    if (!isInputMask(inputNb)) {
-        comps->push_back(ImageLayerDesc::getXYComponents());
+    if (halfWidth <= 0) {
+        return std::function<PassLineFn()>();
     }
+
+    return [halfWidth, takeMax]() -> PassLineFn {
+        std::shared_ptr<ErodeDilateKernels::LineScratch> scratch = std::make_shared<ErodeDilateKernels::LineScratch>();
+
+        return [halfWidth, takeMax, scratch](float* line, int length, std::ptrdiff_t stride, int count) {
+            for (int i = 0; i < count; ++i) {
+                ErodeDilateKernels::filterLine(line + i, length, stride, halfWidth, takeMax, *scratch);
+            }
+        };
+    };
 }
 
-NativePluginDescription
-ErodeDilate::getNativePluginDescription() const
+#ifdef NATRON_HAVE_GPU
+/// The source the kernels read. With no source pixels in the extent the executor hands over no
+/// buffer, but the line kernels still bind one: a placeholder, which the empty valid rect keeps
+/// unread.
+bool
+gpuSourceImage(const PassGpuIO& io,
+               gpu::GpuBlurImage* image)
 {
-    NativePluginDescription desc;
+    if (io.source.buffer) {
+        *image = PassExec::toGpuBlurImage(io.source);
 
-    if (_dilate) {
-        desc.id = PLUGINID_NATRON_DILATE;
-        desc.label = "Dilate";
-        desc.description = tr("Dilate (or erode) input stream by a rectangular structuring element of specified size and Neumann boundary conditions (pixels out of the image get the value of the nearest pixel).\n"
-                              "A negative size will perform an erosion instead of a dilation.\n"
-                              "Different sizes can be given for the x and y axis.\n"
-                              "The operation is the 'dilate' and 'erode' behaviour of the CImg library (http://cimg.eu), "
-                              "distributed under the CeCILL-C licence.")
-                               .toStdString();
-        desc.majorVersion = PLUGIN_MAJOR_NATRON_DILATE;
-    } else {
-        desc.id = PLUGINID_NATRON_ERODE;
-        desc.label = "Erode";
-        desc.description = tr("Erode (or dilate) input stream by a rectangular structuring element of specified size and Neumann boundary conditions (pixels out of the image get the value of the nearest pixel).\n"
-                              "A negative size will perform a dilation instead of an erosion.\n"
-                              "Different sizes can be given for the x and y axis.\n"
-                              "The operation is the 'erode' and 'dilate' behaviour of the CImg library (http://cimg.eu), "
-                              "distributed under the CeCILL-C licence.")
-                               .toStdString();
-        desc.majorVersion = PLUGIN_MAJOR_NATRON_ERODE;
+        return true;
     }
-    desc.grouping = PLUGIN_GROUP_FILTER;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindImage));
-    desc.inputs.push_back(NativeInputDescription("Mask", true, eDataKindImage, true));
-    desc.outputKind = eDataKindImage;
+    gpu::GpuBuffer* placeholder = nullptr;
+    if (!io.context.scratch((VkDeviceSize)std::max(1, io.nComps) * sizeof(float), placeholder) || !placeholder) {
+        return false;
+    }
+    *image = gpu::GpuBlurImage();
+    image->buffer = placeholder;
 
-    return desc;
+    return true;
 }
 
-void
-ErodeDilate::initializeKnobs()
+/// The window of the source as the CPU buffer holds it, for a list whose passes all have a half
+/// width of zero: recordMorphology() takes at least one pass, and the line kernel's identity
+/// filter copies the window, zero where the buffer has no pixel.
+StatusEnum
+recordUnfiltered(const PassGpuIO& io)
 {
-    KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
-
-    KnobIntPtr size = createKnob<KnobInt>(tr("Size"), 2);
-    size->setName(kErodeDilateParamSize);
-    size->setHintToolTip(tr("Width/height of the rectangular structuring element is 2*size+1, in pixel units (>=0)."));
-    for (int d = 0; d < 2; ++d) {
-        size->setMinimum(-1000, d);
-        size->setMaximum(1000, d);
-        size->setDisplayMinimum(-100, d);
-        size->setDisplayMaximum(100, d);
-        size->setDefaultValue(1, d);
+    gpu::GpuBlurImage source;
+    if (!gpuSourceImage(io, &source)) {
+        return eStatusFailed;
     }
-    page->addKnob(size);
-    _size = size;
-
-    KnobBoolPtr expandRoD = createKnob<KnobBool>(tr("Expand RoD"));
-    expandRoD->setName(kErodeDilateParamExpandRoD);
-    if (_dilate) {
-        expandRoD->setHintToolTip(tr("Expand the source region of definition by 2*size pixels if size is positive"));
-    } else {
-        expandRoD->setHintToolTip(tr("Expand the source region of definition by 2*size pixels if size is negative"));
+    gpu::GpuBuffer* window = nullptr;
+    if (!gpu::recordFilterWindow(io.context, PassExec::toGpuBlurRect(io.output), PassExec::toGpuBlurRect(io.rod), io.haloX, io.haloY, window)) {
+        return eStatusFailed;
     }
-    expandRoD->setDefaultValue(true);
-    page->addKnob(expandRoD);
-    _expandRoD = expandRoD;
+    gpu::GpuLineBlur copy;
+    copy.src = source;
+    copy.srcValid = PassExec::toGpuBlurRect(io.sourceValid);
+    copy.dst = PassExec::toGpuBlurImage(io.filtered);
+    copy.output = PassExec::toGpuBlurRect(io.output);
+    copy.domain = PassExec::toGpuBlurRect(io.domain);
+    copy.window = window;
+    copy.channels = (uint32_t)io.nComps;
 
-    addMaskMixKnobs(page);
+    return gpu::recordLineBlur(io.context, copy) ? eStatusOK : eStatusFailed;
 }
 
-void
-ErodeDilate::getParams(double time,
-                       ViewIdx view,
-                       ErodeDilateParams* params) const
+PassGpuRecorder
+morphologyGpuRecorder(std::vector<gpu::GpuMorphPass> passes)
 {
-    KnobIntPtr size = _size.lock();
-    KnobBoolPtr expandRoD = _expandRoD.lock();
+    return [passes](const PassGpuIO& io) -> StatusEnum {
+        if (passes.empty()) {
+            return recordUnfiltered(io);
+        }
+        gpu::GpuMorphology morph;
+        morph.src = PassExec::toGpuBlurImage(io.source);
+        morph.dst = PassExec::toGpuBlurImage(io.filtered);
+        morph.output = PassExec::toGpuBlurRect(io.output);
+        morph.rod = PassExec::toGpuBlurRect(io.rod);
+        morph.haloX = io.haloX;
+        morph.haloY = io.haloY;
+        morph.passes = passes;
+        morph.channels = (uint32_t)io.nComps;
 
-    *params = ErodeDilateParams();
-    if (size) {
-        params->sizeX = size->getValueAtTime(time, 0, view);
-        params->sizeY = size->getValueAtTime(time, 1, view);
-    }
-    params->expandRoD = expandRoD ? expandRoD->getValueAtTime(time, 0, view) : true;
+        return gpu::recordMorphology(io.context, morph) ? eStatusOK : eStatusFailed;
+    };
 }
-
-RectI
-ErodeDilate::getSourceRoI(const RectI& rect,
-                          const RenderScale& scale,
-                          const ErodeDilateParams& params)
-{
-    const OfxPointD rs = scale.toOfxPointD();
-    const int deltaX = (int)std::ceil(std::abs(params.sizeX) * rs.x);
-    const int deltaY = (int)std::ceil(std::abs(params.sizeY) * rs.y);
-
-    return RectI(rect.x1 - deltaX, rect.y1 - deltaY, rect.x2 + deltaX, rect.y2 + deltaY);
-}
+#endif // NATRON_HAVE_GPU
 
 bool
-ErodeDilate::paramsAreIdentity(const RenderScale& scale,
-                               const ErodeDilateParams& params)
+isIdentityAt(const RenderScale& scale,
+             const ErodeDilateParams& params)
 {
     const OfxPointD rs = scale.toOfxPointD();
 
     return (std::floor(params.sizeX * rs.x) == 0) && (std::floor(params.sizeY * rs.y) == 0);
 }
 
-void
-ErodeDilate::getExpansion(const RenderScale& scale,
-                          const ErodeDilateParams& params,
-                          bool dilate,
-                          int* deltaX,
-                          int* deltaY)
+/// The halo of an axis, which the one pass running on that axis carries.
+int
+axisHalo(int size,
+         double scale)
+{
+    return (int)std::ceil(std::abs(size) * scale);
+}
+
+PassList
+erodeDilatePasses(const ErodeDilateParams& params,
+                  const RenderScale& scale,
+                  bool dilate)
 {
     const OfxPointD rs = scale.toOfxPointD();
-    const bool growsX = dilate ? (params.sizeX > 0) : (params.sizeX < 0);
-    const bool growsY = dilate ? (params.sizeY > 0) : (params.sizeY < 0);
-
-    *deltaX = growsX ? (int)std::ceil(std::abs(params.sizeX) * rs.x) : 0;
-    *deltaY = growsY ? (int)std::ceil(std::abs(params.sizeY) * rs.y) : 0;
-}
-
-bool
-ErodeDilate::isIdentityOp(double time,
-                          const RenderScale& scale,
-                          const RectI& /*roi*/,
-                          ViewIdx view)
-{
-    ErodeDilateParams params;
-
-    getParams(time, view, &params);
-
-    return paramsAreIdentity(scale, params);
-}
-
-StatusEnum
-ErodeDilate::getRegionOfDefinition(U64 hash,
-                                   double time,
-                                   const RenderScale& scale,
-                                   ViewIdx view,
-                                   RectD* rod)
-{
-    EffectInstancePtr input = getInput(0);
-
-    if (!input) {
-        return EffectInstance::getRegionOfDefinition(hash, time, scale, view, rod);
-    }
-    ErodeDilateParams params;
-    getParams(time, view, &params);
-    if (!params.expandRoD) {
-        return EffectInstance::getRegionOfDefinition(hash, time, scale, view, rod);
-    }
-
-    const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
-    RectD srcRoD;
-    bool isProjectFormat = false;
-    if (input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &srcRoD, &isProjectFormat) == eStatusFailed) {
-        return eStatusFailed;
-    }
-    RectI rodPixel = toPixelEnclosing(srcRoD, scale, getAspectRatio(0));
-    if (isEmptyRect(rodPixel)) {
-        return EffectInstance::getRegionOfDefinition(hash, time, scale, view, rod);
-    }
-    int deltaX = 0;
-    int deltaY = 0;
-    getExpansion(scale, params, _dilate, &deltaX, &deltaY);
-    rodPixel.x1 -= deltaX;
-    rodPixel.x2 += deltaX;
-    rodPixel.y1 -= deltaY;
-    rodPixel.y2 += deltaY;
-    *rod = toCanonical(rodPixel, scale, getAspectRatio(-1));
-
-    return eStatusOK;
-}
-
-void
-ErodeDilate::getRegionsOfInterest(double time,
-                                  const RenderScale& scale,
-                                  const RectD& outputRoD,
-                                  const RectD& renderWindow,
-                                  ViewIdx view,
-                                  RoIMap* ret)
-{
-    EffectInstance::getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
-
-    EffectInstancePtr input = getInput(0);
-    if (!input) {
-        return;
-    }
-    const bool doMasking = isMaskApplied();
-    double mix = 1.;
-    if (doMasking) {
-        mix = getMixValue(time, view);
-        if (mix == 0.) {
-            return;
-        }
-    }
-
-    ErodeDilateParams params;
-    getParams(time, view, &params);
-    const double par = getAspectRatio(0);
-    const RectI rectPixel = toPixelEnclosing(renderWindow, scale, par);
-    RectD srcRoI = toCanonical(getSourceRoI(rectPixel, scale, params), scale, par);
-    if (doMasking && (mix != 1.)) {
-        srcRoI.merge(renderWindow);
-    }
-    // The mask may be the same effect as the source, in which case both needs share one entry.
-    RoIMap::iterator found = ret->find(input);
-    if (found != ret->end()) {
-        if (isMaskApplied() && (getInput(getMaskInput()) == input)) {
-            srcRoI.merge(found->second);
-        }
-        found->second = srcRoI;
-    } else {
-        ret->insert(std::make_pair(input, srcRoI));
-    }
-}
-
-StatusEnum
-ErodeDilate::render(const RenderActionArgs& args)
-{
-    ErodeDilateParams params;
-    getParams(args.time, args.view, &params);
-
-    Phase phases[2];
-    getPhases(args.mappedScale, params, _dilate, phases);
-
-    const double mixValue = getMixValue(args.time, args.view);
-    const float mix = (float)mixValue;
-    const bool maskInvert = getMaskInvertValue(args.time, args.view);
-    NodePtr node = getNode();
-
-    // Every image is fetched before any is locked: fetching renders upstream, which may write
-    // into a cached image this render would otherwise already hold a read lock on.
-    const bool doMask = isMaskApplied();
-    ImagePtr mask;
-    int maskChannel = -1;
-    if (doMask) {
-        const int maskInput = getMaskInput();
-        ImageLayerDesc maskLayer;
-        if (resolveInputPlaneForRender(maskInput, args.time, args.view, &maskLayer, &maskChannel) && (maskChannel >= 0)) {
-            RectI maskRoI;
-            mask = getImage(maskInput, args.time, args.mappedScale, args.view, NULL, &maskLayer, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &maskRoI);
-        }
-        if (mask && ((maskChannel >= (int)mask->getComponentsCount()))) {
-            mask.reset();
-        }
-    }
-
-    KnobChannelSelectPtr unPremultBy = node ? node->getUnPremultBySelector() : KnobChannelSelectPtr();
-    ImageLayerDesc divisorLayer;
-    int divisorChannel = -1;
-    if (unPremultBy && !unPremultBy->isNone() && getInput(0)) {
-        std::list<ImageLayerDesc> availableLayers;
-        getAvailableLayers(args.time, args.view, 0, &availableLayers);
-        divisorChannel = node->getUnPremultChannel(availableLayers, &divisorLayer);
-        if (divisorLayer.getNumComponents() == 0) {
-            divisorChannel = -1;
-        }
-    }
-
-    std::vector<PlaneJob> jobs;
-    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
-        PlaneJob job;
-        job.dst = it->second;
-        if (!job.dst) {
-            continue;
-        }
-        job.nComps = (int)job.dst->getComponentsCount();
-        job.channels = processedBitsForImage(it->first, job.nComps, args.processChannels);
-
-        ImageLayerDesc sourceLayer;
-        if (getInput(0) && resolveInputPlaneForRender(0, args.time, args.view, &sourceLayer, NULL)) {
-            RectI sourceRoI;
-            // Mapped to the clip's components, which is the layout the output plane is rendered in.
-            job.src = getImage(0, args.time, args.mappedScale, args.view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &sourceRoI);
-        }
-        if (job.src && (divisorChannel >= 0)) {
-            RectI divisorRoI;
-            job.divisor = getImage(0, args.time, args.mappedScale, args.view, NULL, &divisorLayer, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &divisorRoI);
-            if (job.divisor && (divisorChannel < (int)job.divisor->getComponentsCount())) {
-                job.divisorChannel = divisorChannel;
-                job.skipChannel = Node::getUnPremultSkipChannel(it->first.isColorLayer() ? job.dst->getComponents() : it->first, divisorLayer, divisorChannel);
-            } else {
-                job.divisor.reset();
-            }
-        }
-        if (!isFloatImage(job.dst) || !isFloatImage(job.src) || !isFloatImage(job.divisor)) {
-            return eStatusFailed;
-        }
-        jobs.push_back(job);
-    }
-    if (!isFloatImage(mask)) {
-        return eStatusFailed;
-    }
-
-    const RectI& roi = args.roi;
-    if ((roi.width() <= 0) || (roi.height() <= 0)) {
-        return eStatusOK;
-    }
-
-    // The filters run over the window plus the halo, clipped to this effect's own region of
-    // definition, as CImgFilterPluginHelper::render() clips its source region of interest.
-    RectD ownRoD;
-    bool isProjectFormat = false;
-    if (getRegionOfDefinition_public(getRenderHash(), args.time, args.mappedScale, args.view, &ownRoD, &isProjectFormat) == eStatusFailed) {
-        return eStatusFailed;
-    }
-    const RectI dstRoDPixel = toPixelEnclosing(ownRoD, args.mappedScale, getAspectRatio(-1));
-
-    // Images are locked here, on the calling thread, for the whole render; the pool threads only
-    // compute pixel addresses through these accesses.
-    MaskInput maskSource;
-    maskSource.applied = doMask;
-    maskSource.invert = maskInvert;
-    maskSource.image = mask;
-    maskSource.channel = maskChannel;
-    maskSource.lock();
-    for (std::size_t j = 0; j < jobs.size(); ++j) {
-        jobs[j].lock();
-    }
-
-    // The whole window is filtered whatever the mask, so that a pixel's value does not depend on
-    // where the mask is zero; the mask only blends in writeWindow().
-    RectI processWindow = roi;
-    if (mixValue == 0.) {
-        processWindow.x2 = processWindow.x1;
-        processWindow.y2 = processWindow.y1;
-    }
-    const bool processing = !isEmptyRect(processWindow);
-
-    RectI bufferRect(0, 0, 0, 0);
-    if (processing) {
-        intersectRects(getSourceRoI(processWindow, args.mappedScale, params), dstRoDPixel, &bufferRect);
-    }
-    const int bufferWidth = std::max(0, bufferRect.width());
-    const int bufferHeight = std::max(0, bufferRect.height());
-    const std::size_t planeSize = (std::size_t)bufferWidth * bufferHeight;
-
-    const int nThreads = appPTR->getNCPUsAvailableForEffect();
-    RenderCancellation cancel(this);
-
-    for (std::size_t j = 0; j < jobs.size(); ++j) {
-        const PlaneJob& job = jobs[j];
-        const ProcessedPlanes planes(job);
-        const int nPlanes = planes.count();
-        std::vector<float> buffer((processing && (nPlanes > 0)) ? planeSize * nPlanes : 0);
-
-        if (!buffer.empty()) {
-            // 1. The source over the buffer, zero outside its image, divided by the "(Un)premult by"
-            // channel where that is usable.
-            fillBuffer(job, planes, bufferRect, Boundary::Zero, nThreads, cancel, &buffer[0]);
-            if (cancel.check()) {
-                return eStatusOK;
-            }
-
-            // 2. Each phase runs its horizontal pass over whole rows and its vertical pass over
-            // whole columns of every plane.
-            for (int ph = 0; ph < 2; ++ph) {
-                const Phase& phase = phases[ph];
-                if (phase.halfX > 0) {
-                    const std::function<void(int, int)> rows = [&](int first, int end) {
-                        ErodeDilateKernels::LineScratch scratch;
-                        for (int line = first; line < end; ++line) {
-                            if ((((line - first) % kAbortCheckLines) == 0) && cancel.check()) {
-                                return;
-                            }
-                            const int p = line / bufferHeight;
-                            const int row = line % bufferHeight;
-                            ErodeDilateKernels::filterLine(&buffer[(std::size_t)p * planeSize + (std::size_t)row * bufferWidth], bufferWidth, 1, phase.halfX, phase.takeMax, scratch);
-                        }
-                    };
-                    forEachLineChunk(nPlanes * bufferHeight, (std::size_t)bufferWidth, nThreads, cancel, rows);
-                    if (cancel.check()) {
-                        return eStatusOK;
-                    }
-                }
-                if (phase.halfY > 0) {
-                    const std::function<void(int, int)> columns = [&](int first, int end) {
-                        ErodeDilateKernels::LineScratch scratch;
-                        for (int line = first; line < end; ++line) {
-                            if ((((line - first) % kAbortCheckLines) == 0) && cancel.check()) {
-                                return;
-                            }
-                            const int p = line / bufferWidth;
-                            const int column = line % bufferWidth;
-                            ErodeDilateKernels::filterLine(&buffer[(std::size_t)p * planeSize + column], bufferHeight, (std::ptrdiff_t)bufferWidth, phase.halfY, phase.takeMax, scratch);
-                        }
-                    };
-                    forEachLineChunk(nPlanes * bufferWidth, (std::size_t)bufferHeight, nThreads, cancel, columns);
-                    if (cancel.check()) {
-                        return eStatusOK;
-                    }
-                }
-            }
-        }
-
-        // 3. The window: multiply back, mask and mix against the undivided source; unprocessed
-        // channels and the pixels outside the processed window pass through.
-        WindowLayout layout;
-        layout.roi = roi;
-        layout.processWindow = processWindow;
-        layout.processing = processing;
-        layout.bufferRect = bufferRect;
-        layout.buffer = buffer.empty() ? NULL : &buffer[0];
-        layout.mix = mix;
-        writeWindow(job, planes, maskSource, layout, nThreads, cancel);
-        if (cancel.check()) {
-            return eStatusOK;
-        }
-    }
-
-    return eStatusOK;
-} // ErodeDilate::render
-
-bool
-ErodeDilate::canRenderOnGpu(const GpuQuery& query) const
-{
+    PassList list;
 #ifdef NATRON_HAVE_GPU
-    if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps < 1) || (query.nComps > (int)gpu::kGpuMorphMaxChannels)) {
-        return false;
-    }
-    if ((query.unPremultChannel >= 0) && !query.unPremultInPlane) {
-        return false;
-    }
-    ErodeDilateParams params;
-    getParams(query.time, query.view, &params);
-    Phase phases[2];
-    getPhases(query.mappedScale, params, _dilate, phases);
+    std::vector<gpu::GpuMorphPass> gpuPasses;
+    bool gpuFits = true;
+#endif
+
+    // The operation of the positive axes first, then the opposite one on the negative axes.
     for (int ph = 0; ph < 2; ++ph) {
-        if ((phases[ph].halfX > (int)gpu::kGpuMorphMaxRadius) || (phases[ph].halfY > (int)gpu::kGpuMorphMaxRadius)) {
-            return false;
+        const int sign = (ph == 0) ? 1 : -1;
+        const bool takeMax = (ph == 0) ? dilate : !dilate;
+        const bool onX = (sign * params.sizeX) > 0;
+        const bool onY = (sign * params.sizeY) > 0;
+        const int halfX = (int)std::floor(std::max(0, sign * params.sizeX) * rs.x);
+        const int halfY = (int)std::floor(std::max(0, sign * params.sizeY) * rs.y);
+
+        if (onX) {
+            const int halo = axisHalo(params.sizeX, rs.x);
+            list.passes.push_back(Pass::lineX(halo, takeMax ? halo : 0, lineWorker(halfX, takeMax)));
         }
+        if (onY) {
+            const int halo = axisHalo(params.sizeY, rs.y);
+            list.passes.push_back(Pass::lineY(halo, takeMax ? halo : 0, lineWorker(halfY, takeMax)));
+        }
+#ifdef NATRON_HAVE_GPU
+        if (halfX > 0) {
+            gpuPasses.push_back(gpu::GpuMorphPass { (uint32_t)halfX, false, takeMax });
+        }
+        if (halfY > 0) {
+            gpuPasses.push_back(gpu::GpuMorphPass { (uint32_t)halfY, true, takeMax });
+        }
+        gpuFits = gpuFits && (halfX <= (int)gpu::kGpuMorphMaxRadius) && (halfY <= (int)gpu::kGpuMorphMaxRadius);
+#endif
     }
+
+#ifdef NATRON_HAVE_GPU
+    if (gpuFits) {
+        list.gpu = morphologyGpuRecorder(std::move(gpuPasses));
+    }
+#endif
+
+    return list;
+} // erodeDilatePasses
+} // anonymous namespace
+
+template <ErodeDilateMode MODE>
+void
+ErodeDilateOp<MODE>::createKnobs(KnobHolder* holder,
+                                 const KnobPagePtr& page)
+{
+    KnobIntPtr sizeKnob = AppManager::createKnob<KnobInt>(holder, EffectInstance::tr("Size"), 2);
+    sizeKnob->setName(kErodeDilateParamSize);
+    sizeKnob->setHintToolTip(EffectInstance::tr("Width/height of the rectangular structuring element is 2*size+1, in pixel units (>=0)."));
+    for (int d = 0; d < 2; ++d) {
+        sizeKnob->setMinimum(-1000, d);
+        sizeKnob->setMaximum(1000, d);
+        sizeKnob->setDisplayMinimum(-100, d);
+        sizeKnob->setDisplayMaximum(100, d);
+        sizeKnob->setDefaultValue(1, d);
+    }
+    page->addKnob(sizeKnob);
+    size = sizeKnob;
+
+    KnobBoolPtr expandRoDKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Expand RoD"));
+    expandRoDKnob->setName(kErodeDilateParamExpandRoD);
+    if (kDilate) {
+        expandRoDKnob->setHintToolTip(EffectInstance::tr("Expand the source region of definition by 2*size pixels if size is positive"));
+    } else {
+        expandRoDKnob->setHintToolTip(EffectInstance::tr("Expand the source region of definition by 2*size pixels if size is negative"));
+    }
+    expandRoDKnob->setDefaultValue(true);
+    page->addKnob(expandRoDKnob);
+    expandRoD = expandRoDKnob;
+}
+
+template <ErodeDilateMode MODE>
+typename ErodeDilateOp<MODE>::Params
+ErodeDilateOp<MODE>::bake(const KnobReader& reader) const
+{
+    Params params;
+
+    params.sizeX = reader.value(size, 0);
+    params.sizeY = reader.value(size, 1);
+    params.expandRoD = reader.value(expandRoD);
+
+    return params;
+}
+
+template <ErodeDilateMode MODE>
+bool
+ErodeDilateOp<MODE>::isIdentity(const Params& params,
+                                const PassContext& context) const
+{
+    return isIdentityAt(context.scale, params);
+}
+
+template <ErodeDilateMode MODE>
+PassList
+ErodeDilateOp<MODE>::passes(const Params& params,
+                            const PassContext& context) const
+{
+    return erodeDilatePasses(params, context.scale, kDilate);
+}
+
+template <ErodeDilateMode MODE>
+std::optional<GpuCostHint>
+ErodeDilateOp<MODE>::costHint(const Params& params,
+                              const PassContext& context) const
+{
+    GpuCostHint hint;
+
+    hint.size = (int)std::floor(std::max(std::abs(params.sizeX), std::abs(params.sizeY)) * context.scale.toOfxPointD().x);
+
+    return hint;
+}
+
+template struct ErodeDilateOp<ErodeDilateMode::Erode>;
+template struct ErodeDilateOp<ErodeDilateMode::Dilate>;
+
+template <ErodeDilateMode MODE>
+ErodeDilateNode<MODE>::ErodeDilateNode(NodePtr node)
+    : ImageNode<ErodeDilateOp<MODE>>(node)
+{
+}
+
+template <ErodeDilateMode MODE>
+ErodeDilateNode<MODE>::~ErodeDilateNode()
+{
+}
+
+template <ErodeDilateMode MODE>
+void
+ErodeDilateNode<MODE>::addAcceptedComponents(int inputNb,
+                                             std::list<ImageLayerDesc>* comps)
+{
+    ImageNode<ErodeDilateOp<MODE>>::addAcceptedComponents(inputNb, comps);
+    if (!this->isInputMask(inputNb)) {
+        comps->push_back(ImageLayerDesc::getXYComponents());
+    }
+}
+
+template <ErodeDilateMode MODE>
+void
+ErodeDilateNode<MODE>::getParams(double time,
+                                 ViewIdx view,
+                                 ErodeDilateParams* params) const
+{
+    *params = bakeParams(this->op(), time, view);
+}
+
+template <ErodeDilateMode MODE>
+RectI
+ErodeDilateNode<MODE>::getSourceRoI(const RectI& rect,
+                                    const RenderScale& scale,
+                                    const ErodeDilateParams& params)
+{
+    return passListSourceRoI(rect, erodeDilatePasses(params, scale, ErodeDilateOp<MODE>::kDilate));
+}
+
+template <ErodeDilateMode MODE>
+bool
+ErodeDilateNode<MODE>::paramsAreIdentity(const RenderScale& scale,
+                                         const ErodeDilateParams& params)
+{
+    return isIdentityAt(scale, params);
+}
+
+template <ErodeDilateMode MODE>
+void
+ErodeDilateNode<MODE>::getExpansion(const RenderScale& scale,
+                                    const ErodeDilateParams& params,
+                                    bool dilate,
+                                    int* deltaX,
+                                    int* deltaY)
+{
+    const PassExtent extent = passListExtent(erodeDilatePasses(params, scale, dilate));
+
+    *deltaX = extent.growX;
+    *deltaY = extent.growY;
+}
+
+template <ErodeDilateMode MODE>
+bool
+ErodeDilateNode<MODE>::clipRegionOfDefinition(double time,
+                                              const RenderScale& /*scale*/,
+                                              ViewIdx view,
+                                              const EffectInstancePtr& /*source*/,
+                                              const RectI& srcRoD,
+                                              RectI* rod)
+{
+    ErodeDilateParams params;
+
+    getParams(time, view, &params);
+    if (params.expandRoD || (*rod == srcRoD)) {
+        return false;
+    }
+    *rod = srcRoD;
 
     return true;
-#else
-    Q_UNUSED(query);
-
-    return false;
-#endif
 }
 
-RectI
-ErodeDilate::getGpuInputRoI(int inputNb,
-                            const RectI& outputRect,
-                            const RenderScale& scale) const
-{
-    if (inputNb != 0) {
-        return NativeImageEffect::getGpuInputRoI(inputNb, outputRect, scale);
-    }
-    ErodeDilateParams params;
-    getParams(getCurrentTime(), getCurrentView(), &params);
-
-    return getSourceRoI(outputRect, scale, params);
-}
-
-StatusEnum
-ErodeDilate::renderGpu(const GpuRenderArgs& args)
-{
-#ifdef NATRON_HAVE_GPU
-    if (!canRenderOnGpu(args.query) || args.inputs.empty()) {
-        return eStatusFailed;
-    }
-    const GpuImageView& src = args.inputs[0];
-    const GpuImageView& dst = args.output;
-    const int nComps = args.query.nComps;
-    const RectI& rect = args.outputRect;
-    EffectInstancePtr input = getInput(0);
-    if (!input || !isUsableGpuView(src, nComps) || !isUsableGpuView(dst, nComps) || isEmptyRect(rect) || !dst.bounds.contains(rect)) {
-        return eStatusFailed;
-    }
-
-    const double time = args.query.time;
-    const ViewIdx view = args.query.view;
-    const RenderScale& scale = args.query.mappedScale;
-    ErodeDilateParams params;
-    getParams(time, view, &params);
-    Phase phases[2];
-    getPhases(scale, params, _dilate, phases);
-    std::vector<gpu::GpuMorphPass> passes;
-    for (int ph = 0; ph < 2; ++ph) {
-        if (phases[ph].halfX > 0) {
-            passes.push_back(gpu::GpuMorphPass { (uint32_t)phases[ph].halfX, false, phases[ph].takeMax });
-        }
-        if (phases[ph].halfY > 0) {
-            passes.push_back(gpu::GpuMorphPass { (uint32_t)phases[ph].halfY, true, phases[ph].takeMax });
-        }
-    }
-
-    RectD ownRoD;
-    bool isProjectFormat = false;
-    if (getRegionOfDefinition_public(getRenderHash(), time, scale, view, &ownRoD, &isProjectFormat) == eStatusFailed) {
-        return eStatusFailed;
-    }
-    const RectI rodPixel = toPixelEnclosing(ownRoD, scale, getAspectRatio(-1));
-    const RectI sourceRoI = getSourceRoI(rect, scale, params);
-
-    const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
-    RectD srcRoD;
-    if (input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &srcRoD, &isProjectFormat) == eStatusFailed) {
-        return eStatusFailed;
-    }
-    RectI valid;
-    intersectRects(src.bounds, toPixelEnclosing(srcRoD, scale, getAspectRatio(0)), &valid);
-
-    int divisor = -1;
-    if (!getGpuUnPremultComponent(args.query, &divisor)) {
-        return eStatusFailed;
-    }
-    const double mix = getMixValue(time, view);
-    bool allChannels = true;
-    for (int c = 0; c < 4; ++c) {
-        allChannels = allChannels && args.query.processChannels[c];
-    }
-    // With mix 0 render() processes nothing and the finish passes the source through.
-    const bool filtering = !passes.empty() && (mix != 0.);
-    const bool finish = !filtering || args.query.hasMask || (mix != 1.) || !allChannels || (divisor >= 0);
-
-    // The source view may extend past the input's region of definition; render() reads the
-    // divisor there as 1, as the wrap does outside its source view.
-    GpuRenderArgs wrapArgs(args);
-    wrapArgs.inputs[0] = cropGpuView(src, valid);
-
-    gpu::GpuRecordContext& ctx = args.context;
-    GpuImageView filterSource = wrapArgs.inputs[0];
-    if ((divisor >= 0) || !filtering) {
-        // render()'s buffer: the source divided where the divisor is usable, zero outside it.
-        RectI dividedRect = rect;
-        if (filtering) {
-            intersectRects(sourceRoI, rodPixel, &dividedRect);
-        }
-        filterSource = GpuImageView();
-        if (!isEmptyRect(dividedRect)) {
-            filterSource.bounds = dividedRect;
-            filterSource.nComps = nComps;
-            filterSource.rowStrideFloats = dividedRect.width() * nComps;
-            if (!ctx.scratch((VkDeviceSize)dividedRect.area() * nComps * sizeof(float), filterSource.buffer) || (recordGpuDivide(wrapArgs, filterSource) != eStatusOK)) {
-                return eStatusFailed;
-            }
-            ctx.computeBarrier();
-        }
-    }
-    if (!filtering) {
-        return recordGpuFinish(wrapArgs, filterSource);
-    }
-
-    GpuImageView filtered = dst;
-    if (finish) {
-        filtered = GpuImageView();
-        filtered.bounds = rect;
-        filtered.nComps = nComps;
-        filtered.rowStrideFloats = rect.width() * nComps;
-        if (!ctx.scratch((VkDeviceSize)rect.area() * nComps * sizeof(float), filtered.buffer)) {
-            return eStatusFailed;
-        }
-    }
-
-    gpu::GpuMorphology morph;
-    morph.src = toGpuBlurImage(filterSource);
-    morph.dst = toGpuBlurImage(filtered);
-    morph.output = toGpuBlurRect(rect);
-    morph.rod = toGpuBlurRect(rodPixel);
-    morph.haloX = rect.x1 - sourceRoI.x1;
-    morph.haloY = rect.y1 - sourceRoI.y1;
-    morph.passes = passes;
-    morph.channels = (uint32_t)nComps;
-
-    if (!gpu::recordMorphology(ctx, morph)) {
-        return eStatusFailed;
-    }
-    if (!finish) {
-        return eStatusOK;
-    }
-    ctx.computeBarrier();
-
-    return recordGpuFinish(wrapArgs, filtered);
-#else
-    Q_UNUSED(args);
-
-    return eStatusFailed;
-#endif
-} // ErodeDilate::renderGpu
+template class ErodeDilateNode<ErodeDilateMode::Erode>;
+template class ErodeDilateNode<ErodeDilateMode::Dilate>;
 
 NATRON_NAMESPACE_EXIT

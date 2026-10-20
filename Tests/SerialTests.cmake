@@ -10,6 +10,6 @@ set_tests_properties(
     RenderSchedulerAbort.WriterRangeStopsSoonAfterEngineAbort
     GraphScalingTest.DiamondLadderConnectIsFast
     GraphScalingTest.FrameVaryingFallbackIsLinearOnDiamondLadder
-    NativeImageEffectTest.AnAbortReachesABandRunningOnAPoolThread
+    StagedImageEffectTest.AnAbortReachesABandRunningOnAPoolThread
     PROPERTIES RUN_SERIAL TRUE
 )

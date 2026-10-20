@@ -39,7 +39,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/GpuRender.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScheduler.h"
 
@@ -136,7 +136,7 @@ private:
 // mask, when given, goes to the effect's mask input. The test fails when the effect does not accept
 // the query or does not render.
 GpuRunResult runRenderGpu(GpuParityRuntime& runtime,
-                          NativeImageEffect& effect,
+                          StagedImageEffect& effect,
                           const GpuQuery& query,
                           const std::vector<GpuParityImage>& inputs,
                           const GpuParityImage* mask,

@@ -305,17 +305,20 @@ public:
     }
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source", .kind = eDataKindPolymorphic, .optional = true },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDDataKindScenePolicy,
+        .label = "Test Data Kind Scene Policy",
+        .outputKind = eDataKindPolymorphic,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        NativePluginDescription desc;
-
-        desc.id = kTestPluginIDDataKindScenePolicy;
-        desc.label = "Test Data Kind Scene Policy";
-        desc.description = "";
-        desc.inputs.push_back(NativeInputDescription("Source", true, eDataKindPolymorphic));
-        desc.outputKind = eDataKindPolymorphic;
-
-        return desc;
+        return staticNodeSpec<kNodeSpec>();
     }
 };
 
@@ -357,18 +360,21 @@ public:
     }
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "A", .kind = eDataKindPolymorphic, .optional = true },
+        InputSpec { .label = "B", .kind = eDataKindPolymorphic, .optional = true },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDDataKindSelectFirstInputPolicy,
+        .label = "Test Data Kind Select First Input Policy",
+        .outputKind = eDataKindPolymorphic,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        NativePluginDescription desc;
-
-        desc.id = kTestPluginIDDataKindSelectFirstInputPolicy;
-        desc.label = "Test Data Kind Select First Input Policy";
-        desc.description = "";
-        desc.inputs.push_back(NativeInputDescription("A", true, eDataKindPolymorphic));
-        desc.inputs.push_back(NativeInputDescription("B", true, eDataKindPolymorphic));
-        desc.outputKind = eDataKindPolymorphic;
-
-        return desc;
+        return staticNodeSpec<kNodeSpec>();
     }
 };
 
@@ -413,17 +419,20 @@ public:
     }
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source", .kind = eDataKindPolymorphic, .optional = true },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDDataKindConsumerMirrorPolicy,
+        .label = "Test Data Kind Consumer Mirror Policy",
+        .outputKind = eDataKindPolymorphic,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        NativePluginDescription desc;
-
-        desc.id = kTestPluginIDDataKindConsumerMirrorPolicy;
-        desc.label = "Test Data Kind Consumer Mirror Policy";
-        desc.description = "";
-        desc.inputs.push_back(NativeInputDescription("Source", true, eDataKindPolymorphic));
-        desc.outputKind = eDataKindPolymorphic;
-
-        return desc;
+        return staticNodeSpec<kNodeSpec>();
     }
 };
 

@@ -35,6 +35,10 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kRemoveMetadataInputs[] = {
+    InputSpec { .label = "Source", .optional = false },
+};
+
 // No key is protected: the ofx/ keys the engine writes go too when matched.
 class RemoveMetadata
     : public NativeEffectBase {
@@ -52,7 +56,27 @@ private:
         return LayerKnobSpec();
     }
 
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_REMOVEMETADATA,
+        .label = "RemoveMetadata",
+        .description = "Removes the metadata keys matching the Keys list, or every key when Remove All "
+                       "is on. Keys is a comma- or newline-separated list of globs, where * matches any "
+                       "characters, including /, and ? matches one, for example exr/*, exif/Make. No key "
+                       "is protected, so the engine's ofx/ keys go too if matched. The image itself is "
+                       "passed through unchanged.",
+        .grouping = PLUGIN_GROUP_METADATA,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .inputs = kRemoveMetadataInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
+    virtual Route route(double time,
+                        ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 
@@ -63,14 +87,6 @@ private:
                              bool originatedFromMainThread) OVERRIDE FINAL;
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
-
-    virtual bool isIdentity(double time,
-                            const RenderScale& scale,
-                            const RectI& roi,
-                            ViewIdx view,
-                            double* inputTime,
-                            ViewIdx* inputView,
-                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 

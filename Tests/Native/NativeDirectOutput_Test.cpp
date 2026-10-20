@@ -83,6 +83,10 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kDirectOutputInputs[] = {
+    InputSpec { .label = "Source", .optional = true },
+};
+
 const int kDirectOutputProbeWidth = 50;
 const int kDirectOutputProbeHeight = 40;
 const float kDirectOutputProbeUnfinishedValue = -7.f;
@@ -297,17 +301,15 @@ public:
     }
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kDirectOutputProbePluginID,
+        .label = "Test Direct Output Probe",
+        .inputs = kDirectOutputInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        NativePluginDescription desc;
-
-        desc.id = kDirectOutputProbePluginID;
-        desc.label = "Test Direct Output Probe";
-        desc.description = "";
-        desc.inputs.push_back(NativeInputDescription("Source", true, eDataKindImage));
-        desc.outputKind = eDataKindImage;
-
-        return desc;
+        return staticNodeSpec<kNodeSpec>();
     }
 };
 
@@ -330,17 +332,15 @@ public:
     }
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kDirectOutputProbeViaTemporaryPluginID,
+        .label = "Test Direct Output Probe Via Temporary",
+        .inputs = kDirectOutputInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        NativePluginDescription desc;
-
-        desc.id = kDirectOutputProbeViaTemporaryPluginID;
-        desc.label = "Test Direct Output Probe Via Temporary";
-        desc.description = "";
-        desc.inputs.push_back(NativeInputDescription("Source", true, eDataKindImage));
-        desc.outputKind = eDataKindImage;
-
-        return desc;
+        return staticNodeSpec<kNodeSpec>();
     }
 };
 

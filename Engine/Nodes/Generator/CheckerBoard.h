@@ -116,58 +116,80 @@ int checkerBoardRunEnd(const CheckerBoardGeometry& g,
 
 /**
  * @brief CheckerBoard: boxes of boxSize canonical units in four colours around the centre of the
- * region of definition (of the project for Default extent), with optional lines between boxes
- * and centre lines, with the openfx-misc CheckerBoardPlugin's knobs, defaults and pixel maths.
- * Its pixel depends on where it is; it is a point operator whose input is ignored, and both
- * kernels read the pixel's position. It registers under that plugin's ID one major above.
+ * region of definition, with optional lines between boxes and centre lines, with the openfx-misc
+ * CheckerBoardPlugin's knobs, defaults and pixel maths. Its pixel depends on where it is at the
+ * render scale, so the op takes the render's PassContext. It registers under that plugin's ID
+ * one major above.
  **/
-class CheckerBoard
-    : public NativeGenerator {
-public:
-    static EffectInstance* BuildEffect(NodePtr node)
-    {
-        return new CheckerBoard(node);
-    }
+struct CheckerBoardOp {
+    // Knob values in canonical units, the region of definition in canonical coordinates and the
+    // output pixel aspect ratio; the geometry at a render scale is derived from them.
+    struct Params {
+        double boxSizeX;
+        double boxSizeY;
+        double lineWidth;
+        double centerlineWidth;
+        double rodX1;
+        double rodY1;
+        double rodX2;
+        double rodY2;
+        double par;
+        float colors[6][4];
+    };
 
-    explicit CheckerBoard(NodePtr node);
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_CHECKERBOARD,
+        .label = "CheckerBoard",
+        .description = "Generate an image with a checkerboard.\n"
+                       "A frame range may be specified for operators that need it.\n"
+                       "See also: https://web.archive.org/web/20220807183203/http://www.opticalenquiry.com/nuke/index.php?title=Constant,_CheckerBoard,_ColorBars,_ColorWheel",
+        .grouping = PLUGIN_GROUP_IMAGE,
+        .majorVersion = PLUGIN_MAJOR_NATRON_CHECKERBOARD,
+        .minorVersion = 0,
+    };
 
-    virtual ~CheckerBoard();
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = {},
+        .layers = LayerPolicy::targetSelect(),
+        .op = OpKind::Point,
+    };
 
-protected:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    void createKnobs(KnobHolder* holder,
+                     const KnobPagePtr& page);
 
-private:
-    virtual void initializeKnobs() OVERRIDE FINAL;
+    Params bake(const KnobReader& reader) const;
 
-    virtual bool isPointOp() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return true;
-    }
+    bool isIdentity(const Params& params,
+                    const PassContext& context) const;
 
-    virtual PixelKernelPtr makeKernel(const KernelContext& context) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    void row(const Params& params,
+             const PassContext& context,
+             const RowIO& io) const;
 
-    virtual int gpuKernelId(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    GpuOpRef gpu(const Params& params,
+                 const PassContext& context) const;
 
-    virtual bool makeGpuKernel(const KernelContext& context,
-                               PixelKernelGpu* gpu) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    /**
+     * @brief Where params draw at context's render scale.
+     **/
+    static CheckerBoardGeometry geometry(const Params& params,
+                                         const PassContext& context);
 
-    // The geometry and colours at context's time, view and render scale; both kernels are built
-    // from one read.
-    void readParams(const KernelContext& context,
-                    CheckerBoardGeometry* g,
-                    float colors[6][4],
-                    RectD* rodOut) const;
-
-    KnobDoubleWPtr _boxSize;
-    KnobColorWPtr _color0;
-    KnobColorWPtr _color1;
-    KnobColorWPtr _color2;
-    KnobColorWPtr _color3;
-    KnobColorWPtr _lineColor;
-    KnobDoubleWPtr _lineWidth;
-    KnobColorWPtr _centerlineColor;
-    KnobDoubleWPtr _centerlineWidth;
+    const NativeGenerator* generator = nullptr;
+    KnobDoubleWPtr boxSize;
+    KnobColorWPtr color0;
+    KnobColorWPtr color1;
+    KnobColorWPtr color2;
+    KnobColorWPtr color3;
+    KnobColorWPtr lineColor;
+    KnobDoubleWPtr lineWidth;
+    KnobColorWPtr centerlineColor;
+    KnobDoubleWPtr centerlineWidth;
 };
+
+static_assert(ScaledPointOp<CheckerBoardOp>);
+
+using CheckerBoard = GeneratorNode<CheckerBoardOp>;
 
 NATRON_NAMESPACE_EXIT
 

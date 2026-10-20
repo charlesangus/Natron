@@ -33,10 +33,11 @@
 
 #include <cstddef>
 #include <list>
+#include <optional>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/RectI.h"
 
 #define PLUGINID_NATRON_ERODE "net.sf.cimg.CImgErode"
@@ -88,40 +89,117 @@ struct ErodeDilateParams {
 };
 
 /**
- * @brief Erode (or dilate) by a rectangular structuring element, as openfx-misc's CImgErode and
- * CImgDilate do; this class is the erosion and Dilate the dilation. Each takes a size per axis:
- * a positive size runs the node's own operation over a window of floor(size * renderScale) * 2 + 1
- * pixels, a negative size runs the opposite operation. Min and max filters don't commute, so
- * parity needs the OpenFX order: positive axes before negative ones, X before Y.
- *
- * The filters run over one float buffer covering the render window plus the halo, clipped to
- * the output's region of definition, as the OpenFX plug-ins do: outside the source image the
- * buffer reads as zero, and the window clamps at the buffer's edge. The host never splits that
- * buffer (FullySafe), the X pass runs over whole rows and the Y pass over whole columns on the
- * global pool, which gives the same pixels at any thread count.
- *
- * The "(Un)premult by" selector starts at None: the host has no per-source automatic default.
+ * @brief Which operation a positive size runs: the erosion of Erode, the dilation of Dilate.
  **/
-class ErodeDilate
-    : public NativeImageEffect {
+enum class ErodeDilateMode {
+    Erode,
+    Dilate
+};
+
+inline constexpr InputSpec kErodeDilateInputs[] = {
+    InputSpec { .label = "Source" },
+    InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
+};
+
+/**
+ * @brief Erode (or dilate) by a rectangular structuring element, as openfx-misc's CImgErode and
+ * CImgDilate do; MODE picks which of the two this is. Each takes a size per axis: a positive size
+ * runs the node's own operation over a window of floor(size * renderScale) * 2 + 1 pixels, a
+ * negative size runs the opposite operation. Min and max filters don't commute, so parity needs
+ * the OpenFX order: positive axes before negative ones, X before Y.
+ *
+ * Its passes are those line filters over one buffer covering the render window plus the halo,
+ * clipped to the output's region of definition, as the OpenFX plug-ins do: outside the source
+ * image the buffer reads as zero, and the window clamps at the buffer's edge. Each pass runs over
+ * whole lines, which gives the same pixels at any thread count.
+ **/
+template <ErodeDilateMode MODE>
+struct ErodeDilateOp {
+    using Params = ErodeDilateParams;
+
+    static constexpr bool kDilate = (MODE == ErodeDilateMode::Dilate);
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kDilate ? PLUGINID_NATRON_DILATE : PLUGINID_NATRON_ERODE,
+        .label = kDilate ? "Dilate" : "Erode",
+        .description = kDilate ? "Dilate (or erode) input stream by a rectangular structuring element of specified size and Neumann boundary conditions (pixels out of the image get the value of the nearest pixel).\n"
+                                 "A negative size will perform an erosion instead of a dilation.\n"
+                                 "Different sizes can be given for the x and y axis.\n"
+                                 "The operation is the 'dilate' and 'erode' behaviour of the CImg library (http://cimg.eu), "
+                                 "distributed under the CeCILL-C licence."
+                               : "Erode (or dilate) input stream by a rectangular structuring element of specified size and Neumann boundary conditions (pixels out of the image get the value of the nearest pixel).\n"
+                                 "A negative size will perform a dilation instead of an erosion.\n"
+                                 "Different sizes can be given for the x and y axis.\n"
+                                 "The operation is the 'erode' and 'dilate' behaviour of the CImg library (http://cimg.eu), "
+                                 "distributed under the CeCILL-C licence.",
+        .grouping = PLUGIN_GROUP_FILTER,
+        .majorVersion = kDilate ? PLUGIN_MAJOR_NATRON_DILATE : PLUGIN_MAJOR_NATRON_ERODE,
+        .minorVersion = 0,
+        .inputs = kErodeDilateInputs,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .layers = LayerPolicy::all(),
+        .op = OpKind::Passes,
+    };
+
+    void createKnobs(KnobHolder* holder,
+                     const KnobPagePtr& page);
+
+    Params bake(const KnobReader& reader) const;
+
+    /**
+     * @brief ErodeDilateNode::paramsAreIdentity() at the context's scale.
+     **/
+    bool isIdentity(const Params& params,
+                    const PassContext& context) const;
+
+    /**
+     * @brief One line filter per axis with a non-zero size, the positive axes' then the negative
+     * axes', X before Y. Each carries its axis's halo, ErodeDilateNode::getSourceRoI(), and the
+     * filter that dilates its axis's spread, ErodeDilateNode::getExpansion(); one whose half width
+     * is zero at the context's scale only contributes them. The GPU recorder is left out where a
+     * half width exceeds the morphology kernel's tile.
+     **/
+    PassList passes(const Params& params,
+                    const PassContext& context) const;
+
+    /**
+     * @brief The larger axis's size in pixels at the context's scale, rounded down, even when the
+     * op is an identity.
+     **/
+    std::optional<GpuCostHint> costHint(const Params& params,
+                                        const PassContext& context) const;
+
+    KnobIntWPtr size;
+    KnobBoolWPtr expandRoD;
+};
+
+extern template struct ErodeDilateOp<ErodeDilateMode::Erode>;
+extern template struct ErodeDilateOp<ErodeDilateMode::Dilate>;
+
+static_assert(PassesOp<ErodeDilateOp<ErodeDilateMode::Erode>>);
+static_assert(PassesOp<ErodeDilateOp<ErodeDilateMode::Dilate>>);
+
+template <ErodeDilateMode MODE>
+class ErodeDilateNode
+    : public ImageNode<ErodeDilateOp<MODE>> {
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
-        return new ErodeDilate(node);
+        return new ErodeDilateNode(node);
     }
 
-    explicit ErodeDilate(NodePtr node);
+    explicit ErodeDilateNode(NodePtr node);
 
-    virtual ~ErodeDilate();
+    virtual ~ErodeDilateNode();
 
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
 
-    virtual StatusEnum getRegionOfDefinition(U64 hash,
-                                             double time,
-                                             const RenderScale& scale,
-                                             ViewIdx view,
-                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
+    /**
+     * @brief The Params the op renders with at (time, view).
+     **/
     void getParams(double time, ViewIdx view, ErodeDilateParams* params) const;
 
     /**
@@ -138,75 +216,27 @@ public:
 
     /**
      * @brief How far the region of definition grows on each axis at scale: the size of the axes
-     * whose sign selects the operation opposite to this node's own, in pixels rounded up.
+     * whose sign selects a dilation, in pixels rounded up.
      **/
     static void getExpansion(const RenderScale& scale, const ErodeDilateParams& params, bool dilate, int* deltaX, int* deltaY);
 
-    /**
-     * @brief Float images of 1 to 4 components, with any "(Un)premult by" channel in the rendered
-     * plane and half widths the GPU kernel's tile holds.
-     **/
-    virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    /**
-     * @brief getSourceRoI() at the current time and view.
-     **/
-    virtual RectI getGpuInputRoI(int inputNb, const RectI& outputRect, const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    /**
-     * @brief The pixels render() gives for the same query, including the filter buffer, the
-     * window plus the halo clipped to this effect's region of definition, which decides where a
-     * line is short and where its windows clamp.
-     **/
-    virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
 protected:
-    ErodeDilate(NodePtr node, bool dilate);
-
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual void getRegionsOfInterest(double time,
-                                      const RenderScale& scale,
-                                      const RectD& outputRoD,
-                                      const RectD& renderWindow,
-                                      ViewIdx view,
-                                      RoIMap* ret) OVERRIDE FINAL;
-
-    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-private:
-    virtual void initializeKnobs() OVERRIDE FINAL;
-
-    virtual bool isIdentityOp(double time,
-                              const RenderScale& scale,
-                              const RectI& roi,
-                              ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    bool _dilate;
-    KnobIntWPtr _size;
-    KnobBoolWPtr _expandRoD;
+    /**
+     * @brief Without expandRoD, the source's region, unexpanded.
+     **/
+    virtual bool clipRegionOfDefinition(double time,
+                                        const RenderScale& scale,
+                                        ViewIdx view,
+                                        const EffectInstancePtr& source,
+                                        const RectI& srcRoD,
+                                        RectI* rod) OVERRIDE FINAL;
 };
 
-/**
- * @brief The dilation: ErodeDilate with the roles of the two signs swapped.
- **/
-class Dilate
-    : public ErodeDilate {
-public:
-    static EffectInstance* BuildEffect(NodePtr node)
-    {
-        return new Dilate(node);
-    }
+extern template class ErodeDilateNode<ErodeDilateMode::Erode>;
+extern template class ErodeDilateNode<ErodeDilateMode::Dilate>;
 
-    explicit Dilate(NodePtr node)
-        : ErodeDilate(node, true)
-    {
-    }
-
-    virtual ~Dilate()
-    {
-    }
-};
+using ErodeDilate = ErodeDilateNode<ErodeDilateMode::Erode>;
+using Dilate = ErodeDilateNode<ErodeDilateMode::Dilate>;
 
 NATRON_NAMESPACE_EXIT
 

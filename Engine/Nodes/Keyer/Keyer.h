@@ -33,7 +33,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 
 #define PLUGINID_NATRON_KEYER "net.sf.openfx.KeyerPlugin"
 #define PLUGIN_MAJOR_NATRON_KEYER 2
@@ -74,9 +74,12 @@ NATRON_NAMESPACE_ENTER
  * Divergence: an RGB source has no alpha, which the OpenFX plug-in reads out of bounds. Here
  * "Normal" source alpha composites with an alpha of one there, and "Add to Inside Mask" adds
  * nothing.
+ *
+ * It is a Custom op with no mask or mix stage: the inside and outside masks feed the key itself,
+ * and its render writes the channels it does not process from the Source.
  **/
 class Keyer
-    : public NativeImageEffect {
+    : public StagedImageEffect {
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
@@ -86,6 +89,10 @@ public:
     explicit Keyer(NodePtr node);
 
     virtual ~Keyer();
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual const ImagePipelineSpec& imagePipelineSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual std::string getInputHint(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -97,28 +104,30 @@ public:
                                              ViewIdx view,
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+private:
+    // Never an identity: the output is always RGBA with the key as alpha.
+    virtual bool isOpIdentity(double time,
+                              const RenderScale& scale,
+                              const RectI& roi,
+                              ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual StatusEnum renderOp(const RenderActionArgs& args,
+                                const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     /**
-     * @brief Every mode and output of render() for a float RGBA plane whose Source and Bg, when
+     * @brief Every mode and output of renderOp() for a float RGBA plane whose Source and Bg, when
      * resolved, are RGB or RGBA; the masks are read in their own layers.
      **/
-    virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum renderOpGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-protected:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool getOpGpuInputLayer(int inputNb,
+                                    const ImageLayerDesc& plane,
+                                    double time,
+                                    ViewIdx view,
+                                    ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    virtual bool isIdentity(double time,
-                            const RenderScale& scale,
-                            const RectI& roi,
-                            ViewIdx view,
-                            double* inputTime,
-                            ViewIdx* inputView,
-                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-private:
     virtual void initializeKnobs() OVERRIDE FINAL;
 
     virtual bool knobChanged(KnobI* k,
@@ -131,15 +140,15 @@ private:
 
     virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // The knob values render() and renderGpu() key with; defined in Keyer.cpp.
+    // The knob values renderOp() and renderOpGpu() key with; defined in Keyer.cpp.
     struct Settings;
 
     void readSettings(double time, ViewIdx view, Settings* settings) const;
 
-    // The number of components render() reads input inputNb in, or 0 when it reads no image.
+    // The number of components renderOp() reads input inputNb in, or 0 when it reads no image.
     int getResolvedInputNComps(int inputNb, double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
-    // Whether render() reads input inputNb as a mask: it is connected and its selector is on.
+    // Whether renderOp() reads input inputNb as a mask: it is connected and its selector is on.
     bool isKeyMaskUsed(int inputNb) const WARN_UNUSED_RETURN;
 
     // Shows the knobs the current mode uses, and writes the mode into the sublabel.

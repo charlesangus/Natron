@@ -25,545 +25,426 @@
 
 #include "Transform.h"
 
-#include <algorithm>
-#include <atomic>
 #include <cfloat>
-#include <cmath>
-#include <cstddef>
-#include <functional>
 #include <list>
-#include <memory>
 #include <string>
 #include <vector>
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Format.h"
-#include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
-#include "Engine/PoolParallelFor.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/TimeLine.h"
-
-#ifdef NATRON_HAVE_GPU
-#include "Engine/Gpu/GpuRecord.h"
-#include "Engine/Gpu/GpuResample.h"
-#endif
 
 NATRON_NAMESPACE_ENTER
 
 using TransformMath::Mat3;
 
 namespace {
-// How many rows render() runs between two abort checks.
-const int kAbortCheckRows = 16;
-
 // The openfx-misc transform interact's scale range.
 const double kScaleMax = 10000.;
-
-int
-channelIndexForBit(int nComps,
-                   int bit)
-{
-    if (nComps == 1) {
-        return (bit == 3) ? 0 : -1;
-    }
-
-    return (bit < nComps) ? bit : -1;
-}
-
-bool
-isFloatImage(const ImagePtr& image)
-{
-    return !image || (image->getBitDepth() == eImageBitDepthFloat);
-}
-
-// One plane of the render. The resampler reads the source through `source`, which points either
-// into the source image or, when the image's layout differs from the output's, into `converted`.
-struct TransformPlaneJob {
-    ImagePtr dst;
-    ImagePtr src;
-    Transform::Matrix3x3Ptr inputTransform;
-    std::shared_ptr<Image::ReadAccess> srcAccess;
-    std::shared_ptr<Image::WriteAccess> dstAccess;
-    std::vector<float> converted;
-    Resampler::SourceImage source;
-    Resampler::SamplingTransforms transforms;
-    Resampler::ResampleParams params;
-    bool resamplePassThrough = false;
-    Resampler::SamplingTransforms passThroughTransforms;
-    Resampler::ResampleParams passThroughParams;
-};
-
-struct TransformBand {
-    std::size_t job;
-    int y1;
-    int y2;
-
-    TransformBand(std::size_t jobIndex,
-                  int firstRow,
-                  int endRow)
-        : job(jobIndex)
-        , y1(firstRow)
-        , y2(endRow)
-    {
-    }
-};
-
-// Copies the source pixels into `out` in an nComps layout, mapping channels by colour bit and
-// reading zero for a channel the source lacks.
-void
-convertSource(const Image::ReadAccess& access,
-              const RectI& bounds,
-              int srcNComps,
-              int nComps,
-              std::vector<float>* out)
-{
-    const std::size_t width = (std::size_t)bounds.width();
-    const std::size_t height = (std::size_t)bounds.height();
-
-    out->assign(width * height * (std::size_t)nComps, 0.f);
-    int srcIndex[4] = { -1, -1, -1, -1 };
-    for (int c = 0; (c < nComps) && (c < 4); ++c) {
-        srcIndex[c] = channelIndexForBit(srcNComps, pixelKernelChannelBit(nComps, c));
-    }
-    for (int y = bounds.y1; y < bounds.y2; ++y) {
-        const float* srcPix = (const float*)access.pixelAt(bounds.x1, y);
-        if (!srcPix) {
-            continue;
-        }
-        float* dstPix = &(*out)[(std::size_t)(y - bounds.y1) * width * nComps];
-        for (std::size_t x = 0; x < width; ++x, srcPix += srcNComps, dstPix += nComps) {
-            for (int c = 0; (c < nComps) && (c < 4); ++c) {
-                if (srcIndex[c] >= 0) {
-                    dstPix[c] = srcPix[srcIndex[c]];
-                }
-            }
-        }
-    }
-}
-
-// One value per pixel of `channel` of row y, zero wherever the image has no pixel.
-void
-readMaskRow(const Image::ReadAccess* access,
-            const RectI& bounds,
-            int nComps,
-            int channel,
-            int x0,
-            int y,
-            int width,
-            float* row)
-{
-    std::fill(row, row + width, 0.f);
-    if (!access || (y < bounds.y1) || (y >= bounds.y2)) {
-        return;
-    }
-    const int xStart = std::max(x0, bounds.x1);
-    const int xEnd = std::min(x0 + width, bounds.x2);
-    if (xStart >= xEnd) {
-        return;
-    }
-    const float* pix = (const float*)access->pixelAt(xStart, y);
-    if (!pix) {
-        return;
-    }
-    for (int x = xStart; x < xEnd; ++x, pix += nComps) {
-        row[x - x0] = pix[channel];
-    }
-}
-
-// The farthest canonical coordinate a GPU region is computed for, so a region with an infinite edge
-// still converts to pixels.
-const double kMaxCanonicalCoord = 1e9;
-
-double
-clampCanonical(double v)
-{
-    return std::max(-kMaxCanonicalCoord, std::min(v, kMaxCanonicalCoord));
-}
-
-RectI
-clampedPixelEnclosing(const RectD& r,
-                      const RenderScale& scale,
-                      double par)
-{
-    if ((r.x2 <= r.x1) || (r.y2 <= r.y1)) {
-        return RectI();
-    }
-    const RectD clamped(clampCanonical(r.x1), clampCanonical(r.y1), clampCanonical(r.x2), clampCanonical(r.y2));
-
-    return clamped.toPixelEnclosing(scale, par);
-}
-
-RectI
-intersectPixels(const RectI& a,
-                const RectI& b)
-{
-    const RectI r(std::max(a.x1, b.x1), std::max(a.y1, b.y1), std::min(a.x2, b.x2), std::min(a.y2, b.y2));
-
-    return r.isNull() ? RectI() : r;
-}
-
-// Resampler's isAffine: render() samples such a matrix without the perspective division.
-bool
-isAffineMatrix(const Mat3& H)
-{
-    if ((H(2, 0) != 0.) || (H(2, 1) != 0.) || (H(2, 2) != 1.)) {
-        return false;
-    }
-    for (int k = 0; k < 6; ++k) {
-        if (!std::isfinite(H.m[k])) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-NativeImageTraits
-transformTraits()
-{
-    NativeImageTraits traits;
-
-    traits.processesAllLayers = true;
-
-    return traits;
-}
 } // anonymous namespace
 
-TransformNode::TransformNode(NodePtr node,
-                             bool masked)
-    : NativeImageEffect(node, transformTraits())
-    , _masked(masked)
-{
-}
-
-TransformNode::~TransformNode()
-{
-}
-
 void
-TransformNode::addAcceptedComponents(int inputNb,
-                                     std::list<ImageLayerDesc>* comps)
+TransformOp::createKnobs(KnobHolder* holder,
+                         const KnobPagePtr& page)
 {
-    NativeImageEffect::addAcceptedComponents(inputNb, comps);
-    if (!isInputMask(inputNb)) {
-        comps->push_back(ImageLayerDesc::getXYComponents());
-    }
-}
-
-NativePluginDescription
-TransformNode::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    if (_masked) {
-        desc.id = PLUGINID_NATRON_TRANSFORMMASKED;
-        desc.label = "TransformMasked";
-        desc.description = tr("Translate / Rotate / Scale a 2D image, with optional masking.\n"
-                              "This plugin concatenates transforms upstream.")
-                               .toStdString();
-        desc.majorVersion = PLUGIN_MAJOR_NATRON_TRANSFORMMASKED;
-    } else {
-        desc.id = PLUGINID_NATRON_TRANSFORM;
-        desc.label = "Transform";
-        desc.description = tr("Translate / Rotate / Scale a 2D image.\n"
-                              "This plugin concatenates transforms.\n"
-                              "See also https://web.archive.org/web/20220627030948/http://www.opticalenquiry.com/nuke/index.php?title=Transform")
-                               .toStdString();
-        desc.majorVersion = PLUGIN_MAJOR_NATRON_TRANSFORM;
-    }
-    desc.grouping = PLUGIN_GROUP_TRANSFORM;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindImage));
-    if (_masked) {
-        desc.inputs.push_back(NativeInputDescription("Mask", true, eDataKindImage, true));
-    }
-    desc.outputKind = eDataKindImage;
-
-    return desc;
-}
-
-void
-TransformNode::initializeKnobs()
-{
-    KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
-
-    KnobDoublePtr translate = createKnob<KnobDouble>(tr("Translate"), 2);
-    translate->setName(kTransformNodeParamTranslate);
-    translate->setHintToolTip(tr("Translation along the x and y axes in pixels. Can also be adjusted by clicking and dragging the center handle in the Viewer."));
-    translate->setSpatial(true);
-    translate->setDefaultValuesAreNormalized(true);
-    translate->disableSlider();
+    KnobDoublePtr translateKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Translate"), 2);
+    translateKnob->setName(kTransformNodeParamTranslate);
+    translateKnob->setHintToolTip(EffectInstance::tr("Translation along the x and y axes in pixels. Can also be adjusted by clicking and dragging the center handle in the Viewer."));
+    translateKnob->setSpatial(true);
+    translateKnob->setDefaultValuesAreNormalized(true);
+    translateKnob->disableSlider();
     for (int d = 0; d < 2; ++d) {
-        translate->setMinimum(-DBL_MAX, d);
-        translate->setMaximum(DBL_MAX, d);
-        translate->setDisplayMinimum(-10000., d);
-        translate->setDisplayMaximum(10000., d);
-        translate->setIncrement(10., d);
-        translate->setDefaultValue(0., d);
+        translateKnob->setMinimum(-DBL_MAX, d);
+        translateKnob->setMaximum(DBL_MAX, d);
+        translateKnob->setDisplayMinimum(-10000., d);
+        translateKnob->setDisplayMaximum(10000., d);
+        translateKnob->setIncrement(10., d);
+        translateKnob->setDefaultValue(0., d);
     }
-    page->addKnob(translate);
-    _translate = translate;
+    page->addKnob(translateKnob);
+    translate = translateKnob;
 
-    KnobDoublePtr rotate = createKnob<KnobDouble>(tr("Rotate"));
-    rotate->setName(kTransformNodeParamRotate);
-    rotate->setHintToolTip(tr("Rotation angle in degrees around the Center. Can also be adjusted by clicking and dragging the rotation bar in the Viewer."));
-    rotate->setMinimum(-DBL_MAX);
-    rotate->setMaximum(DBL_MAX);
-    rotate->setDisplayMinimum(-180.);
-    rotate->setDisplayMaximum(180.);
-    rotate->setIncrement(0.1);
-    rotate->setDefaultValue(0.);
-    page->addKnob(rotate);
-    _rotate = rotate;
+    KnobDoublePtr rotateKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Rotate"));
+    rotateKnob->setName(kTransformNodeParamRotate);
+    rotateKnob->setHintToolTip(EffectInstance::tr("Rotation angle in degrees around the Center. Can also be adjusted by clicking and dragging the rotation bar in the Viewer."));
+    rotateKnob->setMinimum(-DBL_MAX);
+    rotateKnob->setMaximum(DBL_MAX);
+    rotateKnob->setDisplayMinimum(-180.);
+    rotateKnob->setDisplayMaximum(180.);
+    rotateKnob->setIncrement(0.1);
+    rotateKnob->setDefaultValue(0.);
+    page->addKnob(rotateKnob);
+    rotate = rotateKnob;
 
-    KnobDoublePtr scale = createKnob<KnobDouble>(tr("Scale"), 2);
-    scale->setName(kTransformNodeParamScale);
-    scale->setHintToolTip(tr("Scale factor along the x and y axes. Can also be adjusted by clicking and dragging the outer circle or the diameter handles in the Viewer."));
-    scale->setCanAutoFoldDimensions(true);
+    KnobDoublePtr scaleKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Scale"), 2);
+    scaleKnob->setName(kTransformNodeParamScale);
+    scaleKnob->setHintToolTip(EffectInstance::tr("Scale factor along the x and y axes. Can also be adjusted by clicking and dragging the outer circle or the diameter handles in the Viewer."));
+    scaleKnob->setCanAutoFoldDimensions(true);
     for (int d = 0; d < 2; ++d) {
-        scale->setMinimum(-kScaleMax, d);
-        scale->setMaximum(kScaleMax, d);
-        scale->setDisplayMinimum(0.1, d);
-        scale->setDisplayMaximum(10., d);
-        scale->setIncrement(0.01, d);
-        scale->setDefaultValue(1., d);
+        scaleKnob->setMinimum(-kScaleMax, d);
+        scaleKnob->setMaximum(kScaleMax, d);
+        scaleKnob->setDisplayMinimum(0.1, d);
+        scaleKnob->setDisplayMaximum(10., d);
+        scaleKnob->setIncrement(0.01, d);
+        scaleKnob->setDefaultValue(1., d);
     }
-    scale->setAddNewLine(false);
-    scale->setSpacingBetweenItems(1);
-    page->addKnob(scale);
-    _scale = scale;
+    scaleKnob->setAddNewLine(false);
+    scaleKnob->setSpacingBetweenItems(1);
+    page->addKnob(scaleKnob);
+    scale = scaleKnob;
 
     // Uniform scaling is easy through the host's knob and overlay, so the OpenFX plug-in hides
     // this until a project gives it a value or an animation; updateUniformVisibility() does too.
-    KnobBoolPtr uniform = createKnob<KnobBool>(tr("Uniform"));
-    uniform->setName(kTransformNodeParamUniform);
-    uniform->setHintToolTip(tr("Use the X scale for both directions"));
-    uniform->setDefaultValue(false);
-    uniform->setSecretByDefault(true);
-    uniform->setDefaultAllDimensionsEnabled(false);
-    page->addKnob(uniform);
-    _uniform = uniform;
+    KnobBoolPtr uniformKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Uniform"));
+    uniformKnob->setName(kTransformNodeParamUniform);
+    uniformKnob->setHintToolTip(EffectInstance::tr("Use the X scale for both directions"));
+    uniformKnob->setDefaultValue(false);
+    uniformKnob->setSecretByDefault(true);
+    uniformKnob->setDefaultAllDimensionsEnabled(false);
+    page->addKnob(uniformKnob);
+    uniform = uniformKnob;
 
-    KnobDoublePtr skewX = createKnob<KnobDouble>(tr("Skew X"));
-    skewX->setName(kTransformNodeParamSkewX);
-    skewX->setHintToolTip(tr("Skew along the x axis. Can also be adjusted by clicking and dragging the skew bar in the Viewer."));
-    skewX->setMinimum(-DBL_MAX);
-    skewX->setMaximum(DBL_MAX);
-    skewX->setDisplayMinimum(-1.);
-    skewX->setDisplayMaximum(1.);
-    skewX->setIncrement(0.01);
-    skewX->setDefaultValue(0.);
-    page->addKnob(skewX);
-    _skewX = skewX;
+    KnobDoublePtr skewXKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Skew X"));
+    skewXKnob->setName(kTransformNodeParamSkewX);
+    skewXKnob->setHintToolTip(EffectInstance::tr("Skew along the x axis. Can also be adjusted by clicking and dragging the skew bar in the Viewer."));
+    skewXKnob->setMinimum(-DBL_MAX);
+    skewXKnob->setMaximum(DBL_MAX);
+    skewXKnob->setDisplayMinimum(-1.);
+    skewXKnob->setDisplayMaximum(1.);
+    skewXKnob->setIncrement(0.01);
+    skewXKnob->setDefaultValue(0.);
+    page->addKnob(skewXKnob);
+    skewX = skewXKnob;
 
-    KnobDoublePtr skewY = createKnob<KnobDouble>(tr("Skew Y"));
-    skewY->setName(kTransformNodeParamSkewY);
-    skewY->setHintToolTip(tr("Skew along the y axis."));
-    skewY->setMinimum(-DBL_MAX);
-    skewY->setMaximum(DBL_MAX);
-    skewY->setDisplayMinimum(-1.);
-    skewY->setDisplayMaximum(1.);
-    skewY->setIncrement(0.01);
-    skewY->setDefaultValue(0.);
-    page->addKnob(skewY);
-    _skewY = skewY;
+    KnobDoublePtr skewYKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Skew Y"));
+    skewYKnob->setName(kTransformNodeParamSkewY);
+    skewYKnob->setHintToolTip(EffectInstance::tr("Skew along the y axis."));
+    skewYKnob->setMinimum(-DBL_MAX);
+    skewYKnob->setMaximum(DBL_MAX);
+    skewYKnob->setDisplayMinimum(-1.);
+    skewYKnob->setDisplayMaximum(1.);
+    skewYKnob->setIncrement(0.01);
+    skewYKnob->setDefaultValue(0.);
+    page->addKnob(skewYKnob);
+    skewY = skewYKnob;
 
-    KnobChoicePtr skewOrder = createKnob<KnobChoice>(tr("Skew Order"));
-    skewOrder->setName(kTransformNodeParamSkewOrder);
-    skewOrder->setHintToolTip(tr("The order in which skew transforms are applied: X then Y, or Y then X."));
+    KnobChoicePtr skewOrderKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Skew Order"));
+    skewOrderKnob->setName(kTransformNodeParamSkewOrder);
+    skewOrderKnob->setHintToolTip(EffectInstance::tr("The order in which skew transforms are applied: X then Y, or Y then X."));
     {
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption("XY", "XY", ""));
         options.push_back(ChoiceOption("YX", "YX", ""));
-        skewOrder->populateChoices(options);
+        skewOrderKnob->populateChoices(options);
     }
-    skewOrder->setDefaultValue(0);
-    page->addKnob(skewOrder);
-    _skewOrder = skewOrder;
+    skewOrderKnob->setDefaultValue(0);
+    page->addKnob(skewOrderKnob);
+    skewOrder = skewOrderKnob;
 
-    KnobDoublePtr amount = createKnob<KnobDouble>(tr("Amount"));
-    amount->setName(kTransformNodeParamAmount);
-    amount->setHintToolTip(tr("Amount of transform to apply. 0 means the transform is identity, 1 means to apply the full transform."));
-    amount->setMinimum(-DBL_MAX);
-    amount->setMaximum(DBL_MAX);
-    amount->setDisplayMinimum(0.);
-    amount->setDisplayMaximum(1.);
-    amount->setIncrement(0.01);
-    amount->setDefaultValue(1.);
-    page->addKnob(amount);
-    _amount = amount;
+    KnobDoublePtr amountKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Amount"));
+    amountKnob->setName(kTransformNodeParamAmount);
+    amountKnob->setHintToolTip(EffectInstance::tr("Amount of transform to apply. 0 means the transform is identity, 1 means to apply the full transform."));
+    amountKnob->setMinimum(-DBL_MAX);
+    amountKnob->setMaximum(DBL_MAX);
+    amountKnob->setDisplayMinimum(0.);
+    amountKnob->setDisplayMaximum(1.);
+    amountKnob->setIncrement(0.01);
+    amountKnob->setDefaultValue(1.);
+    page->addKnob(amountKnob);
+    amount = amountKnob;
 
-    KnobDoublePtr center = createKnob<KnobDouble>(tr("Center"), 2);
-    center->setName(kTransformNodeParamCenter);
-    center->setHintToolTip(tr("Center of rotation and scale."));
-    center->setSpatial(true);
-    center->setDefaultValuesAreNormalized(true);
-    center->disableSlider();
+    KnobDoublePtr centerKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Center"), 2);
+    centerKnob->setName(kTransformNodeParamCenter);
+    centerKnob->setHintToolTip(EffectInstance::tr("Center of rotation and scale."));
+    centerKnob->setSpatial(true);
+    centerKnob->setDefaultValuesAreNormalized(true);
+    centerKnob->disableSlider();
     for (int d = 0; d < 2; ++d) {
-        center->setMinimum(-DBL_MAX, d);
-        center->setMaximum(DBL_MAX, d);
-        center->setDisplayMinimum(-10000., d);
-        center->setDisplayMaximum(10000., d);
-        center->setIncrement(1., d);
-        center->setDefaultValue(0.5, d);
+        centerKnob->setMinimum(-DBL_MAX, d);
+        centerKnob->setMaximum(DBL_MAX, d);
+        centerKnob->setDisplayMinimum(-10000., d);
+        centerKnob->setDisplayMaximum(10000., d);
+        centerKnob->setIncrement(1., d);
+        centerKnob->setDefaultValue(0.5, d);
     }
-    center->setAddNewLine(false);
-    center->setSpacingBetweenItems(1);
-    page->addKnob(center);
-    _center = center;
+    centerKnob->setAddNewLine(false);
+    centerKnob->setSpacingBetweenItems(1);
+    page->addKnob(centerKnob);
+    center = centerKnob;
 
-    KnobButtonPtr resetCenterButton = createKnob<KnobButton>(tr("Reset Center"));
+    KnobButtonPtr resetCenterButton = AppManager::createKnob<KnobButton>(holder, EffectInstance::tr("Reset Center"));
     resetCenterButton->setName(kTransformNodeParamResetCenter);
-    resetCenterButton->setHintToolTip(tr("Reset the position of the center to the center of the input region of definition"));
+    resetCenterButton->setHintToolTip(EffectInstance::tr("Reset the position of the center to the center of the input region of definition"));
     page->addKnob(resetCenterButton);
-    _resetCenter = resetCenterButton;
+    resetCenter = resetCenterButton;
 
-    KnobBoolPtr centerChanged = createKnob<KnobBool>(std::string(kTransformNodeParamCenterChanged));
-    centerChanged->setName(kTransformNodeParamCenterChanged);
-    centerChanged->setDefaultValue(false);
-    centerChanged->setSecretByDefault(true);
-    centerChanged->setDefaultAllDimensionsEnabled(false);
-    centerChanged->setAnimationEnabled(false);
-    centerChanged->setEvaluateOnChange(false);
-    page->addKnob(centerChanged);
-    _centerChanged = centerChanged;
+    KnobBoolPtr centerChangedKnob = AppManager::createKnob<KnobBool>(holder, std::string(kTransformNodeParamCenterChanged));
+    centerChangedKnob->setName(kTransformNodeParamCenterChanged);
+    centerChangedKnob->setDefaultValue(false);
+    centerChangedKnob->setSecretByDefault(true);
+    centerChangedKnob->setDefaultAllDimensionsEnabled(false);
+    centerChangedKnob->setAnimationEnabled(false);
+    centerChangedKnob->setEvaluateOnChange(false);
+    page->addKnob(centerChangedKnob);
+    centerChanged = centerChangedKnob;
 
-    KnobBoolPtr interactOpen = createKnob<KnobBool>(tr("Show Interact"));
-    interactOpen->setName(kTransformNodeParamInteractOpen);
-    interactOpen->setHintToolTip(tr("If checked, the transform interact is displayed over the image."));
-    interactOpen->setDefaultValue(true);
-    interactOpen->setSecretByDefault(true);
-    interactOpen->setDefaultAllDimensionsEnabled(false);
-    interactOpen->setAnimationEnabled(false);
-    page->addKnob(interactOpen);
-    _interactOpen = interactOpen;
+    KnobBoolPtr interactOpenKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Show Interact"));
+    interactOpenKnob->setName(kTransformNodeParamInteractOpen);
+    interactOpenKnob->setHintToolTip(EffectInstance::tr("If checked, the transform interact is displayed over the image."));
+    interactOpenKnob->setDefaultValue(true);
+    interactOpenKnob->setSecretByDefault(true);
+    interactOpenKnob->setDefaultAllDimensionsEnabled(false);
+    interactOpenKnob->setAnimationEnabled(false);
+    page->addKnob(interactOpenKnob);
+    interactOpen = interactOpenKnob;
 
-    KnobBoolPtr interactive = createKnob<KnobBool>(tr("Interactive Update"));
-    interactive->setName(kTransformNodeParamInteractive);
-    interactive->setHintToolTip(tr("If checked, update the parameter values during interaction with the image viewer, else update the values when pen is released."));
-    interactive->setDefaultValue(true);
-    interactive->setEvaluateOnChange(false);
-    page->addKnob(interactive);
-    _interactive = interactive;
+    KnobBoolPtr interactiveKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Interactive Update"));
+    interactiveKnob->setName(kTransformNodeParamInteractive);
+    interactiveKnob->setHintToolTip(EffectInstance::tr("If checked, update the parameter values during interaction with the image viewer, else update the values when pen is released."));
+    interactiveKnob->setDefaultValue(true);
+    interactiveKnob->setEvaluateOnChange(false);
+    page->addKnob(interactiveKnob);
+    interactive = interactiveKnob;
 
     // Kept for knob parity with the OpenFX plug-in; the host overlay sizes itself.
-    KnobBoolPtr hiDPI = createKnob<KnobBool>(tr("HiDPI"));
-    hiDPI->setName(kTransformNodeParamHiDPI);
-    hiDPI->setHintToolTip(tr("Should be checked when the display area is High-DPI (a.k.a Retina). Draws OpenGL overlays twice larger."));
-    hiDPI->setDefaultValue(false);
-    hiDPI->setAnimationEnabled(false);
-    hiDPI->setEvaluateOnChange(false);
-    page->addKnob(hiDPI);
-    _hiDPI = hiDPI;
+    KnobBoolPtr hiDPIKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("HiDPI"));
+    hiDPIKnob->setName(kTransformNodeParamHiDPI);
+    hiDPIKnob->setHintToolTip(EffectInstance::tr("Should be checked when the display area is High-DPI (a.k.a Retina). Draws OpenGL overlays twice larger."));
+    hiDPIKnob->setDefaultValue(false);
+    hiDPIKnob->setAnimationEnabled(false);
+    hiDPIKnob->setEvaluateOnChange(false);
+    page->addKnob(hiDPIKnob);
+    hiDPI = hiDPIKnob;
 
-    KnobBoolPtr invert = createKnob<KnobBool>(tr("Invert"));
-    invert->setName(kTransformNodeParamInvert);
-    invert->setHintToolTip(tr("Invert the transform."));
-    invert->setDefaultValue(false);
-    page->addKnob(invert);
-    _invert = invert;
+    KnobBoolPtr invertKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Invert"));
+    invertKnob->setName(kTransformNodeParamInvert);
+    invertKnob->setHintToolTip(EffectInstance::tr("Invert the transform."));
+    invertKnob->setDefaultValue(false);
+    page->addKnob(invertKnob);
+    invert = invertKnob;
 
-    KnobChoicePtr filter = createKnob<KnobChoice>(tr(kResamplerParamFilterTypeLabel));
-    filter->setName(kResamplerParamFilterType);
-    filter->setHintToolTip(tr(kResamplerParamFilterTypeHint));
+    KnobChoicePtr filterKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr(kResamplerParamFilterTypeLabel));
+    filterKnob->setName(kResamplerParamFilterType);
+    filterKnob->setHintToolTip(EffectInstance::tr(kResamplerParamFilterTypeHint));
     {
         const std::vector<Resampler::ChoiceOption>& filters = Resampler::filterOptions();
         std::vector<ChoiceOption> options;
         for (std::size_t i = 0; i < filters.size(); ++i) {
             options.push_back(ChoiceOption(filters[i].id, filters[i].label, filters[i].hint));
         }
-        filter->populateChoices(options);
+        filterKnob->populateChoices(options);
     }
-    filter->setDefaultValue((int)Resampler::eFilterCubic);
-    filter->setAddNewLine(false);
-    filter->setSpacingBetweenItems(1);
-    page->addKnob(filter);
-    _filter = filter;
+    filterKnob->setDefaultValue((int)Resampler::eFilterCubic);
+    filterKnob->setAddNewLine(false);
+    filterKnob->setSpacingBetweenItems(1);
+    page->addKnob(filterKnob);
+    filter = filterKnob;
 
-    KnobBoolPtr clamp = createKnob<KnobBool>(tr(kResamplerParamFilterClampLabel));
-    clamp->setName(kResamplerParamFilterClamp);
-    clamp->setHintToolTip(tr(kResamplerParamFilterClampHint));
-    clamp->setDefaultValue(false);
-    clamp->setAddNewLine(false);
-    clamp->setSpacingBetweenItems(1);
-    page->addKnob(clamp);
-    _clamp = clamp;
+    KnobBoolPtr clampKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr(kResamplerParamFilterClampLabel));
+    clampKnob->setName(kResamplerParamFilterClamp);
+    clampKnob->setHintToolTip(EffectInstance::tr(kResamplerParamFilterClampHint));
+    clampKnob->setDefaultValue(false);
+    clampKnob->setAddNewLine(false);
+    clampKnob->setSpacingBetweenItems(1);
+    page->addKnob(clampKnob);
+    clamp = clampKnob;
 
-    KnobBoolPtr blackOutside = createKnob<KnobBool>(tr(kResamplerParamFilterBlackOutsideLabel));
-    blackOutside->setName(kResamplerParamFilterBlackOutside);
-    blackOutside->setHintToolTip(tr(kResamplerParamFilterBlackOutsideHint));
-    blackOutside->setDefaultValue(true);
-    page->addKnob(blackOutside);
-    _blackOutside = blackOutside;
+    KnobBoolPtr blackOutsideKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr(kResamplerParamFilterBlackOutsideLabel));
+    blackOutsideKnob->setName(kResamplerParamFilterBlackOutside);
+    blackOutsideKnob->setHintToolTip(EffectInstance::tr(kResamplerParamFilterBlackOutsideHint));
+    blackOutsideKnob->setDefaultValue(true);
+    page->addKnob(blackOutsideKnob);
+    blackOutside = blackOutsideKnob;
 
-    KnobDoublePtr motionBlur = createKnob<KnobDouble>(tr("Motion Blur"));
-    motionBlur->setName(kTransformNodeParamMotionBlur);
-    motionBlur->setHintToolTip(tr("Quality of motion blur rendering. 0 disables motion blur, 1 is a good value. Increasing this slows down rendering."));
-    motionBlur->setMinimum(0.);
-    motionBlur->setMaximum(100.);
-    motionBlur->setDisplayMinimum(0.);
-    motionBlur->setDisplayMaximum(4.);
-    motionBlur->setIncrement(0.01);
-    motionBlur->setDefaultValue(0.);
-    page->addKnob(motionBlur);
-    _motionBlur = motionBlur;
+    KnobDoublePtr motionBlurKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Motion Blur"));
+    motionBlurKnob->setName(kTransformNodeParamMotionBlur);
+    motionBlurKnob->setHintToolTip(EffectInstance::tr("Quality of motion blur rendering. 0 disables motion blur, 1 is a good value. Increasing this slows down rendering."));
+    motionBlurKnob->setMinimum(0.);
+    motionBlurKnob->setMaximum(100.);
+    motionBlurKnob->setDisplayMinimum(0.);
+    motionBlurKnob->setDisplayMaximum(4.);
+    motionBlurKnob->setIncrement(0.01);
+    motionBlurKnob->setDefaultValue(0.);
+    page->addKnob(motionBlurKnob);
+    motionBlur = motionBlurKnob;
 
-    KnobBoolPtr directionalBlur = createKnob<KnobBool>(tr("Directional Blur Mode"));
-    directionalBlur->setName(kTransformNodeParamDirectionalBlur);
-    directionalBlur->setHintToolTip(tr("Motion blur is computed from the original image to the transformed image, each parameter being interpolated linearly. The motionBlur parameter must be set to a nonzero value, and the blackOutside parameter may have an important effect on the result."));
-    directionalBlur->setDefaultValue(false);
-    page->addKnob(directionalBlur);
-    _directionalBlur = directionalBlur;
+    KnobBoolPtr directionalBlurKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Directional Blur Mode"));
+    directionalBlurKnob->setName(kTransformNodeParamDirectionalBlur);
+    directionalBlurKnob->setHintToolTip(EffectInstance::tr("Motion blur is computed from the original image to the transformed image, each parameter being interpolated linearly. The motionBlur parameter must be set to a nonzero value, and the blackOutside parameter may have an important effect on the result."));
+    directionalBlurKnob->setDefaultValue(false);
+    page->addKnob(directionalBlurKnob);
+    directionalBlur = directionalBlurKnob;
 
-    KnobDoublePtr shutter = createKnob<KnobDouble>(tr("Shutter"));
-    shutter->setName(kTransformNodeParamShutter);
-    shutter->setHintToolTip(tr("Controls how long (in frames) the shutter should remain open."));
-    shutter->setMinimum(0.);
-    shutter->setMaximum(2.);
-    shutter->setDisplayMinimum(0.);
-    shutter->setDisplayMaximum(2.);
-    shutter->setIncrement(0.01);
-    shutter->setDefaultValue(0.5);
-    page->addKnob(shutter);
-    _shutter = shutter;
+    KnobDoublePtr shutterKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Shutter"));
+    shutterKnob->setName(kTransformNodeParamShutter);
+    shutterKnob->setHintToolTip(EffectInstance::tr("Controls how long (in frames) the shutter should remain open."));
+    shutterKnob->setMinimum(0.);
+    shutterKnob->setMaximum(2.);
+    shutterKnob->setDisplayMinimum(0.);
+    shutterKnob->setDisplayMaximum(2.);
+    shutterKnob->setIncrement(0.01);
+    shutterKnob->setDefaultValue(0.5);
+    page->addKnob(shutterKnob);
+    shutter = shutterKnob;
 
-    KnobChoicePtr shutterOffset = createKnob<KnobChoice>(tr(kResamplerParamShutterOffsetLabel));
-    shutterOffset->setName(kResamplerParamShutterOffset);
-    shutterOffset->setHintToolTip(tr(kResamplerParamShutterOffsetHint));
+    KnobChoicePtr shutterOffsetKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr(kResamplerParamShutterOffsetLabel));
+    shutterOffsetKnob->setName(kResamplerParamShutterOffset);
+    shutterOffsetKnob->setHintToolTip(EffectInstance::tr(kResamplerParamShutterOffsetHint));
     {
         const std::vector<Resampler::ChoiceOption>& offsets = Resampler::shutterOffsetOptions();
         std::vector<ChoiceOption> options;
         for (std::size_t i = 0; i < offsets.size(); ++i) {
             options.push_back(ChoiceOption(offsets[i].id, offsets[i].label, offsets[i].hint));
         }
-        shutterOffset->populateChoices(options);
+        shutterOffsetKnob->populateChoices(options);
     }
-    shutterOffset->setDefaultValue((int)Resampler::eShutterOffsetStart);
-    page->addKnob(shutterOffset);
-    _shutterOffset = shutterOffset;
+    shutterOffsetKnob->setDefaultValue((int)Resampler::eShutterOffsetStart);
+    page->addKnob(shutterOffsetKnob);
+    shutterOffset = shutterOffsetKnob;
 
-    KnobDoublePtr shutterCustomOffset = createKnob<KnobDouble>(tr(kResamplerParamShutterCustomOffsetLabel));
-    shutterCustomOffset->setName(kResamplerParamShutterCustomOffset);
-    shutterCustomOffset->setHintToolTip(tr(kResamplerParamShutterCustomOffsetHint));
-    shutterCustomOffset->setMinimum(-1.);
-    shutterCustomOffset->setMaximum(1.);
-    shutterCustomOffset->setDisplayMinimum(-1.);
-    shutterCustomOffset->setDisplayMaximum(1.);
-    shutterCustomOffset->setIncrement(0.1);
-    shutterCustomOffset->setDefaultValue(0.);
-    page->addKnob(shutterCustomOffset);
-    _shutterCustomOffset = shutterCustomOffset;
+    KnobDoublePtr shutterCustomOffsetKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr(kResamplerParamShutterCustomOffsetLabel));
+    shutterCustomOffsetKnob->setName(kResamplerParamShutterCustomOffset);
+    shutterCustomOffsetKnob->setHintToolTip(EffectInstance::tr(kResamplerParamShutterCustomOffsetHint));
+    shutterCustomOffsetKnob->setMinimum(-1.);
+    shutterCustomOffsetKnob->setMaximum(1.);
+    shutterCustomOffsetKnob->setDisplayMinimum(-1.);
+    shutterCustomOffsetKnob->setDisplayMaximum(1.);
+    shutterCustomOffsetKnob->setIncrement(0.1);
+    shutterCustomOffsetKnob->setDefaultValue(0.);
+    page->addKnob(shutterCustomOffsetKnob);
+    shutterCustomOffset = shutterCustomOffsetKnob;
+} // TransformOp::createKnobs
 
-    if (_masked) {
-        addMaskMixKnobs(page);
+TransformOp::Params
+TransformOp::bake(const KnobReader& reader) const
+{
+    Params params;
+    TransformMath::TransformParams& p = params.transform;
+
+    p.translateX = reader.value(translate, 0);
+    p.translateY = reader.value(translate, 1);
+    p.rotate = reader.value(rotate);
+    p.scaleX = reader.value(scale, 0);
+    p.scaleY = reader.value(scale, 1);
+    p.scaleUniform = reader.value(uniform);
+    p.skewX = reader.value(skewX);
+    p.skewY = reader.value(skewY);
+    p.skewOrderYX = reader.value(skewOrder) != 0;
+    p.centerX = reader.value(center, 0);
+    p.centerY = reader.value(center, 1);
+    p.amount = reader.value(amount);
+
+    params.invert = reader.value(invert);
+    params.filter = (Resampler::FilterEnum)reader.value(filter);
+    params.clamp = reader.value(clamp);
+    params.blackOutside = reader.value(blackOutside);
+
+    Resampler::BlurSettings& blur = params.blur;
+    blur.motionBlur = reader.value(motionBlur);
+    blur.directionalBlur = reader.value(directionalBlur);
+    blur.shutter = reader.value(shutter);
+    blur.shutterOffset = (Resampler::ShutterOffsetEnum)reader.value(shutterOffset);
+    blur.shutterCustomOffset = reader.value(shutterCustomOffset);
+
+    return params;
+} // TransformOp::bake
+
+bool
+TransformOp::isIdentity(const Params& params,
+                        const PassContext& /*context*/) const
+{
+    if ((params.blur.shutter != 0.) && (params.blur.motionBlur != 0.)) {
+        return false;
     }
 
-    KnobBoolPtr srcClipChanged = createKnob<KnobBool>(std::string(kTransformNodeParamSrcClipChanged));
+    return TransformMath::isIdentity(params.transform);
+}
+
+ResampleSettings
+TransformOp::settings(const Params& params,
+                      const PassContext& /*context*/) const
+{
+    ResampleSettings settings;
+
+    settings.filter = params.filter;
+    settings.clamp = params.clamp;
+    settings.blackOutside = params.blackOutside;
+    settings.invert = params.invert;
+    settings.blur = params.blur;
+    settings.transformIsIdentity = TransformMath::isIdentity(params.transform);
+
+    return settings;
+}
+
+bool
+TransformOp::transform(const Params& params,
+                       const PassContext& /*context*/,
+                       double amount,
+                       bool invert,
+                       Mat3* matrix) const
+{
+    *matrix = TransformMath::inverseTransformCanonical(params.transform, amount, invert);
+
+    return true;
+}
+
+bool
+TransformOp::rendersWithMotionBlur(const Params& params)
+{
+    const Resampler::BlurSettings& blur = params.blur;
+
+    return (blur.motionBlur != 0.) && ((blur.shutter != 0.) || blur.directionalBlur);
+}
+
+std::optional<GpuCostHint>
+TransformOp::costHint(const Params& params,
+                      const PassContext& /*context*/) const
+{
+    GpuCostHint hint;
+
+    hint.motionBlur = rendersWithMotionBlur(params);
+
+    return hint;
+}
+
+template <bool MASKED>
+TransformImageNode<MASKED>::TransformImageNode(NodePtr node)
+    : Base(node)
+{
+}
+
+template <bool MASKED>
+TransformImageNode<MASKED>::~TransformImageNode()
+{
+}
+
+template <bool MASKED>
+void
+TransformImageNode<MASKED>::addAcceptedComponents(int inputNb,
+                                                  std::list<ImageLayerDesc>* comps)
+{
+    Base::addAcceptedComponents(inputNb, comps);
+    if (!this->isInputMask(inputNb)) {
+        comps->push_back(ImageLayerDesc::getXYComponents());
+    }
+}
+
+template <bool MASKED>
+void
+TransformImageNode<MASKED>::initializeKnobs()
+{
+    const KnobPagePtr page = this->createControlsPage();
+
+    this->op().createKnobs(static_cast<KnobHolder*>(this), page);
+    this->addStageKnobs(page);
+
+    KnobBoolPtr srcClipChanged = this->template createKnob<KnobBool>(std::string(kTransformNodeParamSrcClipChanged));
     srcClipChanged->setName(kTransformNodeParamSrcClipChanged);
     srcClipChanged->setDefaultValue(false);
     srcClipChanged->setSecretByDefault(true);
@@ -574,26 +455,29 @@ TransformNode::initializeKnobs()
     _srcClipChanged = srcClipChanged;
 
     updateShutterEnabled();
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateClampEnabled(this->getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 
-    NodePtr node = getNode();
+    NodePtr node = this->getNode();
     if (node) {
-        node->addTransformInteract(translate, scale, uniform, rotate, skewX, skewY, skewOrder, center, invert, interactive);
+        const TransformOp& op = this->op();
+        node->addTransformInteract(op.translate.lock(), op.scale.lock(), op.uniform.lock(), op.rotate.lock(), op.skewX.lock(), op.skewY.lock(), op.skewOrder.lock(), op.center.lock(), op.invert.lock(), op.interactive.lock());
     }
-} // TransformNode::initializeKnobs
+} // TransformImageNode::initializeKnobs
 
+template <bool MASKED>
 void
-TransformNode::updateShutterEnabled()
+TransformImageNode<MASKED>::updateShutterEnabled()
 {
-    KnobBoolPtr directionalBlur = _directionalBlur.lock();
+    const TransformOp& op = this->op();
+    KnobBoolPtr directionalBlur = op.directionalBlur.lock();
 
     if (!directionalBlur) {
         return;
     }
     const bool enabled = !directionalBlur->getValue();
-    KnobDoublePtr shutter = _shutter.lock();
-    KnobChoicePtr shutterOffset = _shutterOffset.lock();
-    KnobDoublePtr shutterCustomOffset = _shutterCustomOffset.lock();
+    KnobDoublePtr shutter = op.shutter.lock();
+    KnobChoicePtr shutterOffset = op.shutterOffset.lock();
+    KnobDoublePtr shutterCustomOffset = op.shutterCustomOffset.lock();
     if (shutter) {
         shutter->setAllDimensionsEnabled(enabled);
     }
@@ -605,11 +489,13 @@ TransformNode::updateShutterEnabled()
     }
 }
 
+template <bool MASKED>
 void
-TransformNode::updateClampEnabled(double time, ViewSpec view)
+TransformImageNode<MASKED>::updateClampEnabled(double time,
+                                               ViewSpec view)
 {
-    KnobChoicePtr filter = _filter.lock();
-    KnobBoolPtr clamp = _clamp.lock();
+    KnobChoicePtr filter = this->op().filter.lock();
+    KnobBoolPtr clamp = this->op().clamp.lock();
 
     if (!filter || !clamp) {
         return;
@@ -617,10 +503,11 @@ TransformNode::updateClampEnabled(double time, ViewSpec view)
     clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
 }
 
+template <bool MASKED>
 void
-TransformNode::updateUniformVisibility(bool allowHiding)
+TransformImageNode<MASKED>::updateUniformVisibility(bool allowHiding)
 {
-    KnobBoolPtr uniform = _uniform.lock();
+    KnobBoolPtr uniform = this->op().uniform.lock();
 
     if (!uniform) {
         return;
@@ -633,34 +520,39 @@ TransformNode::updateUniformVisibility(bool allowHiding)
     uniform->setAllDimensionsEnabled(used);
 }
 
+template <bool MASKED>
 void
-TransformNode::onKnobsLoaded()
+TransformImageNode<MASKED>::onKnobsLoaded()
 {
     updateShutterEnabled();
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateClampEnabled(this->getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
     updateUniformVisibility(true);
 }
 
+template <bool MASKED>
 void
-TransformNode::onInputChanged(int inputNo)
+TransformImageNode<MASKED>::onInputChanged(int inputNo)
 {
-    KnobBoolPtr centerChanged = _centerChanged.lock();
+    KnobBoolPtr centerChanged = this->op().centerChanged.lock();
+    const int source = this->getSourceInput();
 
-    if ((inputNo != 0) || !getInput(0) || !centerChanged || centerChanged->getValue()) {
+    if ((inputNo != source) || !this->getInput(source) || !centerChanged || centerChanged->getValue()) {
         return;
     }
-    resetCenter(getApp()->getTimeLine()->currentFrame());
+    resetCenter(this->getApp()->getTimeLine()->currentFrame());
 }
 
+template <bool MASKED>
 bool
-TransformNode::knobChanged(KnobI* k,
-                           ValueChangedReasonEnum reason,
-                           ViewSpec view,
-                           double time,
-                           bool /*originatedFromMainThread*/)
+TransformImageNode<MASKED>::knobChanged(KnobI* k,
+                                        ValueChangedReasonEnum reason,
+                                        ViewSpec view,
+                                        double time,
+                                        bool /*originatedFromMainThread*/)
 {
-    KnobButtonPtr resetCenterButton = _resetCenter.lock();
-    KnobBoolPtr centerChanged = _centerChanged.lock();
+    const TransformOp& op = this->op();
+    KnobButtonPtr resetCenterButton = op.resetCenter.lock();
+    KnobBoolPtr centerChanged = op.centerChanged.lock();
     if (resetCenterButton && (k == resetCenterButton.get())) {
         resetCenter(time);
         if (centerChanged && centerChanged->getValue()) {
@@ -669,7 +561,7 @@ TransformNode::knobChanged(KnobI* k,
 
         return true;
     }
-    KnobDoublePtr center = _center.lock();
+    KnobDoublePtr center = op.center.lock();
     if (center && (k == center.get())) {
         const bool edited = (reason == eValueChangedReasonUserEdited) || (reason == eValueChangedReasonPluginEdited) || (reason == eValueChangedReasonNatronGuiEdited) || (reason == eValueChangedReasonNatronInternalEdited);
         if (edited && centerChanged && !centerChanged->getValue()) {
@@ -678,19 +570,19 @@ TransformNode::knobChanged(KnobI* k,
 
         return true;
     }
-    KnobChoicePtr filterKnob = _filter.lock();
+    KnobChoicePtr filterKnob = op.filter.lock();
     if (filterKnob && (k == filterKnob.get())) {
         updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }
-    KnobBoolPtr directionalBlur = _directionalBlur.lock();
+    KnobBoolPtr directionalBlur = op.directionalBlur.lock();
     if (directionalBlur && (k == directionalBlur.get())) {
         updateShutterEnabled();
 
         return true;
     }
-    KnobBoolPtr uniform = _uniform.lock();
+    KnobBoolPtr uniform = op.uniform.lock();
     if (uniform && (k == uniform.get())) {
         if (reason != eValueChangedReasonTimeChanged) {
             updateUniformVisibility(false);
@@ -700,135 +592,33 @@ TransformNode::knobChanged(KnobI* k,
     }
 
     return false;
-} // TransformNode::knobChanged
+} // TransformImageNode::knobChanged
 
+template <bool MASKED>
 void
-TransformNode::getTransformParams(double time,
-                                  ViewIdx view,
-                                  TransformMath::TransformParams* p) const
+TransformImageNode<MASKED>::getTransformParams(double time,
+                                               ViewIdx view,
+                                               TransformMath::TransformParams* params) const
 {
-    *p = TransformMath::TransformParams();
-
-    KnobDoublePtr translate = _translate.lock();
-    if (translate) {
-        p->translateX = translate->getValueAtTime(time, 0, view);
-        p->translateY = translate->getValueAtTime(time, 1, view);
-    }
-    KnobDoublePtr rotate = _rotate.lock();
-    if (rotate) {
-        p->rotate = rotate->getValueAtTime(time, 0, view);
-    }
-    KnobDoublePtr scale = _scale.lock();
-    if (scale) {
-        p->scaleX = scale->getValueAtTime(time, 0, view);
-        p->scaleY = scale->getValueAtTime(time, 1, view);
-    }
-    KnobBoolPtr uniform = _uniform.lock();
-    if (uniform) {
-        p->scaleUniform = uniform->getValueAtTime(time, 0, view);
-    }
-    KnobDoublePtr skewX = _skewX.lock();
-    if (skewX) {
-        p->skewX = skewX->getValueAtTime(time, 0, view);
-    }
-    KnobDoublePtr skewY = _skewY.lock();
-    if (skewY) {
-        p->skewY = skewY->getValueAtTime(time, 0, view);
-    }
-    KnobChoicePtr skewOrder = _skewOrder.lock();
-    if (skewOrder) {
-        p->skewOrderYX = skewOrder->getValueAtTime(time, 0, view) != 0;
-    }
-    KnobDoublePtr center = _center.lock();
-    if (center) {
-        p->centerX = center->getValueAtTime(time, 0, view);
-        p->centerY = center->getValueAtTime(time, 1, view);
-    }
-    KnobDoublePtr amount = _amount.lock();
-    if (amount) {
-        p->amount = amount->getValueAtTime(time, 0, view);
-    }
-} // TransformNode::getTransformParams
-
-Resampler::CanonicalTransformFn
-TransformNode::makeCanonicalTransformFn(ViewIdx view) const
-{
-    const TransformNode* self = this;
-
-    return [self, view](double time, double amount, bool invert, Mat3* matrix) {
-        TransformMath::TransformParams p;
-        self->getTransformParams(time, view, &p);
-        *matrix = TransformMath::inverseTransformCanonical(p, amount, invert);
-
-        return true;
-    };
+    *params = bakeParams(this->op(), time, view).transform;
 }
 
-Resampler::BlurSettings
-TransformNode::getBlurSettings(double time,
-                               ViewIdx view) const
-{
-    Resampler::BlurSettings blur;
-
-    KnobDoublePtr motionBlur = _motionBlur.lock();
-    if (motionBlur) {
-        blur.motionBlur = motionBlur->getValueAtTime(time, 0, view);
-    }
-    KnobBoolPtr directionalBlur = _directionalBlur.lock();
-    if (directionalBlur) {
-        blur.directionalBlur = directionalBlur->getValueAtTime(time, 0, view);
-    }
-    KnobDoublePtr shutter = _shutter.lock();
-    if (shutter) {
-        blur.shutter = shutter->getValueAtTime(time, 0, view);
-    }
-    KnobChoicePtr shutterOffset = _shutterOffset.lock();
-    if (shutterOffset) {
-        blur.shutterOffset = (Resampler::ShutterOffsetEnum)shutterOffset->getValueAtTime(time, 0, view);
-    }
-    KnobDoublePtr shutterCustomOffset = _shutterCustomOffset.lock();
-    if (shutterCustomOffset) {
-        blur.shutterCustomOffset = shutterCustomOffset->getValueAtTime(time, 0, view);
-    }
-
-    return blur;
-}
-
+template <bool MASKED>
 bool
-TransformNode::isMasking() const
+TransformImageNode<MASKED>::rendersWithMotionBlur(double time,
+                                                  ViewIdx view) const
 {
-    return _masked && isMaskApplied();
+    return TransformOp::rendersWithMotionBlur(bakeParams(this->op(), time, view));
 }
 
-Resampler::RegionParams
-TransformNode::getRegionParams(double time,
-                               ViewIdx view) const
-{
-    Resampler::RegionParams params;
-
-    KnobBoolPtr invert = _invert.lock();
-    params.invert = invert ? invert->getValueAtTime(time, 0, view) : false;
-    params.blur = getBlurSettings(time, view);
-    KnobChoicePtr filter = _filter.lock();
-    params.filter = filter ? (Resampler::FilterEnum)filter->getValueAtTime(time, 0, view) : Resampler::eFilterCubic;
-    KnobBoolPtr blackOutside = _blackOutside.lock();
-    params.blackOutside = blackOutside ? blackOutside->getValueAtTime(time, 0, view) : true;
-    TransformMath::TransformParams p;
-    getTransformParams(time, view, &p);
-    params.isIdentity = TransformMath::isIdentity(p);
-    params.doMasking = isMasking();
-    params.mix = params.doMasking ? getMixValue(time, view) : 1.;
-
-    return params;
-}
-
+template <bool MASKED>
 bool
-TransformNode::getSourceRoD(double time,
-                            const RenderScale& scale,
-                            ViewIdx view,
-                            RectD* rod) const
+TransformImageNode<MASKED>::getSourceRoD(double time,
+                                         const RenderScale& scale,
+                                         ViewIdx view,
+                                         RectD* rod) const
 {
-    EffectInstancePtr input = getInput(0);
+    EffectInstancePtr input = this->getInput(this->getSourceInput());
 
     if (!input) {
         return false;
@@ -839,12 +629,13 @@ TransformNode::getSourceRoD(double time,
     return input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, rod, &isProjectFormat) != eStatusFailed;
 }
 
+template <bool MASKED>
 RectD
-TransformNode::getProjectRect() const
+TransformImageNode<MASKED>::getProjectRect() const
 {
     Format format;
 
-    getApp()->getProject()->getProjectDefaultFormat(&format);
+    this->getApp()->getProject()->getProjectDefaultFormat(&format);
     RectI pixel;
     pixel.x1 = format.x1;
     pixel.x2 = format.x2;
@@ -854,13 +645,14 @@ TransformNode::getProjectRect() const
     return pixel.toCanonical_noClipping(0, format.getPixelAspectRatio());
 }
 
+template <bool MASKED>
 void
-TransformNode::resetCenter(double time)
+TransformImageNode<MASKED>::resetCenter(double time)
 {
-    KnobDoublePtr center = _center.lock();
-    KnobDoublePtr translate = _translate.lock();
+    KnobDoublePtr center = this->op().center.lock();
+    KnobDoublePtr translate = this->op().translate.lock();
 
-    if (!center || !getInput(0)) {
+    if (!center || !this->getInput(this->getSourceInput())) {
         return;
     }
     RectD rod;
@@ -900,601 +692,15 @@ TransformNode::resetCenter(double time)
         newTranslateY = p.translateY + dRot.y - dyrot;
     }
 
-    beginChanges();
+    this->beginChanges();
     center->setValues(newCenterX, newCenterY, ViewSpec::all(), eValueChangedReasonPluginEdited);
     if (translate) {
         translate->setValues(newTranslateX, newTranslateY, ViewSpec::all(), eValueChangedReasonPluginEdited);
     }
-    endChanges();
-} // TransformNode::resetCenter
+    this->endChanges();
+} // TransformImageNode::resetCenter
 
-bool
-TransformNode::getInputsHoldingTransform(std::list<int>* inputs) const
-{
-    if (!inputs) {
-        return false;
-    }
-    inputs->push_back(0);
-
-    return true;
-}
-
-StatusEnum
-TransformNode::getTransform(double time,
-                            const RenderScale& renderScale,
-                            bool draftRender,
-                            ViewIdx view,
-                            EffectInstancePtr* inputToTransform,
-                            Transform::Matrix3x3* transform)
-{
-    if (!draftRender) {
-        const Resampler::BlurSettings blur = getBlurSettings(time, view);
-        const double shutter = blur.directionalBlur ? 0. : blur.shutter;
-        if (((shutter != 0.) && (blur.motionBlur != 0.)) || blur.directionalBlur) {
-            return eStatusReplyDefault;
-        }
-    }
-
-    KnobBoolPtr invertKnob = _invert.lock();
-    const bool invert = invertKnob ? invertKnob->getValueAtTime(time, 0, view) : false;
-    TransformMath::TransformParams p;
-    getTransformParams(time, view, &p);
-    const Mat3 invCanonical = TransformMath::inverseTransformCanonical(p, 1., invert);
-    Mat3 canonical;
-    if (!invCanonical.inverse(&canonical)) {
-        return eStatusReplyDefault;
-    }
-
-    EffectInstancePtr input = getInput(0);
-    if (!input) {
-        return eStatusFailed;
-    }
-    const double srcPar = getAspectRatio(0);
-    const double dstPar = getAspectRatio(-1);
-    const OfxPointD s = renderScale.toOfxPointD();
-    *transform = TransformMath::toEngineMatrix(TransformMath::forwardToPixel(canonical, srcPar, dstPar, s.x, s.y));
-    *inputToTransform = input;
-
-    return eStatusOK;
-}
-
-StatusEnum
-TransformNode::getRegionOfDefinition(U64 /*hash*/,
-                                     double time,
-                                     const RenderScale& scale,
-                                     ViewIdx view,
-                                     RectD* rod)
-{
-    if (!getInput(0)) {
-        return eStatusReplyDefault;
-    }
-    RectD srcRoD;
-    if (!getSourceRoD(time, scale, view, &srcRoD)) {
-        return eStatusFailed;
-    }
-    const OfxPointD s = scale.toOfxPointD();
-    Resampler::getRegionOfDefinition(makeCanonicalTransformFn(view), srcRoD, time, getAspectRatio(-1), s.x, s.y, getRegionParams(time, view), rod);
-
-    return eStatusOK;
-}
-
-void
-TransformNode::getRegionsOfInterest(double time,
-                                    const RenderScale& scale,
-                                    const RectD& /*outputRoD*/,
-                                    const RectD& renderWindow,
-                                    ViewIdx view,
-                                    RoIMap* ret)
-{
-    EffectInstancePtr source = getInput(0);
-    const int maskInput = _masked ? getMaskInput() : -1;
-    EffectInstancePtr mask = (maskInput >= 0) ? getInput(maskInput) : EffectInstancePtr();
-
-    RectD srcRoI = renderWindow;
-    if (source) {
-        RectD srcRoD;
-        if (!getSourceRoD(time, scale, view, &srcRoD)) {
-            srcRoD = RectD();
-        }
-        const OfxPointD s = scale.toOfxPointD();
-        const Resampler::RegionParams params = getRegionParams(time, view);
-        Resampler::getRegionOfInterest(makeCanonicalTransformFn(view), renderWindow, srcRoD, getProjectRect(), time, getAspectRatio(0), s.x, s.y, params, &srcRoI);
-        // Wherever mask x mix is below 1 the render also reads the input under the output pixel,
-        // without a mask too, and through a concatenated input transform it resamples there with
-        // the node's filter. The engine maps this region through that transform.
-        if (_masked && (params.doMasking || (getMixValue(time, view) != 1.)) && !renderWindow.isNull()) {
-            RectD passThrough = renderWindow;
-            Resampler::expandRoI(renderWindow, getAspectRatio(0), s.x, s.y, params.filter, false, 1., &passThrough);
-            if (srcRoI.isNull()) {
-                srcRoI = passThrough;
-            } else {
-                srcRoI.merge(passThrough);
-            }
-        }
-        ret->insert(std::make_pair(source, srcRoI));
-    }
-    // The mask is read under each output pixel, as the OpenFX host's default region of interest.
-    if (mask) {
-        RoIMap::iterator found = ret->find(mask);
-        if (found == ret->end()) {
-            ret->insert(std::make_pair(mask, renderWindow));
-        } else {
-            RectD& r = found->second;
-            r.x1 = std::min(r.x1, renderWindow.x1);
-            r.y1 = std::min(r.y1, renderWindow.y1);
-            r.x2 = std::max(r.x2, renderWindow.x2);
-            r.y2 = std::max(r.y2, renderWindow.y2);
-        }
-    }
-}
-
-bool
-TransformNode::isIdentity(double time,
-                          const RenderScale& scale,
-                          const RectI& roi,
-                          ViewIdx view,
-                          double* inputTime,
-                          ViewIdx* inputView,
-                          int* inputNb)
-{
-    *inputTime = time;
-    *inputView = view;
-    *inputNb = 0;
-
-    const Resampler::BlurSettings blur = getBlurSettings(time, view);
-    if ((blur.shutter != 0.) && (blur.motionBlur != 0.)) {
-        return false;
-    }
-    TransformMath::TransformParams p;
-    getTransformParams(time, view, &p);
-    if (TransformMath::isIdentity(p)) {
-        return true;
-    }
-    if (!_masked) {
-        return false;
-    }
-    if (getMixValue(time, view) == 0.) {
-        return true;
-    }
-    if (isMasking() && !getMaskInvertValue(time, view)) {
-        EffectInstancePtr mask = getInput(getMaskInput());
-        const RenderScale maskScale = mask->supportsRenderScale() ? scale : RenderScale::identity;
-        RectD maskRoD;
-        bool isProjectFormat = false;
-        if (mask->getRegionOfDefinition_public(mask->getRenderHash(), time, maskScale, view, &maskRoD, &isProjectFormat) != eStatusFailed) {
-            // The window does not reach the mask, so the source shows through unchanged.
-            const RectI maskPixels = maskRoD.toPixelEnclosing(scale, mask->getAspectRatio(-1));
-            if (!roi.intersects(maskPixels)) {
-                return true;
-            }
-        }
-    }
-
-    return false;
-} // TransformNode::isIdentity
-
-StatusEnum
-TransformNode::render(const RenderActionArgs& args)
-{
-    const double time = args.time;
-    const ViewIdx view = args.view;
-    const OfxPointD s = args.mappedScale.toOfxPointD();
-
-    KnobBoolPtr invertKnob = _invert.lock();
-    KnobChoicePtr filterKnob = _filter.lock();
-    KnobBoolPtr clampKnob = _clamp.lock();
-    KnobBoolPtr blackOutsideKnob = _blackOutside.lock();
-    const bool invert = invertKnob ? invertKnob->getValueAtTime(time, 0, view) : false;
-    Resampler::FilterEnum filter = Resampler::eFilterImpulse;
-    if (!args.draftMode) {
-        filter = filterKnob ? (Resampler::FilterEnum)filterKnob->getValueAtTime(time, 0, view) : Resampler::eFilterCubic;
-    }
-    const bool clamp = clampKnob ? clampKnob->getValueAtTime(time, 0, view) : false;
-    const bool blackOutside = blackOutsideKnob ? blackOutsideKnob->getValueAtTime(time, 0, view) : false;
-
-    Resampler::BlurSettings blur = getBlurSettings(time, view);
-    if (blur.directionalBlur) {
-        blur.shutter = 0.;
-    }
-    const Resampler::CanonicalTransformFn fn = makeCanonicalTransformFn(view);
-    const double dstPar = getAspectRatio(-1);
-
-    const float mix = _masked ? (float)getMixValue(time, view) : 1.f;
-    const bool maskInvert = _masked ? getMaskInvertValue(time, view) : false;
-
-    // Every image is fetched before any is locked: fetching renders upstream, which may write
-    // into a cached image this render would otherwise already hold a read lock on.
-    const bool doMask = isMasking();
-    ImagePtr mask;
-    int maskChannel = -1;
-    if (doMask) {
-        const int maskInput = getMaskInput();
-        ImageLayerDesc maskLayer;
-        if (resolveInputPlaneForRender(maskInput, time, view, &maskLayer, &maskChannel) && (maskChannel >= 0)) {
-            RectI maskRoI;
-            mask = getImage(maskInput, time, args.mappedScale, view, NULL, &maskLayer, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &maskRoI);
-        }
-        if (mask && (maskChannel >= (int)mask->getComponentsCount())) {
-            mask.reset();
-        }
-    }
-    if (!isFloatImage(mask)) {
-        return eStatusFailed;
-    }
-
-    std::vector<std::shared_ptr<TransformPlaneJob>> jobs;
-    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
-        std::shared_ptr<TransformPlaneJob> job = std::make_shared<TransformPlaneJob>();
-        job->dst = it->second;
-        if (job->dst) {
-            ImageLayerDesc sourceLayer;
-            if (getInput(0) && resolveInputPlaneForRender(0, time, view, &sourceLayer, NULL)) {
-                RectI sourceRoI;
-                // Mapped to the clip's components, which is the layout the output plane is rendered in.
-                job->src = getImage(0, time, args.mappedScale, view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &sourceRoI, &job->inputTransform);
-            }
-            if (!isFloatImage(job->dst) || !isFloatImage(job->src)) {
-                return eStatusFailed;
-            }
-        }
-        jobs.push_back(job);
-    }
-
-    const RectI& roi = args.roi;
-    const int width = roi.width();
-    if ((width <= 0) || (roi.height() <= 0)) {
-        return eStatusOK;
-    }
-
-    std::shared_ptr<Image::ReadAccess> maskAccess;
-    RectI maskBounds;
-    int maskNComps = 0;
-    if (mask) {
-        maskBounds = mask->getBounds();
-        maskNComps = (int)mask->getComponentsCount();
-        maskAccess = std::make_shared<Image::ReadAccess>(mask.get());
-    }
-
-    // Images are locked, their bounds read and the matrices built here, on the calling thread;
-    // the band threads only read through these.
-    const int nThreads = appPTR->getNCPUsAvailableForEffect();
-    std::vector<RectI> bandRects;
-    makeRowBands(roi, nThreads, &bandRects);
-    std::vector<TransformBand> bands;
-    for (std::size_t j = 0; j < jobs.size(); ++j) {
-        TransformPlaneJob& job = *jobs[j];
-        if (!job.dst) {
-            continue;
-        }
-        const int nComps = (int)job.dst->getComponentsCount();
-        if (job.src) {
-            const RectI srcBounds = job.src->getBounds();
-            const int srcNComps = (int)job.src->getComponentsCount();
-            const double srcPar = job.src->getPixelAspectRatio();
-            job.srcAccess = std::make_shared<Image::ReadAccess>(job.src.get());
-            if (srcNComps == nComps) {
-                job.source = Resampler::SourceImage((const float*)job.srcAccess->pixelAt(srcBounds.x1, srcBounds.y1), srcBounds, nComps);
-            } else {
-                convertSource(*job.srcAccess, srcBounds, srcNComps, nComps, &job.converted);
-                job.source = Resampler::SourceImage(job.converted.empty() ? (const float*)0 : &job.converted[0], srcBounds, nComps);
-            }
-            Resampler::buildSamplingTransforms(fn, time, invert, blur, s.x, s.y, false, srcPar, dstPar, &job.transforms);
-            if (job.inputTransform) {
-                const Mat3 inputTransform = TransformMath::fromEngineMatrix(*job.inputTransform);
-                Resampler::concatenateInputTransform(inputTransform, &job.transforms);
-                if (_masked) {
-                    // The source fetched is upstream of the concatenated transforms, but the
-                    // unmasked part must show this node's immediate input: resample it through
-                    // the input transform alone. That input is black outside its own region,
-                    // whatever this node's black_outside says.
-                    job.passThroughTransforms.invTransforms.push_back(Mat3::identity());
-                    Resampler::concatenateInputTransform(inputTransform, &job.passThroughTransforms);
-                    job.passThroughParams = Resampler::makeResampleParams(job.passThroughTransforms, filter, clamp, true);
-                    job.resamplePassThrough = true;
-                }
-            }
-        } else {
-            job.source = Resampler::SourceImage((const float*)0, RectI(), nComps);
-            // Without a source the OpenFX plug-in samples through a matrix that maps everything
-            // nowhere, which renders zeros.
-            Mat3 none;
-            none(2, 2) = 1.;
-            job.transforms.invTransforms.push_back(none);
-        }
-        job.params = Resampler::makeResampleParams(job.transforms, filter, clamp, blackOutside);
-        job.dstAccess = std::make_shared<Image::WriteAccess>(job.dst.get());
-        for (std::size_t b = 0; b < bandRects.size(); ++b) {
-            bands.push_back(TransformBand(j, bandRects[b].y1, bandRects[b].y2));
-        }
-    }
-
-    RenderCancellation cancel(this);
-
-    const std::function<void(int)> renderBand = [&](int bandIndex) {
-        const TransformBand& band = bands[bandIndex];
-        const TransformPlaneJob& job = *jobs[band.job];
-        const int nComps = (int)job.dst->getComponentsCount();
-        std::vector<float> resampled((std::size_t)width * nComps);
-        std::vector<float> maskRow(doMask ? width : 0);
-        std::vector<float> passThroughRow(job.resamplePassThrough ? (std::size_t)width * nComps : 0);
-
-        for (int y = band.y1; y < band.y2; ++y) {
-            if ((((y - band.y1) % kAbortCheckRows) == 0) && cancel.check()) {
-                return;
-            }
-
-            float* dstPix = (float*)job.dstAccess->pixelAt(roi.x1, y);
-            if (!dstPix) {
-                continue;
-            }
-            Resampler::resampleRow(job.params, job.source, y, roi.x1, roi.x2, &resampled[0]);
-            if (!_masked) {
-                std::copy(resampled.begin(), resampled.end(), dstPix);
-                continue;
-            }
-            if (doMask) {
-                readMaskRow(maskAccess.get(), maskBounds, maskNComps, maskChannel, roi.x1, y, width, &maskRow[0]);
-            }
-            if (job.resamplePassThrough) {
-                Resampler::resampleRow(job.passThroughParams, job.source, y, roi.x1, roi.x2, &passThroughRow[0]);
-            }
-            for (int i = 0; i < width; ++i, dstPix += nComps) {
-                const float* tmpPix = &resampled[(std::size_t)i * nComps];
-                const float* srcPix = job.resamplePassThrough ? &passThroughRow[(std::size_t)i * nComps] : job.source.pixel(roi.x1 + i, y);
-                float maskScale = 1.f;
-                if (doMask) {
-                    maskScale = maskInvert ? (1.f - maskRow[i]) : maskRow[i];
-                }
-                const float alpha = maskScale * mix;
-                if (alpha == 0.f) {
-                    for (int c = 0; c < nComps; ++c) {
-                        dstPix[c] = srcPix ? srcPix[c] : 0.f;
-                    }
-                } else if (alpha == 1.f) {
-                    for (int c = 0; c < nComps; ++c) {
-                        dstPix[c] = tmpPix[c];
-                    }
-                } else if (srcPix) {
-                    for (int c = 0; c < nComps; ++c) {
-                        dstPix[c] = tmpPix[c] * alpha + (1.f - alpha) * srcPix[c];
-                    }
-                } else {
-                    for (int c = 0; c < nComps; ++c) {
-                        dstPix[c] = tmpPix[c] * alpha;
-                    }
-                }
-            }
-        }
-    };
-    parallelForCancellable((int)bands.size(), nThreads, cancel, renderBand);
-
-    return eStatusOK;
-} // TransformNode::render
-
-bool
-TransformNode::rendersWithMotionBlur(double time,
-                                     ViewIdx view) const
-{
-    const Resampler::BlurSettings blur = getBlurSettings(time, view);
-
-    return (blur.motionBlur != 0.) && ((blur.shutter != 0.) || blur.directionalBlur);
-}
-
-bool
-TransformNode::getGpuSamplingTransforms(double time,
-                                        ViewIdx view,
-                                        const RenderScale& scale,
-                                        Resampler::SamplingTransforms* transforms) const
-{
-    Resampler::BlurSettings blur = getBlurSettings(time, view);
-    if (blur.directionalBlur) {
-        blur.shutter = 0.;
-    }
-    KnobBoolPtr invertKnob = _invert.lock();
-    const bool invert = invertKnob ? invertKnob->getValueAtTime(time, 0, view) : false;
-    const OfxPointD s = scale.toOfxPointD();
-    Resampler::buildSamplingTransforms(makeCanonicalTransformFn(view), time, invert, blur, s.x, s.y, false, getAspectRatio(0), getAspectRatio(-1), transforms);
-    if (transforms->invTransforms.empty()) {
-        return false;
-    }
-    // A directional blur at quality 0 still builds every matrix, but render() samples the first.
-    if ((transforms->motionBlur == 0.) || (transforms->invTransforms.size() == 1)) {
-        transforms->invTransforms.resize(1);
-        transforms->alphas.clear();
-        transforms->motionBlur = 0.;
-    }
-    for (const Mat3& H : transforms->invTransforms) {
-        if (!isAffineMatrix(H)) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-RectI
-TransformNode::getSourceRoIPixels(double time,
-                                  ViewIdx view,
-                                  const RectI& outputRect,
-                                  const RenderScale& scale) const
-{
-    EffectInstancePtr source = getInput(0);
-    if (!source || outputRect.isNull()) {
-        return outputRect;
-    }
-    const RectD window = outputRect.toCanonical_noClipping(scale.toMipmapLevel(), getAspectRatio(-1));
-    RoIMap rois;
-    // Computing the regions only reads knobs and the inputs' regions of definition.
-    TransformNode* self = const_cast<TransformNode*>(this);
-    self->getRegionsOfInterest(time, scale, window, window, view, &rois);
-    RoIMap::const_iterator found = rois.find(source);
-    if (found == rois.end()) {
-        return outputRect;
-    }
-
-    return clampedPixelEnclosing(found->second, scale, getAspectRatio(0));
-}
-
-bool
-TransformNode::canRenderOnGpu(const GpuQuery& query) const
-{
-#ifdef NATRON_HAVE_GPU
-    if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps < 1) || (query.nComps > (int)gpu::kGpuResampleMaxChannels)) {
-        return false;
-    }
-    if (query.hasConcatenatedInput) {
-        return false;
-    }
-    Resampler::SamplingTransforms transforms;
-
-    return getGpuSamplingTransforms(query.time, query.view, query.mappedScale, &transforms) && (transforms.invTransforms.size() <= gpu::kGpuResampleMaxMatrices);
-#else
-    Q_UNUSED(query);
-
-    return false;
-#endif
-}
-
-RectI
-TransformNode::getGpuInputRoI(int inputNb,
-                              const RectI& outputRect,
-                              const RenderScale& scale) const
-{
-    if (inputNb != 0) {
-        return NativeImageEffect::getGpuInputRoI(inputNb, outputRect, scale);
-    }
-
-    return getSourceRoIPixels(getCurrentTime(), getCurrentView(), outputRect, scale);
-}
-
-StatusEnum
-TransformNode::renderGpu(const GpuRenderArgs& args)
-{
-#ifdef NATRON_HAVE_GPU
-    const GpuQuery& query = args.query;
-    const RectI& rect = args.outputRect;
-    const int nComps = query.nComps;
-    if (!canRenderOnGpu(query) || rect.isNull() || !isUsableGpuView(args.output, nComps) || !args.output.bounds.contains(rect)) {
-        return eStatusFailed;
-    }
-    const double time = query.time;
-    const ViewIdx view = query.view;
-    const RenderScale& scale = query.mappedScale;
-    Resampler::SamplingTransforms transforms;
-    if (!getGpuSamplingTransforms(time, view, scale, &transforms)) {
-        return eStatusFailed;
-    }
-
-    KnobChoicePtr filterKnob = _filter.lock();
-    KnobBoolPtr clampKnob = _clamp.lock();
-    KnobBoolPtr blackOutsideKnob = _blackOutside.lock();
-    Resampler::FilterEnum filter = Resampler::eFilterImpulse;
-    if (!query.draftMode) {
-        filter = filterKnob ? (Resampler::FilterEnum)filterKnob->getValueAtTime(time, 0, view) : Resampler::eFilterCubic;
-    }
-    const bool clamp = clampKnob ? clampKnob->getValueAtTime(time, 0, view) : false;
-    const bool blackOutside = blackOutsideKnob ? blackOutsideKnob->getValueAtTime(time, 0, view) : false;
-
-    // render() is handed the source over its region of interest clipped to the source's region of
-    // definition, and the filters clamp to and read zero outside exactly that.
-    GpuImageView source;
-    if (getInput(0) && !args.inputs.empty() && args.inputs[0].buffer) {
-        const GpuImageView& input = args.inputs[0];
-        if (!isUsableGpuView(input, nComps)) {
-            return eStatusFailed;
-        }
-        RectD srcRoD;
-        if (getSourceRoD(time, scale, view, &srcRoD)) {
-            const RectI valid = intersectPixels(intersectPixels(input.bounds, clampedPixelEnclosing(srcRoD, scale, getAspectRatio(0))),
-                                                getSourceRoIPixels(time, view, rect, scale));
-            source = cropGpuView(input, valid);
-        }
-    }
-
-    gpu::GpuResample resample;
-    if (source.buffer) {
-        resample.src = toGpuBlurImage(source);
-    }
-    resample.channels = (uint32_t)nComps;
-    resample.filter = (uint32_t)filter;
-    resample.clamp = clamp && Resampler::filterHonoursClamp(filter);
-    resample.blackOutside = blackOutside;
-    resample.matrices.resize(transforms.invTransforms.size());
-    for (std::size_t i = 0; i < transforms.invTransforms.size(); ++i) {
-        const Mat3& H = transforms.invTransforms[i];
-        gpu::GpuResampleMatrix& m = resample.matrices[i];
-        for (int k = 0; k < 6; ++k) {
-            m.matrix[k] = H.m[k];
-        }
-        if (!transforms.alphas.empty()) {
-            m.weight = transforms.alphas[i];
-        }
-        // The Jacobian render() samples with, by which axes fall inside the source.
-        for (int state = 1; state < 4; ++state) {
-            const bool x = (state & 1) != 0;
-            const bool y = (state & 2) != 0;
-            const double Jxx = x ? H(0, 0) : 0.;
-            const double Jxy = x ? H(0, 1) : 0.;
-            const double Jyx = y ? H(1, 0) : 0.;
-            const double Jyy = y ? H(1, 1) : 0.;
-            gpu::GpuResampleJacobian& j = m.jacobians[state];
-            j.zero = (Jxx == 0.) && (Jxy == 0.) && (Jyx == 0.) && (Jyy == 0.);
-            int levelX = 0;
-            int levelY = 0;
-            if (!j.zero && Resampler::supersampleLevels(Jxx, Jxy, Jyx, Jyy, &levelX, &levelY)) {
-                j.levelX = (uint32_t)levelX;
-                j.levelY = (uint32_t)levelY;
-            }
-        }
-    }
-    if (resample.matrices.size() > 1) {
-        const double quality = transforms.motionBlur;
-        resample.blur.minSamples = (uint32_t)Resampler::motionBlurMinSamples(quality);
-        resample.blur.maxIterations = (uint32_t)Resampler::motionBlurMaxIterations(quality);
-        resample.blur.maxError = Resampler::motionBlurMaxError(quality);
-        resample.blur.seedOffset = (uint32_t)(unsigned int)(0x10000 * quality);
-        resample.blur.weighted = !transforms.alphas.empty();
-    }
-
-    // TransformMasked blends with the source under the output pixel by mask x mix; with neither it
-    // writes the resampled pixels, as Transform does.
-    const bool finish = _masked && (query.hasMask || (getMixValue(time, view) != 1.));
-    gpu::GpuRecordContext& ctx = args.context;
-    GpuImageView filtered = args.output;
-    if (finish) {
-        filtered = GpuImageView();
-        filtered.bounds = rect;
-        filtered.nComps = nComps;
-        filtered.rowStrideFloats = rect.width() * nComps;
-        if (!ctx.scratch((VkDeviceSize)rect.area() * nComps * sizeof(float), filtered.buffer)) {
-            return eStatusFailed;
-        }
-    }
-    resample.dst = toGpuBlurImage(filtered);
-    resample.output = toGpuBlurRect(rect);
-    if (!gpu::recordResample(ctx, resample)) {
-        return eStatusFailed;
-    }
-    if (!finish) {
-        return eStatusOK;
-    }
-    ctx.computeBarrier();
-
-    // render() blends every channel, whatever the channel selection says, and divides by nothing.
-    GpuRenderArgs wrapArgs(args);
-    for (int c = 0; c < 4; ++c) {
-        wrapArgs.query.processChannels[c] = true;
-    }
-    if (!wrapArgs.inputs.empty()) {
-        wrapArgs.inputs[0] = source;
-    }
-
-    return recordGpuFinish(wrapArgs, filtered);
-#else
-    Q_UNUSED(args);
-
-    return eStatusFailed;
-#endif
-} // TransformNode::renderGpu
+template class TransformImageNode<false>;
+template class TransformImageNode<true>;
 
 NATRON_NAMESPACE_EXIT

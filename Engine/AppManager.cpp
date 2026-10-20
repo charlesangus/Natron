@@ -170,6 +170,7 @@
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Nodes/Merge/Switch.h"
 #include "Engine/Nodes/Metadata/CopyMetadata.h"
 #include "Engine/Nodes/Metadata/ModifyMetadata.h"
 #include "Engine/Nodes/Metadata/RemoveMetadata.h"
@@ -1666,6 +1667,7 @@ AppManager::loadBuiltinNodePlugins()
     registerBuiltInPlugin<MergePreset<eMergePresetMin>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeMin.png"), false, false);
     registerBuiltInPlugin<MergePreset<eMergePresetDifference>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeDifference.png"), false, false);
     registerBuiltInPlugin<Dissolve>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.DissolvePlugin.png"), false, false);
+    registerBuiltInPlugin<Switch>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.switchPlugin.png"), false, false);
     registerBuiltInPlugin<Crop>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.CropPlugin.png"), false, false);
     registerBuiltInPlugin<Position>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Position.png"), false, false);
     registerBuiltInPlugin<TransformNode>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.TransformPlugin.png"), false, false);

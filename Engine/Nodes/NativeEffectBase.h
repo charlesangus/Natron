@@ -33,6 +33,7 @@
 #include <list>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -41,64 +42,47 @@
 #include "Engine/DeepPixelOps.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/GpuCostModel.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/Nodes/Image/ImagePipelineSpec.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/Nodes/NodeSpec.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
 
-/**
- * @brief Statically describes one input of a NativeEffectBase subclass: its label,
- * whether it may be left unconnected, the DataKindEnum it accepts, and whether it is a mask.
- * The host gives a mask input the enableMask_<label>/maskChannel_<label> selectors.
- **/
-struct NativeInputDescription {
-    std::string label;
-    bool optional;
-    DataKindEnum kind;
-    bool isMask;
+struct GpuQuery;
+struct GpuRenderArgs;
 
-    explicit NativeInputDescription(const std::string& label_,
-                                    bool optional_ = false,
-                                    DataKindEnum kind_ = eDataKindImage,
-                                    bool isMask_ = false)
-        : label(label_)
-        , optional(optional_)
-        , kind(kind_)
-        , isMask(isMask_)
-    {
-    }
+/**
+ * @brief What the stages around a node's op resolve to at one time and view, as GPU placement
+ * reads them. applyMask is whether the mask input is connected and enabled; maskChannel is the
+ * channel of maskLayer it reads, -1 when it resolves to none. divisorChannel is the channel of
+ * divisorLayer "(Un)premult by" divides the source by, -1 for none.
+ **/
+struct GpuStageSummary {
+    bool applyMask = false;
+    ImageLayerDesc maskLayer;
+    int maskChannel = -1;
+    double mix = 1.;
+    ImageLayerDesc divisorLayer;
+    int divisorChannel = -1;
 };
 
 /**
- * @brief Statically describes a NativeEffectBase subclass: plugin id/label/description,
- * grouping (a menu path whose levels are separated by '/', e.g. "Color/Math"), version, its inputs, the DataKindEnum it outputs, and whether it is a writer. One
- * instance of this, returned by NativeEffectBase::getNativePluginDescription(), replaces the
- * half-dozen one-line EffectInstance accessor overrides a hand-written node otherwise repeats.
+ * @brief What the GPU cost model reads from an op beyond its kind to pick a row of its tables:
+ * sigma, the Gaussian-equivalent spread in pixels at the rendered scale (size / 2.4 for a
+ * blur of diameter size), whether the filter is recursive (IIR), whose cost does not grow
+ * with sigma, the Blur filter, for an erode or dilate its size in pixels at the rendered
+ * scale, and whether the render averages several matrices per pixel (motion blur).
  **/
-struct NativePluginDescription {
-    std::string id;
-    std::string label;
-    std::string description;
-    std::string grouping;
-    int majorVersion;
-    int minorVersion;
-    std::vector<NativeInputDescription> inputs;
-    DataKindEnum outputKind;
-    bool isWriter;
-
-    NativePluginDescription()
-        : id()
-        , label()
-        , description()
-        , grouping(PLUGIN_GROUP_OTHER)
-        , majorVersion(1)
-        , minorVersion(0)
-        , inputs()
-        , outputKind(eDataKindImage)
-        , isWriter(false)
-    {
-    }
+struct GpuCostHint {
+    double sigma = 0.;
+    bool iir = false;
+    GpuBlurFilter filter = GpuBlurFilter::eAny;
+    int size = 0;
+    bool motionBlur = false;
 };
 
 /**
@@ -148,7 +132,7 @@ void parallelForCancellable(int count,
  * one-line overrides (getPluginID(), getPluginLabel(), getPluginGrouping(),
  * getMajorVersion(), getMinorVersion(), getNInputs(), getInputDataKind(), isWriter(),
  * isOutput(), ...) for every new node. NativeEffectBase asks for that metadata once, via a
- * single getNativePluginDescription() override, and implements those EffectInstance and
+ * single nodeSpec() override, and implements those EffectInstance and
  * OutputEffectInstance virtuals from it.
  *
  * Everything else about OutputEffectInstance -- knobs, rendering, undo, serialization,
@@ -182,21 +166,9 @@ void parallelForCancellable(int count,
  *     }
  *
  * private:
- *     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+ *     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
  *     {
- *         NativePluginDescription desc;
- *
- *         desc.id = "fr.natron.ExampleNode";
- *         desc.label = "Example";
- *         desc.description = "A minimal native node built on NativeEffectBase.";
- *         desc.grouping = PLUGIN_GROUP_OTHER;
- *         desc.majorVersion = 1;
- *         desc.minorVersion = 0;
- *         desc.inputs.push_back( NativeInputDescription("Source", false, eDataKindImage) );
- *         desc.outputKind = eDataKindImage;
- *         desc.isWriter = false;
- *
- *         return desc;
+ *         return staticNodeSpec<kExampleSpec>();
  *     }
  *
  *     virtual void initializeKnobs() OVERRIDE FINAL
@@ -226,58 +198,42 @@ public:
 
     virtual ~NativeEffectBase();
 
-    virtual std::string getPluginID() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return getNativePluginDescription().id;
-    }
-
-    virtual std::string getPluginLabel() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return getNativePluginDescription().label;
-    }
-
-    virtual std::string getPluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return getNativePluginDescription().description;
-    }
-
+    virtual std::string getPluginID() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual std::string getPluginLabel() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual std::string getPluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void getPluginGrouping(std::list<std::string>* grouping) const OVERRIDE FINAL;
-
-    virtual int getMajorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return getNativePluginDescription().majorVersion;
-    }
-
-    virtual int getMinorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return getNativePluginDescription().minorVersion;
-    }
-
-    virtual bool isWriter() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return getNativePluginDescription().isWriter;
-    }
-
-    virtual bool isOutput() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return getNativePluginDescription().isWriter;
-    }
-
-    virtual int getNInputs() const OVERRIDE WARN_UNUSED_RETURN
-    {
-        return (int)getNativePluginDescription().inputs.size();
-    }
-
+    virtual int getMajorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual int getMinorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool isWriter() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool isOutput() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual int getNInputs() const OVERRIDE WARN_UNUSED_RETURN;
     virtual std::string getInputLabel(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
     virtual bool isInputOptional(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
     virtual bool isInputMask(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
-
-    virtual DataKindEnum getOutputDataKind() const OVERRIDE WARN_UNUSED_RETURN
-    {
-        return getNativePluginDescription().outputKind;
-    }
-
+    virtual DataKindEnum getOutputDataKind() const OVERRIDE WARN_UNUSED_RETURN;
     virtual DataKindEnum getInputDataKind(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The node's static description, which every query above answers from. A node
+     * returns staticNodeSpec<kSpec>() of a constexpr spec, which rejects an invalid spec at
+     * compile time. The spec must outlive the node and never change.
+     **/
+    virtual const NodeSpec* nodeSpec() const WARN_UNUSED_RETURN = 0;
+
+    /**
+     * @brief How the output at time and view relates to the inputs. For a node with a
+     * nodeSpec(), isIdentity() answers from this: Input(i, t) is an identity of input i at t,
+     * and Black an identity of no input, which the render paths output as transparent black.
+     * The default is None: the node computes its output.
+     **/
+    virtual Route route(double time,
+                        ViewIdx view) WARN_UNUSED_RETURN
+    {
+        Q_UNUSED(time);
+        Q_UNUSED(view);
+
+        return Route::none();
+    }
 
     /**
      * @brief Supplies this node's data-kind resolution policy, consulted when its declared output
@@ -309,6 +265,82 @@ public:
     virtual bool inputParticipatesInDataKindPropagation(int /*inputNb*/) const WARN_UNUSED_RETURN
     {
         return true;
+    }
+
+    /**
+     * @brief What the node's image op computes, which the scheduler's cost model and task records
+     * read; empty for a node that is not an image op, which GPU placement never considers.
+     **/
+    virtual std::optional<OpKind> opKind() const WARN_UNUSED_RETURN
+    {
+        return std::nullopt;
+    }
+
+    /**
+     * @brief The cost model's hint for a render at time and view, mipmapLevel levels below full
+     * resolution; empty for an op whose cost the plug-in's plain row describes, as by default.
+     **/
+    virtual std::optional<GpuCostHint> gpuCostHint(double /*time*/,
+                                                   ViewIdx /*view*/,
+                                                   unsigned int /*mipmapLevel*/) const WARN_UNUSED_RETURN
+    {
+        return std::nullopt;
+    }
+
+    /**
+     * @brief Whether renderGpu() can produce this query. Nodes that cannot are rendered on the
+     * CPU, as every node is by default. The answer must depend only on the query and the node's
+     * settings: placement asks before the region is recorded, and the region engine asks again
+     * when it records it.
+     **/
+    virtual bool canRenderOnGpu(const GpuQuery& /*query*/) const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief The region of input inputNb that renderGpu() reads to produce outputRect; wider
+     * than outputRect for a node with a halo.
+     **/
+    virtual RectI getGpuInputRoI(int /*inputNb*/,
+                                 const RectI& outputRect,
+                                 const RenderScale& /*scale*/) const WARN_UNUSED_RETURN
+    {
+        return outputRect;
+    }
+
+    /**
+     * @brief The layer renderGpu() reads input inputNb in when this node renders plane at time and
+     * view; the region engine hands that input over in it. False when the GPU path cannot read
+     * the input at all, which keeps the node on the CPU, as the default does.
+     **/
+    virtual bool getGpuInputLayer(int /*inputNb*/,
+                                  const ImageLayerDesc& /*plane*/,
+                                  double /*time*/,
+                                  ViewIdx /*view*/,
+                                  ImageLayerDesc* /*layer*/) const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief Records the dispatches that fill args.output over args.outputRect. Only called
+     * when canRenderOnGpu() accepted args.query; the default fails.
+     **/
+    virtual StatusEnum renderGpu(const GpuRenderArgs& /*args*/) WARN_UNUSED_RETURN
+    {
+        return eStatusFailed;
+    }
+
+    /**
+     * @brief The mask, mix and "(Un)premult by" divisor the stages around the op resolve to at
+     * time and view, which GPU placement folds into the query. The default is neutral: no mask,
+     * a mix of 1 and no divisor.
+     **/
+    virtual GpuStageSummary getGpuStageSummary(double /*time*/,
+                                               ViewIdx /*view*/) WARN_UNUSED_RETURN
+    {
+        return GpuStageSummary();
     }
 
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE;
@@ -377,6 +409,18 @@ protected:
 
     virtual void onNodeHashChanged(U64 hash) OVERRIDE;
     virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE;
+
+    /**
+     * @brief For a node with a nodeSpec(), the answer of route(); otherwise not an identity,
+     * as EffectInstance answers, unless a subclass overrides this.
+     **/
+    virtual bool isIdentity(double time,
+                            const RenderScale& scale,
+                            const RectI& roi,
+                            ViewIdx view,
+                            double* inputTime,
+                            ViewIdx* inputView,
+                            int* inputNb) OVERRIDE WARN_UNUSED_RETURN;
 
     /**
      * @brief Drops every cached getOutputMetadata() result of this node alone, for a change that
@@ -492,14 +536,6 @@ protected:
      **/
     static void makeDeepScanlineChunks(const RectI& bounds,
                                        std::vector<RectI>* chunks);
-
-    /**
-     * @brief Subclasses declare their static plugin metadata by overriding this.
-     * It is queried on demand rather than cached: every call site above is off the
-     * render path (registration, UI display, project load), so re-building the
-     * small description each time keeps this class free of per-instance state.
-     **/
-    virtual NativePluginDescription getNativePluginDescription() const WARN_UNUSED_RETURN = 0;
 
     /**
      * @brief Wraps the AppManager::createKnob() idiom every initializeKnobs() repeats.

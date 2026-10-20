@@ -115,6 +115,7 @@
 #include "Engine/ViewerInstance.h"
 
 #include "Engine/Nodes/IO/NativeWrite.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #include "Serialization/NodeSerialization.h"
@@ -3149,6 +3150,21 @@ Node::createHostMixKnob(const KnobPagePtr& mainPage)
 }
 
 void
+Node::createStageFooterSeparator(const KnobPagePtr& mainPage)
+{
+    if (!mainPage) {
+        return;
+    }
+    const KnobsVec children = mainPage->getChildren();
+    if (children.empty() || dynamic_cast<KnobSeparator*>(children.back().get())) {
+        return;
+    }
+    KnobSeparatorPtr sep = AppManager::createKnob<KnobSeparator>(_imp->effect.get(), std::string(), 1, false);
+    sep->setName("advancedSep");
+    mainPage->addKnob(sep);
+}
+
+void
 Node::createUnPremultSelector(const KnobPagePtr& mainPage)
 {
     // openfx-misc's colour family declares "(Un)premult by" as a bool plus a fixed R/G/B/A
@@ -3592,6 +3608,16 @@ Node::initializeDefaultKnobs(bool loadingSerialization)
 
     assert(foundPluginDefaultKnobsToReorder.size() > 0 && foundPluginDefaultKnobsToReorder[0].first == kOfxMaskInvertParamName);
 
+    // Spec'd nodes put the whole footer under one separator; the generic one below would split
+    // (Un)premult by from the mask rows.
+    const StagedImageEffect* stagedEffect = dynamic_cast<const StagedImageEffect*>(_imp->effect.get());
+    if (stagedEffect) {
+        const bool hasMaskSelector = std::any_of(hasMaskChannelSelector.begin(), hasMaskChannelSelector.end(),
+                                                 [](const std::pair<bool, bool>& p) { return p.first; });
+        if (hasMaskSelector || stagedEffect->wantsHostUnPremultSelector() || stagedEffect->imagePipelineSpec().stages.has(Stage::MaskMix)) {
+            createStageFooterSeparator(mainPage);
+        }
+    }
     createUnPremultSelector(mainPage);
 
     OfxEffectInstance* isOfxEffect = dynamic_cast<OfxEffectInstance*>(_imp->effect.get());
@@ -3626,6 +3652,9 @@ Node::initializeDefaultKnobs(bool loadingSerialization)
         }
     }
 
+    if (stagedEffect) {
+        lastKnobBeforeAdvancedOption.reset();
+    }
 
     if (lastKnobBeforeAdvancedOption && mainPage) {
 

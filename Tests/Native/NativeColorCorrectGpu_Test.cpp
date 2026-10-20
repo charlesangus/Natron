@@ -53,7 +53,7 @@
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Image/ColorMath.h"
 #include "Engine/Nodes/Image/GpuRender.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -62,23 +62,10 @@ namespace {
 
 const double kTime = 1.;
 
-// makeKernel() is protected in the base and private in ColorCorrect; naming it through a derived class
-// of the base is what makes the member pointer accessible.
-struct KernelProbe
-    : public NativeImageEffect {
-    static PixelKernelPtr make(NativeImageEffect* effect,
-                               const KernelContext& context)
-    {
-        PixelKernelPtr (NativeImageEffect::*member)(const KernelContext&) = &KernelProbe::makeKernel;
-
-        return (effect->*member)(context);
-    }
-};
-
-NativeImageEffect*
+StagedImageEffect*
 effectOf(const NodePtr& node)
 {
-    return node ? dynamic_cast<NativeImageEffect*>(node->getEffectInstance().get()) : NULL;
+    return node ? dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get()) : NULL;
 }
 
 bool
@@ -117,7 +104,7 @@ imageOf(const RenderedPlane& plane)
 GpuQuery
 queryFor(const NodePtr& op)
 {
-    NativeImageEffect* effect = effectOf(op);
+    StagedImageEffect* effect = effectOf(op);
     const ImageLayerDesc plane = ImageLayerDesc::mapNCompsToColorLayer(4);
     GpuQuery q;
 
@@ -153,26 +140,24 @@ queryFor(const NodePtr& op)
     return q;
 }
 
-// The native CPU path: the node's own row kernel over packed rows. Channels outside the mask keep
+// The native CPU path: the op's own row kernel over packed rows. Channels outside the mask keep
 // their input value.
 std::vector<float>
-cpuKernelRender(NativeImageEffect* effect,
+cpuKernelRender(StagedImageEffect* effect,
                 const std::vector<float>& src,
                 int width,
                 int height,
                 int nComps,
                 unsigned channelMask)
 {
-    KernelContext context;
-    context.time = kTime;
-    context.processChannels = std::bitset<4>(channelMask);
-    PixelKernelPtr kernel = KernelProbe::make(effect, context);
+    ColorCorrect* node = dynamic_cast<ColorCorrect*>(effect);
     std::vector<float> dst(src);
 
-    EXPECT_TRUE(bool(kernel));
-    if (!kernel) {
+    EXPECT_TRUE(node != NULL);
+    if (!node) {
         return dst;
     }
+    const ColorCorrectOp::Params params = node->bakeColorCorrect(kTime, ViewIdx(0));
     for (int y = 0; y < height; ++y) {
         RowIO io;
         io.nSrc = 1;
@@ -181,15 +166,15 @@ cpuKernelRender(NativeImageEffect* effect,
         io.y = y;
         io.width = width;
         io.nComps = nComps;
-        io.channels = context.processChannels;
-        kernel->processRow(io);
+        io.channels = std::bitset<4>(channelMask);
+        node->colorCorrectRow(params, io);
     }
 
     return dst;
 }
 #endif // NATRON_HAVE_GPU
 
-const char* const kGroupNames[ColorCorrect::eGroupCount] = {
+const char* const kGroupNames[ColorCorrectOp::eGroupCount] = {
     kColorCorrectGroupMaster, kColorCorrectGroupShadows, kColorCorrectGroupMidtones, kColorCorrectGroupHighlights
 };
 
@@ -203,7 +188,7 @@ struct GroupSetting {
 
 // A different correction per group, every channel differing, so that a group applied in the wrong
 // place or a channel swapped shows.
-const GroupSetting kEdited[ColorCorrect::eGroupCount] = {
+const GroupSetting kEdited[ColorCorrectOp::eGroupCount] = {
     { { 1.2, 0.8, 1.1, 0.9 }, { 1.1, 0.9, 1.3, 1.2 }, { 1.2, 0.8, 1.5, 0.9 }, { 1.1, 0.95, 1.2, 1.05 }, { 0.01, -0.02, 0.03, 0.05 } },
     { { 1.5, 0.6, 1.3, 1.4 }, { 1.4, 0.7, 1.2, 0.8 }, { 0.7, 1.3, 1.1, 1.6 }, { 1.3, 1.1, 0.9, 1.2 }, { 0.02, 0.04, -0.01, -0.03 } },
     { { 0.7, 1.4, 0.9, 1.2 }, { 0.8, 1.25, 1.1, 1.3 }, { 1.4, 0.9, 0.75, 1.1 }, { 0.9, 1.2, 1.15, 0.8 }, { -0.03, 0.01, 0.02, 0.04 } },
@@ -211,7 +196,7 @@ const GroupSetting kEdited[ColorCorrect::eGroupCount] = {
 };
 
 struct CorrectSetting {
-    // The edited groups as bits of 1 << ColorCorrect::GroupEnum; the others are the identity.
+    // The edited groups as bits of 1 << ColorCorrectOp::GroupEnum; the others are the identity.
     unsigned groups;
     int luminanceMath;
     bool clampBlack;
@@ -255,7 +240,7 @@ void
 applySetting(const NodePtr& node,
              const CorrectSetting& s)
 {
-    for (int g = 0; g < ColorCorrect::eGroupCount; ++g) {
+    for (int g = 0; g < ColorCorrectOp::eGroupCount; ++g) {
         const std::string name = kGroupNames[g];
         const bool edited = ((s.groups >> g) & 1u) != 0;
         const GroupSetting& e = kEdited[g];
@@ -321,7 +306,7 @@ testValues(const CorrectSetting& s,
 
 void
 checkKernelOn(GpuParityRuntime& runtime,
-              NativeImageEffect* effect,
+              StagedImageEffect* effect,
               const CorrectSetting& setting,
               const std::vector<float>& src,
               int width,
@@ -357,7 +342,7 @@ checkKernelOn(GpuParityRuntime& runtime,
 
 void
 checkKernel(GpuParityRuntime& runtime,
-            NativeImageEffect* effect,
+            StagedImageEffect* effect,
             const CorrectSetting& setting,
             int nComps,
             unsigned channelMask,
@@ -390,11 +375,11 @@ TEST_F(NativeColorCorrectGpuTest, MatchesTheCpuKernelInEveryClampAndCurve)
     }
     NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_COLORCORRECT));
     ASSERT_TRUE(bool(node));
-    NativeImageEffect* effect = effectOf(node);
+    StagedImageEffect* effect = effectOf(node);
     ASSERT_TRUE(effect != NULL);
 
-    const unsigned groupSets[] = { 1u << ColorCorrect::eGroupMaster, 1u << ColorCorrect::eGroupShadows, 1u << ColorCorrect::eGroupMidtones,
-                                   1u << ColorCorrect::eGroupHighlights, 0xFu };
+    const unsigned groupSets[] = { 1u << ColorCorrectOp::eGroupMaster, 1u << ColorCorrectOp::eGroupShadows, 1u << ColorCorrectOp::eGroupMidtones,
+                                   1u << ColorCorrectOp::eGroupHighlights, 0xFu };
     const unsigned channelMasks[] = { 0xF, 0x5, 0x8 };
     std::size_t nCompared = 0;
     int nCase = 0;
@@ -438,7 +423,7 @@ TEST_F(NativeColorCorrectGpuTest, DefaultKnobsPassEveryValueThrough)
     }
     NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_COLORCORRECT));
     ASSERT_TRUE(bool(node));
-    NativeImageEffect* effect = effectOf(node);
+    StagedImageEffect* effect = effectOf(node);
     ASSERT_TRUE(effect != NULL);
 
     CorrectSetting setting;
@@ -504,7 +489,7 @@ TEST_F(NativeColorCorrectGpuTest, MatchesTheCpuRender)
     maskChannel->set("rgba.A");
     KnobChannelSelect* unPremultBy = dynamic_cast<KnobChannelSelect*>(op->getKnobByName(kUnPremultByKnobName).get());
     ASSERT_TRUE(unPremultBy != NULL);
-    NativeImageEffect* effect = effectOf(op);
+    StagedImageEffect* effect = effectOf(op);
     ASSERT_TRUE(effect != NULL);
 
     const RectI sourceWindow = paritySourceWindow(source, kTime, 0);
@@ -597,7 +582,7 @@ TEST_F(NativeColorCorrectGpuTest, MatchesTheCpuPastASteepKeyBetweenFloats)
     }
     NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_COLORCORRECT));
     ASSERT_TRUE(bool(node));
-    NativeImageEffect* effect = effectOf(node);
+    StagedImageEffect* effect = effectOf(node);
     ASSERT_TRUE(effect != NULL);
 
     CorrectSetting setting;
@@ -656,11 +641,11 @@ TEST_F(NativeColorCorrectGpuTest, ToneWeightsStayInUnitIntervalWithClampsOff)
     }
     NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_COLORCORRECT));
     ASSERT_TRUE(bool(node));
-    NativeImageEffect* effect = effectOf(node);
+    StagedImageEffect* effect = effectOf(node);
     ASSERT_TRUE(effect != NULL);
 
     CorrectSetting setting;
-    setting.groups = 1u << ColorCorrect::eGroupShadows;
+    setting.groups = 1u << ColorCorrectOp::eGroupShadows;
     setting.luminanceMath = ColorMath::eLuminanceMathMax;
     setting.clampBlack = false;
     setting.clampWhite = false;
@@ -677,12 +662,12 @@ TEST_F(NativeColorCorrectGpuTest, ToneWeightsStayInUnitIntervalWithClampsOff)
         ASSERT_EQ(eStatusOK, tones->addControlPoint(eValueChangedReasonPluginEdited, d, 0., value, eKeyframeTypeConstant));
         ASSERT_EQ(eStatusOK, tones->addControlPoint(eValueChangedReasonPluginEdited, d, 1., value, eKeyframeTypeConstant));
     }
-    const double gain = kEdited[ColorCorrect::eGroupShadows].gain[0];
-    ASSERT_TRUE(setKnobValues(node, std::string(kGroupNames[ColorCorrect::eGroupShadows]) + kColorCorrectParamSaturation, std::vector<double>(4, 1.)));
-    ASSERT_TRUE(setKnobValues(node, std::string(kGroupNames[ColorCorrect::eGroupShadows]) + kColorCorrectParamContrast, std::vector<double>(4, 1.)));
-    ASSERT_TRUE(setKnobValues(node, std::string(kGroupNames[ColorCorrect::eGroupShadows]) + kColorCorrectParamGamma, std::vector<double>(4, 1.)));
-    ASSERT_TRUE(setKnobValues(node, std::string(kGroupNames[ColorCorrect::eGroupShadows]) + kColorCorrectParamGain, std::vector<double>(4, gain)));
-    ASSERT_TRUE(setKnobValues(node, std::string(kGroupNames[ColorCorrect::eGroupShadows]) + kColorCorrectParamOffset, std::vector<double>(4, 0.)));
+    const double gain = kEdited[ColorCorrectOp::eGroupShadows].gain[0];
+    ASSERT_TRUE(setKnobValues(node, std::string(kGroupNames[ColorCorrectOp::eGroupShadows]) + kColorCorrectParamSaturation, std::vector<double>(4, 1.)));
+    ASSERT_TRUE(setKnobValues(node, std::string(kGroupNames[ColorCorrectOp::eGroupShadows]) + kColorCorrectParamContrast, std::vector<double>(4, 1.)));
+    ASSERT_TRUE(setKnobValues(node, std::string(kGroupNames[ColorCorrectOp::eGroupShadows]) + kColorCorrectParamGamma, std::vector<double>(4, 1.)));
+    ASSERT_TRUE(setKnobValues(node, std::string(kGroupNames[ColorCorrectOp::eGroupShadows]) + kColorCorrectParamGain, std::vector<double>(4, gain)));
+    ASSERT_TRUE(setKnobValues(node, std::string(kGroupNames[ColorCorrectOp::eGroupShadows]) + kColorCorrectParamOffset, std::vector<double>(4, 0.)));
 
     const std::vector<float> values = { 0.f, 0.25f, 0.5f, 1.f, 1.5f, 4.f, -0.5f, -3.f };
     std::vector<float> src;

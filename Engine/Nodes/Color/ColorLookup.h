@@ -32,7 +32,9 @@
 #include <vector>
 
 #include "Engine/EngineFwd.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/ColorMath.h"
+#include "Engine/Nodes/Image/CurveSnapshot.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 
 #define PLUGINID_NATRON_COLORLOOKUP "net.sf.openfx.ColorLookupPlugin"
 #define PLUGIN_MAJOR_NATRON_COLORLOOKUP 2
@@ -54,6 +56,11 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kColorLookupInputs[] = {
+    InputSpec { .label = "Source" },
+    InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
+};
+
 /**
  * @brief ColorLookup: per-channel curves of a parametric knob. The lookup table has five curves,
  * in this order: master, red, green, blue and alpha. How the master curve combines with the
@@ -69,9 +76,7 @@ NATRON_NAMESPACE_ENTER
  * outside it the curve is evaluated directly. Knob names, defaults and maths are the
  * openfx-misc ColorLookupPlugin's; it registers under that plugin's ID one major above.
  **/
-class ColorLookup
-    : public NativeImageEffect {
-public:
+struct ColorLookupOp {
     enum CurveEnum {
         eCurveMaster = 0,
         eCurveRed,
@@ -88,6 +93,79 @@ public:
         eMasterCurveModeLuminance
     };
 
+    // The curves and the tables sampled from them, shared by every Params baked from the same
+    // curves, clamps and kind of master curve mode.
+    struct Tables;
+
+    struct Params {
+        MasterCurveModeEnum mode;
+        ColorMath::LuminanceMathEnum luminanceMath;
+        bool clampBlack;
+        bool clampWhite;
+        std::shared_ptr<const Tables> tables;
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_COLORLOOKUP,
+        .label = "ColorLookup",
+        .description = "Apply a parametric lookup curve with the possibility to adjust each channel separately.\n"
+                       "The master curve is combined with the red, green and blue curves, but not with the alpha curve.\n"
+                       "Different algorithms are available when applying the master curve, which are selectable using the \"Master Curve Mode\" parameter.\n"
+                       "\n"
+                       "Note that you can easily do color remapping by setting Source and Target colors and clicking \"Set RGB\" or \"Set RGBA\" below.\n"
+                       "This will add control points on the curve to match the target from the source. You can add as many point as you like.\n"
+                       "This is very useful for matching color of one shot to another, or adding custom colors to a black and white ramp.\n"
+                       "\n"
+                       "Optionally, the RGB histogram or a color ramp can be displayed in the background of the lookup curves.\n"
+                       "\n"
+                       "See also: https://web.archive.org/web/20221208230906/http://opticalenquiry.com/nuke/index.php?title=ColorLookup",
+        .grouping = PLUGIN_GROUP_COLOR,
+        .majorVersion = PLUGIN_MAJOR_NATRON_COLORLOOKUP,
+        .minorVersion = 0,
+        .inputs = kColorLookupInputs,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = { Stage::Premult, Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .layers = LayerPolicy::color(true, true, true, true),
+        .op = OpKind::Point,
+    };
+
+    Params bake(const KnobReader& reader) const;
+
+    bool isIdentity(const Params& params) const;
+
+    void row(const Params& params,
+             const RowIO& io) const;
+
+    GpuOpRef gpu(const Params& params) const;
+
+    KnobParametricWPtr lookupTable;
+    KnobChoiceWPtr masterCurveMode;
+    KnobChoiceWPtr luminanceMath;
+    KnobBoolWPtr clampBlack;
+    KnobBoolWPtr clampWhite;
+
+private:
+    std::shared_ptr<const Tables> bakeTables(MasterCurveModeEnum mode,
+                                             bool black,
+                                             bool white) const;
+
+    // One cache per kind of master curve mode (standard or not) and pair of clamps, which the
+    // tables are sampled through.
+    CurveTablesCache<Tables> _tables[8];
+};
+
+static_assert(PointOp<ColorLookupOp>);
+
+class ColorLookup
+    : public ImageNode<ColorLookupOp> {
+public:
+    using CurveEnum = ColorLookupOp::CurveEnum;
+    using MasterCurveModeEnum = ColorLookupOp::MasterCurveModeEnum;
+    using enum ColorLookupOp::CurveEnum;
+    using enum ColorLookupOp::MasterCurveModeEnum;
+
     enum DisplayEnum {
         eDisplayNone = 0,
         eDisplayColorRamp,
@@ -103,11 +181,6 @@ public:
 
     virtual ~ColorLookup();
 
-    virtual bool isPointOp() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return true;
-    }
-
     /**
      * @brief Counts the red, green and blue values of the source at `time` into 256 bins per
      * channel across [0, 1], the first and last bins taking everything below and above it, and
@@ -121,8 +194,17 @@ public:
      **/
     std::vector<unsigned long long> getHistogramCounts() const WARN_UNUSED_RETURN;
 
-protected:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    /**
+     * @brief The Params the op renders with at (time, view).
+     **/
+    ColorLookupOp::Params bakeColorLookup(double time,
+                                          ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The op's CPU kernel over one row.
+     **/
+    void colorLookupRow(const ColorLookupOp::Params& params,
+                        const RowIO& io) const;
 
 private:
     struct BackgroundState;
@@ -137,13 +219,6 @@ private:
                              double time,
                              bool originatedFromMainThread) OVERRIDE FINAL;
 
-    virtual PixelKernelPtr makeKernel(const KernelContext& context) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual int gpuKernelId(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual bool makeGpuKernel(const KernelContext& context,
-                               PixelKernelGpu* gpuKernel) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
     /**
      * @brief Shows or hides backgroundDisplay and updateHistogram from hasBackgroundInteract, and
      * enables updateHistogram only while the display is the histogram.
@@ -157,7 +232,6 @@ private:
     void addControlPointFromButton(KnobI* button, double time, ViewIdx view);
 
     KnobBoolWPtr _hasBackgroundInteract;
-    KnobParametricWPtr _lookupTable;
     KnobChoiceWPtr _display;
     KnobButtonWPtr _updateHistogram;
     KnobColorWPtr _source;
@@ -166,10 +240,6 @@ private:
     KnobButtonWPtr _setRGB;
     KnobButtonWPtr _setRGBA;
     KnobButtonWPtr _setA;
-    KnobChoiceWPtr _masterCurveMode;
-    KnobChoiceWPtr _luminanceMath;
-    KnobBoolWPtr _clampBlack;
-    KnobBoolWPtr _clampWhite;
     std::shared_ptr<BackgroundState> _background;
 };
 

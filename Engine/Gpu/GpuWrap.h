@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <span>
 
 namespace gpu {
 
@@ -70,7 +71,7 @@ struct GpuWrapView {
     uint32_t nComps = 0;
 };
 
-// What NativeImageEffect::render() does around a point op, over `output`. The source reads zero
+// What the CPU point-op wrapping does around a point op, over `output`. The source reads zero
 // outside its bounds, which may be empty; it has the destination's nComps.
 struct GpuWrap {
     GpuWrapView src;
@@ -94,15 +95,53 @@ struct GpuWrap {
     int32_t skipChannel = -1;
 };
 
+// One step of a Composite op's fold over `output`: `result`, the result so far, combined with
+// `input` into `dst`. Both read zero outside their bounds, which may be empty. `result` has nComps
+// channels; `input` has 1 to 4 and is read in the output's channels by channel bit. The step's
+// GpuWrapParams describe `result` as the source and `input` in the mask fields, maskComps being its
+// channel count, with no mask flag.
+struct GpuWrapStep {
+    GpuWrapView result;
+    GpuWrapView input;
+    // Must contain output.
+    GpuWrapView dst;
+    GpuWrapRect output;
+    // 1 to 4.
+    uint32_t nComps = 0;
+    uint32_t channelMask = 0xF;
+};
+
+// Bindings of every kernel built on compositestep.slang: those of pixelwrap.slang, with the mask
+// binding unused, then the step's input.
+inline constexpr uint32_t kGpuWrapStepBindings = kGpuWrapBindings + 1;
+
 // Validates the geometry of `wrap` and packs it for a dispatch over its output; buffers are only
 // checked when recording. `filtered`, wrap_finish's input, must contain the output and have
 // wrap.nComps channels.
 GpuStatus wrapParams(const GpuWrap& wrap, GpuWrapParams& out, const GpuWrapView* filtered = nullptr);
 
+// Validates the geometry of `step` and packs it for a dispatch over its output, as GpuWrapStep
+// describes.
+GpuStatus wrapStepParams(const GpuWrapStep& step, GpuWrapParams& out);
+
 // Records `kernel`, a point op entry built with runWrapped, reading its parameters from `opParams`.
 // Without opParams the binding gets a scratch buffer.
 GpuStatus recordWrapped(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap,
                         const GpuBuffer* opParams = nullptr);
+
+// Records one dispatch of `kernel`, a Composite step entry built with runCompositeStep, reading its
+// parameters from `opParams`.
+GpuStatus recordWrapStep(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrapStep& step,
+                         const GpuBuffer* opParams = nullptr);
+
+// Records a Composite op's fold and its finish into wrap.dst over wrap.output: the result starts as
+// `base` and `kernel` folds each of `inputs` into it in order, one dispatch per input, alternating
+// between two scratch buffers of the output's size; wrap_finish then blends the result with
+// wrap.src, the blend input, by mask x mix and passes unprocessed channels through from it. With no
+// input the result is `base`. `base` has wrap.nComps channels and every view reads zero outside its
+// bounds. No input is divided, so wrap.divisorChannel must be -1.
+GpuStatus recordWrapFold(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, const GpuWrapView& base,
+                         std::span<const GpuWrapView> inputs, const GpuBuffer* opParams = nullptr);
 
 // Writes the source over wrap.output into wrap.dst, divided by the divisor where it is usable, as
 // a spatial filter's input. Channel mask, mask and mix are ignored.

@@ -32,9 +32,10 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RectD.h"
+#include "Engine/ViewIdx.h"
 
 #define PLUGINID_NATRON_CROP "net.sf.openfx.CropPlugin"
 #define PLUGIN_MAJOR_NATRON_CROP 2
@@ -45,6 +46,75 @@
 #define kCropParamBlackOutside "blackOutside"
 
 NATRON_NAMESPACE_ENTER
+
+class Crop;
+
+inline constexpr InputSpec kCropInputs[] = {
+    InputSpec { .label = "Source" },
+};
+
+/**
+ * @brief The Resample op of Crop, in the offset form. The offset and the matte depend on the crop
+ * rectangle, which the node computes from its extent knobs and its source, so both ask the node,
+ * which the node points crop at.
+ **/
+struct CropOp {
+    struct Params {
+        double time = 0.;
+        ViewIdx view;
+        bool reformat = false;
+        bool blackOutside = false;
+        double softness = 0.;
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_CROP,
+        .label = "Crop",
+        .description = "Removes everything outside the defined rectangle and optionally adds black edges so everything outside is black.\n"
+                       "If 'Reformat' is checked, the crop rectangle, moved to (0,0), becomes the output format; with the 'Format' extent the output pixel aspect ratio is also set to this of the format.\n"
+                       "This plugin does not concatenate transforms.",
+        .grouping = PLUGIN_GROUP_TRANSFORM,
+        .majorVersion = PLUGIN_MAJOR_NATRON_CROP,
+        .minorVersion = 0,
+        .inputs = kCropInputs,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = {},
+        .layers = LayerPolicy::all(),
+        .op = OpKind::Resample,
+    };
+
+    static constexpr bool kClipsSourceToRoI = true;
+
+    Params bake(const KnobReader& reader) const;
+
+    /**
+     * @brief Always false: even an unshifted crop changes the region of definition.
+     **/
+    bool isIdentity(const Params& params,
+                    const PassContext& context) const;
+
+    /**
+     * @brief With reformat, the translation that brings the crop rectangle, rounded to the
+     * nearest pixels at the context's scale, to the origin; zero otherwise.
+     **/
+    PixelOffset offset(const Params& params,
+                       const PassContext& context) const;
+
+    /**
+     * @brief The black border and the softness fade, or an empty matte when neither applies.
+     **/
+    ResampleRowMatte rowMatte(const Params& params,
+                              const PassContext& context) const;
+
+    const Crop* crop = nullptr;
+    KnobDoubleWPtr softness;
+    KnobBoolWPtr reformat;
+    KnobBoolWPtr blackOutside;
+};
+
+static_assert(ResampleOp<CropOp> && !MatrixResampleOp<CropOp>);
 
 /**
  * @brief Crop: keeps the pixels inside a rectangle, optionally fading them to black at its edges
@@ -58,10 +128,11 @@ NATRON_NAMESPACE_ENTER
  * plug-in's ID one major above.
  *
  * Every channel of every requested plane is cropped; the unprocessed-channel copy stays with
- * the host.
+ * the host. The regions of definition and of interest are the node's own, not the offset form's:
+ * they follow the crop rectangle, which the source's region only bounds.
  **/
 class Crop
-    : public NativeImageEffect {
+    : public ImageNode<CropOp> {
 public:
     typedef ExtentKnobs::ExtentEnum ExtentEnum;
     static constexpr ExtentEnum eExtentFormat = ExtentKnobs::eExtentFormat;
@@ -79,11 +150,6 @@ public:
     virtual ~Crop();
 
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
-
-    virtual bool rendersUnprocessedChannels() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return false;
-    }
 
     virtual StatusEnum getRegionOfDefinition(U64 hash,
                                              double time,
@@ -113,8 +179,6 @@ public:
                           double* par) const;
 
 protected:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
     virtual void getRegionsOfInterest(double time,
                                       const RenderScale& scale,
                                       const RectD& outputRoD,
@@ -132,8 +196,6 @@ protected:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
-    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
 private:
     virtual void initializeKnobs() OVERRIDE FINAL;
 
@@ -143,10 +205,7 @@ private:
     void updateRectangleEnable();
 
     ExtentKnobs _extentKnobs;
-    KnobDoubleWPtr _softness;
-    KnobBoolWPtr _reformat;
     KnobBoolWPtr _intersect;
-    KnobBoolWPtr _blackOutside;
 };
 
 NATRON_NAMESPACE_EXIT

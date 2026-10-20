@@ -1,6 +1,6 @@
 import gradeops;
 
-// The per-pixel wrapping of NativeImageEffect::render(): divide by the "(Un)premult by" channel,
+// The per-pixel wrapping of a CPU point op: divide by the "(Un)premult by" channel,
 // the op, multiply back, blend with the undivided source by mask x mix, and pass unprocessed
 // channels through from the undivided source. GpuWrapParams in Engine/Gpu/GpuWrap.h mirrors
 // WrapParams.

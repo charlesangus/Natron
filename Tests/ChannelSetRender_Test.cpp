@@ -590,9 +590,10 @@ TEST_F(ChannelSetRenderUnPremultByTest, DivisorMayBeAChannelOfAnotherLayer)
 }
 
 // A one-channel plane's process bit is bit 3 while its pixel holds the channel at index 0; the
-// multiply back must find the same channel the divide did. Constant writes depth.Z = 1 over the
+// multiply back must find the same channel the divide did. Ramp writes depth.Z = 1 over the
 // halved specular, then Grade processes depth alone, unpremultiplied by specular.B = 0.5:
 //   depth.Z = 0.5 * clamp(2 * (1 / 0.5)) = 0.5, against clamp(2 * 1) = 1 left divided.
+// Ramp rather than Constant because the native Constant has no source to pass specular through.
 TEST_F(ChannelSetRenderUnPremultByTest, OneChannelPlaneIsMultipliedBackByAnotherLayersChannel)
 {
     KnobChannelSetPtr specularChannels;
@@ -604,19 +605,22 @@ TEST_F(ChannelSetRenderUnPremultByTest, OneChannelPlaneIsMultipliedBackByAnother
     ASSERT_TRUE(halveMultiply != NULL);
     halveMultiply->setValues(0.5, 0.5, 0.5, 0.5, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
 
-    NodePtr constant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
-    ASSERT_TRUE(bool(constant));
-    connectNodes(halveSpecular, constant, 0, true);
-    KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName("color").get());
-    ASSERT_TRUE(color != NULL);
-    color->setValues(1., 1., 1., 1., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
-    KnobLayerSelectPtr constantLayer = std::dynamic_pointer_cast<KnobLayerSelect>(constant->getLayerKnob());
-    ASSERT_TRUE(bool(constantLayer));
-    constantLayer->setLayer("depth");
+    NodePtr ramp = createNode(QString::fromUtf8("net.sf.openfx.Ramp"));
+    ASSERT_TRUE(bool(ramp));
+    connectNodes(halveSpecular, ramp, 0, true);
+    // Equal end colours make the ramp flat, whatever its geometry.
+    for (const char* name : { "color0", "color1" }) {
+        KnobColor* color = dynamic_cast<KnobColor*>(ramp->getKnobByName(name).get());
+        ASSERT_TRUE(color != NULL) << name;
+        color->setValues(1., 1., 1., 1., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    }
+    KnobLayerSelectPtr rampLayer = std::dynamic_pointer_cast<KnobLayerSelect>(ramp->getLayerKnob());
+    ASSERT_TRUE(bool(rampLayer));
+    rampLayer->setLayer("depth");
 
     NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
     ASSERT_TRUE(bool(grade));
-    connectNodes(constant, grade, 0, true);
+    connectNodes(ramp, grade, 0, true);
     KnobChannelSetPtr gradeChannels = std::dynamic_pointer_cast<KnobChannelSet>(grade->getKnobByName(kNodeParamChannelSet));
     ASSERT_TRUE(bool(gradeChannels));
     gradeChannels->setLayer(0, "depth", NULL);

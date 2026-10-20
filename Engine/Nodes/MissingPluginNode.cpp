@@ -25,14 +25,31 @@
 
 #include "MissingPluginNode.h"
 
+#include <QDateTime>
 #include <QMutexLocker>
 
+#include "Engine/AppManager.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 
 #include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_ENTER
+
+MissingPluginNode::MissingPluginNode(NodePtr node)
+    : NativeEffectBase(node)
+    , _info()
+    , _storedMutex()
+    , _stored()
+    , _inputLabels()
+    , _description(tr("Placeholder for a node whose plug-in is not installed. "
+                      "It keeps the node's settings and connections so that saving the project does not lose them.")
+                       .toStdString())
+    , _inputSpecs()
+    , _spec()
+{
+    rebuildSpec();
+}
 
 Serialization::NodeSerializationPtr
 MissingPluginNode::getStoredSerialization() const
@@ -105,28 +122,33 @@ MissingPluginNode::initializeKnobs()
     _info = info;
 }
 
-NativePluginDescription
-MissingPluginNode::getNativePluginDescription() const
+void
+MissingPluginNode::rebuildSpec()
 {
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_MISSING_PLUGIN;
-    desc.label = "MissingPlugin";
-    desc.description = tr("Placeholder for a node whose plug-in is not installed. "
-                          "It keeps the node's settings and connections so that saving the project does not lose them.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_OTHER;
-    desc.majorVersion = 1;
-    desc.minorVersion = 0;
-    desc.outputKind = eDataKindPolymorphic;
-    {
-        QMutexLocker k(&_storedMutex);
-        for (const std::string& label : _inputLabels) {
-            desc.inputs.push_back(NativeInputDescription(label, true, eDataKindPolymorphic));
-        }
+    _inputSpecs.clear();
+    _inputSpecs.reserve(_inputLabels.size());
+    for (const std::string& label : _inputLabels) {
+        _inputSpecs.push_back(InputSpec { .label = label, .kind = eDataKindPolymorphic, .optional = true });
     }
 
-    return desc;
+    _spec = NodeSpec {
+        .id = PLUGINID_NATRON_MISSING_PLUGIN,
+        .label = "MissingPlugin",
+        .description = _description,
+        .grouping = PLUGIN_GROUP_OTHER,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .outputKind = eDataKindPolymorphic,
+        .inputs = _inputSpecs,
+    };
+
+    if (!isValidNodeSpec(_spec)) {
+        appPTR->writeToErrorLog_mt_safe(QString::fromUtf8("MissingPluginNode"),
+                                        QDateTime::currentDateTime(),
+                                        tr("The inputs of the missing plug-in do not form a valid node description and are dropped."));
+        _inputSpecs.clear();
+        _spec.inputs = _inputSpecs;
+    }
 }
 
 void
@@ -148,6 +170,7 @@ MissingPluginNode::onKnobsAboutToBeLoaded(const Serialization::NodeSerialization
                 _inputLabels.push_back(std::to_string(i));
             }
         }
+        rebuildSpec();
     }
     getNode()->initializeInputs();
 }

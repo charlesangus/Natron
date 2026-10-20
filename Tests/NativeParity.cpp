@@ -389,6 +389,24 @@ paritySourceExtraValue(int channel,
     return static_cast<float>(0.5 + 0.75 * std::sin(3. * u + 5. * v + 1.7 * channel) + 0.01 * time);
 }
 
+float
+paritySourceNoise(int channel,
+                  int cx,
+                  int cy)
+{
+    const std::uint32_t kSeed = 0x9e3779b9u;
+    std::uint32_t h = (static_cast<std::uint32_t>(cx) * 0x8da6b343u) ^ (static_cast<std::uint32_t>(cy) * 0xd8163841u) ^ (static_cast<std::uint32_t>(channel) * 0xcb1ab31fu) ^ kSeed;
+
+    h ^= h >> 16;
+    h *= 0x7feb352du;
+    h ^= h >> 15;
+    h *= 0x846ca68bu;
+    h ^= h >> 16;
+
+    // 24 bits scaled by 2^-24 and offset by 0.5 are exact in float, so the noise is the same on every platform.
+    return static_cast<float>(h >> 8) * (1.f / 16777216.f) - 0.5f;
+}
+
 ImageLayerDesc
 paritySourceExtraLayer()
 {
@@ -406,6 +424,7 @@ ParitySourceTestEffect::ParitySourceTestEffect(NodePtr n)
     , _components()
     , _extraLayer()
     , _origin()
+    , _noise()
 {
     setSupportsRenderScaleMaybe(eSupportsYes);
 }
@@ -414,19 +433,6 @@ void
 ParitySourceTestEffect::addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const
 {
     depths->push_back(eImageBitDepthFloat);
-}
-
-NativePluginDescription
-ParitySourceTestEffect::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = kTestPluginIDParitySource;
-    desc.label = "Test Parity Source";
-    desc.description = "";
-    desc.outputKind = eDataKindImage;
-
-    return desc;
 }
 
 void
@@ -464,6 +470,13 @@ ParitySourceTestEffect::initializeKnobs()
     origin->setDefaultValue(0, 1);
     page->addKnob(origin);
     _origin = origin;
+
+    KnobBoolPtr noise = createKnob<KnobBool>(std::string("Noise"));
+    noise->setName(kParitySourceParamNoise);
+    noise->setAnimationEnabled(false);
+    noise->setDefaultValue(false);
+    page->addKnob(noise);
+    _noise = noise;
 }
 
 int
@@ -488,6 +501,14 @@ ParitySourceTestEffect::hasExtraLayer() const
     KnobBoolPtr extraLayer = _extraLayer.lock();
 
     return extraLayer ? extraLayer->getValue() : false;
+}
+
+bool
+ParitySourceTestEffect::hasNoise() const
+{
+    KnobBoolPtr noise = _noise.lock();
+
+    return noise ? noise->getValue() : false;
 }
 
 void
@@ -551,6 +572,7 @@ ParitySourceTestEffect::render(const RenderActionArgs& args)
 {
     const unsigned mipmapLevel = args.mappedScale.toMipmapLevel();
     const int step = 1 << mipmapLevel;
+    const bool noise = hasNoise();
     int ox, oy;
     getOrigin(&ox, &oy);
 
@@ -584,7 +606,17 @@ ParitySourceTestEffect::render(const RenderActionArgs& args)
                     return eStatusFailed;
                 }
                 for (int c = 0; c < nComps; ++c) {
-                    pixel[c] = isColor ? paritySourceColorValue(colorChannel[c], cx, cy, args.time) : paritySourceExtraValue(c, cx, cy, args.time);
+                    const int channel = isColor ? colorChannel[c] : c;
+                    float v = isColor ? paritySourceColorValue(channel, cx, cy, args.time) : paritySourceExtraValue(channel, cx, cy, args.time);
+                    if (noise) {
+                        const float n = 0.1f * paritySourceNoise(isColor ? channel : 4 + channel, cx, cy);
+                        if (!isColor || (channel < 3)) {
+                            v += n;
+                        } else if ((v != 0.f) && (v != 1.f)) {
+                            v = std::min(1.f, std::max(0.f, v + n));
+                        }
+                    }
+                    pixel[c] = v;
                 }
             }
         }
@@ -816,6 +848,13 @@ setParitySourceExtraLayer(const NodePtr& source,
                           bool extraLayer)
 {
     setKnobValues(source, kParitySourceParamExtraLayer, std::vector<double>(1, extraLayer ? 1. : 0.));
+}
+
+void
+setParitySourceNoise(const NodePtr& source,
+                     bool noise)
+{
+    setKnobValues(source, kParitySourceParamNoise, std::vector<double>(1, noise ? 1. : 0.));
 }
 
 void

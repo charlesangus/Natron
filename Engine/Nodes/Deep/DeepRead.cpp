@@ -56,23 +56,10 @@ isZBackChannelName(const std::string& name)
 }
 } // anonymous namespace
 
-NativePluginDescription
-DeepRead::getNativePluginDescription() const
+const NodeSpec*
+DeepRead::nodeSpec() const
 {
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_DEEPREAD;
-    desc.label = "DeepRead";
-    desc.description = tr("Read a deep EXR file, scanline or tiled, as deep data: every pixel's "
-                          "sample list and every channel the file carries, including deep AOVs, "
-                          "in the order the file stores them.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_DEEP;
-    desc.majorVersion = 1;
-    desc.minorVersion = 0;
-    desc.outputKind = eDataKindDeep;
-
-    return desc;
+    return staticNodeSpec<kNodeSpec>();
 }
 
 void

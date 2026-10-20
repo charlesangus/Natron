@@ -50,7 +50,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Image/GpuRender.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/ViewIdx.h"
 
@@ -106,10 +106,10 @@ const InputSet kInputSets[] = {
 };
 
 #ifdef NATRON_HAVE_GPU
-NativeImageEffect*
+StagedImageEffect*
 effectOf(const NodePtr& node)
 {
-    return node ? dynamic_cast<NativeImageEffect*>(node->getEffectInstance().get()) : NULL;
+    return node ? dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get()) : NULL;
 }
 
 bool
@@ -182,7 +182,7 @@ imageOf(const RenderedPlane& plane)
 
 // The query the placement builds for a task rendering the RGBA plane of the Keyer.
 GpuQuery
-queryFor(NativeImageEffect* effect)
+queryFor(StagedImageEffect* effect)
 {
     const ImageLayerDesc plane = ImageLayerDesc::mapNCompsToColorLayer(4);
     GpuQuery q;
@@ -212,7 +212,7 @@ expectGpuMatchesCpu(GpuParityRuntime& runtime,
                     const std::string& name,
                     double* worst)
 {
-    NativeImageEffect* effect = effectOf(keyer);
+    StagedImageEffect* effect = effectOf(keyer);
     ASSERT_TRUE(effect != NULL);
     const GpuQuery query = queryFor(effect);
     ASSERT_TRUE(effect->canRenderOnGpu(query)) << name;

@@ -232,6 +232,71 @@ concept RouteOp = BakesParams<OP> && std::copyable<typename OP::Params> && requi
 };
 
 /**
+ * @brief Whether an op of any kind has route(params, context), which the host then asks before
+ * anything else: an answer other than None makes the node an identity of that input.
+ **/
+template <typename OP>
+concept RoutesOp = requires(const OP& op, const typename OP::Params& params, const RouteContext& context) {
+    { op.route(params, context) } -> std::same_as<Route>;
+};
+
+/**
+ * @brief One input a Composite op reads in an evaluation, at the time it reads it.
+ **/
+struct CompositeSource {
+    int inputNb = -1;
+    double time = 0.;
+};
+
+/**
+ * @brief The inputs a Composite op reads in one evaluation, in the order RowIO::src holds their
+ * rows, and the input the stages blend against.
+ *
+ * At most kPixelKernelMaxInputs inputs; add() refuses more. blendInput is the input the MaskMix
+ * and PassThroughUnprocessed stages blend with and copy from, read at the evaluation's time, and
+ * the input every composed identity answers; -1 stands for the node's first Source input. It need
+ * not be one of the listed inputs.
+ **/
+struct CompositeSources {
+    CompositeSource list[kPixelKernelMaxInputs];
+    int count = 0;
+    int blendInput = -1;
+
+    constexpr bool add(int inputNb,
+                       double time)
+    {
+        if (count >= kPixelKernelMaxInputs) {
+            return false;
+        }
+        list[count].inputNb = inputNb;
+        list[count].time = time;
+        ++count;
+
+        return true;
+    }
+};
+
+/**
+ * @brief A Composite op: a node whose output pixel depends only on the same pixel of up to
+ * kPixelKernelMaxInputs inputs.
+ *
+ * bake() and Params are as for a Point op. isIdentity() says whether those Params leave the blend
+ * input unchanged. sources() chooses from the Params and the context the inputs this evaluation
+ * reads. row() is pure on its RowIO, as a Point op's is, and reads io.src[i] for the i-th of those
+ * inputs, io.nSrc of them: a row of io.nComps floats per pixel, read in the layer the input's
+ * InputSpec::layer names; for an input of role Mask, one float per pixel, the channel its mask
+ * selector names, zero when that mask is disconnected or disabled. Wherever an input has no
+ * pixel, its row reads zero. No row is divided: a Composite op has no Premult stage, since no one
+ * input's divisor applies to the others.
+ **/
+template <typename OP>
+concept CompositeOp = BakesParams<OP> && std::copyable<typename OP::Params> && requires(const OP& op, const typename OP::Params& params, const RouteContext& context, const RowIO& io) {
+    { op.isIdentity(params) } -> std::convertible_to<bool>;
+    { op.sources(params, context) } -> std::same_as<CompositeSources>;
+    { op.row(params, io) } -> std::same_as<void>;
+};
+
+/**
  * @brief A Resample op: a node whose output is its source resampled through a 3x3 matrix, or
  * shifted by a whole number of pixels.
  *
@@ -289,11 +354,11 @@ template <typename OP>
 concept GpuResampleOp = MatrixResampleOp<OP> && requires { requires OP::kResamplesOnGpu; };
 
 /**
- * @brief Whether OP satisfies the concept of op kind KIND. Only Point, Passes, Route and Resample
- * ops are run by the host so far; every other kind is refused here.
+ * @brief Whether OP satisfies the concept of op kind KIND. Only Point, Composite, Passes, Route
+ * and Resample ops are run by the host so far; every other kind is refused here.
  **/
 template <typename OP, OpKind KIND>
-concept OpOfKind = ((KIND == OpKind::Point) && PointOp<OP>) || ((KIND == OpKind::Passes) && PassesOp<OP>) || ((KIND == OpKind::Route) && RouteOp<OP>) || ((KIND == OpKind::Resample) && ResampleOp<OP>);
+concept OpOfKind = ((KIND == OpKind::Point) && PointOp<OP>) || ((KIND == OpKind::Composite) && CompositeOp<OP>) || ((KIND == OpKind::Passes) && PassesOp<OP>) || ((KIND == OpKind::Route) && RouteOp<OP>) || ((KIND == OpKind::Resample) && ResampleOp<OP>);
 
 NATRON_NAMESPACE_EXIT
 

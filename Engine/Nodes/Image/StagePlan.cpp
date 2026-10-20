@@ -41,6 +41,8 @@
 #include "Engine/GpuContext.h"
 #include "Engine/Image.h"
 #include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobChannelSet.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
@@ -102,6 +104,64 @@ resolvePlanMask(EffectInstance& effect,
         plan->maskLayer = maskLayer;
         plan->maskChannel = maskChannel;
     }
+}
+
+// One input image a Composite op reads, locked on the calling thread like PassExec::PlaneJob.
+struct SourceImage {
+    ImagePtr image;
+    int nComps = 0;
+    RectI bounds;
+    std::shared_ptr<Image::ReadAccess> access;
+
+    void lock()
+    {
+        if (image) {
+            bounds = image->getBounds();
+            nComps = (int)image->getComponentsCount();
+            access = std::make_shared<Image::ReadAccess>(image.get());
+        }
+    }
+};
+
+ImagePtr
+fetchStageSource(EffectInstance& effect,
+                 const StageSource& source,
+                 const EffectInstance::RenderActionArgs& args)
+{
+    if (!effect.getInput(source.inputNb)) {
+        return ImagePtr();
+    }
+    RectI roi;
+    if (source.mask) {
+        if (!source.maskApplied || (source.maskChannel < 0)) {
+            return ImagePtr();
+        }
+        ImagePtr image = effect.getImage(source.inputNb, source.time, args.mappedScale, args.view, NULL, &source.maskLayer, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &roi);
+        if (image && (source.maskChannel >= (int)image->getComponentsCount())) {
+            image.reset();
+        }
+
+        return image;
+    }
+
+    ImageLayerDesc layer;
+    bool mapToClipPrefs = true;
+    if (!source.layerKnob.empty()) {
+        KnobLayerSelectPtr knob = effect.getKnobByNameAndType<KnobLayerSelect>(std::string(source.layerKnob));
+        std::list<ImageLayerDesc> present;
+        effect.getAvailableLayers(source.time, args.view, source.layerInput, &present);
+        ResolvedLayer resolved;
+        if (!knob || !knob->resolve(present, &resolved) || (resolved.desc.getNumComponents() == 0)) {
+            return ImagePtr();
+        }
+        layer = resolved.desc;
+        // A selected layer is read as it is stored, not in the clip's colour layout.
+        mapToClipPrefs = false;
+    } else if (!effect.resolveInputPlaneForRender(source.layerInput, source.time, args.view, &layer, NULL)) {
+        return ImagePtr();
+    }
+
+    return effect.getImage(source.inputNb, source.time, args.mappedScale, args.view, NULL, &layer, mapToClipPrefs, false /*dontUpscale*/, eStorageModeRAM, NULL, &roi);
 }
 
 // GpuRecordContext::updateBuffer() writes at most this much.
@@ -424,6 +484,55 @@ resolveStagePlan(EffectInstance& effect,
 } // resolveStagePlan
 
 void
+resolveStageSources(EffectInstance& effect,
+                    const NodeSpec* spec,
+                    const CompositeSources& sources,
+                    StagePlan* plan)
+{
+    plan->nSources = 0;
+    const int count = std::min(sources.count, (int)kPixelKernelMaxInputs);
+    const int nSpecInputs = spec ? spec->inputCount() : 0;
+    for (int i = 0; i < count; ++i) {
+        StageSource& source = plan->sources[i];
+        source = StageSource();
+        source.inputNb = sources.list[i].inputNb;
+        source.time = sources.list[i].time;
+        source.layerInput = source.inputNb;
+
+        const NodeSpec::ResolvedInput resolved = spec ? spec->resolveInput(source.inputNb) : NodeSpec::ResolvedInput { nullptr, 0 };
+        if (resolved.spec && (resolved.spec->role == InputRole::Mask)) {
+            source.mask = true;
+            source.maskApplied = effect.getInput(source.inputNb) && effect.isMaskEnabled(source.inputNb);
+            ImageLayerDesc maskLayer;
+            int maskChannel = -1;
+            if (source.maskApplied && effect.resolveInputPlaneForRender(source.inputNb, source.time, plan->view, &maskLayer, &maskChannel) && (maskChannel >= 0)) {
+                source.maskLayer = maskLayer;
+                source.maskChannel = maskChannel;
+            }
+            continue;
+        }
+
+        // Every step of a pairing names a distinct input, so a chain longer than the inputs loops.
+        const InputSpec* layerSpec = resolved.spec;
+        int layerInput = source.inputNb;
+        for (int step = 0; layerSpec && (layerSpec->layer.kind == InputLayer::Kind::PairWith); ++step) {
+            if (step >= nSpecInputs) {
+                layerSpec = nullptr;
+                layerInput = source.inputNb;
+                break;
+            }
+            layerInput = layerSpec->layer.pairedInput;
+            layerSpec = spec->resolveInput(layerInput).spec;
+        }
+        source.layerInput = layerInput;
+        if (layerSpec && (layerSpec->layer.kind == InputLayer::Kind::Select)) {
+            source.layerKnob = layerSpec->layer.knob;
+        }
+    }
+    plan->nSources = count;
+} // resolveStageSources
+
+void
 makeStageRowBands(const RectI& roi,
                   int nThreads,
                   std::vector<RectI>* bands)
@@ -504,6 +613,26 @@ runStagesCpu(EffectInstance& effect,
         return eStatusFailed;
     }
 
+    // A Composite op's inputs, per output plane; a Mask-role input is the same for every plane.
+    const int nSources = plan.nSources;
+    std::vector<std::vector<SourceImage>> jobSources(nSources > 0 ? jobs.size() : 0, std::vector<SourceImage>(nSources));
+    for (int s = 0; s < nSources; ++s) {
+        const StageSource& source = plan.sources[s];
+        ImagePtr maskImage = source.mask ? fetchStageSource(effect, source, args) : ImagePtr();
+        if (!PassExec::isFloatImage(maskImage)) {
+            return eStatusFailed;
+        }
+        for (std::size_t j = 0; j < jobSources.size(); ++j) {
+            if (!jobs[j].dst) {
+                continue;
+            }
+            jobSources[j][s].image = source.mask ? maskImage : fetchStageSource(effect, source, args);
+            if (!PassExec::isFloatImage(jobSources[j][s].image)) {
+                return eStatusFailed;
+            }
+        }
+    }
+
     const RectI& roi = args.roi;
     const int width = roi.width();
     if ((width <= 0) || (roi.height() <= 0)) {
@@ -524,6 +653,11 @@ runStagesCpu(EffectInstance& effect,
             continue;
         }
         jobs[j].lock();
+        if (nSources > 0) {
+            for (SourceImage& source : jobSources[j]) {
+                source.lock();
+            }
+        }
         for (std::size_t b = 0; b < bandRects.size(); ++b) {
             bands.push_back(RowBand(j, bandRects[b].y1, bandRects[b].y2));
         }
@@ -541,10 +675,18 @@ runStagesCpu(EffectInstance& effect,
         std::vector<float> kernelRow(rowSize);
         std::vector<float> maskRow(doMask ? width : 0);
         std::vector<float> divisorRow(job.divisor ? width : 0);
+        std::vector<float> sourceRows[kPixelKernelMaxInputs];
 
         RowIO io;
         io.src[0] = &dividedRow[0];
         io.nSrc = 1;
+        if (nSources > 0) {
+            for (int s = 0; s < nSources; ++s) {
+                sourceRows[s].resize(plan.sources[s].mask ? (std::size_t)width : rowSize);
+                io.src[s] = &sourceRows[s][0];
+            }
+            io.nSrc = nSources;
+        }
         io.mask = doMask ? &maskRow[0] : 0;
         io.divisor = job.divisor ? &divisorRow[0] : 0;
         io.divisorSkipChannel = job.divisor ? job.skipChannel : -1;
@@ -578,6 +720,14 @@ runStagesCpu(EffectInstance& effect,
             }
             if (doMask) {
                 PassExec::readChannelRow(mask.get(), maskSource.access.get(), maskSource.bounds, maskSource.nComps, maskChannel, roi.x1, y, width, 0.f, &maskRow[0]);
+            }
+            for (int s = 0; s < nSources; ++s) {
+                const SourceImage& source = jobSources[band.job][s];
+                if (plan.sources[s].mask) {
+                    PassExec::readChannelRow(source.image.get(), source.access.get(), source.bounds, source.nComps, plan.sources[s].maskChannel, roi.x1, y, width, 0.f, &sourceRows[s][0]);
+                } else {
+                    PassExec::readSourceRow(source.image.get(), source.access.get(), source.bounds, source.nComps, roi.x1, y, width, nComps, &sourceRows[s][0]);
+                }
             }
 
             io.y = y;

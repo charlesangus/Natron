@@ -59,8 +59,11 @@ NATRON_NAMESPACE_ENTER
  *
  * Identity is composed: a route() other than None, then, with the MaskMix stage, a mix of 0,
  * then the op's own identity, then, with the MaskMix stage, a non-inverted mask whose region
- * misses the window. Every stage identity is one of the node's first Source input at the same
+ * misses the window. Every stage identity is one of the blend input (getBlendInput()) at the same
  * time.
+ *
+ * A Composite op reads the inputs its sources() lists for each evaluation, and names the input
+ * the stages blend against, the node's first Source input unless it says otherwise.
  *
  * A Passes op also gives the node its regions: the source's region of interest is the window
  * grown by the halo of the op's passes, and the region of definition the source's grown by their
@@ -202,10 +205,17 @@ public:
                                     Transform::Matrix3x3* transform) OVERRIDE WARN_UNUSED_RETURN;
 
     /**
-     * @brief The input the op reads and the stages blend against: the first Source input of
-     * nodeSpec(), -1 when it has none, and input 0 for a node without a spec.
+     * @brief The input a Point, Passes or Resample op reads and the stages blend against: the
+     * first Source input of nodeSpec(), -1 when it has none, and input 0 for a node without a
+     * spec.
      **/
     int getSourceInput() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The input the stages blend against and every composed identity answers at time and
+     * view: the blend input a Composite op's sources() names, else getSourceInput().
+     **/
+    int getBlendInput(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     /**
      * @brief The input the MaskMix stage reads as its mask: the first input described as a mask,
@@ -280,7 +290,8 @@ protected:
                             int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
-     * @brief Resolves the StagePlan once and hands it to renderOp().
+     * @brief Resolves the StagePlan once, with a Composite op's sources, and hands it to
+     * renderOp().
      **/
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -329,6 +340,16 @@ protected:
                                        const RenderScale& /*scale*/) const WARN_UNUSED_RETURN
     {
         return ResampleRequest();
+    }
+
+    /**
+     * @brief The inputs a Composite op reads at time and view, and its blend input; the default
+     * lists none and leaves the blend input to getSourceInput().
+     **/
+    virtual CompositeSources opSources(double /*time*/,
+                                       ViewIdx /*view*/) const WARN_UNUSED_RETURN
+    {
+        return CompositeSources();
     }
 
     /**
@@ -394,6 +415,7 @@ template <typename OP, const NodeSpec& SPEC = OP::kNodeSpec, const ImagePipeline
 class ImageNode
     : public StagedImageEffect {
     static_assert((PIPELINE.op != OpKind::Resample) || !PIPELINE.stages.has(Stage::Premult), "a Resample op resamples the source as stored, so it has no Premult stage");
+    static_assert((PIPELINE.op != OpKind::Composite) || !PIPELINE.stages.has(Stage::Premult), "a Composite op reads several inputs, so no one divisor applies, and it has no Premult stage");
 
 public:
     static EffectInstance* BuildEffect(NodePtr node)
@@ -422,12 +444,13 @@ public:
     }
 
     /**
-     * @brief For a Route op, the op's route() at time and view; None for every other op kind.
+     * @brief The op's route() at time and view when it has one, whatever its kind; None
+     * otherwise.
      **/
     virtual Route route(double time,
                         ViewIdx view) OVERRIDE WARN_UNUSED_RETURN
     {
-        if constexpr (PIPELINE.op == OpKind::Route) {
+        if constexpr (RoutesOp<OP>) {
             return _op.route(bakeParams(_op, time, view), RouteContext(*this, time, view));
         } else {
             return StagedImageEffect::route(time, view);
@@ -519,6 +542,14 @@ private:
             return runPassesCpu(*this, plan, args, _op.passes(params, getPassContext(args.mappedScale)));
         } else if constexpr (PIPELINE.op == OpKind::Resample) {
             return runResampleCpu(*this, plan, args, opResample(args.time, args.view, args.mappedScale));
+        } else if constexpr (PIPELINE.op == OpKind::Composite) {
+            const typename OP::Params params = bakeParams(_op, args.time, args.view);
+            const OP& rowOp = _op;
+            const auto row = [&rowOp, &params](const RowIO& io) {
+                rowOp.row(params, io);
+            };
+
+            return runStagesCpu(*this, plan, args, StageRowFn(row));
         } else if constexpr (ScaledPointOp<OP>) {
             const typename OP::Params params = bakeParams(_op, args.time, args.view);
             const PassContext context = getPassContext(args.mappedScale);
@@ -603,6 +634,19 @@ private:
             }
 
             return request;
+        }
+    }
+
+    virtual CompositeSources opSources(double time,
+                                       ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        if constexpr (PIPELINE.op == OpKind::Composite) {
+            return _op.sources(bakeParams(_op, time, view), RouteContext(*this, time, view));
+        } else {
+            Q_UNUSED(time);
+            Q_UNUSED(view);
+
+            return CompositeSources();
         }
     }
 

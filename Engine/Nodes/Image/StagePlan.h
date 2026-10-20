@@ -32,6 +32,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "Engine/EffectInstance.h"
@@ -41,6 +42,7 @@
 #include "Engine/Nodes/Image/ImagePipelineSpec.h"
 #include "Engine/Nodes/Image/Op.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
+#include "Engine/Nodes/NodeSpec.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
@@ -57,13 +59,36 @@ struct StageKnobs {
 };
 
 /**
+ * @brief One input of a Composite op as a render reads it: inputNb at time.
+ *
+ * A Mask-role input (mask) reads the one channel maskChannel of maskLayer its mask selector
+ * names, and reads zero when maskApplied is false (disconnected or disabled) or maskChannel is -1.
+ * Any other input is read in the layer of layerInput, which is inputNb itself unless its
+ * InputLayer pairs it with another input: the plane being rendered as that input resolves it
+ * when layerKnob is empty, else the layer the KnobLayerSelect named layerKnob selects among the
+ * layers layerInput carries.
+ **/
+struct StageSource {
+    int inputNb = -1;
+    double time = 0.;
+    bool mask = false;
+    bool maskApplied = false;
+    ImageLayerDesc maskLayer;
+    int maskChannel = -1;
+    int layerInput = -1;
+    std::string_view layerKnob = {};
+};
+
+/**
  * @brief Everything the stages around an op decide for one render, resolved once on the
  * rendering thread before any pixel is touched.
  *
- * sourceInput is the input the op reads and the stages blend against, -1 for none. applyMask
- * is whether the mask input is connected and enabled; maskChannel is the channel of maskLayer
- * it reads, -1 when it resolves to none, in which case the mask reads zero everywhere.
- * divisorChannel is the channel of divisorLayer "(Un)premult by" divides by, -1 for none.
+ * sourceInput is the input the stages blend against and copy unprocessed channels from, and the
+ * one a Point, Passes or Resample op reads; -1 for none. applyMask is whether the mask input is
+ * connected and enabled; maskChannel is the channel of maskLayer it reads, -1 when it resolves to
+ * none, in which case the mask reads zero everywhere. divisorChannel is the channel of
+ * divisorLayer "(Un)premult by" divides by, -1 for none. sources holds the nSources inputs a
+ * Composite op reads, none for any other op.
  **/
 struct StagePlan {
     double time = 0.;
@@ -79,6 +104,8 @@ struct StagePlan {
     int maskChannel = -1;
     ImageLayerDesc divisorLayer;
     int divisorChannel = -1;
+    StageSource sources[kPixelKernelMaxInputs];
+    int nSources = 0;
 };
 
 /**
@@ -142,6 +169,17 @@ StagePlan resolveStagePlan(EffectInstance& effect,
                            const std::bitset<4>& processChannels) WARN_UNUSED_RETURN;
 
 /**
+ * @brief Fills plan's sources from a Composite op's sources, at most kPixelKernelMaxInputs:
+ * whether each is a Mask-role input of spec, its mask selector's layer and channel if so, and
+ * otherwise the input and knob its InputLayer resolves to. A pairing that never ends in a plane or
+ * a selection reads the input's own plane. With a null spec, every input reads its own plane.
+ **/
+void resolveStageSources(EffectInstance& effect,
+                         const NodeSpec* spec,
+                         const CompositeSources& sources,
+                         StagePlan* plan);
+
+/**
  * @brief Renders args through plan with row, the op's per-row function, on the CPU.
  *
  * Every image is fetched first, then locked on this thread for the whole render; the window
@@ -151,6 +189,9 @@ StagePlan resolveStagePlan(EffectInstance& effect,
  * row; the processed channels it wrote are multiplied back by the divisor and blended with the
  * undivided source by mask x mix, and with PassThroughUnprocessed the other channels are
  * copied from the source.
+ *
+ * With plan.nSources > 0, row gets those inputs' rows in io.src instead, as StageSource
+ * describes them, and the source rows only serve the blend and the pass-through.
  **/
 StatusEnum runStagesCpu(EffectInstance& effect,
                         const StagePlan& plan,

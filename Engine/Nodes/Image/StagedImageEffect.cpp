@@ -244,6 +244,15 @@ StagedImageEffect::getSourceInput() const
 }
 
 int
+StagedImageEffect::getBlendInput(double time,
+                                 ViewIdx view) const
+{
+    const CompositeSources sources = opSources(time, view);
+
+    return (sources.blendInput >= 0) ? sources.blendInput : getSourceInput();
+}
+
+int
 StagedImageEffect::getMaskInput() const
 {
     return stageMaskInput(*this);
@@ -558,7 +567,7 @@ StagedImageEffect::isIdentity(double time,
 
     *inputTime = time;
     *inputView = view;
-    *inputNb = getSourceInput();
+    *inputNb = getBlendInput(time, view);
 
     const bool maskMix = imagePipelineSpec().stages.has(Stage::MaskMix);
     if (maskMix && (getMixValue(time, view) == 0.)) {
@@ -580,7 +589,13 @@ StagedImageEffect::isIdentity(double time,
 StatusEnum
 StagedImageEffect::render(const RenderActionArgs& args)
 {
-    const StagePlan plan = resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), args.time, args.view, args.processChannels);
+    const CompositeSources sources = opSources(args.time, args.view);
+    const int blendInput = (sources.blendInput >= 0) ? sources.blendInput : getSourceInput();
+    StagePlan plan = resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, blendInput, args.time, args.view, args.processChannels);
+
+    if (imagePipelineSpec().op == OpKind::Composite) {
+        resolveStageSources(*this, nodeSpec(), sources, &plan);
+    }
 
     return renderOp(args, plan);
 }

@@ -8,7 +8,9 @@ registered, testable node, and the rules an author needs to know about data
 kinds and the single `EffectInstance` hierarchy. `NativeEffectBase.h`'s
 class-level comment carries a full worked example that compiles as written;
 read that for the API reference. This file is the map of the directory and
-the rules that example doesn't state.
+the rules that example doesn't state. The design of the declarative layers
+(`NodeSpec`, `ImagePipelineSpec`, the op kinds) and the reasons for its shape
+are in `docs/decisions/2026-10-19-native-node-framework.md`.
 
 ## What goes here, and what doesn't
 
@@ -42,7 +44,12 @@ new base class alongside `EffectInstance`, that's a sign to add a virtual to
 `EffectInstance` instead, not a sign this rule doesn't apply to your case.
 
 `NativeEffectBase` (below) is not an exception to this: it's a convenience
-layer *on* `EffectInstance`, not a second hierarchy.
+layer *on* `EffectInstance`, not a second hierarchy. `StagedImageEffect` (see
+"Flat image nodes") is the same again, a convenience layer *on*
+`NativeEffectBase` for flat image nodes: a Point, Passes, Route, Resample or
+Composite node is a `StagedImageEffect` with an op plugged in, and a node that
+fits none of them subclasses it directly as a Custom node. It adds no
+capability virtual of its own and is not a parallel hierarchy.
 
 ## `NativeEffectBase`
 
@@ -62,47 +69,101 @@ Writing an `EffectInstance` subclass directly means overriding a half-dozen
 one-line accessors (`getPluginID()`, `getPluginLabel()`, `getPluginGrouping()`,
 `getMajorVersion()`, `getMinorVersion()`, `getNInputs()`, `getInputDataKind()`,
 `isWriter()`, `isOutput()`, ...) for every node. `NativeEffectBase` asks for
-that metadata once, as a single `NativePluginDescription` returned from
-`getNativePluginDescription()`, and implements those `EffectInstance` and
-`OutputEffectInstance` virtuals from it. It adds no capability virtuals of its
-own -- see "Single hierarchy" above.
+that metadata once, as a single `NodeSpec` (`Engine/Nodes/NodeSpec.h`)
+returned from `nodeSpec()`, and implements those `EffectInstance` and
+`OutputEffectInstance` virtuals from it. It adds no capability of its own
+that is specific to one kind of data -- see "Single hierarchy" above. What it
+does add is kind-agnostic: the spec, the `route()` identity hook, `KnobReader`
+and `bakeParams()`, and the GPU virtuals (`canRenderOnGpu()`, `renderGpu()`,
+`getGpuInputRoI()`, `getGpuInputLayer()`, `getGpuStageSummary()`,
+`gpuCostHint()`), which refuse by default. The engine casts to
+`NativeEffectBase` to reach them.
 
 What it supplies so a subclass doesn't have to:
 
 - `getPluginID()`, `getPluginLabel()`, `getPluginDescription()`,
   `getPluginGrouping()`, `getMajorVersion()`, `getMinorVersion()`,
   `isWriter()`, `isOutput()`, `getNInputs()`, `getInputLabel()`,
-  `isInputOptional()`, `getOutputDataKind()`, `getInputDataKind()` -- all
-  derived from `getNativePluginDescription()`. `isWriter()` and `isOutput()`
-  both follow the description's `isWriter` flag, default `false`: a node that
-  is meant to be a render root -- a writer -- sets it, and both accessors
-  report true; every other native node reports false for both, same as
-  before this class carried a `RenderEngine` at all.
+  `isInputOptional()`, `isInputMask()`, `getOutputDataKind()`,
+  `getInputDataKind()` -- all derived from `nodeSpec()`. `isWriter()` and
+  `isOutput()` both follow the spec's `isWriter` flag, default `false`: a node
+  that is meant to be a render root -- a writer -- sets it, and both accessors
+  report true; every other native node reports false for both.
 - `addAcceptedComponents()` -- defaults to RGB, RGBA and Alpha.
 - `addSupportedBitDepth()` -- defaults to byte, short and float.
 - `renderThreadSafety()` -- defaults to `eRenderSafetyFullySafeFrame`.
+- `isIdentity()` -- answered from `route()`.
 - `createKnob<KNOB_TYPE>(label, dimension)` -- wraps the
   `AppManager::createKnob(this, label, dimension)` idiom every
   `initializeKnobs()` otherwise repeats.
 
 What a subclass still must provide, exactly as it would on top of
-`OutputEffectInstance` directly: `getNativePluginDescription()` (the only pure
-virtual `NativeEffectBase` adds), `initializeKnobs()`, and its render
-behavior (`render()`, or `isIdentity()` if the node is a pass-through). A
-writer sets `NativePluginDescription::isWriter = true`; nothing else about
-writing a native node changes.
+`OutputEffectInstance` directly: `nodeSpec()` (the only pure virtual
+`NativeEffectBase` adds), `initializeKnobs()`, and its render behavior
+(`render()`, or `route()` if the node is a pass-through). A writer sets
+`NodeSpec::isWriter = true`; nothing else about writing a native node changes.
 
 The plugin-identity accessors -- `getPluginID()`, `getPluginLabel()`,
 `getPluginDescription()`, `getPluginGrouping()`, `getMajorVersion()`,
 `getMinorVersion()`, `isWriter()`, `isOutput()` -- are `OVERRIDE FINAL` on
-purpose: `NativePluginDescription` is meant to be the single place a node's
-identity is written, and a subclass changes them by changing what it returns
-from `getNativePluginDescription()`, not by overriding the accessor. The
-remaining defaults are plain overrides that a node may replace when the
+purpose: `NodeSpec` is the single place a node's identity is written, and a
+subclass changes them by changing the spec, not by overriding the accessor.
+The remaining defaults are plain overrides that a node may replace when the
 default doesn't fit it: `getNInputs()`, `getInputLabel()`, `isInputOptional()`,
 `getOutputDataKind()`, `getInputDataKind()`, `resolveOutputDataKind()`,
 `inputParticipatesInDataKindPropagation()`, `addAcceptedComponents()`,
 `addSupportedBitDepth()` and `renderThreadSafety()`.
+
+### `NodeSpec`
+
+A `NodeSpec` is an aggregate of `std::string_view`s and spans, so a node
+writes it as a `constexpr` with designated initialisers:
+
+```cpp
+inline constexpr InputSpec kMyInputs[] = {
+    InputSpec { .label = "Source" },
+    InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
+};
+
+inline constexpr NodeSpec kMySpec = {
+    .id = PLUGINID_NATRON_MYNODE,
+    .label = "MyNode",
+    .description = "What it does.",
+    .grouping = PLUGIN_GROUP_COLOR,
+    .majorVersion = 1,
+    .minorVersion = 0,
+    .inputs = kMyInputs,
+};
+```
+
+Each `InputSpec` has a label, a `DataKindEnum` (default image), a role,
+`optional`, and a layer policy. The roles are `Source` (an ordinary input),
+`Aux`, `Mask` (the host adds its `enableMask_<label>` and `maskChannel_<label>`
+selectors; it must be an image input) and `Variadic`, a run of `count`
+numbered inputs labelled `label + (firstNumber + k)`, which must come last.
+`InputLayer` says in which layer an input is read: the plane being rendered
+(the default), the layer a knob selects (`InputLayer::select(knob)`) or the
+layer another input resolves to (`InputLayer::pairWith(i)`). `time` and
+`boundary` are declared but no executor reads them yet, and `rfvReads` holds
+names only. `description` and labels are untranslated `string_view`s.
+
+`nodeSpec()` returns `staticNodeSpec<kMySpec>()`, which `static_assert`s that
+the spec is valid, so an invalid one fails to compile. A runtime spec
+(`MissingPluginNode` builds one from the missing plug-in's record) skips that
+check by returning a member `NodeSpec` instead.
+
+`route(time, view)` returns `Route::none()` (the node computes its output),
+`Route::input(i, t)` (the node is an identity of input `i` at time `t`) or
+`Route::black()` (transparent black with an empty region of definition;
+identity with input -1). `isIdentity()` answers from it, so a node that only
+forwards an input -- `TypedPassthrough`, `Switch`, the channel nodes at their
+no-op settings -- overrides `route()` and nothing else. An image node never
+overrides `isIdentity()` itself; see "Flat image nodes".
+
+`KnobReader(time, view)` reads knob values, and a node bakes them once per
+evaluation into a plain `Params` struct with `bake(const KnobReader&)`;
+`bakeParams(op, time, view)` does so for any type that has it. Render code
+works on the baked `Params`, never on the knobs.
 
 ## Per-frame metadata
 
@@ -145,8 +206,8 @@ edits or drops keys overrides `deriveOutputMetadata()`, usually starting from
   from the clip or the timeline would misdescribe it.
 
 Framework policies: `Merge` takes the metadata of its A input (then A2.., then
-B if no A is connected), never B's; `NativeGenerator` outputs only
-`ofx/framerate` and `ofx/pixelaspect` (it has no source, and `ofx/frame` is the
+B if no A is connected), never B's; the generators (`GeneratorNode`) output only
+`ofx/framerate` and `ofx/pixelaspect` (they have no source, and `ofx/frame` is the
 frame number within the source, so it is omitted); transforms and filters
 keep the default.
 
@@ -387,7 +448,10 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
 `TypedPassthrough` (`Engine/Nodes/TypedPassthrough.h` /
 `Engine/Nodes/TypedPassthrough.cpp`) is the framework's own proof node and a
 complete, minimal, real example of every step below. It's referenced
-throughout; read it alongside this section.
+throughout; read it alongside this section. A flat image node is shorter
+still, because the framework supplies the render, the identity and the stage
+knobs from an op: steps 1 to 3 then collapse into the op struct described
+under "Flat image nodes", and `Grade` is the example to read.
 
 1. **Header**: declare a class deriving from `NativeEffectBase`, with a
    `static EffectInstance* BuildEffect(NodePtr node)` factory function and a
@@ -413,30 +477,34 @@ throughout; read it alongside this section.
        }
 
    private:
-       virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+       virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+       {
+           return staticNodeSpec<kMySpec>();
+       }
+
        virtual void initializeKnobs() OVERRIDE FINAL;
        // ... plus whichever render-behavior virtual this node needs, see step 3.
    };
    ```
 
-2. **Declare the plugin metadata**: implement `getNativePluginDescription()`
-   in the `.cpp`, filling in `id`, `label`, `description`, `grouping` (one of
-   the `PLUGIN_GROUP_*` constants in `Global/Macros.h` -- `PLUGIN_GROUP_DEEP`
-   and `PLUGIN_GROUP_3D` already exist for the corresponding domains),
-   `majorVersion`, `minorVersion`, one `NativeInputDescription` per input
-   (label, whether it's optional, its `DataKindEnum`), and `outputKind`. See
-   "Data kinds" below for what to put in the kind fields. Set `isWriter = true`
-   if this node is meant to be rendered as a root -- a writer -- through the
-   GUI Render menu, the CLI's `-w`, or Python's `app.render()`; leave it at
-   its default `false` otherwise, which is what every node needed before this
-   flag existed.
+2. **Declare the spec**: define `kMySpec` as a `constexpr NodeSpec`, as shown
+   under "`NodeSpec`" above, filling in `id`, `label`, `description`,
+   `grouping` (one of the `PLUGIN_GROUP_*` constants in `Global/Macros.h` --
+   `PLUGIN_GROUP_DEEP` and `PLUGIN_GROUP_3D` already exist for the
+   corresponding domains), `majorVersion`, `minorVersion`, one `InputSpec` per
+   input (label, role, whether it's optional, its `DataKindEnum`) and
+   `outputKind`. See "Data kinds" below for what to put in the kind fields.
+   Set `isWriter = true` if this node is meant to be rendered as a root -- a
+   writer -- through the GUI Render menu, the CLI's `-w`, or Python's
+   `app.render()`; leave it at its default `false` otherwise.
 
 3. **Knobs and render behavior**: implement `initializeKnobs()` using
    `createKnob<KnobType>(tr("Label"))`. Implement the node's actual behavior:
-   override `render()` for a node that produces new pixels, or `isIdentity()`
-   for a pass-through that just forwards an input unchanged (`TypedPassthrough`
-   does the latter -- it has no `render()` override at all, and relies on the
-   same identity-render path `Dot` and `NoOpBase` use).
+   override `render()` for a node that produces new pixels, or `route()` for a
+   pass-through that just forwards an input unchanged (`TypedPassthrough` does
+   the latter -- it has no `render()` override at all, and relies on the same
+   identity-render path `Dot` and `NoOpBase` use). A node that produces flat
+   images should not override `render()`: it is a `StagedImageEffect`.
 
 4. **Register it**: add one line to
    `AppManager::loadBuiltinNodePlugins()` in `Engine/AppManager.cpp`:
@@ -480,8 +548,8 @@ throughout; read it alongside this section.
   through, like openfx-misc's `Switch`, is loaded as an `OfxEffectInstance`
   and is typed image/image like every other plugin.
 
-A node declares kinds via `NativePluginDescription::inputs[i].kind` and
-`NativePluginDescription::outputKind` (or, off `NativeEffectBase`, by
+A node declares kinds via `NodeSpec::inputs[i].kind` and
+`NodeSpec::outputKind` (or, off `NativeEffectBase`, by
 overriding `EffectInstance::getInputDataKind()` /
 `getOutputDataKind()` directly).
 
@@ -655,47 +723,282 @@ splicing it into a render chain doesn't change the rendered result, by
 rendering the same chain with and without the node and comparing every
 output pixel. Add the new test file to `Tests_SOURCES` in `Tests/CMakeLists.txt`.
 
-## Flat image nodes (`NativeImageEffect`)
+## Flat image nodes (`StagedImageEffect`)
 
 The flat 2D core nodes -- the colour, merge, generator, spatial and keying
 families that replaced the openfx-misc and openfx-io plugins -- sit on
-`Engine/Nodes/Image/NativeImageEffect` (`NativeGenerator` for nodes with no
-image input). It is a convenience layer on `NativeEffectBase`, not a second
-hierarchy. It is float-only, tile-capable, multi-resolution, supports render
+`Engine/Nodes/Image/StagedImageEffect`. It is a convenience layer on
+`NativeEffectBase`, not a second hierarchy: the node's identity is a `NodeSpec`,
+and everything the host does around its pixel maths is declared, not
+overridden. It is float-only, tile-capable, multi-resolution, supports render
 scale, and is not multiplanar: the host's layer knob decides which planes are
-rendered and which channels of each are processed, and `render()` is called
+rendered and which channels of each are processed, and the render is called
 once per plane. Spatial parameters scale by `mappedScale`. Per-instance state
-is knobs only; kernels and lookup tables are built per render call.
+is knobs only; `Params` and lookup tables are built per render call.
 
-### Point ops: the kernel contract
+A flat image node is three declarations and a few functions:
 
-A point operator returns true from `isPointOp()` and builds a `PixelKernel`
-(`Engine/Nodes/Image/PixelKernel.h`) in `makeKernel()`. The base's `render()`
-then does the whole per-pixel pipeline in one pass over each row, so the host
-neither copies unprocessed channels nor multiplies back
-(`rendersUnprocessedChannels()` is true). The order is fixed:
+- a `NodeSpec` (above) for its identity and inputs;
+- an `ImagePipelineSpec` with the node's **stages**, its **layer policy** and
+  its **op kind**;
+- an **op**, a struct that holds its knobs and does the pixel maths.
 
-1. divide every channel but the divisor itself by the "(Un)premult by" channel,
-   where `Image::unPremultDivisorIsUsable()` says it is usable;
-2. run the kernel;
-3. multiply the processed channels back (`Image::premultiplyValue()`);
-4. blend each processed channel with the *undivided* source by mask x `mix`,
-   with the `ofxsMaskMixPix()` arithmetic;
-5. pass the unprocessed channels through from the source.
+`ImageNode<OP>` builds the node from them (`OP::kNodeSpec` and `OP::kPipeline`
+by default). A node that needs more than the op gives -- extra knobs, region
+overrides, `knobChanged()` -- derives from `ImageNode<OP>` and overrides the
+virtual it needs, as `Grade` does for Normalize. A generator derives from
+`GeneratorNode<OP>`, which adds the extent knobs and the region of definition
+and has no input. A node whose maths fits no op kind is a **Custom** node, below.
 
-A pixel outside the source reads as zero, outside the divisor as a divisor of
-one (neither divided nor multiplied), and outside the mask as a mask of zero.
-The divide and multiply share their per-pixel helpers with
-`Image::unPremultiplyByChannel()`/`premultiplyByChannel()`, so the two paths
-compute identical values. A node that overrides `isIdentityOp()` only answers
-for the operator itself; the base adds the mask and mix rules.
+### A Point op, start to finish
 
-A `PixelKernel` is fusion-ready: it is immutable, built from knob values at a
-`KernelContext` (time, view, mapped scale, processed channels), and
-`processRow()` is pure on its `RowIO` -- no knob access, allocation or I/O. Rows
-may run in any order, on any thread, or be chained with other kernels over a
-strip. No fusing pass exists yet; keep to those rules so one can be added
-without touching the nodes.
+`Grade` (`Engine/Nodes/Color/Grade.h`) is the full example. The smallest op
+that compiles against the real signatures is:
+
+```cpp
+inline constexpr InputSpec kGainInputs[] = {
+    InputSpec { .label = "Source" },
+    InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
+};
+
+struct GainOp {
+    struct Params {
+        double gain;
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_GAIN,
+        .label = "Gain",
+        .description = "Multiplies the image by a constant.",
+        .grouping = PLUGIN_GROUP_COLOR,
+        .inputs = kGainInputs,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = { Stage::Premult, Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .layers = LayerPolicy::color(true, true, true, false),
+        .op = OpKind::Point,
+    };
+
+    void createKnobs(KnobHolder* holder, const KnobPagePtr& page)
+    {
+        KnobDoublePtr k = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Gain").toStdString());
+
+        k->setName("gain");
+        k->setDefaultValue(1.);
+        page->addKnob(k);
+        gain = k;
+    }
+
+    Params bake(const KnobReader& reader) const
+    {
+        return Params { reader.value(gain) };
+    }
+
+    bool isIdentity(const Params& params) const
+    {
+        return params.gain == 1.;
+    }
+
+    void row(const Params& params, const RowIO& io) const
+    {
+        for (int x = 0; x < io.width; ++x) {
+            for (int c = 0; c < io.nComps; ++c) {
+                if (io.channels[pixelKernelChannelBit(io.nComps, c)]) {
+                    io.dst[x * io.nComps + c] = (float)(io.src[0][x * io.nComps + c] * params.gain);
+                }
+            }
+        }
+    }
+
+    GpuOpRef gpu(const Params&) const
+    {
+        return GpuOpRef::none();
+    }
+
+    KnobDoubleWPtr gain;
+};
+
+static_assert(PointOp<GainOp>);
+
+class Gain
+    : public ImageNode<GainOp> {
+public:
+    static EffectInstance* BuildEffect(NodePtr node) { return new Gain(node); }
+    explicit Gain(NodePtr node) : ImageNode<GainOp>(node) {}
+};
+```
+
+Registration and testing are steps 4 and 5 above. What the op does and does not
+do:
+
+- `bake()` reads each knob once through the `KnobReader` into `Params`, which
+  must be copyable (`std::copyable`) so band threads take it by value. It is the
+  only place an op touches knobs. `row()` is pure on its `RowIO`: no knob
+  access, allocation or I/O, called concurrently for different rows, in any
+  order. It writes every channel set in `io.channels`; the stages deal with the
+  rest. A `Params` that holds a lot of immutable data (ColorCorrect's and
+  ColorLookup's curve tables) holds it through a `std::shared_ptr<const ...>`,
+  cached by the curve knobs' hash, rather than copying it per bake.
+- `isIdentity()` says whether those `Params` leave the source unchanged,
+  whatever the stages do. An op whose maths depends on the render scale takes
+  the `PassContext` (the scale and the source's pixel aspect ratio) in all
+  three members, `isIdentity(params, context)`, `row(params, context, io)` and
+  `gpu(params, context)`; it has one form or the other.
+- The op never overrides `render()` or `isIdentity()` of the node: both are
+  `FINAL` in `StagedImageEffect`, so a node cannot fork the stage rules.
+
+### Stages
+
+A stage is something the host does around the op, so every node that asks for it
+does it the same way, on the CPU and the GPU. `ImagePipelineSpec::stages` lists
+them:
+
+- **`Premult`** divides every channel but the divisor itself by the "(Un)premult
+  by" channel before the op, where `Image::unPremultDivisorIsUsable()` says it
+  is usable, and multiplies the processed channels back after it. The node needs
+  a Source input, and a Composite or Resample op cannot have it (no one divisor
+  applies to several inputs, and a resampler reads the source as stored); both
+  are compile errors.
+- **`MaskMix`** blends each processed channel of the op's result with the
+  *undivided* source by mask x `mix`, with the `ofxsMaskMixPix()` arithmetic. It
+  needs a Mask input.
+- **`PassThroughUnprocessed`** writes the channels the op does not process from
+  the source. Without it they are left for the host to copy, so a node that
+  renders them itself must ask for it to stay bit-exact (Grade, Blur, Position
+  do).
+
+The order is fixed: divide, op, multiply back, blend, pass the unprocessed
+channels through. A pixel outside the source reads as zero, outside the divisor
+as a divisor of one (neither divided nor multiplied), and outside the mask as a
+mask of zero. The stage maths is shared by the CPU executor (`runStagesCpu()`,
+`Engine/Nodes/Image/StagePlan.h`) and the GPU one (`recordStagesGpu()`), and
+the divide and multiply share their per-pixel helpers with
+`Image::unPremultiplyByChannel()`/`premultiplyByChannel()`.
+
+Everything the stages decide for one render -- processed channels, the mix, the
+mask and its channel, the divisor -- is resolved once on the rendering thread
+into a `StagePlan`. A Custom node's `renderOp()` is handed it.
+
+Identity is composed in a fixed order and is never overridden: `route()` other
+than `None`; with `MaskMix`, a `mix` of 0; the op's own identity; with
+`MaskMix`, a non-inverted mask whose region misses the window. Every stage
+identity is the first Source input at the same time (the *blend input*, which a
+Composite op can choose).
+
+`LayerPolicy` says which layers and channels the node processes, and so the
+layer knob the host gives it: `color(r, g, b, a)` and `all()` get the
+input-bound channel set (starting on the colour layer or on "All", with the
+given checkbox defaults), `targetSelect()` gets a layer select naming the layer
+the node writes (generators), and `none()` gets no knob (Switch).
+
+### Op kinds
+
+`ImagePipelineSpec::op` picks the concept the op satisfies. Each concept starts
+with `bake()`/`Params` as for Point.
+
+| Kind | The op provides | The host does |
+|---|---|---|
+| Point | `isIdentity(params)`, `row(params, io)`, `gpu(params)` | `row()` per band through `runStagesCpu()`; `gpu()` through `recordStagesGpu()` |
+| Passes | `isIdentity(params, ctx)`, `passes(params, ctx)` returning a `PassList` | runs the passes over planar scratch buffers; derives the source's region of interest (window + halo) and the region of definition (source + spread) from the list |
+| Route | `route(params, ctx)` | the node is an identity everywhere, with region of definition, frames needed and metadata of the routed input; nothing renders. No stages |
+| Resample | matrix form or offset form, below | resamples the source; derives the regions; concatenates transforms (matrix form) |
+| Composite | `isIdentity(params)`, `inputs(params, ctx)`, `step(params, io)` | folds any number of inputs through `step()` |
+| Custom | none: the node implements `isOpIdentity()` and `renderOp()` | `render()` and `isIdentity()` stay the host's, with the stages and the composed identities |
+
+**Passes.** A pass is a line filter along X or Y, a gather over a window, or a
+point pass, over scratch slots; `Pass::lineX()`, `lineY()`, `gather()` and
+`point()` build them and say their halo and growth. `PassList::gpu` is one
+recorder for the whole list, because Blur's GPU kernels fuse their passes. An op
+may add `costHint(params, ctx)` for the GPU cost model; without it the list's
+sigma gives one. A node narrows the region of definition the list gives by
+overriding `clipRegionOfDefinition()` (Blur's "Crop To Format").
+
+**Route.** `route()` returns the `Route` as for any node, here from the op's
+`Params` and a `RouteContext` (the time, the view and which inputs are
+connected). Any op kind may also have `route()`: the host asks it first and an
+answer other than `None` makes the node an identity of that input (Dissolve at
+an integer `which`).
+
+**Resample** has two forms, and an op has exactly one.
+
+- *Matrix form*: `isIdentity(params, ctx)`, `settings(params, ctx)` (filter,
+  clamp, black outside, invert, blur) and `transform(params, ctx, amount, invert,
+  matrix)`, the canonical 3x3 matrix at a blend amount. The host samples through
+  it, asks it at every time a motion blur samples, and concatenates through it:
+  the node offers its matrix to the host (unless it has `MaskMix`, or
+  `canConcatenate()` says no) and always applies the transforms the host
+  concatenates into its source. Transform, TransformMasked and Reformat are this
+  form. It runs on the GPU only if the op says
+  `static constexpr bool kResamplesOnGpu = true`; then the GPU renders it
+  whenever its sampling matrices are affine and nothing is concatenated into the
+  source. The Resample kind runs its own loop (`runResampleCpu()`), not a row
+  function under `runStagesCpu()`, since it fetches through the concatenated
+  transform and samples the whole source.
+- *Offset form*: `offset(params, ctx)` returns the whole-pixel translation at
+  the render scale (output pixel (i, j) shows source pixel (i - x, j - y)). It
+  offers no matrix and takes none, and is CPU only. It may add
+  `rowMatte(params, ctx)`, a `ResampleRowMatte` that weights each shifted row
+  (an empty one weights nothing), and
+  `static constexpr bool kClipsSourceToRoI = true`, to read the source as zero
+  outside the region of interest it was fetched for, as an OpenFX host shows it.
+  Position is the plain form. Crop is the full one: its offset is the
+  translation `reformat` needs, its row matte is the black border and the
+  softness fade, and it clips the source to its region of interest.
+
+**Composite** is a fold, not a fixed source list. `inputs()` returns a
+`CompositeInputs`: a base input, any number of further inputs (each with the
+time it is read at) and a blend input (the one the stages blend against and
+every composed identity answers; the base input by default). The result starts
+as the base input's row and `step()` combines it with each further input's row
+in turn: `io.src[0]` is the result so far, `io.src[1]` the next input's row, and
+`step()` writes the processed channels to `io.dst`. Mask and mix apply once, to
+the final result. An input is read in the layer its `InputSpec::layer` names and
+reads zero wherever it has no pixel. An op reading several inputs at once is not
+supported. Dissolve folds the two of its 64 sources that `which` lies between, with `mix` from the `MaskMix` stage.
+
+**Custom** is the way out, and the cost of it is that the node owns its pixels.
+A Custom node derives from `StagedImageEffect` directly, returns
+`staticNodeSpec<>()` from `nodeSpec()` and `staticImagePipelineSpec<>()`
+from `imagePipelineSpec()` (with `.op = OpKind::Custom`), and implements
+`isOpIdentity(time, scale, roi, view)` and `renderOp(args, plan)`. It still gets
+the layer knob, the stage knobs and the composed identities, and reads the mask,
+mix and divisor from the `StagePlan` instead of its own knobs. Merge, Keyer and
+ChromaKeyer are Custom nodes; Merge until M101 - Clean-Sheet Merge Node, the
+keyers until M95 - Knob Cleanup And Keyer Redesign. A Custom node is on the CPU
+unless it opts into the GPU by overriding three virtuals:
+`canRenderOpOnGpu(query)` (the answer may depend only on the query and the
+node's settings), `renderOpGpu(args)` to record its dispatches over
+`args.outputRect`, and `getOpGpuInputLayer()` to say the layer it reads each
+input in. The keyers do, with their own kernels.
+
+### The GPU side of an op
+
+A Point op names its GPU work with a `GpuOpRef` returned from `gpu()`:
+`GpuOpRef::compiled(kernelId, params)` for a registry kernel and a trivially
+copyable parameter block, `GpuOpRef::packed(kernelId, words)` for words the op
+lays out itself, `GpuOpRef::runtime(shader, inputs)` for a runtime shader, or
+`GpuOpRef::none()` to stay on the CPU. A block over the recorder's 64 KB, or a
+component count outside `acceptedComponents`, stays on the CPU too.
+
+The kernel is an `IPixelOp` in the style of `Engine/Gpu/Kernels/pixelwrap.slang`:
+`load()` reads the block, `apply(float4, int2)` does the maths on a pixel in
+channel-bit order, and an entry calls `runWrapped<Op>`. The wrapper does the
+divide, the multiply back, the mask x mix blend and the pass-through of the
+stages (`GpuWrap`, `Engine/Gpu/GpuWrap.h`), so the kernel holds the op's maths
+and nothing else; there are no standalone kernels. Register the entry with
+`slang_add_kernel(name Kernels/x.slang ENTRY name REGISTRY NatronGpu)` in
+`Engine/Gpu/CMakeLists.txt`. A Composite op's kernel is an `ICompositeStep` run
+through `runCompositeStep<Op>` (`Kernels/compositestep.slang`): it is dispatched
+once per further input, folding it into the result so far between two scratch
+buffers, and a finishing pass then blends and passes through. A Passes op names
+its GPU work in `PassList::gpu`; the placement test is `canRecordPassesGpu()`.
+
+Keep the C++ maths and its Slang twin in step: the same operand types and
+evaluation order, the twin in a Slang module beside the kernel (`gradeops.slang`
+holds Grade's), and the parameter block mirrored by a struct with
+`static_assert(sizeof(...) == ...)`, as `Grade.cpp` does. That is what keeps the
+GPU within its parity bound without a second set of maths to review.
 
 ### Host knobs and script names
 
@@ -704,31 +1007,34 @@ none of that. It gets, with these script names, which a node must not rename
 or redeclare:
 
 - the layer knob at row 0 (`channels` is the channel-set knob), with defaults
-  from the traits (`NativeImageTraits::processesAllLayers`, `defaultChannels`);
-- `enableMask_<label>` and `maskChannel_<label>` for each input declared with
-  `NativeInputDescription::isMask`;
-- `hostUnPremultBy`, when the traits ask for it (`hostUnPremult`);
-- `maskInvert` and `mix`, declared by the node through `addMaskMixKnobs()` and
-  moved by the host to the end of the page, after the mask selectors.
+  from the `LayerPolicy`;
+- `enableMask_<label>` and `maskChannel_<label>` for each input with the `Mask`
+  role;
+- `hostUnPremultBy`, with the `Premult` stage;
+- `maskInvert` and `mix`, created by the `MaskMix` stage (`addStageKnobs()`,
+  which `ImageNode` calls after the op's `createKnobs()`).
 
-Beyond those, a node's own knobs follow the OFX plugin's order, names, types,
-dimensions and defaults. The OFX-internal `NatronOfxParamProcess*`,
-`unPremultBy*` and `premultChanged` are not declared. Labels drop the `OFX`
-suffix and grouping is a `/`-separated path matching the OFX menus.
+The stage knobs sit together below the node's own knobs, under one separator, in
+this order: (Un)premult by, the mask selectors and Invert mask, Mix. A node's own
+knobs follow the OFX plugin's order, names, types, dimensions and defaults. The
+OFX-internal `NatronOfxParamProcess*`, `unPremultBy*` and `premultChanged` are
+not declared. Labels drop the `OFX` suffix and grouping is a `/`-separated path
+matching the OFX menus. The filters (Blur, EdgeDetect, ErodeDilate) have no
+`Premult` stage and filter the data as stored.
 
 ### Scheduler declaration: zero unplanned pulls
 
-Everything `render()` fetches must be declared beforehand, so a task-graph
+Everything a render fetches must be declared beforehand, so a task-graph
 render shows 0 unplanned pulls and the legacy and task-graph schedulers give
-bit-identical output at any pool size. `NativeImageEffect` already declares the
+bit-identical output at any pool size. `StagedImageEffect` already declares the
 source plane, the divisor layer (through the "(Un)premult by" selector) and the
-mask layer (through the mask selector), all at the render window. A node that
-reads more -- a wider window, another input, another time -- declares it through
-`getRegionsOfInterest()`, `getComponentsNeededAndProduced()` and
-`getFramesNeeded()`. `isIdentity()` matches the OFX conditions so identities
-become identity tasks. `TransformNode`, and `Reformat` with `preserveBB`,
-implement `getCanTransform()`/`getTransform()` and consume a concatenated input
-transform. No node here touches deep data or GL.
+mask layer (through the mask selector), all at the render window, and a Passes
+or Resample op widens the source's region of interest by its halo or filter
+reach. A node that reads more -- another input, another time, a wider window --
+declares it through `getRegionsOfInterest()`, `getComponentsNeededAndProduced()`
+and `getFramesNeeded()` (Dissolve and Merge do). `isIdentity()` is composed from
+`route()` and the op, matching the OpenFX conditions so identities become
+identity tasks. No node here touches deep data or GL.
 
 ### Threading
 
@@ -739,9 +1045,9 @@ suite does. Each node parallelises its own render, within the thread budget
 `parallelForCancellable` (`NativeEffectBase.h`), never on
 `parallelForOnGlobalPool` directly:
 
-- **Point ops** split their own row bands (`NativeImageEffect::makeRowBands()`:
-  at least 16384 pixels per band, at most 4 bands per thread). The kernel must
-  therefore be safe to call concurrently.
+- **Point and Composite ops** split their own row bands
+  (`makeStageRowBands()`: at least 16384 pixels per band, at most 4 bands per
+  thread). `row()` and `step()` must therefore be safe to call concurrently.
 - **Spatial filters** (`Blur`, `EdgeDetect`, `ErodeDilate`) parallelise over
   whole rows or whole columns, one line per task, never over the host's tile
   split. Their result is then independent of thread count and band layout.
@@ -757,9 +1063,9 @@ suite does. Each node parallelises its own render, within the thread budget
   between the full frame and a 1x1 window, about 1% of the input's range;
   `NativeSpatialFilterWindow_Test.cpp` holds them to 2e-2. The box family is a
   running sum in double whose rounding to float measured identical.
-- Other nodes with their own `render()` (`Merge`, `Dissolve`, `TransformNode`,
-  `Crop`, `Reformat`, `Position`, `Keyer`, `ChromaKeyer`, the generators) split
-  row bands the same way as point ops.
+- Resample ops and the Custom nodes with their own `renderOp()` (`Merge`,
+  `Keyer`, `ChromaKeyer`) and the generators split row bands the same way as
+  point ops.
 
 Read an image's bounds with `Image::getBounds()` on the calling thread, before
 the bands start, and hand the rectangle to the band. `getBounds()` takes the
@@ -787,13 +1093,14 @@ is how a parity test renders both side by side. The ID and major live in
 node exposes `static EffectInstance* BuildEffect(NodePtr)`, and icons are in
 `Gui/Resources/Images/NativeNodes/<pluginID>.png`.
 
-Siblings are one class under several IDs: the Merge presets (`Plus`, `Matte`,
-`Multiply`, `In`, `Out`, `Screen`, `Max`, `Min`, `Difference`) are `MergeNode`
-with a default `operation`; `Solid` is a `Constant` preset; `TransformMasked`
-is `TransformNode` with a mask input; `Add`, `Multiply` and `Gamma` are one
-`ColorMath` class; `Erode` and `Dilate` are `ErodeDilate` and a thin subclass.
-The compat versions of retired plugins are gone, and nothing migrates a project
-saved with the OFX versions.
+Siblings are one op under several IDs, each with its own `NodeSpec`: the Merge
+presets (`Plus`, `Matte`, `Multiply`, `In`, `Out`, `Screen`, `Max`, `Min`,
+`Difference`) are `MergeNode` with a default `operation`; `Solid` is a
+`ConstantNode` over `ConstantOp` with its own spec; `TransformMasked` is
+`TransformImageNode<true>`, the `TransformOp` node with a mask input; `Add`,
+`Multiply` and `Gamma` are `ColorMathNode<KIND>`; `Erode` and `Dilate` are
+`ErodeDilateNode<MODE>`. The compat versions of retired plugins are gone, and
+nothing migrates a project saved with the OFX versions.
 
 ### Writing a parity test
 
@@ -938,10 +1245,10 @@ rounding exceeds that, or with values and slopes so large that two floats do not
 Saturation holds its CPU class, transcendental, for every luminance option; the kernel takes the
 weights from the CPU's `ColorMath::luminance` (`Tests/Native/NativeSaturationGpu_Test.cpp`).
 ColorCorrect holds its CPU class, transcendental, in every group and luminance option, with the tone curves read from the CPU's table inside [0, 1] and evaluated from their keys outside it, as ColorLookup does, and the tone weights clamped to [0, 1] on both sides whatever the output clamps are (shared through `CurveSnapshot::packGpu` and `Kernels/curvesnapshot.slang`, so in two floats past a steep key between two floats too); a curve of more than 128 keys, or one `packGpu` cannot bound within 1e-6 of the CPU, stays on the CPU (`Tests/Native/NativeColorCorrectGpu_Test.cpp`).
-Constant and Solid hold their CPU class, exact, for every target layer and channel selection, with a source connected or not (`Tests/Native/NativeConstantGpu_Test.cpp`).
+Constant and Solid hold their CPU class, exact, for every target layer and channel selection (`Tests/Native/NativeConstantGpu_Test.cpp`).
 CheckerBoard holds its CPU class, exact, at mipmap 0 and 1: the host classes every column and row of the region of definition with the CPU's double comparisons and the device looks the class up (`Tests/Native/NativeCheckerBoardGpu_Test.cpp`).
 Add and Multiply hold `arithmetic()` and Gamma holds `transcendental()`, where a subnormal input may come back as 0 on a device that flushes denormals (`Tests/Native/NativeColorMathGpu_Test.cpp`).
-Erode and Dilate hold exact, bit for bit on NaNs, signed zeros and denormals, except where "(Un)premult by" divides, which holds 2e-6 absolute plus 1e-6 relative, as divided values reach far above 1 (`Tests/Native/NativeErodeDilateGpu_Test.cpp`).
+Erode and Dilate hold exact, bit for bit on NaNs, signed zeros and denormals (`Tests/Native/NativeErodeDilateGpu_Test.cpp`).
 Transform and TransformMasked hold their CPU class, `resampling()`, for every filter with clamp and black outside on and off, with mask and mix, at mipmap 0 and 1; sample positions travel in two floats so the filters pick the CPU's taps. Motion blur at quality 0.5, 1 and 4 over every shutter offset, and directional blur, hold `iir()`: each pixel draws the CPU's van der Corput sequence over the same host-built matrices and stops on the same variance test, its sums kept in two floats. The device filters each sample in float where the CPU uses double, a few ulps apart, so a pixel whose variance quotient lies that close to an integer takes one sample more or fewer and moves by about `motionBlurMaxError()` / sqrt(samples); up to one pixel in 250 of a window (at least 2) may therefore miss `iir()`, by no more than `motionBlurMaxError()` (quality / 1000), the standard error the sampler itself targets. Matching the CPU's sample counts exactly would need double-precision filtering on the device. A transform concatenated from upstream stays on the CPU (`Tests/Native/NativeTransformGpu_Test.cpp`).
 ChromaKeyer holds its CPU class, transcendental, in the intermediate, premultiplied and composite modes, with every source alpha option, Bg and masks or not, and an RGB source; the host derives the key's per-frame constants as the CPU does and the device keys in float. The unpremultiplied mode holds 1e-3 relative: it divides by the key alpha, so a one-ulp difference in the float key the CPU rounds from double becomes a relative error of about 6e-8 over that alpha (a float model of the kernel measured 1.02e-4 on the parity source, where the alpha reaches 5.8e-4) (`Tests/Native/NativeChromaKeyerGpu_Test.cpp`).
 Keyer holds its CPU class, transcendental, in every key, output and source alpha mode, with each of InM, OutM and Bg or none, partly covering the window, an RGB source and a channel subset; the host decides every threshold comparison and derives the key colour terms in double, and the device takes the distance to the key axis from the orthogonal part of the colour rather than the CPU's squared-norm difference, which float cannot hold near the axis (`Tests/Native/NativeKeyerGpu_Test.cpp`).

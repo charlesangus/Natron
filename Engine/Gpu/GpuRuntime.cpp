@@ -20,10 +20,27 @@ GpuImportJob::finish()
 }
 
 void
+GpuImportJob::advance()
+{
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++prepared_;
+    }
+    cv_.notify_all();
+}
+
+void
 GpuImportJob::wait()
 {
     std::unique_lock<std::mutex> lock(mutex_);
     cv_.wait(lock, [&] { return finished_; });
+}
+
+void
+GpuImportJob::waitFor(std::size_t count)
+{
+    std::unique_lock<std::mutex> lock(mutex_);
+    cv_.wait(lock, [&] { return finished_ || prepared_ >= count; });
 }
 
 void
@@ -107,6 +124,7 @@ struct GpuImportPreparer {
                     touch(range);
                     transfer.prepareImport(range);
                 }
+                job->advance();
             }
             {
                 std::lock_guard<std::mutex> lock(mutex);

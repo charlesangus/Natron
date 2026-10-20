@@ -450,10 +450,6 @@ GpuContext::initialize()
         gpu::GpuRuntimeOptions rtOptions;
         rtOptions.device.deviceSelector = _options.device;
         rtOptions.transfer.cacheHostImports = true;
-        // The free hook forgets a buffer's whole capacity, which is what makes importing all of it safe.
-        rtOptions.transfer.hostAllocationBytes = [](const void* host) {
-            return (VkDeviceSize)HostImageMemory::bytesFrom(host);
-        };
         // One memcpy thread moves a fraction of the bus rate; the ranges left to staging are those that cannot be
         // imported, and they are worth splitting across several threads in large pieces.
         rtOptions.transfer.copyThreads = 4;

@@ -2326,6 +2326,7 @@ TEST_F(GpuResidencyTest, GrowingImageReusesTheBuffersAndImportsOfTheFrameBefore)
     // within one size class of each other.
     const int sizes[] = { 1000, 1010, 1020 };
     std::size_t firstBytes = 0;
+    std::size_t previousBytes = 0;
     for (int frame = 0; frame < 3; ++frame) {
         SCOPED_TRACE(frame + 1);
         // Released, the previous frame's images go back to the pools.
@@ -2355,14 +2356,21 @@ TEST_F(GpuResidencyTest, GrowingImageReusesTheBuffersAndImportsOfTheFrameBefore)
         EXPECT_EQ(0, fallbacksOf(run));
         EXPECT_EQ(1, run.stats->getGpuRegionsRun());
         EXPECT_EQ(0, report.strips);
+        // The source and the downloaded image are imported up to their own size, never into their buffers' growth room,
+        // so a frame imports only what its images grew by.
+        const std::size_t padded = HostImageMemory::paddedSize(bytes);
         if (frame == 0) {
             EXPECT_GE(report.importCount, 1u);
             EXPECT_GE(report.poolMisses, 1u);
-        } else if (frame == 2) {
-            EXPECT_EQ(0u, report.importCount) << "a frame imported host memory again";
-            EXPECT_EQ(0u, report.newImportBytes);
+            EXPECT_LE(report.newImportBytes, 2 * padded) << "the growth room of a buffer was imported";
+        } else {
+            EXPECT_LE(report.newImportBytes, 2 * (padded - HostImageMemory::paddedSize(previousBytes)))
+                << "a frame imported more than its images grew by";
+        }
+        if (frame == 2) {
             EXPECT_EQ(0u, report.poolMisses) << "a frame allocated device memory again";
         }
+        previousBytes = bytes;
         EXPECT_FALSE(run.future->getRootPlanes().empty());
         expectReleased(run);
     }
@@ -2453,11 +2461,12 @@ TEST_F(GpuResidencyTest, StripTransfersCopyOutOfWholeImageImports)
         EXPECT_LE(report.stripsInFlight, 1);
         EXPECT_EQ((unsigned long long)report.strips, report.uploadsImported + report.uploadsStaged);
         EXPECT_EQ((unsigned long long)report.strips, report.downloadsImported + report.downloadsStaged);
+        // Even on the first frame, each strip's download finds the chunks of its rows prepared.
+        EXPECT_EQ(0u, report.importsAtDownload) << "a strip download imported its rows itself";
+        EXPECT_EQ(0u, report.downloadsStaged);
         if (frame == 1) {
             EXPECT_EQ(0u, report.importsAtUpload) << "a strip upload imported its rows itself";
-            EXPECT_EQ(0u, report.importsAtDownload) << "a strip download imported its rows itself";
             EXPECT_EQ(0u, report.uploadsStaged);
-            EXPECT_EQ(0u, report.downloadsStaged);
         }
         expectReleased(run);
     }

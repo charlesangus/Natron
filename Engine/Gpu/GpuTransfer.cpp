@@ -794,14 +794,6 @@ struct GpuTransfer::Impl {
             return true;
         }
 
-        VkDeviceSize extent = bytes;
-        if (opt.hostAllocationBytes) {
-            const VkDeviceSize allocation = opt.hostAllocationBytes(p);
-            if (allocation > bytes && allocation % importAlignment == 0) {
-                extent = allocation;
-            }
-        }
-
         // Pinning takes long enough that holding the lock through it would serialize every thread's imports,
         // so the lock only guards the lookups and the insertion.
         std::unique_lock<std::mutex> lock(importMutex);
@@ -822,7 +814,7 @@ struct GpuTransfer::Impl {
                 importCv.wait(lock);
                 continue;
             }
-            VkDeviceSize len = std::min(importPieceMax, extent - pos);
+            VkDeviceSize len = std::min(importPieceMax, bytes - pos);
             if (next != importCache.end()) {
                 len = std::min<VkDeviceSize>(len, next->first - addr);
             }

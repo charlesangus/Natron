@@ -27,11 +27,6 @@ struct GpuTransferOptions {
     bool cacheHostImports = false;
     // Fills the device-side TimeSpans of TransferTimeline. Costs a blocking query-pool reset per process().
     bool recordTimestamps = false;
-    // Bytes from a host address to the end of the allocation that holds it, or 0 when unknown. With
-    // cacheHostImports, an import created for part of an allocation then covers the rest of it too, so that a
-    // later, larger transfer from the same allocation finds it cached. The caller's forgetHostAllocation()
-    // must then cover the whole allocation. Called without the transfer's locks held.
-    std::function<VkDeviceSize(const void* host)> hostAllocationBytes;
     // Called on the importing thread, with no lock held, between creating an import meant for the cache and
     // caching it, so that tests can interleave forgetHostAllocation() with it.
     std::function<void(const void* host, VkDeviceSize bytes)> onImportCreated;

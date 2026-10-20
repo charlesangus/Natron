@@ -20,6 +20,7 @@
 #include "GpuBuffer.h"
 #include "GpuDevice.h"
 #include "GpuKernel.h"
+#include "GpuRuntime.h"
 #include "GpuTestDevice.h"
 #include "GpuTransfer.h"
 #include "fill_spirv.h"
@@ -963,4 +964,98 @@ GPU_TEST_F(GpuTransferTest, UnalignedPartOfACachedImportCreatesNoImport)
     ASSERT_TRUE(t->wait(staged).ok());
     EXPECT_EQ(upPath, TransferPath::Staging);
     munmap(p, kBytes);
+}
+
+GPU_TEST_F(GpuTransferTest, StripDownloadProceedsOnceItsChunkIsPrepared)
+{
+    constexpr size_t kChunk = size_t(2) << 20;
+    std::mutex mutex;
+    std::condition_variable cv;
+    const void* held = nullptr;
+    bool reached = false;
+    bool release = false;
+    GpuRuntimeOptions o;
+    o.device = gputest::deviceOptions();
+    o.transfer.cacheHostImports = true;
+    o.transfer.onImportCreated = [&](const void* host, VkDeviceSize) {
+        std::unique_lock<std::mutex> lock(mutex);
+        if (host != held) {
+            return;
+        }
+        reached = true;
+        cv.notify_all();
+        cv.wait(lock, [&] { return release; });
+    };
+    std::unique_ptr<GpuRuntime> rt;
+    const GpuStatus created = GpuRuntime::create(o, rt);
+    ASSERT_TRUE(created.ok()) << created.message;
+    // Declared after the runtime, so that a failed assertion lets the helper thread go before the runtime joins it.
+    struct Releaser {
+        std::mutex& mutex;
+        std::condition_variable& cv;
+        bool& release;
+        ~Releaser()
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            release = true;
+            cv.notify_all();
+        }
+    } releaser { mutex, cv, release };
+    GpuTransfer& t = rt->transfer();
+    if (!t.hostImportSupported()) {
+        GPUTEST_SKIP() << "VK_EXT_external_memory_host unavailable";
+    }
+    void* p = mapImportable(3 * kChunk, t.hostImportAlignment());
+    if (!p) {
+        GPUTEST_SKIP() << "import alignment exceeds the page size";
+    }
+    uint8_t* host = static_cast<uint8_t*>(p);
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        held = host + kChunk;
+    }
+
+    const HostImportStats before = t.hostImportStats();
+    std::shared_ptr<GpuImportJob> job =
+        rt->prepareImports({ { host, kChunk }, { host + kChunk, kChunk }, { host + 2 * kChunk, kChunk } });
+    ASSERT_TRUE(job != nullptr);
+    job->waitFor(1);
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        cv.wait(lock, [&] { return reached; });
+    }
+    EXPECT_FALSE(job->finished());
+
+    // A strip's rows inside the first chunk, at no aligned offset or size.
+    constexpr VkDeviceSize kOffset = 48;
+    constexpr VkDeviceSize kPart = (VkDeviceSize(1) << 20) + 1000;
+    GpuBuffer buf;
+    ASSERT_TRUE(GpuBuffer::createDeviceLocal(rt->device(), kPart, kGpuBufferDefaultUsage, buf).ok());
+    StreamOptions up;
+    up.handoff = ComputeHandoff::None;
+    TimelineValue uploaded;
+    ASSERT_TRUE(rt->upload({ srcs_[0].get(), kPart }, buf, 0, uploaded, up).ok());
+    TransferPath path = TransferPath::Staging;
+    StreamOptions down;
+    down.handoff = ComputeHandoff::None;
+    down.waits = { &uploaded, 1 };
+    down.path = &path;
+    TimelineValue downloaded;
+    ASSERT_TRUE(rt->download(buf, 0, { host + kOffset, kPart }, downloaded, down).ok());
+    ASSERT_TRUE(rt->wait(downloaded).ok());
+    EXPECT_EQ(path, TransferPath::HostImport) << "the strip did not copy into its prepared chunk";
+    EXPECT_EQ(t.hostImportStats().atDownload, before.atDownload) << "the strip imported its rows itself";
+    EXPECT_FALSE(job->finished()) << "the later chunks were prepared before the strip landed";
+    expectSame(srcs_[0].get(), host + kOffset, kPart, 1);
+
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        release = true;
+        cv.notify_all();
+    }
+    job->wait();
+    EXPECT_EQ(t.hostImportStats().cached - before.cached, 3u) << "each chunk is its own import";
+
+    t.forgetHostAllocation(p, 3 * kChunk);
+    munmap(p, 3 * kChunk);
 }

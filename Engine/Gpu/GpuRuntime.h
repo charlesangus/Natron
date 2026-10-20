@@ -9,6 +9,7 @@
 #include "GpuTransfer.h"
 
 #include <atomic>
+#include <cstddef>
 #include <deque>
 #include <condition_variable>
 #include <memory>
@@ -30,12 +31,17 @@ enum class GpuRuntimeState {
 
 struct GpuImportPreparer;
 
-// Host ranges the runtime's helper thread faults in and imports ahead of the transfers that will use them. The
-// ranges must stay allocated, and untouched by the device, until wait() or cancel() returns.
+// Host ranges the runtime's helper thread faults in and imports, in order, ahead of the transfers that will use them.
+// The ranges must stay allocated until wait() or cancel() returns, and each must stay untouched by the device until a
+// waitFor() past it, wait() or cancel() returns: the helper thread writes the pages it faults in.
 class GpuImportJob {
 public:
     // Blocks until every range was prepared or skipped.
     void wait();
+
+    // Blocks until the first `count` ranges were prepared or skipped, while the helper thread may still be preparing
+    // the ones after them.
+    void waitFor(std::size_t count);
 
     // Skips the ranges not started yet, then waits for the one in progress.
     void cancel();
@@ -47,11 +53,13 @@ private:
     friend struct GpuImportPreparer;
 
     void finish();
+    void advance();
 
     std::vector<HostRange> ranges_;
     std::atomic<bool> cancelled_ { false };
     mutable std::mutex mutex_;
     std::condition_variable cv_;
+    std::size_t prepared_ = 0;
     bool finished_ = false;
 };
 

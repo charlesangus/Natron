@@ -36,6 +36,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -94,6 +95,9 @@ availableRuntime()
 
     return (gpu && gpu->isAvailable()) ? gpu->runtime() : nullptr;
 }
+
+// A transparent huge page on x86-64 and on the common arm64 configuration.
+constexpr VkDeviceSize kPrepareChunkAlignment = VkDeviceSize(2) << 20;
 
 // The categories the CPU fallbacks are counted under; the detail goes to the error log.
 const char* const kFallbackOutOfMemory = "out of device memory";
@@ -348,7 +352,7 @@ public:
         const std::uint64_t importBytesBefore = _runtime.transfer().hostImportBytes();
         const gpu::HostImportStats importStatsBefore = _runtime.transfer().hostImportStats();
         std::vector<GpuStrip> strips;
-        if (!plan() || !resolveInputs() || !planStrips(&strips) || !allocateDownloadImages()) {
+        if (!plan() || !resolveInputs() || !planStrips(&strips) || !allocateDownloadImages(strips)) {
             return failed();
         }
         const Clock::time_point begin = Clock::now();
@@ -1105,13 +1109,21 @@ private:
 
     /**
      * @brief Allocates the RAM images every download lands in, and has the runtime's helper thread fault them in and
-     * import them while the uploads and the compute run, so that the downloads pay neither.
+     * import them while the uploads and the compute run, so that the downloads pay neither. Stripped, each image is
+     * prepared in chunks, in strip order, and a strip's download waits only for the chunks its rows lie in.
      **/
-    bool allocateDownloadImages()
+    bool allocateDownloadImages(const std::vector<GpuStrip>& strips)
     {
-        std::vector<gpu::HostRange> ranges;
+        struct Destination {
+            std::size_t slot = 0;
+            unsigned char* data = nullptr;
+            VkDeviceSize bytes = 0;
+            VkDeviceSize queued = 0;
+        };
+        std::vector<Destination> destinations;
 
-        for (Slot& slot : _slots) {
+        for (std::size_t s = 0; s < _slots.size(); ++s) {
+            Slot& slot = _slots[s];
             if (!slot.download || slot.pinned) {
                 continue;
             }
@@ -1126,24 +1138,63 @@ private:
             slot.downloadAccess = std::make_shared<Image::WriteAccess>(slot.downloadImage.get());
             unsigned char* data = slot.downloadAccess->pixelAt(slot.layout.bounds.x1, slot.layout.bounds.y1);
             if (data) {
-                ranges.push_back({ data, (VkDeviceSize)slot.downloadBytes });
+                destinations.push_back({ s, data, (VkDeviceSize)slot.downloadBytes, 0 });
             }
+        }
+
+        // A chunk ends past its strip's last row, on a huge-page boundary: the next chunk's faulting then never writes
+        // a page the strip's download is writing, and never splits a transparent huge page with it.
+        const VkDeviceSize chunkAlignment = std::max<VkDeviceSize>(kPrepareChunkAlignment, _runtime.transfer().hostImportAlignment());
+        std::vector<gpu::HostRange> ranges;
+        _stripPrepared.assign(strips.size(), 0);
+        for (std::size_t k = 0; k < strips.size(); ++k) {
+            for (Destination& d : destinations) {
+                const Slot& slot = _slots[d.slot];
+                const RectI& interior = strips[k].interiors[d.slot];
+                if (interior.isNull()) {
+                    continue;
+                }
+                const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(d.data);
+                const std::uintptr_t rowsEnd = base + (std::uintptr_t)rowBytes(slot) * (std::uintptr_t)(interior.y2 - slot.layout.bounds.y1);
+                const std::uintptr_t chunkEnd = (rowsEnd + chunkAlignment - 1) / chunkAlignment * chunkAlignment;
+                const VkDeviceSize end = std::min<VkDeviceSize>(d.bytes, chunkEnd - base);
+                if (end > d.queued) {
+                    ranges.push_back({ d.data + d.queued, end - d.queued });
+                    d.queued = end;
+                }
+            }
+            _stripPrepared[k] = ranges.size();
+        }
+        for (Destination& d : destinations) {
+            if (d.queued < d.bytes) {
+                ranges.push_back({ d.data + d.queued, d.bytes - d.queued });
+            }
+        }
+        // The rest is prepared before the last strip lands, so that no page of an output is written once it is stored.
+        if (!_stripPrepared.empty()) {
+            _stripPrepared.back() = ranges.size();
         }
         _prepared = _runtime.prepareImports(std::move(ranges));
 
         return true;
     }
 
-    // The helper thread writes the pages it faults in, so it must be done with them before the device writes them.
-    void awaitPreparedDownloads()
+    // The helper thread writes the pages it faults in, so it must be done with the ones a download lands in before the
+    // device writes them: all of them for a whole region, the strip's chunks and those before them for a strip.
+    void awaitPreparedDownloads(std::optional<std::size_t> strip = std::nullopt)
     {
-        if (_prepared) {
-            const Clock::time_point begin = Clock::now();
+        if (!_prepared) {
+            return;
+        }
+        const Clock::time_point begin = Clock::now();
+        if (strip) {
+            _prepared->waitFor(_stripPrepared[*strip]);
+        } else {
             _prepared->wait();
             _prepared.reset();
-            if (_report) {
-                _report->prepareWaitMs += msBetween(begin, Clock::now());
-            }
+        }
+        if (_report) {
+            _report->prepareWaitMs += msBetween(begin, Clock::now());
         }
     }
 
@@ -1492,7 +1543,8 @@ private:
         if (!prepareStripImages(&sources)) {
             return EffectInstance::eRenderRoIRetCodeFailed;
         }
-        for (const GpuStrip& strip : strips) {
+        for (std::size_t index = 0; index < strips.size(); ++index) {
+            const GpuStrip& strip = strips[index];
             if (isAborted()) {
                 return EffectInstance::eRenderRoIRetCodeAborted;
             }
@@ -1503,7 +1555,7 @@ private:
             if (recorded != EffectInstance::eRenderRoIRetCodeOk) {
                 return recorded;
             }
-            if (!downloadStrip(strip)) {
+            if (!downloadStrip(strips, index)) {
                 return EffectInstance::eRenderRoIRetCodeFailed;
             }
             for (Slot& slot : _slots) {
@@ -1723,10 +1775,12 @@ private:
     }
 
     // Pipelined, each range must match the one submitStrip released to the transfer family exactly.
-    bool downloadStrip(const GpuStrip& strip,
+    bool downloadStrip(const std::vector<GpuStrip>& strips,
+                       std::size_t index,
                        StripInFlight* flight = nullptr)
     {
-        awaitPreparedDownloads();
+        const GpuStrip& strip = strips[index];
+        awaitPreparedDownloads(index);
         const Clock::time_point begin = Clock::now();
         std::vector<gpu::TimelineValue> downloads;
 
@@ -1941,7 +1995,7 @@ private:
     {
         StripInFlight& flight = _inFlightStrips.front();
 
-        if (!flight.downloadsIssued && !downloadStrip(strips[flight.index], &flight)) {
+        if (!flight.downloadsIssued && !downloadStrip(strips, flight.index, &flight)) {
             return false;
         }
         const Clock::time_point waitBegin = Clock::now();
@@ -2007,7 +2061,7 @@ private:
             gpuStripSubmitted(k);
             if (_inFlightStrips.size() >= 2) {
                 StripInFlight& previous = _inFlightStrips[_inFlightStrips.size() - 2];
-                if (!previous.downloadsIssued && !downloadStrip(strips[previous.index], &previous)) {
+                if (!previous.downloadsIssued && !downloadStrip(strips, previous.index, &previous)) {
                     return EffectInstance::eRenderRoIRetCodeFailed;
                 }
             }
@@ -2323,6 +2377,8 @@ private:
 
     // The helper thread's job faulting in and importing the download images, until a download or drain() waits for it.
     std::shared_ptr<gpu::GpuImportJob> _prepared;
+    // By strip: how many of _prepared's ranges its download waits for.
+    std::vector<std::size_t> _stripPrepared;
 
     // Pipelined strips: those whose device work may still run, oldest first, and the buffers of those that landed.
     std::deque<StripInFlight> _inFlightStrips;

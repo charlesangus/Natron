@@ -150,6 +150,9 @@ StagedImageEffect::canRenderOnGpu(const GpuQuery& query) const
     if (kind == OpKind::Resample) {
         return opResamplesOnGpu() && canRecordResampleGpu(*this, resolveGpuPlan(query), query, opResample(query.time, query.view, query.mappedScale));
     }
+    if (kind == OpKind::Custom) {
+        return canRenderOpOnGpu(query);
+    }
     if ((kind != OpKind::Point) && (kind != OpKind::Composite)) {
         return false;
     }
@@ -196,6 +199,9 @@ StagedImageEffect::getGpuInputLayer(int inputNb,
 {
     const OpKind kind = imagePipelineSpec().op;
 
+    if (kind == OpKind::Custom) {
+        return getOpGpuInputLayer(inputNb, plane, time, view, layer);
+    }
     if ((kind != OpKind::Point) && (kind != OpKind::Composite) && (kind != OpKind::Passes) && ((kind != OpKind::Resample) || !opResamplesOnGpu())) {
         return false;
     }
@@ -219,6 +225,9 @@ StagedImageEffect::renderGpu(const GpuRenderArgs& args)
         }
 
         return recordResampleGpu(*this, resolveGpuPlan(query), args, opResample(query.time, query.view, query.mappedScale), getResampleRegionStages(query.time, query.view));
+    }
+    if (kind == OpKind::Custom) {
+        return renderOpGpu(args);
     }
     if ((kind != OpKind::Point) && (kind != OpKind::Composite)) {
         return eStatusFailed;

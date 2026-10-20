@@ -60,6 +60,33 @@ NATRON_NAMESPACE_ENTER
 namespace {
 const int kAbortCheckRows = 16;
 
+constexpr InputSpec kChromaKeyerInputs[] = {
+    InputSpec { .label = "Source" },
+    InputSpec { .label = "InM", .role = InputRole::Mask, .optional = true },
+    InputSpec { .label = "OutM", .role = InputRole::Mask, .optional = true },
+    InputSpec { .label = "Bg", .role = InputRole::Aux, .optional = true },
+};
+
+constexpr NodeSpec kChromaKeyerNodeSpec = {
+    .id = PLUGINID_NATRON_CHROMAKEYER,
+    .label = "ChromaKeyer",
+    .description = "Simple chroma Keyer.\n"
+                   "Algorithm description:\n"
+                   "Keith Jack, \"Video Demystified\", Independent Pub Group (Computer), 1996, pp. 214-222, http://www.ee-techs.com/circuit/video-demy5.pdf\n"
+                   "A simplified version is described in:\n"
+                   "[2] High Quality Chroma Key, Michael Ashikhmin, http://www.cs.utah.edu/~michael/chroma/\n",
+    .grouping = PLUGIN_GROUP_KEYER,
+    .majorVersion = PLUGIN_MAJOR_NATRON_CHROMAKEYER,
+    .minorVersion = 0,
+    .inputs = kChromaKeyerInputs,
+};
+
+constexpr ImagePipelineSpec kChromaKeyerPipeline = {
+    .stages = { Stage::PassThroughUnprocessed },
+    .layers = LayerPolicy::color(true, true, true, true),
+    .op = OpKind::Custom,
+};
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846264338327950288
 #endif
@@ -714,7 +741,7 @@ readDouble(const KnobDoubleWPtr& weak,
 } // anonymous namespace
 
 ChromaKeyer::ChromaKeyer(NodePtr node)
-    : NativeImageEffect(node)
+    : StagedImageEffect(node)
     , _keyColor()
     , _colorspace()
     , _linear()
@@ -729,6 +756,18 @@ ChromaKeyer::ChromaKeyer(NodePtr node)
 
 ChromaKeyer::~ChromaKeyer()
 {
+}
+
+const NodeSpec*
+ChromaKeyer::nodeSpec() const
+{
+    return staticNodeSpec<kChromaKeyerNodeSpec>();
+}
+
+const ImagePipelineSpec&
+ChromaKeyer::imagePipelineSpec() const
+{
+    return staticImagePipelineSpec<kChromaKeyerPipeline, kChromaKeyerNodeSpec>();
 }
 
 std::string
@@ -755,7 +794,7 @@ ChromaKeyer::addAcceptedComponents(int inputNb,
                                    std::list<ImageLayerDesc>* comps)
 {
     if (isInputMask(inputNb)) {
-        NativeImageEffect::addAcceptedComponents(inputNb, comps);
+        StagedImageEffect::addAcceptedComponents(inputNb, comps);
 
         return;
     }
@@ -763,35 +802,10 @@ ChromaKeyer::addAcceptedComponents(int inputNb,
     comps->push_back(ImageLayerDesc::getRGBComponents());
 }
 
-NativePluginDescription
-ChromaKeyer::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_CHROMAKEYER;
-    desc.label = "ChromaKeyer";
-    desc.description = tr("Simple chroma Keyer.\n"
-                          "Algorithm description:\n"
-                          "Keith Jack, \"Video Demystified\", Independent Pub Group (Computer), 1996, pp. 214-222, http://www.ee-techs.com/circuit/video-demy5.pdf\n"
-                          "A simplified version is described in:\n"
-                          "[2] High Quality Chroma Key, Michael Ashikhmin, http://www.cs.utah.edu/~michael/chroma/\n")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_KEYER;
-    desc.majorVersion = PLUGIN_MAJOR_NATRON_CHROMAKEYER;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindImage));
-    desc.inputs.push_back(NativeInputDescription("InM", true, eDataKindImage, true));
-    desc.inputs.push_back(NativeInputDescription("OutM", true, eDataKindImage, true));
-    desc.inputs.push_back(NativeInputDescription("Bg", true, eDataKindImage));
-    desc.outputKind = eDataKindImage;
-
-    return desc;
-}
-
 void
 ChromaKeyer::initializeKnobs()
 {
-    KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
+    KnobPagePtr page = createControlsPage();
 
     _keyColor = createKeyColorKnob(this, page, tr("Key Color").toStdString(), tr("Foreground key color; foreground areas containing the key color are replaced with the background image.").toStdString());
 
@@ -867,13 +881,10 @@ ChromaKeyer::getRegionOfDefinition(U64 /*hash*/,
 }
 
 bool
-ChromaKeyer::isIdentity(double /*time*/,
-                        const RenderScale& /*scale*/,
-                        const RectI& /*roi*/,
-                        ViewIdx /*view*/,
-                        double* /*inputTime*/,
-                        ViewIdx* /*inputView*/,
-                        int* /*inputNb*/)
+ChromaKeyer::isOpIdentity(double /*time*/,
+                          const RenderScale& /*scale*/,
+                          const RectI& /*roi*/,
+                          ViewIdx /*view*/)
 {
     return false;
 }
@@ -907,7 +918,8 @@ ChromaKeyer::readSettings(double time,
 }
 
 StatusEnum
-ChromaKeyer::render(const RenderActionArgs& args)
+ChromaKeyer::renderOp(const RenderActionArgs& args,
+                      const StagePlan& /*plan*/)
 {
     ChromaKeyerSettings settings;
     readSettings(args.time, args.view, &settings);
@@ -993,7 +1005,7 @@ ChromaKeyer::render(const RenderActionArgs& args)
 
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
     std::vector<RectI> bandRects;
-    NativeImageEffect::makeRowBands(roi, nThreads, &bandRects);
+    makeStageRowBands(roi, nThreads, &bandRects);
     std::vector<KeyBand> bands;
     for (std::size_t j = 0; j < jobs.size(); ++j) {
         KeyJob& job = jobs[j];
@@ -1058,7 +1070,7 @@ ChromaKeyer::render(const RenderActionArgs& args)
     parallelForCancellable((int)bands.size(), nThreads, cancel, renderBand);
 
     return eStatusOK;
-} // ChromaKeyer::render
+} // ChromaKeyer::renderOp
 
 #ifdef NATRON_HAVE_GPU
 namespace {
@@ -1121,7 +1133,7 @@ ChromaKeyer::resolveColorInputLayer(int inputNb,
 }
 
 bool
-ChromaKeyer::canRenderOnGpu(const GpuQuery& query) const
+ChromaKeyer::canRenderOpOnGpu(const GpuQuery& query) const
 {
 #ifdef NATRON_HAVE_GPU
     if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps != 4)) {
@@ -1144,16 +1156,18 @@ ChromaKeyer::canRenderOnGpu(const GpuQuery& query) const
 }
 
 bool
-ChromaKeyer::getGpuInputLayer(int inputNb,
-                              const ImageLayerDesc& plane,
-                              double time,
-                              ViewIdx view,
-                              ImageLayerDesc* layer) const
+ChromaKeyer::getOpGpuInputLayer(int inputNb,
+                                const ImageLayerDesc& plane,
+                                double time,
+                                ViewIdx view,
+                                ImageLayerDesc* layer) const
 {
     if ((inputNb != kChromaKeyerInputSource) && (inputNb != kChromaKeyerInputBg)) {
-        return NativeImageEffect::getGpuInputLayer(inputNb, plane, time, view, layer);
+        stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
+
+        return true;
     }
-    // render() reads an RGB Source or Bg as RGB, whatever plane it renders.
+    // renderOp() reads an RGB Source or Bg as RGB, whatever plane it renders.
     *layer = plane;
     ImageLayerDesc resolved;
     if (resolveColorInputLayer(inputNb, time, view, &resolved) && (resolved.getNumComponents() > 0)) {
@@ -1177,10 +1191,10 @@ ChromaKeyer::getGpuReadableInput(const GpuRenderArgs& args,
     if (!input || !in.buffer) {
         return true;
     }
-    if ((in.nComps < 1) || (in.nComps > 4) || !isUsableGpuView(in, in.nComps)) {
+    if ((in.nComps < 1) || (in.nComps > 4) || !PassExec::isUsableGpuView(in, in.nComps)) {
         return false;
     }
-    // render() reads no pixel outside the input image, whose bounds lie within the input's
+    // renderOp() reads no pixel outside the input image, whose bounds lie within the input's
     // region of definition; the view may extend past it.
     const RenderScale& scale = args.query.mappedScale;
     const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
@@ -1189,18 +1203,18 @@ ChromaKeyer::getGpuReadableInput(const GpuRenderArgs& args,
     if (input->getRegionOfDefinition_public(input->getRenderHash(), args.query.time, inputScale, args.query.view, &rod, &isProjectFormat) == eStatusFailed) {
         return false;
     }
-    *view = cropGpuView(in, in.bounds.intersect(rod.toPixelEnclosing(scale, getAspectRatio(inputNb))));
+    *view = PassExec::cropGpuView(in, in.bounds.intersect(rod.toPixelEnclosing(scale, getAspectRatio(inputNb))));
 
     return true;
 }
 
 StatusEnum
-ChromaKeyer::renderGpu(const GpuRenderArgs& args)
+ChromaKeyer::renderOpGpu(const GpuRenderArgs& args)
 {
 #ifdef NATRON_HAVE_GPU
     const GpuQuery& query = args.query;
     const RectI& rect = args.outputRect;
-    if (!canRenderOnGpu(query) || rect.isNull() || !isUsableGpuView(args.output, 4) || !args.output.bounds.contains(rect)) {
+    if (!canRenderOpOnGpu(query) || rect.isNull() || !PassExec::isUsableGpuView(args.output, 4) || !args.output.bounds.contains(rect)) {
         return eStatusFailed;
     }
 
@@ -1214,7 +1228,7 @@ ChromaKeyer::renderGpu(const GpuRenderArgs& args)
         }
     }
 
-    // Views of the inputs as render() fetches them; one without a buffer reads zero.
+    // Views of the inputs as renderOp() fetches them; one without a buffer reads zero.
     GpuImageView views[4];
     const int colorInputs[2] = { kChromaKeyerInputSource, kChromaKeyerInputBg };
     for (int k = 0; k < 2; ++k) {
@@ -1241,7 +1255,7 @@ ChromaKeyer::renderGpu(const GpuRenderArgs& args)
         if (!mask.buffer) {
             continue;
         }
-        const int component = getGpuMaskViewComponent(maskLayer, maskChannel, mask.nComps);
+        const int component = stageGpuMaskViewComponent(maskLayer, maskChannel, mask.nComps);
         if ((component < 0) || (component >= mask.nComps)) {
             return eStatusFailed;
         }
@@ -1310,6 +1324,6 @@ ChromaKeyer::renderGpu(const GpuRenderArgs& args)
 
     return eStatusFailed;
 #endif
-} // ChromaKeyer::renderGpu
+} // ChromaKeyer::renderOpGpu
 
 NATRON_NAMESPACE_EXIT

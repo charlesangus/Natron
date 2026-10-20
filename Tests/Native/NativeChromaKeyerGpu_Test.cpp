@@ -53,7 +53,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Image/GpuRender.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/ViewIdx.h"
 
@@ -149,10 +149,10 @@ toleranceForShow(int show)
     return (show == 2) ? kUnpremultipliedTolerance : transcendental;
 }
 
-NativeImageEffect*
+StagedImageEffect*
 effectOf(const NodePtr& node)
 {
-    return node ? dynamic_cast<NativeImageEffect*>(node->getEffectInstance().get()) : NULL;
+    return node ? dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get()) : NULL;
 }
 
 bool
@@ -199,7 +199,7 @@ imageOf(const RenderedPlane& plane)
 GpuQuery
 queryFor(const NodePtr& keyer)
 {
-    NativeImageEffect* effect = effectOf(keyer);
+    StagedImageEffect* effect = effectOf(keyer);
     const ImageLayerDesc plane = ImageLayerDesc::mapNCompsToColorLayer(4);
     GpuQuery q;
 
@@ -288,7 +288,7 @@ TEST_F(NativeChromaKeyerGpuTest, MatchesTheCpuRender)
                 const bool hasMasks = (config & 2) != 0;
                 const NodePtr& keyer = keyers[hasBg ? 1 : 0];
                 const RenderedPlane& sourcePlane = sourcePlanes[hasBg ? 1 : 0];
-                NativeImageEffect* effect = effectOf(keyer);
+                StagedImageEffect* effect = effectOf(keyer);
                 ASSERT_TRUE(effect != NULL);
                 applySetting(keyer, setting);
                 enableKeyMasks(keyer, hasMasks);

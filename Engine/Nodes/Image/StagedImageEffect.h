@@ -129,7 +129,8 @@ public:
      * again for this node. For a Composite op with gpu() (GpuCompositeOp), the same with its
      * inputs (canRunStageSourcesGpu()) and a registry kernel. For a Passes op, canRecordPassesGpu() with the op's passes at the
      * query's time, view and scale. For a Resample op that opts into the GPU, canRecordResampleGpu()
-     * with the op's request at the query's time, view and scale. Every other op stays on the CPU.
+     * with the op's request at the query's time, view and scale. For a Custom op,
+     * canRenderOpOnGpu(). Every other op stays on the CPU.
      **/
     virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -161,7 +162,7 @@ public:
     /**
      * @brief For a Point, Composite or Passes op, or a Resample op that opts into the GPU, the layer
      * its plane is read in, except for the mask input, which is read in the layer its mask channel
-     * resolves in. False for every other op.
+     * resolves in. For a Custom op, getOpGpuInputLayer(). False for every other op.
      **/
     virtual bool getGpuInputLayer(int inputNb,
                                   const ImageLayerDesc& plane,
@@ -172,7 +173,8 @@ public:
     /**
      * @brief Records a Point or Composite op's gpu() description through the StagePlan of
      * args.query with recordStagesGpu(), a Passes op's passes with recordPassesGpu(), or a Resample op's request
-     * with recordResampleGpu(). Only called when canRenderOnGpu() accepted args.query.
+     * with recordResampleGpu(), or a Custom op's dispatches with renderOpGpu(). Only called when
+     * canRenderOnGpu() accepted args.query.
      **/
     virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -375,6 +377,37 @@ protected:
      * default is false.
      **/
     virtual bool opCanConcatenate() const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief Whether a Custom op's renderOpGpu() can produce query; the default, false, keeps the
+     * op on the CPU. The answer must depend only on the query and the node's settings.
+     **/
+    virtual bool canRenderOpOnGpu(const GpuQuery& /*query*/) const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief Records a Custom op's dispatches that fill args.output over args.outputRect. Only
+     * called when canRenderOpOnGpu() accepted args.query; the default fails.
+     **/
+    virtual StatusEnum renderOpGpu(const GpuRenderArgs& /*args*/) WARN_UNUSED_RETURN
+    {
+        return eStatusFailed;
+    }
+
+    /**
+     * @brief The layer a Custom op's renderOpGpu() reads input inputNb in when the node renders
+     * plane at time and view. False, the default, when it cannot read the input.
+     **/
+    virtual bool getOpGpuInputLayer(int /*inputNb*/,
+                                    const ImageLayerDesc& /*plane*/,
+                                    double /*time*/,
+                                    ViewIdx /*view*/,
+                                    ImageLayerDesc* /*layer*/) const WARN_UNUSED_RETURN
     {
         return false;
     }

@@ -33,7 +33,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 
 #define PLUGINID_NATRON_CHROMAKEYER "net.sf.openfx.ChromaKeyerPlugin"
 #define PLUGIN_MAJOR_NATRON_CHROMAKEYER 2
@@ -71,9 +71,12 @@ struct ChromaKeyerSettings;
  * Divergence: an RGB source has no alpha, which the OpenFX plug-in reads out of bounds. Here
  * "Normal" source alpha composites with an alpha of one there, and "Add to Inside Mask" adds
  * nothing.
+ *
+ * It is a Custom op with no mask or mix stage: the inside and outside masks feed the key itself,
+ * and its render writes the channels it does not process from the Source.
  **/
 class ChromaKeyer
-    : public NativeImageEffect {
+    : public StagedImageEffect {
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
@@ -83,6 +86,10 @@ public:
     explicit ChromaKeyer(NodePtr node);
 
     virtual ~ChromaKeyer();
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual const ImagePipelineSpec& imagePipelineSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual std::string getInputHint(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -94,49 +101,45 @@ public:
                                              ViewIdx view,
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+private:
+    // Never an identity: the output is always RGBA with the key as alpha.
+    virtual bool isOpIdentity(double time,
+                              const RenderScale& scale,
+                              const RectI& roi,
+                              ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual StatusEnum renderOp(const RenderActionArgs& args,
+                                const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     /**
      * @brief Accepts the RGBA plane in float whatever the settings, with or without Bg and the
-     * masks; the Source and Bg are read in the layer render() fetches them in.
+     * masks; the Source and Bg are read in the layer renderOp() fetches them in.
      **/
-    virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    virtual bool getGpuInputLayer(int inputNb,
-                                  const ImageLayerDesc& plane,
-                                  double time,
-                                  ViewIdx view,
-                                  ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool getOpGpuInputLayer(int inputNb,
+                                    const ImageLayerDesc& plane,
+                                    double time,
+                                    ViewIdx view,
+                                    ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum renderOpGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-protected:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual bool isIdentity(double time,
-                            const RenderScale& scale,
-                            const RectI& roi,
-                            ViewIdx view,
-                            double* inputTime,
-                            ViewIdx* inputView,
-                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-private:
     virtual void initializeKnobs() OVERRIDE FINAL;
 
     virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // Whether render() reads input inputNb as a mask: it is connected and its selector is on.
+    // Whether renderOp() reads input inputNb as a mask: it is connected and its selector is on.
     bool isKeyMaskUsed(int inputNb) const WARN_UNUSED_RETURN;
 
-    // The knob values render() and renderGpu() key with at time and view.
+    // The knob values renderOp() and renderOpGpu() key with at time and view.
     void readSettings(double time, ViewIdx view, ChromaKeyerSettings* settings) const;
 
-    // The layer render() fetches the Source or Bg in, false when it fetches nothing.
+    // The layer renderOp() fetches the Source or Bg in, false when it fetches nothing.
     bool resolveColorInputLayer(int inputNb, double time, ViewIdx view, ImageLayerDesc* layer) const WARN_UNUSED_RETURN;
 
-    // The part of input inputNb's view that render() would read pixels from: the view within the
-    // input's region of definition, without a buffer when render() reads none. False when the
+    // The part of input inputNb's view that renderOp() would read pixels from: the view within the
+    // input's region of definition, without a buffer when renderOp() reads none. False when the
     // region of definition cannot be computed.
     bool getGpuReadableInput(const GpuRenderArgs& args, int inputNb, GpuImageView* view) WARN_UNUSED_RETURN;
 

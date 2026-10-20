@@ -1454,7 +1454,11 @@ Node::flushHashDirtyMarks()
                 continue;
             }
             root->_imp->hashDirtyQueued.store(false);
-            if (visit(root)) {
+            // Walking from a root does not count as reaching it: a read of the only node marked
+            // recomputes it with its mark still queued, so a root may be clean, and another root
+            // of the batch it folds in must still mark it. A root reached already was walked from.
+            if ((root->_imp->hashFlushVisit != pass) && (root->_imp->hashFlushRootVisit != pass)) {
+                root->_imp->hashFlushRootVisit = pass;
                 toExpand.push_back(root);
             }
             if (batch[i].includeGroupContents) {

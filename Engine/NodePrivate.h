@@ -384,6 +384,7 @@ public:
     // Set while a mark of this node waits for its dependents to be marked too.
     std::atomic<bool> hashDirtyQueued { false };
     U64 hashFlushVisit = 0; //< the flush pass that last reached the node; only read and written under the flush mutex
+    U64 hashFlushRootVisit = 0; //< the flush pass that last walked from the node's own mark; same locking
     QMutex hashRecomputeMutex; //< serializes recomputes of this node; no other node's is taken under it
 
     // Set on the nodes downstream of an edit instead of refreshing their input-related data, which

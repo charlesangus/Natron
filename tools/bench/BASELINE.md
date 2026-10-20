@@ -1034,3 +1034,13 @@ The run above could not resolve regressions under the host noise, so the per-nod
 | blur | 48.78 | 48.07 | -1.5% | 47.83 | -0.7% |
 
 The 862c37f11 regressions came from the generic finish pass running when it was a plain copy (no mask, mix 1, no divisor, all channels), an unused row copy and a second read of the base input in Composites, and ColorCorrect's `toneWeight` no longer being inlined. 8c5a37d90 (with 7e4f4858a) removes all three; every native golden is unchanged.
+
+Graph benchmarks at 8c5a37d90, four ABBA rounds (`BENCH_N=50 BENCH_RES=uhd`, default render threads), raw data in `build/bench/m137-g2/`. Host load rose from 1.0 to about 4 after round 1. Values are the median of 3 timed frames per run, in s/frame; the delta column is the median over rounds.
+
+| case | before r1 / r2 / r3 / r4 | after r1 / r2 / r3 / r4 | delta |
+|---|---|---|---|
+| blurchain | 13.03 / 11.72 / 11.76 / 11.67 | 11.61 / 13.93 / 11.63 / 11.58 | -1.0% |
+| xfchain | 23.93 / 18.88 / 18.81 / 18.87 | 18.09 / 22.48 / 18.13 / 17.95 | -4.1% |
+| ccchain | 13.53 / 13.55 / 13.59 / 13.41 | 14.45 / 12.69 / 12.67 / 12.63 | -6.3% |
+
+Rounds 3 and 4 are steady within a run (frames within 1%) and agree: blurchain -1% to +0.2%, xfchain -4.7%, ccchain -6.5%. Rounds 1 and 2 each have one side with a 15 to 25% outlier, in both directions.

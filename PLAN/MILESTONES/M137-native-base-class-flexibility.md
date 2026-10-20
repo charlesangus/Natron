@@ -542,7 +542,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - verify: every case's after-median is within the pair's spread or within 3%, whichever is larger. A miss blocks the gate and goes to the user, even for Passes overhead that M139 - Blur In-Graph Overhead owns.
   - size: M
 
-- [ ] M137.P10.T2 — Panel screenshots and AppImage
+- [x] M137.P10.T2 — Panel screenshots and AppImage
   - files: `Tests/gui/m137_panels.py` (new), `build/appimages/M137-<sha>.AppImage`
   - approach:
     - Under Xvfb, open Grade, Saturation, Blur, ErodeDilate, Transform, Dissolve and Switch.
@@ -553,6 +553,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
 
 ## Decisions
 
+- 2026-10-20 — P10.T2: the user approved the panel shots of Grade, Saturation, Blur, ErodeDilate, Transform, Dissolve and Switch from the merged release build (`build/appimages/M137-c66bb1e7a.AppImage`, script `Tests/gui/m137_panels.py`, ca10faf6b).
 - 2026-10-19 — Claimed despite the file-overlap test (user override): M137 shares `Engine/GpuRegionTask.cpp`, `GpuCostModel.cpp`, `RenderScheduler.cpp` and `Tests/GpuResidency_Test.cpp` with M109 - GPU Region Engine Hardening, `GpuCostModel.cpp` with M107 - GPU Viewer Hand-off, `AppManager.cpp`/`Tests/CMakeLists.txt` with the parked M64 - Tiled Rendering, and `Engine/Nodes/README.md` with M78 - Metadata In Expressions. The user accepted rebasing over M109/M107 and resolving the conflicts in the scheduler and cost-model files.
 - 2026-10-19 — Goldens carry a build-config `STAMP`: a replay is bit-exact only in the configuration that recorded them, and uses the `NativeParity` CPU tolerances elsewhere (PR CI debug vs remote `fast` at -O1 can differ by ulps). They are recorded remotely through a `record_goldens` input on `remote-build.yml` (`tools/ci/remote/build.sh --record-goldens`), since this host builds remotely. The migration gate compares in the recording configuration.
 

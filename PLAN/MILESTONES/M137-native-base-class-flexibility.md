@@ -458,54 +458,36 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
 
 ## Phase 137.8: Composite kind, keyers and Merge
 
-- [ ] M137.P8.T1 — Composite kind on the CPU
-  - files: `Engine/Nodes/Image/Op.h`, `Engine/Nodes/Image/StagePlan.{h,cpp}`, `Engine/Nodes/Image/StagedImageEffect.{h,cpp}`, `Tests/Native/StagedComposite_Test.cpp` (new)
+- [x] M137.P8.T1 — Composite kind on the CPU (first cut, code 74836e031: a fixed four-source list; reworked by P8.T7)
+- [x] M137.P8.T6 — Composite kind on the GPU (first cut, code cd00f94a0: four fixed bindings in `compositewrap.slang`; reworked by P8.T7)
+- [x] M137.P8.T2 — Dissolve (code 1193cf0c8; moves to the fold in P8.T7)
+
+- [ ] M137.P8.T7 — Composite as a fold over any number of inputs
+  - files: `Engine/Nodes/Image/Op.h`, `Engine/Nodes/Image/StagePlan.{h,cpp}`, `Engine/Nodes/Image/StagedImageEffect.{h,cpp}`, `Engine/Gpu/Kernels/pixelwrap.slang`, `Engine/Gpu/Kernels/compositewrap.slang` (delete), `Engine/Gpu/GpuWrap.{h,cpp}`, `Engine/Nodes/Merge/Dissolve.{h,cpp}`, `Tests/Native/StagedComposite_Test.cpp`, `Tests/Gpu/PixelWrap_Test.cpp`, `Tests/Gpu/CMakeLists.txt`
   - approach:
-    - Add a `CompositeOp` concept and admit it in `OpOfKind`: `bake`, `isIdentity(params)`, `sources(params, RouteContext)` returning this evaluation's active (input, time) list, and `row(params, io)` over `io.src[0..n)`. At most `kPixelKernelMaxInputs` (4) sources and no fold: no node here reads more (Dissolve 2, Keyer/ChromaKeyer 4).
-    - `StagePlan` carries the source list. `runStagesCpu` fills `RowIO::src[i]`, reading each input through its `InputSpec::layer` (the first executor that reads it). A Mask-role source is read as the one channel its mask selector names. Rows outside an input's RoD read zero.
-    - The stages blend against a blend source the op names per evaluation (default: the first Source). The composed identities in `StagedImageEffect::isIdentity` resolve to that input, not to `getSourceInput()`.
-    - `ImageNode::route()` calls an op's `route(params, ctx)` for any kind when the op has one; today it does so only for Route.
-    - The GPU side is P8.T6.
-  - verify: at the phase build, `StagedComposite_Test` renders a two-source test op with an offset second input under mask and mix, a blend source other than input 0, a four-source op, and a Point op whose `route()` answers identity.
+    - A Composite op names a base input and an ordered list of further inputs, any count (Variadic included), and defines one step that combines the running result with one more input. The executor starts from the base row and folds the step over the list. With an empty list the result is the base row.
+    - Mask and mix are applied once, after the last step, against the blend input (default: the base). Premult stays refused.
+    - Drop the fixed four-source list and the Mask-role source reads; masks come only through MaskMix.
+    - GPU: one two-input step kernel per op, dispatched once per further input, ping-ponging two scratch buffers, with the finish (mask, mix, pass-through) on the last dispatch. Existing point kernels keep their bindings. Delete `compositewrap.slang`.
+    - Dissolve becomes base = lower input, one further input = upper input, step = its lerp.
+  - verify: at the phase build, `StagedComposite_Test` folds 2, 3 and 5 inputs (one offset) under mask and mix, with a blend input other than the base, plus the Point-op `route()` identity; `PixelWrap_Test` checks the step kernel over 2 and 5 inputs against a CPU transcription; Dissolve goldens re-recorded (rounding only) and `NativeDissolve_Test` passes.
   - size: L
 
-- [ ] M137.P8.T6 — Composite kind on the GPU
-  - files: `Engine/Gpu/Kernels/pixelwrap.slang`, `Engine/Gpu/GpuWrap.{h,cpp}`, `Engine/Nodes/Image/StagePlan.cpp`, `Engine/Nodes/Image/StagedImageEffect.cpp`, `Tests/Gpu/PixelWrap_Test.cpp`
+- [ ] M137.P8.T3 — Keyer as a Custom node
+  - files: `Engine/Nodes/Keyer/Keyer.{h,cpp}`, `Engine/Nodes/Image/StagedImageEffect.{h,cpp}` (only a Custom GPU opt-in, if needed), `Tests/Native/NativeKeyerGpu_Test.cpp`
   - approach:
-    - `IBinaryPixelOp` does not exist, and Keyer/ChromaKeyer read four inputs. Add an n-source op interface beside `IPixelOp` (`pixelwrap.slang:57`), with a `runWrapped` that binds up to `kPixelKernelMaxInputs` source views and applies the same divide, mask, mix and finish as the one-source path.
-    - `recordStagesGpu` binds the plan's sources. `canRenderOnGpu` admits Composite when `canRunStagesGpu` holds and every source is a usable float view. `getGpuInputLayer` answers each source from its `InputSpec::layer`.
-    - Listed directly after P8.T1; P8.T3 and P8.T4 need it.
-  - verify: at the phase build, on the remote GPU build, `PixelWrap_Test` checks a two-source and a four-source op against a CPU transcription.
-  - size: L
-
-- [ ] M137.P8.T2 — Dissolve
-  - files: `Engine/Nodes/Merge/Dissolve.{h,cpp}`
-  - approach:
-    - Composite op, CPU only (M110), `LayerPolicy::all()`. Inputs keep their numbering: `{"0" Source, "1" Source, "Mask" Mask, Variadic count 62 firstNumber 2}`; the mask is input 2 (`kDissolveMaskInput`).
-    - `sources()` returns floor and ceil of `which`. At an integer `which`, `route()` answers that input. The blend source is the lower input (floor of `which`), as its mask does today (`:398-407`).
-    - `{MaskMix, PassThroughUnprocessed}` replaces its own `maskInvert` (`:262-269`; same script name) and gives Dissolve a `mix` knob (approved by the user).
-    - `updateRange` and `getFramesNeeded` stay in the node.
-  - verify: at the phase build, the Dissolve goldens are bit-exact (mix at its default 1) and `NativeDissolve_Test` passes.
+    - Re-base onto `StagedImageEffect`, `OpKind::Custom`, with a `NodeSpec`, as Merge. Its render becomes `renderOp`; `isIdentity` stays false. Its GPU path and `keyer_main` stay as they are, through a Custom-node GPU opt-in if the framework lacks one.
+    - Behaviour unchanged; M95 - Knob Cleanup And Keyer Redesign removes its extra inputs later.
+  - verify: at the phase build, the Keyer goldens are bit-exact, `NativeKeyerGpu_Test` is within its bound, and `NativeKeyer_Test` passes.
   - size: M
 
-- [ ] M137.P8.T3 — Keyer, with `keyer_main` as an n-source op
-  - files: `Engine/Nodes/Keyer/Keyer.{h,cpp}`, `Engine/Gpu/Kernels/keyer.slang`, `Engine/Gpu/CMakeLists.txt`, `Tests/Native/NativeKeyerGpu_Test.cpp`
-  - approach:
-    - Composite op over Source, InM, OutM and Bg, with InM/OutM as Mask-role sources read through their selectors (P8.T1). No MaskMix (no mix knob today). Unprocessed channels as today; the goldens decide on PassThroughUnprocessed. `isIdentity` stays false.
-    - Move `keyer_main`'s body into a P8.T6 n-source entry, and delete the standalone entry and its `slang_add_kernel` line. Delete `render`, `isIdentity` and the GPU overrides. Retarget the test's casts.
-    - Behaviour stays unchanged; M95 - Knob Cleanup And Keyer Redesign redesigns it later.
-  - verify: at the phase build, the Keyer goldens are bit-exact, `NativeKeyerGpu_Test` is within its bound, and `NativeKeyer_Test` passes.
-  - size: L
-
-- [ ] M137.P8.T4 — ChromaKeyer, with `chromakeyer_main` as an n-source op
-  - files: `Engine/Nodes/Keyer/ChromaKeyer.{h,cpp}`, `Engine/Gpu/Kernels/chromakeyer.slang`, `Engine/Gpu/CMakeLists.txt`, `Engine/Nodes/NodeSpec.h`, `Tests/Native/NativeChromaKeyerGpu_Test.cpp`
-  - approach:
-    - As P8.T3.
-    - Its `getGpuInputLayer` (`:1147`) and its CPU path read Source and Bg in their resolved colour layer, whatever plane renders. `InputLayer` has only `plane`/`select`/`pairWith`. Add the kind this needs (e.g. `colorLayer()`) and declare it on Source and Bg, so the executors' per-source layer read replaces the override. `getGpuReadableInput` goes with the GPU overrides.
+- [ ] M137.P8.T4 — ChromaKeyer as a Custom node
+  - files: `Engine/Nodes/Keyer/ChromaKeyer.{h,cpp}`, `Tests/Native/NativeChromaKeyerGpu_Test.cpp`
+  - approach: as P8.T3, keeping `chromakeyer_main`, its `getGpuInputLayer` and `getGpuReadableInput`.
   - verify: as P8.T3, with `NativeChromaKeyer_Test`.
-  - size: L
+  - size: M
 
-- [ ] M137.P8.T5 — Merge as a Custom node
+- [x] M137.P8.T5 — Merge as a Custom node (code 6b81168b2)
   - files: `Engine/Nodes/Merge/Merge.{h,cpp}`
   - approach:
     - Re-base `MergeNode` onto `StagedImageEffect`, `OpKind::Custom`, with a `NodeSpec` per preset (`MergePreset<P>`, `Merge.h:191`): B (input 0) as the first Source, then A, Mask, and a Variadic run for A2… (`firstNumber` 2). Stages: MaskMix, plus PassThroughUnprocessed if its render copies unprocessed channels today.
@@ -617,6 +599,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
 - 2026-10-19 — Constant, Solid and CheckerBoard lose their optional input: no Source input, no stages, `sourceInput` -1, no pass-through (user). This is a deliberate behaviour change; P5.T4 re-records only the generator goldens.
 - 2026-10-19 — Crop is a pure Point op whose box rounds to whole pixels internally, with softness a matte the row multiplies by; `reformat` is expressed as an output RoD/format move and an integer translation, never a shifted source read, and P7.T4 stops and reports if that fails (user): a crop to a fractional pixel makes no sense. Golden diffs are allowed only at the edge pixels of fractional-box cases, and are reported.
 - 2026-10-19 — Dissolve gains a `mix` knob through the MaskMix stage, replacing its own mask handling (user).
+- 2026-10-20 — Composite is a fold, not a fixed source list (user): an op names a base input and any number of further inputs and defines one step combining the running result with one more input; the GPU dispatches a two-input step kernel per further input. The four-source cap existed only for the keyers, which are losing those inputs, and gave many-input nodes nothing. An op reading several inputs at once is left until a concrete node needs it. Keyer and ChromaKeyer become Custom nodes keeping their own render and GPU kernels until M95 - Knob Cleanup And Keyer Redesign: fitting them to Composite needed per-pixel source coverage, as-stored layer reads and RGB blend sources on the GPU, all keyer-only.
 - 2026-10-20 — Dissolve (code 1193cf0c8): rounding-only diffs from the op/stage split are accepted and its goldens re-recorded (user: don't revisit architectural decisions to fix rounding errors). Masked and one-input pixels can move by a few ulps, and unprocessed channels now always come from the lower input. The same rule applies to any later node whose conversion moves results only by rounding.
 - 2026-10-20 — Composite (code 74836e031) refuses the Premult stage at compile time: no single divisor applies to several inputs.
 - 2026-10-20 — Merge (code 6b81168b2) keeps its own early mask-miss identity return in `isOpIdentity` beside the framework's check, so the old answers hold when the mask region fails or touches the window edge. One old answer can't be kept: with a B channel off under an enabled output channel and a non-inverted mask missing the window, the framework now answers identity to B. No golden or test covers that case.
@@ -627,7 +610,7 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
   - `NativeGolden_Test` bit-exact, in the recording configuration (STAMP), for every recorded case of every migrated node. Exceptions: the generator fixtures were re-recorded by P5.T4 after the generators lost their input. Crop's goldens, `Crop_reformat_*` included, stay bit-exact (P7.T4). Merge's cases come from P4.T6. Rounding-only diffs from a conversion (Dissolve, P8.T2) are re-recorded, not fixed.
   - Every `Native*Gpu_Test` within its README bound on the remote GPU build. The Blur and ErodeDilate parity cases that set "(Un)premult by" were removed with the knob.
   - `NodeSpec_Test`, `NativeSwitch_Test`, `StageKnobFooter_Test`, `StagedPointContext_Test`, `StagedResample_Test`, `StagedComposite_Test` and `NativeChannelNodesSpec_Test`.
-- Greps for `NativeImageEffect`, `NativeImageTraits`, `NativePluginDescription`, `getNativePluginDescription`, `SpatialFilterSupport`, `grade_main`, `keyer_main` and `chromakeyer_main`, and a whole-word grep (`grep -w`) for `hostUnPremult`, find nothing in `Engine/` or `Tests/`. The knob script name `hostUnPremultBy` stays. `Engine/GpuCostModel.cpp` casts to no node class.
+- Greps for `NativeImageEffect`, `NativeImageTraits`, `NativePluginDescription`, `getNativePluginDescription`, `SpatialFilterSupport`, and `grade_main`, and a whole-word grep (`grep -w`) for `hostUnPremult`, find nothing in `Engine/` or `Tests/`. The knob script name `hostUnPremultBy` stays. `Engine/GpuCostModel.cpp` casts to no node class.
 - The `getPluginIDs()` dump equals the pre-milestone one, plus `fr.natron.Switch`.
 - P10.T1's interleaved before/after timings show no regression beyond noise.
 - The user approved:

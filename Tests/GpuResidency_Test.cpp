@@ -33,11 +33,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <future>
 #include <list>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <vector>
 
@@ -311,6 +314,29 @@ protected:
         }
 
         return true;
+    }
+
+    /**
+     * @brief Renders with a context of the test's own whose initialization waits for gate, so that the test controls
+     * when the GPU comes up. Returns it, still initializing.
+     **/
+    GpuContext* useGatedContext(const std::shared_future<void>& gate)
+    {
+        GpuContextOptions options;
+        options.mode = GpuResolvedMode::Force;
+        options.infoLog = [](const std::string&) { };
+        options.beforeInit = [gate] {
+            gate.wait();
+        };
+        std::unique_ptr<GpuContext> own(new GpuContext(options));
+        GpuContext* gated = own.get();
+        std::unique_ptr<GpuContext> previous = appPTR->swapGpuContextForTests(std::move(own));
+        if (!_swapped) {
+            _swappedContext = std::move(previous);
+            _swapped = true;
+        }
+
+        return gated;
     }
 
     /**
@@ -2505,7 +2531,157 @@ planChain(int blurHalo = kPlanHalo,
     return graph;
 }
 
+/**
+ * @brief Holds a gated context's initialization back until open() or openAfter()'s delay, and lets it go when it goes
+ * at the latest, so that the context can be destroyed.
+ **/
+class InitGate {
+public:
+    InitGate()
+        : _future(_promise.get_future().share())
+    {
+    }
+
+    ~InitGate()
+    {
+        if (_opener.joinable()) {
+            _opener.join();
+        }
+        open();
+    }
+
+    InitGate(const InitGate&) = delete;
+    InitGate& operator=(const InitGate&) = delete;
+
+    const std::shared_future<void>& future() const { return _future; }
+
+    void open()
+    {
+        std::lock_guard<std::mutex> k(_mutex);
+        if (!_open) {
+            _open = true;
+            _promise.set_value();
+        }
+    }
+
+    void openAfter(std::chrono::milliseconds delay)
+    {
+        _opener = std::thread([this, delay] {
+            std::this_thread::sleep_for(delay);
+            open();
+        });
+    }
+
+private:
+    std::mutex _mutex;
+    bool _open = false;
+    std::promise<void> _promise;
+    std::shared_future<void> _future;
+    std::thread _opener;
+};
+
+/**
+ * @brief Prices the session model's CPU costs on one thread while it lives, so that they do not depend on the machine.
+ **/
+class SessionThreadCountScope {
+public:
+    explicit SessionThreadCountScope(int threads)
+        : _saved(GpuCostModel::session().threadCount())
+    {
+        GpuCostModel::session().setThreadCount(threads);
+    }
+
+    ~SessionThreadCountScope()
+    {
+        GpuCostModel::session().setThreadCount(_saved);
+    }
+
+    SessionThreadCountScope(const SessionThreadCountScope&) = delete;
+    SessionThreadCountScope& operator=(const SessionThreadCountScope&) = delete;
+
+private:
+    int _saved;
+};
+
 } // namespace
+
+// The first frame of a process is placed while the GPU still initializes. A large Blur, which the GPU wins once it is
+// up, must wait for it rather than go to the CPU, and be placed exactly as the same frame is once the GPU is up.
+TEST_F(GpuResidencyTest, FirstFrameWaitsForTheGpuWhenItWouldWin)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const int size = 8192;
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr blur = makeBlur(60.);
+    ASSERT_TRUE(source && blur);
+    ASSERT_TRUE(setKnobValue(source, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize));
+    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamBottomLeft, { 0., 0. }));
+    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamSize, { (double)size, (double)size }));
+    KnobBool* crop = dynamic_cast<KnobBool*>(blur->getKnobByName(kBlurParamCropToFormat).get());
+    ASSERT_TRUE(crop);
+    crop->setValue(false);
+    connectNodes(source, blur, 0, true);
+    const RectI window(0, 0, size, size);
+    // On one thread the Blur's CPU time is seconds, which leaves the gated context time to come up within the wait.
+    SessionThreadCountScope threads(1);
+
+    InitGate gate;
+    GpuContext* gpu = useGatedContext(gate.future());
+    FrameRun first;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(blur, &first, &error, window)) << error;
+    const int blurTask = taskOf(first.graph, blur);
+    ASSERT_TRUE(blurTask >= 0);
+    ASSERT_TRUE(gpu->isInitializing());
+    gate.openAfter(std::chrono::milliseconds(200));
+    EXPECT_TRUE(placeRenderGraph(first.graph, first.context)) << "placement did not wait for the GPU";
+    EXPECT_TRUE(gpu->isAvailable());
+    EXPECT_EQ(FrameGraph::Device::Gpu, first.graph.tasks[blurTask].device);
+    EXPECT_FALSE(first.graph.regions.empty());
+
+    FrameRun warm;
+    ASSERT_TRUE(prepareFrame(blur, &warm, &error, window)) << error;
+    ASSERT_TRUE(placeRenderGraph(warm.graph, warm.context));
+    ASSERT_EQ(warm.graph.tasks.size(), first.graph.tasks.size());
+    for (std::size_t i = 0; i < warm.graph.tasks.size(); ++i) {
+        EXPECT_EQ(warm.graph.tasks[i].device, first.graph.tasks[i].device) << "task " << i;
+        EXPECT_EQ(warm.graph.tasks[i].regionId, first.graph.tasks[i].regionId) << "task " << i;
+    }
+    EXPECT_EQ(warm.graph.regions.size(), first.graph.regions.size());
+}
+
+// A frame the GPU cannot win even with free transfers, a lone Grade over 96 x 64 pixels, does not wait for the GPU to
+// come up: it is placed on the CPU at once.
+TEST_F(GpuResidencyTest, FirstFrameTheGpuCannotWinDoesNotWait)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr grade = makeGrade(1.5, 0.1);
+    ASSERT_TRUE(source && grade);
+    connectNodes(source, grade, 0, true);
+    SessionThreadCountScope threads(1);
+
+    InitGate gate;
+    GpuContext* gpu = useGatedContext(gate.future());
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(grade, &run, &error)) << error;
+    QElapsedTimer timer;
+    timer.start();
+    EXPECT_FALSE(placeRenderGraph(run.graph, run.context));
+    EXPECT_LT(timer.elapsed(), 1000) << "placement waited for a GPU that cannot win the frame";
+    EXPECT_TRUE(gpu->isInitializing());
+    EXPECT_TRUE(run.graph.regions.empty());
+    for (const FrameGraph::Task& task : run.graph.tasks) {
+        EXPECT_EQ(FrameGraph::Device::Cpu, task.device);
+    }
+    gate.open();
+    EXPECT_TRUE(gpu->waitForInit(std::chrono::seconds(60)));
+}
 
 TEST(GpuRegionStrips, FitsWholeWithoutLimits)
 {

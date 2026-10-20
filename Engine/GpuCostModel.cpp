@@ -577,6 +577,21 @@ double
 GpuCostModel::regionGainMs(const FrameGraph& graph,
                            const FrameGraph::Region& region) const
 {
+    return estimateRegionGainMs(graph, region, false);
+}
+
+double
+GpuCostModel::regionGainBoundMs(const FrameGraph& graph,
+                                const FrameGraph::Region& region) const
+{
+    return estimateRegionGainMs(graph, region, true);
+}
+
+double
+GpuCostModel::estimateRegionGainMs(const FrameGraph& graph,
+                                   const FrameGraph::Region& region,
+                                   bool freeTransfers) const
+{
     std::vector<bool> inRegion(graph.tasks.size(), false);
     for (int m : region.members) {
         inRegion[m] = true;
@@ -593,6 +608,9 @@ GpuCostModel::regionGainMs(const FrameGraph& graph,
         const double megapixels = megapixelsOf(task);
         gpuTotalMs += gpuMs(traits, megapixels);
         savedMs += cpuMs(traits, megapixels);
+    }
+    if (freeTransfers) {
+        return savedMs - gpuTotalMs - kAcceptMarginMs;
     }
 
     double uploadBytes = 0.;

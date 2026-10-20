@@ -90,6 +90,9 @@ struct GpuContextOptions {
     // Receives the informational line written when the GPU is unavailable, and one per device-loss recovery
     // attempt, so it is called for as long as the context lives. Unset writes them to the Qt info log.
     std::function<void(const std::string&)> infoLog;
+
+    // Runs on the initialization thread before the device is created. Tests hold initialization back with it.
+    std::function<void()> beforeInit;
 };
 
 /**
@@ -147,6 +150,11 @@ public:
      **/
     bool waitForInit(std::chrono::milliseconds timeout) const;
 
+    /**
+     * @brief When the context was created, which is when its initialization started.
+     **/
+    std::chrono::steady_clock::time_point createdAt() const { return _createdAt; }
+
     GpuResolvedMode mode() const { return _mode; }
 
     /**
@@ -182,6 +190,7 @@ private:
 
     const GpuContextOptions _options;
     const GpuResolvedMode _mode;
+    const std::chrono::steady_clock::time_point _createdAt;
     std::shared_ptr<Shared> _shared;
     std::thread _thread;
 };

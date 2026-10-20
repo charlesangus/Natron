@@ -222,6 +222,12 @@ public:
      **/
     double regionGainMs(const FrameGraph& graph, const FrameGraph::Region& region) const;
 
+    /**
+     * @brief regionGainMs() with every transfer free: the most the region can gain at any transfer rates, so that it
+     * can be judged before the rates are known.
+     **/
+    double regionGainBoundMs(const FrameGraph& graph, const FrameGraph::Region& region) const;
+
     void observeCpu(const GpuTaskTraits& traits, std::int64_t wallNs, int budget, double megapixels);
     void observeCpu(const FrameGraph::Task& task, std::int64_t wallNs, int budget);
 
@@ -260,6 +266,7 @@ private:
 
     int threadCountLocked() const;
     double transferMsLocked(double uploadBytes, double downloadBytes) const;
+    double estimateRegionGainMs(const FrameGraph& graph, const FrameGraph::Region& region, bool freeTransfers) const;
     double seedThreadMsPerMpxLocked(const CpuRow& row) const;
     const CpuRow* findCpuRowOrDefaultLocked(const GpuTaskTraits& traits) const;
     bool gpuMsPerMpxLocked(const GpuTaskTraits& traits, double* msPerMpx) const;

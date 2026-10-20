@@ -106,7 +106,9 @@ PlacementInputs makeRenderPlacementInputs(const FrameRenderContextPtr& context);
 /**
  * @brief Places graph with makeRenderPlacementInputs() when isGpuPlacementAvailable(), and leaves it unchanged
  * otherwise. Returns whether it placed. A render starts here, so a GPU runtime lost by an earlier one is recreated
- * first when nothing holds it any more. Same thread requirement as makeRenderPlacementInputs().
+ * first when nothing holds it any more. While the GPU context is still initializing, it first waits for it, for at most
+ * what the graph's regions would gain with free transfers, so that the first frame of a process is placed as a later
+ * one would be. Same thread requirement as makeRenderPlacementInputs().
  **/
 bool placeRenderGraph(FrameGraph& graph, const FrameRenderContextPtr& context);
 

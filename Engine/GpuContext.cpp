@@ -123,6 +123,7 @@ GpuContext::isDeviceAllowed(GpuResolvedMode mode,
 GpuContext::GpuContext(const GpuContextOptions& options)
     : _options(options)
     , _mode(options.mode)
+    , _createdAt(std::chrono::steady_clock::now())
     , _shared(std::make_shared<Shared>())
 {
 #ifdef NATRON_HAVE_GPU
@@ -415,6 +416,9 @@ GpuContext::initialize()
     std::unique_ptr<gpu::GpuRuntime> runtime;
 
     try {
+        if (_options.beforeInit) {
+            _options.beforeInit();
+        }
         // The cache is switched on at creation, so the hook that drops its imports must exist first. It does
         // nothing until the runtime is published through the hook target.
         shared.hookId = HostImageMemory::addFreeHook([target](void* ptr, std::size_t paddedBytes) {

@@ -293,7 +293,6 @@ def createInstance(app,group):
     groupMerge1.connectInput(0, groupUnpremult1)
     groupMerge1.connectInput(1, groupSolid1)
     groupMerge1.connectInput(2, groupInput2)
-    groupSolid1.connectInput(0, groupInput1)
     groupShuffle1.connectInput(0, groupDot1)
     groupShuffle1.connectInput(1, groupMerge1)
     groupPremult1.connectInput(0, groupShuffle1)

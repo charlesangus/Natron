@@ -56,7 +56,7 @@ Deps: M100 - Content Node Hashing (owns the sweep and the known-bug list).
 
 ## Phase 143.2: Fork fixes
 
-- [ ] M143.P2.T1 — EdgeExtend: stop `mergeOver` and `premult` indexing absent channels
+- [x] M143.P2.T1 — EdgeExtend: stop `mergeOver` and `premult` indexing absent channels
   - files: openfx-misc fork: `CImg/Blur/CImgBlur.cpp` (around the EdgeExtend branch of `render`, ~`:1727`, and the `premult`, `mergeOver` and `unpremult` helpers it calls)
   - approach:
     - The three helpers assume `cimg.spectrum() == 4`. When the process-channel toggles disable A (or other channels), the working image holds fewer channels, and they read past the end.
@@ -65,7 +65,7 @@ Deps: M100 - Content Node Hashing (owns the sweep and the known-bug list).
   - verify: in the fork, build the plug-in and render EdgeExtend with `processA` off and with every combination of R/G/B/A toggles under valgrind or ASan (no invalid read); the four-channel render's pixels are unchanged against the previous fork commit. Record the commit hash for P2.T4.
   - size: M
 
-- [ ] M143.P2.T2 — CImg expression parser: initialise `variable_name` before use
+- [x] M143.P2.T2 — CImg expression parser: initialise `variable_name` before use
   - files: openfx-misc fork: the bundled `CImg/CImg.h` (the `variable_name.assign(ss, ...)` statement near the `cimg_mp_operator_dollar` block, ~`:22320`)
   - approach:
     - In the parser's `mp` function, `variable_name` is assigned inside `#ifdef cimg_mp_operator_dollar` but read afterwards by code compiled whether or not that macro is defined. Without the macro the buffer is uninitialised. Move the `assign(...).back() = 0` out of the `#ifdef`, before it, so every later read sees a terminated name.
@@ -74,7 +74,7 @@ Deps: M100 - Content Node Hashing (owns the sweep and the known-bug list).
   - verify: run the CImgExpression plug-in with a variable-name expression and a plain one under valgrind (`--track-origins=yes`) or MSan: no use of an uninitialised value. Record the commit hash.
   - size: M
 
-- [ ] M143.P2.T3 — Sketch: fixed noise seed
+- [x] M143.P2.T3 — Sketch: fixed noise seed
   - files: openfx-arena fork: `Magick/Sketch.cpp` (render, before `image.sketch(...)`, ~`:193`)
   - approach:
     - ImageMagick's `SketchImage` draws strokes from random noise seeded from entropy unless a random seed is set. Set a fixed seed before `image.sketch(...)`, via `Magick::SetRandomSeed(<constant>)` or the per-image random-state setting that applies to that image only.
@@ -91,7 +91,7 @@ Deps: M100 - Content Node Hashing (owns the sweep and the known-bug list).
 
 ## Phase 143.3: Retire the known-bug list
 
-- [ ] M143.P3.T1 — Remove the known-plugin-bug mechanism from the sweep
+- [x] M143.P3.T1 — Remove the known-plugin-bug mechanism from the sweep
   - files: `Tests/Native/CacheEquivalence_Test.cpp`
   - approach:
     - Delete `KnownBugKind`, `KnownPluginBug`, `kKnownPluginBugs`, `findKnownPluginBug`, `kKnownBugChildSeconds`, `kKnownBugChildHungExitCode`, `exitIfStillRunningAfter`, `diedAbnormally`, the `CacheEquivalenceKnownPluginBugTest` fixture and its `KnownPluginBugsStillCrash` test, and the skip/known-bug branches in `CacheEquivalenceSweepTest` (`:1769-1790`). The empty array would not compile (`sizeof` of a zero-length array) and nothing else would use the rest.
@@ -102,6 +102,8 @@ Deps: M100 - Content Node Hashing (owns the sweep and the known-bug list).
 
 ## Decisions
 
+- 2026-10-20 — P2 verified locally (fork branch `m143/bundled-plugin-bug-fixes`, openfx-misc `6ed7a959`, openfx-arena `ed63abf`): all 16 sweep shards pass in both schedulers with no skips; taskgraph shard 4 (EdgeExtend) 40/40, while the old `CImg.ofx` aborts 6/6 on heap corruption. Valgrind clean for EdgeExtend over R/G/B/A, RGB, R+A and A-only, and for CImgExpression with variable names (the old plug-ins show invalid writes in `mergeOver` and an invalid read in `compile`). Four-channel EdgeExtend output is exactly unchanged. Sketch is byte-identical across renders, processes and 4-way parallel frames. Full ctest 2581/2581 in both modes. P3.T1 committed as 8ed920fb6.
+- 2026-10-20 — Scope addition: Texture (openfx-arena) sets the same process-global ImageMagick seed without a lock, so parallel Texture frames differ (1–4 of 8 per run) and a concurrent Sketch perturbs it. Sketch and Texture now share one seed-and-draw lock. The sweep could not see this: it renders one plug-in at a time per shard.
 - 2026-10-20 — P1.T1: the taskgraph hang is **plug-in UB in EdgeExtend**, not an engine deadlock; P1.T2 is `n/a - plug-in UB`. `mergeOver` (openfx-misc `CImg/Blur/CImgBlur.cpp:1083-1104`) writes channel 3 of a 3-channel image when `processA` is off, 16 KB past the buffer. In the hung child (3 of ~190 local taskgraph runs; the CI hangs are the first child, EdgeExtend) all 4 threads sleep on futex: main in `FrameFuture::wait()` (`Engine/RenderScheduler.cpp:89-95`) waiting on the render task; one pool thread in `gomp_team_barrier_wait_end <- gomp_team_end <- CImgBlurPlugin::render` (return address of the `GOMP_parallel` for `mergeOver._omp_fn.0`, a one-thread team at 64×64), whose barrier state the overflow corrupted; the other pool thread idle; the watchdog. No engine mutex is held. Same stack shape in two captures. CImgExpression always segfaults in `_cimg_math_parser::compile` and never hangs. Repro scripts and captures live under the m143 worktree's `build/m143t1-*`.
 - 2026-10-20 — P2.T1: EdgeExtend passes the image through unchanged when the working image is not RGBA with alpha at channel 3 (fork commit `94487064`), replacing a debug `assert` that would abort in PR CI. Four-channel arithmetic is untouched. Partial-matte cases such as RG+A get no edge extension rather than a partial one.
 - 2026-10-20 — P2.T2: `CImg.h` is not tracked in the openfx-misc fork; `fetch-assets.sh` downloads it at the fork's `CIMGVERSION`. The fix ships as a `CImg/CImg.h.patch` in the fork, applied by `fetch-assets.sh` beside the existing `inpaint.h.patch`.

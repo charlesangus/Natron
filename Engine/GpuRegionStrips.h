@@ -81,7 +81,8 @@ struct GpuStripSlot {
     // Read after the region: the rows of each strip's band are kept to the end of the strip and downloaded.
     bool interior = false;
 
-    // Read after the region by another region on the device: stripping would download it and lose that.
+    // Read after the region on the device, by another region or by the viewer as the root: stripping would download it
+    // and lose that, so a region holding one is never stripped only to hide its transfer.
     bool keptOnDevice = false;
 };
 

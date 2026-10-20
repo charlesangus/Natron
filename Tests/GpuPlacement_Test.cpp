@@ -490,7 +490,7 @@ struct CostFixture {
             return traits.count(indexOf(graph, task)) != 0;
         };
         inputs.regionGain = [this](const FrameGraph& g, const FrameGraph::Region& region) {
-            return model.regionGainMs(g, region);
+            return model.regionGainMs(g, region, false);
         };
         placeGraph(graph, inputs);
     }
@@ -1164,7 +1164,7 @@ TEST(GpuCostModel, NodeThatCannotRenderOnGpuIsNeverPlaced)
         return (index != 2) && (fixture.traits.count(index) != 0);
     };
     inputs.regionGain = [&fixture](const FrameGraph& g, const FrameGraph::Region& region) {
-        return fixture.model.regionGainMs(g, region);
+        return fixture.model.regionGainMs(g, region, false);
     };
     placeGraph(fixture.graph, inputs);
 

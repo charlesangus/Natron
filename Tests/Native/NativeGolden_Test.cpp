@@ -52,6 +52,7 @@
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Nodes/Transform/Position.h"
 #include "Engine/Nodes/Transform/Reformat.h"
@@ -194,6 +195,48 @@ bool
 chromaKey(const GoldenGraph& g)
 {
     return num(g, kChromaKeyerParamKeyColor, { 0.1, 0.8, 0.2 });
+}
+
+GoldenNodeSpec
+mergeSpec(const std::string& name,
+          const std::string& id,
+          bool secondA)
+{
+    GoldenNodeSpec spec = plainSpec(name, id, PLUGIN_MAJOR_NATRON_MERGE);
+
+    spec.maskInput = "Mask";
+    spec.extraInputs.push_back("A");
+    if (secondA) {
+        spec.extraInputs.push_back("A2");
+    }
+
+    return spec;
+}
+
+Apply
+mergeOperation(const std::string& operation)
+{
+    return [operation](const GoldenGraph& g) { return choice(g, kMergeParamOperation, operation); };
+}
+
+// The cases every Merge registration shares: B and the A inputs sit at different origins, so each
+// A reaches outside the render window and the bounding box modes differ.
+void
+addMergeCases(std::vector<GoldenVariant>* variants,
+              const std::string& operation)
+{
+    const Apply op = mergeOperation(operation);
+
+    variants->push_back(variant("default", op));
+    variants->push_back(variant("bboxa", [operation](const GoldenGraph& g) { return choice(g, kMergeParamOperation, operation) && choice(g, kMergeParamBBox, kMergeBBoxA); }));
+    variants->push_back(variant("bboxintersection", [operation](const GoldenGraph& g) { return choice(g, kMergeParamOperation, operation) && choice(g, kMergeParamBBox, kMergeBBoxIntersection); }));
+    variants->push_back(variant("channels", [operation](const GoldenGraph& g) {
+        return choice(g, kMergeParamOperation, operation) && num(g, std::string(kMergeParamAChannels) + "R", { 0. }) && num(g, std::string(kMergeParamOutputChannels) + "A", { 0. });
+    }));
+    variants->push_back(maskVariant("maskmix", [operation](const GoldenGraph& g) {
+        return choice(g, kMergeParamOperation, operation) && num(g, kOfxMixParamName, { 0.5 }) && num(g, kOfxMaskInvertParamName, { 1. });
+    }));
+    variants->push_back(maskVariant("maskplain", op));
 }
 
 } // namespace
@@ -471,6 +514,52 @@ TEST_F(NativeGoldenTest, Dissolve)
     v.push_back(variant("which1", [](const GoldenGraph& g) { return num(g, kDissolveParamWhich, { 1. }); }));
     v.push_back(maskVariant("mask", [](const GoldenGraph& g) { return num(g, kDissolveParamWhich, { 0.4 }); }));
     run(spec, v);
+}
+
+TEST_F(NativeGoldenTest, MergeOver)
+{
+    std::vector<GoldenVariant> v;
+    addMergeCases(&v, "over");
+    v.push_back(variant("alphamasking", [](const GoldenGraph& g) { return choice(g, kMergeParamOperation, "over") && num(g, kMergeParamAlphaMasking, { 1. }); }));
+    run(mergeSpec("MergeOver", PLUGINID_NATRON_MERGE, false), v);
+}
+
+TEST_F(NativeGoldenTest, MergePlusOperation)
+{
+    std::vector<GoldenVariant> v;
+    addMergeCases(&v, "plus");
+    v.push_back(variant("alphamasking", [](const GoldenGraph& g) { return choice(g, kMergeParamOperation, "plus") && num(g, kMergeParamAlphaMasking, { 1. }); }));
+    run(mergeSpec("MergePlusOperation", PLUGINID_NATRON_MERGE, false), v);
+}
+
+TEST_F(NativeGoldenTest, MergeA2)
+{
+    std::vector<GoldenVariant> v;
+    addMergeCases(&v, "over");
+    run(mergeSpec("MergeA2", PLUGINID_NATRON_MERGE, true), v);
+}
+
+TEST_F(NativeGoldenTest, MergeA2Plus)
+{
+    std::vector<GoldenVariant> v;
+    addMergeCases(&v, "plus");
+    run(mergeSpec("MergeA2Plus", PLUGINID_NATRON_MERGE, true), v);
+}
+
+TEST_F(NativeGoldenTest, MergePlus)
+{
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(maskVariant("maskmix", [](const GoldenGraph& g) { return num(g, kOfxMixParamName, { 0.5 }) && num(g, kOfxMaskInvertParamName, { 1. }); }));
+    run(mergeSpec("MergePlus", MergeNode::presetPluginID(eMergePresetPlus), true), v);
+}
+
+TEST_F(NativeGoldenTest, MergeMultiply)
+{
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(maskVariant("maskmix", [](const GoldenGraph& g) { return num(g, kOfxMixParamName, { 0.5 }) && num(g, kOfxMaskInvertParamName, { 1. }); }));
+    run(mergeSpec("MergeMultiply", MergeNode::presetPluginID(eMergePresetMultiply), false), v);
 }
 
 TEST_F(NativeGoldenTest, Keyer)

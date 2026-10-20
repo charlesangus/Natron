@@ -33,7 +33,7 @@
 #include <vector>
 
 #include "Engine/EngineFwd.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Merge/MergeOperators.h"
 
 #define PLUGINID_NATRON_MERGE "net.sf.openfx.MergePlugin"
@@ -77,6 +77,78 @@ enum MergePresetEnum {
     eMergePresetDifference
 };
 
+inline constexpr InputSpec kMergeInputs[] = {
+    InputSpec { .label = "B", .optional = true },
+    InputSpec { .label = "A", .optional = true },
+    InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
+    InputSpec { .label = "A", .role = InputRole::Variadic, .optional = true, .count = kMergeMaxAInputs - 1, .firstNumber = 2 },
+};
+
+inline constexpr ImagePipelineSpec kMergePipeline = {
+    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+    .layers = LayerPolicy::color(true, true, true, true),
+    .op = OpKind::Custom,
+};
+
+/**
+ * @brief The NodeSpec of a preset, without its description: the description lists every
+ * operator, which MergeOperators only knows at run time.
+ **/
+constexpr NodeSpec
+mergeNodeSpec(MergePresetEnum preset)
+{
+    NodeSpec spec;
+
+    switch (preset) {
+    case eMergePresetMerge:
+        spec.id = PLUGINID_NATRON_MERGE;
+        spec.label = "Merge";
+        break;
+    case eMergePresetPlus:
+        spec.id = PLUGINID_NATRON_MERGE_PREFIX "Plus";
+        spec.label = "Plus";
+        break;
+    case eMergePresetMatte:
+        spec.id = PLUGINID_NATRON_MERGE_PREFIX "Matte";
+        spec.label = "Matte";
+        break;
+    case eMergePresetMultiply:
+        spec.id = PLUGINID_NATRON_MERGE_PREFIX "Multiply";
+        spec.label = "Multiply";
+        break;
+    case eMergePresetIn:
+        spec.id = PLUGINID_NATRON_MERGE_PREFIX "In";
+        spec.label = "In";
+        break;
+    case eMergePresetOut:
+        spec.id = PLUGINID_NATRON_MERGE_PREFIX "Out";
+        spec.label = "Out";
+        break;
+    case eMergePresetScreen:
+        spec.id = PLUGINID_NATRON_MERGE_PREFIX "Screen";
+        spec.label = "Screen";
+        break;
+    case eMergePresetMax:
+        spec.id = PLUGINID_NATRON_MERGE_PREFIX "Max";
+        spec.label = "Max";
+        break;
+    case eMergePresetMin:
+        spec.id = PLUGINID_NATRON_MERGE_PREFIX "Min";
+        spec.label = "Min";
+        break;
+    case eMergePresetDifference:
+        spec.id = PLUGINID_NATRON_MERGE_PREFIX "Difference";
+        spec.label = "Absminus";
+        break;
+    }
+    spec.grouping = (preset == eMergePresetMerge) ? PLUGIN_GROUP_MERGE : PLUGIN_GROUP_MERGE "/Merges";
+    spec.majorVersion = PLUGIN_MAJOR_NATRON_MERGE;
+    spec.minorVersion = 0;
+    spec.inputs = kMergeInputs;
+
+    return spec;
+}
+
 /**
  * @brief Pixel-by-pixel merge of one or more A inputs over B, with the operators, input handling,
  * region of definition and identity rules of openfx-misc's Merge 2.0, registered under its IDs
@@ -90,9 +162,13 @@ enum MergePresetEnum {
  *
  * The class is not named Merge because Engine/MergingEnum.h already declares a namespace of that
  * name in the Natron namespace.
+ *
+ * It is a Custom op: the blend against B reads its mask, inversion and mix from the StagePlan,
+ * and the channels it does not process are written by its own render, from the input the host
+ * would copy them from.
  **/
 class MergeNode
-    : public NativeImageEffect {
+    : public StagedImageEffect {
 public:
     MergeNode(NodePtr node,
               MergePresetEnum preset);
@@ -102,16 +178,11 @@ public:
     static std::string presetPluginID(MergePresetEnum preset);
     static MergeOperators::Operation presetOperation(MergePresetEnum preset);
 
-    virtual int getNInputs() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return kMergeMaxAInputs + 2;
-    }
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    virtual std::string getInputLabel(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual const ImagePipelineSpec& imagePipelineSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual std::string getInputHint(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-    virtual bool isInputOptional(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-    virtual bool isInputMask(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-    virtual DataKindEnum getInputDataKind(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
 
@@ -129,8 +200,6 @@ public:
                                               const std::vector<ImagePtr>& outputs) WARN_UNUSED_RETURN;
 
 protected:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
     /**
      * @brief The metadata of the first connected A input (A, then A2, ...), or of B when no A is
      * connected. The Mask never contributes.
@@ -156,15 +225,18 @@ private:
                                              ViewIdx view,
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    virtual bool isIdentity(double time,
-                            const RenderScale& scale,
-                            const RectI& roi,
-                            ViewIdx view,
-                            double* inputTime,
-                            ViewIdx* inputView,
-                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    /**
+     * @brief Whether the merge leaves B unchanged over roi: every output channel is off, or no
+     * output channel drops B's and either a non-inverted mask misses roi or the operator leaves
+     * B unchanged where A is absent and no A input, clipped to such a mask, meets roi.
+     **/
+    virtual bool isOpIdentity(double time,
+                              const RenderScale& scale,
+                              const RectI& roi,
+                              ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum renderOp(const RenderActionArgs& args,
+                                const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     MergeOperators::Operation getOperation(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
@@ -186,10 +258,13 @@ private:
 
 /**
  * @brief The factory the built-in plug-in registry needs for each ID: it builds an effect
- * through a static function that takes no preset argument.
+ * through a static function that takes no preset argument. kNodeSpec is the preset's spec
+ * without its description.
  **/
 template <MergePresetEnum PRESET>
 struct MergePreset {
+    static constexpr NodeSpec kNodeSpec = mergeNodeSpec(PRESET);
+
     static EffectInstance* BuildEffect(NodePtr node)
     {
         return new MergeNode(node, PRESET);

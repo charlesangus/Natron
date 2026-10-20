@@ -340,12 +340,36 @@ maxError(const std::vector<float>& got,
     return worst;
 }
 
+// OCIO leaves a 1D LUT's interpolation to the sampler's linear filter, whose weights the device
+// quantizes to subTexelPrecisionBits: 8 on RADV, where OCIO's CPU interpolates in float. The error
+// is up to the largest step between neighbouring texels over 2^bits.
+double
+linearFilterError(gpu::GpuRuntime& runtime,
+                  const OcioVulkanShader& shader)
+{
+    VkPhysicalDeviceProperties properties {};
+    vkGetPhysicalDeviceProperties(runtime.device().physicalDevice(), &properties);
+    double largestStep = 0.;
+    for (const OcioVulkanShader::Texture& t : shader.textures()) {
+        if ( (t.desc.dimensions == 3) || (t.desc.filter != gpu::GpuTextureFilter::Linear) ) {
+            continue;
+        }
+        const std::size_t channels = t.desc.channels;
+        for (std::size_t i = channels; i < t.texels.size(); ++i) {
+            largestStep = std::max(largestStep, std::fabs(double(t.texels[i]) - double(t.texels[i - channels])));
+        }
+    }
+
+    return std::ldexp(largestStep, -int(properties.limits.subTexelPrecisionBits));
+}
+
 void
 runCase(gpu::GpuRuntime& runtime,
         const char* label,
         const OCIO::ConstProcessorRcPtr& processor,
         OcioVulkanShader::Resources& resources,
-        Prepared* prepared)
+        Prepared* prepared,
+        bool filteredLut = false)
 {
     ASSERT_TRUE(bool(processor));
     std::printf("[ocio-vk] %s\n", label);
@@ -362,8 +386,9 @@ runCase(gpu::GpuRuntime& runtime,
     }
     ASSERT_EQ(input.size(), got.size());
     const double worst = maxError(got, cpuReference(processor->getDefaultCPUProcessor(), input));
-    std::printf("  max abs error vs OCIO CPU: %.3g\n", worst);
-    EXPECT_LE(worst, kTolerance);
+    const double tolerance = filteredLut ? kTolerance + linearFilterError(runtime, prepared->shader) : kTolerance;
+    std::printf("  max abs error vs OCIO CPU: %.3g (tolerance %.3g)\n", worst, tolerance);
+    EXPECT_LE(worst, tolerance);
 }
 
 #endif // NATRON_HAVE_GPU
@@ -413,7 +438,7 @@ TEST(OcioVulkanShader, ShaperAnd3DLutLook)
 
     OcioVulkanShader::Resources resources(holder->runtime());
     Prepared prepared;
-    runCase(holder->runtime(), "luts", processor, resources, &prepared);
+    runCase(holder->runtime(), "luts", processor, resources, &prepared, true);
     if (::testing::Test::HasFatalFailure()) {
         return;
     }

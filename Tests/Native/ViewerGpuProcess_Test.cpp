@@ -374,12 +374,44 @@ private:
 struct EightBitStats {
     std::size_t codes = 0;
     std::size_t offByOne = 0;
+    std::size_t thresholdBand = 0;
     int worst = 0;
 };
+
+// Under OCIO the kernel thresholds gamma 0 at this value rather than the CPU's 1.0, because OCIO's
+// GPU renderer lands clamped white a few ulps under 1.0. A channel the CPU transform lands in
+// between is black on the CPU and may be white on the GPU.
+const float kGpuOcioThreshold = 0.99999f;
+
+// The float path computes luminance in double where the 8-bit path uses float, so its value may sit
+// a few ulps either side of the one the 8-bit path thresholds.
+bool
+inThresholdBand(float v)
+{
+    return (v >= kGpuOcioThreshold) && (v <= 1.f + (1.f - kGpuOcioThreshold));
+}
+
+// Each channel's value after the CPU display transform and before the gamma 0 threshold, laid out
+// as RGBA over kRect.
+std::vector<float>
+cpuDisplayValues(const ImagePtr& image,
+                 const Case& c)
+{
+    Case plain = c;
+    plain.matte = false;
+    if (plain.channels == eDisplayChannelsMatte) {
+        plain.channels = eDisplayChannelsRGB;
+    }
+    std::vector<float> values = cpuReference<float>(image, plain, eImageBitDepthFloat, 4);
+    applyViewerDisplayTransform(*c.processor, values.data(), int(kRect.area()), c.gain, c.offset, 1., eViewerDisplayOutputExact);
+
+    return values;
+}
 
 void
 compareEightBit(const std::vector<std::byte>& gpuBytes,
                 const std::vector<U32>& cpu,
+                const std::vector<float>* thresholdInputs,
                 const std::string& label,
                 EightBitStats* stats)
 {
@@ -396,6 +428,10 @@ compareEightBit(const std::vector<std::byte>& gpuBytes,
             const int got = int((gpu[i] >> shifts[k]) & 0xffu);
             const int diff = std::abs(expected - got);
             const int tolerance = (k == 0) ? 0 : 1;
+            if ( (k > 0) && thresholdInputs && inThresholdBand( (*thresholdInputs)[i * 4 + std::size_t(k - 1)] ) ) {
+                ++stats->thresholdBand;
+                continue;
+            }
             if (k > 0) {
                 ++stats->codes;
                 stats->offByOne += (diff == 1) ? 1 : 0;
@@ -407,6 +443,9 @@ compareEightBit(const std::vector<std::byte>& gpuBytes,
                     const int y = kRect.y1 + int(i / std::size_t(kRect.width()));
                     std::ostringstream s;
                     s << "pixel (" << x << ", " << y << ") byte " << "ARGB"[k] << ": cpu " << expected << ", gpu " << got;
+                    if ( thresholdInputs && (k > 0) ) {
+                        s << std::setprecision(9) << " (cpu display value " << (*thresholdInputs)[i * 4 + std::size_t(k - 1)] << ")";
+                    }
                     first = s.str();
                 }
                 ++mismatches;
@@ -600,7 +639,12 @@ TEST(ViewerGpuProcess, EightBitMatchesTheCpuInEveryDisplayMode)
                         std::vector<std::byte> got;
                         const gpu::GpuStatus s = dispatcher.run(process, gpu::GlPixelFormat::Bgra8, c, &got);
                         ASSERT_TRUE(bool(s)) << label << ": " << s.message;
-                        compareEightBit(got, cpuReference<U32>(image, c, eImageBitDepthByte, 1), label, &stats[pi]);
+                        std::vector<float> thresholdInputs;
+                        if ( (gamma <= 0.) && c.processor ) {
+                            thresholdInputs = cpuDisplayValues(image, c);
+                        }
+                        compareEightBit(got, cpuReference<U32>(image, c, eImageBitDepthByte, 1), thresholdInputs.empty() ? nullptr : &thresholdInputs,
+                                        label, &stats[pi]);
                         if (::testing::Test::HasFatalFailure()) {
                             return;
                         }
@@ -610,7 +654,8 @@ TEST(ViewerGpuProcess, EightBitMatchesTheCpuInEveryDisplayMode)
         }
     }
     for (int pi = 0; pi < 3; ++pi) {
-        std::printf("[viewer-gpu] %-10s %zu codes, %zu one code off, worst %d\n", processors[pi].name, stats[pi].codes, stats[pi].offByOne, stats[pi].worst);
+        std::printf("[viewer-gpu] %-10s %zu codes, %zu one code off, worst %d, %zu in the gamma 0 threshold band\n", processors[pi].name,
+                    stats[pi].codes, stats[pi].offByOne, stats[pi].worst, stats[pi].thresholdBand);
     }
 #endif
 }

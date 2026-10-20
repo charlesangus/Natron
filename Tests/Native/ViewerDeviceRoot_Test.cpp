@@ -33,6 +33,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -43,20 +44,26 @@
 
 #include <QCoreApplication>
 #include <QString>
+#include <QStringList>
 #include <QThread>
 
 #include "Tests/BaseTest.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CreateNodeArgs.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GpuContext.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/OpenGLViewerI.h"
+#include "Engine/Plugin.h"
+#include "Engine/PluginActionShortcut.h"
 #include "Engine/Project.h"
 #include "Engine/RenderStats.h"
 #include "Engine/TimeLine.h"
@@ -73,6 +80,47 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const int kSize = 64;
+
+// AppManager registers the viewer only for a GUI session, and the tests run in the background. It
+// is registered for internal use only, so that the sweeps over every plug-in that run later in the
+// same process do not try to build it.
+void
+registerViewerPluginOnce()
+{
+    static std::once_flag once;
+
+    std::call_once(once, []() {
+        try {
+            if ( appPTR->getPluginBinary(QString::fromUtf8(PLUGINID_NATRON_VIEWER), -1, -1, false) ) {
+                return;
+            }
+        } catch (const std::exception&) {
+        }
+        EffectInstancePtr node( ViewerInstance::BuildEffect( NodePtr() ) );
+        std::map<std::string, void (*)()> functions;
+        functions.insert( std::make_pair("BuildEffect", (void (*)())&ViewerInstance::BuildEffect) );
+        LibraryBinary* binary = new LibraryBinary(functions);
+
+        std::list<std::string> grouping;
+        node->getPluginGrouping(&grouping);
+        QStringList qgrouping;
+        for (std::list<std::string>::iterator it = grouping.begin(); it != grouping.end(); ++it) {
+            qgrouping.push_back( QString::fromUtf8( it->c_str() ) );
+        }
+
+        Plugin* p = appPTR->registerPlugin(QString(), qgrouping, QString::fromUtf8( node->getPluginID().c_str() ), QString::fromUtf8( node->getPluginLabel().c_str() ),
+                                           QString(), QStringList(), node->isReader(), node->isWriter(), binary, node->renderThreadSafety() == eRenderSafetyUnsafe,
+                                           node->getMajorVersion(), node->getMinorVersion(), false);
+        // Registered after AppManager::load(), so the label-without-suffix the script name is made
+        // from was never assigned.
+        p->setLabelWithoutSuffix( Plugin::makeLabelWithoutSuffix( p->getPluginLabel() ) );
+        std::list<PluginActionShortcut> shortcuts;
+        node->getPluginShortcuts(&shortcuts);
+        p->setShorcuts(shortcuts);
+        p->setOpenGLRenderSupport( node->supportsOpenGLRender() );
+        p->setForInternalUseOnly(true);
+    });
+}
 
 // The viewer widget as the render thread sees it: a single tile covering the whole frame at 100%.
 class FakeViewerUi
@@ -339,7 +387,10 @@ protected:
         }
 
         NodePtr constant = createNode( QString::fromUtf8(PLUGINID_NATRON_CONSTANT) );
-        _viewerNode = createNode( QString::fromUtf8(PLUGINID_NATRON_VIEWER) );
+        registerViewerPluginOnce();
+        CreateNodeArgs viewerArgs( PLUGINID_NATRON_VIEWER, getApp()->getProject() );
+        viewerArgs.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
+        _viewerNode = getApp()->createNode(viewerArgs);
         ASSERT_TRUE(constant && _viewerNode);
         _viewer = _viewerNode->isEffectViewer();
         ASSERT_TRUE(_viewer != NULL);

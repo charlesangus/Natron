@@ -3391,3 +3391,7 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
 ### 2026-10-16T12:30:00Z — change-request
 - refs: none
 - New milestone requested (user): **Native Metadata Utilities** (E3, after M77 - Native Metadata Nodes). Native versions of the OFX example metadata nodes that M77 left without a native equivalent — `org.openfx.examples.metadataCompare`, `metadataContribute` and `metadataTimeCode` — then retire the OFX ones from the bundle and the asset fetch. Also replace the three OFX example plug-ins the test suite uses as metadata-bridge fixtures (Contribute, Print, TimeCode in `build/assets/TestPlugins/`) with an in-repo test-only OFX plug-in, so the bridge keeps coverage once they're gone. Deps: M77.
+
+### 2026-10-20T10:30:00Z — change-request
+- refs: none
+- Proposed follow-up milestone (E5 - GPU Compute or E6 - Render Performance), from M109 - GPU Region Engine Hardening's gate decision: cut the first-render page-zeroing cost of GPU region download destinations. A fresh 4 GiB destination (Erode 40 at 16k) waits ~100–256 ms while the kernel zeroes new pages at ~16–24 GB/s, about a third of region wall in a fresh process. Candidates: transparent or explicit huge pages for pooled `HostImageMemory` buffers, a pre-faulted and pinned destination pool reused across renders and frames, or prefaulting on an idle thread at startup. The CPU path pays the same zeroing, so judge it on fresh-process single-frame wall, Auto against Off and CPU-only against main.

@@ -203,6 +203,7 @@ future core work has solid ground to build on.
 | M143 | Bundled Plugin Bug Fixes | doing | M100 | bosley-native-nodes | E3 | [M143-bundled-plugin-bug-fixes.md](PLAN/MILESTONES/M143-bundled-plugin-bug-fixes.md) |
 | M144 | Render-Thread Metadata Refresh | todo | M100 |  | E14 | [M144-render-thread-metadata-refresh.md](PLAN/MILESTONES/M144-render-thread-metadata-refresh.md) |
 | M145 | OFX Fork Plugin Purge | todo | M113, M121, M122, M123, M124, M125, M127, M128, M129, M130, M132, M140, M143 |  | E3 | [M145-ofx-fork-plugin-purge.md](PLAN/MILESTONES/M145-ofx-fork-plugin-purge.md) |
+| M154 | Fresh Buffer Page Zeroing | todo | M109 |  | E5 | [M154-fresh-buffer-page-zeroing.md](PLAN/MILESTONES/M154-fresh-buffer-page-zeroing.md) |
 
 # Epics
 

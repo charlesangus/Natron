@@ -82,7 +82,6 @@ const char* const kAllBundledPyPlugs[] = {
     "fr.inria.AngleBlur",
     "fr.inria.DropShadow",
     "fr.inria.EdgeBlur",
-    "fr.inria.Fill",
     "fr.inria.Glow",
     "fr.inria.LightWrap",
     "fr.inria.PIKColor",

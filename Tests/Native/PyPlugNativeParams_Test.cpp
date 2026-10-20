@@ -254,7 +254,6 @@ const char* const kAuditedPyPlugs[] = {
     "AngleBlur",
     "DropShadow",
     "EdgeBlur",
-    "Fill",
     "Glow",
     "LightWrap",
     "PIKColor",

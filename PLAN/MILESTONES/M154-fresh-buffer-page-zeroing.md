@@ -72,7 +72,7 @@ M109 - GPU Region Engine Hardening merged to main as `687f1991a` (#70). This mil
   - verify: `gpu_region_summary.py --self-test` passes with the new fields. A `BENCH_DRY_RUN=1` run lists base and candidate sessions interleaved. One real UHD Erode a-warm session per AppImage writes non-zero `VmHWM` and THP fields. shellcheck on `tools/bench/*.sh` is clean.
   - size: M
 
-- [ ] M154.P1.T3 — Quick directional diagnosis (~1 h): where the fresh-page time goes, and which candidates run
+- [x] M154.P1.T3 — Quick directional diagnosis (~1 h): where the fresh-page time goes, and which candidates run
   - files: none (results in `## Decisions`, data under `.local/m154/p1/`)
   - approach:
     - On the current boot, run P1.T1 to get the 1-thread and N-thread rates, 4K against THP, each touch pattern, with and without a background load equal to one download.
@@ -90,7 +90,7 @@ M109 - GPU Region Engine Hardening merged to main as `687f1991a` (#70). This mil
 
 ## Phase 154.2: Huge-page coverage and prefault rate
 
-- [ ] M154.P2.T1 — Give every pooled large buffer huge pages from its first fault (if P1.T3 finds 4K fallback)
+- [x] ~~M154.P2.T1 — Give every pooled large buffer huge pages from its first fault (if P1.T3 finds 4K fallback)~~ — **dropped 2026-10-20** by P1.T3 (see `## Decisions`)
   - files: `Engine/HostImageMemory.cpp` (`rawAlloc`, `rawFree`, `reallyFree`), `Engine/Gpu/GpuRuntime.cpp` (`GpuImportPreparer::touch`), `Tests/Image_Test.cpp`
   - approach:
     - Apply the cause P1.T3 names. The expected shape: allocate buffers ≥ 32 MiB with `mmap`, trimmed to a 2 MiB-aligned start, advise `MADV_HUGEPAGE` before any touch, and `munmap` with the capacity in `rawFree`. The free path already knows each buffer's capacity.
@@ -99,7 +99,7 @@ M109 - GPU Region Engine Hardening merged to main as `687f1991a` (#70). This mil
   - verify: a new `Image_Test` case allocates a 64 MiB pooled buffer, writes it, and reads its `AnonHugePages` from `/proc/self/smaps`. With THP `madvise`/`always`, that is ≥ 90% of the size; with `never`, the case skips. Existing `HostImageMemory` and idle-trim tests pass. P1.T1's in-process equivalent (`thp_fault_fallback` delta ≈ 0 on an Erode 40 16k a-warm run) is recorded in `## Decisions`.
   - size: M
 
-- [ ] M154.P2.T2 — Prefault fresh destinations in one call, in parallel where it pays (if P1.T3 (c) shows ≥ 1.3× under load)
+- [x] ~~M154.P2.T2 — Prefault fresh destinations in one call, in parallel where it pays (if P1.T3 (c) shows ≥ 1.3× under load)~~ — **dropped 2026-10-20** by P1.T3 (see `## Decisions`)
   - files: `Engine/HostImageMemory.{h,cpp}` (new `prefault(void*, std::size_t)`), `Engine/Gpu/GpuRuntime.cpp` (`GpuImportPreparer` uses it), `Tests/Image_Test.cpp`, `Tests/Gpu/GpuRuntime_Test.cpp`
   - approach:
     - `prefault` uses `MADV_POPULATE_WRITE`, falling back to write-touch on `EINVAL`. It splits ranges of at least a few hundred MiB across the thread count P1.T3 found best under load.
@@ -110,7 +110,7 @@ M109 - GPU Region Engine Hardening merged to main as `687f1991a` (#70). This mil
 
 ## Phase 154.3: Hiding the zeroing earlier
 
-- [ ] M154.P3.T1 — Keep a speculative prefaulted reserve, sized from the loaded project and bounded by `MemAvailable` (if P1.T3 (e) shows an idle window ≥ the fault time)
+- [x] ~~M154.P3.T1 — Keep a speculative prefaulted reserve, sized from the loaded project and bounded by `MemAvailable` (if P1.T3 (e) shows an idle window ≥ the fault time)~~ — **dropped 2026-10-20** by P1.T3 (see `## Decisions`)
   - files: `Engine/HostImageMemory.{h,cpp}` (new `reserve(sizes)`), `Engine/Project.cpp` or `Engine/AppInstance.cpp` (one call after a project loads, whichever P1.T3 shows precedes the idle window; `Project.cpp` is in M108.P2.T4, so prefer `AppInstance.cpp` or wait for M108), `Tests/Image_Test.cpp`
   - approach:
     - After a project loads, a low-priority thread allocates and prefaults the buffers of the project's largest output format (RGBA float, the capacity `capacityFor` returns). Use the count P1.T3 saw the first frame allocate, capped at 2.
@@ -121,17 +121,109 @@ M109 - GPU Region Engine Hardening merged to main as `687f1991a` (#70). This mil
   - verify: unit tests cover: the reserve is served to a matching `allocate` without a fresh fault; the reserve is refused when the probed `MemAvailable` is low (through a test hook); idle trim takes the reserve down to the floor; and a cancel mid-reserve leaves the pool consistent. Directional: Erode 40 16k a-warm on Auto and Off drops by about the P1.T3 prediction, with `VmHWM` growing by no more than the stated budget.
   - size: L
 
-- [ ] M154.P3.T2 — Fault CPU-path outputs off the critical path (if P1.T3 (d) shows Off's zeroing is serial or exposed)
-  - files: as P1.T3 finds. The candidates are `Engine/Image.cpp` (allocation-time fills) and `Engine/CacheEntry.h` (`RamBuffer::resize`), plus `Tests/Image_Test.cpp`
+- [ ] M154.P3.T2 — ⚑ Allocate native nodes' scratch buffers uninitialised from the pooled huge-page allocator (after M137 - Native Base Class Flexibility merges: it rewrites `ErodeDilate.cpp` and `EdgeDetect.cpp`)
+  - files: `Engine/Nodes/Filter/ErodeDilate.cpp`, `Engine/Nodes/Filter/EdgeDetect.cpp`, any other native node with the same scratch pattern (grep `std::vector<float>` sized by plane area in `Engine/Nodes/`), `Engine/HostImageMemory.h` if a scratch helper is needed, `Tests/Native/` (a test beside the nodes' existing ones)
   - approach:
-    - Remove whatever P1.T3 shows serialises the CPU path's first touch. For example, a single-threaded fill of a fresh buffer that the render then overwrites, or one thread faulting a whole output that render threads could fault in parallel.
-    - If the change needs a part of `Image.cpp` that M108 - Retire Engine GL Host Path edits (the `fill`/`fillZero` paths taking a `glContext`), move this task after M108 merges and flag it.
-  - verify: image tests pass. A directional Erode 40 16k Off a-warm run is faster than P2's build on the same boot, and CPU renders are bit-identical to main on the `Image_Test` fixtures.
+    - P1.T3 found `std::vector<float> buffer(planeSize * nPlanes)` (`ErodeDilate.cpp:527` on `687f1991a`; `EdgeDetect.cpp:739`). Its value-initialisation zero-fills 4 GiB on one thread, on 4K pages, and that one thread faults every fresh page while the others idle. `fillBuffer` then overwrites every element, including the zero border, so the zeroes are never read.
+    - Replace it with an uninitialised buffer from `HostImageMemory` (pooled, 2 MiB-aligned with `MADV_HUGEPAGE` above 32 MiB), released at the end of the render. The kernel's own page zeroing then happens on `fillBuffer`'s threads, at the huge-page rate, and a re-render reuses the pooled pages with no fault at all.
+    - Confirm, per node, that every element is written before it is read. Where a node relies on the zero-fill, keep an explicit parallel fill of only that part.
+    - Re-scout after M137 merges: line numbers and the buffer's shape will have moved.
+  - verify: the nodes' existing native tests are bit-identical to main on CPU and GPU. A directional Erode 40 16k Off a-warm run against `.local/m154/Natron-main-687f1991a-release.AppImage` (same boot, `BENCH_BASE_APPIMAGE`) is ≥ 5% faster, and the scratch VMA shows huge pages and multi-thread faults (per-thread `/proc` sampling as in P1.T3).
   - size: M
 
 ## Phase 154.4: Shared-file follow-up (FLAGGED: touches a file M107 owns)
 
-- [ ] M154.P4.T1 — ⚑ Start preparing region destinations when the region is dispatched, not when it starts (if P1.T3 (e) shows region dispatch → start ≥ the destination's fault time; touches M107 - GPU Viewer Hand-off's `Engine/GpuRegionTask.cpp`; start after M107 merges; `Engine/RenderScheduler.cpp` also appears in M143.P1.T2 and blocked M64.P2.T3, so rerun the overlap check first)
+- [x] ~~M154.P4.T1 — ⚑ Start preparing region destinations when the region is dispatched, not when it starts (if P1.T3 (e) shows region dispatch → start ≥ the destination's fault time; touches M107 - GPU Viewer Hand-off's `Engine/GpuRegionTask.cpp`; start after M107 merges; `Engine/RenderScheduler.cpp` also appears in M143.P1.T2 and blocked M64.P2.T3, so rerun the overlap check first)~~ — **dropped 2026-10-20** by P1.T3 (see `## Decisions`)
+  - files: `Engine/GpuRegionTask.cpp` (`allocateDownloadImages` split into an early allocate-and-queue step), `Engine/RenderScheduler.cpp` (call it when the region's inputs are dispatched), `Tests/GpuResidency_Test.cpp`
+  - approach:
+    - Allocate the download images and queue their prepare job as soon as the region's shape and strips are planned, which can be before its inputs finish. Then `runGpuRegion` waits on the existing chunk counters.
+    - The early step must be undone (images released, job cancelled) if the region is cancelled or falls back to the CPU.
+  - verify: residency tests pass on lavapipe and RADV in both scheduler modes, including a cancelled-region case that leaks no import. On a comp whose region has upstream CPU work (defocus_retime 8K), a directional a-warm run shows lower `prepareWaitMs`.
+  - size: L
+
+## Phase 154.5: Thorough bench
+
+- [ ] M154.P5.T1 — Thorough bench against main on the target host
+  - files: none (results in `## Decisions`, data under `.local/m154/p5/`)
+  - approach:
+    - The last phase's release AppImage against a main release AppImage (`BENCH_BASE_APPIMAGE`), 3 rounds, same boot, interleaved.
+    - Cases: Erode 40 at 16k and 24k, Blur σ100 at 16k, Transform at 8K, and the defocus_retime comp at 8K.
+    - Kinds, in order: a-warm, a-cold (reported separately, with compile time), bc (re-render and frame jump), then playback (secondary).
+    - Both NATRON_GPU modes, `MemAvailable` probed per case, write-back out of timing.
+    - Record the same-boot rates from P1.T1 and the GpuBench import rate.
+    - Read idle trim from the process's RssAnon/AnonHugePages after 2× the idle period.
+  - verify: the gate below holds, or each miss is written in `## Decisions` for the user.
+  - size: M
+
+**Verification gate:**
+- Fresh-process single frame (a-warm), Erode 40 16k, CPU-only (NATRON_GPU=off): the in-process render time drops by ≥ 5% against main, as the median of same-boot pairs with every round below 1.0. 24k and EdgeDetect are reported.
+- GPU Auto shows no regression: within ±2% of main on every bench case and kind.
+- No warm regression: bc (same-frame re-render, frame jump) and playback frames 2+ are within ±2% of main in both modes, and Off bc re-renders are reported (the pooled scratch should speed them too).
+- On every session, peak RSS (`VmHWM`) is ≤ main's + 2%. The pool never exceeds `maxPoolBytes()`.
+- Idle trim still works: after 2× the idle period, the idle process's pooled bytes and RssAnon are back at the floor.
+- Full ctest passes on lavapipe, RADV and no ICD, in both scheduler modes, and `-DNATRON_GPU=OFF` builds.
+
+## Decisions`, data under `.local/m154/p1/`)
+  - approach:
+    - On the current boot, run P1.T1 to get the 1-thread and N-thread rates, 4K against THP, each touch pattern, with and without a background load equal to one download.
+    - Run P1.T2 on Erode 40 16k a-warm (fresh process, single frame) and bc (same-frame re-render, frame jump), Auto and Off, 2 rounds.
+    - For one Auto and one Off session, also capture `perf stat -e page-faults,minor-faults` and a `perf record -g` of the region and render threads. From those, get the `clear_page*`/`clear_huge_page` share, plus a `/proc/<pid>/smaps` sample of the destination VMA during the render.
+    - Answer each of these:
+      - (a) Do destinations get huge pages, or do they fall back to 4K? Use `thp_fault_fallback`, `thp_split_pmd` and `AnonHugePages`. Explain why, for example the read-then-write touch mapping the huge zero page, alignment, the glibc header page, or defrag.
+      - (b) Is the in-process ~16 GB/s the THP rate under bandwidth contention?
+      - (c) Do T threads fault faster than 1 under that load?
+      - (d) What share of Off's fresh-process wall is page zeroing, and on which threads?
+      - (e) What idle window comes before the render? Measure process start → project loaded → render start, and region dispatch → region start.
+    - From these, pick which Phase 154.2–154.4 tasks run, and the predicted gain of each.
+  - verify: `## Decisions` holds a dated entry with (a)–(e), the same-boot rates, and a run/drop call for each of P2.T1, P2.T2, P3.T1, P3.T2 and P4.T1, with a predicted fresh-process single-frame gain for Auto and for Off. If no candidate predicts ≥ 5% on either path, the PM stops and asks the user before Phase 154.2.
+  - size: M
+
+## Phase 154.2: Huge-page coverage and prefault rate
+
+- [x] ~~M154.P2.T1 — Give every pooled large buffer huge pages from its first fault (if P1.T3 finds 4K fallback)~~ — **dropped 2026-10-20** by P1.T3 (see `## Decisions`)
+  - files: `Engine/HostImageMemory.cpp` (`rawAlloc`, `rawFree`, `reallyFree`), `Engine/Gpu/GpuRuntime.cpp` (`GpuImportPreparer::touch`), `Tests/Image_Test.cpp`
+  - approach:
+    - Apply the cause P1.T3 names. The expected shape: allocate buffers ≥ 32 MiB with `mmap`, trimmed to a 2 MiB-aligned start, advise `MADV_HUGEPAGE` before any touch, and `munmap` with the capacity in `rawFree`. The free path already knows each buffer's capacity.
+    - Make `touch` write-only, for example `p[off] = 0` on destination ranges, which downloads overwrite, so no read maps the huge zero page.
+    - Keep the smaller-buffer and Windows paths unchanged.
+  - verify: a new `Image_Test` case allocates a 64 MiB pooled buffer, writes it, and reads its `AnonHugePages` from `/proc/self/smaps`. With THP `madvise`/`always`, that is ≥ 90% of the size; with `never`, the case skips. Existing `HostImageMemory` and idle-trim tests pass. P1.T1's in-process equivalent (`thp_fault_fallback` delta ≈ 0 on an Erode 40 16k a-warm run) is recorded in `## Decisions`.
+  - size: M
+
+- [x] ~~M154.P2.T2 — Prefault fresh destinations in one call, in parallel where it pays (if P1.T3 (c) shows ≥ 1.3× under load)~~ — **dropped 2026-10-20** by P1.T3 (see `## Decisions`)
+  - files: `Engine/HostImageMemory.{h,cpp}` (new `prefault(void*, std::size_t)`), `Engine/Gpu/GpuRuntime.cpp` (`GpuImportPreparer` uses it), `Tests/Image_Test.cpp`, `Tests/Gpu/GpuRuntime_Test.cpp`
+  - approach:
+    - `prefault` uses `MADV_POPULATE_WRITE`, falling back to write-touch on `EINVAL`. It splits ranges of at least a few hundred MiB across the thread count P1.T3 found best under load.
+    - The preparer keeps chunk order, so strip k's range still finishes before strip k+1's. Pinning stays on the helper thread.
+    - If (c) shows no gain, keep only the single-call populate, and only if P1.T1 shows it is faster than touching.
+  - verify: unit tests show `prefault` leaves every page resident (`mincore`) and that the fallback path does too. `GpuRuntime_Test`'s prepare-job tests pass on lavapipe and RADV. A directional Erode 40 16k a-warm run shows lower `prepareWaitMs` than P2.T1's build on the same boot.
+  - size: M
+
+## Phase 154.3: Hiding the zeroing earlier
+
+- [x] ~~M154.P3.T1 — Keep a speculative prefaulted reserve, sized from the loaded project and bounded by `MemAvailable` (if P1.T3 (e) shows an idle window ≥ the fault time)~~ — **dropped 2026-10-20** by P1.T3 (see `## Decisions`)
+  - files: `Engine/HostImageMemory.{h,cpp}` (new `reserve(sizes)`), `Engine/Project.cpp` or `Engine/AppInstance.cpp` (one call after a project loads, whichever P1.T3 shows precedes the idle window; `Project.cpp` is in M108.P2.T4, so prefer `AppInstance.cpp` or wait for M108), `Tests/Image_Test.cpp`
+  - approach:
+    - After a project loads, a low-priority thread allocates and prefaults the buffers of the project's largest output format (RGBA float, the capacity `capacityFor` returns). Use the count P1.T3 saw the first frame allocate, capped at 2.
+    - It puts them straight into the pool as pooled bytes, so cache `trimTo`, `maxPoolBytes` and idle trim all take them like any pooled buffer.
+    - Before each buffer, it re-probes `getAmountAvailablePhysicalRAM()` and stops when the reserve would leave less than the larger of 25% of `MemAvailable` and the pool's headroom.
+    - It stops, without blocking, when a render starts allocating, so it never competes with a render already running.
+    - The budget (the maximum reserve bytes) is stated in the header comment and recorded in `## Decisions`. The gate's peak-RSS line uses it.
+  - verify: unit tests cover: the reserve is served to a matching `allocate` without a fresh fault; the reserve is refused when the probed `MemAvailable` is low (through a test hook); idle trim takes the reserve down to the floor; and a cancel mid-reserve leaves the pool consistent. Directional: Erode 40 16k a-warm on Auto and Off drops by about the P1.T3 prediction, with `VmHWM` growing by no more than the stated budget.
+  - size: L
+
+- [ ] M154.P3.T2 — ⚑ Allocate native nodes' scratch buffers uninitialised from the pooled huge-page allocator (after M137 - Native Base Class Flexibility merges: it rewrites `ErodeDilate.cpp` and `EdgeDetect.cpp`)
+  - files: `Engine/Nodes/Filter/ErodeDilate.cpp`, `Engine/Nodes/Filter/EdgeDetect.cpp`, any other native node with the same scratch pattern (grep `std::vector<float>` sized by plane area in `Engine/Nodes/`), `Engine/HostImageMemory.h` if a scratch helper is needed, `Tests/Native/` (a test beside the nodes' existing ones)
+  - approach:
+    - P1.T3 found `std::vector<float> buffer(planeSize * nPlanes)` (`ErodeDilate.cpp:527` on `687f1991a`; `EdgeDetect.cpp:739`). Its value-initialisation zero-fills 4 GiB on one thread, on 4K pages, and that one thread faults every fresh page while the others idle. `fillBuffer` then overwrites every element, including the zero border, so the zeroes are never read.
+    - Replace it with an uninitialised buffer from `HostImageMemory` (pooled, 2 MiB-aligned with `MADV_HUGEPAGE` above 32 MiB), released at the end of the render. The kernel's own page zeroing then happens on `fillBuffer`'s threads, at the huge-page rate, and a re-render reuses the pooled pages with no fault at all.
+    - Confirm, per node, that every element is written before it is read. Where a node relies on the zero-fill, keep an explicit parallel fill of only that part.
+    - Re-scout after M137 merges: line numbers and the buffer's shape will have moved.
+  - verify: the nodes' existing native tests are bit-identical to main on CPU and GPU. A directional Erode 40 16k Off a-warm run against `.local/m154/Natron-main-687f1991a-release.AppImage` (same boot, `BENCH_BASE_APPIMAGE`) is ≥ 5% faster, and the scratch VMA shows huge pages and multi-thread faults (per-thread `/proc` sampling as in P1.T3).
+  - size: M
+
+## Phase 154.4: Shared-file follow-up (FLAGGED: touches a file M107 owns)
+
+- [x] ~~M154.P4.T1 — ⚑ Start preparing region destinations when the region is dispatched, not when it starts (if P1.T3 (e) shows region dispatch → start ≥ the destination's fault time; touches M107 - GPU Viewer Hand-off's `Engine/GpuRegionTask.cpp`; start after M107 merges; `Engine/RenderScheduler.cpp` also appears in M143.P1.T2 and blocked M64.P2.T3, so rerun the overlap check first)~~ — **dropped 2026-10-20** by P1.T3 (see `## Decisions`)
   - files: `Engine/GpuRegionTask.cpp` (`allocateDownloadImages` split into an early allocate-and-queue step), `Engine/RenderScheduler.cpp` (call it when the region's inputs are dispatched), `Tests/GpuResidency_Test.cpp`
   - approach:
     - Allocate the download images and queue their prepare job as soon as the region's shape and strips are planned, which can be before its inputs finish. Then `runGpuRegion` waits on the existing chunk counters.
@@ -176,3 +268,4 @@ M109 - GPU Region Engine Hardening merged to main as `687f1991a` (#70). This mil
   - **Bench, Erode 40 16k, a-warm:** Auto 3.99/3.86 s, prepareWaitMs 271/260, peak RSS 8.4 GB. Off 8.34/8.42 s, peak RSS 12.5 GB. Every session: `thp_fault_fallback` 0, `thp_split_pmd` 0. Of Auto's 4.0 s, 3.6 s is the single-threaded Write task; the region is ~364 ms (kernel 81, prepare wait 271).
   - **(a)** Pooled destinations always get huge pages (AnonHugePages = Rss), including under the read-then-write touch. **(b)** Yes: in-process prepare runs at ~14–16 GB/s, the THP rw rate under contention (probe: 19.7 unloaded, 13.0 under a ~18 GB/s load). **(c)** 1.26–1.42× at 4–8 threads under a one-download load, 1.64× under a heavier one; `MADV_POPULATE_WRITE` gains only 1.10× and does not scale with threads. **(d)** Off's exposed zeroing is ~1.25 s of 8.4 s (~15%), all on one thread: `Engine/Nodes/Filter/ErodeDilate.cpp:527` builds a 4 GiB `std::vector<float>` scratch, zero-filled serially on 4K pages, unpooled and re-faulted on every render, while 15 threads idle. `EdgeDetect.cpp:739` has the same pattern. Pooled-buffer zeroing in Off is parallel and ~0.2 s. **(e)** Project built → render start ≈ 0 in batch; region dispatch → start ≈ 0 (no CPU upstream; inferred from the graph).
   - **Calls:** P2.T1 drop (no 4K fallback). P2.T2 drop as specified (populate doesn't scale; an 8-thread write-touch would save ~50–80 ms, ≈1.5–2% Auto). P3.T1 drop (no idle window). P4.T1 drop (no dispatch window). P3.T2 run only if retargeted at the node scratch buffers: ≈12–14% on every Off render, 0% Auto. **No candidate predicts ≥ 5% on Auto**; removing prepare wait entirely caps at ~6.8%. The nearest Auto item outside the list is the Write thread faulting its 4 GiB pooled buffer on the first render (~0.15–0.2 s, ~4–5%). The gate's "≥ 5% on both paths" is unreachable as planned, so the PM stops and asks the user before Phase 154.2.
+- 2026-10-20 — **Retargeted after P1.T3 (user).** GPU destinations already get huge pages, and no planned candidate gains ≥ 5% on Auto, so P2.T1, P2.T2, P3.T1 and P4.T1 are dropped. P3.T2 is rewritten in place to fix the native nodes' scratch buffers: their zero-fill is redundant (`fillBuffer` overwrites every element) and serial. Without it, the kernel's mandatory page zeroing runs on the fill's threads at the huge-page rate, and pooling removes it on re-renders. It is flagged ⚑ to start after M137 - Native Base Class Flexibility merges, since M137 rewrites both node files. The gate now asks ≥ 5% on Off only, with Auto held to ±2% of main; the reserve-budget gate line is gone with P3.T1. P5.T1's bench keeps its cases.

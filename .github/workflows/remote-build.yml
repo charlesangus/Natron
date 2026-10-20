@@ -42,7 +42,16 @@ on:
 permissions:
   contents: read
 
+env:
+  CI: 'True'
+  PYTHON_VERSION: '3.13'
+  OCIO_CONFIG_VERSION: 2.5
+  NATRON_IN_CONTAINER: 1
+  NATRON_DEPS_CACHE: ${{ github.workspace }}/.natron-deps
+  PRESET: ${{ inputs.preset || 'fast' }}
+
 jobs:
+  # Builds once; the ctest legs below run off the build tree it uploads.
   remote-build:
     name: remote-build
     runs-on: ubuntu-latest
@@ -52,14 +61,12 @@ jobs:
       run:
         shell: bash -l {0}
     env:
-      CI: 'True'
-      PYTHON_VERSION: '3.13'
-      OCIO_CONFIG_VERSION: 2.5
-      NATRON_IN_CONTAINER: 1
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: ${{ (inputs.preset || 'fast') == 'release' && '3G' || '2G' }}
-      NATRON_DEPS_CACHE: ${{ github.workspace }}/.natron-deps
-      PRESET: ${{ inputs.preset || 'fast' }}
+      # One compile per vCPU of the hosted runner; build.sh's default of 3 suits the dev machine.
+      NATRON_BUILD_JOBS: 4
+    outputs:
+      tree: ${{ steps.upload_tree.outcome }}
 
     steps:
       - name: Checkout branch
@@ -135,58 +142,24 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # Each leg took about 35 minutes when ctest ran serially. Without the step bound, a case that outlives
-      # ctest's own per-case timeout holds the job until GitHub's six-hour limit.
-      - name: Run ctest suite (legacy scheduler)
+      # A tar because artifacts drop the executable bit. Object files and static archives are
+      # only build inputs, and Testing/ holds this job's golden-recording run.
+      - name: Pack build tree
         if: inputs.tests && !cancelled() && steps.build.outcome == 'success'
-        timeout-minutes: 75
-        env:
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-          NATRON_TEST_REQUIRE_GPU: 1
-          NATRON_RENDER_SCHEDULER: legacy
-          # One case per vCPU of the hosted runner; 1 restores the serial `ctest -V` run.
-          NATRON_CTEST_JOBS: 4
         run: |
-          set -o pipefail
-          mkdir -p ctest-logs
-          tools/ci/local/test.sh ctest "$PRESET" 2>&1 | tee ctest-logs/ctest-legacy.log
+          tar -cf build-tree.tar --exclude='*.o' --exclude='*.a' --exclude="build/$PRESET/Testing" "build/$PRESET"
+          ls -lh build-tree.tar
 
-      - name: Run ctest suite (taskgraph scheduler)
-        if: inputs.tests && (success() || failure())
-        timeout-minutes: 75
-        env:
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-          NATRON_TEST_REQUIRE_GPU: 1
-          NATRON_RENDER_SCHEDULER: taskgraph
-          # One case per vCPU of the hosted runner; 1 restores the serial `ctest -V` run.
-          NATRON_CTEST_JOBS: 4
-        run: |
-          set -o pipefail
-          mkdir -p ctest-logs
-          tools/ci/local/test.sh ctest "$PRESET" 2>&1 | tee ctest-logs/ctest-taskgraph.log
-
-      - name: Python bindings smoke test (legacy scheduler)
-        if: inputs.tests && (success() || failure())
-        env:
-          NATRON_RENDER_SCHEDULER: legacy
-          NATRON_SMOKE_OUTPUT_DIR: ${{ github.workspace }}/build/smoke-reference
-        run: tools/ci/local/test.sh smoke "$PRESET"
-
-      - name: Python bindings smoke test (taskgraph scheduler)
-        if: inputs.tests && (success() || failure())
-        env:
-          NATRON_RENDER_SCHEDULER: taskgraph
-          NATRON_SMOKE_REFERENCE_DIR: ${{ github.workspace }}/build/smoke-reference
-        run: tools/ci/local/test.sh smoke "$PRESET"
-
-      - name: Upload ctest logs
-        if: always() && inputs.tests
+      - name: Upload build tree
+        id: upload_tree
+        if: inputs.tests && !cancelled() && steps.build.outcome == 'success'
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: ctest-logs-${{ env.PRESET }}-${{ github.sha }}
-          path: ctest-logs/*
-          if-no-files-found: ignore
-          retention-days: 7
+          name: build-tree-${{ env.PRESET }}
+          path: build-tree.tar
+          if-no-files-found: error
+          compression-level: 1
+          retention-days: 1
 
       # Gated on the build rather than on test success: a red test leg
       # should not withhold the binary someone is trying to inspect.
@@ -218,3 +191,151 @@ jobs:
       - name: ccache stats
         if: always()
         run: ccache -s
+
+  ctest:
+    name: ctest (${{ matrix.scheduler }})
+    needs: remote-build
+    if: >-
+      !cancelled() && inputs.tests && needs.remote-build.outputs.tree == 'success'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scheduler: [legacy, taskgraph]
+    container:
+      image: aswf/ci-vfxall:2027-clang21.1
+    defaults:
+      run:
+        shell: bash -l {0}
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v5.0.1
+        with:
+          submodules: recursive
+
+      # The build job saved both entries, so these hit and fetch-assets.sh is a stamp check.
+      - name: Restore test assets
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: |
+            build/assets/Plugins
+            build/assets/TestPlugins
+            build/assets/CImg
+          key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
+
+      - name: Restore Slang
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: .natron-deps
+          key: natron-deps-linux-${{ hashFiles('cmake/FetchSlang.cmake') }}
+
+      - name: Fetch test assets
+        run: tools/ci/local/fetch-assets.sh
+
+      # Missing when recording failed outright; the leg then replays the committed references,
+      # as it would have in the build job.
+      - name: Download native goldens
+        if: inputs.record_goldens
+        continue-on-error: true
+        uses: actions/download-artifact@v7.0.0
+        with:
+          name: native-goldens-${{ env.PRESET }}-${{ github.sha }}
+          path: Tests/fixtures/native-golden
+
+      - name: Download build tree
+        uses: actions/download-artifact@v7.0.0
+        with:
+          name: build-tree-${{ env.PRESET }}
+
+      # The tree's absolute paths hold because every job's workspace is mounted at the same path.
+      - name: Unpack build tree
+        run: |
+          tar -xf build-tree.tar
+          rm build-tree.tar
+
+      # Each leg took about 35 minutes when ctest ran serially. Without the step bound, a case that outlives
+      # ctest's own per-case timeout holds the job until GitHub's six-hour limit.
+      - name: Run ctest suite (${{ matrix.scheduler }} scheduler)
+        timeout-minutes: 75
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          NATRON_TEST_REQUIRE_GPU: 1
+          NATRON_RENDER_SCHEDULER: ${{ matrix.scheduler }}
+          # One case per vCPU of the hosted runner; 1 restores the serial `ctest -V` run.
+          NATRON_CTEST_JOBS: 4
+        run: |
+          set -o pipefail
+          mkdir -p ctest-logs
+          tools/ci/local/test.sh ctest "$PRESET" 2>&1 | tee "ctest-logs/ctest-${{ matrix.scheduler }}.log"
+
+      - name: Python bindings smoke test (${{ matrix.scheduler }} scheduler)
+        if: success() || failure()
+        env:
+          NATRON_RENDER_SCHEDULER: ${{ matrix.scheduler }}
+          NATRON_SMOKE_OUTPUT_DIR: ${{ github.workspace }}/build/smoke-reference
+        run: tools/ci/local/test.sh smoke "$PRESET"
+
+      - name: Upload ctest log
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: ctest-log-${{ matrix.scheduler }}-${{ env.PRESET }}-${{ github.sha }}
+          path: ctest-logs/*
+          if-no-files-found: ignore
+          retention-days: 1
+
+      - name: Upload smoke renders
+        if: success() || failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: smoke-render-${{ matrix.scheduler }}-${{ env.PRESET }}-${{ github.sha }}
+          path: build/smoke-reference
+          if-no-files-found: ignore
+          retention-days: 1
+
+  # Gathers both legs' logs into the one artifact tools/ci/remote/build.sh downloads, and holds the
+  # byte-for-byte comparison of the two schedulers' smoke renders, which spans both legs.
+  results:
+    name: results
+    needs: [remote-build, ctest]
+    if: always() && inputs.tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download ctest logs
+        uses: actions/download-artifact@v7.0.0
+        with:
+          pattern: ctest-log-*-${{ env.PRESET }}-${{ github.sha }}
+          merge-multiple: true
+          path: ctest-logs
+
+      - name: Upload ctest logs
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: ctest-logs-${{ env.PRESET }}-${{ github.sha }}
+          path: ctest-logs/*
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Require every ctest leg to pass
+        env:
+          RESULT: ${{ needs.ctest.result }}
+        run: |
+          if [ "$RESULT" != success ]; then
+            echo "ctest matrix result: $RESULT" >&2
+            exit 1
+          fi
+
+      - name: Download smoke renders
+        uses: actions/download-artifact@v7.0.0
+        with:
+          pattern: smoke-render-*-${{ env.PRESET }}-${{ github.sha }}
+          path: smoke-renders
+
+      - name: Compare smoke renders across schedulers
+        env:
+          SUFFIX: ${{ env.PRESET }}-${{ github.sha }}
+        run: |
+          test -d "smoke-renders/smoke-render-legacy-$SUFFIX"
+          test -d "smoke-renders/smoke-render-taskgraph-$SUFFIX"
+          diff -r "smoke-renders/smoke-render-legacy-$SUFFIX" "smoke-renders/smoke-render-taskgraph-$SUFFIX"

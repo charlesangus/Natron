@@ -21,13 +21,10 @@ permissions:
   contents: read
 
 jobs:
-  ctest:
-    name: ctest (${{ matrix.scheduler }})
+  # Builds once; the ctest legs below run off the build tree it uploads.
+  build:
+    name: build (debug)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        scheduler: [legacy, taskgraph]
     container:
       image: aswf/ci-vfxall:2027-clang21.1
     defaults:
@@ -64,6 +61,8 @@ jobs:
       # raise this first.
       CCACHE_MAXSIZE: 3G
       NATRON_DEPS_CACHE: ${{ github.workspace }}/.natron-deps
+      # One compile per vCPU of the hosted runner; build.sh's default of 3 suits the dev machine.
+      NATRON_BUILD_JOBS: 4
 
     steps:
       - name: Checkout branch
@@ -161,6 +160,101 @@ jobs:
       - name: Build (debug)
         run: tools/ci/local/build.sh debug --no-ccache-stats
 
+      # A tar because artifacts drop the executable bit. Object files and static archives are
+      # only build inputs.
+      - name: Pack build tree
+        run: |
+          tar -cf build-tree.tar --exclude='*.o' --exclude='*.a' build/debug
+          ls -lh build-tree.tar
+
+      - name: Upload build tree
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: build-tree-debug
+          path: build-tree.tar
+          if-no-files-found: error
+          compression-level: 1
+          retention-days: 1
+
+      # if: always() is load-bearing: a step defaults to success() and is
+      # skipped once an earlier step has failed, so without it a red build
+      # would compile objects into ccache and then never save them, and
+      # the fix-and-push run that recompiles almost the same tree would
+      # start cold. Plain actions/cache is no alternative -- its implicit
+      # post-job save is declared post-if: success() and drops the cache
+      # on a red run too, which is why restore and save are separate steps
+      # here. Removing this fails nothing loudly; CI just gets slow.
+      #
+      # key reuses the restore step's resolved cache-primary-key output
+      # rather than re-interpolating the expression, so restore and save
+      # can never drift apart.
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.restore_ccache.outputs.cache-primary-key }}
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s
+
+  ctest:
+    name: ctest (${{ matrix.scheduler }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scheduler: [legacy, taskgraph]
+    container:
+      image: aswf/ci-vfxall:2027-clang21.1
+    defaults:
+      run:
+        shell: bash -l {0}
+    env:
+      CI: 'True'
+      PYTHON_VERSION: '3.13'
+      OCIO_CONFIG_VERSION: 2.5
+      NATRON_IN_CONTAINER: 1
+      NATRON_DEPS_CACHE: ${{ github.workspace }}/.natron-deps
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v5.0.1
+        with:
+          submodules: recursive
+
+      # The build job saved both entries, so these hit and fetch-assets.sh is a stamp check.
+      - name: Restore test assets
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: |
+            build/assets/Plugins
+            build/assets/TestPlugins
+            build/assets/CImg
+          key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
+
+      - name: Restore Slang
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: .natron-deps
+          key: natron-deps-linux-${{ hashFiles('cmake/FetchSlang.cmake') }}
+
+      - name: Fetch test assets
+        run: tools/ci/local/fetch-assets.sh
+
+      - name: Download build tree
+        uses: actions/download-artifact@v7.0.0
+        with:
+          name: build-tree-debug
+
+      # The tree's absolute paths hold because every job's workspace is mounted at the same path.
+      - name: Unpack build tree
+        run: |
+          tar -xf build-tree.tar
+          rm build-tree.tar
+
       # lavapipe is the CPU Vulkan device; without it the Gpu tests would
       # skip silently, so REQUIRE_GPU turns that into a failure.
       - name: Run ctest suite (debug)
@@ -188,40 +282,13 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
 
-      # if: always() is load-bearing: a step defaults to success() and is
-      # skipped once an earlier step has failed, so without it a red build
-      # would compile objects into ccache and then never save them, and
-      # the fix-and-push run that recompiles almost the same tree would
-      # start cold. Plain actions/cache is no alternative -- its implicit
-      # post-job save is declared post-if: success() and drops the cache
-      # on a red run too, which is why restore and save are separate steps
-      # here. Removing this fails nothing loudly; CI just gets slow.
-      #
-      # key reuses the restore step's resolved cache-primary-key output
-      # rather than re-interpolating the expression, so restore and save
-      # can never drift apart.
-      #
-      # Only the legacy leg saves: both legs restore the same entry and
-      # end with near-identical ccache contents, so a second save would
-      # just double the cache quota used.
-      - name: Save ccache
-        if: always() && matrix.scheduler == 'legacy'
-        uses: actions/cache/save@v6.1.0
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ${{ steps.restore_ccache.outputs.cache-primary-key }}
-
-      - name: ccache stats
-        if: always()
-        run: ccache -s
-
   # Branch protection requires a check named exactly `build-and-test`; the
   # matrix legs are named `ctest (<scheduler>)`, so this job keeps the
   # required name stable. It also holds the byte-for-byte comparison of the
   # two schedulers' smoke renders, which can no longer happen inside one job.
   build-and-test:
     name: build-and-test
-    needs: ctest
+    needs: [build, ctest]
     if: always()
     runs-on: ubuntu-latest
     steps:

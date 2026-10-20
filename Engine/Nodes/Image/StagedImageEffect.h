@@ -37,12 +37,14 @@
 #include "Engine/Nodes/Image/ImagePipelineSpec.h"
 #include "Engine/Nodes/Image/Op.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
+#include "Engine/Nodes/Image/ResampleExecutor.h"
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/NodeSpec.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
+#include "Engine/Transform.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -67,6 +69,11 @@ NATRON_NAMESPACE_ENTER
  * A Route op renders nothing: route() makes the node an identity everywhere, and its region of
  * definition, frames needed and metadata are those of the input it routes to, or empty for
  * Black. Its render() fails, as the engine never calls it for an identity.
+ *
+ * A Resample op gives the node its regions through ResampleExecutor, and, for the matrix form,
+ * the transform concatenation answers: the node applies the transforms the host concatenates into
+ * its source, and offers its own matrix unless it has the MaskMix stage. It renders on the CPU
+ * only.
  **/
 class StagedImageEffect
     : public NativeEffectBase {
@@ -132,6 +139,8 @@ public:
     /**
      * @brief For a Route op, the region of the input route() chooses, at the time it chooses,
      * and an empty region for Black or an unconnected input.
+     * For a Resample op with a connected source, resampleRegionOfDefinition() with the mask and
+     * mix the MaskMix stage applies.
      * For a Passes op with a connected source whose region is not empty: the default
      * region when the op is an identity, else the source's region grown by the spread of the op's
      * passes (passListRoD()). Then clipRegionOfDefinition() may change it; the default region when
@@ -165,6 +174,29 @@ public:
      **/
     virtual GpuStageSummary getGpuStageSummary(double time,
                                                ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For a matrix-form Resample op, the source input; false for every other op.
+     **/
+    virtual bool getInputsHoldingTransform(std::list<int>* inputs) const OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For a matrix-form Resample op without the MaskMix stage, whether the op lets the node
+     * offer its matrix (true unless the op's canConcatenate() says otherwise); false for every
+     * other op.
+     **/
+    virtual bool getCanTransform() const OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For a Resample op, resampleTransform() at time, view and renderScale; the default
+     * reply for every other op.
+     **/
+    virtual StatusEnum getTransform(double time,
+                                    const RenderScale& renderScale,
+                                    bool draftRender,
+                                    ViewIdx view,
+                                    EffectInstancePtr* inputToTransform,
+                                    Transform::Matrix3x3* transform) OVERRIDE WARN_UNUSED_RETURN;
 
     /**
      * @brief The input the op reads and the stages blend against: the first Source input of
@@ -212,7 +244,8 @@ protected:
     /**
      * @brief For a Passes op, the default regions of interest, with the source's replaced by the
      * window grown by the halo of the op's passes, merged with the window under a mask with a mix
-     * other than 1. A mask with a mix of 0 keeps the defaults, as does every other op kind.
+     * other than 1. A mask with a mix of 0 keeps the defaults, as does every other op kind except
+     * Resample, whose source entry resampleRegionsOfInterest() replaces.
      **/
     virtual void getRegionsOfInterest(double time,
                                       const RenderScale& scale,
@@ -286,6 +319,33 @@ protected:
     }
 
     /**
+     * @brief What a Resample op resolves to at time, view and scale; the default is Form::None.
+     **/
+    virtual ResampleRequest opResample(double /*time*/,
+                                       ViewIdx /*view*/,
+                                       const RenderScale& /*scale*/) const WARN_UNUSED_RETURN
+    {
+        return ResampleRequest();
+    }
+
+    /**
+     * @brief Whether the op is a Resample op of the matrix form; the default is false.
+     **/
+    virtual bool opHasMatrix() const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief Whether a matrix-form Resample op lets the node offer its matrix to the host; the
+     * default is false.
+     **/
+    virtual bool opCanConcatenate() const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
      * @brief Lets a node narrow the region of definition its passes give, in pixels at scale:
      * rod, which is srcRoD, the source's region, grown unless that is empty. Returns whether it
      * changed rod; the default changes nothing.
@@ -303,6 +363,9 @@ protected:
 private:
     StagePlan resolveGpuPlan(const GpuQuery& query) const WARN_UNUSED_RETURN;
 
+    ResampleRegionStages getResampleRegionStages(double time,
+                                                 ViewIdx view) const WARN_UNUSED_RETURN;
+
     StageKnobs _stageKnobs;
     mutable StageGpuShaderGate _gpuShaderGate;
 };
@@ -318,6 +381,8 @@ template <typename OP, const NodeSpec& SPEC = OP::kNodeSpec, const ImagePipeline
     requires OpOfKind<OP, PIPELINE.op>
 class ImageNode
     : public StagedImageEffect {
+    static_assert((PIPELINE.op != OpKind::Resample) || !PIPELINE.stages.has(Stage::Premult), "a Resample op resamples the source as stored, so it has no Premult stage");
+
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
@@ -408,7 +473,7 @@ private:
                               const RectI& /*roi*/,
                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        if constexpr (PIPELINE.op == OpKind::Passes) {
+        if constexpr ((PIPELINE.op == OpKind::Passes) || (PIPELINE.op == OpKind::Resample)) {
             return _op.isIdentity(bakeParams(_op, time, view), getPassContext(scale));
         } else if constexpr (PIPELINE.op == OpKind::Route) {
             return false;
@@ -431,6 +496,8 @@ private:
             const typename OP::Params params = bakeParams(_op, args.time, args.view);
 
             return runPassesCpu(*this, plan, args, _op.passes(params, getPassContext(args.mappedScale)));
+        } else if constexpr (PIPELINE.op == OpKind::Resample) {
+            return runResampleCpu(*this, plan, args, opResample(args.time, args.view, args.mappedScale));
         } else if constexpr (ScaledPointOp<OP>) {
             const typename OP::Params params = bakeParams(_op, args.time, args.view);
             const PassContext context = getPassContext(args.mappedScale);
@@ -472,6 +539,65 @@ private:
             return _op.passes(bakeParams(_op, time, view), getPassContext(scale));
         } else {
             return PassList();
+        }
+    }
+
+    virtual ResampleRequest opResample(double time,
+                                       ViewIdx view,
+                                       const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        if constexpr (PIPELINE.op != OpKind::Resample) {
+            Q_UNUSED(time);
+            Q_UNUSED(view);
+            Q_UNUSED(scale);
+
+            return ResampleRequest();
+        } else {
+            const PassContext context = getPassContext(scale);
+            const typename OP::Params params = bakeParams(_op, time, view);
+            ResampleRequest request;
+
+            if constexpr (MatrixResampleOp<OP>) {
+                request.form = ResampleRequest::Form::Matrix;
+                request.settings = _op.settings(params, context);
+                const OP* op = &_op;
+                request.transform = [op, params, context, time, view](double t, double amount, bool invert, TransformMath::Mat3* matrix) -> bool {
+                    if (t == time) {
+                        return op->transform(params, context, amount, invert, matrix);
+                    }
+
+                    return op->transform(bakeParams(*op, t, view), context, amount, invert, matrix);
+                };
+            } else {
+                request.form = ResampleRequest::Form::Offset;
+                request.offset = _op.offset(params, context);
+            }
+
+            return request;
+        }
+    }
+
+    virtual bool opHasMatrix() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        if constexpr (PIPELINE.op == OpKind::Resample) {
+            return MatrixResampleOp<OP>;
+        } else {
+            return false;
+        }
+    }
+
+    virtual bool opCanConcatenate() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        if constexpr ((PIPELINE.op == OpKind::Resample) && MatrixResampleOp<OP>) {
+            if constexpr (requires(const OP& o) {
+                              { o.canConcatenate() } -> std::convertible_to<bool>;
+                          }) {
+                return _op.canConcatenate();
+            } else {
+                return true;
+            }
+        } else {
+            return false;
         }
     }
 

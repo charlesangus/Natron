@@ -346,6 +346,9 @@ StagedImageEffect::getRegionOfDefinition(U64 hash,
     const int source = getSourceInput();
     EffectInstancePtr input = (source >= 0) ? getInput(source) : EffectInstancePtr();
 
+    if ((imagePipelineSpec().op == OpKind::Resample) && input) {
+        return resampleRegionOfDefinition(*this, source, opResample(time, view, scale), getResampleRegionStages(time, view), time, scale, view, rod);
+    }
     if ((imagePipelineSpec().op != OpKind::Passes) || !input) {
         return NativeEffectBase::getRegionOfDefinition(hash, time, scale, view, rod);
     }
@@ -390,6 +393,11 @@ StagedImageEffect::getRegionsOfInterest(double time,
 
     const int source = getSourceInput();
     EffectInstancePtr input = (source >= 0) ? getInput(source) : EffectInstancePtr();
+    if ((imagePipelineSpec().op == OpKind::Resample) && input) {
+        resampleRegionsOfInterest(*this, source, opResample(time, view, scale), getResampleRegionStages(time, view), time, scale, renderWindow, view, ret);
+
+        return;
+    }
     if ((imagePipelineSpec().op != OpKind::Passes) || !input) {
         return;
     }
@@ -419,6 +427,57 @@ StagedImageEffect::getRegionsOfInterest(double time,
         ret->insert(std::make_pair(input, srcRoI));
     }
 } // StagedImageEffect::getRegionsOfInterest
+
+ResampleRegionStages
+StagedImageEffect::getResampleRegionStages(double time,
+                                           ViewIdx view) const
+{
+    ResampleRegionStages stages;
+
+    stages.maskMix = imagePipelineSpec().stages.has(Stage::MaskMix);
+    if (stages.maskMix) {
+        stages.doMasking = isMaskApplied();
+        stages.mix = getMixValue(time, view);
+    }
+    stages.maskInput = getMaskInput();
+
+    return stages;
+}
+
+bool
+StagedImageEffect::getInputsHoldingTransform(std::list<int>* inputs) const
+{
+    const int source = getSourceInput();
+
+    if (!inputs || !opHasMatrix() || (source < 0)) {
+        return false;
+    }
+    inputs->push_back(source);
+
+    return true;
+}
+
+bool
+StagedImageEffect::getCanTransform() const
+{
+    // Mask and mix are no matrix, so a node with them only applies the transforms upstream.
+    return opHasMatrix() && !imagePipelineSpec().stages.has(Stage::MaskMix) && opCanConcatenate();
+}
+
+StatusEnum
+StagedImageEffect::getTransform(double time,
+                                const RenderScale& renderScale,
+                                bool draftRender,
+                                ViewIdx view,
+                                EffectInstancePtr* inputToTransform,
+                                Transform::Matrix3x3* transform)
+{
+    if (imagePipelineSpec().op != OpKind::Resample) {
+        return NativeEffectBase::getTransform(time, renderScale, draftRender, view, inputToTransform, transform);
+    }
+
+    return resampleTransform(*this, getSourceInput(), opResample(time, view, renderScale), time, renderScale, draftRender, inputToTransform, transform);
+}
 
 FramesNeededMap
 StagedImageEffect::getFramesNeeded(double time,

@@ -38,6 +38,8 @@
 #include "Engine/Nodes/Image/ImagePipelineSpec.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
+#include "Engine/Nodes/Image/ResampleExecutor.h"
+#include "Engine/Nodes/Image/TransformMath.h"
 #include "Engine/Nodes/KnobReader.h"
 
 NATRON_NAMESPACE_ENTER
@@ -230,11 +232,53 @@ concept RouteOp = BakesParams<OP> && std::copyable<typename OP::Params> && requi
 };
 
 /**
- * @brief Whether OP satisfies the concept of op kind KIND. Only Point, Passes and Route ops are
- * run by the host so far; every other kind is refused here.
+ * @brief A Resample op: a node whose output is its source resampled through a 3x3 matrix, or
+ * shifted by a whole number of pixels.
+ *
+ * bake() and Params are as for a Point op, and isIdentity() says whether those Params leave the
+ * source unchanged at the context's scale. An op has one of two forms, never both.
+ *
+ * The matrix form has settings(), the filter, clamp, black-outside, invert and blur settings the
+ * Resampler samples with, and transform(), the canonical matrix at a blend amount as
+ * Resampler::CanonicalTransformFn describes it: with invert false the inverse (output to source)
+ * matrix, with invert true the forward one, false when no matrix exists. The host asks for it at
+ * every time a motion blur samples, with the Params baked at that time, and at every amount a
+ * directional blur samples; amount is 1 for a plain render. The host concatenates through that
+ * matrix: unless the node has the MaskMix stage, it offers it to the host, and it always applies
+ * the transforms the host concatenates into its source. An op that has canConcatenate() decides
+ * with it whether the node offers its matrix.
+ *
+ * The offset form has offset(), the whole-pixel translation at the context's scale; it neither
+ * offers a matrix nor accepts one.
+ **/
+template <typename OP>
+concept MatrixResampleMembers = requires(const OP& op, const typename OP::Params& params, const PassContext& context, double amount, bool invert, TransformMath::Mat3* matrix) {
+    { op.isIdentity(params, context) } -> std::convertible_to<bool>;
+    { op.settings(params, context) } -> std::same_as<ResampleSettings>;
+    { op.transform(params, context, amount, invert, matrix) } -> std::convertible_to<bool>;
+};
+
+template <typename OP>
+concept OffsetResampleMembers = requires(const OP& op, const typename OP::Params& params, const PassContext& context) {
+    { op.isIdentity(params, context) } -> std::convertible_to<bool>;
+    { op.offset(params, context) } -> std::same_as<PixelOffset>;
+};
+
+template <typename OP>
+concept ResampleOp = BakesParams<OP> && std::copyable<typename OP::Params> && (MatrixResampleMembers<OP> != OffsetResampleMembers<OP>);
+
+/**
+ * @brief A Resample op of the matrix form.
+ **/
+template <typename OP>
+concept MatrixResampleOp = ResampleOp<OP> && MatrixResampleMembers<OP>;
+
+/**
+ * @brief Whether OP satisfies the concept of op kind KIND. Only Point, Passes, Route and Resample
+ * ops are run by the host so far; every other kind is refused here.
  **/
 template <typename OP, OpKind KIND>
-concept OpOfKind = ((KIND == OpKind::Point) && PointOp<OP>) || ((KIND == OpKind::Passes) && PassesOp<OP>) || ((KIND == OpKind::Route) && RouteOp<OP>);
+concept OpOfKind = ((KIND == OpKind::Point) && PointOp<OP>) || ((KIND == OpKind::Passes) && PassesOp<OP>) || ((KIND == OpKind::Route) && RouteOp<OP>) || ((KIND == OpKind::Resample) && ResampleOp<OP>);
 
 NATRON_NAMESPACE_EXIT
 

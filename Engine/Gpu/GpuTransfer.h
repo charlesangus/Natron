@@ -27,6 +27,9 @@ struct GpuTransferOptions {
     bool cacheHostImports = false;
     // Fills the device-side TimeSpans of TransferTimeline. Costs a blocking query-pool reset per process().
     bool recordTimestamps = false;
+    // Called on the importing thread, with no lock held, between creating an import meant for the cache and
+    // caching it, so that tests can interleave forgetHostAllocation() with it.
+    std::function<void(const void* host, VkDeviceSize bytes)> onImportCreated;
 };
 
 enum class TransferPath {
@@ -94,6 +97,20 @@ struct StreamOptions {
     std::chrono::steady_clock::time_point hostOrigin {};
 };
 
+struct HostImportStats {
+    // Host imports created so far, cached or not, and the bytes they imported.
+    uint64_t created = 0;
+    uint64_t bytes = 0;
+    // Of those, the ones created by prepareImport(), upload() and download().
+    uint64_t prepared = 0;
+    uint64_t atUpload = 0;
+    uint64_t atDownload = 0;
+    // Imports destroyed right after creation: another thread cached the range first, or it was forgotten meanwhile.
+    uint64_t dropped = 0;
+    // Imports in the cache now.
+    uint64_t cached = 0;
+};
+
 struct TransferFrame {
     const void* src = nullptr;
     void* dst = nullptr;
@@ -147,9 +164,10 @@ struct TransferTimeline {
     double sumOfStagesMs() const;
 };
 
-// Host<->device copies on the transfer queue. Every copy is split at GpuDeviceInfo::copyChunkSize.
-// A host range that is aligned to minImportedHostPointerAlignment is imported and copied without a
-// host memcpy; anything else goes through a pinned staging ring. Thread-safe.
+// Host<->device copies, uploads on the upload queue and downloads on the download queue. Every copy is split at GpuDeviceInfo::copyChunkSize.
+// A host range that cached imports cover, at any alignment, or that is aligned to
+// minImportedHostPointerAlignment and can be imported, is copied without a host memcpy; anything else goes
+// through a pinned staging ring. Thread-safe.
 class GpuTransfer {
 public:
     static GpuStatus create(GpuDevice& device, const GpuTransferOptions& options,
@@ -198,8 +216,15 @@ public:
     GpuStatus process(std::span<const TransferFrame> frames, const ComputeRecordFn& record,
                       TransferTimeline* timeline = nullptr);
 
+    // Imports [range.data, range.data + range.bytes) into the cache, so that a later upload() or download() of
+    // it or of any part of it, aligned or not, creates no import and needs no staging. Returns whether the range is cached now: false when imports are
+    // not cached, the range is not aligned for import, the import failed or the range was forgotten meanwhile.
+    // The memory must stay allocated until it returns.
+    bool prepareImport(HostRange range);
+
     // Drops every cached import overlapping [ptr, ptr + max(bytes, 1)), waiting for transfers that
-    // still use them. Call before freeing or remapping cached host memory. Cheap when nothing is cached.
+    // still use them, and for imports of the range still being created, which are then never cached.
+    // Call before freeing or remapping cached host memory. Cheap when nothing is cached.
     void forgetHostAllocation(const void* ptr, size_t bytes = 0);
 
     // Waits for the device to go idle, then drops every cached import.
@@ -207,6 +232,9 @@ public:
 
     // Host imports created so far, cached or not.
     uint64_t hostImportCount() const;
+    // Bytes of host memory imported so far, cached or not.
+    uint64_t hostImportBytes() const;
+    HostImportStats hostImportStats() const;
 
 private:
     struct Impl;

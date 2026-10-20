@@ -9,6 +9,8 @@
 #include "GpuTransfer.h"
 
 #include <atomic>
+#include <condition_variable>
+#include <cstddef>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -25,6 +27,40 @@ enum class GpuRuntimeState {
     Degraded,
     // VK_ERROR_DEVICE_LOST was seen. Sticky until recreate().
     Lost,
+};
+
+struct GpuImportPreparer;
+
+// Host ranges the runtime's helper thread faults in and imports, in order, ahead of the transfers that will use them.
+// The ranges must stay allocated until wait() or cancel() returns, and each must stay untouched by the device until a
+// waitFor() past it, wait() or cancel() returns: the helper thread writes the pages it faults in.
+class GpuImportJob {
+public:
+    // Blocks until every range was prepared or skipped.
+    void wait();
+
+    // Blocks until the first `count` ranges were prepared or skipped, while the helper thread may still be preparing
+    // the ones after them.
+    void waitFor(std::size_t count);
+
+    // Skips the ranges not started yet, then waits for the one in progress.
+    void cancel();
+
+    bool finished() const;
+
+private:
+    friend class GpuRuntime;
+    friend struct GpuImportPreparer;
+
+    void finish();
+    void advance();
+
+    std::vector<HostRange> ranges_;
+    std::atomic<bool> cancelled_ { false };
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    std::size_t prepared_ = 0;
+    bool finished_ = false;
 };
 
 struct GpuRuntimeOptions {
@@ -55,6 +91,10 @@ public:
     GpuRuntimeState state() const { return state_.load(std::memory_order_acquire); }
     bool isLost() const { return state() == GpuRuntimeState::Lost; }
 
+    // Differs for every device built by any runtime of the process, so that what was learned about one device is
+    // never applied to another.
+    uint64_t generation() const { return generation_.load(std::memory_order_acquire); }
+
     GpuDevice& device() const { return *device_; }
     GpuTransfer& transfer() const { return *transfer_; }
     GpuKernelRegistry& registry() const { return *registry_; }
@@ -82,6 +122,12 @@ public:
     GpuStatus wait(TimelineValue value);
     GpuStatus waitIdle();
 
+    // Faults in `ranges` and imports them into the transfer's cache on a helper thread, so that the transfers
+    // into them find their imports made. Null when there is nothing to do: the transfer caches no imports, the
+    // device cannot import, the runtime is lost or `ranges` is empty. Jobs run one after another; teardown and
+    // recreate() skip the ranges of those not finished.
+    std::shared_ptr<GpuImportJob> prepareImports(std::vector<HostRange> ranges);
+
     // Feeds the outcome of a call made directly on a component into the state machine: a lost result latches
     // Lost, an out-of-memory result calls noteOutOfMemory(requestBytes). Returns `status` unchanged.
     GpuStatus note(const GpuStatus& status, uint64_t requestBytes = 0);
@@ -107,6 +153,7 @@ private:
     GpuStatus lostStatus() const;
 
     uint64_t leaked_ = 0;
+    std::atomic<uint64_t> generation_ { 0 };
     GpuRuntimeOptions options_;
     std::vector<GpuKernelDesc> registered_;
     struct RuntimeModule {
@@ -122,6 +169,7 @@ private:
     std::unique_ptr<GpuKernelRegistry> registry_;
     std::unique_ptr<GpuBufferPool> pool_;
     std::unique_ptr<GpuPipelineCache> pipelines_;
+    std::unique_ptr<GpuImportPreparer> preparer_;
 };
 
 } // namespace gpu

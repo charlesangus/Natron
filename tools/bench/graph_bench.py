@@ -36,6 +36,16 @@
 #   BENCH_RENDERER  NatronRenderer binary for that render (default build/release/Renderer/NatronRenderer)
 #   BENCH_IMPL    native (default) | ofx: which implementation of the IDs in NATIVE_MAJORS to create; the
 #                 OFX plugin and its native replacement share an ID and differ by major version
+#   BENCH_SESSION a | bc | playback: a session that counts one-time costs (no warm-up render, setup is part of the
+#                 measurement) instead of the timed-frames loop. a renders BENCH_SESSION_FRAME once, labelled
+#                 BENCH_LABEL (default a); bc renders it, then re-renders it BENCH_RERENDERS times (default 4)
+#                 with a slightly changed knob in between (label b), then renders BENCH_JUMP_FRAME (default 7,
+#                 label c); playback renders BENCH_PLAYBACK_FRAMES frames (default 4) from the session frame as one
+#                 range. Each render is timed in-process around app.render, and its output is deleted and synced
+#                 outside the timing. Needs BENCH_RENDER_DIR, an absolute existing directory.
+#   BENCH_SESSION_FRAME  frame of the first render (default 2)
+#   BENCH_COMP    path of an .ntp to load instead of building a topology (BENCH_TOPO=ntp); its Write node is
+#                 pointed at BENCH_RENDER_DIR, and BENCH_SIZE other than uhd adds a project format of that size
 #   BENCH_HOLD    seconds to sleep before rendering, so a sampler can attach (default 0)
 #   BENCH_DRY_RUN 1 builds the graph against stand-in objects and prints the planned nodes without
 #                 Natron (python3 tools/bench/graph_bench.py on the host); nothing is rendered
@@ -132,6 +142,16 @@ RANGE = int(os.environ.get("BENCH_RANGE", "0"))
 OUT = os.environ.get("BENCH_OUT", "")
 KEEP_OUTPUT = os.environ.get("BENCH_KEEP_OUTPUT") == "1"
 SEED = int(os.environ.get("BENCH_SEED", "1"))
+SESSION = os.environ.get("BENCH_SESSION", "")
+SESSION_FRAME = int(os.environ.get("BENCH_SESSION_FRAME", "2"))
+JUMP_FRAME = int(os.environ.get("BENCH_JUMP_FRAME", "7"))
+RERENDERS = int(os.environ.get("BENCH_RERENDERS", "4"))
+PLAYBACK_FRAMES = int(os.environ.get("BENCH_PLAYBACK_FRAMES", "4"))
+LABEL = os.environ.get("BENCH_LABEL", "a")
+RENDER_DIR = os.environ.get("BENCH_RENDER_DIR", "")
+COMP = os.environ.get("BENCH_COMP", "")
+if SESSION not in ("", "a", "bc", "playback"):
+    raise SystemExit("BENCH_SESSION must be a, bc or playback, got %r" % SESSION)
 BLUR_FILTER = os.environ.get("BENCH_BLUR_FILTER", "")
 HOLD = float(os.environ.get("BENCH_HOLD", "0"))
 SETTINGS = os.environ.get("BENCH_SETTINGS", "")
@@ -150,6 +170,8 @@ NATIVE_MAJORS = {
 }
 
 LAST_FRAME = 1 + FRAMES + max(RANGE, 0) + 1
+if SESSION:
+    LAST_FRAME = max(LAST_FRAME, JUMP_FRAME, SESSION_FRAME + PLAYBACK_FRAMES) + 1
 
 READ_TOPOS = ("readchain", "footagecomp", "iobound", "deepcomp")
 PLATE_RES = "hd" if TOPO == "deepcomp" else RES
@@ -418,12 +440,18 @@ def chromakeyer(inp):
     return n
 
 
+# The node under test and the first Grade of a gxg graph, for the knob the session changes between renders.
+tweak_targets = {}
+
+
 def bench_node(inp):
     makers = {"transform": animated_transform, "blur": lambda i: blur(i, 0), "erode": erode,
               "chromakeyer": chromakeyer}
     if NODE not in makers:
         raise RuntimeError("BENCH_NODE must be one of %s, got %r" % (", ".join(sorted(makers)), NODE))
-    return makers[NODE](inp)
+    node = makers[NODE](inp)
+    tweak_targets["node"] = node
+    return node
 
 
 def build_node():
@@ -431,7 +459,9 @@ def build_node():
 
 
 def build_gxg():
-    return grade(bench_node(grade(source(0), 0)), 1)
+    first = grade(source(0), 0)
+    tweak_targets["grade"] = first
+    return grade(bench_node(first), 1)
 
 
 def build_gebg():
@@ -556,6 +586,86 @@ def build_comp():
     for s in streams[1:]:
         out = merge(s, out)
     return out
+
+
+# Knob changed between re-renders: node kind -> (param, value for the k-th change). Every value is new, so
+# a content-hash cache can never serve a re-render from an earlier one.
+NODE_TWEAKS = {
+    "transform": ("scale", lambda k: (1.0 + 0.001 * k, 1.0 + 0.001 * k)),
+    "blur": ("size", lambda k: (BLUR_SIZE * (1.0 + 0.002 * k),) * 2),
+    "erode": ("size", lambda k: (ERODE_SIZE + k,) * 2),
+    "chromakeyer": ("acceptanceAngle", lambda k: (60.0 + 0.5 * k,)),
+}
+COMP_TWEAKS = {
+    "keying_grade": ("fg_grade1", "multiply", (1.05, 1.0, 0.95, 1.0)),
+    "cg_multipass": ("glow_thresh", "offset", (-0.4, -0.4, -0.4, 0.0)),
+    "defocus_retime": ("plate_grade", "multiply", (1.1, 1.0, 0.9, 1.0)),
+}
+
+
+def make_tweak(session_app):
+    """Returns a function k -> None that changes the knob for the k-th re-render."""
+    if COMP:
+        comp = os.path.splitext(os.path.basename(COMP))[0]
+        node_name, name, base = COMP_TWEAKS[comp]
+        prm = param(session_app.getNode(node_name), name)
+        return lambda k: prm.set(base[0] + 0.001 * k, *base[1:])
+    if TOPO == "node" or TOPO == "gxg":
+        node = tweak_targets["node"]
+        name, value = NODE_TWEAKS[NODE]
+        if node.getParam(name) is not None:
+            prm = node.getParam(name)
+            return lambda k: prm.set(*value(k))
+        log("%s has no param %s; changing the first Grade instead" % (node.getPluginID(), name))
+    if "grade" not in tweak_targets:
+        raise RuntimeError("no knob to change for %s" % TOPO)
+    prm = param(tweak_targets["grade"], "multiply")
+    return lambda k: prm.set(1.0001 + 0.001 * k, 1.0, 1.0, 1.0)
+
+
+def load_comp(path, render_dir):
+    """Loads the .ntp and points its Write node at render_dir; returns (app, writer)."""
+    loaded = app.loadProject(path)
+    session_app = loaded if loaded is not None else app
+    if CUSTOM_SIZE and CUSTOM_SIZE != "3840x2160":
+        w, h = (int(v) for v in CUSTOM_SIZE.lower().split("x"))
+        session_app.addFormat("bench%dx%d %d %d 1" % (w, h, w, h))
+        session_app.getProjectParam("outputFormat").set("bench%dx%d" % (w, h))
+    writer = session_app.getNode("Write")
+    if writer is None:
+        raise RuntimeError("%s has no Write node" % path)
+    stem = os.path.splitext(os.path.basename(path))[0]
+    global written_glob
+    written_glob = os.path.join(render_dir, stem + ".[0-9][0-9][0-9][0-9].exr")
+    param(writer, "filename").set(os.path.join(render_dir, stem + ".####.exr"))
+    return session_app, writer
+
+
+def run_session(session_app, writer):
+    """Renders per BENCH_SESSION. The first render includes every one-time cost; nothing is warmed up first."""
+    marks = []
+    sequence_no = [0]
+
+    def timed(label, first, last):
+        wall, cpu, io = render(writer, first, last)
+        count = last - first + 1
+        marks.append({"label": label, "index": len(marks), "frame": first, "frames": count,
+                      "profileFrame": sequence_no[0], "wall_s": round(wall, 4), "cpu_s": round(cpu, 4)})
+        sequence_no[0] += count
+        log("render %d %s frames %d-%d wall %.4fs" % (len(marks) - 1, label, first, last, wall))
+
+    if SESSION == "a":
+        timed(LABEL, SESSION_FRAME, SESSION_FRAME)
+    elif SESSION == "bc":
+        tweak = make_tweak(session_app)
+        timed("first", SESSION_FRAME, SESSION_FRAME)
+        for k in range(1, RERENDERS + 1):
+            tweak(k)
+            timed("b", SESSION_FRAME, SESSION_FRAME)
+        timed("c", JUMP_FRAME, JUMP_FRAME)
+    else:
+        timed("playback", SESSION_FRAME, SESSION_FRAME + PLAYBACK_FRAMES - 1)
+    return marks
 
 
 def rusage():
@@ -699,7 +809,69 @@ def render_stats(writer):
     return found
 
 
+def main_session():
+    if not SESSION:
+        raise RuntimeError("BENCH_TOPO=ntp needs BENCH_SESSION")
+    if not DRY_RUN and not (RENDER_DIR and os.path.isabs(RENDER_DIR) and os.path.isdir(RENDER_DIR)):
+        raise RuntimeError("BENCH_RENDER_DIR must be an absolute existing directory, got %r" % RENDER_DIR)
+    global written_glob
+    t0 = time.time()
+    if TOPO == "ntp":
+        if not COMP:
+            raise RuntimeError("BENCH_TOPO=ntp needs BENCH_COMP")
+        if DRY_RUN:
+            log("dry run: session %s comp %s size %s" % (SESSION, COMP, CUSTOM_SIZE or "project"))
+            return
+        session_app, writer = load_comp(COMP, RENDER_DIR)
+    else:
+        session_app = app
+        fmt = RES
+        if fmt == "hd":
+            app.getProjectParam("outputFormat").set("HD")
+        elif fmt == "uhd":
+            app.getProjectParam("outputFormat").set("UHD_4K")
+        app.getProjectParam("frameRange").set(1, LAST_FRAME)
+        root = {"node": build_node, "gxg": build_gxg}[TOPO]()
+        if DRY_RUN:
+            log("dry run: session %s %s nodes=%d %s" % (SESSION, TOPO, sum(counts.values()), json.dumps(counts, sort_keys=True)))
+            make_tweak(app)(1)
+            return
+        written_glob = os.path.join(RENDER_DIR, "%s_%s_[0-9][0-9][0-9][0-9].exr" % (TOPO, RES))
+        writer = app.createWriter(os.path.join(RENDER_DIR, "%s_%s_####.exr" % (TOPO, RES)))
+        writer.connectInput(0, root)
+        working = writer.getParam("ocioWorkingSpace").get()
+        writer.getParam("ocioOutputSpace").set(working)
+        writer.getParam("ocioOutputSpaceSet").set(True)
+        comp_param = writer.getParam("compression")
+        if comp_param is not None:
+            comp_param.set("none")
+    setup_s = time.time() - t0
+    log("session %s setup %.2fs" % (SESSION, setup_s))
+    pressure_start = load_pressure()
+    marks = run_session(session_app, writer)
+    result = {
+        "topo": TOPO, "comp": os.path.basename(COMP) if COMP else None, "bench_node": NODE if TOPO in ("node", "gxg") else None,
+        "res": RES, "size": CUSTOM_SIZE, "session": SESSION, "label": LABEL, "setup_s": round(setup_s, 4),
+        "renders": marks, "settings": SETTINGS, "rss_peak_mb": vm("VmHWM"), "cpus": os.cpu_count(),
+        "mem_total_mb": mem_total_mb(), "output_bytes": output_bytes, "output_frames": output_files,
+        "load1_start": pressure_start["load1"],
+    }
+    line = json.dumps(result)
+    log("RESULT " + line)
+    if OUT:
+        with open(OUT, "a") as f:
+            f.write(line + "\n")
+    marks_path = os.environ.get("BENCH_MARKS", "")
+    if marks_path:
+        with open(marks_path, "w") as f:
+            for m in marks:
+                f.write(json.dumps(m) + "\n")
+
+
 def main():
+    if SESSION or TOPO == "ntp":
+        main_session()
+        return
     if TOPO in READ_TOPOS and PLATE_RES not in ("hd", "uhd"):
         raise RuntimeError("%s reads plates and needs BENCH_RES=hd or uhd" % TOPO)
     fmt = PLATE_RES if TOPO in READ_TOPOS else RES

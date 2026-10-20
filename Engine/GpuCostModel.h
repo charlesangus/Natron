@@ -53,15 +53,31 @@ enum class GpuCostClass {
 };
 
 /**
+ * @brief The Blur filter a GPU row was measured with. eAny on a row matches every filter, on a task it is a plugin
+ * that is no Blur.
+ **/
+enum class GpuBlurFilter {
+    eAny,
+    eQuasiGaussian,
+    eGaussian,
+    eBox,
+    eTriangle,
+    eQuadratic,
+    eFirGaussian,
+};
+
+/**
  * @brief What the cost of a task depends on besides its size: the plugin, for a blur its sigma in pixels at the
- * level it renders at and whether its filter is recursive, and whether it renders with motion blur, which only rows
- * measured with motion blur price. The cost class and the input count only matter for a plugin without rows of its
- * own.
+ * level it renders at, its filter and whether that is recursive, for an erode or dilate its size in pixels at the
+ * level it renders at, and whether it renders with motion blur, which only rows measured with motion blur price. The
+ * cost class and the input count only matter for a plugin without rows of its own.
  **/
 struct GpuTaskTraits {
     std::string pluginId;
     double sigma = 0.;
     bool iir = false;
+    GpuBlurFilter filter = GpuBlurFilter::eAny;
+    int size = 0;
     bool motionBlur = false;
     GpuCostClass costClass = GpuCostClass::eOther;
     int inputCount = 1;
@@ -70,21 +86,26 @@ struct GpuTaskTraits {
 
     GpuTaskTraits(const std::string& pluginId_,
                   double sigma_ = 0.,
-                  bool iir_ = false)
+                  bool iir_ = false,
+                  GpuBlurFilter filter_ = GpuBlurFilter::eAny)
         : pluginId(pluginId_)
         , sigma(sigma_)
         , iir(iir_)
+        , filter(filter_)
     {
     }
 };
 
 /**
- * @brief Host-device transfer rates in bytes per second. With unifiedMemory, transfers cost nothing.
+ * @brief Host-device transfer rates in bytes per second. With unifiedMemory, transfers cost nothing. With
+ * pipelinedStrips, the device may run a region as strips in flight together, overlapping their transfers with
+ * their compute.
  **/
 struct GpuTransferRates {
     double uploadBytesPerSecond = 0.;
     double downloadBytesPerSecond = 0.;
     bool unifiedMemory = false;
+    bool pipelinedStrips = false;
 
     static GpuTransferRates fromCalibration(const GpuCalibration& calibration);
 };
@@ -93,7 +114,8 @@ struct GpuTransferRates {
  * @brief Per-task CPU and GPU time estimates, and the gain of running a region on the GPU, in milliseconds.
  *
  * Costs start from the checked-in seed table (GpuCostSeed.inc) and are refined during the session by an exponential
- * moving average of measured times, per plugin and motion blur and, for a blur, per filter kind and sigma row. Nothing is kept across
+ * moving average of measured times, per plugin and motion blur and, for a blur, per filter kind and sigma row and, for
+ * an erode or dilate, per size row. Nothing is kept across
  * sessions.
  *
  * The CPU cost is kept as thread-milliseconds per megapixel, the measured wallNs × budget / Mpx, so that tasks run
@@ -127,7 +149,8 @@ public:
     int threadCount() const;
 
     /**
-     * @brief Defaults to no bandwidth, which makes any transfer cost infinite unless unifiedMemory is set.
+     * @brief Defaults to no bandwidth, which makes any transfer cost infinite unless unifiedMemory is set. Keeps the
+     * correction observeTransfer() made to the rates set before.
      **/
     void setTransferRates(const GpuTransferRates& rates);
     GpuTransferRates transferRates() const;
@@ -143,6 +166,12 @@ public:
      * what was measured for it.
      **/
     void setCpuSeed(const std::string& pluginId, double serialMsPerMpx, double parallelSpeedup);
+
+    /**
+     * @brief Sets the GPU kernel cost of every row of a plugin, or of a new plain row when it has none, replacing what
+     * was measured for it.
+     **/
+    void setGpuSeed(const std::string& pluginId, double kernelMsPerMpx);
 
     GpuTaskTraits traitsOf(const FrameGraph::Task& task) const;
 
@@ -167,22 +196,52 @@ public:
     bool hasGpuCost(const GpuTaskTraits& traits) const;
 
     /**
-     * @brief Transfer time of the given bytes, both ways.
+     * @brief Transfer time of the given bytes, both ways, at the rates set as observeTransfer() corrected them.
      **/
     double transferMs(double uploadBytes, double downloadBytes) const;
 
     /**
-     * @brief CPU time the region saves, less its GPU time, its transfers and kAcceptMarginMs: it is worth running on
-     * the GPU when positive. An external input is uploaded unless its task is on the GPU; an output is downloaded
-     * when it is the root or a task outside the region on the CPU consumes it. Identity members cost nothing.
+     * @brief Whether the strip planner would pipeline the region, so that its transfers overlap its GPU time of
+     * kernelMs: the rates allow pipelined strips, the region moves at least kGpuStripOverlapMinBytes between host and
+     * device, its kernelMs is at least kGpuStripOverlapMinKernelRatio of the time the bytes take, it keeps no output
+     * on the device for another region, and its outputs are tall enough for kGpuStripMaxInFlight strips of
+     * kGpuStripMinPipelinedRows. The halo the strips would read is left out.
+     **/
+    bool pipelinesTransfers(const FrameGraph& graph,
+                            const FrameGraph::Region& region,
+                            double uploadBytes,
+                            double downloadBytes,
+                            double kernelMs) const;
+
+    /**
+     * @brief CPU time the region saves, less its GPU time, the transfer time it exposes and kAcceptMarginMs: it is
+     * worth running on the GPU when positive. An external input is uploaded unless its task is on the GPU; an output
+     * is downloaded when it is the root or a task outside the region on the CPU consumes it. A region that
+     * pipelinesTransfers() exposes only the transfer time beyond its GPU time; any other exposes all of it. Identity
+     * members cost nothing.
      **/
     double regionGainMs(const FrameGraph& graph, const FrameGraph::Region& region) const;
+
+    /**
+     * @brief regionGainMs() with every transfer free: the most the region can gain at any transfer rates, so that it
+     * can be judged before the rates are known.
+     **/
+    double regionGainBoundMs(const FrameGraph& graph, const FrameGraph::Region& region) const;
 
     void observeCpu(const GpuTaskTraits& traits, std::int64_t wallNs, int budget, double megapixels);
     void observeCpu(const FrameGraph::Task& task, std::int64_t wallNs, int budget);
 
     void observeGpu(const GpuTaskTraits& traits, std::int64_t kernelNs, double megapixels);
     void observeGpu(const FrameGraph::Task& task, std::int64_t kernelNs);
+
+    /**
+     * @brief Moves the transfer rates toward a region's measured ms per byte, by a moving average of the ratio of the
+     * measured time to the time the rates set give, which then scales both directions. ms is the upload time plus
+     * the download time, each whole, the part its compute hid included, since how much is hidden is not a property
+     * of the bus, and summed even where the two directions overlapped, since transferMs() sums them. Ignored when
+     * the rates price the bytes at nothing or at infinity.
+     **/
+    void observeTransfer(double uploadBytes, double downloadBytes, double ms);
 
 private:
     struct CpuRow {
@@ -198,12 +257,17 @@ private:
 
     struct GpuRow {
         double sigmaMax = 0.;
+        // 0 for a row that holds at any size.
+        int sizeMax = 0;
+        GpuBlurFilter filter = GpuBlurFilter::eAny;
         bool iir = false;
         bool motionBlur = false;
         double kernelMsPerMpx = 0.;
     };
 
     int threadCountLocked() const;
+    double transferMsLocked(double uploadBytes, double downloadBytes) const;
+    double estimateRegionGainMs(const FrameGraph& graph, const FrameGraph::Region& region, bool freeTransfers) const;
     double seedThreadMsPerMpxLocked(const CpuRow& row) const;
     const CpuRow* findCpuRowOrDefaultLocked(const GpuTaskTraits& traits) const;
     bool gpuMsPerMpxLocked(const GpuTaskTraits& traits, double* msPerMpx) const;
@@ -217,6 +281,7 @@ private:
     std::map<std::string, std::vector<GpuRow>> _gpu;
     int _threads = 0;
     GpuTransferRates _rates;
+    double _transferScale = 1.;
     std::function<GpuTaskTraits(const FrameGraph::Task&)> _traitsHint;
 };
 

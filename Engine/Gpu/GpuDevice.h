@@ -4,6 +4,7 @@
 
 #include "vk_mem_alloc.h"
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -30,7 +31,8 @@ struct GpuStatus {
 
 enum class QueueKind {
     Compute,
-    Transfer,
+    Upload,
+    Download,
 };
 
 using GpuDebugMessageFn = std::function<void(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -78,9 +80,15 @@ struct GpuDeviceInfo {
     uint32_t physicalDeviceIndex = 0;
 
     uint32_t computeFamily = 0;
+    // Family of the upload and download queues: a transfer-only family when the device has one, else computeFamily.
     uint32_t transferFamily = 0;
-    // True when no transfer-only family exists and transfers use the compute queue.
-    bool transferUsesComputeQueue = false;
+    // Index within its family of the queue each QueueKind submits to. Kinds with the same family and index share
+    // one VkQueue.
+    uint32_t computeQueueIndex = 0;
+    uint32_t uploadQueueIndex = 0;
+    uint32_t downloadQueueIndex = 0;
+    // True when uploads and downloads submit to the very VkQueue compute does, so they cannot overlap it.
+    bool transferSharesComputeQueue = false;
 
     bool validationEnabled = false;
     bool debugMessenger = false;
@@ -98,9 +106,14 @@ struct GpuDeviceInfo {
     uint64_t minImportedHostPointerAlignment = 0;
     uint64_t deviceLocalHeapSize = 0;
     uint64_t maxMemoryAllocationSize = 0;
-    // Integrated GPU, or a device-local and host-visible heap that covers all device memory.
+    // See isUnifiedMemory().
     bool unifiedMemory = false;
 };
+
+// Whether the device's memory is the host's RAM, so that a host-device transfer moves nothing over a bus: an integrated
+// GPU, or a CPU implementation such as lavapipe. A discrete card with Resizable BAR also exposes a device-local,
+// host-visible type covering its whole heap, but reaching that memory still crosses PCIe.
+bool isUnifiedMemory(VkPhysicalDeviceType type);
 
 class GpuDevice {
 public:
@@ -137,9 +150,9 @@ public:
     // need a fault at a point of a workload rather than at a count from creation. Kind::Off disarms it.
     void injectFault(GpuFaultPlan::Kind kind, uint64_t inOperations);
 
-    // Waits until both queues are idle even once a loss was latched: an injected loss leaves the device running
+    // Waits until every queue is idle even once a loss was latched: an injected loss leaves the device running
     // the work submitted before it, which may still read or write host memory its owner is about to free. On a
-    // device that is really lost the wait returns at once. Holds both queue locks for the wait.
+    // device that is really lost the wait returns at once. Holds every queue lock for the wait.
     void drainQueues();
 
 private:
@@ -152,6 +165,7 @@ private:
 
     Queue& queueFor(QueueKind kind);
     GpuStatus lostStatus() const;
+    VkResult waitIdleLocked();
 
     GpuDeviceInfo info_;
     GpuDebugMessageFn debugMessage_;
@@ -162,8 +176,10 @@ private:
     VmaAllocator allocator_ = nullptr;
     uint32_t memoryHeapCount_ = 0;
 
-    Queue computeQueue_;
-    Queue transferQueue_;
+    // The distinct VkQueues, each with the lock Vulkan's external synchronization of vkQueueSubmit2 needs, and
+    // the one each QueueKind submits to.
+    std::array<Queue, 3> queues_;
+    std::array<Queue*, 3> route_ {};
 
     // The fault plan, written by injectFault() while other threads count operations; faultAt_ 0 means none.
     std::atomic<GpuFaultPlan::Kind> faultKind_ { GpuFaultPlan::Kind::Off };

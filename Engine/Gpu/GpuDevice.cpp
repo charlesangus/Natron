@@ -177,6 +177,12 @@ namespace {
 
 } // namespace
 
+bool
+isUnifiedMemory(VkPhysicalDeviceType type)
+{
+    return (type == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) || (type == VK_PHYSICAL_DEVICE_TYPE_CPU);
+}
+
 GpuStatus
 GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& out)
 {
@@ -307,9 +313,25 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
             break;
         }
     }
+    // Uploads and downloads get queues of their own, so that both overlap compute and each other, as far as the
+    // families have queues to give: without a transfer-only family they come out of the compute family, and with
+    // only two queues there they share the second.
     dev->info_.computeFamily = static_cast<uint32_t>(compute);
-    dev->info_.transferUsesComputeQueue = transfer < 0;
-    dev->info_.transferFamily = transfer < 0 ? dev->info_.computeFamily : static_cast<uint32_t>(transfer);
+    dev->info_.computeQueueIndex = 0;
+    uint32_t computeQueues = 1;
+    uint32_t transferQueues = 0;
+    if (transfer >= 0) {
+        dev->info_.transferFamily = static_cast<uint32_t>(transfer);
+        transferQueues = std::min<uint32_t>(std::max<uint32_t>(fams[transfer].queueCount, 1), 2);
+        dev->info_.uploadQueueIndex = 0;
+        dev->info_.downloadQueueIndex = transferQueues - 1;
+    } else {
+        dev->info_.transferFamily = dev->info_.computeFamily;
+        computeQueues = std::min<uint32_t>(std::max<uint32_t>(fams[compute].queueCount, 1), 3);
+        dev->info_.uploadQueueIndex = computeQueues > 1 ? 1 : 0;
+        dev->info_.downloadQueueIndex = computeQueues - 1;
+    }
+    dev->info_.transferSharesComputeQueue = transfer < 0 && computeQueues == 1;
 
     uint32_t ne = 0;
     vkEnumerateDeviceExtensionProperties(dev->physical_, nullptr, &ne, nullptr);
@@ -362,16 +384,7 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
             }
         }
         dev->info_.deviceLocalHeapSize = localHeap;
-        constexpr VkMemoryPropertyFlags kBoth
-            = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-        bool covers = false;
-        for (uint32_t i = 0; i < mem.memoryTypeCount; ++i) {
-            const auto& t = mem.memoryTypes[i];
-            if ((t.propertyFlags & kBoth) == kBoth && mem.memoryHeaps[t.heapIndex].size >= localHeap) {
-                covers = true;
-            }
-        }
-        dev->info_.unifiedMemory = dev->info_.type == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU || covers;
+        dev->info_.unifiedMemory = isUnifiedMemory(dev->info_.type);
     }
 
     Features avail;
@@ -384,18 +397,18 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     want.f12.shaderFloat16 = avail.f12.shaderFloat16;
     want.f13.synchronization2 = VK_TRUE;
 
-    const float prio = 1.0f;
+    const float prios[3] = { 1.0f, 1.0f, 1.0f };
     std::vector<VkDeviceQueueCreateInfo> qcis;
-    auto addQueue = [&](uint32_t family) {
+    auto addQueues = [&](uint32_t family, uint32_t count) {
         VkDeviceQueueCreateInfo q { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
         q.queueFamilyIndex = family;
-        q.queueCount = 1;
-        q.pQueuePriorities = &prio;
+        q.queueCount = count;
+        q.pQueuePriorities = prios;
         qcis.push_back(q);
     };
-    addQueue(dev->info_.computeFamily);
-    if (!dev->info_.transferUsesComputeQueue) {
-        addQueue(dev->info_.transferFamily);
+    addQueues(dev->info_.computeFamily, computeQueues);
+    if (transferQueues > 0) {
+        addQueues(dev->info_.transferFamily, transferQueues);
     }
 
     VkDeviceCreateInfo dci { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
@@ -409,9 +422,32 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
         return fail(r, "vkCreateDevice failed");
     }
 
-    vkGetDeviceQueue(dev->device_, dev->info_.computeFamily, 0, &dev->computeQueue_.handle);
-    if (!dev->info_.transferUsesComputeQueue) {
-        vkGetDeviceQueue(dev->device_, dev->info_.transferFamily, 0, &dev->transferQueue_.handle);
+    {
+        const struct {
+            QueueKind kind;
+            uint32_t family;
+            uint32_t index;
+        } routes[] = {
+            { QueueKind::Compute, dev->info_.computeFamily, dev->info_.computeQueueIndex },
+            { QueueKind::Upload, dev->info_.transferFamily, dev->info_.uploadQueueIndex },
+            { QueueKind::Download, dev->info_.transferFamily, dev->info_.downloadQueueIndex },
+        };
+        size_t used = 0;
+        for (const auto& r : routes) {
+            VkQueue handle = VK_NULL_HANDLE;
+            vkGetDeviceQueue(dev->device_, r.family, r.index, &handle);
+            Queue* q = nullptr;
+            for (size_t i = 0; i < used; ++i) {
+                if (dev->queues_[i].handle == handle) {
+                    q = &dev->queues_[i];
+                }
+            }
+            if (!q) {
+                q = &dev->queues_[used++];
+                q->handle = handle;
+            }
+            dev->route_[static_cast<size_t>(r.kind)] = q;
+        }
     }
 
     VmaAllocatorCreateInfo aci {};
@@ -467,10 +503,7 @@ GpuDevice::queueFamily(QueueKind kind) const
 GpuDevice::Queue&
 GpuDevice::queueFor(QueueKind kind)
 {
-    if (kind == QueueKind::Transfer && !info_.transferUsesComputeQueue) {
-        return transferQueue_;
-    }
-    return computeQueue_;
+    return *route_[static_cast<size_t>(kind)];
 }
 
 GpuStatus
@@ -527,9 +560,15 @@ GpuDevice::drainQueues()
     if (device_ == VK_NULL_HANDLE) {
         return;
     }
-    std::lock_guard<std::mutex> compute(computeQueue_.mutex);
-    std::lock_guard<std::mutex> transfer(transferQueue_.mutex);
-    vkDeviceWaitIdle(device_);
+    waitIdleLocked();
+}
+
+VkResult
+GpuDevice::waitIdleLocked()
+{
+    // Vulkan requires every queue of the device to be externally synchronized across vkDeviceWaitIdle.
+    std::scoped_lock lock(queues_[0].mutex, queues_[1].mutex, queues_[2].mutex);
+    return vkDeviceWaitIdle(device_);
 }
 
 bool
@@ -610,7 +649,7 @@ GpuDevice::waitIdle()
     if (isLost()) {
         return lostStatus();
     }
-    return check(vkDeviceWaitIdle(device_), "vkDeviceWaitIdle");
+    return check(waitIdleLocked(), "vkDeviceWaitIdle");
 }
 
 GpuStatus

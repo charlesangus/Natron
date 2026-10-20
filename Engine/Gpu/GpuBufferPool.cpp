@@ -1,13 +1,12 @@
 #include "GpuBufferPool.h"
 
+#include "GpuSizeClass.h"
+
 #include <algorithm>
-#include <bit>
 
 namespace gpu {
 
 namespace {
-
-    constexpr VkDeviceSize kMinClass = 64 * 1024;
 
     GpuStatus
     outOfMemory(VkDeviceSize size, uint64_t budget)
@@ -51,12 +50,7 @@ GpuBufferPool::~GpuBufferPool()
 VkDeviceSize
 GpuBufferPool::sizeClass(VkDeviceSize size)
 {
-    if (size <= kMinClass) {
-        return kMinClass;
-    }
-    const uint64_t octave = std::bit_floor(size - 1);
-    const uint64_t step = std::max<uint64_t>(octave / 4, 1);
-    return (size + step - 1) / step * step;
+    return sizeClassOf(size);
 }
 
 void
@@ -202,12 +196,16 @@ GpuBufferPool::acquire(VkDeviceSize size, GpuBufferHandle& out)
     for (;;) {
         std::unique_lock<std::mutex> lock(mutex_);
 
-        auto it = free_.find(cls);
-        if (it != free_.end() && !it->second.empty()) {
+        auto it = free_.lower_bound(cls);
+        while (it != free_.end() && it->second.empty()) {
+            ++it;
+        }
+        if (it != free_.end() && it->first <= nextSizeClassOf(cls)) {
+            const VkDeviceSize pooled = it->first;
             GpuBuffer buf = std::move(it->second.back());
             it->second.pop_back();
-            stats_.pooledBytes -= cls;
-            reserveLocked(cls);
+            stats_.pooledBytes -= pooled;
+            reserveLocked(pooled);
             lock.unlock();
             wrap(std::move(buf));
             return {};
@@ -217,6 +215,7 @@ GpuBufferPool::acquire(VkDeviceSize size, GpuBufferHandle& out)
             reserveLocked(cls);
             lock.unlock();
             GpuBuffer buf;
+            allocations_.fetch_add(1, std::memory_order_relaxed);
             GpuStatus s = GpuBuffer::createDeviceLocal(dev_, cls, kGpuBufferDefaultUsage, buf);
             if (s.ok()) {
                 wrap(std::move(buf));

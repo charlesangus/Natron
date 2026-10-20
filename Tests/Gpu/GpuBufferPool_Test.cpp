@@ -4,10 +4,12 @@
 #include <cstdint>
 #include <memory>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "GpuBufferPool.h"
 #include "GpuDevice.h"
+#include "GpuSizeClass.h"
 #include "GpuTestDevice.h"
 
 using namespace gpu;
@@ -193,6 +195,93 @@ GPU_TEST_F(GpuBufferPoolTest, OutOfMemoryWhenNothingIsEvictable)
     ASSERT_TRUE(pool->acquire(16 * kMiB, b).ok());
     GpuBufferHandle c;
     EXPECT_EQ(pool->acquire(4 * kMiB, c).result, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+}
+
+// A request a few percent off the one a pooled buffer was made for takes that buffer: within its class when it grows, and
+// from the class above when it shrinks across a boundary.
+GPU_TEST_F(GpuBufferPoolTest, NearbySizesReuseThePooledBuffer)
+{
+    const std::pair<uint64_t, uint64_t> cases[] = {
+        { 9 * kMiB, 9 * kMiB + 9 * kMiB / 20 },
+        { 8 * kMiB + kMiB / 5, 8 * kMiB - kMiB / 5 },
+        { 8 * kMiB, 8 * kMiB - 8 * kMiB / 20 },
+    };
+    for (const std::pair<uint64_t, uint64_t>& c : cases) {
+        VkBuffer raw = VK_NULL_HANDLE;
+        uint64_t held = 0;
+        {
+            GpuBufferHandle a;
+            ASSERT_TRUE(pool->acquire(c.first, a).ok());
+            raw = a.vkBuffer();
+            held = a.size();
+        }
+        EXPECT_EQ(pool->stats().pooledBytes, held);
+        const uint64_t allocations = pool->allocationCount();
+        GpuBufferHandle b;
+        ASSERT_TRUE(pool->acquire(c.second, b).ok());
+        EXPECT_EQ(b.vkBuffer(), raw) << c.first << " then " << c.second;
+        EXPECT_EQ(b.size(), held);
+        EXPECT_GE(b.size(), c.second);
+        EXPECT_EQ(pool->allocationCount(), allocations);
+        EXPECT_EQ(pool->stats().liveBytes, held);
+        EXPECT_EQ(pool->stats().pooledBytes, 0u);
+        b = GpuBufferHandle();
+        EXPECT_EQ(pool->stats().liveBytes, 0u);
+        EXPECT_EQ(pool->stats().pooledBytes, held);
+        pool->trim();
+    }
+}
+
+GPU_TEST_F(GpuBufferPoolTest, MuchSmallerRequestLeavesALargePooledBufferAlone)
+{
+    VkBuffer raw = VK_NULL_HANDLE;
+    uint64_t held = 0;
+    {
+        GpuBufferHandle a;
+        ASSERT_TRUE(pool->acquire(16 * kMiB, a).ok());
+        raw = a.vkBuffer();
+        held = a.size();
+    }
+    ASSERT_GT(held, nextSizeClassOf(6 * kMiB));
+    const uint64_t allocations = pool->allocationCount();
+    GpuBufferHandle b;
+    ASSERT_TRUE(pool->acquire(6 * kMiB, b).ok());
+    EXPECT_NE(b.vkBuffer(), raw);
+    EXPECT_EQ(b.size(), GpuBufferPool::sizeClass(6 * kMiB));
+    EXPECT_EQ(pool->allocationCount(), allocations + 1);
+    EXPECT_EQ(pool->stats().pooledBytes, held);
+    EXPECT_EQ(pool->stats().liveBytes, b.size());
+}
+
+GPU_TEST_F(GpuBufferPoolTest, SmallestFittingPooledBufferIsTaken)
+{
+    VkBuffer fit = VK_NULL_HANDLE;
+    VkBuffer roomier = VK_NULL_HANDLE;
+    uint64_t fitBytes = 0;
+    uint64_t roomierBytes = 0;
+    {
+        GpuBufferHandle a, c;
+        ASSERT_TRUE(pool->acquire(8 * kMiB, a).ok());
+        ASSERT_TRUE(pool->acquire(10 * kMiB, c).ok());
+        fit = a.vkBuffer();
+        roomier = c.vkBuffer();
+        fitBytes = a.size();
+        roomierBytes = c.size();
+    }
+    const uint64_t request = 8 * kMiB - 8 * kMiB / 20;
+    ASSERT_LT(fitBytes, roomierBytes);
+    ASSERT_LE(roomierBytes, nextSizeClassOf(request));
+    const uint64_t allocations = pool->allocationCount();
+    GpuBufferHandle b;
+    ASSERT_TRUE(pool->acquire(request, b).ok());
+    EXPECT_EQ(b.vkBuffer(), fit);
+    EXPECT_EQ(pool->stats().pooledBytes, roomierBytes);
+    GpuBufferHandle d;
+    ASSERT_TRUE(pool->acquire(request, d).ok());
+    EXPECT_EQ(d.vkBuffer(), roomier);
+    EXPECT_EQ(pool->allocationCount(), allocations);
+    EXPECT_EQ(pool->stats().pooledBytes, 0u);
+    EXPECT_EQ(pool->stats().liveBytes, fitBytes + roomierBytes);
 }
 
 GPU_TEST_F(GpuBufferPoolTest, CallbackMayReenterPool)

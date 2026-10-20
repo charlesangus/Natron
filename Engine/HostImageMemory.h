@@ -38,10 +38,13 @@ NATRON_NAMESPACE_ENTER
 /**
  * @brief Allocator for RAM image buffers that can be imported by a GPU as host memory.
  *
- * Buffers of at least minPooledBytes() are page-aligned and padded to the import
- * alignment, and released ones are kept in a bounded pool so repeated same-size frames
- * reuse memory that is already touched and possibly already imported. Smaller buffers
- * come from plain malloc: they are never worth importing.
+ * Buffers of at least minPooledBytes() are page-aligned and allocated in the size classes
+ * of gpu::sizeClassOf(), with room for the request to grow a little, padded to the import
+ * alignment. Released ones are kept in a bounded pool. A request takes the smallest pooled
+ * buffer that holds it, up to one class above what it would allocate, so frames whose
+ * sizes drift by a few percent reuse memory that is already touched and possibly already
+ * imported. Smaller buffers come from plain malloc:
+ * they are never worth importing.
  *
  * Pooled-but-unused bytes count against a cache's RAM limit: before a Cache evicts
  * anything it calls trimTo() with its remaining headroom, so idle pool memory is given up
@@ -65,9 +68,26 @@ public:
     static void release(void* ptr, std::size_t bytes);
 
     /**
-     * @brief Size a request for @p bytes occupies once padded.
+     * @brief @p bytes padded to the import alignment: what a transfer of such a buffer moves.
+     * The buffer that holds them may be larger, see capacity().
      **/
     static std::size_t paddedSize(std::size_t bytes);
+
+    /**
+     * @brief Size of the buffer allocate() makes for @p bytes when no pooled buffer serves it.
+     **/
+    static std::size_t capacityFor(std::size_t bytes);
+
+    /**
+     * @brief Usable size of the outstanding large buffer that starts at @p ptr, 0 if there is none.
+     **/
+    static std::size_t capacity(const void* ptr);
+
+    /**
+     * @brief Bytes from @p ptr to the end of the outstanding large buffer that holds it, 0 if
+     * none does. A GPU import of a buffer may cover all of it.
+     **/
+    static std::size_t bytesFrom(const void* ptr);
 
     static std::size_t pageSize();
 
@@ -95,9 +115,24 @@ public:
     static void trimTo(std::size_t maxBytes);
 
     /**
+     * @brief Pooled memory is trimmed down to a floor once no pooled-size buffer has been
+     * allocated or released for an idle period, by a thread started on the first release.
+     * These override the floor and the timings (tests use short ones); the wake interval
+     * is how often idleness is checked.
+     **/
+    static void setIdleTrim(std::size_t floorBytes, int idleMilliseconds, int pollMilliseconds);
+    static void resetIdleTrim();
+
+    /**
+     * @brief Stops and joins the idle-trim thread; a later release starts it again. It is
+     * also stopped automatically at process exit.
+     **/
+    static void stopIdleTrim();
+
+    /**
      * @brief Registers a callback invoked, without internal locks held, just before a
-     * pooled-size buffer is really returned to the OS. It is not invoked when a buffer is
-     * recycled into the pool. Returns an id for removeFreeHook().
+     * pooled-size buffer is really returned to the OS, with its whole capacity. It is not
+     * invoked when a buffer is recycled into the pool. Returns an id for removeFreeHook().
      **/
     static int addFreeHook(const FreeHook& hook);
     static void removeFreeHook(int id);

@@ -40,7 +40,8 @@
 //   Measured in situ on UHD float at 16 threads, so they are hard-coded here.
 // GPU rows: { plugin id, kind (plain, iir or motion_blur), largest sigma covered (0 when the
 //   kernel has no sigma), kernel-only ms per Mpx on an RX 7900 XTX, from the kernelMs of lone-node
-//   regions at UHD }.
+//   regions at UHD, then optionally the Blur filter (nullptr for any) and the largest Erode or
+//   Dilate size covered (0 for any) }. A row that names a filter or a size beats one that does not.
 
 #define NATRON_GPU_COST_SEED_CPU_ROWS \
     { "fr.inria.built-in.Write", 16.0285, 1.1214 }, \
@@ -92,7 +93,8 @@
     { "net.sf.openfx.ColorLookupPlugin", "plain", 0.0, 0.0608 }, \
     { "net.sf.openfx.KeyerPlugin", "plain", 0.0, 0.0532 }, \
     { "net.sf.openfx.ChromaKeyerPlugin", "plain", 0.0, 0.0620 }, \
-    { "net.sf.cimg.CImgErode", "plain", 0.0, 0.8231 }, \
+    { "net.sf.cimg.CImgErode", "plain", 0.0, 0.8231, nullptr, 6 }, \
+    { "net.sf.cimg.CImgErode", "plain", 0.0, 0.5027, nullptr, 1000000 }, \
     { "net.sf.cimg.CImgDilate", "plain", 0.0, 0.8337 }, \
     { "net.sf.openfx.ConstantPlugin", "plain", 0.0, 0.0627 }, \
     { "net.sf.openfx.Solid", "plain", 0.0, 0.0615 }, \
@@ -102,4 +104,9 @@
     { "net.sf.cimg.CImgBlur", "plain", 3.0, 1.1470 }, \
     { "net.sf.cimg.CImgBlur", "plain", 25.0, 0.8527 }, \
     { "net.sf.cimg.CImgBlur", "plain", 1e9, 2.2600 }, \
-    { "net.sf.cimg.CImgBlur", "iir", 1e9, 2.4130 }
+    { "net.sf.cimg.CImgBlur", "iir", 1e9, 2.4130 }, \
+    { "net.sf.cimg.CImgBlur", "plain", 1e9, 2.6886, "box", 0 }, \
+    { "net.sf.cimg.CImgBlur", "plain", 1e9, 3.8870, "triangle", 0 }, \
+    { "net.sf.cimg.CImgBlur", "plain", 1e9, 4.7803, "quadratic", 0 }, \
+    { "net.sf.cimg.CImgBlur", "iir", 1e9, 3.4855, "gaussian", 0 }, \
+    { "net.sf.cimg.CImgBlur", "iir", 1e9, 4.2040, "quasi_gaussian", 0 }

@@ -28,6 +28,7 @@
 #include <atomic>
 #include <bitset>
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <stdexcept>
 #include <string>
@@ -800,10 +801,29 @@ formatRegionRecord(unsigned long long frameSequence,
     }
     std::snprintf(num, sizeof(num),
                   "],\"uploadMs\":%.6f,\"uploadBytes\":%llu,\"kernelMs\":%.6f,\"downloadMs\":%.6f,\"downloadBytes\":%llu,"
-                  "\"wallMs\":%.6f,\"strips\":%d,\"stripsInFlight\":%d,\"transferHiddenMs\":%.6f,\"transferExposedMs\":%.6f,\"fallback\":\"",
+                  "\"wallMs\":%.6f,\"strips\":%d,\"stripsInFlight\":%d,\"transferHiddenMs\":%.6f,\"transferExposedMs\":%.6f,",
                   times.uploadMs, times.uploadBytes, times.kernelMs, times.downloadMs, times.downloadBytes,
                   times.wallMs, times.strips, times.stripsInFlight, times.transferHiddenMs, times.transferExposedMs);
     line.append(num);
+    std::snprintf(num, sizeof(num),
+                  "\"planMs\":%.6f,\"recordMs\":%.6f,\"acquireMs\":%.6f,\"submitWaitMs\":%.6f,\"poolMisses\":%llu,\"importCount\":%llu,"
+                  "\"newImportBytes\":%llu,\"predictedTransferMs\":",
+                  times.planMs, times.recordMs, times.acquireMs, times.submitWaitMs, times.poolMisses, times.importCount, times.newImportBytes);
+    line.append(num);
+    if (std::isfinite(times.predictedTransferMs)) {
+        std::snprintf(num, sizeof(num), "%.6f", times.predictedTransferMs);
+        line.append(num);
+    } else {
+        line.append("null");
+    }
+    line.append(times.overlapStrips ? ",\"overlapStrips\":1" : ",\"overlapStrips\":0");
+    std::snprintf(num, sizeof(num),
+                  ",\"prepareWaitMs\":%.6f,\"uploadsImported\":%llu,\"uploadsStaged\":%llu,\"downloadsImported\":%llu,"
+                  "\"downloadsStaged\":%llu,\"importsAtUpload\":%llu,\"importsAtDownload\":%llu",
+                  times.prepareWaitMs, times.uploadsImported, times.uploadsStaged, times.downloadsImported,
+                  times.downloadsStaged, times.importsAtUpload, times.importsAtDownload);
+    line.append(num);
+    line.append(",\"fallback\":\"");
     for (std::size_t i = 0; i < times.fallback.size(); ++i) {
         const char c = times.fallback[i];
         if ((c == '"') || (c == '\\')) {

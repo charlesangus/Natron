@@ -15,3 +15,7 @@ Acceptance sketch:
 - `grep` finds no GL-texture branch in `ImageMaskMix.cpp`, `ImageCopyChannels.cpp`, `ImagePremult.cpp` or `ImageConvert.cpp`, and no mask-mix or copy-channels shader.
 - A GL-suite OFX plugin with mask, mix and a channel subset matches its CPU render.
 - Preferences lists Vulkan devices, not GL renderers, and choosing one takes effect at the next launch.
+
+## Decisions
+
+- 2026-10-20 — **Claimed by the gpu PM as the third lane, overlap with M64 accepted (user).** M108 will touch `Engine/Settings.cpp` and `Engine/EffectInstance.cpp`, which M64 - Tiled Rendering (blocked, dropped for now) also lists. The user chose to run M108 anyway; M64 rebases over it if it resumes. The M86 boundary blocker resolves as the stub already says: M108 runs first, and a GL-suite plugin's output crosses to RAM right after the plugin call, leaving Vulkan interop to M86 - OFX 1.5 GPU Suites. M85 is merged, so the wrappers may run as `pixelwrap` kernels.

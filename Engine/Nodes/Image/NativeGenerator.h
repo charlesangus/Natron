@@ -30,7 +30,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/RectD.h"
 
 #define kNativeGeneratorSourceInputLabel "Source"
@@ -38,8 +38,8 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The channels of an output row a generator kernel writes, and where each comes from in
- * the generator's RGBA colour: an alpha pixel takes A, an XY pixel R and G, an RGB pixel R, G and
+ * @brief The channels of an output row a generator op writes, and where each comes from in the
+ * generator's RGBA colour: an alpha pixel takes A, an XY pixel R and G, an RGB pixel R, G and
  * B, the way the openfx-misc generators fill a 1-, 2-, 3- or 4-channel image. A one-channel plane
  * other than colour alpha is rendered into an RGBA image by the host and read back from R, so it
  * too takes the generator's first channel.
@@ -75,43 +75,27 @@ struct GeneratorRowChannels {
 };
 
 /**
- * @brief Base for native image generators, reproducing the openfx-misc Generator helper
+ * @brief What native image generators share, reproducing the openfx-misc Generator helper
  * (SupportExt/ofxsGenerator) knob for knob: the extent choice (Format, Size, Project, Default),
  * recenter, reformat, the host-managed format choice with its secret size and pixel aspect ratio,
  * bottomLeft/size with normalised defaults (the project extent), interactive, hidpi and
  * frameRange; the region of definition, output pixel aspect ratio, output format and time domain
  * they imply; and the rectangle overlay in Size extent.
  *
- * The output layer is chosen by a target layer select with channel buttons; the selected channels
- * of that layer are written by the subclass's kernel, and every other channel passes through from
- * the optional Source input, or is zero without one. The output stream is always RGBA, as the
- * openfx-misc generators' outputComponents is pinned to RGBA under Natron.
- *
- * A subclass declares its Source input through describeSourceInput(), calls
- * initializeGeneratorKnobs() first in initializeKnobs(), and builds a kernel in makeKernel(). The
- * kernel receives the row's pixel position (x0, y) at the render scale, no source row (nSrc is 0)
- * and dst already holding the pass-through values; it writes only the channels in io.channels,
- * through GeneratorRowChannels.
+ * A generator has no input: Default extent is the project's, and the channels of the target
+ * layer its op does not write are zero.
  **/
-class NativeGenerator
-    : public NativeImageEffect {
+class NativeGenerator {
 public:
     typedef ExtentKnobs::ExtentEnum ExtentEnum;
 
-    explicit NativeGenerator(NodePtr node);
+    explicit NativeGenerator(EffectInstance* effect);
 
-    virtual ~NativeGenerator();
-
-    virtual bool isGenerator() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return true;
-    }
-
-    virtual StatusEnum getRegionOfDefinition(U64 hash,
-                                             double time,
-                                             const RenderScale& scale,
-                                             ViewIdx view,
-                                             RectD* rod) OVERRIDE WARN_UNUSED_RETURN;
+    /**
+     * @brief Declares the generator knobs on page, in the openfx-misc order, with Default the
+     * initial extent. The generator knobs come before the op's.
+     **/
+    void createKnobs(const KnobPagePtr& page);
 
     ExtentEnum getExtent() const WARN_UNUSED_RETURN;
 
@@ -129,43 +113,138 @@ public:
      **/
     RectD getProjectExtentRect() const WARN_UNUSED_RETURN;
 
-protected:
     /**
-     * @brief Adds the optional Source input every generator has, so the layers and channels it
-     * does not write pass through from it.
+     * @brief The generator's region of definition at (time, view): the extent's, or the
+     * project's for Default extent.
      **/
-    static void describeSourceInput(NativePluginDescription* desc);
+    RectD getRegionOfDefinition(double time,
+                                ViewIdx view) const WARN_UNUSED_RETURN;
 
     /**
-     * @brief Declares the generator knobs on page, in the openfx-misc order, with Default the
-     * initial extent.
+     * @brief The output pixel aspect ratio, 1 when the effect has none yet.
      **/
-    void initializeGeneratorKnobs(const KnobPagePtr& page);
+    double getPixelAspectRatio() const WARN_UNUSED_RETURN;
+
+    bool knobChanged(KnobI* k,
+                     ValueChangedReasonEnum reason,
+                     double time) WARN_UNUSED_RETURN;
+
+    void onKnobsLoaded();
+
+    void getFrameRange(double* first,
+                       double* last) const;
+
+    StatusEnum getPreferredMetadata(NodeMetadata& metadata) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Only ofx/framerate and ofx/pixelaspect. ofx/frame is omitted because it numbers an
+     * image within a source and a generator has none.
+     **/
+    ImageMetadata deriveOutputMetadata() const WARN_UNUSED_RETURN;
+
+private:
+    EffectInstance* _effect;
+    ExtentKnobs _extentKnobs;
+};
+
+/**
+ * @brief An image generator made of an Op with no input: an ImageNode over OP and SPEC that
+ * holds a NativeGenerator and answers from it the region of definition, preferred metadata,
+ * output metadata and frame range. Its knobs are the generator's, then the op's, on one
+ * "Controls" page. An op with a `const NativeGenerator* generator` member gets it pointed at the
+ * node's, so that bake() can read the region of definition and pixel aspect ratio.
+ **/
+template <typename OP, const NodeSpec& SPEC = OP::kNodeSpec>
+class GeneratorNode
+    : public ImageNode<OP, SPEC, OP::kPipeline> {
+    static_assert(SPEC.inputs.empty(), "a generator has no input");
+    static_assert(OP::kPipeline.stages.empty(), "a generator has no source for its stages to blend against");
+
+    typedef ImageNode<OP, SPEC, OP::kPipeline> Base;
+
+public:
+    static EffectInstance* BuildEffect(NodePtr node)
+    {
+        return new GeneratorNode(node);
+    }
+
+    explicit GeneratorNode(NodePtr node)
+        : Base(node)
+        , _generator(this)
+    {
+        if constexpr (requires(OP& o, const NativeGenerator* g) { o.generator = g; }) {
+            this->op().generator = &_generator;
+        }
+    }
+
+    virtual ~GeneratorNode()
+    {
+    }
+
+    virtual bool isGenerator() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    virtual StatusEnum getRegionOfDefinition(U64 /*hash*/,
+                                             double time,
+                                             const RenderScale& /*scale*/,
+                                             ViewIdx view,
+                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        *rod = _generator.getRegionOfDefinition(time, view);
+
+        return eStatusOK;
+    }
+
+    const NativeGenerator& generator() const
+    {
+        return _generator;
+    }
+
+protected:
+    virtual void initializeKnobs() OVERRIDE
+    {
+        const KnobPagePtr page = this->createControlsPage();
+
+        _generator.createKnobs(page);
+        this->op().createKnobs(static_cast<KnobHolder*>(this), page);
+        this->addStageKnobs(page);
+    }
 
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
-                             ViewSpec view,
+                             ViewSpec /*view*/,
                              double time,
-                             bool originatedFromMainThread) OVERRIDE;
+                             bool /*originatedFromMainThread*/) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return _generator.knobChanged(k, reason, time);
+    }
 
-    virtual void onKnobsLoaded() OVERRIDE;
+    virtual void onKnobsLoaded() OVERRIDE FINAL
+    {
+        _generator.onKnobsLoaded();
+    }
 
     virtual void getFrameRange(double* first,
-                               double* last) OVERRIDE;
+                               double* last) OVERRIDE FINAL
+    {
+        _generator.getFrameRange(first, last);
+    }
 
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE WARN_UNUSED_RETURN;
+    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return _generator.getPreferredMetadata(metadata);
+    }
 
-    /**
-     * @brief Only ofx/framerate and ofx/pixelaspect. Nothing the Source input carries is passed
-     * on, since the generator replaces that image, and ofx/frame is omitted because it numbers
-     * an image within a source and a generator has none.
-     **/
-    virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE WARN_UNUSED_RETURN;
-
-    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual ImageMetadata deriveOutputMetadata(double /*time*/,
+                                               ViewIdx /*view*/) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return _generator.deriveOutputMetadata();
+    }
 
 private:
-    ExtentKnobs _extentKnobs;
+    NativeGenerator _generator;
 };
 
 NATRON_NAMESPACE_EXIT

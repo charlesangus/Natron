@@ -38,6 +38,10 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kViewMetadataInputs[] = {
+    InputSpec { .label = "Source", .optional = false },
+};
+
 class ViewMetadata
     : public NativeEffectBase {
 public:
@@ -64,7 +68,25 @@ private:
         return LayerKnobSpec();
     }
 
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_VIEWMETADATA,
+        .label = "ViewMetadata",
+        .description = "Shows the metadata of its input at the current frame in its Metadata tab. The "
+                       "list follows the timeline and upstream changes; Refresh updates it on demand. "
+                       "The image and its metadata are passed through unchanged.",
+        .grouping = PLUGIN_GROUP_METADATA,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .inputs = kViewMetadataInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
+    virtual Route route(double time,
+                        ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 
@@ -73,14 +95,6 @@ private:
                              ViewSpec view,
                              double time,
                              bool originatedFromMainThread) OVERRIDE FINAL;
-
-    virtual bool isIdentity(double time,
-                            const RenderScale& scale,
-                            const RectI& roi,
-                            ViewIdx view,
-                            double* inputTime,
-                            ViewIdx* inputView,
-                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void refreshExtraStateAfterTimeChanged(bool isPlayback, double time) OVERRIDE FINAL;
     virtual void onNodeHashChanged(U64 hash) OVERRIDE FINAL;

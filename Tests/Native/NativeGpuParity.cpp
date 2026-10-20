@@ -249,14 +249,17 @@ const int kOutputSlot = 16;
 
 } // namespace
 
+namespace {
+
 GpuRunResult
-runRenderGpu(GpuParityRuntime& runtime,
-             NativeImageEffect& effect,
-             const GpuQuery& query,
-             const std::vector<GpuParityImage>& inputs,
-             const GpuParityImage* mask,
-             const RectI& outputRect,
-             const GpuViewLayout& layout)
+runRenderGpuOn(GpuParityRuntime& runtime,
+               NativeEffectBase& effect,
+               int effectMaskInput,
+               const GpuQuery& query,
+               const std::vector<GpuParityImage>& inputs,
+               const GpuParityImage* mask,
+               const RectI& outputRect,
+               const GpuViewLayout& layout)
 {
     GpuRunResult result;
 
@@ -264,7 +267,7 @@ runRenderGpu(GpuParityRuntime& runtime,
     std::size_t nInputs = inputs.size();
     int maskInput = -1;
     if (mask) {
-        maskInput = effect.getMaskInput();
+        maskInput = effectMaskInput;
         EXPECT_GE(maskInput, 0) << "the effect has no mask input";
         if (maskInput < 0) {
             return result;
@@ -339,6 +342,20 @@ runRenderGpu(GpuParityRuntime& runtime,
     result.ok = true;
 
     return result;
+}
+
+} // namespace
+
+GpuRunResult
+runRenderGpu(GpuParityRuntime& runtime,
+             StagedImageEffect& effect,
+             const GpuQuery& query,
+             const std::vector<GpuParityImage>& inputs,
+             const GpuParityImage* mask,
+             const RectI& outputRect,
+             const GpuViewLayout& layout)
+{
+    return runRenderGpuOn(runtime, effect, mask ? effect.getMaskInput() : -1, query, inputs, mask, outputRect, layout);
 }
 
 #endif // NATRON_HAVE_GPU
@@ -525,7 +542,7 @@ placeOnGpu(FrameRun* run,
         if (!makeGpuQueryForTask(task, *context, &query)) {
             return false;
         }
-        const NativeImageEffect* native = dynamic_cast<const NativeImageEffect*>(task.key.node->getEffectInstance().get());
+        const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(task.key.node->getEffectInstance().get());
 
         return native && native->canRenderOnGpu(query);
     };

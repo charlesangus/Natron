@@ -50,7 +50,7 @@
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Image/GpuRender.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -95,7 +95,7 @@ imageOf(const RenderedPlane& plane)
 GpuQuery
 queryFor(const NodePtr& op)
 {
-    NativeImageEffect* effect = dynamic_cast<NativeImageEffect*>(op->getEffectInstance().get());
+    StagedImageEffect* effect = dynamic_cast<StagedImageEffect*>(op->getEffectInstance().get());
     const ImageLayerDesc plane = ImageLayerDesc::mapNCompsToColorLayer(4);
     GpuQuery q;
 
@@ -168,7 +168,7 @@ TEST_F(NativeInvertGpuTest, MatchesTheCpuRender)
     maskChannel->set("rgba.A");
     KnobChannelSelect* unPremultBy = dynamic_cast<KnobChannelSelect*>(op->getKnobByName(kUnPremultByKnobName).get());
     ASSERT_TRUE(unPremultBy != NULL);
-    NativeImageEffect* effect = dynamic_cast<NativeImageEffect*>(op->getEffectInstance().get());
+    StagedImageEffect* effect = dynamic_cast<StagedImageEffect*>(op->getEffectInstance().get());
     ASSERT_TRUE(effect != NULL);
 
     const RectI sourceWindow = paritySourceWindow(source, kTime, 0);

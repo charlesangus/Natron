@@ -51,7 +51,7 @@
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/NativeGenerator.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
@@ -93,22 +93,10 @@ extentOf(const NodePtr& node)
 }
 
 #ifdef NATRON_HAVE_GPU
-GpuParityImage
-imageOf(const RenderedPlane& plane)
-{
-    GpuParityImage image;
-
-    image.bounds = plane.window;
-    image.nComps = (int)plane.channels.size();
-    image.pixels = plane.pixels;
-
-    return image;
-}
-
 GpuQuery
 queryFor(const NodePtr& node)
 {
-    NativeImageEffect* effect = dynamic_cast<NativeImageEffect*>(node->getEffectInstance().get());
+    StagedImageEffect* effect = dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get());
     GpuQuery q;
 
     q.time = kTime;
@@ -130,8 +118,8 @@ class NativeConstantGpuTest
     : public BaseTest {
 };
 
-// The generator writes its knob values untouched: the exact class, with the source's channels
-// passing through where the target layer leaves some unprocessed.
+// The generator writes its knob values untouched: the exact class, with zero in the channels of
+// the target layer it leaves unprocessed.
 TEST_F(NativeConstantGpuTest, MatchesTheCpuRender)
 {
 #ifndef NATRON_HAVE_GPU
@@ -141,40 +129,31 @@ TEST_F(NativeConstantGpuTest, MatchesTheCpuRender)
     if (!createRuntime(runtime)) {
         return;
     }
-    NodePtr source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
-    ASSERT_TRUE(bool(source));
-    RenderedPlane sourcePlane;
-    ASSERT_TRUE(renderRgba(source, paritySourceWindow(source, kTime, 0), &sourcePlane));
 
     struct Case {
         const char* name;
         const char* id;
-        bool connected;
         std::vector<std::string> channels;
         std::vector<double> color;
     };
     const Case cases[] = {
-        { "constant", PLUGINID_NATRON_CONSTANT, false, {}, { 0.25, -0.5, 1.75, 0.6 } },
-        { "constant over source, RG", PLUGINID_NATRON_CONSTANT, true, { "R", "G" }, { 0.75, 0.5, 0.25, 0.125 } },
-        { "constant, RG, no source", PLUGINID_NATRON_CONSTANT, false, { "R", "G" }, { 0.75, 0.5, 0.25, 0.125 } },
-        { "constant over source, A", PLUGINID_NATRON_CONSTANT, true, { "A" }, { 0.75, 0.5, 0.25, 0.125 } },
-        { "solid", PLUGINID_NATRON_SOLID, false, {}, { 0.3, 0.6, 0.9 } },
-        { "solid over source, B", PLUGINID_NATRON_SOLID, true, { "B" }, { 0.3, 0.6, 0.9 } },
+        { "constant", PLUGINID_NATRON_CONSTANT, {}, { 0.25, -0.5, 1.75, 0.6 } },
+        { "constant, RG", PLUGINID_NATRON_CONSTANT, { "R", "G" }, { 0.75, 0.5, 0.25, 0.125 } },
+        { "constant, A", PLUGINID_NATRON_CONSTANT, { "A" }, { 0.75, 0.5, 0.25, 0.125 } },
+        { "solid", PLUGINID_NATRON_SOLID, {}, { 0.3, 0.6, 0.9 } },
+        { "solid, B", PLUGINID_NATRON_SOLID, { "B" }, { 0.3, 0.6, 0.9 } },
     };
     int nCase = 0;
     for (const Case& c : cases) {
         NodePtr node = createNode(QString::fromUtf8(c.id));
         ASSERT_TRUE(bool(node)) << c.name;
-        NativeImageEffect* effect = dynamic_cast<NativeImageEffect*>(node->getEffectInstance().get());
+        StagedImageEffect* effect = dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get());
         ASSERT_TRUE(effect != NULL) << c.name;
         ASSERT_TRUE(setKnobValues(node, kConstantParamColor, c.color)) << c.name;
         if (!c.channels.empty()) {
             KnobLayerSelectPtr layer = std::dynamic_pointer_cast<KnobLayerSelect>(node->getLayerKnob());
             ASSERT_TRUE(bool(layer)) << c.name;
             layer->setChannels(c.channels);
-        }
-        if (c.connected) {
-            connectNodes(source, node, 0, true);
         }
 
         const RectI window = extentOf(node);
@@ -184,16 +163,8 @@ TEST_F(NativeConstantGpuTest, MatchesTheCpuRender)
         RenderedPlane cpu;
         ASSERT_TRUE(renderRgba(node, window, &cpu)) << c.name;
 
-        std::vector<GpuParityImage> inputs;
-        if (c.connected) {
-            inputs.push_back(imageOf(sourcePlane));
-        }
         GpuViewLayout layout;
         if (nCase++ % 2) {
-            if (c.connected) {
-                inputs[0].layout.padFloats = 16;
-                inputs[0].layout.rowPadFloats = 3;
-            }
             layout.padFloats = 8;
             layout.rowPadFloats = 5;
             layout.marginLeft = 3;
@@ -201,7 +172,7 @@ TEST_F(NativeConstantGpuTest, MatchesTheCpuRender)
             layout.marginRight = 4;
             layout.marginTop = 1;
         }
-        const GpuRunResult run = runRenderGpu(*runtime, *effect, query, inputs, nullptr, window, layout);
+        const GpuRunResult run = runRenderGpu(*runtime, *effect, query, std::vector<GpuParityImage>(), nullptr, window, layout);
         ASSERT_TRUE(run.ok) << c.name;
         EXPECT_EQ(0u, run.writtenOutside) << c.name;
         ASSERT_EQ(cpu.pixels.size(), run.pixels.size()) << c.name;

@@ -29,8 +29,7 @@
 #include "Global/Macros.h"
 
 #include "Engine/EngineFwd.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
-#include "Engine/ParallelRenderArgs.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 
 #define PLUGINID_NATRON_DISSOLVE "net.sf.openfx.DissolvePlugin"
 #define PLUGIN_MAJOR_NATRON_DISSOLVE 2
@@ -43,14 +42,75 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kDissolveInputs[] = {
+    InputSpec { .label = "0", .optional = true },
+    InputSpec { .label = "1", .optional = true },
+    InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
+    InputSpec { .label = "", .role = InputRole::Variadic, .optional = true, .count = kDissolveSourceCount - 2, .firstNumber = 2 },
+};
+
+/**
+ * @brief The input number of source clip k (0..63).
+ **/
+constexpr int
+dissolveSourceInput(int k)
+{
+    return (k < kDissolveMaskInput) ? k : k + 1;
+}
+
 /**
  * @brief Dissolve: a weighted average of the two source inputs `floor(which)` and `ceil(which)`
  * out of 64, the blend being the fractional part of `which`, optionally masked. Knob names,
  * defaults, region of definition, identity rules and per-pixel arithmetic are the openfx-misc
  * DissolvePlugin's; it registers under that plug-in's ID one major above.
  **/
+struct DissolveOp {
+    struct Params {
+        double which;
+        int prev;
+        int next;
+        float blend;
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_DISSOLVE,
+        .label = "Dissolve",
+        .description = "Weighted average of two inputs.",
+        .grouping = PLUGIN_GROUP_MERGE,
+        .majorVersion = PLUGIN_MAJOR_NATRON_DISSOLVE,
+        .minorVersion = 0,
+        .inputs = kDissolveInputs,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .layers = LayerPolicy::all(),
+        .op = OpKind::Composite,
+    };
+
+    void createKnobs(KnobHolder* holder,
+                     const KnobPagePtr& page);
+
+    Params bake(const KnobReader& reader) const;
+
+    bool isIdentity(const Params& params) const;
+
+    Route route(const Params& params,
+                const RouteContext& context) const;
+
+    CompositeInputs inputs(const Params& params,
+                           const RouteContext& context) const;
+
+    void step(const Params& params,
+              const RowIO& io) const;
+
+    KnobDoubleWPtr which;
+};
+
+static_assert(CompositeOp<DissolveOp>);
+
 class Dissolve
-    : public NativeImageEffect {
+    : public ImageNode<DissolveOp> {
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
@@ -74,20 +134,10 @@ public:
      **/
     static int sourceInput(int k)
     {
-        return (k < kDissolveMaskInput) ? k : k + 1;
+        return dissolveSourceInput(k);
     }
 
 protected:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual bool isIdentity(double time,
-                            const RenderScale& scale,
-                            const RectI& roi,
-                            ViewIdx view,
-                            double* inputTime,
-                            ViewIdx* inputView,
-                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
     virtual void getRegionsOfInterest(double time,
                                       const RenderScale& scale,
                                       const RectD& outputRoD,
@@ -98,25 +148,13 @@ protected:
     virtual FramesNeededMap getFramesNeeded(double time,
                                             ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
 private:
-    virtual void initializeKnobs() OVERRIDE FINAL;
-
     virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
-
-    // The `which` value clamped to [0, 63].
-    double getWhich(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     bool isSourceConnected(int k) const WARN_UNUSED_RETURN;
 
-    bool getDissolveMaskInvert(double time, ViewIdx view) const WARN_UNUSED_RETURN;
-
     // Sets the display range of `which` to the highest connected source input.
     void updateRange();
-
-    KnobDoubleWPtr _which;
-    KnobBoolWPtr _dissolveMaskInvert;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -41,34 +41,6 @@ CopyMetadata::CopyMetadata(NodePtr node)
 {
 }
 
-NativePluginDescription
-CopyMetadata::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_COPYMETADATA;
-    desc.label = "CopyMetadata";
-    desc.description = tr("Copies the metadata of B onto the metadata of A, restricted to the keys matching "
-                          "the Keys filter, a comma- or newline-separated list of globs where * matches any "
-                          "characters and ? one (every key if it is empty). The image of A is passed through "
-                          "unchanged, and so is its metadata while B is not connected.\n\n"
-                          "Replace: the keys of A matching the filter are dropped and replaced by those "
-                          "of B matching the filter; the keys of A that do not match survive, so a key "
-                          "of A matching the filter that B lacks is removed.\n"
-                          "Merge, B wins: the keys of B matching the filter are added to A's, B's value "
-                          "kept on a clash.\n"
-                          "Merge, A wins: likewise, but A's value is kept on a clash.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_METADATA;
-    desc.majorVersion = 1;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("A", false, eDataKindImage));
-    desc.inputs.push_back(NativeInputDescription("B", true, eDataKindImage));
-    desc.outputKind = eDataKindImage;
-
-    return desc;
-}
-
 void
 CopyMetadata::initializeKnobs()
 {
@@ -99,20 +71,11 @@ CopyMetadata::initializeKnobs()
     _keys = keys;
 }
 
-bool
-CopyMetadata::isIdentity(double time,
-                         const RenderScale& /*scale*/,
-                         const RectI& /*roi*/,
-                         ViewIdx view,
-                         double* inputTime,
-                         ViewIdx* inputView,
-                         int* inputNb)
+Route
+CopyMetadata::route(double time,
+                    ViewIdx /*view*/)
 {
-    *inputTime = time;
-    *inputNb = 0;
-    *inputView = view;
-
-    return true;
+    return Route::input(0, time);
 }
 
 ImageMetadata

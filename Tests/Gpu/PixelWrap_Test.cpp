@@ -17,6 +17,7 @@
 #include "GpuRuntime.h"
 #include "GpuTestDevice.h"
 #include "GpuWrap.h"
+#include "compositestep_halveadd_spirv.h"
 #include "pixelwrap_identity_spirv.h"
 #include "pixelwrap_scale_spirv.h"
 
@@ -44,6 +45,16 @@ struct TwinGlobals {
     GpuWrapParams* params;
 };
 
+// The C++ target lays out an importing module's globals before those it imports.
+struct TwinStepGlobals {
+    TwinBuffer input;
+    TwinBuffer src;
+    TwinBuffer dst;
+    TwinBuffer mask;
+    TwinBuffer aux;
+    GpuWrapParams* params;
+};
+
 using TwinEntry = void (*)(TwinVarying*, void*, void*);
 
 } // namespace
@@ -52,6 +63,7 @@ extern "C" void pixelwrap_identity(TwinVarying*, void*, void*);
 extern "C" void pixelwrap_scale(TwinVarying*, void*, void*);
 extern "C" void wrap_divide(TwinVarying*, void*, void*);
 extern "C" void wrap_finish(TwinVarying*, void*, void*);
+extern "C" void compositestep_halveadd(TwinVarying*, void*, void*);
 
 namespace {
 
@@ -312,8 +324,8 @@ struct Expected {
     std::vector<double> magnitude;
 };
 
-// A transcription of NativeImageEffect::render()'s per-pixel wrapping, with readSourceRow's and
-// readChannelRow's fills outside the images.
+// A transcription of the CPU point-op per-pixel wrapping, with the fills outside the images that
+// the row readers apply.
 Expected
 reference(Kernel kernel, const Case& c)
 {
@@ -481,6 +493,235 @@ checkTwin(Kernel kernel)
     }
 }
 
+// A Composite op's fold under the halve-and-add step, and its finish: base is the result the fold
+// starts from, inputs are folded into it in order, and the Case's src is the blend input.
+struct FoldCase {
+    Case finish;
+    HostView base;
+    std::vector<HostView> inputs;
+
+    std::vector<GpuWrapView> inputViews() const
+    {
+        std::vector<GpuWrapView> views;
+        for (const HostView& v : inputs) {
+            views.push_back(v.view(nullptr));
+        }
+        return views;
+    }
+};
+
+// Folds of `count` inputs, the base included, over channel counts and subsets, no / partial /
+// inverted mask and mix 0, 0.5 and 1, as makeCases(), with a blend input other than the base, and
+// a base and inputs that are smaller than the output, cover it, or are missing, the inputs in the
+// output's channel count and in others.
+std::vector<FoldCase>
+makeFoldCases(uint32_t count)
+{
+    const GpuWrapRect output { -5, 3, 32, 22 };
+    const GpuWrapRect inputBounds[3] = { { 0, 6, 20, 17 }, { -9, 0, 40, 30 }, { 4, -2, 27, 12 } };
+    std::vector<FoldCase> cases;
+    std::mt19937 rng(4321 + int(count));
+    for (uint32_t n : { 1u, 3u, 4u }) {
+        std::vector<uint32_t> subsets;
+        if (n == 1) {
+            subsets = { 0x8, 0x7 };
+        } else if (n == 3) {
+            subsets = { 0x7, 0x2, 0xF };
+        } else {
+            subsets = { 0xF, 0x7, 0x8, 0x5 };
+        }
+        for (uint32_t subset : subsets) {
+            for (int maskMode = 0; maskMode < 3; ++maskMode) {
+                for (float mix : { 0.0f, 0.5f, 1.0f }) {
+                    const size_t index = cases.size();
+                    FoldCase c;
+                    Case& f = c.finish;
+                    f.nComps = n;
+                    f.channelMask = subset;
+                    f.output = output;
+                    f.mix = mix;
+                    if (index % 5 == 4) {
+                        f.src = makeView({}, n, 0, 0, 0.0f);
+                    } else {
+                        f.src = makeView(index % 2 ? GpuWrapRect { -9, 0, 40, 30 } : GpuWrapRect { 1, 5, 21, 18 }, n,
+                                         index % 2 ? 0 : 7, index % 2 ? 0 : 3, 0.0f);
+                    }
+                    fillSource(f.src, -1, rng);
+                    f.dst = makeView({ -7, 1, 35, 25 }, n, 5, 2, kSentinel);
+                    if (maskMode > 0) {
+                        f.applyMask = true;
+                        f.maskInvert = maskMode == 2;
+                        f.mask = makeView({ 2, -1, 25, 15 }, 2, 3, 2, 0.0f);
+                        f.maskChannel = 1;
+                        fillMask(f.mask, rng);
+                    }
+                    if (index % 7 == 3) {
+                        c.base = makeView({}, n, 0, 0, 0.0f);
+                    } else {
+                        c.base = makeView(inputBounds[index % 3], n, index % 4, uint32_t(index % 3), 0.0f);
+                        fillSource(c.base, -1, rng);
+                    }
+                    for (uint32_t s = 1; s < count; ++s) {
+                        const size_t k = index + s;
+                        if (k % 7 == 3) {
+                            c.inputs.push_back(makeView({}, n, 0, 0, 0.0f));
+                            continue;
+                        }
+                        const uint32_t comps[4] = { n, 4u, 1u, 3u };
+                        HostView v = makeView(inputBounds[k % 3], comps[k % 4], 2 * s, s, 0.0f);
+                        fillSource(v, -1, rng);
+                        c.inputs.push_back(std::move(v));
+                    }
+                    char label[160];
+                    std::snprintf(label, sizeof label, "fold of %u n=%u channels=0x%x mask=%d mix=%g case=%zu", count, n,
+                                  subset, maskMode, double(mix), index);
+                    f.label = label;
+                    cases.push_back(std::move(c));
+                }
+            }
+        }
+    }
+    return cases;
+}
+
+// PassExecutor's channelIndexForBit.
+int
+channelIndexForBit(int nComps, int bit)
+{
+    if (nComps == 1) {
+        return bit == 3 ? 0 : -1;
+    }
+    return bit < nComps ? bit : -1;
+}
+
+// A view's pixel in the output's channels by channel bit, zero outside the view, as readSourceRow
+// reads it.
+void
+readFoldPixel(const HostView& v, int x, int y, int n, float* out)
+{
+    for (int ch = 0; ch < 4; ++ch) {
+        out[ch] = 0.f;
+    }
+    if (v.bounds.empty() || !v.inside(x, y)) {
+        return;
+    }
+    for (int ch = 0; ch < n; ++ch) {
+        const int i = channelIndexForBit(int(v.nComps), channelBit(n, ch));
+        if (i >= 0) {
+            out[ch] = v.data[v.index(x, y, i)];
+        }
+    }
+}
+
+// A transcription of runStagesCpu() over a Composite op's fold under the halve-and-add step.
+Expected
+foldReference(const FoldCase& fc)
+{
+    const Case& c = fc.finish;
+    Expected e;
+    e.value = c.dst.data;
+    e.divided.assign(e.value.size(), 0);
+    e.magnitude.assign(e.value.size(), 0.0);
+    const int n = int(c.nComps);
+    for (int y = c.output.y1; y < c.output.y2; ++y) {
+        for (int x = c.output.x1; x < c.output.x2; ++x) {
+            float sourcePix[4];
+            readFoldPixel(c.src, x, y, n, sourcePix);
+            float result[4];
+            readFoldPixel(fc.base, x, y, n, result);
+            for (const HostView& input : fc.inputs) {
+                float inputPix[4];
+                readFoldPixel(input, x, y, n, inputPix);
+                for (int ch = 0; ch < n; ++ch) {
+                    result[ch] = result[ch] * 0.5f + inputPix[ch];
+                }
+            }
+
+            float alpha = c.mix;
+            if (c.applyMask) {
+                const float m = c.mask.inside(x, y) ? c.mask.data[c.mask.index(x, y, int(c.maskChannel))] : 0.f;
+                const float maskScale = c.maskInvert ? (1.f - m) : m;
+                alpha = maskScale * c.mix;
+            }
+            for (int ch = 0; ch < n; ++ch) {
+                const size_t i = c.dst.index(x, y, ch);
+                const float srcV = sourcePix[ch];
+                if (!(c.channelMask & (1u << channelBit(n, ch)))) {
+                    e.value[i] = srcV;
+                    continue;
+                }
+                float v = result[ch];
+                if (alpha == 0.f) {
+                    v = srcV;
+                } else if (alpha != 1.f) {
+                    v = v * alpha + (1.f - alpha) * srcV;
+                }
+                e.value[i] = v;
+            }
+        }
+    }
+    return e;
+}
+
+// recordWrapFold()'s dispatches run through the C++ twins: one step per input, alternating between
+// two scratch buffers, then wrap_finish.
+std::vector<float>
+runFoldTwin(const FoldCase& fc)
+{
+    const Case& c = fc.finish;
+    std::vector<float> unused(16, 0.0f);
+    const uint32_t n = c.nComps;
+    const uint32_t width = uint32_t(c.output.x2 - c.output.x1);
+    const uint32_t height = uint32_t(c.output.y2 - c.output.y1);
+    HostView scratch[2];
+    for (HostView& v : scratch) {
+        v = makeView(c.output, n, 0, 0, 0.0f);
+    }
+    std::vector<float> base = fc.base.data.empty() ? unused : fc.base.data;
+    TwinVarying vi { { 0, 0, 0 }, { (width + 7) / 8, (height + 7) / 8, 1 } };
+    for (size_t k = 0; k < fc.inputs.size(); ++k) {
+        const HostView& resultView = k == 0 ? fc.base : scratch[(k - 1) & 1];
+        HostView& dstView = scratch[k & 1];
+        GpuWrapStep step;
+        step.result = resultView.view(nullptr);
+        step.input = fc.inputs[k].view(nullptr);
+        step.dst = dstView.view(nullptr);
+        step.output = c.output;
+        step.nComps = n;
+        step.channelMask = c.channelMask;
+        GpuWrapParams p;
+        const GpuStatus s = wrapStepParams(step, p);
+        EXPECT_TRUE(s.ok()) << c.label << ": " << s.message;
+        std::vector<float> result = k == 0 ? base : resultView.data;
+        std::vector<float> input = fc.inputs[k].data.empty() ? unused : fc.inputs[k].data;
+        TwinStepGlobals g { { input.data(), input.size() }, { result.data(), result.size() }, { dstView.data.data(), dstView.data.size() }, { unused.data(), unused.size() }, { unused.data(), unused.size() }, &p };
+        compositestep_halveadd(&vi, nullptr, &g);
+    }
+    HostView& filtered = scratch[(fc.inputs.size() - 1) & 1];
+    GpuWrapParams p;
+    const GpuWrapView filteredView = filtered.view(nullptr);
+    const GpuStatus s = wrapParams(c.wrap(), p, &filteredView);
+    EXPECT_TRUE(s.ok()) << c.label << ": " << s.message;
+    std::vector<float> dst = c.dst.data;
+    std::vector<float> src = c.src.data.empty() ? unused : c.src.data;
+    std::vector<float> mask = c.mask.data.empty() ? unused : c.mask.data;
+    TwinGlobals g { { src.data(), src.size() }, { dst.data(), dst.size() }, { mask.data(), mask.size() }, { filtered.data.data(), filtered.data.size() }, &p };
+    wrap_finish(&vi, nullptr, &g);
+    return dst;
+}
+
+void
+checkFoldTwin(uint32_t count)
+{
+    Comparison cmp;
+    for (const FoldCase& c : makeFoldCases(count)) {
+        cmp.check(c.finish, foldReference(c), runFoldTwin(c));
+    }
+    cmp.print(("fold of " + std::to_string(count) + " cpu twin vs reference").c_str());
+    EXPECT_EQ(cmp.failures, 0u);
+    EXPECT_GT(cmp.exactCompared, 0u);
+}
+
 } // namespace
 
 TEST(PixelWrapLayout, ParamsMatchTheShader)
@@ -489,6 +730,47 @@ TEST(PixelWrapLayout, ParamsMatchTheShader)
     EXPECT_EQ(pixelwrap_scale_push_bytes, sizeof(GpuWrapParams));
     EXPECT_EQ(pixelwrap_identity_storage_buffers, kGpuWrapBindings);
     EXPECT_EQ(pixelwrap_scale_storage_buffers, kGpuWrapBindings);
+    EXPECT_EQ(compositestep_halveadd_push_bytes, sizeof(GpuWrapParams));
+    EXPECT_EQ(compositestep_halveadd_storage_buffers, kGpuWrapStepBindings);
+}
+
+TEST(PixelWrapLayout, PacksAStep)
+{
+    HostView result = makeView({ -2, 0, 9, 9 }, 4, 6, 1, 0.0f);
+    HostView dst = makeView({ 0, 0, 8, 8 }, 4, 0, 0, 0.0f);
+    GpuWrapStep step;
+    step.result = result.view(nullptr);
+    step.input = makeView({ 1, 2, 5, 6 }, 3, 4, 1, 0.0f).view(nullptr);
+    step.dst = dst.view(nullptr);
+    step.output = { 0, 0, 8, 8 };
+    step.nComps = 4;
+    GpuWrapParams p;
+    ASSERT_TRUE(wrapStepParams(step, p).ok());
+    EXPECT_EQ(p.srcOffset, 6u);
+    EXPECT_EQ(p.srcX1, -2);
+    EXPECT_EQ(p.maskOffset, 4u);
+    EXPECT_EQ(p.maskStride, 15u);
+    EXPECT_EQ(p.maskX1, 1);
+    EXPECT_EQ(p.maskY2, 6);
+    EXPECT_EQ(p.maskComps, 3u);
+    EXPECT_EQ(p.flags, 0u);
+
+    GpuWrapStep missing = step;
+    missing.input = makeView({}, 3, 0, 0, 0.0f).view(nullptr);
+    ASSERT_TRUE(wrapStepParams(missing, p).ok());
+    EXPECT_EQ(p.maskComps, 0u);
+
+    GpuWrapStep fiveChannels = step;
+    fiveChannels.input.nComps = 5;
+    EXPECT_FALSE(wrapStepParams(fiveChannels, p).ok());
+
+    GpuWrapStep otherResult = step;
+    otherResult.result.nComps = 3;
+    EXPECT_FALSE(wrapStepParams(otherResult, p).ok());
+
+    GpuWrapStep outside = step;
+    outside.output = { 0, 0, 9, 8 };
+    EXPECT_FALSE(wrapStepParams(outside, p).ok());
 }
 
 TEST(PixelWrapLayout, RejectsBadGeometry)
@@ -547,6 +829,16 @@ TEST(PixelWrapCpu, FinishMatchesReference)
     checkTwin(Kernel::Finish);
 }
 
+TEST(PixelWrapCpu, FoldOfTwoMatchesReference)
+{
+    checkFoldTwin(2);
+}
+
+TEST(PixelWrapCpu, FoldOfFiveMatchesReference)
+{
+    checkFoldTwin(5);
+}
+
 namespace {
 
 class PixelWrapGpuTest : public gputest::SkippableTest {
@@ -567,6 +859,9 @@ protected:
         scale_ = rt_->registerKernel(desc(pixelwrap_scale_spirv, pixelwrap_scale_spirv_words, pixelwrap_scale_entry,
                                           pixelwrap_scale_storage_buffers, pixelwrap_scale_push_bytes,
                                           pixelwrap_scale_group_size));
+        step_ = rt_->registerKernel(desc(compositestep_halveadd_spirv, compositestep_halveadd_spirv_words,
+                                         compositestep_halveadd_entry, compositestep_halveadd_storage_buffers,
+                                         compositestep_halveadd_push_bytes, compositestep_halveadd_group_size));
     }
 
     static void TearDownTestCase() { rt_.reset(); }
@@ -695,18 +990,111 @@ protected:
         EXPECT_GT(cmp.nanCompared, 0u);
     }
 
+    bool download(const GpuBufferHandle& h, std::vector<float>& o)
+    {
+        TimelineValue done;
+        GpuStatus s = rt_->download(h.buffer(), 0, { o.data(), o.size() * sizeof(float) }, done);
+        if (s.ok()) {
+            s = rt_->wait(done);
+        }
+        if (!s.ok()) {
+            ADD_FAILURE() << s.message;
+        }
+        return s.ok();
+    }
+
+    // Batched so one record context holds a bounded number of dispatches.
+    std::vector<std::vector<float>> runFoldGpu(const std::vector<FoldCase>& cases)
+    {
+        constexpr size_t kBatch = 16;
+        std::vector<std::vector<float>> out(cases.size());
+        for (size_t first = 0; first < cases.size(); first += kBatch) {
+            const size_t count = std::min(kBatch, cases.size() - first);
+            std::vector<GpuBufferHandle> src(count), dst(count), mask(count), base(count);
+            std::vector<std::vector<GpuBufferHandle>> inputs(count);
+            std::unique_ptr<GpuRecordContext> ctx;
+            GpuStatus s = rt_->newRecordContext(ctx);
+            if (!s.ok()) {
+                ADD_FAILURE() << s.message;
+                return out;
+            }
+            for (size_t k = 0; k < count; ++k) {
+                const FoldCase& fc = cases[first + k];
+                const Case& c = fc.finish;
+                if (!upload(c.dst, dst[k]) || (!c.src.bounds.empty() && !upload(c.src, src[k]))
+                    || (c.applyMask && !upload(c.mask, mask[k])) || (!fc.base.bounds.empty() && !upload(fc.base, base[k]))) {
+                    return out;
+                }
+                GpuWrap w = c.wrap();
+                w.dst.buffer = &dst[k].buffer();
+                if (src[k]) {
+                    w.src.buffer = &src[k].buffer();
+                }
+                if (mask[k]) {
+                    w.mask.buffer = &mask[k].buffer();
+                }
+                GpuWrapView baseView = fc.base.view(base[k] ? &base[k].buffer() : nullptr);
+                std::vector<GpuWrapView> views = fc.inputViews();
+                inputs[k].resize(fc.inputs.size());
+                for (size_t i = 0; i < fc.inputs.size(); ++i) {
+                    if (fc.inputs[i].bounds.empty()) {
+                        continue;
+                    }
+                    if (!upload(fc.inputs[i], inputs[k][i])) {
+                        return out;
+                    }
+                    views[i].buffer = &inputs[k][i].buffer();
+                }
+                s = recordWrapFold(*ctx, step_, w, baseView, views);
+                if (!s.ok()) {
+                    ADD_FAILURE() << c.label << ": " << s.message;
+                    return out;
+                }
+            }
+            s = ctx->submitAndWait();
+            ctx.reset();
+            if (!s.ok()) {
+                ADD_FAILURE() << s.message;
+                return out;
+            }
+            for (size_t k = 0; k < count; ++k) {
+                std::vector<float>& o = out[first + k];
+                o.assign(cases[first + k].finish.dst.data.size(), 0.0f);
+                if (!download(dst[k], o)) {
+                    return out;
+                }
+            }
+        }
+        return out;
+    }
+
+    void checkFoldGpu(uint32_t count)
+    {
+        const std::vector<FoldCase> cases = makeFoldCases(count);
+        const std::vector<std::vector<float>> got = runFoldGpu(cases);
+        Comparison cmp;
+        for (size_t k = 0; k < cases.size(); ++k) {
+            cmp.check(cases[k].finish, foldReference(cases[k]), got[k]);
+        }
+        cmp.print(("fold of " + std::to_string(count) + " gpu vs reference").c_str());
+        EXPECT_EQ(cmp.failures, 0u);
+        EXPECT_GT(cmp.exactCompared, 0u);
+    }
+
     gputest::ValidationCheck check_;
 
     static std::unique_ptr<GpuRuntime> rt_;
     static std::string error_;
     static GpuKernelId identity_;
     static GpuKernelId scale_;
+    static GpuKernelId step_;
 };
 
 std::unique_ptr<GpuRuntime> PixelWrapGpuTest::rt_;
 std::string PixelWrapGpuTest::error_;
 GpuKernelId PixelWrapGpuTest::identity_ {};
 GpuKernelId PixelWrapGpuTest::scale_ {};
+GpuKernelId PixelWrapGpuTest::step_ {};
 
 } // namespace
 
@@ -728,6 +1116,16 @@ GPU_TEST_F(PixelWrapGpuTest, DivideMatchesReference)
 GPU_TEST_F(PixelWrapGpuTest, FinishMatchesReference)
 {
     checkGpu(Kernel::Finish);
+}
+
+GPU_TEST_F(PixelWrapGpuTest, FoldOfTwoMatchesReference)
+{
+    checkFoldGpu(2);
+}
+
+GPU_TEST_F(PixelWrapGpuTest, FoldOfFiveMatchesReference)
+{
+    checkFoldGpu(5);
 }
 
 GPU_TEST_F(PixelWrapGpuTest, RegistryKernelsUseTheWrapLayout)

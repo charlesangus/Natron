@@ -38,6 +38,10 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kDeepReformatInputs[] = {
+    InputSpec { .label = "Source", .kind = eDataKindDeep },
+};
+
 /**
  * @brief Repositions the deep input within a new output format, without filtering it: the input
  * is translated by a whole number of pixels and every sample is copied across untouched -- its
@@ -89,7 +93,24 @@ public:
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_DEEPREFORMAT,
+        .label = "DeepReformat",
+        .description = "Reposition the deep input in a new format, by a whole number of pixels "
+                       "and with no filtering: every sample is copied across exactly as it came "
+                       "in. Centre puts the input's format in the middle of the new one; with it "
+                       "off the input stays at the origin and only the format changes.",
+        .grouping = PLUGIN_GROUP_DEEP,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .outputKind = eDataKindDeep,
+        .inputs = kDeepReformatInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 
@@ -100,13 +121,8 @@ private:
                                       ViewIdx view,
                                       RoIMap* ret) OVERRIDE FINAL;
 
-    virtual bool isIdentity(double time,
-                            const RenderScale& scale,
-                            const RectI& roi,
-                            ViewIdx view,
-                            double* inputTime,
-                            ViewIdx* inputView,
-                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual Route route(double time,
+                        ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 

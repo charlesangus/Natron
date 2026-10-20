@@ -41,27 +41,6 @@
 
 NATRON_NAMESPACE_ENTER
 
-NativePluginDescription
-DeepReformat::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_DEEPREFORMAT;
-    desc.label = "DeepReformat";
-    desc.description = tr("Reposition the deep input in a new format, by a whole number of pixels "
-                          "and with no filtering: every sample is copied across exactly as it came "
-                          "in. Centre puts the input's format in the middle of the new one; with it "
-                          "off the input stays at the origin and only the format changes.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_DEEP;
-    desc.majorVersion = 1;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindDeep));
-    desc.outputKind = eDataKindDeep;
-
-    return desc;
-}
-
 void
 DeepReformat::initializeKnobs()
 {
@@ -238,28 +217,19 @@ DeepReformat::getRegionsOfInterest(double time,
     }
 }
 
-bool
-DeepReformat::isIdentity(double time,
-                         const RenderScale& /*scale*/,
-                         const RectI& /*roi*/,
-                         ViewIdx view,
-                         double* inputTime,
-                         ViewIdx* inputView,
-                         int* inputNb)
+Route
+DeepReformat::route(double time,
+                    ViewIdx view)
 {
     int dx = 0;
     int dy = 0;
 
     getTranslation(&dx, &dy);
     if ((dx != 0) || (dy != 0)) {
-        return false;
+        return Route::none();
     }
 
-    *inputTime = time;
-    *inputNb = 0;
-    *inputView = view;
-
-    return true;
+    return Route::input(0, time);
 }
 
 StatusEnum

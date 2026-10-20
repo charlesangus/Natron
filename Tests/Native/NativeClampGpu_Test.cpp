@@ -52,7 +52,6 @@
 #include "Engine/Nodes/Color/Clamp.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Image/GpuRender.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -60,19 +59,6 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const double kTime = 1.;
-
-// makeKernel() is protected in the base and private in Clamp; naming it through a derived class
-// of the base is what makes the member pointer accessible.
-struct KernelProbe
-    : public NativeImageEffect {
-    static PixelKernelPtr make(NativeImageEffect* effect,
-                               const KernelContext& context)
-    {
-        PixelKernelPtr (NativeImageEffect::*member)(const KernelContext&) = &KernelProbe::makeKernel;
-
-        return (effect->*member)(context);
-    }
-};
 
 struct ClampSetting {
     double minimum[4];
@@ -113,10 +99,10 @@ applySetting(const NodePtr& node,
     ASSERT_TRUE(setKnobValues(node, kClampParamMaxClampToEnable, std::vector<double>(1, s.maxClampToEnable ? 1. : 0.)));
 }
 
-NativeImageEffect*
+Clamp*
 effectOf(const NodePtr& node)
 {
-    return node ? dynamic_cast<NativeImageEffect*>(node->getEffectInstance().get()) : NULL;
+    return node ? dynamic_cast<Clamp*>(node->getEffectInstance().get()) : NULL;
 }
 
 bool
@@ -155,7 +141,7 @@ imageOf(const RenderedPlane& plane)
 GpuQuery
 queryFor(const NodePtr& op)
 {
-    NativeImageEffect* effect = effectOf(op);
+    Clamp* effect = effectOf(op);
     const ImageLayerDesc plane = ImageLayerDesc::mapNCompsToColorLayer(4);
     GpuQuery q;
 
@@ -191,26 +177,19 @@ queryFor(const NodePtr& op)
     return q;
 }
 
-// The native CPU path: the node's own row kernel over packed rows. Channels outside the mask keep
+// The native CPU path: the op's own row kernel over packed rows. Channels outside the mask keep
 // their input value.
 std::vector<float>
-cpuKernelRender(NativeImageEffect* effect,
+cpuKernelRender(Clamp* effect,
                 const std::vector<float>& src,
                 int width,
                 int height,
                 int nComps,
                 unsigned channelMask)
 {
-    KernelContext context;
-    context.time = kTime;
-    context.processChannels = std::bitset<4>(channelMask);
-    PixelKernelPtr kernel = KernelProbe::make(effect, context);
+    const std::bitset<4> channels(channelMask);
+    const ClampOp::Params params = effect->bakeClamp(kTime, ViewIdx(0));
     std::vector<float> dst(src);
-
-    EXPECT_TRUE(bool(kernel));
-    if (!kernel) {
-        return dst;
-    }
     for (int y = 0; y < height; ++y) {
         RowIO io;
         io.nSrc = 1;
@@ -219,8 +198,8 @@ cpuKernelRender(NativeImageEffect* effect,
         io.y = y;
         io.width = width;
         io.nComps = nComps;
-        io.channels = context.processChannels;
-        kernel->processRow(io);
+        io.channels = channels;
+        effect->clampRow(params, io);
     }
 
     return dst;
@@ -273,7 +252,7 @@ TEST_F(NativeClampGpuTest, MatchesTheCpuKernelOnSpecialValues)
     }
     NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_CLAMP));
     ASSERT_TRUE(bool(node));
-    NativeImageEffect* effect = effectOf(node);
+    Clamp* effect = effectOf(node);
     ASSERT_TRUE(effect != NULL);
 
     const ClampSetting* const settings[] = { &kDefaultSetting, &kColourSetting, &kAwkwardSetting, &kMinOnlySetting, &kMaxOnlySetting };
@@ -360,7 +339,7 @@ TEST_F(NativeClampGpuTest, MatchesTheCpuRender)
     maskChannel->set("rgba.A");
     KnobChannelSelect* unPremultBy = dynamic_cast<KnobChannelSelect*>(op->getKnobByName(kUnPremultByKnobName).get());
     ASSERT_TRUE(unPremultBy != NULL);
-    NativeImageEffect* effect = effectOf(op);
+    Clamp* effect = effectOf(op);
     ASSERT_TRUE(effect != NULL);
 
     const RectI sourceWindow = paritySourceWindow(source, kTime, 0);

@@ -78,7 +78,7 @@ NATRON_NAMESPACE_ENTER
  *     concatenateInputTransform() if the host handed back an input transform;
  *  3. makeResampleParams(), choosing eFilterImpulse in draft render quality;
  *  4. for each row y of the window: resampleRow() into a float row, then apply mask x mix
- *     against the source pixel at (x, y) the way NativeImageEffect does.
+ *     against the source pixel at (x, y), as the other image nodes do.
  * And for the region actions: getRegionOfDefinition() / getRegionOfInterest() with a
  * RegionParams filled from the same knobs.
  **/

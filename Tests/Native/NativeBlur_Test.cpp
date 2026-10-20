@@ -193,7 +193,7 @@ TEST_F(NativeBlurTest, InputsAreSourceAndMask)
     EXPECT_EQ(std::string("Mask"), node->getInputLabel(1));
     EXPECT_TRUE(node->getEffectInstance()->isInputMask(1));
     EXPECT_TRUE(bool(node->getKnobByName("enableMask_Mask")));
-    EXPECT_TRUE(bool(node->getKnobByName("hostUnPremultBy")));
+    EXPECT_FALSE(bool(node->getKnobByName("hostUnPremultBy")));
 }
 
 TEST_F(NativeBlurTest, SourceRegionOfInterestIsTheOfxHalo)

@@ -66,9 +66,10 @@
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
@@ -252,7 +253,7 @@ protected:
                           const std::string& channel,
                           bool enabled)
     {
-        const NativeImageEffect* effect = dynamic_cast<const NativeImageEffect*>(grade->getEffectInstance().get());
+        const StagedImageEffect* effect = dynamic_cast<const StagedImageEffect*>(grade->getEffectInstance().get());
         const int maskInput = effect ? effect->getMaskInput() : -1;
         if (maskInput < 0) {
             return false;
@@ -348,7 +349,7 @@ protected:
             if (!makeGpuQueryForTask(task, *context, &query)) {
                 return false;
             }
-            const NativeImageEffect* native = dynamic_cast<const NativeImageEffect*>(task.key.node->getEffectInstance().get());
+            const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(task.key.node->getEffectInstance().get());
 
             return native && native->canRenderOnGpu(query);
         };

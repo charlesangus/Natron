@@ -54,7 +54,7 @@
 #include "Engine/Nodes/Image/ColorMath.h"
 #include "Engine/Nodes/Image/CurveSnapshot.h"
 #include "Engine/Nodes/Image/GpuRender.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -63,34 +63,10 @@ namespace {
 
 const double kTime = 1.;
 
-// makeKernel() is protected in the base and private in ColorLookup; naming it through a derived class
-// of the base is what makes the member pointer accessible.
-struct KernelProbe
-    : public NativeImageEffect {
-    static PixelKernelPtr make(NativeImageEffect* effect,
-                               const KernelContext& context)
-    {
-        PixelKernelPtr (NativeImageEffect::*member)(const KernelContext&) = &KernelProbe::makeKernel;
-
-        return (effect->*member)(context);
-    }
-
-#ifdef NATRON_HAVE_GPU
-    static bool makeGpu(NativeImageEffect* effect,
-                        const KernelContext& context,
-                        PixelKernelGpu* gpuKernel)
-    {
-        bool (NativeImageEffect::*member)(const KernelContext&, PixelKernelGpu*) = &KernelProbe::makeGpuKernel;
-
-        return (effect->*member)(context, gpuKernel);
-    }
-#endif
-};
-
-NativeImageEffect*
+StagedImageEffect*
 effectOf(const NodePtr& node)
 {
-    return node ? dynamic_cast<NativeImageEffect*>(node->getEffectInstance().get()) : NULL;
+    return node ? dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get()) : NULL;
 }
 
 bool
@@ -129,7 +105,7 @@ imageOf(const RenderedPlane& plane)
 GpuQuery
 queryFor(const NodePtr& op)
 {
-    NativeImageEffect* effect = effectOf(op);
+    StagedImageEffect* effect = effectOf(op);
     const ImageLayerDesc plane = ImageLayerDesc::mapNCompsToColorLayer(4);
     GpuQuery q;
 
@@ -165,26 +141,24 @@ queryFor(const NodePtr& op)
     return q;
 }
 
-// The native CPU path: the node's own row kernel over packed rows. Channels outside the mask keep
+// The native CPU path: the op's own row kernel over packed rows. Channels outside the mask keep
 // their input value.
 std::vector<float>
-cpuKernelRender(NativeImageEffect* effect,
+cpuKernelRender(StagedImageEffect* effect,
                 const std::vector<float>& src,
                 int width,
                 int height,
                 int nComps,
                 unsigned channelMask)
 {
-    KernelContext context;
-    context.time = kTime;
-    context.processChannels = std::bitset<4>(channelMask);
-    PixelKernelPtr kernel = KernelProbe::make(effect, context);
+    ColorLookup* node = dynamic_cast<ColorLookup*>(effect);
     std::vector<float> dst(src);
 
-    EXPECT_TRUE(bool(kernel));
-    if (!kernel) {
+    EXPECT_TRUE(node != NULL);
+    if (!node) {
         return dst;
     }
+    const ColorLookupOp::Params params = node->bakeColorLookup(kTime, ViewIdx(0));
     for (int y = 0; y < height; ++y) {
         RowIO io;
         io.nSrc = 1;
@@ -193,8 +167,8 @@ cpuKernelRender(NativeImageEffect* effect,
         io.y = y;
         io.width = width;
         io.nComps = nComps;
-        io.channels = context.processChannels;
-        kernel->processRow(io);
+        io.channels = std::bitset<4>(channelMask);
+        node->colorLookupRow(params, io);
     }
 
     return dst;
@@ -312,7 +286,7 @@ testValues(const LookupSetting& s,
 
 void
 checkKernelOn(GpuParityRuntime& runtime,
-              NativeImageEffect* effect,
+              StagedImageEffect* effect,
               const LookupSetting& setting,
               const std::vector<float>& src,
               int width,
@@ -369,7 +343,7 @@ checkKernelOn(GpuParityRuntime& runtime,
 
 void
 checkKernel(GpuParityRuntime& runtime,
-            NativeImageEffect* effect,
+            StagedImageEffect* effect,
             const LookupSetting& setting,
             int nComps,
             unsigned channelMask,
@@ -399,14 +373,12 @@ setSteepCurves(const NodePtr& node,
 }
 
 bool
-makesGpuKernel(NativeImageEffect* effect)
+makesGpuKernel(StagedImageEffect* effect)
 {
-    KernelContext context;
-    context.time = kTime;
-    context.processChannels = std::bitset<4>(0xF);
-    PixelKernelGpu gpuKernel;
+    GpuQuery query;
+    query.time = kTime;
 
-    return KernelProbe::makeGpu(effect, context, &gpuKernel);
+    return effect->canRenderOnGpu(query);
 }
 #endif // NATRON_HAVE_GPU
 
@@ -430,7 +402,7 @@ TEST_F(NativeColorLookupGpuTest, MatchesTheCpuKernelInEveryMode)
     }
     NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_COLORLOOKUP));
     ASSERT_TRUE(bool(node));
-    NativeImageEffect* effect = effectOf(node);
+    StagedImageEffect* effect = effectOf(node);
     ASSERT_TRUE(effect != NULL);
 
     const unsigned channelMasks[] = { 0xF, 0x5, 0x8 };
@@ -474,7 +446,7 @@ TEST_F(NativeColorLookupGpuTest, TwoComponentPixelsStayOnTheCpu)
 {
     NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_COLORLOOKUP));
     ASSERT_TRUE(bool(node));
-    NativeImageEffect* effect = effectOf(node);
+    StagedImageEffect* effect = effectOf(node);
     ASSERT_TRUE(effect != NULL);
     GpuQuery query;
 
@@ -512,7 +484,7 @@ TEST_F(NativeColorLookupGpuTest, MatchesTheCpuRender)
     maskChannel->set("rgba.A");
     KnobChannelSelect* unPremultBy = dynamic_cast<KnobChannelSelect*>(op->getKnobByName(kUnPremultByKnobName).get());
     ASSERT_TRUE(unPremultBy != NULL);
-    NativeImageEffect* effect = effectOf(op);
+    StagedImageEffect* effect = effectOf(op);
     ASSERT_TRUE(effect != NULL);
 
     const RectI sourceWindow = paritySourceWindow(source, kTime, 0);
@@ -606,7 +578,7 @@ TEST_F(NativeColorLookupGpuTest, MatchesTheCpuPastASteepKeyBetweenFloats)
     }
     NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_COLORLOOKUP));
     ASSERT_TRUE(bool(node));
-    NativeImageEffect* effect = effectOf(node);
+    StagedImageEffect* effect = effectOf(node);
     ASSERT_TRUE(effect != NULL);
 
     const double key = 7.9999999;
@@ -659,7 +631,7 @@ TEST_F(NativeColorLookupGpuTest, WeightedStandardAtOrAboveOneIsFinite)
     }
     NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_COLORLOOKUP));
     ASSERT_TRUE(bool(node));
-    NativeImageEffect* effect = effectOf(node);
+    StagedImageEffect* effect = effectOf(node);
     ASSERT_TRUE(effect != NULL);
 
     LookupSetting setting = { (int)ColorLookup::eMasterCurveModeWeightedStandard, 0, false, false, 1 };
@@ -696,7 +668,7 @@ TEST_F(NativeColorLookupGpuTest, ACurveTooSteepToRepeatStaysOnTheCpu)
 {
     NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_COLORLOOKUP));
     ASSERT_TRUE(bool(node));
-    NativeImageEffect* effect = effectOf(node);
+    StagedImageEffect* effect = effectOf(node);
     ASSERT_TRUE(effect != NULL);
     LookupSetting setting = { 0, 0, false, false, 0 };
     applySetting(node, setting);

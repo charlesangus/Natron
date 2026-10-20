@@ -25,11 +25,7 @@
 
 #include "Invert.h"
 
-#include <memory>
-#include <string>
-
 #include "Engine/ImageLayerDesc.h"
-#include "Engine/KnobTypes.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
@@ -37,48 +33,57 @@
 
 NATRON_NAMESPACE_ENTER
 
-namespace {
-class InvertKernel
-    : public PixelKernel {
-public:
-    InvertKernel()
-    {
-    }
-
-    virtual void processRow(const RowIO& io) const OVERRIDE FINAL
-    {
-        const int nComps = io.nComps;
-        int indices[4] = { -1, -1, -1, -1 };
-        int nProcessed = 0;
-
-        for (int c = 0; (c < nComps) && (c < 4); ++c) {
-            if (io.channels[pixelKernelChannelBit(nComps, c)]) {
-                indices[nProcessed++] = c;
-            }
-        }
-        const float* src = io.src[0];
-        float* dst = io.dst;
-        for (int x = 0; x < io.width; ++x, src += nComps, dst += nComps) {
-            for (int i = 0; i < nProcessed; ++i) {
-                dst[indices[i]] = 1.f - src[indices[i]];
-            }
-        }
-    }
-};
-
-NativeImageTraits
-invertTraits()
+InvertOp::Params
+InvertOp::bake(const KnobReader& /*reader*/) const
 {
-    NativeImageTraits traits;
-
-    traits.hostUnPremult = true;
-
-    return traits;
+    return Params();
 }
-} // anonymous namespace
+
+bool
+InvertOp::isIdentity(const Params& /*params*/) const
+{
+    return false;
+}
+
+void
+InvertOp::row(const Params& /*params*/,
+              const RowIO& io) const
+{
+    const int nComps = io.nComps;
+    int indices[4] = { -1, -1, -1, -1 };
+    int nProcessed = 0;
+
+    for (int c = 0; (c < nComps) && (c < 4); ++c) {
+        if (io.channels[pixelKernelChannelBit(nComps, c)]) {
+            indices[nProcessed++] = c;
+        }
+    }
+    const float* src = io.src[0];
+    float* dst = io.dst;
+    for (int x = 0; x < io.width; ++x, src += nComps, dst += nComps) {
+        for (int i = 0; i < nProcessed; ++i) {
+            dst[indices[i]] = 1.f - src[indices[i]];
+        }
+    }
+}
+
+GpuOpRef
+InvertOp::gpu(const Params& /*params*/) const
+{
+#ifdef NATRON_HAVE_GPU
+    GpuOpRef ref;
+
+    ref.kind = GpuOpRef::Kind::Kernel;
+    ref.kernel.kernel = (int)gpu::GpuKernelId::invert;
+
+    return ref;
+#else
+    return GpuOpRef::none();
+#endif
+}
 
 Invert::Invert(NodePtr node)
-    : NativeImageEffect(node, invertTraits())
+    : ImageNode<InvertOp>(node)
 {
 }
 
@@ -90,67 +95,10 @@ void
 Invert::addAcceptedComponents(int inputNb,
                               std::list<ImageLayerDesc>* comps)
 {
-    NativeImageEffect::addAcceptedComponents(inputNb, comps);
+    StagedImageEffect::addAcceptedComponents(inputNb, comps);
     if (!isInputMask(inputNb)) {
         comps->push_back(ImageLayerDesc::getXYComponents());
     }
-}
-
-NativePluginDescription
-Invert::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_INVERT;
-    desc.label = "Invert";
-    desc.description = tr("Inverse the selected channels").toStdString();
-    desc.grouping = PLUGIN_GROUP_COLOR;
-    desc.majorVersion = PLUGIN_MAJOR_NATRON_INVERT;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindImage));
-    desc.inputs.push_back(NativeInputDescription("Mask", true, eDataKindImage, true));
-    desc.outputKind = eDataKindImage;
-
-    return desc;
-}
-
-void
-Invert::initializeKnobs()
-{
-    KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
-
-    addMaskMixKnobs(page);
-}
-
-PixelKernelPtr
-Invert::makeKernel(const KernelContext& /*context*/)
-{
-    return std::make_shared<InvertKernel>();
-}
-
-int
-Invert::gpuKernelId(const GpuQuery& /*query*/) const
-{
-#ifdef NATRON_HAVE_GPU
-    return (int)gpu::GpuKernelId::invert;
-#else
-    return -1;
-#endif
-}
-
-bool
-Invert::makeGpuKernel(const KernelContext& /*context*/,
-                      PixelKernelGpu* gpu)
-{
-#ifdef NATRON_HAVE_GPU
-    gpu->kernel = (int)gpu::GpuKernelId::invert;
-
-    return true;
-#else
-    Q_UNUSED(gpu);
-
-    return false;
-#endif
 }
 
 NATRON_NAMESPACE_EXIT

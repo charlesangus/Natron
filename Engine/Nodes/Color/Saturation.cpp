@@ -27,110 +27,18 @@
 
 #include <algorithm>
 #include <cfloat>
-#include <memory>
 #include <string>
 
+#include "Engine/AppManager.h"
 #include "Engine/KnobTypes.h"
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
 #endif
 #include "Engine/Nodes/Image/ColorMath.h"
-#include "Engine/RenderScale.h"
 
 NATRON_NAMESPACE_ENTER
 
-struct SaturationValues {
-    double saturation;
-    ColorMath::LuminanceMathEnum luminanceMath;
-    bool clampBlack;
-    bool clampWhite;
-};
-
 namespace {
-class SaturationKernel
-    : public PixelKernel {
-public:
-    SaturationKernel(double saturation,
-                     ColorMath::LuminanceMathEnum luminanceMath,
-                     bool clampBlack,
-                     bool clampWhite)
-        : _saturation(saturation)
-        , _luminanceMath(luminanceMath)
-        , _clampBlack(clampBlack)
-        , _clampWhite(clampWhite)
-    {
-    }
-
-    virtual void processRow(const RowIO& io) const OVERRIDE FINAL
-    {
-        const int nComps = io.nComps;
-        bool process[4] = { false, false, false, false };
-
-        for (int c = 0; (c < nComps) && (c < 4); ++c) {
-            process[c] = io.channels[pixelKernelChannelBit(nComps, c)];
-        }
-        const float* src = io.src[0];
-        float* dst = io.dst;
-        for (int x = 0; x < io.width; ++x, src += nComps, dst += nComps) {
-            const double l = ColorMath::luminance(_luminanceMath, src[0], src[1], src[2]);
-            for (int c = 0; c < nComps; ++c) {
-                if (!process[c]) {
-                    continue;
-                }
-                double v = src[c];
-                if (c < 3) {
-                    v = (1. - _saturation) * l + _saturation * v;
-                }
-                if (_clampBlack) {
-                    v = (std::max)(0., v);
-                }
-                if (_clampWhite) {
-                    v = (std::min)(1., v);
-                }
-                dst[c] = (float)v;
-            }
-        }
-    }
-
-private:
-    double _saturation;
-    ColorMath::LuminanceMathEnum _luminanceMath;
-    bool _clampBlack;
-    bool _clampWhite;
-};
-
-NativeImageTraits
-saturationTraits()
-{
-    NativeImageTraits traits;
-
-    traits.hostUnPremult = true;
-    traits.defaultChannels[3] = false;
-
-    return traits;
-}
-
-bool
-readBool(const KnobBoolWPtr& weak,
-         double time,
-         ViewIdx view,
-         bool defaultValue)
-{
-    KnobBoolPtr knob = weak.lock();
-
-    return knob ? knob->getValueAtTime(time, 0, view) : defaultValue;
-}
-
-double
-readSaturation(const KnobDoubleWPtr& weak,
-               double time,
-               ViewIdx view)
-{
-    KnobDoublePtr knob = weak.lock();
-
-    return knob ? knob->getValueAtTime(time, 0, view) : 1.;
-}
-
 #ifdef NATRON_HAVE_GPU
 // The parameter block of SaturationOp in saturation.slang, which has no padding between members.
 struct SaturationGpuParams {
@@ -147,8 +55,123 @@ constexpr uint32_t kSaturationGpuLumaMax = 4;
 #endif
 } // anonymous namespace
 
+void
+SaturationOp::createKnobs(KnobHolder* holder,
+                          const KnobPagePtr& page)
+{
+    KnobDoublePtr saturationKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Saturation").toStdString());
+    saturationKnob->setName(kSaturationParamSaturation);
+    saturationKnob->setHintToolTip(EffectInstance::tr("Color saturation factor to apply. 0 produces grayscale.").toStdString());
+    saturationKnob->setDefaultValue(1.);
+    saturationKnob->setMinimum(0.);
+    saturationKnob->setMaximum(DBL_MAX);
+    saturationKnob->setDisplayMinimum(0.);
+    saturationKnob->setDisplayMaximum(4.);
+    page->addKnob(saturationKnob);
+    saturation = saturationKnob;
+
+    luminanceMath = ColorMath::addLuminanceMathKnob(holder, page);
+
+    KnobBoolPtr clampBlackKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Clamp Black").toStdString());
+    clampBlackKnob->setName(kSaturationParamClampBlack);
+    clampBlackKnob->setHintToolTip(EffectInstance::tr("All colors below 0 on output are set to 0.").toStdString());
+    clampBlackKnob->setDefaultValue(false);
+    clampBlackKnob->setAddNewLine(false);
+    page->addKnob(clampBlackKnob);
+    clampBlack = clampBlackKnob;
+
+    KnobBoolPtr clampWhiteKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Clamp White").toStdString());
+    clampWhiteKnob->setName(kSaturationParamClampWhite);
+    clampWhiteKnob->setHintToolTip(EffectInstance::tr("All colors above 1 on output are set to 1.").toStdString());
+    clampWhiteKnob->setDefaultValue(false);
+    page->addKnob(clampWhiteKnob);
+    clampWhite = clampWhiteKnob;
+}
+
+SaturationOp::Params
+SaturationOp::bake(const KnobReader& reader) const
+{
+    int mathIndex = reader.value(luminanceMath);
+
+    if ((mathIndex < (int)ColorMath::eLuminanceMathRec709) || (mathIndex > (int)ColorMath::eLuminanceMathMax)) {
+        mathIndex = (int)ColorMath::eLuminanceMathRec709;
+    }
+
+    Params p;
+    p.saturation = reader.value(saturation);
+    p.luminanceMath = (ColorMath::LuminanceMathEnum)mathIndex;
+    p.clampBlack = reader.value(clampBlack);
+    p.clampWhite = reader.value(clampWhite);
+
+    return p;
+}
+
+bool
+SaturationOp::isIdentity(const Params& params) const
+{
+    if (params.clampBlack || params.clampWhite) {
+        return false;
+    }
+
+    return params.saturation == 1.;
+}
+
+void
+SaturationOp::row(const Params& params,
+                  const RowIO& io) const
+{
+    const int nComps = io.nComps;
+    bool process[4] = { false, false, false, false };
+
+    for (int c = 0; (c < nComps) && (c < 4); ++c) {
+        process[c] = io.channels[pixelKernelChannelBit(nComps, c)];
+    }
+    const float* src = io.src[0];
+    float* dst = io.dst;
+    for (int x = 0; x < io.width; ++x, src += nComps, dst += nComps) {
+        const double l = ColorMath::luminance(params.luminanceMath, src[0], src[1], src[2]);
+        for (int c = 0; c < nComps; ++c) {
+            if (!process[c]) {
+                continue;
+            }
+            double v = src[c];
+            if (c < 3) {
+                v = (1. - params.saturation) * l + params.saturation * v;
+            }
+            if (params.clampBlack) {
+                v = (std::max)(0., v);
+            }
+            if (params.clampWhite) {
+                v = (std::min)(1., v);
+            }
+            dst[c] = (float)v;
+        }
+    }
+}
+
+GpuOpRef
+SaturationOp::gpu(const Params& params) const
+{
+#ifdef NATRON_HAVE_GPU
+    // The weights are the luminance of the unit colours, taken from the function the CPU row
+    // calls; Max is no weighted sum and is flagged instead.
+    SaturationGpuParams p = {};
+    p.saturation = (float)params.saturation;
+    p.flags = (params.clampBlack ? kSaturationGpuClampBlack : 0) | (params.clampWhite ? kSaturationGpuClampWhite : 0) | ((params.luminanceMath == ColorMath::eLuminanceMathMax) ? kSaturationGpuLumaMax : 0);
+    p.weights[0] = (float)ColorMath::luminance(params.luminanceMath, 1., 0., 0.);
+    p.weights[1] = (float)ColorMath::luminance(params.luminanceMath, 0., 1., 0.);
+    p.weights[2] = (float)ColorMath::luminance(params.luminanceMath, 0., 0., 1.);
+
+    return GpuOpRef::compiled((int)gpu::GpuKernelId::saturation_wrapped, p);
+#else
+    Q_UNUSED(params);
+
+    return GpuOpRef::none();
+#endif
+}
+
 Saturation::Saturation(NodePtr node)
-    : NativeImageEffect(node, saturationTraits())
+    : ImageNode<SaturationOp>(node)
 {
 }
 
@@ -156,152 +179,31 @@ Saturation::~Saturation()
 {
 }
 
+SaturationOp::Params
+Saturation::bakeSaturation(double time,
+                           ViewIdx view) const
+{
+    return bakeParams(op(), time, view);
+}
+
+void
+Saturation::saturationRow(const SaturationOp::Params& params,
+                          const RowIO& io) const
+{
+    op().row(params, io);
+}
+
 void
 Saturation::addAcceptedComponents(int inputNb,
                                   std::list<ImageLayerDesc>* comps)
 {
     if (isInputMask(inputNb)) {
-        NativeImageEffect::addAcceptedComponents(inputNb, comps);
+        StagedImageEffect::addAcceptedComponents(inputNb, comps);
 
         return;
     }
     comps->push_back(ImageLayerDesc::getRGBAComponents());
     comps->push_back(ImageLayerDesc::getRGBComponents());
-}
-
-NativePluginDescription
-Saturation::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_SATURATION;
-    desc.label = "Saturation";
-    desc.description = tr("Modify the color saturation of an image.\n"
-                          "Each processed channel is moved away from (saturation above 1) or towards "
-                          "(saturation below 1) the pixel's luminance. A saturation of 0 produces grayscale.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_COLOR;
-    desc.majorVersion = PLUGIN_MAJOR_NATRON_SATURATION;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindImage));
-    desc.inputs.push_back(NativeInputDescription("Mask", true, eDataKindImage, true));
-    desc.outputKind = eDataKindImage;
-
-    return desc;
-}
-
-void
-Saturation::initializeKnobs()
-{
-    KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
-
-    KnobDoublePtr saturation = createKnob<KnobDouble>(tr("Saturation"));
-    saturation->setName(kSaturationParamSaturation);
-    saturation->setHintToolTip(tr("Color saturation factor to apply. 0 produces grayscale."));
-    saturation->setDefaultValue(1.);
-    saturation->setMinimum(0.);
-    saturation->setMaximum(DBL_MAX);
-    saturation->setDisplayMinimum(0.);
-    saturation->setDisplayMaximum(4.);
-    page->addKnob(saturation);
-    _saturation = saturation;
-
-    _luminanceMath = ColorMath::addLuminanceMathKnob(this, page);
-
-    KnobBoolPtr clampBlack = createKnob<KnobBool>(tr("Clamp Black"));
-    clampBlack->setName(kSaturationParamClampBlack);
-    clampBlack->setHintToolTip(tr("All colors below 0 on output are set to 0."));
-    clampBlack->setDefaultValue(false);
-    clampBlack->setAddNewLine(false);
-    page->addKnob(clampBlack);
-    _clampBlack = clampBlack;
-
-    KnobBoolPtr clampWhite = createKnob<KnobBool>(tr("Clamp White"));
-    clampWhite->setName(kSaturationParamClampWhite);
-    clampWhite->setHintToolTip(tr("All colors above 1 on output are set to 1."));
-    clampWhite->setDefaultValue(false);
-    page->addKnob(clampWhite);
-    _clampWhite = clampWhite;
-
-    addMaskMixKnobs(page);
-}
-
-SaturationValues
-Saturation::readValues(double time,
-                       ViewIdx view) const
-{
-    KnobChoicePtr math = _luminanceMath.lock();
-    int mathIndex = math ? math->getValueAtTime(time, 0, view) : (int)ColorMath::eLuminanceMathRec709;
-
-    if ((mathIndex < (int)ColorMath::eLuminanceMathRec709) || (mathIndex > (int)ColorMath::eLuminanceMathMax)) {
-        mathIndex = (int)ColorMath::eLuminanceMathRec709;
-    }
-
-    SaturationValues values;
-    values.saturation = readSaturation(_saturation, time, view);
-    values.luminanceMath = (ColorMath::LuminanceMathEnum)mathIndex;
-    values.clampBlack = readBool(_clampBlack, time, view, false);
-    values.clampWhite = readBool(_clampWhite, time, view, false);
-
-    return values;
-}
-
-PixelKernelPtr
-Saturation::makeKernel(const KernelContext& context)
-{
-    const SaturationValues v = readValues(context.time, context.view);
-
-    return std::make_shared<SaturationKernel>(v.saturation, v.luminanceMath, v.clampBlack, v.clampWhite);
-}
-
-int
-Saturation::gpuKernelId(const GpuQuery& /*query*/) const
-{
-#ifdef NATRON_HAVE_GPU
-    return (int)gpu::GpuKernelId::saturation_wrapped;
-#else
-    return -1;
-#endif
-}
-
-bool
-Saturation::makeGpuKernel(const KernelContext& context,
-                          PixelKernelGpu* gpuKernel)
-{
-#ifdef NATRON_HAVE_GPU
-    const SaturationValues v = readValues(context.time, context.view);
-
-    // The weights are the luminance of the unit colours, taken from the function the CPU kernel
-    // calls; Max is no weighted sum and is flagged instead.
-    SaturationGpuParams p = {};
-    p.saturation = (float)v.saturation;
-    p.flags = (v.clampBlack ? kSaturationGpuClampBlack : 0) | (v.clampWhite ? kSaturationGpuClampWhite : 0) | ((v.luminanceMath == ColorMath::eLuminanceMathMax) ? kSaturationGpuLumaMax : 0);
-    p.weights[0] = (float)ColorMath::luminance(v.luminanceMath, 1., 0., 0.);
-    p.weights[1] = (float)ColorMath::luminance(v.luminanceMath, 0., 1., 0.);
-    p.weights[2] = (float)ColorMath::luminance(v.luminanceMath, 0., 0., 1.);
-    gpuKernel->kernel = (int)gpu::GpuKernelId::saturation_wrapped;
-    gpuKernel->setParams(p);
-
-    return true;
-#else
-    Q_UNUSED(context);
-    Q_UNUSED(gpuKernel);
-
-    return false;
-#endif
-}
-
-bool
-Saturation::isIdentityOp(double time,
-                         const RenderScale& /*scale*/,
-                         const RectI& /*roi*/,
-                         ViewIdx view)
-{
-    if (readBool(_clampBlack, time, view, false) || readBool(_clampWhite, time, view, false)) {
-        return false;
-    }
-
-    return readSaturation(_saturation, time, view) == 1.;
 }
 
 NATRON_NAMESPACE_EXIT

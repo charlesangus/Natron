@@ -29,13 +29,11 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
-#include <memory>
 #include <string>
 
 #include "Engine/AppManager.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
-#include "Engine/RenderScale.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
@@ -43,70 +41,7 @@
 
 NATRON_NAMESPACE_ENTER
 
-struct ClampValues {
-    double minimum[4];
-    double maximum[4];
-    double minClampTo[4];
-    double maxClampTo[4];
-    bool minimumEnable;
-    bool maximumEnable;
-    bool minClampToEnable;
-    bool maxClampToEnable;
-};
-
 namespace {
-class ClampKernel
-    : public PixelKernel {
-public:
-    explicit ClampKernel(const ClampValues& values)
-        : _values(values)
-    {
-    }
-
-    virtual void processRow(const RowIO& io) const OVERRIDE FINAL
-    {
-        const int nComps = io.nComps;
-        int bits[4] = { -1, -1, -1, -1 };
-
-        for (int c = 0; (c < nComps) && (c < 4); ++c) {
-            const int bit = pixelKernelChannelBit(nComps, c);
-            bits[c] = io.channels[bit] ? bit : -1;
-        }
-        const float* src = io.src[0];
-        float* dst = io.dst;
-        for (int x = 0; x < io.width; ++x, src += nComps, dst += nComps) {
-            for (int c = 0; (c < nComps) && (c < 4); ++c) {
-                if (bits[c] < 0) {
-                    continue;
-                }
-                const int i = bits[c];
-                const double v = src[c];
-                double out = v;
-                if (_values.minimumEnable && (v < _values.minimum[i])) {
-                    out = _values.minClampToEnable ? _values.minClampTo[i] : _values.minimum[i];
-                } else if (_values.maximumEnable && (v > _values.maximum[i])) {
-                    out = _values.maxClampToEnable ? _values.maxClampTo[i] : _values.maximum[i];
-                }
-                dst[c] = (float)out;
-            }
-        }
-    }
-
-private:
-    ClampValues _values;
-};
-
-NativeImageTraits
-clampTraits()
-{
-    NativeImageTraits traits;
-
-    traits.hostUnPremult = true;
-    traits.defaultChannels[3] = true;
-
-    return traits;
-}
-
 KnobColorPtr
 addClampColorKnob(KnobHolder* holder,
                   const KnobPagePtr& page,
@@ -148,31 +83,6 @@ addClampEnableKnob(KnobHolder* holder,
     page->addKnob(knob);
 
     return knob;
-}
-
-void
-readColor(const KnobColorWPtr& weak,
-          double time,
-          ViewIdx view,
-          double defaultValue,
-          double out[4])
-{
-    KnobColorPtr knob = weak.lock();
-
-    for (int i = 0; i < 4; ++i) {
-        out[i] = knob ? knob->getValueAtTime(time, i, view) : defaultValue;
-    }
-}
-
-bool
-readBool(const KnobBoolWPtr& weak,
-         double time,
-         ViewIdx view,
-         bool defaultValue)
-{
-    KnobBoolPtr knob = weak.lock();
-
-    return knob ? knob->getValueAtTime(time, 0, view) : defaultValue;
 }
 
 #ifdef NATRON_HAVE_GPU
@@ -222,8 +132,109 @@ floorToFloat(double d)
 #endif
 } // anonymous namespace
 
+void
+ClampOp::createKnobs(KnobHolder* holder,
+                     const KnobPagePtr& page)
+{
+    minimum = addClampColorKnob(holder, page, kClampParamMinimum, EffectInstance::tr("Minimum").toStdString(),
+                                EffectInstance::tr("If enabled, all values that are lower than this number are set to this value, or to the minClampTo value if minClampTo is enabled.").toStdString(), 0.);
+    minimumEnable = addClampEnableKnob(holder, page, kClampParamMinimumEnable, EffectInstance::tr("Enable Minimum").toStdString(),
+                                       EffectInstance::tr("Whether to clamp selected channels to a minimum value.").toStdString(), true);
+    maximum = addClampColorKnob(holder, page, kClampParamMaximum, EffectInstance::tr("Maximum").toStdString(),
+                                EffectInstance::tr("If enabled, all values that are higher than this number are set to this value, or to the maxClampTo value if maxClampTo is enabled.").toStdString(), 1.);
+    maximumEnable = addClampEnableKnob(holder, page, kClampParamMaximumEnable, EffectInstance::tr("Enable Maximum").toStdString(),
+                                       EffectInstance::tr("Whether to clamp selected channels to a maximum value.").toStdString(), true);
+    minClampTo = addClampColorKnob(holder, page, kClampParamMinClampTo, EffectInstance::tr("MinClampTo").toStdString(),
+                                   EffectInstance::tr("The value to which values below minimum are clamped when minClampTo is enabled. Setting this to a custom color helps visualizing the clamped areas or create graphic effects.").toStdString(), 0.);
+    minClampToEnable = addClampEnableKnob(holder, page, kClampParamMinClampToEnable, EffectInstance::tr("Enable MinClampTo").toStdString(),
+                                          EffectInstance::tr("When enabled, all values below minimum are set to the minClampTo value.\nWhen disabled, all values below minimum are clamped to the minimum value.").toStdString(), false);
+    maxClampTo = addClampColorKnob(holder, page, kClampParamMaxClampTo, EffectInstance::tr("MaxClampTo").toStdString(),
+                                   EffectInstance::tr("The value to which values above maximum are clamped when maxClampTo is enabled. Setting this to a custom color helps visualizing the clamped areas or create graphic effects.").toStdString(), 1.);
+    maxClampToEnable = addClampEnableKnob(holder, page, kClampParamMaxClampToEnable, EffectInstance::tr("Enable MaxClampTo").toStdString(),
+                                          EffectInstance::tr("When enabled, all values above maximum are set to the maxClampTo value.\nWhen disabled, all values above maximum are clamped to the maximum value.").toStdString(), false);
+}
+
+ClampOp::Params
+ClampOp::bake(const KnobReader& reader) const
+{
+    Params p;
+
+    for (int i = 0; i < 4; ++i) {
+        p.minimum[i] = reader.value(minimum, i);
+        p.maximum[i] = reader.value(maximum, i);
+        p.minClampTo[i] = reader.value(minClampTo, i);
+        p.maxClampTo[i] = reader.value(maxClampTo, i);
+    }
+    p.minimumEnable = reader.value(minimumEnable);
+    p.maximumEnable = reader.value(maximumEnable);
+    p.minClampToEnable = reader.value(minClampToEnable);
+    p.maxClampToEnable = reader.value(maxClampToEnable);
+
+    return p;
+}
+
+bool
+ClampOp::isIdentity(const Params& params) const
+{
+    return !params.minimumEnable && !params.maximumEnable;
+}
+
+void
+ClampOp::row(const Params& params,
+             const RowIO& io) const
+{
+    const int nComps = io.nComps;
+    int bits[4] = { -1, -1, -1, -1 };
+
+    for (int c = 0; (c < nComps) && (c < 4); ++c) {
+        const int bit = pixelKernelChannelBit(nComps, c);
+        bits[c] = io.channels[bit] ? bit : -1;
+    }
+    const float* src = io.src[0];
+    float* dst = io.dst;
+    for (int x = 0; x < io.width; ++x, src += nComps, dst += nComps) {
+        for (int c = 0; (c < nComps) && (c < 4); ++c) {
+            if (bits[c] < 0) {
+                continue;
+            }
+            const int i = bits[c];
+            const double v = src[c];
+            double out = v;
+            if (params.minimumEnable && (v < params.minimum[i])) {
+                out = params.minClampToEnable ? params.minClampTo[i] : params.minimum[i];
+            } else if (params.maximumEnable && (v > params.maximum[i])) {
+                out = params.maxClampToEnable ? params.maxClampTo[i] : params.maximum[i];
+            }
+            dst[c] = (float)out;
+        }
+    }
+}
+
+GpuOpRef
+ClampOp::gpu(const Params& params) const
+{
+#ifdef NATRON_HAVE_GPU
+    ClampGpuParams p = {};
+    for (int i = 0; i < 4; ++i) {
+        p.minTest[i] = ceilToFloat(params.minimum[i]);
+        p.maxTest[i] = floorToFloat(params.maximum[i]);
+        p.minValue[i] = (float)params.minimum[i];
+        p.maxValue[i] = (float)params.maximum[i];
+        p.minClampTo[i] = (float)params.minClampTo[i];
+        p.maxClampTo[i] = (float)params.maxClampTo[i];
+    }
+    p.flags = (params.minimumEnable ? kClampGpuMinimumEnable : 0) | (params.maximumEnable ? kClampGpuMaximumEnable : 0) | (params.minClampToEnable ? kClampGpuMinClampToEnable : 0) | (params.maxClampToEnable ? kClampGpuMaxClampToEnable : 0);
+
+    return GpuOpRef::compiled((int)gpu::GpuKernelId::clamp_wrapped, p);
+#else
+    Q_UNUSED(params);
+
+    return GpuOpRef::none();
+#endif
+}
+
 Clamp::Clamp(NodePtr node)
-    : NativeImageEffect(node, clampTraits())
+    : ImageNode<ClampOp>(node)
 {
 }
 
@@ -231,145 +242,28 @@ Clamp::~Clamp()
 {
 }
 
+ClampOp::Params
+Clamp::bakeClamp(double time,
+                 ViewIdx view) const
+{
+    return bakeParams(op(), time, view);
+}
+
+void
+Clamp::clampRow(const ClampOp::Params& params,
+                const RowIO& io) const
+{
+    op().row(params, io);
+}
+
 void
 Clamp::addAcceptedComponents(int inputNb,
                              std::list<ImageLayerDesc>* comps)
 {
-    NativeImageEffect::addAcceptedComponents(inputNb, comps);
+    StagedImageEffect::addAcceptedComponents(inputNb, comps);
     if (!isInputMask(inputNb)) {
         comps->push_back(ImageLayerDesc::getXYComponents());
     }
-}
-
-NativePluginDescription
-Clamp::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_CLAMP;
-    desc.label = "Clamp";
-    desc.description = tr("Clamp the values of the selected channels.\n"
-                          "\n"
-                          "A special use case for the Clamp plugin is to generate a binary mask image "
-                          "(i.e. each pixel is either 0 or 1) by thresholding an image. Let us say one wants "
-                          "all input pixels whose value is above or equal to some threshold value to "
-                          "become 1, and all values below this threshold to become 0. Set the \"Minimum\" value "
-                          "to the threshold, set the \"Maximum\" to any value strictly below the threshold "
-                          "(e.g. 0 if the threshold is positive), and "
-                          "check \"Enable MinClampTo\" and \"Enable MaxClampTo\" while keeping the default "
-                          "values for \"MinClampTo\" (0.0) and \"MaxClampTo\" (1.0). The result is a binary "
-                          "mask image. To create a non-binary mask, with softer edges, either blur the output "
-                          "of Clamp, or use the Grade plugin instead, setting the \"Black Point\" and \"White Point\" "
-                          "to values close to the threshold, and checking the \"Clamp Black\" and \"Clamp "
-                          "White\" options.\n"
-                          "\n"
-                          "See also: https://web.archive.org/web/20220627024614/http://www.opticalenquiry.com/nuke/index.php?title=Clamp")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_COLOR;
-    desc.majorVersion = PLUGIN_MAJOR_NATRON_CLAMP;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindImage));
-    desc.inputs.push_back(NativeInputDescription("Mask", true, eDataKindImage, true));
-    desc.outputKind = eDataKindImage;
-
-    return desc;
-}
-
-void
-Clamp::initializeKnobs()
-{
-    KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
-
-    _minimum = addClampColorKnob(this, page, kClampParamMinimum, tr("Minimum").toStdString(),
-                                 tr("If enabled, all values that are lower than this number are set to this value, or to the minClampTo value if minClampTo is enabled.").toStdString(), 0.);
-    _minimumEnable = addClampEnableKnob(this, page, kClampParamMinimumEnable, tr("Enable Minimum").toStdString(),
-                                        tr("Whether to clamp selected channels to a minimum value.").toStdString(), true);
-    _maximum = addClampColorKnob(this, page, kClampParamMaximum, tr("Maximum").toStdString(),
-                                 tr("If enabled, all values that are higher than this number are set to this value, or to the maxClampTo value if maxClampTo is enabled.").toStdString(), 1.);
-    _maximumEnable = addClampEnableKnob(this, page, kClampParamMaximumEnable, tr("Enable Maximum").toStdString(),
-                                        tr("Whether to clamp selected channels to a maximum value.").toStdString(), true);
-    _minClampTo = addClampColorKnob(this, page, kClampParamMinClampTo, tr("MinClampTo").toStdString(),
-                                    tr("The value to which values below minimum are clamped when minClampTo is enabled. Setting this to a custom color helps visualizing the clamped areas or create graphic effects.").toStdString(), 0.);
-    _minClampToEnable = addClampEnableKnob(this, page, kClampParamMinClampToEnable, tr("Enable MinClampTo").toStdString(),
-                                           tr("When enabled, all values below minimum are set to the minClampTo value.\nWhen disabled, all values below minimum are clamped to the minimum value.").toStdString(), false);
-    _maxClampTo = addClampColorKnob(this, page, kClampParamMaxClampTo, tr("MaxClampTo").toStdString(),
-                                    tr("The value to which values above maximum are clamped when maxClampTo is enabled. Setting this to a custom color helps visualizing the clamped areas or create graphic effects.").toStdString(), 1.);
-    _maxClampToEnable = addClampEnableKnob(this, page, kClampParamMaxClampToEnable, tr("Enable MaxClampTo").toStdString(),
-                                           tr("When enabled, all values above maximum are set to the maxClampTo value.\nWhen disabled, all values above maximum are clamped to the maximum value.").toStdString(), false);
-
-    addMaskMixKnobs(page);
-}
-
-ClampValues
-Clamp::readValues(double time,
-                  ViewIdx view) const
-{
-    ClampValues values;
-
-    readColor(_minimum, time, view, 0., values.minimum);
-    readColor(_maximum, time, view, 1., values.maximum);
-    readColor(_minClampTo, time, view, 0., values.minClampTo);
-    readColor(_maxClampTo, time, view, 1., values.maxClampTo);
-    values.minimumEnable = readBool(_minimumEnable, time, view, true);
-    values.maximumEnable = readBool(_maximumEnable, time, view, true);
-    values.minClampToEnable = readBool(_minClampToEnable, time, view, false);
-    values.maxClampToEnable = readBool(_maxClampToEnable, time, view, false);
-
-    return values;
-}
-
-PixelKernelPtr
-Clamp::makeKernel(const KernelContext& context)
-{
-    return std::make_shared<ClampKernel>(readValues(context.time, context.view));
-}
-
-int
-Clamp::gpuKernelId(const GpuQuery& /*query*/) const
-{
-#ifdef NATRON_HAVE_GPU
-    return (int)gpu::GpuKernelId::clamp_wrapped;
-#else
-    return -1;
-#endif
-}
-
-bool
-Clamp::makeGpuKernel(const KernelContext& context,
-                     PixelKernelGpu* gpuKernel)
-{
-#ifdef NATRON_HAVE_GPU
-    const ClampValues values = readValues(context.time, context.view);
-
-    ClampGpuParams p = {};
-    for (int i = 0; i < 4; ++i) {
-        p.minTest[i] = ceilToFloat(values.minimum[i]);
-        p.maxTest[i] = floorToFloat(values.maximum[i]);
-        p.minValue[i] = (float)values.minimum[i];
-        p.maxValue[i] = (float)values.maximum[i];
-        p.minClampTo[i] = (float)values.minClampTo[i];
-        p.maxClampTo[i] = (float)values.maxClampTo[i];
-    }
-    p.flags = (values.minimumEnable ? kClampGpuMinimumEnable : 0) | (values.maximumEnable ? kClampGpuMaximumEnable : 0) | (values.minClampToEnable ? kClampGpuMinClampToEnable : 0) | (values.maxClampToEnable ? kClampGpuMaxClampToEnable : 0);
-    gpuKernel->kernel = (int)gpu::GpuKernelId::clamp_wrapped;
-    gpuKernel->setParams(p);
-
-    return true;
-#else
-    Q_UNUSED(context);
-    Q_UNUSED(gpuKernel);
-
-    return false;
-#endif
-}
-
-bool
-Clamp::isIdentityOp(double time,
-                    const RenderScale& /*scale*/,
-                    const RectI& /*roi*/,
-                    ViewIdx view)
-{
-    return !readBool(_minimumEnable, time, view, true) && !readBool(_maximumEnable, time, view, true);
 }
 
 NATRON_NAMESPACE_EXIT

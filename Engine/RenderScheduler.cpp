@@ -58,7 +58,7 @@
 #include "Engine/Image.h"
 #include "Engine/MemoryInfo.h"
 #include "Engine/Node.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/NonKeyParams.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/OpenMPThreads.h"
@@ -348,8 +348,8 @@ formatTaskRecord(const FrameGraph::Task& task,
                  bool ranOnCpu = false)
 {
     const NodePtr& node = task.key.node;
-    const NativeImageEffect* native = dynamic_cast<const NativeImageEffect*>(effect.get());
-    const bool pointOp = native && native->isPointOp();
+    const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(effect.get());
+    const bool pointOp = native && (native->opKind() == OpKind::Point);
     const bool glSupport = effect && (effect->supportsOpenGLRender() != ePluginOpenGLRenderSupportNone);
     char num[192];
     std::string line;

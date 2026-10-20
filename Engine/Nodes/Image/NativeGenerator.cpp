@@ -25,155 +25,20 @@
 
 #include "NativeGenerator.h"
 
-#include <algorithm>
-#include <atomic>
 #include <cmath>
-#include <cstddef>
-#include <functional>
-#include <memory>
-#include <string>
-#include <vector>
-
-#include <QThread>
 
 #include <ofxMetadata.h>
 #include <ofxNatron.h>
 
 #include "Engine/AppInstance.h"
-#include "Engine/AppManager.h"
-#include "Engine/Image.h"
-#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
-#include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
-#include "Engine/PoolParallelFor.h"
 #include "Engine/RectI.h"
 
 NATRON_NAMESPACE_ENTER
 
 namespace {
-// How many rows render() runs between two abort checks.
-const int kAbortCheckRows = 16;
-
-// The index in an nComps-channel pixel of the channel on colour bit `bit`, or -1.
-int
-channelIndexForBit(int nComps,
-                   int bit)
-{
-    if (nComps == 1) {
-        return (bit == 3) ? 0 : -1;
-    }
-
-    return (bit < nComps) ? bit : -1;
-}
-
-// The bits written in a dstNComps-channel image holding `plane`. A one-channel plane rendered
-// into a wider image sits where EffectInstance's copy back reads it: alpha for a colour plane,
-// channel 0 otherwise.
-std::bitset<4>
-processedBitsForImage(const ImageLayerDesc& plane,
-                      int dstNComps,
-                      const std::bitset<4>& planeBits)
-{
-    if ((plane.getNumComponents() != 1) || (dstNComps == 1)) {
-        return planeBits;
-    }
-    std::bitset<4> bits;
-    bits[plane.isColorLayer() ? 3 : 0] = planeBits[3];
-
-    return bits;
-}
-
-bool
-writesEveryChannel(int nComps,
-                   const std::bitset<4>& channels)
-{
-    for (int c = 0; (c < nComps) && (c < 4); ++c) {
-        if (!channels[pixelKernelChannelBit(nComps, c)]) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-// Copies `width` pixels of row y starting at x0 into row (nComps floats per pixel), writing zero
-// wherever the image has no pixel. An image in another layout is mapped channel by colour bit,
-// a channel it lacks reading as zero.
-void
-readSourceRow(const Image* image,
-              const Image::ReadAccess* access,
-              const RectI& bounds,
-              int x0,
-              int y,
-              int width,
-              int nComps,
-              float* row)
-{
-    std::fill(row, row + (std::size_t)width * nComps, 0.f);
-    if (!image) {
-        return;
-    }
-    if ((y < bounds.y1) || (y >= bounds.y2)) {
-        return;
-    }
-    const int xStart = std::max(x0, bounds.x1);
-    const int xEnd = std::min(x0 + width, bounds.x2);
-    if (xStart >= xEnd) {
-        return;
-    }
-    const int srcNComps = (int)image->getComponentsCount();
-    const float* srcPix = (const float*)access->pixelAt(xStart, y);
-    float* dstPix = row + (std::size_t)(xStart - x0) * nComps;
-    if (srcNComps == nComps) {
-        std::copy(srcPix, srcPix + (std::size_t)(xEnd - xStart) * nComps, dstPix);
-
-        return;
-    }
-    int srcIndex[4] = { -1, -1, -1, -1 };
-    for (int c = 0; (c < nComps) && (c < 4); ++c) {
-        srcIndex[c] = channelIndexForBit(srcNComps, pixelKernelChannelBit(nComps, c));
-    }
-    for (int x = xStart; x < xEnd; ++x, srcPix += srcNComps, dstPix += nComps) {
-        for (int c = 0; (c < nComps) && (c < 4); ++c) {
-            if (srcIndex[c] >= 0) {
-                dstPix[c] = srcPix[srcIndex[c]];
-            }
-        }
-    }
-}
-
-struct GeneratorPlaneJob {
-    ImagePtr dst;
-    std::bitset<4> channels;
-    ImagePtr src;
-    bool passThrough;
-
-    GeneratorPlaneJob()
-        : dst()
-        , channels()
-        , src()
-        , passThrough(false)
-    {
-    }
-};
-
-struct GeneratorBand {
-    std::size_t job;
-    int y1;
-    int y2;
-
-    GeneratorBand(std::size_t jobIndex,
-                  int firstRow,
-                  int endRow)
-        : job(jobIndex)
-        , y1(firstRow)
-        , y2(endRow)
-    {
-    }
-};
-
 bool
 isAnimatedKnob(const KnobIPtr& knob)
 {
@@ -201,36 +66,16 @@ generatorExtentPolicy()
 
     return policy;
 }
-
-NativeImageTraits
-generatorTraits()
-{
-    NativeImageTraits traits;
-
-    traits.generator = true;
-
-    return traits;
-}
 } // anonymous namespace
 
-NativeGenerator::NativeGenerator(NodePtr node)
-    : NativeImageEffect(node, generatorTraits())
-    , _extentKnobs(this, generatorExtentPolicy())
-{
-}
-
-NativeGenerator::~NativeGenerator()
+NativeGenerator::NativeGenerator(EffectInstance* effect)
+    : _effect(effect)
+    , _extentKnobs(effect, generatorExtentPolicy())
 {
 }
 
 void
-NativeGenerator::describeSourceInput(NativePluginDescription* desc)
-{
-    desc->inputs.push_back(NativeInputDescription(kNativeGeneratorSourceInputLabel, true, eDataKindImage));
-}
-
-void
-NativeGenerator::initializeGeneratorKnobs(const KnobPagePtr& page)
+NativeGenerator::createKnobs(const KnobPagePtr& page)
 {
     _extentKnobs.createKnobs(page);
     _extentKnobs.finishKnobs();
@@ -251,9 +96,7 @@ NativeGenerator::getProjectExtentRect() const
 bool
 NativeGenerator::knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
-                             ViewSpec /*view*/,
-                             double time,
-                             bool /*originatedFromMainThread*/)
+                             double time)
 {
     return _extentKnobs.onKnobChanged(k, reason, time);
 }
@@ -272,32 +115,30 @@ NativeGenerator::getExtentRegionOfDefinition(double time,
     return _extentKnobs.getExtentRegionOfDefinition(time, view, rod);
 }
 
-StatusEnum
-NativeGenerator::getRegionOfDefinition(U64 /*hash*/,
-                                       double time,
-                                       const RenderScale& scale,
-                                       ViewIdx view,
-                                       RectD* rod)
+RectD
+NativeGenerator::getRegionOfDefinition(double time,
+                                       ViewIdx view) const
 {
-    if (getExtentRegionOfDefinition(time, view, rod)) {
-        return eStatusOK;
+    RectD rod;
+
+    if (!getExtentRegionOfDefinition(time, view, &rod)) {
+        rod = getProjectExtentRect();
     }
 
-    EffectInstancePtr source = getInput(0);
-    if (source) {
-        const RenderScale sourceScale = source->supportsRenderScale() ? scale : RenderScale::identity;
-        bool isProjectFormat = false;
+    return rod;
+}
 
-        return source->getRegionOfDefinition_public(source->getRenderHash(), time, sourceScale, view, rod, &isProjectFormat);
-    }
-    *rod = getProjectExtentRect();
+double
+NativeGenerator::getPixelAspectRatio() const
+{
+    const double par = _effect->getAspectRatio(-1);
 
-    return eStatusOK;
+    return (par == 0.) ? 1. : par;
 }
 
 void
 NativeGenerator::getFrameRange(double* first,
-                               double* last)
+                               double* last) const
 {
     KnobIntPtr frameRange = _extentKnobs.getFrameRangeKnob();
 
@@ -306,19 +147,18 @@ NativeGenerator::getFrameRange(double* first,
 }
 
 ImageMetadata
-NativeGenerator::deriveOutputMetadata(double /*time*/,
-                                      ViewIdx /*view*/)
+NativeGenerator::deriveOutputMetadata() const
 {
     ImageMetadata metadata;
 
-    metadata.setDouble(kOfxMetadataKeyFrameRate, getApp()->getProjectFrameRate());
-    metadata.setDouble(kOfxMetadataKeyPixelAspect, getAspectRatio(-1));
+    metadata.setDouble(kOfxMetadataKeyFrameRate, _effect->getApp()->getProjectFrameRate());
+    metadata.setDouble(kOfxMetadataKeyPixelAspect, _effect->getAspectRatio(-1));
 
     return metadata;
 }
 
 StatusEnum
-NativeGenerator::getPreferredMetadata(NodeMetadata& metadata)
+NativeGenerator::getPreferredMetadata(NodeMetadata& metadata) const
 {
     metadata.setIsContinuous(true);
     metadata.setNComps(-1, 4);
@@ -362,114 +202,5 @@ NativeGenerator::getPreferredMetadata(NodeMetadata& metadata)
 
     return eStatusOK;
 } // NativeGenerator::getPreferredMetadata
-
-StatusEnum
-NativeGenerator::render(const RenderActionArgs& args)
-{
-    KernelContext context;
-    context.time = args.time;
-    context.view = args.view;
-    context.mappedScale = args.mappedScale;
-    context.processChannels = args.processChannels;
-    const PixelKernelPtr kernel = makeKernel(context);
-    if (!kernel) {
-        return eStatusFailed;
-    }
-
-    // Every source image is fetched before any is locked: fetching renders upstream, which may
-    // write into a cached image this render would otherwise already hold a read lock on.
-    std::vector<GeneratorPlaneJob> jobs;
-    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
-        GeneratorPlaneJob job;
-        job.dst = it->second;
-        if (!job.dst) {
-            jobs.push_back(job);
-            continue;
-        }
-        if (job.dst->getBitDepth() != eImageBitDepthFloat) {
-            return eStatusFailed;
-        }
-        const int dstNComps = (int)job.dst->getComponentsCount();
-        job.channels = processedBitsForImage(it->first, dstNComps, args.processChannels);
-        job.passThrough = !writesEveryChannel(dstNComps, job.channels);
-
-        ImageLayerDesc sourceLayer;
-        if (job.passThrough && getInput(0) && resolveInputPlaneForRender(0, args.time, args.view, &sourceLayer, NULL)) {
-            RectI sourceRoI;
-            // Mapped to the clip's components, which is the layout the output plane is rendered in.
-            job.src = getImage(0, args.time, args.mappedScale, args.view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &sourceRoI);
-            if (job.src && (job.src->getBitDepth() != eImageBitDepthFloat)) {
-                return eStatusFailed;
-            }
-        }
-        jobs.push_back(job);
-    }
-
-    const RectI& roi = args.roi;
-    const int width = roi.width();
-    if ((width <= 0) || (roi.height() <= 0)) {
-        return eStatusOK;
-    }
-
-    // Images are locked here, on the calling thread, for the whole render; the band threads only
-    // compute pixel addresses through these accesses. Their bounds are read here too, because
-    // Image::getBounds() takes the lock, which a band thread must not ask for: behind a writer
-    // waiting on an image this render holds for reading, it blocks forever.
-    std::vector<std::shared_ptr<Image::ReadAccess>> srcAccesses(jobs.size());
-    std::vector<RectI> srcBounds(jobs.size());
-    std::vector<std::shared_ptr<Image::WriteAccess>> dstAccesses(jobs.size());
-    std::vector<GeneratorBand> bands;
-    const int nThreads = appPTR->getNCPUsAvailableForEffect();
-    std::vector<RectI> bandRects;
-    makeRowBands(roi, nThreads, &bandRects);
-    for (std::size_t j = 0; j < jobs.size(); ++j) {
-        if (!jobs[j].dst) {
-            continue;
-        }
-        if (jobs[j].src) {
-            srcBounds[j] = jobs[j].src->getBounds();
-            srcAccesses[j] = std::make_shared<Image::ReadAccess>(jobs[j].src.get());
-        }
-        dstAccesses[j] = std::make_shared<Image::WriteAccess>(jobs[j].dst.get());
-        for (std::size_t b = 0; b < bandRects.size(); ++b) {
-            bands.push_back(GeneratorBand(j, bandRects[b].y1, bandRects[b].y2));
-        }
-    }
-
-    RenderCancellation cancel(this);
-
-    const std::function<void(int)> renderBand = [&](int bandIndex) {
-        const GeneratorBand& band = bands[bandIndex];
-        const GeneratorPlaneJob& job = jobs[band.job];
-        const int nComps = (int)job.dst->getComponentsCount();
-
-        RowIO io;
-        io.nSrc = 0;
-        io.x0 = roi.x1;
-        io.width = width;
-        io.nComps = nComps;
-        io.channels = job.channels;
-
-        for (int y = band.y1; y < band.y2; ++y) {
-            if ((((y - band.y1) % kAbortCheckRows) == 0) && cancel.check()) {
-                return;
-            }
-
-            float* dstPix = (float*)dstAccesses[band.job]->pixelAt(roi.x1, y);
-            if (!dstPix) {
-                continue;
-            }
-            if (job.passThrough) {
-                readSourceRow(job.src.get(), srcAccesses[band.job].get(), srcBounds[band.job], roi.x1, y, width, nComps, dstPix);
-            }
-            io.y = y;
-            io.dst = dstPix;
-            kernel->processRow(io);
-        }
-    };
-    parallelForCancellable((int)bands.size(), nThreads, cancel, renderBand);
-
-    return eStatusOK;
-} // NativeGenerator::render
 
 NATRON_NAMESPACE_EXIT

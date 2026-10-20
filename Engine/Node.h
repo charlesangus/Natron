@@ -1325,6 +1325,8 @@ private:
 
     void createUnPremultSelector(const KnobPagePtr& mainPage);
 
+    void createStageFooterSeparator(const KnobPagePtr& mainPage);
+
     void createMaskSelectors(const std::vector<std::pair<bool, bool> >& hasMaskChannelSelector,
                              const std::vector<std::string>& inputLabels,
                              const KnobPagePtr& mainPage,

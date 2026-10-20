@@ -31,6 +31,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -195,71 +196,153 @@ NativeEffectBase::~NativeEffectBase()
 {
 }
 
-std::string
-NativeEffectBase::getInputLabel(int inputNb) const
-{
-    const NativePluginDescription desc = getNativePluginDescription();
-
-    if ((inputNb < 0) || ((std::size_t)inputNb >= desc.inputs.size())) {
-        return EffectInstance::getInputLabel(inputNb);
-    }
-
-    return desc.inputs[inputNb].label;
-}
-
-bool
-NativeEffectBase::isInputOptional(int inputNb) const
-{
-    const NativePluginDescription desc = getNativePluginDescription();
-
-    if ((inputNb < 0) || ((std::size_t)inputNb >= desc.inputs.size())) {
-        return false;
-    }
-
-    return desc.inputs[inputNb].optional;
-}
-
-bool
-NativeEffectBase::isInputMask(int inputNb) const
-{
-    const NativePluginDescription desc = getNativePluginDescription();
-
-    if ((inputNb < 0) || ((std::size_t)inputNb >= desc.inputs.size())) {
-        return false;
-    }
-
-    return desc.inputs[inputNb].isMask;
-}
-
+namespace {
 void
-NativeEffectBase::getPluginGrouping(std::list<std::string>* grouping) const
+splitGrouping(std::string_view path,
+              std::list<std::string>* grouping)
 {
-    const std::string path = getNativePluginDescription().grouping;
     std::size_t start = 0;
 
     while (start <= path.size()) {
         const std::size_t slash = path.find('/', start);
-        const std::size_t end = (slash == std::string::npos) ? path.size() : slash;
+        const std::size_t end = (slash == std::string_view::npos) ? path.size() : slash;
         if (end > start) {
-            grouping->push_back(path.substr(start, end - start));
+            grouping->push_back(std::string(path.substr(start, end - start)));
         }
-        if (slash == std::string::npos) {
+        if (slash == std::string_view::npos) {
             break;
         }
         start = slash + 1;
     }
 }
+} // anonymous namespace
+
+std::string
+NativeEffectBase::getPluginID() const
+{
+    return std::string(nodeSpec()->id);
+}
+
+std::string
+NativeEffectBase::getPluginLabel() const
+{
+    return std::string(nodeSpec()->label);
+}
+
+std::string
+NativeEffectBase::getPluginDescription() const
+{
+    return std::string(nodeSpec()->description);
+}
+
+void
+NativeEffectBase::getPluginGrouping(std::list<std::string>* grouping) const
+{
+    splitGrouping(nodeSpec()->grouping, grouping);
+}
+
+int
+NativeEffectBase::getMajorVersion() const
+{
+    return nodeSpec()->majorVersion;
+}
+
+int
+NativeEffectBase::getMinorVersion() const
+{
+    return nodeSpec()->minorVersion;
+}
+
+bool
+NativeEffectBase::isWriter() const
+{
+    return nodeSpec()->isWriter;
+}
+
+bool
+NativeEffectBase::isOutput() const
+{
+    return isWriter();
+}
+
+int
+NativeEffectBase::getNInputs() const
+{
+    return nodeSpec()->inputCount();
+}
+
+std::string
+NativeEffectBase::getInputLabel(int inputNb) const
+{
+    const NodeSpec::ResolvedInput input = nodeSpec()->resolveInput(inputNb);
+    if (!input.spec) {
+        return EffectInstance::getInputLabel(inputNb);
+    }
+    if (input.spec->role == InputRole::Variadic) {
+        return std::string(input.spec->label) + std::to_string(input.spec->firstNumber + input.indexInRun);
+    }
+
+    return std::string(input.spec->label);
+}
+
+bool
+NativeEffectBase::isInputOptional(int inputNb) const
+{
+    const NodeSpec::ResolvedInput input = nodeSpec()->resolveInput(inputNb);
+
+    return input.spec && input.spec->optional;
+}
+
+bool
+NativeEffectBase::isInputMask(int inputNb) const
+{
+    const NodeSpec::ResolvedInput input = nodeSpec()->resolveInput(inputNb);
+
+    return input.spec && (input.spec->role == InputRole::Mask);
+}
+
+DataKindEnum
+NativeEffectBase::getOutputDataKind() const
+{
+    return nodeSpec()->outputKind;
+}
 
 DataKindEnum
 NativeEffectBase::getInputDataKind(int inputNb) const
 {
-    const NativePluginDescription desc = getNativePluginDescription();
+    const NodeSpec::ResolvedInput input = nodeSpec()->resolveInput(inputNb);
 
-    if ((inputNb < 0) || ((std::size_t)inputNb >= desc.inputs.size())) {
-        return eDataKindImage;
+    return input.spec ? input.spec->kind : eDataKindImage;
+}
+
+bool
+NativeEffectBase::isIdentity(double time,
+                             const RenderScale& scale,
+                             const RectI& roi,
+                             ViewIdx view,
+                             double* inputTime,
+                             ViewIdx* inputView,
+                             int* inputNb)
+{
+    const Route answer = route(time, view);
+
+    *inputView = view;
+    switch (answer.kind) {
+    case Route::Kind::Input:
+        *inputNb = answer.inputNb;
+        *inputTime = answer.time;
+
+        return true;
+    case Route::Kind::Black:
+        *inputNb = -1;
+        *inputTime = time;
+
+        return true;
+    case Route::Kind::None:
+        break;
     }
 
-    return desc.inputs[inputNb].kind;
+    return false;
 }
 
 namespace {

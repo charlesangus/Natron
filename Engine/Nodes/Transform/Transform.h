@@ -29,14 +29,13 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <optional>
 
 #include "Engine/EngineFwd.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
 #include "Engine/Nodes/Image/Resampler.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Image/TransformMath.h"
-#include "Engine/ParallelRenderArgs.h"
 #include "Engine/RectD.h"
-#include "Engine/Transform.h"
 
 #define PLUGINID_NATRON_TRANSFORM "net.sf.openfx.TransformPlugin"
 #define PLUGIN_MAJOR_NATRON_TRANSFORM 2
@@ -66,57 +65,166 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief Transform: translates, rotates, scales and skews the image about a centre, resampling
- * it with one of the ten OpenFX filters, with optional motion blur over the shutter or
- * directional blur along the transform. Knob names, defaults, regions, identity rules and pixel
- * maths are the openfx-misc TransformPlugin's (through Resampler and TransformMath); it
- * registers under that plug-in's ID one major above.
+ * @brief The knob values one Transform evaluation reads.
+ **/
+struct TransformNodeParams {
+    TransformMath::TransformParams transform;
+    bool invert = false;
+    Resampler::FilterEnum filter = Resampler::eFilterCubic;
+    bool clamp = false;
+    bool blackOutside = true;
+    Resampler::BlurSettings blur;
+};
+
+inline constexpr InputSpec kTransformInputs[] = {
+    InputSpec { .label = "Source" },
+};
+
+inline constexpr InputSpec kTransformMaskedInputs[] = {
+    InputSpec { .label = "Source" },
+    InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
+};
+
+inline constexpr NodeSpec kTransformNodeSpec = {
+    .id = PLUGINID_NATRON_TRANSFORM,
+    .label = "Transform",
+    .description = "Translate / Rotate / Scale a 2D image.\n"
+                   "This plugin concatenates transforms.\n"
+                   "See also https://web.archive.org/web/20220627030948/http://www.opticalenquiry.com/nuke/index.php?title=Transform",
+    .grouping = PLUGIN_GROUP_TRANSFORM,
+    .majorVersion = PLUGIN_MAJOR_NATRON_TRANSFORM,
+    .minorVersion = 0,
+    .inputs = kTransformInputs,
+};
+
+inline constexpr NodeSpec kTransformMaskedNodeSpec = {
+    .id = PLUGINID_NATRON_TRANSFORMMASKED,
+    .label = "TransformMasked",
+    .description = "Translate / Rotate / Scale a 2D image, with optional masking.\n"
+                   "This plugin concatenates transforms upstream.",
+    .grouping = PLUGIN_GROUP_TRANSFORM,
+    .majorVersion = PLUGIN_MAJOR_NATRON_TRANSFORMMASKED,
+    .minorVersion = 0,
+    .inputs = kTransformMaskedInputs,
+};
+
+inline constexpr ImagePipelineSpec kTransformPipeline = {
+    .layers = LayerPolicy::all(),
+    .op = OpKind::Resample,
+};
+
+inline constexpr ImagePipelineSpec kTransformMaskedPipeline = {
+    .stages = { Stage::MaskMix },
+    .layers = LayerPolicy::all(),
+    .op = OpKind::Resample,
+};
+
+/**
+ * @brief Transform's op: the matrix of the transform knobs about the centre, resampled with one
+ * of the ten OpenFX filters, with optional motion blur over the shutter or directional blur along
+ * the transform. Knob names, defaults, regions, identity rules and pixel maths are the
+ * openfx-misc TransformPlugin's (through Resampler and TransformMath).
  *
- * It concatenates: getTransform() hands the host its pixel matrix so a chain of transforms is
- * resampled once, and render() folds in the transform the host hands back with a concatenated
- * source image. TransformMasked is the same node with a Mask input and the maskInvert and mix
- * knobs; it applies concatenated upstream transforms but does not offer its own. Where mask x mix
- * is below 1 it shows its immediate input, which under concatenation it resamples through the
- * upstream transforms alone.
+ * It holds every knob on the Controls page before the stage knobs, including those only the
+ * node and its interact use.
+ **/
+struct TransformOp {
+    using Params = TransformNodeParams;
+
+    static constexpr bool kResamplesOnGpu = true;
+
+    void createKnobs(KnobHolder* holder,
+                     const KnobPagePtr& page);
+
+    Params bake(const KnobReader& reader) const;
+
+    /**
+     * @brief No motion blur over an open shutter, and transform knobs that leave the image where
+     * it is.
+     **/
+    bool isIdentity(const Params& params,
+                    const PassContext& context) const;
+
+    ResampleSettings settings(const Params& params,
+                              const PassContext& context) const;
+
+    /**
+     * @brief TransformMath::inverseTransformCanonical() of the transform knobs at amount.
+     **/
+    bool transform(const Params& params,
+                   const PassContext& context,
+                   double amount,
+                   bool invert,
+                   TransformMath::Mat3* matrix) const;
+
+    /**
+     * @brief Whether params ask a render to average several matrices per pixel: motion blur on,
+     * with an open shutter or a directional blur.
+     **/
+    static bool rendersWithMotionBlur(const Params& params);
+
+    /**
+     * @brief The cost model's hint: no spread, and motion blur as rendersWithMotionBlur() says.
+     **/
+    std::optional<GpuCostHint> costHint(const Params& params,
+                                        const PassContext& context) const;
+
+    KnobDoubleWPtr translate;
+    KnobDoubleWPtr rotate;
+    KnobDoubleWPtr scale;
+    KnobBoolWPtr uniform;
+    KnobDoubleWPtr skewX;
+    KnobDoubleWPtr skewY;
+    KnobChoiceWPtr skewOrder;
+    KnobDoubleWPtr amount;
+    KnobDoubleWPtr center;
+    KnobButtonWPtr resetCenter;
+    KnobBoolWPtr centerChanged;
+    KnobBoolWPtr interactOpen;
+    KnobBoolWPtr interactive;
+    KnobBoolWPtr hiDPI;
+    KnobBoolWPtr invert;
+    KnobChoiceWPtr filter;
+    KnobBoolWPtr clamp;
+    KnobBoolWPtr blackOutside;
+    KnobDoubleWPtr motionBlur;
+    KnobBoolWPtr directionalBlur;
+    KnobDoubleWPtr shutter;
+    KnobChoiceWPtr shutterOffset;
+    KnobDoubleWPtr shutterCustomOffset;
+};
+
+static_assert(GpuResampleOp<TransformOp>);
+
+/**
+ * @brief Transform: translates, rotates, scales and skews the image about a centre. It registers
+ * under the openfx-misc TransformPlugin's ID one major above.
+ *
+ * It concatenates: the host is handed its pixel matrix so a chain of transforms is resampled
+ * once, and it folds in the transform the host hands back with a concatenated source image.
+ * TransformMasked (MASKED) is the same node with a Mask input and the maskInvert and mix knobs,
+ * under the openfx-misc TransformMaskedPlugin's ID one major above; it applies concatenated
+ * upstream transforms but does not offer its own. Where mask x mix is below 1 it shows its
+ * immediate input, which under concatenation it resamples through the upstream transforms alone.
  *
  * The class is not called Transform because that name is the engine's matrix namespace.
  **/
-class TransformNode
-    : public NativeImageEffect {
+template <bool MASKED>
+class TransformImageNode
+    : public ImageNode<TransformOp, MASKED ? kTransformMaskedNodeSpec : kTransformNodeSpec, MASKED ? kTransformMaskedPipeline : kTransformPipeline> {
+    using Base = ImageNode<TransformOp, MASKED ? kTransformMaskedNodeSpec : kTransformNodeSpec, MASKED ? kTransformMaskedPipeline : kTransformPipeline>;
+
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
-        return new TransformNode(node, false);
+        return new TransformImageNode(node);
     }
 
-    virtual ~TransformNode();
+    explicit TransformImageNode(NodePtr node);
+
+    virtual ~TransformImageNode();
 
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
-
-    virtual bool rendersUnprocessedChannels() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return false;
-    }
-
-    virtual bool getCanTransform() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return !_masked;
-    }
-
-    virtual bool getInputsHoldingTransform(std::list<int>* inputs) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual StatusEnum getTransform(double time,
-                                    const RenderScale& renderScale,
-                                    bool draftRender,
-                                    ViewIdx view,
-                                    EffectInstancePtr* inputToTransform,
-                                    Transform::Matrix3x3* transform) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual StatusEnum getRegionOfDefinition(U64 hash,
-                                             double time,
-                                             const RenderScale& scale,
-                                             ViewIdx view,
-                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
      * @brief The transform knob values at (time, view).
@@ -132,49 +240,14 @@ public:
     void resetCenter(double time);
 
     /**
-     * @brief Accepts a float query of 1 to 4 channels without a transform concatenated from
-     * upstream, whose sampling matrices are all affine and finite: motion blur over the shutter
-     * and directional blur included.
-     **/
-    virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    /**
-     * @brief For the source, the pixels getRegionsOfInterest() asks for outputRect, clipped to the
-     * source's region of definition, as render() is handed them.
-     **/
-    virtual RectI getGpuInputRoI(int inputNb,
-                                 const RectI& outputRect,
-                                 const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    /**
-     * @brief Whether the knobs ask render() to average several matrices per pixel at (time,
+     * @brief Whether the knobs ask a render to average several matrices per pixel at (time,
      * view): motion blur on, with an open shutter or a directional blur. A transform that does
-     * not move over the shutter still counts, although render() then samples it once.
+     * not move over the shutter still counts, although the render then samples it once.
      **/
     bool rendersWithMotionBlur(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
 protected:
-    TransformNode(NodePtr node,
-                  bool masked);
-
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE WARN_UNUSED_RETURN;
-
-    virtual bool isIdentity(double time,
-                            const RenderScale& scale,
-                            const RectI& roi,
-                            ViewIdx view,
-                            double* inputTime,
-                            ViewIdx* inputView,
-                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual void getRegionsOfInterest(double time,
-                                      const RenderScale& scale,
-                                      const RectD& outputRoD,
-                                      const RectD& renderWindow,
-                                      ViewIdx view,
-                                      RoIMap* ret) OVERRIDE FINAL;
+    virtual void initializeKnobs() OVERRIDE FINAL;
 
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
@@ -186,39 +259,8 @@ protected:
 
     virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
 
-    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
 private:
-    virtual void initializeKnobs() OVERRIDE FINAL;
-
-    /**
-     * @brief The canonical matrix function the resampler and the region helpers sample, reading
-     * the knobs at the time they ask for.
-     **/
-    Resampler::CanonicalTransformFn makeCanonicalTransformFn(ViewIdx view) const;
-
-    /**
-     * @brief The blur knob values at (time, view), with the shutter as the knob holds it.
-     **/
-    Resampler::BlurSettings getBlurSettings(double time, ViewIdx view) const;
-
-    /**
-     * @brief Whether a mask is read: only for TransformMasked, with its mask connected and enabled.
-     **/
-    bool isMasking() const WARN_UNUSED_RETURN;
-
-    Resampler::RegionParams getRegionParams(double time, ViewIdx view) const;
-
     bool getSourceRoD(double time, const RenderScale& scale, ViewIdx view, RectD* rod) const;
-
-    RectI getSourceRoIPixels(double time, ViewIdx view, const RectI& outputRect, const RenderScale& scale) const WARN_UNUSED_RETURN;
-
-    /**
-     * @brief The destination-to-source pixel matrices render() samples at (time, view, scale) with
-     * their weights and blur quality, reduced to the single matrix render() samples when it does not
-     * blur; false when one of them is not affine and finite.
-     **/
-    bool getGpuSamplingTransforms(double time, ViewIdx view, const RenderScale& scale, Resampler::SamplingTransforms* transforms) const WARN_UNUSED_RETURN;
 
     RectD getProjectRect() const WARN_UNUSED_RETURN;
 
@@ -232,54 +274,14 @@ private:
      **/
     void updateUniformVisibility(bool allowHiding);
 
-    const bool _masked;
-    KnobDoubleWPtr _translate;
-    KnobDoubleWPtr _rotate;
-    KnobDoubleWPtr _scale;
-    KnobBoolWPtr _uniform;
-    KnobDoubleWPtr _skewX;
-    KnobDoubleWPtr _skewY;
-    KnobChoiceWPtr _skewOrder;
-    KnobDoubleWPtr _amount;
-    KnobDoubleWPtr _center;
-    KnobButtonWPtr _resetCenter;
-    KnobBoolWPtr _centerChanged;
-    KnobBoolWPtr _interactOpen;
-    KnobBoolWPtr _interactive;
-    KnobBoolWPtr _hiDPI;
-    KnobBoolWPtr _invert;
-    KnobChoiceWPtr _filter;
-    KnobBoolWPtr _clamp;
-    KnobBoolWPtr _blackOutside;
-    KnobDoubleWPtr _motionBlur;
-    KnobBoolWPtr _directionalBlur;
-    KnobDoubleWPtr _shutter;
-    KnobChoiceWPtr _shutterOffset;
-    KnobDoubleWPtr _shutterCustomOffset;
     KnobBoolWPtr _srcClipChanged;
 };
 
-/**
- * @brief TransformMasked: Transform with a Mask input and the maskInvert and mix knobs, under the
- * openfx-misc TransformMaskedPlugin's ID one major above.
- **/
-class TransformMasked
-    : public TransformNode {
-public:
-    static EffectInstance* BuildEffect(NodePtr node)
-    {
-        return new TransformMasked(node);
-    }
+extern template class TransformImageNode<false>;
+extern template class TransformImageNode<true>;
 
-    explicit TransformMasked(NodePtr node)
-        : TransformNode(node, true)
-    {
-    }
-
-    virtual ~TransformMasked()
-    {
-    }
-};
+using TransformNode = TransformImageNode<false>;
+using TransformMasked = TransformImageNode<true>;
 
 NATRON_NAMESPACE_EXIT
 

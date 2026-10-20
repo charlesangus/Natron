@@ -35,9 +35,6 @@
 #include <type_traits>
 #include <vector>
 
-#include "Engine/RenderScale.h"
-#include "Engine/ViewIdx.h"
-
 #define kPixelKernelMaxInputs 4
 
 NATRON_NAMESPACE_ENTER
@@ -55,38 +52,18 @@ pixelKernelChannelBit(int nComps,
 }
 
 /**
- * @brief What a PixelKernel is built for: the render's time, view, mapped render scale (spatial
- * parameters scale by it) and the channels it processes, in the bit space of
- * pixelKernelChannelBit().
- **/
-struct KernelContext {
-    double time;
-    ViewIdx view;
-    RenderScale mappedScale;
-    std::bitset<4> processChannels;
-
-    KernelContext()
-        : time(0.)
-        , view(0)
-        , mappedScale()
-        , processChannels()
-    {
-    }
-};
-
-/**
- * @brief One row of pixels handed to PixelKernel::processRow(): `width` pixels starting at
+ * @brief One row of pixels handed to a point op's row function: `width` pixels starting at
  * pixel (x0, y), every buffer holding `nComps` interleaved floats per pixel unless noted.
  *
  * src[i] is input i's row (nSrc of them), zero where the input has no pixel, and already divided
- * by the "(Un)premult by" channel wherever NativeImageEffect divides. mask holds one value per
+ * by the "(Un)premult by" channel wherever the divisor is applied. mask holds one value per
  * pixel, the mask channel before maskInvert, or is null when no mask applies. divisor holds one
  * value per pixel, the "(Un)premult by" channel, or is null when none is selected, and
  * divisorSkipChannel is the channel of the row that is that divisor itself (-1 when none). The
- * base multiplies back and applies mask and mix after processRow() returns, so a point op
+ * stage multiplies back and applies mask and mix after the row function returns, so a point op
  * normally ignores mask and divisor; they are here for a kernel whose maths depends on them.
  *
- * dst receives the result: processRow() must write every channel whose bit is set in `channels`
+ * dst receives the result: the row function must write every channel whose bit is set in `channels`
  * and may leave the others untouched.
  **/
 struct RowIO {
@@ -121,28 +98,10 @@ struct RowIO {
 };
 
 /**
- * @brief The per-pixel maths of a point operator, built once per render call from knob values
- * at a KernelContext and immutable afterwards. processRow() is pure on its RowIO: no knob access,
- * no allocation and no I/O, so rows can be run in any order, on any thread, or chained with
- * other kernels over a strip.
- **/
-class PixelKernel {
-public:
-    virtual ~PixelKernel()
-    {
-    }
-
-    virtual void processRow(const RowIO& io) const = 0;
-};
-
-typedef std::shared_ptr<const PixelKernel> PixelKernelPtr;
-
-/**
- * @brief The GPU description of a point operator, built by NativeImageEffect::makeGpuKernel() from
- * the same knob values as the PixelKernel of makeKernel(): a kernel of the GPU registry, a
+ * @brief The GPU description of a point operator: a kernel of the GPU registry, a
  * gpu::GpuKernelId held as an int so that this header builds without the GPU backend (-1 for
- * none), and the parameter block that kernel's op loads. The base wraps it with mask, mix,
- * processed channels and "(Un)premult by" exactly as render() wraps processRow().
+ * none), and the parameter block that kernel's op loads. The stage wraps it with mask, mix,
+ * processed channels and "(Un)premult by" exactly as the CPU row function is wrapped.
  **/
 struct PixelKernelGpu {
     int kernel = -1;

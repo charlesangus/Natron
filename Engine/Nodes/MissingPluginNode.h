@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <deque>
 #include <list>
 #include <string>
 #include <vector>
@@ -51,10 +52,10 @@ public:
         return new MissingPluginNode(node);
     }
 
-    explicit MissingPluginNode(NodePtr node)
-        : NativeEffectBase(node)
-    {
-    }
+    explicit MissingPluginNode(NodePtr node);
+
+    MissingPluginNode(const MissingPluginNode&) = delete;
+    MissingPluginNode& operator=(const MissingPluginNode&) = delete;
 
     Serialization::NodeSerializationPtr getStoredSerialization() const WARN_UNUSED_RETURN;
 
@@ -73,7 +74,15 @@ private:
         return false;
     }
 
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    // The one node with a runtime NodeSpec: its inputs are the ones the missing plug-in had, known
+    // only once the serialization arrives. The spec views _description and _inputLabels, so the
+    // node must not be copied or moved.
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return &_spec;
+    }
+
+    void rebuildSpec();
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 
@@ -91,7 +100,11 @@ private:
     KnobStringWPtr _info;
     mutable QMutex _storedMutex;
     Serialization::NodeSerializationPtr _stored;
-    std::vector<std::string> _inputLabels;
+    // A deque keeps the elements still when it grows, so the views in _inputSpecs stay valid.
+    std::deque<std::string> _inputLabels;
+    std::string _description;
+    std::vector<InputSpec> _inputSpecs;
+    NodeSpec _spec;
     std::string _guiChildrenNodeName;
     std::list<Serialization::NodeGuiSerializationPtr> _guiChildren;
 };

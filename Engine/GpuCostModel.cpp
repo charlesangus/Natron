@@ -37,10 +37,7 @@
 #include "Engine/GpuContext.h"
 #include "Engine/GpuRegionStrips.h"
 #include "Engine/Node.h"
-#include "Engine/Nodes/Filter/Blur.h"
-#include "Engine/Nodes/Filter/ErodeDilate.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
-#include "Engine/Nodes/Transform/Transform.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -99,27 +96,6 @@ blurFilterByName(const char* name)
                 return entry.filter;
             }
         }
-    }
-
-    return GpuBlurFilter::eAny;
-}
-
-GpuBlurFilter
-blurFilterOf(BlurKernels::Filter filter)
-{
-    switch (filter) {
-    case BlurKernels::eFilterQuasiGaussian:
-        return GpuBlurFilter::eQuasiGaussian;
-    case BlurKernels::eFilterGaussian:
-        return GpuBlurFilter::eGaussian;
-    case BlurKernels::eFilterBox:
-        return GpuBlurFilter::eBox;
-    case BlurKernels::eFilterTriangle:
-        return GpuBlurFilter::eTriangle;
-    case BlurKernels::eFilterQuadratic:
-        return GpuBlurFilter::eQuadratic;
-    case BlurKernels::eFilterFIRGaussian:
-        return GpuBlurFilter::eFirGaussian;
     }
 
     return GpuBlurFilter::eAny;
@@ -321,25 +297,16 @@ GpuCostModel::traitsOf(const FrameGraph::Task& task) const
     GpuTaskTraits traits(node->getPluginID());
     traits.inputCount = node->getNInputs();
     EffectInstancePtr effect = node->getEffectInstance();
-    if (const NativeImageEffect* native = dynamic_cast<const NativeImageEffect*>(effect.get())) {
-        traits.costClass = native->isPointOp() ? GpuCostClass::ePointOp : GpuCostClass::eSpatial;
+    const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(effect.get());
+    if (const std::optional<OpKind> kind = native ? native->opKind() : std::nullopt) {
+        traits.costClass = (*kind == OpKind::Point) ? GpuCostClass::ePointOp : GpuCostClass::eSpatial;
     }
-    if (const Blur* blur = dynamic_cast<const Blur*>(effect.get())) {
-        BlurParams params;
-        blur->getParams(task.key.time, task.key.view, &params);
-        const double scale = std::ldexp(1., -(int)task.cacheMipmapLevel);
-        traits.sigma = std::max(params.sizeX, params.sizeY) * scale / 2.4;
-        traits.iir = (params.filter == BlurKernels::eFilterQuasiGaussian) || (params.filter == BlurKernels::eFilterGaussian);
-        traits.filter = blurFilterOf(params.filter);
-    }
-    if (const ErodeDilate* erodeDilate = dynamic_cast<const ErodeDilate*>(effect.get())) {
-        ErodeDilateParams params;
-        erodeDilate->getParams(task.key.time, task.key.view, &params);
-        const double scale = std::ldexp(1., -(int)task.cacheMipmapLevel);
-        traits.size = (int)std::floor(std::max(std::abs(params.sizeX), std::abs(params.sizeY)) * scale);
-    }
-    if (const TransformNode* transform = dynamic_cast<const TransformNode*>(effect.get())) {
-        traits.motionBlur = transform->rendersWithMotionBlur(task.key.time, task.key.view);
+    if (const std::optional<GpuCostHint> hint = native ? native->gpuCostHint(task.key.time, task.key.view, task.cacheMipmapLevel) : std::nullopt) {
+        traits.sigma = hint->sigma;
+        traits.iir = hint->iir;
+        traits.filter = hint->filter;
+        traits.size = hint->size;
+        traits.motionBlur = hint->motionBlur;
     }
 
     return traits;

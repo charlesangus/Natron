@@ -39,28 +39,6 @@ RemoveMetadata::RemoveMetadata(NodePtr node)
 {
 }
 
-NativePluginDescription
-RemoveMetadata::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_REMOVEMETADATA;
-    desc.label = "RemoveMetadata";
-    desc.description = tr("Removes the metadata keys matching the Keys list, or every key when Remove All "
-                          "is on. Keys is a comma- or newline-separated list of globs, where * matches any "
-                          "characters, including /, and ? matches one, for example exr/*, exif/Make. No key "
-                          "is protected, so the engine's ofx/ keys go too if matched. The image itself is "
-                          "passed through unchanged.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_METADATA;
-    desc.majorVersion = 1;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindImage));
-    desc.outputKind = eDataKindImage;
-
-    return desc;
-}
-
 void
 RemoveMetadata::initializeKnobs()
 {
@@ -122,20 +100,11 @@ RemoveMetadata::onKnobsLoaded()
     refreshKeysVisibility();
 }
 
-bool
-RemoveMetadata::isIdentity(double time,
-                           const RenderScale& /*scale*/,
-                           const RectI& /*roi*/,
-                           ViewIdx view,
-                           double* inputTime,
-                           ViewIdx* inputView,
-                           int* inputNb)
+Route
+RemoveMetadata::route(double time,
+                      ViewIdx /*view*/)
 {
-    *inputTime = time;
-    *inputNb = 0;
-    *inputView = view;
-
-    return true;
+    return Route::input(0, time);
 }
 
 ImageMetadata

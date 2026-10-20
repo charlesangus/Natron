@@ -116,27 +116,6 @@ Shuffle::~Shuffle()
 {
 }
 
-NativePluginDescription
-Shuffle::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_SHUFFLE;
-    desc.label = "Shuffle";
-    desc.description = tr("Rearrange channels between layers. Two input slots, each a layer of the Source input, "
-                          "feed two output layers; every output channel takes a slot channel, 0 or 1, and by "
-                          "default the same channel of its own slot. Every layer that is not an output passes "
-                          "through unchanged.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_CHANNEL;
-    desc.majorVersion = 1;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", true, eDataKindImage));
-    desc.outputKind = eDataKindImage;
-
-    return desc;
-}
-
 void
 Shuffle::addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const
 {
@@ -671,37 +650,32 @@ Shuffle::getComponentsNeededAndProduced(double time,
     }
 } // Shuffle::getComponentsNeededAndProduced
 
-bool
-Shuffle::isIdentity(double time,
-                    const RenderScale& /*scale*/,
-                    const RectI& /*roi*/,
-                    ViewIdx view,
-                    double* inputTime,
-                    ViewIdx* inputView,
-                    int* inputNb)
+Route
+Shuffle::route(double time,
+               ViewIdx view)
 {
     if (!getOutputLayer(2).empty()) {
-        return false;
+        return Route::none();
     }
 
     const std::string out1Layer = getOutputLayer(1);
     const bool outIsView = ImageLayerDesc::isColorViewID(out1Layer);
     const int nChannels = layerChannelCount(out1Layer, (int)eInputMain, time, view);
     if (nChannels < 0) {
-        return false;
+        return Route::none();
     }
     for (int c = 0; c < nChannels; ++c) {
         const ShuffleSource src = getEffectiveSource(1, c, time, view);
         if ((src.kind != ShuffleSource::eInput) || (getSlotInput(src.slot) != (int)eInputMain)) {
-            return false;
+            return Route::none();
         }
         const std::string slotLayer = getSlotLayer(src.slot);
         if (outIsView) {
             if (!ImageLayerDesc::isColorViewID(slotLayer) || (ImageLayerDesc::colorViewChannelBit(slotLayer, src.index) != ImageLayerDesc::colorViewChannelBit(out1Layer, c))) {
-                return false;
+                return Route::none();
             }
         } else if ((src.index != c) || (slotLayer != out1Layer)) {
-            return false;
+            return Route::none();
         }
     }
     // A colour channel the main input lacks is written as 0 into a wider plane, which passing
@@ -709,20 +683,16 @@ Shuffle::isIdentity(double time,
     if (outIsView) {
         ImageLayerDesc mainColor;
         if (getInputColorStorage((int)eInputMain, time, view, &mainColor) && (ImageLayerDesc::colorViewMask(out1Layer) & ~ImageLayerDesc::colorStorageBits(mainColor)).any()) {
-            return false;
+            return Route::none();
         }
     }
     // renderRoI() validates the mapping only past its identity shortcut, so a channel the input
     // cannot feed (e.g. a layer it does not carry) must keep the render off that shortcut.
     if (!checkExtraChannelsPresent(time, view, NULL)) {
-        return false;
+        return Route::none();
     }
 
-    *inputNb = (int)eInputMain;
-    *inputTime = time;
-    *inputView = view;
-
-    return true;
+    return Route::input((int)eInputMain, time);
 }
 
 StatusEnum
@@ -1127,29 +1097,6 @@ ShuffleCopy::ShuffleCopy(NodePtr node)
 
 ShuffleCopy::~ShuffleCopy()
 {
-}
-
-NativePluginDescription
-ShuffleCopy::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_SHUFFLECOPY;
-    desc.label = "ShuffleCopy";
-    desc.description = tr("Rearrange channels between layers of two inputs. The second slot reads input 2, the "
-                          "main input, and the first slot reads input 1; each feeds an output layer, and every "
-                          "output channel takes a slot channel, 0 or 1. By default the color comes from input 2 "
-                          "and the alpha from input 1. Every layer that is not an output passes through from "
-                          "input 2 unchanged.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_CHANNEL;
-    desc.majorVersion = 1;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("2", true, eDataKindImage));
-    desc.inputs.push_back(NativeInputDescription("1", true, eDataKindImage));
-    desc.outputKind = eDataKindImage;
-
-    return desc;
 }
 
 NATRON_NAMESPACE_EXIT

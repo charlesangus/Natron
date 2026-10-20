@@ -29,7 +29,11 @@
 #include "Global/Macros.h"
 
 #include "Engine/EngineFwd.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include <memory>
+
+#include "Engine/Nodes/Image/ColorMath.h"
+#include "Engine/Nodes/Image/CurveSnapshot.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 
 #define PLUGINID_NATRON_COLORCORRECT "net.sf.openfx.ColorCorrectPlugin"
 #define PLUGIN_MAJOR_NATRON_COLORCORRECT 3
@@ -50,6 +54,11 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kColorCorrectInputs[] = {
+    InputSpec { .label = "Source" },
+    InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
+};
+
 /**
  * @brief ColorCorrect: saturation, contrast, gamma, gain and offset, once for the shadows,
  * midtones and highlights blended by the tone-range curves of the luminance, then once for the
@@ -62,9 +71,7 @@ NATRON_NAMESPACE_ENTER
  * openfx-misc ColorCorrectPlugin's, except that clampBlack defaults off so that a default node is
  * an identity; it registers under that plugin's ID one major above.
  **/
-class ColorCorrect
-    : public NativeImageEffect {
-public:
+struct ColorCorrectOp {
     enum GroupEnum {
         eGroupMaster = 0,
         eGroupShadows,
@@ -73,24 +80,53 @@ public:
         eGroupCount
     };
 
-    static EffectInstance* BuildEffect(NodePtr node)
-    {
-        return new ColorCorrect(node);
-    }
+    struct Group {
+        double saturation[4];
+        double contrast[4];
+        double gamma[4];
+        double invGamma[4];
+        double gain[4];
+        double offset[4];
+        // Whether the group changes anything; an identity group is not run, so that it leaves
+        // the pixel bit-for-bit as it is.
+        bool active;
+    };
 
-    explicit ColorCorrect(NodePtr node);
+    // The tone-range curves and the tables sampled from them, shared by every Params baked from
+    // the same curves.
+    struct Tones;
 
-    virtual ~ColorCorrect();
+    struct Params {
+        Group groups[eGroupCount];
+        ColorMath::LuminanceMathEnum luminanceMath;
+        bool clampBlack;
+        bool clampWhite;
+        std::shared_ptr<const Tones> tones;
+    };
 
-    virtual bool isPointOp() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return true;
-    }
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_COLORCORRECT,
+        .label = "ColorCorrect",
+        .description = "Adjusts the saturation, contrast, gamma, gain and offset of an image.\n"
+                       "The ranges of the shadows, midtones and highlights are controlled by the curves "
+                       "in the \"Ranges\" tab.\n"
+                       "The Contrast adjustment works using the formula: Output = (Input/0.18)^Contrast*0.18.\n"
+                       "\n"
+                       "See also:\n"
+                       "- http://opticalenquiry.com/nuke/index.php?title=ColorCorrect\n"
+                       "- https://compositormathematic.wordpress.com/2013/07/06/gamma-contrast/",
+        .grouping = PLUGIN_GROUP_COLOR,
+        .majorVersion = PLUGIN_MAJOR_NATRON_COLORCORRECT,
+        .minorVersion = 0,
+        .inputs = kColorCorrectInputs,
+    };
 
-protected:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = { Stage::Premult, Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .layers = LayerPolicy::color(true, true, true, false),
+        .op = OpKind::Point,
+    };
 
-private:
     struct GroupKnobs {
         KnobBoolWPtr enable;
         KnobColorWPtr saturation;
@@ -100,27 +136,55 @@ private:
         KnobColorWPtr offset;
     };
 
-    virtual void initializeKnobs() OVERRIDE FINAL;
+    void createKnobs(KnobHolder* holder,
+                     const KnobPagePtr& page);
 
-    virtual PixelKernelPtr makeKernel(const KernelContext& context) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    Params bake(const KnobReader& reader) const;
 
-    virtual int gpuKernelId(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    bool isIdentity(const Params& params) const;
 
-    virtual bool makeGpuKernel(const KernelContext& context,
-                               PixelKernelGpu* gpuKernel) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    void row(const Params& params,
+             const RowIO& io) const;
 
-    virtual bool isIdentityOp(double time,
-                              const RenderScale& scale,
-                              const RectI& roi,
-                              ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    GpuOpRef gpu(const Params& params) const;
 
-    void addGroup(const KnobPagePtr& page, GroupEnum group, const std::string& name, bool open);
+    GroupKnobs groups[eGroupCount];
+    KnobParametricWPtr toneRanges;
+    KnobChoiceWPtr luminanceMath;
+    KnobBoolWPtr clampBlack;
+    KnobBoolWPtr clampWhite;
 
-    GroupKnobs _groups[eGroupCount];
-    KnobParametricWPtr _toneRanges;
-    KnobChoiceWPtr _luminanceMath;
-    KnobBoolWPtr _clampBlack;
-    KnobBoolWPtr _clampWhite;
+private:
+    std::shared_ptr<const Tones> bakeTones() const;
+
+    CurveTablesCache<Tones> _tones;
+};
+
+static_assert(PointOp<ColorCorrectOp>);
+
+class ColorCorrect
+    : public ImageNode<ColorCorrectOp> {
+public:
+    static EffectInstance* BuildEffect(NodePtr node)
+    {
+        return new ColorCorrect(node);
+    }
+
+    explicit ColorCorrect(NodePtr node);
+
+    virtual ~ColorCorrect();
+
+    /**
+     * @brief The Params the op renders with at (time, view).
+     **/
+    ColorCorrectOp::Params bakeColorCorrect(double time,
+                                            ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The op's CPU kernel over one row.
+     **/
+    void colorCorrectRow(const ColorCorrectOp::Params& params,
+                         const RowIO& io) const;
 };
 
 NATRON_NAMESPACE_EXIT

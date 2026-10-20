@@ -141,26 +141,6 @@ ViewMetadata::ViewMetadata(NodePtr node)
 {
 }
 
-NativePluginDescription
-ViewMetadata::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_VIEWMETADATA;
-    desc.label = "ViewMetadata";
-    desc.description = tr("Shows the metadata of its input at the current frame in its Metadata tab. The "
-                          "list follows the timeline and upstream changes; Refresh updates it on demand. "
-                          "The image and its metadata are passed through unchanged.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_METADATA;
-    desc.majorVersion = 1;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindImage));
-    desc.outputKind = eDataKindImage;
-
-    return desc;
-}
-
 void
 ViewMetadata::initializeKnobs()
 {
@@ -262,20 +242,11 @@ ViewMetadata::knobChanged(KnobI* k,
     return false;
 }
 
-bool
-ViewMetadata::isIdentity(double time,
-                         const RenderScale& /*scale*/,
-                         const RectI& /*roi*/,
-                         ViewIdx view,
-                         double* inputTime,
-                         ViewIdx* inputView,
-                         int* inputNb)
+Route
+ViewMetadata::route(double time,
+                    ViewIdx /*view*/)
 {
-    *inputTime = time;
-    *inputNb = 0;
-    *inputView = view;
-
-    return true;
+    return Route::input(0, time);
 }
 
 void

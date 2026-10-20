@@ -254,7 +254,6 @@ const char* const kAuditedPyPlugs[] = {
     "AngleBlur",
     "DropShadow",
     "EdgeBlur",
-    "Fill",
     "Glow",
     "LightWrap",
     "PIKColor",
@@ -344,9 +343,9 @@ TEST_F(PyPlugNativeParamsTest, EveryParamAPyPlugSetsOnANativeNodeExistsOnIt)
                            << findings.str();
 }
 
-// These inner nodes were saved with the OpenFX plug-in's un-premultiply toggle on. The native
-// node has no such toggle, so the PyPlug has to set the host selector to alpha itself, or the
-// node silently stops dividing by alpha.
+// These colour inner nodes were saved with the OpenFX plug-in's un-premultiply toggle on. The
+// native node has no such toggle, so the PyPlug has to set the host selector to alpha itself, or
+// the node silently stops dividing by alpha.
 TEST_F(PyPlugNativeParamsTest, InnerNodesSavedUnPremultipliedStillUnPremultiplyByAlpha)
 {
     struct Expected {
@@ -356,8 +355,6 @@ TEST_F(PyPlugNativeParamsTest, InnerNodesSavedUnPremultipliedStillUnPremultiplyB
     };
     const Expected expected[] = {
         { "DropShadow", "Multiply1", PLUGINID_NATRON_MULTIPLY },
-        { "PIKColor", "DilateFast1", PLUGINID_NATRON_DILATE },
-        { "PIKColor", "DilateFast2", PLUGINID_NATRON_DILATE },
     };
 
     const std::string firstId = std::string("fr.inria.") + expected[0].pyPlug;
@@ -388,5 +385,41 @@ TEST_F(PyPlugNativeParamsTest, InnerNodesSavedUnPremultipliedStillUnPremultiplyB
         ASSERT_TRUE(bool(unPremultBy)) << e.pyPlug << "/" << e.scriptName;
         EXPECT_FALSE(unPremultBy->isNone()) << e.pyPlug << "/" << e.scriptName;
         EXPECT_EQ(std::string("rgba.A"), unPremultBy->get()) << e.pyPlug << "/" << e.scriptName;
+    }
+}
+
+// The OpenFX dilates were saved un-premultiplying by alpha too, but the native filters work on
+// premultiplied data as stored and offer no selector. Their source here has R/G/B at zero, so
+// dividing by alpha first never changed what they produced.
+TEST_F(PyPlugNativeParamsTest, FilterInnerNodesSavedUnPremultipliedFilterAsStored)
+{
+    const char* const pyPlug = "PIKColor";
+    const char* const scriptNames[] = { "DilateFast1", "DilateFast2" };
+
+    const std::string pluginID = std::string("fr.inria.") + pyPlug;
+    if (!isPluginLoaded(pluginID.c_str())) {
+        std::cerr << "Skipping: PyPlugs under " NATRON_TESTS_PYPLUGS_DIR " were not registered as plugins." << std::endl;
+        return;
+    }
+
+    NodePtr group = createNode(QString::fromStdString(pluginID));
+    ASSERT_TRUE(bool(group)) << pyPlug;
+    NodeCollectionPtr collection = std::dynamic_pointer_cast<NodeCollection>(group->getEffectInstance());
+    ASSERT_TRUE(bool(collection)) << pyPlug;
+
+    NodesList innerNodes;
+    collection->getNodes_recursive(innerNodes, true);
+    for (const char* scriptName : scriptNames) {
+        NodePtr inner;
+        for (const NodePtr& candidate : innerNodes) {
+            if (candidate->getScriptName() == scriptName) {
+                inner = candidate;
+                break;
+            }
+        }
+        ASSERT_TRUE(bool(inner)) << pyPlug << "/" << scriptName;
+        EXPECT_EQ(std::string(PLUGINID_NATRON_DILATE), inner->getPluginID()) << pyPlug << "/" << scriptName;
+        EXPECT_FALSE(bool(inner->getUnPremultBySelector())) << pyPlug << "/" << scriptName;
+        EXPECT_FALSE(bool(inner->getKnobByName(kUnPremultByKnobName))) << pyPlug << "/" << scriptName;
     }
 }

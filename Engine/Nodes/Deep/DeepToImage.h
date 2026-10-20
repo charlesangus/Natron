@@ -44,6 +44,10 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kDeepToImageInputs[] = {
+    InputSpec { .label = "Source", .kind = eDataKindDeep, .role = InputRole::Source, .optional = false },
+};
+
 /**
  * @brief Flattens the layers of its deep input that its channel set selects into float images:
  * every pixel's samples composited front-to-back, tidied first if the input does not declare
@@ -60,6 +64,23 @@ NATRON_NAMESPACE_ENTER
 class DeepToImage
     : public NativeEffectBase {
 public:
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_DEEPTOIMAGE,
+        .label = "DeepToImage",
+        .description = "Flatten the deep layers Channels selects into images: every pixel's samples are "
+                       "composited front-to-back, tidied first when the input does not guarantee they "
+                       "are. Every layer is composited with the deep alpha A, even when alpha is not "
+                       "selected, and a selected channel the deep data lacks reads as 0. The colour "
+                       "plane holds only the colour channels selected: rgb gives an image without "
+                       "alpha. This is where a deep stream's depth information is discarded.",
+        .grouping = PLUGIN_GROUP_DEEP,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .isWriter = false,
+        .outputKind = eDataKindImage,
+        .inputs = kDeepToImageInputs,
+    };
+
     static EffectInstance* BuildEffect(NodePtr node)
     {
         return new DeepToImage(node);
@@ -122,7 +143,7 @@ private:
         std::vector<std::pair<ImageLayerDesc, std::vector<std::string>>> layers;
     };
 
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 

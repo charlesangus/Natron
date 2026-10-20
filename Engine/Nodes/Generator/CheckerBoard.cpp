@@ -35,6 +35,8 @@
 #include <string>
 #include <vector>
 
+#include "Engine/AppManager.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/RectD.h"
@@ -84,62 +86,28 @@ nextStep(const Step& step,
     return n;
 }
 
-class CheckerBoardKernel
-    : public PixelKernel {
-public:
-    CheckerBoardKernel(const CheckerBoardGeometry& geometry,
-                       const float colors[6][4])
-        : _g(geometry)
-    {
-        for (int i = 0; i < 6; ++i) {
-            for (int c = 0; c < 4; ++c) {
-                _colors[i][c] = colors[i][c];
-            }
-        }
-    }
-
-    virtual void processRow(const RowIO& io) const OVERRIDE FINAL
-    {
-        const GeneratorRowChannels channels(io);
-        const CheckerBoardRow row = checkerBoardRow(_g, io.y);
-        const int xEnd = io.x0 + io.width;
-        float* dst = io.dst;
-
-        for (int x = io.x0; x < xEnd;) {
-            CheckerBoardColorEnum color = eCheckerBoardColor0;
-            const int end = checkerBoardRunEnd(_g, row, x, xEnd, &color);
-            fillRun(channels, _colors[color], io.nComps, end - x, dst);
-            dst += (std::size_t)(end - x) * io.nComps;
-            x = end;
-        }
-    }
-
-private:
-    static void fillRun(const GeneratorRowChannels& channels,
-                        const float rgba[4],
-                        int nComps,
-                        int count,
-                        float* dst)
-    {
-        if (channels.count != nComps) {
-            for (int i = 0; i < count; ++i, dst += nComps) {
-                channels.write(rgba, dst);
-            }
-
-            return;
-        }
-        float pixel[4] = { 0.f, 0.f, 0.f, 0.f };
-        channels.write(rgba, pixel);
+void
+fillRun(const GeneratorRowChannels& channels,
+        const float rgba[4],
+        int nComps,
+        int count,
+        float* dst)
+{
+    if (channels.count != nComps) {
         for (int i = 0; i < count; ++i, dst += nComps) {
-            for (int c = 0; c < nComps; ++c) {
-                dst[c] = pixel[c];
-            }
+            channels.write(rgba, dst);
+        }
+
+        return;
+    }
+    float pixel[4] = { 0.f, 0.f, 0.f, 0.f };
+    channels.write(rgba, pixel);
+    for (int i = 0; i < count; ++i, dst += nComps) {
+        for (int c = 0; c < nComps; ++c) {
+            dst[c] = pixel[c];
         }
     }
-
-    CheckerBoardGeometry _g;
-    float _colors[6][4];
-};
+}
 
 KnobColorPtr
 addCheckerBoardColorKnob(KnobHolder* holder,
@@ -192,26 +160,13 @@ addCheckerBoardWidthKnob(KnobHolder* holder,
 }
 
 void
-readColor(const KnobColorWPtr& weak,
-          const KernelContext& context,
+readColor(const KnobReader& reader,
+          const KnobColorWPtr& knob,
           float out[4])
 {
-    KnobColorPtr knob = weak.lock();
-
     for (int i = 0; i < 4; ++i) {
-        out[i] = knob ? (float)knob->getValueAtTime(context.time, i, context.view) : 0.f;
+        out[i] = (float)reader.valueOr(knob, 0., i);
     }
-}
-
-double
-readDouble(const KnobDoubleWPtr& weak,
-           const KernelContext& context,
-           int dimension,
-           double defaultValue)
-{
-    KnobDoublePtr knob = weak.lock();
-
-    return knob ? knob->getValueAtTime(context.time, dimension, context.view) : defaultValue;
 }
 } // anonymous namespace
 
@@ -334,154 +289,124 @@ checkerBoardRunEnd(const CheckerBoardGeometry& g,
     return end;
 } // checkerBoardRunEnd
 
-CheckerBoard::CheckerBoard(NodePtr node)
-    : NativeGenerator(node)
-{
-}
-
-CheckerBoard::~CheckerBoard()
-{
-}
-
-NativePluginDescription
-CheckerBoard::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_CHECKERBOARD;
-    desc.label = "CheckerBoard";
-    desc.description = tr("Generate an image with a checkerboard.\n"
-                          "A frame range may be specified for operators that need it.\n"
-                          "See also: https://web.archive.org/web/20220807183203/http://www.opticalenquiry.com/nuke/index.php?title=Constant,_CheckerBoard,_ColorBars,_ColorWheel")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_IMAGE;
-    desc.majorVersion = PLUGIN_MAJOR_NATRON_CHECKERBOARD;
-    desc.minorVersion = 0;
-    describeSourceInput(&desc);
-    desc.outputKind = eDataKindImage;
-
-    return desc;
-}
-
 void
-CheckerBoard::initializeKnobs()
+CheckerBoardOp::createKnobs(KnobHolder* holder,
+                            const KnobPagePtr& page)
 {
-    KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
-
-    initializeGeneratorKnobs(page);
-
-    KnobDoublePtr boxSize = createKnob<KnobDouble>(tr("Box Size"), 2);
-    boxSize->setName(kCheckerBoardParamBoxSize);
-    boxSize->setHintToolTip(tr("Size of the checkerboard boxes in pixels."));
-    boxSize->setSpatial(true);
-    boxSize->setCanAutoFoldDimensions(true);
+    KnobDoublePtr boxSizeKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Box Size").toStdString(), 2);
+    boxSizeKnob->setName(kCheckerBoardParamBoxSize);
+    boxSizeKnob->setHintToolTip(EffectInstance::tr("Size of the checkerboard boxes in pixels.").toStdString());
+    boxSizeKnob->setSpatial(true);
+    boxSizeKnob->setCanAutoFoldDimensions(true);
     for (int d = 0; d < 2; ++d) {
-        boxSize->setMinimum(1., d);
-        boxSize->setMaximum(DBL_MAX, d);
-        boxSize->setDisplayMinimum(0., d);
-        boxSize->setDisplayMaximum(100., d);
-        boxSize->setDefaultValue(64., d);
+        boxSizeKnob->setMinimum(1., d);
+        boxSizeKnob->setMaximum(DBL_MAX, d);
+        boxSizeKnob->setDisplayMinimum(0., d);
+        boxSizeKnob->setDisplayMaximum(100., d);
+        boxSizeKnob->setDefaultValue(64., d);
     }
-    page->addKnob(boxSize);
-    _boxSize = boxSize;
+    page->addKnob(boxSizeKnob);
+    boxSize = boxSizeKnob;
 
-    _color0 = addCheckerBoardColorKnob(this, page, kCheckerBoardParamColor0, tr("Color 0").toStdString(),
-                                       tr("Color to fill the box on top-left of image center and every other row and column.").toStdString(), 0.1, 0.1, 0.1, 1.);
-    _color1 = addCheckerBoardColorKnob(this, page, kCheckerBoardParamColor1, tr("Color 1").toStdString(),
-                                       tr("Color to fill the box on top-right of image center and every other row and column.").toStdString(), 0.5, 0.5, 0.5, 1.);
-    _color2 = addCheckerBoardColorKnob(this, page, kCheckerBoardParamColor2, tr("Color 2").toStdString(),
-                                       tr("Color to fill the box on bottom-right of image center and every other row and column.").toStdString(), 0.1, 0.1, 0.1, 1.);
-    _color3 = addCheckerBoardColorKnob(this, page, kCheckerBoardParamColor3, tr("Color 3").toStdString(),
-                                       tr("Color to fill the box on bottom-left of image center and every other row and column.").toStdString(), 0.5, 0.5, 0.5, 1.);
-    _lineColor = addCheckerBoardColorKnob(this, page, kCheckerBoardParamLineColor, tr("Line Color").toStdString(),
-                                          tr("Color of the line drawn between boxes.").toStdString(), 1., 1., 1., 1.);
-    _lineWidth = addCheckerBoardWidthKnob(this, page, kCheckerBoardParamLineWidth, tr("Line Width").toStdString(),
-                                          tr("Width, in pixels, of the lines drawn between boxes.").toStdString(), 0.);
-    _centerlineColor = addCheckerBoardColorKnob(this, page, kCheckerBoardParamCenterLineColor, tr("Centerline Color").toStdString(),
-                                                tr("Color of the center lines.").toStdString(), 1., 1., 0., 1.);
-    _centerlineWidth = addCheckerBoardWidthKnob(this, page, kCheckerBoardParamCenterLineWidth, tr("Centerline Width").toStdString(),
-                                                tr("Width, in pixels, of the center lines.").toStdString(), 1.);
-} // CheckerBoard::initializeKnobs
+    color0 = addCheckerBoardColorKnob(holder, page, kCheckerBoardParamColor0, EffectInstance::tr("Color 0").toStdString(),
+                                      EffectInstance::tr("Color to fill the box on top-left of image center and every other row and column.").toStdString(), 0.1, 0.1, 0.1, 1.);
+    color1 = addCheckerBoardColorKnob(holder, page, kCheckerBoardParamColor1, EffectInstance::tr("Color 1").toStdString(),
+                                      EffectInstance::tr("Color to fill the box on top-right of image center and every other row and column.").toStdString(), 0.5, 0.5, 0.5, 1.);
+    color2 = addCheckerBoardColorKnob(holder, page, kCheckerBoardParamColor2, EffectInstance::tr("Color 2").toStdString(),
+                                      EffectInstance::tr("Color to fill the box on bottom-right of image center and every other row and column.").toStdString(), 0.1, 0.1, 0.1, 1.);
+    color3 = addCheckerBoardColorKnob(holder, page, kCheckerBoardParamColor3, EffectInstance::tr("Color 3").toStdString(),
+                                      EffectInstance::tr("Color to fill the box on bottom-left of image center and every other row and column.").toStdString(), 0.5, 0.5, 0.5, 1.);
+    lineColor = addCheckerBoardColorKnob(holder, page, kCheckerBoardParamLineColor, EffectInstance::tr("Line Color").toStdString(),
+                                         EffectInstance::tr("Color of the line drawn between boxes.").toStdString(), 1., 1., 1., 1.);
+    lineWidth = addCheckerBoardWidthKnob(holder, page, kCheckerBoardParamLineWidth, EffectInstance::tr("Line Width").toStdString(),
+                                         EffectInstance::tr("Width, in pixels, of the lines drawn between boxes.").toStdString(), 0.);
+    centerlineColor = addCheckerBoardColorKnob(holder, page, kCheckerBoardParamCenterLineColor, EffectInstance::tr("Centerline Color").toStdString(),
+                                               EffectInstance::tr("Color of the center lines.").toStdString(), 1., 1., 0., 1.);
+    centerlineWidth = addCheckerBoardWidthKnob(holder, page, kCheckerBoardParamCenterLineWidth, EffectInstance::tr("Centerline Width").toStdString(),
+                                               EffectInstance::tr("Width, in pixels, of the center lines.").toStdString(), 1.);
+} // CheckerBoardOp::createKnobs
 
-void
-CheckerBoard::readParams(const KernelContext& context,
-                         CheckerBoardGeometry* g,
-                         float colors[6][4],
-                         RectD* rodOut) const
+CheckerBoardOp::Params
+CheckerBoardOp::bake(const KnobReader& reader) const
 {
-    const OfxPointD renderScale = context.mappedScale.toOfxPointD();
-    const double rsX = renderScale.x;
-    const double rsY = renderScale.y;
-    double par = getAspectRatio(-1);
-    if (par == 0) {
-        par = 1.;
-    }
+    Params params;
+    const RectD rod = generator ? generator->getRegionOfDefinition(reader.time(), reader.view()) : RectD();
 
-    RectD rod;
-    if (!getExtentRegionOfDefinition(context.time, context.view, &rod)) {
-        rod = getProjectExtentRect();
-    }
+    params.boxSizeX = reader.valueOr(boxSize, 64., 0);
+    params.boxSizeY = reader.valueOr(boxSize, 64., 1);
+    params.lineWidth = reader.valueOr(lineWidth, 0., 0);
+    params.centerlineWidth = reader.valueOr(centerlineWidth, 1., 0);
+    params.rodX1 = rod.x1;
+    params.rodY1 = rod.y1;
+    params.rodX2 = rod.x2;
+    params.rodY2 = rod.y2;
+    params.par = generator ? generator->getPixelAspectRatio() : 1.;
+    readColor(reader, color0, params.colors[eCheckerBoardColor0]);
+    readColor(reader, color1, params.colors[eCheckerBoardColor1]);
+    readColor(reader, color2, params.colors[eCheckerBoardColor2]);
+    readColor(reader, color3, params.colors[eCheckerBoardColor3]);
+    readColor(reader, lineColor, params.colors[eCheckerBoardColorLine]);
+    readColor(reader, centerlineColor, params.colors[eCheckerBoardColorCenterline]);
 
-    const double boxSizeX = readDouble(_boxSize, context, 0, 64.);
-    const double boxSizeY = readDouble(_boxSize, context, 1, 64.);
-    const double lineWidth = readDouble(_lineWidth, context, 0, 0.);
-    const double centerlineWidth = readDouble(_centerlineWidth, context, 0, 1.);
-
-    *g = checkerBoardGeometry(boxSizeX, boxSizeY, lineWidth, centerlineWidth, rod, rsX, rsY, par);
-    readColor(_color0, context, colors[eCheckerBoardColor0]);
-    readColor(_color1, context, colors[eCheckerBoardColor1]);
-    readColor(_color2, context, colors[eCheckerBoardColor2]);
-    readColor(_color3, context, colors[eCheckerBoardColor3]);
-    readColor(_lineColor, context, colors[eCheckerBoardColorLine]);
-    readColor(_centerlineColor, context, colors[eCheckerBoardColorCenterline]);
-    *rodOut = rod;
+    return params;
 }
 
-PixelKernelPtr
-CheckerBoard::makeKernel(const KernelContext& context)
+CheckerBoardGeometry
+CheckerBoardOp::geometry(const Params& params,
+                         const PassContext& context)
 {
-    CheckerBoardGeometry g;
-    float colors[6][4];
-    RectD rod;
+    const OfxPointD renderScale = context.scale.toOfxPointD();
+    const RectD rod(params.rodX1, params.rodY1, params.rodX2, params.rodY2);
 
-    readParams(context, &g, colors, &rod);
-
-    return std::make_shared<CheckerBoardKernel>(g, colors);
-} // CheckerBoard::makeKernel
-
-int
-CheckerBoard::gpuKernelId(const GpuQuery& /*query*/) const
-{
-#ifdef NATRON_HAVE_GPU
-    return (int)gpu::GpuKernelId::checkerboard;
-#else
-    return -1;
-#endif
+    return checkerBoardGeometry(params.boxSizeX, params.boxSizeY, params.lineWidth, params.centerlineWidth, rod, renderScale.x, renderScale.y, params.par);
 }
 
 bool
-CheckerBoard::makeGpuKernel(const KernelContext& context,
-                            PixelKernelGpu* gpu)
+CheckerBoardOp::isIdentity(const Params& /*params*/,
+                           const PassContext& /*context*/) const
+{
+    return false;
+}
+
+void
+CheckerBoardOp::row(const Params& params,
+                    const PassContext& context,
+                    const RowIO& io) const
+{
+    const CheckerBoardGeometry g = geometry(params, context);
+    const GeneratorRowChannels channels(io);
+    const CheckerBoardRow row = checkerBoardRow(g, io.y);
+    const int xEnd = io.x0 + io.width;
+    float* dst = io.dst;
+
+    for (int x = io.x0; x < xEnd;) {
+        CheckerBoardColorEnum color = eCheckerBoardColor0;
+        const int end = checkerBoardRunEnd(g, row, x, xEnd, &color);
+        fillRun(channels, params.colors[color], io.nComps, end - x, dst);
+        dst += (std::size_t)(end - x) * io.nComps;
+        x = end;
+    }
+}
+
+GpuOpRef
+CheckerBoardOp::gpu(const Params& params,
+                    const PassContext& context) const
 {
 #ifdef NATRON_HAVE_GPU
-    CheckerBoardGeometry g;
-    float colors[6][4];
-    RectD rod;
-
-    readParams(context, &g, colors, &rod);
+    const CheckerBoardGeometry g = geometry(params, context);
 
     // Pixels only exist inside the region of definition; the margin keeps the tables clear of
     // the rounding of its edges.
-    const double par = (getAspectRatio(-1) == 0) ? 1. : getAspectRatio(-1);
-    const double rsX = context.mappedScale.toOfxPointD().x;
-    const double rsY = context.mappedScale.toOfxPointD().y;
-    const double x1 = std::floor(rod.x1 * rsX / par) - 2.;
-    const double x2 = std::ceil(rod.x2 * rsX / par) + 2.;
-    const double y1 = std::floor(rod.y1 * rsY) - 2.;
-    const double y2 = std::ceil(rod.y2 * rsY) + 2.;
+    const double par = params.par;
+    const double rsX = context.scale.toOfxPointD().x;
+    const double rsY = context.scale.toOfxPointD().y;
+    const double x1 = std::floor(params.rodX1 * rsX / par) - 2.;
+    const double x2 = std::ceil(params.rodX2 * rsX / par) + 2.;
+    const double y1 = std::floor(params.rodY1 * rsY) - 2.;
+    const double y2 = std::ceil(params.rodY2 * rsY) + 2.;
     const double limit = 65536.;
     if (!(x2 - x1 >= 1.) || !(y2 - y1 >= 1.) || !(x2 - x1 <= limit) || !(y2 - y1 <= limit) || !(std::fabs(x1) < 1e9) || !(std::fabs(y1) < 1e9)) {
-        return false;
+        return GpuOpRef::none();
     }
     const int baseX = (int)x1;
     const int baseY = (int)y1;
@@ -492,7 +417,7 @@ CheckerBoard::makeGpuKernel(const KernelContext& context,
     const std::size_t header = 32;
     std::vector<std::uint32_t> words(header + wordsX + wordsY, 0u);
 
-    std::memcpy(words.data(), colors, sizeof(float) * 24);
+    std::memcpy(words.data(), params.colors, sizeof(float) * 24);
     words[24] = (std::uint32_t)baseX;
     words[25] = (std::uint32_t)baseY;
     words[26] = (std::uint32_t)countX;
@@ -537,17 +462,19 @@ CheckerBoard::makeGpuKernel(const KernelContext& context,
         words[header + wordsX + n / 16] |= cls << ((n % 16) * 2);
     }
 
-    gpu->kernel = (int)gpu::GpuKernelId::checkerboard;
-    gpu->params.resize(words.size() * sizeof(std::uint32_t));
-    std::memcpy(gpu->params.data(), words.data(), gpu->params.size());
+    GpuOpRef ref;
+    ref.kind = GpuOpRef::Kind::Kernel;
+    ref.kernel.kernel = (int)gpu::GpuKernelId::checkerboard;
+    ref.kernel.params.resize(words.size() * sizeof(std::uint32_t));
+    std::memcpy(ref.kernel.params.data(), words.data(), ref.kernel.params.size());
 
-    return true;
+    return ref;
 #else
+    Q_UNUSED(params);
     Q_UNUSED(context);
-    Q_UNUSED(gpu);
 
-    return false;
+    return GpuOpRef::none();
 #endif
-}
+} // CheckerBoardOp::gpu
 
 NATRON_NAMESPACE_EXIT

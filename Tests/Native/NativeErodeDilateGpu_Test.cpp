@@ -61,7 +61,7 @@
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Image/GpuRender.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
@@ -110,9 +110,9 @@ protected:
         return node;
     }
 
-    static ErodeDilate* effectOf(const NodePtr& node)
+    static StagedImageEffect* effectOf(const NodePtr& node)
     {
-        return node ? dynamic_cast<ErodeDilate*>(node->getEffectInstance().get()) : NULL;
+        return node ? dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get()) : NULL;
     }
 };
 
@@ -126,7 +126,7 @@ TEST_F(NativeErodeDilateGpuTest, EligibilityFollowsTheSupportedSettings)
     resetProject();
     for (bool dilate : { false, true }) {
         NodePtr node = makeNode(dilate);
-        ErodeDilate* effect = effectOf(node);
+        StagedImageEffect* effect = effectOf(node);
         ASSERT_TRUE(effect != NULL);
         ASSERT_TRUE(setKnobValues(node, kErodeDilateParamSize, { 6., -40. }));
         const std::string name = dilate ? "dilate" : "erode";
@@ -154,13 +154,6 @@ TEST_F(NativeErodeDilateGpuTest, EligibilityFollowsTheSupportedSettings)
             q.mix = mix;
             EXPECT_EQ(supported, effect->canRenderOnGpu(q)) << name << " mix " << mix;
         }
-        {
-            GpuQuery q = eligibleQuery();
-            q.unPremultChannel = 3;
-            EXPECT_FALSE(effect->canRenderOnGpu(q)) << name << " a divisor outside the plane";
-            q.unPremultInPlane = true;
-            EXPECT_EQ(supported, effect->canRenderOnGpu(q)) << name << " unpremult";
-        }
         for (ImageBitDepthEnum depth : { eImageBitDepthByte, eImageBitDepthShort, eImageBitDepthHalf }) {
             GpuQuery q = eligibleQuery();
             q.bitDepth = depth;
@@ -176,7 +169,7 @@ TEST_F(NativeErodeDilateGpuTest, InputRegionIsTheSourceRegionOfInterest)
 {
     resetProject();
     NodePtr node = makeNode(false);
-    ErodeDilate* effect = effectOf(node);
+    ErodeDilate* effect = node ? dynamic_cast<ErodeDilate*>(node->getEffectInstance().get()) : NULL;
     ASSERT_TRUE(effect != NULL);
     ASSERT_TRUE(setKnobValues(node, kErodeDilateParamSize, { 12., -30. }));
 
@@ -245,7 +238,7 @@ GpuQuery
 queryFor(const NodePtr& node,
          unsigned mipmapLevel)
 {
-    NativeImageEffect* effect = dynamic_cast<NativeImageEffect*>(node->getEffectInstance().get());
+    StagedImageEffect* effect = dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get());
     const ImageLayerDesc plane = colorLayer(node);
     GpuQuery q = eligibleQuery();
 
@@ -263,17 +256,6 @@ queryFor(const NodePtr& node,
     const std::bitset<4> channels = effect->getProcessChannelsForPlane(effect->getRenderHash(), kTime, ViewIdx(0), plane);
     for (int i = 0; i < 4; ++i) {
         q.processChannels[i] = channels[i];
-    }
-    KnobChannelSelectPtr unPremultBy = node->getUnPremultBySelector();
-    if (unPremultBy && !unPremultBy->isNone() && effect->getInput(0)) {
-        std::list<ImageLayerDesc> available;
-        effect->getAvailableLayers(kTime, ViewIdx(0), 0, &available);
-        ImageLayerDesc divisorLayer;
-        const int divisorChannel = node->getUnPremultChannel(available, &divisorLayer);
-        if (divisorLayer.getNumComponents() > 0) {
-            q.unPremultChannel = divisorChannel;
-            q.unPremultInPlane = (divisorChannel >= 0) && (Node::getUnPremultSkipChannel(plane, divisorLayer, divisorChannel) >= 0);
-        }
     }
 
     return q;
@@ -297,7 +279,7 @@ outputLayout()
 // The source over getGpuInputRoI(roi), inside a larger buffer at an offset and with padded rows.
 bool
 sourceImage(const NodePtr& source,
-            ErodeDilate& effect,
+            StagedImageEffect& effect,
             unsigned mipmapLevel,
             const RectI& roi,
             GpuParityImage* image)
@@ -399,7 +381,7 @@ TEST_F(NativeErodeDilateGpuTest, MatchesTheCpuRender)
                 // A fresh node per setting, so no region of definition cached under an earlier
                 // setting is reused.
                 NodePtr node = makeNode(dilate);
-                ErodeDilate* effect = effectOf(node);
+                StagedImageEffect* effect = effectOf(node);
                 ASSERT_TRUE(effect != NULL);
                 connectNodes(source, node, 0, true);
                 ASSERT_TRUE(setKnobValues(node, kErodeDilateParamSize, { size.x, size.y }));
@@ -456,16 +438,15 @@ struct WrappedCase {
     int maskX;
     int maskY;
     double mix;
-    bool unPremultByAlpha;
     bool redAndAlpha;
 };
 
 } // namespace
 
 // The settings renderGpu() wraps around the filter: the mask (plain and inverted, and one two
-// columns wide at the source's right edge, mostly zero over the window), mix, "(Un)premult by"
-// alpha and an R+A channel subset, alone and combined, against the CPU render.
-TEST_F(NativeErodeDilateGpuTest, MatchesTheCpuRenderWithMaskMixAndUnpremult)
+// columns wide at the source's right edge, mostly zero over the window), mix and an R+A channel
+// subset, alone and combined, against the CPU render.
+TEST_F(NativeErodeDilateGpuTest, MatchesTheCpuRenderWithMaskMixAndChannels)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
     if (!createRuntime(runtime)) {
@@ -477,31 +458,26 @@ TEST_F(NativeErodeDilateGpuTest, MatchesTheCpuRenderWithMaskMixAndUnpremult)
     setParitySourceOrigin(source, 3, 5);
 
     const WrappedCase cases[] = {
-        { "mask", false, { 6., 6. }, eMaskOn, 8, 4, 1., false, false },
-        { "mask", true, { 1., -40. }, eMaskOn, 8, 6, 1., false, false },
-        { "inverted mask", false, { 2., -6. }, eMaskInverted, 8, 4, 1., false, false },
-        { "inverted mask", true, { 40., 2. }, eMaskInverted, 0, 2, 1., false, false },
-        { "narrow mask", false, { 40., 1. }, eMaskOn, 65, 4, 1., false, false },
-        { "narrow mask", true, { -40., 2. }, eMaskOn, 65, 4, 1., false, false },
-        { "mix", false, { 40., 6. }, eMaskNone, 0, 0, 0.5, false, false },
-        { "mix 0", true, { 6., 6. }, eMaskNone, 0, 0, 0., false, false },
-        { "unpremult", false, { 6., 6. }, eMaskNone, 0, 0, 1., true, false },
-        { "unpremult", true, { -40., 2. }, eMaskNone, 0, 0, 1., true, false },
-        { "R+A", false, { 2., -2. }, eMaskNone, 0, 0, 1., false, true },
-        { "everything", false, { 6., -2. }, eMaskOn, 8, 4, 0.5, true, true },
-        { "everything", true, { -1., 40. }, eMaskInverted, 8, 4, 0.5, true, true },
+        { "mask", false, { 6., 6. }, eMaskOn, 8, 4, 1., false },
+        { "mask", true, { 1., -40. }, eMaskOn, 8, 6, 1., false },
+        { "inverted mask", false, { 2., -6. }, eMaskInverted, 8, 4, 1., false },
+        { "inverted mask", true, { 40., 2. }, eMaskInverted, 0, 2, 1., false },
+        { "narrow mask", false, { 40., 1. }, eMaskOn, 65, 4, 1., false },
+        { "narrow mask", true, { -40., 2. }, eMaskOn, 65, 4, 1., false },
+        { "mix", false, { 40., 6. }, eMaskNone, 0, 0, 0.5, false },
+        { "mix 0", true, { 6., 6. }, eMaskNone, 0, 0, 0., false },
+        { "R+A", false, { 2., -2. }, eMaskNone, 0, 0, 1., true },
+        { "everything", false, { 6., -2. }, eMaskOn, 8, 4, 0.5, true },
+        { "everything", true, { -1., 40. }, eMaskInverted, 8, 4, 0.5, true },
     };
 
-    // Dividing by "(Un)premult by" is only 2.5 ulp in Vulkan (RADV takes a reciprocal), and the
-    // divided values reach far above 1; everything else picks or blends values as render() does.
-    const ParityTolerance kDividedTolerance = ParityTolerance::make(2e-6, 1e-6);
     int nCompared = 0;
     for (const WrappedCase& c : cases) {
         NodePtr maskSource = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
         ASSERT_TRUE(bool(maskSource));
         setParitySourceOrigin(maskSource, c.maskX, c.maskY);
         NodePtr node = makeNode(c.dilate);
-        ErodeDilate* effect = effectOf(node);
+        StagedImageEffect* effect = effectOf(node);
         ASSERT_TRUE(effect != NULL);
         connectNodes(source, node, 0, true);
         const int maskInput = effect->getMaskInput();
@@ -513,13 +489,6 @@ TEST_F(NativeErodeDilateGpuTest, MatchesTheCpuRenderWithMaskMixAndUnpremult)
         ASSERT_TRUE(setKnobValues(node, "enableMask_Mask", { (c.mask != eMaskNone) ? 1. : 0. }));
         ASSERT_TRUE(setKnobValues(node, kOfxMaskInvertParamName, { (c.mask == eMaskInverted) ? 1. : 0. }));
         ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { c.mix }));
-        KnobChannelSelect* unPremultBy = dynamic_cast<KnobChannelSelect*>(node->getKnobByName(kUnPremultByKnobName).get());
-        ASSERT_TRUE(unPremultBy != NULL);
-        if (c.unPremultByAlpha) {
-            unPremultBy->set("rgba.A");
-        } else {
-            unPremultBy->setNone();
-        }
         if (c.redAndAlpha) {
             KnobChannelSetPtr channelSet = std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet));
             ASSERT_TRUE(bool(channelSet));
@@ -534,7 +503,7 @@ TEST_F(NativeErodeDilateGpuTest, MatchesTheCpuRenderWithMaskMixAndUnpremult)
             const std::string base = std::string(c.name) + " " + describeSize(c.dilate, c.size, true, mipmapLevel);
             ASSERT_EQ(4, query.nComps) << base;
             EXPECT_EQ(c.mask != eMaskNone, query.hasMask) << base;
-            EXPECT_EQ(c.unPremultByAlpha, query.unPremultChannel >= 0) << base;
+            EXPECT_LT(query.unPremultChannel, 0) << base;
             EXPECT_EQ(!c.redAndAlpha, query.processChannels[1] && query.processChannels[2]) << base;
             ASSERT_TRUE(effect->canRenderOnGpu(query)) << base;
 
@@ -575,7 +544,7 @@ TEST_F(NativeErodeDilateGpuTest, MatchesTheCpuRenderWithMaskMixAndUnpremult)
                 EXPECT_EQ(0u, run.writtenOutside) << what << ": floats outside the window were written";
 
                 ASSERT_EQ(cpu.pixels.size(), run.pixels.size()) << what;
-                const ImageDiff diff = compareImages(cpu.pixels, run.pixels, c.unPremultByAlpha ? kDividedTolerance : ParityTolerance::exact());
+                const ImageDiff diff = compareImages(cpu.pixels, run.pixels, ParityTolerance::exact());
                 nCompared += (int)diff.compared;
                 const std::size_t at = diff.firstMismatchIndex / 4;
                 EXPECT_EQ(0u, diff.mismatches) << what << ", first at (" << (roi.x1 + (int)(at % roi.width())) << "," << (roi.y1 + (int)(at / roi.width())) << ") channel " << (diff.firstMismatchIndex % 4)
@@ -668,12 +637,10 @@ TEST_F(NativeErodeDilateGpuTest, SpecialValuesMatchFilterLineBitForBit)
     for (bool dilate : { false, true }) {
         for (const SizeCase& size : sizes) {
             NodePtr node = makeNode(dilate);
-            ErodeDilate* effect = effectOf(node);
+            StagedImageEffect* effect = effectOf(node);
             ASSERT_TRUE(effect != NULL);
             connectNodes(source, node, 0, true);
             ASSERT_TRUE(setKnobValues(node, kErodeDilateParamSize, { size.x, size.y }));
-            ErodeDilateParams params;
-            effect->getParams(kTime, ViewIdx(0), &params);
             const RectI rod = pixelRegionOfDefinition(node, 0);
 
             for (const RectI& roi : testWindows(rod)) {

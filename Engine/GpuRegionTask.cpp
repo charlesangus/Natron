@@ -56,7 +56,7 @@
 #include "Engine/Image.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/GpuRender.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/OpenMPThreads.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RenderStats.h"
@@ -270,7 +270,7 @@ struct Slot {
 
 struct Member {
     int task = -1;
-    NativeImageEffect* effect = nullptr;
+    NativeEffectBase* effect = nullptr;
     GpuQuery query;
     bool identity = false;
     int outSlot = -1;
@@ -615,7 +615,7 @@ private:
                 continue;
             }
 
-            member.effect = dynamic_cast<NativeImageEffect*>(task.key.node->getEffectInstance().get());
+            member.effect = dynamic_cast<NativeEffectBase*>(task.key.node->getEffectInstance().get());
             if (!member.effect) {
                 return fail(taskIndex, "the node has no GPU path");
             }
@@ -1403,7 +1403,7 @@ private:
             GpuStripMember stripMember;
             stripMember.outSlot = member.outSlot;
             stripMember.inputSlots = member.inputSlots;
-            NativeImageEffect* effect = member.effect;
+            NativeEffectBase* effect = member.effect;
             const RenderScale scale = member.query.mappedScale;
             stripMember.inputRoI = [effect, scale](int inputNb, const RectI& rect) {
                 return effect->getGpuInputRoI(inputNb, rect, scale);

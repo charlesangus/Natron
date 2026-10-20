@@ -28,9 +28,10 @@
 
 #include "Global/Macros.h"
 
+#include <list>
+
 #include "Engine/EngineFwd.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
-#include "Engine/ParallelRenderArgs.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 
 #define PLUGINID_NATRON_POSITION "net.sf.openfx.Position"
 #define PLUGIN_MAJOR_NATRON_POSITION 2
@@ -39,6 +40,10 @@
 #define kPositionParamInteractive "interactive"
 
 NATRON_NAMESPACE_ENTER
+
+inline constexpr InputSpec kPositionInputs[] = {
+    InputSpec { .label = "Source" },
+};
 
 /**
  * @brief Position: translates the image by a whole number of pixels, the pixels outside the
@@ -49,8 +54,52 @@ NATRON_NAMESPACE_ENTER
  * The OpenFX plug-in's even-row rounding for field-both never applies here: the host renders
  * and describes every frame without fields.
  **/
+struct PositionOp {
+    struct Params {
+        double translateX = 0.;
+        double translateY = 0.;
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_POSITION,
+        .label = "Position",
+        .description = "Translate an image by an integer number of pixels.\n"
+                       "This plugin does not concatenate transforms.",
+        .grouping = PLUGIN_GROUP_TRANSFORM,
+        .majorVersion = PLUGIN_MAJOR_NATRON_POSITION,
+        .minorVersion = 0,
+        .inputs = kPositionInputs,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = { Stage::PassThroughUnprocessed },
+        .layers = LayerPolicy::all(),
+        .op = OpKind::Resample,
+    };
+
+    void createKnobs(KnobHolder* holder,
+                     const KnobPagePtr& page);
+
+    Params bake(const KnobReader& reader) const;
+
+    bool isIdentity(const Params& params,
+                    const PassContext& context) const;
+
+    /**
+     * @brief The translation in whole pixels at the context's scale: the knob value in pixels,
+     * rounded to nearest, x through the pixel aspect ratio and both axes through the horizontal
+     * render scale.
+     **/
+    PixelOffset offset(const Params& params,
+                       const PassContext& context) const;
+
+    KnobDoubleWPtr translate;
+};
+
+static_assert(ResampleOp<PositionOp> && !MatrixResampleOp<PositionOp>);
+
 class Position
-    : public NativeImageEffect {
+    : public ImageNode<PositionOp> {
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
@@ -62,44 +111,6 @@ public:
     virtual ~Position();
 
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
-
-    virtual StatusEnum getRegionOfDefinition(U64 hash,
-                                             double time,
-                                             const RenderScale& scale,
-                                             ViewIdx view,
-                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-protected:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual bool isIdentity(double time,
-                            const RenderScale& scale,
-                            const RectI& roi,
-                            ViewIdx view,
-                            double* inputTime,
-                            ViewIdx* inputView,
-                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual void getRegionsOfInterest(double time,
-                                      const RenderScale& scale,
-                                      const RectD& outputRoD,
-                                      const RectD& renderWindow,
-                                      ViewIdx view,
-                                      RoIMap* ret) OVERRIDE FINAL;
-
-    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-private:
-    virtual void initializeKnobs() OVERRIDE FINAL;
-
-    // The translation in whole pixels at `scale`: the knob value in pixels, rounded to nearest.
-    void getPixelShift(double time,
-                       ViewIdx view,
-                       const RenderScale& scale,
-                       int* x,
-                       int* y) const;
-
-    KnobDoubleWPtr _translate;
 };
 
 NATRON_NAMESPACE_EXIT

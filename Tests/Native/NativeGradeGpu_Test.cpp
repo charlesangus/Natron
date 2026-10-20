@@ -52,7 +52,6 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Image/GpuRender.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRuntime.h"
@@ -61,19 +60,6 @@
 NATRON_NAMESPACE_USING
 
 namespace {
-
-// makeKernel() is protected in the base and private in Grade; naming it through a derived class
-// of the base is what makes the member pointer accessible.
-struct KernelProbe
-    : public NativeImageEffect {
-    static PixelKernelPtr make(NativeImageEffect* effect,
-                               const KernelContext& context)
-    {
-        PixelKernelPtr (NativeImageEffect::*member)(const KernelContext&) = &KernelProbe::makeKernel;
-
-        return (effect->*member)(context);
-    }
-};
 
 struct GradeSetting {
     double multiply[4];
@@ -87,11 +73,11 @@ struct GradeSetting {
 class NativeGradeGpuTest
     : public BaseTest {
 protected:
-    NativeImageEffect* makeGrade(NodePtr& node)
+    Grade* makeGrade(NodePtr& node)
     {
         node = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
         EXPECT_TRUE(bool(node));
-        NativeImageEffect* effect = node ? dynamic_cast<NativeImageEffect*>(node->getEffectInstance().get()) : NULL;
+        Grade* effect = node ? dynamic_cast<Grade*>(node->getEffectInstance().get()) : NULL;
         EXPECT_TRUE(effect != NULL);
 
         return effect;
@@ -110,22 +96,18 @@ protected:
         ASSERT_TRUE(setKnobValues(node, "clampWhite", { s.clampWhite ? 1. : 0. }));
     }
 
-    // The native CPU path: the node's own row kernel over packed rows. Channels outside the mask
+    // The native CPU path: the op's own row kernel over packed rows. Channels outside the mask
     // keep their input value.
-    static std::vector<float> cpuRender(NativeImageEffect* effect,
+    static std::vector<float> cpuRender(Grade* effect,
                                         const std::vector<float>& src,
                                         int width,
                                         int height,
                                         int nComps,
                                         unsigned channelMask)
     {
-        KernelContext context;
-        context.processChannels = std::bitset<4>(channelMask);
-        PixelKernelPtr kernel = KernelProbe::make(effect, context);
+        const std::bitset<4> channels(channelMask);
+        const GradeOp::Params params = effect->bakeGrade(0., ViewIdx(0));
         std::vector<float> dst(src);
-        if (!kernel) {
-            return dst;
-        }
         for (int y = 0; y < height; ++y) {
             RowIO io;
             io.nSrc = 1;
@@ -134,8 +116,8 @@ protected:
             io.y = y;
             io.width = width;
             io.nComps = nComps;
-            io.channels = context.processChannels;
-            kernel->processRow(io);
+            io.channels = channels;
+            effect->gradeRow(params, io);
         }
 
         return dst;
@@ -177,7 +159,7 @@ const GradeSetting kGammaAtFloor = { { 1., 1., 1., 1. }, { 0., 0., 0., 0. }, { g
 TEST_F(NativeGradeGpuTest, EligibilityFollowsTheSupportedSettings)
 {
     NodePtr node;
-    NativeImageEffect* grade = makeGrade(node);
+    Grade* grade = makeGrade(node);
     ASSERT_TRUE(grade != NULL);
 
 #ifdef NATRON_HAVE_GPU
@@ -226,7 +208,7 @@ TEST_F(NativeGradeGpuTest, EligibilityFollowsTheSupportedSettings)
 TEST_F(NativeGradeGpuTest, DefaultKernelPassesEveryValueThrough)
 {
     NodePtr node;
-    NativeImageEffect* grade = makeGrade(node);
+    Grade* grade = makeGrade(node);
     ASSERT_TRUE(grade != NULL);
 
     int width = 0;
@@ -241,10 +223,10 @@ TEST_F(NativeGradeGpuTest, DefaultKernelPassesEveryValueThrough)
 TEST_F(NativeGradeGpuTest, GammaAtOrBelowZeroIsRaisedToTheFloor)
 {
     NodePtr node;
-    NativeImageEffect* grade = makeGrade(node);
+    Grade* grade = makeGrade(node);
     ASSERT_TRUE(grade != NULL);
     NodePtr floorNode;
-    NativeImageEffect* floorGrade = makeGrade(floorNode);
+    Grade* floorGrade = makeGrade(floorNode);
     ASSERT_TRUE(floorGrade != NULL);
 
     int width = 0;
@@ -284,7 +266,7 @@ TEST_F(NativeGradeGpuTest, MatchesTheCpuKernelOnTheGradeFixtures)
         return;
     }
     NodePtr node;
-    NativeImageEffect* grade = makeGrade(node);
+    Grade* grade = makeGrade(node);
     ASSERT_TRUE(grade != NULL);
 
     const std::vector<gradefix::GradeCase> cases = gradefix::makeCases();
@@ -380,7 +362,7 @@ TEST_F(NativeGradeGpuTest, DefaultKnobsPassEveryValueThroughOnTheGpu)
         return;
     }
     NodePtr node;
-    NativeImageEffect* grade = makeGrade(node);
+    Grade* grade = makeGrade(node);
     ASSERT_TRUE(grade != NULL);
 
     int width = 0;
@@ -413,7 +395,7 @@ TEST_F(NativeGradeGpuTest, GammaAtOrBelowZeroMatchesTheCpuKernel)
         return;
     }
     NodePtr node;
-    NativeImageEffect* grade = makeGrade(node);
+    Grade* grade = makeGrade(node);
     ASSERT_TRUE(grade != NULL);
 
     int width = 0;
@@ -461,7 +443,7 @@ TEST_F(NativeGradeGpuTest, HonoursOffsetsAndStridesOfTheViews)
         return;
     }
     NodePtr node;
-    NativeImageEffect* grade = makeGrade(node);
+    Grade* grade = makeGrade(node);
     ASSERT_TRUE(grade != NULL);
 
     GradeSetting setting = { { 1.5, 0.75, 2., 1.25 }, { 0.1, -0.05, 0.2, 0. }, { 2.2, 1.8, 0.8, 1. }, false, true, true };
@@ -622,7 +604,7 @@ TEST_F(NativeGradeGpuTest, WrapsMaskMixPremultAndChannelsAroundTheGrade)
 
     for (const WrapCase& c : cases) {
         NodePtr node;
-        NativeImageEffect* grade = makeGrade(node);
+        Grade* grade = makeGrade(node);
         ASSERT_TRUE(grade != NULL);
         connectNodes(rgbaSource, node, 0, true);
         applySetting(node, c.setting);

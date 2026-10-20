@@ -23,6 +23,11 @@ on:
         required: true
         type: boolean
         default: false
+      record_goldens:
+        description: 'Record the native golden renders (needs tests) and upload them'
+        required: false
+        type: boolean
+        default: false
       appimage:
         description: 'Package and upload an AppImage'
         required: true
@@ -99,8 +104,42 @@ jobs:
           WITH_TESTS: ${{ inputs.tests && '1' || '' }}
         run: tools/ci/local/build.sh "$PRESET" ${WITH_TESTS:+--tests} --no-ccache-stats
 
+      # Runs before the ctest legs so they replay the references just recorded.
+      - name: Record native goldens
+        if: inputs.tests && inputs.record_goldens && steps.build.outcome == 'success'
+        timeout-minutes: 15
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          NATRON_RENDER_SCHEDULER: legacy
+          NATRON_GOLDEN_RECORD_DIR: ${{ github.workspace }}/Tests/fixtures/native-golden
+          OFX_PLUGIN_PATH: ${{ github.workspace }}/build/assets/Plugins:${{ github.workspace }}/build/assets/TestPlugins
+        working-directory: build/${{ env.PRESET }}
+        run: |
+          set -o pipefail
+          mkdir -p "$NATRON_GOLDEN_RECORD_DIR"
+          rc=0
+          xvfb-run --auto-servernum ctest -R '^NativeGoldenTest\.' --timeout 300 --output-on-failure || rc=$?
+          test -f "$NATRON_GOLDEN_RECORD_DIR/STAMP" || rc=1
+          exit "$rc"
+
+      # Straight after recording, so that a later leg that fails, times out or is cancelled cannot
+      # lose the references; a node whose case failed is simply absent from them.
+      - name: Upload native goldens
+        if: >-
+          !cancelled() && inputs.tests && inputs.record_goldens && steps.build.outcome == 'success'
+          && hashFiles('Tests/fixtures/native-golden/STAMP') != ''
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: native-goldens-${{ env.PRESET }}-${{ github.sha }}
+          path: Tests/fixtures/native-golden
+          if-no-files-found: error
+          retention-days: 7
+
+      # Each leg normally takes about 35 minutes. Without the step bound, a case that outlives
+      # ctest's own per-case timeout holds the job until GitHub's six-hour limit.
       - name: Run ctest suite (legacy scheduler)
-        if: inputs.tests
+        if: inputs.tests && !cancelled() && steps.build.outcome == 'success'
+        timeout-minutes: 75
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           NATRON_TEST_REQUIRE_GPU: 1
@@ -112,6 +151,7 @@ jobs:
 
       - name: Run ctest suite (taskgraph scheduler)
         if: inputs.tests && (success() || failure())
+        timeout-minutes: 75
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           NATRON_TEST_REQUIRE_GPU: 1

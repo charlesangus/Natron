@@ -32,13 +32,14 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "Engine/AppManager.h"
 #include "Engine/Curve.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/Interpolation.h"
 #include "Engine/KnobTypes.h"
-#include "Engine/Nodes/Image/ColorMath.h"
-#include "Engine/Nodes/Image/CurveSnapshot.h"
 #include "Engine/RenderScale.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -46,6 +47,16 @@
 #endif
 
 NATRON_NAMESPACE_ENTER
+
+struct ColorCorrectOp::Tones {
+    CurveSnapshot curves[2];
+    std::vector<float> lut[2];
+#ifdef NATRON_HAVE_GPU
+    // Both curves as curvesnapshot.slang reads them, one after the other, or empty when either
+    // has more keys than it holds.
+    std::vector<std::uint32_t> gpuCurves;
+#endif
+};
 
 namespace {
 // The tone LUT has this many intervals over [kToneLutMin, kToneLutMax]; a tone curve is evaluated
@@ -65,7 +76,7 @@ const int kGpuYMin = 12;
 const int kGpuYMax = 14;
 const int kGpuGroups = 16;
 const int kGpuGroupWords = 20;
-const int kGpuHeaderWords = kGpuGroups + ColorCorrect::eGroupCount * kGpuGroupWords;
+const int kGpuHeaderWords = kGpuGroups + ColorCorrectOp::eGroupCount * kGpuGroupWords;
 const int kGpuLutSize = kToneLutIntervals + 1;
 const int kGpuLutBase = kGpuHeaderWords;
 const int kGpuCurveBase = kGpuLutBase + 2 * kGpuLutSize;
@@ -89,300 +100,125 @@ putFloat(std::vector<std::uint32_t>& words,
 }
 #endif // NATRON_HAVE_GPU
 
-struct GroupValues {
-    double saturation[4];
-    double contrast[4];
-    double gamma[4];
-    double gain[4];
-    double offset[4];
-
-    GroupValues()
-    {
-        setIdentity();
-    }
-
-    void setIdentity()
-    {
-        for (int i = 0; i < 4; ++i) {
-            saturation[i] = 1.;
-            contrast[i] = 1.;
-            gamma[i] = 1.;
-            gain[i] = 1.;
-            offset[i] = 0.;
-        }
-    }
-
-    bool isIdentity() const
-    {
-        for (int i = 0; i < 4; ++i) {
-            if ((saturation[i] != 1.) || (contrast[i] != 1.) || (gamma[i] != 1.) || (gain[i] != 1.) || (offset[i] != 0.)) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-};
-
 struct PixelRGBA {
     double v[4];
 };
 
-class ColorCorrectKernel
-    : public PixelKernel {
-public:
-    ColorCorrectKernel(const GroupValues groups[ColorCorrect::eGroupCount],
-                       ColorMath::LuminanceMathEnum luminanceMath,
-                       bool clampBlack,
-                       bool clampWhite,
-                       const CurveSnapshot curves[2])
-        : _luminanceMath(luminanceMath)
-        , _clampBlack(clampBlack)
-        , _clampWhite(clampWhite)
-    {
-        for (int g = 0; g < ColorCorrect::eGroupCount; ++g) {
-            _groups[g] = groups[g];
-            _active[g] = !groups[g].isIdentity();
-            for (int i = 0; i < 4; ++i) {
-                _invGamma[g][i] = 1. / groups[g].gamma[i];
-            }
-        }
-        for (int curve = 0; curve < 2; ++curve) {
-            _curves[curve] = curves[curve];
-            _lut[curve].resize(kToneLutIntervals + 1);
-            for (int position = 0; position <= kToneLutIntervals; ++position) {
-                const double parametricPos = kToneLutMin + (kToneLutMax - kToneLutMin) * double(position) / kToneLutIntervals;
-                _lut[curve][position] = (float)toneClamp(curveValue(curve, parametricPos));
-            }
-        }
-    }
-
-#ifdef NATRON_HAVE_GPU
-    // The tables and values colorcorrect.slang reads, or false when a curve has more keys than it
-    // holds. Gamma travels as the reciprocal the CPU raises to.
-    bool packGpu(std::vector<std::uint32_t>* words) const
-    {
-        words->assign(kGpuTotalWords, 0);
-        std::uint32_t flags = (_clampBlack ? kGpuClampBlack : 0) | (_clampWhite ? kGpuClampWhite : 0) | ((_luminanceMath == ColorMath::eLuminanceMathMax) ? kGpuLumaMax : 0);
-        for (int g = 0; g < ColorCorrect::eGroupCount; ++g) {
-            if (_active[g]) {
-                flags |= 1u << (kGpuActiveShift + g);
-            }
-        }
-        (*words)[kGpuFlags] = flags;
-        // The luminance of the unit colours, from the function the CPU kernel calls.
-        putFloat(*words, kGpuWeights, (float)ColorMath::luminance(_luminanceMath, 1., 0., 0.));
-        putFloat(*words, kGpuWeights + 1, (float)ColorMath::luminance(_luminanceMath, 0., 1., 0.));
-        putFloat(*words, kGpuWeights + 2, (float)ColorMath::luminance(_luminanceMath, 0., 0., 1.));
-        CurveSnapshot::packGpuTableRange(kToneLutMin, kToneLutMax, kToneLutIntervals, &(*words)[kGpuTableRange]);
-        for (int g = 0; g < ColorCorrect::eGroupCount; ++g) {
-            const GroupValues& group = _groups[g];
-            const int base = kGpuGroups + g * kGpuGroupWords;
-            for (int i = 0; i < 4; ++i) {
-                putFloat(*words, base + i, (float)group.saturation[i]);
-                putFloat(*words, base + 4 + i, (float)group.contrast[i]);
-                putFloat(*words, base + 8 + i, (float)_invGamma[g][i]);
-                putFloat(*words, base + 12 + i, (float)group.gain[i]);
-                putFloat(*words, base + 16 + i, (float)group.offset[i]);
-            }
-        }
-        for (int curve = 0; curve < 2; ++curve) {
-            const CurveSnapshot& snapshot = _curves[curve];
-            if (!snapshot.packGpu(&(*words)[kGpuCurveBase + curve * CurveSnapshot::kGpuWords])) {
-                return false;
-            }
-            (*words)[kGpuKeyCount + curve] = (std::uint32_t)snapshot.keys().size();
-            putFloat(*words, kGpuYMin + curve, (float)snapshot.yMin());
-            putFloat(*words, kGpuYMax + curve, (float)snapshot.yMax());
-            for (int i = 0; i < kGpuLutSize; ++i) {
-                putFloat(*words, kGpuLutBase + curve * kGpuLutSize + i, _lut[curve][i]);
-            }
-        }
-
-        return true;
-    }
-#endif // NATRON_HAVE_GPU
-
-    virtual void processRow(const RowIO& io) const OVERRIDE FINAL
-    {
-        const int nComps = io.nComps;
-        int bits[4] = { -1, -1, -1, -1 };
-        bool process[4] = { false, false, false, false };
-
-        for (int c = 0; (c < nComps) && (c < 4); ++c) {
-            bits[c] = pixelKernelChannelBit(nComps, c);
-            process[bits[c]] = io.channels[bits[c]];
-        }
-        const float* src = io.src[0];
-        float* dst = io.dst;
-        for (int x = 0; x < io.width; ++x, src += nComps, dst += nComps) {
-            // A pixel without alpha is opaque and one without colour black, as the OpenFX
-            // plugin reads them, so the luminance of an alpha-only pixel is zero.
-            PixelRGBA p;
-            p.v[0] = p.v[1] = p.v[2] = 0.;
-            p.v[3] = 1.;
-            for (int c = 0; (c < nComps) && (c < 4); ++c) {
-                p.v[bits[c]] = src[c];
-            }
-
-            const float l = static_cast<float>(ColorMath::luminance(_luminanceMath, p.v[0], p.v[1], p.v[2]));
-            const double sScale = interpolate(0, l);
-            const double hScale = interpolate(1, l);
-            const double mScale = 1.f - sScale - hScale;
-
-            // An identity group leaves the pixel bit-for-bit as it is, so it is not run. The
-            // blend below still runs: its weights do not sum to exactly one in floating point.
-            PixelRGBA s = p;
-            PixelRGBA m = p;
-            PixelRGBA h = p;
-            if (_active[ColorCorrect::eGroupShadows]) {
-                applyGroup(ColorCorrect::eGroupShadows, process, &s);
-            }
-            if (_active[ColorCorrect::eGroupMidtones]) {
-                applyGroup(ColorCorrect::eGroupMidtones, process, &m);
-            }
-            if (_active[ColorCorrect::eGroupHighlights]) {
-                applyGroup(ColorCorrect::eGroupHighlights, process, &h);
-            }
-            for (int i = 0; i < 4; ++i) {
-                if (process[i]) {
-                    p.v[i] = s.v[i] * sScale + m.v[i] * mScale + h.v[i] * hScale;
-                }
-            }
-            if (_active[ColorCorrect::eGroupMaster]) {
-                applyGroup(ColorCorrect::eGroupMaster, process, &p);
-            }
-
-            for (int c = 0; (c < nComps) && (c < 4); ++c) {
-                if (process[bits[c]]) {
-                    dst[c] = (float)clamp(p.v[bits[c]]);
-                }
-            }
-        }
-    }
-
-private:
-    double clamp(double value) const
-    {
-        if (_clampBlack && (value < 0.)) {
-            return 0.;
-        } else if (_clampWhite && (value > 1.)) {
-            return 1.;
-        }
-
-        return value;
-    }
-
-    // The tone weights stay in [0, 1] whatever the output clamps are, or the three groups would
-    // blend with weights that do not sum to one.
-    static double toneClamp(double value)
-    {
-        if (value < 0.) {
-            return 0.;
-        } else if (value > 1.) {
-            return 1.;
-        }
-
-        return value;
-    }
-
-    double curveValue(int curve,
-                      double parametricPos) const
-    {
-        return _curves[curve].valueAt(parametricPos);
-    }
-
-    // The weight of tone curve `curve` at luminance `value`: interpolated in the LUT inside
-    // the table's domain, the curve itself outside it.
-    float interpolate(int curve,
-                      float value) const
-    {
-        if ((value < kToneLutMin) || (kToneLutMax < value)) {
-            return static_cast<float>(toneClamp(curveValue(curve, value)));
-        }
-        const double x = (value - kToneLutMin) / (kToneLutMax - kToneLutMin);
-        if (x <= 0.) {
-            return _lut[curve][0];
-        } else if (x >= 1.) {
-            return _lut[curve][kToneLutIntervals];
-        }
-        int i = (int)(x * kToneLutIntervals);
-        i = (std::max)(0, (std::min)(i, kToneLutIntervals - 1));
-        const double alpha = (std::max)(0., (std::min)(x * kToneLutIntervals - i, 1.));
-        const float a = _lut[curve][i];
-        const float b = _lut[curve][i + 1];
-
-        return static_cast<float>(a * (1.f - alpha) + b * alpha);
-    }
-
-    void applyGroup(int groupIndex,
-                    const bool process[4],
-                    PixelRGBA* p) const
-    {
-        const GroupValues& group = _groups[groupIndex];
-        const double* invGamma = _invGamma[groupIndex];
-        applySaturation(group.saturation, process, p);
-        for (int i = 0; i < 4; ++i) {
-            if (!process[i]) {
-                continue;
-            }
-            double v = p->v[i];
-            if ((v > 0) && (group.contrast[i] != 1.)) {
-                v = std::pow(v / 0.18, group.contrast[i]) * 0.18;
-            }
-            if ((v > 0) && (group.gamma[i] != 1.)) {
-                v = std::pow(v, invGamma[i]);
-            }
-            if (group.gain[i] != 1.) {
-                v = v * group.gain[i];
-            }
-            if (group.offset[i] != 0.) {
-                v = v + group.offset[i];
-            }
-            p->v[i] = v;
-        }
-    }
-
-    void applySaturation(const double saturation[4],
-                         const bool process[4],
-                         PixelRGBA* p) const
-    {
-        bool any = false;
-
-        for (int i = 0; i < 3; ++i) {
-            any = any || (process[i] && (saturation[i] != 1.));
-        }
-        if (!any) {
-            return;
-        }
-        // One luminance for all three channels, taken before any of them changes.
-        const double l = ColorMath::luminance(_luminanceMath, p->v[0], p->v[1], p->v[2]);
-        for (int i = 0; i < 3; ++i) {
-            if (process[i] && (saturation[i] != 1.)) {
-                p->v[i] = (1.f - saturation[i]) * l + saturation[i] * p->v[i];
-            }
-        }
-    }
-
-    GroupValues _groups[ColorCorrect::eGroupCount];
-    bool _active[ColorCorrect::eGroupCount];
-    double _invGamma[ColorCorrect::eGroupCount][4];
-    ColorMath::LuminanceMathEnum _luminanceMath;
-    bool _clampBlack;
-    bool _clampWhite;
-    CurveSnapshot _curves[2];
-    std::vector<float> _lut[2];
-};
-
-NativeImageTraits
-colorCorrectTraits()
+// The tone weights stay in [0, 1] whatever the output clamps are, or the three groups would
+// blend with weights that do not sum to one.
+double
+toneClamp(double value)
 {
-    NativeImageTraits traits;
+    if (value < 0.) {
+        return 0.;
+    } else if (value > 1.) {
+        return 1.;
+    }
 
-    traits.hostUnPremult = true;
-    traits.defaultChannels[3] = false;
+    return value;
+}
 
-    return traits;
+// The weight of tone curve `curve` at luminance `value`: interpolated in the LUT inside
+// the table's domain, the curve itself outside it.
+ALWAYS_INLINE float
+toneWeight(const ColorCorrectOp::Tones& tones,
+           int curve,
+           float value)
+{
+    if ((value < kToneLutMin) || (kToneLutMax < value)) {
+        return static_cast<float>(toneClamp(tones.curves[curve].valueAt(value)));
+    }
+    const std::vector<float>& lut = tones.lut[curve];
+    const double x = (value - kToneLutMin) / (kToneLutMax - kToneLutMin);
+    if (x <= 0.) {
+        return lut[0];
+    } else if (x >= 1.) {
+        return lut[kToneLutIntervals];
+    }
+    int i = (int)(x * kToneLutIntervals);
+    i = (std::max)(0, (std::min)(i, kToneLutIntervals - 1));
+    const double alpha = (std::max)(0., (std::min)(x * kToneLutIntervals - i, 1.));
+    const float a = lut[i];
+    const float b = lut[i + 1];
+
+    return static_cast<float>(a * (1.f - alpha) + b * alpha);
+}
+
+double
+clampOutput(const ColorCorrectOp::Params& params,
+            double value)
+{
+    if (params.clampBlack && (value < 0.)) {
+        return 0.;
+    } else if (params.clampWhite && (value > 1.)) {
+        return 1.;
+    }
+
+    return value;
+}
+
+void
+applySaturation(ColorMath::LuminanceMathEnum luminanceMath,
+                const double saturation[4],
+                const bool process[4],
+                PixelRGBA* p)
+{
+    bool any = false;
+
+    for (int i = 0; i < 3; ++i) {
+        any = any || (process[i] && (saturation[i] != 1.));
+    }
+    if (!any) {
+        return;
+    }
+    // One luminance for all three channels, taken before any of them changes.
+    const double l = ColorMath::luminance(luminanceMath, p->v[0], p->v[1], p->v[2]);
+    for (int i = 0; i < 3; ++i) {
+        if (process[i] && (saturation[i] != 1.)) {
+            p->v[i] = (1.f - saturation[i]) * l + saturation[i] * p->v[i];
+        }
+    }
+}
+
+void
+applyGroup(const ColorCorrectOp::Params& params,
+           int groupIndex,
+           const bool process[4],
+           PixelRGBA* p)
+{
+    const ColorCorrectOp::Group& group = params.groups[groupIndex];
+    applySaturation(params.luminanceMath, group.saturation, process, p);
+    for (int i = 0; i < 4; ++i) {
+        if (!process[i]) {
+            continue;
+        }
+        double v = p->v[i];
+        if ((v > 0) && (group.contrast[i] != 1.)) {
+            v = std::pow(v / 0.18, group.contrast[i]) * 0.18;
+        }
+        if ((v > 0) && (group.gamma[i] != 1.)) {
+            v = std::pow(v, group.invGamma[i]);
+        }
+        if (group.gain[i] != 1.) {
+            v = v * group.gain[i];
+        }
+        if (group.offset[i] != 0.) {
+            v = v + group.offset[i];
+        }
+        p->v[i] = v;
+    }
+}
+
+bool
+isIdentityGroup(const ColorCorrectOp::Group& group)
+{
+    for (int i = 0; i < 4; ++i) {
+        if ((group.saturation[i] != 1.) || (group.contrast[i] != 1.) || (group.gamma[i] != 1.) || (group.gain[i] != 1.) || (group.offset[i] != 0.)) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 KnobColorPtr
@@ -411,34 +247,302 @@ addScaleKnob(KnobHolder* holder,
     return knob;
 }
 
-void
-readColor(const KnobColorWPtr& weak,
-          double time,
-          ViewIdx view,
-          double defaultValue,
-          double out[4])
+ColorCorrectOp::GroupKnobs
+addGroup(KnobHolder* holder,
+         const KnobPagePtr& page,
+         ColorCorrectOp::GroupEnum groupIndex,
+         const std::string& name,
+         bool open)
 {
-    KnobColorPtr knob = weak.lock();
+    KnobGroupPtr group = AppManager::createKnob<KnobGroup>(holder, name);
 
-    for (int i = 0; i < 4; ++i) {
-        out[i] = knob ? knob->getValueAtTime(time, i, view) : defaultValue;
+    group->setName(name);
+    group->setDefaultValue(open);
+    page->addKnob(group);
+
+    ColorCorrectOp::GroupKnobs knobs;
+    if (groupIndex != ColorCorrectOp::eGroupMaster) {
+        KnobBoolPtr enable = AppManager::createKnob<KnobBool>(holder, std::string(kColorCorrectParamEnable));
+        enable->setName(name + kColorCorrectParamEnable);
+        enable->setHintToolTip(EffectInstance::tr("When checked, %1 correction is enabled.").arg(QString::fromUtf8(name.c_str())));
+        enable->setDefaultValue(true);
+        group->addKnob(enable);
+        knobs.enable = enable;
     }
+    knobs.saturation = addScaleKnob(holder, group, name + kColorCorrectParamSaturation, kColorCorrectParamSaturation, 1., 0., 4., eColorKnobRoleGain);
+    knobs.contrast = addScaleKnob(holder, group, name + kColorCorrectParamContrast, kColorCorrectParamContrast, 1., 0., 4., eColorKnobRoleGain);
+    knobs.gamma = addScaleKnob(holder, group, name + kColorCorrectParamGamma, kColorCorrectParamGamma, 1., 0.2, 5., eColorKnobRolePower);
+    knobs.gain = addScaleKnob(holder, group, name + kColorCorrectParamGain, kColorCorrectParamGain, 1., 0., 4., eColorKnobRoleGain);
+    knobs.offset = addScaleKnob(holder, group, name + kColorCorrectParamOffset, kColorCorrectParamOffset, 0., -1., 1., eColorKnobRoleOffset);
+
+    return knobs;
 }
 
-bool
-readBool(const KnobBoolWPtr& weak,
-         double time,
-         ViewIdx view,
-         bool defaultValue)
+ColorCorrectOp::Tones
+buildTones(const KnobParametricPtr& toneRanges)
 {
-    KnobBoolPtr knob = weak.lock();
+    ColorCorrectOp::Tones tones;
 
-    return knob ? knob->getValueAtTime(time, 0, view) : defaultValue;
+    for (int curve = 0; curve < 2; ++curve) {
+        if (toneRanges) {
+            tones.curves[curve] = CurveSnapshot(toneRanges->getParametricCurve(curve));
+        }
+        tones.lut[curve].resize(kToneLutIntervals + 1);
+        for (int position = 0; position <= kToneLutIntervals; ++position) {
+            const double parametricPos = kToneLutMin + (kToneLutMax - kToneLutMin) * double(position) / kToneLutIntervals;
+            tones.lut[curve][position] = (float)toneClamp(tones.curves[curve].valueAt(parametricPos));
+        }
+    }
+#ifdef NATRON_HAVE_GPU
+    tones.gpuCurves.assign(2 * CurveSnapshot::kGpuWords, 0);
+    for (int curve = 0; curve < 2; ++curve) {
+        if (!tones.curves[curve].packGpu(&tones.gpuCurves[curve * CurveSnapshot::kGpuWords])) {
+            tones.gpuCurves.clear();
+            break;
+        }
+    }
+#endif
+
+    return tones;
 }
 } // anonymous namespace
 
+void
+ColorCorrectOp::createKnobs(KnobHolder* holder,
+                            const KnobPagePtr& page)
+{
+    groups[eGroupMaster] = addGroup(holder, page, eGroupMaster, kColorCorrectGroupMaster, true);
+    groups[eGroupShadows] = addGroup(holder, page, eGroupShadows, kColorCorrectGroupShadows, false);
+    groups[eGroupMidtones] = addGroup(holder, page, eGroupMidtones, kColorCorrectGroupMidtones, false);
+    groups[eGroupHighlights] = addGroup(holder, page, eGroupHighlights, kColorCorrectGroupHighlights, false);
+
+    KnobPagePtr ranges = AppManager::createKnob<KnobPage>(holder, EffectInstance::tr("Ranges"));
+    {
+        KnobParametricPtr toneRangesKnob = AppManager::createKnob<KnobParametric>(holder, EffectInstance::tr("Tone Ranges"), 2);
+        toneRangesKnob->setName(kColorCorrectParamToneRanges);
+        toneRangesKnob->setHintToolTip(EffectInstance::tr("Tone ranges lookup table"));
+        toneRangesKnob->setDimensionName(0, "Shadow");
+        toneRangesKnob->setDimensionName(1, "Highlight");
+        toneRangesKnob->setCurveColor(0, 0.6, 0.4, 0.6);
+        toneRangesKnob->setCurveColor(1, 0.8, 0.7, 0.6);
+        toneRangesKnob->setParametricRange(0., 1.);
+        toneRangesKnob->setDisplayMinimumsAndMaximums(std::vector<double>(2, 0.), std::vector<double>(2, 1.));
+        // Horizontal keys are what the OpenFX host gives this plugin's default points, so the
+        // default shapes are the same smoothstep ramps.
+        const double points[2][2][2] = { { { 0., 1. }, { 0.09, 0. } }, { { 0.5, 0. }, { 1., 1. } } };
+        for (int curve = 0; curve < 2; ++curve) {
+            for (int p = 0; p < 2; ++p) {
+                StatusEnum stat = toneRangesKnob->addControlPoint(eValueChangedReasonPluginEdited, curve, points[curve][p][0], points[curve][p][1], eKeyframeTypeHorizontal);
+                Q_UNUSED(stat);
+            }
+        }
+        toneRangesKnob->setDefaultCurvesFromCurves();
+        ranges->addKnob(toneRangesKnob);
+        toneRanges = toneRangesKnob;
+    }
+
+    KnobChoicePtr luminanceMathKnob = ColorMath::addLuminanceMathKnob(holder, page);
+    luminanceMathKnob->setHintToolTip(EffectInstance::tr("Formula used to compute luminance from RGB values (used for saturation adjustments)."));
+    luminanceMath = luminanceMathKnob;
+
+    KnobBoolPtr clampBlackKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Clamp Black"));
+    clampBlackKnob->setName(kColorCorrectParamClampBlack);
+    clampBlackKnob->setHintToolTip(EffectInstance::tr("All colors below 0 on output are set to 0."));
+    clampBlackKnob->setDefaultValue(false);
+    clampBlackKnob->setAddNewLine(false);
+    page->addKnob(clampBlackKnob);
+    clampBlack = clampBlackKnob;
+
+    KnobBoolPtr clampWhiteKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Clamp White"));
+    clampWhiteKnob->setName(kColorCorrectParamClampWhite);
+    clampWhiteKnob->setHintToolTip(EffectInstance::tr("All colors above 1 on output are set to 1."));
+    clampWhiteKnob->setDefaultValue(false);
+    page->addKnob(clampWhiteKnob);
+    clampWhite = clampWhiteKnob;
+} // ColorCorrectOp::createKnobs
+
+std::shared_ptr<const ColorCorrectOp::Tones>
+ColorCorrectOp::bakeTones() const
+{
+    const KnobParametricPtr knob = toneRanges.lock();
+    const auto build = [&knob]() {
+        return buildTones(knob);
+    };
+
+    if (!knob) {
+        return std::make_shared<const Tones>(build());
+    }
+
+    return _tones.get(*knob, build);
+}
+
+ColorCorrectOp::Params
+ColorCorrectOp::bake(const KnobReader& reader) const
+{
+    Params p;
+
+    for (int g = 0; g < eGroupCount; ++g) {
+        Group& group = p.groups[g];
+        for (int i = 0; i < 4; ++i) {
+            group.saturation[i] = 1.;
+            group.contrast[i] = 1.;
+            group.gamma[i] = 1.;
+            group.gain[i] = 1.;
+            group.offset[i] = 0.;
+        }
+        const GroupKnobs& knobs = groups[g];
+        if ((g == eGroupMaster) || reader.value(knobs.enable)) {
+            for (int i = 0; i < 4; ++i) {
+                group.saturation[i] = reader.value(knobs.saturation, i);
+                group.contrast[i] = reader.value(knobs.contrast, i);
+                group.gamma[i] = reader.value(knobs.gamma, i);
+                group.gain[i] = reader.value(knobs.gain, i);
+                group.offset[i] = reader.value(knobs.offset, i);
+            }
+        }
+        for (int i = 0; i < 4; ++i) {
+            group.invGamma[i] = 1. / group.gamma[i];
+        }
+        group.active = !isIdentityGroup(group);
+    }
+    p.luminanceMath = (ColorMath::LuminanceMathEnum)reader.value(luminanceMath);
+    p.clampBlack = reader.value(clampBlack);
+    p.clampWhite = reader.value(clampWhite);
+    p.tones = bakeTones();
+
+    return p;
+}
+
+bool
+ColorCorrectOp::isIdentity(const Params& params) const
+{
+    if (params.clampBlack || params.clampWhite) {
+        return false;
+    }
+    for (int g = 0; g < eGroupCount; ++g) {
+        if (params.groups[g].active) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void
+ColorCorrectOp::row(const Params& params,
+                    const RowIO& io) const
+{
+    const Tones& tones = *params.tones;
+    const int nComps = io.nComps;
+    int bits[4] = { -1, -1, -1, -1 };
+    bool process[4] = { false, false, false, false };
+
+    for (int c = 0; (c < nComps) && (c < 4); ++c) {
+        bits[c] = pixelKernelChannelBit(nComps, c);
+        process[bits[c]] = io.channels[bits[c]];
+    }
+    const float* src = io.src[0];
+    float* dst = io.dst;
+    for (int x = 0; x < io.width; ++x, src += nComps, dst += nComps) {
+        // A pixel without alpha is opaque and one without colour black, as the OpenFX
+        // plugin reads them, so the luminance of an alpha-only pixel is zero.
+        PixelRGBA p;
+        p.v[0] = p.v[1] = p.v[2] = 0.;
+        p.v[3] = 1.;
+        for (int c = 0; (c < nComps) && (c < 4); ++c) {
+            p.v[bits[c]] = src[c];
+        }
+
+        const float l = static_cast<float>(ColorMath::luminance(params.luminanceMath, p.v[0], p.v[1], p.v[2]));
+        const double sScale = toneWeight(tones, 0, l);
+        const double hScale = toneWeight(tones, 1, l);
+        const double mScale = 1.f - sScale - hScale;
+
+        // The blend runs even when every tone group is an identity: its weights do not sum to
+        // exactly one in floating point.
+        PixelRGBA s = p;
+        PixelRGBA m = p;
+        PixelRGBA h = p;
+        if (params.groups[eGroupShadows].active) {
+            applyGroup(params, eGroupShadows, process, &s);
+        }
+        if (params.groups[eGroupMidtones].active) {
+            applyGroup(params, eGroupMidtones, process, &m);
+        }
+        if (params.groups[eGroupHighlights].active) {
+            applyGroup(params, eGroupHighlights, process, &h);
+        }
+        for (int i = 0; i < 4; ++i) {
+            if (process[i]) {
+                p.v[i] = s.v[i] * sScale + m.v[i] * mScale + h.v[i] * hScale;
+            }
+        }
+        if (params.groups[eGroupMaster].active) {
+            applyGroup(params, eGroupMaster, process, &p);
+        }
+
+        for (int c = 0; (c < nComps) && (c < 4); ++c) {
+            if (process[bits[c]]) {
+                dst[c] = (float)clampOutput(params, p.v[bits[c]]);
+            }
+        }
+    }
+} // ColorCorrectOp::row
+
+GpuOpRef
+ColorCorrectOp::gpu(const Params& params) const
+{
+#ifdef NATRON_HAVE_GPU
+    if (!params.tones || params.tones->gpuCurves.empty()) {
+        return GpuOpRef::none();
+    }
+    const Tones& tones = *params.tones;
+    std::vector<std::uint32_t> words(kGpuTotalWords, 0);
+    std::uint32_t flags = (params.clampBlack ? kGpuClampBlack : 0) | (params.clampWhite ? kGpuClampWhite : 0) | ((params.luminanceMath == ColorMath::eLuminanceMathMax) ? kGpuLumaMax : 0);
+    for (int g = 0; g < eGroupCount; ++g) {
+        if (params.groups[g].active) {
+            flags |= 1u << (kGpuActiveShift + g);
+        }
+    }
+    words[kGpuFlags] = flags;
+    // The luminance of the unit colours, from the function the CPU row calls.
+    putFloat(words, kGpuWeights, (float)ColorMath::luminance(params.luminanceMath, 1., 0., 0.));
+    putFloat(words, kGpuWeights + 1, (float)ColorMath::luminance(params.luminanceMath, 0., 1., 0.));
+    putFloat(words, kGpuWeights + 2, (float)ColorMath::luminance(params.luminanceMath, 0., 0., 1.));
+    CurveSnapshot::packGpuTableRange(kToneLutMin, kToneLutMax, kToneLutIntervals, &words[kGpuTableRange]);
+    // Gamma travels as the reciprocal the CPU raises to.
+    for (int g = 0; g < eGroupCount; ++g) {
+        const Group& group = params.groups[g];
+        const int base = kGpuGroups + g * kGpuGroupWords;
+        for (int i = 0; i < 4; ++i) {
+            putFloat(words, base + i, (float)group.saturation[i]);
+            putFloat(words, base + 4 + i, (float)group.contrast[i]);
+            putFloat(words, base + 8 + i, (float)group.invGamma[i]);
+            putFloat(words, base + 12 + i, (float)group.gain[i]);
+            putFloat(words, base + 16 + i, (float)group.offset[i]);
+        }
+    }
+    std::copy(tones.gpuCurves.begin(), tones.gpuCurves.end(), words.begin() + kGpuCurveBase);
+    for (int curve = 0; curve < 2; ++curve) {
+        const CurveSnapshot& snapshot = tones.curves[curve];
+        words[kGpuKeyCount + curve] = (std::uint32_t)snapshot.keys().size();
+        putFloat(words, kGpuYMin + curve, (float)snapshot.yMin());
+        putFloat(words, kGpuYMax + curve, (float)snapshot.yMax());
+        for (int i = 0; i < kGpuLutSize; ++i) {
+            putFloat(words, kGpuLutBase + curve * kGpuLutSize + i, tones.lut[curve][i]);
+        }
+    }
+
+    return GpuOpRef::packed((int)gpu::GpuKernelId::colorcorrect_wrapped, std::move(words));
+#else
+    Q_UNUSED(params);
+
+    return GpuOpRef::none();
+#endif
+} // ColorCorrectOp::gpu
+
 ColorCorrect::ColorCorrect(NodePtr node)
-    : NativeImageEffect(node, colorCorrectTraits())
+    : ImageNode<ColorCorrectOp>(node)
 {
 }
 
@@ -446,214 +550,18 @@ ColorCorrect::~ColorCorrect()
 {
 }
 
-NativePluginDescription
-ColorCorrect::getNativePluginDescription() const
+ColorCorrectOp::Params
+ColorCorrect::bakeColorCorrect(double time,
+                               ViewIdx view) const
 {
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_COLORCORRECT;
-    desc.label = "ColorCorrect";
-    desc.description = tr("Adjusts the saturation, contrast, gamma, gain and offset of an image.\n"
-                          "The ranges of the shadows, midtones and highlights are controlled by the curves "
-                          "in the \"Ranges\" tab.\n"
-                          "The Contrast adjustment works using the formula: Output = (Input/0.18)^Contrast*0.18.\n"
-                          "\n"
-                          "See also:\n"
-                          "- http://opticalenquiry.com/nuke/index.php?title=ColorCorrect\n"
-                          "- https://compositormathematic.wordpress.com/2013/07/06/gamma-contrast/")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_COLOR;
-    desc.majorVersion = PLUGIN_MAJOR_NATRON_COLORCORRECT;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindImage));
-    desc.inputs.push_back(NativeInputDescription("Mask", true, eDataKindImage, true));
-    desc.outputKind = eDataKindImage;
-
-    return desc;
+    return bakeParams(op(), time, view);
 }
 
 void
-ColorCorrect::addGroup(const KnobPagePtr& page,
-                       GroupEnum groupIndex,
-                       const std::string& name,
-                       bool open)
+ColorCorrect::colorCorrectRow(const ColorCorrectOp::Params& params,
+                              const RowIO& io) const
 {
-    KnobGroupPtr group = createKnob<KnobGroup>(name);
-
-    group->setName(name);
-    group->setDefaultValue(open);
-    page->addKnob(group);
-
-    GroupKnobs& knobs = _groups[groupIndex];
-    if (groupIndex != eGroupMaster) {
-        KnobBoolPtr enable = createKnob<KnobBool>(std::string(kColorCorrectParamEnable));
-        enable->setName(name + kColorCorrectParamEnable);
-        enable->setHintToolTip(tr("When checked, %1 correction is enabled.").arg(QString::fromUtf8(name.c_str())));
-        enable->setDefaultValue(true);
-        group->addKnob(enable);
-        knobs.enable = enable;
-    }
-    knobs.saturation = addScaleKnob(this, group, name + kColorCorrectParamSaturation, kColorCorrectParamSaturation, 1., 0., 4., eColorKnobRoleGain);
-    knobs.contrast = addScaleKnob(this, group, name + kColorCorrectParamContrast, kColorCorrectParamContrast, 1., 0., 4., eColorKnobRoleGain);
-    knobs.gamma = addScaleKnob(this, group, name + kColorCorrectParamGamma, kColorCorrectParamGamma, 1., 0.2, 5., eColorKnobRolePower);
-    knobs.gain = addScaleKnob(this, group, name + kColorCorrectParamGain, kColorCorrectParamGain, 1., 0., 4., eColorKnobRoleGain);
-    knobs.offset = addScaleKnob(this, group, name + kColorCorrectParamOffset, kColorCorrectParamOffset, 0., -1., 1., eColorKnobRoleOffset);
-}
-
-void
-ColorCorrect::initializeKnobs()
-{
-    KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
-
-    addGroup(page, eGroupMaster, kColorCorrectGroupMaster, true);
-    addGroup(page, eGroupShadows, kColorCorrectGroupShadows, false);
-    addGroup(page, eGroupMidtones, kColorCorrectGroupMidtones, false);
-    addGroup(page, eGroupHighlights, kColorCorrectGroupHighlights, false);
-
-    KnobPagePtr ranges = createKnob<KnobPage>(tr("Ranges"));
-    {
-        KnobParametricPtr toneRanges = createKnob<KnobParametric>(tr("Tone Ranges"), 2);
-        toneRanges->setName(kColorCorrectParamToneRanges);
-        toneRanges->setHintToolTip(tr("Tone ranges lookup table"));
-        toneRanges->setDimensionName(0, "Shadow");
-        toneRanges->setDimensionName(1, "Highlight");
-        toneRanges->setCurveColor(0, 0.6, 0.4, 0.6);
-        toneRanges->setCurveColor(1, 0.8, 0.7, 0.6);
-        toneRanges->setParametricRange(0., 1.);
-        toneRanges->setDisplayMinimumsAndMaximums(std::vector<double>(2, 0.), std::vector<double>(2, 1.));
-        // Horizontal keys are what the OpenFX host gives this plugin's default points, so the
-        // default shapes are the same smoothstep ramps.
-        const double points[2][2][2] = { { { 0., 1. }, { 0.09, 0. } }, { { 0.5, 0. }, { 1., 1. } } };
-        for (int curve = 0; curve < 2; ++curve) {
-            for (int p = 0; p < 2; ++p) {
-                StatusEnum stat = toneRanges->addControlPoint(eValueChangedReasonPluginEdited, curve, points[curve][p][0], points[curve][p][1], eKeyframeTypeHorizontal);
-                Q_UNUSED(stat);
-            }
-        }
-        toneRanges->setDefaultCurvesFromCurves();
-        ranges->addKnob(toneRanges);
-        _toneRanges = toneRanges;
-    }
-
-    _luminanceMath = ColorMath::addLuminanceMathKnob(this, page);
-    if (KnobChoicePtr luminanceMath = _luminanceMath.lock()) {
-        luminanceMath->setHintToolTip(tr("Formula used to compute luminance from RGB values (used for saturation adjustments)."));
-    }
-
-    KnobBoolPtr clampBlack = createKnob<KnobBool>(tr("Clamp Black"));
-    clampBlack->setName(kColorCorrectParamClampBlack);
-    clampBlack->setHintToolTip(tr("All colors below 0 on output are set to 0."));
-    clampBlack->setDefaultValue(false);
-    clampBlack->setAddNewLine(false);
-    page->addKnob(clampBlack);
-    _clampBlack = clampBlack;
-
-    KnobBoolPtr clampWhite = createKnob<KnobBool>(tr("Clamp White"));
-    clampWhite->setName(kColorCorrectParamClampWhite);
-    clampWhite->setHintToolTip(tr("All colors above 1 on output are set to 1."));
-    clampWhite->setDefaultValue(false);
-    page->addKnob(clampWhite);
-    _clampWhite = clampWhite;
-
-    addMaskMixKnobs(page);
-} // ColorCorrect::initializeKnobs
-
-PixelKernelPtr
-ColorCorrect::makeKernel(const KernelContext& context)
-{
-    GroupValues groups[eGroupCount];
-
-    for (int g = 0; g < eGroupCount; ++g) {
-        const GroupKnobs& knobs = _groups[g];
-        if ((g != eGroupMaster) && !readBool(knobs.enable, context.time, context.view, true)) {
-            continue;
-        }
-        readColor(knobs.saturation, context.time, context.view, 1., groups[g].saturation);
-        readColor(knobs.contrast, context.time, context.view, 1., groups[g].contrast);
-        readColor(knobs.gamma, context.time, context.view, 1., groups[g].gamma);
-        readColor(knobs.gain, context.time, context.view, 1., groups[g].gain);
-        readColor(knobs.offset, context.time, context.view, 0., groups[g].offset);
-    }
-
-    ColorMath::LuminanceMathEnum luminanceMath = ColorMath::eLuminanceMathRec709;
-    if (KnobChoicePtr choice = _luminanceMath.lock()) {
-        luminanceMath = (ColorMath::LuminanceMathEnum)choice->getValueAtTime(context.time, 0, context.view);
-    }
-
-    CurveSnapshot curves[2];
-    if (KnobParametricPtr toneRanges = _toneRanges.lock()) {
-        for (int curve = 0; curve < 2; ++curve) {
-            curves[curve] = CurveSnapshot(toneRanges->getParametricCurve(curve));
-        }
-    }
-
-    return std::make_shared<ColorCorrectKernel>(groups,
-                                                luminanceMath,
-                                                readBool(_clampBlack, context.time, context.view, false),
-                                                readBool(_clampWhite, context.time, context.view, false),
-                                                curves);
-}
-
-int
-ColorCorrect::gpuKernelId(const GpuQuery& /*query*/) const
-{
-#ifdef NATRON_HAVE_GPU
-    return (int)gpu::GpuKernelId::colorcorrect_wrapped;
-#else
-    return -1;
-#endif
-}
-
-bool
-ColorCorrect::makeGpuKernel(const KernelContext& context,
-                            PixelKernelGpu* gpuKernel)
-{
-#ifdef NATRON_HAVE_GPU
-    const std::shared_ptr<const ColorCorrectKernel> kernel = std::static_pointer_cast<const ColorCorrectKernel>(makeKernel(context));
-    std::vector<std::uint32_t> words;
-
-    if (!kernel->packGpu(&words)) {
-        return false;
-    }
-    gpuKernel->kernel = (int)gpu::GpuKernelId::colorcorrect_wrapped;
-    gpuKernel->params.resize(words.size() * sizeof(std::uint32_t));
-    std::memcpy(gpuKernel->params.data(), words.data(), gpuKernel->params.size());
-
-    return true;
-#else
-    Q_UNUSED(context);
-    Q_UNUSED(gpuKernel);
-
-    return false;
-#endif
-}
-
-bool
-ColorCorrect::isIdentityOp(double time,
-                           const RenderScale& /*scale*/,
-                           const RectI& /*roi*/,
-                           ViewIdx view)
-{
-    if (readBool(_clampBlack, time, view, false) || readBool(_clampWhite, time, view, false)) {
-        return false;
-    }
-    for (int g = 0; g < eGroupCount; ++g) {
-        const GroupKnobs& knobs = _groups[g];
-        if ((g != eGroupMaster) && !readBool(knobs.enable, time, view, true)) {
-            continue;
-        }
-        GroupValues values;
-        readColor(knobs.saturation, time, view, 1., values.saturation);
-        readColor(knobs.contrast, time, view, 1., values.contrast);
-        readColor(knobs.gamma, time, view, 1., values.gamma);
-        readColor(knobs.gain, time, view, 1., values.gain);
-        readColor(knobs.offset, time, view, 0., values.offset);
-        if (!values.isIdentity()) {
-            return false;
-        }
-    }
-
-    return true;
+    op().row(params, io);
 }
 
 NATRON_NAMESPACE_EXIT

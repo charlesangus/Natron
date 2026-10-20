@@ -105,16 +105,15 @@ public:
     }
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDMetadataSource,
+        .label = "Test Metadata Source",
+        .outputKind = eDataKindImage,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        NativePluginDescription desc;
-
-        desc.id = kTestPluginIDMetadataSource;
-        desc.label = "Test Metadata Source";
-        desc.description = "";
-        desc.outputKind = eDataKindImage;
-
-        return desc;
+        return staticNodeSpec<kNodeSpec>();
     }
 
     virtual void initializeKnobs() OVERRIDE FINAL

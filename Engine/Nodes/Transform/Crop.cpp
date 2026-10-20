@@ -26,34 +26,17 @@
 #include "Crop.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cmath>
 #include <cstddef>
-#include <functional>
 #include <list>
-#include <memory>
-#include <string>
-#include <vector>
 
-#include <ofxNatron.h>
-
-#include "Engine/AppInstance.h"
-#include "Engine/AppManager.h"
-#include "Engine/Image.h"
-#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
-#include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
-#include "Engine/Nodes/Image/NativeGenerator.h"
-#include "Engine/PoolParallelFor.h"
 #include "Engine/RectI.h"
 
 NATRON_NAMESPACE_ENTER
 
 namespace {
-// How many rows render() runs between two abort checks.
-const int kAbortCheckRows = 16;
-
 bool
 isEmptyRect(const RectD& r)
 {
@@ -137,98 +120,6 @@ rampSmooth(double t)
     return -0.5 * (t * (t - 2) - 1);
 }
 
-// The index in an nComps-channel pixel of the channel on colour bit `bit`, or -1.
-int
-channelIndexForBit(int nComps,
-                   int bit)
-{
-    if (nComps == 1) {
-        return (bit == 3) ? 0 : -1;
-    }
-
-    return (bit < nComps) ? bit : -1;
-}
-
-// Copies `width` pixels of row y starting at x0 into row (nComps floats per pixel). Pixels outside
-// `bounds` read as black. An image in another layout is mapped channel by colour bit, a channel
-// it lacks reading as zero.
-void
-readSourceRow(const Image* image,
-              const Image::ReadAccess* access,
-              const RectI& bounds,
-              int x0,
-              int y,
-              int width,
-              int nComps,
-              float* row)
-{
-    std::fill(row, row + (std::size_t)width * nComps, 0.f);
-    if (!image || (bounds.x2 <= bounds.x1) || (bounds.y2 <= bounds.y1)) {
-        return;
-    }
-    if ((y < bounds.y1) || (y >= bounds.y2)) {
-        return;
-    }
-    const int srcNComps = (int)image->getComponentsCount();
-    int srcIndex[4] = { -1, -1, -1, -1 };
-    for (int c = 0; (c < nComps) && (c < 4); ++c) {
-        srcIndex[c] = (srcNComps == nComps) ? c : channelIndexForBit(srcNComps, pixelKernelChannelBit(nComps, c));
-    }
-    const float* rowStart = (const float*)access->pixelAt(bounds.x1, y);
-    if (!rowStart) {
-        return;
-    }
-    const int xBegin = std::max(x0, bounds.x1);
-    const int xEnd = std::min(x0 + width, bounds.x2);
-    float* dstPix = row + (std::size_t)std::max(xBegin - x0, 0) * nComps;
-    for (int x = xBegin; x < xEnd; ++x, dstPix += nComps) {
-        const float* srcPix = rowStart + (std::size_t)(x - bounds.x1) * srcNComps;
-        for (int c = 0; (c < nComps) && (c < 4); ++c) {
-            if (srcIndex[c] >= 0) {
-                dstPix[c] = srcPix[srcIndex[c]];
-            }
-        }
-    }
-}
-
-struct CropPlaneJob {
-    ImagePtr dst;
-    ImagePtr src;
-    std::shared_ptr<Image::ReadAccess> srcAccess;
-    std::shared_ptr<Image::WriteAccess> dstAccess;
-    // Image::getBounds() takes the image's lock, which a band thread must never ask for: behind
-    // a writer waiting on an image this render holds for reading, it blocks forever. The bounds
-    // are read once on the calling thread instead.
-    RectI srcBounds;
-    // The OFX host shows a plug-in only the part of an input image inside the RoI it asked for.
-    RectI srcRoI;
-};
-
-struct CropBand {
-    std::size_t job;
-    int y1;
-    int y2;
-
-    CropBand(std::size_t jobIndex,
-             int firstRow,
-             int endRow)
-        : job(jobIndex)
-        , y1(firstRow)
-        , y2(endRow)
-    {
-    }
-};
-
-NativeImageTraits
-cropTraits()
-{
-    NativeImageTraits traits;
-
-    traits.processesAllLayers = true;
-
-    return traits;
-}
-
 ExtentPolicy
 cropExtentPolicy()
 {
@@ -243,10 +134,114 @@ cropExtentPolicy()
 }
 } // anonymous namespace
 
+CropOp::Params
+CropOp::bake(const KnobReader& reader) const
+{
+    Params params;
+
+    params.time = reader.time();
+    params.view = reader.view();
+    params.reformat = reader.value(reformat);
+    params.blackOutside = reader.value(blackOutside);
+    // Softness is in canonical units, so the render scale does not apply to it.
+    params.softness = reader.value(softness);
+
+    return params;
+}
+
+bool
+CropOp::isIdentity(const Params& /*params*/,
+                   const PassContext& /*context*/) const
+{
+    return false;
+}
+
+PixelOffset
+CropOp::offset(const Params& params,
+               const PassContext& context) const
+{
+    PixelOffset shift;
+
+    if (!crop || !params.reformat) {
+        return shift;
+    }
+    RectD cropFull;
+    double par = 1.;
+    crop->getCropRectangle(params.time, params.view, context.scale, false, false, false, false, &cropFull, &par);
+    const RectI fullPixel = toPixelNearest(cropFull, context.scale.toOfxPointD().x, par);
+    shift.x = -fullPixel.x1;
+    shift.y = -fullPixel.y1;
+
+    return shift;
+}
+
+ResampleRowMatte
+CropOp::rowMatte(const Params& params,
+                 const PassContext& context) const
+{
+    const bool blackOutside = params.blackOutside;
+    const double softness = params.softness;
+
+    if (!crop || (!blackOutside && (softness == 0))) {
+        return ResampleRowMatte();
+    }
+    const double scale = context.scale.toOfxPointD().x;
+    const double dstPar = crop->getAspectRatio(-1);
+    RectD cropFull;
+    double par = 1.;
+    crop->getCropRectangle(params.time, params.view, context.scale, false, false, false, false, &cropFull, &par);
+    const RectI fullPixel = toPixelNearest(cropFull, scale, par);
+    const PixelOffset shift = offset(params, context);
+    const int tx = shift.x;
+    const int ty = shift.y;
+
+    return [blackOutside, softness, scale, dstPar, cropFull, fullPixel, tx, ty](int y, int x1, int width, int nComps, float* row) {
+        const bool yBlack = blackOutside && ((y == (fullPixel.y1 + ty)) || (y == (fullPixel.y2 - 1 + ty)));
+        if (yBlack) {
+            std::fill(row, row + (std::size_t)width * nComps, 0.f);
+
+            return;
+        }
+
+        const int srcY = y - ty;
+        const double canonicalY = (srcY + 0.5) / scale;
+        const double dy = std::min(canonicalY - cropFull.y1, cropFull.y2 - canonicalY);
+
+        float* pix = row;
+        for (int i = 0; i < width; ++i, pix += nComps) {
+            const int x = x1 + i;
+            const bool xBlack = blackOutside && ((x == (fullPixel.x1 + tx)) || (x == (fullPixel.x2 - 1 + tx)));
+            if (xBlack) {
+                std::fill(pix, pix + nComps, 0.f);
+                continue;
+            }
+            const double canonicalX = ((x - tx) + 0.5) * dstPar / scale;
+            const double dx = std::min(canonicalX - cropFull.x1, cropFull.x2 - canonicalX);
+            if (blackOutside && ((dx <= 0) || (dy <= 0))) {
+                std::fill(pix, pix + nComps, 0.f);
+                continue;
+            }
+            if ((softness == 0) || ((dx >= softness) && (dy >= softness))) {
+                continue;
+            }
+            const double wx = (dx >= softness) ? 1. : rampSmooth(dx / softness);
+            const double wy = (dy >= softness) ? 1. : rampSmooth(dy / softness);
+            const double t = wx * wy;
+            if (t >= 1) {
+                continue;
+            }
+            for (int c = 0; c < nComps; ++c) {
+                pix[c] = (float)(pix[c] * t);
+            }
+        }
+    };
+} // CropOp::rowMatte
+
 Crop::Crop(NodePtr node)
-    : NativeImageEffect(node, cropTraits())
+    : ImageNode<CropOp>(node)
     , _extentKnobs(this, cropExtentPolicy())
 {
+    op().crop = this;
 }
 
 Crop::~Crop()
@@ -257,34 +252,14 @@ void
 Crop::addAcceptedComponents(int inputNb,
                             std::list<ImageLayerDesc>* comps)
 {
-    NativeImageEffect::addAcceptedComponents(inputNb, comps);
+    ImageNode<CropOp>::addAcceptedComponents(inputNb, comps);
     comps->push_back(ImageLayerDesc::getXYComponents());
-}
-
-NativePluginDescription
-Crop::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_CROP;
-    desc.label = "Crop";
-    desc.description = tr("Removes everything outside the defined rectangle and optionally adds black edges so everything outside is black.\n"
-                          "If 'Reformat' is checked, the crop rectangle, moved to (0,0), becomes the output format; with the 'Format' extent the output pixel aspect ratio is also set to this of the format.\n"
-                          "This plugin does not concatenate transforms.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_TRANSFORM;
-    desc.majorVersion = PLUGIN_MAJOR_NATRON_CROP;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription(kNativeGeneratorSourceInputLabel, false, eDataKindImage));
-    desc.outputKind = eDataKindImage;
-
-    return desc;
 }
 
 void
 Crop::initializeKnobs()
 {
-    KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
+    const KnobPagePtr page = createControlsPage();
 
     // The frame range knob is kept for parity only: the node has no time domain of its own.
     _extentKnobs.createKnobs(page);
@@ -299,7 +274,7 @@ Crop::initializeKnobs()
     softness->setDisplayMaximum(100.);
     softness->setIncrement(1.);
     page->addKnob(softness);
-    _softness = softness;
+    op().softness = softness;
 
     KnobBoolPtr reformat = createKnob<KnobBool>(tr("Reformat"));
     reformat->setName(kCropParamReformat);
@@ -312,7 +287,7 @@ Crop::initializeKnobs()
     reformat->setSpacingBetweenItems(1);
     reformat->setIsMetadataSlave(true);
     page->addKnob(reformat);
-    _reformat = reformat;
+    op().reformat = reformat;
 
     KnobBoolPtr intersect = createKnob<KnobBool>(tr("Intersect"));
     intersect->setName(kCropParamIntersect);
@@ -328,8 +303,9 @@ Crop::initializeKnobs()
     blackOutside->setHintToolTip(tr("Add 1 black and transparent pixel to the region of definition so that all the area outside the crop rectangle is black."));
     blackOutside->setDefaultValue(false);
     page->addKnob(blackOutside);
-    _blackOutside = blackOutside;
+    op().blackOutside = blackOutside;
 
+    addStageKnobs(page);
     _extentKnobs.finishKnobs();
 } // Crop::initializeKnobs
 
@@ -342,7 +318,7 @@ Crop::getExtent() const
 void
 Crop::updateRectangleEnable()
 {
-    KnobBoolPtr reformat = _reformat.lock();
+    KnobBoolPtr reformat = op().reformat.lock();
     KnobBoolPtr rectangleEnable = _extentKnobs.getRectangleEnableKnob();
 
     if (!reformat || !rectangleEnable) {
@@ -371,11 +347,11 @@ Crop::knobChanged(KnobI* k,
     if (_extentKnobs.onKnobChanged(k, reason, time)) {
         return true;
     }
-    KnobBoolPtr reformat = _reformat.lock();
+    KnobBoolPtr reformat = op().reformat.lock();
     if (reformat && (k == reformat.get())) {
         updateRectangleEnable();
         if (reason == eValueChangedReasonUserEdited) {
-            KnobBoolPtr blackOutside = _blackOutside.lock();
+            KnobBoolPtr blackOutside = op().blackOutside.lock();
             if (blackOutside) {
                 blackOutside->setValue(!reformat->getValue());
             }
@@ -399,8 +375,8 @@ Crop::getCropRectangle(double time,
                        double* par) const
 {
     KnobBoolPtr intersectKnob = _intersect.lock();
-    KnobBoolPtr blackOutsideKnob = _blackOutside.lock();
-    KnobBoolPtr reformatKnob = _reformat.lock();
+    KnobBoolPtr blackOutsideKnob = op().blackOutside.lock();
+    KnobBoolPtr reformatKnob = op().reformat.lock();
 
     bool intersect = false;
     if (useIntersect) {
@@ -515,7 +491,7 @@ Crop::getRegionsOfInterest(double time,
     getCropRectangle(time, view, scale, true, true, false, false, &cropRect, NULL);
 
     RectD roi = renderWindow;
-    KnobBoolPtr reformat = _reformat.lock();
+    KnobBoolPtr reformat = op().reformat.lock();
     if (reformat && reformat->getValueAtTime(time, 0, view)) {
         // The crop rectangle is rendered at the origin, so the window maps back by its offset.
         roi.x1 += cropRect.x1;
@@ -529,7 +505,7 @@ Crop::getRegionsOfInterest(double time,
 StatusEnum
 Crop::getPreferredMetadata(NodeMetadata& metadata)
 {
-    KnobBoolPtr reformat = _reformat.lock();
+    KnobBoolPtr reformat = op().reformat.lock();
 
     if (!reformat || !reformat->getValue()) {
         return eStatusOK;
@@ -565,142 +541,5 @@ Crop::getPreferredMetadata(NodeMetadata& metadata)
 
     return eStatusOK;
 }
-
-StatusEnum
-Crop::render(const RenderActionArgs& args)
-{
-    KnobBoolPtr reformatKnob = _reformat.lock();
-    KnobBoolPtr blackOutsideKnob = _blackOutside.lock();
-    KnobDoublePtr softnessKnob = _softness.lock();
-    if (!reformatKnob || !blackOutsideKnob || !softnessKnob) {
-        return eStatusFailed;
-    }
-
-    const bool reformat = reformatKnob->getValueAtTime(args.time, 0, args.view);
-    const bool blackOutside = blackOutsideKnob->getValueAtTime(args.time, 0, args.view);
-    // Softness is in canonical units, so the render scale does not apply to it.
-    const double softness = softnessKnob->getValueAtTime(args.time, 0, args.view);
-    const double scale = args.mappedScale.toOfxPointD().x;
-    const double dstPar = getAspectRatio(-1);
-
-    RectD cropFull;
-    double par = 1.;
-    getCropRectangle(args.time, args.view, args.mappedScale, false, false, false, false, &cropFull, &par);
-    const RectI fullPixel = toPixelNearest(cropFull, scale, par);
-    const int tx = reformat ? -fullPixel.x1 : 0;
-    const int ty = reformat ? -fullPixel.y1 : 0;
-
-    // Every source image is fetched before any is locked: fetching renders upstream, which may
-    // write into a cached image this render would otherwise already hold a read lock on.
-    std::vector<CropPlaneJob> jobs;
-    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
-        CropPlaneJob job;
-        job.dst = it->second;
-        if (job.dst) {
-            if (job.dst->getBitDepth() != eImageBitDepthFloat) {
-                return eStatusFailed;
-            }
-            ImageLayerDesc sourceLayer;
-            if (getInput(0) && resolveInputPlaneForRender(0, args.time, args.view, &sourceLayer, NULL)) {
-                // Mapped to the clip's components, which is the layout the output plane is rendered in.
-                job.src = getImage(0, args.time, args.mappedScale, args.view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &job.srcRoI);
-                if (job.src && (job.src->getBitDepth() != eImageBitDepthFloat)) {
-                    return eStatusFailed;
-                }
-            }
-        }
-        jobs.push_back(job);
-    }
-
-    const RectI& roi = args.roi;
-    const int width = roi.width();
-    if ((width <= 0) || (roi.height() <= 0)) {
-        return eStatusOK;
-    }
-
-    // Images are locked here, on the calling thread, for the whole render; the band threads only
-    // compute pixel addresses through these accesses.
-    const int nThreads = appPTR->getNCPUsAvailableForEffect();
-    std::vector<RectI> bandRects;
-    makeRowBands(roi, nThreads, &bandRects);
-    std::vector<CropBand> bands;
-    for (std::size_t j = 0; j < jobs.size(); ++j) {
-        CropPlaneJob& job = jobs[j];
-        if (!job.dst) {
-            continue;
-        }
-        if (job.src) {
-            job.srcBounds = job.src->getBounds().intersect(job.srcRoI);
-            job.srcAccess = std::make_shared<Image::ReadAccess>(job.src.get());
-        }
-        job.dstAccess = std::make_shared<Image::WriteAccess>(job.dst.get());
-        for (std::size_t b = 0; b < bandRects.size(); ++b) {
-            bands.push_back(CropBand(j, bandRects[b].y1, bandRects[b].y2));
-        }
-    }
-
-    RenderCancellation cancel(this);
-
-    const std::function<void(int)> renderBand = [&](int bandIndex) {
-        const CropBand& band = bands[bandIndex];
-        const CropPlaneJob& job = jobs[band.job];
-        const int nComps = (int)job.dst->getComponentsCount();
-        std::vector<float> srcRow(job.src ? (std::size_t)width * nComps : 0);
-
-        for (int y = band.y1; y < band.y2; ++y) {
-            if ((((y - band.y1) % kAbortCheckRows) == 0) && cancel.check()) {
-                return;
-            }
-
-            float* dstPix = (float*)job.dstAccess->pixelAt(roi.x1, y);
-            if (!dstPix) {
-                continue;
-            }
-            const bool yBlack = blackOutside && ((y == (fullPixel.y1 + ty)) || (y == (fullPixel.y2 - 1 + ty)));
-            if (yBlack || !job.src) {
-                std::fill(dstPix, dstPix + (std::size_t)width * nComps, 0.f);
-                continue;
-            }
-
-            const int srcY = y - ty;
-            readSourceRow(job.src.get(), job.srcAccess.get(), job.srcBounds, roi.x1 - tx, srcY, width, nComps, &srcRow[0]);
-            const double canonicalY = (srcY + 0.5) / scale;
-            const double dy = std::min(canonicalY - cropFull.y1, cropFull.y2 - canonicalY);
-
-            for (int i = 0; i < width; ++i, dstPix += nComps) {
-                const int x = roi.x1 + i;
-                const bool xBlack = blackOutside && ((x == (fullPixel.x1 + tx)) || (x == (fullPixel.x2 - 1 + tx)));
-                if (xBlack) {
-                    std::fill(dstPix, dstPix + nComps, 0.f);
-                    continue;
-                }
-                const double canonicalX = ((x - tx) + 0.5) * dstPar / scale;
-                const double dx = std::min(canonicalX - cropFull.x1, cropFull.x2 - canonicalX);
-                if (blackOutside && ((dx <= 0) || (dy <= 0))) {
-                    std::fill(dstPix, dstPix + nComps, 0.f);
-                    continue;
-                }
-                const float* srcPix = &srcRow[(std::size_t)i * nComps];
-                if ((softness == 0) || ((dx >= softness) && (dy >= softness))) {
-                    std::copy(srcPix, srcPix + nComps, dstPix);
-                    continue;
-                }
-                const double tx2 = (dx >= softness) ? 1. : rampSmooth(dx / softness);
-                const double ty2 = (dy >= softness) ? 1. : rampSmooth(dy / softness);
-                const double t = tx2 * ty2;
-                if (t >= 1) {
-                    std::copy(srcPix, srcPix + nComps, dstPix);
-                } else {
-                    for (int c = 0; c < nComps; ++c) {
-                        dstPix[c] = (float)(srcPix[c] * t);
-                    }
-                }
-            }
-        }
-    };
-    parallelForCancellable((int)bands.size(), nThreads, cancel, renderBand);
-
-    return eStatusOK;
-} // Crop::render
 
 NATRON_NAMESPACE_EXIT

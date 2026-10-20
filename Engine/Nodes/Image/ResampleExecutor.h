@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
+
 #include "Engine/EffectInstance.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/GpuRender.h"
@@ -70,12 +72,21 @@ struct PixelOffset {
 };
 
 /**
+ * @brief Weights one shifted row of an offset-form render in place: row holds width pixels of
+ * nComps floats, the output pixels [x1, x1 + width) of output row y, as read from the source.
+ * Called from band threads, concurrently for different rows, so it reads only what it captured.
+ **/
+typedef std::function<void(int y, int x1, int width, int nComps, float* row)> ResampleRowMatte;
+
+/**
  * @brief What a Resample op resolves to for one action at one time, view and scale.
  *
  * Matrix: transform is the op's canonical matrix as Resampler::CanonicalTransformFn describes it,
  * reading the op's Params at whatever time it is asked for, and settings says how to sample
- * through it. Offset: the source is shifted by offset whole pixels. None: the node has no
- * Resample op.
+ * through it. Offset: the source is shifted by offset whole pixels; then, when set, rowMatte
+ * weights each shifted row of a plane whose source was fetched, and with clipSourceToRoI the
+ * source reads zero outside the region of interest it was fetched for, as an OpenFX host shows
+ * it. None: the node has no Resample op.
  *
  * transform is only valid while the node is, and is called on the thread running the action,
  * never from band threads.
@@ -91,6 +102,8 @@ struct ResampleRequest {
     ResampleSettings settings;
     Resampler::CanonicalTransformFn transform;
     PixelOffset offset;
+    ResampleRowMatte rowMatte;
+    bool clipSourceToRoI = false;
 };
 
 /**
@@ -111,7 +124,8 @@ struct ResampleRegionStages {
  * The source is fetched with the transform the host concatenated into it, if any, and read as a
  * whole image in the output plane's layout. Each output row is the source resampled through the
  * request's matrices (Resampler::buildSamplingTransforms() then resampleRow(), with the impulse
- * filter for a draft render) or the source shifted by the request's offset. That row is blended
+ * filter for a draft render) or the source shifted by the request's offset, weighted by its
+ * rowMatte and clipped to its region of interest as the request asks. That row is blended
  * with the reference row by mask x mix, and with PassThroughUnprocessed the unprocessed channels
  * are copied from it, exactly as runStagesCpu() does. The reference row is the source under the
  * output pixel, or, when the host concatenated a transform and a stage reads the reference, the

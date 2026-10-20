@@ -249,7 +249,10 @@ concept RouteOp = BakesParams<OP> && std::copyable<typename OP::Params> && requi
  * with it whether the node offers its matrix.
  *
  * The offset form has offset(), the whole-pixel translation at the context's scale; it neither
- * offers a matrix nor accepts one.
+ * offers a matrix nor accepts one. It may also have rowMatte(params, context), returning the
+ * ResampleRowMatte that weights each shifted row (an empty one weights nothing), and
+ * `static constexpr bool kClipsSourceToRoI = true` to read the source as zero outside the region
+ * of interest it was fetched for. Neither runs on the GPU, which never takes the offset form.
  **/
 template <typename OP>
 concept MatrixResampleMembers = requires(const OP& op, const typename OP::Params& params, const PassContext& context, double amount, bool invert, TransformMath::Mat3* matrix) {

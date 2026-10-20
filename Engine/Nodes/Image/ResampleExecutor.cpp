@@ -71,6 +71,10 @@ struct ResamplePlane {
     int nComps = 0;
     int srcNComps = 0;
     RectI srcBounds;
+    RectI srcRoI;
+    // The part of source an offset render reads: its bounds, or with clipSourceToRoI those
+    // clipped to srcRoI.
+    RectI readable;
     std::shared_ptr<Image::ReadAccess> srcAccess;
     std::shared_ptr<Image::WriteAccess> dstAccess;
     std::vector<float> converted;
@@ -134,9 +138,11 @@ convertSource(const Image::ReadAccess& access,
     }
 }
 
-// Pixels [x0, x0 + width) of row y of src, src.nComps floats each, zero outside its bounds.
+// Pixels [x0, x0 + width) of row y of src, src.nComps floats each, zero outside readable, which
+// lies within src's bounds.
 void
 readSourceImageRow(const Resampler::SourceImage& src,
+                   const RectI& readable,
                    int x0,
                    int y,
                    int width,
@@ -145,11 +151,11 @@ readSourceImageRow(const Resampler::SourceImage& src,
     const int nComps = src.nComps;
 
     std::fill(row, row + (std::size_t)width * nComps, 0.f);
-    if (!src.isValid() || (y < src.bounds.y1) || (y >= src.bounds.y2)) {
+    if (!src.isValid() || (y < readable.y1) || (y >= readable.y2)) {
         return;
     }
-    const int xStart = std::max(x0, src.bounds.x1);
-    const int xEnd = std::min(x0 + width, src.bounds.x2);
+    const int xStart = std::max(x0, readable.x1);
+    const int xEnd = std::min(x0 + width, readable.x2);
     if (xStart >= xEnd) {
         return;
     }
@@ -348,9 +354,8 @@ runResampleCpu(EffectInstance& effect,
             plane->channels = PassExec::processedBitsForImage(it->first, plane->nComps, args.processChannels);
             ImageLayerDesc sourceLayer;
             if ((sourceInput >= 0) && effect.getInput(sourceInput) && effect.resolveInputPlaneForRender(sourceInput, args.time, args.view, &sourceLayer, NULL)) {
-                RectI sourceRoI;
                 // Mapped to the clip's components, which is the layout the output plane is rendered in.
-                plane->src = effect.getImage(sourceInput, args.time, args.mappedScale, args.view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &sourceRoI, matrix ? &plane->inputTransform : NULL);
+                plane->src = effect.getImage(sourceInput, args.time, args.mappedScale, args.view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &plane->srcRoI, matrix ? &plane->inputTransform : NULL);
             }
             if (!PassExec::isFloatImage(plane->dst) || !PassExec::isFloatImage(plane->src)) {
                 return eStatusFailed;
@@ -395,6 +400,7 @@ runResampleCpu(EffectInstance& effect,
         const int nComps = plane.nComps;
         if (plane.src) {
             plane.srcBounds = plane.src->getBounds();
+            plane.readable = (!matrix && request.clipSourceToRoI) ? plane.srcBounds.intersect(plane.srcRoI) : plane.srcBounds;
             plane.srcNComps = (int)plane.src->getComponentsCount();
             plane.srcAccess = std::make_shared<Image::ReadAccess>(plane.src.get());
             if (plane.srcNComps == nComps) {
@@ -457,13 +463,16 @@ runResampleCpu(EffectInstance& effect,
             } else if (matrix) {
                 Resampler::resampleRow(plane.params, plane.source, y, roi.x1, roi.x2, &resampledRow[0]);
             } else {
-                readSourceImageRow(plane.source, roi.x1 - offset.x, y - offset.y, width, &resampledRow[0]);
+                readSourceImageRow(plane.source, plane.readable, roi.x1 - offset.x, y - offset.y, width, &resampledRow[0]);
+            }
+            if (!matrix && plane.src && request.rowMatte) {
+                request.rowMatte(y, roi.x1, width, nComps, &resampledRow[0]);
             }
             if (readsReference) {
                 if (plane.resampleReference) {
                     Resampler::resampleRow(plane.referenceParams, plane.source, y, roi.x1, roi.x2, &referenceRow[0]);
                 } else {
-                    readSourceImageRow(plane.source, roi.x1, y, width, &referenceRow[0]);
+                    readSourceImageRow(plane.source, plane.readable, roi.x1, y, width, &referenceRow[0]);
                 }
             }
             if (doMask) {

@@ -3226,11 +3226,12 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                 }
 
                 if (mappedOriginalInputImage) {
-                    if (!rendersUnprocessed) {
-                        it->second.tmpImage->copyUnProcessedChannels(renderMappedRectToRender, tmpProcessChannels, mappedOriginalInputImage);
-                    }
+                    // Mix first: it blends every channel in float and would round a channel copied back from the source.
                     if (useMaskMix) {
                         it->second.tmpImage->applyMaskMix(renderMappedRectToRender, maskImage.get(), mappedOriginalInputImage.get(), doMask, false, mix);
+                    }
+                    if (!rendersUnprocessed) {
+                        it->second.tmpImage->copyUnProcessedChannels(renderMappedRectToRender, tmpProcessChannels, mappedOriginalInputImage);
                     }
                 }
                 if ( ( it->second.fullscaleImage->getComponents() != it->second.tmpImage->getComponents() ) ||
@@ -3300,11 +3301,12 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                     it->second.downscaleImage->premultiplyByChannel(actionArgs.roi, unPremultDivisorImage.get(), unPremultDivisorChannel, planeProcessChannels, unPremultSkipChannel);
                 }
 
-                if (!rendersUnprocessed) {
-                    it->second.downscaleImage->copyUnProcessedChannels(actionArgs.roi, planeProcessChannels, originalInputImage);
-                }
+                // Mix first: it blends every channel in float and would round a channel copied back from the source.
                 if (useMaskMix) {
                     it->second.downscaleImage->applyMaskMix(actionArgs.roi, maskImage.get(), originalInputImage.get(), doMask, false, mix);
+                }
+                if (!rendersUnprocessed) {
+                    it->second.downscaleImage->copyUnProcessedChannels(actionArgs.roi, planeProcessChannels, originalInputImage);
                 }
             } // if (renderFullScaleThenDownscale) {
         } // if (it->second.isAllocatedOnTheFly) {

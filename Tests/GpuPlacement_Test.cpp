@@ -665,16 +665,20 @@ pipelinedRates(double bytesPerSecond)
     return r;
 }
 
+// The Grade's kernel seeded at 0.5 ms/Mpx, as heavy as a spatial node's, so that pipelined strips can hide its transfer.
+const double kHeavyGradeMsPerMpx = 0.5;
+
 } // namespace
 
-// sink 0 (CPU) <- Grade 1 <- reader 2 (CPU): the Grade saves 8.3 ms of CPU time for 0.5 ms of GPU time, and moves
-// 265 MB in 7.6 ms at 35 GB/s. Pipelined strips hide the 0.5 ms of transfer that overlaps the kernel, so the Grade
-// gains 0.2 ms beyond the margin; run whole it exposes all 7.6 ms and falls 0.3 ms short.
+// sink 0 (CPU) <- Grade 1 <- reader 2 (CPU): the Grade saves 8.3 ms of CPU time for 4.1 ms of GPU time, and moves
+// 265 MB in 7.6 ms at 35 GB/s. Pipelined strips hide the 4.1 ms of transfer that overlaps the kernel, so the Grade
+// gains 0.2 ms beyond the margin; run whole it exposes all 7.6 ms and falls 3.9 ms short.
 TEST(GpuCostModel, PipelinedLoneGradeIsAcceptedWhereItsTransferHides)
 {
     CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
 
     fixture.traits[1] = GpuTaskTraits(kGradeId);
+    fixture.model.setGpuSeed(kGradeId, kHeavyGradeMsPerMpx);
     fixture.model.setTransferRates(pipelinedRates(35e9));
     fixture.place();
     ASSERT_EQ(fixture.graph.regions.size(), 1u);
@@ -687,19 +691,33 @@ TEST(GpuCostModel, PipelinedLoneGradeIsAcceptedWhereItsTransferHides)
     EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
 }
 
-// The same Grade at 25 GB/s: its 10.6 ms of transfer leave 10.1 ms exposed even pipelined.
+// The same Grade at 25 GB/s: its 10.6 ms of transfer leave 6.5 ms exposed even pipelined.
 TEST(GpuCostModel, PipelinedLoneGradeIsRefusedOnHalfTheBandwidth)
 {
     CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
 
     fixture.traits[1] = GpuTaskTraits(kGradeId);
+    fixture.model.setGpuSeed(kGradeId, kHeavyGradeMsPerMpx);
     fixture.model.setTransferRates(pipelinedRates(25e9));
     fixture.place();
     EXPECT_TRUE(fixture.graph.regions.empty());
     EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
 }
 
-TEST(GpuCostModel, PipeliningNeedsDeviceSupportBytesHeightAndNoOutputKeptOnDevice)
+// At its own 0.5 ms the Grade's kernel is under a quarter of its 7.6 ms of transfer, so the planner would run it whole:
+// placement charges it all 7.6 ms, and it falls 0.3 ms short.
+TEST(GpuCostModel, PipelinedLoneCheapGradeIsChargedItsWholeTransfer)
+{
+    CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
+
+    fixture.traits[1] = GpuTaskTraits(kGradeId);
+    fixture.model.setTransferRates(pipelinedRates(35e9));
+    fixture.place();
+    EXPECT_TRUE(fixture.graph.regions.empty());
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
+}
+
+TEST(GpuCostModel, PipeliningNeedsDeviceSupportBytesKernelHeightAndNoOutputKeptOnDevice)
 {
     CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
     FrameGraph::Region region;
@@ -710,20 +728,23 @@ TEST(GpuCostModel, PipeliningNeedsDeviceSupportBytesHeightAndNoOutputKeptOnDevic
     output.externalConsumers = 1;
     region.outputs.push_back(output);
     const double bytes = (double)kUhdBytes;
+    // At 25 GB/s the bytes take 10.6 ms, of which a kernel must run a quarter.
+    const double kernelMs = 5.;
 
     fixture.model.setTransferRates(rates(25e9));
-    EXPECT_FALSE(fixture.model.pipelinesTransfers(fixture.graph, region, bytes, bytes));
+    EXPECT_FALSE(fixture.model.pipelinesTransfers(fixture.graph, region, bytes, bytes, kernelMs));
 
     fixture.model.setTransferRates(pipelinedRates(25e9));
-    EXPECT_TRUE(fixture.model.pipelinesTransfers(fixture.graph, region, bytes, bytes));
-    EXPECT_FALSE(fixture.model.pipelinesTransfers(fixture.graph, region, 1 << 20, 1 << 20));
+    EXPECT_TRUE(fixture.model.pipelinesTransfers(fixture.graph, region, bytes, bytes, kernelMs));
+    EXPECT_FALSE(fixture.model.pipelinesTransfers(fixture.graph, region, 1 << 20, 1 << 20, kernelMs));
+    EXPECT_FALSE(fixture.model.pipelinesTransfers(fixture.graph, region, bytes, bytes, 2.5));
 
     fixture.graph.tasks[0].device = FrameGraph::Device::Gpu;
-    EXPECT_FALSE(fixture.model.pipelinesTransfers(fixture.graph, region, bytes, bytes));
+    EXPECT_FALSE(fixture.model.pipelinesTransfers(fixture.graph, region, bytes, bytes, kernelMs));
     fixture.graph.tasks[0].device = FrameGraph::Device::Cpu;
 
     fixture.graph.tasks[1].renderedRoI = RectI(0, 0, 3840, 128);
-    EXPECT_FALSE(fixture.model.pipelinesTransfers(fixture.graph, region, bytes, bytes));
+    EXPECT_FALSE(fixture.model.pipelinesTransfers(fixture.graph, region, bytes, bytes, kernelMs));
 }
 
 TEST(GpuCostModel, ObservedTransfersMoveRatesByMovingAverage)
@@ -755,7 +776,7 @@ TEST(GpuCostModel, ObservedTransfersMoveRatesByMovingAverage)
     EXPECT_NEAR(model.transferMs(1e9, 0.), 40. * scale, 1e-9);
 }
 
-// The Grade the 50 GB/s calibration accepts pipelined is refused once its regions measure the bus at half that.
+// The Grade the 50 GB/s calibration accepts is refused once its regions measure the bus at half that.
 TEST(GpuCostModel, SlowObservedTransfersRefuseLoneGrade)
 {
     CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });

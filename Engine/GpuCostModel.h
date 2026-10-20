@@ -167,6 +167,12 @@ public:
      **/
     void setCpuSeed(const std::string& pluginId, double serialMsPerMpx, double parallelSpeedup);
 
+    /**
+     * @brief Sets the GPU kernel cost of every row of a plugin, or of a new plain row when it has none, replacing what
+     * was measured for it.
+     **/
+    void setGpuSeed(const std::string& pluginId, double kernelMsPerMpx);
+
     GpuTaskTraits traitsOf(const FrameGraph::Task& task) const;
 
     /**
@@ -195,15 +201,17 @@ public:
     double transferMs(double uploadBytes, double downloadBytes) const;
 
     /**
-     * @brief Whether the strip planner would pipeline the region, so that its transfers overlap its GPU time: the
-     * rates allow pipelined strips, the region moves at least kGpuStripOverlapMinBytes between host and device, keeps
-     * no output on the device for another region, and its outputs are tall enough for kGpuStripMaxInFlight strips of
+     * @brief Whether the strip planner would pipeline the region, so that its transfers overlap its GPU time of
+     * kernelMs: the rates allow pipelined strips, the region moves at least kGpuStripOverlapMinBytes between host and
+     * device, its kernelMs is at least kGpuStripOverlapMinKernelRatio of the time the bytes take, it keeps no output
+     * on the device for another region, and its outputs are tall enough for kGpuStripMaxInFlight strips of
      * kGpuStripMinPipelinedRows. The halo the strips would read is left out.
      **/
     bool pipelinesTransfers(const FrameGraph& graph,
                             const FrameGraph::Region& region,
                             double uploadBytes,
-                            double downloadBytes) const;
+                            double downloadBytes,
+                            double kernelMs) const;
 
     /**
      * @brief CPU time the region saves, less its GPU time, the transfer time it exposes and kAcceptMarginMs: it is

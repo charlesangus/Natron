@@ -52,9 +52,13 @@ const int kGpuStripMaxInFlight = 3;
 const int kGpuStripMinPipelinedRows = 64;
 
 // A region that fits whole is stripped to hide its transfer only when it moves at least this many bytes between host and
-// device, and only into strips at least this many times as tall as the halo the region reads beyond a strip's rows.
+// device.
 const std::uint64_t kGpuStripOverlapMinBytes = std::uint64_t(32) << 20;
-const int kGpuStripOverlapHaloMultiple = 4;
+
+// It also needs a predicted kernel time of at least this fraction of its predicted transfer time. Pipelined strips
+// hide no more transfer than the kernel runs, while each strip pays a fixed cost in submits, waits and smaller copies
+// that no prediction carries: a lone point op at UHD moved its 127 MB in 15-18 ms as strips against ~10 ms whole.
+const double kGpuStripOverlapMinKernelRatio = 0.25;
 
 // The device memory strips leave to what allocates outside the pool: the viewer's textures, the driver, other
 // processes and OFX plugins rendering on the GPU themselves. The pool already holds a fifth of the heap back, which is
@@ -93,6 +97,9 @@ struct GpuStripMember {
 
     // The window of input inputNb the member reads to render outputRect.
     std::function<RectI(int inputNb, const RectI& outputRect)> inputRoI;
+
+    // The predicted kernel time of the member over its whole output slot, in milliseconds; 0 when unknown.
+    double kernelMs = 0.;
 };
 
 struct GpuStripGraph {
@@ -112,9 +119,13 @@ struct GpuStripLimits {
     int forcedRows = 0;
 
     // A region that fits whole, with pipelining allowed, no output kept on the device and at least this many bytes
-    // uploaded and downloaded, runs as kGpuStripMaxInFlight or more pipelined strips when they stay tall enough, so
-    // that its transfers overlap its compute. The default leaves every region whole.
+    // uploaded and downloaded, may run as kGpuStripMaxInFlight or more pipelined strips, so that its transfers overlap
+    // its compute: see planGpuStrips(). The default leaves every region whole.
     std::uint64_t overlapMinBytes = std::numeric_limits<std::uint64_t>::max();
+
+    // The predicted time of moving the given bytes to and from the device, in milliseconds. Unset, transfers cost
+    // nothing, so no region strips to hide them.
+    std::function<double(std::uint64_t uploadBytes, std::uint64_t downloadBytes)> transferMs;
 
     // The most strips that may hold their buffers at once; budgetBytes must hold that many strips' buffers, beside
     // the resident images they share.
@@ -190,8 +201,11 @@ RectI gpuStripBands(const GpuStripGraph& graph);
  * strips two of which fit, when those are at least kGpuStripMinPipelinedRows tall; and 1 otherwise, or when there is a
  * single strip.
  *
- * A region that fits whole may still come back as Strips, with overlapped set, when limits.overlapMinBytes asks for it
- * and the strips stay at least kGpuStripMinPipelinedRows tall and kGpuStripOverlapHaloMultiple times the halo.
+ * A region that fits whole may still come back as Strips, with overlapped set, when limits.overlapMinBytes asks for it,
+ * its members' kernelMs add up to at least kGpuStripOverlapMinKernelRatio of its limits.transferMs, and
+ * kGpuStripMaxInFlight or more strips at least kGpuStripMinPipelinedRows tall are predicted to finish sooner than the
+ * whole region. Strips of n take K' + max(0, T' - K' (n - 1) / n), with K' and T' the kernel and transfer time of
+ * all of them together, halos included; the whole region takes K + T.
  **/
 GpuStripResult planGpuStrips(const GpuStripGraph& graph,
                              const GpuStripLimits& limits,

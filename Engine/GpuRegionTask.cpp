@@ -276,6 +276,9 @@ struct Member {
 
     // Its share of the device time of the submission it is recorded in.
     double weight = 1.;
+
+    // The cost model's kernel time for the task, 0 when it has none.
+    double predictedKernelMs = 0.;
 };
 
 /**
@@ -657,7 +660,8 @@ private:
             member.outSlot = (int)_slots.size() - 1;
 
             const double kernelMs = model.gpuMs(model.traitsOf(task), GpuCostModel::megapixelsOf(task));
-            member.weight = (std::isfinite(kernelMs) && (kernelMs > 0.)) ? kernelMs : 1.;
+            member.predictedKernelMs = (std::isfinite(kernelMs) && (kernelMs > 0.)) ? kernelMs : 0.;
+            member.weight = (member.predictedKernelMs > 0.) ? member.predictedKernelMs : 1.;
             _members.push_back(member);
         }
 
@@ -1353,6 +1357,7 @@ private:
             stripMember.inputRoI = [effect, scale](int inputNb, const RectI& rect) {
                 return effect->getGpuInputRoI(inputNb, rect, scale);
             };
+            stripMember.kernelMs = member.predictedKernelMs;
             graph.members.push_back(stripMember);
         }
 
@@ -1361,9 +1366,10 @@ private:
 
     /**
      * @brief Leaves strips empty when the region fits the device whole and no strip height is forced, unless
-     * pipelined strips would hide enough of its transfer to be worth it, and otherwise fills it with the strips it runs
-     * as. A stripped output never exists whole on the device, so every output read
-     * after the region is downloaded and stored in RAM, including those another region would have read on the device.
+     * the session's cost model predicts that pipelined strips, hiding its transfer behind its kernels, finish sooner,
+     * and otherwise fills it with the strips it runs as. A stripped output never exists whole on the device, so every
+     * output read after the region is downloaded and stored in RAM, including those another region would have read on
+     * the device.
      **/
     bool planStrips(std::vector<GpuStrip>* strips)
     {
@@ -1382,6 +1388,9 @@ private:
         limits.forcedRows = _forcedRows;
         limits.maxInFlight = pipelineAllowed() ? kGpuStripMaxInFlight : 1;
         limits.overlapMinBytes = kGpuStripOverlapMinBytes;
+        limits.transferMs = [](std::uint64_t uploadBytes, std::uint64_t downloadBytes) {
+            return GpuCostModel::session().transferMs((double)uploadBytes, (double)downloadBytes);
+        };
         limits.allocationBytes = [](std::uint64_t bytes) {
             return (std::uint64_t)gpu::GpuBufferPool::sizeClass(bytes);
         };

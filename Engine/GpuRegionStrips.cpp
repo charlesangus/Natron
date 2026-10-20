@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <mutex>
 
 NATRON_NAMESPACE_ENTER
@@ -222,52 +223,89 @@ stripsOfRows(const GpuStripGraph& graph,
     return StripsFit::Fits;
 }
 
-// The bytes the region moves between host and device when it runs as strips: every external input uploaded and every
-// interior slot downloaded.
-std::uint64_t
-hostTransferBytes(const GpuStripGraph& graph)
-{
-    std::uint64_t total = 0;
+struct HostBytes {
+    std::uint64_t upload = 0;
+    std::uint64_t download = 0;
+};
 
-    for (const GpuStripSlot& slot : graph.images) {
-        if (!slot.resident && (slot.external || slot.interior)) {
-            total += bufferBytes(slot.bounds, slot.nComps);
+// The bytes moved between host and device by running graph once over rects, of which interiors are downloaded: every
+// external input uploaded and every interior slot downloaded.
+HostBytes
+hostBytesOf(const GpuStripGraph& graph,
+            const std::vector<RectI>& rects,
+            const std::vector<RectI>& interiors)
+{
+    HostBytes bytes;
+
+    for (std::size_t s = 0; s < graph.images.size(); ++s) {
+        const GpuStripSlot& slot = graph.images[s];
+        if (slot.resident) {
+            continue;
         }
+        if (slot.external) {
+            bytes.upload += bufferBytes(rects[s], slot.nComps);
+        } else if (slot.interior) {
+            bytes.download += bufferBytes(interiors[s], slot.nComps);
+        }
+    }
+
+    return bytes;
+}
+
+double
+transferMsOf(const GpuStripLimits& limits,
+             const HostBytes& bytes)
+{
+    return limits.transferMs ? limits.transferMs(bytes.upload, bytes.download) : 0.;
+}
+
+// The members' predicted kernel time over the given windows, from their whole outputs' by area: the rows a strip
+// computes again for the halo of the members after it cost as much as any other.
+double
+kernelMsOf(const GpuStripGraph& graph,
+           const std::vector<GpuStrip>& strips)
+{
+    double total = 0.;
+
+    for (const GpuStripMember& member : graph.members) {
+        if ((member.outSlot < 0) || !(member.kernelMs > 0.)) {
+            continue;
+        }
+        const GpuStripSlot& out = graph.images[member.outSlot];
+        const std::uint64_t whole = bufferBytes(out.bounds, out.nComps);
+        if (whole == 0) {
+            continue;
+        }
+        std::uint64_t computed = 0;
+        for (const GpuStrip& strip : strips) {
+            computed += bufferBytes(strip.rects[member.outSlot], out.nComps);
+        }
+        total += member.kernelMs * (double)computed / (double)whole;
     }
 
     return total;
 }
 
-// The most rows a strip in the middle of bands reads beyond its own rows, or -1 when it cannot be cut.
-int
-stripHalo(const GpuStripGraph& graph,
-          const RectI& bands)
+// What pipelining n strips leaves of the region's time, with its transfer hidden behind the compute of all but one
+// strip at most.
+double
+pipelinedMs(double kernelMs,
+            double transferMs,
+            std::size_t n)
 {
-    const int lo = bands.y1 + bands.height() / 2 / kGpuStripRowQuantum * kGpuStripRowQuantum;
-    const int hi = std::min(bands.y2, lo + kGpuStripRowQuantum);
-    GpuStrip strip;
-    if (!stripOf(graph, lo, hi, &strip)) {
-        return -1;
-    }
-    int halo = 0;
-    for (const RectI& rect : strip.rects) {
-        if (!rect.isNull()) {
-            halo = std::max(halo, std::max(lo - rect.y1, rect.y2 - hi));
-        }
-    }
-
-    return halo;
+    return kernelMs + std::max(0., transferMs - kernelMs * (double)(n - 1) / (double)n);
 }
 
 // Whether graph, which fits whole, runs better as kGpuStripMaxInFlight or more strips in flight together, filling
-// strips and rows if so.
+// strips and rows if so. A strip's halo is not bounded by itself: it is paid for, as the rows uploaded and computed
+// again, in the time the strips are predicted to take.
 bool
 planOverlap(const GpuStripGraph& graph,
             const GpuStripLimits& limits,
             std::vector<GpuStrip>* strips,
             int* rows)
 {
-    if ((limits.maxInFlight < kGpuStripMaxInFlight) || (hostTransferBytes(graph) < limits.overlapMinBytes)) {
+    if (limits.maxInFlight < kGpuStripMaxInFlight) {
         return false;
     }
     for (const GpuStripSlot& slot : graph.images) {
@@ -279,20 +317,41 @@ planOverlap(const GpuStripGraph& graph,
     if (bands.isNull()) {
         return false;
     }
-    const int halo = stripHalo(graph, bands);
-    if (halo < 0) {
+    GpuStrip whole;
+    for (const GpuStripSlot& slot : graph.images) {
+        whole.rects.push_back(slot.bounds);
+        whole.interiors.push_back(slot.interior ? slot.bounds : RectI());
+    }
+    const HostBytes wholeBytes = hostBytesOf(graph, whole.rects, whole.interiors);
+    if (wholeBytes.upload + wholeBytes.download < limits.overlapMinBytes) {
         return false;
     }
-    const int haloRows = (halo * kGpuStripOverlapHaloMultiple + kGpuStripRowQuantum - 1) / kGpuStripRowQuantum * kGpuStripRowQuantum;
-    const int minRows = std::max(kGpuStripMinPipelinedRows, haloRows);
+    const double wholeTransferMs = transferMsOf(limits, wholeBytes);
+    const double wholeKernelMs = kernelMsOf(graph, std::vector<GpuStrip>(1, whole));
+    if (!(wholeTransferMs > 0.) || !std::isfinite(wholeTransferMs) || (wholeKernelMs < kGpuStripOverlapMinKernelRatio * wholeTransferMs)) {
+        return false;
+    }
+
+    // Rounded up, so that the last strip is not a sliver carrying a whole halo.
     const int perStrip = (bands.height() + kGpuStripMaxInFlight - 1) / kGpuStripMaxInFlight;
-    const int stripRows = std::min(perStrip, limits.maxRows) / kGpuStripRowQuantum * kGpuStripRowQuantum;
-    if (stripRows < minRows) {
+    const int quantized = (perStrip + kGpuStripRowQuantum - 1) / kGpuStripRowQuantum * kGpuStripRowQuantum;
+    const int stripRows = std::min(quantized, limits.maxRows / kGpuStripRowQuantum * kGpuStripRowQuantum);
+    if (stripRows < kGpuStripMinPipelinedRows) {
         return false;
     }
     std::vector<GpuStrip> found;
     if ((stripsOfRows(graph, limits, bands.y1, bands.y2, stripRows, kGpuStripMaxInFlight, &found) != StripsFit::Fits) ||
         ((int)found.size() < kGpuStripMaxInFlight)) {
+        return false;
+    }
+    HostBytes stripBytes;
+    for (const GpuStrip& strip : found) {
+        const HostBytes bytes = hostBytesOf(graph, strip.rects, strip.interiors);
+        stripBytes.upload += bytes.upload;
+        stripBytes.download += bytes.download;
+    }
+    const double stripsMs = pipelinedMs(kernelMsOf(graph, found), transferMsOf(limits, stripBytes), found.size());
+    if (!(stripsMs < wholeKernelMs + wholeTransferMs)) {
         return false;
     }
     strips->swap(found);

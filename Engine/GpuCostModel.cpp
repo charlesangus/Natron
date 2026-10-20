@@ -285,6 +285,23 @@ GpuCostModel::setCpuSeed(const std::string& pluginId,
     }
 }
 
+void
+GpuCostModel::setGpuSeed(const std::string& pluginId,
+                         double kernelMsPerMpx)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    std::vector<GpuRow>& rows = _gpu[pluginId];
+
+    if (rows.empty()) {
+        GpuRow row;
+        row.sigmaMax = kInfinity;
+        rows.push_back(row);
+    }
+    for (GpuRow& row : rows) {
+        row.kernelMsPerMpx = kernelMsPerMpx;
+    }
+}
+
 GpuTaskTraits
 GpuCostModel::traitsOf(const FrameGraph::Task& task) const
 {
@@ -515,7 +532,8 @@ bool
 GpuCostModel::pipelinesTransfers(const FrameGraph& graph,
                                  const FrameGraph::Region& region,
                                  double uploadBytes,
-                                 double downloadBytes) const
+                                 double downloadBytes,
+                                 double kernelMs) const
 {
     {
         std::lock_guard<std::mutex> lock(_mutex);
@@ -524,6 +542,9 @@ GpuCostModel::pipelinesTransfers(const FrameGraph& graph,
         }
     }
     if (uploadBytes + downloadBytes < (double)kGpuStripOverlapMinBytes) {
+        return false;
+    }
+    if (!(kernelMs >= kGpuStripOverlapMinKernelRatio * transferMs(uploadBytes, downloadBytes))) {
         return false;
     }
     std::vector<bool> inRegion(graph.tasks.size(), false);
@@ -596,7 +617,7 @@ GpuCostModel::regionGainMs(const FrameGraph& graph,
     const double fullTransferMs = transferMs(uploadBytes, downloadBytes);
     // std::max turns the NaN of an infinite transfer less an unseeded member's infinite GPU time into 0, which leaves
     // the gain at minus infinity.
-    const double exposedMs = pipelinesTransfers(graph, region, uploadBytes, downloadBytes) ? std::max(0., fullTransferMs - gpuTotalMs) : fullTransferMs;
+    const double exposedMs = pipelinesTransfers(graph, region, uploadBytes, downloadBytes, gpuTotalMs) ? std::max(0., fullTransferMs - gpuTotalMs) : fullTransferMs;
 
     return savedMs - gpuTotalMs - exposedMs - kAcceptMarginMs;
 }

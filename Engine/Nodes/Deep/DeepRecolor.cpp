@@ -87,30 +87,6 @@ retargetAlphas(const float* alpha,
 }
 } // anonymous namespace
 
-NativePluginDescription
-DeepRecolor::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_DEEPRECOLOR;
-    desc.label = "DeepRecolor";
-    desc.description = tr("Give every sample of the deep input A the colour of the Color image "
-                          "at its pixel, scaled to the sample's own alpha, so that the samples "
-                          "flatten back to the Color image while keeping their depths. Channels "
-                          "selects which layers and channels of the Color image are written, "
-                          "creating those the deep input lacks. Target Input Alpha rescales each "
-                          "pixel's alphas as well, so that they flatten to the Color image's alpha.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_DEEP;
-    desc.majorVersion = 1;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("A", false, eDataKindDeep));
-    desc.inputs.push_back(NativeInputDescription("Color", false, eDataKindImage));
-    desc.outputKind = eDataKindDeep;
-
-    return desc;
-}
-
 void
 DeepRecolor::initializeKnobs()
 {

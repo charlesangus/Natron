@@ -45,6 +45,10 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kDeepAddLayersInputs[] = {
+    InputSpec { .label = "Source", .kind = eDataKindDeep },
+};
+
 /**
  * @brief Brings project-registry layers into a deep stream as zero-filled channel buffers,
  * wherever the input lacks them; the sample table and every channel the input has stay shared
@@ -89,7 +93,25 @@ public:
     std::vector<std::string> computeAddedNames(double time, ViewIdx view, const std::list<ImageLayerDesc>& present) WARN_UNUSED_RETURN;
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_DEEPADDLAYERS,
+        .label = "DeepAddLayers",
+        .description = "Add the chosen project layers to the deep stream, filled with zeros on every sample, "
+                       "wherever the input does not have them. A channel the input already has passes through "
+                       "unchanged. The colour views rgba, rgb and alpha share one colour plane: adding rgb to an "
+                       "alpha-only stream adds R, G and B at zero. Deep alpha is part of every sample, so adding "
+                       "alpha changes nothing.",
+        .grouping = PLUGIN_GROUP_DEEP,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .outputKind = eDataKindDeep,
+        .inputs = kDeepAddLayersInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 
@@ -105,13 +127,8 @@ private:
 
     virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
 
-    virtual bool isIdentity(double time,
-                            const RenderScale& scale,
-                            const RectI& roi,
-                            ViewIdx view,
-                            double* inputTime,
-                            ViewIdx* inputView,
-                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual Route route(double time,
+                        ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual StatusEnum renderDeep(const DeepRenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 

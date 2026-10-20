@@ -82,34 +82,6 @@ addExpression(const KnobStringWPtr& weakKnob,
 }
 } // anonymous namespace
 
-NativePluginDescription
-DeepExpression::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_DEEPEXPRESSION;
-    desc.label = "DeepExpression";
-    desc.description = tr("Rewrite the channels of one layer of the deep input, and the Z and ZBack "
-                          "depths, each from its own expression evaluated once per sample. Layer "
-                          "picks the layer, and the expression fields below it take that layer's "
-                          "channel names. An expression reads the input's channels by name (R, G, B, "
-                          "A, Z, ZBack and any AOV, such as diffuse.R), the pixel's x and y, the "
-                          "sample's sampleIndex and its pixel's sampleCount, frame and pi, with the "
-                          "usual arithmetic, comparison, logical and conditional operators and the "
-                          "functions abs, floor, ceil, round, sqrt, exp, log, pow, min, max, clamp, "
-                          "lerp, step, smoothstep, sin, cos, tan and atan2. A channel whose "
-                          "expression is empty is passed through. Writing a colour channel the input "
-                          "lacks creates it; a layer the input lacks at a frame is an error there.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_DEEP;
-    desc.majorVersion = 1;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindDeep));
-    desc.outputKind = eDataKindDeep;
-
-    return desc;
-}
-
 void
 DeepExpression::initializeKnobs()
 {
@@ -371,14 +343,9 @@ DeepExpression::getRegionOfDefinition(U64 hash,
     return input->getRegionOfDefinition_public(hash, time, scale, view, rod, &isProjectFormat);
 }
 
-bool
-DeepExpression::isIdentity(double time,
-                           const RenderScale& /*scale*/,
-                           const RectI& /*roi*/,
-                           ViewIdx view,
-                           double* inputTime,
-                           ViewIdx* inputView,
-                           int* inputNb)
+Route
+DeepExpression::route(double time,
+                      ViewIdx view)
 {
     std::vector<std::string> channels;
     std::vector<std::string> expressions;
@@ -386,7 +353,7 @@ DeepExpression::isIdentity(double time,
 
     getExpressions(time, view, &channels, &expressions, &layerMissing);
     if (!channels.empty() || layerMissing) {
-        return false;
+        return Route::none();
     }
 
     // Every expression is blank, so renderDeep() -- and its success-path clearPersistentMessage()
@@ -394,11 +361,7 @@ DeepExpression::isIdentity(double time,
     // non-blank set of expressions would otherwise stay displayed on a now-valid node forever.
     clearPersistentMessage(false);
 
-    *inputTime = time;
-    *inputNb = 0;
-    *inputView = view;
-
-    return true;
+    return Route::input(0, time);
 }
 
 StatusEnum

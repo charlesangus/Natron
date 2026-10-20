@@ -40,27 +40,6 @@
 
 NATRON_NAMESPACE_ENTER
 
-NativePluginDescription
-DeepCrop::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_DEEPCROP;
-    desc.label = "DeepCrop";
-    desc.description = tr("Crop the deep input to a rectangle in X and Y and/or to a range in Z. "
-                          "A sample is kept only if its Z is at or past Near and its ZBack (or Z, "
-                          "on a point sample) is at or before Far. Reformat sets the output format "
-                          "to the crop rectangle instead of keeping the input's.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_DEEP;
-    desc.majorVersion = 1;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindDeep));
-    desc.outputKind = eDataKindDeep;
-
-    return desc;
-}
-
 void
 DeepCrop::initializeKnobs()
 {

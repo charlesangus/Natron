@@ -36,6 +36,10 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kDeepCropInputs[] = {
+    InputSpec { .label = "Source", .kind = eDataKindDeep },
+};
+
 /**
  * @brief Crops the deep input to Bbox in X and Y and to Z Range in depth, either of which can be
  * switched off on its own. A sample kept by the Z crop is one whose Z is at or past Near and
@@ -79,7 +83,24 @@ public:
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_DEEPCROP,
+        .label = "DeepCrop",
+        .description = "Crop the deep input to a rectangle in X and Y and/or to a range in Z. "
+                       "A sample is kept only if its Z is at or past Near and its ZBack (or Z, "
+                       "on a point sample) is at or before Far. Reformat sets the output format "
+                       "to the crop rectangle instead of keeping the input's.",
+        .grouping = PLUGIN_GROUP_DEEP,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .outputKind = eDataKindDeep,
+        .inputs = kDeepCropInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 

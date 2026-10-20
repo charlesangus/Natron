@@ -74,28 +74,6 @@ DeepAddLayers::~DeepAddLayers()
 {
 }
 
-NativePluginDescription
-DeepAddLayers::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_DEEPADDLAYERS;
-    desc.label = "DeepAddLayers";
-    desc.description = tr("Add the chosen project layers to the deep stream, filled with zeros on every sample, "
-                          "wherever the input does not have them. A channel the input already has passes through "
-                          "unchanged. The colour views rgba, rgb and alpha share one colour plane: adding rgb to an "
-                          "alpha-only stream adds R, G and B at zero. Deep alpha is part of every sample, so adding "
-                          "alpha changes nothing.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_DEEP;
-    desc.majorVersion = 1;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindDeep));
-    desc.outputKind = eDataKindDeep;
-
-    return desc;
-}
-
 void
 DeepAddLayers::initializeKnobs()
 {
@@ -240,30 +218,21 @@ DeepAddLayers::getRegionOfDefinition(U64 hash,
     return input->getRegionOfDefinition_public(hash, time, scale, view, rod, &isProjectFormat);
 }
 
-bool
-DeepAddLayers::isIdentity(double time,
-                          const RenderScale& /*scale*/,
-                          const RectI& /*roi*/,
-                          ViewIdx view,
-                          double* inputTime,
-                          ViewIdx* inputView,
-                          int* inputNb)
+Route
+DeepAddLayers::route(double time,
+                     ViewIdx view)
 {
     if (!getInput(0)) {
-        return false;
+        return Route::none();
     }
 
     std::list<ImageLayerDesc> present;
     getPresentLayers(time, view, 0, &present);
     if (!computeAddedNames(time, view, present).empty()) {
-        return false;
+        return Route::none();
     }
 
-    *inputNb = 0;
-    *inputTime = time;
-    *inputView = view;
-
-    return true;
+    return Route::input(0, time);
 }
 
 StatusEnum

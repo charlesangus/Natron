@@ -44,6 +44,11 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kDeepRecolorInputs[] = {
+    InputSpec { .label = "A", .kind = eDataKindDeep },
+    InputSpec { .label = "Color" },
+};
+
 /**
  * @brief Gives every sample of the deep input A the colour of the Color image at its pixel,
  * scaled to the sample's own alpha -- rgb = color.rgb / color.a * sample.a -- so that a pixel's
@@ -128,7 +133,26 @@ private:
         bool zero;
     };
 
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_DEEPRECOLOR,
+        .label = "DeepRecolor",
+        .description = "Give every sample of the deep input A the colour of the Color image "
+                       "at its pixel, scaled to the sample's own alpha, so that the samples "
+                       "flatten back to the Color image while keeping their depths. Channels "
+                       "selects which layers and channels of the Color image are written, "
+                       "creating those the deep input lacks. Target Input Alpha rescales each "
+                       "pixel's alphas as well, so that they flatten to the Color image's alpha.",
+        .grouping = PLUGIN_GROUP_DEEP,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .outputKind = eDataKindDeep,
+        .inputs = kDeepRecolorInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 

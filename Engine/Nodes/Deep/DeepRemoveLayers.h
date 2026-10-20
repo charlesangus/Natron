@@ -46,6 +46,10 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kDeepRemoveLayersInputs[] = {
+    InputSpec { .label = "Source", .kind = eDataKindDeep },
+};
+
 /**
  * @brief Takes layers out of a deep stream (remove), or keeps only the chosen ones (keep), by
  * dropping channel buffers by name; every kept buffer and the sample table stay shared with the
@@ -119,7 +123,25 @@ private:
         }
     };
 
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_DEEPREMOVELAYERS,
+        .label = "DeepRemoveLayers",
+        .description = "Remove the chosen layers from the deep stream, or keep only them. Every other layer passes "
+                       "through unchanged. The colour views rgba, rgb and alpha share one colour plane, and deep "
+                       "alpha is part of every sample: removing rgba or rgb drops R, G and B, removing alpha "
+                       "changes nothing, and A is always kept. Z and ZBack are always kept. A layer the input "
+                       "does not have is ignored.",
+        .grouping = PLUGIN_GROUP_DEEP,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .outputKind = eDataKindDeep,
+        .inputs = kDeepRemoveLayersInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 
@@ -133,13 +155,8 @@ private:
 
     virtual void onChannelsSelectorRefreshed() OVERRIDE FINAL;
 
-    virtual bool isIdentity(double time,
-                            const RenderScale& scale,
-                            const RectI& roi,
-                            ViewIdx view,
-                            double* inputTime,
-                            ViewIdx* inputView,
-                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual Route route(double time,
+                        ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual StatusEnum renderDeep(const DeepRenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 

@@ -50,6 +50,19 @@ NATRON_NAMESPACE_ENTER
 class DeepRead
     : public NativeEffectBase {
 public:
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_DEEPREAD,
+        .label = "DeepRead",
+        .description = "Read a deep EXR file, scanline or tiled, as deep data: every pixel's "
+                       "sample list and every channel the file carries, including deep AOVs, "
+                       "in the order the file stores them.",
+        .grouping = PLUGIN_GROUP_DEEP,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .isWriter = false,
+        .outputKind = eDataKindDeep,
+    };
+
     static EffectInstance* BuildEffect(NodePtr node)
     {
         return new DeepRead(node);
@@ -78,7 +91,7 @@ public:
     virtual void purgeCaches() OVERRIDE FINAL;
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 

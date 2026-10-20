@@ -72,25 +72,10 @@ pixelIndex(const DeepImage& image,
 }
 } // anonymous namespace
 
-NativePluginDescription
-DeepWrite::getNativePluginDescription() const
+const NodeSpec*
+DeepWrite::nodeSpec() const
 {
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_DEEPWRITE;
-    desc.label = "DeepWrite";
-    desc.description = tr("Write deep data to a deep EXR file, as a scanline or a tiled part, "
-                          "and pass it through unchanged. Every channel is written under its own "
-                          "name, deep AOVs included, and samples keep the order they arrived in.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_DEEP;
-    desc.majorVersion = 1;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindDeep));
-    desc.outputKind = eDataKindDeep;
-    desc.isWriter = true;
-
-    return desc;
+    return staticNodeSpec<kNodeSpec>();
 }
 
 void

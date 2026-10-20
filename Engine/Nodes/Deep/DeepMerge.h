@@ -37,6 +37,11 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kDeepMergeInputs[] = {
+    InputSpec { .label = "A", .kind = eDataKindDeep, .role = InputRole::Source, .optional = true },
+    InputSpec { .label = "B", .kind = eDataKindDeep, .role = InputRole::Source, .optional = true },
+};
+
 /**
  * @brief Merges two deep inputs, A and B, one of two ways.
  *
@@ -56,6 +61,21 @@ NATRON_NAMESPACE_ENTER
 class DeepMerge
     : public NativeEffectBase {
 public:
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_DEEPMERGE,
+        .label = "DeepMerge",
+        .description = "Merge two deep inputs. Combine puts both inputs' samples into one "
+                       "deep pixel, sorted front-to-back and left untidied; Holdout keeps A's "
+                       "samples, each attenuated by the transparency B accumulates in front of "
+                       "it, and drops B's colour.",
+        .grouping = PLUGIN_GROUP_DEEP,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .isWriter = false,
+        .outputKind = eDataKindDeep,
+        .inputs = kDeepMergeInputs,
+    };
+
     enum OperationEnum {
         eOperationCombine = 0,
         eOperationHoldout
@@ -88,7 +108,7 @@ public:
                                std::list<ImageLayerDesc>* layers) OVERRIDE FINAL;
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 

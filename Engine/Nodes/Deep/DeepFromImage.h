@@ -45,6 +45,11 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kDeepFromImageInputs[] = {
+    InputSpec { .label = "Source", .kind = eDataKindImage, .role = InputRole::Source, .optional = false },
+    InputSpec { .label = "Z", .kind = eDataKindImage, .role = InputRole::Aux, .optional = true },
+};
+
 /**
  * @brief Turns an image into deep data: one point sample per pixel holding the pixel's value of
  * every channel the channels knob selects, under the deep channel names DeepLayers::channelName()
@@ -56,6 +61,23 @@ NATRON_NAMESPACE_ENTER
 class DeepFromImage
     : public NativeEffectBase {
 public:
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_DEEPFROMIMAGE,
+        .label = "DeepFromImage",
+        .description = "Turn an image into deep data: one point sample per pixel carrying the "
+                       "pixel's value of every channel Channels selects, at the depth read from "
+                       "the Z Channel of the Z input, or at a constant depth when Z is not "
+                       "connected. The deep alpha A is always written, from the image's alpha "
+                       "(1 for an image without one), and a pixel whose alpha is 0 gets no "
+                       "sample.",
+        .grouping = PLUGIN_GROUP_DEEP,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .isWriter = false,
+        .outputKind = eDataKindDeep,
+        .inputs = kDeepFromImageInputs,
+    };
+
     static EffectInstance* BuildEffect(NodePtr node)
     {
         return new DeepFromImage(node);
@@ -105,7 +127,7 @@ private:
         }
     };
 
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 

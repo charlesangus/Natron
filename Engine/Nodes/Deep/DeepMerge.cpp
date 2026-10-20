@@ -364,26 +364,10 @@ writeHeldOutSamples(const DeepPixelView& aPixel,
 }
 } // anonymous namespace
 
-NativePluginDescription
-DeepMerge::getNativePluginDescription() const
+const NodeSpec*
+DeepMerge::nodeSpec() const
 {
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_DEEPMERGE;
-    desc.label = "DeepMerge";
-    desc.description = tr("Merge two deep inputs. Combine puts both inputs' samples into one "
-                          "deep pixel, sorted front-to-back and left untidied; Holdout keeps A's "
-                          "samples, each attenuated by the transparency B accumulates in front of "
-                          "it, and drops B's colour.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_DEEP;
-    desc.majorVersion = 1;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("A", true, eDataKindDeep));
-    desc.inputs.push_back(NativeInputDescription("B", true, eDataKindDeep));
-    desc.outputKind = eDataKindDeep;
-
-    return desc;
+    return staticNodeSpec<kNodeSpec>();
 }
 
 void

@@ -37,6 +37,10 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kDeepWriteInputs[] = {
+    InputSpec { .label = "Source", .kind = eDataKindDeep, .role = InputRole::Source, .optional = false },
+};
+
 /**
  * @brief Writes its deep input to a deep EXR file -- a scanline part, or a tiled one -- and
  * passes that same deep data through to its own output, so it can sit anywhere in a chain.
@@ -49,6 +53,20 @@ NATRON_NAMESPACE_ENTER
 class DeepWrite
     : public NativeEffectBase {
 public:
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_DEEPWRITE,
+        .label = "DeepWrite",
+        .description = "Write deep data to a deep EXR file, as a scanline or a tiled part, "
+                       "and pass it through unchanged. Every channel is written under its own "
+                       "name, deep AOVs included, and samples keep the order they arrived in.",
+        .grouping = PLUGIN_GROUP_DEEP,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .isWriter = true,
+        .outputKind = eDataKindDeep,
+        .inputs = kDeepWriteInputs,
+    };
+
     static EffectInstance* BuildEffect(NodePtr node)
     {
         return new DeepWrite(node);
@@ -67,7 +85,7 @@ public:
     }
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 

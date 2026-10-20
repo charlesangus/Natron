@@ -46,28 +46,10 @@
 
 NATRON_NAMESPACE_ENTER
 
-NativePluginDescription
-DeepFromImage::getNativePluginDescription() const
+const NodeSpec*
+DeepFromImage::nodeSpec() const
 {
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_DEEPFROMIMAGE;
-    desc.label = "DeepFromImage";
-    desc.description = tr("Turn an image into deep data: one point sample per pixel carrying the "
-                          "pixel's value of every channel Channels selects, at the depth read from "
-                          "the Z Channel of the Z input, or at a constant depth when Z is not "
-                          "connected. The deep alpha A is always written, from the image's alpha "
-                          "(1 for an image without one), and a pixel whose alpha is 0 gets no "
-                          "sample.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_DEEP;
-    desc.majorVersion = 1;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindImage));
-    desc.inputs.push_back(NativeInputDescription("Z", true, eDataKindImage));
-    desc.outputKind = eDataKindDeep;
-
-    return desc;
+    return staticNodeSpec<kNodeSpec>();
 }
 
 void

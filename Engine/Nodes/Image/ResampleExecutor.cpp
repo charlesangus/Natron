@@ -445,8 +445,9 @@ runResampleCpu(EffectInstance& effect,
         const int nComps = plane.nComps;
         const bool hasSource = plane.source.isValid();
         const std::size_t rowSize = (std::size_t)width * nComps;
-        std::vector<float> resampledRow(rowSize);
-        std::vector<float> referenceRow(rowSize);
+        const bool direct = stageFinishIsCopy(doMask, mix, false, nComps, plane.channels);
+        std::vector<float> resampledRow(direct ? 0 : rowSize);
+        std::vector<float> referenceRow(direct ? 0 : rowSize);
         std::vector<float> maskRow(doMask ? width : 0);
 
         for (int y = band.y1; y < band.y2; ++y) {
@@ -458,15 +459,19 @@ runResampleCpu(EffectInstance& effect,
             if (!dstPix) {
                 continue;
             }
+            float* const outRow = direct ? dstPix : resampledRow.data();
             if (!hasSource) {
-                std::fill(resampledRow.begin(), resampledRow.end(), 0.f);
+                std::fill(outRow, outRow + rowSize, 0.f);
             } else if (matrix) {
-                Resampler::resampleRow(plane.params, plane.source, y, roi.x1, roi.x2, &resampledRow[0]);
+                Resampler::resampleRow(plane.params, plane.source, y, roi.x1, roi.x2, outRow);
             } else {
-                readSourceImageRow(plane.source, plane.readable, roi.x1 - offset.x, y - offset.y, width, &resampledRow[0]);
+                readSourceImageRow(plane.source, plane.readable, roi.x1 - offset.x, y - offset.y, width, outRow);
             }
             if (!matrix && plane.src && request.rowMatte) {
-                request.rowMatte(y, roi.x1, width, nComps, &resampledRow[0]);
+                request.rowMatte(y, roi.x1, width, nComps, outRow);
+            }
+            if (direct) {
+                continue;
             }
             if (readsReference) {
                 if (plane.resampleReference) {

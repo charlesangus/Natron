@@ -198,6 +198,17 @@ void makeStageRowBands(const RectI& roi,
                        std::vector<RectI>* bands);
 
 /**
+ * @brief Whether the CPU executors' finish over an nComps-channel plane leaves the op's output
+ * row unchanged: no mask applied, a mix of 1, no divisor, at most 4 channels and every one of
+ * them processed. The op may then write straight into the output image.
+ **/
+bool stageFinishIsCopy(bool applyMask,
+                       float mix,
+                       bool hasDivisor,
+                       int nComps,
+                       const std::bitset<4>& channels) WARN_UNUSED_RETURN;
+
+/**
  * @brief resolveStagePlan() for a GPU render of query: the processed channels are the query's,
  * and the MaskMix stage applies a mask exactly when query.hasMask says so. Placement sets
  * hasMask from this same plan, so the two only differ for a caller that hands over a query of

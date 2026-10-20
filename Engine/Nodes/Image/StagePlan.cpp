@@ -578,6 +578,25 @@ makeStageRowBands(const RectI& roi,
     }
 }
 
+bool
+stageFinishIsCopy(bool applyMask,
+                  float mix,
+                  bool hasDivisor,
+                  int nComps,
+                  const std::bitset<4>& channels)
+{
+    if (applyMask || (mix != 1.f) || hasDivisor || (nComps > 4)) {
+        return false;
+    }
+    for (int c = 0; c < nComps; ++c) {
+        if (!channels[pixelKernelChannelBit(nComps, c)]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 StatusEnum
 runStagesCpu(EffectInstance& effect,
              const StagePlan& plan,
@@ -695,9 +714,13 @@ runStagesCpu(EffectInstance& effect,
         const PassExec::PlaneJob& job = jobs[band.job];
         const int nComps = job.nComps;
         const std::size_t rowSize = (std::size_t)width * nComps;
-        std::vector<float> sourceRow(rowSize);
-        std::vector<float> dividedRow(rowSize);
-        std::vector<float> kernelRow(rowSize);
+        const bool direct = stageFinishIsCopy(doMask, mix, bool(job.divisor), nComps, job.channels);
+        // The same image fetched twice reads the same row, so the source row serves as the base.
+        const bool baseIsSource = (nFolded > 0) && job.src && (jobSources[band.job][0].image == job.src);
+        const bool readsSource = (nFolded == 0) || !direct || baseIsSource;
+        std::vector<float> sourceRow(readsSource ? rowSize : 0);
+        std::vector<float> dividedRow(job.divisor ? rowSize : 0);
+        std::vector<float> kernelRow(direct ? 0 : rowSize);
         std::vector<float> maskRow(doMask ? width : 0);
         std::vector<float> divisorRow(job.divisor ? width : 0);
         // A fold keeps its result in two rows it alternates between, and reads one input row.
@@ -708,15 +731,14 @@ runStagesCpu(EffectInstance& effect,
             foldRows[1].resize(nFolded > 1 ? rowSize : 0);
             inputRow.resize(nFolded > 1 ? rowSize : 0);
         }
-        const float* resultRow = &kernelRow[0];
+        const float* resultRow = kernelRow.data();
 
         RowIO io;
-        io.src[0] = &dividedRow[0];
+        io.src[0] = job.divisor ? dividedRow.data() : sourceRow.data();
         io.nSrc = 1;
         io.mask = doMask ? &maskRow[0] : 0;
         io.divisor = job.divisor ? &divisorRow[0] : 0;
         io.divisorSkipChannel = job.divisor ? job.skipChannel : -1;
-        io.dst = &kernelRow[0];
         io.x0 = roi.x1;
         io.width = width;
         io.nComps = nComps;
@@ -727,9 +749,16 @@ runStagesCpu(EffectInstance& effect,
                 return;
             }
 
-            PassExec::readSourceRow(job.src.get(), job.srcAccess.get(), job.srcBounds, job.srcNComps, roi.x1, y, width, nComps, &sourceRow[0]);
-            std::copy(sourceRow.begin(), sourceRow.end(), dividedRow.begin());
+            float* dstPix = (float*)job.dstAccess->pixelAt(roi.x1, y);
+            if (!dstPix) {
+                continue;
+            }
+
+            if (readsSource) {
+                PassExec::readSourceRow(job.src.get(), job.srcAccess.get(), job.srcBounds, job.srcNComps, roi.x1, y, width, nComps, sourceRow.data());
+            }
             if (job.divisor) {
+                std::copy(sourceRow.begin(), sourceRow.end(), dividedRow.begin());
                 PassExec::readChannelRow(job.divisor.get(), job.divisorAccess.get(), job.divisorBounds, job.divisorNComps, job.divisorChannel, roi.x1, y, width, 1.f, &divisorRow[0]);
                 for (int i = 0; i < width; ++i) {
                     const float d = divisorRow[i];
@@ -750,26 +779,39 @@ runStagesCpu(EffectInstance& effect,
             io.y = y;
             if (nFolded > 0) {
                 const std::vector<SourceImage>& folded = jobSources[band.job];
-                const SourceImage& base = folded[0];
-                PassExec::readSourceRow(base.image.get(), base.access.get(), base.bounds, base.nComps, roi.x1, y, width, nComps, &foldRows[0][0]);
-                int current = 0;
+                const float* result = sourceRow.data();
+                if (!baseIsSource) {
+                    const SourceImage& base = folded[0];
+                    float* baseRow = (direct && (nFolded == 1)) ? dstPix : foldRows[0].data();
+                    PassExec::readSourceRow(base.image.get(), base.access.get(), base.bounds, base.nComps, roi.x1, y, width, nComps, baseRow);
+                    result = baseRow;
+                }
+                // Steps write only to the fold rows or the output, never to the source row the
+                // finish still blends with.
+                int next = 1;
                 for (std::size_t s = 1; s < nFolded; ++s) {
                     const SourceImage& input = folded[s];
                     PassExec::readSourceRow(input.image.get(), input.access.get(), input.bounds, input.nComps, roi.x1, y, width, nComps, &inputRow[0]);
-                    io.src[0] = &foldRows[current][0];
+                    float* stepRow = (direct && ((s + 1) == nFolded)) ? dstPix : foldRows[next].data();
+                    io.src[0] = result;
                     io.src[1] = &inputRow[0];
                     io.nSrc = 2;
-                    io.dst = &foldRows[1 - current][0];
+                    io.dst = stepRow;
                     row(io);
-                    current = 1 - current;
+                    result = stepRow;
+                    next = 1 - next;
                 }
-                resultRow = &foldRows[current][0];
+                resultRow = result;
             } else {
+                io.dst = direct ? dstPix : kernelRow.data();
                 row(io);
+                resultRow = io.dst;
             }
 
-            float* dstPix = (float*)job.dstAccess->pixelAt(roi.x1, y);
-            if (!dstPix) {
+            if (direct) {
+                if (resultRow != dstPix) {
+                    std::copy(resultRow, resultRow + rowSize, dstPix);
+                }
                 continue;
             }
             for (int i = 0; i < width; ++i, dstPix += nComps) {

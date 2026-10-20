@@ -51,7 +51,7 @@ M109 - GPU Region Engine Hardening merged to main as `687f1991a` (#70). This mil
 
 ## Phase 154.1: Measurement
 
-- [ ] M154.P1.T1 — Commit a standalone page-fault probe that mirrors `HostImageMemory`'s allocation
+- [x] M154.P1.T1 — Commit a standalone page-fault probe that mirrors `HostImageMemory`'s allocation
   - files: `tools/bench/page_fault_bench.c` (new), `tools/bench/README.md`
   - approach:
     - A C program in the style of `stream_bench.c`. It allocates N GiB in one of these modes: plain `mmap`; `aligned_alloc(2 MiB)` plus `MADV_HUGEPAGE` (exactly `rawAlloc`); `mmap` aligned to 2 MiB plus `MADV_HUGEPAGE`; or that plus `MADV_POPULATE_WRITE`.
@@ -62,7 +62,7 @@ M109 - GPU Region Engine Hardening merged to main as `687f1991a` (#70). This mil
   - verify: built with `gcc -O2 -pthread`, a 1 GiB run in each mode prints sane numbers in the container. With THP `madvise`, the `MADV_HUGEPAGE` write-only mode shows `AnonHugePages` ≈ the buffer size, and the 4K mode shows 0.
   - size: M
 
-- [ ] M154.P1.T2 — Record peak RSS and THP counters per bench session, and compare against a baseline AppImage
+- [x] M154.P1.T2 — Record peak RSS and THP counters per bench session, and compare against a baseline AppImage
   - files: `tools/bench/gpu_region_bench.sh`, `tools/bench/gpu_region_summary.py`
   - approach:
     - Per session, record `VmHWM` (peak RSS, through `/usr/bin/time -f %M` when present, else by sampling `/proc/<pid>/status`) and `MemAvailable` before the run.
@@ -171,3 +171,4 @@ M109 - GPU Region Engine Hardening merged to main as `687f1991a` (#70). This mil
   - `Engine/GpuRegionTask.cpp` is in M107 (P4.T1, flagged).
   - `Engine/RenderScheduler.cpp` is in M143.P1.T2 and blocked M64.P2.T3 (P4.T1).
   Each of these is rechecked at its task boundary.
+- 2026-10-20 — **M154.P1.T1 (`e5243c54e`) and P1.T2 (`f567fb4ce`), recovered from the previous session's implementers.** Host: 16 CPUs, kernel 6.17, THP `madvise`/`madvise`/`use_zero_page=1`. Probe, 1 GiB, 1 thread, no load: 4K pages 3.6 GB/s write-only, 2.3 read-then-write; `MADV_HUGEPAGE` (aligned or `mmap2m`) 25.4 write-only, 23.7 read-then-write, 26.5 populate. **Read-then-write on a `MADV_HUGEPAGE` buffer still gets huge pages** (AnonHugePages = buffer, 0 fallbacks, 0 splits), at about 2 faults per 2 MiB page and ~7% slower. 4 GiB THP write-only: 24 GB/s on 1 thread, ~27.5 on 4–8. Under a 4-thread memcpy load: 1 thread drops to ~10 GB/s, 4 threads 19–20, 8 threads 18–21. So parallel faulting under load is ~2× one thread, which bears on P2.T2. P1.T2: `/usr/bin/time` isn't on the host, so peak RSS comes from a `python3 -I` `os.wait4` wrapper (`ru_maxrss` of the largest process in the tree). `BENCH_TOPOS` and `BENCH_MODES` were added to narrow a run, defaulting to the old behaviour. A one-pair UHD Erode a-warm check wrote `vmhwm_kb` ~498 MB, `thp_fault_alloc` 128, 0 fallbacks (`.local/m154/p1t2-check/`). Self-test, dry run and shellcheck pass.

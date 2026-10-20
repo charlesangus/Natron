@@ -59,8 +59,14 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/ImagePipelineSpec.h"
+#include "Engine/Nodes/Image/Op.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
+#include "Engine/Nodes/Image/StagePlan.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
+#include "Engine/Nodes/KnobReader.h"
+#include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/NodeSpec.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
@@ -71,84 +77,76 @@
 
 #include <ofxImageEffect.h>
 
-#define kNativeImageTestOpPluginID "test.natron.built-in.NativeImageTestOp"
+#define kStagedImageTestOpPluginID "test.natron.built-in.StagedImageTestOp"
 
 NATRON_NAMESPACE_ENTER
 
-class DoublingTestKernel
-    : public PixelKernel {
-public:
-    virtual void processRow(const RowIO& io) const OVERRIDE FINAL
-    {
-        const float* src = io.src[0];
-        const int count = io.width * io.nComps;
+namespace {
 
-        for (int i = 0; i < count; ++i) {
-            io.dst[i] = 2.f * src[i];
-        }
-    }
+constexpr InputSpec kInputs[] = {
+    InputSpec { .label = "Source" },
+    InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
 };
 
 /**
- * @brief A point operator writing 2 * input, with a mask input, the host "(Un)premult by"
- * selector and R, G and B processed by default.
+ * @brief A Point op writing 2 * input, with a mask input, the host "(Un)premult by" selector and
+ * R, G and B processed by default.
  **/
-class NativeImageTestOp
-    : public NativeImageEffect {
-public:
-    static EffectInstance* BuildEffect(NodePtr n)
+struct DoublingTestOp {
+    struct Params {
+        int unused;
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kStagedImageTestOpPluginID,
+        .label = "Test Staged Image Op",
+        .grouping = "Other/Test",
+        .inputs = kInputs,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = { Stage::Premult, Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .layers = LayerPolicy::color(true, true, true, false),
+        .op = OpKind::Point,
+    };
+
+    Params bake(const KnobReader& /*reader*/) const
     {
-        return new NativeImageTestOp(n);
+        return Params { 0 };
     }
 
-    explicit NativeImageTestOp(NodePtr n)
-        : NativeImageEffect(n, makeTraits())
+    bool isIdentity(const Params& /*params*/) const
     {
+        return false;
     }
 
-    virtual bool isPointOp() const OVERRIDE FINAL
+    void row(const Params& /*params*/,
+             const RowIO& io) const
     {
-        return true;
+        const int nComps = io.nComps;
+        const float* src = io.src[0];
+        float* dst = io.dst;
+
+        for (int x = 0; x < io.width; ++x, src += nComps, dst += nComps) {
+            for (int c = 0; (c < nComps) && (c < 4); ++c) {
+                if (io.channels[pixelKernelChannelBit(nComps, c)]) {
+                    dst[c] = 2.f * src[c];
+                }
+            }
+        }
     }
 
-private:
-    static NativeImageTraits makeTraits()
+    GpuOpRef gpu(const Params& /*params*/) const
     {
-        NativeImageTraits traits;
-
-        traits.hostUnPremult = true;
-        traits.defaultChannels[3] = false;
-
-        return traits;
-    }
-
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        NativePluginDescription desc;
-
-        desc.id = kNativeImageTestOpPluginID;
-        desc.label = "Test Native Image Op";
-        desc.description = "";
-        desc.grouping = "Other/Test";
-        desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindImage));
-        desc.inputs.push_back(NativeInputDescription("Mask", true, eDataKindImage, true));
-        desc.outputKind = eDataKindImage;
-
-        return desc;
-    }
-
-    virtual void initializeKnobs() OVERRIDE FINAL
-    {
-        KnobPagePtr page = createKnob<KnobPage>(std::string("Controls"));
-
-        addMaskMixKnobs(page);
-    }
-
-    virtual PixelKernelPtr makeKernel(const KernelContext& /*context*/) OVERRIDE FINAL
-    {
-        return std::make_shared<DoublingTestKernel>();
+        return GpuOpRef::none();
     }
 };
+
+static_assert(PointOp<DoublingTestOp>);
+
+typedef ImageNode<DoublingTestOp> StagedImageTestOp;
+
+} // namespace
 
 NATRON_NAMESPACE_EXIT
 
@@ -159,15 +157,15 @@ namespace {
 const double kTime = 1.;
 
 void
-registerNativeImageTestOpOnce()
+registerStagedImageTestOpOnce()
 {
     static std::once_flag once;
 
     std::call_once(once, []() {
-        EffectInstancePtr node(NativeImageTestOp::BuildEffect(NodePtr()));
+        EffectInstancePtr node(StagedImageTestOp::BuildEffect(NodePtr()));
         std::map<std::string, void (*)()> functions;
 
-        functions.insert(std::make_pair("BuildEffect", (void (*)())&NativeImageTestOp::BuildEffect));
+        functions.insert(std::make_pair("BuildEffect", (void (*)())&StagedImageTestOp::BuildEffect));
         LibraryBinary* binary = new LibraryBinary(functions);
 
         std::list<std::string> grouping;
@@ -249,12 +247,12 @@ renderColorPlane(const NodePtr& node,
 
 } // namespace
 
-class NativeImageEffectTest
+class StagedImageEffectTest
     : public BaseTest {
 protected:
     virtual void SetUp() OVERRIDE
     {
-        registerNativeImageTestOpOnce();
+        registerStagedImageTestOpOnce();
         BaseTest::SetUp();
     }
 
@@ -269,7 +267,7 @@ protected:
 
     NodePtr createOp(const NodePtr& source)
     {
-        NodePtr op = createNode(QString::fromUtf8(kNativeImageTestOpPluginID));
+        NodePtr op = createNode(QString::fromUtf8(kStagedImageTestOpPluginID));
 
         EXPECT_TRUE(bool(op));
         if (op && source) {
@@ -350,7 +348,7 @@ protected:
     }
 };
 
-TEST_F(NativeImageEffectTest, BaseDeclaresTheHostFacingFlags)
+TEST_F(StagedImageEffectTest, BaseDeclaresTheHostFacingFlags)
 {
     NodePtr op = createOp(createSource());
     ASSERT_TRUE(bool(op));
@@ -385,7 +383,7 @@ TEST_F(NativeImageEffectTest, BaseDeclaresTheHostFacingFlags)
     EXPECT_EQ(std::string("Test"), grouping.back());
 }
 
-TEST_F(NativeImageEffectTest, ProcessInPlaceOnRgbLeavesAlphaBitIdentical)
+TEST_F(StagedImageEffectTest, ProcessInPlaceOnRgbLeavesAlphaBitIdentical)
 {
     NodePtr source = createSource();
     NodePtr op = createOp(source);
@@ -405,7 +403,7 @@ TEST_F(NativeImageEffectTest, ProcessInPlaceOnRgbLeavesAlphaBitIdentical)
     }
 }
 
-TEST_F(NativeImageEffectTest, AlphaOnlyInputProcessesAlpha)
+TEST_F(StagedImageEffectTest, AlphaOnlyInputProcessesAlpha)
 {
     NodePtr source = createSource();
     setParitySourceComponents(source, "alpha");
@@ -428,7 +426,7 @@ TEST_F(NativeImageEffectTest, AlphaOnlyInputProcessesAlpha)
 
 // The in-kernel divide and multiply must give exactly what the host's own pair gives around the
 // same operation.
-TEST_F(NativeImageEffectTest, UnPremultByAlphaMatchesTheHostDivideAndMultiply)
+TEST_F(StagedImageEffectTest, UnPremultByAlphaMatchesTheHostDivideAndMultiply)
 {
     NodePtr source = createSource();
     NodePtr op = createOp(source);
@@ -494,7 +492,7 @@ TEST_F(NativeImageEffectTest, UnPremultByAlphaMatchesTheHostDivideAndMultiply)
     EXPECT_EQ(0, differing);
 }
 
-TEST_F(NativeImageEffectTest, MaskMixAndMaskInvertFollowTheOpenFxArithmetic)
+TEST_F(StagedImageEffectTest, MaskMixAndMaskInvertFollowTheOpenFxArithmetic)
 {
     NodePtr source = createSource();
     NodePtr op = createOp(source);
@@ -528,7 +526,7 @@ TEST_F(NativeImageEffectTest, MaskMixAndMaskInvertFollowTheOpenFxArithmetic)
     }
 }
 
-TEST_F(NativeImageEffectTest, MixZeroAndAMissedMaskAreIdentities)
+TEST_F(StagedImageEffectTest, MixZeroAndAMissedMaskAreIdentities)
 {
     NodePtr source = createSource();
     NodePtr op = createOp(source);
@@ -565,7 +563,7 @@ TEST_F(NativeImageEffectTest, MixZeroAndAMissedMaskAreIdentities)
 
 // Legacy and Task graph renders agree bit for bit, and the scheduler plans every image the
 // render fetches: the mask layer and the divisor layer, here a layer other than colour.
-TEST_F(NativeImageEffectTest, BothSchedulerModesAgreeWithNoUnplannedPull)
+TEST_F(StagedImageEffectTest, BothSchedulerModesAgreeWithNoUnplannedPull)
 {
     NodePtr source = createSource();
     setParitySourceExtraLayer(source, true);
@@ -593,7 +591,7 @@ TEST_F(NativeImageEffectTest, BothSchedulerModesAgreeWithNoUnplannedPull)
     }
 }
 
-TEST_F(NativeImageEffectTest, ChannelsAllRendersEveryPlaneOfAThreeLayerInput)
+TEST_F(StagedImageEffectTest, ChannelsAllRendersEveryPlaneOfAThreeLayerInput)
 {
     NodePtr reader = createThreeLayerReader();
     ASSERT_TRUE(bool(reader));
@@ -640,7 +638,7 @@ expectBandsPartition(const RectI& roi,
 {
     std::vector<RectI> bands;
 
-    NativeImageEffect::makeRowBands(roi, nThreads, &bands);
+    makeStageRowBands(roi, nThreads, &bands);
     ASSERT_EQ(expectedCount, bands.size()) << nThreads << " threads, " << roi.width() << "x" << roi.height();
     int y = roi.y1;
     for (std::size_t i = 0; i < bands.size(); ++i) {
@@ -655,7 +653,7 @@ expectBandsPartition(const RectI& roi,
 
 } // namespace
 
-TEST(NativeImageEffectBands, PartitionCoversTheWindowOnceAndScalesWithThreads)
+TEST(StagedImageEffectBands, PartitionCoversTheWindowOnceAndScalesWithThreads)
 {
     expectBandsPartition(RectI(0, 0, 1920, 1080), 1, 1);
     expectBandsPartition(RectI(0, 0, 1920, 1080), 4, 16);
@@ -666,11 +664,11 @@ TEST(NativeImageEffectBands, PartitionCoversTheWindowOnceAndScalesWithThreads)
     expectBandsPartition(RectI(0, 0, 100000, 2), 8, 2);
 
     std::vector<RectI> bands;
-    NativeImageEffect::makeRowBands(RectI(0, 0, 0, 10), 4, &bands);
+    makeStageRowBands(RectI(0, 0, 0, 10), 4, &bands);
     EXPECT_TRUE(bands.empty());
 }
 
-TEST_F(NativeImageEffectTest, AWindowSplitIntoBandsIsRenderedWhole)
+TEST_F(StagedImageEffectTest, AWindowSplitIntoBandsIsRenderedWhole)
 {
     const int width = 512;
     const int height = 256;
@@ -680,7 +678,7 @@ TEST_F(NativeImageEffectTest, AWindowSplitIntoBandsIsRenderedWhole)
 
     const RectI window(0, 0, width, height);
     std::vector<RectI> bands;
-    NativeImageEffect::makeRowBands(window, 4, &bands);
+    makeStageRowBands(window, 4, &bands);
     ASSERT_GT(bands.size(), 1u);
 
     RenderedPlane in;
@@ -705,7 +703,7 @@ TEST_F(NativeImageEffectTest, AWindowSplitIntoBandsIsRenderedWhole)
     EXPECT_EQ(0, differing);
 }
 
-TEST_F(NativeImageEffectTest, BandsAgreeInBothSchedulerModesWithNoUnplannedPull)
+TEST_F(StagedImageEffectTest, BandsAgreeInBothSchedulerModesWithNoUnplannedPull)
 {
     const int width = 512;
     const int height = 256;
@@ -733,7 +731,7 @@ TEST_F(NativeImageEffectTest, BandsAgreeInBothSchedulerModesWithNoUnplannedPull)
 
 // A pool thread cannot ask EffectInstance::aborted() itself, so a band polling the cancellation
 // on a helper only learns of the abort through the calling thread's timed wait.
-TEST_F(NativeImageEffectTest, AnAbortReachesABandRunningOnAPoolThread)
+TEST_F(StagedImageEffectTest, AnAbortReachesABandRunningOnAPoolThread)
 {
     NodePtr op = createOp(createSource());
     ASSERT_TRUE(bool(op));

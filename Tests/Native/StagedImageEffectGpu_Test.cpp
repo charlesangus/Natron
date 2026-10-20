@@ -31,6 +31,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <list>
 #include <map>
@@ -59,8 +60,12 @@
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/GpuRender.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/ImagePipelineSpec.h"
+#include "Engine/Nodes/Image/Op.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
+#include "Engine/Nodes/KnobReader.h"
+#include "Engine/Nodes/NodeSpec.h"
 #include "Engine/Plugin.h"
 #include "Engine/ViewIdx.h"
 
@@ -70,7 +75,7 @@
 #include "Engine/Gpu/GpuRuntime.h"
 #include "Engine/GpuContext.h"
 
-#include "native_test_pixelwrap_scale_spirv.h"
+#include "staged_test_pixelwrap_scale_spirv.h"
 #endif
 
 #include <ofxImageEffect.h>
@@ -85,7 +90,7 @@ namespace {
 // the node on the CPU.
 std::atomic<int> gScaleKernel(-1);
 
-// When set, makeGpuKernel() hands over a parameter block one byte over the base's limit.
+// When set, the op hands over a parameter block over the 64 KB limit.
 std::atomic<bool> gOversizeParams(false);
 
 const std::size_t kMaxParamBytes = 65536;
@@ -94,10 +99,46 @@ struct ScaleParams {
     float factor;
 };
 
-class ScaleTestKernel
-    : public PixelKernel {
-public:
-    virtual void processRow(const RowIO& io) const OVERRIDE FINAL
+constexpr InputSpec kInputs[] = {
+    InputSpec { .label = "Source" },
+    InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
+};
+
+/**
+ * @brief A Point op scaling its processed channels by 2, with a mask input and the host
+ * "(Un)premult by" selector, R, G and B processed by default. Its GPU kernel is the test kernel
+ * pixelwrap_scale, so the GPU path is the host's alone.
+ **/
+struct GpuScaleTestOp {
+    struct Params {
+        int unused;
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kGpuScaleTestOpPluginID,
+        .label = "Test GPU Scale Op",
+        .grouping = "Other/Test",
+        .inputs = kInputs,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = { Stage::Premult, Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .layers = LayerPolicy::color(true, true, true, false),
+        .op = OpKind::Point,
+    };
+
+    Params bake(const KnobReader& /*reader*/) const
+    {
+        return Params { 0 };
+    }
+
+    bool isIdentity(const Params& /*params*/) const
+    {
+        return false;
+    }
+
+    void row(const Params& /*params*/,
+             const RowIO& io) const
     {
         const int nComps = io.nComps;
         const float* src = io.src[0];
@@ -111,90 +152,28 @@ public:
             }
         }
     }
-};
-
-/**
- * @brief A point operator scaling its processed channels by 2, with a mask input and the host
- * "(Un)premult by" selector, R, G and B processed by default. Its GPU kernel is the test kernel
- * pixelwrap_scale, so the GPU path is the base's alone.
- **/
-class GpuScaleTestOp
-    : public NativeImageEffect {
-public:
-    static EffectInstance* BuildEffect(NodePtr n)
-    {
-        return new GpuScaleTestOp(n);
-    }
-
-    explicit GpuScaleTestOp(NodePtr n)
-        : NativeImageEffect(n, makeTraits())
-    {
-    }
-
-    virtual bool isPointOp() const OVERRIDE FINAL
-    {
-        return true;
-    }
-
-private:
-    static NativeImageTraits makeTraits()
-    {
-        NativeImageTraits traits;
-
-        traits.hostUnPremult = true;
-        traits.defaultChannels[3] = false;
-
-        return traits;
-    }
-
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        NativePluginDescription desc;
-
-        desc.id = kGpuScaleTestOpPluginID;
-        desc.label = "Test GPU Scale Op";
-        desc.description = "";
-        desc.grouping = "Other/Test";
-        desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindImage));
-        desc.inputs.push_back(NativeInputDescription("Mask", true, eDataKindImage, true));
-        desc.outputKind = eDataKindImage;
-
-        return desc;
-    }
-
-    virtual void initializeKnobs() OVERRIDE FINAL
-    {
-        KnobPagePtr page = createKnob<KnobPage>(std::string("Controls"));
-
-        addMaskMixKnobs(page);
-    }
-
-    virtual PixelKernelPtr makeKernel(const KernelContext& /*context*/) OVERRIDE FINAL
-    {
-        return std::make_shared<ScaleTestKernel>();
-    }
-
-    virtual int gpuKernelId(const GpuQuery& /*query*/) const OVERRIDE FINAL
-    {
-        return gScaleKernel.load();
-    }
 
     // pixelwrap_scale ignores its parameters; they are handed over so the upload path runs.
-    virtual bool makeGpuKernel(const KernelContext& /*context*/,
-                               PixelKernelGpu* gpu) OVERRIDE FINAL
+    GpuOpRef gpu(const Params& /*params*/) const
     {
-        gpu->kernel = gScaleKernel.load();
-        if (gOversizeParams.load()) {
-            gpu->params.assign(kMaxParamBytes + 1, std::byte(0));
-        } else {
-            ScaleParams p;
-            p.factor = 2.f;
-            gpu->setParams(p);
-        }
+        const int kernel = gScaleKernel.load();
 
-        return true;
+        if (kernel < 0) {
+            return GpuOpRef::none();
+        }
+        if (gOversizeParams.load()) {
+            return GpuOpRef::packed(kernel, std::vector<std::uint32_t>(kMaxParamBytes / sizeof(std::uint32_t) + 1));
+        }
+        ScaleParams p;
+        p.factor = 2.f;
+
+        return GpuOpRef::compiled(kernel, p);
     }
 };
+
+static_assert(PointOp<GpuScaleTestOp>);
+
+typedef ImageNode<GpuScaleTestOp> GpuScaleTestNode;
 
 const double kTime = 1.;
 
@@ -204,10 +183,10 @@ registerGpuScaleTestOpOnce()
     static std::once_flag once;
 
     std::call_once(once, []() {
-        EffectInstancePtr node(GpuScaleTestOp::BuildEffect(NodePtr()));
+        EffectInstancePtr node(GpuScaleTestNode::BuildEffect(NodePtr()));
         std::map<std::string, void (*)()> functions;
 
-        functions.insert(std::make_pair("BuildEffect", (void (*)())&GpuScaleTestOp::BuildEffect));
+        functions.insert(std::make_pair("BuildEffect", (void (*)())&GpuScaleTestNode::BuildEffect));
         LibraryBinary* binary = new LibraryBinary(functions);
 
         std::list<std::string> grouping;
@@ -321,7 +300,7 @@ GpuQuery
 queryFor(const NodePtr& op,
          const ImageLayerDesc& plane)
 {
-    NativeImageEffect* effect = dynamic_cast<NativeImageEffect*>(op->getEffectInstance().get());
+    StagedImageEffect* effect = dynamic_cast<StagedImageEffect*>(op->getEffectInstance().get());
     GpuQuery q;
 
     q.time = kTime;
@@ -392,12 +371,12 @@ scaleKernelDesc()
 {
     gpu::GpuKernelDesc d;
 
-    d.spirv = native_test_pixelwrap_scale_spirv;
-    d.spirvWords = native_test_pixelwrap_scale_spirv_words;
-    d.entry = native_test_pixelwrap_scale_entry;
-    d.storageBufferCount = native_test_pixelwrap_scale_storage_buffers;
-    d.pushConstantBytes = native_test_pixelwrap_scale_push_bytes;
-    d.groupSize = { native_test_pixelwrap_scale_group_size[0], native_test_pixelwrap_scale_group_size[1], native_test_pixelwrap_scale_group_size[2] };
+    d.spirv = staged_test_pixelwrap_scale_spirv;
+    d.spirvWords = staged_test_pixelwrap_scale_spirv_words;
+    d.entry = staged_test_pixelwrap_scale_entry;
+    d.storageBufferCount = staged_test_pixelwrap_scale_storage_buffers;
+    d.pushConstantBytes = staged_test_pixelwrap_scale_push_bytes;
+    d.groupSize = { staged_test_pixelwrap_scale_group_size[0], staged_test_pixelwrap_scale_group_size[1], staged_test_pixelwrap_scale_group_size[2] };
 
     return d;
 }
@@ -409,7 +388,7 @@ NATRON_NAMESPACE_EXIT
 
 NATRON_NAMESPACE_USING
 
-class NativeImageEffectGpuTest
+class StagedImageEffectGpuTest
     : public BaseTest {
 protected:
     virtual void SetUp() OVERRIDE
@@ -502,17 +481,17 @@ protected:
         return channels;
     }
 
-    static NativeImageEffect* effectOf(const NodePtr& node)
+    static StagedImageEffect* effectOf(const NodePtr& node)
     {
-        return node ? dynamic_cast<NativeImageEffect*>(node->getEffectInstance().get()) : NULL;
+        return node ? dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get()) : NULL;
     }
 };
 
-TEST_F(NativeImageEffectGpuTest, BaseAcceptsAPointOpOnlyWithAKernel)
+TEST_F(StagedImageEffectGpuTest, HostAcceptsAPointOpOnlyWithAKernel)
 {
     NodePtr op = createOp(createSource("rgba"));
     ASSERT_TRUE(bool(op));
-    NativeImageEffect* effect = effectOf(op);
+    StagedImageEffect* effect = effectOf(op);
     ASSERT_TRUE(effect != NULL);
 
     GpuQuery q;
@@ -561,17 +540,18 @@ TEST_F(NativeImageEffectGpuTest, BaseAcceptsAPointOpOnlyWithAKernel)
 
     // A point op naming no kernel stays on the CPU however plain its query.
     gScaleKernel = -1;
-    ASSERT_TRUE(effect->isPointOp());
+    ASSERT_TRUE(effect->opKind().has_value());
+    ASSERT_EQ(OpKind::Point, *effect->opKind());
     EXPECT_FALSE(effect->canRenderOnGpu(q));
 }
 
 #ifdef NATRON_HAVE_GPU
 
-// The base's renderGpu() against the node's own render() over the parity sources: channel
+// The host's renderGpu() against the node's own render() over the parity sources: channel
 // layouts, channel subsets, masks (partly covering, inverted), mix and "(Un)premult by" channels
 // whose values include exact 0, negatives and small ramps, with a source smaller than the window
 // and views at offsets and row strides.
-TEST_F(NativeImageEffectGpuTest, RenderGpuMatchesTheCpuRender)
+TEST_F(StagedImageEffectGpuTest, RenderGpuMatchesTheCpuRender)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
     if (!createRuntime(runtime)) {
@@ -598,7 +578,7 @@ TEST_F(NativeImageEffectGpuTest, RenderGpuMatchesTheCpuRender)
         NodePtr op = createOp(source);
         ASSERT_TRUE(bool(op));
         ASSERT_TRUE(bool(connectMask(op, 8, 4, in.mask)));
-        NativeImageEffect* effect = effectOf(op);
+        StagedImageEffect* effect = effectOf(op);
         ASSERT_TRUE(effect != NULL);
         const int maskInput = effect->getMaskInput();
         ASSERT_GE(maskInput, 0);
@@ -718,7 +698,7 @@ TEST_F(NativeImageEffectGpuTest, RenderGpuMatchesTheCpuRender)
     EXPECT_GT(nDivided, 0);
 }
 
-TEST_F(NativeImageEffectGpuTest, RenderGpuRefusesParametersOverTheLimit)
+TEST_F(StagedImageEffectGpuTest, RenderGpuRefusesParametersOverTheLimit)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
     if (!createRuntime(runtime)) {
@@ -726,7 +706,7 @@ TEST_F(NativeImageEffectGpuTest, RenderGpuRefusesParametersOverTheLimit)
     }
     NodePtr op = createOp(createSource("rgba"));
     ASSERT_TRUE(bool(op));
-    NativeImageEffect* effect = effectOf(op);
+    StagedImageEffect* effect = effectOf(op);
     ASSERT_TRUE(effect != NULL);
     gScaleKernel = (int)runtime->runtime().registerKernel(scaleKernelDesc());
     gOversizeParams = true;
@@ -743,13 +723,13 @@ TEST_F(NativeImageEffectGpuTest, RenderGpuRefusesParametersOverTheLimit)
     args.output.bounds = rect;
     args.output.rowStrideFloats = rect.width() * 4;
     args.output.nComps = 4;
-    ASSERT_TRUE(effect->canRenderOnGpu(args.query));
+    EXPECT_FALSE(effect->canRenderOnGpu(args.query));
     EXPECT_EQ(eStatusFailed, effect->renderGpu(args));
 }
 
 // The scheduler places the node in a region through makeGpuQueryForTask() and the region engine
-// renders it with the base's renderGpu(), masked and divided by alpha too.
-TEST_F(NativeImageEffectGpuTest, RunsInARegionAndMatchesTheCpuFrame)
+// renders it with the host's renderGpu(), masked and divided by alpha too.
+TEST_F(StagedImageEffectGpuTest, RunsInARegionAndMatchesTheCpuFrame)
 {
     NodePtr source = createSource("rgba");
     NodePtr op = createOp(source);

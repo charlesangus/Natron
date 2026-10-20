@@ -147,10 +147,10 @@ target_link_libraries(Tests
 if(NATRON_GPU)
     include(${CMAKE_SOURCE_DIR}/cmake/FetchSlang.cmake)
     include(${CMAKE_SOURCE_DIR}/cmake/SlangKernels.cmake)
-    # NativeImageEffectGpu_Test registers this at run time as its test node's GPU kernel. GpuTests
+    # StagedImageEffectGpu_Test registers this at run time as its test node's GPU kernel. GpuTests
     # already owns a target named pixelwrap_scale.
-    slang_add_kernel(native_test_pixelwrap_scale ${CMAKE_SOURCE_DIR}/Engine/Gpu/Kernels/pixelwrap.slang ENTRY pixelwrap_scale)
-    target_link_libraries(Tests PRIVATE native_test_pixelwrap_scale)
+    slang_add_kernel(staged_test_pixelwrap_scale ${CMAKE_SOURCE_DIR}/Engine/Gpu/Kernels/pixelwrap.slang ENTRY pixelwrap_scale)
+    target_link_libraries(Tests PRIVATE staged_test_pixelwrap_scale)
 endif()
 # Compiler, build type and the flags that set optimisation and FMA contraction, so fast
 # (Release at -O1), release (RelWithDebInfo) and debug builds stamp distinct goldens.

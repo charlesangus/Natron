@@ -124,13 +124,13 @@ Nothing native or host-side renders through GL any more:
   - verify: Phase build. ctest `GLScheduler.*`, `RenderScheduler*`, `ViewerScheduler*` and `ChannelSetRender*` are green on CI (GLScheduler skips there). `Tests/gui/run-gl-tests.sh 'GLScheduler.*'` is green in natron-dev.
   - size: L
 
-- [ ] M108.P1.T3 — Delete the GL branches of the mask-mix and copy-channels wrappers
+- [x] M108.P1.T3 — Delete the GL branches of the mask-mix and copy-channels wrappers
   - files: `Engine/Image.h`, `Engine/ImageMaskMix.cpp`, `Engine/ImageCopyChannels.cpp`
   - approach: Remove the `eStorageModeGLTex` blocks (`ImageMaskMix.cpp:217-260`, `ImageCopyChannels.cpp:451-480` and the `extractChannels` check at `:544`), the `GLShader.h`/`OSGLContext.h` includes, and the `glContext`/`glMaskChannel` parameters of `applyMaskMix` and `copyUnProcessedChannels` in `Image.h`. P1.T2 stopped passing them, so the callers already compile without them. Delete the mask assert's GL clause.
   - verify: Phase build. `grep -n 'eStorageModeGLTex\|getGLTexture\|glContext\|GLShader' Engine/ImageMaskMix.cpp Engine/ImageCopyChannels.cpp` is empty. ctest `ChannelSetRender*` and `Native*` mask/mix cases are green.
   - size: M
 
-- [ ] M108.P1.T4 — Delete GL fill, GL→GL paste and the premult/convert GL checks
+- [x] M108.P1.T4 — Delete GL fill, GL→GL paste and the premult/convert GL checks
   - files: `Engine/Image.h`, `Engine/Image.cpp`, `Engine/ImagePremult.cpp`, `Engine/ImageConvert.cpp`
   - approach:
     - Delete the GL branches of `fill`/`fillZero`/`fillBoundsZero` (`Image.cpp:1463-1520, 1525, 1571`) and their `glContext` parameters.
@@ -258,3 +258,4 @@ Nothing native or host-side renders through GL any more:
 - 2026-10-20 — **Three design calls (user, on the consultant's recommendations):** GL-rendered output keeps today's no-cache, full-RoI policy, revisited in M86 - OFX 1.5 GPU Suites; under Auto the GL suite never uses a software GL renderer, and only `NATRON_GPU=force` enables llvmpipe; `--opengl` is removed outright (hard cut).
 - 2026-10-20 — **M108.P1.T1 (`ec34cf6dc`):** `Tests/gui/run-gl-tests.sh` uses display 78 (override `GL_TEST_DISPLAY`) so it never clashes with the GUI runner's 79, and takes `OFX_PLUGIN_PATH` from `run-gui-test.sh`. Only `bash -n` has run; shellcheck isn't on the host. The `GLScheduler.*` no-skip run is owed to the Phase 108.1 build.
 - 2026-10-20 — **M108.P1.T2 (`a8167fb7d`), syntax-checked only.** `renderRoI` carries a separate `useOpenGL` and keeps `storage` RAM, so the cache lookup, input pre-render and layer allocation are all RAM. Readback is the static `readBackOpenGLRender` (`EffectInstance.cpp` ~2740). It pastes straight into a float layer with matching components; otherwise it reads into a float temp with the plugin's components and calls `convertToFormat`. Float, because `pasteFrom` sizes its buffer from the destination depth while reading `GL_FLOAT`. Layers are matched by image pointer, not key. The `useOpenGL` argument at ~2590 was left as is: it only feeds `isDoingOpenGLRender`, which nothing reads. The GL branches of `getImageFromCacheAndConvertIfNeeded` are now dead but stay, since `RotoContext.cpp` shares the signature. Phase build to check: the texture is freed after the render's own attacher detaches, relying on renderRoI's `glContextLocker` keeping the context current.
+- 2026-10-20 — **M108.P1.T3 and P1.T4 landed as one commit (`514bde9c2`)** because both edit the same `Image.h` declarations; syntax-checked only (NDEBUG, so asserts unexercised). `applyMaskMix` now takes a one-channel mask, and its `maskChannel` parameter is gone. `Image.cpp` keeps its `GLShader.h`/`OSGLContext.h`/`GPUContextPool.h` includes, because the kept RAM↔GL `pasteFrom` branches use `getFBOId()`/`getPBOId()` and `glCheckError`; P1.T5 must leave `OSGLContext.h` available to it. No caller needed changes.

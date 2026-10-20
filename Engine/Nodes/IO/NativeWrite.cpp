@@ -837,24 +837,6 @@ NativeWrite::NativeWrite(NodePtr node)
 {
 }
 
-NativePluginDescription
-NativeWrite::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_WRITE;
-    desc.label = "Write";
-    desc.description = tr("Write an image or image sequence.").toStdString();
-    desc.grouping = PLUGIN_GROUP_IMAGE;
-    desc.majorVersion = PLUGIN_MAJOR_NATRON_WRITE;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindImage));
-    desc.outputKind = eDataKindImage;
-    desc.isWriter = true;
-
-    return desc;
-}
-
 void
 NativeWrite::initializeKnobs()
 {

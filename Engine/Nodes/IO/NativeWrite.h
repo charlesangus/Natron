@@ -201,7 +201,25 @@ private:
         double par;
     };
 
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source" },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_WRITE,
+        .label = "Write",
+        .description = "Write an image or image sequence.",
+        .grouping = PLUGIN_GROUP_IMAGE,
+        .majorVersion = PLUGIN_MAJOR_NATRON_WRITE,
+        .minorVersion = 0,
+        .isWriter = true,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 

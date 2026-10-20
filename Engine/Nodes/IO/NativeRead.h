@@ -131,7 +131,19 @@ public:
     static void setFrameListingScannedHookForTests(const std::function<void()>& hook);
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_READ,
+        .label = "Read",
+        .description = "Read an image or image sequence.",
+        .grouping = PLUGIN_GROUP_IMAGE,
+        .majorVersion = PLUGIN_MAJOR_NATRON_READ,
+        .minorVersion = 0,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 

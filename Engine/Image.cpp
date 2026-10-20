@@ -34,7 +34,6 @@
 #include <QDebug>
 
 #include "Engine/AppManager.h"
-#include "Engine/GLShader.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/PoolParallelFor.h"

@@ -170,14 +170,6 @@ public:
 
 
     /**
-     * @brief Returns one of the built-in shaders, used in the Image class.
-     * Note: this context must be made current before calling this function
-     **/
-    GLShaderPtr getOrCreateFillShader();
-    GLShaderPtr getOrCreateMaskMixShader(bool maskEnabled);
-    GLShaderPtr getOrCreateCopyUnprocessedChannelsShader(bool doR, bool doG, bool doB, bool doA);
-
-    /**
      * @brief Same as setContextCurrent() except that it should be used to bind the context to perform NON-RENDER operations!
      **/
     void setContextCurrentNoRender();

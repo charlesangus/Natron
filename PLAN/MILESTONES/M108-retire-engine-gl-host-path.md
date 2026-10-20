@@ -274,3 +274,4 @@ Nothing native or host-side renders through GL any more:
   - **Strict GL (`GLScheduler.*:GlHostWrap.*`):** 6 of 7 pass. `GlHostWrap.MixMaskAndChannelSubsetTogether` fails at `GlHostWrap_Test.cpp:460`: the unprocessed blue channel is not bit-exact with the source (both print 0.175431).
   - **Full ctest:** 2549/2550 on RADV and lavapipe in both scheduler modes. The one failure is the same test.
   - A fixer is finding whether the engine or the test is at fault.
+- 2026-10-20 — **The channel-subset failure was an engine bug, now fixed in `71b2e3f63`.** `renderHandler` copied unprocessed channels back from the source and only then ran `applyMaskMix`. The mix blends every channel in float, so it rounded the bits it had just copied, on the CPU path as well as GL. The copy now runs after the mix. The strict GL run passes 7/7, and a ctest subset of 538 mask, mix, channel and image tests passes on RADV with taskgraph.

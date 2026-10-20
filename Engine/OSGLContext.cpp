@@ -42,6 +42,7 @@
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/GPUContextPool.h"
+#include "Engine/GpuDeviceList.h"
 #include "Global/FloatingPointExceptions.h"
 
 NATRON_NAMESPACE_ENTER
@@ -496,6 +497,110 @@ OSGLContext::stringInExtensionString(const char* string,
     return true;
 }
 
+
+// GL_DEVICE_UUID_EXT from EXT_external_objects, which the bundled glad does not generate.
+static const GLenum kGlDeviceUuidExt = 0x9597;
+
+bool
+OSGLContext::readCurrentDeviceUuid(void (*getUnsignedBytei_vEXT)(void),
+                                   std::array<uint8_t, 16>* uuid)
+{
+    if (!getUnsignedBytei_vEXT || !uuid) {
+        return false;
+    }
+    const char* extensions = reinterpret_cast<const char*>( glGetString(GL_EXTENSIONS) );
+    if (!extensions) {
+        return false;
+    }
+    if ( !stringInExtensionString("GL_EXT_memory_object", extensions) &&
+         !stringInExtensionString("GL_EXT_semaphore", extensions) ) {
+        return false;
+    }
+    typedef void (APIENTRYP GetUnsignedBytei_vEXTProc)(GLenum target, GLuint index, GLubyte* data);
+    GetUnsignedBytei_vEXTProc getUuid = reinterpret_cast<GetUnsignedBytei_vEXTProc>(getUnsignedBytei_vEXT);
+    while (glGetError() != GL_NO_ERROR) {
+    }
+    std::array<uint8_t, 16> u {};
+    getUuid(kGlDeviceUuidExt, 0, u.data());
+    if (glGetError() != GL_NO_ERROR) {
+        return false;
+    }
+    *uuid = u;
+    return true;
+}
+
+bool
+OSGLContext::isSoftwareRendererName(const std::string& rendererName)
+{
+    static const char* const softwareNames[] = {
+        "llvmpipe", "softpipe", "swrast", "Software Rasterizer",
+    };
+    for (const char* name : softwareNames) {
+        if (rendererName.find(name) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+GLRendererPick
+OSGLContext::pickRenderer(const std::list<OpenGLRendererInfo>& renderers,
+                          const GpuDeviceSummary* chosenOrNull,
+                          bool allowSoftware)
+{
+    GLRendererPick pick;
+    if ( renderers.empty() ) {
+        pick.reason = "disabled: no GL renderer is available";
+        return pick;
+    }
+
+    const OpenGLRendererInfo* firstAllowed = 0;
+    for (const OpenGLRendererInfo& r : renderers) {
+        if (r.accelerated || allowSoftware) {
+            firstAllowed = &r;
+            break;
+        }
+    }
+    if (!firstAllowed) {
+        pick.reason = "disabled: only a software GL renderer is available";
+        return pick;
+    }
+
+    const OpenGLRendererInfo* matched = 0;
+    if (chosenOrNull) {
+        for (const OpenGLRendererInfo& r : renderers) {
+            if ( (r.accelerated || allowSoftware) && r.hasUuid && (r.deviceUuid == chosenOrNull->uuid) ) {
+                matched = &r;
+                break;
+            }
+        }
+        if (!matched && chosenOrNull->vendorID != 0) {
+            for (const OpenGLRendererInfo& r : renderers) {
+                if ( (r.accelerated || allowSoftware) && (r.pciVendorID != 0) &&
+                     (r.pciVendorID == chosenOrNull->vendorID) && (r.pciDeviceID == chosenOrNull->deviceID) ) {
+                    matched = &r;
+                    break;
+                }
+            }
+        }
+    }
+
+    const OpenGLRendererInfo* picked = matched ? matched : firstAllowed;
+    pick.enabled = true;
+    pick.rendererID = picked->rendererID;
+    pick.reason = picked->rendererName;
+    if (!picked->accelerated) {
+        pick.reason += ", software";
+    }
+    if (matched) {
+        pick.reason += " (matches the chosen Vulkan device)";
+    } else if (chosenOrNull) {
+        pick.reason += " (default renderer: no GL renderer matches the chosen Vulkan device)";
+    } else {
+        pick.reason += " (default renderer)";
+    }
+    return pick;
+}
 
 void
 OSGLContext::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)

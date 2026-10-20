@@ -951,6 +951,8 @@ OSGLContext_x11::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
         // We don't have any way to get memory size, set it to 0
         info.maxMemBytes = 0;
         info.rendererID.renderID = -1;
+        info.accelerated = !OSGLContext::isSoftwareRendererName(info.rendererName);
+        info.hasUuid = OSGLContext::readCurrentDeviceUuid(getProcAddress(glxInfo, "glGetUnsignedBytei_vEXT"), &info.deviceUuid);
         renderers.push_back(info);
     } else {
         // Just use the first screen
@@ -966,103 +968,108 @@ OSGLContext_x11::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
         do {
             gotRenderer = (bool)glxInfo->_imp->QueryRendererIntegerMESA(glxInfo->_imp->x11.display, screen, renderer, GLX_RENDERER_DEVICE_ID_MESA, v);
             if (gotRenderer) {
-                int rendererID = v[0];
-                if ( (unsigned int)rendererID == 0xFFFFFFFF ) {
-                    gotRenderer = false;
-                } else {
-                    bool ok = glxInfo->_imp->QueryRendererIntegerMESA(glxInfo->_imp->x11.display, screen, renderer, GLX_RENDERER_ACCELERATED_MESA, v);
-                    assert(ok);
-                    if (!ok || !v[0]) {
-                        ++renderer;
-                        continue;
-                    }
+                // A renderer without a PCI identity (e.g. llvmpipe) reports 0xFFFFFFFF.
+                const uint32_t pciDeviceID = (v[0] == 0xFFFFFFFF) ? 0 : v[0];
+                bool ok = glxInfo->_imp->QueryRendererIntegerMESA(glxInfo->_imp->x11.display, screen, renderer, GLX_RENDERER_VENDOR_ID_MESA, v);
+                const uint32_t pciVendorID = (!ok || v[0] == 0xFFFFFFFF) ? 0 : v[0];
+
+                ok = glxInfo->_imp->QueryRendererIntegerMESA(glxInfo->_imp->x11.display, screen, renderer, GLX_RENDERER_ACCELERATED_MESA, v);
+                assert(ok);
+                if (!ok) {
+                    ++renderer;
+                    continue;
+                }
+                const bool accelerated = v[0] != 0;
 
 
-                    ok = glxInfo->_imp->QueryRendererIntegerMESA(glxInfo->_imp->x11.display, screen, renderer, GLX_RENDERER_OPENGL_COMPATIBILITY_PROFILE_VERSION_MESA, v);
-                    assert(ok);
-                    if (!ok) {
-                        ++renderer;
-                        continue;
-                    }
+                ok = glxInfo->_imp->QueryRendererIntegerMESA(glxInfo->_imp->x11.display, screen, renderer, GLX_RENDERER_OPENGL_COMPATIBILITY_PROFILE_VERSION_MESA, v);
+                assert(ok);
+                if (!ok) {
+                    ++renderer;
+                    continue;
+                }
 
-                    int maxCompatGLVersionMajor = (int)v[0];
-                    int maxCompatGLVersionMinor = (int)v[1];
+                int maxCompatGLVersionMajor = (int)v[0];
+                int maxCompatGLVersionMinor = (int)v[1];
 
-                    ok = glxInfo->_imp->QueryRendererIntegerMESA(glxInfo->_imp->x11.display, screen, renderer,  GLX_RENDERER_OPENGL_CORE_PROFILE_VERSION_MESA, v);
-                    assert(ok);
-                    if (!ok) {
-                        ++renderer;
-                        continue;
-                    }
+                ok = glxInfo->_imp->QueryRendererIntegerMESA(glxInfo->_imp->x11.display, screen, renderer,  GLX_RENDERER_OPENGL_CORE_PROFILE_VERSION_MESA, v);
+                assert(ok);
+                if (!ok) {
+                    ++renderer;
+                    continue;
+                }
 
-                    int maxCoreGLVersionMajor = (int)v[0];
-                    int maxCoreGLVersionMinor = (int)v[1];
-                    const char* vendorIDStr = glxInfo->_imp->QueryRendererStringMesa(glxInfo->_imp->x11.display, screen, renderer, GLX_RENDERER_VENDOR_ID_MESA);
-                    if (!vendorIDStr) {
-                        ++renderer;
-                        continue;
-                    }
-                    const char* deviceIDStr = glxInfo->_imp->QueryRendererStringMesa(glxInfo->_imp->x11.display, screen, renderer, GLX_RENDERER_DEVICE_ID_MESA);
-                    if (!deviceIDStr) {
-                        ++renderer;
-                        continue;
-                    }
-                    std::string vendorID(vendorIDStr);
-                    std::string deviceID(deviceIDStr);
-                    std::stringstream ss;
-                    ss << "Creating context for Device:" << deviceID << ", Vendor:" << vendorID << std::endl;
-                    ss << "Max Compatibility OpenGL profile version: " << maxCompatGLVersionMajor << "." << maxCompatGLVersionMinor << std::endl;
-                    ss << "Max Core OpenGL profile version: " << maxCoreGLVersionMajor << "." << maxCoreGLVersionMinor;
+                int maxCoreGLVersionMajor = (int)v[0];
+                int maxCoreGLVersionMinor = (int)v[1];
+                const char* vendorIDStr = glxInfo->_imp->QueryRendererStringMesa(glxInfo->_imp->x11.display, screen, renderer, GLX_RENDERER_VENDOR_ID_MESA);
+                if (!vendorIDStr) {
+                    ++renderer;
+                    continue;
+                }
+                const char* deviceIDStr = glxInfo->_imp->QueryRendererStringMesa(glxInfo->_imp->x11.display, screen, renderer, GLX_RENDERER_DEVICE_ID_MESA);
+                if (!deviceIDStr) {
+                    ++renderer;
+                    continue;
+                }
+                std::string vendorID(vendorIDStr);
+                std::string deviceID(deviceIDStr);
+                std::stringstream ss;
+                ss << "Creating context for Device:" << deviceID << ", Vendor:" << vendorID << std::endl;
+                ss << "Max Compatibility OpenGL profile version: " << maxCompatGLVersionMajor << "." << maxCompatGLVersionMinor << std::endl;
+                ss << "Max Core OpenGL profile version: " << maxCoreGLVersionMajor << "." << maxCoreGLVersionMinor;
 #ifdef DEBUG
+                std::cerr << ss.str() << std::endl;
+#endif
+
+                OpenGLRendererInfo info;
+                info.pciVendorID = pciVendorID;
+                info.pciDeviceID = pciDeviceID;
+                info.accelerated = accelerated;
+
+                ok = glxInfo->_imp->QueryRendererIntegerMESA(glxInfo->_imp->x11.display, screen, renderer, GLX_RENDERER_VIDEO_MEMORY_MESA, v);
+                assert(ok);
+                info.maxMemBytes = v[0] * 1e6;
+
+                // Now create a context with the renderer ID
+                std::unique_ptr<OSGLContext_x11> context;
+                try {
+                    context.reset( new OSGLContext_x11(FramebufferConfig(), GLVersion.major, GLVersion.minor, false, GLRendererID( (int)renderer ), 0) );
+                } catch (const std::exception& e) {
+#ifndef DEBUG
                     std::cerr << ss.str() << std::endl;
 #endif
-
-                    OpenGLRendererInfo info;
-
-                    ok = glxInfo->_imp->QueryRendererIntegerMESA(glxInfo->_imp->x11.display, screen, renderer, GLX_RENDERER_VIDEO_MEMORY_MESA, v);
-                    assert(ok);
-                    info.maxMemBytes = v[0] * 1e6;
-
-                    // Now create a context with the renderer ID
-                    std::unique_ptr<OSGLContext_x11> context;
-                    try {
-                        context.reset( new OSGLContext_x11(FramebufferConfig(), GLVersion.major, GLVersion.minor, false, GLRendererID( (int)renderer ), 0) );
-                    } catch (const std::exception& e) {
-#ifndef DEBUG
-                        std::cerr << ss.str() << std::endl;
-#endif
-                        std::cerr << e.what() << std::endl;
-                        ++renderer;
-                        continue;
-                    }
-
-                    if ( !makeContextCurrent( context.get() ) ) {
-                        ++renderer;
-                        continue;
-                    }
-
-                    try {
-                        OSGLContext::checkOpenGLVersion();
-                    } catch (const std::exception& e) {
-#ifndef DEBUG
-                        std::cerr << ss.str() << std::endl;
-#endif
-                        std::cerr << e.what() << std::endl;
-                        ++renderer;
-                        continue;
-                    }
-
-                    info.rendererID.renderID = renderer;
-                    info.vendorName = std::string( (const char *) glGetString(GL_VENDOR) );
-                    info.rendererName = std::string( (const char *) glGetString(GL_RENDERER) );
-                    info.glVersionString = std::string( (const char *) glGetString(GL_VERSION) );
-                    info.glslVersionString = std::string( (const char*) glGetString (GL_SHADING_LANGUAGE_VERSION) );
-                    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &info.maxTextureSize);
-
-                    renderers.push_back(info);
-
-                    makeContextCurrent(0);
+                    std::cerr << e.what() << std::endl;
+                    ++renderer;
+                    continue;
                 }
+
+                if ( !makeContextCurrent( context.get() ) ) {
+                    ++renderer;
+                    continue;
+                }
+
+                try {
+                    OSGLContext::checkOpenGLVersion();
+                } catch (const std::exception& e) {
+#ifndef DEBUG
+                    std::cerr << ss.str() << std::endl;
+#endif
+                    std::cerr << e.what() << std::endl;
+                    ++renderer;
+                    continue;
+                }
+
+                info.rendererID.renderID = renderer;
+                info.vendorName = std::string( (const char *) glGetString(GL_VENDOR) );
+                info.rendererName = std::string( (const char *) glGetString(GL_RENDERER) );
+                info.glVersionString = std::string( (const char *) glGetString(GL_VERSION) );
+                info.glslVersionString = std::string( (const char*) glGetString (GL_SHADING_LANGUAGE_VERSION) );
+                glGetIntegerv(GL_MAX_TEXTURE_SIZE, &info.maxTextureSize);
+                info.hasUuid = OSGLContext::readCurrentDeviceUuid(getProcAddress(glxInfo, "glGetUnsignedBytei_vEXT"), &info.deviceUuid);
+
+                renderers.push_back(info);
+
+                makeContextCurrent(0);
             }
             ++renderer;
         } while (gotRenderer);

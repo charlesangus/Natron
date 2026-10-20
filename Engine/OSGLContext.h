@@ -55,7 +55,9 @@
 //
 //========================================================================
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <list>
@@ -119,13 +121,32 @@ public:
 class OpenGLRendererInfo
 {
 public:
-    std::size_t maxMemBytes;
+    std::size_t maxMemBytes = 0;
     std::string rendererName;
     std::string vendorName;
     std::string glVersionString;
     std::string glslVersionString;
-    int maxTextureSize;
+    int maxTextureSize = 0;
     GLRendererID rendererID;
+
+    // GL_DEVICE_UUID_EXT, comparable with VkPhysicalDeviceIDProperties::deviceUUID.
+    std::array<uint8_t, 16> deviceUuid {};
+    bool hasUuid = false;
+
+    // 0 when the renderer has no PCI identity, e.g. a software rasterizer.
+    uint32_t pciVendorID = 0;
+    uint32_t pciDeviceID = 0;
+
+    bool accelerated = true;
+};
+
+struct GpuDeviceSummary;
+
+struct GLRendererPick
+{
+    bool enabled = false;
+    GLRendererID rendererID;
+    std::string reason;
 };
 
 /**
@@ -179,6 +200,28 @@ public:
      * @brief Returns all renderers capable of rendering OpenGL
      **/
     static void getGPUInfos(std::list<OpenGLRendererInfo>& renderers);
+
+    /**
+     * @brief Picks the GL renderer for the GL suite: the one whose device UUID, then PCI vendor and device ID, matches
+     * chosenOrNull, else the first renderer allowed. Non-accelerated renderers are allowed only when allowSoftware.
+     * Disabled when no renderer is allowed.
+     **/
+    static GLRendererPick pickRenderer(const std::list<OpenGLRendererInfo>& renderers,
+                                       const GpuDeviceSummary* chosenOrNull,
+                                       bool allowSoftware);
+
+    /**
+     * @brief Reads GL_DEVICE_UUID_EXT (index 0) of the current context. getUnsignedBytei_vEXT is
+     * glGetUnsignedBytei_vEXT as returned by the platform's getProcAddress. Returns false when the context
+     * exposes neither GL_EXT_memory_object nor GL_EXT_semaphore, or when the query fails.
+     **/
+    static bool readCurrentDeviceUuid(void (*getUnsignedBytei_vEXT)(void), std::array<uint8_t, 16>* uuid);
+
+    /**
+     * @brief For renderers enumerated without GLX_MESA_query_renderer, guesses from GL_RENDERER whether it is a
+     * software rasterizer.
+     **/
+    static bool isSoftwareRendererName(const std::string& rendererName);
 
     /**
      * @brief Returns true if a context is currently set on the current thread.

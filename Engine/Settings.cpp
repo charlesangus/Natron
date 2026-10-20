@@ -482,9 +482,24 @@ Settings::initializeKnobsRendering()
     _renderingPage->addKnob(_activateTransformConcatenationSupport);
 }
 
-void
-Settings::populateOpenGLRenderers(const std::list<OpenGLRendererInfo>& renderers)
+// Software renderers stay out of the chooser. The lone default renderer (renderID -1, listed when
+// GLX_MESA_query_renderer is absent) stays in, because its acceleration is only guessed from its name.
+static std::vector<const OpenGLRendererInfo*>
+chooserRenderers(const std::list<OpenGLRendererInfo>& all)
 {
+    std::vector<const OpenGLRendererInfo*> listed;
+    for (const OpenGLRendererInfo& r : all) {
+        if ( r.accelerated || (r.rendererID.renderID == -1) ) {
+            listed.push_back(&r);
+        }
+    }
+    return listed;
+}
+
+void
+Settings::populateOpenGLRenderers(const std::list<OpenGLRendererInfo>& allRenderers)
+{
+    const std::vector<const OpenGLRendererInfo*> renderers = chooserRenderers(allRenderers);
     if ( renderers.empty() ) {
         _availableOpenGLRenderers->setSecret(true);
         _nOpenGLContexts->setSecret(true);
@@ -496,8 +511,8 @@ Settings::populateOpenGLRenderers(const std::list<OpenGLRendererInfo>& renderers
     _enableOpenGL->setSecret(false);
 
     std::vector<ChoiceOption> entries( renderers.size() );
-    int i = 0;
-    for (std::list<OpenGLRendererInfo>::const_iterator it = renderers.begin(); it != renderers.end(); ++it, ++i) {
+    for (std::size_t i = 0; i < renderers.size(); ++i) {
+        const OpenGLRendererInfo* it = renderers[i];
         std::string option = it->vendorName + ' ' + it->rendererName + ' ' + it->glVersionString;
         entries[i] = ChoiceOption(option);
     }
@@ -529,19 +544,13 @@ Settings::getActiveOpenGLRendererID() const
         return GLRendererID();
     }
     int activeIndex = _availableOpenGLRenderers->getValue();
-    const std::list<OpenGLRendererInfo>& renderers = appPTR->getOpenGLRenderers();
+    const std::vector<const OpenGLRendererInfo*> renderers = chooserRenderers( appPTR->getOpenGLRenderers() );
     if ( (activeIndex < 0) || ( activeIndex >= (int)renderers.size() ) ) {
         // Invalid index
         return GLRendererID();
     }
-    int i = 0;
-    for (std::list<OpenGLRendererInfo>::const_iterator it = renderers.begin(); it != renderers.end(); ++it, ++i) {
-        if (i == activeIndex) {
-            return it->rendererID;
-        }
-    }
 
-    return GLRendererID();
+    return renderers[activeIndex]->rendererID;
 }
 
 void
@@ -2181,9 +2190,9 @@ Settings::restoreSettings(bool useDefault)
         }
         int curIndex = _availableOpenGLRenderers->getValue();
         if ( (curIndex >= 0) && ( curIndex < (int)availableRenderers.size() ) ) {
-            const std::list<OpenGLRendererInfo>& renderers = appPTR->getOpenGLRenderers();
-            int i = 0;
-            for (std::list<OpenGLRendererInfo>::const_iterator it = renderers.begin(); it != renderers.end(); ++it, ++i) {
+            const std::vector<const OpenGLRendererInfo*> renderers = chooserRenderers( appPTR->getOpenGLRenderers() );
+            for (int i = 0; i < (int)renderers.size(); ++i) {
+                const OpenGLRendererInfo* it = renderers[i];
                 if (i == curIndex) {
                     QString maxMemoryString = it->maxMemBytes == 0 ? tr("Unknown") : printAsRAM(it->maxMemBytes);
                     QString curRenderer = (QString::fromUtf8("<p><h2>") +

@@ -147,14 +147,9 @@ fetchStageSource(EffectInstance& effect,
     ImageLayerDesc layer;
     bool mapToClipPrefs = true;
     if (!source.layerKnob.empty()) {
-        KnobLayerSelectPtr knob = effect.getKnobByNameAndType<KnobLayerSelect>(std::string(source.layerKnob));
-        std::list<ImageLayerDesc> present;
-        effect.getAvailableLayers(source.time, args.view, source.layerInput, &present);
-        ResolvedLayer resolved;
-        if (!knob || !knob->resolve(present, &resolved) || (resolved.desc.getNumComponents() == 0)) {
+        if (!resolveStageSourceLayer(effect, source, args.view, &layer)) {
             return ImagePtr();
         }
-        layer = resolved.desc;
         // A selected layer is read as it is stored, not in the clip's colour layout.
         mapToClipPrefs = false;
     } else if (!effect.resolveInputPlaneForRender(source.layerInput, source.time, args.view, &layer, NULL)) {
@@ -260,6 +255,44 @@ makeStageGpuWrap(const StagePlan& plan,
     return true;
 } // makeStageGpuWrap
 
+// plan's Composite sources as args hands them over, read as runStagesCpu() reads them: an input
+// not handed over, and a Mask-role input that is not applied or resolves to no channel, reads
+// zero.
+bool
+makeStageGpuSources(const StagePlan& plan,
+                    const GpuRenderArgs& args,
+                    gpu::GpuWrapSources* sources)
+{
+    if ((plan.nSources < 0) || (plan.nSources > (int)gpu::kGpuWrapMaxSources)) {
+        return false;
+    }
+    sources->count = (uint32_t)plan.nSources;
+    for (int s = 0; s < plan.nSources; ++s) {
+        const StageSource& source = plan.sources[s];
+        gpu::GpuWrapSource& out = sources->list[s];
+        const int inputNb = source.inputNb;
+        if ((inputNb < 0) || (inputNb >= (int)args.inputs.size()) || !args.inputs[inputNb].buffer) {
+            continue;
+        }
+        const GpuImageView& view = args.inputs[inputNb];
+        if (source.mask) {
+            if (!source.maskApplied || (source.maskChannel < 0) || (source.maskChannel >= source.maskLayer.getNumComponents())) {
+                continue;
+            }
+            const int component = stageGpuMaskViewComponent(source.maskLayer, source.maskChannel, view.nComps);
+            if ((component < 0) || (component >= view.nComps)) {
+                return false;
+            }
+            out.channel = component;
+        }
+        if (!toWrapView(view, &out.view)) {
+            return false;
+        }
+    }
+
+    return true;
+} // makeStageGpuSources
+
 StatusEnum
 recordKernelOp(const StagePlan& plan,
                const GpuRenderArgs& args,
@@ -278,6 +311,11 @@ recordKernelOp(const StagePlan& plan,
         return eStatusFailed;
     }
 
+    gpu::GpuWrapSources sources;
+    if ((plan.nSources > 0) && !makeStageGpuSources(plan, args, &sources)) {
+        return eStatusFailed;
+    }
+
     gpu::GpuRecordContext& ctx = args.context;
     gpu::GpuBuffer* params = nullptr;
     if (!kernel.params.empty()) {
@@ -286,6 +324,10 @@ recordKernelOp(const StagePlan& plan,
         if (!ctx.scratch(block.size(), params) || !params || !ctx.updateBuffer(*params, 0, std::span<const std::byte>(block.data(), block.size()))) {
             return eStatusFailed;
         }
+    }
+
+    if (plan.nSources > 0) {
+        return gpu::recordWrappedSources(ctx, (gpu::GpuKernelId)kernel.kernel, wrap, sources, params) ? eStatusOK : eStatusFailed;
     }
 
     return gpu::recordWrapped(ctx, (gpu::GpuKernelId)kernel.kernel, wrap, params) ? eStatusOK : eStatusFailed;
@@ -531,6 +573,24 @@ resolveStageSources(EffectInstance& effect,
     }
     plan->nSources = count;
 } // resolveStageSources
+
+bool
+resolveStageSourceLayer(EffectInstance& effect,
+                        const StageSource& source,
+                        ViewIdx view,
+                        ImageLayerDesc* layer)
+{
+    KnobLayerSelectPtr knob = effect.getKnobByNameAndType<KnobLayerSelect>(std::string(source.layerKnob));
+    std::list<ImageLayerDesc> present;
+    effect.getAvailableLayers(source.time, view, source.layerInput, &present);
+    ResolvedLayer resolved;
+    if (!knob || !knob->resolve(present, &resolved) || (resolved.desc.getNumComponents() == 0)) {
+        return false;
+    }
+    *layer = resolved.desc;
+
+    return true;
+}
 
 void
 makeStageRowBands(const RectI& roi,
@@ -828,6 +888,30 @@ canRunStagesGpu(const StagePlan& plan,
     return stageGpuDivisorComponent(plan, query, &component);
 }
 
+bool
+canRunStageSourcesGpu(const StagePlan& plan,
+                      const GpuQuery& query)
+{
+    if ((plan.nSources < 1) || (plan.nSources > kPixelKernelMaxInputs) || (plan.divisorChannel >= 0)) {
+        return false;
+    }
+    for (int s = 0; s < plan.nSources; ++s) {
+        const StageSource& source = plan.sources[s];
+        if (source.time != query.time) {
+            return false;
+        }
+        const bool inPlane = !source.mask && source.layerKnob.empty();
+        if (!inPlane && (source.inputNb == plan.sourceInput)) {
+            return false;
+        }
+        if (!source.mask && plan.applyMask && (source.inputNb == plan.maskInput)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 int
 stageGpuMaskViewComponent(const ImageLayerDesc& maskLayer,
                           int maskChannel,
@@ -965,6 +1049,9 @@ recordStagesGpu(const StagePlan& plan,
 
         return recordKernelOp(plan, args, op.kernel);
     case GpuOpRef::Kind::RuntimeShader:
+        if (plan.nSources > 0) {
+            return eStatusFailed;
+        }
 
         return recordRuntimeShaderOp(plan, args, op.shader, op.shaderInputs);
     case GpuOpRef::Kind::None:

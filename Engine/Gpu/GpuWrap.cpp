@@ -3,6 +3,7 @@
 #include "GpuBuffer.h"
 #include "GpuRecord.h"
 
+#include <span>
 #include <string>
 
 namespace gpu {
@@ -80,16 +81,25 @@ namespace {
         return {};
     }
 
-    GpuStatus record(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, const GpuBuffer* aux,
-                     const GpuWrapView* filtered)
+    // A buffer for a binding the kernel reads nothing from, requested once per dispatch.
+    GpuStatus standIn(GpuRecordContext& ctx, const GpuBuffer*& unused)
     {
-        GpuWrapParams p;
-        if (GpuStatus s = wrapParams(wrap, p, filtered); !s) {
-            return s;
-        }
-        if (p.width == 0 || p.height == 0) {
+        if (unused) {
             return {};
         }
+        GpuBuffer* scratch = nullptr;
+        if (GpuStatus s = ctx.scratch(16, scratch); !s) {
+            return s;
+        }
+        unused = scratch;
+        return {};
+    }
+
+    // The source, destination, mask and parameter buffers of a dispatch of `wrap`.
+    GpuStatus wrapBuffers(GpuRecordContext& ctx, const GpuWrap& wrap, const GpuBuffer* aux,
+                          const GpuWrapView* filtered, const GpuBuffer*& unused,
+                          const GpuBuffer* (&out)[kGpuWrapBindings])
+    {
         if (GpuStatus s = checkBuffer(wrap.dst, "destination"); !s) {
             return s;
         }
@@ -116,15 +126,33 @@ namespace {
             return invalid("empty parameter buffer");
         }
         if (!src || !mask || !aux) {
-            GpuBuffer* unused = nullptr;
-            if (GpuStatus s = ctx.scratch(16, unused); !s) {
+            if (GpuStatus s = standIn(ctx, unused); !s) {
                 return s;
             }
-            src = src ? src : unused;
-            mask = mask ? mask : unused;
-            aux = aux ? aux : unused;
         }
-        return ctx.dispatch(kernel, { src, wrap.dst.buffer, mask, aux }, p, { p.width, p.height, 1 });
+        out[0] = src ? src : unused;
+        out[1] = wrap.dst.buffer;
+        out[2] = mask ? mask : unused;
+        out[3] = aux ? aux : unused;
+        return {};
+    }
+
+    GpuStatus record(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, const GpuBuffer* aux,
+                     const GpuWrapView* filtered)
+    {
+        GpuWrapParams p;
+        if (GpuStatus s = wrapParams(wrap, p, filtered); !s) {
+            return s;
+        }
+        if (p.width == 0 || p.height == 0) {
+            return {};
+        }
+        const GpuBuffer* unused = nullptr;
+        const GpuBuffer* b[kGpuWrapBindings];
+        if (GpuStatus s = wrapBuffers(ctx, wrap, aux, filtered, unused, b); !s) {
+            return s;
+        }
+        return ctx.dispatch(kernel, { b[0], b[1], b[2], b[3] }, p, { p.width, p.height, 1 });
     }
 
 } // namespace
@@ -203,9 +231,97 @@ wrapParams(const GpuWrap& wrap, GpuWrapParams& out, const GpuWrapView* filtered)
 }
 
 GpuStatus
+wrapSourceBlock(const GpuWrap& wrap, const GpuWrapSources& sources, GpuWrapSourceBlock& out)
+{
+    out = {};
+    if (sources.count > kGpuWrapMaxSources) {
+        return invalid("at most " + std::to_string(kGpuWrapMaxSources) + " sources are supported, got "
+                       + std::to_string(sources.count));
+    }
+    if (wrap.divisorChannel >= 0) {
+        return invalid("an op reading several sources divides none of them");
+    }
+    out.count = sources.count;
+    for (uint32_t i = 0; i < sources.count; ++i) {
+        const GpuWrapSource& source = sources.list[i];
+        GpuWrapSourceView& v = out.views[i];
+        v.channel = source.channel < 0 ? -1 : source.channel;
+        if (source.view.bounds.empty()) {
+            continue;
+        }
+        const std::string name = "source " + std::to_string(i);
+        if (GpuStatus s = checkGeometry(source.view, name.c_str()); !s) {
+            return s;
+        }
+        if (source.channel >= int32_t(source.view.nComps)) {
+            return invalid(name + " channel out of range");
+        }
+        v.offset = static_cast<uint32_t>(source.view.offsetFloats);
+        v.stride = source.view.strideFloats;
+        v.x1 = source.view.bounds.x1;
+        v.y1 = source.view.bounds.y1;
+        v.x2 = source.view.bounds.x2;
+        v.y2 = source.view.bounds.y2;
+        v.comps = source.view.nComps;
+    }
+    return {};
+}
+
+GpuStatus
 recordWrapped(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, const GpuBuffer* opParams)
 {
     return record(ctx, kernel, wrap, opParams, nullptr);
+}
+
+GpuStatus
+recordWrappedSources(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap, const GpuWrapSources& sources,
+                     const GpuBuffer* opParams)
+{
+    GpuWrapParams p;
+    if (GpuStatus s = wrapParams(wrap, p); !s) {
+        return s;
+    }
+    GpuWrapSourceBlock block;
+    if (GpuStatus s = wrapSourceBlock(wrap, sources, block); !s) {
+        return s;
+    }
+    if (p.width == 0 || p.height == 0) {
+        return {};
+    }
+    const GpuBuffer* unused = nullptr;
+    const GpuBuffer* b[kGpuWrapBindings];
+    if (GpuStatus s = wrapBuffers(ctx, wrap, opParams, nullptr, unused, b); !s) {
+        return s;
+    }
+    const GpuBuffer* src[kGpuWrapMaxSources] = {};
+    for (uint32_t i = 0; i < sources.count; ++i) {
+        const GpuWrapView& view = sources.list[i].view;
+        if (view.bounds.empty()) {
+            continue;
+        }
+        const std::string name = "source " + std::to_string(i);
+        if (GpuStatus s = checkBuffer(view, name.c_str()); !s) {
+            return s;
+        }
+        src[i] = view.buffer;
+    }
+    for (const GpuBuffer*& buffer : src) {
+        if (!buffer) {
+            if (GpuStatus s = standIn(ctx, unused); !s) {
+                return s;
+            }
+            buffer = unused;
+        }
+    }
+    GpuBuffer* views = nullptr;
+    if (GpuStatus s = ctx.scratch(sizeof(block), views); !s) {
+        return s;
+    }
+    if (GpuStatus s = ctx.updateBuffer(*views, 0, std::as_bytes(std::span(&block, 1))); !s) {
+        return s;
+    }
+    return ctx.dispatch(kernel, { b[0], b[1], b[2], b[3], src[0], src[1], src[2], src[3], views }, p,
+                        { p.width, p.height, 1 });
 }
 
 GpuStatus

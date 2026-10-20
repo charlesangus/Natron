@@ -126,7 +126,8 @@ public:
      * @brief For a Point op, whether the GPU executor can run the StagePlan of query
      * (canRunStagesGpu()) and the op's gpu() description at the query's time, view and scale names work
      * the device runs for pixels of the query's component count. A runtime shader that does not build is reported once and never built
-     * again for this node. For a Passes op, canRecordPassesGpu() with the op's passes at the
+     * again for this node. For a Composite op with gpu() (GpuCompositeOp), the same with its
+     * sources (canRunStageSourcesGpu()) and a registry kernel. For a Passes op, canRecordPassesGpu() with the op's passes at the
      * query's time, view and scale. For a Resample op that opts into the GPU, canRecordResampleGpu()
      * with the op's request at the query's time, view and scale. Every other op stays on the CPU.
      **/
@@ -158,9 +159,10 @@ public:
                                              RectD* rod) OVERRIDE WARN_UNUSED_RETURN;
 
     /**
-     * @brief For a Point or Passes op, or a Resample op that opts into the GPU, the layer its plane
-     * is read in, except for the mask input, which is read in the layer its mask channel resolves
-     * in. False for every other op.
+     * @brief For a Point, Composite or Passes op, or a Resample op that opts into the GPU, the layer
+     * its plane is read in, except for the mask input, which is read in the layer its mask channel
+     * resolves in, and a Composite source whose InputLayer selects a layer, which is read in that
+     * layer (false when it resolves to none). False for every other op.
      **/
     virtual bool getGpuInputLayer(int inputNb,
                                   const ImageLayerDesc& plane,
@@ -169,8 +171,8 @@ public:
                                   ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
-     * @brief Records the op's gpu() description through the StagePlan of args.query with
-     * recordStagesGpu(), a Passes op's passes with recordPassesGpu(), or a Resample op's request
+     * @brief Records a Point or Composite op's gpu() description through the StagePlan of
+     * args.query with recordStagesGpu(), a Passes op's passes with recordPassesGpu(), or a Resample op's request
      * with recordResampleGpu(). Only called when canRenderOnGpu() accepted args.query.
      **/
     virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -574,7 +576,9 @@ private:
                            ViewIdx view,
                            const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        if constexpr (PIPELINE.op != OpKind::Point) {
+        if constexpr (GpuCompositeOp<OP> && (PIPELINE.op == OpKind::Composite)) {
+            return _op.gpu(bakeParams(_op, time, view));
+        } else if constexpr (PIPELINE.op != OpKind::Point) {
             return GpuOpRef::none();
         } else if constexpr (ScaledPointOp<OP>) {
             return _op.gpu(bakeParams(_op, time, view), getPassContext(scale));

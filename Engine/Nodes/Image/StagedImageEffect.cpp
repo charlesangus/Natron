@@ -129,7 +129,15 @@ StagedImageEffect::resolveGpuPlan(const GpuQuery& query) const
     // Resolving only reads knobs, the node's selectors and its inputs' layers.
     StagedImageEffect* self = const_cast<StagedImageEffect*>(this);
 
-    return resolveGpuStagePlan(*self, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), query);
+    if (imagePipelineSpec().op != OpKind::Composite) {
+        return resolveGpuStagePlan(*self, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), query);
+    }
+    const CompositeSources sources = opSources(query.time, query.view);
+    const int blendInput = (sources.blendInput >= 0) ? sources.blendInput : getSourceInput();
+    StagePlan plan = resolveGpuStagePlan(*self, imagePipelineSpec().stages, _stageKnobs, blendInput, query);
+    resolveStageSources(*self, nodeSpec(), sources, &plan);
+
+    return plan;
 }
 
 bool
@@ -143,11 +151,18 @@ StagedImageEffect::canRenderOnGpu(const GpuQuery& query) const
     if (kind == OpKind::Resample) {
         return opResamplesOnGpu() && canRecordResampleGpu(*this, resolveGpuPlan(query), query, opResample(query.time, query.view, query.mappedScale));
     }
-    if ((kind != OpKind::Point) || !canRunStagesGpu(resolveGpuPlan(query), query)) {
+    if ((kind != OpKind::Point) && (kind != OpKind::Composite)) {
+        return false;
+    }
+    const StagePlan plan = resolveGpuPlan(query);
+    if (!canRunStagesGpu(plan, query) || ((kind == OpKind::Composite) && !canRunStageSourcesGpu(plan, query))) {
         return false;
     }
 
     const GpuOpRef op = gpuOp(query.time, query.view, query.mappedScale);
+    if ((kind == OpKind::Composite) && (op.kind != GpuOpRef::Kind::Kernel)) {
+        return false;
+    }
 
     return op.acceptsComponents(query.nComps) && canRecordGpuOp(op, _gpuShaderGate, getNode());
 }
@@ -182,8 +197,22 @@ StagedImageEffect::getGpuInputLayer(int inputNb,
 {
     const OpKind kind = imagePipelineSpec().op;
 
-    if ((kind != OpKind::Point) && (kind != OpKind::Passes) && ((kind != OpKind::Resample) || !opResamplesOnGpu())) {
+    if ((kind != OpKind::Point) && (kind != OpKind::Composite) && (kind != OpKind::Passes) && ((kind != OpKind::Resample) || !opResamplesOnGpu())) {
         return false;
+    }
+    if (kind == OpKind::Composite) {
+        // Resolving only reads the node's selectors and its inputs' layers.
+        StagedImageEffect* self = const_cast<StagedImageEffect*>(this);
+        StagePlan plan;
+        plan.time = time;
+        plan.view = view;
+        resolveStageSources(*self, nodeSpec(), opSources(time, view), &plan);
+        for (int s = 0; s < plan.nSources; ++s) {
+            const StageSource& source = plan.sources[s];
+            if ((source.inputNb == inputNb) && !source.mask && !source.layerKnob.empty()) {
+                return resolveStageSourceLayer(*self, source, view, layer);
+            }
+        }
     }
     stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
 
@@ -206,12 +235,15 @@ StagedImageEffect::renderGpu(const GpuRenderArgs& args)
 
         return recordResampleGpu(*this, resolveGpuPlan(query), args, opResample(query.time, query.view, query.mappedScale), getResampleRegionStages(query.time, query.view));
     }
-    if (kind != OpKind::Point) {
+    if ((kind != OpKind::Point) && (kind != OpKind::Composite)) {
         return eStatusFailed;
     }
     const StagePlan plan = resolveGpuPlan(query);
     const GpuOpRef op = gpuOp(query.time, query.view, query.mappedScale);
     if (!canRunStagesGpu(plan, query) || !op.acceptsComponents(query.nComps) || !canRecordGpuOp(op, _gpuShaderGate, getNode())) {
+        return eStatusFailed;
+    }
+    if ((kind == OpKind::Composite) && (!canRunStageSourcesGpu(plan, query) || (op.kind != GpuOpRef::Kind::Kernel))) {
         return eStatusFailed;
     }
 
@@ -222,7 +254,7 @@ GpuStageSummary
 StagedImageEffect::getGpuStageSummary(double time,
                                       ViewIdx view)
 {
-    const StagePlan plan = resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), time, view, std::bitset<4>());
+    const StagePlan plan = resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, getBlendInput(time, view), time, view, std::bitset<4>());
     GpuStageSummary summary;
 
     summary.applyMask = plan.applyMask;

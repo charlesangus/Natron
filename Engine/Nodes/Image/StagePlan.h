@@ -180,6 +180,17 @@ void resolveStageSources(EffectInstance& effect,
                          StagePlan* plan);
 
 /**
+ * @brief The layer a source whose InputLayer selects one (a non-empty layerKnob) is read in at
+ * view: the layer its KnobLayerSelect resolves to among those layerInput carries at the source's
+ * time, read as stored. False when the knob is missing or resolves to no layer, in which case the
+ * source reads zero.
+ **/
+bool resolveStageSourceLayer(EffectInstance& effect,
+                             const StageSource& source,
+                             ViewIdx view,
+                             ImageLayerDesc* layer) WARN_UNUSED_RETURN;
+
+/**
  * @brief Renders args through plan with row, the op's per-row function, on the CPU.
  *
  * Every image is fetched first, then locked on this thread for the whole render; the window
@@ -232,6 +243,16 @@ bool stageGpuDivisorComponent(const StagePlan& plan,
  **/
 bool canRunStagesGpu(const StagePlan& plan,
                      const GpuQuery& query) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Whether the GPU executor can read plan's Composite sources for query: one to
+ * kPixelKernelMaxInputs of them, none divided, every one read at the query's time, and every input
+ * read in one layer. The region engine hands an input over once, so a Mask-role source or a
+ * source with a selected layer cannot also be the blend input, and no source other than a
+ * Mask-role one can be the input the MaskMix stage reads its mask from.
+ **/
+bool canRunStageSourcesGpu(const StagePlan& plan,
+                           const GpuQuery& query) WARN_UNUSED_RETURN;
 
 /**
  * @brief The component of a mask view of viewNComps components that holds maskChannel of
@@ -287,6 +308,10 @@ bool canRecordGpuOp(const GpuOpRef& op,
  * runs between the divide and finish passes of recordStagesGpuDivide() and
  * recordStagesGpuFinish(), with its uniforms and textures, as GpuRuntimeShader describes.
  * An input that is not connected reads zero, and a mask that is not handed over reads zero.
+ *
+ * With plan.nSources > 0 the op is a Composite op, and must be a Kernel whose entry is built with
+ * runWrappedSources: it reads plan's sources as runStagesCpu() reads them, and is blended against
+ * plan.sourceInput.
  **/
 StatusEnum recordStagesGpu(const StagePlan& plan,
                            const GpuRenderArgs& args,

@@ -94,15 +94,66 @@ struct GpuWrap {
     int32_t skipChannel = -1;
 };
 
+inline constexpr uint32_t kGpuWrapMaxSources = 4;
+
+// Mirrors one view of the view block in Kernels/compositewrap.slang. comps is 0 for an input that
+// reads zero everywhere; channel is -1 for an input read in the output's channels.
+struct GpuWrapSourceView {
+    uint32_t offset;
+    uint32_t stride;
+    int32_t x1;
+    int32_t y1;
+    int32_t x2;
+    int32_t y2;
+    uint32_t comps;
+    int32_t channel;
+};
+static_assert(sizeof(GpuWrapSourceView) == 32);
+
+// Mirrors the view block of Kernels/compositewrap.slang, which has no padding between members.
+struct GpuWrapSourceBlock {
+    uint32_t count;
+    GpuWrapSourceView views[kGpuWrapMaxSources];
+};
+static_assert(sizeof(GpuWrapSourceBlock) == 4 + 32 * kGpuWrapMaxSources);
+
+// Bindings of every kernel built on compositewrap.slang: those of pixelwrap.slang, one per source,
+// then the view block.
+inline constexpr uint32_t kGpuWrapSourcesBindings = kGpuWrapBindings + kGpuWrapMaxSources + 1;
+
+// One input of an op that reads several. With channel -1 it is read in the output's channels by
+// channel bit, whatever its own channel count; otherwise it is the one component `channel` of its
+// view, as a Mask-role input is read. It reads zero outside its bounds, which may be empty.
+struct GpuWrapSource {
+    GpuWrapView view;
+    int32_t channel = -1;
+};
+
+// The inputs of an op that reads several, in the order the op sees them.
+struct GpuWrapSources {
+    GpuWrapSource list[kGpuWrapMaxSources];
+    // 0 to kGpuWrapMaxSources.
+    uint32_t count = 0;
+};
+
 // Validates the geometry of `wrap` and packs it for a dispatch over its output; buffers are only
 // checked when recording. `filtered`, wrap_finish's input, must contain the output and have
 // wrap.nComps channels.
 GpuStatus wrapParams(const GpuWrap& wrap, GpuWrapParams& out, const GpuWrapView* filtered = nullptr);
 
+// Validates the geometry of `sources` and packs their view block. No input of such an op is
+// divided, so wrap.divisorChannel must be -1.
+GpuStatus wrapSourceBlock(const GpuWrap& wrap, const GpuWrapSources& sources, GpuWrapSourceBlock& out);
+
 // Records `kernel`, a point op entry built with runWrapped, reading its parameters from `opParams`.
 // Without opParams the binding gets a scratch buffer.
 GpuStatus recordWrapped(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap,
                         const GpuBuffer* opParams = nullptr);
+
+// As recordWrapped() for `kernel`, an entry built with runWrappedSources, reading `sources`; wrap.src
+// is the blend source.
+GpuStatus recordWrappedSources(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWrap& wrap,
+                               const GpuWrapSources& sources, const GpuBuffer* opParams = nullptr);
 
 // Writes the source over wrap.output into wrap.dst, divided by the divisor where it is usable, as
 // a spatial filter's input. Channel mask, mask and mix are ignored.

@@ -297,6 +297,16 @@ concept CompositeOp = BakesParams<OP> && std::copyable<typename OP::Params> && r
 };
 
 /**
+ * @brief A Composite op that runs on the GPU: gpu(params) names a registry kernel whose entry is
+ * built with runWrappedSources (Kernels/compositewrap.slang), and its parameter block. A
+ * Composite op without it stays on the CPU.
+ **/
+template <typename OP>
+concept GpuCompositeOp = CompositeOp<OP> && requires(const OP& op, const typename OP::Params& params) {
+    { op.gpu(params) } -> std::same_as<GpuOpRef>;
+};
+
+/**
  * @brief A Resample op: a node whose output is its source resampled through a 3x3 matrix, or
  * shifted by a whole number of pixels.
  *

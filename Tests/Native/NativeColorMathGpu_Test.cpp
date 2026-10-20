@@ -52,7 +52,7 @@
 #include "Engine/Nodes/Color/ColorMathNode.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Image/GpuRender.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -60,19 +60,6 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const double kTime = 1.;
-
-// makeKernel() is protected in the base and private in ColorMathNode; naming it through a derived
-// class of the base is what makes the member pointer accessible.
-struct KernelProbe
-    : public NativeImageEffect {
-    static PixelKernelPtr make(NativeImageEffect* effect,
-                               const KernelContext& context)
-    {
-        PixelKernelPtr (NativeImageEffect::*member)(const KernelContext&) = &KernelProbe::makeKernel;
-
-        return (effect->*member)(context);
-    }
-};
 
 struct Setting {
     const char* id;
@@ -114,10 +101,10 @@ applySetting(const NodePtr& node,
     }
 }
 
-NativeImageEffect*
+StagedImageEffect*
 effectOf(const NodePtr& node)
 {
-    return node ? dynamic_cast<NativeImageEffect*>(node->getEffectInstance().get()) : NULL;
+    return node ? dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get()) : NULL;
 }
 
 bool
@@ -155,7 +142,7 @@ imageOf(const RenderedPlane& plane)
 GpuQuery
 queryFor(const NodePtr& op)
 {
-    NativeImageEffect* effect = effectOf(op);
+    StagedImageEffect* effect = effectOf(op);
     const ImageLayerDesc plane = ImageLayerDesc::mapNCompsToColorLayer(4);
     GpuQuery q;
 
@@ -191,24 +178,23 @@ queryFor(const NodePtr& op)
     return q;
 }
 
+template <ColorMathOperationEnum KIND>
 std::vector<float>
-cpuKernelRender(NativeImageEffect* effect,
-                const std::vector<float>& src,
-                int width,
-                int height,
-                int nComps,
-                unsigned channelMask)
+cpuRowsOf(StagedImageEffect* effect,
+          const std::vector<float>& src,
+          int width,
+          int height,
+          int nComps,
+          unsigned channelMask)
 {
-    KernelContext context;
-    context.time = kTime;
-    context.processChannels = std::bitset<4>(channelMask);
-    PixelKernelPtr kernel = KernelProbe::make(effect, context);
+    ColorMathNode<KIND>* node = dynamic_cast<ColorMathNode<KIND>*>(effect);
     std::vector<float> dst(src);
 
-    EXPECT_TRUE(bool(kernel));
-    if (!kernel) {
+    EXPECT_TRUE(node != NULL);
+    if (!node) {
         return dst;
     }
+    const typename ColorMathOp<KIND>::Params params = node->bakeColorMath(kTime, ViewIdx(0));
     for (int y = 0; y < height; ++y) {
         RowIO io;
         io.nSrc = 1;
@@ -217,11 +203,32 @@ cpuKernelRender(NativeImageEffect* effect,
         io.y = y;
         io.width = width;
         io.nComps = nComps;
-        io.channels = context.processChannels;
-        kernel->processRow(io);
+        io.channels = std::bitset<4>(channelMask);
+        node->colorMathRow(params, io);
     }
 
     return dst;
+}
+
+std::vector<float>
+cpuKernelRender(const Setting& setting,
+                StagedImageEffect* effect,
+                const std::vector<float>& src,
+                int width,
+                int height,
+                int nComps,
+                unsigned channelMask)
+{
+    const std::string id(setting.id);
+
+    if (id == PLUGINID_NATRON_ADD) {
+        return cpuRowsOf<eColorMathOperationAdd>(effect, src, width, height, nComps, channelMask);
+    }
+    if (id == PLUGINID_NATRON_MULTIPLY) {
+        return cpuRowsOf<eColorMathOperationMultiply>(effect, src, width, height, nComps, channelMask);
+    }
+
+    return cpuRowsOf<eColorMathOperationGamma>(effect, src, width, height, nComps, channelMask);
 }
 
 // A device may flush a denormal to zero on input or output, so a result the CPU computes below
@@ -286,7 +293,7 @@ TEST_F(NativeColorMathGpuTest, MatchesTheCpuKernelOnSpecialValues)
     for (const Setting& setting : kSettings) {
         NodePtr node = createNode(QString::fromUtf8(setting.id));
         ASSERT_TRUE(bool(node));
-        NativeImageEffect* effect = effectOf(node);
+        StagedImageEffect* effect = effectOf(node);
         ASSERT_TRUE(effect != NULL);
         applySetting(node, setting);
         if (HasFatalFailure()) {
@@ -299,7 +306,7 @@ TEST_F(NativeColorMathGpuTest, MatchesTheCpuKernelOnSpecialValues)
                 for (size_t i = 0; i < src.size(); ++i) {
                     src[i] = values[(i + (size_t)nCase) % values.size()];
                 }
-                std::vector<float> want = cpuKernelRender(effect, src, width, height, nComps, channelMask);
+                std::vector<float> want = cpuKernelRender(setting, effect, src, width, height, nComps, channelMask);
 
                 GpuQuery query;
                 query.time = kTime;
@@ -385,7 +392,7 @@ TEST_F(NativeColorMathGpuTest, MatchesTheCpuRender)
         maskChannel->set("rgba.A");
         KnobChannelSelect* unPremultBy = dynamic_cast<KnobChannelSelect*>(op->getKnobByName(kUnPremultByKnobName).get());
         ASSERT_TRUE(unPremultBy != NULL);
-        NativeImageEffect* effect = effectOf(op);
+        StagedImageEffect* effect = effectOf(op);
         ASSERT_TRUE(effect != NULL);
         applySetting(op, setting);
         if (HasFatalFailure()) {

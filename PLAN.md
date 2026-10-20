@@ -211,7 +211,7 @@ future core work has solid ground to build on.
 | M151 | SplineWarp Motion Blur | todo | M147, M150 |  | E3 | [M151-splinewarp-motion-blur.md](PLAN/MILESTONES/M151-splinewarp-motion-blur.md) |
 | M152 | Curve Track Links And Roto Copy | todo | M148 |  | E3 | [M152-curve-track-links-and-roto-copy.md](PLAN/MILESTONES/M152-curve-track-links-and-roto-copy.md) |
 | M153 | Distortion Concatenation | todo | M147, M113 |  | E14 | [M153-distortion-concatenation.md](PLAN/MILESTONES/M153-distortion-concatenation.md) |
-| M154 | Fresh Buffer Page Zeroing | todo | M109 |  | E5 | [M154-fresh-buffer-page-zeroing.md](PLAN/MILESTONES/M154-fresh-buffer-page-zeroing.md) |
+| M154 | Fresh Buffer Page Zeroing | doing | M109 | gpu | E5 | [M154-fresh-buffer-page-zeroing.md](PLAN/MILESTONES/M154-fresh-buffer-page-zeroing.md) |
 
 # Epics
 

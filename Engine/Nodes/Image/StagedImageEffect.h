@@ -114,7 +114,7 @@ public:
 
     /**
      * @brief For a Point op, whether the GPU executor can run the StagePlan of query
-     * (canRunStagesGpu()) and the op's gpu() description at the query's time and view names work
+     * (canRunStagesGpu()) and the op's gpu() description at the query's time, view and scale names work
      * the device runs. A runtime shader that does not build is reported once and never built
      * again for this node. For a Passes op, canRecordPassesGpu() with the op's passes at the
      * query's time, view and scale. Every other op kind stays on the CPU.
@@ -204,8 +204,8 @@ protected:
     bool isMaskApplied() const WARN_UNUSED_RETURN;
 
     /**
-     * @brief What a Passes op's passes are built for at scale: the scale, and the pixel aspect
-     * ratio of the source input when it is connected and has one.
+     * @brief What a Passes op's passes, or a scaled Point op's members, are built for at scale: the
+     * scale, and the pixel aspect ratio of the source input when it is connected and has one.
      **/
     PassContext getPassContext(const RenderScale& scale) const WARN_UNUSED_RETURN;
 
@@ -265,10 +265,12 @@ protected:
         = 0;
 
     /**
-     * @brief How the op runs on the GPU at time and view; none, the default, keeps it on the CPU.
+     * @brief How the op runs on the GPU at time, view and scale; none, the default, keeps it on
+     * the CPU.
      **/
     virtual GpuOpRef gpuOp(double /*time*/,
-                           ViewIdx /*view*/) const WARN_UNUSED_RETURN
+                           ViewIdx /*view*/,
+                           const RenderScale& /*scale*/) const WARN_UNUSED_RETURN
     {
         return GpuOpRef::none();
     }
@@ -410,6 +412,8 @@ private:
             return _op.isIdentity(bakeParams(_op, time, view), getPassContext(scale));
         } else if constexpr (PIPELINE.op == OpKind::Route) {
             return false;
+        } else if constexpr (ScaledPointOp<OP>) {
+            return _op.isIdentity(bakeParams(_op, time, view), getPassContext(scale));
         } else {
             return _op.isIdentity(bakeParams(_op, time, view));
         }
@@ -427,6 +431,15 @@ private:
             const typename OP::Params params = bakeParams(_op, args.time, args.view);
 
             return runPassesCpu(*this, plan, args, _op.passes(params, getPassContext(args.mappedScale)));
+        } else if constexpr (ScaledPointOp<OP>) {
+            const typename OP::Params params = bakeParams(_op, args.time, args.view);
+            const PassContext context = getPassContext(args.mappedScale);
+            const OP& rowOp = _op;
+            const auto row = [&rowOp, &params, &context](const RowIO& io) {
+                rowOp.row(params, context, io);
+            };
+
+            return runStagesCpu(*this, plan, args, StageRowFn(row));
         } else {
             const typename OP::Params params = bakeParams(_op, args.time, args.view);
             const OP& rowOp = _op;
@@ -439,12 +452,15 @@ private:
     }
 
     virtual GpuOpRef gpuOp(double time,
-                           ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN
+                           ViewIdx view,
+                           const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        if constexpr (PIPELINE.op == OpKind::Point) {
-            return _op.gpu(bakeParams(_op, time, view));
-        } else {
+        if constexpr (PIPELINE.op != OpKind::Point) {
             return GpuOpRef::none();
+        } else if constexpr (ScaledPointOp<OP>) {
+            return _op.gpu(bakeParams(_op, time, view), getPassContext(scale));
+        } else {
+            return _op.gpu(bakeParams(_op, time, view));
         }
     }
 

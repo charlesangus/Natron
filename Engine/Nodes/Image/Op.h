@@ -97,13 +97,39 @@ struct GpuOpRef {
  * those Params leave the source unchanged, whatever the stages do. row() is pure on its RowIO,
  * as PixelKernel::processRow() is: no knob access, no allocation and no I/O, called
  * concurrently for different rows. gpu() says how the same Params run on the GPU.
+ *
+ * An op whose maths depends on the render scale takes the render's PassContext as well, in all
+ * three members: isIdentity(params, context), row(params, context, io) and gpu(params, context).
+ * An op has one form or the other, never a mix of both.
  **/
 template <typename OP>
-concept PointOp = BakesParams<OP> && std::is_trivially_copyable_v<typename OP::Params> && requires(const OP& op, const typename OP::Params& params, const RowIO& io) {
+concept ScaleFreePointMembers = requires(const OP& op, const typename OP::Params& params, const RowIO& io) {
     { op.isIdentity(params) } -> std::convertible_to<bool>;
     { op.row(params, io) } -> std::same_as<void>;
     { op.gpu(params) } -> std::same_as<GpuOpRef>;
 };
+
+template <typename OP>
+concept ScaledPointMembers = requires(const OP& op, const typename OP::Params& params, const PassContext& context, const RowIO& io) {
+    { op.isIdentity(params, context) } -> std::convertible_to<bool>;
+    { op.row(params, context, io) } -> std::same_as<void>;
+    { op.gpu(params, context) } -> std::same_as<GpuOpRef>;
+};
+
+template <typename OP>
+concept AnyScaleFreePointMember = requires(const OP& op, const typename OP::Params& params) { op.isIdentity(params); } || requires(const OP& op, const typename OP::Params& params, const RowIO& io) { op.row(params, io); } || requires(const OP& op, const typename OP::Params& params) { op.gpu(params); };
+
+template <typename OP>
+concept AnyScaledPointMember = requires(const OP& op, const typename OP::Params& params, const PassContext& context) { op.isIdentity(params, context); } || requires(const OP& op, const typename OP::Params& params, const PassContext& context, const RowIO& io) { op.row(params, context, io); } || requires(const OP& op, const typename OP::Params& params, const PassContext& context) { op.gpu(params, context); };
+
+template <typename OP>
+concept PointOp = BakesParams<OP> && std::is_trivially_copyable_v<typename OP::Params> && ((ScaleFreePointMembers<OP> && !AnyScaledPointMember<OP>) || (ScaledPointMembers<OP> && !AnyScaleFreePointMember<OP>));
+
+/**
+ * @brief A Point op of the form that takes the render's PassContext.
+ **/
+template <typename OP>
+concept ScaledPointOp = PointOp<OP> && ScaledPointMembers<OP>;
 
 /**
  * @brief A Passes op: a node whose output pixel depends on a neighbourhood of its source,

@@ -29,26 +29,6 @@
 
 NATRON_NAMESPACE_ENTER
 
-NativePluginDescription
-TypedPassthrough::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_TYPEDPASSTHROUGH;
-    desc.label = "TypedPassthrough";
-    desc.description = tr("A trivial polymorphic pass-through node built on NativeEffectBase. "
-                          "It is an identity of its single input, and its effective data kind "
-                          "resolves structurally from whatever feeds it, exactly like Dot.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_OTHER;
-    desc.majorVersion = 1;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindPolymorphic));
-    desc.outputKind = eDataKindPolymorphic;
-
-    return desc;
-}
-
 void
 TypedPassthrough::initializeKnobs()
 {
@@ -62,20 +42,11 @@ TypedPassthrough::initializeKnobs()
     page->addKnob(info);
 }
 
-bool
-TypedPassthrough::isIdentity(double time,
-                             const RenderScale& /*scale*/,
-                             const RectI& /*roi*/,
-                             ViewIdx view,
-                             double* inputTime,
-                             ViewIdx* inputView,
-                             int* inputNb)
+Route
+TypedPassthrough::route(double time,
+                        ViewIdx /*view*/)
 {
-    *inputTime = time;
-    *inputNb = 0;
-    *inputView = view;
-
-    return true;
+    return Route::input(0, time);
 }
 
 NATRON_NAMESPACE_EXIT

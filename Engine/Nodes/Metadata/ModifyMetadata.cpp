@@ -39,30 +39,6 @@ ModifyMetadata::ModifyMetadata(NodePtr node)
 {
 }
 
-NativePluginDescription
-ModifyMetadata::getNativePluginDescription() const
-{
-    NativePluginDescription desc;
-
-    desc.id = PLUGINID_NATRON_MODIFYMETADATA;
-    desc.label = "ModifyMetadata";
-    desc.description = tr("Sets, removes or renames keys of the image's metadata. Each of the eight "
-                          "operation slots has an Operation (None, Set, Remove or Rename), a Key with its "
-                          "prefix, for example exr/owner, and, for Set, a Type (Integer, Float or String) "
-                          "and a Value, which can be animated or driven by an expression. Rename moves the "
-                          "value of Key to New Key, replacing any value already there. Slots are applied in "
-                          "order, so a later slot sees the result of an earlier one. The image itself is "
-                          "passed through unchanged.")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_METADATA;
-    desc.majorVersion = 1;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindImage));
-    desc.outputKind = eDataKindImage;
-
-    return desc;
-}
-
 void
 ModifyMetadata::initializeKnobs()
 {
@@ -205,20 +181,11 @@ ModifyMetadata::onKnobsLoaded()
     }
 }
 
-bool
-ModifyMetadata::isIdentity(double time,
-                           const RenderScale& /*scale*/,
-                           const RectI& /*roi*/,
-                           ViewIdx view,
-                           double* inputTime,
-                           ViewIdx* inputView,
-                           int* inputNb)
+Route
+ModifyMetadata::route(double time,
+                      ViewIdx /*view*/)
 {
-    *inputTime = time;
-    *inputNb = 0;
-    *inputView = view;
-
-    return true;
+    return Route::input(0, time);
 }
 
 ImageMetadata

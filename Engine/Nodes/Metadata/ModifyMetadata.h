@@ -39,6 +39,10 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kModifyMetadataInputs[] = {
+    InputSpec { .label = "Source", .optional = false },
+};
+
 // The slots are ordinary knobs rather than table rows so that values animate and take expressions.
 class ModifyMetadata
     : public NativeEffectBase {
@@ -79,7 +83,29 @@ private:
         return LayerKnobSpec();
     }
 
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_MODIFYMETADATA,
+        .label = "ModifyMetadata",
+        .description = "Sets, removes or renames keys of the image's metadata. Each of the eight "
+                       "operation slots has an Operation (None, Set, Remove or Rename), a Key with its "
+                       "prefix, for example exr/owner, and, for Set, a Type (Integer, Float or String) "
+                       "and a Value, which can be animated or driven by an expression. Rename moves the "
+                       "value of Key to New Key, replacing any value already there. Slots are applied in "
+                       "order, so a later slot sees the result of an earlier one. The image itself is "
+                       "passed through unchanged.",
+        .grouping = PLUGIN_GROUP_METADATA,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .inputs = kModifyMetadataInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
+    virtual Route route(double time,
+                        ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 
@@ -90,14 +116,6 @@ private:
                              bool originatedFromMainThread) OVERRIDE FINAL;
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
-
-    virtual bool isIdentity(double time,
-                            const RenderScale& scale,
-                            const RectI& roi,
-                            ViewIdx view,
-                            double* inputTime,
-                            ViewIdx* inputView,
-                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 

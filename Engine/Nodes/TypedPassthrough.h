@@ -35,10 +35,14 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kTypedPassthroughInputs[] = {
+    InputSpec { .label = "Source", .kind = eDataKindPolymorphic },
+};
+
 /**
  * @brief A single-input, single-output polymorphic pass-through: it forwards its
  * input unchanged, and its effective data kind is whatever feeds it. The forward
- * is an isIdentity() answer rather than a render() that copies pixels, so the
+ * is a route() answer rather than a render() that copies pixels, so the
  * render path resolves straight to the input and the node costs nothing.
  **/
 class TypedPassthrough
@@ -55,17 +59,28 @@ public:
     }
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_TYPEDPASSTHROUGH,
+        .label = "TypedPassthrough",
+        .description = "A trivial polymorphic pass-through node built on NativeEffectBase. "
+                       "It is an identity of its single input, and its effective data kind "
+                       "resolves structurally from whatever feeds it, exactly like Dot.",
+        .grouping = PLUGIN_GROUP_OTHER,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .outputKind = eDataKindPolymorphic,
+        .inputs = kTypedPassthroughInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
+    virtual Route route(double time,
+                        ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void initializeKnobs() OVERRIDE FINAL;
-
-    virtual bool isIdentity(double time,
-                            const RenderScale& scale,
-                            const RectI& roi,
-                            ViewIdx view,
-                            double* inputTime,
-                            ViewIdx* inputView,
-                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
 };
 
 NATRON_NAMESPACE_EXIT

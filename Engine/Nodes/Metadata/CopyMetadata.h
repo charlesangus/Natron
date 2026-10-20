@@ -35,6 +35,11 @@
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kCopyMetadataInputs[] = {
+    InputSpec { .label = "A", .optional = false },
+    InputSpec { .label = "B", .optional = true },
+};
+
 class CopyMetadata
     : public NativeEffectBase {
 public:
@@ -57,17 +62,34 @@ private:
         return LayerKnobSpec();
     }
 
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_COPYMETADATA,
+        .label = "CopyMetadata",
+        .description = "Copies the metadata of B onto the metadata of A, restricted to the keys matching "
+                       "the Keys filter, a comma- or newline-separated list of globs where * matches any "
+                       "characters and ? one (every key if it is empty). The image of A is passed through "
+                       "unchanged, and so is its metadata while B is not connected.\n\n"
+                       "Replace: the keys of A matching the filter are dropped and replaced by those "
+                       "of B matching the filter; the keys of A that do not match survive, so a key "
+                       "of A matching the filter that B lacks is removed.\n"
+                       "Merge, B wins: the keys of B matching the filter are added to A's, B's value "
+                       "kept on a clash.\n"
+                       "Merge, A wins: likewise, but A's value is kept on a clash.",
+        .grouping = PLUGIN_GROUP_METADATA,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .inputs = kCopyMetadataInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
+    virtual Route route(double time,
+                        ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void initializeKnobs() OVERRIDE FINAL;
-
-    virtual bool isIdentity(double time,
-                            const RenderScale& scale,
-                            const RectI& roi,
-                            ViewIdx view,
-                            double* inputTime,
-                            ViewIdx* inputView,
-                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 

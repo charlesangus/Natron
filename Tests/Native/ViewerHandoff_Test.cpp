@@ -749,6 +749,11 @@ TEST(ViewerHandoff, ReadbackMatchesTheTextureOnEveryRung)
         for (ViewerHandoffFormat format : { ViewerHandoffFormat::Bgra8, ViewerHandoffFormat::Rgba32F }) {
             const ViewerHandoffFrame frame = frameFor(kRect, format);
             const unsigned texture = h.makeTexture(frame);
+            // The rings keep the size of the first format's frames, so a larger format is refused once
+            // while their slots grow.
+            if (handoff.capacity(0) < frame.bytes()) {
+                EXPECT_FALSE(bool(handoff.present(0, root, paramsFor(c, kRect), texture, frame))) << toString(wanted);
+            }
             // More requests than the ring has slots, so that an uncollected copy has to be harvested before
             // its slot is produced into again.
             std::map<std::uint64_t, std::vector<unsigned char> > expected;

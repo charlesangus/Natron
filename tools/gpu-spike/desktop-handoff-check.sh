@@ -6,10 +6,11 @@ set -u
 
 usage() {
     cat <<USAGE
-usage: ${0##*/} --glinterop <GlInteropQt binary | directory to search> [--out <dir>]
+usage: ${0##*/} --glinterop <probe bundle dir | bundle .tar.gz | GlInteropQt | dir to search> [--out <dir>]
                 [--appimage <file>] [--comp <file>]
 
-  --glinterop  the GlInteropQt probe, or a directory searched recursively for it
+  --glinterop  the bundle from make-probe-bundle.sh (directory or .tar.gz), a
+               GlInteropQt binary, or a directory searched recursively for it
   --out        where the report and raw logs go (default: a new temp directory)
   --appimage, --comp   reserved; accepted but not yet supported
 USAGE
@@ -56,6 +57,14 @@ finish() {
 
 if [ -f /.dockerenv ] || [ -f /run/.containerenv ]; then
     say "WARNING: running inside a container; GL is probably not the desktop's GPU."
+fi
+
+if [ -f "$glinterop" ] && [ "${glinterop%.tar.gz}" != "$glinterop" ]; then
+    mkdir -p "$out/bundle" && tar -C "$out/bundle" -xzf "$glinterop" || {
+        say "cannot extract $glinterop"
+        finish "VERDICT no result: bundle tarball unreadable" 1
+    }
+    glinterop="$out/bundle"
 fi
 
 bin=""
@@ -128,7 +137,7 @@ printf '%s\n' "$ldd_out" > "$out/ldd.log"
 notfound=$(printf '%s\n' "$ldd_out" | grep 'not found')
 if [ -n "$notfound" ]; then
     say "$notfound"
-    say "Missing shared libraries; install them or run from the build's environment."
+    say "Missing shared libraries; use a bundle from tools/gpu-spike/make-probe-bundle.sh."
     finish "VERDICT no result: GlInteropQt cannot start (missing shared libraries)" 1
 fi
 say "all shared libraries resolved"
@@ -139,9 +148,17 @@ platforms=()
 
 verdict=""
 best_summary=""
+plugin_dir="$(dirname "$bin")/plugins/platforms"
 for plat in "${platforms[@]}"; do
+    if [ -d "$plugin_dir" ] && ! ls "$plugin_dir"/libq"$plat"*.so >/dev/null 2>&1; then
+        say ""
+        say "== GlInteropQt ($plat) =="
+        say "skipped: the bundled Qt has no $plat platform plugin"
+        best_summary="${best_summary:+$best_summary; }$plat: no platform plugin in bundle"
+        continue
+    fi
     log="$out/glinterop-$plat.log"
-    env -u LD_LIBRARY_PATH QT_QPA_PLATFORM="$plat" timeout 120 "$bin" > "$log" 2>&1
+    env -u LD_LIBRARY_PATH -u QT_PLUGIN_PATH -u QT_QPA_PLATFORM_PLUGIN_PATH QT_QPA_PLATFORM="$plat" timeout 120 "$bin" > "$log" 2>&1
     rc=$?
     result=$(grep '^RESULT ' "$log" | tail -n 1)
     missing=$(grep -E '^(missing|zero-copy blockers):' "$log" | tail -n 1)

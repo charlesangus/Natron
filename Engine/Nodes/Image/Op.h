@@ -240,11 +240,11 @@ concept RoutesOp = requires(const OP& op, const typename OP::Params& params, con
 };
 
 /**
- * @brief One input a Composite op reads in an evaluation, at the time it reads it.
+ * @brief One input a Composite op reads in an evaluation. Every input is read at the evaluation's
+ * time: frames needed and the GPU fold only ever ask for that time.
  **/
 struct CompositeInput {
     int inputNb = -1;
-    double time = 0.;
 };
 
 /**
@@ -261,10 +261,9 @@ struct CompositeInputs {
     std::vector<CompositeInput> further;
     int blendInput = -1;
 
-    void add(int inputNb,
-             double time)
+    void add(int inputNb)
     {
-        further.push_back(CompositeInput { inputNb, time });
+        further.push_back(CompositeInput { inputNb });
     }
 
     int blend() const
@@ -345,9 +344,6 @@ concept OffsetResampleMembers = requires(const OP& op, const typename OP::Params
 template <typename OP>
 concept ResampleOp = BakesParams<OP> && std::copyable<typename OP::Params> && (MatrixResampleMembers<OP> != OffsetResampleMembers<OP>);
 
-/**
- * @brief A Resample op of the matrix form.
- **/
 template <typename OP>
 concept MatrixResampleOp = ResampleOp<OP> && MatrixResampleMembers<OP>;
 

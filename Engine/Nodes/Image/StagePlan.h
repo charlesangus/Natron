@@ -59,14 +59,13 @@ struct StageKnobs {
 };
 
 /**
- * @brief One input of a Composite op as a render reads it: inputNb at time, in the layer of
- * layerInput, which is inputNb itself unless its InputLayer pairs it with another input: the plane
+ * @brief One input of a Composite op as a render reads it: inputNb at the render's time, in the
+ * layer of layerInput, which is inputNb itself unless its InputLayer pairs it with another input: the plane
  * being rendered as that input resolves it when layerKnob is empty, else the layer the
  * KnobLayerSelect named layerKnob selects among the layers layerInput carries.
  **/
 struct StageSource {
     int inputNb = -1;
-    double time = 0.;
     int layerInput = -1;
     std::string_view layerKnob = {};
 };
@@ -237,7 +236,7 @@ bool canRunStagesGpu(const StagePlan& plan,
 
 /**
  * @brief Whether the GPU executor can fold plan's Composite inputs for query: a base input, no
- * divisor, and every input read at the query's time in the query's plane. The region engine hands
+ * divisor, and every input read in the query's plane. The region engine hands
  * an input over once, in one layer, so no folded input can be the input the MaskMix stage reads
  * its mask from.
  **/

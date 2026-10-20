@@ -117,9 +117,6 @@ public:
                                                 bool* defaultB,
                                                 bool* defaultA) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    /**
-     * @brief The op kind of imagePipelineSpec().
-     **/
     virtual std::optional<OpKind> opKind() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
@@ -178,9 +175,6 @@ public:
      **/
     virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    /**
-     * @brief The mask, mix and divisor of the StagePlan a render at time and view resolves.
-     **/
     virtual GpuStageSummary getGpuStageSummary(double time,
                                                ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -298,26 +292,16 @@ protected:
      **/
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    /**
-     * @brief Whether the op alone leaves its source unchanged at (time, view) over roi.
-     **/
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
                               const RectI& roi,
                               ViewIdx view)
         = 0;
 
-    /**
-     * @brief Renders args through plan, the stages resolved for this render.
-     **/
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan)
         = 0;
 
-    /**
-     * @brief How the op runs on the GPU at time, view and scale; none, the default, keeps it on
-     * the CPU.
-     **/
     virtual GpuOpRef gpuOp(double /*time*/,
                            ViewIdx /*view*/,
                            const RenderScale& /*scale*/) const WARN_UNUSED_RETURN
@@ -325,9 +309,6 @@ protected:
         return GpuOpRef::none();
     }
 
-    /**
-     * @brief A Passes op's passes at time, view and scale; the default is an empty list.
-     **/
     virtual PassList opPasses(double /*time*/,
                               ViewIdx /*view*/,
                               const RenderScale& /*scale*/) const WARN_UNUSED_RETURN
@@ -335,9 +316,6 @@ protected:
         return PassList();
     }
 
-    /**
-     * @brief What a Resample op resolves to at time, view and scale; the default is Form::None.
-     **/
     virtual ResampleRequest opResample(double /*time*/,
                                        ViewIdx /*view*/,
                                        const RenderScale& /*scale*/) const WARN_UNUSED_RETURN
@@ -345,45 +323,29 @@ protected:
         return ResampleRequest();
     }
 
-    /**
-     * @brief The inputs a Composite op folds at time and view, and its blend input; the default
-     * names none.
-     **/
     virtual CompositeInputs opInputs(double /*time*/,
                                      ViewIdx /*view*/) const WARN_UNUSED_RETURN
     {
         return CompositeInputs();
     }
 
-    /**
-     * @brief Whether the op is a Resample op of the matrix form; the default is false.
-     **/
     virtual bool opHasMatrix() const WARN_UNUSED_RETURN
     {
         return false;
     }
 
-    /**
-     * @brief Whether the op is a Resample op that runs on the GPU (GpuResampleOp); the default is
-     * false.
-     **/
     virtual bool opResamplesOnGpu() const WARN_UNUSED_RETURN
     {
         return false;
     }
 
-    /**
-     * @brief Whether a matrix-form Resample op lets the node offer its matrix to the host; the
-     * default is false.
-     **/
     virtual bool opCanConcatenate() const WARN_UNUSED_RETURN
     {
         return false;
     }
 
     /**
-     * @brief Whether a Custom op's renderOpGpu() can produce query; the default, false, keeps the
-     * op on the CPU. The answer must depend only on the query and the node's settings.
+     * @brief The answer must depend only on the query and the node's settings.
      **/
     virtual bool canRenderOpOnGpu(const GpuQuery& /*query*/) const WARN_UNUSED_RETURN
     {
@@ -391,18 +353,14 @@ protected:
     }
 
     /**
-     * @brief Records a Custom op's dispatches that fill args.output over args.outputRect. Only
-     * called when canRenderOpOnGpu() accepted args.query; the default fails.
+     * @brief Must fill args.output over the whole of args.outputRect. Only called when
+     * canRenderOpOnGpu() accepted args.query.
      **/
     virtual StatusEnum renderOpGpu(const GpuRenderArgs& /*args*/) WARN_UNUSED_RETURN
     {
         return eStatusFailed;
     }
 
-    /**
-     * @brief The layer a Custom op's renderOpGpu() reads input inputNb in when the node renders
-     * plane at time and view. False, the default, when it cannot read the input.
-     **/
     virtual bool getOpGpuInputLayer(int /*inputNb*/,
                                     const ImageLayerDesc& /*plane*/,
                                     double /*time*/,

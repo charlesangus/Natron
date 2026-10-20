@@ -93,13 +93,13 @@ DissolveOp::route(const Params& params,
 
 CompositeInputs
 DissolveOp::inputs(const Params& params,
-                   const RouteContext& context) const
+                   const RouteContext& /*context*/) const
 {
     CompositeInputs inputs;
 
-    inputs.base = CompositeInput { dissolveSourceInput(params.prev), context.time() };
+    inputs.base = CompositeInput { dissolveSourceInput(params.prev) };
     if (params.next != params.prev) {
-        inputs.add(dissolveSourceInput(params.next), context.time());
+        inputs.add(dissolveSourceInput(params.next));
     }
 
     return inputs;

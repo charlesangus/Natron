@@ -449,9 +449,6 @@ RectI passListRoD(const RectI& srcRoD, const PassList& list) WARN_UNUSED_RETURN;
  **/
 std::optional<GpuCostHint> passListCostHint(const PassList& list) WARN_UNUSED_RETURN;
 
-/**
- * @brief Whether every pass of list is of a kind the executors run.
- **/
 bool isRunnablePassList(const PassList& list) WARN_UNUSED_RETURN;
 
 /**

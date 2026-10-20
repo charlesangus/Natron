@@ -104,9 +104,33 @@ inline constexpr InputSpec kSelfPairInputs[] = {
 };
 inline constexpr NodeSpec kSelfPairSpec = { .id = "bad.selfPair", .label = "Bad", .inputs = kSelfPairInputs };
 
+inline constexpr InputSpec kPairCycleInputs[] = {
+    InputSpec { .label = "A", .layer = InputLayer::pairWith(2) },
+    InputSpec { .label = "B", .layer = InputLayer::pairWith(0) },
+    InputSpec { .label = "C", .layer = InputLayer::pairWith(1) },
+};
+inline constexpr NodeSpec kPairCycleSpec = { .id = "bad.pairCycle", .label = "Bad", .inputs = kPairCycleInputs };
+
+inline constexpr InputSpec kPairTwoCycleInputs[] = {
+    InputSpec { .label = "Source" },
+    InputSpec { .label = "A", .layer = InputLayer::pairWith(2) },
+    InputSpec { .label = "B", .layer = InputLayer::pairWith(1) },
+};
+inline constexpr NodeSpec kPairTwoCycleSpec = { .id = "bad.pairTwoCycle", .label = "Bad", .inputs = kPairTwoCycleInputs };
+
+inline constexpr InputSpec kPairChainInputs[] = {
+    InputSpec { .label = "A", .layer = InputLayer::pairWith(1) },
+    InputSpec { .label = "B", .layer = InputLayer::pairWith(2) },
+    InputSpec { .label = "C", .layer = InputLayer::select("layer") },
+};
+inline constexpr NodeSpec kPairChainSpec = { .id = "good.pairChain", .label = "Good", .inputs = kPairChainInputs };
+
 static_assert(!nodeSpecMasksAreImages(kDeepMaskSpec) && !isValidNodeSpec(kDeepMaskSpec));
 static_assert(!nodeSpecVariadicIsLast(kVariadicFirstSpec) && !isValidNodeSpec(kVariadicFirstSpec));
 static_assert(!nodeSpecLayerPairsAreValid(kSelfPairSpec) && !isValidNodeSpec(kSelfPairSpec));
+static_assert(!nodeSpecLayerPairsAreValid(kPairCycleSpec) && !isValidNodeSpec(kPairCycleSpec));
+static_assert(!nodeSpecLayerPairsAreValid(kPairTwoCycleSpec) && !isValidNodeSpec(kPairTwoCycleSpec));
+static_assert(nodeSpecLayerPairsAreValid(kPairChainSpec) && isValidNodeSpec(kPairChainSpec));
 
 inline constexpr InputSpec kBakeInputs[] = {
     InputSpec { .label = "Source", .optional = true },

@@ -140,13 +140,13 @@ struct TestFoldOp {
     }
 
     CompositeInputs inputs(const Params& params,
-                           const RouteContext& context) const
+                           const RouteContext& /*context*/) const
     {
         CompositeInputs folded;
 
-        folded.base = CompositeInput { foldInput(0), context.time() };
+        folded.base = CompositeInput { foldInput(0) };
         for (int k = 1; k < params.foldCount; ++k) {
-            folded.add(foldInput(k), context.time());
+            folded.add(foldInput(k));
         }
         folded.blendInput = params.blendInput;
 

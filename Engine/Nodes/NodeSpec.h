@@ -203,9 +203,17 @@ nodeSpecLayerPairsAreValid(const NodeSpec& spec)
     const int n = spec.inputCount();
 
     for (int i = 0; i < n; ++i) {
-        const InputLayer& layer = spec.resolveInput(i).spec->layer;
-        if ((layer.kind == InputLayer::Kind::PairWith) && ((layer.pairedInput < 0) || (layer.pairedInput >= n) || (layer.pairedInput == i))) {
-            return false;
+        int current = i;
+        // An acyclic chain visits at most n inputs, so one that takes n hops repeats an input.
+        for (int hops = 0;; ++hops) {
+            const InputLayer& layer = spec.resolveInput(current).spec->layer;
+            if (layer.kind != InputLayer::Kind::PairWith) {
+                break;
+            }
+            if ((layer.pairedInput < 0) || (layer.pairedInput >= n) || (hops == n)) {
+                return false;
+            }
+            current = layer.pairedInput;
         }
     }
 
@@ -229,7 +237,7 @@ staticNodeSpec()
     static_assert(nodeSpecMasksAreImages(SPEC), "a Mask input must take eDataKindImage");
     static_assert(nodeSpecVariadicIsLast(SPEC), "a Variadic input must be the last InputSpec");
     static_assert(nodeSpecCountsAreValid(SPEC), "only a Variadic input has a count, and it is at least 1");
-    static_assert(nodeSpecLayerPairsAreValid(SPEC), "InputLayer::pairWith() must name another input of the node");
+    static_assert(nodeSpecLayerPairsAreValid(SPEC), "InputLayer::pairWith() must name another input of the node, and its chain must end without repeating an input");
 
     return &SPEC;
 }

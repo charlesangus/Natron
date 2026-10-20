@@ -124,17 +124,18 @@ struct SourceImage {
 };
 
 // The layer a source whose InputLayer selects one is read in: the layer its KnobLayerSelect
-// resolves to among those layerInput carries at the source's time. False when the knob is missing
+// resolves to among those layerInput carries at time. False when the knob is missing
 // or resolves to no layer, in which case the source reads zero.
 bool
 resolveStageSourceLayer(EffectInstance& effect,
                         const StageSource& source,
+                        double time,
                         ViewIdx view,
                         ImageLayerDesc* layer)
 {
     KnobLayerSelectPtr knob = effect.getKnobByNameAndType<KnobLayerSelect>(std::string(source.layerKnob));
     std::list<ImageLayerDesc> present;
-    effect.getAvailableLayers(source.time, view, source.layerInput, &present);
+    effect.getAvailableLayers(time, view, source.layerInput, &present);
     ResolvedLayer resolved;
     if (!knob || !knob->resolve(present, &resolved) || (resolved.desc.getNumComponents() == 0)) {
         return false;
@@ -156,16 +157,16 @@ fetchStageSource(EffectInstance& effect,
     ImageLayerDesc layer;
     bool mapToClipPrefs = true;
     if (!source.layerKnob.empty()) {
-        if (!resolveStageSourceLayer(effect, source, args.view, &layer)) {
+        if (!resolveStageSourceLayer(effect, source, args.time, args.view, &layer)) {
             return ImagePtr();
         }
         // A selected layer is read as it is stored, not in the clip's colour layout.
         mapToClipPrefs = false;
-    } else if (!effect.resolveInputPlaneForRender(source.layerInput, source.time, args.view, &layer, NULL)) {
+    } else if (!effect.resolveInputPlaneForRender(source.layerInput, args.time, args.view, &layer, NULL)) {
         return ImagePtr();
     }
 
-    return effect.getImage(source.inputNb, source.time, args.mappedScale, args.view, NULL, &layer, mapToClipPrefs, false /*dontUpscale*/, eStorageModeRAM, NULL, &roi);
+    return effect.getImage(source.inputNb, args.time, args.mappedScale, args.view, NULL, &layer, mapToClipPrefs, false /*dontUpscale*/, eStorageModeRAM, NULL, &roi);
 }
 
 // GpuRecordContext::updateBuffer() writes at most this much.
@@ -531,7 +532,6 @@ resolveStageSources(const NodeSpec* spec,
     const auto resolve = [spec, nSpecInputs](const CompositeInput& input) {
         StageSource source;
         source.inputNb = input.inputNb;
-        source.time = input.time;
         source.layerInput = input.inputNb;
 
         // Every step of a pairing names a distinct input, so a chain longer than the inputs loops.
@@ -913,7 +913,7 @@ canRunStageSourcesGpu(const StagePlan& plan,
         return false;
     }
     for (const StageSource& source : plan.composite) {
-        if ((source.time != query.time) || !source.layerKnob.empty()) {
+        if (!source.layerKnob.empty()) {
             return false;
         }
         if (plan.applyMask && (source.inputNb == plan.maskInput)) {

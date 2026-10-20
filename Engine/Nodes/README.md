@@ -143,7 +143,9 @@ selectors; it must be an image input) and `Variadic`, a run of `count`
 numbered inputs labelled `label + (firstNumber + k)`, which must come last.
 `InputLayer` says in which layer an input is read: the plane being rendered
 (the default), the layer a knob selects (`InputLayer::select(knob)`) or the
-layer another input resolves to (`InputLayer::pairWith(i)`). `time` and
+layer another input resolves to (`InputLayer::pairWith(i)`). Only a Composite
+op's folded inputs follow it; every other op kind reads its source in the plane
+being rendered. `time` and
 `boundary` are declared but no executor reads them yet, and `rfvReads` holds
 names only. `description` and labels are untranslated `string_view`s.
 
@@ -984,9 +986,9 @@ an integer `which`).
   softness fade, and it clips the source to its region of interest.
 
 **Composite** is a fold, not a fixed source list. `inputs()` returns a
-`CompositeInputs`: a base input, any number of further inputs (each with the
-time it is read at) and a blend input (the one the stages blend against and
-every composed identity answers; the base input by default). The result starts
+`CompositeInputs`: a base input, any number of further inputs and a blend
+input (the one the stages blend against and every composed identity answers;
+the base input by default). Every input is read at the evaluation's time. The result starts
 as the base input's row and `step()` combines it with each further input's row
 in turn: `io.src[0]` is the result so far, `io.src[1]` the next input's row, and
 `step()` writes the processed channels to `io.dst`. Mask and mix apply once, to

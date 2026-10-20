@@ -139,7 +139,7 @@ Nothing native or host-side renders through GL any more:
   - verify: Phase build. `grep -n 'eStorageModeGLTex\|GLShader' Engine/ImagePremult.cpp Engine/ImageConvert.cpp` is empty. `Image.cpp` has no `getOrCreateFillShader`. ctest `Image_Test`, `ImageConvert_Test` and `ImagePasteBands_Test` are green.
   - size: M
 
-- [ ] M108.P1.T5 — Delete the engine GL shaders and GLShader
+- [x] M108.P1.T5 — Delete the engine GL shaders and GLShader
   - files: `Engine/OSGLContext.h`, `Engine/OSGLContext.cpp`, `Engine/GLShader.h` (delete), `Engine/GLShader.cpp` (delete), `Engine/DefaultShaders.h` (delete), `Engine/DefaultShaders.cpp` (delete), `Engine/EngineFwd.h`
   - approach: Remove `getOrCreateFillShader`, `getOrCreateMaskMixShader` and `getOrCreateCopyUnprocessedChannelsShader` (`OSGLContext.cpp:509-645`, the declarations at `OSGLContext.h:176-178`), the shader members (`:245-249, 266-268`), and the `DefaultShaders.h`/`GLShader.h` includes. Delete the four files and the `GLShader` forward declaration and typedef (`EngineFwd.h:158, 355`). This is a mechanical deletion and needs the phase build's fresh configure, because the Engine GLOB has no CONFIGURE_DEPENDS.
   - verify: Phase build from a fresh configure. `grep -rn 'GLShader\|DefaultShaders\|getOrCreate.*Shader' Engine Gui Tests` is empty.

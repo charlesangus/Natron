@@ -144,7 +144,9 @@ StagedImageEffect::canRenderOnGpu(const GpuQuery& query) const
         return false;
     }
 
-    return canRecordGpuOp(gpuOp(query.time, query.view, query.mappedScale), _gpuShaderGate, getNode());
+    const GpuOpRef op = gpuOp(query.time, query.view, query.mappedScale);
+
+    return op.acceptsComponents(query.nComps) && canRecordGpuOp(op, _gpuShaderGate, getNode());
 }
 
 RectI
@@ -190,7 +192,7 @@ StagedImageEffect::renderGpu(const GpuRenderArgs& args)
     }
     const StagePlan plan = resolveGpuPlan(query);
     const GpuOpRef op = gpuOp(query.time, query.view, query.mappedScale);
-    if (!canRunStagesGpu(plan, query) || !canRecordGpuOp(op, _gpuShaderGate, getNode())) {
+    if (!canRunStagesGpu(plan, query) || !op.acceptsComponents(query.nComps) || !canRecordGpuOp(op, _gpuShaderGate, getNode())) {
         return eStatusFailed;
     }
 

@@ -34,13 +34,13 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "Engine/AppManager.h"
 #include "Engine/Image.h"
 #include "Engine/Interpolation.h"
 #include "Engine/KnobTypes.h"
-#include "Engine/Nodes/Image/ColorMath.h"
-#include "Engine/Nodes/Image/CurveSnapshot.h"
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
 
@@ -49,6 +49,17 @@
 #endif
 
 NATRON_NAMESPACE_ENTER
+
+struct ColorLookupOp::Tables {
+    CurveSnapshot curves[eCurveCount];
+    // Empty for the master curve in the standard modes, which fold it into the channel tables.
+    std::vector<float> lut[eCurveCount];
+#ifdef NATRON_HAVE_GPU
+    // Every curve as curvesnapshot.slang reads them, one after the other, or empty when any has
+    // more keys than it holds.
+    std::vector<std::uint32_t> gpuCurves;
+#endif
+};
 
 namespace {
 const int kHistogramBins = 256;
@@ -81,8 +92,8 @@ const int kGpuYMax = 21;
 const int kGpuKeyCount = 8;
 const int kGpuTableRange = 26;
 const int kGpuLutBase = kGpuHeaderWords;
-const int kGpuCurveBase = kGpuLutBase + ColorLookup::eCurveCount * kGpuLutSize;
-const int kGpuTotalWords = kGpuCurveBase + ColorLookup::eCurveCount * kGpuCurveWords;
+const int kGpuCurveBase = kGpuLutBase + ColorLookupOp::eCurveCount * kGpuLutSize;
+const int kGpuTotalWords = kGpuCurveBase + ColorLookupOp::eCurveCount * kGpuCurveWords;
 
 static_assert(kLutIntervals + 1 == 1024, "must match CS_TABLE_SIZE in curvesnapshot.slang");
 static_assert(kGpuTableRange + CurveSnapshot::kGpuTableRangeWords <= kGpuHeaderWords, "the table range lies in the header");
@@ -99,51 +110,18 @@ putFloat(std::vector<std::uint32_t>& words,
 int
 curveOfChannel(int channelBit)
 {
-    return ColorLookup::eCurveRed + channelBit;
+    return ColorLookupOp::eCurveRed + channelBit;
 }
 
-struct KernelParams {
-    ColorLookup::MasterCurveModeEnum mode;
+// The op's maths over one set of Params and their tables.
+struct LookupMaths {
+    const ColorLookupOp::Tables& tables;
+    ColorLookupOp::MasterCurveModeEnum mode;
     ColorMath::LuminanceMathEnum luminanceMath;
     bool clampBlack;
     bool clampWhite;
 
-    KernelParams()
-        : mode(ColorLookup::eMasterCurveModeStandard)
-        , luminanceMath(ColorMath::eLuminanceMathRec709)
-        , clampBlack(false)
-        , clampWhite(false)
-    {
-    }
-};
-
-class ColorLookupKernel
-    : public PixelKernel {
-public:
-    ColorLookupKernel(const KernelParams& params,
-                      const CurveSnapshot curves[ColorLookup::eCurveCount])
-        : _mode(params.mode)
-        , _luminanceMath(params.luminanceMath)
-        , _clampBlack(params.clampBlack)
-        , _clampWhite(params.clampWhite)
-    {
-        for (int i = 0; i < ColorLookup::eCurveCount; ++i) {
-            _curves[i] = curves[i];
-        }
-        const bool standard = isStandard();
-        for (int curve = 0; curve < ColorLookup::eCurveCount; ++curve) {
-            if ((curve == ColorLookup::eCurveMaster) && standard) {
-                continue;
-            }
-            _lut[curve].resize(kLutIntervals + 1);
-            for (int position = 0; position <= kLutIntervals; ++position) {
-                const double parametricPos = kLutMin + (kLutMax - kLutMin) * double(position) / kLutIntervals;
-                _lut[curve][position] = (float)clamp(curveValue(curve, parametricPos));
-            }
-        }
-    }
-
-    virtual void processRow(const RowIO& io) const OVERRIDE FINAL
+    void processRow(const RowIO& io) const
     {
         const int nComps = io.nComps;
         const float* src = io.src[0];
@@ -153,7 +131,7 @@ public:
             const bool process = io.channels[3];
             for (int x = 0; x < io.width; ++x, ++src, ++dst) {
                 if (process) {
-                    *dst = interpolate(ColorLookup::eCurveAlpha, *src);
+                    *dst = interpolate(ColorLookupOp::eCurveAlpha, *src);
                 }
             }
 
@@ -185,48 +163,21 @@ public:
                 }
             }
             if ((nComps == 4) && process[3]) {
-                dst[3] = interpolate(ColorLookup::eCurveAlpha, src[3]);
+                dst[3] = interpolate(ColorLookupOp::eCurveAlpha, src[3]);
             }
         }
     }
 
-#ifdef NATRON_HAVE_GPU
-    // The tables colorlookup.slang reads, or false when a curve has more keys than it holds.
-    bool packGpu(std::vector<std::uint32_t>* words) const
-    {
-        words->assign(kGpuTotalWords, 0);
-        (*words)[0] = (std::uint32_t)_mode;
-        (*words)[1] = (std::uint32_t)_luminanceMath;
-        (*words)[2] = (_clampBlack ? 1u : 0u) | (_clampWhite ? 2u : 0u);
-        CurveSnapshot::packGpuTableRange(kLutMin, kLutMax, kLutIntervals, &(*words)[kGpuTableRange]);
-        for (int curve = 0; curve < ColorLookup::eCurveCount; ++curve) {
-            const CurveSnapshot& snapshot = _curves[curve];
-            if (!snapshot.packGpu(&(*words)[kGpuCurveBase + curve * kGpuCurveWords])) {
-                return false;
-            }
-            putFloat(*words, kGpuYMin + curve, (float)snapshot.yMin());
-            putFloat(*words, kGpuYMax + curve, (float)snapshot.yMax());
-            (*words)[kGpuKeyCount + curve] = (std::uint32_t)snapshot.keys().size();
-            for (std::size_t i = 0; i < _lut[curve].size(); ++i) {
-                putFloat(*words, kGpuLutBase + curve * kGpuLutSize + (int)i, _lut[curve][i]);
-            }
-        }
-
-        return true;
-    }
-#endif
-
-private:
     bool isStandard() const
     {
-        return (_mode == ColorLookup::eMasterCurveModeStandard) || (_mode == ColorLookup::eMasterCurveModeWeightedStandard);
+        return (mode == ColorLookupOp::eMasterCurveModeStandard) || (mode == ColorLookupOp::eMasterCurveModeWeightedStandard);
     }
 
     double clamp(double value) const
     {
-        if (_clampBlack && (value < 0.)) {
+        if (clampBlack && (value < 0.)) {
             return 0.;
-        } else if (_clampWhite && (value > 1.)) {
+        } else if (clampWhite && (value > 1.)) {
             return 1.;
         }
 
@@ -235,9 +186,9 @@ private:
 
     float clamp(float value) const
     {
-        if (_clampBlack && (value < 0.f)) {
+        if (clampBlack && (value < 0.f)) {
             return 0.f;
-        } else if (_clampWhite && (value > 1.f)) {
+        } else if (clampWhite && (value > 1.f)) {
             return 1.f;
         }
 
@@ -248,10 +199,10 @@ private:
     double curveValue(int curve,
                       double pos) const
     {
-        double value = _curves[curve].valueAt(pos);
+        double value = tables.curves[curve].valueAt(pos);
 
-        if (isStandard() && (curve >= ColorLookup::eCurveRed) && (curve <= ColorLookup::eCurveBlue)) {
-            value += _curves[ColorLookup::eCurveMaster].valueAt(pos) - pos;
+        if (isStandard() && (curve >= ColorLookupOp::eCurveRed) && (curve <= ColorLookupOp::eCurveBlue)) {
+            value += tables.curves[ColorLookupOp::eCurveMaster].valueAt(pos) - pos;
         }
 
         return value;
@@ -264,7 +215,7 @@ private:
         if ((value < kLutMin) || (kLutMax < value)) {
             return static_cast<float>(clamp(curveValue(curve, value)));
         }
-        const std::vector<float>& lut = _lut[curve];
+        const std::vector<float>& lut = tables.lut[curve];
         const double x = (value - kLutMin) / (kLutMax - kLutMin);
         if (x <= 0.) {
             return lut[0];
@@ -288,7 +239,7 @@ private:
         float result = interpolate(curve, value);
 
         if (!isStandard()) {
-            result = (float)clamp(result + (interpolate(ColorLookup::eCurveMaster, value) - value));
+            result = (float)clamp(result + (interpolate(ColorLookupOp::eCurveMaster, value) - value));
         }
 
         return result;
@@ -325,8 +276,8 @@ private:
         const float gold = g;
         const float bold = b;
 
-        r = interpolate(ColorLookup::eCurveMaster, rold);
-        b = interpolate(ColorLookup::eCurveMaster, bold);
+        r = interpolate(ColorLookupOp::eCurveMaster, rold);
+        b = interpolate(ColorLookupOp::eCurveMaster, bold);
         g = b + ((r - b) * (gold - bold) / (rold - bold));
     }
 
@@ -335,22 +286,22 @@ private:
              float b,
              float out[3]) const
     {
-        switch (_mode) {
-        case ColorLookup::eMasterCurveModeStandard:
-            out[0] = interpolate(ColorLookup::eCurveRed, r);
-            out[1] = interpolate(ColorLookup::eCurveGreen, g);
-            out[2] = interpolate(ColorLookup::eCurveBlue, b);
+        switch (mode) {
+        case ColorLookupOp::eMasterCurveModeStandard:
+            out[0] = interpolate(ColorLookupOp::eCurveRed, r);
+            out[1] = interpolate(ColorLookupOp::eCurveGreen, g);
+            out[2] = interpolate(ColorLookupOp::eCurveBlue, b);
             break;
-        case ColorLookup::eMasterCurveModeWeightedStandard: {
-            const float r1 = interpolate(ColorLookup::eCurveRed, r);
+        case ColorLookupOp::eMasterCurveModeWeightedStandard: {
+            const float r1 = interpolate(ColorLookupOp::eCurveRed, r);
             const float g1 = triangle(r, r1, g);
             const float b1 = triangle(r, r1, b);
 
-            const float g2 = interpolate(ColorLookup::eCurveGreen, g);
+            const float g2 = interpolate(ColorLookupOp::eCurveGreen, g);
             const float r2 = triangle(g, g2, r);
             const float b2 = triangle(g, g2, b);
 
-            const float b3 = interpolate(ColorLookup::eCurveBlue, b);
+            const float b3 = interpolate(ColorLookupOp::eCurveBlue, b);
             const float r3 = triangle(b, b3, r);
             const float g3 = triangle(b, b3, g);
 
@@ -359,10 +310,10 @@ private:
             out[2] = clamp(b1 * 0.25f + b2 * 0.25f + b3 * 0.50f);
             break;
         }
-        case ColorLookup::eMasterCurveModeFilmLike: {
-            const double rcoef = r < 1e-8 ? 1. : (interpolate(ColorLookup::eCurveRed, r) / r);
-            const double gcoef = g < 1e-8 ? 1. : (interpolate(ColorLookup::eCurveGreen, g) / g);
-            const double bcoef = b < 1e-8 ? 1. : (interpolate(ColorLookup::eCurveBlue, b) / b);
+        case ColorLookupOp::eMasterCurveModeFilmLike: {
+            const double rcoef = r < 1e-8 ? 1. : (interpolate(ColorLookupOp::eCurveRed, r) / r);
+            const double gcoef = g < 1e-8 ? 1. : (interpolate(ColorLookupOp::eCurveGreen, g) / g);
+            const double bcoef = b < 1e-8 ? 1. : (interpolate(ColorLookupOp::eCurveBlue, b) / b);
             if (r >= g) {
                 if (g > b) {
                     rgbTone(r, g, b);
@@ -371,8 +322,8 @@ private:
                 } else if (b > g) {
                     rgbTone(r, b, g);
                 } else {
-                    r = interpolate(ColorLookup::eCurveMaster, r);
-                    g = interpolate(ColorLookup::eCurveMaster, g);
+                    r = interpolate(ColorLookupOp::eCurveMaster, r);
+                    g = interpolate(ColorLookupOp::eCurveMaster, g);
                     b = g;
                 }
             } else {
@@ -389,34 +340,56 @@ private:
             out[2] = static_cast<float>(clamp(bcoef * b));
             break;
         }
-        case ColorLookup::eMasterCurveModeLuminance: {
-            const float luma = static_cast<float>(ColorMath::luminance(_luminanceMath, r, g, b));
+        case ColorLookupOp::eMasterCurveModeLuminance: {
+            const float luma = static_cast<float>(ColorMath::luminance(luminanceMath, r, g, b));
             const double l = (std::max)(luma, 1.e-8f);
-            const double coef = interpolate(ColorLookup::eCurveMaster, (float)l) / l;
-            out[0] = static_cast<float>(clamp(coef * interpolate(ColorLookup::eCurveRed, r)));
-            out[1] = static_cast<float>(clamp(coef * interpolate(ColorLookup::eCurveGreen, g)));
-            out[2] = static_cast<float>(clamp(coef * interpolate(ColorLookup::eCurveBlue, b)));
+            const double coef = interpolate(ColorLookupOp::eCurveMaster, (float)l) / l;
+            out[0] = static_cast<float>(clamp(coef * interpolate(ColorLookupOp::eCurveRed, r)));
+            out[1] = static_cast<float>(clamp(coef * interpolate(ColorLookupOp::eCurveGreen, g)));
+            out[2] = static_cast<float>(clamp(coef * interpolate(ColorLookupOp::eCurveBlue, b)));
             break;
         }
         }
     }
-
-    ColorLookup::MasterCurveModeEnum _mode;
-    ColorMath::LuminanceMathEnum _luminanceMath;
-    bool _clampBlack;
-    bool _clampWhite;
-    CurveSnapshot _curves[ColorLookup::eCurveCount];
-    std::vector<float> _lut[ColorLookup::eCurveCount];
 };
 
-NativeImageTraits
-colorLookupTraits()
+ColorLookupOp::Tables
+buildTables(const KnobParametricPtr& table,
+            bool standard,
+            bool clampBlack,
+            bool clampWhite)
 {
-    NativeImageTraits traits;
+    ColorLookupOp::Tables tables;
 
-    traits.hostUnPremult = true;
+    if (table) {
+        for (int curve = 0; curve < ColorLookupOp::eCurveCount; ++curve) {
+            tables.curves[curve] = CurveSnapshot(table->getParametricCurve(curve));
+        }
+    }
+    // Of the mode, only whether it is a standard one shapes the tables.
+    const ColorLookupOp::MasterCurveModeEnum mode = standard ? ColorLookupOp::eMasterCurveModeStandard : ColorLookupOp::eMasterCurveModeFilmLike;
+    const LookupMaths maths = { tables, mode, ColorMath::eLuminanceMathRec709, clampBlack, clampWhite };
+    for (int curve = 0; curve < ColorLookupOp::eCurveCount; ++curve) {
+        if ((curve == ColorLookupOp::eCurveMaster) && standard) {
+            continue;
+        }
+        tables.lut[curve].resize(kLutIntervals + 1);
+        for (int position = 0; position <= kLutIntervals; ++position) {
+            const double parametricPos = kLutMin + (kLutMax - kLutMin) * double(position) / kLutIntervals;
+            tables.lut[curve][position] = (float)maths.clamp(maths.curveValue(curve, parametricPos));
+        }
+    }
+#ifdef NATRON_HAVE_GPU
+    tables.gpuCurves.assign(ColorLookupOp::eCurveCount * kGpuCurveWords, 0);
+    for (int curve = 0; curve < ColorLookupOp::eCurveCount; ++curve) {
+        if (!tables.curves[curve].packGpu(&tables.gpuCurves[curve * kGpuCurveWords])) {
+            tables.gpuCurves.clear();
+            break;
+        }
+    }
+#endif
 
-    return traits;
+    return tables;
 }
 
 template <typename T>
@@ -440,16 +413,6 @@ readColor(const KnobColorWPtr& weak,
     for (int i = 0; i < 4; ++i) {
         out[i] = knob ? knob->getValueAtTime(time, i, view) : 0.;
     }
-}
-
-bool
-readBool(const KnobBoolWPtr& weak,
-         double time,
-         ViewIdx view)
-{
-    KnobBoolPtr knob = weak.lock();
-
-    return knob ? knob->getValueAtTime(time, 0, view) : false;
 }
 
 int
@@ -487,6 +450,92 @@ addColorKnob(KnobHolder* holder,
 }
 } // anonymous namespace
 
+std::shared_ptr<const ColorLookupOp::Tables>
+ColorLookupOp::bakeTables(MasterCurveModeEnum mode,
+                          bool black,
+                          bool white) const
+{
+    const bool standard = (mode == eMasterCurveModeStandard) || (mode == eMasterCurveModeWeightedStandard);
+    const KnobParametricPtr knob = lookupTable.lock();
+    const auto build = [&knob, standard, black, white]() {
+        return buildTables(knob, standard, black, white);
+    };
+
+    if (!knob) {
+        return std::make_shared<const Tables>(build());
+    }
+
+    return _tables[(standard ? 1 : 0) | (black ? 2 : 0) | (white ? 4 : 0)].get(*knob, build);
+}
+
+ColorLookupOp::Params
+ColorLookupOp::bake(const KnobReader& reader) const
+{
+    Params p;
+
+    p.mode = (MasterCurveModeEnum)reader.value(masterCurveMode);
+    p.luminanceMath = (ColorMath::LuminanceMathEnum)reader.value(luminanceMath);
+    p.clampBlack = reader.value(clampBlack);
+    p.clampWhite = reader.value(clampWhite);
+    p.tables = bakeTables(p.mode, p.clampBlack, p.clampWhite);
+
+    return p;
+}
+
+bool
+ColorLookupOp::isIdentity(const Params& params) const
+{
+    // Even identity curves round through the float tables, so no Params leave the source
+    // bit-for-bit unchanged.
+    Q_UNUSED(params);
+
+    return false;
+}
+
+void
+ColorLookupOp::row(const Params& params,
+                   const RowIO& io) const
+{
+    const LookupMaths maths = { *params.tables, params.mode, params.luminanceMath, params.clampBlack, params.clampWhite };
+
+    maths.processRow(io);
+}
+
+GpuOpRef
+ColorLookupOp::gpu(const Params& params) const
+{
+#ifdef NATRON_HAVE_GPU
+    if (!params.tables || params.tables->gpuCurves.empty()) {
+        return GpuOpRef::none();
+    }
+    const Tables& tables = *params.tables;
+    std::vector<std::uint32_t> words(kGpuTotalWords, 0);
+    words[0] = (std::uint32_t)params.mode;
+    words[1] = (std::uint32_t)params.luminanceMath;
+    words[2] = (params.clampBlack ? 1u : 0u) | (params.clampWhite ? 2u : 0u);
+    CurveSnapshot::packGpuTableRange(kLutMin, kLutMax, kLutIntervals, &words[kGpuTableRange]);
+    std::copy(tables.gpuCurves.begin(), tables.gpuCurves.end(), words.begin() + kGpuCurveBase);
+    for (int curve = 0; curve < eCurveCount; ++curve) {
+        const CurveSnapshot& snapshot = tables.curves[curve];
+        putFloat(words, kGpuYMin + curve, (float)snapshot.yMin());
+        putFloat(words, kGpuYMax + curve, (float)snapshot.yMax());
+        words[kGpuKeyCount + curve] = (std::uint32_t)snapshot.keys().size();
+        for (std::size_t i = 0; i < tables.lut[curve].size(); ++i) {
+            putFloat(words, kGpuLutBase + curve * kGpuLutSize + (int)i, tables.lut[curve][i]);
+        }
+    }
+    GpuOpRef ref = GpuOpRef::packed((int)gpu::GpuKernelId::colorlookup_wrapped, std::move(words));
+    // Two-component pixels take a per-channel path the wrapped op does not see.
+    ref.acceptedComponents = GpuOpRef::componentsBit(1) | GpuOpRef::componentsBit(3) | GpuOpRef::componentsBit(4);
+
+    return ref;
+#else
+    Q_UNUSED(params);
+
+    return GpuOpRef::none();
+#endif
+} // ColorLookupOp::gpu
+
 struct ColorLookup::BackgroundState {
     std::mutex mutex;
     std::vector<unsigned long long> counts;
@@ -499,7 +548,7 @@ struct ColorLookup::BackgroundState {
 };
 
 ColorLookup::ColorLookup(NodePtr node)
-    : NativeImageEffect(node, colorLookupTraits())
+    : ImageNode<ColorLookupOp>(node)
     , _background(std::make_shared<BackgroundState>())
 {
 }
@@ -508,39 +557,24 @@ ColorLookup::~ColorLookup()
 {
 }
 
-NativePluginDescription
-ColorLookup::getNativePluginDescription() const
+ColorLookupOp::Params
+ColorLookup::bakeColorLookup(double time,
+                             ViewIdx view) const
 {
-    NativePluginDescription desc;
+    return bakeParams(op(), time, view);
+}
 
-    desc.id = PLUGINID_NATRON_COLORLOOKUP;
-    desc.label = "ColorLookup";
-    desc.description = tr("Apply a parametric lookup curve with the possibility to adjust each channel separately.\n"
-                          "The master curve is combined with the red, green and blue curves, but not with the alpha curve.\n"
-                          "Different algorithms are available when applying the master curve, which are selectable using the \"Master Curve Mode\" parameter.\n"
-                          "\n"
-                          "Note that you can easily do color remapping by setting Source and Target colors and clicking \"Set RGB\" or \"Set RGBA\" below.\n"
-                          "This will add control points on the curve to match the target from the source. You can add as many point as you like.\n"
-                          "This is very useful for matching color of one shot to another, or adding custom colors to a black and white ramp.\n"
-                          "\n"
-                          "Optionally, the RGB histogram or a color ramp can be displayed in the background of the lookup curves.\n"
-                          "\n"
-                          "See also: https://web.archive.org/web/20221208230906/http://opticalenquiry.com/nuke/index.php?title=ColorLookup")
-                           .toStdString();
-    desc.grouping = PLUGIN_GROUP_COLOR;
-    desc.majorVersion = PLUGIN_MAJOR_NATRON_COLORLOOKUP;
-    desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindImage));
-    desc.inputs.push_back(NativeInputDescription("Mask", true, eDataKindImage, true));
-    desc.outputKind = eDataKindImage;
-
-    return desc;
+void
+ColorLookup::colorLookupRow(const ColorLookupOp::Params& params,
+                            const RowIO& io) const
+{
+    op().row(params, io);
 }
 
 void
 ColorLookup::initializeKnobs()
 {
-    KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
+    KnobPagePtr page = createControlsPage();
 
     {
         KnobBoolPtr knob = createKnob<KnobBool>(std::string("Has Background Interact"));
@@ -577,7 +611,7 @@ ColorLookup::initializeKnobs()
         }
         table->setDefaultCurvesFromCurves();
         page->addKnob(table);
-        _lookupTable = table;
+        op().lookupTable = table;
     }
     {
         KnobBoolPtr knob = createKnob<KnobBool>(std::string("Show Ramp"));
@@ -656,11 +690,11 @@ ColorLookup::initializeKnobs()
         mode->setDefaultValue((int)eMasterCurveModeStandard);
         mode->setAnimationEnabled(false);
         page->addKnob(mode);
-        _masterCurveMode = mode;
+        op().masterCurveMode = mode;
     }
 
-    _luminanceMath = ColorMath::addLuminanceMathKnob(this, page);
-    if (KnobChoicePtr luminanceMath = _luminanceMath.lock()) {
+    op().luminanceMath = ColorMath::addLuminanceMathKnob(this, page);
+    if (KnobChoicePtr luminanceMath = op().luminanceMath.lock()) {
         luminanceMath->setHintToolTip(tr("Formula used to compute luminance from RGB values (only used by 'Set Master' and by the luminance master curve mode)."));
     }
 
@@ -670,77 +704,20 @@ ColorLookup::initializeKnobs()
     clampBlack->setDefaultValue(false);
     clampBlack->setAddNewLine(false);
     page->addKnob(clampBlack);
-    _clampBlack = clampBlack;
+    op().clampBlack = clampBlack;
 
     KnobBoolPtr clampWhite = createKnob<KnobBool>(tr("Clamp White"));
     clampWhite->setName(kColorLookupParamClampWhite);
     clampWhite->setHintToolTip(tr("All colors above 1 on output are set to 1."));
     clampWhite->setDefaultValue(false);
     page->addKnob(clampWhite);
-    _clampWhite = clampWhite;
+    op().clampWhite = clampWhite;
 
-    addMaskMixKnobs(page);
+    addStageKnobs(page);
 
     installBackgroundPainter();
     refreshBackgroundControls();
 } // ColorLookup::initializeKnobs
-
-PixelKernelPtr
-ColorLookup::makeKernel(const KernelContext& context)
-{
-    KernelParams params;
-
-    params.mode = (MasterCurveModeEnum)readChoice(_masterCurveMode, context.time, context.view);
-    params.luminanceMath = (ColorMath::LuminanceMathEnum)readChoice(_luminanceMath, context.time, context.view);
-    params.clampBlack = readBool(_clampBlack, context.time, context.view);
-    params.clampWhite = readBool(_clampWhite, context.time, context.view);
-
-    CurveSnapshot curves[eCurveCount];
-    if (KnobParametricPtr table = _lookupTable.lock()) {
-        for (int curve = 0; curve < eCurveCount; ++curve) {
-            curves[curve] = CurveSnapshot(table->getParametricCurve(curve));
-        }
-    }
-
-    return std::make_shared<ColorLookupKernel>(params, curves);
-}
-
-int
-ColorLookup::gpuKernelId(const GpuQuery& query) const
-{
-#ifdef NATRON_HAVE_GPU
-    // Two-component pixels take a per-channel path the wrapped op does not see.
-    return (query.nComps == 2) ? -1 : (int)gpu::GpuKernelId::colorlookup_wrapped;
-#else
-    Q_UNUSED(query);
-
-    return -1;
-#endif
-}
-
-bool
-ColorLookup::makeGpuKernel(const KernelContext& context,
-                           PixelKernelGpu* gpuKernel)
-{
-#ifdef NATRON_HAVE_GPU
-    const std::shared_ptr<const ColorLookupKernel> kernel = std::static_pointer_cast<const ColorLookupKernel>(makeKernel(context));
-    std::vector<std::uint32_t> words;
-
-    if (!kernel->packGpu(&words)) {
-        return false;
-    }
-    gpuKernel->kernel = (int)gpu::GpuKernelId::colorlookup_wrapped;
-    gpuKernel->params.resize(words.size() * sizeof(std::uint32_t));
-    std::memcpy(gpuKernel->params.data(), words.data(), gpuKernel->params.size());
-
-    return true;
-#else
-    Q_UNUSED(context);
-    Q_UNUSED(gpuKernel);
-
-    return false;
-#endif
-}
 
 void
 ColorLookup::refreshBackgroundControls()
@@ -768,7 +745,7 @@ ColorLookup::onKnobsLoaded()
 void
 ColorLookup::installBackgroundPainter()
 {
-    KnobParametricPtr table = _lookupTable.lock();
+    KnobParametricPtr table = op().lookupTable.lock();
     KnobBoolPtr hasBackground = _hasBackgroundInteract.lock();
 
     if (!table || !hasBackground) {
@@ -877,7 +854,7 @@ ColorLookup::dropHistogram()
         std::lock_guard<std::mutex> lock(_background->mutex);
         std::vector<unsigned long long>().swap(_background->counts);
     }
-    if (KnobParametricPtr table = _lookupTable.lock()) {
+    if (KnobParametricPtr table = op().lookupTable.lock()) {
         table->notifyBackgroundChanged();
     }
 }
@@ -894,7 +871,7 @@ void
 ColorLookup::updateHistogram(double time,
                              ViewIdx view)
 {
-    KnobParametricPtr table = _lookupTable.lock();
+    KnobParametricPtr table = op().lookupTable.lock();
 
     if (!table || !getInput(0)) {
         return;
@@ -945,7 +922,7 @@ ColorLookup::addControlPointFromButton(KnobI* button,
                                        double time,
                                        ViewIdx view)
 {
-    KnobParametricPtr table = _lookupTable.lock();
+    KnobParametricPtr table = op().lookupTable.lock();
 
     if (!table) {
         return;
@@ -956,7 +933,7 @@ ColorLookup::addControlPointFromButton(KnobI* button,
     readColor(_target, time, view, target);
 
     if (isKnob(button, _setMaster)) {
-        const ColorMath::LuminanceMathEnum math = (ColorMath::LuminanceMathEnum)readChoice(_luminanceMath, time, view);
+        const ColorMath::LuminanceMathEnum math = (ColorMath::LuminanceMathEnum)readChoice(op().luminanceMath, time, view);
         StatusEnum stat = table->addControlPoint(eValueChangedReasonPluginEdited, eCurveMaster, ColorMath::luminance(math, source[0], source[1], source[2]), ColorMath::luminance(math, target[0], target[1], target[2]), eKeyframeTypeCubic);
         Q_UNUSED(stat);
 
@@ -995,10 +972,10 @@ ColorLookup::knobChanged(KnobI* k,
                 dropHistogram();
             } else if (reason == eValueChangedReasonUserEdited) {
                 updateHistogram(time, viewIdx);
-            } else if (KnobParametricPtr table = _lookupTable.lock()) {
+            } else if (KnobParametricPtr table = op().lookupTable.lock()) {
                 table->notifyBackgroundChanged();
             }
-        } else if (KnobParametricPtr table = _lookupTable.lock()) {
+        } else if (KnobParametricPtr table = op().lookupTable.lock()) {
             table->notifyBackgroundChanged();
         }
 

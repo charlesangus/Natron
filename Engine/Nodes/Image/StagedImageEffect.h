@@ -115,7 +115,7 @@ public:
     /**
      * @brief For a Point op, whether the GPU executor can run the StagePlan of query
      * (canRunStagesGpu()) and the op's gpu() description at the query's time, view and scale names work
-     * the device runs. A runtime shader that does not build is reported once and never built
+     * the device runs for pixels of the query's component count. A runtime shader that does not build is reported once and never built
      * again for this node. For a Passes op, canRecordPassesGpu() with the op's passes at the
      * query's time, view and scale. Every other op kind stays on the CPU.
      **/

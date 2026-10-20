@@ -48,6 +48,8 @@ NATRON_NAMESPACE_ENTER
  * PixelKernelGpu), or as a runtime shader with the uniforms and textures it is dispatched with
  * (RuntimeShader). A Kernel's block is either a trivially copyable struct (compiled()) or words
  * the op lays out itself (packed()); a block over the recorder's 64 KB limit stays on the CPU.
+ * acceptedComponents is the set of pixel component counts the GPU work handles, as bits
+ * componentsBit(1) to componentsBit(4); a render of any other count stays on the CPU.
  **/
 struct GpuOpRef {
     enum class Kind : unsigned char {
@@ -56,10 +58,23 @@ struct GpuOpRef {
         RuntimeShader
     };
 
+    static constexpr unsigned char componentsBit(int nComps)
+    {
+        return (unsigned char)(1u << nComps);
+    }
+
+    static constexpr unsigned char kAllComponents = (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4);
+
     Kind kind = Kind::None;
     PixelKernelGpu kernel;
     GpuRuntimeShader shader;
     GpuShaderInputs shaderInputs;
+    unsigned char acceptedComponents = kAllComponents;
+
+    bool acceptsComponents(int nComps) const
+    {
+        return (nComps >= 1) && (nComps <= 4) && ((acceptedComponents & componentsBit(nComps)) != 0);
+    }
 
     static GpuOpRef none()
     {

@@ -55,19 +55,21 @@ NEED_NODE=${BENCH_NEED_NODE:-6}
 NEED_GXG=${BENCH_NEED_GXG:-9}
 APP_ARGS=${BENCH_APP_ARGS:--b}
 APPIMAGE_ARGS=${BENCH_APPIMAGE_ARGS:---appimage-extract-and-run}
+read -r -a APP_ARGV <<<"$APP_ARGS"
+read -r -a APPIMAGE_ARGV <<<"$APPIMAGE_ARGS"
 DRY=${BENCH_DRY_RUN:-0}
 RENDER_BASE=$(realpath -m "${BENCH_RENDER_BASE:-$OUT/render}")
 
-declare -A CASE
-CASE[xf]="BENCH_NODE=transform BENCH_MOTION_BLUR=0"
-CASE[xfmb]="BENCH_NODE=transform BENCH_MOTION_BLUR=1"
-CASE[blur25]="BENCH_NODE=blur BENCH_BLUR_SIZE=60 BENCH_BLUR_FILTER=firgaussian"
-CASE[iir25]="BENCH_NODE=blur BENCH_BLUR_SIZE=60 BENCH_BLUR_FILTER=quasigaussian"
-CASE[blur100]="BENCH_NODE=blur BENCH_BLUR_SIZE=240 BENCH_BLUR_FILTER=firgaussian"
-CASE[iir100]="BENCH_NODE=blur BENCH_BLUR_SIZE=240 BENCH_BLUR_FILTER=quasigaussian"
-CASE[erode6]="BENCH_NODE=erode BENCH_ERODE_SIZE=6"
-CASE[erode40]="BENCH_NODE=erode BENCH_ERODE_SIZE=40"
-CASE[ck]="BENCH_NODE=chromakeyer"
+declare -A CASES
+CASES[xf]="BENCH_NODE=transform BENCH_MOTION_BLUR=0"
+CASES[xfmb]="BENCH_NODE=transform BENCH_MOTION_BLUR=1"
+CASES[blur25]="BENCH_NODE=blur BENCH_BLUR_SIZE=60 BENCH_BLUR_FILTER=firgaussian"
+CASES[iir25]="BENCH_NODE=blur BENCH_BLUR_SIZE=60 BENCH_BLUR_FILTER=quasigaussian"
+CASES[blur100]="BENCH_NODE=blur BENCH_BLUR_SIZE=240 BENCH_BLUR_FILTER=firgaussian"
+CASES[iir100]="BENCH_NODE=blur BENCH_BLUR_SIZE=240 BENCH_BLUR_FILTER=quasigaussian"
+CASES[erode6]="BENCH_NODE=erode BENCH_ERODE_SIZE=6"
+CASES[erode40]="BENCH_NODE=erode BENCH_ERODE_SIZE=40"
+CASES[ck]="BENCH_NODE=chromakeyer"
 
 mem_available_kb() { awk '/^MemAvailable:/{print $2}' /proc/meminfo; }
 
@@ -106,9 +108,9 @@ dirty_kb() { awk '/^(Dirty|Writeback):/{s+=$2} END{print s}' /proc/meminfo; }
 # The 1-minute load average decays too slowly to see the previous run finish, and its EXR write-back
 # would otherwise throttle the next one, so wait for idle CPUs and drained dirty pages.
 settle() {
-    local i busy dirty
+    local busy dirty
     sync
-    for i in $(seq 1 300); do
+    for _ in $(seq 1 300); do
         busy=$(cpu_busy_pct)
         dirty=$(dirty_kb)
         if [ "$busy" -lt 5 ] && [ "$dirty" -lt 262144 ]; then
@@ -169,7 +171,7 @@ run_session() {
         NATRON_RENDER_SCHEDULER=taskgraph NATRON_RENDER_PROFILE="$OUT/$tag.prof" BENCH_TAG="$tag" \
         BENCH_SESSION="$(session_of "$kind")" BENCH_LABEL="$kind" BENCH_RENDER_DIR="$render_dir" \
         BENCH_MARKS="$OUT/$tag.marks.jsonl" BENCH_OUT="$OUT/results.jsonl" BENCH_N=1 "$@" \
-        timeout 3600 "$APPIMAGE" $APPIMAGE_ARGS $APP_ARGS tools/bench/graph_bench.py) > "$OUT/$tag.log" 2>&1
+        timeout 3600 "$APPIMAGE" "${APPIMAGE_ARGV[@]}" "${APP_ARGV[@]}" tools/bench/graph_bench.py) > "$OUT/$tag.log" 2>&1
     code=$?
     rm -rf "$render_dir"
     printf '{"tag":"%s","kind":"%s","gpu":"%s","exit":%d,"proc_wall_s":%d}\n' "$tag" "$kind" "$mode" "$code" $((SECONDS - t0)) >> "$OUT/driver.jsonl"
@@ -214,7 +216,7 @@ run_node_case() {
     local res=uhd sz=""
     [ "$size" != uhd ] && { res=s$size; sz=$size; }
     # shellcheck disable=SC2086
-    run_kind "$key" "$tag" "$kind" "$mode" BENCH_TOPO="$topo" BENCH_RES="$res" BENCH_SIZE="$sz" ${CASE[$c]}
+    run_kind "$key" "$tag" "$kind" "$mode" BENCH_TOPO="$topo" BENCH_RES="$res" BENCH_SIZE="$sz" ${CASES[$c]}
 }
 
 run_comp_case() {

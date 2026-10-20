@@ -1016,8 +1016,7 @@ GPU_TEST_F(GpuTransferTest, StripDownloadProceedsOnceItsChunkIsPrepared)
     }
 
     const HostImportStats before = t.hostImportStats();
-    std::shared_ptr<GpuImportJob> job =
-        rt->prepareImports({ { host, kChunk }, { host + kChunk, kChunk }, { host + 2 * kChunk, kChunk } });
+    std::shared_ptr<GpuImportJob> job = rt->prepareImports({ { host, kChunk }, { host + kChunk, kChunk }, { host + 2 * kChunk, kChunk } });
     ASSERT_TRUE(job != nullptr);
     job->waitFor(1);
     {

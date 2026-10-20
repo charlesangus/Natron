@@ -25,8 +25,8 @@
 
 #include "HostImageMemory.h"
 
-#include "Engine/MemoryInfo.h"
 #include "Engine/Gpu/GpuSizeClass.h"
+#include "Engine/MemoryInfo.h"
 
 #include <algorithm>
 #include <atomic>
@@ -178,7 +178,7 @@ reaperLoop()
         const std::size_t floorBytes = r.floorBytes;
         const std::chrono::steady_clock::duration idle = r.idle;
         lk.unlock();
-        const std::chrono::steady_clock::time_point last{std::chrono::steady_clock::duration(s.lastActivityTicks.load(std::memory_order_relaxed))};
+        const std::chrono::steady_clock::time_point last { std::chrono::steady_clock::duration(s.lastActivityTicks.load(std::memory_order_relaxed)) };
         if (std::chrono::steady_clock::now() - last >= idle) {
             // Same path as every other trim, so the free hooks drop GPU imports before the memory is returned.
             HostImageMemory::trimTo(floorBytes);

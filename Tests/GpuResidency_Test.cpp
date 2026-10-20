@@ -2152,7 +2152,7 @@ TEST_F(GpuResidencyTest, PipelinedTransfersCorrectTheModelByTheirSummedTimes)
                 report.uploadMs, report.downloadMs, spannedMs, report.predictedTransferMs);
     // Without timestamps the pipelined strips measure no transfer, and the model is left as it was.
     const double expectedMs = (summedMs > 0.) ? report.predictedTransferMs + GpuCostModel::kEmaWeight * (summedMs - report.predictedTransferMs)
-                              : report.predictedTransferMs;
+                                              : report.predictedTransferMs;
     EXPECT_NEAR(GpuCostModel::session().transferMs((double)report.uploadBytes, (double)report.downloadBytes), expectedMs, expectedMs * 1e-9);
     expectReleased(run);
 }

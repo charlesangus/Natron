@@ -1245,8 +1245,7 @@ RenderScheduler::executeRegion(const FramePtr& frame,
         }
         RegionReport report;
         try {
-            retCode = body(frame->context, frame->graph, region,
-                           [this](int* cpuBudget) { return leaseCpuFallback(cpuBudget); }, &planes, &report);
+            retCode = body(frame->context, frame->graph, region, [this](int* cpuBudget) { return leaseCpuFallback(cpuBudget); }, &planes, &report);
         } catch (const std::exception&) {
             retCode = EffectInstance::eRenderRoIRetCodeFailed;
         } catch (...) {

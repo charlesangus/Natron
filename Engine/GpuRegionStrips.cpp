@@ -340,8 +340,7 @@ planOverlap(const GpuStripGraph& graph,
         return false;
     }
     std::vector<GpuStrip> found;
-    if ((stripsOfRows(graph, limits, bands.y1, bands.y2, stripRows, kGpuStripMaxInFlight, &found) != StripsFit::Fits) ||
-        ((int)found.size() < kGpuStripMaxInFlight)) {
+    if ((stripsOfRows(graph, limits, bands.y1, bands.y2, stripRows, kGpuStripMaxInFlight, &found) != StripsFit::Fits) || ((int)found.size() < kGpuStripMaxInFlight)) {
         return false;
     }
     HostBytes stripBytes;

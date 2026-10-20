@@ -104,4 +104,9 @@
     { "net.sf.cimg.CImgBlur", "plain", 3.0, 1.1470 }, \
     { "net.sf.cimg.CImgBlur", "plain", 25.0, 0.8527 }, \
     { "net.sf.cimg.CImgBlur", "plain", 1e9, 2.2600 }, \
-    { "net.sf.cimg.CImgBlur", "iir", 1e9, 2.4130 }
+    { "net.sf.cimg.CImgBlur", "iir", 1e9, 2.4130 }, \
+    { "net.sf.cimg.CImgBlur", "plain", 1e9, 2.6886, "box", 0 }, \
+    { "net.sf.cimg.CImgBlur", "plain", 1e9, 3.8870, "triangle", 0 }, \
+    { "net.sf.cimg.CImgBlur", "plain", 1e9, 4.7803, "quadratic", 0 }, \
+    { "net.sf.cimg.CImgBlur", "iir", 1e9, 3.4855, "gaussian", 0 }, \
+    { "net.sf.cimg.CImgBlur", "iir", 1e9, 4.2040, "quasi_gaussian", 0 }

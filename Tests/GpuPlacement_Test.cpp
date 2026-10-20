@@ -928,7 +928,8 @@ TEST(GpuCostModel, ErodeSizeSelectsItsSeedRow)
     EXPECT_NEAR(model.gpuMs(small, kUhdMpx), 6.827, 1e-3);
 }
 
-// Dilate has one seed row for every size, and a Blur filter with no row of its own prices like the row for any filter.
+// Dilate has one seed row for every size, and the FIR Gaussian, the one Blur filter with no row of its own, prices like
+// the rows for any filter.
 TEST(GpuCostModel, RowsWithoutSizeOrFilterHoldForAny)
 {
     GpuCostModel model;
@@ -938,13 +939,56 @@ TEST(GpuCostModel, RowsWithoutSizeOrFilterHoldForAny)
     dilate.size = 40;
     EXPECT_NEAR(model.gpuMs(dilate, 1.), any, 1e-12);
 
-    const GpuTaskTraits plain(kBlurId, 25.);
+    for (double sigma : { 2., 25., 100. }) {
+        const GpuTaskTraits fir(kBlurId, sigma, false, GpuBlurFilter::eFirGaussian);
+        EXPECT_NEAR(model.gpuMs(fir, 1.), model.gpuMs(GpuTaskTraits(kBlurId, sigma), 1.), 1e-12) << sigma;
+    }
+}
+
+// Each Blur filter is seeded apart, at one cost for every sigma, and what one filter measures leaves the others' costs
+// as they were.
+TEST(GpuCostModel, BlurFiltersAreSeededAndLearnedApart)
+{
+    GpuCostModel model;
+
+    const GpuTaskTraits fir(kBlurId, 25., false, GpuBlurFilter::eFirGaussian);
     const GpuTaskTraits box(kBlurId, 25., false, GpuBlurFilter::eBox);
     const GpuTaskTraits triangle(kBlurId, 25., false, GpuBlurFilter::eTriangle);
-    EXPECT_NEAR(model.gpuMs(box, 1.), model.gpuMs(plain, 1.), 1e-12);
-    EXPECT_NEAR(model.gpuMs(triangle, 1.), model.gpuMs(plain, 1.), 1e-12);
+    const GpuTaskTraits quadratic(kBlurId, 25., false, GpuBlurFilter::eQuadratic);
     const GpuTaskTraits gaussian(kBlurId, 25., true, GpuBlurFilter::eGaussian);
-    EXPECT_NEAR(model.gpuMs(gaussian, 1.), model.gpuMs(GpuTaskTraits(kBlurId, 25., true), 1.), 1e-12);
+    const GpuTaskTraits quasiGaussian(kBlurId, 25., true, GpuBlurFilter::eQuasiGaussian);
+    const std::vector<GpuTaskTraits> filters = { fir, box, triangle, quadratic, gaussian, quasiGaussian };
+
+    EXPECT_NEAR(model.gpuMs(box, kUhdMpx), 22.30, 1e-3);
+    EXPECT_NEAR(model.gpuMs(triangle, kUhdMpx), 32.24, 1e-3);
+    EXPECT_NEAR(model.gpuMs(quadratic, kUhdMpx), 39.65, 1e-3);
+    EXPECT_NEAR(model.gpuMs(gaussian, kUhdMpx), 28.91, 1e-3);
+    EXPECT_NEAR(model.gpuMs(quasiGaussian, kUhdMpx), 34.87, 1e-3);
+    for (const GpuTaskTraits& traits : filters) {
+        if (traits.filter == GpuBlurFilter::eFirGaussian) {
+            continue;
+        }
+        for (double sigma : { 2., 100. }) {
+            GpuTaskTraits other = traits;
+            other.sigma = sigma;
+            EXPECT_NEAR(model.gpuMs(other, 1.), model.gpuMs(traits, 1.), 1e-12) << (int)traits.filter << " at " << sigma;
+        }
+    }
+
+    for (std::size_t observed = 0; observed < filters.size(); ++observed) {
+        std::vector<double> before;
+        for (const GpuTaskTraits& traits : filters) {
+            before.push_back(model.gpuMs(traits, 1.));
+        }
+        model.observeGpu(filters[observed], 100000000, 1.);
+        for (std::size_t i = 0; i < filters.size(); ++i) {
+            if (i == observed) {
+                EXPECT_NEAR(model.gpuMs(filters[i], 1.), before[i] + GpuCostModel::kEmaWeight * (100. - before[i]), 1e-9) << i;
+            } else {
+                EXPECT_NEAR(model.gpuMs(filters[i], 1.), before[i], 1e-12) << i << " after " << observed;
+            }
+        }
+    }
 }
 
 // Every node with a GPU kernel has seed rows of its own, so none of them falls back on a class default.

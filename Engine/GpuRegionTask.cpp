@@ -2304,7 +2304,7 @@ private:
             }
         }
         if (_report) {
-            model.observeTransfer((double)_report->uploadBytes, (double)_report->downloadBytes, _report->transferHiddenMs + _report->transferExposedMs);
+            model.observeTransfer((double)_report->uploadBytes, (double)_report->downloadBytes, _report->uploadMs + _report->downloadMs);
         }
         if (_stats) {
             _stats->noteGpuRegionRun();

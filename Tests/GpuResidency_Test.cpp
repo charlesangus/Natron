@@ -2091,6 +2091,72 @@ TEST_F(GpuResidencyTest, WholeRegionWithLargeTransferRunsAsOverlappedStrips)
     }
 }
 
+// Pipelined strips can run an upload and a download at once on their own queues. The cost model prices the two
+// directions summed, so the region must correct it by their summed times, not by the shorter span they cover together.
+TEST_F(GpuResidencyTest, PipelinedTransfersCorrectTheModelByTheirSummedTimes)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    if (!canPipeline()) {
+        std::printf("[  SKIPPED ] the device has no push descriptors, so strips never run pipelined\n");
+
+        return;
+    }
+    const int width = 3840;
+    const int height = 2160;
+    NodePtr source = makeNode(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
+    NodePtr grade = makeGrade(1.5, 0.1);
+    NodePtr sink = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
+    ASSERT_TRUE(source && grade && sink);
+    ASSERT_TRUE(setKnobValue(source, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize));
+    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamBottomLeft, { 0., 0. }));
+    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamSize, { (double)width, (double)height }));
+    connectNodes(source, grade, 0, true);
+    connectNodes(grade, sink, 0, true);
+    const RectI window(0, 0, width, height);
+    SessionCostScope cost(grade->getPluginID(), 40., 10e9);
+
+    std::shared_ptr<RenderScheduler::RegionReport> last = std::make_shared<RenderScheduler::RegionReport>();
+    _scheduler->setRegionBody([last](const FrameRenderContextPtr& context,
+                                     const FrameGraph& graph,
+                                     int region,
+                                     const RenderScheduler::CpuFallbackLease& lease,
+                                     std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
+                                     RenderScheduler::RegionReport* report) {
+        const EffectInstance::RenderRoIRetCode code = runGpuRegion(context, graph, region, lease, rootPlanes, report);
+        *last = *report;
+
+        return code;
+    });
+
+    setGpuStripPipeliningForTests(GpuStripPipelining::On);
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(sink, &run, &error, window)) << error;
+    const int gradeTask = taskOf(run.graph, grade);
+    ASSERT_TRUE(gradeTask >= 0);
+    assignRegions(&run.graph, { { gradeTask } });
+    run.future = _scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+    const RenderScheduler::RegionReport report = *last;
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_GT(report.stripsInFlight, 1);
+    ASSERT_GT(report.uploadBytes, 0u);
+    ASSERT_GT(report.downloadBytes, 0u);
+    ASSERT_TRUE(std::isfinite(report.predictedTransferMs) && (report.predictedTransferMs > 0.));
+
+    const double summedMs = report.uploadMs + report.downloadMs;
+    const double spannedMs = report.transferHiddenMs + report.transferExposedMs;
+    std::printf("[          ] upload %.3f ms, download %.3f ms, spanning %.3f ms together; predicted %.3f ms\n",
+                report.uploadMs, report.downloadMs, spannedMs, report.predictedTransferMs);
+    // Without timestamps the pipelined strips measure no transfer, and the model is left as it was.
+    const double expectedMs = (summedMs > 0.) ? report.predictedTransferMs + GpuCostModel::kEmaWeight * (summedMs - report.predictedTransferMs)
+                              : report.predictedTransferMs;
+    EXPECT_NEAR(GpuCostModel::session().transferMs((double)report.uploadBytes, (double)report.downloadBytes), expectedMs, expectedMs * 1e-9);
+    expectReleased(run);
+}
+
 // The same Grade at its own cost of well under a millisecond, on a bus that takes a second over its bytes: pipelined
 // strips would hide next to nothing and cost their own overhead, so even with pipelining on it runs whole.
 TEST_F(GpuResidencyTest, CheapWholeRegionWithLargeTransferStaysWhole)

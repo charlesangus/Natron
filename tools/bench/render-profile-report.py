@@ -336,7 +336,10 @@ TRANSFORM_PLAIN_MEASURED = (26.126, 6.096)
 # covers; a row without them holds for any filter and any size. The first Erode row is size 6 and
 # the second is size 40: the median kernelMs, 4.720 ms, of the steady-state region records of
 # main/node-erode40-uhd-auto-r1 and r2 under .local/m109/p2t1, less the 0.550 ms of the
-# CheckerBoard that shares the region.
+# CheckerBoard that shares the region. The Blur rows that name a filter are the median steady-state
+# kernelMs at size 60 under .local/m109/p4t4, less the same 0.550 ms: box 22.85, triangle 32.79,
+# quadratic 40.20, Gaussian 29.46 and Quasi-Gaussian 35.42 ms. Each runs as running sums or a
+# recursion, which cost the same at any size, so it covers every sigma.
 GPU_KERNEL_UHD_MS = (
     (GRADE_PLUGIN_ID, "plain", 0.0, 0.497),
     (COLOR_CORRECT_PLUGIN_ID, "plain", 0.0, 0.514),
@@ -361,6 +364,11 @@ GPU_KERNEL_UHD_MS = (
     (BLUR_PLUGIN_ID, "plain", 25.0, 7.073),
     (BLUR_PLUGIN_ID, "plain", OPEN_SIGMA, 18.745),
     (BLUR_PLUGIN_ID, "iir", OPEN_SIGMA, 20.014),
+    (BLUR_PLUGIN_ID, "plain", OPEN_SIGMA, 22.300, "box", 0),
+    (BLUR_PLUGIN_ID, "plain", OPEN_SIGMA, 32.240, "triangle", 0),
+    (BLUR_PLUGIN_ID, "plain", OPEN_SIGMA, 39.650, "quadratic", 0),
+    (BLUR_PLUGIN_ID, "iir", OPEN_SIGMA, 28.910, "gaussian", 0),
+    (BLUR_PLUGIN_ID, "iir", OPEN_SIGMA, 34.870, "quasi_gaussian", 0),
 )
 
 
@@ -567,7 +575,8 @@ def self_test(args):
         assert len(grade_gpu) == 1 and close(grade_gpu[0][3], 0.497 / UHD_MPX), grade_gpu
         for plugin in PORTED_PLUGIN_IDS:
             assert any(r[0] == plugin for r in gpu), plugin
-        assert [r[1] for r in gpu if r[0] == BLUR_PLUGIN_ID] == ["plain", "plain", "plain", "iir"], gpu
+        assert [r[1] for r in gpu if r[0] == BLUR_PLUGIN_ID] == ["plain", "plain", "plain", "iir", "plain", "plain", "plain", "iir", "iir"], gpu
+        assert [r[4] for r in gpu if r[0] == BLUR_PLUGIN_ID] == [None] * 4 + ["box", "triangle", "quadratic", "gaussian", "quasi_gaussian"], gpu
         assert [r[1] for r in gpu if r[0] == TRANSFORM_PLUGIN_ID] == ["plain", "motion_blur"], gpu
         text = emit_cost_table({fast: sample}, "cmd")
         assert text == emit_cost_table({fast: sample}, "cmd"), "output must be deterministic"

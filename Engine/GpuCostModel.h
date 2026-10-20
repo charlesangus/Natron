@@ -236,9 +236,10 @@ public:
 
     /**
      * @brief Moves the transfer rates toward a region's measured ms per byte, by a moving average of the ratio of the
-     * measured time to the time the rates set give, which then scales both directions. ms is the whole time the
-     * region spent moving the bytes, the part its compute hid included, since how much is hidden is not a property
-     * of the bus. Ignored when the rates price the bytes at nothing or at infinity.
+     * measured time to the time the rates set give, which then scales both directions. ms is the upload time plus
+     * the download time, each whole, the part its compute hid included, since how much is hidden is not a property
+     * of the bus, and summed even where the two directions overlapped, since transferMs() sums them. Ignored when
+     * the rates price the bytes at nothing or at infinity.
      **/
     void observeTransfer(double uploadBytes, double downloadBytes, double ms);
 

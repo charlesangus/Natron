@@ -187,7 +187,7 @@ M85's benches show where the region engine loses time on real comps. Three items
     - Report `TransferPath` and `HostImportStats.atUpload`/`atDownload` in the region record.
   - verify:
     - At the phase build, a `GpuTransfer_Test` case checks that an unaligned sub-range of a cached import makes no new import. A residency test checks that a strip-mode region's second frame has `atUpload == 0` and `atDownload == 0` and no staging on 4096-aligned widths, on lavapipe and RADV.
-    - Host bench on RADV: before the change, ChromaKeyer at 16k shows device copy time well below host `uploadMs + downloadMs`. After it, the rate is ≥ 20 GB/s in each direction.
+    - Host bench on RADV: before the change, ChromaKeyer at 16k shows device copy time well below host `uploadMs + downloadMs`. After it, the rate is ≥ 85% of the same-boot GpuBench host-import rate in each direction.
   - size: L
 - [x] M109.P4.T6 — Pipeline strips on extra compute-family queues when the device has no transfer-only family
   - files: `Engine/Gpu/GpuDevice.{h,cpp}` (queue creation), `Engine/Gpu/GpuTransfer.{h,cpp}` (`QueueKind`, timelines), `Engine/GpuRegionStrips.cpp` (`gpuStripPipeliningAllowed`), `Engine/GpuRegionTask.cpp` (`pipelineAllowed`), `Engine/GpuPlacement.cpp`, `Tests/Gpu/GpuTransfer_Test.cpp`, `Tests/GpuResidency_Test.cpp`
@@ -206,12 +206,28 @@ M85's benches show where the region engine loses time on real comps. Three items
   - approach: Remove `RADV_PERFTEST=transfer_queue` from both scripts (hard cut, no opt-in). Add a `GpuDevice` helper that takes every queue mutex in a fixed order, then calls `vkDeviceWaitIdle`. Use it in `waitIdle`, the transfer destructor, `releaseCachedImports` and the `process()` abort path.
   - verify: At the phase build, the residency and transfer tests pass on RADV with no env var, and `WholeRegionWithLargeTransferRunsAsOverlappedStrips` in Auto mode pipelines.
   - size: M
-- [ ] M109.P4.T4 — Quick directional bench of the overlap phase (after P4.T5 and P4.T6)
+- [x] M109.P4.T4 — Quick directional bench of the overlap phase (after P4.T5 and P4.T6)
   - files: none (results in `## Decisions`)
   - approach:
     - Rerun P2.T1's comps and node/gxg cases at UHD and 8K with `gpu_region_bench.sh`.
     - Tune `overlapMinBytes` and record the chosen value.
   - verify: Exposed transfer is below 30% of region time on the expensive spatial cases (Erode 40, Blur σ100 at 16k/24k) and on fused comp regions. No Auto case is slower than Off in any round, and no comp regresses against M85's ratios.
+  - size: M
+
+- [ ] M109.P4.T8 — Prepare download destinations chunk by chunk, ahead of the downloads
+  - files: `Engine/Gpu/GpuRuntime.{h,cpp}`, `Engine/GpuRegionTask.cpp` (`allocateDownloadImages`, `downloadStrip`), `Tests/Gpu/GpuTransfer_Test.cpp`, `Tests/GpuResidency_Test.cpp`
+  - approach:
+    - First, run Erode 40 at 16k for 6 frames. If `newImportBytes` is 0 from frame 3 on, record that and stop.
+    - Otherwise, the import job takes ranges aligned to strip interiors and rounded out to 2 MiB, and marks each one ready as it finishes. `downloadStrip` waits only on its own chunk, and the cache-first lookup resolves each strip within one chunk.
+    - Touch the size-class headroom too, or stop importing into it.
+  - verify: Erode 40 at 16k: `prepareWaitMs` ≤ 20 ms and wall ≤ 310 ms. Residency tests pass on lavapipe and RADV.
+  - size: M
+- [ ] M109.P4.T9 — Strip for overlap only when the kernel can hide transfer
+  - files: `Engine/GpuRegionStrips.{h,cpp}` (`planOverlap`), `Engine/GpuRegionTask.cpp` (`planStrips` passes the predicted kernel and transfer ms), `Engine/GpuCostModel.cpp` (`pipelinesTransfers`), `Tests/GpuResidency_Test.cpp`
+  - approach:
+    - Require predicted K ≥ 0.25·T before stripping a region that fits whole. Tune the threshold on the UHD and 8K lone and comp cases.
+    - Log which `planOverlap` gate refuses the defocus_retime 8K regions, and loosen the ×4 halo rule if it's the culprit.
+  - verify: directional bench: lone cheap UHD regions run whole with exposed transfer ≤ 11 ms; the defocus 8K regions run as overlapped strips; no comp regresses.
   - size: M
 
 ## Phase 109.5: Root-cause fixes and host memory
@@ -282,6 +298,7 @@ M85's benches show where the region engine loses time on real comps. Three items
     - Run the M82 comps at UHD and 8K, and the node/gxg cases at UHD, 8K, 16k and 24k.
     - Probe RAM on every case, and keep the write-back out of the timed part.
     - Report medians of ratios from pairs measured on the same boot, set against M85's table.
+    - Bench fixes first: run 16k/24k for ≥ 4 frames, make the warm frame go through the GPU path, and add the pipelined-floor and steady-state `prepareWaitMs` columns to `tools/bench/gpu_region_summary.py`.
   - verify: The gate below holds. The idle Natron's pooled host bytes, read after 2× the idle period, are at the floor.
   - size: M
 
@@ -291,9 +308,10 @@ M85's benches show where the region engine loses time on real comps. Three items
 - On the M82 comps:
   - no region halves its strips after its first frame;
   - contention halvings are 0, or explained in Decisions;
-  - region exposed transfer is under 30% of region time on regions whose kernel time is at least comparable to their transfer: expensive spatial ops at 16k–24k, fused multi-node regions and resident chains. Cheap lone nodes are left to placement;
+  - region exposed transfer, with `prepareWaitMs` excluded from numerator and denominator, is ≤ 1.25× its pipelined floor max(0, T − K·(n−1)/n), where T uses the same-boot GpuBench host-import rate; where K ≥ T it is under 30%. Cheap lone nodes are left to placement;
+  - on steady-state frames (frame ≥ 3), `prepareWaitMs` is ≤ 10% of region wall;
   - plain Transform "other" is under 20%.
-- Every speed-up is ≥ M85's, and no Auto case is slower than Off in any round.
+- Every speed-up is ≥ M85's, and no Auto case is slower than Off on frames after the first GPU use. A first-frame pipeline build is reported, not gated.
 - CPU-only renders are within ±2% of `main`.
 - A forced CPU fallback of a big Blur runs within 15% of Off.
 - Per-member times in profiles come from timestamps.
@@ -361,3 +379,4 @@ M85's benches show where the region engine loses time on real comps. Three items
   - **`overlapMinBytes`: keep 32 MiB.** The smallest region moves ~127 MB; whole regions that skip overlap are held back by another `planOverlap` gate, not the byte limit.
   - **Seeds owed to P7.T2** (UHD steady `kernelMs`, includes ~0.5 ms CheckerBoard): Blur box 22.85, triangle 32.79, quadratic 40.20, Gaussian IIR 29.46, Quasi-Gaussian 35.42, FIR σ25 8.01; Transform motion blur q4 48.28; Erode 6 8.80 and Erode 40 5.97 in the same run (Erode 40 cheaper than Erode 6 reproduces). CPU Erode 40 UHD single-thread 0.62 s.
   - **Tooling:** the committed comps hard-code `build/bench/m82-profile/out`; there is no 8K comp variant (`app.addFormat` in-process works).
+- 2026-10-20 — **P4.T4's misses are mostly a bus limit; the gate was amended (user, on the consultant's analysis).** On compute-queue copies RADV moves ~17 GB/s down and 10–11 up (`.local/m109/p4t4/gb/gpubench.csv`); regions reach ~90% of that. The pipelined floor max(0, T − K·(n−1)/n) puts Erode 40 at 16k/24k at 66–68% exposed, and the measured 209 ms is within 8% of the 194 ms floor; 30% would need ~33.5 GB/s, beyond PCIe 4 x16. The real defect is `prepareWaitMs` (~110 of 406 ms at 16k): one helper thread faults and pins the whole 4 GiB destination (plus 1 GiB size-class headroom) before the first download → new P4.T8. Lone cheap UHD regions lose throughput when stripped with nothing to hide (127 MB in 15–18 ms vs ~10 ms whole), and the kernel-heavy defocus_retime 8K regions run whole with 0 hidden, probably refused by the ×4 halo rule → new P4.T9. The Blur V/H 2.29× at UHD (0.47 ms absolute; 16k passes at 1.79×) is accepted. The lone-Transform round-1 slowdown was a 264 ms cold pipeline build, so first-frame builds are reported, not gated; P8.T1's bench warms the GPU path. P4.T5's "≥ 20 GB/s" check becomes ≥ 85% of the same-boot GpuBench rate.

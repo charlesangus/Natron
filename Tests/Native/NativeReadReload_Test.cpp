@@ -54,6 +54,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
+#include "Engine/Nodes/Metadata/ModifyMetadata.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
@@ -239,4 +240,28 @@ TEST_F(NativeReadReloadTest, ReloadOutputsThePixelsOfAFileChangedOnDisk)
 
     EXPECT_TRUE(outputIsFlat(kSecond));
     EXPECT_FALSE(_read->hasPersistentMessage());
+}
+
+TEST_F(NativeReadReloadTest, FilenameEditsKeepTheReadersHashesRecoverable)
+{
+    const std::string other = (_dir.path() + QString::fromUtf8("/other.exr")).toStdString();
+    ASSERT_TRUE(writeFlatExr(_path, kWidth, kHeight, kRgba, kFirst));
+    ASSERT_TRUE(writeFlatExr(other, kWidth, kHeight, kRgba, kSecond));
+    _read = createWorkingSpaceRead(_path);
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    ASSERT_TRUE(_read && modify);
+    KnobFile* file = dynamic_cast<KnobFile*>(_read->getKnobByName(kOfxImageEffectFileParamName).get());
+    KnobInt* value = dynamic_cast<KnobInt*>(modify->getKnobByName("intValue1").get());
+    ASSERT_TRUE(file && value);
+    ASSERT_NO_THROW(value->setExpression(0, "len(" + _read->getScriptName() + ".metadataKeys(1))", false, true));
+
+    const U64 before = modify->getHashValue();
+    file->setValue(other);
+    EXPECT_NE(before, modify->getHashValue());
+    file->setValue(_path);
+
+    // A filename edit moves the Read's hash, so it needs no metadata revision, which would keep
+    // the reader from finding the renders of the state it returned to.
+    EXPECT_EQ(0u, _read->getMetadataRevision());
+    EXPECT_EQ(before, modify->getHashValue());
 }

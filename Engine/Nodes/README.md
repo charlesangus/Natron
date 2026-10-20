@@ -150,6 +150,43 @@ B if no A is connected), never B's; `NativeGenerator` outputs only
 frame number within the source, so it is omitted); transforms and filters
 keep the default.
 
+### Reading metadata from Python and expressions
+
+`Effect.metadata(key[, frame, view])` returns one value of the node's output
+metadata, `Effect.metadataKeys([frame, view])` the sorted list of its keys.
+`frame` defaults to the current frame (the evaluation frame inside an
+expression) and `view` to 0. A missing key gives `None`. Types follow the
+stored value: int to `int`, double to `float`, string to `str`, a vector to a
+`list`; an OpenFX node's one-element vector comes back as a scalar.
+
+Keys carry the prefixes listed under "Metadata" below (`ofx/`, `exr/`,
+`exif/`, `tiff/`, `dpx/`, `cin/`, `oiio/`, `quicktime/`). Use
+`thisNode.metadata('ofx/frame')` or `app.Read1.metadata('exr/myString')` in an
+expression; a frame argument reads another frame, as in
+`Read1.metadata('ofx/frame', frame + 1)`.
+
+- An expression that calls `X.metadata()` or `X.metadataKeys()` registers X as
+  a dependency of its knob and is re-evaluated whenever X's hash changes, which
+  includes an edit anywhere upstream of X. The reading node's own hash follows
+  X's.
+- When a native node's metadata changes under the same hash, such as a Read
+  reloading its file, the readers of its metadata and of the metadata of every
+  node downstream of it, native or OpenFX, are refreshed: their nodes' hashes
+  move too.
+- Renaming X rewrites the references to X in the expression's code and in the
+  node paths passed to `getNode()`, leaving metadata keys, other strings and
+  comments alone, knob reads in the same expression included; deactivating or
+  deleting X marks it invalid, as for an expression reading one of X's knobs.
+- A knob that is part of its node's hash cannot read the metadata of a node
+  whose hash depends on its own node's, such as a node downstream of it, nor
+  can an expression or a link read a knob that leads to such a read: the
+  expression or link is refused, and so is a connection that would close such
+  a loop. Knobs outside the hash, like the label, can, unless a hashed
+  expression reads them.
+- An OpenFX node ignores `view`.
+- Results are cached per evaluation time, so each frame an expression asks for
+  is derived once per hash.
+
 ## Metadata
 
 Keys are strings whose prefix names the namespace: `ofx/` (standard keys the

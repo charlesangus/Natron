@@ -1910,6 +1910,16 @@ OfxEffectInstance::onNodeHashChanged(U64 hash)
 }
 
 void
+OfxEffectInstance::dropCachedOutputMetadata()
+{
+#ifdef OFX_SUPPORTS_METADATA
+    if (_imp->effect) {
+        _imp->effect->invalidateMetadata();
+    }
+#endif
+}
+
+void
 OfxEffectInstance::dropClipMetadataNotCachedUnder(U64 hash)
 {
 #ifdef OFX_SUPPORTS_METADATA

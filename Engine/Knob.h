@@ -739,6 +739,15 @@ public:
     virtual void replaceNodeNameInExpression(int dimension,
                                              const std::string& oldName,
                                              const std::string& newName) = 0;
+
+    /**
+     * @brief Like replaceNodeNameInExpression(), but only replaces "oldName" where the expression
+     * names it in code: whole identifiers, outside string literals and comments.
+     **/
+    virtual void replaceNodeNameInExpressionCode(int dimension,
+                                                 const std::string& oldName,
+                                                 const std::string& newName)
+        = 0;
     virtual void clearExpressionsResults(int dimension) = 0;
     virtual void clearExpression(int dimension, bool clearResults) = 0;
     virtual std::string getExpression(int dimension) const = 0;
@@ -772,6 +781,17 @@ public:
      **/
     virtual bool getExpressionDependencies(int dimension, std::list<std::pair<KnobIWPtr, int> >& dependencies) const = 0;
 
+    /**
+     * @brief Records that the expression at the given dimension reads the output metadata of node,
+     * and registers this knob as one of node's metadata readers. Cleared with the expression.
+     **/
+    virtual void addMetadataDependency(int dimension, const NodePtr& node) = 0;
+
+    /**
+     * @brief Appends the live nodes whose output metadata the expression at the given dimension
+     * reads, or every dimension's if dimension is -1.
+     **/
+    virtual void getMetadataDependencies(int dimension, std::list<NodePtr>* nodes) const = 0;
 
     /**
      * @brief Calls setValueAtTime with a reason of eValueChangedReasonUserEdited.
@@ -1631,6 +1651,9 @@ public:
     virtual void replaceNodeNameInExpression(int dimension,
                                              const std::string& oldName,
                                              const std::string& newName) OVERRIDE FINAL;
+    virtual void replaceNodeNameInExpressionCode(int dimension,
+                                                 const std::string& oldName,
+                                                 const std::string& newName) OVERRIDE FINAL;
     virtual void clearExpression(int dimension, bool clearResults) OVERRIDE FINAL;
     virtual std::string validateExpression(const std::string& expression, int dimension, bool hasRetVariable,
                                            std::string* resultAsString) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -1646,6 +1669,30 @@ public:
 
     virtual bool isExpressionUsingRetVariable(int dimension = 0) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool getExpressionDependencies(int dimension, std::list<std::pair<KnobIWPtr, int> >& dependencies) const OVERRIDE FINAL;
+    virtual void addMetadataDependency(int dimension, const NodePtr& node) OVERRIDE FINAL;
+    virtual void getMetadataDependencies(int dimension, std::list<NodePtr>* nodes) const OVERRIDE FINAL;
+
+    /**
+     * @brief Appends to sources, each once, the other nodes whose hashes the content hash of
+     * dimension folds: those whose metadata this knob's expression reads, and so on through the
+     * knobs its expression or master link reads. Each (knob, dimension) passed through is added to
+     * visited, and not walked again.
+     **/
+    void appendHashedMetadataSources(int dimension, std::vector<NodePtr>* sources, std::set<std::pair<const KnobI*, int>>* visited) const;
+
+    /**
+     * @brief True if some expression reads node metadata.
+     **/
+    static bool anyExpressionReadsMetadata();
+
+    /**
+     * @brief A counter that every edit able to alter what appendHashedMetadataSources() finds for
+     * some knob moves: an expression's knob or metadata reads, a master link, the knobs a holder
+     * has or which of them are render-hashed. Read it before walking the knobs, so that an edit
+     * landing meanwhile leaves the result stale.
+     **/
+    static U64 getHashedMetadataSourcesGeneration();
+    static void moveHashedMetadataSourcesGeneration();
     virtual std::string getExpression(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual const std::vector<std::shared_ptr<Curve>  > & getCurves() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setAnimationEnabled(bool val) OVERRIDE FINAL;
@@ -1737,6 +1784,13 @@ public:
     virtual bool isMastersPersistenceIgnored() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void copyAnimationToClipboard() const OVERRIDE FINAL;
     virtual double getCurrentTime() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The time the innermost expression running on this thread is evaluated at. False, with
+     * time left alone, when no expression is running.
+     **/
+    static bool getExpressionEvaluationTime(double* time);
+
     virtual ViewIdx getCurrentView() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual std::string getDimensionName(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setDimensionName(int dim, const std::string & name) OVERRIDE FINAL;
@@ -1816,6 +1870,12 @@ protected:
 
 private:
     typedef std::set<std::pair<const KnobHelper*, int>> ContentHashPath;
+
+    /**
+     * @brief True, with message set, if the expression at dimension reading read's readDimension
+     * would make a node's hash fold itself through a metadata read.
+     **/
+    bool expressionReadClosesMetadataCycle(int dimension, int readDimension, const KnobHelper* read, std::string* message) const;
 
     U64 getOwnDimensionContentHash(int dimension) const;
     U64 getDimensionContentHashRecursive(int dimension, ContentHashPath& path) const;
@@ -2356,6 +2416,7 @@ private:
         QMutexLocker k(&_valueMutex);
 
         _exprRes[dimension].clear();
+        ++_exprResGenerations[dimension];
     }
 
 
@@ -2456,6 +2517,9 @@ private:
     };
     std::vector<DefaultValue> _defaultValues;
     mutable ExprResults _exprRes;
+    // By dimension, moved by every clear of _exprRes: a result computed while a clear landed may
+    // predate what the clear was for, and is then not stored.
+    mutable std::vector<U64> _exprResGenerations;
 
     //Only for double and int
     mutable QReadWriteLock _minMaxMutex;

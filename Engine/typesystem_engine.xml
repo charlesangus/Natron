@@ -1124,6 +1124,46 @@
                 %CPPSELF.%FUNCTION_NAME(%1);
             </inject-code>
         </modify-function>
+        <modify-function signature="metadata(QString)const">
+            <modify-argument index="return">
+                <replace-type modified-type="PyObject"/>
+            </modify-argument>
+            <inject-code class="target" position="beginning">
+                %PYARG_0 = %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (!%PYARG_0 &amp;&amp; !PyErr_Occurred()) {
+                    PyErr_SetString(PyExc_RuntimeError, "could not convert the metadata value.");
+                }
+                return %PYARG_0;
+            </inject-code>
+            <inject-documentation format="target">
+                Returns the value of the metadata key this node puts out in the main view at the frame the calling expression is evaluated at, or outside an expression at the current frame, as an int, a float, a str or a list, or None if the node has no such key.
+            </inject-documentation>
+        </modify-function>
+        <modify-function signature="metadata(QString,double,int)const">
+            <modify-argument index="return">
+                <replace-type modified-type="PyObject"/>
+            </modify-argument>
+            <inject-code class="target" position="beginning">
+                %PYARG_0 = %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (!%PYARG_0 &amp;&amp; !PyErr_Occurred()) {
+                    PyErr_SetString(PyExc_RuntimeError, "could not convert the metadata value.");
+                }
+                return %PYARG_0;
+            </inject-code>
+            <inject-documentation format="target">
+                Returns the value of the metadata key this node puts out at the given frame and view, as an int, a float, a str or a list, or None if the node has no such key.
+            </inject-documentation>
+        </modify-function>
+        <modify-function signature="metadataKeys()const">
+            <inject-documentation format="target">
+                Returns the sorted keys of the metadata this node puts out in the main view at the frame the calling expression is evaluated at, or outside an expression at the current frame.
+            </inject-documentation>
+        </modify-function>
+        <modify-function signature="metadataKeys(double,int)const">
+            <inject-documentation format="target">
+                Returns the sorted keys of the metadata this node puts out at the given frame and view.
+            </inject-documentation>
+        </modify-function>
         <modify-function signature="getPersistentMessage()const">
             <inject-documentation format="target">
                 Returns the error or warning message the node currently shows, or an empty string if it shows none.

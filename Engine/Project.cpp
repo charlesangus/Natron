@@ -26,6 +26,7 @@
 #include "Project.h"
 
 #include <algorithm> // min, max
+#include <atomic>
 #include <cassert>
 #include <cerrno> // errno
 #include <cstdlib> // strtoul
@@ -793,10 +794,12 @@ Project::saveProjectInternal(const QString & path,
     std::string newFilePath = _imp->runOnProjectSaveCallback(filePath.toStdString(), autoSave);
     filePath = QString::fromUtf8( newFilePath.c_str() );
 
-    ///Use a temporary file to save, so if Natron crashes it doesn't corrupt the user save.
-    QString tmpFilename = StandardPaths::writableLocation(StandardPaths::eStandardLocationTemp);
-    StrUtils::ensureLastPathSeparator(tmpFilename);
-    tmpFilename.append( QString::number( time.toMSecsSinceEpoch() ) );
+    /// Use a temporary file to save, so if Natron crashes it doesn't corrupt the user save.
+    // Same directory as the destination so the final rename stays on one filesystem. The name must be unique
+    // per save: concurrent saves (other processes, or other threads) in the same millisecond would otherwise
+    // share one file.
+    static std::atomic<unsigned int> saveCounter(0);
+    const QString tmpFilename = filePath + QString::fromUtf8(".%1.%2.tmp").arg(QCoreApplication::applicationPid()).arg(saveCounter.fetch_add(1));
 
     {
         FStreamsSupport::ofstream ofile;

@@ -617,11 +617,12 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
 - 2026-10-19 — Constant, Solid and CheckerBoard lose their optional input: no Source input, no stages, `sourceInput` -1, no pass-through (user). This is a deliberate behaviour change; P5.T4 re-records only the generator goldens.
 - 2026-10-19 — Crop is a pure Point op whose box rounds to whole pixels internally, with softness a matte the row multiplies by; `reformat` is expressed as an output RoD/format move and an integer translation, never a shifted source read, and P7.T4 stops and reports if that fails (user): a crop to a fractional pixel makes no sense. Golden diffs are allowed only at the edge pixels of fractional-box cases, and are reported.
 - 2026-10-19 — Dissolve gains a `mix` knob through the MaskMix stage, replacing its own mask handling (user).
+- 2026-10-20 — Merge (code 6b81168b2) keeps its own early mask-miss identity return in `isOpIdentity` beside the framework's check, so the old answers hold when the mask region fails or touches the window edge. One old answer can't be kept: with a B channel off under an enabled output channel and a non-inverted mask missing the window, the framework now answers identity to B. No golden or test covers that case.
 - 2026-10-19 — Untranslated `NodeSpec` text needs no owner: the tree has no `.ts`/`.qm` translation files, so the `tr()` calls it replaces were no-ops and nothing regresses.
 
 **Verification gate:**
 - The full build and ctest pass on both scheduler modes. This includes:
-  - `NativeGolden_Test` bit-exact, in the recording configuration (STAMP), for every recorded case of every migrated node. Exceptions: the generator fixtures were re-recorded by P5.T4 after the generators lost their input, and Crop's reported edge-pixel diffs in fractional-box cases (P7.T4) are accepted. Merge's cases come from P4.T6.
+  - `NativeGolden_Test` bit-exact, in the recording configuration (STAMP), for every recorded case of every migrated node. Exceptions: the generator fixtures were re-recorded by P5.T4 after the generators lost their input. Crop's goldens, `Crop_reformat_*` included, stay bit-exact (P7.T4). Merge's cases come from P4.T6.
   - Every `Native*Gpu_Test` within its README bound on the remote GPU build. The Blur and ErodeDilate parity cases that set "(Un)premult by" were removed with the knob.
   - `NodeSpec_Test`, `NativeSwitch_Test`, `StageKnobFooter_Test`, `StagedPointContext_Test`, `StagedResample_Test`, `StagedComposite_Test` and `NativeChannelNodesSpec_Test`.
 - Greps for `NativeImageEffect`, `NativeImageTraits`, `NativePluginDescription`, `getNativePluginDescription`, `SpatialFilterSupport`, `grade_main`, `keyer_main` and `chromakeyer_main`, and a whole-word grep (`grep -w`) for `hostUnPremult`, find nothing in `Engine/` or `Tests/`. The knob script name `hostUnPremultBy` stays. `Engine/GpuCostModel.cpp` casts to no node class.
@@ -629,6 +630,6 @@ Scouted facts (2026-10-19, `main` at `d521f111a`; re-check line numbers at claim
 - P10.T1's interleaved before/after timings show no regression beyond noise.
 - The user approved:
   - the design note (P3.T2);
-  - the post-approval departures: curve Params copyable with shared tables (P5.T2/P5.T5), generators losing their inputs (P5.T4), Crop as a rounding point op (P7.T4), and Dissolve gaining mix (P8.T2);
+  - the post-approval departures: curve Params copyable with shared tables (P5.T2/P5.T5), generators losing their inputs (P5.T4), and Dissolve gaining mix (P8.T2);
   - the panel screenshots (P10.T2).
 - CI is green.

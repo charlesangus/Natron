@@ -271,19 +271,30 @@ TEST_F(NativeConstantTest, SizeExtentWithAnOffset)
     expectParity(pair, "size-offset", true);
 }
 
-TEST_F(NativeConstantTest, OverSourceWritesTheSelectedChannelsAndPassesTheRestThrough)
+TEST_F(NativeConstantTest, ChannelsOutsideTheTargetSelectionAreZero)
 {
     resetProject();
-    ParityPair pair = makeParityPair(getApp(), PLUGINID_NATRON_CONSTANT, kOfxConstantMajor, kNativeConstantMajor);
-    ASSERT_TRUE(bool(pair.native));
-    EXPECT_FALSE(pair.live());
-    setParitySourceOrigin(pair.source, 5, 3);
-    ASSERT_TRUE(setKnobOnBoth(pair, kConstantParamColor, { 0.75, 0.5, 0.25, 0.125 }));
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), kNativeConstantMajor);
+    ASSERT_TRUE(isNative(node));
+    EXPECT_EQ(0, node->getNInputs());
+    ASSERT_TRUE(setKnobValues(node, kConstantParamColor, { 0.75, 0.5, 0.25, 0.125 }));
     std::vector<std::string> rg;
     rg.push_back("R");
     rg.push_back("G");
-    ASSERT_TRUE(setTargetChannels(pair.native, rg));
-    expectParity(pair, "over-source-rg", true);
+    ASSERT_TRUE(setTargetChannels(node, rg));
+
+    const RectI window = regionOfDefinition(node, kTime).toPixelEnclosing(0, 1.);
+    std::list<ImageLayerDesc> layers(1, ImageLayerDesc::mapNCompsToColorLayer(4));
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, layers, &planes, &error)) << error;
+    ASSERT_EQ(1u, planes.size());
+    ASSERT_EQ(4u, planes[0].channels.size());
+    const float expected[4] = { 0.75f, 0.5f, 0.f, 0.f };
+    ASSERT_EQ((std::size_t)window.width() * window.height() * 4, planes[0].pixels.size());
+    for (std::size_t i = 0; i < planes[0].pixels.size(); ++i) {
+        ASSERT_EQ(expected[i % 4], planes[0].pixels[i]) << "float " << i;
+    }
 }
 
 TEST_F(NativeConstantTest, SolidIsOpaque)
@@ -395,26 +406,23 @@ TEST_F(NativeConstantTest, RendersTheSameInBothSchedulerModes)
     ASSERT_TRUE(setKnobValues(alone, kNativeGeneratorParamSize, { 37., 23. }));
     ASSERT_TRUE(setKnobValues(alone, kConstantParamColor, { 0.1, 0.2, 0.3, 0.4 }));
 
-    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
-    NodePtr over = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), kNativeConstantMajor);
-    ASSERT_TRUE(bool(source));
-    ASSERT_TRUE(isNative(over));
-    connectNodes(source, over, 0, true);
-    ASSERT_TRUE(setKnobValues(over, kConstantParamColor, { 0.75, 0.5, 0.25, 0.125 }));
+    NodePtr rgOnly = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), kNativeConstantMajor);
+    ASSERT_TRUE(isNative(rgOnly));
+    ASSERT_TRUE(setKnobValues(rgOnly, kConstantParamColor, { 0.75, 0.5, 0.25, 0.125 }));
     std::vector<std::string> rg;
     rg.push_back("R");
     rg.push_back("G");
-    ASSERT_TRUE(setTargetChannels(over, rg));
+    ASSERT_TRUE(setTargetChannels(rgOnly, rg));
 
-    const NodePtr nodes[2] = { alone, over };
+    const NodePtr nodes[2] = { alone, rgOnly };
     for (int i = 0; i < 2; ++i) {
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             std::vector<int> unplannedPulls;
             const RectI window = regionOfDefinition(nodes[i], kTime).toPixelEnclosing(mipmapLevel, 1.);
             const RenderMismatch m = renderBothWaysDirect(nodes[i], kTime, ViewIdx(0), mipmapLevel, window, poolSizes, std::function<void()>(), 0.f, &unplannedPulls);
-            EXPECT_FALSE(m.any) << (i ? "over a source" : "alone") << ", mipmap " << mipmapLevel << ": " << describe(m);
+            EXPECT_FALSE(m.any) << (i ? "R and G only" : "all channels") << ", mipmap " << mipmapLevel << ": " << describe(m);
             for (std::size_t p = 0; p < unplannedPulls.size(); ++p) {
-                EXPECT_EQ(0, unplannedPulls[p]) << (i ? "over a source" : "alone") << ", mipmap " << mipmapLevel << ", pool " << poolSizes[p];
+                EXPECT_EQ(0, unplannedPulls[p]) << (i ? "R and G only" : "all channels") << ", mipmap " << mipmapLevel << ", pool " << poolSizes[p];
             }
         }
     }

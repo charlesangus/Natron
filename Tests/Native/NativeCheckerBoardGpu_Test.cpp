@@ -50,7 +50,7 @@
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/NativeGenerator.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
@@ -110,7 +110,7 @@ GpuQuery
 queryFor(const NodePtr& node,
          unsigned mipmapLevel = 0)
 {
-    NativeImageEffect* effect = dynamic_cast<NativeImageEffect*>(node->getEffectInstance().get());
+    StagedImageEffect* effect = dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get());
     GpuQuery q;
 
     q.time = kTime;
@@ -162,7 +162,7 @@ TEST_F(NativeCheckerBoardGpuTest, MatchesTheCpuRender)
         for (unsigned level = 0; level <= 1; ++level) {
             NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_CHECKERBOARD));
             ASSERT_TRUE(bool(node)) << c.name;
-            NativeImageEffect* effect = dynamic_cast<NativeImageEffect*>(node->getEffectInstance().get());
+            StagedImageEffect* effect = dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get());
             ASSERT_TRUE(effect != NULL) << c.name;
             ASSERT_TRUE(setKnobValues(node, kCheckerBoardParamBoxSize, c.boxSize)) << c.name;
             ASSERT_TRUE(setKnobValues(node, kCheckerBoardParamLineWidth, { c.lineWidth })) << c.name;

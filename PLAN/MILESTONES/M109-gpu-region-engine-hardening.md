@@ -306,7 +306,7 @@ M85's benches show where the region engine loses time on real comps. Three items
 
 ## Phase 109.8: Thorough bench
 
-- [ ] M109.P8.T1 — Thorough Auto/Off bench on the target host
+- [x] M109.P8.T1 — Thorough Auto/Off bench on the target host
   - files: none (results in `## Decisions`, design note §11 hand-off)
   - approach:
     - Use the P7 release AppImage with `gpu_region_bench.sh`, 3 rounds.
@@ -441,3 +441,4 @@ M85's benches show where the region engine loses time on real comps. Three items
   - **Miss — K ≥ T under 30%:** Blur σ100 is at 30–32% on warm first frames at UHD and 8K, and at 10–15% at 16k/24k.
   - **Miss — Transform "other" under 20%:** node Transform at 8K is 21.8% on the warm first frame, all of it `prepareWaitMs` (19.5 ms). Steady state is about 1%. 16k playback frames 1–2 show 265–295 ms of "other", not investigated.
   - **Miss — speed-up ≥ M85:** keying_grade and cg_multipass playback are 2.31/2.31 and 1.75/1.76, against M85's 2.77/2.90 and 1.99/2.09. defocus_retime is on par. P4.T4 already found M85's method not reproducible.
+- 2026-10-20 — **The gate's four misses are accepted, and M109 ships (user).** Blur's 30–32% and Transform's 21.8% are marginal. Transform's excess is page-zeroing `prepareWaitMs`, which M154 - Fresh Buffer Page Zeroing targets. The M85 comparison has no reproducible baseline (P4.T4). The comp download rate, ~6 GB/s against GpuBench's 16.7, goes to the inbox as a follow-up milestone. Two lines go to the PR's CI and were not measured here: CPU-only renders within ±2% of `main`, and full ctest on `82dd5c063` and later.

@@ -558,12 +558,23 @@ On hosts whose `LD_LIBRARY_PATH` carries another application's Qt, run
 AppImages and binaries as `env -u LD_LIBRARY_PATH <binary>`, otherwise that Qt
 shadows Natron's.
 
-To check a real desktop session in one step, run
-`tools/gpu-spike/desktop-handoff-check.sh --glinterop <GlInteropQt or build dir>`
-on the host from a terminal in that session. It runs the probe under xcb and/or
-wayland, records the GL renderer and Vulkan device, and writes
-`handoff-report.txt` (first line `VERDICT ...`) plus raw logs into `--out`
-(default: a new temp directory). It warns when the GL renderer is not radeonsi.
+The host has no Qt6, so the probe built in the container cannot start there.
+Pack it with the container's Qt first, then run the check on the host from a
+terminal in the desktop session:
+
+```
+tools/gpu-spike/make-probe-bundle.sh
+tools/gpu-spike/desktop-handoff-check.sh --glinterop build/gpu-spike/probe-bundle.tar.gz
+```
+
+The bundle (`build/gpu-spike/probe-bundle/`, also accepted as a directory)
+carries Qt6, the Qt `xcb` platform and GLX integration plugins, a `qt.conf`, and
+an `$ORIGIN` RUNPATH; GL, EGL, Vulkan, DRM and libc come from the host. The
+container's Qt has no Wayland platform plugin, so a Wayland session is probed
+through XWayland (`xcb`). The check runs the probe under `xcb` and/or `wayland`,
+records the GL renderer and Vulkan device, and writes `handoff-report.txt`
+(first line `VERDICT ...`) plus raw logs into `--out` (default: a new temp
+directory). It warns when the GL renderer is not radeonsi.
 
 Confirmed recipe: not yet recorded.
 

@@ -78,11 +78,6 @@ public:
         return n;
     }
 
-    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL
-    {
-        return false;
-    }
-
     virtual PluginOpenGLRenderSupport supportsOpenGLRender() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return ePluginOpenGLRenderSupportYes;

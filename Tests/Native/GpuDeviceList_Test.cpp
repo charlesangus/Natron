@@ -75,9 +75,14 @@ TEST(GpuDeviceList, EnumeratesDevicesAndRoundTripsSelectors)
         reportNoGpu("no Vulkan device enumerated");
         return;
     }
-    EXPECT_TRUE(std::any_of(list.begin(), list.end(),
-                            [](const GpuDeviceSummary& d) { return d.type == GpuDeviceType::Cpu; }));
+    for (size_t i = 0; i < list.size(); ++i) {
+        EXPECT_EQ(list[i].index, static_cast<int>(i));
+    }
     for (const GpuDeviceSummary& d : list) {
+        // Lavapipe names its device after the llvmpipe rasterizer it wraps.
+        if (d.name.find("llvmpipe") != std::string::npos) {
+            EXPECT_EQ(d.type, GpuDeviceType::Cpu) << d.name;
+        }
         const std::string hex = uuidHex(d.uuid);
         EXPECT_EQ(hex.size(), 32u);
         EXPECT_EQ(hex.find_first_not_of("0123456789abcdef"), std::string::npos);

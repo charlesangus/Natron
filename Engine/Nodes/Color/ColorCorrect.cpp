@@ -120,7 +120,7 @@ toneClamp(double value)
 
 // The weight of tone curve `curve` at luminance `value`: interpolated in the LUT inside
 // the table's domain, the curve itself outside it.
-float
+ALWAYS_INLINE float
 toneWeight(const ColorCorrectOp::Tones& tones,
            int curve,
            float value)

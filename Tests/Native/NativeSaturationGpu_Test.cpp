@@ -51,7 +51,6 @@
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Color/Saturation.h"
 #include "Engine/Nodes/Image/GpuRender.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -61,19 +60,6 @@ namespace {
 const double kTime = 1.;
 
 const char* const kLuminanceOptions[] = { "rec709", "rec2020", "acesap0", "acesap1", "ccir601", "average", "max" };
-
-// makeKernel() is protected in the base and private in Saturation; naming it through a derived class
-// of the base is what makes the member pointer accessible.
-struct KernelProbe
-    : public NativeImageEffect {
-    static PixelKernelPtr make(NativeImageEffect* effect,
-                               const KernelContext& context)
-    {
-        PixelKernelPtr (NativeImageEffect::*member)(const KernelContext&) = &KernelProbe::makeKernel;
-
-        return (effect->*member)(context);
-    }
-};
 
 struct SaturationSetting {
     double saturation;
@@ -101,10 +87,10 @@ applySetting(const NodePtr& node,
     ASSERT_TRUE(setKnobValue(node, "luminanceMath", std::string(luminance)));
 }
 
-NativeImageEffect*
+Saturation*
 effectOf(const NodePtr& node)
 {
-    return node ? dynamic_cast<NativeImageEffect*>(node->getEffectInstance().get()) : NULL;
+    return node ? dynamic_cast<Saturation*>(node->getEffectInstance().get()) : NULL;
 }
 
 bool
@@ -142,7 +128,7 @@ imageOf(const RenderedPlane& plane)
 GpuQuery
 queryFor(const NodePtr& op)
 {
-    NativeImageEffect* effect = effectOf(op);
+    Saturation* effect = effectOf(op);
     const ImageLayerDesc plane = ImageLayerDesc::mapNCompsToColorLayer(4);
     GpuQuery q;
 
@@ -179,23 +165,16 @@ queryFor(const NodePtr& op)
 }
 
 std::vector<float>
-cpuKernelRender(NativeImageEffect* effect,
+cpuKernelRender(Saturation* effect,
                 const std::vector<float>& src,
                 int width,
                 int height,
                 int nComps,
                 unsigned channelMask)
 {
-    KernelContext context;
-    context.time = kTime;
-    context.processChannels = std::bitset<4>(channelMask);
-    PixelKernelPtr kernel = KernelProbe::make(effect, context);
+    const std::bitset<4> channels(channelMask);
+    const SaturationOp::Params params = effect->bakeSaturation(kTime, ViewIdx(0));
     std::vector<float> dst(src);
-
-    EXPECT_TRUE(bool(kernel));
-    if (!kernel) {
-        return dst;
-    }
     for (int y = 0; y < height; ++y) {
         RowIO io;
         io.nSrc = 1;
@@ -204,8 +183,8 @@ cpuKernelRender(NativeImageEffect* effect,
         io.y = y;
         io.width = width;
         io.nComps = nComps;
-        io.channels = context.processChannels;
-        kernel->processRow(io);
+        io.channels = channels;
+        effect->saturationRow(params, io);
     }
 
     return dst;
@@ -245,7 +224,7 @@ TEST_F(NativeSaturationGpuTest, MatchesTheCpuKernelForEveryLuminanceOption)
     }
     NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_SATURATION));
     ASSERT_TRUE(bool(node));
-    NativeImageEffect* effect = effectOf(node);
+    Saturation* effect = effectOf(node);
     ASSERT_TRUE(effect != NULL);
 
     const unsigned channelMasks[] = { 0xF, 0x7, 0x5, 0x8 };
@@ -311,7 +290,7 @@ TEST_F(NativeSaturationGpuTest, DefaultKnobsPassEveryValueThrough)
     }
     NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_SATURATION));
     ASSERT_TRUE(bool(node));
-    NativeImageEffect* effect = effectOf(node);
+    Saturation* effect = effectOf(node);
     ASSERT_TRUE(effect != NULL);
 
     const std::vector<float> values = testValues();
@@ -371,7 +350,7 @@ TEST_F(NativeSaturationGpuTest, MatchesTheCpuRender)
     maskChannel->set("rgba.A");
     KnobChannelSelect* unPremultBy = dynamic_cast<KnobChannelSelect*>(op->getKnobByName(kUnPremultByKnobName).get());
     ASSERT_TRUE(unPremultBy != NULL);
-    NativeImageEffect* effect = effectOf(op);
+    Saturation* effect = effectOf(op);
     ASSERT_TRUE(effect != NULL);
 
     const RectI window = paritySourceWindow(source, kTime, 0);

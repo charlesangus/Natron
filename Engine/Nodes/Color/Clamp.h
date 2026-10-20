@@ -28,8 +28,10 @@
 
 #include "Global/Macros.h"
 
+#include <list>
+
 #include "Engine/EngineFwd.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 
 #define PLUGINID_NATRON_CLAMP "net.sf.openfx.Clamp"
 #define PLUGIN_MAJOR_NATRON_CLAMP 3
@@ -45,7 +47,10 @@
 
 NATRON_NAMESPACE_ENTER
 
-struct ClampValues;
+inline constexpr InputSpec kClampInputs[] = {
+    InputSpec { .label = "Source" },
+    InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
+};
 
 /**
  * @brief Clamp: per processed channel, a value below `minimum` becomes minClampTo when
@@ -54,8 +59,76 @@ struct ClampValues;
  * Knob names, defaults and maths are the openfx-misc Clamp plugin's; it registers under that
  * plugin's ID one major above.
  **/
+struct ClampOp {
+    // Doubles, as the CPU row compares and clamps in double; the GPU block takes floats from them.
+    struct Params {
+        double minimum[4];
+        double maximum[4];
+        double minClampTo[4];
+        double maxClampTo[4];
+        bool minimumEnable;
+        bool maximumEnable;
+        bool minClampToEnable;
+        bool maxClampToEnable;
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_CLAMP,
+        .label = "Clamp",
+        .description = "Clamp the values of the selected channels.\n"
+                       "\n"
+                       "A special use case for the Clamp plugin is to generate a binary mask image "
+                       "(i.e. each pixel is either 0 or 1) by thresholding an image. Let us say one wants "
+                       "all input pixels whose value is above or equal to some threshold value to "
+                       "become 1, and all values below this threshold to become 0. Set the \"Minimum\" value "
+                       "to the threshold, set the \"Maximum\" to any value strictly below the threshold "
+                       "(e.g. 0 if the threshold is positive), and "
+                       "check \"Enable MinClampTo\" and \"Enable MaxClampTo\" while keeping the default "
+                       "values for \"MinClampTo\" (0.0) and \"MaxClampTo\" (1.0). The result is a binary "
+                       "mask image. To create a non-binary mask, with softer edges, either blur the output "
+                       "of Clamp, or use the Grade plugin instead, setting the \"Black Point\" and \"White Point\" "
+                       "to values close to the threshold, and checking the \"Clamp Black\" and \"Clamp "
+                       "White\" options.\n"
+                       "\n"
+                       "See also: https://web.archive.org/web/20220627024614/http://www.opticalenquiry.com/nuke/index.php?title=Clamp",
+        .grouping = PLUGIN_GROUP_COLOR,
+        .majorVersion = PLUGIN_MAJOR_NATRON_CLAMP,
+        .minorVersion = 0,
+        .inputs = kClampInputs,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = { Stage::Premult, Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .layers = LayerPolicy::color(true, true, true, true),
+        .op = OpKind::Point,
+    };
+
+    void createKnobs(KnobHolder* holder,
+                     const KnobPagePtr& page);
+
+    Params bake(const KnobReader& reader) const;
+
+    bool isIdentity(const Params& params) const;
+
+    void row(const Params& params,
+             const RowIO& io) const;
+
+    GpuOpRef gpu(const Params& params) const;
+
+    KnobColorWPtr minimum;
+    KnobBoolWPtr minimumEnable;
+    KnobColorWPtr maximum;
+    KnobBoolWPtr maximumEnable;
+    KnobColorWPtr minClampTo;
+    KnobBoolWPtr minClampToEnable;
+    KnobColorWPtr maxClampTo;
+    KnobBoolWPtr maxClampToEnable;
+};
+
+static_assert(PointOp<ClampOp>);
+
 class Clamp
-    : public NativeImageEffect {
+    : public ImageNode<ClampOp> {
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
@@ -66,42 +139,19 @@ public:
 
     virtual ~Clamp();
 
-    virtual bool isPointOp() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return true;
-    }
-
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
 
-protected:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    /**
+     * @brief The Params the op renders with at (time, view).
+     **/
+    ClampOp::Params bakeClamp(double time,
+                              ViewIdx view) const WARN_UNUSED_RETURN;
 
-private:
-    virtual void initializeKnobs() OVERRIDE FINAL;
-
-    virtual PixelKernelPtr makeKernel(const KernelContext& context) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual bool isIdentityOp(double time,
-                              const RenderScale& scale,
-                              const RectI& roi,
-                              ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual int gpuKernelId(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual bool makeGpuKernel(const KernelContext& context,
-                               PixelKernelGpu* gpuKernel) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    ClampValues readValues(double time,
-                           ViewIdx view) const WARN_UNUSED_RETURN;
-
-    KnobColorWPtr _minimum;
-    KnobBoolWPtr _minimumEnable;
-    KnobColorWPtr _maximum;
-    KnobBoolWPtr _maximumEnable;
-    KnobColorWPtr _minClampTo;
-    KnobBoolWPtr _minClampToEnable;
-    KnobColorWPtr _maxClampTo;
-    KnobBoolWPtr _maxClampToEnable;
+    /**
+     * @brief The op's CPU kernel over one row.
+     **/
+    void clampRow(const ClampOp::Params& params,
+                  const RowIO& io) const;
 };
 
 NATRON_NAMESPACE_EXIT

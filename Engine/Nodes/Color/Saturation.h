@@ -32,7 +32,8 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/ColorMath.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 
 #define PLUGINID_NATRON_SATURATION "net.sf.openfx.SaturationPlugin"
 #define PLUGIN_MAJOR_NATRON_SATURATION 3
@@ -43,7 +44,10 @@
 
 NATRON_NAMESPACE_ENTER
 
-struct SaturationValues;
+inline constexpr InputSpec kSaturationInputs[] = {
+    InputSpec { .label = "Source" },
+    InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
+};
 
 /**
  * @brief Saturation: moves each processed colour channel away from, or towards, the pixel's
@@ -53,8 +57,55 @@ struct SaturationValues;
  * AP1 coefficients and clampBlack defaults off so that a default node is an identity; it
  * registers under that plugin's ID one major above.
  **/
+struct SaturationOp {
+    // The saturation is a double, as the CPU row computes in double; the GPU block takes a float.
+    struct Params {
+        double saturation;
+        ColorMath::LuminanceMathEnum luminanceMath;
+        bool clampBlack;
+        bool clampWhite;
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_SATURATION,
+        .label = "Saturation",
+        .description = "Modify the color saturation of an image.\n"
+                       "Each processed channel is moved away from (saturation above 1) or towards "
+                       "(saturation below 1) the pixel's luminance. A saturation of 0 produces grayscale.",
+        .grouping = PLUGIN_GROUP_COLOR,
+        .majorVersion = PLUGIN_MAJOR_NATRON_SATURATION,
+        .minorVersion = 0,
+        .inputs = kSaturationInputs,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = { Stage::Premult, Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .layers = LayerPolicy::color(true, true, true, false),
+        .op = OpKind::Point,
+    };
+
+    void createKnobs(KnobHolder* holder,
+                     const KnobPagePtr& page);
+
+    Params bake(const KnobReader& reader) const;
+
+    bool isIdentity(const Params& params) const;
+
+    void row(const Params& params,
+             const RowIO& io) const;
+
+    GpuOpRef gpu(const Params& params) const;
+
+    KnobDoubleWPtr saturation;
+    KnobChoiceWPtr luminanceMath;
+    KnobBoolWPtr clampBlack;
+    KnobBoolWPtr clampWhite;
+};
+
+static_assert(PointOp<SaturationOp>);
+
 class Saturation
-    : public NativeImageEffect {
+    : public ImageNode<SaturationOp> {
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
@@ -65,38 +116,19 @@ public:
 
     virtual ~Saturation();
 
-    virtual bool isPointOp() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return true;
-    }
-
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
 
-protected:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    /**
+     * @brief The Params the op renders with at (time, view).
+     **/
+    SaturationOp::Params bakeSaturation(double time,
+                                        ViewIdx view) const WARN_UNUSED_RETURN;
 
-private:
-    virtual void initializeKnobs() OVERRIDE FINAL;
-
-    virtual PixelKernelPtr makeKernel(const KernelContext& context) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual bool isIdentityOp(double time,
-                              const RenderScale& scale,
-                              const RectI& roi,
-                              ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual int gpuKernelId(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual bool makeGpuKernel(const KernelContext& context,
-                               PixelKernelGpu* gpuKernel) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    SaturationValues readValues(double time,
-                                ViewIdx view) const WARN_UNUSED_RETURN;
-
-    KnobDoubleWPtr _saturation;
-    KnobChoiceWPtr _luminanceMath;
-    KnobBoolWPtr _clampBlack;
-    KnobBoolWPtr _clampWhite;
+    /**
+     * @brief The op's CPU kernel over one row.
+     **/
+    void saturationRow(const SaturationOp::Params& params,
+                       const RowIO& io) const;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -31,20 +31,57 @@
 #include <list>
 
 #include "Engine/EngineFwd.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/Image/StagedImageEffect.h"
 
 #define PLUGINID_NATRON_INVERT "net.sf.openfx.Invert"
 #define PLUGIN_MAJOR_NATRON_INVERT 3
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kInvertInputs[] = {
+    InputSpec { .label = "Source" },
+    InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
+};
+
 /**
  * @brief Invert: output = 1 - input on every processed channel, unclamped. It has no knob of its
  * own: the host's channel selector, "(Un)premult by", mask and mix do the rest. Its ID is the
  * openfx-misc Invert plugin's, one major above.
  **/
+struct InvertOp {
+    struct Params {
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_INVERT,
+        .label = "Invert",
+        .description = "Inverse the selected channels",
+        .grouping = PLUGIN_GROUP_COLOR,
+        .majorVersion = PLUGIN_MAJOR_NATRON_INVERT,
+        .minorVersion = 0,
+        .inputs = kInvertInputs,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = { Stage::Premult, Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .layers = LayerPolicy::color(true, true, true, true),
+        .op = OpKind::Point,
+    };
+
+    Params bake(const KnobReader& reader) const;
+
+    bool isIdentity(const Params& params) const;
+
+    void row(const Params& params,
+             const RowIO& io) const;
+
+    GpuOpRef gpu(const Params& params) const;
+};
+
+static_assert(PointOp<InvertOp>);
+
 class Invert
-    : public NativeImageEffect {
+    : public ImageNode<InvertOp> {
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
@@ -55,25 +92,7 @@ public:
 
     virtual ~Invert();
 
-    virtual bool isPointOp() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return true;
-    }
-
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
-
-protected:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-private:
-    virtual void initializeKnobs() OVERRIDE FINAL;
-
-    virtual PixelKernelPtr makeKernel(const KernelContext& context) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual int gpuKernelId(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual bool makeGpuKernel(const KernelContext& context,
-                               PixelKernelGpu* gpu) OVERRIDE FINAL WARN_UNUSED_RETURN;
 };
 
 NATRON_NAMESPACE_EXIT

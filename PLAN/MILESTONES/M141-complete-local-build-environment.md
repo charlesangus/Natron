@@ -11,7 +11,7 @@ Deps: none.
 
 Scouted facts (scouted 2026-10-19 on main `d521f111a`; re-check at promotion):
 - **Slang resolution:** `cmake/FetchSlang.cmake` honours `SLANG_ROOT` (cmake var, then env), then `NATRON_DEPS_CACHE`, else downloads `slang-${NATRON_SLANG_VERSION}-linux-x86_64.tar.gz` (pinned URL and SHA256 in the same file) into `<repo>/.natron-deps/` (gitignored, `.gitignore:257`). Only `bin/slangc` and `include/slang-cpp-prelude.h` are used.
-- **Image:** `tools/ci/local/Dockerfile` is `FROM aswf/ci-vfxall:2027-clang21.1` plus one Mesa relink `RUN`; its header comment says local-only layers belong there, and that only github.com, registry-1.docker.io, auth.docker.io, mirror.gcr.io, ghcr.io and quay.io are reachable from the build environment. CI runs the base image directly (no local layers), so CI keeps downloading Slang; `.github/workflows/ci.yml:146-150` and `remote-build.yml:87-91` already cache `.natron-deps` keyed on `hashFiles('cmake/FetchSlang.cmake')`.
+- **Image:** `tools/ci/local/Dockerfile` is `FROM aswf/ci-vfxall:2027-clang21.1` plus one Mesa relink `RUN`; its header comment says local-only layers belong there, and that only github.com, registry-1.docker.io, auth.docker.io, mirror.gcr.io, ghcr.io and quay.io are reachable from the build environment. CI runs the base image directly (no local layers) and downloads Slang itself (Phase 141.6 changes this); `.github/workflows/ci.yml:146-150` and `remote-build.yml:87-91` already cache `.natron-deps` keyed on `hashFiles('cmake/FetchSlang.cmake')`.
 - **Syntax checker:** `build/syntax-check.py` is **not tracked** (`.gitignore:53` ignores `build/`; no reference in `tools/` or `.github/`). It reads `build/fast/compile_commands.json` of the main checkout, rewrites paths for another checkout root, runs `docker exec natron-dev` with 3 workers, and for a TU missing from the DB borrows a sibling's command (so a new GPU TU in an old tree gets `NO-COMMAND`, and test TUs inherit flags that lack the include dirs).
 - **Remote build:** `tools/ci/remote/build.sh` accepts `fast|release` (`:78`), dispatches `.github/workflows/remote-build.yml` whose `preset` input lists `fast`, `release` (`:15-17`); CCACHE size is chosen by preset (`:55`). The workflow runs `tools/ci/local/test.sh ctest "$PRESET"` twice (legacy and taskgraph scheduler) with `NATRON_CTEST_JOBS` unset, i.e. serial `ctest -V`. PR CI (`ci.yml:166-173`) sets `NATRON_CTEST_JOBS: 4` (`ctest -j 4 --output-on-failure`) on the `debug` preset.
 - **Local scripts:** `tools/ci/local/{Dockerfile,README.md,build.sh,devshell.sh,fetch-assets.sh,package.sh,test.sh}`; `build.sh:186-197` runs the submodule update host-side before entering the container; `package.sh:89-95` prefers `build/appimagetool-wrapper/appimagetool` (an untracked 478-byte shell wrapper beside a 15 MB `appimagetool.real`) when it is executable. README `tools/ci/local/README.md` "Sharing the cache with worktrees" covers ccache only.
@@ -24,6 +24,7 @@ Scouted facts (scouted 2026-10-19 on main `d521f111a`; re-check at promotion):
 - A tracked, parameterised syntax-check tool in `tools/ci/local/`, with a file-path CLI, correct include paths for test TUs, and on-demand configure of a GPU-era compile database instead of silently skipping GPU TUs.
 - A `debug` preset for `tools/ci/remote/build.sh` and `remote-build.yml`, and `-V` re-run of failed cases after a parallel ctest (local, remote and PR CI all use `test.sh`).
 - A worktree bootstrap script, a submodule-update opt-out for `build.sh`, and a tracked appimagetool wrapper generator.
+- The `natron-dev` image prebuilt and published to GHCR under a content-hash tag. `devshell.sh` pulls it, and PR CI and remote builds run inside it instead of the bare ASWF image.
 - Documentation in `tools/ci/local/README.md` and `tools/ci/remote/README.md`.
 
 **Out:**
@@ -150,12 +151,43 @@ Scouted facts (scouted 2026-10-19 on main `d521f111a`; re-check at promotion):
   - verify: create a scratch worktree under `.worktrees/`, run the script, run it again (second run reports everything present, no downloads), then `tools/ci/local/build.sh fast --reconfigure` configures there without network use for Slang. Remove the scratch worktree with `git worktree remove`.
   - size: M
 
+## Phase 141.6: Prebuilt image on GHCR
+
+Runs before Phase 141.5, so the docs describe it. The repo is public, so the GHCR package is public and its storage is free.
+
+- [ ] M141.P6.T1 — Content-hash image tag and publish job
+  - files: `tools/ci/local/dev-image-tag.sh` (new), `.github/workflows/dev-image.yml` (new, reusable through `workflow_call` and runnable through `workflow_dispatch`)
+  - approach:
+    - `dev-image-tag.sh` prints `ghcr.io/charlesangus/natron-dev:<tag>`, where `<tag>` is the first 16 hex characters of a SHA-256 over the Dockerfile and `cmake/FetchSlang.cmake`, in a fixed order. It is the single definition of the tag, used by the workflow, `devshell.sh` and CI.
+    - `dev-image.yml` computes the tag and checks whether it already exists in the registry (`docker manifest inspect`). If it does not, it builds `tools/ci/local/Dockerfile` and pushes it under the tag and `:latest`, with `permissions: packages: write` and `GITHUB_TOKEN` login. It outputs the image reference either way.
+    - The runner has limited disk and the ASWF base is many GB, so free disk space first, following whatever `ci.yml` already does for the base pull.
+  - verify: dispatch it on the milestone branch. The first run pushes, and a re-run reports the tag present and skips the build. `docker pull` of the tag works locally, and `slangc -v` in it prints the pinned version.
+  - size: M
+
+- [ ] M141.P6.T2 — devshell.sh pulls the published image
+  - files: `tools/ci/local/devshell.sh`, `tools/ci/local/build.sh` (only if it names the image)
+  - approach:
+    - Resolve the image through `dev-image-tag.sh`. If it isn't present locally, `docker pull` it, and fall back to a local `docker build` when the pull fails (offline, or a Dockerfile change not yet published).
+    - Restart the dev container on the new image only when it is created. Never restart a running container under a build (one build per container).
+  - verify: on a host with the tag absent locally, devshell pulls it. With the network blocked or the tag missing, it builds locally. A running container is left alone.
+  - size: M
+
+- [ ] M141.P6.T3 — CI and remote builds run in the published image
+  - files: `.github/workflows/ci.yml`, `.github/workflows/remote-build.yml`
+  - approach:
+    - Each workflow first calls `dev-image.yml`, which builds and pushes the image if a PR changed the Dockerfile. The build jobs then run in its output image instead of `aswf/ci-vfxall:2027-clang21.1`.
+    - Drop the `.natron-deps` Slang cache steps (`ci.yml:146-150`, `remote-build.yml:87-91`): `SLANG_ROOT` comes from the image.
+    - CI now gets the Mesa relink layer, which was local-only until now. Read why that layer exists before switching, and record in Decisions whether CI behaviour changes.
+  - verify: PR CI on the milestone branch is green with the debug preset, including the lavapipe GPU tests. A remote `fast --tests` build is green in both scheduler modes. Neither log shows a Slang download.
+  - size: M
+
 ## Phase 141.5: Documentation
 
 - [ ] M141.P5.T1 — Document the local environment
   - files: `tools/ci/local/README.md`, `tools/ci/remote/README.md`
   - approach:
     - `local/README.md`: add sections for the Slang layer (what `SLANG_ROOT` is, the drift check, that CI still downloads), "Checking syntax before a build" (the new tool's CLI, GPU-era trees, one build per container), "Worktree lanes" (`worktree-init.sh`, `NATRON_SKIP_SUBMODULE_UPDATE`), and the failed-case `-V` re-run in the `test.sh` section.
+    - Both READMEs: describe the published GHCR image, its content-hash tag and how `devshell.sh` pulls it or falls back to a local build.
     - `remote/README.md`: list `debug` among the presets, say it never packages an AppImage, and say its ctest runs at PR CI's parallelism with failed cases re-run `-V`. Replace the "presets (`fast`, `release`)" sentence.
     - Machine-neutral wording only: no host names or home paths.
   - verify: every command line in the new sections runs as written (copy-paste each in a scratch worktree) and every named file exists; `git grep -n '/home/'` over the two READMEs finds nothing.
@@ -163,6 +195,7 @@ Scouted facts (scouted 2026-10-19 on main `d521f111a`; re-check at promotion):
 
 ## Decisions
 
+- 2026-10-21 — **Publish the dev image to GHCR (user):** we layer Slang and a Mesa relink on top of ASWF, so local, CI and remote builds share one prebuilt image tagged by content hash. This reverses the earlier scope line that CI runs the bare base image. Added as Phase 141.6.
 - 2026-10-21 — **Claimed despite the file-overlap test (user-directed):** the user asked to run this milestone and M155 - Per-Suite Test Processes in parallel lanes. Overlapping files: `tools/ci/local/README.md` with M107 - GPU Viewer Hand-off; `tools/ci/local/test.sh` with the parked M64 - Tiled Rendering; and `tools/ci/local/test.sh`, both READMEs and `remote-build.yml` with M155. Conflicts are resolved at merge.
 
 **Verification gate:**
@@ -171,4 +204,5 @@ Scouted facts (scouted 2026-10-19 on main `d521f111a`; re-check at promotion):
 - `NATRON_CTEST_JOBS=4 tools/ci/local/test.sh ctest debug` shows the assert text of a deliberately failing case, with a non-zero exit.
 - A pushed branch builds through `tools/ci/remote/build.sh debug --tests` with Debug flags, `-j 4` ctest and no AppImage; `fast` and `release` still work.
 - `worktree-init.sh` brings a new worktree to a configurable, packageable state (submodules, assets, `.natron-deps`, wrapper) and is idempotent on a second run.
+- The `natron-dev` image is on GHCR under its content-hash tag; `devshell.sh` pulls it; PR CI and remote builds run in it and download no Slang.
 - The READMEs contain no machine-local paths or hostnames.

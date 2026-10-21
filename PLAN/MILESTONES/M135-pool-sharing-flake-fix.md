@@ -39,5 +39,19 @@ The likely cause is that the test's premise is timing-dependent, not that the sc
   - verify: the stressed loops (fresh process per iteration) that crashed before pass 500/500 after, in both scheduler modes on the debug preset, for both cases. The `DeepLayers*` and `DeepRenderPipeline*` suites are green.
   - size: L
 
+## Phase 135.3: Other flakes found by M155
+
+- [ ] M135.P3.T1 — Make ViewerDisplayTransformOCIO.EightBitOutputStaysWithinOneCodeValue deterministic
+  - files: the test's source (find it with `git grep EightBitOutputStaysWithinOneCodeValue`), plus whatever Engine viewer/OCIO code the cause leads to
+  - approach: M155's leak agent saw it fail intermittently when run on its own, in both scheduler modes, on a local NDEBUG fast build. Its fixture does not use `BaseTest`, so M155's per-case reset doesn't cover it. Reproduce it with `--gtest_repeat` under CPU load. Find whether the failure is a timing premise in the test or a real race in the 8-bit viewer path, and fix it where it lives.
+  - verify: 500/500 under load in both modes; the suite is green.
+  - size: M
+- [ ] M135.P3.T2 — Find the CImgBlur heap corruption in CacheEquivalenceSweepTest shard 4
+  - files: `Tests/` sweep shard, `Plugins/` or libs CImg Blur code (to be found)
+  - approach: on the 4-core local box, shard 4 of `Shards/CacheEquivalenceSweepTest` aborts with heap corruption inside CImgBlur's OpenMP code. It reproduces on untouched main there, but passes on the remote runners. Get a backtrace and, if needed, an ASan build of the plug-in. A thread-count-dependent overrun is the first suspect. Fix it at the root.
+  - verify: shard 4 passes 20/20 locally, in both modes; remote debug gate green.
+  - size: L
+
 **Verification gate:** one build per phase. Both stressed repeat loops are 500/500, and full ctest is green apart from known goldens. CI `build-and-test` is green on the PR.
 - 2026-10-21 — **Scope widened to every flaky test found (user).** So far that means the DeepLayersGraphTest segfault (Phase 135.2). Renamed from "Pool Sharing Flake Fix". Claimed alongside M141 - Complete Local Build Environment and M155 - Per-Suite Test Processes. M155 is fixing shared-process leaks in four other Deep suites, so the two lanes may touch the same Deep Engine code; conflicts are resolved at merge.
+- 2026-10-21 — Phase 135.3 added under the same instruction: two more flakes found by M155's leak agent (ViewerDisplayTransformOCIO 8-bit, CImgBlur heap corruption on 4 cores).

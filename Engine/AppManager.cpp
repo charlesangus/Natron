@@ -1351,6 +1351,21 @@ AppManager::clearAllCaches()
         (*it)->abortAllViewers();
     }
 
+    // A holder's queued cleanup names it by cache ID, which a node created after the clear may
+    // reuse; run them all now so none removes that node's fresh entries later.
+    if (_imp->_nodeCache) {
+        _imp->_nodeCache->waitForDeleterThread();
+    }
+    if (_imp->_diskCache) {
+        _imp->_diskCache->waitForDeleterThread();
+    }
+    if (_imp->_viewerCache) {
+        _imp->_viewerCache->waitForDeleterThread();
+    }
+    if (_imp->_deepImageCache) {
+        _imp->_deepImageCache->waitForDeleterThread();
+    }
+
     clearDiskCache();
     clearNodeCache();
     _imp->_deepImageCache->clear();

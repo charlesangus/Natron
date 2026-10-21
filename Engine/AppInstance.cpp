@@ -2352,7 +2352,7 @@ AppInstance::addInvalidExpressionKnob(const KnobIPtr& knob)
     QMutexLocker k(&_imp->invalidExprKnobsMutex);
 
     for (std::list<KnobIWPtr>::iterator it = _imp->invalidExprKnobs.begin(); it != _imp->invalidExprKnobs.end(); ++it) {
-        if ( it->lock().get() ) {
+        if (it->lock() == knob) {
             return;
         }
     }

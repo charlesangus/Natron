@@ -212,8 +212,6 @@ protected:
         _nextSlot = 1;
     }
 
-    // Destroyed nodes take their cache entries with them, so the next test's nodes, which may get
-    // the same script names and so the same hashes, cannot be served this test's renders.
     // The destroy must block: a non-blocking one finishes from a queued signal, and with no event
     // loop running the nodes would stay active in the project and keep referencing "mask".
     virtual void TearDown() OVERRIDE

@@ -445,9 +445,6 @@ protected:
         _nextSlot = 1;
     }
 
-    // Destroyed nodes take their cache entries with them, so the next test's nodes -- which may
-    // well get the same script names, and so the same hashes -- cannot be served this test's
-    // renders.
     virtual void TearDown() OVERRIDE
     {
         for (std::vector<NodePtr>::reverse_iterator it = _nodes.rbegin(); it != _nodes.rend(); ++it) {

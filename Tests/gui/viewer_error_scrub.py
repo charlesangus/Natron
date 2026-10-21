@@ -40,7 +40,7 @@ try:
 
     reader_a = create_reader(os.path.join(FIXTURES, "flat-three-layers.exr"))
     reader_b = create_reader(os.path.join(FIXTURES, "flat-rgba-only.exr"))
-    switch = create("net.sf.openfx.switchPlugin")
+    switch = create("fr.natron.Switch")
     shuffle = create("fr.natron.Shuffle")
     viewer = app.getNode("Viewer1")
     if viewer is None:

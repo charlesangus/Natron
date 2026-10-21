@@ -39,6 +39,7 @@
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
+#include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
@@ -134,11 +135,11 @@ protected:
         NodePtr readerB = createReader("flat-rgba-only.exr");
         ASSERT_TRUE(readerA && readerB);
 
-        _switch = createNode(QString::fromUtf8("net.sf.openfx.switchPlugin"));
+        _switch = createNode(QString::fromUtf8(kNatronTestTwoInputCopyPluginID), kNatronTestTwoInputCopyMajor);
         ASSERT_TRUE(bool(_switch));
         connectNodes(readerA, _switch, 0, true);
         connectNodes(readerB, _switch, 1, true);
-        KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(_switch->getKnobByName("which"));
+        KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(_switch->getKnobByName(kNatronTestTwoInputCopyParamWhich));
         ASSERT_TRUE(bool(which));
         which->setValueAtTime(1, 0, ViewSpec::all(), 0);
         which->setValueAtTime(2, 1, ViewSpec::all(), 0);

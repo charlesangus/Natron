@@ -22,6 +22,7 @@
 #include "NativeParity.h"
 #include "PassThroughRoDTestEffect.h"
 #include "PerProcessUserDirs.h"
+#include "TestBuiltInPlugins.h"
 #include "TestOfxPluginPath.h"
 #include "TestPlaneChoiceTakeOvers.h"
 #include "TestRetiredOfxIds.h"
@@ -40,6 +41,7 @@ registerTestBuiltInPlugin()
     EffectInstancePtr node(PLUGIN::BuildEffect(NodePtr()));
     std::map<std::string, void (*)()> functions;
 
+    testRegisteredPluginIds().insert(node->getPluginID());
     functions.insert(std::make_pair("BuildEffect", (void (*)())&PLUGIN::BuildEffect));
     LibraryBinary* binary = new LibraryBinary(functions);
 

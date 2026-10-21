@@ -36,6 +36,7 @@
 #include <QStringList>
 
 #include "BaseTest.h"
+#include "TestBuiltInPlugins.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -66,6 +67,7 @@ namespace {
 struct FragmentEntry {
     std::string id;
     void (*builder)();
+    bool internal;
 };
 
 // The builder is compared by address with the one the registry stored for the same ID.
@@ -79,10 +81,10 @@ fragmentEntry()
     if (!native) {
         ADD_FAILURE() << effect->getPluginID() << " has a registration fragment but is not a NativeEffectBase";
 
-        return FragmentEntry { effect->getPluginID(), nullptr };
+        return FragmentEntry { effect->getPluginID(), nullptr, false };
     }
 
-    return FragmentEntry { std::string(native->nodeSpec()->id), (void (*)())&PLUGIN::BuildEffect };
+    return FragmentEntry { std::string(native->nodeSpec()->id), (void (*)())&PLUGIN::BuildEffect, native->nodeSpec()->internal };
 }
 
 // Expands the generated aggregate of the registration fragments with a recording macro, so the
@@ -155,6 +157,9 @@ TEST_F(NativePluginListTest, EveryFragmentIsRegisteredAndEveryNativePluginHasAFr
                 }
             }
             if (!matchesFragment) {
+                if (testRegisteredPluginIds().count(versions.first)) {
+                    continue;
+                }
                 EffectInstancePtr effect(builder.second(NodePtr()));
                 EXPECT_FALSE(dynamic_cast<const NativeEffectBase*>(effect.get())) << versions.first << " is a native plug-in registered without a .reg.inc fragment";
                 continue;
@@ -220,6 +225,10 @@ TEST_F(NativePluginListTest, EveryRetiredOfxReplacementIsANativePlugin)
 TEST_F(NativePluginListTest, CreatedNodesAreNative)
 {
     for (const FragmentEntry& entry : fragments()) {
+        // Internal-use-only plug-ins are not creatable through the user path.
+        if (entry.internal) {
+            continue;
+        }
         NodePtr node = createNode(QString::fromStdString(entry.id));
         ASSERT_TRUE(bool(node)) << entry.id;
         EXPECT_TRUE(dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get())) << entry.id;

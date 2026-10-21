@@ -27,7 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <vector>
 
@@ -43,6 +43,23 @@ NATRON_NAMESPACE_ENTER
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
+/*
+ * The seed rows come from one fragment per plugin: Engine/Nodes/<Family>/<Node>.costseed.inc for a native node and
+ * Engine/GpuCostSeeds/ofx/<plugin id>.inc for an OFX plug-in, written by tools/bench/render-profile-report.py
+ * --emit-cost-table and gathered by Engine/CMakeLists.txt into GpuCostSeedsAll.inc. A fragment holds any of:
+ *
+ *   NATRON_GPU_COST_SEED_CPU_ROW(plugin id, serial ms per Mpx, parallel speedup at kSeedThreads)
+ *   NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROW(the same, pricing only a task that renders with motion blur)
+ *   NATRON_GPU_COST_SEED_CPU_SIGMA_ROW(plugin id, algorithm (fir or iir), largest sigma covered, serial ms per Mpx,
+ *                                      parallel speedup)
+ *   NATRON_GPU_COST_SEED_GPU_ROW(plugin id, kind (plain, iir or motion_blur), largest sigma covered (0 when the
+ *                                kernel has no sigma), kernel-only ms per Mpx[, Blur filter or nullptr for any,
+ *                                largest Erode or Dilate size covered or 0 for any])
+ *
+ * The aggregate defines whichever of the four macros its includer leaves undefined as empty, so each table below
+ * collects only its own rows. The lookups do not depend on the order of the rows, so the fragments can be gathered
+ * in any order.
+ */
 struct SeedCpuRow {
     const char* pluginId;
     double serialMsPerMpx;
@@ -68,18 +85,43 @@ struct SeedGpuRow {
     int sizeMax = 0;
 };
 
-#include "Engine/GpuCostSeed.inc"
+// std::initializer_list rather than an array, since a table that no fragment contributes to is empty.
+constexpr std::initializer_list<SeedCpuRow> kSeedCpuRows = {
+#define NATRON_GPU_COST_SEED_CPU_ROW(...) SeedCpuRow { __VA_ARGS__ },
+#include "GpuCostSeedsAll.inc"
+};
+constexpr std::initializer_list<SeedCpuRow> kSeedCpuMotionBlurRows = {
+#define NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROW(...) SeedCpuRow { __VA_ARGS__ },
+#include "GpuCostSeedsAll.inc"
+};
+constexpr std::initializer_list<SeedCpuSigmaRow> kSeedCpuSigmaRows = {
+#define NATRON_GPU_COST_SEED_CPU_SIGMA_ROW(...) SeedCpuSigmaRow { __VA_ARGS__ },
+#include "GpuCostSeedsAll.inc"
+};
+constexpr std::initializer_list<SeedGpuRow> kSeedGpuRows = {
+#define NATRON_GPU_COST_SEED_GPU_ROW(...) SeedGpuRow { __VA_ARGS__ },
+#include "GpuCostSeedsAll.inc"
+};
 
-const SeedCpuRow kSeedCpuRows[] = { NATRON_GPU_COST_SEED_CPU_ROWS };
-// A vector, since the generator emits no rows when the bench comps render nothing with motion blur.
-const std::vector<SeedCpuRow> kSeedCpuMotionBlurRows = { NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROWS };
-const SeedCpuSigmaRow kSeedCpuSigmaRows[] = { NATRON_GPU_COST_SEED_CPU_SIGMA_ROWS };
-const SeedGpuRow kSeedGpuRows[] = { NATRON_GPU_COST_SEED_GPU_ROWS };
+constexpr bool
+seedTextEquals(const char* a,
+               const char* b)
+{
+    if (!a || !b) {
+        return a == b;
+    }
+    while ((*a != '\0') && (*a == *b)) {
+        ++a;
+        ++b;
+    }
 
-GpuBlurFilter
+    return *a == *b;
+}
+
+constexpr GpuBlurFilter
 blurFilterByName(const char* name)
 {
-    static const struct {
+    constexpr struct {
         const char* name;
         GpuBlurFilter filter;
     } kNames[] = {
@@ -90,16 +132,71 @@ blurFilterByName(const char* name)
         { "quadratic", GpuBlurFilter::eQuadratic },
         { "fir_gaussian", GpuBlurFilter::eFirGaussian },
     };
-    if (name) {
-        for (const auto& entry : kNames) {
-            if (std::strcmp(entry.name, name) == 0) {
-                return entry.filter;
-            }
+    for (const auto& entry : kNames) {
+        if (seedTextEquals(entry.name, name)) {
+            return entry.filter;
         }
     }
 
     return GpuBlurFilter::eAny;
 }
+
+// Two rows the model would key alike would make the lookups pick between them by the order of the fragments.
+constexpr bool
+seedCpuRowsAreDistinct(std::initializer_list<SeedCpuRow> rows)
+{
+    for (const SeedCpuRow* a = rows.begin(); a != rows.end(); ++a) {
+        for (const SeedCpuRow* b = a + 1; b != rows.end(); ++b) {
+            if (seedTextEquals(a->pluginId, b->pluginId)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+constexpr bool
+seedCpuSigmaRowsAreValid(std::initializer_list<SeedCpuSigmaRow> rows)
+{
+    for (const SeedCpuSigmaRow* a = rows.begin(); a != rows.end(); ++a) {
+        if ((!seedTextEquals(a->algorithm, "fir") && !seedTextEquals(a->algorithm, "iir")) || (a->sigmaMax < 0.)) {
+            return false;
+        }
+        for (const SeedCpuSigmaRow* b = a + 1; b != rows.end(); ++b) {
+            if (seedTextEquals(a->pluginId, b->pluginId) && seedTextEquals(a->algorithm, b->algorithm) && (a->sigmaMax == b->sigmaMax)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+constexpr bool
+seedGpuRowsAreValid(std::initializer_list<SeedGpuRow> rows)
+{
+    for (const SeedGpuRow* a = rows.begin(); a != rows.end(); ++a) {
+        if (!seedTextEquals(a->kind, "plain") && !seedTextEquals(a->kind, "iir") && !seedTextEquals(a->kind, "motion_blur")) {
+            return false;
+        }
+        if (a->filter && (blurFilterByName(a->filter) == GpuBlurFilter::eAny)) {
+            return false;
+        }
+        for (const SeedGpuRow* b = a + 1; b != rows.end(); ++b) {
+            if (seedTextEquals(a->pluginId, b->pluginId) && seedTextEquals(a->kind, b->kind) && (a->sigmaMax == b->sigmaMax) && (blurFilterByName(a->filter) == blurFilterByName(b->filter)) && (std::max(0, a->sizeMax) == std::max(0, b->sizeMax))) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+static_assert(seedCpuRowsAreDistinct(kSeedCpuRows), "two CPU seed rows name the same plugin");
+static_assert(seedCpuRowsAreDistinct(kSeedCpuMotionBlurRows), "two CPU motion-blur seed rows name the same plugin");
+static_assert(seedCpuSigmaRowsAreValid(kSeedCpuSigmaRows), "a CPU sigma seed row has an unknown algorithm, a negative sigma, or repeats another's plugin, algorithm and sigma");
+static_assert(seedGpuRowsAreValid(kSeedGpuRows), "a GPU seed row has an unknown kind or filter, or repeats another's plugin, kind, sigma, filter and size");
 
 // The thread count the seed's threaded profiles ran with.
 const int kSeedThreads = 16;
@@ -167,31 +264,20 @@ GpuCostModel::GpuCostModel()
     for (const SeedCpuSigmaRow& seed : kSeedCpuSigmaRows) {
         CpuRow row;
         row.sigmaMax = seed.sigmaMax;
-        row.iir = (std::strcmp(seed.algorithm, "iir") == 0);
+        row.iir = seedTextEquals(seed.algorithm, "iir");
         row.serialMsPerMpx = seed.serialMsPerMpx;
         row.parallelSpeedup = seed.parallelSpeedup;
         _cpu[seed.pluginId].push_back(row);
     }
     for (const SeedGpuRow& seed : kSeedGpuRows) {
         GpuRow row;
-        row.iir = (std::strcmp(seed.kind, "iir") == 0);
-        row.motionBlur = (std::strcmp(seed.kind, "motion_blur") == 0);
+        row.iir = seedTextEquals(seed.kind, "iir");
+        row.motionBlur = seedTextEquals(seed.kind, "motion_blur");
         row.sigmaMax = seed.sigmaMax;
         row.sizeMax = seed.sizeMax;
         row.filter = blurFilterByName(seed.filter);
         row.kernelMsPerMpx = seed.kernelMsPerMpx;
         _gpu[seed.pluginId].push_back(row);
-    }
-    for (std::pair<const std::string, std::vector<GpuRow>>& rows : _gpu) {
-        std::stable_sort(rows.second.begin(), rows.second.end(), [](const GpuRow& a, const GpuRow& b) {
-            if (a.sigmaMax != b.sigmaMax) {
-                return a.sigmaMax < b.sigmaMax;
-            }
-            const double aSize = (a.sizeMax > 0) ? a.sizeMax : kInfinity;
-            const double bSize = (b.sizeMax > 0) ? b.sizeMax : kInfinity;
-
-            return aSize < bSize;
-        });
     }
 }
 
@@ -327,19 +413,21 @@ GpuCostModel::findCpuRowLocked(const GpuTaskTraits& traits) const
     if (found == _cpu.end()) {
         return nullptr;
     }
+    // The sigma row with the smallest bound that covers the sigma, else the plain row.
     const CpuRow* plain = nullptr;
+    const CpuRow* tightest = nullptr;
     for (const CpuRow& row : found->second) {
         if (row.motionBlur != traits.motionBlur) {
             continue;
         }
         if (row.sigmaMax < 0.) {
             plain = &row;
-        } else if ((row.iir == traits.iir) && (row.sigmaMax >= traits.sigma)) {
-            return &row;
+        } else if ((row.iir == traits.iir) && (row.sigmaMax >= traits.sigma) && (!tightest || (row.sigmaMax < tightest->sigmaMax))) {
+            tightest = &row;
         }
     }
 
-    return plain;
+    return tightest ? tightest : plain;
 }
 
 GpuCostModel::CpuRow*
@@ -355,12 +443,35 @@ GpuCostModel::findGpuRowLocked(const GpuTaskTraits& traits) const
     if (found == _gpu.end()) {
         return nullptr;
     }
-    // A row that names a filter or a size beats one that holds for any, among the rows that cover the traits. A row
-    // that does not cover them is kept as the fallback, the last of the most specific.
+    // A row that covers the traits beats one that does not. Then a row that names a filter beats one that names a
+    // size, which beats one that names neither. Then, among rows that cover the traits, the one with the smallest
+    // sigma bound and then the smallest size bound wins; among rows that do not, the one with the largest. No two rows
+    // tie on all of these: the seed rows are checked distinct at compile time, and observeGpu() adds a row only when
+    // none matches the traits.
+    const auto covers = [&traits](const GpuRow& row) {
+        return (row.sigmaMax >= traits.sigma) && ((row.sizeMax <= 0) || (row.sizeMax >= traits.size));
+    };
+    const auto specificity = [](const GpuRow& row) {
+        return ((row.filter != GpuBlurFilter::eAny) ? 2 : 0) + ((row.sizeMax > 0) ? 1 : 0);
+    };
+    const auto sizeBound = [](const GpuRow& row) {
+        return (row.sizeMax > 0) ? (double)row.sizeMax : kInfinity;
+    };
+    const auto ranksAbove = [&](const GpuRow& a, const GpuRow& b) {
+        const bool aCovers = covers(a);
+        if (aCovers != covers(b)) {
+            return aCovers;
+        }
+        if (specificity(a) != specificity(b)) {
+            return specificity(a) > specificity(b);
+        }
+        if (a.sigmaMax != b.sigmaMax) {
+            return aCovers ? (a.sigmaMax < b.sigmaMax) : (a.sigmaMax > b.sigmaMax);
+        }
+
+        return aCovers ? (sizeBound(a) < sizeBound(b)) : (sizeBound(a) > sizeBound(b));
+    };
     const GpuRow* best = nullptr;
-    int bestScore = -1;
-    const GpuRow* fallback = nullptr;
-    int fallbackScore = -1;
     for (const GpuRow& row : found->second) {
         if ((row.motionBlur != traits.motionBlur) || (row.iir != traits.iir)) {
             continue;
@@ -368,19 +479,12 @@ GpuCostModel::findGpuRowLocked(const GpuTaskTraits& traits) const
         if ((row.filter != GpuBlurFilter::eAny) && (row.filter != traits.filter)) {
             continue;
         }
-        const int score = ((row.filter != GpuBlurFilter::eAny) ? 2 : 0) + ((row.sizeMax > 0) ? 1 : 0);
-        if ((row.sigmaMax < traits.sigma) || ((row.sizeMax > 0) && (row.sizeMax < traits.size))) {
-            if (score >= fallbackScore) {
-                fallback = &row;
-                fallbackScore = score;
-            }
-        } else if (score > bestScore) {
+        if (!best || ranksAbove(row, *best)) {
             best = &row;
-            bestScore = score;
         }
     }
 
-    return best ? best : fallback;
+    return best;
 }
 
 GpuCostModel::GpuRow*

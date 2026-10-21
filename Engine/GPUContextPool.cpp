@@ -38,7 +38,6 @@
 
 #include "Engine/AppManager.h"
 #include "Engine/OSGLContext.h"
-#include "Engine/Settings.h"
 
 NATRON_NAMESPACE_ENTER
 

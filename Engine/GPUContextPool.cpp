@@ -252,7 +252,8 @@ GPUContextPool::attachGLContextToRender(bool checkIfGLLoaded)
 #endif //NATRON_RENDER_SHARED_CONTEXT
     assert(newContext);
 
-    if (!_imp->currentOpenGLRendererMaxTexSize) {
+    // Before the startup state is set the GL entry points are not loaded yet, so there is nothing to query.
+    if (isRenderingEnabled() && !_imp->currentOpenGLRendererMaxTexSize) {
         newContext->setContextCurrentNoRender();
         glGetIntegerv(GL_MAX_TEXTURE_SIZE, &_imp->currentOpenGLRendererMaxTexSize);
         newContext->unsetCurrentContextNoRender();

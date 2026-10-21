@@ -47,6 +47,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/GpuDeviceList.h"
 #include "Engine/KnobFactory.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
@@ -82,6 +83,8 @@
 #define NATRON_DEFAULT_APPEARANCE_VERSION 1
 
 #define NATRON_CUSTOM_HOST_NAME_ENTRY "Custom..."
+
+#define kGpuDeviceAutoID "auto"
 
 NATRON_NAMESPACE_ENTER
 
@@ -404,38 +407,6 @@ Settings::initializeKnobsThreading()
                                             "The NATRON_RENDER_SCHEDULER environment variable (legacy or taskgraph) takes precedence over this setting."));
     _threadingPage->addKnob(_renderSchedulerMode);
 
-    _gpuComputeMode = AppManager::createKnob<KnobChoice>(this, tr("GPU compute"));
-    _gpuComputeMode->setName("gpuComputeMode");
-    {
-        std::vector<ChoiceOption> entries;
-        entries.push_back(ChoiceOption("off",
-                                       tr("Off").toStdString(),
-                                       tr("Never use the GPU for compute.").toStdString()));
-        assert(entries.size() == (int)eGpuComputeModeAuto);
-        entries.push_back(ChoiceOption("auto",
-                                       tr("Auto").toStdString(),
-                                       tr("Use the GPU for compute when a suitable one is found.").toStdString()));
-        _gpuComputeMode->populateChoices(entries);
-    }
-    _gpuComputeMode->setHintToolTip(tr("Whether the GPU is used for compute. Auto uses a hardware Vulkan device when one is found and "
-                                       "never a software one. The NATRON_GPU environment variable (off, auto or force) takes precedence "
-                                       "over this setting; force also accepts software devices. Changing this takes effect upon the next application launch."));
-    _threadingPage->addKnob(_gpuComputeMode);
-
-    _gpuDevice = AppManager::createKnob<KnobString>(this, tr("GPU device"));
-    _gpuDevice->setName("gpuDevice");
-    _gpuDevice->setHintToolTip(tr("The name, or part of the name, of the Vulkan device to use for compute, or its index. "
-                                  "Leave empty to choose automatically. Changing this takes effect upon the next application launch."));
-    _threadingPage->addKnob(_gpuDevice);
-
-    _gpuMemoryBudgetMB = AppManager::createKnob<KnobInt>(this, tr("GPU memory budget (MB)"));
-    _gpuMemoryBudgetMB->setName("gpuMemoryBudgetMB");
-    _gpuMemoryBudgetMB->setHintToolTip(tr("The most device memory, in megabytes, that compute may hold on the GPU. "
-                                          "0 chooses automatically from what the device offers. Changing this takes effect upon the next application launch."));
-    _gpuMemoryBudgetMB->setMinimum(0);
-    _gpuMemoryBudgetMB->disableSlider();
-    _threadingPage->addKnob(_gpuMemoryBudgetMB);
-
     _renderInSeparateProcess = AppManager::createKnob<KnobBool>( this, tr("Render in a separate process") );
     _renderInSeparateProcess->setName("renderNewProcess");
     _renderInSeparateProcess->setHintToolTip( tr("If true, %1 will render frames to disk in "
@@ -482,122 +453,91 @@ Settings::initializeKnobsRendering()
     _renderingPage->addKnob(_activateTransformConcatenationSupport);
 }
 
-// Software renderers stay out of the chooser. The lone default renderer (renderID -1, listed when
-// GLX_MESA_query_renderer is absent) stays in, because its acceleration is only guessed from its name.
-static std::vector<const OpenGLRendererInfo*>
-chooserRenderers(const std::list<OpenGLRendererInfo>& all)
-{
-    std::vector<const OpenGLRendererInfo*> listed;
-    for (const OpenGLRendererInfo& r : all) {
-        if ( r.accelerated || (r.rendererID.renderID == -1) ) {
-            listed.push_back(&r);
-        }
-    }
-    return listed;
-}
-
-void
-Settings::populateOpenGLRenderers(const std::list<OpenGLRendererInfo>& allRenderers)
-{
-    const std::vector<const OpenGLRendererInfo*> renderers = chooserRenderers(allRenderers);
-    if ( renderers.empty() ) {
-        _availableOpenGLRenderers->setSecret(true);
-        _nOpenGLContexts->setSecret(true);
-        _enableOpenGL->setSecret(true);
-        return;
-    }
-
-    _nOpenGLContexts->setSecret(false);
-    _enableOpenGL->setSecret(false);
-
-    std::vector<ChoiceOption> entries( renderers.size() );
-    for (std::size_t i = 0; i < renderers.size(); ++i) {
-        const OpenGLRendererInfo* it = renderers[i];
-        std::string option = it->vendorName + ' ' + it->rendererName + ' ' + it->glVersionString;
-        entries[i] = ChoiceOption(option);
-    }
-    _availableOpenGLRenderers->populateChoices(entries);
-    _availableOpenGLRenderers->setSecret(renderers.size() == 1);
-}
-
-bool
-Settings::isOpenGLRenderingEnabled() const
-{
-    if (_enableOpenGL->getIsSecret()) {
-        return false;
-    }
-    EnableOpenGLEnum enableOpenGL = (EnableOpenGLEnum)_enableOpenGL->getValue();
-    return enableOpenGL == eEnableOpenGLEnabled || (enableOpenGL == eEnableOpenGLDisabledIfBackground && !appPTR->isBackground());
-}
-
-int
-Settings::getMaxOpenGLContexts() const
-{
-    return _nOpenGLContexts->getValue();
-}
-
-GLRendererID
-Settings::getActiveOpenGLRendererID() const
-{
-    if ( _availableOpenGLRenderers->getIsSecret() ) {
-        // We were not able to detect multiple renderers, use default
-        return GLRendererID();
-    }
-    int activeIndex = _availableOpenGLRenderers->getValue();
-    const std::vector<const OpenGLRendererInfo*> renderers = chooserRenderers( appPTR->getOpenGLRenderers() );
-    if ( (activeIndex < 0) || ( activeIndex >= (int)renderers.size() ) ) {
-        // Invalid index
-        return GLRendererID();
-    }
-
-    return renderers[activeIndex]->rendererID;
-}
-
 void
 Settings::initializeKnobsGPU()
 {
-    _gpuPage = AppManager::createKnob<KnobPage>( this, tr("GPU Rendering") );
-    _openglRendererString = AppManager::createKnob<KnobString>( this, tr("Active OpenGL renderer") );
-    _openglRendererString->setName("activeOpenGLRenderer");
-    _openglRendererString->setHintToolTip( tr("The currently active OpenGL renderer.") );
-    _openglRendererString->setAsLabel();
-    _gpuPage->addKnob(_openglRendererString);
+    _gpuPage = AppManager::createKnob<KnobPage>( this, tr("GPU") );
 
-    _availableOpenGLRenderers = AppManager::createKnob<KnobChoice>( this, tr("OpenGL renderer") );
-    _availableOpenGLRenderers->setName("chooseOpenGLRenderer");
-    _availableOpenGLRenderers->setHintToolTip( tr("The renderer used to perform OpenGL rendering. Changing the OpenGL renderer requires a restart of the application.") );
-    _gpuPage->addKnob(_availableOpenGLRenderers);
-
-    _nOpenGLContexts = AppManager::createKnob<KnobInt>( this, tr("No. of OpenGL Contexts") );
-    _nOpenGLContexts->setName("maxOpenGLContexts");
-    _nOpenGLContexts->setMinimum(1);
-    _nOpenGLContexts->setDisplayMinimum(1);
-    _nOpenGLContexts->setDisplayMaximum(8);
-    _nOpenGLContexts->setMaximum(8);
-    _nOpenGLContexts->setHintToolTip( tr("The number of OpenGL contexts created to perform OpenGL rendering. Each OpenGL context can be attached to a CPU thread, allowing for more frames to be rendered simultaneously. Increasing this value may increase performances for graphs with mixed CPU/GPU nodes but can drastically reduce performances if too many OpenGL contexts are active at once.") );
-    _gpuPage->addKnob(_nOpenGLContexts);
-
-
-    _enableOpenGL = AppManager::createKnob<KnobChoice>( this, tr("OpenGL Rendering") );
-    _enableOpenGL->setName("enableOpenGLRendering");
+    _gpuComputeMode = AppManager::createKnob<KnobChoice>(this, tr("GPU compute"));
+    _gpuComputeMode->setName("gpuComputeMode");
     {
         std::vector<ChoiceOption> entries;
-        assert(entries.size() == (int)Settings::eEnableOpenGLEnabled);
-        entries.push_back(ChoiceOption("enabled",
-                                       tr("Enabled").toStdString(),
-                                       tr("If a plug-in support GPU rendering, prefer rendering using the GPU if possible.").toStdString()));
-        assert(entries.size() == (int)Settings::eEnableOpenGLDisabled);
-        entries.push_back(ChoiceOption("disabled",
-                                       tr("Disabled").toStdString(),
-                                       tr("Disable GPU rendering for all plug-ins.").toStdString()));
-        assert(entries.size() == (int)Settings::eEnableOpenGLDisabledIfBackground);
-        entries.push_back(ChoiceOption("foreground",
-                                       tr("Disabled If Background").toStdString(),
-                                       tr("Disable GPU rendering when rendering with NatronRenderer but not in GUI mode.").toStdString()));
-        _enableOpenGL->populateChoices(entries);
+        entries.push_back(ChoiceOption("off",
+                                       tr("Off").toStdString(),
+                                       tr("Never use the GPU for compute.").toStdString()));
+        assert(entries.size() == (int)eGpuComputeModeAuto);
+        entries.push_back(ChoiceOption("auto",
+                                       tr("Auto").toStdString(),
+                                       tr("Use the GPU for compute when a suitable one is found.").toStdString()));
+        _gpuComputeMode->populateChoices(entries);
     }
-    _enableOpenGL->setHintToolTip( tr("Select whether to activate OpenGL rendering or not. If disabled, even though a Project enable GPU rendering, it will not be activated.") );
-    _gpuPage->addKnob(_enableOpenGL);
+    _gpuComputeMode->setHintToolTip(tr("Whether the GPU is used for compute. Auto uses a hardware Vulkan device when one is found and "
+                                       "never a software one. The NATRON_GPU environment variable (off, auto or force) takes precedence "
+                                       "over this setting; force also accepts software devices. Changing this takes effect upon the next application launch."));
+    _gpuPage->addKnob(_gpuComputeMode);
+
+    _gpuDevice = AppManager::createKnob<KnobChoice>(this, tr("GPU device"));
+    _gpuDevice->setName("gpuDevice");
+    _gpuDevice->setHintToolTip(tr("The Vulkan device used for compute, and the device whose OpenGL renderer is used for GPU rendering. "
+                                  "Automatic lets %1 choose. Changing this takes effect upon the next application launch.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ));
+    populateGpuDevices( std::vector<GpuDeviceSummary>() );
+    _gpuPage->addKnob(_gpuDevice);
+
+    _gpuMemoryBudgetMB = AppManager::createKnob<KnobInt>(this, tr("GPU memory budget (MB)"));
+    _gpuMemoryBudgetMB->setName("gpuMemoryBudgetMB");
+    _gpuMemoryBudgetMB->setHintToolTip(tr("The most device memory, in megabytes, that compute may hold on the GPU. "
+                                          "0 chooses automatically from what the device offers. Changing this takes effect upon the next application launch."));
+    _gpuMemoryBudgetMB->setMinimum(0);
+    _gpuMemoryBudgetMB->disableSlider();
+    _gpuPage->addKnob(_gpuMemoryBudgetMB);
+
+    _gpuStatus = AppManager::createKnob<KnobString>( this, tr("GPU status") );
+    _gpuStatus->setName("gpuStatus");
+    _gpuStatus->setHintToolTip( tr("The OpenGL renderer chosen at launch for GPU rendering, or why GPU rendering is disabled. "
+                                   "It reflects the settings above as they were at launch; a change to them takes effect upon the next application launch.") );
+    _gpuStatus->setIsPersistent(false);
+    _gpuStatus->setAsLabel();
+    _gpuPage->addKnob(_gpuStatus);
+}
+
+static const char*
+gpuDeviceTypeLabel(GpuDeviceType type)
+{
+    switch (type) {
+    case GpuDeviceType::Discrete:
+        return "discrete";
+    case GpuDeviceType::Integrated:
+        return "integrated";
+    case GpuDeviceType::Virtual:
+        return "virtual";
+    case GpuDeviceType::Cpu:
+        return "CPU";
+    case GpuDeviceType::Other:
+        break;
+    }
+
+    return "other";
+}
+
+void
+Settings::populateGpuDevices(const std::vector<GpuDeviceSummary>& devices)
+{
+    std::vector<ChoiceOption> entries;
+    entries.push_back(ChoiceOption(kGpuDeviceAutoID,
+                                   tr("Automatic").toStdString(),
+                                   tr("Let %1 choose the device.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ).toStdString()));
+    for (const GpuDeviceSummary& d : devices) {
+        entries.push_back(ChoiceOption(uuidHex(d.uuid),
+                                       d.name + " (" + gpuDeviceTypeLabel(d.type) + ")",
+                                       std::string()));
+    }
+    _gpuDevice->populateChoices(entries);
+}
+
+void
+Settings::setGpuStatus(const std::string& status)
+{
+    _gpuStatus->setValue(status);
 }
 
 void
@@ -1573,9 +1513,6 @@ Settings::setDefaultValues()
     _useThreadPool->setDefaultValue(true);
     _nThreadsPerEffect->setDefaultValue(0);
     _renderSchedulerMode->setDefaultValue((int)eRenderSchedulerModeTaskGraph);
-    _gpuComputeMode->setDefaultValue((int)eGpuComputeModeAuto);
-    _gpuDevice->setDefaultValue(std::string());
-    _gpuMemoryBudgetMB->setDefaultValue(0);
     _renderInSeparateProcess->setDefaultValue(false, 0);
     _queueRenders->setDefaultValue(false);
 
@@ -1584,14 +1521,10 @@ Settings::setDefaultValues()
     _activateRGBSupport->setDefaultValue(true);
     _activateTransformConcatenationSupport->setDefaultValue(true);
 
-    // General/GPU rendering
-    //_openglRendererString
-    _nOpenGLContexts->setDefaultValue(2);
-#if NATRON_VERSION_MAJOR < 2 || (NATRON_VERSION_MAJOR == 2 && NATRON_VERSION_MINOR < 2)
-    _enableOpenGL->setDefaultValue((int)eEnableOpenGLDisabled);
-#else
-    _enableOpenGL->setDefaultValue((int)eEnableOpenGLDisabledIfBackground);
-#endif
+    // General/GPU
+    _gpuComputeMode->setDefaultValue((int)eGpuComputeModeAuto);
+    _gpuDevice->setDefaultValue(0);
+    _gpuMemoryBudgetMB->setDefaultValue(0);
 
     // General/Projects setup
     _firstReadSetProjectFormat->setDefaultValue(true);
@@ -2175,48 +2108,6 @@ Settings::restoreSettings(bool useDefault)
 
     tryLoadOpenColorIOConfig();
 
-    // Restore opengl renderer
-    {
-        std::vector<ChoiceOption> availableRenderers = _availableOpenGLRenderers->getEntries_mt_safe();
-        QString missingGLError;
-        bool hasGL = appPTR->hasOpenGLForRequirements(eOpenGLRequirementsTypeRendering, &missingGLError);
-
-        if ( availableRenderers.empty() || !hasGL) {
-            if (missingGLError.isEmpty()) {
-                _openglRendererString->setValue( tr("OpenGL rendering disabled: No device meeting %1 requirements could be found.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ).toStdString() );
-            } else {
-                _openglRendererString->setValue(missingGLError.toStdString());
-            }
-        }
-        int curIndex = _availableOpenGLRenderers->getValue();
-        if ( (curIndex >= 0) && ( curIndex < (int)availableRenderers.size() ) ) {
-            const std::vector<const OpenGLRendererInfo*> renderers = chooserRenderers( appPTR->getOpenGLRenderers() );
-            for (int i = 0; i < (int)renderers.size(); ++i) {
-                const OpenGLRendererInfo* it = renderers[i];
-                if (i == curIndex) {
-                    QString maxMemoryString = it->maxMemBytes == 0 ? tr("Unknown") : printAsRAM(it->maxMemBytes);
-                    QString curRenderer = (QString::fromUtf8("<p><h2>") +
-                                           tr("OpenGL Renderer Infos:") +
-                                           QString::fromUtf8("</h2></p><p><b>") +
-                                           tr("Vendor:") +
-                                           QString::fromUtf8("</b> %1</p><p><b>").arg( QString::fromUtf8( it->vendorName.c_str() ) ) +
-                                           tr("Renderer:") +
-                                           QString::fromUtf8("</b> %1</p><p><b>").arg( QString::fromUtf8( it->rendererName.c_str() ) ) +
-                                           tr("OpenGL Version:") +
-                                           QString::fromUtf8("</b> %1</p><p><b>").arg( QString::fromUtf8( it->glVersionString.c_str() ) ) +
-                                           tr("GLSL Version:") +
-                                           QString::fromUtf8("</b> %1</p><p><b>").arg( QString::fromUtf8( it->glslVersionString.c_str() ) ) +
-                                           tr("Max. Memory:") +
-                                           QString::fromUtf8("</b> %1</p><p><b>").arg(maxMemoryString) +
-                                           tr("Max. Texture Size (px):") +
-                                           QString::fromUtf8("</b> %5</p<").arg(it->maxTextureSize));
-                    _openglRendererString->setValue( curRenderer.toStdString() );
-                    break;
-                }
-            }
-        }
-    }
-
     if (!appPTR->isTextureFloatSupported()) {
         if (_texturesMode) {
             _texturesMode->setSecret(true);
@@ -2417,11 +2308,6 @@ Settings::onKnobValueChanged(KnobI* k,
         appPTR->reloadScriptEditorFonts();
     } else if (k == _pluginUseImageCopyForSource.get()) {
         appPTR->setPluginsUseInputImageCopyToRender( _pluginUseImageCopyForSource->getValue() );
-    } else if (k == _enableOpenGL.get()) {
-        appPTR->refreshOpenGLRenderingFlagOnAllInstances();
-        if (!_restoringSettings) {
-            appPTR->clearPluginsLoadedCache();
-        }
     } else {
         ret = false;
     }
@@ -2535,7 +2421,9 @@ Settings::getGpuComputeMode() const
 std::string
 Settings::getGpuDevice() const
 {
-    return _gpuDevice->getValue();
+    const std::string id = _gpuDevice->getActiveEntry().id;
+
+    return id == kGpuDeviceAutoID ? std::string() : id;
 }
 
 std::uint64_t

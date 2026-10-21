@@ -45,6 +45,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+struct GpuDeviceSummary;
+
 /*The current settings in the preferences menu.*/
 class Settings
     : public KnobHolder
@@ -80,13 +82,6 @@ public:
         eKnownHostNameRamen,
         eKnownHostNameTuttleOfx,
         eKnownHostNameNone,
-    };
-
-    enum EnableOpenGLEnum
-    {
-        eEnableOpenGLEnabled = 0,
-        eEnableOpenGLDisabled,
-        eEnableOpenGLDisabledIfBackground,
     };
 
     Settings();
@@ -301,6 +296,7 @@ public:
     RenderSchedulerModeEnum getRenderSchedulerMode() const;
 
     GpuComputeModeEnum getGpuComputeMode() const;
+    // The UUID id of the chosen GPU device, or "" for automatic.
     std::string getGpuDevice() const;
     std::uint64_t getGpuMemoryBudgetMB() const;
 
@@ -392,13 +388,13 @@ public:
 
     bool isAutoScrollEnabled() const;
 
-    GLRendererID getActiveOpenGLRendererID() const;
+    /**
+     * @brief Fills the GPU device menu: "auto" first, then one entry per device, identified by its UUID.
+     * Must be called before restoreSettings() so the saved choice can be matched.
+     **/
+    void populateGpuDevices(const std::vector<GpuDeviceSummary>& devices);
 
-    void populateOpenGLRenderers(const std::list<OpenGLRendererInfo>& renderers);
-
-    bool isOpenGLRenderingEnabled() const;
-
-    int getMaxOpenGLContexts() const;
+    void setGpuStatus(const std::string& status);
 
 Q_SIGNALS:
 
@@ -462,9 +458,6 @@ private:
     KnobBoolPtr _useThreadPool;
     KnobIntPtr _nThreadsPerEffect;
     KnobChoicePtr _renderSchedulerMode;
-    KnobChoicePtr _gpuComputeMode;
-    KnobStringPtr _gpuDevice;
-    KnobIntPtr _gpuMemoryBudgetMB;
     KnobBoolPtr _renderInSeparateProcess;
     KnobBoolPtr _queueRenders;
 
@@ -474,12 +467,12 @@ private:
     KnobBoolPtr _activateRGBSupport;
     KnobBoolPtr _activateTransformConcatenationSupport;
 
-    // General/GPU rendering
+    // General/GPU
     KnobPagePtr _gpuPage;
-    KnobStringPtr _openglRendererString;
-    KnobChoicePtr _availableOpenGLRenderers;
-    KnobIntPtr _nOpenGLContexts;
-    KnobChoicePtr _enableOpenGL;
+    KnobChoicePtr _gpuComputeMode;
+    KnobChoicePtr _gpuDevice;
+    KnobIntPtr _gpuMemoryBudgetMB;
+    KnobStringPtr _gpuStatus;
 
 
 

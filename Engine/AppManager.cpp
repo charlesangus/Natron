@@ -751,7 +751,8 @@ AppManager::loadInternal(const CLArgs& cl)
                 ",Max GPU Memory:" << printAsRAM(it->maxMemBytes);;
         }
     }
-    _imp->_settings->populateOpenGLRenderers(_imp->openGLRenderers);
+    const std::vector<GpuDeviceSummary> gpuDevices = enumerateGpuDevices();
+    _imp->_settings->populateGpuDevices(gpuDevices);
 
 
     // Settings: we must load these and set the custom settings (using python) ASAP, before creating the OFX Plugin Cache
@@ -760,7 +761,6 @@ AppManager::loadInternal(const CLArgs& cl)
     _imp->_settings->restoreSettings( cl.isLoadedUsingDefaultSettings() );
     onRenderSchedulerModeSettingChanged(_imp->_settings->getRenderSchedulerMode());
     {
-        const std::vector<GpuDeviceSummary> gpuDevices = enumerateGpuDevices();
         const GpuResolvedMode gpuMode = GpuContext::resolveMode(_imp->_settings->getGpuComputeMode(), std::getenv("NATRON_GPU"));
         const std::string gpuDeviceId = _imp->_settings->getGpuDevice();
         const std::string gpuSelector = gpuSelectorForDeviceId(gpuDevices, gpuDeviceId);
@@ -778,11 +778,13 @@ AppManager::loadInternal(const CLArgs& cl)
         // Under Auto the GL suite never uses a software renderer; only NATRON_GPU=force allows one.
         const GLRendererPick glPick = OSGLContext::pickRenderer(_imp->openGLRenderers, chosenDevice, gpuMode == GpuResolvedMode::Force);
         const bool glEnabled = gpuMode != GpuResolvedMode::Off && glPick.enabled && isOpenGLLoaded();
-        _imp->renderingContextPool->setRenderingState(glEnabled, glPick.rendererID, glPick.reason);
+        const std::string glStatus = glEnabled ? glPick.reason : "GL suite disabled (" + glPick.reason + ")";
+        _imp->renderingContextPool->setRenderingState(glEnabled, glPick.rendererID, glStatus);
+        _imp->_settings->setGpuStatus( _imp->renderingContextPool->getRendererStatus() );
         qInfo().noquote() << QString::fromUtf8("GPU: Preferences device \"%1\" (%2); OpenGL renderer: %3")
             .arg( QString::fromStdString( gpuDeviceId.empty() ? std::string("auto") : gpuDeviceId ) )
             .arg( chosenDevice ? QString::fromStdString(chosenDevice->name) : QString::fromUtf8("none selected") )
-            .arg( QString::fromStdString( glEnabled ? glPick.reason : "GL suite disabled (" + glPick.reason + ")" ) );
+            .arg( QString::fromStdString(glStatus) );
 
         GpuContextOptions gpuOptions;
         gpuOptions.mode = gpuMode;
@@ -3506,14 +3508,6 @@ GPUContextPool*
 AppManager::getGPUContextPool() const
 {
     return _imp->renderingContextPool.get();
-}
-
-void
-AppManager::refreshOpenGLRenderingFlagOnAllInstances()
-{
-    for (std::size_t i = 0; i < _imp->_appInstances.size(); ++i) {
-        _imp->_appInstances[i]->getProject()->refreshOpenGLRenderingFlagOnNodes();
-    }
 }
 
 void

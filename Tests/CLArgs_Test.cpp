@@ -264,3 +264,14 @@ TEST(CLArgs, WriterFilenameHeuristicLeavesUnSteppedRangeAlone)
     EXPECT_EQ(10, cl.getFrameRanges().front().second.first);
     EXPECT_EQ(20, cl.getFrameRanges().front().second.second);
 }
+
+TEST(CLArgs, RemovedOpenGLOptionIsAnUnparsedArgument)
+{
+    // --opengl is not an option, so it and its value are left over like any unknown argument and fail the parse.
+    ScopedCoutSilencer silence;
+    CLArgs cl(makeArgs({ "NatronRenderer", "/tmp/project.ntp", "--opengl", "enabled" }), /*forceBackground=*/true);
+
+    ASSERT_TRUE(cl.getError().has_value());
+    EXPECT_EQ(1, *cl.getError());
+    EXPECT_TRUE(cl.getSettingCommands().empty());
+}

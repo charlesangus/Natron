@@ -17,6 +17,7 @@ on:
         options:
           - fast
           - release
+          - debug
         default: fast
       tests:
         description: 'Run the ctest suite and smoke test'
@@ -29,7 +30,7 @@ on:
         type: boolean
         default: false
       appimage:
-        description: 'Package and upload an AppImage'
+        description: 'Package and upload an AppImage (ignored for debug, which cannot be packaged in the container)'
         required: true
         type: boolean
         default: true
@@ -62,7 +63,7 @@ jobs:
         shell: bash -l {0}
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: ${{ (inputs.preset || 'fast') == 'release' && '3G' || '2G' }}
+      CCACHE_MAXSIZE: ${{ (inputs.preset || 'fast') == 'fast' && '2G' || '3G' }}
       # One compile per vCPU of the hosted runner; build.sh's default of 3 suits the dev machine.
       NATRON_BUILD_JOBS: 4
     outputs:
@@ -86,6 +87,7 @@ jobs:
           restore-keys: |
             ccache-linux-${{ env.PRESET }}-${{ github.head_ref || github.ref_name }}-
             ccache-linux-${{ env.PRESET }}-main-
+            ${{ env.PRESET == 'debug' && 'ccache-linux-main-' || '' }}
 
       - name: Cache test assets
         uses: actions/cache@v6.1.0
@@ -165,15 +167,15 @@ jobs:
       # should not withhold the binary someone is trying to inspect.
       # check-startup.sh runs inside make-appimage.sh.
       - name: Stage bundle
-        if: inputs.appimage && !cancelled() && steps.build.outcome == 'success'
+        if: inputs.appimage && inputs.preset != 'debug' && !cancelled() && steps.build.outcome == 'success'
         run: tools/release/stage-bundle.sh "build/$PRESET" /tmp/natron-stage
 
       - name: Create AppImage
-        if: inputs.appimage && !cancelled() && steps.build.outcome == 'success'
+        if: inputs.appimage && inputs.preset != 'debug' && !cancelled() && steps.build.outcome == 'success'
         run: tools/release/make-appimage.sh /tmp/natron-stage /tmp/artifacts
 
       - name: Upload AppImage
-        if: inputs.appimage && !cancelled() && steps.build.outcome == 'success'
+        if: inputs.appimage && inputs.preset != 'debug' && !cancelled() && steps.build.outcome == 'success'
         uses: actions/upload-artifact@v7.0.1
         with:
           name: natron-${{ env.PRESET }}-${{ github.sha }}

@@ -27,6 +27,10 @@
 #                              (printed after the run, folded, under GitHub
 #                              Actions). Cases that assert a wall-clock bound
 #                              run alone: see Tests/SerialTests.cmake.
+#                              When the parallel run fails, the failed cases
+#                              are re-run serially with `ctest --rerun-failed
+#                              -V` so their complete output is in the log; the
+#                              exit status stays the parallel run's.
 #                              Forwarded into the container when set.
 #   NATRON_SMOKE_OUTPUT_DIR -> smoke only: the graded PNG is copied here.
 #   NATRON_SMOKE_REFERENCE_DIR -> smoke only: the graded PNG must be
@@ -227,6 +231,10 @@ case "${SUBCOMMAND}" in
 
         echo "== test.sh: ctest -j ${CTEST_JOBS} (${BUILD_TYPE}) =="
         echo "+ OFX_PLUGIN_PATH=${OFX_PLUGIN_PATH} xvfb-run --auto-servernum ctest -j ${CTEST_JOBS} --timeout ${CTEST_TIMEOUT_SECONDS} --output-on-failure"
+        FAILED_LIST="${BUILD_DIR}/Testing/Temporary/LastTestsFailed.log"
+        # ctest only rewrites this list when it gets as far as running cases, so
+        # a leftover from an earlier run must not trigger a re-run.
+        rm -f "${FAILED_LIST}"
         if xvfb-run --auto-servernum ctest -j "${CTEST_JOBS}" --timeout "${CTEST_TIMEOUT_SECONDS}" --output-on-failure; then
             rc=0
         else
@@ -240,6 +248,12 @@ case "${SUBCOMMAND}" in
                 cat "${FULL_LOG}"
                 echo "::endgroup::"
             fi
+        fi
+        if [[ "${rc}" -ne 0 && -s "${FAILED_LIST}" ]]; then
+            echo "== test.sh: re-running failed cases serially, ctest --rerun-failed -V (${BUILD_TYPE}) =="
+            echo "+ OFX_PLUGIN_PATH=${OFX_PLUGIN_PATH} xvfb-run --auto-servernum ctest --rerun-failed -V --timeout ${CTEST_TIMEOUT_SECONDS}"
+            # The re-run is diagnostic only; its status must not replace rc.
+            xvfb-run --auto-servernum ctest --rerun-failed -V --timeout "${CTEST_TIMEOUT_SECONDS}" || true
         fi
         exit "${rc}"
         ;;

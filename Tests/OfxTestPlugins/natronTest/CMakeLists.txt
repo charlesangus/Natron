@@ -23,5 +23,6 @@ natron_add_test_ofx_bundle(natronTest
         PluginList.h
         PluginList.cpp
         RoutingTestPlugins.cpp
+        TraitTestPlugins.cpp
 )
 target_link_libraries(natronTest PRIVATE NatronTestOfxSupport)

@@ -31,6 +31,7 @@
 #include <cassert>
 #include <cctype>
 #include <limits>
+#include <list>
 #include <locale>
 #include <mutex>
 #include <set>
@@ -686,6 +687,21 @@ const PlaneChoiceTakeOver kPlaneChoiceTakeOvers[] = {
     { "net.sf.openfx.Unpremult", "inputPlane", "hostInputLayer", "Layer", kOfxImageEffectSimpleSourceClipName, true },
 };
 
+struct TestPlaneChoice {
+    std::string pluginID;
+    std::string paramName;
+    PlaneChoiceTakeOver takeOver;
+};
+
+// A std::list, so each takeOver's pointers into its own strings survive later additions.
+std::list<TestPlaneChoice>&
+testPlaneChoiceTakeOvers()
+{
+    static std::list<TestPlaneChoice> takeOvers;
+
+    return takeOvers;
+}
+
 // A take-over choice whose plugin label was left empty (openfx-misc's shared (un)premult
 // channel picker, SupportExt/ofxsMaskMix.h, never labelled it because it doubles as a mask
 // footer control there).
@@ -728,6 +744,11 @@ findPlaneChoiceTakeOver(const std::string& pluginID,
     for (std::size_t i = 0; i < sizeof(kPlaneChoiceTakeOvers) / sizeof(kPlaneChoiceTakeOvers[0]); ++i) {
         if ((pluginID == kPlaneChoiceTakeOvers[i].pluginID) && (paramName == kPlaneChoiceTakeOvers[i].paramName)) {
             return &kPlaneChoiceTakeOvers[i];
+        }
+    }
+    for (std::list<TestPlaneChoice>::const_iterator it = testPlaneChoiceTakeOvers().begin(); it != testPlaneChoiceTakeOvers().end(); ++it) {
+        if ((pluginID == it->pluginID) && (paramName == it->paramName)) {
+            return &it->takeOver;
         }
     }
 
@@ -813,6 +834,24 @@ unresolvedChannelQuad(const std::string& layerID,
 }
 
 } // anonymous namespace
+
+void
+OfxEffectInstance::addPlaneChoiceTakeOverForTesting(const std::string& pluginID,
+                                                    const std::string& paramName)
+{
+    std::list<TestPlaneChoice>& takeOvers = testPlaneChoiceTakeOvers();
+
+    takeOvers.push_back(TestPlaneChoice());
+    TestPlaneChoice& added = takeOvers.back();
+    added.pluginID = pluginID;
+    added.paramName = paramName;
+    added.takeOver.pluginID = added.pluginID.c_str();
+    added.takeOver.paramName = added.paramName.c_str();
+    added.takeOver.twinName = "hostInputLayer";
+    added.takeOver.twinLabel = "Layer";
+    added.takeOver.clipName = kOfxImageEffectSimpleSourceClipName;
+    added.takeOver.ownsChannelQuad = true;
+}
 
 void
 OfxEffectInstance::takeOverMultiplaneChoices(const KnobPagePtr& fallbackPage)

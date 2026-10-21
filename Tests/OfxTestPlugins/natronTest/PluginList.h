@@ -25,6 +25,7 @@
 namespace NatronTestOfx {
 // Each source file of the bundle appends its plug-in factories here; PluginList.cpp calls them all.
 void getRoutingPluginIDs(OFX::PluginFactoryArray& ids);
+void getTraitPluginIDs(OFX::PluginFactoryArray& ids);
 }
 
 #endif // Tests_OfxTestPlugins_natronTest_PluginList_h

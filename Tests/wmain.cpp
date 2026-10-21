@@ -23,6 +23,7 @@
 #include "PassThroughRoDTestEffect.h"
 #include "PerProcessUserDirs.h"
 #include "TestOfxPluginPath.h"
+#include "TestPlaneChoiceTakeOvers.h"
 #include "TestRetiredOfxIds.h"
 
 using namespace NATRON_NAMESPACE;
@@ -154,6 +155,7 @@ GTEST_API_ int main(int argc, char **argv)
     PerProcessUserDirs userDirs;
     appendTestOfxPluginDir();
     applyTestRetiredOfxIds();
+    applyTestPlaneChoiceTakeOvers();
     AppManager manager;
 
     {

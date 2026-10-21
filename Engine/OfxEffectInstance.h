@@ -319,6 +319,15 @@ public:
     void takeOverMultiplaneChoices(const KnobPagePtr& fallbackPage);
 
     /**
+     * @brief Takes over \p paramName of \p pluginID as a plane choice, the way Premult's
+     * "inputPlane" is: a "hostInputLayer" twin labelled "Layer", reading the Source clip and
+     * owning the plugin's R/G/B/A quad. A plane choice's options give nothing to recognise it
+     * by, so only listed params are taken over; this lists a test plug-in's without the shipped
+     * table naming it. Only the test mains call it, before AppManager::load().
+     **/
+    static void addPlaneChoiceTakeOverForTesting(const std::string& pluginID, const std::string& paramName);
+
+    /**
      * @brief If knob is a twin created by takeOverMultiplaneChoices(), pushes its value into
      * the plugin choice it replaces and returns true. Returns false for any other knob.
      **/

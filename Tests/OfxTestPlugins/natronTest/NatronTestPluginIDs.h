@@ -53,4 +53,41 @@
 #define kNatronTestPointMatrixParamMaskInvert "maskInvert"
 #define kNatronTestPointMatrixClipMask "Mask"
 
+// Multiplanar, like Premult: multiplies the quad's channels of inputPlane (or of every plane, with
+// processAllPlanes) by the unPremultByChannel channel of Source. Other planes pass through.
+#define kNatronTestMultiPlanePluginID "fr.natron.test.MultiPlane"
+#define kNatronTestMultiPlaneMajor 1
+#define kNatronTestMultiPlaneParamInputPlane "inputPlane"
+#define kNatronTestMultiPlaneParamProcessAllPlanes "processAllPlanes"
+#define kNatronTestMultiPlaneParamByChannel "unPremultByChannel"
+
+// Warps Source by the 3x3 matrix in transform_row1..3 (canonical coordinates, as CornerPin's
+// extra matrix), offset per pixel by UV's channelU/channelV and scaled by its channelA, as
+// IDistort. With UV neutral it is a pure transform the host can concatenate.
+#define kNatronTestMatrixWarpPluginID "fr.natron.test.MatrixWarp"
+#define kNatronTestMatrixWarpMajor 1
+#define kNatronTestMatrixWarpClipUV "UV"
+#define kNatronTestMatrixWarpParamRow1 "transform_row1"
+#define kNatronTestMatrixWarpParamRow2 "transform_row2"
+#define kNatronTestMatrixWarpParamRow3 "transform_row3"
+#define kNatronTestMatrixWarpParamChannelU "channelU"
+#define kNatronTestMatrixWarpParamChannelV "channelV"
+#define kNatronTestMatrixWarpParamChannelA "channelA"
+
+// Averages Source over frameRange, relative to the time minus timeOffset unless absolute is set,
+// like FrameBlend; a one-frame range is an identity at that frame, like TimeOffset.
+#define kNatronTestFrameWindowPluginID "fr.natron.test.FrameWindow"
+#define kNatronTestFrameWindowMajor 1
+#define kNatronTestFrameWindowParamFrameRange "frameRange"
+#define kNatronTestFrameWindowParamAbsolute "absolute"
+#define kNatronTestFrameWindowParamTimeOffset "timeOffset"
+
+// An identity filter declaring the OCIO params the project pushes into every node.
+#define kNatronTestOCIOConfigPluginID "fr.natron.test.OCIOConfig"
+#define kNatronTestOCIOConfigMajor 1
+#define kNatronTestOCIOConfigParamConfigFile "ocioConfigFile"
+#define kNatronTestOCIOConfigParamWorkingSpace "ocioWorkingSpace"
+#define kNatronTestOCIOConfigParamInputSpace "ocioInputSpace"
+#define kNatronTestOCIOConfigParamOutputSpace "ocioOutputSpace"
+
 #endif // Tests_OfxTestPlugins_NatronTestPluginIDs_h

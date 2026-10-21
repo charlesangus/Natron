@@ -25,6 +25,7 @@ namespace Plugin {
     getPluginIDs(OFX::PluginFactoryArray& ids)
     {
         NatronTestOfx::getRoutingPluginIDs(ids);
+        NatronTestOfx::getTraitPluginIDs(ids);
     }
 } // namespace Plugin
 } // namespace OFX

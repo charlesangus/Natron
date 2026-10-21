@@ -115,18 +115,21 @@ public:
     }
 
 private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source", .kind = eDataKindImage, .optional = false },
+        InputSpec { .label = "Mask", .kind = eDataKindImage, .role = InputRole::Mask, .optional = true },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDGlHostWrap,
+        .label = "Test GL Host Wrap",
+        .outputKind = eDataKindImage,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        NativePluginDescription desc;
-
-        desc.id = kTestPluginIDGlHostWrap;
-        desc.label = "Test GL Host Wrap";
-        desc.description = "";
-        desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindImage, false));
-        desc.inputs.push_back(NativeInputDescription("Mask", true, eDataKindImage, true));
-        desc.outputKind = eDataKindImage;
-
-        return desc;
+        return staticNodeSpec<kNodeSpec>();
     }
 
     virtual void initializeKnobs() OVERRIDE FINAL

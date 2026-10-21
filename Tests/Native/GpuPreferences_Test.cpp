@@ -118,9 +118,9 @@ private:
 TEST(GpuPreferences, GpuPageHoldsTheGpuKnobsAndThreadingDoesNot)
 {
     const KnobPagePtr gpu = findSettingsPage("GPU");
-    ASSERT_TRUE(gpu) << "no Preferences page labelled \"GPU\"";
+    ASSERT_NE(gpu, nullptr) << "no Preferences page labelled \"GPU\"";
     const KnobPagePtr threading = findSettingsPage("Threading");
-    ASSERT_TRUE(threading);
+    ASSERT_NE(threading, nullptr);
 
     for (const char* name : { "gpuComputeMode", "gpuDevice", "gpuMemoryBudgetMB", "gpuStatus" }) {
         EXPECT_TRUE( pageHoldsKnob(gpu, name) ) << name << " is not on the GPU page";
@@ -128,7 +128,7 @@ TEST(GpuPreferences, GpuPageHoldsTheGpuKnobsAndThreadingDoesNot)
     }
 
     KnobStringPtr status = appPTR->getCurrentSettings()->getKnobByNameAndType<KnobString>("gpuStatus");
-    ASSERT_TRUE(status);
+    ASSERT_NE(status, nullptr);
     EXPECT_TRUE( status->isLabel() );
     EXPECT_EQ( appPTR->getGPUContextPool()->getRendererStatus(), status->getValue() );
 }
@@ -136,7 +136,7 @@ TEST(GpuPreferences, GpuPageHoldsTheGpuKnobsAndThreadingDoesNot)
 TEST(GpuPreferences, GpuDeviceIsAChoiceOfAutoThenEachEnumeratedDevice)
 {
     KnobChoicePtr device = appPTR->getCurrentSettings()->getKnobByNameAndType<KnobChoice>("gpuDevice");
-    ASSERT_TRUE(device) << "gpuDevice is not a choice";
+    ASSERT_NE(device, nullptr) << "gpuDevice is not a choice";
 
     const std::vector<GpuDeviceSummary> devices = enumerateGpuDevices();
     const std::vector<ChoiceOption> entries = device->getEntries_mt_safe();
@@ -152,7 +152,7 @@ TEST(GpuPreferences, GpuDeviceIsAChoiceOfAutoThenEachEnumeratedDevice)
 TEST(GpuPreferences, DeviceEntriesAreLabelledWithNameAndTypeAndReadAsTheirUuid)
 {
     KnobChoicePtr device = appPTR->getCurrentSettings()->getKnobByNameAndType<KnobChoice>("gpuDevice");
-    ASSERT_TRUE(device);
+    ASSERT_NE(device, nullptr);
     GpuDeviceMenuRestorer restore(device);
 
     const std::vector<GpuDeviceSummary> fake = fakeDevices();
@@ -170,7 +170,7 @@ TEST(GpuPreferences, DeviceEntriesAreLabelledWithNameAndTypeAndReadAsTheirUuid)
 TEST(GpuPreferences, SavedDeviceIsRestoredByUuidAndAnOldStringValueIsIgnored)
 {
     KnobChoicePtr device = appPTR->getCurrentSettings()->getKnobByNameAndType<KnobChoice>("gpuDevice");
-    ASSERT_TRUE(device);
+    ASSERT_NE(device, nullptr);
     GpuDeviceMenuRestorer restore(device);
 
     const std::vector<GpuDeviceSummary> fake = fakeDevices();

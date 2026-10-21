@@ -461,7 +461,7 @@ TEST_F(GLScheduler, ConcurrentGLTasksBeyondTheContextLimitRenderOnCPU)
 
     const std::size_t used = appPTR->getGPUContextPool()->getNumThreadContextsUsedForRender();
     EXPECT_GT(used, 0u) << "no task bound its thread's OpenGL context";
-    EXPECT_LE(used, 1u) << "tasks created more OpenGL contexts than maxOpenGLContexts allows";
+    EXPECT_LE(used, 1u) << "tasks created more OpenGL contexts than the one-context cap allows";
 
     const std::vector<ObservedFrame> frames = observedFrames();
     EXPECT_EQ(poolSizes.size(), frames.size());

@@ -655,7 +655,8 @@ protected:
         if (!chain->source || !chain->grade1 || !chain->blur || !chain->grade2 || !chain->sink) {
             return false;
         }
-        // The project format is set once per process, so the source and the Blur do not depend on it.
+        // The project format is the fixture's 96 x 64, smaller than the strips, so the source sets its own size and
+        // the Blur does not crop to the format.
         if (!setKnobValue(chain->source, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize) || !setKnobValues(chain->source, kNativeGeneratorParamBottomLeft, { 0., 0. }) || !setKnobValues(chain->source, kNativeGeneratorParamSize, { (double)kStripWidth, (double)kStripHeight })) {
             return false;
         }

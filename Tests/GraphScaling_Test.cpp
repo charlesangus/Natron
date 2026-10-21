@@ -139,7 +139,10 @@ protected:
     }
 };
 
-TEST_F(GraphScalingTest, DiamondLadderConnectIsFast)
+// These cases assert wall-clock bounds, so they form their own suite and run alone while the rest of the fixture's cases run in parallel.
+class GraphScalingTiming : public GraphScalingTest { };
+
+TEST_F(GraphScalingTiming, DiamondLadderConnectIsFast)
 {
     const int kLevels = 40;
     const AppInstancePtr app = getApp();
@@ -250,7 +253,7 @@ TEST_F(GraphScalingTest, FrameVaryingIsPropagatedDownstreamOnly)
     expectFrameVaryingFromSetterAndFallback(app, animatedBottom, expected);
 }
 
-TEST_F(GraphScalingTest, FrameVaryingFallbackIsLinearOnDiamondLadder)
+TEST_F(GraphScalingTiming, FrameVaryingFallbackIsLinearOnDiamondLadder)
 {
     const int kLevels = 30;
     const AppInstancePtr app = getApp();

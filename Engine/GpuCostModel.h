@@ -142,6 +142,12 @@ public:
     static GpuCostModel& session();
 
     /**
+     * @brief Puts the model back as it was constructed: the seed table, no measurement, no thread count and no
+     * transfer rates. The traits hint is kept.
+     **/
+    void reset();
+
+    /**
      * @brief The pool size CPU costs are scaled to. 0, the default, follows the global thread pool.
      **/
     void setThreadCount(int threads);

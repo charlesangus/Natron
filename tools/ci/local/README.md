@@ -280,12 +280,15 @@ container with `NATRON_DEV_CONTAINER` (see "Where things live").
 
 ```
 [NATRON_RENDER_SCHEDULER=legacy|taskgraph] [NATRON_CTEST_JOBS=<n>] \
+  [GTEST_SHUFFLE=1 GTEST_RANDOM_SEED=<n> GTEST_REPEAT=<n>] \
   tools/ci/local/test.sh <ctest|smoke> [debug|release|fast] [--gdb]
 ```
 
 - `ctest` runs against the build dir. By default (`NATRON_CTEST_JOBS` unset)
   that is the serial `ctest -V`; PR CI sets `NATRON_CTEST_JOBS=4`, which runs
-  `ctest -j 4 --output-on-failure`.
+  `ctest -j 4 --output-on-failure`. There is one ctest entry per gtest suite
+  (named `<Suite>`), not per case; to run one case, call the test binary with
+  `--gtest_filter=Suite.Case`.
 - `smoke` locates the built `NatronRenderer` and runs
   `tools/ci/smoke_test.py` through it. This script only exists on branches
   that carry the M2-era `tools/ci/smoke_test.py` addition -- it is not on
@@ -298,12 +301,19 @@ container with `NATRON_DEV_CONTAINER` (see "Where things live").
   clients of the one Xvfb server. Unset or 1 is the serial `ctest -V` run.
   Above 1 only failing cases' output is printed as each finishes; the full
   output of every case is in `Testing/Temporary/LastTest.log`. Cases that
-  assert a wall-clock bound run alone (`Tests/SerialTests.cmake`). It is
+  assert a wall-clock bound run alone (`Tests/SuiteProperties.cmake`). It is
   forwarded into the container when set. When the parallel run fails,
   `test.sh` then re-runs just the failed cases serially with
   `ctest --rerun-failed -V`, so their complete output (including assert
   text that parallel output hides) is in the log. The re-run is diagnostic
   only; the script's exit status stays that of the parallel run.
+- `GTEST_SHUFFLE`, `GTEST_RANDOM_SEED` and `GTEST_REPEAT` (`ctest` only) are
+  read by gtest itself; ctest passes its environment on to every suite
+  process. `GTEST_SHUFFLE=1 GTEST_RANDOM_SEED=<n>` runs the cases within each
+  suite in a fixed shuffled order, to flush out leaks between cases;
+  `GTEST_REPEAT=<n>` runs each suite n times. Each ctest entry is one suite,
+  so the shuffle never crosses suites. All three are forwarded into the
+  container when set.
 - `--gdb` applies only to `smoke` (`ctest` runs many binaries, not one): it
   runs the target under
   `gdb -batch -ex run -ex "thread apply all bt" -ex bt --args <binary> ...`

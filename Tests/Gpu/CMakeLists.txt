@@ -83,26 +83,24 @@ string(REPLACE ";" "\;" GpuTests_GL_ENV "${GpuTests_GL_ENV}")
 
 # Registered twice: as the device offers it, and with VK_KHR_push_descriptor masked off so the
 # descriptor-pool path in GpuKernel runs on every driver. GlInterop is registered once with the
-# EGL environment; the second registration filters it out. Every ctest name starts with Gpu so
-# `ctest -R '^Gpu'` selects them all, and the prefixes keep the three registrations distinct.
-gtest_discover_tests(GpuTests
+# EGL environment; the other registrations filter it out. Every ctest name starts with Gpu so
+# `ctest -R '^Gpu'` selects them all, and the prefixes keep the registrations distinct.
+include(${CMAKE_SOURCE_DIR}/cmake/NatronGtestSuites.cmake)
+natron_add_gtest_suites(GpuTests
     TEST_PREFIX Gpu.
-    DISCOVERY_MODE PRE_TEST
-    DISCOVERY_TIMEOUT 60
     TEST_FILTER -GlInteropTest.*
-    PROPERTIES TIMEOUT 600 LABELS gpu
+    PROPERTIES TIMEOUT 1200 LABELS gpu
 )
-gtest_discover_tests(GpuTests
+natron_add_gtest_suites(GpuTests
     TEST_PREFIX GpuNoPushDescriptor.
-    DISCOVERY_MODE PRE_TEST
-    DISCOVERY_TIMEOUT 60
     TEST_FILTER -GlInteropTest.*
-    PROPERTIES TIMEOUT 600 LABELS gpu ENVIRONMENT NATRON_TEST_GPU_NO_PUSH_DESCRIPTOR=1
+    PROPERTIES TIMEOUT 1200 LABELS gpu ENVIRONMENT NATRON_TEST_GPU_NO_PUSH_DESCRIPTOR=1
 )
-gtest_discover_tests(GpuTests
-    TEST_PREFIX Gpu.
-    DISCOVERY_MODE PRE_TEST
-    DISCOVERY_TIMEOUT 60
-    TEST_FILTER GlInteropTest.*
-    PROPERTIES TIMEOUT 600 LABELS gpu ENVIRONMENT "${GpuTests_GL_ENV}"
-)
+# Only built with EGL; registering it otherwise would list no test, which fails the listing.
+if(TARGET OpenGL::EGL)
+    natron_add_gtest_suites(GpuTests
+        TEST_PREFIX Gpu.
+        TEST_FILTER GlInteropTest.*
+        PROPERTIES TIMEOUT 1200 LABELS gpu ENVIRONMENT "${GpuTests_GL_ENV}"
+    )
+endif()

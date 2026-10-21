@@ -12,6 +12,7 @@
 # Usage:
 #   [NATRON_RENDER_SCHEDULER=legacy|taskgraph] tools/ci/local/test.sh <ctest|smoke> [debug|release|fast] [--gdb]
 #   [NATRON_CTEST_JOBS=<n>] tools/ci/local/test.sh ctest ...
+#   [GTEST_SHUFFLE=1] [GTEST_RANDOM_SEED=<n>] [GTEST_REPEAT=<n>] tools/ci/local/test.sh ctest ...
 #   [NATRON_SMOKE_OUTPUT_DIR=<dir>|NATRON_SMOKE_REFERENCE_DIR=<dir>] tools/ci/local/test.sh smoke ...
 #
 #   NATRON_RENDER_SCHEDULER -> selects the render scheduler for ctest and the
@@ -26,12 +27,22 @@
 #                              case is in Testing/Temporary/LastTest.log
 #                              (printed after the run, folded, under GitHub
 #                              Actions). Cases that assert a wall-clock bound
-#                              run alone: see Tests/SerialTests.cmake.
+#                              run alone: see Tests/SuiteProperties.cmake.
 #                              When the parallel run fails, the failed cases
 #                              are re-run serially with `ctest --rerun-failed
 #                              -V` so their complete output is in the log; the
 #                              exit status stays the parallel run's.
 #                              Forwarded into the container when set.
+#   GTEST_SHUFFLE,
+#   GTEST_RANDOM_SEED,
+#   GTEST_REPEAT            -> ctest only: gtest reads these itself, and ctest
+#                              hands its environment to every suite process, so
+#                              they shuffle the cases within each suite (seed
+#                              n, or a time-based one when unset), or repeat
+#                              each suite, to flush out leaks between cases.
+#                              Each ctest entry is one suite, so the shuffle
+#                              never crosses suites. Forwarded into the
+#                              container when set.
 #   NATRON_SMOKE_OUTPUT_DIR -> smoke only: the graded PNG is copied here.
 #   NATRON_SMOKE_REFERENCE_DIR -> smoke only: the graded PNG must be
 #                              byte-identical to the same-named file there
@@ -140,7 +151,7 @@ if ! in_container; then
     # long-lived container, so variables that steer the run are re-applied
     # through env(1) on the container side.
     forwarded_env=()
-    for var in NATRON_RENDER_SCHEDULER NATRON_CTEST_JOBS NATRON_SMOKE_OUTPUT_DIR NATRON_SMOKE_REFERENCE_DIR; do
+    for var in NATRON_RENDER_SCHEDULER NATRON_CTEST_JOBS GTEST_SHUFFLE GTEST_RANDOM_SEED GTEST_REPEAT NATRON_SMOKE_OUTPUT_DIR NATRON_SMOKE_REFERENCE_DIR; do
         if [[ -n "${!var:-}" ]]; then
             forwarded_env+=("${var}=${!var}")
         fi
@@ -218,8 +229,8 @@ case "${SUBCOMMAND}" in
             echo "test.sh: ERROR: NATRON_CTEST_JOBS must be a positive integer, got '${CTEST_JOBS}'" >&2
             exit 1
         fi
-        # Only a default: every discovered gtest case carries its own TIMEOUT property, which
-        # wins; this bounds the cases registered without one.
+        # Only a default: every discovered gtest suite carries its own TIMEOUT property, which
+        # wins; this bounds the tests registered without one.
         CTEST_TIMEOUT_SECONDS=300
         cd "${BUILD_DIR}"
         echo "+ cd ${BUILD_DIR}"
@@ -241,6 +252,16 @@ case "${SUBCOMMAND}" in
             rc=$?
         fi
         FULL_LOG="${BUILD_DIR}/Testing/Temporary/LastTest.log"
+        # A failing suite's ctest line names only the suite; gtest names the case.
+        if [[ "${rc}" -ne 0 && -f "${FULL_LOG}" ]]; then
+            FAILED_CASES="$(grep -E '^\[  FAILED  \] [^ ]+\.[^ ]+' "${FULL_LOG}" | sed -E 's/^\[  FAILED  \] ([^ ,]+).*/\1/' | sort -u || true)"
+            if [[ -n "${FAILED_CASES}" ]]; then
+                echo "Failing cases:"
+                while IFS= read -r failed_case; do
+                    echo "[  FAILED  ] ${failed_case}"
+                done <<<"${FAILED_CASES}"
+            fi
+        fi
         if [[ -f "${FULL_LOG}" ]]; then
             echo "Complete output of every case: ${FULL_LOG}"
             if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then

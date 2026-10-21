@@ -81,6 +81,11 @@ main(int argc, char** argv)
 {
     printf("Running main() from guimain.cpp\n");
     ::testing::InitGoogleTest(&argc, argv);
+    // ctest lists the suites before every run. Every test is registered statically, so the list
+    // does not depend on load(), which would cost a QApplication plus Python and OCIO init.
+    if (::testing::GTEST_FLAG(list_tests)) {
+        return RUN_ALL_TESTS();
+    }
     if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) {
         qputenv("QT_QPA_PLATFORM", "offscreen");
     }

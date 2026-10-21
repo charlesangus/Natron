@@ -183,6 +183,8 @@ fi
 
 # Plug-ins only the tests load. ctest gets them on its path; the smoke test
 # does not, as it asserts OFX_PLUGIN_PATH holds exactly the shipped set.
+"${SCRIPT_DIR}/fetch-assets.sh" --check-pins || exit 1
+
 TEST_PLUGINS_DIR="${ASSETS_DIR}/TestPlugins"
 
 if [[ "${SUBCOMMAND}" == "ctest" ]]; then

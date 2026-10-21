@@ -35,7 +35,8 @@ The likely cause is that the test's premise is timing-dependent, not that the sc
     - Seen once: PR CI for M141 - Complete Local Build Environment (run 39591735434, `ctest (legacy)`, debug preset, `ctest -j 4`, inside the new GHCR image). The case segfaulted after 1.67 s and passed on the serial `--rerun-failed -V` that followed. It does not appear in main's last six CI runs.
     - Reproduce in the debug build: `--gtest_repeat` on the case, and on the whole `DeepLayersGraphTest` suite (it may depend on a sibling case once suites share a process), under CPU load, in both `NATRON_RENDER_SCHEDULER` modes. Get a backtrace: core dump or gdb in the container, see the profiling memory for privileges. A TSan or ASan build of `Tests` is in scope if the plain build won't reproduce it.
     - Fix the root cause. If it turns out to be a design-level race in the scheduler or cache, record it and stop for the user, as P1 does.
-  - verify: the stressed repeat loop that crashed before passes 500/500 after, in both scheduler modes on the debug preset, and the `DeepLayers*` suites are green.
+    - Second sighting (2026-10-21, remote debug run for M141): `DeepRenderPipelineTest.AbortDuringUpstreamRenderLeavesNothingCached` passed, then segfaulted during process teardown with `malloc(): unsorted double linked list corrupted`. Likely the same bug, a shutdown race: something outlives the app at exit. Repeat loops have to launch a fresh process per iteration to exercise exit.
+  - verify: the stressed loops (fresh process per iteration) that crashed before pass 500/500 after, in both scheduler modes on the debug preset, for both cases. The `DeepLayers*` and `DeepRenderPipeline*` suites are green.
   - size: L
 
 **Verification gate:** one build per phase. Both stressed repeat loops are 500/500, and full ctest is green apart from known goldens. CI `build-and-test` is green on the PR.

@@ -81,7 +81,7 @@
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/GpuRender.h"
-#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
@@ -457,7 +457,7 @@ protected:
             if ( !makeGpuQueryForTask(task, *context, &query) ) {
                 return false;
             }
-            const NativeImageEffect* native = dynamic_cast<const NativeImageEffect*>( task.key.node->getEffectInstance().get() );
+            const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>( task.key.node->getEffectInstance().get() );
 
             return native && native->canRenderOnGpu(query);
         };

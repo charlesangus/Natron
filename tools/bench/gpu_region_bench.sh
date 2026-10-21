@@ -80,6 +80,7 @@ CASES[iir100]="BENCH_NODE=blur BENCH_BLUR_SIZE=240 BENCH_BLUR_FILTER=quasigaussi
 CASES[erode6]="BENCH_NODE=erode BENCH_ERODE_SIZE=6"
 CASES[erode40]="BENCH_NODE=erode BENCH_ERODE_SIZE=40"
 CASES[ck]="BENCH_NODE=chromakeyer"
+CASES[edge]="BENCH_NODE=edgedetect"
 
 # Runs argv and writes the largest resident set of the child tree (wait4 folds reaped descendants into it) to
 # the file named by $RSS_FILE; /usr/bin/time is not installed on the bench host.

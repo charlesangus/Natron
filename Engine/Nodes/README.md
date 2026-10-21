@@ -370,6 +370,48 @@ under "Flat image nodes", and `Grade` is the example to read.
 
 5. **Test it**: see "Testing" below.
 
+### Adding a native node: checklist
+
+Files a port adds, per node (`<Dir>` is the node's directory under
+`Engine/Nodes/`). All are picked up by globs; no shared file is edited.
+
+- [ ] `Engine/Nodes/<Dir>/<Node>.reg.inc`: the registration fragment, see step 4
+      above. One per registered ID; a template argument list containing a comma
+      goes through an alias. Icon, `deprecated` and `internal` are `NodeSpec`
+      fields (`Engine/Nodes/NodeSpec.h`), not part of the fragment. CMake builds
+      `NativeRegistryAll.inc` from `Nodes/*.reg.inc`.
+- [ ] `Engine/Nodes/<Dir>/<Node>.costseed.inc`: GPU cost model seed rows, built
+      from `NATRON_GPU_COST_SEED_CPU_ROW`, `_CPU_MOTION_BLUR_ROW`, `_CPU_SIGMA_ROW`
+      and `_GPU_ROW`. CMake aggregates them into `GpuCostSeedsAll.inc`. Regenerate
+      with `tools/bench/render-profile-report.py ... --emit-cost-table <source root>`
+      rather than writing rows by hand. Delete
+      `Engine/GpuCostSeeds/ofx/<plugin-id>.inc` for the OFX plug-in the port
+      supersedes, or the plug-in keeps a second seed.
+- [ ] `Engine/Nodes/<Dir>/docs/<Node>.md`: the node's doc, with a `Tolerance:` line
+      (`Tolerance: none recorded.`, or `Tolerance:` followed by the table of
+      class and test constant, as in `Color/docs/Grade.md`).
+- [ ] `Tests/Native/Native<Node>_Test.cpp`: the node's test, calling
+      `expectNativeIdentity(id, major, label)` from
+      `Tests/Native/NativePluginIdentity.h`.
+- [ ] `Engine/Gpu/Kernels/<kernel>.cmake`: for each new `.slang` kernel, one
+      fragment holding its `slang_add_kernel(...)` lines, named after the
+      `.slang` file (see `blur.cmake`).
+- [ ] `Gui/Resources/Images/NativeNodes/<icon>.png`: the icon, globbed by
+      `Gui/CMakeLists.txt`; the `NodeSpec` icon path names it.
+- [ ] `Engine/OfxRetired/<ofx-id>`: one marker per OFX ID the port retires, see
+      `Engine/OfxRetired/README.md`. An ID the native node keeps (same plug-in ID)
+      gets no marker; the native registration already replaces it.
+- [ ] Any test that used a retired ID as a fixture moves to the test-only bundle
+      in `Tests/OfxTestPlugins/`.
+
+Two tests catch a mistake here. `NativePluginList_Test` fails when a `.reg.inc`
+fragment is not registered (or registers a different class), when a native
+plug-in has no fragment, when two fragments share an ID, when a marker names an
+ID a native node registers, or names a replacement that is not a registered
+native plug-in. `OfxRetired_Test` fails when a marker names an ID no loaded OFX
+bundle provides (a typo), or when a retired ID is still registered as an OFX
+plug-in. Neither checks the cost seed, doc, icon or kernel fragments.
+
 ## Data kinds
 
 `DataKindEnum` (`Global/Enums.h`) has four values:

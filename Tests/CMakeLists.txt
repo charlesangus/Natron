@@ -233,25 +233,17 @@ target_include_directories(GuiTests
         google-mock
 )
 
-include(GoogleTest)
-# PRE_TEST, not the default POST_BUILD: discovery runs the binary, which
-# constructs an AppManager and calls load() before RUN_ALL_TESTS() (even
-# under --gtest_list_tests), so it needs libpython3.13, OFX_PLUGIN_PATH and
-# the built OFX bundles -- all guaranteed at ctest time, not at build time.
-# TIMEOUT 300: the whole suite runs in under a second locally and the
-# slowest single case is well under a second too, so 300s per case is pure
-# headroom -- its only job is to turn a scheduler wait with no predicate,
-# no loop and no timeout (OutputSchedulerThread.cpp's bufEmptyCondition
-# wait) into a failed test instead of a process that never exits.
-# DISCOVERY_TIMEOUT 120, not the 5s default: PRE_TEST discovery runs the binary,
-# and wmain.cpp passes --clear-openfx-cache, so every discovery pays a cold rescan
-# of all four OFX bundles plus Python and OCIO init before gtest prints the list.
-# Blowing the 5s budget is a FATAL_ERROR that fails ctest before a single test runs.
-gtest_discover_tests(Tests DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 120
-    PROPERTIES TIMEOUT 300)
-gtest_discover_tests(GuiTests DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 120 PROPERTIES TIMEOUT 300)
-# PRE_TEST discovery only learns the case names at ctest time, so per-case properties are applied
-# from an include that ctest runs after the discovery includes registered above.
+include(NatronGtestSuites)
+# One ctest entry per suite: every launch of these binaries pays a cold OFX rescan plus Python and
+# OCIO init in AppManager::load(), so a process per case spends most of a run starting up. The
+# suites are listed at ctest time, under --gtest_list_tests, which both mains answer before load().
+# TIMEOUT 900 turns a scheduler wait that never returns (OutputSchedulerThread.cpp's
+# bufEmptyCondition wait has no predicate, loop or timeout) into a failed suite instead of a process
+# that never exits, with headroom for the longest suite.
+natron_add_gtest_suites(Tests PROPERTIES TIMEOUT 900)
+natron_add_gtest_suites(GuiTests PROPERTIES TIMEOUT 900)
+# Per-suite properties go in an include that ctest runs after the includes registered above, once
+# their add_test() calls have run.
 set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/SerialTests.cmake)
 
 if(NATRON_GPU)

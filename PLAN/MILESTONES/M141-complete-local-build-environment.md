@@ -161,6 +161,10 @@ Scouted facts (scouted 2026-10-19 on main `d521f111a`; re-check at promotion):
   - verify: every command line in the new sections runs as written (copy-paste each in a scratch worktree) and every named file exists; `git grep -n '/home/'` over the two READMEs finds nothing.
   - size: S
 
+## Decisions
+
+- 2026-10-21 — **Claimed despite the file-overlap test (user-directed):** the user asked to run this milestone and M155 - Per-Suite Test Processes in parallel lanes. Overlapping files: `tools/ci/local/README.md` with M107 - GPU Viewer Hand-off; `tools/ci/local/test.sh` with the parked M64 - Tiled Rendering; and `tools/ci/local/test.sh`, both READMEs and `remote-build.yml` with M155. Conflicts are resolved at merge.
+
 **Verification gate:**
 - A fresh container from the rebuilt image has `slangc` on the path and configures with no network and an empty `.natron-deps/`; `check-slang-pin.sh` passes on main and fails on a deliberate pin mismatch.
 - `tools/ci/local/syntax-check.py` is tracked, takes file paths, checks a test TU and a GPU TU in a pre-M85 worktree correctly without stub headers, and never silently skips.

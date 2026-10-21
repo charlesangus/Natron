@@ -109,10 +109,101 @@ filterLine(float* data,
         data[(std::ptrdiff_t)i * stride] = reduce(suffix[i], prefix[i + width - 1], takeMax);
     }
 }
+
+void
+filterColumns(float* data,
+              int length,
+              std::ptrdiff_t stride,
+              int count,
+              int halfWidth,
+              bool takeMax,
+              LineScratch& scratch)
+{
+    if ((halfWidth <= 0) || (length <= 1) || (count <= 0)) {
+        return;
+    }
+    if (length <= halfWidth + 2) {
+        for (int c = 0; c < count; ++c) {
+            filterLine(data + c, length, stride, halfWidth, takeMax, scratch);
+        }
+
+        return;
+    }
+
+    // filterLine() with each value widened to kColumnBlock lanes, one per column, so that the
+    // inner loops vectorise. Lanes past `count` carry the neutral value and are not written back.
+    const int B = kColumnBlock;
+    const int width = 2 * halfWidth + 1;
+    const int n = length + 2 * halfWidth;
+    const float neutral = takeMax ? -std::numeric_limits<float>::infinity() : std::numeric_limits<float>::infinity();
+    const std::size_t size = (std::size_t)n * B;
+    scratch.padded.resize(size);
+    scratch.prefix.resize(size);
+    scratch.suffix.resize(size);
+    float* padded = &scratch.padded[0];
+    float* prefix = &scratch.prefix[0];
+    float* suffix = &scratch.suffix[0];
+
+    for (int c0 = 0; c0 < count; c0 += B) {
+        const int nc = std::min(B, count - c0);
+        float* block = data + c0;
+
+        std::fill(padded, padded + (std::size_t)halfWidth * B, neutral);
+        for (int i = 0; i < length; ++i) {
+            const float* src = block + (std::ptrdiff_t)i * stride;
+            float* dst = padded + (std::size_t)(halfWidth + i) * B;
+            for (int c = 0; c < nc; ++c) {
+                dst[c] = src[c];
+            }
+            for (int c = nc; c < B; ++c) {
+                dst[c] = neutral;
+            }
+        }
+        std::fill(padded + (std::size_t)(halfWidth + length) * B, padded + size, neutral);
+
+        for (int j = 0; j < n; ++j) {
+            const float* in = padded + (std::size_t)j * B;
+            float* out = prefix + (std::size_t)j * B;
+            if ((j % width) == 0) {
+                for (int c = 0; c < B; ++c) {
+                    out[c] = in[c];
+                }
+            } else {
+                const float* prev = out - B;
+                for (int c = 0; c < B; ++c) {
+                    out[c] = reduce(prev[c], in[c], takeMax);
+                }
+            }
+        }
+        for (int j = n - 1; j >= 0; --j) {
+            const float* in = padded + (std::size_t)j * B;
+            float* out = suffix + (std::size_t)j * B;
+            if ((j == n - 1) || (((j + 1) % width) == 0)) {
+                for (int c = 0; c < B; ++c) {
+                    out[c] = in[c];
+                }
+            } else {
+                const float* next = out + B;
+                for (int c = 0; c < B; ++c) {
+                    out[c] = reduce(next[c], in[c], takeMax);
+                }
+            }
+        }
+        for (int i = 0; i < length; ++i) {
+            const float* s = suffix + (std::size_t)i * B;
+            const float* e = prefix + (std::size_t)(i + width - 1) * B;
+            float* dst = block + (std::ptrdiff_t)i * stride;
+            for (int c = 0; c < nc; ++c) {
+                dst[c] = reduce(s[c], e[c], takeMax);
+            }
+        }
+    }
+} // filterColumns
 } // namespace ErodeDilateKernels
 
 namespace {
-/// Runs filterLine() over each line the executor hands over, through a scratch owned by the chunk.
+/// Runs filterLine() over each line the executor hands over, or filterColumns() over a block of
+/// adjacent columns, through a scratch owned by the chunk.
 std::function<PassLineFn()>
 lineWorker(int halfWidth,
            bool takeMax)
@@ -125,8 +216,10 @@ lineWorker(int halfWidth,
         std::shared_ptr<ErodeDilateKernels::LineScratch> scratch = std::make_shared<ErodeDilateKernels::LineScratch>();
 
         return [halfWidth, takeMax, scratch](float* line, int length, std::ptrdiff_t stride, int count) {
-            for (int i = 0; i < count; ++i) {
-                ErodeDilateKernels::filterLine(line + i, length, stride, halfWidth, takeMax, *scratch);
+            if (count == 1) {
+                ErodeDilateKernels::filterLine(line, length, stride, halfWidth, takeMax, *scratch);
+            } else {
+                ErodeDilateKernels::filterColumns(line, length, stride, count, halfWidth, takeMax, *scratch);
             }
         };
     };
@@ -247,7 +340,9 @@ erodeDilatePasses(const ErodeDilateParams& params,
         }
         if (onY) {
             const int halo = axisHalo(params.sizeY, rs.y);
-            list.passes.push_back(Pass::lineY(halo, takeMax ? halo : 0, lineWorker(halfY, takeMax)));
+            Pass pass = Pass::lineY(halo, takeMax ? halo : 0, lineWorker(halfY, takeMax));
+            pass.columnBlock = ErodeDilateKernels::kColumnBlock;
+            list.passes.push_back(pass);
         }
 #ifdef NATRON_HAVE_GPU
         if (halfX > 0) {

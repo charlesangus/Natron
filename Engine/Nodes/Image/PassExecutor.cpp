@@ -675,18 +675,41 @@ runLinePass(const Pass& pass,
         return;
     }
 
-    const std::function<void(int, int)> columns = [&](int first, int end) {
+    // A worker that filters one column at a time gets each column as a contiguous copy, taken with
+    // its neighbours a cache line at a time. Walked in place, a column reads one line per row and
+    // relies on the cache keeping them for the next column; at a power-of-two width on huge pages
+    // all those lines fall in the same cache sets and are evicted before they are reused.
+    const int kTransposeColumns = 16;
+    const int groupsPerPlane = (width + kTransposeColumns - 1) / kTransposeColumns;
+    const std::function<void(int, int)> columnGroups = [&](int first, int end) {
         const PassLineFn fn = pass.lineWorker();
-        for (int line = first; line < end; ++line) {
-            if ((((line - first) % kAbortCheckLines) == 0) && cancel.check()) {
+        std::vector<float> columns((std::size_t)kTransposeColumns * height);
+        for (int group = first; group < end; ++group) {
+            if (cancel.check()) {
                 return;
             }
-            const int p = line / width;
-            const int column = line % width;
-            fn(data + (std::size_t)p * planeSize + column, height, width, 1);
+            const int p = group / groupsPerPlane;
+            const int column = (group % groupsPerPlane) * kTransposeColumns;
+            const int count = std::min(kTransposeColumns, width - column);
+            float* const origin = data + (std::size_t)p * planeSize + column;
+            for (int y = 0; y < height; ++y) {
+                const float* row = origin + (std::size_t)y * width;
+                for (int c = 0; c < count; ++c) {
+                    columns[(std::size_t)c * height + y] = row[c];
+                }
+            }
+            for (int c = 0; c < count; ++c) {
+                fn(&columns[(std::size_t)c * height], height, 1, 1);
+            }
+            for (int y = 0; y < height; ++y) {
+                float* row = origin + (std::size_t)y * width;
+                for (int c = 0; c < count; ++c) {
+                    row[c] = columns[(std::size_t)c * height + y];
+                }
+            }
         }
     };
-    forEachLineChunk(nPlanes * width, (std::size_t)height * taps, nThreads, cancel, columns);
+    forEachLineChunk(nPlanes * groupsPerPlane, (std::size_t)height * kTransposeColumns * taps, nThreads, cancel, columnGroups);
 } // runLinePass
 
 void

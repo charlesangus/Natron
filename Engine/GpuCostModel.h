@@ -113,10 +113,9 @@ struct GpuTransferRates {
 /**
  * @brief Per-task CPU and GPU time estimates, and the gain of running a region on the GPU, in milliseconds.
  *
- * Costs start from the checked-in seed table (GpuCostSeed.inc) and are refined during the session by an exponential
- * moving average of measured times, per plugin and motion blur and, for a blur, per filter kind and sigma row and, for
- * an erode or dilate, per size row. Nothing is kept across
- * sessions.
+ * Costs start from the checked-in seed rows (one fragment per plugin, described in GpuCostModel.cpp) and are refined
+ * during the session by an exponential moving average of measured times, per plugin and motion blur and, for a blur,
+ * per filter kind and sigma row and, for an erode or dilate, per size row. Nothing is kept across sessions.
  *
  * The CPU cost is kept as thread-milliseconds per megapixel, the measured wallNs × budget / Mpx, so that tasks run
  * with any thread budget refine the same figure; a task's CPU time is that over the pool size. The seed's serial cost

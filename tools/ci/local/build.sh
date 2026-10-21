@@ -31,6 +31,15 @@
 #                            after e.g. editing CMakeLists.txt).
 #   --no-ccache-stats      -> skip the `ccache -s` summary printed at the end.
 #
+# Environment:
+#   NATRON_SKIP_SUBMODULE_UPDATE=1
+#                          -> skip the host-side `git submodule update --init
+#                             --recursive`, which resets every submodule to the
+#                             commit the superproject records and so discards a
+#                             pinned libs/OpenFX fork branch. Instead verify
+#                             each required submodule is checked out and fail
+#                             naming the first missing one.
+#
 # This script runs the actual configure/build INSIDE the dev container (that
 # is where cmake/ninja/ccache/gcc/Qt6 live), but is meant to be invoked from
 # the host, from the repo root, with no prior `devshell.sh` shell required --
@@ -185,14 +194,28 @@ in_container() {
 
 # --- host-side: submodules, then hop into the container ---------------------
 if ! in_container; then
-    echo "== build.sh: ensuring submodules are initialized (host side) =="
-    if ! git -C "${REPO_ROOT}" submodule update --init --recursive; then
-        echo "build.sh: ERROR: 'git submodule update --init --recursive' failed." >&2
-        echo "This is required for the build (Tests/google-mock, Tests/google-test," >&2
-        echo "libs/OpenFX, libs/SequenceParsing must be checked out). Resolve the" >&2
-        echo "submodule fetch error above (network access to github.com is required)" >&2
-        echo "and re-run this script." >&2
-        exit 1
+    if [[ "${NATRON_SKIP_SUBMODULE_UPDATE:-}" == "1" ]]; then
+        echo "== build.sh: NATRON_SKIP_SUBMODULE_UPDATE=1, checking submodules are present =="
+        # '+' (checked out at a different commit) is allowed: pinning a
+        # libs/OpenFX fork branch is intended. '-' and 'U' cannot compile.
+        bad_submodules="$(git -C "${REPO_ROOT}" submodule status --recursive | grep -E '^[-U]' || true)"
+        if [[ -n "${bad_submodules}" ]]; then
+            echo "build.sh: ERROR: submodules not ready (- = not initialised, U = conflict):" >&2
+            printf '%s\n' "${bad_submodules}" | awk '{ print "  " substr($0, 1, 1) " " $2 }' >&2
+            echo "Run 'git submodule update --init --recursive' (or tools/ci/local/worktree-init.sh)," >&2
+            echo "or unset NATRON_SKIP_SUBMODULE_UPDATE." >&2
+            exit 1
+        fi
+    else
+        echo "== build.sh: ensuring submodules are initialized (host side) =="
+        if ! git -C "${REPO_ROOT}" submodule update --init --recursive; then
+            echo "build.sh: ERROR: 'git submodule update --init --recursive' failed." >&2
+            echo "This is required for the build (Tests/google-mock, Tests/google-test," >&2
+            echo "libs/OpenFX, libs/SequenceParsing must be checked out). Resolve the" >&2
+            echo "submodule fetch error above (network access to github.com is required)" >&2
+            echo "and re-run this script." >&2
+            exit 1
+        fi
     fi
 
     echo "== build.sh: entering dev container via devshell.sh =="

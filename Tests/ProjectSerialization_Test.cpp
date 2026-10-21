@@ -36,6 +36,7 @@
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
+#include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
@@ -379,9 +380,9 @@ protected:
 TEST_F(MultiplaneTwinProjectTest, TwinsRoundTripAndArePushedIntoThePluginChoicesOnLoad)
 {
     ProjectPtr project = getApp()->getProject();
-    NodePtr premult = createNode(QString::fromUtf8("net.sf.openfx.Premult"));
-    NodePtr idistort = createNode(QString::fromUtf8("net.sf.openfx.IDistort"));
-    NodePtr unpremult = createNode(QString::fromUtf8("net.sf.openfx.Unpremult"));
+    NodePtr premult = createNode(QString::fromUtf8(kNatronTestMultiPlanePluginID), kNatronTestMultiPlaneMajor);
+    NodePtr idistort = createNode(QString::fromUtf8(kNatronTestMatrixWarpPluginID), kNatronTestMatrixWarpMajor);
+    NodePtr unpremult = createNode(QString::fromUtf8(kNatronTestMultiPlanePluginID), kNatronTestMultiPlaneMajor);
     ASSERT_TRUE(bool(premult) && bool(idistort) && bool(unpremult));
     const std::string premultName = premult->getScriptName();
     const std::string idistortName = idistort->getScriptName();

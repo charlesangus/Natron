@@ -36,6 +36,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -292,4 +293,9 @@ TEST_F(NativeBlurTest, RendersTheSameInBothSchedulerModesAtAnyPoolSize)
     ASSERT_TRUE(setChannelSelect(blur, "maskChannel_Mask", "rgba.A"));
     ASSERT_TRUE(setKnobValues(blur, kOfxMixParamName, { 0.5 }));
     expectSameBothWays(blur, "quadratic-9x4-mask-mix");
+}
+
+TEST_F(NativeBlurTest, RegisteredIdentity)
+{
+    expectNativeIdentity(PLUGINID_NATRON_BLUR, PLUGIN_MAJOR_NATRON_BLUR, "Blur");
 }

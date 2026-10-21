@@ -1,0 +1,78 @@
+name: Dev image
+
+# Publishes the build environment that ci.yml and remote-build.yml run in. The
+# tag is a hash of the files that define the image, so an unchanged image is
+# only ever built once. Only a run on main moves :latest; any other run pushes
+# just the hash tag, so a branch can never change what :latest points at.
+
+on:
+  workflow_call:
+    outputs:
+      image:
+        description: 'Published image reference, tag included'
+        value: ${{ jobs.image.outputs.image }}
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: dev image
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+    outputs:
+      image: ${{ steps.tag.outputs.image }}
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v5.0.1
+
+      - name: Compute image reference
+        id: tag
+        run: echo "image=$(tools/ci/local/dev-image-tag.sh)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to ghcr.io
+        run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check for a published image
+        id: exists
+        env:
+          IMAGE: ${{ steps.tag.outputs.image }}
+        run: |
+          if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The ASWF base is many GB and the runner's disk is not enough for it
+      # plus the build layers without this.
+      - name: Free runner disk
+        if: steps.exists.outputs.present != 'true'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h /
+
+      - name: Build and push
+        if: steps.exists.outputs.present != 'true'
+        env:
+          IMAGE: ${{ steps.tag.outputs.image }}
+        run: |
+          docker build -f tools/ci/local/Dockerfile -t "$IMAGE" tools/ci/local
+          docker push "$IMAGE"
+
+      # The hash tag may already exist from a branch run, so main points
+      # :latest at it whether or not this run built it.
+      - name: Publish latest
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          IMAGE: ${{ steps.tag.outputs.image }}
+        run: |
+          docker pull "$IMAGE"
+          docker tag "$IMAGE" "${IMAGE%:*}:latest"
+          docker push "${IMAGE%:*}:latest"

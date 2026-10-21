@@ -1,0 +1,3 @@
+// GPU cost model seed rows for net.sf.openfx.Rectangle, written by tools/bench/render-profile-report.py
+// --emit-cost-table from the inputs in Engine/GpuCostSeeds/inputs.txt. Engine/GpuCostModel.cpp describes the rows.
+NATRON_GPU_COST_SEED_CPU_ROW("net.sf.openfx.Rectangle", 4.5997, 0.5637)

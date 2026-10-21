@@ -34,6 +34,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -174,4 +175,9 @@ TEST_F(NativePositionTest, UnversionedRequestsGetTheNativePosition)
     ASSERT_TRUE(bool(unversioned));
     EXPECT_TRUE(isNative(unversioned));
     EXPECT_EQ(kNativePositionMajor, unversioned->getMajorVersion());
+}
+
+TEST_F(NativePositionTest, RegisteredIdentity)
+{
+    expectNativeIdentity(PLUGINID_NATRON_POSITION, PLUGIN_MAJOR_NATRON_POSITION, "Position");
 }

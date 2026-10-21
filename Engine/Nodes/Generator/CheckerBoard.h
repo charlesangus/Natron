@@ -146,6 +146,7 @@ struct CheckerBoardOp {
         .grouping = PLUGIN_GROUP_IMAGE,
         .majorVersion = PLUGIN_MAJOR_NATRON_CHECKERBOARD,
         .minorVersion = 0,
+        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.CheckerBoardPlugin.png",
     };
 
     static constexpr ImagePipelineSpec kPipeline = {

@@ -21,12 +21,23 @@ permissions:
   contents: read
 
 jobs:
+  dev-image:
+    name: dev image
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/dev-image.yml
+
   # Builds once; the ctest legs below run off the build tree it uploads.
   build:
     name: build (debug)
+    needs: dev-image
     runs-on: ubuntu-latest
     container:
-      image: aswf/ci-vfxall:2027-clang21.1
+      image: ${{ needs.dev-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     defaults:
       run:
         shell: bash -l {0}
@@ -60,7 +71,6 @@ jobs:
       # 3G. If the end-of-job `ccache -s` keeps reporting cleanups,
       # raise this first.
       CCACHE_MAXSIZE: 3G
-      NATRON_DEPS_CACHE: ${{ github.workspace }}/.natron-deps
       # One compile per vCPU of the hosted runner; build.sh's default of 3 suits the dev machine.
       NATRON_BUILD_JOBS: 4
 
@@ -140,14 +150,6 @@ jobs:
             build/assets/CImg
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 
-      # The pinned Slang release is downloaded at configure time; the
-      # key hashes FetchSlang.cmake, so a version or SHA bump misses.
-      - name: Cache Slang
-        uses: actions/cache@v6.1.0
-        with:
-          path: .natron-deps
-          key: natron-deps-linux-${{ hashFiles('cmake/FetchSlang.cmake') }}
-
       - name: Fetch test assets
         run: tools/ci/local/fetch-assets.sh
 
@@ -201,14 +203,17 @@ jobs:
 
   ctest:
     name: ctest (${{ matrix.scheduler }})
-    needs: build
+    needs: [dev-image, build]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         scheduler: [legacy, taskgraph]
     container:
-      image: aswf/ci-vfxall:2027-clang21.1
+      image: ${{ needs.dev-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     defaults:
       run:
         shell: bash -l {0}
@@ -217,7 +222,6 @@ jobs:
       PYTHON_VERSION: '3.13'
       OCIO_CONFIG_VERSION: 2.5
       NATRON_IN_CONTAINER: 1
-      NATRON_DEPS_CACHE: ${{ github.workspace }}/.natron-deps
 
     steps:
       - name: Checkout branch
@@ -234,12 +238,6 @@ jobs:
             build/assets/TestPlugins
             build/assets/CImg
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
-
-      - name: Restore Slang
-        uses: actions/cache/restore@v6.1.0
-        with:
-          path: .natron-deps
-          key: natron-deps-linux-${{ hashFiles('cmake/FetchSlang.cmake') }}
 
       - name: Fetch test assets
         run: tools/ci/local/fetch-assets.sh

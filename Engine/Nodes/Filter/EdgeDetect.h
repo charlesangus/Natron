@@ -161,6 +161,7 @@ struct EdgeDetectOp {
         .grouping = PLUGIN_GROUP_FILTER,
         .majorVersion = PLUGIN_MAJOR_NATRON_EDGEDETECT,
         .minorVersion = 0,
+        .icon = NATRON_IMAGES_PATH "NativeNodes/eu.cimg.EdgeDetect.png",
         .inputs = kEdgeDetectInputs,
     };
 

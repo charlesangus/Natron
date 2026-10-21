@@ -136,51 +136,11 @@
 #include "Engine/ThreadPool.h"
 #include "Engine/TrackerNode.h"
 
-#include "Engine/Nodes/Channel/AddLayers.h"
-#include "Engine/Nodes/Channel/RemoveLayers.h"
-#include "Engine/Nodes/Channel/Shuffle.h"
-#include "Engine/Nodes/Color/Clamp.h"
-#include "Engine/Nodes/Color/ColorCorrect.h"
-#include "Engine/Nodes/Color/ColorLookup.h"
-#include "Engine/Nodes/Color/ColorMathNode.h"
-#include "Engine/Nodes/Color/Grade.h"
-#include "Engine/Nodes/Color/Invert.h"
-#include "Engine/Nodes/Color/Saturation.h"
-#include "Engine/Nodes/Deep/DeepAddLayers.h"
-#include "Engine/Nodes/Deep/DeepCrop.h"
-#include "Engine/Nodes/Deep/DeepExpression.h"
-#include "Engine/Nodes/Deep/DeepFromImage.h"
-#include "Engine/Nodes/Deep/DeepMerge.h"
-#include "Engine/Nodes/Deep/DeepRead.h"
-#include "Engine/Nodes/Deep/DeepRecolor.h"
-#include "Engine/Nodes/Deep/DeepReformat.h"
-#include "Engine/Nodes/Deep/DeepRemoveLayers.h"
-#include "Engine/Nodes/Deep/DeepToImage.h"
-#include "Engine/Nodes/Deep/DeepWrite.h"
-#include "Engine/Nodes/Filter/Blur.h"
-#include "Engine/Nodes/Filter/EdgeDetect.h"
-#include "Engine/Nodes/Filter/ErodeDilate.h"
-#include "Engine/Nodes/Generator/CheckerBoard.h"
-#include "Engine/Nodes/Generator/Constant.h"
-#include "Engine/Nodes/IO/NativeRead.h"
-#include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/IO/OiioWriteSupport.h"
-#include "Engine/Nodes/Keyer/ChromaKeyer.h"
-#include "Engine/Nodes/Keyer/Keyer.h"
-#include "Engine/Nodes/Merge/Dissolve.h"
-#include "Engine/Nodes/Merge/Merge.h"
-#include "Engine/Nodes/Merge/Switch.h"
-#include "Engine/Nodes/Metadata/CopyMetadata.h"
-#include "Engine/Nodes/Metadata/ModifyMetadata.h"
-#include "Engine/Nodes/Metadata/RemoveMetadata.h"
-#include "Engine/Nodes/Metadata/ViewMetadata.h"
-#include "Engine/Nodes/MissingPluginNode.h"
-#include "Engine/Nodes/Transform/Crop.h"
-#include "Engine/Nodes/Transform/Position.h"
-#include "Engine/Nodes/Transform/Reformat.h"
-#include "Engine/Nodes/Transform/Transform.h"
-#include "Engine/Nodes/TypedPassthrough.h"
+#include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/NativeRegistry.h"
+#include "Engine/Nodes/NodeSpec.h"
 
 #include "Engine/NodeGroup.h"
 #include "Engine/Utils.h"
@@ -1595,16 +1555,16 @@ AppManager::onAllPluginsLoaded()
     }
 } // AppManager::onAllPluginsLoaded
 
-template <typename PLUGIN>
 void
-AppManager::registerBuiltInPlugin(const QString& iconPath,
+AppManager::registerBuiltInEffect(const EffectInstancePtr& node,
+                                  void (*buildEffect)(),
+                                  const QString& iconPath,
                                   bool isDeprecated,
                                   bool internalUseOnly)
 {
-    EffectInstancePtr node( PLUGIN::BuildEffect( NodePtr() ) );
     std::map<std::string, void (*)()> functions;
 
-    functions.insert( std::make_pair("BuildEffect", ( void (*)() ) & PLUGIN::BuildEffect) );
+    functions.insert(std::make_pair("BuildEffect", buildEffect));
     LibraryBinary *binary = new LibraryBinary(functions);
     assert(binary);
 
@@ -1632,6 +1592,34 @@ AppManager::registerBuiltInPlugin(const QString& iconPath,
     }
 }
 
+template <typename PLUGIN>
+void
+AppManager::registerBuiltInPlugin(const QString& iconPath,
+                                  bool isDeprecated,
+                                  bool internalUseOnly)
+{
+    EffectInstancePtr node(PLUGIN::BuildEffect(NodePtr()));
+
+    registerBuiltInEffect(node, (void (*)())&PLUGIN::BuildEffect, iconPath, isDeprecated, internalUseOnly);
+}
+
+template <typename PLUGIN>
+void
+AppManager::registerNativePlugin()
+{
+    EffectInstancePtr node(PLUGIN::BuildEffect(NodePtr()));
+    // Through the built effect rather than PLUGIN: not every node exposes its spec as a static
+    // member (Keyer's lives in its .cpp, MissingPluginNode builds its own), and a templated
+    // registration such as MergePreset is not itself the effect class.
+    const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(node.get());
+    if (!native) {
+        throw std::logic_error("A native node registration fragment names " + node->getPluginID() + ", which is not a NativeEffectBase");
+    }
+    const NodeSpec* spec = native->nodeSpec();
+
+    registerBuiltInEffect(node, (void (*)())&PLUGIN::BuildEffect, QString::fromUtf8(spec->icon.data(), static_cast<int>(spec->icon.size())), spec->deprecated, spec->internal);
+}
+
 void
 AppManager::loadBuiltinNodePlugins()
 {
@@ -1640,72 +1628,16 @@ AppManager::loadBuiltinNodePlugins()
     registerBuiltInPlugin<GroupInput>(QString::fromUtf8(NATRON_IMAGES_PATH "input_icon.png"), false, false);
     registerBuiltInPlugin<NodeGroup>(QString::fromUtf8(NATRON_IMAGES_PATH "group_icon.png"), false, false);
     registerBuiltInPlugin<Dot>(QString::fromUtf8(NATRON_IMAGES_PATH "dot_icon.png"), false, false);
-    registerBuiltInPlugin<TypedPassthrough>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<ModifyMetadata>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<CopyMetadata>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<RemoveMetadata>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<ViewMetadata>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<DeepRead>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<DeepWrite>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<DeepMerge>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<DeepToImage>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<DeepFromImage>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<DeepRecolor>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<DeepCrop>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<DeepExpression>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<DeepReformat>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<DeepRemoveLayers>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<DeepAddLayers>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<Shuffle>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<ShuffleCopy>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<RemoveLayers>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<AddLayers>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<Grade>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.GradePlugin.png"), false, false);
-    registerBuiltInPlugin<ColorCorrect>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.ColorCorrectPlugin.png"), false, false);
-    registerBuiltInPlugin<Saturation>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.SaturationPlugin.png"), false, false);
-    registerBuiltInPlugin<Clamp>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Clamp.png"), false, false);
-    registerBuiltInPlugin<Invert>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Invert.png"), false, false);
-    registerBuiltInPlugin<ColorMathAdd>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.AddPlugin.png"), false, false);
-    registerBuiltInPlugin<ColorMathMultiply>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MultiplyPlugin.png"), false, false);
-    registerBuiltInPlugin<ColorMathGamma>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.GammaPlugin.png"), false, false);
-    registerBuiltInPlugin<Constant>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.ConstantPlugin.png"), false, false);
-    registerBuiltInPlugin<Solid>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Solid.png"), false, false);
-    registerBuiltInPlugin<CheckerBoard>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.CheckerBoardPlugin.png"), false, false);
-    registerBuiltInPlugin<MergePreset<eMergePresetMerge>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergePlugin.png"), false, false);
-    registerBuiltInPlugin<MergePreset<eMergePresetPlus>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergePlus.png"), false, false);
-    registerBuiltInPlugin<MergePreset<eMergePresetMatte>>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<MergePreset<eMergePresetMultiply>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeMultiply.png"), false, false);
-    registerBuiltInPlugin<MergePreset<eMergePresetIn>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeIn.png"), false, false);
-    registerBuiltInPlugin<MergePreset<eMergePresetOut>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeOut.png"), false, false);
-    registerBuiltInPlugin<MergePreset<eMergePresetScreen>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeScreen.png"), false, false);
-    registerBuiltInPlugin<MergePreset<eMergePresetMax>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeMax.png"), false, false);
-    registerBuiltInPlugin<MergePreset<eMergePresetMin>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeMin.png"), false, false);
-    registerBuiltInPlugin<MergePreset<eMergePresetDifference>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeDifference.png"), false, false);
-    registerBuiltInPlugin<Dissolve>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.DissolvePlugin.png"), false, false);
-    registerBuiltInPlugin<Switch>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.switchPlugin.png"), false, false);
-    registerBuiltInPlugin<Crop>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.CropPlugin.png"), false, false);
-    registerBuiltInPlugin<Position>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Position.png"), false, false);
-    registerBuiltInPlugin<TransformNode>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.TransformPlugin.png"), false, false);
-    registerBuiltInPlugin<TransformMasked>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.TransformMaskedPlugin.png"), false, false);
-    registerBuiltInPlugin<Reformat>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Reformat.png"), false, false);
-    registerBuiltInPlugin<Blur>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.cimg.CImgBlur.png"), false, false);
-    registerBuiltInPlugin<Keyer>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.KeyerPlugin.png"), false, false);
-    registerBuiltInPlugin<ChromaKeyer>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.ChromaKeyerPlugin.png"), false, false);
-    registerBuiltInPlugin<ErodeDilate>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.cimg.CImgErode.png"), false, false);
-    registerBuiltInPlugin<Dilate>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.cimg.CImgDilate.png"), false, false);
-    registerBuiltInPlugin<EdgeDetect>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/eu.cimg.EdgeDetect.png"), false, false);
-    registerBuiltInPlugin<ColorLookup>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.ColorLookupPlugin.png"), false, false);
     registerBuiltInPlugin<DiskCacheNode>(QString::fromUtf8(NATRON_IMAGES_PATH "diskcache_icon.png"), false, false);
     registerBuiltInPlugin<RotoPaint>(QString::fromUtf8(NATRON_ICONS_PATH "lucide/brush.svg"), false, false);
     registerBuiltInPlugin<RotoNode>(QString::fromUtf8(NATRON_IMAGES_PATH "rotoNodeIcon.png"), false, false);
     registerBuiltInPlugin<RotoSmear>(QString::fromUtf8(""), false, true);
-    registerBuiltInPlugin<MissingPluginNode>(QString::fromUtf8(""), false, true);
     registerBuiltInPlugin<PrecompNode>(QString::fromUtf8(NATRON_IMAGES_PATH "precompNodeIcon.png"), false, false);
     registerBuiltInPlugin<TrackerNode>(QString::fromUtf8(NATRON_IMAGES_PATH "trackerNodeIcon.png"), false, false);
     registerBuiltInPlugin<JoinViewsNode>(QString::fromUtf8(NATRON_IMAGES_PATH "joinViewsNode.png"), false, false);
     registerBuiltInPlugin<OneViewNode>(QString::fromUtf8(NATRON_IMAGES_PATH "oneViewNode.png"), false, false);
-    registerBuiltInPlugin<NativeRead>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<NativeWrite>(QString::fromUtf8(NATRON_IMAGES_PATH "writeImage.png"), false, false);
+
+#include "NativeRegistryAll.inc"
 
     if ( !isBackground() ) {
         registerBuiltInPlugin<ViewerInstance>(QString::fromUtf8(NATRON_IMAGES_PATH "viewer_icon.png"), false, false);

@@ -55,6 +55,17 @@ list(APPEND NatronGui_SOURCES
     GuiResources.qrc
 )
 add_library(NatronGui STATIC ${NatronGui_HEADERS} ${NatronGui_SOURCES})
+
+# Adding an icon PNG to this directory is enough; no qrc edit is needed.
+# CONFIGURE_DEPENDS re-runs the glob at build time so a new file triggers regeneration.
+set(NATIVE_NODE_ICON_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Images/NativeNodes")
+file(GLOB NATIVE_NODE_ICONS CONFIGURE_DEPENDS "${NATIVE_NODE_ICON_DIR}/*.png")
+list(SORT NATIVE_NODE_ICONS)
+qt_add_resources(NatronGui NativeNodes
+    PREFIX "/Resources/Images/NativeNodes"
+    BASE "${NATIVE_NODE_ICON_DIR}"
+    FILES ${NATIVE_NODE_ICONS}
+)
 target_link_libraries(NatronGui
     PUBLIC
         ${SHIBOKEN_LIB}

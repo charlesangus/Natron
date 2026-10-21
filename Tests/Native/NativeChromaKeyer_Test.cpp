@@ -39,6 +39,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -338,4 +339,9 @@ TEST_F(NativeChromaKeyerTest, ProblemPixelsKeyToFiniteValues)
             }
         }
     }
+}
+
+TEST_F(NativeChromaKeyerTest, RegisteredIdentity)
+{
+    expectNativeIdentity(PLUGINID_NATRON_CHROMAKEYER, PLUGIN_MAJOR_NATRON_CHROMAKEYER, "ChromaKeyer");
 }

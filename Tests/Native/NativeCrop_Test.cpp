@@ -39,6 +39,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -451,4 +452,9 @@ TEST_F(NativeCropTest, ReformatOnDefaultMakesTheSourceExtentTheOutputFormat)
     const RectI expected(0, 0, (int)(sourceRoD.x2 - sourceRoD.x1), (int)(sourceRoD.y2 - sourceRoD.y1));
     EXPECT_EQ(expected, crop->getEffectInstance()->getOutputFormat());
     EXPECT_EQ(RectD(0., 0., expected.x2, expected.y2), regionOfDefinition(crop, kTime));
+}
+
+TEST_F(NativeCropTest, RegisteredIdentity)
+{
+    expectNativeIdentity(PLUGINID_NATRON_CROP, PLUGIN_MAJOR_NATRON_CROP, "Crop");
 }

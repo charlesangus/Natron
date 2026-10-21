@@ -176,6 +176,12 @@ jobs:
           set -euo pipefail
           shellcheck tools/ci/check_serialization_layering.sh
 
+      - name: Slang and glslang pins match local image
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools/ci/local/check-image-pins.sh
+
       - name: actionlint workflows
         shell: bash
         run: |

@@ -33,6 +33,7 @@
 
 #include "BaseTest.h"
 #include "NativeMetadataTestEffect.h"
+#include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
@@ -54,8 +55,8 @@
 NATRON_NAMESPACE_USING
 
 namespace {
-const char kOfxColorMatrixID[] = "net.sf.openfx.ColorMatrixPlugin";
-const int kOfxColorMatrixMajor = 2;
+const char kOfxPointMatrixID[] = kNatronTestPointMatrixPluginID;
+const int kOfxPointMatrixMajor = kNatronTestPointMatrixMajor;
 
 NativeEffectBase*
 nativeEffectOf(const NodePtr& node)
@@ -241,10 +242,10 @@ TEST_F(BaseTest, DotChainMetadataReachesOfxInputClipExactly)
     NodePtr source = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
     NodePtr dotA = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
     NodePtr dotB = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
-    NodePtr downstream = createNode(QString::fromUtf8(kOfxColorMatrixID), kOfxColorMatrixMajor);
+    NodePtr downstream = createNode(QString::fromUtf8(kOfxPointMatrixID), kOfxPointMatrixMajor);
 
     ASSERT_TRUE(source && dotA && dotB);
-    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxColorMatrixID;
+    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxPointMatrixID;
 
     NativeEffectBase* sourceEffect = nativeEffectOf(source);
 
@@ -265,10 +266,10 @@ TEST_F(BaseTest, DotMetadataReachesOfxInputClipAfterKnobChangeOnTheSource)
 {
     NodePtr source = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
     NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
-    NodePtr downstream = createNode(QString::fromUtf8(kOfxColorMatrixID), kOfxColorMatrixMajor);
+    NodePtr downstream = createNode(QString::fromUtf8(kOfxPointMatrixID), kOfxPointMatrixMajor);
 
     ASSERT_TRUE(source && dot);
-    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxColorMatrixID;
+    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxPointMatrixID;
 
     connectNodes(source, dot, 0, true);
     connectNodes(dot, downstream, 0, true);
@@ -283,10 +284,10 @@ TEST_F(BaseTest, DotMetadataReachesOfxInputClipAfterKnobChangeOnTheSource)
 TEST_F(BaseTest, DisconnectedDotKeepsTheHostFallbackOnOfxInputClip)
 {
     NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
-    NodePtr downstream = createNode(QString::fromUtf8(kOfxColorMatrixID), kOfxColorMatrixMajor);
+    NodePtr downstream = createNode(QString::fromUtf8(kOfxPointMatrixID), kOfxPointMatrixMajor);
 
     ASSERT_TRUE(bool(dot));
-    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxColorMatrixID;
+    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxPointMatrixID;
 
     connectNodes(dot, downstream, 0, true);
 

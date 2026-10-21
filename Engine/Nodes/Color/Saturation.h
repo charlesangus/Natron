@@ -75,6 +75,7 @@ struct SaturationOp {
         .grouping = PLUGIN_GROUP_COLOR,
         .majorVersion = PLUGIN_MAJOR_NATRON_SATURATION,
         .minorVersion = 0,
+        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.SaturationPlugin.png",
         .inputs = kSaturationInputs,
     };
 

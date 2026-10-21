@@ -39,6 +39,7 @@
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
+#include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
@@ -216,7 +217,7 @@ public:
         graph->underTest = createReader(NATRON_TESTS_FIXTURES_DIR "/flat-seq-layers.####.exr");
     }
 
-    // OFX Switch (net.sf.openfx.switchPlugin): input 0 is Read(flat-three-layers.exr) (diffuse +
+    // Two-input routing OFX node: input 0 is Read(flat-three-layers.exr) (diffuse +
     // specular), input 1 is Read(flat-rgba-only.exr) (RGBA only). `which` is keyed 0 at frame 1
     // and 1 at frame 2, so the node under test switches streams across the same two frames.
     void buildSwitch(TimeVaryingGraph* graph)
@@ -225,7 +226,7 @@ public:
         NodePtr readerB = createReader(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr");
         ASSERT_TRUE(readerA && readerB);
 
-        NodePtr switchNode = createNode(QString::fromUtf8("net.sf.openfx.switchPlugin"));
+        NodePtr switchNode = createNode(QString::fromUtf8(kNatronTestTwoInputCopyPluginID));
         ASSERT_TRUE(bool(switchNode));
 
         connectNodes(readerA, switchNode, 0, true);
@@ -294,7 +295,7 @@ public:
         NodePtr rgbaOnly = createReader(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr");
         ASSERT_TRUE(withDiffuse && rgbaOnly);
 
-        NodePtr switchNode = createNode(QString::fromUtf8("net.sf.openfx.switchPlugin"));
+        NodePtr switchNode = createNode(QString::fromUtf8(kNatronTestTwoInputCopyPluginID));
         ASSERT_TRUE(bool(switchNode));
 
         connectNodes(reversed ? rgbaOnly : withDiffuse, switchNode, 0, true);
@@ -468,10 +469,10 @@ TEST_F(TimeVaryingLayersTest, ReversedSwitchOnDiffuseRowSelectorListsRoutedInput
     expectSwitchSelectorListsRoutedInput(&TimeVaryingLayersTest::buildReversedSwitchDiffuseRow);
 }
 
-// A FrameHold passes its input through at the held frame, so its layers are that frame's
+// A one-frame absolute FrameWindow, a hold, passes its input through at the held frame, so its layers are that frame's
 // whatever frame it is queried at: holding frame 1 of the sequence carries diffuse at frame 2,
 // where the sequence itself does not.
-TEST_F(TimeVaryingLayersTest, FrameHoldOnAllReportsHeldFrameLayers)
+TEST_F(TimeVaryingLayersTest, HeldFrameOnAllReportsHeldFrameLayers)
 {
     for (int firstFrame = 1; firstFrame <= 2; ++firstFrame) {
         SCOPED_TRACE("frame " + std::to_string(firstFrame) + " queried first");
@@ -479,15 +480,16 @@ TEST_F(TimeVaryingLayersTest, FrameHoldOnAllReportsHeldFrameLayers)
 
         NodePtr reader = createReader(NATRON_TESTS_FIXTURES_DIR "/flat-seq-layers.####.exr");
         ASSERT_TRUE(bool(reader));
-        NodePtr hold = createNode(QString::fromUtf8("net.sf.openfx.FrameHold"));
+        NodePtr hold = createNode(QString::fromUtf8(kNatronTestFrameWindowPluginID));
         ASSERT_TRUE(bool(hold));
         connectNodes(reader, hold, 0, true);
 
-        KnobIntPtr firstFrameKnob = std::dynamic_pointer_cast<KnobInt>(hold->getKnobByName("firstFrame"));
-        KnobIntPtr increment = std::dynamic_pointer_cast<KnobInt>(hold->getKnobByName("increment"));
-        ASSERT_TRUE(firstFrameKnob && increment);
-        firstFrameKnob->setValue(1);
-        increment->setValue(0);
+        KnobIntPtr frameRange = std::dynamic_pointer_cast<KnobInt>(hold->getKnobByName("frameRange"));
+        KnobBoolPtr absolute = std::dynamic_pointer_cast<KnobBool>(hold->getKnobByName("absolute"));
+        ASSERT_TRUE(frameRange && absolute);
+        absolute->setValue(true);
+        frameRange->setValue(1, ViewSpec::all(), 0);
+        frameRange->setValue(1, ViewSpec::all(), 1);
         setChannelsAll(hold);
         if (HasFatalFailure()) {
             return;

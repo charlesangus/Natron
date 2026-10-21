@@ -1,0 +1,36 @@
+Inputs of the GPU cost model seed rows, Engine/Nodes/**/*.costseed.inc and Engine/GpuCostSeeds/ofx/*.inc.
+
+Serial (noRenderThreads=1) inputs, dated by file modification time:
+  build/bench/m82-profile/cg_multipass-serial.steady.jsonl (2026-10-10)
+  build/bench/m82-profile/defocus_retime-serial.steady.jsonl (2026-10-10)
+  build/bench/m82-profile/keying_grade-serial.steady.jsonl (2026-10-10)
+  build/bench/m85-nodes/invert-serial.steady.jsonl (2026-10-14)
+  build/bench/m85-nodes/clamp-serial.steady.jsonl (2026-10-14)
+  build/bench/m85-nodes/add-serial.steady.jsonl (2026-10-14)
+  build/bench/m85-nodes/multiply-serial.steady.jsonl (2026-10-14)
+  build/bench/m85-nodes/gamma-serial.steady.jsonl (2026-10-14)
+  build/bench/m85-nodes/saturation-serial.steady.jsonl (2026-10-14)
+  build/bench/m85-nodes/colorlookup-serial.steady.jsonl (2026-10-14)
+  build/bench/m85-nodes/constant-serial.steady.jsonl (2026-10-14)
+  build/bench/m85-nodes/solid-serial.steady.jsonl (2026-10-14)
+Threaded inputs:
+  build/bench/m82-profile/cg_multipass.steady.jsonl (2026-10-10)
+  build/bench/m82-profile/defocus_retime.steady.jsonl (2026-10-10)
+  build/bench/m82-profile/keying_grade.steady.jsonl (2026-10-10)
+  build/bench/m85-nodes/invert.steady.jsonl (2026-10-14)
+  build/bench/m85-nodes/clamp.steady.jsonl (2026-10-14)
+  build/bench/m85-nodes/add.steady.jsonl (2026-10-14)
+  build/bench/m85-nodes/multiply.steady.jsonl (2026-10-14)
+  build/bench/m85-nodes/gamma.steady.jsonl (2026-10-14)
+  build/bench/m85-nodes/saturation.steady.jsonl (2026-10-14)
+  build/bench/m85-nodes/colorlookup.steady.jsonl (2026-10-14)
+  build/bench/m85-nodes/constant.steady.jsonl (2026-10-14)
+  build/bench/m85-nodes/solid.steady.jsonl (2026-10-14)
+
+Regenerate from the repository root with:
+  tools/bench/render-profile-report.py --serial-profile build/bench/m82-profile/cg_multipass.steady.jsonl=build/bench/m82-profile/cg_multipass-serial.steady.jsonl --serial-profile build/bench/m82-profile/defocus_retime.steady.jsonl=build/bench/m82-profile/defocus_retime-serial.steady.jsonl --serial-profile build/bench/m82-profile/keying_grade.steady.jsonl=build/bench/m82-profile/keying_grade-serial.steady.jsonl --serial-profile build/bench/m85-nodes/invert.steady.jsonl=build/bench/m85-nodes/invert-serial.steady.jsonl --serial-profile build/bench/m85-nodes/clamp.steady.jsonl=build/bench/m85-nodes/clamp-serial.steady.jsonl --serial-profile build/bench/m85-nodes/add.steady.jsonl=build/bench/m85-nodes/add-serial.steady.jsonl --serial-profile build/bench/m85-nodes/multiply.steady.jsonl=build/bench/m85-nodes/multiply-serial.steady.jsonl --serial-profile build/bench/m85-nodes/gamma.steady.jsonl=build/bench/m85-nodes/gamma-serial.steady.jsonl --serial-profile build/bench/m85-nodes/saturation.steady.jsonl=build/bench/m85-nodes/saturation-serial.steady.jsonl --serial-profile build/bench/m85-nodes/colorlookup.steady.jsonl=build/bench/m85-nodes/colorlookup-serial.steady.jsonl --serial-profile build/bench/m85-nodes/constant.steady.jsonl=build/bench/m85-nodes/constant-serial.steady.jsonl --serial-profile build/bench/m85-nodes/solid.steady.jsonl=build/bench/m85-nodes/solid-serial.steady.jsonl build/bench/m82-profile/cg_multipass.steady.jsonl build/bench/m82-profile/defocus_retime.steady.jsonl build/bench/m82-profile/keying_grade.steady.jsonl build/bench/m85-nodes/invert.steady.jsonl build/bench/m85-nodes/clamp.steady.jsonl build/bench/m85-nodes/add.steady.jsonl build/bench/m85-nodes/multiply.steady.jsonl build/bench/m85-nodes/gamma.steady.jsonl build/bench/m85-nodes/saturation.steady.jsonl build/bench/m85-nodes/colorlookup.steady.jsonl build/bench/m85-nodes/constant.steady.jsonl build/bench/m85-nodes/solid.steady.jsonl --emit-cost-table .
+
+CPU rows: serial ms per Mpx (median over tasks weighted by RoI pixels) and parallel speedup (serial over
+threaded ms per Mpx). Motion-blur CPU rows: the same, for the plugins the bench comps render with motion
+blur. CPU sigma rows and the GPU rows are in-situ measurements hard-coded in the generator; the GPU rows
+are kernel-only ms per Mpx on an RX 7900 XTX, from the kernelMs of lone-node regions at UHD.

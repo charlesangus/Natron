@@ -43,6 +43,7 @@
 #include "BaseTest.h"
 #include "FlatExrReader.h"
 #include "MultiplanarTestEffect.h"
+#include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
@@ -161,12 +162,12 @@ protected:
         NodePtr readerA = createReader("flat-three-layers.exr");
         NodePtr readerB = createReader("flat-rgba-only.exr");
 
-        NodePtr switchNode = createNode(QString::fromUtf8("net.sf.openfx.switchPlugin"));
+        NodePtr switchNode = createNode(QString::fromUtf8(kNatronTestTwoInputCopyPluginID), kNatronTestTwoInputCopyMajor);
         EXPECT_TRUE(bool(switchNode));
         connectNodes(readerA, switchNode, 0, true);
         connectNodes(readerB, switchNode, 1, true);
 
-        KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName("which"));
+        KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName(kNatronTestTwoInputCopyParamWhich));
         EXPECT_TRUE(bool(which));
         if (which) {
             which->setValueAtTime(1, 0, ViewSpec::all(), 0);
@@ -809,11 +810,11 @@ TEST_F(RemoveLayersRenderTest, BlurOnAllOverASwitchRoutedToAColourlessStreamWrit
     NodePtr colored = createReader("flat-rgba-only.exr");
     ASSERT_TRUE(bool(colored));
 
-    NodePtr switchNode = createNode(QString::fromUtf8("net.sf.openfx.switchPlugin"));
+    NodePtr switchNode = createNode(QString::fromUtf8(kNatronTestTwoInputCopyPluginID), kNatronTestTwoInputCopyMajor);
     ASSERT_TRUE(bool(switchNode));
     connectNodes(_remove, switchNode, 0, true);
     connectNodes(colored, switchNode, 1, true);
-    KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName("which"));
+    KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName(kNatronTestTwoInputCopyParamWhich));
     ASSERT_TRUE(bool(which));
     which->setValue(0);
     _last = switchNode;

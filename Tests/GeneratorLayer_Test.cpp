@@ -39,6 +39,7 @@ CLANG_DIAG_ON(deprecated)
 
 #include "BaseTest.h"
 #include "FlatExrReader.h"
+#include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
@@ -63,9 +64,8 @@ namespace {
 // specular (0, 0, 1).
 const int kSize = 8;
 
-// A generator built on openfx-misc's Generator base that stays OpenFX.
-const char kOfxGeneratorID[] = "net.sf.openfx.ColorWheel";
-const int kOfxGeneratorMajor = 1;
+const char kOfxGeneratorID[] = kNatronTestGeneratorPluginID;
+const int kOfxGeneratorMajor = kNatronTestGeneratorMajor;
 
 const double kConstantR = 0.75;
 const double kConstantG = 0.5;
@@ -270,9 +270,9 @@ TEST_F(GeneratorLayerTest, ConstantWithoutSourceWritesDepthOnly)
     project->reset(false, true);
 }
 
-// Ramp carries its own R/G/B/A quad: the host adopts it, forces it on and masks the plane
+// The test Generator carries its own R/G/B/A quad: the host adopts it, forces it on and masks the plane
 // itself, so only the selected channel of the target plane changes.
-TEST_F(GeneratorLayerTest, RampOverSourceWritesOneChannelOfDiffuse)
+TEST_F(GeneratorLayerTest, QuadGeneratorOverSourceWritesOneChannelOfDiffuse)
 {
     ProjectPtr project = getApp()->getProject();
 
@@ -281,24 +281,22 @@ TEST_F(GeneratorLayerTest, RampOverSourceWritesOneChannelOfDiffuse)
     NodePtr reader = createFixtureReader();
     ASSERT_TRUE(bool(reader));
     KnobLayerSelectPtr layer;
-    NodePtr ramp = createGenerator("net.sf.openfx.Ramp", &layer);
-    ASSERT_TRUE(bool(ramp));
+    NodePtr generatorNode = createGenerator(kOfxGeneratorID, &layer, kOfxGeneratorMajor);
+    ASSERT_TRUE(bool(generatorNode));
     ASSERT_TRUE(bool(layer));
-    EXPECT_TRUE(ramp->isTargetLayerKnob(layer));
-    connectNodes(reader, ramp, 0, true);
+    EXPECT_TRUE(generatorNode->isTargetLayerKnob(layer));
+    connectNodes(reader, generatorNode, 0, true);
 
     static const char* const quad[4] = { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA };
     for (int i = 0; i < 4; ++i) {
-        KnobBoolPtr process = std::dynamic_pointer_cast<KnobBool>(ramp->getKnobByName(quad[i]));
+        KnobBoolPtr process = std::dynamic_pointer_cast<KnobBool>(generatorNode->getKnobByName(quad[i]));
         ASSERT_TRUE(bool(process)) << quad[i];
         EXPECT_TRUE(process->getIsSecret()) << quad[i];
         EXPECT_TRUE(process->getValue()) << quad[i];
         EXPECT_FALSE(process->getIsPersistent()) << quad[i];
     }
 
-    // Equal end colors make the ramp flat, whatever its geometry.
-    setColor(ramp, "color0", kConstantR, kConstantG, kConstantB, kConstantA);
-    setColor(ramp, "color1", kConstantR, kConstantG, kConstantB, kConstantA);
+    setColor(generatorNode, kNatronTestGeneratorParamColor, kConstantR, kConstantG, kConstantB, kConstantA);
 
     layer->setLayer("diffuse");
     layer->setChannels(std::vector<std::string>(1, "R"));
@@ -307,7 +305,7 @@ TEST_F(GeneratorLayerTest, RampOverSourceWritesOneChannelOfDiffuse)
     ASSERT_TRUE(tmp.isValid());
     FlatExrImage image;
     std::string error;
-    ASSERT_TRUE(renderAllLayers(ramp, tmp, &image, &error)) << error;
+    ASSERT_TRUE(renderAllLayers(generatorNode, tmp, &image, &error)) << error;
 
     expectChannelEverywhere(image, "diffuse.R", (float)kConstantR);
     expectChannelEverywhere(image, "diffuse.G", 1.f);
@@ -351,7 +349,7 @@ TEST_F(GeneratorLayerTest, ConstantWritesTwoChannelsOfColor)
 }
 
 // The plug-in's own "Output Components" choice is redundant with the layer select's channel
-// buttons and openfx-misc's Generator base reads it unconditionally, so the host must hide it.
+// buttons and the plug-in reads it unconditionally, so the host must hide it.
 // It stays pinned to RGBA regardless of the selection: the buttons choose which channels the
 // plug-in writes, but the others still pass through (or are zero with no source), so the
 // stream itself always carries all four channels.

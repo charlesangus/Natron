@@ -1,0 +1,1 @@
+slang_add_kernel(saturation_wrapped Kernels/saturation.slang ENTRY saturation_wrapped REGISTRY NatronGpu)

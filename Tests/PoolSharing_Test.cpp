@@ -658,6 +658,7 @@ TEST_F(PoolSharing, WideGraphLeavesGetOneThreadEach)
     const int kLeaves = 64;
     // Every task takes long enough that the tasks admitted together are still running when the next leaf starts.
     const int kDelayMs = 10;
+    ASSERT_NO_FATAL_FAILURE(assertDefaultThreadSettings());
     PoolSizeGuard pool(4);
     CountingTestRegistry::reset();
 
@@ -681,22 +682,47 @@ TEST_F(PoolSharing, WideGraphLeavesGetOneThreadEach)
         level.swap(next);
     }
 
+    struct Seen {
+        int threads;
+        int order;
+        RenderScheduler::TaskBudgetInputs inputs;
+    };
     std::mutex mutex;
-    std::map<const Node*, int> seen;
+    std::map<const Node*, Seen> seen;
+    int renders = 0;
     CountingTestRegistry::setRenderHook([&](const Node* node) {
-        const int n = appPTR->getNCPUsAvailableForEffect();
+        Seen s;
+        s.threads = appPTR->getNCPUsAvailableForEffect();
+        s.inputs = RenderScheduler::getLastTaskBudgetInputsForTests();
         std::lock_guard<std::mutex> k(mutex);
-        seen[node] = n;
+        s.order = renders++;
+        seen[node] = s;
     });
     std::string error;
     const bool ok = renderCounting(level.front(), &error);
     CountingTestRegistry::reset();
     ASSERT_TRUE(ok) << error;
 
+    // A leaf taken while fewer tasks than threads are running or ready, as near the end of the wave, legitimately
+    // gets the spare threads, so each leaf is checked against the load it was taken under rather than a fixed 1.
+    int fullPoolLeaves = 0;
+    std::string shortPoolLeaves;
     for (std::size_t i = 0; i < leaves.size(); ++i) {
         ASSERT_EQ(1u, seen.count(leaves[i].get())) << "leaf " << i << " never rendered";
-        EXPECT_EQ(1, seen[leaves[i].get()]) << "leaf " << i;
+        const Seen& s = seen[leaves[i].get()];
+        const RenderScheduler::TaskBudgetInputs& in = s.inputs;
+        ASSERT_EQ(4, in.poolMax) << "leaf " << i;
+        EXPECT_EQ(RenderScheduler::computeTaskBudget(in.poolMax, in.running, in.ready, in.cores, in.perEffect), s.threads)
+            << "leaf " << i << ": " << in.running << " running, " << in.ready << " ready";
+        if (in.running + in.ready >= in.poolMax) {
+            ++fullPoolLeaves;
+            EXPECT_EQ(1, s.threads) << "leaf " << i << ": " << in.running << " running, " << in.ready << " ready";
+        } else {
+            shortPoolLeaves += " leaf " + std::to_string(i) + " (render " + std::to_string(s.order) + " of " + std::to_string(renders) + ", " + std::to_string(in.running) + " running, " + std::to_string(in.ready) + " ready)";
+        }
     }
+    // The wide case is the point of this test: with too few leaves taken under a full pool it would check nothing.
+    EXPECT_GE(fullPoolLeaves, kLeaves / 2) << "found the pool short:" << shortPoolLeaves;
 }
 
 TEST_F(PoolSharing, ConcurrentLeavesShareThePoolEvenly)

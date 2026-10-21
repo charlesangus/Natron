@@ -26,7 +26,8 @@
 #                        run's log is ctest-<scheduler>-seed<seed>.log next to
 #                        the unshuffled ctest-<scheduler>.log. The ctest step's
 #                        timeout is a fixed 120 minutes, which fits about five
-#                        seeds on the debug preset.
+#                        seeds on the debug preset, so at most 5 seeds are
+#                        accepted.
 #   --no-appimage     -> skip packaging and downloading the AppImage.
 #   --mode            -> print the build mode (local or remote) and exit. Takes
 #                        no other arguments. The mode is the first non-blank,
@@ -137,6 +138,13 @@ done
 
 if [[ -z "${PRESET}" ]]; then
     echo "build.sh: a preset (fast|release|debug) is required" >&2
+    usage
+    exit 1
+fi
+
+# The ctest step's 120-minute timeout covers about five seeds on the debug preset.
+if [[ -n "${SHUFFLE_SEEDS}" ]] && (( $(tr -cd ',' <<<"${SHUFFLE_SEEDS}" | wc -c) + 1 > 5 )); then
+    echo "build.sh: --shuffle-seeds accepts at most 5 seeds (the ctest step's 120-minute timeout covers about five), got '${SHUFFLE_SEEDS}'" >&2
     usage
     exit 1
 fi

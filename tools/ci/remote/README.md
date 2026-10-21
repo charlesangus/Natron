@@ -72,7 +72,8 @@ tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--sh
   between cases. Every seed runs even after a failure, the leg fails if any
   run did, and each shuffled run's log is `ctest-<scheduler>-seed<seed>.log`.
   The ctest step's timeout rises from 30 to a fixed 120 minutes, about five
-  seeds on the debug preset.
+  seeds on the debug preset, so at most 5 seeds are accepted; `build.sh` and
+  the workflow both reject a longer list.
 - `--no-appimage` skips packaging and downloading the AppImage. `debug`
   implies it.
 - The ctest suite has one entry per gtest suite, not per case, so `ctest -R`

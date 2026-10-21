@@ -275,6 +275,14 @@ jobs:
           NATRON_CTEST_JOBS: 4
         run: |
           set -o pipefail
+          if [[ -n "$SHUFFLE_SEEDS" ]]; then
+            seed_list=${SHUFFLE_SEEDS//,/ }
+            seed_count=$(wc -w <<<"$seed_list")
+            if (( seed_count > 5 )); then
+              echo "::error::shuffle_seeds has $seed_count seeds; at most 5 fit the 120-minute ctest step timeout"
+              exit 1
+            fi
+          fi
           mkdir -p ctest-logs
           rc=0
           tools/ci/local/test.sh ctest "$PRESET" 2>&1 | tee "ctest-logs/ctest-${{ matrix.scheduler }}.log" || rc=$?

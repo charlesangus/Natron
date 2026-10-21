@@ -13,6 +13,8 @@ Because of these, PLAN-FORMAT §8a's file-overlap test would serialise every por
 
 Deps: M85 - Native GPU Kernels (its `slang_add_kernel` lines and cost seeds are migrated here).
 
+Freshness check 2026-10-20 on main `31636d20d` (after M137, M109, M126): corrections are folded into the tasks below; the scouted list keeps its original line numbers for history.
+
 Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels facts from `origin/milestone/m85-native-gpu-kernels`; re-check at promotion):
 - **Registration:** one `registerBuiltInPlugin<T>(icon, deprecated, internal)` line per node in `Engine/AppManager.cpp:1625-1674`. The template is just above. Icons are `NATRON_IMAGES_PATH "NativeNodes/<ofx-id>.png"`.
 - **Node directories:** `Engine/Nodes/{Channel,Color,Deep,Filter,Generator,IO,Image,Keyer,Merge,Metadata,Transform}/`. `Engine/CMakeLists.txt:43-46` GLOB_RECURSEs `Engine/Nodes/**`.
@@ -110,11 +112,14 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 ## Phase 120.1: Per-node manifests
 
 - [ ] M120.P1.T1 — Per-node native-node registration fragments
-  - files: `Engine/Nodes/<Family>/<Node>.reg.inc` (new, one per existing native node), `Engine/AppManager.cpp`, `Engine/CMakeLists.txt`, `Engine/Nodes/NativeRegistry.h` (new)
+  - files: `Engine/Nodes/<Family>/<Node>.reg.inc` (new, one per existing native node), `Engine/AppManager.cpp`, `Engine/CMakeLists.txt`, `Engine/Nodes/NativeRegistry.h` (new), `Engine/Nodes/NodeSpec.h`, every native node's spec, `Tests/wmain.cpp`, `Engine/Nodes/README.md` (step 4 only)
   - approach:
     - Each node gets a one-line fragment `NATRON_NATIVE_NODE(Class, "header.h")` beside its class. The registry reads ID, version, label, grouping, icon and the deprecated/internal flags from `Class`'s `NodeSpec` (M137 - Native Base Class Flexibility), so the fragment never repeats them. Icon files keep their current names.
-    - Check the `NodeSpec` M137 actually merged first; if it already generates a registration line, the fragment is just that line.
-    - CMake `file(GLOB_RECURSE ... CONFIGURE_DEPENDS Engine/Nodes/*.reg.inc)`, sorts the list, and generates `NativeRegistryAll.inc` (the `#include`s plus the macro lines), which `loadBuiltinNodePlugins()` includes in place of the hand lines at `AppManager.cpp:1631-1674`.
+    - M137's `NodeSpec` (`Engine/Nodes/NodeSpec.h:114-125`) carries id, label, description, grouping and versions, but no icon, no deprecated or internal flag, and no class reference. Add `icon`, `deprecated` and `internal` to `NodeSpec`, set them on every native node to today's values (several register with an empty icon; `RotoSmear` and `MissingPluginNode` are internal), and have the registry read them. Roto, Tracker and the other non-`NativeEffectBase` built-ins stay hand-registered, so they need no `NodeSpec`.
+    - Templated nodes (`MergePreset<…>`, `ColorMathNode<K>`, `ErodeDilateNode<M>`, `TransformImageNode<true>`) get one fragment per registered ID, naming the full instantiation.
+    - Today's registrations are `AppManager.cpp:1628-1693` (template at `:1583-1618`). `Tests/wmain.cpp:29-60` mirrors the template as `registerTestBuiltInPlugin<T>`; keep it in step.
+    - Update README "Writing a node" step 4 (`Engine/Nodes/README.md:552-563`), which still says to add a hand `registerBuiltInPlugin` line.
+    - CMake `file(GLOB_RECURSE ... CONFIGURE_DEPENDS Engine/Nodes/*.reg.inc)`, sorts the list, and generates `NativeRegistryAll.inc` (the `#include`s plus the macro lines), which `loadBuiltinNodePlugins()` includes in place of the native hand lines.
     - Migrate every native registration. Non-node built-ins (Roto, Tracker, Viewer, Precomp, DiskCache, JoinViews/OneView, Dot, Backdrop, Group) stay hand-registered.
     - Do **not** use static-initialiser self-registration: object files in the static engine library that nothing references get dropped by the linker, and their nodes would silently vanish.
   - verify: at the phase build, `NativePluginList_Test` and the full ctest pass, and the registered plug-in set is identical before and after. Diff the `getPluginIDs()` dump.
@@ -123,24 +128,27 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - [ ] M120.P1.T2 — Per-kernel GPU CMake fragments
   - files: `Engine/Gpu/CMakeLists.txt`, `Engine/Gpu/Kernels/<kernel>.cmake` (new, one beside each existing `<kernel>.slang`)
   - approach:
+    - Today: 21 `slang_add_kernel` lines over 17 `.slang` files at `Engine/Gpu/CMakeLists.txt:21-41`; `curvesnapshot.slang` and `compositestep.slang` have no line (included by others). M126's runtime GLSL shaders need no fragment.
     - Move each `slang_add_kernel(...)` line from `Engine/Gpu/CMakeLists.txt` into a fragment named after its `.slang` file (a file with several entry points keeps all of its lines in one fragment).
     - The parent `file(GLOB ... CONFIGURE_DEPENDS Kernels/*.cmake)`s and `include()`s the fragments in sorted order, so the generated `GpuKernelId` enum is deterministic.
-  - verify: at the phase build, the generated kernel registry lists the same IDs, and the GPU parity tests (`ctest -R Gpu`) pass on RADV.
+  - verify: at the phase build, the generated kernel registry lists the same IDs (`Tests/Gpu/GpuKernelRegistry_Test.cpp`), and the GPU parity tests (`ctest -R Gpu`) pass on RADV.
   - size: M
 
 - [ ] M120.P1.T3 — Per-node GPU cost seeds
   - files: `Engine/GpuCostModel.cpp`, `Engine/GpuCostSeed.inc` (split into `Engine/Nodes/<Family>/<Node>.costseed.inc` and `Engine/GpuCostSeeds/ofx/<plugin-id>.inc`), `tools/bench/render-profile-report.py`, `Engine/CMakeLists.txt`
   - approach:
-    - Split the seed table into one fragment per node, beside the node. A CMake-generated aggregate (glob of `Engine/Nodes/*.costseed.inc`, sorted) replaces the include at `GpuCostModel.cpp:64`.
+    - Today `Engine/GpuCostSeed.inc` (included at `GpuCostModel.cpp:71`, consumed at `:73-77`) holds four X-macro tables: CPU rows, CPU motion-blur rows (Transform), CPU sigma rows (CImgBlur) and GPU rows (some with filter and size columns). Each fragment contributes to whichever tables it has rows for, and an empty aggregate must compile (the motion-blur table is already a `std::vector` for this).
+    - The GPU table is order-sensitive today ("a row that names a filter or a size beats one that does not"). Make the lookup order-independent, by specificity, before splitting, so sorted-glob order cannot change a result; verify every seeded lookup gives the same cost as before.
+    - Split the seed table into one fragment per node, beside the node. A CMake-generated aggregate (glob of `Engine/Nodes/*.costseed.inc`, sorted) replaces the include.
     - Rows for OFX plug-ins (Despill, FrameBlend, Retime, TimeBlur, Ramp, Radial, Rectangle…) go one per plug-in to `Engine/GpuCostSeeds/ofx/<plugin-id>.inc`, also globbed; a port milestone deletes the files for the IDs it retires, so no two lanes touch the same file.
-    - Teach `--emit-cost-table` to write one fragment per node, finding the node's dir from its `.reg.inc`.
+    - Teach `--emit-cost-table` (`emit_cost_table()`, `tools/bench/render-profile-report.py:438`; writes at `:608`; self-test at `:581-608`) to write one fragment per node, finding the node's dir from its `.reg.inc`. Rows are keyed by OFX-era IDs (e.g. `net.sf.openfx.GradePlugin`); keep them.
   - verify: at the phase build, `GpuCostModel` tests pass and the seeded cost for Grade/Blur/Despill is unchanged. A dry run of the emitter reproduces the split files byte-for-byte.
   - size: M
 
 - [ ] M120.P1.T4 — Generated native-node icon resource
   - files: `Gui/GuiResources.qrc`, `Gui/CMakeLists.txt`, `cmake/` (a small qrc-generation helper if one isn't present)
   - approach:
-    - Remove the `Resources/Images/NativeNodes/*.png` entries from `GuiResources.qrc`.
+    - Remove the 34 `Resources/Images/NativeNodes/*.png` entries (`Gui/GuiResources.qrc:328-361`) from `GuiResources.qrc`.
     - CMake globs `Gui/Resources/Images/NativeNodes/*.png` (CONFIGURE_DEPENDS) into a generated `NativeNodes.qrc` added to the Gui target, keeping the same resource paths, so `NATRON_IMAGES_PATH "NativeNodes/..."` lookups don't change.
   - verify: at the phase build, every native node shows its icon in the tab menu and the node graph (Xvfb screenshot of the tab menu's Color and Filter groups).
   - size: M
@@ -148,11 +156,11 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - [ ] M120.P1.T5 — Per-node docs and tolerance lines
   - files: `Engine/Nodes/README.md`, `Engine/Nodes/<Family>/docs/<Node>.md` (new, one per existing native node)
   - approach:
-    - Move each node's notes and its row of the tolerance table (`README.md` around §658-676) into that node's doc file, as a `Tolerance:` line.
+    - Move each node's notes and its row of the tolerance table (`README.md:1177-1212`, "### Parity tolerances") into that node's doc file, as a `Tolerance:` line. Per-node notes are also spread through `:1214-1300` (GPU parity, exceptions); move those that are about one node.
     - The top README keeps framework docs and says where per-node docs live (no hand index, so ports never edit it).
     - Pure text move. The policy rewrite is M111 - Native Node Identity Cleanup's.
   - verify: `git diff --stat` shows only moves, and every node section appears exactly once across the new files.
-  - size: S
+  - size: M
 
 ## Phase 120.2: Retirement as data, and the plug-in list test
 
@@ -161,7 +169,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - approach:
     - Each retired OFX plug-in is one file, `Engine/OfxRetired/<ofx-plugin-id>`, with no extension, whose only content is an optional line naming the native ID that replaces it. One file per ID, so parallel lanes never edit the same file.
     - CMake `file(GLOB ... CONFIGURE_DEPENDS)`s the directory, ignores `README.md`, and generates a sorted `constexpr` array of IDs and replacements. `loadOFXPlugins()` skips any plug-in whose identifier is listed, next to the reader/writer skips (`OfxHost.cpp:946-953`).
-    - The skip is a small predicate over that set. A test-only `OfxHost` hook adds extra IDs before the load, so no test marker ships.
+    - The skip is a small predicate over that set; it must call `p->getIdentifier()` itself (the identifier is read only at `:957`, after the reader/writer skips). A test-only `OfxHost` hook adds extra IDs before the load, so no test marker ships.
     - Ship no markers. Each port milestone adds its own.
   - verify: at the phase build, `OfxRetired_Test` uses the hook to show a listed ID from the test bundle (Phase 120.3) is absent from `getPluginIDs()` while an unlisted one in the same bundle is present. It also checks that every shipped marker names an ID some loaded bundle provides; with no markers yet, that loop is empty.
   - size: M
@@ -169,8 +177,8 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - [ ] M120.P2.T2 — Derive the native plug-in list test from the registry
   - files: `Tests/Native/NativePluginList_Test.cpp`, `Tests/Native/NativePluginIdentity.h` (new: an `expectNativeIdentity(id, major, label)` helper for per-node tests), `Tests/CMakeLists.txt`
   - approach:
-    - Replace the hand `nativeTable()` (`:80`): the test checks that every `.reg.inc` fragment's class is registered and every registered native ID comes from a fragment, both ways.
-    - Move the per-node ID/major/label assertions into each existing node's own `Native<Node>_Test.cpp` through the new helper (mechanical; list the tests touched in the commit, splitting the commit if it is large). Port milestones do the same in their nodes' tests.
+    - Replace the hand `nativeTable()` (`:85`, 35 entries, iterated at `:139` and `:149`; other hand lists at `:165` ff. and `:181-198`): the test checks that every `.reg.inc` fragment's class is registered and every registered native ID comes from a fragment, both ways.
+    - Move the per-node ID/major/label assertions into each existing node's own test through the new helper (not every node has a `Native<Node>_Test.cpp`: Merge is `NativeMerge_Test`, the channel nodes share `NativeChannelNodesSpec_Test`; create a test file where a node has none) (mechanical; list the tests touched in the commit, splitting the commit if it is large). Port milestones do the same in their nodes' tests.
     - Keep `RetiredOfxIdsResolveToASingleNativeVersion`. Add checks that no two fragments register the same ID, that no retired ID is also a native ID or alias, and that each marker's replacement, when given, is registered.
   - verify: at the phase build, `ctest -R NativePluginList` passes and lists the same IDs as before.
   - size: M
@@ -190,7 +198,7 @@ T6 and T7 come first: they build the test-only OFX bundle. The other tasks then 
   - approach:
     - `Tests/OfxTestPlugins/CMakeLists.txt` defines `natron_add_test_ofx_bundle(<name> SOURCES ...)`, which builds a `MODULE` library (`PREFIX ""`, `SUFFIX ".ofx"`) into `${CMAKE_BINARY_DIR}/Tests/TestPlugins/<name>.ofx.bundle/Contents/Linux-x86-64/` and makes `Tests` and `GuiTests` depend on it. It globs `*/CMakeLists.txt` and adds each subdirectory, so each bundle is its own directory. M140 - Native Metadata Utilities adds `natronTestMetadata/` (raw C API) without editing this file.
     - The `natronTest` bundle is built on the in-repo OFX Support layer (`libs/OpenFX/Support`). Its single `getPluginIDs` lives in `PluginList.cpp`, as the Support layer requires one per module.
-    - `Tests/wmain.cpp` adds the bundle directory (compile definition `NATRON_TEST_OFX_PLUGIN_DIR`) to `OFX_PLUGIN_PATH` before `AppManager::load()`.
+    - `Tests/wmain.cpp` appends the bundle directory (compile definition `NATRON_TEST_OFX_PLUGIN_DIR`) to `OFX_PLUGIN_PATH` before `AppManager::load()` (verified: `PluginCache` reads the variable lazily, inside `loadOFXPlugins()`). Append, never replace: `ShufflePluginList_Test`, `HashPluginSweep_Test` and `ColorViewsRender_Test` expect a user-set path to the shipped set. Silence or adapt `BaseTest::SetUp`'s "Ignoring standard plugin path" warning (`Tests/BaseTest.cpp:113`) so it doesn't fire on every run.
     - Plug-ins, IDs `fr.natron.test.*`: a two-input copy (stands in for Switch, KeyMix and CopyRectangle-style routing), a generator with a format and colour knob (stands in for Ramp, ColorWheel and ColorBars), and an RGBA point op with a matrix knob (stands in for ColorMatrix). Give one of them major version 2, for `PluginIdentity_Test`.
   - verify: at the phase build, `OfxTestPlugin_Test` finds each ID in `getPluginIDs()`, creates and renders each, and the bundle is absent from `build/assets/Plugins/` and the AppImage staging input.
   - size: M
@@ -206,14 +214,14 @@ T6 and T7 come first: they build the test-only OFX bundle. The other tasks then 
   - size: M
 
 - [ ] M120.P3.T1 — Channel-set and layer-knob tests
-  - files: `Tests/DefaultChannelSet_Test.cpp`, `Tests/LayerKnobs_Test.cpp`, `Tests/LayerKnobsRender_Test.cpp`, `Tests/KnobLayerSelect_Test.cpp`, `Tests/ChannelSetRender_Test.cpp`
-  - approach: replace Switch/KeyMix/AdjustRoD/HSVTool/Quantize/ColorMatrix/Ramp/Radial/Rectangle/ColorWheel/Noise/CImgPlasma/CornerPin/IDistort/STMap fixtures with test-bundle plug-ins with the same multiplanar or channel traits (the two-input copy for routing, the generator, the transform, the multiplanar pass-through). The KeyMix quad tests (`ChannelSetRender_Test.cpp:1286-1369`) move to M121 - Native Routing And Mix. Leave them marked there.
+  - files: `Tests/DefaultChannelSet_Test.cpp`, `Tests/LayerKnobs_Test.cpp`, `Tests/LayerKnobsRender_Test.cpp`, `Tests/ChannelSetRender_Test.cpp` (`KnobLayerSelect_Test` no longer loads a plug-in; dropped)
+  - approach: replace Switch/KeyMix/AdjustRoD/HSVTool/Quantize/ColorMatrix/Ramp/Radial/Rectangle/ColorWheel/Noise/CImgPlasma/CornerPin/IDistort/STMap fixtures with test-bundle plug-ins with the same multiplanar or channel traits (the two-input copy for routing, the generator, the transform, the multiplanar pass-through). `DefaultChannelSet_Test.cpp:59-127` is an expectation list of IDs rather than fixtures: drop or move only the table's IDs. The KeyMix quad tests (`ChannelSetRender_Test.cpp:1299, 1371`) move to M121 - Native Routing And Mix. Leave them marked there.
   - verify: at the phase build, the five tests pass, and grepping them for every table ID finds only the deferred KeyMix cases.
   - size: M
 
 - [ ] M120.P3.T2 — Colour-view, metadata, serialization and identity tests
-  - files: `Tests/ColorViewsRender_Test.cpp`, `Tests/ProjectSerialization_Test.cpp`, `Tests/PluginIdentity_Test.cpp`, `Tests/Native/EngineHooks_Test.cpp`
-  - approach: same swap. `EngineHooks_Test` uses ColorMatrix as a generic OFX point op, so use the test point op. `PluginIdentity_Test:51` (HueCorrect major 2) moves to the major-2 test plug-in.
+  - files: `Tests/ColorViewsRender_Test.cpp`, `Tests/ProjectSerialization_Test.cpp`, `Tests/PluginIdentity_Test.cpp`, `Tests/Native/EngineHooks_Test.cpp`, `Tests/Native/NativeParitySelf_Test.cpp`, `Tests/Native/NativeReadMetadata_Test.cpp`, `Tests/Native/NativeReadDotMetadata_Test.cpp`, `Tests/hash_exempt_allowlist.txt`
+  - approach: same swap. `EngineHooks_Test` uses ColorMatrix as a generic OFX point op, so use the test point op. `PluginIdentity_Test:51` (HueCorrect major 2) moves to the major-2 test plug-in. Added at freshness check: the ColorMatrix major-2 fixtures in `NativeParitySelf_Test.cpp:55-56` (its parity pair; re-record its fixtures if needed), `NativeReadMetadata_Test.cpp:67-68` and `NativeReadDotMetadata_Test.cpp:57-58` move to the test point op; `ProjectSerialization_Test` Premult/IDistort are at `:382-383`; `ColorViewsRender_Test` uses IDistort at `:855, :898`, Premult at `:969` and TimeBuffer Read/Write at `:1204-1237`. Add `hash_exempt_allowlist.txt` entries for test-bundle plug-ins only where the hash sweep needs them; the Premult/IDistort/STMap lines go with their port milestones.
   - verify: at the phase build, the four tests pass and contain no table IDs.
   - size: M
 
@@ -227,20 +235,21 @@ T6 and T7 come first: they build the test-only OFX bundle. The other tasks then 
   - size: M
 
 - [ ] M120.P3.T4 — Render, OCIO, GL and smoke tests
-  - files: `Tests/ShuffleRender_Test.cpp`, `Tests/RemoveLayersRender_Test.cpp`, `Tests/PersistentMessage_Test.cpp`, `Tests/GLScheduler_Test.cpp`, `tools/ci/smoke_test.py`
+  - files: `Tests/ShuffleRender_Test.cpp`, `Tests/RemoveLayersRender_Test.cpp`, `Tests/PersistentMessage_Test.cpp`, `Tests/GLScheduler_Test.cpp`, `tools/ci/smoke_test.py`, `Tests/gui/m56_visual.py`, `Tests/gui/m45_tab_menu.py`, `Tests/gui/m61_uat.py`, `Tests/gui/viewer_error_scrub.py`
   - approach:
     - Switch fixtures → the test two-input copy.
     - `GLScheduler_Test`'s OCIOColorSpace (`:69,296`) stays, with a marker comment for M127 - Native OCIO Nodes; no GL-capable test plug-in is built.
-    - `smoke_test.py` runs against the AppImage, which has no test bundle, so its bundle checks (`:303-305`) switch to shipped IDs not in the table: NoOp in Misc, CImgSmooth in CImg and an arena node. The ColorMatrix render check (`:688-690`) moves to ColorBars.
+    - `smoke_test.py` runs against the AppImage, which has no test bundle, so its bundle checks (`:303-305`) switch to shipped IDs not in the table: NoOp in Misc, CImgSmooth in CImg and an arena node. The ColorMatrix render check (`:683-685`) moves to ColorBars.
+    - The GUI scripts run against the AppImage too: swap switchPlugin (`m61_uat.py:421`, `viewer_error_scrub.py:43`) for a shipped native or staying-OFX node; DirBlur (`m45_tab_menu.py`) and IDistort/Premult/STMap (`m56_visual.py:877-964`) stay, marked for their port milestones, unless an equivalent staying node exercises the same thing.
   - verify: at the phase build, the four C++ tests pass. `python3 tools/ci/smoke_test.py` passes against the phase AppImage.
   - size: M
 
 - [ ] M120.P3.T5 — OCIO host tests
-  - files: `Tests/ProjectOCIO_Test.cpp`, `Tests/ProjectOCIOPlugins_Test.cpp`, `Tests/Native/NativeReadColor_Test.cpp`
+  - files: `Tests/ProjectOCIO_Test.cpp`, `Tests/ProjectOCIOPlugins_Test.cpp` (`NativeReadColor_Test` uses the OCIO library directly; dropped)
   - approach: these test the project config reaching OFX OCIO plug-ins. Split them:
     - Config-push assertions (`Project::pushOCIOConfigToNode`) target the test OCIO-config filter (P3.T7).
     - Assertions about the OCIO plug-ins' own behaviour stay, marked for M127 - Native OCIO Nodes to port to the native nodes.
-  - verify: at the phase build, the three tests pass, and the remaining OCIO-plug-in references carry the M127 - Native OCIO Nodes marker comment.
+  - verify: at the phase build, the two tests pass, and the remaining OCIO-plug-in references carry the M127 - Native OCIO Nodes marker comment.
   - size: M
 
 - [ ] M120.P3.T8 — Metadata and metadata-bridge tests
@@ -271,5 +280,5 @@ T6 and T7 come first: they build the test-only OFX bundle. The other tasks then 
 - `ctest -R Gpu` passes on RADV.
 - The registered native set, kernel IDs and seeded costs are unchanged from before the milestone.
 - `OfxRetired_Test` and `OfxTestPlugin_Test` pass, and the test bundle is absent from the AppImage.
-- Grepping `Tests/` and `tools/ci/` for the table's IDs finds only cases explicitly deferred to their port milestone, and the M140 - Native Metadata Utilities metadata IDs.
+- Grepping `Tests/` (including `Tests/gui/`) and `tools/ci/` for the table's IDs finds only cases explicitly deferred to their port milestone, and the M140 - Native Metadata Utilities metadata IDs.
 - An Xvfb tab-menu screenshot shows the native icons.

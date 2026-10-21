@@ -44,6 +44,7 @@
 #include <QtCore/QThreadPool>
 
 #include "BaseTest.h"
+#include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 #include "PassThroughRoDTestEffect.h"
 
 #include "Engine/AbortableRenderInfo.h"
@@ -71,7 +72,6 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-const char* const kFrameBlendPluginID = "net.sf.openfx.FrameBlend";
 const int kWindowSize = 64;
 
 typedef std::tuple<std::string, double, int> CallKey;
@@ -514,14 +514,14 @@ TEST_F(FrameGraphBuild, DiamondLadderCountsBothConsumers)
     EXPECT_EQ(1, last->consumers);
 }
 
-TEST_F(FrameGraphBuild, FrameBlendHonoursThePreFetchCap)
+TEST_F(FrameGraphBuild, FrameWindowOverAnOffsetHonoursThePreFetchCap)
 {
     const AppInstancePtr app = getApp();
     const double time = 10.;
 
     NodePtr constant = createNamedNode(app, PLUGINID_OFX_CONSTANT, "BlendConstant");
-    NodePtr offset = createNamedNode(app, PLUGINID_OFX_TIMEOFFSET, "BlendOffset");
-    NodePtr blend = createNamedNode(app, kFrameBlendPluginID, "BlendFrames");
+    NodePtr offset = createNamedNode(app, kNatronTestFrameWindowPluginID, "BlendOffset");
+    NodePtr blend = createNamedNode(app, kNatronTestFrameWindowPluginID, "BlendFrames");
     ASSERT_TRUE(bool(constant));
     ASSERT_TRUE(bool(offset));
     ASSERT_TRUE(bool(blend));
@@ -532,6 +532,14 @@ TEST_F(FrameGraphBuild, FrameBlendHonoursThePreFetchCap)
     KnobInt* offsetKnob = dynamic_cast<KnobInt*>(offset->getKnobByName("timeOffset").get());
     ASSERT_TRUE(offsetKnob != NULL);
     offsetKnob->setValue(3);
+
+    KnobInt* offsetRange = dynamic_cast<KnobInt*>(offset->getKnobByName("frameRange").get());
+    ASSERT_TRUE(offsetRange != NULL);
+    offsetRange->setValue(0, ViewSpec::all(), 0);
+    offsetRange->setValue(0, ViewSpec::all(), 1);
+    KnobBool* offsetAbsolute = dynamic_cast<KnobBool*>(offset->getKnobByName("absolute").get());
+    ASSERT_TRUE(offsetAbsolute != NULL);
+    offsetAbsolute->setValue(false);
 
     KnobInt* frameRange = dynamic_cast<KnobInt*>(blend->getKnobByName("frameRange").get());
     ASSERT_TRUE(frameRange != NULL);
@@ -548,7 +556,7 @@ TEST_F(FrameGraphBuild, FrameBlendHonoursThePreFetchCap)
     ASSERT_TRUE(buildAndRender(blend, time, &request, &calls, &error)) << error;
     ASSERT_NO_FATAL_FAILURE(collectEdges(request, &summary));
 
-    // FrameBlend needs frames 5..10 of the offset: the first four are pre-rendered, the rest are fetched by getImage.
+    // The blending FrameWindow needs frames 5..10 of the offset: the first four are pre-rendered, the rest are fetched by getImage.
     CallSet beyondCap;
     beyondCap.insert(makeKey(offset, 9., ViewIdx(0)));
     beyondCap.insert(makeKey(offset, 10., ViewIdx(0)));

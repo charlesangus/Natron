@@ -54,6 +54,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AbortableRenderInfo.h"
@@ -978,7 +979,7 @@ TEST_F(GpuResidencyTest, SplitCarriesOneDeviceImageBetweenRegions)
     expectMatchesCpu(sink, run);
 }
 
-// FrameBlend, an OpenFX plugin, tells the frames it fetched apart by the time in their image key.
+// A multi-frame OpenFX plugin tells the frames it fetched apart by the time in their image key.
 TEST_F(GpuResidencyTest, DownloadedOutputsKeepTheirTimeAndView)
 {
     if (!gpuOrSkip()) {
@@ -986,7 +987,7 @@ TEST_F(GpuResidencyTest, DownloadedOutputsKeepTheirTimeAndView)
     }
     NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
     NodePtr grade = makeGrade(1., 0.);
-    NodePtr blend = createNode(QString::fromUtf8("net.sf.openfx.FrameBlend"));
+    NodePtr blend = createNode(QString::fromUtf8(kNatronTestFrameWindowPluginID));
     ASSERT_TRUE(source && grade && blend);
     KnobColor* multiply = dynamic_cast<KnobColor*>(grade->getKnobByName("multiply").get());
     ASSERT_TRUE(multiply != NULL);

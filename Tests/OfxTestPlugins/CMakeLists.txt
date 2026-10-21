@@ -55,10 +55,14 @@ target_include_directories(NatronTestOfxSupport
 )
 # Every translation unit that includes the Support headers must see the same
 # extension set: it changes the layout of the action argument structs.
+# Without OFX_EXTENSIONS_TUTTLE, appendOption() folds each option's hint into the
+# param's hint instead of kOfxParamPropChoiceLabelOption, and the host finds the
+# clip a single-clip channel choice reads from in those per-option hints.
 target_compile_definitions(NatronTestOfxSupport
     PUBLIC
         OFX_EXTENSIONS_NUKE
         OFX_EXTENSIONS_NATRON
+        OFX_EXTENSIONS_TUTTLE
         OFXS_MANUAL_REGISTRATION
 )
 # Third-party code, kept as upstream wrote it.

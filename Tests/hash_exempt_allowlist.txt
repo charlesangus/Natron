@@ -26,9 +26,3 @@ net.sf.openfx.IDistort channelA  # host mirror of hostChannelA, overwritten from
 net.sf.openfx.STMap channelU  # host mirror of hostChannelU, overwritten from it
 net.sf.openfx.STMap channelV  # host mirror of hostChannelV, overwritten from it
 net.sf.openfx.STMap channelA  # host mirror of hostChannelA, overwritten from it
-fr.natron.test.MultiPlane inputPlane  # host mirror of hostInputLayer, overwritten from it
-fr.natron.test.MultiPlane processAllPlanes  # host mirror of hostInputLayer's All entry, overwritten from it
-fr.natron.test.MultiPlane unPremultByChannel  # host mirror of hostUnPremultByChannel, overwritten from it
-fr.natron.test.MatrixWarp channelU  # host mirror of hostChannelU, overwritten from it
-fr.natron.test.MatrixWarp channelV  # host mirror of hostChannelV, overwritten from it
-fr.natron.test.MatrixWarp channelA  # host mirror of hostChannelA, overwritten from it

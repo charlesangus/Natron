@@ -158,18 +158,32 @@ class CompDb:
             return borrowed, None
         return None, searched or "./"
 
+    def same_tree(self):
+        return os.path.realpath(self.src_root) == os.path.realpath(self.root)
+
     def stale_cmake(self, rel):
-        """The checkout's CMakeLists.txt governing rel when this DB's tree
-        lacks it or has a different one, so the DB may lack rel's target."""
-        if os.path.normpath(self.src(rel)) in self.by_file:
-            return None
+        """The checkout's CMakeLists.txt governing rel when it can differ from
+        what this DB was configured with, so the DB's flags or targets for rel
+        may be out of date."""
         d = nearest_cmake_dir(self.root, rel)
         mine = os.path.join(self.root, d, "CMakeLists.txt")
+        if not os.path.isfile(mine):
+            return None
+        # An entry does not make the flags current: the CMakeLists.txt can have
+        # gained include dirs or definitions since the DB was written.
+        if self.same_tree():
+            return mine if os.path.getmtime(mine) > self.mtime() else None
         theirs = os.path.join(self.src_root, d, "CMakeLists.txt")
         if d == nearest_cmake_dir(self.src_root, rel) and os.path.isfile(theirs) and \
                 filecmp.cmp(mine, theirs, shallow=False):
             return None
         return mine
+
+    def gpu_stale(self):
+        """True when the GPU sources in the checkout can differ from what this DB saw."""
+        if self.same_tree():
+            return newest_gpu_mtime(self.root) > self.mtime()
+        return gpu_trees_differ(self.root, self.src_root)
 
     def argv_for(self, entry):
         args = entry["arguments"] if "arguments" in entry else shlex.split(entry["command"])
@@ -273,20 +287,31 @@ def generated_includes(root, rel, extra_dirs):
     return found
 
 
-def newest_gpu_change(root):
-    newest = 0.0
-    p = git(root, "log", "-1", "--format=%ct", "--", *GPU_TRIGGER_PATHS, check=False)
-    if p.stdout.strip():
-        newest = float(p.stdout.strip())
-    dirty = git(root, "status", "--porcelain", "--untracked-files=all", "--",
-                *GPU_TRIGGER_PATHS, check=False).stdout.splitlines()
-    for line in dirty:
-        path = os.path.join(root, line[3:].split(" -> ")[-1])
-        if os.path.exists(path):
-            newest = max(newest, os.path.getmtime(path))
-        else:
-            newest = max(newest, time.time())
-    return newest
+def gpu_trigger_files(root):
+    """Relative paths of the GPU trigger files under root, and of their directories."""
+    files, dirs = set(), set()
+    for rel in GPU_TRIGGER_PATHS:
+        full = os.path.join(root, rel)
+        if os.path.isfile(full):
+            files.add(rel)
+        for dirpath, _, names in os.walk(full):
+            dirs.add(os.path.relpath(dirpath, root))
+            files.update(os.path.relpath(os.path.join(dirpath, n), root) for n in names)
+    return files, dirs
+
+
+def newest_gpu_mtime(root):
+    """Newest mtime among the trigger files; directories count so a deletion shows."""
+    files, dirs = gpu_trigger_files(root)
+    return max((os.path.getmtime(os.path.join(root, r)) for r in files | dirs), default=0.0)
+
+
+def gpu_trees_differ(root, other):
+    mine, _ = gpu_trigger_files(root)
+    theirs, _ = gpu_trigger_files(other)
+    return mine != theirs or any(
+        not filecmp.cmp(os.path.join(root, r), os.path.join(other, r), shallow=False)
+        for r in mine)
 
 
 DEPS = [
@@ -326,7 +351,7 @@ def ensure_gpu_db(root, main, needed_headers, moc_targets, cmake_files=(), gener
             "so wait for that build to finish before a GPU syntax check reconfigures.", 1)
     bdir = os.path.join(root, "build", "syntax")
     db_path = os.path.join(bdir, "compile_commands.json")
-    newest = max([newest_gpu_change(root), *map(os.path.getmtime, cmake_files)])
+    newest = max([newest_gpu_mtime(root), *map(os.path.getmtime, cmake_files)])
     if not os.path.isfile(db_path) or os.path.getmtime(db_path) < newest:
         os.makedirs(bdir, exist_ok=True)
         argv = ["cmake", "-S", root, "-B", bdir, *SYNTAX_CMAKE_ARGS, *deps_root_args(root, main)]
@@ -469,7 +494,7 @@ def main():
     jobs = [(rel, db) for rel in plain if not stale[rel]]
     fresh = [rel for rel in plain if stale[rel]]
     if gpu or fresh:
-        if gpu and not fresh and db.mtime() >= newest_gpu_change(root):
+        if gpu and not fresh and not db.gpu_stale():
             gpu_db = db
         else:
             gpu_db = ensure_gpu_db(root, main_root, needed, moc_targets,

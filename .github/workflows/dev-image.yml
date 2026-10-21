@@ -2,7 +2,8 @@ name: Dev image
 
 # Publishes the build environment that ci.yml and remote-build.yml run in. The
 # tag is a hash of the files that define the image, so an unchanged image is
-# only ever built once.
+# only ever built once. Only a run on main moves :latest; any other run pushes
+# just the hash tag, so a branch can never change what :latest points at.
 
 on:
   workflow_call:
@@ -63,6 +64,15 @@ jobs:
           IMAGE: ${{ steps.tag.outputs.image }}
         run: |
           docker build -f tools/ci/local/Dockerfile -t "$IMAGE" tools/ci/local
-          docker tag "$IMAGE" "${IMAGE%:*}:latest"
           docker push "$IMAGE"
+
+      # The hash tag may already exist from a branch run, so main points
+      # :latest at it whether or not this run built it.
+      - name: Publish latest
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          IMAGE: ${{ steps.tag.outputs.image }}
+        run: |
+          docker pull "$IMAGE"
+          docker tag "$IMAGE" "${IMAGE%:*}:latest"
           docker push "${IMAGE%:*}:latest"

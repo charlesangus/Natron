@@ -20,6 +20,8 @@ if [[ $# -lt 1 || $# -gt 2 ]]; then
     exit 1
 fi
 
+WRAPPER_MARKER="# appimagetool-wrapper: generated"
+
 DEST_DIR="$1"
 REAL_TOOL="${2:-}"
 
@@ -48,6 +50,21 @@ mkdir -p "${DEST_DIR}"
 # A wrapper resolves through its own symlinks, so a PATH hit that is itself a
 # wrapper must be copied from its target, not from the script.
 REAL_TOOL="$(readlink -f "${REAL_TOOL}")"
+
+# A generated wrapper copied as the real tool would make the new wrapper exec
+# itself forever, so use the real tool beside it. Wrappers written before the
+# marker existed are recognised as a script with an appimagetool.real beside it.
+is_script() { [[ "$(head -c 2 "$1" 2>/dev/null)" == "#!" ]]; }
+sibling="$(dirname "${REAL_TOOL}")/appimagetool.real"
+if grep -qx "${WRAPPER_MARKER}" "${REAL_TOOL}" 2>/dev/null ||
+    { is_script "${REAL_TOOL}" && [[ -f "${sibling}" ]]; }; then
+    if [[ ! -f "${sibling}" ]] || is_script "${sibling}"; then
+        echo "make-appimagetool-wrapper.sh: ERROR: ${REAL_TOOL} is a generated wrapper" >&2
+        echo "with no real appimagetool.real beside it. Pass the real tool's path." >&2
+        exit 1
+    fi
+    REAL_TOOL="$(readlink -f "${sibling}")"
+fi
 if [[ "${REAL_TOOL}" != "$(readlink -f "${DEST_DIR}/appimagetool.real" 2>/dev/null || true)" ]]; then
     cp -f "${REAL_TOOL}" "${DEST_DIR}/appimagetool.real"
 fi
@@ -55,6 +72,7 @@ chmod +x "${DEST_DIR}/appimagetool.real"
 
 cat >"${DEST_DIR}/appimagetool" <<'WRAPPER'
 #!/usr/bin/env bash
+# appimagetool-wrapper: generated
 # Local-only wrapper (never committed, lives under gitignored build/) so
 # make-appimage.sh's `command -v appimagetool` finds this instead of
 # downloading the upstream tool, letting us pass -n/--no-appstream because

@@ -51,6 +51,7 @@
 #include "Engine/Nodes/Metadata/RemoveMetadata.h"
 #include "Engine/Nodes/Metadata/ViewMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/OfxRetired.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
 
@@ -104,6 +105,18 @@ fragments()
     static const std::vector<FragmentEntry> list = collectFragments();
 
     return list;
+}
+
+std::set<std::string>
+fragmentIds()
+{
+    std::set<std::string> ids;
+
+    for (const FragmentEntry& entry : fragments()) {
+        ids.insert(entry.id);
+    }
+
+    return ids;
 }
 
 } // namespace
@@ -178,6 +191,29 @@ TEST_F(NativePluginListTest, RetiredOfxIdsResolveToASingleNativeVersion)
         const PluginsMap::const_iterator it = plugins.find(entry.id);
         ASSERT_TRUE(it != plugins.end()) << entry.id;
         ASSERT_EQ(1u, it->second.size()) << entry.id << " must have no OFX version left";
+    }
+}
+
+// A native node that kept its OFX predecessor's ID already takes that ID's place, so a marker
+// for it would retire nothing; only an OFX ID no native node took over may be retired.
+TEST_F(NativePluginListTest, NoRetiredOfxIdIsANativePluginId)
+{
+    const std::set<std::string> nativeIds = fragmentIds();
+
+    for (const auto& retired : retiredOfxPlugins()) {
+        EXPECT_EQ(0u, nativeIds.count(retired.first)) << "Engine/OfxRetired/" << retired.first << " retires an ID a native node registers";
+    }
+}
+
+TEST_F(NativePluginListTest, EveryRetiredOfxReplacementIsANativePlugin)
+{
+    const std::set<std::string> nativeIds = fragmentIds();
+
+    for (const auto& retired : retiredOfxPlugins()) {
+        if (retired.second.empty()) {
+            continue;
+        }
+        EXPECT_EQ(1u, nativeIds.count(retired.second)) << "Engine/OfxRetired/" << retired.first << " names " << retired.second << ", which is not a registered native plug-in";
     }
 }
 

@@ -25,16 +25,17 @@
 
 #include "OfxHost.h"
 
-#include <cassert>
-#include <cstdarg>
-#include <memory>
-#include <fstream>
-#include <new> // std::bad_alloc
-#include <stdexcept> // std::exception
-#include <cctype> // tolower
 #include <algorithm> // transform, min, max
-#include <string>
+#include <cassert>
+#include <cctype> // tolower
+#include <cstdarg>
 #include <cstring> // for std::memcpy, std::memset, std::strcmp
+#include <fstream>
+#include <memory>
+#include <new> // std::bad_alloc
+#include <set>
+#include <stdexcept> // std::exception
+#include <string>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -102,6 +103,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/OfxMemory.h"
+#include "Engine/OfxRetired.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
 #include "Engine/PoolParallelFor.h"
@@ -843,6 +845,32 @@ QDebug operator<<(QDebug dbg, const std::list<std::string> &l)
     return dbg.space();
 }
 
+namespace {
+
+std::set<std::string>&
+testRetiredPluginIds()
+{
+    static std::set<std::string> ids;
+
+    return ids;
+}
+
+bool
+isRetiredOfxPlugin(const OFX::Host::ImageEffect::ImageEffectPlugin& plugin)
+{
+    const std::string& id = plugin.getIdentifier();
+
+    return isRetiredOfxPluginId(id) || testRetiredPluginIds().count(id) != 0;
+}
+
+} // namespace
+
+void
+OfxHost::addRetiredPluginIdsForTesting(const std::list<std::string>& ids)
+{
+    testRetiredPluginIds().insert(ids.begin(), ids.end());
+}
+
 void
 OfxHost::loadOFXPlugins()
 {
@@ -951,6 +979,11 @@ OfxHost::loadOFXPlugins()
         }
         // Writing is done by the native Write node only.
         if (p->getContexts().find(kOfxImageEffectContextWriter) != p->getContexts().end()) {
+            continue;
+        }
+        // A native node replaces it (Engine/OfxRetired.h); a project naming it gets the
+        // missing-plug-in node, like any absent plug-in.
+        if (isRetiredOfxPlugin(*p)) {
             continue;
         }
         assert( p->getBinary() );

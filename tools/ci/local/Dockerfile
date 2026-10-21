@@ -1,20 +1,13 @@
-# Local dev image mirroring the CI build environment as closely as possible.
+# The Natron build image, used by local builds, PR CI and remote builds alike.
+# It is published to GHCR under a tag hashed from this file and the Slang and
+# glslang fetch files (tools/ci/local/dev-image-tag.sh), by
+# .github/workflows/dev-image.yml.
 #
-# Base image and package list here MUST match .github/workflows/ci.yml so
-# that a build inside this container reproduces CI exactly. Do not bump the
-# base image tag independently of ci.yml, and keep the CI package list
-# documentation below in sync with the "Install Linux system packages" step
-# there.
+# Do not bump the base image tag without checking the package notes below.
 #
-# Everything ci.yml's package-install step needs (bar one documented
-# exception below) is already present in aswf/ci-vfxall:2027-clang21.1, so
-# the only layers this file adds are the local-only Mesa relink and the
-# Slang and glslang toolchains at the bottom, which CI never sees (CI runs the
-# base image directly, and downloads and caches them itself through
-# cmake/FetchSlang.cmake and cmake/FetchGlslang.cmake). It is kept as a file
-# (rather than building the image straight from `docker pull`) so that:
-#   (a) the drift-check comment block below has somewhere to live, and
-#   (b) local-only layers have an obvious, already-wired seam to land in.
+# Everything the build needs (bar one documented exception below) is already
+# present in aswf/ci-vfxall:2027-clang21.1. This file adds the Mesa relink and
+# the Slang and glslang toolchains at the bottom, so no build downloads them.
 #
 # Why ci-vfxall and not ci-baseqt (which this used through M7): ci-baseqt
 # ships Qt/PySide and the base libraries but no OpenColorIO, OpenImageIO, or
@@ -67,7 +60,7 @@ FROM aswf/ci-vfxall:2027-clang21.1
 # almost certainly already covered by the base image, but confirm before
 # assuming so.
 
-# --- Local-only additions (not part of CI's package list) ------------------
+# --- Additions on top of the base image ------------------
 # ccache, ninja, and gdb are already present in this base image (ccache and
 # ninja via Conan at /usr/local/bin, gdb as an RPM) -- nothing to install.
 

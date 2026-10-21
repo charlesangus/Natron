@@ -1,37 +1,11 @@
-"""UAT for the GPU page of the Preferences window (M108): the page lists GPU compute, GPU device and
-GPU memory budget, the device menu offers Automatic plus every Vulkan device, the Threading page no
-longer carries those knobs, no OpenGL preference text is left anywhere in the dialog, and choosing
-the llvmpipe device and saving stores its UUID as the gpuDevice choice ID. A screenshot of the GPU
+"""GUI test for the GPU page of the Preferences window: page contents, device menu, Threading page
+cleanup, absence of OpenGL preference text, and saving the llvmpipe device. A screenshot of the GPU
 page goes to $NATRON_GUI_TEST_OUT/m108-gpu-prefs.png (default build/gui-test-out/).
 
-Usage:
+Usage, in the natron-dev container:
     VK_ICD_FILENAMES=<path to lvp_icd.x86_64.json> \\
         Tests/gui/run-gui-test.sh Tests/gui/m108_gpu_prefs.py <Natron.AppImage or release binary>
-run in the natron-dev container. VK_ICD_FILENAMES must name the lavapipe ICD (and only it), so
-that the one Vulkan device is llvmpipe; without it the script fails at "a device entry containing
-llvmpipe". run-gui-test.sh gives the AppImage run a throwaway HOME, so the saved gpuDevice never
-reaches the container's own Natron.conf.
-
-Manual next-launch check (not automated: the script cannot relaunch Natron). Preferences are stored
-by QSettings in $HOME/.config/INRIA/Natron.conf (organisation "INRIA", application "Natron",
-INI format, under $XDG_CONFIG_HOME when that is set), one `name=value` line per knob in the [General]
-section, and a choice knob is stored as its entry ID. Create a HOME that holds
-
-    [General]
-    gpuDevice=<lavapipe uuid>
-
-where <lavapipe uuid> is the 32 lowercase hex digits this script prints in its
-"NOTE llvmpipe device ID" line. Then run, with VK_ICD_FILENAMES listing both the RADV and the
-lavapipe ICD json files separated by a colon:
-
-    HOME=<that home> VK_ICD_FILENAMES=<radv_icd.json>:<lvp_icd.json> NatronRenderer -h
-
-and check that the output has a line starting
-
-    GPU: Preferences device "<lavapipe uuid>" (llvmpipe
-
-so the saved device wins over the one automatic selection would have picked (RADV). The line is
-logged by Engine/AppManager.cpp.
+VK_ICD_FILENAMES must name only the lavapipe ICD so that the one Vulkan device is llvmpipe.
 """
 import os
 import sys
@@ -168,7 +142,6 @@ try:
         require(settings.getParam("gpuComputeMode") is not None, "Settings has a parameter named gpuComputeMode")
         require(settings.getParam("gpuMemoryBudgetMB") is not None, "Settings has a parameter named gpuMemoryBudgetMB")
 
-        # Open Preferences the way m56_visual.py does.
         QMetaObject.invokeMethod(gui_widget(), "showSettings")
         ok = yield ("until", lambda: open_prefs() is not None, POLL_TIMEOUT_S)
         prefs = open_prefs()
@@ -179,7 +152,6 @@ try:
         require(page_tree(prefs) is not None,
                 "found the page tree (a QTreeWidget in the Preferences window with a \"Threading\" item)")
 
-        # --- The GPU page ---
         require(select_page(prefs, "GPU"), "the page tree has a \"GPU\" item")
         yield ("sleep", SETTLE_MS)
 
@@ -227,7 +199,6 @@ try:
         check(len(llvmpipe_id) == 32 and all(c in "0123456789abcdef" for c in llvmpipe_id),
               "the llvmpipe entry ID is a 32-digit lower-case hex UUID (got %r)" % (llvmpipe_id,))
 
-        # --- The Threading page ---
         require(select_page(prefs, "Threading"), "the page tree has a \"Threading\" item")
         yield ("sleep", SETTLE_MS)
         ok = yield ("until", lambda: not any("gpu device" in l.lower() for l in visible_labels(prefs))
@@ -241,14 +212,12 @@ try:
         check(not any(AUTO_LABEL in items for _, items in visible_combos(prefs)),
               "the Threading page has no combo with the \"%s\" device entry" % AUTO_LABEL)
 
-        # --- No OpenGL preference text anywhere ---
         texts = dialog_texts(prefs)
         report("NOTE %d text(s) scanned in the Preferences window" % len(texts))
         for banned in BANNED_TEXT:
             hits = [t for t in texts if banned in t.lower()]
             check(not hits, "no text in the Preferences window reads \"%s\" (found %r)" % (banned, hits[:3]))
 
-        # --- Pick the llvmpipe device, screenshot, save ---
         require(select_page(prefs, "GPU"), "the page tree has a \"GPU\" item (second look)")
         yield ("sleep", SETTLE_MS)
         QMetaObject.invokeMethod(device_combo, "setCurrentIndex", Q_ARG(int, row))

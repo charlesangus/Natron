@@ -164,7 +164,7 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # it depends on OIIO/OCIO/SeExpr, so it configures and links clean against
 # this container with no other source changes needed.
 OPENFX_MISC_REPO="https://github.com/charlesangus/openfx-misc.git"
-OPENFX_MISC_REF="6ed7a9599b35779fdc1cfbceafa4a63d1fb1283f"
+OPENFX_MISC_REF="3b5b995ea27de18fd22c7bc97e95176610e16fbf"
 
 # LCMS2_REF: mm2/Little-CMS at the lcms2.16 tag. Built from source even
 # though the image already ships /usr/local/lib/liblcms2.so.2.0.19 with a
@@ -212,9 +212,11 @@ IMAGEMAGICK_REF="b2dd67b1681e23d0e0b9769d81bed23f05129e2a"
 # Sketch seeds ImageMagick's random generator with a fixed value under a lock,
 # so its noise is identical across renders and threads. Texture also seeds and
 # draws under the same lock as Sketch, so both are deterministic under
-# concurrent renders.
+# concurrent renders. The effects also hold ImageMagick's process-global
+# thread limit fixed while they run, so renders with different OpenMP
+# settings cannot change it under one another's per-thread arrays.
 OPENFX_ARENA_REPO="https://github.com/charlesangus/openfx-arena.git"
-OPENFX_ARENA_REF="e9d1565c052e4e8261605f0cf9344e33204cbb93"
+OPENFX_ARENA_REF="59b254af4d6eb4faedb3e87ca78ae64821d69499"
 
 # OPENFX_METADATA_REF: charlesangus/openfx -- our ASWF-lineage OpenFX fork,
 # whose Support/Plugins/Metadata* examples exercise the clip and image

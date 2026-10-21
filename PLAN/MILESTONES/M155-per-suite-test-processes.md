@@ -80,7 +80,7 @@ Scouted facts (main `31636d20d`, 2026-10-20; re-check at promotion):
 
 ## Phase 155.3: Shared-process leaks
 
-- [ ] M155.P3.T1 — Shuffled sweep and triage
+- [x] M155.P3.T1 — Shuffled sweep and triage
   - files: tools/ci/local/test.sh, PLAN/MILESTONES/M155-per-suite-test-processes.md
   - approach: Forward `GTEST_SHUFFLE`, `GTEST_RANDOM_SEED` and `GTEST_REPEAT` into the container. On the debug preset (live asserts), run the grouped suites unshuffled and with `GTEST_SHUFFLE=1` at 3 fixed seeds, in both scheduler modes, with `NATRON_CTEST_JOBS=4`. For each failing suite record in Decisions: the case, seed, mode, and a root-cause hypothesis (start with the Scouted suspects: project format set once per process, the process-wide shader compile memo, no project reset in `BaseTest`). The PM then inserts one fix task per root cause as M155.P3.T2 onward, each sized M or larger.
   - verify: The Decisions entry lists every failure with its seed, or states the sweep was clean in both modes.
@@ -102,3 +102,6 @@ Scouted facts (main `31636d20d`, 2026-10-20; re-check at promotion):
 - 2026-10-20 — **One ctest entry per suite, with no per-case opt-in** (user): running a single case stays available through `--gtest_filter` by hand. A second registration mode would be code nobody exercises.
 - 2026-10-20 — **Fix leaks rather than isolate them** (user): a suite that fails when grouped gets its leak fixed. Only a case that truly needs a fresh process moves into its own suite.
 - 2026-10-21 — **A cached Read not setting the project format stays as is (user).** The leak work found that a Read served from the cache never sets the project format. The user ruled that auto-setting the format from a Read is not a desired feature, so no milestone follows from it.
+- 2026-10-21 — **Shuffled sweep (P3.T1).** Remote debug run 39645578802 (e3f31748e): live asserts, `-j 4`, unshuffled plus `GTEST_SHUFFLE` seeds 1, 2 and 3, in both scheduler modes. All 324 suites passed in all eight runs except `FrameGraphBuild`. It timed out at 300 s in each run and passed when rerun alone (153–221 s), so this is suite length under load, not a leak. Its timeout was raised to 900 s in `SuiteProperties.cmake`. Leaks found and fixed earlier, on the remote fast runs:
+  - **Seven suites:** DeepNodes, DeepRenderPipeline, DeepReshape, DeepFlattenLayers, GpuResidency, RotoLayer and MetadataExpressionDependency. Fixed by `BaseTest::SetUp` resetting the project, clearing the caches and resetting `GpuCostModel` (f148fc2f2). That commit also fixed two Engine bugs, in `AppInstance::addInvalidExpressionKnob` and `KnobHelper::setExpressionInvalid`.
+  - **GLScheduler:** a race in the test, where the four branches shared one cache entry (52b63c835).

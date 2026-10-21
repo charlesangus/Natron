@@ -157,6 +157,37 @@ touching them mid-iteration. When a rebuild looks bigger than it should,
 `ninja -d explain -n` in the build directory names the input that dirtied
 each target.
 
+### Syntax-checking changed files
+
+```
+tools/ci/local/syntax-check.py [--root <checkout>] [--base <ref>] [--compdb <path>] [<file> ...]
+```
+
+Runs `-fsyntax-only` on translation units inside the dev container (three at
+a time) with the flags from the main checkout's `build/fast` compile DB, so
+it needs one `build.sh fast` first. Use it before a remote build, where one
+failing TU costs a full build cycle. Files are relative to `--root` (default:
+the current checkout, e.g. a worktree). With no files it checks what changed
+since `--base` (default: the merge base with `origin/main`), including
+uncommitted and untracked files. A header is checked through its `.cpp`.
+Results are `OK`, `FAIL` (with the error lines), `NO-COMMAND` or
+`SKIPPED (header, no owner)`. The exit status is non-zero on any `FAIL` or
+`NO-COMMAND`.
+
+A TU missing from the DB, such as a new test, borrows the command of a DB
+entry in its own directory or a parent, never across a top-level directory.
+A new `Tests/*.cpp` gets the `Tests` target's flags.
+
+TUs under `Engine/Gpu/`, or that include a generated kernel header
+(`GpuKernels.inc`, `*_spirv.h`), need a DB that knows the current kernels. If
+the DB predates the last change to `Engine/Gpu/Kernels/` or
+`Engine/Gpu/CMakeLists.txt`, the script configures `build/syntax` in the
+checked checkout with the `fast` flags and builds only the kernel-header
+targets (about 30 s cold, a few seconds after that). It refuses while `ninja`
+runs in the container, and fails, naming the header, if a generated header is
+still missing. A worktree reuses the main checkout's `.natron-deps` for Slang
+and glslang. `NATRON_DEV_CONTAINER` picks the container.
+
 ## 4. Test
 
 ```

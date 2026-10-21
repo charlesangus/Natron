@@ -212,6 +212,7 @@ private:
         .grouping = PLUGIN_GROUP_IMAGE,
         .majorVersion = PLUGIN_MAJOR_NATRON_WRITE,
         .minorVersion = 0,
+        .icon = NATRON_IMAGES_PATH "writeImage.png",
         .isWriter = true,
         .inputs = kInputs,
     };

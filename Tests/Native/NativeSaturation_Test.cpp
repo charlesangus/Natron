@@ -37,6 +37,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -294,4 +295,9 @@ TEST_F(NativeSaturationTest, BothSchedulerModesAgreeWithNoUnplannedPull)
             }
         }
     }
+}
+
+TEST_F(NativeSaturationTest, RegisteredIdentity)
+{
+    expectNativeIdentity(PLUGINID_NATRON_SATURATION, PLUGIN_MAJOR_NATRON_SATURATION, "Saturation");
 }

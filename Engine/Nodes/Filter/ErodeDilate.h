@@ -135,6 +135,7 @@ struct ErodeDilateOp {
         .grouping = PLUGIN_GROUP_FILTER,
         .majorVersion = kDilate ? PLUGIN_MAJOR_NATRON_DILATE : PLUGIN_MAJOR_NATRON_ERODE,
         .minorVersion = 0,
+        .icon = kDilate ? NATRON_IMAGES_PATH "NativeNodes/net.sf.cimg.CImgDilate.png" : NATRON_IMAGES_PATH "NativeNodes/net.sf.cimg.CImgErode.png",
         .inputs = kErodeDilateInputs,
     };
 

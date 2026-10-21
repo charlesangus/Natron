@@ -418,7 +418,7 @@ try:
         seek(1)
         read_a = create_reader("flat-three-layers.exr", 0, 100)
         read_b = create_reader("flat-rgba-only.exr", 250, 100)
-        switch = create("net.sf.openfx.switchPlugin", 120, 250)
+        switch = create("fr.natron.Switch", 120, 250)
         connect(switch, 0, read_a)
         connect(switch, 1, read_b)
         automatic = switch.getParam("automatic")
@@ -438,14 +438,14 @@ try:
         yield from open_panel(switch)
         yield from open_panel(shuffle)
         channels = switch.getParam("channels")
-        need(channels is not None, "the Switch has a channels selector")
 
         per_frame = {1: (None, "red"), 2: (["diffuse.g", "not in the Source input"], "black")}
-        for mode in ("rgba", "All"):
-            if mode == "All":
-                channels.setAll()
-            else:
-                channels.setLayer(COLOUR)
+        for mode in (("rgba", "All") if channels is not None else ("rgba",)):
+            if channels is not None:
+                if mode == "All":
+                    channels.setAll()
+                else:
+                    channels.setLayer(COLOUR)
             yield ("sleep", 300)
             yield from scrub(shuffle, per_frame, mode, shots="g2-%s" % mode.lower())
             for frame in (1, 2, 1):

@@ -56,21 +56,16 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const char* const kProcessesAllLayers[] = {
+    "fr.natron.test.TwoInputCopy",
+    "fr.natron.test.MatrixWarp",
+    "fr.natron.test.FrameWindow",
     "net.sf.openfx.TransformPlugin",
     "net.sf.openfx.TransformMaskedPlugin",
-    "net.sf.openfx.DirBlur",
-    "net.sf.openfx.CornerPinPlugin",
-    "net.sf.openfx.CornerPinMaskedPlugin",
     "net.sf.openfx.CropPlugin",
     "net.sf.openfx.Position",
     "net.sf.openfx.Reformat",
     "net.sf.openfx.Card3D",
-    "net.sf.openfx.AdjustRoDPlugin",
     "net.sf.openfx.SpriteSheet",
-    "net.sf.openfx.Mirror",
-    "net.sf.openfx.IDistort",
-    "net.sf.openfx.STMap",
-    "net.sf.openfx.LensDistortion",
     "fr.inria.openfx.OIIOResize",
     "net.fxarena.openfx.Reflection",
     "net.fxarena.openfx.Tile",
@@ -80,33 +75,13 @@ const char* const kProcessesAllLayers[] = {
     "net.fxarena.openfx.Implode",
     "net.fxarena.openfx.Swirl",
     "net.fxarena.openfx.Wave",
-    "net.sf.openfx.FrameHold",
-    "net.sf.openfx.timeOffset",
-    "net.sf.openfx.FrameRange",
-    "net.sf.openfx.AppendClip",
-    "net.sf.openfx.Retime",
-    "net.sf.openfx.FrameBlend",
-    "net.sf.openfx.TimeBlur",
-    "net.sf.openfx.NoTimeBlurPlugin",
-    "net.sf.openfx.SlitScan",
     "net.sf.openfx.Deinterlace",
-    "net.sf.openfx.TimeBufferRead",
-    "net.sf.openfx.TimeBufferWrite",
     "net.sf.cimg.CImgBlur",
-    "net.sf.cimg.CImgLaplacian",
-    "net.sf.cimg.CImgSharpen",
-    "net.sf.cimg.CImgSoften",
-    "net.sf.cimg.CImgBloom",
-    "net.sf.cimg.CImgMedian",
     "net.sf.cimg.CImgErode",
     "net.sf.cimg.CImgDilate",
     "net.sf.cimg.CImgErodeSmooth",
-    "net.sf.cimg.CImgBilateral",
-    "net.sf.cimg.CImgBilateralGuided",
-    "net.sf.cimg.CImgGuided",
     "net.sf.cimg.CImgDenoise",
     "net.sf.cimg.CImgSmooth",
-    "net.sf.cimg.CImgRollingGuidance",
     "net.sf.cimg.CImgSharpenInvDiff",
     "net.sf.cimg.CImgSharpenShock",
     "eu.cimg.Inpaint",
@@ -114,16 +89,12 @@ const char* const kProcessesAllLayers[] = {
     "eu.cimg.Distance",
     "eu.cimg.CImgMatrix3x3",
     "eu.cimg.CImgMatrix5x5",
-    "net.sf.openfx.GodRays",
     "net.fxarena.openfx.Oilpaint",
     "net.fxarena.openfx.Charcoal",
     "net.fxarena.openfx.Edges",
     "net.fxarena.openfx.Sketch",
     "net.fxarena.openfx.Morphology",
-    "net.sf.openfx.switchPlugin",
     "net.sf.openfx.DissolvePlugin",
-    "net.sf.openfx.TimeDissolvePlugin",
-    "net.sf.openfx.KeyMix",
     "net.sf.openfx.CopyRectanglePlugin",
     "net.sf.openfx.ContactSheetOFX",
     "net.sf.openfx.LayerContactSheetOFX",
@@ -136,6 +107,8 @@ const char* const kProcessesAllLayers[] = {
 // Includes the Filter/Transform-grouped plug-ins that interpret R, G and B as colour or run
 // user code, which the grouping fallback must not catch.
 const char* const kKeepsColorLayer[] = {
+    "fr.natron.test.PointMatrix",
+    "fr.natron.test.PointMatrix1",
     "net.sf.openfx.GradePlugin",
     "net.sf.openfx.ColorCorrectPlugin",
     "net.sf.openfx.Invert",
@@ -143,7 +116,6 @@ const char* const kKeepsColorLayer[] = {
     "net.sf.openfx.SaturationPlugin",
     "net.sf.openfx.Clamp",
     "net.sf.openfx.ColorLookupPlugin",
-    "net.sf.openfx.HSVToolPlugin",
     "net.sf.openfx.MergePlugin",
     "net.sf.openfx.KeyerPlugin",
     "net.sf.openfx.ChromaKeyerPlugin",
@@ -155,7 +127,6 @@ const char* const kKeepsColorLayer[] = {
     "net.sf.cimg.CImgExpression",
     "net.sf.cimg.CImgChromaBlur",
     "eu.cimg.EdgeDetect",
-    "eu.cimg.EdgeExtend",
 };
 
 bool
@@ -241,7 +212,7 @@ TEST_F(DefaultChannelSetTest, ChannelAgnosticNodesDefaultToAll)
 
     EXPECT_TRUE(isPluginLoaded("net.sf.cimg.CImgBlur"));
     EXPECT_TRUE(isPluginLoaded("net.sf.openfx.TransformPlugin"));
-    EXPECT_TRUE(isPluginLoaded("net.sf.openfx.switchPlugin"));
+    EXPECT_TRUE(isPluginLoaded("fr.natron.test.TwoInputCopy"));
     EXPECT_GE(checked, 3);
 }
 

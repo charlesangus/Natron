@@ -76,6 +76,7 @@ struct CropOp {
         .grouping = PLUGIN_GROUP_TRANSFORM,
         .majorVersion = PLUGIN_MAJOR_NATRON_CROP,
         .minorVersion = 0,
+        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.CropPlugin.png",
         .inputs = kCropInputs,
     };
 

@@ -118,6 +118,7 @@ struct ColorCorrectOp {
         .grouping = PLUGIN_GROUP_COLOR,
         .majorVersion = PLUGIN_MAJOR_NATRON_COLORCORRECT,
         .minorVersion = 0,
+        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.ColorCorrectPlugin.png",
         .inputs = kColorCorrectInputs,
     };
 

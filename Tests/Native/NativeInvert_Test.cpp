@@ -37,6 +37,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -240,4 +241,9 @@ TEST_F(NativeInvertTest, UnversionedRequestsGetTheNativeInvert)
     EXPECT_EQ(kNativeInvertMajor, unversioned->getMajorVersion());
 
     EXPECT_FALSE(isPluginMajorRegistered(kInvertID, kOfxInvertMajor));
+}
+
+TEST_F(NativeInvertTest, RegisteredIdentity)
+{
+    expectNativeIdentity(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT, "Invert");
 }

@@ -18,6 +18,7 @@ import argparse
 import collections
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -425,6 +426,16 @@ def sigma_text(top):
     return "1e9" if top >= OPEN_SIGMA else repr(float(top))
 
 
+def cpu_row_text(row):
+    plugin, cost, speedup = row
+    return '"%s", %.4f, %.4f' % (plugin, cost, speedup)
+
+
+def sigma_row_text(row):
+    plugin, algo, top, cost, speedup = row
+    return '"%s", "%s", %s, %.4f, %.4f' % (plugin, algo, sigma_text(top), cost, speedup)
+
+
 def gpu_row_text(row):
     """One GPU seed row; the filter and size columns are written only for a row that names either."""
     plugin, kind, top, ms = row[:4]
@@ -432,55 +443,199 @@ def gpu_row_text(row):
     text = '"%s", "%s", %s, %.4f' % (plugin, kind, sigma_text(top), ms)
     if blur_filter or size:
         text += ", %s, %d" % ('"%s"' % blur_filter if blur_filter else "nullptr", size)
-    return "{ %s }" % text
+    return text
 
 
-def emit_cost_table(pairs, command):
-    """Returns the text of Engine/GpuCostSeed.inc; pairs maps each threaded profile to its serial one."""
+# The row macro of each table, in the order cost_table_rows() returns the tables, with its row writer.
+SEED_TABLES = (
+    ("NATRON_GPU_COST_SEED_CPU_ROW", cpu_row_text),
+    ("NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROW", cpu_row_text),
+    ("NATRON_GPU_COST_SEED_CPU_SIGMA_ROW", sigma_row_text),
+    ("NATRON_GPU_COST_SEED_GPU_ROW", gpu_row_text),
+)
+NODES_DIR = "Engine/Nodes"
+NODE_SEED_SUFFIX = ".costseed.inc"
+OFX_SEED_DIR = "Engine/GpuCostSeeds/ofx"
+SEED_INPUTS_PATH = "Engine/GpuCostSeeds/inputs.txt"
+SEED_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+
+DEFINE_RE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)[ \t]+(.*?)[ \t]*(?://.*)?$", re.M)
+TOKEN_RE = re.compile(r'"(?:[^"\\\n]|\\.)*"|[A-Za-z_]\w*|\S')
+REGISTRATION_RE = re.compile(r'NATRON_NATIVE_NODE\((.+),[ \t]*"([^"]+)"[ \t]*\)')
+SPEC_ID_RE = re.compile(r"\.id[ \t]*=[ \t]*([^;,\n]+)")
+
+
+def read_text(path):
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        return handle.read()
+
+
+def files_under(root, rel_dir, suffix, recursive):
+    """Paths relative to root, with forward slashes and sorted, of the files of rel_dir ending in suffix."""
+    found = []
+    top = os.path.join(root, rel_dir)
+    for dirpath, dirnames, filenames in os.walk(top):
+        found += [os.path.relpath(os.path.join(dirpath, name), root).replace(os.sep, "/")
+                  for name in filenames if name.endswith(suffix)]
+        if not recursive:
+            break
+    return sorted(found)
+
+
+def string_macro_value(expr, defines, depth=0):
+    """The string a C expression of adjacent string literals and string macros spells, or None for any other."""
+    parts = []
+    for token in TOKEN_RE.findall(expr):
+        if token in "()":
+            continue
+        if token.startswith('"'):
+            parts.append(token[1:-1])
+            continue
+        value = string_macro_value(defines[token], defines, depth + 1) if token in defines and depth < 16 else None
+        if value is None:
+            return None
+        parts.append(value)
+    return "".join(parts) if parts else None
+
+
+def node_name_of(plugin_id):
+    """The node name an OFX-era plugin id spells: net.sf.openfx.GradePlugin and net.sf.cimg.CImgBlur give Grade and
+    Blur."""
+    name = plugin_id.rsplit(".", 1)[-1]
+    if name.startswith("CImg"):
+        name = name[len("CImg"):]
+    if name.endswith("Plugin"):
+        name = name[:-len("Plugin")]
+    return name
+
+
+def native_node_paths(root):
+    """Returns {plugin id: Engine/Nodes/<Family>/<Node>} for every native node registration fragment.
+
+    The id is the one the class's NodeSpec sets: the .id assignments, naming a PLUGINID_ macro, of the header the
+    fragment names and of that header's .cpp. Several NodeSpecs share a header (Add, Multiply and Gamma; Erode and
+    Dilate; the Merge operators), so where the files assign more than one id, the node's is the one whose name is the
+    fragment's."""
+    defines = {}
+    for rel_dir, recursive in (("Global", False), ("Engine", False), (NODES_DIR, True)):
+        for path in files_under(root, rel_dir, ".h", recursive):
+            for name, value in DEFINE_RE.findall(read_text(os.path.join(root, path))):
+                defines.setdefault(name, value)
+    owners = {}
+    for fragment in files_under(root, NODES_DIR, ".reg.inc", True):
+        node = fragment[:-len(".reg.inc")]
+        match = REGISTRATION_RE.search(read_text(os.path.join(root, fragment)))
+        if not match:
+            sys.exit("%s: no NATRON_NATIVE_NODE(Class, \"Header.h\") line" % fragment)
+        header = os.path.join(root, os.path.dirname(fragment), match.group(2))
+        ids = set()
+        for source in (header, os.path.splitext(header)[0] + ".cpp"):
+            if not os.path.exists(source):
+                continue
+            for expr in SPEC_ID_RE.findall(read_text(source)):
+                for operand in re.split(r"\?|(?<!:):(?!:)", expr):
+                    value = string_macro_value(operand, defines) if "PLUGINID_" in operand else None
+                    if value:
+                        ids.add(value)
+        if len(ids) > 1:
+            ids = set(plugin for plugin in ids if node_name_of(plugin) == os.path.basename(node))
+        if len(ids) != 1:
+            sys.exit("%s: cannot tell the plugin id of its NodeSpec from %s and its .cpp" % (fragment, match.group(2)))
+        plugin = ids.pop()
+        if plugin in owners:
+            sys.exit("%s and %s.reg.inc both register %s" % (fragment, owners[plugin], plugin))
+        owners[plugin] = node
+    return owners
+
+
+def seed_fragment_path(plugin, nodes):
+    if plugin in nodes:
+        return nodes[plugin] + NODE_SEED_SUFFIX
+    return "%s/%s.inc" % (OFX_SEED_DIR, plugin)
+
+
+def seed_fragment_paths(root):
+    """The checked-in seed fragments, relative to root."""
+    return files_under(root, NODES_DIR, NODE_SEED_SUFFIX, True) + files_under(root, OFX_SEED_DIR, ".inc", False)
+
+
+def cost_fragments(tables, nodes):
+    """Returns {path: text} with one seed fragment per plugin id of the (cpu, motion-blur cpu, sigma, gpu) rows,
+    beside the registration fragment of the native node nodes maps the id to, else under OFX_SEED_DIR."""
+    lines = collections.defaultdict(list)
+    for (macro, row_text), rows in zip(SEED_TABLES, tables):
+        for row in rows:
+            lines[row[0]].append("%s(%s)" % (macro, row_text(row)))
+    fragments = {}
+    for plugin in sorted(lines):
+        header = ["// GPU cost model seed rows for %s, written by tools/bench/render-profile-report.py" % plugin,
+                  "// --emit-cost-table from the inputs in %s. Engine/GpuCostModel.cpp describes the rows."
+                  % SEED_INPUTS_PATH]
+        fragments[seed_fragment_path(plugin, nodes)] = "\n".join(header + lines[plugin]) + "\n"
+    return fragments
+
+
+def seed_value(text):
+    if text.startswith('"'):
+        return text[1:-1]
+    if text == "nullptr":
+        return None
+    return float(text) if any(c in text for c in ".e") else int(text)
+
+
+def parse_cost_fragments(root):
+    """The (cpu, motion-blur cpu, sigma, gpu) rows of the checked-in seed fragments, in the order cost_fragments()
+    would write them."""
+    tables = tuple([] for _ in SEED_TABLES)
+    macros = [macro for macro, _ in SEED_TABLES]
+    row_re = re.compile(r"^(%s)\((.*)\)$" % "|".join(macros))
+    for path in seed_fragment_paths(root):
+        for line in read_text(os.path.join(root, path)).splitlines():
+            match = row_re.match(line)
+            if match:
+                row = tuple(seed_value(arg.strip()) for arg in match.group(2).split(","))
+                tables[macros.index(match.group(1))].append(row)
+    return tables
+
+
+def inputs_text(serial, threaded, command):
+    out = ["Inputs of the GPU cost model seed rows, Engine/Nodes/**/*%s and %s/*.inc." % (NODE_SEED_SUFFIX, OFX_SEED_DIR),
+           "",
+           "Serial (noRenderThreads=1) inputs, dated by file modification time:"]
+    out += ["  %s (%s)" % (path, file_date(path)) for path in serial]
+    out.append("Threaded inputs:")
+    out += ["  %s (%s)" % (path, file_date(path)) for path in threaded]
+    out += ["",
+            "Regenerate from the repository root with:",
+            "  " + command,
+            "",
+            "CPU rows: serial ms per Mpx (median over tasks weighted by RoI pixels) and parallel speedup (serial over",
+            "threaded ms per Mpx). Motion-blur CPU rows: the same, for the plugins the bench comps render with motion",
+            "blur. CPU sigma rows and the GPU rows are in-situ measurements hard-coded in the generator; the GPU rows",
+            "are kernel-only ms per Mpx on an RX 7900 XTX, from the kernelMs of lone-node regions at UHD."]
+    return "\n".join(out) + "\n"
+
+
+def emit_cost_table(pairs, command, root):
+    """Returns {path relative to root: text} for the seed fragments and their inputs file; pairs maps each threaded
+    profile to its serial one."""
     threaded = list(pairs)
     serial = [pairs[path] for path in threaded]
-    cpu, motion_blur, sigma, gpu = cost_table_rows(threaded, serial)
+    fragments = cost_fragments(cost_table_rows(threaded, serial), native_node_paths(root))
+    fragments[SEED_INPUTS_PATH] = inputs_text(serial, threaded, command)
+    return fragments
 
-    def block(name, rows):
-        if not rows:
-            return "#define %s\n" % name
-        lines = ["#define %s \\" % name]
-        lines += ["    %s, \\" % row for row in rows]
-        lines[-1] = lines[-1][:-3]
-        return "\n".join(lines) + "\n"
 
-    out = ["// Seed costs for the GPU placement cost model. Generated, do not edit.",
-           "//",
-           "// Serial (noRenderThreads=1) inputs, dated by file modification time:"]
-    out += ["//   %s (%s)" % (path, file_date(path)) for path in serial]
-    out.append("// Threaded inputs:")
-    out += ["//   %s (%s)" % (path, file_date(path)) for path in threaded]
-    out += ["//",
-            "// Regenerate from the repository root with:",
-            "//   " + command,
-            "//",
-            "// Each macro expands to an initialiser list; the consuming code defines the row structs.",
-            "// CPU rows: { plugin id, serial ms per Mpx (median over tasks weighted by RoI pixels),",
-            "//   parallel speedup (serial over threaded ms per Mpx) }.",
-            "// CPU motion-blur rows: the same, for the plugins the bench comps render with motion blur;",
-            "//   they price only a task that renders with motion blur.",
-            "// CPU sigma rows: { plugin id, algorithm, largest sigma covered, serial ms per Mpx, parallel",
-            "//   speedup }. Use the first row of the algorithm whose sigma bound is at least the sigma.",
-            "//   Measured in situ on UHD float at 16 threads, so they are hard-coded here.",
-            "// GPU rows: { plugin id, kind (plain, iir or motion_blur), largest sigma covered (0 when the",
-            "//   kernel has no sigma), kernel-only ms per Mpx on an RX 7900 XTX, from the kernelMs of lone-node",
-            "//   regions at UHD, then optionally the Blur filter (nullptr for any) and the largest Erode or",
-            "//   Dilate size covered (0 for any) }. A row that names a filter or a size beats one that does not.",
-            ""]
-    out.append(block("NATRON_GPU_COST_SEED_CPU_ROWS",
-                     ['{ "%s", %.4f, %.4f }' % row for row in cpu]))
-    out.append(block("NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROWS",
-                     ['{ "%s", %.4f, %.4f }' % row for row in motion_blur]))
-    out.append(block("NATRON_GPU_COST_SEED_CPU_SIGMA_ROWS",
-                     ['{ "%s", "%s", %s, %.4f, %.4f }' % (p, a, sigma_text(t), s, k)
-                      for p, a, t, s, k in sigma]))
-    out.append(block("NATRON_GPU_COST_SEED_GPU_ROWS", [gpu_row_text(row) for row in gpu]))
-    return "\n".join(out)
+def write_cost_table(fragments, root):
+    """Writes the fragments under root and removes the seed fragments they no longer include."""
+    for path in seed_fragment_paths(root):
+        if path not in fragments:
+            os.remove(os.path.join(root, path))
+    for path, text in sorted(fragments.items()):
+        target = os.path.join(root, path)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8") as out:
+            out.write(text)
 
 
 def self_test(args):
@@ -578,16 +733,22 @@ def self_test(args):
         assert [r[1] for r in gpu if r[0] == BLUR_PLUGIN_ID] == ["plain", "plain", "plain", "iir", "plain", "plain", "plain", "iir", "iir"], gpu
         assert [r[4] for r in gpu if r[0] == BLUR_PLUGIN_ID] == [None] * 4 + ["box", "triangle", "quadratic", "gaussian", "quasi_gaussian"], gpu
         assert [r[1] for r in gpu if r[0] == TRANSFORM_PLUGIN_ID] == ["plain", "motion_blur"], gpu
-        text = emit_cost_table({fast: sample}, "cmd")
-        assert text == emit_cost_table({fast: sample}, "cmd"), "output must be deterministic"
-        assert '    { "Blur", 100.0000, 2.0000 }, \\\n' in text, text
-        assert text.count("#define NATRON_GPU_COST_SEED_") == 4
-        assert "#define NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROWS\n" in text, text
-        assert '{ "net.sf.cimg.CImgBlur", "fir", 3.0, 30.1300, 6.4106 }' in text, text
-        assert '{ "net.sf.cimg.CImgBlur", "iir", 1e9, ' in text, text
-        assert "(%s)" % file_date(sample) in text and "//   cmd\n" in text
-        body = [line for line in text.splitlines() if not line.startswith("//")]
-        assert not any(line.endswith("\\") for line in body if line.startswith("}")), body
+        files = emit_cost_table({fast: sample}, "cmd", SEED_ROOT)
+        assert files == emit_cost_table({fast: sample}, "cmd", SEED_ROOT), "output must be deterministic"
+        assert 'NATRON_GPU_COST_SEED_CPU_ROW("Blur", 100.0000, 2.0000)\n' in files[OFX_SEED_DIR + "/Blur.inc"], files
+        assert not any("MOTION_BLUR_ROW(" in text for text in files.values()), files
+        blur = files[NODES_DIR + "/Filter/Blur.costseed.inc"]
+        assert 'NATRON_GPU_COST_SEED_CPU_SIGMA_ROW("net.sf.cimg.CImgBlur", "fir", 3.0, 30.1300, 6.4106)\n' in blur, blur
+        assert 'NATRON_GPU_COST_SEED_CPU_SIGMA_ROW("net.sf.cimg.CImgBlur", "iir", 1e9, ' in blur, blur
+        assert 'NATRON_GPU_COST_SEED_GPU_ROW("net.sf.cimg.CImgBlur", "plain", 1e9, ' in blur, blur
+        assert ('NATRON_GPU_COST_SEED_GPU_ROW("%s", "plain", 0.0, %.4f)\n' % (GRADE_PLUGIN_ID, 0.497 / UHD_MPX)
+                in files[NODES_DIR + "/Color/Grade.costseed.inc"]), files
+        inputs = files[SEED_INPUTS_PATH]
+        assert "(%s)" % file_date(sample) in inputs and "\n  cmd\n" in inputs, inputs
+        for path, text in files.items():
+            assert text.endswith("\n") and not text.endswith("\n\n"), path
+            if path != SEED_INPUTS_PATH:
+                assert all(line.startswith("//") or line.endswith(")") for line in text.splitlines()), path
 
         moving = os.path.join(tmp, "transform.jsonl")
         with open(moving, "w", encoding="utf-8") as out:
@@ -599,21 +760,39 @@ def self_test(args):
         cpu, motion_blur, _, _ = cost_table_rows([moving], [moving])
         assert [r[0] for r in cpu] == ["Grade", TRANSFORM_PLUGIN_ID], cpu
         assert [r[0] for r in motion_blur] == [TRANSFORM_PLUGIN_ID] and close(motion_blur[0][1], 300.0), motion_blur
-        text = emit_cost_table({moving: moving}, "cmd")
-        assert ('#define NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROWS \\\n    { "%s", 300.0000, 1.0000 }\n'
-                % TRANSFORM_PLUGIN_ID) in text, text
-    assert gpu_row_text(("p", "plain", 0.0, 1.0)) == '{ "p", "plain", 0.0, 1.0000 }'
-    assert gpu_row_text(("p", "plain", 0.0, 1.0, None, 6)) == '{ "p", "plain", 0.0, 1.0000, nullptr, 6 }'
-    assert gpu_row_text(("p", "plain", OPEN_SIGMA, 1.0, "box", 0)) == '{ "p", "plain", 1e9, 1.0000, "box", 0 }'
-    seed_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "Engine", "GpuCostSeed.inc")
-    if os.path.exists(seed_path):
-        with open(seed_path, encoding="utf-8") as handle:
-            seed = handle.read()
-        cpu_block = seed[seed.index("#define NATRON_GPU_COST_SEED_CPU_ROWS"):seed.index("#define NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROWS")]
-        gpu_block = seed[seed.index("#define NATRON_GPU_COST_SEED_GPU_ROWS"):]
-        for plugin in PORTED_PLUGIN_IDS:
-            assert '"%s"' % plugin in cpu_block, "no CPU seed row for " + plugin
-            assert '"%s"' % plugin in gpu_block, "no GPU seed row for " + plugin
+        files = emit_cost_table({moving: moving}, "cmd", SEED_ROOT)
+        assert ('NATRON_GPU_COST_SEED_CPU_MOTION_BLUR_ROW("%s", 300.0000, 1.0000)\n' % TRANSFORM_PLUGIN_ID
+                in files[NODES_DIR + "/Transform/Transform.costseed.inc"]), files
+
+        written = os.path.join(tmp, "tree")
+        stale = os.path.join(written, OFX_SEED_DIR, "net.sf.openfx.Stale.inc")
+        os.makedirs(os.path.dirname(stale))
+        open(stale, "w").close()
+        write_cost_table(files, written)
+        assert not os.path.exists(stale)
+        assert sorted(seed_fragment_paths(written)) == sorted(p for p in files if p != SEED_INPUTS_PATH)
+    assert gpu_row_text(("p", "plain", 0.0, 1.0)) == '"p", "plain", 0.0, 1.0000'
+    assert gpu_row_text(("p", "plain", 0.0, 1.0, None, 6)) == '"p", "plain", 0.0, 1.0000, nullptr, 6'
+    assert gpu_row_text(("p", "plain", OPEN_SIGMA, 1.0, "box", 0)) == '"p", "plain", 1e9, 1.0000, "box", 0'
+    assert node_name_of("net.sf.cimg.CImgErode") == "Erode" and node_name_of("net.sf.openfx.GradePlugin") == "Grade"
+
+    nodes = native_node_paths(SEED_ROOT)
+    assert nodes[GRADE_PLUGIN_ID] == NODES_DIR + "/Color/Grade", nodes
+    assert nodes[ADD_PLUGIN_ID] == NODES_DIR + "/Color/Add", nodes
+    assert nodes[ERODE_PLUGIN_ID] == NODES_DIR + "/Filter/Erode", nodes
+    assert nodes[DILATE_PLUGIN_ID] == NODES_DIR + "/Filter/Dilate", nodes
+    assert nodes["net.sf.openfx.MergeDifference"] == NODES_DIR + "/Merge/MergeDifference", nodes
+    assert nodes["fr.inria.built-in.Write"] == NODES_DIR + "/IO/NativeWrite", nodes
+    assert nodes[KEYER_PLUGIN_ID] == NODES_DIR + "/Keyer/Keyer", nodes
+    assert "net.sf.openfx.Despill" not in nodes, nodes
+
+    tables = parse_cost_fragments(SEED_ROOT)
+    checked_in = {path: read_text(os.path.join(SEED_ROOT, path)) for path in seed_fragment_paths(SEED_ROOT)}
+    assert cost_fragments(tables, nodes) == checked_in, "the seed fragments differ from what the emitter writes"
+    for plugin in PORTED_PLUGIN_IDS:
+        assert any(row[0] == plugin for row in tables[0]), "no CPU seed row for " + plugin
+        assert any(row[0] == plugin for row in tables[3]), "no GPU seed row for " + plugin
+        assert seed_fragment_path(plugin, nodes).startswith(NODES_DIR + "/"), plugin
     print("self-test passed")
 
 
@@ -642,9 +821,11 @@ def main():
                          "comp; each node's own cost per pixel then replaces the contended wallNs of that "
                          "input for classification and region cost. Costs are not shared between inputs; "
                          "nodes absent from the serial profile keep their wallNs and are reported")
-    ap.add_argument("--emit-cost-table", metavar="OUT",
-                    help="write the per-plugin cost seed (a C++ .inc) from the one-thread profiles of "
-                         "--serial-profile INPUT=SERIAL pairs, with INPUT the threaded profile, and exit")
+    ap.add_argument("--emit-cost-table", metavar="ROOT",
+                    help="write the per-plugin cost seed fragments under the source tree ROOT, one per native "
+                         "node beside its .reg.inc and one per OFX plug-in under %s, from the one-thread "
+                         "profiles of --serial-profile INPUT=SERIAL pairs, with INPUT the threaded profile, "
+                         "remove the fragments of plugins no longer seeded, and exit" % OFX_SEED_DIR)
     ap.add_argument("--json", action="store_true", help="print machine-readable JSON instead of text")
     ap.add_argument("--self-test", action="store_true",
                     help="check the analysis against render-profile-sample.jsonl and exit")
@@ -682,8 +863,7 @@ def main():
             ap.error("--emit-cost-table needs --serial-profile INPUT=SERIAL pairs")
         command = " ".join(["tools/bench/render-profile-report.py"] + ["--serial-profile %s=%s" % kv
                            for kv in pairs.items()] + args.files + ["--emit-cost-table", args.emit_cost_table])
-        with open(args.emit_cost_table, "w", encoding="utf-8") as out:
-            out.write(emit_cost_table(pairs, command))
+        write_cost_table(emit_cost_table(pairs, command, args.emit_cost_table), args.emit_cost_table)
         return
     frames = load_records(args.files)
     if pairs:

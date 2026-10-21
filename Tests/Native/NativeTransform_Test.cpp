@@ -38,6 +38,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -554,4 +555,10 @@ TEST_F(NativeTransformTest, MaskedPartialWindowFetchesThePassThroughRegion)
             }
         }
     }
+}
+
+TEST_F(NativeTransformTest, RegisteredIdentity)
+{
+    expectNativeIdentity(PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM, "Transform");
+    expectNativeIdentity(PLUGINID_NATRON_TRANSFORMMASKED, PLUGIN_MAJOR_NATRON_TRANSFORMMASKED, "TransformMasked");
 }

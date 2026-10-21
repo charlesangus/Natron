@@ -54,6 +54,8 @@
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/Settings.h"
 
+#include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
+
 NATRON_NAMESPACE_USING
 
 namespace {
@@ -62,6 +64,7 @@ const char* const kCGURI = "ocio://cg-config-v4.0.0_aces-v2.0_ocio-v2.5";
 const char* const kStudioOnlySpace = "Camera Rec.709";
 const char* const kSharedSpace = "ACEScg";
 
+const char* const kConfigFixtureID = kNatronTestOCIOConfigPluginID;
 const char* const kOCIOColorSpaceID = "fr.inria.openfx.OCIOColorSpace";
 const char* const kOCIODisplayID = "fr.inria.openfx.OCIODisplay";
 const char* const kOCIOLookTransformID = "fr.inria.openfx.OCIOLookTransform";
@@ -285,7 +288,7 @@ TEST_F(ProjectOCIOTest, NewReadWriteAndColorSpaceNodesCarryTheProjectConfigHidde
 {
     NodePtr read = createReader("flat-rgb-only.exr");
     NodePtr write = createNativeWrite();
-    NodePtr colorSpace = createNode(kOCIOColorSpaceID);
+    NodePtr colorSpace = createNode(kConfigFixtureID);
 
     ASSERT_TRUE(bool(read));
     ASSERT_TRUE(bool(write));
@@ -304,9 +307,11 @@ TEST_F(ProjectOCIOTest, SwitchingToCGUpdatesEveryNodeAndRebuildsTheColorSpaceMen
     NodePtr read = createReader("flat-rgb-only.exr");
     NodePtr write = createNativeWrite();
     NodePtr colorSpace = createNode(kOCIOColorSpaceID);
+    NodePtr configNode = createNode(kConfigFixtureID);
     ASSERT_TRUE(bool(read));
     ASSERT_TRUE(bool(write));
     ASSERT_TRUE(bool(colorSpace));
+    ASSERT_TRUE(bool(configNode));
 
     KnobChoicePtr inputMenu = choiceKnob(colorSpace, "ocioInputSpaceIndex");
     ASSERT_TRUE(bool(inputMenu));
@@ -317,6 +322,7 @@ TEST_F(ProjectOCIOTest, SwitchingToCGUpdatesEveryNodeAndRebuildsTheColorSpaceMen
     expectCarriesConfig(read, kCGURI);
     expectCarriesConfig(write, kCGURI);
     expectCarriesConfig(colorSpace, kCGURI);
+    expectCarriesConfig(configNode, kCGURI);
 
     const std::vector<ChoiceOption> entries = inputMenu->getEntries_mt_safe();
     const std::vector<std::string> cgSpaces = project()->getColorManagement()->getColorSpaces();

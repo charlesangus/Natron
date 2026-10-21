@@ -39,6 +39,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -304,4 +305,9 @@ TEST(CheckerBoardRuns, MatchThePerPixelTest)
         }
     }
     EXPECT_EQ(0, mismatches);
+}
+
+TEST_F(NativeCheckerBoardTest, RegisteredIdentity)
+{
+    expectNativeIdentity(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD, "CheckerBoard");
 }

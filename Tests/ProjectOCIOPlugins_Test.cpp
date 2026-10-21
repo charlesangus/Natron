@@ -40,10 +40,12 @@
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/Project.h"
 
+#include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
+
 NATRON_NAMESPACE_USING
 
 namespace {
-const char* const kOCIOColorSpaceID = "fr.inria.openfx.OCIOColorSpace";
+const char* const kConfigFixtureID = kNatronTestOCIOConfigPluginID;
 const char* const kStudioURI = "ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5";
 const char* const kCGURI = "ocio://cg-config-v4.0.0_aces-v2.0_ocio-v2.5";
 
@@ -69,7 +71,7 @@ protected:
 
     OFX::Host::ImageEffect::Instance* createOfxInstance()
     {
-        CreateNodeArgs args(kOCIOColorSpaceID, project());
+        CreateNodeArgs args(kConfigFixtureID, project());
         _node = appPTR->getTopLevelInstance()->createNode(args);
         if (!_node) {
             return NULL;

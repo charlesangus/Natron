@@ -102,6 +102,7 @@ struct GradeOp {
         .grouping = PLUGIN_GROUP_COLOR,
         .majorVersion = PLUGIN_MAJOR_NATRON_GRADE,
         .minorVersion = 0,
+        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.GradePlugin.png",
         .inputs = kGradeInputs,
     };
 

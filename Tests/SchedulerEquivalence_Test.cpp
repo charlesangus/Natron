@@ -50,6 +50,7 @@
 #include "BaseTest.h"
 #include "CacheMemoryPressureGuard.h"
 #include "FlatExrReader.h"
+#include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AbortableRenderInfo.h"
@@ -83,8 +84,6 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const char* const kCheckerBoardPluginID = "net.sf.openfx.CheckerBoardPlugin";
-const char* const kFrameBlendPluginID = "net.sf.openfx.FrameBlend";
-const char* const kSwitchPluginID = "net.sf.openfx.switchPlugin";
 
 const int kFirstFrame = 1;
 const int kLastFrame = 3;
@@ -413,12 +412,23 @@ protected:
     NodePtr createTimeOffset(const NodePtr& source,
                              int offset)
     {
-        NodePtr node = createNode(QString::fromUtf8(PLUGINID_OFX_TIMEOFFSET));
+        NodePtr node = createNode(QString::fromUtf8(kNatronTestFrameWindowPluginID));
         EXPECT_TRUE(bool(node));
         if (!node) {
             return node;
         }
         connectNodes(source, node, 0, true);
+        KnobInt* range = dynamic_cast<KnobInt*>(node->getKnobByName("frameRange").get());
+        EXPECT_TRUE(range != NULL);
+        if (range) {
+            range->setValue(0, ViewSpec::all(), 0);
+            range->setValue(0, ViewSpec::all(), 1);
+        }
+        KnobBool* absolute = dynamic_cast<KnobBool*>(node->getKnobByName("absolute").get());
+        EXPECT_TRUE(absolute != NULL);
+        if (absolute) {
+            absolute->setValue(false);
+        }
         KnobInt* knob = dynamic_cast<KnobInt*>(node->getKnobByName("timeOffset").get());
         EXPECT_TRUE(knob != NULL);
         if (knob) {
@@ -588,14 +598,14 @@ TEST_F(SchedulerEquivalence, TimeOffsetBranchesOfAnAnimatedGrade)
 }
 
 // frameRange -5..0 asks for six frames of the Grade per output frame, past the four the request
-// pass pre-renders, so the rest are pulled by getImage inside FrameBlend's task.
-TEST_F(SchedulerEquivalence, FrameBlendPastThePrefetchCap)
+// pass pre-renders, so the rest are pulled by getImage inside the FrameWindow's task.
+TEST_F(SchedulerEquivalence, FrameWindowPastThePrefetchCap)
 {
     NodePtr grade = createGrade(createChecker(), 1.);
     ASSERT_TRUE(bool(grade));
     ASSERT_NO_FATAL_FAILURE(animateMultiply(grade, { { -4., 0.1 }, { 3., 1.5 } }));
 
-    NodePtr blend = createNode(QString::fromUtf8(kFrameBlendPluginID));
+    NodePtr blend = createNode(QString::fromUtf8(kNatronTestFrameWindowPluginID));
     ASSERT_TRUE(bool(blend));
     connectNodes(grade, blend, 0, true);
     KnobInt* frameRange = dynamic_cast<KnobInt*>(blend->getKnobByName("frameRange").get());
@@ -827,7 +837,7 @@ TEST_F(SchedulerEquivalence, SwitchWithAnimatedWhich)
     NodePtr bright = createTransform(createGrade(createChecker(), 1.4), 16., 8.);
     ASSERT_TRUE(dark && bright);
 
-    NodePtr switchNode = createNode(QString::fromUtf8(kSwitchPluginID));
+    NodePtr switchNode = createNode(QString::fromUtf8(kNatronTestTwoInputCopyPluginID));
     ASSERT_TRUE(bool(switchNode));
     connectNodes(dark, switchNode, 0, true);
     connectNodes(bright, switchNode, 1, true);
@@ -900,8 +910,8 @@ private:
 
 } // namespace
 
-// Each TimeOffset is an identity of its input at another time, so the outer one is an alias of an
-// alias: the frame stores one image under three keys, and FrameHold's alias is shared by every
+// Each time-offset FrameWindow is an identity of its input at another time, so the outer one is an alias of an
+// alias: the frame stores one image under three keys, and the held frame's alias is shared by every
 // frame that holds the same time.
 TEST_F(SchedulerEquivalence, IdentitiesAtAnotherTime)
 {
@@ -914,12 +924,15 @@ TEST_F(SchedulerEquivalence, IdentitiesAtAnotherTime)
     NodePtr outer = createTimeOffset(inner, -1);
     ASSERT_TRUE(bool(outer));
 
-    NodePtr hold = createNode(QString::fromUtf8(PLUGINID_OFX_FRAMEHOLD));
+    NodePtr hold = createNode(QString::fromUtf8(kNatronTestFrameWindowPluginID));
     ASSERT_TRUE(bool(hold));
     connectNodes(grade, hold, 0, true);
-    KnobInt* firstFrame = dynamic_cast<KnobInt*>(hold->getKnobByName("firstFrame").get());
-    ASSERT_TRUE(firstFrame != NULL);
-    firstFrame->setValue(2);
+    KnobInt* heldFrame = dynamic_cast<KnobInt*>(hold->getKnobByName("frameRange").get());
+    KnobBool* heldAbsolute = dynamic_cast<KnobBool*>(hold->getKnobByName("absolute").get());
+    ASSERT_TRUE(heldFrame != NULL && heldAbsolute != NULL);
+    heldAbsolute->setValue(true);
+    heldFrame->setValue(2, ViewSpec::all(), 0);
+    heldFrame->setValue(2, ViewSpec::all(), 1);
 
     NodePtr merge = createMerge(outer, hold);
     ASSERT_TRUE(bool(merge));

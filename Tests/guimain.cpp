@@ -37,6 +37,8 @@
 #include "Engine/CLArgs.h"
 
 #include "PerProcessUserDirs.h"
+#include "TestOfxPluginPath.h"
+#include "TestPlaneChoiceTakeOvers.h"
 
 using namespace NATRON_NAMESPACE;
 
@@ -84,6 +86,8 @@ main(int argc, char** argv)
     }
     int retval;
     PerProcessUserDirs userDirs;
+    appendTestOfxPluginDir();
+    applyTestPlaneChoiceTakeOvers();
     {
         WidgetTestAppManager manager;
 

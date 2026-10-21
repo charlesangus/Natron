@@ -38,6 +38,7 @@
 #include <QStringList>
 
 #include "Tests/BaseTest.h"
+#include "Tests/OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 #include "Tests/RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -61,9 +62,6 @@
 
 #define kEngineHooksUnPremultPluginID "test.natron.built-in.EngineHooksUnPremult"
 #define kEngineHooksPlaneRecorderPluginID "test.natron.built-in.EngineHooksPlaneRecorder"
-
-// A colour plugin that stays OpenFX, so it still exercises the OpenFX hosting paths.
-#define kOfxColorMatrixMajor 2
 
 NATRON_NAMESPACE_ENTER
 
@@ -306,27 +304,27 @@ TEST_F(EngineHooksTest, EffectNotAskingGetsNoHostUnPremultSelector)
 
 TEST_F(EngineHooksTest, OfxPluginPairStillYieldsTheHostSelectorAndIsHidden)
 {
-    NodePtr colorMatrix = createNode(QString::fromUtf8("net.sf.openfx.ColorMatrixPlugin"), kOfxColorMatrixMajor);
-    ASSERT_TRUE(bool(colorMatrix));
+    NodePtr pointMatrix = createNode(QString::fromUtf8(kNatronTestPointMatrixPluginID), kNatronTestPointMatrixMajor);
+    ASSERT_TRUE(bool(pointMatrix));
 
-    EXPECT_TRUE(bool(colorMatrix->getUnPremultBySelector()));
-    KnobIPtr pluginEnabled = colorMatrix->getKnobByName(kUnPremultByPluginKnobName);
-    KnobIPtr pluginChannel = colorMatrix->getKnobByName(kUnPremultByChannelPluginKnobName);
+    EXPECT_TRUE(bool(pointMatrix->getUnPremultBySelector()));
+    KnobIPtr pluginEnabled = pointMatrix->getKnobByName(kUnPremultByPluginKnobName);
+    KnobIPtr pluginChannel = pointMatrix->getKnobByName(kUnPremultByChannelPluginKnobName);
     ASSERT_TRUE(bool(pluginEnabled));
     ASSERT_TRUE(bool(pluginChannel));
     EXPECT_TRUE(pluginEnabled->getIsSecret());
     EXPECT_TRUE(pluginChannel->getIsSecret());
 }
 
-TEST_F(EngineHooksTest, OfxColorMatrixOutsideRenderReadsTheSelectedNonColorLayer)
+TEST_F(EngineHooksTest, OfxPointMatrixOutsideRenderReadsTheSelectedNonColorLayer)
 {
     NodePtr reader = createThreeLayerReader();
     ASSERT_TRUE(bool(reader));
-    NodePtr colorMatrix = createNode(QString::fromUtf8("net.sf.openfx.ColorMatrixPlugin"), kOfxColorMatrixMajor);
-    ASSERT_TRUE(bool(colorMatrix));
-    connectNodes(reader, colorMatrix, 0, true);
+    NodePtr pointMatrix = createNode(QString::fromUtf8(kNatronTestPointMatrixPluginID), kNatronTestPointMatrixMajor);
+    ASSERT_TRUE(bool(pointMatrix));
+    connectNodes(reader, pointMatrix, 0, true);
 
-    EffectInstancePtr effect = colorMatrix->getEffectInstance();
+    EffectInstancePtr effect = pointMatrix->getEffectInstance();
     ImageLayerDesc layer;
     int maskChannel = 42;
 
@@ -334,7 +332,7 @@ TEST_F(EngineHooksTest, OfxColorMatrixOutsideRenderReadsTheSelectedNonColorLayer
     EXPECT_TRUE(layer.isColorLayer()) << layer.getLayerID();
     EXPECT_EQ(-1, maskChannel);
 
-    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(colorMatrix->getKnobByName(kNodeParamChannelSet));
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(pointMatrix->getKnobByName(kNodeParamChannelSet));
     ASSERT_TRUE(bool(channels));
     channels->setLayer(0, "diffuse", NULL);
 
@@ -344,26 +342,26 @@ TEST_F(EngineHooksTest, OfxColorMatrixOutsideRenderReadsTheSelectedNonColorLayer
     EXPECT_EQ(-1, maskChannel);
 }
 
-TEST_F(EngineHooksTest, OfxColorMatrixMaskInputReadsTheSelectedMaskChannel)
+TEST_F(EngineHooksTest, OfxPointMatrixMaskInputReadsTheSelectedMaskChannel)
 {
     NodePtr reader = createThreeLayerReader();
     ASSERT_TRUE(bool(reader));
-    NodePtr colorMatrix = createNode(QString::fromUtf8("net.sf.openfx.ColorMatrixPlugin"), kOfxColorMatrixMajor);
-    ASSERT_TRUE(bool(colorMatrix));
-    connectNodes(reader, colorMatrix, 0, true);
+    NodePtr pointMatrix = createNode(QString::fromUtf8(kNatronTestPointMatrixPluginID), kNatronTestPointMatrixMajor);
+    ASSERT_TRUE(bool(pointMatrix));
+    connectNodes(reader, pointMatrix, 0, true);
 
-    const int maskInput = inputNamed(colorMatrix, "Mask");
+    const int maskInput = inputNamed(pointMatrix, "Mask");
     ASSERT_GE(maskInput, 0);
-    connectNodes(reader, colorMatrix, maskInput, true);
+    connectNodes(reader, pointMatrix, maskInput, true);
 
-    KnobBool* maskEnabled = dynamic_cast<KnobBool*>(colorMatrix->getKnobByName("enableMask_Mask").get());
+    KnobBool* maskEnabled = dynamic_cast<KnobBool*>(pointMatrix->getKnobByName("enableMask_Mask").get());
     ASSERT_TRUE(maskEnabled != NULL);
     maskEnabled->setValue(true);
-    KnobChannelSelect* maskSelect = dynamic_cast<KnobChannelSelect*>(colorMatrix->getKnobByName("maskChannel_Mask").get());
+    KnobChannelSelect* maskSelect = dynamic_cast<KnobChannelSelect*>(pointMatrix->getKnobByName("maskChannel_Mask").get());
     ASSERT_TRUE(maskSelect != NULL);
     maskSelect->set("specular.G");
 
-    EffectInstancePtr effect = colorMatrix->getEffectInstance();
+    EffectInstancePtr effect = pointMatrix->getEffectInstance();
     ImageLayerDesc layer;
     int maskChannel = -1;
 

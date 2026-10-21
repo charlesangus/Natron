@@ -11,6 +11,7 @@ working tree are checked. A header is checked through the .cpp beside it.
 Exit status is non-zero when any TU is FAIL or NO-COMMAND.
 """
 import argparse
+import filecmp
 import json
 import os
 import re
@@ -125,6 +126,7 @@ class CompDb:
         if e is not None:
             return e, None
         parts = rel.split("/")
+        cmake_dir = nearest_cmake_dir(self.root, rel)
         # Flags never cross a top-level directory, and each libs/<name> is its
         # own project, so the search stops there.
         stop = 2 if parts[0] == "libs" and len(parts) > 2 else 1
@@ -133,9 +135,13 @@ class CompDb:
         for depth in range(len(parts) - 1, stop - 1, -1):
             d = os.path.join(self.src_root, *parts[:depth]) + os.sep
             searched = "/".join(parts[:depth]) + "/"
+            # Flags only carry over within one CMake directory: a nested
+            # CMakeLists.txt defines its own targets and include dirs.
             cands = [x for x in self.entries
                      if x["file"].startswith(d) and not x["file"].startswith(build_prefix)
-                     and x["file"].endswith(SOURCE_EXTS)]
+                     and x["file"].endswith(SOURCE_EXTS)
+                     and nearest_cmake_dir(self.src_root, os.path.relpath(x["file"], self.src_root))
+                     == cmake_dir]
             if not cands:
                 continue
             counts = {}
@@ -152,6 +158,19 @@ class CompDb:
             return borrowed, None
         return None, searched or "./"
 
+    def stale_cmake(self, rel):
+        """The checkout's CMakeLists.txt governing rel when this DB's tree
+        lacks it or has a different one, so the DB may lack rel's target."""
+        if os.path.normpath(self.src(rel)) in self.by_file:
+            return None
+        d = nearest_cmake_dir(self.root, rel)
+        mine = os.path.join(self.root, d, "CMakeLists.txt")
+        theirs = os.path.join(self.src_root, d, "CMakeLists.txt")
+        if d == nearest_cmake_dir(self.src_root, rel) and os.path.isfile(theirs) and \
+                filecmp.cmp(mine, theirs, shallow=False):
+            return None
+        return mine
+
     def argv_for(self, entry):
         args = entry["arguments"] if "arguments" in entry else shlex.split(entry["command"])
         if self.root != self.src_root:
@@ -166,6 +185,14 @@ class CompDb:
             elif a != "-c":
                 out.append(a)
         return out + ["-fsyntax-only"]
+
+
+def nearest_cmake_dir(base, rel):
+    """Directory (relative to base) of the closest CMakeLists.txt at or above rel."""
+    d = os.path.dirname(rel)
+    while d and not os.path.isfile(os.path.join(base, d, "CMakeLists.txt")):
+        d = os.path.dirname(d)
+    return d
 
 
 def rewrite_root(arg, old, new, keep):
@@ -290,14 +317,17 @@ def deps_root_args(root, main):
     return args
 
 
-def ensure_gpu_db(root, main, needed_headers, moc_targets):
-    """Configures build/syntax and generates kernel headers; returns its CompDb."""
+def ensure_gpu_db(root, main, needed_headers, moc_targets, cmake_files=(), generate=True):
+    """Configures build/syntax and generates kernel headers; returns its CompDb.
+
+    The tree is reconfigured when older than the GPU sources or cmake_files."""
     if ninja_running():
         die(f"ninja is already running in the '{CONTAINER}' container; it is single-tenant, "
             "so wait for that build to finish before a GPU syntax check reconfigures.", 1)
     bdir = os.path.join(root, "build", "syntax")
     db_path = os.path.join(bdir, "compile_commands.json")
-    if not os.path.isfile(db_path) or os.path.getmtime(db_path) < newest_gpu_change(root):
+    newest = max([newest_gpu_change(root), *map(os.path.getmtime, cmake_files)])
+    if not os.path.isfile(db_path) or os.path.getmtime(db_path) < newest:
         os.makedirs(bdir, exist_ok=True)
         argv = ["cmake", "-S", root, "-B", bdir, *SYNTAX_CMAKE_ARGS, *deps_root_args(root, main)]
         print(f"configuring {bdir} ...", flush=True)
@@ -310,6 +340,9 @@ def ensure_gpu_db(root, main, needed_headers, moc_targets):
         # CMake leaves an unchanged compile DB untouched, which would make it
         # look stale again on the next run.
         os.utime(db_path)
+
+    if not generate:
+        return CompDb(db_path, root)
 
     p = container_exec(["ninja", "-C", bdir, "-t", "targets", "all"], root)
     if p.returncode != 0:
@@ -432,11 +465,16 @@ def main():
         else:
             plain.append(rel)
 
-    jobs = [(rel, db) for rel in plain]
-    if gpu:
-        gpu_db = db if db.mtime() >= newest_gpu_change(root) else \
-            ensure_gpu_db(root, main_root, needed, moc_targets)
-        jobs += [(rel, gpu_db) for rel in gpu]
+    stale = {rel: db.stale_cmake(rel) for rel in plain}
+    jobs = [(rel, db) for rel in plain if not stale[rel]]
+    fresh = [rel for rel in plain if stale[rel]]
+    if gpu or fresh:
+        if gpu and not fresh and db.mtime() >= newest_gpu_change(root):
+            gpu_db = db
+        else:
+            gpu_db = ensure_gpu_db(root, main_root, needed, moc_targets,
+                                   [stale[rel] for rel in fresh], generate=bool(gpu))
+        jobs += [(rel, gpu_db) for rel in gpu + fresh]
 
     def run(job):
         rel, d = job

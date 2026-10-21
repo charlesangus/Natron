@@ -8,8 +8,10 @@
 #
 # Everything ci.yml's package-install step needs (bar one documented
 # exception below) is already present in aswf/ci-vfxall:2027-clang21.1, so
-# the only layer this file adds is the local-only Mesa relink at the bottom,
-# which CI never sees (CI runs the base image directly). It is kept as a file
+# the only layers this file adds are the local-only Mesa relink and the
+# Slang toolchain at the bottom, which CI never sees (CI runs the base image
+# directly, and downloads and caches Slang itself through
+# cmake/FetchSlang.cmake). It is kept as a file
 # (rather than building the image straight from `docker pull`) so that:
 #   (a) the drift-check comment block below has somewhere to live, and
 #   (b) local-only layers have an obvious, already-wired seam to land in.
@@ -100,3 +102,22 @@ RUN set -eu; \
     test "$patched" -gt 0; \
     ldd /usr/lib64/libvulkan_radeon.so | grep -q "$sys_llvm"; \
     ! ldd /usr/lib64/libvulkan_radeon.so | grep -q /usr/local/lib/libLLVM
+
+# --- Slang: bake the shader compiler so configure never downloads it -------
+# Same release cmake/FetchSlang.cmake pins; tools/ci/local/check-slang-pin.sh
+# fails CI when the two drift. SLANG_ROOT makes FetchSlang.cmake use this copy
+# instead of fetching into .natron-deps. Only slangc and the prelude header
+# are consumed, so the build fails if a release layout change drops either.
+ARG NATRON_SLANG_VERSION=2026.19
+ARG NATRON_SLANG_SHA256=bd6cfc47b7353b2cffa36a866b1584749f76f4b2dbebf6dda26bc3fb40dc3c0e
+ARG NATRON_SLANG_URL=https://github.com/shader-slang/slang/releases/download/v${NATRON_SLANG_VERSION}/slang-${NATRON_SLANG_VERSION}-linux-x86_64.tar.gz
+RUN set -eu; \
+    tarball=/tmp/slang.tar.gz; \
+    wget -q -O "$tarball" "$NATRON_SLANG_URL"; \
+    echo "${NATRON_SLANG_SHA256}  ${tarball}" | sha256sum -c -; \
+    mkdir -p /opt/slang; \
+    tar -xzf "$tarball" -C /opt/slang; \
+    rm -f "$tarball"; \
+    test -x /opt/slang/bin/slangc; \
+    test -f /opt/slang/include/slang-cpp-prelude.h
+ENV SLANG_ROOT=/opt/slang

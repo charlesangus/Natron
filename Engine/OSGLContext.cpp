@@ -576,7 +576,7 @@ OSGLContext::pickRenderer(const std::list<OpenGLRendererInfo>& renderers,
         }
         if (!matched && chosenOrNull->vendorID != 0) {
             for (const OpenGLRendererInfo& r : renderers) {
-                if ( (r.accelerated || allowSoftware) && (r.pciVendorID != 0) &&
+                if ( (r.accelerated || allowSoftware) && !r.hasUuid && (r.pciVendorID != 0) &&
                      (r.pciVendorID == chosenOrNull->vendorID) && (r.pciDeviceID == chosenOrNull->deviceID) ) {
                     matched = &r;
                     break;

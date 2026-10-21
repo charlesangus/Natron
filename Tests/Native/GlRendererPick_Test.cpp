@@ -120,6 +120,22 @@ TEST(GlRendererPick, MatchesChosenDeviceByPciIds)
     EXPECT_EQ(pick.reason, "radeonsi (matches the chosen Vulkan device)");
 }
 
+TEST(GlRendererPick, PciIdsDoNotMatchRendererWithMismatchingUuid)
+{
+    std::list<OpenGLRendererInfo> renderers;
+    OpenGLRendererInfo otherCard = renderer(0, "radeonsi", true, 0x1002, 0x73bf);
+    otherCard.deviceUuid = uuidOf(0x10);
+    otherCard.hasUuid = true;
+    renderers.push_back(otherCard);
+
+    const GpuDeviceSummary chosen = vulkanDevice(0x20, 0x1002, 0x73bf);
+    const GLRendererPick pick = OSGLContext::pickRenderer(renderers, &chosen, false);
+
+    EXPECT_TRUE(pick.enabled);
+    EXPECT_EQ(pick.rendererID.renderID, 0);
+    EXPECT_EQ(pick.reason, "radeonsi (default renderer: no GL renderer matches the chosen Vulkan device)");
+}
+
 TEST(GlRendererPick, FallsBackToFirstAllowedRendererWhenNothingMatches)
 {
     std::list<OpenGLRendererInfo> renderers;

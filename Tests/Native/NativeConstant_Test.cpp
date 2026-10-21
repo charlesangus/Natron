@@ -40,6 +40,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -426,4 +427,10 @@ TEST_F(NativeConstantTest, RendersTheSameInBothSchedulerModes)
             }
         }
     }
+}
+
+TEST_F(NativeConstantTest, RegisteredIdentity)
+{
+    expectNativeIdentity(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT, "Constant");
+    expectNativeIdentity(PLUGINID_NATRON_SOLID, PLUGIN_MAJOR_NATRON_CONSTANT, "Solid");
 }

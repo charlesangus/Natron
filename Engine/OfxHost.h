@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <string>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -149,6 +150,13 @@ public:
     /*Reads OFX plugin cache and scan plugins directories
        to load them all.*/
     void loadOFXPlugins();
+
+    /**
+     * @brief For tests only: loadOFXPlugins() also skips these IDs, on top of the shipped
+     * retired set (Engine/OfxRetired.h), so a test can retire an ID without a marker shipping.
+     * Has no effect once the plug-ins are loaded, so it must be called before AppManager::load().
+     **/
+    static void addRetiredPluginIdsForTesting(const std::list<std::string>& ids);
 
     void clearPluginsLoadedCache();
 

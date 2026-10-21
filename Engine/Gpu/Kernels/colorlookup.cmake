@@ -1,0 +1,1 @@
+slang_add_kernel(colorlookup_wrapped Kernels/colorlookup.slang ENTRY colorlookup_wrapped REGISTRY NatronGpu)

@@ -36,6 +36,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -307,4 +308,9 @@ TEST_F(NativeColorCorrectTest, UnversionedRequestsGetTheNativeColorCorrect)
     EXPECT_TRUE(isNative(unversioned));
     EXPECT_EQ(kNativeColorCorrectMajor, unversioned->getMajorVersion());
     EXPECT_FALSE(isPluginMajorRegistered(kColorCorrectID, kOfxColorCorrectMajor));
+}
+
+TEST_F(NativeColorCorrectTest, RegisteredIdentity)
+{
+    expectNativeIdentity(PLUGINID_NATRON_COLORCORRECT, PLUGIN_MAJOR_NATRON_COLORCORRECT, "ColorCorrect");
 }

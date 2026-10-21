@@ -928,6 +928,90 @@ TEST(GpuCostModel, ErodeSizeSelectsItsSeedRow)
     EXPECT_NEAR(model.gpuMs(small, kUhdMpx), 6.827, 1e-3);
 }
 
+namespace {
+
+GpuTaskTraits
+seedTraits(const char* pluginId,
+           double sigma = 0.,
+           bool iir = false,
+           GpuBlurFilter filter = GpuBlurFilter::eAny,
+           int size = 0,
+           bool motionBlur = false)
+{
+    GpuTaskTraits traits(pluginId, sigma, iir, filter);
+
+    traits.size = size;
+    traits.motionBlur = motionBlur;
+
+    return traits;
+}
+
+} // namespace
+
+// The seeded cost of every row a lookup can reach, including the rows that stand in when none covers the traits, so
+// that the seed fragments and the lookup order cannot change a cost unnoticed.
+TEST(GpuCostModel, SeededCostsArePinned)
+{
+    GpuCostModel model;
+
+    model.setThreadCount(1);
+    const char* const erode = "net.sf.cimg.CImgErode";
+    const char* const dilate = "net.sf.cimg.CImgDilate";
+    const char* const transform = "net.sf.openfx.TransformPlugin";
+    const char* const despill = "net.sf.openfx.Despill";
+    const double beyond = 2e9;
+
+    const std::vector<std::pair<GpuTaskTraits, double>> gpu = {
+        { seedTraits(kGradeId), 0.0599 },
+        { seedTraits(kBlurId, 2.), 1.1470 },
+        { seedTraits(kBlurId, 3.), 1.1470 },
+        { seedTraits(kBlurId, 10.), 0.8527 },
+        { seedTraits(kBlurId, 25.), 0.8527 },
+        { seedTraits(kBlurId, 100.), 2.2600 },
+        { seedTraits(kBlurId, beyond), 2.2600 },
+        { seedTraits(kBlurId, 25., false, GpuBlurFilter::eFirGaussian), 0.8527 },
+        { seedTraits(kBlurId, 100., true), 2.4130 },
+        { seedTraits(kBlurId, beyond, true), 2.4130 },
+        { seedTraits(kBlurId, 25., false, GpuBlurFilter::eBox), 2.6886 },
+        { seedTraits(kBlurId, beyond, false, GpuBlurFilter::eBox), 2.6886 },
+        { seedTraits(kBlurId, 25., false, GpuBlurFilter::eTriangle), 3.8870 },
+        { seedTraits(kBlurId, 25., false, GpuBlurFilter::eQuadratic), 4.7803 },
+        { seedTraits(kBlurId, 25., true, GpuBlurFilter::eGaussian), 3.4855 },
+        { seedTraits(kBlurId, 25., true, GpuBlurFilter::eQuasiGaussian), 4.2040 },
+        { seedTraits(kBlurId, 25., true, GpuBlurFilter::eBox), 2.4130 },
+        { seedTraits(erode), 0.8231 },
+        { seedTraits(erode, 0., false, GpuBlurFilter::eAny, 6), 0.8231 },
+        { seedTraits(erode, 0., false, GpuBlurFilter::eAny, 7), 0.5027 },
+        { seedTraits(erode, 0., false, GpuBlurFilter::eAny, 40), 0.5027 },
+        { seedTraits(erode, 0., false, GpuBlurFilter::eAny, 2000000), 0.5027 },
+        { seedTraits(dilate), 0.8337 },
+        { seedTraits(dilate, 0., false, GpuBlurFilter::eAny, 40), 0.8337 },
+        { seedTraits(transform), 0.0808 },
+        { seedTraits(transform, 0., false, GpuBlurFilter::eAny, 0, true), 1.1803 },
+    };
+    for (std::size_t i = 0; i < gpu.size(); ++i) {
+        EXPECT_DOUBLE_EQ(model.gpuMs(gpu[i].first, 1.), gpu[i].second) << i;
+    }
+    EXPECT_FALSE(model.hasGpuCost(seedTraits(despill)));
+
+    const std::vector<std::pair<GpuTaskTraits, double>> cpu = {
+        { seedTraits(kGradeId), 11.48 },
+        { seedTraits(kBlurId, 2.), 30.13 },
+        { seedTraits(kBlurId, 25.), 84.6 },
+        { seedTraits(kBlurId, 100.), 252.8 },
+        { seedTraits(kBlurId, beyond), 46.9759 },
+        { seedTraits(kBlurId, 100., true), 52.84 },
+        { seedTraits(erode), 54.6268 },
+        { seedTraits(dilate), 50.1112 },
+        { seedTraits(transform), 26.126 },
+        { seedTraits(transform, 0., false, GpuBlurFilter::eAny, 0, true), 996.1061 },
+        { seedTraits(despill), 9.0678 },
+    };
+    for (std::size_t i = 0; i < cpu.size(); ++i) {
+        EXPECT_DOUBLE_EQ(model.cpuMs(cpu[i].first, 1.), cpu[i].second) << i;
+    }
+}
+
 // Dilate has one seed row for every size, and the FIR Gaussian, the one Blur filter with no row of its own, prices like
 // the rows for any filter.
 TEST(GpuCostModel, RowsWithoutSizeOrFilterHoldForAny)

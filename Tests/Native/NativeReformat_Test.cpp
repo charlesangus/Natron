@@ -39,6 +39,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -480,4 +481,9 @@ TEST_F(NativeReformatTest, EdgePixelsDoNotDependOnTheRequestWindow)
             }
         }
     }
+}
+
+TEST_F(NativeReformatTest, RegisteredIdentity)
+{
+    expectNativeIdentity(PLUGINID_NATRON_REFORMAT, PLUGIN_MAJOR_NATRON_REFORMAT, "Reformat");
 }

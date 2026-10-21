@@ -38,6 +38,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -410,4 +411,9 @@ TEST_F(NativeEdgeDetectTest, RendersTheSameInBothSchedulerModesAtAnyPoolSize)
     ASSERT_TRUE(setChannelSelect(edge, "maskChannel_Mask", "rgba.A"));
     ASSERT_TRUE(setKnobValues(edge, kOfxMixParamName, { 0.5 }));
     expectSameBothWays(edge, "sobel-rms-mask-mix");
+}
+
+TEST_F(NativeEdgeDetectTest, RegisteredIdentity)
+{
+    expectNativeIdentity(PLUGINID_NATRON_EDGEDETECT, PLUGIN_MAJOR_NATRON_EDGEDETECT, "EdgeDetect");
 }

@@ -17,7 +17,10 @@
 # along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
 # ***** END LICENSE BLOCK *****
 
-set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h CountingTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h NativeMetadataTestEffect.h NativeParity.h Native/NativeGolden.h Native/NativeGpuParity.h PerProcessUserDirs.h RenderBothWays.h)
+# Where the test-only OFX bundles are built; the test mains append it to OFX_PLUGIN_PATH.
+set(NATRON_TEST_OFX_PLUGIN_DIR ${CMAKE_BINARY_DIR}/Tests/TestPlugins)
+
+set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h CountingTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h NativeMetadataTestEffect.h NativeParity.h Native/NativeGolden.h Native/NativeGpuParity.h PerProcessUserDirs.h RenderBothWays.h TestOfxPluginPath.h TestRetiredOfxIds.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -127,6 +130,8 @@ set(Tests_SOURCES
     NativeMetadata_Test.cpp
     NativeMetadataPolicy_Test.cpp
     OfxMetadataBridge_Test.cpp
+    OfxRetired_Test.cpp
+    OfxTestPlugin_Test.cpp
     wmain.cpp
 )
 # Per-node native tests are picked up without editing this list; CONFIGURE_DEPENDS re-globs on
@@ -165,11 +170,15 @@ target_compile_definitions(Tests
         NATRON_TESTS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
         NATRON_TESTS_PYPLUGS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../Gui/Resources/PyPlugs"
         NATRON_TESTS_CIMG_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/../build/assets/CImg/CImg.h"
+        NATRON_TEST_OFX_PLUGIN_DIR="${NATRON_TEST_OFX_PLUGIN_DIR}"
 )
+# The Engine binary directory holds the aggregates Engine/CMakeLists.txt generates, such as
+# NativeRegistryAll.inc, which NativePluginList_Test expands itself.
 target_include_directories(Tests
     PRIVATE
         .
         ..
+        $<TARGET_PROPERTY:NatronEngine,BINARY_DIR>
         ../libs/SequenceParsing
         ../libs/xxhash
         google-test/include
@@ -222,6 +231,7 @@ target_compile_definitions(GuiTests
     PRIVATE
         NATRON_TESTS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
         NATRON_TESTS_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/output"
+        NATRON_TEST_OFX_PLUGIN_DIR="${NATRON_TEST_OFX_PLUGIN_DIR}"
 )
 target_include_directories(GuiTests
     PRIVATE
@@ -232,6 +242,9 @@ target_include_directories(GuiTests
         google-mock/include
         google-mock
 )
+
+# After both test executables exist: each bundle adds itself as a dependency of them.
+add_subdirectory(OfxTestPlugins)
 
 include(GoogleTest)
 # PRE_TEST, not the default POST_BUILD: discovery runs the binary, which

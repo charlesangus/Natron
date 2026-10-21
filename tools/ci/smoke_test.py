@@ -299,9 +299,8 @@ def check_plugin_id_enumeration():
 
     bundles = {
         "IO": ("fr.inria.openfx.OIIOText",),
-        "Misc": ("net.sf.openfx.Premult", "net.sf.openfx.HSVToolPlugin",
-                 "net.sf.openfx.switchPlugin"),
-        "CImg": ("net.sf.cimg.CImgSharpen", "net.sf.cimg.CImgPlasma"),
+        "Misc": ("net.sf.openfx.NoOpPlugin", "net.sf.openfx.ColorBars"),
+        "CImg": ("net.sf.cimg.CImgSmooth", "net.sf.cimg.CImgDenoise"),
         "Arena": ("net.fxarena.openfx.Text", "net.fxarena.openfx.Texture"),
         "metadataCompare": ("org.openfx.examples.metadataCompare",),
         "metadataContribute": ("org.openfx.examples.metadataContribute",),
@@ -666,23 +665,67 @@ def _render_constant_through(effect_id, configure, png_name, description):
           % (description, out_path))
 
 
+def _render_color_bars():
+    from PySide6 import QtGui
+
+    tmpdir = tempfile.mkdtemp(prefix="natron-ci-smoke-misc-")
+    out_path = os.path.join(tmpdir, "colorbars.png")
+
+    bars = app.createNode("net.sf.openfx.ColorBars")
+    if bars is None:
+        raise AssertionError(
+            "app.createNode('net.sf.openfx.ColorBars') returned None")
+    # The writer renders at the project format whatever the generator's own
+    # extent is, and earlier steps leave the project at 4x4, too narrow for
+    # the bars.
+    app.addFormat("smokebars70x16 70x16 1")
+    app.getProjectParam("outputFormat").set("smokebars70x16")
+    _mark("[smoke] created ColorBars node, project format 70x16")
+
+    writer = app.createWriter(out_path)
+    if writer is None:
+        raise AssertionError(
+            "app.createWriter(%r) returned None" % (out_path,))
+    if not writer.connectInput(0, bars):
+        raise AssertionError(
+            "Effect.connectInput(0, bars) failed for ColorBars -> Writer")
+
+    _mark("[smoke] calling app.render([(writer, 1, 1)]) for "
+          "ColorBars -> Writer...")
+    app.render([(writer, 1, 1)])
+
+    if not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
+        raise AssertionError(
+            "app.render() did not produce a non-empty file at %r"
+            % (out_path,))
+
+    img = QtGui.QImage(out_path)
+    if img.isNull():
+        raise AssertionError(
+            "app.render() produced no decodable PNG at %r" % (out_path,))
+    row = img.height() // 2
+    distinct = set(img.pixelColor(x, row).rgb() for x in range(img.width()))
+    _mark("[smoke] ColorBars -> PNG has %d distinct colours across its "
+          "middle row" % (len(distinct),))
+    if len(distinct) < 6:
+        raise AssertionError(
+            "ColorBars rendered only %d distinct colours across a row, "
+            "expected the bars" % (len(distinct),))
+    _compare_or_stash_render(out_path)
+    _mark("[smoke] OK: ColorBars -> Writer render intact, rendered %r"
+          % (out_path,))
+
+
 def check_misc_effect_render():
     """Render through a plugin that is still OFX, then through native Grade.
 
-    ColorMatrix stays in the Misc bundle, so the first render is what proves
+    ColorBars stays in the Misc bundle, so the first render is what proves
     the bundle loads and renders; Constant and Grade are native nodes.
     """
-    def configure_color_matrix(effect):
-        effect.getParam("outputRed").set(2.0, 0.0, 0.0, 0.0)
-        effect.getParam("outputGreen").set(0.0, 2.0, 0.0, 0.0)
-        effect.getParam("outputBlue").set(0.0, 0.0, 2.0, 0.0)
-
     def configure_grade(effect):
         effect.getParam("multiply").set(2.0, 2.0, 2.0, 1.0)
 
-    _render_constant_through("net.sf.openfx.ColorMatrixPlugin",
-                             configure_color_matrix, "colormatrix.png",
-                             "ColorMatrix")
+    _render_color_bars()
     _render_constant_through("net.sf.openfx.GradePlugin", configure_grade,
                              "graded.png", "Grade")
 
@@ -690,8 +733,8 @@ def check_misc_effect_render():
 def check_deep_write_render():
     """Assert App.render() drives a native (non-OFX) writer, not an OFX writer.
 
-    DeepRead/DeepWrite (Engine/Nodes/Deep/) are NativeEffectBase plugins registered directly by
-    AppManager::registerBuiltInPlugin(), not OFX bundles discovered via OFX_PLUGIN_PATH, so this
+    DeepRead/DeepWrite (Engine/Nodes/Deep/) are NativeEffectBase plugins registered from their
+    per-node .reg.inc fragments, not OFX bundles discovered via OFX_PLUGIN_PATH, so this
     exercises App.render()'s dynamic_cast<OutputEffectInstance*>/isOutput() path (Engine/
     PyAppInstance.cpp) against a writer that never goes near OfxEffectInstance.
     """

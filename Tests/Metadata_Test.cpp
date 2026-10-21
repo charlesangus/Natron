@@ -40,6 +40,7 @@
 #include <SequenceParsing.h>
 
 #include "BaseTest.h"
+#include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -70,13 +71,13 @@ const char kMetadataContributeID[] = "org.openfx.examples.metadataContribute";
 const char kMetadataPrintID[] = "org.openfx.examples.metadataPrint";
 const char kMetadataTimeCodeID[] = "org.openfx.examples.metadataTimeCode";
 
-// A generator and a colour plugin that stay OpenFX: the cases that read an OpenFX clip of either
-// end of a connection use these. ColorMatrix does not trap the get metadata action, so its output
+// A generator and a colour plug-in from the test OpenFX bundle: the cases that read an OpenFX clip of either
+// end of a connection use these. PointMatrix does not trap the get metadata action, so its output
 // clip carries what the host's default inheritance from its source clip gives it.
-const char kOfxGeneratorID[] = "net.sf.openfx.ColorWheel";
-const int kOfxGeneratorMajor = 1;
-const char kOfxColorEffectID[] = "net.sf.openfx.ColorMatrixPlugin";
-const int kOfxColorEffectMajor = 2;
+const char kOfxGeneratorID[] = kNatronTestGeneratorPluginID;
+const int kOfxGeneratorMajor = kNatronTestGeneratorMajor;
+const char kOfxColorEffectID[] = kNatronTestPointMatrixPluginID;
+const int kOfxColorEffectMajor = kNatronTestPointMatrixMajor;
 
 // the param metadataContribute reads, and the key it publishes that param's value under
 const char kContributeNoteParam[] = "note";
@@ -413,7 +414,7 @@ TEST_F(MetadataPluginFixture, MetadataAndPropertySuiteAreFetchableFromOfxHost)
 
 // The base ClipInstance::fetchMetadata() adds nothing of the host's own, so without
 // Natron's override an output clip's metadata carries only whatever the plug-in
-// contributed -- and ColorWheel contributes nothing. Every key checked here therefore comes
+// contributed -- and Generator contributes nothing. Every key checked here therefore comes
 // from the host, and the values are the ones the project and its format imply.
 TEST_F(MetadataPluginFixture, OutputClipCarriesHostDerivedMetadata)
 {
@@ -468,16 +469,16 @@ TEST_F(MetadataPluginFixture, InputClipCarriesUpstreamOutputMetadata)
     connectNodes(generator, colorMatrix, 0, true);
 
     OfxEffectInstance* generatorEffect = dynamic_cast<OfxEffectInstance*>(generator->getEffectInstance().get());
-    ASSERT_TRUE(generatorEffect != NULL) << "ColorWheel is not backed by the OFX host";
+    ASSERT_TRUE(generatorEffect != NULL) << "Generator is not backed by the OFX host";
 
     OfxEffectInstance* colorMatrixEffect = dynamic_cast<OfxEffectInstance*>(colorMatrix->getEffectInstance().get());
-    ASSERT_TRUE(colorMatrixEffect != NULL) << "ColorMatrix is not backed by the OFX host";
+    ASSERT_TRUE(colorMatrixEffect != NULL) << "PointMatrix is not backed by the OFX host";
 
     OFX::Host::ImageEffect::ClipInstance* generatorOutput = generatorEffect->effectInstance()->getClip(kOfxImageEffectOutputClipName);
-    ASSERT_TRUE(generatorOutput != NULL) << "ColorWheel has no output clip";
+    ASSERT_TRUE(generatorOutput != NULL) << "Generator has no output clip";
 
     OFX::Host::ImageEffect::ClipInstance* colorMatrixSource = colorMatrixEffect->effectInstance()->getClip(kOfxImageEffectSimpleSourceClipName);
-    ASSERT_TRUE(colorMatrixSource != NULL) << "ColorMatrix has no " << kOfxImageEffectSimpleSourceClipName << " clip";
+    ASSERT_TRUE(colorMatrixSource != NULL) << "PointMatrix has no " << kOfxImageEffectSimpleSourceClipName << " clip";
 
     MetadataRef upstream(generatorOutput, 1.);
     ASSERT_TRUE(upstream.get() != NULL);
@@ -492,7 +493,7 @@ TEST_F(MetadataPluginFixture, InputClipCarriesUpstreamOutputMetadata)
     EXPECT_EQ(upstream->getIntProperty(kOfxMetadataKeyWidth), source->getIntProperty(kOfxMetadataKeyWidth));
     EXPECT_EQ(upstream->getIntProperty(kOfxMetadataKeyHeight), source->getIntProperty(kOfxMetadataKeyHeight));
 
-    // ColorWheel generates the project format, so the values that reached ColorMatrix are the ones
+    // Generator generates the project format, so the values that reached PointMatrix are the ones
     // the project implies rather than whatever a default constructed set would carry
     EXPECT_DOUBLE_EQ(getApp()->getProjectFrameRate(), source->getDoubleProperty(kOfxMetadataKeyFrameRate));
     EXPECT_EQ(projectFormat.width(), source->getIntProperty(kOfxMetadataKeyWidth));
@@ -515,10 +516,10 @@ TEST_F(MetadataPluginFixture, DisconnectedInputClipFallsBackToHostDerivedMetadat
     disconnectNodes(generator, colorMatrix, true);
 
     OfxEffectInstance* colorMatrixEffect = dynamic_cast<OfxEffectInstance*>(colorMatrix->getEffectInstance().get());
-    ASSERT_TRUE(colorMatrixEffect != NULL) << "ColorMatrix is not backed by the OFX host";
+    ASSERT_TRUE(colorMatrixEffect != NULL) << "PointMatrix is not backed by the OFX host";
 
     OFX::Host::ImageEffect::ClipInstance* colorMatrixSource = colorMatrixEffect->effectInstance()->getClip(kOfxImageEffectSimpleSourceClipName);
-    ASSERT_TRUE(colorMatrixSource != NULL) << "ColorMatrix has no " << kOfxImageEffectSimpleSourceClipName << " clip";
+    ASSERT_TRUE(colorMatrixSource != NULL) << "PointMatrix has no " << kOfxImageEffectSimpleSourceClipName << " clip";
 
     MetadataRef source(colorMatrixSource, 1.);
     ASSERT_TRUE(source.get() != NULL);

@@ -39,6 +39,7 @@
 
 #include "BaseTest.h"
 #include "FlatExrReader.h"
+#include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
@@ -251,12 +252,12 @@ protected:
         NodePtr readerA = createWorkingSpaceRead(std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
         NodePtr readerB = createWorkingSpaceRead(std::string(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr"));
 
-        NodePtr switchNode = createNode(QString::fromUtf8("net.sf.openfx.switchPlugin"));
+        NodePtr switchNode = createNode(QString::fromUtf8(kNatronTestTwoInputCopyPluginID), kNatronTestTwoInputCopyMajor);
         EXPECT_TRUE(bool(switchNode));
         connectNodes(readerA, switchNode, 0, true);
         connectNodes(readerB, switchNode, 1, true);
 
-        KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName("which"));
+        KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName(kNatronTestTwoInputCopyParamWhich));
         EXPECT_TRUE(bool(which));
         if (which) {
             which->setValueAtTime(1, 0, ViewSpec::all(), 0);
@@ -1313,11 +1314,11 @@ TEST_F(ShuffleRenderTest, SwitchOnALayerItsRoutedInputLacksShowsTheRoutedInput)
     ASSERT_TRUE(color != NULL);
     color->setValues(0.5, 0.5, 0.5, 1., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
 
-    NodePtr switchNode = createNode(QString::fromUtf8("net.sf.openfx.switchPlugin"));
+    NodePtr switchNode = createNode(QString::fromUtf8(kNatronTestTwoInputCopyPluginID), kNatronTestTwoInputCopyMajor);
     ASSERT_TRUE(bool(switchNode));
     connectNodes(withDiffuse, switchNode, 0, true);
     connectNodes(grey, switchNode, 1, true);
-    KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName("which"));
+    KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName(kNatronTestTwoInputCopyParamWhich));
     ASSERT_TRUE(bool(which));
     which->setValueAtTime(1, 0, ViewSpec::all(), 0);
     which->setValueAtTime(2, 1, ViewSpec::all(), 0);

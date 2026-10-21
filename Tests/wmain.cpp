@@ -22,6 +22,10 @@
 #include "NativeParity.h"
 #include "PassThroughRoDTestEffect.h"
 #include "PerProcessUserDirs.h"
+#include "TestBuiltInPlugins.h"
+#include "TestOfxPluginPath.h"
+#include "TestPlaneChoiceTakeOvers.h"
+#include "TestRetiredOfxIds.h"
 
 using namespace NATRON_NAMESPACE;
 
@@ -37,6 +41,7 @@ registerTestBuiltInPlugin()
     EffectInstancePtr node(PLUGIN::BuildEffect(NodePtr()));
     std::map<std::string, void (*)()> functions;
 
+    testRegisteredPluginIds().insert(node->getPluginID());
     functions.insert(std::make_pair("BuildEffect", (void (*)())&PLUGIN::BuildEffect));
     LibraryBinary* binary = new LibraryBinary(functions);
 
@@ -150,6 +155,9 @@ GTEST_API_ int main(int argc, char **argv)
     printf("Running main() from wmain.cpp\n");
     ::testing::InitGoogleTest(&argc, argv);
     PerProcessUserDirs userDirs;
+    appendTestOfxPluginDir();
+    applyTestRetiredOfxIds();
+    applyTestPlaneChoiceTakeOvers();
     AppManager manager;
 
     {

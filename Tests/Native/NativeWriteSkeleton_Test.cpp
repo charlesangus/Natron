@@ -36,6 +36,7 @@
 #include <ofxImageEffect.h>
 
 #include "BaseTest.h"
+#include "NativePluginIdentity.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
@@ -233,4 +234,9 @@ TEST_F(NativeWriteSkeletonTest, CreatingWithAFilenameInTheArgsKeepsItAndOpensNoD
     ASSERT_TRUE(file != NULL);
     EXPECT_EQ(std::string("/tmp/native-write-args.png"), file->getValue());
     EXPECT_TRUE(getApp()->isBackground());
+}
+
+TEST_F(NativeWriteSkeletonTest, RegisteredIdentity)
+{
+    expectNativeIdentity(PLUGINID_NATRON_WRITE, PLUGIN_MAJOR_NATRON_WRITE, "Write");
 }

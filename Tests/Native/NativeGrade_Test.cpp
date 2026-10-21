@@ -37,6 +37,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -322,4 +323,9 @@ TEST_F(NativeGradeTest, ColorKnobRoles)
     KnobColor* constantColor = dynamic_cast<KnobColor*>(constant->getKnobByName(kConstantParamColor).get());
     ASSERT_TRUE(constantColor != NULL);
     EXPECT_EQ(eColorKnobRoleColour, constantColor->getColorRole());
+}
+
+TEST_F(NativeGradeTest, RegisteredIdentity)
+{
+    expectNativeIdentity(PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE, "Grade");
 }

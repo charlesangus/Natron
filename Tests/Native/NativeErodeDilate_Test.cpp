@@ -36,6 +36,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -289,4 +290,10 @@ TEST_F(NativeErodeDilateTest, RendersTheSameInBothSchedulerModesAtAnyPoolSize)
         ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
         expectSameBothWays(node, std::string(variants[v].name) + "-6x-3-mask-mix");
     }
+}
+
+TEST_F(NativeErodeDilateTest, RegisteredIdentity)
+{
+    expectNativeIdentity(PLUGINID_NATRON_ERODE, PLUGIN_MAJOR_NATRON_ERODE, "Erode");
+    expectNativeIdentity(PLUGINID_NATRON_DILATE, PLUGIN_MAJOR_NATRON_DILATE, "Dilate");
 }

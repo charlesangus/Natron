@@ -94,6 +94,7 @@ inline constexpr NodeSpec kTransformNodeSpec = {
     .grouping = PLUGIN_GROUP_TRANSFORM,
     .majorVersion = PLUGIN_MAJOR_NATRON_TRANSFORM,
     .minorVersion = 0,
+    .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.TransformPlugin.png",
     .inputs = kTransformInputs,
 };
 
@@ -105,6 +106,7 @@ inline constexpr NodeSpec kTransformMaskedNodeSpec = {
     .grouping = PLUGIN_GROUP_TRANSFORM,
     .majorVersion = PLUGIN_MAJOR_NATRON_TRANSFORMMASKED,
     .minorVersion = 0,
+    .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.TransformMaskedPlugin.png",
     .inputs = kTransformMaskedInputs,
 };
 

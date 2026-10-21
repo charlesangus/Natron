@@ -37,6 +37,7 @@
 #include "BaseTest.h"
 #include "CountingTestEffect.h"
 #include "NativeParity.h"
+#include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -258,4 +259,9 @@ TEST_F(NativeDissolveTest, OnlyTheTwoChosenInputsAreRendered)
     EXPECT_GT(CountingTestRegistry::renders(leaves[0]), 0);
     EXPECT_GT(CountingTestRegistry::renders(leaves[1]), 0);
     EXPECT_EQ(0, CountingTestRegistry::renders(leaves[2]));
+}
+
+TEST_F(NativeDissolveTest, RegisteredIdentity)
+{
+    expectNativeIdentity(PLUGINID_NATRON_DISSOLVE, PLUGIN_MAJOR_NATRON_DISSOLVE, "Dissolve");
 }

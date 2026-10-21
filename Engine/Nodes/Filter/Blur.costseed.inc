@@ -1,0 +1,16 @@
+// GPU cost model seed rows for net.sf.cimg.CImgBlur, written by tools/bench/render-profile-report.py
+// --emit-cost-table from the inputs in Engine/GpuCostSeeds/inputs.txt. Engine/GpuCostModel.cpp describes the rows.
+NATRON_GPU_COST_SEED_CPU_ROW("net.sf.cimg.CImgBlur", 46.9759, 2.3127)
+NATRON_GPU_COST_SEED_CPU_SIGMA_ROW("net.sf.cimg.CImgBlur", "fir", 3.0, 30.1300, 6.4106)
+NATRON_GPU_COST_SEED_CPU_SIGMA_ROW("net.sf.cimg.CImgBlur", "fir", 25.0, 84.6000, 6.9458)
+NATRON_GPU_COST_SEED_CPU_SIGMA_ROW("net.sf.cimg.CImgBlur", "fir", 1e9, 252.8000, 7.2937)
+NATRON_GPU_COST_SEED_CPU_SIGMA_ROW("net.sf.cimg.CImgBlur", "iir", 1e9, 52.8400, 7.7365)
+NATRON_GPU_COST_SEED_GPU_ROW("net.sf.cimg.CImgBlur", "plain", 3.0, 1.1470)
+NATRON_GPU_COST_SEED_GPU_ROW("net.sf.cimg.CImgBlur", "plain", 25.0, 0.8527)
+NATRON_GPU_COST_SEED_GPU_ROW("net.sf.cimg.CImgBlur", "plain", 1e9, 2.2600)
+NATRON_GPU_COST_SEED_GPU_ROW("net.sf.cimg.CImgBlur", "iir", 1e9, 2.4130)
+NATRON_GPU_COST_SEED_GPU_ROW("net.sf.cimg.CImgBlur", "plain", 1e9, 2.6886, "box", 0)
+NATRON_GPU_COST_SEED_GPU_ROW("net.sf.cimg.CImgBlur", "plain", 1e9, 3.8870, "triangle", 0)
+NATRON_GPU_COST_SEED_GPU_ROW("net.sf.cimg.CImgBlur", "plain", 1e9, 4.7803, "quadratic", 0)
+NATRON_GPU_COST_SEED_GPU_ROW("net.sf.cimg.CImgBlur", "iir", 1e9, 3.4855, "gaussian", 0)
+NATRON_GPU_COST_SEED_GPU_ROW("net.sf.cimg.CImgBlur", "iir", 1e9, 4.2040, "quasi_gaussian", 0)

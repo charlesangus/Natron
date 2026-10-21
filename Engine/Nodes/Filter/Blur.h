@@ -117,6 +117,7 @@ struct BlurOp {
         .grouping = PLUGIN_GROUP_FILTER,
         .majorVersion = PLUGIN_MAJOR_NATRON_BLUR,
         .minorVersion = PLUGIN_MINOR_NATRON_BLUR,
+        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.cimg.CImgBlur.png",
         .inputs = kBlurInputs,
     };
 

@@ -42,6 +42,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
@@ -52,8 +53,8 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-const char* const kColorMatrixID = "net.sf.openfx.ColorMatrixPlugin";
-const int kOfxColorMatrixMajor = 2;
+const char* const kPointMatrixID = kNatronTestPointMatrixPluginID;
+const int kOfxPointMatrixMajor = kNatronTestPointMatrixMajor;
 
 const ImageLayerDesc*
 findColorLayer(const std::list<ImageLayerDesc>& layers)
@@ -97,11 +98,11 @@ planeValue(const RenderedPlane& plane,
 class NativeParitySelfTest
     : public BaseTest {
 protected:
-    // Both sides are the OFX ColorMatrix at its own major, so every difference the harness
+    // Both sides are the OFX PointMatrix at its own major, so every difference the harness
     // reports is one the test put there.
     ParityPair makeSelfPair()
     {
-        return makeParityPair(getApp(), kColorMatrixID, kOfxColorMatrixMajor, kOfxColorMatrixMajor);
+        return makeParityPair(getApp(), kPointMatrixID, kOfxPointMatrixMajor, kOfxPointMatrixMajor);
     }
 };
 
@@ -168,11 +169,11 @@ TEST_F(NativeParitySelfTest, ParitySourceRendersEveryPlaneDeterministically)
     EXPECT_EQ(1.f, paritySourceColorValue(3, 10, 4, time));
 }
 
-TEST_F(NativeParitySelfTest, OfxColorMatrixAgainstItselfMatchesExactly)
+TEST_F(NativeParitySelfTest, OfxPointMatrixAgainstItselfMatchesExactly)
 {
     ParityPair pair = makeSelfPair();
     ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live()) << "the OFX ColorMatrix must be loadable at major " << kOfxColorMatrixMajor;
+    ASSERT_TRUE(pair.live()) << "the OFX PointMatrix must be loadable at major " << kOfxPointMatrixMajor;
     ASSERT_TRUE(setKnobOnBoth(pair, "outputRed", { 1.5, 0., 0., 0. }));
 
     for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
@@ -224,8 +225,8 @@ TEST_F(NativeParitySelfTest, RecordedReferencesReplayExactly)
         const ParityResult recorded = compareParity(pair, "recorded", RectI(), mipmapLevel, ParityTolerance::exact(), true, recordOptions);
         ASSERT_TRUE(recorded.ok) << describe(recorded);
         EXPECT_GE(recorded.planesCompared, 2) << "the extra layer must be recorded too";
-        EXPECT_TRUE(QFileInfo::exists(QString::fromStdString(parityReferencePath(dir, kColorMatrixID, "recorded", mipmapLevel, ImageLayerDesc::getRGBAComponents()))));
-        EXPECT_TRUE(QFileInfo::exists(QString::fromStdString(parityReferencePath(dir, kColorMatrixID, "recorded", mipmapLevel, paritySourceExtraLayer()))));
+        EXPECT_TRUE(QFileInfo::exists(QString::fromStdString(parityReferencePath(dir, kPointMatrixID, "recorded", mipmapLevel, ImageLayerDesc::getRGBAComponents()))));
+        EXPECT_TRUE(QFileInfo::exists(QString::fromStdString(parityReferencePath(dir, kPointMatrixID, "recorded", mipmapLevel, paritySourceExtraLayer()))));
 
         const ParityResult replayed = compareParity(pair, "recorded", RectI(), mipmapLevel, ParityTolerance::exact(), false, replayOptions);
         EXPECT_TRUE(replayed.ok) << "mipmap " << mipmapLevel << ": " << describe(replayed);

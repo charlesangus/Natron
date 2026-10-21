@@ -38,6 +38,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -311,4 +312,11 @@ TEST_F(NativeColorMathTest, BothSchedulerModesAgreeWithNoUnplannedPull)
             }
         }
     }
+}
+
+TEST_F(NativeColorMathTest, RegisteredIdentity)
+{
+    expectNativeIdentity(PLUGINID_NATRON_ADD, PLUGIN_MAJOR_NATRON_COLORMATH, "Add");
+    expectNativeIdentity(PLUGINID_NATRON_MULTIPLY, PLUGIN_MAJOR_NATRON_COLORMATH, "Multiply");
+    expectNativeIdentity(PLUGINID_NATRON_GAMMA, PLUGIN_MAJOR_NATRON_COLORMATH, "Gamma");
 }

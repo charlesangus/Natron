@@ -51,6 +51,7 @@ CLANG_DIAG_ON(deprecated)
 
 #include "BaseTest.h"
 #include "FlatExrReader.h"
+#include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -87,8 +88,8 @@ const int32_t kCheckY = 1;
 const char* const kGradePluginID = "net.sf.openfx.GradePlugin";
 const char* const kBlurPluginID = "net.sf.cimg.CImgBlur";
 const char* const kMergePluginID = "net.sf.openfx.MergePlugin";
-const char* const kIDistortPluginID = "net.sf.openfx.IDistort";
-const char* const kPremultPluginID = "net.sf.openfx.Premult";
+const char* const kIDistortPluginID = kNatronTestMatrixWarpPluginID;
+const char* const kPremultPluginID = kNatronTestMultiPlanePluginID;
 const char* const kTimeBufferReadPluginID = "net.sf.openfx.TimeBufferRead";
 const char* const kTimeBufferWritePluginID = "net.sf.openfx.TimeBufferWrite";
 
@@ -852,7 +853,7 @@ TEST_F(ColorViewsRenderTest, IDistortReadsAMissingUVAlphaChannelAsZero)
     NodePtr uv = createReader("flat-rgb-only.exr");
     ASSERT_TRUE(bool(source) && bool(uv));
 
-    NodePtr idistort = createNode(QString::fromUtf8(kIDistortPluginID));
+    NodePtr idistort = createNode(QString::fromUtf8(kIDistortPluginID), kNatronTestMatrixWarpMajor);
     ASSERT_TRUE(bool(idistort));
 
     int sourceInput = -1;
@@ -895,7 +896,7 @@ TEST_F(ColorViewsRenderTest, IDistortWithNoneUVChannelsPassesTheSourceThrough)
     NodePtr uv = createReader("flat-rgb-only.exr");
     ASSERT_TRUE(bool(source) && bool(uv));
 
-    NodePtr idistort = createNode(QString::fromUtf8(kIDistortPluginID));
+    NodePtr idistort = createNode(QString::fromUtf8(kIDistortPluginID), kNatronTestMatrixWarpMajor);
     ASSERT_TRUE(bool(idistort));
 
     int sourceInput = -1;
@@ -966,7 +967,7 @@ TEST_F(ColorViewsRenderTest, PremultOnAlphaOnlyLeavesAlphaUnchanged)
 {
     NodePtr reader = createReader("flat-alpha-only.exr");
     ASSERT_TRUE(bool(reader));
-    NodePtr premult = createNode(QString::fromUtf8(kPremultPluginID));
+    NodePtr premult = createNode(QString::fromUtf8(kPremultPluginID), kNatronTestMultiPlaneMajor);
     ASSERT_TRUE(bool(premult));
     connectNodes(reader, premult, 0, true);
 

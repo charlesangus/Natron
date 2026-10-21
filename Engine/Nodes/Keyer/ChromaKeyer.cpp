@@ -78,6 +78,7 @@ constexpr NodeSpec kChromaKeyerNodeSpec = {
     .grouping = PLUGIN_GROUP_KEYER,
     .majorVersion = PLUGIN_MAJOR_NATRON_CHROMAKEYER,
     .minorVersion = 0,
+    .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.ChromaKeyerPlugin.png",
     .inputs = kChromaKeyerInputs,
 };
 

@@ -114,3 +114,4 @@ Scouted facts (main `31636d20d`, 2026-10-20; re-check at promotion):
   | Remote fast, legacy | 7.0 min (39620482877) | 1.9 min (39645408967) | 3.7× |
   | Remote fast, taskgraph | 10.4 min | 3.2 min | 3.3× |
 - 2026-10-21 — **Gate restated: no 5× against today's main (user).** The 5× target was set against the serial ~33-minute legs. Since then main went to `-j 4` and a single build (PR #73), so the baseline moved. The user chose to merge with the measured speed-ups recorded. On debug, the long single suites now set the minimum time (FrameGraphBuild, about 3 minutes alone).
+- 2026-10-21 — **Shipped** as 3c2ba44fc (PR #77).

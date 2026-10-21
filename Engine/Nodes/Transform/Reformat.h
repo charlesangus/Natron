@@ -108,6 +108,7 @@ struct ReformatOp {
         .grouping = PLUGIN_GROUP_TRANSFORM,
         .majorVersion = PLUGIN_MAJOR_NATRON_REFORMAT,
         .minorVersion = 0,
+        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Reformat.png",
         .inputs = kReformatInputs,
     };
 

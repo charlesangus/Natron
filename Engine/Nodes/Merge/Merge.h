@@ -103,10 +103,12 @@ mergeNodeSpec(MergePresetEnum preset)
     case eMergePresetMerge:
         spec.id = PLUGINID_NATRON_MERGE;
         spec.label = "Merge";
+        spec.icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergePlugin.png";
         break;
     case eMergePresetPlus:
         spec.id = PLUGINID_NATRON_MERGE_PREFIX "Plus";
         spec.label = "Plus";
+        spec.icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergePlus.png";
         break;
     case eMergePresetMatte:
         spec.id = PLUGINID_NATRON_MERGE_PREFIX "Matte";
@@ -115,30 +117,37 @@ mergeNodeSpec(MergePresetEnum preset)
     case eMergePresetMultiply:
         spec.id = PLUGINID_NATRON_MERGE_PREFIX "Multiply";
         spec.label = "Multiply";
+        spec.icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeMultiply.png";
         break;
     case eMergePresetIn:
         spec.id = PLUGINID_NATRON_MERGE_PREFIX "In";
         spec.label = "In";
+        spec.icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeIn.png";
         break;
     case eMergePresetOut:
         spec.id = PLUGINID_NATRON_MERGE_PREFIX "Out";
         spec.label = "Out";
+        spec.icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeOut.png";
         break;
     case eMergePresetScreen:
         spec.id = PLUGINID_NATRON_MERGE_PREFIX "Screen";
         spec.label = "Screen";
+        spec.icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeScreen.png";
         break;
     case eMergePresetMax:
         spec.id = PLUGINID_NATRON_MERGE_PREFIX "Max";
         spec.label = "Max";
+        spec.icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeMax.png";
         break;
     case eMergePresetMin:
         spec.id = PLUGINID_NATRON_MERGE_PREFIX "Min";
         spec.label = "Min";
+        spec.icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeMin.png";
         break;
     case eMergePresetDifference:
         spec.id = PLUGINID_NATRON_MERGE_PREFIX "Difference";
         spec.label = "Absminus";
+        spec.icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeDifference.png";
         break;
     }
     spec.grouping = (preset == eMergePresetMerge) ? PLUGIN_GROUP_MERGE : PLUGIN_GROUP_MERGE "/Merges";

@@ -107,9 +107,10 @@ struct InputSpec {
 
 /**
  * @brief Statically describes a native node: identity, grouping (a menu path whose levels are
- * separated by '/'), versions, whether it is a writer, the kind it outputs, the reverse-flow
- * variables it reads and its inputs. The spans view storage the spec does not own, which for a
- * constexpr spec is a constexpr array of static storage duration.
+ * separated by '/'), versions, its registration (icon resource path, empty for none, and the
+ * deprecated and internal-use-only flags), whether it is a writer, the kind it outputs, the
+ * reverse-flow variables it reads and its inputs. The spans view storage the spec does not own,
+ * which for a constexpr spec is a constexpr array of static storage duration.
  **/
 struct NodeSpec {
     std::string_view id;
@@ -118,6 +119,9 @@ struct NodeSpec {
     std::string_view grouping = PLUGIN_GROUP_OTHER;
     int majorVersion = 1;
     int minorVersion = 0;
+    std::string_view icon = {};
+    bool deprecated = false;
+    bool internal = false;
     bool isWriter = false;
     DataKindEnum outputKind = eDataKindImage;
     // Names only: nothing reads reverse-flow variables yet, so nothing consumes this either.

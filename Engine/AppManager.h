@@ -716,6 +716,15 @@ protected:
     template <typename PLUGIN>
     void registerBuiltInPlugin(const QString& iconPath, bool isDeprecated, bool internalUseOnly);
 
+    /**
+     * @brief Registers a native node, reading its icon and flags from its NodeSpec. The
+     * NATRON_NATIVE_NODE lines of the native registration fragments expand to this.
+     **/
+    template <typename PLUGIN>
+    void registerNativePlugin();
+
+    void registerBuiltInEffect(const EffectInstancePtr& node, void (*buildEffect)(), const QString& iconPath, bool isDeprecated, bool internalUseOnly);
+
     virtual AppInstancePtr makeNewInstance(int appID) const;
     virtual void registerGuiMetaTypes() const
     {

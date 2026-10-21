@@ -122,6 +122,7 @@ struct ColorLookupOp {
         .grouping = PLUGIN_GROUP_COLOR,
         .majorVersion = PLUGIN_MAJOR_NATRON_COLORLOOKUP,
         .minorVersion = 0,
+        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.ColorLookupPlugin.png",
         .inputs = kColorLookupInputs,
     };
 

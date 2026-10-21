@@ -61,6 +61,7 @@ struct ConstantOp {
         .grouping = PLUGIN_GROUP_IMAGE,
         .majorVersion = PLUGIN_MAJOR_NATRON_CONSTANT,
         .minorVersion = 0,
+        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.ConstantPlugin.png",
     };
 
     static constexpr NodeSpec kSolidNodeSpec = {
@@ -70,6 +71,7 @@ struct ConstantOp {
         .grouping = PLUGIN_GROUP_IMAGE,
         .majorVersion = PLUGIN_MAJOR_NATRON_CONSTANT,
         .minorVersion = 0,
+        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Solid.png",
     };
 
     static constexpr ImagePipelineSpec kPipeline = {

@@ -138,6 +138,7 @@ MissingPluginNode::rebuildSpec()
         .grouping = PLUGIN_GROUP_OTHER,
         .majorVersion = 1,
         .minorVersion = 0,
+        .internal = true,
         .outputKind = eDataKindPolymorphic,
         .inputs = _inputSpecs,
     };

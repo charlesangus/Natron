@@ -545,22 +545,28 @@ under "Flat image nodes", and `Grade` is the example to read.
    identity-render path `Dot` and `NoOpBase` use). A node that produces flat
    images should not override `render()`: it is a `StagedImageEffect`.
 
-4. **Register it**: add one line to
-   `AppManager::loadBuiltinNodePlugins()` in `Engine/AppManager.cpp`:
+4. **Register it**: add a fragment `MyNode.reg.inc` beside the node's header,
+   holding the single line
 
    ```cpp
-   registerBuiltInPlugin<MyNode>(QString::fromUtf8(NATRON_IMAGES_PATH "myNode_icon.png"), false, false);
+   NATRON_NATIVE_NODE(MyNode, "MyNode.h")
    ```
 
-   The first argument is the toolbar/node-graph icon path (an empty
-   `QString::fromUtf8("")` is fine if there's no icon yet -- that's what
-   `TypedPassthrough` does); the two bools are `isDeprecated` and
-   `internalUseOnly` respectively. `registerBuiltInPlugin<T>()` instantiates
-   the node once (with a null `NodePtr`) purely to read its static metadata
-   (id, label, grouping, reader/writer-ness, version, thread safety) back off
+   naming the class and its header relative to the fragment. A template
+   registered under several IDs gets one fragment per ID, each naming its
+   full instantiation and named after the node it registers
+   (`Merge/MergePlus.reg.inc` holds
+   `NATRON_NATIVE_NODE(MergePreset<eMergePresetPlus>, "Merge.h")`). The
+   class is a macro argument, so an instantiation whose arguments contain a
+   comma is named through an alias (`Solid` in `Generator/Constant.h`).
+   CMake globs the fragments into the generated `NativeRegistryAll.inc`, which
+   `AppManager::loadBuiltinNodePlugins()` includes, so neither `AppManager.cpp`
+   nor any other shared file changes. Set the node's icon (a resource path,
+   e.g. `NATRON_IMAGES_PATH "NativeNodes/MyNode.png"`; leave it out for none)
+   and its `deprecated` and `internal` flags in its `NodeSpec`; the ID, label,
+   grouping and versions already come from there. Registration instantiates
+   the node once (with a null `NodePtr`) purely to read that metadata back off
    it and register a `Plugin*` -- it is not a live node instance.
-   `#include` the new node's header in `AppManager.cpp` alongside the other
-   `Engine/Nodes/` includes.
 
 5. **Test it**: see "Testing" below.
 

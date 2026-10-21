@@ -79,6 +79,7 @@ struct DissolveOp {
         .grouping = PLUGIN_GROUP_MERGE,
         .majorVersion = PLUGIN_MAJOR_NATRON_DISSOLVE,
         .minorVersion = 0,
+        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.DissolvePlugin.png",
         .inputs = kDissolveInputs,
     };
 

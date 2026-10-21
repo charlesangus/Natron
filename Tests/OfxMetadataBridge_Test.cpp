@@ -69,12 +69,14 @@
 #include <ofxhClip.h>
 #include <ofxhPropertySuite.h>
 
+#include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
+
 NATRON_NAMESPACE_USING
 
 namespace {
 const char kMetadataContributeID[] = "org.openfx.examples.metadataContribute";
-const char kOfxColorMatrixID[] = "net.sf.openfx.ColorMatrixPlugin";
-const int kOfxColorMatrixMajor = 2;
+const char kOfxPointMatrixID[] = kNatronTestPointMatrixPluginID;
+const int kOfxPointMatrixMajor = kNatronTestPointMatrixMajor;
 const char kContributeNoteParam[] = "note";
 const char kContributeNoteKey[] = "org.openfx.examples.metadataContribute.note";
 const double kContributedFrameRate = 30.;
@@ -256,10 +258,10 @@ TEST_F(BaseTest, OfxMetadataBridgeNativeKeysReachTheOfxInputClip)
 {
     NodePtr source = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
     NodePtr shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
-    NodePtr downstream = createNode(QString::fromUtf8(kOfxColorMatrixID), kOfxColorMatrixMajor);
+    NodePtr downstream = createNode(QString::fromUtf8(kOfxPointMatrixID), kOfxPointMatrixMajor);
 
     ASSERT_TRUE(bool(source) && bool(shuffle));
-    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxColorMatrixID;
+    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxPointMatrixID;
 
     MetadataSourceTestEffect* sourceEffect = dynamic_cast<MetadataSourceTestEffect*>(source->getEffectInstance().get());
     NativeEffectBase* shuffleEffect = nativeEffectOf(shuffle);
@@ -283,7 +285,7 @@ TEST_F(BaseTest, OfxMetadataBridgeNativeKeysReachTheOfxInputClip)
     ASSERT_TRUE(expected.contains("exr/tag"));
 
     OFX::Host::ImageEffect::ClipInstance* clip = clipOf(downstream, kOfxImageEffectSimpleSourceClipName);
-    ASSERT_TRUE(clip != NULL) << "ColorMatrix has no " << kOfxImageEffectSimpleSourceClipName << " clip";
+    ASSERT_TRUE(clip != NULL) << "PointMatrix has no " << kOfxImageEffectSimpleSourceClipName << " clip";
 
     MetadataRef received(clip, time);
     ASSERT_TRUE(received.get() != NULL);
@@ -299,10 +301,10 @@ TEST_F(BaseTest, OfxMetadataBridgeNativeKeysReachTheOfxInputClip)
 TEST_F(BaseTest, OfxMetadataBridgeNativeGeneratorKeysReachTheOfxInputClipWithoutSourceKeys)
 {
     NodePtr generator = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
-    NodePtr downstream = createNode(QString::fromUtf8(kOfxColorMatrixID), kOfxColorMatrixMajor);
+    NodePtr downstream = createNode(QString::fromUtf8(kOfxPointMatrixID), kOfxPointMatrixMajor);
 
     ASSERT_TRUE(bool(generator));
-    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxColorMatrixID;
+    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxPointMatrixID;
 
     NativeEffectBase* generatorEffect = nativeEffectOf(generator);
     ASSERT_TRUE(generatorEffect != NULL);
@@ -310,7 +312,7 @@ TEST_F(BaseTest, OfxMetadataBridgeNativeGeneratorKeysReachTheOfxInputClipWithout
     connectNodes(generator, downstream, 0, true);
 
     OFX::Host::ImageEffect::ClipInstance* clip = clipOf(downstream, kOfxImageEffectSimpleSourceClipName);
-    ASSERT_TRUE(clip != NULL) << "ColorMatrix has no " << kOfxImageEffectSimpleSourceClipName << " clip";
+    ASSERT_TRUE(clip != NULL) << "PointMatrix has no " << kOfxImageEffectSimpleSourceClipName << " clip";
 
     const double time = 7.;
     MetadataRef received(clip, time);
@@ -407,9 +409,9 @@ TEST_F(BaseTest, OfxMetadataBridgeReadKeysReachAnOfxNodeThroughNativeNodes)
     NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
     NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE));
     NodePtr write = createNativeWriter();
-    NodePtr downstream = createNode(QString::fromUtf8(kOfxColorMatrixID), kOfxColorMatrixMajor);
+    NodePtr downstream = createNode(QString::fromUtf8(kOfxPointMatrixID), kOfxPointMatrixMajor);
     ASSERT_TRUE(bool(grade) && bool(merge) && bool(write));
-    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxColorMatrixID;
+    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxPointMatrixID;
     ASSERT_TRUE(nativeEffectOf(grade) != NULL);
     ASSERT_TRUE(nativeEffectOf(merge) != NULL);
 

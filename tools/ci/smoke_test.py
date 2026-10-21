@@ -675,9 +675,12 @@ def _render_color_bars():
     if bars is None:
         raise AssertionError(
             "app.createNode('net.sf.openfx.ColorBars') returned None")
-    bars.getParam("extent").set("size")
-    bars.getParam("NatronParamFormatSize").set(70, 16)
-    _mark("[smoke] created ColorBars node, 70x16")
+    # The writer renders at the project format whatever the generator's own
+    # extent is, and earlier steps leave the project at 4x4, too narrow for
+    # the bars.
+    app.addFormat("smokebars70x16 70x16 1")
+    app.getProjectParam("outputFormat").set("smokebars70x16")
+    _mark("[smoke] created ColorBars node, project format 70x16")
 
     writer = app.createWriter(out_path)
     if writer is None:

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # Start -- or exec into, if already running -- a long-lived dev container
-# built from natron-dev:2027-clang21.1 (see tools/ci/local/Dockerfile). The
-# point of this script is that container start cost (pulling/creating the
+# built from the published natron-dev image (see tools/ci/local/Dockerfile and
+# dev-image-tag.sh). The point of this script is that container start cost (pulling/creating the
 # container, warming caches) is paid once, not on every build/test
 # invocation, so this always reuses one running container per repo
 # checkout rather than starting a fresh one each time.
@@ -44,7 +44,13 @@
 
 set -euo pipefail
 
-IMAGE="natron-dev:2027-clang21.1"
+# The published image CI also runs in; dev-image-tag.sh is the one definition
+# of its tag. It is pulled, or built locally when the pull fails, only when the
+# container is created: a running container is never touched.
+IMAGE="$("$(dirname "${BASH_SOURCE[0]}")/dev-image-tag.sh")"
+# Older commands and tools/gpu-spike/run-bench.sh name the image this way, so
+# whatever image the container is made from is also tagged under it.
+LOCAL_IMAGE="natron-dev:2027-clang21.1"
 
 RECREATE=0
 GPU="${NATRON_DEV_GPU:-0}"
@@ -167,10 +173,13 @@ STATE="$(container_state)"
 
 if [[ "${STATE}" == "missing" ]]; then
     if ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then
-        echo "devshell.sh: image '${IMAGE}' not found. Build it first:" >&2
-        echo "    docker build -t ${IMAGE} tools/ci/local" >&2
-        exit 1
+        echo "devshell.sh: pulling ${IMAGE}..." >&2
+        if ! docker pull "${IMAGE}" >&2; then
+            echo "devshell.sh: pull failed; building ${IMAGE} locally..." >&2
+            docker build -f "${SCRIPT_DIR}/Dockerfile" -t "${IMAGE}" "${SCRIPT_DIR}" >&2
+        fi
     fi
+    docker tag "${IMAGE}" "${LOCAL_IMAGE}"
 
     echo "devshell.sh: creating container '${CONTAINER_NAME}' from ${IMAGE}..." >&2
 

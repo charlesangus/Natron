@@ -5,10 +5,13 @@
 # build/remote/<preset>/. The remote twin of tools/ci/local/build.sh.
 #
 # Usage:
-#   tools/ci/remote/build.sh <fast|release> [--tests] [--record-goldens] [--no-appimage]
+#   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--no-appimage]
 #   tools/ci/remote/build.sh --mode
 #
-#   fast | release   -> the build preset, same meaning as in local/build.sh.
+#   fast | release | debug -> the build preset, same meaning as in local/build.sh.
+#                        debug never produces an AppImage: one cannot be packaged
+#                        in the container, because llvmpipe raises SIGFPE under
+#                        the -DDEBUG traps. It behaves as --no-appimage.
 #   --tests           -> also run the ctest suite and smoke tests remotely; the
 #                        ctest logs are downloaded even when the run fails.
 #   --record-goldens  -> implies --tests; also records the native golden renders
@@ -33,7 +36,7 @@ FIND_INTERVAL_SECS=5
 WATCH_INTERVAL_SECS=30
 
 usage() {
-    echo "usage: build.sh <fast|release> [--tests] [--record-goldens] [--no-appimage]" >&2
+    echo "usage: build.sh <fast|release|debug> [--tests] [--record-goldens] [--no-appimage]" >&2
     echo "       build.sh --mode" >&2
 }
 
@@ -81,7 +84,7 @@ fi
 
 for arg in "$@"; do
     case "${arg}" in
-        fast|release)
+        fast|release|debug)
             if [[ -n "${PRESET}" ]]; then
                 echo "build.sh: preset given twice ('${PRESET}' and '${arg}')" >&2
                 usage
@@ -112,9 +115,14 @@ for arg in "$@"; do
 done
 
 if [[ -z "${PRESET}" ]]; then
-    echo "build.sh: a preset (fast|release) is required" >&2
+    echo "build.sh: a preset (fast|release|debug) is required" >&2
     usage
     exit 1
+fi
+
+if [[ "${PRESET}" == "debug" && "${WANT_APPIMAGE}" == "true" ]]; then
+    echo "build.sh: the debug preset builds no AppImage (llvmpipe raises SIGFPE under -DDEBUG traps in the container); behaving as --no-appimage" >&2
+    WANT_APPIMAGE=false
 fi
 
 cd "${REPO_ROOT}"

@@ -194,7 +194,7 @@ Nothing native or host-side renders through GL any more:
   - verify: Phase build. ctest `GpuContext_Test` and `GpuDeviceList.*` are green. Starting `NatronRenderer -h` in natron-dev logs the device/renderer line.
   - size: M
 
-- [ ] M108.P2.T4 — Switch the GL-enable readers and the GL tests to the pool
+- [x] M108.P2.T4 — Switch the GL-enable readers and the GL tests to the pool
   - files: `Engine/Project.cpp`, `Engine/EffectInstanceRenderRoI.cpp`, `Tests/GLScheduler_Test.cpp`, `Tests/OSGLContext_Test.cpp`
   - approach:
     - `Project.cpp:1399, 2039, 2446` read `appPTR->getGPUContextPool()->isRenderingEnabled()`.
@@ -276,3 +276,4 @@ Nothing native or host-side renders through GL any more:
   - A fixer is finding whether the engine or the test is at fault.
 - 2026-10-20 — **The channel-subset failure was an engine bug, now fixed in `71b2e3f63`.** `renderHandler` copied unprocessed channels back from the source and only then ran `applyMaskMix`. The mix blends every channel in float, so it rounded the bits it had just copied, on the CPU path as well as GL. The copy now runs after the mix. The strict GL run passes 7/7, and a ctest subset of 538 mask, mix, channel and image tests passes on RADV with taskgraph.
 - 2026-10-20 — **M108.P2.T3 (`25b3d70b4`), not yet compiled** (the build slot is with M107). The pool state sits behind its own mutex, and the test overrides are atomics. A `getRendererID()` accessor was added, since both context functions need the ID. Startup picks the chosen device's summary by matching its index to the selector. With mode Off, the log line says the GL suite is disabled and gives `pickRenderer`'s reason. `GPUContextPool.cpp` still includes `Settings.h`; P2.T4 and P2.T5 drop it.
+- 2026-10-20 — **M108.P2.T4 (`25b3d70b4`), not yet compiled.** `Tests/Native/GlHostWrap_Test.cpp` had the same settings guard, so it changed too. The `gpuSupport` tooltip in `Project.cpp` no longer names the old OpenGL preference. The only reader left is a commented-out line at `OfxHost.cpp:310`, which P2.T5 deletes. Scripts that look up the old knob names by string were not searched beyond the edited files.

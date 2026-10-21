@@ -91,22 +91,23 @@ makeChannelSelectKnob()
     return knob;
 }
 
-// Quantize stays OpenFX and, like the retired OpenFX Grade, defaults processA to false.
-TEST_F(BaseTest, QuantizeGetsChannelSetSeededByItsQuad)
+// A plug-in whose quad defaults to all four on needs nothing seeded: the channel set keeps its
+// default Color row with no channel restriction.
+TEST_F(BaseTest, PointMatrixGetsChannelSetAdoptingItsQuad)
 {
-    NodePtr quantize = createNode(QString::fromUtf8("net.sf.openfx.Quantize"), 1);
+    NodePtr pointMatrix = createNode(QString::fromUtf8("fr.natron.test.PointMatrix"), 2);
 
-    ASSERT_TRUE(bool(quantize));
+    ASSERT_TRUE(bool(pointMatrix));
 
-    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(quantize->getKnobByName(kNodeParamChannelSet));
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(pointMatrix->getKnobByName(kNodeParamChannelSet));
     ASSERT_TRUE(bool(channels));
-    EXPECT_EQ(channels, quantize->getLayerKnob());
+    EXPECT_EQ(channels, pointMatrix->getLayerKnob());
     EXPECT_TRUE(isFirstOnItsPage(channels));
     EXPECT_FALSE(channels->isAnimationEnabled());
 
-    KnobBoolPtr processA = std::dynamic_pointer_cast<KnobBool>(quantize->getKnobByName(kNatronOfxParamProcessA));
+    KnobBoolPtr processA = std::dynamic_pointer_cast<KnobBool>(pointMatrix->getKnobByName(kNatronOfxParamProcessA));
     ASSERT_TRUE(bool(processA));
-    EXPECT_FALSE(processA->getDefaultValue(0));
+    EXPECT_TRUE(processA->getDefaultValue(0));
     EXPECT_TRUE(processA->getIsSecret());
     EXPECT_TRUE(processA->getValue());
     EXPECT_FALSE(processA->getIsPersistent());
@@ -115,15 +116,11 @@ TEST_F(BaseTest, QuantizeGetsChannelSetSeededByItsQuad)
     ASSERT_EQ(1u, rows.size());
     EXPECT_EQ(ChannelSetRow::eModeLayer, rows[0].mode);
     EXPECT_EQ(std::string(kNatronColorViewRGBA), rows[0].layerOrPattern);
-    std::vector<std::string> rgb;
-    rgb.push_back("R");
-    rgb.push_back("G");
-    rgb.push_back("B");
-    EXPECT_EQ(rgb, rows[0].channels);
+    EXPECT_TRUE(rows[0].channels.empty());
 
-    EXPECT_FALSE(bool(quantize->getKnobByName("channels_legacy")));
-    EXPECT_FALSE(bool(quantize->getKnobByName("Source_channels_legacy")));
-    EXPECT_FALSE(bool(quantize->getKnobByName("processAllLayers")));
+    EXPECT_FALSE(bool(pointMatrix->getKnobByName("channels_legacy")));
+    EXPECT_FALSE(bool(pointMatrix->getKnobByName("Source_channels_legacy")));
+    EXPECT_FALSE(bool(pointMatrix->getKnobByName("processAllLayers")));
 }
 
 TEST_F(BaseTest, InvertGetsChannelSetWithEveryChannel)
@@ -279,14 +276,9 @@ TEST_F(BaseTest, GeneratorsGetTargetLayerSelectWithButtonsAndAdoptedQuads)
     static const Case cases[] = {
         { "net.sf.openfx.ConstantPlugin", false, "" },
         { "net.sf.openfx.Solid", false, "" },
-        { "net.sf.openfx.Ramp", true, "" },
-        { "net.sf.openfx.Radial", true, "" },
-        { "net.sf.openfx.Rectangle", true, "" },
+        { "fr.natron.test.Generator", true, "" },
         { "net.sf.openfx.CheckerBoardPlugin", false, "" },
         { "net.sf.openfx.ColorBars", false, "" },
-        { "net.sf.openfx.ColorWheel", false, "" },
-        { "net.sf.openfx.Noise", false, "" },
-        { "net.sf.cimg.CImgPlasma", true, "RGB" },
         { "fr.inria.openfx.SeExpr", false, "" },
         { "net.fxarena.openfx.Text", false, "" }
     };
@@ -576,7 +568,7 @@ TEST_F(BaseTest, NodesOwningTheirPlanesGetNoLayerKnob)
     const char* ids[] = {
         "fr.natron.DeepMerge",
         PLUGINID_NATRON_SHUFFLE,
-        "net.sf.openfx.Premult"
+        "fr.natron.test.MultiPlane"
     };
 
     for (std::size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); ++i) {

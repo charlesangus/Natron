@@ -70,9 +70,9 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-// A colour plugin that stays OpenFX, for the cases that check how the host adopts its knobs.
-const char* const kOfxColorMatrixID = "net.sf.openfx.ColorMatrixPlugin";
-const int kOfxColorMatrixMajor = 2;
+// A test-bundle colour plug-in, for the cases that check how the host adopts an OpenFX plug-in's knobs.
+const char* const kOfxPointMatrixID = "fr.natron.test.PointMatrix";
+const int kOfxPointMatrixMajor = 2;
 
 const int32_t kCheckX = 1;
 const int32_t kCheckY = 1;
@@ -590,10 +590,11 @@ TEST_F(ChannelSetRenderUnPremultByTest, DivisorMayBeAChannelOfAnotherLayer)
 }
 
 // A one-channel plane's process bit is bit 3 while its pixel holds the channel at index 0; the
-// multiply back must find the same channel the divide did. Ramp writes depth.Z = 1 over the
+// multiply back must find the same channel the divide did. The Generator writes depth.Z = 1 over the
 // halved specular, then Grade processes depth alone, unpremultiplied by specular.B = 0.5:
 //   depth.Z = 0.5 * clamp(2 * (1 / 0.5)) = 0.5, against clamp(2 * 1) = 1 left divided.
-// Ramp rather than Constant because the native Constant has no source to pass specular through.
+// A test-bundle Generator rather than Constant because the native Constant has no source to pass
+// specular through.
 TEST_F(ChannelSetRenderUnPremultByTest, OneChannelPlaneIsMultipliedBackByAnotherLayersChannel)
 {
     KnobChannelSetPtr specularChannels;
@@ -605,22 +606,19 @@ TEST_F(ChannelSetRenderUnPremultByTest, OneChannelPlaneIsMultipliedBackByAnother
     ASSERT_TRUE(halveMultiply != NULL);
     halveMultiply->setValues(0.5, 0.5, 0.5, 0.5, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
 
-    NodePtr ramp = createNode(QString::fromUtf8("net.sf.openfx.Ramp"));
-    ASSERT_TRUE(bool(ramp));
-    connectNodes(halveSpecular, ramp, 0, true);
-    // Equal end colours make the ramp flat, whatever its geometry.
-    for (const char* name : { "color0", "color1" }) {
-        KnobColor* color = dynamic_cast<KnobColor*>(ramp->getKnobByName(name).get());
-        ASSERT_TRUE(color != NULL) << name;
-        color->setValues(1., 1., 1., 1., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
-    }
-    KnobLayerSelectPtr rampLayer = std::dynamic_pointer_cast<KnobLayerSelect>(ramp->getLayerKnob());
-    ASSERT_TRUE(bool(rampLayer));
-    rampLayer->setLayer("depth");
+    NodePtr generator = createNode(QString::fromUtf8("fr.natron.test.Generator"));
+    ASSERT_TRUE(bool(generator));
+    connectNodes(halveSpecular, generator, 0, true);
+    KnobColor* generatorColor = dynamic_cast<KnobColor*>(generator->getKnobByName("color").get());
+    ASSERT_TRUE(generatorColor != NULL);
+    generatorColor->setValues(1., 1., 1., 1., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    KnobLayerSelectPtr generatorLayer = std::dynamic_pointer_cast<KnobLayerSelect>(generator->getLayerKnob());
+    ASSERT_TRUE(bool(generatorLayer));
+    generatorLayer->setLayer("depth");
 
     NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
     ASSERT_TRUE(bool(grade));
-    connectNodes(ramp, grade, 0, true);
+    connectNodes(generator, grade, 0, true);
     KnobChannelSetPtr gradeChannels = std::dynamic_pointer_cast<KnobChannelSet>(grade->getKnobByName(kNodeParamChannelSet));
     ASSERT_TRUE(bool(gradeChannels));
     gradeChannels->setLayer(0, "depth", NULL);
@@ -701,40 +699,39 @@ TEST_F(ChannelSetRenderUnPremultByTest, AMissingDivisorChannelFailsTheRender)
 // all: SupportExt/ofxsMaskMix.h's ofxsPremultDescribeParams() declares unPremultBy/
 // unPremultByChannel outright, it does not declare the old identifiers alongside them, so
 // getKnobByName finds nothing under the old names to assert secret on. premultChanged is
-// the one param of the three declared under its original name (ColorMatrix.cpp's own
-// kParamPremultChanged, untouched by the rename), and stays on the host's hide list.
+// the one param of the three declared under its original name, and stays on the host's hide list.
 TEST_F(ChannelSetRenderTest, OfxUnPremultByIsHostOwnedAndOldPremultFamilyGoneOrSecret)
 {
     KnobChannelSetPtr channels;
-    NodePtr colorMatrix = createEffectOnReader(QString::fromUtf8(kOfxColorMatrixID), &channels, "flat-three-layers.exr", kOfxColorMatrixMajor);
-    ASSERT_TRUE(bool(colorMatrix));
+    NodePtr pointMatrix = createEffectOnReader(QString::fromUtf8(kOfxPointMatrixID), &channels, "flat-three-layers.exr", kOfxPointMatrixMajor);
+    ASSERT_TRUE(bool(pointMatrix));
 
-    KnobChannelSelectPtr hostUnPremultBy = colorMatrix->getUnPremultBySelector();
+    KnobChannelSelectPtr hostUnPremultBy = pointMatrix->getUnPremultBySelector();
     ASSERT_TRUE(bool(hostUnPremultBy));
-    EXPECT_EQ(hostUnPremultBy, std::dynamic_pointer_cast<KnobChannelSelect>(colorMatrix->getKnobByName(kUnPremultByKnobName)));
+    EXPECT_EQ(hostUnPremultBy, std::dynamic_pointer_cast<KnobChannelSelect>(pointMatrix->getKnobByName(kUnPremultByKnobName)));
     EXPECT_FALSE(hostUnPremultBy->getIsSecret());
     EXPECT_TRUE(hostUnPremultBy->isNone());
 
     // The plug-in's own pair is off, hidden and not written to the project: the host does this
     // now, and openfx-misc's ofxsUnPremult()/ofxsPremult() could only ever divide by a channel
     // of the plane they were handed.
-    KnobBool* unPremultBy = dynamic_cast<KnobBool*>(colorMatrix->getKnobByName(kUnPremultByPluginKnobName).get());
+    KnobBool* unPremultBy = dynamic_cast<KnobBool*>(pointMatrix->getKnobByName(kUnPremultByPluginKnobName).get());
     ASSERT_TRUE(unPremultBy != NULL);
     EXPECT_FALSE(unPremultBy->getValue());
     EXPECT_TRUE(unPremultBy->getIsSecret());
     EXPECT_TRUE(unPremultBy->isSecretLocked());
     EXPECT_FALSE(unPremultBy->getIsPersistent());
 
-    KnobChoice* unPremultByChannel = dynamic_cast<KnobChoice*>(colorMatrix->getKnobByName(kUnPremultByChannelPluginKnobName).get());
+    KnobChoice* unPremultByChannel = dynamic_cast<KnobChoice*>(pointMatrix->getKnobByName(kUnPremultByChannelPluginKnobName).get());
     ASSERT_TRUE(unPremultByChannel != NULL);
     EXPECT_TRUE(unPremultByChannel->getIsSecret());
     EXPECT_TRUE(unPremultByChannel->isSecretLocked());
     EXPECT_FALSE(unPremultByChannel->getIsPersistent());
 
-    EXPECT_TRUE(colorMatrix->getKnobByName("premult").get() == NULL);
-    EXPECT_TRUE(colorMatrix->getKnobByName("premultChannel").get() == NULL);
+    EXPECT_TRUE(pointMatrix->getKnobByName("premult").get() == NULL);
+    EXPECT_TRUE(pointMatrix->getKnobByName("premultChannel").get() == NULL);
 
-    KnobBool* premultChanged = dynamic_cast<KnobBool*>(colorMatrix->getKnobByName("premultChanged").get());
+    KnobBool* premultChanged = dynamic_cast<KnobBool*>(pointMatrix->getKnobByName("premultChanged").get());
     ASSERT_TRUE(premultChanged != NULL);
     EXPECT_TRUE(premultChanged->getIsSecret());
 }
@@ -1293,7 +1290,7 @@ TEST_F(ChannelSetRenderBlurTest, MaskChannelAbsentFromDisconnectedMaskRendersSil
 // out-of-range test across the marked channels. Node::pluginOwnsChannelMask() reports that so
 // the host also stops masking their output with the layer knob's row-0 channel bits.
 
-TEST_F(ChannelSetRenderTest, KeyMixQuadIsLeftToThePluginWhileColorMatrixQuadIsAdopted)
+TEST_F(ChannelSetRenderTest, KeyMixQuadIsLeftToThePluginWhilePointMatrixQuadIsAdopted)
 {
     KnobChannelSetPtr keyMixChannels;
     NodePtr keyMix = createEffectOnReader(QString::fromUtf8("net.sf.openfx.KeyMix"), &keyMixChannels);
@@ -1307,16 +1304,16 @@ TEST_F(ChannelSetRenderTest, KeyMixQuadIsLeftToThePluginWhileColorMatrixQuadIsAd
     EXPECT_TRUE(keyMixProcessR->getDefaultValue(0));
     EXPECT_TRUE(keyMixProcessR->getValue());
 
-    KnobChannelSetPtr colorMatrixChannels;
-    NodePtr colorMatrix = createEffectOnReader(QString::fromUtf8(kOfxColorMatrixID), &colorMatrixChannels, "flat-three-layers.exr", kOfxColorMatrixMajor);
-    ASSERT_TRUE(bool(colorMatrix));
-    EXPECT_FALSE(colorMatrix->pluginOwnsChannelMask());
+    KnobChannelSetPtr pointMatrixChannels;
+    NodePtr pointMatrix = createEffectOnReader(QString::fromUtf8(kOfxPointMatrixID), &pointMatrixChannels, "flat-three-layers.exr", kOfxPointMatrixMajor);
+    ASSERT_TRUE(bool(pointMatrix));
+    EXPECT_FALSE(pointMatrix->pluginOwnsChannelMask());
 
-    KnobBool* colorMatrixProcessR = dynamic_cast<KnobBool*>(colorMatrix->getKnobByName(kNatronOfxParamProcessR).get());
-    ASSERT_TRUE(colorMatrixProcessR != NULL);
-    EXPECT_TRUE(colorMatrixProcessR->getIsSecret());
-    EXPECT_FALSE(colorMatrixProcessR->getIsPersistent());
-    EXPECT_TRUE(colorMatrixProcessR->getValue());
+    KnobBool* pointMatrixProcessR = dynamic_cast<KnobBool*>(pointMatrix->getKnobByName(kNatronOfxParamProcessR).get());
+    ASSERT_TRUE(pointMatrixProcessR != NULL);
+    EXPECT_TRUE(pointMatrixProcessR->getIsSecret());
+    EXPECT_FALSE(pointMatrixProcessR->getIsPersistent());
+    EXPECT_TRUE(pointMatrixProcessR->getValue());
 }
 
 TEST_F(ChannelSetRenderTest, DenoiseSharpenAndClipTestAlsoOwnTheirChannelMask)

@@ -49,6 +49,8 @@
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/ViewIdx.h"
 
+#include "TestOfxPluginPath.h"
+
 NATRON_NAMESPACE_ENTER
 
 // The plugin enumeration, knob perturbation and exemption allowlist shared by the sweeps that
@@ -196,9 +198,7 @@ sweptPlugins()
 inline bool
 ofxBundleExpected()
 {
-    const char* path = std::getenv("OFX_PLUGIN_PATH");
-
-    return path && *path;
+    return !userOfxPluginPath().isEmpty();
 }
 
 inline std::string

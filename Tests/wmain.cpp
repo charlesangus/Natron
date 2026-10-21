@@ -22,6 +22,7 @@
 #include "NativeParity.h"
 #include "PassThroughRoDTestEffect.h"
 #include "PerProcessUserDirs.h"
+#include "TestOfxPluginPath.h"
 
 using namespace NATRON_NAMESPACE;
 
@@ -150,6 +151,7 @@ GTEST_API_ int main(int argc, char **argv)
     printf("Running main() from wmain.cpp\n");
     ::testing::InitGoogleTest(&argc, argv);
     PerProcessUserDirs userDirs;
+    appendTestOfxPluginDir();
     AppManager manager;
 
     {

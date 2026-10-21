@@ -63,6 +63,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "CacheMemoryPressureGuard.h"
 #include "CountingTestEffect.h"
 #include "RenderBothWays.h"
+#include "TestOfxPluginPath.h"
 
 NATRON_NAMESPACE_USING
 
@@ -110,9 +111,9 @@ BaseTest::registerTestPlugins()
 void
 BaseTest::SetUp()
 {
-    const char* path = std::getenv("OFX_PLUGIN_PATH");
-    if (path) {
-        std::cout << "Warning: Ignoring standard plugin path, OFX_PLUGIN_PATH=" << path << std::endl;
+    const QString userPath = userOfxPluginPath();
+    if (!userPath.isEmpty()) {
+        std::cout << "Warning: Ignoring standard plugin path, OFX_PLUGIN_PATH=" << userPath.toStdString() << std::endl;
         OFX::Host::PluginCache::useStdOFXPluginsLocation(false);
     }
 

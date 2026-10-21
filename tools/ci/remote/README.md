@@ -54,7 +54,7 @@ included, not only `release`. Set `NATRON_STAGE_NO_STRIP=1` to opt out.
 ## Usage
 
 ```
-tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--no-appimage]
+tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage]
 ```
 
 - `--tests` also runs the ctest suite and the Python bindings smoke test on
@@ -65,6 +65,14 @@ tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--no
 - `--record-goldens` implies `--tests`. It also records the native golden
   renders on the runner and downloads them into
   `Tests/fixtures/native-golden/` of this checkout.
+- `--shuffle-seeds <n,n,...>` implies `--tests`, e.g. `--shuffle-seeds 1,2,3`
+  (seeds 1 to 99999). Each ctest leg runs once unshuffled, as without the
+  option, then once per seed with `GTEST_SHUFFLE=1 GTEST_RANDOM_SEED=<seed>`,
+  which shuffles the cases within each suite process to flush out leaks
+  between cases. Every seed runs even after a failure, the leg fails if any
+  run did, and each shuffled run's log is `ctest-<scheduler>-seed<seed>.log`.
+  The ctest step's timeout rises from 30 to a fixed 120 minutes, about five
+  seeds on the debug preset.
 - `--no-appimage` skips packaging and downloading the AppImage. `debug`
   implies it.
 - The ctest suite has one entry per gtest suite, not per case, so `ctest -R`
@@ -82,7 +90,7 @@ run name, watches it, then downloads the artifacts (kept 7 days on GitHub):
 | Artifact | Contents |
 | --- | --- |
 | `natron-<preset>-<sha>` | the `.AppImage`, made executable |
-| `ctest-logs-<preset>-<sha>` | the ctest logs, `ctest-legacy.log` and `ctest-taskgraph.log` (`--tests` only), uploaded even when the run fails |
+| `ctest-logs-<preset>-<sha>` | the ctest logs, `ctest-legacy.log` and `ctest-taskgraph.log`, plus `ctest-<scheduler>-seed<seed>.log` per shuffle seed (`--tests` only), uploaded even when the run fails |
 
 Both land in `build/remote/<preset>/`, which is wiped at the start of each
 download. The script prints the run URL, the `AppImage:` path and, with

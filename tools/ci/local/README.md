@@ -280,6 +280,7 @@ container with `NATRON_DEV_CONTAINER` (see "Where things live").
 
 ```
 [NATRON_RENDER_SCHEDULER=legacy|taskgraph] [NATRON_CTEST_JOBS=<n>] \
+  [GTEST_SHUFFLE=1 GTEST_RANDOM_SEED=<n> GTEST_REPEAT=<n>] \
   tools/ci/local/test.sh <ctest|smoke> [debug|release|fast] [--gdb]
 ```
 
@@ -306,6 +307,13 @@ container with `NATRON_DEV_CONTAINER` (see "Where things live").
   `ctest --rerun-failed -V`, so their complete output (including assert
   text that parallel output hides) is in the log. The re-run is diagnostic
   only; the script's exit status stays that of the parallel run.
+- `GTEST_SHUFFLE`, `GTEST_RANDOM_SEED` and `GTEST_REPEAT` (`ctest` only) are
+  read by gtest itself; ctest passes its environment on to every suite
+  process. `GTEST_SHUFFLE=1 GTEST_RANDOM_SEED=<n>` runs the cases within each
+  suite in a fixed shuffled order, to flush out leaks between cases;
+  `GTEST_REPEAT=<n>` runs each suite n times. Each ctest entry is one suite,
+  so the shuffle never crosses suites. All three are forwarded into the
+  container when set.
 - `--gdb` applies only to `smoke` (`ctest` runs many binaries, not one): it
   runs the target under
   `gdb -batch -ex run -ex "thread apply all bt" -ex bt --args <binary> ...`

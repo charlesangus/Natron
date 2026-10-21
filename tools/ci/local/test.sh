@@ -12,6 +12,7 @@
 # Usage:
 #   [NATRON_RENDER_SCHEDULER=legacy|taskgraph] tools/ci/local/test.sh <ctest|smoke> [debug|release|fast] [--gdb]
 #   [NATRON_CTEST_JOBS=<n>] tools/ci/local/test.sh ctest ...
+#   [GTEST_SHUFFLE=1] [GTEST_RANDOM_SEED=<n>] [GTEST_REPEAT=<n>] tools/ci/local/test.sh ctest ...
 #   [NATRON_SMOKE_OUTPUT_DIR=<dir>|NATRON_SMOKE_REFERENCE_DIR=<dir>] tools/ci/local/test.sh smoke ...
 #
 #   NATRON_RENDER_SCHEDULER -> selects the render scheduler for ctest and the
@@ -32,6 +33,16 @@
 #                              -V` so their complete output is in the log; the
 #                              exit status stays the parallel run's.
 #                              Forwarded into the container when set.
+#   GTEST_SHUFFLE,
+#   GTEST_RANDOM_SEED,
+#   GTEST_REPEAT            -> ctest only: gtest reads these itself, and ctest
+#                              hands its environment to every suite process, so
+#                              they shuffle the cases within each suite (seed
+#                              n, or a time-based one when unset), or repeat
+#                              each suite, to flush out leaks between cases.
+#                              Each ctest entry is one suite, so the shuffle
+#                              never crosses suites. Forwarded into the
+#                              container when set.
 #   NATRON_SMOKE_OUTPUT_DIR -> smoke only: the graded PNG is copied here.
 #   NATRON_SMOKE_REFERENCE_DIR -> smoke only: the graded PNG must be
 #                              byte-identical to the same-named file there
@@ -140,7 +151,7 @@ if ! in_container; then
     # long-lived container, so variables that steer the run are re-applied
     # through env(1) on the container side.
     forwarded_env=()
-    for var in NATRON_RENDER_SCHEDULER NATRON_CTEST_JOBS NATRON_SMOKE_OUTPUT_DIR NATRON_SMOKE_REFERENCE_DIR; do
+    for var in NATRON_RENDER_SCHEDULER NATRON_CTEST_JOBS GTEST_SHUFFLE GTEST_RANDOM_SEED GTEST_REPEAT NATRON_SMOKE_OUTPUT_DIR NATRON_SMOKE_REFERENCE_DIR; do
         if [[ -n "${!var:-}" ]]; then
             forwarded_env+=("${var}=${!var}")
         fi

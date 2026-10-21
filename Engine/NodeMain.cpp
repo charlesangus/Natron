@@ -543,6 +543,15 @@ Node::destroyNode(bool blockingDestroy, bool autoReconnect)
 
     bool allProcessingQuit = areAllProcessingThreadsQuit();
     if (allProcessingQuit || blockingDestroy) {
+        // An earlier non-blocking destroy of this node, or of a group holding it, may still be quitting this node's
+        // processing on its watcher thread, which reads the effect: it must be done before the effect is destroyed.
+        for (Node* node = this; node;) {
+            if (node->_imp->renderWatcher) {
+                node->_imp->renderWatcher->stopWatching();
+            }
+            NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(node->getGroup());
+            node = group ? group->getNode().get() : NULL;
+        }
         if (!allProcessingQuit) {
             quitAnyProcessing_blocking(false);
         }

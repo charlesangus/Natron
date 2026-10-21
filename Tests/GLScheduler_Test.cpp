@@ -45,6 +45,7 @@
 #include <QtConcurrent/QtConcurrentRun>
 
 #include "BaseTest.h"
+#include "NativeParity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -54,6 +55,7 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Project.h"
@@ -451,10 +453,14 @@ TEST_F(GLScheduler, ConcurrentGLTasksBeyondTheContextLimitRenderOnCPU)
     MaxOpenGLContextsGuard maxContexts(1);
     ASSERT_TRUE(maxContexts.isValid());
 
-    NodePtr checker = createNode(QString::fromUtf8(kCheckerBoardPluginID));
-    ASSERT_TRUE(bool(checker));
+    // Nodes with the same plug-in, parameters and inputs share cache entries. Over one source, a task refused the
+    // context could cache the image before the task holding the context renders, which would then take it from the
+    // cache without binding its context. Each colour-space node gets its own source, so each renders its own image.
     std::vector<NodePtr> colorSpaces(4);
     for (std::size_t i = 0; i < colorSpaces.size(); ++i) {
+        NodePtr checker = createNode(QString::fromUtf8(kCheckerBoardPluginID));
+        ASSERT_TRUE(bool(checker));
+        ASSERT_TRUE(setKnobValues(checker, kCheckerBoardParamBoxSize, { 16. + 8. * (double)i }));
         ASSERT_NO_FATAL_FAILURE(createGPUColorSpace(checker, &colorSpaces[i]));
     }
     NodePtr left;

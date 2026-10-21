@@ -47,6 +47,9 @@ tools/ci/remote/build.sh <fast|release> [--tests] [--no-appimage]
 - `--tests` also runs the ctest suite and the Python bindings smoke test on
   the runner. Without it the build skips tests.
 - `--no-appimage` skips packaging and downloading the AppImage.
+- The ctest suite has one entry per gtest suite, not per case, so `ctest -R`
+  matches suite names (`'^NativeGoldenTest$'`). To run a single case, call the
+  test binary with `--gtest_filter=Suite.Case`.
 
 HEAD must already be pushed: the workflow builds the pushed commit, not the
 working tree. The script refuses on a detached HEAD, or when HEAD differs from

@@ -26,7 +26,7 @@
 #                              case is in Testing/Temporary/LastTest.log
 #                              (printed after the run, folded, under GitHub
 #                              Actions). Cases that assert a wall-clock bound
-#                              run alone: see Tests/SerialTests.cmake.
+#                              run alone: see Tests/SuiteProperties.cmake.
 #                              Forwarded into the container when set.
 #   NATRON_SMOKE_OUTPUT_DIR -> smoke only: the graded PNG is copied here.
 #   NATRON_SMOKE_REFERENCE_DIR -> smoke only: the graded PNG must be
@@ -214,8 +214,8 @@ case "${SUBCOMMAND}" in
             echo "test.sh: ERROR: NATRON_CTEST_JOBS must be a positive integer, got '${CTEST_JOBS}'" >&2
             exit 1
         fi
-        # Only a default: every discovered gtest case carries its own TIMEOUT property, which
-        # wins; this bounds the cases registered without one.
+        # Only a default: every discovered gtest suite carries its own TIMEOUT property, which
+        # wins; this bounds the tests registered without one.
         CTEST_TIMEOUT_SECONDS=300
         cd "${BUILD_DIR}"
         echo "+ cd ${BUILD_DIR}"
@@ -233,6 +233,16 @@ case "${SUBCOMMAND}" in
             rc=$?
         fi
         FULL_LOG="${BUILD_DIR}/Testing/Temporary/LastTest.log"
+        # A failing suite's ctest line names only the suite; gtest names the case.
+        if [[ "${rc}" -ne 0 && -f "${FULL_LOG}" ]]; then
+            FAILED_CASES="$(grep -E '^\[  FAILED  \] [^ ]+\.[^ ]+' "${FULL_LOG}" | sed -E 's/^\[  FAILED  \] ([^ ,]+).*/\1/' | sort -u || true)"
+            if [[ -n "${FAILED_CASES}" ]]; then
+                echo "Failing cases:"
+                while IFS= read -r failed_case; do
+                    echo "[  FAILED  ] ${failed_case}"
+                done <<<"${FAILED_CASES}"
+            fi
+        fi
         if [[ -f "${FULL_LOG}" ]]; then
             echo "Complete output of every case: ${FULL_LOG}"
             if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then

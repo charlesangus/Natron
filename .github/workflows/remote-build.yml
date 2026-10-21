@@ -125,7 +125,7 @@ jobs:
           set -o pipefail
           mkdir -p "$NATRON_GOLDEN_RECORD_DIR"
           rc=0
-          xvfb-run --auto-servernum ctest -R '^NativeGoldenTest\.' --timeout 300 --output-on-failure || rc=$?
+          xvfb-run --auto-servernum ctest -R '^NativeGoldenTest$' --timeout 300 --output-on-failure || rc=$?
           test -f "$NATRON_GOLDEN_RECORD_DIR/STAMP" || rc=1
           exit "$rc"
 
@@ -254,10 +254,10 @@ jobs:
           tar -xf build-tree.tar
           rm build-tree.tar
 
-      # Each leg took about 35 minutes when ctest ran serially. Without the step bound, a case that outlives
-      # ctest's own per-case timeout holds the job until GitHub's six-hour limit.
+      # Without the step bound, a suite that outlives ctest's own per-suite timeout holds the job
+      # until GitHub's six-hour limit.
       - name: Run ctest suite (${{ matrix.scheduler }} scheduler)
-        timeout-minutes: 75
+        timeout-minutes: 30
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           NATRON_TEST_REQUIRE_GPU: 1

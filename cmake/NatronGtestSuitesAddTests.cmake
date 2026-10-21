@@ -1,6 +1,8 @@
 # Run by ctest, through the include file natron_add_gtest_suites() generates: lists a gtest
 # binary's suites and writes one add_test() per suite to CTEST_FILE.
 #
+# Each tests file also appends its names to NATRON_GTEST_SUITE_TESTS, for later include files.
+#
 # It also runs standalone with `cmake -P`, taking the same arguments as -D variables.
 
 cmake_minimum_required(VERSION 3.16)
@@ -213,6 +215,9 @@ function(natron_gtest_suites_add_tests)
     endforeach()
     list(JOIN names " " names)
     string(PREPEND script "natron_gtest_suites_claim(${names})\n")
+    # The tests file is include()d at the top level of CTestTestfile.cmake, so this variable is
+    # visible to the include files that follow it, which can then check the names they refer to.
+    string(APPEND script "list(APPEND NATRON_GTEST_SUITE_TESTS ${names})\n")
 
     # Written aside and renamed, so a listing that dies half way never leaves a cache that looks
     # current.

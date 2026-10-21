@@ -237,14 +237,14 @@ include(NatronGtestSuites)
 # One ctest entry per suite: every launch of these binaries pays a cold OFX rescan plus Python and
 # OCIO init in AppManager::load(), so a process per case spends most of a run starting up. The
 # suites are listed at ctest time, under --gtest_list_tests, which both mains answer before load().
-# TIMEOUT 900 turns a scheduler wait that never returns (OutputSchedulerThread.cpp's
+# TIMEOUT 300 turns a scheduler wait that never returns (OutputSchedulerThread.cpp's
 # bufEmptyCondition wait has no predicate, loop or timeout) into a failed suite instead of a process
-# that never exits, with headroom for the longest suite.
-natron_add_gtest_suites(Tests PROPERTIES TIMEOUT 900)
-natron_add_gtest_suites(GuiTests PROPERTIES TIMEOUT 900)
+# that never exits; SuiteProperties.cmake raises it for the suites that run longer than that.
+natron_add_gtest_suites(Tests PROPERTIES TIMEOUT 300)
+natron_add_gtest_suites(GuiTests PROPERTIES TIMEOUT 300)
 # Per-suite properties go in an include that ctest runs after the includes registered above, once
 # their add_test() calls have run.
-set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/SerialTests.cmake)
+set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/SuiteProperties.cmake)
 
 if(NATRON_GPU)
     add_subdirectory(Gpu)

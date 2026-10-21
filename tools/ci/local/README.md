@@ -166,7 +166,9 @@ each target.
 
 - `ctest` runs against the build dir. By default (`NATRON_CTEST_JOBS` unset)
   that is the serial `ctest -V`; PR CI sets `NATRON_CTEST_JOBS=4`, which runs
-  `ctest -j 4 --output-on-failure`.
+  `ctest -j 4 --output-on-failure`. There is one ctest entry per gtest suite
+  (named `<Suite>`), not per case; to run one case, call the test binary with
+  `--gtest_filter=Suite.Case`.
 - `smoke` locates the built `NatronRenderer` and runs
   `tools/ci/smoke_test.py` through it. This script only exists on branches
   that carry the M2-era `tools/ci/smoke_test.py` addition -- it is not on
@@ -179,7 +181,7 @@ each target.
   clients of the one Xvfb server. Unset or 1 is the serial `ctest -V` run.
   Above 1 only failing cases' output is printed as each finishes; the full
   output of every case is in `Testing/Temporary/LastTest.log`. Cases that
-  assert a wall-clock bound run alone (`Tests/SerialTests.cmake`). It is
+  assert a wall-clock bound run alone (`Tests/SuiteProperties.cmake`). It is
   forwarded into the container when set.
 - `--gdb` applies only to `smoke` (`ctest` runs many binaries, not one): it
   runs the target under

@@ -266,14 +266,8 @@ routes a key by that prefix, in `OiioWriteSupport::applyMetadata()`:
   layout and a few excluded `oiio/`, `tiff/` and `dpx/` names are never written.
 - A key the target format does not take is dropped, with a debug log line.
 
-`Engine/Nodes/Metadata/` holds four nodes, grouped under Metadata:
-
-- `ModifyMetadata`: sets, removes or renames keys through eight operation slots.
-- `CopyMetadata`: copies the keys of B matching a glob filter onto A, in
-  Replace, Merge B wins or Merge A wins mode; B disconnected passes A through.
-- `RemoveMetadata`: removes the keys matching a glob list, or all of them,
-  `ofx/` keys included.
-- `ViewMetadata`: shows the metadata at the current frame in its panel.
+`Engine/Nodes/Metadata/` holds four nodes, grouped under Metadata: `ModifyMetadata`,
+`CopyMetadata`, `RemoveMetadata` and `ViewMetadata`.
 
 All four derive from `NativeEffectBase` and override `isIdentity()` to return
 input 0, so the image is passed through without a render and costs nothing.
@@ -282,205 +276,11 @@ the default pass-through. Key filters are
 `MetadataKeyFilter`: comma- or newline-separated globs, `*` matching any
 characters including `/`, `?` one, an empty list matching every key.
 
-`ModifyMetadata` has a fixed eight slots because a `KnobTable` packs its rows
-into one string: its cells could neither take an expression nor animate, and a
-`Set` value must do both. Each slot is a group of ordinary knobs instead.
 
 ## I/O nodes
 
-`Engine/Nodes/IO/` holds the native Read and Write. `NativeRead` (`NativeRead.h`) is the
-only plug-in registered under `PLUGINID_NATRON_READ`, at one version,
-`PLUGIN_MAJOR_NATRON_READ`. There is no Read container and no OFX reader behind
-it: `ReadNode` is gone, and `OfxHost::loadOFXPlugins()` skips any OFX plug-in
-whose contexts include `kOfxImageEffectContextReader`, so none is registered.
-Decoding lives in
-`OiioReadSupport.*` (header cache, layer grouping, metadata), time mapping in
-`ReadTimeDomain.*` and colour in `IoColorSpace.*`, with the colourspace knobs
-(`ocioInputSpace` and the rest below) in `OcioSpaceKnobs.*`, which takes a
-script-name prefix so the Write can share it.
+Each I/O node is documented in `Engine/Nodes/IO/docs/<Node>.md`.
 
-- **Formats.** `OiioReadSupport::readableExtensions()` is OIIO's
-  `extension_list` attribute minus the formats named in `kExcludedOiioFormats`
-  (`raw`, `null`, `term`, `ffmpeg`, `psd`), lower case and sorted. There is no
-  hand-written list, so a build with more OIIO plug-ins reads more. A path with
-  any other extension gets an "Unsupported format" error from
-  `NativeRead::rejectUnsupportedFormat()`.
-- **Entry points.** The file dialogs, drag and drop, `KnobGuiFile`, the CLI,
-  and `PrecompNode` all ask
-  `AppManager::getReaderPluginIDForFileType()` (extension to
-  `PLUGINID_NATRON_READ`, or empty) and
-  `AppManager::getSupportedReaderFileFormats()` (the extension list). Don't
-  hard-code an extension set or a reader id elsewhere.
-- **Knobs.** The script names are `GenericReader`'s, so existing scripts and
-  the host hooks that look knobs up by name keep working: `filename`, `proxy`,
-  `proxyThreshold`, `originalProxyScale`, `customProxyScale`,
-  `originalFrameRange`, `firstFrame`, `lastFrame`, `before`, `after`,
-  `onMissingFrame`, `frameMode`, `startingTime`, `timeOffset`,
-  `timeDomainUserEdited`, `ocioInputSpace`,
-  `ocioInputSpaceIndex`, `ocioInputSpaceSet`, the `Context` group of
-  `key1`..`key4` and `value1`..`value4`, and the hidden `ocioConfigFile`,
-  `ocioWorkingSpace` and `availableViews`. `reload` (`kNatronReadParamReload`)
-  is a Reload button on the `filename` row.
-- **Reload.** The node hash folds in a stamp of the file or sequence
-  (`FileStampRegistry`: path, modification time, size and inode of every
-  file). A file is stamped once, the first time the node is hashed in a
-  session, and nothing watches or stats it again until Reload. The Reload
-  button runs `purgeCaches()`: the file and proxy stamps are taken again, the
-  frame listings, the cached headers of the files and proxy files, the output
-  metadata and the action results are dropped, and the frame range is read
-  from disk again. A file that changed gets a new stamp, so the node hash moves
-  and the images and action results cached under the old hash are retired.
-  Until then a file changed on disk is not seen: the hash, the produced
-  layers, the region of definition and the cached images stay those of the
-  file read before. An image that is not in the cache is decoded from the file
-  as it is on disk now, though, so a Read whose output is not cached can show
-  new pixels under the old hash. Every other node whose file knob covers the
-  same files is reloaded with it
-  (`KnobFile::reloadOtherNodesReadingTheseFiles()`). The file knob's own reload
-  (`KnobFile::reloadFile()`) does the same.
-- **Colour.** Pixels are converted to the project's working space through the
-  project's OCIO config (`IoColorSpace::toWorkingProcessor()`). The default
-  input space (`IoColorSpace::defaultInputSpace()`) is, in order: the config's
-  file rules (`fileRuleColorSpace()`; a match on the default rule alone does not
-  count), the file's `oiio:ColorSpace` tag if the config has a colourspace, role
-  or alias of that name (`embeddedColorSpace()`), then the project's file
-  default for the pixel depth (`categoryOf()`: float, 16-bit or 8-bit). Setting
-  the input space by hand (`ocioInputSpaceSet`) overrides the default. The
-  non-empty `key`/`value` pairs are set as OCIO context variables when the
-  processor is built, and are part of its cache key.
-- **Layers and views.** Every layer of the file becomes a produced plane
-  (`getComponentsNeededAndProduced()`, grouped by `OiioReadSupport::fileLayers`)
-  and the Read is multi-planar. A greyscale file (a lone `Y` or `I` channel)
-  fills R, G and B from it. A multi-view EXR, as parts with a `view` attribute
-  or channels prefixed per its `multiView` list, fills `availableViews` so the
-  project gets those views; a project view the file lacks reads the file's
-  default view.
-- **Time.** A filename pattern resolves to one file per output frame, listed
-  once per pattern (`FrameListing`). `ReadTimeDomain::resolve()` maps an output
-  frame to a file, black or an error from `before`/`after` (hold, loop, bounce,
-  black, error) and `onMissingFrame` (previous, next, nearest, error, black;
-  searches up to `kMissingFrameSearchRange` frames each way). `frameMode` picks
-  `startingTime` or `timeOffset` for the shift.
-- **Proxies.** The `proxy` file is read instead of `filename` when the render
-  scale is at or below `proxyThreshold`; it has its own frame listing.
-- **Metadata.** `deriveOutputMetadata()` publishes
-  `ofx/pixelaspect` and, for a frame that loads a file, the file path, source
-  frame, mtime and size plus the file's own attributes
-  (`OiioReadSupport::attributeMetadata()`, so a frame rate in the header appears under the
-  format's prefix like any other attribute), for downstream native nodes and, via
-  `OfxMetadataBridge`, OFX nodes. A black or error frame carries only the pixel aspect. A Read has no frame rate: it
-  leaves the output frame rate at the host default and publishes no `ofx/framerate`.
-- **Not read.** RAW (`raw` is excluded; a later milestone adds it) and layered
-  documents such as PSD (`psd` is excluded; deferred to "M79 - Layered Document
-  Readers").
-
-### Write
-
-`NativeWrite` (`NativeWrite.h`) mirrors the Read. It is the only plug-in
-registered under `PLUGINID_NATRON_WRITE` (`fr.inria.built-in.Write`), at one
-version, `PLUGIN_MAJOR_NATRON_WRITE`. There is no Write container and no OFX
-writer behind it: `WriteNode` is gone, and `OfxHost::loadOFXPlugins()` skips any
-OFX plug-in whose contexts include `kOfxImageEffectContextWriter`. Encoding
-lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
-`OcioSpaceKnobs.*`.
-
-- **Formats.** `OiioWriteSupport::writableExtensions()` is the extensions of
-  OIIO's runtime `output_format_list` (every format `ImageOutput::create` can
-  make, if OIIO lacks that attribute) minus `kExcludedOiioFormats`, lower case
-  and sorted. There is no hand-written list and no video. A path with any other
-  extension gets an "Unsupported format" error from
-  `NativeWrite::rejectUnsupportedFormat()`.
-- **Entry points.** The file dialogs and `KnobGuiFile` take their filters from
-  `AppManager::getSupportedWriterFileFormats()`, and
-  `AppManager::getWriterPluginIDForFileType()` maps an extension to
-  `PLUGINID_NATRON_WRITE` (or empty). Everything that creates a Write (Render
-  Selected, `app.createWriter`, the command-line render of an output file)
-  names `PLUGINID_NATRON_WRITE` directly. Don't hard-code an extension set elsewhere.
-- **Knobs.** The script names are WriteOIIO's, because tests, `tools/bench` and
-  host code look them up by name: `filename`, `overwrite`, `formatType`,
-  `clipToRoD`, `frameRange`, `firstFrame`, `lastFrame`, `frameIncr`,
-  `bitDepth`, `compression`, `quality`, `dwaCompressionLevel`,
-  `zipCompressionLevel`, `tileSize`, `partSplitting`, `viewsSelector`,
-  `ocioOutputSpace`, `ocioOutputSpaceIndex`, `ocioOutputSpaceSet`, the `Context`
-  group of `key1`..`key4` and `value1`..`value4`, the hidden `ocioConfigFile`
-  and `ocioWorkingSpace`, `startRender`, `writeMetadata`, `readBack`,
-  and `reload` (a Reload button on the `readBack` row). The compression, bit-depth and per-format knobs follow the
-  file name through `OiioWriteSupport::paramVisibility()`.
-- **Encoder.** `OiioWriteSupport::writeFile()` pulls rows from a `RowSource` one
-  band (about `kDefaultBandBytes`) at a time and is the only pixel memory held:
-  there is no full-frame copy, and sizes, strides and offsets are 64-bit, so the
-  frame size is bounded by the file format. The file is written under a
-  temporary name beside the target and renamed onto it on success; on failure
-  or cancellation the temporary is removed and the old file is untouched.
-- **Colour.** Rows go from the working space to the output space through the
-  project's OCIO config, in the band callback. The default output space is
-  from the config's file rules, then the project's file default for the pixel
-  depth. The file is tagged with `oiio:ColorSpace`, set to the space's Color
-  Interop ID when the config has one, else to the space name
-  (`IoColorSpace::fileTag()`).
-- **Metadata.** With `writeMetadata` on, the upstream metadata is written by
-  `OiioWriteSupport::applyMetadata()`, the inverse of
-  `OiioReadSupport::attributeMetadata()`. The routing rules are in the
-  Metadata section above.
-- **When the file is written.** Only a frame of the Write's own render to
-  disk encodes: the panel's Render button, Render Selected, `app.render` and
-  the `-w` command-line render all run through `startWritersRendering()` and
-  the Write's `RenderEngine`, whose frames are sequential and rooted at the
-  Write. `EffectInstance::isRenderingOwnSequence()` reads exactly that from
-  the frame's `ParallelRenderArgs`. A Viewer, a preview or any node downstream
-  that pulls the Write roots its frame elsewhere, so the Write returns its
-  output without touching the disk. The image cache lookup skips a writer only
-  on its own render to disk.
-- **Output.** The output, on a pull and on a render to disk alike, is what the
-  file of the frame holds, so the cache holds one image either way. One
-  planner, `planFile()` in `NativeWrite.cpp`, decides the file's planes and
-  channels from the channel set and the format's capabilities; the encoder
-  writes its plan, and the output follows it in three places: the produced
-  planes (`getComponentsNeededAndProduced()`), the colour layout
-  (`getPreferredMetadata()` makes an RGBA input RGB when the file gets no
-  alpha), and the pixels the render copies. So a partial R/G/B selection shows
-  the whole RGB triple the file gets, a layer the file gets only some channels
-  of is declared as a layer of those channels alone under its own name (what
-  the native Read makes of the file; the render fetches the input's whole layer
-  and copies the written channels), a layer or alpha the format cannot hold
-  is absent, and no other layer passes through
-  (`producesMetadataLayerImplicitly()` is false and
-  `isPassThroughForNonRenderedLayers()` blocks the rest). Without a writable
-  format, only the channel set restricts the output. A colour row selecting
-  alpha alone keeps an RGBA plane whose RGB is zero.
-- **Read back.** `readBack` is offered only while the file name is an EXR (the
-  one format whose header can hold the gate below). A frame written to an EXR
-  carries the header attribute `natron:outputHash`, the Write's output content
-  hash (`getOutputContentHash()`: the node hash's content without `readBack`,
-  taken when the frame's render action starts) as 16 hex digits, on every part
-  of the file. With `readBack` on, a frame shows its file only when
-  `readBackFrame()` finds the file, reads its header and finds the stored hash
-  equal to the current output content hash; any other frame (no file, no
-  attribute, another hash) passes the input through with no error. The output
-  content hash covers the Write's own knobs, the upstream graph and the project
-  render settings, so an edit anywhere upstream turns the file away and setting
-  the edit back (or undoing it) brings the file back. Leaving `readBack` out of
-  it lets a file written with read back off match once it is on. The node hash
-  does include `readBack`, because the decoded file and the input differ in
-  pixels and metadata and identical nodes share cache entries; turning it on
-  or off therefore switches cache entries rather than purging them. The Render
-  button is disabled and Reload enabled while it is on. A file shown is decoded by
-  `OiioReadSupport::decode()` inside the Write (`renderReadBack()`), read in the
-  output space it was written in, and the produced planes, format and RoD come
-  from its header (`readBackLayers()`), so the channel set and a disconnected
-  input no longer decide what downstream sees. The input is optional while
-  `readBack` is on (`isInputOptional()`), and `outputFollowsLayerKnob()` is false
-  for a frame shown from its file. A finished sequence calls `purgeCaches()`
-  whether `readBack` is on or not, since what was cached while it was on no
-  longer matches the files.
-- **Reload.** `readBackFrame()` looks at each file once, keeping its header
-  and stored hash, and does not stat it again while frames render. The Reload
-  button on the `readBack` row is enabled only while `readBack` is on. It runs
-  `purgeCaches()`, as does a finished sequence:
-  the kept files, the cached headers of the files of the frame range, the
-  output metadata, the action results and the cached images of this node and
-  of every node downstream are dropped, so a file changed on disk is read
-  again.
 
 ## Writing a node, start to finish
 
@@ -1188,74 +988,13 @@ NaNs matches, as do equal infinities.
 | Resampling | `resampling()` | 1e-5 absolute | Transform, Reformat, Crop softness |
 | IIR | `iir()` | 1e-4 absolute | Blur, EdgeDetect, Transform motion blur |
 
-Every node of the flat families, with the constant its test uses:
-
-| Node (ID) | Class | Test constant | Notes |
-|---|---|---|---|
-| Grade | transcendental | `kGradeTolerance` | gamma |
-| ColorCorrect | transcendental | `kColorCorrectTolerance` | tone curves evaluated lock-free |
-| Saturation | transcendental | `kSaturationTolerance` | the ACES AP1 option is exempt: native uses the real AP1 coefficients, where the OFX plugin falls through to CCIR 601 |
-| Clamp | exact | `kClampTolerance` | |
-| Invert | exact | `kInvertTolerance` | |
-| Add | arithmetic | `kAdd` (`NativeColorMath_Test`) | |
-| Multiply | arithmetic | `kMultiply` | |
-| Gamma | transcendental | `kGamma` | |
-| Merge and its nine presets | exact / transcendental | `toleranceFor()` per operator | Porter-Duff operators (ATop, ConjointOver, Copy, DisjointOver, In, Mask, Matte, Out, Over, Stencil, Under, XOR) exact; blend modes transcendental, and mask and mix too. `op-divide` measured 3.05e-5 on large values. The presets share the class and test that each carries its operation |
-| Dissolve | arithmetic | `kDissolveTolerance` | |
-| Constant | exact | `kConstantTolerance` | |
-| Solid | exact | `kConstantTolerance` | a Constant preset, tested in `NativeConstant_Test` |
-| CheckerBoard | exact | `kCheckerBoardTolerance` | |
-| Blur | IIR | `kBlurTolerance` | box filters share the class |
-| Transform | resampling / IIR | `kResamplingTolerance`, `kMotionBlurTolerance` | motion blur averages up to hundreds of samples |
-| TransformMasked | resampling | `kResamplingTolerance` | the `mask-mix05` case |
-| Crop | exact / resampling | `kExactTolerance`, `kSoftTolerance` | softness 0 copies pixels; a soft edge is a double smoothstep rounded to float |
-| Reformat | resampling | `kReformatTolerance` | |
-| Position | exact | `kPositionTolerance` | |
-| Erode, Dilate | exact | `kTolerance` | rectangular min and max are exact in float |
-| EdgeDetect | IIR | `kEdgeDetectTolerance` | see the exceptions below |
-| Keyer | transcendental | `kKeyerTolerance` | |
-| ChromaKeyer | transcendental / measured | `kChromaKeyerTolerance`, `kChromaKeyerUnpremultipliedTolerance` | the unpremultiplied output uses 1e-4 relative |
-| ColorLookup | transcendental | `kColorLookupTolerance` | |
+Each node's tolerance row (class, the constant its test uses, notes), measured
+exceptions and GPU parity notes live in that node's doc,
+`Engine/Nodes/<Family>/docs/<Node>.md`.
 
 Measured exceptions and what they are not:
 
-- **ChromaKeyer, unpremultiplied output: 1e-4 relative**
-  (`ParityTolerance::make(0., 1e-4)`). The OFX plugin is built with `-Ofast`, so
-  its key differs from the native one by a few ulps, and the unpremultiplied
-  output divides the suppressed colour by a key alpha that can be near zero,
-  magnifying them. 5e-5 fails; the other `show` outputs stay at the
-  transcendental class.
-- **EdgeDetect, RGBA processing.** In this host the OFX EdgeDetect always feeds
-  alpha into the rms, max and tensor modes: `Node.cpp` keeps the plugin's own
-  RGBA switches on and applies the channel set afterwards. The native node
-  combines only the processed channels, as upstream Natron's plugin does. Parity
-  pairs therefore set the channel set to process RGBA on both sides; with fewer
-  channels the two legitimately differ.
-- **`-Ofast`.** The OFX plugins are compiled with `-Ofast`, whose ulp
-  differences flip tied pixels under Sobel plus non-maxima suppression, because
-  erosion leaves flat plateaus that suppression compares exactly. The recorded
-  EdgeDetect case uses the Gaussian gradients, which are bit-exact. Do not read a
-  Sobel-plus-suppression mismatch as a native bug without checking for ties.
-- **Deliberate fixes** are divergences, excluded from parity by case: Saturation's
-  ACES AP1 coefficients above. Keyer and ChromaKeyer with an RGB source treat
-  alpha as 1 for Normal and add nothing for "Add to Inside Mask", where OFX
-  reads out of bounds, and neither mirrors OFX's output-premult preference.
-  Grade, ColorCorrect and Saturation default "Clamp Black" off, so a default
-  node is an identity and passes negatives and values above 1 through; the
-  recorded cases turn it on, as OFX's default had it. Grade raises a gamma
-  below 0.01 to 0.01, where OFX made a gamma at or below 0 a step at 1; no
-  recorded case sets such a gamma. Blur, EdgeDetect and Erode/Dilate filter the
-  whole window plus the halo whatever the mask, where CImg shrinks it past
-  mask-zero rows and columns, which moves the IIR filters' lines. Blur's
-  `mask-mix` case trims only rows and columns within the halo of the frame's
-  edge, so its buffer, and its reference, are unchanged; EdgeDetect's is
-  replaced by a check of the mask blend against the node's own unmasked
-  render. Blur has no derivative orders (EdgeDetect computes derivatives), no
-  border-condition choice (it is black outside the image), no alpha threshold, no
-  "Expand RoD" (the region of definition always grows by the filter's reach) and no
-  "Uniform" toggle (the size knob folds its dimensions) and no "(Un)premult by"
-  (a premult-blur-unpremult chain uses the Premult and Unpremult nodes); the OFX
-  plug-in's defaults are those behaviours, so the recorded cases are unchanged.
+- **Deliberate fixes** are divergences, excluded from parity by case; each is recorded in the node's doc.
 
 ### GPU parity
 
@@ -1264,39 +1003,7 @@ plugin, and states its tolerance in this section: a node row above gets a GPU
 bound beside its CPU class, or a measured exception below it, in the same change
 that lets the node answer `canRenderOnGpu()`. Vulkan division is 2.5 ulp and
 `pow` and the trigonometric functions are looser still, so a GPU bound is
-usually wider than the CPU class of the same node. Grade holds `gradefix::kUlpBound` (`Tests/Gpu/GradeFixture.h`), or a per-value bound that grows with |ln y| and 1 / gamma for the float rounding of the exponent and of A * input + B; its 0.01 gamma floor is applied on the host before the parameters are packed, so the device never sees a gamma at or below 0, and is what keeps 1 / gamma, and with it that bound, small. A subnormal input may come back as anything between the results for 0 and for the smallest normal float, as a device's `log2` may flush it or misread its exponent, which at gamma 0.01 is an order-one difference. Blur's FIR Gaussian holds
-2e-6 absolute. Blur's quasi-Gaussian, Gaussian (IIR), box, triangle and quadratic filters hold `iir()`: one thread runs
-each line through the CPU's recursion with its state in two floats where the CPU uses double (plain float drifts past 1e-3
-for the IIR Gaussian at large sizes), and filters the same rect as render(), the window grown by the
-halo and clipped to the region of definition. Blur's knobs are size, filter, "Crop To Format" and the standard channel, mask and mix
-knobs, so every setting of it is eligible for the GPU unless the FIR Gaussian's radius exceeds the kernel's tile
-(`Tests/Native/NativeBlurGpu_Test.cpp`).
-Clamp holds its CPU class, exact, except where a divisor, mask or mix below 1
-enters, which hold `arithmetic()` (`Tests/Native/NativeClampGpu_Test.cpp`).
-Invert holds its CPU class, exact, except where a divisor, mask or mix below 1
-enters, which hold `arithmetic()` (`Tests/Native/NativeInvertGpu_Test.cpp`).
-ColorLookup holds `transcendental()` in the standard and film-like modes, including values outside
-the table's fixed domain [0, 1], which the shader evaluates from the curve's keys with the key time and the cubic in two
-floats (a key time between two floats, times a steep slope, would otherwise move the value far
-beyond the bound), and blends the table in two floats to round as the CPU's double does. Weighted standard holds 5e-4 relative and luminance 3e-5: they
-divide a curve value by a channel's distance to 0 or 1, or by the luminance, which grows a float
-rounding as the divisor nears 0 (measured 2.1e-4 on RADV with "(Un)premult by", 1.3e-5 without, and
-1.05e-5 for luminance at the 1e-8 floor). Weighted standard's triangle shifts a channel above a pixel channel at or over 1 by the move of that channel, where the OpenFX plug-in divided by zero or by a negative distance, and the shader does the same. Weighted standard also skips the colour of a pixel with a
-denormal colour channel, whose quotient depends on the device's denormal arithmetic. Pixels of two
-components stay on the CPU, as does a curve of more than 128 keys, and a curve `CurveSnapshot::packGpu`
-cannot bound within 1e-6 of the CPU: so steep before its first key that the CPU's own double
-rounding exceeds that, or with values and slopes so large that two floats do not hold them
-(`Tests/Native/NativeColorLookupGpu_Test.cpp`).
-Saturation holds its CPU class, transcendental, for every luminance option; the kernel takes the
-weights from the CPU's `ColorMath::luminance` (`Tests/Native/NativeSaturationGpu_Test.cpp`).
-ColorCorrect holds its CPU class, transcendental, in every group and luminance option, with the tone curves read from the CPU's table inside [0, 1] and evaluated from their keys outside it, as ColorLookup does, and the tone weights clamped to [0, 1] on both sides whatever the output clamps are (shared through `CurveSnapshot::packGpu` and `Kernels/curvesnapshot.slang`, so in two floats past a steep key between two floats too); a curve of more than 128 keys, or one `packGpu` cannot bound within 1e-6 of the CPU, stays on the CPU (`Tests/Native/NativeColorCorrectGpu_Test.cpp`).
-Constant and Solid hold their CPU class, exact, for every target layer and channel selection (`Tests/Native/NativeConstantGpu_Test.cpp`).
-CheckerBoard holds its CPU class, exact, at mipmap 0 and 1: the host classes every column and row of the region of definition with the CPU's double comparisons and the device looks the class up (`Tests/Native/NativeCheckerBoardGpu_Test.cpp`).
-Add and Multiply hold `arithmetic()` and Gamma holds `transcendental()`, where a subnormal input may come back as 0 on a device that flushes denormals (`Tests/Native/NativeColorMathGpu_Test.cpp`).
-Erode and Dilate hold exact, bit for bit on NaNs, signed zeros and denormals (`Tests/Native/NativeErodeDilateGpu_Test.cpp`).
-Transform and TransformMasked hold their CPU class, `resampling()`, for every filter with clamp and black outside on and off, with mask and mix, at mipmap 0 and 1; sample positions travel in two floats so the filters pick the CPU's taps. Motion blur at quality 0.5, 1 and 4 over every shutter offset, and directional blur, hold `iir()`: each pixel draws the CPU's van der Corput sequence over the same host-built matrices and stops on the same variance test, its sums kept in two floats. The device filters each sample in float where the CPU uses double, a few ulps apart, so a pixel whose variance quotient lies that close to an integer takes one sample more or fewer and moves by about `motionBlurMaxError()` / sqrt(samples); up to one pixel in 250 of a window (at least 2) may therefore miss `iir()`, by no more than `motionBlurMaxError()` (quality / 1000), the standard error the sampler itself targets. Matching the CPU's sample counts exactly would need double-precision filtering on the device. A transform concatenated from upstream stays on the CPU (`Tests/Native/NativeTransformGpu_Test.cpp`).
-ChromaKeyer holds its CPU class, transcendental, in the intermediate, premultiplied and composite modes, with every source alpha option, Bg and masks or not, and an RGB source; the host derives the key's per-frame constants as the CPU does and the device keys in float. The unpremultiplied mode holds 1e-3 relative: it divides by the key alpha, so a one-ulp difference in the float key the CPU rounds from double becomes a relative error of about 6e-8 over that alpha (a float model of the kernel measured 1.02e-4 on the parity source, where the alpha reaches 5.8e-4) (`Tests/Native/NativeChromaKeyerGpu_Test.cpp`).
-Keyer holds its CPU class, transcendental, in every key, output and source alpha mode, with each of InM, OutM and Bg or none, partly covering the window, an RGB source and a channel subset; the host decides every threshold comparison and derives the key colour terms in double, and the device takes the distance to the key axis from the orthogonal part of the colour rather than the CPU's squared-norm difference, which float cannot hold near the axis (`Tests/Native/NativeKeyerGpu_Test.cpp`).
+usually wider than the CPU class of the same node.
 
 `Tests/Native/NativeGpuParity.{h,cpp}` is the shared harness. A test names its
 bound with `ParityTolerance` and compares through `compareImages()`.

@@ -24,6 +24,9 @@
 # appimagetool -n/--no-appstream), it's put ahead of PATH for the
 # make-appimage.sh call only, so that call finds it instead of downloading
 # the real tool -- a no-op everywhere that wrapper doesn't exist, e.g. CI.
+# When the wrapper is missing but a real appimagetool is available (on PATH or
+# in the main checkout's build/appimagetool-wrapper/), make-appimagetool-wrapper.sh
+# regenerates it first.
 
 set -euo pipefail
 
@@ -87,6 +90,24 @@ echo "== package.sh: building tarball =="
 
 echo "== package.sh: building AppImage =="
 APPIMAGETOOL_WRAPPER="${REPO_ROOT}/build/appimagetool-wrapper"
+if [[ ! -x "${APPIMAGETOOL_WRAPPER}/appimagetool" ]]; then
+    # Rebuild a missing wrapper from a real tool already on this machine; with
+    # none available, fall through to make-appimage.sh's own download.
+    wrapper_src=""
+    if [[ -f "${APPIMAGETOOL_WRAPPER}/appimagetool.real" ]]; then
+        wrapper_src="${APPIMAGETOOL_WRAPPER}/appimagetool.real"
+    elif command -v appimagetool >/dev/null 2>&1; then
+        wrapper_src="$(command -v appimagetool)"
+    else
+        common_dir="$(git -C "${REPO_ROOT}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+        if [[ -n "${common_dir}" && -f "$(dirname "${common_dir}")/build/appimagetool-wrapper/appimagetool.real" ]]; then
+            wrapper_src="$(dirname "${common_dir}")/build/appimagetool-wrapper/appimagetool.real"
+        fi
+    fi
+    if [[ -n "${wrapper_src}" ]]; then
+        "${SCRIPT_DIR}/make-appimagetool-wrapper.sh" "${APPIMAGETOOL_WRAPPER}" "${wrapper_src}"
+    fi
+fi
 if [[ -x "${APPIMAGETOOL_WRAPPER}/appimagetool" ]]; then
     PATH="${APPIMAGETOOL_WRAPPER}:${PATH}" "${SCRIPT_DIR}/../../release/make-appimage.sh" "${STAGE_DIR}" "${ARTIFACTS_DIR}"
 else

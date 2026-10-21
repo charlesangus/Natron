@@ -32,6 +32,8 @@
 #include "Engine/AppManager.h"
 #include "Engine/Plugin.h"
 
+#include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
+
 NATRON_NAMESPACE_USING
 
 static void
@@ -46,9 +48,9 @@ expectSingleVersion(const char* pluginID,
     EXPECT_EQ(expectedMajor, (*it->second.begin())->getMajorVersion()) << pluginID;
 }
 
-TEST(PluginIdentity, HueCorrectVersionsHaveDistinctIDs)
+TEST(PluginIdentity, VersionsOfOnePluginHaveDistinctIDs)
 {
-    expectSingleVersion("net.sf.openfx.HueCorrect", 2);
+    expectSingleVersion(kNatronTestPointMatrixPluginID, kNatronTestPointMatrixMajor);
     expectSingleVersion("net.sf.openfx.HueCorrect1", 1);
 }
 

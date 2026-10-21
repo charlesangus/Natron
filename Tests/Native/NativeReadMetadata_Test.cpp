@@ -38,6 +38,7 @@
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
+#include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
@@ -64,8 +65,8 @@
 NATRON_NAMESPACE_USING
 
 namespace {
-const char kOfxColorMatrixID[] = "net.sf.openfx.ColorMatrixPlugin";
-const int kOfxColorMatrixMajor = 2;
+const char kOfxPointMatrixID[] = kNatronTestPointMatrixPluginID;
+const int kOfxPointMatrixMajor = kNatronTestPointMatrixMajor;
 const int kSize = 4;
 
 std::string
@@ -425,9 +426,9 @@ TEST_F(NativeReadMetadataTest, KeysReachAnOfxInputClipPastADot)
     writeSequence(dir, "ofx", frames);
     NodePtr read = createRead(framePath(dir, "ofx", 1));
     NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
-    NodePtr downstream = createNode(QString::fromUtf8(kOfxColorMatrixID), kOfxColorMatrixMajor);
+    NodePtr downstream = createNode(QString::fromUtf8(kOfxPointMatrixID), kOfxPointMatrixMajor);
     ASSERT_TRUE(read && dot);
-    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxColorMatrixID;
+    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxPointMatrixID;
 
     connectNodes(read, dot, 0, true);
     connectNodes(dot, downstream, 0, true);
@@ -444,9 +445,9 @@ TEST_F(NativeReadMetadataTest, KeysReachAnOfxInputClipDirectly)
     std::vector<int> frames(1, 1);
     writeSequence(dir, "direct", frames);
     NodePtr read = createRead(framePath(dir, "direct", 1));
-    NodePtr downstream = createNode(QString::fromUtf8(kOfxColorMatrixID), kOfxColorMatrixMajor);
+    NodePtr downstream = createNode(QString::fromUtf8(kOfxPointMatrixID), kOfxPointMatrixMajor);
     ASSERT_TRUE(bool(read));
-    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxColorMatrixID;
+    ASSERT_TRUE(bool(downstream)) << "node creation failed for " << kOfxPointMatrixID;
 
     connectNodes(read, downstream, 0, true);
 

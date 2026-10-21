@@ -679,7 +679,7 @@ private:
     BooleanParam* _maskInvert;
 };
 
-mDeclarePluginFactory(PointMatrixPluginFactory, {}, {});
+mDeclarePluginFactoryVersioned(PointMatrixPluginFactory, {}, {});
 mDeclarePluginFactory(RGBPointPluginFactory, {}, {});
 
 void
@@ -771,22 +771,25 @@ describePointMatrixInContext(ImageEffectDescriptor& desc,
     }
 }
 
+template <unsigned int majorVersion>
 void
-PointMatrixPluginFactory::describe(ImageEffectDescriptor& desc)
+PointMatrixPluginFactory<majorVersion>::describe(ImageEffectDescriptor& desc)
 {
     describePointMatrix(desc, "PointMatrix", "Test fixture: multiplies RGBA by a 4x4 matrix, one output* row per output channel.");
 }
 
+template <unsigned int majorVersion>
 void
-PointMatrixPluginFactory::describeInContext(ImageEffectDescriptor& desc,
-                                            ContextEnum /*context*/)
+PointMatrixPluginFactory<majorVersion>::describeInContext(ImageEffectDescriptor& desc,
+                                                          ContextEnum /*context*/)
 {
     describePointMatrixInContext(desc, true);
 }
 
+template <unsigned int majorVersion>
 ImageEffect*
-PointMatrixPluginFactory::createInstance(OfxImageEffectHandle handle,
-                                         ContextEnum /*context*/)
+PointMatrixPluginFactory<majorVersion>::createInstance(OfxImageEffectHandle handle,
+                                                       ContextEnum /*context*/)
 {
     return new PointMatrixPlugin(handle);
 }
@@ -819,8 +822,8 @@ getRoutingPluginIDs(OFX::PluginFactoryArray& ids)
 {
     static TwoInputCopyPluginFactory twoInputCopy(kNatronTestTwoInputCopyPluginID, kNatronTestTwoInputCopyMajor, 0);
     static GeneratorPluginFactory generator(kNatronTestGeneratorPluginID, kNatronTestGeneratorMajor, 0);
-    static PointMatrixPluginFactory pointMatrix(kNatronTestPointMatrixPluginID, kNatronTestPointMatrixMajor, 0);
-    static PointMatrixPluginFactory pointMatrix1(kNatronTestPointMatrix1PluginID, kNatronTestPointMatrix1Major, 0);
+    static PointMatrixPluginFactory<kNatronTestPointMatrixMajor> pointMatrix(kNatronTestPointMatrixPluginID, 0);
+    static PointMatrixPluginFactory<kNatronTestPointMatrix1Major> pointMatrix1(kNatronTestPointMatrix1PluginID, 0);
     static RGBGeneratorPluginFactory rgbGenerator(kNatronTestRGBGeneratorPluginID, kNatronTestRGBGeneratorMajor, 0);
     static RGBPointPluginFactory rgbPoint(kNatronTestRGBPointPluginID, kNatronTestRGBPointMajor, 0);
 

@@ -93,6 +93,7 @@
 #include "Engine/RectDSerialization.h"
 #include "Engine/RectISerialization.h"
 #include "Engine/RotoLayer.h"
+#include "Engine/GPUContextPool.h"
 #include "Engine/Settings.h"
 #include "Engine/StandardPaths.h"
 #include "Engine/ViewIdx.h"
@@ -1397,9 +1398,9 @@ Project::initializeKnobs()
         _imp->gpuSupport->populateChoices(entries);
     }
     _imp->gpuSupport->setAnimationEnabled(false);
-    _imp->gpuSupport->setHintToolTip( tr("Select when to activate GPU rendering for plug-ins. Note that if the OpenGL Rendering parameter in the Preferences/GPU Rendering is set to disabled then GPU rendering will not be activated regardless of that value.") );
+    _imp->gpuSupport->setHintToolTip( tr("Select when to activate GPU rendering for plug-ins. Note that if GPU compute is disabled in the Preferences or no OpenGL renderer is available then GPU rendering will not be activated regardless of that value.") );
     _imp->gpuSupport->setEvaluateOnChange(false);
-    _imp->gpuSupport->setAllDimensionsEnabled(appPTR->getCurrentSettings()->isOpenGLRenderingEnabled());
+    _imp->gpuSupport->setAllDimensionsEnabled(appPTR->getGPUContextPool()->isRenderingEnabled());
     page->addKnob(_imp->gpuSupport);
 
     KnobPagePtr viewsPage = AppManager::createKnob<KnobPage>( this, tr("Views") );
@@ -2039,7 +2040,7 @@ Project::getProjectViewsCount() const
 bool
 Project::isGPURenderingEnabledInProject() const
 {
-    if (!appPTR->getCurrentSettings()->isOpenGLRenderingEnabled()) {
+    if (!appPTR->getGPUContextPool()->isRenderingEnabled()) {
         return false;
     }
     int index = _imp->gpuSupport->getValue();
@@ -2446,7 +2447,7 @@ Project::onKnobValueChanged(KnobI* knob,
 void
 Project::refreshOpenGLRenderingFlagOnNodes()
 {
-    _imp->gpuSupport->setAllDimensionsEnabled(appPTR->getCurrentSettings()->isOpenGLRenderingEnabled());
+    _imp->gpuSupport->setAllDimensionsEnabled(appPTR->getGPUContextPool()->isRenderingEnabled());
 
     const bool activated = isGPURenderingEnabledInProject();
     NodesList allNodes;

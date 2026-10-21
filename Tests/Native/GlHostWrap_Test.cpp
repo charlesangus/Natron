@@ -72,7 +72,7 @@ namespace {
 
 const char* const kNoOpenGLMessage = "OpenGL did not load, so this test cannot exercise GL rendering. Run it under Xvfb with GLX and Mesa llvmpipe, as "
                                      "Tests/gui/run-gl-tests.sh does.";
-const char* const kGLRenderingDisabledMessage = "OpenGL loaded, but OpenGL rendering stayed disabled in the settings after the test enabled it.";
+const char* const kGLRenderingDisabledMessage = "OpenGL loaded, but OpenGL rendering stayed disabled in the GPU context pool after the test enabled it.";
 
 const double kTime = 1.;
 
@@ -99,23 +99,17 @@ skipWithoutOpenGL(const char* testName,
     return true;
 }
 
-// AppManager lists only hardware-accelerated renderers, and with none listed Settings hides the OpenGL rendering
-// preference, which disables GL rendering. Under Mesa llvmpipe that leaves nothing for these tests to exercise, so the
-// guard unhides the preference.
+// Forces GL rendering on in the GPU context pool and in the project, and raises the thread pool to at least 2 threads,
+// restoring all of it however the test exits. Under Mesa llvmpipe the pool reports GL rendering disabled, which
+// leaves nothing for these tests to exercise.
 class OpenGLRenderingGuard {
 public:
     explicit OpenGLRenderingGuard(const ProjectPtr& project)
-        : _settingsKnob(appPTR->getCurrentSettings()->getKnobByNameAndType<KnobChoice>("enableOpenGLRendering"))
-        , _projectKnob(project->getKnobByNameAndType<KnobChoice>("gpuRendering"))
-        , _savedSettings(_settingsKnob ? _settingsKnob->getValue() : 0)
-        , _savedSettingsSecret(_settingsKnob ? _settingsKnob->getIsSecret() : false)
+        : _projectKnob(project->getKnobByNameAndType<KnobChoice>("gpuRendering"))
         , _savedProject(_projectKnob ? _projectKnob->getValue() : 0)
         , _savedPoolSize(QThreadPool::globalInstance()->maxThreadCount())
     {
-        if (_settingsKnob) {
-            _settingsKnob->setSecret(false);
-            _settingsKnob->setValue((int)Settings::eEnableOpenGLEnabled);
-        }
+        appPTR->getGPUContextPool()->setRenderingEnabledForTests(true);
         if (_projectKnob) {
             _projectKnob->setValue(0);
         }
@@ -130,25 +124,19 @@ public:
         if (_projectKnob) {
             _projectKnob->setValue(_savedProject);
         }
-        if (_settingsKnob) {
-            _settingsKnob->setValue(_savedSettings);
-            _settingsKnob->setSecret(_savedSettingsSecret);
-        }
+        appPTR->getGPUContextPool()->setRenderingEnabledForTests(std::nullopt);
     }
 
     bool isValid() const
     {
-        return _settingsKnob && _projectKnob;
+        return bool(_projectKnob);
     }
 
     OpenGLRenderingGuard(const OpenGLRenderingGuard&) = delete;
     OpenGLRenderingGuard& operator=(const OpenGLRenderingGuard&) = delete;
 
 private:
-    KnobChoicePtr _settingsKnob;
     KnobChoicePtr _projectKnob;
-    int _savedSettings;
-    bool _savedSettingsSecret;
     int _savedProject;
     int _savedPoolSize;
 };
@@ -324,7 +312,7 @@ protected:
         }
         OpenGLRenderingGuard guard(getApp()->getProject());
         ASSERT_TRUE(guard.isValid());
-        if (skipWithoutOpenGL(testName, appPTR->getCurrentSettings()->isOpenGLRenderingEnabled(), kGLRenderingDisabledMessage)) {
+        if (skipWithoutOpenGL(testName, appPTR->getGPUContextPool()->isRenderingEnabled(), kGLRenderingDisabledMessage)) {
             return;
         }
 

@@ -27,6 +27,7 @@
 
 #include <gtest/gtest.h>
 
+#include "Engine/AppManager.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/Settings.h"
@@ -60,9 +61,7 @@ TEST(OSGLContext, DISABLED_Basic)
         return;
     }
 
-    SettingsPtr settings =  appPTR->getCurrentSettings();
-    ASSERT_NE(settings.get(), nullptr);
-    GLRendererID rendererID = settings->getActiveOpenGLRendererID();
+    GLRendererID rendererID = appPTR->getGPUContextPool()->getRendererID();
 
     // Verify that we start without a context being set.
     EXPECT_FALSE(OSGLContext::threadHasACurrentContext());

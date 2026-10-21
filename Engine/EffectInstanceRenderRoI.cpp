@@ -774,8 +774,8 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                 roi = downscaledImageBoundsNc;
             }
         }
-    } else if (appPTR->isOpenGLLoaded() && !appPTR->getCurrentSettings()->isOpenGLRenderingEnabled() && openGLSupport == ePluginOpenGLRenderSupportNeeded) {
-        QString message = tr("OpenGL render is required for a plugin but it's currently disabled, please consider passing `--opengl enabled` to %1").arg(QString::fromUtf8(NATRON_APPLICATION_NAME));
+    } else if (appPTR->isOpenGLLoaded() && !appPTR->getGPUContextPool()->isRenderingEnabled() && openGLSupport == ePluginOpenGLRenderSupportNeeded) {
+        QString message = tr("OpenGL render is required for a plugin but it's currently disabled, please consider setting the GPU compute preference to Auto or setting NATRON_GPU to auto or force in the environment of %1").arg(QString::fromUtf8(NATRON_APPLICATION_NAME));
         setPersistentMessage(eMessageTypeError, message.toStdString());
         return eRenderRoIRetCodeFailed;
     } else if (wantsOpenGLRender && (openGLSupport == ePluginOpenGLRenderSupportNeeded)) {

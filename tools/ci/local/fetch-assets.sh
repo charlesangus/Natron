@@ -164,7 +164,7 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # it depends on OIIO/OCIO/SeExpr, so it configures and links clean against
 # this container with no other source changes needed.
 OPENFX_MISC_REPO="https://github.com/charlesangus/openfx-misc.git"
-OPENFX_MISC_REF="3b5b995ea27de18fd22c7bc97e95176610e16fbf"
+OPENFX_MISC_REF="cd08fb2ccbd9b702192a86752b412a020c4b7aa2"
 
 # LCMS2_REF: mm2/Little-CMS at the lcms2.16 tag. Built from source even
 # though the image already ships /usr/local/lib/liblcms2.so.2.0.19 with a
@@ -216,7 +216,7 @@ IMAGEMAGICK_REF="b2dd67b1681e23d0e0b9769d81bed23f05129e2a"
 # thread limit fixed while they run, so renders with different OpenMP
 # settings cannot change it under one another's per-thread arrays.
 OPENFX_ARENA_REPO="https://github.com/charlesangus/openfx-arena.git"
-OPENFX_ARENA_REF="59b254af4d6eb4faedb3e87ca78ae64821d69499"
+OPENFX_ARENA_REF="88e6bc92ba81afa832ce98acc25521ebded02a74"
 
 # OPENFX_METADATA_REF: charlesangus/openfx -- our ASWF-lineage OpenFX fork,
 # whose Support/Plugins/Metadata* examples exercise the clip and image

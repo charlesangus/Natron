@@ -174,7 +174,7 @@ future core work has solid ground to build on.
 | M94 | Delete Unused Maintainer Skill | todo | - |  | E2 | [M94-delete-unused-maintainer-skill.md](PLAN/MILESTONES/M94-delete-unused-maintainer-skill.md) |
 | M115 | Build Speed And Artifact Size | done | - | bosley-native-nodes | E2 | [M115-build-speed-and-artifact-size.md](PLAN/MILESTONES/M115-build-speed-and-artifact-size.md) |
 | M113 | Native Warp Nodes | todo | M120, M56 |  | E3 | [M113-native-node-rewrites-continued.md](PLAN/MILESTONES/M113-native-node-rewrites-continued.md) |
-| M120 | Native Node Port Kit | doing | M85, M137 | bosley-native-nodes | E3 | [M120-native-node-port-kit.md](PLAN/MILESTONES/M120-native-node-port-kit.md) |
+| M120 | Native Node Port Kit | done | M85, M137 | bosley-native-nodes | E3 | [M120-native-node-port-kit.md](PLAN/MILESTONES/M120-native-node-port-kit.md) |
 | M121 | Native Routing And Mix | todo | M120, M101, M137 |  | E3 | [M121-native-routing-and-mix.md](PLAN/MILESTONES/M121-native-routing-and-mix.md) |
 | M122 | Native Colour Utilities | todo | M120, M137 |  | E3 | [M122-native-colour-utilities.md](PLAN/MILESTONES/M122-native-colour-utilities.md) |
 | M123 | Native Sharpen And Glow | todo | M120 |  | E3 | [M123-native-sharpen-and-glow.md](PLAN/MILESTONES/M123-native-sharpen-and-glow.md) |

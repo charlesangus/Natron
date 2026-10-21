@@ -30,6 +30,8 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <optional>
+#include <string>
 
 #include "Engine/EngineFwd.h"
 
@@ -46,6 +48,31 @@ public:
     GPUContextPool();
 
     ~GPUContextPool();
+
+    // The number of contexts handed out when no test override is set.
+    static constexpr int kMaxRenderGLContexts = 2;
+
+    /**
+     * @brief Records whether the GL suite may render, on which GL renderer, and the status line describing why.
+     * Called once at startup, before any render. The reads below are thread-safe.
+     **/
+    void setRenderingState(bool enabled, const GLRendererID& rendererID, const std::string& status);
+
+    bool isRenderingEnabled() const;
+
+    GLRendererID getRendererID() const;
+
+    std::string getRendererStatus() const;
+
+    /**
+     * @brief Overrides isRenderingEnabled() until reset with std::nullopt. For tests only.
+     **/
+    void setRenderingEnabledForTests(std::optional<bool> enabled);
+
+    /**
+     * @brief Overrides kMaxRenderGLContexts until reset with std::nullopt. Values below 1 count as 1. For tests only.
+     **/
+    void setMaxContextsForTests(std::optional<int> maxContexts);
 
 
     //////////////////////////////// OpenGL related /////////////////////////////////
@@ -76,7 +103,7 @@ public:
 
     /**
      * @brief Returns the thread-exclusive OpenGL context of the calling thread, creating it on first use, or null when
-     * OpenGL rendering is unavailable or disabled, or when Settings::getMaxOpenGLContexts() threads already have one. These contexts are not part of the pool handed out by
+     * OpenGL rendering is unavailable or disabled, or when the maximum number of contexts already have one. These contexts are not part of the pool handed out by
      * attachGLContextToRender() and share nothing with any other context, so a texture made on one is only valid on it.
      * The caller must leave the context unbound when it is done rendering, so that the context is never current on a
      * thread other than the one it belongs to.

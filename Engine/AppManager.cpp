@@ -120,6 +120,8 @@
 #include "Engine/Log.h"
 #include "Engine/MemoryInfo.h" // getSystemTotalRAM, printAsRAM
 #include "Engine/Node.h"
+#include "Engine/GpuDeviceList.h"
+#include "Engine/GPUContextPool.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxHost.h"
@@ -758,9 +760,33 @@ AppManager::loadInternal(const CLArgs& cl)
     _imp->_settings->restoreSettings( cl.isLoadedUsingDefaultSettings() );
     onRenderSchedulerModeSettingChanged(_imp->_settings->getRenderSchedulerMode());
     {
+        const std::vector<GpuDeviceSummary> gpuDevices = enumerateGpuDevices();
+        const GpuResolvedMode gpuMode = GpuContext::resolveMode(_imp->_settings->getGpuComputeMode(), std::getenv("NATRON_GPU"));
+        const std::string gpuDeviceId = _imp->_settings->getGpuDevice();
+        const std::string gpuSelector = gpuSelectorForDeviceId(gpuDevices, gpuDeviceId);
+
+        const GpuDeviceSummary* chosenDevice = nullptr;
+        if ( !gpuSelector.empty() ) {
+            for (const GpuDeviceSummary& d : gpuDevices) {
+                if (std::to_string(d.index) == gpuSelector) {
+                    chosenDevice = &d;
+                    break;
+                }
+            }
+        }
+
+        // Under Auto the GL suite never uses a software renderer; only NATRON_GPU=force allows one.
+        const GLRendererPick glPick = OSGLContext::pickRenderer(_imp->openGLRenderers, chosenDevice, gpuMode == GpuResolvedMode::Force);
+        const bool glEnabled = gpuMode != GpuResolvedMode::Off && glPick.enabled && isOpenGLLoaded();
+        _imp->renderingContextPool->setRenderingState(glEnabled, glPick.rendererID, glPick.reason);
+        qInfo().noquote() << QString::fromUtf8("GPU: Preferences device \"%1\" (%2); OpenGL renderer: %3")
+            .arg( QString::fromStdString( gpuDeviceId.empty() ? std::string("auto") : gpuDeviceId ) )
+            .arg( chosenDevice ? QString::fromStdString(chosenDevice->name) : QString::fromUtf8("none selected") )
+            .arg( QString::fromStdString( glEnabled ? glPick.reason : "GL suite disabled (" + glPick.reason + ")" ) );
+
         GpuContextOptions gpuOptions;
-        gpuOptions.mode = GpuContext::resolveMode(_imp->_settings->getGpuComputeMode(), std::getenv("NATRON_GPU"));
-        gpuOptions.device = _imp->_settings->getGpuDevice();
+        gpuOptions.mode = gpuMode;
+        gpuOptions.device = gpuSelector;
         gpuOptions.memoryBudgetMB = _imp->_settings->getGpuMemoryBudgetMB();
         _imp->gpuContext.reset(new GpuContext(gpuOptions));
     }

@@ -88,7 +88,7 @@ Scouted facts (main `31636d20d`, 2026-10-20; re-check at promotion):
 
 ## Phase 155.4: Measure
 
-- [ ] M155.P4.T1 — Before/after ctest timings
+- [x] M155.P4.T1 — Before/after ctest timings
   - files: PLAN/MILESTONES/M155-per-suite-test-processes.md
   - approach: Read the ctest step wall time of both scheduler legs from a remote `fast --tests` run and a PR CI run on main before this milestone and on the milestone branch after P3 (`gh api .../jobs/<id>` step timings), plus the ctest entry count. Record the table in Decisions.
   - verify: The table exists with both modes and both workflows.
@@ -105,3 +105,12 @@ Scouted facts (main `31636d20d`, 2026-10-20; re-check at promotion):
 - 2026-10-21 — **Shuffled sweep (P3.T1).** Remote debug run 39645578802 (e3f31748e): live asserts, `-j 4`, unshuffled plus `GTEST_SHUFFLE` seeds 1, 2 and 3, in both scheduler modes. All 324 suites passed in all eight runs except `FrameGraphBuild`. It timed out at 300 s in each run and passed when rerun alone (153–221 s), so this is suite length under load, not a leak. Its timeout was raised to 900 s in `SuiteProperties.cmake`. Leaks found and fixed earlier, on the remote fast runs:
   - **Seven suites:** DeepNodes, DeepRenderPipeline, DeepReshape, DeepFlattenLayers, GpuResidency, RotoLayer and MetadataExpressionDependency. Fixed by `BaseTest::SetUp` resetting the project, clearing the caches and resetting `GpuCostModel` (f148fc2f2). That commit also fixed two Engine bugs, in `AppInstance::addInvalidExpressionKnob` and `KnobHelper::setExpressionInvalid`.
   - **GLScheduler:** a race in the test, where the four branches shared one cache entry (52b63c835).
+- 2026-10-21 — **Before/after ctest step timings (P4.T1).** 324 ctest entries after, 2753 before. 2751 gtest cases plus 2 standalone tests pass in each mode, matching main's per-case count.
+
+  | ctest step | main before | M155 after | speed-up |
+  |---|---|---|---|
+  | PR CI debug, legacy | 11.1 min (39611666939) | 8.2 min (39656817357) | 1.4× |
+  | PR CI debug, taskgraph | 16.9 min | 8.6 min | 2.0× |
+  | Remote fast, legacy | 7.0 min (39620482877) | 1.9 min (39645408967) | 3.7× |
+  | Remote fast, taskgraph | 10.4 min | 3.2 min | 3.3× |
+- 2026-10-21 — **Gate restated: no 5× against today's main (user).** The 5× target was set against the serial ~33-minute legs. Since then main went to `-j 4` and a single build (PR #73), so the baseline moved. The user chose to merge with the measured speed-ups recorded. On debug, the long single suites now set the minimum time (FrameGraphBuild, about 3 minutes alone).

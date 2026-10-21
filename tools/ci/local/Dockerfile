@@ -9,9 +9,9 @@
 # Everything ci.yml's package-install step needs (bar one documented
 # exception below) is already present in aswf/ci-vfxall:2027-clang21.1, so
 # the only layers this file adds are the local-only Mesa relink and the
-# Slang toolchain at the bottom, which CI never sees (CI runs the base image
-# directly, and downloads and caches Slang itself through
-# cmake/FetchSlang.cmake). It is kept as a file
+# Slang and glslang toolchains at the bottom, which CI never sees (CI runs the
+# base image directly, and downloads and caches them itself through
+# cmake/FetchSlang.cmake and cmake/FetchGlslang.cmake). It is kept as a file
 # (rather than building the image straight from `docker pull`) so that:
 #   (a) the drift-check comment block below has somewhere to live, and
 #   (b) local-only layers have an obvious, already-wired seam to land in.
@@ -104,7 +104,7 @@ RUN set -eu; \
     ! ldd /usr/lib64/libvulkan_radeon.so | grep -q /usr/local/lib/libLLVM
 
 # --- Slang: bake the shader compiler so configure never downloads it -------
-# Same release cmake/FetchSlang.cmake pins; tools/ci/local/check-slang-pin.sh
+# Same release cmake/FetchSlang.cmake pins; tools/ci/local/check-image-pins.sh
 # fails CI when the two drift. SLANG_ROOT makes FetchSlang.cmake use this copy
 # instead of fetching into .natron-deps. Only slangc and the prelude header
 # are consumed, so the build fails if a release layout change drops either.
@@ -121,3 +121,23 @@ RUN set -eu; \
     test -x /opt/slang/bin/slangc; \
     test -f /opt/slang/include/slang-cpp-prelude.h
 ENV SLANG_ROOT=/opt/slang
+
+# --- glslang: bake the source tree so configure never downloads it ---------
+# Same release cmake/FetchGlslang.cmake pins; check-image-pins.sh fails CI when
+# the two drift. FetchGlslang.cmake compiles glslang as part of the Natron
+# build, so this is the source tree, not a prebuilt toolchain. GLSLANG_ROOT
+# makes it use this copy instead of fetching into .natron-deps. The build fails
+# if the archive layout drops the two files FetchGlslang.cmake validates.
+ARG NATRON_GLSLANG_VERSION=16.6.0
+ARG NATRON_GLSLANG_SHA256=9c09b901149c729df745057dafa815278aaa101b84d2b6e14f16a42de52f97f2
+ARG NATRON_GLSLANG_URL=https://github.com/KhronosGroup/glslang/archive/refs/tags/${NATRON_GLSLANG_VERSION}.tar.gz
+RUN set -eu; \
+    tarball=/tmp/glslang.tar.gz; \
+    wget -q -O "$tarball" "$NATRON_GLSLANG_URL"; \
+    echo "${NATRON_GLSLANG_SHA256}  ${tarball}" | sha256sum -c -; \
+    mkdir -p /opt/glslang; \
+    tar -xzf "$tarball" -C /opt/glslang --strip-components=1; \
+    rm -f "$tarball"; \
+    test -f /opt/glslang/CMakeLists.txt; \
+    test -f /opt/glslang/glslang/Public/ShaderLang.h
+ENV GLSLANG_ROOT=/opt/glslang

@@ -111,7 +111,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 120.1: Per-node manifests
 
-- [ ] M120.P1.T1 — Per-node native-node registration fragments
+- [x] M120.P1.T1 — Per-node native-node registration fragments
   - files: `Engine/Nodes/<Family>/<Node>.reg.inc` (new, one per existing native node), `Engine/AppManager.cpp`, `Engine/CMakeLists.txt`, `Engine/Nodes/NativeRegistry.h` (new), `Engine/Nodes/NodeSpec.h`, every native node's spec, `Tests/wmain.cpp`, `Engine/Nodes/README.md` (step 4 only)
   - approach:
     - Each node gets a one-line fragment `NATRON_NATIVE_NODE(Class, "header.h")` beside its class. The registry reads ID, version, label, grouping, icon and the deprecated/internal flags from `Class`'s `NodeSpec` (M137 - Native Base Class Flexibility), so the fragment never repeats them. Icon files keep their current names.
@@ -125,7 +125,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: at the phase build, `NativePluginList_Test` and the full ctest pass, and the registered plug-in set is identical before and after. Diff the `getPluginIDs()` dump.
   - size: M
 
-- [ ] M120.P1.T2 — Per-kernel GPU CMake fragments
+- [x] M120.P1.T2 — Per-kernel GPU CMake fragments
   - files: `Engine/Gpu/CMakeLists.txt`, `Engine/Gpu/Kernels/<kernel>.cmake` (new, one beside each existing `<kernel>.slang`)
   - approach:
     - Today: 21 `slang_add_kernel` lines over 17 `.slang` files at `Engine/Gpu/CMakeLists.txt:21-41`; `curvesnapshot.slang` and `compositestep.slang` have no line (included by others). M126's runtime GLSL shaders need no fragment.
@@ -145,7 +145,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: at the phase build, `GpuCostModel` tests pass and the seeded cost for Grade/Blur/Despill is unchanged. A dry run of the emitter reproduces the split files byte-for-byte.
   - size: M
 
-- [ ] M120.P1.T4 — Generated native-node icon resource
+- [x] M120.P1.T4 — Generated native-node icon resource
   - files: `Gui/GuiResources.qrc`, `Gui/CMakeLists.txt`, `cmake/` (a small qrc-generation helper if one isn't present)
   - approach:
     - Remove the 34 `Resources/Images/NativeNodes/*.png` entries (`Gui/GuiResources.qrc:328-361`) from `GuiResources.qrc`.
@@ -260,6 +260,7 @@ T6 and T7 come first: they build the test-only OFX bundle. The other tasks then 
 
 ## Decisions
 
+- 2026-10-20 — P1.T1 (8ebb1cf71): 58 native nodes register from `.reg.inc` fragments; `NodeSpec` gains `icon`, `deprecated`, `internal`. `registerNativePlugin<T>()` builds the instance and reads the spec through `NativeEffectBase` (Keyer/ChromaKeyer/Merge/MissingPluginNode have no static spec). Templates whose argument list contains a comma register through an alias (Constant, Solid). RotoSmear stays hand-registered (not a `NativeEffectBase`). Registration order is irrelevant: `PluginsMap` is keyed by ID. Before-list for the plugin-set diff: m120 worktree `build/m120-p1t1-before.txt`. P1.T2 (c302ec89d): kernel fragments renumber `GpuKernelId`, which is only an in-process index. P1.T4 (26de406d8): icons via `qt_add_resources` with the same `:/Resources/Images/NativeNodes/` paths. All three verify at the phase build.
 - 2026-10-20 — Claimed despite the file-overlap test (user override): M120 shares `Engine/AppManager.cpp` with M108 - Retire Engine GL Host Path (GPU host), `Engine/GpuCostModel.cpp` with M107 - GPU Viewer Hand-off, and `Tests/CMakeLists.txt` with the parked M64 - Tiled Rendering. The user accepted resolving those conflicts at merge, as for M137.
 - 2026-10-19 — **Runs after M137 - Native Base Class Flexibility; fragments derive from `NodeSpec`** (user, M137 grill): registration is designed once. The fragment names only the class and header. This milestone gains a dep on M137.
 

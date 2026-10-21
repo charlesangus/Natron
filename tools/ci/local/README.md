@@ -35,23 +35,91 @@ This prevents formatting issues from reaching CI, using the same `clang-format==
 
 ## 1. Build the image
 
-`Dockerfile` is `FROM aswf/ci-vfxall:2027-clang21.1` -- the exact tag
-`.github/workflows/ci.yml` pins -- and installs nothing, because that base
-image already ships everything CI's `dnf install` step provides. Its one
-layer relinks Mesa against the system LLVM (see "Mesa is relinked against
-the system LLVM" below); CI uses the base image directly, without it. See the
-comments at the top of `Dockerfile` for the full package-by-package
-breakdown, why this is `ci-vfxall` rather than `ci-baseqt`, and the one
-documented gap (`extra-cmake-modules`, below).
+`Dockerfile` is `FROM aswf/ci-vfxall:2027-clang21.1`, and that base image
+already ships everything CI's `dnf install` step provides. It adds three
+layers: the Mesa relink (see "Mesa is relinked against the system LLVM"
+below), the Slang toolchain and the glslang source tree (see "Slang and
+glslang layers" below). See the comments at the top of `Dockerfile` for the
+full package-by-package breakdown, why this is `ci-vfxall` rather than
+`ci-baseqt`, and the one documented gap (`extra-cmake-modules`, below).
+
+You rarely need to build it yourself: `devshell.sh` pulls the published
+image (next section) and only builds locally when the pull fails.
+
+### Published image
+
+CI publishes the image to GitHub Container Registry as
+`ghcr.io/charlesangus/natron-dev:<content hash>`. The package is public, so
+pulling needs no login. The tag is the first 16 hex characters of a SHA-256
+over `tools/ci/local/Dockerfile`, `cmake/FetchSlang.cmake` and
+`cmake/FetchGlslang.cmake`, the files that decide the image's contents, so
+an unchanged image is published once and every checkout with the same files
+resolves to the same tag. `tools/ci/local/dev-image-tag.sh` is the single
+definition of that tag; `devshell.sh` and the workflows all call it:
 
 ```
-docker build -t natron-dev:2027-clang21.1 tools/ci/local/
+tools/ci/local/dev-image-tag.sh
 ```
 
-If you built the old `natron-dev:2027.0` image before this switch, the
-running container still points at it -- run
-`tools/ci/local/devshell.sh --recreate` after the build above to pick up the
-new base. The `.ccache` dir and `HOME` volume survive that.
+`.github/workflows/dev-image.yml` ensures the content-hash tag exists on
+every run, building and pushing the image when it is missing. Only a run whose
+caller ref is `main` (and that is not a pull request) moves `:latest`, and it
+does so whether or not that run built the hash tag; any other run leaves
+`:latest` alone. The workflow is reusable through `workflow_call`, which
+`ci.yml` and `remote-build.yml` do first, so CI and remote builds run inside the published image
+(`container:` jobs), and it can be dispatched by hand with
+`gh workflow run dev-image.yml --ref <branch>`.
+
+`devshell.sh` resolves the image through `dev-image-tag.sh`. When the
+container does not exist yet and the image is not present locally, it runs
+`docker pull`; if the pull fails (offline, or a Dockerfile change that is
+not yet published) it falls back to `docker build` of
+`tools/ci/local/Dockerfile` under the same tag. It then also tags the image
+`natron-dev:2027-clang21.1`, the name older commands use. The image is only
+resolved when the container is created, and a running container is never
+touched. To force the fallback by hand:
+
+```
+docker build -f tools/ci/local/Dockerfile -t "$(tools/ci/local/dev-image-tag.sh)" tools/ci/local/
+```
+
+After a Dockerfile change (or a pull of a newer tag), run
+`tools/ci/local/devshell.sh --recreate` to pick the new image up, and only
+when no build is running in that container (see "Checking syntax before a
+build" for why). The `.ccache` dir and `HOME` volume survive that.
+
+### Slang and glslang layers
+
+The GPU targets need `slangc` and the glslang sources at configure time. The
+`Dockerfile` bakes both in, at the releases and SHA-256 sums that
+`cmake/FetchSlang.cmake` and `cmake/FetchGlslang.cmake` pin:
+
+- `SLANG_ROOT=/opt/slang` holds the Slang release; only `bin/slangc` and
+  `include/slang-cpp-prelude.h` are used.
+- `GLSLANG_ROOT=/opt/glslang` holds the glslang source tree, which the
+  Natron build compiles itself.
+
+Both environment variables are set in the image, and the Fetch files use a
+tree that `SLANG_ROOT` / `GLSLANG_ROOT` points at instead of downloading into
+`.natron-deps/`. So a container with no network access can configure the GPU
+targets, and neither the local image nor the CI jobs that run in it download
+anything. Outside the image (a bare host, say) the Fetch files still download
+the pinned releases into `.natron-deps/`, which is gitignored.
+
+The pins therefore live in two places, each Fetch file and the `Dockerfile`'s
+`ARG NATRON_SLANG_VERSION` / `NATRON_SLANG_SHA256` /
+`NATRON_GLSLANG_VERSION` / `NATRON_GLSLANG_SHA256`. The drift check compares
+them and exits non-zero, naming the variable, when they differ. It reads
+files only and needs no network or Docker:
+
+```
+tools/ci/local/check-image-pins.sh
+```
+
+It runs as the "Slang and glslang pins match local image" step of
+`.github/workflows/checks.yml`, so a PR
+that bumps one side without the other fails. Bump both together; the
+content-hash tag then changes and the next CI run publishes a new image.
 
 ### If the pull fails partway through
 
@@ -157,16 +225,70 @@ touching them mid-iteration. When a rebuild looks bigger than it should,
 `ninja -d explain -n` in the build directory names the input that dirtied
 each target.
 
+### Checking syntax before a build (`syntax-check.py`)
+
+```
+tools/ci/local/syntax-check.py [--root <checkout>] [--base <ref>] [--compdb <path>] [<file> ...]
+```
+
+Runs `-fsyntax-only` on translation units inside the dev container (three at
+a time) with the flags from the main checkout's `build/fast` compile DB, so
+it needs one `build.sh fast` first. Use it before a remote build, where one
+failing TU costs a full build cycle. Files are relative to `--root` (default:
+the current checkout, e.g. a worktree). With no files it checks what changed
+since `--base` (default: the merge base with `origin/main`), including
+uncommitted and untracked files. A header is checked through its `.cpp`.
+Results are `OK`, `FAIL` (with the error lines), `NO-COMMAND` or
+`SKIPPED (header, no owner)`. The exit status is non-zero on any `FAIL` or
+`NO-COMMAND`.
+
+A TU missing from the DB, such as a new test, borrows the command of a DB
+entry in the same CMake directory (its own directory or a parent that
+shares the nearest `CMakeLists.txt`), never across a top-level directory or
+into a nested CMake project. A new `Tests/*.cpp` gets the `Tests` target's
+flags, including `-I Tests` and `-I libs/xxhash`.
+
+The compile DB can be stale for a TU: its CMake directory may be new to the
+DB, or its `CMakeLists.txt` may differ from the checkout's, so the target
+that owns the TU is not in the DB. Borrowing a sibling's flags would then be
+wrong, so the script instead configures `build/syntax` in the checked
+checkout (same `fast` flags, tests on) and checks the TU against that
+database. This reconfigure is also refused while `ninja` runs in the
+container.
+
+TUs under `Engine/Gpu/`, or that include a generated kernel header
+(`GpuKernels.inc`, `*_spirv.h`), need a DB that knows the current kernels. If
+the DB predates the last change to `Engine/Gpu/Kernels/` or
+`Engine/Gpu/CMakeLists.txt`, the script configures `build/syntax` in the
+checked checkout with the `fast` flags and builds only the kernel-header
+targets (about 30 s cold, a few seconds after that). It refuses while `ninja`
+runs in the container, and fails, naming the header, if a generated header is
+still missing. A GPU-era tree is therefore checked without a prior
+`build.sh` of that tree and without hand-written stub kernel headers. Inside
+the dev image the Slang and glslang trees come from `SLANG_ROOT` and
+`GLSLANG_ROOT`; elsewhere a worktree reuses the main checkout's
+`.natron-deps` instead of downloading a second copy. `NATRON_DEV_CONTAINER`
+picks the container.
+
+The dev container is single-tenant: run one build per container at a time. A
+`build.sh` or `ninja` running there while another build, a second
+`syntax-check.py` reconfigure or a `--recreate` starts gives slow, flaky
+results that look exactly like compile errors. Give a second lane its own
+container with `NATRON_DEV_CONTAINER` (see "Where things live").
+
 ## 4. Test
 
 ```
 [NATRON_RENDER_SCHEDULER=legacy|taskgraph] [NATRON_CTEST_JOBS=<n>] \
+  [GTEST_SHUFFLE=1 GTEST_RANDOM_SEED=<n> GTEST_REPEAT=<n>] \
   tools/ci/local/test.sh <ctest|smoke> [debug|release|fast] [--gdb]
 ```
 
 - `ctest` runs against the build dir. By default (`NATRON_CTEST_JOBS` unset)
   that is the serial `ctest -V`; PR CI sets `NATRON_CTEST_JOBS=4`, which runs
-  `ctest -j 4 --output-on-failure`.
+  `ctest -j 4 --output-on-failure`. There is one ctest entry per gtest suite
+  (named `<Suite>`), not per case; to run one case, call the test binary with
+  `--gtest_filter=Suite.Case`.
 - `smoke` locates the built `NatronRenderer` and runs
   `tools/ci/smoke_test.py` through it. This script only exists on branches
   that carry the M2-era `tools/ci/smoke_test.py` addition -- it is not on
@@ -179,8 +301,19 @@ each target.
   clients of the one Xvfb server. Unset or 1 is the serial `ctest -V` run.
   Above 1 only failing cases' output is printed as each finishes; the full
   output of every case is in `Testing/Temporary/LastTest.log`. Cases that
-  assert a wall-clock bound run alone (`Tests/SerialTests.cmake`). It is
-  forwarded into the container when set.
+  assert a wall-clock bound run alone (`Tests/SuiteProperties.cmake`). It is
+  forwarded into the container when set. When the parallel run fails,
+  `test.sh` then re-runs just the failed cases serially with
+  `ctest --rerun-failed -V`, so their complete output (including assert
+  text that parallel output hides) is in the log. The re-run is diagnostic
+  only; the script's exit status stays that of the parallel run.
+- `GTEST_SHUFFLE`, `GTEST_RANDOM_SEED` and `GTEST_REPEAT` (`ctest` only) are
+  read by gtest itself; ctest passes its environment on to every suite
+  process. `GTEST_SHUFFLE=1 GTEST_RANDOM_SEED=<n>` runs the cases within each
+  suite in a fixed shuffled order, to flush out leaks between cases;
+  `GTEST_REPEAT=<n>` runs each suite n times. Each ctest entry is one suite,
+  so the shuffle never crosses suites. All three are forwarded into the
+  container when set.
 - `--gdb` applies only to `smoke` (`ctest` runs many binaries, not one): it
   runs the target under
   `gdb -batch -ex run -ex "thread apply all bt" -ex bt --args <binary> ...`
@@ -219,6 +352,19 @@ AppData screenshot URL; sandboxes without one can drop a wrapper at
 `-n`/`--no-appstream` (see that wrapper's own header for the full story) --
 `package.sh` puts it ahead of `PATH` when present, and does nothing when it
 isn't (e.g. CI, which has real network access).
+
+`make-appimagetool-wrapper.sh` creates that wrapper:
+
+```
+tools/ci/local/make-appimagetool-wrapper.sh <dir> [<real-appimagetool>]
+```
+
+`<dir>` receives `appimagetool` (the wrapper) and `appimagetool.real` (a
+copy of the real tool). The real tool is the path given, else the first
+`appimagetool` on `PATH`, else the `appimagetool.real` already in the main
+checkout's `build/appimagetool-wrapper/`; it exits 1 when none is found.
+`package.sh` calls it itself when the wrapper is missing but one of those
+sources exists, so you normally never run it by hand.
 
 ## 6. Verify a release bundle starts outside the dev container
 
@@ -290,12 +436,13 @@ rewrites the `NEEDED libLLVM.so.21.1` entry of every Mesa library that has
 one (`libgallium`, `libvulkan_radeon`, `libvulkan_lvp`, `libOSMesa`) to the
 absolute path `/usr/lib64/libLLVM.so.21.1` with `patchelf`. The dynamic
 linker opens a slash-containing `NEEDED` by that exact path, so Mesa always
-gets the system LLVM and nothing else's search order changes. CI runs the
-base image directly and is unaffected; locally, llvmpipe (under `xvfb-run`)
-now runs on the system LLVM 21.1.8 rather than the toolchain one.
+gets the system LLVM and nothing else's search order changes. CI and remote
+build jobs run in the same published image, so they carry the relink too;
+llvmpipe (under `xvfb-run`) runs on the system LLVM 21.1.8 rather than the
+toolchain one.
 
-A `natron-dev` image built from an older checkout lacks the relink; rebuild
-it (step 1) and `--recreate` the container. `readelf -d
+A `natron-dev` image built from an older checkout lacks the relink; get the
+current image (step 1) and `--recreate` the container. `readelf -d
 /usr/lib64/libvulkan_radeon.so | grep LLVM` inside it shows the absolute
 path when the relink is present.
 
@@ -349,6 +496,45 @@ then `sudo udevadm control --reload && sudo udevadm trigger -s drm` (or
 reboot). Without it, a manual `chmod 666 /dev/dri/renderD128` works until
 the next reboot, after which `--gpu` refuses to start again. Note this
 grants every local user access to the GPU's render node.
+
+## Worktree lanes
+
+A git worktree under `.worktrees/<id>/` has none of the untracked state the
+main checkout has built up. `worktree-init.sh` bootstraps it from the host:
+
+```
+tools/ci/local/worktree-init.sh [--skip-assets] [<worktree-path>]
+```
+
+`<worktree-path>` defaults to the current checkout. Each step does nothing
+when its result is already there, so it is safe to re-run:
+
+1. `git submodule sync` and `git submodule update --init --recursive`
+   (nested submodules included), only when one is missing or out of date.
+2. `fetch-assets.sh` into the worktree's own `build/assets/`, skipped when
+   the plugin stamp matches the pins and the bundles exist. `--skip-assets`
+   leaves this step out, because `fetch-assets.sh` compiles plugins in the
+   shared dev container and a caller may not want to start a build there.
+3. `.natron-deps` linked to the main checkout's copy (not needed in the main
+   checkout itself).
+4. `build/appimagetool-wrapper/` copied from the main checkout, or
+   regenerated with `make-appimagetool-wrapper.sh`.
+
+It prints a summary of what it did, what was already present, and notes. It
+never builds Natron.
+
+`build.sh` runs `git submodule update --init --recursive` on the host on every
+invocation, which resets each submodule to the commit the superproject
+records and so discards a pinned `libs/OpenFX` fork branch. After checking
+that branch out, set `NATRON_SKIP_SUBMODULE_UPDATE=1`:
+
+```
+NATRON_SKIP_SUBMODULE_UPDATE=1 tools/ci/local/build.sh fast
+```
+
+`build.sh` then skips the update and only checks that `Tests/google-mock`,
+`Tests/google-test`, `libs/OpenFX` and `libs/SequenceParsing` are checked
+out, failing and naming the first one that is not.
 
 ## Where things live, and how to reset them
 

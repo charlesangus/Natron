@@ -5,10 +5,13 @@
 # build/remote/<preset>/. The remote twin of tools/ci/local/build.sh.
 #
 # Usage:
-#   tools/ci/remote/build.sh <fast|release> [--tests] [--record-goldens] [--no-appimage]
+#   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage]
 #   tools/ci/remote/build.sh --mode
 #
-#   fast | release   -> the build preset, same meaning as in local/build.sh.
+#   fast | release | debug -> the build preset, same meaning as in local/build.sh.
+#                        debug never produces an AppImage: one cannot be packaged
+#                        in the container, because llvmpipe raises SIGFPE under
+#                        the -DDEBUG traps. It behaves as --no-appimage.
 #   --tests           -> also run the ctest suite and smoke tests remotely; the
 #                        ctest logs are downloaded even when the run fails.
 #   --record-goldens  -> implies --tests; also records the native golden renders
@@ -16,6 +19,15 @@
 #                        Tests/fixtures/native-golden/ of this checkout. The
 #                        references bind bit for bit only under the preset that
 #                        recorded them (see STAMP).
+#   --shuffle-seeds <n,n,...> -> implies --tests; each ctest leg also runs once
+#                        per seed with GTEST_SHUFFLE=1 GTEST_RANDOM_SEED=<seed>,
+#                        after its unshuffled run, e.g. --shuffle-seeds 1,2,3.
+#                        Every seed runs even if an earlier one failed, and each
+#                        run's log is ctest-<scheduler>-seed<seed>.log next to
+#                        the unshuffled ctest-<scheduler>.log. The ctest step's
+#                        timeout is a fixed 120 minutes, which fits about five
+#                        seeds on the debug preset, so at most 5 seeds are
+#                        accepted.
 #   --no-appimage     -> skip packaging and downloading the AppImage.
 #   --mode            -> print the build mode (local or remote) and exit. Takes
 #                        no other arguments. The mode is the first non-blank,
@@ -33,7 +45,7 @@ FIND_INTERVAL_SECS=5
 WATCH_INTERVAL_SECS=30
 
 usage() {
-    echo "usage: build.sh <fast|release> [--tests] [--record-goldens] [--no-appimage]" >&2
+    echo "usage: build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage]" >&2
     echo "       build.sh --mode" >&2
 }
 
@@ -68,6 +80,7 @@ PRESET=""
 RUN_TESTS=false
 RECORD_GOLDENS=false
 WANT_APPIMAGE=true
+SHUFFLE_SEEDS=""
 
 if [[ " $* " == *" --mode "* ]]; then
     if [[ $# -ne 1 ]]; then
@@ -79,9 +92,11 @@ if [[ " $* " == *" --mode "* ]]; then
     exit 0
 fi
 
-for arg in "$@"; do
+while [[ $# -gt 0 ]]; do
+    arg="$1"
+    shift
     case "${arg}" in
-        fast|release)
+        fast|release|debug)
             if [[ -n "${PRESET}" ]]; then
                 echo "build.sh: preset given twice ('${PRESET}' and '${arg}')" >&2
                 usage
@@ -94,6 +109,16 @@ for arg in "$@"; do
             ;;
         --record-goldens)
             RECORD_GOLDENS=true
+            RUN_TESTS=true
+            ;;
+        --shuffle-seeds)
+            if [[ $# -eq 0 ]]; then
+                echo "build.sh: --shuffle-seeds needs a comma-separated list of seeds" >&2
+                usage
+                exit 1
+            fi
+            SHUFFLE_SEEDS="$1"
+            shift
             RUN_TESTS=true
             ;;
         --no-appimage)
@@ -112,9 +137,28 @@ for arg in "$@"; do
 done
 
 if [[ -z "${PRESET}" ]]; then
-    echo "build.sh: a preset (fast|release) is required" >&2
+    echo "build.sh: a preset (fast|release|debug) is required" >&2
     usage
     exit 1
+fi
+
+# The ctest step's 120-minute timeout covers about five seeds on the debug preset.
+if [[ -n "${SHUFFLE_SEEDS}" ]] && (( $(tr -cd ',' <<<"${SHUFFLE_SEEDS}" | wc -c) + 1 > 5 )); then
+    echo "build.sh: --shuffle-seeds accepts at most 5 seeds (the ctest step's 120-minute timeout covers about five), got '${SHUFFLE_SEEDS}'" >&2
+    usage
+    exit 1
+fi
+
+# gtest takes a seed from 0 to 99999; 0 would pick a time-based one, which a rerun cannot repeat.
+if [[ -n "${SHUFFLE_SEEDS}" ]] && ! [[ "${SHUFFLE_SEEDS}" =~ ^[1-9][0-9]{0,4}(,[1-9][0-9]{0,4})*$ ]]; then
+    echo "build.sh: --shuffle-seeds must be comma-separated integers from 1 to 99999, got '${SHUFFLE_SEEDS}'" >&2
+    usage
+    exit 1
+fi
+
+if [[ "${PRESET}" == "debug" && "${WANT_APPIMAGE}" == "true" ]]; then
+    echo "build.sh: the debug preset builds no AppImage (llvmpipe raises SIGFPE under -DDEBUG traps in the container); behaving as --no-appimage" >&2
+    WANT_APPIMAGE=false
 fi
 
 cd "${REPO_ROOT}"
@@ -150,6 +194,7 @@ gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
     -f "tests=${RUN_TESTS}" \
     -f "record_goldens=${RECORD_GOLDENS}" \
     -f "appimage=${WANT_APPIMAGE}" \
+    -f "shuffle_seeds=${SHUFFLE_SEEDS}" \
     -f "token=${TOKEN}"
 
 # gh 2.23 prints no run ID on dispatch, so the run is found by the token that
@@ -276,6 +321,13 @@ if [[ -n "${GOLDEN_DIR}" ]]; then
 fi
 if [[ -n "${CTEST_LOG_DIR}" ]]; then
     echo "ctest logs: ${CTEST_LOG_DIR}"
+    if [[ -n "${SHUFFLE_SEEDS}" ]]; then
+        for log in "${CTEST_LOG_DIR}"/ctest-*-seed*.log; do
+            if [[ -f "${log}" ]]; then
+                echo "shuffled ctest log: ${log}"
+            fi
+        done
+    fi
 fi
 
 exit "${RUN_STATUS}"

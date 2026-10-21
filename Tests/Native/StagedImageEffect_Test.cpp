@@ -729,9 +729,12 @@ TEST_F(StagedImageEffectTest, BandsAgreeInBothSchedulerModesWithNoUnplannedPull)
     }
 }
 
+// This case asserts a wall-clock bound, so it forms its own suite and runs alone while the rest of the fixture's cases run in parallel.
+class StagedImageEffectTiming : public StagedImageEffectTest { };
+
 // A pool thread cannot ask EffectInstance::aborted() itself, so a band polling the cancellation
 // on a helper only learns of the abort through the calling thread's timed wait.
-TEST_F(StagedImageEffectTest, AnAbortReachesABandRunningOnAPoolThread)
+TEST_F(StagedImageEffectTiming, AnAbortReachesABandRunningOnAPoolThread)
 {
     NodePtr op = createOp(createSource());
     ASSERT_TRUE(bool(op));

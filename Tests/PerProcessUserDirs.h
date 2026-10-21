@@ -27,12 +27,12 @@
 #include <QTemporaryDir>
 #include <QtGlobal>
 
-// ctest runs every case as its own process, possibly several at once, and each one starts with
-// --clear-cache --clear-openfx-cache: left on the shared defaults, one case's startup would wipe
-// the disk/viewer tile caches and OFXLoadCache another case is using, and the plugin defaults
+// ctest runs every suite as its own process, possibly several at once, and each one starts with
+// --clear-cache --clear-openfx-cache: left on the shared defaults, one suite's startup would wipe
+// the disk/viewer tile caches and OFXLoadCache another suite is using, and the plugin defaults
 // written to Natron.conf and the autosaves directory would be shared too. XDG_CACHE_HOME is left
 // alone on purpose: Mesa's shader cache and fontconfig's cache live there and gain nothing from
-// starting cold in every case.
+// starting cold in every suite.
 //
 // Construct before the AppManager so it outlives it: the caches hold files open until teardown.
 class PerProcessUserDirs {

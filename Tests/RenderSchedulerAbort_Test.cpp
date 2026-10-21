@@ -414,9 +414,12 @@ protected:
     std::size_t _savedBudget;
 };
 
+// These cases assert wall-clock bounds, so they form their own suite and run alone while the rest of the fixture's cases run in parallel.
+class RenderSchedulerAbortTiming : public RenderSchedulerAbort { };
+
 // Aborting from inside the first leaf drops the queued leaves without rendering them, lets the leaves already running
 // return early, and finishes the frame as aborted with its store empty and no runnable left behind.
-TEST_F(RenderSchedulerAbort, AbortDropsQueuedTasksAndWaitsForRunningOnes)
+TEST_F(RenderSchedulerAbortTiming, AbortDropsQueuedTasksAndWaitsForRunningOnes)
 {
     std::vector<NodePtr> nodes;
     ASSERT_TRUE(buildWide(kLeaves, &nodes));
@@ -500,7 +503,7 @@ TEST_F(RenderSchedulerAbort, AbortDropsQueuedTasksAndWaitsForRunningOnes)
 
 // A budget of one output holds every branch but the first back, so an abort must also release the reservations of the
 // admitted tasks and drop the gated ones.
-TEST_F(RenderSchedulerAbort, AbortUnderAOneOutputBudgetReleasesEverything)
+TEST_F(RenderSchedulerAbortTiming, AbortUnderAOneOutputBudgetReleasesEverything)
 {
     const int leaves = 16;
     std::vector<NodePtr> nodes;
@@ -565,7 +568,7 @@ TEST_F(RenderSchedulerAbort, AbortUnderAOneOutputBudgetReleasesEverything)
 }
 
 // An abort for a render the scheduler does not know of is a no-op, so the engine may forward every abort to it.
-TEST_F(RenderSchedulerAbort, AbortOfAnUnknownRenderDoesNothing)
+TEST_F(RenderSchedulerAbortTiming, AbortOfAnUnknownRenderDoesNothing)
 {
     AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
 
@@ -581,7 +584,7 @@ TEST_F(RenderSchedulerAbort, AbortOfAnUnknownRenderDoesNothing)
 // scheduler queues twice as many frames as threads ahead of them, which bounds what may still land on disk. With the
 // Task graph mode the engine's abort reaches the RenderScheduler through the frame's AbortableRenderInfo; the
 // assertions hold on the Legacy path as well.
-TEST_F(RenderSchedulerAbort, WriterRangeStopsSoonAfterEngineAbort)
+TEST_F(RenderSchedulerAbortTiming, WriterRangeStopsSoonAfterEngineAbort)
 {
     const int parallelRenders = 2;
     const int firstFrame = 1;

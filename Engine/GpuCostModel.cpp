@@ -290,6 +290,19 @@ GpuCostModel::session()
 }
 
 void
+GpuCostModel::reset()
+{
+    GpuCostModel fresh;
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    _cpu = std::move(fresh._cpu);
+    _gpu = std::move(fresh._gpu);
+    _threads = fresh._threads;
+    _rates = fresh._rates;
+    _transferScale = fresh._transferScale;
+}
+
+void
 GpuCostModel::setThreadCount(int threads)
 {
     std::lock_guard<std::mutex> lock(_mutex);

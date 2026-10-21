@@ -17,6 +17,7 @@ on:
         options:
           - fast
           - release
+          - debug
         default: fast
       tests:
         description: 'Run the ctest suite and smoke test'
@@ -29,10 +30,15 @@ on:
         type: boolean
         default: false
       appimage:
-        description: 'Package and upload an AppImage'
+        description: 'Package and upload an AppImage (ignored for debug, which cannot be packaged in the container)'
         required: true
         type: boolean
         default: true
+      shuffle_seeds:
+        description: 'Comma-separated gtest shuffle seeds (needs tests): each ctest leg runs once unshuffled, then once per seed'
+        required: false
+        type: string
+        default: ''
       token:
         description: 'Opaque marker echoed into the run name so a script can find this run'
         required: false
@@ -47,22 +53,32 @@ env:
   PYTHON_VERSION: '3.13'
   OCIO_CONFIG_VERSION: 2.5
   NATRON_IN_CONTAINER: 1
-  NATRON_DEPS_CACHE: ${{ github.workspace }}/.natron-deps
   PRESET: ${{ inputs.preset || 'fast' }}
 
 jobs:
+  dev-image:
+    name: dev image
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/dev-image.yml
+
   # Builds once; the ctest legs below run off the build tree it uploads.
   remote-build:
     name: remote-build
+    needs: dev-image
     runs-on: ubuntu-latest
     container:
-      image: aswf/ci-vfxall:2027-clang21.1
+      image: ${{ needs.dev-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     defaults:
       run:
         shell: bash -l {0}
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: ${{ (inputs.preset || 'fast') == 'release' && '3G' || '2G' }}
+      CCACHE_MAXSIZE: ${{ (inputs.preset || 'fast') == 'fast' && '2G' || '3G' }}
       # One compile per vCPU of the hosted runner; build.sh's default of 3 suits the dev machine.
       NATRON_BUILD_JOBS: 4
     outputs:
@@ -86,6 +102,7 @@ jobs:
           restore-keys: |
             ccache-linux-${{ env.PRESET }}-${{ github.head_ref || github.ref_name }}-
             ccache-linux-${{ env.PRESET }}-main-
+            ${{ env.PRESET == 'debug' && 'ccache-linux-main-' || '' }}
 
       - name: Cache test assets
         uses: actions/cache@v6.1.0
@@ -95,12 +112,6 @@ jobs:
             build/assets/TestPlugins
             build/assets/CImg
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
-
-      - name: Cache Slang
-        uses: actions/cache@v6.1.0
-        with:
-          path: .natron-deps
-          key: natron-deps-linux-${{ hashFiles('cmake/FetchSlang.cmake') }}
 
       - name: Fetch test assets
         run: tools/ci/local/fetch-assets.sh
@@ -125,7 +136,7 @@ jobs:
           set -o pipefail
           mkdir -p "$NATRON_GOLDEN_RECORD_DIR"
           rc=0
-          xvfb-run --auto-servernum ctest -R '^NativeGoldenTest\.' --timeout 300 --output-on-failure || rc=$?
+          xvfb-run --auto-servernum ctest -R '^NativeGoldenTest$' --timeout 300 --output-on-failure || rc=$?
           test -f "$NATRON_GOLDEN_RECORD_DIR/STAMP" || rc=1
           exit "$rc"
 
@@ -165,15 +176,15 @@ jobs:
       # should not withhold the binary someone is trying to inspect.
       # check-startup.sh runs inside make-appimage.sh.
       - name: Stage bundle
-        if: inputs.appimage && !cancelled() && steps.build.outcome == 'success'
+        if: inputs.appimage && inputs.preset != 'debug' && !cancelled() && steps.build.outcome == 'success'
         run: tools/release/stage-bundle.sh "build/$PRESET" /tmp/natron-stage
 
       - name: Create AppImage
-        if: inputs.appimage && !cancelled() && steps.build.outcome == 'success'
+        if: inputs.appimage && inputs.preset != 'debug' && !cancelled() && steps.build.outcome == 'success'
         run: tools/release/make-appimage.sh /tmp/natron-stage /tmp/artifacts
 
       - name: Upload AppImage
-        if: inputs.appimage && !cancelled() && steps.build.outcome == 'success'
+        if: inputs.appimage && inputs.preset != 'debug' && !cancelled() && steps.build.outcome == 'success'
         uses: actions/upload-artifact@v7.0.1
         with:
           name: natron-${{ env.PRESET }}-${{ github.sha }}
@@ -194,7 +205,7 @@ jobs:
 
   ctest:
     name: ctest (${{ matrix.scheduler }})
-    needs: remote-build
+    needs: [dev-image, remote-build]
     if: >-
       !cancelled() && inputs.tests && needs.remote-build.outputs.tree == 'success'
     runs-on: ubuntu-latest
@@ -203,7 +214,10 @@ jobs:
       matrix:
         scheduler: [legacy, taskgraph]
     container:
-      image: aswf/ci-vfxall:2027-clang21.1
+      image: ${{ needs.dev-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     defaults:
       run:
         shell: bash -l {0}
@@ -223,12 +237,6 @@ jobs:
             build/assets/TestPlugins
             build/assets/CImg
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
-
-      - name: Restore Slang
-        uses: actions/cache/restore@v6.1.0
-        with:
-          path: .natron-deps
-          key: natron-deps-linux-${{ hashFiles('cmake/FetchSlang.cmake') }}
 
       - name: Fetch test assets
         run: tools/ci/local/fetch-assets.sh
@@ -254,20 +262,38 @@ jobs:
           tar -xf build-tree.tar
           rm build-tree.tar
 
-      # Each leg took about 35 minutes when ctest ran serially. Without the step bound, a case that outlives
-      # ctest's own per-case timeout holds the job until GitHub's six-hour limit.
+      # Without the step bound, a suite that outlives ctest's own per-suite timeout holds the job
+      # until GitHub's six-hour limit.
       - name: Run ctest suite (${{ matrix.scheduler }} scheduler)
-        timeout-minutes: 75
+        timeout-minutes: ${{ inputs.shuffle_seeds == '' && 30 || 120 }}
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           NATRON_TEST_REQUIRE_GPU: 1
+          SHUFFLE_SEEDS: ${{ inputs.shuffle_seeds }}
           NATRON_RENDER_SCHEDULER: ${{ matrix.scheduler }}
-          # One case per vCPU of the hosted runner; 1 restores the serial `ctest -V` run.
+          # One suite per vCPU of the hosted runner; 1 restores the serial `ctest -V` run.
           NATRON_CTEST_JOBS: 4
         run: |
           set -o pipefail
+          if [[ -n "$SHUFFLE_SEEDS" ]]; then
+            seed_list=${SHUFFLE_SEEDS//,/ }
+            seed_count=$(wc -w <<<"$seed_list")
+            if (( seed_count > 5 )); then
+              echo "::error::shuffle_seeds has $seed_count seeds; at most 5 fit the 120-minute ctest step timeout"
+              exit 1
+            fi
+          fi
           mkdir -p ctest-logs
-          tools/ci/local/test.sh ctest "$PRESET" 2>&1 | tee "ctest-logs/ctest-${{ matrix.scheduler }}.log"
+          rc=0
+          tools/ci/local/test.sh ctest "$PRESET" 2>&1 | tee "ctest-logs/ctest-${{ matrix.scheduler }}.log" || rc=$?
+          # Every seed runs even after a failure, so one dispatch reports all of them; the leg
+          # fails if any run did.
+          for seed in ${SHUFFLE_SEEDS//,/ }; do
+            echo "== shuffled ctest run, seed $seed =="
+            GTEST_SHUFFLE=1 GTEST_RANDOM_SEED="$seed" tools/ci/local/test.sh ctest "$PRESET" 2>&1 \
+              | tee "ctest-logs/ctest-${{ matrix.scheduler }}-seed${seed}.log" || rc=$?
+          done
+          exit "$rc"
 
       - name: Python bindings smoke test (${{ matrix.scheduler }} scheduler)
         if: success() || failure()

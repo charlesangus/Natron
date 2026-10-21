@@ -3025,6 +3025,8 @@ ViewerGL::zoomSlot(int v)
     }
 
     checkIfViewPortRoIValidOrRender();
+    // The projection changed even when the textures still cover the viewport and no render follows.
+    update();
 }
 
 void

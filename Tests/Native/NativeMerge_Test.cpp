@@ -41,6 +41,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -572,4 +573,18 @@ TEST_F(NativeMergeTest, SourceThatIsAnOutputIsReadFromAPrivateCopy)
     const ImagePtr input = makeImage();
     EXPECT_EQ(input, MergeNode::sourceDetachedFromOutputs(input, outputs));
     EXPECT_FALSE(MergeNode::sourceDetachedFromOutputs(ImagePtr(), outputs));
+}
+
+TEST_F(NativeMergeTest, RegisteredIdentity)
+{
+    expectNativeIdentity(PLUGINID_NATRON_MERGE, PLUGIN_MAJOR_NATRON_MERGE, "Merge");
+    expectNativeIdentity(PLUGINID_NATRON_MERGE_PREFIX "Plus", PLUGIN_MAJOR_NATRON_MERGE, "Plus");
+    expectNativeIdentity(PLUGINID_NATRON_MERGE_PREFIX "Matte", PLUGIN_MAJOR_NATRON_MERGE, "Matte");
+    expectNativeIdentity(PLUGINID_NATRON_MERGE_PREFIX "Multiply", PLUGIN_MAJOR_NATRON_MERGE, "Multiply");
+    expectNativeIdentity(PLUGINID_NATRON_MERGE_PREFIX "In", PLUGIN_MAJOR_NATRON_MERGE, "In");
+    expectNativeIdentity(PLUGINID_NATRON_MERGE_PREFIX "Out", PLUGIN_MAJOR_NATRON_MERGE, "Out");
+    expectNativeIdentity(PLUGINID_NATRON_MERGE_PREFIX "Screen", PLUGIN_MAJOR_NATRON_MERGE, "Screen");
+    expectNativeIdentity(PLUGINID_NATRON_MERGE_PREFIX "Max", PLUGIN_MAJOR_NATRON_MERGE, "Max");
+    expectNativeIdentity(PLUGINID_NATRON_MERGE_PREFIX "Min", PLUGIN_MAJOR_NATRON_MERGE, "Min");
+    expectNativeIdentity(PLUGINID_NATRON_MERGE_PREFIX "Difference", PLUGIN_MAJOR_NATRON_MERGE, "Absminus");
 }

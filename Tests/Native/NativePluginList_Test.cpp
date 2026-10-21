@@ -25,6 +25,8 @@
 
 #include "Global/Macros.h"
 
+#include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -39,91 +41,69 @@
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
-#include "Engine/Nodes/Color/Clamp.h"
-#include "Engine/Nodes/Color/ColorCorrect.h"
-#include "Engine/Nodes/Color/ColorLookup.h"
-#include "Engine/Nodes/Color/ColorMathNode.h"
-#include "Engine/Nodes/Color/Grade.h"
-#include "Engine/Nodes/Color/Invert.h"
-#include "Engine/Nodes/Color/Saturation.h"
 #include "Engine/Nodes/Deep/DeepWrite.h"
-#include "Engine/Nodes/Filter/Blur.h"
-#include "Engine/Nodes/Filter/EdgeDetect.h"
-#include "Engine/Nodes/Filter/ErodeDilate.h"
-#include "Engine/Nodes/Generator/CheckerBoard.h"
-#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/NativeWrite.h"
-#include "Engine/Nodes/Keyer/ChromaKeyer.h"
-#include "Engine/Nodes/Keyer/Keyer.h"
-#include "Engine/Nodes/Merge/Dissolve.h"
-#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/Metadata/CopyMetadata.h"
 #include "Engine/Nodes/Metadata/ModifyMetadata.h"
 #include "Engine/Nodes/Metadata/RemoveMetadata.h"
 #include "Engine/Nodes/Metadata/ViewMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
-#include "Engine/Nodes/Transform/Crop.h"
-#include "Engine/Nodes/Transform/Position.h"
-#include "Engine/Nodes/Transform/Reformat.h"
-#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
+
+#define NATRON_NATIVE_REGISTRY_HEADERS
+#include "NativeRegistryAll.inc"
+#undef NATRON_NATIVE_REGISTRY_HEADERS
 
 NATRON_NAMESPACE_USING
 
 namespace {
 
-struct NativeEntry {
-    const char* id;
-    int major;
+struct FragmentEntry {
+    std::string id;
+    void (*builder)();
 };
 
-// Later families append their IDs here.
-const std::vector<NativeEntry>&
-nativeTable()
+// The builder is compared by address with the one the registry stored for the same ID.
+template <typename PLUGIN>
+FragmentEntry
+fragmentEntry()
 {
-    static const std::vector<NativeEntry> table = {
-        { PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE },
-        { PLUGINID_NATRON_COLORCORRECT, PLUGIN_MAJOR_NATRON_COLORCORRECT },
-        { PLUGINID_NATRON_SATURATION, PLUGIN_MAJOR_NATRON_SATURATION },
-        { PLUGINID_NATRON_CLAMP, PLUGIN_MAJOR_NATRON_CLAMP },
-        { PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT },
-        { PLUGINID_NATRON_ADD, PLUGIN_MAJOR_NATRON_COLORMATH },
-        { PLUGINID_NATRON_MULTIPLY, PLUGIN_MAJOR_NATRON_COLORMATH },
-        { PLUGINID_NATRON_GAMMA, PLUGIN_MAJOR_NATRON_COLORMATH },
-        { PLUGINID_NATRON_MERGE, PLUGIN_MAJOR_NATRON_MERGE },
-        { PLUGINID_NATRON_MERGE_PREFIX "Plus", PLUGIN_MAJOR_NATRON_MERGE },
-        { PLUGINID_NATRON_MERGE_PREFIX "Matte", PLUGIN_MAJOR_NATRON_MERGE },
-        { PLUGINID_NATRON_MERGE_PREFIX "Multiply", PLUGIN_MAJOR_NATRON_MERGE },
-        { PLUGINID_NATRON_MERGE_PREFIX "In", PLUGIN_MAJOR_NATRON_MERGE },
-        { PLUGINID_NATRON_MERGE_PREFIX "Out", PLUGIN_MAJOR_NATRON_MERGE },
-        { PLUGINID_NATRON_MERGE_PREFIX "Screen", PLUGIN_MAJOR_NATRON_MERGE },
-        { PLUGINID_NATRON_MERGE_PREFIX "Max", PLUGIN_MAJOR_NATRON_MERGE },
-        { PLUGINID_NATRON_MERGE_PREFIX "Min", PLUGIN_MAJOR_NATRON_MERGE },
-        { PLUGINID_NATRON_MERGE_PREFIX "Difference", PLUGIN_MAJOR_NATRON_MERGE },
-        { PLUGINID_NATRON_DISSOLVE, PLUGIN_MAJOR_NATRON_DISSOLVE },
-        { PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT },
-        { PLUGINID_NATRON_SOLID, PLUGIN_MAJOR_NATRON_CONSTANT },
-        { PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD },
-        { PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM },
-        { PLUGINID_NATRON_TRANSFORMMASKED, PLUGIN_MAJOR_NATRON_TRANSFORMMASKED },
-        { PLUGINID_NATRON_CROP, PLUGIN_MAJOR_NATRON_CROP },
-        { PLUGINID_NATRON_POSITION, PLUGIN_MAJOR_NATRON_POSITION },
-        { PLUGINID_NATRON_REFORMAT, PLUGIN_MAJOR_NATRON_REFORMAT },
-        { PLUGINID_NATRON_BLUR, PLUGIN_MAJOR_NATRON_BLUR },
-        { PLUGINID_NATRON_KEYER, PLUGIN_MAJOR_NATRON_KEYER },
-        { PLUGINID_NATRON_CHROMAKEYER, PLUGIN_MAJOR_NATRON_CHROMAKEYER },
-        { PLUGINID_NATRON_ERODE, PLUGIN_MAJOR_NATRON_ERODE },
-        { PLUGINID_NATRON_DILATE, PLUGIN_MAJOR_NATRON_DILATE },
-        { PLUGINID_NATRON_EDGEDETECT, PLUGIN_MAJOR_NATRON_EDGEDETECT },
-        { PLUGINID_NATRON_COLORLOOKUP, PLUGIN_MAJOR_NATRON_COLORLOOKUP },
-        { PLUGINID_NATRON_READ, PLUGIN_MAJOR_NATRON_READ },
-        { PLUGINID_NATRON_WRITE, PLUGIN_MAJOR_NATRON_WRITE },
-    };
+    EffectInstancePtr effect(PLUGIN::BuildEffect(NodePtr()));
+    const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(effect.get());
 
-    return table;
+    if (!native) {
+        ADD_FAILURE() << effect->getPluginID() << " has a registration fragment but is not a NativeEffectBase";
+
+        return FragmentEntry { effect->getPluginID(), nullptr };
+    }
+
+    return FragmentEntry { std::string(native->nodeSpec()->id), (void (*)())&PLUGIN::BuildEffect };
+}
+
+// Expands the generated aggregate of the registration fragments with a recording macro, so the
+// fragments themselves are the source of truth rather than a copy of them kept here.
+std::vector<FragmentEntry>
+collectFragments()
+{
+    std::vector<FragmentEntry> entries;
+
+#define NATRON_NATIVE_NODE(CLASS, HEADER) entries.push_back(fragmentEntry<CLASS>());
+#include "NativeRegistryAll.inc"
+#undef NATRON_NATIVE_NODE
+
+    return entries;
+}
+
+const std::vector<FragmentEntry>&
+fragments()
+{
+    static const std::vector<FragmentEntry> list = collectFragments();
+
+    return list;
 }
 
 } // namespace
@@ -132,22 +112,79 @@ class NativePluginListTest
     : public BaseTest {
 };
 
+TEST_F(NativePluginListTest, EveryFragmentIsRegisteredAndEveryNativePluginHasAFragment)
+{
+    std::map<std::string, void (*)()> fragmentBuilders;
+
+    for (const FragmentEntry& entry : fragments()) {
+        fragmentBuilders[entry.id] = entry.builder;
+    }
+    EXPECT_FALSE(fragmentBuilders.empty());
+
+    std::map<std::string, void (*)()> registeredBuilders;
+
+    for (const auto& versions : appPTR->getPluginsList()) {
+        for (const Plugin* plugin : versions.second) {
+            const LibraryBinary* binary = plugin->getLibraryBinary();
+            if (!binary || plugin->getOfxPlugin()) {
+                continue;
+            }
+            const std::pair<bool, EffectBuilder> builder = binary->findFunction<EffectBuilder>("BuildEffect");
+            if (!builder.first) {
+                continue;
+            }
+            // A plug-in hand-registered outside the fragments is fine unless it is native.
+            bool matchesFragment = false;
+            for (const FragmentEntry& entry : fragments()) {
+                if (entry.builder == (void (*)())builder.second) {
+                    matchesFragment = true;
+                    break;
+                }
+            }
+            if (!matchesFragment) {
+                EffectInstancePtr effect(builder.second(NodePtr()));
+                EXPECT_FALSE(dynamic_cast<const NativeEffectBase*>(effect.get())) << versions.first << " is a native plug-in registered without a .reg.inc fragment";
+                continue;
+            }
+            registeredBuilders[versions.first] = (void (*)())builder.second;
+        }
+    }
+
+    for (const auto& entry : fragmentBuilders) {
+        const std::map<std::string, void (*)()>::const_iterator it = registeredBuilders.find(entry.first);
+        if (it == registeredBuilders.end()) {
+            ADD_FAILURE() << entry.first << " has a registration fragment but is not registered under that ID";
+        } else {
+            EXPECT_TRUE(it->second == entry.second) << entry.first << " is registered with a different class than its fragment names";
+        }
+    }
+    EXPECT_EQ(fragmentBuilders.size(), registeredBuilders.size());
+}
+
+TEST_F(NativePluginListTest, NoTwoFragmentsRegisterTheSameId)
+{
+    std::set<std::string> seen;
+
+    for (const FragmentEntry& entry : fragments()) {
+        EXPECT_TRUE(seen.insert(entry.id).second) << entry.id << " is registered by more than one fragment";
+    }
+}
+
 TEST_F(NativePluginListTest, RetiredOfxIdsResolveToASingleNativeVersion)
 {
     const PluginsMap& plugins = appPTR->getPluginsList();
 
-    for (const NativeEntry& entry : nativeTable()) {
+    for (const FragmentEntry& entry : fragments()) {
         const PluginsMap::const_iterator it = plugins.find(entry.id);
         ASSERT_TRUE(it != plugins.end()) << entry.id;
         ASSERT_EQ(1u, it->second.size()) << entry.id << " must have no OFX version left";
-        EXPECT_EQ(entry.major, (*it->second.begin())->getMajorVersion()) << entry.id;
     }
 }
 
 TEST_F(NativePluginListTest, CreatedNodesAreNative)
 {
-    for (const NativeEntry& entry : nativeTable()) {
-        NodePtr node = createNode(QString::fromUtf8(entry.id));
+    for (const FragmentEntry& entry : fragments()) {
+        NodePtr node = createNode(QString::fromStdString(entry.id));
         ASSERT_TRUE(bool(node)) << entry.id;
         EXPECT_TRUE(dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get())) << entry.id;
     }

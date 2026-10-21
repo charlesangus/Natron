@@ -39,6 +39,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -345,4 +346,9 @@ TEST_F(NativeKeyerTest, ProblemPixelsKeyToFiniteValues)
             }
         }
     }
+}
+
+TEST_F(NativeKeyerTest, RegisteredIdentity)
+{
+    expectNativeIdentity(PLUGINID_NATRON_KEYER, PLUGIN_MAJOR_NATRON_KEYER, "Keyer");
 }

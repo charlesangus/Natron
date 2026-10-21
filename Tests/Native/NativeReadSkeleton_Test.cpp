@@ -37,6 +37,7 @@
 #include <ofxImageEffect.h>
 
 #include "BaseTest.h"
+#include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -145,4 +146,9 @@ TEST_F(NativeReadSkeletonTest, MajorAndFilenameSurviveSaveAndLoad)
     KnobFile* loadedFile = dynamic_cast<KnobFile*>(loaded->getKnobByName(kOfxImageEffectFileParamName).get());
     ASSERT_TRUE(loadedFile != NULL);
     EXPECT_EQ(std::string("/tmp/native-read-skeleton.png"), loadedFile->getValue());
+}
+
+TEST_F(NativeReadSkeletonTest, RegisteredIdentity)
+{
+    expectNativeIdentity(PLUGINID_NATRON_READ, PLUGIN_MAJOR_NATRON_READ, "Read");
 }

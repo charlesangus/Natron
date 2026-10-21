@@ -37,6 +37,7 @@
 
 #include "BaseTest.h"
 #include "NativeParity.h"
+#include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -203,4 +204,9 @@ TEST_F(NativeClampTest, SchedulerModesAgreeWithNoUnplannedPulls)
             EXPECT_EQ(0, unplanned[i]) << "mipmap " << mipmapLevel << ", pool " << poolSizes[i];
         }
     }
+}
+
+TEST_F(NativeClampTest, RegisteredIdentity)
+{
+    expectNativeIdentity(PLUGINID_NATRON_CLAMP, PLUGIN_MAJOR_NATRON_CLAMP, "Clamp");
 }

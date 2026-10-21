@@ -1,4 +1,6 @@
-# M135 - Pool Sharing Flake Fix
+# M135 - Flaky Test Fixes
+
+Originally scoped to the PoolSharing flake. The user widened it on 2026-10-21 to every flaky test found so far; see Phase 135.2.
 
 Make `PoolSharing.WideGraphLeavesGetOneThreadEach` (`Tests/PoolSharing_Test.cpp:656`) deterministic. It failed CI `build-and-test` once during M69 - Minor Cleanup's gate ("leaf 63 got two threads instead of one"). It passed on rerun and in both local runs, and M69 touches no pool or scheduler code.
 
@@ -8,6 +10,7 @@ The likely cause is that the test's premise is timing-dependent, not that the sc
 
 **In:**
 - Confirm the cause, then make the test assert only what the scheduler guarantees.
+- `DeepLayersGraphTest.UnchangedLayersPassThroughRatherThanBeingProduced` (`Tests/DeepLayers_Test.cpp:522`): a segfault seen once under parallel debug ctest. Find the root cause and fix it where it lives, Engine included, since a segfault is not a test-premise issue.
 
 **Out:**
 - Changing `computeTaskBudget` or scheduler admission. If the investigation shows a real scheduler bug, record it and stop for the user; don't fix it here.
@@ -24,4 +27,16 @@ The likely cause is that the test's premise is timing-dependent, not that the sc
   - verify: the reproduction loop that failed before the change passes 500/500 after it, under the same load. The test still fails if `computeTaskBudget` is temporarily changed to give every task `poolMax` threads, so it still guards the wide-graph behaviour. Full `PoolSharing*` suite green.
   - size: M
 
-**Verification gate:** one build. The stressed repeat loop is 500/500, and full ctest is green apart from known goldens. CI `build-and-test` is green on the PR.
+## Phase 135.2: Deep layers segfault
+
+- [ ] M135.P2.T1 — Find and fix the DeepLayersGraphTest segfault
+  - files: `Tests/DeepLayers_Test.cpp`, and the Engine deep-layer code the crash leads to (to be found)
+  - approach:
+    - Seen once: PR CI for M141 - Complete Local Build Environment (run 39591735434, `ctest (legacy)`, debug preset, `ctest -j 4`, inside the new GHCR image). The case segfaulted after 1.67 s and passed on the serial `--rerun-failed -V` that followed. It does not appear in main's last six CI runs.
+    - Reproduce in the debug build: `--gtest_repeat` on the case, and on the whole `DeepLayersGraphTest` suite (it may depend on a sibling case once suites share a process), under CPU load, in both `NATRON_RENDER_SCHEDULER` modes. Get a backtrace: core dump or gdb in the container, see the profiling memory for privileges. A TSan or ASan build of `Tests` is in scope if the plain build won't reproduce it.
+    - Fix the root cause. If it turns out to be a design-level race in the scheduler or cache, record it and stop for the user, as P1 does.
+  - verify: the stressed repeat loop that crashed before passes 500/500 after, in both scheduler modes on the debug preset, and the `DeepLayers*` suites are green.
+  - size: L
+
+**Verification gate:** one build per phase. Both stressed repeat loops are 500/500, and full ctest is green apart from known goldens. CI `build-and-test` is green on the PR.
+- 2026-10-21 — **Scope widened to every flaky test found (user).** So far that means the DeepLayersGraphTest segfault (Phase 135.2). Renamed from "Pool Sharing Flake Fix". Claimed alongside M141 - Complete Local Build Environment and M155 - Per-Suite Test Processes. M155 is fixing shared-process leaks in four other Deep suites, so the two lanes may touch the same Deep Engine code; conflicts are resolved at merge.

@@ -50,7 +50,7 @@ Scouted facts (scouted 2026-10-19 on main `d521f111a`; re-check at promotion):
 
 ## Phase 141.1: Slang in the image
 
-- [ ] M141.P1.T1 — Slang layer in the natron-dev Dockerfile
+- [x] M141.P1.T1 — Slang layer in the natron-dev Dockerfile
   - files: `tools/ci/local/Dockerfile`
   - approach:
     - Add a `RUN` layer after the Mesa relink that downloads the Slang tarball pinned in `cmake/FetchSlang.cmake` (version, URL and SHA256 as `ARG`s with the current values), verifies the hash, and extracts it to a fixed in-image dir such as `/opt/slang`.
@@ -60,7 +60,7 @@ Scouted facts (scouted 2026-10-19 on main `d521f111a`; re-check at promotion):
   - verify: `docker build` of the image succeeds, then in the container `slangc -v` runs and a fresh configure with no network and an empty `.natron-deps/` finds `SLANG_COMPILER` under the image path.
   - size: M
 
-- [ ] M141.P1.T2 — Slang pin drift check
+- [x] M141.P1.T2 — Slang pin drift check
   - files: `tools/ci/local/check-slang-pin.sh` (new), `.github/workflows/checks.yml`
   - approach:
     - The script parses `NATRON_SLANG_VERSION` and `NATRON_SLANG_SHA256` out of `cmake/FetchSlang.cmake` and the `ARG` defaults out of `Dockerfile`, and exits non-zero naming both values when they differ.
@@ -70,7 +70,7 @@ Scouted facts (scouted 2026-10-19 on main `d521f111a`; re-check at promotion):
 
 ## Phase 141.2: Syntax checker in the repo
 
-- [ ] M141.P2.T1 — Move syntax-check into tools/ and give it a file-path CLI
+- [x] M141.P2.T1 — Move syntax-check into tools/ and give it a file-path CLI
   - files: `tools/ci/local/syntax-check.py` (new), `build/syntax-check.py` (left alone: untracked)
   - approach:
     - Port the untracked script. Resolve the main checkout and the container name (`NATRON_DEV_CONTAINER`, default as in `devshell.sh`) from the script's location and the environment, with no hard-coded host paths.
@@ -80,7 +80,7 @@ Scouted facts (scouted 2026-10-19 on main `d521f111a`; re-check at promotion):
   - verify: run with an explicit `.cpp` in `Engine/` (OK), a file with a deliberate syntax error in a scratch worktree (FAIL with the error line), no arguments on a branch with a changed file, and `<root> <ref>` positionals (usage error).
   - size: M
 
-- [ ] M141.P2.T2 — Include paths for test and third-party TUs
+- [x] M141.P2.T2 — Include paths for test and third-party TUs
   - files: `tools/ci/local/syntax-check.py`
   - approach:
     - For a `Tests/**.cpp` TU with no DB entry, take the flags of a real `Tests` target entry and add the target's include dirs (`Tests`, `libs/xxhash`, gtest/gmock) by reading them from that same entry's `-I`/`-isystem` set, not from a hand list, so it follows `Tests/CMakeLists.txt:160`.
@@ -88,7 +88,7 @@ Scouted facts (scouted 2026-10-19 on main `d521f111a`; re-check at promotion):
   - verify: syntax-check a new test file that includes `xxhash.h` and `CountingTestEffect.h` (not in the DB): OK; a test that includes a missing header: FAIL showing the header name.
   - size: M
 
-- [ ] M141.P2.T3 — GPU-era compile database on demand
+- [x] M141.P2.T3 — GPU-era compile database on demand
   - files: `tools/ci/local/syntax-check.py`, `tools/ci/local/README.md`
   - approach:
     - When a changed TU lives under `Engine/Gpu/` or includes a generated kernel header (`GpuKernel*`, `slang_add_kernel` outputs), and the compile DB is older than the newest `Engine/Gpu/Kernels/*` or `Engine/Gpu/CMakeLists.txt` change, run `cmake -S . -B build/syntax -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON` (flags matching the `fast` preset in `build.sh`) inside the container and build only the Slang kernel-registry generation targets (`ninja -t targets` to name them), then use `build/syntax/compile_commands.json`.
@@ -100,7 +100,7 @@ Scouted facts (scouted 2026-10-19 on main `d521f111a`; re-check at promotion):
 
 ## Phase 141.3: Debug in remote builds, readable ctest failures
 
-- [ ] M141.P3.T1 — Re-run failed ctest cases with -V
+- [x] M141.P3.T1 — Re-run failed ctest cases with -V
   - files: `tools/ci/local/test.sh`
   - approach:
     - When `NATRON_CTEST_JOBS` is greater than 1 and the parallel `ctest` run fails, run `ctest --rerun-failed -V` serially on the same build dir after it (same env, Xvfb and plugin paths), print a header line, and exit with the first run's non-zero status.
@@ -109,7 +109,7 @@ Scouted facts (scouted 2026-10-19 on main `d521f111a`; re-check at promotion):
   - verify: run `NATRON_CTEST_JOBS=4 tools/ci/local/test.sh ctest debug` against a tree with one case forced to `assert()`-fail (temporary local edit, not committed): the output ends with the failing case's full `-V` log including the assert text, and the exit status is non-zero. A passing run prints no re-run section.
   - size: M
 
-- [ ] M141.P3.T2 — `debug` preset for remote builds
+- [x] M141.P3.T2 — `debug` preset for remote builds
   - files: `tools/ci/remote/build.sh`, `.github/workflows/remote-build.yml`
   - approach:
     - Add `debug` to the `preset` choice in the workflow and to the accepted values in `build.sh` (`:78`, the usage text, the error text), keeping `fast` the default.
@@ -121,7 +121,7 @@ Scouted facts (scouted 2026-10-19 on main `d521f111a`; re-check at promotion):
 
 ## Phase 141.4: Worktree bootstrap
 
-- [ ] M141.P4.T1 — Track the appimagetool wrapper generator
+- [x] M141.P4.T1 — Track the appimagetool wrapper generator
   - files: `tools/ci/local/make-appimagetool-wrapper.sh` (new), `tools/ci/local/package.sh`
   - approach:
     - Read the existing wrapper's behaviour (`build/appimagetool-wrapper/appimagetool`, the 478-byte script that execs `appimagetool.real` with `-n`) and write a script that creates it in a given `build/appimagetool-wrapper/` dir from a real `appimagetool` (path argument or the copy already fetched by `release/make-appimage.sh`; read that script to find where it comes from).
@@ -129,7 +129,7 @@ Scouted facts (scouted 2026-10-19 on main `d521f111a`; re-check at promotion):
   - verify: remove a scratch copy of the wrapper dir (a literal path below `build/`), run `package.sh fast` on an existing fast tree: the wrapper is regenerated and an AppImage is produced; with no real tool present it falls back to the existing behaviour.
   - size: M
 
-- [ ] M141.P4.T2 — Opt-out for build.sh's submodule update
+- [x] M141.P4.T2 — Opt-out for build.sh's submodule update
   - files: `tools/ci/local/build.sh`
   - approach:
     - When `NATRON_SKIP_SUBMODULE_UPDATE=1`, skip the host-side `git submodule update --init --recursive` at `build.sh:188-196` and instead verify that each required submodule (`Tests/google-mock`, `Tests/google-test`, `libs/OpenFX`, `libs/SequenceParsing`) is checked out, failing with a clear message if one is not.
@@ -137,7 +137,7 @@ Scouted facts (scouted 2026-10-19 on main `d521f111a`; re-check at promotion):
   - verify: with the variable set and `libs/OpenFX` on a non-recorded branch commit, `build.sh` does not move it (`git -C libs/OpenFX rev-parse HEAD` unchanged); unset, it behaves as before; with the variable set and a submodule removed, it exits non-zero naming it.
   - size: M
 
-- [ ] M141.P4.T3 — Worktree bootstrap script
+- [x] M141.P4.T3 — Worktree bootstrap script
   - files: `tools/ci/local/worktree-init.sh` (new)
   - approach:
     - `worktree-init.sh [<worktree-path>]` (default the current checkout), run from the host, does the following in order, each step idempotent:
@@ -155,7 +155,7 @@ Scouted facts (scouted 2026-10-19 on main `d521f111a`; re-check at promotion):
 
 Runs before Phase 141.5, so the docs describe it. The repo is public, so the GHCR package is public and its storage is free.
 
-- [ ] M141.P6.T1 — Content-hash image tag and publish job
+- [x] M141.P6.T1 — Content-hash image tag and publish job
   - files: `tools/ci/local/dev-image-tag.sh` (new), `.github/workflows/dev-image.yml` (new, reusable through `workflow_call` and runnable through `workflow_dispatch`)
   - approach:
     - `dev-image-tag.sh` prints `ghcr.io/charlesangus/natron-dev:<tag>`, where `<tag>` is the first 16 hex characters of a SHA-256 over the Dockerfile and `cmake/FetchSlang.cmake`, in a fixed order. It is the single definition of the tag, used by the workflow, `devshell.sh` and CI.
@@ -164,7 +164,7 @@ Runs before Phase 141.5, so the docs describe it. The repo is public, so the GHC
   - verify: dispatch it on the milestone branch. The first run pushes, and a re-run reports the tag present and skips the build. `docker pull` of the tag works locally, and `slangc -v` in it prints the pinned version.
   - size: M
 
-- [ ] M141.P6.T2 — devshell.sh pulls the published image
+- [x] M141.P6.T2 — devshell.sh pulls the published image
   - files: `tools/ci/local/devshell.sh`, `tools/ci/local/build.sh` (only if it names the image)
   - approach:
     - Resolve the image through `dev-image-tag.sh`. If it isn't present locally, `docker pull` it, and fall back to a local `docker build` when the pull fails (offline, or a Dockerfile change not yet published).
@@ -172,7 +172,7 @@ Runs before Phase 141.5, so the docs describe it. The repo is public, so the GHC
   - verify: on a host with the tag absent locally, devshell pulls it. With the network blocked or the tag missing, it builds locally. A running container is left alone.
   - size: M
 
-- [ ] M141.P6.T3 — CI and remote builds run in the published image
+- [x] M141.P6.T3 — CI and remote builds run in the published image
   - files: `.github/workflows/ci.yml`, `.github/workflows/remote-build.yml`
   - approach:
     - Each workflow first calls `dev-image.yml`, which builds and pushes the image if a PR changed the Dockerfile. The build jobs then run in its output image instead of `aswf/ci-vfxall:2027-clang21.1`.
@@ -183,7 +183,7 @@ Runs before Phase 141.5, so the docs describe it. The repo is public, so the GHC
 
 ## Phase 141.5: Documentation
 
-- [ ] M141.P5.T1 — Document the local environment
+- [x] M141.P5.T1 — Document the local environment
   - files: `tools/ci/local/README.md`, `tools/ci/remote/README.md`
   - approach:
     - `local/README.md`: add sections for the Slang layer (what `SLANG_ROOT` is, the drift check, that CI still downloads), "Checking syntax before a build" (the new tool's CLI, GPU-era trees, one build per container), "Worktree lanes" (`worktree-init.sh`, `NATRON_SKIP_SUBMODULE_UPDATE`), and the failed-case `-V` re-run in the `test.sh` section.
@@ -195,6 +195,7 @@ Runs before Phase 141.5, so the docs describe it. The repo is public, so the GHC
 
 ## Decisions
 
+- 2026-10-21 — Phase gate. PR CI is green in the published image: the image was built and pushed, the debug build passed, and both ctest legs passed after one flaky Deep segfault was rerun. A remote `debug --tests` run built with Debug flags, ran ctest at `-j 4` and packaged no AppImage; one Deep teardown crash in it passed on the `-V` re-run. Both flakes went to M135 - Flaky Test Fixes. The image also carries the glslang source tree (`GLSLANG_ROOT`), because CI no longer caches `.natron-deps`, and the pin check covers both toolchains. syntax-check also reconfigures when a TU's CMake directory is new to the compile database (found while checking M120). The Mesa relink now reaches CI too; it is functionally a no-op on GPU-less runners. Not run: P4.T3's offline `build.sh fast --reconfigure` in a fresh lane. CI configuring inside the image with no Slang download covers the same path.
 - 2026-10-21 — **Publish the dev image to GHCR (user):** we layer Slang and a Mesa relink on top of ASWF, so local, CI and remote builds share one prebuilt image tagged by content hash. This reverses the earlier scope line that CI runs the bare base image. Added as Phase 141.6.
 - 2026-10-21 — **Claimed despite the file-overlap test (user-directed):** the user asked to run this milestone and M155 - Per-Suite Test Processes in parallel lanes. Overlapping files: `tools/ci/local/README.md` with M107 - GPU Viewer Hand-off; `tools/ci/local/test.sh` with the parked M64 - Tiled Rendering; and `tools/ci/local/test.sh`, both READMEs and `remote-build.yml` with M155. Conflicts are resolved at merge.
 

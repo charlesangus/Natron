@@ -15,6 +15,7 @@ set(_natron_serial_suites
 # legacy and task-graph scheduler runs.
 set(_natron_long_suite_timeouts
     BaseTest 540
+    FrameGraphBuild 900
 )
 
 set(_natron_long_suites "")

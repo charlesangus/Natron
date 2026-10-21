@@ -82,6 +82,8 @@ const TestPluginVersion kTestPlugins[] = {
     { kNatronTestTwoInputCopyPluginID, kNatronTestTwoInputCopyMajor },
     { kNatronTestGeneratorPluginID, kNatronTestGeneratorMajor },
     { kNatronTestPointMatrixPluginID, kNatronTestPointMatrixMajor },
+    { kNatronTestRGBGeneratorPluginID, kNatronTestRGBGeneratorMajor },
+    { kNatronTestRGBPointPluginID, kNatronTestRGBPointMajor },
     { kNatronTestMultiPlanePluginID, kNatronTestMultiPlaneMajor },
     { kNatronTestMatrixWarpPluginID, kNatronTestMatrixWarpMajor },
     { kNatronTestFrameWindowPluginID, kNatronTestFrameWindowMajor },

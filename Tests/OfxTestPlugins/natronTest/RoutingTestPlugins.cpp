@@ -138,7 +138,8 @@ addColorComponents(ClipDescriptor* clip)
 
 void
 describeProcessQuad(ImageEffectDescriptor& desc,
-                    PageParamDescriptor* page)
+                    PageParamDescriptor* page,
+                    bool processADefault = true)
 {
     static const char* const names[4] = { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA };
     static const char* const labels[4] = { kNatronOfxParamProcessRLabel, kNatronOfxParamProcessGLabel, kNatronOfxParamProcessBLabel, kNatronOfxParamProcessALabel };
@@ -148,7 +149,7 @@ describeProcessQuad(ImageEffectDescriptor& desc,
         BooleanParamDescriptor* param = desc.defineBooleanParam(names[c]);
         param->setLabel(labels[c]);
         param->setHint(hints[c]);
-        param->setDefault(true);
+        param->setDefault((c < 3) || processADefault);
         if (c < 3) {
             param->setLayoutHint(eLayoutHintNoNewLine, 1);
         }
@@ -435,13 +436,16 @@ private:
 };
 
 mDeclarePluginFactory(GeneratorPluginFactory, {}, {});
+mDeclarePluginFactory(RGBGeneratorPluginFactory, {}, {});
 
 void
-GeneratorPluginFactory::describe(ImageEffectDescriptor& desc)
+describeGenerator(ImageEffectDescriptor& desc,
+                  const char* label,
+                  const char* description)
 {
-    desc.setLabel("Generator");
+    desc.setLabel(label);
     desc.setPluginGrouping("Image");
-    desc.setPluginDescription("Test fixture: fills its colour over the project or a chosen format, over the Source if one is connected.");
+    desc.setPluginDescription(description);
     desc.addSupportedContext(eContextGenerator);
     desc.addSupportedContext(eContextGeneral);
     describeCommon(desc);
@@ -449,8 +453,8 @@ GeneratorPluginFactory::describe(ImageEffectDescriptor& desc)
 }
 
 void
-GeneratorPluginFactory::describeInContext(ImageEffectDescriptor& desc,
-                                          ContextEnum /*context*/)
+describeGeneratorInContext(ImageEffectDescriptor& desc,
+                           bool processADefault)
 {
     // Optional in both contexts, as the openfx-misc generators declare it, so the host offers the
     // same input whichever context it instantiates.
@@ -460,7 +464,7 @@ GeneratorPluginFactory::describeInContext(ImageEffectDescriptor& desc,
     addColorComponents(desc.defineClip(kOfxImageEffectOutputClipName));
 
     PageParamDescriptor* page = desc.definePageParam("Controls");
-    describeProcessQuad(desc, page);
+    describeProcessQuad(desc, page, processADefault);
     {
         ChoiceParamDescriptor* param = desc.defineChoiceParam(kNatronTestGeneratorParamExtent);
         param->setLabel("Extent");
@@ -523,9 +527,42 @@ GeneratorPluginFactory::describeInContext(ImageEffectDescriptor& desc,
     }
 }
 
+void
+GeneratorPluginFactory::describe(ImageEffectDescriptor& desc)
+{
+    describeGenerator(desc, "Generator", "Test fixture: fills its colour over the project or a chosen format, over the Source if one is connected.");
+}
+
+void
+GeneratorPluginFactory::describeInContext(ImageEffectDescriptor& desc,
+                                          ContextEnum /*context*/)
+{
+    describeGeneratorInContext(desc, true);
+}
+
 ImageEffect*
 GeneratorPluginFactory::createInstance(OfxImageEffectHandle handle,
                                        ContextEnum /*context*/)
+{
+    return new GeneratorPlugin(handle);
+}
+
+void
+RGBGeneratorPluginFactory::describe(ImageEffectDescriptor& desc)
+{
+    describeGenerator(desc, "RGBGenerator", "Test fixture: the Generator whose process quad leaves alpha off by default.");
+}
+
+void
+RGBGeneratorPluginFactory::describeInContext(ImageEffectDescriptor& desc,
+                                             ContextEnum /*context*/)
+{
+    describeGeneratorInContext(desc, false);
+}
+
+ImageEffect*
+RGBGeneratorPluginFactory::createInstance(OfxImageEffectHandle handle,
+                                          ContextEnum /*context*/)
 {
     return new GeneratorPlugin(handle);
 }
@@ -643,13 +680,16 @@ private:
 };
 
 mDeclarePluginFactory(PointMatrixPluginFactory, {}, {});
+mDeclarePluginFactory(RGBPointPluginFactory, {}, {});
 
 void
-PointMatrixPluginFactory::describe(ImageEffectDescriptor& desc)
+describePointMatrix(ImageEffectDescriptor& desc,
+                    const char* label,
+                    const char* description)
 {
-    desc.setLabel("PointMatrix");
+    desc.setLabel(label);
     desc.setPluginGrouping("Color/Math");
-    desc.setPluginDescription("Test fixture: multiplies RGBA by a 4x4 matrix, one output* row per output channel.");
+    desc.setPluginDescription(description);
     desc.addSupportedContext(eContextFilter);
     desc.addSupportedContext(eContextGeneral);
     describeCommon(desc);
@@ -657,8 +697,8 @@ PointMatrixPluginFactory::describe(ImageEffectDescriptor& desc)
 }
 
 void
-PointMatrixPluginFactory::describeInContext(ImageEffectDescriptor& desc,
-                                            ContextEnum /*context*/)
+describePointMatrixInContext(ImageEffectDescriptor& desc,
+                             bool processADefault)
 {
     ClipDescriptor* src = desc.defineClip(kOfxImageEffectSimpleSourceClipName);
     addColorComponents(src);
@@ -673,7 +713,7 @@ PointMatrixPluginFactory::describeInContext(ImageEffectDescriptor& desc,
     mask->setIsMask(true);
 
     PageParamDescriptor* page = desc.definePageParam("Controls");
-    describeProcessQuad(desc, page);
+    describeProcessQuad(desc, page, processADefault);
 
     const char* const rowNames[4] = { kNatronTestPointMatrixParamOutputRed, kNatronTestPointMatrixParamOutputGreen,
                                       kNatronTestPointMatrixParamOutputBlue, kNatronTestPointMatrixParamOutputAlpha };
@@ -731,9 +771,42 @@ PointMatrixPluginFactory::describeInContext(ImageEffectDescriptor& desc,
     }
 }
 
+void
+PointMatrixPluginFactory::describe(ImageEffectDescriptor& desc)
+{
+    describePointMatrix(desc, "PointMatrix", "Test fixture: multiplies RGBA by a 4x4 matrix, one output* row per output channel.");
+}
+
+void
+PointMatrixPluginFactory::describeInContext(ImageEffectDescriptor& desc,
+                                            ContextEnum /*context*/)
+{
+    describePointMatrixInContext(desc, true);
+}
+
 ImageEffect*
 PointMatrixPluginFactory::createInstance(OfxImageEffectHandle handle,
                                          ContextEnum /*context*/)
+{
+    return new PointMatrixPlugin(handle);
+}
+
+void
+RGBPointPluginFactory::describe(ImageEffectDescriptor& desc)
+{
+    describePointMatrix(desc, "RGBPoint", "Test fixture: the PointMatrix whose process quad leaves alpha off by default.");
+}
+
+void
+RGBPointPluginFactory::describeInContext(ImageEffectDescriptor& desc,
+                                         ContextEnum /*context*/)
+{
+    describePointMatrixInContext(desc, false);
+}
+
+ImageEffect*
+RGBPointPluginFactory::createInstance(OfxImageEffectHandle handle,
+                                      ContextEnum /*context*/)
 {
     return new PointMatrixPlugin(handle);
 }
@@ -747,9 +820,13 @@ getRoutingPluginIDs(OFX::PluginFactoryArray& ids)
     static TwoInputCopyPluginFactory twoInputCopy(kNatronTestTwoInputCopyPluginID, kNatronTestTwoInputCopyMajor, 0);
     static GeneratorPluginFactory generator(kNatronTestGeneratorPluginID, kNatronTestGeneratorMajor, 0);
     static PointMatrixPluginFactory pointMatrix(kNatronTestPointMatrixPluginID, kNatronTestPointMatrixMajor, 0);
+    static RGBGeneratorPluginFactory rgbGenerator(kNatronTestRGBGeneratorPluginID, kNatronTestRGBGeneratorMajor, 0);
+    static RGBPointPluginFactory rgbPoint(kNatronTestRGBPointPluginID, kNatronTestRGBPointMajor, 0);
 
     ids.push_back(&twoInputCopy);
     ids.push_back(&generator);
     ids.push_back(&pointMatrix);
+    ids.push_back(&rgbGenerator);
+    ids.push_back(&rgbPoint);
 }
 } // namespace NatronTestOfx

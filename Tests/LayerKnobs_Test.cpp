@@ -123,6 +123,41 @@ TEST_F(BaseTest, PointMatrixGetsChannelSetAdoptingItsQuad)
     EXPECT_FALSE(bool(pointMatrix->getKnobByName("processAllLayers")));
 }
 
+// A quad whose processA defaults to false seeds the channel set's R, G and B.
+TEST_F(BaseTest, RGBPointGetsChannelSetSeededByItsQuad)
+{
+    NodePtr rgbPoint = createNode(QString::fromUtf8("fr.natron.test.RGBPoint"), 1);
+
+    ASSERT_TRUE(bool(rgbPoint));
+
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(rgbPoint->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(bool(channels));
+    EXPECT_EQ(channels, rgbPoint->getLayerKnob());
+    EXPECT_TRUE(isFirstOnItsPage(channels));
+    EXPECT_FALSE(channels->isAnimationEnabled());
+
+    KnobBoolPtr processA = std::dynamic_pointer_cast<KnobBool>(rgbPoint->getKnobByName(kNatronOfxParamProcessA));
+    ASSERT_TRUE(bool(processA));
+    EXPECT_FALSE(processA->getDefaultValue(0));
+    EXPECT_TRUE(processA->getIsSecret());
+    EXPECT_TRUE(processA->getValue());
+    EXPECT_FALSE(processA->getIsPersistent());
+
+    std::vector<ChannelSetRow> rows = channels->getRows();
+    ASSERT_EQ(1u, rows.size());
+    EXPECT_EQ(ChannelSetRow::eModeLayer, rows[0].mode);
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), rows[0].layerOrPattern);
+    std::vector<std::string> rgb;
+    rgb.push_back("R");
+    rgb.push_back("G");
+    rgb.push_back("B");
+    EXPECT_EQ(rgb, rows[0].channels);
+
+    EXPECT_FALSE(bool(rgbPoint->getKnobByName("channels_legacy")));
+    EXPECT_FALSE(bool(rgbPoint->getKnobByName("Source_channels_legacy")));
+    EXPECT_FALSE(bool(rgbPoint->getKnobByName("processAllLayers")));
+}
+
 TEST_F(BaseTest, InvertGetsChannelSetWithEveryChannel)
 {
     NodePtr invert = createNode(QString::fromUtf8("net.sf.openfx.Invert"));
@@ -277,6 +312,7 @@ TEST_F(BaseTest, GeneratorsGetTargetLayerSelectWithButtonsAndAdoptedQuads)
         { "net.sf.openfx.ConstantPlugin", false, "" },
         { "net.sf.openfx.Solid", false, "" },
         { "fr.natron.test.Generator", true, "" },
+        { "fr.natron.test.RGBGenerator", true, "RGB" },
         { "net.sf.openfx.CheckerBoardPlugin", false, "" },
         { "net.sf.openfx.ColorBars", false, "" },
         { "fr.inria.openfx.SeExpr", false, "" },

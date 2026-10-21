@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "Engine/AppManager.h"
+#include "Engine/HostImageMemory.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/Image/StagePlan.h"
@@ -973,23 +974,32 @@ runPassesCpu(EffectInstance& effect,
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
     RenderCancellation cancel(&effect);
 
-    // Left uninitialised: fillBuffer() writes every element, and zeroing here would fault the pages in
-    // on this thread alone. Kept across jobs so that a later plane reuses the pages the first one faulted in.
-    std::unique_ptr<float[]> sourceStorage;
-    std::size_t sourceCapacity = 0;
+    // All scratch comes uninitialised from the pooled huge-page allocator, and is released when the
+    // function returns. Zeroing it here would fault every page in on this thread alone; instead
+    // the threads that first write a page fault it in, and a re-render takes pooled pages that are
+    // already resident. Kept across jobs so that a later plane reuses the pages the first one touched.
+    //
+    // Slot 0 is written whole by fillBuffer(): the window, the halo and the boundary alike.
+    // The other slots are each written whole by the first pass that touches them, before any pass
+    // reads them; a pass that does not write every element must not be added without clearing the
+    // rest here. See the EdgeDetect pass list, the only one with more than one slot:
+    //   slots 1 and 2: copyWorker() copies slot 0 over every row of every plane, or stencilWorker()
+    //                  writes every element of both, and combineWorker() reads only after that;
+    //   slot 3:        suppressionWorker() writes every pixel of every plane, border included.
+    HostScratchFloats sourceStorage;
+    std::vector<HostScratchFloats> extraStorage(list.scratchSlots - 1);
     for (std::size_t j = 0; j < jobs.size(); ++j) {
         const PlaneJob& job = jobs[j];
         const ProcessedPlanes planes(job);
         const int nPlanes = planes.count();
         const std::size_t bufferSize = processing ? planeSize * nPlanes : 0;
-        if (bufferSize > sourceCapacity) {
-            sourceStorage.reset(new float[bufferSize]);
-            sourceCapacity = bufferSize;
+        float* buffer = NULL;
+        if (bufferSize) {
+            sourceStorage.reserve(bufferSize);
+            buffer = sourceStorage.data();
         }
-        float* const buffer = bufferSize ? sourceStorage.get() : NULL;
 
         PassScratch scratch;
-        std::vector<std::vector<float>> extraSlots;
         if (buffer) {
             scratch.rect = bufferRect;
             scratch.width = bufferWidth;
@@ -997,9 +1007,8 @@ runPassesCpu(EffectInstance& effect,
             scratch.nPlanes = nPlanes;
             scratch.planeSize = planeSize;
             scratch.buffers.push_back(buffer);
-            extraSlots.resize(list.scratchSlots - 1);
-            for (std::vector<float>& slot : extraSlots) {
-                slot.assign(bufferSize, 0.f);
+            for (HostScratchFloats& slot : extraStorage) {
+                slot.reserve(bufferSize);
                 scratch.buffers.push_back(slot.data());
             }
 

@@ -105,6 +105,12 @@ public:
     static std::size_t pooledBufferCount();
 
     /**
+     * @brief Sets every float of every pooled buffer to @p value. For tests that check that
+     * scratch taken from the pool is written before it is read.
+     **/
+    static void fillPooled(float value);
+
+    /**
      * @brief Frees every pooled buffer.
      **/
     static void trim();
@@ -136,6 +142,41 @@ public:
      **/
     static int addFreeHook(const FreeHook& hook);
     static void removeFreeHook(int id);
+};
+
+/**
+ * @brief An uninitialised array of floats from HostImageMemory, released when it goes out of
+ * scope. For scratch whose every element is written before it is read: nothing zeroes it, so
+ * the kernel's page zeroing happens on the threads that first write each page, and a buffer
+ * recycled from the pool is not touched at all.
+ *
+ * Not thread-safe; the memory itself may be written from any thread.
+ **/
+class HostScratchFloats {
+public:
+    HostScratchFloats()
+        : _data(nullptr)
+        , _count(0)
+    {
+    }
+
+    ~HostScratchFloats();
+
+    HostScratchFloats(const HostScratchFloats&) = delete;
+    HostScratchFloats& operator=(const HostScratchFloats&) = delete;
+
+    /**
+     * @brief Makes room for @p count floats, with indeterminate contents (a buffer already large
+     * enough is kept, and so are its contents). Throws std::bad_alloc when the memory cannot be had.
+     **/
+    void reserve(std::size_t count);
+
+    float* data() const { return _data; }
+    std::size_t capacity() const { return _count; }
+
+private:
+    float* _data;
+    std::size_t _count;
 };
 
 NATRON_NAMESPACE_EXIT

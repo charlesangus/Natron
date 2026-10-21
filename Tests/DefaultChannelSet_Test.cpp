@@ -108,6 +108,7 @@ const char* const kProcessesAllLayers[] = {
 // user code, which the grouping fallback must not catch.
 const char* const kKeepsColorLayer[] = {
     "fr.natron.test.PointMatrix",
+    "fr.natron.test.PointMatrix1",
     "net.sf.openfx.GradePlugin",
     "net.sf.openfx.ColorCorrectPlugin",
     "net.sf.openfx.Invert",

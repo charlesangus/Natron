@@ -51,7 +51,7 @@ expectSingleVersion(const char* pluginID,
 TEST(PluginIdentity, VersionsOfOnePluginHaveDistinctIDs)
 {
     expectSingleVersion(kNatronTestPointMatrixPluginID, kNatronTestPointMatrixMajor);
-    expectSingleVersion("net.sf.openfx.HueCorrect1", 1);
+    expectSingleVersion(kNatronTestPointMatrix1PluginID, kNatronTestPointMatrix1Major);
 }
 
 TEST(PluginIdentity, TextVersionsHaveDistinctIDs)

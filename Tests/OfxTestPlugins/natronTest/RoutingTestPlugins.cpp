@@ -820,12 +820,14 @@ getRoutingPluginIDs(OFX::PluginFactoryArray& ids)
     static TwoInputCopyPluginFactory twoInputCopy(kNatronTestTwoInputCopyPluginID, kNatronTestTwoInputCopyMajor, 0);
     static GeneratorPluginFactory generator(kNatronTestGeneratorPluginID, kNatronTestGeneratorMajor, 0);
     static PointMatrixPluginFactory pointMatrix(kNatronTestPointMatrixPluginID, kNatronTestPointMatrixMajor, 0);
+    static PointMatrixPluginFactory pointMatrix1(kNatronTestPointMatrix1PluginID, kNatronTestPointMatrix1Major, 0);
     static RGBGeneratorPluginFactory rgbGenerator(kNatronTestRGBGeneratorPluginID, kNatronTestRGBGeneratorMajor, 0);
     static RGBPointPluginFactory rgbPoint(kNatronTestRGBPointPluginID, kNatronTestRGBPointMajor, 0);
 
     ids.push_back(&twoInputCopy);
     ids.push_back(&generator);
     ids.push_back(&pointMatrix);
+    ids.push_back(&pointMatrix1);
     ids.push_back(&rgbGenerator);
     ids.push_back(&rgbPoint);
 }

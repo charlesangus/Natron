@@ -70,9 +70,35 @@ target_compile_options(NatronTestOfxSupport PRIVATE $<$<CXX_COMPILER_ID:GNU,Clan
 
 # natron_add_test_ofx_bundle(<name> SOURCES <src>...)
 #
-# Builds <name>.ofx into NATRON_TEST_OFX_PLUGIN_DIR/<name>.ofx.bundle/Contents/Linux-x86-64/
+# Builds <name>.ofx into NATRON_TEST_OFX_PLUGIN_DIR/<name>.ofx.bundle/Contents/<OFX architecture>/
 # and makes the test binaries depend on it. Only the OFX C API headers are on the
 # include path; a bundle built on the Support layer links NatronTestOfxSupport itself.
+# The directory name the OFX host searches (ofxhPluginCache.cpp's ARCHSTR).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set(NATRON_TEST_OFX_ARCH "Linux-x86")
+    else()
+        set(NATRON_TEST_OFX_ARCH "FreeBSD-x86")
+    endif()
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        string(APPEND NATRON_TEST_OFX_ARCH "-64")
+    endif()
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND NOT CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+        set(NATRON_TEST_OFX_ARCH "MacOS-x86-64")
+    else()
+        set(NATRON_TEST_OFX_ARCH "MacOS")
+    endif()
+elseif(WIN32)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(NATRON_TEST_OFX_ARCH "win64")
+    else()
+        set(NATRON_TEST_OFX_ARCH "win32")
+    endif()
+else()
+    message(FATAL_ERROR "No OFX architecture directory known for ${CMAKE_SYSTEM_NAME}")
+endif()
+
 function(natron_add_test_ofx_bundle name)
     cmake_parse_arguments(PARSE_ARGV 1 ARG "" "" "SOURCES")
     if(NOT ARG_SOURCES)
@@ -80,11 +106,12 @@ function(natron_add_test_ofx_bundle name)
     endif()
 
     add_library(${name} MODULE ${ARG_SOURCES})
-    set(bundle_binary_dir "${NATRON_TEST_OFX_PLUGIN_DIR}/${name}.ofx.bundle/Contents/Linux-x86-64")
+    set(bundle_binary_dir "${NATRON_TEST_OFX_PLUGIN_DIR}/${name}.ofx.bundle/Contents/${NATRON_TEST_OFX_ARCH}")
     set_target_properties(${name} PROPERTIES
         PREFIX ""
         SUFFIX ".ofx"
         LIBRARY_OUTPUT_DIRECTORY "${bundle_binary_dir}"
+        RUNTIME_OUTPUT_DIRECTORY "${bundle_binary_dir}"
         CXX_VISIBILITY_PRESET hidden
         VISIBILITY_INLINES_HIDDEN ON
     )
@@ -92,7 +119,8 @@ function(natron_add_test_ofx_bundle name)
     # which the OFX host does not look in.
     foreach(config ${CMAKE_CONFIGURATION_TYPES})
         string(TOUPPER "${config}" config_upper)
-        set_target_properties(${name} PROPERTIES LIBRARY_OUTPUT_DIRECTORY_${config_upper} "${bundle_binary_dir}")
+        set_target_properties(${name} PROPERTIES LIBRARY_OUTPUT_DIRECTORY_${config_upper} "${bundle_binary_dir}"
+            RUNTIME_OUTPUT_DIRECTORY_${config_upper} "${bundle_binary_dir}")
     endforeach()
     target_include_directories(${name} PRIVATE ${CMAKE_SOURCE_DIR}/libs/OpenFX/include)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")

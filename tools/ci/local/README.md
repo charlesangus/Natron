@@ -61,10 +61,12 @@ definition of that tag; `devshell.sh` and the workflows all call it:
 tools/ci/local/dev-image-tag.sh
 ```
 
-`.github/workflows/dev-image.yml` builds and pushes the image (under the
-content-hash tag and `:latest`) when that tag is not yet in the registry. It
-is reusable through `workflow_call`, which `ci.yml` and `remote-build.yml`
-do first, so CI and remote builds run inside the published image
+`.github/workflows/dev-image.yml` ensures the content-hash tag exists on
+every run, building and pushing the image when it is missing. Only a run whose
+caller ref is `main` (and that is not a pull request) moves `:latest`, and it
+does so whether or not that run built the hash tag; any other run leaves
+`:latest` alone. The workflow is reusable through `workflow_call`, which
+`ci.yml` and `remote-build.yml` do first, so CI and remote builds run inside the published image
 (`container:` jobs), and it can be dispatched by hand with
 `gh workflow run dev-image.yml --ref <branch>`.
 

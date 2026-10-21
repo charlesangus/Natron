@@ -196,14 +196,16 @@ in_container() {
 if ! in_container; then
     if [[ "${NATRON_SKIP_SUBMODULE_UPDATE:-}" == "1" ]]; then
         echo "== build.sh: NATRON_SKIP_SUBMODULE_UPDATE=1, checking submodules are present =="
-        for submodule in Tests/google-mock Tests/google-test libs/OpenFX libs/SequenceParsing; do
-            if [[ ! -e "${REPO_ROOT}/${submodule}/.git" ]]; then
-                echo "build.sh: ERROR: submodule ${submodule} is not checked out." >&2
-                echo "Run 'git submodule update --init --recursive' (or tools/ci/local/worktree-init.sh)," >&2
-                echo "or unset NATRON_SKIP_SUBMODULE_UPDATE." >&2
-                exit 1
-            fi
-        done
+        # '+' (checked out at a different commit) is allowed: pinning a
+        # libs/OpenFX fork branch is intended. '-' and 'U' cannot compile.
+        bad_submodules="$(git -C "${REPO_ROOT}" submodule status --recursive | grep -E '^[-U]' || true)"
+        if [[ -n "${bad_submodules}" ]]; then
+            echo "build.sh: ERROR: submodules not ready (- = not initialised, U = conflict):" >&2
+            printf '%s\n' "${bad_submodules}" | awk '{ print "  " substr($0, 1, 1) " " $2 }' >&2
+            echo "Run 'git submodule update --init --recursive' (or tools/ci/local/worktree-init.sh)," >&2
+            echo "or unset NATRON_SKIP_SUBMODULE_UPDATE." >&2
+            exit 1
+        fi
     else
         echo "== build.sh: ensuring submodules are initialized (host side) =="
         if ! git -C "${REPO_ROOT}" submodule update --init --recursive; then

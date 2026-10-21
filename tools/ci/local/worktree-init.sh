@@ -81,9 +81,13 @@ assets_current() {
         printf '%s' "${PLUGINS_WANT:-}"
     )"
     [[ -n "${wanted}" && "$(cat "${ASSETS_DIR}/Plugins/.natron-plugin-pins")" == "${wanted}" ]] || return 1
+    # A bundle directory can survive a partial delete or interrupted copy, so
+    # the loadable binary is what proves each bundle is present.
     local bundle
-    for bundle in Plugins/metadataCompare Plugins/metadataContribute Plugins/metadataTimeCode TestPlugins/metadataPrint; do
-        [[ -d "${ASSETS_DIR}/${bundle}.ofx.bundle" ]] || return 1
+    for bundle in Plugins/IO Plugins/Misc Plugins/CImg Plugins/Arena \
+        Plugins/metadataCompare Plugins/metadataContribute Plugins/metadataTimeCode \
+        TestPlugins/metadataPrint; do
+        [[ -f "${ASSETS_DIR}/${bundle}.ofx.bundle/Contents/Linux-x86-64/${bundle##*/}.ofx" ]] || return 1
     done
     return 0
 }

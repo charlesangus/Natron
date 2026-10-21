@@ -36,6 +36,9 @@
 #include <mutex>
 #include <optional>
 
+#include <QtCore/QDebug>
+#include <QtCore/QString>
+
 #include "Engine/Gpu/GlInterop.h"
 #include "Engine/Gpu/GpuBuffer.h"
 #include "Engine/Gpu/GpuRuntime.h"
@@ -178,6 +181,35 @@ struct ViewerHandoff::Imp {
     std::vector<ViewerHandoffReadback> completed;
     std::size_t wantedCapacity = 0;
     unsigned dispatchesSinceRelease = 0;
+
+    // The rung last written to the log; unset until the first one is.
+    std::optional<ViewerHandoffRung> loggedRung;
+
+    // Logs the rung once when it is first chosen and again whenever it changes, with its reason.
+    void noteRung()
+    {
+        const ViewerHandoffRung r = rung.load(std::memory_order_acquire);
+        if (loggedRung && (*loggedRung == r)) {
+            return;
+        }
+        loggedRung = r;
+        std::string why;
+        {
+            std::lock_guard<std::mutex> k(mutex);
+            why = reason;
+        }
+        QString line = QString::fromLatin1("Viewer hand-off rung: %1").arg( QString::fromLatin1( toString(r) ) );
+        if (!why.empty()) {
+            line += QString::fromLatin1(" (%1)").arg( QString::fromStdString(why) );
+        }
+        qInfo().noquote() << line;
+    }
+
+    struct NoteRungOnExit {
+        Imp* imp;
+
+        ~NoteRungOnExit() { imp->noteRung(); }
+    };
 
     void setReason(const std::string& r)
     {
@@ -522,6 +554,7 @@ ViewerHandoff::maintain()
     if (!_imp->created) {
         return false;
     }
+    Imp::NoteRungOnExit note { _imp.get() };
     std::shared_ptr<Device> dev = _imp->currentDevice();
     if (dev) {
         bool lost = dev->runtime->isLost();
@@ -576,6 +609,7 @@ ViewerHandoff::present(int textureIndex,
     if (!maintain()) {
         return refuse("rung cpu: " + rungReason());
     }
+    Imp::NoteRungOnExit note { _imp.get() };
     std::shared_ptr<Device> dev = _imp->currentDevice();
     if ((textureIndex < 0) || (textureIndex >= kTextureCount)) {
         return refuse("texture index " + std::to_string(textureIndex) + " out of range");
@@ -714,6 +748,7 @@ ViewerHandoff::ensureCapacity(std::size_t bytes)
     if (!maintain()) {
         return refuse("rung cpu: " + rungReason());
     }
+    Imp::NoteRungOnExit note { _imp.get() };
     std::shared_ptr<Device> dev = _imp->currentDevice();
     _imp->wantedCapacity = std::max(_imp->wantedCapacity, bytes);
 

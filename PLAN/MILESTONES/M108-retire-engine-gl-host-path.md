@@ -181,7 +181,7 @@ Nothing native or host-side renders through GL any more:
   - verify: Phase build. The `GlRendererPick.*` table tests (pure data, no GL) cover a UUID match, a PCI match, the default fallback, software refused under Auto and accepted under Force, and an empty list.
   - size: L
 
-- [ ] M108.P2.T3 — ⚑ GPUContextPool owns the GL-suite state, set once at startup (after M137 - Native Base Class Flexibility merges: `AppManager.cpp`)
+- [x] M108.P2.T3 — ⚑ GPUContextPool owns the GL-suite state, set once at startup (after M137 - Native Base Class Flexibility merges: `AppManager.cpp`)
   - files: `Engine/GPUContextPool.h`, `Engine/GPUContextPool.cpp`, `Engine/AppManager.cpp`
   - approach:
     - Add `GPUContextPool::setRenderingState(bool enabled, GLRendererID, std::string status)`, `isRenderingEnabled()`, `getRendererStatus()`, and the constant `kMaxRenderGLContexts = 2` (the old default). Add the test overrides `setRenderingEnabledForTests(std::optional<bool>)` and `setMaxContextsForTests(std::optional<int>)`.
@@ -275,3 +275,4 @@ Nothing native or host-side renders through GL any more:
   - **Full ctest:** 2549/2550 on RADV and lavapipe in both scheduler modes. The one failure is the same test.
   - A fixer is finding whether the engine or the test is at fault.
 - 2026-10-20 — **The channel-subset failure was an engine bug, now fixed in `71b2e3f63`.** `renderHandler` copied unprocessed channels back from the source and only then ran `applyMaskMix`. The mix blends every channel in float, so it rounded the bits it had just copied, on the CPU path as well as GL. The copy now runs after the mix. The strict GL run passes 7/7, and a ctest subset of 538 mask, mix, channel and image tests passes on RADV with taskgraph.
+- 2026-10-20 — **M108.P2.T3 (`25b3d70b4`), not yet compiled** (the build slot is with M107). The pool state sits behind its own mutex, and the test overrides are atomics. A `getRendererID()` accessor was added, since both context functions need the ID. Startup picks the chosen device's summary by matching its index to the selector. With mode Off, the log line says the GL suite is disabled and gives `pickRenderer`'s reason. `GPUContextPool.cpp` still includes `Settings.h`; P2.T4 and P2.T5 drop it.

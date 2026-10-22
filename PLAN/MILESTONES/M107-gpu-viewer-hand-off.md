@@ -314,6 +314,49 @@ Two things block the end-to-end acceptance. First, keeping the root on the devic
 - **Merges:** P5.T1 lands only after M109 merges, and the branch is rebased on main after M100 merges.
 - **Not applicable:** GUI bench (`tools/bench/gui/run.sh`), because no `Gui/NodeGraph*`, `NodeGui*`, `Edge*`, knob-expression or naming files change.
 
+## Phase 107.7: Playback and first-frame fixes (from P6.T2's diagnosis)
+
+- [ ] M107.P7.T1 — Fill the hand-off cache in place, with tile copies in parallel; upload the readback rung straight from mapped memory
+  - files: `Engine/ViewerHandoff.h`, `Engine/ViewerHandoff.cpp`, `Engine/Gpu/GlInterop.h`, `Engine/Gpu/GlInterop.cpp`, `Engine/ViewerInstance.cpp`, `Tests/Native/ViewerHandoff_Test.cpp`, `Tests/Gpu/GlInterop_Test.cpp`
+  - approach:
+    - Productionise the diagnosis prototype (`.local/m107/p6t2/proto-fix.diff`, which also carries the timing probes, switched by `NATRON_M107_TIMING`/`NATRON_M107_PROTO`). Keep the behaviour without the probes or the switches: delete `Engine/Gpu/M107Probe.h` and every probe call.
+    - The host copy is read in place from the slot's mapped readback memory. An in-place view replaces the copying `readHostCopy`, so there is one API, and `ViewerHandoff_Test`'s readback check is updated to it.
+    - `insertCacheTiles` allocates the tiles serially, then copies them with `parallelForOnGlobalPool`.
+    - On the readback rung, `glTexSubImage2D` uploads from the mapped host memory without a PBO, so the per-frame 132 MB PBO reallocation and `memcpy` go.
+    - The slot must not be reused while the fill or the upload still reads its mapped memory; state how that is guaranteed.
+  - verify: remote `fast --tests` green on lavapipe. M107's suites on RADV from the remote build tree, as for P6.T1. UAT readback and hostsync configs `SUMMARY 0 failure(s)`. A headless readback rerun of UHD/8K × 8u/32f against main `3c2ba44fc` (3 interleaved rounds): UHD 32f playback ≥ 15 fps, as the prototype measured.
+  - size: M
+
+- [ ] M107.P7.T2 — Run the hand-off cache fill on a worker
+  - files: `Engine/ViewerHandoff.h`, `Engine/ViewerHandoff.cpp`, `Engine/ViewerInstance.cpp`
+  - approach: after the upload, the fill (tile allocation plus parallel copies) runs as a job on the global pool, holding the slot. `present` waits on that slot's pending fill before it reuses the slot, so on zerocopy and hostsync the GUI thread does no fill work in steady playback. Device loss or a viewer teardown waits for, or cancels, a pending fill before the slot's memory is freed.
+  - verify: as P7.T1, plus a `ViewerHandoff_Test` case in which a fill is still pending when the slot comes round again, and one where teardown happens with a fill pending.
+  - size: M
+
+- [ ] M107.P7.T3 — 8K playback stalls: parallel CPU fallback, logged refusal reason, and keep displayed roots resident
+  - files: `Engine/ViewerInstance.cpp`, `Engine/ViewerHandoff.cpp`
+  - approach:
+    - Log the reason `present` refuses a device root, once per reason per session.
+    - Split `viewerProcessRectOnCpu` in the `drawDeviceRootOnCpu` fallback across the global pool by rows.
+    - Then confirm the refusal reason on an 8K 8u playback. If it is eviction under VRAM pressure while playback renders ahead, keep the displayed and queued roots from being evicted (for example by holding a reference until displayed). Write the finding in Decisions before changing eviction.
+  - verify: headless readback 8K 8u playback has no frame over 1 s, and playback fps ≥ main's 1.55. The UAT configs still pass.
+  - size: M
+
+- [ ] M107.P7.T4 — Readback rung: overlap the GPU wait
+  - files: `Engine/ViewerHandoff.cpp`, `Engine/Gpu/GlInterop.cpp`
+  - approach: the upload's `waitProduced` (~19 ms at UHD 32f) no longer runs straight after `produce` on the GUI thread. Either present frame N−1's slot while frame N computes, using the existing double buffer, or wait on the render thread before handing the frame to the GUI.
+  - verify: as P7.T1. UHD 32f readback playback improves over P7.T2's numbers, and tweak and seek don't regress.
+  - size: M
+
+- [ ] M107.P7.T5 — First frame: compile the viewer kernel and build the rings ahead of time
+  - files: `Engine/ViewerHandoff.h`, `Engine/ViewerHandoff.cpp`, `Gui/ViewerGL.cpp`
+  - approach:
+    - Compile the viewer-process kernel on a worker at `ViewerHandoff::create`, and again when the display processor or depth changes, so the first frame finds it ready.
+    - Build the interop rings at viewport size at `initializeGL` and on resize.
+    - On the zerocopy rung, create the host readback buffers lazily.
+  - verify: headless first-frame time with a cold `XDG_CACHE_HOME` at UHD 8u and 32f is within +50 ms of main's, against P6.T2's ~+220 ms. The UAT configs pass.
+  - size: M
+
 ## Overlaps with running milestones
 
 | M107 file | Running owner | Handling |
@@ -397,3 +440,18 @@ Two things block the end-to-end acceptance. First, keeping the root on the devic
   - UHD 8u: 18.9 against 5.1 (a win).
 
   The PBO copy is therefore not the playback bottleneck: the cost runs per playback frame, doesn't depend on the rung, and scales with frame bytes. The diagnosis consultant has this data.
+- 2026-10-22 — **P6.T2 diagnosis (consultant; instrumented release build; `.local/m107/p6t2/`, prototype diff `proto-fix.diff`).** At UHD 32f readback, each playback frame spent, all on the GUI thread: PBO resize + `memcpy` 90 ms, `readHostCopy` into a new vector 105 ms, `insertCacheTiles` allocate + per-tile copy 90 ms, GPU wait 19 ms, `glTexSubImage2D` 12 ms. Buffers of 32 MiB or more go to glibc `mmap`/`munmap`, so the PBO storage and the vector are fresh pages every frame, and the cache tiles are fresh mapped cache-file pages too. The GUI thread takes ~80k minor faults per 32f frame, at ~40% user and ~51% system time. Main avoids this by filling tiles on workers and uploading ~1 MB per-tile PBOs.
+  - **Every rung pays the cache fill,** because `produce(hostCopy=true)` runs whenever the texture cache is on. This matches the desktop's ~158 ms gap on all rungs.
+  - **8K 8u playback has separate ~5.5 s stalls.** `present` refuses the frame, and `drawDeviceRootOnCpu` then runs OCIO single-threaded on the GUI thread. Eviction of the ~566 MB roots under VRAM pressure is suspected but not logged.
+  - **The +220 ms first frame is setup:** kernel compile 75–314 ms with a cold cache, ring build 85–170 ms, first PBO copy ~100 ms.
+  - **Prototype of the in-place fill, parallel tiles and direct upload,** 3 interleaved rounds, readback rung, headless, before → fix / main:
+
+    | Case | Playback fps | Tweak ms |
+    |---|---|---|
+    | UHD 32f | 3.94 → 15.6 / 24.2 | 119 → 61 / 57 |
+    | UHD 8u | 14.7 → 45.3 / 6.1 | — |
+    | 8K 32f | 1.29 → 3.08 / 6.61 | — |
+    | 8K 8u | 0.64 → 2.49 / 1.55 (stalls remain) | — |
+
+    The readback UAT passes with the prototype.
+- 2026-10-22 — **Phase 107.7 added (PM),** so P6.T3's "no case slower than main beyond noise without an explanation" can hold. It covers the ranked fixes: in-place fill with parallel tiles and direct upload (P7.T1), the fill on a worker (P7.T2), the 8K stalls (P7.T3), overlapping the readback rung's GPU wait (P7.T4), and first-frame setup ahead of time (P7.T5). P6.T3 runs after Phase 107.7. None of these files is in another running milestone; no other row is `doing`.

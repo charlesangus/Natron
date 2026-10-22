@@ -1896,13 +1896,24 @@ isRegisteredAdapter(DataKindEnum from,
     return (from == eDataKindDeep) && (to == eDataKindImage);
 }
 
+// Raw reaches an image input only at the Viewer, which shows the values as they are for display
+// (RawDisplay) and feeds nothing downstream. It is kept out of the table above so that no other
+// image input, whatever its virtual answers, can take raw without a RawToImage in the graph.
+static bool
+isViewerOnlyAdapter(const EffectInstancePtr& effect,
+                    DataKindEnum from,
+                    DataKindEnum to)
+{
+    return (from == eDataKindRaw) && (to == eDataKindImage) && dynamic_cast<const ViewerInstance*>(effect.get());
+}
+
 static bool
 inputAcceptsViaAdapter(const EffectInstancePtr& effect,
                        int inputNb,
                        DataKindEnum from,
                        DataKindEnum required)
 {
-    return isRegisteredAdapter(from, required) && effect->inputAcceptsDataKindViaAdapter(inputNb, from);
+    return (isRegisteredAdapter(from, required) || isViewerOnlyAdapter(effect, from, required)) && effect->inputAcceptsDataKindViaAdapter(inputNb, from);
 }
 
 // The node whose consumers receive what node delivers. A GroupOutput has none inside its group:

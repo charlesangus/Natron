@@ -60,7 +60,9 @@ struct Chain {
 
 /**
  * @brief Creates the chain below read, in read's group, and returns it; a chain whose nodes could
- * not all be created or connected is removed again and returned empty.
+ * not all be created or connected is removed again and returned empty. In the interface the chain
+ * joins the undo command that created read (NodeGraphI::addNodesToCreationOf()), so undoing the
+ * Read's creation removes the chain and its backdrop with it.
  **/
 Chain buildChain(const NodePtr& read);
 

@@ -30,6 +30,7 @@
 #include <cmath>
 #include <list>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -56,6 +57,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
+#include "Engine/Nodes/IO/RawExtensions.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
@@ -176,7 +178,13 @@ TEST_F(NativeReadEntryPointsTest, ReaderLookupFollowsTheReadableExtensions)
 
     std::vector<std::string> supported;
     appPTR->getSupportedReaderFileFormats(&supported);
-    EXPECT_EQ(readable, supported);
+    std::vector<std::string> expected = readable;
+    for (std::string_view raw : RawExtensions::kExtensions) {
+        expected.push_back(std::string(raw));
+    }
+    std::sort(expected.begin(), expected.end());
+    std::sort(supported.begin(), supported.end());
+    EXPECT_EQ(expected, supported);
 
     for (const std::string& ext : readable) {
         EXPECT_EQ(std::string(PLUGINID_NATRON_READ), appPTR->getReaderPluginIDForFileType(ext)) << ext;
@@ -184,7 +192,8 @@ TEST_F(NativeReadEntryPointsTest, ReaderLookupFollowsTheReadableExtensions)
         std::transform(upper.begin(), upper.end(), upper.begin(), [](unsigned char ch) { return (char)std::toupper(ch); });
         EXPECT_EQ(std::string(PLUGINID_NATRON_READ), appPTR->getReaderPluginIDForFileType(upper)) << upper;
     }
-    EXPECT_EQ(std::string(), appPTR->getReaderPluginIDForFileType("cr2"));
+    EXPECT_EQ(std::string(PLUGINID_NATRON_READ), appPTR->getReaderPluginIDForFileType("cr2"));
+    EXPECT_EQ(std::string(PLUGINID_NATRON_READ), appPTR->getReaderPluginIDForFileType("RAF"));
     EXPECT_EQ(std::string(), appPTR->getReaderPluginIDForFileType("mov"));
     EXPECT_EQ(std::string(), appPTR->getReaderPluginIDForFileType(""));
 }

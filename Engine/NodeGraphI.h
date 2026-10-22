@@ -41,6 +41,15 @@ public:
     virtual ~NodeGraphI() {}
 
     virtual void onNodesCleared() = 0;
+
+    /**
+     * @brief Makes `added`, nodes created on behalf of `created` just after it, part of the undo
+     * command that created `created`, so that one undo removes them together. When another
+     * command came in between, they get an undo command of their own instead.
+     **/
+    virtual void addNodesToCreationOf(const NodePtr& created,
+                                      const NodesList& added)
+        = 0;
 };
 
 NATRON_NAMESPACE_EXIT

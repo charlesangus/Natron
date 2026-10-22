@@ -50,6 +50,8 @@ OcioSpaceKnobs::OcioSpaceKnobs()
     , _space()
     , _menu()
     , _spaceSet()
+    , _context()
+    , _hidden(false)
 {
 }
 
@@ -119,6 +121,7 @@ OcioSpaceKnobs::create(KnobHolder* holder,
     context->setHintToolTip(contextHint);
     context->setDefaultValue(false);
     page->addKnob(context);
+    _context = context;
     for (int i = 0; i < 4; ++i) {
         const std::string n = std::to_string(i + 1);
         KnobStringPtr key = AppManager::createKnob<KnobString>(holder, "key" + n);
@@ -216,7 +219,27 @@ OcioSpaceKnobs::refreshMenu()
         menu->setValue(index);
     }
     // A name the config lacks cannot be shown by the menu, so the string itself is shown.
-    space->setSecret(value.empty() || index >= 0);
+    space->setSecret(_hidden || value.empty() || index >= 0);
+}
+
+void
+OcioSpaceKnobs::setHidden(bool hidden)
+{
+    _hidden = hidden;
+    if (KnobChoicePtr menu = _menu.lock()) {
+        menu->setSecret(hidden);
+    }
+    if (KnobGroupPtr context = _context.lock()) {
+        context->setSecret(hidden);
+    }
+    for (int i = 0; i < 4; ++i) {
+        for (const KnobStringWPtr& weak : { _contextKeys[i], _contextValues[i] }) {
+            if (KnobStringPtr knob = weak.lock()) {
+                knob->setSecret(hidden);
+            }
+        }
+    }
+    refreshMenu();
 }
 
 void

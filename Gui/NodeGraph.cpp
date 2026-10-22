@@ -287,6 +287,26 @@ NodeGraph::onNodesCleared()
 }
 
 void
+NodeGraph::addNodesToCreationOf(const NodePtr& created,
+                                const NodesList& added)
+{
+    const NodeGuiPtr owner = created ? std::dynamic_pointer_cast<NodeGui>(created->getNodeGui()) : NodeGuiPtr();
+    NodesGuiList guis;
+
+    for (NodesList::const_iterator it = added.begin(); it != added.end(); ++it) {
+        if (const NodeGuiPtr gui = *it ? std::dynamic_pointer_cast<NodeGui>((*it)->getNodeGui()) : NodeGuiPtr()) {
+            guis.push_back(gui);
+        }
+    }
+    if (!owner || guis.empty()) {
+        return;
+    }
+    AddMultipleNodesCommand* command = new AddMultipleNodesCommand(this, guis);
+    command->setCreatedFor(owner);
+    pushUndoCommand(command);
+}
+
+void
 NodeGraph::resizeEvent(QResizeEvent* e)
 {
     _imp->_refreshOverlays = true;

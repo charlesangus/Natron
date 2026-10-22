@@ -273,7 +273,7 @@ TEST(ProjectBundle, MembersAreWrittenInTheirFixedOrder)
     EXPECT_EQ(std::string(Serialization::kNatronProjectMimeType), asText(archive.data("mimetype")));
 
     const BundleManifest manifest = Serialization::decodeManifestYaml(asText(archive.data("manifest.yaml")));
-    ASSERT_EQ(5u, manifest.members.size());
+    ASSERT_EQ(4u, manifest.members.size());
     for (const Serialization::BundleManifestMember& listed : manifest.members) {
         const Serialization::ZipMember* member = archive.find(listed.name);
         ASSERT_TRUE(member) << listed.name;

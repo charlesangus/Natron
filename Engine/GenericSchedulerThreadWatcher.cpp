@@ -96,10 +96,23 @@ GenericWatcher::~GenericWatcher()
 void
 GenericWatcher::stopWatching()
 {
-    if ( !isRunning() ) {
+    stopInternal(true);
+}
+
+void
+GenericWatcher::finishPendingTasksAndStop()
+{
+    stopInternal(false);
+}
+
+void
+GenericWatcher::stopInternal(bool cancelPendingTasks)
+{
+    // A task waiting for its own thread would never return.
+    if (!isRunning() || (QThread::currentThread() == this)) {
         return;
     }
-    {
+    if (cancelPendingTasks) {
         QMutexLocker k(&_imp->tasksMutex);
         _imp->tasks.clear();
     }
@@ -131,16 +144,7 @@ GenericWatcher::run()
                                                            boost_adaptbx::floating_point::exception_trapping::invalid |
                                                            boost_adaptbx::floating_point::exception_trapping::overflow);
 #endif
-    for (;; ) {
-        {
-            QMutexLocker quitLocker(&_imp->mustQuitMutex);
-            if (_imp->mustQuit) {
-                _imp->mustQuit = false;
-                _imp->mustQuitCond.wakeAll();
-
-                return;
-            }
-        }
+    for (;;) {
         int taskID = -1;
         GenericWatcherCallerArgsPtr inArgs;
         {
@@ -155,6 +159,18 @@ GenericWatcher::run()
         if (taskID != -1) {
             handleBlockingTask(taskID);
             Q_EMIT taskFinished(taskID, inArgs);
+            continue;
+        }
+
+        // Quitting only once the queue is empty lets finishPendingTasksAndStop() run what is queued.
+        {
+            QMutexLocker quitLocker(&_imp->mustQuitMutex);
+            if (_imp->mustQuit) {
+                _imp->mustQuit = false;
+                _imp->mustQuitCond.wakeAll();
+
+                return;
+            }
         }
 
         {

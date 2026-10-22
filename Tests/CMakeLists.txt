@@ -73,6 +73,7 @@ set(Tests_SOURCES
     KnobContentHash_Test.cpp
     LazyHash_Test.cpp
     NodeContentHash_Test.cpp
+    NodeDestroyWatcher_Test.cpp
     FileStamp_Test.cpp
     RotoContentHash_Test.cpp
     Knob_Test.cpp

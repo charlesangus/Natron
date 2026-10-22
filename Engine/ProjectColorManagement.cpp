@@ -338,6 +338,27 @@ EightBitDisplayLut::checkCells(const OCIO::CPUProcessor& cpu)
         OCIO::PackedImageDesc desc(&values[0], slab * nSamples, 1, 4);
         cpu.apply(desc);
         for (int c = 0; c < slab; ++c) {
+            const int g = c / kCells;
+            const int r = c % kCells;
+            // Comparing clamped values would let the samples of a cell that crosses 0 or 1 all land where both sides
+            // clamp to the same bound, hiding the error between them, so a channel is compared unclamped unless every
+            // corner and sample of the cell is on one side of the display range, where any error clamps away.
+            bool allAbove[3] = { true, true, true };
+            bool allBelow[3] = { true, true, true };
+            for (int corner = 0; corner < 8; ++corner) {
+                const float* v = &_lut[3 * (((b + (corner >> 2)) * kSize + g + ((corner >> 1) & 1)) * kSize + r + (corner & 1))];
+                for (int k = 0; k < 3; ++k) {
+                    allAbove[k] = allAbove[k] && (v[k] >= 1.f);
+                    allBelow[k] = allBelow[k] && (v[k] <= 0.f);
+                }
+            }
+            for (int s = 0; s < nSamples; ++s) {
+                const float* v = &values[4 * (c * nSamples + s)];
+                for (int k = 0; k < 3; ++k) {
+                    allAbove[k] = allAbove[k] && (v[k] >= 1.f);
+                    allBelow[k] = allBelow[k] && (v[k] <= 0.f);
+                }
+            }
             bool close = true;
             for (int s = 0; s < nSamples && close; ++s) {
                 const int idx = c * nSamples + s;
@@ -345,9 +366,10 @@ EightBitDisplayLut::checkCells(const OCIO::CPUProcessor& cpu)
                 int cell;
                 interpolate(&shapedIn[3 * idx], approx, &cell);
                 for (int k = 0; k < 3; ++k) {
-                    const float e = std::min(std::max(values[4 * idx + k], 0.f), 1.f);
-                    const float a = std::min(std::max(approx[k], 0.f), 1.f);
-                    if (!(std::fabs(e - a) <= kEightBitTolerance)) {
+                    if (allAbove[k] || allBelow[k]) {
+                        continue;
+                    }
+                    if (!(std::fabs(values[4 * idx + k] - approx[k]) <= kEightBitTolerance)) {
                         close = false;
                     }
                 }

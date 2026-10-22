@@ -395,6 +395,21 @@ public:
      **/
     static int computeTaskBudget(int poolMax, int running, int ready, int cores, int perEffect);
 
+    struct TaskBudgetInputs {
+        int poolMax = 0;
+        int running = 0;
+        int ready = 0;
+        int cores = 0;
+        int perEffect = 0;
+    };
+
+    /**
+     * @brief What the last CPU task budget computed on the calling thread was computed from, as computeTaskBudget()
+     * saw it under the scheduler's lock. A task runs on the thread that took it, so from within its render this is
+     * its own budget's snapshot; all zero on a thread that never computed one.
+     **/
+    static TaskBudgetInputs getLastTaskBudgetInputsForTests();
+
     std::size_t getBytesBudget() const;
 
     /**

@@ -85,7 +85,11 @@ public:
      **/
     void scheduleBlockingTask( int taskID, const GenericWatcherCallerArgsPtr& inArgs = GenericWatcherCallerArgsPtr() );
 
+    // Cancels the queued tasks and waits for the one running, if any.
     void stopWatching();
+
+    // Runs every queued task to completion, emitting taskFinished() for each, then stops the thread.
+    void finishPendingTasksAndStop();
 
 Q_SIGNALS:
 
@@ -99,6 +103,7 @@ protected:
 private:
 
     virtual void run() OVERRIDE FINAL;
+    void stopInternal(bool cancelPendingTasks);
     std::unique_ptr<GenericWatcherPrivate> _imp;
 };
 

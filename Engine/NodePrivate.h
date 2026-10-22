@@ -525,6 +525,9 @@ public:
     mutable QMutex isBeingDestroyedMutex;
     bool isBeingDestroyed;
     NodeRenderWatcherPtr renderWatcher;
+    // Held by the blocking quit/abort while they use the effect, which may run on any watcher thread
+    // listing this node, and while the effect is detached: the effect cannot be freed under them.
+    QMutex effectTeardownMutex;
     /*
        Used to block render emitions while modifying nodes links
        MT-safe: only accessed/used on main thread

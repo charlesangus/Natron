@@ -825,6 +825,18 @@ RenderScheduler::computeTaskBudget(int poolMax,
     return std::min(idle, share);
 }
 
+namespace {
+
+thread_local RenderScheduler::TaskBudgetInputs lastTaskBudgetInputs;
+
+} // namespace
+
+RenderScheduler::TaskBudgetInputs
+RenderScheduler::getLastTaskBudgetInputsForTests()
+{
+    return lastTaskBudgetInputs;
+}
+
 int
 RenderScheduler::cpuTaskBudgetLocked() const
 {
@@ -842,8 +854,16 @@ RenderScheduler::cpuTaskBudgetLocked() const
         return (int)std::count_if(heap.begin(), heap.end(), [](const ReadyRef& r) { return isRegionTask(r); });
     };
     const int ready = (int)(_freeReady.size() + _admittedReady.size()) - regionsIn(_freeReady) - regionsIn(_admittedReady);
+    const int running = _runningTasks - _runningGpuTasks + _fallbackCpuTasks;
+    const int budget = computeTaskBudget(poolMax, running, ready, cores, nThreadsPerEffect);
 
-    return computeTaskBudget(poolMax, _runningTasks - _runningGpuTasks + _fallbackCpuTasks, ready, cores, nThreadsPerEffect);
+    lastTaskBudgetInputs.poolMax = poolMax;
+    lastTaskBudgetInputs.running = running;
+    lastTaskBudgetInputs.ready = ready;
+    lastTaskBudgetInputs.cores = cores;
+    lastTaskBudgetInputs.perEffect = nThreadsPerEffect;
+
+    return budget;
 }
 
 std::shared_ptr<void>

@@ -65,7 +65,14 @@ in_container() {
     return 1
 }
 
-if ! in_container; then
+# --check-pins only compares the installed plugins' stamp with the pins below, so test.sh can refuse to run
+# against plugins built at older refs: those load and run, but with the bugs later refs fixed.
+CHECK_PINS=0
+if [[ "${1:-}" == "--check-pins" ]]; then
+    CHECK_PINS=1
+fi
+
+if [[ "${CHECK_PINS}" -eq 0 ]] && ! in_container; then
     echo "== fetch-assets.sh: entering dev container via devshell.sh =="
     exec "${SCRIPT_DIR}/devshell.sh" "${REPO_ROOT}/tools/ci/local/fetch-assets.sh" "$@"
 fi
@@ -74,11 +81,13 @@ fi
 
 ASSETS_DIR="${REPO_ROOT}/build/assets"
 
-mkdir -p "${ASSETS_DIR}"
+if [[ "${CHECK_PINS}" -eq 0 ]]; then
+    mkdir -p "${ASSETS_DIR}"
 
-echo "== fetch-assets.sh =="
-echo "Repo root:   ${REPO_ROOT}"
-echo "Assets dir:  ${ASSETS_DIR}"
+    echo "== fetch-assets.sh =="
+    echo "Repo root:   ${REPO_ROOT}"
+    echo "Assets dir:  ${ASSETS_DIR}"
+fi
 
 # ---------------------------------------------------------------------------
 # Plugins (openfx-io and openfx-misc, built from source against this
@@ -237,6 +246,17 @@ PLUGINS_STAMP="${PLUGINS_TARGET}/.natron-plugin-pins"
 # kernel tests compare against it; Tests/CMakeLists.txt reads this path.
 CIMG_HEADER_KEPT="${ASSETS_DIR}/CImg/CImg.h"
 PLUGINS_WANT="openfx-io=${OPENFX_IO_REF} seexpr=${SEEXPR_REF} openfx-misc=${OPENFX_MISC_REF} lcms2=${LCMS2_REF} libzip=${LIBZIP_REF} imagemagick=${IMAGEMAGICK_REF} openfx-arena=${OPENFX_ARENA_REF} openfx-metadata=${OPENFX_METADATA_REF}"
+
+if [[ "${CHECK_PINS}" -eq 1 ]]; then
+    if [ -f "${PLUGINS_STAMP}" ] && [ "$(cat "${PLUGINS_STAMP}")" = "${PLUGINS_WANT}" ]; then
+        exit 0
+    fi
+    echo "fetch-assets.sh: ${PLUGINS_TARGET} was not built at the pinned refs." >&2
+    echo "  built:  $(cat "${PLUGINS_STAMP}" 2>/dev/null || echo "<no stamp>")" >&2
+    echo "  pinned: ${PLUGINS_WANT}" >&2
+    echo "Run tools/ci/local/fetch-assets.sh to rebuild them." >&2
+    exit 1
+fi
 
 # Defined unconditionally (not just in the build branch below) so both the
 # "already built -- skipping" and the "building..." paths can probe these

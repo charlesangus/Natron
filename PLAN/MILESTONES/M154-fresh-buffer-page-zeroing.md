@@ -143,7 +143,7 @@ M109 - GPU Region Engine Hardening merged to main as `687f1991a` (#70). This mil
 
 ## Phase 154.5: Thorough bench
 
-- [ ] M154.P5.T1 — Thorough bench against main on the target host
+- [x] M154.P5.T1 — Thorough bench against main on the target host
   - files: none (results in `## Decisions`, data under `.local/m154/p5/`)
   - approach:
     - The last phase's release AppImage against a main release AppImage (`BENCH_BASE_APPIMAGE`), 3 rounds, same boot, interleaved.
@@ -155,7 +155,7 @@ M109 - GPU Region Engine Hardening merged to main as `687f1991a` (#70). This mil
   - verify: the gate below holds, or each miss is written in `## Decisions` for the user.
   - size: M
 
-- [ ] M154.P5.T2 — Pool native scratch only while no other render's scratch is live, so overlapping playback frames don't retain an extra set
+- [x] M154.P5.T2 — Pool native scratch only while no other render's scratch is live, so overlapping playback frames don't retain an extra set
   - files: `Engine/HostImageMemory.h`, `Engine/HostImageMemory.cpp`, `Engine/Nodes/Image/PassExecutor.cpp`, `Tests/Native/NativePassScratch_Test.cpp`
   - approach:
     - `HostImageMemory::releaseToSystem(ptr, bytes)` erases the buffer from `live` and goes through `reallyFree` so the free hooks run. The buffer is never pooled.
@@ -166,6 +166,16 @@ M109 - GPU Region Engine Hardening merged to main as `687f1991a` (#70). This mil
     - Targeted ctest (native pass and HostImageMemory tests) on RADV and lavapipe.
     - Rerun playback, bc and a-warm for erode40/edge/blur100 at 16k and defocus_retime 8K against main `1c0b5ab3b`, with `OFX_PLUGIN_PATH` set (the command in the 2026-10-22 consultant decision).
     - Playback `vmhwm_kb` is ≤ 1.02× main. Erode Off bc stays about 0.82×.
+  - size: M
+
+- [ ] M154.P5.T3 — Let local and remote builds take extra CMake arguments, and build the lane with `-DNATRON_GPU=OFF` on GitHub Actions
+  - files: `tools/ci/local/build.sh`, `tools/ci/remote/build.sh`, `.github/workflows/remote-build.yml`, `tools/ci/local/README.md`, `tools/ci/remote/README.md`
+  - approach:
+    - `tools/ci/local/build.sh` accepts `--cmake-arg <arg>` (repeatable), appended to `CMAKE_ARGS`. Any extra argument puts the build in its own folder (`build/<preset>-<short hash of the args>`), so it never clobbers the preset's normal tree, and forces a configure there on first use.
+    - `remote-build.yml` gains a string input `cmake_args` (space-separated, default empty), passed to `build.sh` as `--cmake-arg` entries. The build-tree and AppImage artifact names stay per preset/sha; the run name includes a marker when the input is non-empty.
+    - `tools/ci/remote/build.sh` gains a repeatable `--cmake-arg <arg>` that it forwards as `cmake_args`.
+    - Both READMEs document the option in one short paragraph each.
+  - verify: `bash -n` and `shellcheck` (if present) on both scripts; `actionlint` if present. Then `tools/ci/remote/build.sh fast --tests --no-appimage --cmake-arg -DNATRON_GPU=OFF` on the pushed lane builds green and its ctest passes in both scheduler legs (gate 6's `-DNATRON_GPU=OFF` line). A plain `tools/ci/remote/build.sh fast --no-appimage` still uses the usual tree.
   - size: M
 
 **Verification gate:**
@@ -206,3 +216,6 @@ M109 - GPU Region Engine Hardening merged to main as `687f1991a` (#70). This mil
 - 2026-10-22 — **M154.P5.T2 code (`fd2d7470c`), syntax-checked only.** `ScratchSetHolder` is declared in `PassExecutor.h`, so the test can drive it directly. In an overlap, whichever set ends last is pooled. The tests cover the holder and the allocator, not the one-line `runPassesCpu` wiring; the playback RSS re-run covers that. The build, targeted ctest and bench re-run wait for the build slot.
 - 2026-10-22 — **P5.T2's remote `fast --tests` on `fd2d7470c` passes on lavapipe: 2713/2713 in both scheduler modes** (run 39712479357). The lane is then rebased cleanly onto main `3c2ba44fc` as `264eeedf4`. A remote `release --tests` of it and a main `3c2ba44fc` release baseline (run 39716280625) are dispatched for the RSS re-run and the gate bench.
 - 2026-10-22 — **Remote `release --tests` on the rebased `264eeedf4` passes on lavapipe: 326/326 ctest entries in both scheduler modes** (run 39716269320). The candidate release AppImage is in the lane's `build/remote/release/`. The main `3c2ba44fc` release baseline is at `.local/m154/p5b/base/` (run 39716280625). Owed locally, in the build slot after M107's RADV run: P5.T2's targeted ctest on RADV, full ctest with no ICD, a `-DNATRON_GPU=OFF` build, then the RSS and gate re-runs.
+- 2026-10-22 — **P5.T2 verified and P5.T1's bench re-run on `264eeedf4` against main `3c2ba44fc` (boot `0571a3e8`, 16 CPUs, 192 GB, THP madvise; 3 interleaved same-boot rounds; `.local/m154/p5b/`).** Comp rows ran with `OFX_PLUGIN_PATH` unset, because the host's stale `build/assets/Plugins` crashes both new AppImages; each AppImage loads its own bundled plugins (153 loaded, defocus peak 4.4 GB, so the rows are real). **RADV targeted ctest** (all `Native*`, `HostImageMemoryTest`, Blur kernel and GPU suites) 87/87 in both modes, from the remote `build-tree-release`. **No ICD:** full ctest 325/326 in both modes; the miss is `Shards/CacheEquivalenceSweepTest` (Sketch non-determinism, a CImg Blur double free, a Text segfault), which main `1c0b5ab3b`'s tree fails the same way with the same stale local assets; remote CI with fresh assets passes 326/326. **Playback peak RSS, candidate/base medians:** Erode 16k Auto 1.000, Off 0.861; Edge 16k 1.001/0.919; Blur 100 16k 1.000/1.002; defocus_retime 8K 0.969/0.819. Erode Off bc 0.803×. **Gate 1 pass:** Erode 40 16k Off a-warm 0.814× (0.814/0.815/0.811). **Gate 2 pass:** Erode Auto a-warm first came out 1.024× (1.060/0.969/1.024); six extra rounds gave 0.970, worst 1.009, read as noise; every other Auto median ≤ 1.0. **Gate 3 pass** on bc and total playback (all ≤ 1.0); frames-2+ Write time is Edge Off 1.022× and defocus Auto 1.101×. **Gate 4 pass by case median** (worst Blur Off a-warm 1.014×); single rounds Erode Off playback r3 1.195× and defocus Auto a-warm r2 1.036× come from base-side variance. The pool is bounded by `maxPoolBytes()` (max(512 MB, RAM/4) ≈ 50 GB here) against a 35 GB highest session peak. **Gate 5 pass:** every 16k case trims to 103–206 MB RssAnon, no huge pages, in 32–34 s on both builds; defocus_retime 8K plateaus at ~1.1 GB on both builds and both modes, so it is not a regression.
+- 2026-10-22 — **Gate readings (user):** gate 4's "every session" is judged per case by median. Playback is judged by total wall time, and the frames-2+ Write-time overshoot is accepted, because it counts Write time that overlaps the next frame's compute. The `-DNATRON_GPU=OFF` build goes through a new cmake-args option on the local and remote build scripts (P5.T3), so it runs on GitHub Actions.
+- 2026-10-22 — **Rebased onto main `13f12edca` (M108) as `51bf97d94`,** cleanly.

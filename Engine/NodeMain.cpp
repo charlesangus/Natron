@@ -474,7 +474,12 @@ Node::doDestroyNodeInternalEnd(bool autoReconnect)
     if (_imp->effect) {
         _imp->effect->clearPluginMemoryChunks();
     }
-    _imp->effect.reset();
+    EffectInstancePtr effect;
+    {
+        QMutexLocker k(&_imp->effectTeardownMutex);
+        effect.swap(_imp->effect);
+    }
+    effect.reset();
 
     ///If inside the group, remove it from the group
     ///the use_count() after the call to removeNode should be 2 and should be the shared_ptr held by the caller and the
@@ -515,7 +520,10 @@ void
 Node::onProcessingQuitInDestroyNodeInternal(int taskID,
                                             const GenericWatcherCallerArgsPtr& args)
 {
-    assert(_imp->renderWatcher);
+    // A blocking destroy that ran meanwhile has already waited for this watcher and released it.
+    if (!_imp->renderWatcher) {
+        return;
+    }
     assert(taskID == (int)NodeRenderWatcher::eBlockingTaskQuitAnyProcessing);
     Q_UNUSED(taskID);
     assert(args);
@@ -543,20 +551,21 @@ Node::destroyNode(bool blockingDestroy, bool autoReconnect)
 
     bool allProcessingQuit = areAllProcessingThreadsQuit();
     if (allProcessingQuit || blockingDestroy) {
-        // An earlier non-blocking destroy of this node, or of a group holding it, may still be quitting this node's
-        // processing on its watcher thread, which reads the effect: it must be done before the effect is destroyed.
-        for (Node* node = this; node;) {
-            if (node->_imp->renderWatcher) {
-                node->_imp->renderWatcher->stopWatching();
-            }
-            NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(node->getGroup());
-            node = group ? group->getNode().get() : NULL;
+        // The watcher of an earlier non-blocking destroy holds this node: let its queued quit run rather than
+        // cancel it, then release it so neither keeps the other alive. Its quit only waits on this node's and its
+        // children's processing, which this destroy waits on anyway. Other watchers listing this node, such as an
+        // enclosing group's, are kept off the freed effect by effectTeardownMutex.
+        NodePtr keepAlive;
+        if (_imp->renderWatcher) {
+            keepAlive = shared_from_this();
+            _imp->renderWatcher->finishPendingTasksAndStop();
+            _imp->renderWatcher.reset();
         }
         if (!allProcessingQuit) {
             quitAnyProcessing_blocking(false);
         }
         doDestroyNodeInternalEnd(false);
-    } else {
+    } else if (!_imp->renderWatcher) {
         NodeGroup* isGrp = dynamic_cast<NodeGroup*>( _imp->effect.get() );
         NodesList nodesToWatch;
         nodesToWatch.push_back( shared_from_this() );
@@ -568,7 +577,6 @@ Node::destroyNode(bool blockingDestroy, bool autoReconnect)
         NodeDestroyNodeInternalArgsPtr args = std::make_shared<NodeDestroyNodeInternalArgs>();
         args->autoReconnect = autoReconnect;
         _imp->renderWatcher->scheduleBlockingTask(NodeRenderWatcher::eBlockingTaskQuitAnyProcessing, args);
-
     }
 } // Node::destroyNodeInternal
 

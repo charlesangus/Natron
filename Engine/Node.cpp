@@ -2569,6 +2569,8 @@ Node::quitAnyProcessing_non_blocking()
 void
 Node::quitAnyProcessing_blocking(bool allowThreadsToRestart)
 {
+    QMutexLocker teardownLocker(&_imp->effectTeardownMutex);
+
     {
         QMutexLocker k(&_imp->nodeIsDequeuingMutex);
         if (_imp->nodeIsDequeuing) {
@@ -2627,6 +2629,8 @@ Node::abortAnyProcessing_non_blocking()
 void
 Node::abortAnyProcessing_blocking()
 {
+    QMutexLocker teardownLocker(&_imp->effectTeardownMutex);
+
     OutputEffectInstance* isOutput = dynamic_cast<OutputEffectInstance*>( getEffectInstance().get() );
 
     if (isOutput) {

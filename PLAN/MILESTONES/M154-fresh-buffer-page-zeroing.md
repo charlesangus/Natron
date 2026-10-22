@@ -155,6 +155,19 @@ M109 - GPU Region Engine Hardening merged to main as `687f1991a` (#70). This mil
   - verify: the gate below holds, or each miss is written in `## Decisions` for the user.
   - size: M
 
+- [ ] M154.P5.T2 — Pool native scratch only while no other render's scratch is live, so overlapping playback frames don't retain an extra set
+  - files: `Engine/HostImageMemory.h`, `Engine/HostImageMemory.cpp`, `Engine/Nodes/Image/PassExecutor.cpp`, `Tests/Native/NativePassScratch_Test.cpp`
+  - approach:
+    - `HostImageMemory::releaseToSystem(ptr, bytes)` erases the buffer from `live` and goes through `reallyFree` so the free hooks run. The buffer is never pooled.
+    - `HostScratchFloats::discard()` uses it.
+    - In `runPassesCpu`, one RAII holder per call (not per slot) increments a process-wide count of active scratch sets. On exit it decrements, and if another set is still live it discards every slot. Otherwise the slots pool as now.
+  - verify:
+    - A unit test: two overlapping holders leave exactly one scratch set pooled, and a lone holder pools.
+    - Targeted ctest (native pass and HostImageMemory tests) on RADV and lavapipe.
+    - Rerun playback, bc and a-warm for erode40/edge/blur100 at 16k and defocus_retime 8K against main `1c0b5ab3b`, with `OFX_PLUGIN_PATH` set (the command in the 2026-10-22 consultant decision).
+    - Playback `vmhwm_kb` is ≤ 1.02× main. Erode Off bc stays about 0.82×.
+  - size: M
+
 **Verification gate:**
 - Fresh-process single frame (a-warm), Erode 40 16k, CPU-only (NATRON_GPU=off): the in-process render time drops by ≥ 5% against main, as the median of same-boot pairs with every round below 1.0. 24k and EdgeDetect are reported.
 - GPU Auto shows no regression: within ±2% of main on every bench case and kind.
@@ -189,3 +202,4 @@ M109 - GPU Region Engine Hardening merged to main as `687f1991a` (#70). This mil
   - **Gate 5, partial.** Only lane Erode 16k Off ran. RssAnon fell to 104 MB within 33–57 s. Pooled bytes were not read, and the other cases did not run.
   - **Gate 6, not run.** Full ctest on lavapipe and with no ICD, the legacy leg, and `-DNATRON_GPU=OFF` are still owed.
   - A consultant is diagnosing the playback peak-RSS growth before anything re-runs.
+- 2026-10-22 — **Playback peak RSS diagnosed (consultant; `.local/m154/p5-rss/hwm_vs_thp.txt`).** Pooled scratch and images share size classes, and nothing trims the pool during a ~20 s playback: the reaper needs 30 s idle, and cache headroom and the RAM/4 cap don't bind at 16k. So the lane's peak is every buffer it ever faulted. Erode 16k Off is 12288 huge pages = six 4 GiB buffers, including a second scratch set from the overlap of frames 1 and 2. Main's scratch is freed on return, so its peak depends on timing (rounds 1.06 vs 1.20). The growth is bounded by `maxPoolBytes()`, but that can never meet +2%. Fix added as P5.T2. Edge 16k Auto frames-2+ (1.024×) measures Write-task wall that overlaps the faster Edge compute; total playback is ~0.75× main, so it is not a regression. `session.sh` never exported `OFX_PLUGIN_PATH`, so P5's re-runs must set it.

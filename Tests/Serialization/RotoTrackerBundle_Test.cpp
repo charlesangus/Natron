@@ -379,7 +379,16 @@ protected:
         }
         for (int t = 0; t < 3; ++t) {
             TrackMarkerPtr track = context->createMarker();
-            if (!track || !track->setScriptName("track" + std::to_string(t + 1))) {
+            if (!track) {
+                return NodePtr();
+            }
+            // createMarker() already gives the track a unique name, and setScriptName() returns
+            // false when asked for the name the track already has, so the name is checked instead.
+            const std::string name = "track" + std::to_string(t + 1);
+            track->setScriptName(name);
+            if (track->getScriptName_mt_safe() != name) {
+                ADD_FAILURE() << "the new track is named " << track->getScriptName_mt_safe() << ", not " << name;
+
                 return NodePtr();
             }
             KnobDoublePtr center = track->getCenterKnob();

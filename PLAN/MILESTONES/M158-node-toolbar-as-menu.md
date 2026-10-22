@@ -116,7 +116,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`):
 
 ## Phase 158.4: Docs and UAT
 
-- [ ] M158.P4.T1 — Document the node menu, `nodesMenu()` and the new initGui.py timing
+- [x] M158.P4.T1 — Document the node menu, `nodesMenu()` and the new initGui.py timing
   - files: the Python scripting docs that cover `init.py`/`initGui.py` and `addMenuCommand`. These live on the docs orphan branch (`docs/decisions/2026-09-04-docs-to-orphan-branch.md`), not under `docs/` on main; locate the page there
   - approach: explain that `initGui.py` now runs after the first window exists. Give a Nuke-style example adding a preset item with `nodesMenu()`, and say that the tab menu lists every node-menu item.
   - verify: the docs build, if the docs pipeline has a check.
@@ -156,6 +156,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`):
 - 2026-10-22 — Plug-ins with no grouping read `Misc/<label>` in the tab menu (the menu's placement), not a bare `<label>`. The tab-menu adapter has its own menu walker instead of `find_qt_menu_items`, which split labels containing `/` and skipped top-level leaves.
 - 2026-10-22 — P1–P3 verified on the fast AppImage of `8570052b4`: ctest 331/331 on both legs, and `m158_nodes_menu`, `m158_init_gui`, `m45_tab_menu` and `m56_visual` pass under Xvfb. The earlier failures were in the tests (fixed in `35d62a642`). PySide 6.8 invalidates a menu returned by `QAction.menu()` once the action's Python wrapper is collected, even though the C++ menu lives on. The helper `gt.menu_of` keeps the owner alive. P4.T1's docs must warn script authors to hold the action, or to walk the menu through `findChildren(QMenu)`. The toolbox class `AutoHideToolBar` has no `Q_OBJECT`, so it reports as `QToolBar`. `m45_tab_menu`'s "group" case fails intermittently on main as well (the node never joins the group); it predates this milestone.
 - 2026-10-22 — A startup segfault on an NVIDIA desktop (Qt compositor shader compile with an empty log) was seen once with this milestone's AppImage and not reproduced. No line in this milestone touches GL. It went to the inbox as a separate milestone request (GL context restore on the GUI thread).
+- 2026-10-22 — P4.T1 docs are committed on the local `docs` branch as `b746872d4` (worktree `.worktrees/m158-docs`). They will be pushed when this milestone merges, so the published docs never describe unmerged behaviour. The Sphinx build passes; the only new warnings are the pre-existing duplicate `addMenuCommand` overload descriptions. Not yet run: the `findChildren(QMenu)` alternative in the PySide caveat. `Documentation/source/devel/initGui.py` still shows the queued `addMenuCommand` form, which still works.
 
 ## Handoff (2026-10-22, PM paused by user)
 

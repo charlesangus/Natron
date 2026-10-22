@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <bitset>
 #include <cstddef>
 #include <functional>
@@ -37,6 +38,7 @@
 
 #include "Engine/EffectInstance.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/HostImageMemory.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/Image/GpuRender.h"
@@ -450,6 +452,31 @@ RectI passListRoD(const RectI& srcRoD, const PassList& list) WARN_UNUSED_RETURN;
 std::optional<GpuCostHint> passListCostHint(const PassList& list) WARN_UNUSED_RETURN;
 
 bool isRunnablePassList(const PassList& list) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Marks one runPassesCpu() call's scratch as live for its lifetime. When it ends while
+ * another call's scratch is still live, as when two frames render at once, the scratch goes back
+ * to the OS instead of the pool, so that overlapping renders do not leave two sets resident. A
+ * lone call pools its scratch for the next render. Declare it after the storages it covers.
+ **/
+class ScratchSetHolder
+{
+public:
+    ScratchSetHolder(HostScratchFloats& source,
+                     std::vector<HostScratchFloats>& extra,
+                     std::atomic<int>& active);
+    ~ScratchSetHolder();
+
+    ScratchSetHolder(const ScratchSetHolder&) = delete;
+    ScratchSetHolder& operator=(const ScratchSetHolder&) = delete;
+
+    static std::atomic<int>& activeSets();
+
+private:
+    HostScratchFloats& _source;
+    std::vector<HostScratchFloats>& _extra;
+    std::atomic<int>& _active;
+};
 
 /**
  * @brief Renders args through plan with list on the CPU.

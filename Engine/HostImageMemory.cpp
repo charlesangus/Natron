@@ -620,6 +620,42 @@ HostImageMemory::release(void* ptr,
     reallyFree(toFree);
 }
 
+void
+HostImageMemory::releaseToSystem(void* ptr,
+                                 std::size_t bytes)
+{
+    if (!ptr) {
+        return;
+    }
+    if (bytes < kMinPooledBytes) {
+        std::free(ptr);
+
+        return;
+    }
+
+    State& s = state();
+    touch(s);
+    PooledBuffer b = { ptr, 0 };
+    {
+        std::lock_guard<std::mutex> k(s.mutex);
+        std::map<const void*, std::size_t>::iterator lit = s.live.find(ptr);
+        assert(lit != s.live.end());
+        b.capacity = lit != s.live.end() ? lit->second : capacityLocked(s, roundUp(bytes, s.alignment));
+        if (lit != s.live.end()) {
+            s.live.erase(lit);
+        }
+    }
+    reallyFree(std::vector<PooledBuffer>(1, b));
+}
+
+void
+HostScratchFloats::discard()
+{
+    HostImageMemory::releaseToSystem(_data, _count * sizeof(float));
+    _data = nullptr;
+    _count = 0;
+}
+
 HostScratchFloats::~HostScratchFloats()
 {
     HostImageMemory::release(_data, _count * sizeof(float));

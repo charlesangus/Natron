@@ -68,6 +68,12 @@ public:
     static void release(void* ptr, std::size_t bytes);
 
     /**
+     * @brief Returns a buffer obtained from allocate() straight to the OS, never to the pool.
+     * The free hooks still run.
+     **/
+    static void releaseToSystem(void* ptr, std::size_t bytes);
+
+    /**
      * @brief @p bytes padded to the import alignment: what a transfer of such a buffer moves.
      * The buffer that holds them may be larger, see capacity().
      **/
@@ -170,6 +176,11 @@ public:
      * enough is kept, and so are its contents). Throws std::bad_alloc when the memory cannot be had.
      **/
     void reserve(std::size_t count);
+
+    /**
+     * @brief Frees the buffer to the OS instead of the pool, leaving this empty.
+     **/
+    void discard();
 
     float* data() const { return _data; }
     std::size_t capacity() const { return _count; }

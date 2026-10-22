@@ -758,6 +758,34 @@ runPass(const Pass& pass,
 }
 } // anonymous namespace
 
+ScratchSetHolder::ScratchSetHolder(HostScratchFloats& source,
+                                   std::vector<HostScratchFloats>& extra,
+                                   std::atomic<int>& active)
+    : _source(source)
+    , _extra(extra)
+    , _active(active)
+{
+    _active.fetch_add(1);
+}
+
+ScratchSetHolder::~ScratchSetHolder()
+{
+    if (_active.fetch_sub(1) > 1) {
+        _source.discard();
+        for (std::size_t i = 0; i < _extra.size(); ++i) {
+            _extra[i].discard();
+        }
+    }
+}
+
+std::atomic<int>&
+ScratchSetHolder::activeSets()
+{
+    static std::atomic<int> count(0);
+
+    return count;
+}
+
 Pass
 Pass::lineX(int halo,
             int grow,
@@ -1011,6 +1039,8 @@ runPassesCpu(EffectInstance& effect,
     //   slot 3:        suppressionWorker() writes every pixel of every plane, border included.
     HostScratchFloats sourceStorage;
     std::vector<HostScratchFloats> extraStorage(list.scratchSlots - 1);
+    // Playback overlaps two frames, and pooling both sets would keep both resident.
+    const ScratchSetHolder scratchHolder(sourceStorage, extraStorage, ScratchSetHolder::activeSets());
     for (std::size_t j = 0; j < jobs.size(); ++j) {
         const PlaneJob& job = jobs[j];
         const ProcessedPlanes planes(job);

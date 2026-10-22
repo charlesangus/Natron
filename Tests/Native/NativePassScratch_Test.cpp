@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -52,6 +53,7 @@
 #include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
+#include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
@@ -210,4 +212,50 @@ TEST_F(NativePassScratchTest, ErodeDilateScratchIsFullyWrittenBeforeRead)
         ASSERT_TRUE(setKnobValues(node, kErodeDilateParamSize, { 5., 3. }));
         expectScratchIsFullyWritten(node, 1, id);
     }
+}
+
+TEST(NativePassScratchPoolTest, OverlappingScratchSetsPoolOnlyTheLastToEnd)
+{
+    PoolGuard guard;
+    std::atomic<int> active(0);
+    const std::size_t count = HostImageMemory::minPooledBytes() / sizeof(float) * 2;
+    ASSERT_EQ(0u, HostImageMemory::pooledBufferCount());
+    {
+        HostScratchFloats sourceA;
+        std::vector<HostScratchFloats> extraA(2);
+        const ScratchSetHolder holderA(sourceA, extraA, active);
+        sourceA.reserve(count);
+        extraA[0].reserve(count);
+        extraA[1].reserve(count);
+        {
+            HostScratchFloats sourceB;
+            std::vector<HostScratchFloats> extraB(2);
+            const ScratchSetHolder holderB(sourceB, extraB, active);
+            sourceB.reserve(count);
+            extraB[0].reserve(count);
+            extraB[1].reserve(count);
+            EXPECT_EQ(2, active.load());
+        }
+        EXPECT_EQ(1, active.load());
+        // The set that ended while the other was live went to the OS.
+        EXPECT_EQ(0u, HostImageMemory::pooledBufferCount());
+    }
+    EXPECT_EQ(0, active.load());
+    EXPECT_EQ(3u, HostImageMemory::pooledBufferCount());
+}
+
+TEST(NativePassScratchPoolTest, LoneScratchSetIsPooled)
+{
+    PoolGuard guard;
+    std::atomic<int> active(0);
+    const std::size_t count = HostImageMemory::minPooledBytes() / sizeof(float) * 2;
+    {
+        HostScratchFloats source;
+        std::vector<HostScratchFloats> extra(1);
+        const ScratchSetHolder holder(source, extra, active);
+        source.reserve(count);
+        extra[0].reserve(count);
+    }
+    EXPECT_EQ(2u, HostImageMemory::pooledBufferCount());
+    EXPECT_GE(HostImageMemory::pooledBytes(), 2 * count * sizeof(float));
 }

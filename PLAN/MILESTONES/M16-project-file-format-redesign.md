@@ -249,19 +249,19 @@ Scouting facts this plan relies on (2026-10-10):
 
 ## Phase 16.4: Presets, clipboard, layouts and undo
 
-- [ ] M16.P4.T1 — `.nps` presets as a plain YAML document
+- [x] M16.P4.T1 — `.nps` presets as a plain YAML document
   - files: `Gui/NodeSettingsPanel.cpp` (`:211-300`), new `Serialization/Yaml/PresetYaml.cpp`, new `Tests/Serialization/PresetYaml_Test.cpp`
   - approach: keep the `.nps` extension (see Decisions). The file is one YAML document: `format: natron-preset`, `formatVersion: 1`, then a list of nodes in the `project.yaml` node schema, with blobs inline as YAML `!!binary` tables through `BlobSink`. An old XML `.nps` (detected by `<?xml` at the start) gets the old-format message.
   - verify: compiled at P5.T5. A gtest round-trips a preset holding a RotoPaint with a heavy stroke. UAT covers export and import in the GUI.
   - size: M
 
-- [ ] M16.P4.T2 — Copy and paste as YAML text
+- [x] M16.P4.T2 — Copy and paste as YAML text
   - files: `Gui/NodeGraph40.cpp` (`:130-200`), `Gui/NodeClipBoard.h`, new `Serialization/Yaml/ClipboardYaml.cpp`
   - approach: copy puts a `format: natron-clipboard` document (nodes with inline blobs, plus their positions) on the system clipboard as `text/plain` and `application/vnd.natron.nodes+yaml`. Paste accepts that document; other text is ignored, as today.
   - verify: compiled at P5.T5. UAT: copy a Blur→Grade pair, edit the Blur size in a text editor, paste it back, and the edit and the connection survive.
   - size: M
 
-- [ ] M16.P4.T3 — `.nl` layouts as YAML, and knob undo without an archive
+- [x] M16.P4.T3 — `.nl` layouts as YAML, and knob undo without an archive
   - files: `Gui/Gui10.cpp`, `Gui/Gui15.cpp`
   - approach: `.nl` save and load use P2.T4's layout encoder, and an XML `.nl` gets the old-format message. (`KnobUndoCommand` already keeps an in-memory snapshot; nothing to do there.)
   - verify: compiled at P5.T5. UAT saves and loads a layout, then undoes and redoes a knob edit.
@@ -269,7 +269,7 @@ Scouting facts this plan relies on (2026-10-10):
 
 ## Phase 16.5: Tests
 
-- [ ] M16.P5.T1 — Migrate tests that inspect saved XML
+- [x] M16.P5.T1 — Migrate tests that inspect saved XML
   - files: the tests P3.T8 listed (for example `Tests/DefaultChannelSet_Test.cpp:547`, `Tests/ProjectSerialization_Test.cpp` `SavedProjectContainsNoUserComponents`), new `Tests/Serialization/BundleTestUtils.h`
   - approach: add `readBundleMember(path, "project.yaml")`. Rewrite XML-text assertions against the YAML text or the decoded data, keeping what each assertion means.
   - verify: compiled at P5.T5. Each migrated test passes. Spot-check one by reverting its guarded behaviour: it must fail.
@@ -384,3 +384,5 @@ UAT (P7.T3).
 - 2026-10-22 — Between Phase 16.3 and 16.4, copy/paste, `.nl` import and `.nps` import are inert (the XML readers are gone; `decodeClipboardNodes` returns false and cut still deletes). Phase 16.4 restores them; the milestone never ships in between.
 - 2026-10-22 — `softwareVersion`, `lastAuthor` and `lastSaveDate` project knobs are kept out of `project.yaml` so re-saves stay byte-identical; author and date round-trip through `manifest.yaml`, `softwareVersion` is set from the running build on load.
 - 2026-10-22 — A missing link target is a load warning, not a failed load (`KnobI::restoreLinks` reports `missingTargets`). The GUI summary dialog lists the first 20 warnings.
+- 2026-10-22 — The clipboard document uses the project node schema, which omits the clone master (`masterNodeName`), so a pasted clone is no longer linked to its original. Duplicate and clone don't go through the clipboard. M92 - Linked Nodes defines linked-node fields; accepted under the clean break.
+- 2026-10-22 — A default-layout preference pointing at an XML, damaged or empty `.nl` falls back to the built-in layout with an error dialog (previously: error and no layout at all).

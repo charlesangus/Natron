@@ -170,7 +170,9 @@ namespace YamlDetail {
         }
 
         // A string knob's curve is the keyframe index of its strings with constant interpolation;
-        // when it is exactly that, the strings alone say everything.
+        // when it is exactly that, the strings alone say everything. Derivatives are not compared:
+        // a live curve gives its end keys nonzero ones even when constant, and the format drops
+        // them for every interpolation that does not store them.
         bool
         isStringCurveImplied(const KnobSerialization& knob)
         {
@@ -184,7 +186,7 @@ namespace YamlDetail {
             std::size_t i = 0;
             for (std::map<int, std::string>::const_iterator it = knob.stringAnimation->begin(); it != knob.stringAnimation->end(); ++it, ++i) {
                 const KeyFrameSerialization& key = keys[i];
-                if ((key.time != (double)it->first) || (key.value != (double)i) || (key.interpolation != kYamlKeyframeConstant) || (key.leftDerivative != 0.) || (key.rightDerivative != 0.)) {
+                if ((key.time != (double)it->first) || (key.value != (double)i) || (key.interpolation != kYamlKeyframeConstant)) {
                     return false;
                 }
             }

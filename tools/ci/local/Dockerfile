@@ -134,3 +134,9 @@ RUN set -eu; \
     test -f /opt/glslang/CMakeLists.txt; \
     test -f /opt/glslang/glslang/Public/ShaderLang.h
 ENV GLSLANG_ROOT=/opt/glslang
+
+# --- git-lfs: the raw test fixtures are LFS objects -----------------------
+# The base image's git has no LFS support. The pin lives in the script, which
+# the jobs on the bare ASWF image also run, and dev-image-tag.sh hashes it.
+COPY install-git-lfs.sh /tmp/install-git-lfs.sh
+RUN /tmp/install-git-lfs.sh && rm -f /tmp/install-git-lfs.sh

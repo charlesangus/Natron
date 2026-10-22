@@ -19,6 +19,7 @@
 
 #include "Serialization/Bundle/ProjectBundle.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -33,11 +34,15 @@ namespace Serialization {
 
 namespace {
 
-    constexpr std::size_t kSniffSize = 64;
-
     // The local header of a stored member is 30 bytes and `mimetype` is 8 bytes long, so in a
     // bundle the mime type always starts at offset 38.
     constexpr std::size_t kMimeTypeOffset = 38;
+
+    // Large enough for the whole mime type entry, and for the XML declaration or doctype of a
+    // legacy project that may follow a short prologue.
+    constexpr std::size_t kLegacyXmlSniffSize = 64;
+    constexpr std::size_t kSniffSize = std::max(kLegacyXmlSniffSize, kMimeTypeOffset + kNatronProjectMimeType.size());
+    static_assert(kSniffSize >= kMimeTypeOffset + kNatronProjectMimeType.size());
 
     std::span<const std::byte>
     textBytes(std::string_view text)

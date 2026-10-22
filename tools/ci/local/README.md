@@ -51,8 +51,9 @@ image (next section) and only builds locally when the pull fails.
 CI publishes the image to GitHub Container Registry as
 `ghcr.io/charlesangus/natron-dev:<content hash>`. The package is public, so
 pulling needs no login. The tag is the first 16 hex characters of a SHA-256
-over `tools/ci/local/Dockerfile`, `cmake/FetchSlang.cmake` and
-`cmake/FetchGlslang.cmake`, the files that decide the image's contents, so
+over `tools/ci/local/Dockerfile`, `cmake/FetchSlang.cmake`,
+`cmake/FetchGlslang.cmake` and `tools/ci/local/install-git-lfs.sh`, the files
+that decide the image's contents, so
 an unchanged image is published once and every checkout with the same files
 resolves to the same tag. `tools/ci/local/dev-image-tag.sh` is the single
 definition of that tag; `devshell.sh` and the workflows all call it:

@@ -43,6 +43,7 @@ jobs:
         uses: actions/checkout@v5.0.1
         with:
           submodules: recursive
+          lfs: false
 
       - name: Resolve dispatch tag
         if: github.event_name == 'workflow_dispatch'
@@ -65,6 +66,28 @@ jobs:
             git push origin "refs/tags/$TAG"
           fi
           echo "Building $TAG at $(git rev-parse HEAD)"
+
+      # The ASWF base image has no git-lfs; the dev image bakes in the same pin.
+      - name: Install git-lfs
+        run: tools/ci/local/install-git-lfs.sh
+
+      # LFS objects come from the cache and download only on a miss. The workspace
+      # is not owned by the container's root user, so git needs it marked safe.
+      - name: List LFS objects
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+
+      - name: Restore LFS objects
+        uses: actions/cache@v6.1.0
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+
+      - name: Pull LFS objects
+        run: |
+          git lfs install --local
+          git lfs pull
 
       - name: Restore ccache
         id: restore_ccache

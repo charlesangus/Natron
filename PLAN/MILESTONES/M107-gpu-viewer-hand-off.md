@@ -371,3 +371,4 @@ Two things block the end-to-end acceptance. First, keeping the root on the devic
     - the `lost@40` fault config, which fails (the loss never fires) only with the fresh `XDG_CACHE_HOME` that `run.sh` creates and passes with the container's cache dir;
     - a check that the GPU-rung runs really rendered on the device, since a loss that never fires suggests little device work.
   - **Accepted cost:** on a hand-off cache hit, an open histogram or output picking renders the viewed node synchronously on the main thread, as the input picker already does.
+- 2026-10-22 — **Rebased onto main `3c2ba44fc` (M120, M141, M155) as `22f88b57e`.** One conflict, in `tools/ci/local/README.md`: M141's "Worktree lanes" section and this branch's "RADV GL display for GUI checks" section both stay, main's first. No C++ conflicts. Remote `fast --tests` (the lavapipe CI gate line) and a `release` AppImage for P6.T2 are dispatched together.

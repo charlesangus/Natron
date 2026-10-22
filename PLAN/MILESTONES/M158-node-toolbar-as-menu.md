@@ -45,7 +45,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`):
 
 ## Phase 158.1: One shared node menu
 
-- [ ] M158.P1.T1 — Build the plug-in tree as one process-wide QMenu tree
+- [x] M158.P1.T1 — Build the plug-in tree as one process-wide QMenu tree
   - files: `Gui/GuiApplicationManager.{h,cpp}`, `Gui/ToolButton.{h,cpp}`, `Gui/Gui20.cpp`
   - approach:
     - `GuiApplicationManager` owns a `QMenu` with objectName `NodesMenu`, built from the `PluginGroupNode` tree once plug-ins load. Use a `Menu` per grouping, in `namedGroupsOrdered` order, and a `QAction` per user-creatable plug-in.
@@ -57,7 +57,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`):
   - verify: a GUI test under Xvfb checks the tree is complete: every `getIsUserCreatable()` plug-in has exactly one action under its grouping path. It also checks that disabling a plug-in removes only its action and keeps a foreign action added to the same submenu.
   - size: L
 
-- [ ] M158.P1.T2 — Draw each window's toolbar and right-click menu from the shared menu
+- [x] M158.P1.T2 — Draw each window's toolbar and right-click menu from the shared menu
   - files: `Gui/GuiPrivate.cpp`, `Gui/Gui20.cpp`, `Gui/Gui.cpp`, `Gui/GuiAppInstance.cpp`, `Gui/NodeGraph35.cpp`
   - approach:
     - Per window, make one `AutoRaiseToolButton` per top-level submenu of `NodesMenu` that the plug-in tree created, with the same icon, size, order and `InstantPopup`. The look is unchanged.
@@ -66,7 +66,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`):
   - verify: `Tests/gui/m56_visual.py`'s left-toolbox screenshot matches the pre-change one. Share the before and after shots with the user. A second window shows the same menus.
   - size: M
 
-- [ ] M158.P1.T3 — Add `natron.nodesMenu()` to the Python API
+- [x] M158.P1.T3 — Add `natron.nodesMenu()` to the Python API
   - files: `Gui/PyGlobalGui.h`, the NatronGui typesystem XML, `Tests/gui/` (new test script)
   - approach:
     - A one-line accessor returning the shared `QMenu*`, with no ownership transfer to Python (check the typesystem's ownership rules; see how other `QWidget*` returns are bound).
@@ -76,7 +76,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`):
 
 ## Phase 158.2: Startup order
 
-- [ ] M158.P2.T1 — Run initGui.py after the first GUI window, and insert addMenuCommand live
+- [x] M158.P2.T1 — Run initGui.py after the first GUI window, and insert addMenuCommand live
   - files: `Engine/AppManager.{h,cpp}` (`loadPythonGroups`), `Gui/GuiAppInstance.cpp`, `Gui/GuiApplicationManager10.cpp` (`addCommand`), `Gui/Gui50.cpp` (`addMenuEntry`)
   - approach:
     - `init.py` keeps its timing.
@@ -88,7 +88,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`):
 
 ## Phase 158.3: Tab menu over the shared menu
 
-- [ ] M158.P3.T1 — Take tab-menu items from the node menu and drop the JSON node source
+- [x] M158.P3.T1 — Take tab-menu items from the node menu and drop the JSON node source
   - files: `Gui/Resources/TabTabTab/tabtabtab_natron.py`, `Gui/TabMenuBridge.{h,cpp}`, `Gui/PyGuiApp.{h,cpp}`, the NatronGui typesystem XML
   - approach:
     - Replace `_node_items` with `find_qt_menu_items` over `natron.nodesMenu()`.
@@ -99,7 +99,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`):
   - verify: covered by P3.T3's updated tests.
   - size: M
 
-- [ ] M158.P3.T2 — Place nodes created from the tab menu at the cursor
+- [x] M158.P3.T2 — Place nodes created from the tab menu at the cursor
   - files: `Gui/TabMenuBridge.cpp`, `Engine/AppInstance.{h,cpp}` (node creation), `Gui/Resources/TabTabTab/tabtabtab_natron.py`
   - approach:
     - Around the deferred `action.trigger()`, the bridge sets a scoped creation context: the target graph's collection and the cursor's scene position.
@@ -108,7 +108,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`):
   - verify: a GUI test opens the tab menu over a graph at a known point and triggers a Python action that calls `app.createNode("…")`. The node is in that graph at the point. A toolbar click outside the tab menu still uses default placement.
   - size: M
 
-- [ ] M158.P3.T3 — Update the tab-menu tests for the menu-walk source
+- [x] M158.P3.T3 — Update the tab-menu tests for the menu-walk source
   - files: `Tests/gui/m45_tab_menu.py`, `Tests/python/test_tabtabtab_natron.py`, `Gui/Resources/TabTabTab/tests/`, `Tests/TabMenuBridge_Test.cpp`
   - approach: replace the stubs and assertions on `getTabMenuNodeItems` with a stub or real `nodesMenu()`. Keep each test's intent: weights, uniqueness, shortcuts, icons and node creation. Add a case where a Python action under `Merge/` is listed and triggers.
   - verify: the four suites pass at the gate.
@@ -154,6 +154,8 @@ Scouted facts (2026-10-22, `main` `1eed87752`):
 - 2026-10-22 — Freshness check (§5a) at claim: stale file lists and line numbers corrected in place; no premise change.
 - 2026-10-22 — P1.T1's completeness check (every user-creatable plug-in has exactly one action) can't run in C++: GuiTests uses a plain `AppManager`, and `GuiApplicationManager::initGui` runs `exec()` and is `FINAL`. With `getTabMenuNodeItems` deleted (P3.T1), Python sees only plug-in IDs, so `m158_nodes_menu.py` now checks that every action names a registered plug-in, no version repeats, and Merge/Blur sit under their groupings; the startup tree is the snapshot for disable/enable. Accepted as is: the tree is built from the same `PluginGroupNode` walk as before.
 - 2026-10-22 — Plug-ins with no grouping read `Misc/<label>` in the tab menu (the menu's placement), not a bare `<label>`. The tab-menu adapter has its own menu walker instead of `find_qt_menu_items`, which split labels containing `/` and skipped top-level leaves.
+- 2026-10-22 — P1–P3 verified on the fast AppImage of `8570052b4`: ctest 331/331 on both legs, and `m158_nodes_menu`, `m158_init_gui`, `m45_tab_menu` and `m56_visual` pass under Xvfb. The earlier failures were in the tests (fixed in `35d62a642`). PySide 6.8 invalidates a menu returned by `QAction.menu()` once the action's Python wrapper is collected, even though the C++ menu lives on. The helper `gt.menu_of` keeps the owner alive. P4.T1's docs must warn script authors to hold the action, or to walk the menu through `findChildren(QMenu)`. The toolbox class `AutoHideToolBar` has no `Q_OBJECT`, so it reports as `QToolBar`. `m45_tab_menu`'s "group" case fails intermittently on main as well (the node never joins the group); it predates this milestone.
+- 2026-10-22 — A startup segfault on an NVIDIA desktop (Qt compositor shader compile with an empty log) was seen once with this milestone's AppImage and not reproduced. No line in this milestone touches GL. It went to the inbox as a separate milestone request (GL context restore on the GUI thread).
 
 ## Handoff (2026-10-22, PM paused by user)
 

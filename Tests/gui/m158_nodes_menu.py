@@ -9,8 +9,8 @@ Sections:
   - api: nodesMenu() returns the QMenu named NodesMenu, the same object on every call;
   - tree: the Preferences plug-in list, which shows every registered plug-in version except
     internal-only ones with its grouping, is read as the registry; every plug-in-owned action names
-    a version that list shows (and an ID natron.getPluginIDs() returns) and sits under that
-    version's grouping, Merge, Blur and the test PyPlug have an action for their newest major, no
+    a version that list shows (and an ID natron.getPluginIDs() returns) and sits in a submenu named
+    like the deepest grouping the list shows for it (the list merges same-named groups), Merge, Blur and the test PyPlug have an action for their newest major, no
     plug-in version has two actions, and every action carries the ID, major, category colour and
     shortcut properties; Python cannot see whether a listed version is deprecated, so a listed
     version with no action is only counted, not failed; of the test PyPlug's two majors (from
@@ -116,10 +116,12 @@ try:
         unlisted = sorted(k for k in expected if k not in listed)
         check(not unlisted, "every plug-in action names a plug-in version the Preferences list shows, "
               "so none is internal-only or of a major that does not exist (%r)" % unlisted[:10])
+        # The Preferences list files a plug-in under any existing group named like its deepest
+        # grouping, so "Extra/Filter" can show as "Filter": only that deepest name is reliable.
         misplaced = sorted((k, p, listed[k] or [DEFAULT_GROUPING]) for k, p in expected.items()
-                           if k in listed and p != (listed[k] or [DEFAULT_GROUPING]))
-        check(not misplaced, "every plug-in action sits under the grouping the Preferences list shows "
-              "for its plug-in (%r)" % misplaced[:5])
+                           if k in listed and p[-1:] != (listed[k] or [DEFAULT_GROUPING])[-1:])
+        check(not misplaced, "every plug-in action sits in a submenu named like the deepest grouping the "
+              "Preferences list shows for its plug-in (%r)" % misplaced[:5])
         for pid in sorted(KNOWN_GROUPINGS):
             majors = [m for k, m in listed if k == pid]
             newest = (pid, max(majors)) if majors else None

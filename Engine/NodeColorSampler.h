@@ -35,6 +35,21 @@
 NATRON_NAMESPACE_ENTER
 
 /**
+ * @brief Renders layer of node's output over pixelRect, in pixel coordinates at mipmapLevel, synchronously on
+ * the calling thread, into RAM. renderedRect, if not NULL, receives the part of pixelRect inside the region of
+ * definition, which the returned image covers and may exceed.
+ *
+ * Returns NULL in the cases sampleNodeColor() returns false.
+ **/
+ImagePtr renderNodeImage(const NodePtr& node,
+                         double time,
+                         ViewIdx view,
+                         unsigned int mipmapLevel,
+                         const RectI& pixelRect,
+                         const ImageLayerDesc& layer,
+                         RectI* renderedRect);
+
+/**
  * @brief Renders node's output over pixelRect, in pixel coordinates at mipmapLevel, synchronously on
  * the calling thread, and writes the mean of every rendered pixel of layer to rgba. Asking for the
  * time, view, scale and layer the viewer last rendered makes this a cache lookup in the usual case.

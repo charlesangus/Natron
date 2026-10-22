@@ -12,12 +12,15 @@ Per viewer texture mode (8u, 32f) the cases are, in M107_CASES (comma list, defa
   aces       the same channels under an ACES view, then a mid-session switch between views
   wipe       the B Grade connected as viewer input B and the A/B wipe on, then off and B disconnected again
   pan        zoom to 200% and a middle-button drag that brings new image area into view
-  picker     the info bar's RGBA values at three viewport points
+  picker     the info bar's RGBA values at three viewport points, and the viewed node's output picked
+             (Ctrl+Alt+click) at the middle one
   sweep      Grade multiply stepped through 16 values; every step must change the picture, and the last one
              must be darker than the first
   cache      after the sweep, multiply back to 1: the frame shown at the sweep's first step again (from the
-             viewer cache), with the picker reading that frame's values rather than the last step's
-  histogram  (once, at the end) a new histogram pane draws something
+             viewer cache), with the picker, input and output, reading that frame's values rather than the
+             last step's
+  histogram  (once, at the end, on the frame the cache case left on screen) a new histogram pane draws
+             what the CPU run's draws
 With NATRON_GPU_FAULT set only the sweep runs: the log must show the hand-off dropping to the cpu rung on a
 device loss during it, and the sweep frames after the loss must still change. Its grabs are not compared with
 the CPU reference, whose sweep ran in a different viewer layout. Every GPU run without a fault must log the
@@ -61,6 +64,7 @@ PICK_TOL = float(os.environ.get("M107_PICK_TOL", "0.002"))
 DITHER_SHARE = float(os.environ.get("M107_DITHER_SHARE", "0.005"))
 SWEEP_STEPS = 16
 HISTOGRAM_COLOURED_RATIO = 0.10
+HISTOGRAM_DIFF_SHARE = float(os.environ.get("M107_HISTOGRAM_DIFF_SHARE", "0.02"))
 CHANNELS = ["RGB", "Red", "Green", "Blue", "Alpha", "Luminance", "Matte"]
 VARIANTS = [("neutral", 0.0, 1.0), ("gain2", 1.0, 1.0), ("gamma2.2", 0.0, 2.2), ("gamma0", 0.0, 0.0)]
 ALL_CASES = ["matrix", "aces", "wipe", "pan", "picker", "sweep", "cache", "histogram"]
@@ -284,9 +288,9 @@ try:
                 return True
         return False
 
-    def mouse(widget, kind, pos, button, buttons):
+    def mouse(widget, kind, pos, button, buttons, modifiers=Qt.NoModifier):
         QApplication.sendEvent(widget, QMouseEvent(kind, QPointF(pos), QPointF(widget.mapToGlobal(pos)), button,
-                                                   buttons, Qt.NoModifier))
+                                                   buttons, modifiers))
 
     def find_aces(display_combo, view_combo):
         """Selects a view whose name mentions ACES, in the current display or else in an ACES display."""
@@ -324,6 +328,35 @@ try:
         QTest.mouseMove(w, target)
         yield ("sleep", 300)
         return info_picker_values()
+
+    def info_picker_source():
+        """"in" or "out", whichever the info bar of the first visible viewer says its values were read from."""
+        for bar in [w for w in gt.widgets_of("InfoViewerWidget") if w.isVisible()]:
+            for lab in bar.findChildren(QLabel):
+                found = re.search(r">(in|out)<", lab.text() or "")
+                if found and lab.isVisible():
+                    return found.group(1)
+        return None
+
+    def pick_output_at(w, fx, fy):
+        """Ctrl+Alt+clicks a viewport point and returns the viewed node's output values the info bar then shows,
+        or None, then clicks again to leave the picker."""
+        target = QPoint(int(w.width() * fx), int(w.height() * fy))
+        QTest.mouseMove(w, target)
+        yield ("sleep", 300)
+        mods = Qt.ControlModifier | Qt.AltModifier
+        mouse(w, QEvent.MouseButtonPress, target, Qt.LeftButton, Qt.LeftButton, mods)
+        mouse(w, QEvent.MouseButtonRelease, target, Qt.LeftButton, Qt.NoButton, mods)
+        yield ("sleep", 300)
+        values = info_picker_values()
+        source = info_picker_source()
+        mouse(w, QEvent.MouseButtonPress, target, Qt.LeftButton, Qt.LeftButton)
+        mouse(w, QEvent.MouseButtonRelease, target, Qt.LeftButton, Qt.NoButton)
+        yield ("sleep", 300)
+        if source != "out":
+            report("NOTE output pick read from %r" % source)
+            return None
+        return values
 
     def compare_pick(name, values):
         pickers[name] = values
@@ -493,6 +526,11 @@ try:
                     check(values is not None, "%s: the info bar shows picked values (%r)" % (name, values))
                     if values is not None:
                         compare_pick(name, values)
+                name = "%s-picker1-output" % mode
+                values = yield from pick_output_at(w, 0.5, 0.5)
+                check(values is not None, "%s: the info bar shows the viewed node's output (%r)" % (name, values))
+                if values is not None:
+                    compare_pick(name, values)
                 QApplication.sendEvent(w, QEvent(QEvent.Leave))
 
             if "sweep" in CASES:
@@ -524,6 +562,16 @@ try:
                             check(len(own) == len(values) and all(abs(a - b) <= PICK_TOL for a, b in zip(values, own)),
                                   "%s-cache-pick: the picker reads the frame on screen, as at the picker case (%r, %r)" %
                                   (mode, values, own))
+                    name = "%s-cache-pick-output" % mode
+                    values = yield from pick_output_at(w, 0.5, 0.5)
+                    check(values is not None, "%s: the info bar shows the viewed node's output (%r)" % (name, values))
+                    if values is not None:
+                        compare_pick(name, values)
+                        own = pickers.get("%s-picker1-output" % mode)
+                        if own is not None:
+                            check(len(own) == len(values) and all(abs(a - b) <= PICK_TOL for a, b in zip(values, own)),
+                                  "%s: the output picker reads the frame on screen, as at the picker case (%r, %r)" %
+                                  (name, values, own))
                     QApplication.sendEvent(w, QEvent(QEvent.Leave))
                 yield ("sleep", SETTLE_MS)
 
@@ -560,6 +608,23 @@ try:
                 check(expected > 0 and abs(coloured - expected) <= HISTOGRAM_COLOURED_RATIO * expected,
                       "the histogram's coloured pixels (%d) are within %d%% of the CPU run's (%d)" %
                       (coloured, int(HISTOGRAM_COLOURED_RATIO * 100), expected))
+                ref = QImage(os.path.join(REF_DIR, "histogram.png"))
+                if ref.isNull() or ref.size() != crop.size():
+                    report("NOTE no CPU histogram of the same size to compare (%s)" % ("missing" if ref.isNull() else "size"))
+                elif not FAULT_ENV:
+                    ref = ref.convertToFormat(crop.format())
+                    sampled = differing = 0
+                    for y in range(0, crop.height(), 2):
+                        for x in range(0, crop.width(), 2):
+                            a = crop.pixelColor(x, y)
+                            b = ref.pixelColor(x, y)
+                            sampled += 1
+                            if max(abs(a.red() - b.red()), abs(a.green() - b.green()), abs(a.blue() - b.blue())) > 60:
+                                differing += 1
+                    share = differing / float(max(sampled, 1))
+                    check(share <= HISTOGRAM_DIFF_SHARE,
+                          "the histogram draws the CPU run's curves (%d of %d sampled pixels differ, at most %g)" %
+                          (differing, sampled, HISTOGRAM_DIFF_SHARE))
 
         gt.section("log")
         log_path = os.path.join(gt.OUT, "natron.log")

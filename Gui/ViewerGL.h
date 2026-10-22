@@ -673,13 +673,31 @@ private:
     NodePtr getViewedNodeInput(int textureIndex, double time) const WARN_UNUSED_RETURN;
 
     /**
-     * @brief Mean colour of the viewed node's input over canonicalRect, at least one pixel wide
-     * and high, read at the time, view, scale and layer displayed, the image last rendered in
-     * textureIndex, was rendered with, and converted to pixels with the input's own pixel aspect
-     * ratio. Channels displayed lacks are filled as getColorAt() fills them.
+     * @brief The node displayed in textureIndex at time: the viewer's active input, resolved past disabled nodes.
      **/
-    bool getInputColorAtCanonicalRect(int textureIndex, const ImagePtr& displayed, const RectD& canonicalRect,
-                                      float* r, float* g, float* b, float* a) WARN_UNUSED_RETURN;
+    NodePtr getViewedNode(int textureIndex, double time) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Renders the image the frame on screen in textureIndex was made from, when that frame came from the
+     * viewer cache without it, so that the getters of the last rendered image never return an earlier frame's.
+     **/
+    void renderLastImageOnDemand(int textureIndex) const;
+
+    /**
+     * @brief The scale and layer the frame on screen in textureIndex was rendered at, without rendering the image
+     * it was made from. False when nothing is displayed.
+     **/
+    bool getDisplayedLevelAndLayer(int textureIndex, unsigned int mipmapLevel, unsigned int* displayedLevel,
+                                   ImageLayerDesc* layer) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Mean colour of the viewed node's input over canonicalRect, at least one pixel wide
+     * and high, read at the time, view, mipmapLevel and layer the frame displayed in textureIndex
+     * was rendered with, and converted to pixels with the input's own pixel aspect ratio. Channels
+     * the layer lacks are filled as getColorAt() fills them.
+     **/
+    bool getInputColorAtCanonicalRect(int textureIndex, unsigned int mipmapLevel, const ImageLayerDesc& layer,
+                                      const RectD& canonicalRect, float* r, float* g, float* b, float* a) WARN_UNUSED_RETURN;
 
     /**
      * @brief getColorAt() and getColorAtRect() read from the viewed node's input unless pickOutput

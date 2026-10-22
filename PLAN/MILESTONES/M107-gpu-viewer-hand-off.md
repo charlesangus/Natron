@@ -455,3 +455,4 @@ Two things block the end-to-end acceptance. First, keeping the root on the devic
 
     The readback UAT passes with the prototype.
 - 2026-10-22 — **Phase 107.7 added (PM),** so P6.T3's "no case slower than main beyond noise without an explanation" can hold. It covers the ranked fixes: in-place fill with parallel tiles and direct upload (P7.T1), the fill on a worker (P7.T2), the 8K stalls (P7.T3), overlapping the readback rung's GPU wait (P7.T4), and first-frame setup ahead of time (P7.T5). P6.T3 runs after Phase 107.7. None of these files is in another running milestone; no other row is `doing`.
+- 2026-10-22 — **Rebased onto main `448013710` (M108, M154) as `f0ce83d1d`, cleanly;** a remote `fast --tests` of it is dispatched. The diagnosis prototype was cleared from the lane after it was saved to `.local/m107/p6t2/proto-fix.diff`, which still applies cleanly. P7.T1 is being implemented from it.

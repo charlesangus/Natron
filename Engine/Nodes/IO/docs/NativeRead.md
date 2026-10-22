@@ -18,7 +18,17 @@ script-name prefix so the Write can share it.
   (`raw`, `null`, `term`, `ffmpeg`, `psd`), lower case and sorted. There is no
   hand-written list, so a build with more OIIO plug-ins reads more. A path with
   any other extension gets an "Unsupported format" error from
-  `NativeRead::rejectUnsupportedFormat()`.
+  `NativeRead::rejectUnsupportedFormat()`. A camera raw extension
+  (`RawExtensions::kExtensions`, `RawExtensions.h`) is checked before that
+  list and never reaches OIIO; until the Read decodes raw it fails with a
+  "Camera raw decoding is not available" error.
+- **Output kind.** The Read declares `eDataKindPolymorphic` and resolves it
+  from the `filename` extension (`NativeRead::resolveOutputDataKind()`):
+  `eDataKindRaw` for a camera raw extension, `eDataKindImage` otherwise,
+  including an empty filename. Only the extension counts, so the file need not
+  exist. A `filename` change that flips the kind invalidates the node's cached
+  kind, which re-checks every edge reachable from it; edges are kept, and a
+  consumer that cannot take the new kind is put in error.
 - **Entry points.** The file dialogs, drag and drop, `KnobGuiFile`, the CLI,
   and `PrecompNode` all ask
   `AppManager::getReaderPluginIDForFileType()` (extension to

@@ -6,6 +6,7 @@
 #
 # Usage:
 #   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage]
+#                            [--cmake-arg <arg>]...
 #   tools/ci/remote/build.sh --mode
 #
 #   fast | release | debug -> the build preset, same meaning as in local/build.sh.
@@ -29,6 +30,10 @@
 #                        seeds on the debug preset, so at most 5 seeds are
 #                        accepted.
 #   --no-appimage     -> skip packaging and downloading the AppImage.
+#   --cmake-arg <arg> -> pass <arg> to the remote cmake configure, e.g.
+#                        --cmake-arg -DNATRON_GPU=OFF. Repeatable. The args reach
+#                        the workflow as one space-separated input, so an arg
+#                        containing whitespace is rejected.
 #   --mode            -> print the build mode (local or remote) and exit. Takes
 #                        no other arguments. The mode is the first non-blank,
 #                        non-# line of .local/build-mode at the repo root; a
@@ -45,7 +50,7 @@ FIND_INTERVAL_SECS=5
 WATCH_INTERVAL_SECS=30
 
 usage() {
-    echo "usage: build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage]" >&2
+    echo "usage: build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage] [--cmake-arg <arg>]..." >&2
     echo "       build.sh --mode" >&2
 }
 
@@ -81,6 +86,7 @@ RUN_TESTS=false
 RECORD_GOLDENS=false
 WANT_APPIMAGE=true
 SHUFFLE_SEEDS=""
+CMAKE_ARGS=""
 
 if [[ " $* " == *" --mode "* ]]; then
     if [[ $# -ne 1 ]]; then
@@ -123,6 +129,20 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-appimage)
             WANT_APPIMAGE=false
+            ;;
+        --cmake-arg)
+            if [[ $# -eq 0 ]]; then
+                echo "build.sh: --cmake-arg needs an argument" >&2
+                usage
+                exit 1
+            fi
+            if [[ -z "$1" || "$1" =~ [[:space:]] ]]; then
+                echo "build.sh: --cmake-arg must be non-empty and contain no whitespace, got '$1'" >&2
+                usage
+                exit 1
+            fi
+            CMAKE_ARGS="${CMAKE_ARGS:+${CMAKE_ARGS} }$1"
+            shift
             ;;
         -h|--help)
             usage
@@ -195,6 +215,7 @@ gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
     -f "record_goldens=${RECORD_GOLDENS}" \
     -f "appimage=${WANT_APPIMAGE}" \
     -f "shuffle_seeds=${SHUFFLE_SEEDS}" \
+    -f "cmake_args=${CMAKE_ARGS}" \
     -f "token=${TOKEN}"
 
 # gh 2.23 prints no run ID on dispatch, so the run is found by the token that

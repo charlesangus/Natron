@@ -1,6 +1,6 @@
 name: Remote build
 
-run-name: remote-build ${{ inputs.preset || 'fast' }} ${{ inputs.token }}
+run-name: remote-build ${{ inputs.preset || 'fast' }} ${{ inputs.token }}${{ inputs.cmake_args != '' && format(' cmake:{0}', inputs.cmake_args) || '' }}
 
 on:
   # A push run builds fast with no tests and no AppImage; it exists to
@@ -36,6 +36,11 @@ on:
         default: true
       shuffle_seeds:
         description: 'Comma-separated gtest shuffle seeds (needs tests): each ctest leg runs once unshuffled, then once per seed'
+        required: false
+        type: string
+        default: ''
+      cmake_args:
+        description: 'Extra CMake arguments, space-separated'
         required: false
         type: string
         default: ''
@@ -120,7 +125,24 @@ jobs:
         id: build
         env:
           WITH_TESTS: ${{ inputs.tests && '1' || '' }}
-        run: tools/ci/local/build.sh "$PRESET" ${WITH_TESTS:+--tests} --no-ccache-stats
+          CMAKE_ARGS: ${{ inputs.cmake_args }}
+        run: |
+          extra=()
+          for word in $CMAKE_ARGS; do
+            extra+=(--cmake-arg "$word")
+          done
+          tools/ci/local/build.sh "$PRESET" ${WITH_TESTS:+--tests} "${extra[@]}" --no-ccache-stats
+
+      # An extra-argument build lands in build/<preset>-<hash>, but test.sh and the packaging steps
+      # look in build/<preset>; a relative link makes the real tree answer to that name.
+      - name: Link build tree
+        if: steps.build.outcome == 'success'
+        env:
+          BUILD_DIR: ${{ steps.build.outputs.build_dir }}
+        run: |
+          if [[ "$(basename "$BUILD_DIR")" != "$PRESET" ]]; then
+            ln -sfn "$(basename "$BUILD_DIR")" "build/$PRESET"
+          fi
 
       # Runs before the ctest legs so they replay the references just recorded.
       - name: Record native goldens
@@ -154,11 +176,19 @@ jobs:
           retention-days: 7
 
       # A tar because artifacts drop the executable bit. Object files and static archives are
-      # only build inputs, and Testing/ holds this job's golden-recording run.
+      # only build inputs, and Testing/ holds this job's golden-recording run. An extra-argument
+      # build packs its real tree next to the build/<preset> link, which tar stores as a link.
       - name: Pack build tree
         if: inputs.tests && !cancelled() && steps.build.outcome == 'success'
+        env:
+          BUILD_DIR: ${{ steps.build.outputs.build_dir }}
         run: |
-          tar -cf build-tree.tar --exclude='*.o' --exclude='*.a' --exclude="build/$PRESET/Testing" "build/$PRESET"
+          trees=("build/$PRESET")
+          real="build/$(basename "$BUILD_DIR")"
+          if [[ "$real" != "build/$PRESET" ]]; then
+            trees+=("$real")
+          fi
+          tar -cf build-tree.tar --exclude='*.o' --exclude='*.a' --exclude="$real/Testing" "${trees[@]}"
           ls -lh build-tree.tar
 
       - name: Upload build tree

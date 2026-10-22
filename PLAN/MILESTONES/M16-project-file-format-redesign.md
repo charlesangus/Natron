@@ -99,7 +99,7 @@ Scouting facts this plan relies on (2026-10-10):
   - verify: compiled at P1.T5. gtest round-trips every dtype, a 0-row table and a 1e6-row table; checks the missing and unknown column rules; and checks that a corrupt count or offset is rejected without reading out of bounds (ASan in the debug build if available).
   - size: M
 
-- [ ] M16.P1.T5 — Phase 16.1 build and test checkpoint
+- [x] M16.P1.T5 — Phase 16.1 build and test checkpoint
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `ctest -R 'ZipStore|BlobTable'`, then `tools/ci/local/test.sh ctest debug`.
   - verify: green. The build is required.

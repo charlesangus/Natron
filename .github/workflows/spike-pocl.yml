@@ -7,18 +7,28 @@ jobs:
     runs-on: ubuntu-latest
     container: aswf/ci-vfxall:2027-clang21.1
     steps:
-      - name: Repos
+      - name: Package availability
+        continue-on-error: true
         run: |
-          rpm -q epel-release || true
-          dnf repolist
+          rpm -q epel-release mesa-libOpenCL || true
           ls -la /etc/OpenCL/vendors 2>&1 || true
-          rpm -q mesa-libOpenCL || true
-      - name: Install pocl and clinfo
-        run: dnf install -y pocl clinfo
-      - name: clinfo
+          dnf -q --disablerepo=cuda list available '*pocl*' '*clinfo*' '*opencl*' '*rusticl*' 'ocl-icd*' 2>&1 | head -40 || true
+          dnf -q --disablerepo=cuda provides '*/libpocl.so*' 2>&1 | head || true
+          clang --version | head -1; llvm-config --version || true
+      - name: Build pocl from source
+        continue-on-error: true
         run: |
-          ls -la /etc/OpenCL/vendors; cat /etc/OpenCL/vendors/*.icd
+          dnf install -y --disablerepo=cuda clinfo ocl-icd-devel hwloc-devel || true
+          git clone --depth 1 --branch "$(git ls-remote --tags --refs https://github.com/pocl/pocl 'v*' | sed 's|.*refs/tags/||' | grep -E '^v[0-9]+\.[0-9]+$' | sort -V | tail -1)" https://github.com/pocl/pocl /tmp/pocl
+          git -C /tmp/pocl describe --tags
+          cmake -S /tmp/pocl -B /tmp/pocl-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_ICD=ON -DENABLE_TESTS=OFF -DENABLE_EXAMPLES=OFF -DINSTALL_OPENCL_HEADERS=OFF -DCMAKE_INSTALL_PREFIX=/usr/local -DWITH_LLVM_CONFIG=$(command -v llvm-config) -DENABLE_LLVM_STATIC=OFF 2>&1 | tail -40
+          cmake --build /tmp/pocl-build -j"$(nproc)" 2>&1 | tail -30
+          cmake --install /tmp/pocl-build
+          mkdir -p /etc/OpenCL/vendors; cat /usr/local/etc/OpenCL/vendors/*.icd 2>/dev/null; ls /usr/local/etc/OpenCL/vendors /etc/OpenCL/vendors
+      - name: clinfo
+        continue-on-error: true
+        run: |
+          export OCL_ICD_VENDORS=/usr/local/etc/OpenCL/vendors
           clinfo
           echo "=== extensions"
           clinfo | grep -E "Platform Name|Device Name|Device Version|Extensions|cl_khr_external|cl_khr_device_uuid|cl_khr_gl_sharing" || true
-          clinfo -l

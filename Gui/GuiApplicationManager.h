@@ -137,6 +137,12 @@ public:
      **/
     void setNodesMenuTarget(Gui* gui, QMenu* popup);
 
+    /**
+     * @brief Drops the target set by setNodesMenuTarget() if its popup has not been shown since,
+     * for callers that cannot tell beforehand whether an event opens the popup.
+     **/
+    void releaseNodesMenuTargetIfNotShown();
+
     virtual bool isBackground() const OVERRIDE FINAL
     {
         return false;

@@ -57,6 +57,8 @@ GCC_DIAG_SUGGEST_OVERRIDE_ON
 
     // Read-only, so GUI test scripts can check the keyframe colouring.
     Q_PROPERTY(int animation READ getAnimation)
+    // Read-only, so GUI test scripts can tell enabled plug-ins in the Preferences list.
+    Q_PROPERTY(bool checked READ isChecked)
 
 public:
 

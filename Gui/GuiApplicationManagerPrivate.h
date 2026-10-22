@@ -36,6 +36,7 @@ CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QCursor>
 #include <QFutureWatcher>
+#include <QMenu>
 #include <QPointer>
 #include <QString>
 #include <QTimer>
@@ -67,6 +68,8 @@ struct GuiApplicationManagerPrivate
     std::list<PluginGroupNodePtr> _topLevelToolButtons;
     QMenu* nodesMenu;
     QPointer<Gui> nodesMenuTarget;
+    QPointer<QMenu> nodesMenuPopup;
+    bool nodesMenuPopupShown;
     quint64 nodesMenuTargetGeneration;
     std::unique_ptr<KnobsClipBoard> _knobsClipBoard;
     std::unique_ptr<KnobGuiFactory> _knobGuiFactory;
@@ -153,6 +156,8 @@ struct GuiApplicationManagerPrivate
     void addNodesMenuPluginAction(QMenu* menu, const PluginGroupNode& leaf);
 
     void createNodeFromNodesMenu(const QString& pluginID, int major, int minor);
+
+    void clearNodesMenuTarget();
 };
 
 NATRON_NAMESPACE_EXIT

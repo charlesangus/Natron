@@ -51,6 +51,8 @@ GuiApplicationManagerPrivate::GuiApplicationManagerPrivate(GuiApplicationManager
     , _topLevelToolButtons()
     , nodesMenu(NULL)
     , nodesMenuTarget()
+    , nodesMenuPopup()
+    , nodesMenuPopupShown(false)
     , nodesMenuTargetGeneration(0)
     , _knobsClipBoard(new KnobsClipBoard)
     , _knobGuiFactory(new KnobGuiFactory())

@@ -8,23 +8,25 @@ Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL/Xvfb setup
 Sections:
   - api: nodesMenu() returns the QMenu named NodesMenu, the same object on every call;
   - tree: the Preferences plug-in list, which shows every registered plug-in version except
-    internal-only ones with its grouping, is read as the registry; every plug-in-owned action names
-    a version that list shows (and an ID natron.getPluginIDs() returns) and sits in a submenu named
-    like the deepest grouping the list shows for it (the list merges same-named groups), Merge, Blur and the test PyPlug have an action for their newest major, no
-    plug-in version has two actions, and every action carries the ID, major, category colour and
-    shortcut properties; Python cannot see whether a listed version is deprecated, so a listed
-    version with no action is only counted, not failed; of the test PyPlug's two majors (from
-    m158_nodes_menu.natronpath/), only the older one's label carries its major; the startup tree is
-    the snapshot the later sections compare against; top-level groupings keep the toolbox order;
-    triggering an action creates the node;
+    internal-only ones with its grouping and its Enabled checkbox state, is read as the registry;
+    every enabled version in it except KNOWN_DEPRECATED (the list does not show deprecation) has
+    an action and no other version has one; every action names an ID natron.getPluginIDs()
+    returns and sits in a submenu named like the deepest grouping the list shows for it (the list
+    merges same-named groups); no plug-in version has two actions, and every action carries the
+    ID, major, category colour and shortcut properties; of the test PyPlug's two majors (from
+    m158_nodes_menu.natronpath/), only the older one's label carries its major; the startup tree
+    is the snapshot the later sections compare against; top-level groupings keep the toolbox
+    order; triggering an action creates the node;
   - python item: a QAction added under Merge/ shows in the main window's Merge toolbox popup;
   - second window: a window opened afterwards has the same toolbox buttons over the same menus,
     shows the Python item, and both windows' graph right-click menus hold every top-level entry
-    of the nodes menu; a node created from the menu while the second window's right-click menu is
-    open lands in that window's project, and once that menu has closed, one created with the first
-    window active lands in the first window's;
+    of the nodes menu; Blur chosen with key presses in the second window's right-click menu lands
+    in that window's project; once that menu has closed, a trigger with the first window active
+    lands in the first window's; with the second window active, Blur chosen from the first
+    window's menu, opened as soon as the second's is dismissed, lands in the first window's;
   - disable: disabling a Merge plug-in in Preferences removes only its action, keeps the Python
-    item, and re-enabling it (or cancelling Preferences) brings the action back.
+    item, and re-enabling it (or cancelling Preferences) brings the action back; disabling the
+    test PyPlug's major 2 leaves major 1's label as it was.
 
 Plug-ins are enabled and disabled through the Preferences plug-in list's "Enabled" checkboxes,
 which are AnimatedCheckBox frames toggled by a Space key press, and Preferences is cancelled at the
@@ -61,6 +63,14 @@ PYTHON_ITEM_TEXT = "M158 Python item"
 TWO_MAJORS_ID = "fr.natron.m158.TwoMajors"
 TWO_MAJORS_LABEL = "M158 Two Majors"
 KNOWN_GROUPINGS = {MERGE_ID: [MERGE_GROUPING], BLUR_ID: ["Filter"], TWO_MAJORS_ID: ["Other"]}
+# The Preferences list does not show which versions are deprecated. These are, in the bundled
+# openfx-misc, openfx-io and openfx-arena (each calls setIsDeprecated(true) when describing them).
+KNOWN_DEPRECATED = {
+    ("fr.inria.openfx.OIIOResize", 1), ("fr.inria.openfx.OIIOText", 1), ("net.fxarena.openfx.MagickText", 5),
+    ("net.sf.cimg.CImgBloom", 3), ("net.sf.cimg.CImgChromaBlur", 3), ("net.sf.cimg.CImgLaplacian", 3),
+    ("net.sf.openfx.HueCorrect1", 1), ("net.sf.openfx.LensDistortion", 2), ("net.sf.openfx.LensDistortion", 3),
+    ("net.sf.openfx.TrackerPM", 1), ("net.sf.openfx.joinViewsPlugin", 1), ("net.sf.openfx.oneViewPlugin", 2),
+}
 
 # Columns of the Preferences plug-in list (PreferencesPanel.cpp COL_*).
 PREFS_COL_ID = 1
@@ -72,6 +82,7 @@ try:
     import shiboken6
     from PySide6.QtCore import QEvent, QMetaObject, QPointF, Qt, QTimer
     from PySide6.QtGui import QKeyEvent, QMouseEvent
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QGraphicsView, QMenu, QToolBar, QTreeWidget
 
     import guitest as gt
@@ -102,10 +113,10 @@ try:
                 leaves.append((a.property(PROP_ID), int(a.property(PROP_MAJOR)), path, a))
         return leaves
 
-    def expected_items(listed):
+    def expected_items(listed, enabled):
         """(ID, major) -> grouping path of every plug-in action at startup, once each has been
         checked against the plug-in registry: natron.getPluginIDs() and listed, the Preferences
-        plug-in list."""
+        plug-in list, whose Enabled checkbox states are in enabled."""
         registered = set(NatronGui.natron.getPluginIDs())
         leaves = walk(nodes_menu(), [], [])
         expected = {}
@@ -128,8 +139,17 @@ try:
             check(newest in expected, "%s's newest listed major has an action (listed majors %r)" % (pid, majors))
         no_action = sorted(k for k in listed if k not in expected)
         report("NOTE %d plug-in IDs registered, %d plug-in versions in the Preferences list, %d with an "
-               "action; the %d without one are deprecated or disabled as far as this test can tell (%r)"
-               % (len(registered), len(listed), len(expected), len(no_action), no_action[:10]))
+               "action, %d without one (%r)"
+               % (len(registered), len(listed), len(expected), len(no_action), no_action))
+        unreadable = sorted(k for k, on in enabled.items() if on is None)
+        require(not unreadable, "every Enabled checkbox in the Preferences list exposes its 'checked' state",
+                "%d do not, e.g. %r" % (len(unreadable), unreadable[:5]))
+        offered = set(k for k in listed if enabled.get(k) and k not in KNOWN_DEPRECATED)
+        missing = sorted(k for k in offered if k not in expected)
+        check(not missing, "every enabled plug-in version in the Preferences list, except the known "
+              "deprecated ones, has an action (missing %d: %r)" % (len(missing), missing[:10]))
+        unexpected = sorted(k for k in expected if k not in offered)
+        check(not unexpected, "no disabled or known deprecated plug-in version has an action (%r)" % unexpected[:10])
         for pid, grouping in sorted(KNOWN_GROUPINGS.items()):
             paths = [p for (k, _), p in expected.items() if k == pid]
             check(grouping in paths, "%s has an action under %r (got %r)" % (pid, grouping, paths))
@@ -262,6 +282,40 @@ try:
                          Qt.RightButton, Qt.RightButton, Qt.NoModifier)
         with_open_menu(lambda: QApplication.sendEvent(widget, ev), on_menu)
 
+    def choose_with_keys(menu, leaf):
+        """From an open menu holding the nodes menu's top-level entries, opens the submenus down to
+        leaf's action with Right key presses and chooses it with Return, so the choice goes through
+        QMenu's own hide-then-trigger sequence. Returns whether Return reached the action."""
+        current = menu
+        for grouping in leaf[2]:
+            entry = next((a for a in (current.actions() if current is not None else [])
+                          if owned(a) and a.property(PROP_GROUPING) == grouping and gt.menu_of(a) is not None), None)
+            if entry is None:
+                return False
+            current.setActiveAction(entry)
+            QTest.keyClick(current, Qt.Key_Right)
+            current = gt.menu_of(entry)
+            if not current.isVisible():
+                return False
+        if ptr(leaf[3]) not in [ptr(a) for a in current.actions()]:
+            return False
+        current.setActiveAction(leaf[3])
+        QTest.keyClick(current, Qt.Key_Return)
+        return True
+
+    def activate(gui):
+        gui.raise_()
+        gui.activateWindow()
+        ok = yield ("until", lambda: QApplication.activeWindow() is not None
+                    and ptr(QApplication.activeWindow()) == ptr(gui), POLL_TIMEOUT_S)
+        return ok
+
+    def drop_new(target_app, before, plugin_id):
+        node = new_node(target_app, before, plugin_id)
+        if node is not None:
+            node.destroy()
+        gt.close_all_panels()
+
     def check_graph_menu(area, gui):
         graph = graph_of(gui)
         if not check(graph is not None, "%s: found the node graph" % area):
@@ -320,6 +374,22 @@ try:
                 visit(tree.topLevelItem(i), [])
         return found
 
+    def enabled_states(prefs):
+        """(ID, major) -> the row's Enabled checkbox state, or None where it cannot be read."""
+        tree = plugin_list(prefs)
+        states = {}
+        if tree is None:
+            return states
+        items = tree.findItems("*", Qt.MatchFlag.MatchWildcard | Qt.MatchFlag.MatchRecursive, PREFS_COL_ID)
+        for item in items:
+            pid = item.text(PREFS_COL_ID)
+            if not pid:
+                continue
+            box = tree.itemWidget(item, PREFS_COL_ENABLED)
+            state = box.property("checked") if box is not None else None
+            states[(pid, int(item.text(PREFS_COL_VERSION).split(".")[0]))] = state if isinstance(state, bool) else None
+        return states
+
     def read_plugin_list(gui):
         QMetaObject.invokeMethod(gui, "showSettings")
         ok = yield ("until", lambda: open_prefs() is not None, POLL_TIMEOUT_S)
@@ -327,11 +397,12 @@ try:
         require(ok and prefs is not None, "the Preferences window opened")
         yield ("sleep", SETTLE_MS)
         listed = listed_plugin_versions(prefs)
+        enabled = enabled_states(prefs)
         QApplication.sendEvent(prefs, QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
         ok = yield ("until", lambda: open_prefs() is None, POLL_TIMEOUT_S)
         require(ok, "Escape closes Preferences")
         yield ("sleep", SETTLE_MS)
-        return listed
+        return listed, enabled
 
     def plugin_checkbox(prefs, pid, major):
         for tree in prefs.findChildren(QTreeWidget):
@@ -373,9 +444,9 @@ try:
         check(ptr(nodes_menu()) == ptr(menu), "nodesMenu() returns the same menu on every call")
 
         gt.section("tree")
-        listed = yield from read_plugin_list(main_gui)
+        listed, enabled = yield from read_plugin_list(main_gui)
         require(len(listed) > 0, "the Preferences plug-in list has rows")
-        expected = expected_items(listed)
+        expected = expected_items(listed, enabled)
         require(len(expected) > 0, "the plug-in list has user-creatable plug-ins")
         leaves = check_tree("tree", expected)
         several_majors = sorted(set(pid for pid, _ in listed if sum(1 for k, _ in listed if k == pid) > 1))
@@ -468,44 +539,59 @@ try:
         check_graph_menu("window 2", second_gui)
 
         blur_leaf = find_leaf(BLUR_ID)
+        first_graph = graph_of(main_gui)
         second_graph = graph_of(second_gui)
-        if blur_leaf is not None and second_graph is not None:
-            before1 = node_names(app)
-            before2 = node_names(app2)
+        if blur_leaf is not None and first_graph is not None and second_graph is not None:
+            chosen = []
 
-            def trigger_while_open(menu):
-                blur_leaf[3].trigger()
+            def choose_blur(menu):
+                chosen.append(choose_with_keys(menu, blur_leaf))
                 close_popups()
 
-            right_click(second_graph.viewport(), trigger_while_open)
+            before1, before2 = node_names(app), node_names(app2)
+            right_click(second_graph.viewport(), choose_blur)
+            check(chosen == [True], "Blur is chosen from window 2's graph menu with Right and Return key presses")
             ok = yield ("until", lambda: new_node(app2, before2, BLUR_ID) is not None, POLL_TIMEOUT_S)
-            check(ok, "while window 2's graph menu is open, the menu creates nodes in window 2's project")
+            check(ok, "choosing Blur in window 2's graph menu creates it in window 2's project")
             check(new_node(app, before1, BLUR_ID) is None, "...and none in window 1's project")
-            node = new_node(app2, before2, BLUR_ID)
-            if node is not None:
-                node.destroy()
-            gt.close_all_panels()
+            drop_new(app2, before2, BLUR_ID)
             yield ("sleep", SETTLE_MS)
 
-            main_gui.raise_()
-            main_gui.activateWindow()
-            ok = yield ("until", lambda: QApplication.activeWindow() is not None
-                        and ptr(QApplication.activeWindow()) == ptr(main_gui), POLL_TIMEOUT_S)
+            ok = yield from activate(main_gui)
             if not ok:
                 report("SKIP second window: window 1 could not be made the active window, so a trigger "
                        "after window 2's graph menu closed is not checked")
             else:
-                before1 = node_names(app)
-                before2 = node_names(app2)
+                before1, before2 = node_names(app), node_names(app2)
                 blur_leaf[3].trigger()
                 ok = yield ("until", lambda: new_node(app, before1, BLUR_ID) is not None, POLL_TIMEOUT_S)
                 check(ok, "once window 2's graph menu has closed, the menu creates nodes in the active "
                       "window 1's project")
                 check(new_node(app2, before2, BLUR_ID) is None, "...and none in window 2's project")
-                node = new_node(app, before1, BLUR_ID)
-                if node is not None:
-                    node.destroy()
-                gt.close_all_panels()
+                drop_new(app, before1, BLUR_ID)
+                yield ("sleep", SETTLE_MS)
+
+            ok = yield from activate(second_gui)
+            if not ok:
+                report("SKIP second window: window 2 could not be made the active window, so a popup opened "
+                       "while a dismissed one's target is still being cleared is not checked")
+            else:
+                del chosen[:]
+                before1, before2 = node_names(app), node_names(app2)
+
+                def dismiss_then_open_first(menu):
+                    if menu is not None:
+                        QTest.keyClick(menu, Qt.Key_Escape)
+                    # Window 1's menu opens before the event loop can run window 2's deferred clear.
+                    right_click(first_graph.viewport(), choose_blur)
+
+                right_click(second_graph.viewport(), dismiss_then_open_first)
+                check(chosen == [True], "Blur is chosen from window 1's graph menu, opened as window 2's closed")
+                ok = yield ("until", lambda: new_node(app, before1, BLUR_ID) is not None, POLL_TIMEOUT_S)
+                check(ok, "with window 2 active, a node chosen from window 1's graph menu, opened straight after "
+                      "window 2's was dismissed, goes into window 1's project")
+                check(new_node(app2, before2, BLUR_ID) is None, "...and none into window 2's project")
+                drop_new(app, before1, BLUR_ID)
                 yield ("sleep", SETTLE_MS)
 
         gt.section("disable")
@@ -543,6 +629,22 @@ try:
         press_space(checkbox)
         yield ("sleep", SETTLE_MS)
         check_tree("disabled again", expected, absent=(target,))
+
+        newest_two = plugin_checkbox(prefs, TWO_MAJORS_ID, 2)
+        if check(newest_two is not None, "found the test PyPlug's major 2 Enabled checkbox"):
+            press_space(newest_two)
+            yield ("sleep", SETTLE_MS)
+            labels = dict((major, a.text()) for pid, major, _, a in walk(nodes_menu(), [], []) if pid == TWO_MAJORS_ID)
+            check(sorted(labels) == [1], "with major 2 disabled, only the test PyPlug's major 1 has an action (got %r)"
+                  % sorted(labels))
+            check(labels.get(1) == TWO_MAJORS_LABEL + " 1",
+                  "with major 2 disabled, major 1 keeps the label carrying its major (got %r)" % labels.get(1))
+            press_space(newest_two)
+            yield ("sleep", SETTLE_MS)
+            labels = dict((major, a.text()) for pid, major, _, a in walk(nodes_menu(), [], []) if pid == TWO_MAJORS_ID)
+            check(labels.get(2) == TWO_MAJORS_LABEL, "re-enabling major 2 brings back its plain label (got %r)"
+                  % labels.get(2))
+
         QApplication.sendEvent(prefs, QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
         ok = yield ("until", lambda: open_prefs() is None, POLL_TIMEOUT_S)
         check(ok, "Escape closes Preferences without saving")

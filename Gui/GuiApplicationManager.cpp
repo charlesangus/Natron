@@ -1305,7 +1305,7 @@ findPlugin(const QString& pluginID,
 }
 
 int
-highestUserCreatableMajor(const QString& pluginID)
+highestOfferedMajor(const QString& pluginID)
 {
     const PluginsMap& plugins = appPTR->getPluginsList();
     PluginsMap::const_iterator found = plugins.find(pluginID.toStdString());
@@ -1315,7 +1315,8 @@ highestUserCreatableMajor(const QString& pluginID)
         return highest;
     }
     for (PluginVersionsOrdered::const_iterator it = found->second.begin(); it != found->second.end(); ++it) {
-        if ((*it)->getIsUserCreatable()) {
+        // Activation is left out so that disabling the newest major does not rename an older one.
+        if (!(*it)->getIsForInternalUseOnly() && !(*it)->getIsDeprecated()) {
             highest = std::max(highest, (*it)->getMajorVersion());
         }
     }
@@ -1553,17 +1554,42 @@ GuiApplicationManager::setNodesMenuTarget(Gui* gui,
                                           QMenu* popup)
 {
     _imp->nodesMenuTarget = popup ? gui : 0;
+    _imp->nodesMenuPopup = popup;
+    _imp->nodesMenuPopupShown = false;
     const quint64 generation = ++_imp->nodesMenuTargetGeneration;
     if (!popup) {
         return;
     }
+    auto markShown = [this, generation]() {
+        if (_imp->nodesMenuTargetGeneration == generation) {
+            _imp->nodesMenuPopupShown = true;
+        }
+    };
+    auto clear = [this, generation]() {
+        if (_imp->nodesMenuTargetGeneration == generation) {
+            _imp->clearNodesMenuTarget();
+        }
+    };
     // A QMenu hides before it emits the chosen action's triggered(), so the target is cleared only
     // once the event that hid the popup has been handled. A later popup's target is left alone.
-    QObject::connect(popup, &QMenu::aboutToHide, this, [this, generation]() { QTimer::singleShot(0, this, [this, generation]() {
-                                                                                  if (_imp->nodesMenuTargetGeneration == generation) {
-                                                                                      _imp->nodesMenuTarget.clear();
-                                                                                  }
-                                                                              }); }, Qt::SingleShotConnection);
+    QObject::connect(popup, &QMenu::aboutToShow, this, markShown, Qt::SingleShotConnection);
+    QObject::connect(popup, &QMenu::aboutToHide, this, [this, clear]() { QTimer::singleShot(0, this, clear); }, Qt::SingleShotConnection);
+}
+
+void
+GuiApplicationManager::releaseNodesMenuTargetIfNotShown()
+{
+    if (!_imp->nodesMenuPopupShown) {
+        _imp->clearNodesMenuTarget();
+    }
+}
+
+void
+GuiApplicationManagerPrivate::clearNodesMenuTarget()
+{
+    nodesMenuTarget.clear();
+    nodesMenuPopup.clear();
+    nodesMenuPopupShown = false;
 }
 
 void
@@ -1592,7 +1618,8 @@ GuiApplicationManagerPrivate::createNodeFromNodesMenu(const QString& pluginID,
     if (app) {
         group = app->getNodeCreationContextCollection();
     } else {
-        if (nodesMenuTarget) {
+        // A popup destroyed while open never emits aboutToHide(), so its target is dropped with it.
+        if (nodesMenuTarget && nodesMenuPopup) {
             app = nodesMenuTarget->getApp();
         }
         if (!app) {
@@ -1655,8 +1682,7 @@ GuiApplicationManagerPrivate::addNodesMenuPluginAction(QMenu* menu,
         return;
     }
 
-    // Only an older major is told apart by its version: the newest one keeps the plain label.
-    const bool olderMajor = plugin && (leaf.getMajorVersion() < highestUserCreatableMajor(leaf.getID()));
+    const bool olderMajor = plugin && (leaf.getMajorVersion() < highestOfferedMajor(leaf.getID()));
     QString label = olderMajor ? leaf.getLabelVersionMajorEncoded() : leaf.getLabel();
     QIcon menuIcon, toolButtonIcon;
     makePluginGroupIcons(leaf, &menuIcon, &toolButtonIcon);

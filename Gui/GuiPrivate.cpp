@@ -497,6 +497,7 @@ private:
             _gui->setToolButtonMenuOpened(NULL);
         }
         QToolButton::mousePressEvent(e);
+        appPTR->releaseNodesMenuTargetIfNotShown();
     }
 
     virtual void mouseReleaseEvent(QMouseEvent* e) OVERRIDE FINAL
@@ -508,7 +509,8 @@ private:
     virtual void keyPressEvent(QKeyEvent* e) OVERRIDE FINAL
     {
         // Space and Select press the button, which pops an InstantPopup button's menu up.
-        if ((e->key() == Qt::Key_Right) || (e->key() == Qt::Key_Space) || (e->key() == Qt::Key_Select)) {
+        const bool mayOpenMenu = (e->key() == Qt::Key_Right) || (e->key() == Qt::Key_Space) || (e->key() == Qt::Key_Select);
+        if (mayOpenMenu) {
             appPTR->setNodesMenuTarget(_gui, menu());
         }
         if (e->key() == Qt::Key_Right) {
@@ -530,6 +532,9 @@ private:
         } else {
             QToolButton::keyPressEvent(e);
         }
+        if (mayOpenMenu) {
+            appPTR->releaseNodesMenuTargetIfNotShown();
+        }
     }
 
     virtual void enterEvent(QEnterEvent* e) OVERRIDE FINAL
@@ -544,6 +549,7 @@ private:
             _menuOpened = true;
             appPTR->setNodesMenuTarget(_gui, menu());
             showMenu();
+            appPTR->releaseNodesMenuTargetIfNotShown();
         }
         QToolButton::enterEvent(e);
     }

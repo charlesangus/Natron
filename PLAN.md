@@ -192,7 +192,7 @@ future core work has solid ground to build on.
 | M118 | Large Graph GUI Responsiveness | todo | M117, M56 |  | E10 | [M118-large-graph-gui-responsiveness.md](PLAN/MILESTONES/M118-large-graph-gui-responsiveness.md) |
 | M119 | Trackball Panel Layout | todo | M56, M69 |  | E10 | [M119-trackball-panel-layout.md](PLAN/MILESTONES/M119-trackball-panel-layout.md) |
 | M134 | Output Picker Pixel Aspect | todo | - |  | E10 | [M134-output-picker-pixel-aspect.md](PLAN/MILESTONES/M134-output-picker-pixel-aspect.md) |
-| M135 | Flaky Test Fixes | doing | - | bosley-native-nodes | E2 | [M135-pool-sharing-flake-fix.md](PLAN/MILESTONES/M135-pool-sharing-flake-fix.md) |
+| M135 | Flaky Test Fixes | done | - | bosley-native-nodes | E2 | [M135-pool-sharing-flake-fix.md](PLAN/MILESTONES/M135-pool-sharing-flake-fix.md) |
 | M136 | Edge Policy Investigation | todo | - |  | E3 | [M136-edge-policy-investigation.md](PLAN/MILESTONES/M136-edge-policy-investigation.md) |
 | M137 | Native Base Class Flexibility | done | - | bosley-native-nodes | E3 | [M137-native-base-class-flexibility.md](PLAN/MILESTONES/M137-native-base-class-flexibility.md) |
 | M138 | GUI Papercuts | todo | - |  | E10 | [M138-gui-papercuts.md](PLAN/MILESTONES/M138-gui-papercuts.md) |

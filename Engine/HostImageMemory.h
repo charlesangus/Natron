@@ -182,6 +182,11 @@ public:
      **/
     void discard();
 
+    /**
+     * @brief Returns the buffer to the pool now, as destruction would, leaving this empty.
+     **/
+    void recycle();
+
     float* data() const { return _data; }
     std::size_t capacity() const { return _count; }
 

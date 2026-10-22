@@ -656,6 +656,14 @@ HostScratchFloats::discard()
     _count = 0;
 }
 
+void
+HostScratchFloats::recycle()
+{
+    HostImageMemory::release(_data, _count * sizeof(float));
+    _data = nullptr;
+    _count = 0;
+}
+
 HostScratchFloats::~HostScratchFloats()
 {
     HostImageMemory::release(_data, _count * sizeof(float));

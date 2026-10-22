@@ -758,32 +758,54 @@ runPass(const Pass& pass,
 }
 } // anonymous namespace
 
+ScratchSetRegistry&
+ScratchSetRegistry::global()
+{
+    // Never destroyed: render threads may still end their renders during static teardown.
+    static ScratchSetRegistry* registry = new ScratchSetRegistry;
+
+    return *registry;
+}
+
 ScratchSetHolder::ScratchSetHolder(HostScratchFloats& source,
                                    std::vector<HostScratchFloats>& extra,
-                                   std::atomic<int>& active)
+                                   ScratchSetRegistry& registry)
     : _source(source)
     , _extra(extra)
-    , _active(active)
+    , _registry(registry)
 {
-    _active.fetch_add(1);
+    const std::lock_guard<std::mutex> lock(_registry.mutex);
+    ++_registry.active;
 }
 
 ScratchSetHolder::~ScratchSetHolder()
 {
-    if (_active.fetch_sub(1) > 1) {
-        _source.discard();
-        for (std::size_t i = 0; i < _extra.size(); ++i) {
-            _extra[i].discard();
+    std::unique_lock<std::mutex> lock(_registry.mutex);
+    if (_registry.active > 1) {
+        // Uncounted before the slow unmapping, outside the lock: another holder ending meanwhile
+        // must see itself as the last and pool its set, and nothing this one frees is pooled.
+        --_registry.active;
+        lock.unlock();
+        if (_registry.beforeRelease) {
+            _registry.beforeRelease();
         }
+        _source.discard();
+        for (HostScratchFloats& slot : _extra) {
+            slot.discard();
+        }
+
+        return;
     }
-}
-
-std::atomic<int>&
-ScratchSetHolder::activeSets()
-{
-    static std::atomic<int> count(0);
-
-    return count;
+    // Pooled under the lock: a holder registering meanwhile would allocate a second set, and
+    // pool it in turn when it ends.
+    if (_registry.beforeRelease) {
+        _registry.beforeRelease();
+    }
+    _source.recycle();
+    for (HostScratchFloats& slot : _extra) {
+        slot.recycle();
+    }
+    --_registry.active;
 }
 
 Pass
@@ -1040,7 +1062,7 @@ runPassesCpu(EffectInstance& effect,
     HostScratchFloats sourceStorage;
     std::vector<HostScratchFloats> extraStorage(list.scratchSlots - 1);
     // Playback overlaps two frames, and pooling both sets would keep both resident.
-    const ScratchSetHolder scratchHolder(sourceStorage, extraStorage, ScratchSetHolder::activeSets());
+    const ScratchSetHolder scratchHolder(sourceStorage, extraStorage, ScratchSetRegistry::global());
     for (std::size_t j = 0; j < jobs.size(); ++j) {
         const PlaneJob& job = jobs[j];
         const ProcessedPlanes planes(job);

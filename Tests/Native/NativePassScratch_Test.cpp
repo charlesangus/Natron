@@ -27,12 +27,15 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <future>
 #include <limits>
 #include <list>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -217,45 +220,91 @@ TEST_F(NativePassScratchTest, ErodeDilateScratchIsFullyWrittenBeforeRead)
 TEST(NativePassScratchPoolTest, OverlappingScratchSetsPoolOnlyTheLastToEnd)
 {
     PoolGuard guard;
-    std::atomic<int> active(0);
+    ScratchSetRegistry registry;
     const std::size_t count = HostImageMemory::minPooledBytes() / sizeof(float) * 2;
     ASSERT_EQ(0u, HostImageMemory::pooledBufferCount());
     {
         HostScratchFloats sourceA;
         std::vector<HostScratchFloats> extraA(2);
-        const ScratchSetHolder holderA(sourceA, extraA, active);
+        const ScratchSetHolder holderA(sourceA, extraA, registry);
         sourceA.reserve(count);
         extraA[0].reserve(count);
         extraA[1].reserve(count);
         {
             HostScratchFloats sourceB;
             std::vector<HostScratchFloats> extraB(2);
-            const ScratchSetHolder holderB(sourceB, extraB, active);
+            const ScratchSetHolder holderB(sourceB, extraB, registry);
             sourceB.reserve(count);
             extraB[0].reserve(count);
             extraB[1].reserve(count);
-            EXPECT_EQ(2, active.load());
+            EXPECT_EQ(2, registry.active);
         }
-        EXPECT_EQ(1, active.load());
+        EXPECT_EQ(1, registry.active);
         // The set that ended while the other was live went to the OS.
         EXPECT_EQ(0u, HostImageMemory::pooledBufferCount());
     }
-    EXPECT_EQ(0, active.load());
+    EXPECT_EQ(0, registry.active);
     EXPECT_EQ(3u, HostImageMemory::pooledBufferCount());
 }
 
 TEST(NativePassScratchPoolTest, LoneScratchSetIsPooled)
 {
     PoolGuard guard;
-    std::atomic<int> active(0);
+    ScratchSetRegistry registry;
     const std::size_t count = HostImageMemory::minPooledBytes() / sizeof(float) * 2;
     {
         HostScratchFloats source;
         std::vector<HostScratchFloats> extra(1);
-        const ScratchSetHolder holder(source, extra, active);
+        const ScratchSetHolder holder(source, extra, registry);
         source.reserve(count);
         extra[0].reserve(count);
     }
     EXPECT_EQ(2u, HostImageMemory::pooledBufferCount());
     EXPECT_GE(HostImageMemory::pooledBytes(), 2 * count * sizeof(float));
+}
+
+TEST(NativePassScratchPoolTest, ConcurrentLastHoldersPoolOnlyOneSet)
+{
+    PoolGuard guard;
+    ScratchSetRegistry registry;
+    const std::size_t count = HostImageMemory::minPooledBytes() / sizeof(float) * 2;
+    std::atomic<bool> firstRelease(true);
+    std::promise<void> aReleasing;
+    std::promise<void> bAllocated;
+    std::future<void> bAllocatedFuture = bAllocated.get_future();
+    // The first holder to end, alone, waits there for the second to register and allocate. It
+    // may only pool once that one can no longer allocate a set of its own: here, the second
+    // cannot register before the timeout, and then takes the pooled set.
+    registry.beforeRelease = [&]() {
+        if (firstRelease.exchange(false)) {
+            aReleasing.set_value();
+            bAllocatedFuture.wait_for(std::chrono::milliseconds(200));
+        }
+    };
+    ASSERT_EQ(0u, HostImageMemory::pooledBufferCount());
+
+    std::future<void> aReleasingFuture = aReleasing.get_future();
+    std::thread a([&]() {
+        HostScratchFloats source;
+        std::vector<HostScratchFloats> extra(2);
+        const ScratchSetHolder holder(source, extra, registry);
+        source.reserve(count);
+        extra[0].reserve(count);
+        extra[1].reserve(count);
+    });
+    aReleasingFuture.wait();
+    std::thread b([&]() {
+        HostScratchFloats source;
+        std::vector<HostScratchFloats> extra(2);
+        const ScratchSetHolder holder(source, extra, registry);
+        source.reserve(count);
+        extra[0].reserve(count);
+        extra[1].reserve(count);
+        bAllocated.set_value();
+    });
+    a.join();
+    b.join();
+
+    EXPECT_EQ(0, registry.active);
+    EXPECT_EQ(3u, HostImageMemory::pooledBufferCount());
 }

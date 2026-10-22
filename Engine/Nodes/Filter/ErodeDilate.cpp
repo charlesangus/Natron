@@ -202,8 +202,8 @@ filterColumns(float* data,
 } // namespace ErodeDilateKernels
 
 namespace {
-/// Runs filterLine() over each line the executor hands over, or filterColumns() over a block of
-/// adjacent columns, through a scratch owned by the chunk.
+/// Columns go a block at a time because, with a 64 KiB row stride on physically contiguous huge
+/// pages, every row of one column falls in the same L2 set.
 std::function<PassLineFn()>
 lineWorker(int halfWidth,
            bool takeMax)

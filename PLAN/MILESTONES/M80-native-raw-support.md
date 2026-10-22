@@ -50,8 +50,8 @@ Every node is built on the M137 - Native Base Class Flexibility framework (`Node
   - size: M
 
 - [ ] M80.P1.T2 — Add the `eDataKindRaw` data kind
-  - files: `Global/Enums.h`, `Engine/Node.cpp`, `Gui/Edge.cpp`, `Gui/NodeGui.cpp`, `Engine/Nodes/README.md`
-  - approach: add `eDataKindRaw` to `DataKindEnum` (`Global/Enums.h:515-520`, beside Image, Deep, Scene and Polymorphic). The payload is a float `Image` in the existing image cache: one channel for a mosaic, three or one for linear raw. There is no new render virtual or cache (unlike Deep's `EffectInstanceRenderDeep.cpp`); the kind exists for edge typing only. **Add no row to `isRegisteredAdapter`** (`Node.cpp:1892`). Conversions are explicit (README "Conversions between kinds are explicit"): Demosaic and RawToImage declare raw in and image out, and the Viewer exception is P2.T4. Colour the edge and the node tint with a new Okabe-Ito colour distinct from Deep's blue (`Gui/Edge.cpp`, `Gui/NodeGui.cpp`, at the Deep colour sites). Check `EffectInstance.cpp`, `OutputSchedulerThread.cpp` and `ViewerInstance.h` for kind switches that need a raw arm. Document the kind in the README "Data kinds" section, including that the layout travels as metadata (P1.T3).
+  - files: `Global/Enums.h`, `Engine/Node.cpp`, `Engine/Settings.{h,cpp}`, `Engine/OutputSchedulerThread.cpp`, `Engine/NodeColorSampler.cpp`, `Gui/NodeGui.cpp` (pen refresh only), `Engine/Nodes/README.md`
+  - approach: add `eDataKindRaw` to `DataKindEnum` (`Global/Enums.h:515-520`, beside Image, Deep, Scene and Polymorphic). The payload is a float `Image` in the existing image cache: one channel for a mosaic, three or one for linear raw. There is no new render virtual or cache (unlike Deep's `EffectInstanceRenderDeep.cpp`); the kind exists for edge typing only. **Add no row to `isRegisteredAdapter`** (`Node.cpp:1892`). Conversions are explicit (README "Conversions between kinds are explicit"): Demosaic and RawToImage declare raw in and image out, and the Viewer exception is P2.T4. Edge colours are Preferences knobs: add an `_edgeRawColor` knob with an Okabe-Ito default distinct from Deep's blue, a `getEdgeRawColor`, and a Raw arm in `Settings::getEdgeKindColor` (`Engine/Settings.cpp:~3132`); `Edge::kindTintColor` already goes through it. Add raw arms to the kind switches in `Engine/OutputSchedulerThread.cpp` (~2505, ~2656) and `Engine/NodeColorSampler.cpp:175`. Document the kind in the README "Data kinds" section, including that the layout travels as metadata (P1.T3).
   - verify: gtest in `Tests/DataKind_Test.cpp`: a raw output cannot connect to an image-only input (`eCanConnectInput_incompatibleDataKind`) and can connect to a raw input; a project with a conflicting edge reports it on load through `Project::reportDataKindConflicts`; full ctest unchanged.
   - size: M
 
@@ -70,7 +70,7 @@ Every node is built on the M137 - Native Base Class Flexibility framework (`Node
   - size: M
 
 - [ ] M80.P1.T4 — Host raw-kind nodes on the native framework
-  - files: `Engine/Nodes/NodeSpec.h`, `Engine/Nodes/Image/StagedImageEffect.h/.cpp`, `Engine/Nodes/README.md`, new `Tests/Native/RawKindFramework_Test.cpp`
+  - files: `Engine/Nodes/NodeSpec.h`, `Engine/Nodes/Image/ImagePipelineSpec.h`, `Engine/Nodes/Image/StagedImageEffect.h/.cpp`, `Engine/Nodes/README.md`, new `Tests/Native/RawKindFramework_Test.cpp`
   - approach: `StagedImageEffect` ops are image-kind today. Let an `ImagePipelineSpec`/`NodeSpec` declare raw in with raw out, or raw in with image out. Ops already see pixel position through `RowIO::x0`/`y` (`Engine/Nodes/Image/PixelKernel.h:69`), so a Point op can call `RawLayout::colourAt`. Stages that make no sense on a mosaic are rejected at compile time for raw-in specs: Premult, and the layer and channel selection. The framework checks `raw/stage` through `RawMetadata::requireStage` before rendering and raises the persistent error. Scout first: if raw-in specs need more than a kind field plus those restrictions, report it before implementing. Document raw nodes in the README "Flat image nodes" section.
   - verify: gtest with a test-only raw Point op: declared kinds resolve; a raw→raw op sees the right `colourAt` per row; a raw→image op connects to an image consumer; a wrong `raw/stage` sets the persistent message and renders nothing.
   - size: L
@@ -97,7 +97,7 @@ Every node is built on the M137 - Native Base Class Flexibility framework (`Node
 
 - [ ] M80.P2.T4 — The Viewer accepts raw directly
   - files: `Engine/ViewerInstance.cpp/.h`, new `Engine/Nodes/Raw/RawDisplay.h/.cpp`, `Engine/Nodes/README.md`
-  - approach: extend the Viewer's adapter exception (`ViewerInstance.h:453-459`, `inputAcceptsDataKindViaAdapter`, Deep today) to Raw. Display goes through a shared `RawDisplay` conversion: a mosaic becomes a greyscale single channel, and linear raw shows its channels as they are. RawToImage (P2.T5) reuses the same function. No demosaic in the viewer. The info line shows "RAW mosaic" or "RAW linear". Update the README's Viewer-exception paragraph.
+  - approach: extend the Viewer's adapter exception (`ViewerInstance.h`, `inputAcceptsDataKindViaAdapter`, which returns `kind == eDataKindDeep` today) to Raw. `isRegisteredAdapter` (`Node.cpp:~1895`) hard-codes Deep→Image; make the Raw acceptance Viewer-only (no general Raw→Image adapter row, per P1.T2), choosing the smallest mechanism that keeps other image inputs rejecting raw. Display goes through a shared `RawDisplay` conversion: a mosaic becomes a greyscale single channel, and linear raw shows its channels as they are. RawToImage (P2.T5) reuses the same function. No demosaic in the viewer. The info line shows "RAW mosaic" or "RAW linear". Update the README's Viewer-exception paragraph.
   - verify: gtest: a viewer fed by a raw Read renders without error, and its pixel values equal the mosaic; a linear DNG shows three channels. Extend the `Tests/gui` smoke script to show it.
   - size: M
 
@@ -252,6 +252,7 @@ Kernels are Slang under `Engine/Gpu/Kernels/`, each with its own `<kernel>.cmake
   - size: M
 
 **Verification gate:**
+- The GUI bench rule applies only once M117 - GUI Perf Harness And Baseline has landed; until then record "N/A, no bench yet" in `## Decisions`.
 - `ctest` is green, including every new `Tests/Native/*Raw*`, `NativeReadRaw`, `NativeSourceKind`, `RawKindFramework` and core-chain GPU parity test. The GPU tests run on RADV/llvmpipe as the existing GPU tests do.
 - The darktable reference comparison (M80.P5.T1) passes within its stated tolerances on a Bayer and an X-Trans fixture.
 - A linear DNG reads as raw and develops.
@@ -275,3 +276,4 @@ Kernels are Slang under `Engine/Gpu/Kernels/`, each with its own `<kernel>.cmake
 - 2026-10-22 — The Read's knob-driven kind uses the existing polymorphic `resolveOutputDataKind` hook with explicit cache invalidation (`NativeEffectBase.h:244-253`), so P2.T2 no longer carries a RawRead-node fallback.
 - 2026-10-22 — Nodes are built on the M137 framework with the M120 per-node files; `RowIO::x0/y` gives Point ops the CFA position (code: `PixelKernel.h:69`).
 - 2026-10-22 — **Claimed despite strict file overlap** (user): run alongside M80, M16 and M158 in parallel lanes, with M64 - Tiled Rendering (parked) not treated as a blocker; overlaps with active rows (M86, M107, M154) and sibling lanes are one or two shared files, handled by rebasing after each merge.
+- 2026-10-22 — Freshness check (§5a) at claim: stale file lists and line numbers corrected in place; no premise change.

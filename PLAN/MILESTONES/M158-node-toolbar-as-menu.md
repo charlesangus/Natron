@@ -117,7 +117,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`):
 ## Phase 158.4: Docs and UAT
 
 - [ ] M158.P4.T1 — Document the node menu, `nodesMenu()` and the new initGui.py timing
-  - files: the Python scripting docs that cover `init.py`/`initGui.py` and `addMenuCommand` (find them under `docs/`)
+  - files: the Python scripting docs that cover `init.py`/`initGui.py` and `addMenuCommand`. These live on the docs orphan branch (`docs/decisions/2026-09-04-docs-to-orphan-branch.md`), not under `docs/` on main; locate the page there
   - approach: explain that `initGui.py` now runs after the first window exists. Give a Nuke-style example adding a preset item with `nodesMenu()`, and say that the tab menu lists every node-menu item.
   - verify: the docs build, if the docs pipeline has a check.
   - size: M
@@ -136,7 +136,7 @@ Scouted facts (2026-10-22, `main` `1eed87752`):
 
 **Verification gate:** in one build:
 - The full test suite passes, and `m45_tab_menu.py`/`m56_visual.py` pass under Xvfb.
-- The GUI bench runs (`tools/bench/gui/run.sh --xvfb`, `compare.py` against `baselines/xvfb.jsonl`), because the diff touches `Gui/NodeGraph*`. Record the result here.
+- The GUI bench runs (`tools/bench/gui/run.sh --xvfb`, `compare.py` against `baselines/xvfb.jsonl`), because the diff touches `Gui/NodeGraph*` — only if M117 - GUI Perf Harness And Baseline has landed by then; otherwise record "N/A, no bench yet" here.
 - The before/after toolbar screenshots are shared and OK'd.
 - CI is green.
 - The user signs off the UAT.
@@ -151,3 +151,4 @@ Scouted facts (2026-10-22, `main` `1eed87752`):
 - 2026-10-22 — **Toolbar looks identical** (user).
 - 2026-10-22 — **Tab-menu paths start below `NodesMenu`** (planner): they read as today's `grouping/label` paths, so the display and the tests' path keys are unchanged.
 - 2026-10-22 — **Claimed despite strict file overlap** (user): run alongside M80, M16 and M158 in parallel lanes, with M64 - Tiled Rendering (parked) not treated as a blocker; overlaps with active rows (M86, M107, M154) and sibling lanes are one or two shared files, handled by rebasing after each merge.
+- 2026-10-22 — Freshness check (§5a) at claim: stale file lists and line numbers corrected in place; no premise change.

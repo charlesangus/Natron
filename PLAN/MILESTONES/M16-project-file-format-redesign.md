@@ -76,7 +76,7 @@ Scouting facts this plan relies on (2026-10-10):
   - size: S
 
 - [ ] M16.P1.T2 — Add yaml-cpp 0.8 to the build
-  - files: `CMakeLists.txt`, new `libs/yaml-cpp/` (only if P1.T1 found no usable install), `libs/CMakeLists.txt`, `Serialization/CMakeLists.txt`, `tools/license/components/LICENSE-yaml-cpp.txt` (and its README line)
+  - files: `CMakeLists.txt`, new `libs/yaml-cpp/` (only if P1.T1 found no usable install), `libs/CMakeLists.txt`, `Serialization/CMakeLists.txt` (add `GLOB_RECURSE` for the new `Bundle/` and `Yaml/` subdirs; it globs only top-level `*.cpp` plus `BoostXml/` today), `tools/ci/check_serialization_layering.sh` (if it needs to allow the new subdirs), `tools/license/components/LICENSE-yaml-cpp.txt` (and its README line)
   - approach: try `find_package(yaml-cpp 0.8 CONFIG)` first. Otherwise vendor the pinned 0.8.0 release as a static target with tests, tools and contrib OFF. Link it PRIVATE to `NatronSerialization` only, so no Engine or Gui header includes yaml-cpp. Exclude `libs/yaml-cpp` from the format and lint gates as other `libs/` entries are.
   - verify: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug` configures and links, and `grep -rn yaml-cpp Engine Gui` is empty.
   - size: M
@@ -207,13 +207,13 @@ Scouting facts this plan relies on (2026-10-10):
   - size: M
 
 - [ ] M16.P3.T5 — Delete legacy-format tests and fixtures
-  - files: `Tests/fixtures/channel-set-legacy-defaults.ntp`, `Tests/fixtures/m65-legacy-color.ntp`, `Tests/fixtures/golden-ntp/` and `Tests/Serialization/GoldenXml_Test.cpp` (M93's), `Tests/DefaultChannelSet_Test.cpp` (`:220-240` and `:485+`), `Tests/ProjectSerialization_Test.cpp` (`LegacyColorProjectTest`, `:312-530`)
+  - files: `Tests/fixtures/golden-ntp/` and `Tests/Serialization/GoldenXml_Test.cpp` (M93's), plus the other XML-only tests if they depend on the XML format: `ProjectXmlEquivalence_Test`, `KnobXmlEquivalence_Test`, `RotoXmlEquivalence_Test`, `ProjectXmlHelpers.h`, the `MissingPlugin*` XML tests, `Tests/fixtures/native-golden`. (The two legacy `.ntp` fixtures and `LegacyColorProjectTest` were already removed by M69.)
   - approach: delete only the assertions about *migrating* old versions. Where a legacy test also pins current behaviour, rebuild that graph in code and keep the assertion. For example, `ResavingWritesRgbaNeverTheStorageID` becomes a check that a fresh Blur's saved `project.yaml` never contains the storage ID. List every deleted test name in the commit message.
   - verify: compiled at P3.T8. `grep -rn "legacy" Tests/*.cpp` shows nothing that loads an XML fixture.
   - size: M
 
 - [ ] M16.P3.T6 — Delete version-gated legacy migration code
-  - files: `Engine/Node.cpp` (`:1448-1575` legacy colour rows, `:1636`, `:1759`), `Engine/KnobChannelSet.cpp/.h` (`legacyColorDefaultRows`), `Engine/ProjectPrivate.cpp` (`:273`), `Gui/ProjectGui.cpp` (`:575,588`), `Serialization/*Serialization.h` (remove the `version` fields and `oldInputs`)
+  - files: `Engine/Project.cpp` (the RC2/RC3 scan, `setReadingRC2OrRC3Archive`), `Engine/NodeGroupSerialization.cpp` (`oldInputs`, ~`:363`), `Serialization/*Serialization.h` (remove the `version` fields and `oldInputs`). Most Node.cpp/ProjectPrivate/ProjectGui legacy gates were already removed; re-scout for any remaining version gates rather than trusting line numbers
   - approach: the clean break makes these unreachable, because a `.ntpz` is always current. Remove the code and its constants (the `*_SERIALIZATION_*` version macros go with `BoostXml` in P7.T1).
   - verify: compiled at P3.T8, where the full ctest is green.
   - size: M
@@ -238,7 +238,7 @@ Scouting facts this plan relies on (2026-10-10):
   - size: M
 
 - [ ] M16.P3.T8 — Rename test and tool paths, build, regenerate fixtures and comps, full ctest
-  - files: about 14 `Tests/*.cpp` files that save to `*.ntp` names (`ProjectOCIODefaults_Test`, `DefaultChannelSet_Test`, `TimeVaryingLayers_Test`, `DeepReadWrite_Test`, `LayerRegistry_Test`, `AddLayers_Test`, `ProjectOCIO_Test`, `DeepLayers_Test`, `RemoveLayers_Test`, `PyPlugExport_Test`, `ProjectColorManagement_Test`, `ProjectSerialization_Test`, `CLArgs_Test`), `tools/ci/smoke_test.py`, `tools/ci/regen_read_time_offset.py`, `tools/bench/comps/build_comps.{sh,py}`, `tools/bench/comps/run_comps.sh`, `tools/bench/graph_bench.py`, `tools/genStaticDocs.sh`, `Tests/fixtures/read-time-offset.ntpz` (regenerated), `tools/bench/comps/*.ntpz` (regenerated), and the old `*.ntp` files (deleted)
+  - files: every test file found by `grep -rl '\.ntp"' Tests` (about 30, including `Tests/Native/`), `tools/ci/smoke_test.py`, `tools/ci/regen_read_time_offset.py`, `tools/bench/comps/build_comps.{sh,py}`, `tools/bench/comps/run_comps.sh`, `tools/bench/graph_bench.py`, `tools/genStaticDocs.sh`, `Tests/fixtures/read-time-offset.ntpz` (regenerated), `tools/bench/comps/*.ntpz` (regenerated), and the old `*.ntp` files (deleted)
   - approach:
     1. Replace `.ntp"` with `.ntpz"` in the listed test strings and tool paths. In `genStaticDocs.sh`, check that an empty dummy file is still accepted by `--export-docs`; if not, make it write a real empty project first.
     2. Build: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug` (and `release`, because `build_comps.sh` uses `build/release`).
@@ -262,8 +262,8 @@ Scouting facts this plan relies on (2026-10-10):
   - size: M
 
 - [ ] M16.P4.T3 — `.nl` layouts as YAML, and knob undo without an archive
-  - files: `Gui/Gui10.cpp` (`:300-325`), `Gui/Gui15.cpp` (`:60-115`), `Gui/KnobUndoCommand.cpp` (`:90-110`)
-  - approach: `.nl` save and load use P2.T4's layout encoder, and an XML `.nl` gets the old-format message. `KnobUndoCommand` keeps its `KnobSerialization` snapshot in memory with no string round-trip.
+  - files: `Gui/Gui10.cpp`, `Gui/Gui15.cpp`
+  - approach: `.nl` save and load use P2.T4's layout encoder, and an XML `.nl` gets the old-format message. (`KnobUndoCommand` already keeps an in-memory snapshot; nothing to do there.)
   - verify: compiled at P5.T5. UAT saves and loads a layout, then undoes and redoes a knob edit.
   - size: M
 
@@ -374,3 +374,5 @@ UAT (P7.T3).
 - 2026-10-10 — boost.serialization is kept only for the disk-cache TOC (`Engine/AppManagerPrivate.cpp`, cache keys). Replacing it is a possible follow-up milestone, not M16 scope.
 - 2026-10-10 — Out of scope: incremental or partial save, lazy load, and the node-creation and `Node::loadKnob` O(K²) open cost (follow-on work, per the design decision).
 - 2026-10-22 — **Claimed despite strict file overlap** (user): run alongside M80, M16 and M158 in parallel lanes, with M64 - Tiled Rendering (parked) not treated as a blocker; overlaps with active rows (M86, M107, M154) and sibling lanes are one or two shared files, handled by rebasing after each merge.
+- 2026-10-22 — Freshness check (§5a) at claim: stale file lists and line numbers corrected in place; no premise change.
+- 2026-10-22 — Build mode on this host is remote: every `tools/ci/local/build.sh`/`test.sh` checkpoint in this file runs as `tools/ci/remote/build.sh debug --tests` on pushed HEAD instead (release where the task says release). Local-only steps (P1.T1 probe) use the natron-dev container.

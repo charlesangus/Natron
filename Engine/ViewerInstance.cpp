@@ -3574,6 +3574,14 @@ ViewerInstance::setActiveLayer(const ImageLayerDesc& layer,
     }
 }
 
+ImageLayerDesc
+ViewerInstance::getActiveLayer() const
+{
+    QMutexLocker l(&_imp->viewerParamsMutex);
+
+    return _imp->viewerParamsLayer;
+}
+
 void
 ViewerInstance::setAlphaChannel(const ImageLayerDesc& layer,
                                 const std::string& channelName,

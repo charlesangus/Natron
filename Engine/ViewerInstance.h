@@ -300,6 +300,8 @@ public:
 
     void setActiveLayer(const ImageLayerDesc& layer, bool doRender);
 
+    ImageLayerDesc getActiveLayer() const;
+
     void setAlphaChannel(const ImageLayerDesc& layer, const std::string& channelName, bool doRender);
 
     bool isAutoContrastEnabled() const WARN_UNUSED_RETURN;

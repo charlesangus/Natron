@@ -160,26 +160,26 @@ renderLayer(const NodePtr& node,
 
 } // namespace
 
-bool
-sampleNodeColor(const NodePtr& node,
+ImagePtr
+renderNodeImage(const NodePtr& node,
                 double time,
                 ViewIdx view,
                 unsigned int mipmapLevel,
                 const RectI& pixelRect,
                 const ImageLayerDesc& layer,
-                float rgba[4])
+                RectI* renderedRect)
 {
     if (!node || !node->getEffectInstance() || !node->isActivated() || node->isNodeDisabled(time) || pixelRect.isNull()) {
-        return false;
+        return ImagePtr();
     }
     if (node->hasMandatoryInputDisconnected()) {
-        return false;
+        return ImagePtr();
     }
     switch (node->getEffectiveOutputDataKind()) {
     case eDataKindDeep:
     // Raw values are camera-native, per-photosite on a mosaic: no RGBA reading of them means anything.
     case eDataKindRaw:
-        return false;
+        return ImagePtr();
     case eDataKindImage:
     case eDataKindScene:
     case eDataKindPolymorphic:
@@ -203,6 +203,27 @@ sampleNodeColor(const NodePtr& node,
     }
 
     if (!rendered) {
+        return ImagePtr();
+    }
+    if (renderedRect) {
+        *renderedRect = roi;
+    }
+
+    return image;
+} // renderNodeImage
+
+bool
+sampleNodeColor(const NodePtr& node,
+                double time,
+                ViewIdx view,
+                unsigned int mipmapLevel,
+                const RectI& pixelRect,
+                const ImageLayerDesc& layer,
+                float rgba[4])
+{
+    RectI roi;
+    const ImagePtr image = renderNodeImage(node, time, view, mipmapLevel, pixelRect, layer, &roi);
+    if (!image) {
         return false;
     }
     const RectI rect = roi.intersect(image->getBounds());

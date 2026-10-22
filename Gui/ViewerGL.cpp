@@ -1570,6 +1570,7 @@ ViewerGL::endTransferBufferFromRAMToGPU(int textureIndex,
             {
                 QMutexLocker k(&_imp->lastRenderedImageMutex);
                 _imp->displayTextures[textureIndex].lastRenderedTiles[mipmapLevel] = image;
+                _imp->displayTextures[textureIndex].imageOnDemand = false;
             }
             _imp->displayTextures[textureIndex].memoryHeldByLastRenderedImages = 0;
             _imp->displayTextures[textureIndex].memoryHeldByLastRenderedImages += image->size();
@@ -1582,9 +1583,32 @@ ViewerGL::endTransferBufferFromRAMToGPU(int textureIndex,
             {
                 QMutexLocker k(&_imp->lastRenderedImageMutex);
                 _imp->displayTextures[textureIndex].lastRenderedTiles[mipmapLevel].reset();
+                _imp->displayTextures[textureIndex].imageOnDemand = false;
             }
             Q_EMIT imageChanged(textureIndex, true);
 #endif
+        } else if (texture) {
+            // A frame from the viewer cache whose image the cache no longer holds, or the hand-off never kept:
+            // every level still held is an earlier frame's.
+            {
+                QMutexLocker k(&_imp->lastRenderedImageMutex);
+                TextureInfo& info = _imp->displayTextures[textureIndex];
+                for (std::size_t i = 0; i < info.lastRenderedTiles.size(); ++i) {
+                    info.lastRenderedTiles[i].reset();
+                    info.lastRenderedDeepTiles[i].reset();
+#ifdef NATRON_HAVE_GPU
+                    info.lastRenderedDeviceTiles[i].reset();
+#endif
+                }
+                if (info.memoryHeldByLastRenderedDeepImages > 0) {
+                    internalNode->unregisterPluginMemory(info.memoryHeldByLastRenderedDeepImages);
+                    info.memoryHeldByLastRenderedDeepImages = 0;
+                }
+                info.imageOnDemand = true;
+                info.onDemandLayer = internalNode->getActiveLayer();
+                info.onDemandRect = texture->getTextureRect();
+            }
+            Q_EMIT imageChanged(textureIndex, true);
         } else {
             if ( !_imp->displayTextures[textureIndex].lastRenderedTiles[mipmapLevel] ) {
                 Q_EMIT imageChanged(textureIndex, false);
@@ -1862,6 +1886,10 @@ ViewerGL::clearLastRenderedImage()
         }
         for (U32 j = 0; j < _imp->displayTextures[i].lastRenderedDeepTiles.size(); ++j) {
             _imp->displayTextures[i].lastRenderedDeepTiles[j].reset();
+        }
+        {
+            QMutexLocker k(&_imp->lastRenderedImageMutex);
+            _imp->displayTextures[i].imageOnDemand = false;
         }
 #ifdef NATRON_HAVE_GPU
         {
@@ -4332,6 +4360,7 @@ ViewerGL::clearLastRenderedTexture()
             for (U32 j = 0; j < _imp->displayTextures[i].lastRenderedDeepTiles.size(); ++j) {
                 _imp->displayTextures[i].lastRenderedDeepTiles[j].reset();
             }
+            _imp->displayTextures[i].imageOnDemand = false;
 #ifdef NATRON_HAVE_GPU
             for (U32 j = 0; j < _imp->displayTextures[i].lastRenderedDeviceTiles.size(); ++j) {
                 _imp->displayTextures[i].lastRenderedDeviceTiles[j].reset();
@@ -4389,6 +4418,7 @@ ViewerGL::getLastRenderedImage(int textureIndex) const
     if ( !getInternalNode()->getNode()->isActivated() ) {
         return ImagePtr();
     }
+    renderLastImageOnDemand(textureIndex);
     QMutexLocker l(&_imp->lastRenderedImageMutex);
     TextureInfo& info = _imp->displayTextures[textureIndex];
     for (U32 i = 0; i < info.lastRenderedTiles.size(); ++i) {
@@ -4411,6 +4441,7 @@ ViewerGL::getLastRenderedImageByMipmapLevel(int textureIndex,
     if ( !getInternalNode()->getNode()->isActivated() ) {
         return ImagePtr();
     }
+    renderLastImageOnDemand(textureIndex);
 
     QMutexLocker l(&_imp->lastRenderedImageMutex);
     TextureInfo& info = _imp->displayTextures[textureIndex];
@@ -4737,8 +4768,8 @@ ViewerGL::getColorAtRect(const RectD& rect, // rectangle in canonical coordinate
 } // getColorAtRect
 
 NodePtr
-ViewerGL::getViewedNodeInput(int textureIndex,
-                             double time) const
+ViewerGL::getViewedNode(int textureIndex,
+                        double time) const
 {
     ViewerInstance* viewer = getInternalNode();
     int activeInputs[2];
@@ -4748,6 +4779,83 @@ ViewerGL::getViewedNodeInput(int textureIndex,
     if (viewed) {
         viewed = viewed->getNearestNonDisabled(time);
     }
+
+    return viewed ? viewed->getNode() : NodePtr();
+}
+
+void
+ViewerGL::renderLastImageOnDemand(int textureIndex) const
+{
+    assert( qApp && qApp->thread() == QThread::currentThread() );
+
+    unsigned int level;
+    SequenceTime time;
+    ImageLayerDesc layer;
+    RectI rect;
+    {
+        QMutexLocker l(&_imp->lastRenderedImageMutex);
+        const TextureInfo& info = _imp->displayTextures[textureIndex];
+        if (!info.imageOnDemand) {
+            return;
+        }
+        level = info.mipmapLevel;
+        time = info.time;
+        layer = info.onDemandLayer;
+        rect = info.onDemandRect;
+    }
+
+    const ImagePtr image = renderNodeImage(getViewedNode(textureIndex, time), time, getCurrentView(), level, rect, layer, NULL);
+
+    QMutexLocker l(&_imp->lastRenderedImageMutex);
+    TextureInfo& info = _imp->displayTextures[textureIndex];
+    // A newer frame may have reached the texture while the image rendered.
+    if ( !info.imageOnDemand || (info.mipmapLevel != level) || (info.time != time) ) {
+        return;
+    }
+    // A failed render is not retried: the histogram asks again on every redraw.
+    info.imageOnDemand = false;
+    if (image) {
+        info.lastRenderedTiles[level] = image;
+        info.memoryHeldByLastRenderedImages += image->size();
+        getInternalNode()->registerPluginMemory( image->size() );
+    }
+}
+
+bool
+ViewerGL::getDisplayedLevelAndLayer(int textureIndex,
+                                    unsigned int mipmapLevel,
+                                    unsigned int* displayedLevel,
+                                    ImageLayerDesc* layer) const
+{
+    {
+        QMutexLocker l(&_imp->lastRenderedImageMutex);
+        const TextureInfo& info = _imp->displayTextures[textureIndex];
+        if (info.imageOnDemand) {
+            *displayedLevel = info.mipmapLevel;
+            *layer = info.onDemandLayer;
+
+            return true;
+        }
+    }
+    const ImagePtr displayed = getLastRenderedImageByMipmapLevel(textureIndex, mipmapLevel);
+    if (!displayed) {
+        return false;
+    }
+    *displayedLevel = displayed->getMipmapLevel();
+    *layer = displayed->getComponents();
+
+    return true;
+}
+
+NodePtr
+ViewerGL::getViewedNodeInput(int textureIndex,
+                             double time) const
+{
+    NodePtr viewedNode = getViewedNode(textureIndex, time);
+    if (!viewedNode) {
+        return NodePtr();
+    }
+    EffectInstancePtr viewed = viewedNode->getEffectInstance();
     if (!viewed) {
         return NodePtr();
     }
@@ -4762,7 +4870,8 @@ ViewerGL::getViewedNodeInput(int textureIndex,
 
 bool
 ViewerGL::getInputColorAtCanonicalRect(int textureIndex,
-                                       const ImagePtr& displayed,
+                                       unsigned int mm,
+                                       const ImageLayerDesc& layer,
                                        const RectD& canonicalRect,
                                        float* r,
                                        float* g,
@@ -4785,7 +4894,6 @@ ViewerGL::getInputColorAtCanonicalRect(int textureIndex,
     if (par <= 0.) {
         par = 1.;
     }
-    const unsigned int mm = displayed->getMipmapLevel();
     RectI pixelRect(int(std::floor(canonicalRect.left() / par)) >> mm,
                     int(std::floor(canonicalRect.bottom())) >> mm,
                     int(std::floor(canonicalRect.right() / par)) >> mm,
@@ -4797,7 +4905,6 @@ ViewerGL::getInputColorAtCanonicalRect(int textureIndex,
         pixelRect.y2 = pixelRect.y1 + 1;
     }
 
-    const ImageLayerDesc& layer = displayed->getComponents();
     float rgba[4];
     if (!sampleNodeColor(input, time, getCurrentView(), mm, pixelRect, layer, rgba)) {
         return false;
@@ -4834,10 +4941,11 @@ ViewerGL::pickColorAt(double x,
                       bool* fromInput)
 {
     if (!pickOutput) {
-        ImagePtr displayed = getLastRenderedImageByMipmapLevel(textureIndex, getMipmapLevelCombinedToZoomFactor());
-        if (displayed) {
-            if (getInputColorAtCanonicalRect(textureIndex, displayed, RectD(x, y, x, y), r, g, b, a)) {
-                *mipmapLevel = displayed->getMipmapLevel();
+        unsigned int displayedLevel;
+        ImageLayerDesc layer;
+        if ( getDisplayedLevelAndLayer(textureIndex, getMipmapLevelCombinedToZoomFactor(), &displayedLevel, &layer) ) {
+            if (getInputColorAtCanonicalRect(textureIndex, displayedLevel, layer, RectD(x, y, x, y), r, g, b, a)) {
+                *mipmapLevel = displayedLevel;
                 *fromInput = true;
 
                 return true;
@@ -4861,10 +4969,11 @@ ViewerGL::pickColorAtRect(const RectD& rect, // rectangle in canonical coordinat
                           bool* fromInput)
 {
     if (!pickOutput) {
-        ImagePtr displayed = getLastRenderedImageByMipmapLevel(textureIndex, getMipmapLevelCombinedToZoomFactor());
-        if (displayed) {
-            if (getInputColorAtCanonicalRect(textureIndex, displayed, rect, r, g, b, a)) {
-                *mipmapLevel = displayed->getMipmapLevel();
+        unsigned int displayedLevel;
+        ImageLayerDesc layer;
+        if ( getDisplayedLevelAndLayer(textureIndex, getMipmapLevelCombinedToZoomFactor(), &displayedLevel, &layer) ) {
+            if (getInputColorAtCanonicalRect(textureIndex, displayedLevel, layer, rect, r, g, b, a)) {
+                *mipmapLevel = displayedLevel;
                 *fromInput = true;
 
                 return true;

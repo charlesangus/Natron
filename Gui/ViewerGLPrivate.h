@@ -127,6 +127,9 @@ struct TextureInfo
 #endif
         , memoryHeldByLastRenderedImages(0)
         , memoryHeldByLastRenderedDeepImages(0)
+        , imageOnDemand(false)
+        , onDemandLayer()
+        , onDemandRect()
         , isPartialImage(false)
         , isVisible(false)
     {
@@ -163,6 +166,12 @@ struct TextureInfo
     // and can be considerably larger, so it must be accounted for on its own for the memory-stats
     // total to reflect what is actually resident.
     U64 memoryHeldByLastRenderedDeepImages;
+    // Set when the frame on screen came from the viewer cache without the image it was made from, which the
+    // output picker and the histogram then render from the viewed node at mipmapLevel and time the first time
+    // they read it. onDemandRect is the texture's rect, in pixel coordinates at mipmapLevel.
+    bool imageOnDemand;
+    ImageLayerDesc onDemandLayer;
+    RectI onDemandRect;
     bool isPartialImage;
 
     // false if this input is disconnected for the viewer

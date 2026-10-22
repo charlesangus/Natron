@@ -292,13 +292,22 @@ jobs:
           tar -xf build-tree.tar
           rm build-tree.tar
 
+      # An absent cache entry means the option's default, ON. Some suites test only that the
+      # variable is set, so a GPU-off tree must leave it unset rather than set it to 0.
+      - name: Detect GPU build
+        run: |
+          value=$(sed -n 's/^NATRON_GPU:[A-Z]*=//p' "build/$PRESET/CMakeCache.txt")
+          case "${value^^}" in
+            OFF|FALSE|NO|N|0|IGNORE|NOTFOUND|*-NOTFOUND) ;;
+            *) echo "NATRON_TEST_REQUIRE_GPU=1" >> "$GITHUB_ENV" ;;
+          esac
+
       # Without the step bound, a suite that outlives ctest's own per-suite timeout holds the job
       # until GitHub's six-hour limit.
       - name: Run ctest suite (${{ matrix.scheduler }} scheduler)
         timeout-minutes: ${{ inputs.shuffle_seeds == '' && 30 || 120 }}
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-          NATRON_TEST_REQUIRE_GPU: 1
           SHUFFLE_SEEDS: ${{ inputs.shuffle_seeds }}
           NATRON_RENDER_SCHEDULER: ${{ matrix.scheduler }}
           # One suite per vCPU of the hosted runner; 1 restores the serial `ctest -V` run.

@@ -387,6 +387,7 @@ UAT (P7.T3).
 - 2026-10-22 — The clipboard document uses the project node schema, which omits the clone master (`masterNodeName`), so a pasted clone is no longer linked to its original. Duplicate and clone don't go through the clipboard. M92 - Linked Nodes defines linked-node fields; accepted under the clean break.
 - 2026-10-22 — A default-layout preference pointing at an XML, damaged or empty `.nl` falls back to the built-in layout with an error dialog (previously: error and no layout at all).
 - 2026-10-22 — Build of `ffbddea94` (P3+P4): 30 tests red. Root cause: `detectProjectFileKind` sniffed 64 bytes, but the bundle mime check needs 72, so every `.ntpz` was refused as unrecognized. Fixed in `07dea085a`, along with a test that expected 5 manifest members where there are 4. The bench comps still need regenerating, and the decode path is unexercised until a build passes detection.
+- 2026-10-22 — P5.T2–T4 code is in `098c600e8`, unchecked until a green build. `.nps`/`.nl` loads are GUI-only and not linked into the Engine test binary, so P5.T2 case 9 tests the shared `Serialization::isXmlDocument` check and the YAML decoders throwing `YamlError`. `app.loadProject` on an old `.ntp` returns `None` rather than raising, and the message goes to stderr; the smoke check captures it there. P5.T3 compares the first and second load with `ProjectEquivalence`, not the built graph with the first load, because loading a RotoPaint switches its paint tool and changes its compositing-operator knob.
 
 ## Handoff (2026-10-22, PM paused by user)
 

@@ -83,7 +83,7 @@ Every node is built on the M137 - Native Base Class Flexibility framework (`Node
   - verify: gtest checks dimensions, CFA pattern, channel count, levels and crop against rawspeed's own output for each fixture. A window decode equals the same window of the full decode, bit for bit. A truncated file fails cleanly, and an unsupported-camera stub gives the named error.
   - size: M
 
-- [ ] M80.P2.T2 — Let the native Read resolve its output kind from the file
+- [x] M80.P2.T2 — Let the native Read resolve its output kind from the file
   - files: `Engine/Nodes/IO/NativeRead.cpp/.h`, `Engine/Nodes/README.md`, new `Tests/Native/NativeSourceKind_Test.cpp`
   - approach: the mechanism already exists. A node declared `eDataKindPolymorphic` is resolved through `NativeEffectBase::resolveOutputDataKind(bool*)` (`NativeEffectBase.h:253`), and a policy that reads a knob must call `Node::invalidateEffectiveOutputDataKindCache()` itself (`NativeEffectBase.h:~244`). Declare NativeRead's output polymorphic and override `resolveOutputDataKind` to return Raw when the filename's extension is in the RAW set (P2.T3) and Image otherwise, never ambiguous. Invalidate on `filename` changes. Downstream edges whose kind flips go through the existing conflict reporting and are never disconnected. A source node with a knob-driven kind is new, so document it in the README.
   - verify: gtest: a Read whose filename moves PNG→RAW→PNG flips Image→Raw→Image; a raw-only consumer reports a conflict when it flips back; a project save/load round trip keeps the resolved kind (`Tests/DataKindProjectLoad_Test.cpp` pattern).

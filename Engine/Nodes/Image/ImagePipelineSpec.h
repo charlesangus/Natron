@@ -135,32 +135,27 @@ enum class OpKind : unsigned char {
 };
 
 /**
- * @brief How the host runs an image node: the stages around its op, its layer policy and the
- * kind of its op.
+ * @brief The raw stage (raw/stage) a node needs its Source input at. Any for an image node and
+ * for a raw node that works at either stage. Raw or Prepared make the host check the source's
+ * metadata before rendering: on a mismatch the node is never an identity, never placed on the
+ * GPU, and its render fails with RawMetadata::requireStage()'s message as its persistent error.
+ **/
+enum class RawStageRequirement : unsigned char {
+    Any,
+    Raw,
+    Prepared
+};
+
+/**
+ * @brief How the host runs an image node: the stages around its op, its layer policy, the kind
+ * of its op and, for a node reading raw data, the raw stage it needs.
  **/
 struct ImagePipelineSpec {
     StageSet stages = {};
     LayerPolicy layers = {};
     OpKind op = OpKind::Point;
+    RawStageRequirement rawStage = RawStageRequirement::Any;
 };
-
-/**
- * @brief The number of the first Source input of spec, or -1 when it has none.
- **/
-constexpr int
-nodeSpecSourceInput(const NodeSpec& spec)
-{
-    int first = 0;
-
-    for (const InputSpec& input : spec.inputs) {
-        if (input.role == InputRole::Source) {
-            return first;
-        }
-        first += input.count;
-    }
-
-    return -1;
-}
 
 constexpr bool
 pipelinePremultHasSource(const ImagePipelineSpec& pipeline,
@@ -172,20 +167,47 @@ pipelinePremultHasSource(const ImagePipelineSpec& pipeline,
 constexpr bool
 pipelineRouteHasNoStages(const ImagePipelineSpec& pipeline)
 {
-    return (pipeline.op != OpKind::Route) || pipeline.stages.empty();
+    return (pipeline.op != OpKind::Route) || (pipeline.stages.empty() && (pipeline.rawStage == RawStageRequirement::Any));
 }
 
 constexpr bool
-pipelineOutputsImages(const NodeSpec& spec)
+pipelineReadsRaw(const NodeSpec& spec)
 {
-    return spec.outputKind == eDataKindImage;
+    return nodeSpecSourceKind(spec) == eDataKindRaw;
+}
+
+/**
+ * @brief An image node outputs an image, or raw data read from a raw Source input.
+ **/
+constexpr bool
+pipelineOutputKindIsValid(const NodeSpec& spec)
+{
+    return (spec.outputKind == eDataKindImage) || ((spec.outputKind == eDataKindRaw) && pipelineReadsRaw(spec));
+}
+
+constexpr bool
+pipelineRawStageHasRawSource(const ImagePipelineSpec& pipeline,
+                             const NodeSpec& spec)
+{
+    return (pipeline.rawStage == RawStageRequirement::Any) || pipelineReadsRaw(spec);
+}
+
+/**
+ * @brief A raw source is a mosaic, or linear data before colour management: no alpha to divide
+ * by, no layers or channels to pick, and no mask to blend a mosaic against.
+ **/
+constexpr bool
+pipelineRawSourceHasNoImageStages(const ImagePipelineSpec& pipeline,
+                                  const NodeSpec& spec)
+{
+    return !pipelineReadsRaw(spec) || (!pipeline.stages.has(Stage::Premult) && !pipeline.stages.has(Stage::MaskMix) && (pipeline.layers.kind == LayerPolicy::Kind::None));
 }
 
 constexpr bool
 isValidImagePipelineSpec(const ImagePipelineSpec& pipeline,
                          const NodeSpec& spec)
 {
-    return pipelinePremultHasSource(pipeline, spec) && pipelineRouteHasNoStages(pipeline) && pipelineOutputsImages(spec);
+    return pipelinePremultHasSource(pipeline, spec) && pipelineRouteHasNoStages(pipeline) && pipelineOutputKindIsValid(spec) && pipelineRawStageHasRawSource(pipeline, spec) && pipelineRawSourceHasNoImageStages(pipeline, spec);
 }
 
 /**
@@ -197,8 +219,12 @@ const ImagePipelineSpec&
 staticImagePipelineSpec()
 {
     static_assert(pipelinePremultHasSource(PIPELINE, SPEC), "a Premult stage needs a Source input to divide");
-    static_assert(pipelineRouteHasNoStages(PIPELINE), "a Route op renders nothing, so it has no stages");
-    static_assert(pipelineOutputsImages(SPEC), "an image pipeline belongs to a node outputting eDataKindImage");
+    static_assert(pipelineRouteHasNoStages(PIPELINE), "a Route op renders nothing, so it has no stages and no raw stage");
+    static_assert(pipelineOutputKindIsValid(SPEC), "an image pipeline outputs eDataKindImage, or eDataKindRaw from an eDataKindRaw Source input");
+    static_assert(pipelineRawStageHasRawSource(PIPELINE, SPEC), "a raw stage other than Any needs an eDataKindRaw Source input");
+    static_assert(!pipelineReadsRaw(SPEC) || !PIPELINE.stages.has(Stage::Premult), "a raw Source input has no alpha to divide by, so no Premult stage");
+    static_assert(!pipelineReadsRaw(SPEC) || !PIPELINE.stages.has(Stage::MaskMix), "a raw Source input is not blended against a mask, so no MaskMix stage");
+    static_assert(!pipelineReadsRaw(SPEC) || (PIPELINE.layers.kind == LayerPolicy::Kind::None), "a raw Source input has no layers or channels to pick, so its layer policy is None");
 
     return PIPELINE;
 }

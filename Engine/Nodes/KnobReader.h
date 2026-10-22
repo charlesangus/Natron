@@ -30,6 +30,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+class ImageMetadata;
+
 /**
  * @brief Reads knob values at one time and view, for one evaluation of a node. Every value a
  * node's bake() needs comes through one reader, so the evaluation sees one consistent context;
@@ -111,10 +113,27 @@ private:
  * bake() reads each knob it needs once, through the reader, and Params holds the values.
  **/
 template <typename T>
-concept BakesParams = requires(const T& baker, const KnobReader& reader) {
+concept BakesParamsFromKnobs = requires(const T& baker, const KnobReader& reader) {
     typename T::Params;
     { baker.bake(reader) } -> std::same_as<typename T::Params>;
 };
+
+/**
+ * @brief A type whose Params also depend on the metadata of the image it reads:
+ * bake(reader, source), with source the metadata of its Source input at the reader's time and
+ * view, such as the CFA layout of a raw image.
+ **/
+template <typename T>
+concept BakesParamsFromSource = requires(const T& baker, const KnobReader& reader, const ImageMetadata& source) {
+    typename T::Params;
+    { baker.bake(reader, source) } -> std::same_as<typename T::Params>;
+};
+
+/**
+ * @brief A type with exactly one of the two bake() forms.
+ **/
+template <typename T>
+concept BakesParams = BakesParamsFromKnobs<T> != BakesParamsFromSource<T>;
 
 /**
  * @brief Bakes baker's knobs through reader. Params must be copyable, so it can be handed to
@@ -122,6 +141,7 @@ concept BakesParams = requires(const T& baker, const KnobReader& reader) {
  * held through std::shared_ptr<const ...> when it is too large or unbounded to copy per bake.
  **/
 template <BakesParams T>
+    requires BakesParamsFromKnobs<T>
 typename T::Params
 bakeParams(const T& baker,
            const KnobReader& reader)
@@ -131,7 +151,27 @@ bakeParams(const T& baker,
     return baker.bake(reader);
 }
 
+/**
+ * @brief Bakes baker's knobs through reader, handing source to a baker that takes it and
+ * ignoring it for one that does not.
+ **/
 template <BakesParams T>
+typename T::Params
+bakeParams(const T& baker,
+           const KnobReader& reader,
+           const ImageMetadata& source)
+{
+    static_assert(std::copyable<typename T::Params>, "Params must be copyable");
+
+    if constexpr (BakesParamsFromSource<T>) {
+        return baker.bake(reader, source);
+    } else {
+        return baker.bake(reader);
+    }
+}
+
+template <BakesParams T>
+    requires BakesParamsFromKnobs<T>
 typename T::Params
 bakeParams(const T& baker,
            double time,
@@ -140,6 +180,18 @@ bakeParams(const T& baker,
     const KnobReader reader(time, view);
 
     return bakeParams(baker, reader);
+}
+
+template <BakesParams T>
+typename T::Params
+bakeParams(const T& baker,
+           double time,
+           ViewIdx view,
+           const ImageMetadata& source)
+{
+    const KnobReader reader(time, view);
+
+    return bakeParams(baker, reader, source);
 }
 
 NATRON_NAMESPACE_EXIT

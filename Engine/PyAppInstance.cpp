@@ -30,6 +30,8 @@
 #include <sstream> // stringstream
 
 #include <QDebug>
+#include <QFile>
+#include <QFileInfo>
 
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
@@ -442,6 +444,28 @@ App::saveProjectAs(const QString& filename)
     Project::expandVariable(env, outFile);
 
     return getInternalApp()->saveAs(outFile);
+}
+
+bool
+App::saveLegacyXmlForBenchmark(const QString& filename)
+{
+    try {
+        getInternalApp()->getProject()->saveLegacyXmlForBenchmark(filename);
+    } catch (const std::exception&) {
+        return false;
+    }
+
+    return true;
+}
+
+bool
+App::autoSaveForBenchmark(const QString& filename)
+{
+    const QFileInfo info(filename);
+    // updateProjectProperties is false so the project's autosave bookkeeping and signals stay untouched.
+    const bool saved = getInternalApp()->getProject()->saveProject_imp(info.absolutePath(), info.fileName(), true, false);
+
+    return saved && QFile::exists(info.absoluteFilePath() + QString::fromUtf8(".autosave"));
 }
 
 App*

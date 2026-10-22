@@ -30,23 +30,8 @@
 #include <cstddef>
 #include <limits>
 #include <map>
-#include <sstream> // stringstream
 #include <stdexcept>
 #include <vector>
-
-#if !defined(Q_MOC_RUN) && !defined(SBK_RUN)
-GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_OFF
-// clang-format off
-GCC_DIAG_OFF(unused-parameter)
-// /opt/local/include/boost/serialization/smart_cast.hpp:254:25: warning: unused parameter 'u' [-Wunused-parameter]
-#include <boost/archive/xml_oarchive.hpp>
-// /usr/local/include/boost/serialization/shared_ptr.hpp:112:5: warning: unused typedef 'boost_static_assert_typedef_112' [-Wunused-local-typedef]
-#include <boost/serialization/split_member.hpp>
-#include <boost/serialization/version.hpp>
-GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_ON
-GCC_DIAG_ON(unused-parameter)
-// clang-format on
-#endif
 
 #include <QApplication>
 #include <QClipboard>
@@ -75,10 +60,9 @@ GCC_DIAG_ON(unused-parameter)
 
 #include "Global/QtCompat.h"
 
-#include "Serialization/BoostXml/NodeXml.h"
-#include "Serialization/BoostXml/ProjectGuiXml.h"
 #include "Serialization/NodeSerialization.h"
 #include "Serialization/ProjectGuiSerialization.h"
+#include "Serialization/Yaml/ClipboardYaml.h"
 
 NATRON_NAMESPACE_ENTER
 void
@@ -134,6 +118,34 @@ NodeGraph::copyNodes(const NodesGuiList& nodes,
     _imp->copyNodesInternal(nodes, clipboard);
 }
 
+// Puts the nodes of clipboard on the system clipboard as a clipboard document, so that another
+// Natron or a text editor can take them.
+static bool
+putOnSystemClipboard(const NodeClipBoard& cb)
+{
+    std::string text;
+    try {
+        Serialization::ClipboardSerialization serialization;
+        serialization.nodes = cb.nodes;
+        serialization.nodesUI = cb.nodesUI;
+        text = Serialization::encodeClipboardYaml(serialization);
+    } catch (const std::exception& e) {
+        Dialogs::errorDialog(NodeGraph::tr("Copy").toStdString(), NodeGraph::tr("The selection cannot be copied: %1").arg(QString::fromUtf8(e.what())).toStdString());
+
+        return false;
+    }
+
+    QMimeData* mimedata = new QMimeData;
+    const QByteArray data = QByteArray::fromStdString(text);
+    mimedata->setData(QLatin1String("text/plain"), data);
+    mimedata->setData(QString::fromLatin1(Serialization::kClipboardYamlMimeType.data(), (int)Serialization::kClipboardYamlMimeType.size()), data);
+
+    // ownership is transferred to the clipboard
+    QApplication::clipboard()->setMimeData(mimedata);
+
+    return true;
+}
+
 void
 NodeGraph::copySelectedNodes()
 {
@@ -145,22 +157,7 @@ NodeGraph::copySelectedNodes()
 
     NodeClipBoard& cb = appPTR->getNodeClipBoard();
     _imp->copyNodesInternal(_imp->_selection, cb);
-
-    std::ostringstream ss;
-    try {
-        boost::archive::xml_oarchive oArchive(ss);
-        oArchive << boost::serialization::make_nvp("Clipboard", cb);
-    } catch (...) {
-        qDebug() << "Failed to copy selection to system clipboard";
-    }
-
-    QMimeData* mimedata = new QMimeData;
-    QByteArray data( ss.str().c_str() );
-    mimedata->setData(QLatin1String("text/plain"), data);
-    QClipboard* clipboard = QApplication::clipboard();
-
-    //ownership is transferred to the clipboard
-    clipboard->setMimeData(mimedata);
+    putOnSystemClipboard(cb);
 }
 
 void
@@ -171,7 +168,11 @@ NodeGraph::cutSelectedNodes()
 
         return;
     }
-    copySelectedNodes();
+    NodeClipBoard& cb = appPTR->getNodeClipBoard();
+    _imp->copyNodesInternal(_imp->_selection, cb);
+    if (!putOnSystemClipboard(cb)) {
+        return;
+    }
     deleteSelection();
 }
 
@@ -323,11 +324,25 @@ NodeGraph::pasteCliboard(const NodeClipBoard& clipboard,
     _imp->pasteNodesInternal(clipboard, position, false, newNodes);
 }
 
+// Text that is not a Natron clipboard document, an old XML one included, is not pasted.
 static bool
-decodeClipboardNodes(const std::string& /*text*/,
-                     NodeClipBoard* /*clipboard*/)
+decodeClipboardNodes(const std::string& text,
+                     NodeClipBoard* clipboard)
 {
-    return false;
+    Serialization::ClipboardSerialization serialization;
+    try {
+        serialization = Serialization::decodeClipboardYaml(text);
+    } catch (const std::exception&) {
+        return false;
+    }
+    if (serialization.nodes.empty()) {
+        return false;
+    }
+    clipboard->nodes = serialization.nodes;
+    clipboard->nodesUI = serialization.nodesUI;
+    clipboard->sourceNodes.assign(serialization.nodes.size(), NodePtr());
+
+    return true;
 }
 
 bool
@@ -336,14 +351,18 @@ NodeGraph::pasteNodeClipBoards(const QPointF& pos)
     QClipboard* clipboard = QApplication::clipboard();
     const QMimeData* mimedata = clipboard->mimeData();
 
-    if ( !mimedata->hasFormat( QLatin1String("text/plain") ) ) {
+    const QString yamlMimeType = QString::fromLatin1(Serialization::kClipboardYamlMimeType.data(), (int)Serialization::kClipboardYamlMimeType.size());
+    QByteArray data;
+    if (mimedata->hasFormat(yamlMimeType)) {
+        data = mimedata->data(yamlMimeType);
+    } else if (mimedata->hasFormat(QLatin1String("text/plain"))) {
+        data = mimedata->data(QLatin1String("text/plain"));
+    } else {
         return false;
     }
-    QByteArray data = mimedata->data( QLatin1String("text/plain") );
     std::list<std::pair<std::string, NodeGuiPtr> > newNodes;
     NodeClipBoard& cb = appPTR->getNodeClipBoard();
-    std::string s = QString::fromUtf8(data).toStdString();
-    if (!decodeClipboardNodes(s, &cb)) {
+    if (!decodeClipboardNodes(data.toStdString(), &cb)) {
         return false;
     }
 

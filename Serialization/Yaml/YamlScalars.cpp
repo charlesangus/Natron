@@ -181,6 +181,22 @@ keyframeInterpolationFromToken(std::string_view token)
     return std::nullopt;
 }
 
+bool
+isXmlDocument(std::string_view text)
+{
+    static constexpr std::string_view kByteOrderMark = "\xEF\xBB\xBF";
+    if (text.substr(0, kByteOrderMark.size()) == kByteOrderMark) {
+        text.remove_prefix(kByteOrderMark.size());
+    }
+    const std::size_t start = text.find_first_not_of(" \t\r\n");
+    if (start == std::string_view::npos) {
+        return false;
+    }
+    text.remove_prefix(start);
+
+    return (text.substr(0, 5) == "<?xml") || (text.substr(0, 9) == "<!DOCTYPE");
+}
+
 namespace YamlDetail {
 
     namespace {
@@ -581,6 +597,37 @@ namespace YamlDetail {
                 warn(_warnings, _context + ": unknown key \"" + entry.key + "\" ignored");
             }
         }
+    }
+
+    void
+    checkDocumentFormat(MapReader& reader,
+                        std::string_view format,
+                        int maxVersion,
+                        const std::string& what)
+    {
+        YAML::Node formatNode = reader.get("format");
+        if (!formatNode || !formatNode.IsScalar() || (formatNode.Scalar() != format)) {
+            throw YamlError("this is not " + what + ": \"format: " + std::string(format) + "\" is missing");
+        }
+        const int version = readInt(reader.get("formatVersion"), reader.context() + ".formatVersion");
+        if (version > maxVersion) {
+            throw YamlNewerFormatError("This was saved by a newer Natron (" + std::string(format) + " format version " + std::to_string(version) + "; this version reads up to " + std::to_string(maxVersion) + ")");
+        }
+        if (version < 1) {
+            fail(reader.get("formatVersion"), reader.context() + ".formatVersion", "invalid format version " + std::to_string(version));
+        }
+    }
+
+    void
+    emitDocumentFormat(YAML::Emitter& em,
+                       std::string_view format,
+                       int version)
+    {
+        emitKey(em, "format");
+        em << YAML::Value << std::string(format);
+        emitKey(em, "formatVersion");
+        em << YAML::Value;
+        emitInt(em, version);
     }
 
 } // namespace YamlDetail

@@ -90,6 +90,12 @@ std::optional<std::int64_t> parseYamlInteger(std::string_view text);
 std::string_view keyframeInterpolationToken(int interpolation);
 std::optional<int> keyframeInterpolationFromToken(std::string_view token);
 
+/**
+ * @brief Whether text starts like an XML document (after an optional byte order mark and blank
+ * space): a file or clipboard text from the format Natron used before YAML.
+ **/
+bool isXmlDocument(std::string_view text);
+
 // The KeyframeTypeEnum values the curve grammar needs to know: only free and broken keys store
 // derivatives, every other kind has its derivatives computed from the neighbouring keys.
 inline constexpr int kYamlKeyframeConstant = 0;

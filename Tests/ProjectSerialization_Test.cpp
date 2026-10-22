@@ -24,7 +24,10 @@
 // ***** END PYTHON BLOCK *****
 
 #include <algorithm>
+#include <cctype>
+#include <exception>
 #include <list>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -55,12 +58,52 @@
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
+#include "Serialization/Bundle/ProjectBundle.h"
 #include "Serialization/KnobSerialization.h"
+#include "Serialization/NodeSerialization.h"
+#include "Serialization/ProjectBundleTestHelpers.h"
+#include "Serialization/ProjectSerialization.h"
 
 #include <ofxImageEffect.h>
 #include <ofxNatron.h>
 
 NATRON_NAMESPACE_USING
+
+namespace {
+
+std::string
+lowerCase(std::string text)
+{
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+
+    return text;
+}
+
+Serialization::ProjectSerialization
+readSavedProject(const QString& savedFilePath)
+{
+    try {
+        return Serialization::ProjectBundleReader(savedFilePath.toStdString()).readProject();
+    } catch (const std::exception& e) {
+        ADD_FAILURE() << "Cannot read back " << savedFilePath.toStdString() << ": " << e.what();
+
+        return Serialization::ProjectSerialization();
+    }
+}
+
+void
+collectKnobNames(const std::list<Serialization::NodeSerializationPtr>& nodes,
+                 std::set<std::string>* names)
+{
+    for (const Serialization::NodeSerializationPtr& node : nodes) {
+        for (const Serialization::KnobSerialization& knob : node->knobs) {
+            names->insert(knob.name);
+        }
+        collectKnobNames(node->children, names);
+    }
+}
+
+} // namespace
 
 // Exercises Project::saveProject()/loadProject() end to end: builds a generator -> writer graph,
 // sets a distinctive value on one knob of each kind that Engine/*Serialization.h treats
@@ -179,12 +222,9 @@ TEST_F(BaseTest, RoundTripKeepsNodeHashAndWritesNoKnobsAge)
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
 
-    QFile saved(savedFilePath);
-    ASSERT_TRUE(saved.open(QIODevice::ReadOnly));
-    const QByteArray contents = saved.readAll();
-    saved.close();
-    EXPECT_TRUE(contents.contains("<KnobsAge>0</KnobsAge>"));
-    EXPECT_FALSE(contents.contains("<KnobsAge>1</KnobsAge>"));
+    const std::string projectYaml = readBundleMember(savedFilePath, Serialization::kBundleProjectMember);
+    ASSERT_NE(std::string::npos, projectYaml.find(generatorName + ":")) << projectYaml;
+    EXPECT_EQ(std::string::npos, lowerCase(projectYaml).find("knobsage")) << projectYaml;
 
     project->reset(false, true);
     ASSERT_TRUE(project->loadProject(dirPath, fileName));
@@ -236,13 +276,23 @@ TEST_F(BaseTest, RoundTripsLayerRegistry)
     ASSERT_TRUE(QFile::exists(savedFilePath));
 
     {
-        QFile f(savedFilePath);
-        ASSERT_TRUE(f.open(QIODevice::ReadOnly | QIODevice::Text));
-        const QString contents = QString::fromUtf8(f.readAll());
-        EXPECT_TRUE(contents.contains(QString::fromUtf8("<Layers")));
-        EXPECT_TRUE(contents.contains(QString::fromUtf8("diffuse")));
-        EXPECT_FALSE(contents.contains(QString::fromUtf8(kNatronColorLayerID)));
-        EXPECT_FALSE(contents.contains(QString::fromUtf8("Backward")));
+        const Serialization::ProjectSerialization saved = readSavedProject(savedFilePath);
+        std::set<std::string> savedLayerIDs;
+        for (const Serialization::LayerRegistryEntrySerialization& entry : saved.layers) {
+            savedLayerIDs.insert(entry.layer.layerID);
+        }
+        EXPECT_EQ(1u, savedLayerIDs.count("diffuse"));
+        EXPECT_EQ(1u, savedLayerIDs.count("specular"));
+        std::shared_ptr<const std::vector<LayerRegistryEntry>> snapshot = project->getLayerRegistrySnapshot();
+        int builtins = 0;
+        for (const LayerRegistryEntry& entry : *snapshot) {
+            if (entry.origin == LayerRegistryEntry::eOriginBuiltin) {
+                ++builtins;
+                EXPECT_EQ(0u, savedLayerIDs.count(entry.desc.getLayerID())) << entry.desc.getLayerID();
+            }
+        }
+        EXPECT_GT(builtins, 0);
+        EXPECT_EQ(0u, savedLayerIDs.count(kNatronColorLayerID));
     }
 
     project->reset(false, true);
@@ -327,12 +377,11 @@ TEST_F(BaseTest, SavedProjectContainsNoUserComponents)
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
     ASSERT_TRUE(QFile::exists(savedFilePath));
 
-    QFile f(savedFilePath);
-    ASSERT_TRUE(f.open(QIODevice::ReadOnly | QIODevice::Text));
-    const QString contents = QString::fromUtf8(f.readAll());
-    f.close();
-    EXPECT_FALSE(contents.contains(QString::fromUtf8("UserComponents")))
-        << "Saved project should not contain UserComponents element";
+    const std::string projectYaml = readBundleMember(savedFilePath, Serialization::kBundleProjectMember);
+    ASSERT_NE(std::string::npos, projectYaml.find(generator->getScriptName() + ":")) << projectYaml;
+    EXPECT_EQ(std::string::npos, lowerCase(projectYaml).find("usercomponents"))
+        << "Saved project should not contain user components:\n"
+        << projectYaml;
 }
 
 namespace {
@@ -416,13 +465,12 @@ TEST_F(MultiplaneTwinProjectTest, TwinsRoundTripAndArePushedIntoThePluginChoices
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
 
     {
-        QFile f(savedFilePath);
-        ASSERT_TRUE(f.open(QIODevice::ReadOnly | QIODevice::Text));
-        const QString contents = QString::fromUtf8(f.readAll());
-        EXPECT_TRUE(contents.contains(QString::fromUtf8("<Name>hostChannelU</Name>")));
-        EXPECT_FALSE(contents.contains(QString::fromUtf8("<Name>channelU</Name>")));
-        EXPECT_FALSE(contents.contains(QString::fromUtf8("<Name>" kNatronOfxParamProcessA "</Name>")));
-        EXPECT_FALSE(contents.contains(QString::fromUtf8("<Name>processAllPlanes</Name>")));
+        std::set<std::string> savedKnobs;
+        collectKnobNames(readSavedProject(savedFilePath).nodes.nodes, &savedKnobs);
+        EXPECT_EQ(1u, savedKnobs.count("hostChannelU"));
+        EXPECT_EQ(0u, savedKnobs.count("channelU"));
+        EXPECT_EQ(0u, savedKnobs.count(kNatronOfxParamProcessA));
+        EXPECT_EQ(0u, savedKnobs.count("processAllPlanes"));
     }
 
     project->reset(false, true);

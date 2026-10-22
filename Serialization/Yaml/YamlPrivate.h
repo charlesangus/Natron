@@ -45,6 +45,7 @@
 #include "Serialization/CurveSerialization.h"
 #include "Serialization/KnobSerialization.h"
 #include "Serialization/NodeSerialization.h"
+#include "Serialization/ProjectGuiSerialization.h"
 #include "Serialization/RotoSerialization.h"
 #include "Serialization/TrackerSerialization.h"
 #include "Serialization/Yaml/BlobSink.h"
@@ -162,6 +163,14 @@ namespace YamlDetail {
 
     void warn(YamlWarnings* warnings, const std::string& message);
 
+    /**
+     * @brief Checks the format and formatVersion keys of a document read with reader. Throws
+     * YamlError when it names another format (what names the expected kind of document, e.g.
+     * "a Natron preset"), YamlNewerFormatError for a version above maxVersion.
+     **/
+    void checkDocumentFormat(MapReader& reader, std::string_view format, int maxVersion, const std::string& what);
+    void emitDocumentFormat(YAML::Emitter& em, std::string_view format, int version);
+
     void emitCurve(YAML::Emitter& em, const CurveSerialization& curve);
     CurveSerialization readCurve(const YAML::Node& node, const std::string& context);
 
@@ -261,6 +270,13 @@ namespace YamlDetail {
      **/
     void emitNodeMap(YAML::Emitter& em, const std::list<NodeSerializationPtr>& nodes, const std::string& parentFullName, BlobSink& sink, std::set<std::string>* usedPaths);
     std::list<NodeSerializationPtr> readNodeMap(const YAML::Node& node, const BlobSource& source, const std::string& context, YamlWarnings* warnings);
+
+    /**
+     * @brief The node graph state of one node as a flow map (pos, size, preview, colors,
+     * selected), without its name or its children.
+     **/
+    void emitNodeGuiValue(YAML::Emitter& em, const NodeGuiSerialization& node);
+    NodeGuiSerializationPtr readNodeGuiValue(const std::string& name, const YAML::Node& node, const std::string& context, YamlWarnings* warnings);
 
 } // namespace YamlDetail
 } // namespace Serialization

@@ -97,12 +97,15 @@ namespace {
         return values;
     }
 
+} // namespace
+
+namespace YamlDetail {
+
     void
-    emitNodeGui(YAML::Emitter& em,
-                const NodeGuiSerialization& node)
+    emitNodeGuiValue(YAML::Emitter& em,
+                     const NodeGuiSerialization& node)
     {
-        emitKey(em, node.nodeName);
-        em << YAML::Value << YAML::Flow << YAML::BeginMap;
+        em << YAML::Flow << YAML::BeginMap;
         emitDoublePair(em, "pos", node.positionX, node.positionY);
         emitDoublePair(em, "size", node.width, node.height);
         if (node.previewEnabled) {
@@ -126,18 +129,13 @@ namespace {
             emitBoolKey(em, "selected", true);
         }
         em << YAML::EndMap;
-        for (const NodeGuiSerializationPtr& child : node.children) {
-            if (child) {
-                emitNodeGui(em, *child);
-            }
-        }
     }
 
     NodeGuiSerializationPtr
-    readNodeGui(const std::string& name,
-                const YAML::Node& node,
-                const std::string& context,
-                YamlWarnings* warnings)
+    readNodeGuiValue(const std::string& name,
+                     const YAML::Node& node,
+                     const std::string& context,
+                     YamlWarnings* warnings)
     {
         NodeGuiSerializationPtr result = std::make_shared<NodeGuiSerialization>();
         NodeGuiSerialization& data = *result;
@@ -183,6 +181,26 @@ namespace {
         return result;
     }
 
+} // namespace YamlDetail
+
+namespace {
+
+    using namespace YamlDetail;
+
+    void
+    emitNodeGui(YAML::Emitter& em,
+                const NodeGuiSerialization& node)
+    {
+        emitKey(em, node.nodeName);
+        em << YAML::Value;
+        emitNodeGuiValue(em, node);
+        for (const NodeGuiSerializationPtr& child : node.children) {
+            if (child) {
+                emitNodeGui(em, *child);
+            }
+        }
+    }
+
     // A group's nodes are written after it under their fully qualified names; each finds its
     // group again by the name before its last dot.
     std::list<NodeGuiSerialization>
@@ -193,7 +211,7 @@ namespace {
         std::vector<std::pair<std::string, NodeGuiSerializationPtr>> nodes;
         std::map<std::string, NodeGuiSerializationPtr> byName;
         for (const std::pair<std::string, YAML::Node>& entry : reader.entries()) {
-            NodeGuiSerializationPtr data = readNodeGui(entry.first, entry.second, "gui.nodes." + entry.first, warnings);
+            NodeGuiSerializationPtr data = readNodeGuiValue(entry.first, entry.second, "gui.nodes." + entry.first, warnings);
             nodes.emplace_back(entry.first, data);
             byName[entry.first] = data;
         }

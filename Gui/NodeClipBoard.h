@@ -28,28 +28,13 @@
 
 #include "Global/Macros.h"
 
-#include <cassert>
 #include <list>
 #include <memory>
-
-#if !defined(Q_MOC_RUN) && !defined(SBK_RUN)
-GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_OFF
-// clang-format off
-GCC_DIAG_OFF(unused-parameter)
-#include <boost/archive/xml_oarchive.hpp>
-#include <boost/serialization/split_member.hpp>
-#include <boost/serialization/version.hpp>
-GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_ON
-GCC_DIAG_ON(unused-parameter)
-// clang-format on
-#endif
 
 #include "Engine/EngineFwd.h"
 
 #include "Gui/GuiFwd.h"
 
-#include "Serialization/BoostXml/NodeXml.h"
-#include "Serialization/BoostXml/ProjectGuiXml.h"
 #include "Serialization/NodeSerialization.h"
 #include "Serialization/ProjectGuiSerialization.h"
 
@@ -61,8 +46,8 @@ public:
     std::list<Serialization::NodeSerializationPtr> nodes;
     std::list<Serialization::NodeGuiSerializationPtr> nodesUI;
 
-    // The node each item of nodes was copied from, or null. It is not archived: a
-    // serialization does not reference its node.
+    // The node each item of nodes was copied from, or null. It is not put on the system
+    // clipboard: a serialization does not reference its node.
     std::list<NodePtr> sourceNodes;
 
     NodeClipBoard()
@@ -76,25 +61,6 @@ public:
     {
         return nodes.empty() && nodesUI.empty();
     }
-
-    template<class Archive>
-    void save(Archive & ar,
-              const unsigned int /*version*/) const
-
-    {
-        int nNodes = nodes.size();
-
-        assert( nodes.size() == nodesUI.size() );
-        ar & ::boost::serialization::make_nvp("NbNodes", nNodes);
-        std::list<Serialization::NodeGuiSerializationPtr>::const_iterator itUI = nodesUI.begin();
-        for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = nodes.begin();
-             it != nodes.end(); ++it, ++itUI) {
-            ar & ::boost::serialization::make_nvp("Node", **it);
-            ar & ::boost::serialization::make_nvp("NodeUI", **itUI);
-        }
-    }
-
-    BOOST_SERIALIZATION_SPLIT_MEMBER()
 };
 
 NATRON_NAMESPACE_EXIT

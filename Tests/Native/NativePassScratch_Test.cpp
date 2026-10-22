@@ -72,8 +72,7 @@ const int kHeight = 1500;
 const double kTime = 1.;
 
 // Pins the pool for the duration of a test: it may not trim or shrink under the test's feet.
-class PoolGuard
-{
+class PoolGuard {
 public:
     PoolGuard()
         : _maxPoolBytes(HostImageMemory::maxPoolBytes())

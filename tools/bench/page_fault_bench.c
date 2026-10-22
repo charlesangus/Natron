@@ -36,8 +36,12 @@
 #define SMALL_BYTES ((size_t)4096)
 #define LOAD_HALF_BYTES ((size_t)128 << 20)
 
-enum Alloc { ALLOC_MMAP, ALLOC_ALIGNED, ALLOC_MMAP2M };
-enum Touch { TOUCH_WRITE, TOUCH_RW, TOUCH_POPULATE };
+enum Alloc { ALLOC_MMAP,
+             ALLOC_ALIGNED,
+             ALLOC_MMAP2M };
+enum Touch { TOUCH_WRITE,
+             TOUCH_RW,
+             TOUCH_POPULATE };
 
 typedef struct {
     unsigned char* base;
@@ -239,14 +243,16 @@ main(int argc, char** argv)
             load = atoi(v);
             ++i;
         } else if (v && !strcmp(a, "-a")) {
-            alloc = !strcmp(v, "mmap") ? ALLOC_MMAP : !strcmp(v, "aligned") ? ALLOC_ALIGNED : ALLOC_MMAP2M;
+            alloc = !strcmp(v, "mmap") ? ALLOC_MMAP : !strcmp(v, "aligned") ? ALLOC_ALIGNED
+                                                                            : ALLOC_MMAP2M;
             if (strcmp(v, "mmap") && strcmp(v, "aligned") && strcmp(v, "mmap2m")) {
                 fprintf(stderr, "unknown -a %s\n", v);
                 return 2;
             }
             ++i;
         } else if (v && !strcmp(a, "-t")) {
-            touch = !strcmp(v, "write") ? TOUCH_WRITE : !strcmp(v, "rw") ? TOUCH_RW : TOUCH_POPULATE;
+            touch = !strcmp(v, "write") ? TOUCH_WRITE : !strcmp(v, "rw") ? TOUCH_RW
+                                                                         : TOUCH_POPULATE;
             if (strcmp(v, "write") && strcmp(v, "rw") && strcmp(v, "populate")) {
                 fprintf(stderr, "unknown -t %s\n", v);
                 return 2;
@@ -273,8 +279,8 @@ main(int argc, char** argv)
         return 3;
     }
 
-    const char* allocName[] = {"mmap", "aligned", "mmap2m"};
-    const char* touchName[] = {"write", "rw", "populate"};
+    const char* allocName[] = { "mmap", "aligned", "mmap2m" };
+    const char* touchName[] = { "write", "rw", "populate" };
     char thpEnabled[64], thpDefrag[64], thpZero[64];
     sysSetting("enabled", thpEnabled, sizeof thpEnabled);
     sysSetting("defrag", thpDefrag, sizeof thpDefrag);

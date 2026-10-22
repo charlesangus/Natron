@@ -457,8 +457,7 @@ bool isRunnablePassList(const PassList& list) WARN_UNUSED_RETURN;
  * @brief The scratch sets live at once, counted by ScratchSetHolder. A set is counted from its
  * holder's construction until its buffers are back in the pool or freed.
  **/
-struct ScratchSetRegistry
-{
+struct ScratchSetRegistry {
     std::mutex mutex;
     int active = 0;
     /// Run between deciding a set's fate and releasing it, so that a test can start another
@@ -476,8 +475,7 @@ struct ScratchSetRegistry
  * register until that is done, so the next one finds the pooled set rather than allocating
  * another. Declare it after the storages it covers.
  **/
-class ScratchSetHolder
-{
+class ScratchSetHolder {
 public:
     ScratchSetHolder(HostScratchFloats& source,
                      std::vector<HostScratchFloats>& extra,

@@ -118,7 +118,7 @@ future core work has solid ground to build on.
 | M82 | Render Cost Profiling | done |  |  | E6 | [M82-render-cost-profiling.md](PLAN/MILESTONES/M82-render-cost-profiling.md) |
 | M83 | GPU Compute Backend Spike | done |  |  | E5 | [M83-gpu-compute-backend-spike.md](PLAN/MILESTONES/M83-gpu-compute-backend-spike.md) |
 | M84 | GPU Placement And Residency | done |  |  | E5 | [M84-gpu-placement-and-residency.md](PLAN/MILESTONES/M84-gpu-placement-and-residency.md) |
-| M101 | Clean-Sheet Merge Node | todo | M84, M137 |  | E3 | [M101-clean-sheet-merge-node.md](PLAN/MILESTONES/M101-clean-sheet-merge-node.md) |
+| M101 | Clean-Sheet Merge Node | todo | M84, M137, M158 |  | E3 | [M101-clean-sheet-merge-node.md](PLAN/MILESTONES/M101-clean-sheet-merge-node.md) |
 | M111 | Native Node Identity Cleanup | todo | M76, M101, M120 |  | E3 | [M111-native-node-identity-cleanup.md](PLAN/MILESTONES/M111-native-node-identity-cleanup.md) |
 | M112 | Native Node Behaviour Fixes | done | - | bosley-native-nodes | E3 | [M112-native-node-behaviour-fixes.md](PLAN/MILESTONES/M112-native-node-behaviour-fixes.md) |
 | M81 | Raw GPU Kernels | todo | M80, M85 |  | E5 | [M81-raw-gpu-kernels.md](PLAN/MILESTONES/M81-raw-gpu-kernels.md) |
@@ -215,6 +215,7 @@ future core work has solid ground to build on.
 | M155 | Per-Suite Test Processes | done | - | bosley-native-nodes | E2 | [M155-per-suite-test-processes.md](PLAN/MILESTONES/M155-per-suite-test-processes.md) |
 | M156 | GPU Download Throughput In Comps | todo | M109 |  | E5 | [M156-gpu-download-throughput-in-comps.md](PLAN/MILESTONES/M156-gpu-download-throughput-in-comps.md) |
 | M157 | Relicense To GPLv3 Or Later | todo | - |  | E2 | [M157-relicense-to-gplv3-or-later.md](PLAN/MILESTONES/M157-relicense-to-gplv3-or-later.md) |
+| M158 | Node Toolbar As Menu | todo | - |  | E10 | [M158-node-toolbar-as-menu.md](PLAN/MILESTONES/M158-node-toolbar-as-menu.md) |
 
 # Epics
 

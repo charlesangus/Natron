@@ -373,3 +373,4 @@ UAT (P7.T3).
 - 2026-10-10 — Member split: the graph is in `project.yaml`; positions, viewers and layout are in `gui.yaml`; save date and author are in `manifest.yaml`. Cosmetic edits and re-saves then leave the graph diff untouched. Headless saves pass `gui.yaml` through.
 - 2026-10-10 — boost.serialization is kept only for the disk-cache TOC (`Engine/AppManagerPrivate.cpp`, cache keys). Replacing it is a possible follow-up milestone, not M16 scope.
 - 2026-10-10 — Out of scope: incremental or partial save, lazy load, and the node-creation and `Node::loadKnob` O(K²) open cost (follow-on work, per the design decision).
+- 2026-10-22 — **Claimed despite strict file overlap** (user): run alongside M80, M16 and M158 in parallel lanes, with M64 - Tiled Rendering (parked) not treated as a blocker; overlaps with active rows (M86, M107, M154) and sibling lanes are one or two shared files, handled by rebasing after each merge.

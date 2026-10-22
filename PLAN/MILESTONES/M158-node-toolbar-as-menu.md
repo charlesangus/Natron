@@ -150,3 +150,4 @@ Scouted facts (2026-10-22, `main` `1eed87752`):
 - 2026-10-22 — **Tab-menu creations land at the cursor through a creation context** (user): Python presets need no positioning code, and today's tab-menu behaviour is kept.
 - 2026-10-22 — **Toolbar looks identical** (user).
 - 2026-10-22 — **Tab-menu paths start below `NodesMenu`** (planner): they read as today's `grouping/label` paths, so the display and the tests' path keys are unchanged.
+- 2026-10-22 — **Claimed despite strict file overlap** (user): run alongside M80, M16 and M158 in parallel lanes, with M64 - Tiled Rendering (parked) not treated as a blocker; overlaps with active rows (M86, M107, M154) and sibling lanes are one or two shared files, handled by rebasing after each merge.

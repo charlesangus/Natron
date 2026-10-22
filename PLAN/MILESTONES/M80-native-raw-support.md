@@ -274,3 +274,4 @@ Kernels are Slang under `Engine/Gpu/Kernels/`, each with its own `<kernel>.cmake
 - 2026-10-22 — No adapter row for raw: the README says conversions are explicit, and Demosaic and RawToImage declare raw→image themselves (code: `Node.cpp:1892`, README "Conversions between kinds are explicit").
 - 2026-10-22 — The Read's knob-driven kind uses the existing polymorphic `resolveOutputDataKind` hook with explicit cache invalidation (`NativeEffectBase.h:244-253`), so P2.T2 no longer carries a RawRead-node fallback.
 - 2026-10-22 — Nodes are built on the M137 framework with the M120 per-node files; `RowIO::x0/y` gives Point ops the CFA position (code: `PixelKernel.h:69`).
+- 2026-10-22 — **Claimed despite strict file overlap** (user): run alongside M80, M16 and M158 in parallel lanes, with M64 - Tiled Rendering (parked) not treated as a blocker; overlaps with active rows (M86, M107, M154) and sibling lanes are one or two shared files, handled by rebasing after each merge.

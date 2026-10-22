@@ -114,7 +114,7 @@ future core work has solid ground to build on.
 | M77 | Native Metadata Nodes | done | M75 | bosley-native-nodes | E3 | [M77-native-metadata-nodes.md](PLAN/MILESTONES/M77-native-metadata-nodes.md) |
 | M78 | Metadata In Expressions | done | M75, M77 | bosley-native-nodes | E3 | [M78-metadata-in-expressions.md](PLAN/MILESTONES/M78-metadata-in-expressions.md) |
 | M79 | Layered Document Readers | todo | M75 |  | E3 | [M79-layered-document-readers.md](PLAN/MILESTONES/M79-layered-document-readers.md) |
-| M80 | Native RAW Support | todo | M75, M85, M120, M137 |  | E3 | [M80-native-raw-support.md](PLAN/MILESTONES/M80-native-raw-support.md) |
+| M80 | Native RAW Support | doing | M75, M85, M120, M137 | bosley-native-nodes | E3 | [M80-native-raw-support.md](PLAN/MILESTONES/M80-native-raw-support.md) |
 | M159 | Kind-Agnostic Groups | todo | - |  | E3 | [M159-kind-agnostic-groups.md](PLAN/MILESTONES/M159-kind-agnostic-groups.md) |
 | M160 | Lensfun Lens Correction | todo | M80, M113 |  | E3 | [M160-lensfun-lens-correction.md](PLAN/MILESTONES/M160-lensfun-lens-correction.md) |
 | M82 | Render Cost Profiling | done |  |  | E6 | [M82-render-cost-profiling.md](PLAN/MILESTONES/M82-render-cost-profiling.md) |
@@ -159,7 +159,7 @@ future core work has solid ground to build on.
 | M32 | Deep Sample Node | todo |  |  | E8 | [M32-deep-sample-node.md](PLAN/MILESTONES/M32-deep-sample-node.md) |
 | M93 | Serialization Boundary | done | - | slate-ferret | E7 | [M93-serialization-boundary.md](PLAN/MILESTONES/M93-serialization-boundary.md) |
 | M100 | Content Node Hashing | done | M93 | bosley-native-nodes | E7 | [M100-content-node-hashing.md](PLAN/MILESTONES/M100-content-node-hashing.md) |
-| M16 | Project Format Redesign | todo | M93 |  | E7 | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
+| M16 | Project Format Redesign | doing | M93 | bosley-native-nodes | E7 | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
 | M114 | Global Undo Correctness | todo | M93 |  | E7 | [M114-global-undo-correctness.md](PLAN/MILESTONES/M114-global-undo-correctness.md) |
 | M102 | Graph Edit Operations | todo | M16 |  | E7 | [M102-graph-edit-operations.md](PLAN/MILESTONES/M102-graph-edit-operations.md) |
 | M103 | Graph Diff And Merge | todo | M102 |  | E12 | [M103-graph-diff-and-merge.md](PLAN/MILESTONES/M103-graph-diff-and-merge.md) |
@@ -217,7 +217,7 @@ future core work has solid ground to build on.
 | M155 | Per-Suite Test Processes | done | - | bosley-native-nodes | E2 | [M155-per-suite-test-processes.md](PLAN/MILESTONES/M155-per-suite-test-processes.md) |
 | M156 | GPU Download Throughput In Comps | todo | M109 |  | E5 | [M156-gpu-download-throughput-in-comps.md](PLAN/MILESTONES/M156-gpu-download-throughput-in-comps.md) |
 | M157 | Relicense To GPLv3 Or Later | todo | - |  | E2 | [M157-relicense-to-gplv3-or-later.md](PLAN/MILESTONES/M157-relicense-to-gplv3-or-later.md) |
-| M158 | Node Toolbar As Menu | todo | - |  | E10 | [M158-node-toolbar-as-menu.md](PLAN/MILESTONES/M158-node-toolbar-as-menu.md) |
+| M158 | Node Toolbar As Menu | doing | - | bosley-native-nodes | E10 | [M158-node-toolbar-as-menu.md](PLAN/MILESTONES/M158-node-toolbar-as-menu.md) |
 
 # Epics
 

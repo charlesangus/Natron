@@ -1,0 +1,20 @@
+format: natron-project
+formatVersion: 1
+nodes:
+  Blur1:
+    plugin: "net.sf.cimg.CImgBlur"
+    version: [5, 1]
+    knobs:
+      size: [{expr: "Missing2.size.getValue(0) * 2", hasRet: false}, 4]
+    inputs: {Source: "Constant1"}
+  Blur2:
+    plugin: "net.sf.cimg.CImgBlur"
+    version: [5, 1]
+    knobs:
+      size: [{link: "Missing3.size.0"}, 3]
+    inputs: {Source: "Blur1"}
+  Constant1:
+    plugin: "net.sf.openfx.ConstantPlugin"
+    version: [2, 0]
+    knobs:
+      color: [0.25, 0.5, 0.75, 1]

@@ -887,6 +887,105 @@ def check_reader_cli_time_offset_regression():
           "despite a stale non-zero timeOffset" % (frame_paths,))
 
 
+def _call_capturing_native_output(func):
+    """Return func()'s result and what was written to the process's stdout
+    and stderr while it ran.
+
+    Natron reports a project it refuses to load through std::cerr, beneath
+    Python's sys.stderr, so only redirecting the file descriptors themselves
+    catches the message.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    with tempfile.TemporaryFile() as sink:
+        saved_stdout = os.dup(1)
+        saved_stderr = os.dup(2)
+        try:
+            os.dup2(sink.fileno(), 1)
+            os.dup2(sink.fileno(), 2)
+            try:
+                result = func()
+            finally:
+                sys.stdout.flush()
+                sys.stderr.flush()
+                os.dup2(saved_stdout, 1)
+                os.dup2(saved_stderr, 2)
+        finally:
+            os.close(saved_stdout)
+            os.close(saved_stderr)
+        sink.seek(0)
+        output = sink.read().decode("utf-8", "replace")
+    return result, output
+
+
+def check_project_bundle_round_trip():
+    """app.saveProject() writes a .ntpz bundle that app.loadProject() reads
+    back, and app.loadProject() refuses a project in the old XML format."""
+    tmpdir = tempfile.mkdtemp(prefix="natron-ci-smoke-ntpz-")
+    path = os.path.join(tmpdir, "round-trip.ntpz")
+
+    app.resetProject()
+    constant = app.createNode("net.sf.openfx.ConstantPlugin")
+    grade = app.createNode("net.sf.openfx.GradePlugin")
+    if constant is None or grade is None:
+        raise AssertionError("cannot create the Constant -> Grade graph to save")
+    constant.getParam("color").set(0.5, 0.25, 0.125, 1.0)
+    constant.getParam("color").setValueAtTime(0.75, 10, 0)
+    grade.getParam("multiply").set(2.0, 1.5, 1.0, 1.0)
+    if not grade.connectInput(0, constant):
+        raise AssertionError("Effect.connectInput(0, constant) failed for Grade")
+    constant_name = constant.getScriptName()
+    grade_name = grade.getScriptName()
+
+    if not app.saveProject(path):
+        raise AssertionError("app.saveProject(%r) returned False" % (path,))
+    if not zipfile.is_zipfile(path):
+        raise AssertionError("app.saveProject(%r) did not write a zip "
+                             "archive there" % (path,))
+    with zipfile.ZipFile(path) as bundle:
+        members = bundle.namelist()
+    if members[:3] != ["mimetype", "manifest.yaml", "project.yaml"]:
+        raise AssertionError("%r is not laid out as a project bundle: %r"
+                             % (path, members))
+    _mark("[smoke] app.saveProject() wrote the bundle %r: %r" % (path, members))
+
+    loaded = app.loadProject(path)
+    if loaded is None:
+        raise AssertionError("app.loadProject(%r) returned None" % (path,))
+    constant = loaded.getNode(constant_name)
+    grade = loaded.getNode(grade_name)
+    if constant is None or grade is None:
+        raise AssertionError("the loaded project lacks %s or %s"
+                             % (constant_name, grade_name))
+    color = constant.getParam("color")
+    multiply = grade.getParam("multiply")
+    found = (color.getValueAtTime(10, 0), color.getValue(1),
+             multiply.getValue(0), multiply.getValue(1))
+    if found != (0.75, 0.25, 2.0, 1.5):
+        raise AssertionError("the loaded Constant color and Grade multiply "
+                             "are %r, expected (0.75, 0.25, 2.0, 1.5)"
+                             % (found,))
+    source = grade.getInput(0)
+    if source is None or source.getScriptName() != constant_name:
+        raise AssertionError("the loaded %s is not connected to %s"
+                             % (grade_name, constant_name))
+    _mark("[smoke] OK: app.loadProject() read back %r" % (path,))
+
+    old_format = os.path.join(_repo_root(), "Tests", "fixtures",
+                              "old-format.ntp")
+    result, output = _call_capturing_native_output(
+        lambda: app.loadProject(old_format))
+    if result is not None:
+        raise AssertionError("app.loadProject(%r) loaded a project in the "
+                             "old XML format" % (old_format,))
+    if "old XML .ntp format" not in output:
+        raise AssertionError("app.loadProject(%r) returned None without the "
+                             "old-format message; it printed:\n%s"
+                             % (old_format, output))
+    _mark("[smoke] OK: app.loadProject() refused the old XML format: %s"
+          % (output.strip().splitlines()[-1],))
+
+
 _RENDER_SCHEDULER_MODES = ("legacy", "taskgraph")
 
 
@@ -938,6 +1037,7 @@ def main():
     check_exr_to_png_colorspace()
     check_misc_effect_render()
     check_deep_write_render()
+    check_project_bundle_round_trip()
     check_reader_cli_time_offset_regression()
 
     # NOTE: not covered here -- PyGuiApplication::addMenuCommand()

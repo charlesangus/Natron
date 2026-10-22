@@ -390,7 +390,7 @@ TEST_F(PyPlugExportTest, UserLayerSelectWithChannelButtonsSurvivesProjectRoundTr
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QString::fromUtf8("/");
-    const QString fileName = QString::fromUtf8("layerselect-roundtrip.ntp");
+    const QString fileName = QString::fromUtf8("layerselect-roundtrip.ntpz");
 
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));

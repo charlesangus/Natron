@@ -54,6 +54,17 @@ inline constexpr std::string_view kNatronProjectMimeType = "application/vnd.natr
 
 std::uint32_t zipCrc32(std::span<const std::byte> data, std::uint32_t crc = 0);
 
+/**
+ * @brief Where a ZipWriter given no path sends the archive bytes, in order. write() throws
+ * (any exception) when the bytes cannot be taken; the writer passes the exception on.
+ **/
+class ZipOutput {
+public:
+    virtual ~ZipOutput();
+
+    virtual void write(const void* data, std::size_t size) = 0;
+};
+
 class ZipWriter {
 public:
     /**
@@ -61,6 +72,12 @@ public:
      * stored with no extra field so the mime type sits at a fixed offset for file sniffers.
      **/
     explicit ZipWriter(const std::string& path, std::string_view mimeType = kNatronProjectMimeType);
+
+    /**
+     * @brief The same, writing to output, which must outlive the writer. finish() leaves
+     * flushing and closing whatever output writes to to its owner.
+     **/
+    explicit ZipWriter(ZipOutput& output, std::string_view mimeType = kNatronProjectMimeType);
     ~ZipWriter();
 
     ZipWriter(const ZipWriter&) = delete;
@@ -92,6 +109,7 @@ private:
 
     std::string _path;
     std::FILE* _file = nullptr;
+    ZipOutput* _output = nullptr;
     std::uint64_t _offset = 0;
     std::vector<Entry> _entries;
     std::unordered_map<std::string, std::size_t> _names;

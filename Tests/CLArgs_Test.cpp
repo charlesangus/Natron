@@ -79,7 +79,7 @@ private:
 
 TEST(CLArgs, ReaderArgLandsInGetReaderArgs)
 {
-    CLArgs cl(makeArgs({ "NatronRenderer", "-i", "Read1", "/tmp/input.exr", "/tmp/project.ntp" }), /*forceBackground=*/true);
+    CLArgs cl(makeArgs({ "NatronRenderer", "-i", "Read1", "/tmp/input.exr", "/tmp/project.ntpz" }), /*forceBackground=*/true);
 
     ASSERT_FALSE(cl.getError().has_value());
     ASSERT_EQ(1u, cl.getReaderArgs().size());
@@ -90,7 +90,7 @@ TEST(CLArgs, ReaderArgLandsInGetReaderArgs)
 
 TEST(CLArgs, WriterArgWithExplicitFilenameLandsInGetWriterArgs)
 {
-    CLArgs cl(makeArgs({ "NatronRenderer", "-w", "Write1", "/tmp/output.exr", "/tmp/project.ntp" }), /*forceBackground=*/true);
+    CLArgs cl(makeArgs({ "NatronRenderer", "-w", "Write1", "/tmp/output.exr", "/tmp/project.ntpz" }), /*forceBackground=*/true);
 
     ASSERT_FALSE(cl.getError().has_value());
     ASSERT_EQ(1u, cl.getWriterArgs().size());
@@ -102,22 +102,22 @@ TEST(CLArgs, WriterArgWithExplicitFilenameLandsInGetWriterArgs)
 
 TEST(CLArgs, WriterArgWithoutFilenameLeavesFilenameEmpty)
 {
-    // The next token is the project file (.ntp), which the optional-filename
+    // The next token is the project file (.ntpz), which the optional-filename
     // heuristic explicitly excludes, so it is correctly left for the
     // positional project-file parsing below rather than being swallowed here.
-    CLArgs cl(makeArgs({ "NatronRenderer", "-w", "Write1", "/tmp/project.ntp" }), /*forceBackground=*/true);
+    CLArgs cl(makeArgs({ "NatronRenderer", "-w", "Write1", "/tmp/project.ntpz" }), /*forceBackground=*/true);
 
     ASSERT_FALSE(cl.getError().has_value());
     ASSERT_EQ(1u, cl.getWriterArgs().size());
     const CLArgs::WriterArg& w = cl.getWriterArgs().front();
     EXPECT_EQ(QString::fromUtf8("Write1"), w.name);
     EXPECT_TRUE(w.filename.isEmpty());
-    EXPECT_EQ(QString::fromUtf8("/tmp/project.ntp"), cl.getScriptFilename());
+    EXPECT_EQ(QString::fromUtf8("/tmp/project.ntpz"), cl.getScriptFilename());
 }
 
 TEST(CLArgs, FrameRangeSimple)
 {
-    CLArgs cl(makeArgs({ "NatronRenderer", "/tmp/project.ntp", "10-20" }), /*forceBackground=*/true);
+    CLArgs cl(makeArgs({ "NatronRenderer", "/tmp/project.ntpz", "10-20" }), /*forceBackground=*/true);
 
     ASSERT_FALSE(cl.getError().has_value());
     ASSERT_TRUE(cl.hasFrameRange());
@@ -130,7 +130,7 @@ TEST(CLArgs, FrameRangeSimple)
 
 TEST(CLArgs, FrameRangeMultipleCommaSeparated)
 {
-    CLArgs cl(makeArgs({ "NatronRenderer", "/tmp/project.ntp", "1-10,20-30" }), /*forceBackground=*/true);
+    CLArgs cl(makeArgs({ "NatronRenderer", "/tmp/project.ntpz", "1-10,20-30" }), /*forceBackground=*/true);
 
     ASSERT_FALSE(cl.getError().has_value());
     ASSERT_TRUE(cl.hasFrameRange());
@@ -147,7 +147,7 @@ TEST(CLArgs, FrameRangeMultipleCommaSeparated)
 
 TEST(CLArgs, FrameRangeWithStep)
 {
-    CLArgs cl(makeArgs({ "NatronRenderer", "/tmp/project.ntp", "1-10:2" }), /*forceBackground=*/true);
+    CLArgs cl(makeArgs({ "NatronRenderer", "/tmp/project.ntpz", "1-10:2" }), /*forceBackground=*/true);
 
     ASSERT_FALSE(cl.getError().has_value());
     ASSERT_TRUE(cl.hasFrameRange());
@@ -160,7 +160,7 @@ TEST(CLArgs, FrameRangeWithStep)
 
 TEST(CLArgs, FrameRangeBareSingleFrame)
 {
-    CLArgs cl(makeArgs({ "NatronRenderer", "/tmp/project.ntp", "5" }), /*forceBackground=*/true);
+    CLArgs cl(makeArgs({ "NatronRenderer", "/tmp/project.ntpz", "5" }), /*forceBackground=*/true);
 
     ASSERT_FALSE(cl.getError().has_value());
     ASSERT_TRUE(cl.hasFrameRange());
@@ -178,7 +178,7 @@ TEST(CLArgs, MalformedReaderMissingNameSetsError)
     // the filename of a script or project" error at the end of parse() from standing in
     // for the -i validation, and it cannot come after "-i", which would take it for the
     // Read node's name.
-    CLArgs cl(makeArgs({ "NatronRenderer", "/tmp/project.ntp", "-i" }), /*forceBackground=*/true);
+    CLArgs cl(makeArgs({ "NatronRenderer", "/tmp/project.ntpz", "-i" }), /*forceBackground=*/true);
 
     ASSERT_TRUE(cl.getError().has_value());
     EXPECT_EQ(1, *cl.getError());
@@ -188,7 +188,7 @@ TEST(CLArgs, MalformedReaderMissingNameSetsError)
 TEST(CLArgs, MalformedReaderMissingFilenameSetsError)
 {
     ScopedCoutSilencer silence;
-    CLArgs cl(makeArgs({ "NatronRenderer", "/tmp/project.ntp", "-i", "Read1" }), /*forceBackground=*/true);
+    CLArgs cl(makeArgs({ "NatronRenderer", "/tmp/project.ntpz", "-i", "Read1" }), /*forceBackground=*/true);
 
     ASSERT_TRUE(cl.getError().has_value());
     EXPECT_EQ(1, *cl.getError());
@@ -197,7 +197,7 @@ TEST(CLArgs, MalformedReaderMissingFilenameSetsError)
 TEST(CLArgs, MalformedWriterNameStartingWithDigitSetsError)
 {
     ScopedCoutSilencer silence;
-    CLArgs cl(makeArgs({ "NatronRenderer", "-w", "1Write", "/tmp/project.ntp" }), /*forceBackground=*/true);
+    CLArgs cl(makeArgs({ "NatronRenderer", "-w", "1Write", "/tmp/project.ntpz" }), /*forceBackground=*/true);
 
     ASSERT_TRUE(cl.getError().has_value());
     EXPECT_EQ(1, *cl.getError());
@@ -220,7 +220,7 @@ TEST(CLArgs, MalformedMissingProjectOrScriptSetsError)
 TEST(CLArgs, MalformedTrailingGarbageSetsError)
 {
     ScopedCoutSilencer silence;
-    CLArgs cl(makeArgs({ "NatronRenderer", "/tmp/project.ntp", "--not-a-real-option" }), /*forceBackground=*/true);
+    CLArgs cl(makeArgs({ "NatronRenderer", "/tmp/project.ntpz", "--not-a-real-option" }), /*forceBackground=*/true);
 
     ASSERT_TRUE(cl.getError().has_value());
     EXPECT_EQ(1, *cl.getError());
@@ -239,7 +239,7 @@ TEST(CLArgs, SurpriseWriterFilenameHeuristicSwallowsSteppedFrameRange)
     // parser ever sees it, and the overall parse still reports no error.
     // This assertion documents that current (surprising) behavior, not the
     // desired one.
-    CLArgs cl(makeArgs({ "NatronRenderer", "-w", "Write1", "1-10:2", "/tmp/project.ntp" }), /*forceBackground=*/true);
+    CLArgs cl(makeArgs({ "NatronRenderer", "-w", "Write1", "1-10:2", "/tmp/project.ntpz" }), /*forceBackground=*/true);
 
     ASSERT_FALSE(cl.getError().has_value());
     ASSERT_EQ(1u, cl.getWriterArgs().size());
@@ -254,7 +254,7 @@ TEST(CLArgs, WriterFilenameHeuristicLeavesUnSteppedRangeAlone)
     // pure digits/hyphens, the anchored heuristic regex matches it fully,
     // and it is correctly recognized as a frame range rather than a
     // filename.
-    CLArgs cl(makeArgs({ "NatronRenderer", "-w", "Write1", "10-20", "/tmp/project.ntp" }), /*forceBackground=*/true);
+    CLArgs cl(makeArgs({ "NatronRenderer", "-w", "Write1", "10-20", "/tmp/project.ntpz" }), /*forceBackground=*/true);
 
     ASSERT_FALSE(cl.getError().has_value());
     ASSERT_EQ(1u, cl.getWriterArgs().size());
@@ -269,7 +269,7 @@ TEST(CLArgs, RemovedOpenGLOptionIsAnUnparsedArgument)
 {
     // --opengl is not an option, so it and its value are left over like any unknown argument and fail the parse.
     ScopedCoutSilencer silence;
-    CLArgs cl(makeArgs({ "NatronRenderer", "/tmp/project.ntp", "--opengl", "enabled" }), /*forceBackground=*/true);
+    CLArgs cl(makeArgs({ "NatronRenderer", "/tmp/project.ntpz", "--opengl", "enabled" }), /*forceBackground=*/true);
 
     ASSERT_TRUE(cl.getError().has_value());
     EXPECT_EQ(1, *cl.getError());

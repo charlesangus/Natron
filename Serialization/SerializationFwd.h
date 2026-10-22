@@ -42,7 +42,6 @@ struct KnobMasterSerialization;
 struct KnobSerialization;
 struct LayerRegistryEntrySerialization;
 struct LayerSerialization;
-struct NodeBackdropSerialization;
 struct NodeCollectionSerialization;
 struct NodeGuiSerialization;
 struct NodeSerialization;
@@ -63,6 +62,7 @@ struct SplitterSerialization;
 struct TrackSerialization;
 struct TrackerContextSerialization;
 struct ViewerDataSerialization;
+class ZipOutput;
 
 typedef std::shared_ptr<NodeGuiSerialization> NodeGuiSerializationPtr;
 typedef std::shared_ptr<NodeSerialization> NodeSerializationPtr;

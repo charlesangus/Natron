@@ -267,7 +267,7 @@ run_comp_case() {
     [ "$DRY" = 1 ] && return 0
     local sz=""
     [ "$size" != uhd ] && sz=$size
-    run_kind "$key$BUILD_SUFFIX" "$tag" "$kind" "$mode" BENCH_TOPO=ntp BENCH_COMP="$REPO/tools/bench/comps/$comp.ntp" \
+    run_kind "$key$BUILD_SUFFIX" "$tag" "$kind" "$mode" BENCH_TOPO=ntp BENCH_COMP="$REPO/tools/bench/comps/$comp.ntpz" \
         BENCH_RES=uhd BENCH_SIZE="$sz"
 }
 

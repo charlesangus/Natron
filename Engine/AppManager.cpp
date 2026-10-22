@@ -3282,19 +3282,6 @@ AppManager::initBuiltinPythonModules()
 }
 
 void
-AppManager::setProjectCreatedDuringRC2Or3(bool b)
-{
-    _imp->lastProjectLoadedCreatedDuringRC2Or3 = b;
-}
-
-//To by-pass a bug introduced in RC3 with the serialization of bezier curves
-bool
-AppManager::wasProjectCreatedDuringRC2Or3() const
-{
-    return _imp->lastProjectLoadedCreatedDuringRC2Or3;
-}
-
-void
 AppManager::launchPythonInterpreter()
 {
     std::string err;

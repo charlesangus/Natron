@@ -574,7 +574,7 @@ TEST_F(ProjectOCIODefaultsTest, AReloadedReadKeepsTheSpacesItGuessed)
     // A restored read that guessed again would take this new 8-bit default.
     setProjectFileSpace("colorSpace8Bit", kGamma22Space);
 
-    saveResetAndLoad(tmp, "guessed-read.ntp");
+    saveResetAndLoad(tmp, "guessed-read.ntpz");
 
     ASSERT_EQ(std::string(kGamma22Space), project()->getFileColorSpace(eFileColorCategory8Bit));
     reader = project()->getNodeByName(name);
@@ -622,7 +622,7 @@ TEST_F(ProjectOCIODefaultsTest, AnExistingWriteKeepsItsOutputSpaceAcrossADefault
     setProjectFileSpace("colorSpace8Bit", kGamma22Space);
     EXPECT_EQ(std::string(kSRGBSpace), stringValue(writer, kOutputSpaceKnob));
 
-    saveResetAndLoad(tmp, "defaults.ntp");
+    saveResetAndLoad(tmp, "defaults.ntpz");
 
     ASSERT_EQ(std::string(kGamma22Space), project()->getFileColorSpace(eFileColorCategory8Bit));
     writer = project()->getNodeByName(name);

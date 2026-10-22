@@ -29,7 +29,6 @@ GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_OFF
 // clang-format off
 GCC_DIAG_OFF(unused-parameter)
 #include <boost/archive/basic_archive.hpp>
-#include <boost/archive/xml_iarchive.hpp>
 #include <boost/archive/xml_oarchive.hpp>
 #include <boost/serialization/base_object.hpp>
 #include <boost/serialization/list.hpp>
@@ -42,8 +41,7 @@ GCC_DIAG_ON(unused-parameter)
 // clang-format on
 #endif
 
-// Mirrors FORMAT_SERIALIZATION_CHANGES_TO_RECTD/RECTI in Engine/FormatSerialization.h,
-// which this adapter's version-gated load keeps in step with.
+// Mirrors FORMAT_SERIALIZATION_CHANGES_TO_RECTD/RECTI in Engine/FormatSerialization.h.
 #define NATRON_SERIALIZATION_FORMAT_CHANGES_TO_RECTD 2
 #define NATRON_SERIALIZATION_FORMAT_CHANGES_TO_RECTI 3
 #define NATRON_SERIALIZATION_FORMAT_VERSION NATRON_SERIALIZATION_FORMAT_CHANGES_TO_RECTI
@@ -79,28 +77,12 @@ namespace serialization {
     void
     serialize(Archive& ar,
               NATRON_NAMESPACE::Serialization::FormatSerialization& format,
-              const unsigned int version)
+              const unsigned int /*version*/)
     {
-        if (version < NATRON_SERIALIZATION_FORMAT_CHANGES_TO_RECTD) {
-            NATRON_NAMESPACE::Serialization::RectISerialization r;
-            ar& ::boost::serialization::make_nvp("RectI", r);
-            format.x1 = r.x1;
-            format.x2 = r.x2;
-            format.y1 = r.y1;
-            format.y2 = r.y2;
-        } else if (version < NATRON_SERIALIZATION_FORMAT_CHANGES_TO_RECTI) {
-            NATRON_NAMESPACE::Serialization::RectDSerialization r;
-            ar& ::boost::serialization::make_nvp("RectD", r);
-            format.x1 = r.x1;
-            format.x2 = r.x2;
-            format.y1 = r.y1;
-            format.y2 = r.y2;
-        } else {
-            ::boost::serialization::void_cast_register<NATRON_NAMESPACE::Serialization::FormatSerialization, NATRON_NAMESPACE::Serialization::RectISerialization>(
-                static_cast<NATRON_NAMESPACE::Serialization::FormatSerialization*>(nullptr),
-                static_cast<NATRON_NAMESPACE::Serialization::RectISerialization*>(nullptr));
-            ar& ::boost::serialization::make_nvp("RectI", ::boost::serialization::base_object<NATRON_NAMESPACE::Serialization::RectISerialization>(format));
-        }
+        ::boost::serialization::void_cast_register<NATRON_NAMESPACE::Serialization::FormatSerialization, NATRON_NAMESPACE::Serialization::RectISerialization>(
+            static_cast<NATRON_NAMESPACE::Serialization::FormatSerialization*>(nullptr),
+            static_cast<NATRON_NAMESPACE::Serialization::RectISerialization*>(nullptr));
+        ar& ::boost::serialization::make_nvp("RectI", ::boost::serialization::base_object<NATRON_NAMESPACE::Serialization::RectISerialization>(format));
         ar& ::boost::serialization::make_nvp("Pixel_aspect_ratio", format.pixelAspectRatio);
         ar& ::boost::serialization::make_nvp("Name", format.name);
     }
@@ -129,26 +111,6 @@ namespace serialization {
         } else if (typeTag == "stringlist") {
             std::list<std::string> v = variant.stringListValue;
             ar& ::boost::serialization::make_nvp("Value", v);
-        }
-    }
-
-    template <class Archive>
-    void
-    load(Archive& ar,
-         NATRON_NAMESPACE::Serialization::VariantSerialization& variant,
-         const unsigned int /*version*/)
-    {
-        ar& ::boost::serialization::make_nvp("Type", variant.typeTag);
-        if (variant.typeTag == "bool") {
-            ar& ::boost::serialization::make_nvp("Value", variant.boolValue);
-        } else if ((variant.typeTag == "int") || (variant.typeTag == "uint")) {
-            ar& ::boost::serialization::make_nvp("Value", variant.intValue);
-        } else if (variant.typeTag == "double") {
-            ar& ::boost::serialization::make_nvp("Value", variant.doubleValue);
-        } else if (variant.typeTag == "string") {
-            ar& ::boost::serialization::make_nvp("Value", variant.stringValue);
-        } else if (variant.typeTag == "stringlist") {
-            ar& ::boost::serialization::make_nvp("Value", variant.stringListValue);
         }
     }
 

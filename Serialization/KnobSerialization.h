@@ -32,9 +32,7 @@
 #include "Serialization/CurveSerialization.h"
 #include "Serialization/SerializationFwd.h"
 
-// The knob, value and master class versions of the .ntp format. They live with the plain data
-// rather than only in the XML adapter because loading code compares a knob's loaded version
-// against them (KnobSerialization::version).
+// The knob, value and master class versions the XML writer stamps on what it writes.
 #define NATRON_SERIALIZATION_KNOB_INTRODUCES_SLAVED_TRACKS 2
 #define NATRON_SERIALIZATION_KNOB_INTRODUCES_SLAVED_TRACKS_OFFSET 3
 #define NATRON_SERIALIZATION_KNOB_INTRODUCES_CHOICE_LABEL 4
@@ -224,9 +222,6 @@ typedef std::variant<std::monostate,
  * @brief Plain-data equivalent of everything a project file saves for one knob.
  **/
 struct KnobSerialization {
-    // The class version the knob was loaded from, NATRON_SERIALIZATION_KNOB_VERSION otherwise.
-    unsigned int version;
-
     // The knob's script name, as saved. Engine turns it into a script-friendly name when it is
     // given to a knob, see scriptFriendlyKnobName().
     std::string name;
@@ -237,9 +232,9 @@ struct KnobSerialization {
     // When set, the master of the first dimension is a knob this knob is an alias of.
     bool masterIsAlias;
 
-    // One entry per dimension, or, from NATRON_SERIALIZATION_KNOB_SAVES_FOLDED_DIMENSIONS on, a
-    // single entry standing for every dimension of a multi-dimensional knob whose dimensions are
-    // folded. The entry count is what the loaded knob's fold state is restored from.
+    // One entry per dimension, or a single entry standing for every dimension of a
+    // multi-dimensional knob whose dimensions are folded. The entry count is what the loaded
+    // knob's fold state is restored from.
     std::vector<KnobDimensionSerialization> dimensions;
 
     // Present for parametric knobs only.
@@ -265,8 +260,7 @@ struct KnobSerialization {
     std::optional<bool> useHostOverlayHandle;
 
     KnobSerialization()
-        : version(NATRON_SERIALIZATION_KNOB_VERSION)
-        , name()
+        : name()
         , typeName()
         , dimension(0)
         , secret(false)

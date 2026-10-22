@@ -39,7 +39,6 @@ GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_OFF
 // clang-format off
 GCC_DIAG_OFF(unused-parameter)
 // /opt/local/include/boost/serialization/smart_cast.hpp:254:25: warning: unused parameter 'u' [-Wunused-parameter]
-#include <boost/archive/xml_iarchive.hpp>
 #include <boost/archive/xml_oarchive.hpp>
 // /usr/local/include/boost/serialization/shared_ptr.hpp:112:5: warning: unused typedef 'boost_static_assert_typedef_112' [-Wunused-local-typedef]
 #include <boost/serialization/split_member.hpp>
@@ -324,6 +323,13 @@ NodeGraph::pasteCliboard(const NodeClipBoard& clipboard,
     _imp->pasteNodesInternal(clipboard, position, false, newNodes);
 }
 
+static bool
+decodeClipboardNodes(const std::string& /*text*/,
+                     NodeClipBoard* /*clipboard*/)
+{
+    return false;
+}
+
 bool
 NodeGraph::pasteNodeClipBoards(const QPointF& pos)
 {
@@ -337,11 +343,7 @@ NodeGraph::pasteNodeClipBoards(const QPointF& pos)
     std::list<std::pair<std::string, NodeGuiPtr> > newNodes;
     NodeClipBoard& cb = appPTR->getNodeClipBoard();
     std::string s = QString::fromUtf8(data).toStdString();
-    try {
-        std::stringstream ss(s);
-        boost::archive::xml_iarchive iArchive(ss);
-        iArchive >> boost::serialization::make_nvp("Clipboard", cb);
-    } catch (...) {
+    if (!decodeClipboardNodes(s, &cb)) {
         return false;
     }
 

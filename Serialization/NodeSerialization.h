@@ -71,13 +71,9 @@ struct LayerSerialization {
 /**
  * @brief The saved state of one node: its plug-in, names and knobs, its input connections, its
  * roto and tracker data, its user knob layout and, for a group or a multi-instance node, the
- * nodes it holds. Node names are script names; a name read from a file older than script names
- * is already converted to one.
+ * nodes it holds. Node names are script names.
  **/
 struct NodeSerialization {
-    // The class version the node was loaded from, NATRON_SERIALIZATION_NODE_VERSION otherwise.
-    unsigned int version;
-
     std::string label;
     std::string scriptName;
     std::string pluginID;
@@ -93,10 +89,6 @@ struct NodeSerialization {
 
     // Input label to the script name of the node connected there.
     std::map<std::string, std::string> inputs;
-
-    // Files older than NATRON_SERIALIZATION_NODE_CHANGE_INPUTS_SERIALIZATION save inputs by
-    // index instead of by label; such a node has these and no inputs.
-    std::vector<std::string> oldInputs;
 
     // Still read and written so the file layout is stable, but ignored on load and saved as 0.
     std::uint64_t knobsAge;
@@ -121,8 +113,7 @@ struct NodeSerialization {
     std::string cacheID;
 
     NodeSerialization()
-        : version(NATRON_SERIALIZATION_NODE_VERSION)
-        , label()
+        : label()
         , scriptName()
         , pluginID()
         , pluginMajorVersion(-1)
@@ -131,7 +122,6 @@ struct NodeSerialization {
         , pythonModuleVersion(0)
         , knobs()
         , inputs()
-        , oldInputs()
         , knobsAge(0)
         , masterNodeName()
         , hasRotoContext(false)

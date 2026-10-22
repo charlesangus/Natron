@@ -24,65 +24,34 @@
 namespace boost {
 namespace serialization {
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::NodeGuiSerialization& node,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::NodeGuiSerialization& node,
                                                           const unsigned int version);
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::NodeBackdropSerialization& backdrop,
-                                                          const unsigned int version);
-    template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::NodeBackdropSerialization& backdrop,
-                                                          const unsigned int version);
-
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::ViewerDataSerialization& viewer,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::ViewerDataSerialization& viewer,
                                                           const unsigned int version);
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::PythonPanelSerialization& panel,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::PythonPanelSerialization& panel,
                                                           const unsigned int version);
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::PaneLayoutSerialization& pane,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::PaneLayoutSerialization& pane,
                                                           const unsigned int version);
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::SplitterSerialization& splitter,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::SplitterSerialization& splitter,
                                                           const unsigned int version);
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::ApplicationWindowSerialization& window,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::ApplicationWindowSerialization& window,
                                                           const unsigned int version);
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::GuiLayoutSerialization& layout,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::GuiLayoutSerialization& layout,
                                                           const unsigned int version);
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::ProjectGuiSerialization& projectGui,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::ProjectGuiSerialization& projectGui,
                                                           const unsigned int version);

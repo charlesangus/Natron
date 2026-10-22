@@ -513,11 +513,6 @@ public:
         return y * getLogicalDPIYRATIO();
     }
 
-    void setProjectCreatedDuringRC2Or3(bool b);
-
-    //To by-pass a bug introduced in RC3 with the serialization of bezier curves
-    bool wasProjectCreatedDuringRC2Or3() const;
-
     bool isNodeCacheAlmostFull() const;
 
     bool isAggressiveCachingEnabled() const;

@@ -25,7 +25,6 @@
 
 #include "Global/Macros.h"
 
-#include <sstream>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -34,7 +33,7 @@
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
-#include "ProjectXmlHelpers.h"
+#include "ProjectBundleTestHelpers.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -45,7 +44,6 @@
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
-#include "Serialization/BoostXml/NodeXml.h"
 #include "Serialization/NodeSerialization.h"
 #include "Serialization/ProjectSerialization.h"
 
@@ -106,21 +104,21 @@ protected:
         _downstreamName = _downstream->getScriptName_mt_safe();
     }
 
-    // Saves the current project with the Grade's plug-in ID replaced by one that is not
-    // installed, and returns that Grade's serialization in *missing.
-    std::string saveWithMissingGrade(Serialization::NodeSerializationPtr* missing)
+    // Serializes the current project into *saved with the Grade's plug-in ID replaced by one
+    // that is not installed, and returns that Grade's serialization in *missing.
+    bool serializeWithMissingGrade(Serialization::ProjectSerialization* saved,
+                                   Serialization::NodeSerializationPtr* missing)
     {
-        Serialization::ProjectSerialization saved;
-        getApp()->getProject()->toSerialization(&saved);
-        *missing = findSerializedNode(saved.nodes.nodes, PLUGINID_NATRON_GRADE);
+        getApp()->getProject()->toSerialization(saved);
+        *missing = findSerializedNode(saved->nodes.nodes, PLUGINID_NATRON_GRADE);
         if (!*missing) {
             ADD_FAILURE() << "The Grade was not saved";
 
-            return std::string();
+            return false;
         }
         (*missing)->pluginID = kNotInstalledPluginID;
 
-        return saveProjectXml(saved);
+        return true;
     }
 
     NodePtr _generator;
@@ -139,16 +137,15 @@ TEST_F(MissingPluginRoundTripTest, SaveWritesTheMissingNodeBackUnchanged)
     ASSERT_TRUE(tmp.isValid());
     ASSERT_NO_FATAL_FAILURE(buildGraph());
 
+    Serialization::ProjectSerialization saved;
     Serialization::NodeSerializationPtr original;
-    const std::string xml = saveWithMissingGrade(&original);
-    ASSERT_FALSE(xml.empty());
+    ASSERT_TRUE(serializeWithMissingGrade(&saved, &original));
     ASSERT_FALSE(original->knobs.empty());
     ASSERT_EQ(1u, original->userPages.size());
 
     ProjectPtr project = getApp()->getProject();
     project->reset(false, true);
-    const std::string resavedXml = reloadProjectXml(project, tmp, QString::fromUtf8("missing-plugin.ntp"), xml);
-    ASSERT_FALSE(resavedXml.empty());
+    ASSERT_TRUE(loadProjectBundle(project, tmp, QString::fromUtf8("missing-plugin.ntpz"), saved));
 
     NodePtr placeholder = project->getNodeByName(_gradeName);
     ASSERT_TRUE(bool(placeholder));
@@ -166,16 +163,16 @@ TEST_F(MissingPluginRoundTripTest, SaveWritesTheMissingNodeBackUnchanged)
     EXPECT_TRUE(foundUserKnob);
 
     Serialization::ProjectSerialization resaved;
-    ASSERT_TRUE(loadProjectXml(resavedXml, &resaved));
+    ASSERT_TRUE(saveProjectBundle(project, tmp, QString::fromUtf8("missing-plugin-resaved.ntpz"), nullptr, &resaved));
     Serialization::NodeSerializationPtr resavedMissing = findSerializedNode(resaved.nodes.nodes, kNotInstalledPluginID);
     ASSERT_TRUE(bool(resavedMissing));
     EXPECT_TRUE(findSerializedNode(resaved.nodes.nodes, PLUGINID_NATRON_MISSING_PLUGIN) == Serialization::NodeSerializationPtr());
-    EXPECT_EQ(saveNodeXml(*original), saveNodeXml(*resavedMissing));
+    EXPECT_EQ(nodeYaml(*original), nodeYaml(*resavedMissing));
 
     // With the plug-in back, the file loads as if it had never been missing.
     resavedMissing->pluginID = PLUGINID_NATRON_GRADE;
     project->reset(false, true);
-    ASSERT_FALSE(reloadProjectXml(project, tmp, QString::fromUtf8("plugin-back.ntp"), saveProjectXml(resaved)).empty());
+    ASSERT_TRUE(loadProjectBundle(project, tmp, QString::fromUtf8("plugin-back.ntpz"), resaved));
 
     NodePtr grade = project->getNodeByName(_gradeName);
     NodePtr generator = project->getNodeByName(_generatorName);
@@ -201,13 +198,13 @@ TEST_F(MissingPluginRoundTripTest, SaveFollowsTheLiveConnectionsAndName)
     ASSERT_TRUE(tmp.isValid());
     ASSERT_NO_FATAL_FAILURE(buildGraph());
 
+    Serialization::ProjectSerialization saved;
     Serialization::NodeSerializationPtr original;
-    const std::string xml = saveWithMissingGrade(&original);
-    ASSERT_FALSE(xml.empty());
+    ASSERT_TRUE(serializeWithMissingGrade(&saved, &original));
 
     ProjectPtr project = getApp()->getProject();
     project->reset(false, true);
-    ASSERT_FALSE(reloadProjectXml(project, tmp, QString::fromUtf8("missing-plugin.ntp"), xml).empty());
+    ASSERT_TRUE(loadProjectBundle(project, tmp, QString::fromUtf8("missing-plugin.ntpz"), saved));
 
     NodePtr placeholder = project->getNodeByName(_gradeName);
     NodePtr otherGenerator = project->getNodeByName(_otherGeneratorName);
@@ -230,14 +227,13 @@ TEST_F(MissingPluginRoundTripTest, SaveFollowsTheLiveConnectionsAndName)
     ASSERT_EQ(1u, resavedMissing->inputs.size());
     EXPECT_EQ(inputLabel, resavedMissing->inputs.begin()->first);
     EXPECT_EQ(_otherGeneratorName, resavedMissing->inputs.begin()->second);
-    EXPECT_TRUE(resavedMissing->oldInputs.empty());
 
     // Everything the placeholder cannot change is written back as it was read.
     Serialization::NodeSerialization expected = *original;
     expected.scriptName = resavedMissing->scriptName;
     expected.label = resavedMissing->label;
     expected.inputs = resavedMissing->inputs;
-    EXPECT_EQ(saveNodeXml(expected), saveNodeXml(*resavedMissing));
+    EXPECT_EQ(nodeYaml(expected), nodeYaml(*resavedMissing));
 
     bool downstreamFollowsRename = false;
     for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = resaved.nodes.nodes.begin(); it != resaved.nodes.nodes.end(); ++it) {

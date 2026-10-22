@@ -22,7 +22,6 @@
 
 #include "Global/Macros.h"
 
-#include <algorithm>
 #include <list>
 #include <map>
 #include <optional>
@@ -41,7 +40,6 @@ GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_OFF
 GCC_DIAG_OFF(unused-parameter)
 GCC_DIAG_OFF(sign-compare)
 // /opt/local/include/boost/serialization/smart_cast.hpp:254:25: warning: unused parameter 'u' [-Wunused-parameter]
-#include <boost/archive/xml_iarchive.hpp>
 #include <boost/archive/xml_oarchive.hpp>
 #include <boost/serialization/list.hpp>
 #include <boost/serialization/map.hpp>
@@ -64,31 +62,13 @@ namespace Serialization {
  * @brief The archived form of one knob dimension. The value and expression-result elements a
  * dimension holds depend on the knob's type, which a nested object cannot see on its own, so
  * the knob adapter archives this view of a KnobDimensionSerialization in the position where
- * the format has always had its own class (with its own class_id and version). Saving reads
- * source; loading writes destination and, for the selected entry an old choice knob kept in
- * each dimension, choiceOptionID.
+ * the format has always had its own class (with its own class_id and version).
  **/
 struct KnobDimensionXml {
     const KnobDimensionSerialization* source;
-    KnobDimensionSerialization* destination;
-    KnobTypeTraits traits;
-    std::optional<std::string>* choiceOptionID;
 
     explicit KnobDimensionXml(const KnobDimensionSerialization* sourceDimension)
         : source(sourceDimension)
-        , destination(nullptr)
-        , traits()
-        , choiceOptionID(nullptr)
-    {
-    }
-
-    KnobDimensionXml(KnobDimensionSerialization* destinationDimension,
-                     const KnobTypeTraits& knobTraits,
-                     std::optional<std::string>* knobChoiceOptionID)
-        : source(nullptr)
-        , destination(destinationDimension)
-        , traits(knobTraits)
-        , choiceOptionID(knobChoiceOptionID)
     {
     }
 };
@@ -97,8 +77,8 @@ struct KnobDimensionXml {
 NATRON_NAMESPACE_EXIT
 
 // Non-intrusive adapters reproducing the NVP sequence, nesting and class versions of the old
-// intrusive KnobSerialization/ValueSerialization/MasterSerialization/GroupKnobSerialization, including every branch
-// that reads files written by older versions.
+// intrusive KnobSerialization/ValueSerialization/MasterSerialization/GroupKnobSerialization.
+// They write the current layout only.
 namespace boost {
 namespace serialization {
 
@@ -113,23 +93,6 @@ namespace serialization {
         ar& ::boost::serialization::make_nvp("MasterNodeNameFull", master.masterNodeNameFull);
         ar& ::boost::serialization::make_nvp("MasterKnobName", master.masterKnobName);
         ar& ::boost::serialization::make_nvp("MasterTrackName", master.masterTrackName);
-    }
-
-    template <class Archive>
-    void
-    load(Archive& ar,
-         NATRON_NAMESPACE::Serialization::KnobMasterSerialization& master,
-         const unsigned int version)
-    {
-        ar& ::boost::serialization::make_nvp("MasterDimension", master.masterDimension);
-        ar& ::boost::serialization::make_nvp("MasterNodeName", master.masterNodeName);
-        if (version >= NATRON_SERIALIZATION_KNOB_MASTER_INTRODUCE_MASTER_NODE_NAME_FULL) {
-            ar& ::boost::serialization::make_nvp("MasterNodeNameFull", master.masterNodeNameFull);
-        }
-        ar& ::boost::serialization::make_nvp("MasterKnobName", master.masterKnobName);
-        if (version >= NATRON_SERIALIZATION_KNOB_MASTER_INTRODUCE_MASTER_TRACK_NAME) {
-            ar& ::boost::serialization::make_nvp("MasterTrackName", master.masterTrackName);
-        }
     }
 
     template <class Archive>
@@ -180,108 +143,6 @@ namespace serialization {
 
         ar& ::boost::serialization::make_nvp("Expression", dimension.expression);
         ar& ::boost::serialization::make_nvp("ExprHasRet", dimension.expressionHasReturnVariable);
-    }
-
-    template <typename ValueType, class Archive>
-    void
-    loadKnobDimensionValue(Archive& ar,
-                           NATRON_NAMESPACE::Serialization::KnobDimensionXml& item,
-                           const unsigned int version)
-    {
-        ValueType value = ValueType();
-        ar& ::boost::serialization::make_nvp("Value", value);
-        item.destination->value = NATRON_NAMESPACE::Serialization::KnobValueSerialization(std::in_place_type<ValueType>, value);
-
-        if (item.traits.isChoice && (version >= NATRON_SERIALIZATION_KNOB_VALUE_INTRODUCES_CHOICE_LABEL) && (version < NATRON_SERIALIZATION_KNOB_VALUE_REMOVES_EXTRA_DATA)) {
-            std::string label;
-            ar& ::boost::serialization::make_nvp("Label", label);
-            if (item.choiceOptionID) {
-                *item.choiceOptionID = label;
-            }
-        }
-
-        if (version >= NATRON_SERIALIZATION_KNOB_VALUE_INTRODUCES_DEFAULT_VALUES) {
-            ValueType defaultValue = ValueType();
-            ar& ::boost::serialization::make_nvp("Default", defaultValue);
-            item.destination->defaultValue = NATRON_NAMESPACE::Serialization::KnobValueSerialization(std::in_place_type<ValueType>, defaultValue);
-        }
-    }
-
-    template <typename ValueType, class Archive>
-    void
-    skipKnobDimensionExpressionResults(Archive& ar)
-    {
-        std::map<int, ValueType> expressionResults;
-        ar& ::boost::serialization::make_nvp("ExprResults", expressionResults);
-    }
-
-    template <class Archive>
-    void
-    load(Archive& ar,
-         NATRON_NAMESPACE::Serialization::KnobDimensionXml& item,
-         const unsigned int version)
-    {
-        NATRON_NAMESPACE::Serialization::KnobDimensionSerialization& dimension = *item.destination;
-        const NATRON_NAMESPACE::Serialization::KnobTypeTraits& traits = item.traits;
-
-        ar& ::boost::serialization::make_nvp("Enabled", dimension.enabled);
-
-        bool hasAnimation = false;
-        ar& ::boost::serialization::make_nvp("HasAnimation", hasAnimation);
-        if (hasAnimation) {
-            dimension.curve.emplace();
-            ar& ::boost::serialization::make_nvp("Curve", *dimension.curve);
-        }
-
-        if (traits.hasValue) {
-            switch (traits.storageType) {
-            case NATRON_NAMESPACE::Serialization::eKnobStorageTypeBool:
-                loadKnobDimensionValue<bool>(ar, item, version);
-                break;
-            case NATRON_NAMESPACE::Serialization::eKnobStorageTypeInt:
-                loadKnobDimensionValue<int>(ar, item, version);
-                break;
-            case NATRON_NAMESPACE::Serialization::eKnobStorageTypeDouble:
-                loadKnobDimensionValue<double>(ar, item, version);
-                break;
-            case NATRON_NAMESPACE::Serialization::eKnobStorageTypeString:
-                loadKnobDimensionValue<std::string>(ar, item, version);
-                break;
-            case NATRON_NAMESPACE::Serialization::eKnobStorageTypeNone:
-                break;
-            }
-        }
-
-        bool hasMaster = false;
-        ar& ::boost::serialization::make_nvp("HasMaster", hasMaster);
-        if (hasMaster) {
-            dimension.master.emplace();
-            ar& ::boost::serialization::make_nvp("Master", *dimension.master);
-        }
-
-        if (version >= NATRON_SERIALIZATION_KNOB_VALUE_INTRODUCES_EXPRESSIONS) {
-            ar& ::boost::serialization::make_nvp("Expression", dimension.expression);
-            ar& ::boost::serialization::make_nvp("ExprHasRet", dimension.expressionHasReturnVariable);
-        }
-
-        if ((version >= NATRON_SERIALIZATION_KNOB_VALUE_INTRODUCES_EXPRESSIONS_RESULTS) && (version < NATRON_SERIALIZATION_KNOB_VALUE_REMOVES_EXPRESSIONS_RESULTS)) {
-            switch (traits.storageType) {
-            case NATRON_NAMESPACE::Serialization::eKnobStorageTypeInt:
-                skipKnobDimensionExpressionResults<int>(ar);
-                break;
-            case NATRON_NAMESPACE::Serialization::eKnobStorageTypeBool:
-                skipKnobDimensionExpressionResults<bool>(ar);
-                break;
-            case NATRON_NAMESPACE::Serialization::eKnobStorageTypeDouble:
-                skipKnobDimensionExpressionResults<double>(ar);
-                break;
-            case NATRON_NAMESPACE::Serialization::eKnobStorageTypeString:
-                skipKnobDimensionExpressionResults<std::string>(ar);
-                break;
-            case NATRON_NAMESPACE::Serialization::eKnobStorageTypeNone:
-                break;
-            }
-        }
     }
 
     template <class Archive>
@@ -358,182 +219,6 @@ namespace serialization {
 
     template <class Archive>
     void
-    loadKnobUserDefinition(Archive& ar,
-                           NATRON_NAMESPACE::Serialization::KnobSerialization& knob,
-                           const NATRON_NAMESPACE::Serialization::KnobTypeTraits& traits,
-                           const unsigned int version)
-    {
-        ar& ::boost::serialization::make_nvp("Label", knob.label);
-        ar& ::boost::serialization::make_nvp("Help", knob.tooltip);
-        ar& ::boost::serialization::make_nvp("NewLine", knob.triggerNewLine);
-        ar& ::boost::serialization::make_nvp("Evaluate", knob.evaluatesOnChange);
-        ar& ::boost::serialization::make_nvp("Animates", knob.animationEnabled);
-        ar& ::boost::serialization::make_nvp("Persistent", knob.isPersistent);
-
-        if (traits.isChoice) {
-            NATRON_NAMESPACE::Serialization::KnobChoiceExtraSerialization* choiceData = std::get_if<NATRON_NAMESPACE::Serialization::KnobChoiceExtraSerialization>(&knob.extraData);
-            if (!choiceData) {
-                choiceData = &knob.extraData.emplace<NATRON_NAMESPACE::Serialization::KnobChoiceExtraSerialization>();
-            }
-            ar& ::boost::serialization::make_nvp("Entries", choiceData->entries);
-            if (version >= NATRON_SERIALIZATION_KNOB_INTRODUCES_CHOICE_HELP_STRINGS) {
-                ar& ::boost::serialization::make_nvp("Helps", choiceData->helpStrings);
-            }
-        }
-
-        if (traits.isString) {
-            NATRON_NAMESPACE::Serialization::KnobTextExtraSerialization textData;
-            ar& ::boost::serialization::make_nvp("IsLabel", textData.isLabel);
-            ar& ::boost::serialization::make_nvp("IsMultiLine", textData.isMultiLine);
-            ar& ::boost::serialization::make_nvp("UseRichText", textData.usesRichText);
-            knob.extraData = textData;
-        }
-
-        if (traits.isDouble || traits.isInt || traits.isColor) {
-            NATRON_NAMESPACE::Serialization::KnobValueRangeSerialization rangeData;
-            ar& ::boost::serialization::make_nvp("Min", rangeData.minimum);
-            ar& ::boost::serialization::make_nvp("Max", rangeData.maximum);
-            if (version >= NATRON_SERIALIZATION_KNOB_INTRODUCES_DISPLAY_MIN_MAX) {
-                ar& ::boost::serialization::make_nvp("DMin", rangeData.displayMinimum);
-                ar& ::boost::serialization::make_nvp("DMax", rangeData.displayMaximum);
-            }
-            knob.extraData = rangeData;
-        }
-
-        if (traits.isInputFile || traits.isOutputFile) {
-            NATRON_NAMESPACE::Serialization::KnobFileExtraSerialization fileData;
-            ar& ::boost::serialization::make_nvp("Sequences", fileData.useSequences);
-            knob.extraData = fileData;
-        }
-
-        if (traits.isPath) {
-            NATRON_NAMESPACE::Serialization::KnobPathExtraSerialization pathData;
-            ar& ::boost::serialization::make_nvp("MultiPath", pathData.multiPath);
-            knob.extraData = pathData;
-        }
-
-        if (traits.isLayerSelect) {
-            NATRON_NAMESPACE::Serialization::KnobLayerSelectExtraSerialization layerSelectData;
-            if (version >= NATRON_SERIALIZATION_KNOB_INTRODUCES_LAYER_SELECT_CHANNEL_BUTTONS) {
-                ar& ::boost::serialization::make_nvp("WithChannelButtons", layerSelectData.withChannelButtons);
-            }
-            knob.extraData = layerSelectData;
-        }
-
-        if (traits.isDouble && (version >= NATRON_SERIALIZATION_KNOB_INTRODUCES_NATIVE_OVERLAYS) && (knob.dimension == 2)) {
-            bool useHostOverlayHandle = false;
-            ar& ::boost::serialization::make_nvp("HasOverlayHandle", useHostOverlayHandle);
-            knob.useHostOverlayHandle = useHostOverlayHandle;
-        }
-
-        if ((version >= NATRON_SERIALIZATION_KNOB_INTRODUCES_DEFAULT_VALUES) && (version < NATRON_SERIALIZATION_KNOB_REMOVE_DEFAULT_VALUES)) {
-            // Only plain Bool knobs saved a bool default here, unlike Button, Separator, Group and
-            // Page, which share the bool storage type.
-            for (int i = 0; i < knob.dimension; ++i) {
-                if (traits.storageType == NATRON_NAMESPACE::Serialization::eKnobStorageTypeDouble) {
-                    double defaultValue;
-                    ar& ::boost::serialization::make_nvp("DefaultValue", defaultValue);
-                } else if (traits.storageType == NATRON_NAMESPACE::Serialization::eKnobStorageTypeInt) {
-                    int defaultValue;
-                    ar& ::boost::serialization::make_nvp("DefaultValue", defaultValue);
-                } else if (traits.isBool) {
-                    bool defaultValue;
-                    ar& ::boost::serialization::make_nvp("DefaultValue", defaultValue);
-                } else if (traits.storageType == NATRON_NAMESPACE::Serialization::eKnobStorageTypeString) {
-                    std::string defaultValue;
-                    ar& ::boost::serialization::make_nvp("DefaultValue", defaultValue);
-                }
-            }
-        }
-    }
-
-    template <class Archive>
-    void
-    load(Archive& ar,
-         NATRON_NAMESPACE::Serialization::KnobSerialization& knob,
-         const unsigned int version)
-    {
-        knob = NATRON_NAMESPACE::Serialization::KnobSerialization();
-        knob.version = version;
-
-        ar& ::boost::serialization::make_nvp("Name", knob.name);
-        ar& ::boost::serialization::make_nvp("Type", knob.typeName);
-        ar& ::boost::serialization::make_nvp("Dimension", knob.dimension);
-        if (knob.dimension > 0) {
-            knob.dimensions.resize(static_cast<std::size_t>(knob.dimension));
-        }
-
-        const NATRON_NAMESPACE::Serialization::KnobTypeTraits traits = NATRON_NAMESPACE::Serialization::getKnobTypeTraits(knob.typeName);
-        // The format stops reading a knob of a type no knob can be created for right here, leaving
-        // the rest of its element unread.
-        if (!traits.isKnown) {
-            return;
-        }
-
-        ar& ::boost::serialization::make_nvp("Secret", knob.secret);
-
-        if (version >= NATRON_SERIALIZATION_KNOB_INTRODUCES_ALIAS) {
-            ar& ::boost::serialization::make_nvp("MasterIsAlias", knob.masterIsAlias);
-        } else {
-            knob.masterIsAlias = false;
-        }
-
-        if (version >= NATRON_SERIALIZATION_KNOB_SAVES_FOLDED_DIMENSIONS) {
-            int savedDimensions = 0;
-            ar& ::boost::serialization::make_nvp("SavedDimensions", savedDimensions);
-            knob.dimensions.resize(static_cast<std::size_t>(std::max(savedDimensions, 0)));
-        }
-
-        if (traits.isChoice) {
-            knob.choiceOptionID = std::string();
-            knob.extraData = NATRON_NAMESPACE::Serialization::KnobChoiceExtraSerialization();
-        }
-
-        for (std::size_t i = 0; i < knob.dimensions.size(); ++i) {
-            NATRON_NAMESPACE::Serialization::KnobDimensionXml item(&knob.dimensions[i], traits, &knob.choiceOptionID);
-            ar& ::boost::serialization::make_nvp("item", item);
-        }
-
-        if (traits.isParametric) {
-            knob.parametricCurves.emplace();
-            ar& ::boost::serialization::make_nvp("ParametricCurves", *knob.parametricCurves);
-        } else if (traits.hasStringAnimation) {
-            knob.stringAnimation.emplace();
-            ar& ::boost::serialization::make_nvp("StringsAnimation", *knob.stringAnimation);
-        }
-
-        if ((version >= NATRON_SERIALIZATION_KNOB_INTRODUCES_SLAVED_TRACKS) && (version < NATRON_SERIALIZATION_KNOB_REMOVE_SLAVED_TRACKS) && traits.isDouble && (NATRON_NAMESPACE::Serialization::scriptFriendlyKnobName(knob.name) == "center") && (knob.dimension == 2)) {
-            int count = 0;
-            ar& ::boost::serialization::make_nvp("SlavePtsNo", count);
-            for (int i = 0; i < count; ++i) {
-                std::string rotoNodeName, bezierName;
-                int controlPointIndex;
-                bool isFeather;
-                int offsetTime;
-                ar& ::boost::serialization::make_nvp("SlavePtNodeName", rotoNodeName);
-                ar& ::boost::serialization::make_nvp("SlavePtBezier", bezierName);
-                ar& ::boost::serialization::make_nvp("SlavePtIndex", controlPointIndex);
-                ar& ::boost::serialization::make_nvp("SlavePtIsFeather", isFeather);
-                if (version >= NATRON_SERIALIZATION_KNOB_INTRODUCES_SLAVED_TRACKS_OFFSET) {
-                    ar& ::boost::serialization::make_nvp("OffsetTime", offsetTime);
-                }
-            }
-        }
-
-        if (version >= NATRON_SERIALIZATION_KNOB_INTRODUCES_USER_KNOB) {
-            if (traits.isChoice) {
-                ar& ::boost::serialization::make_nvp("ChoiceLabel", *knob.choiceOptionID);
-            }
-
-            ar& ::boost::serialization::make_nvp("UserKnob", knob.isUserKnob);
-            if (knob.isUserKnob) {
-                loadKnobUserDefinition(ar, knob, traits, version);
-            }
-        }
-    }
-
-    template <class Archive>
-    void
     serialize(Archive& ar,
               NATRON_NAMESPACE::Serialization::KnobSerialization& knob,
               const unsigned int version)
@@ -561,37 +246,6 @@ namespace serialization {
                 ar& ::boost::serialization::make_nvp("item", it->group);
             } else {
                 ar& ::boost::serialization::make_nvp("item", it->knob);
-            }
-        }
-    }
-
-    template <class Archive>
-    void
-    load(Archive& ar,
-         NATRON_NAMESPACE::Serialization::GroupKnobSerialization& group,
-         const unsigned int /*version*/)
-    {
-        group = NATRON_NAMESPACE::Serialization::GroupKnobSerialization();
-
-        ar& ::boost::serialization::make_nvp("Name", group.name);
-        ar& ::boost::serialization::make_nvp("Label", group.label);
-        ar& ::boost::serialization::make_nvp("Secret", group.secret);
-        ar& ::boost::serialization::make_nvp("IsTab", group.isSetAsTab);
-        ar& ::boost::serialization::make_nvp("IsOpened", group.isOpened);
-        int nbChildren = 0;
-        ar& ::boost::serialization::make_nvp("NbChildren", nbChildren);
-        for (int i = 0; i < nbChildren; ++i) {
-            std::string type;
-            ar& ::boost::serialization::make_nvp("Type", type);
-
-            // Each child is read in place: an archive may record where it loaded an object.
-            group.children.push_back(NATRON_NAMESPACE::Serialization::GroupKnobChildSerialization());
-            NATRON_NAMESPACE::Serialization::GroupKnobChildSerialization& child = group.children.back();
-            child.isGroup = (type == "Group");
-            if (child.isGroup) {
-                ar& ::boost::serialization::make_nvp("item", child.group);
-            } else {
-                ar& ::boost::serialization::make_nvp("item", child.knob);
             }
         }
     }

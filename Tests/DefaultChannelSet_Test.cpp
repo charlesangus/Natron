@@ -173,7 +173,7 @@ protected:
     {
         ProjectPtr project = getApp()->getProject();
         const QString dirPath = tmp.path() + QLatin1Char('/');
-        const QString fileName = QString::fromUtf8("default-channel-set.ntp");
+        const QString fileName = QString::fromUtf8("default-channel-set.ntpz");
         QString savedFilePath;
 
         if (!project->saveProject(dirPath, fileName, &savedFilePath) || !QFile::exists(savedFilePath)) {
@@ -346,7 +346,6 @@ TEST_F(DefaultChannelSetTest, ChannelSetIsSavedEvenOnItsDefault)
 
         Serialization::NodeSerialization serialization;
         nodes[i]->toSerialization(&serialization);
-        EXPECT_EQ(unsigned(NATRON_SERIALIZATION_NODE_VERSION), serialization.version);
 
         bool saved = false;
         const std::list<Serialization::KnobSerialization>& values = serialization.knobs;

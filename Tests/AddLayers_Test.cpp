@@ -431,7 +431,7 @@ TEST_F(AddLayersTest, SelectionSurvivesSaveResetLoad)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("add-layers.ntp");
+    const QString fileName = QString::fromUtf8("add-layers.ntpz");
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
 

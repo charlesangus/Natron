@@ -1692,7 +1692,7 @@ exportKnobValues(int indentLevel,
     KnobShuffleMap* isShuffleMap = dynamic_cast<KnobShuffleMap*>(knob.get());
     // A KnobChannelSet's default is per-plugin (see KnobChannelSet::hasModificationsForSerialization),
     // so leaving it out when the value happens to match today's default would have a future
-    // default change silently reinterpret this exported script's value, same as for .ntp.
+    // default change silently reinterpret this exported script's value, same as for .ntpz.
     KnobChannelSet* isChannelSetKnob = dynamic_cast<KnobChannelSet*>(knob.get());
 
     ///Don't export this kind of parameter. Mainly this is the html label of the node which is 99% of times empty

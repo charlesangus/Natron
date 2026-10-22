@@ -211,6 +211,8 @@ zipCrc32(std::span<const std::byte> data,
 #endif
 }
 
+ZipOutput::~ZipOutput() = default;
+
 ZipWriter::ZipWriter(const std::string& path,
                      std::string_view mimeType)
     : _path(path)
@@ -219,6 +221,19 @@ ZipWriter::ZipWriter(const std::string& path,
     if (!_file) {
         throw ZipError("cannot create " + path + ": " + std::strerror(errno));
     }
+    try {
+        writeMember("mimetype", std::as_bytes(std::span<const char>(mimeType.data(), mimeType.size())), false);
+    } catch (...) {
+        close();
+        throw;
+    }
+}
+
+ZipWriter::ZipWriter(ZipOutput& output,
+                     std::string_view mimeType)
+    : _path("<output>")
+    , _output(&output)
+{
     try {
         writeMember("mimetype", std::as_bytes(std::span<const char>(mimeType.data(), mimeType.size())), false);
     } catch (...) {
@@ -239,12 +254,26 @@ ZipWriter::close()
         std::fclose(_file);
         _file = nullptr;
     }
+    _output = nullptr;
 }
 
 void
 ZipWriter::writeBytes(const void* data,
                       std::size_t size)
 {
+    if (_output) {
+        if (size > 0) {
+            try {
+                _output->write(data, size);
+            } catch (...) {
+                close();
+                throw;
+            }
+        }
+        _offset += size;
+
+        return;
+    }
     if ((size > 0) && (std::fwrite(data, 1, size, _file) != size)) {
         int error = errno;
         close();
@@ -265,7 +294,7 @@ ZipWriter::writeMember(std::string_view name,
                        std::span<const std::byte> data,
                        bool align)
 {
-    if (!_file) {
+    if (!_file && !_output) {
         throw ZipError("zip archive " + _path + " is closed");
     }
     std::string problem = memberNameProblem(name, false);
@@ -329,7 +358,7 @@ ZipWriter::writeMember(std::string_view name,
 void
 ZipWriter::finish()
 {
-    if (!_file) {
+    if (!_file && !_output) {
         throw ZipError("zip archive " + _path + " is closed");
     }
     std::uint64_t directoryOffset = _offset;
@@ -372,6 +401,11 @@ ZipWriter::finish()
     end.u16(0);
     writeBytes(end.data(), end.size());
 
+    if (_output) {
+        _output = nullptr;
+
+        return;
+    }
     bool flushed = std::fflush(_file) == 0;
     int flushErrno = errno;
     bool closed = std::fclose(_file) == 0;

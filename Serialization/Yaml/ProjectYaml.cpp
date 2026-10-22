@@ -263,7 +263,7 @@ decodeProjectYaml(std::string_view text,
     }
     const int formatVersion = readInt(reader.get("formatVersion"), "project.formatVersion");
     if (formatVersion > kProjectYamlFormatVersion) {
-        throw YamlError("This project was saved by a newer Natron (project format version " + std::to_string(formatVersion) + "; this version reads up to " + std::to_string(kProjectYamlFormatVersion) + ")");
+        throw YamlNewerFormatError("This project was saved by a newer Natron (project format version " + std::to_string(formatVersion) + "; this version reads up to " + std::to_string(kProjectYamlFormatVersion) + ")");
     }
     if (formatVersion < 1) {
         fail(reader.get("formatVersion"), "project.formatVersion", "invalid format version " + std::to_string(formatVersion));

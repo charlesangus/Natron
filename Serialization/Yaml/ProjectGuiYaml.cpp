@@ -579,7 +579,7 @@ namespace {
         }
         const int version = readInt(reader.get("formatVersion"), std::string(documentName) + ".formatVersion");
         if (version > kGuiYamlFormatVersion) {
-            throw YamlError(std::string(documentName) + " was saved by a newer Natron (format version " + std::to_string(version) + "; this version reads up to " + std::to_string(kGuiYamlFormatVersion) + ")");
+            throw YamlNewerFormatError(std::string(documentName) + " was saved by a newer Natron (format version " + std::to_string(version) + "; this version reads up to " + std::to_string(kGuiYamlFormatVersion) + ")");
         }
     }
 

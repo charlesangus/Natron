@@ -19,76 +19,35 @@
 
 #include "RotoXml.h"
 
-NATRON_NAMESPACE_ENTER
-namespace Serialization {
-
-static bool readingRC2OrRC3Archive = false;
-
-void
-setReadingRC2OrRC3Archive(bool isRC2OrRC3)
-{
-    readingRC2OrRC3Archive = isRC2OrRC3;
-}
-
-bool
-isReadingRC2OrRC3Archive()
-{
-    return readingRC2OrRC3Archive;
-}
-
-} // namespace Serialization
-NATRON_NAMESPACE_EXIT
-
 // explicit template instantiations
 
 namespace boost {
 namespace serialization {
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::BezierCPSerialization& point,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::BezierCPSerialization& point,
                                                           const unsigned int version);
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::RotoItemSerialization& item,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::RotoItemSerialization& item,
                                                           const unsigned int version);
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::RotoDrawableItemSerialization& drawable,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::RotoDrawableItemSerialization& drawable,
                                                           const unsigned int version);
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::BezierSerialization& bezier,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::BezierSerialization& bezier,
                                                           const unsigned int version);
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::RotoStrokeItemSerialization& stroke,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::RotoStrokeItemSerialization& stroke,
                                                           const unsigned int version);
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::RotoLayerSerialization& layer,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::RotoLayerSerialization& layer,
                                                           const unsigned int version);
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::RotoContextSerialization& context,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::RotoContextSerialization& context,
                                                           const unsigned int version);

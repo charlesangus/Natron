@@ -318,8 +318,6 @@ expectLayoutsEqual(const GuiLayoutSerialization& e,
         EXPECT_EQ(expected.height, window->height);
         ++window;
     }
-    EXPECT_TRUE(a.legacyPanes.empty());
-    EXPECT_TRUE(a.legacySplitterStates.empty());
 }
 
 void
@@ -402,7 +400,6 @@ TEST(ProjectGuiYaml, FullyPopulatedGuiRoundTrips)
         expectViewersEqual(viewer.second, decoded.viewers.at(viewer.first));
     }
     EXPECT_EQ(gui.histograms, decoded.histograms);
-    EXPECT_TRUE(decoded.legacyBackdrops.empty());
     EXPECT_EQ(gui.openedPanels, decoded.openedPanels);
     EXPECT_EQ(gui.openedPanelsMinimized, decoded.openedPanelsMinimized);
     EXPECT_EQ(gui.openedPanelsHideUnmodified, decoded.openedPanelsHideUnmodified);

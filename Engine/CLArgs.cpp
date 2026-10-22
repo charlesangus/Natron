@@ -366,12 +366,12 @@ CLArgs::printUsage(const std::string& programName)
                      "      1-10:1,20-30:2,40-50\n"
                      "      1329,2450,123,1-10:2\n"
                      "Sample uses:\n"
-                     "  %1 /Users/Me/MyNatronProjects/MyProject.ntp\n"
-                     "  %1 -b -w MyWriter /Users/Me/MyNatronProjects/MyProject.ntp\n"
-                     "  %1Renderer -w MyWriter /Users/Me/MyNatronProjects/MyProject.ntp\n"
-                     "  %1Renderer -w MyWriter /FastDisk/Pictures/sequence'###'.exr 1-100 /Users/Me/MyNatronProjects/MyProject.ntp\n"
-                     "  %1Renderer -w MyWriter -w MySecondWriter 1-10 /Users/Me/MyNatronProjects/MyProject.ntp\n"
-                     "  %1Renderer -w MyWriter 1-10 -l /Users/Me/Scripts/onProjectLoaded.py /Users/Me/MyNatronProjects/MyProject.ntp\n"
+                     "  %1 /Users/Me/MyNatronProjects/MyProject.ntpz\n"
+                     "  %1 -b -w MyWriter /Users/Me/MyNatronProjects/MyProject.ntpz\n"
+                     "  %1Renderer -w MyWriter /Users/Me/MyNatronProjects/MyProject.ntpz\n"
+                     "  %1Renderer -w MyWriter /FastDisk/Pictures/sequence'###'.exr 1-100 /Users/Me/MyNatronProjects/MyProject.ntpz\n"
+                     "  %1Renderer -w MyWriter -w MySecondWriter 1-10 /Users/Me/MyNatronProjects/MyProject.ntpz\n"
+                     "  %1Renderer -w MyWriter 1-10 -l /Users/Me/Scripts/onProjectLoaded.py /Users/Me/MyNatronProjects/MyProject.ntpz\n"
                      "\n"
                      /* Text must hold in 80 columns ************************************************/
                      "Options for the execution of Python scripts:\n"
@@ -985,9 +985,7 @@ CLArgsPrivate::parse()
         if ( it != args.end() && !it->startsWith( QChar::fromLatin1('-') ) ) {
             // Check that it's neither a python script, a natron project, nor a frame range.
             QRegularExpression re( QRegularExpression::anchoredPattern( QString::fromUtf8("[0-9\\-,]*") ) ); // Matches frame ranges.
-            if (!it->endsWith(QString::fromUtf8(".py"), Qt::CaseInsensitive) &&
-                !it->endsWith(QString::fromUtf8(".ntp"), Qt::CaseInsensitive) &&
-                !re.match(*it).hasMatch()) {
+            if (!it->endsWith(QString::fromUtf8(".py"), Qt::CaseInsensitive) && !it->endsWith(QString::fromUtf8("." NATRON_PROJECT_FILE_EXT), Qt::CaseInsensitive) && !it->endsWith(QString::fromUtf8(".ntp"), Qt::CaseInsensitive) && !re.match(*it).hasMatch()) {
                 w.filename = *it;
 #ifdef __NATRON_UNIX__
                 w.filename = AppManager::qt_tildeExpansion(w.filename);
@@ -1112,6 +1110,12 @@ CLArgsPrivate::parse()
     {
         QStringList::iterator it = findFileNameWithExtension( QString::fromUtf8(NATRON_PROJECT_FILE_EXT) );
         if ( it == args.end() ) {
+            if (findFileNameWithExtension(QString::fromUtf8("ntp")) != args.end()) {
+                std::cout << tr("This project uses the old XML .ntp format, which this version of Natron cannot open (no compatibility, by design)").toStdString() << std::endl;
+                error = 1;
+
+                return;
+            }
             it = findFileNameWithExtension( QString::fromUtf8("py") );
             if (it != args.end()) {
                 isPythonScript = true;

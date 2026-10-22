@@ -374,9 +374,10 @@ Curve::fromSerialization(const Serialization::CurveSerialization& serialization)
         keys.insert(k);
     }
 
+    // A project file keeps the derivatives of free and broken keys only: the others are computed
+    // from the neighbouring keys, as editing the curve would.
     QMutexLocker l(&_imp->_lock);
-    _imp->keyFrames = keys;
-    invalidateOwnerContentHash();
+    setKeyframesInternal(keys, true);
 }
 
 void

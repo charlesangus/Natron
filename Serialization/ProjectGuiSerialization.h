@@ -32,8 +32,7 @@
 #include "Serialization/KnobSerialization.h"
 #include "Serialization/SerializationFwd.h"
 
-// The class versions of the GUI section of the .ntp format. They live with the plain data rather
-// than only in the XML adapter because restoring code compares a loaded version against them.
+// The class versions the XML writer stamps on the GUI section it writes.
 #define NATRON_SERIALIZATION_NODE_GUI_INTRODUCES_COLOR 2
 #define NATRON_SERIALIZATION_NODE_GUI_INTRODUCES_SELECTED 3
 #define NATRON_SERIALIZATION_NODE_GUI_MERGE_BACKDROP 4
@@ -97,19 +96,13 @@ namespace Serialization {
 /**
  * @brief The node graph state of one node: its position, size, colours, whether its preview is
  * shown and whether it is selected, and, for a group, the same for the nodes it holds.
- * nodeName is the node's fully qualified script name; a name read from a file older than
- * NATRON_SERIALIZATION_NODE_GUI_MERGE_BACKDROP is already converted to a script name.
+ * nodeName is the node's fully qualified script name.
  **/
 struct NodeGuiSerialization {
-    // The class version the node GUI was loaded from, NATRON_SERIALIZATION_NODE_GUI_VERSION
-    // otherwise.
-    unsigned int version;
-
     std::string nodeName;
     double positionX;
     double positionY;
 
-    // Only read from files saved since NATRON_SERIALIZATION_NODE_GUI_MERGE_BACKDROP.
     double width;
     double height;
 
@@ -118,8 +111,7 @@ struct NodeGuiSerialization {
     float colorG;
     float colorB;
 
-    // Set when the colour was read from a file, which files older than
-    // NATRON_SERIALIZATION_NODE_GUI_INTRODUCES_COLOR do not save.
+    // Set when the file saved a colour.
     bool colorWasFound;
 
     bool selected;
@@ -128,8 +120,6 @@ struct NodeGuiSerialization {
     double overlayColorB;
     bool hasOverlayColor;
 
-    // Only meaningful from NATRON_SERIALIZATION_NODE_GUI_INTRODUCES_USER_COLOR on: older files
-    // store no user colour, see resolveNodeGuiUserColor().
     bool hasUserColor;
     float userColorR;
     float userColorG;
@@ -138,8 +128,7 @@ struct NodeGuiSerialization {
     std::list<NodeGuiSerializationPtr> children;
 
     NodeGuiSerialization()
-        : version(NATRON_SERIALIZATION_NODE_GUI_VERSION)
-        , nodeName()
+        : nodeName()
         , positionX(0.)
         , positionY(0.)
         , width(0.)
@@ -164,69 +153,18 @@ struct NodeGuiSerialization {
 };
 
 /**
- * @brief Whether the node should carry a user colour, and which one. Files older than
- * NATRON_SERIALIZATION_NODE_GUI_INTRODUCES_USER_COLOR only stored a single node colour, which
- * was the default of either the current category colours or the older grouping ladder the file
- * may have been saved with, unless the user picked it. It is taken to be the user's only if it
- * differs from both by more than 0.05 in some channel. Each colour is an RGB triple;
- * legacyCategoryColor may be NULL, and with categoryColor NULL no stored colour is taken to be
- * the user's, since there is nothing to tell a default apart from a pick.
+ * @brief Whether the node carries a user colour, and which one.
  **/
 bool resolveNodeGuiUserColor(const NodeGuiSerialization& node,
-                             const float* categoryColor,
-                             const float* legacyCategoryColor,
                              float* r,
                              float* g,
                              float* b);
 
 /**
- * @brief A backdrop as files older than NATRON_SERIALIZATION_PROJECT_GUI_MERGE_BACKDROP saved
- * it, apart from the nodes. Newer files save backdrops as nodes and never write this.
- **/
-struct NodeBackdropSerialization {
-    double positionX;
-    double positionY;
-    int width;
-    int height;
-    std::string name;
-    std::string masterBackdropName;
-
-    // The backdrop's label, saved as a String knob.
-    KnobSerialization label;
-
-    float colorR;
-    float colorG;
-    float colorB;
-
-    // Only read from files saved since NATRON_SERIALIZATION_NODE_BACKDROP_INTRODUCES_SELECTED.
-    bool selected;
-
-    NodeBackdropSerialization()
-        : positionX(0.)
-        , positionY(0.)
-        , width(0)
-        , height(0)
-        , name()
-        , masterBackdropName()
-        , label()
-        , colorR(0.f)
-        , colorG(0.f)
-        , colorB(0.f)
-        , selected(false)
-    {
-    }
-};
-
-/**
  * @brief The state of one viewer: its viewport, region of interest, display settings, visible
- * toolbars, playback settings and active inputs. Fields a loaded file does not save hold the
- * values the viewer had before they existed.
+ * toolbars, playback settings and active inputs.
  **/
 struct ViewerDataSerialization {
-    // The class version the viewer data was loaded from, NATRON_SERIALIZATION_VIEWER_DATA_VERSION
-    // otherwise.
-    unsigned int version;
-
     double zoomLeft;
     double zoomBottom;
     double zoomFactor;
@@ -243,8 +181,7 @@ struct ViewerDataSerialization {
     bool renderScaleActivated;
     unsigned int mipmapLevel;
 
-    // Empty when the file predates NATRON_SERIALIZATION_VIEWER_DATA_INTRODUCES_OCIO_DISPLAY: the
-    // project's display defaults then apply.
+    // Empty for the project's display defaults.
     std::string display;
     std::string view;
 
@@ -278,8 +215,7 @@ struct ViewerDataSerialization {
     int activeInputB;
 
     ViewerDataSerialization()
-        : version(NATRON_SERIALIZATION_VIEWER_DATA_VERSION)
-        , zoomLeft(0.)
+        : zoomLeft(0.)
         , zoomBottom(0.)
         , zoomFactor(1.)
         , userRoIEnabled(false)
@@ -331,14 +267,12 @@ struct PythonPanelSerialization {
 
 /**
  * @brief One pane: the script names of its tabs, the index of the current tab, its name and
- * whether it is the anchor pane new viewers go to. Tab names read from a file older than
- * NATRON_SERIALIZATION_PANE_INTRODUCES_SCRIPT_NAME are already converted to script names.
+ * whether it is the anchor pane new viewers go to.
  **/
 struct PaneLayoutSerialization {
     std::list<std::string> tabs;
     int currentIndex;
 
-    // Only read from files saved since NATRON_SERIALIZATION_PANE_MAJOR_OVERHAUL.
     bool isAnchor;
     std::string name;
 
@@ -413,12 +347,6 @@ struct ApplicationWindowSerialization {
  **/
 struct GuiLayoutSerialization {
     std::list<ApplicationWindowSerialization> windows;
-
-    // Only read from layouts older than NATRON_SERIALIZATION_GUI_LAYOUT_MAJOR_OVERHAUL or
-    // projects older than NATRON_SERIALIZATION_PROJECT_GUI_EXTERNALISE_GUI_LAYOUT, and unused:
-    // the default layout is restored for those instead.
-    std::map<std::string, PaneLayoutSerialization> legacyPanes;
-    std::map<std::string, std::string> legacySplitterStates;
 };
 
 /**
@@ -426,10 +354,6 @@ struct GuiLayoutSerialization {
  * viewers, histograms, opened settings panels and Python panels, and the script editor input.
  **/
 struct ProjectGuiSerialization {
-    // The class version the GUI section was loaded from, NATRON_SERIALIZATION_PROJECT_GUI_VERSION
-    // otherwise.
-    unsigned int version;
-
     // The nodes at the top level of the project; a group saves the nodes it holds.
     std::list<NodeGuiSerialization> nodes;
 
@@ -440,10 +364,6 @@ struct ProjectGuiSerialization {
 
     // The object names of the opened histograms.
     std::list<std::string> histograms;
-
-    // Only read from files between NATRON_SERIALIZATION_PROJECT_GUI_INTRODUCES_BACKDROPS and
-    // NATRON_SERIALIZATION_PROJECT_GUI_MERGE_BACKDROP.
-    std::list<NodeBackdropSerialization> legacyBackdrops;
 
     // The opened settings panels, top first, by node fully qualified script name or
     // NATRON_SERIALIZATION_PROJECT_SETTINGS_PANEL_NAME, and which of them are minimized or hide
@@ -456,12 +376,10 @@ struct ProjectGuiSerialization {
     std::list<PythonPanelSerialization> pythonPanels;
 
     ProjectGuiSerialization()
-        : version(NATRON_SERIALIZATION_PROJECT_GUI_VERSION)
-        , nodes()
+        : nodes()
         , layout()
         , viewers()
         , histograms()
-        , legacyBackdrops()
         , openedPanels()
         , openedPanelsMinimized()
         , openedPanelsHideUnmodified()

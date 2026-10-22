@@ -31,7 +31,7 @@ for comp in $COMPS; do
     start=$(date +%s.%N)
     docker exec -e REPO="$REPO" -e COMP="$comp" -e FIRST="$FIRST" -e LAST="$LAST" -e RENDERER_ARGS="$RENDERER_ARGS" \
         -e NATRON_RENDER_PROFILE="$OUT/$comp$TAG.jsonl" -e OFX_PLUGIN_PATH="$REPO/build/assets/Plugins" natron-dev bash -lc \
-        'cd "$REPO" && xvfb-run --auto-servernum build/release/Renderer/NatronRenderer $RENDERER_ARGS -w Write $FIRST-$LAST tools/bench/comps/$COMP.ntp' \
+        'cd "$REPO" && xvfb-run --auto-servernum build/release/Renderer/NatronRenderer $RENDERER_ARGS -w Write $FIRST-$LAST tools/bench/comps/$COMP.ntpz' \
         > "$OUT/$comp$TAG.log" 2>&1
     end=$(date +%s.%N)
     echo "$comp$TAG frames $FIRST-$LAST wall $(python3 -c "print(round($end - $start, 1))") s; load after $(cut -d' ' -f1-3 /proc/loadavg)" | tee -a "$OUT/host.log"

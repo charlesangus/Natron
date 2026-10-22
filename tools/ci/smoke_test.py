@@ -128,6 +128,7 @@ import sys
 import tempfile
 import traceback
 import zlib
+import zipfile
 
 # Scene-linear 0.18 -- the standard 18% mid-grey -- and the 8-bit code
 # value it lands on once encoded into an sRGB PNG. SRGB_GREY_CODE is
@@ -781,7 +782,7 @@ def _repo_root():
     if not plugin_path:
         raise AssertionError(
             "OFX_PLUGIN_PATH is not set -- cannot locate the repository "
-            "root to find Tests/fixtures/read-time-offset.ntp."
+            "root to find Tests/fixtures/read-time-offset.ntpz."
         )
     assets_dir = os.path.dirname(os.path.normpath(plugin_path))
     build_dir = os.path.dirname(assets_dir)
@@ -790,10 +791,7 @@ def _repo_root():
 
 def _write_time_offset_fixture_copy(dir_path, output_dir):
     fixture_path = os.path.join(_repo_root(), "Tests", "fixtures",
-                                 "read-time-offset.ntp")
-    with open(fixture_path, "r") as f:
-        content = f.read()
-
+                                 "read-time-offset.ntpz")
     # Read1's timeOffset knob in this fixture is 50, not 0. A first attempt
     # at this check used the default offset of 0 and passed green against
     # the broken -i code path -- i.e. it tested nothing, since with
@@ -801,11 +799,20 @@ def _write_time_offset_fixture_copy(dir_path, output_dir):
     # sequenceTime = t - timeOffset to get wrong. Do not "simplify" this
     # fixture to a zero offset.
     # tools/ci/regen_read_time_offset.py regenerates the fixture.
-    content = content.replace(READ_TIME_OFFSET_FIXTURE_OUTPUT_TOKEN, output_dir)
-
-    copy_path = os.path.join(dir_path, "read-time-offset.ntp")
-    with open(copy_path, "w") as f:
-        f.write(content)
+    #
+    # The token is in project.yaml. Natron reads a bundle repacked stored
+    # with the mimetype member leading; only the member alignment is lost.
+    copy_path = os.path.join(dir_path, "read-time-offset.ntpz")
+    with zipfile.ZipFile(fixture_path) as src, \
+            zipfile.ZipFile(copy_path, "w", zipfile.ZIP_STORED) as dst:
+        for info in src.infolist():
+            data = src.read(info.filename)
+            if info.filename == "project.yaml":
+                data = data.decode("utf-8").replace(
+                    READ_TIME_OFFSET_FIXTURE_OUTPUT_TOKEN, output_dir
+                ).encode("utf-8")
+            dst.writestr(zipfile.ZipInfo(info.filename, info.date_time), data,
+                         compress_type=zipfile.ZIP_STORED)
     return copy_path
 
 
@@ -815,7 +822,7 @@ def check_reader_cli_time_offset_regression():
     Engine/AppInstance.cpp applies -i's filename with a bare
     KnobFile::setValue(): the reader's own filename handler refreshes
     originalFrameRange/firstFrame/lastFrame/startingTime from the new file,
-    but never timeOffset. Tests/fixtures/read-time-offset.ntp's Read1 node
+    but never timeOffset. Tests/fixtures/read-time-offset.ntpz's Read1 node
     carries a non-zero timeOffset for exactly this reason (see
     _write_time_offset_fixture_copy() above): with the stale offset, every
     requested time maps outside the sequence domain and the reader's
@@ -870,7 +877,7 @@ def check_reader_cli_time_offset_regression():
             "rendering frames 1-3 through `%s` produced byte-identical "
             "output for %r even though the 3 input frames at %r differ. "
             "Read1's timeOffset (50, non-zero by design -- see "
-            "Tests/fixtures/read-time-offset.ntp) was not refreshed when -i "
+            "Tests/fixtures/read-time-offset.ntpz) was not refreshed when -i "
             "set a new filename, so every requested frame time maps "
             "outside the sequence domain and the reader's before/after "
             "hold collapses frames 1-3 onto a single held input frame."

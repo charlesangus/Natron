@@ -586,7 +586,7 @@ protected:
     {
         ProjectPtr project = getApp()->getProject();
         const QString dirPath = tmp.path() + QLatin1Char('/');
-        const QString fileName = QString::fromUtf8("blur-fir-gaussian.ntp");
+        const QString fileName = QString::fromUtf8("blur-fir-gaussian.ntpz");
         QString savedFilePath;
 
         if (!project->saveProject(dirPath, fileName, &savedFilePath) || !QFile::exists(savedFilePath)) {

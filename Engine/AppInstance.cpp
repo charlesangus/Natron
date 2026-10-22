@@ -161,7 +161,6 @@ public:
     AppInstance* _publicInterface;
     ProjectPtr _currentProject; //< ptr to the project
     int _appID; //< the unique ID of this instance (or window)
-    bool _projectCreatedWithLowerCaseIDs;
     mutable QMutex creatingGroupMutex;
 
     //When a pyplug is created
@@ -189,7 +188,6 @@ public:
         : _publicInterface(app)
         , _currentProject()
         , _appID(appID)
-        , _projectCreatedWithLowerCaseIDs(false)
         , creatingGroupMutex()
         , _creatingGroup(0)
         , _creatingInternalNode(false)
@@ -620,17 +618,17 @@ AppInstance::loadInternal(const CLArgs& cl,
 
         std::list<AppInstance::RenderWork> writersWork;
 
-
-        if ( info.suffix() == QString::fromUtf8(NATRON_PROJECT_FILE_EXT) ) {
+        // An old .ntp reaches the loader too, which explains why it cannot be opened.
+        if ((info.suffix() == QString::fromUtf8(NATRON_PROJECT_FILE_EXT)) || (info.suffix() == QString::fromUtf8("ntp"))) {
             ///Load the project
             if ( !_imp->_currentProject->loadProject( info.path(), info.fileName() ) ) {
                 throw std::invalid_argument( tr("Project file loading failed.").toStdString() );
             }
-        } else if ( info.suffix() == QString::fromUtf8("py") ) {
+        } else if (info.suffix() == QString::fromUtf8("py")) {
             ///Load the python script
             loadPythonScript(info);
         } else {
-            throw std::invalid_argument( tr("%1 only accepts python scripts or .ntp project files.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ).toStdString() );
+            throw std::invalid_argument(tr("%1 only accepts python scripts or .ntpz project files.").arg(QString::fromUtf8(NATRON_APPLICATION_NAME)).toStdString());
         }
 
         // exec the python script specified via --onload
@@ -687,7 +685,7 @@ AppInstance::loadInternal(const CLArgs& cl,
         if ( info.exists() ) {
             if ( info.suffix() == QString::fromUtf8("py") ) {
                 loadPythonScript(info);
-            } else if ( info.suffix() == QString::fromUtf8(NATRON_PROJECT_FILE_EXT) ) {
+            } else if ((info.suffix() == QString::fromUtf8(NATRON_PROJECT_FILE_EXT)) || (info.suffix() == QString::fromUtf8("ntp"))) {
                 if ( !_imp->_currentProject->loadProject( info.path(), info.fileName() ) ) {
                     throw std::invalid_argument( tr("Project file loading failed.").toStdString() );
                 }
@@ -1192,8 +1190,7 @@ AppInstance::createNodeInternal(CreateNodeArgs& args,
     int versionMinor = args.getProperty<int>(kCreateNodeArgsPropPluginVersion, 1);
 
     //Roto has moved to a built-in plugin
-    if ( (!trustPluginID || serialization) &&
-         ( ( !_imp->_projectCreatedWithLowerCaseIDs && ( argsPluginID == QString::fromUtf8(PLUGINID_OFX_ROTO) ) ) || ( _imp->_projectCreatedWithLowerCaseIDs && ( argsPluginID == QString::fromUtf8(PLUGINID_OFX_ROTO).toLower() ) ) ) ) {
+    if ((!trustPluginID || serialization) && (argsPluginID == QString::fromUtf8(PLUGINID_OFX_ROTO))) {
         findId = QString::fromUtf8(PLUGINID_NATRON_ROTO);
     } else {
         findId = argsPluginID;
@@ -1221,7 +1218,7 @@ AppInstance::createNodeInternal(CreateNodeArgs& args,
     }
 
     try {
-        plugin = appPTR->getPluginBinary(findId, versionMajor, versionMinor, _imp->_projectCreatedWithLowerCaseIDs && serialization);
+        plugin = appPTR->getPluginBinary(findId, versionMajor, versionMinor, false);
     } catch (const std::exception & e1) {
         ///Ok try with the old Ids we had in Natron prior to 1.0
         try {
@@ -1255,7 +1252,7 @@ AppInstance::createNodeInternal(CreateNodeArgs& args,
 
     /*
        If the plug-in is a PyPlug create it with createNodeFromPythonModule() except in the following situations:
-       - The user speicifed in the Preferences that he/she prefers loading PyPlugs from their serialization in the .ntp
+       - The user speicifed in the Preferences that he/she prefers loading PyPlugs from their serialization in the .ntpz
        file rather than load the Python script
        - The user is copy/pasting in which case we don't want to run the Python code which could override modifications
        made by the user on the original node
@@ -1893,7 +1890,7 @@ AppInstance::startWritersRendering(bool doBlockingRender,
     bool renderInSeparateProcess = appPTR->getCurrentSettings()->isRenderInSeparatedProcessEnabled();
     QString savePath;
     if (renderInSeparateProcess) {
-        getProject()->saveProject_imp(QString(), QString::fromUtf8("RENDER_SAVE.ntp"), true, false, &savePath);
+        getProject()->saveProject_imp(QString(), QString::fromUtf8("RENDER_SAVE.ntpz"), true, false, &savePath);
     }
 
     std::list<RenderQueueItem> itemsToQueue;
@@ -2228,18 +2225,6 @@ double
 AppInstance::getProjectFrameRate() const
 {
     return _imp->_currentProject->getProjectFrameRate();
-}
-
-void
-AppInstance::setProjectWasCreatedWithLowerCaseIDs(bool b)
-{
-    _imp->_projectCreatedWithLowerCaseIDs = b;
-}
-
-bool
-AppInstance::wasProjectCreatedWithLowerCaseIDs() const
-{
-    return _imp->_projectCreatedWithLowerCaseIDs;
 }
 
 bool

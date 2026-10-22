@@ -25,12 +25,13 @@
 
 #include "NodeSettingsPanel.h"
 
-#include <vector>
-#include <list>
-#include <string>
 #include <exception>
 #include <fstream>
+#include <istream>
+#include <list>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 #include <QStyle>
 
@@ -218,6 +219,17 @@ NodeSettingsPanel::onSettingsButtonClicked()
     menu.exec( _settingsButton->mapToGlobal( _settingsButton->pos() ) );
 }
 
+static bool
+looksLikeXml(std::istream& stream)
+{
+    char header[64];
+
+    stream.read(header, sizeof(header));
+    const std::string text(header, static_cast<std::size_t>(stream.gcount()));
+
+    return (text.find("<?xml") != std::string::npos) || (text.find("<!DOCTYPE boost_serialization") != std::string::npos);
+}
+
 void
 NodeSettingsPanel::onImportPresetsActionTriggered()
 {
@@ -241,34 +253,11 @@ NodeSettingsPanel::onImportPresetsActionTriggered()
         return;
     }
 
-    std::list<Serialization::NodeSerializationPtr> nodeSerialization;
-    try {
-        int nNodes;
-        boost::archive::xml_iarchive iArchive(ifile);
-        iArchive >> boost::serialization::make_nvp("NodesCount", nNodes);
-        for (int i = 0; i < nNodes; ++i) {
-            Serialization::NodeSerializationPtr node = std::make_shared<Serialization::NodeSerialization>();
-            iArchive >> boost::serialization::make_nvp("Node", *node);
-            nodeSerialization.push_back(node);
-        }
-    } catch (const std::exception & e) {
-        Dialogs::errorDialog( "Presets", e.what() );
-
-        return;
+    if (looksLikeXml(ifile)) {
+        Dialogs::errorDialog(tr("Presets").toStdString(), tr("This preset uses the old XML .nps format, which this version of Natron cannot open (no compatibility, by design).").toStdString(), false);
+    } else {
+        Dialogs::errorDialog(tr("Presets").toStdString(), tr("Unrecognized or damaged preset file.").toStdString(), false);
     }
-
-    NodeGuiPtr node = getNode();
-    if (nodeSerialization.front()->pluginID != node->getNode()->getPluginID()) {
-        QString err = tr("You cannot load %1 which are presets for the plug-in %2 on the plug-in %3.")
-                          .arg(QString::fromUtf8(filename.c_str()))
-                          .arg(QString::fromUtf8(nodeSerialization.front()->pluginID.c_str()))
-                          .arg(QString::fromUtf8(node->getNode()->getPluginID().c_str()));
-        Dialogs::errorDialog( tr("Presets").toStdString(), err.toStdString() );
-
-        return;
-    }
-
-    node->restoreInternal(node, nodeSerialization);
 }
 
 static bool

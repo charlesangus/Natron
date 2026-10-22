@@ -19,49 +19,21 @@
 
 #include "Serialization/ProjectGuiSerialization.h"
 
-#include <cmath>
-
 NATRON_NAMESPACE_ENTER
 namespace Serialization {
 
-namespace {
-
-    bool
-    storedColorIsNear(const NodeGuiSerialization& node,
-                      const float* color)
-    {
-        return color && (std::abs(node.colorR - color[0]) <= 0.05) && (std::abs(node.colorG - color[1]) <= 0.05) && (std::abs(node.colorB - color[2]) <= 0.05);
-    }
-
-} // namespace
-
 bool
 resolveNodeGuiUserColor(const NodeGuiSerialization& node,
-                        const float* categoryColor,
-                        const float* legacyCategoryColor,
                         float* r,
                         float* g,
                         float* b)
 {
-    if (node.version >= NATRON_SERIALIZATION_NODE_GUI_INTRODUCES_USER_COLOR) {
-        if (!node.hasUserColor) {
-            return false;
-        }
-        *r = node.userColorR;
-        *g = node.userColorG;
-        *b = node.userColorB;
-
-        return true;
-    }
-    if (!node.colorWasFound || !categoryColor) {
+    if (!node.hasUserColor) {
         return false;
     }
-    if (storedColorIsNear(node, categoryColor) || storedColorIsNear(node, legacyCategoryColor)) {
-        return false;
-    }
-    *r = node.colorR;
-    *g = node.colorG;
-    *b = node.colorB;
+    *r = node.userColorR;
+    *g = node.userColorG;
+    *b = node.userColorB;
 
     return true;
 }

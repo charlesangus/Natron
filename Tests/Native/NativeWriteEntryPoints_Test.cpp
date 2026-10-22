@@ -162,7 +162,7 @@ TEST_F(NativeWriteEntryPointsTest, UnversionedWriteKeepsItsClassThroughSaveAndLo
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("unversioned-write.ntp");
+    const QString fileName = QString::fromUtf8("unversioned-write.ntpz");
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
 

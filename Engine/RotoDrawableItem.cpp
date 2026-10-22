@@ -940,7 +940,7 @@ RotoDrawableItem::restoreSavedKnobs(const std::list<Serialization::KnobSerializa
         const std::string serializedName = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name);
         for (std::list<KnobIPtr>::const_iterator it2 = _imp->knobs.begin(); it2 != _imp->knobs.end(); ++it2) {
             if ((*it2)->getName() == serializedName) {
-                KnobIPtr serializedKnob = createDetachedKnobFromSerialization(*it);
+                KnobIPtr serializedKnob = createDetachedKnobFromSerialization(completeKnobSerializationForKnob(**it2, *it));
                 if (!serializedKnob) {
                     break;
                 }

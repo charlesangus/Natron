@@ -24,30 +24,18 @@
 namespace boost {
 namespace serialization {
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::KnobMasterSerialization& master,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::KnobMasterSerialization& master,
                                                           const unsigned int version);
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::KnobDimensionXml& item,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::KnobDimensionXml& item,
                                                           const unsigned int version);
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::KnobSerialization& knob,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::KnobSerialization& knob,
                                                           const unsigned int version);
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::GroupKnobSerialization& group,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::GroupKnobSerialization& group,
                                                           const unsigned int version);

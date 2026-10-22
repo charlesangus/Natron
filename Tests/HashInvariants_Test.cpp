@@ -260,7 +260,7 @@ TEST_F(HashInvariantsTest, SameGraphHashesEqualAfterSaveAndLoad)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("same-state.ntp");
+    const QString fileName = QString::fromUtf8("same-state.ntpz");
     QString savedFilePath;
     ASSERT_TRUE(project()->saveProject(dirPath, fileName, &savedFilePath));
 
@@ -548,7 +548,7 @@ TEST_F(HashInvariantsTest, DifferentEditAfterReopenDoesNotReuseTheUnsavedEditsHa
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("reopen.ntp");
+    const QString fileName = QString::fromUtf8("reopen.ntpz");
     QString savedFilePath;
     ASSERT_TRUE(project()->saveProject(dirPath, fileName, &savedFilePath));
 
@@ -592,8 +592,8 @@ TEST_F(HashInvariantsTest, DivergedSaveAsCopiesDoNotCollide)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString originalName = QString::fromUtf8("original.ntp");
-    const QString copyName = QString::fromUtf8("copy.ntp");
+    const QString originalName = QString::fromUtf8("original.ntpz");
+    const QString copyName = QString::fromUtf8("copy.ntpz");
     QString savedFilePath;
     ASSERT_TRUE(project()->saveProject(dirPath, originalName, &savedFilePath));
     ASSERT_TRUE(project()->saveProject(dirPath, copyName, &savedFilePath));

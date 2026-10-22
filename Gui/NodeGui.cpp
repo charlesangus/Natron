@@ -521,49 +521,6 @@ NodeGui::getCategoryColor(const NodePtr& internalNode,
     return true;
 }
 
-// The colour the grouping ladder that predates node categories gave a non-backdrop node,
-// which is what archives without a stored user colour recorded for an unedited node. It
-// differs from getCategoryColor() wherever categories moved a node: Reader/Writer/Generator
-// beat the Deep grouping, 3D groupings were the default node colour, and no label keyword
-// was consulted.
-static bool
-getLegacyCategoryColor(const NodePtr& internalNode,
-                       QColor* color)
-{
-    if (!internalNode) {
-        return false;
-    }
-    EffectInstancePtr iseffect = internalNode->getEffectInstance();
-    if (!iseffect) {
-        return false;
-    }
-    std::list<std::string> grouping;
-    internalNode->getPluginGrouping(&grouping);
-    const std::string majGroup = grouping.empty() ? std::string() : grouping.front();
-    NodeCategoryEnum category;
-
-    if (iseffect->isReader()) {
-        category = eNodeCategoryRead;
-    } else if (iseffect->isWriter()) {
-        category = eNodeCategoryWrite;
-    } else if (iseffect->isGenerator()) {
-        category = eNodeCategoryGenerator;
-    } else if (majGroup == PLUGIN_GROUP_DEEP) {
-        category = eNodeCategoryDeep;
-    } else {
-        // An empty label gives the keyword heuristic nothing to match, leaving only the
-        // exact major-grouping table, which is what the old ladder consulted.
-        category = Node::categoryFromGroupingAndLabel(majGroup, std::string());
-    }
-    float r, g, b;
-    appPTR->getCurrentSettings()->getNodeCategoryColor(category, &r, &g, &b);
-    color->setRgbF(Image::clamp<qreal>(r, 0., 1.),
-                   Image::clamp<qreal>(g, 0., 1.),
-                   Image::clamp<qreal>(b, 0., 1.));
-
-    return true;
-}
-
 void
 NodeGui::restoreStateAfterCreation()
 {
@@ -3644,28 +3601,14 @@ NodeGui::getUserColor(QColor* color) const
 void
 NodeGui::restoreCategoryAndUserColor(const Serialization::NodeGuiSerialization& serialization)
 {
-    NodePtr node = getNode();
     QColor categoryColor;
-    const bool hasCategoryColor = getCategoryColor(node, &categoryColor);
-    float category[3] = { 0.f, 0.f, 0.f };
-    float legacyCategory[3] = { 0.f, 0.f, 0.f };
-    bool hasLegacyCategoryColor = false;
 
-    if (hasCategoryColor) {
+    if (getCategoryColor(getNode(), &categoryColor)) {
         setCurrentColor(categoryColor);
-        categoryColor.getRgbF(&category[0], &category[1], &category[2]);
-        QColor legacyColor;
-        hasLegacyCategoryColor = getLegacyCategoryColor(node, &legacyColor);
-        if (hasLegacyCategoryColor) {
-            legacyColor.getRgbF(&legacyCategory[0], &legacyCategory[1], &legacyCategory[2]);
-        }
     }
 
     float r, g, b;
-    if (Serialization::resolveNodeGuiUserColor(serialization,
-                                               hasCategoryColor ? category : NULL,
-                                               hasLegacyCategoryColor ? legacyCategory : NULL,
-                                               &r, &g, &b)) {
+    if (Serialization::resolveNodeGuiUserColor(serialization, &r, &g, &b)) {
         setUserColor(QColor::fromRgbF(r, g, b));
     } else {
         clearUserColor();

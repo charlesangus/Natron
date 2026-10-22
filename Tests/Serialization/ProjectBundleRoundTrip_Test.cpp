@@ -35,7 +35,7 @@
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
-#include "ProjectXmlHelpers.h"
+#include "ProjectBundleTestHelpers.h"
 #include "SyntheticProjectGraphs.h"
 
 #include "Engine/AppInstance.h"
@@ -43,14 +43,14 @@
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 
-#include "Serialization/BoostXml/NodeXml.h"
-#include "Serialization/BoostXml/ProjectXml.h"
 #include "Serialization/NodeSerialization.h"
 #include "Serialization/ProjectSerialization.h"
+#include "Serialization/Yaml/BlobSink.h"
+#include "Serialization/Yaml/ProjectYaml.h"
 
 NATRON_NAMESPACE_USING
 
-class ProjectXmlEquivalenceTest
+class ProjectBundleRoundTripTest
     : public SyntheticProjectGraphTest {
 protected:
     virtual void SetUp() OVERRIDE
@@ -66,19 +66,19 @@ protected:
     }
 
     enum ReloadExpectationEnum {
-        // Saving the loaded project writes the XML saved from the graph as it was built.
-        eReloadExpectationSameXml,
+        // Saving the loaded project writes the project.yaml written from the graph as it was built.
+        eReloadExpectationSameYaml,
         // Loading settles some session state into saved state, so only a second load of the
-        // first reload's save is expected to write the same XML again.
+        // first reload's save is expected to write the same project.yaml again.
         eReloadExpectationFixedPoint
     };
 
-    // Saves the graph built in the current project to XML, checks that reading that XML and
-    // writing it again changes nothing, then loads it as a project file from tmp into a fresh
+    // Writes the graph built in the current project as a bundle in tmp, checks that decoding its
+    // project.yaml and encoding it again changes nothing, then loads the bundle into a fresh
     // project and checks what saving that project writes, as reloadExpectation says.
     void expectRoundTrip(const QTemporaryDir& tmp,
                          Serialization::ProjectSerialization* loaded,
-                         ReloadExpectationEnum reloadExpectation = eReloadExpectationSameXml)
+                         ReloadExpectationEnum reloadExpectation = eReloadExpectationSameYaml)
     {
         ProjectPtr project = getApp()->getProject();
 
@@ -87,33 +87,39 @@ protected:
         ASSERT_TRUE(setProjectPathVariable(tmp.path()));
 
         // Saving syncs the private data of OpenFX effects into their knobs, which may change
-        // knob ages on the first save only.
+        // them on the first save only.
         Serialization::ProjectSerialization saved;
         project->toSerialization(&saved);
         project->toSerialization(&saved);
-        const std::string savedXml = saveProjectXml(saved);
 
-        ASSERT_TRUE(loadProjectXml(savedXml, loaded));
-        EXPECT_EQ(savedXml, saveProjectXml(*loaded));
-        EXPECT_EQ((unsigned int)NATRON_SERIALIZATION_PROJECT_VERSION, loaded->version);
+        Serialization::MemoryBlobStore blobs;
+        const std::string savedYaml = Serialization::encodeProjectYaml(saved, blobs);
+        *loaded = Serialization::decodeProjectYaml(savedYaml, blobs);
+        Serialization::MemoryBlobStore reencodedBlobs;
+        EXPECT_EQ(savedYaml, Serialization::encodeProjectYaml(*loaded, reencodedBlobs));
         EXPECT_EQ(NATRON_VERSION_MAJOR, loaded->savedByVersion.versionMajor);
         ASSERT_EQ(saved.nodes.nodes.size(), loaded->nodes.nodes.size());
-        for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = loaded->nodes.nodes.begin(); it != loaded->nodes.nodes.end(); ++it) {
-            EXPECT_EQ((unsigned int)NATRON_SERIALIZATION_NODE_VERSION, (*it)->version);
-        }
 
-        const std::string reloadedXml = reloadProjectXml(getApp()->getProject(), tmp, QString::fromUtf8("round-trip.ntp"), savedXml);
-        ASSERT_FALSE(reloadedXml.empty());
-        if (reloadExpectation == eReloadExpectationSameXml) {
-            EXPECT_EQ(withoutSessionCounters(savedXml), withoutSessionCounters(reloadedXml));
+        project->reset(false, true);
+        std::string writtenYaml;
+        ASSERT_TRUE(loadProjectBundle(project, tmp, QString::fromUtf8("round-trip.ntpz"), saved, &writtenYaml));
+        EXPECT_EQ(savedYaml, writtenYaml);
+
+        std::string resavedYaml;
+        ASSERT_TRUE(saveProjectBundle(project, tmp, QString::fromUtf8("round-trip-resaved.ntpz"), &resavedYaml));
+        if (reloadExpectation == eReloadExpectationSameYaml) {
+            EXPECT_EQ(savedYaml, resavedYaml);
         } else {
-            const std::string reloadedAgainXml = reloadProjectXml(getApp()->getProject(), tmp, QString::fromUtf8("round-trip-again.ntp"), reloadedXml);
-            EXPECT_EQ(withoutSessionCounters(reloadedXml), withoutSessionCounters(reloadedAgainXml));
+            project->reset(false, true);
+            ASSERT_TRUE(project->loadProject(tmp.path() + QLatin1Char('/'), QString::fromUtf8("round-trip-resaved.ntpz")));
+            std::string resavedAgainYaml;
+            ASSERT_TRUE(saveProjectBundle(project, tmp, QString::fromUtf8("round-trip-resaved-again.ntpz"), &resavedAgainYaml));
+            EXPECT_EQ(resavedYaml, resavedAgainYaml);
         }
     }
 };
 
-TEST_F(ProjectXmlEquivalenceTest, GeneratorGradeWrite)
+TEST_F(ProjectBundleRoundTripTest, GeneratorGradeWrite)
 {
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -127,12 +133,11 @@ TEST_F(ProjectXmlEquivalenceTest, GeneratorGradeWrite)
     ASSERT_TRUE(bool(grade));
     EXPECT_FALSE(grade->inputs.empty());
     EXPECT_FALSE(grade->knobs.empty());
-    EXPECT_TRUE(grade->oldInputs.empty());
     EXPECT_FALSE(grade->hasRotoContext);
     EXPECT_FALSE(grade->hasTrackerContext);
 }
 
-TEST_F(ProjectXmlEquivalenceTest, GroupWithUserKnobAndNestedGroup)
+TEST_F(ProjectBundleRoundTripTest, GroupWithUserKnobAndNestedGroup)
 {
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -155,7 +160,7 @@ TEST_F(ProjectXmlEquivalenceTest, GroupWithUserKnobAndNestedGroup)
     EXPECT_TRUE(bool(findSerializedNode(outerGroup.children, PLUGINID_NATRON_DOT)));
 }
 
-TEST_F(ProjectXmlEquivalenceTest, RotoPaintAndTracker)
+TEST_F(ProjectBundleRoundTripTest, RotoPaintAndTracker)
 {
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -178,29 +183,4 @@ TEST_F(ProjectXmlEquivalenceTest, RotoPaintAndTracker)
     ASSERT_TRUE(bool(tracker));
     EXPECT_TRUE(tracker->hasTrackerContext);
     EXPECT_EQ(2u, tracker->trackerContext.tracks.size());
-}
-
-TEST(ProjectXmlLegacyVersionString, Parse)
-{
-    int versionMajor = -1;
-    int versionMinor = -1;
-    int versionRevision = -1;
-
-    EXPECT_TRUE(Serialization::parseLegacyNatronVersionString("Natron v2.0.3 from git branch master commit 1234abc for  Linux 64bit",
-                                                              &versionMajor, &versionMinor, &versionRevision));
-    EXPECT_EQ(2, versionMajor);
-    EXPECT_EQ(0, versionMinor);
-    EXPECT_EQ(3, versionRevision);
-
-    // The revision part keeps the release-candidate suffix, which is not an integer.
-    EXPECT_TRUE(Serialization::parseLegacyNatronVersionString("Natron v1.0.0 RC2 from git branch master commit 1234abc for  Linux 64bit",
-                                                              &versionMajor, &versionMinor, &versionRevision));
-    EXPECT_EQ(1, versionMajor);
-    EXPECT_EQ(0, versionMinor);
-    EXPECT_EQ(0, versionRevision);
-
-    versionMajor = -1;
-    EXPECT_FALSE(Serialization::parseLegacyNatronVersionString("Natron v2.1 from git branch master", &versionMajor, &versionMinor, &versionRevision));
-    EXPECT_FALSE(Serialization::parseLegacyNatronVersionString("not a version", &versionMajor, &versionMinor, &versionRevision));
-    EXPECT_EQ(-1, versionMajor);
 }

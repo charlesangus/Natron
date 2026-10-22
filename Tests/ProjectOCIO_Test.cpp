@@ -377,7 +377,7 @@ TEST_F(ProjectOCIOTest, AColorSpaceTheConfigLacksIsAnErrorOnLoadThatClearsWhenTh
     project()->reportUnresolvedOCIOColorSpaces();
     EXPECT_TRUE(colorSpace->hasPersistentMessage());
 
-    saveResetAndLoad(tmp, "cg-unresolved.ntp");
+    saveResetAndLoad(tmp, "cg-unresolved.ntpz");
     colorSpace = project()->getNodeByName(name);
     ASSERT_TRUE(bool(colorSpace));
     EXPECT_EQ(std::string(kStudioOnlySpace), stringKnob(colorSpace, "ocioInputSpace")->getValue());
@@ -423,7 +423,7 @@ TEST_F(ProjectOCIOTest, ASavedAndReloadedProjectKeepsTheConfigTheCleanStateAndTh
     const std::string writeName = write->getScriptName_mt_safe();
     const std::string colorSpaceName = colorSpace->getScriptName_mt_safe();
 
-    saveResetAndLoad(tmp, "cg.ntp");
+    saveResetAndLoad(tmp, "cg.ntpz");
 
     EXPECT_EQ(std::string(kCGURI), project()->getOCIOConfigSource());
     read = project()->getNodeByName(readName);
@@ -459,11 +459,11 @@ TEST_F(ProjectOCIOTest, UnderAnOCIOOverrideALoadedProjectsNodesUseTheOverrideAnd
     // makes the plug-in raise its own persistent error on load.
     plantSpace(colorSpace, "ocioOutputSpace", kSharedSpace);
     QString saved;
-    ASSERT_TRUE(project()->saveProject(dirPath, QString::fromUtf8("cg.ntp"), &saved));
+    ASSERT_TRUE(project()->saveProject(dirPath, QString::fromUtf8("cg.ntpz"), &saved));
 
     setOCIOOverride(kStudioURI);
     project()->reset(false, true);
-    ASSERT_TRUE(project()->loadProject(dirPath, QString::fromUtf8("cg.ntp")));
+    ASSERT_TRUE(project()->loadProject(dirPath, QString::fromUtf8("cg.ntpz")));
 
     EXPECT_EQ(std::string(kStudioURI), project()->getOCIOConfigSource());
     read = project()->getNodeByName(readName);
@@ -477,7 +477,7 @@ TEST_F(ProjectOCIOTest, UnderAnOCIOOverrideALoadedProjectsNodesUseTheOverrideAnd
 
     setOCIOOverride(0);
     project()->reset(false, true);
-    ASSERT_TRUE(project()->loadProject(dirPath, QString::fromUtf8("cg.ntp")));
+    ASSERT_TRUE(project()->loadProject(dirPath, QString::fromUtf8("cg.ntpz")));
 
     colorSpace = project()->getNodeByName(colorSpaceName);
     ASSERT_TRUE(bool(colorSpace));

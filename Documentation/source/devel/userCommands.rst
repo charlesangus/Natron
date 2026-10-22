@@ -28,9 +28,12 @@ to register it::
 Note that this function is to be called on the whole **application** via the **natron** variable
 and is not *per-project* unlike most functions that are generally called on the **app** object.
 
-.. warning::
+.. note::
 
-    This function can only be called in the startup script **init.py** and will have no effect
-    otherwise. This is not a dynamic function and will not create menu entries on the fly.
+    A command registered with :func:`addMenuCommand<NatronGui.PyGuiApplication.addMenuCommand>`
+    before the first window exists (for example from **init.py**) is queued and added when
+    that window is built. Called later, for example from **initGui.py** or the Script Editor,
+    it is inserted at once into the menu-bar of every open window.
+    Windows opened afterwards also get it.
 
-
+To add entries to the node menu instead of the menu-bar, see :ref:`nodesMenu`.

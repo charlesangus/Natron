@@ -18,5 +18,6 @@ This section covers basic functionalities a Python script can do in Natron.
     tracker.rst
     modalDialogs.rst
     userCommands.rst
+    nodesMenu.rst
     pysidePanelExample.rst
     viewersInteraction.rst

@@ -18,6 +18,7 @@ Functions
 
 - def :meth:`addMenuCommand<NatronGui.PyGuiApplication.addMenuCommand>` (grouping,function)
 - def :meth:`addMenuCommand<NatronGui.PyGuiApplication.addMenuCommand>` (grouping,function,key,modifiers)
+- def :meth:`nodesMenu<NatronGui.PyGuiApplication.nodesMenu>` ()
 - def :meth:`getGuiInstance<NatronGui.PyGuiApplication.getGuiInstance>` (idx)
 - def :meth:`informationDialog<NatronGui.PyGuiApplication.informationDialog>` (title,message)
 - def :meth:`warningDialog<NatronGui.PyGuiApplication.warningDialog>` (title,message)
@@ -38,8 +39,9 @@ See :func:`PyCoreApplication()<NatronEngine.PyCoreApplication.PyCoreApplication>
     :param grouping: :class:`str`
     :param function: :class:`str`
 
-Adds a new menu entry in the menubar of Natron. This should be used **exclusively** in the
-*initGui.py* initialisation script.
+Adds a new menu entry in the menubar of Natron. If a window already exists, the entry is
+inserted into the menubar of every open window at once; otherwise it is queued and added when
+the first window is built.
 
 The *grouping* is a string indicating a specific menu entry where each submenu is separated
 from its parent menu with a */*::
@@ -49,12 +51,6 @@ from its parent menu with a */*::
     MyStudio/Scripts/Our special trick
 
 The *function* is the name of a python defined function.
-
-.. warning::
-
-    If called anywhere but from the *initGui.py* script, this function will fail to
-    dynamically add a new menu entry.
-
 
 Example::
 
@@ -79,6 +75,15 @@ See PySide documentation for possible keys and modifiers.
 
 The user will always be able to modify the shortcut from the built-in shortcut editor of Natron anyway.
 
+
+
+.. method:: NatronGui.PyGuiApplication.nodesMenu()
+
+    :rtype: :class:`QMenu<PySide6.QtWidgets.QMenu>`
+
+Returns the menu that lists every plug-in, shown by the node toolbar and by the right-click menu
+of the node graph. Returns *None* when Natron runs without a user interface.
+See :ref:`nodesMenu`.
 
 
 .. method:: NatronGui.PyGuiApplication.getGuiInstance(idx)

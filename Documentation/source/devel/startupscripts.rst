@@ -18,6 +18,8 @@ There are 2 different initialization scripts that Natron will look for in the :r
 
         This script is only run in GUI mode (that is with the user interface). It should
         initialize all gui-specific stuff like new menus or windows.
+        It runs once per process, after the first window and the :ref:`node menu<nodesMenu>`
+        have been built, so it can add to both directly.
 
 All the scripts with the above name found in the search paths will be run in the order
 of the :ref:`search paths<natronPath>`.
@@ -29,10 +31,17 @@ of the :ref:`search paths<natronPath>`.
 
 .. warning::
 
-    These scripts are run well before any :ref:`application instance<App>` (i.e: project) is created.
+    **init.py** runs well before any :ref:`application instance<App>` (i.e: project) is created.
+    **initGui.py** runs after the first window exists, but its project is not yet set up either.
     You should therefore not run any function directly that might rely on the *app* variable (or *app1*, etc...).
     However you're free to define classes and functions that may rely on these variable being declared, but that
     will be called only later on, when a project will actually be created.
+
+.. warning::
+
+    **initGui.py** used to run before any window existed. It no longer does, and nothing
+    was kept to emulate the old timing: a script that relied on running before the first window
+    has to be adapted. Opening further windows later does not run **initGui.py** again.
 
 Examples
 =========

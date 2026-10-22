@@ -384,3 +384,16 @@ Two things block the end-to-end acceptance. First, keeping the root on the devic
   | 8K 32f | 1315 vs 600 | 410 vs 198 | 569 vs 368 | 1.18 vs 6.61 fps |
 
   The CPU rung equals main's CPU. Root `downloadBytes == 0` on 180/180 regions per case. **Direction:** 8u wins tweak and seek by 3–3.5×. **32f, 8K 8u playback and the first frame (about +220 ms at UHD) are slower than main**, so per P6.T2 the PM stops before P6.T3 and diagnoses. The agent's hypothesis: the candidate's GUI thread is pegged at about 100% during playback, while on main the work is spread across ~11 workers. The per-frame gap scales with frame bytes (69 ms at 33 MB, 262 ms at 132 MB) against ~11.6 ms of GPU region time, which points at GUI-thread copies: the PBO `memcpy` (`GlInterop.cpp:866`), the cache-fill `readHostCopy` (`:913`) and `insertCacheTiles` (`ViewerInstance.cpp` ~3130). Not yet confirmed by stack samples. Zerocopy and hostsync need the user's desktop: `.local/m107/p6t2/desktop/viewer-bench.sh` (dry run under Xvfb complete).
+- 2026-10-22 — **P6.T2 desktop half (the user's X11 session, radeonsi GL on `:0`, 1 round, same boot `0571a3e8`; `.local/m107/p6t2/desktop/out-20261022-083117/`).** Zerocopy, hostsync and readback were all reached, and root `downloadBytes` was 0 on every hand-off run. **Single-frame work beats main on every rung and size:**
+  - UHD 32f zerocopy: first 187 vs 326 ms, tweak 16 vs 51, seek 46 vs 91.
+  - UHD 8u zerocopy: tweak 17 vs 167.
+  - 8K 8u zerocopy: tweak 56 vs 707.
+  - 8K 32f zerocopy: tweak 64 vs 177.
+
+  **Playback regresses whatever the rung:**
+  - UHD 32f: 5.9 / 5.6 / 5.2 fps (zerocopy / hostsync / readback) against main's 20.4. The inter-frame gap is ~158 ms on every rung against 28.6.
+  - 8K 32f: 1.95 / 1.86 / 1.72 against 5.48.
+  - 8K 8u: 0.69 against 1.26.
+  - UHD 8u: 18.9 against 5.1 (a win).
+
+  The PBO copy is therefore not the playback bottleneck: the cost runs per playback frame, doesn't depend on the rung, and scales with frame bytes. The diagnosis consultant has this data.

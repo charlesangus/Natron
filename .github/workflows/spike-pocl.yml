@@ -1,0 +1,24 @@
+name: spike-pocl
+on:
+  push:
+    branches: [spike/m86-pocl]
+jobs:
+  pocl:
+    runs-on: ubuntu-latest
+    container: aswf/ci-vfxall:2027-clang21.1
+    steps:
+      - name: Repos
+        run: |
+          rpm -q epel-release || true
+          dnf repolist
+          ls -la /etc/OpenCL/vendors 2>&1 || true
+          rpm -q mesa-libOpenCL || true
+      - name: Install pocl and clinfo
+        run: dnf install -y pocl clinfo
+      - name: clinfo
+        run: |
+          ls -la /etc/OpenCL/vendors; cat /etc/OpenCL/vendors/*.icd
+          clinfo
+          echo "=== extensions"
+          clinfo | grep -E "Platform Name|Device Name|Device Version|Extensions|cl_khr_external|cl_khr_device_uuid|cl_khr_gl_sharing" || true
+          clinfo -l

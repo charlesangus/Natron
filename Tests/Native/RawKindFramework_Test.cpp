@@ -646,7 +646,8 @@ TEST_F(RawKindFrameworkTest, DeclaredKindsResolve)
     NodePtr imageSink = createNode(QString::fromUtf8(kTestPluginIDDataKindImageSink));
     NodePtr rawSink = createNode(QString::fromUtf8(kTestPluginIDDataKindRawSink));
     NodePtr imageSource = createNode(QString::fromUtf8(kTestPluginIDParitySource));
-    ASSERT_TRUE(source && rawOp && toImage && imageSink && rawSink && imageSource);
+    NodePtr unconnectedRawOp = createOp(kRawKindTestColourOpID, NodePtr());
+    ASSERT_TRUE(source && rawOp && toImage && imageSink && rawSink && imageSource && unconnectedRawOp);
 
     EXPECT_EQ(eDataKindRaw, rawOp->getEffectInstance()->getInputDataKind(0));
     EXPECT_EQ(eDataKindRaw, rawOp->getEffectInstance()->getOutputDataKind());
@@ -655,7 +656,7 @@ TEST_F(RawKindFrameworkTest, DeclaredKindsResolve)
     EXPECT_EQ(eDataKindImage, toImage->getEffectInstance()->getOutputDataKind());
     EXPECT_EQ(eDataKindImage, toImage->getEffectiveOutputDataKind());
 
-    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, rawOp->canConnectInput(imageSource, 0));
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, unconnectedRawOp->canConnectInput(imageSource, 0));
     EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, imageSink->canConnectInput(rawOp, 0));
     EXPECT_EQ(Node::eCanConnectInput_ok, rawSink->canConnectInput(rawOp, 0));
 

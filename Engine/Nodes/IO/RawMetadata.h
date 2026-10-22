@@ -55,6 +55,8 @@
 #define kRawMetadataIso "raw/iso"
 #define kRawMetadataExposure "raw/exposure"
 #define kRawMetadataStage "raw/stage"
+#define kRawMetadataWbApplied "raw/wb_applied"
+#define kRawMetadataProcessedMaximum "raw/processed_maximum"
 
 #define kRawCfaPatternNone "none"
 #define kRawStageRaw "raw"
@@ -233,6 +235,21 @@ void setIso(ImageMetadata* metadata, double iso);
  **/
 std::optional<double> getExposure(const ImageMetadata& metadata);
 void setExposure(ImageMetadata* metadata, double seconds);
+
+/**
+ * @brief raw/wb_applied: the red, green and blue multipliers a white balance node has already
+ * applied to the data, absent until one has.
+ **/
+std::optional<std::array<double, 3>> getWbApplied(const ImageMetadata& metadata);
+void setWbApplied(ImageMetadata* metadata, const std::array<double, 3>& coeffs);
+
+/**
+ * @brief raw/processed_maximum: per red, green and blue, the value a photosite at the white level
+ * has now, which the develop nodes after the white balance scale their thresholds by (darktable's
+ * processed_maximum). Absent means 1 for each.
+ **/
+std::optional<std::array<double, 3>> getProcessedMaximum(const ImageMetadata& metadata);
+void setProcessedMaximum(ImageMetadata* metadata, const std::array<double, 3>& maximum);
 
 std::optional<RawStageEnum> getStage(const ImageMetadata& metadata);
 void setStage(ImageMetadata* metadata, RawStageEnum stage);

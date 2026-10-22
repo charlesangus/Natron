@@ -315,6 +315,32 @@ setExposure(ImageMetadata* metadata,
     metadata->setDouble(kRawMetadataExposure, seconds);
 }
 
+std::optional<std::array<double, 3>>
+getWbApplied(const ImageMetadata& metadata)
+{
+    return getFixedVector<3>(metadata, kRawMetadataWbApplied);
+}
+
+void
+setWbApplied(ImageMetadata* metadata,
+             const std::array<double, 3>& coeffs)
+{
+    setFixedVector(metadata, kRawMetadataWbApplied, coeffs);
+}
+
+std::optional<std::array<double, 3>>
+getProcessedMaximum(const ImageMetadata& metadata)
+{
+    return getFixedVector<3>(metadata, kRawMetadataProcessedMaximum);
+}
+
+void
+setProcessedMaximum(ImageMetadata* metadata,
+                    const std::array<double, 3>& maximum)
+{
+    setFixedVector(metadata, kRawMetadataProcessedMaximum, maximum);
+}
+
 std::optional<RawStageEnum>
 getStage(const ImageMetadata& metadata)
 {

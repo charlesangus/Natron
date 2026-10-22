@@ -67,6 +67,7 @@
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/IO/RawExtensions.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/Nodes/Raw/RawDevelop.h"
 #include "Engine/PoolParallelFor.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
@@ -423,18 +424,18 @@ NativeRead::projectViewName(ViewIdx view) const
 
 void
 NativeRead::onEffectCreated(bool mayCreateFileDialog,
-                            const CreateNodeArgs& /*args*/)
+                            const CreateNodeArgs& args)
 {
     KnobFilePtr filename = _filename.lock();
 
-    if (!mayCreateFileDialog || !filename || !filename->getValue().empty() || getApp()->isBackground()) {
-        return;
+    if (mayCreateFileDialog && filename && filename->getValue().empty() && !getApp()->isBackground()) {
+        const std::string path = getApp()->openImageFileDialog();
+        if (path.empty()) {
+            throw std::runtime_error("");
+        }
+        filename->setValue(path);
     }
-    const std::string path = getApp()->openImageFileDialog();
-    if (path.empty()) {
-        throw std::runtime_error("");
-    }
-    filename->setValue(path);
+    RawDevelop::onReadCreated(getNode(), args);
 }
 
 DataKindEnum

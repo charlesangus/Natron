@@ -164,8 +164,11 @@ overrides `isIdentity()` itself; see "Flat image nodes".
 
 `KnobReader(time, view)` reads knob values, and a node bakes them once per
 evaluation into a plain `Params` struct with `bake(const KnobReader&)`;
-`bakeParams(op, time, view)` does so for any type that has it. Render code
-works on the baked `Params`, never on the knobs.
+`bakeParams(op, time, view)` does so for any type that has it. A type whose
+`Params` also depend on the metadata of the image it reads has
+`bake(const KnobReader&, const ImageMetadata& source)` instead, never both;
+`bakeParams(op, reader, source)` and `bakeParams(op, time, view, source)` call
+either form. Render code works on the baked `Params`, never on the knobs.
 
 ## Per-frame metadata
 
@@ -795,6 +798,19 @@ do:
   `gpu(params, context)`; it has one form or the other.
 - The op never overrides `render()` or `isIdentity()` of the node: both are
   `FINAL` in `StagedImageEffect`, so a node cannot fork the stage rules.
+- An op whose maths depends on its source's metadata -- a raw op reading the
+  CFA layout -- has `bake(reader, source)` instead of `bake(reader)`.
+  `ImageNode` hands it `getSourceMetadata(time, view)`, the metadata of the
+  first Source input at the time and view being baked (a motion-blurred
+  Resample op is re-baked at every sample time, with the metadata of that
+  time), and fetches it only for an op with that form, since `bake()` runs
+  several times per frame. A Custom node calls `getSourceMetadata()` itself.
+  `Params` derived from metadata are never hashed: they invalidate through the
+  node hash, exactly like the source's pixels, since an upstream change moves
+  both. An op that memoizes a table it derives from metadata keys the memo on
+  `ImageMetadata::hash()`, not on its knobs alone, and a runtime shader takes
+  metadata-derived values as uniforms, never baked into its source text, or
+  every new file would compile a new shader.
 
 ### Stages
 
@@ -915,10 +931,51 @@ mix and divisor from the `StagePlan` instead of its own knobs. Merge, Keyer and
 ChromaKeyer are Custom nodes; Merge until M101 - Clean-Sheet Merge Node, the
 keyers until M95 - Knob Cleanup And Keyer Redesign. A Custom node is on the CPU
 unless it opts into the GPU by overriding three virtuals:
-`canRenderOpOnGpu(query)` (the answer may depend only on the query and the
-node's settings), `renderOpGpu(args)` to record its dispatches over
+`canRenderOpOnGpu(query)` (the answer may depend only on the query, the
+node's settings and its source metadata), `renderOpGpu(args)` to record its dispatches over
 `args.outputRect`, and `getOpGpuInputLayer()` to say the layer it reads each
 input in. The keyers do, with their own kernels.
+
+### Raw nodes
+
+A node reading camera raw data (`eDataKindRaw`, see "Data kinds") is an image
+node like any other: its `NodeSpec` declares the Source input
+`.kind = eDataKindRaw` and its `outputKind`, either `eDataKindRaw` (raw in, raw
+out: a black-level subtraction, a raw crop) or `eDataKindImage` (raw in, image
+out: a demosaic). Raw out from an image Source is a compile error. Its
+pipeline has `.layers = LayerPolicy::none()` and neither `Premult` nor
+`MaskMix`: a mosaic has no alpha to divide by, no layers or channels to pick,
+and nothing to blend against a mask. All three are compile errors on a raw
+Source, as `staticImagePipelineSpec()` checks.
+
+`ImagePipelineSpec::rawStage` says which `raw/stage` the node needs its source
+at: `Any` (the default, and the only choice for an image Source or a Route op),
+`Raw` or `Prepared`. With `Raw` or `Prepared` the host reads the source's
+`raw/stage` before anything else: on a mismatch, or with no `raw/stage` at all,
+the node is never an identity and never placed on the GPU, and its render
+fails, rendering nothing, with `RawMetadata::requireStage()`'s text as the
+node's persistent error. The error is taken back by the first render that
+finds the stage right. Nothing is ever passed through silently.
+
+A Point op reads the CFA through `bake(reader, source)`:
+`RawLayout::fromMetadata(source)` into its `Params`, then
+`layout.colourAt(io.x0 + x, io.y)` for pixel `x` of the row. `colourAt()` takes
+the pattern's origin into account, so the op needs nothing else to find the
+colour of each photosite in whatever window it renders.
+
+A raw-to-image node that changes the channel count -- a one-channel mosaic in,
+RGB out, as a demosaic does -- declares its own output components by
+overriding `getPreferredMetadata()`, and overrides `deriveOutputMetadata()` to
+drop the `raw/` keys that no longer describe its output (the CFA pattern and
+origin, and `raw/stage` once the output is an image). Neither is `FINAL` in
+`StagedImageEffect` or `ImageNode`, so a subclass of either can; a demosaic
+reads neighbouring photosites, so it is a Passes or Custom node anyway.
+
+On the GPU nothing changes in the path: a raw op's parameter block carries the
+CFA in a bounded form -- the pattern packed into at most a 6x6 (X-Trans) cell
+array plus its origin -- so the block's size is fixed and the
+`static_assert(sizeof(...) == ...)` beside its Slang mirror holds whatever the
+file.
 
 ### The GPU side of an op
 

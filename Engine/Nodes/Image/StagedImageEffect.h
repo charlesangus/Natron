@@ -30,7 +30,9 @@
 
 #include <concepts>
 #include <list>
+#include <mutex>
 #include <optional>
+#include <string>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
@@ -40,6 +42,7 @@
 #include "Engine/Nodes/Image/ResampleExecutor.h"
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/NodeSpec.h"
 #include "Engine/RectI.h"
@@ -241,6 +244,12 @@ protected:
     bool getMaskInvertValue(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     /**
+     * @brief The metadata of getSourceInput() at time and view, empty when nothing is connected
+     * to it. What an op's bake(reader, source) receives; a Custom op reads it here.
+     **/
+    ImageMetadata getSourceMetadata(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
      * @brief Whether the MaskMix stage reads a mask: the mask input is connected and enabled.
      **/
     bool isMaskApplied() const WARN_UNUSED_RETURN;
@@ -345,7 +354,8 @@ protected:
     }
 
     /**
-     * @brief The answer must depend only on the query and the node's settings.
+     * @brief The answer must depend only on the query, the node's settings and its source
+     * metadata.
      **/
     virtual bool canRenderOpOnGpu(const GpuQuery& /*query*/) const WARN_UNUSED_RETURN
     {
@@ -386,6 +396,12 @@ protected:
     }
 
 private:
+    /**
+     * @brief The persistent error for a source at the wrong raw stage at time and view, or
+     * nullopt when the pipeline needs none or the source is at the one it needs.
+     **/
+    std::optional<std::string> rawStageError(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
     StagePlan resolveGpuPlan(const GpuQuery& query) const WARN_UNUSED_RETURN;
 
     ResampleRegionStages getResampleRegionStages(double time,
@@ -393,6 +409,8 @@ private:
 
     StageKnobs _stageKnobs;
     mutable StageGpuShaderGate _gpuShaderGate;
+    std::mutex _rawStageErrorMutex;
+    std::string _postedRawStageError;
 };
 
 /**
@@ -443,7 +461,7 @@ public:
                         ViewIdx view) OVERRIDE WARN_UNUSED_RETURN
     {
         if constexpr (RoutesOp<OP>) {
-            return _op.route(bakeParams(_op, time, view), RouteContext(*this, time, view));
+            return _op.route(bake(time, view), RouteContext(*this, time, view));
         } else {
             return StagedImageEffect::route(time, view);
         }
@@ -459,7 +477,7 @@ public:
                                                    unsigned int mipmapLevel) const OVERRIDE WARN_UNUSED_RETURN
     {
         if constexpr (PIPELINE.op == OpKind::Passes) {
-            const typename OP::Params params = bakeParams(_op, time, view);
+            const typename OP::Params params = bake(time, view);
             const PassContext context = getPassContext(RenderScale::fromMipmapLevel(mipmapLevel));
 
             if constexpr (requires(const OP& o, const typename OP::Params& p, const PassContext& c) {
@@ -473,7 +491,7 @@ public:
             if constexpr (requires(const OP& o, const typename OP::Params& p, const PassContext& c) {
                               { o.costHint(p, c) } -> std::same_as<std::optional<GpuCostHint>>;
                           }) {
-                return _op.costHint(bakeParams(_op, time, view), getPassContext(RenderScale::fromMipmapLevel(mipmapLevel)));
+                return _op.costHint(bake(time, view), getPassContext(RenderScale::fromMipmapLevel(mipmapLevel)));
             } else {
                 return std::nullopt;
             }
@@ -504,19 +522,33 @@ protected:
     }
 
 private:
+    /**
+     * @brief The op's Params at time and view. The source metadata is fetched only for an op
+     * whose bake() takes it, since bake() runs several times per frame.
+     **/
+    typename OP::Params bake(double time,
+                             ViewIdx view) const
+    {
+        if constexpr (BakesParamsFromSource<OP>) {
+            return bakeParams(_op, time, view, getSourceMetadata(time, view));
+        } else {
+            return bakeParams(_op, time, view);
+        }
+    }
+
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
                               const RectI& /*roi*/,
                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         if constexpr ((PIPELINE.op == OpKind::Passes) || (PIPELINE.op == OpKind::Resample)) {
-            return _op.isIdentity(bakeParams(_op, time, view), getPassContext(scale));
+            return _op.isIdentity(bake(time, view), getPassContext(scale));
         } else if constexpr (PIPELINE.op == OpKind::Route) {
             return false;
         } else if constexpr (ScaledPointOp<OP>) {
-            return _op.isIdentity(bakeParams(_op, time, view), getPassContext(scale));
+            return _op.isIdentity(bake(time, view), getPassContext(scale));
         } else {
-            return _op.isIdentity(bakeParams(_op, time, view));
+            return _op.isIdentity(bake(time, view));
         }
     }
 
@@ -529,13 +561,13 @@ private:
 
             return eStatusFailed;
         } else if constexpr (PIPELINE.op == OpKind::Passes) {
-            const typename OP::Params params = bakeParams(_op, args.time, args.view);
+            const typename OP::Params params = bake(args.time, args.view);
 
             return runPassesCpu(*this, plan, args, _op.passes(params, getPassContext(args.mappedScale)));
         } else if constexpr (PIPELINE.op == OpKind::Resample) {
             return runResampleCpu(*this, plan, args, opResample(args.time, args.view, args.mappedScale));
         } else if constexpr (PIPELINE.op == OpKind::Composite) {
-            const typename OP::Params params = bakeParams(_op, args.time, args.view);
+            const typename OP::Params params = bake(args.time, args.view);
             const OP& stepOp = _op;
             const auto step = [&stepOp, &params](const RowIO& io) {
                 stepOp.step(params, io);
@@ -543,7 +575,7 @@ private:
 
             return runStagesCpu(*this, plan, args, StageRowFn(step));
         } else if constexpr (ScaledPointOp<OP>) {
-            const typename OP::Params params = bakeParams(_op, args.time, args.view);
+            const typename OP::Params params = bake(args.time, args.view);
             const PassContext context = getPassContext(args.mappedScale);
             const OP& rowOp = _op;
             const auto row = [&rowOp, &params, &context](const RowIO& io) {
@@ -552,7 +584,7 @@ private:
 
             return runStagesCpu(*this, plan, args, StageRowFn(row));
         } else {
-            const typename OP::Params params = bakeParams(_op, args.time, args.view);
+            const typename OP::Params params = bake(args.time, args.view);
             const OP& rowOp = _op;
             const auto row = [&rowOp, &params](const RowIO& io) {
                 rowOp.row(params, io);
@@ -567,13 +599,13 @@ private:
                            const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         if constexpr (GpuCompositeOp<OP> && (PIPELINE.op == OpKind::Composite)) {
-            return _op.gpu(bakeParams(_op, time, view));
+            return _op.gpu(bake(time, view));
         } else if constexpr (PIPELINE.op != OpKind::Point) {
             return GpuOpRef::none();
         } else if constexpr (ScaledPointOp<OP>) {
-            return _op.gpu(bakeParams(_op, time, view), getPassContext(scale));
+            return _op.gpu(bake(time, view), getPassContext(scale));
         } else {
-            return _op.gpu(bakeParams(_op, time, view));
+            return _op.gpu(bake(time, view));
         }
     }
 
@@ -582,7 +614,7 @@ private:
                               const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         if constexpr (PIPELINE.op == OpKind::Passes) {
-            return _op.passes(bakeParams(_op, time, view), getPassContext(scale));
+            return _op.passes(bake(time, view), getPassContext(scale));
         } else {
             return PassList();
         }
@@ -600,19 +632,19 @@ private:
             return ResampleRequest();
         } else {
             const PassContext context = getPassContext(scale);
-            const typename OP::Params params = bakeParams(_op, time, view);
+            const typename OP::Params params = bake(time, view);
             ResampleRequest request;
 
             if constexpr (MatrixResampleOp<OP>) {
                 request.form = ResampleRequest::Form::Matrix;
                 request.settings = _op.settings(params, context);
-                const OP* op = &_op;
-                request.transform = [op, params, context, time, view](double t, double amount, bool invert, TransformMath::Mat3* matrix) -> bool {
+                const ImageNode* node = this;
+                request.transform = [node, params, context, time, view](double t, double amount, bool invert, TransformMath::Mat3* matrix) -> bool {
                     if (t == time) {
-                        return op->transform(params, context, amount, invert, matrix);
+                        return node->_op.transform(params, context, amount, invert, matrix);
                     }
 
-                    return op->transform(bakeParams(*op, t, view), context, amount, invert, matrix);
+                    return node->_op.transform(node->bake(t, view), context, amount, invert, matrix);
                 };
             } else {
                 request.form = ResampleRequest::Form::Offset;
@@ -635,7 +667,7 @@ private:
                                      ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         if constexpr (PIPELINE.op == OpKind::Composite) {
-            return _op.inputs(bakeParams(_op, time, view), RouteContext(*this, time, view));
+            return _op.inputs(bake(time, view), RouteContext(*this, time, view));
         } else {
             Q_UNUSED(time);
             Q_UNUSED(view);

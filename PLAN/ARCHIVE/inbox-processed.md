@@ -3398,3 +3398,7 @@ Scouted facts (2026-10-12, `main` with M84 at its gate on `origin/milestone/m84-
 
 - 2026-10-20 — change-request — from: gpu — refs: none
   Propose a follow-up E5 - GPU Compute milestone, after M109 - GPU Region Engine Hardening: find why GPU region downloads in fused comps run at about 6 GB/s against GpuBench's 16.7 GB/s host-import download rate on the same boot. M109.P8.T1 measured comp exposed transfer at 1.6–2.2× the GpuBench-rate floor (keying_grade, cg_multipass, defocus_retime at UHD/8K); single-node 16k/24k regions are at 0.9–1.08×. Data in `.local/m109/p8t1/analysis/final/regions.md`. Candidates: small per-member downloads, image layout or format conversion, an unpipelined last strip.
+
+### 2026-10-21T14:00:00Z — info
+- refs: none
+- Pre-existing bug on main, found by M107 - GPU Viewer Hand-off's UAT and outside its scope (user: inbox note only, for /cat-plan to plan). Disconnecting a viewer's active input sets A to -1 and the viewer goes black even when another input is still connected: Read → Grade1 → Viewer input 0, `viewer.connectInput(1, Grade2)` (connecting also makes input 1 the active A, via `InspectorNode::refreshActiveInputs`), then `viewer.disconnectInput(1)` → `getAInput()` is -1. Same on main `1c0b5ab3b` and the M107 lane. Fix belongs in `Engine/NodeInputs.cpp`. Repro: `.local/m107/p6t1c/viewer_ab_zoom_repro.py` with `repro.sh` (on the gpu host).

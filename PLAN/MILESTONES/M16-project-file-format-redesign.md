@@ -291,7 +291,7 @@ Scouting facts this plan relies on (2026-10-10):
   - verify: compiled at P5.T5; every case passes.
   - size: M
 
-- [ ] M16.P5.T3 — End-to-end roto and tracker round-trip
+- [x] M16.P5.T3 — End-to-end roto and tracker round-trip
   - files: new `Tests/Serialization/RotoTrackerBundle_Test.cpp`
   - approach: build a live RotoPaint (strokes with pressure, feathered animated beziers with a broken tangent, nested layers) and a Tracker (500-frame tracks, one disabled, user keys) as `Tests/RotoLayer_Test.cpp` and `Tests/TrackerLayer_Test.cpp` do. Save, reset and load, then check `ProjectEquivalence`, the item and track structure, and a pixel-exact roto render at two frames.
   - verify: compiled at P5.T5; it passes, and the bundle contains stroke, bezier and track blob members.
@@ -303,7 +303,7 @@ Scouting facts this plan relies on (2026-10-10):
   - verify: run at P5.T5 via `tools/ci/local/test.sh smoke debug`.
   - size: M
 
-- [ ] M16.P5.T5 — Phase 16.5 build and full ctest
+- [x] M16.P5.T5 — Phase 16.5 build and full ctest
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `tools/ci/local/test.sh ctest debug` and `smoke debug`.
   - verify: everything green. The build is required.
@@ -311,7 +311,7 @@ Scouting facts this plan relies on (2026-10-10):
 
 ## Phase 16.6: One-off benchmark (both writers still exist)
 
-- [ ] M16.P6.T1 — Heavy roto/tracker benchmark harness
+- [x] M16.P6.T1 — Heavy roto/tracker benchmark harness
   - files: new `tools/bench/project_io_bench.py`, new `tools/bench/make_heavy_project.py` (both deleted in P7.T1; they stay in git history)
   - approach: `make_heavy_project.py` (under NatronRenderer) builds a seeded project through `PyRoto`/`PyTracker`: 200 strokes × 500 samples, 30 beziers × 24 CPs × 200 keys with feather, 16 tracks × 2000 frames, plus the `keying_grade` graph. `project_io_bench.py` times `saveLegacyXmlForBenchmark` against the `.ntpz` save, and autosave, as a median of 7 after warm-up. It records file sizes and the `.ntpz` load time; XML load is no longer possible. Results go to `build/bench/results-project-io.jsonl` through `lib.sh`'s helpers.
   - verify: one run against a `fast` build prints the table and exits 0.

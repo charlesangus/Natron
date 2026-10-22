@@ -1,13 +1,19 @@
 """Develop RAW in the interface: a camera raw file dropped on the node graph becomes a Read with
 RawPrepare, RawTemperature, RawHighlights, RawDemosaic and RawInputColor below it, connected in that
-order inside a backdrop titled "Develop RAW". Python's createReader(), a new filename on an
+order inside a backdrop titled "Develop RAW". One undo removes the Read, the chain and the
+backdrop together, and one redo brings them all back. Python's createReader(), a new filename on an
 existing Read, the preference turned off and a project reload add no chain.
 
-The dropped file is Tests/fixtures/raw/canon-eos-5d-mark-iii.cr2, or an empty file of that name
-when the fixture is absent: the chain depends on the extension only, and nothing here renders it.
-The other raw files are empty files with a camera raw extension.
+The Viewer shows raw directly: connected to the Read of the CR2 it shows the mosaic as grey with
+"RAW mosaic" on its info line, and connected to a Read of the linear DNG it shows "RAW linear",
+with no error either way.
 
-Shots: m80-develop-raw.png (the node graph after the drop).
+The dropped file is Tests/fixtures/raw/canon-eos-5d-mark-iii.cr2, or an empty file of that name
+when the fixture is absent (a checkout without Git LFS has pointer files there); the Viewer
+section is then skipped. The other raw files are empty files with a camera raw extension.
+
+Shots: m80-develop-raw.png (the node graph after the drop), m80-viewer-mosaic.png and
+m80-viewer-linear.png (the Viewer on each).
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m80_raw.py
 """
@@ -30,7 +36,7 @@ try:
     import NatronEngine
     from PySide6.QtCore import QMimeData, QPointF, Qt, QUrl
     from PySide6.QtGui import QDropEvent
-    from PySide6.QtWidgets import QApplication, QMainWindow
+    from PySide6.QtWidgets import QApplication, QLabel, QMainWindow
 
     import guitest as gt
     from guitest import check, require
@@ -79,6 +85,42 @@ try:
         bw, bh = backdrop.getSize()
         return bx <= x and by <= y and x + w <= bx + bw and y + h <= by + bh
 
+    def trigger_edit(name):
+        """Undo and Redo are QActions on the Edit menu, matched by Qt's shortcut map before a key
+        event sent to a widget would reach them, so the action itself is triggered."""
+        for win in QApplication.topLevelWidgets():
+            if not isinstance(win, QMainWindow) or win.menuBar() is None:
+                continue
+            for act in win.menuBar().actions():
+                menu = act.menu()
+                if menu is None or not act.text().lower().startswith("edit"):
+                    continue
+                for a in menu.actions():
+                    if a.text().lower().startswith(name) and a.isEnabled():
+                        a.trigger()
+                        QApplication.processEvents()
+                        return True
+        return check(False, "found an enabled %s action in the Edit menu" % name)
+
+    def is_real_fixture(path):
+        """A decodable fixture rather than a Git LFS pointer file or an empty stand-in."""
+        return os.path.exists(path) and os.path.getsize(path) > (1 << 20)
+
+    def info_line_has(text):
+        for w in gt.widgets_of("InfoViewerWidget"):
+            if w.isVisible() and any(text in label.text() for label in w.findChildren(QLabel)):
+                return True
+        return False
+
+    def grey(colour):
+        return colour is not None and max(colour) - min(colour) <= 2
+
+    def show_in_viewer(node):
+        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+        require(viewer is not None, "a Viewer node exists")
+        viewer.disconnectInput(0)
+        require(viewer.connectInput(0, node), "the Viewer accepts the raw Read " + node.getScriptName())
+
     def settle_counts():
         return {pid: len(nodes_of(app, pid)) for pid in [READ_ID, BACKDROP_ID] + CHAIN_IDS}
 
@@ -120,6 +162,40 @@ try:
         ys = [n.getPosition()[1] for n in chain]
         check(ys == sorted(ys), "the chain runs top to bottom in order")
         gt.shot("m80-develop-raw.png")
+
+        gt.section("undo")
+        if trigger_edit("undo"):
+            ok = yield ("until", lambda: not nodes_of(app, READ_ID) and not nodes_of(app, BACKDROP_ID), POLL_TIMEOUT_S)
+            check(ok, "one undo removes the Read and the backdrop")
+            check(all(not nodes_of(app, pid) for pid in CHAIN_IDS), "the same undo removes the whole chain")
+            if trigger_edit("redo"):
+                ok = yield ("until", lambda: len(nodes_of(app, CHAIN_IDS[-1])) == 1 and len(nodes_of(app, READ_ID)) == 1, POLL_TIMEOUT_S)
+                check(ok, "one redo brings the Read and the chain back")
+                check(len(nodes_of(app, BACKDROP_ID)) == 1, "the redo brings the backdrop back")
+                check(is_input(nodes_of(app, CHAIN_IDS[0])[0], 0, nodes_of(app, READ_ID)[0]), "the chain is connected below the Read again")
+                read = nodes_of(app, READ_ID)[0]
+
+        gt.section("viewer")
+        linear = os.path.join(gt.FIXTURES, "raw", "canon-eos-5d-mark-iii-linear-rgb.dng")
+        if is_real_fixture(dropped) and is_real_fixture(linear):
+            show_in_viewer(read)
+            ok = yield ("until", lambda: info_line_has("RAW mosaic"), POLL_TIMEOUT_S)
+            check(ok, "the info line reads RAW mosaic")
+            yield ("sleep", SETTLE_MS)
+            check(not gt.viewer_messages(), "the Viewer shows the mosaic without an error (%r)" % (gt.viewer_messages(),))
+            check(grey(gt.viewer_centre_colour()), "the mosaic shows as grey (%r)" % (gt.viewer_centre_colour(),))
+            gt.shot("m80-viewer-mosaic.png")
+
+            linear_read = app.createReader(linear)
+            require(linear_read is not None, "make a Read of the linear DNG")
+            show_in_viewer(linear_read)
+            ok = yield ("until", lambda: info_line_has("RAW linear"), POLL_TIMEOUT_S)
+            check(ok, "the info line reads RAW linear")
+            yield ("sleep", SETTLE_MS)
+            check(not gt.viewer_messages(), "the Viewer shows the linear DNG without an error (%r)" % (gt.viewer_messages(),))
+            gt.shot("m80-viewer-linear.png")
+        else:
+            gt.report("NOTE the raw fixtures are not checked out (git lfs pull); the Viewer section is skipped")
         counts = settle_counts()
 
         gt.section("no chain")

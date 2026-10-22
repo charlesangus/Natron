@@ -172,6 +172,8 @@ private:
                                  const CreateNodeArgs& args) OVERRIDE FINAL;
 
     bool rejectUnsupportedFormat(const std::string& path);
+    bool isRawFile() const;
+    void refreshRawKnobState();
     void refreshOutputDataKind();
 
     // The frames a filename pattern matches on disk, listed once per pattern.

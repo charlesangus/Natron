@@ -42,6 +42,7 @@
 #include "Global/FloatingPointExceptions.h"
 
 #include "Engine/LayerRegistry.h"
+#include "Engine/Nodes/IO/RawExtensions.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -851,7 +852,8 @@ namespace {
                     }
                     const std::string ext = lowerCase(entry.substr(extPos, extEnd - extPos));
                     extPos = extEnd + 1;
-                    if (!ext.empty()) {
+                    // rawspeed decodes these, so no OIIO plug-in that also lists one is used.
+                    if (!ext.empty() && !RawExtensions::isRawExtension(ext)) {
                         formatOf.insert(std::make_pair(ext, format));
                     }
                 }

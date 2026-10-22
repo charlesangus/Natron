@@ -1502,7 +1502,7 @@ ViewerGL::endTransferBufferFromRAMToGPU(int textureIndex,
 
 
         if (image) {
-            _imp->viewerTab->setImageFormat(textureIndex, image->getComponents(), depth);
+            _imp->viewerTab->setImageFormat(textureIndex, image->getComponents(), depth, QString::fromStdString(internalNode->getRawDisplayLabel(textureIndex)));
             {
                 QMutexLocker k(&_imp->lastRenderedImageMutex);
                 _imp->displayTextures[textureIndex].lastRenderedTiles[mipmapLevel] = image;

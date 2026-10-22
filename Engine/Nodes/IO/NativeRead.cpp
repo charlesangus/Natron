@@ -65,6 +65,7 @@
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/IO/IoColorSpace.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
+#include "Engine/Nodes/IO/RawDecodeSupport.h"
 #include "Engine/Nodes/IO/RawExtensions.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Raw/RawDevelop.h"
@@ -181,7 +182,9 @@ NativeRead::initializeKnobs()
     proxy->setName(kOfxImageEffectProxyParamName);
     proxy->setAsInputImage();
     proxy->setHintToolTip(tr("Filename of the proxy images. They are used instead of the images read from the File parameter "
-                             "when the render scale is at or below the proxy threshold."));
+                             "when the render scale is at or below the proxy threshold.\n"
+                             "Not available for a camera raw file, which is always read at full size: downscaling the "
+                             "colour filter array mosaic of a raw file would mix the colours of its photosites."));
     page->addKnob(proxy);
     _proxy = proxy;
 
@@ -367,6 +370,7 @@ NativeRead::initializeKnobs()
 
     refreshTimeKnobState();
     refreshProxyKnobState();
+    refreshRawKnobState();
 }
 
 void
@@ -376,6 +380,7 @@ NativeRead::onKnobsLoaded()
     _inputSpace.refreshMenu();
     refreshTimeKnobState();
     refreshProxyKnobState();
+    refreshRawKnobState();
     refreshAvailableViews(true);
 }
 
@@ -389,7 +394,7 @@ NativeRead::refreshAvailableViews(bool silent)
     }
     // A single view needs no project view of its own, so only a file of several lists them.
     std::string value;
-    const std::string path = representativePath();
+    const std::string path = isRawFile() ? std::string() : representativePath();
     if (!path.empty()) {
         std::string error;
         const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error);
@@ -465,15 +470,27 @@ NativeRead::refreshOutputDataKind()
 }
 
 bool
+NativeRead::isRawFile() const
+{
+    return resolveOutputDataKind(nullptr) == eDataKindRaw;
+}
+
+void
+NativeRead::refreshRawKnobState()
+{
+    const bool raw = isRawFile();
+
+    _inputSpace.setHidden(raw);
+    if (KnobFilePtr proxy = _proxy.lock()) {
+        proxy->setAllDimensionsEnabled(!raw);
+    }
+    refreshProxyKnobState();
+}
+
+bool
 NativeRead::rejectUnsupportedFormat(const std::string& path)
 {
-    // Checked first: OpenImageIO must never hand a camera raw file to a raw-kind edge as an image.
-    if (RawExtensions::isRawPath(path)) {
-        setPersistentMessage(eMessageTypeError, tr("Camera raw decoding is not available: %1").arg(QString::fromStdString(path)).toStdString());
-
-        return true;
-    }
-    if (OiioReadSupport::isReadablePath(path)) {
+    if (RawExtensions::isRawPath(path) || OiioReadSupport::isReadablePath(path)) {
         return false;
     }
     setPersistentMessage(eMessageTypeError, tr("Unsupported format: %1").arg(QString::fromStdString(path)).toStdString());
@@ -606,6 +623,7 @@ NativeRead::purgeCaches()
     addPaths(frameListing(false));
     addPaths(frameListing(true));
     OiioReadSupport::evictHeaders(paths);
+    RawDecodeSupport::evict(paths);
     invalidateOutputMetadata();
     clearActionsCache();
 
@@ -731,7 +749,7 @@ NativeRead::refreshProxyKnobState()
     if (!proxy || !threshold || !original || !custom) {
         return;
     }
-    const bool hasProxy = !proxy->getValue().empty();
+    const bool hasProxy = !proxy->getValue().empty() && !isRawFile();
     const bool isCustom = custom->getValue();
     threshold->setSecret(!hasProxy);
     custom->setSecret(!hasProxy);
@@ -747,7 +765,7 @@ NativeRead::refreshProxyScale()
     KnobDoublePtr original = _originalProxyScale.lock();
     KnobBoolPtr custom = _customProxyScale.lock();
 
-    if (!threshold || !original || !custom || custom->getValue()) {
+    if (!threshold || !original || !custom || custom->getValue() || isRawFile()) {
         return;
     }
 
@@ -815,7 +833,7 @@ NativeRead::proxySourceAt(double time,
     KnobDoublePtr original = _originalProxyScale.lock();
     KnobFilePtr proxy = _proxy.lock();
 
-    if (!threshold || !original || !proxy || proxy->getValue().empty()) {
+    if (!threshold || !original || !proxy || proxy->getValue().empty() || isRawFile()) {
         return false;
     }
     const unsigned int thresholdLevel = levelOfScale(std::min(threshold->getValue(0), threshold->getValue(1)));
@@ -855,8 +873,9 @@ NativeRead::automaticInputSpace() const
 {
     const std::string path = representativePath();
 
-    // A Read without a file converts nothing.
-    if (path.empty()) {
+    // A Read without a file converts nothing, and nor does one of a camera raw file: its data is
+    // sensor values, not colours, until the raw nodes develop it.
+    if (path.empty() || RawExtensions::isRawPath(path)) {
         return std::string();
     }
     AppInstancePtr app = getApp();
@@ -943,6 +962,7 @@ NativeRead::knobChanged(KnobI* k,
     if (k == filename.get()) {
         if (reason != eValueChangedReasonTimeChanged) {
             refreshOutputDataKind();
+            refreshRawKnobState();
             invalidateFrameListing();
             // The filename is part of the hash, which the readers and the caches downstream follow.
             dropCachedOutputMetadata();
@@ -1035,6 +1055,16 @@ NativeRead::getPreferredMetadata(NodeMetadata& metadata)
         return eStatusOK;
     }
     std::string error;
+    if (RawExtensions::isRawPath(path)) {
+        const std::shared_ptr<const RawDecodeSupport::Header> raw = RawDecodeSupport::readHeader(path, &error);
+        if (raw) {
+            metadata.setOutputFormat(raw->format);
+            metadata.setPixelAspectRatio(-1, raw->pixelAspect);
+            metadata.setNComps(-1, raw->channels);
+        }
+
+        return eStatusOK;
+    }
     const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error);
     if (!header || header->subimages.empty()) {
         return eStatusOK;
@@ -1078,6 +1108,15 @@ NativeRead::deriveOutputMetadata(double time,
     metadata.setDouble(kOfxMetadataKeyFileSize, (double)info.size());
 
     std::string error;
+    if (RawExtensions::isRawPath(target.path)) {
+        const std::shared_ptr<const RawDecodeSupport::Header> raw = RawDecodeSupport::readHeader(target.path, &error);
+        if (raw) {
+            metadata.setDouble(kOfxMetadataKeyPixelAspect, raw->pixelAspect);
+            metadata.merge(raw->metadata, ImageMetadata::eMergePreferThis);
+        }
+
+        return metadata;
+    }
     const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(target.path, &error);
     if (header && !header->subimages.empty()) {
         const OIIO::ImageSpec& spec = header->subimages[(std::size_t)colourSubimageOf(*header, projectViewName(view))];
@@ -1119,6 +1158,18 @@ NativeRead::getRegionOfDefinition(U64 /*hash*/,
     }
 
     std::string error;
+    if (RawExtensions::isRawPath(path)) {
+        const std::shared_ptr<const RawDecodeSupport::Header> raw = RawDecodeSupport::readHeader(path, &error);
+        if (!raw) {
+            setPersistentMessage(eMessageTypeError, error.empty() ? tr("Could not read %1").arg(QString::fromStdString(path)).toStdString() : error);
+
+            return eStatusFailed;
+        }
+        *rod = raw->window.toCanonical_noClipping(0, raw->pixelAspect);
+        clearPersistentMessage(false);
+
+        return eStatusOK;
+    }
     const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error);
     if (!header || header->subimages.empty()) {
         setPersistentMessage(eMessageTypeError, error.empty() ? tr("Could not read %1").arg(QString::fromStdString(path)).toStdString() : error);
@@ -1157,7 +1208,8 @@ NativeRead::getComponentsNeededAndProduced(double time,
     // can select do not come and go with the frame.
     const Target target = targetAtTime(time);
     const std::string path = target.kind == ReadTimeDomain::Result::eFile ? target.path : representativePath();
-    if (path.empty()) {
+    // A camera raw file has no layers besides its sensor data.
+    if (path.empty() || RawExtensions::isRawPath(path)) {
         return;
     }
     std::string error;
@@ -1181,6 +1233,7 @@ struct ReadPlane {
     int subimage;
     std::vector<int> fileChannels; // one per component, -1 for a component the file lacks
     OCIO_NAMESPACE::ConstCPUProcessorRcPtr toWorking; // null when the plane is not converted
+    int rawChannels; // the channels of a camera raw file, which is decoded whole per pixel; 0 for OIIO
 };
 
 // Decodes the rows [y1, y2) of plane.rect into plane.target, through a staging buffer holding
@@ -1212,10 +1265,18 @@ decodeBand(const ReadPlane& plane,
         return true;
     }
 
+    if (plane.rawChannels > 0) {
+        lo = 0;
+        hi = plane.rawChannels - 1;
+    }
     const int span = hi - lo + 1;
     const RectI window(plane.rect.x1, y1, plane.rect.x2, y2);
     std::vector<float> staging((std::size_t)width * (y2 - y1) * span);
-    if (!OiioReadSupport::decode(plane.path, plane.subimage, lo, hi + 1, window, staging.data(), (std::size_t)width * span, error)) {
+    if (plane.rawChannels > 0) {
+        if (!RawDecodeSupport::decode(plane.path, window, staging.data(), (std::size_t)width * span, error)) {
+            return false;
+        }
+    } else if (!OiioReadSupport::decode(plane.path, plane.subimage, lo, hi + 1, window, staging.data(), (std::size_t)width * span, error)) {
         return false;
     }
     for (int y = y1; y < y2; ++y) {
@@ -1271,7 +1332,15 @@ NativeRead::render(const RenderActionArgs& args)
 
     std::string error;
     std::shared_ptr<const OiioReadSupport::Header> header;
-    if (source.kind == ReadTimeDomain::Result::eFile) {
+    std::shared_ptr<const RawDecodeSupport::Header> rawHeader;
+    if (source.kind == ReadTimeDomain::Result::eFile && RawExtensions::isRawPath(path)) {
+        rawHeader = RawDecodeSupport::readHeader(path, &error);
+        if (!rawHeader) {
+            setPersistentMessage(eMessageTypeError, error.empty() ? tr("Could not read %1").arg(QString::fromStdString(path)).toStdString() : error);
+
+            return eStatusFailed;
+        }
+    } else if (source.kind == ReadTimeDomain::Result::eFile) {
         if (rejectUnsupportedFormat(path)) {
             return eStatusFailed;
         }
@@ -1323,7 +1392,14 @@ NativeRead::render(const RenderActionArgs& args)
         RectI dataWindow;
         int subimage = 0;
         std::vector<int> fileChannels((std::size_t)nComps, -1);
-        if (header && it->first.isColorLayer()) {
+        if (rawHeader) {
+            if (it->first.isColorLayer()) {
+                dataWindow = rawHeader->window;
+                for (int c = 0; c < nComps && c < rawHeader->channels; ++c) {
+                    fileChannels[(std::size_t)c] = c;
+                }
+            }
+        } else if (header && it->first.isColorLayer()) {
             if (hasColour) {
                 subimage = colourPart.subimage;
                 dataWindow = OiioReadSupport::dataWindowOf(header->subimages[(std::size_t)subimage]);
@@ -1379,6 +1455,7 @@ NativeRead::render(const RenderActionArgs& args)
         plane.path = path;
         plane.subimage = subimage;
         plane.fileChannels = fileChannels;
+        plane.rawChannels = rawHeader ? rawHeader->channels : 0;
         if (it->first.isColorLayer() && (nComps == 3 || nComps == 4)) {
             plane.toWorking = toWorking;
         }

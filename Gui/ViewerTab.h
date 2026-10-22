@@ -253,8 +253,9 @@ public:
     double getDesiredFps() const;
     void setDesiredFps(double fps);
 
-    ///Called by ViewerGL when the image changes to refresh the info bar
-    void setImageFormat(int textureIndex, const ImageLayerDesc& components, ImageBitDepthEnum depth);
+    /// Called by ViewerGL when the image changes to refresh the info bar. A non-empty kindLabel
+    ///("RAW mosaic") replaces the layer and depth.
+    void setImageFormat(int textureIndex, const ImageLayerDesc& components, ImageBitDepthEnum depth, const QString& kindLabel = QString());
 
     void redrawGLWidgets();
 

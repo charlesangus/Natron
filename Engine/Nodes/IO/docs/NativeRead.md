@@ -19,9 +19,9 @@ script-name prefix so the Write can share it.
   hand-written list, so a build with more OIIO plug-ins reads more. A path with
   any other extension gets an "Unsupported format" error from
   `NativeRead::rejectUnsupportedFormat()`. A camera raw extension
-  (`RawExtensions::kExtensions`, `RawExtensions.h`) is checked before that
-  list and never reaches OIIO; until the Read decodes raw it fails with a
-  "Camera raw decoding is not available" error.
+  (`RawExtensions::kExtensions`, `RawExtensions.h`) is claimed before that
+  list: it is left out of `readableExtensions()` even when a kept OIIO format
+  lists it, and the file is decoded by rawspeed, never by OIIO.
 - **Output kind.** The Read declares `eDataKindPolymorphic` and resolves it
   from the `filename` extension (`NativeRead::resolveOutputDataKind()`):
   `eDataKindRaw` for a camera raw extension, `eDataKindImage` otherwise,
@@ -94,6 +94,21 @@ script-name prefix so the Write can share it.
   format's prefix like any other attribute), for downstream native nodes and, via
   `OfxMetadataBridge`, OFX nodes. A black or error frame carries only the pixel aspect. A Read has no frame rate: it
   leaves the output frame rate at the host default and publishes no `ofx/framerate`.
-- **Not read.** RAW (`raw` is excluded; a later milestone adds it) and layered
-  documents such as PSD (`psd` is excluded; deferred to "M79 - Layered Document
-  Readers").
+- **Camera raw.** A raw file is decoded by rawspeed through
+  `RawDecodeSupport.*` and output as `eDataKindRaw`: the undemosaiced sensor
+  data, one channel for a colour filter array mosaic, or the file's 3 or 1
+  channels for linear data such as a linear DNG, in the file's units (no black
+  subtraction, scaling or colour). The region of definition is the active area
+  rawspeed crops to, in Natron's coordinates (y up), and the format is the
+  whole sensor. `deriveOutputMetadata()` adds the `raw/` keys
+  (`RawMetadata.h`) with `raw/stage` = `raw`. rawspeed only decodes whole
+  files, so the first look at a file decodes it; the decoded image is kept in a
+  cache bounded to a quarter of the project's RAM cache, shared by every Read,
+  and the header outlives it. The colourspace knobs are hidden and no
+  conversion is made. The proxy file is disabled, because downscaling a mosaic
+  mixes the colours of its photosites. A camera the linked rawspeed rejects or
+  does not support gives a persistent error naming the make, model and
+  rawspeed version. Frame sequences and the time domain work as for images.
+- **Not read.** Layered documents such as PSD (`psd` is excluded; deferred to
+  "M79 - Layered Document Readers"). OIIO's `raw` plug-in is excluded too:
+  camera raw files go to rawspeed.

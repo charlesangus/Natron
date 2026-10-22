@@ -618,11 +618,21 @@ attempt to register, an implicit conversion of its own; if a node needs data in
 a different kind than what feeds it, it takes that kind as its declared input
 and requires an explicit converter node upstream.
 
-The Viewer is the intended single exception, once there is deep data to
-convert: flattening deep to image for display is the one conversion that has
-nowhere else to go, since it is not part of the graph's result. That is a
-design intent, not current behavior -- `ViewerInstance` declares image inputs
-like every other node here and no flattening exists to run.
+The Viewer is the single exception, for deep and raw: showing them is a
+conversion that has nowhere else to go, since it is not part of the graph's
+result. `ViewerInstance` declares image inputs and answers
+`inputAcceptsDataKindViaAdapter()` for `eDataKindDeep` and `eDataKindRaw`.
+That virtual is only half of the permission; `Node.cpp` must also allow the
+conversion. Deep to image is a row of its adapter table
+(`isRegisteredAdapter`), and the Viewer flattens deep input for display. Raw
+has no row there: `isViewerOnlyAdapter` allows raw to image only into a
+`ViewerInstance`, so every other image input keeps rejecting raw, whatever
+its virtual answers, and needs a `RawToImage` upstream. The Viewer asks a raw
+input for its own plane, whatever layer the Viewer is set to, and shows it
+through `RawDisplay` (`Engine/Nodes/Raw/RawDisplay.*`, shared with
+`RawToImage`). The values are kept as they are, with no demosaic: a mosaic
+shows as grey and linear raw shows its channels, with alpha 1. The info line
+reads "RAW mosaic" or "RAW linear" instead of the layer and depth.
 
 ## Groups resolve kinds from what is inside them
 
@@ -970,9 +980,9 @@ Source, as `staticImagePipelineSpec()` checks.
 
 Raw enters the graph through the native Read, whose output is raw whenever
 its `filename` has a camera raw extension (see "Knob-driven source kinds").
-Until the Read decodes raw, such a Read fails its region of definition and
-render with a "Camera raw decoding is not available" error; OpenImageIO is
-never asked to read the file as an image.
+rawspeed decodes the file (`Engine/Nodes/IO/RawDecodeSupport.*`, see
+`Engine/Nodes/IO/docs/NativeRead.md`); OpenImageIO is never asked to read it
+as an image.
 
 `ImagePipelineSpec::rawStage` says which `raw/stage` the node needs its source
 at: `Any` (the default, and the only choice for an image Source or a Route op),

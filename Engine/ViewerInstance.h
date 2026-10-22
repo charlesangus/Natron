@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <map>
+#include <mutex>
 #include <string>
 
 #include "Engine/EngineFwd.h"
@@ -48,6 +49,7 @@ class ViewerArgs
 public:
     EffectInstancePtr activeInputToRender;
     bool deepUpstream;
+    bool rawUpstream = false;
     bool forceRender;
     int activeInputIndex;
     U64 activeInputHash;
@@ -79,6 +81,12 @@ public:
     virtual ~ViewerInstance();
 
     OpenGLViewerI* getUiContext() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief RawDisplay::label() of the raw input textureIndex last showed, or an empty string
+     * when that input is not raw.
+     **/
+    std::string getRawDisplayLabel(int textureIndex) const WARN_UNUSED_RETURN;
 
     ///Called upon node creation and then never changed
     void setUiContext(OpenGLViewerI* viewer);
@@ -450,13 +458,14 @@ private:
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
     virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL;
 
-    // The Viewer is the one place a deep edge may land on an image input: it flattens what it
-    // displays anyway. Declaring eDataKindPolymorphic instead would be shorter and also work,
-    // but it would accept a scene edge too and make a real scene-to-Viewer mistake silent.
+    // The Viewer is the one place a deep or raw edge may land on an image input: it flattens
+    // deep and shows raw values as they are (RawDisplay) for display only. Declaring
+    // eDataKindPolymorphic instead would be shorter and also work, but it would accept a scene
+    // edge too and make a real scene-to-Viewer mistake silent.
     virtual bool inputAcceptsDataKindViaAdapter(int /*inputNb*/,
                                                 DataKindEnum kind) const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        return kind == eDataKindDeep;
+        return (kind == eDataKindDeep) || (kind == eDataKindRaw);
     }
     /*******************************************/
 
@@ -485,6 +494,8 @@ private:
 private:
 
     std::unique_ptr<ViewerInstancePrivate> _imp;
+    mutable std::mutex _rawDisplayLabelMutex;
+    std::string _rawDisplayLabel[2];
 };
 
 enum ViewerDisplayOutputEnum {

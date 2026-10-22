@@ -41,6 +41,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGraphI.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/IO/RawExtensions.h"
 #include "Engine/Nodes/Raw/RawDemosaic.h"
@@ -157,6 +158,9 @@ buildChain(const NodePtr& read)
         }
 
         return Chain();
+    }
+    if (NodeGraphI* graph = group->getNodeGraph()) {
+        graph->addNodesToCreationOf(read, { chain.prepare, chain.temperature, chain.highlights, chain.demosaic, chain.inputColor, chain.backdrop });
     }
 
     return chain;

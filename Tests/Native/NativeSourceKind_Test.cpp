@@ -276,9 +276,9 @@ TEST_F(NativeSourceKindTest, ResolvedKindSurvivesSaveAndLoad)
     EXPECT_FALSE(imageSink2->hasPersistentMessage());
 }
 
-// Rendering a Read on a raw file reports an error on the Read and renders nothing; OpenImageIO
-// never gets to read the file as an image.
-TEST_F(NativeSourceKindTest, RawFileFailsCleanlyWithoutARawDecoder)
+// A Read of a raw file that does not exist reports the error on the Read and renders nothing;
+// OpenImageIO never gets to read the file as an image.
+TEST_F(NativeSourceKindTest, MissingRawFileFailsCleanly)
 {
     NodePtr read = createRead(kRawPath);
 
@@ -295,5 +295,5 @@ TEST_F(NativeSourceKindTest, RawFileFailsCleanlyWithoutARawDecoder)
     QString message;
     int type = 0;
     read->getPersistentMessage(&message, &type, false);
-    EXPECT_TRUE(message.contains(QString::fromUtf8("raw"), Qt::CaseInsensitive)) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("plate.CR2"))) << message.toStdString();
 }

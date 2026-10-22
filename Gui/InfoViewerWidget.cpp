@@ -583,13 +583,14 @@ InfoViewerWidget::setDataWindow(const RectI & r)
 
 void
 InfoViewerWidget::setImageFormat(const ImageLayerDesc& comp,
-                                 ImageBitDepthEnum depth)
+                                 ImageBitDepthEnum depth,
+                                 const QString& kindLabel)
 {
     const QFont& font = imageFormat->font();
     QString text = QString::fromUtf8("<font face=\"%1\" size=%2>")
                        .arg(font.family())
                        .arg(font.pixelSize());
-    QString format = QString::fromUtf8( Image::getFormatString(comp, depth).c_str() );
+    QString format = kindLabel.isEmpty() ? QString::fromUtf8(Image::getFormatString(comp, depth).c_str()) : kindLabel;
 
     text.append(format);
     text.append( QString::fromUtf8("</font>") );

@@ -433,6 +433,23 @@ TEST(KnobYaml, StringAnimationThatIsNotTheImpliedCurveKeepsBoth)
     expectKnobsEqual(YamlTest::canonicalKnob(text), decoded);
 }
 
+TEST(KnobYaml, StringAnimationWithEndKeyDerivativesIsStillTheImpliedCurve)
+{
+    KnobSerialization text = makeKnob(kKnobTypes[4], eKnobVariantAnimated);
+    text.name = "filename";
+    text.dimensions[0].curve->keyframes[0].leftDerivative = 0.;
+    text.dimensions[0].curve->keyframes[0].rightDerivative = 1.5;
+    text.dimensions[0].curve->keyframes[1].leftDerivative = 1.5;
+    text.dimensions[0].curve->keyframes[1].rightDerivative = 0.;
+
+    const std::string yaml = Serialization::encodeKnobsYaml({ text });
+    EXPECT_EQ("filename: {curve: [1, \"first\", 12, \"second \\\"quoted\\\"\"]}\n", yaml);
+    KnobSerialization decoded = decodeOne(yaml);
+    Serialization::completeKnobSerialization(&decoded, "String", 1);
+    expectKnobsEqual(YamlTest::canonicalKnob(text), decoded);
+    EXPECT_EQ(yaml, Serialization::encodeKnobsYaml({ decoded }));
+}
+
 TEST(KnobYaml, LinkFormsRoundTrip)
 {
     KnobSerialization knob = makeKnob(kKnobTypes[2], eKnobVariantStatic);

@@ -558,6 +558,8 @@ Node::destroyNode(bool blockingDestroy, bool autoReconnect)
         NodePtr keepAlive;
         if (_imp->renderWatcher) {
             keepAlive = shared_from_this();
+            // A node is never destroyed from its own watcher, which only quits or aborts processing.
+            assert(QThread::currentThread() != _imp->renderWatcher.get());
             _imp->renderWatcher->finishPendingTasksAndStop();
             _imp->renderWatcher.reset();
         }

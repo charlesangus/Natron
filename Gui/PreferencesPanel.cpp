@@ -858,6 +858,7 @@ PreferencesPanel::onItemEnabledCheckBoxChecked(bool checked)
         if (it->enabledCheckbox == cb) {
             it->plugin->setActivated(checked);
             _imp->pluginSettingsChanged = true;
+            appPTR->onPluginsActivationChanged();
             break;
         }
     }
@@ -1225,6 +1226,7 @@ PreferencesPanel::closeEvent(QCloseEvent*)
         }
         if (_imp->pluginSettingsChanged) {
             settings->restorePluginSettings();
+            appPTR->onPluginsActivationChanged();
         }
     }
 }

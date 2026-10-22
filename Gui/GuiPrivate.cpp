@@ -48,9 +48,10 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 // /opt/local/include/QtGui/qmime.h:119:10: warning: private field 'type' is not used [-Wunused-private-field]
 #include <QCloseEvent>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
-#include <QHBoxLayout>
-#include <QGraphicsScene>
 #include <QApplication>
+#include <QGraphicsScene>
+#include <QHBoxLayout>
+#include <QMenu>
 #include <QMenuBar>
 
 #include <QFontMetrics>
@@ -113,7 +114,6 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/Splitter.h"
 #include "Gui/TabWidget.h"
 #include "Gui/ThemedIcon.h"
-#include "Gui/ToolButton.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
 
@@ -488,6 +488,7 @@ private:
 
     virtual void mousePressEvent(QMouseEvent* e) OVERRIDE FINAL
     {
+        appPTR->setNodesMenuTarget(_gui);
         _menuOpened = !_menuOpened;
         if (_menuOpened) {
             setFocus();
@@ -506,6 +507,7 @@ private:
 
     virtual void keyPressEvent(QKeyEvent* e) OVERRIDE FINAL
     {
+        appPTR->setNodesMenuTarget(_gui);
         if (e->key() == Qt::Key_Right) {
             QMenu* m = menu();
             if (m) {
@@ -537,6 +539,7 @@ private:
             setFocus();
             _gui->setToolButtonMenuOpened(this);
             _menuOpened = true;
+            appPTR->setNodesMenuTarget(_gui);
             showMenu();
         }
         QToolButton::enterEvent(e);
@@ -545,22 +548,50 @@ private:
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
-
 void
-GuiPrivate::addToolButton(ToolButton* tool)
+GuiPrivate::addToolButton(QAction* groupingMenuAction)
 {
     QToolButton* button = new AutoRaiseToolButton(_gui, _toolBox);
 
     //button->setArrowType(Qt::NoArrow); // has no effect (arrow is still displayed)
     //button->setToolButtonStyle(Qt::ToolButtonIconOnly); // has no effect (arrow is still displayed)
-    button->setIcon( tool->getToolButtonIcon() );
-    button->setMenu( tool->getMenu() );
+    button->setIcon(groupingMenuAction->property(kNodesMenuPropToolButtonIcon).value<QIcon>());
+    button->setMenu(groupingMenuAction->menu());
 
     const QSize toolButtonSize( TO_DPIX(NATRON_TOOL_BUTTON_SIZE), TO_DPIY(NATRON_TOOL_BUTTON_SIZE) );
     button->setFixedSize(toolButtonSize);
     button->setPopupMode(QToolButton::InstantPopup);
-    button->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tool->getLabel().trimmed(), NATRON_NAMESPACE::WhiteSpaceNormal) );
-    _toolBox->addWidget(button);
+    const QString label = groupingMenuAction->property(kNodesMenuPropGrouping).toString();
+    button->setToolTip(NATRON_NAMESPACE::convertFromPlainText(label.trimmed(), NATRON_NAMESPACE::WhiteSpaceNormal));
+    _nodesToolBoxActions.push_back(_toolBox->addWidget(button));
+}
+
+void
+GuiPrivate::rebuildNodesToolBox()
+{
+    if (!_toolBox) {
+        return;
+    }
+    _toolButtonMenuOpened = 0;
+    // The toolbar releases a removed action's widget, and the action it made for that widget
+    // deletes the widget with it. A rebuild can be requested from inside a button's own popup,
+    // hence the deferred deletion.
+    for (std::size_t i = 0; i < _nodesToolBoxActions.size(); ++i) {
+        _toolBox->removeAction(_nodesToolBoxActions[i]);
+        _nodesToolBoxActions[i]->deleteLater();
+    }
+    _nodesToolBoxActions.clear();
+
+    QMenu* nodesMenu = appPTR->getNodesMenu();
+    if (!nodesMenu) {
+        return;
+    }
+    QList<QAction*> actions = nodesMenu->actions();
+    for (int i = 0; i < actions.size(); ++i) {
+        if (actions[i]->menu() && actions[i]->property(kNodesMenuPropPluginOwned).toBool()) {
+            addToolButton(actions[i]);
+        }
+    }
 }
 
 void

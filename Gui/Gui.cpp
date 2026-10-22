@@ -61,7 +61,6 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/ProjectGui.h"
 #include "Gui/RenderStatsDialog.h"
 #include "Gui/ThemedIcon.h"
-#include "Gui/ToolButton.h"
 #include "Gui/ViewerTab.h"
 
 NATRON_NAMESPACE_ENTER
@@ -92,7 +91,8 @@ Gui::Gui(const GuiAppInstancePtr& app,
                       SLOT(onDoDialog(int,QString,QString,bool,StandardButtons,int)) );
     QObject::connect( this, SIGNAL(doDialogWithStopAskingCheckbox(int,QString,QString,bool,StandardButtons,int)), this,
                       SLOT(onDoDialogWithStopAskingCheckbox(int,QString,QString,bool,StandardButtons,int)) );
-    QObject::connect( app.get(), SIGNAL(pluginsPopulated()), this, SLOT(addToolButttonsToToolBar()) );
+    QObject::connect(app.get(), SIGNAL(pluginsPopulated()), this, SLOT(rebuildNodesToolBox()));
+    QObject::connect(appPTR, SIGNAL(nodesMenuRebuilt()), this, SLOT(rebuildNodesToolBox()));
     QObject::connect( qApp, SIGNAL(focusChanged(QWidget*,QWidget*)), this, SLOT(onFocusChanged(QWidget*,QWidget*)) );
     QObject::connect (this, SIGNAL(s_showLogOnMainThread()), this, SLOT(onShowLogOnMainThreadReceived()));
 
@@ -118,9 +118,6 @@ Gui::~Gui()
     delete _imp->_projectGui;
     delete _imp->_undoStacksGroup;
     _imp->_viewerTabs.clear();
-    for (U32 i = 0; i < _imp->_toolButtons.size(); ++i) {
-        delete _imp->_toolButtons[i];
-    }
 }
 
 bool

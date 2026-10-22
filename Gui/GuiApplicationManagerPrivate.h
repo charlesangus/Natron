@@ -34,10 +34,11 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QCursor>
 #include <QFutureWatcher>
+#include <QPointer>
 #include <QString>
 #include <QTimer>
-#include <QCursor>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -64,6 +65,8 @@ struct GuiApplicationManagerPrivate
 {
     GuiApplicationManager* _publicInterface;
     std::list<PluginGroupNodePtr> _topLevelToolButtons;
+    QMenu* nodesMenu;
+    QPointer<Gui> nodesMenuTarget;
     std::unique_ptr<KnobsClipBoard> _knobsClipBoard;
     std::unique_ptr<KnobGuiFactory> _knobGuiFactory;
     QCursor _colorPickerCursor, _linkToCursor, _linkMultCursor;
@@ -142,6 +145,13 @@ struct GuiApplicationManagerPrivate
                                                                      bool isUserCreatable);
 
     void updateFontConfigCache();
+
+    // Adds the grouping's plug-ins to its submenu of parent, creating the submenu if needed.
+    void populateNodesMenuGroup(QMenu* parent, const PluginGroupNode& group, const std::list<PluginGroupNodePtr>& children);
+
+    void addNodesMenuPluginAction(QMenu* menu, const PluginGroupNode& leaf);
+
+    void createNodeFromNodesMenu(const QString& pluginID, int major, int minor);
 };
 
 NATRON_NAMESPACE_EXIT

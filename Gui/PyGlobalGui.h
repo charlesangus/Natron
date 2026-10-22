@@ -107,6 +107,13 @@ public:
         return Dialogs::questionDialog(title.toStdString(), message.toStdString(), false);
     }
 
+    QMenu* nodesMenu() const
+    {
+        GuiApplicationManager* manager = dynamic_cast<GuiApplicationManager*>(AppManager::instance());
+
+        return manager ? manager->getNodesMenu() : 0;
+    }
+
     void addMenuCommand(const QString& grouping,
                         const QString& pythonFunctionName)
     {

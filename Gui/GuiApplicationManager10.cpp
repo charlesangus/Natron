@@ -343,6 +343,7 @@ GuiApplicationManager::onAllPluginsLoaded()
     ///Restore user shortcuts only when all plug-ins are populated.
     loadShortcuts();
     AppManager::onAllPluginsLoaded();
+    rebuildNodesMenu();
     TabMenuBridge::bootstrap();
 }
 

@@ -49,6 +49,8 @@ NATRON_NAMESPACE_ENTER
 GuiApplicationManagerPrivate::GuiApplicationManagerPrivate(GuiApplicationManager* publicInterface)
     : _publicInterface(publicInterface)
     , _topLevelToolButtons()
+    , nodesMenu(NULL)
+    , nodesMenuTarget()
     , _knobsClipBoard(new KnobsClipBoard)
     , _knobGuiFactory(new KnobGuiFactory())
     , _colorPickerCursor()

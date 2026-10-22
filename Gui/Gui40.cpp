@@ -434,12 +434,6 @@ Gui::setNextViewerAnchor(TabWidget* where)
     _imp->_nextViewerTabPlace = where;
 }
 
-const std::vector<ToolButton*> &
-Gui::getToolButtons() const
-{
-    return _imp->_toolButtons;
-}
-
 GuiAppInstancePtr
 Gui::getApp() const
 {

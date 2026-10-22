@@ -62,6 +62,22 @@
  **/
 #define getKeybind(group, action) ( appPTR->getKeySequenceForAction(group, action) )
 
+#define kNodesMenuObjectName "NodesMenu"
+
+// Set on every action the plug-in tree puts in the nodes menu, plug-in leaves and grouping
+// submenus' menu actions alike. Rebuilding the tree only ever removes actions carrying it.
+#define kNodesMenuPropPluginOwned "natronPluginOwned"
+
+// On plug-in actions.
+#define kNodesMenuPropPluginID "natronPluginID"
+#define kNodesMenuPropPluginMajor "natronPluginMajor"
+#define kNodesMenuPropCategoryColor "natronCategoryColor"
+#define kNodesMenuPropShortcut "natronShortcut"
+
+// On grouping submenus' menu actions: the grouping's name, unescaped, and the icon the
+// toolbar draws for it.
+#define kNodesMenuPropGrouping "natronGrouping"
+#define kNodesMenuPropToolButtonIcon "natronToolButtonIcon"
 
 NATRON_NAMESPACE_ENTER
 
@@ -95,6 +111,31 @@ public:
                                                                      int major,
                                                                      int minor,
                                                                      bool isUserCreatable);
+
+    /**
+     * @brief The process-wide menu of every user-creatable plug-in, one submenu per grouping.
+     * Null until the plug-ins have loaded. Every window's toolbar and node graph show it.
+     **/
+    QMenu* getNodesMenu() const;
+
+    /**
+     * @brief Replaces the plug-in-owned actions of the nodes menu with the current plug-in tree,
+     * keeping any other action, and emits nodesMenuRebuilt().
+     **/
+    void rebuildNodesMenu();
+
+    /**
+     * @brief Adds tree entries for plug-ins that became user-creatable since they were loaded,
+     * then rebuilds the nodes menu.
+     **/
+    void onPluginsActivationChanged();
+
+    /**
+     * @brief The window whose toolbar or graph is about to show the nodes menu: nodes created
+     * from it go into that window's last selected node collection.
+     **/
+    void setNodesMenuTarget(Gui* gui);
+
     virtual bool isBackground() const OVERRIDE FINAL
     {
         return false;
@@ -219,6 +260,8 @@ Q_SIGNALS:
     // that hold a rendered QPixmap (labels, cursors, GL textures) re-render on it; QIcons
     // built by ThemedIcon recolour on their own when repainted.
     void themeChanged();
+
+    void nodesMenuRebuilt();
 
 public:
 #ifdef Q_OS_DARWIN

@@ -51,7 +51,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/Menu.h"
 #include "Gui/NodeGui.h"
 #include "Gui/SequenceFileDialog.h"
-#include "Gui/ToolButton.h"
 
 #include "Global/QtCompat.h"
 
@@ -477,11 +476,11 @@ NodeGraph::showMenu(const QPoint & pos)
 
     _imp->_menu->addSeparator();
 
-    std::list<ToolButton*> orederedToolButtons = getGui()->getToolButtonsOrdered();
-    for (std::list<ToolButton*>::iterator it = orederedToolButtons.begin(); it != orederedToolButtons.end(); ++it) {
-        (*it)->getMenu()->setIcon( (*it)->getMenuIcon() );
-        _imp->_menu->addAction( (*it)->getMenu()->menuAction() );
+    QMenu* nodesMenu = appPTR->getNodesMenu();
+    if (nodesMenu) {
+        _imp->_menu->addActions(nodesMenu->actions());
     }
+    appPTR->setNodesMenuTarget(getGui());
 
     QAction* ret = _imp->_menu->exec(pos);
     if (ret == findAction) {

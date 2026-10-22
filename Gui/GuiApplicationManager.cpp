@@ -26,15 +26,20 @@
 #include "GuiApplicationManager.h"
 #include "GuiApplicationManagerPrivate.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QAction>
 #include <QApplication>
 #include <QColor>
 #include <QDebug>
+#include <QFile>
 #include <QFontDatabase>
 #include <QIcon>
+#include <QKeySequence>
+#include <QMenu>
 #include <QPixmapCache>
 #include <QSettings>
 #include <QtConcurrentRun> // QtCore on Qt4, QtConcurrent on Qt5
@@ -46,7 +51,10 @@ CLANG_DIAG_ON(uninitialized)
 #include "Global/FloatingPointExceptions.h"
 #endif
 
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h" // PLUGINID_OFX_*
+#include "Engine/Node.h"
+#include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/Settings.h"
 #include "Gui/DocumentationManager.h"
@@ -54,6 +62,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiDefines.h"
 #include "Gui/KnobGuiFactory.h"
+#include "Gui/Menu.h"
 #include "Gui/PreviewThread.h"
 #include "Gui/QtEnumConvert.h"
 #include "Gui/SplashScreen.h"
@@ -89,6 +98,7 @@ GuiApplicationManager::~GuiApplicationManager()
         }
     }
     _imp->previewRenderThread.quitThread(false);
+    delete _imp->nodesMenu;
 }
 
 namespace {
@@ -1132,8 +1142,506 @@ GuiApplicationManager::onPluginLoaded(Plugin* plugin)
 void
 GuiApplicationManager::ignorePlugin(Plugin* plugin)
 {
-    _imp->removePluginToolButton( plugin->getGrouping() );
-    _imp->removeKeybind( QString::fromUtf8(kShortcutGroupNodes), plugin->getPluginID() );
+    const QStringList& groups = plugin->getGrouping();
+    QStringList groupingWithID = groups;
+    groupingWithID.push_back(plugin->getPluginID());
+    _imp->removePluginToolButton(groupingWithID);
+
+    QString shortcutGrouping = QString::fromUtf8(kShortcutGroupNodes);
+    for (int i = 0; i < groups.size(); ++i) {
+        shortcutGrouping.push_back(QLatin1Char('/'));
+        shortcutGrouping.push_back(groups[i]);
+    }
+    _imp->removeKeybind(shortcutGrouping, plugin->getPluginID());
+
+    if (_imp->nodesMenu) {
+        rebuildNodesMenu();
+    }
+}
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+#define PLUGIN_GROUP_DEFAULT_ICON_PATH NATRON_ICONS_PATH "lucide/puzzle.svg"
+
+// Group ordering is set at every place in the code where GROUP_ORDER appears in the comments
+const char* const namedGroupsOrdered[] = {
+    PLUGIN_GROUP_IMAGE,
+    PLUGIN_GROUP_PAINT,
+    PLUGIN_GROUP_TIME,
+    PLUGIN_GROUP_CHANNEL,
+    PLUGIN_GROUP_COLOR,
+    PLUGIN_GROUP_FILTER,
+    PLUGIN_GROUP_KEYER,
+    PLUGIN_GROUP_MERGE,
+    PLUGIN_GROUP_TRANSFORM,
+    PLUGIN_GROUP_3D,
+    PLUGIN_GROUP_DEEP,
+    PLUGIN_GROUP_METADATA,
+    PLUGIN_GROUP_MULTIVIEW,
+    PLUGIN_GROUP_TOOLSETS,
+    PLUGIN_GROUP_OTHER,
+    PLUGIN_GROUP_DEFAULT
+};
+const int namedGroupsCount = sizeof(namedGroupsOrdered) / sizeof(namedGroupsOrdered[0]);
+
+void
+getIconForGrouping(QIcon* icon,
+                   int size,
+                   const QString& grouping)
+{
+    PixmapEnum e = NATRON_PIXMAP_OTHER_PLUGINS;
+
+    // Group ordering is set at every place in the code where GROUP_ORDER appears in the comments
+    if (grouping == QString::fromUtf8(PLUGIN_GROUP_IMAGE)) {
+        e = NATRON_PIXMAP_IO_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_PAINT)) {
+        e = NATRON_PIXMAP_PAINT_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_TIME)) {
+        e = NATRON_PIXMAP_TIME_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_CHANNEL)) {
+        e = NATRON_PIXMAP_CHANNEL_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_COLOR)) {
+        e = NATRON_PIXMAP_COLOR_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_FILTER)) {
+        e = NATRON_PIXMAP_FILTER_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_KEYER)) {
+        e = NATRON_PIXMAP_KEYER_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_MERGE)) {
+        e = NATRON_PIXMAP_MERGE_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_TRANSFORM)) {
+        e = NATRON_PIXMAP_TRANSFORM_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_3D)) {
+        e = NATRON_PIXMAP_3D_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_DEEP)) {
+        e = NATRON_PIXMAP_DEEP_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_METADATA)) {
+        e = NATRON_PIXMAP_METADATA_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_MULTIVIEW)) {
+        e = NATRON_PIXMAP_MULTIVIEW_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_TOOLSETS)) {
+        e = NATRON_PIXMAP_TOOLSETS_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_OTHER)) {
+        e = NATRON_PIXMAP_MISC_GROUPING;
+    }
+    appPTR->getIcon(e, size, icon);
+}
+
+void
+makePluginGroupIcons(const PluginGroupNode& node,
+                     QIcon* menuIcon,
+                     QIcon* toolButtonIcon)
+{
+    const QString& iconPath = node.getIconPath();
+
+    if (!iconPath.isEmpty() && QFile::exists(iconPath)) {
+        int menuSize = TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE);
+        int toolButtonSize = !node.hasParent() ? TO_DPIX(NATRON_TOOL_BUTTON_ICON_SIZE) : TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE);
+        if (ThemedIcon::isSvgPath(iconPath)) {
+            // A built-in plugin (e.g. RotoPaint) pointed at a vendored glyph gets the
+            // same themed Normal/On/Disabled states as the toolbox grouping icons.
+            // An OFX plugin's own icon is always a PNG, so it never reaches this branch.
+            *menuIcon = ThemedIcon::icon(iconPath, menuSize);
+            *toolButtonIcon = ThemedIcon::icon(iconPath, toolButtonSize);
+        } else if (!node.hasParent() && !node.getChildren().empty()) {
+            // A plugin bundle's own top-level grouping (e.g. openfx-arena's "Extra") brings a
+            // colour PNG into the otherwise monochrome toolbox. Its silhouette is kept and drawn
+            // in the theme colour; plugins' own icons, which may be colour-coded, keep theirs.
+            *menuIcon = ThemedIcon::tintedIcon(iconPath, menuSize);
+            *toolButtonIcon = ThemedIcon::tintedIcon(iconPath, toolButtonSize);
+        } else {
+            QPixmap pix(iconPath);
+            QPixmap menuPix = pix, toolbuttonPix = pix;
+            if ((std::max(menuPix.width(), menuPix.height()) != menuSize) && !menuPix.isNull()) {
+                menuPix = menuPix.scaled(menuSize, menuSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            }
+            if ((std::max(toolbuttonPix.width(), toolbuttonPix.height()) != toolButtonSize) && !toolbuttonPix.isNull()) {
+                toolbuttonPix = toolbuttonPix.scaled(toolButtonSize, toolButtonSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            }
+            menuIcon->addPixmap(menuPix);
+            toolButtonIcon->addPixmap(toolbuttonPix);
+        }
+    } else if (!node.hasParent()) {
+        getIconForGrouping(toolButtonIcon, TO_DPIX(NATRON_TOOL_BUTTON_ICON_SIZE), node.getLabel());
+        getIconForGrouping(menuIcon, TO_DPIX(NATRON_TOOL_BUTTON_ICON_SIZE), node.getLabel());
+    }
+}
+
+// QMenu treats a single '&' as a mnemonic marker.
+QString
+escapedMenuText(const QString& text)
+{
+    QString ret = text;
+
+    ret.replace(QString::fromUtf8("&"), QString::fromUtf8("&&"));
+
+    return ret;
+}
+
+bool
+isPluginOwned(const QAction* action)
+{
+    return action->property(kNodesMenuPropPluginOwned).toBool();
+}
+
+const Plugin*
+findPlugin(const QString& pluginID,
+           int major)
+{
+    const PluginsMap& plugins = appPTR->getPluginsList();
+    PluginsMap::const_iterator found = plugins.find(pluginID.toStdString());
+
+    if (found == plugins.end()) {
+        return 0;
+    }
+    for (PluginVersionsOrdered::const_reverse_iterator it = found->second.rbegin(); it != found->second.rend(); ++it) {
+        if ((*it)->getMajorVersion() == major) {
+            return *it;
+        }
+    }
+
+    return 0;
+}
+
+QString
+categoryColorName(const Plugin& plugin)
+{
+    float r, g, b;
+
+    appPTR->getCurrentSettings()->getNodeCategoryColor(Node::categoryForPlugin(plugin), &r, &g, &b);
+
+    return QColor::fromRgbF(std::clamp(r, 0.f, 1.f),
+                            std::clamp(g, 0.f, 1.f),
+                            std::clamp(b, 0.f, 1.f))
+        .name();
+}
+
+QString
+shortcutText(const Plugin& plugin)
+{
+    QString shortcutGroup = QString::fromUtf8(kShortcutGroupNodes);
+    const QStringList& grouping = plugin.getGrouping();
+
+    for (int i = 0; i < grouping.size(); ++i) {
+        shortcutGroup += QLatin1Char('/') + grouping[i];
+    }
+    std::list<QKeySequence> sequences = getKeybind(shortcutGroup, plugin.getPluginID());
+
+    return sequences.empty() ? QString() : sequences.front().toString(QKeySequence::NativeText);
+}
+
+bool
+hasPluginGroupNode(const std::list<PluginGroupNodePtr>& level,
+                   const QStringList& path,
+                   int depth,
+                   int major)
+{
+    for (std::list<PluginGroupNodePtr>::const_iterator it = level.begin(); it != level.end(); ++it) {
+        if ((*it)->getID() != path[depth]) {
+            continue;
+        }
+        if (depth + 1 < path.size()) {
+            if (hasPluginGroupNode((*it)->getChildren(), path, depth + 1, major)) {
+                return true;
+            }
+        } else if ((*it)->getMajorVersion() == major) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+QMenu*
+findPluginOwnedSubmenu(QMenu* parent,
+                       const QString& grouping)
+{
+    QList<QAction*> actions = parent->actions();
+
+    for (int i = 0; i < actions.size(); ++i) {
+        if (actions[i]->menu() && isPluginOwned(actions[i]) && (actions[i]->property(kNodesMenuPropGrouping).toString() == grouping)) {
+            return actions[i]->menu();
+        }
+    }
+
+    return 0;
+}
+
+// Deletion is deferred because a rebuild can be requested from a slot of an action that is
+// still being triggered.
+void
+removePluginOwnedLeaves(QMenu* menu)
+{
+    QList<QAction*> actions = menu->actions();
+
+    for (int i = 0; i < actions.size(); ++i) {
+        if (!isPluginOwned(actions[i])) {
+            continue;
+        }
+        if (actions[i]->menu()) {
+            removePluginOwnedLeaves(actions[i]->menu());
+        } else {
+            menu->removeAction(actions[i]);
+            actions[i]->deleteLater();
+        }
+    }
+}
+
+void
+removeEmptyPluginOwnedSubmenus(QMenu* menu)
+{
+    QList<QAction*> actions = menu->actions();
+
+    for (int i = 0; i < actions.size(); ++i) {
+        QMenu* submenu = actions[i]->menu();
+        if (!submenu || !isPluginOwned(actions[i])) {
+            continue;
+        }
+        removeEmptyPluginOwnedSubmenus(submenu);
+        if (submenu->actions().isEmpty()) {
+            menu->removeAction(actions[i]);
+            submenu->deleteLater();
+        }
+    }
+}
+
+int
+topLevelRank(const QAction* action,
+             const QStringList& treeOrder)
+{
+    const QString grouping = action->property(kNodesMenuPropGrouping).toString();
+
+    for (int i = 0; i < namedGroupsCount; ++i) {
+        if (grouping == QString::fromUtf8(namedGroupsOrdered[i])) {
+            return i;
+        }
+    }
+    int index = treeOrder.indexOf(grouping);
+
+    return namedGroupsCount + (index < 0 ? treeOrder.size() : index);
+}
+
+// Plug-in-owned actions come first, in the given order, and every other action keeps its
+// relative order after them.
+template <typename LessThan>
+void
+orderPluginOwnedActions(QMenu* menu,
+                        LessThan lessThan)
+{
+    QList<QAction*> actions = menu->actions();
+    QList<QAction*> owned, others;
+
+    for (int i = 0; i < actions.size(); ++i) {
+        (isPluginOwned(actions[i]) ? owned : others).push_back(actions[i]);
+    }
+    std::stable_sort(owned.begin(), owned.end(), lessThan);
+    QList<QAction*> ordered = owned + others;
+    if (ordered == actions) {
+        return;
+    }
+    for (int i = 0; i < actions.size(); ++i) {
+        menu->removeAction(actions[i]);
+    }
+    menu->addActions(ordered);
+}
+
+bool
+actionTextLessThan(const QAction* lhs,
+                   const QAction* rhs)
+{
+    return lhs->text() < rhs->text();
+}
+
+void
+sortPluginOwnedSubmenus(QMenu* menu)
+{
+    QList<QAction*> actions = menu->actions();
+
+    for (int i = 0; i < actions.size(); ++i) {
+        if (actions[i]->menu() && isPluginOwned(actions[i])) {
+            orderPluginOwnedActions(actions[i]->menu(), actionTextLessThan);
+            sortPluginOwnedSubmenus(actions[i]->menu());
+        }
+    }
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+QMenu*
+GuiApplicationManager::getNodesMenu() const
+{
+    return _imp->nodesMenu;
+}
+
+void
+GuiApplicationManager::setNodesMenuTarget(Gui* gui)
+{
+    _imp->nodesMenuTarget = gui;
+}
+
+void
+GuiApplicationManagerPrivate::createNodeFromNodesMenu(const QString& pluginID,
+                                                      int major,
+                                                      int minor)
+{
+    GuiAppInstancePtr app;
+    if (nodesMenuTarget) {
+        app = nodesMenuTarget->getApp();
+    }
+    if (!app) {
+        app = std::dynamic_pointer_cast<GuiAppInstance>(_publicInterface->getTopLevelInstance());
+    }
+    if (!app || !app->getGui()) {
+        return;
+    }
+    NodeCollectionPtr group = app->getGui()->getLastSelectedNodeCollection();
+    if (!group) {
+        return;
+    }
+    CreateNodeArgs args(pluginID.toStdString(), group);
+    args.setProperty<int>(kCreateNodeArgsPropPluginVersion, major, 0);
+    args.setProperty<int>(kCreateNodeArgsPropPluginVersion, minor, 1);
+    app->createNode(args);
+}
+
+void
+GuiApplicationManagerPrivate::populateNodesMenuGroup(QMenu* parent,
+                                                     const PluginGroupNode& group,
+                                                     const std::list<PluginGroupNodePtr>& children)
+{
+    QMenu* menu = findPluginOwnedSubmenu(parent, group.getLabel());
+
+    if (!menu) {
+        QIcon menuIcon, toolButtonIcon;
+        makePluginGroupIcons(group, &menuIcon, &toolButtonIcon);
+        menu = new Menu(parent);
+        menu->setTitle(escapedMenuText(group.getLabel()));
+        menu->setIcon(menuIcon);
+        QAction* menuAction = menu->menuAction();
+        menuAction->setProperty(kNodesMenuPropPluginOwned, true);
+        menuAction->setProperty(kNodesMenuPropGrouping, group.getLabel());
+        menuAction->setProperty(kNodesMenuPropToolButtonIcon, QVariant::fromValue(toolButtonIcon));
+        parent->addAction(menuAction);
+    }
+
+    for (std::list<PluginGroupNodePtr>::const_iterator it = children.begin(); it != children.end(); ++it) {
+        if ((*it)->getChildren().empty()) {
+            addNodesMenuPluginAction(menu, **it);
+        } else {
+            populateNodesMenuGroup(menu, **it, (*it)->getChildren());
+        }
+    }
+}
+
+void
+GuiApplicationManagerPrivate::addNodesMenuPluginAction(QMenu* menu,
+                                                       const PluginGroupNode& leaf)
+{
+    const Plugin* plugin = findPlugin(leaf.getID(), leaf.getMajorVersion());
+    bool isUserCreatable = plugin ? plugin->getIsUserCreatable() : leaf.getIsUserCreatable();
+
+    if (!isUserCreatable) {
+        return;
+    }
+
+    QString label = leaf.getNotHighestMajorVersion() ? leaf.getLabelVersionMajorEncoded() : leaf.getLabel();
+    QIcon menuIcon, toolButtonIcon;
+    makePluginGroupIcons(leaf, &menuIcon, &toolButtonIcon);
+
+    QAction* action = new QAction(menu);
+    action->setText(escapedMenuText(label));
+    action->setIcon(menuIcon);
+    action->setProperty(kNodesMenuPropPluginOwned, true);
+    action->setProperty(kNodesMenuPropPluginID, leaf.getID());
+    action->setProperty(kNodesMenuPropPluginMajor, leaf.getMajorVersion());
+    action->setProperty(kNodesMenuPropCategoryColor, plugin ? categoryColorName(*plugin) : QString());
+    action->setProperty(kNodesMenuPropShortcut, plugin ? shortcutText(*plugin) : QString());
+
+    const QString pluginID = leaf.getID();
+    const int major = leaf.getMajorVersion();
+    const int minor = leaf.getMinorVersion();
+    QObject::connect(action, &QAction::triggered, _publicInterface, [this, pluginID, major, minor]() {
+        createNodeFromNodesMenu(pluginID, major, minor);
+    });
+    menu->addAction(action);
+}
+
+void
+GuiApplicationManager::rebuildNodesMenu()
+{
+    if (!qobject_cast<QApplication*>(QCoreApplication::instance())) {
+        return;
+    }
+    if (!_imp->nodesMenu) {
+        _imp->nodesMenu = new Menu(NULL);
+        _imp->nodesMenu->setObjectName(QString::fromUtf8(kNodesMenuObjectName));
+    }
+    QMenu* root = _imp->nodesMenu;
+
+    removePluginOwnedLeaves(root);
+
+    // A plug-in without a grouping sits at the top of the tree; it is shown under "Misc".
+    std::list<PluginGroupNodePtr> ungrouped;
+    PluginGroupNodePtr defaultGroup;
+    QStringList treeOrder;
+    for (std::list<PluginGroupNodePtr>::const_iterator it = _imp->_topLevelToolButtons.begin(); it != _imp->_topLevelToolButtons.end(); ++it) {
+        if ((*it)->getChildren().empty()) {
+            ungrouped.push_back(*it);
+        } else {
+            treeOrder.push_back((*it)->getLabel());
+            if ((*it)->getID() == QString::fromUtf8(PLUGIN_GROUP_DEFAULT)) {
+                defaultGroup = *it;
+            }
+        }
+    }
+    for (std::list<PluginGroupNodePtr>::const_iterator it = _imp->_topLevelToolButtons.begin(); it != _imp->_topLevelToolButtons.end(); ++it) {
+        if ((*it)->getChildren().empty()) {
+            continue;
+        }
+        if (*it == defaultGroup) {
+            std::list<PluginGroupNodePtr> children = (*it)->getChildren();
+            children.insert(children.end(), ungrouped.begin(), ungrouped.end());
+            _imp->populateNodesMenuGroup(root, **it, children);
+        } else {
+            _imp->populateNodesMenuGroup(root, **it, (*it)->getChildren());
+        }
+    }
+    if (!defaultGroup && !ungrouped.empty()) {
+        PluginGroupNode miscGroup(QString::fromUtf8(PLUGIN_GROUP_DEFAULT), QString::fromUtf8(PLUGIN_GROUP_DEFAULT),
+                                  QString::fromUtf8(PLUGIN_GROUP_DEFAULT_ICON_PATH), 1, 0, true);
+        _imp->populateNodesMenuGroup(root, miscGroup, ungrouped);
+    }
+
+    removeEmptyPluginOwnedSubmenus(root);
+    orderPluginOwnedActions(root, [&treeOrder](const QAction* lhs, const QAction* rhs) {
+        return topLevelRank(lhs, treeOrder) < topLevelRank(rhs, treeOrder);
+    });
+    sortPluginOwnedSubmenus(root);
+
+    Q_EMIT nodesMenuRebuilt();
+} // GuiApplicationManager::rebuildNodesMenu
+
+void
+GuiApplicationManager::onPluginsActivationChanged()
+{
+    const PluginsMap& plugins = getPluginsList();
+
+    for (PluginsMap::const_iterator it = plugins.begin(); it != plugins.end(); ++it) {
+        for (PluginVersionsOrdered::const_reverse_iterator itver = it->second.rbegin(); itver != it->second.rend(); ++itver) {
+            Plugin* plugin = *itver;
+            if (!plugin->getIsUserCreatable()) {
+                continue;
+            }
+            QStringList groupingWithID = plugin->getGrouping();
+            groupingWithID.push_back(plugin->getPluginID());
+            if (hasPluginGroupNode(_imp->_topLevelToolButtons, groupingWithID, 0, plugin->getMajorVersion())) {
+                continue;
+            }
+            // Plug-ins disabled at startup were never given a short label.
+            plugin->setLabelWithoutSuffix(Plugin::makeLabelWithoutSuffix(plugin->getPluginLabel()));
+            onPluginLoaded(plugin);
+        }
+    }
+    rebuildNodesMenu();
 }
 
 PluginGroupNodePtr

@@ -225,7 +225,6 @@ class TableItemAnim;
 class TableModel;
 class TableView;
 class TimeLineGui;
-class ToolButton;
 class TrackerGui;
 class TrackerPanel;
 class TrackerPanelV1;

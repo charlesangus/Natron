@@ -182,8 +182,8 @@ public:
     ///the left toolbar
     QToolBar* _toolBox;
 
-    ///a vector of all the toolbuttons
-    std::vector<ToolButton* > _toolButtons;
+    /// the toolbox's buttons, one per grouping of the nodes menu
+    std::vector<QAction*> _nodesToolBoxActions;
 
     ///holds the properties dock
     PropertiesBinWrapper *_propertiesBin;
@@ -269,7 +269,9 @@ public:
 
     void setUndoRedoActions(QAction* undoAction, QAction* redoAction);
 
-    void addToolButton(ToolButton* tool);
+    void addToolButton(QAction* groupingMenuAction);
+
+    void rebuildNodesToolBox();
 
     ///Creates the properties bin and appends it as a tab to the propertiesPane TabWidget
     void createPropertiesBinGui();

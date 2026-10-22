@@ -90,7 +90,7 @@ try:
         for a in menu.actions():
             if not owned(a):
                 continue
-            sub = a.menu()
+            sub = gt.menu_of(a)
             if sub is not None:
                 walk(sub, path + [a.property(PROP_GROUPING)], leaves)
             else:
@@ -137,8 +137,8 @@ try:
 
     def top_level_submenu(grouping):
         for a in nodes_menu().actions():
-            if owned(a) and a.menu() is not None and a.property(PROP_GROUPING) == grouping:
-                return a.menu()
+            if owned(a) and a.property(PROP_GROUPING) == grouping and gt.menu_of(a) is not None:
+                return gt.menu_of(a)
         return None
 
     def find_leaf(pid, major=None):
@@ -153,10 +153,10 @@ try:
         return [w for w in gt.widgets_of("Gui") if w.isVisible()]
 
     def toolbox_of(gui):
-        for bar in gui.findChildren(QToolBar):
-            if gt.class_name(bar) == "AutoHideToolBar":
-                return bar
-        return None
+        # AutoHideToolBar has no Q_OBJECT, so its class name reads as QToolBar; it is the
+        # window's only toolbar.
+        bars = gui.findChildren(QToolBar)
+        return bars[0] if bars else None
 
     def toolbox_buttons(gui):
         bar = toolbox_of(gui)
@@ -165,7 +165,7 @@ try:
         buttons = []
         for a in bar.actions():
             w = bar.widgetForAction(a)
-            if w is not None and hasattr(w, "menu") and w.menu() is not None:
+            if w is not None and hasattr(w, "menu") and gt.menu_of(w) is not None:
                 buttons.append(w)
         return buttons
 
@@ -176,12 +176,12 @@ try:
         return None
 
     def owned_top_level_menus():
-        return [a.menu() for a in nodes_menu().actions() if owned(a) and a.menu() is not None]
+        return [gt.menu_of(a) for a in nodes_menu().actions() if owned(a) and gt.menu_of(a) is not None]
 
     def check_toolbox(area, gui):
         buttons = toolbox_buttons(gui)
         menus = owned_top_level_menus()
-        check([ptr(b.menu()) for b in buttons] == [ptr(m) for m in menus],
+        check([ptr(gt.menu_of(b)) for b in buttons] == [ptr(m) for m in menus],
               "%s: one toolbox button per plug-in grouping, in the nodes menu's order (%d buttons, %d groupings)"
               % (area, len(buttons), len(menus)))
         groupings = [m.menuAction().property(PROP_GROUPING) for m in menus]
@@ -331,7 +331,7 @@ try:
         if check(merge_leaf is not None, "Merge has an action"):
             check(bool(merge_leaf[3].property(PROP_SHORTCUT)),
                   "Merge's action carries its default shortcut (got %r)" % merge_leaf[3].property(PROP_SHORTCUT))
-        top = [a.property(PROP_GROUPING) for a in menu.actions() if owned(a) and a.menu() is not None]
+        top = [a.property(PROP_GROUPING) for a in menu.actions() if owned(a) and gt.menu_of(a) is not None]
         report("NOTE top-level groupings: %r" % top)
         named = [g for g in top if g in NAMED_ORDER]
         check(named == sorted(named, key=NAMED_ORDER.index), "named groupings keep the toolbox order (%r)" % named)
@@ -362,7 +362,7 @@ try:
         fired = []
         item.triggered.connect(lambda: fired.append(True))
         check(not owned(item), "an action added from Python carries no plug-in marker")
-        merge_button = next((b for b in main_buttons if ptr(b.menu()) == ptr(merge_menu)), None)
+        merge_button = next((b for b in main_buttons if ptr(gt.menu_of(b)) == ptr(merge_menu)), None)
         if check(merge_button is not None, "window 1 has a Merge toolbox button"):
             seen = {}
 
@@ -391,11 +391,11 @@ try:
         yield ("sleep", SETTLE_MS)
         second_gui = next(g for g in gui_widgets() if ptr(g) != ptr(main_gui))
         second_buttons = check_toolbox("window 2", second_gui)
-        check([ptr(b.menu()) for b in second_buttons] == [ptr(b.menu()) for b in toolbox_buttons(main_gui)],
+        check([ptr(gt.menu_of(b)) for b in second_buttons] == [ptr(gt.menu_of(b)) for b in toolbox_buttons(main_gui)],
               "both windows' toolbox buttons show the same menus")
-        second_merge = next((b for b in second_buttons if ptr(b.menu()) == ptr(merge_menu)), None)
+        second_merge = next((b for b in second_buttons if ptr(gt.menu_of(b)) == ptr(merge_menu)), None)
         if check(second_merge is not None, "window 2 has a Merge toolbox button"):
-            check(ptr(item) in [ptr(a) for a in second_merge.menu().actions()],
+            check(ptr(item) in [ptr(a) for a in gt.menu_of(second_merge).actions()],
                   "window 2's Merge menu shows the Python item added before it opened")
         bar = toolbox_of(second_gui)
         if bar is not None:

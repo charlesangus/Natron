@@ -83,9 +83,9 @@ try:
                 return None
             if i == len(path) - 1:
                 return found
-            if found.menu() is None:
+            if gt.menu_of(found) is None:
                 return None
-            actions = found.menu().actions()
+            actions = gt.menu_of(found).actions()
         return None
 
     def script_editor_of(gui):
@@ -159,7 +159,7 @@ try:
         check(menubar_action(second_gui, LIVE_COMMAND) is not None,
               "window 2's menubar holds the command added from the Script Editor before it opened")
         check(menubar_action(main_gui, LIVE_COMMAND) is not None
-              and len([a for a in menubar_action(main_gui, LIVE_COMMAND[:1]).menu().actions()
+              and len([a for a in gt.menu_of(menubar_action(main_gui, LIVE_COMMAND[:1])).actions()
                        if a.text() == LIVE_COMMAND[1]]) == 1,
               "window 1 still has the live command, once")
 

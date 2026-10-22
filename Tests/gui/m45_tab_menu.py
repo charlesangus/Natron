@@ -95,7 +95,7 @@ try:
             if mb is None:
                 continue
             for act in mb.actions():
-                menu = act.menu()
+                menu = gt.menu_of(act)
                 if menu is not None and title_substr.lower() in act.text().lower():
                     return menu.actions()
         return []
@@ -111,8 +111,8 @@ try:
             text = re.sub(r"&(&?)", r"\1", act.text())
             if not text:
                 continue
-            if act.menu() is not None:
-                found.extend(nodes_menu_items(act.menu(), parts + [text]))
+            if gt.menu_of(act) is not None:
+                found.extend(nodes_menu_items(gt.menu_of(act), parts + [text]))
             else:
                 found.append(("/".join(parts + [text]), act))
         return found
@@ -120,8 +120,8 @@ try:
     def nodes_menu_grouping(grouping):
         menu = NatronGui.natron.nodesMenu()
         for act in (menu.actions() if menu is not None else []):
-            if act.menu() is not None and act.property("natronGrouping") == grouping:
-                return act.menu()
+            if act.property("natronGrouping") == grouping and gt.menu_of(act) is not None:
+                return gt.menu_of(act)
         return None
 
     def find_action(menu_title_substr, text_substr):
@@ -347,6 +347,10 @@ try:
         popup, line_edit, _view = yield from open_menu(main_graph)
         if not check(popup is not None, "tab-tab: the tab menu reopens"):
             return None
+        # The rows still on show were filtered with the pre-filled text before Blur's weight was
+        # counted, so they rank alphabetically; the refresh on the two ticks after the popup
+        # shows re-ranks them. A person's second Tab always comes after it.
+        yield ("sleep", 300)
         text = line_edit.text()
         check(text.startswith(" ") and row_name(text) == "Blur",
              "tab-tab: reopening pre-fills the last choice (got %r)" % text)
@@ -478,7 +482,11 @@ try:
 
             global_point = subgraph.mapToGlobal(subgraph.rect().center() + QPoint(-80, 40))
             QCursor.setPos(global_point)
-            scene_pos = subgraph.mapToScene(subgraph.mapFromGlobal(global_point))
+            # A node's position is in the coordinates of the graph's node layer, which a group's
+            # graph offsets from its scene, so the check looks for the node's items just inside
+            # its top-left corner, where the cursor was, rather than comparing positions.
+            inside_corner = subgraph.mapFromGlobal(global_point) + QPoint(12, 8)
+            items_before = len(subgraph.items(inside_corner))
             root_before = len(app.getChildren())
 
             popup, line_edit, view = yield from open_menu(subgraph)
@@ -501,10 +509,10 @@ try:
             inside = [n.getScriptName() for n in group_node.getChildren()]
             check(node.getScriptName() in inside, "python action: the node went into the group's graph")
             check(len(app.getChildren()) == root_before, "python action: the root graph got no node")
-            nx, ny = node.getPosition()
-            dist = ((nx - scene_pos.x()) ** 2 + (ny - scene_pos.y()) ** 2) ** 0.5
-            check(dist <= 150.0,
-                 "python action: the node is within 150px of the cursor's scene position (got %.1f)" % dist)
+            items_after = len(subgraph.items(inside_corner))
+            check(items_after > items_before,
+                 "python action: the node is drawn where the cursor was (%d graph items there, %d before)"
+                 % (items_after, items_before))
             gt.shot("m45-python-merge-action.png")
 
             # Triggered outside the tab menu, the same action gets no context: app.createNode()

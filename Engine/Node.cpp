@@ -1887,7 +1887,8 @@ nodePropagatesDataKindThroughInput(const NodePtr& node,
 // The conversions the engine is willing to insert without a node in the graph to show for it. A
 // fixed table rather than a registry on purpose: adding a row widens what the type system permits
 // everywhere at once, which is a design decision taken here, not a capability a node -- or a
-// plugin -- can grant itself by answering a virtual.
+// plugin -- can grant itself by answering a virtual. Raw has no row: demosaicing and camera colour
+// are user-visible nodes with their own parameters, never a silent conversion.
 static bool
 isRegisteredAdapter(DataKindEnum from,
                     DataKindEnum to)

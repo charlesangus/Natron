@@ -414,7 +414,7 @@ plug-in. Neither checks the cost seed, doc, icon or kernel fragments.
 
 ## Data kinds
 
-`DataKindEnum` (`Global/Enums.h`) has four values:
+`DataKindEnum` (`Global/Enums.h`) has five values:
 
 - `eDataKindImage` -- a flat raster image. The default for every input and
   output that doesn't say otherwise, so every existing node and every OFX
@@ -434,6 +434,19 @@ plug-in. Neither checks the cost seed, doc, icon or kernel fragments.
   virtuals are polymorphic: an OFX plugin that happens to pass its input
   through, like openfx-misc's `Switch`, is loaded as an `OfxEffectInstance`
   and is typed image/image like every other plugin.
+- `eDataKindRaw` -- camera raw data before it is an image: a one-channel
+  float mosaic straight off the sensor, or three or one channel linear data
+  (a linear DNG) that has a camera's black/white levels and colour matrix but
+  no colour management yet. The payload is an ordinary float `Image` in the
+  ordinary image cache, rendered through `renderRoI()`; there is no raw render
+  virtual and no raw cache. The kind exists for edge typing only, so that a
+  mosaic can never reach a node that would read it as RGB. The mosaic layout
+  (CFA pattern and origin, black and white levels, white balance, camera
+  matrix, crop, ISO, exposure, and whether the data is still `raw` or already
+  `prepared`) travels as image metadata under the `raw/` keys
+  (`Engine/Nodes/IO/RawMetadata.h`), not in the kind. There is no adapter
+  between raw and image: the conversion is always a node in the graph. Raw
+  edges have their own Preferences colour (`edgeRawColor`).
 
 A node declares kinds via `NodeSpec::inputs[i].kind` and
 `NodeSpec::outputKind` (or, off `NativeEffectBase`, by

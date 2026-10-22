@@ -172,8 +172,18 @@ sampleNodeColor(const NodePtr& node,
     if (!node || !node->getEffectInstance() || !node->isActivated() || node->isNodeDisabled(time) || pixelRect.isNull()) {
         return false;
     }
-    if ((node->getEffectiveOutputDataKind() == eDataKindDeep) || node->hasMandatoryInputDisconnected()) {
+    if (node->hasMandatoryInputDisconnected()) {
         return false;
+    }
+    switch (node->getEffectiveOutputDataKind()) {
+    case eDataKindDeep:
+    // Raw values are camera-native, per-photosite on a mosaic: no RGBA reading of them means anything.
+    case eDataKindRaw:
+        return false;
+    case eDataKindImage:
+    case eDataKindScene:
+    case eDataKindPolymorphic:
+        break;
     }
 
     AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);

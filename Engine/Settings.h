@@ -220,6 +220,7 @@ public:
 
     void getEdgeDeepColor(float* r, float* g, float* b) const;
     void getEdgeSceneColor(float* r, float* g, float* b) const;
+    void getEdgeRawColor(float* r, float* g, float* b) const;
 
     /**
      * @brief The colour an edge should tint itself with for the given data kind, if any. Returns
@@ -657,6 +658,7 @@ private:
     KnobColorPtr _defaultUsd3DGroupColor;
     KnobColorPtr _edgeDeepColor;
     KnobColorPtr _edgeSceneColor;
+    KnobColorPtr _edgeRawColor;
     std::vector<ChoiceOption> _knownHostNames;
     bool _restoringSettings;
     bool _settingsExisted;

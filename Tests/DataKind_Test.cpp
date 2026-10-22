@@ -25,11 +25,19 @@
 
 #include "Global/Macros.h"
 
+#include <string>
+
+#include <QFile>
+#include <QString>
+#include <QTemporaryDir>
+
 #include "BaseTest.h"
 #include "DataKindTestEffect.h"
 
+#include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
+#include "Engine/Project.h"
 
 NATRON_NAMESPACE_USING
 
@@ -504,4 +512,93 @@ TEST_F(BaseTest, DeepSourceConnectsIntoAPolymorphicAlreadyFeedingAnAdapterSink)
     EXPECT_FALSE(ambiguous);
     EXPECT_FALSE(dot->hasPersistentMessage());
     EXPECT_FALSE(adapterSink->hasPersistentMessage());
+}
+
+// A mosaic read as RGB is silently wrong, so a raw output must never land on an image input.
+TEST_F(BaseTest, RawSourceRejectedByImageSink)
+{
+    NodePtr rawSource = createNode(QString::fromUtf8(kTestPluginIDDataKindRawSource));
+    NodePtr imageSink = createNode(QString::fromUtf8(kTestPluginIDDataKindImageSink));
+
+    ASSERT_TRUE(rawSource && imageSink);
+
+    NodePtr conflictingNode;
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, imageSink->canConnectInput(rawSource, 0, &conflictingNode));
+    EXPECT_EQ(rawSource.get(), conflictingNode.get());
+}
+
+TEST_F(BaseTest, RawSourceConnectsToRawSink)
+{
+    NodePtr rawSource = createNode(QString::fromUtf8(kTestPluginIDDataKindRawSource));
+    NodePtr rawSink = createNode(QString::fromUtf8(kTestPluginIDDataKindRawSink));
+
+    ASSERT_TRUE(rawSource && rawSink);
+
+    EXPECT_EQ(Node::eCanConnectInput_ok, rawSink->canConnectInput(rawSource, 0));
+    connectNodes(rawSource, rawSink, 0, true);
+    EXPECT_EQ(eDataKindRaw, rawSink->getEffectiveOutputDataKind());
+}
+
+// An image input can never take raw the way the Viewer takes deep: there is no adapter row for it,
+// whatever the consuming effect answers.
+TEST_F(BaseTest, RawHasNoAdapterIntoImage)
+{
+    NodePtr rawSource = createNode(QString::fromUtf8(kTestPluginIDDataKindRawSource));
+    NodePtr adapterSink = createNode(QString::fromUtf8(kTestPluginIDDataKindRawAdapterSink));
+
+    ASSERT_TRUE(rawSource && adapterSink);
+
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, adapterSink->canConnectInput(rawSource, 0));
+}
+
+TEST_F(BaseTest, RawSourceTypesADotThatAnImageSinkThenRejects)
+{
+    NodePtr rawSource = createNode(QString::fromUtf8(kTestPluginIDDataKindRawSource));
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr imageSink = createNode(QString::fromUtf8(kTestPluginIDDataKindImageSink));
+
+    ASSERT_TRUE(rawSource && dot && imageSink);
+
+    connectNodes(rawSource, dot, 0, true);
+    EXPECT_EQ(eDataKindRaw, dot->getEffectiveOutputDataKind());
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, imageSink->canConnectInput(dot, 0));
+}
+
+// A raw-into-image edge wired around canConnectInput() (as a Python script can) survives a save and
+// reload, and Project::reportDataKindConflicts() puts the image sink into an error state.
+TEST_F(BaseTest, ProjectLoadReportsRawIntoImageConflict)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    NodePtr rawSource = createNode(QString::fromUtf8(kTestPluginIDDataKindRawSource));
+    NodePtr imageSink = createNode(QString::fromUtf8(kTestPluginIDDataKindImageSink));
+
+    ASSERT_TRUE(rawSource && imageSink);
+    ASSERT_TRUE(imageSink->connectInput(rawSource, 0));
+
+    const std::string sinkName = imageSink->getScriptName();
+    const std::string sourceName = rawSource->getScriptName();
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("raw-into-image.ntp");
+
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    ASSERT_TRUE(QFile::exists(savedFilePath));
+
+    project->reset(false, true);
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr sink2 = project->getNodeByName(sinkName);
+    ASSERT_TRUE(bool(sink2));
+    ASSERT_TRUE(bool(sink2->getInput(0)));
+    EXPECT_EQ(sourceName, sink2->getInput(0)->getScriptName());
+    EXPECT_TRUE(sink2->hasPersistentMessage());
+
+    NodePtr source2 = project->getNodeByName(sourceName);
+    ASSERT_TRUE(bool(source2));
+    EXPECT_FALSE(source2->hasPersistentMessage());
 }

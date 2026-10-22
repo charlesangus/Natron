@@ -81,6 +81,9 @@ registerDataKindTestPlugins()
     registerTestBuiltInPlugin<DataKindTestConsumerMirrorPolicy>();
     registerTestBuiltInPlugin<DataKindTestAdapterSink>();
     registerTestBuiltInPlugin<DataKindTestSceneAdapterSink>();
+    registerTestBuiltInPlugin<DataKindTestRawSource>();
+    registerTestBuiltInPlugin<DataKindTestRawSink>();
+    registerTestBuiltInPlugin<DataKindTestRawAdapterSink>();
 }
 
 void

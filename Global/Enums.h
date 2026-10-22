@@ -517,6 +517,7 @@ enum DataKindEnum {
     eDataKindDeep,
     eDataKindScene,
     eDataKindPolymorphic,
+    eDataKindRaw,
 };
 
 enum NodeCategoryEnum {

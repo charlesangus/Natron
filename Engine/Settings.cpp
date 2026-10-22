@@ -976,6 +976,12 @@ Settings::initializeKnobsNodeGraphColors()
     _edgeSceneColor->setSimplified(true);
     _edgeSceneColor->setHintToolTip(tr("The color used to tint node graph edges carrying Scene data, connected or not."));
     _nodegraphColorsTab->addKnob(_edgeSceneColor);
+
+    _edgeRawColor = AppManager::createKnob<KnobColor>(this, tr("Raw edges"), 3);
+    _edgeRawColor->setName("edgeRawColor");
+    _edgeRawColor->setSimplified(true);
+    _edgeRawColor->setHintToolTip(tr("The color used to tint node graph edges carrying camera Raw data, connected or not."));
+    _nodegraphColorsTab->addKnob(_edgeRawColor);
 } // Settings::initializeKnobsNodeGraphColors
 
 void
@@ -1784,6 +1790,9 @@ Settings::setDefaultValues()
     _edgeSceneColor->setDefaultValue(230. / 255., 0); // Okabe-Ito orange
     _edgeSceneColor->setDefaultValue(159. / 255., 1);
     _edgeSceneColor->setDefaultValue(0. / 255., 2);
+    _edgeRawColor->setDefaultValue(204. / 255., 0); // Okabe-Ito reddish purple
+    _edgeRawColor->setDefaultValue(121. / 255., 1);
+    _edgeRawColor->setDefaultValue(167. / 255., 2);
 
     endChanges();
 } // setDefaultValues
@@ -3129,6 +3138,16 @@ Settings::getEdgeSceneColor(float* r,
     *b = _edgeSceneColor->getValue(2);
 }
 
+void
+Settings::getEdgeRawColor(float* r,
+                          float* g,
+                          float* b) const
+{
+    *r = _edgeRawColor->getValue(0);
+    *g = _edgeRawColor->getValue(1);
+    *b = _edgeRawColor->getValue(2);
+}
+
 bool
 Settings::getEdgeKindColor(DataKindEnum kind,
                            float* r,
@@ -3141,6 +3160,9 @@ Settings::getEdgeKindColor(DataKindEnum kind,
         return true;
     case eDataKindScene:
         getEdgeSceneColor(r, g, b);
+        return true;
+    case eDataKindRaw:
+        getEdgeRawColor(r, g, b);
         return true;
     case eDataKindImage:
     case eDataKindPolymorphic:

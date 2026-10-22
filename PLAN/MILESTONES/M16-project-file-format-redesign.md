@@ -166,7 +166,7 @@ Scouting facts this plan relies on (2026-10-10):
   - verify: compiled at P2.T7. 4 tracks × 1000 keys with sparse curves and one broken tangent round-trip bit-exactly as four blob members.
   - size: M
 
-- [ ] M16.P2.T7 — Phase 16.2 build and test checkpoint
+- [x] M16.P2.T7 — Phase 16.2 build and test checkpoint
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `ctest -R Yaml`, then the full ctest.
   - verify: green. The build is required.

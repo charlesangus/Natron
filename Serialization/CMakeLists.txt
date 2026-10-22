@@ -28,6 +28,13 @@ file(GLOB_RECURSE NatronSerializationBoostXml_SOURCES BoostXml/*.cpp)
 list(APPEND NatronSerialization_HEADERS ${NatronSerializationBoostXml_HEADERS})
 list(APPEND NatronSerialization_SOURCES ${NatronSerializationBoostXml_SOURCES})
 
+file(GLOB_RECURSE NatronSerializationBundle_HEADERS Bundle/*.h)
+file(GLOB_RECURSE NatronSerializationBundle_SOURCES Bundle/*.cpp)
+file(GLOB_RECURSE NatronSerializationYaml_HEADERS Yaml/*.h)
+file(GLOB_RECURSE NatronSerializationYaml_SOURCES Yaml/*.cpp)
+list(APPEND NatronSerialization_HEADERS ${NatronSerializationBundle_HEADERS} ${NatronSerializationYaml_HEADERS})
+list(APPEND NatronSerialization_SOURCES ${NatronSerializationBundle_SOURCES} ${NatronSerializationYaml_SOURCES})
+
 add_library(NatronSerialization STATIC ${NatronSerialization_HEADERS} ${NatronSerialization_SOURCES})
 
 target_include_directories(NatronSerialization
@@ -42,4 +49,10 @@ target_link_libraries(NatronSerialization
     PRIVATE
         Boost::headers
         Boost::serialization
+        yaml-cpp::yaml-cpp
 )
+
+if(ZLIB_FOUND)
+    target_link_libraries(NatronSerialization PRIVATE ZLIB::ZLIB)
+    target_compile_definitions(NatronSerialization PRIVATE NATRON_SERIALIZATION_HAVE_ZLIB)
+endif()

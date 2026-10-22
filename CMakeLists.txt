@@ -63,6 +63,12 @@ if(NOT DEFINED CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "")
 endif()
 
 find_package(Boost COMPONENTS headers serialization CONFIG)
+# yaml-cpp and zlib are consumed PRIVATE by the static NatronSerialization, but
+# a static library's private link dependencies still reach every executable
+# that links it, so the imported targets must be visible from the top level.
+# The ASWF image ships yaml-cpp 0.9 with a CMake config, which satisfies 0.8.
+find_package(yaml-cpp 0.8 CONFIG REQUIRED)
+find_package(ZLIB)
 if(WIN32)
     # Prevent looking in the registry so that the MinGW python can be found.
     set(Python3_FIND_REGISTRY NEVER)

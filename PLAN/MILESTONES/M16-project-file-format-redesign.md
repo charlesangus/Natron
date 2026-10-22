@@ -386,3 +386,11 @@ UAT (P7.T3).
 - 2026-10-22 — A missing link target is a load warning, not a failed load (`KnobI::restoreLinks` reports `missingTargets`). The GUI summary dialog lists the first 20 warnings.
 - 2026-10-22 — The clipboard document uses the project node schema, which omits the clone master (`masterNodeName`), so a pasted clone is no longer linked to its original. Duplicate and clone don't go through the clipboard. M92 - Linked Nodes defines linked-node fields; accepted under the clean break.
 - 2026-10-22 — A default-layout preference pointing at an XML, damaged or empty `.nl` falls back to the built-in layout with an error dialog (previously: error and no layout at all).
+
+## Handoff (2026-10-22, PM paused by user)
+
+- Lane: `.worktrees/m16`, branch `milestone/m16-project-format-redesign`, HEAD `ffbddea94`, pushed. Checked: P1.*, P2.*, P3.T1–T7, P4.T1–T3, P5.T1 (P3/P4 code checked off before its build — re-verify).
+- Builds: P2 green (338/338). A remote **fast** build of `c59e7d1ab` (P3) was in flight when paused (GitHub run `fast-c59e7d1a-7006b8a8`; local watcher stopped, detached `build.sh` may still write `/tmp/natron-builds/m16-p3.{log,done}` and `build/remote/fast/` in the lane). Expected failures until fixtures are regenerated: `CacheEquivalenceBenchCompTest.EditsAndDisables` and smoke `check_reader_cli_time_offset_regression`.
+- Next build should be of HEAD (P3+P4); then P3.T8 steps 2–4: regenerate `Tests/fixtures/read-time-offset.ntpz` (`tools/ci/regen_read_time_offset.py`) and `tools/bench/comps/*.ntpz` (`build_comps.sh`) with NatronRenderer from the fast AppImage, `git rm` the old `.ntp` files.
+- **Uncommitted in the worktree:** a stopped P5.T2–T4 implementer's partial work (`Tests/Serialization/ProjectEquivalence.{h,cpp}`, `Tests/fixtures/bundle/`, `Tests/fixtures/old-format.ntp`, `Tests/CMakeLists.txt` edit). Re-dispatch P5.T2–T4 over it.
+- Remaining after that: P5.T5 build, Phase 16.6 benchmark (release build), Phase 16.7 cleanup/docs/UAT, gate, PR.

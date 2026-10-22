@@ -18,6 +18,7 @@
 #include "DeepRenderTestEffect.h"
 #include "InputChangedFetchTestEffect.h"
 #include "MultiplanarTestEffect.h"
+#include "Native/GlHostWrapTestEffect.h"
 #include "NativeMetadataTestEffect.h"
 #include "NativeParity.h"
 #include "PassThroughRoDTestEffect.h"
@@ -143,6 +144,7 @@ registerNativeParityTestPlugins()
     // Registered so the native-node parity tests feed the OFX and native versions of a node the
     // same deterministic multiplanar picture, with negatives, super-whites and exact alpha bands.
     registerTestBuiltInPlugin<ParitySourceTestEffect>();
+    registerTestBuiltInPlugin<GlHostWrapTestEffect>();
 }
 }
 

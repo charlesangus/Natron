@@ -72,10 +72,10 @@ const char* const kOCIOColorSpacePluginID = "fr.inria.openfx.OCIOColorSpace";
 const char* const kMergePluginID = "net.sf.openfx.MergePlugin";
 
 const char* const kNoOpenGLMessage = "OpenGL did not load, so this test cannot exercise GL rendering. Run it under Xvfb with GLX and Mesa llvmpipe, as "
-                                     "build/m63-gui/run-gl-tests.sh does: `Xvfb :79 -screen 0 1600x1000x24 +extension GLX` with "
+                                     "Tests/gui/run-gl-tests.sh does: `Xvfb :79 -screen 0 1600x1000x24 +extension GLX` with "
                                      "DISPLAY=:79 LIBGL_ALWAYS_SOFTWARE=1 __GLX_VENDOR_LIBRARY_NAME=mesa and build/deeprepro/gl first on "
                                      "LD_LIBRARY_PATH.";
-const char* const kGLRenderingDisabledMessage = "OpenGL loaded, but OpenGL rendering stayed disabled in the settings after the test enabled it.";
+const char* const kGLRenderingDisabledMessage = "OpenGL loaded, but OpenGL rendering stayed disabled in the GPU context pool after the test enabled it.";
 
 const int kFormatSize = 256;
 
@@ -96,7 +96,7 @@ skipWithoutOpenGL(const char* testName,
         return true;
     }
     std::cout << "[  SKIPPED ] GLScheduler." << testName
-              << ": OpenGL not available; run under build/m63-gui/run-gl-tests.sh with NATRON_TEST_REQUIRE_GL=1"
+              << ": OpenGL not available; run under Tests/gui/run-gl-tests.sh with NATRON_TEST_REQUIRE_GL=1"
               << std::endl;
 
     return true;
@@ -105,25 +105,18 @@ skipWithoutOpenGL(const char* testName,
 // How long a thread holding its context bound waits for the other thread to hold its own.
 const qint64 kLatchTimeoutMs = 10000;
 
-// Enables OpenGL rendering in the preferences and the project, and raises the pool to at least 2 threads,
+// Forces GL rendering on in the GPU context pool and in the project, and raises the thread pool to at least 2 threads,
 // restoring all of it however the test exits.
-// AppManager lists only hardware-accelerated renderers, and with none listed Settings hides the OpenGL rendering
-// preference, which disables GL rendering. Under Mesa llvmpipe that leaves nothing for these tests to exercise, so the
-// guard unhides the preference; GL contexts then use the default renderer, the one AppManager already loaded GL with.
+// Under Mesa llvmpipe the pool reports GL rendering disabled, which leaves nothing for these tests to exercise, so the
+// guard overrides it; GL contexts then use the default renderer, the one AppManager already loaded GL with.
 class OpenGLRenderingGuard {
 public:
     explicit OpenGLRenderingGuard(const ProjectPtr& project)
-        : _settingsKnob(appPTR->getCurrentSettings()->getKnobByNameAndType<KnobChoice>("enableOpenGLRendering"))
-        , _projectKnob(project->getKnobByNameAndType<KnobChoice>("gpuRendering"))
-        , _savedSettings(_settingsKnob ? _settingsKnob->getValue() : 0)
-        , _savedSettingsSecret(_settingsKnob ? _settingsKnob->getIsSecret() : false)
+        : _projectKnob(project->getKnobByNameAndType<KnobChoice>("gpuRendering"))
         , _savedProject(_projectKnob ? _projectKnob->getValue() : 0)
         , _savedPoolSize(QThreadPool::globalInstance()->maxThreadCount())
     {
-        if (_settingsKnob) {
-            _settingsKnob->setSecret(false);
-            _settingsKnob->setValue((int)Settings::eEnableOpenGLEnabled);
-        }
+        appPTR->getGPUContextPool()->setRenderingEnabledForTests(true);
         if (_projectKnob) {
             _projectKnob->setValue(0);
         }
@@ -138,25 +131,19 @@ public:
         if (_projectKnob) {
             _projectKnob->setValue(_savedProject);
         }
-        if (_settingsKnob) {
-            _settingsKnob->setValue(_savedSettings);
-            _settingsKnob->setSecret(_savedSettingsSecret);
-        }
+        appPTR->getGPUContextPool()->setRenderingEnabledForTests(std::nullopt);
     }
 
     bool isValid() const
     {
-        return _settingsKnob && _projectKnob;
+        return bool(_projectKnob);
     }
 
     OpenGLRenderingGuard(const OpenGLRenderingGuard&) = delete;
     OpenGLRenderingGuard& operator=(const OpenGLRenderingGuard&) = delete;
 
 private:
-    KnobChoicePtr _settingsKnob;
     KnobChoicePtr _projectKnob;
-    int _savedSettings;
-    bool _savedSettingsSecret;
     int _savedProject;
     int _savedPoolSize;
 };
@@ -164,32 +151,22 @@ private:
 class MaxOpenGLContextsGuard {
 public:
     explicit MaxOpenGLContextsGuard(int maxContexts)
-        : _knob(appPTR->getCurrentSettings()->getKnobByNameAndType<KnobInt>("maxOpenGLContexts"))
-        , _saved(_knob ? _knob->getValue() : 0)
     {
-        if (_knob) {
-            _knob->setValue(maxContexts);
-        }
+        appPTR->getGPUContextPool()->setMaxContextsForTests(maxContexts);
     }
 
     ~MaxOpenGLContextsGuard()
     {
-        if (_knob) {
-            _knob->setValue(_saved);
-        }
+        appPTR->getGPUContextPool()->setMaxContextsForTests(std::nullopt);
     }
 
     bool isValid() const
     {
-        return bool(_knob);
+        return true;
     }
 
     MaxOpenGLContextsGuard(const MaxOpenGLContextsGuard&) = delete;
     MaxOpenGLContextsGuard& operator=(const MaxOpenGLContextsGuard&) = delete;
-
-private:
-    KnobIntPtr _knob;
-    int _saved;
 };
 
 struct ThreadContextResult {
@@ -364,7 +341,7 @@ TEST_F(GLScheduler, PrivateContextsAreDistinctPerThread)
     }
     OpenGLRenderingGuard guard(getApp()->getProject());
     ASSERT_TRUE(guard.isValid());
-    if (skipWithoutOpenGL("PrivateContextsAreDistinctPerThread", appPTR->getCurrentSettings()->isOpenGLRenderingEnabled(), kGLRenderingDisabledMessage)) {
+    if (skipWithoutOpenGL("PrivateContextsAreDistinctPerThread", appPTR->getGPUContextPool()->isRenderingEnabled(), kGLRenderingDisabledMessage)) {
         return;
     }
     // Contexts left by earlier tests count against the limit, and the last check may run on a third thread.
@@ -410,7 +387,7 @@ TEST_F(GLScheduler, GLNodeRendersInsideATaskAndStoresRAM)
     }
     OpenGLRenderingGuard guard(getApp()->getProject());
     ASSERT_TRUE(guard.isValid());
-    if (skipWithoutOpenGL("GLNodeRendersInsideATaskAndStoresRAM", appPTR->getCurrentSettings()->isOpenGLRenderingEnabled(), kGLRenderingDisabledMessage)) {
+    if (skipWithoutOpenGL("GLNodeRendersInsideATaskAndStoresRAM", appPTR->getGPUContextPool()->isRenderingEnabled(), kGLRenderingDisabledMessage)) {
         return;
     }
 
@@ -447,7 +424,7 @@ TEST_F(GLScheduler, ConcurrentGLTasksBeyondTheContextLimitRenderOnCPU)
     }
     OpenGLRenderingGuard guard(getApp()->getProject());
     ASSERT_TRUE(guard.isValid());
-    if (skipWithoutOpenGL("ConcurrentGLTasksBeyondTheContextLimitRenderOnCPU", appPTR->getCurrentSettings()->isOpenGLRenderingEnabled(), kGLRenderingDisabledMessage)) {
+    if (skipWithoutOpenGL("ConcurrentGLTasksBeyondTheContextLimitRenderOnCPU", appPTR->getGPUContextPool()->isRenderingEnabled(), kGLRenderingDisabledMessage)) {
         return;
     }
     MaxOpenGLContextsGuard maxContexts(1);
@@ -484,7 +461,7 @@ TEST_F(GLScheduler, ConcurrentGLTasksBeyondTheContextLimitRenderOnCPU)
 
     const std::size_t used = appPTR->getGPUContextPool()->getNumThreadContextsUsedForRender();
     EXPECT_GT(used, 0u) << "no task bound its thread's OpenGL context";
-    EXPECT_LE(used, 1u) << "tasks created more OpenGL contexts than maxOpenGLContexts allows";
+    EXPECT_LE(used, 1u) << "tasks created more OpenGL contexts than the one-context cap allows";
 
     const std::vector<ObservedFrame> frames = observedFrames();
     EXPECT_EQ(poolSizes.size(), frames.size());

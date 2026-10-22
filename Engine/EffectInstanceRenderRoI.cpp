@@ -705,40 +705,41 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     ////////////////////////////// End Compute RoI /////////////////////////////////////////////////////////////////////////
     const PluginOpenGLRenderSupport openGLSupport = frameArgs->currentOpenglSupport;
     StorageModeEnum storage = eStorageModeRAM;
+    bool useOpenGL = false;
     OSGLContextAttacherPtr glContextLocker;
 
-    bool wantsGLStorage = false;
+    bool wantsOpenGLRender = false;
     if ( dynamic_cast<DiskCacheNode*>(this) ) {
         storage = eStorageModeDisk;
     } else if (abortInfo && ((openGLSupport == ePluginOpenGLRenderSupportNeeded) || ((openGLSupport == ePluginOpenGLRenderSupportYes) && args.allowGPURendering))) {
-        wantsGLStorage = true;
+        wantsOpenGLRender = true;
         // If the plug-in knows how to render on CPU, check if we actually should not render on CPU instead.
         if (openGLSupport == ePluginOpenGLRenderSupportYes) {
             // User want to force caching of this node but we cannot cache OpenGL renders, so fallback on CPU.
             // If a node has multiple outputs, do not render it on OpenGL since we do not use the cache. We could end-up with this render being executed multiple times.
             // Also, if the render time is different from the caller render time, don't render using OpenGL otherwise we could computed this render multiple times.
             if (getNode()->isForceCachingEnabled() || (frameArgs->visitsCount > 1) || (args.time != args.callerRenderTime)) {
-                wantsGLStorage = false;
+                wantsOpenGLRender = false;
             }
         }
     }
 
     // A task creates its thread's context on first use, so only the renders that will use one may ask for it. Without
     // info to identify the render, the context cannot be managed properly, so such a render never uses OpenGL.
-    if (abortInfo && (wantsGLStorage || (args.returnStorage == eStorageModeGLTex))) {
+    if (abortInfo && (wantsOpenGLRender || (args.returnStorage == eStorageModeGLTex))) {
         glContext = getRenderGLContext(frameArgs);
     }
 
     // The limit is only known once a context exists.
-    if (glContext && wantsGLStorage && (openGLSupport == ePluginOpenGLRenderSupportYes)) {
+    if (glContext && wantsOpenGLRender && (openGLSupport == ePluginOpenGLRenderSupportYes)) {
         int maxTextureSize = appPTR->getGPUContextPool()->getCurrentOpenGLRendererMaxTextureSize();
         if ((roi.width() >= maxTextureSize) || (roi.height() >= maxTextureSize)) {
             // Fallback on CPU rendering since the image is larger than the maximum allowed OpenGL texture size
-            wantsGLStorage = false;
+            wantsOpenGLRender = false;
         }
     }
 
-    if (glContext && wantsGLStorage) {
+    if (glContext && wantsOpenGLRender) {
         // Enable GPU render if the plug-in cannot render another way or if all conditions are met
 
         if (openGLSupport == ePluginOpenGLRenderSupportNeeded && !getNode()->getPlugin()->isOpenGLEnabled()) {
@@ -757,7 +758,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                                                                   , frameArgs->time
 #endif
                                                                   );
-        storage = eStorageModeGLTex;
+        useOpenGL = true;
 
         // OpenGL renders always support render scale...
         if (renderFullScaleThenDownscale) {
@@ -773,11 +774,11 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                 roi = downscaledImageBoundsNc;
             }
         }
-    } else if (appPTR->isOpenGLLoaded() && !appPTR->getCurrentSettings()->isOpenGLRenderingEnabled() && openGLSupport == ePluginOpenGLRenderSupportNeeded) {
-        QString message = tr("OpenGL render is required for a plugin but it's currently disabled, please consider passing `--opengl enabled` to %1").arg(QString::fromUtf8(NATRON_APPLICATION_NAME));
+    } else if (appPTR->isOpenGLLoaded() && !appPTR->getGPUContextPool()->isRenderingEnabled() && openGLSupport == ePluginOpenGLRenderSupportNeeded) {
+        QString message = tr("OpenGL render is required for a plugin but it's currently disabled, please consider setting the GPU compute preference to Auto or setting NATRON_GPU to auto or force in the environment of %1").arg(QString::fromUtf8(NATRON_APPLICATION_NAME));
         setPersistentMessage(eMessageTypeError, message.toStdString());
         return eRenderRoIRetCodeFailed;
-    } else if (wantsGLStorage && (openGLSupport == ePluginOpenGLRenderSupportNeeded)) {
+    } else if (wantsOpenGLRender && (openGLSupport == ePluginOpenGLRenderSupportNeeded)) {
         // The thread is beyond the OpenGL context limit or its context could not be created, and the plug-in has no
         // CPU path to fall back on.
         QString message = tr("OpenGL render is required for %1 but no OpenGL context is available").arg(QString::fromUtf8(getNode()->getLabel_mt_safe().c_str()));
@@ -797,7 +798,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     const bool isFrameVaryingOrAnimated = frameArgs->frameVaryingComputed ? frameArgs->isFrameVaryingOrAnimated : isFrameVaryingOrAnimated_Recursive();
     bool createInCache;
     // Do not use the cache for OpenGL rendering
-    if (storage == eStorageModeGLTex) {
+    if (useOpenGL) {
         createInCache = false;
     } else {
         // in Analysis, the node upstream of the analysis node should always cache
@@ -837,7 +838,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     ImageLayerDesc outputClipPrefComps, outputClipPrefCompsPaired;
     getMetadataOutputClipComponents(&outputClipPrefComps, &outputClipPrefCompsPaired);
     ImageLayersToRenderPtr layersToRender = std::make_shared<ImageLayersToRender>();
-    layersToRender->useOpenGL = storage == eStorageModeGLTex;
+    layersToRender->useOpenGL = useOpenGL;
     layersToRender->processChannelsPerPlane = processChannelsPerPlane;
     FramesNeededMapPtr framesNeeded = std::make_shared<FramesNeededMap>();
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1423,7 +1424,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
          * Reasons to use a render clone is be because a plug-in is eRenderSafetyInstanceSafe or does not support
          * concurrent GL renders.
          **/
-        bool useRenderClone = safety == eRenderSafetyInstanceSafe || (safety != eRenderSafetyUnsafe && storage == eStorageModeGLTex && !supportsConcurrentOpenGLRenders());
+        bool useRenderClone = safety == eRenderSafetyInstanceSafe || (safety != eRenderSafetyUnsafe && useOpenGL && !supportsConcurrentOpenGLRenders());
         if (useRenderClone) {
             renderInstance = getOrCreateRenderInstance();
         } else {
@@ -1466,7 +1467,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
 # endif
 
         bool attachGLOK = true;
-        if (storage == eStorageModeGLTex) {
+        if (useOpenGL) {
             assert(glContext);
             Natron::StatusEnum stat = renderInstance->attachOpenGLContext_public(glContext, &layersToRender->glContextData);
             if (stat == eStatusOutOfMemory) {
@@ -1496,11 +1497,12 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                                               outputClipPrefComps,
                                               neededComps,
                                               processChannels);
-            if (storage == eStorageModeGLTex) {
+            if (useOpenGL) {
                 // If the plug-in doesn't support concurrent OpenGL renders, release the lock that was taken in the call to attachOpenGLContext_public() above.
                 // For safe plug-ins, we call dettachOpenGLContext_public when the effect is destroyed in Node::deactivate() with the function EffectInstance::dettachAllOpenGLContexts().
                 // If we were the last render to use this context, clear the data now
-                if (layersToRender->glContextData->getHasTakenLock() || !supportsConcurrentOpenGLRenders() || layersToRender->glContextData.use_count() == 1) {
+                const EffectInstance::OpenGLContextEffectDataPtr& glData = layersToRender->glContextData;
+                if (glData && (glData->getHasTakenLock() || !supportsConcurrentOpenGLRenders() || glData.use_count() == 1)) {
                     renderInstance->dettachOpenGLContext_public(glContext, layersToRender->glContextData);
                 }
             }
@@ -1616,10 +1618,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         }
 
         //We have to return the downscale image, so make sure it has been computed
-        if ( (renderRetCode != eRenderRoIStatusRenderFailed) &&
-             renderFullScaleThenDownscale &&
-             ( it->second.fullscaleImage->getMipmapLevel() != mipmapLevel && it->second.fullscaleImage->getStorageMode() != eStorageModeGLTex) &&
-             !hasSomethingToRender ) {
+        if ((renderRetCode != eRenderRoIStatusRenderFailed) && renderFullScaleThenDownscale && (it->second.fullscaleImage->getMipmapLevel() != mipmapLevel) && !hasSomethingToRender) {
             assert(it->second.fullscaleImage->getMipmapLevel() == 0);
             if (it->second.downscaleImage == it->second.fullscaleImage) {
                 it->second.downscaleImage = std::make_shared<Image>(it->second.fullscaleImage->getComponents(),
@@ -1667,13 +1666,6 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                 }
                 glContextLocker->attach();
                 it->second.downscaleImage = convertRAMImageToOpenGLTexture(it->second.downscaleImage);
-            } else if ( args.returnStorage != eStorageModeGLTex && (imageStorage == eStorageModeGLTex) ) {
-                assert(args.returnStorage == eStorageModeRAM);
-                assert(glContextLocker);
-                if (glContextLocker) {
-                    glContextLocker->attach();
-                }
-                it->second.downscaleImage = convertOpenGLTextureToCachedRAMImage(it->second.downscaleImage);
             }
 
             outputLayers->insert(std::make_pair(*comp, it->second.downscaleImage));

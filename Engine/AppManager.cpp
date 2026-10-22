@@ -113,6 +113,8 @@
 #include "Engine/DiskCacheNode.h"
 #include "Engine/Dot.h"
 #include "Engine/FileSystemModel.h"
+#include "Engine/GPUContextPool.h"
+#include "Engine/GpuDeviceList.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/JoinViewsNode.h"
@@ -749,8 +751,8 @@ AppManager::loadInternal(const CLArgs& cl)
                 ",Max GPU Memory:" << printAsRAM(it->maxMemBytes);;
         }
     }
-    _imp->_settings->populateOpenGLRenderers(_imp->openGLRenderers);
-
+    const std::vector<GpuDeviceSummary> gpuDevices = enumerateGpuDevices();
+    _imp->_settings->populateGpuDevices(gpuDevices);
 
     // Settings: we must load these and set the custom settings (using python) ASAP, before creating the OFX Plugin Cache
     // Settings: always call restoreSettings, but call restoreKnobsFromSettings conditionally
@@ -758,9 +760,34 @@ AppManager::loadInternal(const CLArgs& cl)
     _imp->_settings->restoreSettings( cl.isLoadedUsingDefaultSettings() );
     onRenderSchedulerModeSettingChanged(_imp->_settings->getRenderSchedulerMode());
     {
+        const GpuResolvedMode gpuMode = GpuContext::resolveMode(_imp->_settings->getGpuComputeMode(), std::getenv("NATRON_GPU"));
+        const std::string gpuDeviceId = _imp->_settings->getGpuDevice();
+        const std::string gpuSelector = gpuSelectorForDeviceId(gpuDevices, gpuDeviceId);
+
+        const GpuDeviceSummary* chosenDevice = nullptr;
+        if (!gpuSelector.empty()) {
+            for (const GpuDeviceSummary& d : gpuDevices) {
+                if (std::to_string(d.index) == gpuSelector) {
+                    chosenDevice = &d;
+                    break;
+                }
+            }
+        }
+
+        // Under Auto the GL suite never uses a software renderer; only NATRON_GPU=force allows one.
+        const GLRendererPick glPick = OSGLContext::pickRenderer(_imp->openGLRenderers, chosenDevice, gpuMode == GpuResolvedMode::Force);
+        const bool glEnabled = gpuMode != GpuResolvedMode::Off && glPick.enabled && isOpenGLLoaded();
+        const std::string glStatus = glEnabled ? glPick.reason : "GL suite disabled (" + glPick.reason + ")";
+        _imp->renderingContextPool->setRenderingState(glEnabled, glPick.rendererID, glStatus);
+        _imp->_settings->setGpuStatus(_imp->renderingContextPool->getRendererStatus());
+        qInfo().noquote() << QString::fromUtf8("GPU: Preferences device \"%1\" (%2); OpenGL renderer: %3")
+                                 .arg(QString::fromStdString(gpuDeviceId.empty() ? std::string("auto") : gpuDeviceId))
+                                 .arg(chosenDevice ? QString::fromStdString(chosenDevice->name) : QString::fromUtf8("none selected"))
+                                 .arg(QString::fromStdString(glStatus));
+
         GpuContextOptions gpuOptions;
-        gpuOptions.mode = GpuContext::resolveMode(_imp->_settings->getGpuComputeMode(), std::getenv("NATRON_GPU"));
-        gpuOptions.device = _imp->_settings->getGpuDevice();
+        gpuOptions.mode = gpuMode;
+        gpuOptions.device = gpuSelector;
         gpuOptions.memoryBudgetMB = _imp->_settings->getGpuMemoryBudgetMB();
         _imp->gpuContext.reset(new GpuContext(gpuOptions));
     }
@@ -3480,14 +3507,6 @@ GPUContextPool*
 AppManager::getGPUContextPool() const
 {
     return _imp->renderingContextPool.get();
-}
-
-void
-AppManager::refreshOpenGLRenderingFlagOnAllInstances()
-{
-    for (std::size_t i = 0; i < _imp->_appInstances.size(); ++i) {
-        _imp->_appInstances[i]->getProject()->refreshOpenGLRenderingFlagOnNodes();
-    }
 }
 
 void

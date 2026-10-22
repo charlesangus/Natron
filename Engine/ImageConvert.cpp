@@ -396,9 +396,6 @@ Image::convertToFormat(const RectI& renderWindow,
                        bool copyBitmap,
                        Image* dstImg) const
 {
-    // OpenGL textures are always RGBA anyway
-    assert(getStorageMode() != eStorageModeGLTex);
-
     // A colour channel the source layout lacks reads zero. Any other plane keeps the historical
     // fill, because a one-channel plane handed to a plug-in through its colour clip is read back
     // from channel 0, and a scratch alpha of 1 keeps premultiplication a no-op on such a plane.

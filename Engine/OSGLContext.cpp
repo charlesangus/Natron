@@ -41,9 +41,8 @@
 #endif
 
 #include "Engine/AbortableRenderInfo.h"
-#include "Engine/DefaultShaders.h"
-#include "Engine/GLShader.h"
 #include "Engine/GPUContextPool.h"
+#include "Engine/GpuDeviceList.h"
 #include "Global/FloatingPointExceptions.h"
 
 NATRON_NAMESPACE_ENTER
@@ -242,11 +241,6 @@ struct OSGLContextPrivate
 
     // The main FBO onto which we do all renders
     GLuint fboID;
-    GLShaderPtr fillImageShader;
-
-    // One for enabled, one for disabled
-    GLShaderPtr applyMaskMixShader[2];
-    GLShaderPtr copyUnprocessedChannelsShader[16];
 
     bool threadExclusive;
 
@@ -263,9 +257,6 @@ struct OSGLContextPrivate
 #endif
         , pboID(0)
         , fboID(0)
-        , fillImageShader()
-        , applyMaskMixShader()
-        , copyUnprocessedChannelsShader()
         , threadExclusive(false)
     {
     }
@@ -506,143 +497,110 @@ OSGLContext::stringInExtensionString(const char* string,
     return true;
 }
 
-GLShaderPtr
-OSGLContext::getOrCreateFillShader()
+// GL_DEVICE_UUID_EXT from EXT_external_objects, which the bundled glad does not generate.
+static const GLenum kGlDeviceUuidExt = 0x9597;
+
+bool
+OSGLContext::readCurrentDeviceUuid(void (*getUnsignedBytei_vEXT)(void),
+                                   std::array<uint8_t, 16>* uuid)
 {
-    if (_imp->fillImageShader) {
-        return _imp->fillImageShader;
+    if (!getUnsignedBytei_vEXT || !uuid) {
+        return false;
     }
-    _imp->fillImageShader = std::make_shared<GLShader>();
-#ifdef DEBUG
-    std::string error;
-    bool ok = _imp->fillImageShader->addShader(GLShader::eShaderTypeFragment, fillConstant_FragmentShader, &error);
-    if (!ok) {
-        qDebug() << error.c_str();
+    const char* extensions = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+    if (!extensions) {
+        return false;
     }
-#else
-    bool ok = _imp->fillImageShader->addShader(GLShader::eShaderTypeFragment, fillConstant_FragmentShader, nullptr);
-#endif
-
-    assert(ok);
-#ifdef DEBUG
-    ok = _imp->fillImageShader->link(&error);
-    if (!ok) {
-        qDebug() << error.c_str();
+    if (!stringInExtensionString("GL_EXT_memory_object", extensions) && !stringInExtensionString("GL_EXT_semaphore", extensions)) {
+        return false;
     }
-#else
-    ok = _imp->fillImageShader->link();
-#endif
-    assert(ok);
-    Q_UNUSED(ok);
-
-    return _imp->fillImageShader;
+    typedef void(APIENTRYP GetUnsignedBytei_vEXTProc)(GLenum target, GLuint index, GLubyte * data);
+    GetUnsignedBytei_vEXTProc getUuid = reinterpret_cast<GetUnsignedBytei_vEXTProc>(getUnsignedBytei_vEXT);
+    while (glGetError() != GL_NO_ERROR) {
+    }
+    std::array<uint8_t, 16> u {};
+    getUuid(kGlDeviceUuidExt, 0, u.data());
+    if (glGetError() != GL_NO_ERROR) {
+        return false;
+    }
+    *uuid = u;
+    return true;
 }
 
-GLShaderPtr
-OSGLContext::getOrCreateMaskMixShader(bool maskEnabled)
+bool
+OSGLContext::isSoftwareRendererName(const std::string& rendererName)
 {
-    int shader_i = maskEnabled ? 1 : 0;
-
-    if (_imp->applyMaskMixShader[shader_i]) {
-        return _imp->applyMaskMixShader[shader_i];
+    static const char* const softwareNames[] = {
+        "llvmpipe",
+        "softpipe",
+        "swrast",
+        "Software Rasterizer",
+    };
+    for (const char* name : softwareNames) {
+        if (rendererName.find(name) != std::string::npos) {
+            return true;
+        }
     }
-    _imp->applyMaskMixShader[shader_i] = std::make_shared<GLShader>();
-
-    std::string fragmentSource;
-    if (maskEnabled) {
-        fragmentSource += "#define MASK_ENABLED\n";
-    }
-
-    fragmentSource += std::string(applyMaskMix_FragmentShader);
-
-#ifdef DEBUG
-    std::string error;
-    bool ok = _imp->applyMaskMixShader[shader_i]->addShader(GLShader::eShaderTypeFragment, fragmentSource.c_str(), &error);
-    if (!ok) {
-        qDebug() << error.c_str();
-    }
-#else
-    bool ok = _imp->applyMaskMixShader[shader_i]->addShader(GLShader::eShaderTypeFragment, fragmentSource.c_str(), nullptr);
-#endif
-    assert(ok);
-#ifdef DEBUG
-    ok = _imp->applyMaskMixShader[shader_i]->link(&error);
-    if (!ok) {
-        qDebug() << error.c_str();
-    }
-#else
-    ok = _imp->applyMaskMixShader[shader_i]->link();
-#endif
-    assert(ok);
-    Q_UNUSED(ok);
-
-    return _imp->applyMaskMixShader[shader_i];
+    return false;
 }
 
-GLShaderPtr
-OSGLContext::getOrCreateCopyUnprocessedChannelsShader(bool doR,
-                                                      bool doG,
-                                                      bool doB,
-                                                      bool doA)
+GLRendererPick
+OSGLContext::pickRenderer(const std::list<OpenGLRendererInfo>& renderers,
+                          const GpuDeviceSummary* chosenOrNull,
+                          bool allowSoftware)
 {
-    int index = 0x0;
+    GLRendererPick pick;
+    if (renderers.empty()) {
+        pick.reason = "disabled: no GL renderer is available";
+        return pick;
+    }
 
-    if (doR) {
-        index |= 0x01;
+    const OpenGLRendererInfo* firstAllowed = 0;
+    for (const OpenGLRendererInfo& r : renderers) {
+        if (r.accelerated || allowSoftware) {
+            firstAllowed = &r;
+            break;
+        }
     }
-    if (doG) {
-        index |= 0x02;
+    if (!firstAllowed) {
+        pick.reason = "disabled: only a software GL renderer is available";
+        return pick;
     }
-    if (doB) {
-        index |= 0x04;
-    }
-    if (doA) {
-        index |= 0x08;
-    }
-    if (_imp->copyUnprocessedChannelsShader[index]) {
-        return _imp->copyUnprocessedChannelsShader[index];
-    }
-    _imp->copyUnprocessedChannelsShader[index] = std::make_shared<GLShader>();
 
-    std::string fragmentSource;
-    if (!doR) {
-        fragmentSource += "#define DO_R\n";
+    const OpenGLRendererInfo* matched = 0;
+    if (chosenOrNull) {
+        for (const OpenGLRendererInfo& r : renderers) {
+            if ((r.accelerated || allowSoftware) && r.hasUuid && (r.deviceUuid == chosenOrNull->uuid)) {
+                matched = &r;
+                break;
+            }
+        }
+        if (!matched && chosenOrNull->vendorID != 0) {
+            for (const OpenGLRendererInfo& r : renderers) {
+                if ((r.accelerated || allowSoftware) && !r.hasUuid && (r.pciVendorID != 0) && (r.pciVendorID == chosenOrNull->vendorID) && (r.pciDeviceID == chosenOrNull->deviceID)) {
+                    matched = &r;
+                    break;
+                }
+            }
+        }
     }
-    if (!doG) {
-        fragmentSource += "#define DO_G\n";
-    }
-    if (!doB) {
-        fragmentSource += "#define DO_B\n";
-    }
-    if (!doA) {
-        fragmentSource += "#define DO_A\n";
-    }
-    fragmentSource += std::string(copyUnprocessedChannels_FragmentShader);
 
-
-#ifdef DEBUG
-    std::string error;
-    bool ok = _imp->copyUnprocessedChannelsShader[index]->addShader(GLShader::eShaderTypeFragment, fragmentSource.c_str(), &error);
-    if (!ok) {
-        qDebug() << error.c_str();
+    const OpenGLRendererInfo* picked = matched ? matched : firstAllowed;
+    pick.enabled = true;
+    pick.rendererID = picked->rendererID;
+    pick.reason = picked->rendererName;
+    if (!picked->accelerated) {
+        pick.reason += ", software";
     }
-#else
-    bool ok = _imp->copyUnprocessedChannelsShader[index]->addShader(GLShader::eShaderTypeFragment, fragmentSource.c_str(), nullptr);
-#endif
-    assert(ok);
-#ifdef DEBUG
-    ok = _imp->copyUnprocessedChannelsShader[index]->link(&error);
-    if (!ok) {
-        qDebug() << error.c_str();
+    if (matched) {
+        pick.reason += " (matches the chosen Vulkan device)";
+    } else if (chosenOrNull) {
+        pick.reason += " (default renderer: no GL renderer matches the chosen Vulkan device)";
+    } else {
+        pick.reason += " (default renderer)";
     }
-#else
-    ok = _imp->copyUnprocessedChannelsShader[index]->link();
-#endif
-    assert(ok);
-    Q_UNUSED(ok);
-
-    return _imp->copyUnprocessedChannelsShader[index];
-} // OSGLContext::getOrCreateCopyUnprocessedChannelsShader
+    return pick;
+}
 
 void
 OSGLContext::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)

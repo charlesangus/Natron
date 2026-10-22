@@ -426,7 +426,6 @@ public:
                                           const std::bitset<4>& processChannels,
                                           const int preferredInput,
                                           const ImagePtr& maskImage,
-                                          const int glMaskChannel,
                                           ImageLayersToRender& layers);
 
     static bool aborted(bool isRenderResponseToUserInteraction,

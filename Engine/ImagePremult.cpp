@@ -97,14 +97,6 @@ Image::premultByChannel(const RectI& roi,
         return;
     }
 
-    // Both storages must be RAM: the callers that pair the divide with the multiply
-    // (OfxClipInstance::getInputImageInternal() and EffectInstance::tiledRenderingFunctor())
-    // both skip OpenGL renders, so no half-applied pair can reach here.
-    assert(getStorageMode() != eStorageModeGLTex && divisorImg->getStorageMode() != eStorageModeGLTex);
-    if ((getStorageMode() == eStorageModeGLTex) || (divisorImg->getStorageMode() == eStorageModeGLTex)) {
-        return;
-    }
-
     const RectI intersection = roi.intersect(_bounds);
     if (intersection.isNull()) {
         return;

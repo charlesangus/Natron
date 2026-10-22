@@ -25,6 +25,9 @@
 
 #include "GPUContextPool.h"
 
+#include <algorithm>
+#include <atomic>
+#include <climits>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -35,7 +38,6 @@
 
 #include "Engine/AppManager.h"
 #include "Engine/OSGLContext.h"
-#include "Engine/Settings.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -67,6 +69,20 @@ struct GPUContextPoolPrivate
 
     int currentOpenGLRendererMaxTexSize;
 
+    // Rendering state set at startup. Separate from contextPoolMutex so that reading it never waits on a context
+    // creation in progress.
+    mutable QMutex stateMutex;
+    bool stateEnabled;
+    GLRendererID stateRendererID;
+    std::string stateStatus;
+
+    // -1 when there is no test override, else 0 or 1
+    std::atomic<int> enabledOverride;
+
+    // kNoMaxOverride when there is no test override
+    static constexpr int kNoMaxOverride = INT_MIN;
+    std::atomic<int> maxContextsOverride;
+
     GPUContextPoolPrivate()
         : contextPoolMutex()
         , glContextPool()
@@ -79,9 +95,24 @@ struct GPUContextPoolPrivate
         , threadContexts()
         , glShareContext()
         , currentOpenGLRendererMaxTexSize(0)
+        , stateMutex()
+        , stateEnabled(false)
+        , stateRendererID()
+        , stateStatus()
+        , enabledOverride(-1)
+        , maxContextsOverride(kNoMaxOverride)
     {
     }
 };
+
+namespace {
+int
+getMaxContexts(const GPUContextPoolPrivate& imp)
+{
+    const int override = imp.maxContextsOverride.load();
+    return std::max(override == GPUContextPoolPrivate::kNoMaxOverride ? GPUContextPool::kMaxRenderGLContexts : override, 1);
+}
+}
 
 GPUContextPool::GPUContextPool()
     : _imp( new GPUContextPoolPrivate() )
@@ -90,6 +121,56 @@ GPUContextPool::GPUContextPool()
 
 GPUContextPool::~GPUContextPool()
 {
+}
+
+void
+GPUContextPool::setRenderingState(bool enabled, const GLRendererID& rendererID, const std::string& status)
+{
+    QMutexLocker k(&_imp->stateMutex);
+
+    _imp->stateEnabled = enabled;
+    _imp->stateRendererID = rendererID;
+    _imp->stateStatus = status;
+}
+
+bool
+GPUContextPool::isRenderingEnabled() const
+{
+    const int override = _imp->enabledOverride.load();
+    if (override >= 0) {
+        return override != 0;
+    }
+    QMutexLocker k(&_imp->stateMutex);
+
+    return _imp->stateEnabled;
+}
+
+GLRendererID
+GPUContextPool::getRendererID() const
+{
+    QMutexLocker k(&_imp->stateMutex);
+
+    return _imp->stateRendererID;
+}
+
+std::string
+GPUContextPool::getRendererStatus() const
+{
+    QMutexLocker k(&_imp->stateMutex);
+
+    return _imp->stateStatus;
+}
+
+void
+GPUContextPool::setRenderingEnabledForTests(std::optional<bool> enabled)
+{
+    _imp->enabledOverride.store(enabled ? (*enabled ? 1 : 0) : -1);
+}
+
+void
+GPUContextPool::setMaxContextsForTests(std::optional<int> maxContexts)
+{
+    _imp->maxContextsOverride.store(maxContexts ? *maxContexts : GPUContextPoolPrivate::kNoMaxOverride);
 }
 
 void
@@ -112,7 +193,7 @@ GPUContextPool::getCurrentOpenGLRendererMaxTextureSize() const
 OSGLContextPtr
 GPUContextPool::attachGLContextToRender(bool checkIfGLLoaded)
 {
-    if (checkIfGLLoaded && (!appPTR->isOpenGLLoaded() || !appPTR->getCurrentSettings()->isOpenGLRenderingEnabled())) {
+    if (checkIfGLLoaded && (!appPTR->isOpenGLLoaded() || !isRenderingEnabled())) {
         return OSGLContextPtr();
     }
     QMutexLocker k(&_imp->contextPoolMutex);
@@ -120,13 +201,8 @@ GPUContextPool::attachGLContextToRender(bool checkIfGLLoaded)
     // Context-sharing disabled as it is not needed
     OSGLContextPtr shareContext;// _imp->glShareContext.lock();
     OSGLContextPtr newContext;
-    SettingsPtr settings =  appPTR->getCurrentSettings();
-    GLRendererID rendererID;
-    if (settings) {
-        rendererID = settings->getActiveOpenGLRendererID();
-    }
-
-    int maxContexts = settings ? std::max(settings->getMaxOpenGLContexts(), 1) : 1;
+    const GLRendererID rendererID = getRendererID();
+    const int maxContexts = getMaxContexts(*_imp);
 
 #ifndef NATRON_RENDER_SHARED_CONTEXT
     while (_imp->glContextPool.empty() && (int)_imp->attachedGLContexts.size() >= maxContexts) {
@@ -176,12 +252,11 @@ GPUContextPool::attachGLContextToRender(bool checkIfGLLoaded)
 #endif //NATRON_RENDER_SHARED_CONTEXT
     assert(newContext);
 
-    if (settings) {
-        if (!_imp->currentOpenGLRendererMaxTexSize) {
-            newContext->setContextCurrentNoRender();
-            glGetIntegerv(GL_MAX_TEXTURE_SIZE, &_imp->currentOpenGLRendererMaxTexSize);
-            newContext->unsetCurrentContextNoRender();
-        }
+    // Before the startup state is set the GL entry points are not loaded yet, so there is nothing to query.
+    if (isRenderingEnabled() && !_imp->currentOpenGLRendererMaxTexSize) {
+        newContext->setContextCurrentNoRender();
+        glGetIntegerv(GL_MAX_TEXTURE_SIZE, &_imp->currentOpenGLRendererMaxTexSize);
+        newContext->unsetCurrentContextNoRender();
     }
 
     // If this is the first context, set it as the sharing context
@@ -201,7 +276,7 @@ GPUContextPool::attachGLContextToRender(bool checkIfGLLoaded)
 OSGLContextPtr
 GPUContextPool::getOrCreateContextForCurrentThread()
 {
-    if (!appPTR->isOpenGLLoaded() || !appPTR->getCurrentSettings()->isOpenGLRenderingEnabled()) {
+    if (!appPTR->isOpenGLLoaded() || !isRenderingEnabled()) {
         return OSGLContextPtr();
     }
     QThread* const thread = QThread::currentThread();
@@ -213,15 +288,11 @@ GPUContextPool::getOrCreateContextForCurrentThread()
         return found->second;
     }
 
-    SettingsPtr settings = appPTR->getCurrentSettings();
-    const int maxContexts = settings ? std::max(settings->getMaxOpenGLContexts(), 1) : 1;
+    const int maxContexts = getMaxContexts(*_imp);
     if ((int)_imp->threadContexts.size() >= maxContexts) {
         return OSGLContextPtr();
     }
-    GLRendererID rendererID;
-    if (settings) {
-        rendererID = settings->getActiveOpenGLRendererID();
-    }
+    const GLRendererID rendererID = getRendererID();
 
     OSGLContextPtr newContext;
     try {
@@ -231,7 +302,7 @@ GPUContextPool::getOrCreateContextForCurrentThread()
     }
 
     // Binding the new context to read the limit would unbind whatever context the thread is rendering with.
-    if (settings && !_imp->currentOpenGLRendererMaxTexSize && !OSGLContext::threadHasACurrentContext()) {
+    if (!_imp->currentOpenGLRendererMaxTexSize && !OSGLContext::threadHasACurrentContext()) {
         newContext->setContextCurrentNoRender();
         glGetIntegerv(GL_MAX_TEXTURE_SIZE, &_imp->currentOpenGLRendererMaxTexSize);
         newContext->unsetCurrentContextNoRender();

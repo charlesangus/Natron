@@ -1868,33 +1868,6 @@ getOrCreateFromCacheInternal(const ImageKey & key,
 }
 
 ImagePtr
-EffectInstance::convertOpenGLTextureToCachedRAMImage(const ImagePtr& image)
-{
-    assert(image->getStorageMode() == eStorageModeGLTex);
-
-    ImageParamsPtr params = std::make_shared<ImageParams>( *image->getParams() );
-    CacheEntryStorageInfo& info = params->getStorageInfo();
-    info.mode = eStorageModeRAM;
-
-    ImagePtr ramImage;
-    getOrCreateFromCacheInternal(image->getKey(), params, true /*useCache*/, &ramImage);
-    if (!ramImage) {
-        return ramImage;
-    }
-
-    OSGLContextPtr context = getThreadLocalOpenGLContext();
-    assert(context);
-    if (!context) {
-        throw std::runtime_error("No OpenGL context attached");
-    }
-
-    ramImage->pasteFrom(*image, image->getBounds(), false, context);
-    ramImage->markForRendered(image->getBounds());
-
-    return ramImage;
-}
-
-ImagePtr
 EffectInstance::convertRAMImageToOpenGLTexture(const ImagePtr& image)
 {
     assert(image->getStorageMode() != eStorageModeGLTex);
@@ -2589,7 +2562,6 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
                                                 lastFrame,
                                                 layers->useOpenGL);
     ImagePtr maskImage;
-    int glMaskChannel = -1;
     EffectInstance::InputImagesMap::const_iterator foundMaskInput = rectToRender.imgs.end();
 
     if ( _publicInterface->isHostMaskingEnabled() ) {
@@ -2607,12 +2579,7 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
             ImageLayerDesc maskLayer;
             const int maskChannel = _publicInterface->getMaskChannel(maskInputNb, availableLayers, &maskLayer);
             if (maskChannel >= 0) {
-                // GL textures are never converted, so the GL mix reads the channel from the whole layer.
-                if (maskImage->getStorageMode() == eStorageModeGLTex) {
-                    glMaskChannel = maskChannel;
-                } else {
-                    maskImage = EffectInstance::convertLayersFormatsIfNeeded(maskImage, maskImage->getBounds(), ImageLayerDesc::getAlphaComponents(), maskImage->getBitDepth(), maskChannel);
-                }
+                maskImage = EffectInstance::convertLayersFormatsIfNeeded(maskImage, maskImage->getBounds(), ImageLayerDesc::getAlphaComponents(), maskImage->getBitDepth(), maskChannel);
             }
         }
     }
@@ -2697,7 +2664,6 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
                                                        processChannels,
                                                        preferredInput,
                                                        maskImage,
-                                                       glMaskChannel,
                                                        *layers);
     if (handlerRet == eRenderingFunctorRetOK) {
         return eRenderingFunctorRetOK;
@@ -2767,6 +2733,27 @@ findInputImageForPlane(const EffectInstance::InputImagesMap& inputImages,
     return found->second.front();
 }
 
+// Reads what a plug-in rendered into an OpenGL texture back into the RAM layer image. The context that holds
+// the texture must be current. glReadPixels() writes RGBA float, so a layer of another depth goes through a
+// float temporary, the same way the CPU path converts its temporary image.
+static void
+readBackOpenGLRender(const Image& texture,
+                     const ImageLayerDesc& plane,
+                     const RectI& roi,
+                     const OSGLContextPtr& glContext,
+                     Image* layerImage)
+{
+    assert(texture.getStorageMode() == eStorageModeGLTex && layerImage->getStorageMode() != eStorageModeGLTex);
+    if ((layerImage->getComponents() == texture.getComponents()) && (layerImage->getBitDepth() == eImageBitDepthFloat)) {
+        layerImage->pasteFrom(texture, roi, false, glContext);
+
+        return;
+    }
+    ImagePtr readBack = std::make_shared<Image>(texture.getComponents(), texture.getRoD(), roi, texture.getMipmapLevel(), texture.getPixelAspectRatio(), eImageBitDepthFloat, texture.getFieldingOrder(), false);
+    readBack->pasteFrom(texture, roi, false, glContext);
+    readBack->convertToFormat(roi, channelForAlphaForPlane(plane), false, layerImage);
+}
+
 EffectInstance::RenderingFunctorRetEnum
 EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                                               const unsigned int mipmapLevel,
@@ -2781,7 +2768,6 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                                               const std::bitset<4>& processChannels,
                                               const int preferredInput,
                                               const ImagePtr& maskImage,
-                                              const int glMaskChannel,
                                               ImageLayersToRender& layers)
 {
     TimeLapsePtr timeRecorder;
@@ -2869,11 +2855,11 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                                                                                                     outputClipPrefDepth,
                                                                                                     false,
                                                                                                     _publicInterface,
-                                                                                                    layers.useOpenGL ? eStorageModeGLTex : eStorageModeRAM,
+                                                                                                    eStorageModeRAM,
                                                                                                     time));
         if (!tls->currentRenderArgs.identityInput) {
             for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::iterator it = layers.layers.begin(); it != layers.layers.end(); ++it) {
-                it->second.renderMappedImage->fillZero(renderMappedRectToRender, glContext);
+                it->second.renderMappedImage->fillZero(renderMappedRectToRender);
 
                 if ( frameArgs->stats && frameArgs->stats->isInDepthProfilingEnabled() ) {
                     frameArgs->stats->addRenderInfosForNode( _publicInterface->getNode(),  NodePtr(), it->first.getChannelsLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation() );
@@ -2891,7 +2877,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                 return eRenderingFunctorRetFailed;
             } else if (identityLayers.empty()) {
                 for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::iterator it = layers.layers.begin(); it != layers.layers.end(); ++it) {
-                    it->second.renderMappedImage->fillZero(renderMappedRectToRender, glContext);
+                    it->second.renderMappedImage->fillZero(renderMappedRectToRender);
 
                     if ( frameArgs->stats && frameArgs->stats->isInDepthProfilingEnabled() ) {
                         frameArgs->stats->addRenderInfosForNode( _publicInterface->getNode(),  tls->currentRenderArgs.identityInput->getNode(), it->first.getChannelsLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation() );
@@ -2910,7 +2896,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
 
                         if ( !idIt->second->getBounds().contains(renderMappedRectToRender) ) {
                             ///Fill the RoI with 0's as the identity input image might have bounds contained into the RoI
-                            it->second.fullscaleImage->fillZero(renderMappedRectToRender, glContext);
+                            it->second.fullscaleImage->fillZero(renderMappedRectToRender);
                         }
 
                         ///Convert format first if needed
@@ -2946,7 +2932,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                     } else {
                         if ( !idIt->second->getBounds().contains(downscaledRectToRender) ) {
                             ///Fill the RoI with 0's as the identity input image might have bounds contained into the RoI
-                            it->second.downscaleImage->fillZero(downscaledRectToRender, glContext);
+                            it->second.downscaleImage->fillZero(downscaledRectToRender);
                         }
 
                         ///Convert format if needed or copy
@@ -2954,7 +2940,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                             const RectI convertWindow = idIt->second->getBounds().intersect(downscaledRectToRender);
                             idIt->second->convertToFormat(convertWindow, 3, false, it->second.downscaleImage.get());
                         } else {
-                            it->second.downscaleImage->pasteFrom(*(idIt->second), downscaledRectToRender, false, glContext);
+                            it->second.downscaleImage->pasteFrom(*(idIt->second), downscaledRectToRender, false);
                         }
                     }
 
@@ -2991,8 +2977,21 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
         // the temporary because tiles writing into one image would serialise on its write lock.
         const bool rendersIntoMappedImage = mappedMatchesOutput && !layers.useOpenGL && (it->second.renderMappedImage->getStorageMode() == eStorageModeRAM) && (layers.rectsToRender.size() == 1) && _publicInterface->rendersOnlyInsideRenderWindow();
 
-        // OpenGL render never use the cache and bitmaps, all images are local to a render.
-        if ((it->second.renderMappedImage->usesBitMap() || !mappedMatchesOutput) && !rendersIntoMappedImage && !_publicInterface->isPaintingOverItselfEnabled() && !layers.useOpenGL) {
+        if (layers.useOpenGL) {
+            // Only the plug-in's output is a texture. It covers the render window and is read back into
+            // renderMappedImage right after the render action, so the host wrappers below run on RAM.
+            ImageParamsPtr textureParams = Image::makeParams(it->second.renderMappedImage->getRoD(),
+                                                             actionArgs.roi,
+                                                             it->second.renderMappedImage->getPixelAspectRatio(),
+                                                             it->second.renderMappedImage->getMipmapLevel(),
+                                                             false /*isRoDProjectFormat*/,
+                                                             prefComp,
+                                                             eImageBitDepthFloat,
+                                                             it->second.renderMappedImage->getFieldingOrder(),
+                                                             eStorageModeGLTex,
+                                                             GL_TEXTURE_2D);
+            it->second.tmpImage = std::make_shared<Image>(it->second.renderMappedImage->getKey(), textureParams);
+        } else if ((it->second.renderMappedImage->usesBitMap() || !mappedMatchesOutput) && !rendersIntoMappedImage && !_publicInterface->isPaintingOverItselfEnabled()) {
             it->second.tmpImage = std::make_shared<Image>(prefComp,
                                                           it->second.renderMappedImage->getRoD(),
                                                           actionArgs.roi,
@@ -3046,7 +3045,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
             assert(actionArgs.outputLayers.size() == 1);
 
             const ImagePtr& mainImageLayer = actionArgs.outputLayers.front().second;
-            assert(mainImageLayer->getStorageMode() == eStorageModeGLTex);
+            assert(mainImageLayer->getStorageMode() == eStorageModeGLTex && mainImageLayer->getBounds() == actionArgs.roi);
             textureTarget = mainImageLayer->getGLTextureTarget();
             glEnable(textureTarget);
             glActiveTexture(GL_TEXTURE0);
@@ -3127,6 +3126,26 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                 return eRenderingFunctorRetAborted;
             }
         } // if (st != eStatusOK || renderAborted) {
+
+        if (layers.useOpenGL) {
+            for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::iterator itLayer = outputLayers.begin(); itLayer != outputLayers.end(); ++itLayer) {
+                if (!itLayer->second.tmpImage || (itLayer->second.tmpImage->getStorageMode() != eStorageModeGLTex)) {
+                    continue;
+                }
+                bool renderedNow = false;
+                for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator itRendered = it->begin(); itRendered != it->end(); ++itRendered) {
+                    if (itRendered->second == itLayer->second.tmpImage) {
+                        renderedNow = true;
+                        break;
+                    }
+                }
+                if (!renderedNow) {
+                    continue;
+                }
+                readBackOpenGLRender(*itLayer->second.tmpImage, itLayer->first, actionArgs.roi, glContext, itLayer->second.renderMappedImage.get());
+                itLayer->second.tmpImage = itLayer->second.renderMappedImage;
+            }
+        }
     } // for (std::list<std::list<std::pair<ImageLayerDesc,ImagePtr> > >::iterator it = layersLists.begin(); it != layersLists.end(); ++it)
 
     assert(!renderAborted);
@@ -3207,11 +3226,12 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                 }
 
                 if (mappedOriginalInputImage) {
-                    if (!rendersUnprocessed) {
-                        it->second.tmpImage->copyUnProcessedChannels(renderMappedRectToRender, tmpProcessChannels, mappedOriginalInputImage);
-                    }
+                    // Mix first: it blends every channel in float and would round a channel copied back from the source.
                     if (useMaskMix) {
                         it->second.tmpImage->applyMaskMix(renderMappedRectToRender, maskImage.get(), mappedOriginalInputImage.get(), doMask, false, mix);
+                    }
+                    if (!rendersUnprocessed) {
+                        it->second.tmpImage->copyUnProcessedChannels(renderMappedRectToRender, tmpProcessChannels, mappedOriginalInputImage);
                     }
                 }
                 if ( ( it->second.fullscaleImage->getComponents() != it->second.tmpImage->getComponents() ) ||
@@ -3281,11 +3301,12 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                     it->second.downscaleImage->premultiplyByChannel(actionArgs.roi, unPremultDivisorImage.get(), unPremultDivisorChannel, planeProcessChannels, unPremultSkipChannel);
                 }
 
-                if (!rendersUnprocessed) {
-                    it->second.downscaleImage->copyUnProcessedChannels(actionArgs.roi, planeProcessChannels, originalInputImage, glContext);
-                }
+                // Mix first: it blends every channel in float and would round a channel copied back from the source.
                 if (useMaskMix) {
-                    it->second.downscaleImage->applyMaskMix(actionArgs.roi, maskImage.get(), originalInputImage.get(), doMask, false, mix, glContext, glMaskChannel);
+                    it->second.downscaleImage->applyMaskMix(actionArgs.roi, maskImage.get(), originalInputImage.get(), doMask, false, mix);
+                }
+                if (!rendersUnprocessed) {
+                    it->second.downscaleImage->copyUnProcessedChannels(actionArgs.roi, planeProcessChannels, originalInputImage);
                 }
             } // if (renderFullScaleThenDownscale) {
         } // if (it->second.isAllocatedOnTheFly) {
@@ -4572,11 +4593,17 @@ EffectInstance::attachOpenGLContext_public(const OSGLContextPtr& glContext,
     StatusEnum ret = attachOpenGLContext(data);
 
     if ( (ret == eStatusOK) || (ret == eStatusReplyDefault) ) {
+        // An effect that keeps no per-context state leaves the data unset, but the render and the detach still
+        // track the context lock and the attachment through it.
+        if (!*data) {
+            *data = std::make_shared<OpenGLContextEffectData>();
+        }
         if (!concurrentGLRender) {
             (*data)->setHasTakenLock(true);
         }
         _imp->attachedContexts.insert( std::make_pair(glContext, *data) );
-    } else {
+    } else if (!concurrentGLRender) {
+        // The concurrent case holds the mutex through the scoped locker, which releases it.
         _imp->attachedContextsMutex.unlock();
     }
 

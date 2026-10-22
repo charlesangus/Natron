@@ -27,8 +27,6 @@
 
 #include <cassert>
 #include <stdexcept>
-#include "Engine/GLShader.h"
-#include "Engine/OSGLContext.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -191,9 +189,7 @@ Image::applyMaskMix(const RectI& roi,
                     const Image* originalImg,
                     bool masked,
                     bool maskInvert,
-                    float mix,
-                    const OSGLContextPtr& glContext,
-                    int maskChannel)
+                    float mix)
 {
     ///!masked && mix == 1 has nothing to do
     if ( !masked && (mix == 1) ) {
@@ -212,73 +208,7 @@ Image::applyMaskMix(const RectI& roi,
     const RectI realRoI = roi.intersect(_bounds);
 
     assert( !originalImg || getBitDepth() == originalImg->getBitDepth() );
-    // The mask is read as one channel per pixel; a single-channel layer other than alpha may be
-    // the selected mask channel.
-    assert(!masked || !maskImg || (maskImg->getStorageMode() == eStorageModeGLTex) || maskImg->getComponentsCount() == 1);
-
-    if (getStorageMode() == eStorageModeGLTex) {
-        assert(glContext);
-        assert(!masked || !maskImg || maskImg->getComponentsCount() == 1 || (0 <= maskChannel && maskChannel < (int)maskImg->getComponentsCount()));
-        assert(!originalImg || originalImg->getStorageMode() == eStorageModeGLTex);
-        GLShaderPtr shader = glContext->getOrCreateMaskMixShader(maskImg != 0);
-        assert(shader);
-        GLuint fboID = glContext->getFBOId();
-
-        glBindFramebuffer(GL_FRAMEBUFFER, fboID);
-        int target = getGLTextureTarget();
-        glEnable(target);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture( target, getGLTextureID() );
-
-        glTexParameteri (target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri (target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-        glTexParameteri (target, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri (target, GL_TEXTURE_WRAP_T, GL_REPEAT);
-
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, getGLTextureID(), 0 /*LoD*/);
-        glCheckFramebufferError();
-
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(target, originalImg ? originalImg->getGLTextureID() : 0);
-
-        glTexParameteri (target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri (target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-        glTexParameteri (target, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri (target, GL_TEXTURE_WRAP_T, GL_REPEAT);
-
-        glActiveTexture(GL_TEXTURE2);
-        glBindTexture(target, maskImg ? maskImg->getGLTextureID() : 0);
-
-        glTexParameteri (target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri (target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-        glTexParameteri (target, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri (target, GL_TEXTURE_WRAP_T, GL_REPEAT);
-
-
-        shader->bind();
-        shader->setUniform("originalImageTex", 1);
-        shader->setUniform("maskImageTex", 2);
-        shader->setUniform("outputImageTex", 0);
-        shader->setUniform("mixValue", mix);
-        shader->setUniform("maskEnabled", maskImg ? 1 : 0);
-        // A one-channel mask holds its value in alpha on GL: an upload replicates it into all four channels.
-        shader->setUniform("maskChannel", (maskImg && maskImg->getComponentsCount() != 1 && maskChannel >= 0) ? maskChannel : 3);
-        applyTextureMapping(_bounds, realRoI);
-        shader->unbind();
-
-
-        glBindTexture(target, 0);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(target, 0);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(target, 0);
-        glCheckError();
-
-        return;
-    }
+    assert(!masked || !maskImg || maskImg->getComponentsCount() == 1);
 
     int srcNComps = originalImg ? (int)originalImg->getComponentsCount() : 0;
     //assert(0 < srcNComps && srcNComps <= 4);

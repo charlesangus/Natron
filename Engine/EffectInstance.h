@@ -810,13 +810,6 @@ public:
                                              ImagePtr* image);
 
     /**
-     * @brief Converts the given OpenGL texture to a RAM-stored image. The resulting image will be cached.
-     * This function is SLOW as it makes use of glReadPixels.
-     * The OpenGL context should have been made current prior to calling this function.
-     **/
-    ImagePtr convertOpenGLTextureToCachedRAMImage(const ImagePtr& image);
-
-    /**
      * @brief Converts the given RAM-stored image to an OpenGL texture.
      * THe resulting texture will not be cached and will destroyed when the shared pointer is released.
      * The OpenGL context should have been made current prior to calling this function.

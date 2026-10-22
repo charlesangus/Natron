@@ -660,6 +660,8 @@ OSGLContext_wayland::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
     // We don't have any way to get memory size, set it to 0
     info.maxMemBytes = 0;
     info.rendererID.renderID = -1;
+    info.accelerated = !OSGLContext::isSoftwareRendererName(info.rendererName);
+    info.hasUuid = OSGLContext::readCurrentDeviceUuid(getProcAddress(eglInfo, "glGetUnsignedBytei_vEXT"), &info.deviceUuid);
     renderers.push_back(info);
 } // OSGLContext_wayland::getGPUInfos
 

@@ -34,7 +34,6 @@
 #include <QDebug>
 
 #include "Engine/AppManager.h"
-#include "Engine/GLShader.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/PoolParallelFor.h"
@@ -1220,27 +1219,7 @@ Image::pasteFrom(const Image & src,
     StorageModeEnum thisStorage = getStorageMode();
     StorageModeEnum otherStorage = src.getStorageMode();
 
-    if ( (thisStorage == eStorageModeGLTex) && (otherStorage == eStorageModeGLTex) ) {
-        // OpenGL texture to OpenGL texture
-        assert(_params->getStorageInfo().textureTarget == src.getParams()->getStorageInfo().textureTarget);
-
-        RectI dstBounds = getBounds();
-        RectI srcBounds = src.getBounds();
-        GLuint fboID = glContext->getFBOId();
-
-        glBindFramebuffer(GL_FRAMEBUFFER, fboID);
-        int target = getGLTextureTarget();
-        glEnable(target);
-        glBindTexture( target, getGLTextureID() );
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, getGLTextureID(), 0 /*LoD*/);
-        glCheckFramebufferError();
-        glBindTexture( target, src.getGLTextureID() );
-
-        applyTextureMapping(dstBounds, srcRoi);
-
-        glBindTexture(target, 0);
-        glCheckError();
-    } else if ( (thisStorage == eStorageModeGLTex) && (otherStorage != eStorageModeGLTex) ) {
+    if ((thisStorage == eStorageModeGLTex) && (otherStorage != eStorageModeGLTex)) {
         // RAM image to OpenGL texture
         const RectI& dstBounds = getBounds();
         const RectI& srcBounds = src.getBounds();
@@ -1308,7 +1287,7 @@ Image::pasteFrom(const Image & src,
         glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
         glBindTexture(target, 0);
         glCheckError();
-    } else if ( (thisStorage != eStorageModeGLTex) && (otherStorage == eStorageModeGLTex) ) {
+    } else if ((thisStorage != eStorageModeGLTex) && (otherStorage == eStorageModeGLTex)) {
         // OpenGL texture to RAM image
 
         const RectI& dstBounds = getBounds();
@@ -1451,54 +1430,13 @@ Image::fillForDepth(const RectI & roi_,
 
 // code proofread and fixed by @devernay on 8/8/2014
 void
-Image::fill(const RectI & roi,
+Image::fill(const RectI& roi,
             float r,
             float g,
             float b,
-            float a,
-            const OSGLContextPtr& glContext)
+            float a)
 {
     QWriteLocker k(&_entryLock);
-
-    if (getStorageMode() == eStorageModeGLTex) {
-        const RectI realRoI = roi.intersect(_bounds);
-        if (realRoI.isNull()) {
-            // no intersection between roi and the bounds of the image
-            return;
-        }
-
-        assert(glContext);
-        GLShaderPtr shader = glContext->getOrCreateFillShader();
-        assert(shader);
-        GLuint fboID = glContext->getFBOId();
-
-        glBindFramebuffer(GL_FRAMEBUFFER, fboID);
-        int target = getGLTextureTarget();
-        glEnable(target);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture( target, getGLTextureID() );
-
-        glTexParameteri (target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri (target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-        glTexParameteri (target, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri (target, GL_TEXTURE_WRAP_T, GL_REPEAT);
-
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, getGLTextureID(), 0 /*LoD*/);
-        glCheckFramebufferError();
-
-        shader->bind();
-        OfxRGBAColourF fillColor = {r, g, b, a};
-        shader->setUniform("fillColor", fillColor);
-        applyTextureMapping(_bounds, realRoI);
-        shader->unbind();
-
-
-        glBindTexture(target, 0);
-        glCheckError();
-
-        return;
-    }
 
     switch ( getBitDepth() ) {
     case eImageBitDepthByte:
@@ -1519,15 +1457,8 @@ Image::fill(const RectI & roi,
 } // fill
 
 void
-Image::fillZero(const RectI& roi,
-                const OSGLContextPtr& glContext)
+Image::fillZero(const RectI& roi)
 {
-    if (getStorageMode() == eStorageModeGLTex) {
-        fill(roi, 0., 0., 0., 0., glContext);
-
-        return;
-    }
-
     QWriteLocker k(&_entryLock);
     const RectI intersection = roi.intersect(_bounds);
 
@@ -1566,14 +1497,8 @@ Image::fillZero(const RectI& roi,
 }
 
 void
-Image::fillBoundsZero(const OSGLContextPtr& glContext)
+Image::fillBoundsZero()
 {
-    if (getStorageMode() == eStorageModeGLTex) {
-        fill(getBounds(), 0., 0., 0., 0., glContext);
-
-        return;
-    }
-
     QWriteLocker k(&_entryLock);
     std::size_t rowSize =  (std::size_t)_nbComponents;
 

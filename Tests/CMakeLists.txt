@@ -104,6 +104,7 @@ set(Tests_SOURCES
     ProjectOCIOPlugins_Test.cpp
     ProjectOCIO_Test.cpp
     ProjectSerialization_Test.cpp
+    Serialization/ProjectEquivalence.cpp
     PyPlugExport_Test.cpp
     PyPlugInstantiate_Test.cpp
     ReadFormat_Test.cpp

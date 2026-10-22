@@ -149,8 +149,8 @@ TEST_F(RawDevelopTest, OnlyInteractiveCreationAsksForTheChain)
     const std::map<std::string, int> before = countByPlugin(getApp()->getProject());
     NodePtr read = createRawRead();
     ASSERT_TRUE(bool(read));
-    std::map<std::string, int> after = countByPlugin(getApp()->getProject());
-    EXPECT_EQ(0, after[PLUGINID_NATRON_RAWPREPARE]);
+    const std::map<std::string, int> after = countByPlugin(getApp()->getProject());
+    EXPECT_EQ(0u, after.count(PLUGINID_NATRON_RAWPREPARE));
     EXPECT_EQ(before.size() + 1, after.size());
 }
 

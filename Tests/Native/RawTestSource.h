@@ -103,7 +103,7 @@ public:
 
     /**
      * @brief Sets everything the source outputs. A render that bypasses the cache sees the new
-     * pixels; the metadata is derived again.
+     * pixels; the metadata, the component count included, is derived again. Main thread only.
      **/
     void setRaw(const RectI& rod,
                 int nComps,
@@ -118,6 +118,10 @@ public:
             _metadata = metadata;
         }
         invalidateOutputMetadata();
+        // The component count lives in the node metadata computed when the node was created, which
+        // nothing else recomputes before a downstream node reads it; recursing marks the nodes
+        // already connected below as stale too.
+        refreshMetadata_public(true);
     }
 
     void setMetadata(const ImageMetadata& metadata)

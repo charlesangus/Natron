@@ -237,7 +237,7 @@ Scouting facts this plan relies on (2026-10-10):
   - verify: compiled at P3.T8. `xmllint --noout` on the MIME file passes. `grep -rn '"ntp"\|\.ntp\b' Engine Gui Global App` shows only the old-format refusal paths.
   - size: M
 
-- [ ] M16.P3.T8 — Rename test and tool paths, build, regenerate fixtures and comps, full ctest
+- [x] M16.P3.T8 — Rename test and tool paths, build, regenerate fixtures and comps, full ctest
   - files: every test file found by `grep -rl '\.ntp"' Tests` (about 30, including `Tests/Native/`), `tools/ci/smoke_test.py`, `tools/ci/regen_read_time_offset.py`, `tools/bench/comps/build_comps.{sh,py}`, `tools/bench/comps/run_comps.sh`, `tools/bench/graph_bench.py`, `tools/genStaticDocs.sh`, `Tests/fixtures/read-time-offset.ntpz` (regenerated), `tools/bench/comps/*.ntpz` (regenerated), and the old `*.ntp` files (deleted)
   - approach:
     1. Replace `.ntp"` with `.ntpz"` in the listed test strings and tool paths. In `genStaticDocs.sh`, check that an empty dummy file is still accepted by `--export-docs`; if not, make it write a real empty project first.
@@ -275,7 +275,7 @@ Scouting facts this plan relies on (2026-10-10):
   - verify: compiled at P5.T5. Each migrated test passes. Spot-check one by reverting its guarded behaviour: it must fail.
   - size: M
 
-- [ ] M16.P5.T2 — Dangling-reference, order, robustness and old-format refusal tests
+- [x] M16.P5.T2 — Dangling-reference, order, robustness and old-format refusal tests
   - files: new `Tests/Serialization/BundleLoad_Test.cpp`, new `Tests/Serialization/ProjectEquivalence.h/.cpp`, new `Tests/fixtures/bundle/*.yaml` (the source YAML, packed with `ZipStore` at run time, so no binary fixtures are committed), new `Tests/fixtures/old-format.ntp` (a 3-line XML stub)
   - approach: `ProjectEquivalence` compares live projects: node tree, plugin ID and version, inputs, every persistent knob value (bit-exact curves), expressions and links, the layer registry, formats and the timeline. Cases:
     1. three node orders load to equivalent projects;
@@ -297,7 +297,7 @@ Scouting facts this plan relies on (2026-10-10):
   - verify: compiled at P5.T5; it passes, and the bundle contains stroke, bezier and track blob members.
   - size: M
 
-- [ ] M16.P5.T4 — Python API round-trip
+- [x] M16.P5.T4 — Python API round-trip
   - files: `tools/ci/smoke_test.py` (one new check), `Engine/PyAppInstance.h` (doc comments only)
   - approach: under NatronRenderer, `app.saveProject("x.ntpz")` then `app.loadProject` on a small graph; `app.loadProject` on `Tests/fixtures/old-format.ntp` raises with the old-format message. Update the doc comments of `saveProject`, `saveProjectAs` and `loadProject` (`:310-313`) to name `.ntpz`.
   - verify: run at P5.T5 via `tools/ci/local/test.sh smoke debug`.

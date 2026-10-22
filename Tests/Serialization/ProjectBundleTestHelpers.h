@@ -28,10 +28,14 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
 #include <exception>
 #include <list>
 #include <memory>
+#include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 
 #include <gtest/gtest.h>
 
@@ -103,6 +107,29 @@ writeProjectBundle(const Serialization::ProjectSerialization& project,
     }
 
     return true;
+}
+
+// The text of the member of the bundle at path, such as "project.yaml". A bundle that cannot be
+// read or lacks the member fails the test and gives an empty string.
+inline std::string
+readBundleMember(const QString& path,
+                 std::string_view member)
+{
+    try {
+        const Serialization::ProjectBundleReader reader(path.toStdString());
+        const std::optional<std::span<const std::byte>> bytes = reader.findMember(member);
+        if (!bytes) {
+            ADD_FAILURE() << path.toStdString() << " has no member " << member;
+
+            return std::string();
+        }
+
+        return std::string(reinterpret_cast<const char*>(bytes->data()), bytes->size());
+    } catch (const std::exception& e) {
+        ADD_FAILURE() << "Cannot read " << path.toStdString() << ": " << e.what();
+
+        return std::string();
+    }
 }
 
 // Writes serialization as the bundle fileName in tmp and loads that file into project.

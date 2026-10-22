@@ -28,7 +28,9 @@
 
 #include <algorithm> // min, max
 #include <cassert>
+#include <exception>
 #include <istream>
+#include <iterator>
 #include <string>
 
 #include <QApplication>
@@ -48,19 +50,52 @@
 #include "Gui/ProjectGui.h"
 #include "Gui/SequenceFileDialog.h"
 
+#include "Serialization/ProjectGuiSerialization.h"
+#include "Serialization/Yaml/ProjectGuiYaml.h"
+#include "Serialization/Yaml/YamlScalars.h"
+
 NATRON_NAMESPACE_ENTER
 
 namespace {
 
+// Reads the layout file at filename. On failure, error says why in words meant for the user and
+// unreadable tells whether the file could not even be opened.
 bool
-looksLikeXml(std::istream& stream)
+readLayoutFile(const std::string& filename,
+               Serialization::GuiLayoutSerialization* layout,
+               QString* error,
+               bool* unreadable = nullptr)
 {
-    char header[64];
+    FStreamsSupport::ifstream ifile;
+    FStreamsSupport::open(&ifile, filename);
+    if (unreadable) {
+        *unreadable = !ifile;
+    }
+    if (!ifile) {
+        *error = Gui::tr("Failed to open file: %1").arg(QString::fromUtf8(filename.c_str()));
 
-    stream.read(header, sizeof(header));
-    const std::string text(header, static_cast<std::size_t>(stream.gcount()));
+        return false;
+    }
+    const std::string text((std::istreambuf_iterator<char>(ifile)), std::istreambuf_iterator<char>());
+    if (Serialization::isXmlDocument(text)) {
+        *error = Gui::tr("The layout %1 uses the old XML .nl format, which this version of Natron cannot open (no compatibility, by design).").arg(QString::fromUtf8(filename.c_str()));
 
-    return (text.find("<?xml") != std::string::npos) || (text.find("<!DOCTYPE boost_serialization") != std::string::npos);
+        return false;
+    }
+    try {
+        *layout = Serialization::decodeGuiLayoutYaml(text);
+    } catch (const std::exception& e) {
+        *error = Gui::tr("Cannot read the layout %1: %2").arg(QString::fromUtf8(filename.c_str())).arg(QString::fromUtf8(e.what()));
+
+        return false;
+    }
+    if (layout->windows.empty()) {
+        *error = Gui::tr("The layout %1 holds no window.").arg(QString::fromUtf8(filename.c_str()));
+
+        return false;
+    }
+
+    return true;
 }
 
 } // anonymous namespace
@@ -74,19 +109,14 @@ Gui::importLayout()
     SequenceFileDialog dialog( this, filters, false, SequenceFileDialog::eFileDialogModeOpen, _imp->_lastLoadProjectOpenedDir.toStdString(), this, false );
     if ( dialog.exec() ) {
         std::string filename = dialog.selectedFiles();
-        FStreamsSupport::ifstream ifile;
-        FStreamsSupport::open(&ifile, filename);
-        if (!ifile) {
-            Dialogs::errorDialog( tr("Error").toStdString(), tr("Failed to open file: ").toStdString() + filename, false );
+        Serialization::GuiLayoutSerialization layoutSerialization;
+        QString error;
+        if (!readLayoutFile(filename, &layoutSerialization, &error)) {
+            Dialogs::errorDialog(tr("Error").toStdString(), error.toStdString(), false);
 
             return;
         }
-
-        if (looksLikeXml(ifile)) {
-            Dialogs::errorDialog(tr("Error").toStdString(), tr("This layout uses the old XML .nl format, which this version of Natron cannot open (no compatibility, by design).").toStdString(), false);
-        } else {
-            Dialogs::errorDialog(tr("Error").toStdString(), tr("Unrecognized or damaged layout file.").toStdString(), false);
-        }
+        restoreLayout(true, layoutSerialization);
     }
 }
 
@@ -97,9 +127,25 @@ Gui::createDefaultLayoutInternal(bool wipePrevious)
         wipeLayout();
     }
 
-    // No layout file format is readable, so a default layout file set in the preferences falls
-    // back to the built-in layout instead of failing on every launch.
-    createDefaultLayout1();
+    const std::string fileLayout = appPTR->getCurrentSettings()->getDefaultLayoutFile();
+    if (fileLayout.empty()) {
+        createDefaultLayout1();
+
+        return;
+    }
+    Serialization::GuiLayoutSerialization layoutSerialization;
+    QString error;
+    bool unreadable = false;
+    if (!readLayoutFile(fileLayout, &layoutSerialization, &error, &unreadable)) {
+        createDefaultLayout1();
+        // A default layout file that has gone away is not worth a dialog on every launch.
+        if (!unreadable) {
+            Dialogs::errorDialog(tr("Error").toStdString(), error.toStdString(), false);
+        }
+
+        return;
+    }
+    restoreLayout(false, layoutSerialization);
 }
 
 void

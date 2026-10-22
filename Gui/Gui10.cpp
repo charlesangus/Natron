@@ -26,10 +26,12 @@
 #include "Gui.h"
 #include "GuiPrivate.h"
 
-#include <cassert>
-#include <fstream>
 #include <algorithm> // min, max
+#include <cassert>
+#include <exception>
+#include <fstream>
 #include <stdexcept>
+#include <string>
 
 #include <QApplication> // qApp
 
@@ -56,8 +58,8 @@
 
 #include "Global/QtCompat.h" // removeFileExtension
 
-#include "Serialization/BoostXml/ProjectGuiXml.h"
 #include "Serialization/ProjectGuiSerialization.h"
+#include "Serialization/Yaml/ProjectGuiYaml.h"
 
 #ifdef __NATRON_WIN32__
 #if _WIN32_WINNT < 0x0500
@@ -133,6 +135,16 @@ Gui::exportLayout()
             filename.append("." NATRON_LAYOUT_FILE_EXT);
         }
 
+        std::string text;
+        try {
+            Serialization::GuiLayoutSerialization layoutSerialization;
+            toSerialization(&layoutSerialization);
+            text = Serialization::encodeGuiLayoutYaml(layoutSerialization);
+        } catch (const std::exception& e) {
+            Dialogs::errorDialog(tr("Error").toStdString(), tr("Failed to save the layout: %1").arg(QString::fromUtf8(e.what())).toStdString(), false);
+
+            return;
+        }
 
         FStreamsSupport::ofstream ofile;
         FStreamsSupport::open(&ofile, filename);
@@ -142,17 +154,10 @@ Gui::exportLayout()
 
             return;
         }
-
-        try {
-            boost::archive::xml_oarchive oArchive(ofile);
-            Serialization::GuiLayoutSerialization layoutSerialization;
-            toSerialization(&layoutSerialization);
-            oArchive << boost::serialization::make_nvp("Layout", layoutSerialization);
-        }catch (...) {
-            Dialogs::errorDialog( tr("Error").toStdString()
-                                  , tr("Failed to save the layout").toStdString(), false );
-
-            return;
+        ofile << text;
+        ofile.close();
+        if (ofile.fail()) {
+            Dialogs::errorDialog(tr("Error").toStdString(), tr("Failed to save the layout").toStdString(), false);
         }
     }
 }

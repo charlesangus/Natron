@@ -28,6 +28,7 @@
 #include <exception>
 #include <fstream>
 #include <istream>
+#include <iterator>
 #include <list>
 #include <stdexcept>
 #include <string>
@@ -54,8 +55,9 @@
 #include "Gui/TrackerPanel.h"
 #include "Gui/RotoPanel.h"
 
-#include "Serialization/BoostXml/NodeXml.h"
 #include "Serialization/NodeSerialization.h"
+#include "Serialization/Yaml/PresetYaml.h"
+#include "Serialization/Yaml/YamlScalars.h"
 
 using std::make_pair;
 NATRON_NAMESPACE_ENTER
@@ -219,17 +221,6 @@ NodeSettingsPanel::onSettingsButtonClicked()
     menu.exec( _settingsButton->mapToGlobal( _settingsButton->pos() ) );
 }
 
-static bool
-looksLikeXml(std::istream& stream)
-{
-    char header[64];
-
-    stream.read(header, sizeof(header));
-    const std::string text(header, static_cast<std::size_t>(stream.gcount()));
-
-    return (text.find("<?xml") != std::string::npos) || (text.find("<!DOCTYPE boost_serialization") != std::string::npos);
-}
-
 void
 NodeSettingsPanel::onImportPresetsActionTriggered()
 {
@@ -252,12 +243,35 @@ NodeSettingsPanel::onImportPresetsActionTriggered()
 
         return;
     }
+    const std::string text((std::istreambuf_iterator<char>(ifile)), std::istreambuf_iterator<char>());
 
-    if (looksLikeXml(ifile)) {
+    if (Serialization::isXmlDocument(text)) {
         Dialogs::errorDialog(tr("Presets").toStdString(), tr("This preset uses the old XML .nps format, which this version of Natron cannot open (no compatibility, by design).").toStdString(), false);
-    } else {
-        Dialogs::errorDialog(tr("Presets").toStdString(), tr("Unrecognized or damaged preset file.").toStdString(), false);
+
+        return;
     }
+
+    std::list<Serialization::NodeSerializationPtr> nodeSerialization;
+    try {
+        nodeSerialization = Serialization::decodePresetYaml(text);
+    } catch (const std::exception& e) {
+        Dialogs::errorDialog(tr("Presets").toStdString(), tr("Cannot read the preset %1: %2").arg(QString::fromUtf8(filename.c_str())).arg(QString::fromUtf8(e.what())).toStdString(), false);
+
+        return;
+    }
+
+    NodeGuiPtr node = getNode();
+    if (nodeSerialization.front()->pluginID != node->getNode()->getPluginID()) {
+        QString err = tr("You cannot load %1 which are presets for the plug-in %2 on the plug-in %3.")
+                          .arg(QString::fromUtf8(filename.c_str()))
+                          .arg(QString::fromUtf8(nodeSerialization.front()->pluginID.c_str()))
+                          .arg(QString::fromUtf8(node->getNode()->getPluginID().c_str()));
+        Dialogs::errorDialog(tr("Presets").toStdString(), err.toStdString());
+
+        return;
+    }
+
+    node->restoreInternal(node, nodeSerialization);
 }
 
 static bool
@@ -283,6 +297,17 @@ NodeSettingsPanel::onExportPresetsActionTriggered()
         filename.append("." NATRON_PRESETS_FILE_EXT);
     }
 
+    NodeGuiPtr node = getNode();
+    std::list<Serialization::NodeSerializationPtr> nodeSerialization;
+    node->serializeInternal(nodeSerialization);
+    std::string text;
+    try {
+        text = Serialization::encodePresetYaml(nodeSerialization);
+    } catch (const std::exception& e) {
+        Dialogs::errorDialog(tr("Presets").toStdString(), e.what());
+
+        return;
+    }
 
     FStreamsSupport::ofstream ofile;
     FStreamsSupport::open(&ofile, filename);
@@ -292,22 +317,11 @@ NodeSettingsPanel::onExportPresetsActionTriggered()
 
         return;
     }
-
-    NodeGuiPtr node = getNode();
-    std::list<Serialization::NodeSerializationPtr> nodeSerialization;
-    node->serializeInternal(nodeSerialization);
-    try {
-        int nNodes = nodeSerialization.size();
-        boost::archive::xml_oarchive oArchive(ofile);
-        oArchive << boost::serialization::make_nvp("NodesCount", nNodes);
-        for (std::list<Serialization::NodeSerializationPtr>::iterator it = nodeSerialization.begin();
-             it != nodeSerialization.end(); ++it) {
-            oArchive << boost::serialization::make_nvp("Node", **it);
-        }
-    }  catch (const std::exception & e) {
-        Dialogs::errorDialog( "Presets", e.what() );
-
-        return;
+    ofile << text;
+    ofile.close();
+    if (ofile.fail()) {
+        Dialogs::errorDialog(tr("Presets").toStdString(),
+                             tr("Failed to write file %1.").arg(QString::fromUtf8(filename.c_str())).toStdString(), false);
     }
 }
 

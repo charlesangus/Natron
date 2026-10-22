@@ -28,7 +28,9 @@ jobs:
       - name: clinfo
         continue-on-error: true
         run: |
-          export OCL_ICD_VENDORS=/usr/local/etc/OpenCL/vendors
+          mkdir -p /tmp/pl && ln -sf /usr/local/lib64/libOpenCL.so.2 /tmp/pl/libOpenCL.so.1
+          export LD_LIBRARY_PATH=/tmp/pl:/usr/local/lib64:$LD_LIBRARY_PATH
+          ldd $(command -v clinfo) | grep -i opencl
           clinfo
           echo "=== extensions"
           clinfo | grep -E "Platform Name|Device Name|Device Version|Extensions|cl_khr_external|cl_khr_device_uuid|cl_khr_gl_sharing" || true

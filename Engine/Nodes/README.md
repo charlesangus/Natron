@@ -387,7 +387,10 @@ Files a port adds, per node (`<Dir>` is the node's directory under
       from `NATRON_GPU_COST_SEED_CPU_ROW`, `_CPU_MOTION_BLUR_ROW`, `_CPU_SIGMA_ROW`
       and `_GPU_ROW`. CMake aggregates them into `GpuCostSeedsAll.inc`. Regenerate
       with `tools/bench/render-profile-report.py ... --emit-cost-table <source root>`
-      rather than writing rows by hand. Delete
+      rather than writing rows by hand. A node the tool has no rows for, such as
+      one that `Engine/GpuCostSeeds/inputs.txt` never renders, has no fragment:
+      `RenderProfileReportSelfTest` fails on any fragment the tool would not
+      write, a hand-written row-less one included. Delete
       `Engine/GpuCostSeeds/ofx/<plugin-id>.inc` for the OFX plug-in the port
       supersedes, or the plug-in keeps a second seed.
 - [ ] `Engine/Nodes/<Dir>/docs/<Node>.md`: the node's doc, with a `Tolerance:` line

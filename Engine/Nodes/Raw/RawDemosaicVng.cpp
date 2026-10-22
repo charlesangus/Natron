@@ -177,7 +177,9 @@ vngLinearInterpolate(float* out,
             float* buf = out + (std::size_t)4 * width * row + 4;
             const float* bufIn = in + (std::size_t)width * row + 1;
             for (int col = 1; col < width - 1; col++) {
-                if ((col == border) && (row >= border) && (row < height - border)) {
+                // darktable jumps backwards, forever, when the buffer is no wider than twice the
+                // border, as Markesteijn's narrowest buffers are; such a row is interpolated whole.
+                if ((col == border) && (row >= border) && (row < height - border) && (width - border > col)) {
                     col = width - border;
                     buf = out + (std::size_t)4 * width * row + 4 * col;
                     bufIn = in + (std::size_t)width * row + col;

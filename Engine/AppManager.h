@@ -593,6 +593,12 @@ public:
      **/
     void appendToNatronPath(const std::string& path);
 
+    /**
+     * @brief Runs every initGui.py found on the search path, once per process. GUI windows call this
+     * once they and the nodes menu exist, so initGui.py can edit them directly. No-op in background mode.
+     **/
+    void runInitGuiScripts();
+
     virtual void addCommand(const QString& /*grouping*/,
                             const std::string& /*pythonFunction*/,
                             Qt::Key /*key*/,
@@ -747,11 +753,10 @@ protected:
     bool loadInternalAfterInitGui(const CLArgs& cl);
 
 private:
-
     void findAllScriptsRecursive(const QDir& directory,
-                            QStringList& allPlugins,
-                            QStringList *foundInit,
-                            QStringList *foundInitGui);
+                                 QStringList& allPlugins,
+                                 QStringList* foundInit,
+                                 QStringList* initGuiDirs);
 
     bool findAndRunScriptFile(const QString& path,
                          const QStringList& files,

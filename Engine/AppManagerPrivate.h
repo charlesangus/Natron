@@ -35,12 +35,12 @@
 #include <string>
 #include <vector>
 
-#include <QtGlobal> // for Q_OS_*
-#include <QMutex>
-#include <QString>
 #include <QAtomicInt>
 #include <QCoreApplication>
-
+#include <QMutex>
+#include <QString>
+#include <QStringList>
+#include <QtGlobal> // for Q_OS_*
 
 #if defined(Q_OS_LINUX) || defined(Q_OS_FREEBSD)
 #include "Engine/OSGLContext_wayland.h"
@@ -200,6 +200,10 @@ public:
     RenderSchedulerPtr renderScheduler;
     std::list<OpenGLRendererInfo> openGLRenderers;
     std::unique_ptr<QCoreApplication> _qApp;
+
+    // Directories holding an initGui.py, in search-path order, waiting for the first GUI window.
+    QStringList pendingInitGuiDirs;
+    bool initGuiScriptsRan = false;
 
 public:
     AppManagerPrivate();

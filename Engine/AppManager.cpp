@@ -1494,7 +1494,7 @@ AppManager::loadAllPlugins()
     // Load OpenFX plug-ins
     _imp->ofxHost->loadOFXPlugins();
 
-    // Load PyPlugs and init.py & initGui.py scripts
+    // Load PyPlugs and init.py scripts
     // Should be done after settings are declared
     loadPythonGroups();
 
@@ -1892,9 +1892,9 @@ addToPythonPathFunctor(const QDir& directory)
 
 void
 AppManager::findAllScriptsRecursive(const QDir& directory,
-                        QStringList& allPlugins,
-                        QStringList *foundInit,
-                        QStringList *foundInitGui)
+                                    QStringList& allPlugins,
+                                    QStringList* foundInit,
+                                    QStringList* initGuiDirs)
 {
     if ( !directory.exists() ) {
         return;
@@ -1907,11 +1907,8 @@ AppManager::findAllScriptsRecursive(const QDir& directory,
     if (ok) {
         foundInit->append( directory.absolutePath() + QString::fromUtf8("/init.py") );
     }
-    if ( !appPTR->isBackground() ) {
-        ok = findAndRunScriptFile( directory.absolutePath() + QChar::fromLatin1('/'), files, QString::fromUtf8("initGui.py") );
-        if (ok) {
-            foundInitGui->append( directory.absolutePath() + QString::fromUtf8("/initGui.py") );
-        }
+    if (!appPTR->isBackground() && files.contains(QString::fromUtf8("initGui.py"))) {
+        initGuiDirs->append(directory.absolutePath());
     }
 
     for (QStringList::iterator it = files.begin(); it != files.end(); ++it) {
@@ -1924,9 +1921,60 @@ AppManager::findAllScriptsRecursive(const QDir& directory,
     Q_FOREACH(const QString &subDir, subDirs) {
         QDir d(directory.absolutePath() + QChar::fromLatin1('/') + subDir);
 
-        findAllScriptsRecursive(d, allPlugins, foundInit, foundInitGui);
+        findAllScriptsRecursive(d, allPlugins, foundInit, initGuiDirs);
     }
 }
+
+static void
+addNewSearchPathsToPythonPath(const QStringList& previousSearchPath)
+{
+    QStringList newSearchPath = appPTR->getAllNonOFXPluginsPaths();
+    Q_FOREACH (const QString& dir, newSearchPath) {
+        if (!previousSearchPath.contains(dir)) {
+            QDir d(dir);
+            operateOnPathRecursive(&addToPythonPathFunctor, d);
+        }
+    }
+}
+
+void
+AppManager::runInitGuiScripts()
+{
+#ifdef NATRON_RUN_WITHOUT_PYTHON
+
+    return;
+#endif
+    if (isBackground() || _imp->initGuiScriptsRan) {
+        return;
+    }
+    _imp->initGuiScriptsRan = true;
+
+    PythonGILLocker pgl;
+    QStringList searchPathBefore = getAllNonOFXPluginsPaths();
+    QStringList dirs;
+    dirs.swap(_imp->pendingInitGuiDirs);
+
+    QStringList loaded;
+    Q_FOREACH (const QString& dir, dirs) {
+        if (findAndRunScriptFile(dir + QChar::fromLatin1('/'), QStringList(QString::fromUtf8("initGui.py")), QString::fromUtf8("initGui.py"))) {
+            loaded.append(dir + QString::fromUtf8("/initGui.py"));
+        }
+    }
+
+    if (loaded.isEmpty()) {
+        QString message = tr("Info: initGui.py script not loaded (this is not an error)");
+        setLoadingStatus(message);
+        std::cout << message.toStdString() << std::endl;
+    } else {
+        Q_FOREACH (const QString& found, loaded) {
+            QString message = tr("Info: initGui.py script found and loaded at %1").arg(found);
+            setLoadingStatus(message);
+            std::cout << message.toStdString() << std::endl;
+        }
+    }
+
+    addNewSearchPathsToPythonPath(searchPathBefore);
+} // AppManager::runInitGuiScripts
 
 void
 AppManager::loadPythonGroups()
@@ -1940,7 +1988,7 @@ AppManager::loadPythonGroups()
     std::string err;
     QStringList allPlugins;
 
-    ///For all search paths, first add the path to the python path, then run in order the init.py and initGui.py
+    /// For all search paths, first add the path to the python path, then run init.py; initGui.py waits for the first GUI window
     Q_FOREACH(const QString &templatesSearchDir, templatesSearchPath) {
         //Adding Qt resources to Python path is useless as Python does not know how to use it
         if ( templatesSearchDir.startsWith( QString::fromUtf8(":/Resources") ) ) {
@@ -1979,13 +2027,11 @@ AppManager::loadPythonGroups()
         }
     }
 
-
     QStringList foundInit;
-    QStringList foundInitGui;
     Q_FOREACH(const QString &templatesSearchDir, templatesSearchPath) {
         QDir d(templatesSearchDir);
 
-        findAllScriptsRecursive(d, allPlugins, &foundInit, &foundInitGui);
+        findAllScriptsRecursive(d, allPlugins, &foundInit, &_imp->pendingInitGuiDirs);
     }
     if ( foundInit.isEmpty() ) {
         QString message = tr("Info: init.py script not loaded (this is not an error)");
@@ -2004,44 +2050,8 @@ AppManager::loadPythonGroups()
         }
     }
 
-    if ( !appPTR->isBackground() ) {
-        if ( foundInitGui.isEmpty() ) {
-            QString message = tr("Info: initGui.py script not loaded (this is not an error)");
-            appPTR->setLoadingStatus(message);
-            if ( !appPTR->isBackground() ) {
-                std::cout << message.toStdString() << std::endl;
-            }
-        } else {
-            Q_FOREACH(const QString &found, foundInitGui) {
-                QString message = tr("Info: initGui.py script found and loaded at %1").arg(found);
-
-                appPTR->setLoadingStatus(message);
-                if ( !appPTR->isBackground() ) {
-                    std::cout << message.toStdString() << std::endl;
-                }
-            }
-        }
-    }
-
-    // Now that init.py and InitGui.py have run, we need to set the search path again for the PyPlug
-    // as the user might have called appendToNatronPath
-
-    QStringList newTemplatesSearchPath = getAllNonOFXPluginsPaths();
-    {
-        QStringList diffSearch;
-        Q_FOREACH(const QString &newTemplatesSearchDir, newTemplatesSearchPath) {
-            if ( !templatesSearchPath.contains(newTemplatesSearchDir) ) {
-                diffSearch.push_back(newTemplatesSearchDir);
-            }
-        }
-
-        //Add only paths that did not exist so far
-        Q_FOREACH(const QString &diffDir, diffSearch) {
-            QDir d(diffDir);
-
-            operateOnPathRecursive(&addToPythonPathFunctor, d);
-        }
-    }
+    // init.py may have called appendToNatronPath
+    addNewSearchPathsToPythonPath(templatesSearchPath);
 
     appPTR->setLoadingStatus( tr("Loading PyPlugs...") );
 

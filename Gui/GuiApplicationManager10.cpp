@@ -653,6 +653,80 @@ GuiApplicationManager::saveShortcuts() const
     }
 }
 
+// Reads the user's saved shortcut for one action; settings must already be inside the action's group.
+static void
+restoreSavedShortcut(QSettings& settings,
+                     const QString& groupID,
+                     const QString& actionID,
+                     BoundAction* action)
+{
+    MouseAction* mAction = dynamic_cast<MouseAction*>(action);
+    KeyBoundAction* kAction = dynamic_cast<KeyBoundAction*>(action);
+    int nbShortcuts = 1;
+    bool nbShortcutsSet = false;
+    if (settings.contains(actionID + QString::fromUtf8("_nbShortcuts"))) {
+        nbShortcuts = settings.value(actionID + QString::fromUtf8("_nbShortcuts")).toInt();
+        nbShortcutsSet = true;
+    }
+
+    bool hasNonNullKeybind = false;
+
+    if (!nbShortcutsSet) {
+        if (kAction) {
+            if (settings.contains(actionID + QString::fromUtf8("_Symbol"))) {
+                Qt::Key key = (Qt::Key)settings.value(actionID + QString::fromUtf8("_Symbol")).toInt();
+                if (key != (Qt::Key)0) {
+                    kAction->currentShortcut.clear();
+                    kAction->currentShortcut.push_back(key);
+                    hasNonNullKeybind = true;
+                }
+            }
+        }
+        if (hasNonNullKeybind && settings.contains(actionID + QString::fromUtf8("_Modifiers"))) {
+            action->modifiers.clear();
+            action->modifiers.push_back(Qt::KeyboardModifiers(settings.value(actionID + QString::fromUtf8("_Modifiers")).toInt()));
+        }
+    } else {
+        for (int i = 0; i < nbShortcuts; ++i) {
+            QString idm = actionID + QString::fromUtf8("_Modifiers") + QString::number(i);
+
+            if (kAction) {
+                QString ids = actionID + QString::fromUtf8("_Symbol") + QString::number(i);
+                if (settings.contains(ids)) {
+                    Qt::Key key = (Qt::Key)settings.value(ids).toInt();
+                    if (key != (Qt::Key)0) {
+                        if (i == 0) {
+                            kAction->currentShortcut.clear();
+                        }
+                        kAction->currentShortcut.push_back(key);
+                        hasNonNullKeybind = true;
+                    } else {
+                        continue;
+                    }
+                }
+            }
+            if (settings.contains(idm)) {
+                if (i == 0) {
+                    action->modifiers.clear();
+                }
+                action->modifiers.push_back(Qt::KeyboardModifiers(settings.value(idm).toInt()));
+            }
+        }
+    }
+    if (mAction && settings.contains(actionID + QString::fromUtf8("_Button"))) {
+        mAction->button = (Qt::MouseButton)settings.value(actionID + QString::fromUtf8("_Button")).toInt();
+    }
+    // If this is a node shortcut, notify the Plugin object that it has a shortcut.
+    if (hasNonNullKeybind && groupID.startsWith(QString::fromUtf8(kShortcutGroupNodes))) {
+        const PluginsMap& allPlugins = appPTR->getPluginsList();
+        PluginsMap::const_iterator found = allPlugins.find(actionID.toStdString());
+        if (found != allPlugins.end()) {
+            assert(found->second.size() > 0);
+            (*found->second.rbegin())->setHasShortcut(true);
+        }
+    }
+}
+
 void
 GuiApplicationManager::loadShortcuts()
 {
@@ -674,71 +748,7 @@ GuiApplicationManager::loadShortcuts()
     for (AppShortcuts::iterator it = _imp->_actionShortcuts.begin(); it != _imp->_actionShortcuts.end(); ++it) {
         settings.beginGroup(it->first);
         for (GroupShortcuts::iterator it2 = it->second.begin(); it2 != it->second.end(); ++it2) {
-            MouseAction* mAction = dynamic_cast<MouseAction*>(it2->second);
-            KeyBoundAction* kAction = dynamic_cast<KeyBoundAction*>(it2->second);
-            int nbShortcuts = 1;
-            bool nbShortcutsSet = false;
-            if ( settings.contains( it2->first + QString::fromUtf8("_nbShortcuts") ) ) {
-                nbShortcuts = settings.value( it2->first + QString::fromUtf8("_nbShortcuts") ).toInt();
-                nbShortcutsSet = true;
-            }
-
-            bool hasNonNullKeybind = false;
-
-            if (!nbShortcutsSet) {
-                if (kAction) {
-                    if ( settings.contains( it2->first + QString::fromUtf8("_Symbol") ) ) {
-                        Qt::Key key = (Qt::Key)settings.value( it2->first + QString::fromUtf8("_Symbol") ).toInt();
-                        if (key != (Qt::Key)0) {
-                            kAction->currentShortcut.clear();
-                            kAction->currentShortcut.push_back(key);
-                            hasNonNullKeybind = true;
-                        }
-                    }
-                }
-                if ( hasNonNullKeybind && settings.contains( it2->first + QString::fromUtf8("_Modifiers") ) ) {
-                    it2->second->modifiers.clear();
-                    it2->second->modifiers.push_back( Qt::KeyboardModifiers( settings.value( it2->first + QString::fromUtf8("_Modifiers") ).toInt() ) );
-                }
-            } else {
-                for (int i = 0; i < nbShortcuts; ++i) {
-                    QString idm = it2->first + QString::fromUtf8("_Modifiers") + QString::number(i);
-
-                    if (kAction) {
-                        QString ids = it2->first + QString::fromUtf8("_Symbol") + QString::number(i);
-                        if ( settings.contains(ids) ) {
-                            Qt::Key key = (Qt::Key)settings.value(ids).toInt();
-                            if (key != (Qt::Key)0) {
-                                if (i == 0) {
-                                    kAction->currentShortcut.clear();
-                                }
-                                kAction->currentShortcut.push_back(key);
-                                hasNonNullKeybind = true;
-                            } else {
-                                continue;
-                            }
-                        }
-                    }
-                    if ( settings.contains(idm) ) {
-                        if (i == 0) {
-                            it2->second->modifiers.clear();
-                        }
-                        it2->second->modifiers.push_back( Qt::KeyboardModifiers( settings.value(idm).toInt() ) );
-                    }
-                }
-            }
-            if ( mAction && settings.contains( it2->first + QString::fromUtf8("_Button") ) ) {
-                mAction->button = (Qt::MouseButton)settings.value( it2->first + QString::fromUtf8("_Button") ).toInt();
-            }
-            //If this is a node shortcut, notify the Plugin object that it has a shortcut.
-            if ( hasNonNullKeybind && it->first.startsWith( QString::fromUtf8(kShortcutGroupNodes) ) ) {
-                const PluginsMap & allPlugins = getPluginsList();
-                PluginsMap::const_iterator found = allPlugins.find( it2->first.toStdString() );
-                if ( found != allPlugins.end() ) {
-                    assert(found->second.size() > 0);
-                    ( *found->second.rbegin() )->setHasShortcut(true);
-                }
-            }
+            restoreSavedShortcut(settings, it->first, it2->first, it2->second);
         }
         settings.endGroup();
     }
@@ -1184,8 +1194,51 @@ GuiApplicationManager::addCommand(const QString& grouping,
     c.modifiers = modifiers;
     _imp->pythonCommands.push_back(c);
 
+    const QString groupID = QString::fromUtf8(kShortcutGroupGlobal);
+    const QString actionID = split[split.size() - 1];
+    BoundAction* existing = 0;
+    {
+        AppShortcuts::iterator foundGroup = _imp->_actionShortcuts.find(groupID);
+        if (foundGroup != _imp->_actionShortcuts.end()) {
+            GroupShortcuts::iterator foundAction = foundGroup->second.find(actionID);
+            if (foundAction != foundGroup->second.end()) {
+                existing = foundAction->second;
+            }
+        }
+    }
+    registerKeybind(kShortcutGroupGlobal, actionID.toStdString(), actionID.toStdString(), modifiers, key);
 
-    registerKeybind(kShortcutGroupGlobal, split[split.size() - 1].toStdString(), split[split.size() - 1].toStdString(), modifiers, key);
+    std::list<Gui*> guis;
+    const AppInstanceVec& instances = getAppInstances();
+    for (AppInstanceVec::const_iterator it = instances.begin(); it != instances.end(); ++it) {
+        GuiAppInstance* guiApp = dynamic_cast<GuiAppInstance*>(it->get());
+        if (guiApp && guiApp->getGui()) {
+            guis.push_back(guiApp->getGui());
+        }
+    }
+    if (guis.empty()) {
+        // Windows built later pick the command up from pythonCommands.
+        return;
+    }
+
+    // loadShortcuts() ran before any window existed, so a keybind registered now must read
+    // its saved user override itself.
+    if (!existing) {
+        AppShortcuts::iterator foundGroup = _imp->_actionShortcuts.find(groupID);
+        GroupShortcuts::iterator foundAction = foundGroup->second.find(actionID);
+        QSettings settings(QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME));
+        settings.beginGroup(groupID);
+        restoreSavedShortcut(settings, groupID, actionID, foundAction->second);
+        settings.endGroup();
+        KeyBoundAction* kAction = dynamic_cast<KeyBoundAction*>(foundAction->second);
+        if (kAction) {
+            notifyShortcutChanged(kAction);
+        }
+    }
+
+    for (std::list<Gui*>::const_iterator it = guis.begin(); it != guis.end(); ++it) {
+        (*it)->addMenuEntry(grouping, pythonFunction, key, modifiers);
+    }
 }
 
 const std::list<PythonUserCommand>&

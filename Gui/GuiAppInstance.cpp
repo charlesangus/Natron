@@ -267,6 +267,9 @@ GuiAppInstance::loadInternal(const CLArgs& cl,
 
     Q_EMIT pluginsPopulated();
 
+    // Before the project is created, so onProjectCreated callbacks defined in initGui.py exist.
+    appPTR->runInitGuiScripts();
+
     ///show the gui
     _imp->_gui->show();
 

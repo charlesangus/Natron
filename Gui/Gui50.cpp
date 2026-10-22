@@ -1018,17 +1018,22 @@ Gui::addMenuEntry(const QString & menuGrouping,
 
         return;
     }
+    // A window whose menubar is not built yet reads the command from the queue in createMenuActions().
+    if (!_imp->menubar) {
+        return;
+    }
 
     std::string appID = getApp()->getAppIDString();
     std::string script = "app = " + appID + "\n" + pythonFunction + "()\n";
     QAction* action = _imp->findActionRecursive(0, _imp->menubar, grouping);
     ActionWithShortcut* aws = dynamic_cast<ActionWithShortcut*>(action);
     if (aws) {
-        aws->setShortcut( makeKeySequence(modifiers, key) );
         std::map<ActionWithShortcut*, std::string>::iterator found = _imp->pythonCommands.find(aws);
         if ( found != _imp->pythonCommands.end() ) {
-            found->second = pythonFunction;
+            aws->setShortcut(makeKeySequence(modifiers, key));
+            found->second = script;
         } else {
+            // A new action already carries the registered keybind, including a saved user override.
             _imp->pythonCommands.insert( std::make_pair(aws, script) );
         }
     }

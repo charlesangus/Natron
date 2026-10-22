@@ -7,10 +7,12 @@ Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL/Xvfb setup
 
 Sections:
   - api: nodesMenu() returns the QMenu named NodesMenu, the same object on every call;
-  - tree: every user-creatable plug-in version (the tab menu's node items, keyed by ID and major)
-    has exactly one plug-in-owned action, under its grouping path ("Misc" when it has none), with
-    the ID, major, category colour and shortcut properties; top-level groupings keep the toolbox
-    order; triggering an action creates the node;
+  - tree: every plug-in-owned action names a plug-in in the registry (natron.getPluginIDs()), no
+    plug-in version has two actions, Merge and Blur sit under their groupings, and every action
+    carries the ID, major, category colour and shortcut properties; the Python API exposes no
+    user-creatable flag or grouping, so this startup tree is the snapshot the later sections
+    compare against; top-level groupings keep the toolbox order; triggering an action creates the
+    node;
   - python item: a QAction added under Merge/ shows in the main window's Merge toolbox popup;
   - second window: a window opened afterwards has the same toolbox buttons over the same menus,
     shows the Python item, and both windows' graph right-click menus hold every top-level entry
@@ -25,7 +27,6 @@ end, so the user's saved plug-in settings are never written.
 
 Shots: m158-toolbox-window1.png, m158-toolbox-window2.png, m158-merge-popup.png.
 """
-import json
 import os
 import sys
 import traceback
@@ -52,6 +53,7 @@ MERGE_GROUPING = "Merge"
 MERGE_ID = "net.sf.openfx.MergePlugin"
 BLUR_ID = "net.sf.cimg.CImgBlur"
 PYTHON_ITEM_TEXT = "M158 Python item"
+KNOWN_GROUPINGS = {MERGE_ID: [MERGE_GROUPING], BLUR_ID: ["Filter"]}
 
 # Columns of the Preferences plug-in list (PreferencesPanel.cpp COL_*).
 PREFS_COL_ID = 1
@@ -96,11 +98,20 @@ try:
         return leaves
 
     def expected_items():
-        """(ID, major) -> grouping path of every user-creatable plug-in version."""
+        """(ID, major) -> grouping path of every plug-in action at startup, once each has been
+        checked against the plug-in registry."""
+        registered = set(NatronGui.natron.getPluginIDs())
+        leaves = walk(nodes_menu(), [], [])
         expected = {}
-        for entry in json.loads(app.getTabMenuNodeItems()):
-            key = (entry["id"], int(entry["major"]))
-            expected.setdefault(key, list(entry["grouping"]) or [DEFAULT_GROUPING])
+        for pid, major, path, _ in leaves:
+            expected.setdefault((pid, major), path)
+        unknown = sorted(set(pid for pid, _, _, _ in leaves if pid not in registered))
+        check(not unknown, "every plug-in action names a registered plug-in (%r)" % unknown[:10])
+        report("NOTE %d plug-in IDs registered, %d with an action"
+               % (len(registered), len(set(pid for pid, _ in expected))))
+        for pid, grouping in sorted(KNOWN_GROUPINGS.items()):
+            paths = [p for (k, _), p in expected.items() if k == pid]
+            check(grouping in paths, "%s has an action under %r (got %r)" % (pid, grouping, paths))
         return expected
 
     def check_tree(area, expected, absent=()):

@@ -1484,17 +1484,30 @@ GuiApplicationManagerPrivate::createNodeFromNodesMenu(const QString& pluginID,
                                                       int minor)
 {
     GuiAppInstancePtr app;
-    if (nodesMenuTarget) {
-        app = nodesMenuTarget->getApp();
+    // A window with a node creation context set, such as the tab menu's, decides where the node goes.
+    const AppInstanceVec& instances = _publicInterface->getAppInstances();
+    for (AppInstanceVec::const_iterator it = instances.begin(); it != instances.end(); ++it) {
+        if ((*it)->getNodeCreationContextCollection()) {
+            app = std::dynamic_pointer_cast<GuiAppInstance>(*it);
+            break;
+        }
     }
-    if (!app) {
-        app = std::dynamic_pointer_cast<GuiAppInstance>(_publicInterface->getTopLevelInstance());
+    NodeCollectionPtr group;
+    if (app) {
+        group = app->getNodeCreationContextCollection();
+    } else {
+        if (nodesMenuTarget) {
+            app = nodesMenuTarget->getApp();
+        }
+        if (!app) {
+            app = std::dynamic_pointer_cast<GuiAppInstance>(_publicInterface->getTopLevelInstance());
+        }
+        if (!app || !app->getGui()) {
+            return;
+        }
+        group = app->getGui()->getLastSelectedNodeCollection();
     }
-    if (!app || !app->getGui()) {
-        return;
-    }
-    NodeCollectionPtr group = app->getGui()->getLastSelectedNodeCollection();
-    if (!group) {
+    if (!app || !group) {
         return;
     }
     CreateNodeArgs args(pluginID.toStdString(), group);

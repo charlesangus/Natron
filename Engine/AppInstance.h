@@ -200,6 +200,20 @@ public:
 
     NodePtr createMissingPluginPlaceholder(CreateNodeArgs& args);
 
+    /**
+     * @brief Until cleared, a node created in the project with no collection goes into the given one, and
+     * the first node created there with no position lands at (x, y). Nodes created out of the project, without
+     * a GUI or from a serialization are left alone. A null collection clears the context.
+     **/
+    void setNodeCreationContext(const NodeCollectionPtr& collection, double x, double y);
+
+    void clearNodeCreationContext();
+
+    /**
+     * @brief The collection set by setNodeCreationContext(), or null when no context is set.
+     **/
+    NodeCollectionPtr getNodeCreationContextCollection() const;
+
     NodePtr createReader(const std::string& filename,
                          CreateNodeArgs& args);
 

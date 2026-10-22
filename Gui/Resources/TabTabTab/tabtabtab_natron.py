@@ -1,11 +1,13 @@
 """tabtabtab adapter for Natron.
 
-Node items come from the C++ bridge on GuiApp, command items from the main
-window's menu bar, and the preferences from Natron's Settings.
+Node items come from the process-wide nodes menu (natron.nodesMenu()),
+command items from the main window's menu bar, and the preferences from
+Natron's Settings. Every item is a QAction; GuiApp triggers it so that the
+nodes it creates land in the graph the menu was opened over.
 """
 
-import json
 import os
+import re
 
 import NatronGui
 import shiboken6
@@ -89,34 +91,57 @@ def _path_element(text):
     return text.replace("/", _PATH_SEPARATOR_STANDIN)
 
 
-class _NodeEntry(object):
-    __slots__ = ("id", "major", "icon", "color")
+_COLOR_PROPERTY = "natronCategoryColor"
+_SHORTCUT_PROPERTY = "natronShortcut"
 
-    def __init__(self, plugin_id, major, icon, color):
-        self.id = plugin_id
-        self.major = major
-        self.icon = icon
-        self.color = color
+_MNEMONIC = re.compile(r"&(&?)")
 
 
-def _node_items(app):
-    if app is None:
-        return []
+def _action_text(action):
+    # Menu text doubles a literal "&" and marks a mnemonic with a single one.
+    return _MNEMONIC.sub(r"\1", action.text())
 
+
+def _string_property(action, name):
+    try:
+        value = action.property(name)
+    except Exception:
+        return ""
+    return value if isinstance(value, str) else ""
+
+
+def _walk_menu(menu, parts):
     items = []
-    for entry in json.loads(app.getTabMenuNodeItems()):
-        parts = [_path_element(g) for g in entry.get("grouping", [])]
-        parts.append(_path_element(entry["label"]))
-        item = {
-            'menuobj': _NodeEntry(entry["id"], entry["major"],
-                                  entry.get("icon", ""), entry.get("color", "")),
-            'menupath': "/".join(parts),
-        }
-        shortcut = entry.get("shortcut", "")
+    for action in menu.actions():
+        if not (action.isVisible() and action.isEnabled()):
+            continue
+        text = _action_text(action)
+        if not text:
+            continue
+        path = parts + [_path_element(text)]
+        submenu = action.menu()
+        if submenu is not None:
+            if submenu.isEnabled():
+                items.extend(_walk_menu(submenu, path))
+            continue
+        item = {'menuobj': action, 'menupath': "/".join(path)}
+        shortcut = _string_property(action, _SHORTCUT_PROPERTY)
+        if not shortcut:
+            shortcut = action.shortcut().toString(QtGui.QKeySequence.NativeText)
         if shortcut:
             item['shortcut'] = shortcut
         items.append(item)
     return items
+
+
+def _node_items():
+    try:
+        menu = NatronGui.natron.nodesMenu()
+    except Exception:
+        return []
+    if not _is_alive(menu):
+        return []
+    return _walk_menu(menu, [])
 
 
 def _command_items(window):
@@ -146,12 +171,16 @@ def _make_menupaths_unique(items):
     return items
 
 
-def _trigger_action(action):
+def _trigger_action(app, action):
     try:
-        if shiboken6.isValid(action):
-            action.trigger()
+        if not shiboken6.isValid(action):
+            return
     except RuntimeError:
-        pass
+        return
+    if app is not None:
+        app.triggerTabMenuAction(action)
+    else:
+        action.trigger()
 
 
 class NatronPlugin(TabTabTabPlugin):
@@ -159,7 +188,6 @@ class NatronPlugin(TabTabTabPlugin):
         self._app = None
         self._window = None
         self._storage_dir = None
-        self._icon_cache = {}
         self._pending = []
 
     def set_app(self, app):
@@ -180,7 +208,7 @@ class NatronPlugin(TabTabTabPlugin):
         self._storage_dir = path
 
     def get_items(self):
-        return _make_menupaths_unique(_node_items(self._app) + _command_items(self.main_window()))
+        return _make_menupaths_unique(_node_items() + _command_items(self.main_window()))
 
     def get_weights_file(self):
         if self._storage_dir is not None:
@@ -188,45 +216,23 @@ class NatronPlugin(TabTabTabPlugin):
         return os.path.join(os.path.expanduser(_DEFAULT_STORAGE_DIR), _WEIGHTS_FILENAME)
 
     def invoke(self, thing):
-        menuobj = thing['menuobj']
-        if isinstance(menuobj, _NodeEntry):
-            app = self._app
-            if app is None:
-                return
-            callback = lambda: app.createNodeFromTabMenu(menuobj.id, menuobj.major)
-        else:
-            callback = lambda: _trigger_action(menuobj)
+        action = thing['menuobj']
+        app = self._app
 
         # The core calls invoke() before it closes the popup. Running the
         # choice now would open its windows (a Read's file dialog, the
         # Preferences) while the popup is still up.
-        self._pending.append(callback)
+        self._pending.append(lambda: _trigger_action(app, action))
         QtCore.QTimer.singleShot(0, self._run_pending)
 
     def _run_pending(self):
         while self._pending:
             self._pending.pop(0)()
 
-    def get_icon(self, menuobj):
-        if not isinstance(menuobj, _NodeEntry):
-            return super(NatronPlugin, self).get_icon(menuobj)
-
-        path = menuobj.icon
-        if not path:
-            return None
-        icon = self._icon_cache.get(path)
-        if icon is None:
-            # Native nodes' icons live in Natron's Qt resources (":/..."),
-            # which only QFile can see.
-            if not QtCore.QFile.exists(path):
-                return None
-            icon = QtGui.QIcon(path)
-            self._icon_cache[path] = icon
-        return icon
-
     def get_color(self, menuobj):
-        if isinstance(menuobj, _NodeEntry) and menuobj.color:
-            return (QtGui.QColor(menuobj.color), QtGui.QColor(menuobj.color))
+        color = _string_property(menuobj, _COLOR_PROPERTY)
+        if color:
+            return (QtGui.QColor(color), QtGui.QColor(color))
         return (None, None)
 
 

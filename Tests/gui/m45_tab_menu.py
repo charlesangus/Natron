@@ -17,8 +17,9 @@ Conventions:
 Shots: m45-open-at-cursor.png (the first open, unfiltered), m45-search-blr.png (the open menu
 with coloured rows), m45-category-filter.png (a "[" category query), m45-command-pref.png (a
 menu-command query), m45-insert-after-read.png (the graph after a Blur is inserted below the
-selected Read) and m45-preferences-nodegraph.png (the "Tab menu" section of Preferences >
-Nodegraph).
+selected Read), m45-python-merge-action.png (the group's graph after a Python action listed under
+Merge created its node at the cursor) and m45-preferences-nodegraph.png (the "Tab menu" section of
+Preferences > Nodegraph).
 """
 import json
 import os
@@ -98,6 +99,30 @@ try:
                 if menu is not None and title_substr.lower() in act.text().lower():
                     return menu.actions()
         return []
+
+    def nodes_menu_items(menu=None, parts=None):
+        """(menupath, action) for every leaf of natron.nodesMenu(), the tab menu's node source."""
+        menu = menu if menu is not None else NatronGui.natron.nodesMenu()
+        parts = parts or []
+        found = []
+        if menu is None:
+            return found
+        for act in menu.actions():
+            text = re.sub(r"&(&?)", r"\1", act.text())
+            if not text:
+                continue
+            if act.menu() is not None:
+                found.extend(nodes_menu_items(act.menu(), parts + [text]))
+            else:
+                found.append(("/".join(parts + [text]), act))
+        return found
+
+    def nodes_menu_grouping(grouping):
+        menu = NatronGui.natron.nodesMenu()
+        for act in (menu.actions() if menu is not None else []):
+            if act.menu() is not None and act.property("natronGrouping") == grouping:
+                return act.menu()
+        return None
 
     def find_action(menu_title_substr, text_substr):
         for a in menu_actions(menu_title_substr):
@@ -199,11 +224,11 @@ try:
              "search: every 'blr' result's name starts with 'b' (got %r)" % entries)
 
         row_colour = view.model().index(0, 0).data(Qt.UserRole) if entries else None
-        items = json.loads(app.getTabMenuNodeItems())
-        blur_item = next((i for i in items if i["id"] == BLUR_ID and i["label"] == "Blur"), None)
-        if check(blur_item is not None and blur_item.get("color"),
-                "search: found Blur's node item with a category colour"):
-            want = QColor(blur_item["color"])
+        blur_item = next(((path, act) for path, act in nodes_menu_items()
+                          if act.property("natronPluginID") == BLUR_ID and path.rsplit("/", 1)[-1] == "Blur"), None)
+        blur_colour = blur_item[1].property("natronCategoryColor") if blur_item is not None else None
+        if check(bool(blur_colour), "search: found Blur's nodes-menu action with a category colour"):
+            want = QColor(blur_colour)
             check(row_colour is not None and row_colour.name() == want.name(),
                  "search: Blur's row colour (Qt.UserRole) matches its category colour (%r vs %r)"
                  % (row_colour.name() if row_colour else None, want.name()))
@@ -416,9 +441,9 @@ try:
 
     def weights_section(blur_item):
         gt.section("weights")
-        if not check(blur_item is not None, "weights: resolved Blur's node item"):
+        if not check(blur_item is not None, "weights: resolved Blur's nodes-menu action"):
             return
-        menupath = "/".join(blur_item.get("grouping", []) + [blur_item["label"]])
+        menupath = blur_item[0]
         ok = yield ("until", lambda: os.path.isfile(WEIGHTS_PATH), 5.0)
         if not check(ok, "weights: tabtabtab_weights.json was written to the scratch folder"):
             return
@@ -426,6 +451,76 @@ try:
             weights = json.load(f)
         check(weights.get(menupath, 0) > 0,
              "weights: %r has a positive entry (got %r)" % (menupath, weights.get(menupath)))
+
+    def python_merge_action_section(main_graph):
+        gt.section("python action")
+        merge_menu = nodes_menu_grouping("Merge")
+        if not check(merge_menu is not None, "python action: found the nodes menu's Merge submenu"):
+            return
+        created = []
+
+        def create_blur():
+            created.append(app.createNode(BLUR_ID))
+
+        action = merge_menu.addAction("M45 Python Blur")
+        action.triggered.connect(create_blur)
+        try:
+            group_node = create_node(GROUP_ID, 1400, 900)
+            if group_node is None:
+                return
+            ok = yield ("until", lambda: any(w.objectName() == group_node.getLabel()
+                                             for w in gt.widgets_of("NodeGraph")), 5.0)
+            if not check(ok, "python action: the group's own node graph exists"):
+                return
+            subgraph = next(w for w in gt.widgets_of("NodeGraph") if w.objectName() == group_node.getLabel())
+            app.clearSelection()
+            QApplication.processEvents()
+
+            global_point = subgraph.mapToGlobal(subgraph.rect().center() + QPoint(-80, 40))
+            QCursor.setPos(global_point)
+            scene_pos = subgraph.mapToScene(subgraph.mapFromGlobal(global_point))
+            root_before = len(app.getChildren())
+
+            popup, line_edit, view = yield from open_menu(subgraph)
+            if not check(popup is not None, "python action: the tab menu opens over the group's graph"):
+                return
+            entries = listed(line_edit, view, "M45 Python Blur")
+            row = next((r for r, e in enumerate(entries) if row_name(e) == "M45 Python Blur"), -1)
+            check(row >= 0 and "[Merge]" in entries[row],
+                 "python action: the action is listed under Merge (got %r)" % entries)
+            if row < 0:
+                close_menu(popup)
+                return
+            view.setCurrentIndex(view.model().index(row, 0))
+            QTest.keyClick(line_edit, Qt.Key_Return)
+
+            ok = yield ("until", lambda: bool(created), 5.0)
+            if not check(ok and created[0] is not None, "python action: choosing it ran app.createNode()"):
+                return
+            node = created[0]
+            inside = [n.getScriptName() for n in group_node.getChildren()]
+            check(node.getScriptName() in inside, "python action: the node went into the group's graph")
+            check(len(app.getChildren()) == root_before, "python action: the root graph got no node")
+            nx, ny = node.getPosition()
+            dist = ((nx - scene_pos.x()) ** 2 + (ny - scene_pos.y()) ** 2) ** 0.5
+            check(dist <= 150.0,
+                 "python action: the node is within 150px of the cursor's scene position (got %.1f)" % dist)
+            gt.shot("m45-python-merge-action.png")
+
+            # Triggered outside the tab menu, the same action gets no context: app.createNode()
+            # with no group goes to the project root.
+            del created[:]
+            action.trigger()
+            QApplication.processEvents()
+            check(bool(created) and created[0] is not None, "python action: a direct trigger creates a node")
+            if created and created[0] is not None:
+                check(created[0].getScriptName() in [n.getScriptName() for n in app.getChildren()],
+                     "python action: outside the tab menu the node goes to the root graph")
+                check(created[0].getScriptName() not in [n.getScriptName() for n in group_node.getChildren()],
+                     "python action: outside the tab menu the group gets no node")
+        finally:
+            merge_menu.removeAction(action)
+            action.deleteLater()
 
     def preferences_section(main_graph):
         gt.section("preferences")
@@ -638,6 +733,7 @@ try:
         yield from group_section(main_graph)
         yield from commands_section(main_graph)
         yield from weights_section(blur_item)
+        yield from python_merge_action_section(main_graph)
         yield from preferences_section(main_graph)
         yield from nodegraph_page_section()
         yield from rebind_section(main_graph)

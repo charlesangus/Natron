@@ -2744,7 +2744,7 @@ readBackOpenGLRender(const Image& texture,
                      Image* layerImage)
 {
     assert(texture.getStorageMode() == eStorageModeGLTex && layerImage->getStorageMode() != eStorageModeGLTex);
-    if ( (layerImage->getComponents() == texture.getComponents()) && (layerImage->getBitDepth() == eImageBitDepthFloat) ) {
+    if ((layerImage->getComponents() == texture.getComponents()) && (layerImage->getBitDepth() == eImageBitDepthFloat)) {
         layerImage->pasteFrom(texture, roi, false, glContext);
 
         return;
@@ -3129,7 +3129,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
 
         if (layers.useOpenGL) {
             for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::iterator itLayer = outputLayers.begin(); itLayer != outputLayers.end(); ++itLayer) {
-                if ( !itLayer->second.tmpImage || (itLayer->second.tmpImage->getStorageMode() != eStorageModeGLTex) ) {
+                if (!itLayer->second.tmpImage || (itLayer->second.tmpImage->getStorageMode() != eStorageModeGLTex)) {
                     continue;
                 }
                 bool renderedNow = false;

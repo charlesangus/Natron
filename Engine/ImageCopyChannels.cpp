@@ -38,8 +38,6 @@
 #include "Engine/AppManager.h"
 #include "Engine/PoolParallelFor.h"
 
-
-
 // disable some warnings due to unused parameters
 // clang-format off
 GCC_DIAG_OFF(unused-parameter)

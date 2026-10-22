@@ -1618,10 +1618,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         }
 
         //We have to return the downscale image, so make sure it has been computed
-        if ( (renderRetCode != eRenderRoIStatusRenderFailed) &&
-             renderFullScaleThenDownscale &&
-             (it->second.fullscaleImage->getMipmapLevel() != mipmapLevel) &&
-             !hasSomethingToRender ) {
+        if ((renderRetCode != eRenderRoIStatusRenderFailed) && renderFullScaleThenDownscale && (it->second.fullscaleImage->getMipmapLevel() != mipmapLevel) && !hasSomethingToRender) {
             assert(it->second.fullscaleImage->getMipmapLevel() == 0);
             if (it->second.downscaleImage == it->second.fullscaleImage) {
                 it->second.downscaleImage = std::make_shared<Image>(it->second.fullscaleImage->getComponents(),

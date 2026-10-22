@@ -456,7 +456,7 @@ Settings::initializeKnobsRendering()
 void
 Settings::initializeKnobsGPU()
 {
-    _gpuPage = AppManager::createKnob<KnobPage>( this, tr("GPU") );
+    _gpuPage = AppManager::createKnob<KnobPage>(this, tr("GPU"));
 
     _gpuComputeMode = AppManager::createKnob<KnobChoice>(this, tr("GPU compute"));
     _gpuComputeMode->setName("gpuComputeMode");
@@ -479,8 +479,9 @@ Settings::initializeKnobsGPU()
     _gpuDevice = AppManager::createKnob<KnobChoice>(this, tr("GPU device"));
     _gpuDevice->setName("gpuDevice");
     _gpuDevice->setHintToolTip(tr("The Vulkan device used for compute, and the device whose OpenGL renderer is used for GPU rendering. "
-                                  "Automatic lets %1 choose. Changing this takes effect upon the next application launch.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ));
-    populateGpuDevices( std::vector<GpuDeviceSummary>() );
+                                  "Automatic lets %1 choose. Changing this takes effect upon the next application launch.")
+                                   .arg(QString::fromUtf8(NATRON_APPLICATION_NAME)));
+    populateGpuDevices(std::vector<GpuDeviceSummary>());
     _gpuPage->addKnob(_gpuDevice);
 
     _gpuMemoryBudgetMB = AppManager::createKnob<KnobInt>(this, tr("GPU memory budget (MB)"));
@@ -491,10 +492,10 @@ Settings::initializeKnobsGPU()
     _gpuMemoryBudgetMB->disableSlider();
     _gpuPage->addKnob(_gpuMemoryBudgetMB);
 
-    _gpuStatus = AppManager::createKnob<KnobString>( this, tr("GPU status") );
+    _gpuStatus = AppManager::createKnob<KnobString>(this, tr("GPU status"));
     _gpuStatus->setName("gpuStatus");
-    _gpuStatus->setHintToolTip( tr("The OpenGL renderer chosen at launch for GPU rendering, or why GPU rendering is disabled. "
-                                   "It reflects the settings above as they were at launch; a change to them takes effect upon the next application launch.") );
+    _gpuStatus->setHintToolTip(tr("The OpenGL renderer chosen at launch for GPU rendering, or why GPU rendering is disabled. "
+                                  "It reflects the settings above as they were at launch; a change to them takes effect upon the next application launch."));
     _gpuStatus->setIsPersistent(false);
     _gpuStatus->setAsLabel();
     _gpuPage->addKnob(_gpuStatus);
@@ -525,7 +526,7 @@ Settings::populateGpuDevices(const std::vector<GpuDeviceSummary>& devices)
     std::vector<ChoiceOption> entries;
     entries.push_back(ChoiceOption(kGpuDeviceAutoID,
                                    tr("Automatic").toStdString(),
-                                   tr("Let %1 choose the device.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ).toStdString()));
+                                   tr("Let %1 choose the device.").arg(QString::fromUtf8(NATRON_APPLICATION_NAME)).toStdString()));
     for (const GpuDeviceSummary& d : devices) {
         entries.push_back(ChoiceOption(uuidHex(d.uuid),
                                        d.name + " (" + gpuDeviceTypeLabel(d.type) + ")",
@@ -2307,7 +2308,7 @@ Settings::onKnobValueChanged(KnobI* k,
     } else if ((k == _scriptEditorFontChoice.get()) || (k == _scriptEditorFontSize.get())) {
         appPTR->reloadScriptEditorFonts();
     } else if (k == _pluginUseImageCopyForSource.get()) {
-        appPTR->setPluginsUseInputImageCopyToRender( _pluginUseImageCopyForSource->getValue() );
+        appPTR->setPluginsUseInputImageCopyToRender(_pluginUseImageCopyForSource->getValue());
     } else {
         ret = false;
     }

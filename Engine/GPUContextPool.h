@@ -74,7 +74,6 @@ public:
      **/
     void setMaxContextsForTests(std::optional<int> maxContexts);
 
-
     //////////////////////////////// OpenGL related /////////////////////////////////
 
     /**

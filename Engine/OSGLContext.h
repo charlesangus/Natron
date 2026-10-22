@@ -58,9 +58,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <list>
 #include <string>
 #include <vector>
-#include <list>
 
 #include "Engine/EngineFwd.h"
 #include "Global/GLIncludes.h"
@@ -142,8 +142,7 @@ public:
 
 struct GpuDeviceSummary;
 
-struct GLRendererPick
-{
+struct GLRendererPick {
     bool enabled = false;
     GLRendererID rendererID;
     std::string reason;
@@ -188,7 +187,6 @@ public:
     // Helper functions used by platform dependent implementations
     static bool stringInExtensionString(const char* string, const char* extensions);
     static const FramebufferConfig& chooseFBConfig(const FramebufferConfig& desired, const std::vector<FramebufferConfig>& alternatives, int count);
-
 
     /**
      * @brief Same as setContextCurrent() except that it should be used to bind the context to perform NON-RENDER operations!

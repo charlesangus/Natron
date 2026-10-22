@@ -497,7 +497,6 @@ OSGLContext::stringInExtensionString(const char* string,
     return true;
 }
 
-
 // GL_DEVICE_UUID_EXT from EXT_external_objects, which the bundled glad does not generate.
 static const GLenum kGlDeviceUuidExt = 0x9597;
 
@@ -508,15 +507,14 @@ OSGLContext::readCurrentDeviceUuid(void (*getUnsignedBytei_vEXT)(void),
     if (!getUnsignedBytei_vEXT || !uuid) {
         return false;
     }
-    const char* extensions = reinterpret_cast<const char*>( glGetString(GL_EXTENSIONS) );
+    const char* extensions = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
     if (!extensions) {
         return false;
     }
-    if ( !stringInExtensionString("GL_EXT_memory_object", extensions) &&
-         !stringInExtensionString("GL_EXT_semaphore", extensions) ) {
+    if (!stringInExtensionString("GL_EXT_memory_object", extensions) && !stringInExtensionString("GL_EXT_semaphore", extensions)) {
         return false;
     }
-    typedef void (APIENTRYP GetUnsignedBytei_vEXTProc)(GLenum target, GLuint index, GLubyte* data);
+    typedef void(APIENTRYP GetUnsignedBytei_vEXTProc)(GLenum target, GLuint index, GLubyte * data);
     GetUnsignedBytei_vEXTProc getUuid = reinterpret_cast<GetUnsignedBytei_vEXTProc>(getUnsignedBytei_vEXT);
     while (glGetError() != GL_NO_ERROR) {
     }
@@ -533,7 +531,10 @@ bool
 OSGLContext::isSoftwareRendererName(const std::string& rendererName)
 {
     static const char* const softwareNames[] = {
-        "llvmpipe", "softpipe", "swrast", "Software Rasterizer",
+        "llvmpipe",
+        "softpipe",
+        "swrast",
+        "Software Rasterizer",
     };
     for (const char* name : softwareNames) {
         if (rendererName.find(name) != std::string::npos) {
@@ -549,7 +550,7 @@ OSGLContext::pickRenderer(const std::list<OpenGLRendererInfo>& renderers,
                           bool allowSoftware)
 {
     GLRendererPick pick;
-    if ( renderers.empty() ) {
+    if (renderers.empty()) {
         pick.reason = "disabled: no GL renderer is available";
         return pick;
     }
@@ -569,15 +570,14 @@ OSGLContext::pickRenderer(const std::list<OpenGLRendererInfo>& renderers,
     const OpenGLRendererInfo* matched = 0;
     if (chosenOrNull) {
         for (const OpenGLRendererInfo& r : renderers) {
-            if ( (r.accelerated || allowSoftware) && r.hasUuid && (r.deviceUuid == chosenOrNull->uuid) ) {
+            if ((r.accelerated || allowSoftware) && r.hasUuid && (r.deviceUuid == chosenOrNull->uuid)) {
                 matched = &r;
                 break;
             }
         }
         if (!matched && chosenOrNull->vendorID != 0) {
             for (const OpenGLRendererInfo& r : renderers) {
-                if ( (r.accelerated || allowSoftware) && !r.hasUuid && (r.pciVendorID != 0) &&
-                     (r.pciVendorID == chosenOrNull->vendorID) && (r.pciDeviceID == chosenOrNull->deviceID) ) {
+                if ((r.accelerated || allowSoftware) && !r.hasUuid && (r.pciVendorID != 0) && (r.pciVendorID == chosenOrNull->vendorID) && (r.pciDeviceID == chosenOrNull->deviceID)) {
                     matched = &r;
                     break;
                 }

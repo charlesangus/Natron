@@ -1219,7 +1219,7 @@ Image::pasteFrom(const Image & src,
     StorageModeEnum thisStorage = getStorageMode();
     StorageModeEnum otherStorage = src.getStorageMode();
 
-    if ( (thisStorage == eStorageModeGLTex) && (otherStorage != eStorageModeGLTex) ) {
+    if ((thisStorage == eStorageModeGLTex) && (otherStorage != eStorageModeGLTex)) {
         // RAM image to OpenGL texture
         const RectI& dstBounds = getBounds();
         const RectI& srcBounds = src.getBounds();
@@ -1287,7 +1287,7 @@ Image::pasteFrom(const Image & src,
         glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
         glBindTexture(target, 0);
         glCheckError();
-    } else if ( (thisStorage != eStorageModeGLTex) && (otherStorage == eStorageModeGLTex) ) {
+    } else if ((thisStorage != eStorageModeGLTex) && (otherStorage == eStorageModeGLTex)) {
         // OpenGL texture to RAM image
 
         const RectI& dstBounds = getBounds();
@@ -1430,7 +1430,7 @@ Image::fillForDepth(const RectI & roi_,
 
 // code proofread and fixed by @devernay on 8/8/2014
 void
-Image::fill(const RectI & roi,
+Image::fill(const RectI& roi,
             float r,
             float g,
             float b,

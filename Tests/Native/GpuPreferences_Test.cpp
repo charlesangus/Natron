@@ -52,7 +52,7 @@ findSettingsPage(const std::string& label)
     const KnobsVec& knobs = appPTR->getCurrentSettings()->getKnobs();
     for (const KnobIPtr& k : knobs) {
         KnobPagePtr page = std::dynamic_pointer_cast<KnobPage>(k);
-        if ( page && (page->getLabel() == label) ) {
+        if (page && (page->getLabel() == label)) {
             return page;
         }
     }
@@ -100,9 +100,9 @@ public:
 
     ~GpuDeviceMenuRestorer()
     {
-        QSettings settings( QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME) );
-        settings.remove( QString::fromUtf8("gpuDevice") );
-        appPTR->getCurrentSettings()->populateGpuDevices( enumerateGpuDevices() );
+        QSettings settings(QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME));
+        settings.remove(QString::fromUtf8("gpuDevice"));
+        appPTR->getCurrentSettings()->populateGpuDevices(enumerateGpuDevices());
         _knob->setValue(0);
     }
 
@@ -123,14 +123,14 @@ TEST(GpuPreferences, GpuPageHoldsTheGpuKnobsAndThreadingDoesNot)
     ASSERT_NE(threading, nullptr);
 
     for (const char* name : { "gpuComputeMode", "gpuDevice", "gpuMemoryBudgetMB", "gpuStatus" }) {
-        EXPECT_TRUE( pageHoldsKnob(gpu, name) ) << name << " is not on the GPU page";
-        EXPECT_FALSE( pageHoldsKnob(threading, name) ) << name << " is still on the Threading page";
+        EXPECT_TRUE(pageHoldsKnob(gpu, name)) << name << " is not on the GPU page";
+        EXPECT_FALSE(pageHoldsKnob(threading, name)) << name << " is still on the Threading page";
     }
 
     KnobStringPtr status = appPTR->getCurrentSettings()->getKnobByNameAndType<KnobString>("gpuStatus");
     ASSERT_NE(status, nullptr);
-    EXPECT_TRUE( status->isLabel() );
-    EXPECT_EQ( appPTR->getGPUContextPool()->getRendererStatus(), status->getValue() );
+    EXPECT_TRUE(status->isLabel());
+    EXPECT_EQ(appPTR->getGPUContextPool()->getRendererStatus(), status->getValue());
 }
 
 TEST(GpuPreferences, GpuDeviceIsAChoiceOfAutoThenEachEnumeratedDevice)
@@ -145,8 +145,8 @@ TEST(GpuPreferences, GpuDeviceIsAChoiceOfAutoThenEachEnumeratedDevice)
     for (std::size_t i = 0; i < devices.size(); ++i) {
         EXPECT_EQ(uuidHex(devices[i].uuid), entries[i + 1].id);
     }
-    EXPECT_EQ( 0, device->getValue() );
-    EXPECT_EQ( "", appPTR->getCurrentSettings()->getGpuDevice() ) << "\"auto\" must read as an empty device id";
+    EXPECT_EQ(0, device->getValue());
+    EXPECT_EQ("", appPTR->getCurrentSettings()->getGpuDevice()) << "\"auto\" must read as an empty device id";
 }
 
 TEST(GpuPreferences, DeviceEntriesAreLabelledWithNameAndTypeAndReadAsTheirUuid)
@@ -164,7 +164,7 @@ TEST(GpuPreferences, DeviceEntriesAreLabelledWithNameAndTypeAndReadAsTheirUuid)
     EXPECT_EQ("llvmpipe (CPU)", entries[2].label);
 
     device->setValue(2);
-    EXPECT_EQ( uuidHex(fake[1].uuid), appPTR->getCurrentSettings()->getGpuDevice() );
+    EXPECT_EQ(uuidHex(fake[1].uuid), appPTR->getCurrentSettings()->getGpuDevice());
 }
 
 TEST(GpuPreferences, SavedDeviceIsRestoredByUuidAndAnOldStringValueIsIgnored)
@@ -178,28 +178,28 @@ TEST(GpuPreferences, SavedDeviceIsRestoredByUuidAndAnOldStringValueIsIgnored)
     const std::vector<KnobI*> knobs { device.get() };
 
     {
-        QSettings settings( QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME) );
-        settings.setValue( QString::fromUtf8("gpuDevice"), QString::fromStdString( uuidHex(fake[1].uuid) ) );
+        QSettings settings(QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME));
+        settings.setValue(QString::fromUtf8("gpuDevice"), QString::fromStdString(uuidHex(fake[1].uuid)));
     }
     appPTR->getCurrentSettings()->restoreKnobsFromSettings(knobs);
-    EXPECT_EQ( 2, device->getValue() );
+    EXPECT_EQ(2, device->getValue());
 
     // A value saved when gpuDevice was a free-text name or index matches no entry, so the knob keeps its value.
     device->setValue(0);
     for (const char* old : { "Radeon", "1", "" }) {
         {
-            QSettings settings( QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME) );
-            settings.setValue( QString::fromUtf8("gpuDevice"), QString::fromUtf8(old) );
+            QSettings settings(QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME));
+            settings.setValue(QString::fromUtf8("gpuDevice"), QString::fromUtf8(old));
         }
         appPTR->getCurrentSettings()->restoreKnobsFromSettings(knobs);
-        EXPECT_EQ( 0, device->getValue() ) << "old value \"" << old << "\"";
-        EXPECT_EQ( "", appPTR->getCurrentSettings()->getGpuDevice() ) << "old value \"" << old << "\"";
+        EXPECT_EQ(0, device->getValue()) << "old value \"" << old << "\"";
+        EXPECT_EQ("", appPTR->getCurrentSettings()->getGpuDevice()) << "old value \"" << old << "\"";
     }
 }
 
 TEST(GpuPreferences, NoOpenGLPreferenceKnobRemains)
 {
     for (const char* name : { "enableOpenGLRendering", "maxOpenGLContexts", "chooseOpenGLRenderer", "activeOpenGLRenderer" }) {
-        EXPECT_FALSE( appPTR->getCurrentSettings()->getKnobByName(name) ) << name << " still exists";
+        EXPECT_FALSE(appPTR->getCurrentSettings()->getKnobByName(name)) << name << " still exists";
     }
 }

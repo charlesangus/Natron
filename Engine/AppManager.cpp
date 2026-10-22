@@ -113,6 +113,8 @@
 #include "Engine/DiskCacheNode.h"
 #include "Engine/Dot.h"
 #include "Engine/FileSystemModel.h"
+#include "Engine/GPUContextPool.h"
+#include "Engine/GpuDeviceList.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/JoinViewsNode.h"
@@ -120,8 +122,6 @@
 #include "Engine/Log.h"
 #include "Engine/MemoryInfo.h" // getSystemTotalRAM, printAsRAM
 #include "Engine/Node.h"
-#include "Engine/GpuDeviceList.h"
-#include "Engine/GPUContextPool.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxHost.h"
@@ -754,7 +754,6 @@ AppManager::loadInternal(const CLArgs& cl)
     const std::vector<GpuDeviceSummary> gpuDevices = enumerateGpuDevices();
     _imp->_settings->populateGpuDevices(gpuDevices);
 
-
     // Settings: we must load these and set the custom settings (using python) ASAP, before creating the OFX Plugin Cache
     // Settings: always call restoreSettings, but call restoreKnobsFromSettings conditionally
     // Call restore after initializing knobs
@@ -766,7 +765,7 @@ AppManager::loadInternal(const CLArgs& cl)
         const std::string gpuSelector = gpuSelectorForDeviceId(gpuDevices, gpuDeviceId);
 
         const GpuDeviceSummary* chosenDevice = nullptr;
-        if ( !gpuSelector.empty() ) {
+        if (!gpuSelector.empty()) {
             for (const GpuDeviceSummary& d : gpuDevices) {
                 if (std::to_string(d.index) == gpuSelector) {
                     chosenDevice = &d;
@@ -780,11 +779,11 @@ AppManager::loadInternal(const CLArgs& cl)
         const bool glEnabled = gpuMode != GpuResolvedMode::Off && glPick.enabled && isOpenGLLoaded();
         const std::string glStatus = glEnabled ? glPick.reason : "GL suite disabled (" + glPick.reason + ")";
         _imp->renderingContextPool->setRenderingState(glEnabled, glPick.rendererID, glStatus);
-        _imp->_settings->setGpuStatus( _imp->renderingContextPool->getRendererStatus() );
+        _imp->_settings->setGpuStatus(_imp->renderingContextPool->getRendererStatus());
         qInfo().noquote() << QString::fromUtf8("GPU: Preferences device \"%1\" (%2); OpenGL renderer: %3")
-            .arg( QString::fromStdString( gpuDeviceId.empty() ? std::string("auto") : gpuDeviceId ) )
-            .arg( chosenDevice ? QString::fromStdString(chosenDevice->name) : QString::fromUtf8("none selected") )
-            .arg( QString::fromStdString(glStatus) );
+                                 .arg(QString::fromStdString(gpuDeviceId.empty() ? std::string("auto") : gpuDeviceId))
+                                 .arg(chosenDevice ? QString::fromStdString(chosenDevice->name) : QString::fromUtf8("none selected"))
+                                 .arg(QString::fromStdString(glStatus));
 
         GpuContextOptions gpuOptions;
         gpuOptions.mode = gpuMode;

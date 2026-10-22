@@ -28,8 +28,8 @@
 #include <gtest/gtest.h>
 
 #include "Engine/AppManager.h"
-#include "Engine/OSGLContext.h"
 #include "Engine/GPUContextPool.h"
+#include "Engine/OSGLContext.h"
 #include "Engine/Settings.h"
 
 NATRON_NAMESPACE_USING

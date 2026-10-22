@@ -93,10 +93,10 @@ vulkanDevice(uint8_t uuidSeed,
 TEST(GlRendererPick, MatchesChosenDeviceByUuid)
 {
     std::list<OpenGLRendererInfo> renderers;
-    renderers.push_back( rendererWithUuid(0, "iris", 0x10) );
-    renderers.push_back( rendererWithUuid(1, "radeonsi", 0x20) );
+    renderers.push_back(rendererWithUuid(0, "iris", 0x10));
+    renderers.push_back(rendererWithUuid(1, "radeonsi", 0x20));
     // Same PCI IDs as the chosen device on another renderer: the UUID must win.
-    renderers.push_back( renderer(2, "decoy", true, 0x1002, 0x73bf) );
+    renderers.push_back(renderer(2, "decoy", true, 0x1002, 0x73bf));
 
     const GpuDeviceSummary chosen = vulkanDevice(0x20, 0x1002, 0x73bf);
     const GLRendererPick pick = OSGLContext::pickRenderer(renderers, &chosen, false);
@@ -109,8 +109,8 @@ TEST(GlRendererPick, MatchesChosenDeviceByUuid)
 TEST(GlRendererPick, MatchesChosenDeviceByPciIds)
 {
     std::list<OpenGLRendererInfo> renderers;
-    renderers.push_back( renderer(0, "iris", true, 0x8086, 0x9a49) );
-    renderers.push_back( renderer(1, "radeonsi", true, 0x1002, 0x73bf) );
+    renderers.push_back(renderer(0, "iris", true, 0x8086, 0x9a49));
+    renderers.push_back(renderer(1, "radeonsi", true, 0x1002, 0x73bf));
 
     const GpuDeviceSummary chosen = vulkanDevice(0x20, 0x1002, 0x73bf);
     const GLRendererPick pick = OSGLContext::pickRenderer(renderers, &chosen, false);
@@ -139,8 +139,8 @@ TEST(GlRendererPick, PciIdsDoNotMatchRendererWithMismatchingUuid)
 TEST(GlRendererPick, FallsBackToFirstAllowedRendererWhenNothingMatches)
 {
     std::list<OpenGLRendererInfo> renderers;
-    renderers.push_back( renderer(0, "llvmpipe", false) );
-    renderers.push_back( renderer(1, "iris", true, 0x8086, 0x9a49) );
+    renderers.push_back(renderer(0, "llvmpipe", false));
+    renderers.push_back(renderer(1, "iris", true, 0x8086, 0x9a49));
 
     const GpuDeviceSummary chosen = vulkanDevice(0x20, 0x1002, 0x73bf);
     const GLRendererPick pick = OSGLContext::pickRenderer(renderers, &chosen, false);
@@ -153,7 +153,7 @@ TEST(GlRendererPick, FallsBackToFirstAllowedRendererWhenNothingMatches)
 TEST(GlRendererPick, NoChosenDeviceUsesTheDefaultRenderer)
 {
     std::list<OpenGLRendererInfo> renderers;
-    renderers.push_back( renderer(-1, "radeonsi", true) );
+    renderers.push_back(renderer(-1, "radeonsi", true));
 
     const GLRendererPick pick = OSGLContext::pickRenderer(renderers, nullptr, false);
 
@@ -165,7 +165,7 @@ TEST(GlRendererPick, NoChosenDeviceUsesTheDefaultRenderer)
 TEST(GlRendererPick, SoftwareRendererRefusedWithoutAllowSoftware)
 {
     std::list<OpenGLRendererInfo> renderers;
-    renderers.push_back( renderer(0, "llvmpipe", false) );
+    renderers.push_back(renderer(0, "llvmpipe", false));
 
     const GLRendererPick pick = OSGLContext::pickRenderer(renderers, nullptr, false);
 
@@ -180,7 +180,7 @@ TEST(GlRendererPick, SoftwareUuidMatchRefusedWithoutAllowSoftware)
     llvmpipe.deviceUuid = uuidOf(0x30);
     llvmpipe.hasUuid = true;
     renderers.push_back(llvmpipe);
-    renderers.push_back( renderer(1, "iris", true, 0x8086, 0x9a49) );
+    renderers.push_back(renderer(1, "iris", true, 0x8086, 0x9a49));
 
     const GpuDeviceSummary chosen = vulkanDevice(0x30, 0x10005, 0);
     const GLRendererPick pick = OSGLContext::pickRenderer(renderers, &chosen, false);
@@ -193,7 +193,7 @@ TEST(GlRendererPick, SoftwareUuidMatchRefusedWithoutAllowSoftware)
 TEST(GlRendererPick, SoftwareRendererAcceptedWithAllowSoftware)
 {
     std::list<OpenGLRendererInfo> renderers;
-    renderers.push_back( renderer(0, "llvmpipe", false) );
+    renderers.push_back(renderer(0, "llvmpipe", false));
 
     const GLRendererPick pick = OSGLContext::pickRenderer(renderers, nullptr, true);
 
@@ -205,8 +205,8 @@ TEST(GlRendererPick, SoftwareRendererAcceptedWithAllowSoftware)
 TEST(GlRendererPick, PciIdsOfZeroNeverMatch)
 {
     std::list<OpenGLRendererInfo> renderers;
-    renderers.push_back( renderer(0, "iris", true, 0x8086, 0x9a49) );
-    renderers.push_back( renderer(1, "llvmpipe", false) );
+    renderers.push_back(renderer(0, "iris", true, 0x8086, 0x9a49));
+    renderers.push_back(renderer(1, "llvmpipe", false));
 
     const GpuDeviceSummary chosen = vulkanDevice(0x40, 0, 0);
     const GLRendererPick pick = OSGLContext::pickRenderer(renderers, &chosen, true);
@@ -231,8 +231,8 @@ TEST(GlRendererPick, EmptyListIsDisabled)
 
 TEST(GlRendererPick, SoftwareRendererNames)
 {
-    EXPECT_TRUE( OSGLContext::isSoftwareRendererName("llvmpipe (LLVM 17.0.6, 256 bits)") );
-    EXPECT_TRUE( OSGLContext::isSoftwareRendererName("softpipe") );
-    EXPECT_FALSE( OSGLContext::isSoftwareRendererName("AMD Radeon RX 6900 XT (radeonsi, navi21, LLVM 17.0.6, DRM 3.54)") );
-    EXPECT_FALSE( OSGLContext::isSoftwareRendererName("NVIDIA GeForce RTX 4090/PCIe/SSE2") );
+    EXPECT_TRUE(OSGLContext::isSoftwareRendererName("llvmpipe (LLVM 17.0.6, 256 bits)"));
+    EXPECT_TRUE(OSGLContext::isSoftwareRendererName("softpipe"));
+    EXPECT_FALSE(OSGLContext::isSoftwareRendererName("AMD Radeon RX 6900 XT (radeonsi, navi21, LLVM 17.0.6, DRM 3.54)"));
+    EXPECT_FALSE(OSGLContext::isSoftwareRendererName("NVIDIA GeForce RTX 4090/PCIe/SSE2"));
 }

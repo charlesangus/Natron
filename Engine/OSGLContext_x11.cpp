@@ -981,7 +981,6 @@ OSGLContext_x11::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
                 }
                 const bool accelerated = v[0] != 0;
 
-
                 ok = glxInfo->_imp->QueryRendererIntegerMESA(glxInfo->_imp->x11.display, screen, renderer, GLX_RENDERER_OPENGL_COMPATIBILITY_PROFILE_VERSION_MESA, v);
                 assert(ok);
                 if (!ok) {
@@ -992,7 +991,7 @@ OSGLContext_x11::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
                 int maxCompatGLVersionMajor = (int)v[0];
                 int maxCompatGLVersionMinor = (int)v[1];
 
-                ok = glxInfo->_imp->QueryRendererIntegerMESA(glxInfo->_imp->x11.display, screen, renderer,  GLX_RENDERER_OPENGL_CORE_PROFILE_VERSION_MESA, v);
+                ok = glxInfo->_imp->QueryRendererIntegerMESA(glxInfo->_imp->x11.display, screen, renderer, GLX_RENDERER_OPENGL_CORE_PROFILE_VERSION_MESA, v);
                 assert(ok);
                 if (!ok) {
                     ++renderer;
@@ -1033,7 +1032,7 @@ OSGLContext_x11::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
                 // Now create a context with the renderer ID
                 std::unique_ptr<OSGLContext_x11> context;
                 try {
-                    context.reset( new OSGLContext_x11(FramebufferConfig(), GLVersion.major, GLVersion.minor, false, GLRendererID( (int)renderer ), 0) );
+                    context.reset(new OSGLContext_x11(FramebufferConfig(), GLVersion.major, GLVersion.minor, false, GLRendererID((int)renderer), 0));
                 } catch (const std::exception& e) {
 #ifndef DEBUG
                     std::cerr << ss.str() << std::endl;
@@ -1043,7 +1042,7 @@ OSGLContext_x11::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
                     continue;
                 }
 
-                if ( !makeContextCurrent( context.get() ) ) {
+                if (!makeContextCurrent(context.get())) {
                     ++renderer;
                     continue;
                 }
@@ -1060,10 +1059,10 @@ OSGLContext_x11::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
                 }
 
                 info.rendererID.renderID = renderer;
-                info.vendorName = std::string( (const char *) glGetString(GL_VENDOR) );
-                info.rendererName = std::string( (const char *) glGetString(GL_RENDERER) );
-                info.glVersionString = std::string( (const char *) glGetString(GL_VERSION) );
-                info.glslVersionString = std::string( (const char*) glGetString (GL_SHADING_LANGUAGE_VERSION) );
+                info.vendorName = std::string((const char*)glGetString(GL_VENDOR));
+                info.rendererName = std::string((const char*)glGetString(GL_RENDERER));
+                info.glVersionString = std::string((const char*)glGetString(GL_VERSION));
+                info.glslVersionString = std::string((const char*)glGetString(GL_SHADING_LANGUAGE_VERSION));
                 glGetIntegerv(GL_MAX_TEXTURE_SIZE, &info.maxTextureSize);
                 info.hasUuid = OSGLContext::readCurrentDeviceUuid(getProcAddress(glxInfo, "glGetUnsignedBytei_vEXT"), &info.deviceUuid);
 

@@ -474,8 +474,6 @@ private:
     KnobIntPtr _gpuMemoryBudgetMB;
     KnobStringPtr _gpuStatus;
 
-
-
     // General/Projects setup
     KnobPagePtr _projectsPage;
     KnobBoolPtr _firstReadSetProjectFormat;

@@ -92,8 +92,8 @@ enumerateGpuDevices()
         s.index = static_cast<int>(i);
         s.name = props.properties.deviceName;
         s.type = props.properties.deviceType <= VK_PHYSICAL_DEVICE_TYPE_CPU
-                     ? static_cast<GpuDeviceType>(props.properties.deviceType)
-                     : GpuDeviceType::Other;
+            ? static_cast<GpuDeviceType>(props.properties.deviceType)
+            : GpuDeviceType::Other;
         std::memcpy(s.uuid.data(), idProps.deviceUUID, VK_UUID_SIZE);
         s.vendorID = props.properties.vendorID;
         s.deviceID = props.properties.deviceID;

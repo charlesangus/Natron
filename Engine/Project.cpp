@@ -84,6 +84,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/FileStampRegistry.h"
 #include "Engine/FormatSerialization.h"
+#include "Engine/GPUContextPool.h"
 #include "Engine/Hash64.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
@@ -93,7 +94,6 @@
 #include "Engine/RectDSerialization.h"
 #include "Engine/RectISerialization.h"
 #include "Engine/RotoLayer.h"
-#include "Engine/GPUContextPool.h"
 #include "Engine/Settings.h"
 #include "Engine/StandardPaths.h"
 #include "Engine/ViewIdx.h"
@@ -1398,7 +1398,7 @@ Project::initializeKnobs()
         _imp->gpuSupport->populateChoices(entries);
     }
     _imp->gpuSupport->setAnimationEnabled(false);
-    _imp->gpuSupport->setHintToolTip( tr("Select when to activate GPU rendering for plug-ins. Note that if GPU compute is disabled in the Preferences or no OpenGL renderer is available then GPU rendering will not be activated regardless of that value.") );
+    _imp->gpuSupport->setHintToolTip(tr("Select when to activate GPU rendering for plug-ins. Note that if GPU compute is disabled in the Preferences or no OpenGL renderer is available then GPU rendering will not be activated regardless of that value."));
     _imp->gpuSupport->setEvaluateOnChange(false);
     _imp->gpuSupport->setAllDimensionsEnabled(appPTR->getGPUContextPool()->isRenderingEnabled());
     page->addKnob(_imp->gpuSupport);

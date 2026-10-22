@@ -675,9 +675,9 @@ public:
      * For example if the image comps is eImageComponentAlpha, then only the alpha value 'a' will
      * be used.
      **/
-    void fill( const RectI & roi, float r, float g, float b, float a );
+    void fill(const RectI& roi, float r, float g, float b, float a);
 
-    void fillZero( const RectI& roi );
+    void fillZero(const RectI& roi);
 
     void fillBoundsZero();
 
@@ -685,9 +685,9 @@ public:
      * @brief Same as fill(const RectI&,float,float,float,float) but fills the R,G and B
      * components with the same value.
      **/
-    void fill( const RectI & rect,
-               float colorValue = 0.f,
-               float alphaValue = 1.f )
+    void fill(const RectI& rect,
+              float colorValue = 0.f,
+              float alphaValue = 1.f)
     {
         fill(rect, colorValue, colorValue, colorValue, alphaValue);
     }

@@ -432,8 +432,10 @@ plug-in. Neither checks the cost seed, doc, icon or kernel fragments.
   no scene payload or evaluation path yet.
 - `eDataKindPolymorphic` -- on an input, "I accept any kind"; on an output,
   "I have no fixed kind of my own." For pass-through utility nodes (`Dot`, the
-  other `NoOps`, group boundaries, `TypedPassthrough`), not for nodes that
-  actually produce or transform data. Only nodes that override the kind
+  other `NoOps`, group boundaries, `TypedPassthrough`), and for a source whose
+  kind follows one of its knobs (the native Read, see "Knob-driven source
+  kinds" below), not for nodes that otherwise produce or transform data. Only
+  nodes that override the kind
   virtuals are polymorphic: an OFX plugin that happens to pass its input
   through, like openfx-misc's `Switch`, is loaded as an `OfxEffectInstance`
   and is typed image/image like every other plugin.
@@ -462,7 +464,8 @@ class, not configured per node instance and not stored per connection. An
 edge carries no kind of its own -- its kind is simply its source node's
 *effective* output kind -- so nothing about data kinds is ever serialized
 into a project, and nothing about it can go stale independently of the graph
-itself.
+itself. A polymorphic node whose policy reads a knob is still no exception:
+the kind is derived from the knob's serialized value, never stored.
 
 **Resolution policy belongs to the node.** A polymorphic node's *effective*
 output kind is `Node::getEffectiveOutputDataKind()` (`Engine/Node.cpp`), which
@@ -482,6 +485,23 @@ others, or those branches are typed, rendered and connection-checked as the
 kind the switch outputs. The default is true, matching the engine default
 below, which follows every polymorphic-declared input at once -- so a node
 without a policy needs nothing here.
+
+**Knob-driven source kinds.** A source node whose kind depends on what it
+reads declares `outputKind = eDataKindPolymorphic` and overrides
+`resolveOutputDataKind()` to answer from a knob, never ambiguous. The native
+Read does this from its `filename`: `eDataKindRaw` when the extension is a
+camera raw one (`RawExtensions::isRawPath()`, `Engine/Nodes/IO/RawExtensions.h`,
+the formats rawspeed decodes), `eDataKindImage` for anything else, an empty
+filename included -- so every consumer of a Read on a non-raw file sees image
+exactly as before. Only the extension is consulted; the file need not exist.
+The engine only invalidates a cached kind when a connection changes, so such a
+node calls `Node::invalidateEffectiveOutputDataKindCache()` itself from
+`knobChanged()` when the knob moves the kind, and once from `onKnobsLoaded()`.
+The Read only invalidates when the kind actually changes, since invalidating
+re-checks and repaints everything reachable from the node. Edges are never
+disconnected by a flip: a consumer that cannot take the new kind gets the
+ordinary data-kind error described below, which clears when the kind flips
+back.
 
 The engine default resolves **bidirectionally**, from the current topology
 alone:
@@ -947,6 +967,12 @@ pipeline has `.layers = LayerPolicy::none()` and neither `Premult` nor
 `MaskMix`: a mosaic has no alpha to divide by, no layers or channels to pick,
 and nothing to blend against a mask. All three are compile errors on a raw
 Source, as `staticImagePipelineSpec()` checks.
+
+Raw enters the graph through the native Read, whose output is raw whenever
+its `filename` has a camera raw extension (see "Knob-driven source kinds").
+Until the Read decodes raw, such a Read fails its region of definition and
+render with a "Camera raw decoding is not available" error; OpenImageIO is
+never asked to read the file as an image.
 
 `ImagePipelineSpec::rawStage` says which `raw/stage` the node needs its source
 at: `Any` (the default, and the only choice for an image Source or a Route op),

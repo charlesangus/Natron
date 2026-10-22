@@ -65,6 +65,7 @@
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/IO/IoColorSpace.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
+#include "Engine/Nodes/IO/RawExtensions.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/PoolParallelFor.h"
 #include "Engine/Project.h"
@@ -370,6 +371,7 @@ NativeRead::initializeKnobs()
 void
 NativeRead::onKnobsLoaded()
 {
+    refreshOutputDataKind();
     _inputSpace.refreshMenu();
     refreshTimeKnobState();
     refreshProxyKnobState();
@@ -435,9 +437,41 @@ NativeRead::onEffectCreated(bool mayCreateFileDialog,
     filename->setValue(path);
 }
 
+DataKindEnum
+NativeRead::resolveOutputDataKind(bool* isAmbiguous) const
+{
+    if (isAmbiguous) {
+        *isAmbiguous = false;
+    }
+    KnobFilePtr filename = _filename.lock();
+
+    return (filename && RawExtensions::isRawPath(filename->getValue())) ? eDataKindRaw : eDataKindImage;
+}
+
+void
+NativeRead::refreshOutputDataKind()
+{
+    NodePtr node = getNode();
+
+    if (!node) {
+        return;
+    }
+    // Invalidating re-checks every connection reachable from this node and repaints its edges, so
+    // a new file of the same kind, by far the common case, leaves the graph alone.
+    if (node->getEffectiveOutputDataKind() != resolveOutputDataKind(nullptr)) {
+        node->invalidateEffectiveOutputDataKindCache();
+    }
+}
+
 bool
 NativeRead::rejectUnsupportedFormat(const std::string& path)
 {
+    // Checked first: OpenImageIO must never hand a camera raw file to a raw-kind edge as an image.
+    if (RawExtensions::isRawPath(path)) {
+        setPersistentMessage(eMessageTypeError, tr("Camera raw decoding is not available: %1").arg(QString::fromStdString(path)).toStdString());
+
+        return true;
+    }
     if (OiioReadSupport::isReadablePath(path)) {
         return false;
     }
@@ -907,6 +941,7 @@ NativeRead::knobChanged(KnobI* k,
 
     if (k == filename.get()) {
         if (reason != eValueChangedReasonTimeChanged) {
+            refreshOutputDataKind();
             invalidateFrameListing();
             // The filename is part of the hash, which the readers and the caches downstream follow.
             dropCachedOutputMetadata();

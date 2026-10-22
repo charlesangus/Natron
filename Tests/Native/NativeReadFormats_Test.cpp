@@ -216,15 +216,15 @@ TEST_F(NativeReadFormatsTest, AFileOutsideTheSetPostsAnUnsupportedFormatMessageA
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
     const QString source = QString::fromUtf8(NATRON_TESTS_FIXTURES_DIR "/png-8bit.png");
-    const QString raw = dir.path() + QString::fromUtf8("/shot.cr2");
-    ASSERT_TRUE(QFile::copy(source, raw));
+    const QString unsupported = dir.path() + QString::fromUtf8("/shot.psd");
+    ASSERT_TRUE(QFile::copy(source, unsupported));
 
     NodePtr node = createRead();
     ASSERT_TRUE(bool(node));
     NativeRead* read = dynamic_cast<NativeRead*>(node->getEffectInstance().get());
     ASSERT_TRUE(read != NULL);
 
-    setFile(node, raw.toStdString());
+    setFile(node, unsupported.toStdString());
     RectD rod;
     EXPECT_EQ(eStatusFailed, read->getRegionOfDefinition(0, 1., RenderScale(), ViewIdx(0), &rod));
     EXPECT_TRUE(node->hasPersistentMessage());

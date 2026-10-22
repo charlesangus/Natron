@@ -63,9 +63,9 @@ if [ -n "${OFX_PLUGIN_PATH:-}" ]; then
     OPTS=(${OPTS[@]+"${OPTS[@]}"} "--setting" "useStdOFXPluginsLocation=False")
 fi
 
-touch "$TMP_FOLDER/dummy.ntp"
-"$NATRON_BIN" ${OPTS[@]+"${OPTS[@]}"} --export-docs "$TMP_FOLDER" "$TMP_FOLDER/dummy.ntp"
-rm "$TMP_FOLDER/dummy.ntp"
+touch "$TMP_FOLDER/dummy.ntpz"
+"$NATRON_BIN" ${OPTS[@]+"${OPTS[@]}"} --export-docs "$TMP_FOLDER" "$TMP_FOLDER/dummy.ntpz"
+rm "$TMP_FOLDER/dummy.ntpz"
 
 pushd "$TMP_FOLDER"
 

@@ -507,7 +507,7 @@ TEST_F(NativeWriteViewsTest, AChosenViewSurvivesSaveAndLoad)
 
     ProjectPtr project = getApp()->getProject();
     const QString dirPath = _dir.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("views.ntp");
+    const QString fileName = QString::fromUtf8("views.ntpz");
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
 

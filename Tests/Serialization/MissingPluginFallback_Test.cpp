@@ -35,7 +35,7 @@
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
-#include "ProjectXmlHelpers.h"
+#include "ProjectBundleTestHelpers.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -150,22 +150,22 @@ protected:
         _downstreamName = _downstream->getScriptName_mt_safe();
     }
 
-    // Saves the project with the Grade's plug-in ID replaced by pluginID and returns that Grade's
-    // serialization in *grade.
-    std::string saveWithGradeID(const std::string& pluginID,
-                                Serialization::NodeSerializationPtr* grade)
+    // Serializes the project into *saved with the Grade's plug-in ID replaced by pluginID and
+    // returns that Grade's serialization in *grade.
+    bool serializeWithGradeID(const std::string& pluginID,
+                              Serialization::ProjectSerialization* saved,
+                              Serialization::NodeSerializationPtr* grade)
     {
-        Serialization::ProjectSerialization saved;
-        getApp()->getProject()->toSerialization(&saved);
-        *grade = findSerializedNode(saved.nodes.nodes, PLUGINID_NATRON_GRADE);
+        getApp()->getProject()->toSerialization(saved);
+        *grade = findSerializedNode(saved->nodes.nodes, PLUGINID_NATRON_GRADE);
         if (!*grade) {
             ADD_FAILURE() << "The Grade was not saved";
 
-            return std::string();
+            return false;
         }
         (*grade)->pluginID = pluginID;
 
-        return saveProjectXml(saved);
+        return true;
     }
 
     NodePtr _generator;
@@ -182,13 +182,13 @@ TEST_F(MissingPluginFallbackTest, LowercasePluginIDLoadsTheInstalledPlugin)
     ASSERT_TRUE(tmp.isValid());
     ASSERT_NO_FATAL_FAILURE(buildGraph());
 
+    Serialization::ProjectSerialization saved;
     Serialization::NodeSerializationPtr grade;
-    const std::string xml = saveWithGradeID(QString::fromUtf8(PLUGINID_NATRON_GRADE).toLower().toStdString(), &grade);
-    ASSERT_FALSE(xml.empty());
+    ASSERT_TRUE(serializeWithGradeID(QString::fromUtf8(PLUGINID_NATRON_GRADE).toLower().toStdString(), &saved, &grade));
 
     ProjectPtr project = getApp()->getProject();
     project->reset(false, true);
-    ASSERT_FALSE(reloadProjectXml(project, tmp, QString::fromUtf8("lowercase-id.ntp"), xml).empty());
+    ASSERT_TRUE(loadProjectBundle(project, tmp, QString::fromUtf8("lowercase-id.ntpz"), saved));
 
     NodePtr loaded = project->getNodeByName(_gradeName);
     NodePtr generator = project->getNodeByName(_generatorName);
@@ -209,13 +209,13 @@ TEST_F(MissingPluginFallbackTest, PythonCannotModifyAPlaceholderButCanReadIt)
     ASSERT_TRUE(tmp.isValid());
     ASSERT_NO_FATAL_FAILURE(buildGraph());
 
+    Serialization::ProjectSerialization saved;
     Serialization::NodeSerializationPtr original;
-    const std::string xml = saveWithGradeID(kNotInstalledPluginID, &original);
-    ASSERT_FALSE(xml.empty());
+    ASSERT_TRUE(serializeWithGradeID(kNotInstalledPluginID, &saved, &original));
 
     ProjectPtr project = getApp()->getProject();
     project->reset(false, true);
-    ASSERT_FALSE(reloadProjectXml(project, tmp, QString::fromUtf8("missing-plugin.ntp"), xml).empty());
+    ASSERT_TRUE(loadProjectBundle(project, tmp, QString::fromUtf8("missing-plugin.ntpz"), saved));
 
     NodePtr placeholder = project->getNodeByName(_gradeName);
     ASSERT_TRUE(bool(placeholder));
@@ -257,7 +257,7 @@ TEST_F(MissingPluginFallbackTest, PythonCannotModifyAPlaceholderButCanReadIt)
     project->toSerialization(&resaved);
     Serialization::NodeSerializationPtr resavedMissing = findSerializedNode(resaved.nodes.nodes, kNotInstalledPluginID);
     ASSERT_TRUE(bool(resavedMissing));
-    EXPECT_EQ(saveNodeXml(*original), saveNodeXml(*resavedMissing));
+    EXPECT_EQ(nodeYaml(*original), nodeYaml(*resavedMissing));
 }
 
 TEST_F(MissingPluginFallbackTest, PythonStillModifiesAnInstalledNode)
@@ -348,8 +348,7 @@ TEST_F(MissingPluginFallbackTest, MissingPyPlugIsAPlaceholderAndComesBackWhenIns
     original->pythonModule = "/nonexistent/NotInstalledPyPlug.py";
 
     project->reset(false, true);
-    const std::string resavedXml = reloadProjectXml(project, tmp, QString::fromUtf8("missing-pyplug.ntp"), saveProjectXml(saved));
-    ASSERT_FALSE(resavedXml.empty());
+    ASSERT_TRUE(loadProjectBundle(project, tmp, QString::fromUtf8("missing-pyplug.ntpz"), saved));
 
     NodePtr placeholder = project->getNodeByName(pyPlugName);
     ASSERT_TRUE(bool(placeholder));
@@ -357,15 +356,15 @@ TEST_F(MissingPluginFallbackTest, MissingPyPlugIsAPlaceholderAndComesBackWhenIns
     EXPECT_EQ(saved.nodes.nodes.size(), countNodesRecursively(project));
 
     Serialization::ProjectSerialization resaved;
-    ASSERT_TRUE(loadProjectXml(resavedXml, &resaved));
+    ASSERT_TRUE(saveProjectBundle(project, tmp, QString::fromUtf8("missing-pyplug-resaved.ntpz"), nullptr, &resaved));
     Serialization::NodeSerializationPtr resavedPyPlug = findSerializedNode(resaved.nodes.nodes, notInstalledPyPlugID);
     ASSERT_TRUE(bool(resavedPyPlug));
-    EXPECT_EQ(saveNodeXml(*original), saveNodeXml(*resavedPyPlug));
+    EXPECT_EQ(nodeYaml(*original), nodeYaml(*resavedPyPlug));
 
     resavedPyPlug->pluginID = kBundledPyPlugID;
     resavedPyPlug->pythonModule = installedModule;
     project->reset(false, true);
-    ASSERT_FALSE(reloadProjectXml(project, tmp, QString::fromUtf8("pyplug-back.ntp"), saveProjectXml(resaved)).empty());
+    ASSERT_TRUE(loadProjectBundle(project, tmp, QString::fromUtf8("pyplug-back.ntpz"), resaved));
 
     NodePtr restored = project->getNodeByName(pyPlugName);
     ASSERT_TRUE(bool(restored));
@@ -429,13 +428,12 @@ TEST_F(MissingPluginFallbackTest, LoadFromPyFilePreferenceChoosesModuleOrEmbedde
     }
     ASSERT_TRUE(dropped != children.end());
     children.erase(dropped);
-    const std::string xml = saveProjectXml(saved);
 
     {
         LoadFromPyFileScope enabled(true);
         ASSERT_TRUE(enabled.valid());
         project->reset(false, true);
-        ASSERT_FALSE(reloadProjectXml(project, tmp, QString::fromUtf8("pyfile-on.ntp"), xml).empty());
+        ASSERT_TRUE(loadProjectBundle(project, tmp, QString::fromUtf8("pyfile-on.ntpz"), saved));
         NodePtr node = project->getNodeByName(pyPlugName);
         ASSERT_TRUE(bool(node));
         EXPECT_EQ(std::string(kBundledPyPlugID), node->getPluginID());
@@ -449,7 +447,7 @@ TEST_F(MissingPluginFallbackTest, LoadFromPyFilePreferenceChoosesModuleOrEmbedde
         LoadFromPyFileScope disabled(false);
         ASSERT_TRUE(disabled.valid());
         project->reset(false, true);
-        ASSERT_FALSE(reloadProjectXml(project, tmp, QString::fromUtf8("pyfile-off.ntp"), xml).empty());
+        ASSERT_TRUE(loadProjectBundle(project, tmp, QString::fromUtf8("pyfile-off.ntpz"), saved));
         NodePtr node = project->getNodeByName(pyPlugName);
         ASSERT_TRUE(bool(node));
         NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(node->getEffectInstance());

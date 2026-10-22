@@ -144,7 +144,7 @@ TEST_F(NativeWriteSkeletonTest, MajorAndFilenameSurviveSaveAndLoad)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("native-write.ntp");
+    const QString fileName = QString::fromUtf8("native-write.ntpz");
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
 
@@ -197,7 +197,7 @@ TEST_F(NativeWriteSkeletonTest, UnsupportedNameInASavedProjectPostsTheMessageAnd
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("native-write-mov.ntp");
+    const QString fileName = QString::fromUtf8("native-write-mov.ntpz");
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
 

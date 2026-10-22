@@ -210,7 +210,7 @@ multiply if the node lacks it; for comps it is `fg_grade1`, `glow_thresh` or `pl
 - `BENCH_DRY_RUN=1` prints the planned and skipped cases with the memory probe and renders nothing.
 
 `graph_bench.py` runs one session itself with `BENCH_SESSION=a|bc|playback` (and `BENCH_TOPO=ntp
-BENCH_COMP=<.ntp>` for a comp); see its header for the variables.
+BENCH_COMP=<.ntpz>` for a comp); see its header for the variables.
 
 `python3 -I tools/bench/gpu_region_summary.py [--skip-frames N] [--import-rate GBPS] <out-dir>/<tag>.prof...`
 reads each run (a file, or a prefix: the profile appends a suffix) and prints its case, GPU mode and kind;

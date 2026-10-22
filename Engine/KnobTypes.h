@@ -1307,7 +1307,7 @@ public:
 
     /**
      * @brief The XML tag used to persist column "col". Unlike getColumnLabel(), which may be
-     * translated for display, this must be a stable ASCII literal: it is part of the .ntp
+     * translated for display, this must be a stable ASCII literal: it is part of the .ntpz
      * on-disk format read by decodeFromKnobTableFormat()/written by encodeToKnobTableFormat().
      **/
     virtual std::string getColumnTag(int col) const

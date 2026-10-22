@@ -122,7 +122,7 @@ TEST_F(BaseTest, ProjectLoadKeepsKindInvalidEdgeAndErrorsTheNode)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("kind-invalid.ntp");
+    const QString fileName = QString::fromUtf8("kind-invalid.ntpz");
 
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
@@ -156,7 +156,7 @@ TEST_F(BaseTest, ProjectLoadKeepsValidEdgeAndLeavesNoErrorState)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("kind-valid.ntp");
+    const QString fileName = QString::fromUtf8("kind-valid.ntpz");
 
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
@@ -192,7 +192,7 @@ TEST_F(BaseTest, ResolutionSurvivesSaveAndLoadUnchanged)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("kind-downstream.ntp");
+    const QString fileName = QString::fromUtf8("kind-downstream.ntpz");
 
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
@@ -234,7 +234,7 @@ TEST_F(BaseTest, ProjectLoadKeepsAmbiguousPolymorphicInputsIntact)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("kind-ambiguous.ntp");
+    const QString fileName = QString::fromUtf8("kind-ambiguous.ntpz");
 
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
@@ -274,7 +274,7 @@ TEST_F(BaseTest, DataKindErrorClearsWhenTheOffendingInputIsRemoved)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("kind-invalid-then-fixed.ntp");
+    const QString fileName = QString::fromUtf8("kind-invalid-then-fixed.ntpz");
 
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
@@ -312,7 +312,7 @@ TEST_F(BaseTest, ClearingTheDataKindErrorLeavesAnUnrelatedErrorAlone)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("kind-invalid-plus-unrelated.ntp");
+    const QString fileName = QString::fromUtf8("kind-invalid-plus-unrelated.ntpz");
 
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
@@ -361,7 +361,7 @@ TEST_F(BaseTest, AdapterEdgeSurvivesSaveAndLoadWithNoError)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("kind-adapter.ntp");
+    const QString fileName = QString::fromUtf8("kind-adapter.ntpz");
 
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));

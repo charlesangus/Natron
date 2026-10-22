@@ -44,7 +44,7 @@
 #                 range. Each render is timed in-process around app.render, and its output is deleted and synced
 #                 outside the timing. Needs BENCH_RENDER_DIR, an absolute existing directory.
 #   BENCH_SESSION_FRAME  frame of the first render (default 2)
-#   BENCH_COMP    path of an .ntp to load instead of building a topology (BENCH_TOPO=ntp); its Write node is
+#   BENCH_COMP    path of an .ntpz to load instead of building a topology (BENCH_TOPO=ntp); its Write node is
 #                 pointed at BENCH_RENDER_DIR, and BENCH_SIZE other than uhd adds a project format of that size
 #   BENCH_HOLD    seconds to sleep before rendering, so a sampler can attach (default 0)
 #   BENCH_DRY_RUN 1 builds the graph against stand-in objects and prints the planned nodes without
@@ -631,7 +631,7 @@ def make_tweak(session_app):
 
 
 def load_comp(path, render_dir):
-    """Loads the .ntp and points its Write node at render_dir; returns (app, writer)."""
+    """Loads the .ntpz and points its Write node at render_dir; returns (app, writer)."""
     loaded = app.loadProject(path)
     session_app = loaded if loaded is not None else app
     if CUSTOM_SIZE and CUSTOM_SIZE != "3840x2160":
@@ -791,7 +791,7 @@ def mem_total_mb():
 
 def render_stats(writer):
     # The CLI path (-w) honours --render-stats; the Python app.render does not.
-    proj = os.path.join(WORK, "stats_%s_%d.ntp" % (TOPO, N))
+    proj = os.path.join(WORK, "stats_%s_%d.ntpz" % (TOPO, N))
     app.saveProject(proj)
     exe = os.environ.get("BENCH_RENDERER", os.path.join(os.getcwd(), "build", "release", "Renderer", "NatronRenderer"))
     cmd = [exe]

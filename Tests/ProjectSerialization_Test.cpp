@@ -107,7 +107,7 @@ TEST_F(BaseTest, RoundTripsNodesConnectionsAndKnobValues)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("roundtrip.ntp");
+    const QString fileName = QString::fromUtf8("roundtrip.ntpz");
 
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
@@ -174,7 +174,7 @@ TEST_F(BaseTest, RoundTripKeepsNodeHashAndWritesNoKnobsAge)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("hash-roundtrip.ntp");
+    const QString fileName = QString::fromUtf8("hash-roundtrip.ntpz");
 
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
@@ -209,7 +209,7 @@ makeThreeChannelLayer(const std::string& id)
 
 // Exercises the project-level LayerRegistry (Project::addLayer/removeLayer/findLayer/
 // getLayerRegistrySnapshot) through a save/reset/load cycle: built-ins are never written
-// to the .ntp, non-built-in layers (both user- and file-origin) are, project reset drops
+// to the .ntpz, non-built-in layers (both user- and file-origin) are, project reset drops
 // everything back to built-ins + depth, and loading restores exactly what was saved while
 // emitting projectLayersChanged() exactly once.
 TEST_F(BaseTest, RoundTripsLayerRegistry)
@@ -229,7 +229,7 @@ TEST_F(BaseTest, RoundTripsLayerRegistry)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("layers-roundtrip.ntp");
+    const QString fileName = QString::fromUtf8("layers-roundtrip.ntpz");
 
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
@@ -321,7 +321,7 @@ TEST_F(BaseTest, SavedProjectContainsNoUserComponents)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("no-usercomponents.ntp");
+    const QString fileName = QString::fromUtf8("no-usercomponents.ntpz");
 
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
@@ -411,7 +411,7 @@ TEST_F(MultiplaneTwinProjectTest, TwinsRoundTripAndArePushedIntoThePluginChoices
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("multiplane-twins.ntp");
+    const QString fileName = QString::fromUtf8("multiplane-twins.ntpz");
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
 
@@ -505,7 +505,7 @@ protected:
             return KnobDoublePtr();
         }
         const QString dirPath = tmp.path() + QLatin1Char('/');
-        const QString fileName = QString::fromUtf8("fold-state.ntp");
+        const QString fileName = QString::fromUtf8("fold-state.ntpz");
         QString savedFilePath;
         if (!project->saveProject(dirPath, fileName, &savedFilePath)) {
             ADD_FAILURE() << "saveProject() failed";

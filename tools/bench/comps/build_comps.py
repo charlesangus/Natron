@@ -1,4 +1,4 @@
-# Builds one of the three synthetic UHD float comps (COMP=keying_grade|cg_multipass|defocus_retime) and saves it as .ntp.
+# Builds one of the three synthetic UHD float comps (COMP=keying_grade|cg_multipass|defocus_retime) and saves it as .ntpz.
 # Run inside NatronRenderer:
 #
 #   COMP=keying_grade COMPS_OUT=tools/bench/comps NatronRenderer -b tools/bench/comps/build_comps.py
@@ -9,12 +9,13 @@
 
 import os
 import re
+import zipfile
 
 import NatronEngine
 
 OUT = os.environ.get("COMPS_OUT", os.path.join(os.getcwd(), "tools", "bench", "comps"))
 RENDER_DIR = os.path.join(os.getcwd(), "build", "bench", "m82-profile", "out")
-# [Project] expands to the directory holding the .ntp, so the saved comps carry no host paths.
+# [Project] expands to the directory holding the .ntpz, so the saved comps carry no host paths.
 WRITE_PATTERN = "[Project]/../../../build/bench/m82-profile/out/%s.####.exr"
 LAST_FRAME = 8
 
@@ -154,15 +155,21 @@ def finish(comp, root):
     pin_output_space(writer)
     choice(writer, "bitDepth", "32f")
     choice(writer, "compression", "none")
-    path = os.path.join(OUT, comp + ".ntp")
+    path = os.path.join(OUT, comp + ".ntpz")
     app.saveProject(path)
     # The saved Project variable is the directory at save time; Natron resets it on load.
-    with open(path, "r", encoding="utf-8") as handle:
-        text = handle.read()
-    text = text.replace(os.path.abspath(OUT), "")
-    text = re.sub(r"<Value>[^<]*\.####\.exr</Value>", "<Value>%s</Value>" % (WRITE_PATTERN % comp), text)
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(text)
+    # Natron reads a bundle repacked stored with the mimetype member leading; the next save by
+    # Natron restores the member alignment.
+    repacked = path + ".repack"
+    with zipfile.ZipFile(path) as src, zipfile.ZipFile(repacked, "w", zipfile.ZIP_STORED) as dst:
+        for info in src.infolist():
+            data = src.read(info.filename)
+            if info.filename == "project.yaml":
+                text = data.decode("utf-8").replace(os.path.abspath(OUT), "")
+                text = re.sub(r'"[^"\n]*\.####\.exr"', '"%s"' % (WRITE_PATTERN % comp), text)
+                data = text.encode("utf-8")
+            dst.writestr(zipfile.ZipInfo(info.filename, info.date_time), data, compress_type=zipfile.ZIP_STORED)
+    os.replace(repacked, path)
     for leftover in (path + ".lock", path + ".~1~"):
         if os.path.exists(leftover):
             os.remove(leftover)

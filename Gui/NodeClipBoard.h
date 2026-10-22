@@ -36,7 +36,6 @@
 GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_OFF
 // clang-format off
 GCC_DIAG_OFF(unused-parameter)
-#include <boost/archive/xml_iarchive.hpp>
 #include <boost/archive/xml_oarchive.hpp>
 #include <boost/serialization/split_member.hpp>
 #include <boost/serialization/version.hpp>
@@ -62,8 +61,8 @@ public:
     std::list<Serialization::NodeSerializationPtr> nodes;
     std::list<Serialization::NodeGuiSerializationPtr> nodesUI;
 
-    // The node each item of nodes was copied from, null for an item read from an archive. It
-    // is not archived: a serialization does not reference its node.
+    // The node each item of nodes was copied from, or null. It is not archived: a
+    // serialization does not reference its node.
     std::list<NodePtr> sourceNodes;
 
     NodeClipBoard()
@@ -92,26 +91,6 @@ public:
              it != nodes.end(); ++it, ++itUI) {
             ar & ::boost::serialization::make_nvp("Node", **it);
             ar & ::boost::serialization::make_nvp("NodeUI", **itUI);
-        }
-    }
-
-    template<class Archive>
-    void load(Archive & ar,
-              const unsigned int /*version*/)
-    {
-        nodes.clear();
-        nodesUI.clear();
-        sourceNodes.clear();
-        int nNodes;
-        ar & ::boost::serialization::make_nvp("NbNodes", nNodes);
-        for (int i = 0; i < nNodes; ++i) {
-            Serialization::NodeSerializationPtr nS = std::make_shared<Serialization::NodeSerialization>();
-            ar & ::boost::serialization::make_nvp("Node", *nS);
-            nodes.push_back(nS);
-            sourceNodes.push_back(NodePtr());
-            Serialization::NodeGuiSerializationPtr nGui = std::make_shared<Serialization::NodeGuiSerialization>();
-            ar & ::boost::serialization::make_nvp("NodeUI", *nGui);
-            nodesUI.push_back(nGui);
         }
     }
 

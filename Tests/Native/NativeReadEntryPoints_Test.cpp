@@ -199,7 +199,7 @@ TEST_F(NativeReadEntryPointsTest, UnversionedReadKeepsItsClassThroughSaveAndLoad
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("unversioned-read.ntp");
+    const QString fileName = QString::fromUtf8("unversioned-read.ntpz");
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
 

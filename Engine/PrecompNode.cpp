@@ -171,7 +171,7 @@ PrecompNode::getPluginLabel() const
 std::string
 PrecompNode::getPluginDescription() const
 {
-    return "The Precomp node is like a Group node, but references an external Natron project (.ntp) instead.\n"
+    return "The Precomp node is like a Group node, but references an external Natron project (.ntpz) instead.\n"
            "This allows you to save a subset of the node tree as a separate project. A Precomp node can be useful in at least two ways:\n"
            "It can be used to reduce portions of the node tree to pre-rendered image inputs. "
            "This speeds up render time: Natron only has to process the single image input instead of all the nodes within the project. "

@@ -42,6 +42,7 @@
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
+#include "Engine/Project.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/Settings.h"
 #include "Engine/ViewerInstance.h"
@@ -51,6 +52,51 @@
 #include <SequenceParsing.h> // for removePath
 
 NATRON_NAMESPACE_ENTER
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+// Connects node's inputs to the siblings serialization names. An input that cannot be connected
+// is left disconnected; when report is set, that is a load warning naming the input and target.
+void
+connectSerializedInputs(const NodeCollectionPtr& group,
+                        const NodePtr& node,
+                        const Serialization::NodeSerialization& serialization,
+                        bool report)
+{
+    ProjectPtr project = node->getApp() ? node->getApp()->getProject() : ProjectPtr();
+    const QString nodeName = QString::fromUtf8(serialization.scriptName.c_str());
+
+    for (std::map<std::string, std::string>::const_iterator it = serialization.inputs.begin(); it != serialization.inputs.end(); ++it) {
+        if (it->second.empty()) {
+            continue;
+        }
+        const QString inputLabel = QString::fromUtf8(it->first.c_str());
+        const QString targetName = QString::fromUtf8(it->second.c_str());
+        QString problem;
+        const int index = node->getInputNumberFromLabel(it->first);
+        if (index == -1) {
+            problem = NodeCollection::tr("the node has no such input; left disconnected");
+        } else if (!group->getNodeByName(it->second)) {
+            problem = NodeCollection::tr("node not found; input left disconnected");
+        } else if (!group->connectNodes(index, it->second, node)) {
+            problem = NodeCollection::tr("the connection was refused; input left disconnected");
+        } else {
+            continue;
+        }
+        if (!report) {
+            qDebug() << nodeName << inputLabel << targetName << problem;
+            continue;
+        }
+        const QString warning = NodeCollection::tr("%1.%2 \u2192 %3: %4").arg(nodeName).arg(inputLabel).arg(targetName).arg(problem);
+        if (project) {
+            project->addLoadWarning(warning);
+        } else {
+            appPTR->writeToErrorLog_mt_safe(NodeCollection::tr("Project"), QDateTime::currentDateTime(), warning);
+        }
+    }
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 static QString lookForFileRecursively(const QString& dirPath, const QString& filenameUnPathed)
 {
@@ -345,11 +391,9 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
             NodePtr masterNode = it->first->getApp()->getNodeByFullySpecifiedName(masterNodeName);
 
             if (!masterNode) {
-                appPTR->writeToErrorLog_mt_safe(tr("Project"), QDateTime::currentDateTime(),
-                                                tr("Cannot restore the link between %1 and %2.")
-                                                    .arg(QString::fromUtf8(it->second->scriptName.c_str()))
-                                                    .arg(QString::fromUtf8(masterNodeName.c_str())));
-                mustShowErrorsLog = true;
+                appInst->getProject()->addLoadWarning(tr("%1 \u2192 %2: node not found; its parameters were left unlinked")
+                                                          .arg(QString::fromUtf8(it->second->scriptName.c_str()))
+                                                          .arg(QString::fromUtf8(masterNodeName.c_str())));
             } else {
                 it->first->getEffectInstance()->slaveAllKnobs( masterNode->getEffectInstance().get(), true );
             }
@@ -360,48 +404,7 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
             continue;
         }
 
-        const std::vector<std::string>& oldInputs = it->second->oldInputs;
-        if ( !oldInputs.empty() ) {
-            /*
-             * Prior to Natron v2 OpenFX effects had their inputs reversed internally
-             */
-            bool isOfxEffect = it->first->isOpenFXNode();
-
-            for (U32 j = 0; j < oldInputs.size(); ++j) {
-                if ( !oldInputs[j].empty() && !group->connectNodes(isOfxEffect ? oldInputs.size() - 1 - j : j, oldInputs[j], it->first) ) {
-                    if (createNodes) {
-                        appPTR->writeToErrorLog_mt_safe(tr("Project"), QDateTime::currentDateTime(),
-                                                        tr("Failed to connect node %1 to %2")
-                                                            .arg(QString::fromUtf8(it->second->scriptName.c_str()))
-                                                            .arg(QString::fromUtf8(oldInputs[j].c_str())));
-                        mustShowErrorsLog = true;
-                    }
-                }
-            }
-        } else {
-            const std::map<std::string, std::string>& inputs = it->second->inputs;
-            for (std::map<std::string, std::string>::const_iterator it2 = inputs.begin(); it2 != inputs.end(); ++it2) {
-                if ( it2->second.empty() ) {
-                    continue;
-                }
-                int index = it->first->getInputNumberFromLabel(it2->first);
-                if (index == -1) {
-                    appPTR->writeToErrorLog_mt_safe( tr("Project"), QDateTime::currentDateTime(),
-                                                     tr("Could not find input named %1")
-                                                     .arg( QString::fromUtf8( it2->first.c_str() ) ) );
-                    continue;
-                }
-                if ( !it2->second.empty() && !group->connectNodes(index, it2->second, it->first) ) {
-                    if (createNodes) {
-                        appPTR->writeToErrorLog_mt_safe(tr("Project"), QDateTime::currentDateTime(),
-                                                        tr("Failed to connect node %1 to %2")
-                                                            .arg(QString::fromUtf8(it->second->scriptName.c_str()))
-                                                            .arg(QString::fromUtf8(it2->second.c_str())));
-                        mustShowErrorsLog = true;
-                    }
-                }
-            }
-        }
+        connectSerializedInputs(group, it->first, *it->second, createNodes);
     } // for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = serializedNodes.begin(); it != serializedNodes.end(); ++it) {
 
     ///Now that the graph is setup, restore expressions
@@ -422,43 +425,7 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
              it
          = parentsToReconnect.begin();
          it != parentsToReconnect.end(); ++it) {
-        const std::vector<std::string>& oldInputs = (*it->second)->oldInputs;
-        if ( !oldInputs.empty() ) {
-            /*
-             * Prior to Natron v2 OpenFX effects had their inputs reversed internally
-             */
-            bool isOfxEffect = it->first->isOpenFXNode();
-
-            for (U32 j = 0; j < oldInputs.size(); ++j) {
-                if ( !oldInputs[j].empty() && !group->connectNodes(isOfxEffect ? oldInputs.size() - 1 - j : j, oldInputs[j], it->first) ) {
-                    if (createNodes) {
-                        qDebug() << tr("Failed to connect node %1 to %2 (this is normal if loading a PyPlug)")
-                                    .arg( QString::fromUtf8( it->first->getPluginLabel().c_str() ) )
-                                    .arg( QString::fromUtf8( oldInputs[j].c_str() ) );
-                    }
-                }
-            }
-        } else {
-            const std::map<std::string, std::string>& inputs = (*it->second)->inputs;
-            for (std::map<std::string, std::string>::const_iterator it2 = inputs.begin(); it2 != inputs.end(); ++it2) {
-                if ( it2->second.empty() ) {
-                    continue;
-                }
-                int index = it->first->getInputNumberFromLabel(it2->first);
-                if (index == -1) {
-                    appPTR->writeToErrorLog_mt_safe( tr("Project"), QDateTime::currentDateTime(),
-                                                     tr("Could not find input named %1").arg( QString::fromUtf8( it2->first.c_str() ) ) );
-                    continue;
-                }
-                if ( !it2->second.empty() && !group->connectNodes(index, it2->second, it->first) ) {
-                    if (createNodes) {
-                        qDebug() << tr("Failed to connect node %1 to %2 (this is normal if loading a PyPlug)")
-                                    .arg( QString::fromUtf8( it->first->getPluginLabel().c_str() ) )
-                                    .arg( QString::fromUtf8( it2->second.c_str() ) );
-                    }
-                }
-            }
-        }
+        connectSerializedInputs(group, it->first, **it->second, false);
     }
 
     return !mustShowErrorsLog;

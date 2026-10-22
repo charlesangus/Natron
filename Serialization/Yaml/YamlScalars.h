@@ -43,6 +43,16 @@ public:
 };
 
 /**
+ * @brief Thrown for a document written by a newer Natron, with a higher formatVersion than this
+ * version reads. The message says so in words meant for the user.
+ **/
+class YamlNewerFormatError
+    : public YamlError {
+public:
+    using YamlError::YamlError;
+};
+
+/**
  * @brief Non-fatal findings of a decode, such as keys the decoder does not know: they are
  * skipped and reported here so a newer file still loads.
  **/

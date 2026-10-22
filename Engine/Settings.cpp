@@ -247,12 +247,12 @@ Settings::initializeKnobsGeneral()
     _saveVersions->disableSlider();
     _saveVersions->setMinimum(0);
     _saveVersions->setMaximum(32);
-    _saveVersions->setHintToolTip( tr("Number of versions created (for backup) when saving newer versions of a file.\n"
-                                      "This option keeps saved versions of your file in the same directory, adding "
-                                      ".~1~, .~2~, etc., with the number increasing to the number of versions you specify.\n"
-                                      "Older files will be named with a higher number. E.g. with the default setting of 2, "
-                                      "you will have three versions of your file: *.ntp (last saved), *.ntp.~1~ (second "
-                                      "last saved), *.~2~ (third last saved).") );
+    _saveVersions->setHintToolTip(tr("Number of versions created (for backup) when saving newer versions of a file.\n"
+                                     "This option keeps saved versions of your file in the same directory, adding "
+                                     ".~1~, .~2~, etc., with the number increasing to the number of versions you specify.\n"
+                                     "Older files will be named with a higher number. E.g. with the default setting of 2, "
+                                     "you will have three versions of your file: *.ntpz (last saved), *.ntpz.~1~ (second "
+                                     "last saved), *.~2~ (third last saved)."));
     _generalTab->addKnob(_saveVersions);
 
     _hostName = AppManager::createKnob<KnobChoice>( this, tr("Appear to plug-ins as") );

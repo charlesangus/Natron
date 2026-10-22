@@ -51,8 +51,7 @@ inline constexpr int kProjectYamlFormatVersion = 1;
  * to sink as blob tables.
  *
  * Not written: the creation date (it belongs to the bundle manifest, so re-saving an unchanged
- * project gives the same text), the class versions, knobsAge, cacheID, the multi-instance parent,
- * oldInputs, the master node and the legacy timeline bounds and node counters.
+ * project gives the same text), knobsAge, cacheID, the multi-instance parent and the master node.
  **/
 std::string encodeProjectYaml(const ProjectSerialization& project, BlobSink& sink);
 

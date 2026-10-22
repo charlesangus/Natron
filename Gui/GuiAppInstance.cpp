@@ -360,7 +360,7 @@ GuiAppInstance::loadInternal(const CLArgs& cl,
             ///If this is a Python script, execute it
             loadPythonScript(info);
             execOnProjectCreatedCallback();
-        } else if ( info.suffix() == QString::fromUtf8(NATRON_PROJECT_FILE_EXT) ) {
+        } else if (info.suffix() == QString::fromUtf8(NATRON_PROJECT_FILE_EXT) || info.suffix() == QString::fromUtf8("ntp")) {
             ///Otherwise just load the project specified.
             QString name = info.fileName();
             QString path = info.path();
@@ -370,8 +370,8 @@ GuiAppInstance::loadInternal(const CLArgs& cl,
             ///remove any file open event that might have occurred
             appPTR->setFileToOpen( QString() );
         } else {
-            Dialogs::errorDialog( tr("Invalid file").toStdString(),
-                                  tr("%1 only accepts python scripts or .ntp project files").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ).toStdString() );
+            Dialogs::errorDialog(tr("Invalid file").toStdString(),
+                                 tr("%1 only accepts python scripts or .ntpz project files").arg(QString::fromUtf8(NATRON_APPLICATION_NAME)).toStdString());
             execOnProjectCreatedCallback();
         }
     }
@@ -1227,7 +1227,7 @@ GuiAppInstance::handleFileOpenEvent(const std::string &filename)
 
     fileCopy.replace( QLatin1Char('\\'), QLatin1Char('/') );
     QString ext = QtCompat::removeFileExtension(fileCopy);
-    if ( ext == QString::fromUtf8(NATRON_PROJECT_FILE_EXT) ) {
+    if (ext == QString::fromUtf8(NATRON_PROJECT_FILE_EXT) || ext == QString::fromUtf8("ntp")) {
         AppInstancePtr app = getGui()->openProject(filename);
         if (!app) {
             Dialogs::errorDialog(tr("Project").toStdString(), tr("Failed to open project").toStdString() + ' ' + filename);

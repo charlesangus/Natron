@@ -33,7 +33,6 @@ GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_OFF
 // clang-format off
 GCC_DIAG_OFF(unused-parameter)
 // /opt/local/include/boost/serialization/smart_cast.hpp:254:25: warning: unused parameter 'u' [-Wunused-parameter]
-#include <boost/archive/xml_iarchive.hpp>
 #include <boost/archive/xml_oarchive.hpp>
 #include <boost/serialization/nvp.hpp>
 #include <boost/serialization/split_free.hpp>
@@ -50,8 +49,7 @@ GCC_DIAG_ON(unused-parameter)
 #define NATRON_SERIALIZATION_TRACKER_CONTEXT_VERSION 1
 
 // Non-intrusive adapters reproducing the NVP sequence and class versions of the old intrusive
-// TrackSerialization and TrackerContextSerialization, including the branch that reads tracks
-// saved before pattern-matching tracks existed.
+// TrackSerialization and TrackerContextSerialization. They write the current layout only.
 namespace boost {
 namespace serialization {
 
@@ -80,36 +78,6 @@ namespace serialization {
 
     template <class Archive>
     void
-    load(Archive& ar,
-         NATRON_NAMESPACE::Serialization::TrackSerialization& track,
-         const unsigned int version)
-    {
-        track = NATRON_NAMESPACE::Serialization::TrackSerialization();
-
-        if (version >= NATRON_SERIALIZATION_TRACK_ADD_TRACKER_PM) {
-            ar& ::boost::serialization::make_nvp("IsTrackerPM", track.isPatternMatching);
-        }
-
-        ar& ::boost::serialization::make_nvp("Enabled", track.enabled);
-        ar& ::boost::serialization::make_nvp("ScriptName", track.scriptName);
-        ar& ::boost::serialization::make_nvp("Label", track.label);
-        int knobCount = 0;
-        ar& ::boost::serialization::make_nvp("NbItems", knobCount);
-        for (int i = 0; i < knobCount; ++i) {
-            track.knobs.push_back(NATRON_NAMESPACE::Serialization::KnobSerialization());
-            ar& ::boost::serialization::make_nvp("Item", track.knobs.back());
-        }
-        int userKeyCount = 0;
-        ar& ::boost::serialization::make_nvp("NbUserKeys", userKeyCount);
-        for (int i = 0; i < userKeyCount; ++i) {
-            int key;
-            ar& ::boost::serialization::make_nvp("UserKeys", key);
-            track.userKeys.push_back(key);
-        }
-    }
-
-    template <class Archive>
-    void
     serialize(Archive& ar,
               NATRON_NAMESPACE::Serialization::TrackSerialization& track,
               const unsigned int version)
@@ -127,23 +95,6 @@ namespace serialization {
         ar& ::boost::serialization::make_nvp("NbItems", trackCount);
         for (std::list<NATRON_NAMESPACE::Serialization::TrackSerialization>::const_iterator it = context.tracks.begin(); it != context.tracks.end(); ++it) {
             ar& ::boost::serialization::make_nvp("Item", *it);
-        }
-    }
-
-    template <class Archive>
-    void
-    load(Archive& ar,
-         NATRON_NAMESPACE::Serialization::TrackerContextSerialization& context,
-         const unsigned int /*version*/)
-    {
-        context = NATRON_NAMESPACE::Serialization::TrackerContextSerialization();
-
-        int trackCount = 0;
-        ar& ::boost::serialization::make_nvp("NbItems", trackCount);
-        for (int i = 0; i < trackCount; ++i) {
-            // Each track is read in place: an archive may record where it loaded an object.
-            context.tracks.push_back(NATRON_NAMESPACE::Serialization::TrackSerialization());
-            ar& ::boost::serialization::make_nvp("Item", context.tracks.back());
         }
     }
 

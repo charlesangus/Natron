@@ -25,10 +25,8 @@
 
 #include "Global/Macros.h"
 
-#include <exception>
 #include <list>
 #include <set>
-#include <sstream>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -36,6 +34,7 @@
 #include <QString>
 
 #include "BaseTest.h"
+#include "YamlTestHelpers.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
@@ -50,40 +49,32 @@
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/ViewIdx.h"
 
-#include "Serialization/BoostXml/RotoXml.h"
 #include "Serialization/RotoSerialization.h"
+#include "Serialization/Yaml/BlobSink.h"
+#include "Serialization/Yaml/RotoYaml.h"
 
 NATRON_NAMESPACE_USING
 
 namespace {
 
-std::string
-saveToXml(const Serialization::RotoContextSerialization& serialization)
+const std::string kRotoNodeName = "RotoPaint1";
+
+// Gives the decoded knobs of every item the types the live item knobs would, taken from the
+// items that were encoded.
+void
+completeItemKnobsLike(Serialization::RotoLayerSerialization* decoded,
+                      const Serialization::RotoLayerSerialization& original)
 {
-    std::stringstream buffer;
-    {
-        boost::archive::xml_oarchive archive(buffer);
-        archive << boost::serialization::make_nvp("RotoContext", serialization);
+    std::list<Serialization::RotoLayerChildSerialization>::const_iterator source = original.children.begin();
+    for (std::list<Serialization::RotoLayerChildSerialization>::iterator it = decoded->children.begin(); (it != decoded->children.end()) && (source != original.children.end()); ++it, ++source) {
+        if (it->type == Serialization::eRotoLayerChildTypeLayer) {
+            completeItemKnobsLike(&it->layer, source->layer);
+        } else if (it->type == Serialization::eRotoLayerChildTypeBezier) {
+            completeLike(&it->bezier.knobs, source->bezier.knobs);
+        } else {
+            completeLike(&it->stroke.knobs, source->stroke.knobs);
+        }
     }
-
-    return buffer.str();
-}
-
-bool
-loadFromXml(const std::string& xml,
-            Serialization::RotoContextSerialization* serialization)
-{
-    try {
-        std::stringstream buffer(xml);
-        boost::archive::xml_iarchive archive(buffer);
-        archive >> boost::serialization::make_nvp("RotoContext", *serialization);
-    } catch (const std::exception& e) {
-        ADD_FAILURE() << "Loading through Serialization/BoostXml failed: " << e.what();
-
-        return false;
-    }
-
-    return true;
 }
 
 // A fresh shape has a single, unkeyed position: keying it at its creation time and then moving
@@ -110,7 +101,7 @@ keyframeTimes(const CurvePtr& curve)
 }
 
 // Compares the internal, not the GUI, curves of two points, and their tangents as stored: the
-// realigned tangents depend on the broken flag, which the project format does not keep.
+// realigned tangents depend on the broken flag, which saving does not keep.
 void
 expectSamePoint(const BezierCPPtr& expected,
                 const BezierCPPtr& actual,
@@ -158,7 +149,7 @@ expectSameShape(const BezierPtr& expected,
     std::list<BezierCPPtr>::const_iterator actualIt = actualPoints.begin();
     for (std::list<BezierCPPtr>::const_iterator it = expectedPoints.begin(); it != expectedPoints.end(); ++it, ++actualIt) {
         expectSamePoint(*it, *actualIt, expectedTimes);
-        // The project format has never kept the broken flag of a bezier's points.
+        // Saving never keeps the broken flag of a bezier's points.
         EXPECT_FALSE((*actualIt)->getBroken());
     }
 
@@ -194,7 +185,7 @@ expectSameStroke(const RotoStrokeItemPtr& expected,
 
 } // anonymous namespace
 
-class RotoXmlEquivalenceTest
+class RotoRoundTripTest
     : public BaseTest {
 protected:
     RotoContextPtr createRotoPaintContext()
@@ -230,19 +221,20 @@ protected:
         return stroke;
     }
 
-    // Saves the context to XML, loads that XML onto a fresh RotoPaint and checks that saving
-    // the fresh one writes the same XML. Returns the fresh context, or null on failure.
+    // Saves the context to YAML, loads that YAML onto a fresh RotoPaint and checks that saving
+    // the fresh one writes the same YAML. Returns the fresh context, or null on failure.
     RotoContextPtr expectRoundTripMatches(const RotoContextPtr& source,
                                           Serialization::RotoContextSerialization* loaded)
     {
         Serialization::RotoContextSerialization saved;
         source->toSerialization(&saved);
-        const std::string savedXml = saveToXml(saved);
+        Serialization::MemoryBlobStore blobs;
+        const std::string savedYaml = Serialization::encodeRotoYaml(saved, kRotoNodeName, blobs);
 
-        if (!loadFromXml(savedXml, loaded)) {
-            return RotoContextPtr();
-        }
-        EXPECT_EQ(savedXml, saveToXml(*loaded));
+        *loaded = Serialization::decodeRotoYaml(savedYaml, blobs);
+        Serialization::MemoryBlobStore reencodedBlobs;
+        EXPECT_EQ(savedYaml, Serialization::encodeRotoYaml(*loaded, kRotoNodeName, reencodedBlobs));
+        completeItemKnobsLike(&loaded->baseLayer, saved.baseLayer);
 
         RotoContextPtr restored = createRotoPaintContext();
         if (!restored) {
@@ -254,13 +246,14 @@ protected:
 
         Serialization::RotoContextSerialization resaved;
         restored->toSerialization(&resaved);
-        EXPECT_EQ(savedXml, saveToXml(resaved));
+        Serialization::MemoryBlobStore resavedBlobs;
+        EXPECT_EQ(savedYaml, Serialization::encodeRotoYaml(resaved, kRotoNodeName, resavedBlobs));
 
         return restored;
     }
 };
 
-TEST_F(RotoXmlEquivalenceTest, Stroke)
+TEST_F(RotoRoundTripTest, Stroke)
 {
     RotoContextPtr context = createRotoPaintContext();
 
@@ -298,7 +291,7 @@ TEST_F(RotoXmlEquivalenceTest, Stroke)
     EXPECT_TRUE(restored->getSelectedItems().empty());
 }
 
-TEST_F(RotoXmlEquivalenceTest, AnimatedFeatheredBezierWithBrokenTangent)
+TEST_F(RotoRoundTripTest, AnimatedFeatheredBezierWithBrokenTangent)
 {
     RotoContextPtr context = createRotoPaintContext();
 
@@ -334,7 +327,7 @@ TEST_F(RotoXmlEquivalenceTest, AnimatedFeatheredBezierWithBrokenTangent)
     EXPECT_FALSE(child.bezier.isOpenBezier);
     EXPECT_EQ(2u, child.bezier.controlPoints.front().xCurve.keyframes.size());
     EXPECT_EQ(2u, child.bezier.controlPoints.front().leftXCurve.keyframes.size());
-    // The project format has never kept the broken flag of a bezier's points.
+    // Saving never keeps the broken flag of a bezier's points.
     EXPECT_FALSE(child.bezier.controlPoints.front().broken);
     ASSERT_EQ(1u, loaded.selectedItems.size());
     EXPECT_EQ(square->getScriptName(), loaded.selectedItems.front());
@@ -361,7 +354,7 @@ TEST_F(RotoXmlEquivalenceTest, AnimatedFeatheredBezierWithBrokenTangent)
     EXPECT_EQ(restoredSquare, restoredSelection.front());
 }
 
-TEST_F(RotoXmlEquivalenceTest, NestedLayers)
+TEST_F(RotoRoundTripTest, NestedLayers)
 {
     RotoContextPtr context = createRotoPaintContext();
 

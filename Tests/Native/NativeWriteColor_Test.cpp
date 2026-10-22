@@ -443,7 +443,7 @@ TEST_F(NativeWriteColorTest, AnExistingWriteKeepsItsSpaceAcrossADefaultChangeAnd
     setProjectSpace("colorSpace8Bit", kGamma22Space);
     EXPECT_EQ(std::string(kSRGBSpace), stringValue(_writer, kOutputSpaceKnob));
 
-    saveResetAndLoad("keep.ntp");
+    saveResetAndLoad("keep.ntpz");
 
     ASSERT_EQ(std::string(kGamma22Space), project()->getFileColorSpace(eFileColorCategory8Bit));
     NodePtr loaded = project()->getNodeByName(name);

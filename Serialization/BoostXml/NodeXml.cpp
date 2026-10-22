@@ -24,23 +24,14 @@
 namespace boost {
 namespace serialization {
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::LayerSerialization& layer,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::LayerSerialization& layer,
                                                           const unsigned int version);
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::NodeSerialization& node,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::NodeSerialization& node,
                                                           const unsigned int version);
 
-    template void serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive& ar,
-                                                          NATRON_NAMESPACE::Serialization::NodeCollectionSerialization& collection,
-                                                          const unsigned int version);
     template void serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive& ar,
                                                           NATRON_NAMESPACE::Serialization::NodeCollectionSerialization& collection,
                                                           const unsigned int version);

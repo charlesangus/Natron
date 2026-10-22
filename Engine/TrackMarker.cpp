@@ -347,7 +347,7 @@ TrackMarker::fromSerialization(const Serialization::TrackSerialization& serializ
         const std::string serializedName = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name);
         for (KnobsVec::const_iterator it2 = knobs.begin(); it2 != knobs.end(); ++it2) {
             if ((*it2)->getName() == serializedName) {
-                KnobIPtr serializedKnob = createDetachedKnobFromSerialization(*it);
+                KnobIPtr serializedKnob = createDetachedKnobFromSerialization(completeKnobSerializationForKnob(**it2, *it));
                 if (!serializedKnob) {
                     break;
                 }

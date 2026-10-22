@@ -349,7 +349,7 @@ TEST_F(BaseTest, ProjectSaveLoadPreservesKnobShuffleMapRows)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("shuffle-map-test.ntp");
+    const QString fileName = QString::fromUtf8("shuffle-map-test.ntpz");
 
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
@@ -426,7 +426,7 @@ TEST_F(BaseTest, ProjectSaveLoadPreservesUserKnobShuffleMapRows)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("user-shuffle-map-test.ntp");
+    const QString fileName = QString::fromUtf8("user-shuffle-map-test.ntpz");
 
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));

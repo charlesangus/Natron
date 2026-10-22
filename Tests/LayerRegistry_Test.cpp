@@ -414,7 +414,7 @@ TEST_F(BaseTest, LoadWithUnchangedFilesDoesNotChangeRegistry)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString dirPath = tmp.path() + QLatin1Char('/');
-    const QString fileName = QString::fromUtf8("unchanged-files.ntp");
+    const QString fileName = QString::fromUtf8("unchanged-files.ntpz");
 
     QString savedFilePath;
     ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));

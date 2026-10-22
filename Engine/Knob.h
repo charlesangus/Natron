@@ -1290,9 +1290,15 @@ public:
         _links.push_back(Link(slaveDimension, nodeNameFull, nodeName, trackName, knobName, dimension));
     }
 
-    void restoreLinks(const NodesList & allNodes,
+    /**
+     * @brief Resolves the links stored by storeLinksFromSerialization(). A link whose target is
+     * not found throws when throwOnFailure is set; otherwise it is skipped, and when
+     * missingTargets is given the target is added to it as "node.knob" or "node.track.knob".
+     **/
+    void restoreLinks(const NodesList& allNodes,
                       const std::map<std::string, std::string>& oldNewScriptNamesMapping,
-                      bool throwOnFailure);
+                      bool throwOnFailure,
+                      std::vector<std::string>* missingTargets = NULL);
 
     /**
      * @brief Stores the links serialization saved, for restoreLinks() to resolve once every node exists.
@@ -3209,6 +3215,13 @@ KnobIPtr createUserKnobFromSerialization(KnobHolder* holder,
  * @returns null when the type name is not one a project file can create.
  **/
 KnobIPtr createDetachedKnobFromSerialization(const Serialization::KnobSerialization& serialization);
+
+/**
+ * @brief serialization with the type, dimension and choice entries of liveKnob filled in when
+ * it was decoded without them, as a plug-in knob read from a project file is; unchanged
+ * otherwise. Needed before createDetachedKnobFromSerialization() for such a knob.
+ **/
+Serialization::KnobSerialization completeKnobSerializationForKnob(const KnobI& liveKnob, const Serialization::KnobSerialization& serialization);
 
 NATRON_NAMESPACE_EXIT
 

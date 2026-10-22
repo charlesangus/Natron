@@ -33,7 +33,7 @@
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
-#include "ProjectXmlHelpers.h"
+#include "ProjectBundleTestHelpers.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
@@ -83,10 +83,9 @@ TEST_F(MissingPluginLoadTest, PlaceholderKeepsItsNodeAndEdges)
     Serialization::NodeSerializationPtr grade = findSerializedNode(saved.nodes.nodes, PLUGINID_NATRON_GRADE);
     ASSERT_TRUE(bool(grade));
     grade->pluginID = "com.example.NotInstalled";
-    const std::string xml = saveProjectXml(saved);
 
     getApp()->getProject()->reset(false, true);
-    ASSERT_FALSE(reloadProjectXml(getApp()->getProject(), tmp, QString::fromUtf8("missing-plugin.ntp"), xml).empty());
+    ASSERT_TRUE(loadProjectBundle(getApp()->getProject(), tmp, QString::fromUtf8("missing-plugin.ntpz"), saved));
 
     NodePtr loadedGenerator = getApp()->getProject()->getNodeByName(generatorName);
     NodePtr placeholder = getApp()->getProject()->getNodeByName(missingName);
@@ -114,9 +113,8 @@ TEST_F(MissingPluginLoadTest, HasMissingPluginNodeSeesOnlyPlaceholders)
     Serialization::NodeSerializationPtr grade = findSerializedNode(saved.nodes.nodes, PLUGINID_NATRON_GRADE);
     ASSERT_TRUE(bool(grade));
     grade->pluginID = "com.example.NotInstalled";
-    const std::string xml = saveProjectXml(saved);
 
     getApp()->getProject()->reset(false, true);
-    ASSERT_FALSE(reloadProjectXml(getApp()->getProject(), tmp, QString::fromUtf8("missing-plugin.ntp"), xml).empty());
+    ASSERT_TRUE(loadProjectBundle(getApp()->getProject(), tmp, QString::fromUtf8("missing-plugin.ntpz"), saved));
     EXPECT_TRUE(getApp()->getProject()->hasMissingPluginNode());
 }

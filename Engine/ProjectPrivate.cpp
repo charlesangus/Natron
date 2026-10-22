@@ -25,10 +25,9 @@
 
 #include "ProjectPrivate.h"
 
-#include <list>
 #include <cassert>
+#include <list>
 #include <stdexcept>
-#include <sstream> // stringstream
 
 #include <QDebug>
 #include <QTimer>
@@ -117,14 +116,12 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
                                           const std::list<Serialization::KnobSerialization>& projectSerializedValues,
                                           SequenceTime currentTime,
                                           const std::list<Serialization::NodeSerializationPtr>& serializedNodes,
-                                          bool recomputeFrameRangeFromReaders,
                                           const QString& name,
                                           const QString& path,
                                           bool* mustSave)
 {
     /*1st OFF RESTORE THE PROJECT KNOBS*/
     bool ok;
-    std::vector<std::string> linksErrors;
     {
         CreatingNodeTreeFlag_RAII creatingNodeTreeFlag( _publicInterface->getApp() );
 
@@ -175,12 +172,13 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
             for (std::list<Serialization::KnobSerialization>::const_iterator it = projectSerializedValues.begin(); it != projectSerializedValues.end(); ++it) {
                 if (NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) == projectKnobs[i]->getName()) {
                     // Non persistent knobs are loaded too when the project saved a value for them.
-                    KnobIPtr serializedKnob = createDetachedKnobFromSerialization(*it);
+                    const Serialization::KnobSerialization completed = completeKnobSerializationForKnob(*projectKnobs[i], *it);
+                    KnobIPtr serializedKnob = createDetachedKnobFromSerialization(completed);
                     KnobChoice* isChoice = dynamic_cast<KnobChoice*>( projectKnobs[i].get() );
                     if (isChoice) {
                         KnobChoice* choiceSerialized = dynamic_cast<KnobChoice*>(serializedKnob.get());
-                        if (choiceSerialized && it->choiceOptionID) {
-                            const std::string& optionID = *it->choiceOptionID;
+                        if (choiceSerialized && completed.choiceOptionID) {
+                            const std::string& optionID = *completed.choiceOptionID;
                             int id = isChoice->choiceRestorationId(choiceSerialized, optionID);
                             isChoice->choiceRestoration(choiceSerialized, optionID, id);
                         }
@@ -195,11 +193,6 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
                 ///by the main GUI process
                 if (appPTR->getAppType() != AppManager::eAppTypeBackgroundAutoRunLaunchedFromGui) {
                     autoSetProjectDirectory(path);
-                }
-            } else if (projectKnobs[i] == natronVersion) {
-                std::string v = natronVersion->getValue();
-                if (v == "Natron v1.0.0") {
-                    _publicInterface->getApp()->setProjectWasCreatedWithLowerCaseIDs(true);
                 }
             }
         }
@@ -226,17 +219,38 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
         NodesList allNodes;
         _publicInterface->getNodes_recursive(allNodes, false);
 
-        // restore the Knob links stored in the Knobs during NodeCollection::restoreFromSerialization()
+        // Every node exists and is wired by now, so a link target that is not found is missing
+        // from the file: the link is left unset and the rest of the project still loads.
         const std::map<std::string, std::string> oldNewScriptNamesMapping;
         for (NodesList::iterator n = allNodes.begin(); n != allNodes.end(); ++n) {
-            // find all KnobIs in the node, restore links
             std::vector<KnobIPtr> knobs = (*n)->getKnobs(); // copy the knobs vector
             for (std::vector<KnobIPtr>::iterator k = knobs.begin(); k != knobs.end(); ++k) {
-                // Even if there are links errors, do our best to restore the project, then display an error dialog.
-                try {
-                    (*k)->restoreLinks(allNodes, oldNewScriptNamesMapping, true); // error if links cannot be restored
-                } catch (const std::exception& e) {
-                    linksErrors.push_back( e.what() );
+                std::vector<std::string> missingTargets;
+                (*k)->restoreLinks(allNodes, oldNewScriptNamesMapping, false, &missingTargets);
+                for (std::size_t i = 0; i < missingTargets.size(); ++i) {
+                    _publicInterface->addLoadWarning(tr("%1.%2 \u2192 %3: link target not found; the link was left out")
+                                                         .arg(QString::fromUtf8((*n)->getFullyQualifiedName().c_str()))
+                                                         .arg(QString::fromUtf8((*k)->getName().c_str()))
+                                                         .arg(QString::fromUtf8(missingTargets[i].c_str())));
+                }
+            }
+        }
+
+        // An expression naming a node restored after its own knob was set aside as invalid; with
+        // the whole tree restored, what is still invalid refers to something the file lacks.
+        _publicInterface->getApp()->recheckInvalidExpressions();
+        for (NodesList::iterator n = allNodes.begin(); n != allNodes.end(); ++n) {
+            const std::vector<KnobIPtr>& knobs = (*n)->getKnobs();
+            for (std::vector<KnobIPtr>::const_iterator k = knobs.begin(); k != knobs.end(); ++k) {
+                for (int i = 0; i < (*k)->getDimension(); ++i) {
+                    std::string error;
+                    if ((*k)->getExpression(i).empty() || (*k)->isExpressionValid(i, &error)) {
+                        continue;
+                    }
+                    _publicInterface->addLoadWarning(tr("%1.%2: the expression could not be evaluated (%3); it is kept but inactive")
+                                                         .arg(QString::fromUtf8((*n)->getFullyQualifiedName().c_str()))
+                                                         .arg(QString::fromUtf8((*k)->getName().c_str()))
+                                                         .arg(QString::fromUtf8(error.c_str())));
                 }
             }
         }
@@ -257,21 +271,7 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
     projectPath->setValue( path.toStdString() );
     ageSinceLastSave = time;
     lastAutoSave = time;
-    _publicInterface->getApp()->setProjectWasCreatedWithLowerCaseIDs(false);
 
-    if (recomputeFrameRangeFromReaders) {
-        _publicInterface->recomputeFrameRangeFromReaders();
-    }
-
-    // Even if there are links errors, do our best to restore the project, then display an error dialog.
-    if ( !linksErrors.empty() ) {
-        const char* const delim = "\n";
-
-        std::ostringstream imploded;
-        std::copy(linksErrors.begin(), linksErrors.end(),
-                  std::ostream_iterator<std::string>(imploded, delim));
-        throw std::runtime_error( imploded.str() );
-    }
     return ok;
 } // restoreFromSerializedData
 

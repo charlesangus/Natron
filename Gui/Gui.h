@@ -215,10 +215,7 @@ public:
     void createDefaultLayout1();
 
     ///Make the layout according to the serialization.
-    ///@param enableOldProjectCompatibility When true, the default Gui layout will be created
-    ///prior to restoring. This is because older projects didn't have as much info to recreate the entire layout.
-    void restoreLayout(bool wipePrevious, bool enableOldProjectCompatibility,
-                       const Serialization::GuiLayoutSerialization& layoutSerialization);
+    void restoreLayout(bool wipePrevious, const Serialization::GuiLayoutSerialization& layoutSerialization);
 
     /**
      * @brief Fills serialization with the layout of the application: the main window, then the

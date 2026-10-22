@@ -322,7 +322,6 @@ expectNodesEqual(const NodeSerialization& expected,
     }
     EXPECT_EQ(expected.hasRotoContext, actual.hasRotoContext);
     EXPECT_EQ(expected.hasTrackerContext, actual.hasTrackerContext);
-    EXPECT_TRUE(actual.oldInputs.empty());
     EXPECT_EQ(0u, actual.knobsAge);
     EXPECT_TRUE(actual.masterNodeName.empty());
     EXPECT_TRUE(actual.multiInstanceParentName.empty());

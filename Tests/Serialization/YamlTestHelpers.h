@@ -195,7 +195,6 @@ expectKnobsEqual(const NATRON_NAMESPACE::Serialization::KnobSerialization& expec
 {
     using namespace NATRON_NAMESPACE::Serialization;
     SCOPED_TRACE("knob " + expected.name);
-    EXPECT_EQ(expected.version, actual.version);
     EXPECT_EQ(expected.name, actual.name);
     EXPECT_EQ(expected.typeName, actual.typeName);
     EXPECT_EQ(expected.dimension, actual.dimension);

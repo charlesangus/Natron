@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <map>
 #include <vector>
 
@@ -35,6 +36,7 @@ CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QDateTime>
 #include <QObject>
+#include <QStringList>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -92,6 +94,31 @@ public:
     bool loadProject(const QString & path, const QString & name, bool isUntitledAutosave = false, bool attemptToLoadAutosave = true);
 
     bool hasMissingPluginNode() const;
+
+    /**
+     * @brief Records a problem that loading worked around, such as an input whose node is
+     * missing, and writes it to the error log. The list is emptied when the next load starts.
+     **/
+    void addLoadWarning(const QString& warning);
+
+    QStringList getLoadWarnings() const;
+
+    /**
+     * @brief Writes a project file at filePath without ever leaving a partial one there:
+     * writeArchive writes the whole archive to a new file in the same directory, beforeReplace
+     * runs once it is complete and synced, then that file replaces filePath. When writeArchive
+     * or the file system fails, filePath is left as it was and std::runtime_error is thrown
+     * (or whatever writeArchive threw).
+     **/
+    static void writeProjectFileAtomically(const QString& filePath,
+                                           const std::function<void(Serialization::ZipOutput&)>& writeArchive,
+                                           const std::function<void()>& beforeReplace = std::function<void()>());
+
+    /**
+     * @brief Writes the project in the boost XML format to filePath, only to compare that format
+     * with the bundle. Nothing loads what it writes.
+     **/
+    void saveLegacyXmlForBenchmark(const QString& filePath);
 
     /**
      * @brief Saves the project with the given path and name corresponding to a file on disk.
@@ -503,7 +530,7 @@ private:
 
     QString saveProjectInternal(const QString & path, const QString & name, bool autosave, bool updateProjectProperties);
 
-
+    void reportLoadWarnings();
 
     void doResetEnd(bool aboutToQuit);
 

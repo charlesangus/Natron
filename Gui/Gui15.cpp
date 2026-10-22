@@ -26,10 +26,10 @@
 #include "Gui.h"
 #include "GuiPrivate.h"
 
-#include <cassert>
-#include <fstream>
 #include <algorithm> // min, max
-#include <stdexcept>
+#include <cassert>
+#include <istream>
+#include <string>
 
 #include <QApplication>
 #include <QVBoxLayout>
@@ -48,11 +48,22 @@
 #include "Gui/ProjectGui.h"
 #include "Gui/SequenceFileDialog.h"
 
-#include "Serialization/BoostXml/ProjectGuiXml.h"
-#include "Serialization/ProjectGuiSerialization.h"
-
 NATRON_NAMESPACE_ENTER
 
+namespace {
+
+bool
+looksLikeXml(std::istream& stream)
+{
+    char header[64];
+
+    stream.read(header, sizeof(header));
+    const std::string text(header, static_cast<std::size_t>(stream.gcount()));
+
+    return (text.find("<?xml") != std::string::npos) || (text.find("<!DOCTYPE boost_serialization") != std::string::npos);
+}
+
+} // anonymous namespace
 
 void
 Gui::importLayout()
@@ -71,21 +82,10 @@ Gui::importLayout()
             return;
         }
 
-        try {
-            boost::archive::xml_iarchive iArchive(ifile);
-            Serialization::GuiLayoutSerialization layoutSerialization;
-            iArchive >> boost::serialization::make_nvp("Layout", layoutSerialization);
-            restoreLayout(true, false, layoutSerialization);
-        } catch (const boost::archive::archive_exception & e) {
-            QString err = QString::fromUtf8("Exception occurred when opening file %1: %2").arg( QString::fromUtf8( filename.c_str() ) ).arg( QString::fromUtf8( e.what() ) );
-            Dialogs::errorDialog( tr("Error").toStdString(), tr( err.toStdString().c_str() ).toStdString(), false );
-
-            return;
-        } catch (const std::exception & e) {
-            QString err = QString::fromUtf8("Exception occurred when opening file %1: %2").arg( QString::fromUtf8( filename.c_str() ) ).arg( QString::fromUtf8( e.what() ) );
-            Dialogs::errorDialog( tr("Error").toStdString(), tr( err.toStdString().c_str() ).toStdString(), false );
-
-            return;
+        if (looksLikeXml(ifile)) {
+            Dialogs::errorDialog(tr("Error").toStdString(), tr("This layout uses the old XML .nl format, which this version of Natron cannot open (no compatibility, by design).").toStdString(), false);
+        } else {
+            Dialogs::errorDialog(tr("Error").toStdString(), tr("Unrecognized or damaged layout file.").toStdString(), false);
         }
     }
 }
@@ -97,37 +97,9 @@ Gui::createDefaultLayoutInternal(bool wipePrevious)
         wipeLayout();
     }
 
-    std::string fileLayout = appPTR->getCurrentSettings()->getDefaultLayoutFile();
-    if ( !fileLayout.empty() ) {
-        std::ifstream ifile;
-        ifile.open( fileLayout.c_str() );
-        if ( !ifile.is_open() ) {
-            createDefaultLayout1();
-        } else {
-            try {
-                boost::archive::xml_iarchive iArchive(ifile);
-                Serialization::GuiLayoutSerialization layoutSerialization;
-                iArchive >> boost::serialization::make_nvp("Layout", layoutSerialization);
-                restoreLayout(false, false, layoutSerialization);
-            } catch (const boost::archive::archive_exception & e) {
-                ifile.close();
-                QString err = QString::fromUtf8("Exception occurred when opening file %1: %2").arg( QString::fromUtf8( fileLayout.c_str() ) ).arg( QString::fromUtf8( e.what() ) );
-                Dialogs::errorDialog( tr("Error").toStdString(), tr( err.toStdString().c_str() ).toStdString(), false );
-
-                return;
-            } catch (const std::exception & e) {
-                ifile.close();
-                QString err = QString::fromUtf8("Exception occurred when opening file %1: %2").arg( QString::fromUtf8( fileLayout.c_str() ) ).arg( QString::fromUtf8( e.what() ) );
-                Dialogs::errorDialog( tr("Error").toStdString(), tr( err.toStdString().c_str() ).toStdString(), false );
-
-                return;
-            }
-
-            ifile.close();
-        }
-    } else {
-        createDefaultLayout1();
-    }
+    // No layout file format is readable, so a default layout file set in the preferences falls
+    // back to the built-in layout instead of failing on every launch.
+    createDefaultLayout1();
 }
 
 void

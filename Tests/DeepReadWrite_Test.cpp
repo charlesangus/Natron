@@ -873,7 +873,7 @@ TEST_F(DeepReadWriteTest, CLIWriterArgOverridesTheFileKnobAndRendersThroughGetWr
     QStringList args;
     args << QString::fromUtf8("NatronRendererTest")
          << QString::fromUtf8("-w") << QString::fromStdString(write->getScriptName()) << overrideFilename
-         << QString::fromUtf8("cli-writer-arg-test.ntp")
+         << QString::fromUtf8("cli-writer-arg-test.ntpz")
          << QString::fromUtf8("1");
     CLArgs cl(args, true /*forceBackground*/);
     ASSERT_FALSE(cl.getError().has_value());

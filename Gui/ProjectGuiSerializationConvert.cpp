@@ -56,7 +56,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Serialization/ProjectGuiSerialization.h"
 
 #include "Engine/AppManager.h" // interpretPythonScript, makeNameScriptFriendly
-#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
@@ -407,13 +406,8 @@ restoreNodeGuiFromSerialization(Gui* gui,
             if (viewerData.activeInputB >= 0) {
                 tab->setInputB(viewerData.activeInputB);
             }
-            if (viewerData.version >= NATRON_SERIALIZATION_VIEWER_DATA_REMOVES_FRAME_RANGE_LOCK) {
-                tab->setFrameRange(viewerData.leftBound, viewerData.rightBound);
-                tab->setFrameRangeEdited(leftBound != viewerData.leftBound || rightBound != viewerData.rightBound);
-            } else {
-                tab->setFrameRange(leftBound, rightBound);
-                tab->setFrameRangeEdited(false);
-            }
+            tab->setFrameRange(viewerData.leftBound, viewerData.rightBound);
+            tab->setFrameRangeEdited(leftBound != viewerData.leftBound || rightBound != viewerData.rightBound);
             if (!viewerData.fpsLocked) {
                 tab->setDesiredFps(viewerData.fps);
             }
@@ -541,18 +535,10 @@ Gui::toSerialization(Serialization::GuiLayoutSerialization* serialization)
 
 void
 Gui::restoreLayout(bool wipePrevious,
-                   bool enableOldProjectCompatibility,
                    const Serialization::GuiLayoutSerialization& layoutSerialization)
 {
     if (wipePrevious) {
         wipeLayout();
-    }
-
-    // Projects older than the layout overhaul do not save enough to rebuild their layout.
-    if (enableOldProjectCompatibility) {
-        createDefaultLayout1();
-
-        return;
     }
 
     std::list<const Serialization::ApplicationWindowSerialization*> floatingDockablePanels;
@@ -784,33 +770,6 @@ ProjectGui::fromSerialization(const Serialization::ProjectGuiSerialization& seri
         }
     }
 
-    for (std::list<Serialization::NodeBackdropSerialization>::const_iterator it = serialization.legacyBackdrops.begin(); it != serialization.legacyBackdrops.end(); ++it) {
-        KnobIPtr labelKnob = createDetachedKnobFromSerialization(it->label);
-        CreateNodeArgs args(PLUGINID_NATRON_BACKDROP, _project.lock());
-        args.setProperty<bool>(kCreateNodeArgsPropSettingsOpened, false);
-        args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
-        args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
-
-        NodePtr node = getGui()->getApp()->createNode(args);
-        NodeGuiIPtr nodeGuiInterface = node->getNodeGui();
-        assert(nodeGuiInterface);
-        BackdropGui* backdrop = dynamic_cast<BackdropGui*>(nodeGuiInterface.get());
-        assert(backdrop);
-        if (backdrop) {
-            backdrop->setPos(it->positionX, it->positionY);
-            backdrop->resize(it->width, it->height);
-            KnobString* labelString = dynamic_cast<KnobString*>(labelKnob.get());
-            assert(labelString);
-            if (labelString) {
-                backdrop->onLabelChanged(QString::fromUtf8(labelString->getValue().c_str()));
-            }
-            QColor color;
-            color.setRgbF(it->colorR, it->colorG, it->colorB);
-            backdrop->setCurrentColor(color);
-            node->setLabel(it->name);
-        }
-    }
-
     // we have to give the tr() context explicitly due to a bug in lupdate
     _gui->getApp()->updateProjectLoadStatus(QObject::tr("Restoring settings panels", "ProjectGui"));
 
@@ -868,9 +827,10 @@ ProjectGui::fromSerialization(const Serialization::ProjectGuiSerialization& seri
                     const std::string serializedName = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it2->name);
                     NATRON_PYTHON_NAMESPACE::Param* param = panel->getParam(QString::fromUtf8(serializedName.c_str()));
                     if (param) {
-                        KnobIPtr serializedKnob = createDetachedKnobFromSerialization(*it2);
+                        KnobIPtr internalKnob = param->getInternalKnob();
+                        KnobIPtr serializedKnob = internalKnob ? createDetachedKnobFromSerialization(completeKnobSerializationForKnob(*internalKnob, *it2)) : KnobIPtr();
                         if (serializedKnob) {
-                            param->getInternalKnob()->clone(serializedKnob);
+                            internalKnob->clone(serializedKnob);
                         }
                         delete param;
                     }
@@ -885,17 +845,13 @@ ProjectGui::fromSerialization(const Serialization::ProjectGuiSerialization& seri
     // An auto-save always restores its workspace.
     bool loadWorkspace = isAutosave || appPTR->getCurrentSettings()->getLoadProjectWorkspce();
     if (loadWorkspace) {
-        _gui->restoreLayout(true, serialization.version < NATRON_SERIALIZATION_PROJECT_GUI_MAJOR_OVERHAUL, serialization.layout);
+        _gui->restoreLayout(true, serialization.layout);
     }
 
     for (std::list<std::string>::const_iterator it = serialization.histograms.begin(); it != serialization.histograms.end(); ++it) {
         Histogram* histogram = _gui->addNewHistogram();
         histogram->setObjectName(QString::fromUtf8((*it).c_str()));
         _gui->appendTabToDefaultViewerPane(histogram, histogram);
-    }
-
-    if (serialization.version < NATRON_SERIALIZATION_PROJECT_GUI_NODEGRAPH_ZOOM_TO_POINT) {
-        _gui->getNodeGraph()->clearSelection();
     }
 
     _gui->getScriptEditor()->setInputScript(QString::fromUtf8(serialization.scriptEditorInput.c_str()));

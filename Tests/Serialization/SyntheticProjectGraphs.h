@@ -111,7 +111,7 @@ protected:
         connectNodes(grade, writer, 0, true);
 
         // The filename is spelled through the [Project] variable rather than as tmp.path() itself,
-        // so the golden depends neither on the random QTemporaryDir name nor on $TMPDIR.
+        // so the saved project depends neither on the random QTemporaryDir name nor on $TMPDIR.
         // [Project] must already resolve when the filename is set: while it is empty, the stored
         // value ends up with repeated "[Project]/" prefixes.
         if (!setProjectPathVariable(tmp.path())) {

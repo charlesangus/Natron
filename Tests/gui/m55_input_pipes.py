@@ -598,7 +598,7 @@ try:
         app.clearSelection()
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
-        rt_path = os.path.join(gt.OUT, "b1.ntp")
+        rt_path = os.path.join(gt.OUT, "b1.ntpz")
         if check(app.saveProjectAs(rt_path), "b1: save the project to " + rt_path):
             if check(app.resetProject(), "b1: reset the project (close, keep the window)"):
                 reloaded = app.loadProject(rt_path)

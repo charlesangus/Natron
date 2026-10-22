@@ -54,7 +54,7 @@ included, not only `release`. Set `NATRON_STAGE_NO_STRIP=1` to opt out.
 ## Usage
 
 ```
-tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage]
+tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage] [--cmake-arg <arg>]...
 ```
 
 - `--tests` also runs the ctest suite and the Python bindings smoke test on
@@ -76,6 +76,12 @@ tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--sh
   the workflow both reject a longer list.
 - `--no-appimage` skips packaging and downloading the AppImage. `debug`
   implies it.
+- `--cmake-arg <arg>` (repeatable) adds an argument to the cmake configure,
+  e.g. `--cmake-arg -DNATRON_GPU=OFF`. `tools/ci/local/build.sh` takes the same
+  flag and then builds in its own `build/<preset>-<hash>` tree instead of the
+  preset's. Remotely the args travel as the workflow's space-separated
+  `cmake_args` input, so `build.sh` rejects an arg containing whitespace, and
+  the run name gains a `cmake:<args>` marker.
 - The ctest suite has one entry per gtest suite, not per case, so `ctest -R`
   matches suite names (`'^NativeGoldenTest$'`). To run a single case, call the
   test binary with `--gtest_filter=Suite.Case`.

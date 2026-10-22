@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -51,10 +52,7 @@
 
 NATRON_NAMESPACE_USING
 
-#ifdef NATRON_ERODEDILATE_HAVE_CIMG
-
 namespace {
-typedef cimg_library_suffixed::CImg<float> CImgF;
 
 std::vector<float>
 randomValues(std::size_t n,
@@ -82,6 +80,10 @@ expectSameLine(const std::vector<float>& expected,
     }
 }
 } // namespace
+
+#ifdef NATRON_ERODEDILATE_HAVE_CIMG
+
+typedef cimg_library_suffixed::CImg<float> CImgF;
 
 // Every line length from 1 to 41 against every half width from 0 to 8: the lines shorter than
 // the window, the one value past it where CImg collapses the line, and the long lines.
@@ -172,3 +174,32 @@ TEST(NativeErodeDilateKernels, CImgReferenceAvailable)
 }
 
 #endif // NATRON_ERODEDILATE_HAVE_CIMG
+
+// Widths on both sides of the column block, with blocks that start inside a row and stop short of
+// its end, so that the lanes past the last column must not leak into the result.
+TEST(NativeErodeDilateKernels, ColumnBlocksMatchFilterLine)
+{
+    ErodeDilateKernels::LineScratch scratch;
+    const int widths[] = { 1, 5, ErodeDilateKernels::kColumnBlock, ErodeDilateKernels::kColumnBlock + 3, 3 * ErodeDilateKernels::kColumnBlock + 7 };
+
+    for (int takeMax = 0; takeMax <= 1; ++takeMax) {
+        for (int width : widths) {
+            for (int height = 1; height <= 30; ++height) {
+                for (int halfWidth = 0; halfWidth <= 6; ++halfWidth) {
+                    std::vector<float> values = randomValues((std::size_t)width * height, width * 131 + height * 7 + halfWidth);
+                    values[values.size() / 2] = std::numeric_limits<float>::infinity();
+                    values[values.size() / 3] = -std::numeric_limits<float>::infinity();
+                    const int first = (width > 2) ? 1 : 0;
+                    const int count = width - first - ((width > 2) ? 1 : 0);
+                    std::vector<float> expected = values;
+                    for (int x = first; x < first + count; ++x) {
+                        ErodeDilateKernels::filterLine(&expected[x], height, width, halfWidth, takeMax != 0, scratch);
+                    }
+                    std::vector<float> got = values;
+                    ErodeDilateKernels::filterColumns(&got[first], height, width, count, halfWidth, takeMax != 0, scratch);
+                    expectSameLine(expected, got, std::string(takeMax ? "dilate" : "erode") + " width " + std::to_string(width) + " height " + std::to_string(height) + " half " + std::to_string(halfWidth));
+                }
+            }
+        }
+    }
+}

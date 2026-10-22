@@ -2,6 +2,7 @@
 """Splits GPU region time from NATRON_RENDER_PROFILE files into its phases, per region and per node.
 
     python3 -I tools/bench/gpu_region_summary.py [--skip-frames N] [--import-rate GBPS] PROFILE_PREFIX_OR_FILE...
+    python3 -I tools/bench/gpu_region_summary.py --driver OUT_DIR_OR_DRIVER_JSONL
     python3 -I tools/bench/gpu_region_summary.py --self-test
 
 A PROFILE argument is a file, or a prefix whose suffixed files (<prefix>.*) are all read. Each argument is
@@ -11,6 +12,12 @@ a-cold, a-warm), the profile frame it starts at and its in-process time. With ma
 by render label, the first frame is kept (it carries the one-time costs; --skip-frames overrides), and a
 per-render table shows the render time, the Write task time in it, and their difference. Without marks the
 first frame is skipped as before.
+
+--driver reads driver.jsonl of a bench output directory and prints, per build (new, or base when the run had
+BENCH_BASE_APPIMAGE), gpu mode and kind, the median peak RSS (vmhwm_kb) and the mean thp_fault_alloc,
+thp_fault_fallback, thp_split_pmd and pgfault deltas of the sessions, then the new/base ratio of the
+in-process render time (the sum of the marks' wall_s) per kind and mode as the median over same-round
+pairs. The vmstat deltas are system-wide.
 
 prepareWaitMs is the time the region waited for its transfer destinations to be prepared. The pipelined
 floor is max(0, T - K*(n-1)/n) with T the exposed plus hidden transfer ms, K the kernel ms and n the strips
@@ -40,12 +47,13 @@ import json
 import os
 import re
 import sys
+import tempfile
 
 PHASES = ("kernel", "exposed", "record", "acquire", "submitWait")
 FIELDS = ("wallMs", "planMs", "kernelMs", "transferExposedMs", "transferHiddenMs", "uploadMs", "downloadMs",
           "recordMs", "acquireMs", "submitWaitMs", "prepareWaitMs")
 KINDS = ("a-cold", "a-warm", "bc", "playback")
-TAG_RE = re.compile(r"^(?P<case>.+)-(?P<gpu>auto|off)-(?P<kind>%s)-r(?P<round>\d+)$" % "|".join(KINDS))
+TAG_RE = re.compile(r"^(?P<case>.+)-(?P<gpu>auto|off)-(?P<kind>%s)-r(?P<round>\d+)(?P<base>-base)?$" % "|".join(KINDS))
 PROFILE_RE = re.compile(r"^(?P<stem>.*)\.prof(\.\d+)?$")
 
 
@@ -114,6 +122,84 @@ def parse_tag(arg):
     stem = m.group("stem") if m else os.path.basename(arg)
     t = TAG_RE.match(stem)
     return t.groupdict() if t else {"case": stem, "gpu": "?", "kind": "?", "round": "?"}
+
+
+def read_jsonl(path):
+    out = []
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                out.append(json.loads(line))
+    return out
+
+
+def median(values):
+    v = sorted(values)
+    n = len(v)
+    if not n:
+        return 0.0
+    return v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2
+
+
+def render_s(out_dir, tag):
+    path = os.path.join(out_dir, tag + ".marks.jsonl")
+    if not os.path.isfile(path):
+        return None
+    marks = read_jsonl(path)
+    return sum(m["wall_s"] for m in marks) if marks else None
+
+
+THP_FIELDS = ("thp_fault_alloc", "thp_fault_fallback", "thp_split_pmd", "pgfault")
+
+
+def summarise_driver(out_dir, rows):
+    """rows are driver.jsonl records; returns (per-group entries, ratio entries)."""
+    sessions = []
+    for r in rows:
+        t = TAG_RE.match(r["tag"])
+        if not t or r.get("exit") != 0:
+            continue
+        sessions.append(dict(r, case=t.group("case"), mode=t.group("gpu"), kind=t.group("kind"),
+                             round=t.group("round"), build="base" if t.group("base") else "new",
+                             render_s=render_s(out_dir, r["tag"])))
+    groups = collections.OrderedDict()
+    for s in sessions:
+        groups.setdefault((s["build"], s["kind"], s["mode"]), []).append(s)
+    entries = []
+    for (build, kind, mode), g in groups.items():
+        e = {"build": build, "kind": kind, "mode": mode, "n": len(g),
+             "vmhwmMB": median([s.get("vmhwm_kb", 0) for s in g]) / 1024.0}
+        for f in THP_FIELDS:
+            e[f] = mean([s.get(f, 0) for s in g])
+        e["thp"] = ",".join(sorted({"%s/%s/%s" % (s.get("thp_enabled", "?"), s.get("thp_defrag", "?"),
+                                                  s.get("thp_use_zero_page", "?")) for s in g}))
+        entries.append(e)
+    pairs = collections.defaultdict(dict)
+    for s in sessions:
+        if s["render_s"]:
+            pairs[(s["kind"], s["mode"], s["case"], s["round"])][s["build"]] = s["render_s"]
+    ratios = collections.defaultdict(list)
+    for (kind, mode, _, _), d in pairs.items():
+        if "new" in d and "base" in d:
+            ratios[(kind, mode)].append(d["new"] / d["base"])
+    return entries, [(k, m, len(v), median(v)) for (k, m), v in sorted(ratios.items())]
+
+
+def format_driver(entries, ratios):
+    lines = ["Per build, kind and gpu mode (peak RSS median MB; THP and page-fault deltas mean per session)"]
+    lines.append(" | ".join(("build", "kind", "gpu", "runs", "peak RSS MB", "thp_fault_alloc", "thp_fault_fallback",
+                             "thp_split_pmd", "pgfault", "thp enabled/defrag/zero_page")))
+    for e in entries:
+        lines.append(" | ".join((e["build"], e["kind"], e["mode"], str(e["n"]), "%.0f" % e["vmhwmMB"],
+                                 "%.0f" % e["thp_fault_alloc"], "%.0f" % e["thp_fault_fallback"],
+                                 "%.0f" % e["thp_split_pmd"], "%.0f" % e["pgfault"], e["thp"])))
+    if ratios:
+        lines += ["", "new/base in-process render time (median over same-round pairs)",
+                  " | ".join(("kind", "gpu", "pairs", "new/base"))]
+        for kind, mode, n, r in ratios:
+            lines.append(" | ".join((kind, mode, str(n), "%.3f" % r)))
+    return "\n".join(lines)
 
 
 def build(records, skip_frames, marks=()):
@@ -300,6 +386,26 @@ def self_test():
     assert marks_path("run/x-auto-bc-r1.prof.123") == "run/x-auto-bc-r1.marks.jsonl"
     assert parse_tag("o/gxg-erode40-8k-auto-a-cold-r2.prof")["kind"] == "a-cold"
     assert parse_tag("o/gxg-erode40-8k-off-bc-r1.prof.77")["case"] == "gxg-erode40-8k"
+    assert parse_tag("o/n-erode40-uhd-auto-a-warm-r1-base.prof")["base"] == "-base"
+    assert median([3, 1, 2]) == 2 and median([1, 2, 3, 10]) == 2.5
+    with tempfile.TemporaryDirectory() as d:
+        drv = []
+        for tag, hwm, rt in (("n-e-uhd-auto-a-warm-r1", 2048 * 1024, 1.0), ("n-e-uhd-auto-a-warm-r1-base", 4096 * 1024, 2.0),
+                             ("n-e-uhd-auto-a-warm-r2", 2048 * 1024, 3.0), ("n-e-uhd-auto-a-warm-r2-base", 4096 * 1024, 4.0)):
+            drv.append({"tag": tag, "exit": 0, "vmhwm_kb": hwm, "thp_fault_alloc": 10, "thp_fault_fallback": 1,
+                        "thp_split_pmd": 2, "pgfault": 1000, "thp_enabled": "madvise", "thp_defrag": "madvise",
+                        "thp_use_zero_page": "1"})
+            with open(os.path.join(d, tag + ".marks.jsonl"), "w") as fh:
+                fh.write(json.dumps({"wall_s": rt}) + "\n")
+        drv.append({"tag": "prime-x", "exit": 0})
+        drv.append({"tag": "n-e-uhd-off-a-warm-r1", "exit": 1})
+        entries, ratios = summarise_driver(d, drv)
+        by = {(e["build"], e["mode"]): e for e in entries}
+        assert set(by) == {("new", "auto"), ("base", "auto")}, sorted(by)
+        assert by[("new", "auto")]["vmhwmMB"] == 2048 and by[("base", "auto")]["vmhwmMB"] == 4096
+        assert by[("new", "auto")]["thp_fault_alloc"] == 10 and by[("new", "auto")]["thp"] == "madvise/madvise/1"
+        assert ratios == [("a-warm", "auto", 2, 0.625)], ratios
+        assert "new/base" in format_driver(entries, ratios) and "peak RSS MB" in format_driver(entries, ratios)
     print(text)
     print("self-test ok")
 
@@ -307,6 +413,12 @@ def self_test():
 def main(argv):
     if "--self-test" in argv:
         self_test()
+        return 0
+    if "--driver" in argv:
+        target = argv[argv.index("--driver") + 1]
+        driver = os.path.join(target, "driver.jsonl") if os.path.isdir(target) else target
+        entries, ratios = summarise_driver(os.path.dirname(os.path.abspath(driver)), read_jsonl(driver))
+        print(format_driver(entries, ratios))
         return 0
     skip = None
     rate = None

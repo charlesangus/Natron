@@ -469,6 +469,17 @@ HostImageMemory::removeFreeHook(int id)
     s.hooks.erase(id);
 }
 
+void
+HostImageMemory::fillPooled(float value)
+{
+    State& s = state();
+    std::lock_guard<std::mutex> k(s.mutex);
+    for (const PooledBuffer& b : s.pool) {
+        float* f = static_cast<float*>(b.ptr);
+        std::fill(f, f + b.capacity / sizeof(float), value);
+    }
+}
+
 void*
 HostImageMemory::allocate(std::size_t bytes)
 {
@@ -607,6 +618,77 @@ HostImageMemory::release(void* ptr,
         }
     }
     reallyFree(toFree);
+}
+
+void
+HostImageMemory::releaseToSystem(void* ptr,
+                                 std::size_t bytes)
+{
+    if (!ptr) {
+        return;
+    }
+    if (bytes < kMinPooledBytes) {
+        std::free(ptr);
+
+        return;
+    }
+
+    State& s = state();
+    touch(s);
+    PooledBuffer b = { ptr, 0 };
+    {
+        std::lock_guard<std::mutex> k(s.mutex);
+        std::map<const void*, std::size_t>::iterator lit = s.live.find(ptr);
+        assert(lit != s.live.end());
+        b.capacity = lit != s.live.end() ? lit->second : capacityLocked(s, roundUp(bytes, s.alignment));
+        if (lit != s.live.end()) {
+            s.live.erase(lit);
+        }
+    }
+    reallyFree(std::vector<PooledBuffer>(1, b));
+}
+
+void
+HostScratchFloats::discard()
+{
+    HostImageMemory::releaseToSystem(_data, _count * sizeof(float));
+    _data = nullptr;
+    _count = 0;
+}
+
+void
+HostScratchFloats::recycle()
+{
+    HostImageMemory::release(_data, _count * sizeof(float));
+    _data = nullptr;
+    _count = 0;
+}
+
+HostScratchFloats::~HostScratchFloats()
+{
+    HostImageMemory::release(_data, _count * sizeof(float));
+}
+
+void
+HostScratchFloats::reserve(std::size_t count)
+{
+    if (count <= _count) {
+        return;
+    }
+    if (count > (std::size_t)-1 / sizeof(float)) {
+        throw std::bad_alloc();
+    }
+    // The old buffer goes back first so that a request that outgrows it can be served from, or
+    // after trimming, the memory it frees.
+    HostImageMemory::release(_data, _count * sizeof(float));
+    _data = nullptr;
+    _count = 0;
+    void* ptr = HostImageMemory::allocate(count * sizeof(float));
+    if (!ptr) {
+        throw std::bad_alloc();
+    }
+    _data = static_cast<float*>(ptr);
+    _count = count;
 }
 
 NATRON_NAMESPACE_EXIT

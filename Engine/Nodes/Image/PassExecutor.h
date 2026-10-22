@@ -32,11 +32,13 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <vector>
 
 #include "Engine/EffectInstance.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/HostImageMemory.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/Image/GpuRender.h"
@@ -450,6 +452,44 @@ RectI passListRoD(const RectI& srcRoD, const PassList& list) WARN_UNUSED_RETURN;
 std::optional<GpuCostHint> passListCostHint(const PassList& list) WARN_UNUSED_RETURN;
 
 bool isRunnablePassList(const PassList& list) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The scratch sets live at once, counted by ScratchSetHolder. A set is counted from its
+ * holder's construction until its buffers are back in the pool or freed.
+ **/
+struct ScratchSetRegistry {
+    std::mutex mutex;
+    int active = 0;
+    /// Run between deciding a set's fate and releasing it, so that a test can start another
+    /// holder in that window.
+    std::function<void()> beforeRelease;
+
+    static ScratchSetRegistry& global();
+};
+
+/**
+ * @brief Marks one runPassesCpu() call's scratch as live for its lifetime, and releases it when
+ * it ends. When it ends while another call's scratch is still live, as when two frames render at
+ * once, the scratch goes back to the OS instead of the pool, so that overlapping renders do not
+ * leave two sets resident. A lone call pools its scratch for the next render; no holder can
+ * register until that is done, so the next one finds the pooled set rather than allocating
+ * another. Declare it after the storages it covers.
+ **/
+class ScratchSetHolder {
+public:
+    ScratchSetHolder(HostScratchFloats& source,
+                     std::vector<HostScratchFloats>& extra,
+                     ScratchSetRegistry& registry);
+    ~ScratchSetHolder();
+
+    ScratchSetHolder(const ScratchSetHolder&) = delete;
+    ScratchSetHolder& operator=(const ScratchSetHolder&) = delete;
+
+private:
+    HostScratchFloats& _source;
+    std::vector<HostScratchFloats>& _extra;
+    ScratchSetRegistry& _registry;
+};
 
 /**
  * @brief Renders args through plan with list on the CPU.

@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "Engine/AppManager.h"
+#include "Engine/HostImageMemory.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/Image/StagePlan.h"
@@ -674,18 +675,41 @@ runLinePass(const Pass& pass,
         return;
     }
 
-    const std::function<void(int, int)> columns = [&](int first, int end) {
+    // A worker that filters one column at a time gets each column as a contiguous copy, taken with
+    // its neighbours a cache line at a time. Walked in place, a column reads one line per row and
+    // relies on the cache keeping them for the next column; at a power-of-two width on huge pages
+    // all those lines fall in the same cache sets and are evicted before they are reused.
+    const int kTransposeColumns = 16;
+    const int groupsPerPlane = (width + kTransposeColumns - 1) / kTransposeColumns;
+    const std::function<void(int, int)> columnGroups = [&](int first, int end) {
         const PassLineFn fn = pass.lineWorker();
-        for (int line = first; line < end; ++line) {
-            if ((((line - first) % kAbortCheckLines) == 0) && cancel.check()) {
+        std::vector<float> columns((std::size_t)kTransposeColumns * height);
+        for (int group = first; group < end; ++group) {
+            if (cancel.check()) {
                 return;
             }
-            const int p = line / width;
-            const int column = line % width;
-            fn(data + (std::size_t)p * planeSize + column, height, width, 1);
+            const int p = group / groupsPerPlane;
+            const int column = (group % groupsPerPlane) * kTransposeColumns;
+            const int count = std::min(kTransposeColumns, width - column);
+            float* const origin = data + (std::size_t)p * planeSize + column;
+            for (int y = 0; y < height; ++y) {
+                const float* row = origin + (std::size_t)y * width;
+                for (int c = 0; c < count; ++c) {
+                    columns[(std::size_t)c * height + y] = row[c];
+                }
+            }
+            for (int c = 0; c < count; ++c) {
+                fn(&columns[(std::size_t)c * height], height, 1, 1);
+            }
+            for (int y = 0; y < height; ++y) {
+                float* row = origin + (std::size_t)y * width;
+                for (int c = 0; c < count; ++c) {
+                    row[c] = columns[(std::size_t)c * height + y];
+                }
+            }
         }
     };
-    forEachLineChunk(nPlanes * width, (std::size_t)height * taps, nThreads, cancel, columns);
+    forEachLineChunk(nPlanes * groupsPerPlane, (std::size_t)height * kTransposeColumns * taps, nThreads, cancel, columnGroups);
 } // runLinePass
 
 void
@@ -733,6 +757,56 @@ runPass(const Pass& pass,
     }
 }
 } // anonymous namespace
+
+ScratchSetRegistry&
+ScratchSetRegistry::global()
+{
+    // Never destroyed: render threads may still end their renders during static teardown.
+    static ScratchSetRegistry* registry = new ScratchSetRegistry;
+
+    return *registry;
+}
+
+ScratchSetHolder::ScratchSetHolder(HostScratchFloats& source,
+                                   std::vector<HostScratchFloats>& extra,
+                                   ScratchSetRegistry& registry)
+    : _source(source)
+    , _extra(extra)
+    , _registry(registry)
+{
+    const std::lock_guard<std::mutex> lock(_registry.mutex);
+    ++_registry.active;
+}
+
+ScratchSetHolder::~ScratchSetHolder()
+{
+    std::unique_lock<std::mutex> lock(_registry.mutex);
+    if (_registry.active > 1) {
+        // Uncounted before the slow unmapping, outside the lock: another holder ending meanwhile
+        // must see itself as the last and pool its set, and nothing this one frees is pooled.
+        --_registry.active;
+        lock.unlock();
+        if (_registry.beforeRelease) {
+            _registry.beforeRelease();
+        }
+        _source.discard();
+        for (HostScratchFloats& slot : _extra) {
+            slot.discard();
+        }
+
+        return;
+    }
+    // Pooled under the lock: a holder registering meanwhile would allocate a second set, and
+    // pool it in turn when it ends.
+    if (_registry.beforeRelease) {
+        _registry.beforeRelease();
+    }
+    _source.recycle();
+    for (HostScratchFloats& slot : _extra) {
+        slot.recycle();
+    }
+    --_registry.active;
+}
 
 Pass
 Pass::lineX(int halo,
@@ -973,23 +1047,34 @@ runPassesCpu(EffectInstance& effect,
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
     RenderCancellation cancel(&effect);
 
-    // Left uninitialised: fillBuffer() writes every element, and zeroing here would fault the pages in
-    // on this thread alone. Kept across jobs so that a later plane reuses the pages the first one faulted in.
-    std::unique_ptr<float[]> sourceStorage;
-    std::size_t sourceCapacity = 0;
+    // All scratch comes uninitialised from the pooled huge-page allocator, and is released when the
+    // function returns. Zeroing it here would fault every page in on this thread alone; instead
+    // the threads that first write a page fault it in, and a re-render takes pooled pages that are
+    // already resident. Kept across jobs so that a later plane reuses the pages the first one touched.
+    //
+    // Slot 0 is written whole by fillBuffer(): the window, the halo and the boundary alike.
+    // The other slots are each written whole by the first pass that touches them, before any pass
+    // reads them; a pass that does not write every element must not be added without clearing the
+    // rest here. See the EdgeDetect pass list, the only one with more than one slot:
+    //   slots 1 and 2: copyWorker() copies slot 0 over every row of every plane, or stencilWorker()
+    //                  writes every element of both, and combineWorker() reads only after that;
+    //   slot 3:        suppressionWorker() writes every pixel of every plane, border included.
+    HostScratchFloats sourceStorage;
+    std::vector<HostScratchFloats> extraStorage(list.scratchSlots - 1);
+    // Playback overlaps two frames, and pooling both sets would keep both resident.
+    const ScratchSetHolder scratchHolder(sourceStorage, extraStorage, ScratchSetRegistry::global());
     for (std::size_t j = 0; j < jobs.size(); ++j) {
         const PlaneJob& job = jobs[j];
         const ProcessedPlanes planes(job);
         const int nPlanes = planes.count();
         const std::size_t bufferSize = processing ? planeSize * nPlanes : 0;
-        if (bufferSize > sourceCapacity) {
-            sourceStorage.reset(new float[bufferSize]);
-            sourceCapacity = bufferSize;
+        float* buffer = NULL;
+        if (bufferSize) {
+            sourceStorage.reserve(bufferSize);
+            buffer = sourceStorage.data();
         }
-        float* const buffer = bufferSize ? sourceStorage.get() : NULL;
 
         PassScratch scratch;
-        std::vector<std::vector<float>> extraSlots;
         if (buffer) {
             scratch.rect = bufferRect;
             scratch.width = bufferWidth;
@@ -997,9 +1082,8 @@ runPassesCpu(EffectInstance& effect,
             scratch.nPlanes = nPlanes;
             scratch.planeSize = planeSize;
             scratch.buffers.push_back(buffer);
-            extraSlots.resize(list.scratchSlots - 1);
-            for (std::vector<float>& slot : extraSlots) {
-                slot.assign(bufferSize, 0.f);
+            for (HostScratchFloats& slot : extraStorage) {
+                slot.reserve(bufferSize);
                 scratch.buffers.push_back(slot.data());
             }
 

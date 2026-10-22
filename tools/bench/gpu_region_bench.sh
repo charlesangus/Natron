@@ -13,9 +13,12 @@
 #   playback  BENCH_PLAYBACK_FRAMES frames as one range, in a fresh process (secondary)
 # Cases: the nodes in BENCH_NODES alone (topology "node") and between two Grades ("gxg") at each size in
 # BENCH_SIZES, then the comps in BENCH_COMPS at each size in BENCH_COMP_SIZES.
+# With BENCH_BASE_APPIMAGE every case also runs on that AppImage, interleaved with the first under the same
+# kind and mode (the build order flips with the round too), and its tag ends in -base.
 # Results: <out-dir>/<tag>.log, <tag>.prof.* (the render profile), <tag>.marks.jsonl (each render's label and
-# in-process time), results.jsonl (graph_bench.py) and driver.jsonl (process wall, exit status). The tag is
-# <case>-<size>-<gpu mode>-<kind>-r<round>. Summarise a run with
+# in-process time), results.jsonl (graph_bench.py) and driver.jsonl (process wall, exit status, peak RSS of the
+# process tree, MemAvailable before the run, the THP and page-fault counter deltas of /proc/vmstat over the
+# session and the THP settings). The tag is <case>-<size>-<gpu mode>-<kind>-r<round>[-base]. Summarise a run with
 #   python3 -I tools/bench/gpu_region_summary.py <out-dir>/<tag>.prof
 #
 # Environment:
@@ -33,6 +36,9 @@
 #                        (default <out-dir>/render); point it at tmpfs to keep write-back off disk
 #   BENCH_APP_ARGS       arguments placed before the script (default "-b")
 #   BENCH_APPIMAGE_ARGS  arguments for the AppImage runtime (default "--appimage-extract-and-run", the host has no FUSE)
+#   BENCH_TOPOS          topologies run for BENCH_NODES (default "node gxg")
+#   BENCH_MODES          GPU modes run (default "off auto")
+#   BENCH_BASE_APPIMAGE  a second AppImage (the baseline) run on every case beside the first
 #   BENCH_DRY_RUN=1      lists the planned cases, with the memory probe, and renders nothing
 #
 # The AppImage runs with LD_LIBRARY_PATH removed: a host Qt on that path shadows the one inside the image.
@@ -57,7 +63,11 @@ APP_ARGS=${BENCH_APP_ARGS:--b}
 APPIMAGE_ARGS=${BENCH_APPIMAGE_ARGS:---appimage-extract-and-run}
 read -r -a APP_ARGV <<<"$APP_ARGS"
 read -r -a APPIMAGE_ARGV <<<"$APPIMAGE_ARGS"
+CUR_APPIMAGE=$APPIMAGE CUR_BUILD=new BUILD_SUFFIX=
+TOPOS=${BENCH_TOPOS:-node gxg}
+MODES=${BENCH_MODES:-off auto}
 DRY=${BENCH_DRY_RUN:-0}
+BASE_APPIMAGE=${BENCH_BASE_APPIMAGE:-}
 RENDER_BASE=$(realpath -m "${BENCH_RENDER_BASE:-$OUT/render}")
 
 declare -A CASES
@@ -70,6 +80,20 @@ CASES[iir100]="BENCH_NODE=blur BENCH_BLUR_SIZE=240 BENCH_BLUR_FILTER=quasigaussi
 CASES[erode6]="BENCH_NODE=erode BENCH_ERODE_SIZE=6"
 CASES[erode40]="BENCH_NODE=erode BENCH_ERODE_SIZE=40"
 CASES[ck]="BENCH_NODE=chromakeyer"
+CASES[edge]="BENCH_NODE=edgedetect"
+
+# Runs argv and writes the largest resident set of the child tree (wait4 folds reaped descendants into it) to
+# the file named by $RSS_FILE; /usr/bin/time is not installed on the bench host.
+PEAK_RSS_PY='import os, subprocess, sys
+p = subprocess.Popen(sys.argv[1:])
+_, status, usage = os.wait4(p.pid, 0)
+with open(os.environ["RSS_FILE"], "w") as f:
+    f.write("%d\n" % usage.ru_maxrss)
+sys.exit(os.waitstatus_to_exitcode(status))'
+
+vmstat_counter() { awk -v k="$1" '$1==k{print $2}' /proc/vmstat; }
+
+thp_setting() { sed -n 's/.*\[\(.*\)\].*/\1/p;t;p' "/sys/kernel/mm/transparent_hugepage/$1" 2> /dev/null | head -n1; }
 
 mem_available_kb() { awk '/^MemAvailable:/{print $2}' /proc/meminfo; }
 
@@ -162,8 +186,15 @@ session_of() {
 
 # Runs one session. Args: tag kind mode cache-dir, then the BENCH_* variables of the case.
 run_session() {
-    local tag=$1 kind=$2 mode=$3 cache=$4 render_dir="$RENDER_BASE/$1" t0 code
+    local tag=$1 kind=$2 mode=$3 cache=$4 render_dir="$RENDER_BASE/$1" t0 code rss_file avail
+    local alloc0 fallback0 split0 fault0 rss_kb
     shift 4
+    rss_file="$OUT/$tag.rss"
+    avail=$(mem_available_kb)
+    alloc0=$(vmstat_counter thp_fault_alloc)
+    fallback0=$(vmstat_counter thp_fault_fallback)
+    split0=$(vmstat_counter thp_split_pmd)
+    fault0=$(vmstat_counter pgfault)
     rm -f "$OUT/$tag.prof".* "$OUT/$tag.marks.jsonl"
     mkdir -p "$render_dir" "$cache"
     t0=$SECONDS
@@ -171,10 +202,17 @@ run_session() {
         NATRON_RENDER_SCHEDULER=taskgraph NATRON_RENDER_PROFILE="$OUT/$tag.prof" BENCH_TAG="$tag" \
         BENCH_SESSION="$(session_of "$kind")" BENCH_LABEL="$kind" BENCH_RENDER_DIR="$render_dir" \
         BENCH_MARKS="$OUT/$tag.marks.jsonl" BENCH_OUT="$OUT/results.jsonl" BENCH_N=1 "$@" \
-        timeout 3600 "$APPIMAGE" "${APPIMAGE_ARGV[@]}" "${APP_ARGV[@]}" tools/bench/graph_bench.py) > "$OUT/$tag.log" 2>&1
+        RSS_FILE="$rss_file" python3 -I -c "$PEAK_RSS_PY" timeout 3600 "$CUR_APPIMAGE" "${APPIMAGE_ARGV[@]}" "${APP_ARGV[@]}" tools/bench/graph_bench.py) > "$OUT/$tag.log" 2>&1
     code=$?
     rm -rf "$render_dir"
-    printf '{"tag":"%s","kind":"%s","gpu":"%s","exit":%d,"proc_wall_s":%d}\n' "$tag" "$kind" "$mode" "$code" $((SECONDS - t0)) >> "$OUT/driver.jsonl"
+    rss_kb=$(cat "$rss_file" 2> /dev/null || echo 0)
+    rm -f "$rss_file"
+    # The vmstat counters are system-wide, so they are only the session's own on an otherwise idle host.
+    printf '{"tag":"%s","build":"%s","kind":"%s","gpu":"%s","exit":%d,"proc_wall_s":%d,"vmhwm_kb":%d,"mem_available_kb":%d,"thp_fault_alloc":%d,"thp_fault_fallback":%d,"thp_split_pmd":%d,"pgfault":%d,"thp_enabled":"%s","thp_defrag":"%s","thp_use_zero_page":"%s"}\n' \
+        "$tag" "$CUR_BUILD" "$kind" "$mode" "$code" $((SECONDS - t0)) "$rss_kb" "$avail" \
+        $(($(vmstat_counter thp_fault_alloc) - alloc0)) $(($(vmstat_counter thp_fault_fallback) - fallback0)) \
+        $(($(vmstat_counter thp_split_pmd) - split0)) $(($(vmstat_counter pgfault) - fault0)) \
+        "$(thp_setting enabled)" "$(thp_setting defrag)" "$(thp_setting use_zero_page)" >> "$OUT/driver.jsonl"
     echo "$tag exit=$code $((SECONDS - t0))s"
 }
 
@@ -208,7 +246,7 @@ run_kind() {
 run_node_case() {
     local c=$1 topo=$2 size=$3 kind=$4 mode=$5 round=$6 key tag frames
     key=$topo-$c-$(size_label "$size")
-    tag=$key-$mode-$kind-r$round
+    tag=$key-$mode-$kind-r$round$BUILD_SUFFIX
     frames=$NEED_NODE
     [ "$topo" = gxg ] && frames=$NEED_GXG
     fits "$(need_kb_for "$size" "$frames" "$kind")" "$tag" || return 0
@@ -216,39 +254,67 @@ run_node_case() {
     local res=uhd sz=""
     [ "$size" != uhd ] && { res=s$size; sz=$size; }
     # shellcheck disable=SC2086
-    run_kind "$key" "$tag" "$kind" "$mode" BENCH_TOPO="$topo" BENCH_RES="$res" BENCH_SIZE="$sz" ${CASES[$c]}
+    run_kind "$key$BUILD_SUFFIX" "$tag" "$kind" "$mode" BENCH_TOPO="$topo" BENCH_RES="$res" BENCH_SIZE="$sz" ${CASES[$c]}
 }
 
 run_comp_case() {
     local comp=$1 size=$2 kind=$3 mode=$4 round=$5 key tag need
     key=comp-$comp-$(size_label "$size")
-    tag=$key-$mode-$kind-r$round
+    tag=$key-$mode-$kind-r$round$BUILD_SUFFIX
     need=$(comp_need_kb "$size")
     [ "$kind" = playback ] && need=$((need * 2))
     fits "$need" "$tag" || return 0
     [ "$DRY" = 1 ] && return 0
     local sz=""
     [ "$size" != uhd ] && sz=$size
-    run_kind "$key" "$tag" "$kind" "$mode" BENCH_TOPO=ntp BENCH_COMP="$REPO/tools/bench/comps/$comp.ntp" \
+    run_kind "$key$BUILD_SUFFIX" "$tag" "$kind" "$mode" BENCH_TOPO=ntp BENCH_COMP="$REPO/tools/bench/comps/$comp.ntp" \
         BENCH_RES=uhd BENCH_SIZE="$sz"
 }
 
-mode_order() { if [ $(($1 % 2)) -eq 1 ]; then echo "off auto"; else echo "auto off"; fi; }
+use_build() {
+    if [ "$1" = base ]; then
+        CUR_APPIMAGE=$BASE_APPIMAGE CUR_BUILD=base BUILD_SUFFIX=-base
+    else
+        CUR_APPIMAGE=$APPIMAGE CUR_BUILD=new BUILD_SUFFIX=
+    fi
+}
+
+# Runs "$@" once per build, the candidate first on odd rounds and the baseline first on even ones.
+for_each_build() {
+    local round=$1 b builds="new"
+    shift
+    if [ -n "$BASE_APPIMAGE" ]; then
+        if [ $((round % 2)) -eq 1 ]; then builds="new base"; else builds="base new"; fi
+    fi
+    for b in $builds; do
+        use_build "$b"
+        "$@"
+    done
+}
+
+mode_order() {
+    local m ordered=""
+    for m in $MODES; do
+        if [ $(($1 % 2)) -eq 1 ]; then ordered="$ordered $m"; else ordered="$m $ordered"; fi
+    done
+    echo "$ordered" | xargs
+}
 
 if [ "$DRY" != 1 ]; then
     [ -x "$APPIMAGE" ] || { echo "not executable: $APPIMAGE" >&2; exit 2; }
+    [ -z "$BASE_APPIMAGE" ] || [ -x "$BASE_APPIMAGE" ] || { echo "not executable: $BASE_APPIMAGE" >&2; exit 2; }
     mkdir -p "$OUT" "$RENDER_BASE"
 fi
 
-echo "gpu_region_bench: rounds=$ROUNDS kinds=\"$KINDS\" out=$OUT render_base=$RENDER_BASE appimage=$APPIMAGE"
+echo "gpu_region_bench: rounds=$ROUNDS kinds=\"$KINDS\" out=$OUT render_base=$RENDER_BASE appimage=$APPIMAGE base=${BASE_APPIMAGE:-none}"
 for r in $(seq 1 "$ROUNDS"); do
     modes=$(mode_order "$r")
     for kind in $KINDS; do
         for size in $SIZES; do
             for c in $NODES; do
-                for topo in node gxg; do
+                for topo in $TOPOS; do
                     for m in $modes; do
-                        run_node_case "$c" "$topo" "$size" "$kind" "$m" "$r"
+                        for_each_build "$r" run_node_case "$c" "$topo" "$size" "$kind" "$m" "$r"
                     done
                 done
             done
@@ -256,7 +322,7 @@ for r in $(seq 1 "$ROUNDS"); do
         for comp in $COMPS; do
             for size in $COMP_SIZES; do
                 for m in $modes; do
-                    run_comp_case "$comp" "$size" "$kind" "$m" "$r"
+                    for_each_build "$r" run_comp_case "$comp" "$size" "$kind" "$m" "$r"
                 done
             done
         done

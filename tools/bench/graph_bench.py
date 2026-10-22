@@ -10,7 +10,7 @@
 #                 gebg (Grade -> Erode -> Blur -> Grade), and node (BENCH_NODE alone) and gxg (Grade -> BENCH_NODE
 #                 -> Grade); BENCH_N is ignored by these four
 #   BENCH_NODE    the node of the node and gxg topologies: transform (animated, motion blur per BENCH_MOTION_BLUR)
-#                 | blur (BENCH_BLUR_SIZE, BENCH_BLUR_FILTER) | erode (BENCH_ERODE_SIZE) | chromakeyer
+#                 | blur (BENCH_BLUR_SIZE, BENCH_BLUR_FILTER) | erode (BENCH_ERODE_SIZE) | chromakeyer | edgedetect
 #   BENCH_N       approximate number of processing nodes
 #   BENCH_SIZE    WxH: render generator-fed topologies at this size; BENCH_RES is then only the record's label
 #   BENCH_BLUR_SIZE  size parameter of the Blur nodes (default 3; sigma = size / 2.4)
@@ -440,13 +440,19 @@ def chromakeyer(inp):
     return n
 
 
+def edgedetect(inp):
+    n = make("eu.cimg.EdgeDetect")
+    n.connectInput(0, inp)
+    return n
+
+
 # The node under test and the first Grade of a gxg graph, for the knob the session changes between renders.
 tweak_targets = {}
 
 
 def bench_node(inp):
     makers = {"transform": animated_transform, "blur": lambda i: blur(i, 0), "erode": erode,
-              "chromakeyer": chromakeyer}
+              "chromakeyer": chromakeyer, "edgedetect": edgedetect}
     if NODE not in makers:
         raise RuntimeError("BENCH_NODE must be one of %s, got %r" % (", ".join(sorted(makers)), NODE))
     node = makers[NODE](inp)
@@ -595,6 +601,7 @@ NODE_TWEAKS = {
     "blur": ("size", lambda k: (BLUR_SIZE * (1.0 + 0.002 * k),) * 2),
     "erode": ("size", lambda k: (ERODE_SIZE + k,) * 2),
     "chromakeyer": ("acceptanceAngle", lambda k: (60.0 + 0.5 * k,)),
+    "edgedetect": ("blurSize", lambda k: (1.0 + 0.01 * k,)),
 }
 COMP_TWEAKS = {
     "keying_grade": ("fg_grade1", "multiply", (1.05, 1.0, 0.95, 1.0)),

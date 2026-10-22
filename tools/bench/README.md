@@ -15,6 +15,7 @@ for finding where the time goes. Everything runs in the `natron-dev` container a
 | `analyze_stacks.py` | Summarises eu-stack samples: busy/blocked/idle, activity, self and inclusive functions. |
 | `compare.py` | Compares two result files per (topology, n, resolution, named); exits non-zero on a regression past `--threshold`. |
 | `stream_bench.c` | Node-at-a-time vs tiled vs fused cost of a chain of point ops on this machine. |
+| `page_fault_bench.c` | First-touch cost, huge-page coverage and THP counters of a fresh buffer allocated like `HostImageMemory`, with optional competing memcpy load. |
 | `make_plates.py` | Writes the synthetic EXR plates and the deep sequence the plate-fed families read. |
 | `gpu_region_bench.sh` | GPU Off/Auto comparison of spatial nodes (alone and between Grades) and the M82 comps from a Natron AppImage, as first-frame, re-render, jump and playback sessions; keeps each run's render profile. |
 | `gpu_region_summary.py` | Splits the GPU region records of those profiles into per-phase times per region and per node. |
@@ -233,3 +234,26 @@ its task record's `wallNs` (device timestamps). `pred xfer` is the record's `pre
 transfer time placement's cost model predicts for the region's `uploadBytes` and `downloadBytes`, to
 compare with `uploadMs + downloadMs`; it reads `n/a` when the model knows no bandwidth (`null`).
 `--self-test` checks the breakdown, the floor and the labelling on `gpu-region-profile-sample.jsonl`.
+
+## Page-fault bench
+
+`page_fault_bench.c` faults a fresh anonymous buffer and reports what the kernel did, with no Natron
+involved. Build and run on the host; it is plain C.
+
+```
+gcc -O2 -pthread -o page_fault_bench tools/bench/page_fault_bench.c
+page_fault_bench [-s GiB] [-a mmap|aligned|mmap2m] [-t write|rw|populate] [-n THREADS] [-l LOAD_THREADS] [-j]
+```
+
+- `-a`: `mmap` is a plain small-page mapping; `aligned` is `aligned_alloc(2 MiB)` plus `MADV_HUGEPAGE`, as
+  `HostImageMemory::rawAlloc` does for large buffers; `mmap2m` is an `mmap` aligned to 2 MiB plus
+  `MADV_HUGEPAGE`.
+- `-t`: `write` stores one byte per 4 KiB; `rw` does `p[off] = p[off]` per 4 KiB, as `GpuImportPreparer::touch`
+  does; `populate` uses `MADV_POPULATE_WRITE` (kernel 5.14+, else it exits with a message).
+- `-n` threads (default: all online CPUs) each fault a contiguous slice of whole 2 MiB pages. `-l` starts that
+  many threads streaming `memcpy` over their own 256 MiB buffers to compete for memory bandwidth.
+- One line per run: fault GB/s, minor faults (`getrusage`), `AnonHugePages` of the buffer's VMA, the
+  `thp_fault_alloc`, `thp_fault_fallback` and `thp_split_pmd` deltas, the time to free the buffer, and the
+  THP `enabled`, `defrag` and `use_zero_page` settings. `-j` prints the same fields as one JSON object.
+- It refuses a buffer (plus load buffers) above half of `MemAvailable`. The vmstat deltas are system-wide, so
+  run it on an otherwise quiet host.

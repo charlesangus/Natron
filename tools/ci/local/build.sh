@@ -8,6 +8,7 @@
 #
 # Usage:
 #   tools/ci/local/build.sh [debug|release|fast] [--tests] [--reconfigure] [--no-ccache-stats]
+#                            [--cmake-arg <arg>]...
 #
 #   debug (default)      -> build/debug,   configured with -DCMAKE_BUILD_TYPE=Debug
 #   release               -> build/release, configured with NO explicit build
@@ -30,6 +31,14 @@
 #                            directory already has a CMakeCache.txt (use this
 #                            after e.g. editing CMakeLists.txt).
 #   --no-ccache-stats      -> skip the `ccache -s` summary printed at the end.
+#   --cmake-arg <arg>      -> append <arg> to the cmake configure command, e.g.
+#                            --cmake-arg -DNATRON_GPU=OFF. Repeatable. The build
+#                            then goes into its own tree,
+#                            build/<preset>-<hash of the args>, so it never
+#                            clobbers the preset's normal tree; the first run
+#                            configures it, later runs with the same args reuse
+#                            it. Under GitHub Actions the tree's path is also
+#                            written to $GITHUB_OUTPUT as build_dir.
 #
 # Environment:
 #   NATRON_SKIP_SUBMODULE_UPDATE=1
@@ -86,8 +95,11 @@ BUILD_TYPE="debug"
 RECONFIGURE=0
 SHOW_CCACHE_STATS=1
 WANT_TESTS_FLAG=0
+EXTRA_CMAKE_ARGS=()
 
-for arg in "$@"; do
+while [[ $# -gt 0 ]]; do
+    arg="$1"
+    shift
     case "${arg}" in
         debug|release|fast)
             BUILD_TYPE="${arg}"
@@ -101,9 +113,17 @@ for arg in "$@"; do
         --no-ccache-stats)
             SHOW_CCACHE_STATS=0
             ;;
+        --cmake-arg)
+            if [[ $# -eq 0 ]]; then
+                echo "build.sh: --cmake-arg needs an argument" >&2
+                exit 1
+            fi
+            EXTRA_CMAKE_ARGS+=("$1")
+            shift
+            ;;
         *)
             echo "build.sh: unknown argument '${arg}'" >&2
-            echo "usage: build.sh [debug|release|fast] [--tests] [--reconfigure] [--no-ccache-stats]" >&2
+            echo "usage: build.sh [debug|release|fast] [--tests] [--reconfigure] [--no-ccache-stats] [--cmake-arg <arg>]..." >&2
             exit 1
             ;;
     esac
@@ -142,6 +162,11 @@ case "${BUILD_TYPE}" in
         ;;
 esac
 
+if [[ ${#EXTRA_CMAKE_ARGS[@]} -gt 0 ]]; then
+    EXTRA_ARGS_HASH="$(printf '%s\n' "${EXTRA_CMAKE_ARGS[@]}" | sha256sum | cut -c1-8)"
+    BUILD_DIR="${BUILD_DIR}-${EXTRA_ARGS_HASH}"
+fi
+
 if [[ "${BUILD_TYPE}" == "fast" && "${WANT_TESTS_FLAG}" -eq 0 ]]; then
     BUILD_TESTS="OFF"
 else
@@ -172,6 +197,10 @@ print_build_banner() {
     echo "== build.sh: preset=${BUILD_TYPE} CMAKE_BUILD_TYPE=${cmake_type:-<unset, CMakeLists defaults to RelWithDebInfo>} =="
     echo "   compile flags: ${flags}"
     echo "   tests: ${BUILD_TESTS}"
+    if [[ ${#EXTRA_CMAKE_ARGS[@]} -gt 0 ]]; then
+        echo "   extra cmake args: ${EXTRA_CMAKE_ARGS[*]}"
+        echo "   build dir: ${BUILD_DIR}"
+    fi
     case "${flags}" in
         *" -g"*|"-g"*) echo "   debug info: yes" ;;
         *)             echo "   debug info: no" ;;
@@ -272,6 +301,7 @@ CMAKE_ARGS=(
     -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
     -DNATRON_BUILD_TESTS="${BUILD_TESTS}"
+    "${EXTRA_CMAKE_ARGS[@]}"
     "${REPO_ROOT}"
 )
 
@@ -310,6 +340,10 @@ echo "+ ninja -j${JOBS}"
 ( cd "${BUILD_DIR}" && ninja -j"${JOBS}" )
 
 echo "== build.sh: build complete: ${BUILD_DIR} =="
+
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    echo "build_dir=${BUILD_DIR}" >> "${GITHUB_OUTPUT}"
+fi
 
 if [[ "${SHOW_CCACHE_STATS}" -eq 1 ]]; then
     echo "== build.sh: ccache summary =="

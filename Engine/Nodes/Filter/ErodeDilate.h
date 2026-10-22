@@ -70,6 +70,22 @@ void filterLine(float* data,
                 int halfWidth,
                 bool takeMax,
                 LineScratch& scratch);
+
+/// The column count filterColumns() works on at once: one cache line of floats.
+const int kColumnBlock = 16;
+
+/**
+ * @brief filterLine() over the `count` lines starting at data, data + 1, ..., data + count - 1,
+ * each of `length` values `stride` apart: adjacent columns of a row-major plane. Equal to calling
+ * filterLine() on each, but walks kColumnBlock columns together, reading each row once per block.
+ **/
+void filterColumns(float* data,
+                   int length,
+                   std::ptrdiff_t stride,
+                   int count,
+                   int halfWidth,
+                   bool takeMax,
+                   LineScratch& scratch);
 } // namespace ErodeDilateKernels
 
 /**

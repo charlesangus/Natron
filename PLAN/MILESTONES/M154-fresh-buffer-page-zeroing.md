@@ -169,12 +169,12 @@ M109 - GPU Region Engine Hardening merged to main as `687f1991a` (#70). This mil
   - size: M
 
 - [ ] M154.P5.T3 — Let local and remote builds take extra CMake arguments, and build the lane with `-DNATRON_GPU=OFF` on GitHub Actions
-  - files: `tools/ci/local/build.sh`, `tools/ci/remote/build.sh`, `.github/workflows/remote-build.yml`, `tools/ci/local/README.md`, `tools/ci/remote/README.md`
+  - files: `tools/ci/local/build.sh`, `tools/ci/remote/build.sh`, `.github/workflows/remote-build.yml`, `tools/ci/remote/README.md`
   - approach:
     - `tools/ci/local/build.sh` accepts `--cmake-arg <arg>` (repeatable), appended to `CMAKE_ARGS`. Any extra argument puts the build in its own folder (`build/<preset>-<short hash of the args>`), so it never clobbers the preset's normal tree, and forces a configure there on first use.
     - `remote-build.yml` gains a string input `cmake_args` (space-separated, default empty), passed to `build.sh` as `--cmake-arg` entries. The build-tree and AppImage artifact names stay per preset/sha; the run name includes a marker when the input is non-empty.
     - `tools/ci/remote/build.sh` gains a repeatable `--cmake-arg <arg>` that it forwards as `cmake_args`.
-    - Both READMEs document the option in one short paragraph each.
+    - `tools/ci/remote/README.md` documents both options in one short paragraph; the local script documents its flag in its usage header. `tools/ci/local/README.md` is M107's and stays untouched.
   - verify: `bash -n` and `shellcheck` (if present) on both scripts; `actionlint` if present. Then `tools/ci/remote/build.sh fast --tests --no-appimage --cmake-arg -DNATRON_GPU=OFF` on the pushed lane builds green and its ctest passes in both scheduler legs (gate 6's `-DNATRON_GPU=OFF` line). A plain `tools/ci/remote/build.sh fast --no-appimage` still uses the usual tree.
   - size: M
 

@@ -43,19 +43,19 @@ Every node is built on the M137 - Native Base Class Flexibility framework (`Node
 
 ## Phase 80.1: Foundation
 
-- [ ] M80.P1.T1 — Vendor rawspeed as a pinned dependency and pin the darktable source release
+- [x] M80.P1.T1 — Vendor rawspeed as a pinned dependency and pin the darktable source release
   - files: `tools/ci/local/fetch-assets.sh`, `Engine/CMakeLists.txt`, `tools/license/components/README.md`, `tools/release/stage-bundle.sh` (only if the shared object needs bundling)
   - approach: build rawspeed from source at an exact commit SHA, plus pugixml if the image lacks it. Follow the `LCMS2_REPO`/`LCMS2_REF` recipe (`fetch-assets.sh:189-190`, clone at `:321`) and install into `build/assets/plugin-src/deps-install/`. Link it statically if rawspeed supports that, so the AppImage needs nothing new. `find_package` or pkg-config it in `Engine/CMakeLists.txt` and link it. Add the licence entries: rawspeed LGPL-2.1, pugixml MIT, and the darktable GPL-3 note. Also record one darktable **release tag** (the latest release) as `DARKTABLE_REF`. Every port in this milestone names it in its file header, and the reference harness builds it. Check the dev image first (`docker ps`, then what the image ships) before building anything. The bundle must include rawspeed's `cameras.xml`, which the decoder needs at run time. No build, cmake or Dockerfile references rawspeed, lensfun, pugixml or libraw today.
   - verify: a one-line test binary links rawspeed and constructs a `RawDecoder`; a second run of the fetch step is idempotent; the licence README names both libraries and the darktable tag.
   - size: M
 
-- [ ] M80.P1.T2 — Add the `eDataKindRaw` data kind
+- [x] M80.P1.T2 — Add the `eDataKindRaw` data kind
   - files: `Global/Enums.h`, `Engine/Node.cpp`, `Engine/Settings.{h,cpp}`, `Engine/OutputSchedulerThread.cpp`, `Engine/NodeColorSampler.cpp`, `Gui/NodeGui.cpp` (pen refresh only), `Engine/Nodes/README.md`
   - approach: add `eDataKindRaw` to `DataKindEnum` (`Global/Enums.h:515-520`, beside Image, Deep, Scene and Polymorphic). The payload is a float `Image` in the existing image cache: one channel for a mosaic, three or one for linear raw. There is no new render virtual or cache (unlike Deep's `EffectInstanceRenderDeep.cpp`); the kind exists for edge typing only. **Add no row to `isRegisteredAdapter`** (`Node.cpp:1892`). Conversions are explicit (README "Conversions between kinds are explicit"): Demosaic and RawToImage declare raw in and image out, and the Viewer exception is P2.T4. Edge colours are Preferences knobs: add an `_edgeRawColor` knob with an Okabe-Ito default distinct from Deep's blue, a `getEdgeRawColor`, and a Raw arm in `Settings::getEdgeKindColor` (`Engine/Settings.cpp:~3132`); `Edge::kindTintColor` already goes through it. Add raw arms to the kind switches in `Engine/OutputSchedulerThread.cpp` (~2505, ~2656) and `Engine/NodeColorSampler.cpp:175`. Document the kind in the README "Data kinds" section, including that the layout travels as metadata (P1.T3).
   - verify: gtest in `Tests/DataKind_Test.cpp`: a raw output cannot connect to an image-only input (`eCanConnectInput_incompatibleDataKind`) and can connect to a raw input; a project with a conflicting edge reports it on load through `Project::reportDataKindConflicts`; full ctest unchanged.
   - size: M
 
-- [ ] M80.P1.T3 — Define the raw metadata schema
+- [x] M80.P1.T3 — Define the raw metadata schema
   - files: new `Engine/Nodes/IO/RawMetadata.h/.cpp`, new `Tests/Native/RawMetadata_Test.cpp`
   - approach: typed accessors over `ImageMetadata` (`Engine/Nodes/Metadata/ImageMetadata.h`: `getString`/`getDoubleVector`/`setDoubleVector`, which return `std::optional`) for the keys every raw node needs:
     - `raw/cfa_pattern`: 2x2 Bayer, 6x6 X-Trans or `none`, as a string, plus the pattern origin offset.

@@ -114,7 +114,9 @@ future core work has solid ground to build on.
 | M77 | Native Metadata Nodes | done | M75 | bosley-native-nodes | E3 | [M77-native-metadata-nodes.md](PLAN/MILESTONES/M77-native-metadata-nodes.md) |
 | M78 | Metadata In Expressions | done | M75, M77 | bosley-native-nodes | E3 | [M78-metadata-in-expressions.md](PLAN/MILESTONES/M78-metadata-in-expressions.md) |
 | M79 | Layered Document Readers | todo | M75 |  | E3 | [M79-layered-document-readers.md](PLAN/MILESTONES/M79-layered-document-readers.md) |
-| M80 | Native RAW Support | todo | M75 |  | E3 | [M80-native-raw-support.md](PLAN/MILESTONES/M80-native-raw-support.md) |
+| M80 | Native RAW Support | todo | M75, M85, M120, M137 |  | E3 | [M80-native-raw-support.md](PLAN/MILESTONES/M80-native-raw-support.md) |
+| M159 | Kind-Agnostic Groups | todo | - |  | E3 | [M159-kind-agnostic-groups.md](PLAN/MILESTONES/M159-kind-agnostic-groups.md) |
+| M160 | Lensfun Lens Correction | todo | M80, M113 |  | E3 | [M160-lensfun-lens-correction.md](PLAN/MILESTONES/M160-lensfun-lens-correction.md) |
 | M82 | Render Cost Profiling | done |  |  | E6 | [M82-render-cost-profiling.md](PLAN/MILESTONES/M82-render-cost-profiling.md) |
 | M83 | GPU Compute Backend Spike | done |  |  | E5 | [M83-gpu-compute-backend-spike.md](PLAN/MILESTONES/M83-gpu-compute-backend-spike.md) |
 | M84 | GPU Placement And Residency | done |  |  | E5 | [M84-gpu-placement-and-residency.md](PLAN/MILESTONES/M84-gpu-placement-and-residency.md) |
